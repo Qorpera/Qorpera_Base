@@ -6,12 +6,15 @@ import {
 	type ComputerHourNoticeJob,
 	type ComputerHourNoticeStore,
 	deliverComputerHourNoticeBatch,
-	parseComputerHourNoticeJobs,
+	parseComputerHourNoticeClaim,
 } from "../_shared/computer-hour-notices.ts";
 
 /* Sends the computer hour notices the database queued (build step 5). Called every minute by
  * pg_cron + pg_net with a Supabase secret key, like profile-invitation-email; see
- * deploy/first-node/RUNTIME-COMPUTER-HOURS.md ("Email"). */
+ * deploy/first-node/RUNTIME-COMPUTER-HOURS.md ("Email"). A batch of ten at ten seconds a send at most
+ * fits well inside the five-minute lease. */
+const BATCH = 10;
+const SEND_TIMEOUT_MS = 10_000;
 
 interface FunctionConfiguration {
 	supabaseUrl: string;
@@ -102,7 +105,7 @@ class ResendProvider implements ComputerHourEmailProvider {
 					"Idempotency-Key": idempotencyKey,
 				},
 				body: JSON.stringify({ from: this.from, to: [job.recipientEmail], subject: email.subject, text: email.text, html: email.html }),
-				signal: AbortSignal.timeout(20_000),
+				signal: AbortSignal.timeout(SEND_TIMEOUT_MS),
 			});
 		} catch (error) {
 			throw new ComputerHourEmailSendError(error instanceof Error ? error.message : "Resend request failed", true);
@@ -129,36 +132,49 @@ Deno.serve(async (request) => {
 	});
 	const leaseId = crypto.randomUUID();
 	const { data: claimed, error: claimError } = await client.rpc("qorpera_claim_computer_hour_notices", {
-		p_limit: 25,
+		p_limit: BATCH,
 		p_lease_id: leaseId,
 	});
 	if (claimError) return jsonResponse({ error: "Notice claim failed" }, 503);
-	let jobs: ComputerHourNoticeJob[];
+	let claim: ReturnType<typeof parseComputerHourNoticeClaim>;
 	try {
-		jobs = parseComputerHourNoticeJobs(claimed);
+		claim = parseComputerHourNoticeClaim(claimed);
 	} catch {
 		return jsonResponse({ error: "Notice claim was invalid" }, 503);
 	}
+	const fail = async (noticeId: string, lease: string, message: string, retryable: boolean) => {
+		const { data, error } = await client.rpc("qorpera_fail_computer_hour_notice", {
+			p_notice_id: noticeId,
+			p_lease_id: lease,
+			p_error: message,
+			p_retryable: retryable,
+		});
+		if (error || data !== true) throw new Error("Notice failure could not be recorded");
+	};
+	// A notice that cannot be read is failed for good, so it holds up no other.
+	let rejected = 0;
+	for (const notice of claim.rejected) {
+		try {
+			await fail(notice.noticeId, notice.leaseId, notice.message, false);
+			rejected += 1;
+		} catch {}
+	}
 	const store: ComputerHourNoticeStore = {
 		complete: async (job, providerMessageId) => {
-			const { error } = await client.rpc("qorpera_complete_computer_hour_notice", {
+			const { data, error } = await client.rpc("qorpera_complete_computer_hour_notice", {
 				p_notice_id: job.noticeId,
 				p_lease_id: job.leaseId,
 				p_provider_message_id: providerMessageId,
 			});
-			if (error) throw new Error("Notice completion failed");
+			if (error || data !== true) throw new Error("Notice completion failed");
 		},
-		fail: async (job, message, retryable) => {
-			const { error } = await client.rpc("qorpera_fail_computer_hour_notice", {
-				p_notice_id: job.noticeId,
-				p_lease_id: job.leaseId,
-				p_error: message,
-				p_retryable: retryable,
-			});
-			if (error) throw new Error("Notice failure could not be recorded");
-		},
+		fail: (job, message, retryable) => fail(job.noticeId, job.leaseId, message, retryable),
 	};
-	return jsonResponse(
-		await deliverComputerHourNoticeBatch(jobs, config.appUrl, new ResendProvider(config.resendApiKey, config.from), store),
+	const result = await deliverComputerHourNoticeBatch(
+		claim.jobs,
+		config.appUrl,
+		new ResendProvider(config.resendApiKey, config.from),
+		store,
 	);
+	return jsonResponse({ ...result, rejected });
 });

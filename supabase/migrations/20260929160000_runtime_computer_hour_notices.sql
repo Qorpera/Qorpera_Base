@@ -5,18 +5,24 @@
 -- Rules carried out here:
 -- * Notices come only from live charges: before the live switch every charge is a dry run, so
 --   nothing is queued (switched off until live payments). Complimentary companies get none.
--- * "Hours running low": once a month per company, when what is left is a fifth or less of the hours
---   in what pays now (the free hours while they last, the founders' current plan periods, the
---   company's credits in use), or under one hour. It goes to the founders whose plans pay (a current
---   plan period), the founders who bought the credits in use, or, while the company has neither,
---   every founder (it is on its free hours).
--- * "Out of hours": once per time the company runs out (it starts to owe time; hours arriving end
---   it), to every founder.
--- * A monthly summary: when a founder's plan period ends and the plan was used, one email to that
---   founder listing each company's use of it.
--- * Admins, contributors and viewers get no billing email: every recipient is a founder when the
---   notice is queued. The Edge Function computer-hour-notices sends through Resend, like invitations
---   (supabase/INVITATION-EMAIL.md); addresses are read when a notice is claimed.
+-- * "Hours running low": once a calendar month per company and recipient, when what is left is a
+--   fifth or less of the hours in what pays now (the free hours while they last, the founders'
+--   current plan periods and the company's credits with hours left), or under one hour. It goes to
+--   the founders whose plans pay (a current plan period with hours left), the founders who bought
+--   the credits in use, or, while neither pays, every founder (the company is on its free hours).
+-- * "Out of hours": once per time the company runs out (it starts to owe time), to every founder.
+-- * Both wait ten minutes before they are sent and are dropped if hours arrived meanwhile (a plan
+--   renewal recorded moments after the meter charged, say; for "out of hours", any hours arriving,
+--   since running out again is a new notice), or the recipient is no longer a founder.
+-- * A monthly summary: when a founder's plan period ended (ten minutes ago or more, so the last
+--   meter pass has committed), one email to that founder listing each company's use of it; a period
+--   nobody used is marked done without an email.
+-- * Admins, contributors and viewers get no billing email. The Edge Function computer-hour-notices
+--   sends through Resend, like invitations (supabase/INVITATION-EMAIL.md); addresses are read when a
+--   notice is claimed.
+-- * Reaching zero without owing (hours taken back, credits expiring, a plan ending) queues nothing
+--   here, since no use follows once the zero rule holds work back: build step 6 sends "out of hours"
+--   when it first holds a company's work back.
 
 set local lock_timeout = '10s';
 
@@ -26,11 +32,12 @@ create table public.qorpera_computer_hour_notices (
 	-- The company, for running low and out of hours; null for a summary (it lists companies).
 	profile_id uuid,
 	user_id uuid not null,
-	-- One notice per recipient per occasion (a month, an episode of owing, a plan period).
+	-- One notice per recipient per occasion (a month, a time of owing, a plan period).
 	occasion text not null check (char_length(occasion) between 1 and 300),
 	-- What the email says, fixed when queued (a company deleted later keeps its name here).
 	details jsonb not null check (jsonb_typeof(details) = 'object'),
-	status text not null default 'pending' check (status in ('pending', 'retrying', 'delivering', 'sent', 'failed')),
+	status text not null default 'pending'
+		check (status in ('pending', 'retrying', 'delivering', 'sent', 'failed', 'cancelled')),
 	attempt_count integer not null default 0 check (attempt_count >= 0),
 	next_attempt_at timestamptz not null default clock_timestamp(),
 	lease_id uuid,
@@ -58,25 +65,58 @@ as $$
 $$;
 revoke all on function public.qorpera_computer_hour_notice_month(timestamptz) from public, anon, authenticated, service_role;
 
+-- A company's hours now: what is left (null when complimentary) and the hours in what pays now
+-- (whole, not what is left of them), the base for "a fifth or less".
+create function public.qorpera_computer_hour_notice_hours(p_profile_id uuid, p_at timestamptz,
+	out left_seconds bigint, out hours_seconds bigint)
+language plpgsql
+stable
+security definer
+set search_path = ''
+as $$
+declare
+	v_founders uuid[] := array(select founder.user_id from public.qorpera_company_founders(p_profile_id) founder);
+begin
+	left_seconds := public.qorpera_company_computer_hours_left(p_profile_id);
+	select
+		coalesce((select case when free.withdrawn_at is null and free.frozen_at is null and free.drawn_seconds < free.granted_seconds
+				then free.granted_seconds else 0 end
+			from public.qorpera_computer_hour_sources free
+			where free.kind = 'free' and free.profile_id = p_profile_id and not free.dry_run), 5 * 3600)
+		+ coalesce((select sum(plan.granted_seconds) from public.qorpera_computer_hour_sources plan
+			where plan.kind = 'plan_period' and not plan.dry_run and plan.user_id = any(v_founders)
+				and plan.withdrawn_at is null and plan.frozen_at is null
+				and plan.period_start <= p_at and p_at < plan.period_end), 0)
+		+ coalesce((select sum(credit.granted_seconds) from public.qorpera_computer_hour_sources credit
+			where credit.kind = 'credit' and not credit.dry_run and credit.profile_id = p_profile_id
+				and credit.withdrawn_at is null and credit.frozen_at is null and credit.expires_at > p_at
+				and credit.drawn_seconds < credit.granted_seconds), 0)
+	into hours_seconds;
+end
+$$;
+revoke all on function public.qorpera_computer_hour_notice_hours(uuid, timestamptz) from public, anon, authenticated, service_role;
+
 create function public.qorpera_computer_hour_queue_notice(
 	p_kind text,
 	p_profile_id uuid,
 	p_user_ids uuid[],
 	p_occasion text,
-	p_details jsonb
+	p_details jsonb,
+	p_send_after timestamptz
 )
 returns void
 language sql
 security definer
 set search_path = ''
 as $$
-	insert into public.qorpera_computer_hour_notices (kind, profile_id, user_id, occasion, details)
-	select p_kind, p_profile_id, recipient.user_id, p_occasion, p_details
+	insert into public.qorpera_computer_hour_notices (kind, profile_id, user_id, occasion, details, next_attempt_at)
+	select p_kind, p_profile_id, recipient.user_id, p_occasion, p_details, p_send_after
 	from (select distinct unnest(p_user_ids) as user_id) recipient
 	where recipient.user_id is not null
 	on conflict (kind, user_id, occasion) do nothing
 $$;
-revoke all on function public.qorpera_computer_hour_queue_notice(text, uuid, uuid[], text, jsonb) from public, anon, authenticated, service_role;
+revoke all on function public.qorpera_computer_hour_queue_notice(text, uuid, uuid[], text, jsonb, timestamptz)
+	from public, anon, authenticated, service_role;
 
 -- After a live charge: is the company running low, or out? Runs after the charge trigger (trigger
 -- names sort "charge" before "notice"), so the hours left already include this use.
@@ -88,65 +128,54 @@ set search_path = ''
 as $$
 declare
 	v_month text;
-	v_left bigint;
-	v_hours bigint;
+	v_hours record;
 	v_founders uuid[];
 	v_payers uuid[];
 	v_owed public.qorpera_computer_hour_sources%rowtype;
 	v_details jsonb;
+	v_send_after timestamptz := clock_timestamp() + interval '10 minutes';
 begin
 	if new.standard_seconds = 0 or public.qorpera_computer_hour_dry_run(new.metered_at) then
 		return null;
 	end if;
+	v_hours := public.qorpera_computer_hour_notice_hours(new.profile_id, new.metered_at);
 	-- Null: a complimentary company, which is never limited.
-	v_left := public.qorpera_company_computer_hours_left(new.profile_id);
-	if v_left is null then
+	if v_hours.left_seconds is null then
 		return null;
 	end if;
 	v_month := public.qorpera_computer_hour_notice_month(new.metered_at);
 	v_founders := array(select founder.user_id from public.qorpera_company_founders(new.profile_id) founder);
 	v_details := jsonb_build_object(
 		'companyName', (select profile.name from public.qorpera_profiles profile where profile.id = new.profile_id),
-		'leftSeconds', v_left, 'month', v_month);
+		'leftSeconds', v_hours.left_seconds, 'month', v_month);
 	select * into v_owed from public.qorpera_computer_hour_sources owed
 	where owed.kind = 'owed' and owed.profile_id = new.profile_id and not owed.dry_run;
 	if v_owed.id is not null and v_owed.drawn_seconds > v_owed.repaid_seconds then
-		-- One episode of owing lasts until hours arrive and repay it, which moves repaid_seconds.
+		-- One time of owing is named by what had been repaid when it began; hours arriving move it.
 		perform public.qorpera_computer_hour_queue_notice('out_of_hours', new.profile_id, v_founders,
-			new.profile_id::text || ':' || v_owed.repaid_seconds::text, v_details);
+			new.profile_id::text || ':' || v_owed.repaid_seconds::text, v_details, v_send_after);
 		return null;
 	end if;
-	-- The hours in what pays now, the same sources hours-left reads (whole, not what is left of them).
-	select
-		coalesce((select case when free.withdrawn_at is null and free.frozen_at is null and free.drawn_seconds < free.granted_seconds
-				then free.granted_seconds else 0 end
-			from public.qorpera_computer_hour_sources free
-			where free.kind = 'free' and free.profile_id = new.profile_id and not free.dry_run), 5 * 3600)
-		+ coalesce((select sum(plan.granted_seconds) from public.qorpera_computer_hour_sources plan
-			where plan.kind = 'plan_period' and not plan.dry_run and plan.user_id = any(v_founders)
-				and plan.withdrawn_at is null and plan.frozen_at is null
-				and plan.period_start <= new.metered_at and new.metered_at < plan.period_end), 0)
-		+ coalesce((select sum(credit.granted_seconds) from public.qorpera_computer_hour_sources credit
-			where credit.kind = 'credit' and not credit.dry_run and credit.profile_id = new.profile_id
-				and credit.withdrawn_at is null and credit.frozen_at is null and credit.expires_at > new.metered_at), 0)
-	into v_hours;
-	if v_left >= 3600 and v_left * 5 > v_hours then
+	if v_hours.left_seconds >= 3600 and v_hours.left_seconds * 5 > v_hours.hours_seconds then
 		return null;
 	end if;
-	-- Who pays now: founders with a current plan period, founders who bought credits still in use.
+	-- Who pays now: founders whose current plan period has hours left, founders who bought credits
+	-- with hours left. Neither: the company is on its free hours, and every founder is told.
 	v_payers := array(
 		select plan.user_id from public.qorpera_computer_hour_sources plan
 		where plan.kind = 'plan_period' and not plan.dry_run and plan.user_id = any(v_founders)
-			and plan.withdrawn_at is null and plan.period_start <= new.metered_at and new.metered_at < plan.period_end
+			and plan.withdrawn_at is null and plan.frozen_at is null and plan.drawn_seconds < plan.granted_seconds
+			and plan.period_start <= new.metered_at and new.metered_at < plan.period_end
 		union
 		select credit.user_id from public.qorpera_computer_hour_sources credit
 		where credit.kind = 'credit' and not credit.dry_run and credit.profile_id = new.profile_id
-			and credit.withdrawn_at is null and credit.expires_at > new.metered_at
+			and credit.withdrawn_at is null and credit.frozen_at is null and credit.expires_at > new.metered_at
 			and credit.drawn_seconds < credit.granted_seconds and credit.user_id = any(v_founders)
 	);
 	perform public.qorpera_computer_hour_queue_notice('running_low', new.profile_id,
 		case when cardinality(v_payers) > 0 then v_payers else v_founders end,
-		new.profile_id::text || ':' || v_month, v_details || jsonb_build_object('hoursSeconds', v_hours));
+		new.profile_id::text || ':' || v_month, v_details || jsonb_build_object('hoursSeconds', v_hours.hours_seconds),
+		v_send_after);
 	return null;
 end
 $$;
@@ -155,9 +184,10 @@ create trigger qorpera_computer_hour_notice_usage
 	after insert on public.qorpera_computer_hour_usage
 	for each row execute function public.qorpera_computer_hour_notice_usage();
 
--- Monthly summaries for plan periods that ended: one per founder whose plan was used, listing each
--- company's use (draws and repayments of owed time) across the period's sources (the period and
--- its upgrade top-up). Called by the worker before it claims.
+-- Monthly summaries for plan periods that ended ten minutes ago or more (within seven days): one
+-- per founder whose plan was used, listing each company's use (draws and repayments of owed time)
+-- across the period and its upgrade top-up. A period nobody used is marked done (cancelled).
+-- Called by the worker before it claims.
 create function public.qorpera_computer_hour_queue_summaries(p_now timestamptz)
 returns integer
 language plpgsql
@@ -166,14 +196,14 @@ set search_path = ''
 as $$
 declare
 	v_period record;
+	v_companies jsonb;
 	v_queued integer := 0;
-	v_rows integer;
 begin
 	for v_period in
 		select base.id, base.user_id, base.reference, base.period_start, base.period_end, base.granted_seconds
 		from public.qorpera_computer_hour_sources base
 		where base.kind = 'plan_period' and not base.dry_run and base.reference ~ '^sub_[A-Za-z0-9]+:[0-9]+$'
-			and base.period_end <= p_now and base.period_end > p_now - interval '7 days'
+			and base.period_end <= p_now - interval '10 minutes' and base.period_end > p_now - interval '7 days'
 			and not exists (
 				select 1 from public.qorpera_computer_hour_notices notice
 				where notice.kind = 'monthly_summary' and notice.user_id = base.user_id and notice.occasion = base.reference
@@ -181,48 +211,50 @@ begin
 		order by base.period_end, base.id
 		limit 200
 	loop
-		insert into public.qorpera_computer_hour_notices (kind, user_id, occasion, details)
-		select 'monthly_summary', v_period.user_id, v_period.reference, jsonb_build_object(
-			'periodStart', v_period.period_start, 'periodEnd', v_period.period_end,
-			'grantedSeconds', v_period.granted_seconds + coalesce((select sum(top.granted_seconds)
-				from public.qorpera_computer_hour_sources top
-				where top.reference = v_period.reference || ':upgrade' and not top.dry_run), 0),
-			'companies', used.companies)
+		select jsonb_agg(jsonb_build_object('companyName', coalesce(profile.name, 'A deleted company'),
+			'seconds', per_company.seconds) order by per_company.seconds desc)
+		into v_companies
 		from (
-			select jsonb_agg(jsonb_build_object('companyName', coalesce(profile.name, 'A deleted company'),
-				'seconds', per_company.seconds) order by per_company.seconds desc) as companies
+			select paid.profile_id, sum(paid.seconds)::bigint as seconds
 			from (
-				select paid.profile_id, sum(paid.seconds)::bigint as seconds
-				from (
-					select usage.profile_id, draw.standard_seconds as seconds
-					from public.qorpera_computer_hour_sources plan
-					join public.qorpera_computer_hour_draws draw on draw.source_id = plan.id
-					join public.qorpera_computer_hour_usage usage on usage.id = draw.usage_id
-					where plan.id = v_period.id or (plan.reference = v_period.reference || ':upgrade' and not plan.dry_run)
-					union all
-					select owed.profile_id, repayment.standard_seconds
-					from public.qorpera_computer_hour_sources plan
-					join public.qorpera_computer_hour_repayments repayment on repayment.source_id = plan.id
-					join public.qorpera_computer_hour_sources owed on owed.id = repayment.owed_source_id
-					where plan.id = v_period.id or (plan.reference = v_period.reference || ':upgrade' and not plan.dry_run)
-				) paid
-				group by paid.profile_id
-			) per_company
-			left join public.qorpera_profiles profile on profile.id = per_company.profile_id
-		) used
-		-- A plan nobody used sends nothing.
-		where used.companies is not null
+				select usage.profile_id, draw.standard_seconds as seconds
+				from public.qorpera_computer_hour_sources plan
+				join public.qorpera_computer_hour_draws draw on draw.source_id = plan.id
+				join public.qorpera_computer_hour_usage usage on usage.id = draw.usage_id
+				where plan.id = v_period.id or (plan.reference = v_period.reference || ':upgrade' and not plan.dry_run)
+				union all
+				select owed.profile_id, repayment.standard_seconds
+				from public.qorpera_computer_hour_sources plan
+				join public.qorpera_computer_hour_repayments repayment on repayment.source_id = plan.id
+				join public.qorpera_computer_hour_sources owed on owed.id = repayment.owed_source_id
+				where plan.id = v_period.id or (plan.reference = v_period.reference || ':upgrade' and not plan.dry_run)
+			) paid
+			group by paid.profile_id
+		) per_company
+		left join public.qorpera_profiles profile on profile.id = per_company.profile_id;
+		insert into public.qorpera_computer_hour_notices (kind, user_id, occasion, details, status, last_error)
+		values ('monthly_summary', v_period.user_id, v_period.reference,
+			case when v_companies is null then '{}'::jsonb else jsonb_build_object(
+				'periodStart', v_period.period_start, 'periodEnd', v_period.period_end,
+				'grantedSeconds', v_period.granted_seconds + coalesce((select sum(top.granted_seconds)
+					from public.qorpera_computer_hour_sources top
+					where top.reference = v_period.reference || ':upgrade' and not top.dry_run), 0),
+				'companies', v_companies) end,
+			case when v_companies is null then 'cancelled' else 'pending' end,
+			case when v_companies is null then 'The plan was not used' end)
 		on conflict (kind, user_id, occasion) do nothing;
-		get diagnostics v_rows = row_count;
-		v_queued := v_queued + v_rows;
+		if v_companies is not null then
+			v_queued := v_queued + 1;
+		end if;
 	end loop;
 	return v_queued;
 end
 $$;
 revoke all on function public.qorpera_computer_hour_queue_summaries(timestamptz) from public, anon, authenticated, service_role;
 
--- The worker's claim: queue due summaries, then lease up to p_limit notices for five minutes. A
--- recipient who is no longer a founder of the company (running low, out of hours) is skipped.
+-- The worker's claim: queue due summaries; drop notices that no longer hold (hours arrived, the
+-- recipient is no longer a founder or has no address, eight attempts made); then lease up to
+-- p_limit due notices for five minutes.
 create function public.qorpera_claim_computer_hour_notices(p_limit integer, p_lease_id uuid)
 returns jsonb
 language plpgsql
@@ -231,36 +263,64 @@ set search_path = ''
 as $$
 declare
 	v_result jsonb;
+	v_now timestamptz := clock_timestamp();
 begin
 	if p_limit not between 1 and 50 or p_lease_id is null then
 		raise exception 'computer hour notice claim is invalid' using errcode = '22023';
 	end if;
-	perform public.qorpera_computer_hour_queue_summaries(clock_timestamp());
+	perform public.qorpera_computer_hour_queue_summaries(v_now);
+	-- Open: waiting, or leased by a worker that did not finish in time.
+	update public.qorpera_computer_hour_notices notice
+	set status = 'cancelled', last_error = 'Hours arrived before it was sent', lease_id = null, lease_expires_at = null
+	where (notice.status in ('pending', 'retrying') or (notice.status = 'delivering' and notice.lease_expires_at <= v_now))
+		and notice.kind = 'out_of_hours'
+		-- Still the same time of owing: hours arriving (even some) name a new one, which has its own notice.
+		and not exists (
+			select 1 from public.qorpera_computer_hour_sources owed
+			where owed.kind = 'owed' and owed.profile_id = notice.profile_id and not owed.dry_run
+				and owed.drawn_seconds > owed.repaid_seconds
+				and notice.occasion = notice.profile_id::text || ':' || owed.repaid_seconds::text
+		);
+	update public.qorpera_computer_hour_notices notice
+	set status = 'cancelled', last_error = 'Hours arrived before it was sent', lease_id = null, lease_expires_at = null
+	where (notice.status in ('pending', 'retrying') or (notice.status = 'delivering' and notice.lease_expires_at <= v_now))
+		and notice.kind = 'running_low'
+		and exists (
+			select 1 from public.qorpera_computer_hour_notice_hours(notice.profile_id, v_now) hours
+			where hours.left_seconds is null or (hours.left_seconds >= 3600 and hours.left_seconds * 5 > hours.hours_seconds)
+		);
 	update public.qorpera_computer_hour_notices notice
 	set status = 'failed', last_error = 'The recipient is no longer a founder of the company', lease_id = null,
 		lease_expires_at = null
-	where (notice.status in ('pending', 'retrying') or (notice.status = 'delivering' and notice.lease_expires_at <= clock_timestamp()))
+	where (notice.status in ('pending', 'retrying') or (notice.status = 'delivering' and notice.lease_expires_at <= v_now))
 		and notice.profile_id is not null
 		and not exists (
 			select 1 from public.qorpera_company_founders(notice.profile_id) founder where founder.user_id = notice.user_id
 		);
 	update public.qorpera_computer_hour_notices notice
 	set status = 'failed', last_error = 'The recipient has no email address', lease_id = null, lease_expires_at = null
-	where (notice.status in ('pending', 'retrying') or (notice.status = 'delivering' and notice.lease_expires_at <= clock_timestamp()))
-		and not exists (select 1 from auth.users recipient where recipient.id = notice.user_id and recipient.email is not null);
+	where (notice.status in ('pending', 'retrying') or (notice.status = 'delivering' and notice.lease_expires_at <= v_now))
+		and not exists (
+			select 1 from auth.users recipient
+			where recipient.id = notice.user_id and nullif(btrim(recipient.email), '') is not null
+		);
+	update public.qorpera_computer_hour_notices notice
+	set status = 'failed', last_error = coalesce(notice.last_error, 'Gave up after eight attempts'), lease_id = null,
+		lease_expires_at = null
+	where notice.status = 'delivering' and notice.lease_expires_at <= v_now and notice.attempt_count >= 8;
 	with candidates as (
 		select notice.id
 		from public.qorpera_computer_hour_notices notice
 		where notice.status in ('pending', 'retrying', 'delivering')
-			and notice.next_attempt_at <= clock_timestamp()
-			and (notice.lease_expires_at is null or notice.lease_expires_at <= clock_timestamp())
+			and notice.next_attempt_at <= v_now
+			and (notice.lease_expires_at is null or notice.lease_expires_at <= v_now)
 		order by notice.next_attempt_at, notice.created_at
 		for update skip locked
 		limit p_limit
 	), claimed as (
 		update public.qorpera_computer_hour_notices notice
 		set status = 'delivering', attempt_count = notice.attempt_count + 1, lease_id = p_lease_id,
-			lease_expires_at = clock_timestamp() + interval '5 minutes', last_error = null
+			lease_expires_at = v_now + interval '5 minutes', last_error = null
 		from candidates
 		where notice.id = candidates.id
 		returning notice.*

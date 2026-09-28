@@ -361,14 +361,15 @@ Live keys come later, with the live switch (build step 7).
 - Qorpera's hour notices use an outbox drained by an Edge Function that sends through Resend, like
   invitations (`supabase/INVITATION-EMAIL.md`). They go only to founders:
   - "hours running low" (a fifth or less of the hours in what pays now is left: the free hours
-    while they last, the founders' current plan periods and the company's credits in use; or less
-    than one hour) and "out of hours" go to the founders whose plans pay, the founders who bought
-    the credits in use, or every founder on free hours;
+    while they last, the founders' current plan periods and the company's credits with hours
+    left; or less than one hour) and "out of hours" go to the founders whose plans pay, the
+    founders who bought the credits in use, or every founder on free hours;
   - "out of hours" also goes to every founder;
   - one monthly summary to each founder whose plan was used, at the end of that plan's period,
     listing each company's use.
 - Built switched off; switched on together with live payments.
-- Admins, contributors and viewers get no billing email. In-app notices mirror the emails.
+- Admins, contributors and viewers get no billing email. In-app notices that mirror the emails
+  come with a later web step.
 
 Migration `20260929160000_runtime_computer_hour_notices` and the Edge Function
 `supabase/functions/computer-hour-notices` (logic in `supabase/functions/_shared/computer-hour-notices.ts`):
@@ -379,22 +380,37 @@ Migration `20260929160000_runtime_computer_hour_notices` and the Edge Function
 - An AFTER INSERT trigger on `qorpera_computer_hour_usage`, running after the charge trigger,
   queues "running low" and "out of hours". It acts only on live charges, so before the live switch
   nothing is queued: that is the "switched off". Complimentary companies get none.
-  - Running low: once a calendar month (Danish time) per company.
-  - Out of hours: once per time the company runs out. The time starts when it begins to owe and
-    ends when hours arrive and repay it (the owed source's repaid total names the time).
-- Summaries are queued by the worker's claim for plan periods that ended in the last seven days
-  and were used, one per founder and period (its `sub_…:start` reference), listing each
-  company's draws and repayments across the period and its upgrade top-up.
-- `qorpera_claim_computer_hour_notices(limit, lease)` (service_role) leases due rows for five
-  minutes with `skip locked`, drops a running-low or out-of-hours row whose recipient is no longer
-  a founder of the company, or has no email address, and returns each row with the founder's
-  current address. `qorpera_complete_computer_hour_notice` and `qorpera_fail_computer_hour_notice`
-  record the outcome: retryable failures wait 1, 2, 4 ... minutes (at most an hour) and stop after
-  eight attempts. Resend gets `qorpera-computer-hour-notice/<id>` as its idempotency key.
-- The emails are in English, like invitations, and link to the web app's account page (Plan &
-  usage).
+  - Running low: once a calendar month (Danish time) per company and recipient; a company still
+    low when a month begins is told again that month. The payers are founders whose current plan
+    period has hours left and founders whose credits have hours left.
+  - Out of hours: once per time the company runs out. A time starts when it begins to owe; any
+    hours arriving (even too few to clear the debt) end it, and running out again is a new time.
+  - Both wait ten minutes before they are sent. The worker drops one (cancelled) if the company
+    is no longer low, no longer owes, or owes in a newer time; for instance, a plan renewal
+    recorded moments after the meter charged. Same if the recipient is no longer a founder.
+  - Reaching zero without owing (hours taken back, credits expiring, a plan ending) queues nothing,
+    since no use follows once the zero rule holds work back. Build step 6 sends "out of hours"
+    when it first holds a company's work back.
+- Summaries are queued by the worker's claim for plan periods that ended ten minutes ago or more
+  (so the last meter pass has committed) and within seven days, one per founder and period (its
+  `sub_…:start` reference). Each lists the company's draws and repayments across the period and its
+  upgrade top-up. A period nobody used is marked done (cancelled) without an email.
+- `qorpera_claim_computer_hour_notices(limit, lease)` (service_role) drops what no longer holds.
+  That covers the cases above, plus a recipient with no email address and a notice leased eight
+  times. It then leases due rows for five minutes with `skip locked` and returns each with the
+  founder's current address. `qorpera_complete_computer_hour_notice` and
+  `qorpera_fail_computer_hour_notice` record the outcome: retryable failures wait 1, 2, 4 ...
+  minutes (at most an hour) and stop after eight attempts.
+- The worker sends ten per call with a ten-second timeout per send, well inside the lease. A
+  notice it cannot read is failed for good, so it holds up no other. Resend gets
+  `qorpera-computer-hour-notice/<id>` as its idempotency key.
+- The emails are in English, like invitations, show days in Danish time, and link to the web app's
+  account page (Plan & usage).
 
-### Turning the notices on (with the live switch)
+### Turning the notices on
+
+Schedule the worker before the live switch (it sends nothing until then, and summaries are only
+looked for within seven days of a period's end).
 
 Jonas (secrets):
 
@@ -402,9 +418,10 @@ Jonas (secrets):
    `QORPERA_HOURS_FROM` (for example `Qorpera <hours@mail.qorpera.com>`, on the verified domain) and
    `QORPERA_APP_URL` (`https://app.qorpera.com/`).
 2. In the database's Vault, the project URL and a Supabase secret key for the worker, as the
-   invitation email needs (`supabase/INVITATION-EMAIL.md`, "Schedule"):
-   `select vault.create_secret('https://<project>.supabase.co', 'qorpera_project_url');` (once, shared
-   with invitations) and `select vault.create_secret('<sb_secret_…>', 'qorpera_computer_hour_notice_key');`.
+   invitation email needs (`supabase/INVITATION-EMAIL.md`, "Schedule"). The project URL may already
+   be there for invitations; skip it if so:
+   `select vault.create_secret('https://<project>.supabase.co', 'qorpera_project_url');` and
+   `select vault.create_secret('<sb_secret_…>', 'qorpera_computer_hour_notice_key');`.
    The key is created in the Supabase dashboard and never passes through a session.
 
 Coordinator (nothing secret):
@@ -423,9 +440,11 @@ Coordinator (nothing secret):
    $$);
    ```
 
-   Scheduling it before the live switch is harmless: nothing is queued until then.
 3. Watch it by count, not by address:
    `select kind, status, count(*) from public.qorpera_computer_hour_notices group by 1, 2 order by 1, 2`.
+4. Rollback: `select cron.unschedule('qorpera-computer-hour-notices')` stops sending. The trigger
+   keeps queueing, harmlessly; `drop trigger qorpera_computer_hour_notice_usage on
+   public.qorpera_computer_hour_usage` stops that too.
 
 ## Zero (build step 6; built switched off)
 
@@ -461,6 +480,10 @@ Coordinator (nothing secret):
   ("Waiting for a coding machine") and `last_step` gain the "waiting for computer hours" reason,
   so it shows in the session's thread. At the hour, a cut-off turn's run is ended before its
   machine is stopped.
+- When it first holds a company's work back, it queues "out of hours" for every founder in step
+  5's outbox, if none is open for that time. This covers a company reaching zero without owing:
+  hours taken back, credits expiring, or a plan ending. No use follows then, so step 5's trigger
+  never sees it.
 - It ships switched off, in its own release, with a 30-minute database watch after the cut. It is
   switched on together with live payments and hour notices.
 
