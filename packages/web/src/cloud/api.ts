@@ -6,6 +6,7 @@ import {
 	parseCodingSessionRead,
 	parseCodingSessions,
 } from "./coding-session.ts";
+import { CompanyFoundingApi, type FoundingTableEntry } from "./company-founding.ts";
 import { type CompanyComputerHours, readCompanyComputerHours } from "./computer-hours.ts";
 import {
 	isMemberPictureName,
@@ -139,6 +140,16 @@ export class CloudApi {
 		await this.cloud.rpc("qorpera_decline_profile_invitation", {
 			p_invitation_id: requiredUuid(invitationId, "Invitation id"),
 		});
+	}
+
+	// Founding tables: the hub's two reads. A table's own calls are in company-founding.ts.
+
+	companyFoundingAvailable(): Promise<boolean> {
+		return new CompanyFoundingApi(this.cloud).available();
+	}
+
+	listCompanyFoundings(): Promise<FoundingTableEntry[]> {
+		return new CompanyFoundingApi(this.cloud).list();
 	}
 
 	// Friends. Company invitations only reach accounts you are already friends

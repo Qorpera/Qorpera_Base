@@ -22,6 +22,7 @@ import { RailLayout } from "../ui/rail-layout.ts";
 import { blankSkeleton, pageSkeleton, railSkeleton, threadSkeleton } from "../ui/skeleton.ts";
 import { AuthController } from "./auth.ts";
 import { CompanyController } from "./company.ts";
+import { FoundingController } from "./founding.ts";
 import { MemberPictures } from "./member-pictures.ts";
 import { currentRoute, navigate, type Route } from "./router.ts";
 import { createConversationStarter } from "./start-conversation.ts";
@@ -33,6 +34,7 @@ import { ComputerPanels } from "./views/computer.ts";
 import { ConversationView } from "./views/conversation.ts";
 import { ExecutionNotices } from "./views/execution-notices.ts";
 import { FeedbackView } from "./views/feedback.ts";
+import { FoundingView } from "./views/founding.ts";
 import { HubController, renderHub } from "./views/hub.ts";
 import { LiveCompanyFileView } from "./views/live-company-file.ts";
 import { type MeetState, renderMeet } from "./views/meet.ts";
@@ -60,6 +62,15 @@ export function mountApplication(
 ): () => void {
 	const auth = new AuthController(cloud);
 	let hub = new HubController(api);
+	/** The founding table on screen, if any; one at a time, like the company. */
+	let founding: { controller: FoundingController; view: FoundingView } | undefined;
+	function teardownFounding(): void {
+		if (!founding) return;
+		founding.controller.dispose();
+		founding = undefined;
+		// Leaving a table's page: joins, answers and closes made there show on the hub.
+		void hub.refresh();
+	}
 	// Every initials disc on the page shows the person's own picture through this store.
 	const pictures = new MemberPictures(api);
 	setPersonPictures(pictures);
@@ -220,6 +231,7 @@ export function mountApplication(
 			accountRevision++;
 			routeRevision++;
 			teardownCompany();
+			teardownFounding();
 			hub.dispose();
 			profiles = [];
 			accountState = {};
@@ -279,6 +291,12 @@ export function mountApplication(
 	 * text live only in their screens, so those stay until they are left. */
 	function redrawScreens(): void {
 		if (disposed) return;
+		// The founding table's page keeps its text between refreshes; a new language builds it again.
+		if (founding)
+			founding = {
+				controller: founding.controller,
+				view: new FoundingView(founding.controller, founding.view.drafts()),
+			};
 		notices?.dispose();
 		notices = undefined;
 		executionNotices.replaceChildren();
@@ -497,8 +515,32 @@ export function mountApplication(
 			teardownCompany();
 			rail.hidden = true;
 			renderTopbar(topbar, shellContext(authState.user, route), undefined);
+			if (route.name !== "found") teardownFounding();
 			if (route.name === "hub") {
 				renderHub(hub, main);
+			} else if (route.name === "found") {
+				const userId = auth.userId!;
+				if (founding?.controller.profileId !== route.profileId) {
+					teardownFounding();
+					const controller = new FoundingController(api, userId, route.profileId, {
+						currentUserId: () => auth.userId,
+						onSeatChanged: () => void hub.refresh(),
+					});
+					founding = { controller, view: new FoundingView(controller) };
+					let companyListed = false;
+					controller.store.subscribe(() => {
+						if (founding?.controller !== controller) return;
+						// A started table's company joins the hub's list once it is ready.
+						if (!companyListed && controller.store.get().table?.start?.companyReady) {
+							companyListed = true;
+							void hub.refresh();
+						}
+						render();
+					});
+				}
+				// The table's page is kept and updated in place, never rebuilt (typing, focus and scroll).
+				if (!main.contains(founding.view.el)) replace(main, founding.view.el);
+				founding.view.update();
 			} else if (route.name === "account") {
 				const revision = accountRevision;
 				if (!accountState.loading && !accountState.loaded) {
@@ -529,6 +571,7 @@ export function mountApplication(
 			}
 			return;
 		}
+		teardownFounding();
 		if (company?.profile.profileId !== route.profileId) {
 			// Opening a company takes a round trip or two. Meanwhile its rail and page stand
 			// as placeholders, never a blank frame or the page it came from.
@@ -1098,6 +1141,7 @@ export function mountApplication(
 		closeFeedback(false);
 		auth.dispose();
 		hub.dispose();
+		teardownFounding();
 		teardownCompany();
 		pictures.reset();
 		if (personPictures() === pictures) setPersonPictures(undefined);

@@ -58,7 +58,7 @@ Founders (2026-09-28, migration 20260929030000): every member with the role
 
 ## 2. Member-callable RPCs (security-definer, granted to `authenticated`)
 
-164 functions, grouped for navigation. Signatures: see the migration that defines each.
+175 functions, grouped for navigation. Signatures: see the migration that defines each.
 
 
 ### Members, presence, friends, feedback (18)
@@ -398,6 +398,59 @@ Founders (2026-09-28, migration 20260929030000): every member with the role
 - `qorpera_session_profile_id`
 - `qorpera_update_profile_member_role`
 
+### Founding lobby (20260929040000_company_founding_lobby)
+
+A founding team starts one company together. The table is a company row with
+its members; nothing else exists until Start (no Company File, Co-Founder or
+wake), so no agent runs and nothing is charged before it.
+
+- `qorpera_company_founding_available()` → boolean. False until new companies
+  are created on the company folder; until then the hub keeps
+  `qorpera_create_cloud_company`, and opening or starting a table is refused
+  (`0A000`).
+- `qorpera_open_company_founding(p_client_creation_id, p_company_name)` opens
+  a table with the caller's seat; repeat-safe per creation id. Needs a
+  confirmed email. A creation id that already belongs to a company that is not
+  a table is refused (`23505`).
+- `qorpera_read_company_founding(p_profile_id)` → `qorpera.company-founding/v1`:
+  `companyName`, `vision` (the description draft), `phase` (`open`,
+  `started`), `revision`, `seats` (`userId`, `displayName`, `state` `invited` or
+  `joined`, `role`, `ready`, `modelLoginReady`, `creator`), `waitingFor`, `me`
+  (`state`, `canEdit`, `canManage`, `canStart`) and `start` (`startedAt`,
+  `startedByUserId`, `revision`, `clientStartId`, `companyReady`) once started.
+  Anyone with a seat, invited or joined, may read it; after Start only founders
+  who are still members.
+- `qorpera_list_company_foundings()` → the caller's open tables and
+  invitations, and started tables whose company is not ready yet.
+- `qorpera_update_company_founding(p_profile_id, p_expected_revision,
+  p_company_name, p_vision)`, `qorpera_set_founder_role(p_profile_id,
+  p_expected_revision, p_role)` (at most 300 characters) and
+  `qorpera_set_founder_ready(p_profile_id, p_expected_revision, p_ready)`.
+  A stale revision is `PT412`. Ready needs the caller's own usable ChatGPT
+  account (`55000` otherwise; a missing `p_ready` is `22023`) and holds only
+  for that revision: a change to the name, description, a role or who sits at
+  the table clears every Ready.
+- `qorpera_invite_company_founder(p_profile_id, p_friend_user_id)`: any joined
+  founder invites an accepted friend of their own; at most eight seats
+  (`54000`). `qorpera_respond_company_founding(p_profile_id, p_accept)` (needs
+  a confirmed email): joining makes the caller a contributor until Start;
+  declining returns `{"state":"declined"}`.
+- `qorpera_remove_company_founder(p_profile_id, p_user_id)`: your own seat
+  (returns `{"state":"left"}`), an invitation you sent, or, for the table's
+  creator, any other seat. Invitations a leaving founder sent go with them.
+  The creator, the table's only owner, closes it with
+  `qorpera_delete_hosted_profile`; the web offers that once they sit there
+  alone.
+- `qorpera_start_company_founding(p_profile_id, p_expected_revision,
+  p_client_start_id)` (needs a confirmed email): any joined founder, once every
+  joined founder is Ready with a usable account of their own. One step, repeat-safe: every founder at
+  the table becomes `owner`, unanswered invitations are withdrawn, and the
+  description and roles become the company's first files (`vision/vision.md`
+  and the Co-Founder's first todo). The first run is paid by the caller's own
+  account.
+- While a table is open, members join only through a seat, email invitations
+  are refused and roles do not change; `qorpera_list_hosted_profiles` leaves it
+  out.
 
 ### Mentions (20260928010000_runtime_room_mentions)
 
@@ -416,6 +469,22 @@ Founders (2026-09-28, migration 20260929030000): every member with the role
   `latestAt`). `qorpera_mark_member_mentions_seen(p_session_id)` marks the
   caller's mentions in a conversation seen. The author is never told about
   their own post.
+
+### Computer hours (20260928248000_runtime_computer_hours_meter)
+
+- Contract: section 19, 2026-09-28 amendment "computer hours"; design
+  `deploy/first-node/RUNTIME-COMPUTER-HOURS.md`. This step measures only:
+  nothing is charged or stopped.
+- `qorpera_read_company_computer_hours(p_profile_id, p_month date default
+  null)` → `qorpera.company-computer-hours/v1`: `profileId`, `month`
+  (`YYYY-MM`, the calendar month in `timeZone` `Europe/Copenhagen`; default
+  the current one), `usedStandardSeconds` (whole standard seconds; one
+  computer hour = 3600), `byKind` (`companyMachines`, `agentMachines`,
+  `codingMachines`, `runs`, standard seconds rounded per kind, so their sum
+  may differ from the total by a few seconds), `awakeNow` (the same kinds,
+  counted now) and `meteredUntil` (the meter counts up to about a minute
+  ago). Any member of the company, viewers included; anyone else gets 42501.
+  A client shows "Not measured yet" while the function is missing (PGRST202).
 
 ## 3. Realtime
 

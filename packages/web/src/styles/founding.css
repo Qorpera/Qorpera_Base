@@ -1,0 +1,116 @@
+/* The founding table (table v3): a centred page with the company's name, one line about it,
+ * a grid of seats and the Start bar. Tokens only, so light and dark both work. */
+
+.founding { flex: 1; min-height: 0; overflow: auto; display: flex; justify-content: center; padding: 8px 24px 56px; }
+.founding-page, .founding-started-body { width: 100%; max-width: 1080px; display: flex; flex-direction: column; gap: 18px; }
+/* Parts of the page that are rebuilt on their own take no box of their own. */
+.founding-slot, .founding-foot-row { display: contents; }
+/* The panels, the Start bar and its lines are shown and hidden in place. */
+.founding [hidden] { display: none !important; }
+
+.founding-head { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 6px; padding-top: 12px; }
+.founding-name {
+	width: min(520px, 100%); border: 0; border-bottom: 1px solid var(--border-strong); border-radius: 0;
+	background: transparent; color: var(--text); padding: 6px 4px; text-align: center;
+	font: 600 clamp(24px, 3.2vw, 34px) / 1.2 var(--font-display); letter-spacing: -0.015em;
+}
+h1.founding-name { border-bottom: 0; width: auto; }
+.founding-name:focus-visible { outline: none; border-bottom-color: var(--sidebar-selection); }
+.founding-vision {
+	width: min(720px, 100%); border: 0; background: transparent; color: var(--text-muted); padding: 4px;
+	font: 14px / 1.45 var(--font-sans); text-align: center; resize: none;
+}
+.founding-vision::placeholder, .founding-name::placeholder, .founding-role-mine::placeholder { color: var(--text-soft); }
+textarea.founding-vision:focus-visible { outline: none; box-shadow: inset 0 -1px 0 var(--border-strong); }
+
+.founding-invitation {
+	align-self: center; width: min(560px, 100%); display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
+	gap: 10px 16px; padding: 12px 16px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--bg);
+}
+
+/* Every row is as tall as its tallest card, and the invite tile stretches with it. */
+.founding-seats { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 300px)); grid-auto-rows: 1fr; justify-content: center; gap: 14px; }
+.founding-seat {
+	min-width: 0; display: flex; flex-direction: column; gap: 10px; padding: 14px 14px 12px;
+	background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-lg); box-shadow: none;
+}
+.founding-seat-mine { border-color: var(--border-strong); }
+.founding-seat-invite {
+	width: 100%; height: 100%; margin: 0; font: inherit; cursor: pointer; align-items: center; justify-content: center; text-align: center;
+	color: var(--text-muted); background: transparent; box-shadow: none; border: 1.5px dashed var(--border-strong);
+}
+.founding-seat-invite:hover { background: var(--hover); }
+.founding-seat-invite:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+.founding-seat-invite strong { color: var(--text); font-size: 14px; font-weight: 600; }
+.founding-plus {
+	width: 44px; height: 44px; border-radius: 50%; border: 1.5px dashed var(--border-strong);
+	display: grid; place-items: center; font-size: 22px; color: var(--text-soft);
+}
+.founding-seat-top { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 10px; }
+.founding-seat-top .person-avatar { width: 40px; height: 40px; font-size: 13px; }
+.founding-who strong { display: block; font-size: 14px; font-weight: 600; line-height: 18px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.founding-who small { display: block; font-size: 11.5px; color: var(--text-muted); line-height: 15px; }
+.founding-kind { font-size: 11px; font-weight: 600; color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--radius-pill); padding: 2px 8px; white-space: nowrap; }
+.founding-kind-owner { color: var(--text); background: var(--hover); border-color: transparent; }
+
+.founding-role {
+	min-height: 42px; margin: 0; padding: 9px 11px; border: 1px solid var(--border); border-radius: 9px;
+	background: var(--chrome); color: var(--text); font: 14px / 1.45 var(--font-sans); overflow-wrap: anywhere; white-space: pre-wrap;
+}
+.founding-role-empty { color: var(--text-soft); }
+textarea.founding-role-mine { width: 100%; resize: vertical; background: var(--bg); border-color: var(--border-strong); }
+textarea.founding-role-mine:focus-visible { outline: none; border-color: var(--text-soft); }
+
+/* The foot holds one control: Connect ChatGPT until it is connected, then Ready. */
+.founding-seat-foot {
+	margin-top: auto; display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 6px 10px;
+	border-top: 1px solid var(--border); padding-top: 9px; font-size: 11.5px; color: var(--text-muted);
+}
+.founding-status { font-size: 11.5px; font-weight: 600; color: var(--text-muted); }
+.founding-status-ready { color: var(--text); background: var(--ok-soft); border-radius: var(--radius-pill); padding: 4px 11px; }
+.founding-seat-foot .btn.founding-ready, .founding-seat-foot .btn.founding-ready-on { border-radius: var(--radius-pill); }
+.founding-seat-foot .btn.founding-ready-on { background: var(--ok-soft); border-color: transparent; color: var(--text); font-weight: 600; }
+
+/* The friends list and the ChatGPT panel open under the seats. */
+.founding-sheet {
+	align-self: center; width: min(560px, 100%); display: flex; flex-direction: column; gap: 10px; padding: 18px 20px 20px;
+	background: var(--overlay); border: 1px solid var(--border); border-radius: var(--radius-xl); box-shadow: none;
+}
+.founding-connect { width: min(720px, 100%); }
+/* The accounts panel is Settings → Connections; its page title is not needed here. */
+.founding-connect h1 { display: none; }
+.founding-sheet-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.founding-sheet h2 { margin: 0; font-size: 18px; font-weight: 650; letter-spacing: -0.01em; }
+.founding-close {
+	flex: none; width: 30px; height: 30px; border: 0; border-radius: 50%; background: transparent; cursor: pointer;
+	color: var(--text-muted); font-size: 20px; line-height: 1; display: grid; place-items: center;
+}
+.founding-close:hover { background: var(--hover); color: var(--text); }
+.founding-friends { list-style: none; margin: 0; padding: 0; }
+.founding-friends li { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 12px; padding: 9px 0; border-bottom: 1px solid var(--border); }
+.founding-friends li:last-child { border-bottom: 0; }
+.founding-friends strong { font-size: 14px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.founding-add-friend { display: flex; flex-direction: column; gap: 8px; border-top: 1px solid var(--border); padding-top: 14px; }
+.founding-add-friend label { font-size: 13px; font-weight: 600; }
+.founding-inline { display: flex; gap: 8px; }
+.founding-inline input {
+	flex: 1; min-width: 0; height: 36px; padding: 0 12px; border: 1px solid var(--border-strong); border-radius: 8px;
+	background: var(--bg); color: var(--text); font-size: 14px;
+}
+
+/* Start, centred, with its status lines under it. */
+.founding-bar { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 8px; padding-top: 6px; }
+.founding-start { min-width: 220px; justify-content: center; text-align: center; }
+.founding-hint { margin: 0; font-size: 12.5px; color: var(--text-muted); max-width: 520px; }
+.founding-exit { display: flex; justify-content: center; }
+.founding-started .founding-head { padding-top: 40px; }
+.founding-gone { align-items: center; text-align: center; padding-top: 64px; }
+a.founding-table-card, .invite-actions a.btn { color: inherit; text-decoration: none; }
+a.founding-table-card:hover { background: var(--hover); }
+
+@media (max-width: 760px) {
+	.founding { padding: 4px 16px 32px; }
+	.founding-seats { grid-template-columns: minmax(0, 1fr); }
+	.founding-start { width: 100%; }
+	.founding-sheet { padding: 16px; border-radius: 14px; }
+}
