@@ -186,17 +186,25 @@ migration can go in any cut without a pause.
 
 ### Use in a rolling update (change 7 writes the full procedure)
 
+A bundle can be declared only once it is registered, and the activation migration registers and
+activates it in one step. So the updated node stays switched off until the activation:
+
 1. Apply the release's migrations. They must be safe for the running bundle N.
-2. Empty node A (`qorpera_set_runtime_node_serving`), wait for `readyForUpdate`, then update it:
-   node release, image, rebuild the fast host. The rebuild re-registers the fast host's
-   orchestrator, which clears any declaration.
-3. Declare **every** orchestrator on node A as N+1, the rebuilt fast host included, and every
-   orchestrator on node B as N. `undeclared` must be empty. Return node A to serving.
-4. Activate N+1: new inputs and runs bind to N+1, and only node A takes them. Node B finishes N.
-5. When `qorpera_runtime_bundle_roll_status()` shows no queued or running N runs, and no N input
-   that can still run, empty node B and update it. Its rebuild clears its fast host's
-   declaration; declare all of node B's orchestrators as N+1 and return it.
-6. Clear every declaration.
+2. Declare every orchestrator on node B as N.
+3. Empty node A (`qorpera_set_runtime_node_serving`), wait for `readyForUpdate`, then update it:
+   node release, image, fast host rebuilt without a declaration. The rebuild re-registers the fast
+   host's orchestrator, which clears any declaration. Start A's orchestrators; while A is switched
+   off they claim nothing.
+4. Activate N+1 with A still switched off. New inputs and runs bind to N+1 and wait briefly: B is
+   declared N and A claims nothing.
+5. Declare **every** orchestrator on node A as N+1, the rebuilt fast host included; `undeclared`
+   must be empty and no orchestrator on A may still be declared N. Return node A to serving: it
+   takes the N+1 runs. Node B finishes N.
+6. When `qorpera_runtime_bundle_roll_status()` shows no queued or running N runs, and no N input
+   that can still run, empty node B and update it; declare all of node B's orchestrators as N+1
+   (N+1 is registered now, so B's fast host rebuild can declare it with
+   `EXEC_RUNTIME_BUNDLE_SHA256`) and return it.
+7. Clear every declaration.
 
 ### Rollout (coordinator)
 
