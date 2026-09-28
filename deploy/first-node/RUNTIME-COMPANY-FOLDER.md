@@ -625,8 +625,8 @@ machine's vsock CID:
 - **The desktop's mount** is bound into the desktop session: the file manager,
   applications and the desktop terminal. Its owner is the computer's holder:
   the run holding that screen, or the member while a member has taken it
-  over. A takeover ends the run's view, and the member's opens on the same
-  mount (C1b-3).
+  over. A takeover ends the run's view once the drain is acknowledged, and
+  the member's view then opens on the same mount (C1b-3).
 - **Each `computer_shell` command's mount** is bound into that command's own
   mount namespace, inside the computer's shell namespace (#411). The network,
   `/tmp` and the process table stay shared. Its owner is the run that started
