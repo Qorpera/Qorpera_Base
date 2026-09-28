@@ -6,6 +6,9 @@ import { t } from "./preferences.ts";
 /** "/" and the name typed so far, right before the caret: at the start or after a space.
  * Names are lowercase; a capital typed while searching still searches. */
 const TRIGGER = /(?:^|\s)\/([a-z0-9-]{0,64})$/i;
+/** A character that continues a name: with one right after the caret, the caret is inside a
+ * written name, not at the end of one being typed. */
+const NAME_CHARACTER = /^[a-z0-9-]/i;
 /** A whole "/name" standing on its own, coloured when it names a skill. */
 const TOKEN = /(^|\s)\/([a-z0-9]+(?:-[a-z0-9]+)*)(?=$|[\s.,;:!?)])/g;
 /** A draft that may name a skill: its list is read so the name can be coloured. */
@@ -19,20 +22,29 @@ let menus = 0;
 
 export type SkillLoader = (signal: AbortSignal) => Promise<readonly SkillSuggestion[]>;
 
+interface Ranked {
+	readonly skill: SkillSuggestion;
+	/** 0 the name starts with the query, 1 the name contains it, 2 only the description does. */
+	readonly rank: number;
+}
+
 /** Calls a skill from the composer (contract 15.2): typing "/" offers the conversation's
  * skills, picking one writes "/name", and a written name shows in blue. The field stays a
- * plain textarea; while the text names a skill, its characters turn transparent over a
- * copy of the same text in which the names are coloured. Without a loader it does nothing. */
+ * plain textarea; while the text names a skill, its characters turn transparent and a copy
+ * of the same text, with the names coloured, lies over them. Without a loader it does nothing. */
 export class SkillMentions {
-	/** The textarea and, behind it, the coloured copy of its text. */
+	/** The textarea and the coloured copy of its text. */
 	readonly field: HTMLElement;
-	/** The suggestions, above the composer. */
+	/** The popup above the composer: the suggestions, or a note when there are none yet. */
 	readonly menu: HTMLElement;
+	readonly #list: HTMLElement;
+	readonly #note: HTMLElement;
 	readonly #input: HTMLTextAreaElement;
 	readonly #highlight: HTMLElement;
 	readonly #load: SkillLoader | undefined;
 	readonly #signal: AbortSignal;
 	readonly #ownerName: () => string | undefined;
+	readonly #opened: () => void;
 	#skills: readonly SkillSuggestion[] | undefined;
 	#loadedAt = 0;
 	#failedAt = Number.NEGATIVE_INFINITY;
@@ -42,31 +54,33 @@ export class SkillMentions {
 	/** A "/" whose menu the member closed (Escape) or answered (a pick): it stays closed while
 	 * the caret stays in that name. */
 	#dismissed: number | undefined;
-	#options: SkillSuggestion[] = [];
-	#active = 0;
+	#options: Ranked[] = [];
+	/** The highlighted option; -1 when only descriptions match, so Enter still sends. */
+	#active = -1;
+	/** What the menu shows now: the same list and query draw nothing new. */
+	#drawn: { skills: readonly SkillSuggestion[] | undefined; query: string; loading: boolean } | undefined;
 
 	constructor(
 		input: HTMLTextAreaElement,
 		load: SkillLoader | undefined,
 		signal: AbortSignal,
 		ownerName: () => string | undefined,
+		opened: () => void = () => {},
 	) {
 		this.#input = input;
 		this.#load = load;
 		this.#signal = signal;
 		this.#ownerName = ownerName;
+		this.#opened = opened;
 		this.#highlight = h("div", { class: "composer-highlight", "aria-hidden": "true" });
 		this.field = h("div", { class: "composer-field" }, this.#highlight, input);
-		this.menu = h("div", {
-			class: "skill-menu",
-			id: `skill-menu-${++menus}`,
-			role: "listbox",
-			"aria-label": t("Skills"),
-			hidden: true,
-		});
+		const id = `skill-menu-${++menus}`;
+		this.#list = h("div", { class: "skill-list", id, role: "listbox", "aria-label": t("Skills") });
+		this.#note = h("p", { class: "skill-menu-note", hidden: true });
+		this.menu = h("div", { class: "skill-menu", hidden: true }, this.#list, this.#note);
 		if (!load) return;
 		input.setAttribute("aria-autocomplete", "list");
-		input.setAttribute("aria-controls", this.menu.id);
+		input.setAttribute("aria-controls", id);
 		input.addEventListener(
 			"input",
 			() => {
@@ -83,12 +97,13 @@ export class SkillMentions {
 			{ signal },
 		);
 		for (const type of ["click", "keyup", "focus"]) input.addEventListener(type, () => this.#update(), { signal });
-		input.addEventListener("blur", () => this.#close(), { signal });
+		input.addEventListener("blur", () => this.close(), { signal });
 		// Picking with the pointer must not take the caret out of the field.
 		this.menu.addEventListener("mousedown", (event) => event.preventDefault(), { signal });
 	}
 
-	/** Redraws the coloured copy; call it whenever the text changes without an input event. */
+	/** Redraws the coloured copy. Call it whenever the text or the field's size changes without
+	 * an input event (a restored draft, a resize that shows or hides the field's scrollbar). */
 	sync(): void {
 		if (!this.#load) return;
 		const text = this.#input.value;
@@ -128,22 +143,34 @@ export class SkillMentions {
 		};
 		if (matchesKey(event, "dismiss")) {
 			this.#dismissed = this.#trigger?.start;
-			this.#close();
+			this.close();
 			return consume();
 		}
-		// While the list loads, or when nothing matches, Enter still sends.
+		// While the list loads, or when nothing matches, the keys are the field's: Enter sends.
 		if (!this.#options.length) return false;
 		if (matchesKey(event, "next") || matchesKey(event, "previous")) {
-			const step = matchesKey(event, "next") ? 1 : -1;
-			this.#select((this.#active + step + this.#options.length) % this.#options.length);
+			const count = this.#options.length;
+			const from = this.#active < 0 ? (matchesKey(event, "next") ? -1 : 0) : this.#active;
+			this.#select((from + (matchesKey(event, "next") ? 1 : -1) + count) % count);
 			return consume();
 		}
-		if ((matchesKey(event, "accept") || matchesKey(event, "tab")) && !event.shiftKey) {
-			const skill = this.#options[this.#active];
-			if (skill) this.#accept(skill);
+		// Enter and Tab pick only a highlighted skill: a "/word" that merely appears in some
+		// description is the member's own text, and Enter sends it as written.
+		const active = this.#options[this.#active];
+		if (active && (matchesKey(event, "accept") || matchesKey(event, "tab")) && !event.shiftKey) {
+			this.#accept(active.skill);
 			return consume();
 		}
 		return false;
+	}
+
+	/** Closes the menu; the next keystroke in a "/name" opens it again. */
+	close(): void {
+		this.#trigger = undefined;
+		this.#options = [];
+		this.#drawn = undefined;
+		if (!this.menu.hidden) this.menu.hidden = true;
+		this.#input.removeAttribute("aria-activedescendant");
 	}
 
 	#fetch(): Promise<void> {
@@ -155,7 +182,7 @@ export class SkillMentions {
 			(this.#skills !== undefined && now - this.#loadedAt < FRESH_MS)
 		)
 			return this.#loading ?? Promise.resolve();
-		// An older list stays in use while the new one is read.
+		// An older list stays in use while the new one is read, and after a failed read.
 		this.#loading = this.#load(this.#signal)
 			.then(
 				(skills) => {
@@ -178,40 +205,52 @@ export class SkillMentions {
 
 	#update(): void {
 		const caret = this.#input.selectionStart;
-		if (this.#input.disabled || document.activeElement !== this.#input || caret !== this.#input.selectionEnd) {
-			this.#close();
-			return;
-		}
-		const match = TRIGGER.exec(this.#input.value.slice(0, caret));
+		const value = this.#input.value;
+		const match =
+			!this.#input.disabled && document.activeElement === this.#input && caret === this.#input.selectionEnd
+				? TRIGGER.exec(value.slice(0, caret))
+				: null;
 		if (!match) {
 			this.#dismissed = undefined;
-			this.#close();
+			this.close();
 			return;
 		}
 		const query = (match[1] ?? "").toLowerCase();
 		const start = caret - query.length - 1;
-		if (this.#dismissed === start) {
-			this.#close();
+		// Inside a name already written the caret is not typing one: arrows and Enter stay the field's.
+		if (this.#dismissed === start || NAME_CHARACTER.test(value.slice(caret))) {
+			this.close();
 			return;
 		}
-		const same = this.#trigger?.start === start && this.#trigger.query === query;
 		this.#trigger = { start, query };
 		void this.#fetch();
-		this.#render(same);
+		this.#render();
 	}
 
-	#render(keepActive: boolean): void {
+	#render(): void {
 		const query = this.#trigger?.query ?? "";
 		const skills = this.#skills;
+		const loading = skills === undefined && this.#loading !== undefined;
+		if (
+			this.#drawn &&
+			this.#drawn.skills === skills &&
+			this.#drawn.query === query &&
+			this.#drawn.loading === loading
+		)
+			return;
+		this.#drawn = { skills, query, loading };
+		this.#note.hidden = true;
+		this.#list.hidden = false;
 		if (skills === undefined) {
-			if (!this.#loading) {
-				this.#close();
+			if (!loading) {
+				this.close();
 				return;
 			}
 			// Reading the list: grey lines in the menu's place, never a loading sentence.
 			this.#options = [];
-			this.menu.setAttribute("aria-busy", "true");
-			this.menu.replaceChildren(
+			this.#active = -1;
+			this.#list.setAttribute("aria-busy", "true");
+			this.#list.replaceChildren(
 				...[0, 1].map(() =>
 					h(
 						"div",
@@ -224,7 +263,7 @@ export class SkillMentions {
 			this.#open();
 			return;
 		}
-		this.menu.removeAttribute("aria-busy");
+		this.#list.removeAttribute("aria-busy");
 		const words = query.replaceAll("-", " ");
 		this.#options = skills
 			.map((skill) => ({
@@ -244,32 +283,31 @@ export class SkillMentions {
 					(a.skill.scope === b.skill.scope ? 0 : a.skill.scope === "agent" ? -1 : 1) ||
 					(a.skill.name < b.skill.name ? -1 : a.skill.name > b.skill.name ? 1 : 0),
 			)
-			.slice(0, SHOWN)
-			.map((item) => item.skill);
+			.slice(0, SHOWN);
 		if (!this.#options.length) {
 			if (query || skills.length) {
-				this.#close();
+				this.close();
 				return;
 			}
-			this.menu.replaceChildren(
-				h(
-					"p",
-					{ class: "skill-menu-note" },
-					t("No skills yet. Agents save skills as they learn how the company works."),
-				),
-			);
+			// No skills at all: say so beside the (empty) list, which may only hold options.
+			this.#list.replaceChildren();
+			this.#list.hidden = true;
+			this.#note.textContent = t("No skills yet. Agents save skills as they learn how the company works.");
+			this.#note.hidden = false;
+			this.#active = -1;
 			this.#open();
 			return;
 		}
-		if (!keepActive || this.#active >= this.#options.length) this.#active = 0;
+		// A name that matches is highlighted, ready for Enter; a match in a description only is offered.
+		this.#active = (this.#options[0]?.rank ?? 2) < 2 ? 0 : -1;
 		const owner = this.#ownerName() ?? t("Agent");
-		this.menu.replaceChildren(
-			...this.#options.map((skill, index) =>
+		this.#list.replaceChildren(
+			...this.#options.map(({ skill }, index) =>
 				h(
 					"div",
 					{
 						class: "skill-option",
-						id: `${this.menu.id}-${index}`,
+						id: `${this.#list.id}-${index}`,
 						role: "option",
 						"aria-selected": String(index === this.#active),
 						onclick: () => this.#accept(skill),
@@ -288,37 +326,39 @@ export class SkillMentions {
 
 	#select(index: number): void {
 		this.#active = index;
-		for (const [position, option] of [...this.menu.children].entries())
+		for (const [position, option] of [...this.#list.children].entries())
 			option.setAttribute("aria-selected", String(position === index));
-		const option = this.menu.children[index];
+		const option = this.#list.children[index];
 		option?.scrollIntoView?.({ block: "nearest" });
 		if (option) this.#input.setAttribute("aria-activedescendant", option.id);
 	}
 
 	#accept(skill: SkillSuggestion): void {
 		const trigger = this.#trigger;
-		if (!trigger) return;
-		const end = trigger.start + 1 + trigger.query.length;
-		const after = this.#input.value.slice(end);
+		const value = this.#input.value;
+		let end = trigger ? trigger.start + 1 + trigger.query.length : -1;
+		// The text moved under the menu (a send, a restored draft): never write at stale offsets.
+		if (!trigger || value.slice(trigger.start, end).toLowerCase() !== `/${trigger.query}`) {
+			this.close();
+			return;
+		}
+		// The whole name the caret was in is replaced, never half of it.
+		while (end < value.length && NAME_CHARACTER.test(value.slice(end))) end++;
+		const after = value.slice(end);
 		this.#input.focus();
 		this.#input.setRangeText(`/${skill.name}${/^\s/.test(after) ? "" : " "}`, trigger.start, end, "end");
 		// Answered: the menu stays closed while the caret stays on this name.
 		this.#dismissed = trigger.start;
-		this.#close();
+		this.close();
 		this.#input.dispatchEvent(new Event("input", { bubbles: true }));
 	}
 
 	#open(): void {
+		const wasHidden = this.menu.hidden;
 		this.menu.hidden = false;
-		const active = this.#options.length ? this.menu.children[this.#active] : undefined;
+		const active = this.#active >= 0 ? this.#list.children[this.#active] : undefined;
 		if (active) this.#input.setAttribute("aria-activedescendant", active.id);
 		else this.#input.removeAttribute("aria-activedescendant");
-	}
-
-	#close(): void {
-		this.#trigger = undefined;
-		this.#options = [];
-		if (!this.menu.hidden) this.menu.hidden = true;
-		this.#input.removeAttribute("aria-activedescendant");
+		if (wasHidden) this.#opened();
 	}
 }

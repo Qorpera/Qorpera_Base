@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CompanyController } from "../src/app/company.ts";
 import { ConversationView } from "../src/app/views/conversation.ts";
 import type { WorkspaceActions } from "../src/app/workspace-actions.ts";
-import { loadSkillSuggestions, type SkillSuggestion } from "../src/cloud/skills.ts";
+import { loadSkillSuggestions, SkillLists, type SkillSuggestion } from "../src/cloud/skills.ts";
 import { fixture, id, profileA, session, settle, staff, team, userA } from "./fixtures.ts";
 
 const SKILLS: SkillSuggestion[] = [
@@ -43,6 +43,7 @@ function setup(actions: WorkspaceActions = {}, draft?: string) {
 	};
 	const field = view.el.querySelector<HTMLTextAreaElement>("textarea.composer-input")!;
 	const menu = view.el.querySelector<HTMLElement>(".skill-menu")!;
+	const list = view.el.querySelector<HTMLElement>(".skill-list")!;
 	/** Types the whole text with the caret at its end, as the browser reports it. */
 	const type = (text: string) => {
 		field.focus();
@@ -62,37 +63,42 @@ function setup(actions: WorkspaceActions = {}, draft?: string) {
 			scope: option.querySelector(".skill-option-scope")?.textContent,
 			selected: option.getAttribute("aria-selected") === "true",
 		}));
-	return { ...f, company, view, field, menu, type, key, options };
+	return { ...f, company, view, field, menu, list, type, key, options };
 }
 
 describe("calling a skill from the composer", () => {
 	it("offers the conversation's skills after a slash and writes the picked name in blue", async () => {
 		let answer!: (skills: SkillSuggestion[]) => void;
-		const skills = vi.fn(() => new Promise<SkillSuggestion[]>((resolve) => (answer = resolve)));
+		const skills = vi.fn(
+			() =>
+				new Promise<SkillSuggestion[]>((resolve) => {
+					answer = resolve;
+				}),
+		);
 		const sendMessage = vi.fn().mockResolvedValue(true);
 		const f = setup({ skills, sendMessage });
 		expect(f.field.getAttribute("aria-autocomplete")).toBe("list");
-		expect(f.field.getAttribute("aria-controls")).toBe(f.menu.id);
+		expect(f.field.getAttribute("aria-controls")).toBe(f.list.id);
 		f.type("Please /");
 		// The list is read once, for this agent's thread: its own skills and the company's.
 		expect(skills).toHaveBeenCalledExactlyOnceWith(staff.id, expect.any(AbortSignal));
 		expect(f.menu.hidden).toBe(false);
-		expect(f.menu.getAttribute("aria-busy")).toBe("true");
+		expect(f.list.getAttribute("aria-busy")).toBe("true");
 		expect(f.menu.querySelectorAll(".skeleton")).not.toHaveLength(0);
 		answer(SKILLS);
 		await settle();
-		expect(f.menu.hasAttribute("aria-busy")).toBe(false);
+		expect(f.list.hasAttribute("aria-busy")).toBe(false);
 		expect(f.options()).toEqual([
 			{ name: "/triage", scope: staff.displayName, selected: true },
 			{ name: "/customer-refund", scope: "Company", selected: false },
 			{ name: "/monthly-vat-report", scope: "Company", selected: false },
 		]);
-		expect(f.field.getAttribute("aria-activedescendant")).toBe(`${f.menu.id}-0`);
+		expect(f.field.getAttribute("aria-activedescendant")).toBe(`${f.list.id}-0`);
 		f.type("Please /RE");
 		expect(f.options().map((option) => option.name)).toEqual(["/customer-refund", "/monthly-vat-report"]);
 		expect(f.key("ArrowDown").defaultPrevented).toBe(true);
 		expect(f.options()[1]?.selected).toBe(true);
-		expect(f.field.getAttribute("aria-activedescendant")).toBe(`${f.menu.id}-1`);
+		expect(f.field.getAttribute("aria-activedescendant")).toBe(`${f.list.id}-1`);
 		// Enter picks the skill; it does not send the message.
 		expect(f.key("Enter").defaultPrevented).toBe(true);
 		expect(sendMessage).not.toHaveBeenCalled();
@@ -196,6 +202,9 @@ describe("calling a skill from the composer", () => {
 		f.type("/");
 		await settle();
 		expect(f.menu.textContent).toBe("No skills yet. Agents save skills as they learn how the company works.");
+		// The note stands beside the list, which may only hold options.
+		expect(f.list.hidden).toBe(true);
+		expect(f.list.childElementCount).toBe(0);
 		expect(f.options()).toEqual([]);
 		// A name typed with no skill to match closes the menu.
 		f.type("/x");
@@ -217,6 +226,70 @@ describe("calling a skill from the composer", () => {
 		expect(skills).toHaveBeenCalledTimes(3);
 		await settle();
 		expect(f.options().map((option) => option.name)).toEqual(["/triage", "/customer-refund", "/monthly-vat-report"]);
+	});
+
+	it("offers a match found only in a description, but Enter sends the text as written", async () => {
+		const sendMessage = vi.fn().mockResolvedValue(true);
+		const skills = vi.fn(
+			async (): Promise<SkillSuggestion[]> => [
+				{ name: "release-checklist", description: "Ship to production safely.", scope: "company" },
+			],
+		);
+		const f = setup({ skills, sendMessage });
+		f.type("Deploy to /prod");
+		await settle();
+		expect(f.options()).toEqual([{ name: "/release-checklist", scope: "Company", selected: false }]);
+		expect(f.field.hasAttribute("aria-activedescendant")).toBe(false);
+		expect(f.key("Enter").defaultPrevented).toBe(true);
+		expect(f.field.value).toBe("Deploy to /prod");
+		expect(sendMessage).toHaveBeenCalledExactlyOnceWith(
+			session.sessionId,
+			"Deploy to /prod",
+			expect.any(AbortSignal),
+		);
+		// Chosen on purpose with an arrow key, it is picked.
+		f.type("Deploy to /prod");
+		f.key("ArrowDown");
+		expect(f.options()[0]?.selected).toBe(true);
+		f.key("Enter");
+		expect(f.field.value).toBe("Deploy to /release-checklist ");
+	});
+
+	it("does not open inside a name already written, and closes when the field is disabled or replaced", async () => {
+		const f = setup({ skills: vi.fn(async () => SKILLS) });
+		f.type("/");
+		await settle();
+		f.field.value = "Use /monthly-vat-report now";
+		f.field.setSelectionRange(13, 13);
+		f.field.dispatchEvent(new Event("input", { bubbles: true }));
+		expect(f.menu.hidden).toBe(true);
+		// Arrow keys move the caret as usual there.
+		expect(f.key("ArrowDown").defaultPrevented).toBe(false);
+		f.type("Use /mon");
+		expect(f.menu.hidden).toBe(false);
+		// The draft is replaced (another tab, a send): the menu closes and never writes at old offsets.
+		f.company.conversation(session.sessionId).set({ draft: "Something else" });
+		await settle();
+		expect(f.field.value).toBe("Something else");
+		expect(f.menu.hidden).toBe(true);
+		f.type("/mon");
+		expect(f.menu.hidden).toBe(false);
+		f.company.conversation(session.sessionId).set({ sending: true });
+		await settle();
+		expect(f.field.disabled).toBe(true);
+		expect(f.menu.hidden).toBe(true);
+	});
+
+	it("closes the composer's other menu when the skills open", async () => {
+		const f = setup({ skills: vi.fn(async () => SKILLS) });
+		const more = f.view.el.querySelector<HTMLButtonElement>(".composer-more")!;
+		more.click();
+		const other = f.view.el.querySelector<HTMLElement>(".composer-menu")!;
+		expect(other.hidden).toBe(false);
+		f.type("/");
+		await settle();
+		expect(f.menu.hidden).toBe(false);
+		expect(other.hidden).toBe(true);
 	});
 
 	it("leaves the composer as it was without a skills adapter", () => {
@@ -288,12 +361,64 @@ describe("reading the skill list", () => {
 		expect(company.every((skill) => skill.scope === "company")).toBe(true);
 	});
 
-	it("offers the other library when one cannot be listed", async () => {
+	it("offers the company's skills when the agent's folder is closed, and fails when the company's cannot be listed", async () => {
 		const client = files({ "skills/customer-refund/SKILL.md": "---\ndescription: Refund.\n---\n" }, [
 			`agents/${staff.id}/skills`,
 		]);
 		expect(await loadSkillSuggestions(client, staff.id, new AbortController().signal)).toEqual([
 			{ name: "customer-refund", description: "Refund.", scope: "company" },
 		]);
+		// Never "no skills" for a failed listing: the composer keeps its last list and reads again.
+		await expect(loadSkillSuggestions(files({}, ["skills"]), staff.id, new AbortController().signal)).rejects.toThrow(
+			"Company File listing refused",
+		);
+	});
+
+	it("lists every page on one snapshot, and starts again when the company changes in between", async () => {
+		const pages = [
+			{ items: ["skills/a-one"], hasMore: true, nextAfter: "skills/a-one", snapshotId: id(80) },
+			new Error("Company File page changed"),
+			{ items: ["skills/a-one"], hasMore: true, nextAfter: "skills/a-one", snapshotId: id(81) },
+			{ items: ["skills/b-two"], hasMore: false, nextAfter: null, snapshotId: id(81) },
+		];
+		const list = vi.fn(async (path: string, _signal: AbortSignal, after: string | null, snapshot: string | null) => {
+			const page = pages.shift()!;
+			if (page instanceof Error) throw page;
+			expect(path).toBe("skills");
+			if (after !== null) expect(snapshot).toBe(page.snapshotId);
+			return {
+				...page,
+				items: page.items.map((item) => ({ path: item, version: id(71), kind: "directory", bytes: null })),
+			};
+		});
+		const read = vi.fn(async (path: string) => ({
+			path,
+			version: id(72),
+			kind: "file" as const,
+			executable: false,
+			text: "---\ndescription: D.\n---\n",
+		}));
+		const client = { list, read } as unknown as CloudMemberCompanyFileClient;
+		expect(
+			(await loadSkillSuggestions(client, null, new AbortController().signal)).map((skill) => skill.name),
+		).toEqual(["a-one", "b-two"]);
+		expect(list).toHaveBeenCalledTimes(4);
+	});
+
+	it("shares one read among a company's threads for a minute, and forgets a failed one", async () => {
+		const lists = new SkillLists();
+		const read = vi.fn<() => Promise<SkillSuggestion[]>>().mockResolvedValue(SKILLS);
+		const [first, second] = [lists.get(staff.id, read), lists.get(staff.id, read)];
+		expect(await first).toBe(await second);
+		expect(read).toHaveBeenCalledOnce();
+		// Another agent's thread reads its own list.
+		await lists.get(null, read);
+		expect(read).toHaveBeenCalledTimes(2);
+		vi.advanceTimersByTime(61_000);
+		read.mockRejectedValueOnce(new Error("unavailable"));
+		await expect(lists.get(staff.id, read)).rejects.toThrow("unavailable");
+		await settle();
+		expect(await lists.get(staff.id, read)).toBe(SKILLS);
+		expect(read).toHaveBeenCalledTimes(4);
 	});
 });

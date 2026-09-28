@@ -12,7 +12,7 @@ import { createWebSessionAttachments } from "../cloud/session-attachments.ts";
 import { createWebSessionInputWriter } from "../cloud/session-input.ts";
 import { createWebSessionModel } from "../cloud/session-model.ts";
 import { createWebSessionRunControl } from "../cloud/session-run-control.ts";
-import { loadSkillSuggestions } from "../cloud/skills.ts";
+import { loadSkillSuggestions, SkillLists } from "../cloud/skills.ts";
 import type { HostedProfile } from "../cloud/types.ts";
 import { button, h, notice, replace } from "../ui/dom.ts";
 import { isPhoneLayout } from "../ui/layout.ts";
@@ -48,6 +48,9 @@ import type { WorkspaceActions } from "./workspace-actions.ts";
 /* Entry point. One cloud client, one auth controller, one company controller
  * at a time. The route decides the view; every view renders from cloud state
  * and re-renders on store changes. */
+
+/** Each company's skill lists, shared by its conversations' composers. */
+const skillLists = new WeakMap<CompanyController, SkillLists>();
 
 export function mountApplication(
 	root: HTMLElement,
@@ -787,20 +790,38 @@ export function mountApplication(
 						route.id ?? "",
 						{
 							sendMessage: (id, text, signal) => controller.sendPrompt(id, text, signal),
-							// Read with the member's own Company File access, as the Company File page reads.
-							skills: async (agentId, signal) => {
+							// One read serves the company's threads for a minute, so it lives with the company,
+							// not with this thread; a thread that closes simply stops listening.
+							skills: (agentId) => {
 								checkConversationAccess();
-								const team = controller.store.get().team;
-								if (!team?.capabilities.read) throw new Error(t("Conversation access changed."));
-								const files = await new WebCompanyFiles(
-									cloud,
-									controller.profile,
-									controller.userId,
-									team.role,
-									signal,
-									checkConversationAccess,
-								).files();
-								return loadSkillSuggestions(files, agentId, signal);
+								const lists = skillLists.get(controller) ?? new SkillLists();
+								skillLists.set(controller, lists);
+								const current = () => {
+									const state = controller.store.get();
+									if (
+										disposed ||
+										company !== controller ||
+										auth.userId !== controller.userId ||
+										state.accessLost ||
+										!state.team?.capabilities.read
+									)
+										throw new Error(t("Conversation access changed."));
+								};
+								return lists.get(agentId, async () => {
+									current();
+									const role = controller.store.get().team?.role;
+									if (!role) throw new Error(t("Conversation access changed."));
+									// Read with the member's own Company File access, as the Company File page reads.
+									const files = await new WebCompanyFiles(
+										cloud,
+										controller.profile,
+										controller.userId,
+										role,
+										controller.signal,
+										current,
+									).files();
+									return loadSkillSuggestions(files, agentId, controller.signal);
+								});
 							},
 							sessionModel: createWebSessionModel(
 								cloud,

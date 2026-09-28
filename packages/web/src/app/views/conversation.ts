@@ -219,6 +219,11 @@ export class ConversationView {
 				const session = company.store.get().sessions.find((item) => item.sessionId === sessionId);
 				return company.staffById(session?.staffAgentId)?.displayName;
 			},
+			// The skills take the "···" menu's place above the field; the two never stand together.
+			// (Opening "···" moves focus off the field, which closes the skills.)
+			() => {
+				if (!this.#menu.hidden) this.#setMenu(false, false);
+			},
 		);
 		this.#send = h(
 			"button",
@@ -551,6 +556,8 @@ export class ConversationView {
 			0,
 		);
 		this.#composerShell.style.height = `${this.#composer.getBoundingClientRect().height + frame + this.#attachments.el.getBoundingClientRect().height}px`;
+		// A new size can show or hide the field's scrollbar, which moves where its lines wrap.
+		this.#skills.sync();
 	}
 
 	#setMenu(open: boolean, restoreFocus = true): void {
@@ -821,6 +828,7 @@ export class ConversationView {
 		);
 		this.#renderStatus(conversation, canWrite, session);
 		this.#composer.disabled = !canWrite || conversation.sending;
+		if (this.#composer.disabled) this.#skills.close();
 		this.#cannotSend =
 			!this.#actions.sendMessage ||
 			this.#models.pending ||
@@ -845,9 +853,10 @@ export class ConversationView {
 			this.#composerPlaceholder = undefined;
 		}
 		if (this.#composer.value !== (conversation.draft ?? "")) {
+			// The text changed under any open menu (a send, another tab's draft): it closes.
+			this.#skills.close();
 			this.#composer.value = conversation.draft ?? "";
 			this.#autosize();
-			this.#skills.sync();
 		}
 	}
 
