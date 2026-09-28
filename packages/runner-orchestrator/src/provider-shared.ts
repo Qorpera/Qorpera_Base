@@ -111,7 +111,7 @@ export class ProviderAdmissionRefused extends Error {
 	}
 }
 
-const RPC_ERROR_CODE = /^(?:[0-9A-Z]{5}|PGRST[0-9]{3})$/;
+const RPC_ERROR_CODE = /^(?:[0-9A-Z]{5}|PGRST[0-9X][0-9]{2})$/;
 
 /** A database call a provider made that failed. Its function name, HTTP status and error code
  * (the SQLSTATE or PostgREST code) are fixed values the provider may log; the answer's text is not. */

@@ -491,7 +491,12 @@ describe("runner provider HTTP service", () => {
 		provider.acquire.mockRejectedValueOnce(
 			new ProviderStepFailed(
 				"reserve",
-				new ProviderRpcFailed("PRIVATE_CREDENTIAL /private/path", "qorpera_reserve_runtime_machine", 403, "42501"),
+				new ProviderRpcFailed(
+					"PRIVATE_CREDENTIAL /private/path",
+					"qorpera_reserve_runtime_machine",
+					500,
+					"PGRSTX00",
+				),
 			),
 		);
 		provider.acquire.mockRejectedValueOnce(
@@ -545,8 +550,8 @@ describe("runner provider HTTP service", () => {
 						...line,
 						stage: "reserve",
 						rpc: "qorpera_reserve_runtime_machine",
-						rpcStatus: 403,
-						rpcCode: "42501",
+						rpcStatus: 500,
+						rpcCode: "PGRSTX00",
 					}),
 				],
 				// A step name that is not a fixed name is not logged, nor anything with it.

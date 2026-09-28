@@ -769,8 +769,6 @@ export class HttpLxdGuestTransport implements LxdGuestTransport {
 	}
 }
 
-/** The company ceiling or the node chooser refused or deferred a machine start. The
- * orchestrator releases its claim without spending an infrastructure retry on it. */
 /** The step an acquisition is at; the provider service logs it when the acquisition fails. */
 interface AcquireStep {
 	stage:
@@ -792,6 +790,8 @@ interface AcquireStep {
 		| "ready";
 }
 
+/** The company ceiling or the node chooser refused or deferred a machine start. The
+ * orchestrator releases its claim without spending an infrastructure retry on it. */
 export class LxdMachineAdmissionRefused extends ProviderAdmissionRefused {
 	constructor(state: "refused" | "deferred", reason: string) {
 		super(state, reason, "Machine start was not admitted by the company ceiling");

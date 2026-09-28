@@ -297,7 +297,7 @@ function stepFailure(error: unknown): Record<string, string | number> | undefine
 		candidate.rpcStatus <= 599
 			? { rpcStatus: candidate.rpcStatus }
 			: {}),
-		...(typeof candidate.rpcCode === "string" && /^(?:[0-9A-Z]{5}|PGRST[0-9]{3})$/.test(candidate.rpcCode)
+		...(typeof candidate.rpcCode === "string" && /^(?:[0-9A-Z]{5}|PGRST[0-9X][0-9]{2})$/.test(candidate.rpcCode)
 			? { rpcCode: candidate.rpcCode }
 			: {}),
 	};
