@@ -124,8 +124,9 @@ create table public.qorpera_company_machines (
 	started_by_run_id uuid not null references public.qorpera_execution_runs(id) on delete restrict,
 	-- The machine_start operation that created it: a replay answers with this machine.
 	started_by_receipt_id uuid not null unique,
-	-- The member whose computer hours it will use (PR #326: the run's requester).
-	sponsor_user_id uuid not null references auth.users(id) on delete restrict,
+	-- The member whose request started the work: attribution only, never a payer. Machine time
+	-- is the company's (Jonas, 2026-09-28: computer hours are pooled; members are never billed).
+	requested_by_user_id uuid not null references auth.users(id) on delete restrict,
 	cpus integer not null check (cpus between 1 and 64),
 	memory_bytes bigint not null check (memory_bytes between 1073741824 and 1099511627776 and memory_bytes % 1073741824 = 0),
 	disk_bytes bigint not null check (disk_bytes between 10737418240 and 2199023255552 and disk_bytes % 1073741824 = 0),
@@ -398,7 +399,7 @@ begin
 		'startedBy', jsonb_build_object('staffAgentId', p_machine.started_by_staff_agent_id, 'runId', p_machine.started_by_run_id,
 			'name', (select staff.display_name from public.qorpera_profile_staff staff
 				where staff.profile_id = p_machine.profile_id and staff.staff_agent_id = p_machine.started_by_staff_agent_id)),
-		'sponsorUserId', p_machine.sponsor_user_id, 'node', v_node,
+		'node', v_node,
 		'queuePosition', case when v_state = 'waiting' then (select count(*) + 1 from public.qorpera_company_machines other
 			where other.desired_state = 'running' and other.removed_at is null and (other.wanted_at, other.id) < (p_machine.wanted_at, p_machine.id)
 				and not public.qorpera_company_machine_reserved(other)) end,
@@ -724,7 +725,7 @@ begin
 				raise exception 'REPOSITORY_UNAVAILABLE: no coding session % with a repository', v_args ->> 'repositoryWorker' using errcode = 'P0F10'; end if;
 		end if;
 		insert into public.qorpera_company_machines(id, profile_id, environment_id, name, purpose, started_by_staff_agent_id, started_by_run_id,
-			started_by_receipt_id, sponsor_user_id, cpus, memory_bytes, disk_bytes, image, lifetime, repository_worker_id, notify_run_ids)
+			started_by_receipt_id, requested_by_user_id, cpus, memory_bytes, disk_bytes, image, lifetime, repository_worker_id, notify_run_ids)
 		values (extensions.gen_random_uuid(), (v_identity ->> 'companyId')::uuid, (v_identity ->> 'environmentId')::uuid, v_args ->> 'name',
 			btrim(v_args ->> 'purpose'), (v_identity ->> 'staffAgentId')::uuid, v_receipt.run_id, v_receipt.id, (v_identity ->> 'requesterUserId')::uuid,
 			(v_args ->> 'cpus')::integer, (v_args ->> 'memoryGiB')::bigint * 1073741824, (v_args ->> 'diskGiB')::bigint * 1073741824,
