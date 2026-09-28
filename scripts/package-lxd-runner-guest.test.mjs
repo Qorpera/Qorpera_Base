@@ -113,6 +113,11 @@ test("packages the complete pinned LXD runner guest contract", async (t) => {
 			assert.doesNotMatch(service, /^SupplementaryGroups=/m);
 			assert.doesNotMatch(service, /safe\.directory/);
 		}
+		// A vault login guest has no identity volume; the bootstrap checks the mount by custody.
+		// A unit condition would skip it silently and the guest would never become ready.
+		const runnerBootstrap = await readFile(join(outputRoot, "qorpera-lxd-runner-bootstrap.service"), "utf-8");
+		assert.doesNotMatch(runnerBootstrap, /^ConditionPathIsMountPoint=/m);
+		assert.match(runnerBootstrap, /^ConditionPathExists=\/var\/lib\/qorpera-bootstrap\/bootstrap\.json$/m);
 		const companyHost = await readFile(join(outputRoot, "qorpera-native-company-host.service"), "utf-8");
 		const companyRunner = await readFile(join(outputRoot, "qorpera-company-runner.service"), "utf-8");
 		assert.match(companyHost, /^User=qorpera-native-company$/m);
