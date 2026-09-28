@@ -16,7 +16,7 @@ const TOKEN = /^[A-Za-z0-9_-]{43}$/;
 const REQUEST_LIMIT = 128 * 1024;
 const RESULT_LIMIT = 128 * 1024;
 const ERROR = "Coding command gateway unavailable";
-type CommandInput = { commandId: string; inputSha256: string; command: string; timeoutMs: number };
+type CommandInput = { commandId: string; inputSha256: string; command: string; timeoutMs: number | null };
 export type CloudCodingCommandHttpRequest = Readonly<
 	{
 		schema: "qorpera.coding-command-http/v1";
@@ -75,9 +75,7 @@ function parseRequest(value: unknown, action: string): CloudCodingCommandHttpReq
 			Buffer.from(input.command).toString("utf8") !== input.command ||
 			Buffer.byteLength(input.command) > 16384 ||
 			Buffer.byteLength(JSON.stringify(input.command)) > 60000 ||
-			!Number.isSafeInteger(input.timeoutMs) ||
-			Number(input.timeoutMs) < 1000 ||
-			Number(input.timeoutMs) > 1800000)
+			(input.timeoutMs !== null && (!Number.isSafeInteger(input.timeoutMs) || Number(input.timeoutMs) < 1000)))
 	)
 		throw new Error(ERROR);
 	return Object.freeze({

@@ -23,10 +23,29 @@ source repository.
 ```
 
 The map accepts 1–128 unique company/environment scopes and office IDs. Each
-office uses its own 43-character base64url transport token, distinct from object,
-secret-broker, Supabase and native-bridge credentials. The HTTPS endpoint must
-be reachable from job guests with a valid certificate and exact office path;
-this configuration does not create a network route or weaken TLS verification.
+route uses its own 43-character base64url transport token, distinct from object,
+secret-broker, Supabase and native-bridge credentials.
+
+A company can run several Company Computers. A route then names every computer
+of the company with a placeholder instead of one office ID:
+`https://office.example.test/office/{companyComputerId}/native`. The job fills
+in the computer its office descriptor places it on. Requirements:
+
+- Every computer of that company accepts the route's token: install the same
+  native token in each computer's service bootstrap. A company's computers are
+  one trust domain; authority still comes from the run, the descriptor and the
+  effect-time grants.
+- The front at that origin routes `/office/<id>/native` (and `/view`) to the
+  node and host port of that computer, whichever node it was placed on.
+- An exact route (one office ID) keeps working and reaches only that computer.
+  A run placed on another computer of the company gets no computer tools; it
+  does not fail.
+- Rolling the provider back to a version without company routes refuses jobs
+  whose journal holds a template: drain them first.
+
+The HTTPS endpoint must be reachable from job guests with a valid certificate
+and exact office path; this configuration does not create a network route or
+weaken TLS verification.
 
 Only the route matching both `work.profileId` and `work.environmentId` enters
 the job guest. The URL and token digest are bound into its immutable bootstrap

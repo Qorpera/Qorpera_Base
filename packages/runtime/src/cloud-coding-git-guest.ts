@@ -52,75 +52,10 @@ export interface CodingGitGuestPorts {
 	protectedUid?: number;
 	protectedDirectoryRoot?: string;
 	inspectMachine?: () => Promise<string>;
-	system?: (executable: string, args: readonly string[]) => Promise<string>;
 	execute?: (request: CodingGitGuestRequest, guest: CodingGitGuestConfiguration, root: string) => Promise<Buffer>;
 	assertStorage?: (guest: CodingGuestConfiguration) => Promise<void>;
 }
 
-/** No command of this session is running: its own units only. Other sessions
- * of the member's machine keep working while this one exports. */
-async function assertCommandQuiescence(ports: CodingGitGuestPorts, workerId: string): Promise<void> {
-	const prefix = cloudCodingSessionLayout(workerId).unitPrefix;
-	const system =
-		ports.system ??
-		(async (executable: string, args: readonly string[]) => {
-			try {
-				return (
-					await exec(executable, [...args], {
-						env: { PATH: "/usr/bin:/bin", LANG: "C" },
-						timeout: 5000,
-						maxBuffer: 65536,
-					})
-				).stdout;
-			} catch {
-				throw new Error("CODING_GIT_COMMAND_STATE_UNCONFIRMED");
-			}
-		});
-	const output = await system("/usr/bin/systemctl", [
-		"list-units",
-		"--all",
-		"--full",
-		"--plain",
-		"--no-legend",
-		"--no-pager",
-		"--type=service",
-		`${prefix}*.service`,
-	]);
-	const units = output.trim()
-		? output
-				.trim()
-				.split("\n")
-				.map((line) => line.trim().split(/\s+/)[0])
-		: [];
-	if (units.length > 1024 || new Set(units).size !== units.length)
-		throw new Error("CODING_GIT_COMMAND_STATE_UNCONFIRMED");
-	for (const unit of units) {
-		const command = unit.startsWith(prefix) && unit.endsWith(".service") ? unit.slice(prefix.length, -8) : "";
-		if (!UUID.test(command)) throw new Error("CODING_GIT_COMMAND_STATE_UNCONFIRMED");
-		const status = await system("/usr/bin/systemctl", [
-			"show",
-			unit,
-			"--property=LoadState,ActiveState,SubState,ControlGroup,TasksCurrent",
-		]);
-		const fields = new Map<string, string>();
-		for (const line of status.trim().split("\n")) {
-			const index = line.indexOf("=");
-			if (index < 1 || fields.has(line.slice(0, index))) throw new Error("CODING_GIT_COMMAND_STATE_UNCONFIRMED");
-			fields.set(line.slice(0, index), line.slice(index + 1));
-		}
-		if (
-			fields.size !== 5 ||
-			fields.get("LoadState") !== "loaded" ||
-			!(
-				(fields.get("ActiveState") === "inactive" ||
-					fields.get("ActiveState") === "failed" ||
-					(fields.get("ActiveState") === "active" && fields.get("SubState") === "exited")) &&
-				(fields.get("TasksCurrent") === "0" || fields.get("ControlGroup") === "")
-			)
-		)
-			throw new Error("CODING_GIT_WORKSPACE_COMMANDS_ACTIVE");
-	}
-}
 function closed(value: unknown, keys: string[]): Record<string, unknown> {
 	if (
 		!value ||
@@ -284,7 +219,6 @@ export async function runCodingGitGuest(
 	}
 	if (action === "prepare") return null;
 	if (action === "export") {
-		await assertCommandQuiescence(ports, workerId);
 		const seed = parseCodingGitGuestRequest(
 			JSON.parse(
 				(
@@ -342,7 +276,6 @@ export async function runCodingGitGuest(
 	// No automatic retry after an uncertain child, even under a new process.
 	await retain(join(directory, "dispatched.json"), Buffer.from(JSON.stringify({ transferId, bootId: guest.bootId })));
 	const output = await (ports.execute ?? child)(request, guest, root);
-	if (action === "export") await assertCommandQuiescence(ports, workerId);
 	if (action === "seed" && output.toString("utf8") !== "seeded\n") throw new Error("CODING_GIT_SEED_UNCONFIRMED");
 	if (action === "export" && (output.length < 1 || output.length > CODING_GIT_BUNDLE_BYTES))
 		throw new Error("CODING_GIT_EXPORT_TOO_LARGE");

@@ -10,9 +10,9 @@ import {
 	type CompanyComputerToolContent,
 } from "@qorpera/cloud-client/cloud-company-computer-contract";
 import { readBoundedCloudResponse } from "@qorpera/cloud-client/cloud-request";
-import { type JsonValue, parseCompanyComputerNativeUrl } from "@qorpera/contracts";
+import { type JsonValue, parseCompanyComputerNativeRoute, parseCompanyComputerNativeUrl } from "@qorpera/contracts";
 
-export { parseCompanyComputerNativeUrl } from "@qorpera/contracts";
+export { parseCompanyComputerNativeRoute, parseCompanyComputerNativeUrl } from "@qorpera/contracts";
 
 import {
 	type CloudCompanyComputerSessionFactory,
@@ -270,7 +270,10 @@ export function createHttpCompanyComputerSessionFactory(options: {
 	fetch?: typeof fetch;
 	objectGateway?: { baseUrl: string; token: string; fetch?: typeof fetch };
 }): CloudCompanyComputerSessionFactory {
-	const endpoint = parseCompanyComputerNativeUrl(options.url);
+	// One computer, or every computer of the company: the run reaches the one its screen is on.
+	const route = parseCompanyComputerNativeRoute(options.url);
+	const reaches = (companyComputerId: string) =>
+		route.companyComputerId === null || route.companyComputerId === companyComputerId;
 	const objectGateway = options.objectGateway ? parseCompanyComputerCaptureGateway(options.objectGateway) : undefined;
 	if (!/^[A-Za-z0-9_-]{43}$/.test(options.token)) throw new Error("INVALID_OFFICE_NATIVE_CONFIGURATION");
 	return async (run, operations) => {
@@ -288,14 +291,14 @@ export function createHttpCompanyComputerSessionFactory(options: {
 				),
 				run,
 			);
-			if (!start) return undefined;
-			if (start.scope.companyComputerId !== endpoint.companyComputerId)
-				throw new Error("OFFICE_NATIVE_CONFIGURATION_DIFFERS");
+			// A one-computer route cannot reach another of the company's computers: the
+			// run goes on without computer tools instead of failing as a whole.
+			if (!start || !reaches(start.scope.companyComputerId)) return undefined;
 			return createCompanyComputerStartSession({ run, operations, descriptor: start, registry: options.registry });
 		}
-		if (descriptor.scope.companyComputerId !== endpoint.companyComputerId)
-			throw new Error("OFFICE_NATIVE_CONFIGURATION_DIFFERS");
-		const remote = new HttpCompanyComputerNativeEndpoint({ ...options, run, descriptor });
+		if (!reaches(descriptor.scope.companyComputerId)) return undefined;
+		const url = route.urlFor(descriptor.scope.companyComputerId);
+		const remote = new HttpCompanyComputerNativeEndpoint({ ...options, url, run, descriptor });
 		const session = createCloudCompanyComputerSession({
 			run,
 			operations,

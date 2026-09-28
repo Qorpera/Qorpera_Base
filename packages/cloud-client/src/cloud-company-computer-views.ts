@@ -189,7 +189,8 @@ export class CloudCompanyComputerViews {
 					| "COMPUTER_NOT_ACTIVE"
 					| "AGENT_HAS_NO_COMPUTER_ACCESS"
 					| "SCREEN_CAPACITY_EXHAUSTED"
-					| "SCREEN_OCCUPIED";
+					| "SCREEN_OCCUPIED"
+					| "AGENT_ON_OTHER_COMPUTER";
 		  }
 	> {
 		if (!COMPANY_COMPUTER_UUID.test(staffAgentId)) throw new Error("INVALID_OFFICE_VIEW_REQUEST");
@@ -205,7 +206,8 @@ export class CloudCompanyComputerViews {
 			(value.reason === "COMPUTER_NOT_ACTIVE" ||
 				value.reason === "AGENT_HAS_NO_COMPUTER_ACCESS" ||
 				value.reason === "SCREEN_CAPACITY_EXHAUSTED" ||
-				value.reason === "SCREEN_OCCUPIED")
+				value.reason === "SCREEN_OCCUPIED" ||
+				value.reason === "AGENT_ON_OTHER_COMPUTER")
 		)
 			return { state: "refused", reason: value.reason };
 		throw new Error("INVALID_OFFICE_VIEW_RESPONSE");

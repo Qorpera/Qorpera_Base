@@ -55,12 +55,13 @@ function fixture() {
 		input: { from: "dispatch", text: null, answers: null } as Record<string, unknown>,
 		earlierTurns: [] as unknown[],
 		omittedEarlierTurns: 0,
+		commands: { running: [], stopped: [], omitted: 0 } as Record<string, unknown>,
 	};
 	const call = vi.fn<CloudCodingNativeControl["call"]>(async (method, args) => {
 		if (method === "qorpera_authorize_coding_turn") return { ...authority, coding };
 		if (method === "qorpera_read_coding_turn_context")
 			return {
-				schema: "qorpera.coding-turn-context/v1",
+				schema: "qorpera.coding-turn-context/v2",
 				workerId: coding.workerId,
 				sequence: coding.sequence,
 				...turnContext,
@@ -577,11 +578,12 @@ describe("the coding composition of a native turn", () => {
 			},
 		};
 		const valid = {
-			schema: "qorpera.coding-turn-context/v1",
+			schema: "qorpera.coding-turn-context/v2",
 			sequence: 2,
 			input: { from: "member", text: "B", answers: { question: "A or B?", options: ["A", "B"] } },
 			earlierTurns: [earlier],
 			omittedEarlierTurns: 0,
+			commands: { running: [], stopped: [], omitted: 0 },
 		};
 		const run = async (drift: Record<string, unknown>) => {
 			const f = fixture();

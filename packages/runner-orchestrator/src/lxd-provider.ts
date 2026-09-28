@@ -3,7 +3,7 @@ import { chmod, lstat, mkdir, open, readdir, readFile, rename, rm, writeFile } f
 import { isIP } from "node:net";
 import { isAbsolute, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { parseCompanyComputerNativeUrl } from "@qorpera/contracts";
+import { parseCompanyComputerNativeRoute } from "@qorpera/contracts";
 import type { ServiceHttpFetch } from "./http-transport.ts";
 import type { LxdClient, LxdCreateInstanceRequest, LxdInstanceRecord, LxdStorageVolumeRecord } from "./lxd-client.ts";
 import {
@@ -471,7 +471,7 @@ function journalFromJson(value: unknown): LxdProviderJournal {
 				throw new Error("Governed office route is invalid");
 			office = {
 				environmentId: route.environmentId,
-				url: parseCompanyComputerNativeUrl(route.url).url,
+				url: parseCompanyComputerNativeRoute(route.url).url,
 				tokenSha256: route.tokenSha256,
 			};
 		}

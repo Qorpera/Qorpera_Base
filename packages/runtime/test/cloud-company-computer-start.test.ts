@@ -222,10 +222,28 @@ describe("native office startup without a running guest", () => {
 		expect(f.guest).not.toHaveBeenCalled();
 		expect(f.control.beginToolOperation).not.toHaveBeenCalled();
 	});
-	it("rejects startup metadata for a different configured office", async () => {
+	it("offers no startup for a computer a one-computer route cannot reach, and the run goes on", async () => {
 		const f = await fixture();
 		f.descriptor.scope.companyComputerId = randomUUID();
-		await expect(f.factory(f.run, f.operations)).rejects.toThrow("OFFICE_NATIVE_CONFIGURATION_DIFFERS");
+		expect(await f.factory(f.run, f.operations)).toBeUndefined();
+		expect(f.guest).not.toHaveBeenCalled();
+	});
+	it("offers startup of any of the company's computers through a company route", async () => {
+		const f = await fixture();
+		f.descriptor.scope.companyComputerId = randomUUID();
+		const factory = createHttpCompanyComputerSessionFactory({
+			url: "https://office.qorpera.test/office/{companyComputerId}/native",
+			token: randomBytes(32).toString("base64url"),
+			registry: new HttpCloudCompanyComputerRegistry({
+				supabaseUrl: "https://registry.qorpera.test",
+				serviceRoleKey: "synthetic-service-key",
+				fetch: f.sql,
+			}),
+			fetch: f.guest,
+		});
+		const session = await factory(f.run, f.operations);
+		expect(session?.tools.map((tool) => tool.name)).toEqual(["computer_start"]);
+		await session?.close();
 	});
 	it("publishes a closed input schema without model-selectable scope or paths", async () => {
 		const f = await fixture();
