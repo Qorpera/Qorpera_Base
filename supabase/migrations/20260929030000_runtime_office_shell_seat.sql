@@ -1,4 +1,4 @@
--- 20260929020000: a command still running in a computer's shell keeps its
+-- 20260929030000: a command still running in a computer's shell keeps its
 -- agent's seat, as it keeps the machine awake (20260928060000). Patched into
 -- qorpera_runtime_office_screen_in_use (20260929010100) in place, after it:
 -- a fresh shell-activity report for the screen, from the office's current
@@ -15,7 +15,7 @@ end $$;
 select pg_temp.office_shell_seat_patch('public.qorpera_runtime_office_screen_in_use(public.qorpera_runtime_office_screens)'::regprocedure,
 	$old$or exists(select 1 from public.qorpera_runtime_office_resources r where r.screen_id = p_screen.id and r.state <> 'drained')$old$,
 	$new$or exists(select 1 from public.qorpera_runtime_office_resources r where r.screen_id = p_screen.id and r.state <> 'drained')
-		-- A command still running in the computer's shell (20260929020000).
+		-- A command still running in the computer's shell (20260929030000).
 		or exists(select 1 from public.qorpera_runtime_office_shell_activity a
 			join public.qorpera_runtime_offices o on o.id = a.office_id
 			where a.screen_id = p_screen.id and a.computer_generation = o.generation and a.busy_until > clock_timestamp())$new$);
