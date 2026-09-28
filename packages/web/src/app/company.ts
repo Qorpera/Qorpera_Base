@@ -44,6 +44,7 @@ import type {
 } from "../cloud/types.ts";
 import { attachmentProblemText } from "../ui/attachments.ts";
 import { t } from "../ui/preferences.ts";
+import { RoomDrafts } from "./room-drafts.ts";
 import { debounce, Store } from "./state.ts";
 
 /* One controller per open company. It holds the canonical projections the
@@ -308,6 +309,8 @@ export class CompanyController {
 	readonly #recoveryReads = new Map<string, { due: number; request: number }>();
 	/** The details RPC is not deployed on this cloud. */
 	#recoveriesMissing = false;
+	/** Members' unsent messages in the conversations they share (20260928000500). */
+	readonly roomDrafts: RoomDrafts;
 	/** This tab on the company's presence channel, once another member could be here. */
 	#presence: CloudPresenceHandle | undefined;
 	/** The conversation this tab says it shows: the open one while the tab is visible. */
@@ -316,6 +319,11 @@ export class CompanyController {
 	constructor(api: CloudApi, profile: HostedProfile, userId: string, writeInput?: SessionInputWriter) {
 		this.#api = api;
 		this.#userId = userId;
+		this.roomDrafts = new RoomDrafts(api, userId, this.#abort.signal, {
+			sharedRoom: (sessionId) => this.#sharedDraftRoom(sessionId),
+			draft: (sessionId) => this.conversation(sessionId).get().draft ?? "",
+			setDraft: (sessionId, text) => this.conversation(sessionId).set({ draft: text }),
+		});
 		this.#writeInput =
 			writeInput ??
 			(async () => {
@@ -1222,6 +1230,28 @@ export class CompanyController {
 		});
 	}
 
+	/** The room of a conversation whose drafts this member shares: an open room this
+	 * member writes in, where another member of the company can write too. */
+	#sharedDraftRoom(sessionId: string): string | undefined {
+		const state = this.store.get();
+		if (this.#stopped || state.accessLost || !state.team?.capabilities.write) return undefined;
+		const session = state.sessions.find((item) => item.sessionId === sessionId);
+		if (session?.status !== "open") return undefined;
+		let roomId: string | undefined;
+		try {
+			roomId = this.roomTargetFor(sessionId)?.roomId;
+		} catch {
+			return undefined;
+		}
+		if (!roomId) return undefined;
+		// An agent thread is every writing member's; a group chat is its own members'.
+		const group = state.groups?.[roomId];
+		const others = group
+			? group.members.some((member) => member.kind === "member" && member.id !== this.#userId)
+			: state.team.members.some((member) => member.userId !== this.#userId && member.role !== "viewer");
+		return others ? roomId.toLowerCase() : undefined;
+	}
+
 	roomTargetFor(sessionId: string): RoomMessageTarget | undefined {
 		const session = this.store.get().sessions.find((item) => item.sessionId === sessionId);
 		const scope = session?.executionScope;
@@ -1539,6 +1569,8 @@ export class CompanyController {
 		}
 		const clientInputId = sameRequest ? retry.clientInputId : crypto.randomUUID();
 		const clientRequestId = sameRequest ? retry.clientRequestId : clientInputId;
+		// Another member may add to a shared draft while it is on its way; their words stay.
+		this.roomDrafts.sending(sessionId);
 		store.set((state) => ({
 			sending: true,
 			sendError: undefined,
@@ -1564,7 +1596,7 @@ export class CompanyController {
 			store.set((state) => ({
 				sending: false,
 				retrySend: undefined,
-				draft: state.draft === text ? "" : state.draft,
+				draft: this.roomDrafts.sent(sessionId, text, state.draft ?? "", true),
 				attachments: sameFiles(state.attachments ?? []) ? [] : state.attachments,
 				optimistic: reconcileOptimistic({
 					...state,
@@ -1573,6 +1605,7 @@ export class CompanyController {
 					),
 				}),
 			}));
+			this.roomDrafts.settle(sessionId);
 			this.#dismissFailureFor(sessionId);
 			await this.loadConversation(sessionId);
 			void this.refreshActivity();
@@ -1581,6 +1614,7 @@ export class CompanyController {
 			return true;
 		} catch (error) {
 			if (this.#stopped) return false;
+			this.roomDrafts.sent(sessionId, text, "", false);
 			store.set((state) => ({
 				sending: false,
 				sendError: describeError(error),
