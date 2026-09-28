@@ -32,14 +32,14 @@ const MOVING: readonly MachineState[] = ["waiting", "starting", "stopping", "del
 
 export class MachinesView {
 	readonly el = h("section", { class: "settings-group machines" });
-	readonly #client: WebMachines;
+	readonly #client: Pick<WebMachines, "list" | "change">;
 	readonly #lifetime = new AbortController();
 	#machines: HostedMachine[] | undefined;
 	#error: string | undefined;
 	#working: string | undefined;
 	#timer: ReturnType<typeof setTimeout> | undefined;
 
-	constructor(client: WebMachines, signal: AbortSignal) {
+	constructor(client: Pick<WebMachines, "list" | "change">, signal: AbortSignal) {
 		this.#client = client;
 		if (signal.aborted) this.#lifetime.abort();
 		else signal.addEventListener("abort", () => this.dispose(), { once: true, signal: this.#lifetime.signal });

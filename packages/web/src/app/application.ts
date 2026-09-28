@@ -5,6 +5,7 @@ import { createWebCompanyAgents } from "../cloud/company-agents.ts";
 import { WebCompanyFiles } from "../cloud/company-files.ts";
 import { WebCompanyComputer } from "../cloud/computer.ts";
 import { takeConnectorReturn } from "../cloud/connectors.ts";
+import { createWebMachines } from "../cloud/machines.ts";
 import { createWebMemberNotifications } from "../cloud/member-notifications.ts";
 import { createWebNativeSubscription } from "../cloud/native-subscription.ts";
 import { createWebRoutines } from "../cloud/routines.ts";
@@ -786,6 +787,11 @@ export function mountApplication(
 						route.id ?? "",
 						{
 							sendMessage: (id, text, signal) => controller.sendPrompt(id, text, signal),
+							sessionMachines: (id) => {
+								checkConversationAccess();
+								return createWebMachines(cloud, controller.profile.profileId).session(id);
+							},
+							openMachines: () => openSettings("machines"),
 							sessionModel: createWebSessionModel(
 								cloud,
 								controller.userId,

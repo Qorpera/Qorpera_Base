@@ -53,7 +53,8 @@ function sdkRpcs(f: { cloud: Cloud }): string[] {
 	return vi
 		.mocked(f.cloud.rpc)
 		.mock.calls.map(([name]) => name)
-		.filter((name) => name !== "qorpera_list_review_rules");
+		// An open conversation reads its machines for the header; settings never do.
+		.filter((name) => name !== "qorpera_list_review_rules" && name !== "qorpera_list_session_machines");
 }
 function click(root: Element, selector: string) {
 	root.querySelector<HTMLButtonElement>(selector)!.click();

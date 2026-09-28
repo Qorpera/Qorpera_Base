@@ -318,4 +318,5 @@ export const SETTINGS: Record<string, string> = {
 	"{cpus} CPUs, {memory} GB memory, {disk} GB disk": "{cpus} CPU'er, {memory} GB hukommelse, {disk} GB disk",
 	"Started by {name}": "Startet af {name}",
 	"Code from {session}": "Kode fra {session}",
+	"{label}. Open the company's machines": "{label}. Åbn virksomhedens maskiner",
 };

@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MachinesView } from "../src/app/views/settings-machines.ts";
-import { createWebMachines, parseMachines } from "../src/cloud/machines.ts";
+import { ThreadMachines } from "../src/app/views/thread-machines.ts";
+import { createWebMachines, parseMachines, parseSessionMachines } from "../src/cloud/machines.ts";
 import { id, settle, timestamp } from "./fixtures.ts";
 
 function machine(overrides: Record<string, unknown> = {}) {
@@ -139,5 +140,37 @@ describe("company machines in settings", () => {
 		view = new MachinesView(client, new AbortController().signal);
 		await settle();
 		expect(view.el.textContent).toContain("The company's machines could not be read.");
+	});
+
+	it("shows a conversation's machines in its header, opens the list, and reads again only while one moves", async () => {
+		vi.useFakeTimers();
+		try {
+			let machines = [
+				machine({ state: "starting", commandsRunning: 0, commands: [] }),
+				machine({ machineId: id(74), name: "gone", state: "deleted" }),
+			];
+			const read = vi.fn(async () =>
+				parseSessionMachines({ schema: "qorpera.session-machines/v1", sessionId: id(40), machines }),
+			);
+			const open = vi.fn();
+			const card = new ThreadMachines(read, open, new AbortController().signal);
+			expect(card.el.hidden).toBe(true);
+			card.refresh();
+			await vi.advanceTimersByTimeAsync(0);
+			const chips = [...card.el.querySelectorAll<HTMLButtonElement>(".thread-machine")];
+			expect(chips.map((chip) => chip.textContent)).toEqual(["build-a"]);
+			expect(chips[0]?.title).toBe("build-a · Starting");
+			chips[0]?.click();
+			expect(open).toHaveBeenCalledTimes(1);
+			machines = [machine({ state: "running", commandsRunning: 0, commands: [] })];
+			await vi.advanceTimersByTimeAsync(10000);
+			expect(read).toHaveBeenCalledTimes(2);
+			expect(card.el.querySelector<HTMLButtonElement>(".thread-machine")?.dataset.state).toBe("running");
+			// Nothing moving: no more reads until the agent's run changes.
+			await vi.advanceTimersByTimeAsync(60000);
+			expect(read).toHaveBeenCalledTimes(2);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 });

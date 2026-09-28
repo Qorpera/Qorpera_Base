@@ -50,6 +50,7 @@ import { PairTranscriptView } from "./pair-transcript.ts";
 import { SessionExecutionView } from "./session-execution.ts";
 import { SessionRunView } from "./session-run.ts";
 import { SharedDrafts } from "./shared-drafts.ts";
+import { ThreadMachines } from "./thread-machines.ts";
 
 /* How often the thread re-reads its coding sessions while one is still going: the
  * header's figures follow them. Nothing is read once they all settled. */
@@ -105,6 +106,8 @@ export class ConversationView {
 	readonly #identity: HTMLButtonElement;
 	/** The coding sessions still going, beside the agent in the header. */
 	readonly #codingSlots = h("div", { class: "thread-coding-sessions" });
+	/** The machines agents started from this conversation, beside them. */
+	readonly #machines: ThreadMachines | undefined;
 	/** The other members who have this conversation open right now. */
 	readonly #here = h("div", { class: "thread-presence", role: "group", hidden: true });
 	#hereKey = "";
@@ -178,6 +181,14 @@ export class ConversationView {
 		this.#sessionId = sessionId;
 		this.#actions = actions;
 		this.#ownPanels = !actions.computerPanels;
+		const readMachines = actions.sessionMachines;
+		this.#machines = readMachines
+			? new ThreadMachines(
+					() => readMachines(sessionId),
+					() => actions.openMachines?.(),
+					AbortSignal.any([this.#lifetime.signal, company.signal]),
+				)
+			: undefined;
 		this.#panels = actions.computerPanels ?? new ComputerPanels(actions.computer, company.signal);
 		this.#run = actions.runControl
 			? new SessionRunView(
@@ -405,7 +416,14 @@ export class ConversationView {
 			},
 			icon("navigation"),
 		);
-		this.#header.append(this.#navigation, this.#identity, this.#codingSlots, this.#here, this.#computer);
+		this.#header.append(
+			this.#navigation,
+			this.#identity,
+			this.#codingSlots,
+			...(this.#machines ? [this.#machines.el] : []),
+			this.#here,
+			this.#computer,
+		);
 		// An open title pill lies over the figures after it; over one of them it steps aside,
 		// so that figure opens and a click there opens its own session.
 		const yieldTo = (event: PointerEvent) => {
@@ -997,6 +1015,8 @@ export class ConversationView {
 		if (activityKey !== this.#activityKey) {
 			this.#activityKey = activityKey;
 			void this.#run?.refresh();
+			// A run that starts or ends may have started, used or stopped a machine.
+			this.#machines?.refresh();
 		}
 		this.#agentState = room ? "idle" : this.#company.agentState(session?.staffAgentId);
 		this.#working = this.#agentState === "working" || this.#agentState === "writing";

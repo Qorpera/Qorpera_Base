@@ -46,6 +46,8 @@ export interface HostedMachine {
 
 export interface WebMachines {
 	list(): Promise<HostedMachine[]>;
+	/** The machines started from one conversation (its thread card). */
+	session(sessionId: string): Promise<HostedMachine[]>;
 	change(machineId: string, action: "start" | "stop" | "delete"): Promise<void>;
 }
 
@@ -111,9 +113,18 @@ export function parseMachines(value: unknown): HostedMachine[] {
 	return body.machines.map(parseMachine);
 }
 
+export function parseSessionMachines(value: unknown): HostedMachine[] {
+	const body = object(value, "Machines");
+	if (body.schema !== "qorpera.session-machines/v1" || !Array.isArray(body.machines))
+		throw new Error("Machines are invalid.");
+	return body.machines.map(parseMachine);
+}
+
 export function createWebMachines(cloud: Pick<Cloud, "rpc">, profileId: string): WebMachines {
 	return {
 		list: async () => parseMachines(await cloud.rpc("qorpera_list_company_machines", { p_profile_id: profileId })),
+		session: async (sessionId) =>
+			parseSessionMachines(await cloud.rpc("qorpera_list_session_machines", { p_session_id: sessionId })),
 		change: async (machineId, action) => {
 			await cloud.rpc("qorpera_member_manage_company_machine", {
 				p_profile_id: profileId,
