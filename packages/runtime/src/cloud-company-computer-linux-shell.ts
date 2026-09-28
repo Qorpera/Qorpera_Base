@@ -216,6 +216,7 @@ export class CompanyComputerLinuxShell implements CompanyComputerGuestShell {
 	#ended(environment: Promise<CompanyComputerShellEnvironment>): void {
 		if (this.#environment !== environment) return;
 		const note = this.#relieving?.environment === environment ? this.#relieving.note : undefined;
+		if (note !== undefined) this.#relieving = undefined;
 		this.#environment = undefined;
 		this.#pid = undefined;
 		this.#processes = 0;
@@ -325,6 +326,9 @@ export class CompanyComputerLinuxShell implements CompanyComputerGuestShell {
 	async start(input: Parameters<CompanyComputerGuestShell["start"]>[0]): Promise<{ sessionId: string }> {
 		const known = this.#keys.get(input.key);
 		if (known && this.#sessions.has(known)) return { sessionId: known };
+		// A command must not land in a shell the machine is ending; the next start opens a fresh one.
+		if (this.#environment && this.#relieving?.environment === this.#environment)
+			throw new Error("OFFICE_SHELL_RESTARTING");
 		const environment = await this.#open(input.signal);
 		input.signal.throwIfAborted();
 		const session: Session = {
@@ -436,13 +440,10 @@ export class CompanyComputerLinuxShell implements CompanyComputerGuestShell {
 		if (!current) return;
 		const opened = await current.catch(() => undefined);
 		// Tracked until its stop is confirmed: an unconfirmed stop stays busy and weighed.
+		// The note stays until this namespace ends, even if that is after a stop that timed out.
 		this.#relieving = { environment: current, note };
-		try {
-			await opened?.stop();
-			this.#ended(current);
-		} finally {
-			if (this.#relieving?.environment === current) this.#relieving = undefined;
-		}
+		await opened?.stop();
+		this.#ended(current);
 	}
 
 	/** Ends every process in the shell and the namespace itself. A timeout is never success. */
@@ -839,27 +840,30 @@ export class CompanyComputerShellPressureGuard {
 		const memoryExcess =
 			pressure.memoryBytes - (pressure.memoryMax - Math.max(256 * 1024 * 1024, pressure.memoryMax / 8));
 		const taskExcess = pressure.tasks - (pressure.tasksMax - Math.max(32, Math.floor(pressure.tasksMax / 8)));
-		const memory = memoryExcess > 0;
-		if (!memory && taskExcess <= 0) return undefined;
+		if (memoryExcess <= 0 && taskExcess <= 0) return undefined;
 		const usages = await this.#usage(open.map(({ pid }) => pid));
-		let heaviest: { shell: CompanyComputerLinuxShell; weight: number } | undefined;
-		for (const { shell, pid } of open) {
-			const usage = usages.get(pid) ?? { memoryBytes: 0, tasks: 0 };
-			const weight = memory ? usage.memoryBytes : usage.tasks;
-			if (!heaviest || weight > heaviest.weight) heaviest = { shell, weight };
+		// Memory first, then tasks: a shell that holds no real share of one may of the other.
+		for (const kind of ["memory", "tasks"] as const) {
+			const excess = kind === "memory" ? memoryExcess : taskExcess;
+			if (excess <= 0) continue;
+			let heaviest: { shell: CompanyComputerLinuxShell; weight: number } | undefined;
+			for (const { shell, pid } of open) {
+				const usage = usages.get(pid) ?? { memoryBytes: 0, tasks: 0 };
+				const weight = kind === "memory" ? usage.memoryBytes : usage.tasks;
+				if (!heaviest || weight > heaviest.weight) heaviest = { shell, weight };
+			}
+			// Ending a shell must relieve the pressure: it holds at least the excess,
+			// or a sixteenth of the whole limit.
+			const floor = Math.max(excess, (kind === "memory" ? pressure.memoryMax : pressure.tasksMax) / 16);
+			if (!heaviest || heaviest.weight < floor) continue;
+			await heaviest.shell.relieve(
+				kind === "memory"
+					? "Stopped because the machine was running out of memory; this shell used the most."
+					: "Stopped because the machine was running out of processes; this shell had the most.",
+			);
+			return heaviest.shell;
 		}
-		// Ending a shell must relieve the pressure: it holds at least the excess,
-		// or a sixteenth of the whole limit.
-		const floor = memory
-			? Math.max(memoryExcess, pressure.memoryMax / 16)
-			: Math.max(taskExcess, pressure.tasksMax / 16);
-		if (!heaviest || heaviest.weight < floor) return undefined;
-		await heaviest.shell.relieve(
-			memory
-				? "Stopped because the machine was running out of memory; this shell used the most."
-				: "Stopped because the machine was running out of processes; this shell had the most.",
-		);
-		return heaviest.shell;
+		return undefined;
 	}
 
 	close(): void {

@@ -347,6 +347,61 @@ describe("the machine's memory and task safety", () => {
 		expect((await small.shell.result({ sessionId, waitMs: 0, signal })).state).toBe("running");
 	});
 
+	it("weighs tasks too when no shell holds a real share of the memory", async () => {
+		const forks = scripted(401);
+		const { sessionId } = await forks.shell.start({ key: "a", command: "make -j64", signal });
+		const guard = new CompanyComputerShellPressureGuard({
+			shells: () => [forks.shell],
+			intervalMs: 3_600_000,
+			pressure: async () => ({ memoryBytes: 3.9 * GiB, memoryMax: 4 * GiB, tasks: 500, tasksMax: 512 }),
+			usage: usage({ 401: { memoryBytes: 20 * 1024 ** 2, tasks: 400 } }),
+		});
+		expect(await guard.check()).toBe(forks.shell);
+		guard.close();
+		expect((await forks.shell.result({ sessionId, waitMs: 0, signal })).note).toMatch(/running out of processes/);
+	});
+
+	it("refuses a start while the machine is ending the shell, then opens a fresh one", async () => {
+		let finish: (() => void) | undefined;
+		const launches: number[] = [];
+		const shell = new CompanyComputerLinuxShell(async () => {
+			launches.push(launches.length);
+			let ended: () => void = () => undefined;
+			const exited = new Promise<void>((resolve) => {
+				ended = resolve;
+			});
+			return {
+				send: () => undefined,
+				exited,
+				stop: () =>
+					new Promise<void>((resolve) => {
+						finish = () => {
+							ended();
+							resolve();
+						};
+					}),
+				pid: 501,
+			};
+		});
+		shells.push(shell);
+		const first = await shell.start({ key: "a", command: "sleep 600", signal });
+		const relieving = shell.relieve(
+			"Stopped because the machine was running out of memory; this shell used the most.",
+		);
+		await vi.waitFor(() => expect(finish).toBeDefined());
+		await expect(shell.start({ key: "b", command: "echo hi", signal })).rejects.toThrow("OFFICE_SHELL_RESTARTING");
+		finish?.();
+		finish = undefined;
+		await relieving;
+		expect((await shell.result({ sessionId: first.sessionId, waitMs: 0, signal })).note).toMatch(/out of memory/);
+		await shell.start({ key: "c", command: "echo hi", signal });
+		expect(launches).toEqual([0, 1]);
+		const closing = shell.close();
+		await vi.waitFor(() => expect(finish).toBeDefined());
+		finish?.();
+		await closing;
+	});
+
 	it("weighs tasks when the machine runs out of processes", async () => {
 		const few = scripted(301);
 		const many = scripted(302);

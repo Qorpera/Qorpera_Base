@@ -618,16 +618,19 @@ export class CompanyComputerGuestAutomation {
 			const refusal = (error: unknown): never => {
 				if (
 					error instanceof Error &&
-					["OFFICE_SHELL_SESSION_UNKNOWN", "OFFICE_SHELL_SESSION_ENDED", "OFFICE_SHELL_INPUT_ENDED"].includes(
-						error.message,
-					)
+					[
+						"OFFICE_SHELL_SESSION_UNKNOWN",
+						"OFFICE_SHELL_SESSION_ENDED",
+						"OFFICE_SHELL_INPUT_ENDED",
+						"OFFICE_SHELL_RESTARTING",
+					].includes(error.message)
 				)
 					throw new CompanyComputerActionFailedError(error);
 				throw error;
 			};
 			let value: JsonValue;
 			if (action.action === "start")
-				value = await shell.start({ key: effect.receiptId, command: action.command, signal });
+				value = await shell.start({ key: effect.receiptId, command: action.command, signal }).catch(refusal);
 			else if (action.action === "read") {
 				if (!shell.known(action.sessionId)) refusal(new Error("OFFICE_SHELL_SESSION_UNKNOWN"));
 				value = { sessionId: action.sessionId };
