@@ -49,7 +49,7 @@ per-worktree copy). It runs `npm ci --ignore-scripts` there (skipped for `hosted
 no packages), streams the output, and exits with the suite's exit code. The run directory is
 deleted afterwards (`--keep` keeps it). At the start of every run, runs older than a day (by the UTC time
 in their name), worktree copies unused for 14 days and hosted-db containers older than 6 hours are removed.
-Untracked files that look like credentials (`.env*`, `*.env`, `.envrc`, `.npmrc`, `.netrc`, `.pgpass`,
+Untracked files that look like credentials (`.env`, `.env.*`, `*.env`, `.envrc`, `.npmrc`, `.netrc`, `.pgpass`,
 `.git-credentials`, `.aws/credentials`, `*.pem`, `*.key`, `*.p12`, `*.tfvars`, `id_*` without an extension,
 `credentials*.json`, `service-account*.json`, `*.private.json`) stop the run unless `--allow-secrets` is given.
 
@@ -70,10 +70,10 @@ Override the target with `QORPERA_TEST_MACHINE`, `QORPERA_TEST_MACHINE_JUMP` and
 | Check | Result |
 | --- | --- |
 | Network | Lease, DNS and HTTPS work. The NAS (192.168.1.40:22, :2049), a Tailscale peer, node 2's LAN and Tailscale addresses, the router, and the gateways of this and two other bridges are refused from the VM while node 2 itself reaches them. SSH from the node answers with an sshd banner |
-| `hosted-db` | Passed, 483 migrations and 148 tests. Suite 1 min 57 s, whole run 2 min 3 s including a 4.4 s copy. GitHub's `ubuntu-26.04` runner takes 2 min 35 s to 3 min 23 s for the same step, including the image pull |
+| `hosted-db` | Passed, 483 migrations and 148 tests. Suite 1 min 57 s, whole run 2 min 3 s including a 4.4 s copy. GitHub's `ubuntu-26.04` runner took 2 min 35 s to 3 min 23 s for the same step, including the image pull (hosted-db runs 36368080589, 36367639772, 36371185370) |
 | `test-office-storage-inventory-linux.mjs` | Passed. `npm ci` 30 s with a cold cache, suite 1.1 s |
 | Docker | Rootful Docker 29.8.1 runs `hello-world` as `tester` |
-| Nested KVM | `/dev/kvm` present, all 6 vCPUs show `svm`, `kvm_amd` loaded, `KVM_GET_API_VERSION` 12 and `KVM_CREATE_VM` succeed (the check from `deploy/first-node/verify-azure-step2-pilot-kvm.sh`). A 1 vCPU / 1 GiB Ubuntu 26.04 VM inside it answers `lxc exec` 25.8 s after launch and reaches `running` at 32.3 s |
+| Nested KVM | `/dev/kvm` present, all 6 vCPUs show `svm`, `kvm_amd` loaded, `KVM_GET_API_VERSION` 12 and `KVM_CREATE_VM` succeed (the check from `deploy/first-node/verify-azure-step2-pilot-kvm.sh`). A 1 vCPU / 1 GiB Ubuntu 26.04 VM inside it answers `lxc exec` 25.8 s after launch; `systemctl is-system-running --wait` returns at 32.3 s |
 
 **Known limit: the `scripts/*-systemd.mjs` suites.** They remount `/sys/fs/cgroup` read-write to boot
 systemd in a container. Docker's default AppArmor profile on Ubuntu refuses that mount ("cgroup is
