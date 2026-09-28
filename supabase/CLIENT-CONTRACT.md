@@ -51,6 +51,11 @@ Founders (2026-09-28, migration 20260928248100): every member with the role
   deletes instead), the last founder while others remain, and a founder while
   company setup runs for them (42501).
 - `qorpera_delete_hosted_profile`: only the last member.
+- Deleting an account (operators only; no client RPC; migration
+  20260929180000) takes the person's memberships as a leave does, with the
+  same refusals, and is also refused for the only member of a company that is
+  not being deleted. It never removes company data: conversations, messages
+  and runs keep naming the person, as they do after a leave.
 - `qorpera_profile_team_info` capabilities add `manage_founders`, `leave` and
   `delete_company` for the caller; `leave` also tells a founder whether they
   may step down. A cloud without several founders omits
