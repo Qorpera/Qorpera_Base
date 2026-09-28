@@ -316,6 +316,7 @@ export const SETTINGS: Record<string, string> = {
 		"Virtuelle maskiner, som jeres agenter starter til test, byg og lange opgaver. De tilhører virksomheden: alle her kan stoppe, vække eller slette dem.",
 	"Waiting for room, number {position} in line": "Venter på plads, nummer {position} i køen",
 	"{cpus} CPUs, {memory} GB memory, {disk} GB disk": "{cpus} CPU'er, {memory} GB hukommelse, {disk} GB disk",
+	"1 CPU, {memory} GB memory, {disk} GB disk": "1 CPU, {memory} GB hukommelse, {disk} GB disk",
 	"Started by {name}": "Startet af {name}",
 	"Code from {session}": "Kode fra {session}",
 	"{label}. Open the company's machines": "{label}. Åbn virksomhedens maskiner",

@@ -141,11 +141,16 @@ export class MachinesView {
 					{ class: "machine-facts" },
 					[
 						state,
-						t("{cpus} CPUs, {memory} GB memory, {disk} GB disk", {
-							cpus: machine.cpus,
-							memory: machine.memoryGiB,
-							disk: machine.diskGiB,
-						}),
+						machine.cpus === 1
+							? t("1 CPU, {memory} GB memory, {disk} GB disk", {
+									memory: machine.memoryGiB,
+									disk: machine.diskGiB,
+								})
+							: t("{cpus} CPUs, {memory} GB memory, {disk} GB disk", {
+									cpus: machine.cpus,
+									memory: machine.memoryGiB,
+									disk: machine.diskGiB,
+								}),
 						machine.lifetime === "always-on" ? t("Always on") : null,
 						machine.startedBy.name ? t("Started by {name}", { name: machine.startedBy.name }) : null,
 						machine.repository ? t("Code from {session}", { session: machine.repository }) : null,

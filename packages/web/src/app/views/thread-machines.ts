@@ -51,7 +51,9 @@ export class ThreadMachines {
 		clearTimeout(this.#timer);
 		this.#timer = undefined;
 		this.#reading = true;
-		void this.#read()
+		// Never inside the caller's render: a read that refuses at once is only a failed read.
+		void Promise.resolve()
+			.then(() => this.#read())
 			.then(
 				(machines) => {
 					if (this.#signal.aborted) return;
