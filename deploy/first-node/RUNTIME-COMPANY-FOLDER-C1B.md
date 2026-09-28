@@ -672,7 +672,9 @@ The call:
    deadlock on them;
 4. inserts one read-record row per (release, resource). Each row holds the
    sorted reads (path key, path, version, content hash, range or page) with
-   their receipts, plus the output digest.
+   their receipts, plus the output digest. Version and content hash are the
+   caller's audit data (contract 9.1), not authority: nothing is decided on
+   them.
 
 A release id is used once. A replay with the same content returns the stored
 result; a replay with different content raises 22023. The id is claimed
@@ -914,7 +916,9 @@ checked and attributed.
   commit in a new transaction, as the runtime does.
 - **C1e: authority-change latency.** Measured in review r1: a grant took
   13 ms at p50, 108 ms at p95 and 343 ms at most while 16 clients committed
-  without pause (3.8 ms idle). C1e adds revoke latency to its pass criteria.
+  without pause (3.8 ms idle). C1e adds revoke latency to its pass criteria,
+  and the latency of a release of thousands of paths, which now resolves each
+  path once, against the 4-second result fence.
   If the tail grows at 32 to 64 clients, point the folder tables' foreign
   keys at a dedicated anchor row that is never locked exclusively, not at
   `qorpera_company_files` (its upload quota trigger locks that row

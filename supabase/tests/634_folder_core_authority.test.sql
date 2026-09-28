@@ -615,6 +615,19 @@ begin
 end $$;
 
 
+-- A re-resolution takes its check and its receipt in one statement. That keeps the receipt no newer than the check
+-- only while the receipt's helpers read the statement's snapshot, so none of them may become volatile.
+do $$
+begin
+	if exists (select 1 from pg_proc where pronamespace = 'public'::regnamespace and provolatile = 'v'
+		and proname in ('qorpera_folder_read_receipt', 'qorpera_folder_path_resource', 'qorpera_folder_agent_grant')) then
+		raise exception 'The read receipt helpers must stay stable'; end if;
+	if (select count(*) from pg_proc where pronamespace = 'public'::regnamespace
+		and proname in ('qorpera_folder_read_receipt', 'qorpera_folder_path_resource', 'qorpera_folder_agent_grant')) <> 3 then
+		raise exception 'The read receipt helpers are missing'; end if;
+end $$;
+
+
 -- Journal order is authority order: every clock value is used by exactly one journal row, change set or authority.
 do $$
 begin
