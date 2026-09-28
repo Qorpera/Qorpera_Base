@@ -7,12 +7,14 @@
  * - POST /portal: a member with a Stripe customer opens Stripe's billing page. Returns {url}.
  * - POST /webhook: Stripe's events. Each is verified, recorded once, re-read from Stripe and turned
  *   into sources of hours through the database's billing door. Unknown or unsupported events are
- *   recorded for review and still answered 2xx; only a passing failure (Stripe or the database
- *   unreachable) answers 5xx, so Stripe retries.
+ *   recorded (ignored, or for review) and still answered 2xx; only a passing failure (Stripe or the
+ *   database unreachable, or Stripe refusing our key) answers 5xx, so Stripe retries. An event left
+ *   for review runs again when it is resent from Stripe's dashboard.
  * Card data never passes through here: Stripe's own pages take it. */
 
 export const STRIPE_API_VERSION = "2026-08-26.dahlia";
 const SIGNATURE_TOLERANCE_SECONDS = 300;
+const STRIPE_TIMEOUT_MS = 20_000;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 type Json = Record<string, unknown>;
@@ -138,8 +140,14 @@ export function createStripeApi(secretKey: string, fetchImpl: typeof fetch = fet
 		return body as Json;
 	};
 	return {
+		// A request Stripe does not answer in time is a passing failure (a webhook is retried).
 		async get(path) {
-			return answer(await fetchImpl(`https://api.stripe.com${path}`, { headers: headers() }));
+			return answer(
+				await fetchImpl(`https://api.stripe.com${path}`, {
+					headers: headers(),
+					signal: AbortSignal.timeout(STRIPE_TIMEOUT_MS),
+				}),
+			);
 		},
 		async post(path, form, idempotencyKey) {
 			return answer(
@@ -147,6 +155,7 @@ export function createStripeApi(secretKey: string, fetchImpl: typeof fetch = fet
 					method: "POST",
 					headers: { ...headers(idempotencyKey), "content-type": "application/x-www-form-urlencoded" },
 					body: new URLSearchParams(form).toString(),
+					signal: AbortSignal.timeout(STRIPE_TIMEOUT_MS),
 				}),
 			);
 		},
@@ -190,15 +199,17 @@ function bearer(request: Request): string | undefined {
 	return header?.startsWith("Bearer ") ? header.slice(7).trim() || undefined : undefined;
 }
 
-/** A passing failure: Stripe or the database could not answer now. Stripe should retry. */
+/** A passing failure: Stripe or the database could not answer now, or Stripe refused our key (a
+ * rolled or expired key, a restricted key missing a permission). Stripe should retry. */
 function isPassing(error: unknown): boolean {
-	if (error instanceof StripeRequestError) return error.status >= 500 || error.status === 429;
+	if (error instanceof StripeRequestError) return error.status >= 500 || [401, 403, 409, 429].includes(error.status);
 	if (error instanceof BillingStoreError)
 		return error.code === undefined || !["22023", "22P02", "23514"].includes(error.code);
 	return true;
 }
 
-/** The return URL with query parameters, keeping Stripe's {CHECKOUT_SESSION_ID} placeholder literal. */
+/** The return URL with a query appended. The web app's return is a hash route
+ * (https://app.qorpera.com/#/account), so the query lands after the hash, where the app reads it. */
 function returnUrl(base: string, query: string): string {
 	return `${base}${base.includes("?") ? "&" : "?"}${query}`;
 }
@@ -275,7 +286,7 @@ async function startCheckout(
 		"saved_payment_method_options[allow_redisplay_filters][0]": "always",
 		"saved_payment_method_options[allow_redisplay_filters][1]": "limited",
 		client_reference_id: checkoutId,
-		success_url: returnUrl(deps.options.returnUrl, "checkout=done&session_id={CHECKOUT_SESSION_ID}"),
+		success_url: returnUrl(deps.options.returnUrl, "checkout=done"),
 		cancel_url: returnUrl(deps.options.returnUrl, "checkout=cancelled"),
 	};
 	const nested = kind === "plan" ? "subscription_data" : "payment_intent_data";
@@ -445,29 +456,35 @@ async function applyInvoice(
 			itemKey,
 			periodStart: line?.periodStart ?? facts.periodStart,
 			periodEnd: line?.periodEnd ?? facts.periodEnd,
+			invoiceId,
 			livemode,
 		});
+		if (string(result.skipped)) return ignored(`${reason} period: ${result.skipped}`);
+		// A renewal withdrawn after its payment failed stays withdrawn; paying it later is for review.
+		if (result.withdrawn === true && type === "invoice.paid")
+			return review(`${reason} period ${String(result.reference)} was paid after it was withdrawn`);
 		return fromRefusal(result, `${reason} period`);
 	}
 	if (reason === "subscription_update" && type === "invoice.paid") {
-		// An upgrade billed at once: a credit line for the old plan, a charge line for the new one.
+		// A plan change billed at once: a credit line for the old plan, a charge line for the new one.
+		// The new plan's line ends where the period ends; the database finds that period and refuses a
+		// payment outside it, a change that lowers the hours, and a second change in the period.
 		const from = lines.find((line) => line.proration && line.amount < 0);
 		const to = lines.find((line) => line.proration && line.amount > 0);
 		const fromItemKey = await itemKeyOf(from?.priceId, deps);
 		const toItemKey = await itemKeyOf(to?.priceId, deps);
-		if (!fromItemKey || !toItemKey) return ignored("plan change without an upgrade charge");
+		if (!fromItemKey || !toItemKey || !to?.periodEnd) return review("plan change without a readable proration");
 		const paidAt = isoFromUnix(object(invoice.status_transitions)?.paid_at) ?? created;
 		const result = await deps.store.call("plan_upgrade", {
 			subscriptionId,
 			fromItemKey,
 			toItemKey,
-			periodStart: facts.periodStart,
-			periodEnd: facts.periodEnd,
+			periodEnd: to.periodEnd,
 			paidAt,
 			invoiceId,
 			livemode,
 		});
-		return fromRefusal(result, "upgrade");
+		return fromRefusal(result, `plan change ${fromItemKey} to ${toItemKey}`);
 	}
 	return ignored(`invoice ${reason}`);
 }
@@ -487,6 +504,39 @@ async function withdrawFailedRenewal(invoiceId: string | undefined, deps: Billin
 		livemode: deps.options.livemode,
 	});
 	return applied(`renewal withdrawn: ${String(result.withdrawn ?? 0)}`);
+}
+
+/** The subscription invoice a payment paid, if any (Charges and PaymentIntents no longer name it). */
+async function invoiceOfPayment(paymentIntentId: string, deps: BillingDependencies): Promise<string | undefined> {
+	const query = new URLSearchParams({
+		"payment[type]": "payment_intent",
+		"payment[payment_intent]": paymentIntentId,
+		limit: "10",
+	});
+	const payments = (await deps.stripe.get(`/v1/invoice_payments?${query}`)).data;
+	if (!Array.isArray(payments)) return undefined;
+	for (const value of payments) {
+		const invoice = object(value)?.invoice;
+		const invoiceId = string(invoice) ?? string(object(invoice)?.id);
+		if (invoiceId) return invoiceId;
+	}
+	return undefined;
+}
+
+/** The purchase a payment made: a credit pack by its PaymentIntent, plan hours by their invoice. */
+async function purchaseOf(paymentIntentId: string, deps: BillingDependencies): Promise<Json> {
+	return {
+		paymentIntentId,
+		invoiceId: (await invoiceOfPayment(paymentIntentId, deps)) ?? null,
+		livemode: deps.options.livemode,
+	};
+}
+
+/** A dispute's effect, from the status Stripe reports now (events can arrive late or out of order). */
+function disputeEffect(status: unknown): "open" | "won" | "lost" {
+	if (status === "won" || status === "warning_closed" || status === "prevented") return "won";
+	if (status === "lost") return "lost";
+	return "open";
 }
 
 async function applyEvent(event: Json, deps: BillingDependencies): Promise<Outcome> {
@@ -532,25 +582,25 @@ async function applyEvent(event: Json, deps: BillingDependencies): Promise<Outco
 			const paymentIntentId = string(charge.payment_intent) ?? string(object(charge.payment_intent)?.id);
 			if (!paymentIntentId || !(typeof charge.amount_refunded === "number" && charge.amount_refunded > 0))
 				return ignored("nothing refunded");
-			const result = await deps.store.call("refund", { paymentIntentId, livemode });
-			return applied(`refund withdrew ${String(result.withdrawn ?? 0)}`);
+			const result = await deps.store.call("refund", await purchaseOf(paymentIntentId, deps));
+			if (result.matched === 0) return review(`refund of ${paymentIntentId} matched no purchase`);
+			return applied(`refund withdrew ${String(result.changed ?? 0)}`);
 		}
 		case "charge.dispute.created":
+		case "charge.dispute.updated":
 		case "charge.dispute.closed": {
 			const dispute = await deps.stripe.get(`/v1/disputes/${encodeURIComponent(id)}`);
-			const paymentIntentId = string(dispute.payment_intent) ?? string(object(dispute.payment_intent)?.id);
+			let paymentIntentId = string(dispute.payment_intent) ?? string(object(dispute.payment_intent)?.id);
+			const chargeId = string(dispute.charge) ?? string(object(dispute.charge)?.id);
+			if (!paymentIntentId && chargeId) {
+				const charge = await deps.stripe.get(`/v1/charges/${encodeURIComponent(chargeId)}`);
+				paymentIntentId = string(charge.payment_intent) ?? string(object(charge.payment_intent)?.id);
+			}
 			if (!paymentIntentId) return review(`dispute ${id} has no payment`);
-			const status =
-				type === "charge.dispute.created"
-					? "open"
-					: dispute.status === "won"
-						? "won"
-						: dispute.status === "lost"
-							? "lost"
-							: undefined;
-			if (!status) return ignored(`dispute ${String(dispute.status)}`);
-			const result = await deps.store.call("dispute", { paymentIntentId, status, livemode });
-			return applied(`dispute ${status}: ${String(result.changed ?? 0)}`);
+			const status = disputeEffect(dispute.status);
+			const result = await deps.store.call("dispute", { ...(await purchaseOf(paymentIntentId, deps)), status });
+			if (result.matched === 0) return review(`dispute ${id} (${String(dispute.status)}) matched no purchase`);
+			return applied(`dispute ${String(dispute.status)}: ${String(result.changed ?? 0)}`);
 		}
 		default:
 			return ignored(`unhandled ${type}`);
@@ -582,14 +632,12 @@ async function receiveWebhook(request: Request, deps: BillingDependencies): Prom
 	// A test event at a live endpoint, or the other way round, is acknowledged and left alone.
 	if (event.livemode !== deps.options.livemode) return json({ received: true, ignored: "other mode" }, 200);
 	const livemode = deps.options.livemode;
-	let begun: Json;
-	try {
-		begun = await deps.store.call("event_begin", { eventId, type, livemode, bodySha256: await sha256Hex(rawBody) });
-	} catch (error) {
-		if (error instanceof BillingStoreError && error.code === "42501" && /another body/.test(error.message))
-			return json({ error: "A different event under a known id" }, 409);
-		throw error;
-	}
+	const begun = await deps.store.call("event_begin", {
+		eventId,
+		type,
+		livemode,
+		bodySha256: await sha256Hex(rawBody),
+	});
 	if (begun.state === "finished") return json({ received: true, duplicate: true }, 200);
 	let outcome: Outcome;
 	try {
@@ -605,12 +653,13 @@ async function receiveWebhook(request: Request, deps: BillingDependencies): Prom
 /** The Edge Function: /checkout, /portal and /webhook. */
 export async function handleComputerBilling(request: Request, deps: BillingDependencies): Promise<Response> {
 	const route = new URL(request.url).pathname.replace(/\/+$/, "").split("/").pop();
+	// The member's routes answer every outcome, errors too, with the headers the browser needs to read it.
+	const cors = route === "webhook" ? {} : corsHeaders(request, deps.options);
 	try {
 		if (route === "webhook") {
 			if (request.method !== "POST") return json({ error: "Method not allowed" }, 405);
 			return await receiveWebhook(request, deps);
 		}
-		const cors = corsHeaders(request, deps.options);
 		if (!cors) return json({ error: "Origin not allowed" }, 403);
 		if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: cors });
 		if (request.method !== "POST") return json({ error: "Method not allowed" }, 405, cors);
@@ -624,6 +673,7 @@ export async function handleComputerBilling(request: Request, deps: BillingDepen
 		return json(
 			{ error: "Payments are unavailable right now" },
 			error instanceof StripeRequestError && error.status < 500 && error.status !== 429 ? 502 : 503,
+			cors ?? {},
 		);
 	}
 }

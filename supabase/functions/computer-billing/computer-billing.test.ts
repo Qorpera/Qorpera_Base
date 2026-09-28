@@ -48,8 +48,8 @@ function fixture(
 		plan_upgrade: () => ({ added: true, seconds: 1 }),
 		plan_failed: () => ({ withdrawn: 1 }),
 		credits_paid: () => ({ added: true }),
-		refund: () => ({ withdrawn: 1 }),
-		dispute: () => ({ changed: 1 }),
+		refund: () => ({ matched: 1, changed: 1 }),
+		dispute: () => ({ matched: 1, changed: 1 }),
 		checkout_begin: () => ({
 			checkoutId: "c0ffee00-0000-4000-8000-000000000001",
 			kind: "credits",
@@ -73,7 +73,8 @@ function fixture(
 		stripe: {
 			async get(path) {
 				gets.push(path);
-				const answer = stripe[path];
+				// A payment that paid no invoice (a credit pack) has no invoice payments.
+				const answer = stripe[path] ?? (path.startsWith("/v1/invoice_payments?") ? { data: [] } : undefined);
 				if (answer === undefined) throw new StripeRequestError(404, `no fixture for ${path}`);
 				if (answer instanceof Error) throw answer;
 				return answer;
@@ -90,7 +91,7 @@ function fixture(
 		options: {
 			livemode: false,
 			webhookSecret: SECRET,
-			returnUrl: "https://app.qorpera.com/?settings=plan",
+			returnUrl: "https://app.qorpera.com/#/account",
 			allowedOrigins: ["https://app.qorpera.com"],
 			nowSeconds: () => NOW,
 		},
@@ -114,6 +115,16 @@ async function webhook(f: Fixture, body: string, signature = sign(body)): Promis
 }
 
 const methods = (f: Fixture) => f.calls.map((call) => call.method);
+const invoicePayments = (paymentIntent: string) =>
+	`/v1/invoice_payments?payment%5Btype%5D=payment_intent&payment%5Bpayment_intent%5D=${paymentIntent}&limit=10`;
+const subscriptionInvoice = (id: string, reason: string, status: string, lines: Json[], extra: Json = {}) => ({
+	id,
+	status,
+	billing_reason: reason,
+	parent: { type: "subscription_details", subscription_details: { subscription: "sub_1" } },
+	lines: { data: lines },
+	...extra,
+});
 const finished = (f: Fixture) => f.calls.find((call) => call.method === "event_finish")?.args;
 
 const subscription = (status = "active", latestInvoice = "in_cycle") => ({
@@ -160,15 +171,13 @@ describe("Stripe webhook", () => {
 		assert.deepEqual(f.calls, []);
 	});
 
-	it("does nothing twice for a replayed event, and refuses another body under a known id", async () => {
+	it("does nothing twice for a replayed event", async () => {
 		const replay = fixture({}, { event_begin: () => ({ state: "finished", outcome: "applied" }) });
 		assert.equal((await webhook(replay, event("charge.refunded", { id: "ch_1" }))).status, 200);
 		assert.deepEqual(methods(replay), ["event_begin"]);
-		const conflict = fixture(
-			{},
-			{ event_begin: () => new BillingStoreError("42501", "Billing: another body under a known event id") },
-		);
-		assert.equal((await webhook(conflict, event("charge.refunded", { id: "ch_1" }))).status, 409);
+		// Each delivery is authenticated by its signature; the first body's hash is kept.
+		const begin = replay.calls[0]?.args;
+		assert.match(String(begin?.bodySha256), /^[0-9a-f]{64}$/);
 	});
 
 	it("adds credits for a paid one-off checkout, re-read from Stripe", async () => {
@@ -217,6 +226,7 @@ describe("Stripe webhook", () => {
 			itemKey: "basis",
 			periodStart: new Date((NOW - 100) * 1000).toISOString(),
 			periodEnd: new Date((NOW + 2_592_000) * 1000).toISOString(),
+			invoiceId: "in_1",
 			livemode: false,
 		});
 		assert.equal(finished(f)?.outcome, "applied");
@@ -235,6 +245,35 @@ describe("Stripe webhook", () => {
 		});
 		await webhook(f, event("invoice.created", { id: "in_2" }));
 		assert.ok(methods(f).includes("plan_period"));
+		// Its paid event adds nothing twice (the database keys the period), and needs no special case.
+		const paid = fixture({
+			"/v1/invoices/in_2": subscriptionInvoice("in_2", "subscription_cycle", "paid", [planLine("price_basis", 18500)]),
+			"/v1/subscriptions/sub_1": subscription(),
+		});
+		await webhook(paid, event("invoice.paid", { id: "in_2" }));
+		assert.equal(paid.calls.find((call) => call.method === "plan_period")?.args.invoiceId, "in_2");
+		assert.equal(finished(paid)?.outcome, "applied");
+	});
+
+	it("gives an unpaid or cancelled subscription no new period, and sends a late payment of a withdrawn one to review", async () => {
+		const unpaid = fixture(
+			{
+				"/v1/invoices/in_2": subscriptionInvoice("in_2", "subscription_cycle", "draft", [planLine("price_basis", 18500)]),
+				"/v1/subscriptions/sub_1": subscription("unpaid"),
+			},
+			{ plan_period: () => ({ skipped: "subscription unpaid" }) },
+		);
+		await webhook(unpaid, event("invoice.created", { id: "in_2" }));
+		assert.equal(finished(unpaid)?.outcome, "ignored");
+		const late = fixture(
+			{
+				"/v1/invoices/in_2": subscriptionInvoice("in_2", "subscription_cycle", "paid", [planLine("price_basis", 18500)]),
+				"/v1/subscriptions/sub_1": subscription(),
+			},
+			{ plan_period: () => ({ added: false, reference: "sub_1:1", withdrawn: true }) },
+		);
+		await webhook(late, event("invoice.paid", { id: "in_2" }));
+		assert.equal(finished(late)?.outcome, "needs_review");
 	});
 
 	it("adds an upgrade's extra hours from the paid proration invoice", async () => {
@@ -251,10 +290,40 @@ describe("Stripe webhook", () => {
 		});
 		await webhook(f, event("invoice.paid", { id: "in_3" }));
 		const upgrade = f.calls.find((call) => call.method === "plan_upgrade")?.args;
-		assert.equal(upgrade?.fromItemKey, "basis");
-		assert.equal(upgrade?.toItemKey, "standard");
-		assert.equal(upgrade?.paidAt, new Date((NOW - 5) * 1000).toISOString());
-		assert.equal(upgrade?.invoiceId, "in_3");
+		assert.deepEqual(upgrade, {
+			subscriptionId: "sub_1",
+			fromItemKey: "basis",
+			toItemKey: "standard",
+			// The period is the new plan's line, never the subscription's period read later.
+			periodEnd: new Date((NOW + 2_592_000) * 1000).toISOString(),
+			paidAt: new Date((NOW - 5) * 1000).toISOString(),
+			invoiceId: "in_3",
+			livemode: false,
+		});
+		assert.equal(finished(f)?.outcome, "applied");
+	});
+
+	it("sends a plan change the database refuses, or cannot read, to review", async () => {
+		const lines = [planLine("price_standard", -20000, true), planLine("price_basis", 6000, true)];
+		const lowered = fixture(
+			{
+				"/v1/invoices/in_5": subscriptionInvoice("in_5", "subscription_update", "paid", lines),
+				"/v1/subscriptions/sub_1": subscription(),
+			},
+			{ plan_upgrade: () => ({ refused: "plan_lowered_at_once" }) },
+		);
+		await webhook(lowered, event("invoice.paid", { id: "in_5" }));
+		assert.equal(finished(lowered)?.outcome, "needs_review");
+		assert.match(String(finished(lowered)?.detail), /plan_lowered_at_once/);
+		const unreadable = fixture({
+			"/v1/invoices/in_6": subscriptionInvoice("in_6", "subscription_update", "paid", [
+				planLine("price_standard", 20000, true),
+			]),
+			"/v1/subscriptions/sub_1": subscription(),
+		});
+		await webhook(unreadable, event("invoice.paid", { id: "in_6" }));
+		assert.equal(finished(unreadable)?.outcome, "needs_review");
+		assert.ok(!methods(unreadable).includes("plan_upgrade"));
 	});
 
 	it("withdraws a renewal whose payment finally failed", async () => {
@@ -276,19 +345,67 @@ describe("Stripe webhook", () => {
 		});
 	});
 
-	it("takes back refunded credits and freezes, then releases, disputed ones", async () => {
+	it("takes back refunded credits, and a refunded plan payment through its invoice", async () => {
 		const refund = fixture({ "/v1/charges/ch_1": { id: "ch_1", payment_intent: "pi_1", amount_refunded: 7000 } });
 		await webhook(refund, event("charge.refunded", { id: "ch_1" }));
 		assert.deepEqual(refund.calls.find((call) => call.method === "refund")?.args, {
 			paymentIntentId: "pi_1",
+			invoiceId: null,
 			livemode: false,
 		});
-		const opened = fixture({ "/v1/disputes/dp_1": { id: "dp_1", payment_intent: "pi_1", status: "needs_response" } });
-		await webhook(opened, event("charge.dispute.created", { id: "dp_1" }));
-		assert.equal(opened.calls.find((call) => call.method === "dispute")?.args.status, "open");
-		const won = fixture({ "/v1/disputes/dp_1": { id: "dp_1", payment_intent: "pi_1", status: "won" } });
-		await webhook(won, event("charge.dispute.closed", { id: "dp_1" }));
-		assert.equal(won.calls.find((call) => call.method === "dispute")?.args.status, "won");
+		assert.ok(refund.gets.includes(invoicePayments("pi_1")));
+		assert.equal(finished(refund)?.outcome, "applied");
+		const plan = fixture({
+			"/v1/charges/ch_2": { id: "ch_2", payment_intent: "pi_2", amount_refunded: 63000 },
+			[invoicePayments("pi_2")]: { data: [{ id: "inpay_1", invoice: "in_1" }] },
+		});
+		await webhook(plan, event("charge.refunded", { id: "ch_2" }));
+		assert.equal(plan.calls.find((call) => call.method === "refund")?.args.invoiceId, "in_1");
+		// A refund that matches no purchase is not silently "applied".
+		const stray = fixture(
+			{ "/v1/charges/ch_3": { id: "ch_3", payment_intent: "pi_3", amount_refunded: 100 } },
+			{ refund: () => ({ matched: 0, changed: 0 }) },
+		);
+		await webhook(stray, event("charge.refunded", { id: "ch_3" }));
+		assert.equal(finished(stray)?.outcome, "needs_review");
+	});
+
+	it("follows a dispute's status as Stripe reports it, whatever event brings it", async () => {
+		const effect = async (type: string, status: string) => {
+			const f = fixture({ "/v1/disputes/dp_1": { id: "dp_1", payment_intent: "pi_1", status } });
+			await webhook(f, event(type, { id: "dp_1" }));
+			return f.calls.find((call) => call.method === "dispute")?.args.status;
+		};
+		assert.equal(await effect("charge.dispute.created", "needs_response"), "open");
+		assert.equal(await effect("charge.dispute.created", "warning_needs_response"), "open");
+		assert.equal(await effect("charge.dispute.closed", "won"), "won");
+		assert.equal(await effect("charge.dispute.closed", "lost"), "lost");
+		// An inquiry that closes releases the purchase; a late "created" after it was won does not freeze it.
+		assert.equal(await effect("charge.dispute.closed", "warning_closed"), "won");
+		assert.equal(await effect("charge.dispute.created", "won"), "won");
+		assert.equal(await effect("charge.dispute.updated", "under_review"), "open");
+		// A dispute without a PaymentIntent is traced through its charge.
+		const viaCharge = fixture({
+			"/v1/disputes/dp_2": { id: "dp_2", payment_intent: null, charge: "ch_9", status: "needs_response" },
+			"/v1/charges/ch_9": { id: "ch_9", payment_intent: "pi_9" },
+		});
+		await webhook(viaCharge, event("charge.dispute.created", { id: "dp_2" }));
+		assert.equal(viaCharge.calls.find((call) => call.method === "dispute")?.args.paymentIntentId, "pi_9");
+	});
+
+	it("withdraws a renewal marked uncollectible, and adds credits paid later by bank", async () => {
+		const uncollectible = fixture({
+			"/v1/invoices/in_4": subscriptionInvoice("in_4", "subscription_cycle", "uncollectible", [
+				planLine("price_basis", 18500),
+			]),
+		});
+		await webhook(uncollectible, event("invoice.marked_uncollectible", { id: "in_4" }));
+		assert.equal(uncollectible.calls.find((call) => call.method === "plan_failed")?.args.subscriptionId, "sub_1");
+		const bank = fixture({
+			"/v1/checkout/sessions/cs_3": { id: "cs_3", mode: "payment", payment_status: "paid", payment_intent: "pi_3" },
+		});
+		await webhook(bank, event("checkout.session.async_payment_succeeded", { id: "cs_3" }));
+		assert.equal(bank.calls.find((call) => call.method === "credits_paid")?.args.sessionId, "cs_3");
 	});
 
 	it("records what it cannot use for review and still answers 2xx; a passing failure answers 5xx", async () => {
@@ -307,6 +424,13 @@ describe("Stripe webhook", () => {
 		const down = fixture({ "/v1/charges/ch_1": new StripeRequestError(503, "Stripe 503") });
 		assert.equal((await webhook(down, event("charge.refunded", { id: "ch_1" }))).status, 503);
 		assert.equal(finished(down), undefined);
+		// Stripe refusing our key (rolled, expired, missing a permission) is passing too: Stripe retries.
+		for (const status of [401, 403]) {
+			const key = fixture({ "/v1/charges/ch_1": new StripeRequestError(status, `Stripe ${status}`) });
+			// 502: Stripe refused us; any non-2xx answer makes Stripe retry.
+			assert.equal((await webhook(key, event("charge.refunded", { id: "ch_1" }))).status, 502);
+			assert.equal(finished(key), undefined);
+		}
 		const database = fixture(
 			{ "/v1/charges/ch_1": { id: "ch_1", payment_intent: "pi_1", amount_refunded: 1 } },
 			{
@@ -370,10 +494,8 @@ describe("Checkout and the billing page", () => {
 		assert.equal(session?.form["automatic_tax[enabled]"], "true");
 		assert.equal(session?.form["customer_update[address]"], "auto");
 		assert.equal(session?.form["payment_intent_data[metadata][qorpera_profile_id]"], COMPANY);
-		assert.equal(
-			session?.form.success_url,
-			"https://app.qorpera.com/?settings=plan&checkout=done&session_id={CHECKOUT_SESSION_ID}",
-		);
+		assert.equal(session?.form.success_url, "https://app.qorpera.com/#/account?checkout=done");
+		assert.equal(session?.form.cancel_url, "https://app.qorpera.com/#/account?checkout=cancelled");
 		assert.ok(!("ui_mode" in (session?.form ?? {})));
 		assert.deepEqual(f.calls.at(-1), {
 			method: "checkout_attach",
@@ -467,11 +589,19 @@ describe("Checkout and the billing page", () => {
 		assert.deepEqual(await response.json(), { url: "https://billing.stripe.com/p/session/x" });
 		assert.deepEqual(f.posts[0]?.form, {
 			customer: "cus_A1",
-			return_url: "https://app.qorpera.com/?settings=plan",
+			return_url: "https://app.qorpera.com/#/account",
 			configuration: "bpc_1",
 		});
 		const none = fixture({}, { customer_get: () => ({ customerId: null }) });
 		assert.equal((await handleComputerBilling(post("portal"), none.deps)).status, 409);
+	});
+
+	it("answers a failure with the headers the browser needs to read it", async () => {
+		const down = fixture({}, { customer_get: () => new BillingStoreError("57P01", "terminating connection") });
+		const response = await handleComputerBilling(post("portal"), down.deps);
+		assert.equal(response.status, 503);
+		assert.equal(response.headers.get("access-control-allow-origin"), "https://app.qorpera.com");
+		assert.deepEqual(await response.json(), { error: "Payments are unavailable right now" });
 	});
 });
 
@@ -495,5 +625,7 @@ describe("Stripe API client", () => {
 			failing.get("/v1/prices/x"),
 			(error: unknown) => error instanceof StripeRequestError && error.status === 404,
 		);
+		// Every request carries a deadline, so a hung Stripe call ends as a passing failure.
+		assert.ok(requests[0]?.init?.signal instanceof AbortSignal);
 	});
 });

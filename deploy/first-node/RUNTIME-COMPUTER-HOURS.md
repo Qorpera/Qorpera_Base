@@ -236,28 +236,45 @@ every request.
   - `POST /portal` (member JWT): Stripe's billing page for card changes, invoices, cancelling at
     the period end and switching between Basis and Standard.
   - `POST /webhook`: Stripe's events, signature checked (five-minute window, several
-    signatures), recorded once by id and body hash, then re-read from Stripe:
+    signatures), recorded once by id (the first body's hash is kept), then re-read from Stripe:
     - `invoice.paid` with `subscription_create`: the first period, from the plan line's service
       period (`lines.data[].period`, `pricing.price_details.price`);
     - `invoice.created` with `subscription_cycle`: a renewal's period at its start, before payment
-      (also on `invoice.paid`, idempotent);
+      (also on `invoice.paid`, idempotent). An `unpaid`, `canceled` or `paused` subscription gets
+      no new period; a renewal paid after it was withdrawn goes to review;
     - `invoice.paid` with `subscription_update`: an upgrade's extra hours, pro rata from the paid
-      time, as an extra period row;
+      time, as an extra period row. The period is the recorded one that ends where the new plan's
+      proration line ends; a payment outside it, a change that lowers the hours at once, and a
+      second change in the same period go to review (one top-up per period at most);
     - `customer.subscription.*`: the subscription's state (item-level current period); a
       subscription that ends `unpaid`, `canceled` or deleted with an unpaid renewal, and
       `invoice.marked_uncollectible`, withdraw that renewal's unused hours;
     - `checkout.session.completed` / `async_payment_succeeded` for a paid one-off checkout:
       credits for twelve months;
-    - `charge.refunded`: that purchase withdrawn; `charge.dispute.created` / `closed`: frozen,
-      then unfrozen (won) or withdrawn (lost).
+    - `charge.refunded`: that purchase's unused hours withdrawn; `charge.dispute.created` /
+      `updated` / `closed`: the effect follows the dispute's status as Stripe reports it (`won`,
+      `warning_closed` or `prevented`: unfrozen; `lost`: withdrawn; otherwise frozen). The
+      purchase is the credit pack paid by that PaymentIntent, or the plan hours of the invoice it
+      paid (found with `GET /v1/invoice_payments`, through the links from invoices to their
+      sources). One that matches nothing goes to review.
   - Everything else, or anything it cannot use, is recorded (`ignored` or `needs_review`) and
-    answered 2xx; only a passing failure (Stripe or the database unreachable, or the billing key
-    refused) answers 5xx, and Stripe retries. Returning from Checkout adds nothing.
+    answered 2xx; only a passing failure (Stripe or the database unreachable, a 20-second
+    timeout, or Stripe refusing our key: 401, 403) answers 5xx, and Stripe retries. An event left
+    for review runs again when it is resent from Stripe's dashboard, once its cause is fixed.
+    Returning from Checkout adds nothing.
+  - Before the live switch, test-mode checkout is open only to members on an internal account
+    (the team), so members never meet a test page, and live checkout is closed (it would take
+    money for dry-run hours). `qorpera_list_computer_hour_offers()` marks what the member can buy
+    now; `qorpera_read_my_computer_plan()` leaves the plan's hours out until then, since members
+    see only measured hours (contract item 12).
 - Hours arrive as new source rows (a period whose start has come, a credit) or an unfreeze, so
   what the company owes is repaid at once (step 3's trigger). A member made founder repays owed
   time at the company's next use instead. Webhook writes run under READ COMMITTED through the
   billing door, which takes the billing lock first.
 - Refunds remove the unused hours of their purchase. A dispute freezes only its purchase.
+- Known limits, for review rather than code: a failed renewal is found through the subscription's
+  latest invoice; a partial refund withdraws the whole purchase; two open tabs can start two
+  subscriptions (the member pays for both, and one is cancelled on the billing page).
 
 ### Setting up Stripe (Jonas; test mode first)
 
@@ -269,9 +286,12 @@ every request.
    DKK prices for 20, 100 and 500 hours (70, 350, 1750). Send the five `price_...` ids (not
    secret); an operator writes them into the catalog.
 4. Customer portal (Settings → Billing → Customer portal): switching between the Basis and
-   Standard products, "invoice immediately" for prorations, downgrades at the period end (check
-   in the sandbox that Standard → Basis waits for the period end; if not, downgrades apply at
-   once without proration), cancel at the period end, payment method update, invoice history.
+   Standard products with "invoice immediately" for prorations and the billing date unchanged
+   (`billing_cycle_anchor=unchanged`), downgrades scheduled at the period end, cancel at the
+   period end, payment method update, invoice history. Check in the sandbox that Standard →
+   Basis waits for the period end. If Stripe cannot schedule it (the plans are two products),
+   leave plan switching off in the portal and tell the billing session: members then cancel
+   and choose the other plan, and a downgrade that took effect at once would only go to review.
    Optionally send the configuration id (`bpc_...`).
 5. Failed payments (Settings → Billing → Subscriptions and emails): after the last retry, cancel
    the subscription. Receipts and invoice emails on.
@@ -281,11 +301,11 @@ every request.
    `checkout.session.async_payment_succeeded`, `invoice.created`, `invoice.paid`,
    `invoice.marked_uncollectible`, `customer.subscription.created`,
    `customer.subscription.updated`, `customer.subscription.deleted`, `charge.refunded`,
-   `charge.dispute.created`, `charge.dispute.closed`.
+   `charge.dispute.created`, `charge.dispute.updated`, `charge.dispute.closed`.
 7. Supabase secrets (Jonas sets them; no session reads them): `QORPERA_STRIPE_SECRET_KEY`
    (`sk_test_...`), `QORPERA_STRIPE_WEBHOOK_SECRET` (`whsec_...`), `QORPERA_COMPUTER_BILLING_KEY`
    (a random secret of at least 32 characters), `QORPERA_BILLING_RETURN_URL`
-   (`https://app.qorpera.com/`), `QORPERA_WEB_ORIGINS` (`["https://app.qorpera.com"]`) and
+   (`https://app.qorpera.com/#/account`), `QORPERA_WEB_ORIGINS` (`["https://app.qorpera.com"]`) and
    optionally `QORPERA_STRIPE_PORTAL_CONFIGURATION`. The coordinator enrolls the SHA-256 of the
    billing key.
 
