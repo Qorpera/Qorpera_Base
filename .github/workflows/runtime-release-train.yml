@@ -5,7 +5,8 @@ name: Runtime release train
 # workflow still packages the runtime and guards the release-owned files on
 # every such PR. A PR that changes only web client files (the web and member-web
 # packages, outside what the runtime and cloud-client tests read: the web's cloud
-# client, its avatar scripts and member-web's screen viewer) cannot touch a
+# client and the tsconfig it compiles under, its avatar scripts and member-web's
+# screen viewer) cannot touch a
 # release-owned file or a runtime test, so it does not start this workflow.
 on:
   workflow_dispatch:
@@ -20,6 +21,7 @@ on:
       - '**'
       - '!packages/web/**'
       - 'packages/web/src/cloud/**'
+      - 'packages/web/tsconfig.json'
       - 'packages/web/public/assets/avatars/**'
       - '!packages/member-web/**'
       - 'packages/member-web/ui/**'
@@ -41,9 +43,16 @@ concurrency:
 
 jobs:
   train:
-    name: Runtime bundle and release-owned files
+    # The name comes from a one-entry matrix on purpose: a job skipped by its if
+    # keeps the unexpanded name, so a skipped edit run never shares a check name
+    # with (and in gh pr checks never shadows) this job's real result. The unit
+    # job's matrix name works the same way.
+    name: Runtime bundle and ${{ matrix.part }}
     # An edited PR runs again only when its base branch changed.
     if: github.event.action != 'edited' || github.event.changes.base
+    strategy:
+      matrix:
+        part: [release-owned files]
     runs-on: ubuntu-26.04
     timeout-minutes: 15
     steps:
