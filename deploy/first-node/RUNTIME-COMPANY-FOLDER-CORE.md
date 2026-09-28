@@ -298,6 +298,16 @@ is never upgraded. The steps:
    8. vault rows;
    9. unique-key claims, by kind then key.
 
+   These numbers are the lock ranks, and all nine come before paths (step 5),
+   objects (step 6), admission (step 10) and the clock (step 11). The commit
+   locks ranks 1, 3, 6 and 7 itself (members, execution authorities,
+   resources, grants). For ranks 2, 4, 5, 8 and 9 it calls the structured-file
+   hook, `qorpera_folder_structured_lock(targets, from_rank, to_rank)` (§5,
+   agreed with F2 on #408). The hook's targets may also name rows of the
+   commit's own tables. The commit merges those into its own pass at that rank,
+   and the stronger mode wins. Each table has one owner, so rows of one table
+   are always locked in one key order.
+
    Everything else in this step follows that order:
    - Rows a unit rewrites, staff included, are taken `FOR NO KEY UPDATE`. That
      does not block foreign-key inserts into the tables that reference them.
