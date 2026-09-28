@@ -5,6 +5,7 @@ import {
 	withCloudDeadline,
 } from "@qorpera/cloud-client/cloud-request";
 import { type CloudCodingRepository, type JsonValue, parseCloudCodingRepository } from "@qorpera/contracts";
+import type { ModelLoginAuthority, ModelLoginRunBinding } from "./cloud-model-login-vault.ts";
 import type { CloudNativeToolBinding } from "./cloud-native-tool-authority.ts";
 import type { CloudToolContent } from "./cloud-native-tool-boundary.ts";
 import { cloudToolJsonText } from "./cloud-native-tool-boundary.ts";
@@ -939,9 +940,10 @@ export class SupabaseCloudSecretBrokerAuthority implements CloudSecretBrokerAuth
 /** Least-privilege broker authority. The database login is the NOINHERIT
  * `qorpera_secret_broker` role and can execute only the custody RPCs (capture
  * description and completion, operation and repository credential
- * authorization); it has no table privileges and never holds a Supabase
- * service key. */
-export class PostgresCloudSecretBrokerAuthority implements CloudSecretBrokerAuthority {
+ * authorization, handing a live run its model login and saving or giving back
+ * one renewal); it has no table privileges and never holds a Supabase service
+ * key. */
+export class PostgresCloudSecretBrokerAuthority implements CloudSecretBrokerAuthority, ModelLoginAuthority {
 	readonly #database: CloudSecretPostgresClient;
 	readonly #brokerAuthorityId: string;
 	readonly #brokerCapabilitySha256: string;
@@ -1040,6 +1042,60 @@ export class PostgresCloudSecretBrokerAuthority implements CloudSecretBrokerAuth
 				request.leaseToken,
 				request.executorOwner,
 				JSON.stringify(request.repository),
+			],
+			signal,
+		);
+	}
+
+	issueModelLogin(
+		binding: ModelLoginRunBinding,
+		knownVersion: number | null,
+		allowRenewal: boolean,
+		signal: AbortSignal,
+	): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_issue_model_login($1::uuid,$2::text,$3::jsonb,$4::bigint,$5::boolean) as result",
+			[this.#brokerAuthorityId, this.#brokerCapabilitySha256, JSON.stringify(binding), knownVersion, allowRenewal],
+			signal,
+		);
+	}
+
+	commitModelLoginRenewal(
+		renewal: Parameters<ModelLoginAuthority["commitModelLoginRenewal"]>[0],
+		signal: AbortSignal,
+	): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_commit_model_login_renewal($1::uuid,$2::text,$3::uuid,$4::uuid,$5::bigint,$6::text,$7::text,$8::text,$9::timestamptz,$10::timestamptz) as result",
+			[
+				this.#brokerAuthorityId,
+				this.#brokerCapabilitySha256,
+				renewal.loginId,
+				renewal.token,
+				renewal.baseVersion,
+				renewal.keyId,
+				Buffer.from(renewal.encryptedEnvelope).toString("base64"),
+				renewal.envelopeSha256,
+				renewal.accessIssuedAt,
+				renewal.accessExpiresAt,
+			],
+			signal,
+		);
+	}
+
+	releaseModelLoginRenewal(
+		release: Parameters<ModelLoginAuthority["releaseModelLoginRenewal"]>[0],
+		signal: AbortSignal,
+	): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_release_model_login_renewal($1::uuid,$2::text,$3::uuid,$4::uuid,$5::bigint,$6::boolean,$7::text) as result",
+			[
+				this.#brokerAuthorityId,
+				this.#brokerCapabilitySha256,
+				release.loginId,
+				release.token,
+				release.baseVersion,
+				release.permanent,
+				release.reason,
 			],
 			signal,
 		);
