@@ -104,11 +104,18 @@ describe("Plan & usage payments state", () => {
 		expect(payments.state.opening).toBeUndefined();
 		// A disposed state holder leaves no listener or timer behind.
 		const changed = vi.fn();
+		const added = vi.spyOn(window, "addEventListener");
+		const removed = vi.spyOn(window, "removeEventListener");
 		const closed = new PlanPayments(api(), changed);
 		closed.portal();
 		await vi.advanceTimersByTimeAsync(0);
+		const listener = added.mock.calls.find(([type]) => type === "pageshow")?.[1];
+		expect(listener).toBeDefined();
 		changed.mockClear();
+		expect(vi.getTimerCount()).toBe(1);
 		closed.dispose();
+		expect(removed).toHaveBeenCalledWith("pageshow", listener);
+		expect(vi.getTimerCount()).toBe(0);
 		window.dispatchEvent(new Event("pageshow"));
 		await vi.advanceTimersByTimeAsync(10_000);
 		expect(changed).not.toHaveBeenCalled();
