@@ -2959,7 +2959,7 @@ calls the Company Computer, and a *computer* is one of its screens. The
 ### 2026-09-27 amendment: the company folder layout
 
 Founder decisions of 27 September 2026 (evening). They complete section 5 and
-the amendment above ("every machine works in the company folder"), and are
+the 2026-09-27 amendment "every machine works in the company folder", and are
 written into 5.6.
 
 A review of master at bundle v137 found three problems:
@@ -2977,8 +2977,8 @@ A review of master at bundle v137 found three problems:
 2. **Machines project onto the folder.** No machine holds the company folder
    or a copy of it. The agent's run box, Company Computers and coding
    machines each project onto the one folder on the NAS. This restates items
-   1 and 3 of the amendment above: a machine "mounts" the folder only in this
-   sense.
+   1 and 3 of the 2026-09-27 amendment "every machine works in the company
+   folder": a machine "mounts" the folder only in this sense.
 3. **`vision/` is seeded.** The Co-Founder's first responsibility is to fill
    it. Every agent reads `vision/vision.md` at every run. "Vision" replaces
    "goals" and "direction" throughout this contract. A decision map may come
