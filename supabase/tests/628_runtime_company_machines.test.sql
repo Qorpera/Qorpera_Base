@@ -195,7 +195,7 @@ begin
 		and v_allocation.company_machine_placement_id = v_place.id and v_allocation.coding_machine_id is null and v_allocation.run_id is null
 		and v_allocation.provider_adapter = 'machine-fixture'
 		and v_demand.provider_kind = 'machine' and v_demand.cpu_millis = 2000 and v_demand.memory_bytes = 4294967296
-		and v_demand.reserved_at is not null and v_row.sponsor_user_id = '30000000-0000-4000-8000-000000000001'
+		and v_demand.reserved_at is not null and v_row.requested_by_user_id = '30000000-0000-4000-8000-000000000001'
 		and v_row.started_by_staff_agent_id = '30000000-0000-4000-8000-000000000030'
 		and v_row.notify_run_ids = array[(pg_temp.binding() ->> 'runId')::uuid],
 		'The placement''s binding, allocation and demand carry the machine''s own size');
@@ -509,9 +509,9 @@ do $$
 declare v_row public.qorpera_company_machines;
 begin
 	insert into public.qorpera_company_machines(id, profile_id, environment_id, name, purpose, started_by_staff_agent_id, started_by_run_id,
-		started_by_receipt_id, sponsor_user_id, cpus, memory_bytes, disk_bytes, image, lifetime, desired_state, desired_by, updated_at)
+		started_by_receipt_id, requested_by_user_id, cpus, memory_bytes, disk_bytes, image, lifetime, desired_state, desired_by, updated_at)
 	select extensions.gen_random_uuid(), profile_id, environment_id, 'forgotten', 'Stopped before it got room', started_by_staff_agent_id,
-		started_by_run_id, extensions.gen_random_uuid(), sponsor_user_id, 1, 1073741824, 10737418240, 'standard', 'task', 'stopped', 'agent',
+		started_by_run_id, extensions.gen_random_uuid(), requested_by_user_id, 1, 1073741824, 10737418240, 'standard', 'task', 'stopped', 'agent',
 		clock_timestamp() - interval '10 minutes'
 	from public.qorpera_company_machines where name = 'big' and removed_at is null
 	returning * into v_row;
