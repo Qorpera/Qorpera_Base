@@ -214,6 +214,9 @@ export function fixture() {
 	vi.spyOn(api, "listProfiles").mockResolvedValue([profileA]);
 	vi.spyOn(api, "listIncomingInvitations").mockResolvedValue([]);
 	vi.spyOn(api, "listFriends").mockResolvedValue([]);
+	// A cloud that still creates companies at once: no founding tables.
+	vi.spyOn(api, "companyFoundingAvailable").mockResolvedValue(false);
+	vi.spyOn(api, "listCompanyFoundings").mockResolvedValue([]);
 	vi.spyOn(api, "findAccountByEmail").mockResolvedValue(null);
 	vi.spyOn(api, "listMemberPictures").mockResolvedValue([]);
 	vi.spyOn(api, "getAccountEntitlement").mockResolvedValue({

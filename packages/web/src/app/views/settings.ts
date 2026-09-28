@@ -16,7 +16,7 @@ import { renderAppearance } from "./appearance.ts";
 import { FriendsController, renderFriends } from "./friends.ts";
 import type { HubController } from "./hub.ts";
 import { renderPlan } from "./plan.ts";
-import { ConnectionsView, ProviderSignIns } from "./settings-connections.ts";
+import { ConnectionsView, memberProviderSignIns } from "./settings-connections.ts";
 import { RulesView } from "./settings-rules.ts";
 import { ServicesView } from "./settings-services.ts";
 import { storageSummary } from "./storage-summary.ts";
@@ -67,9 +67,6 @@ const TABS = [
 	},
 ] as const;
 export type SettingsTab = (typeof TABS)[number]["id"];
-
-/** Provider sign-ins in progress, per member and company, for the life of the tab. */
-const SIGN_INS = new Map<string, ProviderSignIns>();
 
 /** A settings session owns its async work; the conversation stays mounted below it. */
 export class SettingsView {
@@ -345,12 +342,7 @@ export class SettingsView {
 					const company = this.#company;
 					const memberId = this.#auth.userId!;
 					const signal = AbortSignal.any([this.#companyLifetime.signal, this.#lifetime.signal, company.signal]);
-					const key = `${memberId}:${company.profile.profileId}`;
-					let signIns = SIGN_INS.get(key);
-					if (!signIns) {
-						signIns = new ProviderSignIns();
-						SIGN_INS.set(key, signIns);
-					}
+					const signIns = memberProviderSignIns(memberId, company.profile.profileId);
 					// A sign-in belongs to the member, not to this page: it continues while
 					// the page is rebuilt or closed, and stops only if the account changes.
 					const auth = this.#auth;
