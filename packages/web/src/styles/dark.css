@@ -123,7 +123,8 @@
 :root[data-theme="dark"] .attachment-chip { background: #2c2c2b; }
 :root[data-theme="dark"] .attachment-remove { background: #3a3a38; box-shadow: 0 1px 4px rgb(0 0 0 / 40%); }
 :root[data-theme="dark"] .auth-card { border-color: var(--border); background: #262625; }
-:root[data-theme="dark"] .review-call { background: #1e1e1d; }
+:root[data-theme="dark"] .review-mark.is-approved { color: #5ed6a9; }
+:root[data-theme="dark"] .action-review-card.is-folded { border-color: transparent; background: none; }
 :root[data-theme="dark"] .review-rule-input { border-color: var(--border); background: #1e1e1d; }
 :root[data-theme="dark"] :is(.settings-rule-form, .settings-rule-table) input { border-color: rgba(255, 255, 255, 0.1); background: #333332; }
 :root[data-theme="dark"] :is(.settings-rule-form, .settings-rule-table) input::placeholder { color: #8f8e89; }
@@ -233,7 +234,7 @@
 :root[data-theme="dark"] .coding-tone-done .coding-status-text, :root[data-theme="dark"] .coding-step-status.coding-tone-done, :root[data-theme="dark"] .coding-glyph.coding-tone-done { color: #5ed6a9; }
 :root[data-theme="dark"] .coding-badge-codex { background: #f4f3f0; color: #161615; }
 :root[data-theme="dark"] .coding-dot-working { background: #30d158; }
-:root[data-theme="dark"] .coding-question { background: #262624; }
+:root[data-theme="dark"] .coding-composer:has(.coding-field-input[aria-disabled="true"]) { background: var(--hover); }
 :root[data-theme="dark"] .service-card .service-agents, :root[data-theme="dark"] .service-token-form small { color: #a3a39e; }
 :root[data-theme="dark"] .service-outcome.is-ok { color: #8fc7b3; }
 :root[data-theme="dark"] .service-outcome.is-error { color: #ff8a4c; }

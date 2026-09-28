@@ -154,6 +154,7 @@ describe("machine command authority", () => {
 			state: "authorized",
 			machineId,
 			machine: "build-a",
+			placementId: "00000000-0000-4000-8000-000000000066",
 			commandId: request.input.commandId,
 			inputSha256,
 			operationKey: "suite:1",
@@ -172,6 +173,7 @@ describe("machine command authority", () => {
 		expect(await authorizeMachineCommand(f, f.request, f.signal)).toEqual({
 			inputSha256: f.inputSha256,
 			machineId: f.request.scope.machineId,
+			placementId: "00000000-0000-4000-8000-000000000066",
 			machine: "build-a",
 			executorOwner: "mx-a",
 			providerId: "machine-node",
@@ -203,6 +205,40 @@ describe("machine command authority", () => {
 			reason: "MACHINE_NOT_RUNNING",
 		});
 		await expect(authorizeMachineCommand(f, f.request, f.signal)).rejects.toBeInstanceOf(CloudMachineCommandRefusal);
+		// A start SQL gave up (lost before it reached the guest) is never started late.
+		f.call.mockResolvedValueOnce({
+			schema: "qorpera.machine-command-authority/v1",
+			state: "refused",
+			reason: "MACHINE_COMMAND_ENDED",
+		});
+		await expect(authorizeMachineCommand(f, f.request, f.signal)).rejects.toMatchObject({
+			code: "MACHINE_COMMAND_ENDED",
+		});
+		// An answer without the placement it runs on is no authority.
+		f.call.mockResolvedValueOnce({ ...f.answer, placementId: undefined });
+		await expect(authorizeMachineCommand(f, f.request, f.signal)).rejects.toThrow(
+			"MACHINE_COMMAND_AUTHORITY_INVALID",
+		);
+	});
+	it("passes a peer's refusal on as the same refusal", async () => {
+		const f = fixture();
+		const router = new MachineCommandRouter({
+			owner: "mx-c",
+			providerId: "machine-node",
+			peers: [
+				{
+					owner: "mx-a",
+					providerId: "machine-node",
+					origin: "https://node-a.example",
+					tokenCredential: "qorpera-coding-peer-a",
+				},
+			],
+			control: f,
+			credential: async () => randomBytes(32).toString("base64url"),
+			fetch: (async () =>
+				new Response(JSON.stringify({ code: "MACHINE_NOT_RUNNING" }), { status: 409 })) as typeof fetch,
+		});
+		await expect(router.execute(f.request, f.signal)).rejects.toMatchObject({ code: "MACHINE_NOT_RUNNING" });
 	});
 	it("routes to this node, or only to a peer in the allowlist, and a peer never forwards", async () => {
 		const f = fixture();

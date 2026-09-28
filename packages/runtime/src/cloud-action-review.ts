@@ -38,6 +38,8 @@ const POLL_MS = 2_000;
 const REVIEW_DEADLINE_MS = 90_000;
 const REQUEST_BYTES = 4096;
 const DETAIL_BYTES = 600;
+/** Text the member approves (a file's content, an issue's body, an agent's or worker's instructions): an excerpt. */
+const CONTENT_BYTES = 1200;
 /** A best-effort park when a hold ends early (the run stops): the kernel's heartbeat covers a crash. */
 const PARK_ON_EXIT_MS = 5_000;
 
@@ -105,13 +107,37 @@ export interface CloudActionVerdict {
 }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const PLAIN = /[\u0000-\u001f\u007f\u2028\u2029]/g;
+/** Control characters, and bidi embeddings, overrides and isolates (which could reorder what a card shows). */
+const PLAIN = /[\u0000-\u001f\u007f-\u009f\u2028\u2029\u202a-\u202e\u2066-\u2069]/g;
+
+/** The longest start of the text within the byte bound, cut at a code point. */
+function head(text: string, bytes: number): string {
+	if (Buffer.byteLength(text) <= bytes) return text;
+	let used = 0;
+	let end = 0;
+	for (const char of text) {
+		used += Buffer.byteLength(char);
+		if (used > bytes) break;
+		end += char.length;
+	}
+	return text.slice(0, end);
+}
 
 /** One line of plain text, cut at a code point within the byte bound. */
 function line(value: string, bytes: number): string {
-	let text = value.replace(PLAIN, " ").replace(/\s+/g, " ").trim();
-	while (Buffer.byteLength(text) > bytes) text = [...text].slice(0, Math.max(0, [...text].length - 16)).join("");
-	return text;
+	return head(value.replace(PLAIN, " ").replace(/\s+/g, " ").trim(), bytes);
+}
+
+/** Text that keeps its lines, as the card quotes it: other control characters read as
+ * spaces and a run of blank lines as one. */
+function paragraphs(value: string): string {
+	return value
+		.replace(/\r\n?/g, "\n")
+		.split("\n")
+		.map((part) => part.replace(PLAIN, " ").trimEnd())
+		.join("\n")
+		.replace(/\n{3,}/g, "\n\n")
+		.trim();
 }
 
 /** The reviewer's closed verdict, as its tool call carries it. */
@@ -240,18 +266,150 @@ export interface CloudActionDescription {
 	details: Record<string, string>;
 }
 
-/** What the approval card shows: a title, the target and a few plain facts. */
+/** What a call's arguments cannot say themselves: coworkers' names by id, the name of
+ * the member the run acts for, and the time zone of a time that carries none. */
+export interface CloudActionFacts {
+	coworkers?: ReadonlyMap<string, string>;
+	requester?: string;
+	timeZone?: string;
+}
+
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const DAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"];
+
+/** "a, b and c". */
+function list(items: readonly string[]): string {
+	return items.length > 1 ? `${items.slice(0, -1).join(", ")} and ${items.at(-1)}` : (items[0] ?? "");
+}
+
+/** A name or key as people say it, as the approval card names Company File files:
+ * "old-offer" is "Old offer"; a date such as 2026-09-28 keeps its dashes. */
+function readable(name: string): string {
+	const words = name
+		.replace(/(\p{L})[-_]+|[-_]+(?=\p{L})/gu, (_, letter?: string) => (letter ? `${letter} ` : " "))
+		.replace(/_+/g, " ")
+		.trim();
+	if (!words) return name;
+	return /^\p{Ll}\p{Lu}/u.test(words) ? words : words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+/** A Company File path as a file's name, never the path: "sales/old-offer.md" is "Old offer". */
+function fileName(path: string): string {
+	const base = path.split("/").filter(Boolean).at(-1) ?? path;
+	return readable(base.replace(/\.(?=[a-z])[a-z0-9]{1,8}$/i, "")) || base;
+}
+
+/** A time zone this host can read, if the value is one. */
+function knownZone(value: JsonValue | undefined): string | undefined {
+	if (typeof value !== "string" || !value) return undefined;
+	try {
+		new Intl.DateTimeFormat("en-US", { timeZone: value });
+		return value;
+	} catch {
+		return undefined;
+	}
+}
+
+/** An instant on a zone's clock, as people write it: "1 Oct 2026 at 09:00". */
+function clock(value: JsonValue | undefined, timeZone: string): string {
+	const instant = typeof value === "string" ? Date.parse(value) : Number.NaN;
+	if (!Number.isFinite(instant)) return "";
+	const parts = Object.fromEntries(
+		new Intl.DateTimeFormat("en-US", {
+			timeZone,
+			hourCycle: "h23",
+			year: "numeric",
+			month: "numeric",
+			day: "numeric",
+			hour: "2-digit",
+			minute: "2-digit",
+		})
+			.formatToParts(instant)
+			.map((part) => [part.type, part.value]),
+	);
+	return `${parts.day} ${MONTHS[Number(parts.month) - 1]} ${parts.year} at ${parts.hour}:${parts.minute}`;
+}
+
+/** When a routine runs, in plain words, from the trigger manage_routine compiled
+ * (cloud-routine-tools.ts): "Weekdays at 09:00 (Europe/Copenhagen), starting 6 Oct 2026 at 09:00". */
+function routineSchedule(args: Record<string, JsonValue>, fallbackZone: string): string {
+	const trigger = record(args.trigger ?? null);
+	const timeZone = knownZone(trigger.timeZone) ?? fallbackZone;
+	let words: string;
+	if (trigger.kind === "once") words = "The agent picks each next run";
+	else if (trigger.kind === "listener" && typeof trigger.path === "string")
+		words =
+			trigger.match === "subtree"
+				? `When anything in “${fileName(trigger.path)}” changes`
+				: `When “${fileName(trigger.path)}” changes`;
+	else if (trigger.kind === "schedule" && typeof trigger.localTime === "string") {
+		const chosen = Array.isArray(trigger.weekdays) ? trigger.weekdays : [];
+		const days = DAYS.filter((day) => chosen.includes(day));
+		words = `${
+			days.length === 7
+				? "Every day"
+				: days.join() === "monday,tuesday,wednesday,thursday,friday"
+					? "Weekdays"
+					: days.join() === "saturday,sunday"
+						? "Weekends"
+						: list(days.map((day) => `${day.charAt(0).toUpperCase()}${day.slice(1)}s`))
+		} at ${trigger.localTime}`;
+	} else if (trigger.kind === "schedule" && typeof trigger.intervalMinutes === "number") {
+		const minutes = trigger.intervalMinutes;
+		words =
+			minutes % 1440 === 0
+				? minutes === 1440
+					? "Every day"
+					: `Every ${minutes / 1440} days`
+				: minutes % 60 === 0
+					? minutes === 60
+						? "Every hour"
+						: `Every ${minutes / 60} hours`
+					: `Every ${minutes} minutes`;
+	} else return "";
+	const starting = clock(trigger.startAt ?? trigger.at, timeZone);
+	const until = clock(args.expiresAt, timeZone);
+	const runs = typeof args.maxOccurrences === "number" ? args.maxOccurrences : undefined;
+	// The first clock time says whose clock the times are on.
+	const weekly = typeof trigger.localTime === "string";
+	const zone = ` (${timeZone})`;
+	return [
+		weekly ? `${words}${zone}` : words,
+		starting && `starting ${starting}${weekly ? "" : zone}`,
+		until && `until ${until}${weekly || starting ? "" : zone}`,
+		runs === undefined ? "" : `at most ${runs} ${runs === 1 ? "run" : "runs"}`,
+	]
+		.filter(Boolean)
+		.join(", ");
+}
+
+/** What the approval card shows, and the reviewer reads beside the exact call: a title,
+ * the target and a few plain facts a member decides on. A fact is never a Company File
+ * path or raw JSON; text the member approves is quoted with its lines, as an excerpt. */
 export function describeCloudAction(
 	tool: Pick<CloudNativeTool, "name" | "source">,
 	parsed: JsonValue,
+	facts: CloudActionFacts = {},
 ): CloudActionDescription {
 	const args = record(parsed);
 	const action = record(args.action ?? null);
+	// A time without a zone of its own reads on the wake's clock: a routine run's own zone, else UTC.
+	const timeZone = knownZone(facts.timeZone) ?? "UTC";
 	const text = (value: JsonValue | undefined, bytes = DETAIL_BYTES) =>
 		typeof value === "string" ? line(value, bytes) : typeof value === "number" ? String(value) : "";
 	const details: Record<string, string> = {};
-	const add = (key: string, value: JsonValue | undefined, bytes?: number) => {
-		const item = text(value, bytes);
+	// A fact cut to its bound says so: the card no longer shows the call it came from.
+	const add = (key: string, value: JsonValue | undefined, bytes = DETAIL_BYTES) => {
+		const item =
+			typeof value === "string"
+				? bounded(line(value, Number.MAX_SAFE_INTEGER), bytes)
+				: typeof value === "number"
+					? String(value)
+					: "";
+		if (item && Object.keys(details).length < 12) details[key] = item;
+	};
+	const quote = (key: string, value: JsonValue | undefined, bytes = DETAIL_BYTES) => {
+		const item = typeof value === "string" ? bounded(paragraphs(value), bytes) : "";
 		if (item && Object.keys(details).length < 12) details[key] = item;
 	};
 	let title = tool.name.replaceAll("_", " ");
@@ -267,7 +425,7 @@ export function describeCloudAction(
 						? "Press a key in the browser"
 						: "Click in the browser";
 		target = text(action.url) || (action.name ? `${text(action.role)} "${text(action.name, 200)}"` : null);
-		add("text", action.text);
+		quote("text", action.text);
 		add("key", action.key);
 	} else if (tool.name === "computer_desktop") {
 		const verb = text(action.action);
@@ -278,11 +436,11 @@ export function describeCloudAction(
 					? "Press a key on the computer"
 					: "Click on the computer";
 		target = verb === "click" ? `x ${text(action.x)}, y ${text(action.y)}` : null;
-		add("text", action.text);
+		quote("text", action.text);
 		add("key", action.key);
 	} else if (tool.name === "computer_shell") {
 		title = "Run a command on the computer";
-		add("command", action.command, 2000);
+		quote("command", action.command, 2000);
 	} else if (tool.name === "company_delete") {
 		title = "Delete from the Company File";
 		target = text(args.path) || null;
@@ -290,9 +448,28 @@ export function describeCloudAction(
 		title = "Hire a new agent";
 		target = text(args.name) || text(args.displayName) || null;
 		add("role", args.role);
+		// The job description is the new agent's charter; its first assignment is where it starts.
+		quote("intent", args.jobDescription, CONTENT_BYTES);
+		add("first task", args.firstAssignment);
 	} else if (tool.name === "create_group_chat") {
 		title = "Start a group chat";
 		target = text(args.name) || text(args.title) || null;
+		// Coworkers by name; one the context does not list (it lists at most 50) is counted, never shown by id.
+		const ids = Array.isArray(args.coworkerIds)
+			? args.coworkerIds.filter((id): id is string => typeof id === "string")
+			: [];
+		const named = ids.flatMap((id) => facts.coworkers?.get(id) ?? []).sort((a, b) => a.localeCompare(b, "en"));
+		const others = ids.length - named.length;
+		// The member first, so a long list cut to its bound never drops them.
+		add(
+			"invited",
+			list([
+				...(args.includeRequestingMember !== false ? [facts.requester ?? "the member who asked"] : []),
+				...named,
+				...(others ? [others === 1 ? "1 other coworker" : `${others} other coworkers`] : []),
+			]),
+		);
+		add("purpose", args.purpose);
 	} else if (tool.name === "manage_routine") {
 		title =
 			args.action === "remove"
@@ -304,16 +481,58 @@ export function describeCloudAction(
 						: args.action === "conclude"
 							? "End a routine"
 							: "Set up or change a routine";
-		target = text(args.title) || text(args.name) || null;
-		add("intent", args.intent, 1200);
+		// Pausing, resuming, removing or ending one names it by its key alone.
+		const key = text(args.routineKey);
+		target = text(args.title) || text(args.name) || (key ? readable(key) : null);
+		add("schedule", routineSchedule(args, timeZone));
+		quote("intent", args.intent, CONTENT_BYTES);
 	} else if (tool.name === "decide_routine") {
 		title = "Change what a routine does";
 		target = text(args.title) || null;
-		add("intent", args.intent, 1200);
+		const next = clock(args.at, timeZone);
+		add("schedule", next && `Next run ${next} (${timeZone})`);
+		quote("intent", args.intent, CONTENT_BYTES);
 	} else if (tool.name === "manage_worker") {
-		title = args.species === "coding" ? "Start a coding job" : "Start a background worker";
-		add("task", args.task ?? args.instructions ?? args.brief, 1200);
-		add("repository", record(args.repository ?? null).name ?? args.repository);
+		const repository = record(args.repository ?? null);
+		title =
+			args.action === "followup"
+				? "Give a worker new instructions"
+				: args.species === "coding"
+					? "Start a coding job"
+					: "Start a background worker";
+		const worker = text(args.workerKey);
+		// A follow-up names its worker by its key.
+		target =
+			[text(repository.owner), text(repository.name)].filter(Boolean).join("/") ||
+			(args.action === "followup" && worker ? readable(worker) : null);
+		add("title", args.title);
+		quote("task", args.goal ?? args.text, CONTENT_BYTES);
+	} else if (tool.name === "google_drive_create_file" || tool.name === "google_drive_update_file") {
+		title = CONNECTOR_TITLES[tool.name] ?? title;
+		const input = record(args.input ?? parsed);
+		target = text(input.name) || null;
+		// Replacing a file names it by its id alone.
+		if (!target) add("file id", input.file_id);
+		// No text at all is a fact, not a quote the card would show as the file's text.
+		if (typeof input.content === "string" && !paragraphs(input.content))
+			add("content", "none, the file will be empty");
+		else quote("text", input.content, CONTENT_BYTES);
+	} else if (tool.name === "github_create_issue" || tool.name === "github_comment_on_issue") {
+		title = CONNECTOR_TITLES[tool.name] ?? title;
+		const input = record(args.input ?? parsed);
+		const repository = [text(input.owner), text(input.repository)].filter(Boolean).join("/");
+		target =
+			repository && tool.name === "github_comment_on_issue" && text(input.number)
+				? `${repository}#${text(input.number)}`
+				: repository || null;
+		add("title", input.title);
+		quote("body", input.body, CONTENT_BYTES);
+		add(
+			"labels",
+			Array.isArray(input.labels)
+				? input.labels.filter((label): label is string => typeof label === "string").join(", ")
+				: undefined,
+		);
 	} else if (tool.source === "connector") {
 		title = CONNECTOR_TITLES[tool.name] ?? title;
 		const input = record(args.input ?? parsed);
@@ -327,7 +546,9 @@ export function describeCloudAction(
 			text(input.repo) ||
 			text(input.name) ||
 			null;
-		for (const key of ["subject", "title", "body", "text", "path", "name"]) add(key, input[key]);
+		for (const key of ["subject", "title", "body", "text", "path", "name"])
+			if (key === "body" || key === "text") quote(key, input[key]);
+			else add(key, input[key]);
 	}
 	return { title: line(title, 200), target: target ? line(target, 500) : null, details };
 }
@@ -391,10 +612,7 @@ function memberText(text: string): string {
 
 /** Text cut to a byte bound at a code point, marked when cut. */
 function bounded(text: string, bytes: number): string {
-	if (Buffer.byteLength(text) <= bytes) return text;
-	let cut = text;
-	while (Buffer.byteLength(cut) > bytes - 6) cut = [...cut].slice(0, Math.max(0, [...cut].length - 64)).join("");
-	return `${cut} [...]`;
+	return Buffer.byteLength(text) <= bytes ? text : `${head(text, bytes - 6).trimEnd()} [...]`;
 }
 
 /** The member's (or routine's, or coworker's) request this run works on, as the
@@ -508,6 +726,7 @@ export class CloudActionReviewGate {
 	readonly #pollMs: number;
 	readonly #request: string;
 	readonly #connectorEffects: ReadonlyMap<string, "read" | "write">;
+	readonly #facts: CloudActionFacts;
 	readonly #observability?: CloudRuntimeObservability;
 
 	constructor(options: {
@@ -517,6 +736,8 @@ export class CloudActionReviewGate {
 		request: string;
 		holdMs: number;
 		connectorEffects?: ReadonlyMap<string, "read" | "write">;
+		/** Coworkers' names and the wake's time zone (a routine run's own, else UTC), for the card's facts. */
+		facts?: Omit<CloudActionFacts, "requester">;
 		observability?: CloudRuntimeObservability;
 		pollMs?: number;
 	}) {
@@ -528,6 +749,7 @@ export class CloudActionReviewGate {
 		this.#holdMs = options.holdMs;
 		this.#pollMs = options.pollMs ?? POLL_MS;
 		this.#connectorEffects = options.connectorEffects ?? new Map();
+		this.#facts = options.facts ?? {};
 		this.#observability = options.observability;
 	}
 
@@ -566,7 +788,11 @@ export class CloudActionReviewGate {
 		if (begin.state === "pending")
 			return this.#hold(String(begin.reviewId), name(begin.approverName, "an owner or admin"), signal);
 		if (begin.state !== "review") throw new Error("Action review response is invalid");
-		const description = describeCloudAction(call.tool, call.parsed);
+		const requester = name((begin.requester as { name?: unknown } | null)?.name, "");
+		const description = describeCloudAction(call.tool, call.parsed, {
+			...this.#facts,
+			...(requester ? { requester } : {}),
+		});
 		const prompt = JSON.stringify({
 			agent: begin.agent,
 			company: begin.company,

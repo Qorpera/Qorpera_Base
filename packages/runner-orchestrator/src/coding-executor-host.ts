@@ -162,11 +162,25 @@ interface CpuSample {
 	uptimeMs: number;
 	usageUsec: number;
 }
+/** A command whose processes still run, as the guest names it. */
+interface ObservedCommand {
+	commandId: string;
+	turn: number;
+	command: string;
+}
 /** What the guest's observe action published (cloud-coding-guest-observation.ts). */
 interface Observed {
 	bootId: string;
 	uptimeMs: number;
-	sessions: Map<string, { cpuUsageUsec: number; running: { commandId: string; turn: number; command: string }[] }>;
+	sessions: Map<
+		string,
+		{
+			cpuUsageUsec: number;
+			running: ObservedCommand[];
+			/** The watchdog's lease: its generation (the attachment token's digest) and how long it stays live. */
+			lease: { tokenSha256: string; expiresInMs: number } | null;
+		}
+	>;
 }
 /** A machine as the executor's housekeeping list reports it. */
 interface ListedMachine {
@@ -206,8 +220,12 @@ const CODING_SESSION_QUIESCE_MS = 20_000;
 const CODING_BUSY_CPU_SHARE = 0.05;
 /** How often quiet sessions are looked for (qorpera_archive_quiet_coding_sessions). */
 const CODING_ARCHIVE_SCAN_MS = 600_000;
-/** The guest publishes its observation here (root 0444, boot-local). */
+/** The guest publishes its observation here (root 0444, boot-local), each
+ * session's running commands beside it (observation-<workerId>.json). */
 const CODING_GUEST_OBSERVATION = "/run/qorpera-coding/observation.json";
+/** A turn keeps its session's attachment generation only while the guest's
+ * lease of it has at least this long left: a renewal must still reach it. */
+const CODING_ATTACH_LEASE_MARGIN_MS = 15_000;
 /** Refusals a turn waits out in the queue instead of failing: the machine is
  * being removed, the node is full or not ready, the session is still on
  * another machine, or the machine's plan followed a new policy after this turn
@@ -294,6 +312,9 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 	readonly #attachments = new Map<string, Attachment>();
 	readonly #samples = new Map<string, CpuSample>();
 	readonly #leaseWork = new Map<string, Promise<unknown>>();
+	/** Per session, how many attaches this process has recorded: a keeper pass
+	 * leaves a session a turn attached during the pass to that turn. */
+	readonly #attachCounts = new Map<string, number>();
 	/** Per machine, the boot whose storage helper this process has checked against its pin. */
 	readonly #helperBoots = new Map<string, string>();
 	#archiveScanAt = Number.NEGATIVE_INFINITY;
@@ -949,7 +970,36 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		// The session is on its machine: record its attachment and take the guest
 		// lease under it with this turn open. A session standing by since an
 		// earlier turn keeps its attachment's generation, and so whatever its
-		// commands left running.
+		// commands left running, while the guest still holds that generation.
+		await this.#attachSession(claim, machine, storage, guest, ready.scope, signal);
+		this.#prepared.set(claim.workerId, ready);
+		return { vmId: machine.machineId, baseSha };
+	}
+	/** One guest lease step of the session, so the keeper never renews it
+	 * between this attach and its first renewal. */
+	#attachSession(
+		claim: CodingSessionClaim,
+		machine: Readonly<LxdCodingMachineBinding>,
+		storage: Readonly<CloudCodingStorageBinding>,
+		guest: { bootId: string; guestConfigSha256: string },
+		scope: CloudCodingCommandScope,
+		signal: AbortSignal,
+	): Promise<void> {
+		return this.#leaseTask(claim.workerId, () =>
+			this.#attachSessionNow(claim, machine, storage, guest, scope, signal),
+		);
+	}
+	async #attachSessionNow(
+		claim: CodingSessionClaim,
+		machine: Readonly<LxdCodingMachineBinding>,
+		storage: Readonly<CloudCodingStorageBinding>,
+		guest: { bootId: string; guestConfigSha256: string },
+		scope: CloudCodingCommandScope,
+		signal: AbortSignal,
+	): Promise<void> {
+		// The generation the guest still holds, if a renewal can still reach it:
+		// SQL keeps it only if it is also the live attachment on this machine.
+		const lease = (await this.#observe(machine, signal, false)).sessions.get(claim.workerId)?.lease;
 		const started = performance.now();
 		const attached = record(
 			await this.#call(
@@ -960,6 +1010,8 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 					p_binding_text: lxdCodingMachinePlan(machine).text,
 					p_storage: storage,
 					p_machine_id_sha256: this.#options.machineIdSha256,
+					p_guest_generation:
+						lease && lease.expiresInMs >= CODING_ATTACH_LEASE_MARGIN_MS ? lease.tokenSha256 : null,
 				},
 				signal,
 			),
@@ -978,7 +1030,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			typeof attached.attachmentToken !== "string" ||
 			!UUID.test(attached.attachmentToken) ||
 			turnState.sequence !== claim.sequence ||
-			turnState.turnId !== ready.scope.requestId ||
+			turnState.turnId !== scope.requestId ||
 			!turnState.open ||
 			!Number.isSafeInteger(attached.validForMs) ||
 			Number(attached.validForMs) < 1
@@ -995,14 +1047,11 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			since: started,
 		};
 		this.#attachments.set(claim.workerId, attachment);
+		this.#attachCounts.set(claim.workerId, (this.#attachCounts.get(claim.workerId) ?? 0) + 1);
 		// From here on the session is the attachment's: a failure no longer unplugs it.
 		if (this.#attached.get(claim.workerId)?.claim.leaseToken === claim.leaseToken)
 			this.#attached.delete(claim.workerId);
-		await this.#leaseTask(claim.workerId, () =>
-			this.#refreshGuestLease(attachment, started + Number(attached.validForMs), signal),
-		);
-		this.#prepared.set(claim.workerId, ready);
-		return { vmId: machine.machineId, baseSha };
+		await this.#refreshGuestLease(attachment, started + Number(attached.validForMs), signal);
 	}
 	/** A turn as SQL names it in an attachment: its sequence, its turn id and whether it may start commands. */
 	#attachedTurn(value: unknown): Attachment["turn"] {
@@ -1018,7 +1067,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		return { sequence: Number(turn.sequence), turnId: turn.turnId, open: turn.open };
 	}
 	/** One guest lease step at a time per session: the turn that attaches it and
-	 * the keeper never race each other in the guest. */
+	 * the keeper never race each other in SQL's attachment or in the guest. */
 	#leaseTask<T>(workerId: string, use: () => Promise<T>): Promise<T> {
 		const work = (this.#leaseWork.get(workerId) ?? Promise.resolve()).catch(() => undefined).then(use);
 		this.#leaseWork.set(workerId, work);
@@ -1171,23 +1220,11 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		running: readonly string[],
 		signal: AbortSignal,
 	): Promise<void> {
-		return this.#exclusive(machine.machineId, signal, () =>
-			this.#takeOffLocked(machine, storage, session, running, signal),
-		);
-	}
-	/** #takeOff, for a caller that already holds the machine's lifecycle step. */
-	async #takeOffLocked(
-		machine: Readonly<LxdCodingMachineBinding>,
-		storage: Readonly<CloudCodingStorageBinding>,
-		session: { workerId: string; leaseToken: string | null },
-		running: readonly string[],
-		signal: AbortSignal,
-	): Promise<void> {
 		const journal = lxdCodingMachineJournalPlan(machine, this.#placement),
 			text = lxdCodingMachinePlan(machine).text,
 			name = lxdCodingMachineName(machine.machineId),
 			client = this.#options.client;
-		{
+		return this.#exclusive(machine.machineId, signal, async () => {
 			await this.#custody(journal, text, "detach", signal, session);
 			const instance = await client.getInstance(machine.project, name, signal);
 			if (!instance) return;
@@ -1225,7 +1262,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 					throw new Error("CODING_SESSION_DETACH_UNCONFIRMED");
 			}
 			if (guestFailure) throw guestFailure;
-		}
+		});
 	}
 	/** Best effort, bounded: cancels each named command through the pinned
 	 * command helper, which records it cancelled once systemd has stopped it. A
@@ -1257,7 +1294,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		workerId: string,
 		token: string,
 		reason: string,
-		stopped: readonly { commandId: string; turn: number; command: string }[],
+		stopped: readonly ObservedCommand[],
 		signal: AbortSignal,
 	): Promise<void> {
 		const value = record(
@@ -1289,8 +1326,9 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 	/** One keeper pass over this executor's awake machines that carry attached
 	 * sessions: observe what runs inside, renew each session's attachment in SQL
 	 * with that observation, renew its guest lease under the renewed deadline,
-	 * and take off the sessions SQL releases (archived, revoked, expired) or
-	 * whose guest lease is gone. Every failure is returned, never hidden. */
+	 * and take off the sessions SQL releases (archived, revoked, expired). The
+	 * machines are kept side by side, so a slow or unreachable one never holds up
+	 * another's renewals. Every failure is returned, never hidden. */
 	async keep(signal: AbortSignal): Promise<CodingKeepOutcome[]> {
 		const pass = performance.now();
 		const listed = await this.#call(
@@ -1299,26 +1337,28 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			signal,
 		);
 		if (!Array.isArray(listed)) throw new Error("CODING_HOST_MACHINE_LIST_INVALID");
-		const outcomes: CodingKeepOutcome[] = [],
-			kept = new Set<string>();
-		for (const value of listed) {
-			signal.throwIfAborted();
-			const entry = this.#listed(value);
-			if (entry.kind !== "member" || !entry.reserved || !entry.instanceSha256 || !entry.attached.length) continue;
-			for (const { workerId } of entry.attached) kept.add(workerId);
-			try {
-				outcomes.push(...(await this.#keepMachine(entry, signal)));
-			} catch (error) {
-				signal.throwIfAborted();
-				outcomes.push({
-					machineId: entry.machineId,
-					workerId: null,
-					step: "keep",
-					state: "failed",
-					code: errorCodeOf(error),
-				});
-			}
-		}
+		const entries = listed
+			.map((value) => this.#listed(value))
+			.filter((entry) => entry.kind === "member" && entry.reserved && entry.instanceSha256 && entry.attached.length);
+		const kept = new Set(entries.flatMap((entry) => entry.attached.map(({ workerId }) => workerId)));
+		const outcomes = (
+			await Promise.all(
+				entries.map((entry) =>
+					this.#keepMachine(entry, signal).catch((error): CodingKeepOutcome[] => {
+						signal.throwIfAborted();
+						return [
+							{
+								machineId: entry.machineId,
+								workerId: null,
+								step: "keep",
+								state: "failed",
+								code: errorCodeOf(error),
+							},
+						];
+					}),
+				),
+			)
+		).flat();
 		// Forget what no machine carries any more, unless a turn took it on during this pass.
 		for (const [workerId, attachment] of this.#attachments)
 			if (!kept.has(workerId) && attachment.since < pass) {
@@ -1327,19 +1367,31 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			}
 		return outcomes;
 	}
-	/** One machine's keeper step, as one lifecycle step of the machine: a sleep,
-	 * an attach or a detach never runs beside it. */
-	#keepMachine(entry: ListedMachine, signal: AbortSignal): Promise<CodingKeepOutcome[]> {
-		return this.#exclusive(entry.machineId, signal, () => this.#keepMachineLocked(entry, signal));
-	}
-	async #keepMachineLocked(entry: ListedMachine, signal: AbortSignal): Promise<CodingKeepOutcome[]> {
+	/** One machine's keeper step. It runs beside the machine's turns and
+	 * lifecycle steps; only taking a session off is one. A session a turn
+	 * attached during the step is that turn's to renew, and SQL keeps a session
+	 * attached in the last 30 seconds that the observation may predate. */
+	async #keepMachine(entry: ListedMachine, signal: AbortSignal): Promise<CodingKeepOutcome[]> {
 		const machine = lxdCodingMachinePlan(entry.binding as unknown as LxdCodingMachineBinding).binding;
 		if (machine.machineId !== entry.machineId) throw new Error("CODING_HOST_MACHINE_LIST_INVALID");
+		const attaches = new Map(entry.attached.map(({ workerId }) => [workerId, this.#attachCounts.get(workerId) ?? 0]));
+		const generations = new Map(
+			entry.attached.map(({ workerId, attachmentToken }) => [workerId, digest(attachmentToken)]),
+		);
 		const observed = await this.#observe(machine, signal);
-		const sessions = entry.attached.map(({ workerId }) => {
-			const seen = observed.sessions.get(workerId);
+		// A guest lease of the listed generation that ran out can never be renewed,
+		// and the watchdog has stopped the session's commands. Left out of the
+		// observation, the session is released (EXPIRED) with the commands SQL last
+		// saw running, and its next turn attaches it under a new generation.
+		const lost = new Set<string>();
+		const sessions: { workerId: string; busy: boolean; running: ObservedCommand[] }[] = [];
+		for (const [workerId, seen] of observed.sessions) {
+			if (seen.lease?.expiresInMs === 0 && seen.lease.tokenSha256 === generations.get(workerId)) {
+				lost.add(workerId);
+				continue;
+			}
 			const sample = this.#samples.get(workerId);
-			const usage = seen?.cpuUsageUsec ?? 0;
+			const usage = seen.cpuUsageUsec;
 			// Busy: the slice used more than a small share of a core since the last look.
 			const busy =
 				sample !== undefined &&
@@ -1347,8 +1399,8 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				observed.uptimeMs > sample.uptimeMs &&
 				usage - sample.usageUsec >= CODING_BUSY_CPU_SHARE * (observed.uptimeMs - sample.uptimeMs) * 1000;
 			this.#samples.set(workerId, { bootId: observed.bootId, uptimeMs: observed.uptimeMs, usageUsec: usage });
-			return { workerId, busy, running: seen?.running ?? [] };
-		});
+			sessions.push({ workerId, busy, running: seen.running });
+		}
 		const started = performance.now();
 		const kept = record(
 			await this.#call(
@@ -1379,33 +1431,38 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			const workerId = typeof item.workerId === "string" && UUID.test(item.workerId) ? item.workerId : null;
 			if (!workerId || typeof item.attachmentToken !== "string" || !UUID.test(item.attachmentToken))
 				throw new Error("CODING_HOST_ATTACHMENTS_INVALID");
-			const running = observed.sessions.get(workerId)?.running ?? [];
-			let step: CodingKeepOutcome["step"] = item.state === "kept" ? "keep" : "detach";
+			const step: CodingKeepOutcome["step"] = item.state === "kept" ? "keep" : "detach";
 			try {
 				if (item.state === "kept") {
-					const attachment = await this.#attachmentOn(machine, workerId, item, observed.bootId, signal);
-					try {
-						await this.#leaseTask(workerId, () =>
-							this.#refreshGuestLease(attachment, started + Number(item.validForMs), signal),
-						);
-					} catch (error) {
-						// A guest lease of this generation that has already run out can never
-						// be renewed: its commands were stopped. Take the session off; its
-						// next turn attaches it again under a new generation.
-						if (signal.aborted || !(await this.#guestLeaseLost(attachment, observed, signal))) throw error;
-						step = "detach";
-						await this.#takeOffLocked(machine, attachment.storage, { workerId, leaseToken: null }, [], signal);
-						await this.#recordDetached(machine, workerId, attachment.token, "EXPIRED", [], signal);
-						outcomes.push({ machineId: machine.machineId, workerId, step, state: "done", code: "EXPIRED" });
+					if (lost.has(workerId) && generations.get(workerId) === digest(item.attachmentToken)) {
+						// Attached too recently for SQL to judge it by this observation: released at a later pass.
+						outcomes.push({
+							machineId: machine.machineId,
+							workerId,
+							step,
+							state: "not-now",
+							code: "GUEST_LEASE_EXPIRED",
+						});
 						continue;
 					}
-					outcomes.push({ machineId: machine.machineId, workerId, step, state: "done" });
+					const renewed = await this.#leaseTask(workerId, async () => {
+						if ((this.#attachCounts.get(workerId) ?? 0) !== (attaches.get(workerId) ?? 0)) return false;
+						const attachment = await this.#attachmentOn(machine, workerId, item, observed.bootId, signal);
+						await this.#refreshGuestLease(attachment, started + Number(item.validForMs), signal);
+						return true;
+					});
+					outcomes.push(
+						renewed
+							? { machineId: machine.machineId, workerId, step, state: "done" }
+							: { machineId: machine.machineId, workerId, step, state: "not-now", code: "TURN_ATTACHED" },
+					);
 				} else if (
 					item.state === "release" &&
 					typeof item.reason === "string" &&
 					/^[A-Z_]{1,64}$/.test(item.reason)
 				) {
-					await this.#takeOffLocked(
+					const running = observed.sessions.get(workerId)?.running ?? [];
+					await this.#takeOff(
 						machine,
 						lxdCodingSessionStorage(machine, this.#placement, workerId),
 						{ workerId, leaseToken: null },
@@ -1426,10 +1483,11 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		}
 		return outcomes;
 	}
-	/** The attachment as SQL renewed it, on this machine and boot. One this
-	 * process has not taken on yet (it restarted, or the machine rebooted under
-	 * a turn) is adopted from the guest's active configuration, which must be
-	 * the one this executor journaled for that boot. */
+	/** The attachment as SQL renewed it, on this machine and boot. SQL moves the
+	 * turn only through an attach, and a turn this process has closed stays
+	 * closed. One this process has not taken on yet (it restarted, or the machine
+	 * rebooted under a turn) is adopted from the guest's active configuration,
+	 * which must be the one this executor journaled for that boot. */
 	async #attachmentOn(
 		machine: Readonly<LxdCodingMachineBinding>,
 		workerId: string,
@@ -1443,7 +1501,10 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			throw new Error("CODING_HOST_ATTACHMENTS_INVALID");
 		const known = this.#attachments.get(workerId);
 		if (known && known.machine.machineId === machine.machineId && known.bootId === bootId) {
-			const next = { ...known, token, turn };
+			const next =
+				known.token === token && known.turn.sequence === turn.sequence
+					? { ...known, turn: { ...turn, open: turn.open && known.turn.open } }
+					: { ...known, token, turn };
 			this.#attachments.set(workerId, next);
 			return next;
 		}
@@ -1481,35 +1542,10 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		this.#attachments.set(workerId, adopted);
 		return adopted;
 	}
-	/** The guest's lease for this attachment is gone for good: missing, of
-	 * another generation, or run out on the guest's own clock. */
-	async #guestLeaseLost(attachment: Attachment, observed: Observed, signal: AbortSignal): Promise<boolean> {
-		let lease: Record<string, unknown>;
-		try {
-			const file = await this.#options.client.readInstanceFile(
-				attachment.machine.project,
-				lxdCodingMachineName(attachment.machine.machineId),
-				`${cloudCodingSessionLayout(attachment.workerId).runtimeRoot}/lease.json`,
-				4096,
-				signal,
-			);
-			if (file.uid !== 0 || file.gid !== 0) return false;
-			lease = record(JSON.parse(file.content.toString("utf8")));
-		} catch {
-			signal.throwIfAborted();
-			return false;
-		}
-		return (
-			lease.leaseTokenSha256 !== digest(attachment.token) ||
-			lease.bootId !== observed.bootId ||
-			!Number.isSafeInteger(lease.expiresAtMonoMs) ||
-			Number(lease.expiresAtMonoMs) <= observed.uptimeMs
-		);
-	}
 	/** Runs the pinned storage helper's observe action and reads back what it
-	 * published: per attached session, the commands still running and its
-	 * slice's processor time. */
-	async #observe(machine: Readonly<LxdCodingMachineBinding>, signal: AbortSignal): Promise<Observed> {
+	 * published: per attached session, its slice's processor time, its guest
+	 * lease and (unless `named` is false) the commands still running. */
+	async #observe(machine: Readonly<LxdCodingMachineBinding>, signal: AbortSignal, named = true): Promise<Observed> {
 		const client = this.#options.client,
 			name = lxdCodingMachineName(machine.machineId);
 		const boot = await client.readInstanceFile(machine.project, name, "/proc/sys/kernel/random/boot_id", 64, signal);
@@ -1539,12 +1575,15 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			["/usr/bin/node", "/opt/qorpera-coding/cloud-coding-storage-guest.mjs", "observe"],
 			signal,
 		);
-		const file = await client.readInstanceFile(machine.project, name, CODING_GUEST_OBSERVATION, 4194304, signal);
-		if (file.uid !== 0 || file.gid !== 0 || file.mode !== 0o444)
-			throw new Error("CODING_HOST_OBSERVATION_UNCONFIRMED");
-		const value = record(JSON.parse(file.content.toString("utf8")));
+		const published = async (path: string) => {
+			const file = await client.readInstanceFile(machine.project, name, path, 65536, signal);
+			if (file.uid !== 0 || file.gid !== 0 || file.mode !== 0o444)
+				throw new Error("CODING_HOST_OBSERVATION_UNCONFIRMED");
+			return record(JSON.parse(file.content.toString("utf8")));
+		};
+		const value = await published(CODING_GUEST_OBSERVATION);
 		if (
-			value.schema !== "qorpera.coding-guest-observation/v1" ||
+			value.schema !== "qorpera.coding-guest-observation/v2" ||
 			value.bootId !== bootId ||
 			!Number.isSafeInteger(value.uptimeMs) ||
 			!Array.isArray(value.sessions)
@@ -1553,28 +1592,50 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		const sessions: Observed["sessions"] = new Map();
 		for (const entry of value.sessions) {
 			const session = record(entry);
+			const lease = session.lease === null ? null : record(session.lease);
 			if (
 				typeof session.workerId !== "string" ||
 				!UUID.test(session.workerId) ||
 				!Number.isSafeInteger(session.cpuUsageUsec) ||
-				!Array.isArray(session.running) ||
-				session.running.length > 64
+				!Number.isSafeInteger(session.running) ||
+				Number(session.running) < 0 ||
+				(lease !== null &&
+					(typeof lease.tokenSha256 !== "string" ||
+						!SHA.test(lease.tokenSha256) ||
+						!Number.isSafeInteger(lease.expiresInMs) ||
+						Number(lease.expiresInMs) < 0))
 			)
 				throw new Error("CODING_HOST_OBSERVATION_UNCONFIRMED");
-			const running = session.running.map((command: unknown) => {
-				const c = record(command);
+			let running: ObservedCommand[] = [];
+			if (named && Number(session.running) > 0) {
+				const commands = await published(`/run/qorpera-coding/observation-${session.workerId}.json`);
 				if (
-					typeof c.commandId !== "string" ||
-					!UUID.test(c.commandId) ||
-					!Number.isSafeInteger(c.turn) ||
-					Number(c.turn) < 1 ||
-					typeof c.command !== "string" ||
-					Buffer.byteLength(c.command) > 300
+					commands.schema !== "qorpera.coding-guest-running/v1" ||
+					commands.bootId !== bootId ||
+					commands.workerId !== session.workerId ||
+					!Array.isArray(commands.running) ||
+					commands.running.length > 64
 				)
 					throw new Error("CODING_HOST_OBSERVATION_UNCONFIRMED");
-				return { commandId: c.commandId, turn: Number(c.turn), command: c.command };
+				running = commands.running.map((command: unknown) => {
+					const c = record(command);
+					if (
+						typeof c.commandId !== "string" ||
+						!UUID.test(c.commandId) ||
+						!Number.isSafeInteger(c.turn) ||
+						Number(c.turn) < 1 ||
+						typeof c.command !== "string" ||
+						Buffer.byteLength(c.command) > 300
+					)
+						throw new Error("CODING_HOST_OBSERVATION_UNCONFIRMED");
+					return { commandId: c.commandId, turn: Number(c.turn), command: c.command };
+				});
+			}
+			sessions.set(session.workerId, {
+				cpuUsageUsec: Number(session.cpuUsageUsec),
+				running,
+				lease: lease && { tokenSha256: String(lease.tokenSha256), expiresInMs: Number(lease.expiresInMs) },
 			});
-			sessions.set(session.workerId, { cpuUsageUsec: Number(session.cpuUsageUsec), running });
 		}
 		return { bootId, uptimeMs: Number(value.uptimeMs), sessions };
 	}

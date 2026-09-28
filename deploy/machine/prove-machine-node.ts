@@ -38,10 +38,12 @@ async function main(path: string): Promise<void> {
 	const proof = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown> & Proof;
 	const policy = parseCompanyMachinePolicy(proof.policy);
 	const machineId = randomUUID(),
+		placementId = randomUUID(),
 		companyId = "00000000-0000-4000-8000-00000000c0de";
 	const binding = {
 		schema: "qorpera.lxd-company-machine/v1" as const,
 		machineId,
+		placementId,
 		companyId,
 		environmentId: companyId,
 		...policy,
@@ -53,6 +55,8 @@ async function main(path: string): Promise<void> {
 	const plan = lxdCompanyMachinePlan(binding);
 	const entry: CompanyMachineEntry = {
 		machineId,
+		placementId,
+		retired: false,
 		binding,
 		bindingText: plan.text,
 		instanceSha256: plan.instanceSha256,
@@ -79,11 +83,11 @@ async function main(path: string): Promise<void> {
 	const control = {
 		async call(method: string, args: Record<string, unknown>) {
 			if (method === "qorpera_admit_executor_machines") return [];
-			if (method === "qorpera_list_executor_machines") return [{ schema: "qorpera.company-machine-state/v1", ...entry }];
+			if (method === "qorpera_list_executor_machines") return [{ schema: "qorpera.company-machine-state/v2", ...entry }];
 			if (method === "qorpera_authorize_executor_machine")
 				return {
 					schema: "qorpera.coding-machine-admission/v1",
-					machineId,
+					machineId: placementId,
 					workerId: null,
 					instanceSha256: plan.instanceSha256,
 					intent: args.p_intent,
@@ -135,10 +139,10 @@ async function main(path: string): Promise<void> {
 		const commandId = randomUUID(),
 			inputSha256 = randomUUID().replaceAll("-", "").padEnd(64, "0");
 		entry.commands.push(commandId);
-		await host.command({ machineId, commandId, inputSha256 }, { action: "start", commandId, inputSha256, command: text, timeoutMs }, signal);
+		await host.command({ machineId, placementId, commandId, inputSha256 }, { action: "start", commandId, inputSha256, command: text, timeoutMs }, signal);
 		for (;;) {
 			const page = await host.command(
-				{ machineId, commandId, inputSha256 },
+				{ machineId, placementId, commandId, inputSha256 },
 				{ action: "read", read: { commandId, tail: true, limit: 16384 } },
 				signal,
 			);
@@ -187,7 +191,7 @@ async function main(path: string): Promise<void> {
 	// A command still running when the machine is deleted stops with it.
 	const sleeper = randomUUID();
 	await host.command(
-		{ machineId, commandId: sleeper, inputSha256: "f".repeat(64) },
+		{ machineId, placementId, commandId: sleeper, inputSha256: "f".repeat(64) },
 		{ action: "start", commandId: sleeper, inputSha256: "f".repeat(64), command: "sleep 3600", timeoutMs: null },
 		signal,
 	);

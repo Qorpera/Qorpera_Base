@@ -188,7 +188,7 @@ export function createHttpCloudMachineCommandGateway(options: {
 						body,
 					});
 					if (response.status !== 200) {
-						// A refusal names a fixed code the agent can act on (not running, unknown command).
+						// A refusal names a fixed code the agent can act on (not running, a start given up).
 						let code: unknown;
 						if (response.status === 409)
 							code = (
@@ -222,12 +222,21 @@ export function createHttpCloudMachineCommandGateway(options: {
 }
 
 /** A refusal the agent can act on, sent back as 409 with only its code. */
+export const CLOUD_MACHINE_COMMAND_REFUSALS = ["MACHINE_NOT_RUNNING", "MACHINE_COMMAND_ENDED"] as const;
+export type CloudMachineCommandRefusalCode = (typeof CLOUD_MACHINE_COMMAND_REFUSALS)[number];
 export class CloudMachineCommandRefusal extends Error {
-	readonly code: "MACHINE_NOT_RUNNING" | "MACHINE_COMMAND_UNKNOWN";
-	constructor(code: "MACHINE_NOT_RUNNING" | "MACHINE_COMMAND_UNKNOWN") {
+	readonly code: CloudMachineCommandRefusalCode;
+	constructor(code: CloudMachineCommandRefusalCode) {
 		super(code);
 		this.code = code;
 	}
+}
+/** A refusal as it reaches a caller: from this executor's SQL, or from a peer's 409. */
+export function cloudMachineCommandRefusal(error: unknown): CloudMachineCommandRefusalCode | null {
+	if (error instanceof CloudMachineCommandRefusal) return error.code;
+	return error instanceof Error && (CLOUD_MACHINE_COMMAND_REFUSALS as readonly string[]).includes(error.message)
+		? (error.message as CloudMachineCommandRefusalCode)
+		: null;
 }
 
 /** The executor side of the machine route (HttpCloudCodingCommandService):

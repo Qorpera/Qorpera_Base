@@ -526,8 +526,9 @@ begin
 	v_again := public.qorpera_add_agent_review_rule(v_binding, '{"operationKey":"rule-3","when":"posting on Instagram"}');
 	perform pg_temp.wake_assert(not (v_again ->> 'added')::boolean and v_again -> 'rule' = 'null'::jsonb
 		and v_again ->> 'refused' like 'The member has too many rules%'
+		and v_again ->> 'refused' like '%at the bottom of Settings → General.'
 		and not exists (select 1 from public.qorpera_review_rules where when_text = 'posting on Instagram'),
-		'A full rule list is refused with nothing added');
+		'A full rule list is refused with nothing added, and the refusal names where the rules are');
 end
 $$;
 

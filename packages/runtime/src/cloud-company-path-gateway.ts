@@ -19,8 +19,14 @@ import {
 import type { CloudContentAddressedStore, CloudFileReference } from "@qorpera/cloud-client/node/cloud-object-store";
 import type { JsonValue } from "@qorpera/contracts";
 import { parseCompanyComputerScreenshotAsset } from "./cloud-company-computer-screenshots.ts";
+import {
+	COMPANY_FORMATION_PATH,
+	companyFormationWriteRefusal,
+	isCompanyFormationPath,
+} from "./cloud-company-formation.ts";
 import { type CloudCompanyPathPresence, observeCloudCompanyPathPresence } from "./cloud-company-path-presence.ts";
 import {
+	CloudCompanyFormationRefused,
 	CloudCompanyPathParentMissing,
 	CloudCompanyPathRpcParentMissing,
 	CloudCompanyPathRpcPrecondition,
@@ -929,6 +935,24 @@ export class CloudCompanyPathGateway {
 				errorCategory: preflight.result.state === "proposed" ? "protected_path" : null,
 			});
 			return preflight.result;
+		}
+		// The organization projection only runs when the proposal this write makes is
+		// approved, and its refusal never reaches the agent. Once the check has passed
+		// (authority, a replayed operation key, the version, the folder), judge a
+		// formation write against the version it replaces, so the agent learns the
+		// allowed step before anything is staged or proposed. Best effort: when that
+		// version cannot be read, or changed since, the usual path decides. It is a
+		// trusted read of three fields the agent may read anyway, returned only in a
+		// refusal, so it carries no model-read observation or wake-work gate.
+		if (bytes && isCompanyFormationPath(path)) {
+			const current = await this.readTrusted(COMPANY_FORMATION_PATH, signal).catch((error: unknown) => {
+				if (signal.aborted) throw error;
+				return null;
+			});
+			if (current?.kind === "file" && current.version === expectedVersion) {
+				const refusal = companyFormationWriteRefusal(current.text, bytes.toString("utf8"));
+				if (refusal) throw new CloudCompanyFormationRefused(refusal);
+			}
 		}
 		await this.#presence(path, operation === "mkdir" ? "subtree" : "object", "writing", signal);
 		if (next?.kind === "file" && bytes && manifest) {

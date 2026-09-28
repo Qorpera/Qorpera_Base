@@ -68,9 +68,13 @@ export interface CompanyMachineHostOptions {
 	guestReadyTimeoutMs?: number;
 }
 
-/** One machine as SQL lists it for this executor (qorpera_list_executor_machines). */
+/** One placement of a machine as SQL lists it for this executor
+ * (qorpera_list_executor_machines). A retired placement (its machine moved on
+ * or was deleted) is only ever deleted. */
 export interface CompanyMachineEntry {
 	machineId: string;
+	placementId: string;
+	retired: boolean;
 	binding: LxdCompanyMachineBinding;
 	bindingText: string;
 	instanceSha256: string;
@@ -88,14 +92,15 @@ export interface CompanyMachineEntry {
 	removeDue: boolean;
 }
 export interface CompanyMachineOutcome {
-	machineId: string;
+	placementId: string;
 	step: "start" | "guest" | "stop" | "delete" | "release" | "commands" | "wait";
 	state: "done" | "pending" | "not-now" | "failed";
 	code?: string;
 }
-/** A command the gateway authorized in SQL for a machine on this node. */
+/** A command the gateway authorized in SQL for a machine placed on this node. */
 export interface CompanyMachineCommandAuthority {
 	machineId: string;
+	placementId: string;
 	commandId: string;
 	inputSha256: string;
 }
@@ -115,15 +120,14 @@ function errorCode(error: unknown): string {
 function entry(value: unknown): CompanyMachineEntry {
 	const e = record(value, "COMPANY_MACHINE_LIST_INVALID");
 	if (
-		e.schema !== "qorpera.company-machine-state/v1" ||
-		typeof e.machineId !== "string" ||
-		!UUID.test(e.machineId) ||
+		e.schema !== "qorpera.company-machine-state/v2" ||
+		![e.machineId, e.placementId].every((id) => typeof id === "string" && UUID.test(id)) ||
 		typeof e.bindingText !== "string" ||
 		typeof e.instanceSha256 !== "string" ||
 		!SHA.test(e.instanceSha256) ||
 		!["running", "stopped", "deleted"].includes(e.desiredState as string) ||
 		!["task", "always-on"].includes(e.lifetime as string) ||
-		![e.reserved, e.removing, e.released, e.sleepDue, e.stopDue, e.removeDue].every(
+		![e.retired, e.reserved, e.removing, e.released, e.sleepDue, e.stopDue, e.removeDue].every(
 			(flag) => typeof flag === "boolean",
 		) ||
 		(e.bootId !== null && (typeof e.bootId !== "string" || !UUID.test(e.bootId))) ||
@@ -136,7 +140,7 @@ function entry(value: unknown): CompanyMachineEntry {
 }
 
 /** The machine workload of a node's executor: every pass it admits waiting
- * machines on this node, then brings each of its machines to the state SQL
+ * machines on this node, then brings each placement on it to the state SQL
  * wants (running, asleep or deleted) through the coding machine's journaled
  * lifecycle, keeps each running guest's lease, and records how the commands
  * it started ended. It also runs the commands the gateway authorized. */
@@ -146,9 +150,9 @@ export class LxdCompanyMachineHost {
 	readonly #storage: CodingNasStorage;
 	readonly #repositories: CompanyMachineRepositoryStorage;
 	readonly #work = new Map<string, Promise<unknown>>();
-	/** Per machine: the boot whose helper was checked and prepared, and the last processor sample. */
+	/** Per placement: the boot whose helper was checked and prepared, and the last processor sample. */
 	readonly #guests = new Map<string, { bootId: string; busyTicks: number; totalTicks: number }>();
-	/** When this process first saw the machine started and its guest not yet answering. */
+	/** When this process first saw the placement started and its guest not yet answering. */
 	readonly #starting = new Map<string, number>();
 	readonly #generation = Math.floor(Date.now() / 1000);
 	constructor(options: CompanyMachineHostOptions) {
@@ -170,15 +174,15 @@ export class LxdCompanyMachineHost {
 	async #call(method: string, args: Record<string, unknown>, signal: AbortSignal): Promise<unknown> {
 		return this.#options.control.call(method, args, AbortSignal.any([signal, AbortSignal.timeout(10000)]));
 	}
-	/** Lifecycle steps of one machine never overlap. */
-	async #exclusive<T>(machineId: string, use: () => Promise<T>): Promise<T> {
-		const previous = this.#work.get(machineId) ?? Promise.resolve();
+	/** Lifecycle steps of one placement never overlap. */
+	async #exclusive<T>(placementId: string, use: () => Promise<T>): Promise<T> {
+		const previous = this.#work.get(placementId) ?? Promise.resolve();
 		const next = previous.catch(() => undefined).then(use);
-		this.#work.set(machineId, next);
+		this.#work.set(placementId, next);
 		try {
 			return await next;
 		} finally {
-			if (this.#work.get(machineId) === next) this.#work.delete(machineId);
+			if (this.#work.get(placementId) === next) this.#work.delete(placementId);
 		}
 	}
 	async #journalRoot(signal: AbortSignal): Promise<string> {
@@ -197,23 +201,41 @@ export class LxdCompanyMachineHost {
 			plan.text !== e.bindingText ||
 			plan.instanceSha256 !== e.instanceSha256 ||
 			e.binding.machineId !== e.machineId ||
+			e.binding.placementId !== e.placementId ||
 			e.binding.project !== this.#policy.project ||
 			e.binding.providerId !== this.#policy.providerId
 		)
 			throw new Error("COMPANY_MACHINE_BINDING_DIFFERS");
 		return plan;
 	}
-	#custody(e: CompanyMachineEntry, intent: string, signal: AbortSignal) {
+	#custody(e: CompanyMachineEntry, method: string, signal: AbortSignal, extra: Record<string, unknown> = {}) {
 		return this.#call(
-			intent,
+			method,
 			{
-				p_machine_id: e.machineId,
+				p_placement_id: e.placementId,
 				p_owner: this.#options.owner,
 				p_binding_text: e.bindingText,
 				p_machine_id_sha256: this.#options.machineIdSha256,
+				...extra,
 			},
 			signal,
 		);
+	}
+	/** SQL's authority for one LXD effect; a refusal it can wait out throws COMPANY_MACHINE_REFUSED. */
+	async #authorize(e: CompanyMachineEntry, intent: CodingMachineIntent, signal: AbortSignal): Promise<unknown> {
+		const receipt = record(
+			await this.#custody(e, "qorpera_authorize_executor_machine", signal, { p_intent: intent }),
+			"COMPANY_MACHINE_AUTHORITY_INVALID",
+		);
+		if (receipt.state === "refused")
+			throw new Error(
+				`COMPANY_MACHINE_REFUSED:${
+					String(receipt.reason)
+						.replace(/[^A-Z0-9_]/g, "")
+						.slice(0, 60) || "UNKNOWN"
+				}`,
+			);
+		return receipt;
 	}
 	/** Drives the journaled LXD lifecycle to one state, re-fetching SQL
 	 * authority before every effect. A refusal SQL can wait out is "not-now". */
@@ -225,31 +247,12 @@ export class LxdCompanyMachineHost {
 		const plan = this.#plan(e);
 		let refused = false;
 		const authorize = async (intent: CodingMachineIntent, checked: AbortSignal): Promise<unknown> => {
-			const receipt = record(
-				await this.#call(
-					"qorpera_authorize_executor_machine",
-					{
-						p_machine_id: e.machineId,
-						p_owner: this.#options.owner,
-						p_binding_text: e.bindingText,
-						p_machine_id_sha256: this.#options.machineIdSha256,
-						p_intent: intent,
-					},
-					checked,
-				),
-				"COMPANY_MACHINE_AUTHORITY_INVALID",
-			);
-			if (receipt.state === "refused") {
-				refused = true;
-				throw new Error(
-					`COMPANY_MACHINE_REFUSED:${
-						String(receipt.reason)
-							.replace(/[^A-Z0-9_]/g, "")
-							.slice(0, 60) || "UNKNOWN"
-					}`,
-				);
+			try {
+				return await this.#authorize(e, intent, checked);
+			} catch (error) {
+				if (errorCode(error).startsWith("COMPANY_MACHINE_REFUSED:")) refused = true;
+				throw error;
 			}
-			return receipt;
 		};
 		const checked = AbortSignal.any([signal, AbortSignal.timeout(desiredState === "running" ? 300000 : 120000)]);
 		for (;;) {
@@ -334,16 +337,16 @@ export class LxdCompanyMachineHost {
 			prepared = await this.#helper(e, ["prepare", e.machineId, String(this.#generation)], signal);
 		} catch (error) {
 			// Until the guest agent answers, the machine is still starting.
-			const since = this.#starting.get(e.machineId) ?? Date.now();
-			this.#starting.set(e.machineId, since);
+			const since = this.#starting.get(e.placementId) ?? Date.now();
+			this.#starting.set(e.placementId, since);
 			if (
 				Date.now() - since < (this.#options.guestReadyTimeoutMs ?? 180000) &&
 				errorCode(error) !== "COMPANY_MACHINE_HELPER_DIFFERS"
 			)
-				return { machineId: e.machineId, step: "guest", state: "pending" };
+				return { placementId: e.placementId, step: "guest", state: "pending" };
 			throw error;
 		}
-		this.#starting.delete(e.machineId);
+		this.#starting.delete(e.placementId);
 		if (
 			prepared.schema !== "qorpera.machine-guest/v1" ||
 			prepared.machineId !== e.machineId ||
@@ -357,22 +360,12 @@ export class LxdCompanyMachineHost {
 			throw new Error("COMPANY_MACHINE_GUEST_REPLY_INVALID");
 		if (e.bootId !== bootId) {
 			const marked = record(
-				await this.#call(
-					"qorpera_mark_company_machine_running",
-					{
-						p_machine_id: e.machineId,
-						p_owner: this.#options.owner,
-						p_binding_text: e.bindingText,
-						p_machine_id_sha256: this.#options.machineIdSha256,
-						p_boot_id: bootId,
-					},
-					signal,
-				),
+				await this.#custody(e, "qorpera_mark_company_machine_running", signal, { p_boot_id: bootId }),
 				"COMPANY_MACHINE_RUNNING_INVALID",
 			);
-			if (marked.state !== "running") return { machineId: e.machineId, step: "guest", state: "not-now" };
-			this.#guests.delete(e.machineId);
-			return { machineId: e.machineId, step: "start", state: "done" };
+			if (marked.state !== "running") return { placementId: e.placementId, step: "guest", state: "not-now" };
+			this.#guests.delete(e.placementId);
+			return { placementId: e.placementId, step: "start", state: "done" };
 		}
 		// A running machine of this boot: how its commands ended, and whether it is busy.
 		const observed = await this.#helper(e, ["observe", e.commands.length ? e.commands.join(",") : "-"], signal);
@@ -386,7 +379,7 @@ export class LxdCompanyMachineHost {
 			observed.ended.length > 64
 		)
 			throw new Error("COMPANY_MACHINE_GUEST_REPLY_INVALID");
-		const previous = this.#guests.get(e.machineId);
+		const previous = this.#guests.get(e.placementId);
 		const busyTicks = Number(cpu.busyTicks),
 			totalTicks = Number(cpu.totalTicks);
 		const busy =
@@ -394,7 +387,7 @@ export class LxdCompanyMachineHost {
 			previous.bootId === bootId &&
 			totalTicks > previous.totalTicks &&
 			(busyTicks - previous.busyTicks) / (totalTicks - previous.totalTicks) >= BUSY_SHARE;
-		this.#guests.set(e.machineId, { bootId, busyTicks, totalTicks });
+		this.#guests.set(e.placementId, { bootId, busyTicks, totalTicks });
 		const ended = observed.ended
 			.map((item) => record(item, "COMPANY_MACHINE_GUEST_REPLY_INVALID"))
 			.filter((item) => typeof item.commandId === "string" && e.commands.includes(item.commandId))
@@ -405,22 +398,22 @@ export class LxdCompanyMachineHost {
 				outputTail: typeof item.outputTail === "string" ? item.outputTail.slice(-4000) : "",
 			}));
 		if (ended.length || busy)
-			await this.#call(
-				"qorpera_record_company_machine_commands",
-				{
-					p_machine_id: e.machineId,
-					p_owner: this.#options.owner,
-					p_binding_text: e.bindingText,
-					p_machine_id_sha256: this.#options.machineIdSha256,
-					p_boot_id: bootId,
-					p_ended: ended,
-					p_busy: busy,
-				},
-				signal,
-			);
-		return { machineId: e.machineId, step: "commands", state: "done" };
+			await this.#custody(e, "qorpera_record_company_machine_commands", signal, {
+				p_boot_id: bootId,
+				p_ended: ended,
+				p_busy: busy,
+			});
+		return { placementId: e.placementId, step: "commands", state: "done" };
 	}
 	async #stop(e: CompanyMachineEntry, signal: AbortSignal): Promise<CompanyMachineOutcome> {
+		// SQL agrees first: an idle machine someone just used again keeps running, programs and all.
+		try {
+			await this.#authorize(e, "stop", signal);
+		} catch (error) {
+			if (errorCode(error).startsWith("COMPANY_MACHINE_REFUSED:"))
+				return { placementId: e.placementId, step: "stop", state: "not-now" };
+			throw error;
+		}
 		// Give the guest's own programs a moment to stop and its disk to settle;
 		// then the machine is powered off (its disk stays).
 		if (e.runningAt !== null)
@@ -433,26 +426,26 @@ export class LxdCompanyMachineHost {
 				)
 				.catch(() => undefined);
 		const state = await this.#physical(e, "stopped", signal);
-		if (state === "not-now") return { machineId: e.machineId, step: "stop", state: "not-now" };
-		this.#guests.delete(e.machineId);
+		if (state === "not-now") return { placementId: e.placementId, step: "stop", state: "not-now" };
+		this.#guests.delete(e.placementId);
 		const suspended = record(
 			await this.#custody(e, "qorpera_suspend_company_machine", signal),
 			"COMPANY_MACHINE_SUSPEND_INVALID",
 		);
-		return { machineId: e.machineId, step: "stop", state: suspended.state === "suspended" ? "done" : "not-now" };
+		return { placementId: e.placementId, step: "stop", state: suspended.state === "suspended" ? "done" : "not-now" };
 	}
 	async #remove(e: CompanyMachineEntry, signal: AbortSignal): Promise<CompanyMachineOutcome> {
 		if (!e.released) {
 			const state = await this.#physical(e, "deleted", signal);
-			if (state === "not-now") return { machineId: e.machineId, step: "delete", state: "not-now" };
+			if (state === "not-now") return { placementId: e.placementId, step: "delete", state: "not-now" };
 		}
 		const released = record(
 			await this.#custody(e, "qorpera_release_company_machine", signal),
 			"COMPANY_MACHINE_RELEASE_INVALID",
 		);
 		if (released.state !== "released") throw new Error("COMPANY_MACHINE_RELEASE_INVALID");
-		this.#guests.delete(e.machineId);
-		return { machineId: e.machineId, step: "release", state: "done" };
+		this.#guests.delete(e.placementId);
+		return { placementId: e.placementId, step: "release", state: "done" };
 	}
 	async #step(e: CompanyMachineEntry, signal: AbortSignal): Promise<CompanyMachineOutcome> {
 		if (e.released) return this.#remove(e, signal);
@@ -460,10 +453,10 @@ export class LxdCompanyMachineHost {
 		if (e.removeDue && !e.reserved) return this.#remove(e, signal);
 		if (e.desiredState === "running" && e.reserved) {
 			const state = await this.#physical(e, "running", signal);
-			if (state === "not-now") return { machineId: e.machineId, step: "start", state: "not-now" };
+			if (state === "not-now") return { placementId: e.placementId, step: "start", state: "not-now" };
 			return this.#guest(e, signal);
 		}
-		return { machineId: e.machineId, step: "wait", state: "not-now" };
+		return { placementId: e.placementId, step: "wait", state: "not-now" };
 	}
 	async #recordError(
 		e: CompanyMachineEntry,
@@ -474,7 +467,7 @@ export class LxdCompanyMachineHost {
 		await this.#call(
 			"qorpera_record_company_machine_error",
 			{
-				p_machine_id: e.machineId,
+				p_placement_id: e.placementId,
 				p_owner: this.#options.owner,
 				p_machine_id_sha256: this.#options.machineIdSha256,
 				p_stage: stage,
@@ -484,14 +477,19 @@ export class LxdCompanyMachineHost {
 		).catch(() => undefined);
 	}
 
-	/** One pass. Machines progress side by side; a failed step is recorded on
-	 * its machine and retried at the next pass, never hidden. */
+	/** One pass. Placements progress side by side; a failed step is recorded
+	 * on its machine and retried at the next pass, never hidden. Admission
+	 * takes one machine per call (one reservation per transaction) and never
+	 * holds up the rest of the pass. */
 	async pass(signal: AbortSignal): Promise<CompanyMachineOutcome[]> {
-		await this.#call(
-			"qorpera_admit_executor_machines",
-			{ p_owner: this.#options.owner, p_machine_id_sha256: this.#options.machineIdSha256, p_limit: 16 },
-			signal,
-		);
+		for (let admitted = 0; admitted < 8; admitted++) {
+			const taken = await this.#call(
+				"qorpera_admit_executor_machines",
+				{ p_owner: this.#options.owner, p_machine_id_sha256: this.#options.machineIdSha256, p_limit: 32 },
+				signal,
+			).catch(() => []);
+			if (!Array.isArray(taken) || taken.length === 0) break;
+		}
 		const listed = await this.#call(
 			"qorpera_list_executor_machines",
 			{ p_owner: this.#options.owner, p_machine_id_sha256: this.#options.machineIdSha256 },
@@ -501,7 +499,7 @@ export class LxdCompanyMachineHost {
 		const entries = listed.map(entry);
 		return Promise.all(
 			entries.map((e) =>
-				this.#exclusive(e.machineId, async () => {
+				this.#exclusive(e.placementId, async () => {
 					const stage = (step: CompanyMachineOutcome["step"]) =>
 						step === "guest" || step === "commands"
 							? step === "guest"
@@ -524,7 +522,7 @@ export class LxdCompanyMachineHost {
 									? "stop"
 									: "start";
 						await this.#recordError(e, stage(step), failed, signal);
-						return { machineId: e.machineId, step, state: "failed" as const, code: failed };
+						return { placementId: e.placementId, step, state: "failed" as const, code: failed };
 					}
 				}),
 			),
@@ -538,9 +536,9 @@ export class LxdCompanyMachineHost {
 		signal: AbortSignal,
 	): Promise<CloudMachineCommandReceipt> {
 		const machine = { machineId: authority.machineId, project: this.#policy.project };
-		if (!UUID.test(machine.machineId) || !SHA.test(authority.inputSha256))
+		if (!UUID.test(machine.machineId) || !UUID.test(authority.placementId) || !SHA.test(authority.inputSha256))
 			throw new Error("COMPANY_MACHINE_COMMAND_INVALID");
-		const name = lxdCompanyMachineName(machine.machineId);
+		const name = lxdCompanyMachineName(authority.placementId);
 		const commandId = request.action === "read" ? request.read.commandId : request.commandId;
 		if (commandId !== authority.commandId) throw new Error("COMPANY_MACHINE_COMMAND_INVALID");
 		const nonce = randomUUID();
