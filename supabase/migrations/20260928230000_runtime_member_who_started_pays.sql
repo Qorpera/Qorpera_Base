@@ -270,7 +270,7 @@ begin
 			select w.owner_sponsor_binding_id, w.owner_sponsor_version into new.sponsor_binding_id, new.sponsor_version
 			from public.qorpera_runtime_workers w where w.id = new.source_id;
 		end if;$old$,
-$new$		-- The member who started the chain pays (20260928170000): their own login, else a company
+$new$		-- The member who started the chain pays (20260928230000): their own login, else a company
 		-- account, never the agent's standing account or another member's login.
 		select payer.binding_id, payer.version into new.sponsor_binding_id, new.sponsor_version
 		from public.qorpera_starter_sponsor(new.profile_id, new.requested_by_user_id, new.staff_agent_id,
@@ -293,7 +293,7 @@ $new$		-- The member who started the chain pays (20260928170000): their own logi
 	v_definition := pg_temp.starter_pays_replace(v_definition, $old$				where binding.id = new.sponsor_binding_id and binding.profile_id = new.profile_id and binding.status = 'active') then
 			raise exception 'Room wake authority is unavailable' using errcode = '42501'; end if;$old$,
 $new$				where binding.id = new.sponsor_binding_id and binding.profile_id = new.profile_id and binding.status = 'active')
-			-- The poster's own login or a company account (20260928170000).
+			-- The poster's own login or a company account (20260928230000).
 			or not public.qorpera_sponsor_serves_requester(new.profile_id, new.sponsor_binding_id, new.sponsor_version,
 				new.requested_by_user_id) then
 			raise exception 'Room wake authority is unavailable' using errcode = '42501'; end if;$new$, 'room wake sponsor');
@@ -306,7 +306,7 @@ declare v_definition text := pg_get_functiondef('public.qorpera_wake_authorized(
 begin
 	v_definition := pg_temp.starter_pays_replace(v_definition, $old$ if v_standing_version is null then return false; end if;$old$,
 $new$ if v_standing_version is null then return false; end if;
- -- A member's login pays only for work that member started (20260928170000).
+ -- A member's login pays only for work that member started (20260928230000).
  if not public.qorpera_sponsor_serves_requester(p_wake.profile_id,p_wake.sponsor_binding_id,p_wake.sponsor_version,
   p_wake.requested_by_user_id) then return false; end if;$new$, 'wake payer');
 	v_definition := pg_temp.starter_pays_replace(v_definition, $old$			and not exists(select 1 from public.qorpera_staff_execution_authorities where profile_id = p_wake.profile_id
@@ -330,7 +330,7 @@ begin
 		where s.binding_id = v_authority.sponsor_binding_id and s.version = v_authority.sponsor_version
 			and b.profile_id = v_run.profile_id and b.status = 'active' and s.allow_autonomous) then
 		raise exception 'Coworker execution authority is unavailable' using errcode = '42501'; end if;$old$,
-$new$	-- The member who started this chain pays for the recipient's run (20260928170000).
+$new$	-- The member who started this chain pays for the recipient's run (20260928230000).
 	select payer.binding_id, payer.version into v_authority.sponsor_binding_id, v_authority.sponsor_version
 	from public.qorpera_starter_sponsor(v_run.profile_id, v_run.requested_by_user_id, p_recipient_staff_id,
 		v_run.sponsor_binding_id) as payer;
@@ -344,14 +344,14 @@ do $$
 declare v_definition text := pg_get_functiondef('public.qorpera_manage_agent_worker(jsonb,jsonb)'::regprocedure);
 begin
 	v_definition := pg_temp.starter_pays_replace(v_definition, $old$			v_owner := coalesce((p_request ->> 'owner')::uuid, v_run.requested_by_user_id);$old$,
-$new$			-- The session runs for the member who asked, on their own account (20260928170000).
+$new$			-- The session runs for the member who asked, on their own account (20260928230000).
 			v_owner := v_run.requested_by_user_id;
 			if p_request ? 'owner' and (p_request ->> 'owner')::uuid is distinct from v_owner then
 				raise exception 'A coding session runs for the member who asked for it' using errcode = '42501'; end if;$new$, 'coding owner');
 	v_definition := pg_temp.starter_pays_replace(v_definition, $old$		if not exists (select 1 from public.qorpera_staff_execution_authorities authority
 			where authority.profile_id = v_run.profile_id and authority.staff_agent_id = v_run.staff_agent_id) then
 			raise exception 'No model account is set up for background work by this agent' using errcode = '55000'; end if;$old$,
-$new$		-- Background work is paid by the member who started the chain (20260928170000).
+$new$		-- Background work is paid by the member who started the chain (20260928230000).
 		if coalesce(v_species, v_worker.species) <> 'coding' and not exists (select 1
 			from public.qorpera_starter_sponsor(v_run.profile_id, v_run.requested_by_user_id, v_run.staff_agent_id,
 				v_run.sponsor_binding_id)) then
@@ -377,7 +377,7 @@ begin
 	join public.qorpera_staff_execution_authorities as authority
 		on authority.profile_id = proposal.profile_id and authority.staff_agent_id = reviewer.staff_agent_id
 	where proposal.id = new.proposal_id and proposal.execution_kind = 'run'$old$,
-$new$	-- The member who started the change pays for its review (20260928170000).
+$new$	-- The member who started the change pays for its review (20260928230000).
 	select proposal.profile_id, proposal.id, new.revision, reviewer.staff_agent_id,
 		payer.binding_id, payer.version, case when authority.sponsor_binding_id = payer.binding_id
 			then authority.logical_computer_id end
@@ -400,7 +400,7 @@ begin
 	from public.qorpera_staff_execution_authorities as authority
 	where authority.profile_id = v_review.profile_id
 		and authority.staff_agent_id = v_review.reviewer_staff_agent_id;$old$,
-$new$	-- The member who started the change pays for its review (20260928170000).
+$new$	-- The member who started the change pays for its review (20260928230000).
 	select v_review.profile_id, v_review.reviewer_staff_agent_id, payer.binding_id, payer.version,
 		(select authority.logical_computer_id from public.qorpera_staff_execution_authorities as authority
 			where authority.profile_id = v_review.profile_id and authority.staff_agent_id = v_review.reviewer_staff_agent_id
@@ -458,7 +458,7 @@ $new$		if not found then
 			where id = any(v_input_ids);
 			continue;
 		end if;
-		-- A configured login pays only for its owner's own messages (20260928170000).
+		-- A configured login pays only for its owner's own messages (20260928230000).
 		if not public.qorpera_sponsor_serves_requester(v_session.profile_id, v_binding.sponsor_binding_id,
 			v_binding.sponsor_version, v_requester) then
 			update public.qorpera_session_inputs
@@ -488,7 +488,7 @@ begin
 $new$	if p_sponsor_kind = 'member_connection' and v_connection.owner_user_id is null then
 		raise exception 'member sponsor requires a member-owned connection' using errcode = '22023';
 	end if;
-	-- Only the member who owns a login binds it (20260928170000).
+	-- Only the member who owns a login binds it (20260928230000).
 	if p_sponsor_kind = 'member_connection' and v_connection.owner_user_id is distinct from v_user_id then
 		raise exception 'member execution sponsor requires its owner' using errcode = '42501';
 	end if;$new$, 'binding owner');
@@ -506,7 +506,7 @@ begin
 					where member.profile_id = p_profile_id and member.user_id = connection.owner_user_id
 				)
 			)$old$,
-$new$			-- A standing authority names a company account only (20260928170000).
+$new$			-- A standing authority names a company account only (20260928230000).
 			and sponsor.sponsor_kind <> 'member_connection' and connection.owner_user_id is null$new$, 'standing authority kind');
 	execute v_definition;
 end

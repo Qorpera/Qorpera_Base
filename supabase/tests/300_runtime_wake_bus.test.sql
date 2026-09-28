@@ -329,7 +329,7 @@ begin
 		'30000000-0000-4000-8000-000000000031'::uuid,'30000000-0000-4000-8000-000000000032'::uuid] loop
 		perform public.qorpera_grant_company_path(v_resource.id,v_resource.version,'staff_agent',v_staff,array['read','write']);
 	end loop;
-	-- No standing authority: agent wakes are paid by the member who started them (20260928170000).
+	-- No standing authority: agent wakes are paid by the member who started them (20260928230000).
 	perform public.qorpera_configure_session_execution('30000000-0000-4000-8000-000000000042',
 		(current_setting('qorpera_test.wake_sponsor')::jsonb ->> 'binding_id')::uuid,1,null,'agent_turn','agent_turn');
 end
@@ -491,7 +491,7 @@ begin
 			perform pg_temp.wake_assert(public.qorpera_runtime_wake_policy(v_run) = public.qorpera_wake_policy_value(null),'Wrongly attached occurrence keeps human obligations: ' || v_patch::text);
 			raise sqlstate 'PZ001';
 		exception when sqlstate 'PZ001' then null;
-			-- Another requester on this login is refused where runs change (20260928170000).
+			-- Another requester on this login is refused where runs change (20260928230000).
 			when insufficient_privilege then
 				if not v_patch ? 'requested_by_user_id' then raise; end if;
 		end;

@@ -37,7 +37,7 @@ $$;
 
 -- One of Bob's runs for a member: a post in his thread or a turn in a plain
 -- conversation with him. Inserted as 378 does, on an account of the member's own:
--- a member's login pays only for that member's work (20260928170000).
+-- a member's login pays only for that member's work (20260928230000).
 select pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000002');
 select set_config('qorpera_test.settled_member_connection',public.qorpera_register_provider_connection(
 	'30000000-0000-4000-8000-000000000010','30000000-0000-4000-8000-000000000790','30000000-0000-4000-8000-000000000002',

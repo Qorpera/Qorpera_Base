@@ -1,5 +1,5 @@
 -- @fixture 300_runtime_wake_bus.test.sql until "-- END WAKE FIXTURE"
--- The member who started the work pays (20260928170000): a member's login pays only for work that
+-- The member who started the work pays (20260928230000): a member's login pays only for work that
 -- member started, follow-up work inherits the starter's own login, a company account pays when the
 -- starter's login cannot, a coding session runs for the member who asked, and one check where runs
 -- are created refuses anything else. The fixture's owner (…001) has a login; the contributor
