@@ -47,6 +47,8 @@ export class MachinesView {
 	/** Every read carries the generation it started in; an older answer is dropped. */
 	#generation = 0;
 	#drawn = "";
+	/** One read at a time from shown(): Settings may show the tab while its first read runs. */
+	#reading = false;
 	/** A keyboard's place while its button is disabled: it goes back once the button is usable. */
 	#focusKey: string | undefined;
 
@@ -60,7 +62,7 @@ export class MachinesView {
 
 	/** Settings shows this tab again: read now (reading pauses while another tab is shown). */
 	shown(): void {
-		if (!this.#lifetime.signal.aborted && !this.#missing) void this.#read();
+		if (!this.#lifetime.signal.aborted && !this.#missing && !this.#reading) void this.#read();
 	}
 
 	dispose(): void {
@@ -74,6 +76,7 @@ export class MachinesView {
 		clearTimeout(this.#timer);
 		this.#timer = undefined;
 		const generation = ++this.#generation;
+		this.#reading = true;
 		try {
 			const machines = await this.#client.list();
 			if (this.#lifetime.signal.aborted || generation !== this.#generation) return;
@@ -84,6 +87,8 @@ export class MachinesView {
 			// Before the machines migration is on this cloud there is nothing to read.
 			if (error instanceof CloudRpcError && error.missing) this.#missing = true;
 			else this.#error = t("The company's machines could not be read.");
+		} finally {
+			if (generation === this.#generation) this.#reading = false;
 		}
 		this.#draw();
 		if (this.#missing) return;
@@ -127,17 +132,22 @@ export class MachinesView {
 		this.#working.add(machine.machineId);
 		this.#refused = undefined;
 		this.#draw();
-		let failed = false;
+		let failed: unknown;
 		try {
 			await this.#client.change(machine.machineId, action);
-		} catch {
-			failed = true;
+		} catch (error) {
+			failed = error ?? new Error("refused");
 		} finally {
 			this.#working.delete(machine.machineId);
 		}
 		if (this.#lifetime.signal.aborted) return;
-		// Said after the read that follows, which would otherwise clear it.
-		if (failed) this.#refused = t("{name} could not be changed. Try again.", { name: machine.name });
+		// Said after the read that follows, which would otherwise clear it. A member who may only
+		// read the company is told so, not to try again.
+		if (failed)
+			this.#refused =
+				failed instanceof CloudRpcError && failed.denied
+					? t("Only members who can change the company can stop, wake or delete its machines.")
+					: t("{name} could not be changed. Try again.", { name: machine.name });
 		await this.#read();
 	}
 
@@ -155,11 +165,15 @@ export class MachinesView {
 		const key = JSON.stringify([machines, this.#error, this.#refused, [...this.#working]]);
 		if (key === this.#drawn) return;
 		this.#drawn = key;
-		// A keyboard on a button stays on it through a redraw, and returns to it when it is usable again.
-		const focusKey =
-			(this.el.contains(document.activeElement)
-				? (document.activeElement as HTMLElement).dataset.focusKey
-				: undefined) ?? this.#focusKey;
+		// A keyboard on a button stays on it through a redraw, and returns to it when it is usable
+		// again, unless the member has moved on to something else meanwhile.
+		const active = document.activeElement;
+		const here = this.el.contains(active);
+		const focusKey = here
+			? (active as HTMLElement).dataset.focusKey
+			: !active || active === document.body
+				? this.#focusKey
+				: undefined;
 		replace(
 			this.el,
 			h("h1", null, t("Machines")),
@@ -189,9 +203,11 @@ export class MachinesView {
 			),
 		);
 		if (focusKey) {
-			const target = [...this.el.querySelectorAll<HTMLButtonElement>("[data-focus-key]")].find(
-				(item) => item.dataset.focusKey === focusKey,
-			);
+			// A stopped machine's Stop becomes Wake: the keyboard stays on that machine's buttons.
+			const buttons = [...this.el.querySelectorAll<HTMLButtonElement>("[data-focus-key]")];
+			const target =
+				buttons.find((item) => item.dataset.focusKey === focusKey) ??
+				buttons.find((item) => item.dataset.focusKey?.endsWith(`:${focusKey.split(":")[1]}`));
 			this.#focusKey = target?.disabled ? focusKey : undefined;
 			if (target && !target.disabled) target.focus();
 		}

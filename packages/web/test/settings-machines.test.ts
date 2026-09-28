@@ -2,7 +2,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MachinesView } from "../src/app/views/settings-machines.ts";
 import { ThreadMachines } from "../src/app/views/thread-machines.ts";
-import { createWebMachines, parseMachines, parseSessionMachines } from "../src/cloud/machines.ts";
+import { CloudRpcError } from "../src/cloud/client.ts";
+import { createWebMachines, parseMachine, parseMachines, parseSessionMachines } from "../src/cloud/machines.ts";
 import { id, settle, timestamp } from "./fixtures.ts";
 
 function machine(overrides: Record<string, unknown> = {}) {
@@ -239,8 +240,67 @@ describe("company machines in settings", () => {
 			// Nothing moving: no more reads until the agent's run changes.
 			await vi.advanceTimersByTimeAsync(60000);
 			expect(read).toHaveBeenCalledTimes(2);
+			// Five machines: the newest three stand, then "+2".
+			machines = [1, 2, 3, 4, 5].map((n) =>
+				machine({ machineId: id(90 + n), name: `m${n}`, state: "running", commandsRunning: 0, commands: [] }),
+			);
+			card.refresh();
+			await vi.advanceTimersByTimeAsync(0);
+			expect([...card.el.querySelectorAll(".thread-machine")].map((chip) => chip.textContent)).toEqual([
+				"m3",
+				"m4",
+				"m5",
+				"+2",
+			]);
 		} finally {
 			vi.useRealTimers();
 		}
+	});
+
+	it("never reads another conversation's list, and stops asking a cloud without machines", async () => {
+		expect(() =>
+			parseSessionMachines({ schema: "qorpera.session-machines/v1", sessionId: id(41), machines: [] }, id(40)),
+		).toThrow("Machines are invalid.");
+		expect(() => parseMachine({ ...machine(), lifetime: "forever" })).toThrow("Machine lifetime is invalid.");
+		const missing = new CloudRpcError("qorpera_list_session_machines", { code: "PGRST202", message: "missing" });
+		const read = vi.fn(async () => {
+			throw missing;
+		});
+		const card = new ThreadMachines(read, () => {}, new AbortController().signal);
+		card.refresh();
+		await settle();
+		card.refresh();
+		await settle();
+		expect(read).toHaveBeenCalledTimes(1);
+		const list = vi.fn(async () => {
+			throw new CloudRpcError("qorpera_list_company_machines", { code: "PGRST202", message: "missing" });
+		});
+		view = new MachinesView({ list, change: vi.fn(async () => {}) }, new AbortController().signal);
+		await settle();
+		expect(view.el.textContent).toContain("Machines are not available on this cloud yet.");
+		view.shown();
+		await settle();
+		expect(list).toHaveBeenCalledTimes(1);
+	});
+
+	it("asks before stopping a machine whose commands still run", async () => {
+		const client = {
+			list: vi.fn(async () => parseMachines({ schema: "qorpera.company-machines/v1", machines: [machine()] })),
+			change: vi.fn(async () => {}),
+		};
+		view = new MachinesView(client, new AbortController().signal);
+		document.body.append(view.el);
+		await settle();
+		[...view.el.querySelectorAll("button")].find((button) => button.textContent === "Stop")!.click();
+		await settle();
+		expect(document.querySelector(".modal")?.textContent).toContain(
+			"Stop build-a? Its running command stops with it.",
+		);
+		expect(client.change).not.toHaveBeenCalled();
+		[...document.querySelectorAll<HTMLButtonElement>(".modal-actions button")]
+			.find((button) => button.textContent === "Stop")!
+			.click();
+		await settle();
+		expect(client.change).toHaveBeenCalledWith(id(71), "stop");
 	});
 });

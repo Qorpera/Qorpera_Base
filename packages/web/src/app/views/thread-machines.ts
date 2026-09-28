@@ -1,10 +1,11 @@
+import { CloudRpcError } from "../../cloud/client.ts";
 import type { HostedMachine, MachineState } from "../../cloud/machines.ts";
 import { h, icon, replace } from "../../ui/dom.ts";
 import { phrase, t } from "../../ui/preferences.ts";
 
 /**
  * The machines an agent started from this conversation, beside the agent in
- * the thread's header: one small card each (at most three, then "+N"), with
+ * the thread's header: one small card each (the newest three, then "+N"), with
  * its name and what it is doing. A click opens Settings → Machines, where a
  * member can stop, wake or delete it. The thread reads them when the agent's
  * run changes (in a group chat, when a message arrives), and again every few
@@ -34,6 +35,8 @@ export class ThreadMachines {
 	#reading = false;
 	#again = false;
 	#drawn = "";
+	/** The cloud has no machines yet: nothing is read again. */
+	#missing = false;
 
 	constructor(read: () => Promise<HostedMachine[]>, open: () => void, signal: AbortSignal) {
 		this.#read = read;
@@ -45,7 +48,7 @@ export class ThreadMachines {
 
 	/** Reads the thread's machines now; a read already on its way is followed by one more. */
 	refresh(): void {
-		if (this.#signal.aborted) return;
+		if (this.#signal.aborted || this.#missing) return;
 		if (this.#reading) {
 			this.#again = true;
 			return;
@@ -62,7 +65,9 @@ export class ThreadMachines {
 					this.#machines = machines.filter((machine) => machine.state !== "deleted");
 					this.#draw();
 				},
-				() => undefined,
+				(error) => {
+					if (error instanceof CloudRpcError && error.missing) this.#missing = true;
+				},
 			)
 			.finally(() => {
 				this.#reading = false;
@@ -86,7 +91,8 @@ export class ThreadMachines {
 		const more = this.#machines.length - SHOWN;
 		replace(
 			this.el,
-			...this.#machines.slice(0, more > 0 ? SHOWN : undefined).map((machine) => {
+			// The list is oldest first: the newest three stand, the one being started included.
+			...this.#machines.slice(Math.max(0, more)).map((machine) => {
 				const state =
 					machine.state === "waiting" && machine.queuePosition !== null
 						? t("Waiting for room, number {position} in line", { position: machine.queuePosition })
@@ -112,7 +118,10 @@ export class ThreadMachines {
 						{
 							type: "button",
 							class: "thread-machine thread-machine-more",
-							"aria-label": t("{count} more machines. Open the company's machines", { count: more }),
+							"aria-label":
+								more === 1
+									? t("1 more machine. Open the company's machines")
+									: t("{count} more machines. Open the company's machines", { count: more }),
 							onclick: () => this.#open(),
 						},
 						`+${more}`,

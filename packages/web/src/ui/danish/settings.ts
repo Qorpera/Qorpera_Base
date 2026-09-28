@@ -316,7 +316,7 @@ export const SETTINGS: Record<string, string> = {
 	"Delete {name} and its disk? This cannot be undone.": "Slet {name} og dens disk? Det kan ikke fortrydes.",
 	"{name} could not be changed. Try again.": "{name} kunne ikke ændres. Prøv igen.",
 	"Virtual machines your agents start for tests, builds and long jobs. They belong to the company: anyone here can stop, wake or delete them.":
-		"Virtuelle maskiner, som jeres agenter starter til test, builds og lange opgaver. De tilhører virksomheden: alle her kan stoppe, vække eller slette dem.",
+		"Virtuelle maskiner, som jeres agenter starter til test, builds og lange opgaver. De tilhører virksomheden: alle her kan stoppe, starte eller slette dem.",
 	"Waiting for room, number {position} in line": "Venter på plads, nummer {position} i køen",
 	"{cpus} CPUs, {memory} GB memory, {disk} GB disk": "{cpus} CPU'er, {memory} GB hukommelse, {disk} GB disk",
 	"1 CPU, {memory} GB memory, {disk} GB disk": "1 CPU, {memory} GB hukommelse, {disk} GB disk",
@@ -324,6 +324,9 @@ export const SETTINGS: Record<string, string> = {
 	"Code from {session}": "Kode fra {session}",
 	"{label}. Open the company's machines": "{label}. Åbn virksomhedens maskiner",
 	"{count} more machines. Open the company's machines": "{count} maskiner mere. Åbn virksomhedens maskiner",
+	"1 more machine. Open the company's machines": "1 maskine mere. Åbn virksomhedens maskiner",
+	"Only members who can change the company can stop, wake or delete its machines.":
+		"Kun medlemmer, der kan ændre virksomheden, kan stoppe, starte eller slette dens maskiner.",
 	"Machines are not available on this cloud yet.": "Maskiner findes ikke på denne cloud endnu.",
 	"Stop {name}? Its running command stops with it.": "Stop {name}? Dens kørende kommando stopper med den.",
 	"Stop {name}? Its {count} running commands stop with it.":
