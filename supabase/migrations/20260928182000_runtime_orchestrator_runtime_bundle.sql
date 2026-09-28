@@ -136,7 +136,7 @@ begin
 			'nodeId', o.node_id, 'serving', o.enabled, 'lastHeartbeatAt', o.last_heartbeat_at) order by o.id, o.node_id)
 			from orchestrators o where o.sha = shas.sha), '[]'::jsonb),
 		-- Claimable now by: live (heartbeat within 2 minutes) active orchestrators declaring this bundle or
-		-- none, on a serving node or with no node row (the serving switch cannot stop those, 20260928180000).
+		-- none, on a serving node or with no node row (the serving switch cannot stop those, 20260928180700).
 		-- An upper bound: an undeclared orchestrator refuses bundles its hosts do not run, the identity-home
 		-- rule still applies, and a just re-registered orchestrator counts as live before it starts.
 		'servedBy', coalesce((select jsonb_agg(distinct o.id) from orchestrators o where o.live and coalesce(o.enabled, true)
