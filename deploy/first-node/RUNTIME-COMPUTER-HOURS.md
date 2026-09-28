@@ -137,8 +137,8 @@ No reserve, release, suspend or observe function is copied or patched.
   kind, and `standard_seconds`, what the pass adds after the company's running total
   (`qorpera_computer_hour_totals`) is rounded up to whole seconds.
 - It takes no lock on company or member rows (`qorpera_lock_profile_gc_fence` takes the profile
-  row FOR UPDATE on every reservation, suspend and lease check). Its only lock besides the
-  advisory lock is on billing sources it charges (step 3).
+  row FOR UPDATE on every reservation, suspend and lease check). Besides the advisory lock it
+  locks only its own working rows and the billing sources a charge may draw from (step 3).
 - Reads are indexed and bounded by what changed. It never scans old receipts.
 - `qorpera_read_company_computer_hours(profile, month)`: any member of the company; the calendar
   month in Europe/Copenhagen time.
@@ -237,8 +237,9 @@ every draw count from then, in live records.
   an upgrade that raises a period's hours, and a member made founder repay owed time at the
   company's next use instead; the webhook writes periods at their start and upgrades as an extra
   period row for the rest of the period, so the common paths repay at once. Webhook writes run
-  under READ COMMITTED and take `qorpera_computer_hour_lock_billing()` first (a statement trigger
-  on the sources table also takes it).
+  under READ COMMITTED and take `qorpera_computer_hour_lock_billing()` before anything else,
+  including any `SELECT ... FOR UPDATE` on a source (a statement trigger on the sources table
+  also takes it, but only once a write starts).
 - The plan catalog lives in the database with each Stripe price id; checkout re-verifies the price.
   Prices exclude VAT. Stripe Tax adds Danish VAT, or reverse charge for EU buyers with a VAT id;
   checkout collects the address and an optional CVR/VAT number.

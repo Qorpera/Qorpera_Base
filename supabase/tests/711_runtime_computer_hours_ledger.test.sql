@@ -169,7 +169,7 @@ select pg_temp.wake_assert(pg_temp.hours_left() = 590 and (select bool_and(sourc
 -- credit that arrived during the dry run counts now. A pass metered before the switch stays a dry run.
 update public.qorpera_computer_hour_billing set live_since = clock_timestamp();
 insert into public.qorpera_computer_hour_usage (profile_id, metered_at, run_seconds, standard_seconds)
-values ('30000000-0000-4000-8000-000000000010', clock_timestamp() - interval '1 second', 5, 5);
+select '30000000-0000-4000-8000-000000000010', live_since - interval '1 second', 5, 5 from public.qorpera_computer_hour_billing;
 select pg_temp.wake_assert((select bool_and(source.dry_run) from public.qorpera_computer_hour_draws draw
 	join public.qorpera_computer_hour_sources source on source.id = draw.source_id
 	join public.qorpera_computer_hour_usage usage on usage.id = draw.usage_id where usage.standard_seconds = 5),

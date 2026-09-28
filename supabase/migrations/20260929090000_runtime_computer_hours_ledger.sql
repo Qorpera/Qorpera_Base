@@ -139,8 +139,10 @@ $$;
 revoke all on function public.qorpera_computer_hour_lock_billing() from public, anon, authenticated, service_role;
 
 -- Every statement that writes sources takes the billing lock before it touches a row, so a writer
--- that forgot to take it first still cannot deadlock with a meter pass (which already holds it;
--- taking it again in the same transaction is immediate).
+-- whose first contact with billing records is a write cannot deadlock with a meter pass (which
+-- already holds it; taking it again in the same transaction is immediate). A writer that locks
+-- sources another way first (SELECT ... FOR UPDATE) must take qorpera_computer_hour_lock_billing()
+-- before that.
 create function public.qorpera_computer_hour_lock_sources()
 returns trigger
 language plpgsql
