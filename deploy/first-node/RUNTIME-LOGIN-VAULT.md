@@ -289,7 +289,8 @@ new stored); new companies only; node 1 serves, node 2 stands ready with the sam
     copy of the shared vault and at the same moment too, answers the same authority and changes nothing
     (an operator's later switch-off stays). Another capability, another principal, a company created at or
     before the start time, or a company with a vault of its own (retired included) is refused (`23505` or
-    `42501`); a capability hash that names another company's authority is refused with `22023`.
+    `42501`); a capability hash that names another company's authority is refused with `22023`. It runs at
+    read committed only (`25000` otherwise): its race handling re-reads the other copy's committed row.
   - Every existing broker function then serves the company unchanged: each call names the company's own
     authority and capability. Locks: the new authority row and the switch row, plus the key-share locks
     their foreign keys take on the company's profile row and the principal row (a registration waits at
