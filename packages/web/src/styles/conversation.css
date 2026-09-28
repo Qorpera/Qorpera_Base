@@ -241,17 +241,41 @@
 .decision-facts dt, .decision-attribution { color: var(--text-muted); font-size: 11px; }
 .decision-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; padding-top: 8px; }
 .decision-actions p { flex-basis: 100%; color: var(--text-muted); font-size: 11px; }
-/* Approval cards of agents' actions (auto-review, v130). */
-.action-review-card .review-target { margin: 0 0 6px; font-weight: 600; }
-.review-reasons { margin: 8px 0; padding-left: 18px; color: var(--text-muted); }
-.review-reasons li + li { margin-top: 3px; }
-.review-call { max-height: 180px; margin: 8px 0 0; padding: 10px; overflow: auto; border-radius: 8px; background: #f1f1ef; font-size: 11px; white-space: pre-wrap; overflow-wrap: anywhere; }
+/* Approval cards of agents' actions (auto-review, v130). The action leads, then the
+ * change itself (who it reaches, what it is called, what it says); why it asks is one
+ * quiet block, and the answer closes the card. Answered, the card folds to one line. */
+.action-review-card .review-headline { margin-top: 0; font-size: 15px; line-height: 1.35; }
+.review-change { display: grid; gap: 6px; margin: 8px 0 0; }
+.review-change > * { margin: 0; }
+.action-review-card .review-target { font-weight: 600; }
+.review-name { font-weight: 600; }
+.review-quote { padding: 2px 0 2px 12px; border-left: 2px solid var(--border-strong); color: var(--text); white-space: pre-wrap; }
+.review-quote.is-command { max-height: 12em; overflow: auto; font: 11.5px/1.5 var(--font-mono); }
+.review-why { margin-top: 10px; color: var(--text-muted); font-size: 12px; line-height: 1.45; }
+.review-why p { margin: 0; }
+.review-reasons { margin: 4px 0 0; padding: 0; list-style: none; color: var(--text-muted); }
+.review-reasons li + li { margin-top: 2px; }
+/* The answer closes the card: its buttons are the last thing in it. */
+.action-review-card .review-answer { margin-top: 12px; }
+/* An email to approve wears the thread's email card (email-draft-card.ts), read-only. */
+.review-email { overflow-wrap: anywhere; }
+.review-email .review-email-body { padding: 13px 16px; color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.55; }
+.review-email .review-why { margin: 10px 2px 0; }
+.review-email .review-waiting, .review-email .review-failed { margin-inline: 2px; }
+.review-email .email-draft-actions .review-always-open { margin-left: auto; background: transparent; color: var(--text-muted); font-size: 13px; }
+.action-review-card.is-folded { display: flex; align-items: flex-start; gap: 8px; width: auto; padding: 4px 2px; border-color: transparent; background: none; }
+.review-mark { display: grid; flex: none; place-items: center; width: 18px; height: 18px; margin-top: 1px; border-radius: 50%; }
+.review-mark .icon { width: 11px; height: 11px; stroke-width: 2.4; }
+.review-mark.is-approved { background: var(--ok-soft); color: #0f7a5a; }
+.review-mark.is-declined { background: var(--pane-strong); color: var(--text-muted); }
+.review-folded { margin: 0; color: var(--text-muted); font-size: 12.5px; }
+.review-folded-what { color: var(--text); }
 .review-failed { margin: 10px 0 0; color: var(--danger, #b3261e); font-size: 12px; }
 .action-review-card:focus { outline: none; }
 .action-review-card:focus-visible { outline: 2px solid var(--focus, #3478f6); outline-offset: 2px; }
 .review-always label { display: grid; gap: 6px; margin-top: 10px; color: var(--text-muted); font-size: 11px; }
 .review-rule-input { width: 100%; padding: 8px 10px; border: 1px solid #dfdfdb; border-radius: 8px; background: #fff; color: var(--text); font: inherit; font-size: 13px; }
-.review-waiting, .review-outcome { margin: 10px 0 0; font-size: 12px; }
+.review-waiting { margin: 12px 0 0; font-size: 12px; color: var(--text-muted); }
 .decision-details { border-top: 1px solid var(--border); margin-top: 14px; padding-top: 4px; font-size: 11px; }
 .decision-details > summary { color: var(--text-muted); font-weight: 400; }
 .decision-details .kv { grid-template-columns: minmax(0, 1fr); }
