@@ -159,7 +159,7 @@ describe("several computers per company", () => {
 			open = spyViewer();
 		await opened(f.computer);
 		expect(open).toHaveBeenCalledExactlyOnceWith(
-			expect.objectContaining({ binding: binding2, title: `${staff.displayName} · Computer 2` }),
+			expect.objectContaining({ binding: binding2, title: `${staff.displayName} · Computer · Machine 2` }),
 		);
 		expect(methods(f)).toEqual([
 			"qorpera_member_agent_office",
@@ -246,7 +246,7 @@ describe("several computers per company", () => {
 			}),
 			open = spyViewer();
 		const p = await opened(f.computer);
-		expect(statusLine(p)).toBe("Setting up another computer. This can take a while.");
+		expect(statusLine(p)).toBe("Setting up another machine. This can take a while.");
 		for (let n = 0; n < 12 && !open.mock.calls.length; n++) await poll();
 		expect(open).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ binding }));
 	});
@@ -259,7 +259,7 @@ describe("several computers per company", () => {
 			qorpera_runtime_office_start_status: { ...start, officeState: "provisioning", intent },
 		});
 		const p = await opened(f.computer);
-		expect(statusLine(p)).toBe("Setting up the computer. This can take a while.");
+		expect(statusLine(p)).toBe("Setting up the machine. This can take a while.");
 	});
 	it("tells members when the agent's computer access was revoked everywhere", async () => {
 		const f = setup({ qorpera_member_agent_office: placed(null, { placement: "denied" }) });
@@ -278,7 +278,7 @@ describe("several computers per company", () => {
 			await vi.advanceTimersByTimeAsync(1000);
 			await settle();
 		}
-		expect(statusLine(p)).toBe("The computer is not ready yet.");
+		expect(statusLine(p)).toBe("The machine is not ready yet.");
 		expect(action(p.el, "Try again").hidden).toBe(false);
 		expect(open).not.toHaveBeenCalled();
 		expect(methods(f).filter((method) => method === "qorpera_member_agent_office")).toHaveLength(3);
@@ -288,7 +288,7 @@ describe("several computers per company", () => {
 			qorpera_member_agent_office: placed(null, { placement: "new", canManage: false }),
 		});
 		const p = await opened(f.computer);
-		expect(statusLine(p)).toBe("Every computer is in use. An owner or admin can add another one.");
+		expect(statusLine(p)).toBe("All computers are in use. An owner or admin can start another machine.");
 		expect(action(p.el, "Try again").hidden).toBe(false);
 		expect(methods(f)).toEqual(["qorpera_member_agent_office"]);
 	});
@@ -369,7 +369,7 @@ describe("automatic computer popover", () => {
 		expect(statusLine(unavailable)).toBe("Computer access is not available yet.");
 		const f = setup({ qorpera_member_office_catalog: { ...catalog, scope: null } });
 		const p = await opened(f.computer);
-		expect(statusLine(p)).toBe("This company has no computer yet.");
+		expect(statusLine(p)).toBe("This company has no machine yet.");
 		expect(methods(f)).toEqual(["qorpera_member_agent_office", "qorpera_member_office_catalog"]);
 		expect(p.el.textContent).not.toContain("Open computer");
 	});
@@ -418,7 +418,7 @@ describe("automatic computer popover", () => {
 		const startClient = spyStart(f),
 			cancel = vi.spyOn(startClient, "cancel");
 		const p = await opened(f.computer);
-		expect(statusLine(p)).toBe("The computer is restarting. It comes back on its own.");
+		expect(statusLine(p)).toBe("The machine is restarting. It comes back on its own.");
 		p.focus();
 		expect(document.activeElement).toBe(p.el);
 		p.el.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
@@ -744,9 +744,7 @@ describe("web runtime member boundary", () => {
 		const open = spyViewer();
 		const p = await opened(f.computer);
 		await poll();
-		expect(statusLine(p)).toBe(
-			"You have read-only access. A company member with write access can wake the computer.",
-		);
+		expect(statusLine(p)).toBe("You have read-only access. A company member with write access can wake the machine.");
 		expect(request).not.toHaveBeenCalled();
 		f.replies.qorpera_runtime_office_start_status = start;
 		await poll();
@@ -789,7 +787,7 @@ describe("web runtime member boundary", () => {
 		const p = await opened(f.computer);
 		await poll();
 		expect(request).toHaveBeenCalledOnce();
-		expect(statusLine(p)).toBe("Starting the computer…");
+		expect(statusLine(p)).toBe("Starting the machine…");
 		f.replies.qorpera_runtime_office_start_status = start;
 		f.replies.qorpera_runtime_office_member_status = status;
 		await poll();
@@ -817,7 +815,7 @@ describe("web runtime member boundary", () => {
 			const p = await opened(f.computer);
 			await poll();
 			expect(request).toHaveBeenCalledOnce();
-			expect(statusLine(p)).toBe("Starting the computer…");
+			expect(statusLine(p)).toBe("Starting the machine…");
 			await poll();
 			expect(request).toHaveBeenCalledOnce();
 			f.replies.qorpera_runtime_office_start_status = start;
@@ -891,7 +889,7 @@ describe("web runtime member boundary", () => {
 			});
 			const cancel = vi.spyOn(spyStart(f), "cancel");
 			const p = await opened(f.computer);
-			expect(statusLine(p)).toBe("Starting the computer…");
+			expect(statusLine(p)).toBe("Starting the machine…");
 			expect(bodies(f, WITHDRAW)).toEqual([]);
 			p.el.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
 			await settle();
@@ -1029,7 +1027,7 @@ describe("web runtime member boundary", () => {
 				request = vi.spyOn(startClient, "request"),
 				cancel = vi.spyOn(startClient, "cancel");
 			const p = await opened(f.computer);
-			expect(statusLine(p)).toBe("Starting the computer…");
+			expect(statusLine(p)).toBe("Starting the machine…");
 			await poll();
 			await poll();
 			p.dispose();
@@ -1068,7 +1066,7 @@ describe("web runtime member boundary", () => {
 		const request = vi.spyOn(spyStart(f), "request").mockResolvedValue(intent),
 			open = spyViewer();
 		const p = await opened(f.computer);
-		expect(statusLine(p)).toBe("Starting the computer…");
+		expect(statusLine(p)).toBe("Starting the machine…");
 		await poll();
 		await poll();
 		expect(request).toHaveBeenCalledTimes(1);
@@ -1111,12 +1109,12 @@ describe("web runtime member boundary", () => {
 						expect(open).not.toHaveBeenCalled();
 						expect(statusLine(p)).toBe(
 							officeState === "maintenance"
-								? "The computer is restarting. It comes back on its own."
+								? "The machine is restarting. It comes back on its own."
 								: officeState === "retired"
-									? "This computer has been retired."
+									? "This machine has been retired."
 									: canManage
-										? "Starting the computer…"
-										: "The computer is off. An owner or admin can start it.",
+										? "Starting the machine…"
+										: "The machine is off. An owner or admin can start it.",
 						);
 					}
 					if (officeState === "retired") {
@@ -1152,7 +1150,7 @@ describe("web runtime member boundary", () => {
 		expect(open).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ binding: mine(3).binding }));
 	});
 	it.each([
-		["SCREEN_CAPACITY_EXHAUSTED", "All screens on this computer are in use. Try again when one is free."],
+		["SCREEN_CAPACITY_EXHAUSTED", "All computers on this machine are in use. Try again when one is free."],
 		["AGENT_HAS_NO_COMPUTER_ACCESS", `${staff.displayName} does not have access to the computer.`],
 	])("shows the %s refusal without repeatedly requesting access", async (reason, text) => {
 		const f = setup({
@@ -1178,7 +1176,7 @@ describe("web runtime member boundary", () => {
 			vi.spyOn(f.computer, "views").mockReturnValue(views);
 			const p = await opened(f.computer);
 			await poll();
-			expect(statusLine(p)).toBe("The computer is private right now. Shared viewing returns when that ends.");
+			expect(statusLine(p)).toBe("The machine is private right now. Shared viewing returns when that ends.");
 			expect(open).not.toHaveBeenCalled();
 			expect(connect).not.toHaveBeenCalled();
 			f.replies.qorpera_runtime_office_member_status = status;
@@ -1191,7 +1189,7 @@ describe("web runtime member boundary", () => {
 			open = spyViewer();
 		delete f.cloud.config.officeViewerOrigin;
 		const p = await opened(f.computer);
-		expect(statusLine(p)).toBe("Screen viewing is not set up here.");
+		expect(statusLine(p)).toBe("Computer viewing is not set up here.");
 		expect(open).not.toHaveBeenCalled();
 		expect(methods(f)).not.toContain("qorpera_runtime_office_member_status");
 	});

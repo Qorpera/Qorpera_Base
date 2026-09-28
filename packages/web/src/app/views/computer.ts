@@ -153,18 +153,18 @@ export class ComputerPanel {
 				const catalog = await computer.client.catalog(signal);
 				signal.throwIfAborted();
 				if (!catalog.scope) {
-					unavailable(t("This company has no computer yet."));
+					unavailable(t("This company has no machine yet."));
 					return undefined;
 				}
 				return { scope: catalog.scope, canManage: catalog.canManage, number: 1, computers: 1 };
 			}
 			if (!placed.computer) {
-				if (placed.computers === 0) unavailable(t("This company has no computer yet."));
+				if (placed.computers === 0) unavailable(t("This company has no machine yet."));
 				else if (placed.placement === "denied")
 					unavailable(t("{name} does not have access to the computer.", { name: agent.displayName }));
 				else if (placed.placement === "new")
-					blocked(t("Every computer is in use. An owner or admin can add another one."));
-				else blocked(t("The computer is not ready yet."));
+					blocked(t("All computers are in use. An owner or admin can start another machine."));
+				else blocked(t("The machine is not ready yet."));
 				return undefined;
 			}
 			return {
@@ -178,8 +178,8 @@ export class ComputerPanel {
 		const waitingLine = (waiting: "setup" | "room" | null | undefined, number: number) =>
 			waiting === "setup"
 				? number > 1
-					? t("Setting up another computer. This can take a while.")
-					: t("Setting up the computer. This can take a while.")
+					? t("Setting up another machine. This can take a while.")
+					: t("Setting up the machine. This can take a while.")
 				: waiting === "room"
 					? t("Waiting for room on our servers. It starts as soon as there is room.")
 					: undefined;
@@ -227,15 +227,15 @@ export class ComputerPanel {
 					const cycle = idle ? `idle:${start.maintenance!.transitionId}` : "start";
 					const key = `${scope.companyId}:${scope.environmentId}:${scope.companyComputerId}:${scope.logicalComputerId}:${start.computerGeneration}:${cycle}`;
 					if (start.officeState === "maintenance" && !idle) {
-						this.#status.textContent = t("The computer is restarting. It comes back on its own.");
+						this.#status.textContent = t("The machine is restarting. It comes back on its own.");
 					} else if (start.officeState === "retired") {
-						unavailable(t("This computer has been retired."));
+						unavailable(t("This machine has been retired."));
 						return false;
 					} else if (!canManage && !idle) {
-						this.#status.textContent = t("The computer is off. An owner or admin can start it.");
+						this.#status.textContent = t("The machine is off. An owner or admin can start it.");
 					} else if (idle && !computer.canRequestWake) {
 						this.#status.textContent = t(
-							"You have read-only access. A company member with write access can wake the computer.",
+							"You have read-only access. A company member with write access can wake the machine.",
 						);
 					} else {
 						if ((!start.intent || idle) && requestedKey !== key) {
@@ -273,7 +273,7 @@ export class ComputerPanel {
 										? await recheck(scope, located.number, until)
 										: this.#status.textContent;
 						if (reason === MOVED) throw MOVED;
-						this.#status.textContent = reason ?? t("Starting the computer…");
+						this.#status.textContent = reason ?? t("Starting the machine…");
 					}
 					await wait(3000, until);
 				}
@@ -283,7 +283,7 @@ export class ComputerPanel {
 			try {
 				views = computer.views(scope);
 			} catch {
-				unavailable(t("Screen viewing is not set up here."));
+				unavailable(t("Computer viewing is not set up here."));
 				return;
 			}
 			this.#status.textContent = t("Connecting…");
@@ -292,7 +292,7 @@ export class ComputerPanel {
 				const status = await views.status(signal);
 				signal.throwIfAborted();
 				if (status.state === "retired") {
-					unavailable(t("This computer has been retired."));
+					unavailable(t("This machine has been retired."));
 					return;
 				}
 				if (status.state !== "active") {
@@ -351,14 +351,14 @@ export class ComputerPanel {
 							if (opened.reason === "AGENT_ON_OTHER_COMPUTER") throw MOVED;
 							const text =
 								opened.reason === "SCREEN_CAPACITY_EXHAUSTED"
-									? t("All screens on this computer are in use. Try again when one is free.")
+									? t("All computers on this machine are in use. Try again when one is free.")
 									: opened.reason === "AGENT_HAS_NO_COMPUTER_ACCESS"
 										? t("{name} does not have access to the computer.", { name: agent.displayName })
 										: opened.reason === "SCREEN_OCCUPIED"
-											? t("{name}'s screen is being handed over. It opens here in a moment.", {
+											? t("{name}'s computer is being handed over. It opens here in a moment.", {
 													name: agent.displayName,
 												})
-											: t("The computer is not ready yet.");
+											: t("The machine is not ready yet.");
 							if (opened.reason !== "SCREEN_OCCUPIED" && opened.reason !== "COMPUTER_NOT_ACTIVE") {
 								unavailable(text);
 								return;
@@ -368,9 +368,7 @@ export class ComputerPanel {
 						} else continue;
 					}
 				} else {
-					this.#status.textContent = t(
-						"The computer is private right now. Shared viewing returns when that ends.",
-					);
+					this.#status.textContent = t("The machine is private right now. Shared viewing returns when that ends.");
 				}
 				await wait(3000, signal);
 			}
@@ -389,7 +387,7 @@ export class ComputerPanel {
 					// The computer it left needs no wake from this panel any more.
 					this.#withdrawWakes();
 					if (moves >= 2) {
-						unavailable(t("The computer is not ready yet."));
+						unavailable(t("The machine is not ready yet."));
 						this.#retry.hidden = false;
 						break;
 					}
@@ -426,7 +424,7 @@ export class ComputerPanel {
 	#titleText(): string {
 		return this.#number === undefined
 			? t("{name} · Computer", { name: this.#name })
-			: t("{name} · Computer {number}", { name: this.#name, number: String(this.#number) });
+			: t("{name} · Computer · Machine {number}", { name: this.#name, number: String(this.#number) });
 	}
 
 	#applyTitle(): void {
