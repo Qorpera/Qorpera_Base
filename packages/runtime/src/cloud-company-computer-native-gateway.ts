@@ -1,6 +1,7 @@
 import { timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { createServer } from "node:https";
+import { performance } from "node:perf_hooks";
 import type { Duplex } from "node:stream";
 import { isDeepStrictEqual } from "node:util";
 import {
@@ -31,6 +32,16 @@ export interface CompanyComputerNativeGuestSession {
 	/** Stop and reap this session's resources, including idle browser channels.
 	 * No screen/VM power change or profile-byte deletion. */
 	close(): Promise<void>;
+	/** True once the guest itself ended this session (its screen was drained)
+	 * and finished reaping it. The same lease may then open a fresh one. */
+	ended?(): boolean;
+}
+/** The guest refused to create a session and created nothing; the gateway keeps no capacity for it. */
+export class CompanyComputerGuestSessionRefusedError extends Error {
+	constructor(reason: string) {
+		super(reason);
+		this.name = "CompanyComputerGuestSessionRefusedError";
+	}
 }
 export type CompanyComputerNativeGuestSessionFactory = (options: {
 	run: CloudNativeToolRun;
@@ -46,6 +57,9 @@ interface Session {
 	guest: CompanyComputerNativeGuestSession;
 	active: Set<Promise<unknown>>;
 	closing?: Promise<void>;
+	reopening?: Promise<void>;
+	/** A failed reopen is not retried before this time; the action fails as the old session would. */
+	reopenAfter?: number;
 	closed: boolean;
 	released: boolean;
 }
@@ -215,6 +229,53 @@ export class CompanyComputerNativeGateway {
 		);
 		return session.closing;
 	}
+	/**
+	 * The guest ended this run's session under a lease that is still the run's
+	 * (its desktop went away mid-run). Open a fresh one with the same lease and
+	 * configuration, so the run keeps its computer. It grants nothing: the next
+	 * action still passes the endpoint's authorization and effect receipt.
+	 */
+	#reopen(session: Session): Promise<void> {
+		session.reopening ??= (async () => {
+			const descriptor = parseCompanyComputerNativeDescriptor(
+				await this.#registry.call(
+					"qorpera_native_office_descriptor",
+					{ p_binding: session.run.binding },
+					session.run.signal,
+				),
+				session.run,
+			);
+			if (!descriptor) throw new Error("OFFICE_UNAVAILABLE");
+			assertCompanyComputerScope(descriptor.scope, this.#scope);
+			const effects = new CloudCompanyComputerEffectControl({
+				run: session.run,
+				scope: this.#scope,
+				control: this.#registry,
+			});
+			// The fresh session takes the old one's place at once, whatever happens
+			// next, so the run's own close reaps it. A changed configuration needs no
+			// check here: its endpoint refuses every operation the run was admitted with.
+			session.guest = await this.#createSession({
+				run: session.run,
+				descriptor,
+				lease: structuredClone(session.lease),
+				effects,
+			});
+			if (session.closed) {
+				// The run's close may already have closed the session it replaced.
+				await session.guest.close().catch(() => undefined);
+				throw new Error("OFFICE_NATIVE_CLOSED");
+			}
+		})()
+			.catch((error: unknown) => {
+				session.reopenAfter = performance.now() + 3000;
+				throw error;
+			})
+			.finally(() => {
+				session.reopening = undefined;
+			});
+		return session.reopening;
+	}
 	async #dispatch(value: unknown, signal: AbortSignal): Promise<unknown> {
 		const action = value && typeof value === "object" && "action" in value ? value.action : undefined;
 		const body = officeNativeRecord(
@@ -272,10 +333,11 @@ export class CompanyComputerNativeGateway {
 				guestOwned = true;
 			});
 			this.#sessions.set(key, pending);
-			void pending.catch(() => {
-				// Rejected authority did not create any guest resources. Unknown
-				// factory/cleanup outcomes retain capacity until service recovery.
-				if (!guestOwned) {
+			void pending.catch((error: unknown) => {
+				// Rejected authority did not create any guest resources, nor did a
+				// guest that refused to create a session. Unknown factory/cleanup
+				// outcomes retain capacity until service recovery.
+				if (!guestOwned || error instanceof CompanyComputerGuestSessionRefusedError) {
 					this.#sessions.delete(key);
 					this.#activeSessions--;
 				}
@@ -287,6 +349,10 @@ export class CompanyComputerNativeGateway {
 		const result = (async () => {
 			const combined = AbortSignal.any([signal, session.run.signal]);
 			await session.run.assertActive(combined);
+			if (session.guest.ended?.()) {
+				if ((session.reopenAfter ?? 0) > performance.now()) throw new Error("OFFICE_SESSION_CLOSED");
+				await cloudToolRequest(() => this.#reopen(session), combined);
+			}
 			await session.guest.endpoint.authorize(operation, session.run.identity, lease, combined);
 			const content = await session.guest.endpoint.perform(operation, lease, {
 				identity: session.run.identity,
