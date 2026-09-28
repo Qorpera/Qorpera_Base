@@ -61,7 +61,8 @@ export function markSkillNames(root: ParentNode, names: ReadonlySet<string>): vo
 					: neighbour.data.slice(0, 1)
 				: "";
 	for (const [index, text] of texts.entries()) {
-		if (text === "\n" || text.parentElement?.closest("code, pre, a, kbd, .message-skill")) continue;
+		// Code, links, an "@" name and a name already marked are left as they are.
+		if (text === "\n" || text.parentElement?.closest("code, pre, a, kbd, .mention, .message-skill")) continue;
 		const before = edge(texts[index - 1], text, true);
 		const after = edge(texts[index + 1], text, false);
 		const value = text.data;
@@ -231,6 +232,12 @@ export class SkillMentions {
 			return consume();
 		}
 		return false;
+	}
+
+	/** Reads the text around the caret again, as a keystroke would: the text changed without one
+	 * (a teammate's words in a shared draft). An open menu follows or closes; a closed one stays. */
+	refresh(): void {
+		if (!this.menu.hidden) this.#update();
 	}
 
 	/** Closes the menu; the next keystroke in a "/name" opens it again. */
@@ -439,13 +446,13 @@ export class SkillMentions {
 	}
 
 	#open(): void {
-		const wasHidden = this.menu.hidden;
+		// The other popups close first: closing clears the field's popup attributes, which are then this menu's.
+		if (this.menu.hidden) this.#opened();
 		this.menu.hidden = false;
 		this.#input.setAttribute("aria-autocomplete", "list");
 		this.#input.setAttribute("aria-controls", this.#list.id);
 		const active = this.#active >= 0 ? this.#list.children[this.#active] : undefined;
 		if (active) this.#input.setAttribute("aria-activedescendant", active.id);
 		else this.#input.removeAttribute("aria-activedescendant");
-		if (wasHidden) this.#opened();
 	}
 }

@@ -1088,6 +1088,8 @@ export class ConversationView {
 		// A teammate's words can land in this composer (shared drafts) while names are shown:
 		// where the name being typed now starts is read again, or the names close.
 		else if (this.#mention && document.activeElement === this.#composer) this.#updateMention();
+		// The same for an open skill menu.
+		this.#skills.refresh();
 		this.#renderMentionNote();
 		this.#sharedDrafts.update();
 	}
