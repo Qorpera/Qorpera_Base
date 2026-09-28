@@ -280,16 +280,31 @@ it("answers a sign-in only to the client that began it: the shared vault and the
 	};
 	expect(
 		() =>
-			new ModelLoginHelperService({ socketPath, token, vaultToken: token, renewer: { renew: vi.fn() }, signIns: fake }),
+			new ModelLoginHelperService({
+				socketPath,
+				token,
+				vaultToken: token,
+				renewer: { renew: vi.fn() },
+				signIns: fake,
+			}),
 	).toThrow("Login helper token is invalid");
-	const service = new ModelLoginHelperService({ socketPath, token, vaultToken, renewer: { renew: vi.fn() }, signIns: fake });
+	const service = new ModelLoginHelperService({
+		socketPath,
+		token,
+		vaultToken,
+		renewer: { renew: vi.fn() },
+		signIns: fake,
+	});
 	await service.start();
 	closers.push(() => service.close());
 	const broker = new ModelLoginHelperClient({ socketPath, token });
 	const vault = new ModelLoginHelperClient({ socketPath, token: vaultToken });
 	await broker.beginSignIn(brokers, signal());
 	await vault.beginSignIn(vaults, signal());
-	const own = (entry: { signInId: string }) => ({ signInId: entry.signInId, companyId: entry.companyId });
+	const own = (entry: { signInId: string; companyId: string }) => ({
+		signInId: entry.signInId,
+		companyId: entry.companyId,
+	});
 	// Each sees only its own finished sign-ins, and reads the other's as unknown.
 	await expect(broker.listCompletedSignIns({ companyId: brokers.companyId }, signal())).resolves.toEqual([
 		{ signInId: brokers.signInId, capabilitySha256: brokers.capabilitySha256 },
