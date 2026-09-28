@@ -148,6 +148,10 @@ describe("office fleet service installation", () => {
 		expect(units.provider.text).toContain('"$$2" --config "$$3"');
 		for (const unit of Object.values(units)) {
 			expect(unit.text).toContain(`User=${policy.workbench.uid}`);
+			// The namespace helper the node observer installs on every node, not the single-office one.
+			expect(unit.text).toContain("Requires=qorpera-node-host-namespace.service");
+			expect(unit.text).toContain("After=network-online.target qorpera-node-host-namespace.service");
+			expect(unit.text).not.toContain("qorpera-office-host-namespace");
 			expect(unit.text).toContain(`SupplementaryGroups=${policy.host.socketGid}`);
 			expect(unit.text).toContain(`"${policy.journal.path}/adoption.lock"`);
 			expect(unit.text).toContain("NoNewPrivileges=yes");

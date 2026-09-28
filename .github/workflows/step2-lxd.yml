@@ -144,6 +144,8 @@ jobs:
           test/lxd-office-image-self-update.test.ts
           test/office-self-update-mask.test.ts
           test/office-service-software-control.test.ts
+          test/lxd-office-fleet.test.ts
+          test/lxd-office-node-base.test.ts
 
       - name: Test coding session runtime contracts
         working-directory: packages/runtime
