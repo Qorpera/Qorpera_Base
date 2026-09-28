@@ -48,6 +48,7 @@ import { GroupDetails } from "./group-details.ts";
 import { PairTranscriptView } from "./pair-transcript.ts";
 import { SessionExecutionView } from "./session-execution.ts";
 import { SessionRunView } from "./session-run.ts";
+import { SharedDrafts } from "./shared-drafts.ts";
 
 /* How often the thread re-reads its coding sessions while one is still going: the
  * header's figures follow them. Nothing is read once they all settled. */
@@ -86,6 +87,8 @@ export class ConversationView {
 	/** The messages' placeholder, one per load, so the log does not read it out again on each redraw. */
 	#messagesPlaceholder: HTMLElement | undefined;
 	readonly #composerShell: HTMLElement;
+	/** Other members' unsent messages above the composer, and who writes in this member's own. */
+	readonly #sharedDrafts: SharedDrafts;
 	readonly #attachments: AttachmentTray;
 	readonly #more: HTMLButtonElement;
 	readonly #menu: HTMLElement;
@@ -198,6 +201,7 @@ export class ConversationView {
 			oninput: () => {
 				this.#autosize();
 				company.conversation(sessionId).set({ draft: this.#composer.value });
+				this.#sharedDrafts.input();
 			},
 		});
 		this.#send = h(
@@ -334,7 +338,14 @@ export class ConversationView {
 			this.#composerShell.classList.remove("is-dragging");
 			if (!this.#composer.disabled && !this.#isRoom) this.#attachments.add([...(event.dataTransfer?.files ?? [])]);
 		});
-		this.#composerWrap = h("footer", { class: "composer" }, this.#composerShell, this.#attachments.status);
+		this.#sharedDrafts = new SharedDrafts(company, sessionId, this.#composer, () => this.#autosize());
+		this.#composerWrap = h(
+			"footer",
+			{ class: "composer" },
+			this.#sharedDrafts.el,
+			this.#composerShell,
+			this.#attachments.status,
+		);
 		this.#identity = h("button", {
 			type: "button",
 			class: "thread-identity",
@@ -469,6 +480,7 @@ export class ConversationView {
 		else this.#panel?.detach();
 		this.#panel = undefined;
 		this.#attachments.dispose();
+		this.#sharedDrafts.dispose();
 		for (const attachments of this.#receivedAttachments) attachments.dispose();
 		this.#closeCodingSession();
 		clearTimeout(this.#codingPoll);
@@ -827,6 +839,7 @@ export class ConversationView {
 			this.#composer.value = conversation.draft ?? "";
 			this.#autosize();
 		}
+		this.#sharedDrafts.update();
 	}
 
 	#renderHeader(session: HostedSession | undefined, agent: HostedStaffAgent | undefined): void {
