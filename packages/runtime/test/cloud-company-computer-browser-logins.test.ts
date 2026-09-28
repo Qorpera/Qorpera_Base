@@ -313,13 +313,39 @@ describe("sign-ins across the company's computers", () => {
 		time += 60_000;
 		await rm(f.path);
 		await legacy();
-		await utimes(f.path, new Date(time / 1000), new Date(time / 1000 + 60));
+		await utimes(f.path, time / 1000, time / 1000 + 60);
 		const next = f.logins(COMPUTER_1, () => time),
 			c = browser();
 		await next.attach("agent-c", c.context);
 		expect(c.value("session")).toBe("rotated");
 		expect(c.value("mail")).toBeUndefined();
 		await next.close();
+	});
+	it("never brings back the value a rotated sign-in replaced once the new one expires", async () => {
+		let time = Date.now();
+		const f = await store(() => time);
+		const inSeconds = (seconds: number) => Math.trunc(time / 1000) + seconds;
+		await writeFile(
+			f.path,
+			JSON.stringify({
+				schema: "qorpera.company-browser-logins/v1",
+				cookies: [cookie("session", "A", { expires: inSeconds(365 * 24 * 3600) })],
+			}),
+			{ mode: 0o600 },
+		);
+		const one = f.logins(COMPUTER_1, () => time),
+			a = browser();
+		await one.attach("agent-a", a.context);
+		expect(a.value("session")).toBe("A");
+		a.set(cookie("session", "B", { expires: inSeconds(3600) }));
+		await one.sync();
+		time += 2 * 3600 * 1000;
+		await one.sync();
+		expect(a.value("session")).not.toBe("A");
+		const b = browser();
+		await one.attach("agent-b", b.context);
+		expect(b.value("session")).toBeUndefined();
+		await one.close();
 	});
 	it("lets a later change win even when its computer's clock runs behind", async () => {
 		let fast = 5_000_000;

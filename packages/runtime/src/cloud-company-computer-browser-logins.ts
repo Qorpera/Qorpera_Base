@@ -284,14 +284,18 @@ export class CompanyComputerBrowserLogins {
 			}
 			entry.seen = current;
 		}
-		for (const [k, event] of this.#events)
-			if (
-				(event.cookie && expired(event.cookie, now)) ||
-				(!event.cookie && event.at <= now - SIGN_OUT_KEPT_MS && !this.#shadows(k, now))
-			) {
+		for (const [k, event] of this.#events) {
+			if (event.cookie && expired(event.cookie, now)) {
+				// An expired sign-in still hides the older value it replaced (a rotated
+				// token): it stays as a sign-out, or that older value would come back.
+				if (this.#shadows(k, now)) this.#events.set(k, { cookie: null, at: event.at, source: this.#own });
+				else this.#events.delete(k);
+				changed = true;
+			} else if (!event.cookie && event.at <= now - SIGN_OUT_KEPT_MS && !this.#shadows(k, now)) {
 				this.#events.delete(k);
 				changed = true;
 			}
+		}
 		// Every open browser follows the company's sign-ins: this computer's and the others'.
 		const jar = this.#jar();
 		for (const entry of this.#attached.values()) {
