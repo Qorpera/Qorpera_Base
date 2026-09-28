@@ -1,5 +1,5 @@
 -- @fixture 300_runtime_wake_bus.test.sql until "-- END WAKE FIXTURE"
--- Computer hours, build step 3 (20260929090000_runtime_computer_hours_ledger): every usage row is
+-- Computer hours, build step 3 (20260928248300_runtime_computer_hours_ledger): every usage row is
 -- charged as it is inserted. Free hours first, then the founders' current plan periods evenly (one
 -- share per founder), then credits (soonest to expire first), else owed. Owed time is paid as soon
 -- as hours arrive, in the same order. A company with a founder on an internal account is

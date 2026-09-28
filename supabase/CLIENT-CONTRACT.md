@@ -37,7 +37,7 @@ sign-in, OTP, OAuth providers, and authorization-code exchange
 (`viewer`, `contributor`, `admin`, `owner`) are cloud state read through the
 profile RPCs; RLS is the second read boundary.
 
-Founders (2026-09-28, migration 20260929030000): every member with the role
+Founders (2026-09-28, migration 20260928248100): every member with the role
 `owner` is a founder, and a company may have several. Clients name the role
 "founder".
 - `qorpera_update_profile_member_role`: a founder may make a member `owner`.
@@ -398,7 +398,7 @@ Founders (2026-09-28, migration 20260929030000): every member with the role
 - `qorpera_session_profile_id`
 - `qorpera_update_profile_member_role`
 
-### Founding lobby (20260929040000_company_founding_lobby)
+### Founding lobby (20260928248200_company_founding_lobby)
 
 A founding team starts one company together. The table is a company row with
 its members; nothing else exists until Start (no Company File, Co-Founder or
