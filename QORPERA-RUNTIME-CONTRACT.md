@@ -1583,7 +1583,12 @@ Two libraries, both ordinary versioned Company File objects:
 | Library | Path | Who writes it |
 | --- | --- | --- |
 | company | `skills/<name>/SKILL.md` | members and agents under the usual path authority; a protected path proposes |
-| agent (own) | `agents/<staffAgentId>/skills/<name>/SKILL.md` | the agent itself under the notebook's rule (15.1), and members as for any company object |
+| agent (own) | `agents/<agent-name>/skills/<name>/SKILL.md` in the agent's folder (5.6) | the agent itself, and members, under the usual path authority |
+
+Skill files have no path rule of their own. Every reader and writer finds an
+agent's folder through one resolver (`cloudAgentFolder`). Until agents live in
+named folders with an `agent.md` and its index, that folder is
+`agents/<staffAgentId>`, and only the resolver changes when they do.
 
 A flat `skills/<name>.md` is read as a skill too; a new skill is always a
 folder. An agent's own skill wins over a company skill of the same name.
