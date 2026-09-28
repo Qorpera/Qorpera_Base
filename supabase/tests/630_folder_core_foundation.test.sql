@@ -565,7 +565,7 @@ begin
 end $$;
 
 -- Operation keys: a replay returns the stored outcomes; a reused key for another change set is refused.
--- Agent actors arrive with C1b/C1c. No claim outlives its transaction.
+-- An agent acts as a run (C1b), never as a bare staff-agent actor. No claim outlives its transaction.
 do $$
 declare r1 jsonb; r2 jsonb;
 begin
@@ -581,8 +581,8 @@ begin
 	begin
 		perform pg_temp.commit('{"kind":"staff_agent","staffAgentId":"63000000-0000-4000-8000-000000000099"}', 'unit-agent-1',
 			'[{"op":"mkdir","path":"agent-made"}]');
-		raise exception 'An agent actor was accepted before C1b';
-	exception when feature_not_supported then null;
+		raise exception 'A bare staff-agent actor was accepted: agents act as a run (C1b)';
+	exception when invalid_parameter_value then null;
 	end;
 	if exists (select 1 from public.qorpera_folder_entries where kind = 'claim') then raise exception 'A claim outlived its transaction'; end if;
 	if (select count(*) from public.qorpera_folder_journal where environment_id = '63000000-0000-4000-8000-000000000020') <> pg_temp.seq()
