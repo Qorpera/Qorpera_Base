@@ -454,6 +454,7 @@ describe("Plan & usage with payments", () => {
 		const testing = payments({ plan: { ...view.state.plan!, mode: "dry_run", hours: null } }).view;
 		renderPlan(container, { loaded: true, entitlement: entitlement("freemium") }, undefined, { payments: testing });
 		expect(container.querySelector(".settings-plan strong")?.textContent).toBe("Standard");
+		expect(container.querySelector(".settings-plan")?.textContent).toContain("Test mode: nothing is charged.");
 		expect(container.querySelector(".settings-hours strong")?.textContent).toBe("Counted once plans open");
 		expect(container.querySelector(".settings-hours .settings-hours-kinds")).toBeNull();
 	});

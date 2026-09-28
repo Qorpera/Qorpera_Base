@@ -538,6 +538,22 @@ describe("account and route ownership", () => {
 		expect(offers).toHaveBeenCalledTimes(3);
 	});
 
+	it("keeps a return from Stripe for the member who paid, not the next one", async () => {
+		const thanks = "Thank you. Your hours are added as soon as Stripe confirms the payment.";
+		const { api, auth, root } = mounted("#/?checkout=done");
+		vi.spyOn(api, "listComputerHourOffers").mockResolvedValue([]);
+		vi.spyOn(api, "getMyComputerPlan").mockResolvedValue({ mode: "dry_run", plan: null, hours: null });
+		await draw();
+		expect(location.hash).toBe("#/");
+		vi.mocked(api.listProfiles).mockResolvedValue([profileB]);
+		auth(userB);
+		await draw();
+		location.hash = "#/account";
+		await draw();
+		expect(root.textContent).toContain("Plan & usage");
+		expect(root.textContent).not.toContain(thanks);
+	});
+
 	it.each(["#/friends", "#/invitations"])("sends the retired %s page to the company hub", async (hash) => {
 		const f = mounted(hash);
 		await draw();

@@ -102,6 +102,16 @@ describe("Plan & usage payments state", () => {
 		expect(payments.state.opening).toBe("portal");
 		window.dispatchEvent(new Event("pageshow"));
 		expect(payments.state.opening).toBeUndefined();
+		// A disposed state holder leaves no listener or timer behind.
+		const changed = vi.fn();
+		const closed = new PlanPayments(api(), changed);
+		closed.portal();
+		await vi.advanceTimersByTimeAsync(0);
+		changed.mockClear();
+		closed.dispose();
+		window.dispatchEvent(new Event("pageshow"));
+		await vi.advanceTimersByTimeAsync(10_000);
+		expect(changed).not.toHaveBeenCalled();
 	});
 
 	it("names a refusal, says calmly that there are no payments yet, and catches a call that throws at once", async () => {

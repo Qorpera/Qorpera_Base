@@ -59,6 +59,7 @@ export class PlanPayments {
 	#disposed = false;
 	#refresh: ReturnType<typeof setTimeout> | undefined;
 	#openingReset: ReturnType<typeof setTimeout> | undefined;
+	#pageShown: (() => void) | undefined;
 
 	constructor(api: CloudApi, changed: () => void, returned?: "done") {
 		this.#api = api;
@@ -82,6 +83,7 @@ export class PlanPayments {
 		this.#disposed = true;
 		if (this.#refresh) clearTimeout(this.#refresh);
 		if (this.#openingReset) clearTimeout(this.#openingReset);
+		if (this.#pageShown) window.removeEventListener("pageshow", this.#pageShown);
 	}
 
 	#set(next: Partial<PlanPaymentsState>): void {
@@ -135,8 +137,11 @@ export class PlanPayments {
 				const ready = () => {
 					if (this.#openingReset) clearTimeout(this.#openingReset);
 					this.#openingReset = undefined;
+					if (this.#pageShown) window.removeEventListener("pageshow", this.#pageShown);
+					this.#pageShown = undefined;
 					if (this.#state.opening === key) this.#set({ opening: undefined });
 				};
+				this.#pageShown = ready;
 				window.addEventListener("pageshow", ready, { once: true });
 				this.#openingReset = setTimeout(ready, OPENING_RESET_MS);
 				location.assign(url);
