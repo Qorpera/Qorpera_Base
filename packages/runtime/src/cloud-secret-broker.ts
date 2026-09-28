@@ -1087,12 +1087,13 @@ export class PostgresCloudSecretBrokerAuthority implements CloudSecretBrokerAuth
 		signal: AbortSignal,
 	): Promise<unknown> {
 		return this.#rpc(
-			"select public.qorpera_release_model_login_renewal($1::uuid,$2::text,$3::uuid,$4::uuid,$5::boolean,$6::text) as result",
+			"select public.qorpera_release_model_login_renewal($1::uuid,$2::text,$3::uuid,$4::uuid,$5::bigint,$6::boolean,$7::text) as result",
 			[
 				this.#brokerAuthorityId,
 				this.#brokerCapabilitySha256,
 				release.loginId,
 				release.token,
+				release.baseVersion,
 				release.permanent,
 				release.reason,
 			],

@@ -83,11 +83,12 @@ $$;
 -- same conditions as qorpera_validate_native_provider_execution_lease (exact binding, job
 -- leased and unexpired, assignment accepted and unexpired, lease live, sponsor and compute
 -- available, connection, version, capsule and policy active, identity active and not fenced
--- on run and runner, company not paused), read without locks. The run's host keeps
--- validating its lease with the company fence every 15 s, so the vault takes no lock here.
+-- on run and runner, company not paused), without company-wide locks: only a run no member
+-- started takes, like the validator, a share lock on its member's connection row. The run's
+-- host keeps validating its lease with the company fence every 15 s.
 create function public.qorpera_model_login_run_binding(p_binding jsonb)
 returns public.qorpera_native_provider_connection_leases
-language plpgsql stable security definer set search_path = '' as $$
+language plpgsql security definer set search_path = '' as $$
 declare
 	v_run public.qorpera_execution_runs%rowtype;
 	v_job public.qorpera_runner_jobs%rowtype;
@@ -313,6 +314,10 @@ begin
 		and access_expires_at < p_access_expires_at
 	returning current_version into v_version;
 	if v_version is null then
+		if exists (select 1 from public.qorpera_model_logins where id = p_login_id and broker_authority_id = v_authority.id
+			and status = 'active' and current_version = p_base_version and renewal_token = p_renewal_token) then
+			raise exception 'model login renewal is not a later pass' using errcode = '22023';
+		end if;
 		raise exception 'model login renewal lock is not held' using errcode = '40001';
 	end if;
 	insert into public.qorpera_model_login_versions(
@@ -325,13 +330,16 @@ end
 $$;
 
 -- Gives the renewal lock back after a failed renewal. A permanent failure (the provider
--- refused the renewal token) marks the login for a new sign-in; a transient one lets the
--- next caller try again.
+-- refused the renewal token, or a renewal it made could not be saved) marks the login for a
+-- new sign-in, but only while the login is still at the version the renewal started from: a
+-- newer version (a fresh sign-in) is never marked. A transient failure lets a later caller
+-- try again.
 create function public.qorpera_release_model_login_renewal(
 	p_broker_authority_id uuid,
 	p_broker_capability_sha256 text,
 	p_login_id uuid,
 	p_renewal_token uuid,
+	p_base_version bigint,
 	p_permanent boolean,
 	p_reason text
 )
@@ -343,11 +351,13 @@ declare
 begin
 	v_authority := public.qorpera_model_login_authority(p_broker_authority_id, p_broker_capability_sha256);
 	if p_login_id is null or p_renewal_token is null or p_permanent is null
+		or p_base_version is null or p_base_version < 1
 		or coalesce(p_reason, '') !~ '^[a-z][a-z0-9_]{0,63}$' then
 		raise exception 'model login renewal release is invalid' using errcode = '22023';
 	end if;
 	update public.qorpera_model_logins
-	set status = case when p_permanent and status = 'active' then 'needs_sign_in' else status end,
+	set status = case when p_permanent and status = 'active' and current_version = p_base_version
+			then 'needs_sign_in' else status end,
 		renewal_token = null, renewal_until = null,
 		renewal_failures = renewal_failures + 1, last_renewal_failure = p_reason,
 		renewal_failed_at = clock_timestamp(), updated_at = clock_timestamp()
@@ -363,9 +373,9 @@ revoke all on function public.qorpera_model_login_authority(uuid,text),
 	from public, anon, authenticated, service_role, qorpera_secret_broker;
 revoke all on function public.qorpera_issue_model_login(uuid,text,jsonb,bigint,boolean),
 	public.qorpera_commit_model_login_renewal(uuid,text,uuid,uuid,bigint,text,text,text,timestamptz,timestamptz),
-	public.qorpera_release_model_login_renewal(uuid,text,uuid,uuid,boolean,text)
+	public.qorpera_release_model_login_renewal(uuid,text,uuid,uuid,bigint,boolean,text)
 	from public, anon, authenticated, service_role, qorpera_secret_broker;
 grant execute on function public.qorpera_issue_model_login(uuid,text,jsonb,bigint,boolean),
 	public.qorpera_commit_model_login_renewal(uuid,text,uuid,uuid,bigint,text,text,text,timestamptz,timestamptz),
-	public.qorpera_release_model_login_renewal(uuid,text,uuid,uuid,boolean,text)
+	public.qorpera_release_model_login_renewal(uuid,text,uuid,uuid,bigint,boolean,text)
 	to qorpera_secret_broker;

@@ -47,7 +47,7 @@ begin
 		'qorpera_describe_cloud_secret_capture(uuid,text,uuid,text)',
 		'qorpera_finish_email_draft_action(uuid,text,uuid,text,jsonb)',
 		'qorpera_issue_model_login(uuid,text,jsonb,bigint,boolean)',
-		'qorpera_release_model_login_renewal(uuid,text,uuid,uuid,boolean,text)'
+		'qorpera_release_model_login_renewal(uuid,text,uuid,uuid,bigint,boolean,text)'
 	]::text[] then
 		raise exception 'Broker inherited a function outside its fixed custody calls';
 	end if;

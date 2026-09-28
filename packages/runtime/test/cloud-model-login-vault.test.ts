@@ -197,7 +197,7 @@ it("gives the lock back when the provider refuses the renewal, and the run keeps
 	expect(login.version).toBe(3);
 	expect(tokens(login.authJson as string).access_token).toBe(tokens(stored).access_token);
 	expect(f.authority.releaseModelLoginRenewal).toHaveBeenCalledWith(
-		{ loginId: f.loginId, token: f.renewalToken, permanent: true, reason: "refresh_token_reused" },
+		{ loginId: f.loginId, token: f.renewalToken, baseVersion: 3, permanent: true, reason: "refresh_token_reused" },
 		expect.any(AbortSignal),
 	);
 	expect(f.authority.commitModelLoginRenewal).not.toHaveBeenCalled();
@@ -369,6 +369,16 @@ it("refuses an answer for another identity, a renewal of another version, or an 
 		const f = fixture({ stored, change });
 		const vault = new CloudModelLoginVault({ authority: f.authority, keyring: f.keyring });
 		await expect(vault.issue({ binding: f.run, knownVersion: 3 }, new AbortController().signal)).rejects.toThrow();
+		// An unreadable answer that carried a renewal lock gives it back.
+		const answer = (await f.authority.issueModelLogin.mock.results[0]?.value) as {
+			renewal?: { token: string } | null;
+		};
+		if (answer.renewal)
+			expect(f.authority.releaseModelLoginRenewal).toHaveBeenCalledWith(
+				expect.objectContaining({ token: answer.renewal.token, permanent: false, reason: "issue_unreadable" }),
+				expect.any(AbortSignal),
+			);
+		else expect(f.authority.releaseModelLoginRenewal).not.toHaveBeenCalled();
 	}
 });
 
