@@ -3,7 +3,7 @@ import { createHash, randomBytes, randomUUID, X509Certificate } from "node:crypt
 import { constants } from "node:fs";
 import { chmod, chown, link, lstat, mkdir, open, readdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { isIP } from "node:net";
-import { dirname, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import { parseCompanyComputerNativeRoute } from "@qorpera/contracts";
 import { recoveryBase64, recoveryDigest } from "./cloud-identity-recovery-crypto.ts";
@@ -54,6 +54,9 @@ export interface LxdRunnerBootstrapConfig {
 		secretBrokerCaSha256: string;
 		office?: { environmentId: string; url: string; tokenSha256: string };
 		codingCommand?: { url: string; tokenSha256: string };
+		/** Stateless Compute step 1: the vault keeps this identity's login. The guest has no
+		 * identity volume and its native host holds no capsule key. */
+		loginCustody?: "vault";
 	};
 }
 
@@ -223,9 +226,12 @@ export function parseLxdRunnerBootstrapConfig(value: unknown): LxdRunnerBootstra
 				"recovery_volume_path",
 				"office",
 				"coding_command",
+				"login_custody",
 			],
 			"Governed native bootstrap",
 		);
+		if (company.login_custody !== undefined && company.login_custody !== "vault")
+			throw new Error("Governed native login custody is invalid");
 		if (company.mode !== "company-path-v1" || company.recovery_volume_path !== PRODUCTION_PATHS.runnerHomeDirectory) {
 			throw new Error("Governed native bootstrap mode or recovery path is invalid");
 		}
@@ -279,6 +285,7 @@ export function parseLxdRunnerBootstrapConfig(value: unknown): LxdRunnerBootstra
 			secretBrokerCaSha256: text(company.secret_broker_ca_sha256, "Cloud secret broker CA digest", SHA256_PATTERN),
 			...(office ? { office } : {}),
 			...(codingCommand ? { codingCommand } : {}),
+			...(company.login_custody === "vault" ? { loginCustody: "vault" as const } : {}),
 		};
 	}
 	return {
@@ -479,15 +486,13 @@ async function ensureIdentityMasterKey(
 	}
 }
 
-async function verifyIdentityRecovery(
+async function identityRuntimeState(
 	paths: LxdNativeLoginBootstrapPaths | LxdRunnerBootstrapPaths,
 	computeIdentityId: string,
 	baseUrl: string,
 	expectedUid: number,
-	expectedGid: number,
-	login: boolean,
 	stateReader?: (computeIdentityId: string) => Promise<IdentityRecoveryRuntimeState>,
-): Promise<void> {
+): Promise<IdentityRecoveryRuntimeState> {
 	const state = stateReader
 		? await stateReader(computeIdentityId)
 		: await fetchIdentityRecoveryRuntimeState(
@@ -505,6 +510,62 @@ async function verifyIdentityRecovery(
 			);
 	if (state.computeIdentityId !== computeIdentityId || state.blocked)
 		throw new Error("Compute Identity is fenced by cloud recovery authority");
+	return state;
+}
+
+/** Replaces a root-held credential source file atomically and durably. */
+async function writeCredentialSource(path: string, content: string, uid: number, gid: number): Promise<void> {
+	const temporary = `${path}.${randomUUID()}.tmp`;
+	const handle = await open(temporary, "wx", 0o600);
+	try {
+		await handle.writeFile(content);
+		await handle.chown(uid, gid);
+		await handle.sync();
+	} finally {
+		await handle.close();
+	}
+	await rename(temporary, path);
+	const directory = await open(dirname(path), constants.O_RDONLY);
+	try {
+		await directory.sync();
+	} finally {
+		await directory.close();
+	}
+}
+
+/** Stateless Compute step 1: a guest whose identity's login is kept by the vault holds no key,
+ * marker or epoch. The native host's fixed credential sources exist and are empty; the host
+ * refuses to start unless the cloud confirms the vault custody. */
+async function prepareVaultLoginIdentity(
+	paths: LxdRunnerBootstrapPaths,
+	computeIdentityId: string,
+	baseUrl: string,
+	expectedUid: number,
+	expectedGid: number,
+	stateReader?: (computeIdentityId: string) => Promise<IdentityRecoveryRuntimeState>,
+): Promise<void> {
+	await identityRuntimeState(paths, computeIdentityId, baseUrl, expectedUid, stateReader);
+	const entries = (await readdir(paths.identityVolume)).filter((entry) => entry !== basename(paths.identityMasterKey));
+	if (entries.length !== 0) throw new Error("A vault login guest must hold no identity material");
+	await writeCredentialSource(paths.identityMasterKey, "", expectedUid, expectedGid);
+	await writeCredentialSource(
+		join(dirname(paths.nativeProviderEnvironment), "native-identity-epoch.json"),
+		"",
+		expectedUid,
+		expectedGid,
+	);
+}
+
+async function verifyIdentityRecovery(
+	paths: LxdNativeLoginBootstrapPaths | LxdRunnerBootstrapPaths,
+	computeIdentityId: string,
+	baseUrl: string,
+	expectedUid: number,
+	expectedGid: number,
+	login: boolean,
+	stateReader?: (computeIdentityId: string) => Promise<IdentityRecoveryRuntimeState>,
+): Promise<void> {
+	const state = await identityRuntimeState(paths, computeIdentityId, baseUrl, expectedUid, stateReader);
 	if (login && !state.recoveryConfiguration)
 		throw new Error("Native login requires a configured cloud recovery authority");
 	const canInitialize = login && state.canInitialize;
@@ -545,25 +606,12 @@ async function verifyIdentityRecovery(
 			state,
 		);
 	}
-	const credential = join(dirname(paths.nativeProviderEnvironment), "native-identity-epoch.json");
-	const temporary = `${credential}.${randomUUID()}.tmp`;
-	const handle = await open(temporary, "wx", 0o600);
-	try {
-		await handle.writeFile(
-			JSON.stringify({ computeIdentityId, companyId: state.companyId, epoch: state.epoch, keySha256 }),
-		);
-		await handle.chown(expectedUid, expectedGid);
-		await handle.sync();
-	} finally {
-		await handle.close();
-	}
-	await rename(temporary, credential);
-	const directory = await open(dirname(credential), constants.O_RDONLY);
-	try {
-		await directory.sync();
-	} finally {
-		await directory.close();
-	}
+	await writeCredentialSource(
+		join(dirname(paths.nativeProviderEnvironment), "native-identity-epoch.json"),
+		JSON.stringify({ computeIdentityId, companyId: state.companyId, epoch: state.epoch, keySha256 }),
+		expectedUid,
+		expectedGid,
+	);
 }
 
 function nativeProviderEnvironment(
@@ -605,6 +653,7 @@ function nativeProviderEnvironment(
 					"QORPERA_CLOUD_SECRET_BROKER_URL",
 					...(companyRuntime.office ? ["QORPERA_COMPANY_COMPUTER_URL"] : []),
 					...(companyRuntime.codingCommand ? ["QORPERA_CODING_COMMAND_URL"] : []),
+					...(companyRuntime.loginCustody ? ["QORPERA_NATIVE_LOGIN_CUSTODY"] : []),
 				]
 			: []),
 	];
@@ -640,7 +689,8 @@ function nativeProviderEnvironment(
 			environment.get("QORPERA_NATIVE_OBJECT_GATEWAY_URL") !== companyRuntime.objectGatewayUrl ||
 			environment.get("QORPERA_CLOUD_SECRET_BROKER_URL") !== companyRuntime.secretBrokerUrl ||
 			environment.get("QORPERA_COMPANY_COMPUTER_URL") !== companyRuntime.office?.url ||
-			environment.get("QORPERA_CODING_COMMAND_URL") !== companyRuntime.codingCommand?.url)
+			environment.get("QORPERA_CODING_COMMAND_URL") !== companyRuntime.codingCommand?.url ||
+			environment.get("QORPERA_NATIVE_LOGIN_CUSTODY") !== companyRuntime.loginCustody)
 	) {
 		throw new Error("Governed native environment does not match immutable bootstrap authority");
 	}
@@ -808,7 +858,17 @@ async function verifyCompanyGuest(
 	const roots = mounts.filter((mount) => mount.path === "/");
 	const identities = mounts.filter((mount) => mount.path === paths.identityVolume);
 	const recoveries = mounts.filter((mount) => mount.path === paths.runnerHomeDirectory);
-	if (
+	if (company.loginCustody === "vault") {
+		// The vault keeps the login: no node volume may carry identity material into this guest.
+		if (identities.length !== 0) throw new Error("A vault login guest must not mount an identity volume");
+		if (
+			roots.length !== 1 ||
+			recoveries.length !== 1 ||
+			recoveries[0]?.filesystem !== "virtiofs" ||
+			roots[0]?.device === recoveries[0]?.device
+		)
+			throw new Error("Governed native recovery requires a distinct persistent volume mount");
+	} else if (
 		roots.length !== 1 ||
 		identities.length !== 1 ||
 		recoveries.length !== 1 ||
@@ -1080,18 +1140,31 @@ export async function runLxdRunnerBootstrap(options: RunLxdRunnerBootstrapOption
 		throw new Error("Compute Identity volume mount is unsafe");
 	}
 	const mountInfo = await readFile(paths.mountInfo, "utf-8");
-	verifyMountedIdentityVolume(mountInfo, paths.identityVolume);
-	await verifyCompanyGuest(bootstrap, paths, mountInfo, expectedRootUid, expectedRootGid);
-	await chmod(paths.identityVolume, 0o700);
-	await verifyIdentityRecovery(
-		paths,
-		bootstrap.computeIdentityId,
-		runnerConfig.baseUrl,
-		expectedRootUid,
-		expectedRootGid,
-		false,
-		options.identityRuntimeState,
-	);
+	if (bootstrap.companyRuntime?.loginCustody === "vault") {
+		await verifyCompanyGuest(bootstrap, paths, mountInfo, expectedRootUid, expectedRootGid);
+		await chmod(paths.identityVolume, 0o700);
+		await prepareVaultLoginIdentity(
+			paths,
+			bootstrap.computeIdentityId,
+			runnerConfig.baseUrl,
+			expectedRootUid,
+			expectedRootGid,
+			options.identityRuntimeState,
+		);
+	} else {
+		verifyMountedIdentityVolume(mountInfo, paths.identityVolume);
+		await verifyCompanyGuest(bootstrap, paths, mountInfo, expectedRootUid, expectedRootGid);
+		await chmod(paths.identityVolume, 0o700);
+		await verifyIdentityRecovery(
+			paths,
+			bootstrap.computeIdentityId,
+			runnerConfig.baseUrl,
+			expectedRootUid,
+			expectedRootGid,
+			false,
+			options.identityRuntimeState,
+		);
+	}
 
 	const runnerIdentity =
 		options.serviceIdentity ??

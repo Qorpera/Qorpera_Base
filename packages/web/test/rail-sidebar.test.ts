@@ -3,8 +3,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthController } from "../src/app/auth.ts";
 import { CompanyController } from "../src/app/company.ts";
 import type { Route } from "../src/app/router.ts";
+import { GroupParticipantsError, GroupUpdateNotWrittenError } from "../src/app/update-group.ts";
 import { renderRail, type ShellContext } from "../src/app/views/shell.ts";
 import { CloudRpcError } from "../src/cloud/client.ts";
+import type { GroupChatDetails } from "../src/cloud/group-details.ts";
 import {
 	applySidebarRequest,
 	type CompanySidebar,
@@ -12,7 +14,7 @@ import {
 	parseCompanySidebar,
 	type SidebarRequest,
 } from "../src/cloud/sidebar.ts";
-import type { HostedStaffAgent, HostedStaffExecutionActivity } from "../src/cloud/types.ts";
+import type { HostedSession, HostedStaffAgent, HostedStaffExecutionActivity } from "../src/cloud/types.ts";
 import { openMenu } from "../src/ui/context-menu.ts";
 import { h } from "../src/ui/dom.ts";
 import { deferred, fixture, id, profileA, session, settle, staff, stubFigureMotion, team, userA } from "./fixtures.ts";
@@ -35,6 +37,14 @@ const demo = (): CompanySidebar => ({
 	],
 	placements: { [bo.id]: { sectionId: research, position: 0 }, [ada.id]: { sectionId: research, position: 1 } },
 	pinned: [dee.id],
+	hidden: [],
+});
+
+const demoWire = () => ({
+	schema: "qorpera.company-sidebar/v1",
+	sections: [],
+	placements: [],
+	pinned: [],
 	hidden: [],
 });
 
@@ -62,17 +72,27 @@ afterEach(() => {
 });
 
 /** A company whose cloud answers the sidebar like the real RPCs do (the same rules as the client). */
-function companyWith(sidebar: CompanySidebar | "missing", actions: ShellContext["agentActions"] = {}) {
+function companyWith(
+	sidebar: CompanySidebar | "missing",
+	actions: ShellContext["agentActions"] = {},
+	extra: { sessions?: HostedSession[]; groups?: Record<string, GroupChatDetails>; roster?: string[] } = {},
+) {
 	const f = fixture();
 	let stored = sidebar === "missing" ? undefined : sidebar;
 	const read = vi.spyOn(f.api, "readCompanySidebar");
 	if (stored) read.mockImplementation(async () => structuredClone(stored!));
 	const manage = vi.spyOn(f.api, "manageCompanySidebar").mockImplementation(async (_profileId, request) => {
-		stored = applySidebarRequest(stored!, request, roster);
+		stored = applySidebarRequest(stored!, request, extra.roster ?? roster);
 		return structuredClone(stored);
 	});
 	const company = new CompanyController(f.api, profileA, userA.id);
-	company.store.set({ loading: false, staff: [cofounder, ada, bo, cy, dee], sessions: [session], team });
+	company.store.set({
+		loading: false,
+		staff: [cofounder, ada, bo, cy, dee],
+		sessions: [session, ...(extra.sessions ?? [])],
+		team,
+		...(extra.groups ? { groups: extra.groups } : {}),
+	});
 	cleanup.push(() => company.stop());
 	const rail = h("aside", { class: "rail" });
 	document.body.append(h("div", { class: "frame" }, rail));
@@ -141,6 +161,44 @@ describe("sidebar model", () => {
 		).toThrow();
 		expect(() => parseCompanySidebar({ schema: "other" })).toThrow();
 	});
+	it("reads group chats' places beside the agents' where the cloud places them", () => {
+		const room = id(91);
+		const parsed = parseCompanySidebar({
+			schema: "qorpera.company-sidebar/v1",
+			sections: [{ sectionId: research, name: "Research" }],
+			placements: [{ staffAgentId: bo.id, sectionId: research, position: 0 }],
+			roomPlacements: [{ roomId: room.toUpperCase(), sectionId: research, position: 1 }],
+			pinned: [room],
+			hidden: [],
+		});
+		expect(parsed).toEqual({
+			sections: [{ sectionId: research, name: "Research" }],
+			placements: { [bo.id]: { sectionId: research, position: 0 }, [room]: { sectionId: research, position: 1 } },
+			pinned: [room],
+			hidden: [],
+			groupChats: true,
+		});
+		expect(containerOrder(parsed, research, [...roster, room])).toEqual([bo.id, room]);
+		// An older cloud places agents only.
+		expect(parseCompanySidebar({ ...demoWire(), roomPlacements: undefined }).groupChats).toBeUndefined();
+		expect(() => parseCompanySidebar({ ...demoWire(), roomPlacements: [{ roomId: room }] })).toThrow();
+		const apply = (request: SidebarRequest) => applySidebarRequest(parsed, request, [...roster, room]);
+		expect(
+			containerOrder(
+				apply({ action: "move_room", roomId: room, sectionId: research, order: [room, bo.id] }),
+				research,
+				[...roster, room],
+			),
+		).toEqual([room, bo.id]);
+		expect(apply({ action: "set_hidden", roomId: room, hidden: true })).toMatchObject({
+			pinned: [],
+			hidden: [room],
+			groupChats: true,
+		});
+		const created = apply({ action: "create_section", sectionId: id(62), name: "Sales", roomId: room, unpin: true });
+		expect(containerOrder(created, id(62), [...roster, room])).toEqual([room]);
+		expect(created.pinned).toEqual([]);
+	});
 	it("orders a section by position, then the rest in roster order, as the cloud does", () => {
 		const sidebar = demo();
 		expect(containerOrder(sidebar, research, roster)).toEqual([bo.id, ada.id]);
@@ -189,7 +247,7 @@ describe("rail sections and pins", () => {
 		expect(order).toEqual(["rail-cofounder", "rail-pinned", "rail-section", "rail-section", "rail-section"]);
 		expect(names(rail.querySelectorAll(".rail-pin"))).toEqual(["Dee"]);
 		expect(groups(rail)).toEqual([["Research", "Bo", "Ada"], ["Ops"], ["Unassigned", "Cy", "Fixture conversation"]]);
-		expect(rail.querySelector(".rail-pinned")!.getAttribute("aria-label")).toBe("Pinned agents");
+		expect(rail.querySelector(".rail-pinned")!.getAttribute("aria-label")).toBe("Pinned");
 	});
 	it("keeps one list, with no drop zones, on a cloud without the sidebar", async () => {
 		const { rail, ready } = companyWith("missing");
@@ -217,9 +275,9 @@ describe("rail sections and pins", () => {
 		const list = rail.querySelector(".rail-scroll")!;
 		const hidden = rail.querySelector<HTMLElement>(".rail-hidden")!;
 		const toggle = hidden.querySelector<HTMLButtonElement>(".rail-hidden-toggle")!;
-		// The last thing in the list: "Hidden agents" and the count, folded.
+		// The last thing in the list: "Hidden" and the count, folded.
 		expect([...list.children].filter((child) => !child.matches(".rail-empty")).at(-1)).toBe(hidden);
-		expect(toggle.textContent).toBe("Hidden agents2");
+		expect(toggle.textContent).toBe("Hidden2");
 		expect(toggle.getAttribute("aria-expanded")).toBe("false");
 		expect(hidden.querySelector(".rail-hidden-list")!.children.length).toBe(0);
 		toggle.click();
@@ -552,7 +610,7 @@ describe("dragging agents in the rail", () => {
 		const boxes = new Map<Element, DOMRect>();
 		let y = 0;
 		for (const element of rail.querySelectorAll<HTMLElement>(
-			".rail-scroll, [data-drop-zone], [data-agent-id], .rail-section-title",
+			".rail-scroll, [data-drop-zone], [data-agent-id], [data-room-id], .rail-section-title",
 		)) {
 			if (element.matches(".rail-scroll")) continue;
 			const height = element.matches("[data-drop-zone]") ? 0 : 40;
@@ -561,7 +619,7 @@ describe("dragging agents in the rail", () => {
 		}
 		// A zone spans its children.
 		for (const zone of rail.querySelectorAll<HTMLElement>("[data-drop-zone]")) {
-			const inner = [...zone.querySelectorAll("[data-agent-id], .rail-section-title")].map(
+			const inner = [...zone.querySelectorAll("[data-agent-id], [data-room-id], .rail-section-title")].map(
 				(child) => boxes.get(child)!,
 			);
 			const top = inner.length ? Math.min(...inner.map((box) => box.top)) : 0;
@@ -705,5 +763,304 @@ describe("dragging agents in the rail", () => {
 		await ready;
 		await settle();
 		expect(manage).not.toHaveBeenCalled();
+	});
+	it("drags a group chat above an agent in a section, and pins one by dragging", async () => {
+		const { rail, manage, ready } = companyWith(...launchCompany());
+		await ready;
+		await settle();
+		let boxes = layout(rail);
+		drag(groupRow(rail), boxes.get(rowOf(rail, "Ada"))!, rail);
+		await ready;
+		await settle();
+		expect(manage).toHaveBeenLastCalledWith(profileA.profileId, {
+			action: "move_room",
+			roomId: launchRoom,
+			sectionId: research,
+			order: [bo.id, launchRoom, ada.id],
+		});
+		expect(groups(rail)[0]).toEqual(["Research", "Bo", "Launch", "Ada"]);
+		boxes = layout(rail);
+		drag(groupRow(rail), boxes.get(rail.querySelector(".rail-pin")!)!, rail);
+		await ready;
+		await settle();
+		expect(manage).toHaveBeenLastCalledWith(profileA.profileId, {
+			action: "set_pins",
+			order: [launchRoom, dee.id],
+			groupChats: true,
+		});
+		expect(names(rail.querySelectorAll(".rail-pin"))).toEqual(["Launch", "Dee"]);
+		// The drop's click guard lasts one task; let it go before the next test clicks.
+		await new Promise((resolve) => setTimeout(resolve, 0));
+	});
+});
+
+const launchRoom = id(91);
+const launchSession: HostedSession = {
+	...session,
+	sessionId: id(90),
+	title: "Launch",
+	executionScope: { roomId: launchRoom },
+};
+const launchDetails: GroupChatDetails = {
+	roomId: launchRoom,
+	sessionId: launchSession.sessionId,
+	environmentId: profileA.environmentId,
+	version: 3,
+	name: "Launch",
+	purpose: "Plan the launch",
+	status: "active",
+	members: [
+		{ kind: "member", id: userA.id },
+		{ kind: "staff_agent", id: ada.id },
+		{ kind: "staff_agent", id: bo.id },
+	],
+};
+/** A company with one group chat, on a cloud that places group chats (or, with agentsOnly, one that does not). */
+function launchCompany(actions: ShellContext["agentActions"] = {}, agentsOnly = false): Parameters<typeof companyWith> {
+	return [
+		agentsOnly ? demo() : { ...demo(), groupChats: true },
+		actions,
+		{ sessions: [launchSession], groups: { [launchRoom]: launchDetails }, roster: [...roster, launchRoom] },
+	];
+}
+const groupRow = (rail: HTMLElement) => rail.querySelector<HTMLElement>(`.rail-row[data-room-id="${launchRoom}"]`)!;
+
+describe("group chats in the rail", () => {
+	it("stands a group chat among the agents of its section, and pins it as a card", async () => {
+		const [, actions, extra] = launchCompany();
+		const sidebar: CompanySidebar = { ...demo(), groupChats: true };
+		const { rail, ready } = companyWith(
+			{
+				...sidebar,
+				placements: {
+					[bo.id]: { sectionId: research, position: 0 },
+					[launchRoom]: { sectionId: research, position: 1 },
+					[ada.id]: { sectionId: research, position: 2 },
+				},
+			},
+			actions,
+			extra,
+		);
+		await ready;
+		await settle();
+		expect(groups(rail)).toEqual([
+			["Research", "Bo", "Launch", "Ada"],
+			["Ops"],
+			["Unassigned", "Cy", "Fixture conversation"],
+		]);
+		const pinned = companyWith({ ...sidebar, pinned: [launchRoom, dee.id] }, actions, extra);
+		await pinned.ready;
+		await settle();
+		const cards = pinned.rail.querySelectorAll<HTMLElement>(".rail-pin");
+		expect(names(cards)).toEqual(["Launch", "Dee"]);
+		expect(cards[0]!.dataset.roomId).toBe(launchRoom);
+		expect(cards[0]!.getAttribute("href")).toBe(`#/c/${profileA.profileId}/chat/${launchSession.sessionId}`);
+	});
+	it("shows '@' on a pinned group chat where the member was mentioned", async () => {
+		const [, actions, extra] = launchCompany();
+		const pinned = companyWith({ ...demo(), groupChats: true, pinned: [launchRoom] }, actions, extra);
+		await pinned.ready;
+		await settle();
+		const card = () => pinned.rail.querySelector<HTMLElement>(`.rail-pin[data-room-id="${launchRoom}"]`)!;
+		expect(card().querySelector(".rail-mention")).toBeNull();
+		expect(card().title).not.toContain("You were mentioned");
+		pinned.company.store.set({ mentions: { [launchSession.sessionId]: 1 } });
+		await settle();
+		expect(card().querySelector(".rail-mention")?.textContent).toBe("@");
+		expect(card().title).toContain("You were mentioned");
+	});
+	it("offers the agent's menu on a group chat and sends the group chat's requests", async () => {
+		localStorage.removeItem("qorpera.web.rail-hidden-open");
+		const { rail, manage, ready } = companyWith(...launchCompany({ updateGroup: vi.fn(), deleteGroup: vi.fn() }));
+		await ready;
+		await settle();
+		expect(groups(rail).at(-1)).toEqual(["Unassigned", "Cy", "Launch", "Fixture conversation"]);
+		rightClick(groupRow(rail));
+		expect(menuItems()).toEqual(["Pin", "Move to", "Rename", "Copy conversation ID", "Hide from sidebar", "Delete"]);
+		expect(groupRow(rail).classList.contains("menu-open")).toBe(true);
+		document
+			.querySelector<HTMLElement>(".context-menu [aria-haspopup=menu]")!
+			.dispatchEvent(new PointerEvent("pointerenter"));
+		choose("Ops");
+		await ready;
+		await settle();
+		expect(manage).toHaveBeenLastCalledWith(profileA.profileId, {
+			action: "move_room",
+			roomId: launchRoom,
+			sectionId: ops,
+		});
+		expect(groups(rail)[1]).toEqual(["Ops", "Launch"]);
+		rightClick(groupRow(rail));
+		choose("Hide from sidebar");
+		await ready;
+		await settle();
+		expect(manage).toHaveBeenLastCalledWith(profileA.profileId, {
+			action: "set_hidden",
+			roomId: launchRoom,
+			hidden: true,
+		});
+		expect(groupRow(rail)).toBeNull();
+		expect(rail.querySelector(".rail-hidden-toggle")!.textContent).toBe("Hidden1");
+		rail.querySelector<HTMLElement>(".rail-hidden-toggle")!.click();
+		await settle();
+		rightClick(groupRow(rail));
+		choose("Pin");
+		await ready;
+		await settle();
+		expect(manage).toHaveBeenLastCalledWith(profileA.profileId, {
+			action: "set_pins",
+			order: [dee.id, launchRoom],
+			groupChats: true,
+		});
+		expect(names(rail.querySelectorAll(".rail-pin"))).toEqual(["Dee", "Launch"]);
+		expect(rail.querySelector(".rail-hidden")).toBeNull();
+		localStorage.removeItem("qorpera.web.rail-hidden-open");
+	});
+	it("moves the focused group chat with Alt and an arrow", async () => {
+		const { rail, manage, ready } = companyWith(...launchCompany());
+		await ready;
+		await settle();
+		groupRow(rail).focus();
+		groupRow(rail).dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowUp", altKey: true, bubbles: true }));
+		await ready;
+		await settle();
+		expect(manage).toHaveBeenLastCalledWith(profileA.profileId, {
+			action: "move_room",
+			roomId: launchRoom,
+			sectionId: null,
+			// Dee is pinned: it keeps its place in the company's order.
+			order: [launchRoom, cy.id, dee.id],
+		});
+		expect(groups(rail).at(-1)).toEqual(["Unassigned", "Launch", "Cy", "Fixture conversation"]);
+	});
+	it("keeps a group chat a group chat when its conversation leaves the list before the choice", async () => {
+		const { company, rail, manage, ready } = companyWith(...launchCompany());
+		await ready;
+		await settle();
+		rightClick(groupRow(rail));
+		const hide = [...document.querySelectorAll<HTMLElement>(".context-menu [role^=menuitem]")].find(
+			(item) => item.textContent === "Hide from sidebar",
+		)!;
+		// Another member deleted it; the sessions list no longer has it.
+		company.store.set({ sessions: [session] });
+		hide.click();
+		await ready;
+		await settle();
+		expect(manage).toHaveBeenLastCalledWith(profileA.profileId, {
+			action: "set_hidden",
+			roomId: launchRoom,
+			hidden: true,
+		});
+	});
+	it("sends an agent's move with the group chat flag where the cloud places group chats", async () => {
+		const { rail, manage, ready } = companyWith(...launchCompany());
+		await ready;
+		await settle();
+		rowOf(rail, "Cy").focus();
+		rowOf(rail, "Cy").dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", altKey: true, bubbles: true }));
+		await ready;
+		await settle();
+		expect(manage).toHaveBeenLastCalledWith(profileA.profileId, {
+			action: "move_agent",
+			staffAgentId: cy.id,
+			sectionId: null,
+			// Dee is pinned: it keeps its place in the company's order.
+			order: [dee.id, launchRoom, cy.id],
+			groupChats: true,
+		});
+	});
+	it("keeps rename, copy and delete on a cloud that places agents only", async () => {
+		const { rail, manage, ready } = companyWith(
+			...launchCompany({ updateGroup: vi.fn(), deleteGroup: vi.fn() }, true),
+		);
+		await ready;
+		await settle();
+		// The group chat stands after the Unassigned agents, among the other conversations, as before.
+		expect(groups(rail).at(-1)).toEqual(["Unassigned", "Cy", "Fixture conversation", "Launch"]);
+		rightClick(groupRow(rail));
+		expect(menuItems()).toEqual(["Rename", "Copy conversation ID", "Delete"]);
+		openMenu()?.close();
+		groupRow(rail).dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowUp", altKey: true, bubbles: true }));
+		await settle();
+		expect(manage).not.toHaveBeenCalled();
+	});
+	it("leaves renaming and deleting to owners and admins", async () => {
+		const { company, rail, ready } = companyWith(...launchCompany({ updateGroup: vi.fn(), deleteGroup: vi.fn() }));
+		await ready;
+		company.store.set({
+			team: { ...team, role: "contributor", capabilities: { ...team.capabilities, authorize: false } },
+		});
+		await settle();
+		rightClick(groupRow(rail));
+		expect(menuItems()).toEqual(["Pin", "Move to", "Copy conversation ID", "Hide from sidebar"]);
+	});
+	it("renames a group chat through its details and deletes one after confirming", async () => {
+		const updateGroup = vi.fn(async () => {});
+		const deleteGroup = vi.fn(async () => {});
+		const { f, rail, ready } = companyWith(...launchCompany({ updateGroup, deleteGroup }));
+		await ready;
+		await settle();
+		const listSessions = vi.spyOn(f.api, "listSessions").mockResolvedValue([session, launchSession]);
+		rightClick(groupRow(rail));
+		choose("Rename");
+		const input = document.querySelector<HTMLInputElement>(".name-dialog-input")!;
+		expect(input.value).toBe("Launch");
+		input.value = "Launch plan";
+		input.dispatchEvent(new Event("input"));
+		input.form!.requestSubmit();
+		await ready;
+		await settle();
+		expect(updateGroup).toHaveBeenCalledWith(
+			launchSession.sessionId,
+			launchDetails,
+			{ name: "Launch plan", purpose: launchDetails.purpose, members: launchDetails.members },
+			expect.any(AbortSignal),
+		);
+		expect(listSessions).toHaveBeenCalled();
+		rightClick(groupRow(rail));
+		choose("Delete");
+		expect(document.querySelector(".modal p")?.textContent).toContain("Delete Launch?");
+		[...document.querySelectorAll<HTMLButtonElement>(".modal button")]
+			.find((button) => button.textContent === "Delete")!
+			.click();
+		await ready;
+		await settle();
+		expect(deleteGroup).toHaveBeenCalledWith(launchSession.sessionId, launchRoom, expect.any(AbortSignal));
+	});
+	it("sends a rename refused for its participants to the group details", async () => {
+		const updateGroup = vi.fn(async () => {
+			throw new GroupUpdateNotWrittenError("Choose at least two active agents…", {
+				cause: new GroupParticipantsError("Choose at least two active agents…"),
+			});
+		});
+		const { rail, ready } = companyWith(...launchCompany({ updateGroup, deleteGroup: vi.fn() }));
+		await ready;
+		await settle();
+		rightClick(groupRow(rail));
+		choose("Rename");
+		const input = document.querySelector<HTMLInputElement>(".name-dialog-input")!;
+		input.value = "Launch plan";
+		input.dispatchEvent(new Event("input"));
+		input.form!.requestSubmit();
+		await settle();
+		expect(rail.textContent).toContain(
+			"Launch could not be renamed. Update its participants in the group details first.",
+		);
+	});
+	it("says in the rail when a group chat could not be deleted", async () => {
+		const deleteGroup = vi.fn(async () => {
+			throw new Error("gateway said no");
+		});
+		const { rail, ready } = companyWith(...launchCompany({ updateGroup: vi.fn(), deleteGroup }));
+		await ready;
+		await settle();
+		rightClick(groupRow(rail));
+		choose("Delete");
+		[...document.querySelectorAll<HTMLButtonElement>(".modal button")]
+			.find((button) => button.textContent === "Delete")!
+			.click();
+		await settle();
+		expect(rail.textContent).toContain("Launch could not be deleted.");
+		expect(rail.textContent).not.toContain("gateway said no");
 	});
 });

@@ -3,6 +3,7 @@ import { NODE_OBSERVATIONS_PATH, ProviderNodeObservability } from "../src/node-o
 import type { CloudRunnerAssignmentDelivery, CloudRunnerInstance, CloudRunnerWork } from "../src/orchestrator.ts";
 import { HttpCloudRunnerProviderAdapter } from "../src/provider-http.ts";
 import { type CloudRunnerProviderServiceBackend, HttpCloudRunnerProviderService } from "../src/provider-service.ts";
+import { ProviderRpcFailed, ProviderStepFailed, providerRpcErrorCode } from "../src/provider-shared.ts";
 
 const token = "provider-service-token";
 const runnerId = "55555555-5555-4555-8555-555555555555";
@@ -481,6 +482,97 @@ describe("runner provider HTTP service", () => {
 				}),
 			);
 			expect(await response.text()).not.toContain("PRIVATE_CREDENTIAL");
+		} finally {
+			log.mockRestore();
+		}
+	});
+	it("reads only a PostgREST error's code from a failed database answer", async () => {
+		const answer = (body: string) => new Response(body, { status: 500 });
+		expect(await providerRpcErrorCode(answer('{"code":"PGRSTX00","message":"PRIVATE"}'))).toBe("PGRSTX00");
+		expect(await providerRpcErrorCode(answer('{"code":"PGRST202"}'))).toBe("PGRST202");
+		expect(await providerRpcErrorCode(answer('{"code":"42501","details":"PRIVATE"}'))).toBe("42501");
+		for (const body of [
+			'{"code":"pgrstx00"}',
+			'{"code":"PGRSTXX0"}',
+			'{"code":"PRIVATE"}',
+			'{"code":42501}',
+			"<html>",
+			"",
+		])
+			expect(await providerRpcErrorCode(answer(body))).toBeUndefined();
+	});
+	it("logs the failed step and a database call's function, status and code, never the error text", async () => {
+		const provider = backend();
+		provider.acquire.mockRejectedValueOnce(
+			new ProviderStepFailed(
+				"reserve",
+				new ProviderRpcFailed(
+					"PRIVATE_CREDENTIAL /private/path",
+					"qorpera_reserve_runtime_machine",
+					500,
+					"PGRSTX00",
+				),
+			),
+		);
+		provider.acquire.mockRejectedValueOnce(
+			Object.assign(new Error("PRIVATE_CREDENTIAL"), {
+				category: "provider_step",
+				stage: "Create /private",
+				rpc: "drop table",
+				rpcStatus: 9000,
+				rpcCode: "PRIVATE",
+			}),
+		);
+		provider.acquire.mockRejectedValueOnce(
+			Object.assign(new Error("PRIVATE_CREDENTIAL"), {
+				category: "provider_step",
+				stage: "create",
+				rpc: "drop table",
+				rpcStatus: 9000,
+				rpcCode: "PRIVATE",
+			}),
+		);
+		const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+		const service = new HttpCloudRunnerProviderService(provider, token);
+		services.push(service);
+		try {
+			const port = await service.start();
+			for (let attempt = 0; attempt < 3; attempt += 1) {
+				const response = await fetch(`http://127.0.0.1:${port}/v1/qorpera-runner-provider`, {
+					method: "POST",
+					headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+					body: JSON.stringify({
+						schema: "qorpera.runner-provider/v1",
+						action: "acquire",
+						adapter_id: "managed",
+						acquisition_id: work.runId,
+						work,
+					}),
+				});
+				expect(response.status).toBe(422);
+				expect(await response.text()).toBe('{"error":"request rejected"}\n');
+			}
+			const line = {
+				schema: "qorpera.provider-request-error/v1",
+				providerAdapter: "managed",
+				status: "rejected",
+				action: "acquire",
+				errorCategory: "unknown",
+			};
+			expect(log.mock.calls).toEqual([
+				[
+					JSON.stringify({
+						...line,
+						stage: "reserve",
+						rpc: "qorpera_reserve_runtime_machine",
+						rpcStatus: 500,
+						rpcCode: "PGRSTX00",
+					}),
+				],
+				// A step name that is not a fixed name is not logged, nor anything with it.
+				[JSON.stringify(line)],
+				[JSON.stringify({ ...line, stage: "create" })],
+			]);
 		} finally {
 			log.mockRestore();
 		}

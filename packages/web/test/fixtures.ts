@@ -214,6 +214,7 @@ export function fixture() {
 	vi.spyOn(api, "listProfiles").mockResolvedValue([profileA]);
 	vi.spyOn(api, "listIncomingInvitations").mockResolvedValue([]);
 	vi.spyOn(api, "listFriends").mockResolvedValue([]);
+	vi.spyOn(api, "findAccountByEmail").mockResolvedValue(null);
 	vi.spyOn(api, "listMemberPictures").mockResolvedValue([]);
 	vi.spyOn(api, "getAccountEntitlement").mockResolvedValue({
 		planKey: "Account A private plan",
@@ -252,6 +253,7 @@ export function fixture() {
 	vi.spyOn(api, "readCodingSession").mockRejectedValue(new Error("No coding session in this fixture"));
 	vi.spyOn(api, "answerCodingSession").mockRejectedValue(new Error("No coding session in this fixture"));
 	vi.spyOn(api, "delegateCodingSession").mockRejectedValue(new Error("No coding session in this fixture"));
+	vi.spyOn(api, "archiveCodingSession").mockRejectedValue(new Error("No coding session in this fixture"));
 	vi.spyOn(api, "getCompanyFile").mockResolvedValue(file);
 	vi.spyOn(api, "listWorkspaces").mockResolvedValue([]);
 	vi.spyOn(api, "listSnapshots").mockResolvedValue([snapshot]);

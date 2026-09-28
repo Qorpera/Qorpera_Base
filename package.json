@@ -36,6 +36,7 @@
 		"prepare": "husky",
 		"pack:ephemeral-runner": "node scripts/package-ephemeral-runner.mjs",
 		"pack:cloud-secret-broker": "node scripts/package-cloud-secret-broker.mjs",
+		"pack:model-login-helper": "node scripts/package-model-login-helper.mjs",
 		"pack:lxd-runner-guest": "node scripts/package-lxd-runner-guest.mjs",
 		"pack:lxd-provider": "node scripts/package-lxd-provider.mjs",
 		"pack:runner-orchestrator": "node scripts/package-runner-orchestrator.mjs"

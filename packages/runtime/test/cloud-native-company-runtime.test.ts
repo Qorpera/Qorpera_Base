@@ -767,10 +767,13 @@ it.each([
 				"organize_sidebar",
 				"add_review_rule",
 				"read_context",
+				"read_skill",
 				"recall_memory",
+				"search_skills",
 				"send_coworker_message",
 				"send_message",
 				"update_memory",
+				"update_skill",
 			].sort(),
 		);
 		expect(evidence.threadParameters.runtimeWorkspaceRoots).toEqual([]);
@@ -796,6 +799,15 @@ it.each([
 		expect(Object.keys(prompt).at(-1)).toBe("hireOverlay");
 		// Open work is counted, not listed: the list stays behind manage_todo and manage_worker.
 		expect(prompt.openWork).toEqual({ todos: { open: 40, blocked: 2 }, workers: { active: 5, blocked: 1 } });
+		// Contract 15.2: the skill catalog sits before the notebook and the job; both libraries are empty here.
+		expect(Object.keys(prompt).slice(-3)).toEqual(["skills", "memory", "hireOverlay"]);
+		expect(prompt.skills).toMatchObject({
+			schema: "qorpera.agent-skills/v1",
+			trust: "guidance_not_authority",
+			available: true,
+			own: { path: `agents/${f.context.identity.staffAgentId}/skills`, skills: [], moreSkills: 0 },
+			company: { path: "skills", descriptions: "included", skills: [], moreSkills: 0 },
+		});
 		expect(prompt).not.toHaveProperty("jobSpecification");
 		expect(prompt.currentInputs[0].authorUserId).toBe(f.context.identity.requesterUserId);
 		expect(prompt.history[0].kind).toBe("historical_data");
@@ -814,6 +826,7 @@ it("projects only native auth from a login capsule without materializing local c
 	await mkdir(join(f.identityRoot, "codex", "log"));
 	await writeFile(join(f.identityRoot, "codex", "log", "login.log"), "CAPSULE_LOG_MUST_NOT_LOAD\n");
 	let capsule = await sealNativeCredentialCapsule(f.identityRoot, masterKey, f.binding.credentialCapsuleId);
+	const original = capsule;
 	const put = vi.fn(async (_reference: string, bytes: Uint8Array) => {
 		capsule = bytes;
 	});
@@ -849,15 +862,14 @@ it("projects only native auth from a login capsule without materializing local c
 		final_message_id: f.deliveries.get("final")?.messageId,
 	});
 	expect(oldExecute).not.toHaveBeenCalled();
-	expect(put).toHaveBeenCalledTimes(1);
+	// The turn did not renew the login, so nothing is saved back: native sessions and logs
+	// created during this turn never become durable credentials.
+	expect(put).not.toHaveBeenCalled();
+	expect(capsule).toBe(original);
 	expect(Buffer.from(capsule).toString("utf8")).not.toContain("SYNTHETIC_NATIVE_SECRET");
 	const restored = join(root, "restored-capsule");
 	await mkdir(restored, { mode: 0o700 });
 	await openNativeCredentialCapsule(capsule, restored, masterKey, f.binding.credentialCapsuleId);
-	// Native sessions/logs created during this turn must not become durable
-	// credentials, including the unrelated files captured by the login process.
-	expect(await readdir(restored)).toEqual(["codex"]);
-	expect(await readdir(join(restored, "codex"))).toEqual(["auth.json"]);
 	expect(await readFile(join(restored, "codex", "auth.json"), "utf8")).toContain("SYNTHETIC_NATIVE_SECRET");
 	expect(await readFile(f.evidence, "utf8")).not.toMatch(/CAPSULE_CONFIG_MUST_NOT_LOAD|CAPSULE_LOG_MUST_NOT_LOAD/);
 	expect((await readdir(root)).some((path) => path.startsWith("qorpera-native-run-"))).toBe(false);
@@ -1209,8 +1221,10 @@ it("runs a background worker blank: reading tools and its report, no mouth, no c
 		"company_list",
 		"company_read",
 		"read_context",
+		"read_skill",
 		"recall_memory",
 		"report_work",
+		"search_skills",
 	]);
 	expect(evidence.threadParameters.developerInstructions).toContain("# This wake: you are a background worker");
 	expect(evidence.threadParameters.developerInstructions).toContain("# Before you stop\nCall report_work once");
@@ -1218,6 +1232,8 @@ it("runs a background worker blank: reading tools and its report, no mouth, no c
 	expect(JSON.parse(evidence.turnParameters.input[0].text)).not.toHaveProperty("openWork");
 	expect(f.pathCall.mock.calls.map(([method]) => method)).not.toContain("qorpera_describe_agent_open_work");
 	expect(evidence.threadParameters.developerInstructions).not.toContain("# Standing work");
+	// A read-only worker follows skills but writes none, so it gets no guidance on keeping them.
+	expect(evidence.threadParameters.developerInstructions).not.toContain("# Skills");
 	expect(evidence.threadParameters.developerInstructions).not.toContain("# This wake: a message from a coworker");
 });
 
