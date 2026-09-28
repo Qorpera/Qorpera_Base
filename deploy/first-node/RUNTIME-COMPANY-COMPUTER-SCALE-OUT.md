@@ -11,12 +11,12 @@ whichever computer has room; when every running computer is full, the company
 gets another one. Contract section 12 and the 2026-09-16 amendment already
 said so ("six desktop screens per Company Computer ... an additional Company
 Computer for the same company starts when all screens are occupied"); until
-migration `20260929010000` the computer table allowed one row per company
+migration `20260928237100` the computer table allowed one row per company
 environment.
 
 ## What changed in SQL
 
-`20260929010000_runtime_company_computer_sets.sql`
+`20260928237100_runtime_company_computer_sets.sql`
 
 - `qorpera_runtime_offices.environment_id` is no longer unique. Computers of
   one environment are numbered from 1 (`computer_number`, unique per
@@ -34,7 +34,7 @@ environment.
 - `qorpera_register_runtime_office` and `qorpera_member_office_catalog` keep
   meaning "computer 1". Clients that predate several computers see computer 1.
 
-`20260929010100_runtime_company_computer_seats.sql`
+`20260928237200_runtime_company_computer_seats.sql`
 
 - **Screens are seats.** A screen is in use while an agent holds its lease, a
   member watches or drives it, a drain or takeover is pending, agent resources

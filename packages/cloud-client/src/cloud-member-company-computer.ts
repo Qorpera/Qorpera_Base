@@ -19,7 +19,7 @@ export interface MemberCompanyComputerCatalog {
 	staff: { staffAgentId: string; name: string }[];
 	nextAfter: string | null;
 }
-/** Where an agent's screen is, or would go (migration 20260929010100). */
+/** Where an agent's screen is, or would go (migration 20260928237200). */
 export type MemberAgentComputerPlacement =
 	| "screen"
 	| "room"
