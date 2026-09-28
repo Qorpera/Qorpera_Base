@@ -25,7 +25,7 @@ import {
 import { CloudNativeToolBoundary, cloudToolJsonText } from "@qorpera/runtime/cloud-native-tool-boundary";
 import { CloudRuntimeObservability, type CloudRuntimeObservation } from "@qorpera/runtime/cloud-runtime-observability";
 import { describe, expect, it, vi } from "vitest";
-import { companyFilePostgrest } from "./fixtures/company-file-postgrest.ts";
+import { companyFilePostgrest, FakeSqlError } from "./fixtures/company-file-postgrest.ts";
 import { nativeToolAuthorityFixture } from "./fixtures/native-tool-authority-fixture.ts";
 
 /** Only wire/storage orchestration is simulated here. SQL 290 exercises the
@@ -549,6 +549,134 @@ describe("cloud Company File path gateway", () => {
 		} finally {
 			boundary.close();
 		}
+	});
+	// organization/formation.json is protected: the Co-Founder's write only proposes, and the projection
+	// that refuses a wrong step (qorpera_project_organization_document) runs when a member approves it,
+	// behind an object gateway that drops its text. So the agent never learned the allowed step.
+	it("refuses a formation write the projection would refuse before its check, naming the allowed step", async () => {
+		const db = companyFilePostgrest();
+		const path = "organization/formation.json";
+		const formation = (state: string, status: string, revision: number) =>
+			JSON.stringify({
+				schema: "qorpera.company-formation/v1",
+				formationId: "11111111-1111-4111-8111-111111111112",
+				cofounderStaffAgentId: "22222222-2222-4222-8222-222222222223",
+				state,
+				status,
+				revision,
+			});
+		await db.seed(path, formation("goals_ratified", "active", 5));
+		const recorded = db.entries.get(path)!.version;
+		const rows: CloudRuntimeObservation[] = [];
+		const observability = new CloudRuntimeObservability({
+			assignmentId: null,
+			publish: async (row) => {
+				rows.push(row);
+			},
+		});
+		const boundary = new CloudNativeToolBoundary({
+			companyId: db.identity.companyId,
+			runId: db.identity.runId,
+			identity: db.identity,
+			tools: db.gateway.tools(),
+			assertActive: async () => {},
+			signal: new AbortController().signal,
+			observability,
+		});
+		try {
+			const objects = db.objects.size;
+			const skipped = await boundary.invoke("formation_skip", "qorpera", "company_write", {
+				path,
+				operationKey: "formation-operating",
+				expectedVersion: recorded,
+				text: formation("operating", "active", 6),
+			});
+			expect(skipped.success).toBe(false);
+			expect(JSON.parse(skipped.contentItems[0].text)).toMatchObject({
+				status: "denied",
+				content: {
+					text:
+						"COMPANY_FORMATION_REFUSED: nothing was written; the stage moves one step at a time and never back. " +
+						"organization/formation.json is at stage goals_ratified, revision 5, status active. Write it back with exactly its six fields: " +
+						"schema qorpera.company-formation/v1, formationId and cofounderStaffAgentId unchanged, revision 6, " +
+						"state goals_ratified or responsibility_map, status active, paused, completed.",
+				},
+			});
+			// Only the read of the version it replaces crossed the wire: no check, upload, prepare or commit.
+			expect(db.requests).toEqual([{ method: "qorpera_read_company_path", path, status: 200 }]);
+			expect(db.objects.size).toBe(objects);
+			expect(db.entries.get(path)!.version).toBe(recorded);
+			// The step the refusal names goes through the usual check, prepare and commit (the fixture does
+			// not model protected paths, so it applies where production would propose).
+			const next = await boundary.invoke("formation_step", "qorpera", "company_write", {
+				path,
+				operationKey: "formation-responsibility-map",
+				expectedVersion: recorded,
+				text: formation("responsibility_map", "active", 6),
+			});
+			expect(JSON.parse(next.contentItems[0].text)).toMatchObject({ status: "ok" });
+			expect(await db.text(path)).toBe(formation("responsibility_map", "active", 6));
+			// A write over a version that is no longer current is not judged against the new one:
+			// the check refuses it as stale, as for any other path.
+			db.requests.length = 0;
+			const stale = await boundary.invoke("formation_stale", "qorpera", "company_write", {
+				path,
+				operationKey: "formation-stale",
+				expectedVersion: recorded,
+				text: formation("operating", "active", 7),
+			});
+			expect(JSON.parse(stale.contentItems[0].text)).toMatchObject({
+				status: "denied",
+				content: { text: expect.stringMatching(/^COMPANY_FILE_VERSION_CHANGED: /) },
+			});
+			expect(db.requests).toEqual([
+				{ method: "qorpera_read_company_path", path, status: 200 },
+				{ method: "qorpera_check_company_path_mutation", path, status: 412 },
+			]);
+			await observability.close();
+			expect(
+				rows
+					.filter((row) => row.operation === "company_write" && row.phase === "finish")
+					.map((row) => [row.status, row.errorCategory]),
+			).toEqual([
+				["denied", "invalid_arguments"],
+				["succeeded", null],
+				["denied", "stale_version"],
+			]);
+		} finally {
+			boundary.close();
+		}
+	});
+	it("leaves a formation write to the usual path when the version it replaces cannot be read", async () => {
+		const db = companyFilePostgrest();
+		const path = "organization/formation.json";
+		await db.seed(path, JSON.stringify({ state: "goals_ratified", revision: 5 }));
+		const recorded = db.entries.get(path)!.version;
+		const bad = JSON.stringify({ schema: "qorpera.company-formation/v1", state: "operating", revision: 6 });
+		// A recorded file this rule cannot judge: the database decides.
+		expect(
+			await db.gateway.mutate(
+				"write",
+				{ path, operationKey: "unjudged", expectedVersion: recorded, text: bad },
+				new AbortController().signal,
+			),
+		).toMatchObject({ state: "applied" });
+		// A read the authority refuses: the check that follows decides, as for any other write.
+		const current = db.entries.get(path)!.version;
+		db.before.hook = (method) => {
+			if (method === "qorpera_read_company_path") throw new FakeSqlError("42501", "Company File read refused");
+		};
+		expect(
+			await db.gateway.mutate(
+				"write",
+				{ path, operationKey: "unread", expectedVersion: current, text: bad },
+				new AbortController().signal,
+			),
+		).toMatchObject({ state: "applied" });
+		expect(db.requests.filter((request) => request.method === "qorpera_read_company_path")).toEqual([
+			{ method: "qorpera_read_company_path", path, status: 200 },
+			{ method: "qorpera_read_company_path", path, status: 403 },
+		]);
 	});
 	it("registers no presence for a write the check refused for its missing folder", async () => {
 		const observe = vi.fn<CloudCompanyPathPresence["observe"]>();

@@ -19,8 +19,10 @@ import {
 import type { CloudContentAddressedStore, CloudFileReference } from "@qorpera/cloud-client/node/cloud-object-store";
 import type { JsonValue } from "@qorpera/contracts";
 import { parseCompanyComputerScreenshotAsset } from "./cloud-company-computer-screenshots.ts";
+import { companyFormationWriteRefusal, isCompanyFormationPath } from "./cloud-company-formation.ts";
 import { type CloudCompanyPathPresence, observeCloudCompanyPathPresence } from "./cloud-company-path-presence.ts";
 import {
+	CloudCompanyFormationRefused,
 	CloudCompanyPathParentMissing,
 	CloudCompanyPathRpcParentMissing,
 	CloudCompanyPathRpcPrecondition,
@@ -883,6 +885,20 @@ export class CloudCompanyPathGateway {
 		} else if (operation === "mkdir") next = { kind: "directory", path };
 		else if (operation === "delete") next = null;
 		else throw new Error("Unknown Company File operation");
+		// The organization projection only runs when the proposal this write makes is
+		// approved, and its refusal never reaches the agent. Judge a formation write
+		// against the version it replaces now, so the agent learns the allowed step.
+		// Best effort: when that version cannot be read, the usual path decides.
+		if (bytes && isCompanyFormationPath(path)) {
+			const current = await this.readTrusted(path, signal).catch((error: unknown) => {
+				if (signal.aborted) throw error;
+				return null;
+			});
+			if (current?.kind === "file" && current.version === expectedVersion) {
+				const refusal = companyFormationWriteRefusal(current.text, bytes.toString("utf8"));
+				if (refusal) throw new CloudCompanyFormationRefused(refusal);
+			}
+		}
 		const plan: CloudCompanyPathPlan = {
 			schema: "qorpera.company-path-mutation/v1",
 			operationKey: input.operationKey,

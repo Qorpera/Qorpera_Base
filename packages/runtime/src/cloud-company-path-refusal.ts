@@ -58,3 +58,16 @@ export class CloudCompanyPathParentMissing extends CloudRuntimeDiagnosticError {
 		super("parent_missing", "Company File parent folder is missing");
 	}
 }
+
+/** Only the Company File gateway's mutate() raises this, before its first
+ * transaction: a write of organization/formation.json that the organization
+ * projection would refuse over the file's current version (see
+ * cloud-company-formation.ts). Nothing was staged, proposed or written. The
+ * reason names only fixed formation keys and whole numbers, never the text. */
+export class CloudCompanyFormationRefused extends CloudRuntimeDiagnosticError {
+	readonly reason: string;
+	constructor(reason: string) {
+		super("invalid_arguments", "Company formation write refused");
+		this.reason = reason;
+	}
+}

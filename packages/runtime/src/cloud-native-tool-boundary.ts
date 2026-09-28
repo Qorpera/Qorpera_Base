@@ -3,6 +3,7 @@ import type { JsonValue } from "@qorpera/contracts";
 import type { CloudActionGateResult } from "./cloud-action-review.ts";
 import type { CompanyComputerScreenshotAsset } from "./cloud-company-computer-screenshots.ts";
 import {
+	CloudCompanyFormationRefused,
 	CloudCompanyPathParentMissing,
 	CloudCompanyPathToolRefusal,
 	CloudCompanyPathVersionChanged,
@@ -34,6 +35,9 @@ export const CLOUD_TOOL_RESULT_INSTRUCTIONS =
 /** Fixed wording for a definite stale-version refusal of a Company File mutation. */
 const COMPANY_FILE_VERSION_CHANGED =
 	"COMPANY_FILE_VERSION_CHANGED: nothing was written; the path changed since your version. Read it again and make the change on its current version.";
+
+/** Prefix for a formation write the organization projection would refuse; the gateway's reason follows. */
+const COMPANY_FORMATION_REFUSED = "COMPANY_FORMATION_REFUSED: nothing was written; ";
 
 /** Fixed wording for a definite missing-folder refusal of a Company File write or mkdir. */
 const COMPANY_FILE_PARENT_MISSING =
@@ -456,6 +460,7 @@ export class CloudNativeToolBoundary {
 					REVIEW_UNAVAILABLE: "review_unavailable",
 					COMPANY_FILE_VERSION_CHANGED: "stale_version",
 					COMPANY_FILE_PARENT_MISSING: "parent_missing",
+					COMPANY_FORMATION_REFUSED: "invalid_arguments",
 				} as const;
 				observation?.finish(envelope.status, {
 					errorCategory:
@@ -667,6 +672,19 @@ export class CloudNativeToolBoundary {
 			) {
 				observation?.finish("denied", { errorCategory: "parent_missing" });
 				return this.#result(callId, tool, digest, "denied", { kind: "text", value: COMPANY_FILE_PARENT_MISSING });
+			}
+			// Refused before any transaction: the reason names only fixed formation keys and numbers.
+			if (
+				error instanceof CloudCompanyFormationRefused &&
+				!this.#signal.aborted &&
+				tool.source === "company_file" &&
+				tool.name === "company_write"
+			) {
+				observation?.finish("denied", { errorCategory: "invalid_arguments" });
+				return this.#result(callId, tool, digest, "denied", {
+					kind: "text",
+					value: `${COMPANY_FORMATION_REFUSED}${error.reason}`,
+				});
 			}
 			observation?.finish("unconfirmed", { errorCategory: cloudRuntimeErrorCategory(error, this.#signal) });
 			// A thrown adapter error may follow a completed effect. Never echo it or automatically rerun the call.
