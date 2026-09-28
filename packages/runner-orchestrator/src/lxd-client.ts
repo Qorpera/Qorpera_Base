@@ -180,6 +180,20 @@ export interface LxdInstanceDeviceClient {
 	): Promise<void>;
 }
 
+/** A shared execution host's Compute Identity devices are changed by its
+ * node's login gateway (lxd-execution-host-identity.ts): each change is
+ * decided on, and written under, one read of the instance. */
+export interface LxdInstanceDeviceUpdateClient {
+	getInstance(project: string, name: string, signal?: AbortSignal): Promise<LxdInstanceRecord | undefined>;
+	updateInstanceDevices(
+		project: string,
+		name: string,
+		update: (instance: LxdInstanceRecord) => Readonly<Record<string, Readonly<Record<string, string>>>> | undefined,
+		signal: AbortSignal,
+	): Promise<boolean>;
+	listCustomStorageVolumes(project: string, pool: string, signal: AbortSignal): Promise<LxdStorageVolumeRecord[]>;
+}
+
 /** Submission and observation are separate so an office provider can persist
  * the operation ID before polling. A rejected submission has an UNKNOWN
  * physical outcome; neither a timeout nor a 404 authorizes a retry/release.
@@ -1178,6 +1192,7 @@ function projectPath(path: string, project: string): string {
 export class LxdUnixClient
 	implements
 		LxdInstanceDeviceClient,
+		LxdInstanceDeviceUpdateClient,
 		LxdOfficeConfigurationClient,
 		LxdOfficeServiceStartClient,
 		LxdOfficeBootServiceStartClient,
@@ -1476,6 +1491,39 @@ export class LxdUnixClient
 		const metadata = record(envelopeMetadata(current), "LXD instance");
 		const etag = current.headers?.etag;
 		if (typeof etag !== "string" || !etag) throw new Error("LXD instance version is unavailable");
+		await this.#putInstanceDevices(path, metadata, etag, devices, signal);
+	}
+
+	/** Like replaceInstanceDevices, but `update` decides from the very read
+	 * whose ETag the write carries: a change anywhere in the instance between
+	 * the two fails the write (412) instead of being overwritten, so callers
+	 * need no lock across processes. `update` returns the instance's new local
+	 * devices, or undefined to write nothing (then this returns false). */
+	async updateInstanceDevices(
+		project: string,
+		name: string,
+		update: (instance: LxdInstanceRecord) => Readonly<Record<string, Readonly<Record<string, string>>>> | undefined,
+		signal: AbortSignal,
+	): Promise<boolean> {
+		if (!INSTANCE_NAME.test(project) || !INSTANCE_NAME.test(name)) throw new Error("LXD instance scope is invalid");
+		const path = projectPath(`/1.0/instances/${encodeURIComponent(name)}`, project);
+		const current = await this.#request("GET", path, undefined, signal);
+		const metadata = record(envelopeMetadata(current), "LXD instance");
+		const etag = current.headers?.etag;
+		if (typeof etag !== "string" || !etag) throw new Error("LXD instance version is unavailable");
+		const devices = update(instance(metadata));
+		if (!devices) return false;
+		await this.#putInstanceDevices(path, metadata, etag, devices, signal);
+		return true;
+	}
+
+	async #putInstanceDevices(
+		path: string,
+		metadata: Record<string, unknown>,
+		etag: string,
+		devices: Readonly<Record<string, Readonly<Record<string, string>>>>,
+		signal: AbortSignal,
+	): Promise<void> {
 		const body = {
 			architecture: metadata.architecture,
 			config: stringRecord(metadata.config, "LXD instance config"),
@@ -1523,6 +1571,24 @@ export class LxdUnixClient
 		);
 		if (result.status === 404) return undefined;
 		return storageVolume(envelopeMetadata(result));
+	}
+
+	/** Every custom volume of the pool in this project, with its configuration. */
+	async listCustomStorageVolumes(
+		project: string,
+		pool: string,
+		signal: AbortSignal,
+	): Promise<LxdStorageVolumeRecord[]> {
+		if (!INSTANCE_NAME.test(project) || !INSTANCE_NAME.test(pool)) throw new Error("LXD storage scope is invalid");
+		const result = await this.#request(
+			"GET",
+			projectPath(`/1.0/storage-pools/${encodeURIComponent(pool)}/volumes/custom?recursion=1`, project),
+			undefined,
+			signal,
+		);
+		const volumes = envelopeMetadata(result);
+		if (!Array.isArray(volumes)) throw new Error("LXD storage volume listing is invalid");
+		return volumes.map(storageVolume);
 	}
 
 	async createStorageVolume(
