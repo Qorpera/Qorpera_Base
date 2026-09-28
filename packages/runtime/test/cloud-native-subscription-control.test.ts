@@ -75,8 +75,6 @@ function transport() {
 					status: "queued",
 					sponsor_mode: args.p_sponsor_mode,
 				};
-			case "qorpera_approve_session_turn_sponsorship":
-				return { turn_request_id: requestId, status: "queued" };
 			case "qorpera_list_member_native_execution_connections":
 				return { compute_identity: null, connections: [] };
 			case "qorpera_list_compute_identities":

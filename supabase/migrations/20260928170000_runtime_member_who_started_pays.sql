@@ -56,7 +56,8 @@ revoke all on function public.qorpera_sponsor_serves_requester(uuid, uuid, bigin
 grant execute on function public.qorpera_sponsor_serves_requester(uuid, uuid, bigint, uuid) to service_role;
 
 -- The company account for an agent's work: the one an owner or admin configured for this agent,
--- else the company's newest. Company-owned connection, autonomous consent, provider enabled.
+-- else the company's newest. Company-owned connection, autonomous consent, provider enabled, never a
+-- Claude login (coding only, 2026-09-24).
 create function public.qorpera_company_account_sponsor(p_profile_id uuid, p_staff_agent_id uuid)
 returns table (binding_id uuid, version bigint)
 language sql
@@ -81,6 +82,7 @@ as $$
 		and connection.profile_id = p_profile_id and connection.owner_user_id is null and connection.status = 'active'
 		and connection.provider = coalesce(staff.model_provider, 'openai')
 		and version.authorization_state = 'active' and version.allow_autonomous
+		and version.native_harness <> 'claude-code'
 		and not exists (select 1 from public.qorpera_provider_connection_versions as newer
 			where newer.connection_id = connection.id and newer.version > version.version)
 		and public.qorpera_provider_execution_enabled(connection.provider, version.authentication_mode, version.native_harness)

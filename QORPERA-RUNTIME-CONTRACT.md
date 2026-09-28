@@ -1842,8 +1842,10 @@ posts, and everything that follows from them — coworker messages, workers
 and their reports, reviews of a change, a computer that finished starting,
 coding sessions, and routines an agent sets up for them. The kernel already
 carries that member as the run's requester; the payer for follow-up work is
-the requester's own usable login (the parent run's first), else a company
-account, else nothing, and the work does not start. An agent's standing
+the requester's own login with room left (the parent run's first), else a
+company account whose kind can run, else the requester's own used-up login
+(whose run then meets the usage-limit handoff), else nothing, and the work
+does not start. Claude logins never pay for agent work. An agent's standing
 execution authority names a company account only; it never pays with a
 member's login. A coding session runs for the member who asked, on their
 account; the model cannot name another member. A member cannot ask another
@@ -1851,9 +1853,10 @@ member to pay for a turn. Every run is checked where it is created and where
 a handoff moves it: a member-connection sponsor must be owned by the run's
 requester; a company sponsor serves any member. Unattended use stays granted
 by default (2026-09-19/20 amendment, item 2) and covers only the owner's own
-work. The company account for the usage-limit handoff and for work no member
-started is a company-owned API account added by an owner or admin; it pays
-only once its kind of account can run.
+work. A company account is a company-owned account added by an owner or
+admin; it pays only once its kind of account can run. The company OpenAI API
+account, and its use by the usage-limit handoff and for work no member
+started, follow in a later change.
 
 ## 18. Short constitution
 

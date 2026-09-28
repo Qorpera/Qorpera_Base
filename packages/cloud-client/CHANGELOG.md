@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Removed
+
+- `NativeSubscriptionControl.approveSessionTurnSponsorship` and its input type: a member can no longer ask another member to pay for a turn. `requestSessionTurn` refuses the `sponsorship_request` mode before any call; turn provenance still reads it on older requests.
+
 ### Added
 
 - `SupabaseCloudPresenceTransport` takes any client with `channel`/`removeChannel` and just the three presence device calls (`PresenceDevices`), so the web app joins presence without the whole hosted primary.

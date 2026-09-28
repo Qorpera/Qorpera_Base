@@ -134,19 +134,37 @@ $$;
 
 -- A coding session runs for the member who asked: the model cannot name another member.
 select pg_temp.path_claims('service_role');
+select pg_temp.wake_error($q$select public.qorpera_manage_agent_worker(current_setting('qorpera_test.wake_binding')::jsonb,
+	jsonb_build_object('action','dispatch','operationKey','pays-code','todoKey','fix-login','workerKey','fix-login',
+		'title','Fix the login page','goal','Make the login page load.','definitionOfDone','The page loads.',
+		'access','read','species','coding','harness','codex',
+		'repository',jsonb_build_object('host','github.com','owner','qorpera','name','site','baseBranch','main'),
+		'owner','30000000-0000-4000-8000-000000000002'))$q$,'42501','A coding session runs for the member who asked for it');
+
+-- A run created for one member on another member's login is refused where it is inserted.
 do $$
-declare v_refused boolean := false;
+declare v_base public.qorpera_execution_runs%rowtype; v_id uuid := extensions.gen_random_uuid(); v_job uuid;
+	v_message text;
 begin
+	select * into strict v_base from public.qorpera_execution_runs
+	where id = (current_setting('qorpera_test.wake_binding')::jsonb ->> 'runId')::uuid;
+	insert into public.qorpera_runner_jobs(profile_id,environment_id,session_id,substrate_version_id,client_job_id,
+		required_capability,job_type,payload,created_by_user_id)
+	values(v_base.profile_id,v_base.environment_id,v_base.session_id,v_base.substrate_version_id,v_id,
+		'agent_turn','agent_turn','{}','30000000-0000-4000-8000-000000000002') returning id into v_job;
 	begin
-		perform public.qorpera_manage_agent_worker(current_setting('qorpera_test.wake_binding')::jsonb, jsonb_build_object(
-			'action','dispatch','operationKey','pays-code','todoKey','fix-login','workerKey','fix-login',
-			'title','Fix the login page','goal','Make the login page load.','definitionOfDone','The page loads.',
-			'access','read','species','coding','harness','codex',
-			'repository',jsonb_build_object('host','github.com','owner','qorpera','name','site','baseBranch','main'),
-			'owner','30000000-0000-4000-8000-000000000002'));
-	exception when insufficient_privilege then v_refused := true;
+		insert into public.qorpera_execution_runs(id,profile_id,environment_id,source_kind,source_id,session_id,job_id,
+			substrate_version_id,company_snapshot_id,staff_agent_id,staff_version,input_ids,sponsor_binding_id,sponsor_version,
+			required_capability,job_type,payload_sha256,compute_identity_id,transcript_start_sequence,created_by_user_id)
+		values(v_id,v_base.profile_id,v_base.environment_id,'room_delivery',v_id,v_base.session_id,v_job,
+			v_base.substrate_version_id,v_base.company_snapshot_id,v_base.staff_agent_id,v_base.staff_version,'{}',
+			v_base.sponsor_binding_id,v_base.sponsor_version,'agent_turn','agent_turn',repeat('e',64),v_base.compute_identity_id,0,
+			'30000000-0000-4000-8000-000000000002');
+		raise exception 'a run for the contributor was created on the owner''s login';
+	exception when insufficient_privilege then
+		get stacked diagnostics v_message = message_text;
+		if v_message not like '%pays only for work that member started%' then raise; end if;
 	end;
-	if not v_refused then raise exception 'a coding session was started on another member''s account'; end if;
 end
 $$;
 

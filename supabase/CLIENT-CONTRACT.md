@@ -261,7 +261,7 @@ profile RPCs; RLS is the second read boundary.
 - `qorpera_answer_interaction` (2026-09-22, bundle v75): answers a typed card
   the agent raised in the thread. See "Thread interactions" under §6.
 - `qorpera_append_session_input`
-- `qorpera_approve_session_turn_sponsorship`
+- `qorpera_approve_session_turn_sponsorship` (refuses since 2026-09-28: a member's login pays only for that member's own work)
 - `qorpera_claim_wake_v2`
 - `qorpera_close_shared_session`
 - `qorpera_complete_session_turn_v2`
