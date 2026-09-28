@@ -13,7 +13,7 @@ insert into public.qorpera_profile_members(profile_id,user_id,email,display_name
 	('70700000-0000-4000-8000-000000000010','70700000-0000-4000-8000-000000000001','todos-owner@example.test','Owner','owner'),
 	('70700000-0000-4000-8000-000000000010','70700000-0000-4000-8000-000000000002','todos-member@example.test','Member','contributor');
 insert into public.qorpera_company_environments(id,profile_id,name,contract_version,created_by_user_id) values
-	('70700000-0000-4000-8000-000000000020','70700000-0000-4000-8000-000000000010','Environment',1,'70700000-0000-4000-8000-000000000001');
+	('70700000-0000-4000-8000-000000000020','70700000-0000-4000-8000-000000000010','Environment',1,'70700000-0000-4000-8000-000000000001'), ('70700000-0000-4000-8000-000000000022','70700000-0000-4000-8000-000000000010','Other environment',1,'70700000-0000-4000-8000-000000000001');
 
 select set_config('request.jwt.claims', '{"role":"service_role"}', true) \g /dev/null
 select public.qorpera_folder_enable('70700000-0000-4000-8000-000000000020') \g /dev/null
@@ -282,6 +282,107 @@ begin
 	x := pg_temp.row('70700000-0000-4000-8000-0000000000d4');
 	if x.folder_retired_at is not null or x.state is distinct from 'open' or x.todo_key is distinct from 'plan-week' then
 		raise exception 'A restore brings the todo back: %', to_jsonb(x); end if;
+end $$;
+
+-- 6. Review round 1: tombstones never meet, the owner is a file the unit writes, a restore is compared with the last file
+
+do $$
+declare r jsonb; x public.qorpera_runtime_agent_todos;
+begin
+	-- The same name deleted twice: two tombstones, and the agent's folder can still go.
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'tomb-0001', jsonb_build_array(
+		pg_temp.todo('agents/otto/todos/sync.md', '70700000-0000-4000-8000-0000000000d7', 'Sync one'))), 1, 'saved');
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'tomb-0002', jsonb_build_array(jsonb_build_object('op','delete',
+		'path','agents/otto/todos/sync.md','expectedVersion',pg_temp.version('agents/otto/todos/sync.md')))), 1, 'saved');
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'tomb-0003', jsonb_build_array(
+		pg_temp.todo('agents/otto/todos/sync.md', '70700000-0000-4000-8000-0000000000d8', 'Sync two'))), 1, 'saved');
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'tomb-0004', jsonb_build_array(jsonb_build_object('op','delete',
+		'path','agents/otto/todos/sync.md','expectedVersion',pg_temp.version('agents/otto/todos/sync.md')))), 1, 'saved');
+	if (pg_temp.row('70700000-0000-4000-8000-0000000000d7')).todo_key = (pg_temp.row('70700000-0000-4000-8000-0000000000d8')).todo_key then raise exception 'Two tombstones never meet'; end if;
+	-- A unit that names an agent.md it does not write gives its todo no owner.
+	r := pg_temp.commit(pg_temp.owner(), 'owner-0001', jsonb_build_array(jsonb_build_object('op','new_folder','path','agents/wendy',
+		'contents', jsonb_build_array(jsonb_build_object('path','todos','kind','folder'),
+			jsonb_build_object('path','todos/first.md','kind','file','file',pg_temp.stage(pg_temp.todo_text('70700000-0000-4000-8000-0000000000d9', 'Hello', 'open', null, '')))),
+		'structured', jsonb_build_array(
+			pg_temp.entry('agents/wendy/todos/first.md', 'todo', pg_temp.todo_text('70700000-0000-4000-8000-0000000000d9', 'Hello', 'open', null, ''),
+				pg_temp.todo_parse('70700000-0000-4000-8000-0000000000d9', 'Hello', 'open', null, '')),
+			pg_temp.entry('agents/wendy/agent.md', 'agent', pg_temp.agent_text('70700000-0000-4000-8000-0000000000a4', 'Wendy'), pg_temp.agent_parse('70700000-0000-4000-8000-0000000000a4', 'Wendy'))))));
+	if not pg_temp.refused(r) then raise exception 'An owner the unit does not write is no owner: %', r; end if;
+	-- A done todo stays done through a delete and a restore.
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'restore-0001', jsonb_build_array(
+		pg_temp.todo('agents/otto/todos/ship.md', '70700000-0000-4000-8000-0000000000da', 'Ship it', 'done'))), 1, 'saved');
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'restore-0002', jsonb_build_array(jsonb_build_object('op','delete',
+		'path','agents/otto/todos/ship.md','expectedVersion',pg_temp.version('agents/otto/todos/ship.md')))), 1, 'saved');
+	if not pg_temp.refused(pg_temp.commit(pg_temp.owner(), 'restore-0003', jsonb_build_array(
+		pg_temp.todo('agents/otto/todos/ship.md', '70700000-0000-4000-8000-0000000000da', 'Ship it', 'open')))) then
+		raise exception 'A done todo is not opened again by a restore'; end if;
+	-- A restore keeps a requester who has since left (the member left in section 3).
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'restore-0004', jsonb_build_array(
+		pg_temp.todo('agents/nora-dahl/todos/call-again.md', '70700000-0000-4000-8000-0000000000db', 'Call again', 'open', null))), 1, 'saved');
+	update public.qorpera_runtime_agent_todos set requested_by_user_id = '70700000-0000-4000-8000-000000000002' where id = '70700000-0000-4000-8000-0000000000db';
+	update public.qorpera_folder_path_versions set structured = jsonb_set(structured, '{parse,requestedBy}', to_jsonb('70700000-0000-4000-8000-000000000002'::text))
+	where version = pg_temp.version('agents/nora-dahl/todos/call-again.md');
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'restore-0005', jsonb_build_array(jsonb_build_object('op','delete',
+		'path','agents/nora-dahl/todos/call-again.md','expectedVersion',pg_temp.version('agents/nora-dahl/todos/call-again.md')))), 1, 'saved');
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'restore-0006', jsonb_build_array(
+		pg_temp.todo('agents/nora-dahl/todos/call-again.md', '70700000-0000-4000-8000-0000000000db', 'Call again', 'open', '70700000-0000-4000-8000-000000000002'))), 1, 'saved');
+end $$;
+
+-- 7. Ids and shapes ----------------------------------------------------------------------------------------------------
+
+do $$
+declare r jsonb;
+begin
+	-- A runtime todo's id, and another environment's file todo's id, are refused.
+	set local session_replication_role = replica;
+	insert into public.qorpera_runtime_agent_todos(id, profile_id, environment_id, staff_agent_id, todo_key, title, requested_by_user_id,
+		created_by_run_id, updated_by_run_id)
+	values ('70700000-0000-4000-8000-0000000000dc', '70700000-0000-4000-8000-000000000010', '70700000-0000-4000-8000-000000000020', '70700000-0000-4000-8000-0000000000a2', 'runtime', 'From a run', '70700000-0000-4000-8000-000000000001', extensions.gen_random_uuid(), extensions.gen_random_uuid());
+	insert into public.qorpera_runtime_agent_todos(id, profile_id, environment_id, staff_agent_id, todo_key, title,
+		folder_environment_id, folder_path, folder_path_version, folder_commit_id)
+	values ('70700000-0000-4000-8000-0000000000dd', '70700000-0000-4000-8000-000000000010', '70700000-0000-4000-8000-000000000022', '70700000-0000-4000-8000-0000000000a2', 'elsewhere', 'Elsewhere', '70700000-0000-4000-8000-000000000022', 'agents/otto/todos/elsewhere.md',
+		extensions.gen_random_uuid(), extensions.gen_random_uuid());
+	set local session_replication_role = origin;
+	if not pg_temp.refused(pg_temp.commit(pg_temp.owner(), 'ids-0001', jsonb_build_array(
+		pg_temp.todo('agents/otto/todos/runtime.md', '70700000-0000-4000-8000-0000000000dc', 'From a run')))) then
+		raise exception 'A runtime todo''s id is refused'; end if;
+	if not pg_temp.refused(pg_temp.commit(pg_temp.owner(), 'ids-0002', jsonb_build_array(
+		pg_temp.todo('agents/otto/todos/elsewhere.md', '70700000-0000-4000-8000-0000000000dd', 'Elsewhere')))) then
+		raise exception 'Another environment''s todo id is refused'; end if;
+	-- One id twice in one change set: the second file is refused.
+	r := pg_temp.commit(pg_temp.owner(), 'ids-0003', jsonb_build_array(
+		pg_temp.todo('agents/otto/todos/first-copy.md', '70700000-0000-4000-8000-0000000000de', 'Copy'), pg_temp.todo('agents/otto/todos/second-copy.md', '70700000-0000-4000-8000-0000000000de', 'Copy')));
+	perform pg_temp.expect(r, 1, 'saved');
+	if coalesce(r -> 'units' -> 1 ->> 'reason', '') is distinct from 'structured_rule' then
+		raise exception 'One todo per id across units: %', r; end if;
+	-- One id twice inside one unit: a hire that brings two todo files with one id.
+	r := pg_temp.commit(pg_temp.owner(), 'ids-0005', jsonb_build_array(jsonb_build_object('op','new_folder','path','agents/zed',
+		'contents', jsonb_build_array(jsonb_build_object('path','todos','kind','folder'),
+			jsonb_build_object('path','todos/a.md','kind','file','file',pg_temp.stage(pg_temp.todo_text('70700000-0000-4000-8000-0000000000e0', 'A', 'open', null, ''))),
+			jsonb_build_object('path','todos/b.md','kind','file','file',pg_temp.stage(pg_temp.todo_text('70700000-0000-4000-8000-0000000000e0', 'A', 'open', null, ''))),
+			jsonb_build_object('path','agent.md','kind','file','file',pg_temp.stage(pg_temp.agent_text('70700000-0000-4000-8000-0000000000a5', 'Zed')))),
+		'structured', jsonb_build_array(
+			pg_temp.entry('agents/zed/todos/a.md', 'todo', pg_temp.todo_text('70700000-0000-4000-8000-0000000000e0', 'A', 'open', null, ''),
+				pg_temp.todo_parse('70700000-0000-4000-8000-0000000000e0', 'A', 'open', null, '')),
+			pg_temp.entry('agents/zed/todos/b.md', 'todo', pg_temp.todo_text('70700000-0000-4000-8000-0000000000e0', 'A', 'open', null, ''),
+				pg_temp.todo_parse('70700000-0000-4000-8000-0000000000e0', 'A', 'open', null, '')),
+			pg_temp.entry('agents/zed/agent.md', 'agent', pg_temp.agent_text('70700000-0000-4000-8000-0000000000a5', 'Zed'),
+				pg_temp.agent_parse('70700000-0000-4000-8000-0000000000a5', 'Zed'))))));
+	if not pg_temp.refused(r) then raise exception 'One todo id per unit: %', r; end if;
+	-- A file the index does not point at is not the saved version: a new id there is a new todo.
+	delete from public.qorpera_runtime_agent_todos where id = '70700000-0000-4000-8000-0000000000de';
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'ids-0004', jsonb_build_array(
+		pg_temp.todo('agents/otto/todos/first-copy.md', '70700000-0000-4000-8000-0000000000df', 'Copy'))), 1, 'saved');
+	-- Shapes: an extra key, a requested_by that is not an id, a detail past 4000 bytes.
+	if not pg_temp.refused(pg_temp.commit(pg_temp.owner(), 'shape-0001', jsonb_build_array(pg_temp.write('agents/otto/todos/keys.md', 'todo',
+		pg_temp.todo_text('70700000-0000-4000-8000-0000000000de', 'Keys', 'open', null, ''), pg_temp.todo_parse('70700000-0000-4000-8000-0000000000de', 'Keys', 'open', null, '') || '{"extra":1}', null))),
+		'structured_invalid') then raise exception 'A todo''s parse has exactly its keys'; end if;
+	if not pg_temp.refused(pg_temp.commit(pg_temp.owner(), 'shape-0002', jsonb_build_array(pg_temp.write('agents/otto/todos/who.md', 'todo',
+		pg_temp.todo_text('70700000-0000-4000-8000-0000000000de', 'Who', 'open', null, ''), pg_temp.todo_parse('70700000-0000-4000-8000-0000000000de', 'Who', 'open', null, '') || '{"requestedBy":"someone"}', null))),
+		'structured_invalid') then raise exception 'requested_by is an id'; end if;
+	if not pg_temp.refused(pg_temp.commit(pg_temp.owner(), 'shape-0003', jsonb_build_array(
+		pg_temp.todo('agents/otto/todos/long-detail.md', '70700000-0000-4000-8000-0000000000de', 'Long', 'open', null, repeat('d', 4001)))), 'structured_invalid') then
+		raise exception 'The detail is at most 4000 bytes'; end if;
 end $$;
 
 rollback;

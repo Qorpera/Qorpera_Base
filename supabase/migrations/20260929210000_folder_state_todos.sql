@@ -8,7 +8,8 @@
 -- (none: the agent's own) and the detail. The index is today's table, qorpera_runtime_agent_todos, so the runtime's
 -- readers (open work, pages, worker runs) see file todos unchanged. Worker briefs and results follow (F2-5b), with core
 -- C3's writers, which dispatch and report through the platform.
--- * Owner: the agent whose folder holds the file (its agent.md is indexed and not retired). The key is the file name.
+-- * Owner: the agent whose folder holds the file (its agent.md is indexed and not retired, or the same unit writes it,
+--   as a hire with its first todo). The key is the file name.
 -- * Rules (today's): done is refused while a worker is at work; a closed todo is not opened again (write a new file);
 --   requested_by is checked (a member) only when the save changes it; a move or delete that carries a todo with a
 --   working worker is refused. The id never changes and belongs to one file. Not reviewed.
@@ -21,6 +22,9 @@
 -- Builds on F2-4 (20260929190000) and replaces the hook functions with the todo branches added.
 
 -- 1. The todo table as the index of todo files --------------------------------------------------------------------------
+
+-- The runtime reads and writes this table on every agent turn: never queue them behind this change.
+set local lock_timeout = '3s';
 
 alter table public.qorpera_runtime_agent_todos
 	alter column requested_by_user_id drop not null,
@@ -235,7 +239,7 @@ create function public.qorpera_company_state_todo_rules(p_environment_id uuid, p
 returns jsonb language plpgsql stable set search_path = '' as $$
 declare
 	v_base jsonb := public.qorpera_company_state_base(p_environment_id, p_key); v_row public.qorpera_runtime_agent_todos%rowtype;
-	v_exists boolean; v_problem text;
+	v_exists boolean; v_problem text; v_prev jsonb;
 begin
 	-- The saved version is trusted only when the index points at this path for its todo.
 	if v_base is not null and (jsonb_array_length(public.qorpera_company_state_parse_problems('todo', v_base)) > 0
@@ -245,6 +249,14 @@ begin
 		v_base := null; end if;
 	select * into v_row from public.qorpera_runtime_agent_todos where id = (p_parse ->> 'id')::uuid;
 	v_exists := found;
+	-- A restore has no saved version at its path: the saved version is the todo's last file.
+	v_prev := v_base;
+	if v_prev is null and v_exists and v_row.profile_id = p_profile_id and v_row.folder_environment_id = p_environment_id
+		and v_row.folder_retired_at is not null then
+		select v.structured -> 'parse' into v_prev from public.qorpera_folder_path_versions v where v.version = v_row.folder_path_version;
+		if v_prev is not null and jsonb_array_length(public.qorpera_company_state_parse_problems('todo', v_prev)) > 0 then
+			v_prev := null; end if;
+	end if;
 	if public.qorpera_company_state_todo_owner(p_environment_id, p_key) is null and not p_owner_in_unit then
 		v_problem := 'a todo lives in an agent''s folder, next to its agent.md';
 	elsif v_base is not null and v_base ->> 'id' is distinct from p_parse ->> 'id' then
@@ -254,13 +266,13 @@ begin
 		v_problem := 'this id belongs to another todo; give this todo a new id';
 	elsif v_exists and v_row.folder_retired_at is null and public.qorpera_folder_key(v_row.folder_path) <> p_key then
 		v_problem := 'this id belongs to the todo at ' || left(v_row.folder_path, 100) || '; give this todo a new id';
-	elsif v_base is not null and v_base ->> 'status' in ('done','cancelled') and p_parse ->> 'status' <> v_base ->> 'status' then
+	elsif v_prev is not null and v_prev ->> 'status' in ('done','cancelled') and p_parse ->> 'status' <> v_prev ->> 'status' then
 		v_problem := 'a closed todo is not opened again; write a new todo';
 	elsif p_parse ->> 'status' = 'done' and exists (select 1 from public.qorpera_runtime_workers w
 		where w.todo_id = (p_parse ->> 'id')::uuid and w.state = 'active') then
 		v_problem := 'a worker is still at work on this todo; wait for it or cancel it first';
 	elsif jsonb_typeof(p_parse -> 'requestedBy') = 'string'
-		and (v_base is null or v_base ->> 'requestedBy' is distinct from p_parse ->> 'requestedBy')
+		and (v_prev is null or v_prev ->> 'requestedBy' is distinct from p_parse ->> 'requestedBy')
 		and not exists (select 1 from public.qorpera_profile_members m
 			where m.profile_id = p_profile_id and m.user_id = (p_parse ->> 'requestedBy')::uuid) then
 		v_problem := 'requested_by is a member of this company';
@@ -416,15 +428,15 @@ begin
 		if exists (select 1 from public.qorpera_runtime_agent_todos t
 			join public.qorpera_runtime_workers w on w.todo_id = t.id and w.state = 'active'
 			where t.folder_environment_id = p_environment_id and t.folder_retired_at is null
-				and (public.qorpera_folder_key(t.folder_path) = v_key
-					or public.qorpera_folder_key(t.folder_path) like public.qorpera_folder_under(v_key))) then
+				and (t.folder_path = v_key collate "C"
+					or (t.folder_path > (v_key || '/') collate "C" and t.folder_path < (v_key || '0') collate "C"))) then
 			return jsonb_build_object('ok', false, 'reason', 'structured_rule', 'problems', jsonb_build_array(
 				public.qorpera_company_state_problem('value', null, null,
 					'a todo here has a worker at work; cancel the worker first'))); end if;
 		if v_op = 'move' and exists (select 1 from public.qorpera_runtime_agent_todos t
 			where t.folder_environment_id = p_environment_id and t.folder_retired_at is null
-				and (public.qorpera_folder_key(t.folder_path) = v_key
-					or public.qorpera_folder_key(t.folder_path) like public.qorpera_folder_under(v_key))
+				and (t.folder_path = v_key collate "C"
+					or (t.folder_path > (v_key || '/') collate "C" and t.folder_path < (v_key || '0') collate "C"))
 				and not exists (select 1 from public.qorpera_profile_staff s
 					where s.folder_environment_id = p_environment_id and s.folder_retired_at is null and s.deleted_at is null
 						and regexp_replace(public.qorpera_folder_key(p_eff_to || substr(t.folder_path, char_length(p_eff_path) + 1)),
@@ -518,7 +530,9 @@ begin
 					public.qorpera_company_state_problem('value', null, null, 'two todo files in one change carry the same id'))); end if;
 			v_todos := array_append(v_todos, v_checked -> 'parse' ->> 'id');
 			v_rule := public.qorpera_company_state_todo_rules(p_environment_id, v_profile, v_file.key, v_checked -> 'parse',
-				v_entries -> regexp_replace(v_file.key, '/todos/[^/]+[.]md$', '/agent.md') ->> 'kind' is not distinct from 'agent');
+				exists (select 1 from public.qorpera_company_state_unit_files(p_unit, p_eff_path) o
+					where o.key = regexp_replace(v_file.key, '/todos/[^/]+[.]md$', '/agent.md')
+						and v_entries -> o.key ->> 'kind' is not distinct from 'agent'));
 			if v_rule is not null then return v_rule; end if;
 		end if;
 	end loop;
@@ -658,8 +672,8 @@ begin
 		-- roster rows above were repointed).
 		for v_connection in select t.id, t.folder_path from public.qorpera_runtime_agent_todos t
 			where t.profile_id = v_profile and t.folder_environment_id = p_environment_id and t.folder_retired_at is null
-				and (public.qorpera_folder_key(t.folder_path) = v_key
-					or public.qorpera_folder_key(t.folder_path) like public.qorpera_folder_under(v_key))
+				and (t.folder_path = v_key collate "C"
+					or (t.folder_path > (v_key || '/') collate "C" and t.folder_path < (v_key || '0') collate "C"))
 		loop
 			v_new_path := p_eff_to || substr(v_connection.folder_path, char_length(p_eff_path) + 1);
 			select version into v_version from public.qorpera_folder_path_versions
@@ -712,15 +726,16 @@ begin
 		where i.environment_id = p_environment_id and i.retired_at is null
 			and (public.qorpera_folder_key(i.folder_path) = v_key
 				or public.qorpera_folder_key(i.folder_path) like public.qorpera_folder_under(v_key));
-		-- A todo file removed: an open or blocked todo is cancelled, the row retires, and its key becomes a tombstone (a '.'
-		-- no file name has), so a new file of that name is free; a restore brings the key back.
+		-- A todo file removed: an open or blocked todo is cancelled, the row retires, and its key becomes a tombstone with a
+		-- '.' (no file name has one) and the whole id, so a new file of that name is free and two tombstones never meet; a
+		-- restore brings the key back.
 		update public.qorpera_runtime_agent_todos t set folder_retired_at = clock_timestamp(), folder_commit_id = p_commit_id,
 			state = case when t.state in ('open','blocked') then 'cancelled' else t.state end,
-			todo_key = left(t.todo_key, 55) || '.' || left(replace(t.id::text, '-', ''), 8),
+			todo_key = left(t.todo_key, 31) || '.' || replace(t.id::text, '-', ''),
 			revision = t.revision + 1, updated_at = clock_timestamp()
 		where t.profile_id = v_profile and t.folder_environment_id = p_environment_id and t.folder_retired_at is null
-			and (public.qorpera_folder_key(t.folder_path) = v_key
-				or public.qorpera_folder_key(t.folder_path) like public.qorpera_folder_under(v_key));
+			and (t.folder_path = v_key collate "C"
+				or (t.folder_path > (v_key || '/') collate "C" and t.folder_path < (v_key || '0') collate "C"));
 		-- A rule file removed: the rule is archived (review records keep citing it); a restore brings it back.
 		update public.qorpera_review_rules r set archived_at = clock_timestamp(), folder_commit_id = p_commit_id, updated_at = clock_timestamp()
 		where r.profile_id = v_profile and r.folder_environment_id = p_environment_id and r.archived_at is null

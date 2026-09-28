@@ -424,13 +424,15 @@ decision that also changes the title or the instructions is reviewed as delegati
 - `requested_by` is checked (a member) only when the save changes it.
 
 **Also:** the todo belongs to the agent whose folder holds it (its indexed `agent.md`, or the
-`agent.md` the same unit brings, as a hire with its first todo); a move lands only in an agent's
+`agent.md` the same unit writes, as a hire with its first todo); a move lands only in an agent's
 `todos/`. The id never changes and belongs to one file; a file saved before this slice is the
-saved version only once the index points at its path. The key is the file name.
+saved version only once the index points at its path, and a restore is compared with the todo's
+last file. The key is the file name.
 
 **Index:** a folder row has no run ids (the commit records the actor) and may have no requester.
 Deleting the file cancels an open or blocked todo, retires the row and gives its key a tombstone
-with a `.` (no file name has one), so a new file of that name is free; a restore brings it back.
+with a `.` (no file name has one) and the whole id, so a new file of that name is free and two
+tombstones never meet; a restore brings it back.
 A todo save takes the company row at rank 2 (the row's foreign key).
 
 Not reviewed. Dispatching a worker is reviewed.
