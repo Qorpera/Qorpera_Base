@@ -412,19 +412,19 @@ $$;
 
 -- The disk an executor's node has promised to machines: every placement that
 -- still exists there, asleep or retired, at its full size; but for the one
--- machine being placed, whose own old placement its move gives up.
-create function public.qorpera_machine_executor_disk_used(p_owner text, p_except_machine_id uuid default null)
+-- placement a move replaces (its machine's disk there is given up by that move).
+create function public.qorpera_machine_executor_disk_used(p_owner text, p_except_placement_id uuid default null)
 returns bigint language sql stable security definer set search_path = '' as $$
 	select coalesce(sum(machine.disk_bytes), 0)::bigint from public.qorpera_company_machine_placements placement
 	join public.qorpera_company_machines machine on machine.id = placement.machine_id
-	where placement.owner = p_owner and placement.removed_at is null and placement.machine_id is distinct from p_except_machine_id
+	where placement.owner = p_owner and placement.removed_at is null and placement.id is distinct from p_except_placement_id
 $$;
 
 -- The executors a machine of this size may go to, the one with the most room
 -- first. The one place a node is chosen for a machine; a read only, the
 -- reservation that follows decides.
 create function public.qorpera_company_machine_candidates(p_cpu_millis bigint, p_memory_bytes bigint, p_disk_bytes bigint,
-	p_owner text default null, p_machine_id uuid default null)
+	p_owner text default null, p_replacing_placement_id uuid default null)
 returns table(owner text, machine_id_sha256 text, policy jsonb) language sql stable security definer set search_path = '' as $$
 	select executor.owner, executor.machine_id_sha256, executor.policy
 	from public.qorpera_machine_executors executor
@@ -442,7 +442,7 @@ returns table(owner text, machine_id_sha256 text, policy jsonb) language sql sta
 		and public.qorpera_runtime_node_inventory_ready(node.id, observation.observation_id, node.version)
 		and used.cpu + p_cpu_millis <= public.qorpera_runtime_node_cpu_budget(node)
 		and used.memory + p_memory_bytes <= node.memory_bytes - node.headroom_memory_bytes
-		and public.qorpera_machine_executor_disk_used(executor.owner, p_machine_id) + p_disk_bytes <= executor.disk_bytes
+		and public.qorpera_machine_executor_disk_used(executor.owner, p_replacing_placement_id) + p_disk_bytes <= executor.disk_bytes
 	order by node.memory_bytes - node.headroom_memory_bytes - used.memory desc,
 		public.qorpera_runtime_node_cpu_budget(node) - used.cpu desc, node.id, executor.owner
 $$;
@@ -451,8 +451,9 @@ $$;
 -- allocation and a node reservation, all or nothing. A refused reservation
 -- leaves nothing behind. The executor row is held while its disk is counted
 -- again, so two placements never share the same free disk. Internal: the
--- caller holds the machine row and has retired any earlier placement it replaces.
-create function public.qorpera_place_company_machine(p_machine_id uuid, p_owner text)
+-- caller holds the machine row and has retired the earlier placement it
+-- replaces (p_replacing_placement_id), whose disk the move gives up.
+create function public.qorpera_place_company_machine(p_machine_id uuid, p_owner text, p_replacing_placement_id uuid default null)
 returns jsonb language plpgsql security definer set search_path = '' as $$
 declare v_machine public.qorpera_company_machines%rowtype; v_executor public.qorpera_machine_executors%rowtype;
 	v_placement uuid := extensions.gen_random_uuid(); v_binding jsonb; v_text text; v_digest text; v_node jsonb;
@@ -463,7 +464,7 @@ begin
 		return '{"state":"refused","reason":"MACHINE_NOT_WAITING"}'::jsonb; end if;
 	select * into v_executor from public.qorpera_machine_executors where owner = p_owner and enabled and policy is not null for update;
 	if v_executor.owner is null then return '{"state":"refused","reason":"MACHINES_UNAVAILABLE"}'::jsonb; end if;
-	if public.qorpera_machine_executor_disk_used(v_executor.owner, v_machine.id) + v_machine.disk_bytes > v_executor.disk_bytes then
+	if public.qorpera_machine_executor_disk_used(v_executor.owner, p_replacing_placement_id) + v_machine.disk_bytes > v_executor.disk_bytes then
 		return '{"state":"refused","reason":"NODE_DISK_EXHAUSTED"}'::jsonb; end if;
 	-- A repository lives on the NAS of the node that holds its coding session (until the company folder).
 	if v_machine.repository_worker_id is not null and not exists (select 1 from public.qorpera_coding_storage_volumes volume
@@ -543,12 +544,12 @@ begin
 	end if;
 	v_result := coalesce(v_own, '{"state":"refused","reason":"NODE_CAPACITY_EXHAUSTED"}'::jsonb);
 	for v_candidate in select * from public.qorpera_company_machine_candidates(v_machine.cpus::bigint * 1000, v_machine.memory_bytes,
-		v_machine.disk_bytes, p_owner, v_machine.id) loop
+		v_machine.disk_bytes, p_owner, v_placement.id) loop
 		begin
 			if v_placement.id is not null then
 				update public.qorpera_company_machine_placements set retired_at = clock_timestamp() where id = v_placement.id;
 			end if;
-			v_result := public.qorpera_place_company_machine(v_machine.id, v_candidate.owner);
+			v_result := public.qorpera_place_company_machine(v_machine.id, v_candidate.owner, v_placement.id);
 			if v_result ->> 'state' <> 'reserved' then raise sqlstate 'P0F03'; end if;
 			update public.qorpera_company_machines set last_used_at = clock_timestamp() where id = v_machine.id;
 			return v_result;
@@ -557,13 +558,17 @@ begin
 	end loop;
 	if v_placement.id is not null then return v_result; end if;
 	-- Nothing fits now. Say why when it never will: no node (the repository's, when one is attached)
-	-- makes a machine this large or gives machines this much disk.
+	-- makes a machine this large or gives machines this much disk. The largest of each size may be
+	-- on different nodes.
 	select max(provider.cpu_millis) as cpu_millis, max(provider.memory_bytes) as memory_bytes, max(executor.disk_bytes) as disk_bytes
 		into v_largest
 	from public.qorpera_machine_executors executor
 	join public.qorpera_runtime_node_providers provider on provider.provider_kind = 'machine'
 		and provider.provider_id = executor.policy ->> 'providerId' and provider.policy_sha256 = executor.policy ->> 'providerPolicySha256'
-	where executor.enabled and executor.policy is not null and (p_owner is null or executor.owner = p_owner);
+	where executor.enabled and executor.policy is not null and (p_owner is null or executor.owner = p_owner)
+		and (v_machine.repository_worker_id is null or exists (select 1 from public.qorpera_coding_storage_volumes volume
+			where volume.worker_id = v_machine.repository_worker_id and volume.owner = executor.owner
+				and volume.machine_id_sha256 = executor.machine_id_sha256));
 	if v_largest.cpu_millis is null then return '{"state":"refused","reason":"MACHINES_UNAVAILABLE"}'::jsonb; end if;
 	if not exists (select 1 from public.qorpera_machine_executors executor
 		join public.qorpera_runtime_node_providers provider on provider.provider_kind = 'machine'
@@ -729,7 +734,7 @@ begin
 	v_admission := public.qorpera_admit_company_machine(v_machine.id);
 	-- Never room anywhere: refused at once (the new machine is not kept).
 	if v_admission ->> 'reason' = 'MACHINE_TOO_LARGE' then
-		raise exception 'MACHINE_TOO_LARGE: the largest machine a node makes is % CPUs, % GiB memory and % GiB disk',
+		raise exception 'MACHINE_TOO_LARGE: no server holds that size; the largest are % CPUs, % GiB memory and % GiB disk, not always on one server',
 			v_admission #>> '{largest,cpus}', v_admission #>> '{largest,memoryGiB}', v_admission #>> '{largest,diskGiB}' using errcode = 'P0F10'; end if;
 	if v_admission ->> 'reason' = 'MACHINES_UNAVAILABLE' then
 		raise exception 'MACHINES_UNAVAILABLE: no node runs machines yet' using errcode = 'P0F10'; end if;
@@ -972,14 +977,14 @@ $$;
 -- its locks, so the node's pass never holds one company's locks while it
 -- waits for another's; the executor calls again until nothing is admitted.
 -- With nothing to admit, the first machine in line that lacks only disk that
--- stopped machines hold on this node gets it: their scratch disks are given
--- up, the longest asleep first, and it takes the disk once their deletes are
--- proven. And a task machine asleep past the removal delay with no disk left
+-- stopped machines hold on this node (and that is not still trying the node
+-- it slept on) gets it: their scratch disks are given up, the longest asleep
+-- first, and it takes the disk once their deletes are proven. And a task machine asleep past the removal delay with no disk left
 -- on any node is removed (nothing else would ever list it).
 create function public.qorpera_admit_executor_machines(p_owner text, p_machine_id_sha256 text, p_limit integer default 16)
 returns jsonb language plpgsql security definer set search_path = '' as $$
 declare v_executor public.qorpera_machine_executors%rowtype; v_machine public.qorpera_company_machines%rowtype; v_result jsonb;
-	v_shape record; v_room record; v_disk bigint; v_freeing bigint; v_need bigint; v_asleep record;
+	v_shape record; v_room record; v_disk bigint; v_freeing bigint; v_asleep_disk bigint; v_need bigint; v_asleep record;
 begin
 	if auth.role() is distinct from 'service_role' or coalesce(p_owner,'') !~ '^[A-Za-z0-9_.:-]{1,120}$'
 		or coalesce(p_machine_id_sha256,'') !~ '^[0-9a-f]{64}$' or p_limit is null or p_limit not between 1 and 64 then
@@ -1022,10 +1027,15 @@ begin
 			exception when lock_not_available or sqlstate 'P0F04' then continue;
 			end;
 		end loop;
-		-- Disks already being deleted here count as coming free.
+		-- Disks already being deleted here count as coming free; stopped machines' disks here can be given up.
 		select coalesce(sum(machine.disk_bytes), 0) into v_freeing from public.qorpera_company_machine_placements placement
 		join public.qorpera_company_machines machine on machine.id = placement.machine_id
 		where placement.owner = p_owner and placement.retired_at is not null and placement.removed_at is null;
+		select coalesce(sum(machine.disk_bytes), 0) into v_asleep_disk from public.qorpera_company_machine_placements placement
+		join public.qorpera_company_machines machine on machine.id = placement.machine_id
+		join public.qorpera_runtime_node_demands demand on demand.allocation_id = placement.id
+		where placement.owner = p_owner and placement.retired_at is null and placement.removed_at is null
+			and machine.desired_state = 'stopped' and demand.suspended_at is not null and demand.released_at is null;
 		select machine.* into v_machine from public.qorpera_company_machines machine
 		left join public.qorpera_company_machine_placements here on here.machine_id = machine.id
 			and here.retired_at is null and here.removed_at is null
@@ -1033,19 +1043,18 @@ begin
 			and not public.qorpera_company_execution_paused(machine.profile_id)
 			and machine.cpus::bigint * 1000 <= least(v_shape.cpu_millis, v_room.cpu)
 			and machine.memory_bytes <= least(v_shape.memory_bytes, v_room.memory)
-			and here.owner is distinct from p_owner and machine.disk_bytes > v_disk + v_freeing
+			and here.owner is distinct from p_owner
+			-- Only what giving up the stopped disks here can serve.
+			and machine.disk_bytes > v_disk + v_freeing and machine.disk_bytes <= v_disk + v_freeing + v_asleep_disk
+			-- One asleep on another node first tries its own (a wake keeps its disk there).
+			and (here.id is null or machine.wanted_at <= clock_timestamp() - interval '5 minutes')
 			and ((machine.repository_worker_id is null and (here.id is null or here.running_at is null))
 				or (here.id is null and exists (select 1 from public.qorpera_coding_storage_volumes volume
 					where volume.worker_id = machine.repository_worker_id and volume.owner = p_owner
 						and volume.machine_id_sha256 = p_machine_id_sha256)))
 		order by machine.wanted_at, machine.id limit 1;
 		v_need := v_machine.disk_bytes - v_disk - v_freeing;
-		if v_machine.id is not null and v_need <= (select coalesce(sum(machine.disk_bytes), 0)
-			from public.qorpera_company_machine_placements placement
-			join public.qorpera_company_machines machine on machine.id = placement.machine_id
-			join public.qorpera_runtime_node_demands demand on demand.allocation_id = placement.id
-			where placement.owner = p_owner and placement.retired_at is null and placement.removed_at is null
-				and machine.desired_state = 'stopped' and demand.suspended_at is not null and demand.released_at is null) then
+		if v_machine.id is not null then
 			for v_asleep in select placement.id, placement.profile_id, machine.id as machine_id, machine.disk_bytes
 				from public.qorpera_company_machine_placements placement
 				join public.qorpera_company_machines machine on machine.id = placement.machine_id
@@ -1643,7 +1652,7 @@ revoke all on function public.qorpera_configure_machine_executor(text, text, boo
 	public.qorpera_company_machine_view(public.qorpera_company_machines),
 	public.qorpera_machine_executor_disk_used(text, uuid),
 	public.qorpera_company_machine_candidates(bigint, bigint, bigint, text, uuid),
-	public.qorpera_place_company_machine(uuid, text),
+	public.qorpera_place_company_machine(uuid, text, uuid),
 	public.qorpera_admit_company_machine(uuid, text),
 	public.qorpera_end_company_machine_commands(public.qorpera_company_machines, text, jsonb),
 	public.qorpera_company_machine_named(uuid, text),

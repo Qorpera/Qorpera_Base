@@ -1,5 +1,5 @@
-import { createHash } from "node:crypto";
-import { mkdir, readdir } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { mkdir, readdir, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import {
@@ -21,6 +21,10 @@ const MAX_RETAINED_EVENTS = MAX_EVENTS + 3;
 // A stop or delete that failed is re-issued from the VM's own state, at most
 // this many failed attempts in a row; then an operator.
 const MAX_FAILED_ATTEMPTS = 3;
+// A disposable VM's effect that LXD never confirmed (a crash, a restart, a
+// refused submission) is settled from the VM itself once any operation it
+// could have started is long over.
+const DISPATCH_SETTLE_MS = 10 * 60_000;
 
 /** One member's coding machine in one company environment: the machine SQL
  * planned (qorpera_plan_coding_machine) from the environment's VM policy. It
@@ -361,7 +365,7 @@ function nextActions(settled: Event | undefined, segment: number, disposable: bo
 	if (settled.action === "delete") return ["delete"];
 	// A disposable VM's failed create or start is tried again (or the VM is given up).
 	if (!disposable) return [];
-	return settled.action === "create" ? ["create", "start", "delete"] : ["start", "stop", "delete"];
+	return settled.action === "create" ? ["create", "start", "stop", "delete"] : ["start", "stop", "delete"];
 }
 function trailingFailed(events: readonly Event[], action: Action): number {
 	let count = 0;
@@ -376,6 +380,22 @@ function physical(instance: LxdInstanceRecord): "running" | "stopped" | "other" 
 	if (instance.status === "Running" && instance.statusCode === 103) return "running";
 	if (instance.status === "Stopped" && instance.statusCode === 102) return "stopped";
 	return "other";
+}
+/** What the VM shows of an effect whose outcome LXD no longer knows: gone is a
+ * delete done (and a create not done), stopped is a stop done (and a start not
+ * done), running the opposite. null: the VM cannot tell. */
+function effectFromView(
+	action: Action,
+	plan: CodingMachineJournalPlan,
+	observed: LxdInstanceRecord | undefined,
+): "succeeded" | "failed" | null {
+	if (action === "delete") return observed ? "failed" : "succeeded";
+	if (!observed) return action === "create" ? "failed" : null;
+	plan.assertInstance(observed);
+	if (action === "create") return "succeeded";
+	const seen = physical(observed);
+	if (seen === "other") return null;
+	return seen === (action === "stop" ? "stopped" : "running") ? "succeeded" : "failed";
 }
 function encode(value: unknown): Buffer {
 	return Buffer.from(`${JSON.stringify(value)}\n`);
@@ -430,7 +450,7 @@ async function readEvents(
 		if (
 			sha(tail.bytes) !== value.previousTailSha256 ||
 			prior.sequence !== Number(value.previousEventCount) - 1 ||
-			prior.action !== "stop" ||
+			(prior.action !== "stop" && !(disposable && (prior.action === "start" || prior.action === "create"))) ||
 			prior.kind !== "settled" ||
 			(prior.state !== "succeeded" && prior.state !== "failed") ||
 			!UUID.test(prior.operationId ?? "")
@@ -530,7 +550,27 @@ export async function reconcileCodingMachine(
 		);
 	};
 	let tail = current.events.at(-1) ?? current.prior;
-	if (tail?.kind === "dispatch") return result("recovery-required");
+	if (tail?.kind === "dispatch") {
+		// Whether LXD took this effect is unknown. A disposable VM settles it from the VM once any
+		// operation it could have started is long over; the accepted record then names an operation
+		// id no LXD issued (none was ever confirmed). Anything else waits for an operator.
+		if (!plan.disposable) return result("recovery-required");
+		const written = await stat(join(current.root, `${String(tail.sequence).padStart(6, "0")}.json`));
+		if (Date.now() - written.mtimeMs < DISPATCH_SETTLE_MS) return result("recovery-required");
+		const observed = await options.client.getInstance(plan.project, plan.name, signal);
+		signal.throwIfAborted();
+		const state = effectFromView(tail.action, plan, observed);
+		if (!state) return result("recovery-required");
+		if (!(await append({ action: tail.action, kind: "accepted", operationId: randomUUID(), state: null })))
+			return result("pending");
+		current = await readEvents(root, plan.binding, true);
+		tail = current.events.at(-1);
+		if (tail?.kind !== "accepted") return result("recovery-required");
+		await append({ action: tail.action, kind: "settled", operationId: tail.operationId, state });
+		current = await readEvents(root, plan.binding, true);
+		tail = current.events.at(-1);
+		if (tail?.kind !== "settled" || tail.state !== state) return result("recovery-required");
+	}
 	if (tail?.kind === "accepted") {
 		signal.throwIfAborted();
 		let state: "pending" | "succeeded" | "failed";
@@ -542,24 +582,19 @@ export async function reconcileCodingMachine(
 		} catch (error) {
 			// LXD keeps a finished operation only briefly. A stop or delete it no
 			// longer knows is settled from the VM itself: stopped (or gone) is the
-			// effect, still running (or still there) is its absence. Anything else
-			// stays unknown.
+			// effect, still running (or still there) is its absence. A disposable
+			// VM's create or start is settled the same way. Anything else stays unknown.
 			if (
-				(tail.action !== "stop" && tail.action !== "delete") ||
+				(tail.action !== "stop" && tail.action !== "delete" && !plan.disposable) ||
 				!(error instanceof Error) ||
 				error.message !== "LXD_OPERATION_UNKNOWN"
 			)
 				return result("recovery-required");
 			const observed = await options.client.getInstance(plan.project, plan.name, signal);
 			signal.throwIfAborted();
-			if (tail.action === "delete") state = observed ? "failed" : "succeeded";
-			else {
-				if (!observed) return result("recovery-required");
-				plan.assertInstance(observed);
-				const seen = physical(observed);
-				if (seen === "other") return result("recovery-required");
-				state = seen === "stopped" ? "succeeded" : "failed";
-			}
+			const seen = effectFromView(tail.action, plan, observed);
+			if (!seen) return result("recovery-required");
+			state = seen;
 		}
 		signal.throwIfAborted();
 		if (state === "pending") return result("pending");
@@ -657,7 +692,13 @@ export async function reconcileCodingMachine(
 		// is deleted or overwritten; the checkpoint commits its exact predecessor.
 		// Every contender derives the same next segment, whose first effect still
 		// competes through the ordinary immutable event CAS.
-		if (tail?.action !== "stop" || tail.kind !== "settled" || current.segment >= 999999)
+		// A disposable VM that stopped by itself (its last record a start, LXD showing it stopped) closes one too.
+		const selfStopped =
+			plan.disposable === true &&
+			(tail?.action === "start" || tail?.action === "create") &&
+			instance !== undefined &&
+			physical(instance) === "stopped";
+		if ((tail?.action !== "stop" && !selfStopped) || tail?.kind !== "settled" || current.segment >= 999999)
 			throw new Error("CODING_MACHINE_JOURNAL_FULL");
 		const nextRoot = join(root, `segment-${String(current.segment + 1).padStart(6, "0")}`);
 		await mkdir(nextRoot, { mode: 0o700 }).catch((error) => {
