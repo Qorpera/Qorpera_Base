@@ -2969,14 +2969,17 @@ carry a folder of many terabytes that many agents write at once.
 
 - Before whole-company reads ship, reads MUST stop taking a company-wide lock.
 - Before any machine writes through the folder, the Company File MUST:
-  - move to a version per file, with per-folder trees instead of one manifest;
+  - move to a version per file instead of one manifest and one head. Any
+    per-folder summary is built after the commit and is never a precondition,
+    so no value covering the whole company returns;
   - take change sets: many files, moves and deletes in one unit;
   - stop re-staging the whole tree on every write; and
   - have the structured-file saves, index updates and seeded-folder refusals
     of 5.6 in place.
 
 The build order in `deploy/first-node/RUNTIME-COMPANY-FOLDER.md` is reordered
-to match.
+to match. The core is designed in
+`deploy/first-node/RUNTIME-COMPANY-FOLDER-CORE.md`.
 
 **A clean reset, not a migration.** Founder decision, 28 September 2026:
 every company that exists today is a test company, so its data is not moved
