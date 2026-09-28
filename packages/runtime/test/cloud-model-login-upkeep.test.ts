@@ -24,10 +24,15 @@ it("renews due logins one at a time until none is left, past a failed one", asyn
 	expect(logins.renewIdle).toHaveBeenCalledWith(expect.any(AbortSignal));
 });
 
-it("stops a pass after an error or twelve renewals", async () => {
-	const failing = vault([new Error("database unavailable")]);
+it("stops a pass after an error or twelve renewals, and logs only that it stopped", async () => {
+	const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+	const failing = vault([new Error("login 6f0c private detail")]);
 	await new CloudModelLoginUpkeep({ vault: failing }).pass();
 	expect(failing.renewIdle).toHaveBeenCalledTimes(1);
+	expect(log).toHaveBeenCalledExactlyOnceWith(
+		"Model login upkeep: a pass stopped on an error; the next pass tries again.",
+	);
+	log.mockRestore();
 	const busy = vault(["renewed"]);
 	await new CloudModelLoginUpkeep({ vault: busy }).pass();
 	expect(busy.renewIdle).toHaveBeenCalledTimes(12);

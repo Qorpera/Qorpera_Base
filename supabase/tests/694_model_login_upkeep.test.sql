@@ -210,3 +210,76 @@ where id = current_setting('qorpera_test.upkeep_c')::uuid;
 set local session authorization qorpera_secret_broker;
 select pg_temp.upkeep_expect(pg_temp.upkeep_taken(), 'none', 'a login whose connection is revoked is not renewed');
 reset session authorization;
+
+-- Three more reasons a login is no candidate, each shown by repairing it afterwards: the connection
+-- version using its pointer is no longer authorized; the pointer names another login; the connection
+-- belongs to another company.
+select set_config('qorpera_test.upkeep_h', pg_temp.upkeep_login('69400000-0000-4000-8000-0000000000f1',
+	'69400000-0000-4000-8000-0000000000f2','69400000-0000-4000-8000-0000000000f3','69400000-0000-4000-8000-000000000040',
+	interval '8 days', interval '2 days')::text, false);
+update public.qorpera_provider_connection_versions set authorization_state = 'revoked'
+where connection_id = current_setting('qorpera_test.upkeep_h')::uuid;
+set local session authorization qorpera_secret_broker;
+select pg_temp.upkeep_expect(pg_temp.upkeep_taken(), 'none', 'a login whose connection version is not authorized');
+reset session authorization;
+update public.qorpera_provider_connection_versions set authorization_state = 'active'
+where connection_id = current_setting('qorpera_test.upkeep_h')::uuid;
+update public.qorpera_native_credential_capsules
+set encrypted_capsule_reference = 'model-login/69400000-0000-4000-8000-0000000000ff'
+where id = '69400000-0000-4000-8000-0000000000f2';
+set local session authorization qorpera_secret_broker;
+select pg_temp.upkeep_expect(pg_temp.upkeep_taken(), 'none', 'a pointer that names another login');
+reset session authorization;
+update public.qorpera_native_credential_capsules
+set encrypted_capsule_reference = 'model-login/69400000-0000-4000-8000-0000000000f1'
+where id = '69400000-0000-4000-8000-0000000000f2';
+update public.qorpera_provider_connections set profile_id = '69400000-0000-4000-8000-000000000010'
+where id = current_setting('qorpera_test.upkeep_h')::uuid;
+set local session authorization qorpera_secret_broker;
+select pg_temp.upkeep_expect(pg_temp.upkeep_taken(), 'none', 'a connection of another company');
+reset session authorization;
+update public.qorpera_provider_connections
+set profile_id = (select profile_id from public.qorpera_model_logins where id = '69400000-0000-4000-8000-0000000000f1')
+where id = current_setting('qorpera_test.upkeep_h')::uuid;
+set local session authorization qorpera_secret_broker;
+select pg_temp.upkeep_expect(pg_temp.upkeep_taken(), '69400000-0000-4000-8000-0000000000f1', 'repaired, the login is taken');
+reset session authorization;
+
+-- The lock itself, as the take re-checks it on the row: a run's held lock, the back-off, a pass not yet
+-- half used, a login that needs a new sign-in and another broker are all refused; only a free, due login
+-- gets a new token. Only the take may call it.
+do $$
+declare v_role text;
+begin
+	foreach v_role in array array['anon','authenticated','service_role','qorpera_secret_broker'] loop
+		if has_function_privilege(v_role,'public.qorpera_model_login_take_idle_lock(uuid,uuid)','execute') then
+			raise exception 'The idle lock is exposed to %', v_role; end if;
+	end loop;
+end $$;
+select pg_temp.upkeep_expect(public.qorpera_model_login_take_idle_lock('69400000-0000-4000-8000-0000000000f1',
+	'69400000-0000-4000-8000-000000000040')::text, null, 'a held lock is not taken again');
+update public.qorpera_model_logins set renewal_token = null, renewal_until = null,
+	renewal_failures = 3, renewal_failed_at = clock_timestamp() - interval '3 minutes'
+where id = '69400000-0000-4000-8000-0000000000f1';
+select pg_temp.upkeep_expect(public.qorpera_model_login_take_idle_lock('69400000-0000-4000-8000-0000000000f1',
+	'69400000-0000-4000-8000-000000000040')::text, null, 'the back-off after three failures is 4 minutes');
+update public.qorpera_model_logins set renewal_failed_at = clock_timestamp() - interval '5 minutes'
+where id = '69400000-0000-4000-8000-0000000000f1';
+select pg_temp.upkeep_expect(public.qorpera_model_login_take_idle_lock('69400000-0000-4000-8000-0000000000f1',
+	'69400000-0000-4000-8000-000000000041')::text, null, 'another broker never takes the lock');
+update public.qorpera_model_logins set status = 'needs_sign_in' where id = '69400000-0000-4000-8000-0000000000f1';
+select pg_temp.upkeep_expect(public.qorpera_model_login_take_idle_lock('69400000-0000-4000-8000-0000000000f1',
+	'69400000-0000-4000-8000-000000000040')::text, null, 'a login that needs a new sign-in');
+update public.qorpera_model_logins set status = 'active', access_issued_at = clock_timestamp() - interval '4 days',
+	access_expires_at = clock_timestamp() + interval '6 days'
+where id = '69400000-0000-4000-8000-0000000000f1';
+select pg_temp.upkeep_expect(public.qorpera_model_login_take_idle_lock('69400000-0000-4000-8000-0000000000f1',
+	'69400000-0000-4000-8000-000000000040')::text, null, 'a pass not yet half used');
+update public.qorpera_model_logins set access_issued_at = clock_timestamp() - interval '6 days',
+	access_expires_at = clock_timestamp() + interval '4 days'
+where id = '69400000-0000-4000-8000-0000000000f1';
+select set_config('qorpera_test.upkeep_lock', coalesce(public.qorpera_model_login_take_idle_lock(
+	'69400000-0000-4000-8000-0000000000f1','69400000-0000-4000-8000-000000000040')::text, 'none'), false);
+select pg_temp.upkeep_expect((select renewal_token::text from public.qorpera_model_logins
+	where id = '69400000-0000-4000-8000-0000000000f1'), current_setting('qorpera_test.upkeep_lock'),
+	'a free, due login gets a new token');

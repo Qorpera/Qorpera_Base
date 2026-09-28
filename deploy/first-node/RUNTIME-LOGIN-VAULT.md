@@ -167,7 +167,7 @@ no database login and no service key; it sees a login only for one operation and
     (`qorpera_complete_model_login_account_refresh`). A login that cannot be read is unknown usage;
     the refresh still settles. The pass is never renewed here, only display metadata leaves the
     vault, and the envelopes are wiped. No helper and no machine is involved.
-- **Part D, idle renewal** (migration `20260928188000`, `cloud-model-login-upkeep.ts`; founder
+- **Part D, idle renewal** (migration `20260928234000`, `cloud-model-login-upkeep.ts`; founder
   decision 2026-09-28): the vault renews idle logins itself, so a login nobody used does not lapse
   before its next run and runs rarely wait for a renewal at start.
   - Every 5 minutes (the first pass 30 s plus a random part of 5 minutes after start, so brokers
@@ -180,7 +180,10 @@ no database login and no service key; it sees a login only for one operation and
   - It renews through the helper exactly as a run's renewal does and saves or gives back the lock
     with the same commit and release; at most 12 logins per pass. A refusal marks the login
     `needs_sign_in` days before its next run would have found out.
-  - Locks: the login row only, by one conditional update. The taking marks nothing as used.
+  - Locks: the login row only, by one conditional update (`qorpera_model_login_take_idle_lock`, which
+    re-checks a run's lock conditions on the row itself). The taking marks nothing as used.
+  - Deploy: reinstall the broker unit from this build. `TimeoutStopSec=90` lets a stop wait for a
+    renewal in flight (35 s, then its save), where 15 s could lose the new login.
 
 ### Installing the helper (operator, per vault host)
 

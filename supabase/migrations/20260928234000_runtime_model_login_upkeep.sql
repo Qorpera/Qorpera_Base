@@ -14,10 +14,36 @@ create index qorpera_model_logins_broker_due
 	on public.qorpera_model_logins(broker_authority_id, access_expires_at)
 	where status = 'active';
 
+-- Takes one login's renewal lock when a run's renewal could: active, past half its pass, no renewal
+-- running (or only a lapsed one), and the back-off after failures passed (1, 2, 4 ... minutes, at most
+-- an hour). One conditional update of the login's own row; under read committed a concurrent run's lock
+-- is seen by the update itself, so two holders are impossible. Returns the new token, or null.
+create function public.qorpera_model_login_take_idle_lock(p_login_id uuid, p_broker_authority_id uuid)
+returns uuid
+language plpgsql security definer set search_path = '' set lock_timeout = '5s' as $$
+declare
+	v_token uuid;
+	v_now timestamptz := clock_timestamp();
+begin
+	update public.qorpera_model_logins as login
+	set renewal_token = extensions.gen_random_uuid(), renewal_until = v_now + interval '5 minutes',
+		updated_at = v_now
+	where login.id = p_login_id and login.broker_authority_id = p_broker_authority_id and login.status = 'active'
+		and v_now >= login.access_issued_at + (login.access_expires_at - login.access_issued_at) / 2
+		and (login.renewal_until is null or login.renewal_until < v_now)
+		and (login.renewal_failed_at is null or login.renewal_failed_at <= v_now
+			- least(interval '1 minute' * power(2, least(login.renewal_failures, 7) - 1), interval '1 hour'))
+	returning login.renewal_token into v_token;
+	return v_token;
+end
+$$;
+revoke all on function public.qorpera_model_login_take_idle_lock(uuid,uuid)
+	from public, anon, authenticated, service_role, qorpera_secret_broker;
+
 -- Takes the renewal lock of this broker's most urgent idle login and hands it over with its
 -- current version, exactly as a run's issue does with a renewal; `renewal` is null when no login
--- is due. The lock row is the login's own row, taken by a conditional update, so a run's renewal
--- and this one can never both hold it. Nothing else is locked.
+-- is due. Only a login behind an active pointer that an active version of an active connection of
+-- its company uses is a candidate. Nothing but the login's own row is locked.
 create function public.qorpera_take_idle_model_login_renewal(
 	p_broker_authority_id uuid,
 	p_broker_capability_sha256 text
@@ -27,6 +53,7 @@ language plpgsql security definer set search_path = '' set lock_timeout = '5s' a
 declare
 	v_authority public.qorpera_cloud_secret_broker_authorities%rowtype;
 	v_candidate uuid;
+	v_token uuid;
 	v_login public.qorpera_model_logins%rowtype;
 	v_version public.qorpera_model_login_versions%rowtype;
 	v_now timestamptz := clock_timestamp();
@@ -52,21 +79,14 @@ begin
 		order by login.access_expires_at, login.id
 		limit 4
 	loop
-		-- The same conditions again on the row itself: a run may have taken the lock meanwhile.
-		update public.qorpera_model_logins as login
-		set renewal_token = extensions.gen_random_uuid(), renewal_until = v_now + interval '5 minutes',
-			updated_at = v_now
-		where login.id = v_candidate and login.broker_authority_id = v_authority.id and login.status = 'active'
-			and v_now >= login.access_issued_at + (login.access_expires_at - login.access_issued_at) / 2
-			and (login.renewal_until is null or login.renewal_until < v_now)
-			and (login.renewal_failed_at is null or login.renewal_failed_at <= v_now
-				- least(interval '1 minute' * power(2, least(login.renewal_failures, 7) - 1), interval '1 hour'))
-		returning login.* into v_login;
-		exit when v_login.id is not null;
+		-- The lock's own conditions again, on the row itself: a run may have taken it meanwhile.
+		v_token := public.qorpera_model_login_take_idle_lock(v_candidate, v_authority.id);
+		exit when v_token is not null;
 	end loop;
-	if v_login.id is null then
+	if v_token is null then
 		return jsonb_build_object('schema', 'qorpera.model-login-idle-renewal/v1', 'renewal', null);
 	end if;
+	select login.* into strict v_login from public.qorpera_model_logins as login where login.id = v_candidate;
 	select version.* into strict v_version from public.qorpera_model_login_versions as version
 	where version.login_id = v_login.id and version.version = v_login.current_version;
 	return jsonb_build_object(
@@ -80,7 +100,7 @@ begin
 		'envelopeSha256', v_version.envelope_sha256,
 		'accessIssuedAt', v_version.access_issued_at,
 		'accessExpiresAt', v_version.access_expires_at,
-		'renewal', jsonb_build_object('token', v_login.renewal_token, 'baseVersion', v_version.version,
+		'renewal', jsonb_build_object('token', v_token, 'baseVersion', v_version.version,
 			'keyId', v_authority.key_id)
 	);
 end

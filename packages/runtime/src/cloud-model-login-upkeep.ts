@@ -60,7 +60,9 @@ export class CloudModelLoginUpkeep {
 			try {
 				if ((await this.#vault.renewIdle(AbortSignal.timeout(TAKE_DEADLINE_MS))) === "none") return;
 			} catch {
-				// The database or the answer failed: the next pass tries again.
+				// The database or the answer failed: the next pass tries again. The error itself may name
+				// a login; only the fact is logged, so a broken call never switches renewal off unseen.
+				console.error("Model login upkeep: a pass stopped on an error; the next pass tries again.");
 				return;
 			}
 		}
