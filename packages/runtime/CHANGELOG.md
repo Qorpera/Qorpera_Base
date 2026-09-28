@@ -117,4 +117,4 @@
 - Accepted real browser viewport screenshots within the existing size limits and included their surface/dimensions in receipts. Desktop screenshots still require the fixed display size.
 - Prevented viewer disconnect from ending a recovered private browser after readiness, rejected stale private grants before launch, and preserved unexpected private cleanup failures. Screen-open success now waits for physical readiness after receipt admission.
 - Kept the service test constructor mock constructible after automatic formatting and ran final regression tests after repository checks.
-- Pointed members to the rules at the bottom of Settings → General (web #360 removed the Rules tab): the `add_review_rule` tool description and the kernel refusal for a full rule list (migration `20260927163400`) no longer say "Settings, Rules".
+- Pointed members to the rules at the bottom of Settings → General (web #360 removed the Rules tab): the `add_review_rule` tool description and the kernel refusal for a full rule list (migration `20260928013400`) no longer say "Settings, Rules".
