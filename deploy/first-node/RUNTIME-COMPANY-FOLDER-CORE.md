@@ -267,7 +267,7 @@ is never upgraded. The steps:
    - After this lock, the pause is read again, as today's rule requires
      (20260907000700:17-18). An effect that read "not paused" and then waited
      behind a stop refuses.
-   - A transaction that inserts a wake also takes the fence here and re-reads
+   - A transaction that inserts or admits a wake also takes the fence here and re-reads
      the pause, so stop's second phase waits out wake admission as well as
      effects. Today's rule is kept: "stop and resume must update the same
      persistent row that admission and effects lock" (20260907000700:1-3).
@@ -357,9 +357,11 @@ is never upgraded. The steps:
     Transactions that insert no wake never take the admission row, so they
     never block admission and admission never blocks them. The lock is held
     only until the commit ends.
-    - A loop that admits wakes for many companies handles one company per
-      transaction, in sorted order, or takes the row `NOWAIT` and skips that
-      company until the next tick.
+    - A loop that admits wakes for many companies handles exactly one company
+      per transaction, in sorted order. It never holds several companies'
+      locks in one transaction, not even with `NOWAIT` on the admission row:
+      locks taken in completed subtransactions stay held until the top-level
+      commit, so two loops and two workers could form a cycle (40P01).
     - A transaction that inserts no wake skips this step.
 11. **The clock.** `last_seq` is incremented. The commit row gets its `seq`,
     and the journal row is inserted with it.
@@ -456,7 +458,14 @@ recorded revision: the row keeps `least(recorded, observed)`.
   - it adds a row for any newly found narrower resource, locking it in the
     same transaction; and
   - only after a successful re-resolution, it re-stamps the rows with the
-    current revisions, so the work is done once per change.
+    current revisions, as a compare-and-set on the value it read
+    (`where revision = <read value>`). If a release of another command in the
+    same run lowered the value meanwhile, the re-stamp does nothing, and the
+    next effect re-resolves again. So the work is done once per change, and
+    a lowered revision is never overwritten.
+
+  A release that finds a changed revision re-resolves its own command's reads
+  together with the read record it is writing.
 
 A read therefore never carries past a narrowing or revocation. No resource
 change writes other runs' rows, so the old fix-up scan and its reversed lock
@@ -761,7 +770,7 @@ GC is the largest correctness risk of the design, so it gets its own tests:
 | Company File row | every call, `FOR UPDATE` | never |
 | Profile row | every call, `FOR UPDATE` | never `FOR UPDATE` or `NOWAIT`, on any path. Foreign-key inserts take their KEY SHARE, which nothing now blocks |
 | Folder fence row | not present (the wake-admission fence, `FOR UPDATE`) | effects and the post-commit worker `FOR KEY SHARE`; stop and resume `FOR UPDATE`; reads, admission and GC never |
-| Admission row | not present | every wake-inserting transaction `FOR NO KEY UPDATE`, last before the clock; multi-company loops `NOWAIT` or one company per transaction |
+| Admission row | not present | every wake-inserting or wake-admitting transaction `FOR NO KEY UPDATE`, last before the clock; multi-company loops one company per transaction |
 | Job row | `FOR UPDATE`, which also serializes a run's own reads | commits and effects `FOR KEY SHARE`; renewal `FOR NO KEY UPDATE`; lease-ending changes `FOR UPDATE`; reads never |
 | Members, staff, rooms, index rows, resources, grants, vault rows, unique claims | various, unordered | once, in the order of §3 step 4: `FOR NO KEY UPDATE` for rows rewritten, `FOR KEY SHARE` for rows referenced |
 | Entry rows | the one path, after the head | every row of the change set, ancestors first; absent targets claimed in order; subtrees expanded in place |
@@ -898,8 +907,8 @@ function and code path runs only for `folder-v2` companies (§1).
   - concurrency tests: disjoint writes, same-path conflicts, absent-target
     claims, subtree moves and deletes with `asOfSeq`, move against subtree
     delete, fence and two-phase stop, admission, lease renewal and
-    lease-ending changes, ACL narrowing against sends, and the post-commit
-    worker against archive;
+    lease-ending changes, ACL narrowing against sends, a release racing a
+    re-resolution, and the post-commit worker against archive;
   - GC race tests.
 
 ### C2. Structured files, seeding and erasure
