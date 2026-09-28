@@ -36,7 +36,8 @@ A release **rolls** when both of these hold:
   the web API and the edge functions (such as `runner-orchestrator`) serve both nodes at once, so
   they cannot be updated one node at a time. A release that changes one of them is deployed at
   step 2 only if the new version works with both bundles; otherwise the release pauses.
-- Its node release's `order` is not `pause`; with `pause`, `agent apply` insists on `--defer`.
+- Its node release's `order` is `schema-first` or `either`: the migrations come before node A's
+  update. With `pause`, `agent apply` insists on `--defer`.
 
 That covers:
 
@@ -131,6 +132,8 @@ Never run `qorpera_configure_runtime_node` on a switched-off node during a roll:
      and runtime_bundle_sha256 = '<N sha>';
    ```
 2. **Migrations.** Apply the release's migrations, not the activation.
+   - Deploy the release's changed edge functions and other shared services now, and only if they
+     work with both bundles (see "Does a release roll or pause?").
    - A migration that runs in a transaction: dry run first, then commit.
    - A `create index concurrently` migration cannot run in a transaction: apply it on its own, as
      rehearsed, and record it in the migration history as today's cut does.
@@ -181,9 +184,29 @@ Never run `qorpera_configure_runtime_node` on a switched-off node during a roll:
    0. Before the activation, all of these must hold:
       - every active orchestrator on B is still declared N (the query of step 6.3 for B and N
         returns no rows);
-      - every active orchestrator on A runs: its heartbeat is less than 30 s old;
-      - A's observer publishes `ready` for A, so A's run machines, sign-ins and machine wakes are
-        admitted once it returns.
+      - `qorpera_runtime_bundle_roll_status()`'s `undeclared` lists only A's orchestrators, so no
+        orchestrator registered since step 1 on neither node can take N+1 runs on N code;
+      - every active orchestrator on A runs. This must return no rows; revoke a stale row that
+        belongs to no running host rather than wait for it:
+
+        ```sql
+        select o.id, o.last_heartbeat_at from public.qorpera_runner_orchestrators o
+        join lateral public.qorpera_runtime_orchestrator_nodes(o.provider_adapter) n on true
+        where o.status = 'active' and n.node_id = '<A>'
+          and o.last_heartbeat_at < statement_timestamp() - interval '30 seconds';
+        ```
+      - A's observer publishes `ready` for A under A's current policy, fresh enough for placement,
+        so A's run machines, sign-ins and machine wakes are admitted once it returns. This must
+        return `true`:
+
+        ```sql
+        select o.observation->>'state' = 'ready'
+          and o.observed_at > statement_timestamp() - interval '60 seconds'
+          and public.qorpera_runtime_node_inventory_ready(n.id, o.observation_id, n.version)
+        from public.qorpera_runtime_nodes n
+        join public.qorpera_runtime_node_observations o on o.node_id = n.id
+        where n.id = '<A>';
+        ```
 
       If one fails, fix it first. A stays off and B serves N meanwhile.
    1. Apply the activation migration with A still switched off, and record it in the migration
