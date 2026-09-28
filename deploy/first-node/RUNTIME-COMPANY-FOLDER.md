@@ -97,24 +97,25 @@ Computer) hosts up to six computers.
 | Run box (section 4) | the run's authority | the run |
 | Company machine: one mount for each computer's desktop, and one for each `computer_shell` command (section 5) | the company-wide view: paths whose covering resource is the root `company_shared` resource, plus `rules/` read-only | the desktop's mount: the computer's holder (the run holding it, or a member who took it over); a shell command's mount: the run that started that command |
 | Coding machine, one mount per attached session (section 6) | the coding agent ∩ the session owner, `agents/**` and `rules/**` read-only | the session |
-| Test machine, one mount per machine | the company-wide view, as on a company machine (open question 5, settled with #419) | the agent whose command made the change; changes made with no command running go to the machine's starter |
+| Test machine, one mount per machine | the company-wide view, as on a company machine (open question 5, settled by the compute amendment, item 4) | the agent whose command made the change; changes made with no command running go to the machine's starter |
 
 - A company machine never shows a narrower folder, even to an agent that
   may read it. Its computers are not walls between agents (section 12). Such
   folders are worked on from the agent's own run box. A test machine follows
-  the same rule, since any agent of the company may use it (#419).
+  the same rule, since any agent of the company may use it (compute
+  amendment, item 4).
 - On a test machine, `/company` is mounted only when the starter's
   authority covers the company-wide view. Its one view is opened by the
   starter's run, holds the lease and sets what can be seen. Any agent whose
   authority covers that view may run commands there, as on a computer.
-  - Changes made while commands run are published at each command's end,
-    and while a command runs each time its output is read, as a computer's
-    shell commands publish (section 2; compute amendment, item 2). They are
-    credited to that command's agent and requester, taken from
-    #419's command records on the node. When commands overlap, each of their
-    receipts lists the others.
-  - Changes made while no command runs go to the machine's starter, at the
-    next command end or at stop.
+  - The view's pending changes are published at each command's end, and
+    while a command runs each time its output is read (compute amendment,
+    item 4: "when it ends (and while it runs, item 2)"). Changes made while
+    commands run are credited to those commands' agents and requesters, taken
+    from #419's command records on the node. When commands overlap, each of
+    their receipts lists the others.
+  - Changes made while no command runs are credited to the machine's starter,
+    at the next publish or at stop.
   - Reads made while commands run are recorded in the read set of every run
     with a command running at the time. Reads made while none runs are
     recorded on the starter's view.
@@ -133,9 +134,11 @@ Computer) hosts up to six computers.
     for the same member, and the agent is told.
   - Reads are recorded on the view, and that next run inherits them in its
     read set (the answer to C1b-3's question 4 on #432).
-- A test machine has internet, so its commands are outside effects and pass
-  the automatic review, like a computer's shell. The contract text for this
-  is proposed in #419, item 3.
+- A test machine has internet. Once `/company` is mounted on it, starting a
+  command and typing into one are outside effects and pass the automatic
+  review, like a computer's shell; a worker's pass under its agent's rules
+  (compute amendment, item 4, ratified). Until then a machine has no company
+  folder and its commands are not reviewed.
 
 ### What a crash loses (founder decision 3)
 
@@ -347,11 +350,11 @@ desktop-terminal command. `computer_shell` sessions follow the run-box rule.
 publishes when it ends and each time its output is read; it may outlive its
 run, and its last publish comes when its processes end; section 5.)
 
-**On a test machine**, each command's changes publish the same way: when the
-command ends, and each time its output is read while it runs (amended
-2026-09-28: the compute amendment, item 2, has a long-running command's
-changes published while it runs too). Changes made while no command runs
-publish at the next command end or at stop.
+**On a test machine**, the view's pending changes publish the same way: when
+a command ends, and each time a running command's output is read (amended
+2026-09-28: compute amendment, items 2 and 4). Changes made while no command
+runs publish at the next publish or at stop, credited to the machine's
+starter.
 
 **Never published:**
 - a file still open for writing by any process (it waits for a later
@@ -948,10 +951,13 @@ publish. Mount file modes are a convenience, not the boundary.
 its mount opens no new way out of the company. (Amended 2026-09-28: a
 computer's shell and a test machine have internet, so company data read there
 can leave, as the compute amendment accepts (contract, "2026-09-28
-amendment: compute for agents", items 2 and 4, ratified). A firewall there
-blocks private and special ranges, the machine itself and the other
-computers; it is not a security boundary between agents. Starting a command
-and typing into one are outside effects and pass the automatic review.) The existing
+amendment: compute for agents", items 2 and 4, ratified). On a computer, a
+firewall blocks private and special ranges, the machine itself and the other
+computers; it is not a security boundary between agents. A test machine
+reaches the internet but no private network, the NAS, the nodes or the
+control plane. Starting a command and typing into one are outside effects
+and pass the automatic review; on a test machine, once `/company` is
+mounted.) The existing
 exits are connectors and the browser (both reviewed), and coding machines,
 whose sessions keep open network and are not reviewed.
 With the mount, company data a coding session reads can leave through that
@@ -1114,10 +1120,11 @@ folder that fits. This wording ships ahead of the mount, in PR #366.
 3. **Internet in the run box.** Founder decision 7 leaves this for later. If
    it opens, shell commands become outside effects and pass review.
 4. **Large files.** Files over 256 MiB.
-5. **Test machines used by several agents.** Settled with #419 on
-   2026-09-28: any agent of the company may use a test machine, so it shows
-   the company-wide view, like a company machine. Saves are attributed per
-   command end to the command's agent, with overlapping commands listed;
-   changes made with no command running go to the machine's starter at the
-   next command end or at stop. Under root this attribution is best effort,
+5. **Test machines used by several agents.** Settled by the compute
+   amendment, item 4 (ratified 2026-09-28): any agent of the company may use
+   a test machine, so it shows the company-wide view, like a company machine.
+   Saves publish at each command's end and each time a running command's
+   output is read, credited to the commands' agents, with overlapping
+   commands listed; changes made with no command running go to the machine's
+   starter at the next publish or at stop. Under root this attribution is best effort,
    and it can never widen the view.
