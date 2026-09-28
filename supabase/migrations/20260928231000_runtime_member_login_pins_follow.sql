@@ -9,12 +9,15 @@
 -- qorpera_move_member_login_pins moves every binding that currently pays with the member's old
 -- connection to their new one, as a new version of the same binding (the shape of the
 -- usage-limit handoff: same owner, same kind). Routine wakes and coding turns created afterwards
--- take the binding's latest same-owner version, and routine authorization, the wake policy and
--- coding admission accept a later same-owner version of the pinned binding. The Stateless Compute
+-- take the binding's newest same-owner version that can pay now (else the pinned one), and
+-- routine authorization (also for folder writes), the wake policy and coding admission accept a
+-- later same-owner version of the pinned binding. The Stateless Compute
 -- vault calls it when it switches a member's old node login off (S1, 20260928188000); a member's
 -- login still pays only for that member's work (the new version has the same owner).
 --
--- Row locks only (the moved bindings, the two connection rows); no company-wide lock.
+-- Row locks only (the moved bindings, then the two connection rows), taken without waiting: a
+-- busy row returns a retryable refusal, so the move never deadlocks with the wake materializer.
+-- No company-wide lock.
 
 -- A later version of the same binding stands for the pinned one only when it has the same kind
 -- and pays with a connection of the same owner, company and provider.
@@ -38,8 +41,10 @@ as $$
 $$;
 revoke all on function public.qorpera_sponsor_version_follows(uuid, bigint, bigint) from public, anon, authenticated;
 
--- The version a new wake takes for a pinned (binding, version): the binding's latest version when
--- it follows the pinned one, else the pinned version.
+-- The version a new routine wake or coding turn takes for a pinned (binding, version): the newest
+-- later version that follows the pinned one and can pay unattended work now (its login connected,
+-- authorized, consented and enabled), else the pinned version. A usage-limit handoff's version
+-- counts too, but only while its login can still pay.
 create function public.qorpera_live_sponsor_version(p_binding_id uuid, p_pinned bigint)
 returns bigint
 language sql
@@ -48,11 +53,19 @@ security definer
 set search_path = ''
 as $$
 	select coalesce((
-		select latest.version from public.qorpera_execution_sponsor_versions as latest
-		where latest.binding_id = p_binding_id
-			and latest.version = (select max(newest.version) from public.qorpera_execution_sponsor_versions as newest
-				where newest.binding_id = p_binding_id)
-			and public.qorpera_sponsor_version_follows(p_binding_id, p_pinned, latest.version)), p_pinned)
+		select candidate.version
+		from public.qorpera_execution_sponsor_versions as candidate
+		join public.qorpera_provider_connections as connection on connection.id = candidate.provider_connection_id
+		join public.qorpera_provider_connection_versions as version on version.connection_id = connection.id
+			and version.version = candidate.provider_connection_version
+		where candidate.binding_id = p_binding_id and candidate.version > p_pinned and candidate.allow_autonomous
+			and connection.status = 'active' and version.authorization_state = 'active' and version.allow_autonomous
+			and not exists (select 1 from public.qorpera_provider_connection_versions as newer
+				where newer.connection_id = connection.id and newer.version > version.version and not newer.allow_autonomous)
+			and public.qorpera_provider_execution_enabled(connection.provider, version.authentication_mode, version.native_harness)
+			and public.qorpera_sponsor_version_follows(p_binding_id, p_pinned, candidate.version)
+		order by candidate.version desc
+		limit 1), p_pinned)
 $$;
 revoke all on function public.qorpera_live_sponsor_version(uuid, bigint) from public, anon, authenticated;
 
@@ -74,9 +87,6 @@ declare
 	v_routines integer;
 	v_coding integer;
 begin
-	-- Connection rows in id order, so two moves between the same logins never wait on each other.
-	perform 1 from public.qorpera_provider_connections
-	where id in (p_old_connection_id, p_new_connection_id) order by id for share;
 	select * into v_old from public.qorpera_provider_connections where id = p_old_connection_id;
 	select * into v_new from public.qorpera_provider_connections where id = p_new_connection_id;
 	if p_profile_id is null or p_member_user_id is null or v_old.id is null or v_new.id is null or v_old.id = v_new.id
@@ -84,8 +94,27 @@ begin
 		or v_old.owner_user_id is distinct from p_member_user_id or v_new.owner_user_id is distinct from p_member_user_id
 		or v_old.provider <> v_new.provider
 		or exists (select 1 from public.qorpera_provider_connection_versions as version
-			where version.connection_id in (v_old.id, v_new.id) and version.native_harness = 'claude-code') then
+			where version.connection_id in (v_old.id, v_new.id) and version.native_harness = 'claude-code')
+		or (select array_agg(distinct version.authentication_mode) from public.qorpera_provider_connection_versions as version
+			where version.connection_id in (v_old.id, v_new.id)) is distinct from
+			array[(select version.authentication_mode from public.qorpera_provider_connection_versions as version
+				where version.connection_id = v_old.id order by version.version desc limit 1)] then
 		raise exception 'Member login pins move is invalid' using errcode = '22023'; end if;
+	-- Locks never wait, so a move cannot deadlock with the wake materializer (which holds a binding,
+	-- then its login): the moved bindings first in id order, as the usage-limit handoff does, then
+	-- the two logins. A busy row makes the whole move a retryable refusal with nothing changed.
+	begin -- this block runs to the end of the function
+		perform 1 from public.qorpera_execution_sponsor_bindings as binding
+		join public.qorpera_execution_sponsor_versions as sponsor on sponsor.binding_id = binding.id
+			and sponsor.version = (select max(latest.version) from public.qorpera_execution_sponsor_versions as latest
+				where latest.binding_id = binding.id)
+		where binding.profile_id = p_profile_id and binding.status = 'active'
+			and sponsor.sponsor_kind = 'member_connection' and sponsor.provider_connection_id = v_old.id
+		order by binding.id
+		for update of binding nowait;
+		perform 1 from public.qorpera_provider_connections
+		where id in (p_old_connection_id, p_new_connection_id) order by id for share nowait;
+	select * into v_new from public.qorpera_provider_connections where id = p_new_connection_id;
 	select * into v_new_version from public.qorpera_provider_connection_versions
 	where connection_id = v_new.id order by version desc limit 1;
 	if v_new.status <> 'active' or v_new_version.authorization_state is distinct from 'active'
@@ -104,7 +133,8 @@ begin
 			and sponsor.allow_autonomous) then
 		return jsonb_build_object('schema','qorpera.member-login-pins/v1','status','refused','reason','new_login_not_autonomous');
 	end if;
-	-- Every active binding whose latest version pays with the old connection, locked in id order.
+	-- Every active binding whose latest version pays with the old connection, re-read under its lock
+	-- (a binding that another move or a handoff moved first is skipped).
 	for v_binding in
 		select binding.id, binding.created_by_user_id, sponsor.version, sponsor.sponsor_kind, sponsor.allow_autonomous
 		from public.qorpera_execution_sponsor_bindings as binding
@@ -114,7 +144,7 @@ begin
 		where binding.profile_id = p_profile_id and binding.status = 'active'
 			and sponsor.sponsor_kind = 'member_connection' and sponsor.provider_connection_id = v_old.id
 		order by binding.id
-		for update of binding
+		for update of binding nowait
 	loop
 		select coalesce(max(version), 0) + 1 into v_next from public.qorpera_execution_sponsor_versions
 		where binding_id = v_binding.id;
@@ -137,6 +167,9 @@ begin
 		and (worker.state = 'active' or worker.completion_state = 'waiting');
 	return jsonb_build_object('schema','qorpera.member-login-pins/v1','status','moved','bindings',v_moved,
 		'routineVersions',v_routines,'codingWorkers',v_coding);
+	exception when lock_not_available then
+		return jsonb_build_object('schema','qorpera.member-login-pins/v1','status','refused','reason','busy');
+	end;
 end
 $$;
 -- Gated by grants: the service role, or a SECURITY DEFINER caller owned by the migration owner
@@ -202,6 +235,16 @@ begin
 	v_definition := pg_temp.login_pins_replace(v_definition, $old$				where sponsor.binding_id = v_version.sponsor_binding_id and sponsor.version = v_version.sponsor_version) then$old$,
 $new$				where sponsor.binding_id = v_version.sponsor_binding_id
 					and public.qorpera_sponsor_version_follows(sponsor.binding_id, v_version.sponsor_version, sponsor.version)) then$new$, 'routine resume version');
+	execute v_definition;
+end
+$$;
+
+do $$
+declare v_definition text := pg_get_functiondef('public.qorpera_folder_wake_authorized(public.qorpera_wake_occurrences)'::regprocedure);
+begin
+	v_definition := pg_temp.login_pins_replace(v_definition, $old$			and v.sponsor_binding_id = p_wake.sponsor_binding_id and v.sponsor_version = v_standing_version) then return false; end if;$old$,
+$new$			and v.sponsor_binding_id = p_wake.sponsor_binding_id
+			and public.qorpera_sponsor_version_follows(v.sponsor_binding_id, v.sponsor_version, v_standing_version)) then return false; end if;$new$, 'folder routine authorization version');
 	execute v_definition;
 end
 $$;

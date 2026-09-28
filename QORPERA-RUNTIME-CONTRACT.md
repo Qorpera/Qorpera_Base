@@ -1914,8 +1914,9 @@ account, and its use by the usage-limit handoff and for work no member
 started, follow in a later change. When a member signs in again, the control
 plane may move the bindings that pay with their old login to their new one,
 as a new version of each binding with the same owner and kind; routine wakes
-and coding turns then take the binding's latest same-owner version, so a
-routine or coding session keeps working after the old login is switched off.
+and coding turns then take the binding's newest same-owner version that can
+pay, so a routine or coding session keeps working after the member's old
+ChatGPT login is switched off. Claude logins are never moved.
 
 ## 18. Short constitution
 

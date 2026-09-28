@@ -17,9 +17,11 @@ begin
 end
 $$;
 
--- Bob's routine, saved by the owner on the owner's first login.
+-- Bob's routine, saved by the owner on the owner's first login, with one wake already queued.
 select set_config('qorpera_test.pins_routine',pg_temp.wake_routine('30000000-0000-4000-8000-000000000031',
 	'{"id":"tick","kind":"schedule","intervalMinutes":60,"replyPolicy":"optional"}')::text,true);
+select set_config('qorpera_test.pins_early_wake',
+	pg_temp.wake_schedule(current_setting('qorpera_test.pins_routine')::jsonb,'pins-0')::text,true);
 
 -- The owner signs in again: a second connection on the same compute identity, not yet consented
 -- for unattended use.
@@ -110,11 +112,38 @@ begin
 	if v_again ->> 'status' <> 'moved' or jsonb_array_length(v_again -> 'bindings') <> 0 then
 		raise exception 'a repeated move was not idempotent: %', v_again;
 	end if;
+	-- A wake queued before the move keeps the version it was admitted with.
+	if (select sponsor_version from public.qorpera_wake_occurrences
+		where id = current_setting('qorpera_test.pins_early_wake')::uuid) <> 1 then
+		raise exception 'a wake queued before the move changed its login';
+	end if;
 	-- The follow relation: the pinned version itself, or a later version of the same owner.
 	if not public.qorpera_sponsor_version_follows(v_binding,1,1) or not public.qorpera_sponsor_version_follows(v_binding,1,2)
 		or public.qorpera_sponsor_version_follows(v_binding,2,1) or public.qorpera_sponsor_version_follows(v_binding,1,3)
 		or public.qorpera_live_sponsor_version(v_binding,1) <> 2 then
 		raise exception 'the pinned version does not follow the owner''s new login';
+	end if;
+end
+$$;
+
+-- A newer version is taken only while its login can pay: were the new login disconnected, new
+-- wakes would stay on the pinned (still connected) one.
+do $$
+declare v_binding uuid := (current_setting('qorpera_test.wake_sponsor')::jsonb ->> 'binding_id')::uuid;
+begin
+	begin
+		perform set_config('request.jwt.claims','{"role":"authenticated","sub":"30000000-0000-4000-8000-000000000001"}',true);
+		perform public.qorpera_revoke_native_provider_connection('30000000-0000-4000-8000-000000000010',
+			(current_setting('qorpera_test.pins_connection')::jsonb ->> 'connection_id')::uuid);
+		if public.qorpera_live_sponsor_version(v_binding,1) <> 1 then
+			raise exception 'new wakes followed a login that can no longer pay';
+		end if;
+		raise exception using errcode = 'QTP98';
+	exception when sqlstate 'QTP98' then null;
+	end;
+	perform set_config('request.jwt.claims','{"role":"service_role"}',true);
+	if public.qorpera_live_sponsor_version(v_binding,1) <> 2 then
+		raise exception 'the probe changed the moved login';
 	end if;
 end
 $$;
@@ -137,6 +166,13 @@ begin
 	end if;
 	if not public.qorpera_wake_authorized(v_wake) then
 		raise exception 'a routine wake on the moved login is not admitted';
+	end if;
+	-- Moving back onto the disconnected login is refused with nothing changed.
+	if public.qorpera_move_member_login_pins('30000000-0000-4000-8000-000000000010','30000000-0000-4000-8000-000000000001',
+		(current_setting('qorpera_test.pins_connection')::jsonb ->> 'connection_id')::uuid,
+		(current_setting('qorpera_test.wake_connection')::jsonb ->> 'connection_id')::uuid) ->> 'reason'
+		is distinct from 'new_login_unavailable' then
+		raise exception 'a move onto a disconnected login was not refused';
 	end if;
 end
 $$;
