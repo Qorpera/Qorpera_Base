@@ -369,4 +369,22 @@ it("claims a sign-in for its client before waiting for Codex, and frees the clai
 	await expect(broker.beginSignIn(failed, signal())).rejects.toThrow();
 	vi.mocked(fake.beginSignIn).mockResolvedValueOnce({ status: "preparing" });
 	await expect(vault.beginSignIn(failed, signal())).resolves.toEqual({ status: "preparing" });
+	// Two overlapping starts of one sign-in by one client: the first fails after the second succeeded, and
+	// the sign-in stays claimed.
+	const overlapping = binding();
+	let failFirst = (): void => undefined;
+	vi.mocked(fake.beginSignIn)
+		.mockImplementationOnce(
+			() =>
+				new Promise((_, rejectBegin) => {
+					failFirst = () => rejectBegin(new Error("Codex did not start"));
+				}),
+		)
+		.mockResolvedValueOnce({ status: "preparing" });
+	const first = broker.beginSignIn(overlapping, signal());
+	await vi.waitFor(() => expect(fake.beginSignIn).toHaveBeenCalledTimes(4));
+	await expect(broker.beginSignIn(overlapping, signal())).resolves.toEqual({ status: "preparing" });
+	failFirst();
+	await expect(first).rejects.toThrow();
+	await expect(vault.beginSignIn(overlapping, signal())).rejects.toThrow();
 });

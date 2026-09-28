@@ -297,14 +297,18 @@ export class ModelLoginHelperService {
 					if (!this.#owns(binding.signInId, client)) throw new Error("Sign-in belongs to another client");
 					// Claimed before the (up to 12 s) wait for Codex, so the other client cannot reach it meanwhile.
 					const claimed = !this.#owners.has(binding.signInId);
-					this.#owners.set(binding.signInId, { client, until: Date.now() + SIGN_IN_OWNER_MS });
+					const claim = { client, until: Date.now() + SIGN_IN_OWNER_MS };
+					this.#owners.set(binding.signInId, claim);
 					let state: Awaited<ReturnType<ModelLoginSignInHelper["beginSignIn"]>>;
 					try {
 						state = await signIns.beginSignIn(binding, signal);
 					} catch (error) {
-						if (claimed) this.#owners.delete(binding.signInId);
+						// A failed first start frees the id, unless a start of the same client renewed the claim since.
+						if (claimed && this.#owners.get(binding.signInId) === claim) this.#owners.delete(binding.signInId);
 						throw error;
 					}
+					// Renewed on success, so a failing start that overlapped this one cannot free it.
+					this.#owners.set(binding.signInId, { client, until: Date.now() + SIGN_IN_OWNER_MS });
 					return { status: 200, body: { schema: "qorpera.model-login-sign-in/v1", ...state } };
 				}
 				const target = { signInId: input.signInId as string, companyId: input.companyId as string };
