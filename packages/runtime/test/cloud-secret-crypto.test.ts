@@ -19,6 +19,21 @@ it("derives each company's key from the master key, the same on every copy of th
 	nodeTwo.close();
 });
 
+it("derives a company's key as HKDF-SHA256(master, salt qorpera.company-kek/v1, info company), fixed value", async () => {
+	// Computed apart from this code (Python's hmac, RFC 5869 by hand).
+	const master = Buffer.from(Array.from({ length: 32 }, (_, index) => index));
+	const company = "0F0E0D0C-0B0A-4908-8706-050403020100";
+	const expected = Buffer.from("755b45a9b70ddefcd1a4fafc4e263014a631178d3df962ddc154bc171e15883b", "hex");
+	const derived = new CloudSecretKeyring({}, { "vault-root-1": master });
+	// A company keyring that holds exactly that key under the same id opens what the derived one seals.
+	const own = new CloudSecretKeyring({ "vault-root-1": expected });
+	const sealedFor = identity(company.toLowerCase(), "vault-root-1");
+	const envelope = derived.seal({ codex_auth_json: "login" }, sealedFor);
+	await expect(own.use(envelope, sealedFor, async (fields) => fields.codex_auth_json)).resolves.toBe("login");
+	derived.close();
+	own.close();
+});
+
 it("keeps companies apart: another company's derived key cannot open an envelope", async () => {
 	const master = randomBytes(32);
 	const keyring = new CloudSecretKeyring({}, { "vault-root-1": master });

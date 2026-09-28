@@ -1,7 +1,8 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
+import type { CloudConnectorOAuthFlows } from "@qorpera/runtime/cloud-connector-oauth";
 import type { ModelLoginSignInHelper } from "@qorpera/runtime/cloud-model-login-sign-in";
 import { CloudModelLoginUpkeep } from "@qorpera/runtime/cloud-model-login-upkeep";
-import type { ModelLoginRenewer } from "@qorpera/runtime/cloud-model-login-vault";
+import { CloudModelLoginVault, type ModelLoginRenewer } from "@qorpera/runtime/cloud-model-login-vault";
 import {
 	PostgresCloudSecretBrokerAuthority,
 	PostgresCloudSecretBrokerPrincipal,
@@ -43,6 +44,12 @@ it("derives the principal's and each company's capability from the one secret, t
 	expect(sharedBrokerCapability(secret)).not.toBe(sharedBrokerCapability(secret, company));
 	expect(sharedBrokerCapability(secret, company)).toMatch(/^[A-Za-z0-9_-]{43}$/);
 	expect(() => sharedBrokerCapability("short")).toThrow("Shared cloud secret broker secret is invalid");
+	// Fixed values, computed apart from this code (Python's hmac): HMAC-SHA256 over the two labels.
+	const fixed = Buffer.from(Array.from({ length: 32 }, (_, index) => 32 + index)).toString("base64url");
+	expect(sharedBrokerCapability(fixed)).toBe("jV1yyqZ_Jl0_kfk04tpAun6MdLCIFNARnbC1HhlO9bI");
+	expect(sharedBrokerCapability(fixed, "0F0E0D0C-0B0A-4908-8706-050403020100")).toBe(
+		"vGW434I_uNAL8xnksHtqdhzxBLnt_RvlUCHV6hcDS64",
+	);
 });
 
 it("calls the principal's functions with its own capability hash and registers with the company's", async () => {
@@ -82,21 +89,28 @@ it("calls the principal's functions with its own capability hash and registers w
 	expect(principal.authority(company, authorityId)).toBeInstanceOf(PostgresCloudSecretBrokerAuthority);
 });
 
-function principalFixture(options: { registered?: string[]; unregistered?: string[]; keyId?: string } = {}) {
+function principalFixture(
+	options: { registered?: string[]; unregistered?: string[]; keyId?: string; principalKeyId?: string } = {},
+) {
 	const authorityIds = new Map<string, string>();
 	const authorityOf = (companyId: string) => {
 		const known = authorityIds.get(companyId) ?? randomUUID();
 		authorityIds.set(companyId, known);
 		return known;
 	};
-	const state = { registered: [...(options.registered ?? [])], unregistered: [...(options.unregistered ?? [])] };
+	const state = {
+		registered: [...(options.registered ?? [])],
+		unregistered: [...(options.unregistered ?? [])],
+		keyId: options.keyId ?? "vault-root-1",
+	};
 	const principal = {
 		companies: vi.fn(async () => ({
 			schema: "qorpera.broker-principal-companies/v1",
+			keyId: options.principalKeyId ?? "vault-root-1",
 			registered: state.registered.map((companyId) => ({
 				companyId,
 				authorityId: authorityOf(companyId),
-				keyId: options.keyId ?? "vault-root-1",
+				keyId: state.keyId,
 			})),
 			unregistered: [...state.unregistered],
 		})),
@@ -107,7 +121,7 @@ function principalFixture(options: { registered?: string[]; unregistered?: strin
 				schema: "qorpera.broker-principal-registration/v1",
 				companyId,
 				authorityId: authorityOf(companyId),
-				keyId: options.keyId ?? "vault-root-1",
+				keyId: state.keyId,
 			};
 		}),
 		authority: vi.fn(
@@ -178,16 +192,35 @@ it("looks a company created a moment ago up again, but not on every request", as
 });
 
 it("never serves a company whose key this vault cannot derive, and survives a failed registration", async () => {
+	const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
 	const first = randomUUID();
 	const second = randomUUID();
-	const { principal } = principalFixture({ registered: [first], keyId: "other-root" });
+	const { principal, state } = principalFixture({ registered: [first] });
 	const companies = new SharedCloudSecretBrokerCompanies({
 		principal,
 		keyring: new CloudSecretKeyring({}, { "vault-root-1": randomBytes(32) }),
 		adapters: [],
 	});
 	await companies.refresh(new AbortController().signal);
+	expect((await companies.resolve(first, new AbortController().signal))?.companyId).toBe(first);
+	// Its key id changes to one this vault cannot derive: it is no longer served.
+	state.keyId = "other-root";
+	await companies.refresh(new AbortController().signal);
 	expect(await companies.resolve(first, new AbortController().signal)).toBeUndefined();
+
+	// A vault without the principal's key registers nobody: registering would switch the company to vault
+	// sign-in that this vault can never serve.
+	const keyless = principalFixture({ unregistered: [second], principalKeyId: "other-root" });
+	const withoutKey = new SharedCloudSecretBrokerCompanies({
+		principal: keyless.principal,
+		keyring: new CloudSecretKeyring({}, { "vault-root-1": randomBytes(32) }),
+		adapters: [],
+	});
+	await withoutKey.refresh(new AbortController().signal);
+	expect(keyless.principal.register).not.toHaveBeenCalled();
+	expect(logged).toHaveBeenCalledWith(
+		"Shared vault: this vault does not hold the principal's key; it registers no company.",
+	);
 
 	const failing = principalFixture({ unregistered: [first, second] });
 	failing.principal.register.mockRejectedValueOnce(new Error("company already has a vault"));
@@ -199,6 +232,71 @@ it("never serves a company whose key this vault cannot derive, and survives a fa
 	await others.refresh(new AbortController().signal);
 	expect(failing.principal.register).toHaveBeenCalledTimes(2);
 	expect((await others.resolve(second, new AbortController().signal))?.companyId).toBe(second);
+	expect(logged).toHaveBeenCalledWith(
+		"Shared vault: a company's registration was refused; the next refresh looks again.",
+	);
+});
+
+it("answers a request for a registered company once the refresh in flight ends, a start's first included", async () => {
+	let now = 1_000_000;
+	const one = randomUUID();
+	const { principal, state } = principalFixture();
+	const companies = new SharedCloudSecretBrokerCompanies({
+		principal,
+		keyring: new CloudSecretKeyring({}, { "vault-root-1": randomBytes(32) }),
+		adapters: [],
+		now: () => now,
+	});
+	// A lookup a moment ago: the 2 s limit is running.
+	expect(await companies.resolve(randomUUID(), new AbortController().signal)).toBeUndefined();
+	let release = (): void => undefined;
+	principal.companies.mockImplementationOnce(async () => {
+		await new Promise<void>((resolveRelease) => {
+			release = resolveRelease;
+		});
+		return {
+			schema: "qorpera.broker-principal-companies/v1",
+			keyId: "vault-root-1",
+			registered: [{ companyId: one, authorityId: randomUUID(), keyId: "vault-root-1" }],
+			unregistered: [],
+		};
+	});
+	state.registered.push(one);
+	const refreshing = companies.refresh(new AbortController().signal);
+	now += 100;
+	const resolving = companies.resolve(one, new AbortController().signal);
+	release();
+	await refreshing;
+	expect((await resolving)?.companyId).toBe(one);
+});
+
+it("stops a company's upkeep pass after the renewal in hand when the vault closes", async () => {
+	const renewals: (() => void)[] = [];
+	const renewIdle = vi.spyOn(CloudModelLoginVault.prototype, "renewIdle").mockImplementation(
+		() =>
+			new Promise((resolveRenewal) => {
+				renewals.push(() => resolveRenewal("renewed"));
+			}),
+	);
+	vi.spyOn(CloudModelLoginVault.prototype, "recordAccounts").mockResolvedValue(0);
+	vi.spyOn(CloudModelLoginVault.prototype, "switchOffReplacedNodeLogins").mockResolvedValue({
+		switchedOff: 0,
+	} as never);
+	const { principal } = principalFixture({ registered: [randomUUID()] });
+	const companies = new SharedCloudSecretBrokerCompanies({
+		principal,
+		keyring: new CloudSecretKeyring({}, { "vault-root-1": randomBytes(32) }),
+		adapters: [],
+	});
+	await companies.refresh(new AbortController().signal);
+	const passing = companies.upkeep();
+	await vi.waitFor(() => expect(renewals).toHaveLength(1));
+	const closing = companies.close();
+	renewals.shift()?.();
+	await closing;
+	await passing;
+	// Without the close the pass would go on to its twelfth renewal.
+	expect(renewIdle).toHaveBeenCalledTimes(1);
 });
 
 it("collects a signing-in company's sign-ins every pass and every company's on a sweep", async () => {
@@ -294,7 +392,14 @@ it("serves each request from its company's services on the shared vault, and not
 	const signingIn = vi.fn((_companyId: string) => undefined);
 	const resolve = vi.fn(async (companyId: string) => (companyId === served ? scope : undefined));
 	const companies: CloudSecretBrokerCompanies = { resolve, signingIn };
-	const service = new HttpCloudSecretBrokerService(companies, token, { host: "127.0.0.1", port: 0 });
+	const confirm = vi.fn(async () => {
+		throw new Error("state_unknown");
+	});
+	const service = new HttpCloudSecretBrokerService(companies, token, {
+		host: "127.0.0.1",
+		port: 0,
+		oauth: { confirm } as unknown as CloudConnectorOAuthFlows,
+	});
 	const port = await service.start();
 	try {
 		const post = (path: string, authorization: string, body: unknown = {}) =>
@@ -319,6 +424,17 @@ it("serves each request from its company's services on the shared vault, and not
 			expect.objectContaining({ companyId: served, capability }),
 			expect.any(AbortSignal),
 		);
+		// A sign-in the database refuses does not put the company on the frequent collection.
+		signIn.mockRejectedValueOnce(new Error("Vault sign-in is unavailable"));
+		expect((await post(`/v1/model-logins/${served}/login`, capability, { schema: "any" })).ok).toBe(false);
+		expect(signingIn).toHaveBeenCalledTimes(1);
+		// A connector sign-in's confirm names the company the request was routed to.
+		await post(`/v1/oauth/${randomUUID()}/confirm?company=${served}`, token, {
+			schema: "qorpera.cloud-connector-oauth-confirm/v1",
+			confirmation: randomBytes(32).toString("base64url"),
+			browserProof: randomBytes(32).toString("base64url"),
+		});
+		expect(confirm).toHaveBeenCalledWith(expect.objectContaining({ companyId: served }), expect.any(AbortSignal));
 	} finally {
 		await service.close();
 	}

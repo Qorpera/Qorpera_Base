@@ -69,6 +69,9 @@ export interface CloudConnectorOAuthConfirm {
 	readonly ticketId: string;
 	readonly confirmation: string;
 	readonly browserProof: string;
+	/** The company the request was routed to (a shared vault): a flow of another company is refused
+	 * before anything is exchanged. */
+	readonly companyId?: string;
 }
 
 export interface CloudConnectorOAuthStarted {
@@ -140,6 +143,8 @@ const TOKEN = /^[A-Za-z0-9_./-]{20,4096}$/;
 const STATE_TTL_MS = 10 * 60_000;
 const CONFIRM_TTL_MS = 5 * 60_000;
 const MAX_PENDING = 256;
+/** One company's share of the pending starts: a shared vault serves many companies from one set. */
+const MAX_PENDING_PER_COMPANY = 32;
 const PROOF = /^[A-Za-z0-9_-]{43}$/;
 const CONFIRMATION = /^[A-Za-z0-9_-]{43}$/;
 const SHA256_HEX = /^[0-9a-f]{64}$/;
@@ -320,6 +325,9 @@ export class CloudConnectorOAuthFlows {
 		const returnTo = parseConnectorReturnUrl(input.returnTo, this.#returnOrigins);
 		this.#sweep();
 		if (this.#pending.size >= MAX_PENDING) throw new Error("Connector OAuth is busy");
+		let companyPending = 0;
+		for (const pending of this.#pending.values()) if (pending.companyId === companyId) companyPending += 1;
+		if (companyPending >= MAX_PENDING_PER_COMPANY) throw new Error("Connector OAuth is busy");
 		const endpoints = CLOUD_CONNECTOR_OAUTH_PROVIDERS[connector.oauth.provider];
 		const state = `${companyId}.${Buffer.from(this.#random(32)).toString("base64url")}`;
 		const codeVerifier = endpoints.pkce ? Buffer.from(this.#random(32)).toString("base64url") : undefined;
@@ -419,6 +427,8 @@ export class CloudConnectorOAuthFlows {
 		this.#confirmations.delete(key);
 		this.#sweep();
 		if (parked.ticketId !== input.ticketId.toLowerCase()) throw new CloudConnectorOAuthError("state_unknown");
+		if (input.companyId !== undefined && parked.companyId !== input.companyId.toLowerCase())
+			throw new CloudConnectorOAuthError("state_unknown");
 		if (
 			typeof input.browserProof !== "string" ||
 			!PROOF.test(input.browserProof) ||

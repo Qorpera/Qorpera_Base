@@ -396,6 +396,8 @@ export interface HttpCloudSecretBrokerServiceOptions {
 /** What a request's company gets: a single-company broker's own services (some may be off), or one
  * company's on the shared vault. */
 interface RequestScope {
+	/** A shared vault's company; a one-company broker's scope names none. */
+	readonly companyId?: string;
 	readonly broker: CloudSecretBroker;
 	readonly modelLogins: CloudModelLoginVault | undefined;
 	readonly modelLoginSignIns: CloudModelLoginSignIns | undefined;
@@ -622,7 +624,11 @@ export class HttpCloudSecretBrokerService {
 				let completion: Awaited<ReturnType<CloudConnectorOAuthFlows["confirm"]>>;
 				try {
 					completion = await this.#oauth.confirm(
-						{ ticketId: (oauthConfirm as RegExpExecArray)[1], ...confirm },
+						{
+							ticketId: (oauthConfirm as RegExpExecArray)[1],
+							...confirm,
+							...(scope.companyId === undefined ? {} : { companyId: scope.companyId }),
+						},
 						AbortSignal.timeout(20_000),
 					);
 				} catch (error) {
@@ -680,7 +686,6 @@ export class HttpCloudSecretBrokerService {
 				const authorization = request.headers.authorization;
 				if (typeof authorization !== "string" || !authorization.startsWith("Bearer "))
 					throw new Error("Vault sign-in capability is missing");
-				this.#companies?.signingIn(signIn[1]);
 				const answer = await scope.modelLoginSignIns.signIn(
 					{
 						companyId: signIn[1],
@@ -689,6 +694,8 @@ export class HttpCloudSecretBrokerService {
 					},
 					AbortSignal.timeout(25_000),
 				);
+				// Only a sign-in the database accepted puts its company on the frequent collection.
+				this.#companies?.signingIn(signIn[1]);
 				response(reply, 200, { ...answer });
 				return;
 			}

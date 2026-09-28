@@ -116,6 +116,12 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 		const id = company(companyId);
 		const known = this.#served.get(id);
 		if (known) return known.scope;
+		// A refresh already running (the first one after a start included) may serve it: wait for that one.
+		const running = this.#refreshing;
+		if (running) {
+			await running.catch(() => undefined);
+			return this.#served.get(id)?.scope;
+		}
 		// A company created a moment ago may not be on the list yet: look again, but not on every request.
 		if (this.#now() - this.#lastLookup < MISSING_LOOKUP_MS) return undefined;
 		this.#lastLookup = this.#now();
@@ -143,16 +149,28 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 			!Array.isArray(answer.unregistered)
 		)
 			throw new Error("Shared vault companies are invalid");
+		if (typeof answer.keyId !== "string" || !KEY_ID.test(answer.keyId))
+			throw new Error("Shared vault companies are invalid");
 		const registered = answer.registered.map(servedEntry);
-		for (const waiting of answer.unregistered) {
-			try {
-				const done = record(await this.#principal.register(company(waiting), signal), "Shared vault registration");
-				if (done.schema !== "qorpera.broker-principal-registration/v1")
-					throw new Error("Shared vault registration is invalid");
-				registered.push(servedEntry(done));
-			} catch {
-				// Another copy of the vault registered it first, or it gained a vault of its own: the next
-				// refresh lists it as it is.
+		// Registering switches the company to vault sign-in: only a vault that holds the principal's key
+		// (and so can serve it) registers anyone.
+		if (answer.unregistered.length > 0 && !this.#keyring.has(answer.keyId)) {
+			console.error("Shared vault: this vault does not hold the principal's key; it registers no company.");
+		} else {
+			for (const waiting of answer.unregistered) {
+				try {
+					const done = record(
+						await this.#principal.register(company(waiting), signal),
+						"Shared vault registration",
+					);
+					if (done.schema !== "qorpera.broker-principal-registration/v1")
+						throw new Error("Shared vault registration is invalid");
+					registered.push(servedEntry(done));
+				} catch {
+					// Another copy of the vault registered it first, or it gained a vault of its own: the next
+					// refresh lists it as it is. Only the fact is logged.
+					console.error("Shared vault: a company's registration was refused; the next refresh looks again.");
+				}
 			}
 		}
 		const listed = new Set<string>();
@@ -160,12 +178,23 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 			listed.add(entry.companyId);
 			const known = this.#served.get(entry.companyId);
 			if (known && known.authorityId === entry.authorityId && known.keyId === entry.keyId) continue;
+			if (known) this.#drop(entry.companyId, known);
 			// A key this vault cannot derive would strand every login the company seals: serve it only
 			// once the vault holds that master key.
 			if (!this.#keyring.has(entry.keyId)) continue;
 			this.#served.set(entry.companyId, this.#serve(entry));
 		}
-		for (const companyId of [...this.#served.keys()]) if (!listed.has(companyId)) this.#served.delete(companyId);
+		for (const [companyId, served] of [...this.#served]) if (!listed.has(companyId)) this.#drop(companyId, served);
+	}
+
+	/** Stops serving a company; its upkeep pass, if one runs, ends after the renewal in hand. */
+	#drop(companyId: string, served: Served): void {
+		this.#served.delete(companyId);
+		this.#signingIn.delete(companyId);
+		const closing: Promise<void> = served.upkeep.close().finally(() => {
+			this.#running.delete(closing);
+		});
+		this.#running.add(closing);
 	}
 
 	#serve(entry: { companyId: string; authorityId: string; keyId: string }): Served {
@@ -210,7 +239,8 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 	async upkeep(): Promise<void> {
 		for (const served of [...this.#served.values()]) {
 			if (this.#closed) return;
-			await served.upkeep.pass();
+			// A company dropped since the pass began is not worked on.
+			if (this.#served.get(served.scope.companyId) === served) await served.upkeep.pass();
 		}
 	}
 
@@ -243,10 +273,12 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 		schedule(firstMs);
 	}
 
+	/** Stops every loop; a company's upkeep pass in hand ends after its current renewal (and its save),
+	 * which the unit's stop timeout waits for. */
 	async close(): Promise<void> {
 		this.#closed = true;
 		for (const timer of this.#timers) clearTimeout(timer);
 		this.#timers.clear();
-		await Promise.all([...this.#running]);
+		await Promise.all([...[...this.#served.values()].map((served) => served.upkeep.close()), ...this.#running]);
 	}
 }
