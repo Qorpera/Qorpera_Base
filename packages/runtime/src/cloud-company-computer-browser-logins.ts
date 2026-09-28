@@ -108,8 +108,9 @@ const newer = (a: LoginEvent, b: LoginEvent | undefined): boolean =>
  * computer whose clock runs behind cannot lose a change it made later. A
  * sign-out is kept for as long as any file still holds the sign-in it removed.
  * The single file of an office service that predates this (`path`) is read,
- * never written: everything in it counts as a change at the time it was
- * written. A file another computer left unsafe or unreadable is skipped (its
+ * never written: everything in it counts as older than any change a computer
+ * made (a new generation copies it with a fresh modification time, so that
+ * time means nothing). A file another computer left unsafe or unreadable is skipped (its
  * last good content still counts); only this computer's own file is fatal.
  *
  * The files sit in the company directory on the workbench with the same
@@ -351,7 +352,7 @@ export class CompanyComputerBrowserLogins {
 				file = await this.#file(join(this.#directory, name), this.#sources.get(name)?.identity);
 				// Unchanged since the last pass, or gone: what it said still happened.
 				if (!file) continue;
-				events = name === legacy ? this.#legacy(file.value, file.at, name) : this.#computerEvents(file.value, name);
+				events = name === legacy ? this.#legacy(file.value, name) : this.#computerEvents(file.value, name);
 			} catch (error) {
 				// The old single file keeps its old strictness. Another computer's bad
 				// file must not stop this one: its last good content still counts.
@@ -362,8 +363,10 @@ export class CompanyComputerBrowserLogins {
 		}
 	}
 
-	/** The old single file: every sign-in in it is a change at the time it was written. */
-	#legacy(value: unknown, at: number, source: string): Map<string, LoginEvent> {
+	/** The old single file: every sign-in in it counts from the start of time, older
+	 * than any change a computer made. Its modification time means nothing: a new
+	 * generation copies the company folder, file and all, with a fresh one. */
+	#legacy(value: unknown, source: string): Map<string, LoginEvent> {
 		const list =
 			value && typeof value === "object" && (value as { schema?: unknown }).schema === SCHEMA
 				? (value as { cookies?: unknown }).cookies
@@ -371,7 +374,7 @@ export class CompanyComputerBrowserLogins {
 		if (!Array.isArray(list)) throw new Error("INVALID_BROWSER_LOGIN_STORE");
 		const events = new Map<string, LoginEvent>();
 		for (const cookie of list.slice(0, MAX_COOKIES))
-			if (valid(cookie)) events.set(key(cookie), { cookie: plain(cookie), at, source });
+			if (valid(cookie)) events.set(key(cookie), { cookie: plain(cookie), at: 0, source });
 		return events;
 	}
 
@@ -420,7 +423,8 @@ export class CompanyComputerBrowserLogins {
 		const all = [...this.#events.entries()].sort(([, a], [, b]) => a.at - b.at);
 		const kept = all.filter(([k, event]) => !event.cookie && this.#shadows(k, now));
 		const rest = all.filter(([k, event]) => event.cookie || !this.#shadows(k, now));
-		const events = [...kept, ...rest.slice(-Math.max(0, MAX_COOKIES - kept.length))];
+		const room = MAX_COOKIES - kept.length;
+		const events = [...kept, ...(room > 0 ? rest.slice(-room) : [])];
 		const bytes = Buffer.from(
 			JSON.stringify({
 				schema: COMPUTER_SCHEMA,

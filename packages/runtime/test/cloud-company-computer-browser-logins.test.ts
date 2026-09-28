@@ -289,6 +289,38 @@ describe("sign-ins across the company's computers", () => {
 		expect(c.value("session")).toBeUndefined();
 		await again.close();
 	});
+	it("keeps later changes when a new generation copies the older file with a fresh time", async () => {
+		let time = Date.now();
+		const f = await store(() => time);
+		const legacy = () =>
+			writeFile(
+				f.path,
+				JSON.stringify({
+					schema: "qorpera.company-browser-logins/v1",
+					cookies: [cookie("session", "before-upgrade"), cookie("mail", "before-upgrade")],
+				}),
+				{ mode: 0o600 },
+			);
+		await legacy();
+		const one = f.logins(COMPUTER_1, () => time),
+			a = browser();
+		await one.attach("agent-a", a.context);
+		a.set(cookie("session", "rotated"));
+		a.remove("mail");
+		await one.sync();
+		await one.close();
+		// The next generation's adoption copies the company folder: same bytes, new file time.
+		time += 60_000;
+		await rm(f.path);
+		await legacy();
+		await utimes(f.path, new Date(time / 1000), new Date(time / 1000 + 60));
+		const next = f.logins(COMPUTER_1, () => time),
+			c = browser();
+		await next.attach("agent-c", c.context);
+		expect(c.value("session")).toBe("rotated");
+		expect(c.value("mail")).toBeUndefined();
+		await next.close();
+	});
 	it("lets a later change win even when its computer's clock runs behind", async () => {
 		let fast = 5_000_000;
 		const slow = 1_000_000;
