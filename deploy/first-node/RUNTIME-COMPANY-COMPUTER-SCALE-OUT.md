@@ -49,20 +49,35 @@ environment.
 - **One computer per agent at a time.** Taking a seat on one computer while
   the agent's screen on another running computer is in use is refused
   (`SCREEN_OCCUPIED` for runs, `AGENT_ON_OTHER_COMPUTER` for members).
-- **Placement** (`qorpera_runtime_office_placement`), in order:
+- **No waiting for a seat** (Jonas, 28 September: "if a machine is full, the
+  agent always should start a new one, not wait"; `20260929020000`). An agent
+  waiting for a computer to start holds a seat on it: its start waiter on the
+  computer's current generation, while it waits and for two minutes after it
+  is woken. A computer is full when its screens in use and the seats other
+  agents hold reach `max_screens`. Placement joins a sleeping, waking or
+  starting computer only while it has a seat nobody holds, so a burst of demand
+  adds as many computers as it needs (one for each `max_screens` agents without
+  a seat). Native starts record the waiter under the seat lock, so two starts
+  never hold the same last seat. Held seats count only with the switch on.
+- **Placement** (`qorpera_runtime_office_placement`), in order; wherever the
+  agent holds a seat comes first within a step:
   1. `screen`: the agent's screen in use on a running computer;
-  2. `room`: a running computer with a free seat, the one the agent used last
-     first, then the lowest number, so extra computers can go idle;
-  3. `stopped`: a computer that is off after its idle time, woken (agent's
-     last first);
+  2. `room`: a running computer with a seat nobody holds, the one the agent
+     used last first, then the lowest number, so extra computers can go idle;
+  3. `stopped`: a computer that is off after its idle time, with a seat nobody
+     holds, woken (agent's last first), and only when its node would admit it
+     now (switched on, seen ready, its CPU and memory fit what is left). A
+     sleeping computer on a full or emptying node is passed over; waking it on
+     another node is later work of the identical-nodes plan;
   4. `starting`: a computer already starting, waking, or back from a host
-     reboot. A burst of demand never adds two computers;
+     reboot, with a seat nobody holds;
   5. `unstarted`: a computer that was added but never started;
-  6. `new`: every computer is running and full;
+  6. `new`: no computer has a seat for the agent now or when it is up. A
+     computer in maintenance for an update or reset, or whose start an owner
+     cancelled, is passed over: never waited for, never replaced;
   7. `denied`: the agent's computer access is revoked on every computer; no
      computer is added around a revoked grant;
-  8. `none`: no computer the agent can use (none registered, or one is in
-     maintenance for another reason, which waits for its owner as today).
+  8. `none`: no computer registered for the company.
 - Computer access is company-wide: changing an agent's grant (state or
   capabilities) on one computer changes it on all the company's computers, and
   a grant created on a computer (a new computer, or an agent hired again)
@@ -152,3 +167,8 @@ registry, access, native authority and member RPCs (guest readiness is
 synthetic): seats and the lifetime-cap fix, adding computer 2 once, the wait
 reason, one computer per agent for members and runs, idle demand per computer,
 the start descriptor adding computer 3, the switch, revoked access, and seat hand-over.
+`supabase/tests/628_runtime_company_computer_no_wait.test.sql`: a burst adding
+a computer per two waiting agents, held seats (while waiting, two minutes after
+the wake, once per agent, not with the switch off), the agent's own computer
+first, a sleeping computer passed over on a full, emptying or unseen node, and
+maintenance or a cancelled start never waited for.
