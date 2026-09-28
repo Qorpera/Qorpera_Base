@@ -10,7 +10,9 @@ refer to.
 > **Note, 2026-09-27 (evening).** The contract's company folder layout (section
 > 5.6 and the layout amendment in section 19) fixes the folder's seeded tree,
 > makes everything approved by default (no path needs a member's approval),
-> and moves per-folder trees ahead of writes through the mount (section 9).
+> and moves the storage core's version per file ahead of writes through the
+> mount (section 9; the core is designed in
+> [RUNTIME-COMPANY-FOLDER-CORE.md](RUNTIME-COMPANY-FOLDER-CORE.md)).
 > The automatic review of deletes, moves and delegation is unchanged. Where
 > this design speaks of protected paths producing proposals, none are
 > configured by default.
@@ -212,11 +214,13 @@ A unit whose parent comes from a parked or refused unit parks or fails with
 that unit. An example is a new file created inside a moved folder while the
 move waits for approval.
 
-All clean units of a boundary land in one revision and one head move.
+All clean units of a boundary land in one commit with one sequence number
+(amended 2026-09-28: there is no head; each path has its own version, see
+[the core](RUNTIME-COMPANY-FOLDER-CORE.md)).
 
 ### The outcome of each unit
 
-- **Clean.** It is committed in that revision.
+- **Clean.** It is committed in that change set's commit.
 - **Conflict.** A base version moved, so the unit is not written; nobody's
   work is overwritten (no last-writer-wins). The run's version is kept as an
   immutable object on the run's receipt. It is shown read-only in the box
@@ -301,12 +305,15 @@ Only conflicts, proposals and review outcomes wait for the boundary report.
 A whole-company search must not turn into tens of thousands of per-path
 rechecks. So the folder service records reads per run in two forms:
 
-- **In SQL:** one row per authorizing resource and grant, with the newest
-  authority version seen. This is what is rechecked before each model
+- **In SQL:** one row per authorizing resource and grant, with the oldest
+  authority revision not yet rechecked (the core, §4). This is what is rechecked before each model
   request, send and mutation. Child wakes inherit these rows together with
   the parent's path lists.
-- **As a compressed path list per command**, stored as an object on the run
-  for audit. The list separates names (listed) from content (read).
+- **As a compressed path list per command**, for audit and re-resolution. The
+  list separates names (listed) from content (read). Since 2026-09-28 it is
+  stored as one SQL row per command and covering resource (the core's read
+  records, [RUNTIME-COMPANY-FOLDER-CORE.md](RUNTIME-COMPANY-FOLDER-CORE.md)
+  §2), so SQL can re-resolve it and a whole-company search stays a few rows.
 
 The recheck reruns the recorded paths under a resource when any of these
 happens:
@@ -649,14 +656,17 @@ stays usable, and the platform flags the branch.
 
 A repository adds its tracked files and its `.git` files. This repository
 alone is about 9,500 entries before any worktree. Code areas therefore come
-after per-folder trees and the lifted caps (build step 4 since 2026-09-27). Pack files over
+after the version-per-file core and the lifted caps (build step 4 since 2026-09-27). Pack files over
 256 MiB need open question 4.
 
 ## 7. Server work (SQL and gateway)
 
+The storage core behind this section is designed in
+[RUNTIME-COMPANY-FOLDER-CORE.md](RUNTIME-COMPANY-FOLDER-CORE.md) (2026-09-28).
+
 1. **Change sets and units.**
    - One check and one commit cover many units, with an operation key.
-   - Clean units share one revision.
+   - Clean units share one commit (one sequence number).
    - Parked units wait on their card.
 2. **Move and rename**, for files and whole subtrees, keeping each path's
    history. A copy is a write of the same content object, so it costs no
@@ -664,12 +674,14 @@ after per-folder trees and the lifted caps (build step 4 since 2026-09-27). Pack
 3. **Binary.** Byte-range reads of any content. Streamed chunk writes with no
    8 MiB export detour. The executable flag and media type are kept.
 4. **Feed.** An authorized, cursor-based feed of file changes and authority
-   changes per mount, woken by the existing Realtime head signal.
+   changes per mount, woken by the company clock's Realtime hint
+   ([the core](RUNTIME-COMPANY-FOLDER-CORE.md) §6).
 5. **Read sets by covering resource** (section 3), with the recheck and wake
    inheritance moved to that form.
 6. **Cost per change.** A change stops re-staging and re-verifying the whole
-   tree: per-folder tree manifests make its cost follow its depth. After that
-   the 8 MiB manifest cap and the 50,000-entry cap are lifted; the contract
+   tree: each path has its own version, so a commit's cost follows only its
+   own units ([the core](RUNTIME-COMPANY-FOLDER-CORE.md) §3). The 8 MiB
+   manifest cap and the 50,000-entry cap go with the manifest; the contract
    already calls such caps defects.
 7. **Deletes and restore.**
    - An ordinary delete or move is a normal unit after the automatic review.
@@ -718,8 +730,12 @@ Everything runs on the release train, and every PR gets an independent review.
 Reading comes first, so agents can search the whole company early. Writing
 keeps using today's tools until step 5.
 
-Amended 2026-09-27 (contract, company folder layout amendment): per-folder
-trees move from step 8 into step 4. One head per company would make writes
+Amended 2026-09-27 (contract, company folder layout amendment): the storage
+core's version per file (formerly "per-folder trees") moves from step 8 into
+step 4, and is designed in
+[RUNTIME-COMPANY-FOLDER-CORE.md](RUNTIME-COMPANY-FOLDER-CORE.md). Its rollout
+behind a per-company flag, the proof company and the reset are in that
+document's §1 and §11. One head per company would make writes
 through the mount conflict constantly, so the storage core changes before any
 machine writes through the folder. Removing the company-wide lock for reads
 moves into step 1, because steps 1–3 ship whole-company reads. The
@@ -745,8 +761,10 @@ is unchanged.
    and the capacity decision. First live acceptance: an agent searches the
    whole company.
 4. **Server, writing side.**
-   - Per-folder trees and a version per file, lifting the manifest and entry
-     caps (moved here from step 8).
+   - A version per file with no head, lifting the manifest and entry caps
+     (moved here from step 8; see
+     [RUNTIME-COMPANY-FOLDER-CORE.md](RUNTIME-COMPANY-FOLDER-CORE.md)). Any
+     per-folder summary is built after the commit.
    - Structured-file saves with their index update; the refusals for seeded
      folders, `rules/`, a lone `agent.md` or `group.md`, and agent or group
      folders moved out of place; and review by path for delegation units on
@@ -794,7 +812,7 @@ is unchanged.
 
 - **Search.** An agent runs `rg -l refund` over all of `/company` and opens
   what it found. The run's SQL read set stays a handful of rows.
-- **Ordinary work.** Each of these lands as one revision per command, and
+- **Ordinary work.** Each of these lands as one commit per command, and
   members see it in the web app and its history:
   - `sed -i` on a document;
   - `mv reports/2026 archive/`;

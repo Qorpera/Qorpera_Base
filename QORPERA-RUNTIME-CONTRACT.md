@@ -308,9 +308,11 @@ without replaying old conversations.
 
 Ordinary authorized mutations become live immediately after one durable cloud
 transaction succeeds. The product does not require members or agents to check
-out, commit, merge, or publish normal company work. Immutable objects,
-compare-and-swap heads, revisions, and snapshots MAY implement the operation
-log and recovery layer internally. Code repositories and coding workers are the
+out, commit, merge, or publish normal company work. Immutable objects, path
+versions, commits and a journal implement the operation log and recovery
+layer internally. The company folder core has no single head per company
+(`deploy/first-node/RUNTIME-COMPANY-FOLDER-CORE.md`); companies created before
+it keep today's head until the reset. Code repositories and coding workers are the
 explicit branch-and-PR exception. General Company File merge and commit UX is a
 backlog feature, not a launch dependency.
 
@@ -409,7 +411,8 @@ The database holds only what is not company state:
 - runtime state: runs, queues, wakes, leases, locks, presence, receipts, read
   sets, schedule positions and message delivery;
 - conversations and their settings, such as a thread's model;
-- the folder's versions, heads, authority and path grants; and
+- the folder's path versions, commits and journal, authority and path grants;
+  and
 - indexes of the folder.
 
 An index is rebuilt from the files. It never decides anything the files do not
@@ -1514,7 +1517,7 @@ One fact per line: `- (YYYY-MM-DD) <fact>`; a note is
 `- (YYYY-MM-DD) [note] <fact>`. Facts are single self-contained sentences.
 Notebook files are ordinary versioned Company File objects: every write and
 forget goes through the mutation gateway with the exact expected version
-(5.2), history stays in the revision ledger, and no separate memory store or
+(5.2), history stays in the path versions, and no separate memory store or
 ledger exists.
 
 Tools: `update_memory` with `action` `write` (`fact`, optional `tier`) or
@@ -1524,7 +1527,7 @@ already recorded anywhere in the notebook, in any tier or month, is a
 duplicate and says where; `forget` removes every current copy (compared as
 writes compare, case and spacing aside) and says how many. A correction is
 forget then write. "Forget" governs the current notebook and future
-composition; immutable revision history is kept (5.2). Recall and forget read
+composition; immutable path versions are kept (5.2). Recall and forget read
 the profile and every monthly log file, with no search horizon, and report how
 many months they read and the oldest. Recall ranks by shared distinctive words
 and falls back to a case-insensitive substring match; results carry each
@@ -2800,7 +2803,8 @@ section 12.2 and the 2026-09-16 storage rule. Design:
      published as one change set when the command ends or the file is saved.
    - The set is made of units: a file change, a move, or a new folder with
      its contents. Each unit is an atomic path set (5.1) that applies whole
-     or not at all. All clean units land in one revision.
+     or not at all. All clean units land in one commit with one sequence
+     number (2026-09-28: there is no head).
    - Nothing bypasses the mutation gateway, and silent last-writer-wins stays
      forbidden.
    - The result reports each changed path: saved, waiting for approval,
@@ -2969,14 +2973,17 @@ carry a folder of many terabytes that many agents write at once.
 
 - Before whole-company reads ship, reads MUST stop taking a company-wide lock.
 - Before any machine writes through the folder, the Company File MUST:
-  - move to a version per file, with per-folder trees instead of one manifest;
+  - move to a version per file instead of one manifest and one head. Any
+    per-folder summary is built after the commit and is never a precondition,
+    so no value covering the whole company returns;
   - take change sets: many files, moves and deletes in one unit;
   - stop re-staging the whole tree on every write; and
   - have the structured-file saves, index updates and seeded-folder refusals
     of 5.6 in place.
 
 The build order in `deploy/first-node/RUNTIME-COMPANY-FOLDER.md` is reordered
-to match.
+to match. The core is designed in
+`deploy/first-node/RUNTIME-COMPANY-FOLDER-CORE.md`.
 
 **A clean reset, not a migration.** Founder decision, 28 September 2026:
 every company that exists today is a test company, so its data is not moved
@@ -2993,7 +3000,13 @@ and vault credentials (revoked at the provider). This decision plus that
 confirmation is the authorization to erase existing company data that section
 24.3 does not itself grant. One owner runs the reset, as 24.3 requires for a
 shared live change, and acceptance evidence (24.4) is kept.
-The storage core is rebuilt without carrying today's tables or paths forward.
+The storage core is rebuilt without carrying today's Company File tables or
+paths forward, apart from the path resources and grants, which gain
+revisions: the new core has its own tables, and until the reset today's companies keep
+using the old ones. This is a temporary code-level dual mode behind a
+per-company flag, not a data migration. Before the reset, one proof company
+runs on the new core in production. After the reset, the old code and tables
+are removed (`deploy/first-node/RUNTIME-COMPANY-FOLDER-CORE.md`, §1 and §11).
 
 The table below records where each piece of today's state belongs in the new
 layout. It guides the new code; it is not a data migration.
