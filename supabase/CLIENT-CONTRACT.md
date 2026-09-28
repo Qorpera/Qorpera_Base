@@ -207,6 +207,25 @@ profile RPCs; RLS is the second read boundary.
   number of sections (at most 40 until bundle v95). The Co-Founder is never
   placed, pinned or hidden. Agents change the same shared sections through the
   runtime tool `organize_sidebar` (`qorpera_manage_agent_sidebar`, runner only).
+- Group chats (migration `20260928030000`, no bundle): a group chat (an active
+  room that is not an agent's thread, with an open conversation) is placed,
+  pinned and hidden like an agent, named by `roomId` where an agent is named by
+  `staffAgentId`. The read adds `roomPlacements` (`roomId`, `sectionId` or
+  null, `position`); agents and group chats share one order per section, and
+  `pinned` (at most 24 in all) and `hidden` list both kinds of id. Requests:
+  `move_room {roomId, sectionId|null, order?, unpin?}` (owner/admin/
+  contributor), `create_section` with `roomId`, and `set_hidden {roomId,
+  hidden}`. A client that places group chats sends `groupChats: true` on
+  `set_pins` and `move_agent`: its pin row and orders name group chats too.
+  Without it the request is taken as one from an older page: its pin row keeps
+  the member's pinned group chats (after the agents it names), and each of a
+  section's group chats stays after the agent it followed (first if it led; last
+  if the order leaves that agent out). A client sees `roomPlacements`
+  only where the cloud has this migration. The agent tool still lists and moves
+  agents only.
+- The same migration: `qorpera_get_session_model` reports `model_id` null for a
+  group chat's conversation while no model was chosen (each agent runs its
+  own), and a group chat's post takes images like an agent thread's.
 
 ### Auto-review rules and approvals (4) — bundle v130
 

@@ -37,12 +37,15 @@ function fastCaption(modelId: string | undefined): string {
 }
 
 /** Conversation-scoped model, effort and speed; the server pins them when
- * admitting the member's next run in this conversation. */
+ * admitting the member's next run in this conversation. In a group chat the one
+ * choice is every agent's there: each agent's reply to a post runs in the group's
+ * conversation. */
 export class ComposerModels {
 	readonly button: HTMLButtonElement;
 	readonly el: HTMLElement;
 	readonly #label = h("small");
 	readonly #status = h("p", { class: "composer-model-status", role: "status" });
+	readonly #scope = h("p", { class: "composer-model-scope" });
 	readonly #refresh: HTMLButtonElement;
 	readonly #choices: HTMLButtonElement[];
 	readonly #efforts: HTMLButtonElement[];
@@ -154,7 +157,7 @@ export class ComposerModels {
 			...this.#choices,
 			this.#effortGroup,
 			this.#speedGroup,
-			h("p", { class: "composer-model-scope" }, t("Only this conversation. Applies from your next message.")),
+			this.#scope,
 			this.#status,
 			this.#refresh,
 		);
@@ -164,9 +167,13 @@ export class ComposerModels {
 		return this.#pending !== undefined;
 	}
 
-	update(available: boolean, locked: boolean): void {
+	update(available: boolean, locked: boolean, group = false): void {
 		if (this.#signal.aborted) return;
 		this.#locked = locked;
+		const scope = group
+			? t("Every agent in this group chat. Applies from your next message.")
+			: t("Only this conversation. Applies from your next message.");
+		if (this.#scope.textContent !== scope) this.#scope.textContent = scope;
 		this.button.hidden = !available || !this.#client;
 		const state = this.#company.store.get();
 		if (
@@ -273,7 +280,12 @@ export class ComposerModels {
 	#render(): void {
 		const focused = this.el.contains(document.activeElement) ? document.activeElement : null;
 		const id = this.#observed?.modelId;
-		const name = SESSION_MODELS.find((item) => item.id === id)?.name ?? id;
+		// A group chat with no model chosen runs each agent on its own model; nothing is ticked.
+		const name = id
+			? (SESSION_MODELS.find((item) => item.id === id)?.name ?? id)
+			: this.#observed
+				? t("Each agent's own")
+				: undefined;
 		const effortId = this.#observed?.reasoningEffort;
 		const effort = effortId && effortName(effortId);
 		const tier = this.#observed?.serviceTier;
