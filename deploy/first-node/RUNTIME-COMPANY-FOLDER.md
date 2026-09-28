@@ -309,8 +309,11 @@ rechecks. So the folder service records reads per run in two forms:
   authority version seen. This is what is rechecked before each model
   request, send and mutation. Child wakes inherit these rows together with
   the parent's path lists.
-- **As a compressed path list per command**, stored as an object on the run
-  for audit. The list separates names (listed) from content (read).
+- **As a compressed path list per command**, for audit and re-resolution. The
+  list separates names (listed) from content (read). Since 2026-09-28 it is
+  stored as one SQL row per command and covering resource (the core's read
+  records, [RUNTIME-COMPANY-FOLDER-CORE.md](RUNTIME-COMPANY-FOLDER-CORE.md)
+  §2), so SQL can re-resolve it and a whole-company search stays a few rows.
 
 The recheck reruns the recorded paths under a resource when any of these
 happens:
@@ -672,12 +675,12 @@ The storage core behind this section is designed in
    8 MiB export detour. The executable flag and media type are kept.
 4. **Feed.** An authorized, cursor-based feed of file changes and authority
    changes per mount, woken by the company clock's Realtime hint
-   ([the core](RUNTIME-COMPANY-FOLDER-CORE.md) §5).
+   ([the core](RUNTIME-COMPANY-FOLDER-CORE.md) §6).
 5. **Read sets by covering resource** (section 3), with the recheck and wake
    inheritance moved to that form.
 6. **Cost per change.** A change stops re-staging and re-verifying the whole
    tree: each path has its own version, so a commit's cost follows only its
-   own units ([the core](RUNTIME-COMPANY-FOLDER-CORE.md) §2). The 8 MiB
+   own units ([the core](RUNTIME-COMPANY-FOLDER-CORE.md) §3). The 8 MiB
    manifest cap and the 50,000-entry cap go with the manifest; the contract
    already calls such caps defects.
 7. **Deletes and restore.**
@@ -732,7 +735,7 @@ core's version per file (formerly "per-folder trees") moves from step 8 into
 step 4, and is designed in
 [RUNTIME-COMPANY-FOLDER-CORE.md](RUNTIME-COMPANY-FOLDER-CORE.md). Its rollout
 behind a per-company flag, the proof company and the reset are in that
-document's §10. One head per company would make writes
+document's §1 and §11. One head per company would make writes
 through the mount conflict constantly, so the storage core changes before any
 machine writes through the folder. Removing the company-wide lock for reads
 moves into step 1, because steps 1–3 ship whole-company reads. The
