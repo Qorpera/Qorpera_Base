@@ -111,6 +111,74 @@ mount fencing, boot configuration or activation checks. Repeated calls and
 lost replies retain the exact selected allocation. A missing selected journal
 fails closed; it cannot manufacture a replacement or switch hosts.
 
+## A company's next computer
+
+A company can run several Company Computers (migrations `20260928100000` and
+`20260928100100`; `deploy/first-node/RUNTIME-COMPANY-COMPUTER-SCALE-OUT.md`).
+When every running computer of a company is full, the database adds the next
+one; it waits until a host offers it. `qorpera_runtime_office_setup_queue()`
+(service role) lists every computer that needs a host, why it waits (`setup`,
+`room`, or `unstarted` for a spare nobody started yet) and the company's
+computer to copy (`template`).
+
+The next computer copies the company's computer already on that host: the same
+image and provenance, company account (workbench uid/gid), project, network,
+pool, size, registry endpoint and provider credential. Only these are new:
+provider id, computer identity, NAS working folder and its mount, journal
+directory, host ports, mux routes and the fleet units. Two computers never
+share a working folder: the single-writer rule of the workbench holds.
+
+1. Write a request (read-only paths of the template's documents, the new
+   computer from the queue, a new provider UUID, the host choices):
+
+   ```json
+   {
+     "template": {
+       "policyPath": "/etc/qorpera/offices/<first>/policy.json",
+       "servicePath": "/etc/qorpera/offices/<first>/service.json",
+       "passthroughPath": "/etc/qorpera/offices/<first>/passthrough.json"
+     },
+     "office": {
+       "providerId": "<new uuid>",
+       "companyComputerId": "<from the queue>",
+       "logicalComputerId": "<from the queue>",
+       "computerGeneration": 1
+     },
+     "host": {
+       "nodeId": "<enrolled node uuid>",
+       "configRoot": "/etc/qorpera/offices/<companyComputerId>",
+       "workbench": { "mountPoint": "/srv/qorpera-workbench/<companyComputerId>", "source": "<nas>:/volume1/qorpera-runtime-workbench/<companyComputerId>" },
+       "journalPath": "<template journal mount>/<companyComputerId>",
+       "ports": { "viewer": 18545, "native": 18546 }
+     }
+   }
+   ```
+
+2. Run `node qorpera-office-next-computer.cjs /absolute/request.json` from the
+   fleet package. It reads the three documents and prints a plan: the new
+   `policy.json`, `service.json`, `passthrough.json` and `fleet.json` (exact
+   bytes and digests), the provider enrollment, and the remaining root steps.
+   It writes nothing, mints no credential and refuses to reuse the template's
+   provider, computer, working folder, mount, journal or ports.
+3. Follow the plan's steps as root: NAS folder and mount, journal directory and
+   `adoption.lock`, publish the files, copy the provenance, enroll the
+   provider, install the fleet units, add the mux routes, then start the stage
+   and fleet units once the computer's start intent exists.
+4. The new working folder is empty, so the adoption review carries nothing
+   over: its adoption input has shared workbench, desktop and company `null`
+   (layout 2), `legacy` null and no quarantine.
+
+A computer that nobody has started yet can be set up the same way in advance
+(a spare). Its fleet units wait for a start intent; it holds no node capacity
+until placement reserves it.
+
+Native routes: a company route
+(`https://<front>/office/{companyComputerId}/native`) lets a run reach
+whichever computer holds its screen; every computer of that company must then
+accept the route's transport token. The browser sign-in store is kept in step
+only between computers that see the same company directory; until that
+directory is shared between them, each computer keeps its own sign-ins.
+
 ## Acceptance and rollback
 
 For a physical acceptance test, register a new office in a new environment
