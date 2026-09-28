@@ -198,6 +198,19 @@ describe("native subscription product control", () => {
 		});
 	});
 
+	it("refuses to ask another member to pay for a turn before any cloud call", async () => {
+		const { calls, client } = transport();
+		await expect(
+			client.requestSessionTurn({
+				sessionId,
+				body: { schema: "qorpera.session-prompt/v1", text: "Please pay for my turn.", images: [] },
+				sponsorMode: "sponsorship_request",
+				requestedSponsorUserId: "00000000-0000-4000-8000-0000000000aa",
+			}),
+		).rejects.toThrow("A turn is paid by the member who sends it or by a company account");
+		expect(calls).toEqual([]);
+	});
+
 	it("creates explicit company sponsorship without relabeling it as a member connection", async () => {
 		const { calls, client } = transport();
 		await expect(
