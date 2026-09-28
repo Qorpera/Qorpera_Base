@@ -90,9 +90,11 @@ describe("calling a skill from the composer", () => {
 		);
 		const sendMessage = vi.fn().mockResolvedValue(true);
 		const f = setup({ skills, sendMessage });
+		// The field names the list as its popup only while it is open (the "@" names do the same).
+		expect(f.field.hasAttribute("aria-controls")).toBe(false);
+		f.type("Please /");
 		expect(f.field.getAttribute("aria-autocomplete")).toBe("list");
 		expect(f.field.getAttribute("aria-controls")).toBe(f.list.id);
-		f.type("Please /");
 		// The list is read once, for this agent's thread: its own skills and the company's.
 		// The adapter is called a step later, as a failed read if it throws.
 		await Promise.resolve();
@@ -436,6 +438,80 @@ describe("calling a skill from the composer", () => {
 		// Marking again changes nothing.
 		markSkillNames(root, new Set(["triage", "weekly-report"]));
 		expect(root.querySelectorAll(".message-skill")).toHaveLength(2);
+	});
+
+	it("shares the field with the @ names: one list at a time, and each keeps the field's popup its own", async () => {
+		const f = fixture();
+		const roomId = id(79);
+		const astrid = { ...staff, id: id(40), displayName: "Astrid" };
+		const company = new CompanyController(f.api, profileA, userA.id);
+		company.store.set({
+			team: {
+				...team,
+				members: [
+					{
+						userId: userA.id,
+						email: "a@example.invalid",
+						displayName: "Jonas",
+						role: "owner",
+						joinedAt: timestamp,
+					},
+				],
+			},
+			staff: [staff, astrid],
+			sessions: [{ ...session, title: "Launch", executionScope: { roomId } }],
+			groups: {
+				[roomId]: {
+					roomId,
+					sessionId: session.sessionId,
+					environmentId: profileA.environmentId,
+					version: 1,
+					name: "Launch",
+					purpose: "Plan the launch",
+					status: "active",
+					members: [
+						{ kind: "member", id: userA.id },
+						{ kind: "staff_agent", id: astrid.id },
+					],
+				},
+			},
+			loading: false,
+		});
+		vi.mocked(f.api.listMemberMentions).mockReset().mockResolvedValue([]);
+		await company.refreshMentions();
+		const view = new ConversationView(company, session.sessionId, { skills: vi.fn(async () => SKILLS) });
+		document.body.append(view.el);
+		dispose = () => {
+			view.dispose();
+			company.stop();
+		};
+		const field = view.el.querySelector<HTMLTextAreaElement>("textarea.composer-input")!;
+		const names = view.el.querySelector<HTMLElement>(".mention-picker")!;
+		const skills = view.el.querySelector<HTMLElement>(".skill-menu")!;
+		const type = (text: string) => {
+			field.focus();
+			field.value = text;
+			field.setSelectionRange(text.length, text.length);
+			field.dispatchEvent(new Event("input", { bubbles: true }));
+		};
+		type("@As");
+		await settle();
+		expect(names.hidden).toBe(false);
+		expect(skills.hidden).toBe(true);
+		// Typing on in the name leaves the names' popup attributes alone.
+		type("@Ast");
+		expect(field.getAttribute("aria-controls")).toBe(names.id);
+		expect(field.getAttribute("aria-activedescendant")).toBe(`${names.id}-0`);
+		type("@Astrid /cust");
+		await settle();
+		expect(skills.hidden).toBe(false);
+		expect(names.hidden).toBe(true);
+		expect(field.getAttribute("aria-controls")).toBe(view.el.querySelector(".skill-list")?.id);
+		type("@Ast");
+		await settle();
+		expect(skills.hidden).toBe(true);
+		expect(names.hidden).toBe(false);
+		expect(field.getAttribute("aria-controls")).toBe(names.id);
 	});
 
 	it("leaves the composer as it was without a skills adapter", () => {

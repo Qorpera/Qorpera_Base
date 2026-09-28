@@ -1,3 +1,4 @@
+import { cloudAgentFolder } from "@qorpera/cloud-client/cloud-agent-folder";
 import {
 	CloudMemberCompanyAccessDenied,
 	type CloudMemberCompanyFileClient,
@@ -5,7 +6,7 @@ import {
 import { isCloudSkillName, parseCloudSkillFile } from "@qorpera/cloud-client/cloud-skill-file";
 
 /** A skill the composer can offer after "/" (contract 15.2): the company library
- * (skills/<name>/SKILL.md) and the agent's own (agents/<agentId>/skills/<name>/SKILL.md),
+ * (skills/<name>/SKILL.md) and the agent's own (<agent folder>/skills/<name>/SKILL.md),
  * read through the member's own Company File access, as agents read them. */
 export interface SkillSuggestion {
 	readonly name: string;
@@ -71,7 +72,10 @@ export async function loadSkillSuggestions(
 	signal: AbortSignal,
 ): Promise<SkillSuggestion[]> {
 	const libraries = [
-		...(agentId && UUID.test(agentId) ? [{ root: `agents/${agentId}/skills`, scope: "agent" as const }] : []),
+		// The agent's folder comes from the one resolver the runtime uses too (contract 5.6).
+		...(agentId && UUID.test(agentId)
+			? [{ root: `${cloudAgentFolder({ id: agentId })}/skills`, scope: "agent" as const }]
+			: []),
 		{ root: COMPANY_LIBRARY, scope: "company" as const },
 	];
 	const listed = await Promise.all(

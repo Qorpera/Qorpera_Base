@@ -138,8 +138,6 @@ export class SkillMentions {
 		this.#note = h("p", { class: "skill-menu-note", hidden: true });
 		this.menu = h("div", { class: "skill-menu", hidden: true }, this.#list, this.#note);
 		if (!load) return;
-		input.setAttribute("aria-autocomplete", "list");
-		input.setAttribute("aria-controls", id);
 		input.addEventListener(
 			"input",
 			() => {
@@ -240,8 +238,12 @@ export class SkillMentions {
 		this.#trigger = undefined;
 		this.#options = [];
 		this.#drawn = undefined;
-		if (!this.menu.hidden) this.menu.hidden = true;
-		this.#input.removeAttribute("aria-activedescendant");
+		if (this.menu.hidden) return;
+		this.menu.hidden = true;
+		// The field's popup attributes are this menu's only while it is open; another popup (the
+		// "@" names) sets its own, so they are cleared only when this menu was the one showing.
+		for (const name of ["aria-activedescendant", "aria-controls", "aria-autocomplete"])
+			this.#input.removeAttribute(name);
 	}
 
 	#fetch(): Promise<void> {
@@ -439,6 +441,8 @@ export class SkillMentions {
 	#open(): void {
 		const wasHidden = this.menu.hidden;
 		this.menu.hidden = false;
+		this.#input.setAttribute("aria-autocomplete", "list");
+		this.#input.setAttribute("aria-controls", this.#list.id);
 		const active = this.#active >= 0 ? this.#list.children[this.#active] : undefined;
 		if (active) this.#input.setAttribute("aria-activedescendant", active.id);
 		else this.#input.removeAttribute("aria-activedescendant");
