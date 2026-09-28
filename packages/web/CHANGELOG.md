@@ -56,6 +56,7 @@
 - Make primary buttons inside Settings readable; they rendered white text on the light grey settings button.
 - Keep dead-key and IME typing intact in the Settings Friends search: ´ then e gave "´é", and Pinyin and Android keyboard input came out garbled. The field now stays in place while the list below it filters, and the list is redrawn only when what it shows changes.
 - Draw Markdown task-list items in messages with one checkbox; they also printed their `[x]` or `[ ]` marker as text.
+- A failed run whose computer stopped answering no longer says "The run took too long and was stopped." Runs have had no time limit since 2026-09-24, so a lapsed lease means the computer running the agent crashed or lost its connection. The line above the composer now says "The computer running this run stopped answering. The problem is on Qorpera's side." and still offers Try again. A run where one request got no answer in time (the model, the secret broker or another cloud call) now says "One of the run's steps got no answer in time. The problem is on Qorpera's side." instead of "took too long", also with Try again. A run that no computer could start within a day now says no computer could be started, instead of "an internal error", and offers Try again where it offered only Dismiss before. Older runs that really hit a time limit keep the old sentence.
 
 ### Added
 
