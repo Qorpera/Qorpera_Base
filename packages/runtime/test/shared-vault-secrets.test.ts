@@ -1,0 +1,269 @@
+import { spawn, spawnSync } from "node:child_process";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { connect } from "node:net";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { sharedBrokerCapability } from "@qorpera/runtime/cloud-secret-broker";
+import { CloudSecretKeyring } from "@qorpera/runtime/cloud-secret-crypto";
+import { afterEach, expect, it } from "vitest";
+
+const tool = resolve(import.meta.dirname, "../../../deploy/cloud-secret-broker/shared-vault-secrets.py");
+const roots: string[] = [];
+afterEach(async () => {
+	for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
+});
+
+async function root(): Promise<string> {
+	// The tool takes only a resolved path (macOS keeps its temporary folder behind a link).
+	const directory = await realpath(await mkdtemp(join(tmpdir(), "shared-vault-")));
+	roots.push(directory);
+	return join(directory, "vault");
+}
+
+function run(args: string[]): { status: number | null; stdout: string; stderr: string } {
+	const done = spawnSync("python3", [tool, ...args], { encoding: "utf8" });
+	return { status: done.status, stdout: done.stdout, stderr: done.stderr };
+}
+
+it("makes both secrets as owner-only files once, and prints only hashes the broker derives the same way", async () => {
+	const vault = await root();
+	const made = run(["--root", vault, "generate", "--key-id", "vault-root-1"]);
+	expect(made.status).toBe(0);
+	const printed = JSON.parse(made.stdout) as {
+		keyId: string;
+		principalCapabilitySha256: string;
+		fingerprints: { principalSecret: string; masterKey: string };
+		fingerprintsSha256: string;
+	};
+	const secret = (await readFile(join(vault, "principal-secret"), "utf8")).trim();
+	const masterKeys = await readFile(join(vault, "master-keys.json"), "utf8");
+	// Nothing printed is a secret.
+	expect(made.stdout).not.toContain(secret);
+	expect(made.stdout).not.toContain(JSON.parse(masterKeys).keys[0].keyBase64url);
+	expect(printed.keyId).toBe("vault-root-1");
+	expect(printed.principalCapabilitySha256).toBe(
+		createHash("sha256").update(sharedBrokerCapability(secret)).digest("hex"),
+	);
+	expect((await stat(join(vault, "principal-secret"))).mode & 0o777).toBe(0o400);
+	expect((await stat(join(vault, "master-keys.json"))).mode & 0o777).toBe(0o400);
+	expect((await stat(vault)).mode & 0o777).toBe(0o700);
+	// The master key is one the broker's keyring takes.
+	const entry = JSON.parse(masterKeys).keys[0] as { keyId: string; keyBase64url: string };
+	const keyring = new CloudSecretKeyring({}, { [entry.keyId]: Buffer.from(entry.keyBase64url, "base64url") });
+	const identity = {
+		companyId: randomUUID(),
+		environmentId: randomUUID(),
+		secretId: randomUUID(),
+		version: 1,
+		keyId: entry.keyId,
+	};
+	await expect(
+		keyring.use(keyring.seal({ field: "value" }, identity), identity, async (fields) => fields.field),
+	).resolves.toBe("value");
+	keyring.close();
+	// Never over existing secrets.
+	const again = run(["--root", vault, "generate", "--key-id", "vault-root-1"]);
+	expect(again.status).not.toBe(0);
+	expect((await readFile(join(vault, "principal-secret"), "utf8")).trim()).toBe(secret);
+	expect(JSON.parse(run(["--root", vault, "fingerprint"]).stdout)).toEqual(printed);
+});
+
+it("hands the standby its files once, on a ticket that never leaves it, checked before anything is written", async () => {
+	const nodeOne = await root();
+	const nodeTwo = await root();
+	run(["--root", nodeOne, "generate", "--key-id", "vault-root-1"]);
+	// On node 1 the operator copies the company brokers' database login, runtime token, connector clients and
+	// coding executor token in, on the host.
+	const passedOn = {
+		"database-url": "postgresql://qorpera_secret_broker:PRIVATE@db.example.test:5432/postgres?sslmode=verify-full\n",
+		runtime: `${randomBytes(32).toString("base64url")}\n`,
+		"connectors.json": '{"schema":"qorpera.cloud-connector-service/v1","github":{"clientSecret":"PRIVATE"}}\n',
+		"coding-executor": `${randomBytes(32).toString("base64url")}\n`,
+	};
+	for (const [name, content] of Object.entries(passedOn))
+		await writeFile(join(nodeOne, name), content, { mode: 0o400 });
+	const made = JSON.parse(run(["--root", nodeOne, "fingerprint"]).stdout);
+	expect(Object.keys(made.fingerprints).sort()).toEqual([
+		"coding-executor",
+		"connectors.json",
+		"database-url",
+		"masterKey",
+		"principalSecret",
+		"runtime",
+	]);
+	// Node 2 makes the ticket; only its hash reaches node 1.
+	const ticket = run(["--root", nodeTwo, "ticket"]);
+	expect(ticket.status).toBe(0);
+	const { ticketSha256 } = JSON.parse(ticket.stdout) as { ticketSha256: string };
+	const held = (await readFile(join(nodeTwo, "fetch-ticket"), "utf8")).trim();
+	expect(ticket.stdout).not.toContain(held);
+	expect(createHash("sha256").update(held).digest("hex")).toBe(ticketSha256);
+	const serveOnce = (ticketDigest: string) => {
+		const port = 40_000 + Math.floor(Math.random() * 20_000);
+		const serving = spawn(
+			"python3",
+			[
+				tool,
+				"--root",
+				nodeOne,
+				"serve",
+				"--bind",
+				"127.0.0.1",
+				"--peer",
+				"127.0.0.1",
+				"--port",
+				String(port),
+				"--ticket-sha256",
+				ticketDigest,
+				"--ttl",
+				"20",
+			],
+			{ stdio: ["ignore", "pipe", "pipe"] },
+		);
+		let printed = "";
+		serving.stdout.on("data", (chunk: Buffer) => {
+			printed += chunk.toString();
+		});
+		const exited = new Promise<number | null>((resolveExit) => serving.once("exit", resolveExit));
+		return { port, exited, printed: () => printed };
+	};
+	// A wrong digest from node 1 (the expected one does not match what arrives): nothing is written, and the
+	// ticket is used up.
+	const first = serveOnce(ticketSha256);
+	await new Promise((resolveWait) => setTimeout(resolveWait, 700));
+	const refused = run([
+		"--root",
+		nodeTwo,
+		"fetch",
+		"--source",
+		"127.0.0.1",
+		"--port",
+		String(first.port),
+		"--expect",
+		"0".repeat(64),
+	]);
+	expect(refused.status).not.toBe(0);
+	expect(JSON.parse(refused.stdout)).toEqual({ passed: false, match: "mismatch" });
+	expect(await first.exited).toBe(0);
+	await expect(stat(join(nodeTwo, "principal-secret"))).rejects.toThrow();
+	await expect(stat(join(nodeTwo, "fetch-ticket"))).rejects.toThrow();
+	// A file already there: refused before asking, nothing written, and the ticket used up all the same.
+	run(["--root", nodeTwo, "ticket"]);
+	await writeFile(join(nodeTwo, "runtime"), "left over\n", { mode: 0o400 });
+	expect(
+		run(["--root", nodeTwo, "fetch", "--source", "127.0.0.1", "--port", "1", "--expect", made.fingerprintsSha256])
+			.status,
+	).not.toBe(0);
+	await expect(stat(join(nodeTwo, "fetch-ticket"))).rejects.toThrow();
+	await expect(stat(join(nodeTwo, "principal-secret"))).rejects.toThrow();
+	await rm(join(nodeTwo, "runtime"));
+	// An unused ticket is replaced by a new one.
+	const unused = JSON.parse(run(["--root", nodeTwo, "ticket"]).stdout) as { ticketSha256: string };
+	// A fresh ticket, and node 1's own digest: the files arrive, owner-only, and match, although a silent
+	// connection came first (it is closed after 5 s, well inside the fetch's own 15 s).
+	const again = JSON.parse(run(["--root", nodeTwo, "ticket"]).stdout) as { ticketSha256: string };
+	expect(again.ticketSha256).not.toBe(unused.ticketSha256);
+	const second = serveOnce(again.ticketSha256);
+	await new Promise((resolveWait) => setTimeout(resolveWait, 700));
+	const silent = connect({ host: "127.0.0.1", port: second.port });
+	await new Promise((resolveConnect) => silent.once("connect", resolveConnect));
+	const fetched = run([
+		"--root",
+		nodeTwo,
+		"fetch",
+		"--source",
+		"127.0.0.1",
+		"--port",
+		String(second.port),
+		"--expect",
+		made.fingerprintsSha256,
+	]);
+	silent.destroy();
+	expect(fetched.status).toBe(0);
+	expect(JSON.parse(fetched.stdout)).toEqual({ ...made, match: "match" });
+	expect(await second.exited).toBe(0);
+	expect(JSON.parse(second.printed())).toMatchObject({
+		passed: true,
+		served: true,
+		fingerprintsSha256: made.fingerprintsSha256,
+	});
+	for (const printed of [second.printed(), fetched.stdout, JSON.stringify(made)]) {
+		expect(printed).not.toContain("PRIVATE");
+		expect(printed).not.toContain((await readFile(join(nodeOne, "principal-secret"), "utf8")).trim());
+	}
+	for (const name of Object.keys(passedOn)) {
+		expect(await readFile(join(nodeTwo, name), "utf8")).toBe(passedOn[name as keyof typeof passedOn]);
+		expect((await stat(join(nodeTwo, name))).mode & 0o777).toBe(0o400);
+	}
+	expect((await stat(join(nodeTwo, "principal-secret"))).mode & 0o777).toBe(0o400);
+	// A ticket works once: node 2 holds none now, and a second fetch refuses before asking.
+	expect(
+		run(["--root", nodeTwo, "fetch", "--source", "127.0.0.1", "--port", "1", "--expect", made.fingerprintsSha256])
+			.status,
+	).not.toBe(0);
+	// Another address gets nothing: node 1 closes it before reading, and stops at its deadline.
+	const nodeThree = await root();
+	const other = JSON.parse(run(["--root", nodeThree, "ticket"]).stdout) as { ticketSha256: string };
+	const port = 40_000 + Math.floor(Math.random() * 20_000);
+	const elsewhere = spawn(
+		"python3",
+		[
+			tool,
+			"--root",
+			nodeOne,
+			"serve",
+			"--bind",
+			"127.0.0.1",
+			"--peer",
+			"127.0.0.2",
+			"--port",
+			String(port),
+			"--ticket-sha256",
+			other.ticketSha256,
+			"--ttl",
+			"3",
+		],
+		{ stdio: ["ignore", "pipe", "pipe"] },
+	);
+	const stopped = new Promise<number | null>((resolveExit) => elsewhere.once("exit", resolveExit));
+	await new Promise((resolveWait) => setTimeout(resolveWait, 700));
+	const refusedElsewhere = run([
+		"--root",
+		nodeThree,
+		"fetch",
+		"--source",
+		"127.0.0.1",
+		"--port",
+		String(port),
+		"--expect",
+		made.fingerprintsSha256,
+	]);
+	expect(refusedElsewhere.status).not.toBe(0);
+	await expect(stat(join(nodeThree, "principal-secret"))).rejects.toThrow();
+	expect(await stopped).not.toBe(0);
+}, 30_000);
+
+it("gives the shared vault its own login helper token, written on the host and never printed", async () => {
+	const vault = await root();
+	const helperRoot = join(vault, "..", "helper");
+	// Without the helper installed, nothing is written.
+	expect(run(["--root", vault, "helper-token", "--helper-root", helperRoot]).status).not.toBe(0);
+	await expect(stat(join(vault, "login-helper.json"))).rejects.toThrow();
+	await mkdir(helperRoot, { mode: 0o700 });
+	const made = run(["--root", vault, "helper-token", "--helper-root", helperRoot]);
+	expect(made.status).toBe(0);
+	const token = (await readFile(join(helperRoot, "vault-token"), "utf8")).trim();
+	expect(token).toMatch(/^[A-Za-z0-9_-]{43}$/);
+	expect(made.stdout).not.toContain(token);
+	expect(JSON.parse(await readFile(join(vault, "login-helper.json"), "utf8"))).toEqual({
+		schema: "qorpera.model-login-helper-client/v1",
+		socketPath: "/run/qorpera-model-login-helper/helper.sock",
+		token,
+	});
+	expect((await stat(join(helperRoot, "vault-token"))).mode & 0o777).toBe(0o400);
+	expect((await stat(join(vault, "login-helper.json"))).mode & 0o777).toBe(0o400);
+	// Never over an existing one.
+	expect(run(["--root", vault, "helper-token", "--helper-root", helperRoot]).status).not.toBe(0);
+	expect((await readFile(join(helperRoot, "vault-token"), "utf8")).trim()).toBe(token);
+});
