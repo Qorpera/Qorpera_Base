@@ -178,6 +178,18 @@ describe("the approval card", () => {
 		expect(el.querySelector(".review-why p")?.textContent).toBe(
 			"It deletes “Old offer”, which the request did not name.",
 		);
+		const quoted = renderActionReviewCard(
+			{
+				...card,
+				target: "work/old-offer.md",
+				tool: "company_delete",
+				summary: 'It deletes "/work/old-offer.md" without being asked.',
+			},
+			timestamp,
+			undefined,
+			{ answer: vi.fn(), memberName: names },
+		);
+		expect(quoted.querySelector(".review-why p")?.textContent).toBe("It deletes “Old offer” without being asked.");
 	});
 
 	it("reads a file name the way people say it", () => {

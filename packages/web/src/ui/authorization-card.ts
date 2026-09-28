@@ -153,8 +153,9 @@ export function readableFileName(path: string): string {
 	const words = base
 		// Only an extension that starts with a letter: "Møde 10.30" and "2026.09" keep their dots.
 		.replace(/\.(?=[a-z])[a-z0-9]{1,8}$/i, "")
-		// A dash next to a letter joins words; a date such as 2026-09-28 keeps its own.
-		.replace(/(?<=\p{L})[-_]+|[-_]+(?=\p{L})/gu, " ")
+		// A dash next to a letter joins words; a date such as 2026-09-28 keeps its own. (No
+		// lookbehind: Safari before 16.4 cannot parse one, and the whole app would not load.)
+		.replace(/(\p{L})[-_]+|[-_]+(?=\p{L})/gu, (_, letter?: string) => (letter ? `${letter} ` : " "))
 		.replace(/_+/g, " ")
 		.trim();
 	if (!words) return base;
@@ -180,7 +181,9 @@ const NAME_KEYS = new Set(["subject", "title", "name"]);
  * as people say it, like the headline. */
 function reviewReason(card: ActionReviewCard): string {
 	if (!card.summary || !card.target || !card.tool?.startsWith("company_")) return card.summary;
-	return card.summary.split(card.target).join(`“${readableFileName(card.target)}”`);
+	const path = card.target.replace(/^\/+/, "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+	// The path with a leading slash or in its own quotes reads as the one quoted name.
+	return card.summary.replace(new RegExp(`["'“‘\`]?/?${path}["'”’\`]?`, "g"), `“${readableFileName(card.target)}”`);
 }
 
 /** The change itself: who or what it reaches, what it is called, and what it says.
@@ -194,7 +197,9 @@ function reviewChange(card: ActionReviewCard): HTMLElement | null {
 	const parts: (HTMLElement | null)[] = [
 		card.target && !fileTool ? h("p", { class: "review-target" }, card.target) : null,
 		...names.map(([, value]) => h("p", { class: "review-name" }, value)),
-		...content.map(([, value]) => h("blockquote", { class: "review-quote" }, value)),
+		...content.map(([key, value]) =>
+			h("blockquote", { class: key === "command" ? "review-quote is-command" : "review-quote" }, value),
+		),
 		other.length
 			? h(
 					"dl",

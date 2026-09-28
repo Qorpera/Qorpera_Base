@@ -185,6 +185,7 @@
 .action-review-card .review-target { font-weight: 600; }
 .review-name { font-weight: 600; }
 .review-quote { padding: 2px 0 2px 12px; border-left: 2px solid var(--border-strong); color: var(--text); white-space: pre-wrap; }
+.review-quote.is-command { max-height: 12em; overflow: auto; font: 11.5px/1.5 var(--font-mono); }
 .review-why { margin-top: 10px; color: var(--text-muted); font-size: 12px; line-height: 1.45; }
 .review-why p { margin: 0; }
 .review-reasons { margin: 4px 0 0; padding: 0; list-style: none; color: var(--text-muted); }
