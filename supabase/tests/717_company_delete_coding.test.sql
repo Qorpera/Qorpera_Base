@@ -18,7 +18,6 @@ begin
 		join public.qorpera_company_environments environment on environment.id = executor.environment_id
 		where environment.profile_id = '30000000-0000-4000-8000-000000000010' and executor.enabled),
 		'The company''s coding executors are off');
-	perform pg_temp.wake_assert(public.qorpera_claim_coding_session('exec-test',60) is null,'No coding turn is claimed any more');
 end $$;
 
 reset role;

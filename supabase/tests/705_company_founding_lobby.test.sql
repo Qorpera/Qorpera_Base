@@ -530,8 +530,19 @@ select pg_temp.refused($$select public.qorpera_open_company_founding('40000000-0
 -- Closing an open table deletes it with its seats.
 select public.qorpera_delete_hosted_profile(current_setting('qorpera_test.table2')::uuid);
 reset role;
--- Deleting hides the company and stops its work; the deletion finishes once no node holds anything
--- of it (20260929150000). This company has nothing on a node.
+-- Closed, the table is gone at once (20260929150000): its invitations are withdrawn, and neither its
+-- founder nor an invited friend lists, reads or joins it. The rows go once no node holds anything of it.
+do $$ begin
+	if exists(select 1 from public.qorpera_company_founder_seats
+			where profile_id = current_setting('qorpera_test.table2')::uuid and state = 'invited')
+		or public.qorpera_list_company_foundings() @> jsonb_build_array(jsonb_build_object(
+			'profileId',current_setting('qorpera_test.table2'))) then
+		raise exception 'a closed table is still listed or still has invitations'; end if;
+end $$;
+select pg_temp.refused(format($$select public.qorpera_read_company_founding(%L)$$,current_setting('qorpera_test.table2')),'42501');
+select pg_temp.as_user('40000000-0000-4000-8000-000000000101');
+select pg_temp.refused(format($$select public.qorpera_respond_company_founding(%L,true)$$,current_setting('qorpera_test.table2')),'42501');
+reset role;
 select public.qorpera_finish_company_deletion(current_setting('qorpera_test.table2')::uuid);
 do $$ begin
 	if exists(select 1 from public.qorpera_company_foundings where profile_id = current_setting('qorpera_test.table2')::uuid)

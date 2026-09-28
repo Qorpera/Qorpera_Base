@@ -14,7 +14,8 @@
 --   and run machines already drain by themselves; Company Computers and sign-in identities wait for
 --   steps D3 and D4 and stay hidden and stopped until then.
 -- The deletion record keeps only ids and times, with no link to the company, so it outlives the purge.
--- Lock order: the company row and its wake admission fence first, then jobs, workers and machines.
+-- Lock order: the company row and its wake admission fence first, then jobs (skipping any a runtime call
+-- holds: those lock the job before the fence), workers and machines.
 
 set local lock_timeout = '3s';
 
@@ -41,8 +42,7 @@ set search_path = ''
 as $$
 	select exists (select 1 from public.qorpera_company_deletions where profile_id = p_profile_id)
 $$;
-revoke all on function public.qorpera_company_deleting(uuid) from public, anon, authenticated;
-grant execute on function public.qorpera_company_deleting(uuid) to service_role;
+revoke all on function public.qorpera_company_deleting(uuid) from public, anon, authenticated, service_role;
 
 do $guard$
 declare
@@ -53,7 +53,10 @@ declare
 		'public.qorpera_set_company_execution_pause(uuid,boolean,text)', 'fc0f4af8e530b828ca3ee7f0af6b61dc4390ee4a0e1f84180584a885fc8e7a79',
 		'public.qorpera_folder_resume(uuid)', '303b2c492eead0ae888ef36d28c96960bccbcfa067d1bab307872293e1f79eca',
 		'public.qorpera_reconcile_runtime_office_idle(jsonb,bigint,uuid,text,integer)', 'd9fd6de273aad70a2db619286de64ba6c836f258e0c7e85eeaabf814594085d6',
-		'public.qorpera_delete_hosted_profile(uuid)', 'f1a982b33c53ec6d977a5333060ee446a82a6074edd7155065272f6ce64fea15');
+		'public.qorpera_delete_hosted_profile(uuid)', 'f1a982b33c53ec6d977a5333060ee446a82a6074edd7155065272f6ce64fea15',
+		'public.qorpera_company_founding_seated(uuid)', '5f8ed30298a4176e62d7a6c8f4d952d60cc216eeb58fda10acaf739774abb70d',
+		'public.qorpera_list_company_foundings()', '748dbc6de276e167b77e1f9c7e472781adea183ff5d2132b2799546367d8c2aa',
+		'public.qorpera_request_identity_recovery(uuid,uuid,uuid,bigint,text,text)', 'cde378dbe202bacf6e3b9830d801a0bbf14f72832cb80008fec453c06b00bcdd');
 	v_function text;
 begin
 	for v_function in select jsonb_object_keys(v_expected) loop
@@ -104,6 +107,37 @@ begin
 	end if;
 	execute replace(v_definition, v_old, v_old
 		|| E'\t\tand not exists (select 1 from public.qorpera_company_deletions as deletion where deletion.profile_id = profile.id)\n');
+end
+$$;
+
+-- A founding table being deleted is gone for its seats too (the lobby checks seats, not member_role),
+-- and no identity recovery starts for a company being deleted (it would put state on a node).
+do $$
+declare
+	v_definition text := pg_get_functiondef('public.qorpera_company_founding_seated(uuid)'::regprocedure);
+	v_old text := E'\tselect auth.uid() is not null and exists(';
+begin
+	if (length(v_definition) - length(replace(v_definition, v_old, ''))) / length(v_old) <> 1 then
+		raise exception 'Founding seat check differs';
+	end if;
+	execute replace(v_definition, v_old, E'\tselect auth.uid() is not null\n'
+		|| E'\t\tand not exists(select 1 from public.qorpera_company_deletions deletion where deletion.profile_id = p_profile_id)\n'
+		|| E'\t\tand exists(');
+	v_definition := pg_get_functiondef('public.qorpera_list_company_foundings()'::regprocedure);
+	v_old := E'\twhere seat.user_id = auth.uid() and public.qorpera_current_email_verified()\n';
+	if (length(v_definition) - length(replace(v_definition, v_old, ''))) / length(v_old) <> 1 then
+		raise exception 'Founding list differs';
+	end if;
+	execute replace(v_definition, v_old, v_old
+		|| E'\t\tand not exists(select 1 from public.qorpera_company_deletions deletion where deletion.profile_id = founding.profile_id)\n');
+	v_definition := pg_get_functiondef('public.qorpera_request_identity_recovery(uuid,uuid,uuid,bigint,text,text)'::regprocedure);
+	v_old := E'\t\traise exception ''recovery requires a current company owner'' using errcode = ''42501''; end if;\n';
+	if (length(v_definition) - length(replace(v_definition, v_old, ''))) / length(v_old) <> 1 then
+		raise exception 'Identity recovery request differs';
+	end if;
+	execute replace(v_definition, v_old, v_old
+		|| E'\tif public.qorpera_company_deleting(v_identity.profile_id) then\n'
+		|| E'\t\traise exception ''The company is being deleted'' using errcode = ''55000''; end if;\n');
 end
 $$;
 
@@ -184,10 +218,13 @@ begin
 	end if;
 
 	-- Running and queued work ends. A member did not stop it, so it fails with the stated reason.
+	-- Runtime calls lock a job before the company fence; a job one of them holds now is skipped (it
+	-- waits for this fence and then sees the pause) and ended by the finisher's next pass.
 	for v_job in
 		select job.id from public.qorpera_runner_jobs as job
 		where job.profile_id = p_profile_id and job.status in ('queued', 'leased')
 		order by job.id
+		for update skip locked
 	loop
 		perform public.qorpera_terminalize_runner_attempt(v_job, 'failed', 'Company deleted', false);
 		v_jobs := v_jobs + 1;
@@ -220,6 +257,7 @@ begin
 	get diagnostics v_machines = row_count;
 
 	delete from public.qorpera_profile_invitations where profile_id = p_profile_id;
+	delete from public.qorpera_company_founder_seats where profile_id = p_profile_id and state = 'invited';
 
 	-- Open clients of the company drop it now.
 	update public.qorpera_profile_access_state
@@ -256,17 +294,19 @@ $$;
 revoke all on function public.qorpera_request_company_deletion(uuid, uuid) from public, anon, authenticated, service_role;
 
 -- One pass for one company: stop what still runs, then purge if the nodes hold nothing of it.
--- Returns what it found. Never raises for the company's state; errors are recorded on the request.
+-- Returns what it found. Never raises for the company's state: each part runs in its own
+-- subtransaction and its error is recorded on the request, so a failed purge keeps what the stop did.
 create function public.qorpera_finish_company_deletion(p_profile_id uuid)
 returns jsonb
 language plpgsql
 security definer
 set search_path = ''
+set lock_timeout = '5s'
 as $$
 declare
 	v_deletion public.qorpera_company_deletions%rowtype;
 	v_holdings jsonb;
-	v_result jsonb;
+	v_error text;
 begin
 	select * into v_deletion from public.qorpera_company_deletions where profile_id = p_profile_id;
 	if not found then
@@ -275,41 +315,48 @@ begin
 	if v_deletion.purged_at is not null then
 		return jsonb_build_object('profileId', p_profile_id, 'state', 'purged', 'purgedAt', v_deletion.purged_at);
 	end if;
-	begin
-		if not exists (select 1 from public.qorpera_profiles where id = p_profile_id) then
-			v_result := jsonb_build_object('profileId', p_profile_id, 'state', 'purged');
-		else
+	if exists (select 1 from public.qorpera_profiles where id = p_profile_id) then
+		begin
 			perform public.qorpera_lock_profile_gc_fence(p_profile_id);
 			perform public.qorpera_stop_company_work(p_profile_id);
 			v_holdings := public.qorpera_company_node_holdings(p_profile_id);
-			if (v_holdings ->> 'machines')::bigint > 0 or (v_holdings ->> 'identities')::bigint > 0
-				or (v_holdings ->> 'node_updates')::bigint > 0 then
-				update public.qorpera_company_deletions
-				set checked_at = clock_timestamp(), holdings = v_holdings, last_error = null
-				where profile_id = p_profile_id;
-				return jsonb_build_object('profileId', p_profile_id, 'state', 'waiting', 'holdings', v_holdings);
-			end if;
-			perform public.qorpera_purge_company(p_profile_id);
-			v_result := jsonb_build_object('profileId', p_profile_id, 'state', 'purged');
+		exception when others then
+			v_error := left(sqlstate || ': ' || sqlerrm, 2000);
+		end;
+		if v_error is null and ((v_holdings ->> 'machines')::bigint > 0 or (v_holdings ->> 'identities')::bigint > 0
+			or (v_holdings ->> 'node_updates')::bigint > 0) then
+			update public.qorpera_company_deletions
+			set checked_at = clock_timestamp(), holdings = v_holdings, last_error = null
+			where profile_id = p_profile_id;
+			return jsonb_build_object('profileId', p_profile_id, 'state', 'waiting', 'holdings', v_holdings);
 		end if;
-	exception when others then
-		update public.qorpera_company_deletions
-		set checked_at = clock_timestamp(), last_error = left(sqlstate || ': ' || sqlerrm, 2000)
-		where profile_id = p_profile_id;
-		return jsonb_build_object('profileId', p_profile_id, 'state', 'failed', 'error', sqlstate || ': ' || sqlerrm);
-	end;
+		if v_error is null then
+			begin
+				perform public.qorpera_purge_company(p_profile_id);
+			exception when others then
+				v_error := left(sqlstate || ': ' || sqlerrm, 2000);
+			end;
+		end if;
+		if v_error is not null then
+			update public.qorpera_company_deletions
+			set checked_at = clock_timestamp(), holdings = v_holdings, last_error = v_error
+			where profile_id = p_profile_id;
+			return jsonb_build_object('profileId', p_profile_id, 'state', 'failed', 'error', v_error);
+		end if;
+	end if;
 	update public.qorpera_company_deletions
 	set checked_at = clock_timestamp(), holdings = null, last_error = null, purged_at = clock_timestamp()
 	where profile_id = p_profile_id;
-	return v_result;
+	return jsonb_build_object('profileId', p_profile_id, 'state', 'purged');
 end
 $$;
 revoke all on function public.qorpera_finish_company_deletion(uuid) from public, anon, authenticated, service_role;
 
 -- The operator's pg_cron runs this every minute: cron.schedule('qorpera-company-deletions', '* * * * *',
--- 'select public.qorpera_finish_company_deletions()'). Oldest requests first, a few per pass, one
--- company per subtransaction, serialised by an advisory lock.
-create function public.qorpera_finish_company_deletions(p_limit integer default 5)
+-- 'select public.qorpera_finish_company_deletions()'). One company per call by default, so one slow or
+-- cancelled purge holds no other company's locks and rolls back nothing else; companies are taken in
+-- random order, so one that keeps failing does not stall the rest. Serialised by an advisory lock.
+create function public.qorpera_finish_company_deletions(p_limit integer default 1)
 returns jsonb
 language plpgsql
 security definer
@@ -328,7 +375,7 @@ begin
 	for v_profile in
 		select deletion.profile_id from public.qorpera_company_deletions as deletion
 		where deletion.purged_at is null
-		order by deletion.checked_at nulls first, deletion.requested_at, deletion.profile_id
+		order by random()
 		limit p_limit
 	loop
 		v_results := v_results || public.qorpera_finish_company_deletion(v_profile);

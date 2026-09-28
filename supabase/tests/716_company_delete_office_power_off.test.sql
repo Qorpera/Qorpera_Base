@@ -30,13 +30,24 @@ create function pg_temp.idle_poll() returns jsonb language sql as $$
 		'39000000-0000-4000-8000-000000000001',repeat('f',64),60000)
 $$;
 
--- The company lives: its held screen keeps the computer awake, and so does a pause.
+-- The company lives: its held screen keeps the computer awake, and so does a pause without any screen.
 select pg_temp.wake_assert(pg_temp.idle_poll()->'request'='null','A held screen keeps a living company''s computer awake');
+savepoint paused_only;
+select pg_temp.path_claims('service_role');
+set local role service_role;
+select pg_temp.office_call('release',current_setting('qorpera_test.office_lease')::jsonb);
+reset role;
+-- ...and the fixture's run, whose authorized work also keeps the computer warm, has ended.
+select public.qorpera_terminalize_runner_attempt((current_setting('qorpera_test.wake_binding')::jsonb->>'jobId')::uuid,
+	'failed','Ended for the test',false);
 insert into public.qorpera_company_execution_pauses(profile_id,paused_by_user_id,reason)
 values('30000000-0000-4000-8000-000000000010','30000000-0000-4000-8000-000000000001','Operator pause');
+select pg_temp.path_claims('service_role');
+select pg_temp.wake_assert(not public.qorpera_runtime_office_has_demand((select o from public.qorpera_runtime_offices o
+	where o.id=(current_setting('qorpera_test.office')::jsonb->>'companyComputerId')::uuid)),'No screen is held');
 update public.qorpera_runtime_office_idle_policies set idle_since=clock_timestamp()-interval '2 hours';
 select pg_temp.wake_assert(pg_temp.idle_poll()->'request'='null','A paused company''s computer stays awake');
-delete from public.qorpera_company_execution_pauses where profile_id='30000000-0000-4000-8000-000000000010';
+rollback to paused_only;
 
 -- Deleting the company powers the computer off at the next check, held screen and pause notwithstanding.
 reset role;

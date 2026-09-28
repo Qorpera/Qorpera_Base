@@ -22,12 +22,17 @@ kept. Usage and computer-hour records stay for bookkeeping, with plain ids (cont
    - `qorpera_stop_company_work`: queued and running jobs end as failed ("Company deleted"), company
      setup is blocked, coding sessions are archived, coding executors switched off and coding
      machines asked to retire, pending invitations withdrawn.
-   - Company Computers power off at their provider's next idle check.
+   - Company Computers power off at their provider's next idle check (a provider whose preparation
+     is switched off keeps its computer awake, as for any company).
+   - The founding lobby drops the table at once and withdraws its invited seats; identity recovery
+     refuses the company.
 2. **Drain.** Node components remove what the company has on the nodes, each through its own custody.
-3. **Finish** (`qorpera_finish_company_deletions`, an operator's pg_cron every minute). For each open
-   request it repeats `qorpera_stop_company_work`, reads `qorpera_company_node_holdings`, and runs
-   `qorpera_purge_company` (20260929120000) once nothing is held. Its state (`holdings`, `last_error`,
-   `purged_at`) is on the request row.
+3. **Finish** (`qorpera_finish_company_deletions`, an operator's pg_cron every minute, one company per
+   call, picked at random so a company that keeps failing never stalls the rest). It repeats
+   `qorpera_stop_company_work`, reads `qorpera_company_node_holdings`, and runs `qorpera_purge_company`
+   (20260929120000) once nothing is held; stop and purge run in separate subtransactions. Its state
+   (`holdings`, `last_error`, `purged_at`) is on the request row. The member's account cannot be deleted
+   until the purge (their rows restrict it).
 
 Operator step after the migration is live:
 

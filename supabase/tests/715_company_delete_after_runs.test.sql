@@ -249,7 +249,7 @@ begin
 			where profile_id = '30000000-0000-4000-8000-000000000010')
 		or (select status from public.qorpera_profile_access_state
 			where profile_id = '30000000-0000-4000-8000-000000000010'
-				and user_id = '30000000-0000-4000-8000-000000000001') <> 'revoked' then
+				and user_id = '30000000-0000-4000-8000-000000000001') is distinct from 'revoked' then
 		raise exception 'A company being deleted is still visible to its member';
 	end if;
 end
