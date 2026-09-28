@@ -1,6 +1,10 @@
 -- @fixture 300_runtime_wake_bus.test.sql until "-- END WAKE FIXTURE"
 -- Identical nodes, change 1 (20260928180700): a node is serving or emptying.
---   * The switch flips only the node's `enabled` flag, with a reason and the node's version check.
+--   * The switch flips only the node's `enabled` flag (and its stored policy's), with a reason and the
+--     node's version check; it keeps the version.
+--   * A reservation the node already holds (reserved, awake) passes admission again; a new one or a
+--     sleeping machine's wake does not.
+--   * An executor on an emptying node starts no new coding turn; a running one blocks the update.
 --   * An emptying node's orchestrators claim nothing new; the other node's orchestrators do.
 --   * A node-local refusal makes only the refusing orchestrator wait; a second one inside that
 --     wait makes every orchestrator wait. Preference and other refusals keep their old waits.
@@ -196,6 +200,11 @@ select pg_temp.wake_assert(pg_temp.sw_status('64000000-0000-4000-8000-0000000000
 	and not (pg_temp.sw_status('64000000-0000-4000-8000-000000000003') ->> 'readyForUpdate')::boolean,
 	'A serving node is never ready for an update: ' || pg_temp.sw_status('64000000-0000-4000-8000-000000000003')::text);
 select public.qorpera_set_runtime_node_serving('64000000-0000-4000-8000-000000000003',false,1,'restart the host');
+reset role;
+select pg_temp.wake_assert((select policy ->> 'enabled' from public.qorpera_runtime_node_policies
+	where node_id = '64000000-0000-4000-8000-000000000003' and version = 1) = 'false',
+	'The stored policy of the node''s version follows the switch');
+set local role service_role;
 select pg_temp.wake_assert(pg_temp.sw_reserve(2) ->> 'reason' = 'NODE_DISABLED','An emptying node admits no new machine');
 -- The machine already there keeps its reservation and passes admission again (its coding turn re-asks
 -- before each step), with no new observation: the switch kept the node's version.
@@ -219,6 +228,17 @@ set local role service_role;
 select pg_temp.wake_assert((pg_temp.sw_status('64000000-0000-4000-8000-000000000003') ->> 'codingTurns')::bigint = 1
 	and not (pg_temp.sw_status('64000000-0000-4000-8000-000000000003') ->> 'readyForUpdate')::boolean,
 	'A running coding turn blocks the update: ' || pg_temp.sw_status('64000000-0000-4000-8000-000000000003')::text);
+-- Only the executor that holds the lease counts: another executor of the same environment on node B does not.
+savepoint coding_owner;
+reset role;
+insert into public.qorpera_coding_executors(environment_id,owner,enabled,harnesses,nas_machine_id_sha256)
+select environment_id,'coding-node-b',true,array['codex'],repeat('b',64) from public.qorpera_runtime_workers
+where id = '64000000-0000-4000-8000-000000000301';
+set local role service_role;
+select pg_temp.wake_assert((pg_temp.sw_status('64000000-0000-4000-8000-000000000002') ->> 'codingTurns')::bigint = 0
+	and (pg_temp.sw_status('64000000-0000-4000-8000-000000000003') ->> 'codingTurns')::bigint = 1,
+	'A coding turn counts only on the node of the executor holding its lease');
+rollback to savepoint coding_owner;
 select pg_temp.wake_assert(public.qorpera_claim_coding_session('coding-node-c',60) is null,
 	'The emptying node''s executor starts no new coding turn');
 savepoint coding_serving;

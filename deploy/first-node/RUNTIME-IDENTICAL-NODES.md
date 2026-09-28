@@ -29,7 +29,8 @@ change.
 
 ## Change 1: the serving switch (migration `20260928180700`)
 
-- **The switch is `qorpera_runtime_nodes.enabled`.** These already require it:
+- **The switch is `qorpera_runtime_nodes.enabled`.** These require it (the last two as changed
+  here):
   - `qorpera_runtime_node_placement_candidates`, used by the node chooser, the login route pick
     and the company machine fleet;
   - the fresh branch of `qorpera_coding_executor_pick`;
@@ -38,7 +39,8 @@ change.
     passes admission again, because coding turns and sign-ins re-ask it before each step, so they
     finish.
   - `qorpera_claim_coding_session`: an executor on an emptying node starts no new coding turn. A
-    turn it is running keeps its lease and finishes.
+    turn it is running keeps its lease and finishes. Its queued turns are left out of the
+    candidate query, so they take no locks and do not crowd out a lapsed turn waiting to be failed.
 - **Work pinned to the node by a disk stays pinned.** It waits for the node to return:
   - runs of a member whose login lives on the node (the identity-home rule, until logins move
     into the vault, `20260928180600`);
@@ -58,9 +60,14 @@ change.
     `qorpera_runtime_node_serving_changes`, one row per switch. The observer's inventory receipt
     names the node version; a new version would refuse every admission, held ones included, until
     the next scan. `enabled` is not part of the inventory context.
+  - It sets `enabled` in the stored policy of that version too, so the signed updater, which checks
+    and restores `enabled` from it, and anyone who rebuilds a policy from it see the node as it is.
+  - The version check guards against a policy change in between, not against another switch: two
+    operators or scripts switching the same node do not see each other. `lastChange` in the drain
+    status says who switched last.
   - It needs no company pause and locks no company row.
   - It refuses with 55000 while the older signed updater (`20260921010000`) has any unresumed
-    target for the node, because a prepared update pins the node's version.
+    target for the node, because a prepared update binds `enabled`.
   - Asking for the current state returns `changed: false`.
 - **Claim.** The orchestrator claim returns nothing when the orchestrator's adapter maps, through
   `qorpera_runtime_node_providers` of kind native, only to switched-off nodes. Claim replays still
@@ -137,7 +144,8 @@ migration can go in any cut without a pause.
    - empty: `select public.qorpera_set_runtime_node_serving('<node>', false, <version>, '<reason>')`;
    - watch `qorpera_runtime_node_drain_status('<node>')` until `readyForUpdate`;
    - clear parked warm hosts if the fast host is rebuilt;
-   - return with `true`. The observer's next receipt makes the node placeable again.
+   - return with `true`. The node is placeable at once: its version and inventory receipt did not
+     change.
 
    Until logins are in the vault, runs of members whose login lives on the node wait while it is
    empty. Keep that window short.

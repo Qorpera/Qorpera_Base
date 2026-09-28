@@ -43,6 +43,7 @@ create table public.qorpera_runtime_node_serving_changes (
 create index qorpera_runtime_node_serving_changes_node on public.qorpera_runtime_node_serving_changes (node_id, id desc);
 alter table public.qorpera_runtime_node_serving_changes enable row level security;
 revoke all on public.qorpera_runtime_node_serving_changes from public, anon, authenticated, service_role;
+revoke all on sequence public.qorpera_runtime_node_serving_changes_id_seq from public, anon, authenticated, service_role;
 
 create function public.qorpera_set_runtime_node_serving(p_node_id uuid, p_serving boolean, p_expected_version bigint, p_reason text)
 returns jsonb
@@ -66,7 +67,7 @@ begin
 		raise sqlstate 'PGRST' using message = jsonb_build_object('code', 'QRC01', 'message', 'Node policy version changed',
 			'details', null, 'hint', null)::text, detail = '{"status":409,"headers":{}}';
 	end if;
-	-- The signed updater owns `enabled` while it holds this node, and a prepared update pins the node's version.
+	-- The signed updater owns `enabled` while it holds this node: a prepared update binds it.
 	if exists (select 1 from public.qorpera_node_update_targets target
 		where target.node_id = p_node_id and target.resumed_version is null) then
 		raise exception 'A node update holds this node' using errcode = '55000';
@@ -75,8 +76,13 @@ begin
 		return jsonb_build_object('nodeId', p_node_id, 'version', v_node.version, 'serving', v_node.enabled, 'changed', false);
 	end if;
 	-- Same version: the inventory receipt stays valid, so held reservations keep passing admission.
+	-- The stored policy of that version follows, so the signed updater (which checks and restores
+	-- `enabled` from it) and anyone rebuilding a policy from it see the node as it is. The history of
+	-- switches is kept in qorpera_runtime_node_serving_changes.
 	update public.qorpera_runtime_nodes set enabled = p_serving, updated_at = clock_timestamp()
 	where id = p_node_id returning * into v_node;
+	update public.qorpera_runtime_node_policies set policy = jsonb_set(policy, '{enabled}', to_jsonb(p_serving))
+	where node_id = p_node_id and version = v_node.version;
 	insert into public.qorpera_runtime_node_serving_changes(node_id, version, serving, reason)
 	values (p_node_id, v_node.version, p_serving, btrim(p_reason));
 	return jsonb_build_object('nodeId', p_node_id, 'version', v_node.version, 'serving', p_serving, 'changed', true);
@@ -115,6 +121,8 @@ $admission$;
 
 -- An executor on an emptying node starts no new coding turn (a turn it is running keeps its lease and
 -- finishes; a lapsed one is still failed visibly). The node is the executor's NAS machine, as in the pick.
+-- The candidate query leaves such turns out, so they take no locks and no place in the window of 8,
+-- where a lapsed turn is waiting to be failed; the check before the start stays as a second guard.
 do $coding$
 declare v_def text; v_old text; v_new text;
 begin
@@ -128,6 +136,14 @@ begin
 $new$ || v_old;
 	if (length(v_def) - length(replace(v_def, v_old, ''))) / length(v_old) <> 1 then
 		raise exception 'claim_coding_session start differs';
+	end if;
+	v_def := replace(v_def, v_old, v_new);
+	v_old := $old$		where (session.phase in ('queued','input_ready') and (session.claim_after is null or session.claim_after <= clock_timestamp())) or$old$;
+	v_new := $new$		where (session.phase in ('queued','input_ready') and (session.claim_after is null or session.claim_after <= clock_timestamp())
+				and not exists (select 1 from public.qorpera_runtime_nodes node
+					where node.machine_id_sha256 = executor.nas_machine_id_sha256 and not node.enabled)) or$new$;
+	if (length(v_def) - length(replace(v_def, v_old, ''))) / length(v_old) <> 1 then
+		raise exception 'claim_coding_session candidates differ';
 	end if;
 	execute replace(v_def, v_old, v_new);
 end
