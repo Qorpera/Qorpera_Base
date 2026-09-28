@@ -113,6 +113,11 @@ function fixture() {
 	};
 	return { policy, context, inventory, host };
 }
+/** An own key named like this, as JSON.parse makes one. A plain assignment of
+ * `__proto__` would set the object's prototype instead. */
+function ownKey<T>(target: Record<string, T>, key: string, value: T) {
+	Object.defineProperty(target, key, { value, enumerable: true, writable: true, configurable: true });
+}
 describe("complete host inventory reconciliation", () => {
 	it.each(["uuid", "project", "name", "configuration"])("blocks replacement of an observed physical %s", (fault) => {
 		const f = fixture(),
@@ -189,6 +194,27 @@ describe("complete host inventory reconciliation", () => {
 		const before = runtimeNodeInstanceConfigurationSha256(legacy);
 		legacy.devices[`data-${worker}`] = { type: "disk", source: "/srv/coding/data", path: "/workspace/x" };
 		expect(runtimeNodeInstanceConfigurationSha256(legacy)).not.toBe(before);
+	});
+	// The LXD client refuses such a device (lxd-host-inventory.test.ts). Should a
+	// record still carry one as its own key, the digests count it like any other.
+	it.each([0, 3])("counts a host-path disk named __proto__ in a machine's digest (instance %s)", (index) => {
+		const f = fixture(),
+			i = f.inventory.instances[index];
+		if (index === 3)
+			i.config["user.qorpera.schema"] = i.expandedConfig["user.qorpera.schema"] = "qorpera.lxd-coding-machine/v1";
+		f.context.allocations[index].physical = {
+			project: i.project,
+			name: i.name,
+			physicalId: i.config["volatile.uuid"],
+			configurationSha256: runtimeNodeInstanceConfigurationSha256(i),
+		};
+		expect(reconcileRuntimeNodeInventory(f.inventory, f.context).state).toBe("ready");
+		for (const devices of [i.devices, i.expandedDevices])
+			ownKey(devices, "__proto__", { type: "disk", source: "/", path: "/host", required: "true" });
+		expect(Object.keys(i.expandedDevices)).toEqual(["__proto__"]);
+		const result = reconcileRuntimeNodeInventory(f.inventory, f.context);
+		expect(result.entries[index].reason).toBe("INSTANCE_AUTHORITY_DIFFERS");
+		expect(result.state).toBe("unavailable");
 	});
 	it("matches all three physical provider types with exact ledger costs across projects", () => {
 		const f = fixture(),
@@ -456,6 +482,16 @@ describe("shared execution host identity devices (2026-09-27)", () => {
 			expect(reconcileRuntimeNodeInventory(g.inventory, g.context).state).toBe("unavailable");
 		}
 	});
+	it("a device named __proto__ is neither an identity nor left out of the digest", () => {
+		const f = execHost();
+		f.attach(randomUUID());
+		expect(reconcileRuntimeNodeInventory(f.inventory, f.context).state).toBe("ready");
+		for (const devices of [f.i.devices, f.i.expandedDevices])
+			ownKey(devices, "__proto__", { type: "disk", source: "/var/lib/lxd", path: "/host" });
+		const result = reconcileRuntimeNodeInventory(f.inventory, f.context);
+		expect(result.state).toBe("unavailable");
+		expect(result.entries[4]).toMatchObject({ reason: "INSTANCE_AUTHORITY_DIFFERS" });
+	});
 	it("declares identity volumes only for a virtual machine, with exactly pool and source prefix", () => {
 		const f = execHost();
 		expect(parseRuntimeNodeInventoryPolicy(structuredClone(f.policy))).toEqual(f.policy);
@@ -506,6 +542,566 @@ describe("shared execution host identity devices (2026-09-27)", () => {
 				identities: expected.identities ?? [],
 			});
 		}
+	});
+	describe("listed by role (identical nodes, change 6)", () => {
+		const [current, next] = ["c".repeat(64), "d".repeat(64)];
+		/** The same host enrolled as `role: execution-host`, and the images the node's releases pin. */
+		function byRole(declared = false) {
+			const f = execHost(declared);
+			f.policy.infrastructure[0].role = "execution-host";
+			f.policy.infrastructure[0].configurationSha256 = runtimeNodeInstanceConfigurationSha256(
+				f.i,
+				declared ? volumes : undefined,
+				"execution-host",
+			);
+			/** `lxc rebuild` onto another image: only image.* and volatile.base_image change. */
+			const rebuild = (image: string) => {
+				for (const config of [f.i.config, f.i.expandedConfig]) {
+					config["image.os"] = `Ubuntu ${image.slice(0, 4)}`;
+					config["image.serial"] = image.slice(0, 8);
+					config["volatile.base_image"] = image;
+				}
+			};
+			return { ...f, rebuild, released: new Set([current, next]) };
+		}
+		it("a rebuild onto an image a signed release pins keeps the digest and the node ready", () => {
+			const f = byRole(),
+				before = reconcileRuntimeNodeInventory(f.inventory, f.context, f.released);
+			expect(before.state).toBe("ready");
+			expect(before.entries[4]).toMatchObject({ category: "infrastructure", reason: null });
+			expect(Object.hasOwn(before.entries[4], "role")).toBe(false);
+			f.rebuild(next);
+			const after = reconcileRuntimeNodeInventory(f.inventory, f.context, f.released);
+			expect(after.state).toBe("ready");
+			expect(after.entries[4].configurationSha256).toBe(before.entries[4].configurationSha256);
+		});
+		it("an image no signed release pins makes the node unavailable, with its own reason", () => {
+			const f = byRole();
+			f.rebuild("e".repeat(64));
+			const result = reconcileRuntimeNodeInventory(f.inventory, f.context, f.released);
+			expect(result.state).toBe("unavailable");
+			expect(result.entries[4]).toMatchObject({ reason: "INSTANCE_IMAGE_NOT_RELEASED" });
+			// No releases read (the default) accepts no image.
+			const g = byRole();
+			expect(reconcileRuntimeNodeInventory(g.inventory, g.context).entries[4].reason).toBe(
+				"INSTANCE_IMAGE_NOT_RELEASED",
+			);
+			// A profile cannot claim another base image, and a missing one is not released.
+			const h = byRole();
+			h.i.expandedConfig["volatile.base_image"] = next;
+			expect(reconcileRuntimeNodeInventory(h.inventory, h.context, h.released).entries[4].reason).toBe(
+				"INSTANCE_IMAGE_NOT_RELEASED",
+			);
+			const k = byRole();
+			delete k.i.config["volatile.base_image"];
+			delete k.i.expandedConfig["volatile.base_image"];
+			expect(reconcileRuntimeNodeInventory(k.inventory, k.context, k.released).entries[4].reason).toBe(
+				"INSTANCE_IMAGE_NOT_RELEASED",
+			);
+		});
+		it("everything but the image stays exact", () => {
+			for (const change of [
+				(i: TestInstance) => {
+					i.config["limits.cpu"] = "8";
+					i.expandedConfig["limits.cpu"] = "8";
+				},
+				(i: TestInstance) => {
+					i.devices.data = { type: "disk", source: "/srv", path: "/srv" };
+					i.expandedDevices.data = { ...i.devices.data };
+				},
+				(i: TestInstance) => {
+					i.profiles = ["default"];
+				},
+				(i: TestInstance) => {
+					i.config["security.secureboot"] = "false";
+					i.expandedConfig["security.secureboot"] = "false";
+				},
+				(i: TestInstance) => {
+					i.config["user.qorpera.schema"] = "qorpera.native-job-vm/v1";
+					i.expandedConfig["user.qorpera.schema"] = "qorpera.native-job-vm/v1";
+				},
+			]) {
+				const f = byRole();
+				change(f.i);
+				const result = reconcileRuntimeNodeInventory(f.inventory, f.context, f.released);
+				expect(result.state).toBe("unavailable");
+				expect(result.entries[4].reason).toBe("INSTANCE_AUTHORITY_DIFFERS");
+			}
+			// A different physical machine under the same name is not the enrolled host.
+			const f = byRole();
+			f.i.config["volatile.uuid"] = f.i.expandedConfig["volatile.uuid"] = randomUUID();
+			expect(reconcileRuntimeNodeInventory(f.inventory, f.context, f.released).entries[4].reason).toBe(
+				"INSTANCE_AUTHORITY_DIFFERS",
+			);
+			// Without the role, the image keys still count exactly, as before.
+			const g = execHost(false);
+			for (const config of [g.i.config, g.i.expandedConfig]) config["image.os"] = "Debian";
+			expect(reconcileRuntimeNodeInventory(g.inventory, g.context, new Set([current])).state).toBe("unavailable");
+		});
+		it("combines with identity volumes: attaches and a rebuild both keep it ready", () => {
+			const f = byRole(true);
+			f.attach(randomUUID());
+			f.rebuild(next);
+			const result = reconcileRuntimeNodeInventory(f.inventory, f.context, f.released);
+			expect(result.state).toBe("ready");
+			expect(result.entries[4].identities).toHaveLength(1);
+		});
+		it("the role is only execution-host, only on a virtual machine", () => {
+			const f = byRole(true);
+			expect(parseRuntimeNodeInventoryPolicy(structuredClone(f.policy))).toEqual(f.policy);
+			for (const role of ["office", "", null, ["execution-host"]]) {
+				const policy = structuredClone(f.policy) as unknown as { infrastructure: Record<string, unknown>[] };
+				policy.infrastructure[0].role = role;
+				expect(() => parseRuntimeNodeInventoryPolicy(policy)).toThrow("INVALID_NODE_INVENTORY_POLICY");
+			}
+			const container = structuredClone(byRole().policy);
+			container.infrastructure[0].type = "container";
+			expect(() => parseRuntimeNodeInventoryPolicy(container)).toThrow("INVALID_NODE_INVENTORY_POLICY");
+		});
+		it("the operators' Python digest agrees with --role", () => {
+			const python = spawnSync("python3", ["--version"]);
+			if (python.status !== 0) return;
+			const f = byRole(true);
+			f.attach(randomUUID());
+			const lxdQuery = {
+				name: f.i.name,
+				project: f.i.project,
+				type: f.i.type,
+				profiles: f.i.profiles,
+				config: f.i.config,
+				expanded_config: f.i.expandedConfig,
+				devices: f.i.devices,
+				expanded_devices: f.i.expandedDevices,
+			};
+			const script = fileURLToPath(
+				new URL("../../../deploy/shared-execution/exec-host-inventory-digest.py", import.meta.url),
+			);
+			for (const [declared, role] of [
+				[true, true],
+				[false, true],
+				[true, false],
+			]) {
+				const run = spawnSync(
+					"python3",
+					[
+						script,
+						...(declared ? ["--pool", volumes.pool, "--source-prefix", volumes.sourcePrefix] : []),
+						...(role ? ["--role", "execution-host"] : []),
+					],
+					{ input: JSON.stringify(lxdQuery), encoding: "utf-8" },
+				);
+				expect(run.status, run.stderr).toBe(0);
+				const expected = runtimeNodeInstanceConfiguration(
+					f.i,
+					declared ? volumes : undefined,
+					role ? "execution-host" : undefined,
+				);
+				expect(JSON.parse(run.stdout).configurationSha256).toBe(expected.configurationSha256);
+			}
+			expect(spawnSync("python3", [script, "--role", "office"], { input: "{}" }).status).not.toBe(0);
+		});
+		it("the observer reads the node's releases only when an entry is listed by role", async () => {
+			const run = async (f: ReturnType<typeof byRole>) => {
+				const registry: RuntimeNodeObserverRegistry = {
+					call: vi.fn(async (method, args) => {
+						if (method === "qorpera_runtime_node_inventory_context") return structuredClone(f.context);
+						const o = args.p_observation as Record<string, unknown>;
+						return { nodeId: o.nodeId, observationId: o.observationId, observedAt: o.observedAt };
+					}),
+				};
+				const releases = vi.fn(async () => new Set([next]));
+				const observer = new RuntimeNodeInventoryObserver(f.policy, registry, {
+					host: vi.fn(async () => structuredClone(f.host)),
+					lxd: { inspectHostInventory: vi.fn(async () => structuredClone(f.inventory)) },
+					releases,
+				});
+				return { state: (await observer.observe(signal())).state, releases };
+			};
+			const f = byRole();
+			f.rebuild(next);
+			expect(await run(f)).toMatchObject({ state: "ready" });
+			expect((await run(f)).releases).toHaveBeenCalledTimes(1);
+			const g = byRole();
+			g.rebuild(current);
+			expect((await run(g)).state).toBe("unavailable");
+			const h = byRole();
+			delete h.policy.infrastructure[0].role;
+			h.policy.infrastructure[0].configurationSha256 = runtimeNodeInstanceConfigurationSha256(h.i);
+			const plain = await run(h);
+			expect(plain.state).toBe("ready");
+			expect(plain.releases).not.toHaveBeenCalled();
+		});
+	});
+});
+
+describe("image build space (identical nodes, 2026-09-28)", () => {
+	const space = { project: "qorpera-build", network: "qorpera0", cpuMillis: 2000, memoryBytes: 4 * 1024 ** 3 };
+	function builder(name: string, cpu = "1", memory = "2GiB"): TestInstance {
+		const config = {
+			"limits.cpu": cpu,
+			"limits.memory": memory,
+			"volatile.uuid": randomUUID(),
+			"boot.autostart": "false",
+			"user.qorpera.image_builder": "true",
+			"user.qorpera.purpose": "runtime-image",
+		};
+		const devices = { root: { type: "disk", path: "/", pool: "qorpera-vm", size: "80GiB" } };
+		return {
+			name,
+			project: space.project,
+			location: "none",
+			type: "virtual-machine",
+			config,
+			expandedConfig: { ...config },
+			devices,
+			expandedDevices: {
+				...devices,
+				eth0: {
+					type: "nic",
+					network: "qorpera0",
+					name: "eth0",
+					"security.mac_filtering": "true",
+					"security.ipv4_filtering": "true",
+					"security.ipv6_filtering": "true",
+					"security.port_isolation": "true",
+				},
+			},
+			profiles: ["default"],
+			status: "Running",
+			statusCode: 103,
+		};
+	}
+	function withSpace() {
+		const f = fixture();
+		f.context.policy = f.policy = { ...f.policy, buildSpace: { ...space } };
+		return f;
+	}
+	it("accepts a builder and its verifier inside the declared space and keeps the node ready", () => {
+		const f = withSpace();
+		expect(reconcileRuntimeNodeInventory(f.inventory, f.context).state).toBe("ready");
+		f.inventory.instances.push(builder("image-build"), builder("image-verify"));
+		const result = reconcileRuntimeNodeInventory(f.inventory, f.context);
+		expect(result.state).toBe("ready");
+		expect(result.entries.slice(4).map((e) => [e.category, e.reason, e.cpuMillis, e.allocation])).toEqual([
+			["build", null, 1000, null],
+			["build", null, 1000, null],
+		]);
+		// Stopped build machines keep their charge.
+		f.inventory.instances[4].status = "Stopped";
+		f.inventory.instances[4].statusCode = 102;
+		expect(reconcileRuntimeNodeInventory(f.inventory, f.context).state).toBe("ready");
+	});
+	it("accepts the image lane's exact builder: no profiles, its own root, the isolation NIC", () => {
+		const f = withSpace(),
+			config = {
+				"limits.cpu": "4",
+				"limits.memory": "8GiB",
+				"boot.autostart": "false",
+				"volatile.uuid": randomUUID(),
+				"volatile.base_image": "e".repeat(64),
+				"volatile.eth0.hwaddr": "00:16:3e:00:00:01",
+				"image.os": "Ubuntu",
+				"image.user.qorpera.source_commit": "f".repeat(40),
+			},
+			root = { type: "disk", path: "/", pool: "qorpera-vm", size: "80GiB" },
+			nic = {
+				type: "nic",
+				network: "qorpera0",
+				name: "eth0",
+				"security.mac_filtering": "true",
+				"security.ipv4_filtering": "true",
+				"security.ipv6_filtering": "true",
+				"security.port_isolation": "true",
+			};
+		f.inventory.instances.push({
+			name: "qorpera-native142-build-phql-a1",
+			project: space.project,
+			location: "none",
+			type: "virtual-machine",
+			config,
+			expandedConfig: { ...config },
+			devices: { root, eth0: nic },
+			expandedDevices: { root, eth0: nic },
+			profiles: [],
+			status: "Stopped",
+			statusCode: 102,
+		});
+		f.context.policy = f.policy = {
+			...f.policy,
+			buildSpace: { ...space, cpuMillis: 4000, memoryBytes: 8 * 1024 ** 3 },
+		};
+		f.context.headroomCpuMillis = 5000;
+		f.context.headroomMemoryBytes = 9 * 1024 ** 3;
+		const result = reconcileRuntimeNodeInventory(f.inventory, f.context);
+		expect(result.entries[4]).toMatchObject({ category: "build", reason: null });
+		expect(result.state).toBe("ready");
+	});
+	it("refuses build machines beyond the declared space", () => {
+		const f = withSpace();
+		f.inventory.instances.push(builder("image-build", "2"), builder("image-verify"));
+		const result = reconcileRuntimeNodeInventory(f.inventory, f.context);
+		expect(result.state).toBe("unavailable");
+		expect(result.entries.slice(4).map((e) => e.reason)).toEqual(["BUILD_SPACE_EXCEEDED", "BUILD_SPACE_EXCEEDED"]);
+		const g = withSpace();
+		g.inventory.instances.push(builder("image-build", "1", "5GiB"));
+		expect(reconcileRuntimeNodeInventory(g.inventory, g.context).entries[4].reason).toBe("BUILD_SPACE_EXCEEDED");
+	});
+	it.each<[string, (i: TestInstance) => void]>([
+		[
+			"a container",
+			(i) => {
+				i.type = "container";
+			},
+		],
+		[
+			"no CPU limit",
+			(i) => {
+				delete i.expandedConfig["limits.cpu"];
+			},
+		],
+		[
+			"a runtime marker",
+			(i) => {
+				i.expandedConfig["user.qorpera.schema"] = "qorpera.native-job-vm/v1";
+			},
+		],
+		[
+			"the management marker",
+			(i) => {
+				i.config["user.qorpera.management_vm"] = "true";
+			},
+		],
+		[
+			"a false builder marker",
+			(i) => {
+				i.expandedConfig["user.qorpera.image_builder"] = "false";
+			},
+		],
+		[
+			"raw hypervisor settings",
+			(i) => {
+				i.expandedConfig["raw.qemu"] = "-device vfio-pci";
+			},
+		],
+		[
+			"a host path",
+			(i) => {
+				i.expandedDevices.src = { type: "disk", source: "/srv/company", path: "/mnt" };
+			},
+		],
+		[
+			"an identity volume",
+			(i) => {
+				i.devices.id = { type: "disk", pool: "qorpera-vm", source: "phql-a1-identity-x", path: "/i" };
+			},
+		],
+		[
+			"a second root",
+			(i) => {
+				i.expandedDevices.root = { type: "disk", path: "/", pool: "p", source: "/dev/sda" };
+			},
+		],
+		[
+			"a proxy",
+			(i) => {
+				i.expandedDevices.p = { type: "proxy", listen: "tcp:0.0.0.0:80", connect: "tcp:127.0.0.1:80" };
+			},
+		],
+		[
+			"a physical NIC",
+			(i) => {
+				i.expandedDevices.eth1 = { type: "nic", nictype: "physical", parent: "enp1s0" };
+			},
+		],
+		[
+			"a macvlan NIC",
+			(i) => {
+				i.expandedDevices.eth0 = { ...i.expandedDevices.eth0, nictype: "macvlan", parent: "nas-vlan" };
+			},
+		],
+		[
+			"an undeclared network",
+			(i) => {
+				i.expandedDevices.eth0 = { ...i.expandedDevices.eth0, network: "lxdbr0" };
+			},
+		],
+		[
+			"MAC filtering off",
+			(i) => {
+				i.expandedDevices.eth0 = { ...i.expandedDevices.eth0, "security.mac_filtering": "false" };
+			},
+		],
+		[
+			"port isolation off",
+			(i) => {
+				i.expandedDevices.eth0 = { ...i.expandedDevices.eth0, "security.port_isolation": "false" };
+			},
+		],
+		[
+			"a guest API setting",
+			(i) => {
+				i.expandedConfig["security.devlxd.management.volumes"] = "true";
+			},
+		],
+		[
+			"cloud-init user data",
+			(i) => {
+				i.config["cloud-init.user-data"] = "#cloud-config";
+			},
+		],
+		[
+			"stateful migration",
+			(i) => {
+				i.expandedConfig["migration.stateful"] = "true";
+			},
+		],
+		[
+			"autostart",
+			(i) => {
+				i.expandedConfig["boot.autostart"] = "true";
+			},
+		],
+		[
+			"raw settings in its own config only",
+			(i) => {
+				i.config["raw.qemu"] = "-device x";
+			},
+		],
+		[
+			"a root disk without a size",
+			(i) => {
+				i.expandedDevices.root = { type: "disk", path: "/", pool: "qorpera-vm" };
+			},
+		],
+		[
+			"no root disk",
+			(i) => {
+				delete i.expandedDevices.root;
+			},
+		],
+		[
+			"two root disks",
+			(i) => {
+				i.expandedDevices.root2 = { type: "disk", path: "/", pool: "qorpera-vm", size: "1GiB" };
+			},
+		],
+		[
+			"IPv4 filtering off",
+			(i) => {
+				i.expandedDevices.eth0 = { ...i.expandedDevices.eth0, "security.ipv4_filtering": "false" };
+			},
+		],
+		[
+			"IPv6 filtering off",
+			(i) => {
+				i.expandedDevices.eth0 = { ...i.expandedDevices.eth0, "security.ipv6_filtering": "false" };
+			},
+		],
+		[
+			"no port isolation",
+			(i) => {
+				const { "security.port_isolation": _isolation, ...nic } = i.expandedDevices.eth0;
+				i.expandedDevices.eth0 = nic;
+			},
+		],
+		[
+			"an empty root size",
+			(i) => {
+				i.expandedDevices.root = { ...i.expandedDevices.root, size: "" };
+			},
+		],
+		[
+			"a GPU",
+			(i) => {
+				i.expandedDevices.g = { type: "gpu" };
+			},
+		],
+		[
+			"a host path disk named __proto__",
+			(i) => {
+				ownKey(i.expandedDevices, "__proto__", { type: "disk", source: "/", path: "/host" });
+			},
+		],
+		[
+			"a configuration key named __proto__",
+			(i) => {
+				ownKey(i.expandedConfig, "__proto__", "true");
+			},
+		],
+	])("refuses a build machine with %s", (_, change) => {
+		const f = withSpace(),
+			i = builder("image-build");
+		change(i);
+		f.inventory.instances.push(i);
+		const result = reconcileRuntimeNodeInventory(f.inventory, f.context);
+		expect(result.entries[4]).toMatchObject({ category: "build", reason: "INSTANCE_AUTHORITY_DIFFERS" });
+		expect(result.state).toBe("unavailable");
+	});
+	it("treats a runtime guest in the build project as a build machine, never as its allocation", () => {
+		const f = withSpace();
+		f.inventory.instances[0].project = space.project;
+		const result = reconcileRuntimeNodeInventory(f.inventory, f.context);
+		expect(result.entries[0]).toMatchObject({
+			category: "build",
+			allocation: null,
+			reason: "INSTANCE_AUTHORITY_DIFFERS",
+		});
+		expect(result.state).toBe("unavailable");
+	});
+	it("keeps a builder outside the space unregistered, as before", () => {
+		const f = withSpace(),
+			i = builder("image-build");
+		i.project = "qn25b2";
+		f.inventory.instances.push(i);
+		const result = reconcileRuntimeNodeInventory(f.inventory, f.context);
+		expect(result.entries[4]).toMatchObject({ category: "unmanaged", reason: "UNREGISTERED_INSTANCE" });
+		expect(result.state).toBe("unavailable");
+		// And without a declared space nothing changes.
+		const g = fixture();
+		g.inventory.instances.push(builder("image-build"));
+		expect(reconcileRuntimeNodeInventory(g.inventory, g.context).entries[4].category).toBe("unmanaged");
+	});
+	it("counts the space against headroom whether a build runs or not", () => {
+		const f = withSpace();
+		f.context.headroomCpuMillis = 2999;
+		expect(reconcileRuntimeNodeInventory(f.inventory, f.context)).toMatchObject({
+			headroomValid: false,
+			state: "unavailable",
+		});
+		f.context.headroomCpuMillis = 3000;
+		expect(reconcileRuntimeNodeInventory(f.inventory, f.context)).toMatchObject({
+			headroomValid: true,
+			state: "ready",
+		});
+	});
+	it("parses the space strictly and never next to infrastructure in the same project", () => {
+		const base = fixture().policy;
+		expect(parseRuntimeNodeInventoryPolicy({ ...base, buildSpace: space }).buildSpace).toEqual(space);
+		const { network: _network, ...withoutNetwork } = space;
+		expect(parseRuntimeNodeInventoryPolicy(base)).not.toHaveProperty("buildSpace");
+		for (const bad of [
+			{ ...space, extra: 1 },
+			withoutNetwork,
+			{ ...space, network: "../net" },
+			{ ...space, cpuMillis: 0 },
+			{ ...space, project: "../x" },
+			null,
+		])
+			expect(() => parseRuntimeNodeInventoryPolicy({ ...base, buildSpace: bad })).toThrow(
+				/^INVALID_(NODE_INVENTORY_POLICY|OFFICE_PHYSICAL_RECORD)$/,
+			);
+		const infra = {
+			project: space.project,
+			name: "exec",
+			physicalId: randomUUID(),
+			type: "virtual-machine",
+			configurationSha256: sha,
+			cpuMillis: 1000,
+			memoryBytes: 1024,
+		};
+		expect(() => parseRuntimeNodeInventoryPolicy({ ...base, infrastructure: [infra], buildSpace: space })).toThrow(
+			"INVALID_NODE_INVENTORY_POLICY",
+		);
 	});
 });
 

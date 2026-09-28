@@ -87,6 +87,34 @@ export interface CodingSession {
 	sessionId?: string;
 	/** Whether the signed-in member owns the session (only the listing says). */
 	isOwner?: boolean;
+	/** Whether the cloud keeps sessions on their machine between turns (its view names `attached`). Before it
+	 * does, nothing about standing by or archiving is shown, and Archive is not offered. */
+	standby: boolean;
+	/** Archived: taken off its machine, files kept; a new message reopens it. */
+	archivedAt?: string;
+	/** On its awake machine between turns (standing by), with what it left running. */
+	attached: boolean;
+	/** Commands still running at the last look, while attached. */
+	runningCommands: number;
+	/** Its machine is asleep: programs stopped, files kept, the next message wakes it. */
+	machineAsleep: boolean;
+	/** When this client asked for this copy (performance clock). The cloud moves `updatedAt` only when the
+	 * session's phase or turn changes, so of two copies with the same `updatedAt` the one asked for later knows
+	 * more (standing by, asleep, archived). */
+	askedAt?: number;
+}
+
+/** Orders two copies of a session: positive when `a` is the newer, 0 when they are the same copy. */
+export function compareCodingSessions(
+	a: Pick<CodingSession, "updatedAt" | "askedAt">,
+	b: Pick<CodingSession, "updatedAt" | "askedAt">,
+): number {
+	return Date.parse(a.updatedAt) - Date.parse(b.updatedAt) || (a.askedAt ?? 0) - (b.askedAt ?? 0);
+}
+
+/** Still going: neither settled nor archived. An archived session that was asking waits for nothing. */
+export function codingSessionGoing(session: Pick<CodingSession, "phase" | "archivedAt">): boolean {
+	return !codingSessionSettled(session.phase) && !session.archivedAt;
 }
 
 export interface CodingSessionEvent {
@@ -109,10 +137,11 @@ export function codingSessionSettled(phase: CodingSessionPhase): boolean {
 	return phase === "completed" || phase === "failed" || phase === "cancelled";
 }
 
-/** Whether the owner may type into the session now: it asked, or it is done. The
- * kernel refuses input while a turn is running. */
-export function codingSessionTakesInput(session: Pick<CodingSession, "phase" | "sequence">): boolean {
-	return (session.phase === "awaiting_input" || codingSessionSettled(session.phase)) && session.sequence < 64;
+/** Whether the owner may type into the session now: it asked, or it is done (an
+ * archived session too: the message reopens it). The kernel refuses input while
+ * a turn is running. A session takes any number of turns. */
+export function codingSessionTakesInput(session: Pick<CodingSession, "phase">): boolean {
+	return session.phase === "awaiting_input" || codingSessionSettled(session.phase);
 }
 
 function optionalString(value: unknown, maximum = 32 * 1024): string | undefined {
@@ -158,7 +187,8 @@ function parseChecks(value: unknown): CodingCheck[] {
 	return checks;
 }
 
-export function parseCodingSession(value: unknown): CodingSession {
+/** `askedAt`: when the request that returned it was sent. */
+export function parseCodingSession(value: unknown, askedAt = performance.now()): CodingSession {
 	const item = record(value, "Coding session");
 	const session: CodingSession = {
 		workerId: uuid(item.workerId, "Coding session worker id"),
@@ -169,7 +199,7 @@ export function parseCodingSession(value: unknown): CodingSession {
 		harness: oneOf(item.harness, CODING_HARNESSES, "Coding session harness"),
 		repository: parseRepository(item.repository),
 		branch: nonEmptyString(item.branch, "Coding session branch", 250),
-		sequence: boundedInteger(item.sequence, "Coding session sequence", 1, 64),
+		sequence: boundedInteger(item.sequence, "Coding session sequence", 1, Number.MAX_SAFE_INTEGER),
 		workerState: nonEmptyString(item.workerState, "Coding session worker state", 32),
 		phase: oneOf(item.phase, CODING_SESSION_PHASES, "Coding session phase"),
 		filesChanged: typeof item.filesChanged === "number" && item.filesChanged >= 0 ? Math.floor(item.filesChanged) : 0,
@@ -177,7 +207,15 @@ export function parseCodingSession(value: unknown): CodingSession {
 		artifacts: Array.isArray(item.artifacts) ? item.artifacts.map(jsonValue) : [],
 		updatedAt: timestamp(item.updatedAt, "Coding session updated at"),
 		createdAt: timestamp(item.createdAt ?? item.updatedAt, "Coding session created at"),
+		standby: Object.hasOwn(item, "attached"),
+		attached: item.attached === true,
+		runningCommands:
+			typeof item.runningCommands === "number" && item.runningCommands > 0 ? Math.floor(item.runningCommands) : 0,
+		machineAsleep: item.machineAsleep === true,
+		askedAt,
 	};
+	const archivedAt = optionalTimestamp(item.archivedAt, "Coding session archived at");
+	if (archivedAt) session.archivedAt = archivedAt;
 	const model = optionalString(item.model, 96);
 	if (model) session.model = model;
 	const baseSha = optionalString(item.baseSha, 40);
@@ -200,16 +238,16 @@ export function parseCodingSession(value: unknown): CodingSession {
 }
 
 /** qorpera_list_coding_sessions: the sessions dispatched from one conversation, oldest first. */
-export function parseCodingSessions(value: unknown): CodingSession[] {
+export function parseCodingSessions(value: unknown, askedAt = performance.now()): CodingSession[] {
 	const page = record(value, "Coding sessions");
-	return array(page.sessions, "Coding sessions").map(parseCodingSession);
+	return array(page.sessions, "Coding sessions").map((session) => parseCodingSession(session, askedAt));
 }
 
 export function parseCodingSessionEvent(value: unknown): CodingSessionEvent {
 	const item = record(value, "Coding session event");
 	return {
 		id: boundedInteger(item.id, "Coding session event id", 1, Number.MAX_SAFE_INTEGER),
-		sequence: boundedInteger(item.sequence, "Coding session event sequence", 1, 64),
+		sequence: boundedInteger(item.sequence, "Coding session event sequence", 1, Number.MAX_SAFE_INTEGER),
 		kind: oneOf(item.kind, CODING_SESSION_EVENT_KINDS, "Coding session event kind"),
 		actor: oneOf(item.actor, CODING_SESSION_ACTORS, "Coding session event actor"),
 		body: jsonValue(item.body ?? {}),
@@ -218,10 +256,10 @@ export function parseCodingSessionEvent(value: unknown): CodingSessionEvent {
 }
 
 /** qorpera_read_coding_session: the view plus the events after a cursor. */
-export function parseCodingSessionRead(value: unknown): CodingSessionRead {
+export function parseCodingSessionRead(value: unknown, askedAt = performance.now()): CodingSessionRead {
 	const item = record(value, "Coding session read");
 	return {
-		session: parseCodingSession(item.session),
+		session: parseCodingSession(item.session, askedAt),
 		isOwner: item.isOwner === true,
 		events: array(item.events, "Coding session events").map(parseCodingSessionEvent),
 	};

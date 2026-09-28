@@ -36,6 +36,10 @@ export const CLOUD_RUNTIME_TOOL_OPERATIONS = [
 	// Agent memory (runtime Step 6, Grok Bot shape).
 	"update_memory",
 	"recall_memory",
+	// Agent skills (contract 15.2): own and company libraries.
+	"read_skill",
+	"search_skills",
+	"update_skill",
 	// Company sidebar sections, shared with members (2026-09-24).
 	"organize_sidebar",
 	// Auto-review (v130): an agent adds an Ask first rule for its member.

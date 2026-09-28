@@ -54,6 +54,7 @@ update public.qorpera_runtime_offices set state='active';
 select pg_temp.wake_assert((select count(*)=1 from public.qorpera_runtime_machine_allocations
 	where profile_id='30000000-0000-4000-8000-000000000010' and released_at is null),'one machine regardless of screens');
 -- The pause is an operator brake: the operator session acts with a founder's claims.
+select pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
 select public.qorpera_set_company_execution_pause('30000000-0000-4000-8000-000000000010',true,'fixture');
 select pg_temp.path_claims('service_role');
 set local role service_role;

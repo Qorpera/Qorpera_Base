@@ -49,6 +49,7 @@ test("packages the secret broker separately from every execution host", async ()
 		const service = await readFile(join(destination, "qorpera-cloud-secret-broker.service"), "utf8");
 		assert.match(service, /^ProtectSystem=strict$/m);
 		assert.match(service, /^NoNewPrivileges=yes$/m);
+		assert.match(service, /^TimeoutStopSec=90$/m);
 		assert.match(service, /^LoadCredential=qorpera-cloud-secret-keyring:/m);
 		assert.match(service, /^LoadCredential=qorpera-cloud-secret-runtime:/m);
 		assert.match(service, /^LoadCredential=qorpera-cloud-secret-database-url:/m);
