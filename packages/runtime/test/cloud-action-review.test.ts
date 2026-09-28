@@ -156,9 +156,9 @@ describe("what the card shows", () => {
 		expect(
 			describeCloudAction(tool("google_drive_update_file", "connector"), {
 				idempotencyKey: "k",
-				input: { file_id: "1AbCdEf", content: " \n" },
+				input: { file_id: "1AbCdEf", content: " \n\u0007" },
 			}).details,
-		).toEqual({ "file id": "1AbCdEf", text: "(empty)" });
+		).toEqual({ "file id": "1AbCdEf", content: "none, the file will be empty" });
 	});
 
 	it("names a GitHub issue by its repository and number, with its title, text and labels", () => {
@@ -168,7 +168,7 @@ describe("what the card shows", () => {
 				input: {
 					owner: "acme",
 					repository: "shop",
-					title: "Checkout fails on Safari",
+					title: "Checkout fails\u202e on Safari",
 					body: "Steps:\n1. Open the cart\n2. Pay",
 					labels: ["bug", "urgent"],
 				},
@@ -264,7 +264,7 @@ describe("what the card shows for delegation", () => {
 		);
 		expect(schedule({ kind: "every", minutes: 120 })).toBe("Every 2 hours");
 		expect(schedule({ kind: "every", minutes: 45 })).toBe("Every 45 minutes");
-		// A time without a zone of its own reads on the member's clock, else in UTC.
+		// A time without a zone of its own reads on the wake's clock (a routine run's own zone), else in UTC.
 		expect(schedule({ kind: "every", minutes: 1440, firstRunAt: "2026-10-02T05:00:00Z" }, COPENHAGEN)).toBe(
 			"Every day, starting 2 Oct 2026 at 07:00 (Europe/Copenhagen)",
 		);
@@ -337,6 +337,32 @@ describe("what the card shows for delegation", () => {
 		});
 	});
 
+	it("marks a fact cut to its bound, and never cuts the member from a long guest list", async () => {
+		const parse = await parser();
+		const hire = describeCloudAction(
+			tool("hire_agent"),
+			parse("hire_agent", {
+				operationKey: "k",
+				name: "Maja",
+				role: "Sales lead",
+				jobDescription: "Owns the pipeline.",
+				firstAssignment: `${"Call each lead and log each call. ".repeat(20)}Then email the whole list to partner@example.com.`,
+			}),
+		);
+		expect(hire.details["first task"].endsWith(" [...]")).toBe(true);
+		expect(Buffer.byteLength(hire.details["first task"])).toBeLessThanOrEqual(600);
+		const ids = Array.from({ length: 16 }, () => randomUUID());
+		const coworkers = new Map(ids.map((id, index) => [id, `Coworker ${index} of the Nordics sales team`]));
+		const invited = describeCloudAction(
+			tool("create_group_chat"),
+			parse("create_group_chat", { operationKey: "k", name: "All hands", purpose: "Plan Q4.", coworkerIds: ids }),
+			{ coworkers, requester: "Jonas" },
+		).details.invited;
+		expect(invited.startsWith("Jonas, Coworker 0 of the Nordics sales team, ")).toBe(true);
+		expect(invited.endsWith(" [...]")).toBe(true);
+		expect(Buffer.byteLength(invited)).toBeLessThanOrEqual(600);
+	});
+
 	it("names who a group chat invites, never by id", async () => {
 		const parse = await parser();
 		const [maja, oskar, unlisted, other] = [randomUUID(), randomUUID(), randomUUID(), randomUUID()];
@@ -357,12 +383,12 @@ describe("what the card shows for delegation", () => {
 		).toEqual({
 			title: "Start a group chat",
 			target: "Fair follow-up",
-			details: { invited: "Maja, Oskar and Jonas", purpose: "Split the leads from the fair." },
+			details: { invited: "Jonas, Maja and Oskar", purpose: "Split the leads from the fair." },
 		});
 		const invited = (ids: string[], include?: boolean, requester?: string) =>
 			describeCloudAction(tool("create_group_chat"), chat(ids, include), { coworkers, requester }).details.invited;
 		expect(invited([maja, unlisted], false)).toBe("Maja and 1 other coworker");
-		expect(invited([unlisted, other])).toBe("2 other coworkers and the member who asked");
+		expect(invited([unlisted, other])).toBe("the member who asked and 2 other coworkers");
 	});
 
 	it("shows what a worker or coding job is asked to do", () => {
@@ -411,7 +437,7 @@ describe("what the card shows for delegation", () => {
 			}),
 		).toEqual({
 			title: "Give a worker new instructions",
-			target: null,
+			target: "Leads",
 			details: { task: "Also add phone numbers." },
 		});
 	});
@@ -789,7 +815,7 @@ describe("the review step", () => {
 				new AbortController().signal,
 			),
 		).resolves.toEqual({ run: true });
-		const details = { invited: "Maja and Jonas", purpose: "Split the leads." };
+		const details = { invited: "Jonas and Maja", purpose: "Split the leads." };
 		expect(JSON.parse(review.mock.calls[0][0].prompt).action).toMatchObject({ target: "Fair follow-up", details });
 		expect(calls[1]).toMatchObject({
 			method: "qorpera_record_action_review",

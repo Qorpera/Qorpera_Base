@@ -38,7 +38,7 @@ const POLL_MS = 2_000;
 const REVIEW_DEADLINE_MS = 90_000;
 const REQUEST_BYTES = 4096;
 const DETAIL_BYTES = 600;
-/** Text the member approves (a file's content, an issue's body, a new agent's charter): an excerpt. */
+/** Text the member approves (a file's content, an issue's body, an agent's or worker's instructions): an excerpt. */
 const CONTENT_BYTES = 1200;
 /** A best-effort park when a hold ends early (the run stops): the kernel's heartbeat covers a crash. */
 const PARK_ON_EXIT_MS = 5_000;
@@ -107,7 +107,8 @@ export interface CloudActionVerdict {
 }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const PLAIN = /[\u0000-\u001f\u007f\u2028\u2029]/g;
+/** Control characters, and bidi embeddings, overrides and isolates (which could reorder what a card shows). */
+const PLAIN = /[\u0000-\u001f\u007f-\u009f\u2028\u2029\u202a-\u202e\u2066-\u2069]/g;
 
 /** The longest start of the text within the byte bound, cut at a code point. */
 function head(text: string, bytes: number): string {
@@ -280,7 +281,7 @@ function readable(name: string): string {
 		.replace(/_+/g, " ")
 		.trim();
 	if (!words) return name;
-	return /^\p{Ll}\p{Lu}/u.test(words) ? words : words.charAt(0).toLocaleUpperCase() + words.slice(1);
+	return /^\p{Ll}\p{Lu}/u.test(words) ? words : words.charAt(0).toUpperCase() + words.slice(1);
 }
 
 /** A Company File path as a file's name, never the path: "sales/old-offer.md" is "Old offer". */
@@ -383,13 +384,19 @@ export function describeCloudAction(
 ): CloudActionDescription {
 	const args = record(parsed);
 	const action = record(args.action ?? null);
-	// Times without a zone of their own read on the member's clock (the wake's zone), else UTC.
+	// A time without a zone of its own reads on the wake's clock: a routine run's own zone, else UTC.
 	const timeZone = knownZone(facts.timeZone) ?? "UTC";
 	const text = (value: JsonValue | undefined, bytes = DETAIL_BYTES) =>
 		typeof value === "string" ? line(value, bytes) : typeof value === "number" ? String(value) : "";
 	const details: Record<string, string> = {};
-	const add = (key: string, value: JsonValue | undefined, bytes?: number) => {
-		const item = text(value, bytes);
+	// A fact cut to its bound says so: the card no longer shows the call it came from.
+	const add = (key: string, value: JsonValue | undefined, bytes = DETAIL_BYTES) => {
+		const item =
+			typeof value === "string"
+				? bounded(line(value, Number.MAX_SAFE_INTEGER), bytes)
+				: typeof value === "number"
+					? String(value)
+					: "";
 		if (item && Object.keys(details).length < 12) details[key] = item;
 	};
 	const quote = (key: string, value: JsonValue | undefined, bytes = DETAIL_BYTES) => {
@@ -444,12 +451,13 @@ export function describeCloudAction(
 			: [];
 		const named = ids.flatMap((id) => facts.coworkers?.get(id) ?? []).sort((a, b) => a.localeCompare(b, "en"));
 		const others = ids.length - named.length;
+		// The member first, so a long list cut to its bound never drops them.
 		add(
 			"invited",
 			list([
+				...(args.includeRequestingMember !== false ? [facts.requester ?? "the member who asked"] : []),
 				...named,
 				...(others ? [others === 1 ? "1 other coworker" : `${others} other coworkers`] : []),
-				...(args.includeRequestingMember !== false ? [facts.requester ?? "the member who asked"] : []),
 			]),
 		);
 		add("purpose", args.purpose);
@@ -468,13 +476,13 @@ export function describeCloudAction(
 		const key = text(args.routineKey);
 		target = text(args.title) || text(args.name) || (key ? readable(key) : null);
 		add("schedule", routineSchedule(args, timeZone));
-		quote("intent", args.intent, 1200);
+		quote("intent", args.intent, CONTENT_BYTES);
 	} else if (tool.name === "decide_routine") {
 		title = "Change what a routine does";
 		target = text(args.title) || null;
 		const next = clock(args.at, timeZone);
 		add("schedule", next && `Next run ${next} (${timeZone})`);
-		quote("intent", args.intent, 1200);
+		quote("intent", args.intent, CONTENT_BYTES);
 	} else if (tool.name === "manage_worker") {
 		const repository = record(args.repository ?? null);
 		title =
@@ -483,16 +491,22 @@ export function describeCloudAction(
 				: args.species === "coding"
 					? "Start a coding job"
 					: "Start a background worker";
-		target = [text(repository.owner), text(repository.name)].filter(Boolean).join("/") || null;
+		const worker = text(args.workerKey);
+		// A follow-up names its worker by its key.
+		target =
+			[text(repository.owner), text(repository.name)].filter(Boolean).join("/") ||
+			(args.action === "followup" && worker ? readable(worker) : null);
 		add("title", args.title);
-		quote("task", args.goal ?? args.text, 1200);
+		quote("task", args.goal ?? args.text, CONTENT_BYTES);
 	} else if (tool.name === "google_drive_create_file" || tool.name === "google_drive_update_file") {
 		title = CONNECTOR_TITLES[tool.name] ?? title;
 		const input = record(args.input ?? parsed);
 		target = text(input.name) || null;
 		// Replacing a file names it by its id alone.
 		if (!target) add("file id", input.file_id);
-		if (typeof input.content === "string" && !input.content.trim()) add("text", "(empty)");
+		// No text at all is a fact, not a quote the card would show as the file's text.
+		if (typeof input.content === "string" && !paragraphs(input.content))
+			add("content", "none, the file will be empty");
 		else quote("text", input.content, CONTENT_BYTES);
 	} else if (tool.name === "github_create_issue" || tool.name === "github_comment_on_issue") {
 		title = CONNECTOR_TITLES[tool.name] ?? title;
@@ -713,7 +727,7 @@ export class CloudActionReviewGate {
 		request: string;
 		holdMs: number;
 		connectorEffects?: ReadonlyMap<string, "read" | "write">;
-		/** Coworkers' names and the member's time zone, for the card's facts. */
+		/** Coworkers' names and the wake's time zone (a routine run's own, else UTC), for the card's facts. */
 		facts?: Omit<CloudActionFacts, "requester">;
 		observability?: CloudRuntimeObservability;
 		pollMs?: number;
