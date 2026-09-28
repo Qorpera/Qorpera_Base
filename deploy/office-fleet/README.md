@@ -78,8 +78,8 @@ example `/etc/qorpera-node/office-node-base.json`:
 Then, as root (the tool only reads; the two file steps store its output):
 
 ```sh
-node qorpera-office-node-base.cjs measure /etc/qorpera-node/office-node-base.json > /root/office-node-base.measured.json
-install -o root -g root -m 0444 /root/office-node-base.measured.json /etc/qorpera-node/office-node-base.measured.json
+node qorpera-office-node-base.cjs measure /etc/qorpera-node/office-node-base.json > /root/office-node-base.measured.json &&
+  install -o root -g root -m 0444 /root/office-node-base.measured.json /etc/qorpera-node/office-node-base.measured.json
 node qorpera-office-node-base.cjs check /etc/qorpera-node/office-node-base.json /etc/qorpera-node/office-node-base.measured.json
 ```
 
@@ -98,8 +98,10 @@ and not group- or other-writable (so not under `/tmp`).
   node observer's configuration (`/etc/qorpera/node-observer.json`) exists and
   names the same node id and host.
 - `check` measures again and compares with a stored base. Exit 0: same.
-  1: the node changed. 2: usage or an error, including a stored file that is not
-  exactly what `measure` printed; errors print one short code with no values.
+  1: the node changed. 2: usage or an error; errors print one short code with
+  no values. A stored file that cannot be read safely (missing, wrong owner or
+  mode, unsafe folder) gives `OFFICE_NODE_BASE_STORED_UNREADABLE`; one that is
+  not exactly what `measure` printed gives `OFFICE_NODE_BASE_STORED_INVALID`.
   Use it as the pre-check before any machine is prepared.
 - A machine's physical policy takes `host`, `infrastructure` and the journal
   mount from the base, `guest.project/network/storagePool` from `guest`, and

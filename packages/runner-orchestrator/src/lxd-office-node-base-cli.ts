@@ -14,12 +14,19 @@ import { readLxdOfficeProtectedFile } from "./lxd-office-physical-host.ts";
 // qorpera-office-node-base check CONFIG BASE       re-measure and compare with a stored base (read-only)
 // Exit 0: done / same. 1: the node differs from BASE. 2: usage or an error (one short line, no values).
 
-async function readJson(path: string): Promise<unknown> {
-	const bytes = await readLxdOfficeProtectedFile(path, 65536);
+// A file that cannot be read safely (missing, wrong owner or mode, unsafe folder) says so with its own
+// code, apart from a file whose content is wrong.
+async function readJson(path: string, unreadable: string, invalid: string): Promise<unknown> {
+	let bytes: Buffer;
+	try {
+		bytes = await readLxdOfficeProtectedFile(path, 65536);
+	} catch {
+		throw new Error(unreadable);
+	}
 	try {
 		return JSON.parse(new TextDecoder("utf8", { fatal: true }).decode(bytes));
 	} catch {
-		throw new Error("OFFICE_NODE_BASE_INVALID_JSON");
+		throw new Error(invalid);
 	}
 }
 
@@ -32,7 +39,9 @@ async function main(argv: string[]): Promise<number> {
 		process.stderr.write("Usage: qorpera-office-node-base measure CONFIG | check CONFIG BASE\n");
 		return 2;
 	}
-	const config = parseLxdOfficeNodeBaseConfig(await readJson(configPath));
+	const config = parseLxdOfficeNodeBaseConfig(
+		await readJson(configPath, "OFFICE_NODE_BASE_CONFIG_UNREADABLE", "INVALID_OFFICE_NODE_BASE_CONFIG"),
+	);
 	const signal = AbortSignal.timeout(15000);
 	const base = await measureLxdOfficeNodeBase(config, lxdOfficeNodeBasePorts(config.socketPath), signal);
 	if (mode === "measure") {
@@ -40,9 +49,14 @@ async function main(argv: string[]): Promise<number> {
 		return 0;
 	}
 	// A stored base is exactly what `measure` printed: {base, sha256}, with the digest of that base.
+	const storedValue = await readJson(
+		basePath,
+		"OFFICE_NODE_BASE_STORED_UNREADABLE",
+		"OFFICE_NODE_BASE_STORED_INVALID",
+	);
 	let stored: LxdOfficeNodeBase;
 	try {
-		const file = officeRecord(await readJson(basePath), ["base", "sha256"]);
+		const file = officeRecord(storedValue, ["base", "sha256"]);
 		stored = file.base as LxdOfficeNodeBase;
 		if (file.sha256 !== lxdOfficeNodeBaseSha256(stored)) throw new Error();
 	} catch {

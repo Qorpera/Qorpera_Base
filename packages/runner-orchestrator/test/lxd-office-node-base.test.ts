@@ -148,12 +148,28 @@ describe("node base for automatic company machine setup (step 1)", () => {
 				signal(),
 			),
 		).rejects.toThrow("OFFICE_NODE_BASE_OBSERVER_DIFFERS");
+		const other = "88888888-8888-4888-8888-888888888888";
+		await expect(
+			measureLxdOfficeNodeBase(
+				config(),
+				ports({ observer: async () => lxdOfficeNodeObserverRecord(observerConfig({ nodeId: other })) }),
+				signal(),
+			),
+		).rejects.toThrow("OFFICE_NODE_BASE_OBSERVER_DIFFERS");
+	});
+	it("stops when the measurement is cancelled", async () => {
+		const cancelled = new AbortController();
+		cancelled.abort();
+		await expect(measureLxdOfficeNodeBase(config(), ports(), cancelled.signal)).rejects.toMatchObject({
+			name: "AbortError",
+		});
 	});
 	it("reads the observer's own configuration shape", () => {
 		expect(lxdOfficeNodeObserverRecord(observerConfig())).toEqual({ nodeId, host: host() });
 		for (const bad of [
 			Buffer.from("not json"),
 			Buffer.from(JSON.stringify({ policy: {} })),
+			Buffer.from(JSON.stringify({ ...JSON.parse(observerConfig().toString()), extra: 1 })),
 			observerConfig({ host: { ...host(), extra: 1 } }),
 			observerConfig({ nodeId: "node-a" }),
 		])
@@ -216,7 +232,7 @@ describe("node base for automatic company machine setup (step 1)", () => {
 			`41 22 8:17 / ${at} ro - ext4 /dev/sdb1 rw`,
 			`41 22 8:17 / ${at} rw - ext4 /dev/sdb1 ro`,
 			`41 22 8:17 /sub ${at} rw - ext4 /dev/sdb1 rw`,
-			`41 22 8:17 / ${at} rw - ext4 /dev/${"x".repeat(4096)} rw`,
+			`41 22 8:17 / ${at} rw - ext4 /${"x".repeat(4096)} rw`,
 		])
 			expect(() => officeNodeJournalMount(line, at)).toThrow("OFFICE_NODE_BASE_JOURNAL_UNSUITABLE");
 		expect(() =>
@@ -225,10 +241,23 @@ describe("node base for automatic company machine setup (step 1)", () => {
 				at,
 			),
 		).toThrow("OFFICE_NODE_BASE_JOURNAL_NOT_MOUNTED");
-		expect(() => officeNodeJournalMount(`41 22 8:17 / ${at} rw ext4 /dev/sdb1 rw`, at)).toThrow(
+		expect(officeNodeJournalMount(`41 22 8:17 / ${at} rw - ext4 /${"x".repeat(4095)} rw`, at).source).toHaveLength(
+			4096,
+		);
+		for (const line of [
+			`41 22 8:17 / ${at} rw ext4 /dev/sdb1 rw`,
+			`41 22 / ${at} rw - ext4 /dev/sdb1 rw`,
+			`41 22 8:17 / ${at} rw - ext4 /dev/sdb1`,
+			`41 22 8:17 / ${at} rw - ext4 /dev/sdb1 rw extra`,
+			`41 22 8:17 / ${at} rw - ext4 /dev/sdb1 rw - x`,
+		])
+			expect(() => officeNodeJournalMount(line, at)).toThrow("OFFICE_NODE_BASE_MOUNT_UNCONFIRMED");
+		expect(() => officeNodeJournalMount("x".repeat(1048577), at)).toThrow("OFFICE_NODE_BASE_MOUNT_UNCONFIRMED");
+		const many = Array.from({ length: 25000 }, (_, n) => `${n + 100} 22 0:5 / /run/m${n} rw - tmpfs tmpfs rw`);
+		expect(Buffer.byteLength(many.join("\n"))).toBeGreaterThan(1048576);
+		expect(() => officeNodeJournalMount([mountInfo, ...many].join("\n"), at)).toThrow(
 			"OFFICE_NODE_BASE_MOUNT_UNCONFIRMED",
 		);
-		expect(() => officeNodeJournalMount("x".repeat(1048577), at)).toThrow("OFFICE_NODE_BASE_MOUNT_UNCONFIRMED");
 		expect(officeNodeJournalMount(`41 22 8:17 / ${at} rw - xfs /dev/sdb1 rw`, at).filesystem).toBe("xfs");
 		// Octal escapes in mountinfo are decoded; a decoded space is refused, never guessed around.
 		expect(() =>
@@ -252,10 +281,15 @@ describe("node base for automatic company machine setup (step 1)", () => {
 			{ ...config(), ports: { from: 80, to: 91 } },
 			{ ...config(), ports: { from: 65534, to: 65537 } },
 			{ ...config(), ports: { from: 18600.5, to: 18700 } },
+			{ ...config(), ports: { from: 18600.5, to: 18601.5 } },
+			{ ...config(), ports: { from: 18700, to: 18599 } },
 			{ ...config(), workbench: { serverAddress: "nas.local", mountRoot: "/srv/qorpera-scratch" } },
 			{ ...config(), workbench: { serverAddress: "192.168.1.40", mountRoot: at } },
 			{ ...config(), workbench: { serverAddress: "192.168.1.40", mountRoot: `${at}/scratch` } },
-			{ ...config(), workbench: { serverAddress: "192.168.1.40", mountRoot: "/srv/identity/scratch" } },
+			...["live", "company-live", "identity", "credentials", ".codex", ".claude"].map((name) => ({
+				...config(),
+				workbench: { serverAddress: "192.168.1.40", mountRoot: `/srv/${name}/scratch` },
+			})),
 			{ ...config(), journal: { mountPoint: "/srv/qorpera-scratch/journals" } },
 		])
 			expect(() => parseLxdOfficeNodeBaseConfig(bad)).toThrow();
