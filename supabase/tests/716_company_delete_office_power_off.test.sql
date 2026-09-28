@@ -1,0 +1,70 @@
+-- @fixture 405_runtime_office_browser_idle_lease_reap.test.sql until "create function pg_temp.browser("
+-- 20260929150000: a Company Computer of a company being deleted powers off at its provider's next idle
+-- check. While the company lives, a held screen keeps it awake, and so does a pause; deleting the company
+-- turns the next check into a power_off request, and the deletion waits for the computer's machine.
+-- The office registration, start and activation below are the SQL policy fixture of
+-- fixtures/runtime-office-idle-cases.sql; physical activation evidence is synthetic.
+reset role;
+update public.qorpera_runtime_offices set state='provisioning';
+select pg_temp.path_claims('service_role');
+select public.qorpera_set_runtime_office_provider(current_setting('qorpera_test.office_scope')::jsonb,1,
+	'39000000-0000-4000-8000-000000000001',repeat('f',64),0,true);
+select pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
+select public.qorpera_request_runtime_office_start(current_setting('qorpera_test.office_scope')::jsonb,1,
+	'39000000-0000-4000-8000-000000000002');
+select pg_temp.path_claims('service_role');
+select public.qorpera_reserve_runtime_office_start(current_setting('qorpera_test.office_scope')::jsonb,1,
+	'39000000-0000-4000-8000-000000000002','39000000-0000-4000-8000-000000000003',repeat('c',64),repeat('a',64),repeat('b',64),repeat('d',64),
+	'39000000-0000-4000-8000-000000000001',repeat('f',64));
+insert into public.qorpera_runtime_office_activations(intent_id,activation_id,office_id,computer_generation,allocation_id,
+	provider_id,provider_policy_sha256,provider_binding_sha256,instance_sha256,image_sha256,bootstrap_sha256,attestation,mappings,
+	state,service_invocation_id,ready_at,activated_at)
+select i.id,'39000000-0000-4000-8000-000000000004',i.office_id,1,i.allocation_id,p.provider_id,p.policy_sha256,
+	i.provider_binding_sha256,i.instance_sha256,i.image_sha256,i.bootstrap_sha256,
+	jsonb_build_object('bootId','39000000-0000-4000-8000-000000000005','configurationSha256',repeat('e',64)),
+	'[]','active',repeat('a',32),clock_timestamp(),clock_timestamp()
+from public.qorpera_runtime_office_start_intents i join public.qorpera_runtime_office_providers p on p.office_id=i.office_id;
+update public.qorpera_runtime_offices set state='active';
+create function pg_temp.idle_poll() returns jsonb language sql as $$
+	select public.qorpera_reconcile_runtime_office_idle(current_setting('qorpera_test.office_scope')::jsonb,1,
+		'39000000-0000-4000-8000-000000000001',repeat('f',64),60000)
+$$;
+
+-- The company lives: its held screen keeps the computer awake, and so does a pause.
+select pg_temp.wake_assert(pg_temp.idle_poll()->'request'='null','A held screen keeps a living company''s computer awake');
+insert into public.qorpera_company_execution_pauses(profile_id,paused_by_user_id,reason)
+values('30000000-0000-4000-8000-000000000010','30000000-0000-4000-8000-000000000001','Operator pause');
+update public.qorpera_runtime_office_idle_policies set idle_since=clock_timestamp()-interval '2 hours';
+select pg_temp.wake_assert(pg_temp.idle_poll()->'request'='null','A paused company''s computer stays awake');
+delete from public.qorpera_company_execution_pauses where profile_id='30000000-0000-4000-8000-000000000010';
+
+-- Deleting the company powers the computer off at the next check, held screen and pause notwithstanding.
+reset role;
+select public.qorpera_request_company_deletion('30000000-0000-4000-8000-000000000010','30000000-0000-4000-8000-000000000001');
+select pg_temp.path_claims('service_role');
+do $$
+declare v_first jsonb := pg_temp.idle_poll(); v_again jsonb;
+begin
+	perform pg_temp.wake_assert(v_first#>>'{request,action}'='power_off'
+		and v_first#>>'{request,activationId}'='39000000-0000-4000-8000-000000000004',
+		'A deleted company''s computer is asked to power off at once');
+	perform pg_temp.wake_assert((select state from public.qorpera_runtime_offices
+		where id=(current_setting('qorpera_test.office')::jsonb->>'companyComputerId')::uuid)='maintenance',
+		'The computer is going down');
+	v_again := pg_temp.idle_poll();
+	perform pg_temp.wake_assert(v_again->'request'=v_first->'request','The provider keeps getting the same power_off');
+end
+$$;
+reset role;
+
+-- Its machine is still on the node, so the deletion waits for it (the office's removal is step D3).
+do $$
+declare v_result jsonb := public.qorpera_finish_company_deletion('30000000-0000-4000-8000-000000000010');
+begin
+	perform pg_temp.wake_assert(v_result->>'state'='waiting' and (v_result#>>'{holdings,machines}')::integer>=1
+		and exists(select 1 from public.qorpera_profiles where id='30000000-0000-4000-8000-000000000010'),
+		'The deletion waits for the computer''s machine');
+end
+$$;
+
+rollback;

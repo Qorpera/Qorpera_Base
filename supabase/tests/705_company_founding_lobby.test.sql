@@ -530,6 +530,9 @@ select pg_temp.refused($$select public.qorpera_open_company_founding('40000000-0
 -- Closing an open table deletes it with its seats.
 select public.qorpera_delete_hosted_profile(current_setting('qorpera_test.table2')::uuid);
 reset role;
+-- Deleting hides the company and stops its work; the deletion finishes once no node holds anything
+-- of it (20260929150000). This company has nothing on a node.
+select public.qorpera_finish_company_deletion(current_setting('qorpera_test.table2')::uuid);
 do $$ begin
 	if exists(select 1 from public.qorpera_company_foundings where profile_id = current_setting('qorpera_test.table2')::uuid)
 		or exists(select 1 from public.qorpera_company_founder_seats where profile_id = current_setting('qorpera_test.table2')::uuid) then
