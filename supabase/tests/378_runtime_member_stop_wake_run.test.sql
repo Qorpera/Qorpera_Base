@@ -50,7 +50,7 @@ $$;
 
 -- A contributor's own queued message in Bob's thread: a room delivery, as every
 -- member message there is. Inserted as 280 does, on an account of the contributor's
--- own: a member's login pays only for that member's work (20260928170000).
+-- own: a member's login pays only for that member's work (20260928230000).
 select pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000002');
 select set_config('qorpera_test.stop_member_connection',public.qorpera_register_provider_connection(
 	'30000000-0000-4000-8000-000000000010','30000000-0000-4000-8000-000000000780','30000000-0000-4000-8000-000000000002',

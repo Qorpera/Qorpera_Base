@@ -129,7 +129,7 @@ select public.qorpera_append_account_event(
 );
 
 -- This deployment runs API-billed company accounts, so one may pay for a reviewer's or a
--- follow-up's work when the starter's own login cannot (20260928170000).
+-- follow-up's work when the starter's own login cannot (20260928230000).
 reset role;
 insert into public.qorpera_provider_execution_policies(provider,authentication_mode,native_harness,
 	implementation_status,enablement_status,max_native_concurrency)
@@ -242,7 +242,7 @@ begin
 		raise exception 'a member-owned provider connection became a company sponsor';
 	end if;
 
-	-- Only the member who owns a login binds it (20260928170000): an authorizer cannot pay with it.
+	-- Only the member who owns a login binds it (20260928230000): an authorizer cannot pay with it.
 	v_rejected := false;
 	begin
 		perform public.qorpera_create_execution_sponsor_binding(

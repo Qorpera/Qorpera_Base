@@ -1,5 +1,5 @@
 -- @fixture 300_runtime_wake_bus.test.sql until "-- END WAKE FIXTURE"
--- Default staff execution authority (20260923030000, narrowed by 20260928170000):
+-- Default staff execution authority (20260923030000, narrowed by 20260928230000):
 -- a standing authority names a company account only. Hiring an agent into a
 -- company with only members' logins grants nothing, and the agent is still
 -- reachable, because the member who started the work pays for it. When a company

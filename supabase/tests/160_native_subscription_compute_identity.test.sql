@@ -623,7 +623,7 @@ begin
 end
 $$;
 
--- A member cannot ask another member to pay for a turn (20260928170000): the request mode is
+-- A member cannot ask another member to pay for a turn (20260928230000): the request mode is
 -- refused, and approving an older request is refused too.
 do $$
 declare v_rejected boolean := false;

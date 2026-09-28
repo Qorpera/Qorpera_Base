@@ -64,7 +64,7 @@ begin
   'member_connection',(connection->>'connection_id')::uuid,1,false);
  identity := public.qorpera_upsert_member_compute_identity(p,pg_temp.queue_id(p_company,64),
   'Owner compute','qorpera-member-linux','v1','["agent_turn","company_substrate"]','{}');
- -- The member's own login: a member's turn is paid by that member (20260928170000).
+ -- The member's own login: a member's turn is paid by that member (20260928230000).
  perform pg_temp.queue_auth(m);
  connection := public.qorpera_register_provider_connection(p,pg_temp.queue_id(p_company,65),m,
   'openai','api_key','openai-responses','vault://queue/member','queue-member','queue-member-budget',
@@ -87,7 +87,7 @@ begin
   p_client,'user_message','{"schema":"qorpera.session-prompt/v1","text":"Queue regression","images":[]}');
  return (result->>'input_id')::uuid;
 end $$;
--- The member's own turn with review publication. Until 20260928170000 this was a turn the owner
+-- The member's own turn with review publication. Until 20260928230000 this was a turn the owner
 -- was asked to pay for; a member's turn is now paid by that member.
 create function pg_temp.queue_request(p_company jsonb,
  p_client uuid default extensions.gen_random_uuid(), p_request uuid default extensions.gen_random_uuid())
@@ -148,7 +148,7 @@ begin
   appearance_shape,employment_status,lifecycle_state,model_provider,model_id,updated_by_user_id,created_at,updated_at)
  values(origin.profile_id,reviewer,'Queue reviewer','Reviewer','Review proposed work.','blue','round','active','active',
   'openai','gpt-test',(p_company->>'owner')::uuid,statement_timestamp(),statement_timestamp());
- -- A standing authority names a company account only (20260928170000); a native review is
+ -- A standing authority names a company account only (20260928230000); a native review is
  -- paid by the member who started the change, through their own login.
  if not p_native then
   perform pg_temp.queue_auth((p_company->>'owner')::uuid);
@@ -242,7 +242,7 @@ begin
    'low',(sponsor->>'binding_id')::uuid,1,null,'agent_turn','agent_turn',true,'automatic',null,'{}');
  else raise exception 'Unknown recovery lane'; end if;
  execute 'reset role';
- -- The owner writes: the owner's login pays only for the owner's messages (20260928170000).
+ -- The owner writes: the owner's login pays only for the owner's messages (20260928230000).
  if p_lane='ordinary' then input:=pg_temp.queue_input(p_company,true); end if;
  if p_lane='wake' then
   select * into strict cursor from public.qorpera_cloud_routine_schedule_cursors where routine_id=(routine->>'routine_id')::uuid;
