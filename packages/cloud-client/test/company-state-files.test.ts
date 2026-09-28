@@ -174,6 +174,9 @@ describe("companyStatePath", () => {
 		expect(codes("agents/groups/Launch", true)).toEqual(["name"]);
 		expect(codes("agents/anna/Notes", true)).toEqual([]);
 		expect(codes("Sales", true)).toEqual([]);
+		expect(codes("agents/Anna/", true)).toEqual(["name"]);
+		expect(companyStatePathProblems("agents/a/todos/T", true)[0]?.message).toContain("for example t");
+		expect(companyStatePathProblems("agents/a/todos/t/日本", true)[0]?.message).toContain("for example worker");
 	});
 
 	it("leaves ordinary files alone", () => {
@@ -375,10 +378,13 @@ describe("agent.md", () => {
 		expect(problems.at(-1)?.message).toMatch(/^and \d+ more problems$/);
 		const long = refused("agents/a/agent.md", agentFields({ [`k${"x".repeat(5000)}`]: "v" }));
 		expect(long[0]?.message.length).toBeLessThan(400);
+		const twice = `---\n${`k${"x".repeat(5000)}: 1\n`.repeat(2)}---\nx\n`;
+		expect(JSON.stringify(refused("agents/a/agent.md", twice)).length).toBeLessThan(3000);
 		expect(JSON.stringify(long).length).toBeLessThan(2000);
 	});
 
 	it("keeps Unicode spaces, as YAML does, and refuses them at the edges", () => {
+		expect(ok("agents/a/agent.md", agentFields({ name: "a\u00a0#b" }))).toMatchObject({ name: "a\u00a0#b" });
 		expect(keys(refused("agents/a/agent.md", agentFields({ name: "Anna\u00a0" })))).toEqual([["name", "value"]]);
 		expect(refused("agents/a/agent.md", agentFields({ note: "x" }).replace("note: x", "\u00a0# note"))[0]?.code).toBe(
 			"syntax",
@@ -919,6 +925,16 @@ describe("companyStateValue", () => {
 		expect(keys(refused("agents/a/agent.md", writeAgentFile({ ...agentBase(), name: "Anna\tBerg" })))).toEqual([
 			["name", "value"],
 		]);
+		for (const name of ["Anna\ufffe", "Anna\uffff"]) {
+			expect(companyStateValue(name)).toMatch(/^"Anna\\uff/);
+			expect(ok("agents/a/agent.md", writeAgentFile({ ...agentBase(), name }))).toMatchObject({ name });
+		}
+		const group = writeGroupFile(
+			{ id: GROUP, name: "L", subtitle: null, agents: [ANNA, IDA], people: [], purpose: "P" },
+			new Map([[ANNA, "Anna\ufffeBerg"]]),
+		);
+		expect(ok("agents/groups/l/group.md", group)).toMatchObject({ agents: [ANNA, IDA] });
+		for (const text of ["2026-09-30", "2026-9-3", "._5"]) expect(companyStateValue(text)).toBe(`"${text}"`);
 	});
 });
 

@@ -63,6 +63,8 @@ const LINE_SEPARATOR = /[\u2028\u2029]/;
 /** Controls a settings line never holds (a tab has its own message). A carriage return inside a
  * line is one of them: YAML reads it as a line break. */
 const SETTINGS_CONTROL = /[\u0000-\u0008\u000a-\u001f\u007f-\u009f\ufffe\uffff]/;
+/** What a writer never writes raw: controls, line separators and the noncharacters YAML refuses. */
+const WRITER_ESCAPED = /[\u0000-\u001f\u007f-\u009f\u2028\u2029\ufffe\uffff]/;
 const LONE_SURROGATE = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/;
 const INSTANT = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,6}))?)?Z$/;
 const CLOCK = /^([01]\d|2[0-3]):([0-5]\d)$/;
@@ -618,7 +620,7 @@ function split(text: string, front: boolean, problems: Problems): Split | null {
 			continue;
 		}
 		if (values.has(key)) {
-			problems.add("duplicate_key", number, key, `${key} is set twice`);
+			problems.add("duplicate_key", number, key, `${shown(key)} is set twice`);
 			continue;
 		}
 		const rest = trimSpaces(match[2] ?? "");
@@ -1234,7 +1236,9 @@ export function companyStatePathProblems(path: string, folder = false): CompanyS
 	const written = path.split("/");
 	const named: [string | undefined, string][] = [];
 	if (folder) {
-		const places = structuredFolderNames(companyPathKey(path).split("/"));
+		let end = written.length;
+		while (end > 1 && written[end - 1] === "") end--;
+		const places = structuredFolderNames(companyPathKey(written.slice(0, end).join("/")).split("/"));
 		if (places === null) return [];
 		for (const [index, what] of places) named.push([written[index], what]);
 	} else {
@@ -1255,7 +1259,13 @@ export function companyStatePathProblems(path: string, folder = false): CompanyS
 				null,
 				`the name of ${what} (${shown(name ?? "")}) must be lowercase letters a–z, digits and single hyphens, at most ${COMPANY_STATE_NAME_MAX_CHARS} characters, for example ${
 					companyStateName(name ?? "") ||
-					(what === "a group chat's folder" ? "group" : what === "an agent's folder" ? "agent" : "file")
+					({
+						"a group chat's folder": "group",
+						"an agent's folder": "agent",
+						"the todo's folder": "todo",
+						"the worker's folder": "worker",
+					}[what] ??
+						"file")
 				}`,
 			);
 	const kind = folder ? null : companyStatePath(path)?.kind;
@@ -1358,7 +1368,7 @@ export function companyStateValue(text: string): string {
 		!/: |:$| #/.test(text) &&
 		!ambiguousPlain(text) &&
 		!yaml11Ambiguous(text) &&
-		!NOT_ONE_LINE.test(text);
+		!WRITER_ESCAPED.test(text);
 	return plain ? text : quote(text);
 }
 
@@ -1366,14 +1376,14 @@ export function companyStateValue(text: string): string {
  * booleans, base-60 numbers and leading-zero octals. Writers quote them; the parser follows
  * YAML 1.2 and reads them as text. */
 function yaml11Ambiguous(text: string): boolean {
-	return /^(?:y|Y|yes|Yes|YES|n|N|no|No|NO|on|On|ON|off|Off|OFF|=|<<)$|^[-+]?[0-9][0-9_]*(?::[0-5]?[0-9])+(?:\.[0-9_]*)?$|^[-+]?0[0-7_]+$|^[-+]?0b[01_]+$|^[-+]?0x[0-9a-fA-F_]+$|^[-+]?[0-9][0-9_]*(?:\.[0-9_]*)?(?:[eE][-+]?[0-9]+)?$|^[-+]?\.[0-9][0-9_]*(?:[eE][-+]?[0-9]+)?$/.test(
+	return /^(?:y|Y|yes|Yes|YES|n|N|no|No|NO|on|On|ON|off|Off|OFF|=|<<)$|^[-+]?[0-9][0-9_]*(?::[0-5]?[0-9])+(?:\.[0-9_]*)?$|^[-+]?0[0-7_]+$|^[-+]?0b[01_]+$|^[-+]?0x[0-9a-fA-F_]+$|^[-+]?[0-9][0-9_]*(?:\.[0-9_]*)?(?:[eE][-+]?[0-9]+)?$|^[-+]?\.[0-9_]+(?:[eE][-+]?[0-9]+)?$|^[0-9]{4}-[0-9]{1,2}-[0-9]{1,2}(?:[Tt ]|$)/.test(
 		text,
 	);
 }
 
 function quote(text: string): string {
 	return JSON.stringify(text).replace(
-		/[\u007f-\u009f\u2028\u2029]/g,
+		/[\u007f-\u009f\u2028\u2029\ufffe\uffff]/g,
 		(character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`,
 	);
 }
@@ -1387,9 +1397,9 @@ function document(lines: readonly (readonly [string, string | null])[], text: st
 	return `---\n${front.join("\n")}\n---\n${text.trim() ? `${text.trim()}\n` : ""}`;
 }
 
-/** A name beside an id, for reading: one line, with every control or line separator a space. */
+/** A name beside an id, for reading: one line, with every character a writer escapes a space. */
 function readable(name: string | undefined): string {
-	return (name ?? "").replace(new RegExp(NOT_ONE_LINE.source, "g"), " ").replace(/\s+/g, " ").trim();
+	return (name ?? "").replace(new RegExp(WRITER_ESCAPED.source, "g"), " ").replace(/\s+/g, " ").trim();
 }
 
 function note(name: string | undefined): string {

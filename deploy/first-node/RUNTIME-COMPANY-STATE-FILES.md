@@ -51,7 +51,8 @@ on one list of paths, compatibility spellings included.
 Folder and file names follow contract 5.6 as written (not only as keys): lowercase `a–z`,
 digits and single hyphens, at most 64 characters, and a lowercase `.md` extension. The whole
 path of a structured file is written exactly as its key, so `agents/anna/Agent.md` or a
-compatibility spelling is refused with the spelling to use.
+compatibility spelling is refused with the spelling to use. The rule covers agent and group
+folders, routine, todo, rule and connection files, and todo and worker folders.
 
 These path checks are `companyStatePathProblems(path, folder)`. They need no text, so the
 database runs the same list, and the comparison test covers both. `decide` runs them on the
@@ -65,9 +66,10 @@ path an entry is actually stored under, its parent folder's stored spelling incl
 So a rename can never leave a file that no later save could pass. Renaming
 `routines/daily.md` to `Daily report.md`, or case-only to `Daily.md`, is refused. So is
 creating an ordinary folder `agents/anna/Routines/`, which would give a later routine the
-wrong spelling. This covers
-agent and group folders, routine, todo, rule and connection files, and todo and worker
-folders. `companyStateName` makes one from a display name: NFC first, then æ → ae, ø → oe,
+wrong spelling. A subtree move checks the moved folder's new name; the names inside it do not
+change. A failed path check refuses the unit as `structured_invalid` with `name` problems.
+
+`companyStateName` makes a name from a display name: NFC first, then æ → ae, ø → oe,
 å → aa, accents dropped, spaces to hyphens, the rest dropped. `freeCompanyStateName` adds `-2`,
 `-3` for a taken name and uses the fallback (`agent`, `group`) when nothing is left. `groups`
 is reserved under `agents/`. Uniqueness is checked by the database on the key.
@@ -132,7 +134,8 @@ like these, but not instants.
 
 A structured file is at most 64 KiB (core §5). The same bytes always give the same parse or the
 same problems. A refused file reports at most 50 problems, then one closing "and K more
-problems". Input quoted in a message is cut to 100 characters, so problems stay small next to
+problems" (`line` and `key` null, the code of the first problem left out). Input quoted in a
+message or a problem's `key` is cut to 100 characters, so problems stay small next to
 the file. A place that shows a missing-id problem may offer a fresh id
 (`newCompanyStateId`), but the parse never contains one, so an operation key replays.
 
@@ -428,7 +431,8 @@ carries would become a structured file of another kind, or turn from structured 
 or back. Examples: an ordinary `notes/hire.md` moved to `agents/nora/agent.md`, a todo moved
 into `routines/`, a todo moved out to `notes/`. Write the new file instead.
 
-A copy never lands a structured file, which narrows core §5's copy rule ("parse as a new file").
+A copy never lands a structured file (`structured_copy`), which narrows core §5's copy rule
+("parse as a new file").
 A copy would repeat an id, and a worker's brief and results are platform-only. So only moves
 that keep every kind carry structured files. Their index rows are repointed without a new
 parse, and the path checks above run on their new paths.
@@ -451,7 +455,8 @@ Outcome shape (core §3 "Outcomes"):
     the same way for every writer.
   - A writer that cannot decode the bytes as strict UTF-8 reports `encoding` itself.
 - `structured_rule`: a database rule, such as an unknown id added, an unknown time zone, a
-  taken name, a second Co-Founder, a platform-only field, `no_agent` or `kind_change`.
+  taken name, a second Co-Founder, a platform-only field, `no_agent`, `kind_change` or
+  `structured_copy`.
 - The 5.6 refusals keep their own reasons: `seeded`, `cofounder`, `coding_session_read_only`,
   `rules_owner_only`, `connected`, `lone_structured_file`, `out_of_place`.
 
