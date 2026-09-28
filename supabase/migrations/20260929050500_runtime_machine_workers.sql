@@ -42,9 +42,10 @@ select pg_temp.machine_worker_patch(
 
 -- status: one machine's state and, with commandId, how that command stands, as
 -- the executor last recorded it (a pass every 10 s). A waiting worker looks
--- here instead of at the machine: a read, no lock, nothing written. A run that
--- may no longer work (its worker was cancelled, the company paused) is told
--- so, and stops waiting.
+-- here instead of at the machine: it writes nothing and takes no machine lock
+-- (only the run's own authority check locks its job row). A run that may no
+-- longer work (its worker was cancelled, the company paused) is told so, and
+-- stops waiting.
 select pg_temp.machine_worker_patch('public.qorpera_native_machine_manage(jsonb,jsonb)'::regprocedure,
 	$old$		or v_action is null or v_action not in ('list','stop','delete')
 		or (v_action = 'list' and p_request - 'action' <> '{}'::jsonb)
@@ -52,7 +53,8 @@ select pg_temp.machine_worker_patch('public.qorpera_native_machine_manage(jsonb,
 			or coalesce(p_request ->> 'machine','') !~ '^[a-z0-9][a-z0-9-]{0,39}$')) then$old$,
 	$new$		or v_action is null or v_action not in ('list','stop','delete','status')
 		or (v_action = 'list' and p_request - 'action' <> '{}'::jsonb)
-		or (v_action <> 'list' and (p_request - array['action','machine'] - case when v_action = 'status' then 'commandId' else '' end <> '{}'::jsonb
+		or (v_action <> 'list' and (p_request - case when v_action = 'status' then array['action','machine','commandId']
+				else array['action','machine'] end <> '{}'::jsonb
 			or coalesce(p_request ->> 'machine','') !~ '^[a-z0-9][a-z0-9-]{0,39}$'))
 		or (p_request ? 'commandId' and coalesce(p_request ->> 'commandId','')
 			!~ '^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$') then$new$);

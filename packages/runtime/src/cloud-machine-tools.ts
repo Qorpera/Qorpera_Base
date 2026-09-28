@@ -66,8 +66,11 @@ export const CLOUD_MACHINE_START_DESCRIPTION =
 	"A result with refused started nothing and says why (the name is taken, too large for any server, no such machine). Keep operationKey stable after an uncertain result.";
 /** A worker (an agent's background helper) is never woken: it has no conversation to continue. */
 export const CLOUD_MACHINE_START_WORKER_DESCRIPTION = CLOUD_MACHINE_START_DESCRIPTION.replace(
+	"To wake a stopped machine, pass only machine with its name.",
+	"To wake a stopped machine, pass only machine with its name (and waitSeconds to wait).",
+).replace(
 	"If it is not running yet, finish this run normally: you are woken when it runs.",
-	"You are a worker: nothing wakes you. With waitSeconds (1 to 300) the call waits while it starts, and no model turn is spent; start it again by name to wait longer. " +
+	"You are a worker: nothing wakes you. With waitSeconds (1 to 300) the call waits while it starts, and no model turn is spent; to wait longer, call machine_start again with the same operationKey and arguments (waitSeconds may change). " +
 		"A machine that waits in line for room returns at once: use another running machine from machine_list, or say in your report that it is waiting so your agent can retry.",
 );
 export const CLOUD_MACHINE_RUN_DESCRIPTION =
@@ -405,8 +408,20 @@ export function cloudMachineTools(options: {
 				return latest.state !== "starting";
 			});
 			check(context);
-			if (outcome === "stopped") return workStopped();
-			return { kind: "json", value: { ...started, machine: latest } as JsonValue };
+			// The machine was started either way: a stopped worker is told so beside it, not refused.
+			return {
+				kind: "json",
+				value: {
+					...started,
+					machine: latest,
+					...(outcome === "stopped"
+						? {
+								workStopped:
+									"your work was stopped (your agent cancelled it, or the company paused work); end your run",
+							}
+						: {}),
+				} as JsonValue,
+			};
 		},
 	};
 

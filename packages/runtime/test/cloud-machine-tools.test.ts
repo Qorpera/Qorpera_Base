@@ -161,6 +161,8 @@ describe("machine tools", () => {
 			expect(run.description).not.toContain("With notify true");
 			expect(start.description).toContain("You are a worker: nothing wakes you.");
 			expect(start.description).not.toContain("you are woken when it runs");
+			// To wait longer it repeats the same start: a new key would be another start.
+			expect(start.description).toContain("call machine_start again with the same operationKey and arguments");
 			expect(() =>
 				run.parseArguments({ operationKey: "k", machine: "build-a", command: "npm test", notify: true }),
 			).toThrow();
@@ -347,6 +349,63 @@ describe("machine tools", () => {
 				expect(f.looks()).toHaveLength(2);
 				expect(f.execute.mock.calls[0][0].operation.arguments).not.toHaveProperty("waitSeconds");
 				expect(f.execute.mock.calls[0][0].operation.arguments).toMatchObject({ name: "shard-1" });
+			} finally {
+				f.boundary.close();
+			}
+		});
+
+		it("stops waiting for a start at the deadline, when the machine is gone, or when its work is stopped", async () => {
+			const start = async (f: ReturnType<typeof fixture>, key: string, waitSeconds: number, advance: number) => {
+				const call = f.boundary.invoke(key, "qorpera", "machine_start", {
+					operationKey: key,
+					machine: "build-a",
+					waitSeconds,
+				});
+				await vi.advanceTimersByTimeAsync(advance);
+				return f.content((await call) as never);
+			};
+			const slow = fixture(undefined, true);
+			const gone = fixture(undefined, true);
+			const stopped = fixture(undefined, true);
+			try {
+				for (const f of [slow, gone, stopped]) {
+					f.started.state = "starting";
+					f.started.queuePosition = null;
+				}
+				slow.statuses.push(
+					...Array.from({ length: 3 }, () => slow.status({ ...slow.listed[0], state: "starting" })),
+				);
+				expect((await start(slow, "slow", 7, 7_000)).machine.state).toBe("starting");
+				// Looks at 0, 5 and at the deadline, 7 s.
+				expect(slow.looks()).toHaveLength(3);
+				gone.statuses.push(gone.status(null));
+				expect((await start(gone, "gone", 60, 0)).machine.state).toBe("deleted");
+				stopped.statuses.push({ schema: "qorpera.machine-status/v1", workStopped: true });
+				const answer = await start(stopped, "stopped", 60, 0);
+				// It was started all the same: the answer is the start, and the worker is told to end.
+				expect(answer.machine.state).toBe("starting");
+				expect(answer.workStopped).toContain("end your run");
+				expect(answer.refused).toBeUndefined();
+			} finally {
+				for (const f of [slow, gone, stopped]) f.boundary.close();
+			}
+		});
+
+		it("stops waiting for a command when its machine stops, and the read says so", async () => {
+			const f = fixture(undefined, true);
+			try {
+				f.statuses.push(f.status({ ...f.listed[0], state: "stopping" }, "running"));
+				f.gateway.read.mockRejectedValueOnce(new CloudMachineCommandRefusal("MACHINE_NOT_RUNNING"));
+				const read = f.boundary.invoke("r1", "qorpera", "machine_read", {
+					machine: "build-a",
+					commandId: randomUUID(),
+					waitSeconds: 300,
+				});
+				await vi.advanceTimersByTimeAsync(0);
+				const result = await read;
+				expect(result.contentItems[0].text).toContain("MACHINE_NOT_RUNNING");
+				expect(f.looks()).toHaveLength(1);
+				expect(f.gateway.read).toHaveBeenCalledTimes(1);
 			} finally {
 				f.boundary.close();
 			}

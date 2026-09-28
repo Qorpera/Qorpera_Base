@@ -126,6 +126,29 @@ begin
 	perform pg_temp.wake_error(format($sql$select public.qorpera_native_machine_manage(%L,
 		'{"action":"status","machine":"shard-1","commandId":"not-a-command"}')$sql$,pg_temp.child()),'22023',
 		'Invalid machine request');
+	perform pg_temp.wake_error(format($sql$select public.qorpera_native_machine_manage(%L,
+		'{"action":"stop","machine":"shard-1","":1}')$sql$,pg_temp.child()),'22023',
+		'Invalid machine request');
+	-- A command is looked up on the machine named, and a machine in this company only.
+	insert into public.qorpera_company_machines(id, profile_id, environment_id, name, purpose, started_by_staff_agent_id, started_by_run_id,
+		started_by_receipt_id, requested_by_user_id, cpus, memory_bytes, disk_bytes, image, lifetime, desired_state, desired_by)
+	select extensions.gen_random_uuid(), profile_id, environment_id, 'other-1', 'Another machine', started_by_staff_agent_id,
+		started_by_run_id, extensions.gen_random_uuid(), requested_by_user_id, 1, 1073741824, 10737418240, 'standard', 'task', 'stopped', 'agent'
+	from public.qorpera_company_machines where name = 'shard-1' and removed_at is null;
+	insert into public.qorpera_profiles(id,name,created_by_user_id)
+	values ('30000000-0000-4000-8000-000000000611','Another company','30000000-0000-4000-8000-000000000001');
+	insert into public.qorpera_company_environments(id,profile_id,name,contract_version,created_by_user_id)
+	values ('30000000-0000-4000-8000-000000000612','30000000-0000-4000-8000-000000000611','Environment',1,'30000000-0000-4000-8000-000000000001');
+	insert into public.qorpera_company_machines(id, profile_id, environment_id, name, purpose, started_by_staff_agent_id, started_by_run_id,
+		started_by_receipt_id, requested_by_user_id, cpus, memory_bytes, disk_bytes, image, lifetime, desired_state, desired_by)
+	select extensions.gen_random_uuid(), '30000000-0000-4000-8000-000000000611', '30000000-0000-4000-8000-000000000612', 'elsewhere',
+		'Another company''s machine', started_by_staff_agent_id, started_by_run_id, extensions.gen_random_uuid(), requested_by_user_id,
+		1, 1073741824, 10737418240, 'standard', 'task', 'stopped', 'agent'
+	from public.qorpera_company_machines where name = 'shard-1' and removed_at is null;
+	perform pg_temp.wake_assert(public.qorpera_native_machine_manage(pg_temp.child(),
+			'{"action":"status","machine":"other-1","commandId":"30000000-0000-4000-8000-000000000601"}') -> 'command' = 'null'::jsonb
+		and public.qorpera_native_machine_manage(pg_temp.child(),'{"action":"status","machine":"elsewhere"}') -> 'machine' = 'null'::jsonb,
+		'Another machine''s command, and another company''s machine, are none');
 	-- The agent itself may still ask to be woken by a command on the worker's machine.
 	perform public.qorpera_begin_native_tool_operation(current_setting('qorpera_test.parent_binding')::jsonb,
 		'30000000-0000-4000-8000-000000000602','machine_run:t2',repeat('6',64),repeat('5',64),false);
