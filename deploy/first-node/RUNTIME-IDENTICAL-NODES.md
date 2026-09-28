@@ -150,3 +150,83 @@ migration can go in any cut without a pause.
    Until logins are in the vault, runs of members whose login lives on the node wait while it is
    empty. Keep that window short.
 
+## Change 4: each run keeps its version (migration `20260928182000`)
+
+- **How a run gets its bundle.** A run is bound to a runtime bundle when it is created: its
+  inputs' bundle, else the active bundle (`20260828019300`). The run's host refuses any other
+  bundle (`assertCloudRuntimeBundle`). Today every cut pauses all companies, so that no run of
+  the old bundle remains when the new one activates.
+- **Where old-bundle runs come from after a switch:**
+  - inputs accepted before the switch;
+  - the retry of a failed run (a new run whose inputs keep the old bundle);
+  - a sponsorship request approved later.
+- **Declaring a bundle.** `qorpera_declare_runner_orchestrator_bundle(orchestrator, sha | null)`
+  (service role) records the bundle an orchestrator's hosts run. The bundle must be registered,
+  and the orchestrator not revoked.
+  - A declared orchestrator claims only runs whose `runtime_bundle_sha256` equals its
+    declaration. The claim reads the declaration by primary key.
+  - An undeclared orchestrator claims as before.
+  - **Re-registering an orchestrator clears its declaration.** Every fast-host rebuild does
+    that, and the rebuilt host may run another bundle. So a leftover declaration cannot outlive
+    the host it described; after a rebuild, declare again.
+- **`qorpera_runtime_bundle_roll_status()`** (service role) lists the active bundle and, for
+  every bundle with work or a declaring orchestrator:
+  - queued runs (unclaimed) and running runs (claimed or leased);
+  - inputs not yet turned into a run, with the oldest one's time;
+  - the declaring orchestrators with their nodes, serving state and heartbeats;
+  - `servedBy` and `servedOnServingNode`: live, active orchestrators on a serving node, or with no
+    node row, that declare this bundle or nothing.
+
+  It also lists `undeclared`, the active orchestrators that declare nothing whatever their
+  heartbeat (a rebuilt host left stopped claims at its first call), and `undeclaredLive`, the part
+  of those with a heartbeat. `servedBy` is an upper bound: an undeclared orchestrator's host
+  refuses bundles it does not run, the identity-home rule still applies, and a just re-registered
+  orchestrator counts as live for up to 2 minutes before it starts. During a roll `undeclared`
+  must be empty.
+- **Things read from the active bundle.** Old-bundle runs themselves are not affected: a run's
+  model policy comes from its own bundle, and only a conversation's displayed defaults follow the
+  active one. Two cases need care:
+  - A packaged office checks its package's bundle against the active bundle on every start, reset
+    and install. Across a switch, a packaged office on the old package cannot start or reset
+    until its package is renewed for the new bundle, as at every cut today.
+  - A release whose migrations change what the old host reads or sends pauses (see
+    `RUNTIME-ROLLING-UPDATE.md`).
+
+### Use in a rolling update (change 7 writes the full procedure)
+
+A bundle can be declared only once it is registered, and the activation migration registers and
+activates it in one step. So the updated node stays switched off until the activation:
+
+1. Apply the release's migrations. They must be safe for the running bundle N.
+2. Declare every orchestrator on node B as N.
+3. Empty node A (`qorpera_set_runtime_node_serving`), wait for `readyForUpdate`, then update it:
+   node release, image, fast host rebuilt without a declaration. The rebuild re-registers the fast
+   host's orchestrator, which clears any declaration. Start A's orchestrators; while A is switched
+   off they claim nothing.
+4. Activate N+1 with A still switched off. New inputs and runs bind to N+1 and wait briefly: B is
+   declared N and A claims nothing.
+5. Declare **every** orchestrator on node A as N+1, the rebuilt fast host included; `undeclared`
+   must be empty and no orchestrator on A may still be declared N. Return node A to serving: it
+   takes the N+1 runs. Node B finishes N.
+6. When `qorpera_runtime_bundle_roll_status()` shows no queued or running N runs, and no N input
+   that can still run, empty node B and update it; declare all of node B's orchestrators as N+1
+   (N+1 is registered now, so B's fast host rebuild can declare it with
+   `EXEC_RUNTIME_BUNDLE_SHA256`) and return it.
+7. Clear every declaration.
+
+### Rollout (coordinator)
+
+SQL only, safe for the running bundle, and nothing changes until an operator declares.
+- **Activation guard** for the release branch: `declared.runtime_bundle_sha256` present in the
+  claim function. Check that it is ABSENT live first.
+- **Stacking.** This PR is stacked on change 1 (#424) and needs `20260928180700` first
+  (`qorpera_runtime_orchestrator_nodes`).
+- **Every cut's preflight**, paused or rolling: no declaration may be left over. A leftover
+  declaration stops that orchestrator from claiming runs of the new bundle.
+
+  ```sql
+  select id, provider_adapter, runtime_bundle_sha256 from public.qorpera_runner_orchestrators
+  where runtime_bundle_sha256 is not null and status <> 'revoked';
+  ```
+
+  This must return no rows before a paused cut.
