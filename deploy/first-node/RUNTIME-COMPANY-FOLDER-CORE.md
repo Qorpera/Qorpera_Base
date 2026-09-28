@@ -950,10 +950,11 @@ For `folder-v2` companies:
 1. The rewrites of §10 due by C5 land.
 2. An operator creates one `folder-v2` proof company and runs the core
    acceptance below. The load test of §9 passes.
-3. The reset procedure is written as a service-role function. Today's product
-   delete (`qorpera_delete_hosted_profile`, 20260818006000:41-68) fails for any
-   company that has had a run: restrict foreign keys and triggers refuse
-   deletes.
+3. The reset procedure is written as a service-role function, and becomes the
+   product's "Delete company" for `folder-v2` companies (founder decision,
+   28 September 2026). Today's product delete (`qorpera_delete_hosted_profile`,
+   20260818006000:41-68) fails for any company that has had a run: restrict
+   foreign keys and triggers refuse deletes.
 4. Its exact scope goes to the founder for confirmation, including whether the
    proof company is deleted too.
 5. One owner runs it in a short maintenance pause, and company creation
@@ -1005,8 +1006,7 @@ After C5, the mount's build steps continue from RUNTIME-COMPANY-FOLDER.md §9.
 3. **Member-private folders.** `members/<id>/private` exists in SQL but not in
    contract 5.6. Proposed: keep it as an explicit resource, and add one line
    to 5.6.
-4. **"Delete company" in the product.** It calls
-   `qorpera_delete_hosted_profile` (`web/src/cloud/api.ts:256`), which fails
-   for any company that has had a run. Proposed: the C5 reset procedure
-   becomes the product's delete for `folder-v2` companies. This is a founder
-   decision.
+4. **"Delete company" in the product.** Decided by the founder on
+   28 September 2026: the C5 reset procedure becomes the product's delete for
+   `folder-v2` companies. Today's `qorpera_delete_hosted_profile`
+   (`web/src/cloud/api.ts:256`) fails for any company that has had a run.
