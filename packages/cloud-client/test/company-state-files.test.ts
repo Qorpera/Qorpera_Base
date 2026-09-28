@@ -1035,4 +1035,27 @@ describe("companyStateSeedTree", () => {
 			sections: [],
 		});
 	});
+
+	it("seeds the founding table's vision, roles and the Co-Founder's first todo", () => {
+		const tree = companyStateSeedTree({
+			companyName: "Nordlys Studio",
+			cofounderId: ANNA,
+			vision: "  We book physiotherapy.\n\nFor small clinics.  ",
+			founders: [
+				{ displayName: "Jonas", role: "Product and sales" },
+				{ displayName: "Ida\nLund", role: "" },
+				{ displayName: " ", role: "ignored" },
+			],
+			firstTodo: { id: ID, requestedBy: JONAS },
+		});
+		const vision = tree.find((entry) => entry.path === "vision/vision.md")?.text ?? "";
+		expect(ok("vision/vision.md", vision)).toEqual({ kind: "vision", name: "Nordlys Studio" });
+		expect(vision).toBe(
+			"# Nordlys Studio\n\nWe book physiotherapy.\n\nFor small clinics.\n\n## What we build\n\n## For whom\n\n## Why\n\n## How we work\n- Jonas: Product and sales\n- Ida Lund\n",
+		);
+		const todo = tree.find((entry) => entry.path === "agents/co-founder/todos/start-with-the-founders.md");
+		expect(ok(todo?.path ?? "", todo?.text ?? "")).toMatchObject({ id: ID, status: "open", requestedBy: JONAS });
+		const paths = tree.map((entry) => entry.path);
+		expect(paths.indexOf("agents/co-founder/todos")).toBeLessThan(paths.indexOf(todo?.path ?? ""));
+	});
 });
