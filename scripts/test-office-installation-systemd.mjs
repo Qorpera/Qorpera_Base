@@ -5,11 +5,15 @@ import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { build } from "esbuild";
+import { SYSTEMD_CONTAINER_SECURITY, systemdContainerBoot } from "./fixtures/systemd-container.mjs";
 
 const repository = resolve(import.meta.dirname, "..");
 const image = process.env.QORPERA_OFFICE_SYSTEMD_TEST_IMAGE;
 if (process.argv.length !== 2 || !image || !/^(?:[^\s]+@)?sha256:[0-9a-f]{64}$/.test(image))
 	throw new Error("Select a prepared, digest-pinned local systemd/Node 22 image with QORPERA_OFFICE_SYSTEMD_TEST_IMAGE");
+// Package as a root build would: Ubuntu's default user umask 0002 leaves files group-writable,
+// and the installers refuse those as unprotected. Docker Desktop shows every mounted file as root 0644.
+process.umask(0o022);
 const temporary = await mkdtemp(join(tmpdir(), "qorpera-office-install-systemd-"));
 let container;
 const command = (file, args, timeout = 60000) => {
@@ -30,13 +34,13 @@ try {
 	// provider unit is exercised unchanged and retains empty capability sets.
 	for (const cap of ["SYS_ADMIN", "SYS_PTRACE", "SYS_RESOURCE", "SYS_CHROOT", "CHOWN", "DAC_OVERRIDE", "FOWNER", "FSETID", "KILL", "SETGID", "SETUID", "SETPCAP", "AUDIT_WRITE", "MKNOD"])
 		args.push("--cap-add", cap);
-	args.push("--device-cgroup-rule", "c 10:237 rwm", "--device-cgroup-rule", "b 7:* rwm", "--security-opt", "no-new-privileges", "--cpus", "2", "--memory", "768m", "--pids-limit", "1024",
+	args.push("--device-cgroup-rule", "c 10:237 rwm", "--device-cgroup-rule", "b 7:* rwm", ...SYSTEMD_CONTAINER_SECURITY, "--cpus", "2", "--memory", "768m", "--pids-limit", "1024",
 		"--tmpfs", "/run:rw,nosuid,nodev,size=128m,mode=755", "--tmpfs", "/tmp:rw,nosuid,nodev,size=192m,mode=1777", "--tmpfs", "/var/log/journal:rw,nosuid,nodev,size=16m,mode=755", "--tmpfs", "/etc/systemd/system:rw,nosuid,nodev,size=16m,mode=755", "--env", "container=docker");
 	for (const [source, target] of [[packaged, "/fixture/package"], [fixture, "/fixture/physical.cjs"], [join(repository, "scripts/fixtures/office-installation-systemd.mjs"), "/fixture/check.mjs"], [temporary, "/fixture/tls"]])
 		args.push("--mount", `type=bind,src=${source},dst=${target},readonly`);
 	// Only the container's own cgroup namespace is remounted. No host cgroup or
 	// block-device bind is passed; the probe mounts its own autoclearing loop file.
-	args.push(image, "/bin/bash", "-c", "groupadd --gid 1101 office-lxd-test && mount -o remount,bind,rw /sys/fs/cgroup && exec /lib/systemd/systemd --log-target=console");
+	args.push(image, "/bin/bash", "-c", systemdContainerBoot("groupadd --gid 1101 office-lxd-test"));
 	container = command("docker", args);
 	let ready = false;
 	for (let i = 0; i < 40; i++) {

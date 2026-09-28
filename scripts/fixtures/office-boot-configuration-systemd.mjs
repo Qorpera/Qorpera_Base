@@ -10,9 +10,11 @@ const ctl = (...args) => command("/usr/bin/systemctl",args);
 const property = (unit,key) => ctl("show",unit,"--property="+key,"--value");
 const pkg = "/run/boot-proof-package";
 await cp("/fixture/package",pkg,{recursive:true}); await chmod(pkg,0o755);
+// A copy keeps each file's owner: the invoking user on a Linux Docker host (Docker Desktop shows
+// mounted files as root). The installer requires root-owned staging, so every file is chowned.
 const manifest = await readFile(pkg+"/manifest.json");
-for (const file of JSON.parse(manifest).artifacts) await chmod(pkg+"/"+file.file,0o444);
-await chmod(pkg+"/manifest.json",0o444);
+for (const file of JSON.parse(manifest).artifacts) { await chown(pkg+"/"+file.file,0,0); await chmod(pkg+"/"+file.file,0o444); }
+await chown(pkg+"/manifest.json",0,0); await chmod(pkg+"/manifest.json",0o444);
 const installer = pkg+"/qorpera-office-image-install.cjs";
 const dependencies = JSON.parse(command("/usr/bin/node",[installer,"--measure-dependencies"]));
 const spec = { schema:"qorpera.office-image-installation/v1", packageRoot:pkg, packageManifestSha256:hash(manifest), uid:1100, gid:1100, architecture:process.arch, dependencies };

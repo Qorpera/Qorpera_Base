@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import {verifyOfficeBootCredentials} from './boot-credentials.mjs';
 import {spawnSync} from 'node:child_process';
 import {createHash} from 'node:crypto';
-import {chmod,cp,lstat,mkdir,readFile,readdir,rename,rm,writeFile} from 'node:fs/promises';
+import {chmod,chown,cp,lstat,mkdir,readFile,readdir,rename,rm,writeFile} from 'node:fs/promises';
 const hash=b=>createHash('sha256').update(b).digest('hex');
 const root='/run/office-image-input',pkg=root+'/package',exe=pkg+'/qorpera-office-image-install.cjs',specPath=root+'/spec.json';
 const unit='qorpera-company-computer.service',mountUnit='run-qorpera\\x2doffice-private.mount';
@@ -13,9 +13,10 @@ const prop=(name,key)=>ctl('show',name,'--property='+key,'--value');
 const exists=async p=>!!await lstat(p).catch(e=>{if(e.code==='ENOENT')return undefined;throw e;});
 const cases=[];const check=name=>{cases.push(name);console.log('PASS '+name);};
 await mkdir(root,{mode:0o755});await cp('/fixture/package',pkg,{recursive:true});await chmod(pkg,0o755);
-// Docker bind source ownership is irrelevant after copying into root-owned local staging.
+// A copy keeps each file's owner: the invoking user on a Linux Docker host (Docker Desktop shows
+// mounted files as root). The installer requires root-owned staging, so every file is chowned.
 const manifest=await readFile(pkg+'/manifest.json');const artifacts=JSON.parse(manifest).artifacts;
-for(const a of artifacts)await chmod(pkg+'/'+a.file,0o444);await chmod(pkg+'/manifest.json',0o444);
+for(const a of artifacts){await chown(pkg+'/'+a.file,0,0);await chmod(pkg+'/'+a.file,0o444);}await chown(pkg+'/manifest.json',0,0);await chmod(pkg+'/manifest.json',0o444);
 const measured=JSON.parse(ok('/usr/bin/node',[exe,'--measure-dependencies']));
 const spec={schema:'qorpera.office-image-installation/v1',packageRoot:pkg,packageManifestSha256:hash(manifest),uid:1100,gid:1100,architecture:process.arch,dependencies:measured};
 await writeFile(specPath,JSON.stringify(spec),{mode:0o444});

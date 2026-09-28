@@ -5,10 +5,14 @@ import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { build } from "esbuild";
+import { SYSTEMD_CONTAINER_SECURITY, systemdContainerBoot } from "./fixtures/systemd-container.mjs";
 const repository = resolve(import.meta.dirname, "..");
 const image = process.env.QORPERA_OFFICE_SYSTEMD_TEST_IMAGE;
 if (process.argv.length !== 2 || !image || !/^(?:[^\s]+@)?sha256:[0-9a-f]{64}$/.test(image))
 	throw new Error("Select a prepared, digest-pinned local office/systemd image with QORPERA_OFFICE_SYSTEMD_TEST_IMAGE");
+// Package as a root build would: Ubuntu's default user umask 0002 leaves files group-writable,
+// and the installers refuse those as unprotected. Docker Desktop shows every mounted file as root 0644.
+process.umask(0o022);
 const temporary = await mkdtemp(join(tmpdir(), "qorpera-office-image-systemd-"));
 const command = (file, args) => {
 	const result = spawnSync(file, args, { cwd: repository, encoding: "utf8", timeout: 60000 });
@@ -24,11 +28,11 @@ try {
 	// Root fixture privileges only; installed guest service units are unchanged.
 	for (const cap of ["SYS_ADMIN", "SYS_PTRACE", "SYS_RESOURCE", "SYS_CHROOT", "CHOWN", "DAC_OVERRIDE", "FOWNER", "FSETID", "KILL", "SETGID", "SETUID", "SETPCAP", "AUDIT_WRITE"])
 		args.push("--cap-add", cap);
-	args.push("--security-opt", "no-new-privileges", "--cpus", "2", "--memory", "1g", "--pids-limit", "2048",
+	args.push(...SYSTEMD_CONTAINER_SECURITY, "--cpus", "2", "--memory", "1g", "--pids-limit", "2048",
 		"--tmpfs", "/run:rw,nosuid,nodev,size=192m,mode=755", "--tmpfs", "/tmp:rw,nosuid,nodev,size=128m,mode=1777", "--tmpfs", "/var/log/journal:rw,nosuid,nodev,size=16m,mode=755", "--tmpfs", "/etc/systemd/system:rw,nosuid,nodev,size=16m,mode=755", "--env", "container=docker");
 	for (const [source, target] of [[packaged, "/fixture/package"], [consumer, "/fixture/consumer.mjs"], [join(repository, "scripts/fixtures/office-image-installation-systemd.mjs"), "/fixture/check.mjs"], [join(repository, "scripts/fixtures/office-boot-credentials-systemd.mjs"), "/fixture/boot-credentials.mjs"]])
 		args.push("--mount", `type=bind,src=${source},dst=${target},readonly`);
-	args.push(image, "/bin/bash", "-c", "mount -o remount,bind,rw /sys/fs/cgroup && exec /lib/systemd/systemd --log-target=console");
+	args.push(image, "/bin/bash", "-c", systemdContainerBoot());
 	container = command("docker", args);
 	let ready = false;
 	for (let i = 0; i < 40; i++) {

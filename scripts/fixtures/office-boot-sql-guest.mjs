@@ -15,9 +15,11 @@ const property=(name,key)=>ctl('show',name,'--property='+key,'--value');
 const idle=()=>{for(const name of [unit,prep]){assert.equal(property(name,'ActiveState'),'inactive');assert.equal(property(name,'InvocationID'),'');assert.equal(property(name,'MainPID'),'0');}};
 const root='/run/qorpera-office-preparation',base='/opt/qorpera-office',pkg='/run/office-boot-sql-package';
 await cp('/fixture/package',pkg,{recursive:true});await chmod(pkg,0o755);
+// A copy keeps each file's owner: the invoking user on a Linux Docker host (Docker Desktop shows
+// mounted files as root). The installer requires root-owned staging, so every file is chowned.
 const manifest=await readFile(pkg+'/manifest.json');
-for(const artifact of JSON.parse(manifest).artifacts)await chmod(pkg+'/'+artifact.file,0o444);
-await chmod(pkg+'/manifest.json',0o444);
+for(const artifact of JSON.parse(manifest).artifacts){await chown(pkg+'/'+artifact.file,0,0);await chmod(pkg+'/'+artifact.file,0o444);}
+await chown(pkg+'/manifest.json',0,0);await chmod(pkg+'/manifest.json',0o444);
 const installer=pkg+'/qorpera-office-image-install.cjs',dependencies=JSON.parse(run('/usr/bin/node',[installer,'--measure-dependencies']));
 await writeFile('/run/office-boot-sql-spec.json',JSON.stringify({schema:'qorpera.office-image-installation/v1',packageRoot:pkg,packageManifestSha256:hash(manifest),uid:1100,gid:1100,architecture:process.arch,dependencies}),{mode:0o444});
 run('/usr/bin/node',[installer,'--apply','--spec','/run/office-boot-sql-spec.json']);idle();
