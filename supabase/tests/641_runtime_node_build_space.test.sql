@@ -1,6 +1,6 @@
 begin;
 -- Identical nodes, change 2 (20260928180500): an image build space that keeps the node serving.
--- A policy may declare buildSpace {project, cpuMillis, memoryBytes}: always counted against headroom,
+-- A policy may declare buildSpace {project, network, cpuMillis, memoryBytes}: always counted against headroom,
 -- never next to an infrastructure entry. The registry accepts `build` entries only in that project,
 -- never with an allocation, together within the space; nothing in the build project may stay
 -- unclassified. Policies without a build space behave as before.
@@ -110,7 +110,10 @@ select pg_temp.fails($q$select pg_temp.observe('ready',jsonb_build_array(pg_temp
 select pg_temp.fails($q$select pg_temp.observe('ready',jsonb_build_array(pg_temp.build('qn25b2','image-build',1000,1073741824)))$q$,
 	'Node inventory mixes the build space with other instances');
 select pg_temp.fails($q$select pg_temp.observe('ready',jsonb_build_array(pg_temp.build('qorpera-build','image-build',1000,1073741824)
-	|| '{"type":"container"}'::jsonb))$q$,'A build machine must be a virtual machine');
+	|| '{"type":"container"}'::jsonb))$q$,'Node inventory is not ready');
+-- The observer reports it honestly as unavailable: that observation is recorded.
+select pg_temp.observe('unavailable',jsonb_build_array(pg_temp.build('qorpera-build','image-build',1000,1073741824)
+	|| '{"type":"container","reason":"INSTANCE_AUTHORITY_DIFFERS"}'::jsonb));
 select pg_temp.fails($q$select pg_temp.observe('ready',jsonb_build_array(pg_temp.build('qorpera-build','guest',1000,1073741824)
 	|| jsonb_build_object('category','managed','allocation',jsonb_build_object('allocationId',extensions.gen_random_uuid()))))$q$,
 	'Node inventory mixes the build space with other instances');

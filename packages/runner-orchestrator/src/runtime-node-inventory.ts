@@ -341,7 +341,7 @@ const BUILD_NIC = new Set([
 /** A build machine as the image lane makes one: a virtual machine with an
  * allowlisted configuration (never autostarting), one root disk of a declared
  * size from a storage pool, and network interfaces only on the build space's
- * network with MAC, IPv4 and IPv6 filtering on. It can mount no host path or
+ * network with MAC, IPv4 and IPv6 filtering and port isolation on, like every runtime guest. It can mount no host path or
  * volume (so no company, identity or login disk) and reach no other network. */
 function buildMachine(i: LxdHostInventoryInstance, space: RuntimeNodeBuildSpace): boolean {
 	if (i.type !== "virtual-machine") return false;
@@ -366,7 +366,7 @@ function buildMachine(i: LxdHostInventoryInstance, space: RuntimeNodeBuildSpace)
 					device["security.mac_filtering"] !== "true" ||
 					device["security.ipv4_filtering"] !== "true" ||
 					device["security.ipv6_filtering"] !== "true" ||
-					(device["security.port_isolation"] !== undefined && device["security.port_isolation"] !== "true")
+					device["security.port_isolation"] !== "true"
 				)
 					return false;
 				continue;
@@ -376,6 +376,7 @@ function buildMachine(i: LxdHostInventoryInstance, space: RuntimeNodeBuildSpace)
 				device.path !== "/" ||
 				typeof device.pool !== "string" ||
 				typeof device.size !== "string" ||
+				!/^[1-9][0-9]*(\.[0-9]+)?[A-Za-z]{0,3}$/.test(device.size) ||
 				Object.keys(device).some((k) => !["type", "path", "pool", "size", "size.state"].includes(k))
 			)
 				return false;

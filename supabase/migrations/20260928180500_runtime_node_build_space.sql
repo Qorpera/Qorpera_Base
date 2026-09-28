@@ -10,12 +10,12 @@
 -- as category `build`: a virtual machine with an allowlisted configuration (limits, boot and secure-boot
 -- settings, LXD's volatile.* and image.* keys, `user.qorpera.image_builder=true`, `user.qorpera.purpose`;
 -- never autostarting), exactly one root disk of a declared size from a pool, and network interfaces only
--- on the declared network with MAC, IPv4 and IPv6 filtering on. Anything else there is
+-- on the declared network with MAC, IPv4 and IPv6 filtering and port isolation on. Anything else there is
 -- `INSTANCE_AUTHORITY_DIFFERS`; together they may use at most the declared space
 -- (`BUILD_SPACE_EXCEEDED`). The space always counts against headroom, like infrastructure, whether a
 -- build runs or not. No infrastructure entry may sit in the build project. The registry checks again:
--- every entry in the build project is `build` and every `build` entry is in it, a virtual machine,
--- never with an allocation, and all of them together within the space.
+-- every entry in the build project is `build` and every `build` entry is in it, never with an
+-- allocation, a virtual machine (else not ready), and all of them together within the space.
 -- Policies without buildSpace, and observers that report no `build` entries, behave exactly as before.
 
 do $guard$ begin
@@ -193,8 +193,8 @@ begin
    if v_item->'allocation'<>'null'::jsonb then raise exception 'A build machine cannot claim an allocation' using errcode='42501'; end if;
    if not v_policy ? 'buildSpace' then
     raise exception 'Node inventory reports a build machine outside the build space' using errcode='42501'; end if;
-   if v_item->>'type' is distinct from 'virtual-machine' then
-    raise exception 'A build machine must be a virtual machine' using errcode='42501'; end if;
+   -- A container in the build space is an honest observation of a wrong machine: not ready, recorded.
+   if v_item->>'type' is distinct from 'virtual-machine' then v_ready:=false; end if;
    v_build_cpu:=v_build_cpu+coalesce((v_item->>'cpuMillis')::numeric,0);
    v_build_memory:=v_build_memory+coalesce((v_item->>'memoryBytes')::numeric,0);
   else

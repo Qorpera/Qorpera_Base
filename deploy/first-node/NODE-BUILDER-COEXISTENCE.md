@@ -14,10 +14,12 @@ This is the way to run image builds on a serving node. A node's inventory policy
     (only `false`), `boot.mode`, `security.secureboot`, `security.csm`, LXD's own `volatile.*`
     and `image.*` keys, `user.qorpera.image_builder` (only `true`) and `user.qorpera.purpose`;
   - with exactly one root disk (`type`, `path=/`, `pool`, `size` required, `size.state` allowed;
-    no `source`), from the instance itself or a profile;
+    no `source`, a non-empty size), from the instance itself or a profile;
   - with network interfaces only on the declared network: keys `type`, `name`, `network`,
-    `hwaddr` and the filtering keys, with MAC, IPv4 and IPv6 filtering `true`, and
-    `security.port_isolation`, if set, `true`. No `nictype`, no `parent`.
+    `hwaddr` and the filtering keys, with MAC, IPv4 and IPv6 filtering and
+    `security.port_isolation` all `true`, like every runtime guest on the bridge. No `nictype`,
+    no `parent`. The network is matched by name, so the build project must use the default
+    project's networks (`features.networks=false`).
 
   Anything else is `INSTANCE_AUTHORITY_DIFFERS`. The configuration check is an allowlist, so keys
   LXD adds later are refused until they are reviewed.
@@ -31,7 +33,7 @@ This is the way to run image builds on a serving node. A node's inventory policy
 
 **Lanes.** Create build machines in the build project with explicit limits,
 `boot.autostart=false`, a root disk with a size, and a NIC only on the declared network with
-`security.mac_filtering=true security.ipv4_filtering=true security.ipv6_filtering=true`. Drop every
+`security.mac_filtering=true security.ipv4_filtering=true security.ipv6_filtering=true security.port_isolation=true`. Drop every
 other `user.qorpera.*` key. The older verifier recipe's `user.qorpera.acceptance_test` is refused;
 use `user.qorpera.purpose`. Image properties are fine, because they arrive as `image.*` keys.
 
@@ -65,7 +67,10 @@ use `user.qorpera.purpose`. Image properties are fine, because they arrive as `i
    - `limits.disk` bounds the root disks. The inventory counts CPU and memory only, so keep the
      lane's pool check as well.
    - The project's default profile must carry no devices. The lane uses `--no-profiles` anyway.
-6. Point the image lane's builder and verifier at the project. A build now leaves the node `ready`.
+6. Prove the project on the node before the first real build: run the project command, then one
+   lane build and verify, including `lxc publish`. `restricted=true` also restricts snapshots and
+   backups by default, so check the lane needs neither.
+7. Point the image lane's builder and verifier at the project. A build now leaves the node `ready`.
 
 The procedure below, enrolling each builder exactly, remains for any other host VM.
 

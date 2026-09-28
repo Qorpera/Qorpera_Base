@@ -538,6 +538,7 @@ describe("image build space (identical nodes, 2026-09-28)", () => {
 					"security.mac_filtering": "true",
 					"security.ipv4_filtering": "true",
 					"security.ipv6_filtering": "true",
+					"security.port_isolation": "true",
 				},
 			},
 			profiles: ["default"],
@@ -564,6 +565,51 @@ describe("image build space (identical nodes, 2026-09-28)", () => {
 		f.inventory.instances[4].status = "Stopped";
 		f.inventory.instances[4].statusCode = 102;
 		expect(reconcileRuntimeNodeInventory(f.inventory, f.context).state).toBe("ready");
+	});
+	it("accepts the image lane's exact builder: no profiles, its own root, the isolation NIC", () => {
+		const f = withSpace(),
+			config = {
+				"limits.cpu": "4",
+				"limits.memory": "8GiB",
+				"boot.autostart": "false",
+				"volatile.uuid": randomUUID(),
+				"volatile.base_image": "e".repeat(64),
+				"volatile.eth0.hwaddr": "00:16:3e:00:00:01",
+				"image.os": "Ubuntu",
+				"image.user.qorpera.source_commit": "f".repeat(40),
+			},
+			root = { type: "disk", path: "/", pool: "qorpera-vm", size: "80GiB" },
+			nic = {
+				type: "nic",
+				network: "qorpera0",
+				name: "eth0",
+				"security.mac_filtering": "true",
+				"security.ipv4_filtering": "true",
+				"security.ipv6_filtering": "true",
+				"security.port_isolation": "true",
+			};
+		f.inventory.instances.push({
+			name: "qorpera-native142-build-phql-a1",
+			project: space.project,
+			location: "none",
+			type: "virtual-machine",
+			config,
+			expandedConfig: { ...config },
+			devices: { root, eth0: nic },
+			expandedDevices: { root, eth0: nic },
+			profiles: [],
+			status: "Stopped",
+			statusCode: 102,
+		});
+		f.context.policy = f.policy = {
+			...f.policy,
+			buildSpace: { ...space, cpuMillis: 4000, memoryBytes: 8 * 1024 ** 3 },
+		};
+		f.context.headroomCpuMillis = 5000;
+		f.context.headroomMemoryBytes = 9 * 1024 ** 3;
+		const result = reconcileRuntimeNodeInventory(f.inventory, f.context);
+		expect(result.entries[4]).toMatchObject({ category: "build", reason: null });
+		expect(result.state).toBe("ready");
 	});
 	it("refuses build machines beyond the declared space", () => {
 		const f = withSpace();
@@ -712,6 +758,31 @@ describe("image build space (identical nodes, 2026-09-28)", () => {
 			"two root disks",
 			(i) => {
 				i.expandedDevices.root2 = { type: "disk", path: "/", pool: "qorpera-vm", size: "1GiB" };
+			},
+		],
+		[
+			"IPv4 filtering off",
+			(i) => {
+				i.expandedDevices.eth0 = { ...i.expandedDevices.eth0, "security.ipv4_filtering": "false" };
+			},
+		],
+		[
+			"IPv6 filtering off",
+			(i) => {
+				i.expandedDevices.eth0 = { ...i.expandedDevices.eth0, "security.ipv6_filtering": "false" };
+			},
+		],
+		[
+			"no port isolation",
+			(i) => {
+				const { "security.port_isolation": _isolation, ...nic } = i.expandedDevices.eth0;
+				i.expandedDevices.eth0 = nic;
+			},
+		],
+		[
+			"an empty root size",
+			(i) => {
+				i.expandedDevices.root = { ...i.expandedDevices.root, size: "" };
 			},
 		],
 		[
