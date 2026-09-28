@@ -85,6 +85,32 @@ describe("isolated coding command tools", () => {
 			f.boundary.close();
 		}
 	});
+	it("starts a command without a deadline when none is given, and has no maximum", async () => {
+		const f = fixture();
+		try {
+			const args = { operationKey: "serve", command: "npm run dev" };
+			expect((await f.boundary.invoke("serve", "qorpera", "coding_run_command", args)).success).toBe(true);
+			expect(f.gateway.start).toHaveBeenCalledWith(
+				f.scope,
+				{ commandId: f.commandId, inputSha256: f.receipt.inputSha256, command: args.command, timeoutMs: null },
+				expect.any(AbortSignal),
+			);
+			expect(f.execute.mock.calls[0][0].operation.arguments).toEqual(args);
+			const long = { operationKey: "soak", command: "npm run soak", timeoutMs: 6 * 60 * 60 * 1000 };
+			expect((await f.boundary.invoke("soak", "qorpera", "coding_run_command", long)).success).toBe(true);
+			expect(
+				(
+					await f.boundary.invoke("short", "qorpera", "coding_run_command", {
+						operationKey: "short",
+						command: "true",
+						timeoutMs: 999,
+					})
+				).success,
+			).toBe(false);
+		} finally {
+			f.boundary.close();
+		}
+	});
 	it.each(["vmId", "workerId", "cwd", "env", "credential", "commandId"])("refuses model-selected %s", async (key) => {
 		const f = fixture();
 		try {
