@@ -6,6 +6,7 @@ import {
 	companyPathKey,
 	companyStateName,
 	companyStatePath,
+	companyStatePathProblems,
 	companyStateTimeZoneProblem,
 	companyStateValue,
 	freeCompanyStateName,
@@ -158,6 +159,23 @@ describe("companyStatePath", () => {
 		expect(refused("rules/.md", "---\n---\n")[0]?.code).toBe("name");
 	});
 
+	it("checks a path on its own, for renames and for folders at structured places", () => {
+		const codes = (path: string, folder = false) =>
+			companyStatePathProblems(path, folder).map((problem) => problem.code);
+		expect(codes("agents/anna/routines/daily.md")).toEqual([]);
+		expect(codes("agents/anna/routines/Daily report.md")).toEqual(["name"]);
+		expect(codes("agents/anna/routines/Daily.md")).toEqual(["name"]);
+		expect(codes("agents/anna/Routines/daily.md")).toEqual(["name"]);
+		expect(codes("sales/Leads.md")).toEqual([]);
+		expect(codes("agents/anna", true)).toEqual([]);
+		expect(codes("agents/Anna", true)).toEqual(["name"]);
+		expect(codes("agents/anna/Routines", true)).toEqual(["name"]);
+		expect(codes("agents/anna/todos/Old Stuff", true)).toEqual(["name"]);
+		expect(codes("agents/groups/Launch", true)).toEqual(["name"]);
+		expect(codes("agents/anna/Notes", true)).toEqual([]);
+		expect(codes("Sales", true)).toEqual([]);
+	});
+
 	it("leaves ordinary files alone", () => {
 		expect(parseCompanyStateFile("sales/leads/list.md", "anything")).toBeNull();
 	});
@@ -211,7 +229,7 @@ describe("agent.md", () => {
 	});
 
 	it("reads CRLF files, a byte-order mark, notes and quotes", () => {
-		const text = `﻿---\r\n# who\r\nid: ${ANNA} # never changes\r\nname: "Anna \\"AB\\" Berg"\r\nrole: 'Head of ''Sales'''\r\nkind: agent\r\nstatus: active\r\n---\r\n\r\n    Sell.\r\n`;
+		const text = `\ufeff---\r\n# who\r\nid: ${ANNA} # never changes\r\nname: "Anna \\"AB\\" Berg"\r\nrole: 'Head of ''Sales'''\r\nkind: agent\r\nstatus: active\r\n---\r\n\r\n    Sell.\r\n`;
 		expect(ok("agents/anna-berg/agent.md", text)).toMatchObject({
 			id: ANNA,
 			name: 'Anna "AB" Berg',
@@ -312,8 +330,10 @@ describe("agent.md", () => {
 	});
 
 	it("wants the fixed names in lowercase, as written", () => {
-		for (const path of ["agents/anna/Agent.md", "Agents/anna/agent.md", "agents/anna/routines/../agent.md"])
-			if (companyStatePath(path)) expect(refused(path, agentText)[0]?.code).toBe("name");
+		for (const path of ["agents/anna/Agent.md", "Agents/anna/agent.md"]) {
+			expect(companyStatePath(path)?.kind).toBe("agent");
+			expect(refused(path, agentText)[0]?.code).toBe("name");
+		}
 		expect(refused("ａｇｅｎｔｓ/anna/agent.md", agentText)[0]?.message).toBe(
 			"write the path in lowercase, as agents/anna/agent.md",
 		);
@@ -348,6 +368,27 @@ describe("agent.md", () => {
 		expect(ok("agents/a/agent.md", `${agentFields()}�`)).toMatchObject({ instructions: "Sell.\n�" });
 	});
 
+	it("reports at most 50 problems, and shortens quoted input", () => {
+		const lines = `---\n${"x\n".repeat(30_000)}---\nx\n`;
+		const problems = refused("agents/a/agent.md", lines);
+		expect(problems).toHaveLength(51);
+		expect(problems.at(-1)?.message).toMatch(/^and \d+ more problems$/);
+		const long = refused("agents/a/agent.md", agentFields({ [`k${"x".repeat(5000)}`]: "v" }));
+		expect(long[0]?.message.length).toBeLessThan(400);
+		expect(JSON.stringify(long).length).toBeLessThan(2000);
+	});
+
+	it("keeps Unicode spaces, as YAML does, and refuses them at the edges", () => {
+		expect(keys(refused("agents/a/agent.md", agentFields({ name: "Anna\u00a0" })))).toEqual([["name", "value"]]);
+		expect(refused("agents/a/agent.md", agentFields({ note: "x" }).replace("note: x", "\u00a0# note"))[0]?.code).toBe(
+			"syntax",
+		);
+		const group = `---\nid: ${GROUP}\nname: L\nagents:\n  - \u00a0${ANNA}\n  - ${IDA}\n---\nx\n`;
+		expect(refused("agents/groups/l/group.md", group)[0]?.key).toBe("agents");
+		expect(refused("agents/a/agent.md", agentFields({ name: "a # note\ufffe" }))[0]?.code).toBe("syntax");
+		expect(refused("vision/vision.md", `#${" ".repeat(10)}\rx\n`)[0]?.code).toBe("body");
+	});
+
 	it("reads a pathological 64 KiB file in linear time", () => {
 		const spaces = " ".repeat(65_000);
 		const inputs: [string, string][] = [
@@ -361,6 +402,10 @@ describe("agent.md", () => {
 			["agents/a/agent.md", `---\nname:${spaces}\rx\n---\nx\n`],
 			["agents/a/agent.md", `---\nagents:\n  -${spaces}\rx\n---\nx\n`],
 			["agents/a/agent.md", `---\nname: a # ${spaces}\rx\n---\nx\n`],
+			["agents/a/agent.md", `---\nname: a${spaces}\n---\nx\n`],
+			["agents/a/agent.md", `---\nname:${spaces}a${spaces}\n---\nx\n`],
+			["agents/a/agent.md", `---\n${"x\n".repeat(30_000)}---\nx\n`],
+			["agents/sections.md", `## Sales\n- ${ANNA}\t${spaces}\rx`],
 		];
 		for (const [path, text] of inputs) {
 			const started = performance.now();
@@ -693,6 +738,13 @@ Go through new leads in sales/leads/.
 				routine("when: once\nat: 2026-09-30T07:00:00Z\nends: 2026-09-30T07:00:00.000001Z\ntimezone: UTC"),
 			),
 		).toMatchObject({ ends: "2026-09-30T07:00:00.000001Z" });
+		for (const ends of ["2026-09-30T07:00:00Z", "2026-09-30T06:59:59.999999Z"])
+			expect(
+				refused(
+					"agents/a/routines/r.md",
+					routine(`when: once\nat: 2026-09-30T07:00:00Z\nends: ${ends}\ntimezone: UTC`),
+				)[0]?.key,
+			).toBe("at");
 	});
 
 	it("defaults effort and reply, and asks for match", () => {
@@ -821,7 +873,8 @@ describe("time zones", () => {
 
 	it("get an engine hint for editors", () => {
 		expect(companyStateTimeZoneProblem("Europe/Copenhagen")).toBeNull();
-		expect(companyStateTimeZoneProblem("europe/copenhagen")).toContain("unknown time zone");
+		expect(companyStateTimeZoneProblem("europe/copenhagen")).toBe("write the time zone as Europe/Copenhagen");
+		expect(companyStateTimeZoneProblem("us/pacific")).toContain("unknown time zone");
 		expect(companyStateTimeZoneProblem("Mars/Olympus")).toContain("unknown time zone");
 	});
 });
@@ -832,8 +885,33 @@ describe("companyStateValue", () => {
 		expect(companyStateValue("a\tb")).toBe('"a\\tb"');
 		expect(companyStateValue("a\u2028b")).toBe('"a\\u2028b"');
 		expect(companyStateValue("a\u0085b")).toBe('"a\\u0085b"');
-		for (const text of ["yes", "No", "on", "OFF", "08:00", "1:30:00", "010"])
+		for (const text of [
+			"yes",
+			"No",
+			"on",
+			"OFF",
+			"08:00",
+			"8:00",
+			"1:30:00",
+			"010",
+			"0b101",
+			"-0x1F",
+			"1_000",
+			"=",
+			"<<",
+		])
 			expect(companyStateValue(text)).toBe(`"${text}"`);
+		for (const text of ["Anna", "v2", "2026 plan", "a=b"]) expect(companyStateValue(text)).toBe(text);
+		for (const text of [
+			`${"1".repeat(65_000)}x`,
+			`${"1_".repeat(30_000)}x`,
+			`0x${"f".repeat(65_000)}g`,
+			`${"1:".repeat(30_000)}x`,
+		]) {
+			const started = performance.now();
+			companyStateValue(text);
+			expect(performance.now() - started).toBeLessThan(250);
+		}
 		// A value the format refuses still makes a file the parser reads; the parse refuses the value.
 		expect(keys(refused("agents/a/agent.md", writeAgentFile({ ...agentBase(), name: "Anna\u2028Berg" })))).toEqual([
 			["name", "value"],
@@ -880,9 +958,9 @@ describe("setCompanyStateSettings", () => {
 	});
 
 	it("keeps a byte-order mark and each line's own ending", () => {
-		const text = `﻿---\r\nid: ${ANNA}\nstatus: active\r\n---\r\nBody\n`;
+		const text = `\ufeff---\r\nid: ${ANNA}\nstatus: active\r\n---\r\nBody\n`;
 		expect(setCompanyStateSettings(text, { status: "paused", effort: "low" })).toBe(
-			`﻿---\r\nid: ${ANNA}\nstatus: paused\r\neffort: low\r\n---\r\nBody\n`,
+			`\ufeff---\r\nid: ${ANNA}\nstatus: paused\r\neffort: low\r\n---\r\nBody\n`,
 		);
 	});
 
@@ -891,6 +969,15 @@ describe("setCompanyStateSettings", () => {
 		expect(setCompanyStateSettings(text, { agents: [TOM, JONAS] })).toBe(
 			`---\nagents: [${TOM}, ${JONAS}]\n# about people\npeople: []\n---\nx\n`,
 		);
+	});
+
+	it("takes whole numbers only, and list lines only under a key without a value", () => {
+		const text = `---\nid: ${ANNA}\nstatus: active\n- stray\n---\nx\n`;
+		expect(setCompanyStateSettings(text, { status: "archived" })).toBe(
+			text.replace("status: active", "status: archived"),
+		);
+		for (const runs of [Number.NaN, Number.POSITIVE_INFINITY, 1.5])
+			expect(() => setCompanyStateSettings(text, { runs })).toThrow();
 	});
 
 	it("encodes values, so a value cannot add a setting", () => {

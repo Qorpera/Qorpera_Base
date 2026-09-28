@@ -51,7 +51,21 @@ on one list of paths, compatibility spellings included.
 Folder and file names follow contract 5.6 as written (not only as keys): lowercase `a–z`,
 digits and single hyphens, at most 64 characters, and a lowercase `.md` extension. The whole
 path of a structured file is written exactly as its key, so `agents/anna/Agent.md` or a
-compatibility spelling is refused with the spelling to use. This covers
+compatibility spelling is refused with the spelling to use.
+
+These path checks are `companyStatePathProblems(path, folder)`. They need no text, so the
+database runs the same list, and the comparison test covers both. `decide` runs them on the
+path an entry is actually stored under, its parent folder's stored spelling included:
+- for every file a unit writes;
+- for every structured file a move or rename carries, at its new path;
+- for every folder a unit creates or renames at a structured place: `agents/<h>`,
+  `agents/groups/<g>`, `agents/<h>/routines`, `agents/<h>/todos`, `agents/<h>/todos/<t>` and
+  `agents/<h>/todos/<t>/<w>`.
+
+So a rename can never leave a file that no later save could pass. Renaming
+`routines/daily.md` to `Daily report.md`, or case-only to `Daily.md`, is refused. So is
+creating an ordinary folder `agents/anna/Routines/`, which would give a later routine the
+wrong spelling. This covers
 agent and group folders, routine, todo, rule and connection files, and todo and worker
 folders. `companyStateName` makes one from a display name: NFC first, then æ → ae, ø → oe,
 å → aa, accents dropped, spaces to hyphens, the rest dropped. `freeCompanyStateName` adds `-2`,
@@ -66,8 +80,9 @@ Today's routine, todo and worker keys allow `.`, `_` and up to 96 characters
 
 A strict subset of YAML 1.2. A YAML 1.2 core-schema reader reads the same values from any file
 the parser accepts. YAML 1.1 readers (js-yaml, PyYAML) may read some plain values differently:
-an unquoted instant as a timestamp, and `yes`, `08:00` or `010` as a boolean or a number. The
-canonical writers quote the last three, but not instants.
+an unquoted instant as a timestamp, or, depending on the reader, forms such as `yes`, `8:00`,
+`010`, `0b101`, `0x1F` or `1_000` as a boolean or a number. The canonical writers quote forms
+like these, but not instants.
 
 - The file starts with a line `---`; the block ends at the next line `---`. A UTF-8
   byte-order mark and CRLF line ends are accepted.
@@ -82,7 +97,7 @@ canonical writers quote the last three, but not instants.
   - a one-line list `[a, b]`;
   - or a key with no value, followed by `- item` lines at one indentation (zero allowed). A
     list key with no items is refused, because YAML reads it as null; an empty list is `[]`.
-- **Notes:** `#` after whitespace starts a note. Tabs, every other control character (a
+- **Notes:** `#` after a space starts a note. Tabs, every other control character (a
   carriage return inside a line included) and U+2028/U+2029 are refused anywhere in the block,
   notes included.
 - **Refused shapes:**
@@ -93,7 +108,8 @@ canonical writers quote the last three, but not instants.
   - list items that do not line up;
   - a plain value in a text field that YAML reads as something other than text (`true`,
     `null`, `42`, `.5`, `0o17`, …): "put it in double quotes";
-  - a quoted value with spaces at either end;
+  - a value with spaces at either end. Only U+0020 counts as a space in the settings: a
+    no-break or other Unicode space is kept as YAML keeps it, and refused at a value's edge;
   - a quoted whole number.
 - **Types are the kind's:**
   - ids: lowercase UUIDs;
@@ -104,9 +120,10 @@ canonical writers quote the last three, but not instants.
   - clock times `HH:MM`;
   - days `mon`…`sun`;
   - IANA time zones. The parser checks only their shape, since engines disagree on aliases:
-    each part starts with a capital letter or a digit, as in `pg_timezone_names`. The database
-    then refuses a name that is not in its exact-case list (`structured_rule`). Editors may
-    show `companyStateTimeZoneProblem`, the engine's opinion, as a hint.
+    each part starts with a capital letter or a digit. The few list entries of another shape,
+    such as `posixrules`, are not accepted. The database then refuses a name that is not in its
+    exact-case list (`structured_rule`). Editors may show `companyStateTimeZoneProblem`, the
+    engine's opinion, as a hint; it also suggests the right case.
 - **One-line text fields** refuse every C0 and C1 control character (tab included, as Postgres
   `[[:cntrl:]]`) and U+2028/U+2029. Limits count characters or bytes exactly as the database
   column does (see each kind).
@@ -114,7 +131,9 @@ canonical writers quote the last three, but not instants.
   and the index keep it trimmed at both ends, as the database columns require.
 
 A structured file is at most 64 KiB (core §5). The same bytes always give the same parse or the
-same problems. A place that shows a missing-id problem may offer a fresh id
+same problems. A refused file reports at most 50 problems, then one closing "and K more
+problems". Input quoted in a message is cut to 100 characters, so problems stay small next to
+the file. A place that shows a missing-id problem may offer a fresh id
 (`newCompanyStateId`), but the parse never contains one, so an operation key replays.
 
 The canonical writers always produce a file the parser reads:
@@ -124,9 +143,10 @@ The canonical writers always produce a file the parser reads:
   heading name ending in `#` gets a closing `#`, so it reads back the same.
 - Names beside ids, for reading, are made one line.
 
-`setCompanyStateSettings` changes typed settings and keeps every other byte: the BOM, each
-line's own line ending, other lines' notes, blank lines and the body. A changed key keeps its
-place. Its list lines go with it, and so does its own note.
+`setCompanyStateSettings` changes typed settings (text, whole numbers, lists) and keeps every
+other byte: the BOM, each line's own line ending, other lines' notes, blank lines and the body.
+A changed key keeps its place, and its own note goes. A key with no value on its line takes its
+list lines with it; a key with a value never takes the lines below it.
 
 ## 2. Formats
 
@@ -406,9 +426,12 @@ change set left it, and so does its review class. The dependency rule:
 A move or copy never changes a file's kind. It is refused (`kind_change`) if any file it
 carries would become a structured file of another kind, or turn from structured to ordinary
 or back. Examples: an ordinary `notes/hire.md` moved to `agents/nora/agent.md`, a todo moved
-into `routines/`, a todo moved out to `notes/`. Write the new file instead. A copy that lands
-a structured file is refused too, because it would repeat an id. So only moves that keep every
-kind carry structured files, and their index rows are repointed without a new parse.
+into `routines/`, a todo moved out to `notes/`. Write the new file instead.
+
+A copy never lands a structured file, which narrows core §5's copy rule ("parse as a new file").
+A copy would repeat an id, and a worker's brief and results are platform-only. So only moves
+that keep every kind carry structured files. Their index rows are repointed without a new
+parse, and the path checks above run on their new paths.
 
 Outcome shape (core §3 "Outcomes"):
 
@@ -522,7 +545,7 @@ on a unit that `decide` passed.
 
 | Core §3 step | Function | Does |
 | --- | --- | --- |
-| before tx (TS) | `parseCompanyStateFile(path, text)` | Each structured path of a unit gets an entry in `structured: [{path, kind, text, parse, parserVersion}]`, or `[{path, kind, problems}]` without the text when refused. A `new_folder` or subtree copy lists every structured file inside it. SQL re-hashes each parsed file's text against its file hash. |
+| before tx (TS) | `parseCompanyStateFile(path, text)` | Each structured path of a unit gets an entry in `structured: [{path, kind, text, parse, parserVersion}]`, or `[{path, kind, problems}]` without the text when refused. A `new_folder` lists every structured file inside it. SQL re-hashes each parsed file's text against its file hash. |
 | any | `qorpera_structured_path_kind(path)` | The pattern table, on the key. |
 | 4, plan | `qorpera_folder_structured_targets(env, actor, units)` | Takes no locks. Returns the rows to lock, each with its rank and mode: index rows by parse id, index rows by path prefix for a subtree unit as of its `asOfSeq`, referenced member rows (`people`, `requested_by`, `connected_by`: rank 1, KEY SHARE), and unique claims. |
 | 4, lock | `qorpera_folder_structured_lock(env, targets, from_rank, to_rank)` | Locks through a closed list of tables. Rank 1 is merged with the actor's own member row in member-id order. Called for ranks 1–2, 4–5 and 8–9. |

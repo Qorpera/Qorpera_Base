@@ -62,7 +62,7 @@ const NOT_ONE_LINE = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/;
 const LINE_SEPARATOR = /[\u2028\u2029]/;
 /** Controls a settings line never holds (a tab has its own message). A carriage return inside a
  * line is one of them: YAML reads it as a line break. */
-const SETTINGS_CONTROL = /[\u0000-\u0008\u000a-\u001f\u007f-\u009f]/;
+const SETTINGS_CONTROL = /[\u0000-\u0008\u000a-\u001f\u007f-\u009f\ufffe\uffff]/;
 const LONE_SURROGATE = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/;
 const INSTANT = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,6}))?)?Z$/;
 const CLOCK = /^([01]\d|2[0-3]):([0-5]\d)$/;
@@ -387,6 +387,11 @@ export function isCompanyStateTimeZoneName(name: string): boolean {
 /** A hint for an editor: why this engine would not know a time zone name, or null. Engines
  * differ in their aliases, so the parser never uses it; the database's list decides. */
 export function companyStateTimeZoneProblem(name: string): string | null {
+	let known: string | null = null;
+	try {
+		known = new Intl.DateTimeFormat("en-US", { timeZone: name }).resolvedOptions().timeZone;
+	} catch {}
+	if (known && known !== name && known.toLowerCase() === name.toLowerCase()) return `write the time zone as ${known}`;
 	if (!isCompanyStateTimeZoneName(name)) return `unknown time zone "${name}"; use a name like Europe/Copenhagen`;
 	let resolved: string;
 	try {
@@ -422,10 +427,15 @@ interface Split {
 	readonly bodyLine: number;
 }
 
+/** Input quoted in a message, at most 100 characters. */
+function shown(text: string): string {
+	return [...text].length > 100 ? `${[...text].slice(0, 100).join("")}…` : text;
+}
+
 class Problems {
 	readonly list: CompanyStateProblem[] = [];
 	add(code: CompanyStateProblemCode, line: number | null, key: string | null, message: string): void {
-		this.list.push({ line, key, code, message });
+		this.list.push({ line, key: key === null ? null : shown(key), code, message });
 	}
 	has(key: string): boolean {
 		return this.list.some((problem) => problem.key === key);
@@ -496,9 +506,9 @@ function scalar(rest: string, inList: boolean): { item: Omit<Item, "line">; afte
 	}
 	if (/^[[\]{},#&*!|>%@`]/.test(rest) || /^[-?:](?:\s|$)/.test(rest))
 		return "a value cannot start with this character; put it in double quotes";
-	const stop = inList ? /(?:\s#|[,\]])/ : /\s#/;
+	const stop = inList ? /(?: #|[,\]])/ : / #/;
 	const end = rest.search(stop);
-	const raw = (end < 0 ? rest : rest.slice(0, end)).trimEnd();
+	const raw = trimSpaces(end < 0 ? rest : rest.slice(0, end), false);
 	if (/: |:$/.test(raw)) return 'a value with ": " in it goes in double quotes';
 	if (inList && /[[{}]/.test(raw)) return "a list item with [, { or } in it goes in double quotes";
 	return { item: { text: raw, quoted: false }, after: end < 0 ? "" : rest.slice(end) };
@@ -508,7 +518,7 @@ function scalar(rest: string, inList: boolean): { item: Omit<Item, "line">; afte
 function lineValue(rest: string, line: number): Value | string {
 	if (rest.startsWith("[")) {
 		const items: Item[] = [];
-		let after = rest.slice(1).trimStart();
+		let after = rest.slice(1).replace(/^ +/, "");
 		if (after.startsWith("]")) after = after.slice(1);
 		else
 			for (;;) {
@@ -516,9 +526,9 @@ function lineValue(rest: string, line: number): Value | string {
 				if (typeof parsed === "string") return parsed;
 				if (!parsed.item.quoted && !parsed.item.text) return "a list item is empty";
 				items.push({ ...parsed.item, line });
-				after = parsed.after.trimStart();
+				after = parsed.after.replace(/^ +/, "");
 				if (after.startsWith(",")) {
-					after = after.slice(1).trimStart();
+					after = after.slice(1).replace(/^ +/, "");
 					continue;
 				}
 				if (after.startsWith("]")) {
@@ -527,12 +537,12 @@ function lineValue(rest: string, line: number): Value | string {
 				}
 				return "a list on one line must end with ]";
 			}
-		if (after.trim() && !/^\s+#/.test(after)) return "unexpected text after the list";
+		if (!/^ *$/.test(after) && !/^ +#/.test(after)) return "unexpected text after the list";
 		return { line, items, item: null };
 	}
 	const parsed = scalar(rest, false);
 	if (typeof parsed === "string") return parsed;
-	if (parsed.after.trim() && !/^\s+#/.test(parsed.after)) return "unexpected text after the value";
+	if (!/^ *$/.test(parsed.after) && !/^ +#/.test(parsed.after)) return "unexpected text after the value";
 	return { line, items: null, item: { ...parsed.item, line } };
 }
 
@@ -573,7 +583,7 @@ function split(text: string, front: boolean, problems: Problems): Split | null {
 			problems.add("syntax", number, null, "control and line separator characters are not allowed in the settings");
 			continue;
 		}
-		if (!line.trim() || /^\s*#/.test(line)) continue;
+		if (/^ *$/.test(line) || /^ *#/.test(line)) continue;
 		const item = /^( *)-(?: (.*))?$/.exec(line);
 		if (item) {
 			const current: OpenList | null = open;
@@ -587,9 +597,9 @@ function split(text: string, front: boolean, problems: Problems): Split | null {
 				continue;
 			}
 			current.indent = indent;
-			const parsed = scalar((item[2] ?? "").trimStart(), false);
+			const parsed = scalar((item[2] ?? "").replace(/^ +/, ""), false);
 			if (typeof parsed === "string") problems.add("syntax", number, current.key, parsed);
-			else if (parsed.after.trim() && !/^\s+#/.test(parsed.after))
+			else if (!/^ *$/.test(parsed.after) && !/^ +#/.test(parsed.after))
 				problems.add("syntax", number, current.key, "unexpected text after the list item");
 			else if (!parsed.item.quoted && !parsed.item.text)
 				problems.add("syntax", number, current.key, "a list item is empty");
@@ -604,14 +614,14 @@ function split(text: string, front: boolean, problems: Problems): Split | null {
 		}
 		const key = match[1] ?? "";
 		if (!KEY.test(key)) {
-			problems.add("syntax", number, key, `"${key}" is not a setting name`);
+			problems.add("syntax", number, key, `"${shown(key)}" is not a setting name`);
 			continue;
 		}
 		if (values.has(key)) {
 			problems.add("duplicate_key", number, key, `${key} is set twice`);
 			continue;
 		}
-		const rest = (match[2] ?? "").trim();
+		const rest = trimSpaces(match[2] ?? "");
 		if (!rest || rest.startsWith("#")) {
 			open = { key, line: number, items: [], indent: null };
 			continue;
@@ -699,7 +709,12 @@ class Fields {
 		const item = this.one(key, required);
 		if (!item) return null;
 		if ((allowed as readonly string[]).includes(item.text)) return item.text as T;
-		this.problems.add("value", item.line, key, `${key} must be one of: ${allowed.join(", ")} (found "${item.text}")`);
+		this.problems.add(
+			"value",
+			item.line,
+			key,
+			`${key} must be one of: ${allowed.join(", ")} (found "${shown(item.text)}")`,
+		);
 		return null;
 	}
 
@@ -788,6 +803,7 @@ class Fields {
 		const items = this.list(key, required, empty);
 		if (!items) return items;
 		const ids: string[] = [];
+		const seen = new Set<string>();
 		for (const item of items) {
 			if (!UUID.test(item.text))
 				this.problems.add(
@@ -798,9 +814,12 @@ class Fields {
 						? `ids in ${key} are written in lowercase`
 						: `each entry of ${key} must be an id`,
 				);
-			else if (ids.includes(item.text))
+			else if (seen.has(item.text))
 				this.problems.add("value", item.line, key, `${item.text} is listed twice in ${key}`);
-			else ids.push(item.text);
+			else {
+				seen.add(item.text);
+				ids.push(item.text);
+			}
 		}
 		return ids;
 	}
@@ -812,7 +831,7 @@ class Fields {
 		for (const item of items) {
 			const day = item.text as RoutineDay;
 			if (!DAYS.includes(day))
-				this.problems.add("value", item.line, key, `days are ${DAYS.join(", ")} (found "${item.text}")`);
+				this.problems.add("value", item.line, key, `days are ${DAYS.join(", ")} (found "${shown(item.text)}")`);
 			else if (chosen.includes(day)) this.problems.add("value", item.line, key, `${day} is listed twice`);
 			else chosen.push(day);
 		}
@@ -828,7 +847,7 @@ class Fields {
 					"unknown_key",
 					value.line,
 					key,
-					`unknown setting "${key}" for ${kind}; allowed: ${allowed}`,
+					`unknown setting "${shown(key)}" for ${kind}; allowed: ${allowed}`,
 				);
 	}
 }
@@ -847,15 +866,27 @@ function body(split: Split, problems: Problems, what: string, required: boolean,
 	return text;
 }
 
-/** An ATX heading's text: trimmed, with an optional closing run of `#` removed (CommonMark).
- * Written without regular expressions over the whole line, so a long line costs its length. */
-function headingText(rest: string): string {
-	let text = rest.trim();
+/** An ATX heading's text: spaces trimmed, with an optional closing run of `#` removed
+ * (CommonMark). Null when the raw text holds a control or line separator. Written without
+ * regular expressions over the whole line, so a long line costs its length. */
+function headingText(rest: string): string | null {
+	if (NOT_ONE_LINE.test(rest)) return null;
+	let text = trimSpaces(rest);
 	let end = text.length;
 	while (end > 0 && text[end - 1] === "#") end--;
 	if (end === 0) return "";
-	if (end < text.length && /\s/.test(text[end - 1] ?? "")) text = text.slice(0, end).trim();
+	if (end < text.length && text[end - 1] === " ") text = trimSpaces(text.slice(0, end));
 	return text;
+}
+
+/** Spaces (U+0020 only) trimmed from the end, and from the start unless `start` is false.
+ * A loop, not a regular expression: ` +$` retries at every space of a long run. */
+function trimSpaces(text: string, start = true): string {
+	let from = 0;
+	let end = text.length;
+	if (start) while (from < end && text[from] === " ") from++;
+	while (end > from && text[end - 1] === " ") end--;
+	return text.slice(from, end);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -863,11 +894,11 @@ function headingText(rest: string): string {
 
 function vision(split: Split, problems: Problems): VisionFile | null {
 	const lines = split.body.split("\n");
-	const index = lines.findIndex((line) => line.trim());
+	const index = lines.findIndex((line) => /[^ \t\r]/.test(line));
 	const first = index < 0 ? "" : (lines[index] ?? "").replace(/\r$/, "");
 	const marker = /^# +/.exec(first);
 	const name = marker ? headingText(first.slice(marker[0].length)) : "";
-	if (!name || NOT_ONE_LINE.test(name)) {
+	if (!name) {
 		problems.add("body", index < 0 ? 1 : index + 1, null, "the first line must be # and the company's name");
 		return null;
 	}
@@ -907,23 +938,23 @@ function sections(split: Split, problems: Problems): SectionsFile | null {
 				problems.add("syntax", number, null, "put a space after ## in a section's name");
 				return;
 			}
-			const name = headingText(line.slice(2));
-			if (!name || NOT_ONE_LINE.test(name) || [...name].length > 60)
+			const name = headingText(line.slice(2)) ?? "";
+			if (!name || [...name].length > 60)
 				problems.add("value", number, null, "a section's name must be 1–60 characters, without tabs");
 			else if (names.has(name.toLowerCase()))
-				problems.add("value", number, null, `there are two sections named "${name}"`);
+				problems.add("value", number, null, `there are two sections named "${shown(name)}"`);
 			names.add(name.toLowerCase());
 			found.push({ name, line: number, members: [] });
 			return;
 		}
-		const entry = /^\s*[-*]\s+(\S+)(?:\s.*)?$/.exec(line);
+		const entry = /^[ \t]*[-*][ \t]+([^ \t]+)(?:[ \t].*)?$/.exec(line);
 		const section = found.at(-1);
 		const id = entry?.[1] ?? "";
 		if (!section) {
 			if (UUID_ANY_CASE.test(id)) problems.add("syntax", number, null, "put this line under a ## section");
 			return;
 		}
-		if (!line.trim()) return;
+		if (/^[ \t]*$/.test(line)) return;
 		if (!entry || !UUID.test(id)) {
 			problems.add(
 				"syntax",
@@ -963,11 +994,15 @@ function connection(split: Split, fields: Fields, problems: Problems): Connectio
 	const account = fields.text("account", true, 254);
 	const status = fields.choice("status", true, ["connected", "broken"] as const);
 	const actions: string[] = [];
+	const seen = new Set<string>();
 	for (const item of fields.list("actions", true, true) ?? []) {
 		if (!/^[a-z][a-z0-9_]{0,63}$/.test(item.text))
-			problems.add("value", item.line, "actions", `"${item.text}" is not an action name`);
-		else if (actions.includes(item.text)) problems.add("value", item.line, "actions", `${item.text} is listed twice`);
-		else actions.push(item.text);
+			problems.add("value", item.line, "actions", `"${shown(item.text)}" is not an action name`);
+		else if (seen.has(item.text)) problems.add("value", item.line, "actions", `${item.text} is listed twice`);
+		else {
+			seen.add(item.text);
+			actions.push(item.text);
+		}
 	}
 	const connectedBy = fields.id("connected_by", true);
 	const connectedAt = fields.instant("connected_at", true);
@@ -1166,6 +1201,74 @@ function workerResults(split: Split, fields: Fields, problems: Problems): Worker
 	return { kind: "worker-results", outcome, reportedAt, decision, note, report };
 }
 
+/** Where a folder sits in the layout of structured files, or null for an ordinary folder. A
+ * folder at one of these places is checked like the files it will hold. */
+function structuredFolderNames(parts: readonly string[]): [number, string][] | null {
+	const [a, b, c, d, e] = parts;
+	if (a !== "agents" || b === undefined || b === "sections.md") return null;
+	if (b === "groups") return parts.length === 3 ? [[2, "a group chat's folder"]] : parts.length === 2 ? [] : null;
+	if (parts.length === 2) return [[1, "an agent's folder"]];
+	if (c !== "todos" && c !== "routines") return null;
+	if (parts.length === 3) return [[1, "an agent's folder"]];
+	if (c === "todos" && parts.length === 4 && d !== undefined)
+		return [
+			[1, "an agent's folder"],
+			[3, "the todo's folder"],
+		];
+	if (c === "todos" && parts.length === 5 && e !== undefined)
+		return [
+			[1, "an agent's folder"],
+			[3, "the todo's folder"],
+			[4, "the worker's folder"],
+		];
+	return null;
+}
+
+/** The problems with a path itself, before any content: the names it carries follow the naming
+ * rule of contract 5.6, and the whole path is written as its key. The database runs the same
+ * checks on the path an entry is actually stored under (its parent's spelling included) for
+ * every file and folder a unit writes, creates or renames at a structured place, so a rename
+ * can never leave a file that no later save could pass. `folder` checks a folder path. */
+export function companyStatePathProblems(path: string, folder = false): CompanyStateProblem[] {
+	const problems = new Problems();
+	const written = path.split("/");
+	const named: [string | undefined, string][] = [];
+	if (folder) {
+		const places = structuredFolderNames(companyPathKey(path).split("/"));
+		if (places === null) return [];
+		for (const [index, what] of places) named.push([written[index], what]);
+	} else {
+		const where = companyStatePath(path);
+		if (!where) return [];
+		if (where.kind === "group") named.push([written[2], "a group chat's folder"]);
+		else if (where.agent !== null) named.push([written[1], "an agent's folder"]);
+		if (where.kind === "routine" || where.kind === "todo") named.push([written[3]?.slice(0, -3), "the file"]);
+		if (where.kind === "rule" || where.kind === "connection") named.push([written[1]?.slice(0, -3), "the file"]);
+		if (where.kind === "worker-brief" || where.kind === "worker-results")
+			named.push([written[3], "the todo's folder"], [written[4], "the worker's folder"]);
+	}
+	for (const [name, what] of named)
+		if (name === undefined || !isCompanyStateName(name))
+			problems.add(
+				"name",
+				null,
+				null,
+				`the name of ${what} (${shown(name ?? "")}) must be lowercase letters a–z, digits and single hyphens, at most ${COMPANY_STATE_NAME_MAX_CHARS} characters, for example ${
+					companyStateName(name ?? "") ||
+					(what === "a group chat's folder" ? "group" : what === "an agent's folder" ? "agent" : "file")
+				}`,
+			);
+	const kind = folder ? null : companyStatePath(path)?.kind;
+	if (kind && kind !== "vision" && kind !== "sections" && !written.at(-1)?.endsWith(".md"))
+		problems.add("name", null, null, "the file name ends in .md, in lowercase");
+	else if (!problems.list.length && path !== companyPathKey(path))
+		problems.add("name", null, null, `write the path in lowercase, as ${shown(companyPathKey(path))}`);
+	return problems.list;
+}
+
+/** The most problems one refused file reports; the rest are counted in one closing problem. */
+export const COMPANY_STATE_MAX_PROBLEMS = 50;
+
 /** Reads a structured file. Returns null for an ordinary file. Checks everything the file
  * says by itself; the database adds the rules that need its state (ids that exist, names that
  * are taken, who may write, the Co-Founder). `text` is the file decoded as strict UTF-8: a
@@ -1174,7 +1277,19 @@ export function parseCompanyStateFile(path: string, text: string): CompanyStateF
 	const where = companyStatePath(path);
 	if (!where) return null;
 	const problems = new Problems();
-	const refused = () => ({ ok: false as const, path: where, problems: problems.list });
+	const refused = () => {
+		const more = problems.list.length - COMPANY_STATE_MAX_PROBLEMS;
+		const first = problems.list.slice(0, COMPANY_STATE_MAX_PROBLEMS);
+		const next = problems.list[COMPANY_STATE_MAX_PROBLEMS];
+		if (more > 0 && next)
+			first.push({
+				line: null,
+				key: null,
+				code: next.code,
+				message: `and ${more} more ${more === 1 ? "problem" : "problems"}`,
+			});
+		return { ok: false as const, path: where, problems: first };
+	};
 	if (encoder.encode(text).byteLength > COMPANY_STATE_FILE_MAX_BYTES) {
 		problems.add("too_large", null, null, `the file is larger than ${COMPANY_STATE_FILE_MAX_BYTES} bytes`);
 		return refused();
@@ -1184,29 +1299,7 @@ export function parseCompanyStateFile(path: string, text: string): CompanyStateF
 		return refused();
 	}
 	const unmarked = text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
-	// Names the path carries follow the naming rule of contract 5.6, as written.
-	const written = path.split("/");
-	const named: [string | undefined, string, string][] = [];
-	if (where.kind === "group") named.push([written[2], "a group chat's folder", "group"]);
-	else if (where.agent !== null) named.push([written[1], "an agent's folder", "agent"]);
-	if (where.kind === "routine" || where.kind === "todo") named.push([written[3]?.slice(0, -3), "the file", "file"]);
-	if (where.kind === "rule" || where.kind === "connection") named.push([written[1]?.slice(0, -3), "the file", "file"]);
-	if (where.kind === "worker-brief" || where.kind === "worker-results")
-		named.push([written[3], "the todo's folder", "todo"], [written[4], "the worker's folder", "worker"]);
-	for (const [name, what, fallback] of named)
-		if (name === undefined || !isCompanyStateName(name))
-			problems.add(
-				"name",
-				null,
-				null,
-				`the name of ${what} (${name ?? ""}) must be lowercase letters a–z, digits and single hyphens, at most ${COMPANY_STATE_NAME_MAX_CHARS} characters, for example ${
-					companyStateName(name ?? "") || fallback
-				}`,
-			);
-	if (where.kind !== "vision" && where.kind !== "sections" && !written.at(-1)?.endsWith(".md"))
-		problems.add("name", null, null, "the file name ends in .md, in lowercase");
-	else if (!problems.list.length && path !== companyPathKey(path))
-		problems.add("name", null, null, `write the path in lowercase, as ${companyPathKey(path)}`);
+	problems.list.push(...companyStatePathProblems(path));
 	const front = where.kind !== "vision" && where.kind !== "sections";
 	const parts = split(unmarked, front, problems);
 	if (!parts) return refused();
@@ -1273,7 +1366,7 @@ export function companyStateValue(text: string): string {
  * booleans, base-60 numbers and leading-zero octals. Writers quote them; the parser follows
  * YAML 1.2 and reads them as text. */
 function yaml11Ambiguous(text: string): boolean {
-	return /^(?:y|Y|yes|Yes|YES|n|N|no|No|NO|on|On|ON|off|Off|OFF)$|^[-+]?[0-9][0-9_]*(?::[0-5]?[0-9])+(?:\.[0-9_]*)?$|^[-+]?0[0-7_]+$/.test(
+	return /^(?:y|Y|yes|Yes|YES|n|N|no|No|NO|on|On|ON|off|Off|OFF|=|<<)$|^[-+]?[0-9][0-9_]*(?::[0-5]?[0-9])+(?:\.[0-9_]*)?$|^[-+]?0[0-7_]+$|^[-+]?0b[01_]+$|^[-+]?0x[0-9a-fA-F_]+$|^[-+]?[0-9][0-9_]*(?:\.[0-9_]*)?(?:[eE][-+]?[0-9]+)?$|^[-+]?\.[0-9][0-9_]*(?:[eE][-+]?[0-9]+)?$/.test(
 		text,
 	);
 }
@@ -1470,7 +1563,7 @@ export type CompanyStateSetting = string | number | readonly string[] | null;
  * or an agent's own layout survives a status change made from the app. A changed key keeps
  * its place, and its list lines go with it. A new key goes last in the settings. */
 export function setCompanyStateSettings(text: string, changes: Readonly<Record<string, CompanyStateSetting>>): string {
-	const mark = text.charCodeAt(0) === 0xfeff ? "﻿" : "";
+	const mark = text.charCodeAt(0) === 0xfeff ? "\ufeff" : "";
 	const lines = text.slice(mark.length).split("\n");
 	const bare = (line: string | undefined) => (line ?? "").replace(/\r$/, "");
 	const close = bare(lines[0]) === "---" ? lines.findIndex((line, index) => index > 0 && bare(line) === "---") : -1;
@@ -1479,6 +1572,7 @@ export function setCompanyStateSettings(text: string, changes: Readonly<Record<s
 	const encoded = new Map<string, string | null>();
 	for (const [key, value] of Object.entries(changes)) {
 		if (!KEY.test(key)) throw new Error(`Invalid setting name: ${key}`);
+		if (typeof value === "number" && !Number.isSafeInteger(value)) throw new Error(`${key} must be a whole number`);
 		encoded.set(
 			key,
 			value === null
@@ -1497,13 +1591,14 @@ export function setCompanyStateSettings(text: string, changes: Readonly<Record<s
 		if (key !== undefined && encoded.has(key)) {
 			const value = encoded.get(key);
 			encoded.delete(key);
-			// The key's own list lines go with it: its items, and the notes and blank lines
-			// between them, up to its last item.
+			// A key with no value on its line owns the list lines below it: its items, and the notes
+			// and blank lines between them, up to its last item. They go with it.
 			let last = index;
-			for (let next = index + 1; next < close; next++) {
+			const listed = /^[a-z][a-z0-9_]*: *(?:#.*)?$/.test(bare(line));
+			for (let next = index + 1; listed && next < close; next++) {
 				const candidate = bare(lines[next]);
 				if (/^ *-(?: |$)/.test(candidate)) last = next;
-				else if (candidate.trim() && !/^\s*#/.test(candidate)) break;
+				else if (!/^ *$/.test(candidate) && !/^ *#/.test(candidate)) break;
 			}
 			index = last;
 			if (value !== null && value !== undefined) out.push(`${key}: ${value}${line.endsWith("\r") ? "\r" : ""}`);
