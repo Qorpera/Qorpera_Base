@@ -1,5 +1,5 @@
 -- @fixture 300_runtime_wake_bus.test.sql until "-- END WAKE FIXTURE"
--- Identical nodes, change 1 (20260928180000): a node is serving or emptying.
+-- Identical nodes, change 1 (20260928180700): a node is serving or emptying.
 --   * The switch flips only the node's `enabled` flag, with a reason and the node's version check.
 --   * An emptying node's orchestrators claim nothing new; the other node's orchestrators do.
 --   * A node-local refusal makes only the refusing orchestrator wait; a second one inside that

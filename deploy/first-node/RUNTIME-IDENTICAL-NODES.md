@@ -27,7 +27,7 @@ change.
   come from a signed release installed on the node. Build machines go in a declared build space
   counted against headroom. Everything else stays exact.
 
-## Change 1: the serving switch (migration `20260928180000`)
+## Change 1: the serving switch (migration `20260928180700`)
 
 - **The switch is `qorpera_runtime_nodes.enabled`.** These already require it:
   - `qorpera_runtime_node_placement_candidates`, used by the node chooser, the login route pick
@@ -41,7 +41,7 @@ change.
     turn it is running keeps its lease and finishes.
 - **Work pinned to the node by a disk stays pinned.** It waits for the node to return:
   - runs of a member whose login lives on the node (the identity-home rule, until logins move
-    into the vault, `20260928161000`);
+    into the vault, `20260928180600`);
   - a sleeping machine's wake;
   - a new coding turn for a member whose machine is there (the sticky branches of the executor
     pick send it to that node's executor, which does not start it while the node empties);
@@ -118,7 +118,7 @@ migration can go in any cut without a pause.
    select node_id, revision, disabled_version, resumed_version
    from public.qorpera_node_update_targets where resumed_version is null;
    ```
-1. Apply `20260928180000` (dry run first). Guard marker for the release branch:
+1. Apply `20260928180700` (dry run first), after S1's `20260928180600`. Guard marker for the release branch:
    `qorpera_runtime_orchestrator_nodes(v_adapter)` present in
    `qorpera_claim_runner_job_for_orchestrator`. Check that it is ABSENT live first.
 2. Read-only check that each live orchestrator's adapter maps to exactly one node:
@@ -211,7 +211,7 @@ activates it in one step. So the updated node stays switched off until the activ
 SQL only, safe for the running bundle, and nothing changes until an operator declares.
 - **Activation guard** for the release branch: `declared.runtime_bundle_sha256` present in the
   claim function. Check that it is ABSENT live first.
-- **Stacking.** This PR is stacked on change 1 (#424) and needs `20260928180000` first
+- **Stacking.** This PR is stacked on change 1 (#424) and needs `20260928180700` first
   (`qorpera_runtime_orchestrator_nodes`).
 - **Every cut's preflight**, paused or rolling: no declaration may be left over. A leftover
   declaration stops that orchestrator from claiming runs of the new bundle.
