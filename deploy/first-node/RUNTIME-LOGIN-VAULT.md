@@ -40,7 +40,7 @@ Founder approval: 28 September 2026, page "Logins in the Vault"
 - No table privileges for anyone; the broker role executes three functions:
   - `qorpera_issue_model_login(authority, capability, binding, knownVersion, allowRenewal)`: checks the
     run with `qorpera_model_login_run_binding`, the native lease validator's own conditions read
-    without locks (exact binding; job leased and unexpired; assignment accepted and unexpired; lease
+    without company-wide locks (exact binding; job leased and unexpired; assignment accepted and unexpired; lease
     live; sponsor and compute available; connection, version, capsule and policy active; identity
     and runner at the current epoch; company not paused). Past half the pass life and with
     `allowRenewal`, the first caller takes the lock (`update … where renewal_until is null or < now()`
@@ -52,12 +52,14 @@ Founder approval: 28 September 2026, page "Logins in the Vault"
     under the authority's current key. A token is written anew each time the lock is taken, so a
     matching token proves nobody took the lock over, even after it lapsed. A repeat after a lost
     answer finds its own version (same digest) and succeeds.
-  - `qorpera_release_model_login_renewal(…, token, permanent, reason)`: gives the lock back and
-    records the failure time; a permanent failure sets `needs_sign_in` (a revoked login stays
-    revoked).
+  - `qorpera_release_model_login_renewal(…, token, baseVersion, permanent, reason)`: gives the lock
+    back and records the failure time; a permanent failure sets `needs_sign_in` only while the login
+    is still at `baseVersion` (a newer version, such as a fresh sign-in, is never marked; a revoked
+    login stays revoked).
 - Locks: the login row only, for one short statement. No company row, fence or authority row is
-  locked for update (a saved version's foreign key takes a key-share lock on its authority); the
-  run's host keeps validating its lease with the company fence every 15 s, as today.
+  locked for update (a saved version's foreign key takes a key-share lock on its authority). A run
+  no member started takes, like the lease validator, a share lock on its member's connection row.
+  The run's host keeps validating its lease with the company fence every 15 s, as today.
 
 ## The broker (change 1)
 

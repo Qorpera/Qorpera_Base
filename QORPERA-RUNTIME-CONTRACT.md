@@ -3078,8 +3078,8 @@ which makes nodes symmetric for every member. Design:
    lease validator would accept: exactly bound (lease, run, job, runner,
    assignment, capsule, compute identity), job and assignment live, sponsor,
    connection and capsule active, identity not fenced, company not paused. The
-   vault reads these without locks. The run receives a copy of the login's
-   known fields without the renewal token. Its host keeps that copy fresh from the vault during the run, the
+   vault reads these without company-wide locks. The run receives a copy of
+   the login's known fields without the renewal token. Its host keeps that copy fresh from the vault during the run, the
    harness picks the fresh copy up by itself, and the run never writes a login
    back. A lost node loses only passes that end by themselves.
 4. **Sign-in and usage checks.** The member's official sign-in runs in the

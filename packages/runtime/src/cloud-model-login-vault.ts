@@ -79,7 +79,7 @@ export interface ModelLoginAuthority {
 		signal: AbortSignal,
 	): Promise<unknown>;
 	releaseModelLoginRenewal(
-		release: { loginId: string; token: string; permanent: boolean; reason: string },
+		release: { loginId: string; token: string; baseVersion: number; permanent: boolean; reason: string },
 		signal: AbortSignal,
 	): Promise<unknown>;
 }
@@ -291,11 +291,14 @@ export class CloudModelLoginVault {
 	async issue(request: ModelLoginIssueRequest, signal: AbortSignal): Promise<ModelLoginIssue> {
 		const binding = parseModelLoginRunBinding(request.binding);
 		const knownVersion = request.knownVersion === null ? null : version(request.knownVersion, "Known login version");
-		const issue = parseIssue(
-			await this.#authority.issueModelLogin(binding, knownVersion, this.#renewer !== undefined, signal),
-			binding,
-			knownVersion,
-		);
+		const answer = await this.#authority.issueModelLogin(binding, knownVersion, this.#renewer !== undefined, signal);
+		let issue: IssueResult;
+		try {
+			issue = parseIssue(answer, binding, knownVersion);
+		} catch (error) {
+			await this.#releaseUnread(answer);
+			throw error;
+		}
 		if (!issue.envelope) {
 			return {
 				schema: "qorpera.model-login/v1",
@@ -416,6 +419,39 @@ export class CloudModelLoginVault {
 		return { login: renewed, version: renewal.baseVersion };
 	}
 
+	/** An answer this vault could not read may still carry a renewal lock: give it back. */
+	async #releaseUnread(answer: unknown): Promise<void> {
+		const input =
+			answer && typeof answer === "object" && !Array.isArray(answer) ? (answer as Record<string, unknown>) : {};
+		const renewal =
+			input.renewal && typeof input.renewal === "object" && !Array.isArray(input.renewal)
+				? (input.renewal as Record<string, unknown>)
+				: undefined;
+		if (
+			!renewal ||
+			typeof input.loginId !== "string" ||
+			!UUID.test(input.loginId) ||
+			typeof renewal.token !== "string" ||
+			!UUID.test(renewal.token) ||
+			typeof renewal.baseVersion !== "number" ||
+			!Number.isSafeInteger(renewal.baseVersion) ||
+			renewal.baseVersion < 1
+		)
+			return;
+		await this.#authority
+			.releaseModelLoginRenewal(
+				{
+					loginId: input.loginId,
+					token: renewal.token,
+					baseVersion: renewal.baseVersion,
+					permanent: false,
+					reason: "issue_unreadable",
+				},
+				AbortSignal.timeout(SAVE_DEADLINE_MS),
+			)
+			.catch(() => undefined);
+	}
+
 	async #release(
 		issue: IssueResult,
 		renewal: NonNullable<IssueResult["renewal"]>,
@@ -427,6 +463,7 @@ export class CloudModelLoginVault {
 				{
 					loginId: issue.loginId,
 					token: renewal.token,
+					baseVersion: renewal.baseVersion,
 					permanent,
 					reason: /^[a-z][a-z0-9_]{0,63}$/.test(reason) ? reason : "renewal_failed",
 				},
