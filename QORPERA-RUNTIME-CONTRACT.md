@@ -2988,10 +2988,11 @@ into the new layout. When the company folder lands:
 - the layout is proven on new companies created for the test.
 
 The exact scope of the deletion is confirmed with the founder before it runs:
-Supabase projects, tables and storage buckets, NAS paths, machine disks, and
-vault credentials (revoked at the provider). This decision plus that
-confirmation is the authorization section 24.3 requires for a shared live
-change. One owner runs the reset, and acceptance evidence (24.4) is kept.
+which Supabase projects, tables and storage buckets, NAS paths, machine disks,
+and vault credentials (revoked at the provider). This decision plus that
+confirmation is the authorization to erase existing company data that section
+24.3 does not itself grant. One owner runs the reset, as 24.3 requires for a
+shared live change, and acceptance evidence (24.4) is kept.
 The storage core is rebuilt without carrying today's tables or paths forward.
 
 The table below records where each piece of today's state belongs in the new
