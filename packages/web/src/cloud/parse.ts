@@ -1,6 +1,7 @@
 import type {
 	CreatedCompanyResult,
 	HostedAccountEntitlement,
+	HostedAccountMatch,
 	HostedCompanyFile,
 	HostedCompanyProposal,
 	HostedCompanyProposalComment,
@@ -210,6 +211,19 @@ function parseFriend(value: unknown): HostedFriend {
 
 export function parseFriends(value: unknown): HostedFriend[] {
 	return array(value, "friend list").map(parseFriend);
+}
+
+/** Null when no account holds the address. */
+export function parseAccountMatch(value: unknown): HostedAccountMatch | null {
+	if (value === null || value === undefined) return null;
+	const input = record(value, "account");
+	if (typeof input.self !== "boolean") throw new CloudShapeError("account self flag");
+	return {
+		userId: uuid(input.user_id, "account user id"),
+		email: nonEmptyString(input.email, "account email", 320),
+		displayName: nonEmptyString(input.display_name, "account display name", 256),
+		self: input.self,
+	};
 }
 
 function parseMember(value: unknown): HostedProfileMember {

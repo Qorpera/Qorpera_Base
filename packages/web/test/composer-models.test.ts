@@ -19,10 +19,17 @@ afterEach(() => {
 	vi.unstubAllGlobals();
 });
 
-async function setup() {
+async function setup(groupChat = false) {
 	const f = fixture();
 	const company = new CompanyController(f.api, profileA, userA.id);
-	company.store.set({ team, staff: [staff], sessions: [{ ...session, staffAgentId: staff.id }], loading: false });
+	company.store.set({
+		team,
+		staff: [staff],
+		sessions: [
+			groupChat ? { ...session, executionScope: { roomId: id(190) } } : { ...session, staffAgentId: staff.id },
+		],
+		loading: false,
+	});
 	const models = new Map<string, SessionModel>();
 	const read = vi.fn(
 		async (sessionId: string): Promise<SessionModel> =>
@@ -75,6 +82,60 @@ async function open(view: ConversationView, label = "Model: GPT-6 Astra, Low eff
 }
 
 describe("composer model selector", () => {
+	it("names each agent's own model in a group chat where none was chosen", async () => {
+		const f = await setup(true);
+		f.read.mockImplementation(async (sessionId: string) => ({ sessionId, reasoningEffort: "low", version: 0 }));
+		// Opening the menu reads the conversation again.
+		const panel = await open(f.view);
+		expect(button(f.view.el, "Model: Each agent's own, Low effort").textContent).toContain("Each agent's own");
+		expect(panel.querySelectorAll('[role="menuitemradio"][aria-checked="true"]').length).toBe(1);
+		expect(button(panel, "Low").getAttribute("aria-checked")).toBe("true");
+		for (const name of ["GPT-6 Astra", "GPT-6 Sol", "GPT-6 Luna"])
+			expect(button(panel, name).getAttribute("aria-checked")).toBe("false");
+	});
+	it("offers a group chat's speed with no model chosen, for every agent in it", async () => {
+		const f = await setup(true);
+		f.read.mockImplementation(async (sessionId: string) => ({
+			sessionId,
+			reasoningEffort: "low",
+			serviceTier: "fast",
+			version: 0,
+		}));
+		const panel = await open(f.view);
+		expect(button(f.view.el, "Model: Each agent's own, Low effort, Fast").textContent).toContain(
+			"Each agent's own · Low · Fast",
+		);
+		const fast = panel.querySelector<HTMLButtonElement>('[role="menuitemcheckbox"]')!;
+		expect(fast.getAttribute("aria-checked")).toBe("true");
+		// With no one model, the caption names no speed-up of its own.
+		expect(fast.textContent).toBe("FastFaster replies");
+		expect(panel.textContent).toContain("Every agent in this group chat. Applies from your next message.");
+		fast.click();
+		await settle();
+		expect(f.set).toHaveBeenLastCalledWith(
+			session.sessionId,
+			{ serviceTier: "standard" },
+			0,
+			expect.any(AbortSignal),
+		);
+	});
+	it("gives a group chat one model and effort, for every agent in it", async () => {
+		const f = await setup(true);
+		const panel = await open(f.view);
+		expect(panel.textContent).toContain("Every agent in this group chat. Applies from your next message.");
+		button(panel, "GPT-6 Sol").click();
+		await settle();
+		expect(f.set).toHaveBeenCalledWith(session.sessionId, { modelId: "gpt-6-sol" }, 0, expect.any(AbortSignal));
+		button(panel, "High").click();
+		await settle();
+		expect(f.set).toHaveBeenLastCalledWith(
+			session.sessionId,
+			{ reasoningEffort: "high" },
+			1,
+			expect.any(AbortSignal),
+		);
+		expect(button(f.view.el, "Model: GPT-6 Sol, High effort")).toBeTruthy();
+	});
 	it("before the cloud honours thread effort, offers only GPT-6 Astra and skips hidden choices", async () => {
 		const f = await setup();
 		f.read.mockImplementation(async (sessionId: string) => {

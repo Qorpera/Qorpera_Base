@@ -128,6 +128,8 @@ export interface LxdCodingExecutorHostOptions {
 	guestReadyTimeoutMs?: number;
 	/** How long LXD's agent may take to mount a hot-plugged session (default 30 s). */
 	attachTimeoutMs?: number;
+	/** How long one machine's keeper step (observe, keep, renew) may take (default 15 s). */
+	keepDeadlineMs?: number;
 }
 /** A session this process hot-plugged into its member's machine during a turn,
  * before the turn recorded its attachment in SQL: a failure until then
@@ -226,6 +228,10 @@ const CODING_GUEST_OBSERVATION = "/run/qorpera-coding/observation.json";
 /** A turn keeps its session's attachment generation only while the guest's
  * lease of it has at least this long left: a renewal must still reach it. */
 const CODING_ATTACH_LEASE_MARGIN_MS = 15_000;
+/** One machine's keeper step (observe, keep, renew) ends by then, so a slow or
+ * stuck machine never holds up a pass: with a pass every 10 s, every guest lease
+ * (45 s) is renewed at least every 30 s. */
+const CODING_KEEP_MACHINE_MS = 15_000;
 /** Refusals a turn waits out in the queue instead of failing: the machine is
  * being removed, the node is full or not ready, the session is still on
  * another machine, or the machine's plan followed a new policy after this turn
@@ -312,9 +318,15 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 	readonly #attachments = new Map<string, Attachment>();
 	readonly #samples = new Map<string, CpuSample>();
 	readonly #leaseWork = new Map<string, Promise<unknown>>();
-	/** Per session, how many attaches this process has recorded: a keeper pass
-	 * leaves a session a turn attached during the pass to that turn. */
-	readonly #attachCounts = new Map<string, number>();
+	/** Per session, the serial of the last attach this process recorded: a
+	 * keeper pass leaves a session a turn attached during the pass to that turn. */
+	readonly #attachSerials = new Map<string, number>();
+	#attachSerial = 0;
+	/** Take-offs (and new attachments for a turn that lost its guest lease) the
+	 * keeper started, at most one per session; they run beside its passes. */
+	readonly #releasing = new Map<string, Promise<void>>();
+	/** Their outcomes, reported by the next pass. */
+	#released: CodingKeepOutcome[] = [];
 	/** Per machine, the boot whose storage helper this process has checked against its pin. */
 	readonly #helperBoots = new Map<string, string>();
 	#archiveScanAt = Number.NEGATIVE_INFINITY;
@@ -996,10 +1008,14 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		guest: { bootId: string; guestConfigSha256: string },
 		scope: CloudCodingCommandScope,
 		signal: AbortSignal,
+		fresh = false,
 	): Promise<void> {
 		// The generation the guest still holds, if a renewal can still reach it:
 		// SQL keeps it only if it is also the live attachment on this machine.
-		const lease = (await this.#observe(machine, signal, false)).sessions.get(claim.workerId)?.lease;
+		const lease = fresh
+			? undefined
+			: (await this.#observe(machine, signal, false)).sessions.get(claim.workerId)?.lease;
+		const generation = lease && lease.expiresInMs >= CODING_ATTACH_LEASE_MARGIN_MS ? lease.tokenSha256 : null;
 		const started = performance.now();
 		const attached = record(
 			await this.#call(
@@ -1010,8 +1026,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 					p_binding_text: lxdCodingMachinePlan(machine).text,
 					p_storage: storage,
 					p_machine_id_sha256: this.#options.machineIdSha256,
-					p_guest_generation:
-						lease && lease.expiresInMs >= CODING_ATTACH_LEASE_MARGIN_MS ? lease.tokenSha256 : null,
+					p_guest_generation: generation,
 				},
 				signal,
 			),
@@ -1047,11 +1062,20 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			since: started,
 		};
 		this.#attachments.set(claim.workerId, attachment);
-		this.#attachCounts.set(claim.workerId, (this.#attachCounts.get(claim.workerId) ?? 0) + 1);
+		this.#attachSerials.set(claim.workerId, ++this.#attachSerial);
 		// From here on the session is the attachment's: a failure no longer unplugs it.
 		if (this.#attached.get(claim.workerId)?.claim.leaseToken === claim.leaseToken)
 			this.#attached.delete(claim.workerId);
-		await this.#refreshGuestLease(attachment, started + Number(attached.validForMs), signal);
+		try {
+			await this.#refreshGuestLease(attachment, started + Number(attached.validForMs), signal);
+		} catch (error) {
+			// The generation SQL kept ran out in the guest while the attach was on its
+			// way: it can never be renewed. Attach once more under a new one.
+			if (fresh || generation !== digest(attachment.token)) throw error;
+			const now = (await this.#observe(machine, signal, false)).sessions.get(claim.workerId)?.lease;
+			if (now?.tokenSha256 !== generation || now.expiresInMs > 0) throw error;
+			await this.#attachSessionNow(claim, machine, storage, guest, scope, signal, true);
+		}
 	}
 	/** A turn as SQL names it in an attachment: its sequence, its turn id and whether it may start commands. */
 	#attachedTurn(value: unknown): Attachment["turn"] {
@@ -1319,16 +1343,21 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			(value.state !== "detached" && value.state !== "unchanged")
 		)
 			throw new Error("CODING_HOST_DETACH_RECORD_UNCONFIRMED");
-		if (this.#attachments.get(workerId)?.token === token) this.#attachments.delete(workerId);
+		if (this.#attachments.get(workerId)?.token === token) {
+			this.#attachments.delete(workerId);
+			this.#attachSerials.delete(workerId);
+		}
 		this.#samples.delete(workerId);
 	}
 
 	/** One keeper pass over this executor's awake machines that carry attached
 	 * sessions: observe what runs inside, renew each session's attachment in SQL
-	 * with that observation, renew its guest lease under the renewed deadline,
-	 * and take off the sessions SQL releases (archived, revoked, expired). The
-	 * machines are kept side by side, so a slow or unreachable one never holds up
-	 * another's renewals. Every failure is returned, never hidden. */
+	 * with that observation, and renew its guest lease under the renewed deadline.
+	 * The machines are kept side by side, each within its own deadline, and the
+	 * sessions SQL releases (archived, revoked, expired) are taken off beside the
+	 * passes: a slow or stuck machine or take-off never holds up another's
+	 * renewals. Every failure is returned, never hidden; a take-off's outcome
+	 * with the next pass. */
 	async keep(signal: AbortSignal): Promise<CodingKeepOutcome[]> {
 		const pass = performance.now();
 		const listed = await this.#call(
@@ -1343,46 +1372,65 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		const kept = new Set(entries.flatMap((entry) => entry.attached.map(({ workerId }) => workerId)));
 		const outcomes = (
 			await Promise.all(
-				entries.map((entry) =>
-					this.#keepMachine(entry, signal).catch((error): CodingKeepOutcome[] => {
-						signal.throwIfAborted();
-						return [
-							{
-								machineId: entry.machineId,
-								workerId: null,
-								step: "keep",
-								state: "failed",
-								code: errorCodeOf(error),
-							},
-						];
-					}),
-				),
+				entries.map((entry) => {
+					const deadline = AbortSignal.any([
+						signal,
+						AbortSignal.timeout(this.#options.keepDeadlineMs ?? CODING_KEEP_MACHINE_MS),
+					]);
+					// The pass stops waiting at the deadline even for a call that does not.
+					return abortable(this.#keepMachine(entry, deadline, signal), deadline).catch(
+						(error): CodingKeepOutcome[] => {
+							signal.throwIfAborted();
+							return [
+								{
+									machineId: entry.machineId,
+									workerId: null,
+									step: "keep",
+									state: "failed",
+									code: deadline.aborted ? "CODING_HOST_KEEP_DEADLINE" : errorCodeOf(error),
+								},
+							];
+						},
+					);
+				}),
 			)
 		).flat();
 		// Forget what no machine carries any more, unless a turn took it on during this pass.
 		for (const [workerId, attachment] of this.#attachments)
 			if (!kept.has(workerId) && attachment.since < pass) {
 				this.#attachments.delete(workerId);
+				this.#attachSerials.delete(workerId);
 				this.#samples.delete(workerId);
 			}
-		return outcomes;
+		const released = this.#released;
+		this.#released = [];
+		return [...released, ...outcomes];
 	}
-	/** One machine's keeper step. It runs beside the machine's turns and
-	 * lifecycle steps; only taking a session off is one. A session a turn
-	 * attached during the step is that turn's to renew, and SQL keeps a session
-	 * attached in the last 30 seconds that the observation may predate. */
-	async #keepMachine(entry: ListedMachine, signal: AbortSignal): Promise<CodingKeepOutcome[]> {
+	/** Waits for every take-off the keeper started, and returns the outcomes no
+	 * pass has reported yet. */
+	async settled(): Promise<CodingKeepOutcome[]> {
+		await Promise.allSettled([...this.#releasing.values()]);
+		const released = this.#released;
+		this.#released = [];
+		return released;
+	}
+	/** One machine's keeper step, within `deadline`. It runs beside the machine's
+	 * turns and lifecycle steps. A session a turn attached during the step is that
+	 * turn's to renew, and SQL keeps a session attached in the last 30 seconds that
+	 * the observation may predate. Released sessions are handed to #release. */
+	async #keepMachine(entry: ListedMachine, deadline: AbortSignal, signal: AbortSignal): Promise<CodingKeepOutcome[]> {
 		const machine = lxdCodingMachinePlan(entry.binding as unknown as LxdCodingMachineBinding).binding;
 		if (machine.machineId !== entry.machineId) throw new Error("CODING_HOST_MACHINE_LIST_INVALID");
-		const attaches = new Map(entry.attached.map(({ workerId }) => [workerId, this.#attachCounts.get(workerId) ?? 0]));
+		const attaches = new Map(entry.attached.map(({ workerId }) => [workerId, this.#attachSerials.get(workerId)]));
 		const generations = new Map(
 			entry.attached.map(({ workerId, attachmentToken }) => [workerId, digest(attachmentToken)]),
 		);
-		const observed = await this.#observe(machine, signal);
+		const observed = await this.#observe(machine, deadline);
 		// A guest lease of the listed generation that ran out can never be renewed,
 		// and the watchdog has stopped the session's commands. Left out of the
 		// observation, the session is released (EXPIRED) with the commands SQL last
-		// saw running, and its next turn attaches it under a new generation.
+		// saw running: its next turn, or its turn still running here, attaches it
+		// under a new generation.
 		const lost = new Set<string>();
 		const sessions: { workerId: string; busy: boolean; running: ObservedCommand[] }[] = [];
 		for (const [workerId, seen] of observed.sessions) {
@@ -1416,7 +1464,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 						sessions,
 					},
 				},
-				signal,
+				deadline,
 			),
 		);
 		if (
@@ -1425,63 +1473,110 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			!Array.isArray(kept.sessions)
 		)
 			throw new Error("CODING_HOST_ATTACHMENTS_INVALID");
-		const outcomes: CodingKeepOutcome[] = [];
-		for (const value of kept.sessions) {
+		const items = kept.sessions.map((value) => {
 			const item = record(value);
 			const workerId = typeof item.workerId === "string" && UUID.test(item.workerId) ? item.workerId : null;
 			if (!workerId || typeof item.attachmentToken !== "string" || !UUID.test(item.attachmentToken))
 				throw new Error("CODING_HOST_ATTACHMENTS_INVALID");
-			const step: CodingKeepOutcome["step"] = item.state === "kept" ? "keep" : "detach";
-			try {
-				if (item.state === "kept") {
-					if (lost.has(workerId) && generations.get(workerId) === digest(item.attachmentToken)) {
-						// Attached too recently for SQL to judge it by this observation: released at a later pass.
-						outcomes.push({
-							machineId: machine.machineId,
-							workerId,
-							step,
-							state: "not-now",
-							code: "GUEST_LEASE_EXPIRED",
-						});
-						continue;
-					}
-					const renewed = await this.#leaseTask(workerId, async () => {
-						if ((this.#attachCounts.get(workerId) ?? 0) !== (attaches.get(workerId) ?? 0)) return false;
-						const attachment = await this.#attachmentOn(machine, workerId, item, observed.bootId, signal);
-						await this.#refreshGuestLease(attachment, started + Number(item.validForMs), signal);
-						return true;
-					});
-					outcomes.push(
-						renewed
-							? { machineId: machine.machineId, workerId, step, state: "done" }
-							: { machineId: machine.machineId, workerId, step, state: "not-now", code: "TURN_ATTACHED" },
-					);
-				} else if (
-					item.state === "release" &&
-					typeof item.reason === "string" &&
-					/^[A-Z_]{1,64}$/.test(item.reason)
-				) {
-					const running = observed.sessions.get(workerId)?.running ?? [];
-					await this.#takeOff(
-						machine,
-						lxdCodingSessionStorage(machine, this.#placement, workerId),
-						{ workerId, leaseToken: null },
-						running.map((command) => command.commandId),
-						signal,
-					);
-					await this.#recordDetached(machine, workerId, item.attachmentToken, item.reason, running, signal);
-					outcomes.push({ machineId: machine.machineId, workerId, step, state: "done", code: item.reason });
-				} else throw new Error("CODING_HOST_ATTACHMENTS_INVALID");
-			} catch (error) {
-				if (error instanceof CodingCustodyRefused) {
-					outcomes.push({ machineId: machine.machineId, workerId, step, state: "not-now", code: error.reason });
+			return { workerId, item };
+		});
+		const renewals: Promise<CodingKeepOutcome>[] = [];
+		for (const { workerId, item } of items) {
+			const outcome = (state: CodingKeepOutcome["state"], code?: string): CodingKeepOutcome => ({
+				machineId: machine.machineId,
+				workerId,
+				step: "keep",
+				state,
+				...(code ? { code } : {}),
+			});
+			if (item.state === "kept") {
+				if (lost.has(workerId) && generations.get(workerId) === digest(String(item.attachmentToken))) {
+					// Attached too recently for SQL to judge it by this observation: released at a later pass.
+					renewals.push(Promise.resolve(outcome("not-now", "GUEST_LEASE_EXPIRED")));
 					continue;
 				}
-				signal.throwIfAborted();
-				outcomes.push({ machineId: machine.machineId, workerId, step, state: "failed", code: errorCodeOf(error) });
-			}
+				// Each session's renewal on its own, one guest lease step at a time per session.
+				renewals.push(
+					abortable(
+						this.#leaseTask(workerId, async () => {
+							deadline.throwIfAborted();
+							if (this.#attachSerials.get(workerId) !== attaches.get(workerId)) return false;
+							const attachment = await this.#attachmentOn(machine, workerId, item, observed.bootId, deadline);
+							await this.#refreshGuestLease(attachment, started + Number(item.validForMs), deadline);
+							return true;
+						}),
+						deadline,
+					).then(
+						(renewed) => (renewed ? outcome("done") : outcome("not-now", "TURN_ATTACHED")),
+						(error: unknown) => {
+							signal.throwIfAborted();
+							return outcome("failed", deadline.aborted ? "CODING_HOST_KEEP_DEADLINE" : errorCodeOf(error));
+						},
+					),
+				);
+			} else if (item.state === "release" && typeof item.reason === "string" && /^[A-Z_]{1,64}$/.test(item.reason))
+				this.#release(
+					machine,
+					workerId,
+					String(item.attachmentToken),
+					item.reason,
+					observed.sessions.get(workerId)?.running ?? [],
+					signal,
+				);
+			else throw new Error("CODING_HOST_ATTACHMENTS_INVALID");
 		}
-		return outcomes;
+		return Promise.all(renewals);
+	}
+	/** Takes a released session off, beside the keeper's passes, and records it
+	 * detached with what it stopped. A session whose turn this process still runs
+	 * and whose guest lease ran out (renewals did not reach it in time) is instead
+	 * attached again under the turn's own authority, as a new generation, so the
+	 * turn goes on; what the old one ran is recorded stopped. At most one per
+	 * session at a time; the outcome is reported by the next pass. */
+	#release(
+		machine: Readonly<LxdCodingMachineBinding>,
+		workerId: string,
+		token: string,
+		reason: string,
+		running: readonly ObservedCommand[],
+		signal: AbortSignal,
+	): void {
+		if (this.#releasing.has(workerId)) return;
+		const prepared = this.#prepared.get(workerId);
+		const again = reason === "EXPIRED" && prepared?.machine.machineId === machine.machineId ? prepared : undefined;
+		const step: CodingKeepOutcome["step"] = again ? "keep" : "detach";
+		const report = (state: CodingKeepOutcome["state"], code: string) =>
+			this.#released.push({ machineId: machine.machineId, workerId, step, state, code });
+		const work = (async () => {
+			if (again) {
+				// Only while that turn is still prepared here: an ended turn's lease is never opened again.
+				const attached = await this.#leaseTask(workerId, async () => {
+					if (this.#prepared.get(workerId) !== again) return false;
+					await this.#attachSessionNow(again.claim, again.machine, again.storage, again, again.scope, signal);
+					return true;
+				});
+				if (attached) report("done", "REATTACHED");
+				return;
+			}
+			await this.#takeOff(
+				machine,
+				lxdCodingSessionStorage(machine, this.#placement, workerId),
+				{ workerId, leaseToken: null },
+				running.map((command) => command.commandId),
+				signal,
+			);
+			await this.#recordDetached(machine, workerId, token, reason, running, signal);
+			report("done", reason);
+		})()
+			.catch((error: unknown) => {
+				if (signal.aborted) return;
+				if (error instanceof CodingCustodyRefused) report("not-now", error.reason);
+				else report("failed", errorCodeOf(error));
+			})
+			.finally(() => {
+				if (this.#releasing.get(workerId) === work) this.#releasing.delete(workerId);
+			});
+		this.#releasing.set(workerId, work);
 	}
 	/** The attachment as SQL renewed it, on this machine and boot. SQL moves the
 	 * turn only through an attach, and a turn this process has closed stays

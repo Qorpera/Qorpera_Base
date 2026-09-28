@@ -227,8 +227,14 @@ async function fixture() {
 		recent: new Set<string>(),
 		/** Runs inside the keep call, before SQL answers: a turn attaching during a keeper pass. */
 		duringKeep: null as (() => Promise<unknown>) | null,
+		/** Runs inside the attach call, before SQL answers: a slow attach. */
+		duringAttach: null as (() => void) | null,
 	};
+	// The watchdog: a generation's lease renews while live and never again once run out.
 	mocked.refresh.mockImplementation(async (scope: { workerId: string }, tokenSha256: string, ttlMs: number) => {
+		const prior = state.guestLeases.get(scope.workerId);
+		if (prior?.tokenSha256 === tokenSha256 && prior.expiresAtMs <= state.uptimeMs)
+			throw new Error("CODING_GUEST_LEASE_GENERATION_UNAVAILABLE");
 		state.guestLeases.set(scope.workerId, { tokenSha256, expiresAtMs: state.uptimeMs + ttlMs });
 	});
 	// Attachments as SQL holds them: session -> token.
@@ -287,6 +293,9 @@ async function fixture() {
 				const workerId = String(args.p_worker_id);
 				if (leases.get(workerId) !== args.p_lease_token) throw new Error("Coding session lease unavailable");
 				if (state.attachRefusal) return { state: "refused", reason: state.attachRefusal };
+				const during = state.duringAttach;
+				state.duringAttach = null;
+				during?.();
 				// The live attachment's generation is kept only if the guest still holds it.
 				const known = attachments.get(workerId);
 				const token = known && args.p_guest_generation === hash(known) ? known : randomUUID();
@@ -565,6 +574,11 @@ async function fixture() {
 	};
 }
 type Fixture = Awaited<ReturnType<typeof fixture>>;
+/** One keeper pass and the take-offs it started, settled: the pass's renewals, then the take-offs' outcomes. */
+async function pass(f: Fixture) {
+	const renewed = await f.host.keep(f.signal);
+	return [...renewed, ...(await f.host.settled())];
+}
 const reconciled = () =>
 	mocked.reconcile.mock.calls.map((call) => (call[0] as CodingMachineReconcileOptions).desiredState);
 
@@ -703,7 +717,7 @@ describe("a coding turn on its member's machine", () => {
 		f.host.endTurn(second);
 		f.state.release.set(second.workerId, "ARCHIVED");
 		f.state.listed = [f.entry()];
-		expect(await f.host.keep(f.signal)).toEqual(
+		expect(await pass(f)).toEqual(
 			expect.arrayContaining([
 				{
 					machineId: f.machine.machineId,
@@ -1022,6 +1036,28 @@ describe("a coding turn on its member's machine", () => {
 		const next = f.attachments.get(f.claim.workerId)!;
 		expect(next).not.toBe(token);
 		expect(mocked.refresh.mock.calls.at(-1)?.[1]).toBe(hash(next));
+	});
+	it("attaches once more under a new generation when the kept one runs out in the guest during a slow attach", async () => {
+		const f = await fixture();
+		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		const token = f.attachments.get(f.claim.workerId)!;
+		f.host.endTurn(f.claim);
+		f.renew(f.claim);
+		f.claim.sequence = 2;
+		f.sequences.set(f.claim.workerId, 2);
+		// SQL keeps the generation the guest held, but answers only after it ran out there.
+		f.state.duringAttach = () => {
+			f.state.uptimeMs += 60000;
+		};
+		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		expect(f.calls("qorpera_attach_coding_session").slice(-2)).toEqual([
+			expect.objectContaining({ p_guest_generation: hash(token) }),
+			expect.objectContaining({ p_guest_generation: null }),
+		]);
+		const next = f.attachments.get(f.claim.workerId)!;
+		expect(next).not.toBe(token);
+		expect(f.state.guestLeases.get(f.claim.workerId)?.tokenSha256).toBe(hash(next));
+		expect(mocked.leaseTransports.at(-1)).toMatchObject({ scope: f.scope(), open: true });
 	});
 	it("refuses a turn whose pinned base or turn id differs from the kernel's", async () => {
 		const f = await fixture();
@@ -1360,7 +1396,7 @@ describe("a session between its turns", () => {
 			cpuUsageUsec: 0,
 			running: [{ commandId: command, turn: 1, command: "npm run dev" }],
 		});
-		expect(await f.host.keep(f.signal)).toEqual([takenOff(f)]);
+		expect(await pass(f)).toEqual([takenOff(f)]);
 		expect(f.execs()).toEqual([
 			["/usr/bin/node", "/opt/qorpera-coding/cloud-coding-storage-guest.mjs", "observe"],
 			["/usr/bin/node", "/opt/qorpera-coding/cloud-coding-command-guest.mjs", "cancel", f.claim.workerId, command],
@@ -1444,7 +1480,7 @@ describe("a session between its turns", () => {
 			if (command[2] === "detach") throw new Error("CODING_GUEST_SESSION_STOP_UNCONFIRMED");
 			return exec(project, name, command, signal);
 		});
-		expect(await f.host.keep(f.signal)).toEqual([
+		expect(await pass(f)).toEqual([
 			{ ...takenOff(f), state: "failed", code: "CODING_GUEST_SESSION_STOP_UNCONFIRMED" },
 		]);
 		expect(f.lxd.devices).toEqual(f.plan.request.devices);
@@ -1455,11 +1491,9 @@ describe("a session between its turns", () => {
 		const f = await fixture();
 		await released(f);
 		f.state.applyDevices = false;
-		expect(await f.host.keep(f.signal)).toEqual([
-			{ ...takenOff(f), state: "failed", code: "CODING_SESSION_DETACH_UNCONFIRMED" },
-		]);
+		expect(await pass(f)).toEqual([{ ...takenOff(f), state: "failed", code: "CODING_SESSION_DETACH_UNCONFIRMED" }]);
 		f.state.applyDevices = true;
-		expect(await f.host.keep(f.signal)).toEqual([takenOff(f)]);
+		expect(await pass(f)).toEqual([takenOff(f)]);
 		expect(f.lxd.devices).toEqual(f.plan.request.devices);
 	});
 	it("skips the guest step on a machine that is not running and is done when the machine is gone", async () => {
@@ -1483,7 +1517,7 @@ describe("a session between its turns", () => {
 		const f = await fixture();
 		await released(f);
 		f.state.custodyRefusal = "SESSION_ATTACHED";
-		expect(await f.host.keep(f.signal)).toEqual([{ ...takenOff(f), state: "not-now", code: "SESSION_ATTACHED" }]);
+		expect(await pass(f)).toEqual([{ ...takenOff(f), state: "not-now", code: "SESSION_ATTACHED" }]);
 		expect(f.execs()).toEqual([["/usr/bin/node", "/opt/qorpera-coding/cloud-coding-storage-guest.mjs", "observe"]]);
 		expect(f.lxd.devices).toEqual({ ...f.plan.request.devices, ...f.sessionDevices(f.claim.workerId) });
 	});
@@ -1529,7 +1563,7 @@ describe("a session between its turns", () => {
 		]);
 		expect(mocked.refresh).not.toHaveBeenCalled();
 		f.state.recent.clear();
-		expect(await f.host.keep(f.signal)).toEqual([takenOff(f, "EXPIRED")]);
+		expect(await pass(f)).toEqual([takenOff(f, "EXPIRED")]);
 		expect(
 			(f.calls("qorpera_keep_coding_attachments").at(-1) as { p_observation: { sessions: unknown[] } }).p_observation
 				.sessions,
@@ -1541,6 +1575,89 @@ describe("a session between its turns", () => {
 			p_attachment_token: token,
 			p_stopped: [],
 		});
+	});
+	it("attaches a running turn's session again when its guest lease ran out, so the turn goes on", async () => {
+		const f = await fixture();
+		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		const token = f.attachments.get(f.claim.workerId)!;
+		f.state.listed = [f.entry()];
+		// The turn still runs; no renewal reached the guest in time.
+		f.state.uptimeMs += 60000;
+		expect(await pass(f)).toEqual([
+			{
+				machineId: f.machine.machineId,
+				workerId: f.claim.workerId,
+				step: "keep",
+				state: "done",
+				code: "REATTACHED",
+			},
+		]);
+		const next = f.attachments.get(f.claim.workerId)!;
+		expect(next).not.toBe(token);
+		expect(f.calls("qorpera_attach_coding_session").at(-1)).toMatchObject({
+			p_lease_token: f.claim.leaseToken,
+			p_guest_generation: null,
+		});
+		expect(mocked.leaseTransports.at(-1)).toMatchObject({ scope: f.scope(), open: true });
+		// Never taken off: the folders stay, and the turn's commands run under the new generation.
+		expect(f.lxd.devices).toEqual({ ...f.plan.request.devices, ...f.sessionDevices(f.claim.workerId) });
+		expect(f.calls("qorpera_record_coding_session_detached")).toEqual([]);
+		await f.host.commandTransport(f.scope(), async () => undefined, f.signal);
+	});
+	it("keeps renewing while another session of the machine is being taken off", async () => {
+		const f = await fixture();
+		const second = f.another();
+		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		await f.host.prepareWorkspace(second, f.turnOf(second), f.signal);
+		f.host.endTurn(f.claim);
+		f.host.endTurn(second);
+		f.state.release.set(second.workerId, "ARCHIVED");
+		f.state.listed = [f.entry()];
+		let release: (() => void) | undefined;
+		const held = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const exec = vi.mocked(f.client.execInstance).getMockImplementation()!;
+		vi.mocked(f.client.execInstance).mockImplementation(async (project, name, command, signal) => {
+			if (command[2] === "detach") await held;
+			return exec(project, name, command, signal);
+		});
+		const renewals = mocked.refresh.mock.calls.length;
+		// The pass returns with the first session renewed while the second's take-off is still held.
+		expect(await f.host.keep(f.signal)).toEqual([
+			{ machineId: f.machine.machineId, workerId: f.claim.workerId, step: "keep", state: "done" },
+		]);
+		expect(mocked.refresh.mock.calls.length).toBe(renewals + 1);
+		// A second pass renews again and starts no second take-off.
+		expect(await f.host.keep(f.signal)).toEqual([
+			{ machineId: f.machine.machineId, workerId: f.claim.workerId, step: "keep", state: "done" },
+		]);
+		release?.();
+		expect(await f.host.settled()).toEqual([
+			{ machineId: f.machine.machineId, workerId: second.workerId, step: "detach", state: "done", code: "ARCHIVED" },
+		]);
+		expect(f.execs().filter((command) => command[2] === "detach")).toHaveLength(1);
+	});
+	it("ends a machine's step at its deadline, so a stuck guest never holds up the pass", async () => {
+		const f = await fixture();
+		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		f.host.endTurn(f.claim);
+		f.state.listed = [f.entry()];
+		const exec = vi.mocked(f.client.execInstance).getMockImplementation()!;
+		vi.mocked(f.client.execInstance).mockImplementation(async (project, name, command, signal) => {
+			if (command[2] === "observe") return new Promise<void>(() => {});
+			return exec(project, name, command, signal);
+		});
+		const impatient = new LxdCodingExecutorHost({ ...f.options, keepDeadlineMs: 50 });
+		expect(await impatient.keep(f.signal)).toEqual([
+			{
+				machineId: f.machine.machineId,
+				workerId: null,
+				step: "keep",
+				state: "failed",
+				code: "CODING_HOST_KEEP_DEADLINE",
+			},
+		]);
 	});
 	it("leaves a session a turn attached during the pass to that turn", async () => {
 		const f = await fixture();
