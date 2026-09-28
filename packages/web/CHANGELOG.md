@@ -2,10 +2,6 @@
 
 ## [Unreleased]
 
-### Fixed
-
-- The rules list in Settings → General reads company rules that come from a company's `rules/` files (`createdVia: "folder"`, migration `20260929190000_folder_state_rules`). Before, one such rule made the whole list fail with "Rule is invalid.".
-
 ### Added
 
 - Buy computer hours in Settings → Plan & usage (and on the account page) once payments open (migration `20260929110000_runtime_computer_hours_payments`, Edge Function `computer-billing`). A plan on sale says "Choose Basis" or "Choose Standard" and opens Stripe's checkout page; a member who pays switches plan ("Switch to Standard"), changes the card and finds invoices on Stripe's billing page ("Payments and invoices"). Plan prices and hours come from the cloud's catalog, which is what Stripe charges (qorpera.com's prices until the cloud has one). The plan card then shows the paid plan, when it renews or ends, that it is paused, or that its payment failed; the hours card shows the plan's hours used of the period's hours, by company. Founders get "Buy hours" on the company's hours card: packs of 20, 100 or 500 hours for the company, valid for 12 months. Stripe sends the member back to the account page, which thanks them and reads the plan again a moment later; the note goes when they leave the page. Card data never passes through the app, and only Stripe's own checkout and billing pages are opened. Before live payments only test accounts an operator enrolled see anything for sale, marked "Test mode: nothing is charged", and a plan's hours stay hidden, since members see only measured hours until then. Members who are not founders now read "Computer hours are paid by the founders. You are never charged." on the company's hours card.
@@ -39,6 +35,7 @@
 
 ### Fixed
 
+- The rules list in Settings → General reads company rules that come from a company's `rules/` files (`createdVia: "folder"`, migration `20260929190000_folder_state_rules`). Before, one such rule made the whole list fail with "Rule is invalid.".
 - A coding session past its 64th turn no longer fails to load: the web client no longer assumes a turn limit the cloud does not have.
 - Settings → Friends only offers a friend request to an address that belongs to a Qorpera account. Typing a whole email looks it up once typing pauses: an account shows as a person under "Add a friend" and Send request lights up; any other address says "No Qorpera account uses …" and nothing can be sent, and your own address says so. Before, any well-formed address enabled Send request and the cloud refused it only after it was sent. An address counts once its owner has confirmed it (signed in with it), the whole address and never part of one, and a friend request follows the same rule (migration `20260928031000_friend_account_lookup`). Until the cloud has the migration, the search works as before.
 - Closing an agent's computer before it has started no longer leaves it running for nothing. Opening the computer wakes it; closing the panel before the screen came up now takes that wake back (migration `20260927110000_runtime_office_wake_withdrawal`). The computer still finishes starting, since stopping a machine halfway through its boot is not safe, but once every member who woke it has closed it again and no agent or viewer needs it, it turns off one minute after it is up instead of after the usual five idle minutes. A wake whose screen connected, a first start and leaving the company send nothing. Until the cloud has the migration, closing works as before.

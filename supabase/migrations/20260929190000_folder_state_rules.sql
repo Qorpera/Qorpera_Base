@@ -683,7 +683,7 @@ do $$
 declare v_definition text;
 	v_old constant text := $old$		raise exception 'This rule cannot be removed here' using errcode = '42501'; end if;$old$;
 	v_new constant text := $new$		raise exception 'This rule cannot be removed here' using errcode = '42501'; end if;
-	if v_rule.folder_path is not null then
+	if v_rule.folder_path is not null and v_rule.archived_at is null then
 		raise exception 'This rule comes from a file in rules/; delete the file' using errcode = '55000'; end if;$new$;
 begin
 	v_definition := pg_get_functiondef('public.qorpera_archive_review_rule(uuid,uuid)'::regprocedure);
