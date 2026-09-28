@@ -212,6 +212,7 @@ export const WORKSPACE: Record<string, string> = {
 	"Every computer is in use. An owner or admin can add another one.":
 		"Alle computere er i brug. En ejer eller administrator kan tilføje en mere.",
 	"Setting up another computer. This can take a while.": "Sætter en computer mere op. Det kan tage et stykke tid.",
+	"Setting up the computer. This can take a while.": "Sætter computeren op. Det kan tage et stykke tid.",
 	"Waiting for room on our servers. It starts as soon as there is room.":
 		"Venter på plads på vores servere. Den starter, så snart der er plads.",
 

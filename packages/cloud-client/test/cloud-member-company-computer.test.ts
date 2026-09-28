@@ -80,6 +80,11 @@ describe("member Company Computer transport", () => {
 		expect((await f.client.agentComputer(id(5), signal))?.computer).toBeNull();
 		f.fetch.mockResolvedValueOnce(Response.json({ code: "PGRST202" }, { status: 404 }));
 		expect(await f.client.agentComputer(id(5), signal)).toBeUndefined();
+		// Any other 404 is not "an older backend".
+		f.fetch.mockResolvedValueOnce(new Response("not found", { status: 404 }));
+		await expect(f.client.agentComputer(id(5), signal)).rejects.toThrow();
+		f.fetch.mockResolvedValueOnce(Response.json({ ...placed, placement: "denied", computer: null }));
+		expect((await f.client.agentComputer(id(5), signal))?.placement).toBe("denied");
 		f.fetch.mockResolvedValueOnce(new Response(null, { status: 500 }));
 		await expect(f.client.agentComputer(id(5), signal)).rejects.toThrow();
 		for (const bad of [

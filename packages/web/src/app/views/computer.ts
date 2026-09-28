@@ -7,6 +7,9 @@ import { h, replace } from "../../ui/dom.ts";
 import { matchesKey } from "../../ui/keys.ts";
 import { t } from "../../ui/preferences.ts";
 
+/** Thrown inside the open flow when the agent's screen belongs on another computer. */
+const MOVED = Symbol("moved");
+
 /**
  * Opening the thread's computer is the explicit intent to start and watch it.
  * The panel belongs to the company's `ComputerPanels`, not to the thread it
@@ -138,12 +141,15 @@ export class ComputerPanel {
 			unavailable(text);
 			this.#retry.hidden = false;
 		};
+		/** A backend that predates several computers per company answered once: stop asking. */
+		let single = false;
 		/** The computer that shows this agent's screen. A company can run several; a
 		 * backend that predates that has one, the catalog's. */
 		const locate = async () => {
-			const placed = await computer.client.agentComputer(agent.id, signal);
+			const placed = single ? undefined : await computer.client.agentComputer(agent.id, signal);
 			signal.throwIfAborted();
 			if (placed === undefined) {
+				single = true;
 				const catalog = await computer.client.catalog(signal);
 				signal.throwIfAborted();
 				if (!catalog.scope) {
@@ -154,6 +160,8 @@ export class ComputerPanel {
 			}
 			if (!placed.computer) {
 				if (placed.computers === 0) unavailable(t("This company has no computer yet."));
+				else if (placed.placement === "denied")
+					unavailable(t("{name} does not have access to the computer.", { name: agent.displayName }));
 				else if (placed.placement === "new")
 					blocked(t("Every computer is in use. An owner or admin can add another one."));
 				else blocked(t("The computer is not ready yet."));
@@ -164,24 +172,45 @@ export class ComputerPanel {
 				canManage: placed.canManage,
 				number: placed.computer.number,
 				computers: placed.computers,
+				waiting: placed.computer.waiting,
 			};
 		};
-		/** Why a started computer is not up yet, when the backend can say. */
-		const waitingText = async (scope: CompanyComputerScope, until: AbortSignal) => {
-			const placed = await computer.client.agentComputer(agent.id, until).catch(() => undefined);
-			until.throwIfAborted();
-			if (placed?.computer?.scope.companyComputerId !== scope.companyComputerId) return undefined;
-			return placed.computer.waiting === "setup"
-				? t("Setting up another computer. This can take a while.")
-				: placed.computer.waiting === "room"
+		const waitingLine = (waiting: "setup" | "room" | null | undefined, number: number) =>
+			waiting === "setup"
+				? number > 1
+					? t("Setting up another computer. This can take a while.")
+					: t("Setting up the computer. This can take a while.")
+				: waiting === "room"
 					? t("Waiting for room on our servers. It starts as soon as there is room.")
 					: undefined;
+		/** While a computer starts: why it is not up yet, or that the agent now has
+		 * room on another computer (then the panel moves there). */
+		const recheck = async (scope: CompanyComputerScope, number: number, until: AbortSignal) => {
+			if (single) return undefined;
+			const placed = await computer.client.agentComputer(agent.id, until).catch(() => undefined);
+			until.throwIfAborted();
+			if (!placed?.computer) return undefined;
+			if (placed.computer.scope.companyComputerId !== scope.companyComputerId)
+				return placed.placement === "screen" || placed.placement === "room" ? MOVED : undefined;
+			return waitingLine(placed.computer.waiting, number);
 		};
-		/** Resolves to "moved" when the agent's screen is on another computer than the one asked. */
+		/** Resolves to "moved" when the agent's screen is (or should now be) on another computer. */
 		const open = async (): Promise<"moved" | undefined> => {
 			const located = await locate();
 			if (!located) return;
 			const { scope, canManage } = located;
+			try {
+				return await openOn(located, scope, canManage);
+			} catch (error) {
+				if (error !== MOVED) throw error;
+				return "moved";
+			}
+		};
+		const openOn = async (
+			located: NonNullable<Awaited<ReturnType<typeof locate>>>,
+			scope: CompanyComputerScope,
+			canManage: boolean,
+		): Promise<"moved" | undefined> => {
 			this.#number = located.computers > 1 ? located.number : undefined;
 			this.#title = this.#titleText();
 			this.#applyTitle();
@@ -236,9 +265,14 @@ export class ComputerPanel {
 						}
 						// A new computer can wait for its server first; say so instead of "starting" for minutes.
 						const reason =
-							start.officeState === "provisioning" && pass % 4 === 3
-								? await waitingText(scope, until)
-								: undefined;
+							start.officeState !== "provisioning"
+								? undefined
+								: pass === 0
+									? waitingLine(located.waiting, located.number)
+									: pass % 4 === 0
+										? await recheck(scope, located.number, until)
+										: this.#status.textContent;
+						if (reason === MOVED) throw MOVED;
 						this.#status.textContent = reason ?? t("Starting the computer…");
 					}
 					await wait(3000, until);
@@ -314,7 +348,7 @@ export class ComputerPanel {
 						const opened = await views.openScreen(agent.id, signal);
 						signal.throwIfAborted();
 						if (opened.state === "refused") {
-							if (opened.reason === "AGENT_ON_OTHER_COMPUTER") return "moved";
+							if (opened.reason === "AGENT_ON_OTHER_COMPUTER") throw MOVED;
 							const text =
 								opened.reason === "SCREEN_CAPACITY_EXHAUSTED"
 									? t("All screens on this computer are in use. Try again when one is free.")
@@ -350,9 +384,17 @@ export class ComputerPanel {
 			this.#status.textContent = t("Connecting…");
 			try {
 				// An agent that moved between computers is followed a few times, never in a loop.
-				for (let moves = 0; (await open()) === "moved" && moves < 3; moves++) {
-					signal.throwIfAborted();
+				for (let moves = 0; ; moves++) {
+					if ((await open()) !== "moved") break;
+					// The computer it left needs no wake from this panel any more.
+					this.#withdrawWakes();
+					if (moves >= 2) {
+						unavailable(t("The computer is not ready yet."));
+						this.#retry.hidden = false;
+						break;
+					}
 					this.#status.textContent = t("Connecting…");
+					await wait(1000, signal);
 				}
 			} catch {
 				if (!signal.aborted) {

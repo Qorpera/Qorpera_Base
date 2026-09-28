@@ -20,7 +20,16 @@ export interface MemberCompanyComputerCatalog {
 	nextAfter: string | null;
 }
 /** Where an agent's screen is, or would go (migration 20260928100100). */
-export type MemberAgentComputerPlacement = "screen" | "room" | "starting" | "stopped" | "unstarted" | "new" | "none";
+export type MemberAgentComputerPlacement =
+	| "screen"
+	| "room"
+	| "starting"
+	| "stopped"
+	| "unstarted"
+	| "new"
+	/** The agent's computer access was revoked on every computer of the company. */
+	| "denied"
+	| "none";
 export interface MemberAgentComputer {
 	canManage: boolean;
 	/** The company's computers that are not retired. */
@@ -41,6 +50,7 @@ const PLACEMENTS: readonly MemberAgentComputerPlacement[] = [
 	"stopped",
 	"unstarted",
 	"new",
+	"denied",
 	"none",
 ];
 function record(value: unknown, keys: string): Record<string, unknown> {
@@ -114,8 +124,17 @@ export class CloudMemberCompanyComputerClient {
 				};
 				const response = await this.#fetch(`${this.#origin}/rest/v1/rpc/${method}`, request);
 				if (options.missing && response.status === 404) {
-					// A backend that predates this function: the caller falls back.
-					void response.body?.cancel().catch(() => undefined);
+					// A backend that predates this function (PostgREST: no such function): the caller falls back.
+					const body = new TextDecoder("utf-8", { fatal: true }).decode(
+						await readBoundedCloudResponse(response, 64 * 1024, deadline),
+					);
+					let code: unknown;
+					try {
+						code = (JSON.parse(body) as { code?: unknown } | null)?.code;
+					} catch {
+						code = undefined;
+					}
+					if (code !== "PGRST202") throw new Error("Company Computer access is unavailable");
 					return { data: undefined, error: null };
 				}
 				if (response.status !== 200) {
