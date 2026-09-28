@@ -147,6 +147,22 @@ select pg_temp.usage_expect(pg_temp.usage_choose('refresh-one') ->> 'reason','MO
 reset role;
 update public.qorpera_provider_connections set status = 'active'
 where id = current_setting('qorpera_test.usage_node_connection')::uuid;
+-- Nor does a node login its connection has replaced with a newer, inactive version.
+insert into public.qorpera_provider_connection_versions(connection_id,version,authentication_mode,native_harness,
+	secret_reference,provider_account_reference,provider_account_email,billing_source,consent_version,
+	consented_by_user_id,allow_autonomous,commercial_approval_reference,quota_policy,created_by_user_id,
+	credential_capsule_id,authorization_state,max_native_concurrency)
+select latest.connection_id, latest.version + 1, latest.authentication_mode, latest.native_harness, latest.secret_reference,
+	latest.provider_account_reference, latest.provider_account_email, latest.billing_source, latest.consent_version,
+	latest.consented_by_user_id, latest.allow_autonomous, latest.commercial_approval_reference, latest.quota_policy,
+	latest.created_by_user_id, latest.credential_capsule_id, 'revoked', latest.max_native_concurrency
+from public.qorpera_provider_connection_versions latest
+where latest.connection_id = current_setting('qorpera_test.usage_node_connection')::uuid
+order by latest.version desc limit 1;
+set role service_role;
+select pg_temp.usage_expect(pg_temp.usage_choose('refresh-one') ->> 'reason','MODEL_LOGIN_VAULT',
+	'a node login its connection replaced leaves the usage to the vault');
+reset role;
 -- Moved: the member's old node account is gone.
 update public.qorpera_native_credential_capsules set status = 'disabled'
 where compute_identity_id = current_setting('qorpera_test.usage_identity')::uuid

@@ -118,6 +118,12 @@ function parseLogin(item: unknown): RefreshLogin {
 		!SHA256.test(login.envelopeSha256)
 	)
 		throw new Error("Vault account refresh login is invalid");
+	// Every other field first: an envelope is decoded only for an otherwise valid login.
+	uuid(login.credentialCapsuleId, "Vault account refresh capsule");
+	const loginId = uuid(login.loginId, "Vault account refresh login id");
+	const version = positive(login.version, "Vault account refresh login version");
+	const connectionId = uuid(login.connectionId, "Vault account refresh connection");
+	const connectionVersion = positive(login.connectionVersion, "Vault account refresh connection version");
 	const envelope = Buffer.from(login.encryptedEnvelopeBase64, "base64");
 	if (
 		envelope.byteLength < 1 ||
@@ -127,15 +133,7 @@ function parseLogin(item: unknown): RefreshLogin {
 		envelope.fill(0);
 		throw new Error("Vault account refresh login is invalid");
 	}
-	uuid(login.credentialCapsuleId, "Vault account refresh capsule");
-	return {
-		loginId: uuid(login.loginId, "Vault account refresh login id"),
-		version: positive(login.version, "Vault account refresh login version"),
-		keyId: login.keyId,
-		envelope,
-		connectionId: uuid(login.connectionId, "Vault account refresh connection"),
-		connectionVersion: positive(login.connectionVersion, "Vault account refresh connection version"),
-	};
+	return { loginId, version, keyId: login.keyId, envelope, connectionId, connectionVersion };
 }
 
 function parseDescription(value: unknown): RefreshDescription {

@@ -11,6 +11,12 @@
 -- identity still moving (a Codex login on a node beside its vault login) keeps the node path,
 -- which reads its node logins and skips its vault ones.
 
+-- The refresh chooser and the broker find the connection versions that use a capsule on every
+-- poll; the node's own list reaches them only through the connection.
+create index qorpera_provider_connection_versions_capsule
+	on public.qorpera_provider_connection_versions(credential_capsule_id)
+	where credential_capsule_id is not null;
+
 -- The company's vault base, when it has an active broker.
 create function public.qorpera_model_login_vault_url(p_profile_id uuid)
 returns text
