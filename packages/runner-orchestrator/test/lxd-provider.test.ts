@@ -21,6 +21,7 @@ import {
 	type LxdGuestTransport,
 } from "../src/lxd-provider.ts";
 import type { CloudRunnerAssignmentDelivery, CloudRunnerWork } from "../src/orchestrator.ts";
+import { canonical } from "../src/provider-shared.ts";
 import { readRuntimeNodeHost } from "../src/runtime-node-host.ts";
 import { nodeAdmissionFixture } from "./fixtures/node-admission.ts";
 
@@ -353,6 +354,23 @@ async function acquiredFixture() {
 	};
 }
 
+describe("canonical device comparison (2026-09-28)", () => {
+	it("keeps a device named __proto__ in the comparison, and every other key as before", () => {
+		// As LXD's JSON carries it: an own key. Assigned into a copy, it became
+		// the copy's prototype, and the drift check compared equal without it.
+		const live = JSON.parse(
+			'{"root":{"type":"disk","path":"/"},"__proto__":{"type":"disk","source":"/","path":"/host"}}',
+		);
+		const expected = { root: { type: "disk", path: "/" } };
+		expect(JSON.stringify(canonical(live))).not.toBe(JSON.stringify(canonical(expected)));
+		expect(JSON.stringify(canonical(live))).toBe(
+			'{"__proto__":{"path":"/host","source":"/","type":"disk"},"root":{"path":"/","type":"disk"}}',
+		);
+		expect(JSON.stringify(canonical({ b: [{ z: 1, a: undefined }], a: "x", c: undefined }))).toBe(
+			'{"a":"x","b":[{"z":1}]}',
+		);
+	});
+});
 describe("native physical node policy", () => {
 	it("pins public resource and host policy independently of credential rotation", () => {
 		const original = governedConfig("/provider-state");

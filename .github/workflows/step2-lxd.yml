@@ -115,6 +115,7 @@ jobs:
         run: >-
           node ../../node_modules/vitest/dist/cli.js --run
           test/lxd-client.test.ts
+          test/lxd-host-inventory.test.ts
           test/lxd-tracked-operations.test.ts
           test/lxd-guest-network.test.ts
           test/lxd-image-provenance.test.ts
