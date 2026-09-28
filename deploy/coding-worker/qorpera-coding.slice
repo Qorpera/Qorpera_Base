@@ -9,5 +9,7 @@ TasksAccounting=yes
 # equal share (the default weights) when several are busy, and one alone gets
 # the whole machine. Only this reserve is kept, so the guest's own control
 # (lxd-agent, systemd, the watchdog that stops expired sessions) always has
-# memory: a runaway command is killed by the kernel inside this slice instead.
+# memory and processes: a runaway command is killed by the kernel, or refused
+# new processes, inside this slice instead.
 MemoryMax=90%
+TasksMax=90%

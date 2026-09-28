@@ -35,13 +35,18 @@ remaining command stopped and flushed, and has its session folders unplugged
 while it is off; it wakes with no session attached.
 
 The storage helper's `observe` action (no session argument) publishes, root-owned
-0444 at `/run/qorpera-coding/observation.json`, what runs in each session
-attached this boot: the commands whose units still have running processes (a
-unit only retained after its last process exited does not count), each with its
-turn and its first 300 bytes (at most 64 per session, the rest counted), and
-`usage_usec` of the session's slice. It starts, stops and repairs nothing. The
-executor reads it back to keep attachments, to tell the next turn what still
-runs, and to judge whether the machine is quiet enough to sleep.
+0444 at `/run/qorpera-coding/observation.json`, each session attached this boot
+with how many of its commands' units still have running processes (a unit only
+retained after its last process exited does not count), `usage_usec` of its
+slice, and its watchdog lease (the generation's token digest and the time left
+on this boot's clock, 0 once run out). Beside it,
+`/run/qorpera-coding/observation-<workerId>.json` names each session's running
+commands with their turn and first 300 bytes (at most 64, and only as many as
+keep the file within 64 KiB; the rest counted). Every file fits one read of
+LXD's file API. It starts, stops and repairs nothing. The executor reads it
+back to keep attachments, to tell the next turn what still runs, to judge
+whether the machine is quiet enough to sleep, and to learn which attachment
+generation the guest still holds.
 
 Each session runs as its own uid/gid (200000-524287, assigned in SQL per member
 and environment when its NAS volume is first used, never reused within them). The
@@ -126,8 +131,8 @@ command running; a deadline applies to that entire group. Commands keep running
 under systemd after the turn that started them; `read` and `cancel` inspect and
 stop them independently of any turn. The session's slice takes an equal share of
 the machine with the member's other sessions when they are busy, and
-`qorpera-coding.slice` keeps `MemoryMax=90%`, so the guest's own control
-(lxd-agent, systemd, the watchdog) always has memory. Terminal units remain
+`qorpera-coding.slice` keeps `MemoryMax=90%` and `TasksMax=90%`, so the guest's
+own control (lxd-agent, systemd, the watchdog) always has memory and processes. Terminal units remain
 available until reviewed retention cleanup; this change performs no cleanup.
 
 The protected receipt is

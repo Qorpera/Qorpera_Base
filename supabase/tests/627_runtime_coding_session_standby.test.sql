@@ -16,9 +16,17 @@ $$;
 create function pg_temp.custody(p_intent text,p_worker uuid default null,p_lease uuid default null) returns jsonb language sql as $$
 	select public.qorpera_authorize_coding_machine_custody(pg_temp.vm(),'exec-test',pg_temp.binding(),repeat('c',64),p_intent,p_worker,p_lease)
 $$;
-create function pg_temp.attach(p_key text,p_turn jsonb) returns jsonb language sql as $$
+-- p_generation: the digest of the token the guest's live lease names, as the executor reads it; null for none.
+create function pg_temp.attach(p_key text,p_turn jsonb,p_generation text default null) returns jsonb language sql as $$
 	select public.qorpera_attach_coding_session((pg_temp.worker_row(p_key)).id,(p_turn #>> '{claim,leaseToken}')::uuid,pg_temp.binding(),
-		pg_temp.storage((pg_temp.worker_row(p_key)).id),repeat('c',64))
+		pg_temp.storage((pg_temp.worker_row(p_key)).id),repeat('c',64),p_generation)
+$$;
+create function pg_temp.gen(p_token text) returns text language sql as $$
+	select encode(extensions.digest(convert_to(p_token,'utf8'),'sha256'),'hex')
+$$;
+create function pg_temp.last_stop() returns jsonb language sql as $$
+	select body from public.qorpera_coding_session_events where worker_id = (pg_temp.worker_row('fix-send')).id and kind = 'step'
+		and actor = 'executor' and body ? 'stopped' order by id desc limit 1
 $$;
 create function pg_temp.keep(p_observation jsonb default null) returns jsonb language sql as $$
 	select public.qorpera_keep_coding_attachments(pg_temp.vm(),'exec-test',pg_temp.binding(),repeat('c',64),p_observation)
@@ -43,15 +51,18 @@ begin
 	v_turn := pg_temp.next_turn('fix-send');
 	perform set_config('qorpera_test.turn3',v_turn::text,false);
 	v_attach := pg_temp.attach('fix-send',v_turn);
-	v_again := pg_temp.attach('fix-send',v_turn);
+	v_again := pg_temp.attach('fix-send',v_turn,pg_temp.gen(v_attach ->> 'attachmentToken'));
 	perform pg_temp.wake_assert(v_attach ->> 'schema' = 'qorpera.coding-attachment/v1' and v_attach ->> 'machineId' = pg_temp.vm()::text
 		and v_again ->> 'attachmentToken' = v_attach ->> 'attachmentToken' and (v_attach #>> '{turn,sequence}')::int = 3
 		and (v_attach #>> '{turn,turnId}')::uuid = public.qorpera_coding_turn_id(v_worker.id,3) and (v_attach #>> '{turn,open}')::boolean
 		and (pg_temp.session_row('fix-send')).attached_machine_id = pg_temp.vm()
 		and (pg_temp.session_row('fix-send')).attachment_until > clock_timestamp() + interval '50 seconds',
-		'A turn attaches its session; a second attach on the same machine keeps the generation: '||v_attach::text);
+		'A turn attaches its session; a second attach on the same machine, the guest holding it, keeps the generation: '||v_attach::text);
+	-- A guest that does not hold the live generation (its lease ran out) gets a new one.
+	v_attach := pg_temp.attach('fix-send',v_turn);
+	perform pg_temp.wake_assert(v_attach ->> 'attachmentToken' <> v_again ->> 'attachmentToken','Without the guest''s lease a new generation starts');
 	perform set_config('qorpera_test.token',v_attach ->> 'attachmentToken',false);
-	begin perform public.qorpera_attach_coding_session(v_worker.id,extensions.gen_random_uuid(),pg_temp.binding(),pg_temp.storage(v_worker.id),repeat('c',64));
+	begin perform public.qorpera_attach_coding_session(v_worker.id,extensions.gen_random_uuid(),pg_temp.binding(),pg_temp.storage(v_worker.id),repeat('c',64),null);
 		raise exception 'A foreign lease attached the session'; exception when insufficient_privilege then null; end;
 	-- A command of turn 3, receipted by its run.
 	perform public.qorpera_begin_native_tool_operation(v_turn -> 'binding',v_command,'coding_run_command:dev-server',repeat('a',64),repeat('b',64),false);
@@ -110,34 +121,25 @@ begin
 	perform pg_temp.wake_assert(pg_temp.kept(pg_temp.keep(null),'fix-send') #> '{turn}' = jsonb_build_object('sequence',3,
 			'turnId',public.qorpera_coding_turn_id(v_worker.id,3),'open',false),
 		'A queued follow-up does not move the attachment''s turn');
-	-- A withdrawn repository grant ends the attachment at the keeper's next pass; granting it again does not revive it.
-	update public.qorpera_coding_repository_grants set enabled = false where environment_id = '30000000-0000-4000-8000-000000000020';
-	v_keep := pg_temp.keep(null);
-	update public.qorpera_coding_repository_grants set enabled = true where environment_id = '30000000-0000-4000-8000-000000000020';
-	perform pg_temp.wake_assert(pg_temp.kept(v_keep,'fix-send') ->> 'reason' = 'REPOSITORY_WITHDRAWN'
-		and pg_temp.kept(pg_temp.keep(null),'fix-send') ->> 'reason' = 'EXPIRED',
-		'A withdrawn grant releases the session, and an ended attachment stays ended: '||v_keep::text);
-	perform pg_temp.wake_assert(pg_temp.custody('detach',v_worker.id) ->> 'intent' = 'detach','A released session may be detached');
 end $$;
 
--- 3. The next turn reads what earlier turns left running, and may read or cancel an earlier turn's
---    command; it may start only its own. Commands of another session stay out of reach.
+-- 3. The next turn keeps the generation the guest still holds: it reads what earlier turns left running, and may
+--    read or cancel an earlier turn's command; it may start only its own. Then the ways an attachment ends besides
+--    archive: the guest no longer carries it, the grant was withdrawn, the guest's lease ran out.
 do $$
 declare v_worker public.qorpera_runtime_workers := pg_temp.worker_row('fix-send'); v_turn jsonb; v_context jsonb; v_scope jsonb;
 	v_attach jsonb; v_command uuid := current_setting('qorpera_test.command3')::uuid; v_other uuid := extensions.gen_random_uuid();
+	v_empty jsonb := '{"schema":"qorpera.coding-machine-observation/v1","busy":false,"sessions":[]}'; v_keep jsonb; v_token text;
 begin
-	-- The sleep of another machine, as the executor records it, is in the thread and in the context.
+	-- The sleep of another machine, as the executor recorded it after turn 3, is in the thread and in the next context.
 	perform public.qorpera_coding_event(v_worker.id,4,'step','executor',jsonb_build_object('text','The machine went to sleep','reason','SLEEP',
 		'stopped',jsonb_build_array(jsonb_build_object('commandId',v_other,'turn',2,'command','npm test -- --watch'))));
 	v_turn := pg_temp.next_turn('fix-send');
 	perform set_config('qorpera_test.turn4',v_turn::text,false);
-	v_attach := pg_temp.attach('fix-send',v_turn);
-	perform pg_temp.wake_assert(v_attach ->> 'attachmentToken' <> current_setting('qorpera_test.token')
-		and (pg_temp.session_row('fix-send')).attachment_until > clock_timestamp(),
-		'An ended attachment is never renewed: the next turn takes a new generation');
-	perform set_config('qorpera_test.token',v_attach ->> 'attachmentToken',false);
-	perform pg_temp.wake_assert(pg_temp.attach('fix-send',v_turn) ->> 'attachmentToken' = v_attach ->> 'attachmentToken',
-		'Within a live attachment the generation is kept');
+	v_attach := pg_temp.attach('fix-send',v_turn,pg_temp.gen(current_setting('qorpera_test.token')));
+	perform pg_temp.wake_assert(v_attach ->> 'attachmentToken' = current_setting('qorpera_test.token')
+		and (v_attach #>> '{turn,sequence}')::int = 4 and (pg_temp.session_row('fix-send')).attachment_turn = 4,
+		'A session standing by keeps its generation into the next turn, which it now names');
 	v_context := public.qorpera_read_coding_turn_context(v_turn -> 'binding');
 	perform pg_temp.wake_assert(v_context ->> 'schema' = 'qorpera.coding-turn-context/v2'
 		and v_context -> 'commands' = jsonb_build_object(
@@ -154,6 +156,50 @@ begin
 	begin perform public.qorpera_authorize_coding_command(v_turn -> 'binding',v_scope,'read',v_other,null);
 		raise exception 'A command without a receipt was read'; exception when insufficient_privilege then null; end;
 	perform set_config('qorpera_test.turn4_scope',v_scope::text,false);
+
+	-- The guest does not name the session. Just attached, the observation may predate it: kept. Older: released,
+	-- keeping what it last saw running for the record.
+	perform pg_temp.wake_assert(pg_temp.kept(pg_temp.keep(v_empty),'fix-send') ->> 'state' = 'kept','A fresh attachment is not judged by an older look');
+	update public.qorpera_coding_sessions set attached_at = clock_timestamp() - interval '1 minute' where worker_id = v_worker.id;
+	perform pg_temp.wake_assert(pg_temp.kept(pg_temp.keep(v_empty),'fix-send') ->> 'reason' = 'EXPIRED'
+		and (pg_temp.session_row('fix-send')).attachment_until <= clock_timestamp()
+		and (pg_temp.session_row('fix-send')).running_commands -> 0 ->> 'command' = 'npm run dev',
+		'A session the guest no longer carries is released, with what it last ran');
+	-- Its next attach takes a new generation, and records what the old one had running as stopped.
+	v_attach := pg_temp.attach('fix-send',v_turn,pg_temp.gen(current_setting('qorpera_test.token')));
+	perform pg_temp.wake_assert(v_attach ->> 'attachmentToken' <> current_setting('qorpera_test.token')
+		and (pg_temp.session_row('fix-send')).running_commands = '[]'::jsonb
+		and pg_temp.last_stop() ->> 'reason' = 'EXPIRED' and pg_temp.last_stop() #>> '{stopped,0,command}' = 'npm run dev'
+		and pg_temp.last_stop() ->> 'text' = 'The session lost its machine; 1 command was stopped',
+		'An ended attachment is never renewed: the next attach starts a new generation and records what stopped');
+	v_token := v_attach ->> 'attachmentToken';
+
+	-- A withdrawn repository grant ends the attachment at the keeper's next pass; granting it again does not revive it.
+	update public.qorpera_coding_repository_grants set enabled = false where environment_id = '30000000-0000-4000-8000-000000000020';
+	v_keep := pg_temp.keep(null);
+	update public.qorpera_coding_repository_grants set enabled = true where environment_id = '30000000-0000-4000-8000-000000000020';
+	perform pg_temp.wake_assert(pg_temp.kept(v_keep,'fix-send') ->> 'reason' = 'REPOSITORY_WITHDRAWN'
+		and pg_temp.kept(pg_temp.keep(null),'fix-send') ->> 'reason' = 'EXPIRED',
+		'A withdrawn grant releases the session, and an ended attachment stays ended: '||v_keep::text);
+	perform pg_temp.wake_assert(pg_temp.custody('detach',v_worker.id,(v_turn #>> '{claim,leaseToken}')::uuid) ->> 'intent' = 'detach','A released session may be detached');
+
+	-- The guest's lease of the live generation ran out (the executor leaves the session out of its observation): the
+	-- attachment ends, and its end is told in the thread even when nothing was running.
+	v_attach := pg_temp.attach('fix-send',v_turn);
+	v_token := v_attach ->> 'attachmentToken';
+	perform pg_temp.wake_assert(pg_temp.custody('detach',v_worker.id,(v_turn #>> '{claim,leaseToken}')::uuid) ->> 'reason' = 'SESSION_ATTACHED',
+		'A live attachment is not taken off');
+	update public.qorpera_coding_sessions set attached_at = clock_timestamp() - interval '1 minute' where worker_id = v_worker.id;
+	perform pg_temp.wake_assert(pg_temp.kept(pg_temp.keep(v_empty),'fix-send') ->> 'reason' = 'EXPIRED'
+		and pg_temp.custody('detach',v_worker.id,(v_turn #>> '{claim,leaseToken}')::uuid) ->> 'intent' = 'detach',
+		'A session left out of the observation is released, and may be taken off');
+	perform pg_temp.wake_assert(public.qorpera_record_coding_session_detached(pg_temp.vm(),'exec-test',pg_temp.binding(),repeat('c',64),v_worker.id,
+			v_token::uuid,'EXPIRED','[]') ->> 'state' = 'detached'
+		and pg_temp.last_stop() ->> 'text' = 'The session lost its machine' and pg_temp.last_stop() -> 'stopped' = '[]'::jsonb,
+		'A lost attachment is told in the thread even when nothing was running');
+	-- Attached again for what follows.
+	v_attach := pg_temp.attach('fix-send',v_turn);
+	perform set_config('qorpera_test.token',v_attach ->> 'attachmentToken',false);
 end $$;
 
 -- A receipt of another worker's run is never this session's command.
@@ -207,7 +253,7 @@ end $$;
 -- 5. A machine is removed only once its member has no open session. The owner's answer reopens the
 --    archived session; the agent archives it; after a quiet month the executor archives the rest.
 do $$
-declare v_worker public.qorpera_runtime_workers := pg_temp.worker_row('fix-send'); v_receipt jsonb; v_archived integer;
+declare v_worker public.qorpera_runtime_workers := pg_temp.worker_row('fix-send'); v_receipt jsonb; v_archived integer; v_view jsonb;
 begin
 	perform pg_temp.wake_assert(pg_temp.custody('stop') ->> 'intent' = 'stop','The machine with no turn may stop');
 	perform public.qorpera_suspend_coding_machine(pg_temp.vm(),'exec-test',pg_temp.binding(),repeat('c',64));
@@ -219,9 +265,10 @@ begin
 		'An asleep machine stays while its member has an open session');
 	-- The owner reopens the archived session by answering it.
 	perform pg_temp.as_user('30000000-0000-4000-8000-000000000001');
-	perform public.qorpera_answer_coding_session(v_worker.id,'Actually, stop it.','30000000-0000-4000-8000-000000000705');
+	v_view := public.qorpera_answer_coding_session(v_worker.id,'Actually, stop it.','30000000-0000-4000-8000-000000000705');
 	perform pg_temp.path_claims('service_role');
-	perform pg_temp.wake_assert((pg_temp.session_row('fix-send')).archived_at is null
+	perform pg_temp.wake_assert((pg_temp.session_row('fix-send')).archived_at is null and v_view -> 'archivedAt' = 'null'::jsonb
+		and v_view ->> 'phase' = 'input_ready'
 		and (select body ->> 'text' = 'Reopened' from public.qorpera_coding_session_events where worker_id = v_worker.id and kind = 'step' order by id desc limit 1),
 		'A new turn reopens an archived session');
 	-- The agent archives it again (queued turn cancelled), with its own tool.
@@ -245,9 +292,10 @@ end $$;
 -- 6. Only the owner's archive is a member call; the executor's calls are the service role's.
 select pg_temp.wake_assert(has_function_privilege('authenticated','public.qorpera_archive_coding_session(uuid,uuid)','EXECUTE')
 	and not has_function_privilege('authenticated','public.qorpera_keep_coding_attachments(uuid,text,text,text,jsonb)','EXECUTE')
-	and not has_function_privilege('authenticated','public.qorpera_attach_coding_session(uuid,uuid,text,jsonb,text)','EXECUTE')
+	and not has_function_privilege('authenticated','public.qorpera_attach_coding_session(uuid,uuid,text,jsonb,text,text)','EXECUTE')
 	and not has_function_privilege('authenticated','public.qorpera_archive_quiet_coding_sessions(text)','EXECUTE')
 	and not has_function_privilege('authenticated','public.qorpera_record_coding_session_detached(uuid,text,text,text,uuid,uuid,text,jsonb)','EXECUTE')
+	and not has_function_privilege('authenticated','public.qorpera_coding_stopped_event(text,jsonb)','EXECUTE')
 	and has_function_privilege('service_role','public.qorpera_keep_coding_attachments(uuid,text,text,text,jsonb)','EXECUTE')
 	and not has_function_privilege('anon','public.qorpera_archive_coding_session(uuid,uuid)','EXECUTE'),
 	'Grants: members archive their own sessions; the executor keeps and detaches');

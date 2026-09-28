@@ -221,7 +221,16 @@ async function fixture() {
 			{ cpuUsageUsec: number; running: { commandId: string; turn: number; command: string }[] }
 		>(),
 		uptimeMs: 100000,
+		/** The watchdog's lease per session, as the executor's renewals left it (guest clock). */
+		guestLeases: new Map<string, { tokenSha256: string; expiresAtMs: number }>(),
+		/** Sessions SQL attached in the last 30 seconds: kept even when the observation does not name them. */
+		recent: new Set<string>(),
+		/** Runs inside the keep call, before SQL answers: a turn attaching during a keeper pass. */
+		duringKeep: null as (() => Promise<unknown>) | null,
 	};
+	mocked.refresh.mockImplementation(async (scope: { workerId: string }, tokenSha256: string, ttlMs: number) => {
+		state.guestLeases.set(scope.workerId, { tokenSha256, expiresAtMs: state.uptimeMs + ttlMs });
+	});
 	// Attachments as SQL holds them: session -> token.
 	const attachments = new Map<string, string>();
 	const receipt = (intent: string, workerId: string | null, guestUid: number | null) => ({
@@ -278,7 +287,9 @@ async function fixture() {
 				const workerId = String(args.p_worker_id);
 				if (leases.get(workerId) !== args.p_lease_token) throw new Error("Coding session lease unavailable");
 				if (state.attachRefusal) return { state: "refused", reason: state.attachRefusal };
-				const token = attachments.get(workerId) ?? randomUUID();
+				// The live attachment's generation is kept only if the guest still holds it.
+				const known = attachments.get(workerId);
+				const token = known && args.p_guest_generation === hash(known) ? known : randomUUID();
 				attachments.set(workerId, token);
 				return {
 					schema: "qorpera.coding-attachment/v1",
@@ -294,15 +305,24 @@ async function fixture() {
 					},
 				};
 			}
-			case "qorpera_keep_coding_attachments":
+			case "qorpera_keep_coding_attachments": {
 				if (args.p_owner !== "coding-host" || args.p_binding_text !== plan.text)
 					throw new Error("Coding machine custody differs");
+				const during = state.duringKeep;
+				state.duringKeep = null;
+				await during?.();
+				const seen = new Set(
+					(args.p_observation as { sessions: { workerId: string }[] }).sessions.map((entry) => entry.workerId),
+				);
+				// A session the observation does not name is released, unless it was attached just now.
+				const reasonOf = (workerId: string) =>
+					state.release.get(workerId) ?? (seen.has(workerId) || state.recent.has(workerId) ? null : "EXPIRED");
 				return {
 					schema: "qorpera.coding-attachments/v1",
 					machineId: machine.machineId,
 					sessions: [...attachments].map(([workerId, token]) =>
-						state.release.has(workerId)
-							? { workerId, state: "release", reason: state.release.get(workerId), attachmentToken: token }
+						reasonOf(workerId)
+							? { workerId, state: "release", reason: reasonOf(workerId), attachmentToken: token }
 							: {
 									workerId,
 									state: "kept",
@@ -316,6 +336,7 @@ async function fixture() {
 								},
 					),
 				};
+			}
 			case "qorpera_record_coding_session_detached":
 				if (attachments.get(String(args.p_worker_id)) === args.p_attachment_token)
 					attachments.delete(String(args.p_worker_id));
@@ -366,18 +387,38 @@ async function fixture() {
 			if (command[1] === "is-failed") throw new Error("LXD instance command failed");
 			if (command[1] !== "/opt/qorpera-coding/cloud-coding-storage-guest.mjs") return;
 			if (command[2] === "observe") {
-				files.set("/run/qorpera-coding/observation.json", {
-					uid: 0,
-					gid: 0,
-					mode: 0o444,
-					content: Buffer.from(
-						JSON.stringify({
-							schema: "qorpera.coding-guest-observation/v1",
+				// Every session installed in the guest this boot, as cloud-coding-guest-observation.ts publishes it.
+				const published = (path: string, value: unknown) =>
+					files.set(path, { uid: 0, gid: 0, mode: 0o444, content: Buffer.from(JSON.stringify(value)) });
+				const sessions = [...files.keys()]
+					.map((path) => /^\/run\/qorpera-coding\/([0-9a-f-]{36})\/configuration\/guest\.json$/.exec(path)?.[1])
+					.filter((workerId): workerId is string => workerId !== undefined)
+					.map((workerId) => {
+						const seen = state.observed.get(workerId) ?? { cpuUsageUsec: 0, running: [] };
+						const lease = state.guestLeases.get(workerId);
+						published(`/run/qorpera-coding/observation-${workerId}.json`, {
+							schema: "qorpera.coding-guest-running/v1",
 							bootId,
-							uptimeMs: state.uptimeMs,
-							sessions: [...state.observed].map(([workerId, seen]) => ({ workerId, ...seen, moreRunning: 0 })),
-						}),
-					),
+							workerId,
+							running: seen.running,
+							moreRunning: 0,
+						});
+						return {
+							workerId,
+							cpuUsageUsec: seen.cpuUsageUsec,
+							running: seen.running.length,
+							lease: lease && {
+								tokenSha256: lease.tokenSha256,
+								expiresInMs: Math.max(0, lease.expiresAtMs - state.uptimeMs),
+							},
+						};
+					})
+					.map((session) => ({ ...session, lease: session.lease ?? null }));
+				published("/run/qorpera-coding/observation.json", {
+					schema: "qorpera.coding-guest-observation/v2",
+					bootId,
+					uptimeMs: state.uptimeMs,
+					sessions,
 				});
 				return;
 			}
@@ -385,6 +426,7 @@ async function fixture() {
 			if (action === "detach") {
 				for (const name of ["guest.json", "storage.json", "configuration-inbox.json"])
 					files.delete(configuration(workerId, name));
+				state.guestLeases.delete(workerId);
 				return;
 			}
 			if (action !== "install") return;
@@ -539,6 +581,8 @@ describe("a coding turn on its member's machine", () => {
 				p_binding_text: f.plan.text,
 				p_storage: lxdCodingSessionStorage(f.machine, f.placement, f.claim.workerId),
 				p_machine_id_sha256: "f".repeat(64),
+				// No guest lease yet: a new generation.
+				p_guest_generation: null,
 			},
 		]);
 		expect(mocked.refresh).toHaveBeenCalledTimes(1);
@@ -580,6 +624,8 @@ describe("a coding turn on its member's machine", () => {
 				action,
 				f.claim.workerId,
 			]),
+			// The attach reads which generation the guest still holds.
+			["/usr/bin/node", "/opt/qorpera-coding/cloud-coding-storage-guest.mjs", "observe"],
 		]);
 		expect(JSON.stringify(vi.mocked(f.client.pushInstanceFile).mock.calls)).not.toContain("test-token");
 		expect(vi.mocked(f.client.pushInstanceFile).mock.calls.map((call) => call[2])).toEqual([
@@ -952,6 +998,7 @@ describe("a coding turn on its member's machine", () => {
 		expect(f.client.replaceInstanceDevices).toHaveBeenCalledTimes(1);
 		// The same attachment's generation, so the guest keeps what the first turn left running.
 		expect(f.attachments.get(f.claim.workerId)).toBe(token);
+		expect(f.calls("qorpera_attach_coding_session").at(-1)).toMatchObject({ p_guest_generation: hash(token!) });
 		expect(mocked.leaseTransports.map((transport) => [transport.scope.turn, transport.open])).toEqual([
 			[1, true],
 			[2, true],
@@ -959,6 +1006,22 @@ describe("a coding turn on its member's machine", () => {
 		expect(new Set(mocked.refresh.mock.calls.map((call) => call[1]))).toEqual(new Set([hash(token!)]));
 		// The scope of the second turn names the second turn.
 		await f.host.commandTransport(f.scope(), async () => undefined, f.signal);
+	});
+	it("takes a new generation when the guest's lease is gone or too close to running out for a renewal to reach it", async () => {
+		const f = await fixture();
+		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		const token = f.attachments.get(f.claim.workerId)!;
+		f.host.endTurn(f.claim);
+		// 45 s were granted; 14 s are left.
+		f.state.uptimeMs += 31000;
+		f.renew(f.claim);
+		f.claim.sequence = 2;
+		f.sequences.set(f.claim.workerId, 2);
+		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		expect(f.calls("qorpera_attach_coding_session").at(-1)).toMatchObject({ p_guest_generation: null });
+		const next = f.attachments.get(f.claim.workerId)!;
+		expect(next).not.toBe(token);
+		expect(mocked.refresh.mock.calls.at(-1)?.[1]).toBe(hash(next));
 	});
 	it("refuses a turn whose pinned base or turn id differs from the kernel's", async () => {
 		const f = await fixture();
@@ -1263,6 +1326,18 @@ describe("a session between its turns", () => {
 				sessions: [{ workerId: f.claim.workerId, busy: false, running: [{ turn: 1, command: "npm run dev" }] }],
 			},
 		});
+		// Every guest file is one read of LXD's file API.
+		expect(
+			vi
+				.mocked(f.client.readInstanceFile)
+				.mock.calls.filter((call) => call[2].startsWith("/run/qorpera-coding/observation"))
+				.map((call) => [call[2], call[3]]),
+		).toEqual(
+			expect.arrayContaining([
+				["/run/qorpera-coding/observation.json", 65536],
+				[`/run/qorpera-coding/observation-${f.claim.workerId}.json`, 65536],
+			]),
+		);
 		// A server that waits stays quiet; a build that works is busy.
 		f.state.uptimeMs += 10000;
 		f.state.observed.set(f.claim.workerId, { cpuUsageUsec: 1000 + 100000, running: [] });
@@ -1412,25 +1487,11 @@ describe("a session between its turns", () => {
 		expect(f.execs()).toEqual([["/usr/bin/node", "/opt/qorpera-coding/cloud-coding-storage-guest.mjs", "observe"]]);
 		expect(f.lxd.devices).toEqual({ ...f.plan.request.devices, ...f.sessionDevices(f.claim.workerId) });
 	});
-	it("takes off a session whose guest lease has run out for good, and keeps renewing one that only failed once", async () => {
+	it("keeps renewing a session whose renewal only failed once", async () => {
 		const f = await fixture();
 		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
 		f.host.endTurn(f.claim);
 		f.state.listed = [f.entry()];
-		const lease = `${f.layout(f.claim.workerId).runtimeRoot}/lease.json`;
-		const token = f.attachments.get(f.claim.workerId)!;
-		f.files.set(lease, {
-			uid: 0,
-			gid: 0,
-			mode: 0o444,
-			content: Buffer.from(
-				JSON.stringify({
-					leaseTokenSha256: hash(token),
-					bootId: f.files.get("/proc/sys/kernel/random/boot_id")!.content.toString().trim(),
-					expiresAtMonoMs: f.state.uptimeMs + 30000,
-				}),
-			),
-		});
 		mocked.refresh.mockRejectedValueOnce(new Error("LXD instance command failed"));
 		expect(await f.host.keep(f.signal)).toEqual([
 			{
@@ -1441,14 +1502,70 @@ describe("a session between its turns", () => {
 				code: "UNCLASSIFIED",
 			},
 		]);
+		expect(await f.host.keep(f.signal)).toEqual([
+			{ machineId: f.machine.machineId, workerId: f.claim.workerId, step: "keep", state: "done" },
+		]);
+		expect(f.lxd.devices).toEqual({ ...f.plan.request.devices, ...f.sessionDevices(f.claim.workerId) });
+	});
+	it("leaves out a session whose guest lease ran out for good, so SQL releases it and it is taken off", async () => {
+		const f = await fixture();
+		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		f.host.endTurn(f.claim);
+		const token = f.attachments.get(f.claim.workerId)!;
+		f.state.listed = [f.entry()];
+		// No renewal reached the guest for longer than its lease.
 		f.state.uptimeMs += 60000;
-		mocked.refresh.mockRejectedValueOnce(new Error("LXD instance command failed"));
+		// Attached in the last 30 seconds, SQL keeps it: nothing is renewed, and it waits for a later pass.
+		f.state.recent.add(f.claim.workerId);
+		mocked.refresh.mockClear();
+		expect(await f.host.keep(f.signal)).toEqual([
+			{
+				machineId: f.machine.machineId,
+				workerId: f.claim.workerId,
+				step: "keep",
+				state: "not-now",
+				code: "GUEST_LEASE_EXPIRED",
+			},
+		]);
+		expect(mocked.refresh).not.toHaveBeenCalled();
+		f.state.recent.clear();
 		expect(await f.host.keep(f.signal)).toEqual([takenOff(f, "EXPIRED")]);
+		expect(
+			(f.calls("qorpera_keep_coding_attachments").at(-1) as { p_observation: { sessions: unknown[] } }).p_observation
+				.sessions,
+		).toEqual([]);
 		expect(f.lxd.devices).toEqual(f.plan.request.devices);
+		// What it had running is SQL's to name: the watchdog stopped it before this look.
 		expect(f.calls("qorpera_record_coding_session_detached").at(-1)).toMatchObject({
 			p_reason: "EXPIRED",
 			p_attachment_token: token,
+			p_stopped: [],
 		});
+	});
+	it("leaves a session a turn attached during the pass to that turn", async () => {
+		const f = await fixture();
+		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		f.host.endTurn(f.claim);
+		f.state.listed = [f.entry()];
+		f.renew(f.claim);
+		f.claim.sequence = 2;
+		f.sequences.set(f.claim.workerId, 2);
+		f.state.duringKeep = () => f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		mocked.leaseTransports.length = 0;
+		expect(await f.host.keep(f.signal)).toEqual([
+			{
+				machineId: f.machine.machineId,
+				workerId: f.claim.workerId,
+				step: "keep",
+				state: "not-now",
+				code: "TURN_ATTACHED",
+			},
+		]);
+		// Only the turn's own renewal: its turn open, never closed again by the older keep answer.
+		expect(mocked.leaseTransports.map((transport) => [transport.scope.turn, transport.open])).toEqual([[2, true]]);
+		// The next pass renews it under what SQL says now.
+		await f.host.keep(f.signal);
+		expect(mocked.leaseTransports.at(-1)).toMatchObject({ open: false });
 	});
 	it("is adopted by a new executor process from the guest's journaled configuration", async () => {
 		const f = await fixture();
