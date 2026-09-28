@@ -260,11 +260,14 @@ draws are discarded, and free hours, owed time and every draw count from then.
   answers the session directly (`qorpera_answer_coding_session`, which opens the turn without a
   run). The hook list covers `qorpera_coding_session_queue` and the turn's own run at
   `qorpera_begin_coding_turn`. Two executor pieces are needed: a new waitable reason for the
-  coding machine's wake step, and a catch around begin that detaches and defers the session
-  (`qorpera_defer_coding_session`) instead of failing it. The queue has no leased session to
-  defer, so it accepts the turn and the turn waits at begin. The defer step's fixed text
-  ("Waiting for a coding machine") gains the "waiting for computer hours" reason, so it shows in
-  the session's thread. At the hour, a cut-off turn's run is ended before its machine is stopped.
+  coding machine's step (`qorpera_authorize_coding_machine_run`, which every turn passes before
+  begin), and a catch around begin that ends the turn and defers the session
+  (`qorpera_defer_coding_session`) instead of failing it; an attached session stays on its
+  machine for the keeper. The queue has no leased session to defer, so it accepts the turn, and
+  the turn waits in the executor, at its machine's step or at begin. The defer step's fixed text
+  ("Waiting for a coding machine") and `last_step` gain the "waiting for computer hours" reason,
+  so it shows in the session's thread. At the hour, a cut-off turn's run is ended before its
+  machine is stopped.
 - It ships switched off, in its own release, with a 30-minute database watch after the cut. It is
   switched on together with live payments and hour notices.
 
