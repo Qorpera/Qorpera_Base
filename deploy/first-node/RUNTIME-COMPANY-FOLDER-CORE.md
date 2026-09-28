@@ -694,6 +694,30 @@ check reports drift.
 
   The journal is kept for good, so "resync" is returned only for an invalid
   cursor.
+
+  As built in C1f (`20260928202000_folder_core_feed`):
+  - The signature is `qorpera_folder_feed(env, actor, after_seq, limit,
+    cursor)`. It is for service_role only. Its actors are the platform, a
+    member and a run, resolved as `qorpera_folder_read` resolves them; view
+    actors come with C1b-3.
+  - A position is `after_seq` (every seq up to it is done) plus an optional
+    `cursor {unitNo, version}` inside seq `after_seq + 1`. A subtree move can
+    touch 100,000 paths, so a page may stop inside a change set. A change set
+    is whole in the reader's hands once `next.afterSeq` has reached its seq.
+  - Changes are ordered by `(unit_no, version)`. The order within a unit is
+    stable but has no meaning: a unit is one atomic path set.
+  - Each call examines at most `limit` changes and authority rows, readable or
+    not. A member's page may therefore hold fewer events, or none, and still
+    advance. A change set none of whose paths the actor may read is left out.
+    A move's `priorVersion` is shown only when the actor may read the source.
+  - Each page returns `asOfSeq`, `next {afterSeq, cursor}` and `more`. A
+    current version's `updatedAt` is its entry's, as read and list report it;
+    a superseded version carries none.
+  - The clock is service_role's to poll: `select` on `qorpera_folder_clocks`.
+    It is not published to Realtime, because Realtime sends every subscriber
+    that may not select a published table an "unauthorized" event per change,
+    which would show any client the timing of every commit. Members' and
+    clients' own hints come with C4.
 - **Wakes.**
   - Listener cursors hold `processed_seq`. The drain reads a batch of journal
     rows after it and matches every unit, including a move's source path.
