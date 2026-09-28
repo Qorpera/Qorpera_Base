@@ -5,6 +5,8 @@
 ### Added
 
 - `CloudMemberCompanyRefusal` (with `status` 400, 401, 403 or 412) marks a Company File change the cloud refused before saving anything. A 412 (the expected version is no longer current) now throws it with "Company File changed since this version was read" instead of the generic "unavailable, a save may already have completed", so clients can let go of an intent that can never apply.
+- `SupabaseCloudPresenceTransport` takes any client with `channel`/`removeChannel` and just the three presence device calls (`PresenceDevices`), so the web app joins presence without the whole hosted primary.
+
 - `CloudCompanyComputerStart.withdraw(generation, requestId, signal)` takes back the member's own idle wake request (`qorpera_withdraw_runtime_office_wake`). It never cancels the wake or a first start; it lets idle stop the computer one minute after it is up once every requester has withdrawn and nothing used it.
 
 - Browser-safe member session-image upload and canonical-input download transport with Web Crypto integrity checks, immutable selections, bounded responses and no automatic mutation retries.

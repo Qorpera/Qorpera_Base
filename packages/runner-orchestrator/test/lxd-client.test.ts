@@ -150,6 +150,111 @@ describe("LXD Unix client", () => {
 		).rejects.toThrow("LXD instance scope is invalid");
 		expect(puts).toBe(0);
 	});
+	it("decides a device change from the read whose ETag the write carries, and writes nothing when told so", async () => {
+		const requests: { method: string; url: string; body: unknown; ifMatch: unknown }[] = [];
+		const identity = {
+			type: "disk",
+			pool: "qorpera-vm",
+			source: "phql-a1-identity-x",
+			path: "/var/lib/qorpera/identities/x",
+		};
+		const metadata = {
+			name: "qorpera-exec-node02",
+			architecture: "x86_64",
+			type: "virtual-machine",
+			status: "Running",
+			status_code: 103,
+			config: { "limits.cpu": "4", "volatile.uuid": "30000000-0000-4000-8000-000000000001" },
+			expanded_config: { "limits.cpu": "4", "volatile.uuid": "30000000-0000-4000-8000-000000000001" },
+			devices: { root: { type: "disk", path: "/", pool: "qorpera-vm" } },
+			expanded_devices: { root: { type: "disk", path: "/", pool: "qorpera-vm" }, eth0: { type: "nic" } },
+			ephemeral: false,
+			profiles: ["native25-job-a1"],
+			stateful: false,
+			description: "",
+		};
+		const socket = await unixServer((method, url, body, headers) => {
+			requests.push({ method, url, body, ifMatch: headers["if-match"] });
+			if (method === "GET" && url.startsWith("/1.0/instances/"))
+				return { body: { type: "sync", metadata }, headers: { etag: '"v9"' } };
+			if (method === "PUT") return { body: { type: "async", operation: "/1.0/operations/attach", metadata: {} } };
+			return { body: { type: "sync", metadata: { status_code: 200, err: "" } } };
+		});
+		const client = new LxdUnixClient(socket);
+		const seen: string[] = [];
+		expect(
+			await client.updateInstanceDevices(
+				"qn25b2",
+				"qorpera-exec-node02",
+				(instance) => {
+					seen.push(...Object.keys(instance.expandedDevices));
+					return { ...instance.devices, "identity-x": identity };
+				},
+				new AbortController().signal,
+			),
+		).toBe(true);
+		expect(seen).toEqual(["root", "eth0"]);
+		expect(requests.map((request) => [request.method, request.url])).toEqual([
+			["GET", "/1.0/instances/qorpera-exec-node02?project=qn25b2"],
+			["PUT", "/1.0/instances/qorpera-exec-node02?project=qn25b2"],
+			["GET", "/1.0/operations/attach/wait?timeout=120"],
+		]);
+		expect(requests[1].ifMatch).toBe('"v9"');
+		expect(requests[1].body).toEqual({
+			architecture: "x86_64",
+			config: metadata.config,
+			devices: { root: metadata.devices.root, "identity-x": identity },
+			ephemeral: false,
+			profiles: ["native25-job-a1"],
+			stateful: false,
+			description: "",
+		});
+		requests.length = 0;
+		expect(
+			await client.updateInstanceDevices(
+				"qn25b2",
+				"qorpera-exec-node02",
+				() => undefined,
+				new AbortController().signal,
+			),
+		).toBe(false);
+		expect(requests.map((request) => request.method)).toEqual(["GET"]);
+		await expect(
+			client.updateInstanceDevices("qn25b2", "../x", () => undefined, new AbortController().signal),
+		).rejects.toThrow("LXD instance scope is invalid");
+	});
+	it("lists a pool's custom volumes in one project", async () => {
+		const urls: string[] = [];
+		const socket = await unixServer((_method, url) => {
+			urls.push(url);
+			return {
+				body: {
+					type: "sync",
+					metadata: [
+						{
+							name: "phql-a1-identity-x",
+							type: "custom",
+							content_type: "filesystem",
+							description: "Qorpera Compute Identity x",
+							config: { size: "2GiB", "user.qorpera.schema": "qorpera.compute-identity-volume/v1" },
+						},
+					],
+				},
+			};
+		});
+		expect(
+			await new LxdUnixClient(socket).listCustomStorageVolumes("qn25b2", "qorpera-vm", new AbortController().signal),
+		).toEqual([
+			{
+				name: "phql-a1-identity-x",
+				type: "custom",
+				contentType: "filesystem",
+				description: "Qorpera Compute Identity x",
+				config: { size: "2GiB", "user.qorpera.schema": "qorpera.compute-identity-volume/v1" },
+			},
+		]);
+		expect(urls).toEqual(["/1.0/storage-pools/qorpera-vm/volumes/custom?recursion=1&project=qn25b2"]);
+	});
 	it.each(["create", "start"])("observes accepted %s after its dispatch grant expires", async (action) => {
 		const dispatch = new AbortController(),
 			caller = new AbortController();

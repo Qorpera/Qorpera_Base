@@ -26,7 +26,8 @@ const TABS = [
 		id: "general",
 		label: phrase("General"),
 		icon: "settings",
-		keywords: "account language region time zone timezone generelt konto sprog dansk engelsk område tidszone",
+		keywords:
+			"account language region time zone timezone rules auto-review review approval approve ask first allow automatically safety agents actions permissions generelt konto sprog dansk engelsk område tidszone regler godkendelse godkend spørg først tillad automatisk sikkerhed agenter handlinger tilladelser",
 	},
 	{
 		id: "appearance",
@@ -62,13 +63,6 @@ const TABS = [
 		icon: "connections",
 		keywords:
 			"providers subscriptions openai codex anthropic claude secrets forbindelser udbydere modelkonti konti tjenester gmail google drive github hemmeligheder",
-	},
-	{
-		id: "rules",
-		label: phrase("Rules"),
-		icon: "lock",
-		keywords:
-			"auto-review review approval approve ask first allow automatically safety agents actions permissions regler godkendelse godkend spørg først tillad automatisk sikkerhed agenter handlinger tilladelser",
 	},
 ] as const;
 export type SettingsTab = (typeof TABS)[number]["id"];
@@ -109,6 +103,16 @@ export class SettingsView {
 	#connections: ConnectionsView | undefined;
 	#services: ServicesView | undefined;
 	#rules: RulesView | undefined;
+	/** General: the account's settings, then the rules of the company Settings show. */
+	readonly #accountPanel = h("div");
+	readonly #rulesSlot = h("div");
+	/** In the rules' place when Settings show no company (opened from the company list with several,
+	 * or over a company page whose company is not available). */
+	readonly #noCompanyRules = h(
+		"section",
+		{ class: "settings-group settings-rules", "aria-label": t("Rules") },
+		h("p", { class: "settings-rule-note" }, t("Open a company to see its rules.")),
+	);
 	#feedback: TeamFeedback = {};
 	#file: HostedCompanyFile | undefined;
 	#fileLoading = false;
@@ -218,6 +222,8 @@ export class SettingsView {
 			),
 		);
 		document.addEventListener("keydown", this.#onKey, { signal: this.#lifetime.signal });
+		// The tab asked for is drawn first: General's rules load only if Settings opens on General.
+		this.#tab = tab;
 		this.#setCompany(company, false);
 		this.updateProfiles(profiles);
 		void api
@@ -383,14 +389,6 @@ export class SettingsView {
 					);
 					this.#panels.set(tab, h("div", null, this.#connections.el, this.#services.el));
 				}
-			} else if (tab === "rules" && !this.#rules) {
-				const company = this.#company;
-				this.#rules = new RulesView(
-					createWebReviewRules(this.#api.cloud, company.profile.profileId),
-					AbortSignal.any([this.#companyLifetime.signal, this.#lifetime.signal, company.signal]),
-					() => company.store.get().team?.role,
-				);
-				this.#panels.set(tab, this.#rules.el);
 			}
 		}
 		const panel =
@@ -417,16 +415,29 @@ export class SettingsView {
 
 	#general(): void {
 		if (this.#lifetime.signal.aborted) return;
-		let panel = this.#panels.get("general");
-		if (!panel) {
-			panel = h("div");
-			this.#panels.set("general", panel);
-		}
-		renderAccount(this.#auth, panel, this.#account, (next) => {
+		if (!this.#panels.has("general"))
+			this.#panels.set("general", h("div", null, this.#accountPanel, this.#rulesSlot));
+		renderAccount(this.#auth, this.#accountPanel, this.#account, (next) => {
 			if (this.#lifetime.signal.aborted) return;
 			this.#account = { ...this.#account, ...next };
 			this.#general();
 		});
+		// The open company's rules sit under the account's settings, loaded once General is shown.
+		const company = this.#company;
+		if (company && !this.#rules && this.#tab === "general")
+			this.#rules = new RulesView(
+				createWebReviewRules(this.#api.cloud, company.profile.profileId),
+				AbortSignal.any([this.#companyLifetime.signal, this.#lifetime.signal, company.signal]),
+				() => company.store.get().team?.role,
+			);
+		// Moved only when it changes: moving it would take the focus out of a field in use.
+		const rules = company ? this.#rules?.el : this.#noCompanyRules;
+		if (this.#rulesSlot.firstChild !== (rules ?? null)) {
+			const focused = this.#rulesSlot.contains(document.activeElement);
+			replace(this.#rulesSlot, rules);
+			// A field in the old company's rules had the keyboard: keep it in Settings.
+			if (focused) this.#content.focus({ preventScroll: true });
+		}
 	}
 
 	/** The plan is the account's; the usage shown is the open company's storage. */
@@ -488,7 +499,7 @@ export class SettingsView {
 		this.#file = undefined;
 		this.#fileLoading = false;
 		this.#fileError = undefined;
-		for (const tab of ["company", "connections", "rules"] as const) this.#panels.delete(tab);
+		for (const tab of ["company", "connections"] as const) this.#panels.delete(tab);
 		if (company) {
 			this.#unsubscribe = company.store.subscribe(() => {
 				if (company.store.get().accessLost) {

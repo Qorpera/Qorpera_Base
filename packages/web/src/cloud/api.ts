@@ -16,6 +16,7 @@ import {
 	parseMemberPictureObjects,
 	parseMemberPictures,
 } from "./member-pictures.ts";
+import { listMemberMentions, type MemberMentions, markMentionsSeen } from "./mentions.ts";
 import { type HostedCompanyOrganization, parseHostedCompanyOrganization } from "./organization.ts";
 import { collectPages, type PageCursor } from "./pagination.ts";
 import {
@@ -48,7 +49,17 @@ import {
 	parseTeam,
 	UUID_PATTERN,
 } from "./parse.ts";
+import { type CloudPresenceHandle, joinCompanyPresence, type PresenceHealth, type PresenceMember } from "./presence.ts";
+import type { RealtimePhase } from "./realtime.ts";
 import { type ActionReviewAnswer, type ActionReviewReceipt, parseActionReviewReceipt } from "./review-rules.ts";
+import {
+	listRoomDrafts,
+	putRoomDraft,
+	type RoomDraft,
+	type RoomDraftSubscription,
+	type RoomDraftWrite,
+	subscribeRoomDrafts,
+} from "./room-drafts.ts";
 import { type CompanySidebar, parseCompanySidebar, type SidebarRequest } from "./sidebar.ts";
 import type {
 	CreatedCompanyResult,
@@ -280,6 +291,50 @@ export class CloudApi {
 		return this.cloud
 			.rpc("qorpera_company_organization_json", { p_profile_id: requiredUuid(profileId, "Profile id") })
 			.then(parseHostedCompanyOrganization);
+	}
+
+	// Shared drafts: a member's unsent message in a room, which the room's other
+	// members see and edit live (20260928000500). Only its owner sends it.
+
+	listRoomDrafts(roomId: string): Promise<RoomDraft[]> {
+		return listRoomDrafts(this.cloud, requiredUuid(roomId, "Room id").toLowerCase());
+	}
+
+	putRoomDraft(roomId: string, ownerUserId: string, baseRevision: number, body: string): Promise<RoomDraftWrite> {
+		if (!Number.isSafeInteger(baseRevision) || baseRevision < 0) throw new Error("Draft revision is invalid");
+		return putRoomDraft(
+			this.cloud,
+			requiredUuid(roomId, "Room id").toLowerCase(),
+			requiredUuid(ownerUserId, "Draft owner").toLowerCase(),
+			baseRevision,
+			body,
+		);
+	}
+
+	subscribeRoomDrafts(
+		roomId: string,
+		onDraft: (draft: RoomDraft) => void,
+		onHealth: (phase: RealtimePhase) => void,
+	): RoomDraftSubscription {
+		return subscribeRoomDrafts(this.cloud, requiredUuid(roomId, "Room id").toLowerCase(), onDraft, onHealth);
+	}
+
+	/** Who has which conversation open, live (the company's presence channel). */
+	joinPresence(
+		profileId: string,
+		onMembers: (members: PresenceMember[]) => void,
+		onHealth: (health: PresenceHealth) => void,
+	): CloudPresenceHandle {
+		return joinCompanyPresence(this.cloud, requiredUuid(profileId, "Profile id"), onMembers, onHealth);
+	}
+
+	/** The conversations where the signed-in member was mentioned and has not looked yet. */
+	listMemberMentions(profileId: string): Promise<MemberMentions[]> {
+		return listMemberMentions(this.cloud, requiredUuid(profileId, "Profile id"));
+	}
+
+	markMentionsSeen(sessionId: string): Promise<void> {
+		return markMentionsSeen(this.cloud, requiredUuid(sessionId, "Session id"));
 	}
 
 	/** Sections are the company's; pins and hidden agents are the signed-in member's. */

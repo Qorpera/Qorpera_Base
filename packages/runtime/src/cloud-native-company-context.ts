@@ -18,6 +18,7 @@ import {
 	cloudRuntimeHireBehavior,
 } from "./cloud-runtime-hire-overlays.ts";
 import type { CloudRuntimeToolOperation } from "./cloud-runtime-observability.ts";
+import { type CloudRuntimeServiceTier, isCloudRuntimeServiceTier } from "./cloud-runtime-policy.ts";
 import { type CloudWakeEnvelope, cloudWakeIsOwnThread } from "./cloud-wake-bus.ts";
 import type { CloudAgentOpenWork } from "./cloud-worker-tools.ts";
 
@@ -190,6 +191,9 @@ export interface CloudNativeCompanyContext {
 	job: CloudCompanyContextSource;
 	jobSpecification: CloudCompanyContextSource;
 	continuation: CloudCompanyContextSource | null;
+	/** Named only for runs admitted under a bundle with fast mode. It travels
+	 * here, not in the shared tool identity, which company computers also read. */
+	serviceTier?: CloudRuntimeServiceTier;
 }
 
 function closed(value: unknown, keys: readonly string[]): Record<string, unknown> {
@@ -325,7 +329,10 @@ export function parseCloudNativeCompanyContext(
 	value: unknown,
 	binding: CloudNativeToolBinding,
 ): CloudNativeCompanyContext {
-	const data = closed(value, [
+	const tiered = value && typeof value === "object" && !Array.isArray(value) && Object.hasOwn(value, "serviceTier");
+	const { serviceTier, ...untiered } = tiered ? (value as Record<string, unknown>) : { serviceTier: undefined };
+	if (tiered && !isCloudRuntimeServiceTier(serviceTier)) throw new Error("Invalid cloud company context");
+	const data = closed(tiered ? untiered : value, [
 		"schema",
 		"identity",
 		"observedAt",
@@ -436,6 +443,7 @@ export function parseCloudNativeCompanyContext(
 		job,
 		jobSpecification,
 		continuation,
+		...(tiered ? { serviceTier: serviceTier as CloudRuntimeServiceTier } : {}),
 	};
 }
 
