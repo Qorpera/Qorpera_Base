@@ -24,6 +24,9 @@ export const CONVERSATION: Record<string, string> = {
 	"People and agents to mention": "Personer og agenter, du kan nævne",
 	"Only {names} will answer": "Kun {names} svarer",
 	"You were mentioned": "Du blev nævnt",
+	// Who is here: the other members with the conversation open (conversation.ts)
+	"{name} is here": "{name} er her",
+	"{names} are here": "{names} er her",
 
 	// Shared drafts: other members' unsent messages above the composer (app/views/shared-drafts.ts)
 	"{name} is writing a message. Open it to write with them": "{name} skriver en besked. Åbn den for at skrive med",

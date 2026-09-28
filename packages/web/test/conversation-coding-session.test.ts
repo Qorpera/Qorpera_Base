@@ -225,11 +225,12 @@ describe("coding sessions in the thread", () => {
 		await settle();
 		const header = f.view.el.querySelector<HTMLElement>(".thread-header")!;
 		const slots = header.querySelector<HTMLElement>(".thread-coding-sessions")!;
-		// Right after the agent, before the computer button; only the session still going.
+		// Right after the agent, before who is here and the computer button; only the session still going.
 		expect([...header.children].map((node) => node.className)).toEqual([
 			"mobile-navigation-toggle icon-button",
 			"thread-identity",
 			"thread-coding-sessions",
+			"thread-presence",
 			"icon-button thread-computer",
 		]);
 		expect(slots.hidden).toBe(false);

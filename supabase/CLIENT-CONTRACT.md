@@ -392,6 +392,10 @@ profile RPCs; RLS is the second read boundary.
   `realtime.messages`; never stored; must never carry durable content.
   Topic name from `qorpera_presence_topic_profile`. Agent presence over the
   live Company File (contract 5.2) will extend this channel at Order 4.
+  The web client tracks the open conversation's session id in the tracked
+  `staff_agent_id` field (the desktop's staff thread), signed the same way,
+  and `null` while its tab is hidden; it shows other members' faces in that
+  conversation's header. It joins only when the company has another member.
 - `qorpera-room-drafts-{roomId}` — shared drafts (migration
   `20260928000500_room_shared_drafts`): a room member's unsent message, which
   the room's other members see and edit live. Private broadcast channel, event

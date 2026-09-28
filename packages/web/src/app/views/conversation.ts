@@ -105,6 +105,9 @@ export class ConversationView {
 	readonly #identity: HTMLButtonElement;
 	/** The coding sessions still going, beside the agent in the header. */
 	readonly #codingSlots = h("div", { class: "thread-coding-sessions" });
+	/** The other members who have this conversation open right now. */
+	readonly #here = h("div", { class: "thread-presence", role: "group", hidden: true });
+	#hereKey = "";
 	readonly #codingSlotViews = new Map<string, CodingSessionSlot>();
 	#codingPoll: ReturnType<typeof setTimeout> | undefined;
 	/** A read is on its way; the next one is scheduled when it lands, never beside it. */
@@ -402,7 +405,7 @@ export class ConversationView {
 			},
 			icon("navigation"),
 		);
-		this.#header.append(this.#navigation, this.#identity, this.#codingSlots, this.#computer);
+		this.#header.append(this.#navigation, this.#identity, this.#codingSlots, this.#here, this.#computer);
 		// An open title pill lies over the figures after it; over one of them it steps aside,
 		// so that figure opens and a click there opens its own session.
 		const yieldTo = (event: PointerEvent) => {
@@ -994,6 +997,7 @@ export class ConversationView {
 		this.#agentState = room ? "idle" : this.#company.agentState(session?.staffAgentId);
 		this.#working = this.#agentState === "working" || this.#agentState === "writing";
 		this.#renderHeader(session, agent);
+		this.#renderHere();
 		this.#renderCodingSlots(conversation.codingSessions ?? [], agent);
 		this.#renderMessages(
 			conversation,
@@ -1090,6 +1094,46 @@ export class ConversationView {
 		if (!this.#panel && agent) {
 			const open = this.#panels.get(agent.id);
 			if (open && !open.attached) this.#showPanel(agent);
+		}
+	}
+
+	/** Faces of the other members looking at this conversation now, newest arrival last. */
+	#renderHere(): void {
+		const here = this.#company.presentIn(this.#sessionId);
+		const key = JSON.stringify(here);
+		if (key === this.#hereKey) return;
+		this.#hereKey = key;
+		this.#here.hidden = !here.length;
+		if (!here.length) {
+			replace(this.#here);
+			return;
+		}
+		const names = new Intl.ListFormat(presentationLocale(), { style: "long", type: "conjunction" }).format(
+			here.map((member) => member.name),
+		);
+		const label = here.length === 1 ? t("{name} is here", { name: names }) : t("{names} are here", { names });
+		this.#here.setAttribute("aria-label", label);
+		this.#here.title = label;
+		// Faces already shown stay put (a renamed member's is drawn anew); a new one grows in.
+		const kept = new Map(
+			[...this.#here.querySelectorAll<HTMLElement>(".person-avatar[data-user]")].map((face) => [
+				`${face.dataset.user}:${face.dataset.name}`,
+				face,
+			]),
+		);
+		const faces = here.slice(0, 3).map((member) => {
+			const face = kept.get(`${member.userId}:${member.name}`) ?? personAvatar(member.name, member.userId);
+			face.dataset.user = member.userId;
+			face.dataset.name = member.name;
+			return face;
+		});
+		const desired: Element[] = [...faces];
+		if (here.length > 3) desired.push(h("span", { class: "thread-presence-more" }, `+${here.length - 3}`));
+		for (const child of [...this.#here.children]) if (!desired.includes(child)) child.remove();
+		let cursor = this.#here.firstElementChild;
+		for (const node of desired) {
+			if (node !== cursor) this.#here.insertBefore(node, cursor);
+			cursor = node.nextElementSibling;
 		}
 	}
 
