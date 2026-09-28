@@ -7,8 +7,9 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3
  * stops resolving within it, and routine syncs (every agent's file presence re-tracks
  * every 10 s on this topic) cost no lookup. */
 const IDENTITY_TTL_MS = 60_000;
-/** A sync whose identity lookup failed is tried again after this long. */
+/** A sync whose identity lookup failed is tried again after this long, doubling up to the cap. */
 const SYNC_RETRY_MS = 3_000;
+const SYNC_RETRY_MAX_MS = 30_000;
 
 function broadcastBytes(
 	profileId: string,
@@ -101,6 +102,7 @@ export class SupabaseCloudPresenceTransport {
 		let channel: RealtimeChannel | undefined;
 		let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
 		let syncRetryTimer: ReturnType<typeof setTimeout> | undefined;
+		let syncFailures = 0;
 		let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
 		const identities = new Map<string, { identity: HostedPresenceIdentity; at: number }>();
 		// Members are reported the first time, then only when who is where changed.
@@ -166,6 +168,7 @@ export class SupabaseCloudPresenceTransport {
 			const requested = [...new Set(clientIds)].filter((id) => UUID_PATTERN.test(id));
 			const resolved = new Map<string, HostedPresenceIdentity>();
 			const now = Date.now();
+			for (const [id, known] of identities) if (now - known.at >= IDENTITY_TTL_MS) identities.delete(id);
 			const unknown = requested.filter((id) => {
 				const known = identities.get(id);
 				if (known && now - known.at < IDENTITY_TTL_MS) resolved.set(id, known.identity);
@@ -340,15 +343,18 @@ export class SupabaseCloudPresenceTransport {
 								for (const member of newest.values()) {
 									lastPresenceSequence.set(member.clientId, member.sequence);
 								}
+								syncFailures = 0;
 								report([...newest.values()].map(({ sequence: _sequence, ...member }) => member));
 							})
 							.catch(() => {
 								// The lookup failed: try this sync again unless a newer one came.
 								if (next !== channel || stopped || generation !== presenceGeneration) return;
+								const delay = Math.min(SYNC_RETRY_MAX_MS, SYNC_RETRY_MS * 2 ** syncFailures);
+								syncFailures += 1;
 								syncRetryTimer = setTimeout(() => {
 									syncRetryTimer = undefined;
 									if (generation === presenceGeneration) syncMembers();
-								}, SYNC_RETRY_MS);
+								}, delay);
 								if (typeof syncRetryTimer === "object") syncRetryTimer.unref?.();
 							});
 					};
