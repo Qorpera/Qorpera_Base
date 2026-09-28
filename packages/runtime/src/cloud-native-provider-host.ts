@@ -192,8 +192,12 @@ interface WarmCredentialRoot {
 	key: string;
 	root: string;
 	durable: ReadonlySet<string>;
-	/** The capsule bytes this host last stored: reused only while the store still holds them. */
+	/** The stored capsule bytes this root was opened from or last saved as: reused only while
+	 * the store still holds them. */
 	sealed: Uint8Array;
+	/** The credential digest of that stored login. A change to the kept root after it (a spare
+	 * harness renewing between runs) is the next run's change to save. */
+	digest: string;
 	timer: ReturnType<typeof setTimeout>;
 }
 
@@ -607,13 +611,32 @@ export async function sealNativeCredentialCapsule(
 	return Buffer.concat([Buffer.from("QNC1", "ascii"), nonce, tag, ciphertext]);
 }
 
-export async function openNativeCredentialCapsule(
+/** Digest of a login's credential files (paths and bytes, not modes): tells whether a run
+ * changed its login, and whether the stored login is still the one a run started from. */
+function credentialArchiveDigest(files: readonly CapsuleFile[], durablePaths: ReadonlySet<string>): string {
+	const entries = files
+		.filter((file) => durablePaths.has(file.path))
+		.map((file) => [file.path, file.data] as const)
+		.sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0));
+	if (entries.length !== durablePaths.size) throw new Error("Credential capsule lost an original credential path");
+	return createHash("sha256").update(JSON.stringify(entries)).digest("hex");
+}
+
+async function credentialFilesDigest(root: string, durablePaths: ReadonlySet<string>): Promise<string> {
+	const archive = await collectCapsuleFiles(requiredAbsolutePath(root, "Credential capsule root"), durablePaths);
+	return credentialArchiveDigest(archive.files, durablePaths);
+}
+
+function storedCredentialDigest(
 	bytes: Uint8Array,
-	root: string,
 	keyValue: string,
 	capsuleId: string,
-	credentialPaths?: ReadonlySet<string>,
-): Promise<void> {
+	durablePaths: ReadonlySet<string>,
+): string {
+	return credentialArchiveDigest(decryptCapsuleArchive(bytes, keyValue, capsuleId).files, durablePaths);
+}
+
+function decryptCapsuleArchive(bytes: Uint8Array, keyValue: string, capsuleId: string): CapsuleArchive {
 	requiredUuid(capsuleId, "Credential capsule id");
 	if (bytes.byteLength < 32 || Buffer.from(bytes.subarray(0, 4)).toString("ascii") !== "QNC1") {
 		throw new Error("Credential capsule envelope is invalid");
@@ -624,14 +647,23 @@ export async function openNativeCredentialCapsule(
 	const decipher = createDecipheriv("aes-256-gcm", capsuleKey(keyValue), nonce);
 	decipher.setAAD(Buffer.from(`${CAPSULE_SCHEMA}:${capsuleId}`, "utf-8"));
 	decipher.setAuthTag(Buffer.from(tag));
-	let archive: CapsuleArchive;
 	try {
-		archive = JSON.parse(
+		return JSON.parse(
 			Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString("utf-8"),
 		) as CapsuleArchive;
 	} catch (error) {
 		throw new Error("Credential capsule failed authenticated decryption", { cause: error });
 	}
+}
+
+export async function openNativeCredentialCapsule(
+	bytes: Uint8Array,
+	root: string,
+	keyValue: string,
+	capsuleId: string,
+	credentialPaths?: ReadonlySet<string>,
+): Promise<void> {
+	const archive = decryptCapsuleArchive(bytes, keyValue, capsuleId);
 	await restoreCapsuleFiles(requiredAbsolutePath(root, "Credential capsule root"), archive, credentialPaths);
 }
 
@@ -1468,9 +1500,15 @@ export class NativeProviderHost {
 		let root: string | undefined;
 		let durableCredentialPaths: ReadonlySet<string> | undefined;
 		let sealedCapsule: Uint8Array | undefined;
+		let sealedCredentialDigest: string | undefined;
+		// The stored capsule this run started from and its login's digest: the run saves its login
+		// back only when it changed it, and only while the store still holds that login.
+		let openedCapsule: Uint8Array | undefined;
+		let openedCredentialDigest: string | undefined;
 		let harnessStarted = false;
 		// Warm conversations: the capsule root this host kept from its previous company run, reused
-		// only while the stored capsule is byte for byte the one this host uploaded last.
+		// only while the stored capsule is byte for byte the one that root was opened from or
+		// last saved as.
 		const warmKey =
 			request.runtime === "company-path-v1" && this.#warmIdleMs !== undefined
 				? JSON.stringify([
@@ -1497,6 +1535,7 @@ export class NativeProviderHost {
 			const capsule = await this.#capsules.get(authority.encryptedCapsuleReference, executionAbort.signal);
 			if (warm && Buffer.from(capsule).equals(Buffer.from(warm.sealed))) {
 				durableCredentialPaths = warm.durable;
+				openedCredentialDigest = warm.digest;
 			} else {
 				if (warm) {
 					root = undefined;
@@ -1514,7 +1553,10 @@ export class NativeProviderHost {
 				);
 				durableCredentialPaths = new Set((await collectCapsuleFiles(root)).files.map((file) => file.path));
 			}
-			if (!root) throw new Error("Native credential root is unavailable");
+			if (!root || !durableCredentialPaths) throw new Error("Native credential root is unavailable");
+			stage = "credential-opening";
+			openedCredentialDigest ??= await credentialFilesDigest(root, durableCredentialPaths);
+			openedCapsule = capsule;
 			let result: { providerSessionId?: string };
 			let delivery: { messageCount: number; finalMessageId: string | null };
 			if (request.runtime === "company-path-v1") {
@@ -1573,24 +1615,60 @@ export class NativeProviderHost {
 			await mouth?.close();
 			// A provider may rotate its login token before a later request fails.
 			// Preserve only the original credential paths, never transient sessions,
-			// and recheck live authority immediately before replacing the capsule.
-			if (root && durableCredentialPaths && harnessStarted) {
+			// and recheck live authority before replacing the capsule.
+			// Several runs may use one login at once and a renewal token works once:
+			// a run that did not change its login saves nothing, and a changed login is
+			// saved only while the store still holds the login this run started from.
+			// That check and the upload are two requests, not one atomic write.
+			if (root && durableCredentialPaths && harnessStarted && openedCapsule && openedCredentialDigest) {
 				stage = "completion-authority-validation";
 				try {
 					executionAbort.signal.throwIfAborted();
 					stage = "credential-sealing";
-					const refreshedCapsule = await sealNativeCredentialCapsule(
-						root,
-						this.#masterKey,
-						authority.credentialCapsuleId,
-						durableCredentialPaths,
-					);
+					const endedCredentialDigest = await credentialFilesDigest(root, durableCredentialPaths);
+					const refreshedCapsule =
+						endedCredentialDigest === openedCredentialDigest
+							? undefined
+							: await sealNativeCredentialCapsule(
+									root,
+									this.#masterKey,
+									authority.credentialCapsuleId,
+									durableCredentialPaths,
+								);
 					stage = "completion-authority-validation";
 					await this.#controlPlane.validateExecution(request, executionAbort.signal);
 					executionAbort.signal.throwIfAborted();
-					stage = "credential-upload";
-					await this.#capsules.put(authority.encryptedCapsuleReference, refreshedCapsule, executionAbort.signal);
-					sealedCapsule = refreshedCapsule;
+					if (!refreshedCapsule) {
+						// Unchanged: the store keeps the login this run started from.
+						sealedCapsule = openedCapsule;
+						sealedCredentialDigest = openedCredentialDigest;
+					} else {
+						stage = "credential-upload";
+						const stored = await this.#capsules
+							.get(authority.encryptedCapsuleReference, executionAbort.signal)
+							.catch(() => this.#capsules.get(authority.encryptedCapsuleReference, executionAbort.signal));
+						const storedDigest = storedCredentialDigest(
+							stored,
+							this.#masterKey,
+							authority.credentialCapsuleId,
+							durableCredentialPaths,
+						);
+						if (storedDigest === openedCredentialDigest) {
+							await this.#capsules.put(
+								authority.encryptedCapsuleReference,
+								refreshedCapsule,
+								executionAbort.signal,
+							);
+							sealedCapsule = refreshedCapsule;
+							sealedCredentialDigest = endedCredentialDigest;
+						} else {
+							// Another run saved a newer login meanwhile. Keep it; this run's copy is not
+							// kept warm either.
+							console.error(
+								`Native provider execution kept a newer stored login for run ${authority.runId}; this run's changed login was not saved`,
+							);
+						}
+					}
 				} catch (error) {
 					const reason = stage === "credential-sealing" ? ` (${credentialSealingFailure(error)})` : "";
 					failure ??= new Error(`Native provider execution ${stage} stage failed${reason}`, { cause: error });
@@ -1614,7 +1692,14 @@ export class NativeProviderHost {
 			const usedRoot = root;
 			if (usedRoot) {
 				let kept = false;
-				if (warmKey && this.#warmIdleMs !== undefined && !failure && sealedCapsule && durableCredentialPaths) {
+				if (
+					warmKey &&
+					this.#warmIdleMs !== undefined &&
+					!failure &&
+					sealedCapsule &&
+					sealedCredentialDigest &&
+					durableCredentialPaths
+				) {
 					try {
 						// Only the capsule's own credential files stay; the next harness starts auth-only.
 						await pruneToCredentialFiles(usedRoot, durableCredentialPaths);
@@ -1631,6 +1716,7 @@ export class NativeProviderHost {
 							root: keptRoot,
 							durable: durableCredentialPaths,
 							sealed: sealedCapsule,
+							digest: sealedCredentialDigest,
 							timer,
 						};
 						kept = true;
