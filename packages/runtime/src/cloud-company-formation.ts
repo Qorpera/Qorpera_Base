@@ -42,14 +42,12 @@ function stage(value: unknown): value is CompanyFormationStage {
 	return typeof value === "string" && (COMPANY_FORMATION_STAGES as readonly string[]).includes(value);
 }
 
-/** A UUID as PostgreSQL's uuid input reads it: any case, optional braces and hyphens. */
+/** A UUID as PostgreSQL's uuid input reads it: any case, optional paired braces,
+ * and an optional hyphen after each group of four digits. */
 function uuid(value: unknown): string | null {
 	if (typeof value !== "string") return null;
-	const digits = value
-		.replace(/^\{(.*)\}$/, "$1")
-		.replaceAll("-", "")
-		.toLowerCase();
-	return /^[0-9a-f]{32}$/.test(digits) ? digits : null;
+	const text = value.replace(/^\{(.*)\}$/, "$1");
+	return /^[0-9a-f]{4}(?:-?[0-9a-f]{4}){7}$/i.test(text) ? text.replaceAll("-", "").toLowerCase() : null;
 }
 
 function status(value: unknown): value is CompanyFormationStatus {

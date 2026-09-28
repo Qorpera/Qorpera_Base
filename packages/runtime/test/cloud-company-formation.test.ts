@@ -88,10 +88,12 @@ describe("company formation write rule", () => {
 			cofounderStaffAgentId: "fedcba98-7654-4321-8fed-cba987654321",
 		};
 		const current = document("research", "active", 3, ids);
+		const digits = ids.formationId.replaceAll("-", "");
 		for (const spelling of [
 			ids.formationId.toUpperCase(),
 			`{${ids.formationId}}`,
-			ids.formationId.replaceAll("-", ""),
+			digits,
+			digits.replace(/(.{4})(?!$)/g, "$1-"),
 		])
 			expect(
 				companyFormationWriteRefusal(current, document("research", "active", 4, { ...ids, formationId: spelling })),
@@ -100,6 +102,10 @@ describe("company formation write rule", () => {
 		for (const changed of [
 			{ ...ids, cofounderStaffAgentId: ids.cofounderStaffAgentId.toUpperCase() },
 			{ ...ids, formationId: "not-a-uuid" },
+			// PostgreSQL allows a hyphen only after a group of four digits, and braces only as a pair.
+			{ ...ids, formationId: `-${ids.formationId}` },
+			{ ...ids, formationId: `${digits.slice(0, 3)}-${digits.slice(3)}` },
+			{ ...ids, formationId: `{${ids.formationId}` },
 			{ ...ids, formationId: formationId },
 		])
 			expect(companyFormationWriteRefusal(current, document("research", "active", 4, changed))).toMatch(

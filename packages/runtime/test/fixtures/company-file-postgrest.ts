@@ -228,6 +228,8 @@ export function companyFilePostgrest() {
 			if (receipt) return receipt;
 			stale(plan);
 			if (protectedPaths.has(plan.path)) {
+				if (args.p_expected_head !== null || args.p_tree_sha256 !== null)
+					throw new FakeSqlError("22023", "Company File proposal has a candidate tree");
 				const proposal = {
 					schema: "qorpera.company-path-result/v1",
 					state: "proposed",

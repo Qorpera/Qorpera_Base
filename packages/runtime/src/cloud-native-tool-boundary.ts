@@ -673,7 +673,7 @@ export class CloudNativeToolBoundary {
 				observation?.finish("denied", { errorCategory: "parent_missing" });
 				return this.#result(callId, tool, digest, "denied", { kind: "text", value: COMPANY_FILE_PARENT_MISSING });
 			}
-			// Refused before any transaction: the reason names only fixed formation keys and numbers.
+			// Refused after the check, before anything is staged: the reason names only fixed formation keys and numbers.
 			if (
 				error instanceof CloudCompanyFormationRefused &&
 				!this.#signal.aborted &&
