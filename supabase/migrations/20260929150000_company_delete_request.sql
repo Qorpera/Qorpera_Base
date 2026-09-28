@@ -9,7 +9,7 @@
 --   archived, coding executors are switched off and coding machines are asked to retire, pending
 --   invitations are withdrawn. Its Company Computers power off at their provider's next idle check.
 -- * qorpera_finish_company_deletions, run by an operator's pg_cron every minute, stops any work that
---   still appeared and runs qorpera_purge_company (20260929120000) once the nodes hold nothing of the
+--   still appeared and runs qorpera_purge_company (20260928248920) once the nodes hold nothing of the
 --   company: no machine that is not released, no sign-in identity, no update target. Coding machines
 --   and run machines already drain by themselves; Company Computers and sign-in identities wait for
 --   steps D3 and D4 and stay hidden and stopped until then.

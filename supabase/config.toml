@@ -14,6 +14,10 @@ verify_enabled = true
 [functions.profile-invitation-email]
 verify_jwt = false
 
+# Called by pg_cron with a Supabase secret key, which it checks itself (like the invitation worker).
+[functions.computer-hour-notices]
+verify_jwt = false
+
 # The cleanup worker accepts a modern non-JWT Supabase secret key through its
 # own exact-key boundary. The platform JWT gate cannot
 # parse sb_secret keys, so it is disabled here and the handler remains the

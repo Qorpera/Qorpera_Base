@@ -31,7 +31,7 @@ kept. Usage and computer-hour records stay for bookkeeping, with plain ids (cont
    companies per call, picked at random so a company that keeps failing never stalls the rest; with
    more open requests than that, each is visited less than once a minute). It repeats
    `qorpera_stop_company_work`, reads `qorpera_company_node_holdings`, and runs `qorpera_purge_company`
-   (20260929120000) once nothing is held; stop and purge run in separate subtransactions. Its state
+   (20260928248920) once nothing is held; stop and purge run in separate subtransactions. Its state
    (`holdings`, `last_error`, `purged_at`) is on the request row. The member's account cannot be deleted
    until the purge (their rows restrict it).
 
