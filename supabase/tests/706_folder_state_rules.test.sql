@@ -171,6 +171,11 @@ begin
 	if not pg_temp.refused(pg_temp.commit(pg_temp.owner(), 'rule-0007', jsonb_build_array(
 		pg_temp.rule('maybe', '70600000-0000-4000-8000-0000000000f4', 'maybe', 'send a file'))), 'structured_invalid') then
 		raise exception 'An outcome is ask-first or allow'; end if;
+	-- The id is a UUID.
+	if not pg_temp.refused(pg_temp.commit(pg_temp.owner(), 'rule-0012', jsonb_build_array(pg_temp.write('rules/badid.md', 'rule',
+		pg_temp.rule_text('70600000-0000-4000-8000-0000000000f6', 'ask-first', 'send a file'),
+		jsonb_build_object('kind','rule','id','NOT-A-UUID','outcome','ask-first','text','send a file'), null))), 'structured_invalid') then
+		raise exception 'A rule''s id is a UUID'; end if;
 	-- The parse has exactly the rule's keys.
 	if not pg_temp.refused(pg_temp.commit(pg_temp.owner(), 'rule-0008', jsonb_build_array(pg_temp.write('rules/keys.md', 'rule',
 		pg_temp.rule_text('70600000-0000-4000-8000-0000000000f6', 'ask-first', 'send a file'),
