@@ -128,6 +128,14 @@ select public.qorpera_append_account_event(
 	0
 );
 
+-- This deployment runs API-billed company accounts, so one may pay for a reviewer's or a
+-- follow-up's work when the starter's own login cannot (20260928230000).
+reset role;
+insert into public.qorpera_provider_execution_policies(provider,authentication_mode,native_harness,
+	implementation_status,enablement_status,max_native_concurrency)
+values ('openai','api_key','openai-responses','supported','enabled',8);
+set role authenticated;
+
 select set_config(
 	'qorpera_test.provider_connection',
 	public.qorpera_register_provider_connection(
@@ -234,13 +242,22 @@ begin
 		raise exception 'a member-owned provider connection became a company sponsor';
 	end if;
 
-	perform public.qorpera_create_execution_sponsor_binding(
-		'15000000-0000-4000-8000-000000000010',
-		'15000000-0000-4000-8000-000000000065',
-		'member_connection',
-		(current_setting('qorpera_test.member_provider_connection')::jsonb ->> 'connection_id')::uuid,
-		1, false
-	);
+	-- Only the member who owns a login binds it (20260928230000): an authorizer cannot pay with it.
+	v_rejected := false;
+	begin
+		perform public.qorpera_create_execution_sponsor_binding(
+			'15000000-0000-4000-8000-000000000010',
+			'15000000-0000-4000-8000-000000000065',
+			'member_connection',
+			(current_setting('qorpera_test.member_provider_connection')::jsonb ->> 'connection_id')::uuid,
+			1, false
+		);
+	exception when insufficient_privilege then
+		v_rejected := true;
+	end;
+	if not v_rejected then
+		raise exception 'an authorizer bound another member login';
+	end if;
 	v_rejected := false;
 	begin
 		perform public.qorpera_create_execution_sponsor_binding(
@@ -283,13 +300,26 @@ select set_config(
 	'{"sub":"15000000-0000-4000-8000-000000000001","email":"orchestrator-owner@example.test","role":"authenticated","user_metadata":{}}',
 	false
 );
-select public.qorpera_create_execution_sponsor_binding(
-	'15000000-0000-4000-8000-000000000010',
-	'15000000-0000-4000-8000-000000000067',
-	'member_connection',
-	(current_setting('qorpera_test.member_provider_connection_v2')::jsonb ->> 'connection_id')::uuid,
-	2, true
-);
+do $$
+declare v_rejected boolean := false;
+begin
+	-- Even with the member's unattended consent, an authorizer cannot bind the member's login.
+	begin
+		perform public.qorpera_create_execution_sponsor_binding(
+			'15000000-0000-4000-8000-000000000010',
+			'15000000-0000-4000-8000-000000000067',
+			'member_connection',
+			(current_setting('qorpera_test.member_provider_connection_v2')::jsonb ->> 'connection_id')::uuid,
+			2, true
+		);
+	exception when insufficient_privilege then
+		v_rejected := true;
+	end;
+	if not v_rejected then
+		raise exception 'an authorizer bound another member consented login';
+	end if;
+end
+$$;
 
 select public.qorpera_configure_staff_execution_authority(
 	'15000000-0000-4000-8000-000000000010',

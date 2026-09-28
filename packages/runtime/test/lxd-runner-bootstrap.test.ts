@@ -265,6 +265,31 @@ async function companyFixture(): Promise<LxdRunnerBootstrapPaths> {
 	return paths;
 }
 
+/** A one-run guest for an identity whose login the vault keeps: no identity volume, no key. */
+async function vaultCompanyFixture(): Promise<LxdRunnerBootstrapPaths> {
+	const paths = await companyFixture();
+	const bootstrap = JSON.parse(await readFile(paths.bootstrapConfig, "utf-8")) as {
+		company_runtime: Record<string, unknown>;
+	};
+	bootstrap.company_runtime.login_custody = "vault";
+	await writeFile(paths.bootstrapConfig, JSON.stringify(bootstrap), { mode: 0o600 });
+	await writeFile(
+		paths.nativeProviderEnvironment,
+		`${await readFile(paths.nativeProviderEnvironment, "utf-8")}QORPERA_NATIVE_LOGIN_CUSTODY=vault\n`,
+		{ mode: 0o600 },
+	);
+	await rm(paths.identityMasterKey);
+	await rm(paths.identityMarker);
+	await writeFile(
+		paths.mountInfo,
+		(await readFile(paths.mountInfo, "utf-8"))
+			.split("\n")
+			.filter((line) => !line.startsWith("42 "))
+			.join("\n"),
+	);
+	return paths;
+}
+
 async function startCompanyFixture(paths: LxdRunnerBootstrapPaths, started: string[]): Promise<void> {
 	const uid = process.getuid?.() ?? 0;
 	const gid = process.getgid?.() ?? 0;
@@ -792,5 +817,97 @@ describe("governed native company guest bootstrap", () => {
 		config.native_bridge_shared_gid = 42041;
 		await writeFile(paths.runnerConfig, JSON.stringify(config), { mode: 0o600 });
 		await expect(startCompanyFixture(paths, [])).rejects.toThrow("without a shared workspace");
+	});
+});
+
+describe("governed native guest for a vault login", () => {
+	const epochCredential = (paths: LxdRunnerBootstrapPaths) =>
+		join(paths.nativeProviderEnvironment, "..", "native-identity-epoch.json");
+
+	it("starts without an identity volume and hands the host empty key and epoch sources", async () => {
+		const paths = await vaultCompanyFixture();
+		const started: string[] = [];
+		await startCompanyFixture(paths, started);
+		expect(started).toEqual(["qorpera-native-company-host.service", "qorpera-company-runner.service"]);
+		expect(await readFile(paths.identityMasterKey, "utf-8")).toBe("");
+		expect((await stat(paths.identityMasterKey)).mode & 0o777).toBe(0o600);
+		expect(await readFile(epochCredential(paths), "utf-8")).toBe("");
+		await expect(stat(paths.identityMarker)).rejects.toMatchObject({ code: "ENOENT" });
+		// A restart of the same guest finds its own empty sources and starts again.
+		await startCompanyFixture(paths, started);
+		expect(started).toHaveLength(4);
+	});
+
+	it("refuses a mounted identity volume or identity material in a vault login guest", async () => {
+		const mounted = await vaultCompanyFixture();
+		await writeFile(
+			mounted.mountInfo,
+			`${await readFile(mounted.mountInfo, "utf-8")}\n42 1 0:99 / ${mounted.identityVolume.replaceAll(" ", "\\040")} rw - virtiofs identity rw\n`,
+		);
+		const started: string[] = [];
+		await expect(startCompanyFixture(mounted, started)).rejects.toThrow("must not mount an identity volume");
+		const material = await vaultCompanyFixture();
+		await writeFile(material.identityMarker, "{}", { mode: 0o600 });
+		await expect(startCompanyFixture(material, started)).rejects.toThrow("must hold no identity material");
+		const keyed = await vaultCompanyFixture();
+		await writeFile(keyed.identityMasterKey, `${fixtureKey}\n`, { mode: 0o600 });
+		await startCompanyFixture(keyed, started);
+		// A stray key is overwritten, never used.
+		expect(await readFile(keyed.identityMasterKey, "utf-8")).toBe("");
+		expect(started).toEqual(["qorpera-native-company-host.service", "qorpera-company-runner.service"]);
+	});
+
+	it("requires the vault custody in both the bootstrap and the host environment", async () => {
+		const environmentOnly = await companyFixture();
+		await writeFile(
+			environmentOnly.nativeProviderEnvironment,
+			`${await readFile(environmentOnly.nativeProviderEnvironment, "utf-8")}QORPERA_NATIVE_LOGIN_CUSTODY=vault\n`,
+			{ mode: 0o600 },
+		);
+		await expect(startCompanyFixture(environmentOnly, [])).rejects.toThrow("unexpected settings");
+		const bootstrapOnly = await vaultCompanyFixture();
+		await writeFile(
+			bootstrapOnly.nativeProviderEnvironment,
+			(await readFile(bootstrapOnly.nativeProviderEnvironment, "utf-8")).replace(
+				"QORPERA_NATIVE_LOGIN_CUSTODY=vault\n",
+				"",
+			),
+			{ mode: 0o600 },
+		);
+		await expect(startCompanyFixture(bootstrapOnly, [])).rejects.toThrow("unexpected settings");
+		const wrongValue = await vaultCompanyFixture();
+		await writeFile(
+			wrongValue.nativeProviderEnvironment,
+			(await readFile(wrongValue.nativeProviderEnvironment, "utf-8")).replace("CUSTODY=vault", "CUSTODY=node"),
+			{ mode: 0o600 },
+		);
+		await expect(startCompanyFixture(wrongValue, [])).rejects.toThrow("immutable bootstrap authority");
+		const bootstrap = JSON.parse(await readFile(wrongValue.bootstrapConfig, "utf-8")) as {
+			company_runtime: Record<string, unknown>;
+		};
+		bootstrap.company_runtime.login_custody = "node";
+		expect(() => parseLxdRunnerBootstrapConfig(bootstrap)).toThrow("login custody is invalid");
+	});
+
+	it("stops when cloud recovery fences the identity", async () => {
+		const paths = await vaultCompanyFixture();
+		const uid = process.getuid?.() ?? 0;
+		const gid = process.getgid?.() ?? 0;
+		const started: string[] = [];
+		await expect(
+			runLxdRunnerBootstrap({
+				paths,
+				expectedRootUid: uid,
+				expectedRootGid: gid,
+				serviceIdentity: { uid, gid },
+				nativeServiceIdentity: { uid, gid },
+				identityRuntimeState: async () => ({ ...fixtureState, blocked: true }),
+				startService: async (service) => {
+					started.push(service);
+				},
+			}),
+		).rejects.toThrow("fenced by cloud recovery authority");
+		expect(started).toEqual([]);
+		await expect(stat(epochCredential(paths))).rejects.toMatchObject({ code: "ENOENT" });
 	});
 });

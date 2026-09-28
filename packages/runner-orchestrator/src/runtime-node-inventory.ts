@@ -39,7 +39,14 @@ export interface RuntimeNodeInfrastructure {
 	 * and reported as the entry's `identities`; the registry accepts only
 	 * identities whose login machine this node reserved. */
 	identityVolumes?: ExecutionHostIdentityVolumes;
+	/** Listed by its job, so a rebuild onto a new image needs no new policy.
+	 * Only `execution-host`, the node's shared execution host: LXD's `image.*`
+	 * keys are left out of its digest, and its image (`volatile.base_image`)
+	 * must be the runner image a signed release on the node pins
+	 * (runtime-node-releases.ts). Everything else stays exact. */
+	role?: RuntimeNodeInfrastructureRole;
 }
+export type RuntimeNodeInfrastructureRole = "execution-host";
 /** A declared space for image build machines (a builder and its verifier).
  * Every instance in `project` is a build machine (buildMachine below). Together
  * they may use at most the declared CPU and memory, which the policy always
@@ -88,11 +95,16 @@ export function parseRuntimeNodeInventoryPolicy(value: unknown): RuntimeNodeInve
 		throw new Error("INVALID_NODE_INVENTORY_POLICY");
 	const infrastructure = p.infrastructure.map((value): RuntimeNodeInfrastructure => {
 		const hosting = !!value && typeof value === "object" && Object.hasOwn(value, "identityVolumes");
+		const byRole = !!value && typeof value === "object" && Object.hasOwn(value, "role");
 		const i = record(
 			value,
-			`project,name,physicalId,type,configurationSha256,cpuMillis,memoryBytes${hosting ? ",identityVolumes" : ""}`,
+			`project,name,physicalId,type,configurationSha256,cpuMillis,memoryBytes${hosting ? ",identityVolumes" : ""}${byRole ? ",role" : ""}`,
 		);
-		if ((i.type !== "virtual-machine" && i.type !== "container") || (hosting && i.type !== "virtual-machine"))
+		if (
+			(i.type !== "virtual-machine" && i.type !== "container") ||
+			((hosting || byRole) && i.type !== "virtual-machine") ||
+			(byRole && i.role !== "execution-host")
+		)
 			throw new Error("INVALID_NODE_INVENTORY_POLICY");
 		let identityVolumes: ExecutionHostIdentityVolumes | undefined;
 		try {
@@ -109,6 +121,7 @@ export function parseRuntimeNodeInventoryPolicy(value: unknown): RuntimeNodeInve
 			cpuMillis: integer(i.cpuMillis, MAX_CPU),
 			memoryBytes: integer(i.memoryBytes, MAX_MEMORY),
 			...(identityVolumes ? { identityVolumes } : {}),
+			...(byRole ? { role: "execution-host" as const } : {}),
 		};
 	});
 	let buildSpace: RuntimeNodeBuildSpace | undefined;
@@ -236,6 +249,7 @@ export interface RuntimeNodeInventoryEntry {
 		| "INSTANCE_AUTHORITY_DIFFERS"
 		| "INSTANCE_STATE_UNAVAILABLE"
 		| "BUILD_SPACE_EXCEEDED"
+		| "INSTANCE_IMAGE_NOT_RELEASED"
 		| null;
 	/** Only on an infrastructure entry whose policy declares identityVolumes:
 	 * the identities of its identity devices, sorted. */
@@ -278,13 +292,18 @@ function sessionFolder(name: string, device: Readonly<Record<string, string>>): 
  * that shape is left out (sessionFolder); the coding executor checks the
  * folders' NAS placement itself. Likewise a shared execution host enrolled
  * with identityVolumes: its identity devices are left out of the digest and
- * returned as `identities`, which the registry checks one by one. */
+ * returned as `identities`, which the registry checks one by one. An entry
+ * listed by role also leaves out the `image.*` keys LXD copies from the image;
+ * the observer checks the image itself against the node's signed releases. */
 export function runtimeNodeInstanceConfiguration(
 	i: LxdHostInventoryInstance,
 	identityVolumes?: ExecutionHostIdentityVolumes,
+	role?: RuntimeNodeInfrastructureRole,
 ): { configurationSha256: string; identities?: string[] } {
 	const stable = (value: Record<string, string>) =>
-		Object.fromEntries(Object.entries(value).filter(([k]) => !k.startsWith("volatile.")));
+		Object.fromEntries(
+			Object.entries(value).filter(([k]) => !k.startsWith("volatile.") && !(role && k.startsWith("image."))),
+		);
 	const machine =
 		i.config["user.qorpera.schema"] === "qorpera.lxd-coding-machine/v1" &&
 		i.expandedConfig["user.qorpera.schema"] === "qorpera.lxd-coding-machine/v1";
@@ -311,8 +330,9 @@ export function runtimeNodeInstanceConfiguration(
 export function runtimeNodeInstanceConfigurationSha256(
 	i: LxdHostInventoryInstance,
 	identityVolumes?: ExecutionHostIdentityVolumes,
+	role?: RuntimeNodeInfrastructureRole,
 ): string {
-	return runtimeNodeInstanceConfiguration(i, identityVolumes).configurationSha256;
+	return runtimeNodeInstanceConfiguration(i, identityVolumes, role).configurationSha256;
 }
 /** Configuration a build machine may carry: its limits and boot settings, the
  * keys LXD itself keeps (`volatile.*`) or copies from the image (`image.*`),
@@ -456,7 +476,13 @@ function allocation(
 		return null;
 	return expected;
 }
-export function reconcileRuntimeNodeInventory(inventory: LxdHostInventory, context: RuntimeNodeInventoryContext) {
+/** `releasedImages`: the runner images the node's signed releases pin
+ * (readNodeReleaseImages). Only entries listed by role consult it. */
+export function reconcileRuntimeNodeInventory(
+	inventory: LxdHostInventory,
+	context: RuntimeNodeInventoryContext,
+	releasedImages: ReadonlySet<string> = new Set(),
+) {
 	const c = parseRuntimeNodeInventoryContext(context),
 		p = c.policy,
 		accepted = new Set(c.acceptedIdentities);
@@ -487,7 +513,7 @@ export function reconcileRuntimeNodeInventory(inventory: LxdHostInventory, conte
 		const build = p.buildSpace?.project === i.project,
 			a = build ? null : allocation(i, c),
 			infra = a || build ? undefined : p.infrastructure.find((v) => v.project === i.project && v.name === i.name),
-			{ configurationSha256, identities } = runtimeNodeInstanceConfiguration(i, infra?.identityVolumes),
+			{ configurationSha256, identities } = runtimeNodeInstanceConfiguration(i, infra?.identityVolumes, infra?.role),
 			resources = cost(i),
 			s = state(i);
 		let category: RuntimeNodeInventoryEntry["category"] = "unmanaged",
@@ -517,7 +543,8 @@ export function reconcileRuntimeNodeInventory(inventory: LxdHostInventory, conte
 					: "INSTANCE_AUTHORITY_DIFFERS";
 		} else if (infra) {
 			category = "infrastructure";
-			reason =
+			const image = i.config["volatile.base_image"];
+			reason = !(
 				isDeepStrictEqual(infra, {
 					project: i.project,
 					name: i.name,
@@ -526,13 +553,22 @@ export function reconcileRuntimeNodeInventory(inventory: LxdHostInventory, conte
 					configurationSha256,
 					...resources,
 					...(infra.identityVolumes ? { identityVolumes: infra.identityVolumes } : {}),
+					...(infra.role ? { role: infra.role } : {}),
 				}) &&
 				(identities ?? []).every((id) => accepted.has(id)) &&
 				!Object.keys(i.expandedConfig).some(
 					(k) => k.startsWith("user.qorpera.") && k !== "user.qorpera.management_vm",
 				)
-					? null
-					: "INSTANCE_AUTHORITY_DIFFERS";
+			)
+				? "INSTANCE_AUTHORITY_DIFFERS"
+				: infra.role &&
+						!(
+							typeof image === "string" &&
+							image === i.expandedConfig["volatile.base_image"] &&
+							releasedImages.has(image)
+						)
+					? "INSTANCE_IMAGE_NOT_RELEASED"
+					: null;
 		}
 		if (!reason && s === "unavailable") reason = "INSTANCE_STATE_UNAVAILABLE";
 		return {

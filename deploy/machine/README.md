@@ -8,7 +8,7 @@ An agent picks the size (CPUs, memory, disk). Inside, the agent's commands run a
 
 | Part | Where | What it does |
 |---|---|---|
-| SQL (`20260928221500_runtime_company_machines`) | the kernel | Machines, their disposable placements, commands and events; placement and admission on the shared node ledger (provider kind `machine`); the executor's custody of each placement; members' list and actions; `machine-event` wakes |
+| SQL (`20260928238000_runtime_company_machines`) | the kernel | Machines, their disposable placements, commands and events; placement and admission on the shared node ledger (provider kind `machine`); the executor's custody of each placement; members' list and actions; `machine-event` wakes |
 | `machine_*` tools (`packages/runtime/src/cloud-machine-tools.ts`) | the identity host, in a company conversation | start, run, read, cancel, stop, delete, list |
 | Command route `/v1/machine-commands/*` (`cloud-machine-command-http.ts`) | the coding executor's ingress and peer listener | SQL authority, local execution or forwarding to the machine's node |
 | Machine workload (`packages/runner-orchestrator/src/company-machine-host.ts`) | the coding executor on each node, a pass every 10 s | admit waiting machines; create, start, stop, delete them under the coding machine's journal (`company-machines/` on the NAS control path); keep each guest's lease; record how commands ended; report a busy guest |
