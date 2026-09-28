@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
+import { CODEX_RENEWAL_BUDGET_MS } from "./cloud-model-login-budget.ts";
 import type { ModelLoginRenewal, ModelLoginRenewer } from "./cloud-model-login-vault.ts";
 import { launchIsolatedNativeProcess, type NativeIsolationConfiguration } from "./cloud-native-isolation.ts";
 
@@ -19,8 +20,6 @@ import { launchIsolatedNativeProcess, type NativeIsolationConfiguration } from "
  * `invalid_grant` is permanent. Anything else may be retried.
  */
 
-/** Every step of one renewal ends inside this budget, well within the vault's 35 s. */
-export const CODEX_RENEWAL_BUDGET_MS = 25_000;
 const MAX_OUTPUT_BYTES = 64 * 1024;
 const MAX_AUTH_JSON_BYTES = 32 * 1024;
 const CLIENT_NAME = "qorpera_model_login_vault";
@@ -31,6 +30,8 @@ interface RenewalProcess {
 	stdout: NodeJS.ReadableStream;
 	stderr: NodeJS.ReadableStream;
 	exited: Promise<void>;
+	/** Whether the process could not be started at all (a spawn `error`). */
+	failedToStart(): boolean;
 	kill(): void;
 	close(): Promise<void>;
 }
@@ -180,9 +181,21 @@ export class CodexLoginRenewer implements ModelLoginRenewer {
 			const loginPath = join(root, "codex", "auth.json");
 			await writeFile(loginPath, authJson, { mode: 0o600, flag: "wx" });
 			let stderr = "";
+			let launchFailure: string | undefined;
 			try {
-				await this.#beforeLaunch?.();
-				const launched = await this.#launch(root, deadline);
+				try {
+					await this.#beforeLaunch?.();
+				} catch (error) {
+					launchFailure = "codex_changed";
+					throw error;
+				}
+				let launched: RenewalProcess;
+				try {
+					launched = await this.#launch(root, deadline);
+				} catch (error) {
+					launchFailure = "codex_launch_failed";
+					throw error;
+				}
 				launched.stderr.setEncoding?.("utf8");
 				launched.stderr.on("data", (chunk: string) => {
 					if (stderr.length < MAX_OUTPUT_BYTES) stderr += chunk.slice(0, MAX_OUTPUT_BYTES - stderr.length);
@@ -215,6 +228,7 @@ export class CodexLoginRenewer implements ModelLoginRenewer {
 					// The login file and Codex's own error line decide below.
 				} finally {
 					await launched.close().catch(() => undefined);
+					if (launched.failedToStart()) launchFailure = "codex_launch_failed";
 				}
 			} catch {
 				// A launch that failed still leaves the login file to read below.
@@ -227,11 +241,11 @@ export class CodexLoginRenewer implements ModelLoginRenewer {
 				return { outcome: "renewed", authJson: renewed };
 			}
 			const refused = classifyCodexRenewalFailure(stderr);
-			return refused
-				? { outcome: "refused", reason: refused }
-				: { outcome: "transient", reason: "renewal_unchanged" };
+			if (refused) return { outcome: "refused", reason: refused };
+			return { outcome: "transient", reason: launchFailure ?? "renewal_unchanged" };
 		} finally {
-			await rm(root, { recursive: true, force: true });
+			// Codex is stopped by now; a failed removal must not replace the result.
+			await rm(root, { recursive: true, force: true, maxRetries: 3 }).catch(() => undefined);
 		}
 	}
 
@@ -246,9 +260,13 @@ export class CodexLoginRenewer implements ModelLoginRenewer {
 			});
 			// A closed pipe or a failed start must never crash the helper.
 			for (const stream of [child.stdin, child.stdout, child.stderr]) stream.on("error", () => undefined);
+			let startFailed = false;
 			const exited = new Promise<void>((resolveExit) => {
 				child.once("exit", () => resolveExit());
-				child.once("error", () => resolveExit());
+				child.once("error", () => {
+					startFailed = child.pid === undefined;
+					resolveExit();
+				});
 			});
 			const kill = (): void => {
 				child.kill("SIGKILL");
@@ -259,6 +277,7 @@ export class CodexLoginRenewer implements ModelLoginRenewer {
 				stdout: child.stdout,
 				stderr: child.stderr,
 				exited,
+				failedToStart: () => startFailed,
 				kill,
 				async close() {
 					signal.removeEventListener("abort", kill);
@@ -284,16 +303,21 @@ export class CodexLoginRenewer implements ModelLoginRenewer {
 			});
 			const child = isolated.child;
 			for (const stream of [child.stdin, child.stdout, child.stderr]) stream.on("error", () => undefined);
+			let startFailed = false;
 			const exited = new Promise<void>((resolveExit) => {
 				if (child.exitCode !== null || child.signalCode !== null) resolveExit();
 				child.once("exit", () => resolveExit());
-				child.once("error", () => resolveExit());
+				child.once("error", () => {
+					startFailed = child.pid === undefined;
+					resolveExit();
+				});
 			});
 			return {
 				stdin: child.stdin,
 				stdout: child.stdout,
 				stderr: child.stderr,
 				exited,
+				failedToStart: () => startFailed,
 				kill: () => {
 					child.kill("SIGKILL");
 				},

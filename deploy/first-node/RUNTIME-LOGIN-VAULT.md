@@ -124,6 +124,10 @@ no database login and no service key; it sees a login only for one operation and
    `LoadCredential=qorpera-cloud-secret-login-helper:/etc/qorpera-secret-broker/login-helper.json`
    with `{"schema": "qorpera.model-login-helper-client/v1", "socketPath": "/run/qorpera-model-login-helper/helper.sock",
    "token": "<the helper token>"}`. Without that credential the broker never asks for a renewal lock.
+6. Before rollout, prove one real renewal on the vault host (a test login): the unit's system-call
+   filter and the sandbox are only proven there. A renewal that cannot start Codex records
+   `codex_launch_failed`, and a binary changed since start records `codex_changed` and restarts the
+   helper.
 
 ## Runs (change 3, migration `20260928161000`)
 

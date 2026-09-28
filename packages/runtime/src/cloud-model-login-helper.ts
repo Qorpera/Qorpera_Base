@@ -2,7 +2,7 @@ import { timingSafeEqual } from "node:crypto";
 import { chmod, rm } from "node:fs/promises";
 import { createServer, request as httpRequest, type IncomingMessage, type Server } from "node:http";
 import { isAbsolute, resolve } from "node:path";
-import { CODEX_RENEWAL_BUDGET_MS } from "./cloud-model-login-renewal.ts";
+import { CODEX_RENEWAL_BUDGET_MS } from "./cloud-model-login-budget.ts";
 import type { ModelLoginRenewal, ModelLoginRenewer } from "./cloud-model-login-vault.ts";
 
 /**

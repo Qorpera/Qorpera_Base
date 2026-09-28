@@ -309,7 +309,20 @@ it("survives Codex closing its input, a missing binary, a caller's abort and run
 	const missing = new CodexLoginRenewer({ codexPath: join(temporaryRoot, "no-such-codex"), temporaryRoot });
 	await expect(missing.renew(LOGIN, new AbortController().signal)).resolves.toEqual({
 		outcome: "transient",
-		reason: "renewal_unchanged",
+		reason: "codex_launch_failed",
+	});
+	expect(await readdir(temporaryRoot)).toEqual([]);
+	// A binary that changed since the helper started is never launched.
+	const changed = new CodexLoginRenewer({
+		codexPath: await fakeCodex("renew"),
+		temporaryRoot,
+		beforeLaunch: async () => {
+			throw new Error("changed since start");
+		},
+	});
+	await expect(changed.renew(LOGIN, new AbortController().signal)).resolves.toEqual({
+		outcome: "transient",
+		reason: "codex_changed",
 	});
 	expect(await readdir(temporaryRoot)).toEqual([]);
 

@@ -114,7 +114,20 @@ export async function runModelLoginHelperMain(environment: NodeJS.ProcessEnv = p
 	const isolationEntryPoint = absolute(config.isolationEntryPoint, "Login helper isolation entry point");
 	for (const artifact of ["/usr/bin/bwrap", "/usr/bin/node", isolationEntryPoint, codexPath])
 		await rootOwnedArtifact(artifact);
-	const beforeLaunch = await pinnedCodex(codexPath, config.codexSha256);
+	const pinned = await pinnedCodex(codexPath, config.codexSha256);
+	const stop = new AbortController();
+	// A binary that changed since start stops the helper, so systemd restarts it and the pin
+	// check at start decides again, instead of every renewal failing quietly.
+	const beforeLaunch = async (): Promise<void> => {
+		try {
+			await pinned();
+		} catch (error) {
+			console.error("Model login helper: its Codex binary changed since start; stopping for a checked restart.");
+			process.exitCode = 1;
+			stop.abort();
+			throw error;
+		}
+	};
 	const token = await readCredential(directory, "qorpera-model-login-helper-token");
 	if (!TOKEN.test(token)) throw new Error("Login helper token is invalid");
 	const service = new ModelLoginHelperService({
@@ -127,7 +140,6 @@ export async function runModelLoginHelperMain(environment: NodeJS.ProcessEnv = p
 			beforeLaunch,
 		}),
 	});
-	const stop = new AbortController();
 	const shutdown = (): void => stop.abort();
 	process.once("SIGINT", shutdown);
 	process.once("SIGTERM", shutdown);
