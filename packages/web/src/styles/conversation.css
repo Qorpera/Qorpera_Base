@@ -184,17 +184,17 @@
 .review-change > * { margin: 0; }
 .action-review-card .review-target { font-weight: 600; }
 .review-name { font-weight: 600; }
-.review-quote { padding: 2px 0 2px 12px; border-left: 2px solid var(--border-strong); color: var(--text); white-space: pre-wrap; max-height: 9.6em; overflow: auto; }
+.review-quote { padding: 2px 0 2px 12px; border-left: 2px solid var(--border-strong); color: var(--text); white-space: pre-wrap; }
 .review-why { margin-top: 10px; color: var(--text-muted); font-size: 12px; line-height: 1.45; }
 .review-why p { margin: 0; }
 .review-reasons { margin: 4px 0 0; padding: 0; list-style: none; color: var(--text-muted); }
 .review-reasons li + li { margin-top: 2px; }
-.review-foot { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; margin-top: 12px; }
-.review-technical { font-size: 11px; }
+/* The time, then Technical details on a line of its own, so opening it moves nothing. */
+.review-foot { display: grid; justify-items: start; gap: 4px; margin-top: 12px; }
+.review-technical { width: 100%; font-size: 11px; }
 .review-technical > summary { color: var(--text-muted); cursor: pointer; }
-.review-technical[open] { flex-basis: 100%; }
-.action-review-card.is-folded { display: flex; align-items: center; gap: 8px; width: auto; padding: 4px 2px; border-color: transparent; background: none; }
-.review-mark { display: grid; flex: none; place-items: center; width: 18px; height: 18px; border-radius: 50%; }
+.action-review-card.is-folded { display: flex; align-items: flex-start; gap: 8px; width: auto; padding: 4px 2px; border-color: transparent; background: none; }
+.review-mark { display: grid; flex: none; place-items: center; width: 18px; height: 18px; margin-top: 1px; border-radius: 50%; }
 .review-mark .icon { width: 11px; height: 11px; stroke-width: 2.4; }
 .review-mark.is-approved { background: var(--ok-soft); color: #0f7a5a; }
 .review-mark.is-declined { background: var(--pane-strong); color: var(--text-muted); }

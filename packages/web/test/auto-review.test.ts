@@ -11,7 +11,7 @@ import {
 	type HostedReviewRule,
 	type WebReviewRules,
 } from "../src/cloud/review-rules.ts";
-import { renderActionReviewCard, renderAuthorizationCard } from "../src/ui/authorization-card.ts";
+import { readableFileName, renderActionReviewCard, renderAuthorizationCard } from "../src/ui/authorization-card.ts";
 import { id, settle, timestamp } from "./fixtures.ts";
 
 const data = {
@@ -162,7 +162,8 @@ describe("the approval card", () => {
 				...card,
 				title: "Delete from the Company File",
 				target: "work/old-offer.md",
-				details: [["path", "work/old-offer.md"]],
+				summary: "It deletes work/old-offer.md, which the request did not name.",
+				details: [],
 				tool: "company_delete",
 				arguments: '{"path":"work/old-offer.md"}',
 			},
@@ -174,6 +175,56 @@ describe("the approval card", () => {
 		const visible = [...el.children].filter((child) => !child.matches(".review-foot"));
 		expect(visible.map((child) => child.textContent).join(" ")).not.toContain("work/old-offer.md");
 		expect(el.querySelector(".review-call")?.textContent).toContain("work/old-offer.md");
+		expect(el.querySelector(".review-why p")?.textContent).toBe(
+			"It deletes “Old offer”, which the request did not name.",
+		);
+	});
+
+	it("reads a file name the way people say it", () => {
+		expect(readableFileName("work/old-offer.md")).toBe("Old offer");
+		expect(readableFileName("work/2026-09-28-standup.md")).toBe("2026-09-28 standup");
+		expect(readableFileName("work/2026.09")).toBe("2026.09");
+		expect(readableFileName("notes/Møde 10.30")).toBe("Møde 10.30");
+		expect(readableFileName("apps/iOS-plan.md")).toBe("iOS plan");
+		expect(readableFileName("work/reports/")).toBe("Reports");
+		expect(readableFileName(".env")).toBe(".env");
+	});
+
+	it("says a name once when the target already says it, and quotes a worker's task", () => {
+		const el = renderActionReviewCard(
+			{
+				...card,
+				title: "Create a Drive file",
+				target: "Q3 plan",
+				details: [
+					["name", "Q3 plan"],
+					["task", "Draft the plan from the board memo."],
+				],
+			},
+			timestamp,
+			undefined,
+			{ answer: vi.fn(), memberName: names },
+		);
+		expect(el.textContent?.split("Q3 plan").length).toBe(2);
+		expect(el.querySelector(".review-quote")?.textContent).toBe("Draft the plan from the board memo.");
+	});
+
+	it("shows markup in an action as text", () => {
+		const el = renderActionReviewCard(
+			{
+				...card,
+				target: '<img src=x onerror="alert(1)">',
+				details: [
+					["subject", "<b>bold</b>"],
+					["body", "<script>alert(2)</script>"],
+				],
+			},
+			timestamp,
+			undefined,
+			{ answer: vi.fn(), memberName: names },
+		);
+		expect(el.querySelector("img, b, script")).toBeNull();
+		expect(el.querySelector(".review-quote")?.textContent).toBe("<script>alert(2)</script>");
 	});
 
 	it("folds an answered card to one line naming what was decided", () => {

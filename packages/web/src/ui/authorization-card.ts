@@ -151,10 +151,15 @@ const BUILT_IN_LABELS = new Map<string, string>([
 export function readableFileName(path: string): string {
 	const base = path.split("/").filter(Boolean).at(-1) ?? path;
 	const words = base
-		.replace(/\.[a-z0-9]{1,8}$/i, "")
-		.replace(/[-_]+/g, " ")
+		// Only an extension that starts with a letter: "Møde 10.30" and "2026.09" keep their dots.
+		.replace(/\.(?=[a-z])[a-z0-9]{1,8}$/i, "")
+		// A dash next to a letter joins words; a date such as 2026-09-28 keeps its own.
+		.replace(/(?<=\p{L})[-_]+|[-_]+(?=\p{L})/gu, " ")
+		.replace(/_+/g, " ")
 		.trim();
-	return words ? words.charAt(0).toLocaleUpperCase() + words.slice(1) : base;
+	if (!words) return base;
+	// "iOS plan" keeps its own capitals; "old offer" starts with one.
+	return /^\p{Ll}\p{Lu}/u.test(words) ? words : words.charAt(0).toLocaleUpperCase() + words.slice(1);
 }
 
 /** What the agent wants to do, as one plain line. A Company File path never leads: the
@@ -165,20 +170,27 @@ function reviewHeadline(card: ActionReviewCard): string {
 	return card.title || t("Approval requested");
 }
 
-/** Keys whose value is the content itself (what would be said or written). */
-const CONTENT_KEYS = new Set(["body", "text", "message", "content", "instructions", "intent"]);
-/** Keys whose value names the thing (a subject, a title, a name). */
-const NAME_KEYS = new Set(["subject", "title", "name", "displayName"]);
+/** Detail keys (as cloud-action-review.ts sends them) whose value is the content itself:
+ * what would be said, written, asked of a worker or run on the computer. */
+const CONTENT_KEYS = new Set(["body", "text", "intent", "task", "command"]);
+/** Detail keys whose value names the thing (a subject, a title, a name). */
+const NAME_KEYS = new Set(["subject", "title", "name"]);
+
+/** The reviewer's reason as it reads on the card: a Company File path in it is named
+ * as people say it, like the headline. */
+function reviewReason(card: ActionReviewCard): string {
+	if (!card.summary || !card.target || !card.tool?.startsWith("company_")) return card.summary;
+	return card.summary.split(card.target).join(`“${readableFileName(card.target)}”`);
+}
 
 /** The change itself: who or what it reaches, what it is called, and what it says.
  * Paths stay out of view; the exact call is under Technical details. */
 function reviewChange(card: ActionReviewCard): HTMLElement | null {
 	const fileTool = card.tool?.startsWith("company_") === true;
-	const names = card.details.filter(([key]) => NAME_KEYS.has(key));
+	// A name the target already says (a Drive file's name) is not said twice.
+	const names = card.details.filter(([key, value]) => NAME_KEYS.has(key) && value !== card.target);
 	const content = card.details.filter(([key]) => CONTENT_KEYS.has(key));
-	const other = card.details.filter(
-		([key]) => !NAME_KEYS.has(key) && !CONTENT_KEYS.has(key) && key !== "path" && !(fileTool && key === "target"),
-	);
+	const other = card.details.filter(([key]) => !NAME_KEYS.has(key) && !CONTENT_KEYS.has(key) && key !== "path");
 	const parts: (HTMLElement | null)[] = [
 		card.target && !fileTool ? h("p", { class: "review-target" }, card.target) : null,
 		...names.map(([, value]) => h("p", { class: "review-name" }, value)),
@@ -326,7 +338,7 @@ export function renderActionReviewCard(
 			? h(
 					"div",
 					{ class: "review-why" },
-					card.summary ? h("p", null, card.summary) : null,
+					card.summary ? h("p", null, reviewReason(card)) : null,
 					why.length ? h("ul", { class: "review-reasons" }, ...why) : null,
 				)
 			: null,
