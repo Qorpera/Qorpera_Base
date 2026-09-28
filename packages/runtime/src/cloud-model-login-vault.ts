@@ -82,6 +82,8 @@ export interface ModelLoginAuthority {
 		release: { loginId: string; token: string; baseVersion: number; permanent: boolean; reason: string },
 		signal: AbortSignal,
 	): Promise<unknown>;
+	/** Takes the renewal lock of this broker's most urgent idle login, with its current version. */
+	takeIdleModelLoginRenewal(signal: AbortSignal): Promise<unknown>;
 }
 
 /** Runs the official Codex against a full login to renew it. `refused` means the provider
@@ -220,6 +222,39 @@ export function accessOnlyCodexLogin(text: string): string {
 	)}\n`;
 }
 
+/** A stored version's envelope, checked against its digest. */
+function parseEnvelope(input: Record<string, unknown>): { keyId: string; bytes: Uint8Array } {
+	if (
+		typeof input.encryptedEnvelopeBase64 !== "string" ||
+		typeof input.keyId !== "string" ||
+		!KEY_ID.test(input.keyId) ||
+		typeof input.envelopeSha256 !== "string"
+	)
+		throw new Error("Model login issue is invalid");
+	const bytes = Buffer.from(input.encryptedEnvelopeBase64, "base64");
+	if (
+		bytes.byteLength < 1 ||
+		!SHA.test(input.envelopeSha256) ||
+		createHash("sha256").update(bytes).digest("hex") !== input.envelopeSha256
+	)
+		throw new Error("Model login envelope is invalid");
+	return { keyId: input.keyId, bytes };
+}
+
+/** The renewal lock a caller was handed, taken on exactly the version it names. */
+function parseRenewal(value: unknown, versionNumber: number): NonNullable<IssueResult["renewal"]> {
+	const renewal = record(value, "Model login renewal");
+	if (typeof renewal.keyId !== "string" || !KEY_ID.test(renewal.keyId))
+		throw new Error("Model login renewal is invalid");
+	const result = {
+		token: uuid(renewal.token, "Model login renewal"),
+		baseVersion: version(renewal.baseVersion, "Model login renewal base"),
+		keyId: renewal.keyId,
+	};
+	if (result.baseVersion !== versionNumber) throw new Error("Model login renewal is invalid");
+	return result;
+}
+
 function parseIssue(value: unknown, binding: ModelLoginRunBinding, knownVersion: number | null): IssueResult {
 	const input = record(value, "Model login issue");
 	if (input.schema !== "qorpera.model-login-issue/v1" || typeof input.renewing !== "boolean")
@@ -238,30 +273,31 @@ function parseIssue(value: unknown, binding: ModelLoginRunBinding, knownVersion:
 			throw new Error("Model login issue is invalid");
 		return result;
 	}
-	if (input.unchanged !== false || typeof input.encryptedEnvelopeBase64 !== "string") {
-		throw new Error("Model login issue is invalid");
+	if (input.unchanged !== false) throw new Error("Model login issue is invalid");
+	result.envelope = parseEnvelope(input);
+	if (input.renewal !== null && input.renewal !== undefined)
+		result.renewal = parseRenewal(input.renewal, result.version);
+	return result;
+}
+
+/** An idle login the vault took to renew, or null when none is due. */
+function parseIdleRenewal(value: unknown): IssueResult | null {
+	const input = record(value, "Model login idle renewal");
+	if (input.schema !== "qorpera.model-login-idle-renewal/v1") throw new Error("Model login idle renewal is invalid");
+	if (input.renewal === null) {
+		if (Object.keys(input).length !== 2) throw new Error("Model login idle renewal is invalid");
+		return null;
 	}
-	if (typeof input.keyId !== "string" || !KEY_ID.test(input.keyId) || typeof input.envelopeSha256 !== "string")
-		throw new Error("Model login issue is invalid");
-	const bytes = Buffer.from(input.encryptedEnvelopeBase64, "base64");
-	if (
-		bytes.byteLength < 1 ||
-		!SHA.test(input.envelopeSha256) ||
-		createHash("sha256").update(bytes).digest("hex") !== input.envelopeSha256
-	)
-		throw new Error("Model login envelope is invalid");
-	result.envelope = { keyId: input.keyId, bytes };
-	if (input.renewal !== null && input.renewal !== undefined) {
-		const renewal = record(input.renewal, "Model login renewal");
-		if (typeof renewal.keyId !== "string" || !KEY_ID.test(renewal.keyId))
-			throw new Error("Model login renewal is invalid");
-		result.renewal = {
-			token: uuid(renewal.token, "Model login renewal"),
-			baseVersion: version(renewal.baseVersion, "Model login renewal base"),
-			keyId: renewal.keyId,
-		};
-		if (result.renewal.baseVersion !== result.version) throw new Error("Model login renewal is invalid");
-	}
+	const result: IssueResult = {
+		loginId: uuid(input.loginId, "Model login"),
+		companyId: uuid(input.companyId, "Model login company"),
+		computeIdentityId: uuid(input.computeIdentityId, "Model login compute identity"),
+		version: version(input.version, "Model login version"),
+		accessExpiresAt: timestamp(input.accessExpiresAt, "Model login pass end"),
+		renewing: false,
+	};
+	result.envelope = parseEnvelope(input);
+	result.renewal = parseRenewal(input.renewal, result.version);
 	return result;
 }
 
@@ -323,6 +359,31 @@ export class CloudModelLoginVault {
 			accessExpiresAt: login.accessExpiresAt,
 			authJson: accessOnlyCodexLogin(login.text),
 		};
+	}
+
+	/** Renews this broker's most urgent idle login: one past half its pass that no starting run
+	 * renewed. It takes the same lock and saves the same way as a run's renewal. `none` when no
+	 * login is due, or when this vault has no renewer. */
+	async renewIdle(signal: AbortSignal): Promise<"renewed" | "failed" | "none"> {
+		if (!this.#renewer) return "none";
+		const answer = await this.#authority.takeIdleModelLoginRenewal(signal);
+		let issue: IssueResult | null;
+		try {
+			issue = parseIdleRenewal(answer);
+		} catch (error) {
+			await this.#releaseUnread(answer);
+			throw error;
+		}
+		if (!issue?.envelope || !issue.renewal) return "none";
+		let current: CodexLogin;
+		try {
+			current = await this.#open(issue, issue.version, issue.envelope);
+		} catch {
+			await this.#release(issue, issue.renewal, false, "login_unreadable");
+			return "failed";
+		}
+		const renewed = await this.#renew(issue, issue.renewal, current);
+		return renewed && renewed.version > issue.version ? "renewed" : "failed";
 	}
 
 	#open(

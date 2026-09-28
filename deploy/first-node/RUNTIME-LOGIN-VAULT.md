@@ -167,6 +167,23 @@ no database login and no service key; it sees a login only for one operation and
     (`qorpera_complete_model_login_account_refresh`). A login that cannot be read is unknown usage;
     the refresh still settles. The pass is never renewed here, only display metadata leaves the
     vault, and the envelopes are wiped. No helper and no machine is involved.
+- **Part D, idle renewal** (migration `20260928236000`, `cloud-model-login-upkeep.ts`; founder
+  decision 2026-09-28): the vault renews idle logins itself, so a login nobody used does not lapse
+  before its next run and runs rarely wait for a renewal at start.
+  - Every 5 minutes (the first pass 30 s plus a random part of 5 minutes after start, so brokers
+    sharing a helper do not all renew at once) a broker with a helper takes, one login at a time,
+    the renewal lock of its company's most urgent login past half its pass
+    (`qorpera_take_idle_model_login_renewal`, broker role). The conditions are a run's: active, no
+    renewal running (or a lapsed one), the failure back-off passed. The login's pointer must be
+    active and used by an active version of an active connection: a login the member disconnected,
+    or whose connection was disabled or revoked (the member left), is not renewed and lapses.
+  - It renews through the helper exactly as a run's renewal does and saves or gives back the lock
+    with the same commit and release; at most 12 logins per pass. A refusal marks the login
+    `needs_sign_in` days before its next run would have found out.
+  - Locks: the login row only, by one conditional update (`qorpera_model_login_take_idle_lock`, which
+    re-checks a run's lock conditions on the row itself). The taking marks nothing as used.
+  - Deploy: reinstall the broker unit from this build. `TimeoutStopSec=90` lets a stop wait for a
+    renewal in flight (35 s, then its save), where 15 s could lose the new login.
 
 ### Installing the helper (operator, per vault host)
 
@@ -224,7 +241,7 @@ no database login and no service key; it sees a login only for one operation and
   answers with a copy. It never uploads a login; the lease is still validated at the start, every
   15 s and at the end. A warm root keeps its vault version and asks for the current one at the next
   run. The account usage list accepts vault logins and the host skips them (the vault reads usage,
-  change 2B).
+  change 2C).
 - Host start-up (`cloud-native-provider-service-main.ts`): `QORPERA_NATIVE_LOGIN_CUSTODY=vault` means
   no capsule key, no epoch file and no key backup. The key credential must be empty; the host starts
   only when the identity is not fenced and the cloud confirms the vault custody, and needs the
@@ -263,6 +280,10 @@ no database login and no service key; it sees a login only for one operation and
 - Each login moves by signing in again (test company first; company Qorpera after the "who pays"
   work and the founder's go), then the member's old node account is removed: the identity counts
   as in the vault only once no node login of it is active. The old path serves a login until then.
+  Removing it is by hand in Settings for now. Switching it off by itself when the vault login is the
+  same ChatGPT account (founder decision 2026-09-28) comes in a later change. It waits for the "who
+  pays" work to make routines and coding sessions follow the member's live login: a revoked
+  connection's pinned routines, coding workers and queued wakes stop today.
 - After every active login has run from the vault for a week, retire in separate changes: the home
   rule in placement and claim, exec-host identity devices and inventory `identityVolumes`, the login
   and refresh machines for Codex, login key backups and recovery, then the volumes (renamed

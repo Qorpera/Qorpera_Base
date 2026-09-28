@@ -474,39 +474,56 @@ export class CloudApi {
 	// the sessions an agent dispatched from a conversation; the read follows one
 	// session's event stream; answer and delegate are the owner's only writes.
 
+	// Each copy of a session is stamped with when it was asked for (CodingSession.askedAt).
+
 	listCodingSessions(sessionId: string): Promise<CodingSession[]> {
+		const asked = performance.now();
 		return this.cloud
 			.rpc("qorpera_list_coding_sessions", { p_session_id: requiredUuid(sessionId, "Session id") })
-			.then(parseCodingSessions);
+			.then((value) => parseCodingSessions(value, asked));
 	}
 
 	readCodingSession(workerId: string, afterEvent = 0, limit = 200): Promise<CodingSessionRead> {
+		const asked = performance.now();
 		return this.cloud
 			.rpc("qorpera_read_coding_session", {
 				p_worker_id: requiredUuid(workerId, "Coding session id"),
 				p_after_event: afterEvent,
 				p_limit: limit,
 			})
-			.then(parseCodingSessionRead);
+			.then((value) => parseCodingSessionRead(value, asked));
 	}
 
 	answerCodingSession(workerId: string, text: string, clientRequestId: string): Promise<CodingSession> {
+		const asked = performance.now();
 		return this.cloud
 			.rpc("qorpera_answer_coding_session", {
 				p_worker_id: requiredUuid(workerId, "Coding session id"),
 				p_text: text,
 				p_client_request_id: requiredUuid(clientRequestId, "Client request id"),
 			})
-			.then(parseCodingSession);
+			.then((value) => parseCodingSession(value, asked));
 	}
 
 	delegateCodingSession(workerId: string, clientRequestId: string): Promise<CodingSession> {
+		const asked = performance.now();
 		return this.cloud
 			.rpc("qorpera_delegate_coding_session", {
 				p_worker_id: requiredUuid(workerId, "Coding session id"),
 				p_client_request_id: requiredUuid(clientRequestId, "Client request id"),
 			})
-			.then(parseCodingSession);
+			.then((value) => parseCodingSession(value, asked));
+	}
+
+	/** The owner archives a session: what it runs stops and it leaves its machine; its files stay. */
+	archiveCodingSession(workerId: string, clientRequestId: string): Promise<CodingSession> {
+		const asked = performance.now();
+		return this.cloud
+			.rpc("qorpera_archive_coding_session", {
+				p_worker_id: requiredUuid(workerId, "Coding session id"),
+				p_client_request_id: requiredUuid(clientRequestId, "Client request id"),
+			})
+			.then((value) => parseCodingSession(value, asked));
 	}
 
 	listSessionInputs(sessionId: string, afterPosition = 0, limit = 100): Promise<PendingSessionInputPage> {

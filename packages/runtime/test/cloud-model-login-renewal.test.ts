@@ -275,6 +275,7 @@ it("renews end to end: vault, helper socket, official Codex, next version sealed
 		}),
 		commitModelLoginRenewal: commit,
 		releaseModelLoginRenewal: vi.fn(),
+		takeIdleModelLoginRenewal: vi.fn(),
 	};
 	const { renewer: codex } = await renewer("renew-jwt");
 	const h = await helper((authJson, signal) => codex.renew(authJson, signal));

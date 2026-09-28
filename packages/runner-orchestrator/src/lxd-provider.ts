@@ -20,6 +20,9 @@ import {
 	canonical,
 	exactRunner,
 	ProviderAdmissionRefused,
+	ProviderRpcFailed,
+	providerRpcErrorCode,
+	providerStepFailure,
 	record,
 	runAttemptAcquisitionId,
 	sha256,
@@ -766,6 +769,27 @@ export class HttpLxdGuestTransport implements LxdGuestTransport {
 	}
 }
 
+/** The step an acquisition is at; the provider service logs it when the acquisition fails. */
+interface AcquireStep {
+	stage:
+		| "inventory"
+		| "work"
+		| "prior_attempt"
+		| "credentials"
+		| "replay"
+		| "provision"
+		| "login_custody"
+		| "journal"
+		| "reserve"
+		| "identity_volume"
+		| "recovery_volume"
+		| "create"
+		| "authority"
+		| "start"
+		| "bootstrap"
+		| "ready";
+}
+
 /** The company ceiling or the node chooser refused or deferred a machine start. The
  * orchestrator releases its claim without spending an infrastructure retry on it. */
 export class LxdMachineAdmissionRefused extends ProviderAdmissionRefused {
@@ -866,8 +890,24 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 	}
 
 	async acquire(runId: string, work: CloudRunnerWork, signal: AbortSignal): Promise<CloudRunnerInstance> {
+		// The step an acquisition stopped at, for the provider service's error line.
+		const step: AcquireStep = { stage: "inventory" };
+		try {
+			return await this.#acquire(runId, work, signal, step);
+		} catch (error) {
+			throw providerStepFailure(step.stage, error);
+		}
+	}
+
+	#acquire(
+		runId: string,
+		work: CloudRunnerWork,
+		signal: AbortSignal,
+		step: AcquireStep,
+	): Promise<CloudRunnerInstance> {
 		return this.#exclusive(async () => {
 			await this.#assertCapacityInventory(signal);
+			step.stage = "work";
 			ensureStep2Work(work, this.#config.nativeCompanyRuntime !== undefined);
 			if (
 				this.#config.nativeCompanyRuntime &&
@@ -886,6 +926,7 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 			if (!current && (await present(join(this.#config.stateRoot, JOURNAL_ARCHIVE, acquisitionId))))
 				throw new Error("LXD provider acquisition is archived and cannot be replayed");
 			if (!current && this.#config.nativeCompanyRuntime && work.attempt > 1) {
+				step.stage = "prior_attempt";
 				// A sponsor handoff is recorded before the old one-run guest finishes
 				// shutting down. Keep this acquisition (and its renewed dispatch claim)
 				// pending instead of exhausting infrastructure retries during shutdown.
@@ -914,8 +955,10 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 					}
 				}
 			}
+			step.stage = "credentials";
 			const credentials = await this.#credentials(acquisitionId);
 			if (current) {
+				step.stage = "replay";
 				if (current.workSha256 !== digest) {
 					console.error(
 						`acquire refusal: acquisition=${acquisitionId} journaled=${current.workSha256.slice(0, 12)} incoming=${digest.slice(0, 12)} state=${current.physicalState}`,
@@ -930,10 +973,11 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 				) {
 					throw new Error(`LXD provider acquisition is ${current.physicalState} and cannot be replayed`);
 				}
-				current = await this.#ensureReady(current, credentials, signal);
+				current = await this.#ensureReady(current, credentials, signal, step);
 				return current.runner;
 			}
 
+			step.stage = "provision";
 			const runner = exactRunner(
 				await this.#rpc(
 					"qorpera_provision_execution_runner",
@@ -949,9 +993,11 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 				this.adapterId,
 			);
 			// Decided once per acquisition and sealed into the journal and the bootstrap digest.
+			step.stage = "login_custody";
 			const vaultLogin =
 				this.#config.nativeCompanyRuntime !== undefined &&
 				(await this.#identityLoginInVault(work.computeIdentityId, signal));
+			step.stage = "journal";
 			const bootstrapFiles = this.#bootstrapFiles(
 				{
 					runId: work.runId,
@@ -1010,7 +1056,7 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 				updatedAt: now,
 			};
 			await this.#writeJournal(current);
-			current = await this.#ensureReady(current, credentials, signal);
+			current = await this.#ensureReady(current, credentials, signal, step);
 			return current.runner;
 		});
 	}
@@ -1120,16 +1166,21 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 		current: LxdProviderJournal,
 		credentials: ProviderCredentials,
 		signal?: AbortSignal,
+		step: AcquireStep = { stage: "reserve" },
 	): Promise<LxdProviderJournal> {
 		const computeIdentityId = current.runner.computeIdentityId;
 		if (!computeIdentityId) throw new Error("Journaled LXD guest is missing Compute Identity authority");
+		step.stage = "reserve";
 		await this.#reserveMachine(current, signal);
 		if (current.physicalState === "reserving") {
 			current = { ...current, physicalState: "creating", capacityRegistered: true };
 			await this.#writeJournal(current);
 		}
+		step.stage = "identity_volume";
 		if (current.lxd.loginCustody !== "vault") await this.#ensureIdentityVolume(current, computeIdentityId, signal);
+		step.stage = "recovery_volume";
 		await this.#ensureRecoveryVolume(current, signal);
+		step.stage = "create";
 		let instance = await this.#lxd.getInstance(current.lxd.project, current.instanceName, signal);
 		if (!instance) {
 			if (current.physicalState !== "creating") {
@@ -1149,6 +1200,7 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 			instance = await this.#lxd.getInstance(current.lxd.project, current.instanceName, signal);
 			if (!instance) throw new Error("LXD did not persist the created guest");
 		}
+		step.stage = "authority";
 		this.#assertInstanceAuthority(current, instance);
 		if (instance.status === "Stopped" && current.physicalState !== "creating") {
 			await this.#retirePoweredOff(current, signal);
@@ -1156,6 +1208,7 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 		}
 		// A refused start has no physical intent. Keep the created, stopped VM
 		// and its charged allocation retryable until a fresh admission succeeds.
+		step.stage = "start";
 		const startAdmission = instance.status === "Stopped" ? await this.#reserveMachine(current, signal) : undefined;
 		let address: string;
 		try {
@@ -1173,6 +1226,7 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 				);
 			}
 			if (current.physicalState === "creating" || current.physicalState === "starting") {
+				step.stage = "bootstrap";
 				await this.#prepareBootstrap(current, credentials, signal);
 				// Record the one-shot activation intent before invoking systemd. After
 				// a provider crash, observe readiness without starting the unit again.
@@ -1190,6 +1244,7 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 					signal,
 				);
 			}
+			step.stage = "ready";
 			address = await this.#readyAddress(current, signal);
 		} catch (error) {
 			if (
@@ -2096,8 +2151,12 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 			return false;
 		}
 		if (!response.ok) {
-			void response.body?.cancel().catch(() => undefined);
-			throw new Error(`Native identity login custody is unavailable (${response.status})`);
+			throw new ProviderRpcFailed(
+				`Native identity login custody is unavailable (${response.status})`,
+				"qorpera_compute_identity_login_in_vault",
+				response.status,
+				await providerRpcErrorCode(response),
+			);
 		}
 		const answer: unknown = await response.json();
 		if (typeof answer !== "boolean") throw new Error("Native identity login custody is invalid");
@@ -2116,8 +2175,12 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 			signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000),
 		});
 		if (!response.ok) {
-			void response.body?.cancel().catch(() => undefined);
-			throw new Error(`Runner provisioning failed (${response.status})`);
+			throw new ProviderRpcFailed(
+				`Runner provisioning failed (${response.status})`,
+				name,
+				response.status,
+				await providerRpcErrorCode(response),
+			);
 		}
 		return response.json() as Promise<unknown>;
 	}
