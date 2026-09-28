@@ -10,6 +10,7 @@ import {
 	companyStateValue,
 	freeCompanyStateName,
 	isCompanyStateName,
+	isCompanyStateTimeZoneName,
 	parseCompanyStateFile,
 	type RoutineFile,
 	setCompanyStateSettings,
@@ -299,6 +300,25 @@ describe("agent.md", () => {
 		]);
 	});
 
+	it("refuses control characters anywhere in a settings line, notes included", () => {
+		expect(refused("agents/a/agent.md", agentFields({ name: "a\rb" }))[0]?.code).toBe("syntax");
+		expect(refused("agents/a/agent.md", agentFields({ name: "a # note\u0007" }))[0]?.code).toBe("syntax");
+	});
+
+	it("wants an empty list written as []", () => {
+		const group = `---\nid: ${GROUP}\nname: L\nagents: [${ANNA}, ${IDA}]\npeople:\n---\nx\n`;
+		expect(keys(refused("agents/groups/l/group.md", group))).toEqual([["people", "missing"]]);
+		expect(ok("agents/groups/l/group.md", group.replace("people:", "people: []"))).toMatchObject({ people: [] });
+	});
+
+	it("wants the fixed names in lowercase, as written", () => {
+		for (const path of ["agents/anna/Agent.md", "Agents/anna/agent.md", "agents/anna/routines/../agent.md"])
+			if (companyStatePath(path)) expect(refused(path, agentText)[0]?.code).toBe("name");
+		expect(refused("ａｇｅｎｔｓ/anna/agent.md", agentText)[0]?.message).toBe(
+			"write the path in lowercase, as agents/anna/agent.md",
+		);
+	});
+
 	it("keeps list items lined up, as YAML reads them", () => {
 		const group = (list: string) => `---\nid: ${GROUP}\nname: L\nagents:\n${list}\n---\nx\n`;
 		expect(refused("agents/groups/l/group.md", group(`  - ${ANNA}\n    - ${IDA}`))[0]?.message).toBe(
@@ -338,6 +358,9 @@ describe("agent.md", () => {
 			["agents/a/agent.md", `---\nname: a${":".repeat(65_000)}\n---\n`],
 			["agents/a/agent.md", `---\nname: ${"1".repeat(65_000)}x\n---\n`],
 			["agents/a/agent.md", `---\nagents: [${"a,".repeat(30_000)}]\n---\n`],
+			["agents/a/agent.md", `---\nname:${spaces}\rx\n---\nx\n`],
+			["agents/a/agent.md", `---\nagents:\n  -${spaces}\rx\n---\nx\n`],
+			["agents/a/agent.md", `---\nname: a # ${spaces}\rx\n---\nx\n`],
 		];
 		for (const [path, text] of inputs) {
 			const started = performance.now();
@@ -652,6 +675,7 @@ Go through new leads in sales/leads/.
 		expect(canonicalCompanyStateInstant("2026-09-30T07:00:00.000Z")).toBe("2026-09-30T07:00:00Z");
 		expect(canonicalCompanyStateInstant("2026-09-30T07:00:00.500Z")).toBe("2026-09-30T07:00:00.5Z");
 		expect(canonicalCompanyStateInstant("0099-01-01T00:00Z")).toBe("0099-01-01T00:00:00Z");
+		expect(canonicalCompanyStateInstant("0000-01-01T00:00Z")).toBeNull();
 		expect(canonicalCompanyStateInstant("2024-02-29T00:00Z")).toBe("2024-02-29T00:00:00Z");
 		expect(canonicalCompanyStateInstant("2026-02-29T00:00Z")).toBeNull();
 		expect(canonicalCompanyStateInstant("2026-09-30T24:00:00Z")).toBeNull();
@@ -660,6 +684,15 @@ Go through new leads in sales/leads/.
 		expect(ok("agents/a/routines/r.md", routine("when: once\nat: 2026-09-30T07:00Z\ntimezone: UTC"))).toMatchObject({
 			trigger: { at: "2026-09-30T07:00:00Z" },
 		});
+	});
+
+	it("compares at and ends to the microsecond", () => {
+		expect(
+			ok(
+				"agents/a/routines/r.md",
+				routine("when: once\nat: 2026-09-30T07:00:00Z\nends: 2026-09-30T07:00:00.000001Z\ntimezone: UTC"),
+			),
+		).toMatchObject({ ends: "2026-09-30T07:00:00.000001Z" });
 	});
 
 	it("defaults effort and reply, and asks for match", () => {
@@ -726,7 +759,7 @@ Go through new leads in sales/leads/.
 			keys(
 				refused(
 					"agents/a/routines/r.md",
-					routine('when: weekly\ndays: [mon, funday, mon]\ntime: "25:00"\ntimezone: Mars/Olympus'),
+					routine('when: weekly\ndays: [mon, funday, mon]\ntime: "25:00"\ntimezone: mars/olympus'),
 				),
 			),
 		).toEqual([
@@ -763,10 +796,32 @@ Go through new leads in sales/leads/.
 });
 
 describe("time zones", () => {
-	it("must be written as the platform writes them", () => {
+	it("have the list's shape in the parser, the same in every engine", () => {
+		for (const name of [
+			"Europe/Copenhagen",
+			"UTC",
+			"EST5EDT",
+			"Etc/GMT+5",
+			"America/Argentina/ComodRivadavia",
+			"Mars/Olympus",
+		])
+			expect(isCompanyStateTimeZoneName(name)).toBe(true);
+		for (const name of [
+			"europe/copenhagen",
+			"etc/utc",
+			"gmt",
+			"us/pacific",
+			"asia/kolkata",
+			"est5edt",
+			"Europe//Oslo",
+			"/UTC",
+		])
+			expect(isCompanyStateTimeZoneName(name)).toBe(false);
+	});
+
+	it("get an engine hint for editors", () => {
 		expect(companyStateTimeZoneProblem("Europe/Copenhagen")).toBeNull();
-		expect(companyStateTimeZoneProblem("UTC")).toBeNull();
-		expect(companyStateTimeZoneProblem("europe/copenhagen")).toBe("write the time zone as Europe/Copenhagen");
+		expect(companyStateTimeZoneProblem("europe/copenhagen")).toContain("unknown time zone");
 		expect(companyStateTimeZoneProblem("Mars/Olympus")).toContain("unknown time zone");
 	});
 });
@@ -777,6 +832,8 @@ describe("companyStateValue", () => {
 		expect(companyStateValue("a\tb")).toBe('"a\\tb"');
 		expect(companyStateValue("a\u2028b")).toBe('"a\\u2028b"');
 		expect(companyStateValue("a\u0085b")).toBe('"a\\u0085b"');
+		for (const text of ["yes", "No", "on", "OFF", "08:00", "1:30:00", "010"])
+			expect(companyStateValue(text)).toBe(`"${text}"`);
 		// A value the format refuses still makes a file the parser reads; the parse refuses the value.
 		expect(keys(refused("agents/a/agent.md", writeAgentFile({ ...agentBase(), name: "Anna\u2028Berg" })))).toEqual([
 			["name", "value"],
@@ -784,6 +841,28 @@ describe("companyStateValue", () => {
 		expect(keys(refused("agents/a/agent.md", writeAgentFile({ ...agentBase(), name: "Anna\tBerg" })))).toEqual([
 			["name", "value"],
 		]);
+	});
+});
+
+describe("heading writers", () => {
+	it("write names that read back the same, and refuse names that are not one line", () => {
+		for (const name of ["Sales #", "Top ##", "#", "C# team"]) {
+			expect(ok("vision/vision.md", writeVisionFile(name, ""))).toEqual({ kind: "vision", name });
+			const file = ok("agents/sections.md", writeSectionsFile({ sections: [{ name, line: 0, members: [] }] }));
+			expect(file.kind === "sections" && file.sections[0]?.name).toBe(name);
+		}
+		expect(() => writeSectionsFile({ sections: [{ name: `Sales\n- ${ANNA}`, line: 0, members: [] }] })).toThrow();
+		expect(() => writeVisionFile("Acme\nEvil", "")).toThrow();
+		expect(() => writeVisionFile(" ", "")).toThrow();
+		const names = new Map([[ANNA, "Anna\u0000\u0007\nBerg"]]);
+		expect(
+			writeSectionsFile({ sections: [{ name: "Sales", line: 0, members: [{ id: ANNA, line: 0 }] }] }, names),
+		).toContain(`- ${ANNA} Anna Berg\n`);
+		const group = writeGroupFile(
+			{ id: GROUP, name: "L", subtitle: null, agents: [ANNA, IDA], people: [], purpose: "P" },
+			names,
+		);
+		expect(ok("agents/groups/l/group.md", group)).toMatchObject({ agents: [ANNA, IDA] });
 	});
 });
 

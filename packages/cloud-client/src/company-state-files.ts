@@ -60,6 +60,9 @@ const KEY = /^[a-z][a-z0-9_]*$/;
  * `[[:cntrl:]]`), and the two Unicode line separators. */
 const NOT_ONE_LINE = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/;
 const LINE_SEPARATOR = /[\u2028\u2029]/;
+/** Controls a settings line never holds (a tab has its own message). A carriage return inside a
+ * line is one of them: YAML reads it as a line break. */
+const SETTINGS_CONTROL = /[\u0000-\u0008\u000a-\u001f\u007f-\u009f]/;
 const LONE_SURROGATE = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/;
 const INSTANT = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,6}))?)?Z$/;
 const CLOCK = /^([01]\d|2[0-3]):([0-5]\d)$/;
@@ -350,6 +353,7 @@ export function canonicalCompanyStateInstant(text: string): string | null {
 	const match = INSTANT.exec(text);
 	if (!match) return null;
 	const [, year, month, day, hour, minute, second = "00", fraction = ""] = match;
+	if (year === "0000") return null;
 	// setUTCFullYear keeps years below 100 as written, which Date.UTC would move to the 1900s.
 	const date = new Date(0);
 	date.setUTCFullYear(Number(year), Number(month) - 1, Number(day));
@@ -367,11 +371,23 @@ export function canonicalCompanyStateInstant(text: string): string | null {
 	return `${year}-${month}-${day}T${hour}:${minute}:${second}${kept ? `.${kept}` : ""}Z`;
 }
 
-/** Why a time zone name cannot be used, or null. The name must be written as the platform's
- * list writes it; the database checks the same name against that list. */
+/** A canonical instant as text that sorts in time order, to the microsecond. */
+function instantOrder(instant: string): string {
+	const [whole = "", fraction = ""] = instant.slice(0, -1).split(".");
+	return `${whole}.${fraction.padEnd(6, "0")}`;
+}
+
+/** Whether a time zone name has the shape of the platform's list (`pg_timezone_names`): each
+ * part starts with a capital letter or a digit. The parser checks only this, so every engine
+ * gives the same answer; the database then checks the exact name against its list. */
+export function isCompanyStateTimeZoneName(name: string): boolean {
+	return name.length <= 64 && /^[A-Z0-9][A-Za-z0-9_+-]*(?:\/[A-Z0-9][A-Za-z0-9_+-]*)*$/.test(name);
+}
+
+/** A hint for an editor: why this engine would not know a time zone name, or null. Engines
+ * differ in their aliases, so the parser never uses it; the database's list decides. */
 export function companyStateTimeZoneProblem(name: string): string | null {
-	if (!/^[A-Za-z][A-Za-z0-9_+\-/]{0,63}$/.test(name))
-		return `unknown time zone "${name}"; use a name like Europe/Copenhagen`;
+	if (!isCompanyStateTimeZoneName(name)) return `unknown time zone "${name}"; use a name like Europe/Copenhagen`;
 	let resolved: string;
 	try {
 		resolved = new Intl.DateTimeFormat("en-US", { timeZone: name }).resolvedOptions().timeZone;
@@ -387,7 +403,7 @@ export function companyStateTimeZoneProblem(name: string): string | null {
 
 interface Value {
 	readonly line: number;
-	/** A single value, or a list. */
+	/** A single value, or a list. Both null: the key has no value and no items (YAML's null). */
 	readonly items: readonly Item[] | null;
 	readonly item: Item | null;
 }
@@ -543,7 +559,7 @@ function split(text: string, front: boolean, problems: Problems): Split | null {
 	const values = new Map<string, Value>();
 	let open: OpenList | null = null;
 	const finish = () => {
-		if (open) values.set(open.key, { line: open.line, items: open.items, item: null });
+		if (open) values.set(open.key, { line: open.line, items: open.items.length ? open.items : null, item: null });
 		open = null;
 	};
 	for (let index = 1; index < close; index++) {
@@ -553,12 +569,12 @@ function split(text: string, front: boolean, problems: Problems): Split | null {
 			problems.add("syntax", number, null, "tabs are not allowed in the settings; use spaces");
 			continue;
 		}
-		if (LINE_SEPARATOR.test(line)) {
-			problems.add("syntax", number, null, "line separator characters are not allowed in the settings");
+		if (LINE_SEPARATOR.test(line) || SETTINGS_CONTROL.test(line)) {
+			problems.add("syntax", number, null, "control and line separator characters are not allowed in the settings");
 			continue;
 		}
 		if (!line.trim() || /^\s*#/.test(line)) continue;
-		const item = /^( *)-(?: +(.*))?$/.exec(line);
+		const item = /^( *)-(?: (.*))?$/.exec(line);
 		if (item) {
 			const current: OpenList | null = open;
 			if (!current) {
@@ -571,7 +587,7 @@ function split(text: string, front: boolean, problems: Problems): Split | null {
 				continue;
 			}
 			current.indent = indent;
-			const parsed = scalar(item[2] ?? "", false);
+			const parsed = scalar((item[2] ?? "").trimStart(), false);
 			if (typeof parsed === "string") problems.add("syntax", number, current.key, parsed);
 			else if (parsed.after.trim() && !/^\s+#/.test(parsed.after))
 				problems.add("syntax", number, current.key, "unexpected text after the list item");
@@ -581,7 +597,7 @@ function split(text: string, front: boolean, problems: Problems): Split | null {
 			continue;
 		}
 		finish();
-		const match = /^([^\s:#][^:]*):(?: +(.*))?$/.exec(line);
+		const match = /^([^\s:#][^:]*):(?: (.*))?$/.exec(line);
 		if (!match) {
 			problems.add("syntax", number, null, 'each setting is one line, "name: value"');
 			continue;
@@ -645,7 +661,7 @@ class Fields {
 			return null;
 		}
 		if (!value.item) {
-			if (value.items?.length === 0)
+			if (!value.items?.length)
 				this.problems.add("missing", value.line, key, `${key} is empty; give it a value or remove the line`);
 			else this.problems.add("value", value.line, key, `${key} takes one value, not a list`);
 			return null;
@@ -729,9 +745,13 @@ class Fields {
 	timeZone(key: string, required: boolean): string | null {
 		const item = this.one(key, required);
 		if (!item) return null;
-		const problem = companyStateTimeZoneProblem(item.text);
-		if (!problem) return item.text;
-		this.problems.add("value", item.line, key, problem);
+		if (isCompanyStateTimeZoneName(item.text)) return item.text;
+		this.problems.add(
+			"value",
+			item.line,
+			key,
+			`${key} is a time zone name like Europe/Copenhagen, written exactly so`,
+		);
 		return null;
 	}
 
@@ -747,7 +767,11 @@ class Fields {
 			this.problems.add("value", value.line, key, `${key} is a list: [a, b] or one "- item" per line`);
 			return null;
 		}
-		const items = [...(value.items ?? [])];
+		if (!value.items) {
+			this.problems.add("missing", value.line, key, `${key} has no items; write ${key}: [] for an empty list`);
+			return null;
+		}
+		const items = [...value.items];
 		if (!items.length && !empty) {
 			this.problems.add(
 				"value",
@@ -1069,7 +1093,7 @@ function routine(split: Split, fields: Fields, problems: Problems): RoutineFile 
 			problems.add("missing", fields.line("quiet"), "timezone", "quiet hours need a timezone (or quiet_timezone)");
 	} else if (fields.values.has("quiet_timezone"))
 		problems.add("value", fields.line("quiet_timezone"), "quiet_timezone", "quiet_timezone goes with quiet");
-	if (trigger?.when === "once" && ends && Date.parse(trigger.at) >= Date.parse(ends))
+	if (trigger?.when === "once" && ends && instantOrder(trigger.at) >= instantOrder(ends))
 		problems.add("value", fields.line("at"), "at", "at must be before ends");
 	const effort = fields.has("effort") ? fields.choice("effort", false, COMPANY_STATE_EFFORTS) : "medium";
 	const reply = fields.has("reply")
@@ -1181,6 +1205,8 @@ export function parseCompanyStateFile(path: string, text: string): CompanyStateF
 			);
 	if (where.kind !== "vision" && where.kind !== "sections" && !written.at(-1)?.endsWith(".md"))
 		problems.add("name", null, null, "the file name ends in .md, in lowercase");
+	else if (!problems.list.length && path !== companyPathKey(path))
+		problems.add("name", null, null, `write the path in lowercase, as ${companyPathKey(path)}`);
 	const front = where.kind !== "vision" && where.kind !== "sections";
 	const parts = split(unmarked, front, problems);
 	if (!parts) return refused();
@@ -1238,8 +1264,18 @@ export function companyStateValue(text: string): string {
 		!/^[-?:](?:\s|$)/.test(text) &&
 		!/: |:$| #/.test(text) &&
 		!ambiguousPlain(text) &&
+		!yaml11Ambiguous(text) &&
 		!NOT_ONE_LINE.test(text);
 	return plain ? text : quote(text);
+}
+
+/** Plain values a YAML 1.1 reader (js-yaml, PyYAML) reads as something other than text: its
+ * booleans, base-60 numbers and leading-zero octals. Writers quote them; the parser follows
+ * YAML 1.2 and reads them as text. */
+function yaml11Ambiguous(text: string): boolean {
+	return /^(?:y|Y|yes|Yes|YES|n|N|no|No|NO|on|On|ON|off|Off|OFF)$|^[-+]?[0-9][0-9_]*(?::[0-5]?[0-9])+(?:\.[0-9_]*)?$|^[-+]?0[0-7_]+$/.test(
+		text,
+	);
 }
 
 function quote(text: string): string {
@@ -1258,8 +1294,13 @@ function document(lines: readonly (readonly [string, string | null])[], text: st
 	return `---\n${front.join("\n")}\n---\n${text.trim() ? `${text.trim()}\n` : ""}`;
 }
 
+/** A name beside an id, for reading: one line, with every control or line separator a space. */
+function readable(name: string | undefined): string {
+	return (name ?? "").replace(new RegExp(NOT_ONE_LINE.source, "g"), " ").replace(/\s+/g, " ").trim();
+}
+
 function note(name: string | undefined): string {
-	return name ? ` # ${name.replace(/\s+/g, " ").trim()}` : "";
+	return readable(name) ? ` # ${readable(name)}` : "";
 }
 
 function idList(key: string, ids: readonly string[], names?: ReadonlyMap<string, string>): string {
@@ -1267,8 +1308,16 @@ function idList(key: string, ids: readonly string[], names?: ReadonlyMap<string,
 	return [`${key}:`, ...ids.map((id) => `  - ${id}${note(names?.get(id))}`)].join("\n");
 }
 
+/** A name as an ATX heading's text that reads back as the same name: a trailing `#` gets a
+ * closing sequence. A name that cannot be one heading line is refused here, not written. */
+function headingName(name: string): string {
+	const text = name.trim();
+	if (!text || NOT_ONE_LINE.test(text)) throw new Error("A heading name must be one line of text");
+	return text.endsWith("#") ? `${text} #` : text;
+}
+
 export function writeVisionFile(name: string, text: string): string {
-	return `# ${name.trim()}\n${text.trim() ? `\n${text.trim()}\n` : ""}`;
+	return `# ${headingName(name)}\n${text.trim() ? `\n${text.trim()}\n` : ""}`;
 }
 
 export function writeAgentFile(file: Omit<AgentFile, "kind">): string {
@@ -1292,10 +1341,10 @@ export function writeAgentFile(file: Omit<AgentFile, "kind">): string {
 export function writeSectionsFile(file: Omit<SectionsFile, "kind">, names?: ReadonlyMap<string, string>): string {
 	const out = ["# Sections", "", "Each line is an id. The words after it are only for reading."];
 	for (const section of file.sections) {
-		out.push("", `## ${section.name}`);
+		out.push("", `## ${headingName(section.name)}`);
 		for (const member of section.members) {
-			const name = names?.get(member.id);
-			out.push(`- ${member.id}${name ? ` ${name.replace(/\s+/g, " ").trim()}` : ""}`);
+			const name = readable(names?.get(member.id));
+			out.push(`- ${member.id}${name ? ` ${name}` : ""}`);
 		}
 	}
 	return `${out.join("\n")}\n`;
