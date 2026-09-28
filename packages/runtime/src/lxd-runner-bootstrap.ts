@@ -5,7 +5,7 @@ import { chmod, chown, link, lstat, mkdir, open, readdir, readFile, rename, unli
 import { isIP } from "node:net";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
-import { parseCompanyComputerNativeUrl } from "@qorpera/contracts";
+import { parseCompanyComputerNativeRoute } from "@qorpera/contracts";
 import { recoveryBase64, recoveryDigest } from "./cloud-identity-recovery-crypto.ts";
 import {
 	assertIdentityRecoveryMarker,
@@ -260,7 +260,7 @@ export function parseLxdRunnerBootstrapConfig(value: unknown): LxdRunnerBootstra
 			exactKeys(route, ["environment_id", "url", "token_sha256"], "Governed office endpoint");
 			office = {
 				environmentId: text(route.environment_id, "Office environment", UUID_PATTERN),
-				url: parseCompanyComputerNativeUrl(text(route.url, "Office URL", /^https:\/\//)).url,
+				url: parseCompanyComputerNativeRoute(text(route.url, "Office URL", /^https:\/\//)).url,
 				tokenSha256: text(route.token_sha256, "Office token digest", SHA256_PATTERN),
 			};
 		}
