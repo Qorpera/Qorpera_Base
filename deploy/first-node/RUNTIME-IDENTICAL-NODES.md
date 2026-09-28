@@ -211,7 +211,7 @@ activates it in one step. So the updated node stays switched off until the activ
 SQL only, safe for the running bundle, and nothing changes until an operator declares.
 - **Activation guard** for the release branch: `declared.runtime_bundle_sha256` present in the
   claim function. Check that it is ABSENT live first.
-- **Stacking.** This PR is stacked on change 1 (#424) and needs `20260928180000` first
+- **Stacking.** This PR is stacked on change 1 (#424) and needs `20260928180700` first
   (`qorpera_runtime_orchestrator_nodes`).
 - **Every cut's preflight**, paused or rolling: no declaration may be left over. A leftover
   declaration stops that orchestrator from claiming runs of the new bundle.
