@@ -25,13 +25,19 @@ async function setup() {
 	const env = fixture(),
 		root = document.createElement("div");
 	document.body.append(root);
-	vi.mocked(env.cloud.rpc).mockImplementation(
-		async (name) => (name === "qorpera_computer_plan_catalog" ? catalogResponse() : usageResponse()) as never,
-	);
+	vi.mocked(env.cloud.rpc).mockImplementation(async (name) => {
+		if (name === "qorpera_list_review_rules")
+			return { schema: "qorpera.review-rules/v1", canManageCompanyRules: true, rules: [] } as never;
+		return (name === "qorpera_computer_plan_catalog" ? catalogResponse() : usageResponse()) as never;
+	});
 	dispose = mountApplication(root, env.cloud, env.api);
 	await draw();
 	root.querySelector<HTMLButtonElement>(".account-trigger")!.click();
 	root.querySelector<HTMLButtonElement>('[data-account-action="settings"]')!.click();
+	await draw();
+	// General may read company rules; Plan must still perform only its two authoritative reads.
+	expect(vi.mocked(env.cloud.rpc).mock.calls.every(([name]) => name === "qorpera_list_review_rules")).toBe(true);
+	vi.mocked(env.cloud.rpc).mockClear();
 	root.querySelector<HTMLButtonElement>("#settings-tab-plan")!.click();
 	await draw();
 	return { ...env, root };
@@ -52,7 +58,12 @@ describe("settings computer billing", () => {
 		[...env.root.querySelectorAll("button")].find((button) => button.textContent === "Refresh plan status")!.click();
 		await draw();
 		expect(env.root.querySelector(".settings-hours strong")?.textContent).toBe("1 standard hours available");
-		expect(vi.mocked(env.cloud.rpc).mock.calls).toHaveLength(4);
+		expect(vi.mocked(env.cloud.rpc).mock.calls.map(([name]) => name)).toEqual([
+			"qorpera_computer_plan_catalog",
+			"qorpera_my_computer_usage",
+			"qorpera_computer_plan_catalog",
+			"qorpera_my_computer_usage",
+		]);
 	}, 15000);
 	it("removes paid balances on account switch before an old refresh completes", async () => {
 		const env = await setup();
