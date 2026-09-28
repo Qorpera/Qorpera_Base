@@ -1,0 +1,622 @@
+import { randomUUID } from "node:crypto";
+import { type FileHandle, lstat, mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { dirname, join, resolve } from "node:path";
+import type { Duplex } from "node:stream";
+import {
+	assertCompanyComputerScreenBinding,
+	type CompanyComputerScreenBinding,
+} from "@qorpera/cloud-client/cloud-company-computer-contract";
+import type {
+	CompanyComputerGuestBoundary,
+	CompanyComputerGuestShell,
+	CompanyComputerShellCommandResult,
+	CompanyComputerShellListResult,
+} from "./cloud-company-computer-guest.ts";
+import { assertCompanyComputerGuestLayout, type CompanyComputerGuestLayout } from "./cloud-company-computer-layout.ts";
+import {
+	assertCompanyComputerImageArtifact,
+	assertCompanyComputerLinuxHost,
+	assertCompanyComputerWorkbenchMount,
+	type CompanyComputerCommandLimits,
+	companyComputerLinuxSandboxArgs,
+	openCompanyComputerLinuxDirectory,
+} from "./cloud-company-computer-linux-host.ts";
+import { spawnCompanyComputerLinuxProcess } from "./cloud-company-computer-linux-process.ts";
+import { companyComputerScreenDisplay } from "./cloud-company-computer-screens.ts";
+import {
+	type CompanyComputerShellEgressTransport,
+	startCompanyComputerShellEgress,
+} from "./cloud-company-computer-shell-egress.ts";
+import {
+	COMPANY_COMPUTER_NAMESPACE_CHILD,
+	COMPANY_COMPUTER_SHELL_LINE_LIMIT,
+	COMPANY_COMPUTER_SHELL_RELAY_PATH,
+	type CompanyComputerShellHostEvent,
+	type CompanyComputerShellHostRequest,
+	companyComputerShellProxyEnvironment,
+	parseCompanyComputerShellHostEvent,
+} from "./cloud-company-computer-shell-host.ts";
+import type { RecoveryDirectoryMount } from "./cloud-identity-recovery-filesystems.ts";
+import { cloudToolRequest } from "./cloud-native-tool-authority.ts";
+
+/** Storage safety, not work limits: what the service keeps of each command. */
+export const COMPANY_COMPUTER_SHELL_KEPT_OUTPUT = 1024 * 1024;
+/** Output one reply shows; the native reply envelope is 48 KiB including JSON escaping. */
+export const COMPANY_COMPUTER_SHELL_REPLY_OUTPUT = 16 * 1024;
+/** Finished commands remembered for a later read or list. */
+const FINISHED_KEPT = 64;
+const LISTED = 40;
+/** Where every command starts. The company folder mount will replace this with `/company`. */
+export function companyComputerShellWorkingDirectory(layout: CompanyComputerGuestLayout): string {
+	return layout.workbenchRoot;
+}
+/** Image configuration a shell may read. Nothing here holds a secret; missing entries are skipped. */
+const SHELL_IMAGE_FILES = [
+	"/etc/passwd",
+	"/etc/group",
+	"/etc/nsswitch.conf",
+	"/etc/ld.so.cache",
+	"/etc/ssl/openssl.cnf",
+];
+const SHELL_IMAGE_DIRECTORIES = ["/etc/ssl/certs", "/etc/alternatives", "/etc/fonts", "/etc/xdg", "/etc/X11"];
+
+interface Session {
+	id: string;
+	command: string;
+	startedAt: string;
+	state: "starting" | CompanyComputerShellCommandResult["state"];
+	exitCode?: number;
+	signal?: string;
+	stopRequested: boolean;
+	inputEnded: boolean;
+	chunks: Buffer[];
+	/** Absolute byte offsets: the first kept byte, the total, and what replies have shown. */
+	keptFrom: number;
+	total: number;
+	readTo: number;
+	waiters: Set<() => void>;
+}
+
+/** The physical namespace behind one shell. Test seams replace it with an in-process host. */
+export interface CompanyComputerShellEnvironment {
+	send(request: CompanyComputerShellHostRequest): void;
+	/** Settles when the namespace has exited and been reaped. */
+	readonly exited: Promise<void>;
+	stop(): Promise<void>;
+}
+
+export type CompanyComputerShellEnvironmentLauncher = (
+	onEvent: (event: CompanyComputerShellHostEvent) => void,
+	signal: AbortSignal,
+) => Promise<CompanyComputerShellEnvironment>;
+
+function alignStart(bytes: Buffer, index: number): number {
+	while (index < bytes.length && (bytes[index] & 0xc0) === 0x80) index++;
+	return index;
+}
+
+function alignEnd(bytes: Buffer, index: number): number {
+	while (index > 0 && (bytes[index] & 0xc0) === 0x80) index--;
+	return index;
+}
+
+function decode(bytes: Buffer): string {
+	return new TextDecoder("utf-8").decode(bytes);
+}
+
+/**
+ * Bookkeeping for one shell: commands, their kept output and waits. It trusts
+ * nothing the namespace reports beyond ids it issued and bounded sizes.
+ */
+export class CompanyComputerLinuxShell implements CompanyComputerGuestShell {
+	readonly #launch: CompanyComputerShellEnvironmentLauncher;
+	readonly #sessions = new Map<string, Session>();
+	readonly #keys = new Map<string, string>();
+	readonly #stop = new AbortController();
+	#environment?: Promise<CompanyComputerShellEnvironment>;
+	#processes = 0;
+	#closing?: Promise<void>;
+
+	constructor(launch: CompanyComputerShellEnvironmentLauncher) {
+		this.#launch = launch;
+	}
+
+	/** Anything still running in the shell keeps the computer from powering off. */
+	get busy(): boolean {
+		if (!this.#environment) return false;
+		return (
+			this.#processes > 0 ||
+			[...this.#sessions.values()].some((s) => s.state === "starting" || s.state === "running")
+		);
+	}
+
+	#wake(session: Session): void {
+		for (const wake of session.waiters) wake();
+		session.waiters.clear();
+	}
+
+	#event(environment: Promise<CompanyComputerShellEnvironment>, event: CompanyComputerShellHostEvent): void {
+		if (this.#environment !== environment) return;
+		if (event.t === "procs") {
+			this.#processes = event.count;
+			return;
+		}
+		if (event.t === "ready") return;
+		const session = this.#sessions.get(event.id);
+		if (!session) return;
+		if (event.t === "started") {
+			// Waits end when the command ends, not when it starts.
+			if (session.state === "starting") session.state = "running";
+			return;
+		}
+		if (event.t === "failed") {
+			if (session.state === "starting") {
+				session.state = "exited";
+				session.exitCode = 127;
+			}
+		} else if (event.t === "out") {
+			const bytes = Buffer.from(event.data, "base64");
+			if (session.state === "exited" || session.state === "stopped" || !bytes.length) return;
+			session.chunks.push(bytes);
+			session.total += bytes.length;
+			// Keep the newest bytes; the oldest go first.
+			while (session.total - session.keptFrom > COMPANY_COMPUTER_SHELL_KEPT_OUTPUT && session.chunks.length) {
+				const excess = session.total - session.keptFrom - COMPANY_COMPUTER_SHELL_KEPT_OUTPUT;
+				const first = session.chunks[0];
+				if (first.length <= excess) {
+					session.chunks.shift();
+					session.keptFrom += first.length;
+				} else {
+					session.chunks[0] = first.subarray(excess);
+					session.keptFrom += excess;
+				}
+			}
+			return;
+		} else if (event.t === "exit") {
+			if (session.state === "exited" || session.state === "stopped") return;
+			session.state = session.stopRequested ? "stopped" : "exited";
+			if (event.code !== null) session.exitCode = event.code;
+			if (event.signal !== null) session.signal = event.signal;
+		}
+		this.#wake(session);
+		this.#forget();
+	}
+
+	/** Remember at most a fixed number of finished commands. */
+	#forget(): void {
+		const finished = [...this.#sessions.values()].filter((s) => s.state === "exited" || s.state === "stopped");
+		for (const session of finished.slice(0, Math.max(0, finished.length - FINISHED_KEPT))) {
+			this.#sessions.delete(session.id);
+			for (const [key, id] of this.#keys) if (id === session.id) this.#keys.delete(key);
+		}
+	}
+
+	/** The namespace ended: every command in it has ended with it. */
+	#ended(environment: Promise<CompanyComputerShellEnvironment>): void {
+		if (this.#environment !== environment) return;
+		this.#environment = undefined;
+		this.#processes = 0;
+		for (const session of this.#sessions.values())
+			if (session.state === "starting" || session.state === "running") {
+				session.state = "stopped";
+				this.#wake(session);
+			}
+	}
+
+	#open(signal: AbortSignal): Promise<CompanyComputerShellEnvironment> {
+		this.#stop.signal.throwIfAborted();
+		if (this.#environment) return this.#environment;
+		const environment: Promise<CompanyComputerShellEnvironment> = this.#launch(
+			(event) => this.#event(environment, event),
+			this.#stop.signal,
+		);
+		this.#environment = environment;
+		environment.then(
+			(opened) =>
+				void opened.exited.then(
+					() => this.#ended(environment),
+					() => this.#ended(environment),
+				),
+			() => this.#ended(environment),
+		);
+		return cloudToolRequest(() => environment, signal, 15000);
+	}
+
+	#session(sessionId: string): Session {
+		const session = this.#sessions.get(sessionId);
+		if (!session) throw new Error("OFFICE_SHELL_SESSION_UNKNOWN");
+		return session;
+	}
+
+	async #wait(session: Session, waitMs: number, signal: AbortSignal): Promise<void> {
+		if (session.state === "exited" || session.state === "stopped" || waitMs <= 0) return;
+		await new Promise<void>((done, fail) => {
+			const release = (): void => {
+				clearTimeout(timer);
+				signal.removeEventListener("abort", cancel);
+				session.waiters.delete(finish);
+			};
+			const finish = (): void => {
+				release();
+				done();
+			};
+			const cancel = (): void => {
+				release();
+				fail(new Error("OFFICE_SHELL_WAIT_CANCELLED"));
+			};
+			const timer = setTimeout(finish, waitMs);
+			session.waiters.add(finish);
+			signal.addEventListener("abort", cancel, { once: true });
+			if (signal.aborted) cancel();
+		});
+	}
+
+	/** What this reply shows: everything unread, or its head and tail with the middle counted. */
+	#result(session: Session): CompanyComputerShellCommandResult {
+		const from = Math.max(session.readTo, session.keptFrom);
+		const dropped = from - session.readTo;
+		const bytes = Buffer.concat(session.chunks).subarray(from - session.keptFrom);
+		session.readTo = session.total;
+		let output = "";
+		let cut = 0;
+		for (let budget = COMPANY_COMPUTER_SHELL_REPLY_OUTPUT; ; budget = Math.floor(budget / 2)) {
+			if (bytes.length <= budget) {
+				cut = 0;
+				output = decode(bytes);
+			} else {
+				const head = alignEnd(bytes, Math.floor(budget / 4));
+				const tail = alignStart(bytes, bytes.length - Math.floor((budget * 3) / 4));
+				cut = tail - head;
+				output = `${decode(bytes.subarray(0, head))}\n[${cut} bytes not shown]\n${decode(bytes.subarray(tail))}`;
+			}
+			// Control bytes grow sixfold in JSON; the reply must still fit its envelope.
+			if (Buffer.byteLength(JSON.stringify(output)) <= COMPANY_COMPUTER_SHELL_REPLY_OUTPUT + 4096 || budget < 256)
+				break;
+		}
+		if (dropped) output = `[${dropped} earlier bytes not kept]\n${output}`;
+		return {
+			sessionId: session.id,
+			state: session.state === "starting" ? "running" : session.state,
+			...(session.exitCode === undefined ? {} : { exitCode: session.exitCode }),
+			...(session.signal === undefined ? {} : { signal: session.signal }),
+			output,
+			...(dropped + cut ? { skippedBytes: dropped + cut } : {}),
+		};
+	}
+
+	/** The namespace a running command lives in; never a fresh one. */
+	async #current(session: Session): Promise<CompanyComputerShellEnvironment> {
+		const current = this.#environment;
+		if (!current || (session.state !== "starting" && session.state !== "running"))
+			throw new Error("OFFICE_SHELL_SESSION_ENDED");
+		return current;
+	}
+
+	async start(input: Parameters<CompanyComputerGuestShell["start"]>[0]): Promise<{ sessionId: string }> {
+		const known = this.#keys.get(input.key);
+		if (known && this.#sessions.has(known)) return { sessionId: known };
+		const environment = await this.#open(input.signal);
+		input.signal.throwIfAborted();
+		const session: Session = {
+			id: randomUUID(),
+			command: input.command,
+			startedAt: new Date().toISOString(),
+			state: "starting",
+			stopRequested: false,
+			inputEnded: false,
+			chunks: [],
+			keptFrom: 0,
+			total: 0,
+			readTo: 0,
+			waiters: new Set(),
+		};
+		this.#sessions.set(session.id, session);
+		this.#keys.set(input.key, session.id);
+		environment.send({ t: "start", id: session.id, command: input.command });
+		return { sessionId: session.id };
+	}
+
+	known(sessionId: string): boolean {
+		return this.#sessions.has(sessionId);
+	}
+
+	async result(input: Parameters<CompanyComputerGuestShell["result"]>[0]): Promise<CompanyComputerShellCommandResult> {
+		const session = this.#session(input.sessionId);
+		await this.#wait(session, input.waitMs, input.signal);
+		return this.#result(session);
+	}
+
+	async write(input: Parameters<CompanyComputerGuestShell["write"]>[0]): Promise<{ sessionId: string }> {
+		const session = this.#session(input.sessionId);
+		if (session.inputEnded) throw new Error("OFFICE_SHELL_INPUT_ENDED");
+		const environment = await this.#current(session);
+		input.signal.throwIfAborted();
+		session.inputEnded = input.endInput;
+		environment.send({
+			t: "write",
+			id: session.id,
+			data: Buffer.from(input.text).toString("base64"),
+			end: input.endInput,
+		});
+		return { sessionId: session.id };
+	}
+
+	async stop(
+		input: Parameters<CompanyComputerGuestShell["stop"]>[0],
+	): Promise<{ sessionId: string } | { stopped: number }> {
+		if (input.sessionId === undefined) {
+			const running = [...this.#sessions.values()].filter(
+				(s) => s.state === "starting" || s.state === "running",
+			).length;
+			const current = this.#environment;
+			if (current) {
+				const opened = await current.catch(() => undefined);
+				await opened?.stop();
+				this.#ended(current);
+			}
+			return { stopped: running };
+		}
+		const session = this.#session(input.sessionId);
+		if (session.state === "starting" || session.state === "running") {
+			session.stopRequested = true;
+			// The group gets SIGTERM, then SIGKILL two seconds later.
+			(await this.#current(session)).send({ t: "stop", id: session.id });
+		}
+		return { sessionId: session.id };
+	}
+
+	list(): CompanyComputerShellListResult {
+		const commands = [...this.#sessions.values()]
+			.reverse()
+			.slice(0, LISTED)
+			.map((session) => ({
+				sessionId: session.id,
+				command: session.command.length > 200 ? `${session.command.slice(0, 200)}…` : session.command,
+				state: session.state === "starting" ? ("running" as const) : session.state,
+				...(session.exitCode === undefined ? {} : { exitCode: session.exitCode }),
+				startedAt: session.startedAt,
+				unreadBytes: session.total - Math.max(session.readTo, session.keptFrom),
+			}));
+		return { commands, processes: this.#environment ? this.#processes : 0 };
+	}
+
+	/** Ends every process in the shell and the namespace itself. A timeout is never success. */
+	close(): Promise<void> {
+		this.#stop.abort();
+		this.#closing ??= cloudToolRequest(
+			async () => {
+				const current = this.#environment;
+				if (!current) return;
+				const opened = await current.catch(() => undefined);
+				await opened?.stop();
+				this.#ended(current);
+			},
+			new AbortController().signal,
+			15000,
+		);
+		return this.#closing;
+	}
+}
+
+/**
+ * The real shell namespace of one screen. Same sandbox as today's commands:
+ * no host network device, PID view, capabilities or privileges; the workbench
+ * and the desktop home read-write, the screen's X socket, a read-only image.
+ * Its only way out is a broker relay that dials public addresses; browser
+ * profiles, sign-ins, service credentials and the NAS are not mounted.
+ */
+export function createCompanyComputerLinuxShellLauncher(options: {
+	binding: CompanyComputerScreenBinding;
+	layout: CompanyComputerGuestLayout;
+	workbenchMount: RecoveryDirectoryMount;
+	limits: CompanyComputerCommandLimits;
+	/** Existing private local directory with root-owned ancestors, outside every persistent root. */
+	runtimeRoot: string;
+	xSocket: () => string;
+	boundary: CompanyComputerGuestBoundary;
+	timeZone?: string;
+	egressTransport?: CompanyComputerShellEgressTransport;
+}): CompanyComputerShellEnvironmentLauncher {
+	assertCompanyComputerScreenBinding(options.binding, options.binding);
+	assertCompanyComputerGuestLayout(options.layout);
+	const { binding, layout, runtimeRoot } = options;
+	if (
+		runtimeRoot === "/" ||
+		runtimeRoot !== resolve(runtimeRoot) ||
+		/[\x00-\x1f\x7f\\]/.test(runtimeRoot) ||
+		Object.values(layout).some(
+			(root) => runtimeRoot === root || runtimeRoot.startsWith(`${root}/`) || root.startsWith(`${runtimeRoot}/`),
+		)
+	)
+		throw new Error("UNSAFE_OFFICE_CONTROL_PATH");
+	if (options.timeZone !== undefined && !/^[A-Za-z0-9_+-]+(?:\/[A-Za-z0-9_+-]+)*$/.test(options.timeZone))
+		throw new Error("INVALID_OFFICE_TIME_ZONE");
+	return async (onEvent, lifetime) => {
+		if (process.platform !== "linux" || !process.getuid?.() || !process.geteuid?.())
+			throw new Error("UNPRIVILEGED_LINUX_OFFICE_REQUIRED");
+		lifetime.throwIfAborted();
+		await cloudToolRequest((checked) => options.boundary.assertReady(binding, checked), lifetime);
+		await assertCompanyComputerLinuxHost(options.limits, lifetime);
+		for (const path of [
+			"/usr/bin/bwrap",
+			"/usr/bin/tini",
+			"/usr/bin/bash",
+			"/usr/bin/node",
+			COMPANY_COMPUTER_NAMESPACE_CHILD,
+		])
+			await assertCompanyComputerImageArtifact(path);
+		await assertCompanyComputerImageArtifact("/usr", true);
+		const xSocket = options.xSocket();
+		const socket = await lstat(xSocket);
+		const socketParent = await lstat(dirname(xSocket));
+		if (
+			!socket.isSocket() ||
+			socket.uid !== process.getuid?.() ||
+			(await realpath(xSocket)) !== xSocket ||
+			!socketParent.isDirectory() ||
+			socketParent.uid !== process.getuid?.() ||
+			(socketParent.mode & 0o077) !== 0
+		)
+			throw new Error("OFFICE_X_SOCKET_UNAVAILABLE");
+		const files: FileHandle[] = [];
+		let temporary: string | undefined;
+		let relay: Awaited<ReturnType<typeof startCompanyComputerShellEgress>> | undefined;
+		let owned = false;
+		const release = async (): Promise<void> => {
+			await relay?.close().catch(() => undefined);
+			await Promise.all(files.map((file) => file.close().catch(() => undefined)));
+			if (temporary) await rm(temporary, { recursive: true, force: true });
+		};
+		try {
+			files.push(await openCompanyComputerLinuxDirectory(layout.workbenchRoot, false));
+			files.push(await openCompanyComputerLinuxDirectory(layout.desktopHome, true));
+			await assertCompanyComputerWorkbenchMount(files[0], options.workbenchMount, [
+				layout.workbenchRoot,
+				layout.desktopHome,
+			]);
+			const runtime = await openCompanyComputerLinuxDirectory(runtimeRoot, true);
+			try {
+				temporary = await mkdtemp(join(runtimeRoot, `shell-${binding.screenOrdinal}-`));
+			} finally {
+				await runtime.close();
+			}
+			await mkdir(join(temporary, "network"), { mode: 0o700 });
+			relay = await startCompanyComputerShellEgress({
+				root: join(temporary, "network"),
+				assertActive: () => lifetime.throwIfAborted(),
+				signal: lifetime,
+				transport: options.egressTransport,
+			});
+			// `localhost` must resolve without DNS, which the namespace does not have.
+			await writeFile(
+				join(temporary, "hosts"),
+				"127.0.0.1\tlocalhost\n::1\tlocalhost ip6-localhost ip6-loopback\n",
+				{
+					mode: 0o444,
+					flag: "wx",
+				},
+			);
+			const args = [
+				// Package builds unpack into /tmp; tmpfs pages are only used when written.
+				...companyComputerLinuxSandboxArgs(1024 * 1024 * 1024),
+				"--bind-fd",
+				"5",
+				layout.workbenchRoot,
+				"--bind-fd",
+				"6",
+				"/home/qorpera",
+				"--ro-bind",
+				xSocket,
+				`/tmp/.X11-unix/X${binding.screenOrdinal}`,
+				"--ro-bind",
+				relay.path,
+				COMPANY_COMPUTER_SHELL_RELAY_PATH,
+				"--ro-bind",
+				join(temporary, "hosts"),
+				"/etc/hosts",
+			];
+			for (const [paths, directory] of [
+				[SHELL_IMAGE_FILES, false],
+				[SHELL_IMAGE_DIRECTORIES, true],
+			] as const)
+				for (const path of paths) {
+					if (!(await lstat(path).catch(() => undefined))) continue;
+					await assertCompanyComputerImageArtifact(path, directory);
+					args.push("--ro-bind", path, path);
+				}
+			if (await lstat("/usr/bin/ssh").catch(() => undefined)) {
+				await writeFile(
+					join(temporary, "ssh_config"),
+					`Host *\n\tProxyCommand /usr/bin/node ${COMPANY_COMPUTER_NAMESPACE_CHILD} --connect %h %p\n`,
+					{ mode: 0o444, flag: "wx" },
+				);
+				args.push("--ro-bind", join(temporary, "ssh_config"), "/etc/ssh/ssh_config");
+			}
+			for (const [name, value] of Object.entries({
+				HOME: "/home/qorpera",
+				PATH: "/usr/local/bin:/usr/bin:/bin",
+				LANG: "C.UTF-8",
+				SHELL: "/usr/bin/bash",
+				TERM: "dumb",
+				DISPLAY: companyComputerScreenDisplay(binding.screenOrdinal),
+				...(options.timeZone ? { TZ: options.timeZone } : {}),
+				...companyComputerShellProxyEnvironment(),
+			}))
+				args.push("--setenv", name, value);
+			args.push("--chdir", companyComputerShellWorkingDirectory(layout), "--remount-ro", "/");
+			lifetime.throwIfAborted();
+			const launched = spawnCompanyComputerLinuxProcess({
+				args,
+				files,
+				stdin: "ignore",
+				pipeCount: 2,
+				command: ["/usr/bin/node", COMPANY_COMPUTER_NAMESPACE_CHILD, "--shell-host"],
+			});
+			owned = true;
+			const { child } = launched;
+			const exited = new Promise<void>((finished, failed) => {
+				child.once("close", () => void release().then(finished, failed));
+			});
+			void exited.catch(() => undefined);
+			const stop = (): Promise<void> => {
+				launched.stop();
+				return cloudToolRequest(() => exited, new AbortController().signal, 10000);
+			};
+			const kill = (): void => void stop().catch(() => undefined);
+			lifetime.addEventListener("abort", kill, { once: true });
+			void exited.finally(() => lifetime.removeEventListener("abort", kill));
+			let logs = 0;
+			for (const stream of [child.stdout!, child.stderr!])
+				stream.on("data", (bytes: Buffer) => {
+					logs += bytes.length;
+					if (logs > 1024 * 1024) kill();
+				});
+			const toHost = child.stdio[3] as Duplex;
+			const fromHost = child.stdio[4] as Duplex;
+			toHost.on("error", () => undefined);
+			fromHost.on("error", kill);
+			let ready: () => void = () => undefined;
+			const hostReady = new Promise<void>((resolveReady) => {
+				ready = resolveReady;
+			});
+			let buffer = "";
+			fromHost.setEncoding("utf8");
+			fromHost.on("data", (text: string) => {
+				buffer += text;
+				let newline = buffer.indexOf("\n");
+				while (newline >= 0) {
+					const line = buffer.slice(0, newline);
+					buffer = buffer.slice(newline + 1);
+					let event: CompanyComputerShellHostEvent | undefined;
+					try {
+						event = parseCompanyComputerShellHostEvent(line);
+					} catch {
+						event = undefined;
+					}
+					if (event?.t === "ready") ready();
+					if (event) onEvent(event);
+					newline = buffer.indexOf("\n");
+				}
+				// Anything in the namespace can write here; an endless line ends the shell.
+				if (buffer.length > COMPANY_COMPUTER_SHELL_LINE_LIMIT) kill();
+			});
+			try {
+				await launched.started;
+				await cloudToolRequest(() => hostReady, lifetime, 10000);
+			} catch (error) {
+				await stop().catch(() => undefined);
+				throw error;
+			}
+			return {
+				send: (request) => {
+					if (!toHost.destroyed) toHost.write(`${JSON.stringify(request)}\n`);
+				},
+				exited,
+				stop,
+			};
+		} catch (error) {
+			if (!owned) await release();
+			throw error;
+		}
+	};
+}

@@ -42,6 +42,10 @@ import { CompanyComputerLinuxCommands } from "./cloud-company-computer-linux-com
 import { CompanyComputerLinuxDesktopLauncher } from "./cloud-company-computer-linux-desktop.ts";
 import type { CompanyComputerCommandLimits } from "./cloud-company-computer-linux-host.ts";
 import { startCompanyComputerLinuxPrivateSurface } from "./cloud-company-computer-linux-private-surface.ts";
+import {
+	CompanyComputerLinuxShell,
+	createCompanyComputerLinuxShellLauncher,
+} from "./cloud-company-computer-linux-shell.ts";
 import { parseCompanyComputerNativeDescriptor } from "./cloud-company-computer-native-client.ts";
 import {
 	CompanyComputerGuestSessionRefusedError,
@@ -118,6 +122,8 @@ interface SharedScreen {
 	/** Polls the dock launcher's request file while the desktop is ready. */
 	requests?: ReturnType<typeof setTimeout>;
 	browser?: ScreenBrowser;
+	/** The screen agent's long-running shell; its commands outlive runs, not the screen. */
+	shell?: CompanyComputerLinuxShell;
 	lifecycle?: CompanyComputerScreenLifetime;
 }
 interface PrivateSurface {
@@ -177,6 +183,9 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 	#sharedVersion = 0;
 	#gate?: CompanyComputerScreenActionGate;
 	#closing?: Promise<void>;
+	/** Whether the last shell activity report named a busy screen. */
+	#shellBusy = false;
+	readonly #shellActivity: ReturnType<typeof setInterval>;
 
 	constructor(options: CompanyComputerLinuxGuestOptions) {
 		assertCompanyComputerScope(options.scope, options.scope);
@@ -212,6 +221,56 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 				},
 			},
 		});
+		this.#shellActivity = setInterval(() => void this.#reportShellActivity(), 30000);
+		this.#shellActivity.unref?.();
+	}
+
+	/**
+	 * A command still running in a screen's shell is demand: SQL keeps the
+	 * computer on, and the screen with its agent, while a report is fresh (90
+	 * seconds). Each report is the whole set of busy screens. A registry without
+	 * the report (older kernel) only loses that demand, never the command.
+	 */
+	async #reportShellActivity(): Promise<void> {
+		const busy = [...this.#screens.values()]
+			.filter((screen) => screen.shell?.busy)
+			.map((screen) => screen.binding.screenId);
+		if (!busy.length && !this.#shellBusy) return;
+		try {
+			await this.#options.registry.call(
+				"qorpera_report_runtime_office_shell_activity",
+				{
+					p_scope: this.#options.scope,
+					p_computer_generation: this.#options.computerGeneration,
+					p_screen_ids: busy,
+				},
+				this.#stop.signal,
+			);
+			this.#shellBusy = busy.length > 0;
+		} catch {
+			/* The next report tries again; an idle stop ends the commands with the computer. */
+		}
+	}
+
+	/** The screen agent's shell, created on first use. Its namespace starts with the first command. */
+	#screenShell(screen: SharedScreen): CompanyComputerLinuxShell {
+		if (screen.closing || screen.stop.signal.aborted) throw new Error("OFFICE_SCREEN_DRAINING");
+		const binding = screen.binding;
+		screen.shell ??= new CompanyComputerLinuxShell(
+			createCompanyComputerLinuxShellLauncher({
+				...this.#options,
+				binding,
+				runtimeRoot: this.#options.displayRuntimeRoot,
+				xSocket: () => this.#desktop.xSocket(binding),
+				timeZone: this.#options.desktopTimeZone,
+				boundary: {
+					assertReady: async (exact, signal) => {
+						await this.#assertShared(exact, AbortSignal.any([signal, screen.stop.signal]));
+					},
+				},
+			}),
+		);
+		return screen.shell;
 	}
 	#fail(cause?: unknown): void {
 		void this.close().catch(() => undefined);
@@ -517,6 +576,7 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 		let closing: Promise<void> | undefined;
 		let ended = false;
 		let commands: CompanyComputerLinuxCommands | undefined;
+		let shell: CompanyComputerLinuxShell | undefined;
 		let browser: CompanyComputerBrowserSession | undefined;
 		/** The screen browser THIS run drives (or is in the middle of joining). A run
 		 * that never touched the browser has no say over a window a member opened. */
@@ -665,6 +725,9 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 					boundary,
 					xSocket: this.#desktop.xSocket(binding),
 				});
+				const screen = this.#screens.get(binding.screenOrdinal);
+				if (!screen) throw new Error("OFFICE_SCREEN_DRAINING");
+				shell ??= this.#screenShell(screen);
 			},
 			automation: {
 				// The gate calls this for every failed or cancelled action of the run,
@@ -714,12 +777,17 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 						boundary,
 						browser,
 						commands: commands!,
+						shell,
 						screenshots: this.#options.screenshots(input.run),
 						fileExports: this.#options.fileExports?.(input.run),
 						fileImports: this.#options.fileImports?.(input.run),
 					});
 					return automation.perform(action, currentLease, { ...context, signal: checked }, operation);
 				},
+				settle: (action, content, requestSignal) =>
+					automation
+						? automation.settle(action, content, AbortSignal.any([signal, requestSignal]))
+						: Promise.resolve(content),
 			},
 		});
 		return {
@@ -976,6 +1044,9 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 				this.#closePrivate(),
 				...sessions.map((session) => session.close()),
 			]);
+			// Commands still running in the screen's shell end with the screen, once
+			// its runs have let go of it.
+			if (screen?.shell) results.push(...(await Promise.allSettled([screen.shell.close()])));
 			// The screen's browser ends with the screen: after its runs have let go,
 			// before the desktop it draws on stops.
 			if (screen) results.push(...(await Promise.allSettled([this.#closeBrowser(screen)])));
@@ -1001,6 +1072,7 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 	}
 	close(): Promise<void> {
 		this.#stop.abort();
+		clearInterval(this.#shellActivity);
 		this.#closing ??= Promise.resolve().then(() =>
 			cloudToolRequest(
 				async () => {

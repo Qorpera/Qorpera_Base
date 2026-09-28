@@ -848,7 +848,16 @@ for (( attempt=0; attempt<50; attempt++ )); do
 done
 if [[ ${ready} != true ]]; then echo "Display did not become ready." >&2; exit 1; fi
 
+# Internet for the Terminal and what it starts: only the proxy settings the
+# service supplied, pointing at the loopback proxy of this desktop's own,
+# otherwise empty, network. A service without them leaves the desktop offline.
+network=()
+for name in http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY NODE_USE_ENV_PROXY; do
+	value=${!name-}
+	if [[ ${value} =~ ^[A-Za-z0-9:/.,_-]{1,200}$ ]]; then network+=("${name}=${value}"); fi
+done
 /usr/bin/env -i PATH=/usr/local/bin:/usr/bin:/bin LANG=C.UTF-8 HOME="${desktop_home}" DISPLAY="${display}" \
+	"${network[@]}" \
 	SHELL=/usr/bin/bash TZ="${time_zone}" QORPERA_SCREEN_BACKDROPS="${backdrops}" \
 	XDG_RUNTIME_DIR="${runtime_dir}" XDG_CONFIG_HOME="${screen_state}/config" \
 	XDG_CACHE_HOME="${screen_state}/cache" XDG_DATA_HOME="${screen_state}/data" \

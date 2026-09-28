@@ -250,6 +250,19 @@ The owned startup placeholder also changes `office-browser-child.mjs`; include
 that entry together with the service and three desktop scripts in the guest-code
 revision. The dock matches the browser window with or without the new class.
 
+**Shell and Terminal internet (2026-09-28).** `office-browser-child.mjs` is the
+image's one namespace entry file, so it also carries the long-running shell's
+init (`--shell-host`), the desktop's loopback proxy (`--network-proxy`) and the
+SSH connector (`--connect`). The service passes `http_proxy`/`HTTPS_PROXY` and
+`NO_PROXY` into each desktop, and `qorpera-screen-session` hands exactly those
+through its `env -i` to XFCE, so the Terminal and what it starts use the
+desktop's relay. The revision that ships this replaces three entries: the
+service, `office-browser-child.mjs` and `qorpera-screen-session`. An older
+session script leaves the Terminal offline. With an older entry file the new
+service's shell commands fail to start (the entry refuses the mode) and the
+Terminal stays offline; the desktop itself is unaffected. Desktops pick up the
+Terminal change at their next start.
+
 The wrapper is not an authorization or sandbox implementation. Directory-name
 validation cannot detect bind mounts, NAS aliases, unsafe inherited image
 configuration, network routes or leaked credentials. The supervisor must

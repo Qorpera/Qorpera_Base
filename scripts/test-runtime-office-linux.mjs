@@ -18,8 +18,11 @@ const boundary = process.argv.slice(2).includes("--boundary");
 const privateSurface = guest || boundary || process.argv.slice(2).includes("--private");
 const browser = privateSurface || process.argv.slice(2).includes("--browser");
 const desktop = browser || process.argv.slice(2).includes("--desktop");
-if (process.argv.slice(2).some((arg) => !["--desktop", "--browser", "--private", "--guest", "--boundary", "--combined", "--combined-rebuild"].includes(arg))) throw new Error("Unsupported Linux proof mode");
-const image = process.env.QORPERA_OFFICE_TEST_IMAGE || `qorpera-office-linux-test:step4-${browser ? "browser" : desktop ? "desktop" : "commands"}`;
+// The long-running shell alone: its namespace, relay and namespace entry file.
+const shell = process.argv.slice(2).includes("--shell");
+if (process.argv.slice(2).some((arg) => !["--desktop", "--browser", "--private", "--guest", "--boundary", "--combined", "--combined-rebuild", "--shell"].includes(arg))) throw new Error("Unsupported Linux proof mode");
+if (shell && process.argv.length !== 3) throw new Error("The shell proof runs alone");
+const image = process.env.QORPERA_OFFICE_TEST_IMAGE || `qorpera-office-linux-test:step4-${browser ? "browser" : desktop ? "desktop" : shell ? "shell" : "commands"}`;
 if (!/^[a-zA-Z0-9_./:@-]+$/.test(image)) throw new Error("Invalid local test image reference");
 let runningImage = image;
 let combinedControl;
@@ -57,7 +60,7 @@ async function run(args, rpc = false) {
 }
 try {
 	if (!process.env.QORPERA_OFFICE_TEST_IMAGE) {
-		await writeFile(join(root, "Dockerfile"), `FROM ${base}\nRUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends nodejs bubblewrap tini xvfb xdotool scrot x11-xserver-utils xauth${desktop ? " tigervnc-standalone-server xfce4-session xfwm4 xfdesktop4 xfconf xfce4-panel xfce4-terminal thunar dbus-x11 x11-utils procps" : ""}${browser ? " curl ca-certificates unzip libnss3 libasound2t64 libgbm1 libcups2t64" : ""} && rm -rf /var/lib/apt/lists/*\n${browser ? `RUN case "$(dpkg --print-architecture)" in arm64) browser_url=https://cdn.playwright.dev/dbazure/download/playwright/builds/chromium/1234/chromium-linux-arm64.zip; browser_dir=chrome-linux;; amd64) browser_url=https://cdn.playwright.dev/builds/cft/151.0.7922.34/linux64/chrome-linux64.zip; browser_dir=chrome-linux64;; *) exit 1;; esac && curl --fail --location --retry 2 "$browser_url" -o /tmp/chromium.zip && unzip -q /tmp/chromium.zip -d /usr/lib && mv "/usr/lib/$browser_dir" /usr/lib/qorpera-chromium && rm /tmp/chromium.zip\n` : ""}`);
+		await writeFile(join(root, "Dockerfile"), `FROM ${base}\nRUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends nodejs bubblewrap tini xvfb xdotool scrot x11-xserver-utils xauth${shell ? " curl ca-certificates openssh-client" : ""}${desktop ? " tigervnc-standalone-server xfce4-session xfwm4 xfdesktop4 xfconf xfce4-panel xfce4-terminal thunar dbus-x11 x11-utils procps" : ""}${browser ? " curl ca-certificates unzip libnss3 libasound2t64 libgbm1 libcups2t64" : ""} && rm -rf /var/lib/apt/lists/*\n${browser ? `RUN case "$(dpkg --print-architecture)" in arm64) browser_url=https://cdn.playwright.dev/dbazure/download/playwright/builds/chromium/1234/chromium-linux-arm64.zip; browser_dir=chrome-linux;; amd64) browser_url=https://cdn.playwright.dev/builds/cft/151.0.7922.34/linux64/chrome-linux64.zip; browser_dir=chrome-linux64;; *) exit 1;; esac && curl --fail --location --retry 2 "$browser_url" -o /tmp/chromium.zip && unzip -q /tmp/chromium.zip -d /usr/lib && mv "/usr/lib/$browser_dir" /usr/lib/qorpera-chromium && rm /tmp/chromium.zip\n` : ""}`);
 		await run(["build", "--tag", image, root]);
 	}
 	if (desktop) {
@@ -66,27 +69,34 @@ try {
 		for (const name of ["qorpera-screen-session", "qorpera-screen-xfce", "qorpera-screen-browser"])
 			await copyFile(join(repository, "deploy/lxd-company-computer-guest", name), join(root, name));
 		await copyFile(join(repository, "deploy/lxd-company-computer-guest/backdrops/qorpera-screen-pebble.png"), join(root, "wallpaper.png"));
-		if (guest) {
+		// The wallpaper follows the agent's avatar, so every creature must be there.
+		{
 			await mkdir(join(root, "wallpapers"));
 			for (const name of await readdir(join(repository, "deploy/lxd-company-computer-guest/backdrops"))) {
 				if (!/^qorpera-screen-[a-z]+(?:-(?:[01][0-9]|2[0-3]))?\.png$/.test(name)) throw new Error("Invalid fixture creature artifact");
 				await copyFile(join(repository, "deploy/lxd-company-computer-guest/backdrops", name), join(root, "wallpapers", name));
 			}
 		}
-		if (browser) {
-			await copyFile(join(repository, "deploy/lxd-company-computer-guest/qorpera-browser-policy.json"), join(root, "browser-policy.json"));
-			await build({ absWorkingDir: repository, entryPoints: ["packages/runtime/src/cloud-company-computer-browser-child.ts"],
-				outfile: join(root, "office-browser-child.mjs"), platform: "node", format: "esm", target: "node22.19", bundle: true });
-		}
-		await writeFile(join(root, "Dockerfile"), `FROM ${image}\nCOPY --chmod=0555 qorpera-screen-session qorpera-screen-xfce qorpera-screen-browser /usr/local/bin/\nCOPY wallpaper.png /usr/share/backgrounds/qorpera-screen-pebble.png\n${guest ? "COPY --chmod=0444 wallpapers/ /usr/share/backgrounds/\n" : ""}${browser ? "RUN mkdir -p /usr/local/share/qorpera /usr/local/lib/qorpera && chmod 0755 /usr/local/share/qorpera /usr/local/lib/qorpera && install -m 0555 /usr/bin/bwrap /usr/local/lib/qorpera/qorpera-browser-bwrap\nCOPY --chmod=0444 browser-policy.json /usr/local/share/qorpera/browser-policy.json\nCOPY --chmod=0555 office-browser-child.mjs /usr/local/lib/qorpera/office-browser-child.mjs\n" : ""}`);
+		if (browser) await copyFile(join(repository, "deploy/lxd-company-computer-guest/qorpera-browser-policy.json"), join(root, "browser-policy.json"));
+		// Every desktop runs the namespace entry file for its Terminal's proxy.
+		await build({ absWorkingDir: repository, entryPoints: ["packages/runtime/src/cloud-company-computer-browser-child.ts"],
+			outfile: join(root, "office-browser-child.mjs"), platform: "node", format: "esm", target: "node22.19", bundle: true });
+		await writeFile(join(root, "Dockerfile"), `FROM ${image}\nCOPY --chmod=0555 qorpera-screen-session qorpera-screen-xfce qorpera-screen-browser /usr/local/bin/\nCOPY wallpaper.png /usr/share/backgrounds/qorpera-screen-pebble.png\nCOPY --chmod=0444 wallpapers/ /usr/share/backgrounds/\nRUN mkdir -p /usr/local/share/qorpera /usr/local/lib/qorpera && chmod 0755 /usr/local/share/qorpera /usr/local/lib/qorpera\nCOPY --chmod=0555 office-browser-child.mjs /usr/local/lib/qorpera/office-browser-child.mjs\n${browser ? "RUN install -m 0555 /usr/bin/bwrap /usr/local/lib/qorpera/qorpera-browser-bwrap\nCOPY --chmod=0444 browser-policy.json /usr/local/share/qorpera/browser-policy.json\n" : ""}`);
 		runningImage = `qorpera-office-desktop-probe:${randomUUID()}`;
+		await run(["build", "--tag", runningImage, root]);
+	}
+	if (shell) {
+		await build({ absWorkingDir: repository, entryPoints: ["packages/runtime/src/cloud-company-computer-browser-child.ts"],
+			outfile: join(root, "office-browser-child.mjs"), platform: "node", format: "esm", target: "node22.19", bundle: true });
+		await writeFile(join(root, "Dockerfile"), `FROM ${image}\nRUN mkdir -p /usr/local/lib/qorpera && chmod 0755 /usr/local/lib/qorpera\nCOPY --chmod=0444 office-browser-child.mjs /usr/local/lib/qorpera/office-browser-child.mjs\n`);
+		runningImage = `qorpera-office-shell-probe:${randomUUID()}`;
 		await run(["build", "--tag", runningImage, root]);
 	}
 	if (browser) {
 		await mkdir(join(root, "node_modules"));
 		await cp(join(repository, "node_modules/playwright-core"), join(root, "node_modules/playwright-core"), { recursive: true });
 	}
-	await build({ absWorkingDir: repository, entryPoints: [combined ? "packages/runtime/test/fixtures/company-computer-linux-combined-probe.mjs" : `packages/runtime/test/fixtures/company-computer-linux-${boundary ? "boundary-" : guest ? "guest-" : privateSurface ? "private-" : browser ? "browser-" : desktop ? "desktop-" : ""}probe.ts`],
+	await build({ absWorkingDir: repository, entryPoints: [combined ? "packages/runtime/test/fixtures/company-computer-linux-combined-probe.mjs" : `packages/runtime/test/fixtures/company-computer-linux-${boundary ? "boundary-" : guest ? "guest-" : privateSurface ? "private-" : browser ? "browser-" : desktop ? "desktop-" : shell ? "shell-" : ""}probe.ts`],
 		outfile: join(root, "probe.mjs"), platform: "node", format: "esm", target: "node22.19", bundle: true, external: browser ? ["playwright-core"] : [],
 		...(combined ? {banner:{js:'import {createRequire} from "node:module"; const require=createRequire(import.meta.url);'},
 			plugins:[{name:"disposable-browser-content",setup(builder) {
@@ -135,8 +145,8 @@ exec setpriv --reuid=1000 --regid=1000 --clear-groups --bounding-set=-all node /
 	// Docker's default seccomp and proc masks block nested user/PID namespaces.
 	// The outer container permits that setup; the real bwrap boundary then runs
 	// as uid 1000 with no capabilities, no network, and finite cgroup ceilings.
-	const guestArgs = ["run", ...(combined ? ["-i"] : []), "--rm", "--name", container, "--network", "none", "--read-only", "--memory", browser ? "2g" : desktop ? "1g" : "512m", "--memory-swap", browser ? "2g" : desktop ? "1g" : "512m",
-		"--pids-limit", browser ? "512" : desktop ? "256" : "128", "--cpus", desktop ? "2" : "1", "--cap-drop", "ALL", "--cap-add", "CHOWN", "--cap-add", "SETUID", "--cap-add", "SETGID", "--cap-add", "SETPCAP",
+	const guestArgs = ["run", ...(combined ? ["-i"] : []), "--rm", "--name", container, "--network", "none", "--read-only", "--memory", browser ? "2g" : desktop || shell ? "1g" : "512m", "--memory-swap", browser ? "2g" : desktop || shell ? "1g" : "512m",
+		"--pids-limit", browser ? "512" : desktop || shell ? "256" : "128", "--cpus", desktop ? "2" : "1", "--cap-drop", "ALL", "--cap-add", "CHOWN", "--cap-add", "SETUID", "--cap-add", "SETGID", "--cap-add", "SETPCAP",
 		// Root attester reads uid-1000 private mounts; setpriv drops this before the broker probe.
 		...(boundary ? ["--cap-add", "DAC_READ_SEARCH"] : []),
 		"--security-opt", "no-new-privileges", "--security-opt", "seccomp=unconfined", "--security-opt", "systempaths=unconfined",

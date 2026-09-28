@@ -52,7 +52,8 @@ export class CompanyComputerGuestEndpoint implements CompanyComputerCloudEndpoin
 	readonly #binding: CompanyComputerScreenBinding;
 	readonly #effects: CompanyComputerGuestEffectCheck;
 	readonly #gate: CompanyComputerScreenActionGate;
-	readonly #automation: Pick<CompanyComputerGuestAutomation, "perform" | "stopBrowser">;
+	readonly #automation: Pick<CompanyComputerGuestAutomation, "perform" | "stopBrowser"> &
+		Partial<Pick<CompanyComputerGuestAutomation, "settle">>;
 	readonly #assertScreenAdmitted: (binding: CompanyComputerScreenBinding, signal: AbortSignal) => Promise<void>;
 	readonly #prepareScreen: (binding: CompanyComputerScreenBinding, signal: AbortSignal) => Promise<void>;
 	/** Settled actions (failed or successful) whose drain got no confirmation yet, by receipt. */
@@ -65,7 +66,9 @@ export class CompanyComputerGuestEndpoint implements CompanyComputerCloudEndpoin
 		effects: CompanyComputerGuestEffectCheck;
 		/** One shared gate per physical guest, also used by takeover fencing. */
 		gate: CompanyComputerScreenActionGate;
-		automation: Pick<CompanyComputerGuestAutomation, "perform" | "stopBrowser">;
+		/** `settle` is an action's passive half (waiting for a shell command), after its effect finished. */
+		automation: Pick<CompanyComputerGuestAutomation, "perform" | "stopBrowser"> &
+			Partial<Pick<CompanyComputerGuestAutomation, "settle">>;
 		/** Pure authority/binding/readiness preflight. Must not launch or mutate a guest. */
 		assertScreenAdmitted: (binding: CompanyComputerScreenBinding, signal: AbortSignal) => Promise<void>;
 		/** Reuse or start the exact display and await real readiness. Runs only
@@ -235,6 +238,7 @@ export class CompanyComputerGuestEndpoint implements CompanyComputerCloudEndpoin
 			this.#undrained.set(receipt.receiptId, structuredClone(effect));
 			throw error;
 		});
-		return result;
+		// Outside the gate and after the resource drained: waiting stops nothing.
+		return this.#automation.settle ? this.#automation.settle(action, result, context.signal) : result;
 	}
 }

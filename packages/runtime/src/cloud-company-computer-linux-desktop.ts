@@ -27,6 +27,12 @@ import {
 	companyComputerScreenDisplay,
 	waitForCompanyComputerScreenReady,
 } from "./cloud-company-computer-screens.ts";
+import { startCompanyComputerShellEgress } from "./cloud-company-computer-shell-egress.ts";
+import {
+	COMPANY_COMPUTER_NAMESPACE_CHILD,
+	COMPANY_COMPUTER_SHELL_RELAY_PATH,
+	companyComputerShellProxyEnvironment,
+} from "./cloud-company-computer-shell-host.ts";
 import type { RecoveryDirectoryMount } from "./cloud-identity-recovery-filesystems.ts";
 import { cloudToolRequest } from "./cloud-native-tool-authority.ts";
 
@@ -200,8 +206,10 @@ export class CompanyComputerLinuxDesktopLauncher implements CompanyComputerScree
 		const { layout, runtimeRoot } = this.#options;
 		const files: FileHandle[] = [];
 		let temporary: string | undefined;
+		let relay: Awaited<ReturnType<typeof startCompanyComputerShellEgress>> | undefined;
 		let ownedByProcess = false;
 		const remove = async (): Promise<void> => {
+			await relay?.close().catch(() => undefined);
 			await Promise.all(files.map((file) => file.close()));
 			if (temporary) await rm(temporary, { recursive: true, force: true });
 			if (this.#desktops.get(binding.screenOrdinal) === desktop) this.#desktops.delete(binding.screenOrdinal);
@@ -216,6 +224,8 @@ export class CompanyComputerLinuxDesktopLauncher implements CompanyComputerScree
 				"/usr/bin/xfce4-session",
 				"/usr/local/bin/qorpera-screen-session",
 				"/usr/local/bin/qorpera-screen-xfce",
+				"/usr/bin/node",
+				COMPANY_COMPUTER_NAMESPACE_CHILD,
 			])
 				await assertCompanyComputerImageArtifact(path);
 			await assertCompanyComputerImageArtifact("/usr", true);
@@ -248,6 +258,13 @@ export class CompanyComputerLinuxDesktopLauncher implements CompanyComputerScree
 				mode: 0o400,
 				flag: "wx",
 			});
+			// The desktop's only way out, for its Terminal: public addresses only.
+			await mkdir(join(temporary, "network"), { mode: 0o700 });
+			relay = await startCompanyComputerShellEgress({
+				root: join(temporary, "network"),
+				assertActive: () => lifetime.throwIfAborted(),
+				signal: lifetime,
+			});
 			files.push(await open(join(temporary, "machine-id"), constants.O_RDONLY | constants.O_NOFOLLOW));
 			const args = [
 				...companyComputerLinuxSandboxArgs(),
@@ -273,6 +290,9 @@ export class CompanyComputerLinuxDesktopLauncher implements CompanyComputerScree
 				"33554432",
 				"--tmpfs",
 				"/var/tmp",
+				"--ro-bind",
+				relay.path,
+				COMPANY_COMPUTER_SHELL_RELAY_PATH,
 			];
 			for (const path of [
 				"/etc/passwd",
@@ -299,6 +319,7 @@ export class CompanyComputerLinuxDesktopLauncher implements CompanyComputerScree
 				QORPERA_SCREEN_STATE_ROOT: "/screen-state",
 				QORPERA_SCREEN_RUNTIME_ROOT: "/run/qorpera",
 				QORPERA_SCREEN_WALLPAPER: `/screen-state/${binding.screenId}/wallpaper.png`,
+				...companyComputerShellProxyEnvironment(),
 			}))
 				args.push("--setenv", name, value);
 			args.push("--chdir", layout.workbenchRoot, "--remount-ro", "/");
@@ -307,8 +328,15 @@ export class CompanyComputerLinuxDesktopLauncher implements CompanyComputerScree
 				args,
 				files,
 				stdin: "ignore",
+				// The loopback proxy runs beside the session, never above it: if it
+				// stops, the desktop only loses its network.
 				command: [
-					"/usr/local/bin/qorpera-screen-session",
+					"/usr/bin/bash",
+					"--noprofile",
+					"--norc",
+					"-c",
+					`/usr/bin/node ${COMPANY_COMPUTER_NAMESPACE_CHILD} --network-proxy </dev/null >/dev/null 2>&1 & exec /usr/local/bin/qorpera-screen-session "$@"`,
+					"qorpera-screen",
 					binding.screenId,
 					String(binding.screenOrdinal),
 					companyComputerScreenDisplay(binding.screenOrdinal),

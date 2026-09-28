@@ -331,6 +331,59 @@ describe("model-facing cloud computer tools (adapter tests, not native cloud acc
 		expect(harness.screens.acquire).toHaveBeenCalledOnce();
 	});
 
+	it("waits for a shell command only after its effect drained, outside the screen's gate", async () => {
+		const harness = toolHarness(["shell"]);
+		const events: string[] = [];
+		vi.mocked(harness.effects.finish).mockImplementation(async () => {
+			events.push("finished");
+		});
+		harness.automation.perform.mockImplementation(async () => {
+			events.push("started");
+			return { kind: "json", value: { sessionId: computerId(90) } };
+		});
+		const waited = computerDeferred<CompanyComputerToolContent>();
+		const settle = vi.fn(async (action: { action?: string }, content: CompanyComputerToolContent) => {
+			if (action.action !== "start") return content;
+			events.push("waiting");
+			return waited.promise;
+		});
+		Object.assign(harness.automation, { settle });
+		const reply = harness.call("computer_shell", { kind: "shell", action: "start", command: "npm test" });
+		await vi.waitFor(() => expect(settle).toHaveBeenCalled());
+		expect(events).toEqual(["started", "finished", "waiting"]);
+		// Another action on the screen is not refused while the command is awaited.
+		await expect(harness.call("computer_shell", { kind: "shell", action: "list" }, "test:2")).resolves.toMatchObject({
+			kind: "json",
+		});
+		expect(settle.mock.calls[0]).toEqual([
+			{ kind: "shell", action: "start", command: "npm test", waitMs: 10_000 },
+			{ kind: "json", value: { sessionId: computerId(90) } },
+			expect.any(AbortSignal),
+		]);
+		waited.resolve({ kind: "json", value: { sessionId: computerId(90), state: "running", output: "" } });
+		await expect(reply).resolves.toEqual({
+			kind: "json",
+			value: { sessionId: computerId(90), state: "running", output: "" },
+		});
+	});
+
+	it("keeps a cancelled shell wait from leaving an unresolved resource behind", async () => {
+		const harness = toolHarness(["shell"]);
+		harness.automation.perform.mockResolvedValue({ kind: "json", value: { sessionId: computerId(90) } });
+		Object.assign(harness.automation, {
+			settle: vi.fn(async () => {
+				throw new Error("OFFICE_SHELL_WAIT_CANCELLED");
+			}),
+		});
+		await expect(
+			harness.call("computer_shell", { kind: "shell", action: "read", sessionId: computerId(90) }),
+		).rejects.toThrow("OFFICE_SHELL_WAIT_CANCELLED");
+		expect(harness.effects.finish).toHaveBeenCalledTimes(1);
+		// Nothing is left for a drain: releasing the screen does not restart the desktop.
+		await harness.endpoint.drainSettled(new AbortController().signal);
+		expect(harness.effects.finish).toHaveBeenCalledTimes(1);
+	});
+
 	it("binds dispatch to the authorized run/screen and passes the existing receipt unchanged", async () => {
 		const harness = toolHarness();
 		await harness.call("computer_browser", { kind: "browser", action: "navigate", url: "https://example.com/" });
@@ -409,6 +462,83 @@ describe("model-facing cloud computer tools (adapter tests, not native cloud acc
 		{ operationKey: " ", action: { kind: "screen", action: "open" } },
 	])("rejects model-supplied targeting or malformed operations", (arguments_) => {
 		expect(() => parseCompanyComputerToolArguments(arguments_)).toThrow();
+	});
+
+	it("parses the long-running shell actions and fills their defaults", () => {
+		const id = computerId(90);
+		expect(parseCompanyComputerAction({ kind: "shell", action: "start", command: "npm test" })).toEqual({
+			kind: "shell",
+			action: "start",
+			command: "npm test",
+			waitMs: 10_000,
+		});
+		expect(parseCompanyComputerAction({ kind: "shell", action: "read", sessionId: id, waitMs: 0 })).toEqual({
+			kind: "shell",
+			action: "read",
+			sessionId: id,
+			waitMs: 0,
+		});
+		expect(parseCompanyComputerAction({ kind: "shell", action: "write", sessionId: id, text: "y\n" })).toEqual({
+			kind: "shell",
+			action: "write",
+			sessionId: id,
+			text: "y\n",
+			endInput: false,
+			waitMs: 10_000,
+		});
+		expect(
+			parseCompanyComputerAction({ kind: "shell", action: "write", sessionId: id, text: "", endInput: true }),
+		).toEqual({
+			kind: "shell",
+			action: "write",
+			sessionId: id,
+			text: "",
+			endInput: true,
+			waitMs: 10_000,
+		});
+		expect(parseCompanyComputerAction({ kind: "shell", action: "stop", sessionId: id })).toEqual({
+			kind: "shell",
+			action: "stop",
+			sessionId: id,
+		});
+		expect(parseCompanyComputerAction({ kind: "shell", action: "stop" })).toEqual({ kind: "shell", action: "stop" });
+		expect(parseCompanyComputerAction({ kind: "shell", action: "list" })).toEqual({ kind: "shell", action: "list" });
+		// Parsing its own result again is stable: the guest re-parses the exact arguments.
+		const start = parseCompanyComputerAction({ kind: "shell", action: "start", command: "ls" });
+		expect(parseCompanyComputerAction(start)).toEqual(start);
+		// Runtime bundles from before long-running shells still send the 15-second form.
+		expect(parseCompanyComputerAction({ kind: "shell", command: "pwd", timeoutMs: 1000 })).toEqual({
+			kind: "shell",
+			command: "pwd",
+			timeoutMs: 1000,
+		});
+	});
+
+	it.each([
+		{ kind: "shell", action: "start", command: "ls", waitMs: 15_001 },
+		{ kind: "shell", action: "start", command: "ls", waitMs: -1 },
+		{ kind: "shell", action: "start", command: " " },
+		{ kind: "shell", action: "start", command: "ls", timeoutMs: 1000 },
+		{ kind: "shell", action: "read", sessionId: "1" },
+		{ kind: "shell", action: "write", sessionId: computerId(90), text: "" },
+		{ kind: "shell", action: "write", sessionId: computerId(90), text: "x", endInput: "yes" },
+		{ kind: "shell", action: "stop", sessionId: null },
+		{ kind: "shell", action: "list", sessionId: computerId(90) },
+		{ kind: "shell", action: "restart" },
+		{ kind: "shell", command: "ls", timeoutMs: 15_001 },
+	])("rejects malformed shell actions: %j", (action) => {
+		expect(() => parseCompanyComputerAction(action)).toThrow();
+	});
+
+	it("offers models only the long-running shell actions", () => {
+		const harness = toolHarness(["shell"]);
+		const shell = harness.session.tools.find((candidate) => candidate.name === "computer_shell")!;
+		const variants = (
+			shell.inputSchema as { properties: { action: { oneOf: { properties: { action?: { const: string } } }[] } } }
+		).properties.action.oneOf.map((variant) => variant.properties.action?.const);
+		expect(variants).toEqual(["start", "read", "write", "stop", "stop", "list"]);
+		expect(shell.description).not.toContain("15 seconds");
+		expect(shell.description).toContain("public internet");
 	});
 
 	it.each(["file:///etc/passwd", "http://example.com", "https://user:password@example.com", "javascript:alert(1)"])(

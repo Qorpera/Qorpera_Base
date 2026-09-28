@@ -60,6 +60,36 @@ vi.mock("../src/cloud-company-computer-linux-browser.ts", () => ({
 vi.mock("../src/cloud-company-computer-linux-private-surface.ts", () => ({
 	startCompanyComputerLinuxPrivateSurface: physical.privateStart,
 }));
+/** Each screen's long-running shell; the real one has its own tests and Linux probe. */
+const shells = vi.hoisted(
+	() =>
+		[] as {
+			busy: boolean;
+			start: ReturnType<typeof vi.fn>;
+			result: ReturnType<typeof vi.fn>;
+			close: ReturnType<typeof vi.fn>;
+		}[],
+);
+vi.mock("../src/cloud-company-computer-linux-shell.ts", () => ({
+	createCompanyComputerLinuxShellLauncher: () => async () => {
+		throw new Error("NO_FIXTURE_SHELL_NAMESPACE");
+	},
+	CompanyComputerLinuxShell: class {
+		busy = false;
+		start = vi.fn(async () => ({ sessionId: "00000000-0000-4000-8000-0000000000a1" }));
+		result = vi.fn(async (input: { sessionId: string }) => ({
+			sessionId: input.sessionId,
+			state: "running",
+			output: "building\n",
+		}));
+		close = vi.fn(async () => undefined);
+		known = () => true;
+		list = () => ({ commands: [], processes: 0 });
+		constructor() {
+			shells.push(this);
+		}
+	},
+}));
 const runs: CloudNativeToolRun[] = [];
 const guests: CompanyComputerLinuxGuest[] = [];
 const displays: { stop: ReturnType<typeof vi.fn>; exited: ReturnType<typeof computerDeferred<void>> }[] = [];
@@ -82,6 +112,7 @@ const windows = {
 	}),
 };
 beforeEach(() => {
+	shells.length = 0;
 	windows.pages = [];
 	windows.state = "maximized";
 	browsers.length = 0;
@@ -214,6 +245,8 @@ async function fixture(options: { browser?: boolean } = {}) {
 			return { state: "authorized", grant: browserGrant, validForMs: 5000 };
 		}
 		if (method === "qorpera_native_office_browser_grant") return { state: "authorized" };
+		if (method === "qorpera_report_runtime_office_shell_activity")
+			return { schema: "qorpera.office-shell-activity/v1", screens: args.p_screen_ids };
 		if (method === "qorpera_native_office_operation") {
 			if (args.p_action === "authorize") return { state: "authorized" };
 			if (args.p_action === "finish") return { state: "drained" };
@@ -364,6 +397,64 @@ describe("whole Linux guest ownership (physical adapters mocked here; separate L
 		expect(physical.launch).toHaveBeenCalledOnce();
 		expect(f.failure).not.toHaveBeenCalled();
 	});
+	it("runs a shell command in the screen's own shell and waits for it after the effect, outside the gate", async () => {
+		const f = await fixture();
+		const session = await f.create();
+		const action = { kind: "shell", action: "start", command: "npm run build", waitMs: 5000 };
+		const content = await session.endpoint.perform(f.operation(action), f.lease, f.effect());
+		expect(content).toEqual({
+			kind: "json",
+			value: { sessionId: "00000000-0000-4000-8000-0000000000a1", state: "running", output: "building\n" },
+		});
+		expect(shells).toHaveLength(1);
+		expect(shells[0].start).toHaveBeenCalledWith(expect.objectContaining({ command: "npm run build" }));
+		expect(shells[0].result).toHaveBeenCalledWith(
+			expect.objectContaining({ sessionId: "00000000-0000-4000-8000-0000000000a1", waitMs: 5000 }),
+		);
+		// The run ends; its command does not. A later run on the screen reuses the shell.
+		await session.close();
+		expect(shells[0].close).not.toHaveBeenCalled();
+		const next = await f.create();
+		await next.endpoint.perform(f.operation(action), f.lease, f.effect());
+		expect(shells).toHaveLength(1);
+		expect(f.failure).not.toHaveBeenCalled();
+	});
+
+	it("reports busy shells every 30 seconds, then that nothing runs, and ends a screen's shell with the screen", async () => {
+		vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+		const f = await fixture();
+		const session = await f.create();
+		await session.endpoint.perform(
+			f.operation({ kind: "shell", action: "start", command: "sleep 600", waitMs: 0 }),
+			f.lease,
+			f.effect(),
+		);
+		const reports = () =>
+			f.call.mock.calls
+				.filter(([method]) => method === "qorpera_report_runtime_office_shell_activity")
+				.map(([, args]) => args.p_screen_ids);
+		await vi.advanceTimersByTimeAsync(30000);
+		expect(reports()).toEqual([]);
+		shells[0].busy = true;
+		await vi.advanceTimersByTimeAsync(30000);
+		expect(reports()).toEqual([[f.binding.screenId]]);
+		expect(f.call).toHaveBeenCalledWith(
+			"qorpera_report_runtime_office_shell_activity",
+			{
+				p_scope: expect.objectContaining({ companyComputerId: f.binding.companyComputerId }),
+				p_computer_generation: 1,
+				p_screen_ids: [f.binding.screenId],
+			},
+			expect.any(AbortSignal),
+		);
+		shells[0].busy = false;
+		await vi.advanceTimersByTimeAsync(60000);
+		expect(reports()).toEqual([[f.binding.screenId], []]);
+		await session.close();
+		await f.guest.stopResources(f.binding, new AbortController().signal);
+		expect(shells[0].close).toHaveBeenCalledOnce();
+	});
+
 	it("keeps the desktop, its browser and the agent's session when one authority check gets no answer", async () => {
 		const f = await fixture({ browser: true });
 		const session = await f.create();
