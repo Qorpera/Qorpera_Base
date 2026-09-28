@@ -491,7 +491,8 @@ wake), so no agent runs and nothing is charged before it.
   `items` (`itemKey`, `kind` `plan` | `credits`, `name`, `priceMinor` in
   øre excluding VAT, `currency` `dkk`, `hours`: a plan's hours a month or a
   pack's hours, `available`: whether it is on sale to this member now; credits
-  still need a founder of the company, which checkout checks). Before live
+  still need a founder of the company, and a member who already has a plan
+  changes it on Stripe's billing page, both of which checkout checks). Before live
   payments only test accounts an operator enrolled see anything available, in
   Stripe's test mode; a client shows an item that is not available as not for
   sale. Any signed-in member.

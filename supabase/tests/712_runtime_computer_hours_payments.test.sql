@@ -38,7 +38,7 @@ select pg_temp.wake_assert(not has_table_privilege(role_name, 'public.qorpera_co
 from unnest(array['anon', 'authenticated', 'service_role']) role_name;
 select pg_temp.wake_assert(not has_table_privilege(role_name, 'public.qorpera_computer_hour_testers', privilege),
 	'Testers are enrolled by an operator only, not by ' || role_name || ' (' || privilege || ')')
-from unnest(array['anon', 'authenticated', 'service_role']) role_name, unnest(array['SELECT', 'INSERT']) privilege;
+from unnest(array['anon', 'authenticated', 'service_role']) role_name, unnest(array['SELECT', 'INSERT', 'UPDATE', 'DELETE']) privilege;
 select pg_temp.wake_assert(pg_temp.bill('catalog_price', '{"itemKey":"standard"}') = '{"itemKey":"standard","kind":"plan",
 	"priceMinor":63000,"currency":"dkk","hours":286,"active":true,"priceId":"price_standard"}'::jsonb, 'The catalog price');
 select pg_temp.wake_assert(pg_temp.bill('catalog_price', '{"itemKey":"basis","livemode":true}') ->> 'priceId' is null,
@@ -222,11 +222,14 @@ begin
 		"periodStart":"2026-11-01T00:00:00Z","periodEnd":"2026-12-01T00:00:00Z","invoiceId":"in_c3"}');
 end
 $$;
-select pg_temp.wake_assert(pg_temp.period_when('canceled', '2026-11-02T00:00:01Z') = '{"skipped":"subscription canceled"}'
-	and pg_temp.period_when('paused', '2026-11-02T00:00:02Z') = '{"skipped":"subscription paused"}'
-	and pg_temp.period_when('incomplete_expired', '2026-11-02T00:00:03Z') = '{"skipped":"subscription incomplete_expired"}'
-	and pg_temp.period_when('unpaid', '2026-11-02T00:00:04Z') = '{"skipped":"subscription unpaid"}',
-	'No period for a cancelled, paused or expired subscription');
+select pg_temp.wake_assert(pg_temp.period_when('canceled', '2026-11-02T00:00:01Z') = '{"skipped":"subscription canceled"}',
+	'No period for a cancelled subscription');
+select pg_temp.wake_assert(pg_temp.period_when('paused', '2026-11-02T00:00:02Z') = '{"skipped":"subscription paused"}',
+	'No period for a paused subscription');
+select pg_temp.wake_assert(pg_temp.period_when('incomplete_expired', '2026-11-02T00:00:03Z')
+	= '{"skipped":"subscription incomplete_expired"}', 'No period for an expired first payment');
+select pg_temp.wake_assert(pg_temp.period_when('unpaid', '2026-11-02T00:00:04Z') = '{"skipped":"subscription unpaid"}',
+	'Unpaid again');
 
 -- Members read the offers and their own plan. Before the live switch only testers can buy, and
 -- members see only measured hours: the plan's hours are left out.

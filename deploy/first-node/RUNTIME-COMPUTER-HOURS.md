@@ -242,8 +242,9 @@ every request.
     - `invoice.paid` with `subscription_create`: the first period, from the plan line's service
       period (`lines.data[].period`, `pricing.price_details.price`);
     - `invoice.created` with `subscription_cycle`: a renewal's period at its start, before payment
-      (also on `invoice.paid`, idempotent). An `unpaid`, `canceled` or `paused` subscription gets
-      no new period; a renewal paid after it was withdrawn goes to review;
+      (also on `invoice.paid`, idempotent). An `unpaid`, `canceled`, `paused` or
+      `incomplete_expired` subscription gets no new period, and paying such a subscription's
+      invoice goes to review; so does a renewal paid after it was withdrawn;
     - `invoice.paid` with `subscription_update`: an upgrade's extra hours, pro rata from the paid
       time, as an extra period row. The period is the recorded one that ends where the new plan's
       proration line ends; a payment outside it, a change that lowers the hours at once, and a
