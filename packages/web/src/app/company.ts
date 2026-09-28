@@ -306,7 +306,7 @@ export class CompanyController {
 	readonly #recoveryReads = new Map<string, { due: number; request: number }>();
 	/** The details RPC is not deployed on this cloud. */
 	#recoveriesMissing = false;
-	/** Members' unsent messages in the conversations they share (20260927180000). */
+	/** Members' unsent messages in the conversations they share (20260928000500). */
 	readonly roomDrafts: RoomDrafts;
 
 	constructor(api: CloudApi, profile: HostedProfile, userId: string, writeInput?: SessionInputWriter) {

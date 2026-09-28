@@ -375,7 +375,7 @@ profile RPCs; RLS is the second read boundary.
   Topic name from `qorpera_presence_topic_profile`. Agent presence over the
   live Company File (contract 5.2) will extend this channel at Order 4.
 - `qorpera-room-drafts-{roomId}` — shared drafts (migration
-  `20260927180000_room_shared_drafts`): a room member's unsent message, which
+  `20260928000500_room_shared_drafts`): a room member's unsent message, which
   the room's other members see and edit live. Private broadcast channel, event
   `draft`, payload `qorpera.room-draft/v1` (`ownerUserId`, `body`, `revision`,
   `editorUserId`, `contributors`, `updatedAt`). Members of the room receive it

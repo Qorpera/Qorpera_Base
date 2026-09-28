@@ -292,7 +292,7 @@ export class CloudApi {
 	}
 
 	// Shared drafts: a member's unsent message in a room, which the room's other
-	// members see and edit live (20260927180000). Only its owner sends it.
+	// members see and edit live (20260928000500). Only its owner sends it.
 
 	listRoomDrafts(roomId: string): Promise<RoomDraft[]> {
 		return listRoomDrafts(this.cloud, requiredUuid(roomId, "Room id").toLowerCase());

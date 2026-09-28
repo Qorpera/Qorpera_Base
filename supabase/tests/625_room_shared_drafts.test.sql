@@ -1,4 +1,4 @@
--- Shared drafts (20260927180000): a room member's unsent message, seen and edited
+-- Shared drafts (20260928000500): a room member's unsent message, seen and edited
 -- live by the room's other members, written only from its current revision, and
 -- pushed on a private topic that members receive and nobody publishes.
 

@@ -3,7 +3,7 @@ import type { Cloud } from "./client.ts";
 import { array, boundedInteger, CloudShapeError, record, timestamp, uuid } from "./parse.ts";
 import type { RealtimePhase } from "./realtime.ts";
 
-/* Shared drafts (20260927180000): a room member's unsent message, which the
+/* Shared drafts (20260928000500): a room member's unsent message, which the
  * room's other members see and edit live. The cloud orders every change by
  * revision and names the editor; the member's own browser sends the message,
  * as an ordinary room post, when it is ready. */
