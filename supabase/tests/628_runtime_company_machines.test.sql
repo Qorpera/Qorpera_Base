@@ -752,3 +752,29 @@ begin
 		and (select count(*) from public.qorpera_wake_occurrences where source_kind = 'machine-event') = 2,
 		'That run''s later events are held back');
 end $$;
+
+-- 20. A node gone for good: once its executor is disabled, an operator gives up its placements.
+--     Every allocation is released (its node's demand with it) after every placement is closed.
+do $$
+declare v_ids uuid[]; v_policy jsonb := (select policy from public.qorpera_machine_executors where owner = 'mx-b'); v_given integer;
+begin
+	select array_agg(id order by id) into v_ids from public.qorpera_company_machine_placements
+	where owner = 'mx-b' and removed_at is null;
+	perform pg_temp.wake_assert(cardinality(v_ids) >= 1 and exists (select 1 from public.qorpera_runtime_machine_allocations
+		where id = any(v_ids) and released_at is null), 'Node b still holds a placement');
+	perform pg_temp.wake_error($sql$select public.qorpera_abandon_machine_executor('mx-b',repeat('d',64))$sql$,'55000',
+		'Disable the machine executor first');
+	perform public.qorpera_configure_machine_executor('mx-b',repeat('d',64),false,v_policy,322122547200);
+	perform pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
+	perform pg_temp.wake_error($sql$select public.qorpera_abandon_machine_executor('mx-b',repeat('d',64))$sql$,'42501',
+		'Machine operator authority required');
+	perform pg_temp.path_claims('service_role');
+	v_given := public.qorpera_abandon_machine_executor('mx-b',repeat('d',64));
+	perform pg_temp.wake_assert(v_given = cardinality(v_ids)
+		and not exists (select 1 from public.qorpera_company_machine_placements where id = any(v_ids) and removed_at is null)
+		and not exists (select 1 from public.qorpera_runtime_machine_allocations where id = any(v_ids) and released_at is null)
+		and not exists (select 1 from public.qorpera_runtime_node_demands where allocation_id = any(v_ids)
+			and reserved_at is not null and released_at is null)
+		and public.qorpera_abandon_machine_executor('mx-b',repeat('d',64)) = 0,
+		'Every placement is given up and every allocation released, once: '||v_given||' of '||cardinality(v_ids));
+end $$;
