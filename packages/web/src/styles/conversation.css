@@ -177,8 +177,7 @@
 .decision-actions p { flex-basis: 100%; color: var(--text-muted); font-size: 11px; }
 /* Approval cards of agents' actions (auto-review, v130). The action leads, then the
  * change itself (who it reaches, what it is called, what it says); why it asks is one
- * quiet block, and the exact call waits under Technical details. Answered, the card
- * folds to one line. */
+ * quiet block, and the answer closes the card. Answered, the card folds to one line. */
 .action-review-card .review-headline { margin-top: 0; font-size: 15px; line-height: 1.35; }
 .review-change { display: grid; gap: 6px; margin: 8px 0 0; }
 .review-change > * { margin: 0; }
@@ -190,8 +189,10 @@
 .review-why p { margin: 0; }
 .review-reasons { margin: 4px 0 0; padding: 0; list-style: none; color: var(--text-muted); }
 .review-reasons li + li { margin-top: 2px; }
-.review-time { margin: 12px 0 0; }
+/* The answer closes the card: its buttons are the last thing in it. */
+.action-review-card .review-answer { margin-top: 12px; }
 /* An email to approve wears the thread's email card (email-draft-card.ts), read-only. */
+.review-email { overflow-wrap: anywhere; }
 .review-email .review-email-body { padding: 13px 16px; color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.55; }
 .review-email .review-why { margin: 10px 2px 0; }
 .review-email .review-waiting, .review-email .review-failed { margin-inline: 2px; }
@@ -203,7 +204,6 @@
 .review-mark.is-declined { background: var(--pane-strong); color: var(--text-muted); }
 .review-folded { margin: 0; color: var(--text-muted); font-size: 12.5px; }
 .review-folded-what { color: var(--text); }
-.review-call { max-height: 180px; margin: 8px 0 0; padding: 10px; overflow: auto; border-radius: 8px; background: #f1f1ef; font-size: 11px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .review-failed { margin: 10px 0 0; color: var(--danger, #b3261e); font-size: 12px; }
 .action-review-card:focus { outline: none; }
 .action-review-card:focus-visible { outline: 2px solid var(--focus, #3478f6); outline-offset: 2px; }

@@ -174,6 +174,41 @@ function reviewHeadline(card: ActionReviewCard): string {
 /** Sending an email: the card is the thread's email card (email-draft-card.ts), read-only. */
 const EMAIL_TOOLS = new Set(["gmail_send_message", "gmail_send_draft"]);
 
+/** The email exactly as the approval would send it, read from the call the card covers:
+ * every recipient and the whole text. The card's short facts (shortened to one line,
+ * without Cc) are only the fallback when the call cannot be read. */
+function emailFields(card: ActionReviewCard): {
+	to: string;
+	cc: string;
+	bcc: string;
+	subject?: string;
+	body?: string;
+} {
+	let input: Record<string, unknown> = {};
+	try {
+		const parsed: unknown = JSON.parse(card.arguments ?? "");
+		const inner =
+			parsed && typeof parsed === "object" && !Array.isArray(parsed) && "input" in parsed ? parsed.input : parsed;
+		if (inner && typeof inner === "object" && !Array.isArray(inner)) input = inner as Record<string, unknown>;
+	} catch {
+		/* The short facts below stand in. */
+	}
+	const list = (value: unknown) =>
+		Array.isArray(value)
+			? value.filter((item): item is string => typeof item === "string").join(", ")
+			: typeof value === "string"
+				? value
+				: "";
+	const detail = (...keys: string[]) => card.details.find(([key]) => keys.includes(key))?.[1];
+	return {
+		to: list(input.to) || card.target || "",
+		cc: list(input.cc),
+		bcc: list(input.bcc),
+		subject: typeof input.subject === "string" ? input.subject : detail("subject"),
+		body: typeof input.body === "string" ? input.body : detail("body", "text"),
+	};
+}
+
 /** Detail keys (as cloud-action-review.ts sends them) whose value is the content itself:
  * what would be said, written, asked of a worker or run on the computer. */
 const CONTENT_KEYS = new Set(["body", "text", "intent", "task", "command"]);
@@ -193,7 +228,7 @@ function reviewReason(card: ActionReviewCard): string {
 }
 
 /** The change itself: who or what it reaches, what it is called, and what it says.
- * Paths stay out of view; the exact call is under Technical details. */
+ * Paths stay out of view, and the call itself is never shown. */
 function reviewChange(card: ActionReviewCard): HTMLElement | null {
 	const fileTool = card.tool?.startsWith("company_") === true;
 	// A name the target already says (a Drive file's name) is not said twice.
@@ -225,14 +260,13 @@ export interface ActionReviewDraft {
 
 /**
  * An approval card of an agent's action (auto-review, kernel bundle v130): what
- * the agent wants to do, why it waits, and the exact call. The member it waits
+ * the agent wants to do and the change itself, and why it waits. The member it waits
  * for answers Allow once, Deny, or, on a built-in check's card, Always allow
  * with the proposed rule (editable) saved for the company. Everyone else sees
  * who it waits for.
  */
 export function renderActionReviewCard(
 	card: ActionReviewCard,
-	createdAt: string,
 	resolution: JsonValue | undefined,
 	options: {
 		/** Present only while this member may answer the card. */
@@ -373,8 +407,7 @@ export function renderActionReviewCard(
 	// An email the agent wants to send is shown as the email card the thread already has for
 	// drafts, read-only: sending it is allowing it.
 	if (EMAIL_TOOLS.has(card.tool ?? "")) {
-		const subject = card.details.find(([key]) => key === "subject")?.[1];
-		const body = card.details.find(([key]) => key === "body" || key === "text")?.[1];
+		const email = emailFields(card);
 		const row = (label: string, value: string) =>
 			h(
 				"div",
@@ -395,18 +428,17 @@ export function renderActionReviewCard(
 				"header",
 				{ class: "email-draft-heading" },
 				h("h3", null, t("New email")),
-				h(
-					"span",
-					{ class: "email-draft-status" },
-					options.answer ? t("Waiting for you") : t("Waiting for approval"),
-				),
+				// Whoever cannot answer reads who it waits for below; no second label here.
+				options.answer ? h("span", { class: "email-draft-status" }, t("Waiting for you")) : null,
 			),
 			h(
 				"div",
 				{ class: "email-draft-panel" },
-				card.target ? row(t("To"), card.target) : null,
-				subject ? row(t("Subject"), subject) : null,
-				body ? h("div", { class: "review-email-body" }, body) : null,
+				email.to ? row(t("To"), email.to) : null,
+				email.cc ? row(t("Cc"), email.cc) : null,
+				email.bcc ? row(t("Bcc"), email.bcc) : null,
+				email.subject ? row(t("Subject"), email.subject) : null,
+				email.body ? h("div", { class: "review-email-body" }, email.body) : null,
 			),
 			reasons,
 			failed,
@@ -452,6 +484,5 @@ export function renderActionReviewCard(
 					card.alwaysAllow ? always : null,
 				)
 			: h("p", { class: "review-waiting" }, waitingFor),
-		h("p", { class: "decision-attribution review-time" }, fmtTime(createdAt)),
 	);
 }

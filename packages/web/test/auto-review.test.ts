@@ -80,7 +80,7 @@ describe("the approval card", () => {
 
 	it("gives the member it waits for Deny, Allow once and Always allow with the rule to edit", () => {
 		const answer = vi.fn();
-		const el = renderActionReviewCard(issue, timestamp, undefined, { answer, memberName: names });
+		const el = renderActionReviewCard(issue, undefined, { answer, memberName: names });
 		expect(el.dataset.decisionState).toBe("pending");
 		expect(el.textContent).toContain("Company rule: sending any email outside the company");
 		expect(el.textContent).toContain("Personal rule: paying for anything");
@@ -88,6 +88,9 @@ describe("the approval card", () => {
 		// No technical fold: the card says what the action does, never the call.
 		expect(el.querySelector("details, pre, .review-call")).toBeNull();
 		expect(el.textContent).not.toContain("github_create_issue");
+		// No time of the request; the answer closes the card.
+		expect(el.querySelector(".decision-attribution")).toBeNull();
+		expect(el.lastElementChild?.classList.contains("review-answer")).toBe(true);
 		const buttons = [...el.querySelectorAll<HTMLButtonElement>(".review-answer > .decision-actions button")];
 		expect(buttons.map((button) => button.textContent)).toEqual(["Deny", "Always allow…", "Allow once"]);
 		buttons[2]!.click();
@@ -106,20 +109,19 @@ describe("the approval card", () => {
 	});
 
 	it("shows everyone else who it waits for, with no controls", () => {
-		const el = renderActionReviewCard(card, timestamp, undefined, { memberName: names });
+		const el = renderActionReviewCard(card, undefined, { memberName: names });
 		expect(el.querySelector("button")).toBeNull();
 		expect(el.querySelector(".review-waiting")?.textContent).toBe("Waiting for an owner or admin to approve.");
 		const personal = renderActionReviewCard(
 			{ ...card, approverScope: "member", approverUserId: id(2), approverName: "Anna" },
-			timestamp,
 			undefined,
 			{ memberName: names },
 		);
 		expect(personal.querySelector(".review-waiting")?.textContent).toBe("Waiting for Anna to approve.");
 		// A lost answer is news only to whoever answers the card.
-		const failed = renderActionReviewCard(card, timestamp, undefined, { memberName: names, answerFailed: true });
+		const failed = renderActionReviewCard(card, undefined, { memberName: names, answerFailed: true });
 		expect(failed.querySelector(".review-failed")).toBeNull();
-		const retry = renderActionReviewCard(card, timestamp, undefined, {
+		const retry = renderActionReviewCard(card, undefined, {
 			answer: vi.fn(),
 			memberName: names,
 			answerFailed: true,
@@ -150,7 +152,6 @@ describe("the approval card", () => {
 					["count", "3"],
 				],
 			},
-			timestamp,
 			undefined,
 			{ answer: vi.fn(), memberName: names },
 		);
@@ -159,6 +160,34 @@ describe("the approval card", () => {
 		expect(el.querySelector(".review-name")?.textContent).toBe("Sign-up fails on Safari");
 		expect(el.querySelector(".review-quote")?.textContent).toBe("Steps: open the page on iOS 15.");
 		expect(el.querySelector(".decision-facts")?.textContent).toBe("count3");
+	});
+
+	it("shows every recipient and the whole text from the exact call, not the shortened facts", () => {
+		const long = `${"Line one.\n".repeat(80)}The end.`;
+		const el = renderActionReviewCard(
+			{
+				...card,
+				details: [
+					["subject", "Short"],
+					["body", "Line one. Line one. …"],
+				],
+				arguments: JSON.stringify({
+					input: { to: ["anna@nordlys.dk"], cc: ["rival@example.com"], subject: "Launch", body: long },
+				}),
+			},
+			undefined,
+			{ answer: vi.fn(), memberName: names },
+		);
+		const rows = [...el.querySelectorAll(".email-draft-row")].map((row) => row.textContent);
+		expect(rows).toEqual(["Toanna@nordlys.dk", "Ccrival@example.com", "SubjectLaunch"]);
+		expect(el.querySelector(".review-email-body")?.textContent).toBe(long);
+		const unreadable = renderActionReviewCard(
+			{ ...card, arguments: "not json", details: [["body", "Fallback text"]] },
+			undefined,
+			{ answer: vi.fn(), memberName: names },
+		);
+		expect(unreadable.querySelector(".review-email-body")?.textContent).toBe("Fallback text");
+		expect(unreadable.querySelector(".email-draft-row")?.textContent).toBe("Tobob@acme.test");
 	});
 
 	it("shows an email to send as the thread's email card, where sending is allowing", () => {
@@ -171,7 +200,6 @@ describe("the approval card", () => {
 					["body", "Tuesday 10:00 instead."],
 				],
 			},
-			timestamp,
 			undefined,
 			{ answer, memberName: names },
 		);
@@ -189,8 +217,8 @@ describe("the approval card", () => {
 		expect(answer).toHaveBeenLastCalledWith("allow_once");
 		buttons[1]!.click();
 		expect(answer).toHaveBeenLastCalledWith("deny");
-		const waiting = renderActionReviewCard(card, timestamp, undefined, { memberName: names });
-		expect(waiting.querySelector(".email-draft-status")?.textContent).toBe("Waiting for approval");
+		const waiting = renderActionReviewCard(card, undefined, { memberName: names });
+		expect(waiting.querySelector(".email-draft-status")).toBeNull();
 		expect(waiting.querySelector(".review-waiting")?.textContent).toBe("Waiting for an owner or admin to approve.");
 	});
 
@@ -205,7 +233,6 @@ describe("the approval card", () => {
 				tool: "company_delete",
 				arguments: '{"path":"work/old-offer.md"}',
 			},
-			timestamp,
 			undefined,
 			{ answer: vi.fn(), memberName: names },
 		);
@@ -221,13 +248,12 @@ describe("the approval card", () => {
 				tool: "company_delete",
 				summary: 'It deletes "/work/old-offer.md" without being asked.',
 			},
-			timestamp,
 			undefined,
 			{ answer: vi.fn(), memberName: names },
 		);
 		expect(quoted.querySelector(".review-why p")?.textContent).toBe("It deletes “Old offer” without being asked.");
 		const odd = (target: string, summary: string) =>
-			renderActionReviewCard({ ...card, target, tool: "company_delete", summary }, timestamp, undefined, {
+			renderActionReviewCard({ ...card, target, tool: "company_delete", summary }, undefined, {
 				memberName: names,
 			}).querySelector(".review-why p")?.textContent;
 		expect(odd("/", "It deletes everything.")).toBe("It deletes everything.");
@@ -256,7 +282,6 @@ describe("the approval card", () => {
 					["task", "Draft the plan from the board memo."],
 				],
 			},
-			timestamp,
 			undefined,
 			{ answer: vi.fn(), memberName: names },
 		);
@@ -267,7 +292,6 @@ describe("the approval card", () => {
 	it("shows markup in an action as text", () => {
 		const email = renderActionReviewCard(
 			{ ...card, target: "<img src=x onerror=alert(3)>", details: [["body", "<script>alert(4)</script>"]] },
-			timestamp,
 			undefined,
 			{ answer: vi.fn(), memberName: names },
 		);
@@ -281,7 +305,6 @@ describe("the approval card", () => {
 					["body", "<script>alert(2)</script>"],
 				],
 			},
-			timestamp,
 			undefined,
 			{ answer: vi.fn(), memberName: names },
 		);
@@ -292,7 +315,6 @@ describe("the approval card", () => {
 	it("folds an answered card to one line naming what was decided", () => {
 		const el = renderActionReviewCard(
 			{ ...card, title: "Delete from the Company File", target: "work/old-offer.md", tool: "company_delete" },
-			timestamp,
 			{ decision: "approved", answer: { answer: "allow_once" }, answeredBy: id(1) },
 			{ answer: vi.fn(), memberName: names },
 		);
@@ -304,7 +326,6 @@ describe("the approval card", () => {
 	it("names who or what an answered action reached", () => {
 		const el = renderActionReviewCard(
 			card,
-			timestamp,
 			{ decision: "declined", answer: { answer: "deny" }, answeredBy: id(2) },
 			{ memberName: names },
 		);
@@ -314,7 +335,6 @@ describe("the approval card", () => {
 	it("shows the answer once given", () => {
 		const allowed = renderActionReviewCard(
 			card,
-			timestamp,
 			{ entry: { data: { decision: "approved", answer: { answer: "always_allow" }, answeredBy: id(1) } } },
 			{ answer: vi.fn(), memberName: names },
 		);
@@ -323,7 +343,6 @@ describe("the approval card", () => {
 		expect(allowed.querySelector(".review-outcome")?.textContent).toBe("Always allowed by Jonas.");
 		const declined = renderActionReviewCard(
 			card,
-			timestamp,
 			{ decision: "declined", answer: { answer: "deny" }, answeredBy: id(2) },
 			{ memberName: names },
 		);

@@ -1136,7 +1136,6 @@ export class ConversationView {
 				nodes.push(
 					renderActionReviewCard(
 						review,
-						item.createdAt,
 						decisions.get(item.id.toLowerCase())?.body ??
 							(given
 								? { decision: given.outcome, answer: given.answer, answeredBy: given.answeredBy ?? null }
