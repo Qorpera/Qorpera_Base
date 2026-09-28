@@ -2,13 +2,17 @@
 --
 -- A node is either serving or emptying. The switch is the node's existing `enabled` flag, so
 -- every placement that already skips a switched-off node keeps doing so: the placement
--- candidates (runs' node chooser, sign-ins, company machine fleet), the coding executor pick,
--- and the node ledger's admission (`NODE_DISABLED` for a new reservation or the wake of a
--- sleeping machine). Work already on the node keeps its reservation and finishes normally.
+-- candidates (runs' node chooser, sign-ins, company machine fleet), the fresh branch of the coding
+-- executor pick, and the node ledger's admission (`NODE_DISABLED` for a new reservation or the wake
+-- of a sleeping machine). Work already on the node finishes normally: a reservation the node holds
+-- (reserved and awake) passes admission again while the node empties, because coding turns and
+-- sign-ins re-ask it before each step.
 --
 --   * qorpera_set_runtime_node_serving: flips only `enabled`, with a reason, under the node's
---     version check. No company pause, no company lock; it waits for any node update that the
---     older signed updater (20260921010000) holds.
+--     version check, WITHOUT a new node version: the observer's inventory receipt names the node
+--     version, and a new one would refuse every admission, held ones included, until the next
+--     scan. `enabled` is not part of the inventory context. No company pause, no company lock; it
+--     refuses while the older signed updater (20260921010000) has any unresumed target.
 --   * The orchestrator claim skips orchestrators whose provider adapter belongs only to
 --     switched-off nodes. The shared execution host reserves no node demand, so without this
 --     it kept taking runs on an emptying node.
@@ -17,24 +21,26 @@
 --     When another orchestrator already holds an unexpired refuser-only wait on the job (any
 --     refusal of its own, a node preference included), every orchestrator waits, as before, so two
 --     full nodes do not trade the job back and forth.
---
--- Work bound to the node by a disk stays pinned while the node empties: runs of a member whose
--- login lives on the node (the identity-home rule, until logins move into the vault), a sleeping
--- machine's wake, a coding session on an awake member machine there, and a sign-in already routed
--- there. Those wait for the node to return; the switch needs no pause, but for them emptying acts
--- like one.
 --   * qorpera_runtime_node_drain_status: what is still on a node (runs, run machines, sign-ins,
---     awake and sleeping machines) and whether it is empty enough to update or to restart.
+--     coding turns, awake and sleeping machines) and whether it is empty enough to update or restart.
+--   * A coding executor on an emptying node starts no new coding turn; running turns finish.
+--
+-- New work bound to the node by a disk waits while the node empties: runs of a member whose login
+-- lives on the node (the identity-home rule, until logins move into the vault), a sleeping machine's
+-- wake, a new coding turn on a member machine there, and a sign-in already routed there. The switch
+-- needs no pause, but for that work emptying acts like one until the node returns.
 
+-- One row per switch. `version` is the node's policy version at the time (the switch keeps it).
 create table public.qorpera_runtime_node_serving_changes (
+	id bigint generated always as identity primary key,
 	node_id uuid not null references public.qorpera_runtime_nodes(id) on delete restrict,
 	version bigint not null,
 	serving boolean not null,
 	reason text not null check (char_length(btrim(reason)) between 1 and 200),
 	changed_at timestamptz not null default clock_timestamp(),
-	primary key (node_id, version),
 	foreign key (node_id, version) references public.qorpera_runtime_node_policies(node_id, version) on delete restrict
 );
+create index qorpera_runtime_node_serving_changes_node on public.qorpera_runtime_node_serving_changes (node_id, id desc);
 alter table public.qorpera_runtime_node_serving_changes enable row level security;
 revoke all on public.qorpera_runtime_node_serving_changes from public, anon, authenticated, service_role;
 
@@ -45,7 +51,7 @@ security definer
 set search_path = ''
 set lock_timeout = '5s'
 as $$
-declare v_node public.qorpera_runtime_nodes%rowtype; v_policy jsonb;
+declare v_node public.qorpera_runtime_nodes%rowtype;
 begin
 	if auth.role() is distinct from 'service_role' or p_node_id is null or p_serving is null
 		or p_expected_version is null or p_expected_version not between 1 and 9007199254740989
@@ -68,11 +74,9 @@ begin
 	if v_node.enabled = p_serving then
 		return jsonb_build_object('nodeId', p_node_id, 'version', v_node.version, 'serving', v_node.enabled, 'changed', false);
 	end if;
-	select policy into strict v_policy from public.qorpera_runtime_node_policies where node_id = p_node_id and version = v_node.version;
-	update public.qorpera_runtime_nodes set enabled = p_serving, version = v_node.version + 1, updated_at = clock_timestamp()
+	-- Same version: the inventory receipt stays valid, so held reservations keep passing admission.
+	update public.qorpera_runtime_nodes set enabled = p_serving, updated_at = clock_timestamp()
 	where id = p_node_id returning * into v_node;
-	insert into public.qorpera_runtime_node_policies(node_id, version, policy)
-	values (p_node_id, v_node.version, jsonb_set(v_policy, '{enabled}', to_jsonb(p_serving)));
 	insert into public.qorpera_runtime_node_serving_changes(node_id, version, serving, reason)
 	values (p_node_id, v_node.version, p_serving, btrim(p_reason));
 	return jsonb_build_object('nodeId', p_node_id, 'version', v_node.version, 'serving', p_serving, 'changed', true);
@@ -92,6 +96,42 @@ as $$
 	join public.qorpera_runtime_nodes node on node.id = provider.node_id
 	where provider.provider_kind = 'native' and provider.provider_id = p_provider_adapter
 $$;
+
+-- A reservation the node already holds (reserved, not suspended) passes admission again on an
+-- emptying node: coding turns and sign-ins re-ask before each step and must finish. New
+-- reservations and wakes of sleeping machines are still refused with NODE_DISABLED.
+do $admission$
+declare v_def text; v_old text; v_new text;
+begin
+	v_def := pg_get_functiondef('public.qorpera_reserve_runtime_node_machine(uuid,text,text,text,text,text,bigint,bigint)'::regprocedure);
+	v_old := $old$ if not v_node.enabled then v_reason:='NODE_DISABLED';$old$;
+	v_new := $new$ if not v_node.enabled and (v_demand.reserved_at is null or v_demand.suspended_at is not null) then v_reason:='NODE_DISABLED';$new$;
+	if (length(v_def) - length(replace(v_def, v_old, ''))) / length(v_old) <> 1 then
+		raise exception 'reserve_runtime_node_machine enabled check differs';
+	end if;
+	execute replace(v_def, v_old, v_new);
+end
+$admission$;
+
+-- An executor on an emptying node starts no new coding turn (a turn it is running keeps its lease and
+-- finishes; a lapsed one is still failed visibly). The node is the executor's NAS machine, as in the pick.
+do $coding$
+declare v_def text; v_old text; v_new text;
+begin
+	v_def := pg_get_functiondef('public.qorpera_claim_coding_session(text,integer)'::regprocedure);
+	v_old := $old$			update public.qorpera_coding_sessions set phase = 'preparing', lease_owner = p_owner, lease_token = extensions.gen_random_uuid(),$old$;
+	v_new := $new$			if exists (select 1 from public.qorpera_coding_executors executor
+				join public.qorpera_runtime_nodes node on node.machine_id_sha256 = executor.nas_machine_id_sha256
+				where executor.environment_id = v_session.environment_id and executor.owner = p_owner and not node.enabled) then
+				continue;
+			end if;
+$new$ || v_old;
+	if (length(v_def) - length(replace(v_def, v_old, ''))) / length(v_old) <> 1 then
+		raise exception 'claim_coding_session start differs';
+	end if;
+	execute replace(v_def, v_old, v_new);
+end
+$coding$;
 
 do $claim$
 declare v_def text; v_old text; v_new text;
@@ -123,8 +163,8 @@ begin
 			dispatch_deferred_until = statement_timestamp() + case when substr(btrim(p_error), 19) in (''NODE_NOT_PREFERRED'',''NODE_IDENTITY_ELSEWHERE'')
 				then interval ''5 seconds'' else interval ''15 seconds'' end,';
 	-- A node-local refusal (this node is full, retiring or switched off) leaves the job to the other
-	-- orchestrators at once. A second node-local refusal by another orchestrator inside the first
-	-- one's wait means no node has room: every orchestrator waits, as for any other refusal.
+	-- orchestrators at once, unless another orchestrator's refuser-only wait on the job (any refusal
+	-- of its own) is still running: then no node takes it, and every orchestrator waits.
 	v_new := '		set dispatch_refused_by = case
 				when substr(btrim(p_error), 19) in (''NODE_NOT_PREFERRED'',''NODE_IDENTITY_ELSEWHERE'') then p_orchestrator_id
 				when substr(btrim(p_error), 19) in (''SANDBOX_CAPACITY_EXHAUSTED'',''SANDBOX_RETIRING'',''NODE_DISABLED'',
@@ -163,7 +203,7 @@ begin
 	if auth.role() is distinct from 'service_role' then raise exception 'Operator access required' using errcode = '42501'; end if;
 	select * into v_node from public.qorpera_runtime_nodes where id = p_node_id;
 	if not found then raise exception 'Node is not configured' using errcode = '42501'; end if;
-	select * into v_change from public.qorpera_runtime_node_serving_changes where node_id = p_node_id order by version desc limit 1;
+	select * into v_change from public.qorpera_runtime_node_serving_changes where node_id = p_node_id order by id desc limit 1;
 	-- A claim is 'claimed'/'assigned' until its runner accepts, then stays 'accepted' while the job is
 	-- leased. A retried job keeps older accepted claims: only its newest one counts (claims by run, indexed).
 	select count(distinct active.job_id) into v_runs from (
@@ -211,7 +251,7 @@ begin
 		and exists (select 1 from public.qorpera_runtime_orchestrator_nodes(orchestrator.provider_adapter) n where n.node_id = p_node_id);
 	return jsonb_build_object('schema', 'qorpera.runtime-node-drain-status/v1', 'nodeId', p_node_id, 'label', v_node.label,
 		'version', v_node.version, 'serving', v_node.enabled,
-		'lastChange', case when v_change.node_id is null then null else jsonb_build_object('version', v_change.version,
+		'lastChange', case when v_change.id is null then null else jsonb_build_object('version', v_change.version,
 			'serving', v_change.serving, 'reason', v_change.reason, 'changedAt', v_change.changed_at) end,
 		'runs', v_runs, 'runMachines', v_run_machines, 'signIns', v_logins, 'codingTurns', v_coding,
 		'otherReservations', v_other, 'machinesAwake', v_awake, 'machinesAsleep', v_asleep, 'orchestrators', v_orchestrators,

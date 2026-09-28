@@ -108,3 +108,14 @@ test("retains existing managed office identity, reservation and projected state"
 	assert.equal(after.entries[1].state, "suspended");
 	assert.equal(plan.budget.requiredCpuMillis, 6000, "office stays charged in its ledger, not infrastructure headroom");
 });
+
+test("the printed budget includes a declared build space", () => {
+	const f = fixture();
+	f.context.policy = { ...f.context.policy, buildSpace: { project: "qorpera-build", network: "qorpera0", cpuMillis: 1000, memoryBytes: 1024 ** 3 } };
+	f.context.headroomCpuMillis = 9000;
+	f.context.headroomMemoryBytes = 33 * 1024 ** 3;
+	const plan = planNodeBuilderInventory(f);
+	assert.equal(plan.budget.requiredCpuMillis, 7000);
+	assert.equal(plan.budget.requiredMemoryBytes, 17 * 1024 ** 3);
+	assert.equal(plan.budget.remainingCpuMillis, 2000);
+});
