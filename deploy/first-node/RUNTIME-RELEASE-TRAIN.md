@@ -96,9 +96,14 @@ publishes a signed image.
 
 Which workflows run:
 
-- "Runtime release train" (`runtime-release-train.yml`) has no path filter. It
-  runs on every pull request, on pushes to master and `release/runtime-*`, and
-  by hand. It runs the derived-files guard on feature PRs, then
+- "Runtime release train" (`runtime-release-train.yml`) runs on every pull
+  request except a web-only one, on pushes to master and `release/runtime-*`,
+  and by hand. A web-only PR changes files only in `packages/web` and
+  `packages/member-web`, outside what the runtime tests read (the web's
+  `src/cloud` and `tsconfig.json`, its avatar scripts, member-web's `ui`); no
+  release-owned file lives there. A PR title or description edit does not run
+  it again; a base-branch change does. It runs the derived-files guard on
+  feature PRs, then
   `npm run check:runtime-bundle:release-train`, the generator test, the
   ephemeral runner packaging test and the guard's own test. A runtime-only
   feature PR matches no other workflow's paths, so this job is the one that

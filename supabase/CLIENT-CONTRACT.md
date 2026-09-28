@@ -445,7 +445,7 @@ machine.
 | Auth, profiles, membership, invitations, friends, presence | live | build fully |
 | Conversations: sessions, inputs, events, replay, Realtime | live (Order 1 mouth writes the canonical transcript) | build fully; render only send operations |
 | Approvals | `authorization_request` answered through `qorpera_answer_interaction` (bundle v75) | build the inbox; Approve and Decline call the answer RPC |
-| Auto-review rules and approval cards | kernel + runtime in bundle v130 | Settings → Rules; approval cards with Allow once / Deny / Always allow through `qorpera_answer_action_review`; show no live controls until v130 is live |
+| Auto-review rules and approval cards | kernel + runtime in bundle v130 | rules at the bottom of Settings → General; approval cards with Allow once / Deny / Always allow through `qorpera_answer_action_review`; show no live controls until v130 is live |
 | Thread interactions (typed cards) | kernel in bundle v75; runtime tool and web cards follow | render `interaction_request` events as cards; answer through the RPC |
 | Company File: published snapshots, objects, proposals | live | build browsing/review |
 | Company File: live logical paths with ACLs | Order 0 gateway in progress | read-only projection, then live |
@@ -913,8 +913,9 @@ above.
     deletions, hiring, routines, workers), a reviewer decides allow / ask /
     deny. An ask raises an `authorization_request` card of schema
     `qorpera.action-review/v1` in the conversation the agent works in (its
-    own thread or a plain conversation; never a group chat). The web needs a
-    Settings → Rules tab (the three rule RPCs) and live controls on these
-    cards (`qorpera_answer_action_review`, section 2). Older approval cards
-    without `reviewId` keep the v75 path.
+    own thread or a plain conversation; never a group chat). The web needs the
+    rules at the bottom of Settings → General (the three rule RPCs; web #360
+    replaced the first Rules tab) and live controls on these cards
+    (`qorpera_answer_action_review`, section 2). Older approval cards without
+    `reviewId` keep the v75 path.
 

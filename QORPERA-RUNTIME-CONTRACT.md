@@ -335,7 +335,14 @@ written), never the unconfirmed outcome kept for results that may have
 happened (2026-09-25). The gateway never invents parent folders: a write or
 mkdir whose folder does not exist is refused, normally before any bytes are
 staged, as `COMPANY_FILE_PARENT_MISSING` (nothing was written; create the
-folder, then repeat the call) (2026-09-26).
+folder, then repeat the call) (2026-09-26). A write of
+`organization/formation.json` that the organization projection would refuse
+over its current version (a skipped or backward stage, a revision other than
+one more, a completed formation reopened, or other fields) is normally refused
+before it becomes a proposal, as `COMPANY_FORMATION_REFUSED` (nothing was written; the
+result names the current stage and revision and the one allowed next write).
+The projection still enforces the rule when the proposal is approved
+(2026-09-28).
 
 The Company File is worked on as one live folder. Every agent and member
 edits the same live objects in place through the live mount or Company File
