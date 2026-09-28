@@ -323,8 +323,10 @@ export class CompanyComputerLinuxBoundary implements CompanyComputerGuestBoundar
 				signal,
 				5000,
 			);
-		} catch {
-			throw new Error("OFFICE_GUEST_READINESS_UNCONFIRMED");
+		} catch (cause) {
+			// The cause says whether the registry refused or gave no answer; the
+			// diagnostics projection keeps only constant codes from it.
+			throw new Error("OFFICE_GUEST_READINESS_UNCONFIRMED", { cause });
 		}
 	}
 }

@@ -1,4 +1,4 @@
-import type { CodingSession } from "../../cloud/coding-session.ts";
+import { type CodingSession, codingSessionSettled } from "../../cloud/coding-session.ts";
 import type { EmailDraftAction, EmailDraftContent } from "../../cloud/email-drafts.ts";
 import {
 	ACTION_REVIEW_SCHEMA,
@@ -20,7 +20,7 @@ import {
 	renderAuthorizationCard,
 } from "../../ui/authorization-card.ts";
 import { agentFigure } from "../../ui/avatar.ts";
-import { CodingSessionElement } from "../../ui/coding-session.ts";
+import { CodingSessionSlot, codingSessionLine, harnessMark } from "../../ui/coding-session.ts";
 import { CodingSessionThreadView } from "../../ui/coding-session-thread.ts";
 import {
 	conversationTimestampLabel,
@@ -28,12 +28,13 @@ import {
 	needsConversationTimestamp,
 	parseConversationTimestamp,
 } from "../../ui/conversation-timestamps.ts";
-import { fmtTime, h, icon, notice, replace } from "../../ui/dom.ts";
+import { fmtTime, h, icon, notice, personAvatar, replace } from "../../ui/dom.ts";
 import { groupChatAvatar, isGroupChat } from "../../ui/group-chat.ts";
 import { renderInteractionCard } from "../../ui/interaction-card.ts";
 import { matchesKey } from "../../ui/keys.ts";
 import { markdownBubbles } from "../../ui/markdown.ts";
-import { t } from "../../ui/preferences.ts";
+import { findMentions, type MentionTarget, matchTargets, mentionParts, mentionQuery } from "../../ui/mentions.ts";
+import { presentationLocale, t } from "../../ui/preferences.ts";
 import { quietScroll } from "../../ui/quiet-scroll.ts";
 import { ReceivedAttachments } from "../../ui/received-attachments.ts";
 import { runFailureCard, runFailureInterrupted, runFailureReason } from "../../ui/run-failure.ts";
@@ -48,6 +49,13 @@ import { GroupDetails } from "./group-details.ts";
 import { PairTranscriptView } from "./pair-transcript.ts";
 import { SessionExecutionView } from "./session-execution.ts";
 import { SessionRunView } from "./session-run.ts";
+import { SharedDrafts } from "./shared-drafts.ts";
+
+/* How often the thread re-reads its coding sessions while one is still going: the
+ * header's figures follow them. Nothing is read once they all settled. */
+const CODING_POLL_WORKING_MS = 2_500;
+const CODING_POLL_WAITING_MS = 6_000;
+const CODING_POLL_HIDDEN_MS = 20_000;
 
 // Popup dismissal lasts for this company controller, including conversation navigation.
 // It does not settle or discard work whose outcome still needs review.
@@ -80,6 +88,13 @@ export class ConversationView {
 	/** The messages' placeholder, one per load, so the log does not read it out again on each redraw. */
 	#messagesPlaceholder: HTMLElement | undefined;
 	readonly #composerShell: HTMLElement;
+	/** Other members' unsent messages above the composer, and who writes in this member's own. */
+	readonly #sharedDrafts: SharedDrafts;
+	/** Names to mention, shown while "@" and the start of a name are typed. */
+	readonly #mentionPicker: HTMLElement;
+	#mention: { start: number; end: number; options: MentionTarget[]; active: number } | undefined;
+	/** In a group chat, which agents will answer the message being written. */
+	readonly #mentionNote = h("p", { class: "composer-mention-note", role: "status", hidden: true });
 	readonly #attachments: AttachmentTray;
 	readonly #more: HTMLButtonElement;
 	readonly #menu: HTMLElement;
@@ -88,6 +103,17 @@ export class ConversationView {
 	readonly #attach: HTMLButtonElement;
 	readonly #attachNote: HTMLElement;
 	readonly #identity: HTMLButtonElement;
+	/** The coding sessions still going, beside the agent in the header. */
+	readonly #codingSlots = h("div", { class: "thread-coding-sessions" });
+	/** The other members who have this conversation open right now. */
+	readonly #here = h("div", { class: "thread-presence", role: "group", hidden: true });
+	#hereKey = "";
+	readonly #codingSlotViews = new Map<string, CodingSessionSlot>();
+	#codingPoll: ReturnType<typeof setTimeout> | undefined;
+	/** A read is on its way; the next one is scheduled when it lands, never beside it. */
+	#codingReading = false;
+	/** Reads that failed in a row; each one doubles the wait, up to eight times. */
+	#codingFailures = 0;
 	readonly #computer: HTMLButtonElement;
 	readonly #navigation: HTMLButtonElement;
 	readonly #body: HTMLElement;
@@ -128,15 +154,15 @@ export class ConversationView {
 	readonly #runNotification = h("div", { class: "thread-run-failure", hidden: true });
 	#runNotificationKey = "";
 	#receivedAttachments: ReceivedAttachments[] = [];
-	/** The coding sessions shown in this thread, one element per session, kept
-	 * across renders so each keeps its stream, its cursor and its open state. */
-	readonly #codingElements = new Map<string, CodingSessionElement>();
 	/** An approval card's Always allow editor, by review id: kept across re-renders. */
 	readonly #reviewDrafts = new Map<string, ActionReviewDraft>();
 	/** The approval card to give focus after the thread redraws (it was just answered). */
 	#focusReview: string | undefined;
 	readonly #emailCards = new Map<string, { key: string; element: HTMLElement }>();
-	/** A coding session opened as its own thread over this one, from its chip. */
+	/** Each coding session's line, kept while what it shows is the same, so a redraw keeps its focus. */
+	readonly #codingLines = new Map<string, { key: string; element: HTMLElement }>();
+	/** A coding session opened as its own thread over this one, from its line or its
+	 * figure in the header; focus returns to the opener when it closes. */
 	#codingThread: { workerId: string; view: CodingSessionThreadView } | undefined;
 	readonly #timestampTimer: number;
 	#timestampRows: { date: Date; node: HTMLElement; separator?: HTMLTimeElement }[] = [];
@@ -176,6 +202,7 @@ export class ConversationView {
 			placeholder: t("Message…"),
 			"aria-label": t("Message"),
 			onkeydown: (event: KeyboardEvent) => {
+				if (this.#mentionKey(event)) return;
 				if (matchesKey(event, "accept") && !event.shiftKey) {
 					event.preventDefault();
 					this.#submit();
@@ -184,7 +211,22 @@ export class ConversationView {
 			oninput: () => {
 				this.#autosize();
 				company.conversation(sessionId).set({ draft: this.#composer.value });
+				this.#sharedDrafts.input();
+				this.#updateMention();
 			},
+		});
+		// Moving the caret with the keys or a click opens or closes the names as well.
+		this.#composer.addEventListener("keyup", (event) => {
+			if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) this.#updateMention();
+		});
+		this.#composer.addEventListener("click", () => this.#updateMention());
+		this.#composer.addEventListener("blur", () => this.#closeMention());
+		this.#mentionPicker = h("div", {
+			class: "mention-picker",
+			role: "listbox",
+			id: `mention-picker-${sessionId}`,
+			hidden: true,
+			"aria-label": t("People and agents to mention"),
 		});
 		this.#send = h(
 			"button",
@@ -299,6 +341,7 @@ export class ConversationView {
 			this.#send,
 			fileInput,
 			this.#menu,
+			this.#mentionPicker,
 		);
 		this.#composerShell.addEventListener("paste", (event) => {
 			if (this.#composer.disabled) return;
@@ -320,7 +363,15 @@ export class ConversationView {
 			this.#composerShell.classList.remove("is-dragging");
 			if (!this.#composer.disabled && !this.#isRoom) this.#attachments.add([...(event.dataTransfer?.files ?? [])]);
 		});
-		this.#composerWrap = h("footer", { class: "composer" }, this.#composerShell, this.#attachments.status);
+		this.#sharedDrafts = new SharedDrafts(company, sessionId, this.#composer, () => this.#autosize());
+		this.#composerWrap = h(
+			"footer",
+			{ class: "composer" },
+			this.#sharedDrafts.el,
+			this.#composerShell,
+			this.#mentionNote,
+			this.#attachments.status,
+		);
 		this.#identity = h("button", {
 			type: "button",
 			class: "thread-identity",
@@ -354,7 +405,30 @@ export class ConversationView {
 			},
 			icon("navigation"),
 		);
-		this.#header.append(this.#navigation, this.#identity, this.#computer);
+		this.#header.append(this.#navigation, this.#identity, this.#codingSlots, this.#here, this.#computer);
+		// An open title pill lies over the figures after it; over one of them it steps aside,
+		// so that figure opens and a click there opens its own session.
+		const yieldTo = (event: PointerEvent) => {
+			const over = [...this.#codingSlots.children].find((slot) => {
+				const box = slot.getBoundingClientRect();
+				return (
+					event.clientX >= box.left &&
+					event.clientX < box.right &&
+					event.clientY >= box.top &&
+					event.clientY < box.bottom
+				);
+			});
+			for (const slot of this.#codingSlots.children)
+				slot.classList.toggle("coding-slot-yield", over !== undefined && slot !== over);
+		};
+		this.#codingSlots.addEventListener("pointermove", yieldTo, { signal: this.#lifetime.signal });
+		this.#codingSlots.addEventListener(
+			"pointerleave",
+			() => {
+				for (const slot of this.#codingSlots.children) slot.classList.remove("coding-slot-yield");
+			},
+			{ signal: this.#lifetime.signal },
+		);
 		this.#refreshFade = quietScroll(this.#messages);
 		this.#messages.addEventListener("scroll", () => {
 			const { scrollTop, scrollHeight, clientHeight } = this.#messages;
@@ -392,6 +466,17 @@ export class ConversationView {
 		window.addEventListener("qorpera-language-change", refreshTimestamps, { signal: this.#lifetime.signal });
 		window.addEventListener("qorpera-time-zone-change", refreshTimestamps, { signal: this.#lifetime.signal });
 		document.addEventListener("visibilitychange", refreshTimestamps, { signal: this.#lifetime.signal });
+		// Back on the tab: the next read of the header's coding figures comes at the visible pace, not the hidden tab's.
+		document.addEventListener(
+			"visibilitychange",
+			() => {
+				if (document.hidden || this.#codingPoll === undefined) return;
+				clearTimeout(this.#codingPoll);
+				this.#codingPoll = undefined;
+				this.#watchCodingSessions();
+			},
+			{ signal: this.#lifetime.signal },
+		);
 		document.addEventListener(
 			"click",
 			(event) => {
@@ -421,11 +506,12 @@ export class ConversationView {
 		else this.#panel?.detach();
 		this.#panel = undefined;
 		this.#attachments.dispose();
+		this.#sharedDrafts.dispose();
 		for (const attachments of this.#receivedAttachments) attachments.dispose();
 		this.#closeCodingSession();
-		for (const element of this.#codingElements.values()) element.dispose();
-		this.#codingElements.clear();
+		clearTimeout(this.#codingPoll);
 		this.#emailCards.clear();
+		this.#codingLines.clear();
 		for (const unsubscribe of this.#unsubscribe) unsubscribe();
 		this.#company.setOpenSession(undefined);
 	}
@@ -648,6 +734,177 @@ export class ConversationView {
 		this.#send.disabled = stop ? this.#run?.stopping === true : this.#submitting || this.#cannotSend;
 	}
 
+	/** Names that match the "@" being typed at the caret, shown above the composer. */
+	#updateMention(): void {
+		const composer = this.#composer;
+		const targets =
+			composer.disabled || composer.selectionStart !== composer.selectionEnd
+				? []
+				: this.#company.mentionTargets(this.#sessionId);
+		const query = targets.length ? mentionQuery(composer.value, composer.selectionStart) : undefined;
+		const options = query ? matchTargets(query.query, targets) : [];
+		this.#renderMentionNote();
+		if (!query || !options.length) {
+			this.#closeMention();
+			return;
+		}
+		const chosen = this.#mention?.options[this.#mention.active]?.id;
+		this.#mention = {
+			start: query.start,
+			end: composer.selectionStart,
+			options,
+			active: Math.max(
+				0,
+				options.findIndex((option) => option.id === chosen),
+			),
+		};
+		this.#renderMention();
+	}
+
+	#renderMention(): void {
+		const mention = this.#mention;
+		if (!mention) return;
+		const optionId = (index: number) => `${this.#mentionPicker.id}-${index}`;
+		replace(
+			this.#mentionPicker,
+			...mention.options.map((option, index) =>
+				h(
+					"div",
+					{
+						class: "mention-option",
+						role: "option",
+						id: optionId(index),
+						"aria-selected": String(index === mention.active),
+						// The composer keeps the keyboard: a click chooses without taking focus.
+						onmousedown: (event: MouseEvent) => {
+							event.preventDefault();
+							this.#chooseMention(index);
+						},
+						onmousemove: () => {
+							if (this.#mention && this.#mention.active !== index) {
+								this.#mention.active = index;
+								this.#renderMention();
+							}
+						},
+					},
+					option.kind === "agent"
+						? agentFigure(this.#company.staffById(option.id), option.name, { size: 26 })
+						: personAvatar(option.name, option.id),
+					h("span", { class: "mention-name" }, option.name),
+					h("small", null, option.kind === "agent" ? t("Agent") : t("Member")),
+				),
+			),
+		);
+		this.#mentionPicker.hidden = false;
+		this.#composer.setAttribute("aria-autocomplete", "list");
+		this.#composer.setAttribute("aria-controls", this.#mentionPicker.id);
+		this.#composer.setAttribute("aria-activedescendant", optionId(mention.active));
+	}
+
+	#closeMention(): void {
+		if (!this.#mention && this.#mentionPicker.hidden) return;
+		this.#mention = undefined;
+		this.#mentionPicker.hidden = true;
+		replace(this.#mentionPicker);
+		for (const name of ["aria-activedescendant", "aria-controls", "aria-autocomplete"])
+			this.#composer.removeAttribute(name);
+	}
+
+	/** Keys while names are shown: arrows choose, Enter or Tab puts the name in, Escape closes. */
+	#mentionKey(event: KeyboardEvent): boolean {
+		const mention = this.#mention;
+		if (!mention || event.isComposing) return false;
+		const step = event.key === "ArrowDown" ? 1 : event.key === "ArrowUp" ? -1 : 0;
+		if (step) {
+			event.preventDefault();
+			mention.active = (mention.active + step + mention.options.length) % mention.options.length;
+			this.#renderMention();
+			return true;
+		}
+		if ((matchesKey(event, "accept") || event.key === "Tab") && !event.shiftKey) {
+			event.preventDefault();
+			this.#chooseMention(mention.active);
+			return true;
+		}
+		if (matchesKey(event, "dismiss")) {
+			event.preventDefault();
+			event.stopPropagation();
+			this.#closeMention();
+			return true;
+		}
+		return false;
+	}
+
+	#chooseMention(index: number): void {
+		const option = this.#mention?.options[index];
+		if (!option) return;
+		const value = this.#composer.value;
+		// The text may have changed under the list (a teammate's words): read where the name starts now.
+		const end = this.#composer.selectionStart;
+		const query = this.#composer.selectionEnd === end ? mentionQuery(value, end) : undefined;
+		if (!query) {
+			this.#closeMention();
+			return;
+		}
+		const name = `@${option.name} `;
+		this.#composer.value = value.slice(0, query.start) + name + value.slice(end);
+		const caret = query.start + name.length;
+		this.#composer.focus();
+		this.#composer.setSelectionRange(caret, caret);
+		this.#closeMention();
+		this.#composer.dispatchEvent(new Event("input", { bubbles: true }));
+	}
+
+	/** In a group chat the agents a message names answer and the others stay quiet: say so as it is written. */
+	#renderMentionNote(): void {
+		const targets = this.#company.mentionTargets(this.#sessionId);
+		const named =
+			targets.filter((target) => target.kind === "agent").length > 1
+				? [
+						...new Map(
+							findMentions(this.#composer.value, targets)
+								.filter((mention) => mention.target.kind === "agent")
+								.map((mention) => [mention.target.id, mention.target.name]),
+						).values(),
+					]
+				: [];
+		const text = named.length
+			? t("Only {names} will answer", {
+					names: new Intl.ListFormat(presentationLocale(), { style: "long", type: "conjunction" }).format(named),
+				})
+			: "";
+		this.#mentionNote.hidden = !text;
+		if (this.#mentionNote.textContent !== text) this.#mentionNote.textContent = text;
+	}
+
+	/** Every name a message here may mention, this member's own included. */
+	#shownMentionTargets(): MentionTarget[] {
+		const me = this.#company.userId;
+		const own = this.#company.store.get().team?.members.find((member) => member.userId === me)?.displayName;
+		return [
+			...this.#company.mentionTargets(this.#sessionId),
+			...(own ? [{ kind: "member" as const, id: me, name: own }] : []),
+		];
+	}
+
+	/** A member's message with its mentions set apart, this member's own name most of all. */
+	#withMentions(text: string): (string | HTMLElement)[] {
+		const me = this.#company.userId;
+		return mentionParts(text, this.#shownMentionTargets()).map((part) =>
+			typeof part === "string"
+				? part
+				: h(
+						"span",
+						{
+							class: part.targets.some((target) => target.kind === "member" && target.id === me)
+								? "mention mention-me"
+								: "mention",
+						},
+						text.slice(part.start, part.end),
+					),
+		);
+	}
+
 	#submit(): void {
 		const text = this.#composer.value;
 		if (
@@ -744,6 +1001,8 @@ export class ConversationView {
 		this.#agentState = room ? "idle" : this.#company.agentState(session?.staffAgentId);
 		this.#working = this.#agentState === "working" || this.#agentState === "writing";
 		this.#renderHeader(session, agent);
+		this.#renderHere();
+		this.#renderCodingSlots(conversation.codingSessions ?? [], agent);
 		this.#renderMessages(
 			conversation,
 			room ? t("Agent reply") : (agent?.displayName ?? session?.title ?? t("Agent")),
@@ -778,6 +1037,12 @@ export class ConversationView {
 			this.#composer.value = conversation.draft ?? "";
 			this.#autosize();
 		}
+		if (this.#composer.disabled) this.#closeMention();
+		// A teammate's words can land in this composer (shared drafts) while names are shown:
+		// where the name being typed now starts is read again, or the names close.
+		else if (this.#mention && document.activeElement === this.#composer) this.#updateMention();
+		this.#renderMentionNote();
+		this.#sharedDrafts.update();
 	}
 
 	#renderHeader(session: HostedSession | undefined, agent: HostedStaffAgent | undefined): void {
@@ -833,6 +1098,46 @@ export class ConversationView {
 		if (!this.#panel && agent) {
 			const open = this.#panels.get(agent.id);
 			if (open && !open.attached) this.#showPanel(agent);
+		}
+	}
+
+	/** Faces of the other members looking at this conversation now, newest arrival last. */
+	#renderHere(): void {
+		const here = this.#company.presentIn(this.#sessionId);
+		const key = JSON.stringify(here);
+		if (key === this.#hereKey) return;
+		this.#hereKey = key;
+		this.#here.hidden = !here.length;
+		if (!here.length) {
+			replace(this.#here);
+			return;
+		}
+		const names = new Intl.ListFormat(presentationLocale(), { style: "long", type: "conjunction" }).format(
+			here.map((member) => member.name),
+		);
+		const label = here.length === 1 ? t("{name} is here", { name: names }) : t("{names} are here", { names });
+		this.#here.setAttribute("aria-label", label);
+		this.#here.title = label;
+		// Faces already shown stay put (a renamed member's is drawn anew); a new one grows in.
+		const kept = new Map(
+			[...this.#here.querySelectorAll<HTMLElement>(".person-avatar[data-user]")].map((face) => [
+				`${face.dataset.user}:${face.dataset.name}`,
+				face,
+			]),
+		);
+		const faces = here.slice(0, 3).map((member) => {
+			const face = kept.get(`${member.userId}:${member.name}`) ?? personAvatar(member.name, member.userId);
+			face.dataset.user = member.userId;
+			face.dataset.name = member.name;
+			return face;
+		});
+		const desired: Element[] = [...faces];
+		if (here.length > 3) desired.push(h("span", { class: "thread-presence-more" }, `+${here.length - 3}`));
+		for (const child of [...this.#here.children]) if (!desired.includes(child)) child.remove();
+		let cursor = this.#here.firstElementChild;
+		for (const node of desired) {
+			if (node !== cursor) this.#here.insertBefore(node, cursor);
+			cursor = node.nextElementSibling;
 		}
 	}
 
@@ -913,7 +1218,9 @@ export class ConversationView {
 		);
 		const key = JSON.stringify([
 			items,
-			codingSessions,
+			this.#shownMentionTargets(),
+			// Only what the line shows: the header's poll changes the rest every few seconds.
+			codingSessions.map((coding) => [coding.workerId, coding.harness, coding.title, coding.createdAt]),
 			agentName,
 			this.#isRoom,
 			answerable,
@@ -955,20 +1262,18 @@ export class ConversationView {
 			}
 		const nodes: HTMLElement[] = [];
 		this.#timestampRows = [];
-		// A coding session stands where the agent started it: before the first
-		// message written after it. Its element is reused, so the stream it
-		// follows and the body the member opened survive every re-render.
+		// A coding session stands where the agent started it, before the first
+		// message written after it: one line, like a message to a coworker.
 		let nextSession = 0;
 		const placeSessions = (before: string | undefined) => {
 			while (nextSession < codingSessions.length) {
 				const candidate = codingSessions[nextSession]!;
 				if (before !== undefined && candidate.createdAt.localeCompare(before) > 0) break;
 				nextSession += 1;
-				const element = this.#codingElement(candidate, agent, agentName);
-				if (this.#codingThread?.workerId === candidate.workerId) this.#codingThread.view.update(candidate);
-				nodes.push(element.el);
+				const line = this.#codingLine(candidate);
+				nodes.push(line);
 				const date = parseConversationTimestamp(candidate.createdAt);
-				if (date) this.#timestampRows.push({ date, node: element.el });
+				if (date) this.#timestampRows.push({ date, node: line });
 			}
 		};
 		for (const item of items) {
@@ -992,7 +1297,7 @@ export class ConversationView {
 					item.kind === "agent"
 						? markdownBubbles(item.text)
 						: item.text || !item.attachmentCount
-							? [h("div", { class: "text" }, item.text || t("(empty)"))]
+							? [h("div", { class: "text" }, ...(item.text ? this.#withMentions(item.text) : [t("(empty)")]))]
 							: [];
 				nodes.push(
 					h(
@@ -1088,7 +1393,6 @@ export class ConversationView {
 				nodes.push(
 					renderActionReviewCard(
 						review,
-						item.createdAt,
 						decisions.get(item.id.toLowerCase())?.body ??
 							(given
 								? { decision: given.outcome, answer: given.answer, answeredBy: given.answeredBy ?? null }
@@ -1191,12 +1495,8 @@ export class ConversationView {
 		placeSessions(undefined);
 		for (const id of this.#emailCards.keys())
 			if (!items.some((item) => item.kind === "interaction" && item.id === id)) this.#emailCards.delete(id);
-		for (const [workerId, element] of this.#codingElements) {
-			if (!codingSessions.some((session) => session.workerId === workerId)) {
-				element.dispose();
-				this.#codingElements.delete(workerId);
-			}
-		}
+		for (const workerId of this.#codingLines.keys())
+			if (!codingSessions.some((session) => session.workerId === workerId)) this.#codingLines.delete(workerId);
 		if (conversation.loading && !items.length) {
 			this.#messagesPlaceholder ??= messagesSkeleton();
 			nodes.push(this.#messagesPlaceholder);
@@ -1326,38 +1626,137 @@ export class ConversationView {
 		if (refocus) this.#status.querySelector<HTMLElement>(`[data-action="${refocus}"]`)?.focus();
 	}
 
-	#codingElement(
-		session: CodingSession,
-		agent: HostedStaffAgent | undefined,
-		agentName: string,
-	): CodingSessionElement {
-		const existing = this.#codingElements.get(session.workerId);
-		if (existing && !existing.disposed) {
-			existing.update(session);
-			return existing;
-		}
-		const element = new CodingSessionElement(session, {
-			...this.#codingOptions(agent, agentName),
-			open: () => this.#openCodingSession(session.workerId),
-		});
-		this.#codingElements.set(session.workerId, element);
+	/** A coding session in the thread: "Started a coding session in (mark) Codex",
+	 * one centered line that opens the session as its own thread. The node is kept
+	 * while its words are the same, so a keyboard user on it keeps focus. */
+	#codingLine(session: CodingSession): HTMLElement {
+		const { before, name, after } = codingSessionLine(session.harness);
+		const label = `${before}${name}${after}`;
+		const time = fmtTime(session.createdAt);
+		const key = JSON.stringify([label, session.title, time]);
+		const cached = this.#codingLines.get(session.workerId);
+		if (cached?.key === key) return cached.element;
+		const element = h(
+			"div",
+			{ class: "peer-link coding-line", dataset: { workerId: session.workerId } },
+			h(
+				"button",
+				{
+					type: "button",
+					class: "peer-chip",
+					title: `${session.title} · ${time}`,
+					// The title tells two sessions in one thread apart for a screen reader too.
+					"aria-label": t("{label}. Open the session", { label: `${label} · ${session.title}` }),
+					onclick: (event: MouseEvent) =>
+						this.#openCodingSession(session.workerId, event.currentTarget as HTMLElement),
+				},
+				before.trim() ? h("span", null, before.trim()) : null,
+				harnessMark(session.harness, 14),
+				h("span", null, name),
+				after.trim() ? h("span", null, after.trim()) : null,
+			),
+		);
+		this.#codingLines.set(session.workerId, { key, element });
 		return element;
 	}
 
-	/** What both the chip and the session's own thread need to render and act. */
+	/** The sessions still going sit beside the agent in the header, each a figure
+	 * that works while its session works; the figures are kept across renders so
+	 * their motion runs on. */
+	#renderCodingSlots(sessions: readonly CodingSession[], agent: HostedStaffAgent | undefined): void {
+		// The session open as its own thread takes the fresh listing too.
+		const open = this.#codingThread && sessions.find((session) => session.workerId === this.#codingThread?.workerId);
+		if (open) this.#codingThread?.view.update(open);
+		const going = [...sessions]
+			.filter((session) => !codingSessionSettled(session.phase))
+			.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+		const names = this.#codingNames(agent?.displayName ?? t("Agent"));
+		const slots = going.map((session) => {
+			let slot = this.#codingSlotViews.get(session.workerId);
+			if (!slot) {
+				slot = new CodingSessionSlot(session.workerId, (opener) =>
+					this.#openCodingSession(session.workerId, opener),
+				);
+				this.#codingSlotViews.set(session.workerId, slot);
+			}
+			slot.update(session, this.#company.staffById(session.agentId) ?? agent, names(session));
+			return slot;
+		});
+		for (const workerId of this.#codingSlotViews.keys())
+			if (!going.some((session) => session.workerId === workerId)) this.#codingSlotViews.delete(workerId);
+		const current = [...this.#codingSlots.children];
+		if (current.length !== slots.length || slots.some((slot, index) => current[index] !== slot.el)) {
+			const focused = this.#codingSlots.contains(document.activeElement)
+				? (document.activeElement as HTMLElement)
+				: undefined;
+			replace(this.#codingSlots, ...slots.map((slot) => slot.el));
+			// Moving the nodes drops focus to the page: back to the same figure, or to the agent if it left.
+			if (focused && document.activeElement !== focused)
+				(focused.isConnected ? focused : this.#identity.disabled ? this.#composer : this.#identity).focus({
+					preventScroll: true,
+				});
+		}
+		this.#codingSlots.hidden = !slots.length;
+		this.#watchCodingSessions();
+	}
+
+	/** Re-reads the thread's coding sessions on a clock while one is still going, so
+	 * the header's figures follow them; stops once they all settled. A new session or
+	 * a follow-up starts it again from the next render. */
+	#watchCodingSessions(): void {
+		if (this.#codingPoll !== undefined || this.#codingReading || this.#disposed) return;
+		const going = (this.#company.conversation(this.#sessionId).get().codingSessions ?? []).filter(
+			(session) => !codingSessionSettled(session.phase),
+		);
+		if (!going.length) return;
+		const pace = document.hidden
+			? CODING_POLL_HIDDEN_MS
+			: going.some((session) => session.phase !== "awaiting_input" && session.phase !== "queued")
+				? CODING_POLL_WORKING_MS
+				: CODING_POLL_WAITING_MS;
+		this.#codingPoll = setTimeout(
+			() => {
+				this.#codingPoll = undefined;
+				this.#codingReading = true;
+				void this.#company
+					.refreshCodingSessions(this.#sessionId)
+					.then(
+						() => {
+							this.#codingFailures = 0;
+						},
+						() => {
+							this.#codingFailures += 1;
+						},
+					)
+					.finally(() => {
+						this.#codingReading = false;
+						this.#watchCodingSessions();
+					});
+			},
+			pace * 2 ** Math.min(this.#codingFailures, 3),
+		);
+	}
+
+	/** The names a session's captions are written with; the owner is "you" for the owner. */
+	#codingNames(agentName: string) {
+		const company = this.#company;
+		return (current: CodingSession) => {
+			const ownerIsViewer = current.ownerUserId === company.userId;
+			return {
+				agent: company.staffById(current.agentId)?.displayName ?? agentName,
+				owner: ownerIsViewer ? t("you") : company.memberName(current.ownerUserId),
+				ownerIsViewer,
+			};
+		};
+	}
+
+	/** What the session's own thread needs to render and act. */
 	#codingOptions(agent: HostedStaffAgent | undefined, agentName: string) {
 		const sessionId = this.#sessionId;
 		const company = this.#company;
 		return {
 			agent,
-			names: (current: CodingSession) => {
-				const ownerIsViewer = current.ownerUserId === company.userId;
-				return {
-					agent: company.staffById(current.agentId)?.displayName ?? agentName,
-					owner: ownerIsViewer ? t("you") : company.memberName(current.ownerUserId),
-					ownerIsViewer,
-				};
-			},
+			names: this.#codingNames(agentName),
 			viewerOwns: (current: CodingSession) => current.ownerUserId === company.userId,
 			api: {
 				read: (workerId: string, afterEvent: number) => company.readCodingSession(workerId, afterEvent),
@@ -1367,7 +1766,6 @@ export class ConversationView {
 					company.delegateCodingSession(sessionId, workerId, clientRequestId),
 			},
 			signal: AbortSignal.any([this.#lifetime.signal, company.signal]),
-			changed: () => this.#pinToBottom(),
 			askAgent: this.#actions.sendMessage
 				? (text: string) => {
 						this.#closeCodingSession();
@@ -1379,9 +1777,9 @@ export class ConversationView {
 		};
 	}
 
-	/** Open a coding session as its own thread over this one, as a bot's message to
-	 * another bot opens; the chip stays in the conversation. */
-	#openCodingSession(workerId: string): void {
+	/** Open a coding session as its own thread over this one, as a message to a
+	 * coworker opens; the line stays in the conversation. */
+	#openCodingSession(workerId: string, opener?: HTMLElement): void {
 		if (this.#codingThread?.workerId === workerId) return;
 		this.#closeCodingSession();
 		const conversation = this.#company.conversation(this.#sessionId).get();
@@ -1394,7 +1792,11 @@ export class ConversationView {
 			...this.#codingOptions(agent, agent?.displayName ?? t("Agent")),
 			close: () => {
 				if (this.#codingThread?.view === view) this.#codingThread = undefined;
-				this.#codingElements.get(workerId)?.el.querySelector<HTMLButtonElement>(".coding-chip")?.focus();
+				// Back where the member opened it; the line if the header's figure went away meanwhile.
+				(opener?.isConnected
+					? opener
+					: this.#messages.querySelector<HTMLElement>(`.coding-line[data-worker-id="${workerId}"] .peer-chip`)
+				)?.focus();
 			},
 		});
 		this.#codingThread = { workerId, view };

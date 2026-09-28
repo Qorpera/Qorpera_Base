@@ -32,7 +32,7 @@ What does **not** change:
 | `/opt/qorpera/runner-orchestrator/qorpera-runner-orchestrator.mjs` | root | co-located orchestrator, talks to the service on loopback |
 | `/etc/qorpera/shared-execution.env`, `/etc/qorpera/shared-execution-credentials/` | root 0600/0700 | service configuration and its systemd credentials |
 | `/etc/qorpera/runner-orchestrator.env` | root 0600 | orchestrator configuration (`QORPERA_RUNNER_PROVIDER_URL=http://127.0.0.1:18450`) |
-| `/var/lib/qorpera/identities/<id>` | root, one mount each | attached Compute Identity volumes |
+| `/var/lib/qorpera/identities/<id>` | root, one mount each | attached Compute Identity volumes (the node's login gateway attaches them, see below) |
 | `/var/lib/qorpera-shared-execution/journals/<acquisition>.json` | root | live sandbox journal (`qorpera.shared-execution-journal/v1`); terminal ones move to `journals/archive/<acquisition>.<ms>.<state>.json` |
 | `/var/lib/qorpera-shared-execution/slots/<n>/host` | `qorpera-shared-host-<n>` | native host scratch (capsule opened here, wiped after the run) |
 | `/var/lib/qorpera-shared-execution/slots/<n>/runner/{state,workspace}` | `qorpera-shared-runner-<n>` | runner authority state and workspace |
@@ -119,6 +119,8 @@ lxc init <image-fingerprint> qorpera-exec-node02 --project qn25b2 --vm \
 lxc config device add qorpera-exec-node02 eth0 nic network=qorpera0 name=eth0 \
   security.ipv4_filtering=true security.ipv6_filtering=true \
   security.mac_filtering=true security.port_isolation=true --project qn25b2
+# Identity volumes that exist already; later ones are attached by the node's
+# login gateway (see "Identity volumes on the execution host").
 for id in <computeIdentityId...>; do
   lxc config device add qorpera-exec-node02 "identity-${id}" disk pool=qorpera-vm \
     source="phql-a1-identity-${id}" path="/var/lib/qorpera/identities/${id}" --project qn25b2
@@ -150,17 +152,213 @@ the service; the orchestrator is started by hand once the cut is live.
 The node's inventory observer pins the host's configuration digest (it
 includes the `image.*` keys), so a rebuild makes the node `unavailable` for
 placement and logins until the inventory policy is re-enrolled: recompute the
-digest from `lxc query /1.0/instances/<vm>?project=<project>` (type, profiles,
-config and expanded config without `volatile.*` keys, devices and expanded
-devices; sorted-key compact JSON), replace the policy with
+digest with `exec-host-inventory-digest.py` (below) from
+`lxc query /1.0/instances/<vm>?project=<project>`, replace the policy with
 `qorpera_replace_runtime_node_inventory(policy, previous_sha256)`, write the
 observer configuration and restart the observer. The host may carry no
-`user.qorpera.*` key other than `user.qorpera.management_vm`.
+`user.qorpera.*` key other than `user.qorpera.management_vm`. A rebuild keeps
+every device, the identity devices included (`rebuild-exec-host.sh` refuses to
+start the host if one went missing).
 
-A new member login on the node creates a new identity volume: attach it to
-the execution host (`lxc config device add …`, hot-pluggable for a running
-VM) before that member's first run; the service refuses a run whose identity
-is not mounted.
+## Identity volumes on the execution host (2026-09-27)
+
+A member's login lives on a Compute Identity volume that the node's login
+gateway creates (`<QORPERA_LXD_IDENTITY_VOLUME_PREFIX><uuid>` in
+`QORPERA_LXD_STORAGE_POOL`, project `QORPERA_LXD_PROJECT`), right after the
+node reserved a login machine for that sign-in, account refresh or recovery.
+The execution host reads it from exactly one disk device per identity, the
+shape operators attached by hand since the pilot:
+
+```
+identity-<uuid>: { type: disk, pool: <pool>, source: <prefix><uuid>,
+                   path: /var/lib/qorpera/identities/<uuid> }
+```
+
+No other key (no `readonly`, `required`, `shift`, mount options); read-write
+like the volume's every other mount (login VM, one-run guest). The execution
+service only reads it. The rule lives in
+`packages/runner-orchestrator/src/execution-host-identity.ts`.
+
+**Who attaches.** The node's LXD provider process (its login gateway), when
+`QORPERA_LXD_EXECUTION_HOST_INSTANCE` and `QORPERA_LXD_EXECUTION_HOST_PROJECT`
+are set (both or neither; the project must be the gateway's own, because
+identity volumes are per project on `qn25b2`):
+
+- right after it creates or finds the identity volume of a sign-in, account
+  refresh or recovery on this node, before the login VM exists; bounded at
+  30 s, and a failure is logged and never fails the login;
+- on every reconcile pass (every 5 s), a sweep retries that attach for every
+  login this node placed whose journal is still in the gateway's state root
+  (live, or released less than a day ago), when its volume is exactly the
+  gateway's: name `<prefix><uuid>`, custom filesystem volume, the configured
+  size and the markers `user.qorpera.schema=qorpera.compute-identity-volume/v1`,
+  `user.qorpera.compute_identity_id=<uuid>`,
+  `user.qorpera.provider_adapter=<this adapter>`. It never attaches a volume
+  for a login this node did not place (an admission refused, a volume made by
+  anything else).
+
+The host is read once; each missing identity is then its own change, decided
+on its own read and written under that read's ETag, so a concurrent writer
+(another attach, an operator) makes it retry from a fresh read rather than
+overwrite, and a volume LXD cannot hot-plug never holds up the others. It only
+adds devices: a device already named `identity-<uuid>` in any other shape (or
+from a profile) is logged as refused and left alone. A lasting problem is
+logged once a minute. LXD hot-plugs the disk into the running VM and its agent
+mounts it; a stopped host gets it at its next start. A run that arrives before
+the mount is deferred by the service (`NODE_IDENTITY_ELSEWHERE`, up to 2
+minutes), as before.
+
+**Inventory.** The node inventory policy entry of the host declares
+`"identityVolumes": {"pool": "<pool>", "sourcePrefix": "<prefix>"}` (virtual
+machines only; set through `qorpera_replace_runtime_node_inventory`). For that
+entry the observer leaves devices of exactly the shape above out of the
+configuration digest (only when the instance carries the device itself and its
+expanded form is identical) and reports their identities, sorted, as the
+entry's `identities`. Everything else in the entry stays exact: any other
+device, config key, profile, size or type change is still a difference and
+makes the node `unavailable`.
+
+Which identities the host may mount
+(`20260927190000_runtime_exec_host_identity_devices.sql`): those this node ever
+reserved a login or account-refresh machine for (`qorpera_runtime_node_demands`,
+kind `login`, reserved; released later or not) — the gateway creates an
+identity volume only right after that reservation. For a node whose policy
+declares an identity host the inventory context carries this set as
+`acceptedIdentities`; the observer marks the host `INSTANCE_AUTHORITY_DIFFERS`
+and publishes the node `unavailable` when any other identity is attached (the
+receipt names the identities), and the registry checks the same set again. It
+does not look at the identity's current home or status: a recovery in
+progress, a home moved to another node or a member who left never takes the
+node out. An `identities` report for an entry that does not declare
+`identityVolumes` is refused; without the declaration, an attach changes the
+digest exactly as before, and other nodes' context is unchanged.
+
+Digest for enrolment (read-only). Once the entry declares `identityVolumes`,
+every re-enrolment (each rebuild) **must** use this digest; the old full
+digest no longer matches and would take the node out. The operator wrappers
+must import `configuration()` from it (or copy it) instead of their own
+`shape()`:
+
+```sh
+lxc query '/1.0/instances/qorpera-exec-node02?project=qn25b2' \
+  | python3 deploy/shared-execution/exec-host-inventory-digest.py \
+      --pool qorpera-vm --source-prefix phql-a1-identity-
+# {"configurationSha256": "...", "identities": ["2742ef0f-…", "544fb8b7-…", "aba576d5-…"]}
+```
+
+Without `--pool/--source-prefix` it prints the old full digest (every device
+counted), for an entry without `identityVolumes`.
+
+**Detach.** Nothing detaches automatically. A device of an identity whose
+home moved to another node, or of a member who left, stays harmless: the
+service refuses a stale copy (recovery epoch marker) and the identity stays
+accepted, so it never takes the node out. To remove one (no live sandbox of
+that identity: check `journals/` and `warm/`), remove the device and, in the
+same step, rename or delete the volume, otherwise a sweep may put the device
+back within 5 s (while that identity has a placed journal in the gateway's
+state root):
+
+```sh
+lxc config device remove qorpera-exec-node02 identity-<uuid> --project qn25b2 \
+  && lxc storage volume rename qorpera-vm phql-a1-identity-<uuid> retired-identity-<uuid> --project qn25b2
+```
+
+Removing a device changes nothing in the digest. Renaming a volume makes the
+next login of that identity on this node create a fresh volume (and recover
+into it).
+
+### Rollout at a release cut (node 2)
+
+Two provider settings on node 2, next to the current
+`QORPERA_LXD_PROJECT=qn25b2`, `QORPERA_LXD_STORAGE_POOL=qorpera-vm`,
+`QORPERA_LXD_IDENTITY_VOLUME_PREFIX=phql-a1-identity-`:
+
+```
+QORPERA_LXD_EXECUTION_HOST_INSTANCE=qorpera-exec-node02
+QORPERA_LXD_EXECUTION_HOST_PROJECT=qn25b2
+```
+
+Both files, in the same step, before the provider restarts: the fixed
+launcher (`deploy/node-agent/qorpera-node-launch.py`) starts a role only when
+the env file's keys are exactly `node.json`'s fixed, secret and release keys
+and every fixed value matches.
+
+- `/etc/qorpera-node/provider.env.json`: add both under `env`;
+- `/etc/qorpera-node/node.json` (root, 0444): add both, same values, under
+  `roles.provider.fixed`.
+
+Node 1 has no execution host: leave both unset there.
+
+Before the pause, read-only: every identity device already on the host must
+be an accepted identity, or node 2 reads `unavailable` from step 4 on. Take
+the uuids from the host's `identity-*` devices (today 2742ef0f…, 544fb8b7…,
+aba576d5…); every row must say `true`:
+
+```sql
+-- node 2 = a139d86c-6134-426f-aea4-d9bb0e3122d1; uses the (node_id, allocation_id) index
+select v.id, exists(select 1 from public.qorpera_runtime_node_demands d
+    join public.qorpera_runtime_machine_allocations a on a.id = d.allocation_id
+  where d.node_id = 'a139d86c-6134-426f-aea4-d9bb0e3122d1' and d.provider_kind = 'login'
+    and d.reserved_at is not null and a.login_compute_identity_id = v.id) as accepted
+from unnest(array[<each device's uuid>]::uuid[]) v(id);
+```
+
+Any `false`: detach it (see Detach) before step 4, or leave `identityVolumes`
+undeclared until it is resolved.
+
+Order, inside the usual pause:
+
+1. SQL: `20260927190000_runtime_exec_host_identity_devices.sql` (three
+   function replacements: enrol, observe, inventory context). Old observers,
+   old policies and nodes without an identity host keep working unchanged.
+2. Node release apply on node 2: provider build with this change plus the two
+   settings above (both files); node observer package from the same source
+   (`scripts/package-runtime-node-observer.mjs`). An observer older than this
+   change cannot parse a policy that declares `identityVolumes`, so it must be
+   the new build before step 4.
+3. Execution host rebuild as usual (`rebuild-exec-host.sh`); it keeps and
+   checks the identity devices.
+4. Inventory: compute the digest with `exec-host-inventory-digest.py --pool
+   qorpera-vm --source-prefix phql-a1-identity-`, take the current policy, set
+   the exec host entry's `configurationSha256` to it and add
+   `"identityVolumes": {"pool": "qorpera-vm", "sourcePrefix": "phql-a1-identity-"}`
+   (once; later cuts keep it and only change the digest), replace it with
+   `qorpera_replace_runtime_node_inventory(policy, previous_sha256)`, write the
+   same policy into the observer configuration and restart the observer.
+5. Check: node 2's observation is `ready` and its latest inventory receipt
+   lists the exec host entry with `identities` = the devices on the host at
+   that moment (the pre-checked ones, plus any login attached since). Resume,
+   start the exec host orchestrator.
+   Older volumes: the sweep only retries logins whose journal is still in the
+   gateway's state root (released less than a day ago), so a volume from an
+   older login that nobody attached stays unattached, and that member's runs
+   keep failing until their next sign-in or refresh on node 2. List them
+   (`lxc storage volume list qorpera-vm --project qn25b2 -f csv -c n | grep
+   '^phql-a1-identity-'`, minus the host's `identity-*` devices), run the
+   pre-check query on their uuids, and attach each accepted one by hand in the
+   exact shape (now safe: the digest does not change and the identity is
+   accepted) or ask that member to refresh. Leave any not-accepted one alone.
+6. Acceptance: the next sign-in or account refresh on node 2 logs `attached
+   Compute Identity <uuid>` (new identity) or nothing (already attached); node
+   2 stays `ready` throughout; that member's first run is accepted on the exec
+   host without an operator.
+
+Rollback:
+
+- Attach only: remove the two settings from both files (`provider.env.json`
+  and `node.json` `roles.provider.fixed`) and restart the provider. Nothing
+  else changes; new logins need the manual attach again, which (with the
+  declared policy) no longer takes node 2 out as long as the identity is
+  accepted.
+- Everything: first replace the policy with the exec host entry without
+  `identityVolumes` and the full digest (`exec-host-inventory-digest.py`
+  without flags), update the observer configuration and restart it; then roll
+  the node release back. The two settings may stay in both files: an older
+  provider does not read them. The SQL can stay: it
+  accepts old observers and policies unchanged. To restore the previous
+  functions exactly, re-create them from
+  `20260908003900_runtime_node_inventory.sql` (enrol, context) and
+  `20260913000200_runtime_conflict_fences_and_lock_order.sql` (observe).
 
 ## Pilot findings (node 2, 2026-09-22)
 

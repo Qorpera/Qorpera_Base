@@ -38,30 +38,33 @@ export const AGENTS: Record<string, string> = {
 	"When {path} or anything under it changes": "Når {path} eller noget i den ændres",
 	"When {path} changes": "Når {path} ændres",
 	"{days} at {time} ({zone})": "{days} kl. {time} ({zone})",
+	"Every day at {time}": "Hver dag kl. {time}",
+	"Weekdays at {time}": "Hverdage kl. {time}",
+	"Weekends at {time}": "Weekender kl. {time}",
+	"{days} at {time}": "{days} kl. {time}",
+	Instruction: "Instruktion",
+	"When to run": "Hvornår den kører",
+	"Next run": "Næste kørsel",
+	"Last run": "Seneste kørsel",
+	"Pause routine": "Sæt rutinen på pause",
+	"Resume routine": "Genoptag rutinen",
+	"Only owners and admins can pause or resume routines.":
+		"Kun ejere og administratorer kan sætte rutiner på pause eller genoptage dem.",
 	"{every} between {start} and {end}, {days} ({zone})": "{every} mellem {start} og {end}, {days} ({zone})",
 	"{every} between {start} and {end} ({zone})": "{every} mellem {start} og {end} ({zone})",
 	"Routines could not be read. Refresh to try again.": "Rutinerne kunne ikke hentes. Opdater for at prøve igen.",
 	"New routine": "Ny rutine",
-	"Last run: {run}": "Seneste kørsel: {run}",
 	"Has not run yet": "Har ikke kørt endnu",
-	Active: "Aktiv",
-	Paused: "På pause",
 	Ended: "Afsluttet",
 	Done: "Færdig",
-	"Done: {reason}": "Færdig: {reason}",
-	"Next run: {time}": "Næste kørsel: {time}",
 	"Runs until {name} decides it is done": "Kører, indtil {name} beslutter, at den er færdig",
 	"The agent picks each next run": "Agenten vælger hver næste kørsel",
-	Pause: "Sæt på pause",
-	Resume: "Genoptag",
 	"Back to agent details": "Tilbage til agentdetaljer",
 	"Recurring work, on a schedule or when something happens.": "Fast arbejde efter en tidsplan, eller når noget sker.",
 	"Reading routines…": "Henter rutiner…",
 	"{name} has no routines yet.": "{name} har ingen rutiner endnu.",
 	"Routines will appear here.": "Rutiner vises her.",
 	"Your model accounts could not be read. Try again.": "Dine modelkonti kunne ikke hentes. Prøv igen.",
-	"Pausing…": "Sætter på pause…",
-	"Resuming…": "Genoptager…",
 	"The routine could not be changed. Try again.": "Rutinen kunne ikke ændres. Prøv igen.",
 	"Connect a model account in Settings first; a routine runs on the account of the member who last saved it.":
 		"Forbind først en modelkonto i Indstillinger; en rutine kører på kontoen hos det medlem, der sidst gemte den.",
@@ -150,29 +153,8 @@ export const AGENTS: Record<string, string> = {
 	"The group chat changes could not be saved.": "Ændringerne i gruppechatten kunne ikke gemmes.",
 
 	// Coding sessions (ui/coding-session.ts, ui/coding-session-thread.ts)
-	"{agent}'s coding session with you in {harness} needs your answer":
-		"Kodesessionen mellem {agent} og dig i {harness} venter på dit svar",
-	"{agent}'s coding session with {owner} in {harness} needs an answer from {owner}":
-		"Kodesessionen mellem {agent} og {owner} i {harness} venter på svar fra {owner}",
-	"{agent}'s coding session with you in {harness} opened a draft PR":
-		"Kodesessionen mellem {agent} og dig i {harness} åbnede en PR-kladde",
-	"{agent}'s coding session with {owner} in {harness} opened a draft PR":
-		"Kodesessionen mellem {agent} og {owner} i {harness} åbnede en PR-kladde",
-	"{agent}'s coding session with you in {harness} finished":
-		"Kodesessionen mellem {agent} og dig i {harness} er færdig",
-	"{agent}'s coding session with {owner} in {harness} finished":
-		"Kodesessionen mellem {agent} og {owner} i {harness} er færdig",
-	"{agent}'s coding session with you in {harness} failed":
-		"Kodesessionen mellem {agent} og dig i {harness} mislykkedes",
-	"{agent}'s coding session with {owner} in {harness} failed":
-		"Kodesessionen mellem {agent} og {owner} i {harness} mislykkedes",
-	"{agent}'s coding session with you in {harness} was cancelled":
-		"Kodesessionen mellem {agent} og dig i {harness} blev annulleret",
-	"{agent}'s coding session with {owner} in {harness} was cancelled":
-		"Kodesessionen mellem {agent} og {owner} i {harness} blev annulleret",
-	"{agent} started a coding session with you in {harness}": "{agent} startede en kodesession med dig i {harness}",
-	"{agent} started a coding session with {owner} in {harness}":
-		"{agent} startede en kodesession med {owner} i {harness}",
+	"Started a coding session in {harness}": "Startede en kodesession i {harness}",
+	"{label}. Open the session": "{label}. Åbn sessionen",
 	"less than a minute": "under et minut",
 	"{minutes} min": "{minutes} min",
 	"{hours} h {minutes} min": "{hours} t {minutes} min",
@@ -191,17 +173,12 @@ export const AGENTS: Record<string, string> = {
 	"Failed · workspace kept": "Mislykkedes · arbejdsområdet er gemt",
 	"Cancelled · workspace kept": "Annulleret · arbejdsområdet er gemt",
 	"Coding session": "Kodesession",
-	Hide: "Skjul",
-	Show: "Vis",
-	"Open the session as its own thread": "Åbn sessionen som sin egen tråd",
-	"managed by {name}": "styret af {name}",
-	"{count} earlier step": "{count} tidligere trin",
+	"Session transcript": "Sessionens forløb",
 	"{count} earlier steps": "{count} tidligere trin",
 	"Waiting for a computer to start the session.": "Venter på en computer, der kan starte sessionen.",
 	"Nothing reported yet.": "Intet meldt endnu.",
 	Step: "Trin",
 	"The session has a question.": "Sessionen har et spørgsmål.",
-	"{harness} asks": "{harness} spørger",
 	"You left it to {agent}": "Du overlod det til {agent}",
 	"{owner} left it to {agent}": "{owner} overlod det til {agent}",
 	"Draft PR #{number} opened": "PR-kladde #{number} åbnet",
@@ -223,23 +200,14 @@ export const AGENTS: Record<string, string> = {
 	"Follow up on the session": "Følg op på sessionen",
 	"Or answer in your own words": "Eller svar med dine egne ord",
 	"Follow up on this session": "Følg op på denne session",
-	"The session is working": "Sessionen arbejder",
 	Answer: "Svar",
-	"Your answer goes to {harness} and is recorded in this thread.":
-		"Dit svar går til {harness} og gemmes i denne tråd.",
-	"A follow-up starts the session again on the same branch. Uses your {harness} plan.":
-		"En opfølgning starter sessionen igen på samme branch. Bruger dit {harness}-abonnement.",
-	"You can talk to the session once it starts. Uses your {harness} plan.":
-		"Du kan tale med sessionen, når den starter. Bruger dit {harness}-abonnement.",
-	"The session is working; you can answer when it asks or follow up when it is done. Uses your {harness} plan.":
-		"Sessionen arbejder; du kan svare, når den spørger, eller følge op, når den er færdig. Bruger dit {harness}-abonnement.",
 	"Let {name} decide": "Lad {name} bestemme",
-	"Only {owner} can type here. Everyone else steers through {agent}. Uses {ownerName}'s {harness} plan.":
-		"Kun {owner} kan skrive her. Alle andre styrer via {agent}. Bruger {harness}-abonnementet hos {ownerName}.",
+	"Answer {harness}": "Svar {harness}",
+	"The session has not started yet": "Sessionen er ikke startet endnu",
+	"{harness} is working": "{harness} arbejder",
+	"This session takes no more messages": "Sessionen tager ikke imod flere beskeder",
+	"Only {owner} can write to this session. Steer it through {agent}.":
+		"Kun {owner} kan skrive til sessionen. Styr den via {agent}.",
 	"Back to the conversation": "Tilbage til samtalen",
-	"Your answers and follow-ups go to {harness}. Uses your {harness} plan.":
-		"Dine svar og opfølgninger går til {harness}. Bruger dit {harness}-abonnement.",
-	"This session is view-only. Only {owner} can type; steer it through {agent}.":
-		"Sessionen er skrivebeskyttet. Kun {owner} kan skrive; styr den via {agent}.",
 	"Loading group details": "Henter gruppedetaljer",
 };

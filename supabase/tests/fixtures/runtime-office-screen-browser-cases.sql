@@ -77,18 +77,32 @@ select pg_temp.wake_error($q$select pg_temp.sb_grant('desktop')$q$,'42501');
 select pg_temp.wake_error($q$select pg_temp.sb_grant('agent')$q$,'42501');
 reset role;
 savepoint sb_grace_member_profile;
-update public.qorpera_runtime_browser_profiles set company_owned=false where id=current_setting('qorpera_test.sb_profile')::uuid;
+-- Evaluated once: a per-row call would see the profile it just changed.
+update public.qorpera_runtime_browser_profiles set company_owned=false where id=(select (pg_temp.sb_grant()->'grant'->>'profileId')::uuid);
 set local role service_role;
 select pg_temp.wake_error($q$select pg_temp.sb_grant()$q$,'42501');
 reset role;
 rollback to savepoint sb_grace_member_profile;
 select pg_temp.wake_assert((select cardinality(present_member_ids)=0 from public.qorpera_runtime_office_browser_presence),'the lease alone established this presence');
+-- After the minute the company browser stays open but idle (no egress) with
+-- the same grant, until somebody entitled is present again. Still nothing opens.
+select set_config('qorpera_test.sb_present_grant',(pg_temp.sb_grant()->'grant')::text,true);
 select pg_temp.sb_age_presence();
 set local role service_role;
-select pg_temp.wake_error($q$select pg_temp.sb_grant()$q$,'42501');
+select pg_temp.wake_assert(pg_temp.sb_grant()=jsonb_build_object('state','idle','grant',current_setting('qorpera_test.sb_present_grant')::jsonb,
+	'validForMs',5000),'a check with nobody present after the minute answers idle with the same grant');
 select pg_temp.wake_error($q$select pg_temp.sb_grant('desktop')$q$,'42501');
+select pg_temp.wake_error($q$select pg_temp.sb_grant('agent')$q$,'42501');
 reset role;
-select pg_temp.wake_assert((select present_at<clock_timestamp()-interval '60 seconds' from public.qorpera_runtime_office_browser_presence),'a tolerated or refused check never renews the presence');
+savepoint sb_idle_member_profile;
+update public.qorpera_runtime_browser_profiles set company_owned=false
+	where id=(current_setting('qorpera_test.sb_present_grant')::jsonb->>'profileId')::uuid;
+set local role service_role;
+select pg_temp.wake_error($q$select pg_temp.sb_grant()$q$,'42501');
+reset role;
+rollback to savepoint sb_idle_member_profile;
+select pg_temp.wake_assert((select present_at<clock_timestamp()-interval '60 seconds' from public.qorpera_runtime_office_browser_presence),'a tolerated, idle or refused check never renews the presence');
+select pg_temp.wake_assert((select count(*)=1 from public.qorpera_runtime_office_browser_opens),'an idle check records no open');
 
 -- A watching member has no input permission and therefore opens nothing.
 select pg_temp.sb_observe();
@@ -157,12 +171,13 @@ select pg_temp.wake_error($q$select pg_temp.sb_grant('desktop')$q$,'42501');
 reset role;
 select pg_temp.sb_age_presence();
 set local role service_role;
-select pg_temp.wake_error($q$select pg_temp.sb_grant()$q$,'42501');
+select pg_temp.wake_assert(pg_temp.sb_grant()->>'state'='idle','a viewer lapsed for over a minute leaves the browser idle');
 reset role;
 rollback to savepoint sb_expired;
 
--- The tolerance never outlives a revocation or a fence. Each case starts from
--- the same lapsed viewer, which alone would still be tolerated.
+-- The tolerance never outlives a revocation or a fence: the check answers idle
+-- (no egress), never authorized. Each case starts from the same lapsed viewer,
+-- which alone would still be tolerated.
 create function pg_temp.sb_lapse() returns void language sql as $$
 	update public.qorpera_runtime_office_viewers set expires_at=clock_timestamp()-interval '1 second'
 		where id=(current_setting('qorpera_test.sb_viewer')::jsonb->>'viewerSessionId')::uuid
@@ -174,7 +189,7 @@ insert into public.qorpera_runtime_browser_membership_revocations(profile_id,use
 	values('30000000-0000-4000-8000-000000000010','30000000-0000-4000-8000-000000000001',1)
 	on conflict(profile_id,user_id) do update set version=qorpera_runtime_browser_membership_revocations.version+1;
 set local role service_role;
-select pg_temp.wake_error($q$select pg_temp.sb_grant()$q$,'42501');
+select pg_temp.wake_assert(pg_temp.sb_grant()->>'state'='idle','a new membership incarnation ends the tolerance');
 reset role;
 rollback to savepoint sb_grace_membership;
 -- A fence since the presence (what a drain, takeover or screen change leaves behind).
@@ -183,7 +198,7 @@ select pg_temp.sb_lapse();
 update public.qorpera_runtime_office_screens set shared_viewer_epoch=shared_viewer_epoch+1
 	where id=(current_setting('qorpera_test.sb_binding')::jsonb->>'screenId')::uuid;
 set local role service_role;
-select pg_temp.wake_error($q$select pg_temp.sb_grant()$q$,'42501');
+select pg_temp.wake_assert(pg_temp.sb_grant()->>'state'='idle','a fence since the presence ends the tolerance');
 reset role;
 rollback to savepoint sb_grace_fenced;
 -- A privacy version change since the presence.
@@ -192,23 +207,31 @@ select pg_temp.sb_lapse();
 update public.qorpera_runtime_offices set privacy_version=privacy_version+1
 	where id=(current_setting('qorpera_test.sb_binding')::jsonb->>'companyComputerId')::uuid;
 set local role service_role;
-select pg_temp.wake_error($q$select pg_temp.sb_grant()$q$,'42501');
+select pg_temp.wake_assert(pg_temp.sb_grant()->>'state'='idle','a privacy version change ends the tolerance');
 reset role;
 rollback to savepoint sb_grace_privacy;
--- A real takeover request: the pending drain refuses at once, tolerance or not.
+-- A real takeover request: the pending drain refuses at once, tolerance or not,
+-- and the member's takeover screen keeps no idle agent browser after the drain.
 savepoint sb_grace_drain;
 select pg_temp.sb_lapse();
 select pg_temp.sb_observe();
 select pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
 set local role authenticated;
-select public.qorpera_request_runtime_office_drain(current_setting('qorpera_test.office_scope')::jsonb,
+select set_config('qorpera_test.sb_drain',public.qorpera_request_runtime_office_drain(current_setting('qorpera_test.office_scope')::jsonb,
 	(current_setting('qorpera_test.sb_binding')::jsonb->>'screenId')::uuid,
 	(current_setting('qorpera_test.sb_binding')::jsonb->>'computerGeneration')::bigint,
 	(current_setting('qorpera_test.sb_binding')::jsonb->>'screenGeneration')::bigint,
-	current_setting('qorpera_test.sb_epoch')::bigint,true);
+	current_setting('qorpera_test.sb_epoch')::bigint,true)::text,true);
 reset role;
 select pg_temp.path_claims('service_role');
 set local role service_role;
+select pg_temp.wake_error($q$select pg_temp.sb_grant()$q$,'42501');
+select public.qorpera_ack_runtime_office_drain(current_setting('qorpera_test.office_scope')::jsonb,
+	(current_setting('qorpera_test.sb_binding')::jsonb->>'screenId')::uuid,
+	(current_setting('qorpera_test.sb_binding')::jsonb->>'computerGeneration')::bigint,
+	(current_setting('qorpera_test.sb_binding')::jsonb->>'screenGeneration')::bigint,
+	(current_setting('qorpera_test.sb_drain')::jsonb->>'epoch')::bigint,(current_setting('qorpera_test.sb_drain')::jsonb->>'drainId')::uuid);
+select pg_temp.wake_assert(public.qorpera_check_runtime_office_shared_surface(current_setting('qorpera_test.sb_binding')::jsonb)->>'state'='authorized','the drained takeover screen is still up');
 select pg_temp.wake_error($q$select pg_temp.sb_grant()$q$,'42501');
 reset role;
 rollback to savepoint sb_grace_drain;
@@ -232,7 +255,7 @@ select pg_temp.wake_error($q$select pg_temp.sb_grant('desktop')$q$,'42501');
 reset role;
 select pg_temp.sb_age_presence();
 set local role service_role;
-select pg_temp.wake_error($q$select pg_temp.sb_grant()$q$,'42501');
+select pg_temp.wake_assert(pg_temp.sb_grant()->>'state'='idle','after the tolerance the browser stays idle');
 select set_config('qorpera_test.sb_lease',(pg_temp.office_call('acquire')->'lease')::text,true);
 select pg_temp.wake_assert(pg_temp.sb_grant()->>'state'='authorized','the agent''s next lease uses the same screen browser authority');
 reset role;

@@ -88,6 +88,7 @@ const sendEvidence = { reply: null, fenced: null, interrupt: null, pending: null
 // Auto-review (v130): a reviewer thread started while the agent's tool call is open.
 const reviewThreadId = "thread_review";
 const reviewTurnId = "turn_review";
+let reviewClosingFence;
 const reviewEvidence = { reviewerThread: null, reviewerTurn: null, prewarm: null, verdictReply: null, closingFence: null, interrupt: null };
 const usage = (total = {}, last = {}) => ({
 	total: { inputTokens: 23, outputTokens: 7, cachedInputTokens: 3, cacheWriteInputTokens: 5, reasoningOutputTokens: 2, totalTokens: 30, ...total },
@@ -147,6 +148,8 @@ async function handle(message) {
 		if (mode === "unsafe-code-mode") configuration.features.code_mode.enabled = true;
 		if (mode === "nested-cloud-tools") configuration.features.code_mode.direct_only_tool_namespaces = [];
 		if (mode === "skill-route") configuration.orchestrator.skills.enabled = true;
+		if (mode === "fast-mode-off") configuration.features.fast_mode = false;
+		if (mode === "tier-dropped") delete configuration.service_tier;
 		write({ id: message.id, result: { config: configuration } });
 	} else if (message.method === "skills/list") {
 		write({ id: message.id, result: { data: [{ skills: mode === "extra-skills" ? [{ name: "PRIVATE_UNCONTROLLED_SKILL" }] : [], errors: [] }] } });
@@ -321,7 +324,7 @@ async function handle(message) {
 		const fenced = await fence(companyOutputs);
 		if (index + 1 < companyCalls.length) companyCall(index + 1);
 		else {
-			writeFileSync(evidencePath, JSON.stringify({ threadParameters, turnParameters, fenced, outputs: companyOutputs, cwd: process.cwd(), environmentKeys: Object.keys(process.env) }));
+			writeFileSync(evidencePath, JSON.stringify({ threadParameters, turnParameters, configuration, fenced, outputs: companyOutputs, cwd: process.cwd(), environmentKeys: Object.keys(process.env) }));
 			write({ method: "item/agentMessage/delta", params: { threadId, turnId, delta: "PRIVATE_OUTPUT_CANARY" } });
 			write({ method: "item/reasoning/summaryTextDelta", params: { threadId, turnId, delta: "PRIVATE_REASONING_CANARY" } });
 			done();
@@ -355,9 +358,12 @@ async function handle(message) {
 	} else if (message.id === "verdict_request") {
 		reviewEvidence.verdictReply = message;
 		// A closing request of the reviewer can still arrive before the interrupt lands.
-		reviewEvidence.closingFence = await fence([{ kind: "function_call_output", callId: "verdict_1", output: message.result.contentItems[0].text }], { threadId: reviewThreadId, turnId: reviewTurnId });
+		reviewClosingFence = fence([{ kind: "function_call_output", callId: "verdict_1", output: message.result.contentItems[0].text }], { threadId: reviewThreadId, turnId: reviewTurnId });
+		reviewEvidence.closingFence = await reviewClosingFence;
 	} else if (message.id === "review_tool") {
 		const mainFenced = await fence([{ kind: "function_call_output", callId: "email_1", output: message.result.contentItems[0].text }]);
+		// Readline handlers run concurrently: record the reviewer's closing fence before writing the evidence.
+		if (reviewClosingFence) reviewEvidence.closingFence = await reviewClosingFence;
 		writeFileSync(evidencePath, JSON.stringify({ ...reviewEvidence, mainThread: threadParameters, reply: message, mainFenced }));
 		done();
 	} else if (message.method === "turn/interrupt") {

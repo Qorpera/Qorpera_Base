@@ -61,7 +61,11 @@ import {
 	type CloudRuntimeToolOperation,
 	cloudRuntimeErrorCategory,
 } from "./cloud-runtime-observability.ts";
-import type { CloudRuntimeReasoningEffort } from "./cloud-runtime-policy.ts";
+import {
+	type CloudRuntimeReasoningEffort,
+	type CloudRuntimeServiceTier,
+	isCloudRuntimeServiceTier,
+} from "./cloud-runtime-policy.ts";
 import { type CloudSecretOperationClient, cloudSecretTools, describeCloudSecretTools } from "./cloud-secret-tools.ts";
 import { cloudSidebarTools } from "./cloud-sidebar-tools.ts";
 import {
@@ -140,18 +144,22 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		this.#coding = options.coding;
 	}
 
-	/** The effort of the last successful run per identity root: a spare starts with it. */
-	readonly #spareEfforts = new Map<string, CloudRuntimeReasoningEffort>();
+	/** The effort and tier of the last successful run per identity root: a spare starts with them. */
+	readonly #spareEfforts = new Map<
+		string,
+		{ reasoningEffort: CloudRuntimeReasoningEffort; serviceTier: CloudRuntimeServiceTier }
+	>();
 
 	/** Warm conversations: starts a spare Codex process for the next run on this identity root. */
 	prepareSpare(identityRoot: string, idleMs: number): void {
-		const reasoningEffort = this.#spareEfforts.get(identityRoot);
-		if (!reasoningEffort) return;
+		const settings = this.#spareEfforts.get(identityRoot);
+		if (!settings) return;
 		prepareCloudCodexSpare(
 			{
 				command: this.#command,
 				binarySha256: this.#sha256,
-				reasoningEffort,
+				reasoningEffort: settings.reasoningEffort,
+				serviceTier: settings.serviceTier,
 				identityRoot,
 				...(this.#isolation ? { isolation: this.#isolation } : {}),
 			},
@@ -212,6 +220,10 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			const context = parseCloudNativeCompanyContext(await contextRequest, binding);
 			stage = "bundle-compatibility";
 			assertCloudRuntimeBundle(context.identity, this.#sha256);
+			// This host's policy declares fast mode, so every run admitted under it names its tier.
+			const serviceTier = context.serviceTier;
+			if (!isCloudRuntimeServiceTier(serviceTier))
+				throw new Error("Admitted runtime bundle is not supported by this host");
 			// Every activation enters through the wake bus (contract 8): the admitted
 			// occurrence's typed envelope and kernel-owned reply policy, never a job flag.
 			stage = "wake-envelope";
@@ -398,6 +410,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				const result = await runCloudNativeRunToolSession({
 					observability,
 					binding,
+					serviceTier,
 					controlPlane: this.#control,
 					beginExecution: async (specification, requestSignal) => {
 						const toolCatalogText = cloudToolJsonText(specification, CLOUD_NATIVE_TOOL_CATALOG_BYTES);
@@ -461,6 +474,10 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 							request: cloudActionReviewRequest(context, wake),
 							holdMs: ["human", "room", "first-run"].includes(wake.kind) ? CLOUD_ACTION_REVIEW_HOLD_MS : 0,
 							connectorEffects: cloudConnectorEffects(connectorDescriptors),
+							facts: {
+								coworkers: new Map(context.coworkers.map((coworker) => [coworker.id, coworker.name])),
+								timeZone: wake.time.timeZone,
+							},
 							observability,
 						}),
 					tools: async (identity, operations, run) => {
@@ -552,7 +569,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				});
 				stage = "public-completion";
 				const delivery = await mouth.finish(wake.policy.final === "required");
-				this.#spareEfforts.set(identityRoot, context.identity.reasoningEffort);
+				this.#spareEfforts.set(identityRoot, { reasoningEffort: context.identity.reasoningEffort, serviceTier });
 				return { providerSessionId: result.providerSessionId, delivery };
 			} finally {
 				await mouth.close();
