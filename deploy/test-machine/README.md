@@ -64,3 +64,19 @@ names its containers per process.
 Access needs the key `~/.ssh/id_ed25519_qorpera_testvm` and SSH to `company41-node-02`.
 Override the target with `QORPERA_TEST_MACHINE`, `QORPERA_TEST_MACHINE_JUMP` and
 `QORPERA_TEST_MACHINE_KEY`.
+
+## Proof (2026-09-28, VM enrolled at node 2 version 23)
+
+| Check | Result |
+| --- | --- |
+| Network | Lease, DNS and HTTPS work. The NAS (192.168.1.40:22, :2049), a Tailscale peer, node 2's LAN and Tailscale addresses, the router, and the gateways of this and two other bridges are refused from the VM while node 2 itself reaches them. SSH from the node answers with an sshd banner |
+| `hosted-db` | Passed, 483 migrations and 148 tests. Suite 1 min 57 s, whole run 2 min 3 s including a 4.4 s copy. GitHub's `ubuntu-26.04` runner takes 2 min 35 s to 3 min 23 s for the same step, including the image pull |
+| `test-office-storage-inventory-linux.mjs` | Passed. `npm ci` 30 s with a cold cache, suite 1.1 s |
+| Docker | Rootful Docker 29.8.1 runs `hello-world` as `tester` |
+| Nested KVM | `/dev/kvm` present, all 6 vCPUs show `svm`, `kvm_amd` loaded, `KVM_GET_API_VERSION` 12 and `KVM_CREATE_VM` succeed (the check from `deploy/first-node/verify-azure-step2-pilot-kvm.sh`). A 1 vCPU / 1 GiB Ubuntu 26.04 VM inside it answers `lxc exec` 25.8 s after launch and reaches `running` at 32.3 s |
+
+**Known limit: the `scripts/*-systemd.mjs` suites.** They remount `/sys/fs/cgroup` read-write to boot
+systemd in a container. Docker's default AppArmor profile on Ubuntu refuses that mount ("cgroup is
+write-protected"), so as written they fail here and on any Ubuntu Docker host. They have only run on
+Docker Desktop, which has no AppArmor. The same container with `--security-opt apparmor=unconfined`
+boots systemd in under a second. They also need prepared, digest-pinned local images.
