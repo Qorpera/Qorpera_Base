@@ -147,7 +147,9 @@ begin
 		or (select prior_version from public.qorpera_folder_path_versions where version = v2) is distinct from v1 then
 		raise exception 'Path versions must keep each write with its prior version'; end if;
 	if (pg_temp.read('docs/a.txt') -> 'entry' ->> 'version')::uuid is distinct from v2
-		or pg_temp.read('docs/a.txt') -> 'entry' ->> 'mediaType' <> 'text/plain' then
+		or pg_temp.read('docs/a.txt') -> 'entry' ->> 'mediaType' <> 'text/plain'
+		or (pg_temp.read('docs/a.txt') -> 'entry' ->> 'updatedAt')::timestamptz is distinct from
+			(select updated_at from public.qorpera_folder_entries where environment_id = '63000000-0000-4000-8000-000000000020' and key_text = 'docs/a.txt') then
 		raise exception 'Read must show the current version: %', pg_temp.read('docs/a.txt'); end if;
 
 	r := pg_temp.commit(pg_temp.member(2), 'unit-parent-missing', jsonb_build_array(jsonb_build_object('op','write','path','nope/b.txt','file',a)));
@@ -269,6 +271,8 @@ begin
 		raise exception 'A one-level listing shows only children: %', l; end if;
 	l := public.qorpera_folder_list('63000000-0000-4000-8000-000000000020', pg_temp.member(2), 'agents', null, 100, true);
 	if jsonb_array_length(l -> 'entries') <> 4 then raise exception 'A subtree listing shows every descendant: %', l; end if;
+	if exists (select 1 from jsonb_array_elements(l -> 'entries') e where e ->> 'updatedAt' is null) then
+		raise exception 'Every listed entry carries its version''s time: %', l; end if;
 end $$;
 
 -- Review round 1: authority over every path a subtree unit touches, reserved names below the root, the stored

@@ -341,11 +341,14 @@ returns boolean language sql stable security definer set search_path = '' as $$
 		p_permission)
 $$;
 
+-- updatedAt is when the entry's current version was written: a mount's file time. A move or copy writes a
+-- new version, so it moves the time too.
 create function public.qorpera_folder_entry_json(p_path text, p_kind text, p_version uuid, p_seq bigint,
-	p_manifest text, p_file text, p_bytes bigint, p_media text, p_executable boolean)
+	p_manifest text, p_file text, p_bytes bigint, p_media text, p_executable boolean, p_updated_at timestamptz)
 returns jsonb language sql immutable set search_path = '' as $$
 	select jsonb_strip_nulls(jsonb_build_object('path', p_path, 'kind', p_kind, 'version', p_version, 'seq', p_seq,
-		'manifestSha256', p_manifest, 'fileSha256', p_file, 'bytes', p_bytes, 'mediaType', p_media, 'executable', p_executable))
+		'manifestSha256', p_manifest, 'fileSha256', p_file, 'bytes', p_bytes, 'mediaType', p_media, 'executable', p_executable,
+		'updatedAt', p_updated_at))
 $$;
 
 -- A new folder's contents as they will be stored: each takes its folders' spelling, rebuilt from the names
@@ -883,7 +886,7 @@ begin
 	select jsonb_build_object('schema','qorpera.folder-read/v1','asOfSeq',k.last_seq,
 			'found', e.path is not null,
 			'entry', case when e.path is not null then public.qorpera_folder_entry_json(e.path, e.kind, e.version, c.seq,
-				e.manifest_sha256, e.file_sha256, e.bytes, e.media_type, e.executable) end)
+				e.manifest_sha256, e.file_sha256, e.bytes, e.media_type, e.executable, e.updated_at) end)
 	into v_result
 	from public.qorpera_company_files f
 	join public.qorpera_folder_clocks k on k.environment_id = f.environment_id
@@ -927,7 +930,7 @@ begin
 	)
 	select jsonb_build_object('schema','qorpera.folder-list/v1', 'asOfSeq', k.last_seq,
 		'entries', coalesce((select jsonb_agg(public.qorpera_folder_entry_json(p.path, p.kind, p.version, p.commit_seq,
-			p.manifest_sha256, p.file_sha256, p.bytes, p.media_type, p.executable) order by p.key_text) from page p), '[]'::jsonb),
+			p.manifest_sha256, p.file_sha256, p.bytes, p.media_type, p.executable, p.updated_at) order by p.key_text) from page p), '[]'::jsonb),
 		'next', case when (select count(*) from page) = p_limit
 			then (select p.path from page p order by p.key_text desc limit 1) end)
 	into v_result
@@ -944,7 +947,7 @@ revoke all on function public.qorpera_company_file_core_guard(), public.qorpera_
 	public.qorpera_folder_member_allowed(uuid,uuid,uuid,text,text),
 	public.qorpera_folder_member_keys_allowed(uuid,uuid,uuid,text,text[],text),
 	public.qorpera_folder_member_subtree_allowed(uuid,uuid,uuid,text,text,text),
-	public.qorpera_folder_entry_json(text,text,uuid,bigint,text,text,bigint,text,boolean),
+	public.qorpera_folder_entry_json(text,text,uuid,bigint,text,text,bigint,text,boolean,timestamptz),
 	public.qorpera_folder_spelled_contents(text,jsonb),
 	public.qorpera_folder_lock_path(uuid,text,text),
 	public.qorpera_folder_apply_unit(uuid,uuid,integer,text,text,text,jsonb)
