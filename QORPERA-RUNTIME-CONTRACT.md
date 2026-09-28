@@ -2501,10 +2501,19 @@ pin. Any mismatch, revocation or recovery-epoch change ends the warm sandbox.
 The Codex process and its provider connection MAY be reused across those
 runs; each run starts a new provider thread.
 
+> **Amended 2026-09-28** (founder's approval of "Logins in the Vault", its
+> quick fix). A run saves the capsule back only when the run changed the
+> login, and only while the store still holds the login the run started from;
+> otherwise the newer stored login is kept. Several runs may use one login at
+> once and a renewal token works once, so saving after every run let an older
+> copy undo a renewal. Stateless Compute step 1 later removes saving from runs
+> entirely.
+
 Implementation notes (not part of the ratified text): the warm host reuses a
-kept capsule root only while the stored capsule is byte for byte the one it
-uploaded last; otherwise it wipes the root and opens the stored capsule
-afresh. When a run ends, everything but the capsule's own credential files is
+kept capsule root only while the stored capsule is byte for byte the one that
+root was opened from or last saved as; otherwise it wipes the root and opens
+the stored capsule afresh. A change to the kept root between runs (a spare
+renewing its login) counts as the next run's change. When a run ends, everything but the capsule's own credential files is
 removed from the kept root. A spare Codex process started for the next run
 completes its handshake before that run exists and accepts no thread, turn,
 tool call or provider request until the run is bound; its own state files in
