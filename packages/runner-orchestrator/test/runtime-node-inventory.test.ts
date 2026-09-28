@@ -509,6 +509,365 @@ describe("shared execution host identity devices (2026-09-27)", () => {
 	});
 });
 
+describe("image build space (identical nodes, 2026-09-28)", () => {
+	const space = { project: "qorpera-build", network: "qorpera0", cpuMillis: 2000, memoryBytes: 4 * 1024 ** 3 };
+	function builder(name: string, cpu = "1", memory = "2GiB"): TestInstance {
+		const config = {
+			"limits.cpu": cpu,
+			"limits.memory": memory,
+			"volatile.uuid": randomUUID(),
+			"boot.autostart": "false",
+			"user.qorpera.image_builder": "true",
+			"user.qorpera.purpose": "runtime-image",
+		};
+		const devices = { root: { type: "disk", path: "/", pool: "qorpera-vm", size: "80GiB" } };
+		return {
+			name,
+			project: space.project,
+			location: "none",
+			type: "virtual-machine",
+			config,
+			expandedConfig: { ...config },
+			devices,
+			expandedDevices: {
+				...devices,
+				eth0: {
+					type: "nic",
+					network: "qorpera0",
+					name: "eth0",
+					"security.mac_filtering": "true",
+					"security.ipv4_filtering": "true",
+					"security.ipv6_filtering": "true",
+					"security.port_isolation": "true",
+				},
+			},
+			profiles: ["default"],
+			status: "Running",
+			statusCode: 103,
+		};
+	}
+	function withSpace() {
+		const f = fixture();
+		f.context.policy = f.policy = { ...f.policy, buildSpace: { ...space } };
+		return f;
+	}
+	it("accepts a builder and its verifier inside the declared space and keeps the node ready", () => {
+		const f = withSpace();
+		expect(reconcileRuntimeNodeInventory(f.inventory, f.context).state).toBe("ready");
+		f.inventory.instances.push(builder("image-build"), builder("image-verify"));
+		const result = reconcileRuntimeNodeInventory(f.inventory, f.context);
+		expect(result.state).toBe("ready");
+		expect(result.entries.slice(4).map((e) => [e.category, e.reason, e.cpuMillis, e.allocation])).toEqual([
+			["build", null, 1000, null],
+			["build", null, 1000, null],
+		]);
+		// Stopped build machines keep their charge.
+		f.inventory.instances[4].status = "Stopped";
+		f.inventory.instances[4].statusCode = 102;
+		expect(reconcileRuntimeNodeInventory(f.inventory, f.context).state).toBe("ready");
+	});
+	it("accepts the image lane's exact builder: no profiles, its own root, the isolation NIC", () => {
+		const f = withSpace(),
+			config = {
+				"limits.cpu": "4",
+				"limits.memory": "8GiB",
+				"boot.autostart": "false",
+				"volatile.uuid": randomUUID(),
+				"volatile.base_image": "e".repeat(64),
+				"volatile.eth0.hwaddr": "00:16:3e:00:00:01",
+				"image.os": "Ubuntu",
+				"image.user.qorpera.source_commit": "f".repeat(40),
+			},
+			root = { type: "disk", path: "/", pool: "qorpera-vm", size: "80GiB" },
+			nic = {
+				type: "nic",
+				network: "qorpera0",
+				name: "eth0",
+				"security.mac_filtering": "true",
+				"security.ipv4_filtering": "true",
+				"security.ipv6_filtering": "true",
+				"security.port_isolation": "true",
+			};
+		f.inventory.instances.push({
+			name: "qorpera-native142-build-phql-a1",
+			project: space.project,
+			location: "none",
+			type: "virtual-machine",
+			config,
+			expandedConfig: { ...config },
+			devices: { root, eth0: nic },
+			expandedDevices: { root, eth0: nic },
+			profiles: [],
+			status: "Stopped",
+			statusCode: 102,
+		});
+		f.context.policy = f.policy = {
+			...f.policy,
+			buildSpace: { ...space, cpuMillis: 4000, memoryBytes: 8 * 1024 ** 3 },
+		};
+		f.context.headroomCpuMillis = 5000;
+		f.context.headroomMemoryBytes = 9 * 1024 ** 3;
+		const result = reconcileRuntimeNodeInventory(f.inventory, f.context);
+		expect(result.entries[4]).toMatchObject({ category: "build", reason: null });
+		expect(result.state).toBe("ready");
+	});
+	it("refuses build machines beyond the declared space", () => {
+		const f = withSpace();
+		f.inventory.instances.push(builder("image-build", "2"), builder("image-verify"));
+		const result = reconcileRuntimeNodeInventory(f.inventory, f.context);
+		expect(result.state).toBe("unavailable");
+		expect(result.entries.slice(4).map((e) => e.reason)).toEqual(["BUILD_SPACE_EXCEEDED", "BUILD_SPACE_EXCEEDED"]);
+		const g = withSpace();
+		g.inventory.instances.push(builder("image-build", "1", "5GiB"));
+		expect(reconcileRuntimeNodeInventory(g.inventory, g.context).entries[4].reason).toBe("BUILD_SPACE_EXCEEDED");
+	});
+	it.each<[string, (i: TestInstance) => void]>([
+		[
+			"a container",
+			(i) => {
+				i.type = "container";
+			},
+		],
+		[
+			"no CPU limit",
+			(i) => {
+				delete i.expandedConfig["limits.cpu"];
+			},
+		],
+		[
+			"a runtime marker",
+			(i) => {
+				i.expandedConfig["user.qorpera.schema"] = "qorpera.native-job-vm/v1";
+			},
+		],
+		[
+			"the management marker",
+			(i) => {
+				i.config["user.qorpera.management_vm"] = "true";
+			},
+		],
+		[
+			"a false builder marker",
+			(i) => {
+				i.expandedConfig["user.qorpera.image_builder"] = "false";
+			},
+		],
+		[
+			"raw hypervisor settings",
+			(i) => {
+				i.expandedConfig["raw.qemu"] = "-device vfio-pci";
+			},
+		],
+		[
+			"a host path",
+			(i) => {
+				i.expandedDevices.src = { type: "disk", source: "/srv/company", path: "/mnt" };
+			},
+		],
+		[
+			"an identity volume",
+			(i) => {
+				i.devices.id = { type: "disk", pool: "qorpera-vm", source: "phql-a1-identity-x", path: "/i" };
+			},
+		],
+		[
+			"a second root",
+			(i) => {
+				i.expandedDevices.root = { type: "disk", path: "/", pool: "p", source: "/dev/sda" };
+			},
+		],
+		[
+			"a proxy",
+			(i) => {
+				i.expandedDevices.p = { type: "proxy", listen: "tcp:0.0.0.0:80", connect: "tcp:127.0.0.1:80" };
+			},
+		],
+		[
+			"a physical NIC",
+			(i) => {
+				i.expandedDevices.eth1 = { type: "nic", nictype: "physical", parent: "enp1s0" };
+			},
+		],
+		[
+			"a macvlan NIC",
+			(i) => {
+				i.expandedDevices.eth0 = { ...i.expandedDevices.eth0, nictype: "macvlan", parent: "nas-vlan" };
+			},
+		],
+		[
+			"an undeclared network",
+			(i) => {
+				i.expandedDevices.eth0 = { ...i.expandedDevices.eth0, network: "lxdbr0" };
+			},
+		],
+		[
+			"MAC filtering off",
+			(i) => {
+				i.expandedDevices.eth0 = { ...i.expandedDevices.eth0, "security.mac_filtering": "false" };
+			},
+		],
+		[
+			"port isolation off",
+			(i) => {
+				i.expandedDevices.eth0 = { ...i.expandedDevices.eth0, "security.port_isolation": "false" };
+			},
+		],
+		[
+			"a guest API setting",
+			(i) => {
+				i.expandedConfig["security.devlxd.management.volumes"] = "true";
+			},
+		],
+		[
+			"cloud-init user data",
+			(i) => {
+				i.config["cloud-init.user-data"] = "#cloud-config";
+			},
+		],
+		[
+			"stateful migration",
+			(i) => {
+				i.expandedConfig["migration.stateful"] = "true";
+			},
+		],
+		[
+			"autostart",
+			(i) => {
+				i.expandedConfig["boot.autostart"] = "true";
+			},
+		],
+		[
+			"raw settings in its own config only",
+			(i) => {
+				i.config["raw.qemu"] = "-device x";
+			},
+		],
+		[
+			"a root disk without a size",
+			(i) => {
+				i.expandedDevices.root = { type: "disk", path: "/", pool: "qorpera-vm" };
+			},
+		],
+		[
+			"no root disk",
+			(i) => {
+				delete i.expandedDevices.root;
+			},
+		],
+		[
+			"two root disks",
+			(i) => {
+				i.expandedDevices.root2 = { type: "disk", path: "/", pool: "qorpera-vm", size: "1GiB" };
+			},
+		],
+		[
+			"IPv4 filtering off",
+			(i) => {
+				i.expandedDevices.eth0 = { ...i.expandedDevices.eth0, "security.ipv4_filtering": "false" };
+			},
+		],
+		[
+			"IPv6 filtering off",
+			(i) => {
+				i.expandedDevices.eth0 = { ...i.expandedDevices.eth0, "security.ipv6_filtering": "false" };
+			},
+		],
+		[
+			"no port isolation",
+			(i) => {
+				const { "security.port_isolation": _isolation, ...nic } = i.expandedDevices.eth0;
+				i.expandedDevices.eth0 = nic;
+			},
+		],
+		[
+			"an empty root size",
+			(i) => {
+				i.expandedDevices.root = { ...i.expandedDevices.root, size: "" };
+			},
+		],
+		[
+			"a GPU",
+			(i) => {
+				i.expandedDevices.g = { type: "gpu" };
+			},
+		],
+	])("refuses a build machine with %s", (_, change) => {
+		const f = withSpace(),
+			i = builder("image-build");
+		change(i);
+		f.inventory.instances.push(i);
+		const result = reconcileRuntimeNodeInventory(f.inventory, f.context);
+		expect(result.entries[4]).toMatchObject({ category: "build", reason: "INSTANCE_AUTHORITY_DIFFERS" });
+		expect(result.state).toBe("unavailable");
+	});
+	it("treats a runtime guest in the build project as a build machine, never as its allocation", () => {
+		const f = withSpace();
+		f.inventory.instances[0].project = space.project;
+		const result = reconcileRuntimeNodeInventory(f.inventory, f.context);
+		expect(result.entries[0]).toMatchObject({
+			category: "build",
+			allocation: null,
+			reason: "INSTANCE_AUTHORITY_DIFFERS",
+		});
+		expect(result.state).toBe("unavailable");
+	});
+	it("keeps a builder outside the space unregistered, as before", () => {
+		const f = withSpace(),
+			i = builder("image-build");
+		i.project = "qn25b2";
+		f.inventory.instances.push(i);
+		const result = reconcileRuntimeNodeInventory(f.inventory, f.context);
+		expect(result.entries[4]).toMatchObject({ category: "unmanaged", reason: "UNREGISTERED_INSTANCE" });
+		expect(result.state).toBe("unavailable");
+		// And without a declared space nothing changes.
+		const g = fixture();
+		g.inventory.instances.push(builder("image-build"));
+		expect(reconcileRuntimeNodeInventory(g.inventory, g.context).entries[4].category).toBe("unmanaged");
+	});
+	it("counts the space against headroom whether a build runs or not", () => {
+		const f = withSpace();
+		f.context.headroomCpuMillis = 2999;
+		expect(reconcileRuntimeNodeInventory(f.inventory, f.context)).toMatchObject({
+			headroomValid: false,
+			state: "unavailable",
+		});
+		f.context.headroomCpuMillis = 3000;
+		expect(reconcileRuntimeNodeInventory(f.inventory, f.context)).toMatchObject({
+			headroomValid: true,
+			state: "ready",
+		});
+	});
+	it("parses the space strictly and never next to infrastructure in the same project", () => {
+		const base = fixture().policy;
+		expect(parseRuntimeNodeInventoryPolicy({ ...base, buildSpace: space }).buildSpace).toEqual(space);
+		const { network: _network, ...withoutNetwork } = space;
+		expect(parseRuntimeNodeInventoryPolicy(base)).not.toHaveProperty("buildSpace");
+		for (const bad of [
+			{ ...space, extra: 1 },
+			withoutNetwork,
+			{ ...space, network: "../net" },
+			{ ...space, cpuMillis: 0 },
+			{ ...space, project: "../x" },
+			null,
+		])
+			expect(() => parseRuntimeNodeInventoryPolicy({ ...base, buildSpace: bad })).toThrow(
+				/^INVALID_(NODE_INVENTORY_POLICY|OFFICE_PHYSICAL_RECORD)$/,
+			);
+		const infra = {
+			project: space.project,
+			name: "exec",
+			physicalId: randomUUID(),
+			type: "virtual-machine",
+			configurationSha256: sha,
+			cpuMillis: 1000,
+			memoryBytes: 1024,
+		};
+		expect(() => parseRuntimeNodeInventoryPolicy({ ...base, infrastructure: [infra], buildSpace: space })).toThrow(
+			"INVALID_NODE_INVENTORY_POLICY",
+		);
+	});
+});
+
 describe("trusted node inventory publisher composition", () => {
 	function observer(change?: (method: string, args: Record<string, unknown>) => void) {
 		const f = fixture();
