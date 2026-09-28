@@ -163,6 +163,27 @@ set role service_role;
 select pg_temp.usage_expect(pg_temp.usage_choose('refresh-one') ->> 'reason','MODEL_LOGIN_VAULT',
 	'a node login its connection replaced leaves the usage to the vault');
 reset role;
+delete from public.qorpera_provider_connection_versions
+where connection_id = current_setting('qorpera_test.usage_node_connection')::uuid and authorization_state = 'revoked'
+	and version = (select max(version) from public.qorpera_provider_connection_versions
+		where connection_id = current_setting('qorpera_test.usage_node_connection')::uuid);
+set role service_role;
+select pg_temp.usage_expect(case when pg_temp.usage_choose('refresh-one') ->> 'reason' = 'MODEL_LOGIN_VAULT'
+	then 'vault' else 'node' end, 'node', 'the node login read by a node again keeps the node path');
+reset role;
+-- A vault login whose pointer was revoked (the member disconnected it) is no vault custody.
+update public.qorpera_native_credential_capsules set status = 'revoked', revoked_at = clock_timestamp()
+where id = '69300000-0000-4000-8000-000000000060';
+update public.qorpera_provider_connections set status = 'disabled'
+where id = current_setting('qorpera_test.usage_node_connection')::uuid;
+set role service_role;
+select pg_temp.usage_expect(case when pg_temp.usage_choose('refresh-one') ->> 'reason' = 'MODEL_LOGIN_VAULT'
+	then 'vault' else 'node' end, 'node', 'a revoked vault pointer is no vault custody');
+reset role;
+update public.qorpera_native_credential_capsules set status = 'active', revoked_at = null
+where id = '69300000-0000-4000-8000-000000000060';
+update public.qorpera_provider_connections set status = 'active'
+where id = current_setting('qorpera_test.usage_node_connection')::uuid;
 -- Moved: the member's old node account is gone.
 update public.qorpera_native_credential_capsules set status = 'disabled'
 where compute_identity_id = current_setting('qorpera_test.usage_identity')::uuid
