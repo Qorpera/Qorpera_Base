@@ -253,16 +253,18 @@ draws are discarded, and free hours, owed time and every draw count from then.
   than an internal error or a usage limit; it matches the code before the card strips
   `[code=...]` tags. It is not a member's Stop: no routine is paused and no
   worker cancelled. Its machines, always-on ones included, are stopped with their disks kept. A
-  coding turn cut off then ends "out of computer hours", and its machine's running commands end
+  coding turn cut off then ends failed with the same reason, and its machine's running commands end
   as when it sleeps. An in-house worker whose run is ended reports "out of computer hours" to its
   parent instead of the generic "ended without reporting a result".
 - A new coding turn waits like other new work, whether a run starts it or the session's owner
   answers the session directly (`qorpera_answer_coding_session`, which opens the turn without a
   run). The hook list covers `qorpera_coding_session_queue` and the turn's own run at
-  `qorpera_begin_coding_turn`: a refusal there must defer the session
-  (`qorpera_defer_coding_session`, a new waitable reason in the executor host) rather than fail
-  it, and the waiting reason shows in the session's thread. At the hour, a cut-off turn's run is
-  ended before its machine is stopped.
+  `qorpera_begin_coding_turn`. Two executor pieces are needed: a new waitable reason for the
+  coding machine's wake step, and a catch around begin that detaches and defers the session
+  (`qorpera_defer_coding_session`) instead of failing it. The queue has no leased session to
+  defer, so it accepts the turn and the turn waits at begin. The defer step's fixed text
+  ("Waiting for a coding machine") gains the "waiting for computer hours" reason, so it shows in
+  the session's thread. At the hour, a cut-off turn's run is ended before its machine is stopped.
 - It ships switched off, in its own release, with a 30-minute database watch after the cut. It is
   switched on together with live payments and hour notices.
 
