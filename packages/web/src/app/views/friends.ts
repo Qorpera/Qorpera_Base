@@ -1,6 +1,6 @@
 import type { CloudApi } from "../../cloud/api.ts";
-import { describeError } from "../../cloud/client.ts";
-import type { HostedFriend, HostedIncomingProfileInvitation } from "../../cloud/types.ts";
+import { CloudRpcError, describeError } from "../../cloud/client.ts";
+import type { HostedAccountMatch, HostedFriend, HostedIncomingProfileInvitation } from "../../cloud/types.ts";
 import { button, companyLogo, fmtDate, h, notice, personAvatar, replace } from "../../ui/dom.ts";
 import { presentationLocale, presentationTimeZone, t, uiText } from "../../ui/preferences.ts";
 import { listSkeleton } from "../../ui/skeleton.ts";
@@ -11,8 +11,10 @@ import { roleLabel } from "./team.ts";
 /* Friends: the account's address book, and the company invitations waiting
  * for it. A company invitation can only reach someone this account is already
  * friends with (the desktop enforces the same rule), so this tab is where that
- * list is grown. Four RPCs, nothing else: qorpera_list_friends,
- * _send_friend_request, _respond_friend_request, _remove_friend. Invitations
+ * list is grown. Five RPCs, nothing else: qorpera_list_friends,
+ * _find_account_by_email, _send_friend_request, _respond_friend_request,
+ * _remove_friend. A typed address shows a person to add only when an account
+ * has confirmed that address; any other address finds nobody. Invitations
  * are the hub's state (qorpera_list_profile_invitations); accepting one opens
  * the company. */
 
@@ -27,12 +29,36 @@ export interface FriendsState {
 	sending?: boolean;
 	/** What is typed in the one field: a filter, or an address to invite. */
 	query?: string;
+	/** What the typed address found, while the field holds a whole address that is
+	 * no friend's: `account` is undefined while it is being checked, null when no
+	 * account holds the address. */
+	lookup?: AddressLookup;
+	/** This cloud cannot look addresses up yet: any address may be sent a request,
+	 * and the cloud refuses one no account holds. */
+	lookupMissing?: boolean;
 }
+
+export interface AddressLookup {
+	address: string;
+	account?: HostedAccountMatch | null;
+	failed?: string;
+}
+
+/** How long typing pauses before a whole address is looked up. */
+const LOOKUP_DELAY_MS = 250;
+/** How long "no account holds it" is trusted: its owner may confirm the address meanwhile. */
+const NO_ACCOUNT_KEPT_MS = 60_000;
 
 export class FriendsController {
 	readonly store = new Store<FriendsState>({ loading: true, friends: [] });
 	readonly #api: CloudApi;
 	#disposed = false;
+	/** Addresses already looked up, what each found, and when. */
+	readonly #found = new Map<string, { account: HostedAccountMatch | null; at: number }>();
+	/** Lookups on their way, so an address typed again waits for the same answer. */
+	readonly #asking = new Map<string, Promise<HostedAccountMatch | null>>();
+	#lookupTimer: ReturnType<typeof setTimeout> | undefined;
+	#lookupTurn = 0;
 
 	constructor(api: CloudApi) {
 		this.#api = api;
@@ -40,7 +66,66 @@ export class FriendsController {
 
 	dispose(): void {
 		this.#disposed = true;
+		clearTimeout(this.#lookupTimer);
 		this.store.dispose();
+	}
+
+	/** Takes what is typed in the field. A whole address that is no friend's is
+	 * looked up once typing pauses; only the answer for what the field holds now
+	 * is shown. */
+	type(query: string): void {
+		void this.#take(query, false);
+	}
+
+	/** Looks the typed address up at once (Enter before the answer came, or Try
+	 * again after a failure); resolves when its answer is shown. */
+	lookUpNow(): Promise<void> {
+		return this.#take(this.store.get().query ?? "", true);
+	}
+
+	#take(query: string, now: boolean): Promise<void> {
+		if (this.#disposed) return Promise.resolve();
+		clearTimeout(this.#lookupTimer);
+		const turn = ++this.#lookupTurn;
+		const state = this.store.get();
+		const address = query.trim().toLowerCase();
+		if (!EMAIL.test(address) || state.lookupMissing || isFriend(state, address)) {
+			this.store.set({ query, lookup: undefined });
+			return Promise.resolve();
+		}
+		const answer = this.#found.get(address);
+		if (answer && (answer.account || Date.now() - answer.at < NO_ACCOUNT_KEPT_MS)) {
+			this.store.set({ query, lookup: { address, account: answer.account } });
+			return Promise.resolve();
+		}
+		this.store.set({ query, lookup: { address } });
+		if (now || this.#asking.has(address)) return this.#lookUp(address, turn);
+		this.#lookupTimer = setTimeout(() => void this.#lookUp(address, turn), LOOKUP_DELAY_MS);
+		return Promise.resolve();
+	}
+
+	async #lookUp(address: string, turn: number): Promise<void> {
+		let asking = this.#asking.get(address);
+		if (!asking) {
+			asking = this.#api.findAccountByEmail(address);
+			this.#asking.set(address, asking);
+			// Answers are kept; failures are not, so the address is asked again.
+			void asking
+				.then(
+					(account) => void this.#found.set(address, { account, at: Date.now() }),
+					() => {},
+				)
+				.finally(() => this.#asking.delete(address));
+		}
+		try {
+			const account = await asking;
+			if (!this.#disposed && turn === this.#lookupTurn) this.store.set({ lookup: { address, account } });
+		} catch (error) {
+			if (this.#disposed || turn !== this.#lookupTurn) return;
+			if (error instanceof CloudRpcError && error.missing)
+				this.store.set({ lookupMissing: true, lookup: undefined });
+			else this.store.set({ lookup: { address, failed: describeError(error) } });
+		}
 	}
 
 	async refresh(): Promise<void> {
@@ -50,7 +135,12 @@ export class FriendsController {
 			this.store.set({ friends: await this.#api.listFriends(), loading: false, loaded: true });
 		} catch (error) {
 			this.store.set({ loading: false, error: describeError(error) });
+			return;
 		}
+		// The typed address may have become a friend's, or stopped being one; a failed lookup is asked again.
+		const { query = "", lookup } = this.store.get();
+		const address = query.trim().toLowerCase();
+		if (lookup?.address !== address || lookup.failed || isFriend(this.store.get(), address)) this.type(query);
 	}
 
 	async request(email: string): Promise<void> {
@@ -98,7 +188,15 @@ export class FriendsController {
 
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-function personRow(friend: HostedFriend, meta: string, ...actions: HTMLElement[]): HTMLElement {
+function isFriend(state: FriendsState, address: string): boolean {
+	return state.friends.some((friend) => friend.email.toLowerCase() === address);
+}
+
+function personRow(
+	friend: Pick<HostedFriend, "userId" | "email" | "displayName">,
+	meta: string,
+	...actions: HTMLElement[]
+): HTMLElement {
 	return h(
 		"div",
 		{ class: "person-row" },
@@ -147,13 +245,15 @@ function group(title: string, rows: HTMLElement[]): HTMLElement | null {
 		: null;
 }
 
-/** What the field holds, and whether it is an address a friend request can go to. */
-function typed(state: FriendsState): { query: string; invitable: boolean } {
+/** What the field holds, what it found when it holds an address, and whether a
+ * friend request can go to it: only to an account the lookup found, unless this
+ * cloud cannot look addresses up yet. */
+function typed(state: FriendsState): { query: string; lookup?: AddressLookup; invitable: boolean } {
 	const query = (state.query ?? "").trim().toLowerCase();
-	return {
-		query,
-		invitable: EMAIL.test(query) && !state.friends.some((friend) => friend.email.toLowerCase() === query),
-	};
+	if (!EMAIL.test(query) || isFriend(state, query)) return { query, invitable: false };
+	if (state.lookupMissing) return { query, invitable: true };
+	const lookup = state.lookup?.address === query ? state.lookup : { address: query };
+	return { query, lookup, invitable: Boolean(lookup.account && !lookup.account.self) };
 }
 
 /* One field does both jobs, as the desktop's invite popup does: it filters the
@@ -187,20 +287,36 @@ function partsFor(friends: FriendsController): FriendsParts {
 			"aria-label": t("Search friends, or type an email to add someone"),
 		});
 		// Every keystroke filters, composed text included; drawing never moves the field.
-		input.addEventListener("input", () => friends.store.set({ query: input.value }));
-		const send = (event: Event) => {
-			event.preventDefault();
+		input.addEventListener("input", () => friends.type(input.value));
+		const sendTyped = () => {
 			const { query, invitable } = typed(friends.store.get());
-			if (!invitable) return;
+			// A second Enter while the request is out must not clear the field before it lands.
+			if (!invitable || friends.store.get().sending) return;
 			void friends.request(query).then(() => {
 				if (friends.store.get().error) return;
 				input.value = "";
-				friends.store.set({ query: "" });
+				friends.type("");
 			});
 		};
+		const send = (event: Event) => {
+			event.preventDefault();
+			sendTyped();
+		};
+		const submit = h("button", { type: "submit", class: "btn btn-primary" }, t("Send request"));
+		// Enter before the address has its answer, while Send request is still off: look
+		// it up at once, and send if it finds someone and the field still holds it.
+		input.addEventListener("keydown", (event) => {
+			// Safari reports the Enter that ends a composition as keyCode 229, not isComposing.
+			if (event.key !== "Enter" || event.isComposing || event.keyCode === 229 || !submit.disabled) return;
+			const { query, lookup } = typed(friends.store.get());
+			if (!lookup || lookup.account !== undefined) return;
+			event.preventDefault();
+			void friends.lookUpNow().then(() => {
+				if (typed(friends.store.get()).query === query) sendTyped();
+			});
+		});
 		const title = h("h1");
 		const notices = h("div");
-		const submit = h("button", { type: "submit", class: "btn btn-primary" }, t("Send request"));
 		const results = h("div");
 		parts = {
 			page: h(
@@ -237,7 +353,7 @@ export function renderFriends(friends: FriendsController, hub: HubController, co
 	const state = friends.store.get();
 	const companies = hub.store.get();
 	const busy = (friend: HostedFriend) => state.busy === friend.userId;
-	const { query, invitable } = typed(state);
+	const { query, lookup, invitable } = typed(state);
 	const matches = (...texts: string[]) => !query || texts.some((text) => text.toLowerCase().includes(query));
 	const matching = state.friends.filter((friend) => matches(friend.displayName, friend.email));
 	const incoming = matching.filter((friend) => friend.status === "pending" && friend.direction === "incoming");
@@ -264,10 +380,19 @@ export function renderFriends(friends: FriendsController, hub: HubController, co
 			state.message ? notice("ok", state.message) : null,
 		);
 	}
+	// A typed address shows the account that holds it, and nothing when none does.
+	const found = lookup?.account && !lookup.account.self ? lookup.account : undefined;
+	const checking = Boolean(lookup && lookup.account === undefined && !lookup.failed);
+	const outcome =
+		lookup?.account === null
+			? t("No Qorpera account uses {email}.", { email: query })
+			: lookup?.account?.self
+				? t("That is your own address.")
+				: null;
 	const listed = incoming.length + outgoing.length + accepted.length > 0;
 	const loading = !listed && state.loading && !state.loaded;
 	const empty =
-		listed || loading
+		listed || loading || lookup
 			? null
 			: query
 				? invitable
@@ -282,11 +407,23 @@ export function renderFriends(friends: FriendsController, hub: HubController, co
 		[incoming, outgoing, accepted].map((list) => list.map((friend) => [friend, busy(friend)])),
 		loading,
 		empty,
+		[found, checking && query, outcome, lookup?.failed],
 	]);
 	if (shown === parts.shown) return;
 	parts.shown = shown;
 	replace(
 		parts.results,
+		found ? group(t("Add a friend"), [personRow(found, "")]) : null,
+		checking ? listSkeleton(t("Looking up {email}", { email: query }), 1) : null,
+		lookup?.failed
+			? notice(
+					"danger",
+					lookup.failed,
+					" ",
+					button(t("Try again"), () => void friends.lookUpNow(), { small: true }),
+				)
+			: null,
+		outcome ? h("p", { class: "panel-empty muted" }, outcome) : null,
 		group(
 			t("Company invitations"),
 			invitations.map((invitation) => invitationRow(hub, invitation, companies.busyInvitation === invitation.id)),
