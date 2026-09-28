@@ -111,9 +111,16 @@ select pg_temp.fails($q$select pg_temp.observe('ready',jsonb_build_array(pg_temp
 	'Node inventory mixes the build space with other instances');
 select pg_temp.fails($q$select pg_temp.observe('ready',jsonb_build_array(pg_temp.build('qorpera-build','image-build',1000,1073741824)
 	|| '{"type":"container"}'::jsonb))$q$,'Node inventory is not ready');
--- The observer reports it honestly as unavailable: that observation is recorded.
+-- The observer reports it honestly as unavailable: that observation is recorded and the node turns unavailable.
+select pg_temp.observe('ready','[]');
 select pg_temp.observe('unavailable',jsonb_build_array(pg_temp.build('qorpera-build','image-build',1000,1073741824)
 	|| '{"type":"container","reason":"INSTANCE_AUTHORITY_DIFFERS"}'::jsonb));
+reset role;
+select pg_temp.ok((select o.observation->>'state' = 'unavailable' and r.inventory->'entries'->0->>'type' = 'container'
+	from public.qorpera_runtime_node_observations o join public.qorpera_runtime_node_inventory_receipts r
+		on r.node_id = o.node_id and r.observation_id = o.observation_id
+	where o.node_id = '64100000-0000-4000-8000-000000000001'),'The container is recorded and the node is unavailable');
+set local role service_role;
 select pg_temp.fails($q$select pg_temp.observe('ready',jsonb_build_array(pg_temp.build('qorpera-build','guest',1000,1073741824)
 	|| jsonb_build_object('category','managed','allocation',jsonb_build_object('allocationId',extensions.gen_random_uuid()))))$q$,
 	'Node inventory mixes the build space with other instances');

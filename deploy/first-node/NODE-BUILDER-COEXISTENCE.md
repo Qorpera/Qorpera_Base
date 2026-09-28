@@ -26,8 +26,9 @@ This is the way to run image builds on a serving node. A node's inventory policy
 - **Size limit.** Stopped build machines count too. Their total CPU and memory must fit the
   space, or every build entry reports `BUILD_SPACE_EXCEEDED`.
 - **What the registry checks.** Every entry in the build project must be `build`, and every
-  `build` entry must be in the build project, be a virtual machine and have no allocation. All
-  of them together must fit the space.
+  `build` entry must be in the build project and have no allocation; otherwise the observation is
+  refused. A `build` entry that is not a virtual machine, or build machines beyond the space, are
+  recorded and make the node unavailable.
 - **Everything else stays exact.** A builder outside the build project is still an unregistered
   instance.
 
