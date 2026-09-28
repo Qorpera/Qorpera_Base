@@ -53,7 +53,7 @@ function binding(): LxdCompanyMachineBinding {
 }
 
 /** SQL's side: one machine as the executor's list shows it, and every call recorded. */
-async function fixture() {
+async function fixture(pins: { helperSha256?: string; previousHelperSha256s?: string[] } = {}) {
 	state.controlPath = await realpath(await mkdtemp(join(tmpdir(), "company-machine-host-")));
 	await chmod(state.controlPath, 0o700);
 	roots.push(state.controlPath);
@@ -203,6 +203,7 @@ async function fixture() {
 			serverAddress: "10.0.0.2",
 		},
 		helperSha256,
+		...pins,
 	});
 	const signal = new AbortController().signal;
 	return {
@@ -297,6 +298,39 @@ describe("company machine host", () => {
 		expect(f.methods()).toContain("qorpera_suspend_company_machine");
 	});
 
+	it("keeps a running machine's lease and watches its commands while SQL refuses new run authority", async () => {
+		const f = await fixture();
+		await f.host.pass(f.signal);
+		Object.assign(f.entry, { runningAt: new Date().toISOString(), bootId: f.boot, commands: [id(7)] });
+		f.refusals.set("run", "NODE_OBSERVATION_UNAVAILABLE");
+		f.observe({
+			ended: [{ commandId: id(7), state: "succeeded", exitCode: 0, outputTail: "ok" }],
+			cpu: { busyTicks: 0, totalTicks: 0 },
+		});
+		expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "commands", state: "done" }]);
+		expect(f.client.execInstance.mock.calls.slice(-2).map((call) => call[2][3])).toEqual([
+			"refresh-lease",
+			"observe",
+		]);
+		expect(f.calls.at(-1)?.method).toBe("qorpera_record_company_machine_commands");
+		// A machine that is not running is never started without it.
+		f.refusals.set("run", "NODE_DISABLED");
+		Object.assign(f.entry, { runningAt: null, bootId: null });
+		await f.host.pass(f.signal);
+		f.client.execInstance.mockClear();
+		expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "start", state: "not-now" }]);
+		expect(f.client.execInstance).not.toHaveBeenCalled();
+	});
+
+	it("keeps trusting the helper of an earlier image this node still runs, and nothing else", async () => {
+		const f = await fixture({ helperSha256: "0".repeat(64), previousHelperSha256s: [helperSha256] });
+		expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "start", state: "done" }]);
+		const g = await fixture({ helperSha256: "0".repeat(64) });
+		expect(await g.host.pass(g.signal)).toEqual([
+			{ placementId: id(6), step: "start", state: "failed", code: "COMPANY_MACHINE_HELPER_DIFFERS" },
+		]);
+	});
+
 	it("leaves an idle machine's programs alone when SQL says it is in use again", async () => {
 		const f = await fixture();
 		await f.host.pass(f.signal);
@@ -314,9 +348,12 @@ describe("company machine host", () => {
 		f.admissions.push([id(2)], [id(9)], []);
 		await f.host.pass(f.signal);
 		expect(f.methods().filter((method) => method === "qorpera_admit_executor_machines")).toHaveLength(3);
-		f.admissions.push(new Error("deadlock detected"));
+		f.admissions.push(new Error("DEADLOCK_DETECTED"));
 		Object.assign(f.entry, { runningAt: new Date().toISOString(), bootId: f.boot });
-		expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "commands", state: "done" }]);
+		expect(await f.host.pass(f.signal)).toEqual([
+			{ placementId: null, step: "admit", state: "failed", code: "DEADLOCK_DETECTED" },
+			{ placementId: id(6), step: "commands", state: "done" },
+		]);
 	});
 
 	it("deletes a retired placement (its machine moved on) and releases it", async () => {

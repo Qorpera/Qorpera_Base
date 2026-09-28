@@ -549,7 +549,7 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 			]);
 			if (
 				typeof event.machine !== "string" ||
-				(event.kind !== "running" && event.kind !== "command") ||
+				(event.kind !== "running" && event.kind !== "stopped" && event.kind !== "command") ||
 				(event.kind === "command" && (typeof event.command !== "string" || uuid(event.commandId) === null)) ||
 				(event.outputTail !== null && typeof event.outputTail !== "string")
 			)

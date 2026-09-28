@@ -19,30 +19,34 @@
 --     machines, under its own policy (qorpera_machine_executors). The node
 --     provider of kind 'machine' names the largest machine that node makes;
 --     each placement reserves the machine's own size on the shared node ledger
---     (qorpera_company_machine_candidates is the one place a node is chosen).
---     When no node fits now, the machine waits in line (first come, first
---     served where it fits) and every executor admits waiting machines on each
---     pass. A size larger than any node is refused at once. No price, no
---     priority rule and no count of machines per company or agent.
+--     (qorpera_company_machine_candidates is the one place a node is chosen),
+--     and its disk against the disk the node's pool gives machines (asleep
+--     too). When no node fits now, the machine waits until one does (the build
+--     takes them in the order they asked, where they fit) and every executor
+--     admits waiting machines on each pass. A size larger than any node is
+--     refused at once. No price, no priority rule and no count of machines per
+--     company or agent.
 --   * Lifetime. A task machine sleeps after the node's idle delay (default 1 h)
 --     with no command running, no agent use and a quiet processor; asleep it
---     holds no node room. It is removed after the removal delay asleep
---     (default 30 days, like a quiet coding session's archive). An always-on
---     machine is never stopped or removed by the kernel.
+--     holds no node room. One that never came up sleeps the same way. It is
+--     removed after the removal delay asleep (default 30 days, like a quiet
+--     coding session's archive). An always-on machine is never stopped or
+--     removed by the kernel.
 --   * Commands. machine_run starts a command through the executor's command
 --     gateway; it has no deadline unless the agent sets one and keeps running
 --     after the turn. The executor records how each command ended. A command
 --     started with notify wakes its starter when it ends, and a machine that
---     finished waiting for room wakes the run that asked for it, as a
---     continuation of that run's conversation (source 'machine-event'), never
---     through model polling.
+--     finished waiting for room wakes the runs that asked for it (or tells
+--     them it was stopped first), as a continuation of each run's
+--     conversation (source 'machine-event'), never through model polling.
 --   * No secret ever enters a machine, and none of this grants one. A coding
 --     session's repository may be attached read-only (temporary: the company
 --     folder replaces it; while attached, the placement is the session's node).
 --
 -- Nothing is enabled until an operator configures a machine executor and its
 -- node provider (qorpera_configure_machine_executor,
--- qorpera_enroll_runtime_node_provider with kind 'machine').
+-- qorpera_enroll_runtime_node_provider with kind 'machine'). A node gone for
+-- good gives its placements up through qorpera_abandon_machine_executor.
 
 -- ---------------------------------------------------------------------------
 -- 1. Machine executors: one per node, the node's coding executor
@@ -53,18 +57,23 @@ create table public.qorpera_machine_executors (
 	enabled boolean not null default false,
 	-- providerId, providerPolicySha256, project, imageFingerprint, bootstrapSha256, storagePool, network.
 	policy jsonb check (policy is null or (jsonb_typeof(policy) = 'object' and pg_column_size(policy) <= 4096)),
+	-- The disk this node's pool gives machines: every placement that still exists counts its full
+	-- disk size (asleep too), so one machine can never fill the pool under another company's VMs.
+	disk_bytes bigint check (disk_bytes between 10737418240 and 1125899906842624),
 	sleep_after_seconds integer not null default 3600 check (sleep_after_seconds between 60 and 604800),
 	-- Like a coding session's archive (30 days quiet): a sleeping machine keeps its disk, tools and images.
 	remove_after_seconds integer not null default 2592000 check (remove_after_seconds between 300 and 31536000),
 	created_at timestamptz not null default clock_timestamp(),
-	updated_at timestamptz not null default clock_timestamp()
+	updated_at timestamptz not null default clock_timestamp(),
+	check (not enabled or (policy is not null and disk_bytes is not null))
 );
 alter table public.qorpera_machine_executors enable row level security;
 revoke all on public.qorpera_machine_executors from public, anon, authenticated, service_role, qorpera_secret_broker;
 
 -- Trusted deployment configuration, like the coding VM policy: the image,
 -- bootstrap and network isolation are verified before these values are set.
-create function public.qorpera_configure_machine_executor(p_owner text, p_machine_id_sha256 text, p_enabled boolean, p_policy jsonb)
+create function public.qorpera_configure_machine_executor(p_owner text, p_machine_id_sha256 text, p_enabled boolean, p_policy jsonb,
+	p_disk_bytes bigint)
 returns void language plpgsql security definer set search_path = '' as $$
 declare v_existing public.qorpera_machine_executors%rowtype;
 begin
@@ -76,15 +85,17 @@ begin
 			or coalesce(p_policy ->> 'providerId','') !~ '^[a-z][a-z0-9_-]{0,63}$'
 			or exists (select 1 from unnest(array['providerPolicySha256','imageFingerprint','bootstrapSha256']) k where coalesce(p_policy ->> k,'') !~ '^[0-9a-f]{64}$')
 			or exists (select 1 from unnest(array['project','storagePool','network']) k where coalesce(p_policy ->> k,'') !~ '^[a-z][a-z0-9-]{0,62}$')))
-		or (p_enabled and p_policy is null) then
+		or (p_disk_bytes is not null and p_disk_bytes not between 10737418240 and 1125899906842624)
+		or (p_enabled and (p_policy is null or p_disk_bytes is null)) then
 		raise exception 'Machine executor policy invalid' using errcode = '22023'; end if;
 	select * into v_existing from public.qorpera_machine_executors where owner = p_owner for update;
 	-- An executor's placements live on its node's disks: it never moves to another node.
 	if v_existing.owner is not null and v_existing.machine_id_sha256 <> p_machine_id_sha256 then
 		raise exception 'Machine executor node is immutable' using errcode = '42501'; end if;
-	insert into public.qorpera_machine_executors(owner, machine_id_sha256, enabled, policy)
-	values (p_owner, p_machine_id_sha256, p_enabled, p_policy)
-	on conflict (owner) do update set enabled = excluded.enabled, policy = excluded.policy, updated_at = clock_timestamp();
+	insert into public.qorpera_machine_executors(owner, machine_id_sha256, enabled, policy, disk_bytes)
+	values (p_owner, p_machine_id_sha256, p_enabled, p_policy, p_disk_bytes)
+	on conflict (owner) do update set enabled = excluded.enabled, policy = excluded.policy, disk_bytes = excluded.disk_bytes,
+		updated_at = clock_timestamp();
 end
 $$;
 
@@ -180,10 +191,14 @@ create table public.qorpera_company_machine_commands (
 	machine_id uuid not null references public.qorpera_company_machines(id) on delete restrict,
 	run_id uuid not null references public.qorpera_execution_runs(id) on delete restrict,
 	staff_agent_id uuid not null,
+	-- The placement it was started on: its log lives on that placement's disk.
+	placement_id uuid not null references public.qorpera_company_machine_placements(id) on delete restrict,
 	-- The command's first 300 characters, for people and the notification.
 	command_head text not null check (char_length(command_head) between 1 and 300),
 	notify boolean not null,
 	started_at timestamptz not null default clock_timestamp(),
+	-- The last time its start was sent to the guest (a retry sends it again).
+	sent_at timestamptz not null default clock_timestamp(),
 	ended_at timestamptz,
 	-- lost: the machine stopped or restarted under it.
 	state text check (state in ('succeeded','failed','cancelled','lost')),
@@ -203,7 +218,8 @@ create table public.qorpera_company_machine_events (
 	staff_agent_id uuid not null,
 	-- The run this continues: the one that started the machine or the command.
 	parent_run_id uuid not null references public.qorpera_execution_runs(id) on delete restrict,
-	kind text not null check (kind in ('running','command')),
+	-- running: it runs now; stopped: it was stopped or deleted before it ran; command: a command ended.
+	kind text not null check (kind in ('running','stopped','command')),
 	command_id uuid references public.qorpera_company_machine_commands(id) on delete restrict,
 	created_at timestamptz not null default clock_timestamp(),
 	delivery text not null default 'waiting' check (delivery in ('waiting','delivered','suppressed','undeliverable')),
@@ -394,10 +410,20 @@ begin
 end
 $$;
 
+-- The disk an executor's node has promised to machines: every placement that
+-- still exists there, asleep or retired, at its full size.
+create function public.qorpera_machine_executor_disk_used(p_owner text)
+returns bigint language sql stable security definer set search_path = '' as $$
+	select coalesce(sum(machine.disk_bytes), 0)::bigint from public.qorpera_company_machine_placements placement
+	join public.qorpera_company_machines machine on machine.id = placement.machine_id
+	where placement.owner = p_owner and placement.removed_at is null
+$$;
+
 -- The executors a machine of this size may go to, the one with the most room
 -- first. The one place a node is chosen for a machine; a read only, the
 -- reservation that follows decides.
-create function public.qorpera_company_machine_candidates(p_cpu_millis bigint, p_memory_bytes bigint, p_owner text default null)
+create function public.qorpera_company_machine_candidates(p_cpu_millis bigint, p_memory_bytes bigint, p_disk_bytes bigint,
+	p_owner text default null)
 returns table(owner text, machine_id_sha256 text, policy jsonb) language sql stable security definer set search_path = '' as $$
 	select executor.owner, executor.machine_id_sha256, executor.policy
 	from public.qorpera_machine_executors executor
@@ -415,6 +441,7 @@ returns table(owner text, machine_id_sha256 text, policy jsonb) language sql sta
 		and public.qorpera_runtime_node_inventory_ready(node.id, observation.observation_id, node.version)
 		and used.cpu + p_cpu_millis <= public.qorpera_runtime_node_cpu_budget(node)
 		and used.memory + p_memory_bytes <= node.memory_bytes - node.headroom_memory_bytes
+		and public.qorpera_machine_executor_disk_used(executor.owner) + p_disk_bytes <= executor.disk_bytes
 	order by node.memory_bytes - node.headroom_memory_bytes - used.memory desc,
 		public.qorpera_runtime_node_cpu_budget(node) - used.cpu desc, node.id, executor.owner
 $$;
@@ -466,15 +493,15 @@ $$;
 -- One attempt to give a machine that wants to run its room now. Its current
 -- placement asks its own node first (a wake keeps the scratch disk it slept
 -- with). Refused there, a machine that is not running moves on: it is placed
--- fresh on the best node that fits (or on p_owner's only), and the old
--- placement is retired for its executor to delete. A machine with no
--- placement is placed. Every refused attempt is rolled back with its locks,
--- so a caller holds at most the one node it got. Internal: the caller holds
--- the machine row.
+-- fresh on the best node that fits (or on p_owner's only; its own node too,
+-- when that node's machine policy changed under it), and the old placement is
+-- retired for its executor to delete. A machine with no placement is placed.
+-- Every refused attempt is rolled back with its locks, so a caller holds at
+-- most the one node it got. Internal: the caller holds the machine row.
 create function public.qorpera_admit_company_machine(p_machine_id uuid, p_owner text default null)
 returns jsonb language plpgsql security definer set search_path = '' as $$
 declare v_machine public.qorpera_company_machines%rowtype; v_placement public.qorpera_company_machine_placements%rowtype;
-	v_candidate record; v_result jsonb; v_own jsonb; v_largest record; v_observed timestamptz; v_enabled boolean;
+	v_candidate record; v_result jsonb; v_own jsonb; v_largest record; v_enabled boolean;
 begin
 	select * into strict v_machine from public.qorpera_company_machines where id = p_machine_id;
 	if v_machine.removed_at is not null or v_machine.desired_state <> 'running' then return '{"state":"refused","reason":"MACHINE_NOT_WAITING"}'::jsonb; end if;
@@ -495,17 +522,16 @@ begin
 			end;
 		else v_own := '{"state":"refused","reason":"NODE_DISABLED"}'::jsonb;
 		end if;
-		-- Moving drops the scratch disk: only for a machine that is not running, and not for a
-		-- short look-away of its node (an observation missing for under five minutes).
-		select observation.observed_at into v_observed from public.qorpera_runtime_node_observations observation
-		join public.qorpera_runtime_nodes node on node.id = observation.node_id where node.machine_id_sha256 = v_placement.machine_id_sha256;
+		-- Moving drops the scratch disk: only for a machine that is not running, and not while its
+		-- node may only be looking away (a node without a usable observation keeps a machine that
+		-- asked for room less than five minutes ago).
 		if v_placement.running_at is not null or v_machine.repository_worker_id is not null
-			or (v_own ->> 'reason' = 'NODE_OBSERVATION_UNAVAILABLE' and v_observed > clock_timestamp() - interval '5 minutes') then
+			or (v_own ->> 'reason' = 'NODE_OBSERVATION_UNAVAILABLE' and v_machine.wanted_at > clock_timestamp() - interval '5 minutes') then
 			return v_own; end if;
 	end if;
 	v_result := coalesce(v_own, '{"state":"refused","reason":"NODE_CAPACITY_EXHAUSTED"}'::jsonb);
-	for v_candidate in select * from public.qorpera_company_machine_candidates(v_machine.cpus::bigint * 1000, v_machine.memory_bytes, p_owner) loop
-		if v_placement.id is not null and v_candidate.owner = v_placement.owner then continue; end if;
+	for v_candidate in select * from public.qorpera_company_machine_candidates(v_machine.cpus::bigint * 1000, v_machine.memory_bytes,
+		v_machine.disk_bytes, p_owner) loop
 		begin
 			if v_placement.id is not null then
 				update public.qorpera_company_machine_placements set retired_at = clock_timestamp() where id = v_placement.id;
@@ -518,20 +544,22 @@ begin
 	end loop;
 	if v_placement.id is not null then return v_result; end if;
 	-- Nothing fits now. Say why when it never will.
-	select provider.cpu_millis, provider.memory_bytes into v_largest
+	select provider.cpu_millis, provider.memory_bytes, executor.disk_bytes into v_largest
 	from public.qorpera_machine_executors executor
 	join public.qorpera_runtime_node_providers provider on provider.provider_kind = 'machine'
 		and provider.provider_id = executor.policy ->> 'providerId' and provider.policy_sha256 = executor.policy ->> 'providerPolicySha256'
 	where executor.enabled and executor.policy is not null and (p_owner is null or executor.owner = p_owner)
-	order by provider.memory_bytes desc, provider.cpu_millis desc limit 1;
+	order by provider.memory_bytes desc, provider.cpu_millis desc, executor.disk_bytes desc limit 1;
 	if not found then return '{"state":"refused","reason":"MACHINES_UNAVAILABLE"}'::jsonb; end if;
 	if not exists (select 1 from public.qorpera_machine_executors executor
 		join public.qorpera_runtime_node_providers provider on provider.provider_kind = 'machine'
 			and provider.provider_id = executor.policy ->> 'providerId' and provider.policy_sha256 = executor.policy ->> 'providerPolicySha256'
 		where executor.enabled and executor.policy is not null and (p_owner is null or executor.owner = p_owner)
-			and provider.cpu_millis >= v_machine.cpus::bigint * 1000 and provider.memory_bytes >= v_machine.memory_bytes) then
+			and provider.cpu_millis >= v_machine.cpus::bigint * 1000 and provider.memory_bytes >= v_machine.memory_bytes
+			and executor.disk_bytes >= v_machine.disk_bytes) then
 		return jsonb_build_object('state','refused','reason','MACHINE_TOO_LARGE','largest',
-			jsonb_build_object('cpus', v_largest.cpu_millis / 1000, 'memoryGiB', v_largest.memory_bytes / 1073741824)); end if;
+			jsonb_build_object('cpus', v_largest.cpu_millis / 1000, 'memoryGiB', v_largest.memory_bytes / 1073741824,
+				'diskGiB', v_largest.disk_bytes / 1073741824)); end if;
 	return v_result;
 end
 $$;
@@ -539,7 +567,8 @@ $$;
 -- Ends every open command of a machine that stopped, restarted or moved, and
 -- queues the notifications they asked for; or, observed, the ones the guest
 -- saw end. A command the guest does not know yet may still be on its way
--- there: it is lost only after two minutes. Internal: the caller holds the machine row.
+-- there: it is lost only two minutes after its start was last sent. Internal:
+-- the caller holds the machine row.
 create function public.qorpera_end_company_machine_commands(p_machine public.qorpera_company_machines, p_state text,
 	p_ended jsonb default '[]'::jsonb)
 returns integer language plpgsql security definer set search_path = '' as $$
@@ -549,7 +578,7 @@ begin
 		order by started_at, id for update loop
 		select item into v_item from jsonb_array_elements(p_ended) item where item ->> 'commandId' = v_command.id::text;
 		if p_state = 'observed' and (v_item is null
-			or (v_item ->> 'state' = 'lost' and v_command.started_at > clock_timestamp() - interval '2 minutes')) then continue; end if;
+			or (v_item ->> 'state' = 'lost' and v_command.sent_at > clock_timestamp() - interval '2 minutes')) then continue; end if;
 		update public.qorpera_company_machine_commands set ended_at = clock_timestamp(),
 			state = case when p_state = 'observed' then v_item ->> 'state' else p_state end,
 			exit_code = case when p_state = 'observed' and v_item ->> 'state' in ('succeeded','failed') then (v_item ->> 'exitCode')::integer end,
@@ -683,8 +712,8 @@ begin
 	v_admission := public.qorpera_admit_company_machine(v_machine.id);
 	-- Never room anywhere: refused at once (the new machine is not kept).
 	if v_admission ->> 'reason' = 'MACHINE_TOO_LARGE' then
-		raise exception 'MACHINE_TOO_LARGE: the largest machine a node makes is % CPUs and % GiB', v_admission #>> '{largest,cpus}',
-			v_admission #>> '{largest,memoryGiB}' using errcode = 'P0F10'; end if;
+		raise exception 'MACHINE_TOO_LARGE: the largest machine a node makes is % CPUs, % GiB memory and % GiB disk',
+			v_admission #>> '{largest,cpus}', v_admission #>> '{largest,memoryGiB}', v_admission #>> '{largest,diskGiB}' using errcode = 'P0F10'; end if;
 	if v_admission ->> 'reason' = 'MACHINES_UNAVAILABLE' then
 		raise exception 'MACHINES_UNAVAILABLE: no node runs machines yet' using errcode = 'P0F10'; end if;
 	exception when sqlstate 'P0F10' then
@@ -733,7 +762,8 @@ end
 $$;
 
 -- Stop or delete: the executors do the rest. A machine with nothing left on
--- any node is removed here at once. Internal: the caller holds the machine row.
+-- any node is removed here at once, and the runs waiting for it to run hear
+-- that it will not. Internal: the caller holds the machine row.
 create function public.qorpera_set_company_machine_desired(p_machine public.qorpera_company_machines, p_desired text, p_by text)
 returns public.qorpera_company_machines language plpgsql security definer set search_path = '' as $$
 declare v_machine public.qorpera_company_machines%rowtype := p_machine;
@@ -741,6 +771,10 @@ begin
 	if p_desired not in ('stopped','deleted') or p_by not in ('agent','member','kernel') then
 		raise exception 'Invalid machine change' using errcode = '22023'; end if;
 	if v_machine.removed_at is not null or v_machine.desired_state = 'deleted' or v_machine.desired_state = p_desired then return v_machine; end if;
+	-- The runs still waiting for it to run are told it will not.
+	insert into public.qorpera_company_machine_events(machine_id, profile_id, environment_id, staff_agent_id, parent_run_id, kind)
+	select v_machine.id, v_machine.profile_id, v_machine.environment_id, run.staff_agent_id, run.id, 'stopped'
+	from public.qorpera_execution_runs run where run.id = any(v_machine.notify_run_ids) order by run.id;
 	update public.qorpera_company_machines set desired_state = p_desired, desired_by = p_by, notify_run_ids = '{}', updated_at = clock_timestamp()
 	where id = v_machine.id returning * into v_machine;
 	if p_desired = 'deleted' then
@@ -813,19 +847,26 @@ begin
 			or v_receipt.input_sha256 is distinct from p_input_sha256)) then
 		raise exception 'Machine command authority unavailable' using errcode = '42501'; end if;
 	select * into v_command from public.qorpera_company_machine_commands where id = p_command_id;
+	-- A command whose placement is gone (its machine stopped and moved) left its log on that disk;
+	-- a start that never reached the guest and was given up (lost) is never started late. A command
+	-- that ran to its end is answered from the guest, never run again.
+	if v_command.id is not null and (v_command.placement_id is distinct from v_placement.id
+		or (p_action = 'start' and v_command.state = 'lost')) then
+		return jsonb_build_object('schema','qorpera.machine-command-authority/v1','state','refused','reason','MACHINE_COMMAND_ENDED',
+			'machine',v_machine.name,'commandState',v_command.state); end if;
 	if p_action = 'start' then
-		-- A start that never reached the guest and was given up is never started late.
-		if v_command.ended_at is not null then
-			return jsonb_build_object('schema','qorpera.machine-command-authority/v1','state','refused','reason','MACHINE_COMMAND_ENDED',
-				'machine',v_machine.name,'commandState',v_command.state); end if;
 		if v_command.id is null then
-			insert into public.qorpera_company_machine_commands(id, machine_id, run_id, staff_agent_id, command_head, notify)
-			values (p_command_id, v_machine.id, v_receipt.run_id, (v_identity ->> 'staffAgentId')::uuid, p_detail ->> 'commandHead',
+			insert into public.qorpera_company_machine_commands(id, machine_id, run_id, staff_agent_id, placement_id, command_head, notify)
+			values (p_command_id, v_machine.id, v_receipt.run_id, (v_identity ->> 'staffAgentId')::uuid, v_placement.id, p_detail ->> 'commandHead',
 				(p_detail ->> 'notify')::boolean)
 			returning * into v_command;
 		elsif v_command.machine_id <> v_machine.id or v_command.command_head <> p_detail ->> 'commandHead'
 			or v_command.notify <> (p_detail ->> 'notify')::boolean then
-			raise exception 'Machine command authority unavailable' using errcode = '42501'; end if;
+			raise exception 'Machine command authority unavailable' using errcode = '42501';
+		elsif v_command.ended_at is null then
+			-- Sent again: the guest's two minutes to know it start over.
+			update public.qorpera_company_machine_commands set sent_at = clock_timestamp() where id = v_command.id;
+		end if;
 		-- The run that asked for the machine has now used it: no separate "running" wake.
 		update public.qorpera_company_machines set notify_run_ids = array_remove(notify_run_ids, v_receipt.run_id)
 		where id = v_machine.id and v_receipt.run_id = any(notify_run_ids);
@@ -883,7 +924,6 @@ begin
 				select id, started_at from public.qorpera_company_machine_commands where machine_id = machine.id and ended_at is null
 				order by started_at, id limit 64) command), '[]'::jsonb) else '[]'::jsonb end,
 			'sleepDue',placement.retired_at is null and machine.lifetime = 'task' and machine.desired_state = 'running' and state.reserved
-				and placement.running_at is not null
 				and not exists (select 1 from public.qorpera_company_machine_commands where machine_id = machine.id and ended_at is null)
 				and machine.last_used_at <= clock_timestamp() - make_interval(secs => executor.sleep_after_seconds),
 			'stopDue',(placement.retired_at is not null or machine.desired_state <> 'running') and state.reserved,
@@ -902,8 +942,9 @@ end
 $$;
 
 -- Each call gives at most one waiting machine room, the first in line that
--- fits this node now (a machine too large for it or for its free room now
--- never holds up the ones behind it). A machine asleep anywhere wakes where
+-- fits this node now (a machine too large for it or for its free room and
+-- disk now, of a paused company, or one this node could never take, never
+-- holds up the ones behind it). A machine asleep anywhere wakes where
 -- it slept if there is room there; otherwise it may start fresh here. One
 -- reservation per transaction, and every refused attempt is rolled back with
 -- its locks, so the node's pass never holds one company's locks while it
@@ -913,7 +954,7 @@ $$;
 create function public.qorpera_admit_executor_machines(p_owner text, p_machine_id_sha256 text, p_limit integer default 16)
 returns jsonb language plpgsql security definer set search_path = '' as $$
 declare v_executor public.qorpera_machine_executors%rowtype; v_machine public.qorpera_company_machines%rowtype; v_result jsonb;
-	v_shape record; v_room record;
+	v_shape record; v_room record; v_disk bigint;
 begin
 	if auth.role() is distinct from 'service_role' or coalesce(p_owner,'') !~ '^[A-Za-z0-9_.:-]{1,120}$'
 		or coalesce(p_machine_id_sha256,'') !~ '^[0-9a-f]{64}$' or p_limit is null or p_limit not between 1 and 64 then
@@ -930,11 +971,21 @@ begin
 	left join public.qorpera_runtime_node_demands demand on demand.node_id = node.id and demand.reserved_at is not null
 		and demand.released_at is null and demand.suspended_at is null
 	where node.machine_id_sha256 = p_machine_id_sha256 and node.enabled group by node.id;
+	v_disk := v_executor.disk_bytes - public.qorpera_machine_executor_disk_used(p_owner);
 	if v_shape.cpu_millis is not null and v_room.cpu is not null then
 		for v_machine in select machine.* from public.qorpera_company_machines machine
+			left join public.qorpera_company_machine_placements here on here.machine_id = machine.id
+				and here.retired_at is null and here.removed_at is null
 			where machine.desired_state = 'running' and machine.removed_at is null and not public.qorpera_company_machine_reserved(machine)
+				and not public.qorpera_company_execution_paused(machine.profile_id)
 				and machine.cpus::bigint * 1000 <= least(v_shape.cpu_millis, v_room.cpu)
 				and machine.memory_bytes <= least(v_shape.memory_bytes, v_room.memory)
+				-- Asleep here, it wakes on the disk it already holds; anything else needs new disk and must be free to come.
+				and (here.owner = p_owner or (machine.disk_bytes <= v_disk and machine.repository_worker_id is null
+					and (here.id is null or here.running_at is null))
+					or (here.id is null and machine.disk_bytes <= v_disk and exists (select 1 from public.qorpera_coding_storage_volumes volume
+						where volume.worker_id = machine.repository_worker_id and volume.owner = p_owner
+							and volume.machine_id_sha256 = p_machine_id_sha256)))
 			order by machine.wanted_at, machine.id limit p_limit loop
 			begin
 				if not pg_try_advisory_xact_lock(hashtextextended('qorpera.company-machines:' || v_machine.profile_id::text, 0)) then
@@ -1006,8 +1057,8 @@ begin
 		raise exception 'Machine node custody differs' using errcode = '42501'; end if;
 	if p_intent = 'stop' then
 		if v_placement.retired_at is null and v_machine.desired_state = 'running' then
-			-- Only an idle task machine sleeps on its own.
-			if v_machine.lifetime <> 'task' or v_placement.running_at is null
+			-- Only an idle task machine sleeps on its own (one that never came up too: it gives its room back).
+			if v_machine.lifetime <> 'task'
 				or exists (select 1 from public.qorpera_company_machine_commands where machine_id = v_machine.id and ended_at is null)
 				or v_machine.last_used_at > clock_timestamp() - make_interval(secs => v_executor.sleep_after_seconds) then
 				return '{"state":"refused","reason":"MACHINE_IN_USE"}'::jsonb; end if;
@@ -1128,6 +1179,36 @@ begin
 end
 $$;
 
+-- A node gone for good (its disks are gone and it will never run its executor
+-- again): an operator gives up its placements. Each allocation is released,
+-- its machine's commands there are lost, a deleted machine is removed, and a
+-- machine that wants to run starts fresh on another node. Refused while the
+-- executor is enabled; answers with how many placements were given up.
+create function public.qorpera_abandon_machine_executor(p_owner text, p_machine_id_sha256 text)
+returns integer language plpgsql security definer set search_path = '' as $$
+declare v_placement public.qorpera_company_machine_placements%rowtype; v_machine public.qorpera_company_machines%rowtype; v_count integer := 0;
+begin
+	if auth.role() is distinct from 'service_role' then raise exception 'Machine operator authority required' using errcode = '42501'; end if;
+	if not exists (select 1 from public.qorpera_machine_executors where owner = p_owner and machine_id_sha256 = p_machine_id_sha256 and not enabled) then
+		raise exception 'Disable the machine executor first' using errcode = '55000'; end if;
+	for v_placement in select * from public.qorpera_company_machine_placements
+		where owner = p_owner and machine_id_sha256 = p_machine_id_sha256 and removed_at is null order by created_at, id loop
+		perform pg_advisory_xact_lock(hashtextextended('qorpera.company-machines:' || v_placement.profile_id::text, 0));
+		select * into strict v_machine from public.qorpera_company_machines where id = v_placement.machine_id for update;
+		select * into strict v_placement from public.qorpera_company_machine_placements where id = v_placement.id for update;
+		perform public.qorpera_lock_profile_gc_fence(v_placement.profile_id);
+		update public.qorpera_runtime_machine_allocations set released_at = coalesce(released_at, clock_timestamp()) where id = v_placement.id;
+		if v_placement.retired_at is null then perform public.qorpera_end_company_machine_commands(v_machine, 'lost'); end if;
+		update public.qorpera_company_machine_placements set retired_at = coalesce(retired_at, clock_timestamp()),
+			removing_at = coalesce(removing_at, clock_timestamp()), removed_at = clock_timestamp(), running_at = null, boot_id = null
+		where id = v_placement.id;
+		perform public.qorpera_close_company_machine(v_machine);
+		v_count := v_count + 1;
+	end loop;
+	return v_count;
+end
+$$;
+
 create function public.qorpera_record_company_machine_error(p_placement_id uuid, p_owner text, p_machine_id_sha256 text, p_stage text, p_code text)
 returns void language plpgsql security definer set search_path = '' as $$
 begin
@@ -1139,6 +1220,8 @@ begin
 	from public.qorpera_company_machine_placements placement
 	where placement.id = p_placement_id and placement.machine_id = machine.id and placement.owner = p_owner
 		and placement.machine_id_sha256 = p_machine_id_sha256 and placement.removed_at is null and machine.removed_at is null
+		-- A retired placement's trouble is its old node's, not the machine's.
+		and placement.retired_at is null
 		and (p_code is not null or machine.last_error like p_stage || ':%');
 end
 $$;
@@ -1477,7 +1560,7 @@ select pg_temp.company_machine_patch('public.qorpera_record_runtime_observation(
 -- ---------------------------------------------------------------------------
 -- 11. Grants
 -- ---------------------------------------------------------------------------
-revoke all on function public.qorpera_configure_machine_executor(text, text, boolean, jsonb),
+revoke all on function public.qorpera_configure_machine_executor(text, text, boolean, jsonb, bigint),
 	public.qorpera_configure_machine_lifecycle(text, integer, integer),
 	public.qorpera_machine_text_tail(text, integer),
 	public.qorpera_company_machine_binding_text(jsonb),
@@ -1486,7 +1569,8 @@ revoke all on function public.qorpera_configure_machine_executor(text, text, boo
 	public.qorpera_company_machine_reserved(public.qorpera_company_machines),
 	public.qorpera_company_machine_state(public.qorpera_company_machines),
 	public.qorpera_company_machine_view(public.qorpera_company_machines),
-	public.qorpera_company_machine_candidates(bigint, bigint, text),
+	public.qorpera_machine_executor_disk_used(text),
+	public.qorpera_company_machine_candidates(bigint, bigint, bigint, text),
 	public.qorpera_place_company_machine(uuid, text),
 	public.qorpera_admit_company_machine(uuid, text),
 	public.qorpera_end_company_machine_commands(public.qorpera_company_machines, text, jsonb),
@@ -1503,6 +1587,7 @@ revoke all on function public.qorpera_configure_machine_executor(text, text, boo
 	public.qorpera_mark_company_machine_running(uuid, text, text, text, uuid),
 	public.qorpera_suspend_company_machine(uuid, text, text, text),
 	public.qorpera_release_company_machine(uuid, text, text, text),
+	public.qorpera_abandon_machine_executor(text, text),
 	public.qorpera_record_company_machine_error(uuid, text, text, text, text),
 	public.qorpera_record_company_machine_commands(uuid, text, text, text, uuid, jsonb, boolean),
 	public.qorpera_list_company_machines(uuid),
@@ -1515,7 +1600,8 @@ revoke all on function public.qorpera_configure_machine_executor(text, text, boo
 	public.qorpera_drain_machine_wakes(integer),
 	public.qorpera_machine_run_continuation(public.qorpera_execution_runs, integer)
 	from public, anon, authenticated, service_role;
-grant execute on function public.qorpera_configure_machine_executor(text, text, boolean, jsonb),
+grant execute on function public.qorpera_configure_machine_executor(text, text, boolean, jsonb, bigint),
+	public.qorpera_abandon_machine_executor(text, text),
 	public.qorpera_configure_machine_lifecycle(text, integer, integer),
 	public.qorpera_native_machine_start(jsonb, text, text, uuid, text),
 	public.qorpera_native_machine_manage(jsonb, jsonb),

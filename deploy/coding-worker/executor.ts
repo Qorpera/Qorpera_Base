@@ -44,9 +44,10 @@ interface Config {
 	repositories: { repository: CloudCodingRepository; credential: string | null }[];
 	/** Company machines on this node (2026-09-28): the node policy SQL copies
 	 * into every machine placed here, and the pin of the machine guest helper
-	 * the reviewed machine image carries. Absent: this executor makes no
-	 * machines, but still forwards machine commands to its peers. */
-	machines: { policy: CompanyMachinePolicy; helperSha256: string } | null;
+	 * the reviewed machine image carries (plus the helpers of earlier images
+	 * whose machines still run here). Absent: this executor makes no machines,
+	 * but still forwards machine commands to its peers. */
+	machines: { policy: CompanyMachinePolicy; helperSha256: string; previousHelperSha256s: string[] } | null;
 }
 const RESERVED_CREDENTIALS = new Set(["qorpera-coding-executor-config", "qorpera-coding-registry", "qorpera-coding-command", "qorpera-coding-peer-command"]);
 const CONFIG_KEYS = "commandPeers,commandPort,guest,owner,peerCommandPort,repositories,schema,storagePolicy,supabaseUrl,vmPolicy";
@@ -129,12 +130,16 @@ export function parseCodingExecutorConfiguration(value: unknown): Config {
 	let machines: Config["machines"] = null;
 	if (config.machines !== undefined) {
 		const entry = object(config.machines);
-		if (Object.keys(entry).sort().join() !== "helperSha256,policy" || typeof entry.helperSha256 !== "string" ||
-			!/^[0-9a-f]{64}$/.test(entry.helperSha256)) throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
+		const keys = Object.keys(entry).sort().join();
+		const previous = entry.previousHelperSha256s ?? [];
+		if ((keys !== "helperSha256,policy" && keys !== "helperSha256,policy,previousHelperSha256s") ||
+			typeof entry.helperSha256 !== "string" || !/^[0-9a-f]{64}$/.test(entry.helperSha256) || !Array.isArray(previous) ||
+			previous.length > 16 || previous.some((sha) => typeof sha !== "string" || !/^[0-9a-f]{64}$/.test(sha)) ||
+			new Set([entry.helperSha256, ...previous]).size !== previous.length + 1) throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
 		const policy = parseCompanyMachinePolicy(entry.policy);
 		// Commands route to this executor by the coding provider's peer identity.
 		if (policy.providerId !== vmPolicy.providerId) throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
-		machines = { policy, helperSha256: entry.helperSha256 };
+		machines = { policy, helperSha256: entry.helperSha256, previousHelperSha256s: previous as string[] };
 	}
 	return {
 		schema: "qorpera.coding-executor-service/v7", owner: config.owner, supabaseUrl: origin(config.supabaseUrl),
@@ -195,7 +200,7 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 	const machineHost = config.machines ? new LxdCompanyMachineHost({
 		control, owner: config.owner, machineIdSha256: createHash("sha256").update(machine).digest("hex"),
 		policy: config.machines.policy, client: new LxdUnixClient(), journalRoot, storagePolicy: config.storagePolicy,
-		helperSha256: config.machines.helperSha256,
+		helperSha256: config.machines.helperSha256, previousHelperSha256s: config.machines.previousHelperSha256s,
 	}) : undefined;
 	const machineRouter = new MachineCommandRouter({
 		owner: config.owner, providerId: config.vmPolicy.providerId, peers: config.commandPeers, control, credential,

@@ -64,6 +64,9 @@ export interface CompanyMachineHostOptions {
 	storagePolicy: CloudCodingNasPolicy;
 	/** The sha-256 of the packaged machine guest helper the image carries. */
 	helperSha256: string;
+	/** Helpers of earlier images still on this node: their machines keep running until they sleep and
+	 * start fresh from the current image (their placement's policy is gone). */
+	previousHelperSha256s?: readonly string[];
 	/** How long a started guest may take before its agent answers (default 180 s). */
 	guestReadyTimeoutMs?: number;
 }
@@ -92,8 +95,9 @@ export interface CompanyMachineEntry {
 	removeDue: boolean;
 }
 export interface CompanyMachineOutcome {
-	placementId: string;
-	step: "start" | "guest" | "stop" | "delete" | "release" | "commands" | "wait";
+	/** null for admission, which is not one placement's step. */
+	placementId: string | null;
+	step: "admit" | "start" | "guest" | "stop" | "delete" | "release" | "commands" | "wait";
 	state: "done" | "pending" | "not-now" | "failed";
 	code?: string;
 }
@@ -160,6 +164,7 @@ export class LxdCompanyMachineHost {
 			!/^[A-Za-z0-9_.:-]{1,120}$/.test(options.owner) ||
 			!SHA.test(options.machineIdSha256) ||
 			!SHA.test(options.helperSha256) ||
+			(options.previousHelperSha256s ?? []).some((sha) => !SHA.test(sha)) ||
 			resolve(options.journalRoot) !== options.journalRoot
 		)
 			throw new Error("COMPANY_MACHINE_HOST_CONFIGURATION_INVALID");
@@ -332,7 +337,11 @@ export class LxdCompanyMachineHost {
 				65536,
 				signal,
 			);
-			if (createHash("sha256").update(helper.content).digest("hex") !== this.#options.helperSha256)
+			const helperSha256 = createHash("sha256").update(helper.content).digest("hex");
+			if (
+				helperSha256 !== this.#options.helperSha256 &&
+				!(this.#options.previousHelperSha256s ?? []).includes(helperSha256)
+			)
 				throw new Error("COMPANY_MACHINE_HELPER_DIFFERS");
 			prepared = await this.#helper(e, ["prepare", e.machineId, String(this.#generation)], signal);
 		} catch (error) {
@@ -447,13 +456,25 @@ export class LxdCompanyMachineHost {
 		this.#guests.delete(e.placementId);
 		return { placementId: e.placementId, step: "release", state: "done" };
 	}
+	/** This placement's own instance exists, unchanged, and runs. */
+	async #instanceRunning(e: CompanyMachineEntry, signal: AbortSignal): Promise<boolean> {
+		const plan = this.#plan(e);
+		const instance = await this.#options.client.getInstance(plan.project, plan.name, signal);
+		if (!instance) return false;
+		plan.assertInstance(instance);
+		return instance.status === "Running";
+	}
 	async #step(e: CompanyMachineEntry, signal: AbortSignal): Promise<CompanyMachineOutcome> {
 		if (e.released) return this.#remove(e, signal);
 		if ((e.stopDue || e.sleepDue) && e.reserved) return this.#stop(e, signal);
 		if (e.removeDue && !e.reserved) return this.#remove(e, signal);
 		if (e.desiredState === "running" && e.reserved) {
 			const state = await this.#physical(e, "running", signal);
-			if (state === "not-now") return { placementId: e.placementId, step: "start", state: "not-now" };
+			// Without new run authority (its node looks unavailable, or machines are switched off), a
+			// machine that already runs keeps its lease and its commands are still watched: only
+			// creating or starting it needs the node's room.
+			if (state === "not-now" && !(e.runningAt !== null && (await this.#instanceRunning(e, signal))))
+				return { placementId: e.placementId, step: "start", state: "not-now" };
 			return this.#guest(e, signal);
 		}
 		return { placementId: e.placementId, step: "wait", state: "not-now" };
@@ -482,12 +503,19 @@ export class LxdCompanyMachineHost {
 	 * takes one machine per call (one reservation per transaction) and never
 	 * holds up the rest of the pass. */
 	async pass(signal: AbortSignal): Promise<CompanyMachineOutcome[]> {
+		const admission: CompanyMachineOutcome[] = [];
 		for (let admitted = 0; admitted < 8; admitted++) {
-			const taken = await this.#call(
-				"qorpera_admit_executor_machines",
-				{ p_owner: this.#options.owner, p_machine_id_sha256: this.#options.machineIdSha256, p_limit: 32 },
-				signal,
-			).catch(() => []);
+			let taken: unknown;
+			try {
+				taken = await this.#call(
+					"qorpera_admit_executor_machines",
+					{ p_owner: this.#options.owner, p_machine_id_sha256: this.#options.machineIdSha256, p_limit: 64 },
+					signal,
+				);
+			} catch (error) {
+				admission.push({ placementId: null, step: "admit", state: "failed", code: errorCode(error) });
+				break;
+			}
 			if (!Array.isArray(taken) || taken.length === 0) break;
 		}
 		const listed = await this.#call(
@@ -497,7 +525,7 @@ export class LxdCompanyMachineHost {
 		);
 		if (!Array.isArray(listed)) throw new Error("COMPANY_MACHINE_LIST_INVALID");
 		const entries = listed.map(entry);
-		return Promise.all(
+		const outcomes = await Promise.all(
 			entries.map((e) =>
 				this.#exclusive(e.placementId, async () => {
 					const stage = (step: CompanyMachineOutcome["step"]) =>
@@ -527,6 +555,7 @@ export class LxdCompanyMachineHost {
 				}),
 			),
 		);
+		return [...admission, ...outcomes];
 	}
 
 	/** Runs one authorized command action on a machine of this node. */

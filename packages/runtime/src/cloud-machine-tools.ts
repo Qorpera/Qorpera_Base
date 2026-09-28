@@ -55,7 +55,7 @@ export const CLOUD_MACHINE_RUN_DESCRIPTION =
 	"A result with refused started nothing: the machine is not running, or the start with this operationKey was given up (start it again with a new operationKey).";
 export const CLOUD_MACHINE_READ_DESCRIPTION =
 	"Read a machine command's retained output and status, whoever started it. Use log.nextOffset as the next byte cursor, or tail true for recent output; offset and tail cannot be combined. " +
-	"Pages may be smaller than limit. Logs keep 64 MiB; limitReached means later output was dropped. running or unconfirmed is not success; lost means the machine stopped or restarted under it.";
+	"Pages may be smaller than limit. Logs keep 64 MiB; limitReached means later output was dropped. running or unconfirmed is not success; lost means the machine stopped or restarted under it. After the machine moved to another server, its earlier commands have no log (refused).";
 export const CLOUD_MACHINE_CANCEL_DESCRIPTION =
 	"Stop a running machine command and everything it started. Files on the machine stay. Keep operationKey stable after an uncertain result.";
 export const CLOUD_MACHINE_STOP_DESCRIPTION =
@@ -127,6 +127,18 @@ export function cloudMachineTools(options: {
 		kind: "text" as const,
 		value: cloudToolJsonText({ refused: { reason, message, ...extra } }),
 	});
+	/** The executor's refusal to read or cancel a command, as the agent's result. */
+	const commandGone = (error: unknown, machine: string) => {
+		const refusal = cloudMachineCommandRefusal(error);
+		if (refusal === "MACHINE_COMMAND_ENDED")
+			return refused(
+				refusal,
+				"that command ended when its machine stopped or moved; its log went with the old disk",
+			);
+		if (refusal === "MACHINE_NOT_RUNNING")
+			return refused(refusal, `${machine} stopped; its commands stopped with it`);
+		throw error;
+	};
 	const fits = (value: unknown): boolean =>
 		Buffer.byteLength(
 			JSON.stringify(cloudToolJsonText(value as JsonValue, 131072)).replace(
@@ -416,8 +428,9 @@ export function cloudMachineTools(options: {
 				);
 			let limit = Number(query.limit ?? 4096);
 			for (;;) {
-				const page = parseCloudMachineCommandReceipt(
-					await cloudToolRequest(
+				let read: unknown;
+				try {
+					read = await cloudToolRequest(
 						(signal) =>
 							options.gateway.read(
 								{ machineId: machine.machineId },
@@ -425,8 +438,11 @@ export function cloudMachineTools(options: {
 								signal,
 							),
 						context.signal,
-					),
-				);
+					);
+				} catch (error) {
+					return commandGone(error, machine.name);
+				}
+				const page = parseCloudMachineCommandReceipt(read);
 				check(context);
 				if (fits({ machine: machine.name, ...page })) return receipt(page, machine.name);
 				if (limit === 4) throw new Error("Machine command page exceeds result budget");
@@ -476,16 +492,19 @@ export function cloudMachineTools(options: {
 				authorize: async (_operation, admitted) => {
 					if (!isDeepStrictEqual(admitted, identity)) throw new Error("Machine command identity changed");
 				},
-				perform: async (_operation, effect) => ({
-					content: receipt(
-						await options.gateway.cancel(
+				perform: async (_operation, effect) => {
+					let cancelled: CloudMachineCommandReceipt;
+					try {
+						cancelled = await options.gateway.cancel(
 							{ machineId: machine.machineId },
 							String(input.commandId),
 							effect.signal,
-						),
-						machine.name,
-					),
-				}),
+						);
+					} catch (error) {
+						return { content: commandGone(error, machine.name) };
+					}
+					return { content: receipt(cancelled, machine.name) };
+				},
 			});
 		},
 	};
