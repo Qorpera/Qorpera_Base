@@ -1,5 +1,5 @@
 -- @fixture 300_runtime_wake_bus.test.sql until "-- END WAKE FIXTURE"
--- Computer hours, build step 4a (20260929110000_runtime_computer_hours_payments): paid Stripe facts
+-- Computer hours, build step 4a (20260928248910_runtime_computer_hours_payments): paid Stripe facts
 -- become sources of hours through one dispatcher that only an enrolled billing key opens. Test-mode
 -- payments make dry-run sources, and before the live switch only enrolled testers may start a checkout.
 -- Founders buy credits; a member with a plan changes it on Stripe's billing page. A refund or

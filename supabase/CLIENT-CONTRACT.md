@@ -486,7 +486,7 @@ wake), so no agent runs and nothing is charged before it.
   ago). Any member of the company, viewers included; anyone else gets 42501.
   A client shows "Not measured yet" while the function is missing (PGRST202).
 
-- 20260929110000_runtime_computer_hours_payments:
+- 20260928248910_runtime_computer_hours_payments:
   `qorpera_list_computer_hour_offers()` → `qorpera.computer-hour-offers/v1`:
   `items` (`itemKey`, `kind` `plan` | `credits`, `name`, `priceMinor` in
   øre excluding VAT, `currency` `dkk`, `hours`: a plan's hours a month or a
@@ -564,7 +564,7 @@ machine.
 - `native-provider-login` — a member starts the provider-native login handoff
   (Codex / Claude) that runs in an isolated cloud login VM; the client only
   hands the member the link and shows status.
-- `computer-billing` (20260929110000) — computer hours payments. The web app
+- `computer-billing` (20260928248910) — computer hours payments. The web app
   calls `POST /functions/v1/computer-billing/checkout` with the member's
   bearer token and `{itemKey, profileId?}` (`profileId` for credits, which
   only a founder of that company may buy) and gets `{url}` (Stripe Checkout)

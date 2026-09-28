@@ -277,7 +277,7 @@ or switch. Existing companies keep their own brokers (or none) and are switched 
 Picks: one shared vault; each company's capability and key derived from the vault's own secrets (nothing
 new stored); new companies only; node 1 serves, node 2 stands ready with the same secrets.
 
-- **Part 1, database** (migration `20260929130000`): `qorpera_cloud_secret_broker_principals` is the
+- **Part 1, database** (migration `20260928248930`): `qorpera_cloud_secret_broker_principals` is the
   shared vault's identity (service origin, the key id its companies get, a capability hash, and the time
   after which the companies it registers were created). Broker role only:
   - `qorpera_broker_principal_companies`: the principal's key id, the companies it serves (authorities
