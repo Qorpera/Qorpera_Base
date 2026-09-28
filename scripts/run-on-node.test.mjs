@@ -84,10 +84,26 @@ test("untracked files that look like secrets are named", () => {
 			"deploy/id_ed25519",
 			"passwords.private.json",
 			".npmrc",
+			".envrc",
+			"home/.aws/credentials",
+			"infra/prod.tfvars",
+			"config/staging.env",
 			"src/cloud-secret-broker.ts",
+			"src/id_utils.ts",
 			"scripts/new-test.mjs",
 		]),
-		[".env.local", "apps/x/.env", "certs/server.pem", "deploy/id_ed25519", "passwords.private.json", ".npmrc"],
+		[
+			".env.local",
+			"apps/x/.env",
+			"certs/server.pem",
+			"deploy/id_ed25519",
+			"passwords.private.json",
+			".npmrc",
+			".envrc",
+			"home/.aws/credentials",
+			"infra/prod.tfvars",
+			"config/staging.env",
+		],
 	);
 });
 

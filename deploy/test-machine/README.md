@@ -11,7 +11,7 @@ credentials and no product role. Agents' test machines (#419) are a separate pro
 | --- | --- |
 | VM | `qorpera-testvm-node02` in LXD project `testmachines` |
 | Size | 6 vCPU, 16 GiB RAM, 150 GiB root disk on pool `qorpera-vm`. Sized for PR #326's physical acceptance (6+ CPUs, 16 GiB, KVM). Setup records whether `/dev/kvm` is present |
-| Image | Ubuntu 26.04 server, then Docker Engine (rootful), Node 24.21.0 (pinned checksum), Git, build tools, Python, LXD 6.9 rev 40424 for nested tests. The pinned PostgreSQL image of `scripts/test-hosted-db.mjs` and `node:24-bookworm-slim` are pre-pulled. Docker data unused for a week is pruned weekly |
+| Image | Ubuntu 26.04 server, then Docker Engine (rootful), Node 24.21.0 (pinned checksum), Git, build tools, Python, LXD 6.9 rev 40424 for nested tests. The pinned PostgreSQL image of `scripts/test-hosted-db.mjs` and `node:24-bookworm-slim` are pre-pulled. Stopped containers, dangling images and build cache older than a week are pruned weekly |
 | Self-update | `apt-daily*` and `unattended-upgrades` are masked, as for coding images (`deploy/coding-worker/COMMAND-GUEST.md`), and every snap is held |
 | Network | Bridge `testmach0` (10.201.0.1/24, NAT, no IPv6), VM at 10.201.0.2 with MAC/IP filtering and port isolation |
 | Egress | ACL `testmach-egress`: the internet only. Rejected: 10/8 except the bridge's own /24, 172.16/12, 192.168/16 (LAN and NAS), 100.64/10 (Tailscale), 169.254/16, 127/8, 0/8, 192.0.0/24, 198.18/15, 224/4 and all IPv6. The node itself (the gateway) is rejected on every TCP and UDP port except DNS and DHCP; ICMP to it is not blocked. LXD applies reject rules before allow rules, so the rejects are written to leave the needed holes rather than relying on allow rules |
@@ -49,8 +49,9 @@ per-worktree copy). It runs `npm ci --ignore-scripts` there (skipped for `hosted
 no packages), streams the output, and exits with the suite's exit code. The run directory is
 deleted afterwards (`--keep` keeps it). At the start of every run, runs older than a day (by the UTC time
 in their name), worktree copies unused for 14 days and hosted-db containers older than 6 hours are removed.
-Untracked files that look like credentials (`.env*`, `*.pem`, `*.key`, `id_*`, `*.private.json`,
-`.npmrc`) stop the run unless `--allow-secrets` is given.
+Untracked files that look like credentials (`.env*`, `*.env`, `.envrc`, `.npmrc`, `.netrc`, `.pgpass`,
+`.git-credentials`, `.aws/credentials`, `*.pem`, `*.key`, `*.p12`, `*.tfvars`, `id_*` without an extension,
+`credentials*.json`, `service-account*.json`, `*.private.json`) stop the run unless `--allow-secrets` is given.
 
 The last line is a JSON record: host, OS, kernel, Node, npm, Docker and Git versions, KVM, source
 commit and a digest of exactly the files copied, command, copy, preparation and elapsed time, and the

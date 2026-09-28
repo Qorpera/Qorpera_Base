@@ -33,7 +33,7 @@ Target (environment): QORPERA_TEST_MACHINE      default tester@10.201.0.2
 const NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const HOME = "/home/tester";
 const SECRET =
-	/(^|\/)(\.env(\.[^/]*)?|\.npmrc|[^/]*\.(pem|p12|pfx|key)|id_(rsa|ecdsa|ed25519)[^/]*|credentials[^/]*\.json|[^/]*\.private\.json)$/i;
+	/(^|\/)(\.env(\.[^/]*)?|\.envrc|\.dev\.vars|\.npmrc|\.netrc|\.pgpass|\.git-credentials|\.aws\/credentials|[^/]*\.(env|pem|p12|pfx|key|tfvars)|id_[^/.]+|credentials[^/]*\.json|service-account[^/]*\.json|[^/]*\.private\.json)$/i;
 
 export function parseArgs(argv) {
 	const options = {
@@ -164,7 +164,7 @@ export function pruneScript() {
 		`mkdir -p ${HOME}/runs ${HOME}/trees`,
 		"cutoff=$(date -u -d '-1 day' +%Y%m%dT%H%M%S)",
 		`for d in ${HOME}/runs/*/; do n=$(basename "$d"); if [[ "$n" =~ ^[0-9]{8}T[0-9]{6}- && "\${n%%-*}" < "$cutoff" ]]; then sudo -n rm -rf -- "$d"; fi; done`,
-		`find ${HOME}/trees -maxdepth 1 -name '*.lock' -mtime +14 2>/dev/null | while read -r l; do sudo -n rm -rf -- "\${l%.lock}" "$l"; done`,
+		`find ${HOME}/trees -maxdepth 1 -name '*.lock' -mtime +14 2>/dev/null | while read -r l; do flock -n "$l" sudo -n rm -rf -- "\${l%.lock}" && rm -f -- "$l"; done`,
 		`for id in $(docker ps -aq --filter name=^qorpera-hosted-db- 2>/dev/null); do c=$(docker inspect -f '{{.Created}}' "$id") && [ $(( $(date +%s) - $(date -d "$c" +%s) )) -gt 21600 ] && docker rm -f "$id" >/dev/null; done`,
 		"true",
 	].join("\n");
@@ -279,7 +279,8 @@ async function main() {
 		t,
 		[
 			"set -euo pipefail",
-			`flock ${treeDir}.lock rsync -a --delete ${runDir}/ ${treeDir}/`,
+			// The base copy is only a cache: a busy or failed refresh never fails the run.
+			`flock -w 60 ${treeDir}.lock rsync -a --delete ${runDir}/ ${treeDir}/ || echo "== run-on-node: base copy refresh skipped"`,
 			`cd ${runDir}`,
 			`echo "== run-on-node: $(hostname) ${run} (${files.length} files, copy ${((synced - started) / 1000).toFixed(1)} s)"`,
 			options.install
