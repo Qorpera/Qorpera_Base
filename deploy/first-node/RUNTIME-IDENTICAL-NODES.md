@@ -27,7 +27,7 @@ change.
   come from a signed release installed on the node. Build machines go in a declared build space
   counted against headroom. Everything else stays exact.
 
-## Change 1: the serving switch (migration `20260928180000`)
+## Change 1: the serving switch (migration `20260928180700`)
 
 - **The switch is `qorpera_runtime_nodes.enabled`.** These already require it:
   - `qorpera_runtime_node_placement_candidates`, used by the node chooser, the login route pick
@@ -41,7 +41,7 @@ change.
     turn it is running keeps its lease and finishes.
 - **Work pinned to the node by a disk stays pinned.** It waits for the node to return:
   - runs of a member whose login lives on the node (the identity-home rule, until logins move
-    into the vault, `20260928161000`);
+    into the vault, `20260928180600`);
   - a sleeping machine's wake;
   - a new coding turn for a member whose machine is there (the sticky branches of the executor
     pick send it to that node's executor, which does not start it while the node empties);
@@ -118,7 +118,7 @@ migration can go in any cut without a pause.
    select node_id, revision, disabled_version, resumed_version
    from public.qorpera_node_update_targets where resumed_version is null;
    ```
-1. Apply `20260928180000` (dry run first). Guard marker for the release branch:
+1. Apply `20260928180700` (dry run first), after S1's `20260928180600`. Guard marker for the release branch:
    `qorpera_runtime_orchestrator_nodes(v_adapter)` present in
    `qorpera_claim_runner_job_for_orchestrator`. Check that it is ABSENT live first.
 2. Read-only check that each live orchestrator's adapter maps to exactly one node:
@@ -278,17 +278,25 @@ It sorts after change 4 because it reads its bundle declarations.
 
 ### Use in a rolling update (change 7 writes the full procedure)
 
+A bundle can be declared only once it is registered, and the activation migration registers and
+activates it in one step. So the updated node stays switched off until the activation:
+
 1. Apply the release's migrations. They must be safe for the running bundle N.
-2. Empty node A (`qorpera_set_runtime_node_serving`), wait for `readyForUpdate`, then update it:
-   node release, image, rebuild the fast host. The rebuild re-registers the fast host's
-   orchestrator, which clears any declaration.
-3. Declare **every** orchestrator on node A as N+1, the rebuilt fast host included, and every
-   orchestrator on node B as N. `undeclared` must be empty. Return node A to serving.
-4. Activate N+1: new inputs and runs bind to N+1, and only node A takes them. Node B finishes N.
-5. When `qorpera_runtime_bundle_roll_status()` shows no queued or running N runs, and no N input
-   that can still run, empty node B and update it. Its rebuild clears its fast host's
-   declaration; declare all of node B's orchestrators as N+1 and return it.
-6. Clear every declaration.
+2. Declare every orchestrator on node B as N.
+3. Empty node A (`qorpera_set_runtime_node_serving`), wait for `readyForUpdate`, then update it:
+   node release, image, fast host rebuilt without a declaration. The rebuild re-registers the fast
+   host's orchestrator, which clears any declaration. Start A's orchestrators; while A is switched
+   off they claim nothing.
+4. Activate N+1 with A still switched off. New inputs and runs bind to N+1 and wait briefly: B is
+   declared N and A claims nothing.
+5. Declare **every** orchestrator on node A as N+1, the rebuilt fast host included; `undeclared`
+   must be empty and no orchestrator on A may still be declared N. Return node A to serving: it
+   takes the N+1 runs. Node B finishes N.
+6. When `qorpera_runtime_bundle_roll_status()` shows no queued or running N runs, and no N input
+   that can still run, empty node B and update it; declare all of node B's orchestrators as N+1
+   (N+1 is registered now, so B's fast host rebuild can declare it with
+   `EXEC_RUNTIME_BUNDLE_SHA256`) and return it.
+7. Clear every declaration.
 
 ### Rollout (coordinator)
 
