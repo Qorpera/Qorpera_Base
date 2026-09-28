@@ -61,10 +61,16 @@ end
 $$;
 
 -- The seven tables first, in one statement, so the migration never holds auth.users (each drop below
--- takes it) while it waits for one of them behind a member's write.
-lock table public.qorpera_profiles, public.qorpera_company_environments, public.qorpera_company_foundings,
-	public.qorpera_shared_sessions, public.qorpera_session_inputs, public.qorpera_account_entitlements,
-	public.qorpera_account_entitlement_changes in access exclusive mode;
+-- takes it) while it waits for one of them behind a member's write. Applied in one transaction, as a
+-- cut does, the locks last until commit; a runner that commits each statement gains nothing from it
+-- and loses nothing either (a bare LOCK TABLE would fail there).
+do $$
+begin
+	lock table public.qorpera_profiles, public.qorpera_company_environments, public.qorpera_company_foundings,
+		public.qorpera_shared_sessions, public.qorpera_session_inputs, public.qorpera_account_entitlements,
+		public.qorpera_account_entitlement_changes in access exclusive mode;
+end
+$$;
 
 alter table public.qorpera_profiles
 	drop constraint qorpera_profiles_created_by_user_id_fkey,
