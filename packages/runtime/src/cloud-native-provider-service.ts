@@ -363,13 +363,20 @@ export class SupabaseNativeProviderControlPlane
 			if (!Number.isSafeInteger(value.connection_version) || (value.connection_version as number) < 1)
 				throw new Error("Native account connection version is invalid");
 			const capsuleId = uuid(value.credential_capsule_id, "Native account capsule id");
-			if (value.encrypted_capsule_reference !== `native-capsule/${capsuleId}`)
+			// A login kept by the vault (`model-login/<login id>`, Stateless Compute step 1) is listed
+			// too; the host leaves its usage check to the vault.
+			const reference = value.encrypted_capsule_reference;
+			if (
+				typeof reference !== "string" ||
+				(reference !== `native-capsule/${capsuleId}` &&
+					!(reference.startsWith("model-login/") && UUID_PATTERN.test(reference.slice("model-login/".length))))
+			)
 				throw new Error("Native account capsule reference is invalid");
 			return {
 				connectionId: uuid(value.connection_id, "Native account connection id"),
 				connectionVersion: value.connection_version as number,
 				capsuleId,
-				encryptedCapsuleReference: value.encrypted_capsule_reference,
+				encryptedCapsuleReference: reference,
 				nativeHarness: parseHarness(value.native_harness),
 			};
 		});

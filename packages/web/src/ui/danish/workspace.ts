@@ -186,28 +186,35 @@ export const WORKSPACE: Record<string, string> = {
 	"Connecting…": "Forbinder…",
 	"Close computer": "Luk computer",
 	"{name} · Computer": "{name} · Computer",
+	"{name} · Computer · Machine {number}": "{name} · Computer · Maskine {number}",
 	"Agent computer": "Agentens computer",
 	"Drag to move, drag an edge to resize. When focused, arrow keys move it and plus or minus resize it.":
 		"Træk for at flytte, træk i en kant for at ændre størrelse. Med fokus flytter piletasterne den, og plus eller minus ændrer størrelsen.",
 	"Computer access is not available yet.": "Adgang til computeren er ikke tilgængelig endnu.",
-	"This company has no computer yet.": "Denne virksomhed har ingen computer endnu.",
-	"The computer is restarting. It comes back on its own.": "Computeren genstarter. Den kommer tilbage af sig selv.",
-	"This computer has been retired.": "Denne computer er taget ud af brug.",
-	"The computer is off. An owner or admin can start it.":
-		"Computeren er slukket. En ejer eller administrator kan starte den.",
-	"You have read-only access. A company member with write access can wake the computer.":
-		"Du har kun læseadgang. Et medlem af virksomheden med skriveadgang kan vække computeren.",
-	"Starting the computer…": "Starter computeren…",
-	"Screen viewing is not set up here.": "Skærmvisning er ikke sat op her.",
-	"All screens on this computer are in use. Try again when one is free.":
-		"Alle skærme på denne computer er i brug. Prøv igen, når en er ledig.",
+	"This company has no machine yet.": "Denne virksomhed har ingen maskine endnu.",
+	"The machine is restarting. It comes back on its own.": "Maskinen genstarter. Den kommer tilbage af sig selv.",
+	"This machine has been retired.": "Denne maskine er taget ud af brug.",
+	"The machine is off. An owner or admin can start it.":
+		"Maskinen er slukket. En ejer eller administrator kan starte den.",
+	"You have read-only access. A company member with write access can wake the machine.":
+		"Du har kun læseadgang. Et medlem af virksomheden med skriveadgang kan vække maskinen.",
+	"Starting the machine…": "Starter maskinen…",
+	"Computer viewing is not set up here.": "Computervisning er ikke sat op her.",
+	"All computers on this machine are in use. Try again when one is free.":
+		"Alle computere på denne maskine er i brug. Prøv igen, når en er ledig.",
 	"{name} does not have access to the computer.": "{name} har ikke adgang til computeren.",
-	"{name}'s screen is being handed over. It opens here in a moment.":
-		"Skærmen for {name} bliver overdraget. Den åbner her om et øjeblik.",
-	"The computer is not ready yet.": "Computeren er ikke klar endnu.",
-	"The computer is private right now. Shared viewing returns when that ends.":
-		"Computeren er privat lige nu. Delt visning kommer tilbage, når det slutter.",
+	"{name}'s computer is being handed over. It opens here in a moment.":
+		"Computeren for {name} bliver overdraget. Den åbner her om et øjeblik.",
+	"The machine is not ready yet.": "Maskinen er ikke klar endnu.",
+	"The machine is private right now. Shared viewing returns when that ends.":
+		"Maskinen er privat lige nu. Delt visning kommer tilbage, når det slutter.",
 	"The computer could not be reached. Try again.": "Computeren kunne ikke nås. Prøv igen.",
+	"All computers are in use. An owner or admin can start another machine.":
+		"Alle computere er i brug. En ejer eller administrator kan starte en maskine mere.",
+	"Setting up another machine. This can take a while.": "Sætter en maskine mere op. Det kan tage et stykke tid.",
+	"Setting up the machine. This can take a while.": "Sætter maskinen op. Det kan tage et stykke tid.",
+	"Waiting for room on our servers. It starts as soon as there is room.":
+		"Venter på plads på vores servere. Den starter, så snart der er plads.",
 
 	// app/views/feedback.ts
 	"+ Bug": "+ Fejl",
@@ -280,7 +287,7 @@ export const WORKSPACE: Record<string, string> = {
 	"Only owners, admins and contributors can change the company's sections.":
 		"Kun ejere, administratorer og bidragydere kan ændre virksomhedens sektioner.",
 	"The sidebar could not be changed. Try again.": "Sidepanelet kunne ikke ændres. Prøv igen.",
-	"Pinned agents": "Fastgjorte agenter",
+	Pinned: "Fastgjorte",
 	"Drop here to pin": "Slip her for at fastgøre",
 	Unassigned: "Uden sektion",
 	"New section": "Ny sektion",
@@ -293,8 +300,8 @@ export const WORKSPACE: Record<string, string> = {
 	"Copy conversation ID": "Kopiér samtale-id",
 	"The conversation ID could not be copied.": "Samtale-id’et kunne ikke kopieres.",
 	"Show in sidebar": "Vis i sidepanelet",
-	"Hidden agents": "Skjulte agenter",
-	"Hidden agents: {count}": "Skjulte agenter: {count}",
+	Hidden: "Skjulte",
+	"Hidden: {count}": "Skjulte: {count}",
 	"Hide from sidebar": "Skjul fra sidepanelet",
 	Delete: "Slet",
 	"Rename agent": "Omdøb agent",
@@ -306,8 +313,15 @@ export const WORKSPACE: Record<string, string> = {
 	"{name} could not be deleted.": "{name} kunne ikke slettes.",
 	"Rename section": "Omdøb sektion",
 	"Delete section": "Slet sektion",
-	"Delete the section {name}? Its agents move to Unassigned, for everyone in the company.":
-		"Slet sektionen {name}? Dens agenter flyttes til Uden sektion for alle i virksomheden.",
+	"Delete the section {name}? Its agents and group chats move to Unassigned, for everyone in the company.":
+		"Slet sektionen {name}? Dens agenter og gruppechats flyttes til Uden sektion for alle i virksomheden.",
+	"Rename group chat": "Omdøb gruppechat",
+	"{name} could not be renamed. Update its participants in the group details first.":
+		"{name} kunne ikke omdøbes. Opdater først deltagerne i gruppens detaljer.",
+	"Group chat name": "Gruppechattens navn",
+	"Delete {name}? The group chat is removed for everyone. This cannot be undone.":
+		"Slet {name}? Gruppechatten fjernes for alle. Det kan ikke fortrydes.",
+	"The group chat could not be deleted.": "Gruppechatten kunne ikke slettes.",
 	Sidebar: "Sidepanel",
 	"{name} actions": "Handlinger for {name}",
 	Section: "Sektion",

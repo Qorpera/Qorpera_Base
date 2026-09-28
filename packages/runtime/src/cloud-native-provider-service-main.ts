@@ -3,13 +3,18 @@ import { open, readFile } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
+import {
+	readBoundedCloudResponse,
+	supabaseServiceHeaders,
+	withCloudDeadline,
+} from "@qorpera/cloud-client/cloud-request";
 import { CloudContentAddressedStore } from "@qorpera/cloud-client/node/cloud-object-store";
 import { createClient } from "@supabase/supabase-js";
 import { createHttpCloudCodingCommandGateway, parseCloudCodingCommandUrl } from "./cloud-coding-command-http.ts";
 import { HttpCloudCodingControl } from "./cloud-coding-control.ts";
 import {
 	createHttpCompanyComputerSessionFactory,
-	parseCompanyComputerNativeUrl,
+	parseCompanyComputerNativeRoute,
 } from "./cloud-company-computer-native-client.ts";
 import { HttpCloudCompanyComputerRegistry } from "./cloud-company-computer-registry-http.ts";
 import { HttpCloudCompanyPathControl } from "./cloud-company-path-control.ts";
@@ -24,13 +29,18 @@ import { CloudNativeCodingRuntime } from "./cloud-native-coding-runtime.ts";
 import { HttpNativeCompanyObjectTransport } from "./cloud-native-company-objects.ts";
 import { CloudNativeCompanyRuntime } from "./cloud-native-company-runtime.ts";
 import type { NativeIsolationConfiguration } from "./cloud-native-isolation.ts";
-import { NativeProviderHost, OfficialCliNativeHarnessDriver } from "./cloud-native-provider-host.ts";
+import {
+	type NativeModelLoginClient,
+	NativeProviderHost,
+	type NativeProviderLoginRequest,
+	OfficialCliNativeHarnessDriver,
+} from "./cloud-native-provider-host.ts";
 import {
 	HttpNativeProviderHostService,
 	SupabaseNativeCredentialCapsuleStore,
 	SupabaseNativeProviderControlPlane,
 } from "./cloud-native-provider-service.ts";
-import { HttpCloudSecretBrokerClient } from "./cloud-secret-broker-http.ts";
+import { HttpCloudSecretBrokerClient, issueModelLogin } from "./cloud-secret-broker-http.ts";
 import {
 	systemdCredentialMetadataIsSafe as credentialMetadataIsSafe,
 	type SystemdCredentialMetadata,
@@ -163,7 +173,7 @@ export function nativeCompanyComputerConfiguration(environment: NodeJS.ProcessEn
 	if (environment.QORPERA_COMPANY_COMPUTER_URL === undefined) return undefined;
 	if (environment.QORPERA_NATIVE_RUNTIME !== "company-path-v1")
 		throw new Error("Company Computer requires the cloud-native Company File runtime");
-	return { url: parseCompanyComputerNativeUrl(required(environment, "QORPERA_COMPANY_COMPUTER_URL")).url };
+	return { url: parseCompanyComputerNativeRoute(required(environment, "QORPERA_COMPANY_COMPUTER_URL")).url };
 }
 
 /** The coding command gateway (the executor's HTTPS origin) is deployment
@@ -178,6 +188,32 @@ export function nativeCodingConfiguration(environment: NodeJS.ProcessEnv): { url
 	return { url: parseCloudCodingCommandUrl(required(environment, "QORPERA_CODING_COMMAND_URL")) };
 }
 
+/** Whether this identity's login is kept by the vault (Stateless Compute step 1). */
+async function fetchIdentityLoginInVault(
+	baseUrl: string,
+	serviceKey: string,
+	computeIdentityId: string,
+): Promise<boolean> {
+	return withCloudDeadline(async (deadline) => {
+		const response = await fetch(new URL("/rest/v1/rpc/qorpera_compute_identity_login_in_vault", baseUrl), {
+			method: "POST",
+			redirect: "error",
+			signal: deadline,
+			headers: { ...supabaseServiceHeaders(serviceKey), "content-type": "application/json" },
+			body: JSON.stringify({ p_compute_identity_id: computeIdentityId }),
+		});
+		if (!response.ok) {
+			void response.body?.cancel().catch(() => undefined);
+			throw new Error(`Native identity custody is unavailable (${response.status})`);
+		}
+		const answer: unknown = JSON.parse(
+			new TextDecoder("utf8", { fatal: true }).decode(await readBoundedCloudResponse(response, 64, deadline)),
+		);
+		if (typeof answer !== "boolean") throw new Error("Native identity custody is invalid");
+		return answer;
+	}, 10_000);
+}
+
 export async function runNativeProviderHostServiceMain(environment: NodeJS.ProcessEnv = process.env): Promise<void> {
 	const runtimeConfiguration = nativeCompanyRuntimeConfiguration(environment);
 	const computerConfiguration = nativeCompanyComputerConfiguration(environment);
@@ -188,10 +224,21 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 		"qorpera-supabase-service-key",
 		"QORPERA_SUPABASE_SERVICE_KEY",
 	);
+	// Stateless Compute step 1: an identity whose login is kept by the vault has no key, volume or
+	// epoch file on this machine. Its host receives empty credential files and asks the vault.
+	const loginCustody = environment.QORPERA_NATIVE_LOGIN_CUSTODY ?? "node";
+	if (loginCustody !== "node" && loginCustody !== "vault")
+		throw new Error("QORPERA_NATIVE_LOGIN_CUSTODY must be node or vault");
 	const credentialMasterKey = await systemdCredential(environment, "qorpera-native-provider-master-key");
+	if (loginCustody === "vault" && credentialMasterKey)
+		throw new Error("A native host for a vault login must hold no capsule key");
 	const masterKey =
-		credentialMasterKey ??
-		(await readFile(resolve(required(environment, "QORPERA_NATIVE_PROVIDER_MASTER_KEY_FILE")), "utf-8")).trim();
+		loginCustody === "vault"
+			? undefined
+			: (credentialMasterKey ??
+				(
+					await readFile(resolve(required(environment, "QORPERA_NATIVE_PROVIDER_MASTER_KEY_FILE")), "utf-8")
+				).trim());
 	const bridgeToken = await credentialOrEnvironment(
 		environment,
 		"qorpera-native-bridge",
@@ -202,35 +249,40 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 	if (executionBoundary !== "virtual_machine" && executionBoundary !== "microvm") {
 		throw new Error("QORPERA_NATIVE_PROVIDER_EXECUTION_BOUNDARY must name the dedicated machine boundary");
 	}
-	if (!TOKEN_PATTERN.test(masterKey) || !TOKEN_PATTERN.test(bridgeToken)) {
+	if ((masterKey !== undefined && !TOKEN_PATTERN.test(masterKey)) || !TOKEN_PATTERN.test(bridgeToken)) {
 		throw new Error("Native provider credentials must contain 32 base64url bytes");
 	}
 	const state = await fetchIdentityRecoveryRuntimeState(baseUrl, serviceKey, computeIdentityId);
-	const epochCredential =
-		(await systemdCredential(environment, "qorpera-native-identity-epoch")) ??
-		(await readFile(resolve(required(environment, "QORPERA_NATIVE_IDENTITY_EPOCH_FILE")), "utf8"));
-	const localEpoch = recoveryRecord(JSON.parse(epochCredential), [
-		"computeIdentityId",
-		"companyId",
-		"epoch",
-		"keySha256",
-	]);
-	const keyBytes = recoveryBase64(masterKey, 32);
-	let keySha256: string;
-	try {
-		keySha256 = recoveryDigest(keyBytes);
-	} finally {
-		keyBytes.fill(0);
+	if (masterKey === undefined) {
+		if (state.blocked || !(await fetchIdentityLoginInVault(baseUrl, serviceKey, computeIdentityId)))
+			throw new Error("Native identity login is not kept by the vault");
+	} else {
+		const epochCredential =
+			(await systemdCredential(environment, "qorpera-native-identity-epoch")) ??
+			(await readFile(resolve(required(environment, "QORPERA_NATIVE_IDENTITY_EPOCH_FILE")), "utf8"));
+		const localEpoch = recoveryRecord(JSON.parse(epochCredential), [
+			"computeIdentityId",
+			"companyId",
+			"epoch",
+			"keySha256",
+		]);
+		const keyBytes = recoveryBase64(masterKey, 32);
+		let keySha256: string;
+		try {
+			keySha256 = recoveryDigest(keyBytes);
+		} finally {
+			keyBytes.fill(0);
+		}
+		if (
+			state.blocked ||
+			localEpoch.computeIdentityId !== computeIdentityId ||
+			localEpoch.companyId !== state.companyId ||
+			localEpoch.epoch !== state.epoch ||
+			localEpoch.keySha256 !== keySha256 ||
+			(state.keySha256 !== null && state.keySha256 !== keySha256)
+		)
+			throw new Error("Native identity volume does not match current cloud recovery authority");
 	}
-	if (
-		state.blocked ||
-		localEpoch.computeIdentityId !== computeIdentityId ||
-		localEpoch.companyId !== state.companyId ||
-		localEpoch.epoch !== state.epoch ||
-		localEpoch.keySha256 !== keySha256 ||
-		(state.keySha256 !== null && state.keySha256 !== keySha256)
-	)
-		throw new Error("Native identity volume does not match current cloud recovery authority");
 	const controlPlane = new SupabaseNativeProviderControlPlane(
 		baseUrl,
 		serviceKey,
@@ -239,6 +291,7 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 		{ connectionConcurrency: optionalConcurrency(environment.QORPERA_NATIVE_CONNECTION_CONCURRENCY) },
 	);
 	let cloudRuntime: CloudNativeCompanyRuntime | undefined;
+	let modelLogins: NativeModelLoginClient | undefined;
 	if (runtimeConfiguration) {
 		const objectToken = await credentialOrEnvironment(
 			environment,
@@ -369,11 +422,19 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 					}
 				: {}),
 		});
+		// A vault login comes from this company's broker, under the same runtime token. A host that
+		// still holds a key serves a run whose login has just moved to the vault the same way.
+		if (secretBrokerOrigin && secretBrokerToken) {
+			const client = { origin: secretBrokerOrigin, runtimeToken: secretBrokerToken, companyId: state.companyId };
+			modelLogins = { issue: (request, signal) => issueModelLogin(client, request, signal) };
+		}
 	} else if (environment.QORPERA_CLOUD_SECRET_BROKER_URL || environment.QORPERA_CLOUD_SECRET_BROKER_TOKEN) {
 		throw new Error("Cloud secret broker requires the cloud-native Company File runtime");
 	} else if (codingConfiguration) {
 		throw new Error("Coding sessions require the cloud-native Company File runtime");
 	}
+	if (masterKey === undefined && !modelLogins)
+		throw new Error("A vault login needs the cloud-native Company File runtime and the vault's address");
 	const warmIdleMs = cloudRuntime ? nativeWarmIdleMs(environment.QORPERA_NATIVE_WARM_IDLE_MS) : undefined;
 	const host = new NativeProviderHost({
 		controlPlane,
@@ -383,21 +444,26 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 			environment.QORPERA_CLAUDE_PATH ?? "claude",
 			runtimeConfiguration?.isolation,
 		),
-		masterKey,
 		computeIdentityId,
-		backupIdentityKey: async (request) => {
-			const current = await fetchIdentityRecoveryRuntimeState(baseUrl, serviceKey, computeIdentityId);
-			if (current.epoch !== state.epoch || !current.recoveryConfiguration)
-				throw new Error("Native login requires the current cloud recovery authority");
-			await backupNativeIdentityKey({
-				state: current,
-				masterKey,
-				loginId: request.loginId,
-				loginCapability: request.capability,
-				transport: new HttpIdentityRecoveryGuestTransport(current.recoveryConfiguration.serviceOrigin),
-				signal: AbortSignal.timeout(60_000),
-			});
-		},
+		...(modelLogins ? { modelLogins } : {}),
+		...(masterKey === undefined
+			? {}
+			: {
+					masterKey,
+					backupIdentityKey: async (request: NativeProviderLoginRequest) => {
+						const current = await fetchIdentityRecoveryRuntimeState(baseUrl, serviceKey, computeIdentityId);
+						if (current.epoch !== state.epoch || !current.recoveryConfiguration)
+							throw new Error("Native login requires the current cloud recovery authority");
+						await backupNativeIdentityKey({
+							state: current,
+							masterKey,
+							loginId: request.loginId,
+							loginCapability: request.capability,
+							transport: new HttpIdentityRecoveryGuestTransport(current.recoveryConfiguration.serviceOrigin),
+							signal: AbortSignal.timeout(60_000),
+						});
+					},
+				}),
 		...(cloudRuntime ? { cloudRuntime } : {}),
 		...(warmIdleMs !== undefined ? { warmIdleMs } : {}),
 		...(environment.QORPERA_NATIVE_PROVIDER_TEMPORARY_ROOT

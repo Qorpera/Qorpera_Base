@@ -1,5 +1,82 @@
 # Image builders alongside ordinary computer wakes
 
+## Build space (2026-09-28, migration `20260928180500`)
+
+This is the way to run image builds on a serving node. A node's inventory policy may declare
+`buildSpace: {"project": "<project>", "network": "<network>", "cpuMillis": N, "memoryBytes": M}`.
+
+- **The space is always reserved.** Operating plus infrastructure plus the space must fit headroom,
+  whether a build runs or not. No infrastructure entry may use the build project.
+- **What counts as a build machine.** The observer reports every instance in the build project as
+  category `build`. It is accepted only as:
+  - a virtual machine with a physical UUID and explicit `limits.cpu`/`limits.memory`;
+  - carrying only these configuration keys: `limits.cpu`, `limits.memory`, `boot.autostart`
+    (only `false`), `boot.mode`, `security.secureboot`, `security.csm`, LXD's own `volatile.*`
+    and `image.*` keys, `user.qorpera.image_builder` (only `true`) and `user.qorpera.purpose`;
+  - with exactly one root disk (`type`, `path=/`, `pool`, `size` required, `size.state` allowed;
+    no `source`, a non-empty size), from the instance itself or a profile;
+  - with network interfaces only on the declared network: keys `type`, `name`, `network`,
+    `hwaddr` and the filtering keys, with MAC, IPv4 and IPv6 filtering and
+    `security.port_isolation` all `true`, like every runtime guest on the bridge. No `nictype`,
+    no `parent`. The network is matched by name, so the build project must use the default
+    project's networks (`features.networks=false`).
+
+  Anything else is `INSTANCE_AUTHORITY_DIFFERS`. The configuration check is an allowlist, so keys
+  LXD adds later are refused until they are reviewed.
+- **Size limit.** Stopped build machines count too. Their total CPU and memory must fit the
+  space, or every build entry reports `BUILD_SPACE_EXCEEDED`.
+- **What the registry checks.** Every entry in the build project must be `build`, and every
+  `build` entry must be in the build project and have no allocation; otherwise the observation is
+  refused. A `build` entry that is not a virtual machine, or build machines beyond the space, are
+  recorded and make the node unavailable.
+- **Everything else stays exact.** A builder outside the build project is still an unregistered
+  instance.
+
+**Lanes.** Create build machines in the build project with explicit limits,
+`boot.autostart=false`, a root disk with a size, and a NIC only on the declared network with
+`security.mac_filtering=true security.ipv4_filtering=true security.ipv6_filtering=true security.port_isolation=true`. Drop every
+other `user.qorpera.*` key. The older verifier recipe's `user.qorpera.acceptance_test` is refused;
+use `user.qorpera.purpose`. Image properties are fine, because they arrive as `image.*` keys.
+
+**Rollout order, one node at a time.**
+
+1. Apply the migration. Existing policies and observers are unaffected.
+2. Install the observer build that knows `buildSpace`. Until then, a policy that declares one
+   makes the old observer refuse the policy, and the node goes unavailable.
+3. Check that headroom covers operating + infrastructure + space. If it does not, first raise the
+   node's headroom with `qorpera_configure_runtime_node` (version CAS). It is bounded by
+   cpu − standard and lowers placement capacity; the call refuses if the reservations already on
+   the node would no longer fit.
+4. Replace the node's inventory policy with the same policy plus `buildSpace`
+   (`qorpera_replace_runtime_node_inventory`), write the same policy to the observer
+   configuration, and restart the observer. Between the replace and the restart the observer
+   publishes unavailable (`NODE_OBSERVER_POLICY_DIFFERS`) for a few seconds. Do it in a quiet
+   moment.
+5. Create the LXD project so that LXD itself enforces the same shape:
+   ```sh
+   lxc project create <project> -c features.images=false -c features.networks=false \
+     -c features.profiles=true -c features.storage.volumes=true \
+     -c restricted=true -c restricted.virtual-machines.lowlevel=block \
+     -c restricted.devices.nic=managed -c restricted.networks.access=<network> \
+     -c restricted.devices.disk=managed -c limits.containers=0 \
+     -c limits.cpu=<space cpu> -c limits.memory=<space memory> -c limits.disk=<disk budget>
+   ```
+   - `features.images=false` and `features.networks=false` share the default project's images and
+     networks, exactly as the run project does.
+   - `features.storage.volumes=true` keeps other projects' custom volumes, such as identity
+     volumes, out of reach.
+   - `limits.disk` bounds the root disks. The inventory counts CPU and memory only, so keep the
+     lane's pool check as well.
+   - The project's default profile must carry no devices. The lane uses `--no-profiles` anyway.
+6. Prove the project on the node before the first real build: run the project command, then one
+   lane build and verify, including `lxc publish`. `restricted=true` also restricts snapshots and
+   backups by default, so check the lane needs neither.
+7. Point the image lane's builder and verifier at the project. A build now leaves the node `ready`.
+
+The procedure below, enrolling each builder exactly, remains for any other host VM.
+
+## Exact builder enrollment (before build spaces)
+
 An image builder is host infrastructure, not a company allocation. An unregistered builder makes complete-host inventory unavailable, and the ordinary node reservation gate then refuses wakes. Do not ignore its project, name prefix or public marker. Existing infrastructure enrollment can account for the exact builder without changing the observer or placement rules.
 
 `scripts/prepare-node-builder-inventory.mjs` creates an **offline review proposal**, not an executable deployment. It accepts one or two explicitly reviewed, stopped VM identities, checks them against a complete inventory using the production reconciler, preserves existing policy and allocations, and requires operating plus infrastructure reservations to fit current headroom. Raw VM configuration is not copied to the proposal. Unknown machines, different resource limits, UUID/configuration drift, missing builders, runtime metadata, autostart and insufficient headroom are refused.

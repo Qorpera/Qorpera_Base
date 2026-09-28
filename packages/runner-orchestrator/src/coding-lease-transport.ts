@@ -6,12 +6,15 @@ import { parseLxdProcUptime } from "./lxd-proc-uptime.ts";
 
 const HASH = /^[0-9a-f]{64}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
-/** Trusted host only: renewing this callback must validate the current cloud
- * queue lease and exact physical admission. No provider or queue token enters
- * the guest. The hash is a generation marker, never a credential. */
+/** Trusted host only: renewing this callback must validate the session's
+ * current attachment (its token and deadline from SQL) and exact physical
+ * placement. No attachment or queue token enters the guest. The hash is a
+ * generation marker, never a credential. `open` says whether the scope's turn
+ * may start commands. */
 export class LxdCodingLeaseTransport {
 	readonly #pins: CodingCommandGuestPins;
 	readonly #scope: CloudCodingCommandScope;
+	readonly #open: boolean;
 	readonly #authorize: (
 		scope: CloudCodingCommandScope,
 		leaseTokenSha256: string,
@@ -21,6 +24,7 @@ export class LxdCodingLeaseTransport {
 	constructor(
 		options: Omit<CodingCommandGuestPins, "workerId"> & {
 			scope: CloudCodingCommandScope;
+			open: boolean;
 			authorize: (
 				scope: CloudCodingCommandScope,
 				leaseTokenSha256: string,
@@ -36,10 +40,12 @@ export class LxdCodingLeaseTransport {
 			options.scope.vmId !== machine.machineId ||
 			!UUID.test(options.scope.requestId) ||
 			!Number.isSafeInteger(options.scope.turn) ||
-			options.scope.turn < 1
+			options.scope.turn < 1 ||
+			typeof options.open !== "boolean"
 		)
 			throw new Error("CODING_LEASE_SCOPE_INVALID");
 		this.#scope = Object.freeze({ ...options.scope });
+		this.#open = options.open;
 		this.#pins = {
 			machine,
 			storage: options.storage,
@@ -82,7 +88,7 @@ export class LxdCodingLeaseTransport {
 		const remaining = ttlMs - Math.ceil(performance.now() - started) - 100;
 		const notAfterMonoMs = uptime + remaining;
 		if (remaining < 1) throw new Error("CODING_LEASE_REFRESH_EXPIRED");
-		const input = `${JSON.stringify({ schema: "qorpera.coding-guest-lease-refresh/v1", ...this.#scope, leaseTokenSha256, ttlMs: remaining, notAfterMonoMs })}\n`;
+		const input = `${JSON.stringify({ schema: "qorpera.coding-guest-lease-refresh/v2", ...this.#scope, open: this.#open, leaseTokenSha256, ttlMs: remaining, notAfterMonoMs })}\n`;
 		await this.#pins.client.pushInstanceFile(project, name, path, input, 0o444, signal);
 		const staged = await this.#pins.client.readInstanceFile(project, name, path, 4096, signal);
 		if (staged.uid !== 0 || staged.gid !== 0 || staged.mode !== 0o444 || !staged.content.equals(Buffer.from(input)))
@@ -110,10 +116,11 @@ export class LxdCodingLeaseTransport {
 			file.uid !== 0 ||
 			file.gid !== 0 ||
 			file.mode !== 0o444 ||
-			lease.schema !== "qorpera.coding-guest-lease/v1" ||
+			lease.schema !== "qorpera.coding-guest-lease/v2" ||
 			Object.keys(lease).sort().join() !==
-				"bootId,expiresAtMonoMs,leaseTokenSha256,refreshedAtMonoMs,requestId,schema,turn,vmId,workerId" ||
+				"bootId,expiresAtMonoMs,leaseTokenSha256,open,refreshedAtMonoMs,requestId,schema,turn,vmId,workerId" ||
 			Object.entries(this.#scope).some(([key, value]) => lease[key] !== value) ||
+			lease.open !== this.#open ||
 			lease.bootId !== this.#pins.bootId ||
 			lease.leaseTokenSha256 !== leaseTokenSha256 ||
 			!Number.isSafeInteger(lease.refreshedAtMonoMs) ||

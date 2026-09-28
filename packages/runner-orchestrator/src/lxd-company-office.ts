@@ -1,6 +1,6 @@
 import { closeSync, constants, fstatSync, openSync, readSync, realpathSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
-import { parseCompanyComputerNativeUrl } from "@qorpera/contracts";
+import { parseCompanyComputerNativeRoute } from "@qorpera/contracts";
 
 export interface LxdNativeCompanyOffice {
 	companyId: string;
@@ -28,12 +28,17 @@ export function validateLxdNativeCompanyOffices(offices: LxdNativeCompanyOffice[
 			!/^[A-Za-z0-9_-]{43}$/.test(office.token)
 		)
 			throw new Error("INVALID_NATIVE_OFFICE_ROUTE");
-		const { companyComputerId } = parseCompanyComputerNativeUrl(office.url);
+		// A company route (`/office/{companyComputerId}/native`) covers every computer of the company.
+		const { companyComputerId } = parseCompanyComputerNativeRoute(office.url);
 		const scope = `${office.companyId}:${office.environmentId}`;
-		if (scopes.has(scope) || targets.has(companyComputerId) || tokens.has(office.token))
+		if (
+			scopes.has(scope) ||
+			(companyComputerId !== null && targets.has(companyComputerId)) ||
+			tokens.has(office.token)
+		)
 			throw new Error("DUPLICATE_NATIVE_OFFICE_AUTHORITY");
 		scopes.add(scope);
-		targets.add(companyComputerId);
+		if (companyComputerId !== null) targets.add(companyComputerId);
 		tokens.add(office.token);
 	}
 }
@@ -94,7 +99,7 @@ export function readLxdNativeCompanyOffices(path: string, readToken: (path: stri
 			typeof route.url !== "string"
 		)
 			throw new Error("INVALID_NATIVE_OFFICE_ROUTE");
-		parseCompanyComputerNativeUrl(route.url);
+		parseCompanyComputerNativeRoute(route.url);
 		if (typeof route.tokenPath !== "string") throw new Error("INVALID_NATIVE_OFFICE_TOKEN_PATH");
 		return {
 			companyId: route.companyId,

@@ -142,6 +142,29 @@ All tables are keyed by company environment.
     (file or folder); an opaque `version`; the id of the commit that wrote
     it; and, for files, the file manifest hash, the file hash, the size, the
     media type and the executable bit.
+  - **The folder key** is `qorpera_folder_key(path)`: NFKC, then case folding
+    by Unicode simple case mapping pinned to the built-in `pg_c_utf8`
+    collation, then NFKC again. The pin matters: a SQL function's case
+    mapping follows its argument's collation, and the stored path is
+    `collate "C"`, which folds ASCII only. Without it, a key generated from
+    `Økonomi` would differ from one computed from request text (C1a review
+    round 3). Resources are resolved by the same key
+    (`qorpera_folder_path_resource`). When two resources share one folder key
+    (possible while the shared unique key folds ASCII only), the path has no
+    covering resource and only the platform reaches it. C1b-2's folder
+    resource mutators refuse to create a tie. A plain unique index on the
+    folder key is not added to the shared table, because snapshot-v1 rows may
+    already collide (C1B §3). Lookups use an expression index on
+    `(environment_id, qorpera_folder_key(path))`. `snapshot-v1` keeps today's key.
+  - **After a PostgreSQL major upgrade**, the Unicode tables behind
+    `normalize()` and `pg_c_utf8` case mapping may have changed. The runbook
+    step: find entries and resources whose stored key differs from
+    `qorpera_folder_key(path)`, and recompute them (`update ... set path =
+    path`, which regenerates the keys) before the folder is served again.
+    `snapshot-v1`'s keys share the exposure.
+  - A key is at most 2,600 bytes: `key_text` sits in two btree indexes, whose
+    rows hold at most 2,704 bytes. A unit that would store a longer key, or
+    a path over 4,096 bytes, is refused as `too_long`.
   - A row may be a **claim**: a placeholder that §3 step 5 inserts for a path
     about to be created. A claim that does not become live is removed in the
     same transaction.
@@ -287,6 +310,16 @@ is never upgraded. The steps:
    8. vault rows;
    9. unique-key claims, by kind then key.
 
+   These numbers are the lock ranks, and all nine come before paths (step 5),
+   objects (step 6), admission (step 10) and the clock (step 11). The commit
+   locks ranks 1, 3, 6 and 7 itself (members, execution authorities,
+   resources, grants). For ranks 2, 4, 5, 8 and 9 it calls the structured-file
+   hook, `qorpera_folder_structured_lock(targets, from_rank, to_rank)` (§5,
+   agreed with F2 on #408). The hook's targets may also name rows of the
+   commit's own tables. The commit merges those into its own pass at that rank,
+   and the stronger mode wins. Each table has one owner, so rows of one table
+   are always locked in one key order.
+
    Everything else in this step follows that order:
    - Rows a unit rewrites, staff included, are taken `FOR NO KEY UPDATE`. That
      does not block foreign-key inserts into the tables that reference them.
@@ -304,20 +337,29 @@ is never upgraded. The steps:
      authorization after these locks. The check before the transaction was
      only advisory.
 5. **Paths.** Every row this change set locks is taken in one global
-   ancestors-first order by `key_text`. That covers targets, sources, parents,
-   claims and subtree members.
-   - Existing targets and sources are taken `FOR UPDATE`, and parent folders
-     `FOR SHARE`.
-   - Absent targets are claimed in the same order, by inserting a claim row
-     with `ON CONFLICT DO NOTHING`, then locking it.
-   - A subtree is expanded in place. At its root's place in the order, the
-     root is locked `FOR UPDATE`, then its descendants top-down, each folder's
-     children listed only after the folder is held. Every descendant sorts
-     right after its root, so the global order holds. A grandchild created
-     under the subtree cannot escape it.
+   ancestors-first order by `key_text` (refined in C1a, 2026-09-28).
+   - Targets and sources are taken `FOR UPDATE`, a copy's source included
+     (C1a review round 2): writers below it hold it `FOR KEY SHARE`, so the
+     subtree cannot change between the checks and the copy.
+   - A unit that creates a key lands on this change set's claim for it, or
+     inserts the key outright when an earlier unit of the same change set
+     removed it. Every apply counts the rows it placed and raises on a
+     mismatch, so a lost write fails loudly.
+   - **Every ancestor** of every target and source is taken `FOR KEY SHARE`,
+     not just the parent.
+   - Any absent row, target or ancestor, is claimed first by inserting a
+     claim row with `ON CONFLICT DO NOTHING`, then locked. A second
+     transaction then waits on the claim instead of missing it.
+   - Because every write holds all its ancestors, a subtree unit locks only
+     its root. While the root is held `FOR UPDATE`, nothing inside the subtree
+     can change and nothing can be created under a claimed target. So a
+     grandchild cannot escape, and no descendant has to be locked one by one.
+   - No update ever changes a row's key: a move deletes and re-inserts. A
+     READ COMMITTED locking read that follows an update chain keeps its lock on
+     the row's new version, which would sit at a key out of order and deadlock.
    - A missing parent is refused (PT424) unless an earlier unit of the same
      change set creates it.
-   - The parent's written spelling is re-read after its lock.
+   - A new name takes its existing parent's written spelling.
 6. **Objects.** Every object a unit newly references (writes, copies, conflict
    copies) is taken `FOR KEY SHARE`, manifest and chunks, sorted by hash. A
    row that is absent or marked deleting is refused (§8). A move references
@@ -385,7 +427,8 @@ The write-side cost of a commit grows only with its own units.
 Each unit reports one of:
 - saved;
 - conflict;
-- refused (a rule of 5.6, or a structured file that fails its schema);
+- refused (a rule of 5.6, a structured file that fails its schema, or a
+  path the unit would store past the 4096-byte limit, `too_long`);
 - denied (authority, or a reviewed unit without its review);
 - waiting for review (its review record is a pending ask, and the unit is
   parked as a proposal);
@@ -651,6 +694,31 @@ check reports drift.
 
   The journal is kept for good, so "resync" is returned only for an invalid
   cursor.
+
+  As built in C1f (`20260928237000_folder_core_feed`):
+  - The signature is `qorpera_folder_feed(env, actor, after_seq, limit,
+    cursor)`. It is for service_role only. Its actors are the platform, a
+    member and a run, resolved as `qorpera_folder_read` resolves them; view
+    actors come with C1b-3.
+  - A position is `after_seq` (every seq up to it is done) plus an optional
+    `cursor {unitNo, version}` inside seq `after_seq + 1`. A subtree move can
+    touch 100,000 paths, so a page may stop inside a change set. A change set
+    is whole in the reader's hands once `next.afterSeq` has reached its seq.
+  - Changes are ordered by `(unit_no, version)`. The order within a unit is
+    stable but has no meaning: a unit is one atomic path set.
+  - Each call examines at most `limit` changes and authority rows, readable or
+    not. A member's page may therefore hold fewer events, or none, and still
+    advance. A change set none of whose paths the actor may read is left out.
+    A move's `priorVersion` is shown only when the actor may read the source.
+  - Each page returns `asOfSeq`, `next {afterSeq, cursor}` and `more`. A
+    current version's `updatedAt` is its entry's, as read and list report it;
+    a superseded version carries none.
+  - The clock is service_role's to poll: `select` on `qorpera_folder_clocks`.
+    It is not published to Realtime: as we read `realtime.apply_rls`,
+    Realtime sends every subscriber that may not select a published table an
+    "unauthorized" event per change, which would show any client the timing
+    of every commit. Members' and
+    clients' own hints come with C4.
 - **Wakes.**
   - Listener cursors hold `processed_seq`. The drain reads a batch of journal
     rows after it and matches every unit, including a move's source path.
@@ -668,7 +736,8 @@ check reports drift.
   4,096 revisions) becomes a comparison of sequence numbers. No substrate
   version is created per commit.
 - **Clients.**
-  - The clock row is the Realtime hint, and the hints are coalesced.
+  - The clock row is the hint: the node's folder service polls it (C1f), and
+    C4 gives members and clients a hint of their own. Hints are coalesced.
     `last_seq` reveals only that something changed.
   - On a hint, the web client asks the feed what changed instead of listing
     everything again.
@@ -773,7 +842,7 @@ GC is the largest correctness risk of the design, so it gets its own tests:
 | Admission row | not present | every wake-inserting or wake-admitting transaction `FOR NO KEY UPDATE`, last before the clock; multi-company loops one company per transaction |
 | Job row | `FOR UPDATE`, which also serializes a run's own reads | commits and effects `FOR KEY SHARE`; renewal `FOR NO KEY UPDATE`; lease-ending changes `FOR UPDATE`; reads never |
 | Members, staff, rooms, index rows, resources, grants, vault rows, unique claims | various, unordered | once, in the order of §3 step 4: `FOR NO KEY UPDATE` for rows rewritten, `FOR KEY SHARE` for rows referenced |
-| Entry rows | the one path, after the head | every row of the change set, ancestors first; absent targets claimed in order; subtrees expanded in place |
+| Entry rows | the one path, after the head | targets and sources, plus every ancestor `FOR KEY SHARE`, in one ancestors-first order; absent rows claimed in order; a subtree unit locks only its root; no update changes a key |
 | Clock | none | last, from the increment to the end of the commit |
 
 **No exclusive lock on the profile row.** Effects insert rows whose foreign
@@ -911,6 +980,18 @@ function and code path runs only for `folder-v2` companies (§1).
     re-resolution, and the post-commit worker against archive;
   - GC race tests.
 
+C1 ships as slices (agreed 2026-09-28 with the structured-files session F2
+and the machine-side session F3, on #408):
+
+| Slice | Contents | Owner |
+| --- | --- | --- |
+| C1a | the flag; the tables; the change-set commit for members and the platform; reads and listings (with each entry's version time); today's object and artifact GC skipping `folder-v2` | storage core |
+| C1f | `qorpera_folder_feed` (the paths each change set touched, filtered by read authority, with `asOfSeq`) and the clock polled by service_role, so the read-only mount can follow changes before C4 | F3, reviewed by the storage core |
+| C1b | run actors (job, lease, fence, causal wake, session kind, requester), computer holders (the company-wide view plus the holder's own authority) and coding sessions (agent ∩ member, `agents/**` and `rules/**` read-only); authority revisions; read sets and records; explicit resources and bases; review classification in SQL; the call sites and inert stubs of the §5 hook that F2 fills | storage core |
+| C1c | the actor's `folder-v2` branch and the per-caller decisions; the raw `/v1/profile-objects` fallback refusing `folder-v2`; the activation checks | a separate session |
+| C1d | GC G1–G4; upload intents; the object gateway's put and remove; a `folder-v2` byte check that never locks the profile row; the storage usage row and the quota trigger | a separate session |
+| C1e | the load test of §9 on a real disk | storage core |
+
 ### C2. Structured files, seeding and erasure
 
 - The hook of §5: schemas, indexes, the refusals and the converging queue.
@@ -930,7 +1011,7 @@ For `folder-v2` companies:
 ### C4. Journal consumers and clients
 
 - The wake drain works on sequence numbers, and the pin becomes `companySeq`.
-- The feed and the Realtime hint.
+- The members' and clients' hint (the feed itself is C1f).
 - The observability views.
 - The web client's file page, history view and editors (rules, sections,
   agent details, routines, group chats) branch on the core flag, and write
@@ -950,10 +1031,11 @@ For `folder-v2` companies:
 1. The rewrites of §10 due by C5 land.
 2. An operator creates one `folder-v2` proof company and runs the core
    acceptance below. The load test of §9 passes.
-3. The reset procedure is written as a service-role function. Today's product
-   delete (`qorpera_delete_hosted_profile`, 20260818006000:41-68) fails for any
-   company that has had a run: restrict foreign keys and triggers refuse
-   deletes.
+3. The reset procedure is written as a service-role function, and becomes the
+   product's "Delete company" for `folder-v2` companies (founder decision,
+   28 September 2026). Today's product delete (`qorpera_delete_hosted_profile`,
+   20260818006000:41-68) fails for any company that has had a run: restrict
+   foreign keys and triggers refuse deletes.
 4. Its exact scope goes to the founder for confirmation, including whether the
    proof company is deleted too.
 5. One owner runs it in a short maintenance pause, and company creation
@@ -1005,8 +1087,7 @@ After C5, the mount's build steps continue from RUNTIME-COMPANY-FOLDER.md §9.
 3. **Member-private folders.** `members/<id>/private` exists in SQL but not in
    contract 5.6. Proposed: keep it as an explicit resource, and add one line
    to 5.6.
-4. **"Delete company" in the product.** It calls
-   `qorpera_delete_hosted_profile` (`web/src/cloud/api.ts:256`), which fails
-   for any company that has had a run. Proposed: the C5 reset procedure
-   becomes the product's delete for `folder-v2` companies. This is a founder
-   decision.
+4. **"Delete company" in the product.** Decided by the founder on
+   28 September 2026: the C5 reset procedure becomes the product's delete for
+   `folder-v2` companies. Today's `qorpera_delete_hosted_profile`
+   (`web/src/cloud/api.ts:256`) fails for any company that has had a run.

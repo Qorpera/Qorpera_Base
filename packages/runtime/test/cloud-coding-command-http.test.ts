@@ -132,7 +132,7 @@ describe("isolated coding command HTTP gateway", () => {
 				scope: { ...f.request, scope: { ...f.scope, vmId: "../host" } },
 				binding: { ...f.request, binding: { ...f.binding, shell: "bash" } },
 				action: { ...f.request, action: "cancel" },
-				input: { ...f.request, input: { ...f.input, timeoutMs: 1800001 } },
+				input: { ...f.request, input: { ...f.input, timeoutMs: 999 } },
 				size: { ...f.request, input: { ...f.input, command: "x".repeat(131073) } },
 			};
 			expect((await raw(f, variants[kind as keyof typeof variants])).status).toBe(403);

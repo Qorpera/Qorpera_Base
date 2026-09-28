@@ -5,7 +5,9 @@ Wants=network-online.target
 After=local-fs.target network-online.target
 ConditionPathExists=/var/lib/qorpera-bootstrap/bootstrap.json
 ConditionPathExists=/var/lib/qorpera-bootstrap/runner-config.json
-ConditionPathIsMountPoint=/var/lib/qorpera/identity
+# No mount condition on /var/lib/qorpera/identity: a guest whose login the vault keeps has no
+# identity volume. The bootstrap itself requires the mount for a node login and refuses it for
+# a vault login (Stateless Compute step 1).
 
 [Service]
 Type=oneshot

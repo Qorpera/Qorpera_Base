@@ -323,12 +323,101 @@ it("uses only the static broker-role SQL calls and binds downstream idempotency"
 		repository: { host: "github.com" as const, owner: "Qorpera", name: "Qorpera_Base", baseBranch: "master" },
 	};
 	await authority.authorizeRepositoryCredential(repositoryRequest, new AbortController().signal);
+	const loginBinding = {
+		leaseId: randomUUID(),
+		runId: randomUUID(),
+		jobId: randomUUID(),
+		runnerId: randomUUID(),
+		assignmentId: randomUUID(),
+		credentialCapsuleId: randomUUID(),
+		computeIdentityId: randomUUID(),
+	};
+	await authority.issueModelLogin(loginBinding, 3, true, new AbortController().signal);
+	await authority.commitModelLoginRenewal(
+		{
+			loginId: randomUUID(),
+			token: randomUUID(),
+			baseVersion: 3,
+			keyId: "company-kek-1",
+			encryptedEnvelope: Buffer.from("encrypted"),
+			envelopeSha256: "f".repeat(64),
+			accessIssuedAt: "2026-09-28T00:00:00.000Z",
+			accessExpiresAt: "2026-10-08T00:00:00.000Z",
+		},
+		new AbortController().signal,
+	);
+	await authority.releaseModelLoginRenewal(
+		{ loginId: randomUUID(), token: randomUUID(), baseVersion: 3, permanent: true, reason: "refresh_token_reused" },
+		new AbortController().signal,
+	);
+	await authority.modelLoginBrokerCompany(new AbortController().signal);
+	const signInId = randomUUID();
+	await authority.describeModelLoginSignIn(
+		{ loginId: signInId, capabilitySha256: "a".repeat(64) },
+		new AbortController().signal,
+	);
+	await authority.completeModelLoginSignIn(
+		{
+			loginId: signInId,
+			capabilitySha256: "a".repeat(64),
+			modelLoginId: randomUUID(),
+			keyId: "company-kek-1",
+			encryptedEnvelope: Buffer.from("signed-in"),
+			envelopeSha256: "b".repeat(64),
+			accessIssuedAt: "2026-09-28T00:00:00.000Z",
+			accessExpiresAt: "2026-10-08T00:00:00.000Z",
+			providerAccountReference: null,
+			providerAccountEmail: "member@example.test",
+		},
+		new AbortController().signal,
+	);
+	const refreshId = randomUUID();
+	await authority.describeModelLoginAccountRefresh(
+		{ requestId: refreshId, capabilitySha256: "c".repeat(64) },
+		new AbortController().signal,
+	);
+	await authority.recordModelLoginAccountMetadata(
+		{
+			requestId: refreshId,
+			capabilitySha256: "c".repeat(64),
+			loginId: randomUUID(),
+			connectionId: randomUUID(),
+			connectionVersion: 2,
+			providerAccountEmail: "member@example.test",
+			providerAccountUsage: { observedAt: "2026-09-28T00:00:00.000Z", windows: [] },
+			providerAccountIdentity: null,
+		},
+		new AbortController().signal,
+	);
+	await authority.completeModelLoginAccountRefresh(
+		{ requestId: refreshId, capabilitySha256: "c".repeat(64) },
+		new AbortController().signal,
+	);
+	await authority.takeIdleModelLoginRenewal(new AbortController().signal);
 	expect(queries.map((query) => query.text)).toEqual([
 		"select public.qorpera_describe_cloud_secret_capture($1::uuid,$2::text,$3::uuid,$4::text) as result",
 		"select public.qorpera_complete_cloud_secret_capture($1::uuid,$2::text,$3::uuid,$4::text,$5::text,$6::text,$7::text) as result",
 		"select public.qorpera_authorize_cloud_secret_operation($1::uuid,$2::text,$3::jsonb,$4::uuid,$5::text,$6::text,$7::uuid,$8::text,$9::text,$10::bigint,$11::text,$12::text) as result",
 		"select public.qorpera_authorize_coding_repository_credential($1::uuid,$2::text,$3::uuid,$4::uuid,$5::text,$6::jsonb) as result",
+		"select public.qorpera_issue_model_login($1::uuid,$2::text,$3::jsonb,$4::bigint,$5::boolean) as result",
+		"select public.qorpera_commit_model_login_renewal($1::uuid,$2::text,$3::uuid,$4::uuid,$5::bigint,$6::text,$7::text,$8::text,$9::timestamptz,$10::timestamptz) as result",
+		"select public.qorpera_release_model_login_renewal($1::uuid,$2::text,$3::uuid,$4::uuid,$5::bigint,$6::boolean,$7::text) as result",
+		"select public.qorpera_model_login_broker_company($1::uuid,$2::text) as result",
+		"select public.qorpera_describe_model_login_sign_in($1::uuid,$2::text,$3::uuid,$4::text) as result",
+		"select public.qorpera_complete_model_login_sign_in($1::uuid,$2::text,$3::uuid,$4::text,$5::uuid,$6::text,$7::text,$8::text,$9::timestamptz,$10::timestamptz,$11::text,$12::text) as result",
+		"select public.qorpera_describe_model_login_account_refresh($1::uuid,$2::text,$3::uuid,$4::text) as result",
+		"select public.qorpera_record_model_login_account_metadata($1::uuid,$2::text,$3::uuid,$4::text,$5::uuid,$6::uuid,$7::bigint,$8::text,$9::jsonb,$10::text) as result",
+		"select public.qorpera_complete_model_login_account_refresh($1::uuid,$2::text,$3::uuid,$4::text) as result",
+		"select public.qorpera_take_idle_model_login_renewal($1::uuid,$2::text) as result",
 	]);
+	expect(queries[13]?.values).toHaveLength(2);
+	expect(queries[11]?.values[8]).toBe(JSON.stringify({ observedAt: "2026-09-28T00:00:00.000Z", windows: [] }));
+	expect(queries[7]?.values).toHaveLength(2);
+	expect(queries[8]?.values.slice(2)).toEqual([signInId, "a".repeat(64)]);
+	expect(queries[9]?.values[6]).toBe(Buffer.from("signed-in").toString("base64"));
+	expect(queries[9]?.values.slice(10)).toEqual([null, "member@example.test"]);
+	expect(queries[4]?.values.slice(2)).toEqual([JSON.stringify(loginBinding), 3, true]);
+	expect(queries[5]?.values[6]).toBe(Buffer.from("encrypted").toString("base64"));
 	expect(queries[3]?.values.slice(2)).toEqual([
 		repositoryRequest.workerId,
 		repositoryRequest.leaseToken,

@@ -3,7 +3,7 @@ import { errorCode, parseCodingExecutorConfiguration } from "../../../deploy/cod
 
 function fixture() {
 	return {
-		schema: "qorpera.coding-executor-service/v6",
+		schema: "qorpera.coding-executor-service/v7",
 		owner: "node-coding",
 		supabaseUrl: "https://project.supabase.co",
 		commandPort: 8789,
@@ -33,10 +33,6 @@ function fixture() {
 			gid: 1000,
 			storageHelperSha256: "d".repeat(64),
 			resourceProfile: {
-				maxTimeoutMs: 1800000,
-				memoryBytes: 2147483648,
-				tasksMax: 256,
-				cpuQuotaPercent: 200,
 				maxLogBytes: 67108864,
 			},
 			commandHelperSha256: "a".repeat(64),
@@ -175,7 +171,7 @@ describe("coding executor service configuration", () => {
 		expect(() =>
 			parseCodingExecutorConfiguration({
 				...config,
-				guest: { ...config.guest, resourceProfile: { ...config.guest.resourceProfile, cpuQuotaPercent: 300 } },
+				guest: { ...config.guest, resourceProfile: { ...config.guest.resourceProfile, cpuQuotaPercent: 200 } },
 			}),
 		).toThrow();
 	});

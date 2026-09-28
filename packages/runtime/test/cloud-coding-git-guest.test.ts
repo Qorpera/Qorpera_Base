@@ -15,9 +15,7 @@ import {
 } from "../src/cloud-coding-git-guest.ts";
 
 const exec = promisify(execFile),
-	id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`,
-	// Every command unit of session id(1) on its member's machine.
-	prefix = `qorpera-coding-${id(1).replaceAll("-", "")}-`;
+	id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 const roots: string[] = [];
 afterEach(async () => {
 	await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
@@ -35,7 +33,7 @@ async function fixture() {
 		outputRoot: join(root, "output"),
 	};
 	const guest: CodingGitGuestConfiguration = {
-		schema: "qorpera.coding-command-guest/v3",
+		schema: "qorpera.coding-command-guest/v4",
 		workerId: id(1),
 		vmId: id(2),
 		bootId: id(3),
@@ -43,10 +41,6 @@ async function fixture() {
 		gid: 1000,
 		...folders,
 		resourceProfile: {
-			maxTimeoutMs: 1800000,
-			memoryBytes: 2147483648,
-			tasksMax: 256,
-			cpuQuotaPercent: 200,
 			maxLogBytes: 67108864,
 		},
 	};
@@ -103,7 +97,6 @@ async function fixture() {
 		protectedUid: process.getuid?.(),
 		protectedDirectoryRoot: root,
 		inspectMachine: async () => guest.bootId,
-		system: async () => "",
 		execute,
 	};
 	const stage = async (input = request) => {
@@ -237,72 +230,11 @@ describe("protected credential-free guest Git transfer", () => {
 			"CODING_GIT_GUEST_BOOT_CHANGED",
 		);
 	});
-	it("refuses export while an actual command unit remains running", async () => {
+	it("exports while the session's own commands keep running", async () => {
+		// A session standing by keeps its servers and long commands running while
+		// a turn publishes; the export bundles the exact submitted commit.
 		const f = await fixture();
 		await f.seed();
-		let executions = 0;
-		f.ports.execute = async () => {
-			executions++;
-			return Buffer.from("should not run");
-		};
-		f.ports.system = async (_executable, args) =>
-			args[0] === "list-units"
-				? `${prefix}${id(9)}.service loaded active running build\n`
-				: `LoadState=loaded\nActiveState=active\nSubState=running\nControlGroup=/qorpera.slice/qorpera-coding.slice/${prefix}${id(9)}.service\nTasksCurrent=2\n`;
-		const request = {
-			...f.request,
-			action: "export" as const,
-			transferId: id(5),
-			bundleSha256: null,
-			bundleBytes: 0,
-		};
-		await f.stage(request);
-		await expect(runCodingGitGuest("export", id(1), request.transferId, f.ports)).rejects.toThrow(
-			"WORKSPACE_COMMANDS_ACTIVE",
-		);
-		expect(executions).toBe(0);
-	});
-	it("looks only at this session's units, and refuses an unknown one under its prefix", async () => {
-		const f = await fixture();
-		await f.seed();
-		// Another session of the member's machine is building, and the watchdog is
-		// loaded behind its timer: neither is listed under this session's prefix.
-		const patterns: string[] = [];
-		f.ports.system = async (_executable, args) => {
-			if (args[0] !== "list-units") throw new Error("nothing of this session is running to inspect");
-			patterns.push(args.at(-1) as string);
-			const units = [
-				"qorpera-coding-watchdog.service loaded inactive dead Expire the coding guest execution lease",
-				`qorpera-coding-${id(8).replaceAll("-", "")}-${id(9)}.service loaded active running other session`,
-			];
-			const pattern = args.at(-1) as string;
-			return units.filter((unit) => unit.startsWith(pattern.slice(0, -"*.service".length))).join("\n");
-		};
-		const request = {
-			...f.request,
-			action: "export" as const,
-			transferId: id(5),
-			bundleSha256: null,
-			bundleBytes: 0,
-		};
-		await f.stage(request);
-		expect((await runCodingGitGuest("export", id(1), request.transferId, f.ports))?.headSha).toBe(request.headSha);
-		expect(new Set(patterns)).toEqual(new Set([`${prefix}*.service`]));
-		const g = await fixture();
-		await g.seed();
-		g.ports.system = async () => `${prefix}other.service loaded inactive dead unknown\n`;
-		await g.stage(request);
-		await expect(runCodingGitGuest("export", id(1), request.transferId, g.ports)).rejects.toThrow(
-			"CODING_GIT_COMMAND_STATE_UNCONFIRMED",
-		);
-	});
-	it("allows a retained exited command only when systemd confirms no processes", async () => {
-		const f = await fixture();
-		await f.seed();
-		f.ports.system = async (_executable, args) =>
-			args[0] === "list-units"
-				? `${prefix}${id(9)}.service loaded active exited completed\n`
-				: "LoadState=loaded\nActiveState=active\nSubState=exited\nControlGroup=\nTasksCurrent=[not set]\n";
 		const request = {
 			...f.request,
 			action: "export" as const,

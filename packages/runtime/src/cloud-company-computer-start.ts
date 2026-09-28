@@ -88,8 +88,8 @@ export function createCompanyComputerStartSession(options: {
 		name: "computer_start" satisfies CloudRuntimeToolOperation,
 		source: "runtime",
 		description:
-			`${COMPANY_COMPUTER_TOOL_VERSION}. Request startup of the cloud shared office for this company. ` +
-			"An accepted request can remain pending while the provider prepares the office; it is not permission to use screens, browser or shell. " +
+			`${COMPANY_COMPUTER_TOOL_VERSION}. Request a computer for this agent: starts the company machine that hosts it (one that is off or already starting), or another machine when every computer on the running machines is in use. ` +
+			"An accepted request can remain pending while the machine is prepared or waits for room on the servers; it is not permission to use the computer, browser or shell. " +
 			"Use a stable operationKey for the same request. An uncertain result requires reconciliation, never a new key. " +
 			"The accepted request survives this session ending. After activation and successful completion of this run, an internal agent wake continues pending work with the original request and completed receipts. Finish this run normally; do not poll or create another start request. No member device or provider credentials are used.",
 		inputSchema: {

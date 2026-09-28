@@ -3,7 +3,7 @@ import { chmod, lstat, mkdir, open, readdir, readFile, rename, rm, writeFile } f
 import { isIP } from "node:net";
 import { isAbsolute, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { parseCompanyComputerNativeUrl } from "@qorpera/contracts";
+import { parseCompanyComputerNativeRoute } from "@qorpera/contracts";
 import type { ServiceHttpFetch } from "./http-transport.ts";
 import type { LxdClient, LxdCreateInstanceRequest, LxdInstanceRecord, LxdStorageVolumeRecord } from "./lxd-client.ts";
 import {
@@ -20,6 +20,9 @@ import {
 	canonical,
 	exactRunner,
 	ProviderAdmissionRefused,
+	ProviderRpcFailed,
+	providerRpcErrorCode,
+	providerStepFailure,
 	record,
 	runAttemptAcquisitionId,
 	sha256,
@@ -149,6 +152,9 @@ interface LxdProviderJournal {
 		rootDiskSize: string;
 		bootstrapSha256: string;
 		policySha256: string;
+		/** Stateless Compute step 1: the vault keeps this run's login. The guest mounts no
+		 * identity volume; `identityVolume` only names the one it would have had. */
+		loginCustody?: "vault";
 		companyRuntime?: {
 			mode: "company-path-v1";
 			profileId: string;
@@ -184,6 +190,7 @@ interface LxdGuestBootstrapAuthority {
 	computeTemplateVersion: string;
 	computePolicySha256: string;
 	jobType: string;
+	loginCustody?: "vault";
 }
 
 interface LxdGuestBootstrapFile {
@@ -464,7 +471,7 @@ function journalFromJson(value: unknown): LxdProviderJournal {
 				throw new Error("Governed office route is invalid");
 			office = {
 				environmentId: route.environmentId,
-				url: parseCompanyComputerNativeUrl(route.url).url,
+				url: parseCompanyComputerNativeRoute(route.url).url,
 				tokenSha256: route.tokenSha256,
 			};
 		}
@@ -495,6 +502,8 @@ function journalFromJson(value: unknown): LxdProviderJournal {
 	} else if (lxd.companyRuntime !== undefined) {
 		throw new Error("Legacy journal cannot carry governed runtime authority");
 	}
+	if (lxd.loginCustody !== undefined && (lxd.loginCustody !== "vault" || !companyRuntime))
+		throw new Error("LXD provider journal login custody is invalid");
 	return {
 		schema: input.schema,
 		acquisitionId: input.acquisitionId,
@@ -525,6 +534,7 @@ function journalFromJson(value: unknown): LxdProviderJournal {
 			rootDiskSize: lxd.rootDiskSize,
 			bootstrapSha256: lxd.bootstrapSha256,
 			policySha256: lxd.policySha256,
+			...(lxd.loginCustody === "vault" ? { loginCustody: "vault" as const } : {}),
 			...(companyRuntime ? { companyRuntime } : {}),
 		},
 		credentials: {
@@ -759,6 +769,27 @@ export class HttpLxdGuestTransport implements LxdGuestTransport {
 	}
 }
 
+/** The step an acquisition is at; the provider service logs it when the acquisition fails. */
+interface AcquireStep {
+	stage:
+		| "inventory"
+		| "work"
+		| "prior_attempt"
+		| "credentials"
+		| "replay"
+		| "provision"
+		| "login_custody"
+		| "journal"
+		| "reserve"
+		| "identity_volume"
+		| "recovery_volume"
+		| "create"
+		| "authority"
+		| "start"
+		| "bootstrap"
+		| "ready";
+}
+
 /** The company ceiling or the node chooser refused or deferred a machine start. The
  * orchestrator releases its claim without spending an infrastructure retry on it. */
 export class LxdMachineAdmissionRefused extends ProviderAdmissionRefused {
@@ -859,8 +890,24 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 	}
 
 	async acquire(runId: string, work: CloudRunnerWork, signal: AbortSignal): Promise<CloudRunnerInstance> {
+		// The step an acquisition stopped at, for the provider service's error line.
+		const step: AcquireStep = { stage: "inventory" };
+		try {
+			return await this.#acquire(runId, work, signal, step);
+		} catch (error) {
+			throw providerStepFailure(step.stage, error);
+		}
+	}
+
+	#acquire(
+		runId: string,
+		work: CloudRunnerWork,
+		signal: AbortSignal,
+		step: AcquireStep,
+	): Promise<CloudRunnerInstance> {
 		return this.#exclusive(async () => {
 			await this.#assertCapacityInventory(signal);
+			step.stage = "work";
 			ensureStep2Work(work, this.#config.nativeCompanyRuntime !== undefined);
 			if (
 				this.#config.nativeCompanyRuntime &&
@@ -879,6 +926,7 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 			if (!current && (await present(join(this.#config.stateRoot, JOURNAL_ARCHIVE, acquisitionId))))
 				throw new Error("LXD provider acquisition is archived and cannot be replayed");
 			if (!current && this.#config.nativeCompanyRuntime && work.attempt > 1) {
+				step.stage = "prior_attempt";
 				// A sponsor handoff is recorded before the old one-run guest finishes
 				// shutting down. Keep this acquisition (and its renewed dispatch claim)
 				// pending instead of exhausting infrastructure retries during shutdown.
@@ -907,8 +955,10 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 					}
 				}
 			}
+			step.stage = "credentials";
 			const credentials = await this.#credentials(acquisitionId);
 			if (current) {
+				step.stage = "replay";
 				if (current.workSha256 !== digest) {
 					console.error(
 						`acquire refusal: acquisition=${acquisitionId} journaled=${current.workSha256.slice(0, 12)} incoming=${digest.slice(0, 12)} state=${current.physicalState}`,
@@ -923,10 +973,11 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 				) {
 					throw new Error(`LXD provider acquisition is ${current.physicalState} and cannot be replayed`);
 				}
-				current = await this.#ensureReady(current, credentials, signal);
+				current = await this.#ensureReady(current, credentials, signal, step);
 				return current.runner;
 			}
 
+			step.stage = "provision";
 			const runner = exactRunner(
 				await this.#rpc(
 					"qorpera_provision_execution_runner",
@@ -941,6 +992,12 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 				work,
 				this.adapterId,
 			);
+			// Decided once per acquisition and sealed into the journal and the bootstrap digest.
+			step.stage = "login_custody";
+			const vaultLogin =
+				this.#config.nativeCompanyRuntime !== undefined &&
+				(await this.#identityLoginInVault(work.computeIdentityId, signal));
+			step.stage = "journal";
 			const bootstrapFiles = this.#bootstrapFiles(
 				{
 					runId: work.runId,
@@ -952,6 +1009,7 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 					computeTemplateVersion: work.computeTemplateVersion,
 					computePolicySha256: work.computePolicySha256,
 					jobType: work.jobType,
+					...(vaultLogin ? { loginCustody: "vault" as const } : {}),
 				},
 				credentials,
 			);
@@ -977,6 +1035,7 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 					rootDiskSize: this.#config.rootDiskSize,
 					bootstrapSha256: bootstrapSha256(bootstrapFiles),
 					policySha256: work.computePolicySha256,
+					...(vaultLogin ? { loginCustody: "vault" as const } : {}),
 					...(this.#config.nativeCompanyRuntime
 						? {
 								companyRuntime: companyRuntimeAuthority(
@@ -997,7 +1056,7 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 				updatedAt: now,
 			};
 			await this.#writeJournal(current);
-			current = await this.#ensureReady(current, credentials, signal);
+			current = await this.#ensureReady(current, credentials, signal, step);
 			return current.runner;
 		});
 	}
@@ -1107,16 +1166,21 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 		current: LxdProviderJournal,
 		credentials: ProviderCredentials,
 		signal?: AbortSignal,
+		step: AcquireStep = { stage: "reserve" },
 	): Promise<LxdProviderJournal> {
 		const computeIdentityId = current.runner.computeIdentityId;
 		if (!computeIdentityId) throw new Error("Journaled LXD guest is missing Compute Identity authority");
+		step.stage = "reserve";
 		await this.#reserveMachine(current, signal);
 		if (current.physicalState === "reserving") {
 			current = { ...current, physicalState: "creating", capacityRegistered: true };
 			await this.#writeJournal(current);
 		}
-		await this.#ensureIdentityVolume(current, computeIdentityId, signal);
+		step.stage = "identity_volume";
+		if (current.lxd.loginCustody !== "vault") await this.#ensureIdentityVolume(current, computeIdentityId, signal);
+		step.stage = "recovery_volume";
 		await this.#ensureRecoveryVolume(current, signal);
+		step.stage = "create";
 		let instance = await this.#lxd.getInstance(current.lxd.project, current.instanceName, signal);
 		if (!instance) {
 			if (current.physicalState !== "creating") {
@@ -1136,6 +1200,7 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 			instance = await this.#lxd.getInstance(current.lxd.project, current.instanceName, signal);
 			if (!instance) throw new Error("LXD did not persist the created guest");
 		}
+		step.stage = "authority";
 		this.#assertInstanceAuthority(current, instance);
 		if (instance.status === "Stopped" && current.physicalState !== "creating") {
 			await this.#retirePoweredOff(current, signal);
@@ -1143,6 +1208,7 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 		}
 		// A refused start has no physical intent. Keep the created, stopped VM
 		// and its charged allocation retryable until a fresh admission succeeds.
+		step.stage = "start";
 		const startAdmission = instance.status === "Stopped" ? await this.#reserveMachine(current, signal) : undefined;
 		let address: string;
 		try {
@@ -1160,6 +1226,7 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 				);
 			}
 			if (current.physicalState === "creating" || current.physicalState === "starting") {
+				step.stage = "bootstrap";
 				await this.#prepareBootstrap(current, credentials, signal);
 				// Record the one-shot activation intent before invoking systemd. After
 				// a provider crash, observe readiness without starting the unit again.
@@ -1177,6 +1244,7 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 					signal,
 				);
 			}
+			step.stage = "ready";
 			address = await this.#readyAddress(current, signal);
 		} catch (error) {
 			if (
@@ -1245,12 +1313,16 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 					pool: current.lxd.storagePool,
 					size: current.lxd.rootDiskSize,
 				},
-				"compute-identity": {
-					type: "disk",
-					path: "/var/lib/qorpera/identity",
-					pool: current.lxd.storagePool,
-					source: current.lxd.identityVolume,
-				},
+				...(current.lxd.loginCustody === "vault"
+					? {}
+					: {
+							"compute-identity": {
+								type: "disk",
+								path: "/var/lib/qorpera/identity",
+								pool: current.lxd.storagePool,
+								source: current.lxd.identityVolume,
+							},
+						}),
 				...(companyRuntime && this.#config.nativeCompanyRuntime
 					? {
 							"runner-recovery": {
@@ -1315,6 +1387,7 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 			computeTemplateVersion: journal.runner.templateVersion,
 			computePolicySha256: journal.runner.policySha256,
 			jobType: journal.jobType,
+			...(journal.lxd.loginCustody === "vault" ? { loginCustody: "vault" as const } : {}),
 		};
 	}
 
@@ -1399,6 +1472,7 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 								...(coding
 									? { coding_command: { url: coding.origin, token_sha256: sha256(coding.token) } }
 									: {}),
+								...(authority.loginCustody === "vault" ? { login_custody: "vault" } : {}),
 								recovery_volume_path: "/var/lib/qorpera-runner",
 							},
 						}
@@ -1434,6 +1508,7 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 						`QORPERA_CLOUD_SECRET_BROKER_URL=${runtime.secretBroker.origin}`,
 						...(office ? [`QORPERA_COMPANY_COMPUTER_URL=${office.url}`] : []),
 						...(coding ? [`QORPERA_CODING_COMMAND_URL=${coding.origin}`] : []),
+						...(authority.loginCustody === "vault" ? ["QORPERA_NATIVE_LOGIN_CUSTODY=vault"] : []),
 					]
 				: []),
 			"",
@@ -1558,10 +1633,12 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 			root.path !== "/" ||
 			root.pool !== journal.lxd.storagePool ||
 			root.size !== journal.lxd.rootDiskSize ||
-			identity?.type !== "disk" ||
-			identity.path !== "/var/lib/qorpera/identity" ||
-			identity.pool !== journal.lxd.storagePool ||
-			identity.source !== journal.lxd.identityVolume ||
+			(journal.lxd.loginCustody === "vault"
+				? identity !== undefined || instance.expandedDevices["compute-identity"] !== undefined
+				: identity?.type !== "disk" ||
+					identity.path !== "/var/lib/qorpera/identity" ||
+					identity.pool !== journal.lxd.storagePool ||
+					identity.source !== journal.lxd.identityVolume) ||
 			JSON.stringify(canonical(liveCompanyDevice)) !== JSON.stringify(canonical(expectedLiveCompanyDevice))
 		) {
 			throw new Error("LXD guest drifted from immutable provider authority");
@@ -1595,7 +1672,8 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 			await this.#writeJournal({ ...current, physicalState: "lost", stopReason: "idle" });
 			return;
 		}
-		await this.#ensureIdentityVolume(current, current.runner.computeIdentityId, signal);
+		if (current.lxd.loginCustody !== "vault")
+			await this.#ensureIdentityVolume(current, current.runner.computeIdentityId, signal);
 		const instance = await this.#lxd.getInstance(current.lxd.project, current.instanceName, signal);
 		// A lost run never restarts. When its guest is gone as well, a recovery volume that was never
 		// created (the run was lost before its first start) is not a fault; every other journal still
@@ -2051,6 +2129,40 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 		return current.capacityReleased === true || this.#releasedCapacity.has(current.acquisitionId);
 	}
 
+	/** Stateless Compute step 1: whether the vault, not a node volume, keeps this identity's login.
+	 * A database without the check (this build reached a node before its migration) answers 404:
+	 * the login is then on a node, as before. */
+	async #identityLoginInVault(computeIdentityId: string, signal?: AbortSignal): Promise<boolean> {
+		const response = await this.#fetch(
+			new URL("/rest/v1/rpc/qorpera_compute_identity_login_in_vault", this.#config.supabaseUrl),
+			{
+				method: "POST",
+				redirect: "error",
+				headers: {
+					...supabaseServiceHeaders(this.#config.supabaseServiceKey),
+					"content-type": "application/json",
+				},
+				body: JSON.stringify({ p_compute_identity_id: computeIdentityId }),
+				signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000),
+			},
+		);
+		if (response.status === 404) {
+			void response.body?.cancel().catch(() => undefined);
+			return false;
+		}
+		if (!response.ok) {
+			throw new ProviderRpcFailed(
+				`Native identity login custody is unavailable (${response.status})`,
+				"qorpera_compute_identity_login_in_vault",
+				response.status,
+				await providerRpcErrorCode(response),
+			);
+		}
+		const answer: unknown = await response.json();
+		if (typeof answer !== "boolean") throw new Error("Native identity login custody is invalid");
+		return answer;
+	}
+
 	async #rpc(name: string, body: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
 		const response = await this.#fetch(new URL(`/rest/v1/rpc/${name}`, this.#config.supabaseUrl), {
 			method: "POST",
@@ -2063,8 +2175,12 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 			signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000),
 		});
 		if (!response.ok) {
-			void response.body?.cancel().catch(() => undefined);
-			throw new Error(`Runner provisioning failed (${response.status})`);
+			throw new ProviderRpcFailed(
+				`Runner provisioning failed (${response.status})`,
+				name,
+				response.status,
+				await providerRpcErrorCode(response),
+			);
 		}
 		return response.json() as Promise<unknown>;
 	}

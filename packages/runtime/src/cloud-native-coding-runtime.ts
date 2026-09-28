@@ -75,6 +75,7 @@ const INSTRUCTIONS =
 	"When only the member who owns this session can decide something, call coding_ask with the exact question (and short choices when there are natural ones) and stop; the session pauses until they answer, and your next turn continues from their answer. " +
 	"When the work and its checks are complete, commit on the current branch and call coding_finish with the commit SHA and a factual summary including failures; that records a submission for trusted publication, not proof that a PR exists. You have no messaging tool. " +
 	"The context is this session's own record: earlierTurns says what started each earlier turn, what you submitted in it (a question with its choices, or a commit) and how it ended (a turn marked shortened had its long texts cut to fit); input is what started this turn (the dispatch, the agent's follow-up or the owner's reply). " +
+	"This session stays on its machine between turns: commands keep running after the turn that started them. commands.running lists earlier turns' commands still running at the last check (read one with coding_read_command before starting it again); commands.stopped lists ones stopped since your previous turn, with the reason (SLEEP: the machine slept after a quiet period; ARCHIVED: the session was archived; EXPIRED: the coding service lost track of the session). Files in the repository, home and cache folders are kept either way. " +
 	"When input.answers is set, it is a question you asked in an earlier turn that is still open. Its reply is input.text or, when that does not decide it, a reply in earlierTurns after that question (a turn that ended without a submission). A reply of the first words of a choice selects that choice; a single letter selects the choice at that position (A is the first) or, when there is no choice at that position, the only choice that starts with that letter. When a reply decides the question, act on it: do not ask it again or infer a different decision from the repository. When no reply decides it (a clarifying question, or other instructions), do not guess: do what you can without the decision, then call coding_ask again.";
 
 function record(value: unknown, label = "Invalid coding turn authority"): Record<string, unknown> {
@@ -93,7 +94,30 @@ export interface CloudCodingTurnContext {
 	};
 	earlierTurns: CloudCodingEarlierTurn[];
 	omittedEarlierTurns: number;
+	/** Commands earlier turns left running at the executor's last look, and ones
+	 * stopped since the previous turn (the machine slept, the session was
+	 * archived, the executor lost it); at most 32 of each, the rest counted. */
+	commands: {
+		running: CloudCodingTurnCommand[];
+		stopped: (CloudCodingTurnCommand & { reason: string })[];
+		omitted: number;
+	};
 }
+export interface CloudCodingTurnCommand {
+	commandId: string;
+	turn: number;
+	/** The command's first 300 bytes. */
+	command: string;
+}
+const STOP_REASONS = new Set([
+	"ARCHIVED",
+	"EXPIRED",
+	"OWNER_LEFT",
+	"REPOSITORY_WITHDRAWN",
+	"EXECUTOR_DISABLED",
+	"SLEEP",
+	"RETIRED",
+]);
 export interface CloudCodingEarlierTurn {
 	sequence: number;
 	input: { from: "dispatch" | "agent" | "member"; text: string | null };
@@ -180,9 +204,17 @@ export function parseCloudCodingTurnContext(
 	scope: { workerId: string; sequence: number },
 	repository: CloudCodingRepository,
 ): CloudCodingTurnContext {
-	const item = closedRecord(value, ["schema", "workerId", "sequence", "input", "earlierTurns", "omittedEarlierTurns"]);
+	const item = closedRecord(value, [
+		"schema",
+		"workerId",
+		"sequence",
+		"input",
+		"earlierTurns",
+		"omittedEarlierTurns",
+		"commands",
+	]);
 	if (
-		item.schema !== "qorpera.coding-turn-context/v1" ||
+		item.schema !== "qorpera.coding-turn-context/v2" ||
 		item.workerId !== scope.workerId ||
 		item.sequence !== scope.sequence ||
 		!Array.isArray(item.earlierTurns) ||
@@ -239,10 +271,52 @@ export function parseCloudCodingTurnContext(
 		}
 		return { sequence: first + index, input: { from: input.from, text: input.text }, submitted, outcome };
 	});
+	const commands = closedRecord(item.commands, ["running", "stopped", "omitted"]);
+	const command = (entry: unknown, keys: string[]): Record<string, unknown> => {
+		const c = closedRecord(entry, keys);
+		if (
+			typeof c.commandId !== "string" ||
+			!UUID.test(c.commandId) ||
+			!Number.isSafeInteger(c.turn) ||
+			Number(c.turn) < 1 ||
+			Number(c.turn) > scope.sequence ||
+			typeof c.command !== "string" ||
+			Buffer.byteLength(c.command) > 300
+		)
+			throw new Error("CODING_TURN_CONTEXT_INVALID");
+		return c;
+	};
+	if (
+		!Array.isArray(commands.running) ||
+		!Array.isArray(commands.stopped) ||
+		commands.running.length > 32 ||
+		commands.stopped.length > 32 ||
+		!Number.isSafeInteger(commands.omitted) ||
+		Number(commands.omitted) < 0
+	)
+		throw new Error("CODING_TURN_CONTEXT_INVALID");
 	return {
 		input: { from: current.from, text: current.text, answers },
 		earlierTurns,
 		omittedEarlierTurns: Number(item.omittedEarlierTurns),
+		commands: {
+			running: commands.running.map((entry) => {
+				const c = command(entry, ["commandId", "turn", "command"]);
+				return { commandId: c.commandId as string, turn: c.turn as number, command: c.command as string };
+			}),
+			stopped: commands.stopped.map((entry) => {
+				const c = command(entry, ["commandId", "turn", "command", "reason"]);
+				if (typeof c.reason !== "string" || !STOP_REASONS.has(c.reason))
+					throw new Error("CODING_TURN_CONTEXT_INVALID");
+				return {
+					commandId: c.commandId as string,
+					turn: c.turn as number,
+					command: c.command as string,
+					reason: c.reason,
+				};
+			}),
+			omitted: Number(commands.omitted),
+		},
 	};
 }
 
@@ -358,6 +432,7 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 					pullRequest: initial.coding.pullRequest ?? null,
 					earlierTurns: kept,
 					omittedEarlierTurns: turn.omittedEarlierTurns + turn.earlierTurns.length - kept.length,
+					commands: turn.commands,
 					input: turn.input,
 				},
 				// Measured before trimming: the whole reply fits the control's 256 KiB response bound.

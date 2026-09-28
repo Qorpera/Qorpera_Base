@@ -133,6 +133,34 @@
 .composer-shell .composer-input { display: block; width: 100%; min-width: 0; height: 42px; min-height: 42px; max-height: 112px; border: 0; background: transparent; padding: 11px 0 8px; resize: none; border-radius: 0; outline: 0; font-family: var(--font-sans); font-size: 16px; line-height: 21px; letter-spacing: 0; }
 .composer-shell.is-expanded { border-radius: 16px; padding: 8px 12px 34px; }
 .composer-shell.is-expanded .composer-input { padding: 0; min-height: 30px; }
+/* Skills called with "/" (contract 15.2). While the text names a skill, the field's own
+ * characters turn transparent and a copy of the text, whose skill names are blue, lies over
+ * them (it ignores the pointer). The copy has the field's exact box, font and wrapping, so the
+ * two never drift apart, and a selection's background still shows between its letters. */
+.composer-field { position: relative; }
+.composer-shell .composer-input { white-space: pre-wrap; overflow-wrap: break-word; }
+.composer-highlight { position: absolute; inset: 0; overflow: hidden; pointer-events: none; visibility: hidden; padding: 11px 0 8px; font-family: var(--font-sans); font-size: 16px; line-height: 21px; letter-spacing: 0; white-space: pre-wrap; overflow-wrap: break-word; }
+.composer-shell.is-expanded .composer-highlight { padding: 0; }
+.composer-field.has-skills .composer-highlight { visibility: visible; }
+.composer-field.has-skills .composer-input { color: transparent; caret-color: var(--text); }
+.composer-field.has-skills .composer-input::selection { color: HighlightText; background: Highlight; }
+.composer-skill { color: var(--blue); }
+/* The same names in written messages: blue in an agent's or another member's bubble; in the
+ * member's own bubble, whose colour the member picks (blue, green or grey), a light chip in the
+ * bubble's own text colour, which reads on any of them. */
+.message-skill { color: var(--blue); }
+.mine .message-skill { color: inherit; padding: 0 4px; border-radius: 5px; background: rgb(255 255 255 / 22%); font-weight: 600; box-decoration-break: clone; -webkit-box-decoration-break: clone; }
+.skill-menu { position: absolute; z-index: 30; left: 0; bottom: calc(100% + 8px); width: min(420px, 100%); max-height: min(340px, 50dvh); overflow-y: auto; padding: 5px; border: 1px solid var(--border); border-radius: 12px; background: var(--overlay); box-shadow: 0 12px 30px rgb(0 0 0 / 14%); }
+.skill-menu[hidden], .skill-menu [hidden] { display: none; }
+.skill-option { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: baseline; gap: 2px 12px; padding: 8px 10px; border-radius: 7px; cursor: pointer; }
+.skill-option[aria-selected="true"] { background: var(--hover); }
+.skill-option-name { color: var(--blue); font-size: 14px; font-weight: 500; overflow-wrap: anywhere; }
+.skill-option-scope { color: var(--text-muted); font-size: 11px; white-space: nowrap; }
+.skill-option-description { grid-column: 1 / -1; display: -webkit-box; overflow: hidden; color: var(--text-muted); font-size: 12px; line-height: 1.4; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.skill-option.is-loading { gap: 7px; cursor: default; }
+.skill-option.is-loading .skeleton-line { grid-column: 1 / -1; width: 36%; }
+.skill-option.is-loading .skeleton-line.skeleton-small { width: 72%; }
+.skill-menu-note { margin: 6px 8px; color: var(--text-muted); font-size: 12px; line-height: 1.5; }
 .composer-more, .composer-send { position: absolute; bottom: 4px; width: 34px; height: 34px; min-height: 34px; border-radius: 50%; }
 .composer-more { left: 4px; }
 .composer-more .icon { stroke-width: 4px; }
@@ -775,6 +803,8 @@
 .coding-footer { display: flex; flex: none; flex-direction: column; gap: 8px; padding: 4px 16px 10px; }
 .coding-status { display: flex; align-items: center; justify-content: center; gap: 6px; min-width: 0; font-size: 12px; line-height: 16px; font-weight: 500; color: var(--text-muted); text-align: center; }
 .coding-status-text { min-width: 0; overflow-wrap: anywhere; }
+/* The owner's Archive, a small pill beside the status it changes. */
+.coding-status .coding-archive { flex: none; min-height: 22px; padding: 0 10px; border-radius: 999px; font-size: 12px; font-weight: 500; }
 .coding-status .coding-dot-working { animation: pulse 1.6s ease-in-out infinite; }
 @media (prefers-reduced-motion: reduce) { .coding-status .coding-dot-working { animation: none; } }
 .coding-extras { display: flex; flex-direction: column; gap: 6px; }

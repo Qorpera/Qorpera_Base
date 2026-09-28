@@ -1,4 +1,4 @@
-import { X509Certificate } from "node:crypto";
+import { randomUUID, X509Certificate } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
@@ -6,6 +6,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { LxdUnixClient } from "../src/lxd-client.ts";
+import {
+	type RuntimeNodeInventoryContext,
+	type RuntimeNodeInventoryPolicy,
+	runtimeNodeInstanceConfigurationSha256,
+} from "../src/runtime-node-inventory.ts";
+import {
+	RuntimeNodeInventoryObserver,
+	type RuntimeNodeObserverHost,
+	type RuntimeNodeObserverRegistry,
+} from "../src/runtime-node-observer.ts";
 
 const roots: string[] = [],
 	servers: Server[] = [];
@@ -172,6 +182,111 @@ describe("complete LXD host inventory", () => {
 			await expect(inspect(client)).rejects.toThrow("LXD_HOST_INVENTORY_UNCONFIRMED");
 		},
 	);
+	// Copied with `output[name] = …`, a device named __proto__ became the parsed
+	// map's prototype: gone from Object.keys, JSON and the node inventory's
+	// digests. LXD's own name rule allows the name, so the scan refuses it.
+	it.each<[string, (value: Record<string, unknown>) => void]>([
+		[
+			"a device named __proto__",
+			(v) => {
+				v.devices = JSON.parse('{"__proto__":{"type":"disk","source":"/","path":"/host"}}');
+			},
+		],
+		[
+			"an inherited device named __proto__",
+			(v) => {
+				v.expanded_devices = JSON.parse('{"__proto__":{"type":"disk","source":"/","path":"/host"}}');
+			},
+		],
+		[
+			"a device named constructor",
+			(v) => {
+				v.devices = { constructor: { type: "disk", source: "/", path: "/host" } };
+			},
+		],
+		[
+			"a device named prototype",
+			(v) => {
+				v.expanded_devices = { prototype: { type: "disk", source: "/", path: "/host" } };
+			},
+		],
+		[
+			"a device option named __proto__",
+			(v) => {
+				v.devices = JSON.parse('{"eth0":{"type":"nic","network":"qorpera0","__proto__":"x"}}');
+			},
+		],
+		[
+			"a configuration key named __proto__",
+			(v) => {
+				v.config = JSON.parse('{"limits.cpu":"2","limits.memory":"4GiB","__proto__":"x"}');
+			},
+		],
+		[
+			"an inherited configuration key named constructor",
+			(v) => {
+				v.expanded_config = { "limits.cpu": "2", "limits.memory": "4GiB", constructor: "x" };
+			},
+		],
+		[
+			"a device name starting with a full stop",
+			(v) => {
+				v.devices = { ".root": { type: "disk", path: "/", pool: "default" } };
+			},
+		],
+		[
+			"a device name with a space",
+			(v) => {
+				v.devices = { "root disk": { type: "disk", path: "/", pool: "default" } };
+			},
+		],
+		[
+			"a device name of 64 characters",
+			(v) => {
+				v.devices = { ["d".repeat(64)]: { type: "disk", path: "/", pool: "default" } };
+			},
+		],
+		[
+			"an empty device name",
+			(v) => {
+				v.devices = { "": { type: "disk", path: "/", pool: "default" } };
+			},
+		],
+	])("refuses %s instead of dropping or passing it", async (_, change) => {
+		const { client } = await setup((path) => {
+			if (!path.endsWith("recursion=1")) return {};
+			const values: Record<string, unknown>[] = items();
+			change(values[0]);
+			return { body: sync(values) };
+		});
+		await expect(inspect(client)).rejects.toThrow("LXD_HOST_INVENTORY_UNCONFIRMED");
+	});
+	it("keeps every device name LXD's own rule allows, as own entries of a plain object", async () => {
+		const names = [
+			"root",
+			"eth0",
+			`identity-${randomUUID()}`,
+			"data-0123456789abcdef0123456789abcdef",
+			"a/b:c_d.e-f",
+			"d".repeat(63),
+		];
+		const devices = Object.fromEntries(
+			names.map((name, index) => [name, { type: "disk", source: `/srv/${index}`, path: `/mnt/${index}` }]),
+		);
+		const { client } = await setup((path) => {
+			if (!path.endsWith("recursion=1")) return {};
+			const values = items();
+			values[0].devices = values[0].expanded_devices = devices;
+			return { body: sync(values) };
+		});
+		const management = (await inspect(client)).instances.find((i) => i.name === "management");
+		expect(Object.keys(management?.devices ?? {})).toEqual(names);
+		expect(management?.expandedDevices).toEqual(devices);
+		// Callers compare these records with isDeepStrictEqual, which tells a null-prototype object from a plain one.
+		expect(Object.getPrototypeOf(management?.devices)).toBe(Object.prototype);
+		expect(Object.getPrototypeOf(management?.devices.root)).toBe(Object.prototype);
+		expect(Object.getPrototypeOf(management?.config)).toBe(Object.prototype);
+	});
 	it.each([
 		"https://elsewhere.invalid/1.0/instances/office",
 		"/1.0/instances/office?project=company-a&project=company-b",
@@ -228,5 +343,105 @@ describe("complete LXD host inventory", () => {
 		await assertion;
 		clearTimeout(timer);
 		expect(calls.every((call) => call.startsWith("GET "))).toBe(true);
+	});
+});
+
+describe("the node observer over this client (2026-09-28)", () => {
+	const sha = "a".repeat(64),
+		physicalId = randomUUID();
+	/** A node whose only instance is the management VM with these devices. */
+	async function node(devices: string) {
+		const management = instance("default", "management"),
+			uuid = { "volatile.uuid": physicalId };
+		const listed = {
+			...management,
+			config: { ...management.config, ...uuid },
+			expanded_config: { ...management.expanded_config, ...uuid },
+			devices: JSON.parse(devices),
+			expanded_devices: JSON.parse(devices),
+		};
+		return (
+			await setup((path) =>
+				path.endsWith("recursion=0")
+					? { body: sync(["/1.0/instances/management"]) }
+					: path.endsWith("recursion=1")
+						? { body: sync([listed]) }
+						: {},
+			)
+		).client;
+	}
+	it("a host-path disk named __proto__ makes the node unavailable instead of vanishing from its digest", async () => {
+		const clean = await node("{}");
+		const enrolled = (await inspect(clean)).instances[0];
+		const policy: RuntimeNodeInventoryPolicy = {
+			schema: "qorpera.runtime-node-inventory-policy/v1",
+			nodeId: randomUUID(),
+			host: {
+				machineIdSha256: sha,
+				socketPath: "/var/snap/lxd/common/lxd/unix.socket",
+				socketGid: 2000,
+				certificateSha256: certificateSha,
+				serverName: "fixture-node",
+				serverVersion: "6.9",
+				architecture: "x86_64",
+			},
+			operatingCpuMillis: 1000,
+			operatingMemoryBytes: 1024 ** 3,
+			infrastructure: [
+				{
+					project: "default",
+					name: "management",
+					physicalId,
+					type: "virtual-machine",
+					configurationSha256: runtimeNodeInstanceConfigurationSha256(enrolled),
+					cpuMillis: 2000,
+					memoryBytes: 4 * 1024 ** 3,
+				},
+			],
+		};
+		const context: RuntimeNodeInventoryContext = {
+			policy,
+			nodeVersion: 1,
+			contextSha256: sha,
+			headroomCpuMillis: 4000,
+			headroomMemoryBytes: 8 * 1024 ** 3,
+			allocations: [],
+		};
+		const host: RuntimeNodeObserverHost = {
+			machineIdSha256: sha,
+			cpuMillis: 16000,
+			memoryBytes: 64 * 1024 ** 3,
+			bootId: randomUUID(),
+			namespace: "mnt:[1]",
+			socket: { dev: 1, ino: 2, uid: 0, gid: 2000, mode: 0o140660, nlink: 1 },
+		};
+		const observe = async (lxd: LxdUnixClient) => {
+			const published: string[] = [];
+			const registry: RuntimeNodeObserverRegistry = {
+				call: async (method, args) => {
+					if (method === "qorpera_runtime_node_inventory_context") return structuredClone(context);
+					published.push(method);
+					const o = args.p_observation as Record<string, unknown>;
+					return { nodeId: o.nodeId, observationId: o.observationId, observedAt: o.observedAt };
+				},
+			};
+			const observer = new RuntimeNodeInventoryObserver(policy, registry, {
+				lxd,
+				host: async () => structuredClone(host),
+			});
+			return { state: (await observer.observe(new AbortController().signal)).state, published };
+		};
+		expect(await observe(clean)).toEqual({ state: "ready", published: ["qorpera_observe_runtime_node_inventory"] });
+		const disk = '{"type":"disk","source":"/","path":"/host"}';
+		// Under an ordinary name the disk is a change of enrollment, named in the published inventory.
+		expect(await observe(await node(`{"host":${disk}}`))).toEqual({
+			state: "unavailable",
+			published: ["qorpera_observe_runtime_node_inventory"],
+		});
+		// Named __proto__, the scan is refused: unavailable, and no inventory claims the host is known.
+		expect(await observe(await node(`{"__proto__":${disk}}`))).toEqual({
+			state: "unavailable",
+			published: ["qorpera_observe_runtime_node"],
+		});
 	});
 });
