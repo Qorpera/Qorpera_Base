@@ -1274,7 +1274,8 @@ deletes the company first. The creator of a company stays refused at least
 until the company is gone. Company records keep naming former members, so an
 account is closed (its sign-in record stays as an empty shell that cannot sign
 in) rather than erased. Closing is an update that no database link or guard
-acts on: closing an account MUST make these removals and refusals itself.
+acts on: closing an account MUST make these removals, and the founder and
+only-member refusals, itself.
 
 Automatic hiring MUST verify that the creator can delegate the child's entire
 default: current, nonexpiring read/write authority on every live shared root
