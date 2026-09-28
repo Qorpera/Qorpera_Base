@@ -2,7 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { createServer, type IncomingHttpHeaders, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { type LxdCreateInstanceRequest, type LxdCreateStorageVolumeRequest, LxdUnixClient } from "../src/lxd-client.ts";
 import { HttpLxdGuestTransport } from "../src/lxd-provider.ts";
 
@@ -223,6 +223,53 @@ describe("LXD Unix client", () => {
 			client.updateInstanceDevices("qn25b2", "../x", () => undefined, new AbortController().signal),
 		).rejects.toThrow("LXD instance scope is invalid");
 	});
+	it.each(["devices", "expanded_devices", "config", "expanded_config"])(
+		"refuses an instance whose %s carries a __proto__ key before deciding or writing anything",
+		async (field) => {
+			const methods: string[] = [];
+			const metadata: Record<string, unknown> = {
+				name: "qorpera-exec-node02",
+				architecture: "x86_64",
+				type: "virtual-machine",
+				status: "Running",
+				status_code: 103,
+				config: { "limits.cpu": "4" },
+				expanded_config: { "limits.cpu": "4" },
+				devices: { root: { type: "disk", path: "/", pool: "qorpera-vm" } },
+				expanded_devices: { root: { type: "disk", path: "/", pool: "qorpera-vm" } },
+				ephemeral: false,
+				profiles: [],
+				stateful: false,
+				description: "",
+			};
+			// As LXD's JSON carries it: an own key. Copied by assignment, it was
+			// dropped, and the PUT below would have deleted it from the instance.
+			metadata[field] = JSON.parse(
+				field.endsWith("devices")
+					? '{"root":{"type":"disk","path":"/","pool":"qorpera-vm"},"__proto__":{"type":"disk","source":"/","path":"/host"}}'
+					: '{"limits.cpu":"4","__proto__":"x"}',
+			);
+			const socket = await unixServer((method) => {
+				methods.push(method);
+				return method === "GET"
+					? { body: { type: "sync", metadata }, headers: { etag: '"v9"' } }
+					: { body: { type: "async", operation: "/1.0/operations/attach", metadata: {} } };
+			});
+			const update = vi.fn((instance: { devices: Record<string, Record<string, string>> }) => ({
+				...instance.devices,
+			}));
+			await expect(
+				new LxdUnixClient(socket).updateInstanceDevices(
+					"qn25b2",
+					"qorpera-exec-node02",
+					update,
+					new AbortController().signal,
+				),
+			).rejects.toThrow("is invalid");
+			expect(update).not.toHaveBeenCalled();
+			expect(methods).toEqual(["GET"]);
+		},
+	);
 	it("lists a pool's custom volumes in one project", async () => {
 		const urls: string[] = [];
 		const socket = await unixServer((_method, url) => {
@@ -373,6 +420,23 @@ describe("LXD Unix client", () => {
 			}));
 			await expect(new LxdUnixClient(socket).getInstanceState("qorpera-runners", "guest")).rejects.toThrow(
 				"network MAC is invalid",
+			);
+		},
+	);
+
+	it.each(["__proto__", "constructor", "prototype"])(
+		"rejects a guest interface named %s instead of hiding it from the one-interface-per-MAC check",
+		async (name) => {
+			const socket = await unixServer(() => ({
+				body: {
+					type: "sync",
+					metadata: JSON.parse(
+						`{"status":"Running","status_code":103,"network":{"enp5s0":{"hwaddr":"00:16:3e:b9:c4:8c","addresses":[]},"${name}":{"hwaddr":"00:16:3e:b9:c4:8c","addresses":[]}}}`,
+					),
+				},
+			}));
+			await expect(new LxdUnixClient(socket).getInstanceState("qorpera-runners", "guest")).rejects.toThrow(
+				"network state is invalid",
 			);
 		},
 	);
