@@ -542,8 +542,8 @@ of the body, for readers that should not reach the storage server.
     rename (found in F2-1's review). Its owner should take the gc fence first. It never reaches a
     group chat: claiming a draft is refused outside agent threads.
   - A `group.md` or `sections.md` parse stored under F2-1 alone was only kind-checked. A malformed
-    one is not trusted as a base; a well-formed one is. No folder-v2 company exists before C5, so
-    nothing is stored in between.
+    one is not trusted as a base; a well-formed one is. F2-1 and F2-2 ship in one release, so no
+    folder-v2 company (only an operator makes one before C5) saves such a file in between.
   - The sidebar tables take no lock of their own: `agents/sections.md`'s path lock orders their only
     writer. The member RPC's section and move actions refuse for `folder-v2` companies (55000), and
     the sidebar's revision row is not bumped; the web reads the folder feed (C4).

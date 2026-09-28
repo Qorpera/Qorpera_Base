@@ -190,7 +190,7 @@ begin
 	select * into v_room from public.qorpera_company_rooms where id = v_id;
 	v_exists := found;
 	-- A parse stored before its kind's shape was checked (F2-1 alone) is not trusted: its id is not held against the
-	-- save, and every id counts as added. A well-formed one is trusted; no folder-v2 company exists before C5.
+	-- save, and every id counts as added. A well-formed one is trusted: F2-1 and F2-2 ship in one release.
 	if v_base is not null and jsonb_array_length(public.qorpera_company_state_parse_problems('group', v_base)) > 0 then
 		v_base := null; end if;
 	v_prev := v_base;

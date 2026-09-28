@@ -259,7 +259,7 @@ begin
 		or g.status is distinct from 'active' then
 		raise exception 'A chat follows its folder: %', to_jsonb(g); end if;
 	-- Deleting the folder closes the chat and its conversation; its lock target is the room.
-	select jsonb_agg(to_jsonb(x)) into t from public.qorpera_folder_structured_targets('70200000-0000-4000-8000-000000000020', pg_temp.owner(), jsonb_build_array(
+	select coalesce(jsonb_agg(to_jsonb(x)), '[]'::jsonb) into t from public.qorpera_folder_structured_targets('70200000-0000-4000-8000-000000000020', pg_temp.owner(), jsonb_build_array(
 		jsonb_build_object('op','delete','path','agents/groups/launch-team'))) x;
 	if not t @> jsonb_build_array(jsonb_build_object('rank', 4, 'tbl', 'qorpera_company_rooms', 'key', '70200000-0000-4000-8000-0000000000b1', 'mode', 'nokeyupdate'))
 		or not t @> '[{"rank":2,"tbl":"qorpera_profiles","mode":"keyshare"}]' then
@@ -338,16 +338,16 @@ end $$;
 do $$
 declare t jsonb;
 begin
-	select jsonb_agg(to_jsonb(x)) into t from public.qorpera_folder_structured_targets('70200000-0000-4000-8000-000000000020', pg_temp.owner(), jsonb_build_array(
+	select coalesce(jsonb_agg(to_jsonb(x)), '[]'::jsonb) into t from public.qorpera_folder_structured_targets('70200000-0000-4000-8000-000000000020', pg_temp.owner(), jsonb_build_array(
 		pg_temp.edit_group('launch', pg_temp.group_parse('70200000-0000-4000-8000-0000000000b1', 'Launch', array['70200000-0000-4000-8000-0000000000a1','70200000-0000-4000-8000-0000000000a2']::uuid[], array['70200000-0000-4000-8000-000000000001']::uuid[])))) x;
 	if not t @> jsonb_build_array(jsonb_build_object('rank', 4, 'tbl', 'qorpera_company_rooms', 'key', '70200000-0000-4000-8000-0000000000b1', 'mode', 'nokeyupdate'))
 		or not t @> '[{"rank":2,"tbl":"qorpera_profiles","key":"70200000-0000-4000-8000-000000000010","mode":"keyshare"}]' then
 		raise exception 'A group edit locks the company row and its room: %', t; end if;
-	select jsonb_agg(to_jsonb(x)) into t from public.qorpera_folder_structured_targets('70200000-0000-4000-8000-000000000020', pg_temp.owner(), jsonb_build_array(
+	select coalesce(jsonb_agg(to_jsonb(x)), '[]'::jsonb) into t from public.qorpera_folder_structured_targets('70200000-0000-4000-8000-000000000020', pg_temp.owner(), jsonb_build_array(
 		pg_temp.new_group('fresh', '70200000-0000-4000-8000-0000000000b2', 'Fresh', array['70200000-0000-4000-8000-0000000000a1','70200000-0000-4000-8000-0000000000a2']::uuid[], null))) x;
 	if t is distinct from '[{"rank":2,"tbl":"qorpera_profiles","key":"70200000-0000-4000-8000-000000000010","mode":"keyshare"}]' then
 		raise exception 'A new chat locks the company row only: %', t; end if;
-	select jsonb_agg(to_jsonb(x)) into t from public.qorpera_folder_structured_targets('70200000-0000-4000-8000-000000000020', pg_temp.owner(), jsonb_build_array(
+	select coalesce(jsonb_agg(to_jsonb(x)), '[]'::jsonb) into t from public.qorpera_folder_structured_targets('70200000-0000-4000-8000-000000000020', pg_temp.owner(), jsonb_build_array(
 		pg_temp.sections('{"kind":"sections","sections":[]}'))) x;
 	if t is distinct from '[{"rank":2,"tbl":"qorpera_profiles","key":"70200000-0000-4000-8000-000000000010","mode":"keyshare"}]' then
 		raise exception 'sections.md locks the company row only: %', t; end if;
