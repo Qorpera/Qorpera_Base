@@ -2,8 +2,11 @@ import { describe, expect, it } from "vitest";
 import {
 	type AgentFile,
 	type CompanyStateFileResult,
+	canonicalCompanyStateInstant,
+	companyPathKey,
 	companyStateName,
 	companyStatePath,
+	companyStateTimeZoneProblem,
 	companyStateValue,
 	freeCompanyStateName,
 	isCompanyStateName,
@@ -39,7 +42,12 @@ function refused(path: string, text: string) {
 	const result = parseCompanyStateFile(path, text) as CompanyStateFileResult;
 	expect(result).not.toBeNull();
 	if (result.ok) throw new Error(`expected ${path} to be refused`);
+	expect(result.problems.length).toBeGreaterThan(0);
 	return result.problems;
+}
+
+function keys(problems: readonly { key: string | null; code: string }[]) {
+	return problems.map((problem) => [problem.key, problem.code]);
 }
 
 const agentText = `---
@@ -60,6 +68,26 @@ still book by phone and get them to a demo.
 - Answer new leads within the hour.
 `;
 
+const agentFields = (update: Record<string, string> = {}) =>
+	`---\n${Object.entries({ id: ANNA, name: "Anna", role: "Sales", kind: "agent", status: "active", ...update })
+		.map(([key, value]) => `${key}: ${value}`)
+		.join("\n")}\n---\nSell.\n`;
+
+function agentBase(): Omit<AgentFile, "kind"> {
+	return {
+		id: ANNA,
+		name: "Anna",
+		role: "Sales",
+		agentKind: "agent",
+		status: "active",
+		colour: null,
+		figure: null,
+		model: null,
+		effort: null,
+		instructions: "Sell.",
+	};
+}
+
 describe("companyStatePath", () => {
 	it("recognises every structured file and nothing else", () => {
 		const kinds = Object.fromEntries(
@@ -75,6 +103,7 @@ describe("companyStatePath", () => {
 				"connections/gmail-sales-nordlys-dk.md",
 				"rules/ask-before-emailing-customers.md",
 				"Agents/Anna-Berg/Agent.md",
+				"rules/.md",
 				"vision/notes.md",
 				"agents/anna-berg/memory/profile.md",
 				"agents/anna-berg/routines/notes/x.md",
@@ -99,6 +128,7 @@ describe("companyStatePath", () => {
 			"connections/gmail-sales-nordlys-dk.md": "connection",
 			"rules/ask-before-emailing-customers.md": "rule",
 			"Agents/Anna-Berg/Agent.md": "agent",
+			"rules/.md": "rule",
 			"vision/notes.md": null,
 			"agents/anna-berg/memory/profile.md": null,
 			"agents/anna-berg/routines/notes/x.md": null,
@@ -117,6 +147,16 @@ describe("companyStatePath", () => {
 		});
 	});
 
+	it("decides the kind on the folder's key, as the database does", () => {
+		for (const path of ["ａｇｅｎｔｓ/anna/agent.md", "agentſ/anna/agent.md", "AGENTS/anna/AGENT.MD"]) {
+			expect(companyPathKey(path)).toBe("agents/anna/agent.md");
+			expect(companyStatePath(path)?.kind).toBe("agent");
+		}
+		// The names as written still follow the rule, and so does the extension.
+		expect(refused("AGENTS/anna/AGENT.MD", agentText).map((problem) => problem.code)).toEqual(["name"]);
+		expect(refused("rules/.md", "---\n---\n")[0]?.code).toBe("name");
+	});
+
 	it("leaves ordinary files alone", () => {
 		expect(parseCompanyStateFile("sales/leads/list.md", "anything")).toBeNull();
 	});
@@ -126,19 +166,28 @@ describe("names", () => {
 	it("makes plain-Latin folder names", () => {
 		expect(companyStateName("Anna Berg")).toBe("anna-berg");
 		expect(companyStateName("Søren Ærø-Ågård")).toBe("soeren-aeroe-aagaard");
+		expect(companyStateName("Åsa")).toBe("aasa");
 		expect(companyStateName("José Müller")).toBe("jose-muller");
 		expect(companyStateName("  R&D   team!! ")).toBe("rd-team");
 		expect(companyStateName("日本")).toBe("");
 		expect(companyStateName("a".repeat(80))).toHaveLength(64);
+		expect(companyStateName(`${"a".repeat(63)} b`)).toBe("a".repeat(63));
 	});
 
 	it("numbers a taken name and falls back when nothing is left", () => {
 		expect(freeCompanyStateName("Anna Berg", "agent", new Set(["anna-berg", "anna-berg-2"]))).toBe("anna-berg-3");
 		expect(freeCompanyStateName("日本", "agent", new Set(["agent"]))).toBe("agent-2");
 		expect(freeCompanyStateName("Groups", "agent", new Set(["groups"]))).toBe("groups-2");
+		expect(freeCompanyStateName("a".repeat(70), "agent", new Set(["a".repeat(64)]))).toBe(`${"a".repeat(62)}-2`);
 		expect(isCompanyStateName("anna-berg")).toBe(true);
 		expect(isCompanyStateName("Anna")).toBe(false);
 		expect(isCompanyStateName("a--b")).toBe(false);
+	});
+
+	it("suggests a name of the right kind", () => {
+		const text = `---\nid: ${GROUP}\nname: L\nagents: [${ANNA}, ${IDA}]\n---\nx\n`;
+		expect(refused("agents/groups/日本/group.md", text)[0]?.message).toContain("for example group");
+		expect(refused("agents/groups/Launch Team/group.md", text)[0]?.message).toContain("for example launch-team");
 	});
 });
 
@@ -161,11 +210,12 @@ describe("agent.md", () => {
 	});
 
 	it("reads CRLF files, a byte-order mark, notes and quotes", () => {
-		const text = `﻿---\r\n# who\r\nid: ${ANNA} # never changes\r\nname: "Anna \\"AB\\" Berg"\r\nrole: 'Head of Sales'\r\nkind: agent\r\nstatus: active\r\n---\r\nSell.\r\n`;
+		const text = `﻿---\r\n# who\r\nid: ${ANNA} # never changes\r\nname: "Anna \\"AB\\" Berg"\r\nrole: 'Head of ''Sales'''\r\nkind: agent\r\nstatus: active\r\n---\r\n\r\n    Sell.\r\n`;
 		expect(ok("agents/anna-berg/agent.md", text)).toMatchObject({
 			id: ANNA,
 			name: 'Anna "AB" Berg',
-			role: "Head of Sales",
+			role: "Head of 'Sales'",
+			instructions: "Sell.",
 		});
 	});
 
@@ -173,23 +223,28 @@ describe("agent.md", () => {
 		const file = ok("agents/anna-berg/agent.md", agentText) as AgentFile;
 		const { kind: _kind, ...fields } = file;
 		expect(ok("agents/anna-berg/agent.md", writeAgentFile(fields))).toEqual(file);
-		const tricky = {
-			...fields,
-			name: "Ops: #1",
-			role: "true",
-			colour: null,
-			figure: null,
-			model: null,
-			effort: null,
-		};
-		expect(ok("agents/anna-berg/agent.md", writeAgentFile(tricky))).toEqual({ ...tricky, kind: "agent" });
+		for (const name of [
+			"Ops: #1",
+			"true",
+			"- lead",
+			"#1 fan",
+			",Anna",
+			"[team]",
+			"C# dev",
+			"ÆØÅ",
+			"a\\b",
+			"'quoted'",
+			'"x"',
+		])
+			expect(ok("agents/a/agent.md", writeAgentFile({ ...fields, name }))).toMatchObject({ name });
+		const bare = { ...fields, colour: null, figure: null, model: null, effort: null };
+		expect(ok("agents/anna-berg/agent.md", writeAgentFile(bare))).toEqual({ ...bare, kind: "agent" });
 	});
 
-	it("names each problem with its line, and suggests a fresh id", () => {
-		const problems = refused(
-			"agents/anna-berg/agent.md",
-			"---\nname: Anna\nrole: Sales\nkind: agent\nstatus: on leave\nteam: sales\nname: Again\n---\nSell.\n",
-		);
+	it("names each problem with its line, the same way every time", () => {
+		const text =
+			"---\nname: Anna\nrole: Sales\nkind: agent\nstatus: on leave\nteam: sales\nname: Again\n---\nSell.\n";
+		const problems = refused("agents/anna-berg/agent.md", text);
 		expect(problems.map((problem) => [problem.line, problem.key, problem.code])).toEqual([
 			[7, "name", "duplicate_key"],
 			[null, "id", "missing"],
@@ -199,22 +254,37 @@ describe("agent.md", () => {
 		expect(problems.find((problem) => problem.key === "team")?.message).toContain(
 			"allowed: colour, effort, figure, id",
 		);
-		const noId = refused(
-			"agents/anna-berg/agent.md",
-			`---\nid: ANNA\nname: A\nrole: B\nkind: agent\nstatus: active\n---\nx\n`,
+		expect(parseCompanyStateFile("agents/anna-berg/agent.md", agentFields({ id: "ANNA" }))).toEqual(
+			parseCompanyStateFile("agents/anna-berg/agent.md", agentFields({ id: "ANNA" })),
 		);
-		expect(noId[0]?.message).toMatch(/a fresh one you can use/);
+		expect(refused("agents/a/agent.md", agentFields({ id: ANNA.toUpperCase() }))[0]?.message).toBe(
+			"id must be written in lowercase",
+		);
 	});
 
-	it("refuses values YAML would read as something other than text", () => {
-		const problems = refused(
-			"agents/anna-berg/agent.md",
-			`---\nid: ${ANNA}\nname: 42\nrole: null\nkind: agent\nstatus: active\n---\nx\n`,
-		);
-		expect(problems.map((problem) => [problem.key, problem.code])).toEqual([
+	it("refuses values YAML would read differently", () => {
+		expect(keys(refused("agents/a/agent.md", agentFields({ name: "42", role: "null" })))).toEqual([
 			["name", "quote"],
 			["role", "quote"],
 		]);
+		expect(keys(refused("agents/a/agent.md", agentFields({ name: '"  padded  "' })))).toEqual([["name", "value"]]);
+		expect(keys(refused("agents/a/agent.md", agentFields({ name: ",Anna" })))).toEqual([
+			["name", "syntax"],
+			["name", "missing"],
+		]);
+		expect(keys(refused("agents/a/agent.md", agentFields({ name: '"a\\tb"' })))).toEqual([["name", "value"]]);
+		expect(keys(refused("agents/a/agent.md", agentFields({ colour: "[]" })))).toEqual([["colour", "missing"]]);
+		expect(keys(refused("agents/a/agent.md", agentFields({ effort: "" })))).toEqual([["effort", "missing"]]);
+		expect(keys(refused("agents/a/agent.md", agentFields({ figure: "brain" })))).toEqual([["figure", "value"]]);
+	});
+
+	it("refuses escapes that make half a character", () => {
+		expect(refused("agents/a/agent.md", agentFields({ name: '"\\ud800"' }))[0]?.message).toBe(
+			"a \\u escape is half of a character",
+		);
+		expect(ok("agents/a/agent.md", agentFields({ name: '"\\ud83d\\ude00 A"' }))).toMatchObject({ name: "😀 A" });
+		expect(refused("agents/a/agent.md", agentFields({ name: '"\\x41"' }))[0]?.code).toBe("syntax");
+		expect(refused("agents/a/agent.md", `${agentFields()}\ud800`)[0]?.code).toBe("encoding");
 	});
 
 	it("refuses broken settings blocks", () => {
@@ -222,17 +292,25 @@ describe("agent.md", () => {
 		expect(refused("agents/anna-berg/agent.md", "---\nid: x\n")[0]?.code).toBe("front_matter");
 		const syntax = refused(
 			"agents/anna-berg/agent.md",
-			`---\nid: ${ANNA}\n\tname: A\nrole: {a: 1}\nkind: agent\nstatus: active\nfree text\n  - stray\n---\nx\n`,
+			`---\nid: ${ANNA}\n\tname: A\nrole: {a: 1}\nkind: agent\nstatus: active\nfree text\n  - stray\nname:x\n  indented: 1\nx\u2028y: 1\n---\nx\n`,
 		);
-		expect(syntax.map((problem) => [problem.line, problem.code])).toEqual(
-			expect.arrayContaining([
-				[3, "syntax"],
-				[4, "syntax"],
-				[7, "syntax"],
-				[8, "syntax"],
-			]),
+		expect(syntax.filter((problem) => problem.code === "syntax").map((problem) => problem.line)).toEqual([
+			3, 4, 7, 8, 9, 10, 11,
+		]);
+	});
+
+	it("keeps list items lined up, as YAML reads them", () => {
+		const group = (list: string) => `---\nid: ${GROUP}\nname: L\nagents:\n${list}\n---\nx\n`;
+		expect(refused("agents/groups/l/group.md", group(`  - ${ANNA}\n    - ${IDA}`))[0]?.message).toBe(
+			"list items must line up under the first one",
 		);
-		expect(refused("agents/anna-berg/agent.md", agentText.replace(/---\n[\s\S]*$/, "---\n\n"))).toBeTruthy();
+		expect(ok("agents/groups/l/group.md", group(`- ${ANNA}\n- ${IDA}`))).toMatchObject({ agents: [ANNA, IDA] });
+		expect(ok("agents/groups/l/group.md", group(`  - ${ANNA}\n  # the second\n\n  - ${IDA}`))).toMatchObject({
+			agents: [ANNA, IDA],
+		});
+		expect(
+			refused("agents/groups/l/group.md", `---\nid: ${GROUP}\nname: L\nagents: [${ANNA}, a{b}]\n---\nx\n`)[0]?.code,
+		).toBe("syntax");
 	});
 
 	it("refuses an empty body and a folder name that breaks the rule", () => {
@@ -247,6 +325,25 @@ describe("agent.md", () => {
 	it("refuses files that are too large or not text", () => {
 		expect(refused("agents/a/agent.md", `${agentText}${"x".repeat(70_000)}`)[0]?.code).toBe("too_large");
 		expect(refused("agents/a/agent.md", "---\u0000")[0]?.code).toBe("encoding");
+		expect(ok("agents/a/agent.md", `${agentFields()}�`)).toMatchObject({ instructions: "Sell.\n�" });
+	});
+
+	it("reads a pathological 64 KiB file in linear time", () => {
+		const spaces = " ".repeat(65_000);
+		const inputs: [string, string][] = [
+			["vision/vision.md", `# a${spaces}b`],
+			["agents/sections.md", `## a${spaces}b`],
+			["agents/sections.md", `## Sales\n- ${ANNA}${spaces}x`],
+			["agents/a/agent.md", `---\nname: a${spaces}b\n---\n`],
+			["agents/a/agent.md", `---\nname: a${":".repeat(65_000)}\n---\n`],
+			["agents/a/agent.md", `---\nname: ${"1".repeat(65_000)}x\n---\n`],
+			["agents/a/agent.md", `---\nagents: [${"a,".repeat(30_000)}]\n---\n`],
+		];
+		for (const [path, text] of inputs) {
+			const started = performance.now();
+			parseCompanyStateFile(path, text);
+			expect(performance.now() - started).toBeLessThan(250);
+		}
 	});
 });
 
@@ -256,8 +353,11 @@ describe("vision.md", () => {
 		expect(text).toBe("# Nordlys Studio\n\n## What we build\nBooking software.\n");
 		expect(ok("vision/vision.md", `\n\n${text}`)).toEqual({ kind: "vision", name: "Nordlys Studio" });
 		expect(ok("vision/vision.md", "# C# Makers\n")).toEqual({ kind: "vision", name: "C# Makers" });
+		expect(ok("vision/vision.md", "# Nordlys ##\n")).toEqual({ kind: "vision", name: "Nordlys" });
+		expect(ok("vision/vision.md", "#   Nordlys   \n")).toEqual({ kind: "vision", name: "Nordlys" });
 		expect(refused("vision/vision.md", "Nordlys\n")[0]).toMatchObject({ code: "body", line: 1 });
 		expect(refused("vision/vision.md", "## Nordlys\n")[0]?.code).toBe("body");
+		expect(refused("vision/vision.md", "# \n")[0]?.code).toBe("body");
 		expect(refused("vision/vision.md", `# ${"n".repeat(121)}\n`)[0]?.code).toBe("body");
 	});
 });
@@ -266,6 +366,8 @@ describe("sections.md", () => {
 	const text = `# Sections
 
 Each line is an id. The words after it are only for reading.
+
+### Notes before the sections are free text
 
 ## Sales
 - ${ANNA} Anna Berg
@@ -284,15 +386,15 @@ Each line is an id. The words after it are only for reading.
 			sections: [
 				{
 					name: "Sales",
-					line: 5,
+					line: 7,
 					members: [
-						{ id: ANNA, line: 6 },
-						{ id: TOM, line: 7 },
-						{ id: GROUP, line: 8 },
+						{ id: ANNA, line: 8 },
+						{ id: TOM, line: 9 },
+						{ id: GROUP, line: 10 },
 					],
 				},
-				{ name: "Product", line: 10, members: [{ id: IDA, line: 11 }] },
-				{ name: "Later", line: 13, members: [] },
+				{ name: "Product", line: 12, members: [{ id: IDA, line: 13 }] },
+				{ name: "Later", line: 15, members: [] },
 			],
 		});
 		const names = new Map([
@@ -311,9 +413,10 @@ Each line is an id. The words after it are only for reading.
 	it("refuses lines it cannot place", () => {
 		const problems = refused(
 			"agents/sections.md",
-			`- ${ANNA}\n## Sales\n- ${TOM}\nsome prose\n- ${TOM}\n## sales\n### Deep\n##\n`,
+			`- ${ANNA}\n## Sales\n- ${TOM}\nsome prose\n- ${TOM}\n## sales\n### Deep\n##\n##Team\n## A\tB\n## X\n- ${ANNA.toUpperCase()}\n`,
 		);
-		expect(problems.map((problem) => problem.line)).toEqual([1, 4, 5, 6, 7, 8]);
+		expect(problems.map((problem) => problem.line)).toEqual([1, 4, 5, 6, 7, 8, 9, 10, 12]);
+		expect(problems.at(-1)?.message).toBe("ids are written in lowercase");
 	});
 });
 
@@ -346,12 +449,13 @@ Plan and ship version 2 by 1 November.
 		const written = writeGroupFile(fields, new Map([[ANNA, "Anna Berg"]]));
 		expect(written).toContain(`  - ${ANNA} # Anna Berg\n`);
 		expect(ok("agents/groups/launch-team/group.md", written)).toEqual(file);
-		expect(
-			ok("agents/groups/launch-team/group.md", writeGroupFile({ ...fields, subtitle: null, people: [] })),
-		).toMatchObject({
-			people: [],
-			subtitle: null,
-		});
+		for (const subtitle of [null, ""])
+			expect(
+				ok("agents/groups/launch-team/group.md", writeGroupFile({ ...fields, subtitle, people: [] })),
+			).toMatchObject({
+				people: [],
+				subtitle,
+			});
 	});
 
 	it("needs two agents, ids and a purpose", () => {
@@ -359,7 +463,7 @@ Plan and ship version 2 by 1 November.
 			"agents/groups/launch-team/group.md",
 			`---\nid: ${GROUP}\nname: Launch\nagents: [${ANNA}, nope, ${ANNA}]\n---\n`,
 		);
-		expect(problems.map((problem) => [problem.key, problem.code])).toEqual([
+		expect(keys(problems)).toEqual([
 			["agents", "value"],
 			["agents", "value"],
 			[null, "body"],
@@ -369,9 +473,8 @@ Plan and ship version 2 by 1 November.
 				?.message,
 		).toBe("a group chat needs at least two agents");
 		expect(
-			refused("agents/groups/Launch/group.md", `---\nid: ${GROUP}\nname: L\nagents: [${ANNA}, ${IDA}]\n---\nx\n`)[0]
-				?.code,
-		).toBe("name");
+			keys(refused("agents/groups/launch/group.md", `---\nid: ${GROUP}\nname: Launch\nagents: []\n---\nx\n`)),
+		).toEqual([["agents", "value"]]);
 	});
 });
 
@@ -391,26 +494,27 @@ describe("connections, rules, todos and worker files", () => {
 			kind: "connection",
 			...file,
 		});
-		const block = `---\nid: ${ID}\nservice: google_drive\naccount: a@b.dk\nstatus: broken\nactions:\n  - list_files\nconnected_by: ${JONAS}\nconnected_at: 2026-02-30T10:00:00Z\n---\n`;
+		const block = `---\nid: ${ID}\nservice: google_drive\naccount: a@b.dk\nstatus: broken\nactions:\n  - list_files\nconnected_by: ${JONAS}\nconnected_at: 2026-02-30T10:00Z\n---\n`;
 		expect(refused("connections/drive.md", block).map((problem) => problem.key)).toEqual(["connected_at"]);
 		expect(ok("connections/drive.md", block.replace("02-30", "02-28"))).toMatchObject({
 			actions: ["list_files"],
 			purpose: "",
+			connectedAt: "2026-02-28T10:00:00Z",
 		});
 	});
 
-	it("keeps a rule to one sentence", () => {
-		const file = {
-			id: ID,
-			outcome: "ask-first" as const,
-			text: "When an agent wants to send an email to a customer.",
-		};
+	it("keeps a rule to how the sentence ends", () => {
+		const file = { id: ID, outcome: "ask-first" as const, text: "send an email to a customer." };
 		expect(ok("rules/ask-before-emailing-customers.md", writeRuleFile(file))).toEqual({ kind: "rule", ...file });
-		expect(refused("rules/r.md", `---\nid: ${ID}\noutcome: ask-first\n---\nOne.\nTwo.\n`)[0]?.code).toBe("body");
+		expect(ok("rules/r.md", `---\nid: ${ID}\noutcome: allow\n---\n\n\n   ${"x".repeat(280)}   \n`)).toMatchObject({
+			text: "x".repeat(280),
+		});
+		for (const text of ["One.\nTwo.", "a\tb", "x".repeat(281)])
+			expect(refused("rules/r.md", `---\nid: ${ID}\noutcome: ask-first\n---\n${text}\n`)[0]?.code).toBe("body");
 		expect(refused("rules/r.md", `---\nid: ${ID}\noutcome: deny\n---\nOne.\n`)[0]?.key).toBe("outcome");
 	});
 
-	it("reads a todo", () => {
+	it("reads a todo, counting its title in bytes", () => {
 		const file = {
 			id: ID,
 			title: "Draft the pricing page",
@@ -425,6 +529,12 @@ describe("connections, rules, todos and worker files", () => {
 			requestedBy: null,
 			detail: "",
 		});
+		expect(ok("agents/a/todos/t.md", writeTodoFile({ ...file, title: "ø".repeat(100) }))).toMatchObject({
+			title: "ø".repeat(100),
+		});
+		expect(refused("agents/a/todos/t.md", writeTodoFile({ ...file, title: "ø".repeat(150) }))[0]?.message).toBe(
+			"title must be 1–200 bytes",
+		);
 		expect(refused("agents/a/todos/t.md", `---\nid: ${ID}\ntitle: T\nstatus: waiting\n---\n`)[0]?.key).toBe("status");
 	});
 
@@ -478,6 +588,7 @@ reply: optional
 ---
 Go through new leads in sales/leads/.
 `;
+	const routine = (lines: string) => `---\nid: ${ID}\ntitle: T\nstatus: active\n${lines}\n---\nx\n`;
 
 	it("reads a weekly routine", () => {
 		expect(ok("agents/anna-berg/routines/morning-lead-sweep.md", weekly)).toEqual({
@@ -489,7 +600,7 @@ Go through new leads in sales/leads/.
 			timezone: "Europe/Copenhagen",
 			ends: null,
 			runs: null,
-			quiet: { start: "22:00", end: "07:00" },
+			quiet: { start: "22:00", end: "07:00", timezone: "Europe/Copenhagen" },
 			effort: "medium",
 			reply: "optional",
 			conclusion: null,
@@ -512,10 +623,10 @@ Go through new leads in sales/leads/.
 			instructions: "Look.",
 		};
 		const triggers: RoutineFile["trigger"][] = [
-			{ when: "every", minutes: 30, starts: "2026-09-29T06:00:00.000Z" },
+			{ when: "every", minutes: 30, starts: "2026-09-29T06:00:00Z" },
 			{ when: "weekly", days: ["sat"], time: "09:30", starts: null },
 			{ when: "window", minutes: 60, from: "09:00", to: "17:00", days: ["mon"], months: [1, 12] },
-			{ when: "once", at: "2026-09-30T07:00:00Z" },
+			{ when: "once", at: "2026-09-30T07:00:00.123456Z" },
 			{ when: "file-change", watch: "sales/leads", match: "exact" },
 		];
 		for (const trigger of triggers) {
@@ -524,65 +635,155 @@ Go through new leads in sales/leads/.
 		}
 		const concluded = {
 			...base,
-			trigger: triggers[3] as RoutineFile["trigger"],
+			trigger: { when: "every", minutes: 5, starts: null } as const,
+			timezone: null,
 			status: "concluded" as const,
 			conclusion: "Fysio Nord signed.",
-			runs: null,
 			ends: "2026-12-31T00:00:00Z",
-			quiet: { start: "22:00", end: "07:00" },
+			quiet: { start: "22:00", end: "07:00", timezone: "Europe/Oslo" },
 		};
-		expect(ok("agents/a/routines/r.md", writeRoutineFile(concluded))).toEqual({ kind: "routine", ...concluded });
+		const written = writeRoutineFile(concluded);
+		expect(written).toContain("quiet_timezone: Europe/Oslo\n");
+		expect(ok("agents/a/routines/r.md", written)).toEqual({ kind: "routine", ...concluded });
 	});
 
-	it("defaults effort, reply and match", () => {
+	it("gives instants one form, so a new spelling is not a new timing", () => {
+		expect(canonicalCompanyStateInstant("2026-09-30T07:00Z")).toBe("2026-09-30T07:00:00Z");
+		expect(canonicalCompanyStateInstant("2026-09-30T07:00:00.000Z")).toBe("2026-09-30T07:00:00Z");
+		expect(canonicalCompanyStateInstant("2026-09-30T07:00:00.500Z")).toBe("2026-09-30T07:00:00.5Z");
+		expect(canonicalCompanyStateInstant("0099-01-01T00:00Z")).toBe("0099-01-01T00:00:00Z");
+		expect(canonicalCompanyStateInstant("2024-02-29T00:00Z")).toBe("2024-02-29T00:00:00Z");
+		expect(canonicalCompanyStateInstant("2026-02-29T00:00Z")).toBeNull();
+		expect(canonicalCompanyStateInstant("2026-09-30T24:00:00Z")).toBeNull();
+		expect(canonicalCompanyStateInstant("2026-09-30T07:00:60Z")).toBeNull();
+		expect(canonicalCompanyStateInstant("2026-09-30T07:00:00+02:00")).toBeNull();
+		expect(ok("agents/a/routines/r.md", routine("when: once\nat: 2026-09-30T07:00Z\ntimezone: UTC"))).toMatchObject({
+			trigger: { at: "2026-09-30T07:00:00Z" },
+		});
+	});
+
+	it("defaults effort and reply, and asks for match", () => {
 		expect(
-			ok(
-				"agents/a/routines/r.md",
-				`---\nid: ${ID}\ntitle: T\nstatus: paused\nwhen: file-change\nwatch: sales/\ntimezone: UTC\n---\nx\n`,
-			),
+			ok("agents/a/routines/r.md", routine("when: file-change\nwatch: sales/\nmatch: subtree\ntimezone: UTC")),
 		).toMatchObject({
 			effort: "medium",
 			reply: "optional",
 			trigger: { when: "file-change", watch: "sales", match: "subtree" },
 		});
+		expect(
+			keys(refused("agents/a/routines/r.md", routine("when: file-change\nwatch: sales\ntimezone: UTC"))),
+		).toEqual([["match", "missing"]]);
+		for (const empty of ["effort:", "effort: []", "reply:", "match:"])
+			expect(
+				refused(
+					"agents/a/routines/r.md",
+					routine(`when: file-change\nwatch: sales\nmatch: exact\ntimezone: UTC\n${empty}`),
+				).length,
+			).toBeGreaterThan(0);
 	});
 
 	it("refuses settings of another trigger and broken combinations", () => {
-		const problems = refused(
-			"agents/a/routines/r.md",
-			`---\nid: ${ID}\ntitle: T\nstatus: active\nwhen: once\nat: 2026-09-30T07:00:00Z\nminutes: 5\nruns: 3\nends: 2026-09-01T00:00:00Z\nconclusion: early\n---\nx\n`,
-		);
-		expect(problems.map((problem) => [problem.key, problem.code])).toEqual([
+		expect(
+			keys(
+				refused(
+					"agents/a/routines/r.md",
+					routine(
+						"when: once\nat: 2026-09-30T07:00:00Z\nminutes: 5\nruns: 3\nends: 2026-09-01T00:00:00Z\nconclusion: early",
+					),
+				),
+			),
+		).toEqual([
 			["minutes", "unknown_key"],
-			["runs", "value"],
 			["timezone", "missing"],
+			["runs", "value"],
 			["at", "value"],
 			["conclusion", "value"],
 		]);
 		expect(
-			refused(
-				"agents/a/routines/r.md",
-				`---\nid: ${ID}\ntitle: T\nstatus: concluded\nwhen: every\nminutes: 4\n---\nx\n`,
+			keys(
+				refused(
+					"agents/a/routines/r.md",
+					`---\nid: ${ID}\ntitle: T\nstatus: concluded\nwhen: every\nminutes: 4\n---\nx\n`,
+				),
 			),
 		).toEqual([
-			expect.objectContaining({ key: "minutes" }),
-			expect.objectContaining({ key: "conclusion", code: "missing" }),
+			["minutes", "value"],
+			["conclusion", "missing"],
 		]);
+		expect(keys(refused("agents/a/routines/r.md", routine('when: every\nminutes: "30"')))).toEqual([
+			["minutes", "value"],
+		]);
+		expect(keys(refused("agents/a/routines/r.md", routine('when: every\nminutes: 5\nquiet: "22:00-07:00"')))).toEqual(
+			[["timezone", "missing"]],
+		);
 		expect(
-			refused(
+			ok(
 				"agents/a/routines/r.md",
-				`---\nid: ${ID}\ntitle: T\nstatus: active\nwhen: every\nminutes: 5\nquiet: "22:00-07:00"\n---\nx\n`,
-			)[0],
-		).toMatchObject({ key: "timezone", code: "missing" });
+				routine('when: every\nminutes: 5\nquiet: "22:00-07:00"\nquiet_timezone: Europe/Oslo'),
+			),
+		).toMatchObject({ timezone: null, quiet: { timezone: "Europe/Oslo" } });
 		expect(
-			refused(
-				"agents/a/routines/r.md",
-				`---\nid: ${ID}\ntitle: T\nstatus: active\nwhen: weekly\ndays: [mon, funday, mon]\ntime: "25:00"\ntimezone: Mars/Olympus\n---\nx\n`,
-			).map((problem) => problem.key),
-		).toEqual(["days", "days", "time", "timezone"]);
+			keys(
+				refused(
+					"agents/a/routines/r.md",
+					routine('when: weekly\ndays: [mon, funday, mon]\ntime: "25:00"\ntimezone: Mars/Olympus'),
+				),
+			),
+		).toEqual([
+			["days", "value"],
+			["days", "value"],
+			["time", "value"],
+			["timezone", "value"],
+		]);
+		expect(refused("agents/a/routines/r.md", routine("when: hourly"))[0]?.key).toBe("when");
 		expect(
-			refused("agents/a/routines/r.md", `---\nid: ${ID}\ntitle: T\nstatus: active\nwhen: hourly\n---\nx\n`)[0]?.key,
-		).toBe("when");
+			keys(
+				refused(
+					"agents/a/routines/r.md",
+					routine('when: window\nminutes: 60\nfrom: "09:00"\nto: "17:00"\nmonths: []\ntimezone: UTC'),
+				),
+			),
+		).toEqual([["months", "value"]]);
+		for (const effort of ["xhigh", "max"])
+			expect(refused("agents/a/routines/r.md", routine(`when: every\nminutes: 5\neffort: ${effort}`))[0]?.key).toBe(
+				"effort",
+			);
+		expect(refused("agents/a/routines/r.md", routine(`when: every\nminutes: 5\ntitle2: x`))[0]?.code).toBe(
+			"unknown_key",
+		);
+	});
+
+	it("counts the title and the conclusion in bytes", () => {
+		const text = routine("when: every\nminutes: 5").replace("title: T", `title: ${"é".repeat(81)}`);
+		expect(refused("agents/a/routines/r.md", text)[0]).toMatchObject({
+			key: "title",
+			message: "title must be 1–160 bytes",
+		});
+	});
+});
+
+describe("time zones", () => {
+	it("must be written as the platform writes them", () => {
+		expect(companyStateTimeZoneProblem("Europe/Copenhagen")).toBeNull();
+		expect(companyStateTimeZoneProblem("UTC")).toBeNull();
+		expect(companyStateTimeZoneProblem("europe/copenhagen")).toBe("write the time zone as Europe/Copenhagen");
+		expect(companyStateTimeZoneProblem("Mars/Olympus")).toContain("unknown time zone");
+	});
+});
+
+describe("companyStateValue", () => {
+	it("quotes what would not read back the same, and escapes controls", () => {
+		expect(companyStateValue("Anna Berg")).toBe("Anna Berg");
+		expect(companyStateValue("a\tb")).toBe('"a\\tb"');
+		expect(companyStateValue("a\u2028b")).toBe('"a\\u2028b"');
+		expect(companyStateValue("a\u0085b")).toBe('"a\\u0085b"');
+		// A value the format refuses still makes a file the parser reads; the parse refuses the value.
+		expect(keys(refused("agents/a/agent.md", writeAgentFile({ ...agentBase(), name: "Anna\u2028Berg" })))).toEqual([
+			["name", "value"],
+		]);
+		expect(keys(refused("agents/a/agent.md", writeAgentFile({ ...agentBase(), name: "Anna\tBerg" })))).toEqual([
+			["name", "value"],
+		]);
 	});
 });
 
@@ -592,11 +793,30 @@ describe("setCompanyStateSettings", () => {
 		expect(setCompanyStateSettings(text, { status: "paused" })).toBe(
 			text.replace("status: active # was paused", "status: paused"),
 		);
-		expect(setCompanyStateSettings(text, { agents: null, subtitle: companyStateValue("Q4: launch") })).toBe(
+		expect(setCompanyStateSettings(text, { agents: null, subtitle: "Q4: launch" })).toBe(
 			`---\nid: ${ANNA}   # keep this note\nname: Anna Berg\nstatus: active # was paused\nsubtitle: "Q4: launch"\n---\nBody stays.\n`,
 		);
-		const crlf = text.replaceAll("\n", "\r\n");
-		expect(setCompanyStateSettings(crlf, { status: "paused" })).toContain("status: paused\r\n");
 		expect(() => setCompanyStateSettings("# vision\n", { status: "x" })).toThrow();
+		expect(() => setCompanyStateSettings(text, { "bad key": "x" })).toThrow();
+	});
+
+	it("keeps a byte-order mark and each line's own ending", () => {
+		const text = `﻿---\r\nid: ${ANNA}\nstatus: active\r\n---\r\nBody\n`;
+		expect(setCompanyStateSettings(text, { status: "paused", effort: "low" })).toBe(
+			`﻿---\r\nid: ${ANNA}\nstatus: paused\r\neffort: low\r\n---\r\nBody\n`,
+		);
+	});
+
+	it("replaces a whole list, notes between its items included, and nothing after it", () => {
+		const text = `---\nagents:\n  - ${ANNA}\n  # the next one\n\n  - ${IDA}\n# about people\npeople: []\n---\nx\n`;
+		expect(setCompanyStateSettings(text, { agents: [TOM, JONAS] })).toBe(
+			`---\nagents: [${TOM}, ${JONAS}]\n# about people\npeople: []\n---\nx\n`,
+		);
+	});
+
+	it("encodes values, so a value cannot add a setting", () => {
+		const text = `---\nid: ${ANNA}\nstatus: active\n---\nx\n`;
+		const changed = setCompanyStateSettings(text, { status: "paused\nkind: co-founder", runs: 3 });
+		expect(changed).toBe(`---\nid: ${ANNA}\nstatus: "paused\\nkind: co-founder"\nruns: 3\n---\nx\n`);
 	});
 });

@@ -4,8 +4,6 @@
 
 ### Added
 
-- `company-state-files`: the shared reader and canonical writers for the company folder's structured files (contract 5.6; `deploy/first-node/RUNTIME-COMPANY-STATE-FILES.md`): vision, agent, sections, group chat, connection, rule, routine, todo and worker brief and results. `parseCompanyStateFile` answers null for an ordinary file, the parse, or line-numbered problems; `companyStateName` and `freeCompanyStateName` make folder names; `setCompanyStateSettings` changes one setting and keeps every other byte. Nothing calls it yet.
-
 - `SupabaseCloudPresenceTransport` takes any client with `channel`/`removeChannel` and just the three presence device calls (`PresenceDevices`), so the web app joins presence without the whole hosted primary.
 
 - `CloudCompanyComputerStart.withdraw(generation, requestId, signal)` takes back the member's own idle wake request (`qorpera_withdraw_runtime_office_wake`). It never cancels the wake or a first start; it lets idle stop the computer one minute after it is up once every requester has withdrawn and nothing used it.
@@ -48,3 +46,5 @@
 - Shared sign-in intent, status recovery and private-access checks for desktop and web, with closed metadata schemas and no client-side execution or credential handling.
 - Shared member screen discovery, explicit takeover intent, ticket recovery and exact cancellation APIs. The authenticated TLS WebSocket adapter provides a bounded noVNC raw channel without tickets in URLs or DOM attributes; reconnect never silently restores control.
 - Shared office start, status recovery and exact cancellation APIs for desktop and web. Requests retain caller identity for reconciliation and expose no provider paths, credentials or guest execution. The common intent parser also validates native startup results.
+
+- `company-state-files`: the shared reader and canonical writers for the company folder's structured files (contract 5.6; `deploy/first-node/RUNTIME-COMPANY-STATE-FILES.md`): vision, agent, sections, group chat, connection, rule, routine, todo and worker brief and results. `parseCompanyStateFile` answers null for an ordinary file, the parse, or line-numbered problems, the same for the same bytes; `companyPathKey` classifies on the folder key; `companyStateName` and `freeCompanyStateName` make folder names; instants come back in one canonical form; `setCompanyStateSettings` changes typed settings and keeps every other byte. Nothing calls it yet.
