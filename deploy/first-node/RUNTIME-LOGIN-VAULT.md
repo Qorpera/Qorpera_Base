@@ -133,10 +133,23 @@ no database login and no service key; it sees a login only for one operation and
     company's broker by path (the edge function adds no query). The helper must run beside the
     broker (without it the route answers 404). A helper restart ends sign-ins in flight; the member
     signs in again.
-- **Part C, usage** (next): usage reads for vault logins in the vault (the existing `wham/usage`
-  call with the pass, no machine), and the account refresh chooser sending those identities to the
-  vault. Until then (with change 3) a node's usage check lists vault logins and skips them; switch
-  no company before Part C lands.
+- **Part C, usage** (migration `20260928185000`, `cloud-model-login-vault-usage.ts`): the vault reads
+  the usage of the logins it keeps; the web client is unchanged.
+  - For a switched company, the account refresh chooser answers a refresh of an identity with an
+    active vault login with the same `<broker service origin>/v1/model-logins/<company>/` base
+    (reason `MODEL_LOGIN_VAULT`); the edge function posts its unchanged
+    `qorpera.native-account-refresh/v1` to `<base>account-refresh` with the refresh's capability.
+  - The broker reads the refresh (`qorpera_describe_model_login_account_refresh`, broker role; the
+    refresh must belong to its company) with the current version of each vault login of that
+    identity that the latest version of an active connection uses, checks the request against it,
+    opens each login, reads its usage with the pass (the node's own `wham/usage` reader, 8 s each),
+    records the display metadata (email, account identity digest, usage) for that connection
+    version with the node record's checks (`qorpera_record_model_login_account_metadata`), and
+    completes the refresh (`qorpera_complete_model_login_account_refresh`). A login that cannot be
+    read is unknown usage; the refresh still settles. The pass is never renewed here, and nothing
+    but display metadata leaves the vault. No helper and no machine is involved.
+  - Identities without a vault login keep the node path; with change 3 a node's usage check lists
+    vault logins and skips them.
 
 ### Installing the helper (operator, per vault host)
 

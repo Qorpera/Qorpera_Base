@@ -14,6 +14,7 @@ import {
 	parseModelLoginRunBinding,
 } from "./cloud-model-login-vault.ts";
 import type { CloudModelLoginSignIns } from "./cloud-model-login-vault-sign-in.ts";
+import type { CloudModelLoginUsage } from "./cloud-model-login-vault-usage.ts";
 import { parseCloudNativeToolBinding } from "./cloud-native-tool-authority.ts";
 import { type CloudToolContent, cloudToolJsonText } from "./cloud-native-tool-boundary.ts";
 import {
@@ -386,6 +387,9 @@ export interface HttpCloudSecretBrokerServiceOptions {
 	 * `/v1/model-logins/<company>/login` under the sign-in's own capability. Absent means the
 	 * route answers 404. */
 	readonly modelLoginSignIns?: CloudModelLoginSignIns;
+	/** Usage of the logins the vault keeps (change 2C): `/v1/model-logins/<company>/account-refresh`
+	 * under the account refresh's own capability. Absent means the route answers 404. */
+	readonly modelLoginUsage?: CloudModelLoginUsage;
 }
 
 /**
@@ -405,6 +409,7 @@ export class HttpCloudSecretBrokerService {
 	readonly #codingExecutorToken: string | undefined;
 	readonly #modelLogins: CloudModelLoginVault | undefined;
 	readonly #modelLoginSignIns: CloudModelLoginSignIns | undefined;
+	readonly #modelLoginUsage: CloudModelLoginUsage | undefined;
 	#server?: Server;
 
 	constructor(
@@ -440,6 +445,7 @@ export class HttpCloudSecretBrokerService {
 		this.#codingExecutorToken = options.codingExecutorToken;
 		this.#modelLogins = options.modelLogins;
 		this.#modelLoginSignIns = options.modelLoginSignIns;
+		this.#modelLoginUsage = options.modelLoginUsage;
 	}
 
 	async start(): Promise<number> {
@@ -475,6 +481,7 @@ export class HttpCloudSecretBrokerService {
 		const oauthStart = /^\/v1\/oauth\/([0-9a-f-]{36})\/start$/i.exec(path);
 		const oauthConfirm = /^\/v1\/oauth\/([0-9a-f-]{36})\/confirm$/i.exec(path);
 		const signIn = /^\/v1\/model-logins\/([0-9a-f-]{36})\/login$/i.exec(path);
+		const accountRefresh = /^\/v1\/model-logins\/([0-9a-f-]{36})\/account-refresh$/i.exec(path);
 		const memberRoute = Boolean(
 			(capture && UUID.test(capture[1])) ||
 				(emailDraft && UUID.test(emailDraft[1])) ||
@@ -631,6 +638,24 @@ export class HttpCloudSecretBrokerService {
 				const answer = await this.#modelLoginSignIns.signIn(
 					{
 						companyId: signIn[1],
+						capability: authorization.slice("Bearer ".length),
+						body: await readRequest(request),
+					},
+					AbortSignal.timeout(25_000),
+				);
+				response(reply, 200, { ...answer });
+				return;
+			}
+			// The usage of the logins the vault keeps (change 2C): the account refresh chooser names
+			// the same base; the edge function posts its unchanged refresh with the refresh's own
+			// capability as bearer.
+			if (accountRefresh && UUID.test(accountRefresh[1]) && this.#modelLoginUsage !== undefined) {
+				const authorization = request.headers.authorization;
+				if (typeof authorization !== "string" || !authorization.startsWith("Bearer "))
+					throw new Error("Vault account refresh capability is missing");
+				const answer = await this.#modelLoginUsage.refresh(
+					{
+						companyId: accountRefresh[1],
 						capability: authorization.slice("Bearer ".length),
 						body: await readRequest(request),
 					},
