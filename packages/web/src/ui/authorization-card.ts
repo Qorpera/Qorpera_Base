@@ -171,6 +171,9 @@ function reviewHeadline(card: ActionReviewCard): string {
 	return card.title || t("Approval requested");
 }
 
+/** Sending an email: the card is the thread's email card (email-draft-card.ts), read-only. */
+const EMAIL_TOOLS = new Set(["gmail_send_message", "gmail_send_draft"]);
+
 /** Detail keys (as cloud-action-review.ts sends them) whose value is the content itself:
  * what would be said, written, asked of a worker or run on the computer. */
 const CONTENT_KEYS = new Set(["body", "text", "intent", "task", "command"]);
@@ -332,6 +335,97 @@ export function renderActionReviewCard(
 			),
 		);
 	const why = [...card.rules.map(rule), builtIn ? h("li", null, t(builtIn)) : null].filter(Boolean);
+	const reasons =
+		card.summary || why.length
+			? h(
+					"div",
+					{ class: "review-why" },
+					card.summary ? h("p", null, reviewReason(card)) : null,
+					why.length ? h("ul", { class: "review-reasons" }, ...why) : null,
+				)
+			: null;
+	const failed =
+		options.answerFailed && options.answer
+			? h("p", { class: "review-failed" }, t("That answer did not reach the agent. Answer again."))
+			: null;
+	const alwaysButton = card.alwaysAllow
+		? h(
+				"button",
+				{
+					type: "button",
+					class: "btn review-always-open",
+					"aria-expanded": String(Boolean(options.draft?.open)),
+					"aria-controls": editorId,
+					onclick: (event: MouseEvent) => {
+						always.hidden = false;
+						(event.currentTarget as HTMLElement).setAttribute("aria-expanded", "true");
+						draft({ open: true });
+						ruleInput.focus();
+					},
+				},
+				t("Always allow…"),
+			)
+		: null;
+	const deny = (label: string) =>
+		h("button", { type: "button", class: "btn", onclick: () => options.answer?.("deny") }, label);
+	const allow = (label: string, className: string) =>
+		h("button", { type: "button", class: className, onclick: () => options.answer?.("allow_once") }, label);
+	// An email the agent wants to send is shown as the email card the thread already has for
+	// drafts, read-only: sending it is allowing it.
+	if (EMAIL_TOOLS.has(card.tool ?? "")) {
+		const subject = card.details.find(([key]) => key === "subject")?.[1];
+		const body = card.details.find(([key]) => key === "body" || key === "text")?.[1];
+		const row = (label: string, value: string) =>
+			h(
+				"div",
+				{ class: "email-draft-row" },
+				h("span", { class: "email-draft-label" }, label),
+				h("span", { class: "email-draft-from" }, value),
+			);
+		return h(
+			"article",
+			{
+				class: "interaction-card email-draft-card action-review-card review-email",
+				"data-decision-state": state,
+				"data-review-id": card.reviewId,
+				tabindex: "-1",
+				"aria-label": what,
+			},
+			h(
+				"header",
+				{ class: "email-draft-heading" },
+				h("h3", null, t("New email")),
+				h(
+					"span",
+					{ class: "email-draft-status" },
+					options.answer ? t("Waiting for you") : t("Waiting for approval"),
+				),
+			),
+			h(
+				"div",
+				{ class: "email-draft-panel" },
+				card.target ? row(t("To"), card.target) : null,
+				subject ? row(t("Subject"), subject) : null,
+				body ? h("div", { class: "review-email-body" }, body) : null,
+			),
+			reasons,
+			failed,
+			options.answer
+				? h(
+						"div",
+						{ class: "review-answer" },
+						h(
+							"div",
+							{ class: "email-draft-actions" },
+							allow(t("Send email"), "btn email-draft-send"),
+							deny(t("Don't send")),
+							alwaysButton,
+						),
+						card.alwaysAllow ? always : null,
+					)
+				: h("p", { class: "review-waiting" }, waitingFor),
+		);
+	}
 	return h(
 		"article",
 		{
@@ -342,17 +436,8 @@ export function renderActionReviewCard(
 		},
 		h("h3", { class: "review-headline" }, what),
 		reviewChange(card),
-		card.summary || why.length
-			? h(
-					"div",
-					{ class: "review-why" },
-					card.summary ? h("p", null, reviewReason(card)) : null,
-					why.length ? h("ul", { class: "review-reasons" }, ...why) : null,
-				)
-			: null,
-		options.answerFailed && options.answer
-			? h("p", { class: "review-failed" }, t("That answer did not reach the agent. Answer again."))
-			: null,
+		reasons,
+		failed,
 		options.answer
 			? h(
 					"div",
@@ -360,46 +445,13 @@ export function renderActionReviewCard(
 					h(
 						"div",
 						{ class: "decision-actions" },
-						h("button", { type: "button", class: "btn", onclick: () => options.answer?.("deny") }, t("Deny")),
-						card.alwaysAllow
-							? h(
-									"button",
-									{
-										type: "button",
-										class: "btn",
-										"aria-expanded": String(Boolean(options.draft?.open)),
-										"aria-controls": editorId,
-										onclick: (event: MouseEvent) => {
-											always.hidden = false;
-											(event.currentTarget as HTMLElement).setAttribute("aria-expanded", "true");
-											draft({ open: true });
-											ruleInput.focus();
-										},
-									},
-									t("Always allow…"),
-								)
-							: null,
-						h(
-							"button",
-							{ type: "button", class: "btn btn-primary", onclick: () => options.answer?.("allow_once") },
-							t("Allow once"),
-						),
+						deny(t("Deny")),
+						alwaysButton,
+						allow(t("Allow once"), "btn btn-primary"),
 					),
 					card.alwaysAllow ? always : null,
 				)
 			: h("p", { class: "review-waiting" }, waitingFor),
-		h(
-			"footer",
-			{ class: "review-foot" },
-			h("span", { class: "decision-attribution" }, fmtTime(createdAt)),
-			card.tool
-				? h(
-						"details",
-						{ class: "review-technical" },
-						h("summary", null, t("Technical details")),
-						h("pre", { class: "review-call" }, `${card.tool}(${card.arguments ?? ""})`),
-					)
-				: null,
-		),
+		h("p", { class: "decision-attribution review-time" }, fmtTime(createdAt)),
 	);
 }

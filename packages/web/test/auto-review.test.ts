@@ -67,18 +67,27 @@ describe("approval card facts", () => {
 
 describe("the approval card", () => {
 	const card = actionReviewCard(structuredClone(data) as never)! as ActionReviewCard;
+	/** Any action but sending an email, which wears the email card. */
+	const issue: ActionReviewCard = {
+		...card,
+		title: "Open a GitHub issue",
+		target: "qorpera/web",
+		details: [],
+		tool: "github_create_issue",
+		arguments: '{"input":{"repository":"qorpera/web"}}',
+	};
 	const names = (userId: string) => (userId === id(1) ? "Jonas" : "Anna");
 
 	it("gives the member it waits for Deny, Allow once and Always allow with the rule to edit", () => {
 		const answer = vi.fn();
-		const el = renderActionReviewCard(card, timestamp, undefined, { answer, memberName: names });
+		const el = renderActionReviewCard(issue, timestamp, undefined, { answer, memberName: names });
 		expect(el.dataset.decisionState).toBe("pending");
 		expect(el.textContent).toContain("Company rule: sending any email outside the company");
 		expect(el.textContent).toContain("Personal rule: paying for anything");
 		expect(el.textContent).toContain("It moves money.");
-		expect(el.querySelector(".review-call")?.textContent).toBe(
-			'gmail_send_message({"input":{"to":"bob@acme.test"}})',
-		);
+		// No technical fold: the card says what the action does, never the call.
+		expect(el.querySelector("details, pre, .review-call")).toBeNull();
+		expect(el.textContent).not.toContain("github_create_issue");
 		const buttons = [...el.querySelectorAll<HTMLButtonElement>(".review-answer > .decision-actions button")];
 		expect(buttons.map((button) => button.textContent)).toEqual(["Deny", "Always allow…", "Allow once"]);
 		buttons[2]!.click();
@@ -131,13 +140,13 @@ describe("the approval card", () => {
 		expect(el.textContent).not.toContain("Only an owner or admin");
 	});
 
-	it("leads with the action and the change itself, with the exact call folded away", () => {
+	it("leads with the action and the change itself", () => {
 		const el = renderActionReviewCard(
 			{
-				...card,
+				...issue,
 				details: [
-					["subject", "Meeting moved"],
-					["body", "Tuesday 10:00 instead."],
+					["title", "Sign-up fails on Safari"],
+					["body", "Steps: open the page on iOS 15."],
 					["count", "3"],
 				],
 			},
@@ -145,15 +154,44 @@ describe("the approval card", () => {
 			undefined,
 			{ answer: vi.fn(), memberName: names },
 		);
-		expect(el.querySelector(".review-headline")?.textContent).toBe("Send an email");
-		expect(el.querySelector(".review-target")?.textContent).toBe("bob@acme.test");
-		expect(el.querySelector(".review-name")?.textContent).toBe("Meeting moved");
-		expect(el.querySelector(".review-quote")?.textContent).toBe("Tuesday 10:00 instead.");
+		expect(el.querySelector(".review-headline")?.textContent).toBe("Open a GitHub issue");
+		expect(el.querySelector(".review-target")?.textContent).toBe("qorpera/web");
+		expect(el.querySelector(".review-name")?.textContent).toBe("Sign-up fails on Safari");
+		expect(el.querySelector(".review-quote")?.textContent).toBe("Steps: open the page on iOS 15.");
 		expect(el.querySelector(".decision-facts")?.textContent).toBe("count3");
-		const technical = el.querySelector<HTMLDetailsElement>(".review-technical")!;
-		expect(technical.open).toBe(false);
-		expect(technical.querySelector("summary")?.textContent).toBe("Technical details");
-		expect(technical.contains(el.querySelector(".review-call"))).toBe(true);
+	});
+
+	it("shows an email to send as the thread's email card, where sending is allowing", () => {
+		const answer = vi.fn();
+		const el = renderActionReviewCard(
+			{
+				...card,
+				details: [
+					["subject", "Meeting moved"],
+					["body", "Tuesday 10:00 instead."],
+				],
+			},
+			timestamp,
+			undefined,
+			{ answer, memberName: names },
+		);
+		expect(el.classList.contains("email-draft-card")).toBe(true);
+		expect(el.querySelector(".email-draft-heading h3")?.textContent).toBe("New email");
+		const rows = [...el.querySelectorAll(".email-draft-row")].map((row) => row.textContent);
+		expect(rows).toEqual(["Tobob@acme.test", "SubjectMeeting moved"]);
+		expect(el.querySelector(".review-email-body")?.textContent).toBe("Tuesday 10:00 instead.");
+		// Read-only: the email itself has no fields to edit, and there is no technical fold.
+		expect(el.querySelector(".email-draft-panel :is(input, textarea)")).toBeNull();
+		expect(el.querySelector("details, .review-call")).toBeNull();
+		const buttons = [...el.querySelectorAll<HTMLButtonElement>(".email-draft-actions button")];
+		expect(buttons.map((button) => button.textContent)).toEqual(["Send email", "Don't send", "Always allow…"]);
+		buttons[0]!.click();
+		expect(answer).toHaveBeenLastCalledWith("allow_once");
+		buttons[1]!.click();
+		expect(answer).toHaveBeenLastCalledWith("deny");
+		const waiting = renderActionReviewCard(card, timestamp, undefined, { memberName: names });
+		expect(waiting.querySelector(".email-draft-status")?.textContent).toBe("Waiting for approval");
+		expect(waiting.querySelector(".review-waiting")?.textContent).toBe("Waiting for an owner or admin to approve.");
 	});
 
 	it("names a Company File deletion as people say it, never by its path", () => {
@@ -172,9 +210,7 @@ describe("the approval card", () => {
 			{ answer: vi.fn(), memberName: names },
 		);
 		expect(el.querySelector(".review-headline")?.textContent).toBe("Delete “Old offer”");
-		const visible = [...el.children].filter((child) => !child.matches(".review-foot"));
-		expect(visible.map((child) => child.textContent).join(" ")).not.toContain("work/old-offer.md");
-		expect(el.querySelector(".review-call")?.textContent).toContain("work/old-offer.md");
+		expect(el.textContent).not.toContain("work/old-offer.md");
 		expect(el.querySelector(".review-why p")?.textContent).toBe(
 			"It deletes “Old offer”, which the request did not name.",
 		);
@@ -213,6 +249,7 @@ describe("the approval card", () => {
 			{
 				...card,
 				title: "Create a Drive file",
+				tool: "google_drive_create_file",
 				target: "Q3 plan",
 				details: [
 					["name", "Q3 plan"],
@@ -228,9 +265,16 @@ describe("the approval card", () => {
 	});
 
 	it("shows markup in an action as text", () => {
+		const email = renderActionReviewCard(
+			{ ...card, target: "<img src=x onerror=alert(3)>", details: [["body", "<script>alert(4)</script>"]] },
+			timestamp,
+			undefined,
+			{ answer: vi.fn(), memberName: names },
+		);
+		expect(email.querySelector("img, script")).toBeNull();
 		const el = renderActionReviewCard(
 			{
-				...card,
+				...issue,
 				target: '<img src=x onerror="alert(1)">',
 				details: [
 					["subject", "<b>bold</b>"],

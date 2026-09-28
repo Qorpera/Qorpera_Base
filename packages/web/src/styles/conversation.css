@@ -190,10 +190,12 @@
 .review-why p { margin: 0; }
 .review-reasons { margin: 4px 0 0; padding: 0; list-style: none; color: var(--text-muted); }
 .review-reasons li + li { margin-top: 2px; }
-/* The time, then Technical details on a line of its own, so opening it moves nothing. */
-.review-foot { display: grid; justify-items: start; gap: 4px; margin-top: 12px; }
-.review-technical { width: 100%; font-size: 11px; }
-.review-technical > summary { color: var(--text-muted); cursor: pointer; }
+.review-time { margin: 12px 0 0; }
+/* An email to approve wears the thread's email card (email-draft-card.ts), read-only. */
+.review-email .review-email-body { padding: 13px 16px; color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.55; }
+.review-email .review-why { margin: 10px 2px 0; }
+.review-email .review-waiting, .review-email .review-failed { margin-inline: 2px; }
+.review-email .email-draft-actions .review-always-open { margin-left: auto; background: transparent; color: var(--text-muted); font-size: 13px; }
 .action-review-card.is-folded { display: flex; align-items: flex-start; gap: 8px; width: auto; padding: 4px 2px; border-color: transparent; background: none; }
 .review-mark { display: grid; flex: none; place-items: center; width: 18px; height: 18px; margin-top: 1px; border-radius: 50%; }
 .review-mark .icon { width: 11px; height: 11px; stroke-width: 2.4; }
