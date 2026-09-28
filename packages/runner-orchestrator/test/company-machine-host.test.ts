@@ -3,6 +3,7 @@ import { chmod, mkdir, mkdtemp, realpath, rm, utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { CodingControlBusy } from "../src/coding-executor.ts";
 import type { CodingMachineIntent } from "../src/coding-machine.ts";
 import { type LxdCompanyMachineBinding, lxdCompanyMachinePlan } from "../src/company-machine.ts";
 import { type CompanyMachineEntry, LxdCompanyMachineHost } from "../src/company-machine-host.ts";
@@ -83,9 +84,12 @@ async function fixture(pins: { helperSha256?: string; previousHelperSha256s?: st
 	const calls: { method: string; args: Record<string, unknown> }[] = [];
 	const refusals = new Map<string, string>();
 	const admissions: unknown[] = [];
+	/** Methods whose company locks stay busy past SQL's short wait. */
+	const busy = new Set<string>();
 	const control = {
 		call: vi.fn(async (method: string, args: Record<string, unknown>) => {
 			calls.push({ method, args });
+			if (busy.has(method)) throw new CodingControlBusy();
 			if (method === "qorpera_admit_executor_machines") {
 				const next = admissions.shift() ?? [];
 				if (next instanceof Error) throw next;
@@ -211,6 +215,7 @@ async function fixture(pins: { helperSha256?: string; previousHelperSha256s?: st
 		calls,
 		refusals,
 		admissions,
+		busy,
 		client,
 		host,
 		signal,
@@ -487,6 +492,15 @@ describe("company machine host", () => {
 			p_code: "COMPANY_MACHINE_HELPER_DIFFERS",
 		});
 		expect(f.methods()).not.toContain("qorpera_mark_company_machine_running");
+	});
+
+	it("tries again on the next pass when the company's locks are busy, and records no fault", async () => {
+		const f = await fixture();
+		f.busy.add("qorpera_authorize_executor_machine");
+		expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "start", state: "not-now" }]);
+		expect(f.methods()).not.toContain("qorpera_record_company_machine_error");
+		f.busy.clear();
+		expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "start", state: "done" }]);
 	});
 
 	it("treats a guest that does not answer yet as starting", async () => {
