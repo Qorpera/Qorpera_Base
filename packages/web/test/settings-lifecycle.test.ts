@@ -925,17 +925,53 @@ describe("settings session lifecycle", () => {
 		expect(f.api.getCompanyFile).toHaveBeenCalledTimes(1);
 		loading.resolve({ ...file, storageUsedBytes: 2_000_000 });
 		await draw();
-		expect(content().querySelector(".settings-usage:not(.settings-hours) strong")?.textContent).toMatch(
-			/^1\.9 MiB used of /,
+		expect(content().querySelector(".settings-storage strong")?.textContent).toMatch(/^1\.9 MiB used of /);
+		expect(content().querySelector(".settings-storage small:not(.settings-eyebrow)")?.textContent).toBe(
+			profileA.profileName,
 		);
-		expect(
-			content().querySelector(".settings-usage:not(.settings-hours) small:not(.settings-eyebrow)")?.textContent,
-		).toBe(profileA.profileName);
-		expect(content().querySelector(".settings-usage:not(.settings-hours) progress")).not.toBeNull();
+		expect(content().querySelector(".settings-storage progress")).not.toBeNull();
+		// The company's measured computer hours sit beside its storage.
+		expect(f.api.getCompanyComputerHours).toHaveBeenCalledWith(profileA.profileId);
+		expect(content().querySelector(".settings-company-hours strong")?.textContent).toBe("2 h used");
+		expect(content().querySelector(".settings-company-hours .settings-hours-kinds")?.textContent).toBe(
+			"Company machines 1 h · Agent runs 1 h",
+		);
 		// The Company tab reuses what the Plan tab loaded.
 		click(f.root, "#settings-tab-company");
 		await draw();
 		expect(f.api.getCompanyFile).toHaveBeenCalledTimes(1);
+	});
+	it("says computer hours are not measured yet while the cloud has no meter", async () => {
+		const f = await setup();
+		vi.mocked(f.api.getCompanyComputerHours).mockRejectedValueOnce(
+			new CloudRpcError("qorpera_read_company_computer_hours", { code: "PGRST202", message: "Could not find" }, 404),
+		);
+		open(f.root);
+		click(f.root, "#settings-tab-plan");
+		await draw();
+		const card = f.root.querySelector("#settings-content .settings-company-hours")!;
+		expect(card.querySelector("strong")?.textContent).toBe("Not measured yet");
+		expect(card.textContent).not.toContain("Could not find");
+		// It is not asked again on every redraw.
+		click(f.root, "#settings-tab-company");
+		click(f.root, "#settings-tab-plan");
+		await draw();
+		expect(f.api.getCompanyComputerHours).toHaveBeenCalledTimes(1);
+	});
+	it("asks for a company's computer hours once when the lookup fails, whatever the error says", async () => {
+		const f = await setup();
+		// A gateway error can arrive with an empty message.
+		vi.mocked(f.api.getCompanyComputerHours).mockRejectedValue(new Error(""));
+		open(f.root);
+		click(f.root, "#settings-tab-plan");
+		await draw();
+		await draw();
+		const card = f.root.querySelector("#settings-content .settings-company-hours")!;
+		expect(card.querySelector("strong")?.textContent).toBe("Computer hours unavailable");
+		click(f.root, "#settings-tab-company");
+		click(f.root, "#settings-tab-plan");
+		await draw();
+		expect(f.api.getCompanyComputerHours).toHaveBeenCalledTimes(1);
 	});
 	it("asks to open a company for usage and retries a failed storage lookup", async () => {
 		const fixtureState = fixture();
@@ -954,7 +990,7 @@ describe("settings session lifecycle", () => {
 		await draw();
 		expect(f.api.getCompanyFile).toHaveBeenCalledTimes(2);
 		expect(content().textContent).not.toContain("Storage information unavailable");
-		expect(content().querySelector(".settings-usage:not(.settings-hours) progress")).not.toBeNull();
+		expect(content().querySelector(".settings-storage progress")).not.toBeNull();
 		click(f.root, ".settings-close");
 		location.hash = "#/";
 		await draw();
@@ -962,7 +998,7 @@ describe("settings session lifecycle", () => {
 		click(f.root, "#settings-tab-plan");
 		await draw();
 		expect(content().textContent).toContain("Open a company to see its storage.");
-		expect(content().querySelector(".settings-usage:not(.settings-hours)")).toBeNull();
+		expect(content().querySelector(".settings-storage")).toBeNull();
 	});
 	it("shows the open company's rules in General, and asks to open a company when none is open", async () => {
 		const fixtureState = fixture();
