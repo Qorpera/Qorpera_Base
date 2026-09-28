@@ -2,7 +2,7 @@ import type { Cloud } from "./client.ts";
 import { array, boundedInteger, CloudShapeError, nonEmptyString, oneOf, record, timestamp, uuid } from "./parse.ts";
 
 /* Plans and computer hours bought through Stripe (migration
- * 20260929110000_runtime_computer_hours_payments, Edge Function
+ * 20260928248910_runtime_computer_hours_payments, Edge Function
  * computer-billing; contract section 19, 2026-09-28 amendment "computer
  * hours", item 8). Card data never passes through here: the member pays on
  * Stripe's checkout page and manages cards and invoices on Stripe's billing

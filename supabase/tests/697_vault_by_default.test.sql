@@ -1,4 +1,4 @@
--- Vault By Default, part 1 (20260929130000): the shared vault's principal lists the companies it serves and
+-- Vault By Default, part 1 (20260928248930): the shared vault's principal lists the companies it serves and
 -- the new companies it should register, and registers a new company: its authority row (the principal's
 -- origin and key id, the capability hash the broker derived) and its switch to vault sign-in. A company
 -- created before (or at) the principal's start time, a company that has a vault (a retired one too), a repeat

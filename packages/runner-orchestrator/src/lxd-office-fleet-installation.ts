@@ -28,8 +28,8 @@ export function renderOfficeFleetUnits(
 	const render = (stage: boolean) => `[Unit]
 Description=Qorpera office fleet ${stage ? "stage" : "provider"} ${instance}
 Wants=network-online.target
-Requires=qorpera-office-host-namespace.service
-After=network-online.target qorpera-office-host-namespace.service
+Requires=qorpera-node-host-namespace.service
+After=network-online.target qorpera-node-host-namespace.service
 RequiresMountsFor=${officeSystemdPath(policy.journal.mountPoint, "dependency")} ${officeSystemdPath(policy.workbench.mountPoint, "dependency")}
 ConditionPathExists=${officeSystemdPath(configPath, "dependency")}
 StartLimitIntervalSec=300

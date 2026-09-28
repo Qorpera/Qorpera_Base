@@ -212,7 +212,7 @@ begin
 end
 $$;
 
--- Usage facts outlive their job and company, keeping its id as a plain value (20260929120000).
+-- Usage facts outlive their job and company, keeping its id as a plain value (20260928248920).
 savepoint usage_outlives_job;
 delete from public.qorpera_runner_jobs where id = '50000000-0000-4000-8000-000000000070';
 do $$

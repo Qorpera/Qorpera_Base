@@ -51,6 +51,13 @@ Founders (2026-09-28, migration 20260928248100): every member with the role
   deletes instead), the last founder while others remain, and a founder while
   company setup runs for them (42501).
 - `qorpera_delete_hosted_profile`: only the last member.
+- Deleting an account (operators only; no client RPC; migration
+  20260929180000) takes the person's memberships as a leave does, with the
+  same refusals, and is also refused for the only member of a company that is
+  not being deleted. It never removes company data: conversations, messages
+  and runs keep naming the person, as they do after a leave. Closing an
+  account instead (a soft delete, an update) triggers none of this; the close
+  must make the same removals and refusals itself.
 - `qorpera_profile_team_info` capabilities add `manage_founders`, `leave` and
   `delete_company` for the caller; `leave` also tells a founder whether they
   may step down. A cloud without several founders omits
@@ -252,7 +259,8 @@ Founders (2026-09-28, migration 20260928248100): every member with the role
   `canManageCompanyRules` (owner or admin) and `rules`: every active company
   rule plus the caller's own (`id`, `scope` `company|member`, `memberUserId`,
   `when`, `outcome` `ask_first|allow_automatically`, `createdVia`
-  `settings|card|agent`, `createdByUserId`, `createdByStaffAgentId`,
+  `settings|card|agent|folder` (`folder`: a company rule from the company's
+  `rules/` files, folder-v2 companies only), `createdByUserId`, `createdByStaffAgentId`,
   `createdAt`, `updatedAt`). Any member, viewers included. A rule with
   `createdVia: agent` was added by an agent (`createdByStaffAgentId`) when the
   member asked it to: always one of the member's own Ask first rules, which the
@@ -263,9 +271,13 @@ Founders (2026-09-28, migration 20260928248100): every member with the role
   sentence, 1-280 characters after trimming. Company rules: owners and admins
   (42501 otherwise); a personal rule belongs to its author only. 54000 when
   the company's rules pass 48 KiB of text or one member's pass 16 KiB (what
-  the reviewer reads for one action). Returns the rule.
+  the reviewer reads for one action). Returns the rule. A folder-v2 company
+  keeps its company rules in `rules/` files: saving a company rule there is
+  refused with 55000; personal rules are unchanged.
 - `qorpera_archive_review_rule(p_profile_id, p_rule_id)`: removes a rule
   (again: no change). Company rules: owners and admins; personal: its author.
+  A rule that comes from a `rules/` file (`createdVia: folder`) is refused with
+  55000: delete the file instead.
 - `qorpera_answer_action_review(p_review_id, p_client_input_id, p_answer,
   p_rule_text?, p_sponsor_binding_id?, p_sponsor_version?)` answers an approval
   card (`authorization_request` whose `entry.data.schema` is
@@ -491,7 +503,7 @@ wake), so no agent runs and nothing is charged before it.
   computer hours: the company has none left").
   A client shows "Not measured yet" while the function is missing (PGRST202).
 
-- 20260929110000_runtime_computer_hours_payments:
+- 20260928248910_runtime_computer_hours_payments:
   `qorpera_list_computer_hour_offers()` → `qorpera.computer-hour-offers/v1`:
   `items` (`itemKey`, `kind` `plan` | `credits`, `name`, `priceMinor` in
   øre excluding VAT, `currency` `dkk`, `hours`: a plan's hours a month or a
@@ -569,7 +581,7 @@ machine.
 - `native-provider-login` — a member starts the provider-native login handoff
   (Codex / Claude) that runs in an isolated cloud login VM; the client only
   hands the member the link and shows status.
-- `computer-billing` (20260929110000) — computer hours payments. The web app
+- `computer-billing` (20260928248910) — computer hours payments. The web app
   calls `POST /functions/v1/computer-billing/checkout` with the member's
   bearer token and `{itemKey, profileId?}` (`profileId` for credits, which
   only a founder of that company may buy) and gets `{url}` (Stripe Checkout)
@@ -582,7 +594,8 @@ machine.
   `?checkout=done` or `?checkout=cancelled` after the hash; hours arrive with
   Stripe's webhook, not with the return.
 - `profile-invitation-email`, `company-file-verifier`, `artifact-gc-worker`,
-  `runner-control`, `runner-broker`, `runner-orchestrator` — service or
+  `runner-control`, `runner-broker`, `runner-orchestrator`,
+  `computer-hour-notices` (20260929160000, founders' hour emails) — service or
   runner authority only. Clients never call them.
 
 ## 6. Stability by Order (what a client may build now)
