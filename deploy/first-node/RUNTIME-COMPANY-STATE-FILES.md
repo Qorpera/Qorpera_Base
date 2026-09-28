@@ -323,10 +323,24 @@ closes the conversation; a restore reopens both, with the same conversation.
 | `outcome` | yes | `ask-first` (`ask_first`) or `allow` (`allow_automatically`) |
 | body | yes | how "When an agent wants to …" ends, as today's `when_text`: one line, 1–280 characters trimmed, no controls |
 
-- **Who writes:** only owners and admins write `rules/` (members' commits). A card's "Always
-  allow" writes as the answering owner or admin. Agents never write it. Personal rules stay rows.
+- **Who writes:** only owners and admins write `rules/` (members' commits; the core's
+  `company_rules` resource scope). A card's "Always allow" writes as the answering owner or admin
+  (core C3's writer; until then that path still saves a row). Agents never write it. Personal rules
+  stay rows. For folder-v2 companies Settings refuses saving a company rule and removing a rule
+  that comes from a file (55000): they change as file edits. A company rule saved as a row (a
+  card's "Always allow" until C3) can still be removed there. The web's rules list reads
+  `createdVia: folder`.
+- **Database rules:** the id never changes and belongs to this file's rule only: never a personal
+  rule, a row saved outside the folder, another company's or another file's rule. A file saved
+  before this slice is the saved version only once the index points at its path.
 - **Budget:** the company rule budget of 48 KiB (`qorpera_review_rules_assert_room`) stays a
-  database rule.
+  database rule. `decide` checks it against the rules as they are, with every rule file of the
+  same unit counted by its new text, so two concurrent saves of different files can each pass and
+  overshoot by at most one unit each: serializing them would take a company-wide lock.
+- **Index:** a new rule inserts a company row (`created_via` `folder`, the file's id); an edit
+  updates it; deleting the file archives it (review records keep citing it) and a restore brings
+  it back; a move repoints it. The row's foreign key to the company row takes it `KEY SHARE`, so a
+  rule save takes the company row at rank 2 first.
 - Never reviewed.
 
 ### `agents/<handle>/routines/<name>.md`
@@ -509,7 +523,7 @@ of the body, for readers that should not reach the storage server.
 | sections | sidebar sections and placements (+ #370's room placements) | section order, members in order | member pins and hidden |
 | group | `qorpera_company_rooms` (folder columns as the roster's, with no bound agent), room members | name, subtitle, purpose copy, members, open or closed | conversation, drafts, mentions, session model |
 | connection | new `qorpera_folder_connection_index`, one row per account keyed by the vault row's id (its own table, so a connection save never writes or locks a vault row) | path, path version, purpose copy | the vault row, secret versions, grants, audit |
-| rule | `qorpera_review_rules` (company scope) | outcome, `when_text` copy | personal rules, review records |
+| rule | `qorpera_review_rules` (company scope, folder columns as the roster's, `created_via` `folder`) | outcome, `when_text` copy | personal rules, review records |
 | routine | `qorpera_cloud_routines`, `_versions` | owner from the folder, title, trigger, timezone, ends, runs, quiet with its zone, effort, reply, status, conclusion, intent copy | schedule cursors, occurrences, retries, sponsor, `pause_reason`, `authorization_failures`, `origin` (who created it, from the first commit) |
 | todo | `qorpera_runtime_agent_todos` | owner from the folder, title, status, requester, detail copy | — |
 | worker-brief/results | `qorpera_runtime_workers` | dispatch and result copies | handles, leases, revival, completion |
@@ -688,7 +702,8 @@ claims by kind then key (F2). All nine come before paths, objects, admission and
    table. The vault's writer is core C3's; the vault's SQL cannot create file bytes, so it stages
    the text through the object gateway first, or C2's queue writes the file after the vault
    commits.
-5. **F2-4** rules (the reviewer reads the rule index).
+5. **F2-4** rules (migration 20260929190000): the reviewer reads the rule index, its own table;
+   the Settings RPCs refuse company rules for folder-v2.
 6. **F2-5** todos and worker files.
 7. **F2-6** routines, last because the scheduler, schedule positions and decisions are the
    most delicate part.
