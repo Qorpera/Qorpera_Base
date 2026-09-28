@@ -140,7 +140,9 @@ no database login and no service key; it sees a login only for one operation and
     vault login. A repeat after a lost answer finds its own login.
   - Deploy: the broker's public front must route `POST /v1/model-logins/<company>/login` and
     `POST /v1/model-logins/<company>/account-refresh` to that company's broker by path (the edge
-    function adds no query). The helper must run beside the
+    function adds no query). On node 1 (2026-09-28): `map $uri $qorpera_model_login_broker` (one line
+    per company: its broker's port, no fallback) and `location ~ ^/v1/model-logins/<uuid>/(login|account-refresh)$`
+    (POST only, no query, 64k body, `proxy_pass` without a URI). The helper must run beside the
     broker (without it the route answers 404). A helper restart ends sign-ins in flight; the member
     signs in again.
 - **Part C, usage** (migration `20260928185000`, `cloud-model-login-vault-usage.ts`): the vault reads
@@ -257,6 +259,11 @@ no database login and no service key; it sees a login only for one operation and
   fenced, and writes empty key and epoch credential sources for the unchanged host unit. The guest
   bootstrap unit no longer has a mount condition on the identity path (it would skip the bootstrap
   silently); the bootstrap requires the mount for a node login itself.
+- Deploy: the runtime front that runs reach (`QORPERA_CLOUD_SECRET_BROKER_URL`, node 1's `:10000`) must
+  route the run form `POST /v1/model-logins?company=<company>` to that company's broker by the query, as
+  it routes operations: on node 1 (2026-09-28) `map $args $qorpera_model_login_run_broker` (one line per
+  company, no fallback) and `location = /v1/model-logins` (POST only, 64k body, `proxy_pass` without a
+  URI). Without it every vault run fails at `credential-download` (step 7's second run did).
 - Deploy order: free. A database without the check answers 404, and the orchestrator, exec host and
   LXD provider then keep the node path, as before.
 - Activation: move no login into the vault until every node's orchestrator, exec host and guest
@@ -280,10 +287,26 @@ no database login and no service key; it sees a login only for one operation and
 - Each login moves by signing in again (test company first; company Qorpera after the "who pays"
   work and the founder's go), then the member's old node account is removed: the identity counts
   as in the vault only once no node login of it is active. The old path serves a login until then.
-  Removing it is by hand in Settings for now. Switching it off by itself when the vault login is the
-  same ChatGPT account (founder decision 2026-09-28) comes in a later change. It waits for the "who
-  pays" work to make routines and coding sessions follow the member's live login: a revoked
-  connection's pinned routines, coding workers and queued wakes stop today.
+  The vault switches it off by itself (founder decision 2026-09-28, migration `20260929080000`),
+  in its upkeep pass every 5 minutes:
+  - The broker records the ChatGPT account of each vault login it keeps
+    (`qorpera_model_logins_without_account`, `qorpera_record_model_login_account`: sha256 of
+    `openai-account:` + `account_id`, the digest nodes and the vault record for usage).
+  - While the company takes sign-ins in the vault, `qorpera_switch_off_replaced_node_logins` finds each
+    active node Codex connection of the same member that is older than the member's vault connection
+    and whose current login (the node capsule its latest version uses) was recorded as the same account;
+    a record of an earlier login of the connection never counts (at most 4 per pass).
+  - It moves the member's pins to the vault connection first (`qorpera_move_member_login_pins`, #450:
+    routines, coding sessions and agent work follow).
+  - Once no queued or leased job, live lease, queued wake, queued turn or queued change review names
+    the old login, it makes the same updates as the member's Disconnect (the connection, its native
+    capsules and versions, its live leases). A refused move (busy, the vault login not usable or not
+    consented), remaining work or a row held longer than 2 s waits for the next pass.
+  - Another account, another member, a Claude login, a node login newer than the vault login and a
+    company switched back to node sign-ins are never touched. Locks: rows only; the move and the old
+    connection row are taken without waiting, the rows Disconnect updates wait at most 2 s.
+  - A node login whose account no node has read yet is not matched; the member can still remove it in
+    Settings.
 - After every active login has run from the vault for a week, retire in separate changes: the home
   rule in placement and claim, exec-host identity devices and inventory `identityVolumes`, the login
   and refresh machines for Codex, login key backups and recovery, then the volumes (renamed
