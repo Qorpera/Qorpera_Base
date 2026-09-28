@@ -111,10 +111,11 @@ describe("computer hour notices", () => {
 	it("sends each notice once, records failures for retry or for good, and leaves a lost completion leased", async () => {
 		const jobs = jobsOf([
 			wire("running_low", low, { noticeId: "71300000-0000-4000-8000-0000000000b1" }),
+			wire("running_low", low, { noticeId: "71300000-0000-4000-8000-0000000000b5" }),
 			wire("running_low", low, { noticeId: "71300000-0000-4000-8000-0000000000b2" }),
 			wire("running_low", low, { noticeId: "71300000-0000-4000-8000-0000000000b3" }),
+			wire("running_low", low, { noticeId: "71300000-0000-4000-8000-0000000000b6" }),
 			wire("running_low", low, { noticeId: "71300000-0000-4000-8000-0000000000b4" }),
-			wire("running_low", low, { noticeId: "71300000-0000-4000-8000-0000000000b5" }),
 		]);
 		const keys: string[] = [];
 		const done: string[] = [];
@@ -143,8 +144,9 @@ describe("computer hour notices", () => {
 				},
 			},
 		);
-		assert.deepEqual(result, { claimed: 5, delivered: 1, retrying: 1, failed: 1, completionPending: 2 });
-		assert.deepEqual(done, ["b1:re_b1"]);
+		// The unrecorded failure (b5) comes early: the rest of the batch still goes.
+		assert.deepEqual(result, { claimed: 6, delivered: 2, retrying: 1, failed: 1, completionPending: 2 });
+		assert.deepEqual(done, ["b1:re_b1", "b6:re_b6"]);
 		assert.deepEqual(failed, [
 			["b2", "Resend 503", true],
 			["b3", "Invalid recipient", false],

@@ -158,9 +158,9 @@ select pg_temp.wake_assert(user_id = '71300000-0000-4000-8000-000000000002' and 
 	and details -> 'companies' = '[{"companyName":"Second company","seconds":3600}]'::jsonb
 	and (details ->> 'grantedSeconds')::bigint = 74 * 3600, 'The summary: ' || details::text)
 from public.qorpera_computer_hour_notices where kind = 'monthly_summary' and status = 'pending';
-select pg_temp.wake_assert(status = 'cancelled' and last_error = 'The plan was not used',
-	'An unused plan period is marked done, without an email')
-from public.qorpera_computer_hour_notices where kind = 'monthly_summary' and occasion = 'sub_T3:1000';
+select pg_temp.wake_assert((select status || ':' || last_error from public.qorpera_computer_hour_notices
+	where kind = 'monthly_summary' and occasion = 'sub_T3:1000') = 'cancelled:The plan was not used',
+	'An unused plan period is marked done, without an email');
 -- A period that ended moments ago waits for the last meter pass.
 insert into public.qorpera_computer_hour_sources (kind, user_id, granted_seconds, period_start, period_end, reference, dry_run)
 values ('plan_period', '30000000-0000-4000-8000-000000000001', 74 * 3600, clock_timestamp() - interval '30 days',

@@ -13,9 +13,9 @@
 -- * "Out of hours": once per time the company runs out (it starts to owe time), to every founder.
 -- * Both wait ten minutes before they are sent and are dropped if hours arrived meanwhile (a plan
 --   renewal recorded moments after the meter charged, say; for "out of hours", any hours arriving,
---   since running out again is a new notice), if "running low" was overtaken by running out, or if
---   the recipient is no longer a founder. A dropped "running low" frees its month, so the company can
---   be told if it runs low again.
+--   since running out again is a new notice), and "running low" also once the company has run out
+--   or is complimentary. A dropped "running low" frees its month, so the company can be told if it
+--   runs low again. A notice whose recipient is no longer a founder, or has no address, is failed.
 -- * A monthly summary: when a founder's plan period ended (ten minutes ago or more, so the last
 --   meter pass has committed), one email to that founder listing each company's use of it; a period
 --   nobody used is marked done without an email.
@@ -303,6 +303,9 @@ begin
 		and (open_notice.status in ('pending', 'retrying')
 			or (open_notice.status = 'delivering' and open_notice.lease_expires_at <= v_now))
 		and open_notice.kind = 'running_low'
+		-- Again on the row being updated, so a notice another claim just leased is left alone.
+		and (notice.status in ('pending', 'retrying') or (notice.status = 'delivering' and notice.lease_expires_at <= v_now))
+		and notice.kind = 'running_low'
 		and (hours.left_seconds is null or owing.id is not null
 			or (hours.left_seconds >= 3600 and hours.left_seconds * 5 > hours.hours_seconds));
 	update public.qorpera_computer_hour_notices notice
