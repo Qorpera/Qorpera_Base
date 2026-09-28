@@ -28,12 +28,13 @@ import {
 	needsConversationTimestamp,
 	parseConversationTimestamp,
 } from "../../ui/conversation-timestamps.ts";
-import { fmtTime, h, icon, notice, replace } from "../../ui/dom.ts";
+import { fmtTime, h, icon, notice, personAvatar, replace } from "../../ui/dom.ts";
 import { groupChatAvatar, isGroupChat } from "../../ui/group-chat.ts";
 import { renderInteractionCard } from "../../ui/interaction-card.ts";
 import { matchesKey } from "../../ui/keys.ts";
 import { markdownBubbles } from "../../ui/markdown.ts";
-import { t } from "../../ui/preferences.ts";
+import { findMentions, type MentionTarget, matchTargets, mentionParts, mentionQuery } from "../../ui/mentions.ts";
+import { presentationLocale, t } from "../../ui/preferences.ts";
 import { quietScroll } from "../../ui/quiet-scroll.ts";
 import { ReceivedAttachments } from "../../ui/received-attachments.ts";
 import { runFailureCard, runFailureInterrupted, runFailureReason } from "../../ui/run-failure.ts";
@@ -48,6 +49,7 @@ import { GroupDetails } from "./group-details.ts";
 import { PairTranscriptView } from "./pair-transcript.ts";
 import { SessionExecutionView } from "./session-execution.ts";
 import { SessionRunView } from "./session-run.ts";
+import { SharedDrafts } from "./shared-drafts.ts";
 
 /* How often the thread re-reads its coding sessions while one is still going: the
  * header's figures follow them. Nothing is read once they all settled. */
@@ -86,6 +88,13 @@ export class ConversationView {
 	/** The messages' placeholder, one per load, so the log does not read it out again on each redraw. */
 	#messagesPlaceholder: HTMLElement | undefined;
 	readonly #composerShell: HTMLElement;
+	/** Other members' unsent messages above the composer, and who writes in this member's own. */
+	readonly #sharedDrafts: SharedDrafts;
+	/** Names to mention, shown while "@" and the start of a name are typed. */
+	readonly #mentionPicker: HTMLElement;
+	#mention: { start: number; end: number; options: MentionTarget[]; active: number } | undefined;
+	/** In a group chat, which agents will answer the message being written. */
+	readonly #mentionNote = h("p", { class: "composer-mention-note", role: "status", hidden: true });
 	readonly #attachments: AttachmentTray;
 	readonly #more: HTMLButtonElement;
 	readonly #menu: HTMLElement;
@@ -96,6 +105,9 @@ export class ConversationView {
 	readonly #identity: HTMLButtonElement;
 	/** The coding sessions still going, beside the agent in the header. */
 	readonly #codingSlots = h("div", { class: "thread-coding-sessions" });
+	/** The other members who have this conversation open right now. */
+	readonly #here = h("div", { class: "thread-presence", role: "group", hidden: true });
+	#hereKey = "";
 	readonly #codingSlotViews = new Map<string, CodingSessionSlot>();
 	#codingPoll: ReturnType<typeof setTimeout> | undefined;
 	/** A read is on its way; the next one is scheduled when it lands, never beside it. */
@@ -190,6 +202,7 @@ export class ConversationView {
 			placeholder: t("Message…"),
 			"aria-label": t("Message"),
 			onkeydown: (event: KeyboardEvent) => {
+				if (this.#mentionKey(event)) return;
 				if (matchesKey(event, "accept") && !event.shiftKey) {
 					event.preventDefault();
 					this.#submit();
@@ -198,7 +211,22 @@ export class ConversationView {
 			oninput: () => {
 				this.#autosize();
 				company.conversation(sessionId).set({ draft: this.#composer.value });
+				this.#sharedDrafts.input();
+				this.#updateMention();
 			},
+		});
+		// Moving the caret with the keys or a click opens or closes the names as well.
+		this.#composer.addEventListener("keyup", (event) => {
+			if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) this.#updateMention();
+		});
+		this.#composer.addEventListener("click", () => this.#updateMention());
+		this.#composer.addEventListener("blur", () => this.#closeMention());
+		this.#mentionPicker = h("div", {
+			class: "mention-picker",
+			role: "listbox",
+			id: `mention-picker-${sessionId}`,
+			hidden: true,
+			"aria-label": t("People and agents to mention"),
 		});
 		this.#send = h(
 			"button",
@@ -313,6 +341,7 @@ export class ConversationView {
 			this.#send,
 			fileInput,
 			this.#menu,
+			this.#mentionPicker,
 		);
 		this.#composerShell.addEventListener("paste", (event) => {
 			if (this.#composer.disabled) return;
@@ -334,7 +363,15 @@ export class ConversationView {
 			this.#composerShell.classList.remove("is-dragging");
 			if (!this.#composer.disabled && !this.#noImages) this.#attachments.add([...(event.dataTransfer?.files ?? [])]);
 		});
-		this.#composerWrap = h("footer", { class: "composer" }, this.#composerShell, this.#attachments.status);
+		this.#sharedDrafts = new SharedDrafts(company, sessionId, this.#composer, () => this.#autosize());
+		this.#composerWrap = h(
+			"footer",
+			{ class: "composer" },
+			this.#sharedDrafts.el,
+			this.#composerShell,
+			this.#mentionNote,
+			this.#attachments.status,
+		);
 		this.#identity = h("button", {
 			type: "button",
 			class: "thread-identity",
@@ -368,7 +405,7 @@ export class ConversationView {
 			},
 			icon("navigation"),
 		);
-		this.#header.append(this.#navigation, this.#identity, this.#codingSlots, this.#computer);
+		this.#header.append(this.#navigation, this.#identity, this.#codingSlots, this.#here, this.#computer);
 		// An open title pill lies over the figures after it; over one of them it steps aside,
 		// so that figure opens and a click there opens its own session.
 		const yieldTo = (event: PointerEvent) => {
@@ -469,6 +506,7 @@ export class ConversationView {
 		else this.#panel?.detach();
 		this.#panel = undefined;
 		this.#attachments.dispose();
+		this.#sharedDrafts.dispose();
 		for (const attachments of this.#receivedAttachments) attachments.dispose();
 		this.#closeCodingSession();
 		clearTimeout(this.#codingPoll);
@@ -488,7 +526,7 @@ export class ConversationView {
 		return isGroupChat(session);
 	}
 
-	/** A group chat on a cloud that keeps group chats text-only (before 20260927170000).
+	/** A group chat on a cloud that keeps group chats text-only (before 20260928030000).
 	 * While that is not known yet, images may be chosen; sending checks. */
 	get #noImages(): boolean {
 		return this.#isRoom && this.#company.groupChatImages() === false;
@@ -702,6 +740,177 @@ export class ConversationView {
 		this.#send.disabled = stop ? this.#run?.stopping === true : this.#submitting || this.#cannotSend;
 	}
 
+	/** Names that match the "@" being typed at the caret, shown above the composer. */
+	#updateMention(): void {
+		const composer = this.#composer;
+		const targets =
+			composer.disabled || composer.selectionStart !== composer.selectionEnd
+				? []
+				: this.#company.mentionTargets(this.#sessionId);
+		const query = targets.length ? mentionQuery(composer.value, composer.selectionStart) : undefined;
+		const options = query ? matchTargets(query.query, targets) : [];
+		this.#renderMentionNote();
+		if (!query || !options.length) {
+			this.#closeMention();
+			return;
+		}
+		const chosen = this.#mention?.options[this.#mention.active]?.id;
+		this.#mention = {
+			start: query.start,
+			end: composer.selectionStart,
+			options,
+			active: Math.max(
+				0,
+				options.findIndex((option) => option.id === chosen),
+			),
+		};
+		this.#renderMention();
+	}
+
+	#renderMention(): void {
+		const mention = this.#mention;
+		if (!mention) return;
+		const optionId = (index: number) => `${this.#mentionPicker.id}-${index}`;
+		replace(
+			this.#mentionPicker,
+			...mention.options.map((option, index) =>
+				h(
+					"div",
+					{
+						class: "mention-option",
+						role: "option",
+						id: optionId(index),
+						"aria-selected": String(index === mention.active),
+						// The composer keeps the keyboard: a click chooses without taking focus.
+						onmousedown: (event: MouseEvent) => {
+							event.preventDefault();
+							this.#chooseMention(index);
+						},
+						onmousemove: () => {
+							if (this.#mention && this.#mention.active !== index) {
+								this.#mention.active = index;
+								this.#renderMention();
+							}
+						},
+					},
+					option.kind === "agent"
+						? agentFigure(this.#company.staffById(option.id), option.name, { size: 26 })
+						: personAvatar(option.name, option.id),
+					h("span", { class: "mention-name" }, option.name),
+					h("small", null, option.kind === "agent" ? t("Agent") : t("Member")),
+				),
+			),
+		);
+		this.#mentionPicker.hidden = false;
+		this.#composer.setAttribute("aria-autocomplete", "list");
+		this.#composer.setAttribute("aria-controls", this.#mentionPicker.id);
+		this.#composer.setAttribute("aria-activedescendant", optionId(mention.active));
+	}
+
+	#closeMention(): void {
+		if (!this.#mention && this.#mentionPicker.hidden) return;
+		this.#mention = undefined;
+		this.#mentionPicker.hidden = true;
+		replace(this.#mentionPicker);
+		for (const name of ["aria-activedescendant", "aria-controls", "aria-autocomplete"])
+			this.#composer.removeAttribute(name);
+	}
+
+	/** Keys while names are shown: arrows choose, Enter or Tab puts the name in, Escape closes. */
+	#mentionKey(event: KeyboardEvent): boolean {
+		const mention = this.#mention;
+		if (!mention || event.isComposing) return false;
+		const step = event.key === "ArrowDown" ? 1 : event.key === "ArrowUp" ? -1 : 0;
+		if (step) {
+			event.preventDefault();
+			mention.active = (mention.active + step + mention.options.length) % mention.options.length;
+			this.#renderMention();
+			return true;
+		}
+		if ((matchesKey(event, "accept") || event.key === "Tab") && !event.shiftKey) {
+			event.preventDefault();
+			this.#chooseMention(mention.active);
+			return true;
+		}
+		if (matchesKey(event, "dismiss")) {
+			event.preventDefault();
+			event.stopPropagation();
+			this.#closeMention();
+			return true;
+		}
+		return false;
+	}
+
+	#chooseMention(index: number): void {
+		const option = this.#mention?.options[index];
+		if (!option) return;
+		const value = this.#composer.value;
+		// The text may have changed under the list (a teammate's words): read where the name starts now.
+		const end = this.#composer.selectionStart;
+		const query = this.#composer.selectionEnd === end ? mentionQuery(value, end) : undefined;
+		if (!query) {
+			this.#closeMention();
+			return;
+		}
+		const name = `@${option.name} `;
+		this.#composer.value = value.slice(0, query.start) + name + value.slice(end);
+		const caret = query.start + name.length;
+		this.#composer.focus();
+		this.#composer.setSelectionRange(caret, caret);
+		this.#closeMention();
+		this.#composer.dispatchEvent(new Event("input", { bubbles: true }));
+	}
+
+	/** In a group chat the agents a message names answer and the others stay quiet: say so as it is written. */
+	#renderMentionNote(): void {
+		const targets = this.#company.mentionTargets(this.#sessionId);
+		const named =
+			targets.filter((target) => target.kind === "agent").length > 1
+				? [
+						...new Map(
+							findMentions(this.#composer.value, targets)
+								.filter((mention) => mention.target.kind === "agent")
+								.map((mention) => [mention.target.id, mention.target.name]),
+						).values(),
+					]
+				: [];
+		const text = named.length
+			? t("Only {names} will answer", {
+					names: new Intl.ListFormat(presentationLocale(), { style: "long", type: "conjunction" }).format(named),
+				})
+			: "";
+		this.#mentionNote.hidden = !text;
+		if (this.#mentionNote.textContent !== text) this.#mentionNote.textContent = text;
+	}
+
+	/** Every name a message here may mention, this member's own included. */
+	#shownMentionTargets(): MentionTarget[] {
+		const me = this.#company.userId;
+		const own = this.#company.store.get().team?.members.find((member) => member.userId === me)?.displayName;
+		return [
+			...this.#company.mentionTargets(this.#sessionId),
+			...(own ? [{ kind: "member" as const, id: me, name: own }] : []),
+		];
+	}
+
+	/** A member's message with its mentions set apart, this member's own name most of all. */
+	#withMentions(text: string): (string | HTMLElement)[] {
+		const me = this.#company.userId;
+		return mentionParts(text, this.#shownMentionTargets()).map((part) =>
+			typeof part === "string"
+				? part
+				: h(
+						"span",
+						{
+							class: part.targets.some((target) => target.kind === "member" && target.id === me)
+								? "mention mention-me"
+								: "mention",
+						},
+						text.slice(part.start, part.end),
+					),
+		);
+	}
+
 	#submit(): void {
 		const text = this.#composer.value;
 		if (
@@ -809,6 +1018,7 @@ export class ConversationView {
 		this.#agentState = room ? "idle" : this.#company.agentState(session?.staffAgentId);
 		this.#working = this.#agentState === "working" || this.#agentState === "writing";
 		this.#renderHeader(session, agent);
+		this.#renderHere();
 		this.#renderCodingSlots(conversation.codingSessions ?? [], agent);
 		this.#renderMessages(
 			conversation,
@@ -845,6 +1055,12 @@ export class ConversationView {
 			this.#composer.value = conversation.draft ?? "";
 			this.#autosize();
 		}
+		if (this.#composer.disabled) this.#closeMention();
+		// A teammate's words can land in this composer (shared drafts) while names are shown:
+		// where the name being typed now starts is read again, or the names close.
+		else if (this.#mention && document.activeElement === this.#composer) this.#updateMention();
+		this.#renderMentionNote();
+		this.#sharedDrafts.update();
 	}
 
 	#renderHeader(session: HostedSession | undefined, agent: HostedStaffAgent | undefined): void {
@@ -900,6 +1116,46 @@ export class ConversationView {
 		if (!this.#panel && agent) {
 			const open = this.#panels.get(agent.id);
 			if (open && !open.attached) this.#showPanel(agent);
+		}
+	}
+
+	/** Faces of the other members looking at this conversation now, newest arrival last. */
+	#renderHere(): void {
+		const here = this.#company.presentIn(this.#sessionId);
+		const key = JSON.stringify(here);
+		if (key === this.#hereKey) return;
+		this.#hereKey = key;
+		this.#here.hidden = !here.length;
+		if (!here.length) {
+			replace(this.#here);
+			return;
+		}
+		const names = new Intl.ListFormat(presentationLocale(), { style: "long", type: "conjunction" }).format(
+			here.map((member) => member.name),
+		);
+		const label = here.length === 1 ? t("{name} is here", { name: names }) : t("{names} are here", { names });
+		this.#here.setAttribute("aria-label", label);
+		this.#here.title = label;
+		// Faces already shown stay put (a renamed member's is drawn anew); a new one grows in.
+		const kept = new Map(
+			[...this.#here.querySelectorAll<HTMLElement>(".person-avatar[data-user]")].map((face) => [
+				`${face.dataset.user}:${face.dataset.name}`,
+				face,
+			]),
+		);
+		const faces = here.slice(0, 3).map((member) => {
+			const face = kept.get(`${member.userId}:${member.name}`) ?? personAvatar(member.name, member.userId);
+			face.dataset.user = member.userId;
+			face.dataset.name = member.name;
+			return face;
+		});
+		const desired: Element[] = [...faces];
+		if (here.length > 3) desired.push(h("span", { class: "thread-presence-more" }, `+${here.length - 3}`));
+		for (const child of [...this.#here.children]) if (!desired.includes(child)) child.remove();
+		let cursor = this.#here.firstElementChild;
+		for (const node of desired) {
+			if (node !== cursor) this.#here.insertBefore(node, cursor);
+			cursor = node.nextElementSibling;
 		}
 	}
 
@@ -980,6 +1236,7 @@ export class ConversationView {
 		);
 		const key = JSON.stringify([
 			items,
+			this.#shownMentionTargets(),
 			// Only what the line shows: the header's poll changes the rest every few seconds.
 			codingSessions.map((coding) => [coding.workerId, coding.harness, coding.title, coding.createdAt]),
 			agentName,
@@ -1058,7 +1315,7 @@ export class ConversationView {
 					item.kind === "agent"
 						? markdownBubbles(item.text)
 						: item.text || !item.attachmentCount
-							? [h("div", { class: "text" }, item.text || t("(empty)"))]
+							? [h("div", { class: "text" }, ...(item.text ? this.#withMentions(item.text) : [t("(empty)")]))]
 							: [];
 				nodes.push(
 					h(
@@ -1154,7 +1411,6 @@ export class ConversationView {
 				nodes.push(
 					renderActionReviewCard(
 						review,
-						item.createdAt,
 						decisions.get(item.id.toLowerCase())?.body ??
 							(given
 								? { decision: given.outcome, answer: given.answer, answeredBy: given.answeredBy ?? null }

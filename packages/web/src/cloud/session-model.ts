@@ -164,7 +164,7 @@ export function createWebSessionModel(
 							},
 							response.status,
 						);
-					// A group chat with no model chosen reports none: each agent runs its own (20260927170000).
+					// A group chat with no model chosen reports none: each agent runs its own (20260928030000).
 					const model = result.model_id;
 					if (
 						result.session_id !== sessionId ||

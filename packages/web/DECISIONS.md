@@ -405,3 +405,12 @@ stacks and the page alone scrolls.
 Pause button beside the switch, and a delete button: the cloud has no member
 delete for a routine (`CloudRoutineClient.save` says so), so trash waits for
 that call.
+
+## 2026-09-27 — Rules live in Settings → General
+
+**Decision (Jonas).** The rules leave their own tab for Settings → General,
+simplified to Grok Bot's Auto-review rules form (without its "Auto-review
+Rules" title and hint) plus Qorpera's "Applies to:" choice, and one table of
+rules with edit and remove icons. The rules are the company Settings show
+(the one whose page is open, or the account's only company); with none,
+General says "Open a company to see its rules." in their place.

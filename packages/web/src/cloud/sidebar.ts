@@ -4,7 +4,7 @@ import { UUID_PATTERN } from "./parse.ts";
  * member and changed by agents too; pins and hidden agents are this member's own.
  * qorpera_read_company_sidebar answers the member's whole sidebar and every change
  * through qorpera_manage_company_sidebar answers it again.
- * Since 20260927170000 group chats are placed, pinned and hidden like agents, named by
+ * Since 20260928030000 group chats are placed, pinned and hidden like agents, named by
  * their room id; agents and group chats share one order in each section. */
 
 export interface SidebarSection {

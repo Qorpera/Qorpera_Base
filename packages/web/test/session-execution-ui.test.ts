@@ -473,7 +473,7 @@ describe("conversation execution account", () => {
 
 	it("takes picked, pasted and dropped images in group chats once the cloud does", async () => {
 		const f = setup(true);
-		// The cloud that places group chats in the sidebar also takes their images (20260927170000).
+		// The cloud that places group chats in the sidebar also takes their images (20260928030000).
 		f.company.store.set({ sidebar: { sections: [], placements: {}, pinned: [], hidden: [], groupChats: true } });
 		await settle();
 		const image = new File(["image"], "local.png", { type: "image/png" });
