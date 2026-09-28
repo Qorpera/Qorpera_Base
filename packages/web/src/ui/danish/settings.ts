@@ -143,6 +143,9 @@ export const SETTINGS: Record<string, string> = {
 	"Nobody here by that address. Send {email} a friend request.":
 		"Ingen her med den adresse. Send {email} en venneanmodning.",
 	"Nobody here by that name.": "Ingen her med det navn.",
+	"No Qorpera account uses {email}.": "Ingen Qorpera-konto bruger {email}.",
+	"That is your own address.": "Det er din egen adresse.",
+	"Looking up {email}": "Slår {email} op",
 	"No friends yet. Add someone by their Qorpera email address.":
 		"Ingen venner endnu. Tilføj nogen med deres Qorpera-e-mailadresse.",
 	"Invite friends into your companies. Invitations to join other companies show up here too.":
