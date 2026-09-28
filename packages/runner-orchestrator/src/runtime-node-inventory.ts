@@ -40,6 +40,18 @@ export interface RuntimeNodeInfrastructure {
 	 * identities whose login machine this node reserved. */
 	identityVolumes?: ExecutionHostIdentityVolumes;
 }
+/** A declared space for image build machines (a builder and its verifier).
+ * Every instance in `project` is a build machine: a virtual machine with
+ * explicit limits, its root disk and network only, and no Qorpera marker but
+ * the builder's own. Together they may use at most the declared CPU and
+ * memory, which the policy always counts against the node's headroom whether
+ * a build runs or not. So a build never makes the node unavailable, and
+ * nothing else can hide in the build project. */
+export interface RuntimeNodeBuildSpace {
+	project: string;
+	cpuMillis: number;
+	memoryBytes: number;
+}
 export interface RuntimeNodeInventoryPolicy {
 	schema: "qorpera.runtime-node-inventory-policy/v1";
 	nodeId: string;
@@ -55,9 +67,14 @@ export interface RuntimeNodeInventoryPolicy {
 	operatingCpuMillis: number;
 	operatingMemoryBytes: number;
 	infrastructure: RuntimeNodeInfrastructure[];
+	buildSpace?: RuntimeNodeBuildSpace;
 }
 export function parseRuntimeNodeInventoryPolicy(value: unknown): RuntimeNodeInventoryPolicy {
-	const p = record(value, "schema,nodeId,host,operatingCpuMillis,operatingMemoryBytes,infrastructure");
+	const building = !!value && typeof value === "object" && Object.hasOwn(value, "buildSpace");
+	const p = record(
+		value,
+		`schema,nodeId,host,operatingCpuMillis,operatingMemoryBytes,infrastructure${building ? ",buildSpace" : ""}`,
+	);
 	const h = record(
 		p.host,
 		"machineIdSha256,socketPath,socketGid,certificateSha256,serverName,serverVersion,architecture",
@@ -94,9 +111,19 @@ export function parseRuntimeNodeInventoryPolicy(value: unknown): RuntimeNodeInve
 			...(identityVolumes ? { identityVolumes } : {}),
 		};
 	});
+	let buildSpace: RuntimeNodeBuildSpace | undefined;
+	if (building) {
+		const b = record(p.buildSpace, "project,cpuMillis,memoryBytes");
+		buildSpace = {
+			project: text(b.project, NAME),
+			cpuMillis: integer(b.cpuMillis, MAX_CPU),
+			memoryBytes: integer(b.memoryBytes, MAX_MEMORY),
+		};
+	}
 	if (
 		new Set(infrastructure.map((i) => JSON.stringify([i.project, i.name]))).size !== infrastructure.length ||
-		new Set(infrastructure.map((i) => i.physicalId)).size !== infrastructure.length
+		new Set(infrastructure.map((i) => i.physicalId)).size !== infrastructure.length ||
+		(buildSpace && infrastructure.some((i) => i.project === buildSpace.project))
 	)
 		throw new Error("INVALID_NODE_INVENTORY_POLICY");
 	return {
@@ -114,6 +141,7 @@ export function parseRuntimeNodeInventoryPolicy(value: unknown): RuntimeNodeInve
 		operatingCpuMillis: integer(p.operatingCpuMillis, MAX_CPU),
 		operatingMemoryBytes: integer(p.operatingMemoryBytes, MAX_MEMORY),
 		infrastructure,
+		...(buildSpace ? { buildSpace } : {}),
 	};
 }
 export interface RuntimeNodeInventoryAllocation {
@@ -201,8 +229,13 @@ export interface RuntimeNodeInventoryEntry {
 	cpuMillis: number | null;
 	memoryBytes: number | null;
 	allocation: RuntimeNodeInventoryAllocation | null;
-	category: "managed" | "infrastructure" | "unmanaged";
-	reason: "UNREGISTERED_INSTANCE" | "INSTANCE_AUTHORITY_DIFFERS" | "INSTANCE_STATE_UNAVAILABLE" | null;
+	category: "managed" | "infrastructure" | "build" | "unmanaged";
+	reason:
+		| "UNREGISTERED_INSTANCE"
+		| "INSTANCE_AUTHORITY_DIFFERS"
+		| "INSTANCE_STATE_UNAVAILABLE"
+		| "BUILD_SPACE_EXCEEDED"
+		| null;
 	/** Only on an infrastructure entry whose policy declares identityVolumes:
 	 * the identities of its identity devices, sorted. */
 	identities?: string[];
@@ -279,6 +312,33 @@ export function runtimeNodeInstanceConfigurationSha256(
 	identityVolumes?: ExecutionHostIdentityVolumes,
 ): string {
 	return runtimeNodeInstanceConfiguration(i, identityVolumes).configurationSha256;
+}
+const BUILD_MARKERS = new Set(["user.qorpera.image_builder", "user.qorpera.purpose"]);
+/** A build machine as the image lane makes one: a virtual machine whose only
+ * devices are its root disk from a storage pool and network interfaces, with
+ * no raw hypervisor settings and no Qorpera marker but the builder's own. It
+ * can mount no host path or volume, so no company, identity or login disk. */
+function buildMachine(i: LxdHostInventoryInstance): boolean {
+	if (i.type !== "virtual-machine") return false;
+	for (const config of [i.config, i.expandedConfig])
+		for (const [key, value] of Object.entries(config)) {
+			if (key.startsWith("raw.")) return false;
+			if (key.startsWith("user.qorpera.") && !BUILD_MARKERS.has(key)) return false;
+			if (key === "user.qorpera.image_builder" && value !== "true") return false;
+		}
+	for (const devices of [i.devices, i.expandedDevices])
+		for (const device of Object.values(devices)) {
+			if (device.type === "nic") continue;
+			if (
+				device.type !== "disk" ||
+				device.path !== "/" ||
+				typeof device.pool !== "string" ||
+				device.source !== undefined ||
+				Object.keys(device).some((k) => !["type", "path", "pool", "size", "size.state"].includes(k))
+			)
+				return false;
+		}
+	return true;
 }
 function state(i: LxdHostInventoryInstance): RuntimeNodePhysicalState {
 	const states: Record<number, [string, RuntimeNodePhysicalState]> = {
@@ -375,14 +435,22 @@ export function reconcileRuntimeNodeInventory(inventory: LxdHostInventory, conte
 				: null;
 		if (physicalId && physical.has(physicalId)) throw new Error("NODE_INVENTORY_DUPLICATE_INSTANCE");
 		if (physicalId) physical.add(physicalId);
-		const a = allocation(i, c),
-			infra = a ? undefined : p.infrastructure.find((v) => v.project === i.project && v.name === i.name),
+		const build = p.buildSpace?.project === i.project,
+			a = build ? null : allocation(i, c),
+			infra = a || build ? undefined : p.infrastructure.find((v) => v.project === i.project && v.name === i.name),
 			{ configurationSha256, identities } = runtimeNodeInstanceConfiguration(i, infra?.identityVolumes),
 			resources = cost(i),
 			s = state(i);
 		let category: RuntimeNodeInventoryEntry["category"] = "unmanaged",
 			reason: RuntimeNodeInventoryEntry["reason"] = "UNREGISTERED_INSTANCE";
-		if (a) {
+		if (build) {
+			// Build machines never stand for an allocation or infrastructure entry.
+			category = "build";
+			reason =
+				physicalId && resources.cpuMillis !== null && resources.memoryBytes !== null && buildMachine(i)
+					? null
+					: "INSTANCE_AUTHORITY_DIFFERS";
+		} else if (a) {
 			if (managed.has(a.allocationId)) throw new Error("NODE_INVENTORY_DUPLICATE_ALLOCATION");
 			managed.add(a.allocationId);
 			category = "managed";
@@ -428,9 +496,23 @@ export function reconcileRuntimeNodeInventory(inventory: LxdHostInventory, conte
 			...(identities ? { identities } : {}),
 		};
 	});
+	// Build machines share one declared space, stopped ones included.
+	const builds = entries.filter((e) => e.category === "build");
+	if (
+		p.buildSpace &&
+		(builds.reduce((sum, e) => sum + (e.cpuMillis ?? 0), 0) > p.buildSpace.cpuMillis ||
+			builds.reduce((sum, e) => sum + (e.memoryBytes ?? 0), 0) > p.buildSpace.memoryBytes)
+	)
+		for (const e of builds) if (e.reason === null) e.reason = "BUILD_SPACE_EXCEEDED";
 	const headroomValid =
-		p.operatingCpuMillis + p.infrastructure.reduce((sum, i) => sum + i.cpuMillis, 0) <= c.headroomCpuMillis &&
-		p.operatingMemoryBytes + p.infrastructure.reduce((sum, i) => sum + i.memoryBytes, 0) <= c.headroomMemoryBytes;
+		p.operatingCpuMillis +
+			p.infrastructure.reduce((sum, i) => sum + i.cpuMillis, 0) +
+			(p.buildSpace?.cpuMillis ?? 0) <=
+			c.headroomCpuMillis &&
+		p.operatingMemoryBytes +
+			p.infrastructure.reduce((sum, i) => sum + i.memoryBytes, 0) +
+			(p.buildSpace?.memoryBytes ?? 0) <=
+			c.headroomMemoryBytes;
 	return {
 		state: headroomValid && entries.every((i) => i.reason === null) ? ("ready" as const) : ("unavailable" as const),
 		entries,

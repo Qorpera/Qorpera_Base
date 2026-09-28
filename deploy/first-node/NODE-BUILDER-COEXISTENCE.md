@@ -1,5 +1,42 @@
 # Image builders alongside ordinary computer wakes
 
+## Build space (2026-09-28, migration `20260928180500`)
+
+This is the way to run image builds on a serving node. A node's inventory policy may declare
+`buildSpace: {"project": "<project>", "cpuMillis": N, "memoryBytes": M}`:
+
+- **The space is always reserved.** Operating plus infrastructure plus the build space must fit
+  headroom, whether a build runs or not. No infrastructure entry may use the build project.
+- **What counts as a build machine.** The observer reports every instance in the build project as
+  category `build`. Such an instance is accepted only if it is a virtual machine with explicit
+  `limits.cpu`/`limits.memory` and a physical UUID. Its only devices may be a root disk from a
+  storage pool (`type`, `path=/`, `pool`, optional `size`/`size.state`, no `source`) and `nic`
+  devices. It may have no `raw.*` settings and no `user.qorpera.*` key except
+  `user.qorpera.image_builder=true` and `user.qorpera.purpose`. Anything else is
+  `INSTANCE_AUTHORITY_DIFFERS`.
+- **Size limit.** Stopped build machines count too. Their total CPU and memory must fit the
+  space, or every build entry reports `BUILD_SPACE_EXCEEDED`.
+- **What the registry checks.** It checks the same again: `build` entries only in the declared
+  project, never with an allocation, the sum within the space, and no unclassified instance in
+  the build project.
+- **Everything else stays exact.** A builder outside the build project is still an unregistered
+  instance.
+
+Rollout order, one node at a time:
+
+1. Apply the migration. Existing policies and observers are unaffected.
+2. Install the observer build that knows `buildSpace`. Until then, a policy that declares one
+   makes the old observer refuse the policy, so the node goes unavailable.
+3. Replace the node's inventory policy with the same policy plus `buildSpace`
+   (`qorpera_replace_runtime_node_inventory`). Write the same policy to the observer
+   configuration and restart the observer. Headroom must already cover the space.
+4. Create the LXD project (sharing the node's image store, storage pool and network as the lane
+   needs). Point the image lane's builder and verifier at that project with explicit limits.
+
+The procedure below, enrolling each builder exactly, remains for any other host VM.
+
+## Exact builder enrollment (before build spaces)
+
 An image builder is host infrastructure, not a company allocation. An unregistered builder makes complete-host inventory unavailable, and the ordinary node reservation gate then refuses wakes. Do not ignore its project, name prefix or public marker. Existing infrastructure enrollment can account for the exact builder without changing the observer or placement rules.
 
 `scripts/prepare-node-builder-inventory.mjs` creates an **offline review proposal**, not an executable deployment. It accepts one or two explicitly reviewed, stopped VM identities, checks them against a complete inventory using the production reconciler, preserves existing policy and allocations, and requires operating plus infrastructure reservations to fit current headroom. Raw VM configuration is not copied to the proposal. Unknown machines, different resource limits, UUID/configuration drift, missing builders, runtime metadata, autostart and insufficient headroom are refused.
