@@ -1067,6 +1067,12 @@ control-plane lifecycle operations under the kernel-owned spend ceilings.
 Order 4's acceptance is provable on one machine; additional machines are
 capacity work after it.
 
+> **Amended 2026-09-28.** The additional Company Computer is no longer
+> optional or later work: it starts when every screen in use is taken, and
+> screens are seats that free up. The Company Computer's shell and desktop
+> terminal have internet, and its commands have no fixed time limit
+> (2026-09-28 amendment "compute for agents", section 19, items 1 and 2).
+
 One computer-use task holds one lease per screen. Concurrent shell and service
 work uses explicit resource leases and provenance. Every screen action is
 attributed to the agent, run, and authorizing principal.
@@ -1152,7 +1158,9 @@ Worker species have separate lifecycle contracts:
   member's coding machine (amended 2026-09-24: one machine per member and
   environment carries all that member's sessions; asleep when idle, it holds
   no node capacity, and it is removed later, its allocation released only on a
-  proven delete).
+  proven delete; amended 2026-09-28, item 3: a session stands by between
+  turns and ends only when it is archived, and the machine is removed only
+  once all its sessions are archived and it is asleep).
   Follow-up MUST address the same worker and branch; it may run on a later
   machine of the same member. If the coding
   provider lacks a completion callback, Qorpera uses an explicit durable
@@ -1867,7 +1875,7 @@ Company File, rather than chat or a machine disk, is what that brain operates.
 | 1 | Loop plus mouth | Model input and cloud tools work over an exact Company File read view; only send is visible; provider thinking and final assistant text never render; completion links a live operation, proposal, or explicit no-change result. |
 | 2 | Inbound fences, outbound effect check, and cloud secret custody | A fake instruction inside a tool or Company File result is ignored; an unauthorized, stale, protected, or ambiguous write is blocked independently; and a canary credential survives capture, use, rotation, revocation, response reflection, restart, and encrypted recovery without entering any model-visible or company-visible surface. |
 | 3 | Wake bus | One agent enters through all five wake kinds; each applies its silence rule; a routine finishes with no send; an authorized Company File event wakes once, and an agent's own write never wakes itself (amended v95: no multi-agent cycle fence). |
-| 4 | Shared office VM | Persistent cloud workbench, live Company File mount, shell, browser with sticky granted sessions, one company machine (additional machines are later capacity work), and several agent desktops work with every member device offline; resetting the VM leaves company state intact. |
+| 4 | Shared office VM | Persistent cloud workbench, live Company File mount, shell, browser with sticky granted sessions, one company machine (additional machines: 2026-09-28 amendment, item 1), and several agent desktops work with every member device offline; resetting the VM leaves company state intact. |
 | 5 | Workers and todos | Parent remains interruptible; blank child receives a complete dispatch; durable completion reaches the parent; todos and accepted worker outputs become Company File state and survive restart. |
 | 6 | Agent memory (amended 2026-09-22, company first 2026-09-24) | An agent's profile, monthly log, and notes are its own Company File objects in the Grok Bot layout; `update_memory` write/forget and `recall_memory` work through the versioned mutation gateway with notebook-wide dedupe, forget of every copy, a search of every month, and stale-version retry; every turn composes the whole profile and the recent log slice through the trusted read lane; a worker of the same agent recalls but writes only with write access; notebooks are company-owned and there is no member memory; a Grok Bot export imports unchanged. |
 | 7 | Connectors | Install, authenticate out of band, call through scoped RPC, and apply the connector-to-browser escalation path. |
@@ -3043,6 +3051,69 @@ them.
 - Items 20 and 22–25 and item 30 describe withdrawn models. They are rewritten
   together with the section 19 checkpoint and the section 20 matrix once the
   reset and build step 4 have landed.
+
+### 2026-09-28 amendment: compute for agents
+
+Founder decisions of 28 September 2026, after the compute audit. They complete
+section 12, section 13.1, the 2026-09-16 amendment and the 2026-09-27
+amendments above. Machines that agents start for tests and long jobs are a
+later amendment.
+
+1. **More than one Company Computer per company.** Section 12's additional
+   Company Computer is no longer later capacity work, and it is not optional.
+   - An agent that needs a screen gets one in this order: its own open
+     screen; a free screen on a running Company Computer of its company; a
+     stopped one, woken; one that is already starting; a new Company Computer
+     for the same company environment.
+   - A screen is a seat. It is taken only while it is in use: a live lease,
+     a live viewer, a takeover or a running desktop. Six screens in use is the
+     target per computer (2026-09-16 amendment). Having used a screen once
+     does not keep it.
+   - There is no count of Company Computers per company. When no node has
+     room, the request waits in order, and the agent and members see why.
+   - Each Company Computer powers off by its own idle rule. Only work on that
+     computer keeps it awake.
+   - The company's browser sign-ins stay in step across all its Company
+     Computers (2026-09-17 amendment, "the company browser").
+2. **The Company Computer has internet, and its shell runs as long as the
+   work needs.** The first build gave the shell no network and a 15-second
+   stop. Those were build choices, not contract rules.
+   - The shell and the desktop terminal have outbound internet access, not
+     only the browser. Private networks, the NAS, the nodes, the control
+     plane and cloud metadata stay out of reach.
+   - A command has no fixed time limit. Commands and background processes
+     run until they end, an agent or a member stops them, or the computer
+     powers off. Output keeps storage-safety bounds, stated as such.
+   - A running command keeps its computer awake.
+   - Browser profiles, sign-ins and credentials stay out of reach of the
+     shell and the desktop terminal (11.4, 11.5).
+   - Because they have network, Company Computer shell commands are outside
+     effects and keep the automatic review (2026-09-25 amendment).
+   - Company data read on a Company Computer can leave through this network,
+     as it already can from coding machines. Every read is still recorded,
+     and every write still passes the gateway.
+   - The run machine does not change: item 7 of the 2026-09-27 amendment "every
+     machine works in the company folder" (no internet in the run machine's
+     shell) stands.
+3. **Coding sessions stand by between turns.** A coding session behaves like
+   a session on a member's own computer: the end of a turn is not the end of
+   the session.
+   - The end of a turn does not detach a session. Its user, folders, shell
+     state and running programs stay on the member's coding machine until the
+     session is archived.
+   - A command has no fixed time limit. It may keep running after the turn,
+     and a later turn can read or stop it. A machine the control plane loses
+     still stops its sessions' programs; that is crash detection, not a
+     limit.
+   - A coding machine sleeps after 10 minutes with no turn and nothing
+     running. Sleep powers it off: files stay, programs stop, and the agent
+     and the member are told what stopped.
+   - Archiving a session is the real stop. It stops the session's programs
+     and detaches it. Its files are kept, and a new message reopens it. A
+     coding machine is removed only when all its sessions are archived and it
+     is asleep.
+   - Coding machines do not run containers. Heavier tests belong on the
+     machines of the later amendment.
 
 ## 20. Enforcement matrix
 
