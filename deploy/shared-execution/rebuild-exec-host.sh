@@ -6,14 +6,19 @@
 #
 #   rebuild-exec-host.sh <image-fingerprint>
 #
-# Environment (defaults fit node 2's pilot):
-#   EXEC_VM          LXD instance name            (qorpera-exec-node02)
-#   EXEC_PROJECT     LXD project                  (qn25b2)
+# Environment, all required (the same script serves every node; there are no
+# node defaults, so a rebuild never silently takes another node's name or the
+# pilot's 16 slots):
+#   EXEC_VM          LXD instance name            (e.g. qorpera-exec-node02)
+#   EXEC_PROJECT     LXD project                  (e.g. qn25b2)
 #   EXEC_PACKAGE     built shared-execution package directory
-#                    (/home/company41-admin/qorpera-turn-latency/shared-pkg)
-#   EXEC_STAGING     root-only config staging dir (/root/qorpera-shared-exec-pilot)
-#                    with shared-execution.env, runner-orchestrator.env, credentials/
-#   EXEC_SLOTS       slot count                   (16)
+#   EXEC_STAGING     root-only config staging dir with shared-execution.env,
+#                    runner-orchestrator.env, credentials/
+#   EXEC_SLOTS       slot count (the node's sized value, e.g. 2 or 4)
+# Optional:
+#   EXEC_RUNTIME_BUNDLE_SHA256  declare the re-registered orchestrator's runtime
+#                    bundle (rolling updates; needs migration 20260928182000).
+#                    Unset: the orchestrator stays undeclared and claims any bundle.
 # The orchestrator inside the host is left stopped: start it when the cut is live.
 # `lxc rebuild` replaces the root disk only: the instance keeps its devices,
 # the Compute Identity devices (identity-<uuid>) the login gateway attached
@@ -29,11 +34,23 @@ if [[ ${EUID} -ne 0 ]]; then
 	echo "Run as root on the node host." >&2
 	exit 1
 fi
-VM="${EXEC_VM:-qorpera-exec-node02}"
-PROJECT="${EXEC_PROJECT:-qn25b2}"
-PACKAGE="${EXEC_PACKAGE:-/home/company41-admin/qorpera-turn-latency/shared-pkg}"
-STAGING="${EXEC_STAGING:-/root/qorpera-shared-exec-pilot}"
-SLOTS="${EXEC_SLOTS:-16}"
+for name in EXEC_VM EXEC_PROJECT EXEC_PACKAGE EXEC_STAGING EXEC_SLOTS; do
+	[[ -n ${!name:-} ]] || { echo "${name} is required (no node defaults)." >&2; exit 1; }
+done
+VM="${EXEC_VM}"
+PROJECT="${EXEC_PROJECT}"
+PACKAGE="${EXEC_PACKAGE}"
+STAGING="${EXEC_STAGING}"
+SLOTS="${EXEC_SLOTS}"
+BUNDLE="${EXEC_RUNTIME_BUNDLE_SHA256:-}"
+if [[ ! ${SLOTS} =~ ^[1-9][0-9]?$ ]] || ((SLOTS > 64)); then
+	echo "EXEC_SLOTS must be 1-64." >&2
+	exit 1
+fi
+if [[ -n ${BUNDLE} && ! ${BUNDLE} =~ ^[0-9a-f]{64}$ ]]; then
+	echo "EXEC_RUNTIME_BUNDLE_SHA256 must be a sha256." >&2
+	exit 1
+fi
 for file in qorpera-shared-execution-service.mjs install-shared-execution-guest.sh manifest.json; do
 	[[ -f ${PACKAGE}/${file} ]] || { echo "Package is incomplete: ${PACKAGE}/${file}" >&2; exit 1; }
 done
@@ -107,8 +124,14 @@ service_key=$(tr -d '\n' < "${STAGING}/credentials/qorpera-supabase-service-key"
 registered=$(curl -sS -X POST "${supabase_url}/rest/v1/rpc/qorpera_register_runner_orchestrator" \
 	-K <(printf 'header = "apikey: %s"\nheader = "Authorization: Bearer %s"\nheader = "Content-Type: application/json"\n' "${service_key}" "${service_key}") \
 	-d "{\"p_orchestrator_id\":\"${orchestrator_id}\",\"p_display_name\":\"shared-execution ${VM}\",\"p_provider_adapter\":\"${adapter}\",\"p_control_token_sha256\":\"${control_sha256}\",\"p_control_token_seconds\":86400}")
+[[ ${registered} == *'"status": "active"'* || ${registered} == *'"status":"active"'* ]] || { unset service_key; echo "Orchestrator registration failed" >&2; exit 1; }
+if [[ -n ${BUNDLE} ]]; then
+	declared=$(curl -sS -X POST "${supabase_url}/rest/v1/rpc/qorpera_declare_runner_orchestrator_bundle" \
+		-K <(printf 'header = "apikey: %s"\nheader = "Authorization: Bearer %s"\nheader = "Content-Type: application/json"\n' "${service_key}" "${service_key}") \
+		-d "{\"p_orchestrator_id\":\"${orchestrator_id}\",\"p_runtime_bundle_sha256\":\"${BUNDLE}\"}")
+	[[ ${declared} == *"${BUNDLE}"* ]] || { unset service_key; echo "Orchestrator bundle declaration failed" >&2; exit 1; }
+fi
 unset service_key
-[[ ${registered} == *'"status": "active"'* || ${registered} == *'"status":"active"'* ]] || { echo "Orchestrator registration failed" >&2; exit 1; }
 sed -i "s|^QORPERA_RUNNER_ORCHESTRATOR_CONTROL_TOKEN=.*|QORPERA_RUNNER_ORCHESTRATOR_CONTROL_TOKEN=${control_token}|" "${STAGING}/runner-orchestrator.env"
 unset control_token
 push "${STAGING}/runner-orchestrator.env" /etc/qorpera/runner-orchestrator.env 0600
@@ -122,7 +145,7 @@ exec_in systemctl enable --now qorpera-shared-execution.service >/dev/null
 sleep 2
 status=$(exec_in systemctl is-active qorpera-shared-execution.service)
 health=$(exec_in curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18450/healthz)
-echo "image=${FINGERPRINT} fence=${fence} service=${status} healthz=${health} orchestrator=stopped"
+echo "image=${FINGERPRINT} fence=${fence} slots=${SLOTS} bundle=${BUNDLE:-undeclared} service=${status} healthz=${health} orchestrator=stopped"
 echo "Re-enrol the node inventory digest (image.* keys changed); identity devices are not part of it when the"
 echo "policy entry declares identityVolumes: lxc query '/1.0/instances/${VM}?project=${PROJECT}' | exec-host-inventory-digest.py --pool <pool> --source-prefix <prefix>"
 echo "Start the orchestrator when the cut is live: lxc exec ${VM} --project ${PROJECT} -- systemctl enable --now qorpera-runner-orchestrator.service"

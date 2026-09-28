@@ -107,6 +107,48 @@ the ratified window is 5 minutes, `300000`).
   included: stop the orchestrator, wait one window (5 minutes) for the parked
   hosts to end, then rebuild.
 
+## A fast host on every node (identical nodes, change 5, 2026-09-28)
+
+Design: "Identical Nodes" (https://claude.ai/artifact/8Gm5z4Jym3fpLWpeXe4t9Y) and
+`deploy/first-node/RUNTIME-IDENTICAL-NODES.md`. Every node runs one execution host, named
+`qorpera-exec-<node label>`, sized so that one node alone carries the busiest five minutes of the
+last week, parked warm hosts included. The start is 4 slots of 2 vCPU / 4 GiB each (8 vCPU /
+16 GiB). The fresh-VM path stays on every node as overflow.
+
+- **`rebuild-exec-host.sh` has no node defaults.** `EXEC_VM`, `EXEC_PROJECT`, `EXEC_PACKAGE`,
+  `EXEC_STAGING` and `EXEC_SLOTS` are required. The pilot default of 16 slots was wrong for
+  node 2, which runs 2. Optional `EXEC_RUNTIME_BUNDLE_SHA256` declares the re-registered
+  orchestrator's bundle (rolling updates, migration `20260928182000`).
+- **`create-exec-host.sh <fingerprint>`** makes a new host on any node:
+  - it takes the same variables plus `EXEC_PROFILE`, `EXEC_POOL`, `EXEC_NETWORK` and the
+    optional `EXEC_SLOT_CPU`/`EXEC_SLOT_GIB` (default 2 / 4);
+  - it creates the VM with the run VMs' profile, pool and isolated NIC and no identity devices;
+  - it installs through `rebuild-exec-host.sh`;
+  - it prints the infrastructure entry to enroll.
+
+### Node 1, in this order (coordinator)
+
+1. **Prerequisites.** Logins in the vault change 3 is live (`20260928161000`), so member runs are
+   no longer pinned to node 2's identity volumes. Identical nodes change 3 is live too (runs
+   follow the placement: fast hosts first, the fresh-VM orchestrator only as overflow). Until
+   then a fast host on node 1 would race node 1's fresh-VM orchestrator for the same jobs.
+2. **Room.** Raise node 1's headroom by the host's size, 8000 mcpu and 16 GiB at 4 slots
+   (`qorpera_configure_runtime_node`, version CAS). It must still admit node 1's company machine.
+3. **Staging.** Prepare the staging directory as root:
+   - `shared-execution.env` from `shared-execution.env.example`, with node 1's native adapter
+     (`QORPERA_RUNNER_PROVIDER_ADAPTER`), `QORPERA_SHARED_EXECUTION_HOST_ID=qorpera-exec-node01`,
+     node 1's `QORPERA_RUNNER_NODE_ID` and `QORPERA_SHARED_EXECUTION_WARM_IDLE_MS=300000`;
+   - `runner-orchestrator.env` for a new orchestrator id;
+   - the credentials, as for node 2.
+4. **Create.**
+   `EXEC_VM=qorpera-exec-node01 EXEC_PROJECT=<node 1 run project> EXEC_PROFILE=<run profile> EXEC_POOL=qorpera-vm EXEC_NETWORK=qorpera0 EXEC_SLOTS=4 EXEC_PACKAGE=… EXEC_STAGING=… create-exec-host.sh <current image>`.
+   Its orchestrator stays stopped.
+5. **Enroll.** Replace node 1's inventory policy with the printed entry added
+   (`qorpera_replace_runtime_node_inventory`). Write the observer configuration and restart the
+   observer, then check that node 1 reports `ready`.
+6. **Start.** Start the host's orchestrator. The first member run on node 1 should start in
+   about 2 s.
+
 ## Installing an execution host (pilot runbook, node 2)
 
 ```sh
