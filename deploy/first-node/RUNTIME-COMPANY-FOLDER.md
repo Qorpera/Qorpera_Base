@@ -136,9 +136,9 @@ Computer) hosts up to six computers.
     read set (the answer to C1b-3's question 4 on #432).
 - A test machine has internet. Once `/company` is mounted on it, starting a
   command and typing into one are outside effects and pass the automatic
-  review, like a computer's shell; a worker's pass under its agent's rules
-  (compute amendment, item 4, ratified). Until then a machine has no company
-  folder and its commands are not reviewed.
+  review, like a computer's shell; a worker's commands pass under its
+  agent's rules (compute amendment, item 4, ratified). Until then a machine
+  has no company folder and its commands are not reviewed.
 
 ### What a crash loses (founder decision 3)
 
@@ -353,8 +353,8 @@ run, and its last publish comes when its processes end; section 5.)
 **On a test machine**, the view's pending changes publish the same way: when
 a command ends, and each time a running command's output is read (amended
 2026-09-28: compute amendment, items 2 and 4). Changes made while no command
-runs publish at the next publish or at stop, credited to the machine's
-starter.
+runs are published at the next publish or at stop, credited to the
+machine's starter.
 
 **Never published:**
 - a file still open for writing by any process (it waits for a later
@@ -957,8 +957,7 @@ computers; it is not a security boundary between agents. A test machine
 reaches the internet but no private network, the NAS, the nodes or the
 control plane. Starting a command and typing into one are outside effects
 and pass the automatic review; on a test machine, once `/company` is
-mounted.) The existing
-exits are connectors and the browser (both reviewed), and coding machines,
+mounted.) The existing exits are connectors and the browser (both reviewed), and coding machines,
 whose sessions keep open network and are not reviewed.
 With the mount, company data a coding session reads can leave through that
 network. The founder accepted this on 27 September so that coding agents can
@@ -1126,5 +1125,5 @@ folder that fits. This wording ships ahead of the mount, in PR #366.
    Saves publish at each command's end and each time a running command's
    output is read, credited to the commands' agents, with overlapping
    commands listed; changes made with no command running go to the machine's
-   starter at the next publish or at stop. Under root this attribution is best effort,
-   and it can never widen the view.
+   starter at the next publish or at stop. Under root this attribution is
+   best effort, and it can never widen the view.
