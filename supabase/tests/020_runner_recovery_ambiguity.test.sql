@@ -209,15 +209,21 @@ begin
 	exception when object_not_in_prerequisite_state then
 		null;
 	end;
-	begin
-		delete from public.qorpera_runner_jobs
-		where id = '50000000-0000-4000-8000-000000000070';
-		raise exception 'usage-bearing job cascade-deleted billing facts';
-	exception when foreign_key_violation or object_not_in_prerequisite_state then
-		null;
-	end;
 end
 $$;
+
+-- Usage facts outlive their job and company, keeping its id as a plain value (20260929120000).
+savepoint usage_outlives_job;
+delete from public.qorpera_runner_jobs where id = '50000000-0000-4000-8000-000000000070';
+do $$
+begin
+	if not exists (select 1 from public.qorpera_runner_usage_observations
+		where job_id = '50000000-0000-4000-8000-000000000070') then
+		raise exception 'usage-bearing job cascade-deleted billing facts';
+	end if;
+end
+$$;
+rollback to usage_outlives_job;
 
 select set_config(
 	'request.jwt.claims',
