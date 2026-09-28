@@ -136,7 +136,9 @@ describe("office image installation contract", () => {
 		])
 			expect(officeImageDestination(unit)).toEqual({ path: `/etc/systemd/system/${unit}`, mode: 0o644 });
 		const network = OFFICE_IMAGE_NETWORK_PACKAGE_FILES.map((file) => ({ file, bytes: 1, sha256: sha }));
-		expect(() => parseOfficeImagePackage({ ...manifest, artifacts: [...manifest.artifacts, ...network] })).not.toThrow();
+		expect(() =>
+			parseOfficeImagePackage({ ...manifest, artifacts: [...manifest.artifacts, ...network] }),
+		).not.toThrow();
 		for (const missing of OFFICE_IMAGE_NETWORK_PACKAGE_FILES)
 			expect(() =>
 				parseOfficeImagePackage({
@@ -145,7 +147,11 @@ describe("office image installation contract", () => {
 				}),
 			).toThrow("OFFICE_IMAGE_PACKAGE_INCOMPLETE");
 		// The machine's firewall and each computer's own filter block the same ranges.
-		const ranges = (text: string) => /elements = \{([^}]*)\}/.exec(text)?.[1]?.split(",").map((range) => range.trim());
+		const ranges = (text: string) =>
+			/elements = \{([^}]*)\}/
+				.exec(text)?.[1]
+				?.split(",")
+				.map((range) => range.trim());
 		const deploy = new URL("../../../deploy/lxd-company-computer-guest/", import.meta.url);
 		const machine = ranges(readFileSync(new URL("qorpera-computer-network.nft", deploy), "utf8"));
 		expect(machine).toContain("169.254.0.0/16");

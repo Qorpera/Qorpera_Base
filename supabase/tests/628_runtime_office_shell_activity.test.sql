@@ -1,5 +1,5 @@
 -- @fixture 300_runtime_wake_bus.test.sql until "-- END WAKE FIXTURE"
--- 20260928060000: a command still running in a Company Computer shell keeps
+-- 20260929070000: a command still running in a Company Computer shell keeps
 -- the computer on. The office reports the screens whose shells are busy; a
 -- report is demand for 90 seconds, for the office's current generation only,
 -- and a screen missing from the next report has nothing running. Only the
@@ -93,7 +93,7 @@ reset role;
 select pg_temp.wake_assert(not pg_temp.demand(),'nothing running is no demand');
 select pg_temp.wake_assert(not exists(select 1 from public.qorpera_runtime_office_shell_activity),'the report rows are gone');
 
--- 20260929030000: a running command also keeps the agent's seat.
+-- 20260929070100: a running command also keeps the agent's seat.
 create function pg_temp.seat() returns boolean language sql as $$
 	select public.qorpera_runtime_office_screen_in_use(s) from public.qorpera_runtime_office_screens s
 	where s.id=current_setting('qorpera_test.screen')::uuid

@@ -1,4 +1,4 @@
--- 20260928060000: a command still running in a Company Computer shell keeps
+-- 20260929070000: a command still running in a Company Computer shell keeps
 -- the computer on (founder decision 2026-09-28: the shell has no 15-second
 -- stop, and background processes live until the computer powers off or the
 -- agent stops them). Each screen has its agent's shell. The office reports,
@@ -66,7 +66,7 @@ end $$;
 select pg_temp.office_shell_activity_patch('public.qorpera_runtime_office_has_demand(public.qorpera_runtime_offices)'::regprocedure,
 	$old$and (w.status='queued' or j.status in ('queued','leased','running')))$old$,
 	$new$and (w.status='queued' or j.status in ('queued','leased','running')))
-		-- A command still running in a Company Computer shell (20260928060000).
+		-- A command still running in a Company Computer shell (20260929070000).
 		or exists(select 1 from public.qorpera_runtime_office_shell_activity a where a.office_id=p_office.id
 			and a.computer_generation=p_office.generation and a.busy_until>clock_timestamp())$new$);
 

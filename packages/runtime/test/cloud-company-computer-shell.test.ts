@@ -187,7 +187,10 @@ describe("an agent's long-running Company Computer shell", () => {
 		const sleeper = await f.start("sleep 600 & sleep 600", 50);
 		expect(f.shell.busy).toBe(true);
 		await f.shell.pause("Stopped because the company was paused; start the command again when work resumes.");
-		expect(await f.read(sleeper.sessionId, 0)).toMatchObject({ state: "stopped", note: "Stopped because the company was paused; start the command again when work resumes." });
+		expect(await f.read(sleeper.sessionId, 0)).toMatchObject({
+			state: "stopped",
+			note: "Stopped because the company was paused; start the command again when work resumes.",
+		});
 		expect(f.shell.busy).toBe(false);
 		expect(await f.start("echo back")).toMatchObject({ state: "exited", exitCode: 0, output: "back\n" });
 		expect(f.launch).toHaveBeenCalledTimes(2);
@@ -322,7 +325,10 @@ describe("a shell that is slow to start", () => {
 		const { sessionId } = await f.shell.start({ key: "a", command: "npm ci", signal });
 		await f.shell.pause("Stopped because the company was paused; start the command again when work resumes.");
 		expect(f.launch.cancelled).toBe(true);
-		expect(await f.shell.result({ sessionId, waitMs: 0, signal })).toMatchObject({ state: "stopped", note: "Stopped because the company was paused; start the command again when work resumes." });
+		expect(await f.shell.result({ sessionId, waitMs: 0, signal })).toMatchObject({
+			state: "stopped",
+			note: "Stopped because the company was paused; start the command again when work resumes.",
+		});
 		await f.shell.close();
 		expect(f.sent).toEqual([]);
 	});
