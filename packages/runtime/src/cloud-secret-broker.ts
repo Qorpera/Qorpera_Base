@@ -1113,6 +1113,33 @@ export class PostgresCloudSecretBrokerAuthority
 		);
 	}
 
+	listModelLoginsWithoutAccount(signal: AbortSignal): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_model_logins_without_account($1::uuid,$2::text) as result",
+			[this.#brokerAuthorityId, this.#brokerCapabilitySha256],
+			signal,
+		);
+	}
+
+	recordModelLoginAccount(
+		account: Parameters<ModelLoginAuthority["recordModelLoginAccount"]>[0],
+		signal: AbortSignal,
+	): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_record_model_login_account($1::uuid,$2::text,$3::uuid,$4::text) as result",
+			[this.#brokerAuthorityId, this.#brokerCapabilitySha256, account.loginId, account.accountIdentity],
+			signal,
+		);
+	}
+
+	switchOffReplacedNodeLogins(signal: AbortSignal): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_switch_off_replaced_node_logins($1::uuid,$2::text) as result",
+			[this.#brokerAuthorityId, this.#brokerCapabilitySha256],
+			signal,
+		);
+	}
+
 	describeModelLoginSignIn(
 		request: Parameters<ModelLoginSignInAuthority["describeModelLoginSignIn"]>[0],
 		signal: AbortSignal,
