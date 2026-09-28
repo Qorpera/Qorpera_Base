@@ -3001,8 +3001,8 @@ confirmation is the authorization to erase existing company data that section
 24.3 does not itself grant. One owner runs the reset, as 24.3 requires for a
 shared live change, and acceptance evidence (24.4) is kept.
 The storage core is rebuilt without carrying today's Company File tables or
-paths forward:
-the new core has its own tables, and until the reset today's companies keep
+paths forward, apart from the path resources and grants, which gain
+revisions: the new core has its own tables, and until the reset today's companies keep
 using the old ones. This is a temporary code-level dual mode behind a
 per-company flag, not a data migration. Before the reset, one proof company
 runs on the new core in production. After the reset, the old code and tables

@@ -305,8 +305,8 @@ Only conflicts, proposals and review outcomes wait for the boundary report.
 A whole-company search must not turn into tens of thousands of per-path
 rechecks. So the folder service records reads per run in two forms:
 
-- **In SQL:** one row per authorizing resource and grant, with the newest
-  authority version seen. This is what is rechecked before each model
+- **In SQL:** one row per authorizing resource and grant, with the oldest
+  authority revision not yet rechecked (the core, §4). This is what is rechecked before each model
   request, send and mutation. Child wakes inherit these rows together with
   the parent's path lists.
 - **As a compressed path list per command**, for audit and re-resolution. The

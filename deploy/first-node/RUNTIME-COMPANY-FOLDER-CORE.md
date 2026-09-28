@@ -59,7 +59,10 @@ C5, creation makes `folder-v2` companies only when an operator asks for one.
 So one proof company can run on the new core in production before the reset.
 
 **Separate tables.** The folder core uses its own tables (§2). Today's
-Company File tables stay exactly as they are and keep serving `snapshot-v1`:
+Company File tables stay exactly as they are and keep serving `snapshot-v1`.
+The exceptions are the path resources and grants, which both cores use and
+which gain the revisions of §4 (see the table below). The tables that stay
+unchanged include:
 entries with their jsonb and tombstones, snapshots, revisions, and the
 deferred triggers on them. So nothing that `snapshot-v1` relies on is
 reshaped.
@@ -185,11 +188,14 @@ All tables are keyed by company environment.
   about to commit: the file manifest and its chunks, the size, the run or
   member command, the operation key, and an expiry that long uploads renew.
 - **Read sets** (`qorpera_folder_run_reads`) are keyed by covering resource and
-  grant (§4).
+  grant. Each row keeps the oldest authority revision the run has not yet
+  rechecked (§4).
 - **Read records** (`qorpera_folder_run_read_records`) hold one row per command
-  and covering resource. The row carries that command's reads as one sorted,
-  compressed list of path, version, content hash and byte range or page, plus
-  the command's output digest. A whole-company search is therefore a few
+  and covering resource, written once, when the command's output is released.
+  The row carries that command's reads as one sorted, compressed list of path,
+  version, content hash, byte range or page, and the authority revision each
+  read saw, plus the command's output digest. Writing once keeps a run's
+  parallel reads from serializing on a shared row. A whole-company search is therefore a few
   rows, as RUNTIME-COMPANY-FOLDER.md §3 requires. SQL reads the list only when
   it re-resolves (§4).
 - **Objects** (`qorpera_profile_objects`, shared) gain two columns:
@@ -261,20 +267,25 @@ is never upgraded. The steps:
    - After this lock, the pause is read again, as today's rule requires
      (20260907000700:17-18). An effect that read "not paused" and then waited
      behind a stop refuses.
-   - Wake admission no longer uses the fence; it has its own row (step 10).
+   - A transaction that inserts a wake also takes the fence here and re-reads
+     the pause, so stop's second phase waits out wake admission as well as
+     effects. Today's rule is kept: "stop and resume must update the same
+     persistent row that admission and effects lock" (20260907000700:1-3).
+     Admission itself is serialized on its own row (step 10).
    - The profile row is never locked `FOR UPDATE` or `NOWAIT` on any
      `folder-v2` path (§9).
 4. **Principals, indexes, authority and uniques.** These are taken once, in
    one global order used everywhere:
    1. members;
    2. staff;
-   3. rooms, then room members;
-   4. the other index rows (sections, routines, todos, connections, rules),
-      by table then id;
-   5. resources, in ancestors-first order of their paths;
-   6. grants;
-   7. vault rows;
-   8. unique-key claims, by kind then key.
+   3. execution authorities;
+   4. rooms, then room members;
+   5. the other index rows (sections, routines with their schedule cursors,
+      todos, connections, rules), by table then id;
+   6. resources, in ancestors-first order of their paths;
+   7. grants;
+   8. vault rows;
+   9. unique-key claims, by kind then key.
 
    Everything else in this step follows that order:
    - Rows a unit rewrites, staff included, are taken `FOR NO KEY UPDATE`. That
@@ -327,11 +338,25 @@ is never upgraded. The steps:
    tables have no deferred constraints or deferred triggers; an activation
    check verifies this for them. So nothing heavy runs at COMMIT.
 10. **Admission.** If the transaction inserts a wake, it takes the company's
-    admission row `FOR NO KEY UPDATE` as its last lock before the clock. That
-    covers the creation commit's first run, the post-commit worker's first
-    runs, sends, room posts, escalations, routine firing and the file drain.
-    - The lock is held only until the commit ends. Effects never take it, so
-      they never block admission, and admission never blocks them.
+    admission row `FOR NO KEY UPDATE` as its last lock before the clock, and
+    inserts its wakes after it. That covers:
+    - the creation commit's first run and the post-commit worker's first runs;
+    - sends, room posts and escalations that wake an agent;
+    - routine firing, the materializer and the file drain.
+
+    How today's wake producers comply on `folder-v2`:
+    - The wake pin trigger no longer admits at insert
+      (20260907000200:23-28).
+    - Its callers first take the recipient's member, staff and execution
+      authority rows in step 4's order and mode, then admission here.
+    - The materializer locks members and staff before admission, not after
+      (20260920030500:160-169).
+    - Routine firing locks its routine row and cursor at their place in
+      step 4.
+
+    Transactions that insert no wake never take the admission row, so they
+    never block admission and admission never blocks them. The lock is held
+    only until the commit ends.
     - A loop that admits wakes for many companies handles one company per
       transaction, in sorted order, or takes the row `NOWAIT` and skips that
       company until the next tick.
@@ -420,8 +445,9 @@ Before locking, an effect reads the pause flag and refuses at once if the
 company is paused. It reads the flag again after the fence lock (§3 step 3).
 Otherwise, model requests, sends, writes and wakes across
 agents take `FOR SHARE` on the read set's covering resource and grant rows
-(§3 step 4), and compare the revisions recorded in the run's read set with
-the current ones.
+(§3 step 4), and compare the oldest unchecked revision recorded in each
+read-set row with the current one. A new read under a row never raises that
+recorded revision: the row keeps `least(recorded, observed)`.
 
 - If they match, the effect goes ahead.
 - If one changed, SQL re-resolves, against current authority, only the paths
@@ -429,8 +455,8 @@ the current ones.
   - it refuses if any path is no longer readable;
   - it adds a row for any newly found narrower resource, locking it in the
     same transaction; and
-  - it re-stamps the rows with the new revisions, so the work is done once
-    per change.
+  - only after a successful re-resolution, it re-stamps the rows with the
+    current revisions, so the work is done once per change.
 
 A read therefore never carries past a narrowing or revocation. No resource
 change writes other runs' rows, so the old fix-up scan and its reversed lock
@@ -684,7 +710,9 @@ An object is retained while it is referenced by any of:
   marked deleting. Intents list their chunks.
 - **G2. GC marks before it unlinks.** GC locks the object row `FOR UPDATE`,
   re-checks every root in a new statement, and commits the `deleting` mark
-  before any unlink.
+  with its lease token before any unlink. Its final re-check before the
+  unlink runs under the object row lock and checks that its lease token is
+  still current, so a GC that outlived its lease never unlinks.
 - **G3. A deleting object is never "already there".** GC holds a lease with an
   expiry on each object it deletes. An upload of a hash marked deleting waits
   until GC finishes or its lease expires, then writes the bytes again. A
@@ -692,9 +720,10 @@ An object is retained while it is referenced by any of:
   asks the catalog first, unlike today's `object-store.ts:60`. The unlink goes
   through a quarantine rename and a final re-check. If the re-check finds a
   root, GC clears the mark and restores the bytes from quarantine; otherwise
-  it removes them. There is no unconditional `remove` as at `:110-113`. The object gateway is
-shared, so this catalog check on `put` is the one behaviour change that
-`snapshot-v1` companies see. It changes no outcome for them.
+  it removes them. There is no unconditional `remove` as at `:110-113`. The
+  object gateway is shared, so this catalog check on `put` is the one
+  behaviour change that `snapshot-v1` companies see. It changes no outcome for
+  them.
 - **G4. Grace is measured from the last reference.** Each object keeps
   `unreferenced_since`, set when its last root ends and cleared on reuse. GC
   considers only objects past a grace window measured from that time, not
@@ -767,7 +796,7 @@ rules here. The check refuses any `folder-v2` path that:
   a cross-row order problem, 20260927150000:4-9, and "job before fence",
   :33-37, becomes enforced);
 - locks the profile row exclusively;
-- takes an exclusive lock on a row after a shared lock on the same row; or
+- strengthens a lock on a row it already holds, in any mode; or
 - ends a lease without `FOR UPDATE`.
 
 **Stop, in two phases.** Stop first commits the pause, and effects read the
@@ -790,7 +819,9 @@ today runs on tmpfs, drives one sequential agent and excuses 55P03, to:
   wakes, ACL narrowing, subtree deletes, the post-commit worker and GC;
 - count deadlocks, lock waits and multixact use (`pg_stat_slru`);
 - check for authority leaks, missing parents and lost bytes; and
-- measure stop latency and admission skips.
+- measure stop latency and admission skips; and
+- time a re-resolution over a run that read 25,000 paths, which must fit
+  inside the 4-second result fence.
 
 It passes only with no deadlocks, no leaks or losses, and tool-call waits well
 under the 4-second result fence (`cloud-native-result-fence.ts`).
@@ -853,12 +884,12 @@ function and code path runs only for `folder-v2` companies (§1).
 - The flag, the folder core's tables, and the `folder-v2` source columns and
   guards on the shared tables.
 - The change-set commit with the lock rules of §3 and §9, the folder fence,
-  and the activation checks.
+  the admission row, and the activation checks.
 - The actor's `folder-v2` branch, and the per-caller decisions: unchanged,
   branches, refuses.
 - Reads without the company lock.
-- Authority revisions, read sets by covering resource and grant, explicit
-  resources and bases, and read provenance.
+- Authority revisions, read sets by covering resource and grant, read
+  records, explicit resources and bases, and read provenance.
 - Review classification in SQL.
 - GC for `folder-v2` (G1–G4), and today's GC skipping `folder-v2`.
 - Tests:
