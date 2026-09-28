@@ -110,21 +110,35 @@ the ratified window is 5 minutes, `300000`).
 ## A fast host on every node (identical nodes, change 5, 2026-09-28)
 
 Design: "Identical Nodes" (https://claude.ai/artifact/8Gm5z4Jym3fpLWpeXe4t9Y) and
-`deploy/first-node/RUNTIME-IDENTICAL-NODES.md`. Every node runs one execution host, named
-`qorpera-exec-<node label>`, sized so that one node alone carries the busiest five minutes of the
+`deploy/first-node/RUNTIME-IDENTICAL-NODES.md` (from change 1, #424). Every node runs one execution
+host, named `qorpera-exec-<short node name>` (`qorpera-exec-node01`, `qorpera-exec-node02`), sized so that one node alone carries the busiest five minutes of the
 last week, parked warm hosts included. The start is 4 slots of 2 vCPU / 4 GiB each (8 vCPU /
 16 GiB). The fresh-VM path stays on every node as overflow.
 
 - **`rebuild-exec-host.sh` has no node defaults.** `EXEC_VM`, `EXEC_PROJECT`, `EXEC_PACKAGE`,
   `EXEC_STAGING` and `EXEC_SLOTS` are required. The pilot default of 16 slots was wrong for
-  node 2, which runs 2. Optional `EXEC_RUNTIME_BUNDLE_SHA256` declares the re-registered
-  orchestrator's bundle (rolling updates, migration `20260928182000`).
+  node 2, which runs 2.
+  - The staged `shared-execution.env` must set `QORPERA_SHARED_EXECUTION_SLOTS` to `EXEC_SLOTS`,
+    since the service reads its slot count there (default 16). The script refuses otherwise, and
+    also when a line it rewrites is missing (`QORPERA_NATIVE_CODEX_FENCE_SHA256`,
+    `QORPERA_RUNNER_ORCHESTRATOR_CONTROL_TOKEN`). The cut lane passes the host's own value, so it
+    agrees.
+  - Optional `EXEC_RUNTIME_BUNDLE_SHA256` declares the re-registered orchestrator's bundle
+    (rolling updates, migration `20260928182000`). Without it the orchestrator claims runs of any
+    bundle. Once that migration is live, re-registration clears an earlier declaration, so a
+    rebuild during a rolling update must always set it.
+  - `EXEC_PREFLIGHT_ONLY=1` checks the inputs and changes nothing.
 - **`create-exec-host.sh <fingerprint>`** makes a new host on any node:
   - it takes the same variables plus `EXEC_PROFILE`, `EXEC_POOL`, `EXEC_NETWORK` and the
     optional `EXEC_SLOT_CPU`/`EXEC_SLOT_GIB` (default 2 / 4);
+  - it checks every input first (the rebuild's checks, and that the profile has no
+    `user.qorpera.*` key, which the observer refuses on an infrastructure entry);
   - it creates the VM with the run VMs' profile, pool and isolated NIC and no identity devices;
-  - it installs through `rebuild-exec-host.sh`;
-  - it prints the infrastructure entry to enroll.
+  - it installs through `rebuild-exec-host.sh` in its new-host mode (`EXEC_FRESH=1`: nothing to
+    stop, check or rebuild);
+  - it prints the infrastructure entry to enroll;
+  - if a step fails, it deletes the VM it made. A registered orchestrator row may stay behind; it
+    has no heartbeat, so nothing places runs on it.
 
 ### Node 1, in this order (coordinator)
 
@@ -132,24 +146,37 @@ last week, parked warm hosts included. The start is 4 slots of 2 vCPU / 4 GiB ea
    no longer pinned to node 2's identity volumes. Identical nodes change 3 is live too (runs
    follow the placement: fast hosts first, the fresh-VM orchestrator only as overflow). Until
    then a fast host on node 1 would race node 1's fresh-VM orchestrator for the same jobs.
-2. **Room.** Raise node 1's headroom by the host's size, 8000 mcpu and 16 GiB at 4 slots
+2. **Quiet time.** From `lxc init` until step 5, node 1's observer sees an instance its policy does
+   not list and reports node 1 unavailable: node 1 takes no new work. Empty node 1 first
+   (`qorpera_set_runtime_node_serving`, change 1) or pick a quiet time; new work goes to node 2
+   meanwhile. Work already running on node 1 is not stopped.
+3. **Room.** Raise node 1's headroom by the host's size, 8000 mcpu and 16 GiB at 4 slots
    (`qorpera_configure_runtime_node`, version CAS). It must still admit node 1's company machine.
-3. **Staging.** Prepare the staging directory as root:
+4. **Staging.** Prepare the staging directory as root:
    - `shared-execution.env` from `shared-execution.env.example`, with node 1's native adapter
      (`QORPERA_RUNNER_PROVIDER_ADAPTER`), `QORPERA_SHARED_EXECUTION_HOST_ID=qorpera-exec-node01`,
-     node 1's `QORPERA_RUNNER_NODE_ID` and `QORPERA_SHARED_EXECUTION_WARM_IDLE_MS=300000`;
-   - `runner-orchestrator.env` for a new orchestrator id;
+     node 1's `QORPERA_RUNNER_NODE_ID`, `QORPERA_SHARED_EXECUTION_SLOTS=4` (the example says 16)
+     and `QORPERA_SHARED_EXECUTION_WARM_IDLE_MS=300000`;
+   - `runner-orchestrator.env` for a new orchestrator id, with a
+     `QORPERA_RUNNER_ORCHESTRATOR_CONTROL_TOKEN=` line for the script to fill;
    - the credentials, as for node 2.
-4. **Create.**
+
+   Node 1's LXD provider must **not** set `QORPERA_LXD_EXECUTION_HOST_INSTANCE`/`_PROJECT`. With
+   logins in the vault no identity volume is attached to the host, and an attached one would
+   change its inventory digest.
+5. **Create.**
    `EXEC_VM=qorpera-exec-node01 EXEC_PROJECT=<node 1 run project> EXEC_PROFILE=<run profile> EXEC_POOL=qorpera-vm EXEC_NETWORK=qorpera0 EXEC_SLOTS=4 EXEC_PACKAGE=… EXEC_STAGING=… create-exec-host.sh <current image>`.
    Its orchestrator stays stopped.
-5. **Enroll.** Replace node 1's inventory policy with the printed entry added
+6. **Enroll.** Replace node 1's inventory policy with the printed entry added
    (`qorpera_replace_runtime_node_inventory`). Write the observer configuration and restart the
    observer, then check that node 1 reports `ready`.
-6. **Start.** Start the host's orchestrator. The first member run on node 1 should start in
+7. **Start.** Start the host's orchestrator (and return node 1 to serving if it was emptied). The first member run on node 1 should start in
    about 2 s.
 
 ## Installing an execution host (pilot runbook, node 2)
+
+This is how node 2's host was first made, kept for the record. The pilot sized it for 16 slots;
+node 2 runs 2 today. For a new host use `create-exec-host.sh` above.
 
 ```sh
 # On the node host, as a member of the lxd group. The pinned image is the

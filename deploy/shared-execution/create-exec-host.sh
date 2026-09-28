@@ -20,8 +20,12 @@
 # identity volumes keeps its existing host (node 2) until those logins move.
 # The script prints the host's inventory entry; the operator enrolls it
 # (qorpera_replace_runtime_node_inventory) and writes the observer configuration
-# before the node can take work again. The orchestrator inside the host stays
-# stopped until the operator starts it.
+# before the node can take work again: from `lxc init` until then the node's
+# observer sees an instance its policy does not list and publishes the node
+# unavailable, so the node takes no new work. The orchestrator inside the host
+# stays stopped until the operator starts it. If any step fails, the script
+# deletes the VM it made (nothing ran in it); a registered orchestrator row is
+# left, harmless without a heartbeat.
 set -euo pipefail
 
 FINGERPRINT="${1:-}"
@@ -42,7 +46,7 @@ SLOTS="${EXEC_SLOTS}"
 SLOT_CPU="${EXEC_SLOT_CPU:-2}"
 SLOT_GIB="${EXEC_SLOT_GIB:-4}"
 if [[ ! ${VM} =~ ^qorpera-exec-[a-z0-9-]{1,40}$ ]]; then
-	echo "EXEC_VM must be qorpera-exec-<node label>." >&2
+	echo "EXEC_VM must be qorpera-exec-<short node name>, e.g. qorpera-exec-node01." >&2
 	exit 1
 fi
 if [[ ! ${SLOTS} =~ ^[1-9][0-9]?$ ]] || ((SLOTS > 64)) || [[ ! ${SLOT_CPU} =~ ^[1-9]$ ]] || [[ ! ${SLOT_GIB} =~ ^[1-9][0-9]?$ ]]; then
@@ -53,11 +57,29 @@ if lxc info "${VM}" --project "${PROJECT}" >/dev/null 2>&1; then
 	echo "${VM} already exists in ${PROJECT}; use rebuild-exec-host.sh." >&2
 	exit 1
 fi
-lxc image info "${FINGERPRINT}" --project "${PROJECT}" >/dev/null
+# The run profile is part of the host's inventory digest; the observer refuses an
+# infrastructure entry with any user.qorpera.* key.
+profile_keys=$(lxc query "/1.0/profiles/${EXEC_PROFILE}?project=${PROJECT}" \
+	| python3 -c 'import json,sys; print(sum(k.startswith("user.qorpera.") for k in json.load(sys.stdin)["config"]))')
+if [[ ${profile_keys} != 0 ]]; then
+	echo "Profile ${EXEC_PROFILE} sets a user.qorpera.* key; the host could never be enrolled." >&2
+	exit 1
+fi
+# Every input the install needs is checked before anything is created.
+EXEC_PREFLIGHT_ONLY=1 "$(dirname "$0")/rebuild-exec-host.sh" "${FINGERPRINT}"
 CPU=$((SLOTS * SLOT_CPU))
 MEMORY_GIB=$((SLOTS * SLOT_GIB))
 
 echo "Creating ${VM} in ${PROJECT}: ${SLOTS} slots, ${CPU} vCPU, ${MEMORY_GIB} GiB."
+created=
+cleanup() {
+	if [[ -n ${created} ]]; then
+		echo "Failed; deleting the half-made ${VM}." >&2
+		lxc delete --force "${VM}" --project "${PROJECT}" >&2 || echo "Could not delete ${VM}; delete it by hand." >&2
+	fi
+}
+trap cleanup EXIT
+created=1
 lxc init "${FINGERPRINT}" "${VM}" --project "${PROJECT}" --vm \
 	-p "${EXEC_PROFILE}" -s "${EXEC_POOL}" \
 	-c "limits.cpu=${CPU}" -c "limits.memory=${MEMORY_GIB}GiB" -c boot.mode=uefi-secureboot \
@@ -66,13 +88,16 @@ lxc config device add "${VM}" eth0 nic "network=${EXEC_NETWORK}" name=eth0 \
 	security.ipv4_filtering=true security.ipv6_filtering=true \
 	security.mac_filtering=true security.port_isolation=true --project "${PROJECT}" >/dev/null
 
-# The same install, configuration and orchestrator registration as every rebuild.
-"$(dirname "$0")/rebuild-exec-host.sh" "${FINGERPRINT}"
+# The same install, configuration and orchestrator registration as every rebuild,
+# without the stop, sandbox check and rebuild a new host has no use for.
+EXEC_FRESH=1 "$(dirname "$0")/rebuild-exec-host.sh" "${FINGERPRINT}"
 
 echo "Inventory entry for this node's policy (enroll it, then write the observer configuration):"
 digest=$(lxc query "/1.0/instances/${VM}?project=${PROJECT}" | python3 "$(dirname "$0")/exec-host-inventory-digest.py" \
 	| python3 -c 'import json,sys; print(json.load(sys.stdin)["configurationSha256"])')
 [[ ${digest} =~ ^[0-9a-f]{64}$ ]]
 uuid=$(lxc config get "${VM}" volatile.uuid --project "${PROJECT}")
+[[ ${uuid} =~ ^[0-9a-f-]{36}$ ]]
 printf '{"project":"%s","name":"%s","physicalId":"%s","type":"virtual-machine","configurationSha256":"%s","cpuMillis":%d,"memoryBytes":%d}\n' \
 	"${PROJECT}" "${VM}" "${uuid}" "${digest}" $((CPU * 1000)) $((MEMORY_GIB * 1024 * 1024 * 1024))
+created=

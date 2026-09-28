@@ -14,11 +14,19 @@
 #   EXEC_PACKAGE     built shared-execution package directory
 #   EXEC_STAGING     root-only config staging dir with shared-execution.env,
 #                    runner-orchestrator.env, credentials/
-#   EXEC_SLOTS       slot count (the node's sized value, e.g. 2 or 4)
+#   EXEC_SLOTS       slot count (the node's sized value, e.g. 2 or 4); the staged
+#                    shared-execution.env must say the same
+#                    (QORPERA_SHARED_EXECUTION_SLOTS), or the script refuses
 # Optional:
 #   EXEC_RUNTIME_BUNDLE_SHA256  declare the re-registered orchestrator's runtime
 #                    bundle (rolling updates; needs migration 20260928182000).
-#                    Unset: the orchestrator stays undeclared and claims any bundle.
+#                    Unset: the orchestrator claims runs of any bundle. Once
+#                    20260928182000 is live, re-registration clears an earlier
+#                    declaration, so during a rolling update always set it.
+#   EXEC_PREFLIGHT_ONLY=1  check the inputs, change nothing, exit
+#   EXEC_FRESH=1     set only by create-exec-host.sh: the host was just created
+#                    from this image and never started, so there is nothing to
+#                    stop, check or rebuild
 # The orchestrator inside the host is left stopped: start it when the cut is live.
 # `lxc rebuild` replaces the root disk only: the instance keeps its devices,
 # the Compute Identity devices (identity-<uuid>) the login gateway attached
@@ -43,6 +51,7 @@ PACKAGE="${EXEC_PACKAGE}"
 STAGING="${EXEC_STAGING}"
 SLOTS="${EXEC_SLOTS}"
 BUNDLE="${EXEC_RUNTIME_BUNDLE_SHA256:-}"
+FRESH="${EXEC_FRESH:-}"
 if [[ ! ${SLOTS} =~ ^[1-9][0-9]?$ ]] || ((SLOTS > 64)); then
 	echo "EXEC_SLOTS must be 1-64." >&2
 	exit 1
@@ -57,7 +66,24 @@ done
 for file in shared-execution.env runner-orchestrator.env credentials/qorpera-runner-provider credentials/qorpera-supabase-service-key; do
 	[[ -f ${STAGING}/${file} ]] || { echo "Staging is incomplete: ${STAGING}/${file}" >&2; exit 1; }
 done
+# The service reads its slot count from the staged env (default 16); the host is
+# sized and installed for EXEC_SLOTS. The two must agree.
+staged_slots=$(sed -n 's/^QORPERA_SHARED_EXECUTION_SLOTS=//p' "${STAGING}/shared-execution.env")
+if [[ ${staged_slots} != "${SLOTS}" ]]; then
+	echo "${STAGING}/shared-execution.env must set QORPERA_SHARED_EXECUTION_SLOTS=${SLOTS} (it says '${staged_slots:-16 by default}')." >&2
+	exit 1
+fi
+for name in QORPERA_SUPABASE_URL QORPERA_RUNNER_PROVIDER_ADAPTER QORPERA_NATIVE_CODEX_FENCE_SHA256; do
+	grep -q "^${name}=" "${STAGING}/shared-execution.env" || { echo "${STAGING}/shared-execution.env has no ${name} line." >&2; exit 1; }
+done
+for name in QORPERA_RUNNER_ORCHESTRATOR_ID QORPERA_RUNNER_ORCHESTRATOR_CONTROL_TOKEN; do
+	grep -q "^${name}=" "${STAGING}/runner-orchestrator.env" || { echo "${STAGING}/runner-orchestrator.env has no ${name} line." >&2; exit 1; }
+done
 lxc image info "${FINGERPRINT}" --project "${PROJECT}" >/dev/null
+if [[ -n ${EXEC_PREFLIGHT_ONLY:-} ]]; then
+	echo "Inputs checked; nothing changed."
+	exit 0
+fi
 
 exec_in() { lxc exec "${VM}" --project "${PROJECT}" -- "$@"; }
 identity_devices() {
@@ -66,32 +92,42 @@ identity_devices() {
 }
 push() { lxc file push --project "${PROJECT}" --mode "$3" --uid 0 --gid 0 -p "$1" "${VM}$2"; }
 
-# No new run may be admitted from here on: the orchestrator goes first, then the
-# host is checked for anything still alive. A rebuild wipes the journals, so a
-# sandbox in flight (even one still retiring, with a release owed) must not exist.
-echo "Stopping the orchestrator before checking the host."
-exec_in systemctl disable --now qorpera-runner-orchestrator.service
-echo "Refusing to rebuild while any sandbox exists:"
-units=$(exec_in systemctl list-units --no-legend --plain --state=active,activating,deactivating,reloading,refreshing 'qorpera-shared-run-host@*' 'qorpera-shared-runner@*')
-journals=$(exec_in sh -c 'ls /var/lib/qorpera-shared-execution/journals/*.json 2>/dev/null || true')
-if [[ -n ${units} || -n ${journals} ]]; then
-	echo "  live on ${VM}:" >&2
-	printf '  %s\n' ${units} ${journals} >&2
-	echo "  wait for every sandbox to retire (or archive its journal after confirming its allocation is released), then retry." >&2
-	exit 1
+if [[ -n ${FRESH} ]]; then
+	# Only a host create-exec-host.sh just made: stopped, from this image, no identity devices.
+	fresh=$(lxc query "/1.0/instances/${VM}?project=${PROJECT}" | python3 -c 'import json,sys; i=json.load(sys.stdin); print(i["status"], i["config"].get("volatile.base_image", ""), sum(k.startswith("identity-") for k in i["devices"]))')
+	if [[ ${fresh} != "Stopped ${FINGERPRINT} 0" ]]; then
+		echo "EXEC_FRESH is only for a host create-exec-host.sh just made (stopped, from this image, no identity devices)." >&2
+		exit 1
+	fi
+	echo "New host: nothing to stop, check or rebuild."
+else
+	# No new run may be admitted from here on: the orchestrator goes first, then the
+	# host is checked for anything still alive. A rebuild wipes the journals, so a
+	# sandbox in flight (even one still retiring, with a release owed) must not exist.
+	echo "Stopping the orchestrator before checking the host."
+	exec_in systemctl disable --now qorpera-runner-orchestrator.service
+	echo "Refusing to rebuild while any sandbox exists:"
+	units=$(exec_in systemctl list-units --no-legend --plain --state=active,activating,deactivating,reloading,refreshing 'qorpera-shared-run-host@*' 'qorpera-shared-runner@*')
+	journals=$(exec_in sh -c 'ls /var/lib/qorpera-shared-execution/journals/*.json 2>/dev/null || true')
+	if [[ -n ${units} || -n ${journals} ]]; then
+		echo "  live on ${VM}:" >&2
+		printf '  %s\n' ${units} ${journals} >&2
+		echo "  wait for every sandbox to retire (or archive its journal after confirming its allocation is released), then retry." >&2
+		exit 1
+	fi
+	echo "  none."
+	identities_before=$(identity_devices)
+	lxc stop "${VM}" --project "${PROJECT}" || true
+	lxc rebuild "${FINGERPRINT}" "${VM}" --project "${PROJECT}"
+	# The login gateway may add identities meanwhile; none may be lost.
+	lost=$(LC_ALL=C comm -23 <(printf '%s\n' "${identities_before}" | sed '/^$/d') <(identity_devices))
+	if [[ -n ${lost} ]]; then
+		echo "The rebuild lost Compute Identity devices; re-attach them before starting:" >&2
+		printf '  %s\n' ${lost} >&2
+		exit 1
+	fi
+	echo "Kept $(printf '%s\n' "${identities_before}" | sed '/^$/d' | wc -l | tr -d ' ') Compute Identity devices."
 fi
-echo "  none."
-identities_before=$(identity_devices)
-lxc stop "${VM}" --project "${PROJECT}" || true
-lxc rebuild "${FINGERPRINT}" "${VM}" --project "${PROJECT}"
-# The login gateway may add identities meanwhile; none may be lost.
-lost=$(LC_ALL=C comm -23 <(printf '%s\n' "${identities_before}" | sed '/^$/d') <(identity_devices))
-if [[ -n ${lost} ]]; then
-	echo "The rebuild lost Compute Identity devices; re-attach them before starting:" >&2
-	printf '  %s\n' ${lost} >&2
-	exit 1
-fi
-echo "Kept $(printf '%s\n' "${identities_before}" | sed '/^$/d' | wc -l | tr -d ' ') Compute Identity devices."
 lxc start "${VM}" --project "${PROJECT}"
 for _ in $(seq 1 120); do
 	if exec_in true 2>/dev/null; then break; fi
@@ -129,7 +165,16 @@ if [[ -n ${BUNDLE} ]]; then
 	declared=$(curl -sS -X POST "${supabase_url}/rest/v1/rpc/qorpera_declare_runner_orchestrator_bundle" \
 		-K <(printf 'header = "apikey: %s"\nheader = "Authorization: Bearer %s"\nheader = "Content-Type: application/json"\n' "${service_key}" "${service_key}") \
 		-d "{\"p_orchestrator_id\":\"${orchestrator_id}\",\"p_runtime_bundle_sha256\":\"${BUNDLE}\"}")
-	[[ ${declared} == *"${BUNDLE}"* ]] || { unset service_key; echo "Orchestrator bundle declaration failed" >&2; exit 1; }
+	declared_bundle=$(printf '%s' "${declared}" | python3 -c 'import json,sys
+try:
+    print(json.load(sys.stdin).get("runtimeBundleSha256") or "")
+except Exception:
+    print("")')
+	if [[ ${declared_bundle} != "${BUNDLE}" ]]; then
+		unset service_key
+		echo "Orchestrator bundle declaration failed: $(printf '%s' "${declared}" | head -c 300)" >&2
+		exit 1
+	fi
 fi
 unset service_key
 sed -i "s|^QORPERA_RUNNER_ORCHESTRATOR_CONTROL_TOKEN=.*|QORPERA_RUNNER_ORCHESTRATOR_CONTROL_TOKEN=${control_token}|" "${STAGING}/runner-orchestrator.env"
@@ -145,7 +190,9 @@ exec_in systemctl enable --now qorpera-shared-execution.service >/dev/null
 sleep 2
 status=$(exec_in systemctl is-active qorpera-shared-execution.service)
 health=$(exec_in curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18450/healthz)
-echo "image=${FINGERPRINT} fence=${fence} slots=${SLOTS} bundle=${BUNDLE:-undeclared} service=${status} healthz=${health} orchestrator=stopped"
-echo "Re-enrol the node inventory digest (image.* keys changed); identity devices are not part of it when the"
-echo "policy entry declares identityVolumes: lxc query '/1.0/instances/${VM}?project=${PROJECT}' | exec-host-inventory-digest.py --pool <pool> --source-prefix <prefix>"
+echo "image=${FINGERPRINT} fence=${fence} slots=${SLOTS} bundle=${BUNDLE:-any} service=${status} healthz=${health} orchestrator=stopped"
+if [[ -z ${FRESH} ]]; then
+	echo "Re-enrol the node inventory digest (image.* keys changed); identity devices are not part of it when the"
+	echo "policy entry declares identityVolumes: lxc query '/1.0/instances/${VM}?project=${PROJECT}' | exec-host-inventory-digest.py --pool <pool> --source-prefix <prefix>"
+fi
 echo "Start the orchestrator when the cut is live: lxc exec ${VM} --project ${PROJECT} -- systemctl enable --now qorpera-runner-orchestrator.service"

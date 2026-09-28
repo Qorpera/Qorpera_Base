@@ -107,7 +107,7 @@ jobs:
         run: npm ci --ignore-scripts --no-audit --no-fund
 
       - name: Validate deployment shell
-        run: bash -n deploy/first-node/*.sh deploy/lxd-runner-guest/*.sh
+        run: bash -n deploy/first-node/*.sh deploy/lxd-runner-guest/*.sh deploy/shared-execution/*.sh
 
       - name: Test LXD provider contracts
         working-directory: packages/runner-orchestrator
