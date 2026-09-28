@@ -398,6 +398,22 @@ profile RPCs; RLS is the second read boundary.
   caller's mentions in a conversation seen. The author is never told about
   their own post.
 
+### Computer hours (20260928248000_runtime_computer_hours_meter)
+
+- Contract: section 19, 2026-09-28 amendment "computer hours"; design
+  `deploy/first-node/RUNTIME-COMPUTER-HOURS.md`. This step measures only:
+  nothing is charged or stopped.
+- `qorpera_read_company_computer_hours(p_profile_id, p_month date default
+  null)` → `qorpera.company-computer-hours/v1`: `profileId`, `month`
+  (`YYYY-MM`, the calendar month in `timeZone` `Europe/Copenhagen`; default
+  the current one), `usedStandardSeconds` (whole standard seconds; one
+  computer hour = 3600), `byKind` (`companyMachines`, `agentMachines`,
+  `codingMachines`, `runs`, standard seconds rounded per kind, so they may
+  differ from the total by a second or two), `awakeNow` (the same kinds,
+  counted now) and `meteredUntil` (the meter counts up to about a minute
+  ago). Any member of the company, viewers included; anyone else gets 42501.
+  A client shows "Not measured yet" while the function is missing (PGRST202).
+
 ## 3. Realtime
 
 - `qorpera-profile-{profileId}` — durable-lane invalidation hints for a profile
