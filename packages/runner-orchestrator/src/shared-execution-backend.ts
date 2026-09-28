@@ -55,6 +55,10 @@ const UNIT_PREFIX_PATTERN = /^[a-z][a-z0-9-]{0,48}@$/;
 const ACCOUNT_PREFIX_PATTERN = /^[a-z][a-z0-9-]{0,24}$/;
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 const RESERVING_RETIREMENT_MS = 10 * 60_000;
+/** A sandbox waiting this long for (or on) its one assignment is asked about at most once per
+ * ENDED_RUNNER_CHECK_MS: whether its run's job has ended (see #retireEndedRunners). */
+const ENDED_RUNNER_GRACE_MS = 2 * 60_000;
+const ENDED_RUNNER_CHECK_MS = 60_000;
 const MAX_JOURNAL_BYTES = 64 * 1024;
 const WARM_SCHEMA = "qorpera.shared-execution-warm-slot/v1";
 /** After this many failed retirements a sandbox is recorded as lost and its
@@ -466,6 +470,7 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 	#swept = false;
 	/** Acquisitions whose retirement is in flight; a second retire of the same one is a no-op. */
 	readonly #retiring = new Set<string>();
+	#endedRunnersCheckedAt = 0;
 	#serial: Promise<void> = Promise.resolve();
 
 	constructor(config: SharedExecutionProviderConfig, dependencies: SharedExecutionProviderDependencies = {}) {
@@ -517,6 +522,12 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 		}
 		try {
 			await this.#expireWarmSlots(signal);
+		} catch (error) {
+			if (signal?.aborted) throw error;
+			failures.push(error);
+		}
+		try {
+			await this.#retireEndedRunners(live, active, signal);
 		} catch (error) {
 			if (signal?.aborted) throw error;
 			failures.push(error);
@@ -1525,6 +1536,53 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 				continue;
 			}
 			await writeFile(path, `${JSON.stringify({ ...owed, capacityReleased: true }, null, 2)}\n`, { mode: 0o600 });
+		}
+	}
+
+	/** One runner serves one run, and a sandbox whose assignment or delivery ended with an unknown
+	 * outcome stays up for a replay. A job that ended (cancelled, failed, or its company deleted,
+	 * 29 Sep 2026) is never replayed, so its runner unit would wait on its inbox forever and keep
+	 * the slot and the allocation. Once a runner has waited ENDED_RUNNER_GRACE_MS the control plane
+	 * is asked whether its job ended; if so the sandbox retires. A database without the check
+	 * answers 404. */
+	async #retireEndedRunners(
+		live: readonly SharedExecutionJournal[],
+		active: ReadonlySet<string>,
+		signal?: AbortSignal,
+	): Promise<void> {
+		if (this.#now() - this.#endedRunnersCheckedAt < ENDED_RUNNER_CHECK_MS) return;
+		const waiting = live.filter(
+			(journal) =>
+				(journal.physicalState === "registered" || journal.physicalState === "assigned") &&
+				active.has(this.#unit("runner", journal.slot)) &&
+				this.#now() - Date.parse(journal.updatedAt) >= ENDED_RUNNER_GRACE_MS,
+		);
+		this.#endedRunnersCheckedAt = this.#now();
+		if (waiting.length === 0) return;
+		const runnerIds = waiting.map((journal) => journal.runner.runnerId);
+		const response = await this.#fetch(
+			new URL("/rest/v1/rpc/qorpera_runtime_ended_runners", this.#config.supabaseUrl),
+			{
+				method: "POST",
+				redirect: "error",
+				headers: { ...supabaseServiceHeaders(this.#config.supabaseServiceKey), "content-type": "application/json" },
+				body: JSON.stringify({ p_runner_ids: runnerIds }),
+				signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000),
+			},
+		);
+		if (response.status === 404) {
+			void response.body?.cancel().catch(() => undefined);
+			return;
+		}
+		if (!response.ok) {
+			void response.body?.cancel().catch(() => undefined);
+			throw new Error(`Ended runners are unavailable (${response.status})`);
+		}
+		const answer: unknown = await response.json();
+		if (!Array.isArray(answer) || answer.some((id) => typeof id !== "string" || !runnerIds.includes(id)))
+			throw new Error("Ended runners answer is invalid");
+		for (const journal of waiting) {
+			if (answer.includes(journal.runner.runnerId)) await this.#retire(journal.acquisitionId, "revoked", signal);
 		}
 	}
 

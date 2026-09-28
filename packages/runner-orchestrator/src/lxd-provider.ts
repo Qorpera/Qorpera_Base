@@ -815,6 +815,10 @@ const RESERVING_RETIREMENT_MS = 10 * 60_000;
 /** Settled journals move here, inside the state root, out of every scan. */
 const JOURNAL_ARCHIVE = "archive";
 const SETTLED_JOURNAL_RETENTION_MS = 24 * 60 * 60_000;
+/** A guest waiting this long for (or on) its one assignment is asked about at most once per
+ * ENDED_RUNNER_CHECK_MS: whether its run's job has ended (see #retireEndedRunners). */
+const ENDED_RUNNER_GRACE_MS = 2 * 60_000;
+const ENDED_RUNNER_CHECK_MS = 60_000;
 
 export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderServiceBackend {
 	readonly #registeredCapacity = new Set<string>();
@@ -824,6 +828,7 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 	 * settled, reconcile has nothing left to do for it: it is skipped for the rest of the process and archived
 	 * a day after its last change (23 Sep 2026: node 1 re-read 76 of them, three LXD calls each, every pass). */
 	readonly #settled = new Map<string, number>();
+	#endedRunnersCheckedAt = 0;
 	readonly adapterId: string;
 	readonly #config: LxdCloudRunnerProviderConfig;
 	readonly #lxd: LxdClient;
@@ -882,6 +887,12 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 					if (signal?.aborted) throw error;
 					failures.push(error);
 				}
+			}
+			try {
+				await this.#retireEndedRunners(signal);
+			} catch (error) {
+				if (signal?.aborted) throw error;
+				failures.push(error);
 			}
 			if (failures.length === 1) throw failures[0];
 			if (failures.length > 1)
@@ -1116,26 +1127,95 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 	): Promise<void> {
 		await this.#exclusive(async () => {
 			const current = await this.#findJournalByRunner(runner.runnerId);
-			if (!current || current.physicalState === "stopped" || current.physicalState === "lost") return;
-			await this.#writeJournal({ ...current, physicalState: "stopping", stopReason: reason });
-			const instance = await this.#lxd.getInstance(current.lxd.project, current.instanceName, signal);
-			if (!instance) {
-				if (
-					current.deletionConfirmed ||
-					current.physicalState === "reserving" ||
-					current.physicalState === "registered" ||
-					current.physicalState === "assigned"
-				) {
-					await this.#writeJournal({ ...current, physicalState: "stopping", deletionConfirmed: true });
-					await this.#releaseMachine(current, signal);
-				}
-				await this.#writeJournal({ ...current, physicalState: "lost", stopReason: reason });
-				return;
-			}
-			this.#assertInstanceAuthority(current, instance);
-			await this.#retire(current, instance.status, signal);
-			await this.#writeJournal({ ...current, physicalState: "stopped", stopReason: reason });
+			if (current) await this.#stopJournal(current, reason, signal);
 		});
+	}
+
+	async #stopJournal(
+		current: LxdProviderJournal,
+		reason: "delivery_failed" | "idle" | "revoked",
+		signal?: AbortSignal,
+	): Promise<void> {
+		if (current.physicalState === "stopped" || current.physicalState === "lost") return;
+		await this.#writeJournal({ ...current, physicalState: "stopping", stopReason: reason });
+		const instance = await this.#lxd.getInstance(current.lxd.project, current.instanceName, signal);
+		if (!instance) {
+			if (
+				current.deletionConfirmed ||
+				current.physicalState === "reserving" ||
+				current.physicalState === "registered" ||
+				current.physicalState === "assigned"
+			) {
+				await this.#writeJournal({ ...current, physicalState: "stopping", deletionConfirmed: true });
+				await this.#releaseMachine(current, signal);
+			}
+			await this.#writeJournal({ ...current, physicalState: "lost", stopReason: reason });
+			return;
+		}
+		this.#assertInstanceAuthority(current, instance);
+		await this.#retire(current, instance.status, signal);
+		await this.#writeJournal({ ...current, physicalState: "stopped", stopReason: reason });
+	}
+
+	/** A guest serves one run. When an assignment or its delivery ends with an unknown outcome the
+	 * guest stays up for a replay, but a job that ended (cancelled, failed, or its company deleted,
+	 * 29 Sep 2026) is never replayed: the guest would wait on its inbox forever and keep its machine.
+	 * Once a guest has waited ENDED_RUNNER_GRACE_MS, the control plane is asked whether its job
+	 * ended; if so it is retired like any stopped runner. A database without the check answers 404. */
+	async #retireEndedRunners(signal?: AbortSignal): Promise<void> {
+		if (Date.now() - this.#endedRunnersCheckedAt < ENDED_RUNNER_CHECK_MS) return;
+		const waiting: LxdProviderJournal[] = [];
+		for (const entry of await readdir(this.#config.stateRoot, { withFileTypes: true })) {
+			if (!entry.isDirectory() || !UUID_PATTERN.test(entry.name) || this.#settled.has(entry.name)) continue;
+			const current = await this.#readJournal(entry.name);
+			if (
+				current &&
+				(current.physicalState === "registered" || current.physicalState === "assigned") &&
+				Date.now() - Date.parse(current.updatedAt) >= ENDED_RUNNER_GRACE_MS
+			)
+				waiting.push(current);
+		}
+		this.#endedRunnersCheckedAt = Date.now();
+		if (waiting.length === 0) return;
+		const ended = await this.#endedRunners(
+			waiting.map((journal) => journal.runner.runnerId),
+			signal,
+		);
+		for (const journal of waiting) {
+			if (ended.has(journal.runner.runnerId)) await this.#stopJournal(journal, "revoked", signal);
+		}
+	}
+
+	async #endedRunners(runnerIds: readonly string[], signal?: AbortSignal): Promise<ReadonlySet<string>> {
+		const response = await this.#fetch(
+			new URL("/rest/v1/rpc/qorpera_runtime_ended_runners", this.#config.supabaseUrl),
+			{
+				method: "POST",
+				redirect: "error",
+				headers: {
+					...supabaseServiceHeaders(this.#config.supabaseServiceKey),
+					"content-type": "application/json",
+				},
+				body: JSON.stringify({ p_runner_ids: runnerIds }),
+				signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000),
+			},
+		);
+		if (response.status === 404) {
+			void response.body?.cancel().catch(() => undefined);
+			return new Set();
+		}
+		if (!response.ok) {
+			throw new ProviderRpcFailed(
+				`Ended runners are unavailable (${response.status})`,
+				"qorpera_runtime_ended_runners",
+				response.status,
+				await providerRpcErrorCode(response),
+			);
+		}
+		const answer: unknown = await response.json();
+		if (!Array.isArray(answer) || answer.some((id) => typeof id !== "string" || !runnerIds.includes(id)))
+			throw new Error("Ended runners answer is invalid");
+		return new Set(answer as string[]);
 	}
 
 	/** A job guest serves exactly one run. Once it is done the guest has no further
