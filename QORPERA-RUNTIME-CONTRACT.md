@@ -2508,7 +2508,7 @@ capsule root (the same member's credentials) is reused.
 
 > **Note, 2026-09-27.** Where this checkpoint describes company state as
 > database objects, it records the build before the company folder layout
-> (5.6). It is rewritten once that state has moved.
+> (5.6). It is rewritten once the reset and build step 4 have landed.
 
 The NAS-backed live Company File and native cloud runner path already exist.
 The signed v44 infrastructure proof includes a real attended cloud turn writing
@@ -3034,7 +3034,8 @@ them.
 
 > **Note, 2026-09-27.** Rows naming responsibility objects, ceilings, a schema
 > registry, a todo store or a live mount describe the build before the company
-> folder layout (5.6). They are rewritten once that state has moved.
+> folder layout (5.6). They are rewritten once the reset and build step 4
+> have landed.
 
 | Requirement | Code owner | Model law |
 | --- | --- | --- |
