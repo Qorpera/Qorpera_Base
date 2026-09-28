@@ -7,6 +7,10 @@
 -- the idle policy proceed. A report is not a wake: it counts only for the
 -- office's current generation, and an office already powering off is not
 -- woken by it. Per screen, so a busy shell can also keep its agent's seat.
+-- While the operator has paused the company, a report records nothing and
+-- tells the office so: it stops every shell (2026-09-28 amendment "compute
+-- for agents", item 2: a command runs until ... the operator pauses the
+-- company).
 
 create table public.qorpera_runtime_office_shell_activity (
 	screen_id uuid primary key references public.qorpera_runtime_office_screens(id) on delete cascade,
@@ -35,13 +39,17 @@ begin
 	if exists(select 1 from unnest(p_screen_ids) as reported(id) where not exists(
 		select 1 from public.qorpera_runtime_office_screens s where s.id=reported.id and s.office_id=v_office.id)) then
 		raise exception 'Office shell activity screen differs' using errcode='42501'; end if;
+	if public.qorpera_company_execution_paused(v_office.profile_id) then
+		delete from public.qorpera_runtime_office_shell_activity where office_id=v_office.id;
+		return jsonb_build_object('schema','qorpera.office-shell-activity/v1','screens','[]'::jsonb,'paused',true);
+	end if;
 	delete from public.qorpera_runtime_office_shell_activity where office_id=v_office.id and screen_id<>all(p_screen_ids);
 	insert into public.qorpera_runtime_office_shell_activity(screen_id,office_id,computer_generation,busy_until,reported_at)
 		select distinct reported.id,v_office.id,v_office.generation,v_at+interval '90 seconds',v_at from unnest(p_screen_ids) as reported(id)
 		on conflict(screen_id) do update set office_id=excluded.office_id,computer_generation=excluded.computer_generation,
 			busy_until=excluded.busy_until,reported_at=excluded.reported_at;
 	return jsonb_build_object('schema','qorpera.office-shell-activity/v1','screens',
-		(select coalesce(jsonb_agg(distinct reported.id),'[]'::jsonb) from unnest(p_screen_ids) as reported(id)));
+		(select coalesce(jsonb_agg(distinct reported.id),'[]'::jsonb) from unnest(p_screen_ids) as reported(id)),'paused',false);
 end $$;
 revoke all on function public.qorpera_report_runtime_office_shell_activity(jsonb,bigint,uuid[]) from public,anon,authenticated,service_role;
 grant execute on function public.qorpera_report_runtime_office_shell_activity(jsonb,bigint,uuid[]) to service_role;

@@ -3,7 +3,7 @@ import { execFileSync, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { lstat, open, readdir, readFile, rename, writeFile } from "node:fs/promises";
-import { createServer } from "node:net";
+import { createConnection, createServer } from "node:net";
 import { setTimeout as delay } from "node:timers/promises";
 import {
 	CompanyComputerLinuxShell,
@@ -196,6 +196,65 @@ printf isolated`),
 		assert.notEqual((await settled(reaching.sessionId, reaching)).exitCode, 0);
 	} finally {
 		await other.close();
+	}
+
+	// The plumber takes the office account's word for nothing: a namespace whose
+	// program already runs, or any other process, is refused before anything changes.
+	const ask = (request: string) =>
+		new Promise<string>((resolve, reject) => {
+			const socket = createConnection("/run/qorpera-computer-network/plumb.sock");
+			let answer = "";
+			socket.setEncoding("utf8");
+			socket.on("data", (text: string) => {
+				answer += text;
+			});
+			socket.on("end", () => resolve(answer));
+			socket.on("error", reject);
+			socket.end(`${request}\n`);
+		});
+	assert.equal(await ask(`plumb 1 shell ${shell.namespacePid}`), "refused process\n");
+	assert.equal(await ask(`plumb 9 desktop ${process.pid}`), "refused process\n");
+	assert.match(await done("cat /proc/net/dev"), /^ *eth0:/m);
+
+	// Without the machine's firewall (an accident), each computer's own filter
+	// still keeps every private address and the machine out of reach, and a new
+	// computer gets no network at all.
+	assert.equal(await ask("test-firewall flush"), "done\n");
+	try {
+		for (const target of ["10.9.9.9:8080", `10.253.1.1:${canaryPort}`]) {
+			const fetching = await run(`curl -sS --max-time 4 http://${target}/`);
+			assert.equal((await settled(fetching.sessionId, fetching)).exitCode, 28, target);
+		}
+		const unplumbed = new CompanyComputerLinuxShell(
+			createCompanyComputerLinuxShellLauncher({
+				binding: { ...computerBinding(), screenId: "00000000-0000-4000-8000-0000000000b3", screenOrdinal: 3 },
+				layout,
+				workbenchMount,
+				limits,
+				runtimeRoot: "/run/office-screens",
+				xSocket: () => "/tmp/office-x/X1",
+				boundary: { assertReady: async () => undefined },
+			}),
+		);
+		try {
+			let devices = await unplumbed.result({
+				sessionId: (await unplumbed.start({ key: randomUUID(), command: "cat /proc/net/dev", signal })).sessionId,
+				waitMs: 10000,
+				signal,
+			});
+			for (let attempt = 0; devices.state === "running" && attempt < 6; attempt++)
+				devices = await unplumbed.result({ sessionId: devices.sessionId, waitMs: 10000, signal });
+			assert.equal(devices.exitCode, 0, devices.output);
+			assert.match(devices.output, /^ *lo:/m);
+			assert.doesNotMatch(devices.output, /eth0/);
+		} finally {
+			await unplumbed.close();
+		}
+		// Stopping the machine's network removes every computer's link first.
+		assert.equal(await ask("test-firewall down"), "done\n");
+		assert.doesNotMatch(await done("cat /proc/net/dev"), /eth0/);
+	} finally {
+		assert.equal(await ask("test-firewall up"), "done\n");
 	}
 
 	// Commands share the shell's localhost: a server from one is reachable from the next.

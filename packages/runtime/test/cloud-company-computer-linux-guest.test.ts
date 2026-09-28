@@ -68,6 +68,7 @@ const shells = vi.hoisted(
 			start: ReturnType<typeof vi.fn>;
 			result: ReturnType<typeof vi.fn>;
 			close: ReturnType<typeof vi.fn>;
+			pause: ReturnType<typeof vi.fn>;
 		}[],
 );
 vi.mock("../src/cloud-company-computer-linux-shell.ts", () => ({
@@ -86,6 +87,7 @@ vi.mock("../src/cloud-company-computer-linux-shell.ts", () => ({
 			output: "building\n",
 		}));
 		close = vi.fn(async () => undefined);
+		pause = vi.fn(async () => undefined);
 		known = () => true;
 		list = () => ({ commands: [], processes: 0 });
 		constructor() {
@@ -456,6 +458,36 @@ describe("whole Linux guest ownership (physical adapters mocked here; separate L
 		await session.close();
 		await f.guest.stopResources(f.binding, new AbortController().signal);
 		expect(shells[0].close).toHaveBeenCalledOnce();
+	});
+
+	it("stops every shell, with the reason, when a report finds the company paused", async () => {
+		vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+		const f = await fixture();
+		const session = await f.create();
+		await session.endpoint.perform(
+			f.operation({ kind: "shell", action: "start", command: "sleep 600", waitMs: 0 }),
+			f.lease,
+			f.effect(),
+		);
+		const original = f.call.getMockImplementation()!;
+		const answer = { paused: false };
+		f.call.mockImplementation(async (method: string, args: Record<string, unknown>) =>
+			method === "qorpera_report_runtime_office_shell_activity"
+				? { schema: "qorpera.office-shell-activity/v1", screens: answer.paused ? [] : args.p_screen_ids, ...answer }
+				: original(method, args),
+		);
+		shells[0].busy = true;
+		await vi.advanceTimersByTimeAsync(30000);
+		expect(shells[0].pause).not.toHaveBeenCalled();
+		answer.paused = true;
+		await vi.advanceTimersByTimeAsync(30000);
+		expect(shells[0].pause).toHaveBeenCalledExactlyOnceWith(
+			"Stopped because the company was paused; start the command again when work resumes.",
+		);
+		// The shell itself stays, so the agent can read why and start again after the pause.
+		expect(shells[0].close).not.toHaveBeenCalled();
+		expect(f.failure).not.toHaveBeenCalled();
+		await session.close();
 	});
 
 	it("keeps the desktop, its browser and the agent's session when one authority check gets no answer", async () => {

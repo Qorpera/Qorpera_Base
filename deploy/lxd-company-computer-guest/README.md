@@ -256,18 +256,29 @@ own; the machine (this VM) hosts the computers. The office service still
 creates one network namespace for each computer's shell and one for its
 desktop, and asks the root plumber (`qorpera-computer-plumb`, one request per
 connection on `qorpera-computer-plumb.socket`, which only the office account
-can reach) to add a veth `qcmp<ordinal><s|d>` into it before its program
-starts. `qorpera-computer-network.service` loads
-`qorpera-computer-network.nft` at boot: the computers reach the public
-internet on any port and protocol, and never a private, shared, link-local,
-loopback or special range (the NAS, nodes, Tailscale, cloud metadata, the LXD
-bridges), the machine itself or each other; nothing comes in. Name servers are
-public. The browser keeps its own device-less namespace and relay, so
-profiles, sign-ins and credentials stay out of the shell. This needs a new
-image (the units, the firewall, the plumber, and the `iproute2`, `nftables`
-and `iputils-ping` packages). The shell's init is a mode (`--shell-host`) of
-`office-browser-child.mjs`. Without the plumber a computer starts with
-loopback only, never with an unfiltered network.
+can reach) to add a veth `qcmp<ordinal><s|d>` into it while its program still
+waits at the start gate. The plumber takes no process on the office account's
+word: it plumbs only a namespace under `/usr/bin/bwrap` (never the browser's
+own copy) whose Tini's only child is still at the gate, one request at a time,
+and refuses when the machine's firewall is not loaded.
+`qorpera-computer-network.service` runs `qorpera-computer-plumb --up` at boot:
+it loads `qorpera-computer-network.nft`, then turns forwarding on. The
+computers reach the public internet on any port and protocol, and never a
+private, shared, link-local, loopback or special range (the NAS, nodes,
+Tailscale, cloud metadata, the LXD bridges), the machine itself or each other;
+nothing comes in, and the machine forwards nothing else. Each computer also
+gets the same ranges as a filter inside its own namespace, which it cannot
+change, so losing the machine's table (a flush) still leaves nothing private
+in reach. Each computer may hold 16,384 connections at once, far above real
+work, so that one computer cannot fill the machine's connection table.
+Stopping the service (`--down`) removes every computer's link before the
+firewall. Name servers are public. The browser keeps its own device-less
+namespace and relay, so profiles, sign-ins and credentials stay out of the
+shell. This needs a new image (the units, the firewall, the plumber, and the
+`iproute2`, `nftables` and `iputils-ping` packages); the installer takes the
+five network files together or not at all. The shell's init is a mode
+(`--shell-host`) of `office-browser-child.mjs`. Without the plumber a computer
+starts with loopback only, never with an unfiltered network.
 
 The wrapper is not an authorization or sandbox implementation. Directory-name
 validation cannot detect bind mounts, NAS aliases, unsafe inherited image

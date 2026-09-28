@@ -57,7 +57,8 @@ reset role;
 
 select pg_temp.path_claims('service_role');
 set local role service_role;
-select pg_temp.wake_assert(pg_temp.report(pg_temp.busy())->'screens'=to_jsonb(pg_temp.busy()),'a busy shell is reported');
+select pg_temp.wake_assert(pg_temp.report(pg_temp.busy())@>jsonb_build_object('screens',to_jsonb(pg_temp.busy()),'paused',false),
+	'a busy shell is reported');
 select pg_temp.wake_error(format('select pg_temp.report(pg_temp.busy(),%s)',current_setting('qorpera_test.generation')::bigint+1),
 	'42501','Office shell activity binding differs');
 select pg_temp.wake_error('select pg_temp.report(array[''30000000-0000-4000-8000-000000000099''::uuid])','42501',
@@ -107,6 +108,23 @@ reset role;
 select pg_temp.wake_assert(pg_temp.seat(),'a running command keeps the seat');
 update public.qorpera_runtime_office_shell_activity set busy_until=clock_timestamp()-interval '1 second';
 select pg_temp.wake_assert(not pg_temp.seat(),'a stale report keeps no seat');
+
+-- The operator pauses the company: a report records nothing and tells the
+-- office, which stops every shell.
+select pg_temp.path_claims('service_role');
+set local role service_role;
+select pg_temp.report(pg_temp.busy());
+reset role;
+select pg_temp.wake_assert(pg_temp.demand(),'busy before the pause');
+insert into public.qorpera_company_execution_pauses(profile_id,paused_by_user_id)
+values((pg_temp.office()).profile_id,'30000000-0000-4000-8000-000000000001');
+select pg_temp.path_claims('service_role');
+set local role service_role;
+select pg_temp.wake_assert(pg_temp.report(pg_temp.busy())='{"schema":"qorpera.office-shell-activity/v1","screens":[],"paused":true}'::jsonb,
+	'a paused company is told so');
+reset role;
+select pg_temp.wake_assert(not exists(select 1 from public.qorpera_runtime_office_shell_activity),
+	'a paused company keeps no running command on record');
 
 
 rollback;

@@ -242,8 +242,9 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 			.filter((screen) => screen.shell?.busy)
 			.map((screen) => screen.binding.screenId);
 		if (!busy.length && !this.#shellBusy) return;
+		let response: unknown;
 		try {
-			await this.#options.registry.call(
+			response = await this.#options.registry.call(
 				"qorpera_report_runtime_office_shell_activity",
 				{
 					p_scope: this.#options.scope,
@@ -255,7 +256,20 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 			this.#shellBusy = busy.length > 0;
 		} catch {
 			/* The next report tries again; an idle stop ends the commands with the computer. */
+			return;
 		}
+		// The operator paused the company: nothing keeps running in a shell. The
+		// report recorded nothing, and new commands are refused until the pause ends.
+		if (typeof response !== "object" || response === null || (response as { paused?: unknown }).paused !== true)
+			return;
+		this.#shellBusy = false;
+		await Promise.all(
+			[...this.#screens.values()].map((screen) =>
+				screen.shell
+					?.pause("Stopped because the company was paused; start the command again when work resumes.")
+					.catch(() => undefined),
+			),
+		);
 	}
 
 	/** The screen agent's shell, created on first use. Its namespace starts with the first command. */

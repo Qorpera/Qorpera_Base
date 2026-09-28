@@ -1,19 +1,49 @@
 #!/usr/bin/env bash
-# Root, one request per connection on the office account's private socket
-# (qorpera-computer-plumb.socket). Gives one computer's freshly created shell
-# or desktop network namespace its own way out: a veth whose machine end is
+# Root. Each computer's own network: a veth whose machine end is
 # qcmp<ordinal><s|d>, filtered by qorpera-computer-network.nft.
 #
-#   request: plumb <ordinal 1-32> <shell|desktop> <pid in that namespace>
-#   answer:  ok <address>   or   refused <reason>
+#   qorpera-computer-plumb --up     load the firewall, then turn forwarding on
+#   qorpera-computer-plumb --down   remove every computer's link, then the firewall
+#   qorpera-computer-plumb          one request on stdin (qorpera-computer-plumb.socket):
+#     request: plumb <ordinal 1-32> <shell|desktop> <pid in that namespace>
+#     answer:  ok <address>   or   refused <reason>
 #
 # The office service runs unprivileged and cannot create network devices; it
-# creates the namespace with Bubblewrap and asks here before the namespace's
-# program starts. Only a namespace of the office account that is not this
-# machine's own and has no veth yet is plumbed. A computer's previous link of
-# the same kind (a shell or desktop being replaced) is removed first.
+# creates the namespace with Bubblewrap and asks here while the namespace's
+# program still waits at its start gate. Only such a namespace of the office
+# account is plumbed: under /usr/bin/bwrap (never the browser's own copy, whose
+# network is its relay), not this machine's own, with no link yet. Nothing is
+# plumbed without the machine's firewall, and every computer also gets a filter
+# of its own inside its namespace, which it cannot change.
 set -euo pipefail
 export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+nft_file=${QORPERA_COMPUTER_NETWORK_NFT:-/usr/local/share/qorpera/computer-network.nft}
+
+# Every link of ours on this machine.
+links() {
+	ip -o link show | sed -n 's/^[0-9]*: \(qcmp[0-9]*[sd]\)@.*/\1/p'
+}
+
+case ${1-} in
+--up)
+	nft -f "${nft_file}"
+	# Room for every computer's connections (the firewall bounds each one) and
+	# the machine's own. Only the machine's own kernel may raise it.
+	sysctl -q -w net.netfilter.nf_conntrack_max=262144 2>/dev/null || true
+	sysctl -q -w net.ipv4.conf.all.send_redirects=0 net.ipv4.conf.default.send_redirects=0
+	sysctl -q -w net.ipv4.ip_forward=1
+	exit 0
+	;;
+--down)
+	for link in $(links); do ip link del "${link}" 2>/dev/null || true; done
+	sysctl -q -w net.ipv4.ip_forward=0
+	nft delete table inet qorpera_computers 2>/dev/null || true
+	exit 0
+	;;
+'') ;;
+*) exit 2 ;;
+esac
+
 office_user=${QORPERA_OFFICE_USER:-qorpera-office}
 refuse() {
 	printf 'refused %s\n' "$1"
@@ -24,10 +54,41 @@ IFS= read -r -t 5 request || refuse request
 ordinal=${BASH_REMATCH[1]}
 role=${BASH_REMATCH[2]}
 pid=${BASH_REMATCH[3]}
+
+# One request at a time on this machine: the checks below and the plumbing
+# are one step, so a late request never undoes a newer one.
+exec 9<"${BASH_SOURCE[0]}"
+flock -w 10 9 || refuse busy
+
+# The machine's firewall is loaded: its input and forward chains as shipped.
+input=$(nft list chain inet qorpera_computers input 2>/dev/null) || refuse firewall
+forward=$(nft list chain inet qorpera_computers forward 2>/dev/null) || refuse firewall
+nft list chain inet qorpera_computers postrouting >/dev/null 2>&1 || refuse firewall
+[[ ${input} == *'iifname "qcmp*" drop'* && ${forward} == *'policy drop;'* ]] || refuse firewall
+# Our addresses overlap nothing else on this machine.
+while read -r _ name _ address _; do
+	[[ ${name} =~ ^qcmp[0-9]+[sd]$ || ${address} != 10.253.* ]] || refuse addresses
+done < <(ip -o -4 addr show)
+
 office_uid=$(id -u "${office_user}") || refuse account
-[[ -d /proc/${pid} ]] || refuse process
-[[ $(stat -c %u "/proc/${pid}") == "${office_uid}" ]] || refuse owner
 own=$(readlink /proc/1/ns/net)
+# The namespace's first process (Tini) under /usr/bin/bwrap, its only child
+# still at the start gate of cloud-company-computer-linux-process.ts.
+held() {
+	local stat parent children args
+	[[ -d /proc/${pid} ]] || return 1
+	[[ $(stat -c %u "/proc/${pid}") == "${office_uid}" ]] || return 1
+	[[ $(readlink "/proc/${pid}/exe") == /usr/bin/tini ]] || return 1
+	stat=$(<"/proc/${pid}/stat") || return 1
+	read -r _ parent _ <<<"${stat##*) }"
+	[[ $(readlink "/proc/${parent}/exe") == /usr/bin/bwrap ]] || return 1
+	children=$(<"/proc/${pid}/task/${pid}/children") || return 1
+	[[ ${children} =~ ^([0-9]+)\ ?$ ]] || return 1
+	[[ $(readlink "/proc/${BASH_REMATCH[1]}/exe") == /usr/bin/bash ]] || return 1
+	mapfile -d '' -t args <"/proc/${BASH_REMATCH[1]}/cmdline" || return 1
+	[[ ${#args[@]} -gt 5 && ${args[5]} == qorpera-office-launch ]] || return 1
+}
+held || refuse process
 target=$(readlink "/proc/${pid}/ns/net") || refuse process
 [[ ${target} != "${own}" ]] || refuse namespace
 # A fresh namespace only: nothing of ours in it yet.
@@ -41,18 +102,39 @@ else
 	host_ip=10.253.${ordinal}.5
 	peer_ip=10.253.${ordinal}.6
 fi
+# The same computer's previous shell or desktop, if its namespace is still going away.
 ip link del "${host}" 2>/dev/null || true
 ip link add "${host}" type veth peer name eth0 netns "${pid}"
 ip addr add "${host_ip}/30" dev "${host}"
 ip link set "${host}" up
-# Inside: the address and route, ping for the namespace's own users, no IPv6.
+# Inside: its own filter first, then the address and route, ping for the
+# namespace's own users, and no IPv6 on its way out (loopback keeps ::1).
+nsenter -t "${pid}" -n nft -f - <<'EOF'
+table inet qorpera_computer {
+	set blocked {
+		type ipv4_addr
+		flags interval
+		elements = {
+			0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8, 169.254.0.0/16, 172.16.0.0/12,
+			192.0.0.0/24, 192.0.2.0/24, 192.88.99.0/24, 192.168.0.0/16, 198.18.0.0/15,
+			198.51.100.0/24, 203.0.113.0/24, 224.0.0.0/4, 240.0.0.0/4
+		}
+	}
+	chain output {
+		type filter hook output priority filter; policy accept;
+		oifname "lo" accept
+		meta nfproto ipv6 drop
+		ip daddr @blocked drop
+	}
+}
+EOF
+nsenter -t "${pid}" -n sysctl -q -w net.ipv6.conf.eth0.disable_ipv6=1 net.ipv6.conf.default.disable_ipv6=1
 nsenter -t "${pid}" -n ip addr add "${peer_ip}/30" dev eth0
 nsenter -t "${pid}" -n ip link set eth0 up
 nsenter -t "${pid}" -n ip route add default via "${host_ip}"
 nsenter -t "${pid}" -n sysctl -q -w net.ipv4.ping_group_range="0 2147483647"
-nsenter -t "${pid}" -n sysctl -q -w net.ipv6.conf.all.disable_ipv6=1
-# The process must still be the one asked about.
-if [[ $(readlink "/proc/${pid}/ns/net" 2>/dev/null) != "${target}" ]]; then
+# The process must still be the one asked about, still waiting at its gate.
+if ! held || [[ $(readlink "/proc/${pid}/ns/net" 2>/dev/null) != "${target}" ]]; then
 	ip link del "${host}" 2>/dev/null || true
 	refuse namespace
 fi

@@ -223,7 +223,12 @@ export function parseOfficeImagePackage(value: unknown) {
 			"node_modules/playwright-core/index.mjs",
 			"node_modules/playwright-core/browsers.json",
 			"wallpapers/qorpera-screen-pebble.png",
-		].some((f) => !files.has(f))
+		].some((f) => !files.has(f)) ||
+		// The network pieces come together or not at all: a plumber without its
+		// firewall, or a firewall without its stop, is no computer network.
+		![0, OFFICE_IMAGE_NETWORK_PACKAGE_FILES.length].includes(
+			OFFICE_IMAGE_NETWORK_PACKAGE_FILES.filter((f) => files.has(f)).length,
+		)
 	)
 		throw new Error("OFFICE_IMAGE_PACKAGE_INCOMPLETE");
 	return { artifacts, playwright: r.playwright };

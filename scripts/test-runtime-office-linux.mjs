@@ -94,15 +94,38 @@ try {
 		await writeFile(join(root, "Dockerfile"), `FROM ${image}\nRUN mkdir -p /usr/local/lib/qorpera /usr/local/share/qorpera && chmod 0755 /usr/local/lib/qorpera /usr/local/share/qorpera\nCOPY --chmod=0444 office-browser-child.mjs /usr/local/lib/qorpera/office-browser-child.mjs\nCOPY --chmod=0555 qorpera-computer-plumb /usr/local/lib/qorpera/qorpera-computer-plumb\nCOPY --chmod=0444 computer-network.nft /usr/local/share/qorpera/computer-network.nft\n`);
 		// Stand-ins, as root in the container: systemd's socket activation of the
 		// plumber (one script per connection), and hosts behind the machine.
-		await writeFile(join(root, "plumb-socket.mjs"), `import { spawn } from "node:child_process";
+		await writeFile(join(root, "plumb-socket.mjs"), `import { execFileSync, spawn } from "node:child_process";
 import { chownSync, mkdirSync } from "node:fs";
 import { createServer } from "node:net";
 mkdirSync("/run/qorpera-computer-network", { recursive: true, mode: 0o755 });
+const plumber = "/usr/local/lib/qorpera/qorpera-computer-plumb";
+// Test only: the probe changes the machine's firewall as an accident (flush)
+// or stopping qorpera-computer-network.service (down) would.
+const controls = {
+	"test-firewall flush": ["nft", ["delete", "table", "inet", "qorpera_computers"]],
+	"test-firewall down": [plumber, ["--down"]],
+	"test-firewall up": [plumber, ["--up"]],
+};
 const server = createServer((socket) => {
-	const plumb = spawn("/usr/local/lib/qorpera/qorpera-computer-plumb", [], { env: { QORPERA_OFFICE_USER: process.argv[2] }, stdio: ["pipe", "pipe", "inherit"] });
-	socket.pipe(plumb.stdin);
-	plumb.stdout.pipe(socket);
-	socket.on("error", () => plumb.kill());
+	let first = "";
+	socket.setEncoding("utf8");
+	const request = (text) => {
+		first += text;
+		if (!first.includes("\\n")) return;
+		socket.off("data", request);
+		const control = controls[first.slice(0, first.indexOf("\\n"))];
+		if (control) {
+			execFileSync(control[0], control[1], { stdio: ["ignore", "ignore", "inherit"] });
+			socket.end("done\\n");
+			return;
+		}
+		const plumb = spawn(plumber, [], { env: { QORPERA_OFFICE_USER: process.argv[2] }, stdio: ["pipe", "pipe", "inherit"] });
+		plumb.stdin.write(first);
+		socket.pipe(plumb.stdin);
+		plumb.stdout.pipe(socket);
+		socket.on("error", () => plumb.kill());
+	};
+	socket.on("data", request);
 });
 server.listen("/run/qorpera-computer-network/plumb.sock", () => {
 	chownSync("/run/qorpera-computer-network/plumb.sock", 1000, 1000);
@@ -177,8 +200,7 @@ ${desktop ? "dpkg-query -W tigervnc-standalone-server xfce4-session xfwm4 xfdesk
 ${browser ? "/usr/lib/qorpera-chromium/chrome --version" : ""}
 ${boundary ? "node /opt/probe/probe.mjs --prepare" : ""}
 ${shell ? `# The machine: the computers' firewall, a public and a private host behind it, the plumber.
-nft -f /usr/local/share/qorpera/computer-network.nft
-sysctl -q -w net.ipv4.ip_forward=1
+/usr/local/lib/qorpera/qorpera-computer-plumb --up
 ip link set lo up
 for side in pub:1:93.184.216.34 priv:5:10.9.9.9; do
 	netns=\${side%%:*}; rest=\${side#*:}; low=\${rest%%:*}; address=\${rest#*:}

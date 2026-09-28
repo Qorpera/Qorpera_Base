@@ -525,6 +525,15 @@ export class CompanyComputerLinuxShell implements CompanyComputerGuestShell {
 		await this.#stopAll(note);
 	}
 
+	/**
+	 * The operator paused the company: everything in this shell ends, a
+	 * namespace still starting too, with the reason on each command. The next
+	 * start after the pause opens a fresh one.
+	 */
+	async pause(note: string): Promise<void> {
+		await this.#stopAll(note);
+	}
+
 	/** Ends every process in the shell and the namespace itself. A timeout is never success. */
 	close(): Promise<void> {
 		this.#stop.abort();
