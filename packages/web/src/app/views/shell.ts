@@ -544,12 +544,15 @@ function groupPinCard(model: SessionModel, href: string): HTMLElement {
 			href,
 			draggable: "false",
 			"data-room-id": model.roomId,
-			title: [model.title, model.subtitle].filter(Boolean).join(" · "),
+			title: [model.title, model.subtitle, model.mentioned ? t("You were mentioned") : ""]
+				.filter(Boolean)
+				.join(" · "),
 		},
 		h(
 			"span",
 			{ class: "rail-pin-stand" },
 			groupChatAvatar(model.agents, { width: 62, height: 57, selected: model.selected }),
+			mentionBadge(model.mentioned),
 		),
 		h("strong", { class: "rail-pin-name" }, model.title),
 	);

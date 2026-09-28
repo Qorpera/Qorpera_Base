@@ -856,6 +856,19 @@ describe("group chats in the rail", () => {
 		expect(cards[0]!.dataset.roomId).toBe(launchRoom);
 		expect(cards[0]!.getAttribute("href")).toBe(`#/c/${profileA.profileId}/chat/${launchSession.sessionId}`);
 	});
+	it("shows '@' on a pinned group chat where the member was mentioned", async () => {
+		const [, actions, extra] = launchCompany();
+		const pinned = companyWith({ ...demo(), groupChats: true, pinned: [launchRoom] }, actions, extra);
+		await pinned.ready;
+		await settle();
+		const card = () => pinned.rail.querySelector<HTMLElement>(`.rail-pin[data-room-id="${launchRoom}"]`)!;
+		expect(card().querySelector(".rail-mention")).toBeNull();
+		expect(card().title).not.toContain("You were mentioned");
+		pinned.company.store.set({ mentions: { [launchSession.sessionId]: 1 } });
+		await settle();
+		expect(card().querySelector(".rail-mention")?.textContent).toBe("@");
+		expect(card().title).toContain("You were mentioned");
+	});
 	it("offers the agent's menu on a group chat and sends the group chat's requests", async () => {
 		localStorage.removeItem("qorpera.web.rail-hidden-open");
 		const { rail, manage, ready } = companyWith(...launchCompany({ updateGroup: vi.fn(), deleteGroup: vi.fn() }));
