@@ -1,5 +1,5 @@
 -- @fixture 405_runtime_office_browser_idle_lease_reap.test.sql until "create function pg_temp.browser("
--- 20260928100000/100100: several Company Computers per company, screens as seats.
+-- 20260929010000/100100: several Company Computers per company, screens as seats.
 -- The fixture registers computer 1 with two screens and gives Alice (…030) a
 -- native screen lease on it. Members open screens for Bob (…031) and Carol (…032).
 -- Real registry, access, native authority and member RPCs; only guest readiness

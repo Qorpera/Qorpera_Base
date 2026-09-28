@@ -356,7 +356,7 @@ begin
 			insert into public.qorpera_runtime_office_screens(office_id,ordinal,staff_agent_id)
 			values(v_office.id,v_ordinal,v_staff) returning * into v_screen;
 		end if;$old$;
-	v_new := $new$		-- Screens are seats (20260928100100): one computer per agent at a time, and a
+	v_new := $new$		-- Screens are seats (20260929010100): one computer per agent at a time, and a
 		-- computer is full when max_screens of its screens are in use.
 		if public.qorpera_runtime_office_agent_elsewhere(v_office,v_staff) then
 			return jsonb_build_object('state','refused','reason','SCREEN_OCCUPIED'); end if;
@@ -449,7 +449,7 @@ begin
 	v_old := $old$	select * into v_office from public.qorpera_runtime_offices where environment_id=(v_authority#>>'{identity,environmentId}')::uuid
 		and profile_id=(v_authority#>>'{identity,companyId}')::uuid and state='active' for share;$old$;
 	v_new := $new$	-- The computer this agent is placed on: its screen in use, or a running
-	-- computer with a free screen (20260928100100).
+	-- computer with a free screen (20260929010100).
 	v_place:=public.qorpera_runtime_office_placement((v_authority#>>'{identity,companyId}')::uuid,
 		(v_authority#>>'{identity,environmentId}')::uuid,(v_authority#>>'{identity,staffAgentId}')::uuid);
 	select * into v_office from public.qorpera_runtime_offices where id=(v_place->>'officeId')::uuid
@@ -548,7 +548,7 @@ begin
 	v_new := $new$	-- Take the company fence, the seat lock and every computer of the company
 	-- exclusively, in one order, before descriptor reads acquire shared locks, so
 	-- simultaneous native starts never race a share-to-update upgrade and never
-	-- both add a computer (20260928100100).
+	-- both add a computer (20260929010100).
 	perform public.qorpera_lock_profile_gc_fence((v_authority#>>'{identity,companyId}')::uuid);
 	perform public.qorpera_lock_runtime_office_seats((v_authority#>>'{identity,environmentId}')::uuid);
 	perform 1 from public.qorpera_runtime_offices
@@ -576,7 +576,7 @@ declare
 begin
 	v_old := $old$			and e.deadline_at>clock_timestamp() and g.state='active' and s.employment_status='active' and s.version>=e.staff_version)$old$;
 	v_new := $new$			and e.deadline_at>clock_timestamp() and g.state='active' and s.employment_status='active' and s.version>=e.staff_version
-			-- Several computers per company (20260928100100): only the computer the
+			-- Several computers per company (20260929010100): only the computer the
 			-- run's agent is placed on.
 			and public.qorpera_runtime_office_placement(e.profile_id,e.environment_id,e.staff_agent_id)->>'officeId'=p_office.id::text)$new$;
 	if (length(v_definition) - length(replace(v_definition, v_old, ''))) / length(v_old) <> 1 then

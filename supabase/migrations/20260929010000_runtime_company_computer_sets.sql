@@ -12,7 +12,7 @@
 -- made. The first computer is still registered by an owner
 -- (qorpera_register_runtime_office). Later ones are added by
 -- qorpera_add_runtime_office_computer when an agent needs a screen and every
--- running computer is full (20260928100100). Adding a computer records demand
+-- running computer is full (20260929010100). Adding a computer records demand
 -- only: the host still has to be prepared for it before it can start.
 
 alter table public.qorpera_runtime_offices
