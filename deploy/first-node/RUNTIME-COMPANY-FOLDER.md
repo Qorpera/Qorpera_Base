@@ -94,11 +94,18 @@ Computer) hosts up to six computers.
 | Run box (section 4) | the run's authority | the run |
 | Company machine: one mount for each computer's desktop, and one for each `computer_shell` command (section 5) | the company-wide view: paths whose covering resource is the root `company_shared` resource, plus `rules/` read-only | the desktop's mount: the computer's holder (the run holding it, or a member who took it over); a shell command's mount: the run that started that command |
 | Coding machine, one mount per attached session (section 6) | the coding agent ∩ the session owner, `agents/**` and `rules/**` read-only | the session |
-| Test machine, one mount per machine | the agent that started it, for that run's requesting member (open question 5) | that agent |
+| Test machine, one mount per machine | the company-wide view, as on a company machine (open question 5, settled with #419) | the agent whose command made the change; changes made with no command running go to the machine's starter |
 
 - A company machine never shows a narrower folder, even to an agent that
   may read it. Its computers are not walls between agents (section 12). Such
-  folders are worked on from the agent's own run box.
+  folders are worked on from the agent's own run box. A test machine follows
+  the same rule, since any agent of the company may use it (#419).
+- On a test machine any agent whose authority covers the company-wide view
+  may run commands, as on a computer. Each command's end publishes what
+  changed on the machine since the last publish, attributed to that
+  command's agent, with overlapping commands listed in the receipt. The
+  agent is root, so this attribution is best effort; it can misname the
+  saver, never widen the view.
 - A computer's holder changes only as #409 item 1 allows. A computer with a
   running command stays in use, and its desktop is closed before the seat
   changes hands. A member who takes over while an agent's command runs does
@@ -1083,13 +1090,10 @@ folder that fits. This wording ships ahead of the mount, in PR #366.
 3. **Internet in the run box.** Founder decision 7 leaves this for later. If
    it opens, shell commands become outside effects and pass review.
 4. **Large files.** Files over 256 MiB.
-5. **Test machines used by several agents.** The decided view gives a test
-   machine its starter's authority, and every save goes to the starter. #419
-   lets any agent of the company use a machine, as root. Two ways to
-   reconcile them, to settle with #419 before step 6:
-   - only the starting agent uses a machine while `/company` is mounted; or
-   - the executor mounts a view per `machine_run` command, owned by the run
-     that issued it, and runs one run's commands at a time, so no two
-     requesters' authority meet on one machine. Root inside the machine
-     cannot split one mount between agents, so attribution must come from
-     the node, never from the guest.
+5. **Test machines used by several agents.** Settled with #419 on
+   2026-09-28: any agent of the company may use a test machine, so it shows
+   the company-wide view, like a company machine. Saves are attributed per
+   command end to the command's agent, with overlapping commands listed;
+   changes made with no command running go to the machine's starter at the
+   next command end or at stop. Under root this attribution is best effort,
+   and it can never widen the view.
