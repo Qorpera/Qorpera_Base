@@ -173,24 +173,27 @@ try {
 		await delay(25);
 	}
 	assert.ok((await readFile("/srv/workbench/desktop-ticks", "utf8")).includes("tick"));
-	// Internet for the Terminal: what the desktop starts carries the proxy of its
-	// own loopback, and the proxy runs beside the session.
-	const processes: { command: string; environment: string }[] = [];
+	// Internet for the Terminal is the desktop's own network from the root
+	// plumber, not a proxy: what the desktop starts carries no proxy settings and
+	// resolves through public name servers. This proof has no plumber, so the
+	// desktop keeps loopback only, never an unfiltered network.
+	const processes: { pid: string; command: string; environment: string }[] = [];
 	for (const pid of (await readdir("/proc")).filter((name) => /^[0-9]+$/.test(name))) {
 		const command = await readFile(`/proc/${pid}/cmdline`, "utf8").catch(() => "");
 		const environment = await readFile(`/proc/${pid}/environ`, "utf8").catch(() => "");
-		processes.push({ command: command.replaceAll("\0", " "), environment });
+		processes.push({ pid, command: command.replaceAll("\0", " "), environment });
 	}
 	const started = processes.find((entry) => entry.command.includes("desktop-ticks"));
 	assert.ok(started, "the autostart fixture is running");
-	assert.ok(started.environment.split("\0").includes("HTTPS_PROXY=http://127.0.0.1:3128"), started.environment);
-	assert.ok(started.environment.split("\0").includes("NO_PROXY=localhost,127.0.0.1,::1"), started.environment);
-	assert.equal(
-		processes.filter((entry) =>
-			entry.command.startsWith("/usr/bin/node /usr/local/lib/qorpera/office-browser-child.mjs --network-proxy"),
-		).length,
-		bindings.length,
+	assert.ok(
+		!/^(HTTPS?_PROXY|https?_proxy|ALL_PROXY|NO_PROXY)=/m.test(started.environment.replaceAll("\0", "\n")),
+		started.environment,
 	);
+	assert.match(await readFile(`/proc/${started.pid}/root/etc/resolv.conf`, "utf8"), /^nameserver 1\.1\.1\.1\n/);
+	const devices = await readFile(`/proc/${started.pid}/net/dev`, "utf8");
+	assert.match(devices, /^ *lo:/m);
+	assert.doesNotMatch(devices, /eth0/);
+	assert.equal(processes.filter((entry) => entry.command.includes("--network-proxy")).length, 0);
 	const firstCommands = commands(bindings[0]);
 	const secondCommands = commands(bindings[1]);
 	assert.notEqual(launcher.xSocket(bindings[0]), launcher.xSocket(bindings[1]));
