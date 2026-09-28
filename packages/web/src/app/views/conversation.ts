@@ -895,7 +895,11 @@ export class ConversationView {
 				? part
 				: h(
 						"span",
-						{ class: part.target.kind === "member" && part.target.id === me ? "mention mention-me" : "mention" },
+						{
+							class: part.targets.some((target) => target.kind === "member" && target.id === me)
+								? "mention mention-me"
+								: "mention",
+						},
 						text.slice(part.start, part.end),
 					),
 		);

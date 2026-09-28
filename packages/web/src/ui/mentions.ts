@@ -60,13 +60,25 @@ export function findMentions(text: string, targets: readonly MentionTarget[]): M
 	return found.sort((a, b) => a.start - b.start);
 }
 
+/** One mention as shown: its letters once, and everyone they name (a shared name names several). */
+export interface MentionPart {
+	start: number;
+	end: number;
+	targets: MentionTarget[];
+}
+
 /** A text as plain parts and mentions, for showing a message. */
-export function mentionParts(text: string, targets: readonly MentionTarget[]): (string | Mention)[] {
-	const parts: (string | Mention)[] = [];
+export function mentionParts(text: string, targets: readonly MentionTarget[]): (string | MentionPart)[] {
+	const parts: (string | MentionPart)[] = [];
 	let at = 0;
 	for (const mention of findMentions(text, targets)) {
+		const last = parts[parts.length - 1];
+		if (typeof last === "object" && last.start === mention.start && last.end === mention.end) {
+			last.targets.push(mention.target);
+			continue;
+		}
 		if (mention.start > at) parts.push(text.slice(at, mention.start));
-		parts.push(mention);
+		parts.push({ start: mention.start, end: mention.end, targets: [mention.target] });
 		at = mention.end;
 	}
 	if (at < text.length) parts.push(text.slice(at));

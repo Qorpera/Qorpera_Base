@@ -31,7 +31,7 @@ describe("the mention rule", () => {
 		expect(names("İstanbul @BO can you check")).toEqual(["a"]);
 		expect(names("@Bo Jensen @Bo Jensen, the invoices")).toEqual(["b", "b"]);
 		const parts = mentionParts("İstanbul @Bo!", [bo]);
-		expect(parts.map((part) => (typeof part === "string" ? part : `[${part.target.name}]`))).toEqual([
+		expect(parts.map((part) => (typeof part === "string" ? part : `[${part.targets[0]?.name}]`))).toEqual([
 			"İstanbul ",
 			"[Bo]",
 			"!",
@@ -53,13 +53,19 @@ describe("the mention rule", () => {
 
 	it("splits a message into text and mentions", () => {
 		const parts = mentionParts("Hi @Bo, meet @Sofie Lund.", [bo, sofie]);
-		expect(parts.map((part) => (typeof part === "string" ? part : `[${part.target.name}]`))).toEqual([
+		expect(parts.map((part) => (typeof part === "string" ? part : `[${part.targets[0]?.name}]`))).toEqual([
 			"Hi ",
 			"[Bo]",
 			", meet ",
 			"[Sofie Lund]",
 			".",
 		]);
+		// A shared name is shown once and names everyone who has it.
+		const twin: MentionTarget = { kind: "member", id: "g", name: "Bo" };
+		const shared = mentionParts("@Bo hi", [bo, twin]);
+		expect(shared.map((part) => (typeof part === "string" ? part : part.targets.map((target) => target.id)))).toEqual(
+			[["a", "g"], " hi"],
+		);
 	});
 
 	it("finds the name being typed at the caret, and not once a name is followed by a space", () => {
