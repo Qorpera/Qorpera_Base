@@ -50,6 +50,14 @@ set local role service_role;
 savepoint no_roles;
 select pg_temp.wake_assert(pg_temp.fp_claim('64300000-0000-4000-8000-0000000000a2') #>> '{work,run_id}' = current_setting('qorpera_test.fp_r0'),
 	'Without dispatch roles the fresh-VM path claims at once, as before');
+select set_config('qorpera_test.fp_runner0',(public.qorpera_provision_execution_runner(current_setting('qorpera_test.fp_r0')::uuid,
+	'64300000-0000-4000-8000-0000000000c0','process',repeat('1',64)) ->> 'runner_id'),true);
+select public.qorpera_reserve_runtime_machine('64300000-0000-4000-8000-0000000000c0','process',repeat('7',64),
+	current_setting('qorpera_test.fp_r0')::uuid,current_setting('qorpera_test.fp_runner0')::uuid);
+reset role;
+select pg_temp.wake_assert((select reason not like 'CLAIM_TURN%' from public.qorpera_runtime_node_placements
+	where allocation_id = '64300000-0000-4000-8000-0000000000c0'),'Without roles the reservation still asks the node chooser');
+set local role service_role;
 rollback to savepoint no_roles;
 
 -- Roles: operator only; a revoked or unknown orchestrator is refused.
@@ -130,10 +138,58 @@ select pg_temp.wake_assert(public.qorpera_reserve_runtime_machine('64300000-0000
 	'The fast host''s reservation follows the claim');
 reset role;
 select pg_temp.wake_assert((select decision = 'placed' and reason = 'CLAIM_TURN_LEAST_BUSY' and node_id = '64300000-0000-4000-8000-00000000000b'
+		and preferred_node_id = '64300000-0000-4000-8000-00000000000b'
 	from public.qorpera_runtime_node_placements where allocation_id = '64300000-0000-4000-8000-0000000000c1'),
 	'The placement record names the claim turn, not the node chooser');
 set local role service_role;
 rollback to savepoint recorded;
+
+-- Both paths full: the overflow refused a moment ago, then the fast host refused. The overflow does not
+-- take the job again at once (no claim/refuse loop); it waits out its own refusal.
+savepoint loop_guard;
+select pg_temp.fp_refuse('64300000-0000-4000-8000-0000000000b1',pg_temp.fp_claim('64300000-0000-4000-8000-0000000000b1'),'SANDBOX_CAPACITY_EXHAUSTED');
+select pg_temp.fp_refuse('64300000-0000-4000-8000-0000000000a2',pg_temp.fp_claim('64300000-0000-4000-8000-0000000000a2'),'NODE_CAPACITY_EXHAUSTED');
+reset role;
+update public.qorpera_runner_jobs set dispatch_deferred_until = null, dispatch_refused_by = null
+where run_id = current_setting('qorpera_test.fp_r0')::uuid;
+set local role service_role;
+select pg_temp.fp_refuse('64300000-0000-4000-8000-0000000000b1',pg_temp.fp_claim('64300000-0000-4000-8000-0000000000b1'),'SANDBOX_CAPACITY_EXHAUSTED');
+select pg_temp.wake_assert(pg_temp.fp_claim('64300000-0000-4000-8000-0000000000a2') = 'null'::jsonb,
+	'The overflow that refused 15 s ago does not take the job back at once');
+rollback to savepoint loop_guard;
+
+-- An orchestrator without a role among role holders claims at once, as before.
+savepoint no_role;
+select public.qorpera_register_runner_orchestrator('64300000-0000-4000-8000-0000000000a9','Node A old runner','process',repeat('9',64),3600);
+select pg_temp.wake_assert(pg_temp.fp_claim('64300000-0000-4000-8000-0000000000a9') #>> '{work,run_id}' = current_setting('qorpera_test.fp_r0'),
+	'A runner without a role ignores the placement');
+rollback to savepoint no_role;
+
+-- An older accepted claim of a leased job (a retry moved it) never counts: only the newest one does.
+savepoint older_claim;
+reset role;
+insert into public.qorpera_runner_job_claims(id,orchestrator_id,client_claim_id,job_id,run_id,lease_expires_at,status,created_at)
+select extensions.gen_random_uuid(),'64300000-0000-4000-8000-0000000000b1',extensions.gen_random_uuid(),job.id,job.run_id,
+	clock_timestamp() + interval '1 minute','accepted',clock_timestamp() - interval '1 hour'
+from public.qorpera_runner_jobs job where job.run_id = (current_setting('qorpera_test.wake_binding')::jsonb ->> 'runId')::uuid;
+set local role service_role;
+select pg_temp.wake_assert(pg_temp.fp_placement(current_setting('qorpera_test.fp_r0')::uuid) ->> 'nodeId' = '64300000-0000-4000-8000-00000000000b',
+	'Node B stays least busy: its old claim of a moved job does not count');
+rollback to savepoint older_claim;
+
+-- Re-registering keeps a role on the same adapter (a rebuild) and clears it on another adapter.
+savepoint reregister;
+select public.qorpera_register_runner_orchestrator('64300000-0000-4000-8000-0000000000b1','Node B fast host','native-b',repeat('4',64),3600);
+reset role;
+select pg_temp.wake_assert((select dispatch_role = 'fast' from public.qorpera_runner_orchestrators where id = '64300000-0000-4000-8000-0000000000b1'),
+	'A rebuild keeps the role');
+set local role service_role;
+select public.qorpera_register_runner_orchestrator('64300000-0000-4000-8000-0000000000b1','Moved runner','process',repeat('4',64),3600);
+reset role;
+select pg_temp.wake_assert((select dispatch_role is null from public.qorpera_runner_orchestrators where id = '64300000-0000-4000-8000-0000000000b1'),
+	'Another adapter clears the role');
+set local role service_role;
+rollback to savepoint reregister;
 
 -- Held claims count as runs: after node B's fast host holds one, A and B are equal and the lower node id wins.
 savepoint held;

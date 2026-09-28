@@ -125,15 +125,17 @@ begin
 		return jsonb_build_object('fast', v_fast, 'nodeId', v_node, 'reason', 'WARM_CONVERSATION');
 	end if;
 	-- Otherwise the node whose fast hosts hold the fewest runs: held claims (partial index), and each leased
-	-- job's newest accepted claim (queue index, claims by run).
+	-- job's newest accepted claim (queue index, claims by run). The run's own claim never counts, so the
+	-- claim event (before the claim) and the reservation's record (after it) name the same node.
 	with busy as (
-		select claim.orchestrator_id from public.qorpera_runner_job_claims claim where claim.status in ('claimed', 'assigned')
+		select claim.orchestrator_id from public.qorpera_runner_job_claims claim
+		where claim.status in ('claimed', 'assigned') and claim.run_id <> p_run.id
 		union all
 		select latest.orchestrator_id from public.qorpera_runner_jobs job
 		cross join lateral (select claim.orchestrator_id from public.qorpera_runner_job_claims claim
 			where claim.run_id = job.run_id and claim.job_id = job.id and claim.status = 'accepted'
 			order by claim.created_at desc, claim.id desc limit 1) latest
-		where job.status = 'leased'
+		where job.status = 'leased' and job.run_id <> p_run.id
 	)
 	select nodes.node_id into v_node
 	from (select distinct (f ->> 'nodeId')::uuid node_id from jsonb_array_elements(v_fast) f) nodes
@@ -142,6 +144,21 @@ begin
 	limit 1;
 	return jsonb_build_object('fast', v_fast, 'nodeId', v_node, 'reason', 'LEAST_BUSY');
 end
+$$;
+
+-- Did this orchestrator refuse this run's job in the last 15 s? (Its own refusal can be hidden when
+-- another orchestrator's refusal made everyone wait; the released claim still says it.)
+create function public.qorpera_runtime_refused_recently(p_run_id uuid, p_orchestrator_id uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+	select exists (select 1 from public.qorpera_runner_job_claims claim
+		where claim.run_id = p_run_id and claim.orchestrator_id = p_orchestrator_id and claim.status = 'released'
+			and claim.released_at > clock_timestamp() - interval '15 seconds'
+			and claim.release_reason like 'ADMISSION_REFUSED:%')
 $$;
 
 -- May this orchestrator claim this job now? Orchestrators without a dispatch role always may.
@@ -161,11 +178,12 @@ begin
 	if v_role is null then return true; end if;
 	if v_role = 'overflow' then
 		-- A fast host refused it (full, retiring, or not its work): take it without waiting.
-		if v_waited >= interval '10 seconds'
-			or (v_error in ('ADMISSION_REFUSED:SANDBOX_CAPACITY_EXHAUSTED', 'ADMISSION_REFUSED:SANDBOX_RETIRING')
+		if v_waited >= interval '10 seconds' then return true; end if;
+		if ((v_error in ('ADMISSION_REFUSED:SANDBOX_CAPACITY_EXHAUSTED', 'ADMISSION_REFUSED:SANDBOX_RETIRING')
 				and p_job.dispatch_refused_by is distinct from p_orchestrator_id)
 			or (v_error = 'ADMISSION_REFUSED:NODE_NOT_PREFERRED' and exists (select 1 from public.qorpera_runner_orchestrators refuser
-				where refuser.id = p_job.dispatch_refused_by and refuser.dispatch_role = 'fast')) then
+				where refuser.id = p_job.dispatch_refused_by and refuser.dispatch_role = 'fast')))
+			and not public.qorpera_runtime_refused_recently(p_job.run_id, p_orchestrator_id) then
 			return true;
 		end if;
 		return public.qorpera_runtime_run_placement(p_job, p_run) ->> 'reason' = 'NO_FAST_HOST';
@@ -211,7 +229,8 @@ begin
 	select node.node_id into v_node from public.qorpera_runtime_orchestrator_nodes(p_provider_adapter) node
 	order by node.enabled desc, node.node_id limit 1;
 	insert into public.qorpera_runtime_node_placements(allocation_id,provider_kind,provider_id,node_id,decision,reason,preferred_node_id,candidates)
-	values(p_allocation_id,'native',p_provider_adapter,v_node,'placed','CLAIM_TURN_' || (v_placement ->> 'reason'),
+	values(p_allocation_id,'native',p_provider_adapter,v_node,case when v_node is null then 'unbound' else 'placed' end,
+		case when v_node is null then 'CLAIM_TURN_PROVIDER_UNBOUND' else 'CLAIM_TURN_' || (v_placement ->> 'reason') end,
 		(v_placement ->> 'nodeId')::uuid,v_placement -> 'fast')
 	on conflict(allocation_id) do update set provider_id=excluded.provider_id,node_id=excluded.node_id,decision=excluded.decision,
 		reason=excluded.reason,preferred_node_id=excluded.preferred_node_id,candidates=excluded.candidates,
@@ -219,6 +238,24 @@ begin
 	return v_placement;
 end
 $$;
+
+-- A role belongs to a runner on its adapter: re-registering on another adapter (another node or path)
+-- clears it; re-registering on the same adapter (a rebuild) keeps it.
+do $register$
+declare v_def text; v_old text; v_new text;
+begin
+	v_def := pg_get_functiondef('public.qorpera_register_runner_orchestrator(uuid,text,text,text,integer)'::regprocedure);
+	v_old := '		runtime_bundle_declared_at = null
+';
+	v_new := v_old || '		, dispatch_role = case when public.qorpera_runner_orchestrators.provider_adapter = excluded.provider_adapter
+			then public.qorpera_runner_orchestrators.dispatch_role end
+';
+	if (length(v_def) - length(replace(v_def, v_old, ''))) / length(v_old) <> 1 then
+		raise exception 'register_runner_orchestrator conflict update differs';
+	end if;
+	execute replace(v_def, v_old, v_new);
+end
+$register$;
 
 do $reserve$
 declare v_def text; v_old text; v_new text;
@@ -250,6 +287,7 @@ begin
 	v_new := '			or (job.dispatch_refused_by is not null and job.dispatch_refused_by <> p_orchestrator_id)
 			or (btrim(coalesce(job.last_error, '''')) in (''ADMISSION_REFUSED:SANDBOX_CAPACITY_EXHAUSTED'',''ADMISSION_REFUSED:SANDBOX_RETIRING'')
 				and job.dispatch_refused_by is distinct from p_orchestrator_id
+				and not public.qorpera_runtime_refused_recently(job.run_id, p_orchestrator_id)
 				and exists (select 1 from public.qorpera_runner_orchestrators as overflow
 					where overflow.id = p_orchestrator_id and overflow.dispatch_role = ''overflow'')))
 		-- Runs follow the placement: the preferred node''s fast host first, the fresh-VM path as overflow.
@@ -298,6 +336,7 @@ revoke all on function public.qorpera_set_runner_orchestrator_dispatch_role(uuid
 	public.qorpera_runtime_run_placement(public.qorpera_runner_jobs, public.qorpera_execution_runs),
 	public.qorpera_runtime_claim_turn(uuid, public.qorpera_runner_jobs, public.qorpera_execution_runs),
 	public.qorpera_runtime_run_claim_role(uuid),
+	public.qorpera_runtime_refused_recently(uuid, uuid),
 	public.qorpera_runtime_record_claim_turn_placement(uuid, text, public.qorpera_execution_runs)
 	from public, anon, authenticated, service_role;
 grant execute on function public.qorpera_set_runner_orchestrator_dispatch_role(uuid, text),

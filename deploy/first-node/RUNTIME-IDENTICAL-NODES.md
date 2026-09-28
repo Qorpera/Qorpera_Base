@@ -168,16 +168,17 @@ It sorts after change 4 because it reads its bundle declarations.
     group chat the previous run may be another agent's, which is harmless: the fast host matches
     its warm slots by agent and version itself.
   - `LEAST_BUSY`: the node whose fast hosts hold the fewest runs. It counts held claims, and each
-    leased job's newest accepted claim. Every node has the same fast host, so this is the most
-    free fast room. Ties go to the lower node id.
+    leased job's newest accepted claim, never the run's own. Every node has the same fast host,
+    so this is the most free fast room. Ties go to the lower node id.
   - `NO_FAST_HOST`: none may take it.
 - **Claim turn**, a claim predicate:
   - A fast host claims at once on the preferred node. Elsewhere it claims after a 1.5 s head
     start, or at once when the preferred node's orchestrator refused.
   - An overflow orchestrator claims when:
     - a fast host refused the run (`SANDBOX_CAPACITY_EXHAUSTED`, `SANDBOX_RETIRING`, or
-      `NODE_NOT_PREFERRED` from a fast host), even inside that refusal's wait but never inside
-      its own;
+      `NODE_NOT_PREFERRED` from a fast host), even inside that refusal's wait. It never does so
+      within 15 s of its own refusal of that run, read from its released claim, so two full
+      paths cannot trade a job back and forth;
     - no fast host may take the run;
     - or the run has waited 10 s.
   - Waits count from `queued_at`, so a retry or a sponsor handoff starts them again.
@@ -187,8 +188,11 @@ It sorts after change 4 because it reads its bundle declarations.
     reserves no node demand).
   - Instead, the reservation records the claim turn's placement in `qorpera_runtime_node_placements`
     (`decision placed`, `reason CLAIM_TURN_<reason>`).
-  - The claim's `orchestrator_claimed` event carries `placement: {reason, nodeId}`, decided before
-    that claim counts.
+  - The claim's `orchestrator_claimed` event carries `placement: {reason, nodeId}`. Since the run's
+    own claim never counts, the event and the record name the same node. A fast host whose
+    adapter has no node row is recorded as `unbound`.
+- **Roles and re-registration.** A rebuild re-registers on the same adapter and keeps the role.
+  Re-registering on another adapter (another node or path) clears it.
 - **Cost.** It reads orchestrators and node rows by key, held claims through their partial index,
   leased jobs through the queue index, claims by run, and previous runs through the new index. It
   returns early on the time checks before it computes a placement, and it adds no lock.
@@ -204,14 +208,23 @@ It sorts after change 4 because it reads its bundle declarations.
 2. **Before setting roles** (read-only):
    - every active orchestrator maps to exactly one node (change 1's step 2 query);
    - no live orchestrator stays without a role, because a runner without one claims at once and
-     bypasses the placement. Revoke stale ones: da49750d was revoked in v142.
+     bypasses the placement. Revoke stale ones: da49750d was revoked in v142. This query must list
+     nothing once roles are set:
+
+     ```sql
+     select id, provider_adapter, last_heartbeat_at from public.qorpera_runner_orchestrators
+     where status = 'active' and dispatch_role is null;
+     ```
 3. **Set roles**, and don't use roles for member runs before every active login is in the vault:
    - node 2's exec host orchestrator: `fast`;
    - node 1's fresh-VM orchestrator: `overflow`;
    - node 1's fast host, once created: `fast`.
 
    With only node 2's fast host, runs whose login lives on node 1 still go to node 1 at once,
-   because no fast host may take them. Runs node 2's fast host refuses go to node 1 at once.
+   because no fast host may take them. Runs node 2's fast host refuses go to node 1 at once. With
+   two fast hosts, work that fast hosts do not serve (proposal review, other harnesses) is refused
+   by one of them first and then goes to the overflow at once; it may meet both fast hosts, as it
+   does without roles.
 4. **Check.**
    - `orchestrator_claimed` events carry `placement`;
    - `qorpera_runtime_node_placements` rows read `CLAIM_TURN_*`;
