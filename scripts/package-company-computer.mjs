@@ -68,7 +68,9 @@ await mkdir(join(output, "node_modules"), { mode: 0o755 });
 await copyTree(playwright, join(output, "node_modules/playwright-core"));
 for (const name of ["qorpera-company-computer.service", "qorpera-company-computer-preparation.service", "qorpera-office-preparation.conf", "qorpera-office-runtime.conf", "qorpera-office-private.mount.in", "qorpera-screen-session", "qorpera-screen-xfce", "qorpera-browser-policy.json", "qorpera-office-browser-bwrap.apparmor", "qorpera-computer-network.nft", "qorpera-computer-network.service", "qorpera-computer-plumb", "qorpera-computer-plumb.socket", "qorpera-computer-plumb@.service"]) {
 	await copyFile(join(root, "deploy/lxd-company-computer-guest", name), join(output, name));
-	await chmod(join(output, name), name === "qorpera-computer-plumb" ? 0o500 : name.startsWith("qorpera-screen-") ? 0o555 : 0o444);
+	// The plumber is root-only where it is installed (it locks its own file); the
+	// package copy stays readable for every build step that hashes or stages it.
+	await chmod(join(output, name), name.startsWith("qorpera-screen-") || name === "qorpera-computer-plumb" ? 0o555 : 0o444);
 }
 await mkdir(join(output, "wallpapers"), { mode: 0o755 });
 // Reuse the existing artwork as inert image bytes, never desktop application code.
