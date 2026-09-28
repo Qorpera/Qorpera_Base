@@ -151,6 +151,14 @@ export function parseCloudMemberCompanyMode(value: unknown, companyId: string): 
 	return { companyId: uuid(input.companyId), environmentId: uuid(input.environmentId), mode: input.mode };
 }
 
+/** The cloud refused this member the path (401 or 403): a definite answer, not an outage. */
+export class CloudMemberCompanyAccessDenied extends Error {
+	constructor() {
+		super("Company File access was denied. Check your membership or sign in again.");
+		this.name = "CloudMemberCompanyAccessDenied";
+	}
+}
+
 /** Shared member display/intent client only. The cloud stages bytes and publishes
  * against current ACLs. This client cannot obtain a tree or service key. */
 export class CloudMemberCompanyFileClient {
@@ -596,8 +604,7 @@ export class CloudMemberCompanyFileClient {
 					void response.body?.cancel().catch(() => undefined);
 					if (response.status === 409)
 						throw new Error("Company File changed. Reload this path before editing again.");
-					if (response.status === 401 || response.status === 403)
-						throw new Error("Company File access was denied. Check your membership or sign in again.");
+					if (response.status === 401 || response.status === 403) throw new CloudMemberCompanyAccessDenied();
 					// A 400 is a definite refusal before anything was saved (for example a missing folder).
 					if (response.status === 400)
 						throw new Error(

@@ -7,6 +7,12 @@ import {
 	type CloudConnectorOAuthFlows,
 	connectorReturnLocation,
 } from "./cloud-connector-oauth.ts";
+import {
+	type CloudModelLoginVault,
+	type ModelLoginIssue,
+	type ModelLoginIssueRequest,
+	parseModelLoginRunBinding,
+} from "./cloud-model-login-vault.ts";
 import { parseCloudNativeToolBinding } from "./cloud-native-tool-authority.ts";
 import { type CloudToolContent, cloudToolJsonText } from "./cloud-native-tool-boundary.ts";
 import {
@@ -150,6 +156,41 @@ function parseRepositoryCredentialRequest(value: unknown): CodingRepositoryCrede
 		executorOwner: input.executorOwner,
 		repository: input.repository,
 	});
+}
+
+function parseModelLoginRequest(value: unknown): ModelLoginIssueRequest {
+	const input = record(value, "Model login request");
+	exact(input, ["schema", "binding", "knownVersion"], "Model login request");
+	if (
+		input.schema !== "qorpera.model-login-request/v1" ||
+		(input.knownVersion !== null &&
+			(typeof input.knownVersion !== "number" ||
+				!Number.isSafeInteger(input.knownVersion) ||
+				input.knownVersion < 1))
+	)
+		throw new Error("Model login request is invalid");
+	return { binding: parseModelLoginRunBinding(input.binding), knownVersion: input.knownVersion };
+}
+
+function parseModelLogin(value: unknown): ModelLoginIssue {
+	const input = record(value, "Model login");
+	exact(input, ["schema", "version", "accessExpiresAt", "authJson"], "Model login");
+	if (
+		input.schema !== "qorpera.model-login/v1" ||
+		typeof input.version !== "number" ||
+		!Number.isSafeInteger(input.version) ||
+		input.version < 1 ||
+		typeof input.accessExpiresAt !== "string" ||
+		!Number.isFinite(Date.parse(input.accessExpiresAt)) ||
+		(input.authJson !== null && typeof input.authJson !== "string")
+	)
+		throw new Error("Model login is invalid");
+	return {
+		schema: "qorpera.model-login/v1",
+		version: input.version,
+		accessExpiresAt: input.accessExpiresAt,
+		authJson: input.authJson,
+	};
 }
 
 function parseContent(value: unknown): CloudToolContent {
@@ -336,6 +377,10 @@ export interface HttpCloudSecretBrokerServiceOptions {
 	 * 404. The runtime token never opens that route, and this token never opens
 	 * `/v1/operations`. */
 	readonly codingExecutorToken?: string;
+	/** Model logins in the vault (Stateless Compute step 1): `/v1/model-logins` hands a live
+	 * run its login under the runtime token and the database's check of the run's exact native
+	 * lease. Absent means the route answers 404. */
+	readonly modelLogins?: CloudModelLoginVault;
 }
 
 /**
@@ -353,6 +398,7 @@ export class HttpCloudSecretBrokerService {
 	readonly #memberOrigins: ReadonlySet<string>;
 	readonly #oauth: CloudConnectorOAuthFlows | undefined;
 	readonly #codingExecutorToken: string | undefined;
+	readonly #modelLogins: CloudModelLoginVault | undefined;
 	#server?: Server;
 
 	constructor(
@@ -386,6 +432,7 @@ export class HttpCloudSecretBrokerService {
 		this.#memberOrigins = new Set(origins.map(parseMemberOrigin));
 		this.#oauth = options.oauth;
 		this.#codingExecutorToken = options.codingExecutorToken;
+		this.#modelLogins = options.modelLogins;
 	}
 
 	async start(): Promise<number> {
@@ -564,6 +611,22 @@ export class HttpCloudSecretBrokerService {
 				response(reply, 200, result as unknown as JsonValue);
 				return;
 			}
+			// A live run's model login, without its renewal token (Stateless Compute step 1). The
+			// runtime token every native host holds, plus the database's check of the run's exact
+			// native lease; never cached. Like operations, the router picks the company's broker by
+			// `?company=`; the broker ignores the query.
+			if (
+				path === "/v1/model-logins" &&
+				this.#modelLogins !== undefined &&
+				tokenMatches(this.#runtimeToken, request.headers.authorization)
+			) {
+				const login = await this.#modelLogins.issue(
+					parseModelLoginRequest(await readRequest(request)),
+					AbortSignal.timeout(60_000),
+				);
+				response(reply, 200, { ...login });
+				return;
+			}
 			// The coding executor's repository token (bundle v88): only the
 			// executor's own bearer (never the runtime token every guest holds), the
 			// kernel's lease check behind it, and an answer that is never cached.
@@ -707,6 +770,51 @@ export class HttpCloudSecretBrokerClient {
 			signal,
 		);
 	}
+}
+
+/** The run host's model login client (Stateless Compute step 1). Same origin, token and
+ * company routing as operations; the answer is never cached and holds no renewal token. */
+export async function issueModelLogin(
+	options: { origin: string; runtimeToken: string; companyId: string; allowLoopback?: boolean; fetch?: typeof fetch },
+	request: ModelLoginIssueRequest,
+	signal: AbortSignal,
+): Promise<ModelLoginIssue> {
+	const origin = brokerOrigin(options.origin, options.allowLoopback);
+	if (!TOKEN.test(options.runtimeToken) || typeof options.companyId !== "string" || !UUID.test(options.companyId))
+		throw new Error("Model login client is invalid");
+	const body = JSON.stringify({
+		schema: "qorpera.model-login-request/v1",
+		binding: parseModelLoginRunBinding(request.binding),
+		knownVersion: request.knownVersion,
+	});
+	return withCloudDeadline(
+		async (requestSignal) => {
+			const responseValue = await (options.fetch ?? fetch)(
+				`${origin}/v1/model-logins?company=${options.companyId.toLowerCase()}`,
+				{
+					method: "POST",
+					redirect: "error",
+					headers: { authorization: `Bearer ${options.runtimeToken}`, "content-type": "application/json" },
+					body,
+					signal: requestSignal,
+				},
+			);
+			if (!responseValue.ok) {
+				void responseValue.body?.cancel().catch(() => undefined);
+				throw new Error("Cloud secret broker refused the model login");
+			}
+			const bytes = await readBoundedCloudResponse(responseValue, MAX_RESPONSE_BYTES, requestSignal);
+			try {
+				return parseModelLogin(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)));
+			} catch {
+				throw new Error("Cloud secret broker returned an invalid model login");
+			} finally {
+				bytes.fill(0);
+			}
+		},
+		65_000,
+		signal,
+	);
 }
 
 /** Typed member capture path. The plaintext body goes to the broker origin,
