@@ -47,7 +47,9 @@ revoke all on public.qorpera_runtime_office_additions from public, anon, authent
 -- needed. The new computer copies the image, bootstrap and screen count of the
 -- company's newest computer, so every host that is prepared for this company
 -- can run it. Its default agent access and company browser profiles come from
--- the existing insert triggers, exactly as for the first computer.
+-- the existing insert triggers, exactly as for the first computer. An agent
+-- whose access was revoked on any of the company's computers is revoked on the
+-- new one too: a grant revoked on purpose stays revoked.
 create function public.qorpera_add_runtime_office_computer(
 	p_environment_id uuid, p_requested_by text, p_staff_agent_id uuid, p_run_id uuid, p_user_id uuid
 )
@@ -77,6 +79,12 @@ begin
 		template_version, capabilities, policy, computer_class, created_by_user_id)
 	values (v_logical, v_office.profile_id, v_office.client_computer_id, 'Shared office', 'qorpera-shared-office', 'v1',
 		'["company_substrate"]', public.qorpera_runtime_office_policy(), 'company_computer', v_template.created_by_user_id);
+	update public.qorpera_runtime_office_access access set state = 'revoked', version = access.version + 1
+		where access.office_id = v_office.id and access.state = 'active'
+			and exists(select 1 from public.qorpera_runtime_office_access other
+				join public.qorpera_runtime_offices o on o.id = other.office_id
+				where o.environment_id = p_environment_id and o.id <> v_office.id and o.state <> 'retired'
+					and other.staff_agent_id = access.staff_agent_id and other.state = 'revoked');
 	insert into public.qorpera_runtime_office_additions(office_id, profile_id, environment_id, computer_number,
 		template_office_id, requested_by, staff_agent_id, run_id, user_id)
 	values (v_office.id, v_office.profile_id, p_environment_id, v_number, v_template.id, p_requested_by,

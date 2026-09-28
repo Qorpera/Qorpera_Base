@@ -50,8 +50,12 @@ environment.
   4. `stopped`: a computer that is off after its idle time (agent's last first);
   5. `unstarted`: a computer that was added but never started;
   6. `new`: every computer is running and full;
-  7. `none`: no computer the agent can use (none registered, or one is in
+  7. `denied`: the agent's computer access is revoked on every computer; no
+     computer is added around a revoked grant;
+  8. `none`: no computer the agent can use (none registered, or one is in
      maintenance for another reason, which waits for its owner as today).
+- A new computer keeps every revocation: an agent revoked on any of the
+  company's computers is revoked on the new one too.
 - The native tool descriptor offers screen tools on `screen`/`room`. The start
   descriptor offers `computer_start` for `starting`/`stopped`/`unstarted`, and
   on `new` adds the next computer under the company fence and the seat lock.

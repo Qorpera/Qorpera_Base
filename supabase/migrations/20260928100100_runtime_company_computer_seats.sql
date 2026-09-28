@@ -24,6 +24,7 @@
 --    stopped   a computer that is off after its idle time;
 --    unstarted a computer that was added but never started;
 --    new       every computer is running and full: add one;
+--    denied    the agent's computer access is revoked on every computer;
 --    none      no computer the agent can use (none registered, or one is in
 --              maintenance for another reason).
 --    The native tool descriptor offers screen tools on 'screen' and 'room';
@@ -89,7 +90,8 @@ as $$
 		or public.qorpera_runtime_office_seats_taken(p_office.id, p_staff_agent_id) < p_office.max_screens
 $$;
 
--- The agent has a screen in use on another running computer of the company.
+-- The agent has a screen in use on another running computer of the company
+-- where it still has access (the same computers placement considers).
 create function public.qorpera_runtime_office_agent_elsewhere(p_office public.qorpera_runtime_offices, p_staff_agent_id uuid)
 returns boolean
 language sql
@@ -99,6 +101,8 @@ set search_path = ''
 as $$
 	select exists(select 1 from public.qorpera_runtime_office_screens s
 		join public.qorpera_runtime_offices o on o.id = s.office_id
+		join public.qorpera_runtime_office_access a on a.office_id = o.id and a.staff_agent_id = s.staff_agent_id
+			and a.state = 'active'
 		where o.environment_id = p_office.environment_id and o.id <> p_office.id and o.state = 'active'
 			and s.staff_agent_id = p_staff_agent_id and public.qorpera_runtime_office_screen_in_use(s))
 $$;
@@ -146,6 +150,15 @@ set search_path = ''
 as $$
 declare v_office public.qorpera_runtime_offices%rowtype;
 begin
+	-- denied: a revoked grant stays revoked, and no computer is added around it.
+	if exists(select 1 from public.qorpera_runtime_offices where environment_id = p_environment_id
+			and profile_id = p_profile_id and state <> 'retired')
+		and not exists(select 1 from public.qorpera_runtime_offices o
+			join public.qorpera_runtime_office_access a on a.office_id = o.id and a.staff_agent_id = p_staff_agent_id
+				and a.state = 'active'
+			where o.environment_id = p_environment_id and o.profile_id = p_profile_id and o.state <> 'retired') then
+		return '{"decision":"denied"}'::jsonb;
+	end if;
 	-- screen
 	select o.* into v_office from public.qorpera_runtime_offices o
 		join public.qorpera_runtime_office_screens s on s.office_id = o.id and s.staff_agent_id = p_staff_agent_id
@@ -196,11 +209,14 @@ begin
 				where i.office_id = o.id and i.computer_generation = o.generation)
 		order by o.computer_number limit 1;
 	if found then return jsonb_build_object('decision', 'unstarted', 'officeId', v_office.id); end if;
-	-- new: only when every computer is running (and, having got here, full).
-	-- Any other state (maintenance for an update or reset, a cancelled start)
-	-- waits for its owner, exactly as a company with one computer does.
-	if exists(select 1 from public.qorpera_runtime_offices where environment_id = p_environment_id
-			and profile_id = p_profile_id and state = 'active')
+	-- new: only when every computer is running (and, having got here, full), and
+	-- the agent may use one of them. Any other state (maintenance for an update
+	-- or reset, a cancelled start) waits for its owner, exactly as a company
+	-- with one computer does.
+	if exists(select 1 from public.qorpera_runtime_offices o
+			join public.qorpera_runtime_office_access a on a.office_id = o.id and a.staff_agent_id = p_staff_agent_id
+				and a.state = 'active'
+			where o.environment_id = p_environment_id and o.profile_id = p_profile_id and o.state = 'active')
 		and not exists(select 1 from public.qorpera_runtime_offices where environment_id = p_environment_id
 			and profile_id = p_profile_id and state not in ('active', 'retired')) then
 		return '{"decision":"new"}'::jsonb;

@@ -151,6 +151,9 @@ where staff_agent_id='30000000-0000-4000-8000-000000000030';
 select pg_temp.wake_assert(pg_temp.open(pg_temp.scope(1),'30000000-0000-4000-8000-000000000033')->>'state'='open','Dan takes computer 1''s second seat');
 select pg_temp.wake_assert(pg_temp.open(pg_temp.scope(2),'30000000-0000-4000-8000-000000000034')->>'state'='open','Erin takes computer 2''s second seat');
 select pg_temp.wake_assert(pg_temp.place('30000000-0000-4000-8000-000000000030')='{"decision":"new"}'::jsonb,'Alice needs a third computer');
+-- A grant revoked on purpose on one computer is revoked on the next one too.
+update public.qorpera_runtime_office_access set state='revoked',version=version+1
+where office_id=(pg_temp.office(1)).id and staff_agent_id='30000000-0000-4000-8000-000000000034';
 select pg_temp.path_claims('service_role');
 set local role service_role;
 select set_config('qorpera_test.start',public.qorpera_native_office_start_descriptor(current_setting('qorpera_test.wake_binding')::jsonb)::text,true);
@@ -169,6 +172,22 @@ reset role;
 select pg_temp.wake_assert(current_setting('qorpera_test.start_again')::jsonb->'scope'=pg_temp.scope(3),'asking again offers computer 3 and adds nothing');
 select pg_temp.wake_assert((select count(*)=3 from public.qorpera_runtime_offices where environment_id='30000000-0000-4000-8000-000000000020'),
 	'three computers');
+select pg_temp.wake_assert((select state='revoked' from public.qorpera_runtime_office_access
+	where office_id=(pg_temp.office(3)).id and staff_agent_id='30000000-0000-4000-8000-000000000034')
+	and (select state='active' from public.qorpera_runtime_office_access
+	where office_id=(pg_temp.office(3)).id and staff_agent_id='30000000-0000-4000-8000-000000000030'),
+	'computer 3 keeps Erin''s revoked grant revoked and gives Alice access');
+
+-- An agent revoked on every computer is denied, and no computer is added around it.
+update public.qorpera_runtime_office_access set state='revoked',version=version+1
+where staff_agent_id='30000000-0000-4000-8000-000000000032' and state='active';
+select pg_temp.wake_assert(pg_temp.place('30000000-0000-4000-8000-000000000032')='{"decision":"denied"}'::jsonb,
+	'Carol, revoked everywhere, is denied');
+select set_config('qorpera_test.denied',pg_temp.agent_office('30000000-0000-4000-8000-000000000032')::text,true);
+select pg_temp.wake_assert(current_setting('qorpera_test.denied')::jsonb->>'placement'='denied'
+	and current_setting('qorpera_test.denied')::jsonb->'computer'='null'::jsonb
+	and (select count(*)=3 from public.qorpera_runtime_offices where environment_id='30000000-0000-4000-8000-000000000020'),
+	'an owner opening Carol''s computer adds nothing');
 
 -- 7. Display numbers run out at 32: the screen unused for longest changes hands.
 update public.qorpera_runtime_offices set max_screens=32 where id=(pg_temp.office(1)).id;
