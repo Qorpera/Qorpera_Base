@@ -215,6 +215,9 @@ begin
 	-- Asleep past the removal delay.
 	update public.qorpera_runtime_node_demands set suspended_at = suspended_at - interval '1 hour'
 	where allocation_id = current_setting('qorpera_test.coding_vm')::uuid;
+	-- A machine is removed only once its member has no open session (bundle standby, 2026-09-28).
+	update public.qorpera_coding_sessions set archived_at = clock_timestamp(), archived_by = 'member'
+	where profile_id = (select profile_id from public.qorpera_coding_machines where id = current_setting('qorpera_test.coding_vm')::uuid);
 	perform pg_temp.wake_assert(pg_temp.machine_custody('delete') ->> 'intent' = 'delete', 'The sleeping machine may be deleted');
 	perform pg_temp.worker('{"action":"dispatch","operationKey":"machine-lock-dispatch","todoKey":"composer-latency","workerKey":"fix-send-3",
 		"title":"Third","goal":"g","definitionOfDone":"d","access":"read","species":"coding","harness":"codex",
@@ -238,8 +241,8 @@ end $$;
 -- 6. The agent cancels while the executor plans a member's first machine. The plan held the session,
 --    then waited for the profile fence to insert the new machine, which the cancel held while it waited
 --    to change the session. Now the plan takes the fence first.
---    The machine planned above goes first, as any machine goes: its session ends, it sleeps past the
---    removal delay, it is deleted. A plan reserves its node, so it is never released at once.
+--    The machine planned above goes first, as any machine goes: its sessions are archived, it sleeps past
+--    the removal delay, it is deleted. A plan reserves its node, so it is never released at once.
 select pg_temp.machine_agent_cancel('fix-send-3', 'machine-lock-cancel-5');
 do $$
 begin
@@ -251,6 +254,9 @@ begin
 		current_setting('qorpera_test.coding_binding'), repeat('c', 64)) ->> 'state' = 'suspended', 'The planned machine sleeps');
 	update public.qorpera_runtime_node_demands set suspended_at = suspended_at - interval '1 hour'
 	where allocation_id = current_setting('qorpera_test.coding_vm')::uuid;
+	update public.qorpera_coding_sessions set archived_at = clock_timestamp(), archived_by = 'member'
+	where profile_id = (select profile_id from public.qorpera_coding_machines where id = current_setting('qorpera_test.coding_vm')::uuid)
+		and archived_at is null;
 	perform pg_temp.wake_assert(pg_temp.machine_custody('delete') ->> 'intent' = 'delete', 'The planned machine may be deleted');
 	perform pg_temp.path_claims('service_role');
 	perform pg_temp.wake_assert(public.qorpera_release_coding_machine(current_setting('qorpera_test.coding_vm')::uuid, 'exec-test',

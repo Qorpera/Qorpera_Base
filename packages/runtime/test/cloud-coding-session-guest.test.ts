@@ -19,7 +19,7 @@ afterEach(async () => {
 });
 function guest(uid = 200000, workerId = randomUUID()): CodingGuestConfiguration {
 	return {
-		schema: "qorpera.coding-command-guest/v3",
+		schema: "qorpera.coding-command-guest/v4",
 		workerId,
 		vmId: randomUUID(),
 		bootId: randomUUID(),

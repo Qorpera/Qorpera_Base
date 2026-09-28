@@ -233,7 +233,7 @@ export class LxdCodingCommandTransport {
 	}
 	async start(
 		scope: CloudCodingCommandScope,
-		input: { commandId: string; inputSha256: string; command: string; timeoutMs: number },
+		input: { commandId: string; inputSha256: string; command: string; timeoutMs: number | null },
 		signal: AbortSignal,
 	) {
 		if (
@@ -243,13 +243,11 @@ export class LxdCodingCommandTransport {
 			input.command.includes("\0") ||
 			Buffer.byteLength(input.command) > 16384 ||
 			Buffer.from(input.command).toString("utf8") !== input.command ||
-			!Number.isSafeInteger(input.timeoutMs) ||
-			input.timeoutMs < 1000 ||
-			input.timeoutMs > 1800000
+			(input.timeoutMs !== null && (!Number.isSafeInteger(input.timeoutMs) || input.timeoutMs < 1000))
 		)
 			throw new Error("CODING_COMMAND_INPUT_INVALID");
 		await this.#gate("start", scope, input.commandId, input.inputSha256, signal);
-		const request = `${JSON.stringify({ schema: "qorpera.coding-command-request/v1", ...this.#scope, ...input })}\n`;
+		const request = `${JSON.stringify({ schema: "qorpera.coding-command-request/v2", ...this.#scope, ...input })}\n`;
 		if (Buffer.byteLength(request) > 65536) throw new Error("CODING_COMMAND_INPUT_TOO_LARGE");
 		const path = `${this.#custody}/inbox/${input.commandId}.json`;
 		await this.#client.pushInstanceFile(this.#project, this.#name, path, request, 0o444, signal);

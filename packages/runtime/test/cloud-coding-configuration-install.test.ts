@@ -23,7 +23,7 @@ async function fixture() {
 	await chmod(directory, 0o700);
 	const workerId = randomUUID();
 	const guest: CodingGuestConfiguration = {
-		schema: "qorpera.coding-command-guest/v3",
+		schema: "qorpera.coding-command-guest/v4",
 		workerId,
 		vmId: randomUUID(),
 		bootId: randomUUID(),

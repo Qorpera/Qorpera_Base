@@ -40,9 +40,20 @@ export class CodingControlBusy extends Error {
 }
 /** One housekeeping step on one machine, for the executor's log. */
 export interface CodingHousekeepingOutcome {
-	machineId: string;
+	/** Null for archive: the quiet sessions of this executor's environments. */
+	machineId: string | null;
 	/** release: the machine was deleted but its capacity release failed. */
-	step: "sleep" | "delete" | "release";
+	step: "sleep" | "delete" | "release" | "archive";
+	state: "done" | "not-now" | "failed";
+	code?: string;
+}
+/** One keeper step on one attached session (or its whole machine), for the executor's log. */
+export interface CodingKeepOutcome {
+	machineId: string;
+	/** Null when the machine's observation or renewal failed as a whole. */
+	workerId: string | null;
+	/** keep: attachment and guest lease renewed; detach: the session was taken off. */
+	step: "keep" | "detach";
 	state: "done" | "not-now" | "failed";
 	code?: string;
 }
@@ -118,23 +129,27 @@ export interface CodingExecutorHost {
 	 * before this resolves. Throws CodingMachineUnavailable when the turn must
 	 * wait for its machine. */
 	prepareWorkspace(claim: CodingSessionClaim, turn: CodingTurnState, signal: AbortSignal): Promise<CodingWorkspace>;
-	/** Refresh the guest monotonic lease only from the confirmed SQL deadline;
-	 * never beyond the remaining session lease. */
-	refreshLease(claim: CodingSessionClaim, signal: AbortSignal): Promise<void>;
-	/** Quiesce guest commands, export the submitted commit as a bundle, validate
-	 * and push it through the broker and create or verify the draft PR. Keeps its
-	 * own effect journals across restarts. */
+	/** The end of a turn, whatever its outcome: nothing more starts, publishes
+	 * or seeds for it. The session stays attached for the keeper. */
+	endTurn(claim: CodingSessionClaim): void;
+	/** Export the submitted commit as a bundle while the session's commands keep
+	 * running, validate and push it through the broker and create or verify the
+	 * draft PR. Keeps its own effect journals across restarts. */
 	publish(
 		claim: CodingSessionClaim,
 		submission: Extract<CodingSubmission, { kind: "finish" }>,
 		signal: AbortSignal,
 	): Promise<CodingExecutorPublication>;
-	/** The end of the turn: stop the session's commands, flush the guest and
-	 * unplug the session's folders, with or without the lease. The machine keeps
-	 * running for the member's other sessions and sleeps later. */
+	/** A turn that failed, or must wait for its machine, before recording its
+	 * session's attachment unplugs what it hot-plugged, with or without the
+	 * lease. An attached session is the keeper's. */
 	detachSession(claim: CodingSessionClaim, signal: AbortSignal): Promise<void>;
-	/** Sleep idle machines, remove the ones due, retire kept per-session VMs and
-	 * close released ones; every failure is recorded and returned. */
+	/** Keep every attached session of this executor's awake machines: renew its
+	 * attachment and guest lease, report what runs, take off the released ones. */
+	keep(signal: AbortSignal): Promise<CodingKeepOutcome[]>;
+	/** Archive quiet sessions, sleep quiet machines, remove the ones due, retire
+	 * kept per-session VMs and close released ones; every failure is recorded
+	 * and returned. */
 	housekeep(signal: AbortSignal): Promise<CodingHousekeepingOutcome[]>;
 }
 
@@ -278,7 +293,9 @@ export type CodingTurnOutcome = "completed" | "blocked" | "failed" | "deferred" 
  * the only bound. Native model activity, machine custody, Git publication and
  * the kernel's completion have different receipts; none is inferred from
  * another. The host composes the real LXD/Git adapters. A lost lease aborts a
- * turn's work, and its session is detached under separate custody. */
+ * turn's work. A turn never detaches its session: the session stands by on its
+ * machine under its own attachment, which the host keeps (keep) until the
+ * session is archived, its attachment ends or the machine sleeps. */
 export class CloudCodingExecutor {
 	readonly #control: CodingExecutorControl;
 	readonly #host: CodingExecutorHost;
@@ -331,12 +348,16 @@ export class CloudCodingExecutor {
 		void turn.finally(() => this.#turns.delete(turn)).catch(() => undefined);
 		return { state: "claimed", turn };
 	}
-	/** Every running turn has ended (after a shutdown, each detaches its session). */
+	/** Every running turn has ended (after a shutdown, each has ended its turn;
+	 * attached sessions stay for the next process to keep, within their deadline). */
 	async drain(): Promise<void> {
 		await Promise.allSettled([...this.#turns]);
 	}
 	housekeep(signal: AbortSignal): Promise<CodingHousekeepingOutcome[]> {
 		return this.#host.housekeep(signal);
+	}
+	keep(signal: AbortSignal): Promise<CodingKeepOutcome[]> {
+		return this.#host.keep(signal);
 	}
 	/** One turn, serially: it claims nothing else. */
 	async runOnce(signal: AbortSignal): Promise<"idle" | CodingTurnOutcome> {
@@ -348,8 +369,6 @@ export class CloudCodingExecutor {
 		const heartbeatStop = new AbortController();
 		const active = AbortSignal.any([signal, stop.signal]);
 		let heartbeat: Promise<void> | undefined;
-		let workspaceReady = false;
-		let leaseRefresh = Promise.resolve();
 		let watchdog: ReturnType<typeof globalThis.setTimeout> | undefined;
 		const arm = (deadline: string) => {
 			const milliseconds = Date.parse(deadline) - Date.now();
@@ -364,12 +383,6 @@ export class CloudCodingExecutor {
 		try {
 			const claimed = claim;
 			const args = { p_worker_id: claim.workerId, p_lease_token: claim.leaseToken };
-			const refresh = () => {
-				leaseRefresh = leaseRefresh.then(async () => {
-					if (workspaceReady) await this.#host.refreshLease(claimed, active);
-				});
-				return leaseRefresh;
-			};
 			arm(claim.leaseUntil);
 			heartbeat = (async () => {
 				const checked = AbortSignal.any([active, heartbeatStop.signal]);
@@ -384,7 +397,6 @@ export class CloudCodingExecutor {
 						if (typeof until !== "string") throw new Error("Coding heartbeat unconfirmed");
 						arm(until);
 						claimed.leaseUntil = until;
-						if (workspaceReady) await refresh();
 					}
 				} catch {
 					if (!heartbeatStop.signal.aborted) stop.abort(new Error("CODING_EXECUTOR_LEASE_LOST"));
@@ -417,13 +429,9 @@ export class CloudCodingExecutor {
 				);
 				if (view.workerId !== claimed.workerId) throw new Error("Coding completion unconfirmed");
 			};
-			// The end of every turn: stop the session's commands and unplug its
-			// folders before the kernel hears the outcome.
-			const detach = async () => {
-				workspaceReady = false;
-				await leaseRefresh;
-				await this.#host.detachSession(claimed, active);
-			};
+			// The end of every turn: nothing more starts or publishes for it. The
+			// session stays attached with whatever its commands left running.
+			const end = () => this.#host.endTurn(claimed);
 
 			// 1. The workspace: the member's machine, the session's NAS folders, pinned base, seeded checkout.
 			let turn = await describe();
@@ -448,8 +456,6 @@ export class CloudCodingExecutor {
 				}
 				return "deferred";
 			}
-			workspaceReady = true;
-			await refresh();
 			await progress({
 				p_last_step: "Workspace ready",
 				p_vm_allocation_id: workspace.vmId,
@@ -492,14 +498,14 @@ export class CloudCodingExecutor {
 				await progress({ p_phase: "publishing", p_last_step: "Publishing the draft pull request" });
 				const publication = await this.#host.publish(claimed, submission, active);
 				if (!publication.pullRequest && !publication.noChange) throw new Error("Coding publication unconfirmed");
-				await detach();
+				end();
 				await complete("succeeded", submission.summary, {
 					p_pull_request: publication.pullRequest,
 					p_harness_session_ref: claimed.harnessSessionRef,
 				});
 				return "completed";
 			}
-			await detach();
+			end();
 			if (submission?.kind === "ask" && turn.jobStatus === "completed") {
 				await complete("blocked", submission.summary, {
 					p_needs: submission.question,
@@ -520,12 +526,12 @@ export class CloudCodingExecutor {
 			// A lost or expired lease, or shutdown, is the cause, whatever await
 			// it interrupted.
 			const cause = active.aborted ? active.reason : error;
-			workspaceReady = false;
 			stop.abort();
-			await leaseRefresh.catch(() => undefined);
+			this.#host.endTurn(claim);
 			this.#reported("turn", cause);
-			// A separate custody must permit unplugging the session after work
-			// authority disappears. Never claim completion.
+			// A session hot-plugged by this turn but never attached is unplugged
+			// under separate custody after work authority disappears; an attached
+			// one stays for the keeper. Never claim completion.
 			try {
 				await this.#host.detachSession(claim, AbortSignal.timeout(CLEANUP_STOP_BUDGET_MS));
 			} catch (stopError) {

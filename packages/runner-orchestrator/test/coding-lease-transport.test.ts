@@ -35,8 +35,9 @@ function fixture() {
 								? Buffer.from(staged)
 								: Buffer.from(
 										JSON.stringify({
-											schema: "qorpera.coding-guest-lease/v1",
+											schema: "qorpera.coding-guest-lease/v2",
 											...scope,
+											open: JSON.parse(staged).open,
 											bootId,
 											leaseTokenSha256: JSON.parse(staged).leaseTokenSha256,
 											refreshedAtMonoMs: 100000,
@@ -55,6 +56,7 @@ function fixture() {
 		machine,
 		storage: codingMachineStorage,
 		scope,
+		open: true,
 		bootId,
 		helperSha256: createHash("sha256").update(helper).digest("hex"),
 		guestConfigSha256: createHash("sha256").update(config).digest("hex"),
@@ -101,6 +103,8 @@ describe("trusted coding guest lease transport", () => {
 		expect(staged.leaseTokenSha256).toBe("d".repeat(64));
 		expect(staged.ttlMs).toBeLessThanOrEqual(60000);
 		expect(staged.leaseToken).toBeUndefined();
+		// The attachment's lease names its turn and whether that turn may start commands.
+		expect(staged).toMatchObject({ schema: "qorpera.coding-guest-lease-refresh/v2", turn: f.scope.turn, open: true });
 	});
 	it("fails before guest mutation for revoked admission, scope drift and excessive TTL", async () => {
 		const f = fixture();
