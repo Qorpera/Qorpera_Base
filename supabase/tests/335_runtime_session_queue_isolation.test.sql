@@ -21,7 +21,7 @@ declare
  w uuid := pg_temp.queue_id(p_company,30); snap uuid := pg_temp.queue_id(p_company,40);
  staff uuid := pg_temp.queue_id(p_company,54); s uuid := pg_temp.queue_id(p_company,55);
  priv uuid := pg_temp.queue_id(p_company,56); connection jsonb; sponsor jsonb;
- personal jsonb; identity jsonb;
+ personal jsonb; identity jsonb; member_sponsor jsonb; member_identity jsonb;
  policy jsonb := '{"monthly_microusd":100000000,"reservation_microusd":100000,"max_calls_per_run":32,"max_input_tokens_per_run":2000000,"max_output_tokens_per_run":500000,"max_concurrent_runs":8}';
 begin
  insert into auth.users(id,email) values(o,o::text||'@example.test'),(m,m::text||'@example.test');
@@ -64,8 +64,19 @@ begin
   'member_connection',(connection->>'connection_id')::uuid,1,false);
  identity := public.qorpera_upsert_member_compute_identity(p,pg_temp.queue_id(p_company,64),
   'Owner compute','qorpera-member-linux','v1','["agent_turn","company_substrate"]','{}');
+ -- The member's own login: a member's turn is paid by that member (20260928170000).
+ perform pg_temp.queue_auth(m);
+ connection := public.qorpera_register_provider_connection(p,pg_temp.queue_id(p_company,65),m,
+  'openai','api_key','openai-responses','vault://queue/member','queue-member','queue-member-budget',
+  'qorpera-provider-consent/v1',null,policy,false);
+ member_sponsor := public.qorpera_create_member_execution_sponsor(p,pg_temp.queue_id(p_company,66),
+  (connection->>'connection_id')::uuid,1,false);
+ member_identity := public.qorpera_upsert_member_compute_identity(p,pg_temp.queue_id(p_company,67),
+  'Member compute','qorpera-member-linux','v1','["agent_turn","company_substrate"]','{}');
+ perform pg_temp.queue_auth(o);
  return jsonb_build_object('profile',p,'owner',o,'member',m,'session',s,'privateSession',priv,'staff',staff,
-  'sponsor',sponsor->>'binding_id','personalSponsor',personal->>'binding_id','identity',identity->>'compute_identity_id');
+  'sponsor',sponsor->>'binding_id','personalSponsor',personal->>'binding_id','identity',identity->>'compute_identity_id',
+  'memberSponsor',member_sponsor->>'binding_id','memberIdentity',member_identity->>'compute_identity_id');
 end $$;
 create function pg_temp.queue_input(p_company jsonb, p_owner boolean default false, p_private boolean default false,
  p_client uuid default extensions.gen_random_uuid()) returns uuid language plpgsql as $$
@@ -76,26 +87,24 @@ begin
   p_client,'user_message','{"schema":"qorpera.session-prompt/v1","text":"Queue regression","images":[]}');
  return (result->>'input_id')::uuid;
 end $$;
-create function pg_temp.queue_request(p_company jsonb, p_approve boolean default false,
+-- The member's own turn with review publication. Until 20260928170000 this was a turn the owner
+-- was asked to pay for; a member's turn is now paid by that member.
+create function pg_temp.queue_request(p_company jsonb,
  p_client uuid default extensions.gen_random_uuid(), p_request uuid default extensions.gen_random_uuid())
 returns jsonb language plpgsql as $$
-declare result jsonb;
 begin
  perform pg_temp.queue_auth((p_company->>'member')::uuid);
- result := public.qorpera_request_session_turn_v2((p_company->>'session')::uuid,p_client,p_request,
+ return public.qorpera_request_session_turn_v2((p_company->>'session')::uuid,p_client,p_request,
   '{"schema":"qorpera.session-prompt/v1","text":"Queue regression","images":[]}',
-  'sponsorship_request',null,null,(p_company->>'owner')::uuid,null,null,
+  'member_connection',(p_company->>'memberSponsor')::uuid,1,null,(p_company->>'memberIdentity')::uuid,null,
   'managed_sandbox','agent_turn','agent_turn','review','queue-review',array[(p_company->>'staff')::uuid]);
- if p_approve then
-  perform pg_temp.queue_auth((p_company->>'owner')::uuid);
-  perform public.qorpera_approve_session_turn_sponsorship((result->>'turn_request_id')::uuid,
-   (p_company->>'personalSponsor')::uuid,1,(p_company->>'identity')::uuid);
- end if;
- return result;
 end $$;
 select set_config('queue.a',pg_temp.queue_company(335)::text,true);
 select set_config('queue.b',pg_temp.queue_company(336)::text,true);
 select pg_temp.queue_auth();
+-- This deployment runs API-billed company accounts, so they may pay when a starter's login cannot.
+select public.qorpera_set_provider_execution_policy('openai','api_key','openai-responses','supported','enabled',8,null,
+ 'API-billed fixture');
 select public.qorpera_register_runner_orchestrator(pg_temp.queue_id(335,90),'Queue regression','process',repeat('c',64),86400);
 create function pg_temp.native_sponsor(p_company jsonb) returns jsonb language plpgsql as $$
 declare login jsonb; connection jsonb; sponsor jsonb; capsule uuid:=extensions.gen_random_uuid();
@@ -139,11 +148,15 @@ begin
   appearance_shape,employment_status,lifecycle_state,model_provider,model_id,updated_by_user_id,created_at,updated_at)
  values(origin.profile_id,reviewer,'Queue reviewer','Reviewer','Review proposed work.','blue','round','active','active',
   'openai','gpt-test',(p_company->>'owner')::uuid,statement_timestamp(),statement_timestamp());
- perform pg_temp.queue_auth((p_company->>'owner')::uuid);
- execute 'set local role authenticated';
- perform public.qorpera_configure_staff_execution_authority(origin.profile_id,reviewer,
-  (sponsor->>'binding_id')::uuid,1,p_computer);
- execute 'reset role';
+ -- A standing authority names a company account only (20260928170000); a native review is
+ -- paid by the member who started the change, through their own login.
+ if not p_native then
+  perform pg_temp.queue_auth((p_company->>'owner')::uuid);
+  execute 'set local role authenticated';
+  perform public.qorpera_configure_staff_execution_authority(origin.profile_id,reviewer,
+   (sponsor->>'binding_id')::uuid,1,p_computer);
+  execute 'reset role';
+ end if;
  insert into public.qorpera_company_snapshots(id,profile_id,environment_id,workspace_id,client_snapshot_id,
   tree_manifest_sha256,tree_manifest_bytes,tree_contract_version,file_count,total_bytes,created_by_user_id)
  values(proposed,origin.profile_id,origin.environment_id,
@@ -229,7 +242,8 @@ begin
    'low',(sponsor->>'binding_id')::uuid,1,null,'agent_turn','agent_turn',true,'automatic',null,'{}');
  else raise exception 'Unknown recovery lane'; end if;
  execute 'reset role';
- if p_lane='ordinary' then input:=pg_temp.queue_input(p_company); end if;
+ -- The owner writes: the owner's login pays only for the owner's messages (20260928170000).
+ if p_lane='ordinary' then input:=pg_temp.queue_input(p_company,true); end if;
  if p_lane='wake' then
   select * into strict cursor from public.qorpera_cloud_routine_schedule_cursors where routine_id=(routine->>'routine_id')::uuid;
   wake:=extensions.gen_random_uuid();
@@ -289,12 +303,11 @@ begin
     company_snapshot_id,staff,1,execution_scope,audience_kind,audience_user_id
    from public.qorpera_shared_sessions where id=(p_work->>'session')::uuid;
    set local role authenticated;
-   perform public.qorpera_configure_staff_execution_authority((p_work->>'profile')::uuid,staff,(p_work->>'binding')::uuid,1,null);
    perform public.qorpera_configure_session_execution(s,(p_work->>'binding')::uuid,1,null,'agent_turn','agent_turn');
    reset role;
   end if;
   if p_lane='ordinary' then
-   return p_work||jsonb_build_object('session',s,'input',pg_temp.queue_input(p_work||jsonb_build_object('session',s)));
+   return p_work||jsonb_build_object('session',s,'input',pg_temp.queue_input(p_work||jsonb_build_object('session',s),true));
   end if;
   set local role authenticated;
   result:=public.qorpera_request_session_turn_v2(s,extensions.gen_random_uuid(),extensions.gen_random_uuid(),
@@ -396,38 +409,38 @@ begin
  insert into queue_results values(p_name,v_error is null,v_error);
 end $$;
 
-select pg_temp.queue_case('pending sponsorship retains sole ownership and review policy', $case$
+select pg_temp.queue_case('a member cannot ask another member to pay for a turn', $case$
 do $body$
-declare a jsonb := current_setting('queue.a')::jsonb; request jsonb; ordinary uuid;
+declare a jsonb := current_setting('queue.a')::jsonb; rejected boolean := false;
 begin
- request := pg_temp.queue_request(a);
- ordinary := pg_temp.queue_input(a);
- perform pg_temp.queue_auth();
- perform public.qorpera_reconcile_runner_orchestrator(pg_temp.queue_id(335,90));
- perform pg_temp.queue_assert((select status='pending_sponsorship' and run_id is null and publication_mode='review'
-  from public.qorpera_session_turn_requests where id=(request->>'turn_request_id')::uuid),'pending request changed');
- perform pg_temp.queue_assert((select execution_run_id is null and failed_at is null from public.qorpera_session_inputs
-  where id=(request->>'input_id')::uuid),'pending input consumed');
- perform pg_temp.queue_assert((select count(*)=1 and bool_and(input_ids=array[ordinary] and publication_mode='automatic'
-  and requested_by_user_id=(a->>'member')::uuid) from public.qorpera_execution_runs),'ordinary input did not run independently');
+ perform pg_temp.queue_auth((a->>'member')::uuid);
+ begin
+  perform public.qorpera_request_session_turn_v2((a->>'session')::uuid,extensions.gen_random_uuid(),extensions.gen_random_uuid(),
+   '{"schema":"qorpera.session-prompt/v1","text":"Queue regression","images":[]}',
+   'sponsorship_request',null,null,(a->>'owner')::uuid,null,null,
+   'managed_sandbox','agent_turn','agent_turn','review','queue-review',array[(a->>'staff')::uuid]);
+ exception when invalid_parameter_value then rejected := true;
+ end;
+ perform pg_temp.queue_assert(rejected,'a member asked another member to pay for a turn');
+ perform pg_temp.queue_assert(not exists(select 1 from public.qorpera_session_turn_requests),'the refused request left a row');
 end $body$;
 $case$);
 
-select pg_temp.queue_case('approved request keeps sponsor compute and review pins exactly once', $case$
+select pg_temp.queue_case('own request keeps sponsor compute and review pins exactly once', $case$
 do $body$
 declare a jsonb := current_setting('queue.a')::jsonb; request jsonb;
 begin
- request := pg_temp.queue_request(a,true);
+ request := pg_temp.queue_request(a);
  perform pg_temp.queue_auth();
  perform pg_temp.queue_assert(public.qorpera_materialize_session_execution_runs(32)='[]','ordinary materializer stole queued request');
  perform public.qorpera_materialize_session_turn_requests(32);
  perform public.qorpera_reconcile_runner_orchestrator(pg_temp.queue_id(335,90));
  perform pg_temp.queue_assert((select count(*)=1 and bool_and(id=(request->>'turn_request_id')::uuid
-  and sponsor_binding_id=(a->>'personalSponsor')::uuid and sponsor_version=1
-  and compute_identity_id=(a->>'identity')::uuid and requested_by_user_id=(a->>'member')::uuid
-  and sponsored_by_user_id=(a->>'owner')::uuid and publication_mode='review' and review_policy_key='queue-review'
+  and sponsor_binding_id=(a->>'memberSponsor')::uuid and sponsor_version=1
+  and compute_identity_id=(a->>'memberIdentity')::uuid and requested_by_user_id=(a->>'member')::uuid
+  and sponsored_by_user_id=(a->>'member')::uuid and publication_mode='review' and review_policy_key='queue-review'
   and reviewer_staff_ids=array[(a->>'staff')::uuid] and input_ids=array[(request->>'input_id')::uuid])
-  from public.qorpera_execution_runs),'approved authority pins changed');
+  from public.qorpera_execution_runs),'own request authority pins changed');
  perform pg_temp.queue_assert((select status='materialized' and run_id=id from public.qorpera_session_turn_requests
   where id=(request->>'turn_request_id')::uuid),'request not materialized');
  perform pg_temp.queue_assert((select count(*)=1 from public.qorpera_wake_occurrences),'duplicate wake');
@@ -439,7 +452,7 @@ do $body$
 declare a jsonb := current_setting('queue.a')::jsonb; request jsonb; terminal text;
 begin
  foreach terminal in array array['failed','cancelled'] loop
-  request := pg_temp.queue_request(a,true);
+  request := pg_temp.queue_request(a);
   update public.qorpera_session_turn_requests set status=terminal,
    failure_reason=case when terminal='failed' then 'Fixture terminal request' else null end
    where id=(request->>'turn_request_id')::uuid;
@@ -489,11 +502,11 @@ begin
 end $body$;
 $case$);
 
-select pg_temp.queue_case('removed sponsored requester cannot block healthy company', $case$
+select pg_temp.queue_case('removed requester cannot block healthy company', $case$
 do $body$
 declare a jsonb := current_setting('queue.a')::jsonb; b jsonb := current_setting('queue.b')::jsonb; request jsonb;
 begin
- request := pg_temp.queue_request(a,true);
+ request := pg_temp.queue_request(a);
  perform pg_temp.queue_input(b);
  perform pg_temp.queue_auth((a->>'owner')::uuid);
  perform public.qorpera_remove_profile_member((a->>'profile')::uuid,(a->>'member')::uuid);
@@ -502,7 +515,7 @@ begin
  perform pg_temp.queue_assert((select status='failed' and run_id is null from public.qorpera_session_turn_requests
   where id=(request->>'turn_request_id')::uuid),'removed requester was not retired');
  perform pg_temp.queue_assert((select failed_at is not null and execution_run_id is null from public.qorpera_session_inputs
-  where id=(request->>'input_id')::uuid),'sponsored input was not retired');
+  where id=(request->>'input_id')::uuid),'removed requester input was not retired');
  perform pg_temp.queue_assert((select count(*)=1 from public.qorpera_runner_job_claims),'healthy claim blocked');
 end $body$;
 $case$);
@@ -529,23 +542,23 @@ begin
 end $body$;
 $case$);
 
-select pg_temp.queue_case('paused sponsored request retains approved pins until resume', $case$
+select pg_temp.queue_case('paused request retains its pins until resume', $case$
 do $body$
 declare a jsonb := current_setting('queue.a')::jsonb; request jsonb;
 begin
- request := pg_temp.queue_request(a,true);
+ request := pg_temp.queue_request(a);
  perform pg_temp.queue_auth((a->>'owner')::uuid);
  perform public.qorpera_set_company_execution_pause((a->>'profile')::uuid,true,'Queue regression');
  perform pg_temp.queue_auth();
  perform public.qorpera_reconcile_runner_orchestrator(pg_temp.queue_id(335,90));
  perform pg_temp.queue_assert((select status='queued' and run_id is null from public.qorpera_session_turn_requests
-  where id=(request->>'turn_request_id')::uuid),'pause consumed sponsored request');
+  where id=(request->>'turn_request_id')::uuid),'pause consumed the request');
  perform pg_temp.queue_auth((a->>'owner')::uuid);
  perform public.qorpera_set_company_execution_pause((a->>'profile')::uuid,false,'Queue regression');
  perform pg_temp.queue_auth();
  perform public.qorpera_reconcile_runner_orchestrator(pg_temp.queue_id(335,90));
- perform pg_temp.queue_assert((select publication_mode='review' and sponsor_binding_id=(a->>'personalSponsor')::uuid
-  from public.qorpera_execution_runs where id=(request->>'turn_request_id')::uuid),'resume changed sponsored pins');
+ perform pg_temp.queue_assert((select publication_mode='review' and sponsor_binding_id=(a->>'memberSponsor')::uuid
+  from public.qorpera_execution_runs where id=(request->>'turn_request_id')::uuid),'resume changed the request pins');
 end $body$;
 $case$);
 
@@ -574,7 +587,7 @@ begin
  perform pg_temp.queue_auth();
  perform public.qorpera_materialize_session_execution_runs(32);
  begin
-  perform pg_temp.queue_request(a,false,client);
+  perform pg_temp.queue_request(a,client);
  exception when unique_violation then rejected := true;
  end;
  perform pg_temp.queue_assert(rejected,'claimed input gained a pending request');
@@ -586,31 +599,31 @@ select pg_temp.queue_case('existing request replay remains idempotent after mate
 do $body$
 declare a jsonb := current_setting('queue.a')::jsonb; client uuid := extensions.gen_random_uuid(); request_id uuid := extensions.gen_random_uuid(); first jsonb; replay jsonb;
 begin
- first := pg_temp.queue_request(a,true,client,request_id);
+ first := pg_temp.queue_request(a,client,request_id);
  perform pg_temp.queue_auth();
  perform public.qorpera_materialize_session_turn_requests(32);
- replay := pg_temp.queue_request(a,false,client,request_id);
+ replay := pg_temp.queue_request(a,client,request_id);
  perform pg_temp.queue_assert(replay->>'turn_request_id'=first->>'turn_request_id' and replay->>'status'='materialized',
   'materialized request retry rejected');
 end $body$;
 $case$);
 
-select pg_temp.queue_case('changed retry selection is rejected after approval', $case$
+select pg_temp.queue_case('changed retry selection is rejected', $case$
 do $body$
 declare a jsonb := current_setting('queue.a')::jsonb; client uuid := extensions.gen_random_uuid(); request_id uuid := extensions.gen_random_uuid(); rejected boolean := false;
 begin
- perform pg_temp.queue_request(a,true,client,request_id);
+ perform pg_temp.queue_request(a,client,request_id);
  perform pg_temp.queue_auth((a->>'member')::uuid);
  begin
   perform public.qorpera_request_session_turn_v2((a->>'session')::uuid,client,request_id,
    '{"schema":"qorpera.session-prompt/v1","text":"Queue regression","images":[]}',
-   'sponsorship_request',null,null,(a->>'owner')::uuid,null,null,'company_computer',
+   'member_connection',(a->>'memberSponsor')::uuid,1,null,(a->>'memberIdentity')::uuid,null,'company_computer',
    'agent_turn','agent_turn','review','queue-review',array[(a->>'staff')::uuid]);
  exception when unique_violation then rejected := true;
  end;
  perform pg_temp.queue_assert(rejected,'different original placement was silently accepted');
  perform pg_temp.queue_assert((select status='queued' and worker_class='managed_sandbox' and publication_mode='review'
-  from public.qorpera_session_turn_requests where client_request_id=request_id),'retry changed approved request');
+  from public.qorpera_session_turn_requests where client_request_id=request_id),'retry changed the request');
 end $body$;
 $case$);
 

@@ -623,19 +623,29 @@ begin
 end
 $$;
 
-select set_config(
-	'qorpera_test.sponsored_turn',
-	public.qorpera_request_session_turn_v2(
-		'16000000-0000-4000-8000-000000000040',
-		'16000000-0000-4000-8000-000000000072',
-		'16000000-0000-4000-8000-000000000073',
-		'{"schema":"qorpera.session-prompt/v1","text":"Ask the owner to sponsor this turn.","images":[]}',
-		'sponsorship_request', null, null,
-		'16000000-0000-4000-8000-000000000001', null, null,
-		'managed_sandbox', 'agent_turn', 'agent_turn', 'automatic', null, '{}'
-	)::text,
-	false
-);
+-- A member cannot ask another member to pay for a turn (20260928170000): the request mode is
+-- refused, and approving an older request is refused too.
+do $$
+declare v_rejected boolean := false;
+begin
+	begin
+		perform public.qorpera_request_session_turn_v2(
+			'16000000-0000-4000-8000-000000000040',
+			'16000000-0000-4000-8000-000000000072',
+			'16000000-0000-4000-8000-000000000073',
+			'{"schema":"qorpera.session-prompt/v1","text":"Ask the owner to sponsor this turn.","images":[]}',
+			'sponsorship_request', null, null,
+			'16000000-0000-4000-8000-000000000001', null, null,
+			'managed_sandbox', 'agent_turn', 'agent_turn', 'automatic', null, '{}'
+		);
+	exception when invalid_parameter_value then
+		v_rejected := true;
+	end;
+	if not v_rejected then
+		raise exception 'a member asked another member to pay for a turn';
+	end if;
+end
+$$;
 
 select set_config(
 	'request.jwt.claims',
@@ -643,12 +653,40 @@ select set_config(
 	false
 );
 
-select public.qorpera_approve_session_turn_sponsorship(
-	(current_setting('qorpera_test.sponsored_turn')::jsonb ->> 'turn_request_id')::uuid,
-	(current_setting('qorpera_test.native_sponsor')::jsonb ->> 'binding_id')::uuid,
-	1,
-	(current_setting('qorpera_test.native_identity')::jsonb ->> 'compute_identity_id')::uuid,
-	null, 'managed_sandbox'
+do $$
+declare v_rejected boolean := false;
+begin
+	begin
+		perform public.qorpera_approve_session_turn_sponsorship(
+			'16000000-0000-4000-8000-000000000073',
+			(current_setting('qorpera_test.native_sponsor')::jsonb ->> 'binding_id')::uuid,
+			1,
+			(current_setting('qorpera_test.native_identity')::jsonb ->> 'compute_identity_id')::uuid,
+			null, 'managed_sandbox'
+		);
+	exception when insufficient_privilege then
+		v_rejected := true;
+	end;
+	if not v_rejected then
+		raise exception 'a member approved paying for another member turn';
+	end if;
+end
+$$;
+
+-- The owner's own second turn waits behind the first; the revocation below fences it.
+select set_config(
+	'qorpera_test.sponsored_turn',
+	public.qorpera_request_session_turn_v2(
+		'16000000-0000-4000-8000-000000000040',
+		'16000000-0000-4000-8000-000000000072',
+		'16000000-0000-4000-8000-000000000073',
+		'{"schema":"qorpera.session-prompt/v1","text":"A second turn of my own.","images":[]}',
+		'member_connection',
+		(current_setting('qorpera_test.native_sponsor')::jsonb ->> 'binding_id')::uuid, 1,
+		null, (current_setting('qorpera_test.native_identity')::jsonb ->> 'compute_identity_id')::uuid, null,
+		'managed_sandbox', 'agent_turn', 'agent_turn', 'automatic', null, '{}'
+	)::text,
+	false
 );
 
 reset role;
@@ -729,14 +767,14 @@ begin
 	if not exists (
 		select 1 from public.qorpera_session_turn_requests as request
 		where request.id = (current_setting('qorpera_test.sponsored_turn')::jsonb ->> 'turn_request_id')::uuid
-			and request.requested_by_user_id = v_member
-			and request.requested_sponsor_user_id = v_owner
+			and request.requested_by_user_id = v_owner
+			and request.requested_sponsor_user_id is null
 			and request.sponsored_by_user_id = v_owner
 			and request.sponsor_binding_id = v_sponsor and request.sponsor_version = 1
 			and request.compute_identity_id = v_identity
 			and request.status = 'queued'
 	) then
-		raise exception 'approved sponsored turn did not preserve requester and sponsor provenance';
+		raise exception 'a second own turn did not wait with its requester and sponsor provenance';
 	end if;
 	if (
 		select count(*) from public.qorpera_provider_execution_policies
@@ -1350,64 +1388,6 @@ select public.qorpera_materialize_session_turn_requests(32);
 
 reset role;
 
--- A real sponsored turn must retain the requesting friend, not silently
--- substitute the subscription owner. Roll the probe back before the existing
--- revocation tests so this does not change their queued-run fixture.
-do $$
-declare
-	v_run_id uuid := (current_setting('qorpera_test.sponsored_turn')::jsonb ->> 'turn_request_id')::uuid;
-	v_claim jsonb;
-	v_runner jsonb;
-	v_assignment jsonb;
-	v_native jsonb;
-	v_binding jsonb;
-	v_identity jsonb;
-	v_runner_id uuid;
-	v_job_id uuid;
-begin
-	begin
-		update public.qorpera_runner_jobs set created_at = created_at - interval '1 hour' where run_id = v_run_id;
-		set local role service_role;
-		v_claim := public.qorpera_claim_runner_job_for_orchestrator('16000000-0000-4000-8000-000000000092', '16000000-0000-4000-8000-0000000000d1', 120);
-		if (v_claim -> 'work' ->> 'run_id')::uuid is distinct from v_run_id then
-			raise exception 'fixture did not claim the friend-sponsored run';
-		end if;
-		v_job_id := (v_claim -> 'work' ->> 'job_id')::uuid;
-		v_runner := public.qorpera_provision_execution_runner(v_run_id, '16000000-0000-4000-8000-0000000000d2', 'process', repeat('4',64));
-		v_runner_id := (v_runner ->> 'runner_id')::uuid;
-		perform public.qorpera_activate_runner(v_runner_id, repeat('4',64), repeat('5',64), 'linux', 'native-tool-authority-test');
-		v_assignment := public.qorpera_assign_runner_job('16000000-0000-4000-8000-000000000092', (v_claim ->> 'claim_id')::uuid,
-			v_runner_id, '16000000-0000-4000-8000-0000000000d3', repeat('6',64), 120);
-		perform public.qorpera_accept_runner_assignment(v_runner_id, repeat('5',64), (v_assignment ->> 'assignment_id')::uuid, v_job_id, repeat('6',64));
-		v_native := public.qorpera_acquire_native_provider_connection_lease(v_run_id, v_runner_id, repeat('5',64),
-			(v_assignment ->> 'assignment_id')::uuid, repeat('6',64), 120);
-		v_binding := jsonb_build_object('runId', v_run_id, 'jobId', v_job_id, 'runnerId', v_runner_id,
-			'assignmentId', v_assignment ->> 'assignment_id', 'leaseId', v_native ->> 'lease_id',
-			'credentialCapsuleId', v_native ->> 'credential_capsule_id', 'computeIdentityId', v_native ->> 'compute_identity_id',
-			'provider', 'openai', 'nativeHarness', 'codex-cli', 'model', 'gpt-native');
-		v_identity := public.qorpera_describe_native_tool_authority(v_binding) -> 'identity';
-		if v_identity ->> 'requesterUserId' <> '16000000-0000-4000-8000-000000000002'
-			or v_identity ->> 'sponsorUserId' <> '16000000-0000-4000-8000-000000000001' then
-			raise exception 'tool identity replaced the requester with its sponsor';
-		end if;
-		reset role;
-		delete from public.qorpera_profile_members where profile_id = '16000000-0000-4000-8000-000000000010'
-			and user_id = '16000000-0000-4000-8000-000000000002';
-		if not exists (select 1 from public.qorpera_provider_connections
-			where id = (v_identity ->> 'providerConnectionId')::uuid and status = 'active') then
-			raise exception 'requester-removal fixture also revoked the sponsor';
-		end if;
-		set local role service_role;
-		begin
-			perform public.qorpera_describe_native_tool_authority(v_binding);
-			raise exception 'departed requester retained authority through another member subscription';
-		exception when insufficient_privilege then null;
-		end;
-		raise exception using errcode = 'QTP01';
-	exception when sqlstate 'QTP01' then null;
-	end;
-end
-$$;
 
 
 select set_config(

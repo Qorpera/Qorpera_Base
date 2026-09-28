@@ -1836,6 +1836,25 @@ and provider outage (wait or fail over). Agents MAY later configure model and
 sponsor routing for routines, workers, and teammate questions through
 versioned policy objects.
 
+2026-09-28 amendment: the member who started the work pays. A member's own
+model login pays only for work that member started: their turns and room
+posts, and everything that follows from them — coworker messages, workers
+and their reports, reviews of a change, a computer that finished starting,
+coding sessions, and routines an agent sets up for them. The kernel already
+carries that member as the run's requester; the payer for follow-up work is
+the requester's own usable login (the parent run's first), else a company
+account, else nothing, and the work does not start. An agent's standing
+execution authority names a company account only; it never pays with a
+member's login. A coding session runs for the member who asked, on their
+account; the model cannot name another member. A member cannot ask another
+member to pay for a turn. Every run is checked where it is created and where
+a handoff moves it: a member-connection sponsor must be owned by the run's
+requester; a company sponsor serves any member. Unattended use stays granted
+by default (2026-09-19/20 amendment, item 2) and covers only the owner's own
+work. The company account for the usage-limit handoff and for work no member
+started is a company-owned API account added by an owner or admin; it pays
+only once its kind of account can run.
+
 ## 18. Short constitution
 
 The cached constitution is written after the kernel behavior it describes has

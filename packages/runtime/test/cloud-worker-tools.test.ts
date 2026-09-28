@@ -537,6 +537,41 @@ describe("agent todo and worker tools", () => {
 		}
 	});
 
+	it("starts a coding session for the member who asked and refuses to name another member", async () => {
+		const f = await fixture();
+		try {
+			const coding = {
+				...dispatch,
+				operationKey: "c1",
+				workerKey: "fix-login",
+				access: "read",
+				species: "coding",
+				harness: "codex",
+				repository: { host: "github.com", owner: "qorpera", name: "site", baseBranch: "main" },
+			};
+			const sent = await f.boundary.invoke("c1", "qorpera", "manage_worker", coding);
+			expect(body(sent).status).toBe("ok");
+			const request = (
+				f.call.mock.calls.findLast(([method]) => method === "qorpera_manage_agent_worker")?.[1] as {
+					p_request: Record<string, unknown>;
+				}
+			).p_request;
+			expect(request.species).toBe("coding");
+			expect(request).not.toHaveProperty("owner");
+			const calls = f.call.mock.calls.length;
+			// The session runs for the member who asked (the run's requester); the model cannot pick a payer.
+			const refused = await f.boundary.invoke("c2", "qorpera", "manage_worker", {
+				...coding,
+				operationKey: "c2",
+				owner: randomUUID(),
+			});
+			expect(body(refused).status).toBe("denied");
+			expect(f.call.mock.calls.length).toBe(calls);
+		} finally {
+			f.run.close();
+		}
+	});
+
 	it("lets a worker report once to its parent, with a question only when blocked", async () => {
 		const f = await fixture(workerWake, { present: ["work", "work/todos"] });
 		try {

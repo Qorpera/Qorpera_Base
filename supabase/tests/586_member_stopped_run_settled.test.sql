@@ -36,8 +36,19 @@ end
 $$;
 
 -- One of Bob's runs for a member: a post in his thread or a turn in a plain
--- conversation with him. Inserted as 378 does, because this fixture gives the
--- contributor no model account of their own to post with.
+-- conversation with him. Inserted as 378 does, on an account of the member's own:
+-- a member's login pays only for that member's work (20260928170000).
+select pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000002');
+select set_config('qorpera_test.settled_member_connection',public.qorpera_register_provider_connection(
+	'30000000-0000-4000-8000-000000000010','30000000-0000-4000-8000-000000000790','30000000-0000-4000-8000-000000000002',
+	'openai','api_key','openai-responses','vault://member/openai','member-account','member-api-budget',
+	'qorpera-provider-consent/v1',null,
+	'{"monthly_microusd":1000000,"reservation_microusd":1000,"max_calls_per_run":32,"max_input_tokens_per_run":2000000,"max_output_tokens_per_run":500000,"max_concurrent_runs":8}',
+	false)::text,true);
+select set_config('qorpera_test.settled_member_sponsor',public.qorpera_create_member_execution_sponsor(
+	'30000000-0000-4000-8000-000000000010','30000000-0000-4000-8000-000000000791',
+	(current_setting('qorpera_test.settled_member_connection')::jsonb ->> 'connection_id')::uuid,1,false)::text,true);
+select pg_temp.path_claims('service_role');
 create function pg_temp.settled_run(p_kind text,p_session uuid,p_user uuid) returns uuid language plpgsql as $$
 declare v_base public.qorpera_execution_runs%rowtype; v_id uuid := extensions.gen_random_uuid(); v_job uuid;
 begin
@@ -52,7 +63,11 @@ begin
 	values(v_id,v_base.profile_id,v_base.environment_id,p_kind,v_id,p_session,v_job,
 		v_base.substrate_version_id,v_base.company_snapshot_id,v_base.staff_agent_id,v_base.staff_version,
 		case when p_kind = 'session_turn' then array[v_id] else '{}' end,
-		v_base.sponsor_binding_id,v_base.sponsor_version,'agent_turn','agent_turn',repeat('e',64),v_base.compute_identity_id,0,p_user);
+		case when p_user = v_base.requested_by_user_id then v_base.sponsor_binding_id
+			else (current_setting('qorpera_test.settled_member_sponsor')::jsonb ->> 'binding_id')::uuid end,
+		case when p_user = v_base.requested_by_user_id then v_base.sponsor_version else 1 end,
+		'agent_turn','agent_turn',repeat('e',64),
+		case when p_user = v_base.requested_by_user_id then v_base.compute_identity_id end,0,p_user);
 	update public.qorpera_runner_jobs set run_id = v_id where id = v_job;
 	return v_id;
 end
