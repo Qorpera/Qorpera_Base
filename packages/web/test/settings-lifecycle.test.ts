@@ -337,7 +337,7 @@ describe("settings session lifecycle", () => {
 		open(f.root);
 		expect(f.root.querySelector<HTMLElement>(".settings-back")!.hidden).toBe(true);
 	});
-	it("opens all six tabs over the same conversation and restores the profile button", async () => {
+	it("opens all seven tabs over the same conversation and restores the profile button", async () => {
 		const f = await setup(),
 			composer = f.root.querySelector<HTMLTextAreaElement>("textarea")!;
 		composer.value = "Keep my conversation draft";
@@ -350,6 +350,7 @@ describe("settings session lifecycle", () => {
 			"Company",
 			"Friends",
 			"Plan & usage",
+			"Machines",
 			"Connections",
 		]);
 		for (const tab of f.root.querySelectorAll('[role="tab"]')) expect(tab.querySelector("svg.icon")).not.toBeNull();

@@ -1,6 +1,7 @@
 import type { CloudApi } from "../../cloud/api.ts";
 import { describeError } from "../../cloud/client.ts";
 import { createWebConnectors } from "../../cloud/connectors.ts";
+import { createWebMachines } from "../../cloud/machines.ts";
 import { createWebNativeSubscription } from "../../cloud/native-subscription.ts";
 import { createWebReviewRules } from "../../cloud/review-rules.ts";
 import type { HostedCompanyFile, HostedProfile } from "../../cloud/types.ts";
@@ -16,6 +17,7 @@ import { FriendsController, renderFriends } from "./friends.ts";
 import type { HubController } from "./hub.ts";
 import { renderPlan } from "./plan.ts";
 import { ConnectionsView, ProviderSignIns } from "./settings-connections.ts";
+import { MachinesView } from "./settings-machines.ts";
 import { RulesView } from "./settings-rules.ts";
 import { ServicesView } from "./settings-services.ts";
 import { storageSummary } from "./storage-summary.ts";
@@ -56,6 +58,13 @@ const TABS = [
 		icon: "plan",
 		keywords:
 			"plan billing subscription usage storage trial upgrade price payment card invoices computer hours basis standard dedicated abonnement forbrug betaling lager lagerplads prøveperiode opgrader pris kort fakturaer computertimer dedikeret",
+	},
+	{
+		id: "machines",
+		label: phrase("Machines"),
+		icon: "machine",
+		keywords:
+			"machines virtual machines vm servers compute docker tests builds jobs agents stop delete maskiner virtuelle maskiner servere beregning test byg job agenter stop slet",
 	},
 	{
 		id: "connections",
@@ -101,6 +110,7 @@ export class SettingsView {
 	#unsubscribe: (() => void) | undefined;
 	#companyLifetime = new AbortController();
 	#connections: ConnectionsView | undefined;
+	#machines: MachinesView | undefined;
 	#services: ServicesView | undefined;
 	#rules: RulesView | undefined;
 	/** General: the account's settings, then the rules of the company Settings show. */
@@ -287,6 +297,7 @@ export class SettingsView {
 		this.#companyLifetime.abort();
 		this.#unsubscribe?.();
 		this.#connections?.dispose();
+		this.#machines?.dispose();
 		this.#services?.dispose();
 		this.#rules?.dispose();
 		this.#friends.dispose();
@@ -334,6 +345,13 @@ export class SettingsView {
 		else if (tab === "friends") this.#drawFriends();
 		else if (tab === "company") this.#drawCompany();
 		else if (this.#company) {
+			if (tab === "machines" && !this.#machines) {
+				this.#machines = new MachinesView(
+					createWebMachines(this.#api.cloud, this.#company.profile.profileId),
+					AbortSignal.any([this.#companyLifetime.signal, this.#lifetime.signal]),
+				);
+				this.#panels.set(tab, h("div", null, this.#machines.el));
+			}
 			if (tab === "connections") {
 				if (!this.#connections) {
 					const company = this.#company;
@@ -488,6 +506,8 @@ export class SettingsView {
 		this.#unsubscribe?.();
 		this.#connections?.dispose();
 		this.#connections = undefined;
+		this.#machines?.dispose();
+		this.#machines = undefined;
 		this.#services?.dispose();
 		this.#services = undefined;
 		this.#rules?.dispose();
