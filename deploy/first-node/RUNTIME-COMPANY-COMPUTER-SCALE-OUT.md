@@ -120,9 +120,8 @@ Each computer has its own scratch area on the NAS (the contract's
 workbench): tool settings, caches, browser history and temporary files, never
 company files, one writer each. Company files live only in the one company
 folder on the NAS, which every computer reads and writes directly (contract
-5.6; 2026-09-27 amendment: the workbench holds no work files). The company's
-browser sign-ins live in a company directory shared by the company's
-computers.
+5.6; 2026-09-27 amendment: the workbench holds no work files). Browser sign-ins
+are secrets: they never enter the company folder.
 
 ## What it does not do yet
 
@@ -139,8 +138,10 @@ computers.
   that computer activates, not when a seat frees on another computer
   meanwhile. A new message to the agent places it again at once.
 - **Browser sign-ins across computers.** The sign-in store is kept per
-  computer today; keeping it in step across the company's computers is a
-  separate change.
+  computer today. Computers share no directory (each has only its scratch
+  area) and sign-ins must not enter the company folder, so keeping them in
+  step across a company's computers needs a vault-backed store; that belongs
+  with the "logins into the vault" work.
 
 ## Tests
 
