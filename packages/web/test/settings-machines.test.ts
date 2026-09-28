@@ -19,7 +19,6 @@ function machine(overrides: Record<string, unknown> = {}) {
 		lifetime: "task",
 		repository: null,
 		startedBy: { staffAgentId: id(30), runId: id(40), name: "Nora" },
-		sponsorUserId: id(1),
 		node: "node-02",
 		queuePosition: null,
 		waitingFor: null,
