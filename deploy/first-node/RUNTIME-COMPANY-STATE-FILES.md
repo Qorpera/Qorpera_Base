@@ -301,12 +301,16 @@ closes the conversation; a restore reopens both, with the same conversation.
 | `connected_at` | yes | UTC instant |
 | body | no | what the account is for, written by the company |
 
-- **Settings:** written only by the platform, inside the vault's own transaction (core §3 step
-  4). Any other change to them is refused.
+- **Settings:** written only by the platform (the vault's writer, core C3). A member or an agent
+  may change the body only, and never creates or deletes the file.
 - **Body:** company-authored.
 - **Authority:** the vault and the operation grants stay in charge (contract 5.6).
-- **Deleting:** refused while the vault record is active, whether `connected` or `broken`.
-  Disconnecting removes the file.
+- **Database rules:** the id is a vault row (`qorpera_cloud_secrets`) of this company and never
+  changes. A platform write matches that row: it is active and its connector is the `service`. One
+  file holds one account.
+- **Deleting:** refused while the vault record is active, whether `connected` or `broken`, for the
+  platform too. Disconnecting removes the file.
+- **Moving:** within `connections/` the index follows; out of it is a kind change (refused).
 - Not reviewed.
 
 ### `rules/<name>.md`
@@ -502,7 +506,7 @@ of the body, for readers that should not reach the storage server.
 | agent | `qorpera_profile_staff` (folder columns `folder_environment_id`, `folder_path`: the stored path of its `agent.md`, `folder_path_version`, `folder_commit_id`, `folder_retired_at`) | name, role, instructions (charter), colour (`native` when none), figure, status; the Co-Founder's `template_id = 'co-founder'` and its `qorpera_company_cofounders` row (no formation) | lifecycle (setup), execution authority. `hire_overlay`, `reasoning_policy` and `startup_instructions` stay null on folder-v2 rows (the source-complete check ties them to the snapshot-v1 source columns), so the file's `model` and `effort` stay in the parse until the runtime reads them (F2-1b) |
 | sections | sidebar sections and placements (+ #370's room placements) | section order, members in order | member pins and hidden |
 | group | `qorpera_company_rooms` (folder columns as the roster's, with no bound agent), room members | name, subtitle, purpose copy, members, open or closed | conversation, drafts, mentions, session model |
-| connection | `qorpera_cloud_secrets` descriptor columns | path, path version, purpose copy | secret versions, grants, audit |
+| connection | new `qorpera_folder_connection_index`, one row per account keyed by the vault row's id (its own table, so a save never writes a vault row and the vault's lock chains never meet a folder commit) | path, path version, purpose copy | the vault row, secret versions, grants, audit |
 | rule | `qorpera_review_rules` (company scope) | outcome, `when_text` copy | personal rules, review records |
 | routine | `qorpera_cloud_routines`, `_versions` | owner from the folder, title, trigger, timezone, ends, runs, quiet with its zone, effort, reply, status, conclusion, intent copy | schedule cursors, occurrences, retries, sponsor, `pause_reason`, `authorization_failures`, `origin` (who created it, from the first commit) |
 | todo | `qorpera_runtime_agent_todos` | owner from the folder, title, status, requester, detail copy | — |
@@ -678,7 +682,10 @@ claims by kind then key (F2). All nine come before paths, objects, admission and
    - `group.md` to rooms, room members and the conversation; `sections.md` to the sidebar's
      sections and placements;
    - the member RPC's section actions refused for `folder-v2`.
-4. **F2-3** connections (the vault writes the file).
+4. **F2-3** connections (migration 20260929140000): the parse's shape, the rules and the index
+   table. The vault's writer is core C3's; the vault's SQL cannot create file bytes, so it stages
+   the text through the object gateway first, or C2's queue writes the file after the vault
+   commits.
 5. **F2-4** rules (the reviewer reads the rule index).
 6. **F2-5** todos and worker files.
 7. **F2-6** routines, last because the scheduler, schedule positions and decisions are the
