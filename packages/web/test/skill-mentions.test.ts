@@ -10,7 +10,7 @@ import { ConversationView } from "../src/app/views/conversation.ts";
 import type { WorkspaceActions } from "../src/app/workspace-actions.ts";
 import { loadSkillSuggestions, SkillLists, type SkillSuggestion } from "../src/cloud/skills.ts";
 import type { TranscriptItem } from "../src/cloud/transcript.ts";
-import { markdown } from "../src/ui/markdown.ts";
+import { markdown, markdownBubbles } from "../src/ui/markdown.ts";
 import { markSkillNames } from "../src/ui/skill-mentions.ts";
 import { fixture, id, profileA, session, settle, staff, team, timestamp, userA } from "./fixtures.ts";
 
@@ -427,6 +427,12 @@ describe("calling a skill from the composer", () => {
 			"/triage",
 		]);
 		expect(root.textContent).toBe("done/triage, /triagebold, x/triage and/triage (/weekly-report) /triage.");
+		// A line break inside a paragraph is a word break: a name at the start of a new line is a name.
+		const lines = document.createElement("div");
+		lines.append(...markdownBubbles("Done.\n/triage next"));
+		markSkillNames(lines, new Set(["triage"]));
+		expect(lines.querySelector("br")).not.toBeNull();
+		expect([...lines.querySelectorAll(".message-skill")].map((span) => span.textContent)).toEqual(["/triage"]);
 		// Marking again changes nothing.
 		markSkillNames(root, new Set(["triage", "weekly-report"]));
 		expect(root.querySelectorAll(".message-skill")).toHaveLength(2);

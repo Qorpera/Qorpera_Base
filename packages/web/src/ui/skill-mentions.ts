@@ -45,16 +45,25 @@ const WORD_BLOCKS = "p, li, div, h1, h2, h3, h4, h5, h6, blockquote, td, th, dd,
  * Running it again over text it marked changes nothing. */
 export function markSkillNames(root: ParentNode, names: ReadonlySet<string>): void {
 	if (!names.size) return;
-	const texts: Text[] = [];
-	const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-	for (let node = walker.nextNode(); node; node = walker.nextNode()) texts.push(node as Text);
+	// The text in reading order; a line break stands between two texts as the space it is.
+	const texts: (Text | "\n")[] = [];
+	const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT);
+	for (let node = walker.nextNode(); node; node = walker.nextNode())
+		if (node instanceof Text) texts.push(node);
+		else if (node instanceof HTMLBRElement) texts.push("\n");
 	const block = (node: Node) => node.parentElement?.closest(WORD_BLOCKS) ?? null;
+	const edge = (neighbour: Text | "\n" | undefined, text: Text, end: boolean) =>
+		neighbour === "\n"
+			? neighbour
+			: neighbour && block(neighbour) === block(text)
+				? end
+					? neighbour.data.slice(-1)
+					: neighbour.data.slice(0, 1)
+				: "";
 	for (const [index, text] of texts.entries()) {
-		if (text.parentElement?.closest("code, pre, a, kbd, .message-skill")) continue;
-		const previous = texts[index - 1];
-		const next = texts[index + 1];
-		const before = previous && block(previous) === block(text) ? previous.data.slice(-1) : "";
-		const after = next && block(next) === block(text) ? next.data.slice(0, 1) : "";
+		if (text === "\n" || text.parentElement?.closest("code, pre, a, kbd, .message-skill")) continue;
+		const before = edge(texts[index - 1], text, true);
+		const after = edge(texts[index + 1], text, false);
 		const value = text.data;
 		const parts: (Node | string)[] = [];
 		let last = 0;
@@ -251,7 +260,12 @@ export class SkillMentions {
 			.then(() => load(this.#signal))
 			.then(
 				(skills) => {
-					const changed = skills !== this.#skills;
+					// Written messages are marked again only when the names changed, not for every read.
+					const before = this.names();
+					const changed =
+						this.#skills === undefined ||
+						skills.length !== before.size ||
+						skills.some((skill) => !before.has(skill.name));
 					this.#skills = skills;
 					this.#loadedAt = Date.now();
 					if (changed && !this.#signal.aborted) this.#listed();
