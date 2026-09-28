@@ -150,7 +150,7 @@ migration can go in any cut without a pause.
   the old bundle remains when the new one activates.
 - **Where old-bundle runs come from after a switch:**
   - inputs accepted before the switch;
-  - the retry of a run that failed (it keeps its run);
+  - the retry of a failed run (a new run whose inputs keep the old bundle);
   - a sponsorship request approved later.
 - **Declaring a bundle.** `qorpera_declare_runner_orchestrator_bundle(orchestrator, sha | null)`
   (service role) records the bundle an orchestrator's hosts run. The bundle must be registered,
@@ -166,18 +166,21 @@ migration can go in any cut without a pause.
   - queued runs (unclaimed) and running runs (claimed or leased);
   - inputs not yet turned into a run, with the oldest one's time;
   - the declaring orchestrators with their nodes, serving state and heartbeats;
-  - `servedBy` and `servedOnServingNode`: live orchestrators on a serving node, or with no node
-    row, that declare this bundle or nothing.
+  - `servedBy` and `servedOnServingNode`: live, active orchestrators on a serving node, or with no
+    node row, that declare this bundle or nothing.
 
-  It also lists `undeclaredLive`, the live orchestrators that declare nothing. `servedBy` is an
-  upper bound: an undeclared orchestrator's host refuses bundles it does not run, the
-  identity-home rule still applies, and a just re-registered orchestrator counts as live for up
-  to 2 minutes before it starts. During a roll `undeclaredLive` should be empty.
+  It also lists `undeclared`, the active orchestrators that declare nothing whatever their
+  heartbeat (a rebuilt host left stopped claims at its first call), and `undeclaredLive`, the part
+  of those with a heartbeat. `servedBy` is an upper bound: an undeclared orchestrator's host
+  refuses bundles it does not run, the identity-home rule still applies, and a just re-registered
+  orchestrator counts as live for up to 2 minutes before it starts. During a roll `undeclared`
+  must be empty.
 - **Things read from the active bundle.** Old-bundle runs themselves are not affected: a run's
   model policy comes from its own bundle, and only a conversation's displayed defaults follow the
   active one. Two cases need care:
-  - The office package install requires an exact match with the active bundle, so a release that
-    changes the office package installs it after the switch, or pauses.
+  - A packaged office checks its package's bundle against the active bundle on every start, reset
+    and install. Across a switch, a packaged office on the old package cannot start or reset
+    until its package is renewed for the new bundle, as at every cut today.
   - A release whose migrations change what the old host reads or sends pauses (see
     `RUNTIME-ROLLING-UPDATE.md`).
 
@@ -188,7 +191,7 @@ migration can go in any cut without a pause.
    node release, image, rebuild the fast host. The rebuild re-registers the fast host's
    orchestrator, which clears any declaration.
 3. Declare **every** orchestrator on node A as N+1, the rebuilt fast host included, and every
-   orchestrator on node B as N. `undeclaredLive` must be empty. Return node A to serving.
+   orchestrator on node B as N. `undeclared` must be empty. Return node A to serving.
 4. Activate N+1: new inputs and runs bind to N+1, and only node A takes them. Node B finishes N.
 5. When `qorpera_runtime_bundle_roll_status()` shows no queued or running N runs, and no N input
    that can still run, empty node B and update it. Its rebuild clears its fast host's

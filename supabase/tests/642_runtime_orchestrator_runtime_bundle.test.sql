@@ -148,6 +148,47 @@ select pg_temp.wake_assert(pg_temp.kv_entry(pg_temp.kv_status(),current_setting(
 	'A revoked runner neither declares nor serves');
 rollback to savepoint revoked;
 
+-- A stale undeclared runner is in `undeclared` but not in `undeclaredLive`; a revoked one in neither.
+savepoint undeclared;
+select public.qorpera_declare_runner_orchestrator_bundle('64200000-0000-4000-8000-000000000012',null);
+reset role;
+update public.qorpera_runner_orchestrators set last_heartbeat_at = clock_timestamp() - interval '1 hour'
+where id = '64200000-0000-4000-8000-000000000012';
+set local role service_role;
+select pg_temp.wake_assert((pg_temp.kv_status() -> 'undeclared') ? '64200000-0000-4000-8000-000000000012'
+	and not (pg_temp.kv_status() -> 'undeclaredLive') ? '64200000-0000-4000-8000-000000000012'
+	and not (pg_temp.kv_entry(pg_temp.kv_status(),current_setting('qorpera_test.kv_old')) -> 'servedBy') ? '64200000-0000-4000-8000-000000000012',
+	'A stopped, undeclared runner is listed but does not serve');
+reset role;
+update public.qorpera_runner_orchestrators set status = 'revoked' where id = '64200000-0000-4000-8000-000000000012';
+set local role service_role;
+select pg_temp.wake_assert(not (pg_temp.kv_status() -> 'undeclared') ? '64200000-0000-4000-8000-000000000012','A revoked runner is not listed');
+select pg_temp.wake_error($q$select public.qorpera_declare_runner_orchestrator_bundle('64200000-0000-4000-8000-000000000012',null)$q$,
+	'42501','Orchestrator is unavailable');
+rollback to savepoint undeclared;
+-- Only the operator declares, and only a registered runtime bundle.
+savepoint declare_checks;
+reset role;
+insert into public.qorpera_runtime_bundles(bundle_key,version,manifest,sha256)
+values('qorpera.other-bundle',1,'{"other":true}'::jsonb,encode(extensions.digest(convert_to('{"other": true}','utf8'),'sha256'),'hex'));
+select set_config('qorpera_test.kv_other_key',encode(extensions.digest(convert_to('{"other": true}','utf8'),'sha256'),'hex'),true);
+select pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
+select pg_temp.wake_error($q$select public.qorpera_declare_runner_orchestrator_bundle('64200000-0000-4000-8000-000000000012',null)$q$,'42501');
+select pg_temp.path_claims('service_role');
+set local role service_role;
+select pg_temp.wake_error(format('select public.qorpera_declare_runner_orchestrator_bundle(%L,%L)','64200000-0000-4000-8000-000000000012',
+	current_setting('qorpera_test.kv_other_key')),'42501','Runtime bundle is not registered');
+rollback to savepoint declare_checks;
+-- A completed input is not pending.
+savepoint completed_input;
+select set_config('qorpera_test.kv_pending2',pg_temp.kv_entry(pg_temp.kv_status(),current_setting('qorpera_test.kv_old')) ->> 'pendingInputs',true);
+reset role;
+update public.qorpera_session_inputs set completed_at = clock_timestamp() where id = '64200000-0000-4000-8000-000000000102';
+set local role service_role;
+select pg_temp.wake_assert(coalesce((pg_temp.kv_entry(pg_temp.kv_status(),current_setting('qorpera_test.kv_old')) ->> 'pendingInputs')::bigint,0)
+	= current_setting('qorpera_test.kv_pending2')::bigint - 1,'A completed input is not pending');
+rollback to savepoint completed_input;
+
 -- Re-registering a runner (a rebuilt fast host) clears its declaration: it is undeclared until declared again.
 savepoint reregister;
 select public.qorpera_register_runner_orchestrator('64200000-0000-4000-8000-000000000012','Updated node','native-b',repeat('6',64),3600);
