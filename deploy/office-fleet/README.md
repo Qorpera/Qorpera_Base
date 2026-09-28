@@ -128,26 +128,27 @@ provider id, computer identity, NAS working folder and its mount, journal
 directory, host ports, mux routes and the fleet units. Two computers never
 share a working folder: the single-writer rule of the workbench holds.
 
-1. Write a request (read-only paths of the template's documents, the new
-   computer from the queue, a new provider UUID, the host choices):
+1. Write a request: the service document of the company's computer on this
+   host (the template), the service documents of every other office on this
+   host (of any company), the new computer from the queue (with its image and
+   bootstrap digests) and a new provider UUID, and the host choices:
 
    ```json
    {
-     "template": {
-       "policyPath": "/etc/qorpera/offices/<first>/policy.json",
-       "servicePath": "/etc/qorpera/offices/<first>/service.json",
-       "passthroughPath": "/etc/qorpera/offices/<first>/passthrough.json"
-     },
+     "template": { "servicePath": "/etc/qorpera/offices/<first>/service.json" },
+     "others": ["/etc/qorpera/offices/<other office>/service.json"],
      "office": {
        "providerId": "<new uuid>",
        "companyComputerId": "<from the queue>",
        "logicalComputerId": "<from the queue>",
-       "computerGeneration": 1
+       "computerGeneration": 1,
+       "imageSha256": "<from the queue>",
+       "bootstrapSha256": "<from the queue>"
      },
      "host": {
        "nodeId": "<enrolled node uuid>",
        "configRoot": "/etc/qorpera/offices/<companyComputerId>",
-       "workbench": { "mountPoint": "/srv/qorpera-workbench/<companyComputerId>", "source": "<nas>:/volume1/qorpera-runtime-workbench/<companyComputerId>" },
+       "workbench": { "mountPoint": "/srv/qorpera-workbench/<companyComputerId>", "source": "<template NAS>:/volume1/qorpera-runtime-workbench/<companyComputerId>" },
        "journalPath": "<template journal mount>/<companyComputerId>",
        "ports": { "viewer": 18545, "native": 18546 }
      }
@@ -155,18 +156,29 @@ share a working folder: the single-writer rule of the workbench holds.
    ```
 
 2. Run `node qorpera-office-next-computer.cjs /absolute/request.json` from the
-   fleet package. It reads the three documents and prints a plan: the new
-   `policy.json`, `service.json`, `passthrough.json` and `fleet.json` (exact
-   bytes and digests), the provider enrollment, and the remaining root steps.
-   It writes nothing, mints no credential and refuses to reuse the template's
-   provider, computer, working folder, mount, journal or ports.
-3. Follow the plan's steps as root: NAS folder and mount, journal directory and
-   `adoption.lock`, publish the files, copy the provenance, enroll the
-   provider, install the fleet units, add the mux routes, then start the stage
-   and fleet units once the computer's start intent exists.
-4. The new working folder is empty, so the adoption review carries nothing
-   over: its adoption input has shared workbench, desktop and company `null`
-   (layout 2), `legacy` null and no quarantine.
+   fleet package. It reads each service document and the policy and
+   passthrough it names, and the template's lifecycle plan for its guest
+   layout. It prints a plan: the new `policy.json`, `service.json`,
+   `passthrough.json` and `fleet.json` (exact bytes and digests), the provider
+   enrollment (with CPU and memory, which cannot be changed later), the
+   lifecycle plan's adoption input and paths, and the remaining root steps. It
+   writes nothing and mints nothing. It refuses a template on another image
+   than the queued computer, and anything another office on the host already
+   uses: provider, computer, NAS folder (also nested ones), mount, journal,
+   document folder or port. Errors print a fixed code only.
+3. Follow the plan's steps as root. Credentials are the dangerous part: the new
+   computer gets its own TLS certificate and key, guest registry credential
+   and objects token. Its native token is the company route's token when the
+   company uses a company route (see
+   `deploy/first-node/native-office-routes.md`), otherwise a new token with its
+   own route entry. Never copy the template's TLS key: the mux pins one
+   certificate per computer.
+4. At review, the lifecycle plan carries the provider's intent and
+   observation, the printed adoption input (an empty folder: nothing carried
+   over or quarantined, the template's layout), the writer fence and the
+   service bootstrap.
+5. Before members use it, bring the computer to the template's office software
+   revision: the image may lack guest-code fixes the template got later.
 
 A computer that nobody has started yet can be set up the same way in advance
 (a spare). Its fleet units wait for a start intent; it holds no node capacity
