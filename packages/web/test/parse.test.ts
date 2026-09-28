@@ -158,6 +158,24 @@ describe("parsers", () => {
 		});
 		expect(team.capabilities.manageMembers).toBe(false);
 		expect(team.members[0]?.displayName).toBe("A");
+		// A cloud before several founders sends no membership flags.
+		expect(team.capabilities).not.toHaveProperty("leave");
+		const founders = parseTeam({
+			profile_id: P,
+			role: "owner",
+			capabilities: {
+				read: true,
+				write: true,
+				authorize: true,
+				manage_members: true,
+				manage_founders: true,
+				leave: false,
+				delete_company: true,
+			},
+			members: [],
+			invitations: [],
+		});
+		expect(founders.capabilities).toMatchObject({ manageFounders: true, leave: false, deleteCompany: true });
 	});
 
 	it("parses company and private session audiences", () => {

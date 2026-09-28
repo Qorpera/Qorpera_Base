@@ -1248,6 +1248,18 @@ root resource version changes. Protected paths, private scopes, and narrower
 responsibility- or project-scoped resources keep their own rules; the default
 never overrides them.
 
+Amended 2026-09-28: several founders. A company has one or more founders
+(members with the role `owner`); "the company owner" above means its first
+founder: the creator while a founder, otherwise the founder who joined first.
+Any founder may make another member a founder; a founder steps down or leaves
+only on their own; nobody removes or changes a fellow founder. The last
+founder cannot step down, and cannot leave while other members remain. While
+company setup runs for a founder, that founder neither leaves nor steps down.
+Only the last member may delete the company; everyone else leaves. Founders remove other
+members; admins keep managing contributors and viewers. The founder list is
+one stable, ordered set per company, which computer-hours billing pools
+across. Membership rows are member data and stay in the database (5.6).
+
 Automatic hiring MUST verify that the creator can delegate the child's entire
 default: current, nonexpiring read/write authority on every live shared root
 in the company. Verify this both at policy approval and before publication.

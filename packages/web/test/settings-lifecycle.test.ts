@@ -1110,6 +1110,83 @@ describe("settings session lifecycle", () => {
 		);
 		expect(sdkRpcs(f)).toEqual([]);
 	});
+	it("shows founders what they may do with their own membership", async () => {
+		history.replaceState(null, "", "/#/");
+		const member = (userId: string, role: "owner" | "admin" | "contributor") => ({
+			userId,
+			email: `${role}@example.test`,
+			displayName: role === "owner" ? "Founder" : "Member",
+			role,
+			joinedAt: timestamp,
+		});
+		const exitFor = async (capabilities: Partial<typeof team.capabilities>, members: ReturnType<typeof member>[]) => {
+			const fixtureState = fixture();
+			vi.mocked(fixtureState.api.getTeam).mockResolvedValue({
+				...team,
+				capabilities: { ...team.capabilities, ...capabilities },
+				members,
+			});
+			const f = await setup(fixtureState);
+			open(f.root);
+			click(f.root, "#settings-tab-company");
+			await draw();
+			const exit = f.root.querySelector<HTMLButtonElement>(".company-exit")!;
+			const stepDown = [...f.root.querySelectorAll("button")].find((button) => button.textContent === "Step down");
+			const roles = [...f.root.querySelectorAll<HTMLOptionElement>(".company-person select option")].map(
+				(option) => option.value,
+			);
+			const next = exit.nextElementSibling;
+			const hint = next?.classList.contains("notice") ? next.textContent : null;
+			const result = {
+				text: exit.textContent,
+				disabled: exit.disabled,
+				hint,
+				stepDown: stepDown !== undefined,
+				roles,
+			};
+			dispose?.();
+			document.body.replaceChildren();
+			return result;
+		};
+		// The last founder while a member remains: no delete, and leaving waits for another founder.
+		expect(
+			await exitFor({ manageFounders: true, leave: false, deleteCompany: false }, [
+				member(userA.id, "owner"),
+				member(userB.id, "contributor"),
+			]),
+		).toEqual({
+			text: "Leave company",
+			disabled: true,
+			hint: "Make someone else a founder before you leave.",
+			stepDown: false,
+			roles: ["viewer", "contributor", "admin", "owner"],
+		});
+		// With a co-founder, a founder may leave or step down.
+		expect(
+			await exitFor({ manageFounders: true, leave: true, deleteCompany: false }, [
+				member(userA.id, "owner"),
+				member(userB.id, "owner"),
+			]),
+		).toEqual({ text: "Leave company", disabled: false, hint: null, stepDown: true, roles: [] });
+		// While company setup runs for this founder, neither, even with a co-founder.
+		expect(
+			await exitFor({ manageFounders: true, leave: false, deleteCompany: false }, [
+				member(userA.id, "owner"),
+				member(userB.id, "owner"),
+			]),
+		).toEqual({
+			text: "Leave company",
+			disabled: true,
+			hint: "Company setup must finish before you can leave.",
+			stepDown: false,
+			roles: [],
+		});
+		// The last member deletes.
+		expect(
+			await exitFor({ manageFounders: true, leave: false, deleteCompany: true }, [member(userA.id, "owner")]),
+		).toEqual({ text: "Delete company", disabled: false, hint: null, stepDown: false, roles: [] });
+	});
+
 	it.each(["delete", "leave"])("closes settings and refreshes the hub after %s", async (action) => {
 		history.replaceState(null, "", "/#/");
 		const fixtureState = fixture();
