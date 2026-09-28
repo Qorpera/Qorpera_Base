@@ -124,13 +124,17 @@ last week, parked warm hosts included. The start is 4 slots of 2 vCPU / 4 GiB ea
     `QORPERA_RUNNER_ORCHESTRATOR_CONTROL_TOKEN`). The cut lane passes the host's own value, so it
     agrees.
   - Optional `EXEC_RUNTIME_BUNDLE_SHA256` declares the re-registered orchestrator's bundle
-    (rolling updates, migration `20260928182000`). Without it the orchestrator claims runs of any
-    bundle. Once that migration is live, re-registration clears an earlier declaration, so a
-    rebuild during a rolling update must always set it.
+    (rolling updates, migration `20260928182000`), as the last step, once the host is set up.
+    Without it the orchestrator claims runs of any bundle; once that migration is live,
+    re-registration clears an earlier declaration. Only a registered bundle can be declared, and
+    the activation registers it: a rebuild before the activation runs without the variable, and
+    the operator declares the orchestrator after the activation while the node is still switched
+    off (`deploy/first-node/RUNTIME-ROLLING-UPDATE.md`). A refused declaration leaves the host set
+    up and undeclared, and the script exits 1.
   - `EXEC_PREFLIGHT_ONLY=1` checks the inputs and changes nothing.
 - **`create-exec-host.sh <fingerprint>`** makes a new host on any node:
   - it takes the same variables plus `EXEC_PROFILE`, `EXEC_POOL`, `EXEC_NETWORK` and the
-    optional `EXEC_SLOT_CPU`/`EXEC_SLOT_GIB` (default 2 / 4);
+    optional `EXEC_SLOT_CPU`/`EXEC_SLOT_GIB` (default 2 / 4), but never a bundle declaration;
   - it checks every input first (the rebuild's checks, and that the profile has no
     `user.qorpera.*` key, which the observer refuses on an infrastructure entry);
   - it creates the VM with the run VMs' profile, pool and isolated NIC and no identity devices;

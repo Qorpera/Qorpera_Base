@@ -22,7 +22,12 @@
 #                    bundle (rolling updates; needs migration 20260928182000).
 #                    Unset: the orchestrator claims runs of any bundle. Once
 #                    20260928182000 is live, re-registration clears an earlier
-#                    declaration, so during a rolling update always set it.
+#                    declaration. Only a registered bundle can be declared, and
+#                    a bundle is registered by its activation: a rebuild before
+#                    the activation leaves it unset, and the operator declares
+#                    the orchestrator after the activation, while the node is
+#                    still switched off (RUNTIME-ROLLING-UPDATE.md). It is
+#                    declared last, once the host is set up.
 #   EXEC_PREFLIGHT_ONLY=1  check the inputs, change nothing, exit
 #   EXEC_FRESH=1     set only by create-exec-host.sh: the host was just created
 #                    from this image and never started, so there is nothing to
@@ -163,21 +168,6 @@ registered=$(curl -sS -X POST "${supabase_url}/rest/v1/rpc/qorpera_register_runn
 	-K <(printf 'header = "apikey: %s"\nheader = "Authorization: Bearer %s"\nheader = "Content-Type: application/json"\n' "${service_key}" "${service_key}") \
 	-d "{\"p_orchestrator_id\":\"${orchestrator_id}\",\"p_display_name\":\"shared-execution ${VM}\",\"p_provider_adapter\":\"${adapter}\",\"p_control_token_sha256\":\"${control_sha256}\",\"p_control_token_seconds\":86400}")
 [[ ${registered} == *'"status": "active"'* || ${registered} == *'"status":"active"'* ]] || { unset service_key; echo "Orchestrator registration failed" >&2; exit 1; }
-if [[ -n ${BUNDLE} ]]; then
-	declared=$(curl -sS -X POST "${supabase_url}/rest/v1/rpc/qorpera_declare_runner_orchestrator_bundle" \
-		-K <(printf 'header = "apikey: %s"\nheader = "Authorization: Bearer %s"\nheader = "Content-Type: application/json"\n' "${service_key}" "${service_key}") \
-		-d "{\"p_orchestrator_id\":\"${orchestrator_id}\",\"p_runtime_bundle_sha256\":\"${BUNDLE}\"}")
-	declared_bundle=$(printf '%s' "${declared}" | python3 -c 'import json,sys
-try:
-    print(json.load(sys.stdin).get("runtimeBundleSha256") or "")
-except Exception:
-    print("")')
-	if [[ ${declared_bundle} != "${BUNDLE}" ]]; then
-		unset service_key
-		echo "Orchestrator bundle declaration failed: $(printf '%s' "${declared}" | head -c 300)" >&2
-		exit 1
-	fi
-fi
 unset service_key
 sed -i "s|^QORPERA_RUNNER_ORCHESTRATOR_CONTROL_TOKEN=.*|QORPERA_RUNNER_ORCHESTRATOR_CONTROL_TOKEN=${control_token}|" "${STAGING}/runner-orchestrator.env"
 unset control_token
@@ -192,6 +182,25 @@ exec_in systemctl enable --now qorpera-shared-execution.service >/dev/null
 sleep 2
 status=$(exec_in systemctl is-active qorpera-shared-execution.service)
 health=$(exec_in curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18450/healthz)
+if [[ -n ${BUNDLE} ]]; then
+	# Last, so a refused declaration (an unregistered bundle) leaves a host that is set up
+	# and an orchestrator that is registered but undeclared.
+	service_key=$(tr -d '\n' < "${STAGING}/credentials/qorpera-supabase-service-key")
+	declared=$(curl -sS -X POST "${supabase_url}/rest/v1/rpc/qorpera_declare_runner_orchestrator_bundle" \
+		-K <(printf 'header = "apikey: %s"\nheader = "Authorization: Bearer %s"\nheader = "Content-Type: application/json"\n' "${service_key}" "${service_key}") \
+		-d "{\"p_orchestrator_id\":\"${orchestrator_id}\",\"p_runtime_bundle_sha256\":\"${BUNDLE}\"}")
+	unset service_key
+	declared_bundle=$(printf '%s' "${declared}" | python3 -c 'import json,sys
+try:
+    print(json.load(sys.stdin).get("runtimeBundleSha256") or "")
+except Exception:
+    print("")')
+	if [[ ${declared_bundle} != "${BUNDLE}" ]]; then
+		echo "image=${FINGERPRINT} fence=${fence} slots=${SLOTS} bundle=any service=${status} healthz=${health} orchestrator=stopped"
+		echo "The host is set up, but the bundle declaration failed; the orchestrator claims any bundle until it is declared: $(printf '%s' "${declared}" | head -c 300)" >&2
+		exit 1
+	fi
+fi
 echo "image=${FINGERPRINT} fence=${fence} slots=${SLOTS} bundle=${BUNDLE:-any} service=${status} healthz=${health} orchestrator=stopped"
 if [[ -z ${FRESH} ]]; then
 	echo "Re-enrol the node inventory digest (image.* keys changed); identity devices are not part of it when the"

@@ -13,7 +13,6 @@
 # Optional:
 #   EXEC_SLOT_CPU    vCPUs per slot     (2)   the host gets EXEC_SLOTS x EXEC_SLOT_CPU vCPUs
 #   EXEC_SLOT_GIB    GiB memory per slot (4)  and EXEC_SLOTS x EXEC_SLOT_GIB GiB memory
-#   EXEC_RUNTIME_BUNDLE_SHA256  passed on to rebuild-exec-host.sh
 #
 # The host gets no identity devices: with logins in the vault (Stateless Compute
 # step 1) no fast host mounts a login disk. A node whose logins still live on
@@ -32,8 +31,10 @@
 # another host's id re-registers that orchestrator here and takes it over.
 set -euo pipefail
 # Modes of rebuild-exec-host.sh are set here for its own calls only, never
-# inherited from the caller's shell.
-unset EXEC_PREFLIGHT_ONLY EXEC_FRESH
+# inherited from the caller's shell. A new host is not declared for a bundle:
+# a refused declaration would delete a host that is otherwise set up. Declare
+# it after enrolment if a rolling update needs it.
+unset EXEC_PREFLIGHT_ONLY EXEC_FRESH EXEC_RUNTIME_BUNDLE_SHA256
 HERE="$(cd "$(dirname "$0")" && pwd)"
 
 FINGERPRINT="${1:-}"
