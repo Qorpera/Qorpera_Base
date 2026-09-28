@@ -459,7 +459,11 @@ export async function installOfficeImage(stage: "--check" | "--apply" | "--locke
 	await chmod("/var/lib/qorpera-office", 0o755);
 	// Each computer's network units come with newer packages only.
 	const networkUnits: string[] = [];
-	for (const name of ["qorpera-computer-network.service", "qorpera-computer-plumb.socket", "qorpera-computer-plumb@.service"])
+	for (const name of [
+		"qorpera-computer-network.service",
+		"qorpera-computer-plumb.socket",
+		"qorpera-computer-plumb@.service",
+	])
 		if (
 			await lstat(`/etc/systemd/system/${name}`).then(
 				() => true,
