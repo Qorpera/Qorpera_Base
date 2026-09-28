@@ -131,7 +131,7 @@ async function fixture(initial: Record<string, string> = {}) {
 		new AbortController().signal,
 	);
 	const agent = run.identity.staffAgentId;
-	const own = cloudSkillRoot("agent", agent);
+	const own = cloudSkillRoot("agent", run.identity);
 	const store = companyFile(
 		Object.fromEntries(Object.entries(initial).map(([key, text]) => [key.replace("<own>", own), text])),
 	);
@@ -492,7 +492,7 @@ describe("imported skills with long descriptions", () => {
 			"skills/long-one/SKILL.md": `---\nname: long-one\ndescription: ${long}\n---\n\nSteps.\n`,
 		});
 		try {
-			const block = await composeCloudAgentSkills(f.store.gateway, f.agent, new AbortController().signal);
+			const block = await composeCloudAgentSkills(f.store.gateway, f.run.identity, new AbortController().signal);
 			const [entry] = block.company.skills;
 			expect(Buffer.byteLength(entry.description!)).toBeLessThanOrEqual(1100);
 			expect(entry.description!.endsWith("…")).toBe(true);
@@ -517,7 +517,7 @@ describe("skill catalog composition", () => {
 		});
 		try {
 			f.store.unreadable.add("skills/refund/SKILL.md");
-			const block = await composeCloudAgentSkills(f.store.gateway, f.agent, new AbortController().signal);
+			const block = await composeCloudAgentSkills(f.store.gateway, f.run.identity, new AbortController().signal);
 			expect(block).toEqual({
 				schema: "qorpera.agent-skills/v1",
 				trust: "guidance_not_authority",
@@ -555,7 +555,7 @@ describe("skill catalog composition", () => {
 			),
 		);
 		try {
-			const block = await composeCloudAgentSkills(f.store.gateway, f.agent, new AbortController().signal);
+			const block = await composeCloudAgentSkills(f.store.gateway, f.run.identity, new AbortController().signal);
 			expect(block.company).toMatchObject({ descriptions: "search_skills", moreSkills: 0 });
 			expect(block.company.skills).toHaveLength(30);
 			expect(block.company.skills[0]).toEqual({ name: "skill-00" });
@@ -573,7 +573,7 @@ describe("skill catalog composition", () => {
 		});
 		try {
 			f.store.unlistable.add("skills");
-			const block = await composeCloudAgentSkills(f.store.gateway, f.agent, new AbortController().signal);
+			const block = await composeCloudAgentSkills(f.store.gateway, f.run.identity, new AbortController().signal);
 			expect(block.available).toBe(true);
 			expect(block.own.skills).toEqual([{ name: "triage", description: "Triage." }]);
 			expect(block.own).not.toHaveProperty("unavailable");
@@ -582,9 +582,9 @@ describe("skill catalog composition", () => {
 			const found = await f.call("search_skills", {});
 			expect(found).toMatchObject({ total: 1, searched: { agent: 1 }, unavailable: ["company"] });
 			f.store.unlistable.add(f.own);
-			await expect(composeCloudAgentSkills(f.store.gateway, f.agent, new AbortController().signal)).rejects.toThrow(
-				"Company File listing unavailable",
-			);
+			await expect(
+				composeCloudAgentSkills(f.store.gateway, f.run.identity, new AbortController().signal),
+			).rejects.toThrow("Company File listing unavailable");
 		} finally {
 			f.run.close();
 		}
@@ -651,7 +651,7 @@ describe("refusals and protected libraries", () => {
 			expect(f.store.files.get("skills/refund/SKILL.md")?.text).toContain("\n\nx\n");
 			f.store.deniedReads.add("skills/refund/SKILL.md");
 			expect(await f.call("read_skill", { name: "refund", scope: "company" })).toMatchObject({ state: "no_access" });
-			const block = await composeCloudAgentSkills(f.store.gateway, f.agent, new AbortController().signal);
+			const block = await composeCloudAgentSkills(f.store.gateway, f.run.identity, new AbortController().signal);
 			expect(block.company.skills).toEqual([{ name: "refund", problem: "no_access" }]);
 		} finally {
 			f.run.close();

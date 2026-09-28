@@ -109,9 +109,14 @@ export interface CloudAgentSkillsBlock {
 	company: CloudSkillLibrary & { descriptions: "included" | "search_skills" };
 }
 
+/** The agent whose own library a run reads and writes, in its company. */
+export type CloudSkillOwner = Pick<CloudNativeToolIdentity, "companyId" | "staffAgentId">;
+
 /** Where a library keeps its skills. */
-export function cloudSkillRoot(scope: CloudSkillScope, staffAgentId: string): string {
-	return scope === "company" ? CLOUD_COMPANY_SKILLS_ROOT : `${cloudAgentFolder({ id: staffAgentId })}/skills`;
+export function cloudSkillRoot(scope: CloudSkillScope, owner: CloudSkillOwner): string {
+	return scope === "company"
+		? CLOUD_COMPANY_SKILLS_ROOT
+		: `${cloudAgentFolder(owner.companyId, owner.staffAgentId)}/skills`;
 }
 
 /** The composed shape when neither library could be read; the run still starts. */
@@ -278,10 +283,10 @@ function budget(entries: CloudSkillEntry[]): CloudSkillEntry[] {
  * unavailable and the other still composes; only when neither can is this a failure. */
 export async function composeCloudAgentSkills(
 	gateway: CloudSkillGateway,
-	staffAgentId: string,
+	owner: CloudSkillOwner,
 	signal: AbortSignal,
 ): Promise<CloudAgentSkillsBlock> {
-	const ownRoot = cloudSkillRoot("agent", staffAgentId);
+	const ownRoot = cloudSkillRoot("agent", owner);
 	const [ownListing, companyListing] = await Promise.allSettled([
 		listLibrary(gateway, "agent", ownRoot, signal),
 		listLibrary(gateway, "company", CLOUD_COMPANY_SKILLS_ROOT, signal),
@@ -399,7 +404,7 @@ export function cloudSkillTools(
 	identity: CloudNativeToolIdentity,
 ): readonly CloudNativeTool[] {
 	const expected = Object.freeze({ ...identity });
-	const ownRoot = cloudSkillRoot("agent", expected.staffAgentId);
+	const ownRoot = cloudSkillRoot("agent", expected);
 	const root = (scope: CloudSkillScope) => (scope === "company" ? CLOUD_COMPANY_SKILLS_ROOT : ownRoot);
 	const assertContext = (context: CloudToolContext) => {
 		if (
