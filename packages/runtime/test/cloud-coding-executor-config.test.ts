@@ -77,6 +77,30 @@ describe("coding executor service configuration", () => {
 			}),
 		).toThrow("CONFIG_INVALID");
 	});
+	it("carries company machines only with a closed node policy on the coding provider's identity", () => {
+		const machines = {
+			policy: {
+				providerId: "native-node",
+				providerPolicySha256: "e".repeat(64),
+				project: "machines",
+				imageFingerprint: "f".repeat(64),
+				bootstrapSha256: "a".repeat(64),
+				storagePool: "machines",
+				network: "machine-net",
+			},
+			helperSha256: "b".repeat(64),
+		};
+		expect(parseCodingExecutorConfiguration(fixture()).machines).toBeNull();
+		expect(parseCodingExecutorConfiguration({ ...fixture(), machines }).machines).toEqual(machines);
+		expect(parseCodingExecutorConfiguration({ ...fixture(), broker, machines }).machines).toEqual(machines);
+		for (const bad of [
+			{ ...machines, helperSha256: "x" },
+			{ ...machines, policy: { ...machines.policy, providerId: "other-node" } },
+			{ ...machines, policy: { ...machines.policy, cpus: 4 } },
+			{ ...machines, extra: true },
+		])
+			expect(() => parseCodingExecutorConfiguration({ ...fixture(), machines: bad })).toThrow();
+	});
 	it("refuses a broker that is not an HTTPS origin or reuses another credential's name", () => {
 		const config = fixture();
 		for (const origin of [

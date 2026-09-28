@@ -1,0 +1,259 @@
+import { readBoundedCloudResponse, withCloudDeadline } from "@qorpera/cloud-client/cloud-request";
+import {
+	type CloudCodingCommandRead,
+	type CloudMachineCommandReceipt,
+	parseCloudCodingCommandRead,
+	parseCloudMachineCommandReceipt,
+} from "@qorpera/contracts";
+import { type CloudNativeToolBinding, parseCloudNativeToolBinding } from "./cloud-native-tool-authority.ts";
+
+// Machine commands travel the coding executor's command gateway (the same
+// HTTPS ingress, peer routing and transport credential) on their own route,
+// /v1/machine-commands/{start|read|cancel}. The scope names a company
+// machine, never a node, host or address; SQL decides where it runs.
+
+/** The machine tools' operation version: receipts and the executor's check both use it. */
+export const CLOUD_MACHINE_TOOL_VERSION = "qorpera.machine-tools/v1";
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const HASH = /^[0-9a-f]{64}$/;
+const TOKEN = /^[A-Za-z0-9_-]{43}$/;
+const REQUEST_LIMIT = 128 * 1024;
+const RESULT_LIMIT = 128 * 1024;
+const ERROR = "Machine command gateway unavailable";
+
+export interface CloudMachineCommandScope {
+	readonly machineId: string;
+}
+export type CloudMachineCommandStart = {
+	commandId: string;
+	inputSha256: string;
+	command: string;
+	timeoutMs: number | null;
+	notify: boolean;
+};
+export type CloudMachineCommandHttpRequest = Readonly<
+	{
+		schema: "qorpera.machine-command-http/v1";
+		binding: CloudNativeToolBinding;
+		scope: CloudMachineCommandScope;
+	} & (
+		| { action: "start"; input: CloudMachineCommandStart }
+		| { action: "read"; input: CloudCodingCommandRead }
+		| { action: "cancel"; input: { commandId: string } }
+	)
+>;
+/** Host-side: the fixed gateway to the executor of the machine's node. */
+export interface CloudMachineCommandGateway {
+	start(
+		scope: CloudMachineCommandScope,
+		input: CloudMachineCommandStart,
+		signal: AbortSignal,
+	): Promise<CloudMachineCommandReceipt>;
+	read(
+		scope: CloudMachineCommandScope,
+		input: CloudCodingCommandRead,
+		signal: AbortSignal,
+	): Promise<CloudMachineCommandReceipt>;
+	cancel(scope: CloudMachineCommandScope, commandId: string, signal: AbortSignal): Promise<CloudMachineCommandReceipt>;
+}
+
+function record(value: unknown, keys: readonly string[]): Record<string, unknown> {
+	if (
+		!value ||
+		typeof value !== "object" ||
+		Array.isArray(value) ||
+		Object.keys(value).sort().join() !== [...keys].sort().join()
+	)
+		throw new Error(ERROR);
+	return value as Record<string, unknown>;
+}
+/** The first line of a command, for people and notifications (300 characters at most). */
+export function cloudMachineCommandHead(command: string): string {
+	const head = command.trim().replace(/\s+/g, " ");
+	return head.length > 300 ? `${head.slice(0, 297)}...` : head;
+}
+export function parseCloudMachineCommandHttpRequest(value: unknown, action: string): CloudMachineCommandHttpRequest {
+	const input = record(value, ["schema", "binding", "scope", "action", "input"]);
+	if (
+		input.schema !== "qorpera.machine-command-http/v1" ||
+		input.action !== action ||
+		!["start", "read", "cancel"].includes(action)
+	)
+		throw new Error(ERROR);
+	const scope = record(input.scope, ["machineId"]);
+	if (typeof scope.machineId !== "string" || !UUID.test(scope.machineId)) throw new Error(ERROR);
+	const body =
+		action === "read"
+			? { ...parseCloudCodingCommandRead(input.input) }
+			: record(
+					input.input,
+					action === "start" ? ["commandId", "inputSha256", "command", "timeoutMs", "notify"] : ["commandId"],
+				);
+	if (typeof body.commandId !== "string" || !UUID.test(body.commandId)) throw new Error(ERROR);
+	if (
+		action === "start" &&
+		(typeof body.inputSha256 !== "string" ||
+			!HASH.test(body.inputSha256) ||
+			typeof body.command !== "string" ||
+			!body.command.trim() ||
+			body.command.includes("\0") ||
+			Buffer.from(body.command).toString("utf8") !== body.command ||
+			Buffer.byteLength(body.command) > 16384 ||
+			Buffer.byteLength(JSON.stringify(body.command)) > 60000 ||
+			typeof body.notify !== "boolean" ||
+			(body.timeoutMs !== null && (!Number.isSafeInteger(body.timeoutMs) || Number(body.timeoutMs) < 1000)))
+	)
+		throw new Error(ERROR);
+	return Object.freeze({
+		schema: "qorpera.machine-command-http/v1",
+		binding: parseCloudNativeToolBinding(input.binding),
+		scope: Object.freeze({ machineId: scope.machineId }),
+		action,
+		input: Object.freeze({ ...body }),
+	}) as CloudMachineCommandHttpRequest;
+}
+function validToken(value: string): boolean {
+	return (
+		TOKEN.test(value) &&
+		Buffer.from(value, "base64url").length === 32 &&
+		Buffer.from(value, "base64url").toString("base64url") === value
+	);
+}
+function origin(value: string, allowLoopback: boolean): string {
+	const url = new URL(value);
+	if (
+		(url.protocol !== "https:" &&
+			!(allowLoopback && url.protocol === "http:" && ["127.0.0.1", "[::1]"].includes(url.hostname))) ||
+		url.username ||
+		url.password ||
+		url.search ||
+		url.hash ||
+		url.pathname !== "/"
+	)
+		throw new Error(ERROR);
+	return url.origin;
+}
+/** The receipt answers exactly the request: its machine, its command and, for
+ * a start, the command's input digest; a read page stays within its limit. */
+export function checkCloudMachineCommandReceipt(
+	request: CloudMachineCommandHttpRequest,
+	value: unknown,
+): CloudMachineCommandReceipt {
+	const receipt = parseCloudMachineCommandReceipt(value);
+	if (
+		receipt.machineId !== request.scope.machineId ||
+		receipt.commandId !== request.input.commandId ||
+		(request.action === "start" && receipt.inputSha256 !== request.input.inputSha256) ||
+		(request.action === "read" &&
+			((!request.input.tail && receipt.log.offset !== (request.input.offset ?? 0)) ||
+				Buffer.byteLength(receipt.output) > (request.input.limit ?? 4096)))
+	)
+		throw new Error(ERROR);
+	return receipt;
+}
+
+/** Credential and binding are host-only; no model argument chooses a host or
+ * route. There are no automatic effect retries. */
+export function createHttpCloudMachineCommandGateway(options: {
+	url: string;
+	token: string;
+	binding: CloudNativeToolBinding;
+	allowLoopback?: boolean;
+	fetch?: typeof fetch;
+}): CloudMachineCommandGateway {
+	const base = origin(options.url, options.allowLoopback ?? false);
+	if (!validToken(options.token)) throw new Error(ERROR);
+	const binding = parseCloudNativeToolBinding(options.binding);
+	const transport = options.fetch ?? fetch;
+	const request = async (
+		action: "start" | "read" | "cancel",
+		scope: CloudMachineCommandScope,
+		input: unknown,
+		signal: AbortSignal,
+	): Promise<CloudMachineCommandReceipt> => {
+		try {
+			const admitted = parseCloudMachineCommandHttpRequest(
+				{ schema: "qorpera.machine-command-http/v1", binding, scope, action, input },
+				action,
+			);
+			const body = JSON.stringify(admitted);
+			if (Buffer.byteLength(body) > REQUEST_LIMIT) throw new Error(ERROR);
+			return await withCloudDeadline(
+				async (requestSignal) => {
+					const response = await transport(`${base}/v1/machine-commands/${action}`, {
+						method: "POST",
+						redirect: "error",
+						signal: requestSignal,
+						headers: { authorization: `Bearer ${options.token}`, "content-type": "application/json" },
+						body,
+					});
+					if (response.status !== 200) {
+						// A refusal names a fixed code the agent can act on (not running, unknown command).
+						let code: unknown;
+						if (response.status === 409)
+							code = (
+								JSON.parse(
+									new TextDecoder("utf8", { fatal: true }).decode(
+										await readBoundedCloudResponse(response, 4096, requestSignal),
+									),
+								) as { code?: unknown }
+							).code;
+						else void response.body?.cancel().catch(() => undefined);
+						throw new Error(typeof code === "string" && /^[A-Z][A-Z0-9_]{2,60}$/.test(code) ? code : ERROR);
+					}
+					const bytes = await readBoundedCloudResponse(response, RESULT_LIMIT, requestSignal);
+					return checkCloudMachineCommandReceipt(
+						admitted,
+						JSON.parse(new TextDecoder("utf8", { fatal: true }).decode(bytes)),
+					);
+				},
+				30000,
+				signal,
+			);
+		} catch (error) {
+			throw error instanceof Error && /^[A-Z][A-Z0-9_]{2,60}$/.test(error.message) ? error : new Error(ERROR);
+		}
+	};
+	return Object.freeze<CloudMachineCommandGateway>({
+		start: (scope, input, signal) => request("start", scope, input, signal),
+		read: (scope, input, signal) => request("read", scope, input, signal),
+		cancel: (scope, commandId, signal) => request("cancel", scope, { commandId }, signal),
+	});
+}
+
+/** A refusal the agent can act on, sent back as 409 with only its code. */
+export class CloudMachineCommandRefusal extends Error {
+	readonly code: "MACHINE_NOT_RUNNING" | "MACHINE_COMMAND_UNKNOWN";
+	constructor(code: "MACHINE_NOT_RUNNING" | "MACHINE_COMMAND_UNKNOWN") {
+		super(code);
+		this.code = code;
+	}
+}
+
+/** The executor side of the machine route (HttpCloudCodingCommandService):
+ * authorize in SQL, execute on the machine's node, authorize again. */
+export interface CloudMachineCommandServiceOptions {
+	authorize(request: CloudMachineCommandHttpRequest, signal: AbortSignal): Promise<{ inputSha256: string }>;
+	execute(request: CloudMachineCommandHttpRequest, signal: AbortSignal): Promise<unknown>;
+}
+export async function serveCloudMachineCommand(
+	options: CloudMachineCommandServiceOptions,
+	body: unknown,
+	action: string,
+	signal: AbortSignal,
+): Promise<CloudMachineCommandReceipt> {
+	const admitted = parseCloudMachineCommandHttpRequest(body, action);
+	const authority = await options.authorize(admitted, signal);
+	if (
+		!HASH.test(authority.inputSha256) ||
+		(admitted.action === "start" && authority.inputSha256 !== admitted.input.inputSha256)
+	)
+		throw new Error(ERROR);
+	signal.throwIfAborted();
+	const receipt = checkCloudMachineCommandReceipt(admitted, await options.execute(admitted, signal));
+	const after = await options.authorize(admitted, signal);
+	signal.throwIfAborted();
+	if (after.inputSha256 !== authority.inputSha256 || receipt.inputSha256 !== authority.inputSha256)
+		throw new Error(ERROR);
+	return receipt;
+}

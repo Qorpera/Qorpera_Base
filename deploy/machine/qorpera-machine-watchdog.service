@@ -1,0 +1,12 @@
+[Unit]
+Description=Stop agents' commands when the machine's executor lease runs out
+After=local-fs.target
+# The timer starts this every 10 s; never refuse it for starting often.
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+ExecStart=/usr/bin/node /opt/qorpera-machine/cloud-machine-guest.mjs watchdog
+TimeoutStartSec=15

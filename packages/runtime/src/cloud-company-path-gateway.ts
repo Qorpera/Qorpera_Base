@@ -107,7 +107,10 @@ export type CloudCompanyPathRpc =
 	| "qorpera_begin_action_review"
 	| "qorpera_record_action_review"
 	| "qorpera_await_action_review"
-	| "qorpera_add_agent_review_rule";
+	| "qorpera_add_agent_review_rule"
+	// Machines agents start (2026-09-28).
+	| "qorpera_native_machine_start"
+	| "qorpera_native_machine_manage";
 
 /** Service-only transport. Never exposed as an arbitrary RPC tool. */
 export interface CloudCompanyPathControl {

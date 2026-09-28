@@ -192,7 +192,8 @@ export interface CloudWakeEnvelope {
 			| "room"
 			| "office-activation"
 			| "worker-dispatch"
-			| "worker-completion";
+			| "worker-completion"
+			| "machine-event";
 		id: string;
 		occurrenceKey: string;
 	}>;
@@ -511,6 +512,49 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 				!Array.isArray(completion.outputs)
 			)
 				throw new Error("Invalid worker completion wake");
+		}
+	} else if (wake.kind === "agent" && source.kind === "machine-event") {
+		// A typed internal continuation of the agent's own run: a machine it asked
+		// for is running, or a command it started with notify ended.
+		const events = closed(payloadBody, ["schema", "parentRunId", "events", "stillWaiting"]);
+		if (
+			events.schema !== "qorpera.machine-event/v1" ||
+			parentRunId === null ||
+			uuidKey(parentRunId) === uuidKey(identity.runId) ||
+			uuid(events.parentRunId) !== parentRunId ||
+			actorStaffId !== null ||
+			actorUserId !== null ||
+			audience.kind !== "company" ||
+			wake.routine !== null ||
+			(audience.sessionId === null && policy.final !== "forbidden") ||
+			!Number.isSafeInteger(events.stillWaiting) ||
+			(events.stillWaiting as number) < 0 ||
+			!Array.isArray(events.events) ||
+			events.events.length < 1 ||
+			events.events.length > 8
+		)
+			throw new Error("Invalid machine event wake");
+		for (const item of events.events) {
+			const event = closed(item, [
+				"machine",
+				"machineId",
+				"kind",
+				"at",
+				"machineState",
+				"command",
+				"commandId",
+				"commandState",
+				"exitCode",
+				"outputTail",
+			]);
+			if (
+				typeof event.machine !== "string" ||
+				(event.kind !== "running" && event.kind !== "command") ||
+				(event.kind === "command" && (typeof event.command !== "string" || uuid(event.commandId) === null)) ||
+				(event.outputTail !== null && typeof event.outputTail !== "string")
+			)
+				throw new Error("Invalid machine event wake");
+			uuid(event.machineId);
 		}
 	} else if (wake.kind === "agent") {
 		// A coworker message. Delivered into the agent's own shared thread (the

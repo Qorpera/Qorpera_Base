@@ -20,6 +20,7 @@ import {
 	fetchIdentityRecoveryRuntimeState,
 	HttpIdentityRecoveryGuestTransport,
 } from "./cloud-identity-recovery-guest.ts";
+import { createHttpCloudMachineCommandGateway } from "./cloud-machine-command-http.ts";
 import { CloudNativeCodingRuntime } from "./cloud-native-coding-runtime.ts";
 import { HttpNativeCompanyObjectTransport } from "./cloud-native-company-objects.ts";
 import { CloudNativeCompanyRuntime } from "./cloud-native-company-runtime.ts";
@@ -30,6 +31,7 @@ import {
 	SupabaseNativeCredentialCapsuleStore,
 	SupabaseNativeProviderControlPlane,
 } from "./cloud-native-provider-service.ts";
+import type { CloudNativeToolBinding } from "./cloud-native-tool-authority.ts";
 import { HttpCloudSecretBrokerClient } from "./cloud-secret-broker-http.ts";
 import {
 	systemdCredentialMetadataIsSafe as credentialMetadataIsSafe,
@@ -332,6 +334,17 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 			binarySha256: runtimeConfiguration.binarySha256,
 			isolation: runtimeConfiguration.isolation,
 			...(coding ? { coding } : {}),
+			// Company machines ride the same executor ingress and transport credential.
+			...(codingConfiguration && codingToken
+				? {
+						machines: (binding: CloudNativeToolBinding) =>
+							createHttpCloudMachineCommandGateway({
+								url: codingConfiguration.url,
+								token: codingToken,
+								binding,
+							}),
+					}
+				: {}),
 			...(computerConfiguration && computerToken
 				? {
 						computerSession: createHttpCompanyComputerSessionFactory({

@@ -1,0 +1,390 @@
+import { createHash, randomUUID } from "node:crypto";
+import { chmod, mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { CodingMachineIntent } from "../src/coding-machine.ts";
+import { type LxdCompanyMachineBinding, lxdCompanyMachinePlan } from "../src/company-machine.ts";
+import { type CompanyMachineEntry, LxdCompanyMachineHost } from "../src/company-machine-host.ts";
+import type { LxdInstanceRecord, LxdTrackedInstanceAction } from "../src/lxd-client.ts";
+
+const state = vi.hoisted(() => ({ controlPath: "" }));
+vi.mock("../src/coding-storage.ts", () => ({
+	createCodingNasStorage: () => ({
+		get controlPath() {
+			return state.controlPath;
+		},
+		assertControl: async () => {},
+		prepareControl: async () => state.controlPath,
+		prepare: async () => {},
+		assert: async () => {},
+	}),
+}));
+
+const roots: string[] = [];
+afterEach(async () => {
+	await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+});
+const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
+const helper = Buffer.from("machine helper bytes");
+const helperSha256 = createHash("sha256").update(helper).digest("hex");
+const policy = {
+	providerId: "machine-node",
+	providerPolicySha256: "a".repeat(64),
+	project: "machines",
+	imageFingerprint: "b".repeat(64),
+	bootstrapSha256: "c".repeat(64),
+	storagePool: "machines",
+	network: "machine-net",
+};
+function binding(): LxdCompanyMachineBinding {
+	return {
+		schema: "qorpera.lxd-company-machine/v1",
+		machineId: id(2),
+		companyId: id(3),
+		environmentId: id(4),
+		...policy,
+		cpus: 4,
+		memoryBytes: 8 * 1024 ** 3,
+		rootDiskBytes: 40 * 1024 ** 3,
+		repositoryWorkerId: null,
+	};
+}
+
+/** SQL's side: one machine as the executor's list shows it, and every call recorded. */
+async function fixture() {
+	state.controlPath = await realpath(await mkdtemp(join(tmpdir(), "company-machine-host-")));
+	await chmod(state.controlPath, 0o700);
+	roots.push(state.controlPath);
+	const plan = lxdCompanyMachinePlan(binding());
+	const boot = randomUUID();
+	const entry: CompanyMachineEntry & { schema: string } = {
+		schema: "qorpera.company-machine-state/v1",
+		machineId: id(2),
+		binding: binding(),
+		bindingText: plan.text,
+		instanceSha256: plan.instanceSha256,
+		desiredState: "running",
+		lifetime: "task",
+		reserved: true,
+		asleepSince: null,
+		removing: false,
+		released: false,
+		runningAt: null,
+		bootId: null,
+		commands: [],
+		sleepDue: false,
+		stopDue: false,
+		removeDue: false,
+	};
+	const calls: { method: string; args: Record<string, unknown> }[] = [];
+	const refusals = new Map<string, string>();
+	const control = {
+		call: vi.fn(async (method: string, args: Record<string, unknown>) => {
+			calls.push({ method, args });
+			if (method === "qorpera_admit_executor_machines") return [];
+			if (method === "qorpera_list_executor_machines") return [structuredClone(entry)];
+			if (method === "qorpera_authorize_executor_machine") {
+				const intent = args.p_intent as CodingMachineIntent;
+				if (refusals.has(intent)) return { state: "refused", reason: refusals.get(intent) };
+				return {
+					schema: "qorpera.coding-machine-admission/v1",
+					machineId: id(2),
+					workerId: null,
+					instanceSha256: plan.instanceSha256,
+					intent,
+					guestUid: null,
+					validForMs: 5000,
+					nodeId: id(5),
+					nodeVersion: 1,
+				};
+			}
+			if (method === "qorpera_mark_company_machine_running") return { state: "running" };
+			if (method === "qorpera_suspend_company_machine") return { state: "suspended" };
+			if (method === "qorpera_release_company_machine") return { state: "released" };
+			return null;
+		}),
+	};
+	// LXD with one VM and a guest whose helper answers through reply files.
+	let instance: LxdInstanceRecord | undefined;
+	let pending: LxdTrackedInstanceAction | undefined;
+	const replies = new Map<string, unknown>();
+	let observed: unknown = { ended: [], cpu: { busyTicks: 0, totalTicks: 0 } };
+	const client = {
+		getInstance: vi.fn(async () => instance),
+		submitInstanceOperation: vi.fn(async (_project: string, action: LxdTrackedInstanceAction) => {
+			pending = action;
+			return { project: "machines", instanceName: plan.request.name, operationId: randomUUID() };
+		}),
+		inspectInstanceOperation: vi.fn(async (): Promise<"succeeded" | "pending" | "failed"> => {
+			if (pending?.action === "create")
+				instance = {
+					name: plan.request.name,
+					type: "virtual-machine",
+					status: "Stopped",
+					statusCode: 102,
+					profiles: [],
+					devices: structuredClone(plan.request.devices),
+					expandedDevices: structuredClone(plan.request.devices),
+					config: { ...plan.request.config, "volatile.base_image": policy.imageFingerprint },
+					expandedConfig: { ...plan.request.config, "volatile.base_image": policy.imageFingerprint },
+				};
+			else if (pending?.action === "delete") instance = undefined;
+			else if (instance && pending) {
+				instance.status = pending.action === "start" ? "Running" : "Stopped";
+				instance.statusCode = pending.action === "start" ? 103 : 102;
+			}
+			pending = undefined;
+			return "succeeded";
+		}),
+		execInstance: vi.fn(async (_project: string, _name: string, command: readonly string[]) => {
+			if (command[0] !== "/usr/bin/node") return;
+			const [nonce, action, ...args] = command.slice(2);
+			replies.set(
+				nonce,
+				action === "prepare"
+					? { schema: "qorpera.machine-guest/v1", machineId: args[0], bootId: boot, generation: Number(args[1]) }
+					: action === "refresh-lease"
+						? {
+								schema: "qorpera.machine-guest-lease-receipt/v1",
+								machineId: id(2),
+								bootId: boot,
+								validForMs: Number(args[0]),
+							}
+						: action === "observe"
+							? {
+									schema: "qorpera.machine-observation/v1",
+									machineId: id(2),
+									bootId: boot,
+									...(observed as object),
+								}
+							: {
+									schema: "qorpera.machine-command-result/v1",
+									machineId: id(2),
+									commandId: args[0],
+									inputSha256: "e".repeat(64),
+									state: "running",
+									exitCode: null,
+									output: "",
+									truncated: false,
+									log: { offset: 0, nextOffset: 0, totalBytes: 0, limitBytes: 67108864, limitReached: false },
+								},
+			);
+		}),
+		readInstanceFile: vi.fn(async (_project: string, _name: string, path: string) => {
+			if (path === "/opt/qorpera-machine/cloud-machine-guest.mjs")
+				return { content: helper, uid: 0, gid: 0, mode: 0o444 };
+			const nonce = /\/replies\/([0-9a-f-]{36})\.json$/.exec(path)?.[1];
+			if (!nonce || !replies.has(nonce)) throw new Error("LXD instance file unavailable");
+			return { content: Buffer.from(JSON.stringify(replies.get(nonce))), uid: 0, gid: 0, mode: 0o600 };
+		}),
+		pushInstanceFile: vi.fn(async () => {}),
+	};
+	const host = new LxdCompanyMachineHost({
+		control,
+		owner: "mx-a",
+		machineIdSha256: "d".repeat(64),
+		policy,
+		client,
+		journalRoot: state.controlPath,
+		storagePolicy: {
+			schema: "qorpera.coding-nas-policy/v1",
+			mountPoint: "/nas",
+			rootPath: "/nas/coding",
+			source: "10.0.0.2:/coding",
+			serverAddress: "10.0.0.2",
+		},
+		helperSha256,
+	});
+	const signal = new AbortController().signal;
+	return {
+		entry,
+		calls,
+		refusals,
+		client,
+		host,
+		signal,
+		boot,
+		instance: () => instance,
+		observe: (value: unknown) => {
+			observed = value;
+		},
+		methods: () => calls.map((call) => call.method),
+	};
+}
+
+describe("company machine host", () => {
+	it("creates and starts a wanted machine, claims its boot for it and tells SQL it runs", async () => {
+		const f = await fixture();
+		expect(await f.host.pass(f.signal)).toEqual([{ machineId: id(2), step: "start", state: "done" }]);
+		expect(f.instance()?.status).toBe("Running");
+		expect(f.client.submitInstanceOperation.mock.calls.map((call) => call[1].action)).toEqual(["create", "start"]);
+		const execs = f.client.execInstance.mock.calls.map((call) => call[2].slice(3));
+		expect(execs).toEqual([
+			["prepare", id(2), expect.stringMatching(/^\d+$/)],
+			["refresh-lease", "900000"],
+		]);
+		const marked = f.calls.find((call) => call.method === "qorpera_mark_company_machine_running");
+		expect(marked?.args).toMatchObject({
+			p_machine_id: id(2),
+			p_owner: "mx-a",
+			p_binding_text: f.entry.bindingText,
+			p_boot_id: f.boot,
+		});
+		// Every LXD effect was covered by run authority.
+		expect(
+			f.calls
+				.filter((call) => call.method === "qorpera_authorize_executor_machine")
+				.every((call) => call.args.p_intent === "run"),
+		).toBe(true);
+	});
+
+	it("keeps a running machine's lease and records the commands that ended, and a busy machine as used", async () => {
+		const f = await fixture();
+		await f.host.pass(f.signal);
+		f.entry.bootId = f.boot;
+		f.entry.runningAt = new Date().toISOString();
+		f.entry.commands = [id(7), id(8)];
+		f.observe({
+			ended: [
+				{ commandId: id(7), state: "failed", exitCode: 2, outputTail: "1 failing" },
+				{ commandId: id(9), state: "lost", exitCode: null, outputTail: "" },
+			],
+			cpu: { busyTicks: 100, totalTicks: 1000 },
+		});
+		expect(await f.host.pass(f.signal)).toEqual([{ machineId: id(2), step: "commands", state: "done" }]);
+		let recorded = f.calls.filter((call) => call.method === "qorpera_record_company_machine_commands").at(-1);
+		// A command SQL does not list is never reported; the first sample has nothing to compare with.
+		expect(recorded?.args).toMatchObject({
+			p_boot_id: f.boot,
+			p_ended: [{ commandId: id(7), state: "failed", exitCode: 2, outputTail: "1 failing" }],
+			p_busy: false,
+		});
+		f.observe({ ended: [], cpu: { busyTicks: 400, totalTicks: 2000 } });
+		await f.host.pass(f.signal);
+		recorded = f.calls.filter((call) => call.method === "qorpera_record_company_machine_commands").at(-1);
+		expect(recorded?.args).toMatchObject({ p_ended: [], p_busy: true });
+		f.observe({ ended: [], cpu: { busyTicks: 401, totalTicks: 3000 } });
+		const before = f.calls.length;
+		await f.host.pass(f.signal);
+		expect(f.calls.slice(before).some((call) => call.method === "qorpera_record_company_machine_commands")).toBe(
+			false,
+		);
+	});
+
+	it("puts a machine to sleep under stop authority, then gives its room back", async () => {
+		const f = await fixture();
+		await f.host.pass(f.signal);
+		Object.assign(f.entry, { sleepDue: true, runningAt: new Date().toISOString(), bootId: f.boot });
+		expect(await f.host.pass(f.signal)).toEqual([{ machineId: id(2), step: "stop", state: "done" }]);
+		expect(f.instance()?.status).toBe("Stopped");
+		expect(f.client.submitInstanceOperation.mock.calls.at(-1)?.[1]).toMatchObject({ action: "stop", force: true });
+		// The guest's own programs are asked to stop and its disk synced first.
+		expect(f.client.execInstance.mock.calls.at(-1)?.[2]).toEqual([
+			"/bin/sh",
+			"-c",
+			"systemctl stop qorpera-machine.slice docker.service containerd.service; sync",
+		]);
+		expect(f.methods()).toContain("qorpera_suspend_company_machine");
+	});
+
+	it("waits when SQL refuses the effect, and deletes an asleep machine before releasing it", async () => {
+		const f = await fixture();
+		f.refusals.set("run", "NODE_CAPACITY_EXHAUSTED");
+		expect(await f.host.pass(f.signal)).toEqual([{ machineId: id(2), step: "start", state: "not-now" }]);
+		expect(f.client.submitInstanceOperation).not.toHaveBeenCalled();
+		f.refusals.clear();
+		await f.host.pass(f.signal);
+		Object.assign(f.entry, { stopDue: true, desiredState: "deleted" });
+		await f.host.pass(f.signal);
+		Object.assign(f.entry, { stopDue: false, reserved: false, removeDue: true });
+		expect(await f.host.pass(f.signal)).toEqual([{ machineId: id(2), step: "release", state: "done" }]);
+		expect(f.instance()).toBeUndefined();
+		expect(f.client.submitInstanceOperation.mock.calls.map((call) => call[1].action)).toEqual([
+			"create",
+			"start",
+			"stop",
+			"delete",
+		]);
+		expect(f.methods().filter((method) => method === "qorpera_release_company_machine")).toHaveLength(1);
+	});
+
+	it("records a failed step on the machine and never trusts a guest whose helper differs", async () => {
+		const f = await fixture();
+		f.client.readInstanceFile.mockImplementationOnce(async () => ({
+			content: Buffer.from("other"),
+			uid: 0,
+			gid: 0,
+			mode: 0o444,
+		}));
+		expect(await f.host.pass(f.signal)).toEqual([
+			{ machineId: id(2), step: "start", state: "failed", code: "COMPANY_MACHINE_HELPER_DIFFERS" },
+		]);
+		expect(f.calls.find((call) => call.method === "qorpera_record_company_machine_error")?.args).toMatchObject({
+			p_stage: "start",
+			p_code: "COMPANY_MACHINE_HELPER_DIFFERS",
+		});
+		expect(f.methods()).not.toContain("qorpera_mark_company_machine_running");
+	});
+
+	it("treats a guest that does not answer yet as starting", async () => {
+		const f = await fixture();
+		f.client.readInstanceFile.mockImplementationOnce(async () => {
+			throw new Error("LXD instance file unavailable");
+		});
+		expect(await f.host.pass(f.signal)).toEqual([{ machineId: id(2), step: "guest", state: "pending" }]);
+		expect(await f.host.pass(f.signal)).toEqual([{ machineId: id(2), step: "start", state: "done" }]);
+	});
+
+	it("refuses a listed binding that is not the one SQL hashed", async () => {
+		const f = await fixture();
+		f.entry.bindingText = f.entry.bindingText.replace('"cpus":4', '"cpus":8');
+		expect((await f.host.pass(f.signal))[0]).toMatchObject({
+			state: "failed",
+			code: "COMPANY_MACHINE_BINDING_DIFFERS",
+		});
+		expect(f.client.submitInstanceOperation).not.toHaveBeenCalled();
+	});
+
+	it("runs an authorized command through the inbox and the helper, and checks its receipt", async () => {
+		const f = await fixture();
+		const commandId = randomUUID();
+		const receipt = await f.host.command(
+			{ machineId: id(2), commandId, inputSha256: "e".repeat(64) },
+			{ action: "start", commandId, inputSha256: "e".repeat(64), command: "npm test", timeoutMs: null },
+			f.signal,
+		);
+		expect(receipt).toMatchObject({ machineId: id(2), commandId, state: "running" });
+		expect(f.client.pushInstanceFile.mock.calls[0]).toEqual([
+			"machines",
+			"qorpera-machine-00000000000040008000000000000002",
+			`/var/lib/qorpera-machine/inbox/${commandId}.json`,
+			JSON.stringify({
+				schema: "qorpera.machine-command-request/v1",
+				machineId: id(2),
+				commandId,
+				inputSha256: "e".repeat(64),
+				command: "npm test",
+				timeoutMs: null,
+			}),
+			0o400,
+			f.signal,
+		]);
+		expect(f.client.execInstance.mock.calls.at(-1)?.[2].slice(3)).toEqual(["start", commandId]);
+		await expect(
+			f.host.command(
+				{ machineId: id(2), commandId, inputSha256: "f".repeat(64) },
+				{ action: "read", read: { commandId, tail: true, limit: 100 } },
+				f.signal,
+			),
+		).rejects.toThrow("COMPANY_MACHINE_COMMAND_INVALID");
+		expect(f.client.execInstance.mock.calls.at(-1)?.[2].slice(3)).toEqual(["read", commandId, "tail", "100"]);
+	});
+});
+
+// The journal lives on the NAS control path, in its own folder.
+it("keeps company machine journals apart from coding machines'", async () => {
+	const f = await fixture();
+	await f.host.pass(f.signal);
+	await expect(mkdir(join(state.controlPath, "company-machines", id(2)))).rejects.toThrow(/EEXIST/);
+});
