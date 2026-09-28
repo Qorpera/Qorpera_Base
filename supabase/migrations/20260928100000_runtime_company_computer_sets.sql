@@ -79,12 +79,6 @@ begin
 		template_version, capabilities, policy, computer_class, created_by_user_id)
 	values (v_logical, v_office.profile_id, v_office.client_computer_id, 'Shared office', 'qorpera-shared-office', 'v1',
 		'["company_substrate"]', public.qorpera_runtime_office_policy(), 'company_computer', v_template.created_by_user_id);
-	update public.qorpera_runtime_office_access access set state = 'revoked', version = access.version + 1
-		where access.office_id = v_office.id and access.state = 'active'
-			and exists(select 1 from public.qorpera_runtime_office_access other
-				join public.qorpera_runtime_offices o on o.id = other.office_id
-				where o.environment_id = p_environment_id and o.id <> v_office.id and o.state <> 'retired'
-					and other.staff_agent_id = access.staff_agent_id and other.state = 'revoked');
 	insert into public.qorpera_runtime_office_additions(office_id, profile_id, environment_id, computer_number,
 		template_office_id, requested_by, staff_agent_id, run_id, user_id)
 	values (v_office.id, v_office.profile_id, p_environment_id, v_number, v_template.id, p_requested_by,
@@ -95,9 +89,12 @@ $$;
 revoke all on function public.qorpera_add_runtime_office_computer(uuid, text, uuid, uuid, uuid)
 	from public, anon, authenticated, service_role;
 
--- Computer access is company-wide: an agent's grant is the same on all of the
--- company's computers. Changing it on one changes it on the others, so an agent
--- revoked on purpose is never placed on, or given, another computer.
+-- Computer access is company-wide: an agent's grant (state and capabilities)
+-- is the same on all of the company's computers. Changing it on one changes it
+-- on the others, and a grant made on a new computer (a new computer, or an
+-- agent hired or re-hired) takes the agent's grant on the company's other
+-- computers, so an agent revoked on purpose is never placed on, or given,
+-- another computer.
 create function public.qorpera_runtime_office_access_company_wide()
 returns trigger
 language plpgsql
@@ -106,20 +103,48 @@ set search_path = ''
 as $$
 begin
 	update public.qorpera_runtime_office_access other
-		set state = new.state, version = other.version + 1, configured_by_user_id = new.configured_by_user_id
+		set state = new.state, capabilities = new.capabilities, version = other.version + 1,
+			configured_by_user_id = new.configured_by_user_id
 	from public.qorpera_runtime_offices changed, public.qorpera_runtime_offices office
 	where changed.id = new.office_id and office.environment_id = changed.environment_id
 		and office.id <> new.office_id and office.state <> 'retired'
 		and other.office_id = office.id and other.staff_agent_id = new.staff_agent_id
-		and other.state is distinct from new.state;
+		and (other.state is distinct from new.state or other.capabilities is distinct from new.capabilities);
 	return null;
 end
 $$;
-revoke all on function public.qorpera_runtime_office_access_company_wide() from public, anon, authenticated, service_role;
+create function public.qorpera_runtime_office_access_inherit()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare v_sibling public.qorpera_runtime_office_access%rowtype;
+begin
+	select other.* into v_sibling from public.qorpera_runtime_office_access other
+		join public.qorpera_runtime_offices office on office.id = other.office_id
+		join public.qorpera_runtime_offices added on added.id = new.office_id
+		where office.environment_id = added.environment_id and office.id <> new.office_id and office.state <> 'retired'
+			and other.staff_agent_id = new.staff_agent_id
+		order by office.computer_number limit 1;
+	if found and (v_sibling.state is distinct from new.state or v_sibling.capabilities is distinct from new.capabilities) then
+		update public.qorpera_runtime_office_access
+			set state = v_sibling.state, capabilities = v_sibling.capabilities, version = version + 1,
+				configured_by_user_id = v_sibling.configured_by_user_id
+			where office_id = new.office_id and staff_agent_id = new.staff_agent_id;
+	end if;
+	return null;
+end
+$$;
+revoke all on function public.qorpera_runtime_office_access_company_wide(),
+	public.qorpera_runtime_office_access_inherit() from public, anon, authenticated, service_role;
 create trigger qorpera_runtime_office_access_company_wide
-	after update of state on public.qorpera_runtime_office_access
-	for each row when (old.state is distinct from new.state)
+	after update of state, capabilities on public.qorpera_runtime_office_access
+	for each row when (old.state is distinct from new.state or old.capabilities is distinct from new.capabilities)
 	execute function public.qorpera_runtime_office_access_company_wide();
+create trigger qorpera_runtime_office_access_inherit
+	after insert on public.qorpera_runtime_office_access
+	for each row execute function public.qorpera_runtime_office_access_inherit();
 
 -- Registration and the member catalog keep meaning "the company's first
 -- computer": an owner registers computer 1, and clients that predate several

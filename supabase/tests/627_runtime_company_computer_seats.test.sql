@@ -207,6 +207,24 @@ select pg_temp.wake_assert(current_setting('qorpera_test.denied')::jsonb->>'plac
 	and (select count(*)=3 from public.qorpera_runtime_offices where environment_id='30000000-0000-4000-8000-000000000020'),
 	'an owner opening Carol''s computer adds nothing');
 
+-- 6b. Access is company-wide: capabilities follow too, and a re-hired agent keeps its revocation.
+update public.qorpera_runtime_office_access set capabilities='["shell"]',version=version+1
+where office_id=(pg_temp.office(1)).id and staff_agent_id='30000000-0000-4000-8000-000000000030';
+select pg_temp.wake_assert((select count(*)=3 from public.qorpera_runtime_office_access
+	where staff_agent_id='30000000-0000-4000-8000-000000000030' and capabilities='["shell"]'::jsonb),
+	'capabilities changed on computer 1 reach computers 2 and 3');
+-- Erin (revoked everywhere) is archived; a fourth computer is added meanwhile; she is re-hired.
+update public.qorpera_profile_staff set employment_status='archived' where staff_agent_id='30000000-0000-4000-8000-000000000034';
+select public.qorpera_add_runtime_office_computer('30000000-0000-4000-8000-000000000020','member',
+	'30000000-0000-4000-8000-000000000030',null,'30000000-0000-4000-8000-000000000001');
+select pg_temp.wake_assert(not exists(select 1 from public.qorpera_runtime_office_access
+	where office_id=(pg_temp.office(4)).id and staff_agent_id='30000000-0000-4000-8000-000000000034'),
+	'an archived agent gets no grant on a new computer');
+update public.qorpera_profile_staff set employment_status='active' where staff_agent_id='30000000-0000-4000-8000-000000000034';
+select pg_temp.wake_assert((select state='revoked' from public.qorpera_runtime_office_access
+	where office_id=(pg_temp.office(4)).id and staff_agent_id='30000000-0000-4000-8000-000000000034'),
+	'a grant created again for a re-hired agent takes her revoked grant on the other computers');
+
 -- 7. A computer never holds more screen rows than screens: the guest keeps a desktop for each.
 select pg_temp.wake_assert(not exists(select 1 from public.qorpera_runtime_office_screens s
 	join public.qorpera_runtime_offices o on o.id=s.office_id
