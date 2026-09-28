@@ -190,6 +190,12 @@ describe("the approval card", () => {
 			{ answer: vi.fn(), memberName: names },
 		);
 		expect(quoted.querySelector(".review-why p")?.textContent).toBe("It deletes “Old offer” without being asked.");
+		const odd = (target: string, summary: string) =>
+			renderActionReviewCard({ ...card, target, tool: "company_delete", summary }, timestamp, undefined, {
+				memberName: names,
+			}).querySelector(".review-why p")?.textContent;
+		expect(odd("/", "It deletes everything.")).toBe("It deletes everything.");
+		expect(odd("work/p$'x.md", "It deletes work/p$'x.md today.")).toBe("It deletes “P$'x” today.");
 	});
 
 	it("reads a file name the way people say it", () => {

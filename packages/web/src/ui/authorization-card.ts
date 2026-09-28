@@ -182,8 +182,11 @@ const NAME_KEYS = new Set(["subject", "title", "name"]);
 function reviewReason(card: ActionReviewCard): string {
 	if (!card.summary || !card.target || !card.tool?.startsWith("company_")) return card.summary;
 	const path = card.target.replace(/^\/+/, "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-	// The path with a leading slash or in its own quotes reads as the one quoted name.
-	return card.summary.replace(new RegExp(`["'“‘\`]?/?${path}["'”’\`]?`, "g"), `“${readableFileName(card.target)}”`);
+	if (!path) return card.summary;
+	const name = `“${readableFileName(card.target)}”`;
+	// The path with a leading slash or in its own quotes reads as the one quoted name. A
+	// function replacer, so a "$" in the name is never read as a replacement pattern.
+	return card.summary.replace(new RegExp(`["'“‘\`]?/?${path}["'”’\`]?`, "g"), () => name);
 }
 
 /** The change itself: who or what it reaches, what it is called, and what it says.
