@@ -304,8 +304,9 @@ arrive on the feed: they reload the view and trigger the recheck in section 3.
 (`object-gateway/src/native-objects.ts`), and its check has no path. The
 folder service gets its own binding: run-scoped on an execution host, and
 scoped to the mount's view on a company machine (amended 2026-09-28: the
-desktop's holder, or the run that started a shell command; section 5). The path is still checked at
-commit. Memory holds at most one partial chunk per open file.
+desktop's holder, or the run that started a shell command; section 5). The
+path is still checked at commit. Memory holds at most one partial chunk per
+open file.
 
 ## 2. Writes: change sets
 
@@ -321,6 +322,9 @@ report goes on the run's receipt.
 seconds following any change on the mount from that desktop. That covers an
 application's save, a file-manager copy, move or delete, and a
 desktop-terminal command. `computer_shell` sessions follow the run-box rule.
+(Amended 2026-09-28: each `computer_shell` command has its own mount and
+publishes when it ends and each time its output is read; it may outlive its
+run, and its last publish comes when its processes end; section 5.)
 
 **Never published:**
 - a file still open for writing by any process (it waits for a later
@@ -572,8 +576,8 @@ Agents search and read through the shell and still write with today's tools.
 **One view, company-wide.** Desktops on a Company Computer are workflow
 surfaces, not security boundaries (section 12). So every mount on the machine
 shows the same view: the company-wide view (amended 2026-09-28: a mount per
-desktop and per shell command, for attribution; founder decision 2). That view is the paths whose
-covering resource is the root shared resource (`path=''`, subtree,
+desktop and per shell command, for attribution; founder decision 2). That
+view is the paths whose covering resource is the root shared resource (`path=''`, subtree,
 company-wide), which the default agent grant targets
 (`20260926035000_company_agent_default_write_grants.sql`).
 Grants never inherit, so it excludes every path under a narrower resource, of
@@ -582,7 +586,7 @@ the holding run's authority covers the machine view; a run whose default
 grant was revoked or held back gets no Company Computer screen. Work on
 narrower paths runs in the run box.
 
-**Reads and writes are attributed per desktop.** (Amended 2026-09-28.) Every
+**Reads and writes are attributed per mount.** (Amended 2026-09-28.) Every
 mount on a computer is a view with one owner, known by its pass and the
 machine's vsock CID:
 - **The desktop's mount** is bound into the desktop session: the file manager,
@@ -600,6 +604,12 @@ machine's vsock CID:
 Each mount's reads are recorded for its owner, and its changes are checked
 against and recorded for its owner. The upload binding, the review and the
 report follow the same owner.
+
+This attribution is best effort between the shell commands of one computer.
+They run as one user and share the process table, so one command can write
+through another's mount (for example through `/proc/<pid>/root`). Every mount
+on the machine shows the same company-wide view, so this can only misname who
+saved, never widen what may be read or written.
 
 When a screen passes to another run, later desktop saves belong to the new
 holder. A computer with a running command stays in use, and its desktop is
@@ -1080,6 +1090,6 @@ folder that fits. This wording ships ahead of the mount, in PR #366.
    - only the starting agent uses a machine while `/company` is mounted; or
    - the executor mounts a view per `machine_run` command, owned by the run
      that issued it, and runs one run's commands at a time, so no two
-     requesters' authority meet on one machine. Root inside
-     the machine cannot split one mount between agents, so attribution must
-     come from the node, never from the guest.
+     requesters' authority meet on one machine. Root inside the machine
+     cannot split one mount between agents, so attribution must come from
+     the node, never from the guest.
