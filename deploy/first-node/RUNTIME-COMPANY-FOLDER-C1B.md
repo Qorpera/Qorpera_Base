@@ -481,6 +481,10 @@ moment of its check:
 
 Coding and worker runs arrive with the agent wakes.
 
+Built in `20260928233000_folder_core_authority.sql`, with tests 634 and 635.
+It sorts after S2's 20260928230000 and 20260928231000, whose rules for who
+pays it ports (§4).
+
 ### 1. Authority changes go through the clock
 
 **What changed from core §4.** Core §4 had commits and effects hold their
@@ -489,8 +493,13 @@ KEY UPDATE`. PostgreSQL grants a new shared locker even while an exclusive one
 waits (C1b-1 design review, finding 7). So a steady stream of commits and
 effects on the root resource, which covers almost everything, could make a
 revocation wait forever. C1b-2 orders authority changes through the clock
-instead. The clock is an exclusive row lock, so a change queues on it and
-cannot be starved.
+instead. The clock is an exclusive row lock: nothing is admitted ahead of a
+waiting change as a rule, the way new shared lockers are. When the holder ends,
+PostgreSQL wakes the change together with the commits waiting for the clock
+(each commit already holds the clock row `KEY SHARE` through its foreign keys,
+so it waits on the holder directly rather than behind the change), and one of
+them takes it. Either order is correct, because the journal orders them. A
+change waits at most a few commit tails in expectation.
 
 - **Every authority change takes the clock.** A folder-v2 resource or grant
   change (§2):
@@ -580,10 +589,16 @@ consent (contract 4.3).
 1. The member actor, `KEY SHARE` (rank 1). A grant also locks its principal
    `KEY SHARE`: a member at rank 1, an agent at rank 2.
 2. The resource rows, `FOR NO KEY UPDATE` (rank 6): the changed one and, when
-   narrowing, the covering parent, ancestors first.
+   narrowing, the covering parent, ancestors first. A grant or revoke locks its
+   resource this way too, so changes to one resource and its grants take turns.
 3. The tie check, in a new statement after the parent lock. A resource that
-   would share a folder key with another is refused.
-4. Grants (rank 7).
+   would share a folder key with another is refused, including one made while
+   this call waited for the parent (the first one wins). Then the parent
+   again: if a narrower resource now covers the path, it is the one a new
+   resource would narrow, and it is not locked. The call refuses with the QRC01
+   envelope (`folder_authority_changed`) and the caller retries.
+4. Grants (rank 7), read in a new statement after the resource lock, so a
+   replacement sees the grant a concurrent one made.
 5. The clock, with one journal row per call. The row names the actor, and
    whether the change narrows.
 
@@ -687,11 +702,14 @@ journal check after the clock (§1), and the commit is retried.
 
 **Accepted wakes.** Agent wakes from coworker messages, worker dispatch and
 worker completion. They are ported from `qorpera_wake_authorized`'s agent
-branch, without its locks:
+branch as S2 left it (20260928230000 "the member who started the work pays",
+20260928231000 "a member's pinned login follows them"), without its locks. The
+migration sorts after both (20260928233000):
 
 | Check | Rows locked |
 | --- | --- |
-| The execution authority matches the wake's sponsor, standing version and logical computer. Or, for coding worker dispatch, the worker is coding, its owner is a member, and the owner's sponsor matches | the execution authority, rank 3, `KEY SHARE`, required (the coding variant: none) |
+| Every wake kind: the wake's login pays for work its requester started (`qorpera_sponsor_serves_requester`) | none |
+| Agent wakes need no standing execution authority since S2. A coding worker's dispatch is paid by its owner's login, or the login that one follows to (`qorpera_sponsor_version_follows`), and its owner is a member | none |
 | The parent run is in this company and environment | none |
 | **The parent's reads:** for each row of the parent's read set, the recipient can read that resource, under the company-audience rule: not `member_private`, and both the requester and the recipient agent read it. Paths are re-resolved only for rows whose revisions changed, or whose grant expired, since the parent recorded them | none |
 | Ancestry: `qorpera_coworker_wake_ancestry` or `qorpera_worker_wake_ancestry`, which lock nothing and write nothing | none |
@@ -703,9 +721,9 @@ branch, without its locks:
   folder core.
 - **Coding runs** (worker species `coding`) get session kind `coding`: the
   coding rule, and never reviewed.
-  - A coding session acts for its owner (F3, #432). Until S2 makes the owner
-    and the requester the same member, a coding run whose worker owner is not
-    its requester is refused (42501).
+  - A coding session acts for its owner (F3, #432). S2 makes the owner and the
+    requester the same member for new coding work; a coding run whose worker
+    owner is not its requester is still refused (42501).
 - **In-house worker runs** get the access rule. Both rules are already in
   C1b-1 and tested there.
 - **Still refused (0A000):**
@@ -724,7 +742,9 @@ branch, without its locks:
     the same operation key then saves.
   - A widening in the same window aborts nothing.
   - A revoke in flight while a commit holds the clock is ordered after it.
-  - A stream of commits does not starve a revoke (dblink).
+  - A revoke waiting on the clock is not blocked by commits in flight, and
+    a commit waiting with it is ordered either way: before it, with the lower
+    clock value; after it, refused (dblink).
   - A hook target at rank 6 in `FOR SHARE` is refused.
 - **Mutators:**
   - owners and admins on shared resources;
@@ -754,8 +774,9 @@ branch, without its locks:
     checked.
   - Concurrent re-stamps of one run do not deadlock.
 - **Agent wakes:**
-  - a coworker run saves;
-  - a re-pointed execution authority refuses;
+  - a coworker run saves, with no standing execution authority;
+  - a wake paid by another member's login refuses;
+  - a coding dispatch not paid by its owner's login refuses;
   - a parent read-set row the recipient cannot read refuses;
   - the parent check does not re-resolve unchanged rows (cost);
   - worker dispatch and completion;
@@ -835,6 +856,15 @@ checked and attributed.
   until those paths take the job first.
 - **C1b-3** relaxes `qorpera_folder_commits_run_attribution`: a view's save
   after its turn has an agent actor and no live run.
+- **C1c: no savepoints around folder commits.** A stress run that wrapped
+  each commit in a PL/pgSQL exception block (a subtransaction) hit
+  PostgreSQL 17.6's internal error "new multixact has more than one updating
+  member" twice in about 2,000 commits, on the clock row every commit locks
+  `KEY SHARE` through its foreign keys and then updates. The same load with
+  plain calls, one transaction each, never did (four runs, about 4,500
+  operations). Callers retry a refused commit in a new transaction, as the
+  runtime does; C1c must not catch a commit's error inside the transaction
+  that goes on.
 - **Runbook, after a PostgreSQL major upgrade** (or any change to
   `qorpera_folder_key`): besides recomputing stored keys (core §2), run
   `REINDEX INDEX qorpera_company_path_resources_folder_key`. An `update …
