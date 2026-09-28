@@ -2978,11 +2978,23 @@ carry a folder of many terabytes that many agents write at once.
 The build order in `deploy/first-node/RUNTIME-COMPANY-FOLDER.md` is reordered
 to match.
 
-**Moving today's state.** Each move publishes the new files and turns the old
-table into an index of them in the same step. The old path is then removed
-unless the row says otherwise.
+**A clean reset, not a migration.** Founder decision, 28 September 2026:
+every company that exists today is a test company, so its data is not moved
+into the new layout. When the company folder lands:
 
-| Today | Moves to |
+- the platform deletes today's companies' data;
+- it clears their company state and indexes from Supabase;
+- it sets up the company folder on the NAS; and
+- the layout is proven on new companies created for the test.
+
+The exact scope of the deletion (projects, tables, storage buckets and NAS
+paths) is confirmed with the founder before it runs. The storage core is
+rebuilt without carrying today's tables or paths forward.
+
+The table below records where each piece of today's state belongs in the new
+layout. It guides the new code; it is not a data migration.
+
+| Today | Belongs in |
 | --- | --- |
 | `organization/agents/<uuid>.json` and the agent roster rows | `agents/<agent-name>/agent.md` |
 | the Co-Founder mark | the platform's record of the seeded Co-Founder, shown as `kind: co-founder` |

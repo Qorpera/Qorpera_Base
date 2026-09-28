@@ -128,6 +128,7 @@ The build does not yet match this file:
 - **Omitted layers:** the tree contract declares the staff registry and staff
   instructions to be outside the Company File.
 
-The contract's 2026-09-27 layout amendment lists the migration of each item
-and the order of work. The storage core changes first, before any machine
-writes through the folder.
+The contract's 2026-09-27 layout amendment lists where each item belongs and
+the order of work. The storage core changes first, before any machine writes
+through the folder. Today's companies are test companies: they are reset,
+not migrated (founder decision, 28 September 2026).

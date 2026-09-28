@@ -751,7 +751,11 @@ is unchanged.
      folders, `rules/`, a lone `agent.md` or `group.md`, and agent or group
      folders moved out of place; and review by path for delegation units on
      every write path, including today's Company File tools (contract 5.6).
-   - Today's state moved into the layout of contract 5.6.
+   - A clean reset instead of a migration (founder decision, 28 September
+     2026): today's test companies are deleted, their company state and
+     indexes cleared from Supabase, and the layout proven on new companies.
+     The exact scope is confirmed with the founder before anything is
+     deleted.
    - Change sets and units.
    - Move and rename.
    - Streamed binary writes.
