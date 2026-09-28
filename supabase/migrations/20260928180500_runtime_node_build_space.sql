@@ -5,15 +5,17 @@
 -- and refused every sign-in and placement there. Enrolling each builder exactly
 -- (deploy/first-node/NODE-BUILDER-COEXISTENCE.md) needs an admission hold and a re-pin for every phase.
 --
--- An inventory policy may now declare `buildSpace {project, cpuMillis, memoryBytes}`. The node
--- observer (runner-orchestrator runtime-node-inventory.ts) reports every instance in that project as
--- category `build`: a virtual machine with explicit limits, only a root disk from a pool and network
--- interfaces, no raw hypervisor settings and no Qorpera marker but `user.qorpera.image_builder` and
--- `user.qorpera.purpose`. Anything else there is `INSTANCE_AUTHORITY_DIFFERS`; together they may use
--- at most the declared space (`BUILD_SPACE_EXCEEDED`). The space always counts against headroom, like
--- infrastructure, whether a build runs or not. No infrastructure entry may sit in the build project.
--- The registry checks the same again: a `build` entry only in the declared project, never with an
--- allocation, the sum within the space, and no unclassified instance in the build project.
+-- An inventory policy may now declare `buildSpace {project, network, cpuMillis, memoryBytes}`. The
+-- node observer (runner-orchestrator runtime-node-inventory.ts) reports every instance in that project
+-- as category `build`: a virtual machine with an allowlisted configuration (limits, boot and secure-boot
+-- settings, LXD's volatile.* and image.* keys, `user.qorpera.image_builder=true`, `user.qorpera.purpose`;
+-- never autostarting), exactly one root disk of a declared size from a pool, and network interfaces only
+-- on the declared network with MAC, IPv4 and IPv6 filtering on. Anything else there is
+-- `INSTANCE_AUTHORITY_DIFFERS`; together they may use at most the declared space
+-- (`BUILD_SPACE_EXCEEDED`). The space always counts against headroom, like infrastructure, whether a
+-- build runs or not. No infrastructure entry may sit in the build project. The registry checks again:
+-- every entry in the build project is `build` and every `build` entry is in it, a virtual machine,
+-- never with an allocation, and all of them together within the space.
 -- Policies without buildSpace, and observers that report no `build` entries, behave exactly as before.
 
 do $guard$ begin
@@ -38,10 +40,10 @@ begin
   or p_policy-array['schema','nodeId','host','operatingCpuMillis','operatingMemoryBytes','infrastructure','buildSpace']<>'{}'::jsonb
   or (select count(*) from jsonb_object_keys(p_policy))<>6+(p_policy ? 'buildSpace')::integer
   or (p_policy ? 'buildSpace' and (jsonb_typeof(p_policy->'buildSpace') is distinct from 'object'
-   or (p_policy->'buildSpace')-array['project','cpuMillis','memoryBytes']<>'{}'::jsonb
-   or (select count(*) from jsonb_object_keys(p_policy->'buildSpace'))<>3
-   or jsonb_typeof(p_policy->'buildSpace'->'project') is distinct from 'string'
-   or coalesce(p_policy->'buildSpace'->>'project','') !~ '^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$'
+   or (p_policy->'buildSpace')-array['project','network','cpuMillis','memoryBytes']<>'{}'::jsonb
+   or (select count(*) from jsonb_object_keys(p_policy->'buildSpace'))<>4
+   or exists(select 1 from unnest(array['project','network']) k where jsonb_typeof(p_policy->'buildSpace'->k) is distinct from 'string'
+    or coalesce(p_policy->'buildSpace'->>k,'') !~ '^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$')
    or exists(select 1 from unnest(array['cpuMillis','memoryBytes']) k where jsonb_typeof(p_policy->'buildSpace'->k) is distinct from 'number'
     or coalesce(p_policy->'buildSpace'->>k,'') !~ '^[1-9][0-9]{0,15}$')))
   or p_policy->>'schema' is distinct from 'qorpera.runtime-node-inventory-policy/v1' then
@@ -159,6 +161,10 @@ begin
    or exists(select 1 from unnest(array['cpuMillis','memoryBytes']) k where v_item->k<>'null'::jsonb and
     (jsonb_typeof(v_item->k) is distinct from 'number' or coalesce(v_item->>k,'') !~ '^[1-9][0-9]{0,15}$')) then
    raise exception 'Invalid node inventory entry' using errcode='42501'; end if;
+  -- Everything in the build project is a build machine, and a build machine is a virtual machine
+  -- in the build project with no allocation.
+  if v_policy ? 'buildSpace' and (v_item->>'project'=v_policy->'buildSpace'->>'project') <> (v_item->>'category'='build') then
+   raise exception 'Node inventory mixes the build space with other instances' using errcode='42501'; end if;
   if v_item->>'category'='managed' then
    select a into v_expected from jsonb_array_elements(v_context->'allocations') a where a=v_item->'allocation';
    if not found or v_item->>'type'<>'virtual-machine' then raise exception 'Node inventory allocation differs' using errcode='42501'; end if;
@@ -185,14 +191,14 @@ begin
   elsif v_item->>'category'='build' then
    -- A build machine: only in the declared build space, never an allocation; all of them together fit the space.
    if v_item->'allocation'<>'null'::jsonb then raise exception 'A build machine cannot claim an allocation' using errcode='42501'; end if;
-   if not v_policy ? 'buildSpace' or v_item->>'project' is distinct from v_policy->'buildSpace'->>'project' then
+   if not v_policy ? 'buildSpace' then
     raise exception 'Node inventory reports a build machine outside the build space' using errcode='42501'; end if;
+   if v_item->>'type' is distinct from 'virtual-machine' then
+    raise exception 'A build machine must be a virtual machine' using errcode='42501'; end if;
    v_build_cpu:=v_build_cpu+coalesce((v_item->>'cpuMillis')::numeric,0);
    v_build_memory:=v_build_memory+coalesce((v_item->>'memoryBytes')::numeric,0);
   else
    if v_item->'allocation'<>'null'::jsonb then raise exception 'Unmanaged instance cannot claim an allocation' using errcode='42501'; end if;
-   if v_policy ? 'buildSpace' and v_item->>'project'=v_policy->'buildSpace'->>'project' then
-    raise exception 'Node inventory leaves an instance in the build space unclassified' using errcode='42501'; end if;
    v_ready:=false;
   end if;
   if v_item->'physicalId'='null'::jsonb or v_item->'cpuMillis'='null'::jsonb or v_item->'memoryBytes'='null'::jsonb

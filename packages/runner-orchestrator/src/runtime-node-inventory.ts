@@ -41,14 +41,14 @@ export interface RuntimeNodeInfrastructure {
 	identityVolumes?: ExecutionHostIdentityVolumes;
 }
 /** A declared space for image build machines (a builder and its verifier).
- * Every instance in `project` is a build machine: a virtual machine with
- * explicit limits, its root disk and network only, and no Qorpera marker but
- * the builder's own. Together they may use at most the declared CPU and
- * memory, which the policy always counts against the node's headroom whether
- * a build runs or not. So a build never makes the node unavailable, and
- * nothing else can hide in the build project. */
+ * Every instance in `project` is a build machine (buildMachine below). Together
+ * they may use at most the declared CPU and memory, which the policy always
+ * counts against the node's headroom whether a build runs or not. So a build
+ * never makes the node unavailable, and nothing else can hide in the build
+ * project. `network` is the only network a build machine may join. */
 export interface RuntimeNodeBuildSpace {
 	project: string;
+	network: string;
 	cpuMillis: number;
 	memoryBytes: number;
 }
@@ -113,9 +113,10 @@ export function parseRuntimeNodeInventoryPolicy(value: unknown): RuntimeNodeInve
 	});
 	let buildSpace: RuntimeNodeBuildSpace | undefined;
 	if (building) {
-		const b = record(p.buildSpace, "project,cpuMillis,memoryBytes");
+		const b = record(p.buildSpace, "project,network,cpuMillis,memoryBytes");
 		buildSpace = {
 			project: text(b.project, NAME),
+			network: text(b.network, NAME),
 			cpuMillis: integer(b.cpuMillis, MAX_CPU),
 			memoryBytes: integer(b.memoryBytes, MAX_MEMORY),
 		};
@@ -313,31 +314,75 @@ export function runtimeNodeInstanceConfigurationSha256(
 ): string {
 	return runtimeNodeInstanceConfiguration(i, identityVolumes).configurationSha256;
 }
-const BUILD_MARKERS = new Set(["user.qorpera.image_builder", "user.qorpera.purpose"]);
-/** A build machine as the image lane makes one: a virtual machine whose only
- * devices are its root disk from a storage pool and network interfaces, with
- * no raw hypervisor settings and no Qorpera marker but the builder's own. It
- * can mount no host path or volume, so no company, identity or login disk. */
-function buildMachine(i: LxdHostInventoryInstance): boolean {
+/** Configuration a build machine may carry: its limits and boot settings, the
+ * keys LXD itself keeps (`volatile.*`) or copies from the image (`image.*`),
+ * and the builder's own two markers. Anything else, known today or added to
+ * LXD later, is refused. */
+const BUILD_CONFIG = new Set([
+	"limits.cpu",
+	"limits.memory",
+	"boot.autostart",
+	"boot.mode",
+	"security.secureboot",
+	"security.csm",
+	"user.qorpera.image_builder",
+	"user.qorpera.purpose",
+]);
+const BUILD_NIC = new Set([
+	"type",
+	"name",
+	"network",
+	"hwaddr",
+	"security.ipv4_filtering",
+	"security.ipv6_filtering",
+	"security.mac_filtering",
+	"security.port_isolation",
+]);
+/** A build machine as the image lane makes one: a virtual machine with an
+ * allowlisted configuration (never autostarting), one root disk of a declared
+ * size from a storage pool, and network interfaces only on the build space's
+ * network with MAC, IPv4 and IPv6 filtering on. It can mount no host path or
+ * volume (so no company, identity or login disk) and reach no other network. */
+function buildMachine(i: LxdHostInventoryInstance, space: RuntimeNodeBuildSpace): boolean {
 	if (i.type !== "virtual-machine") return false;
 	for (const config of [i.config, i.expandedConfig])
 		for (const [key, value] of Object.entries(config)) {
-			if (key.startsWith("raw.")) return false;
-			if (key.startsWith("user.qorpera.") && !BUILD_MARKERS.has(key)) return false;
+			if (key.startsWith("volatile.") || key.startsWith("image.")) continue;
+			if (!BUILD_CONFIG.has(key)) return false;
 			if (key === "user.qorpera.image_builder" && value !== "true") return false;
+			if (key === "boot.autostart" && value !== "false") return false;
 		}
-	for (const devices of [i.devices, i.expandedDevices])
+	// The root may come from a profile (only in the expanded devices) or be the instance's own.
+	for (const [devices, required] of [
+		[i.devices, false],
+		[i.expandedDevices, true],
+	] as const) {
+		let roots = 0;
 		for (const device of Object.values(devices)) {
-			if (device.type === "nic") continue;
+			if (device.type === "nic") {
+				if (
+					Object.keys(device).some((k) => !BUILD_NIC.has(k)) ||
+					device.network !== space.network ||
+					device["security.mac_filtering"] !== "true" ||
+					device["security.ipv4_filtering"] !== "true" ||
+					device["security.ipv6_filtering"] !== "true" ||
+					(device["security.port_isolation"] !== undefined && device["security.port_isolation"] !== "true")
+				)
+					return false;
+				continue;
+			}
 			if (
 				device.type !== "disk" ||
 				device.path !== "/" ||
 				typeof device.pool !== "string" ||
-				device.source !== undefined ||
+				typeof device.size !== "string" ||
 				Object.keys(device).some((k) => !["type", "path", "pool", "size", "size.state"].includes(k))
 			)
 				return false;
+			roots += 1;
 		}
+		if (roots > 1 || (required && roots !== 1)) return false;
+	}
 	return true;
 }
 function state(i: LxdHostInventoryInstance): RuntimeNodePhysicalState {
@@ -447,7 +492,11 @@ export function reconcileRuntimeNodeInventory(inventory: LxdHostInventory, conte
 			// Build machines never stand for an allocation or infrastructure entry.
 			category = "build";
 			reason =
-				physicalId && resources.cpuMillis !== null && resources.memoryBytes !== null && buildMachine(i)
+				physicalId &&
+				resources.cpuMillis !== null &&
+				resources.memoryBytes !== null &&
+				p.buildSpace &&
+				buildMachine(i, p.buildSpace)
 					? null
 					: "INSTANCE_AUTHORITY_DIFFERS";
 		} else if (a) {

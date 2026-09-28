@@ -52,21 +52,32 @@ select public.qorpera_configure_runtime_node(jsonb_build_object('schema','qorper
 	'standardMemoryBytes',8589934592,'enabled',true),0);
 
 -- Enrolment: the space's shape is strict; it counts against headroom; no infrastructure in its project.
-select pg_temp.fails($q$select public.qorpera_enroll_runtime_node_inventory(pg_temp.policy('{"project":"qorpera-build","cpuMillis":8000}'))$q$,
+select pg_temp.fails($q$select public.qorpera_enroll_runtime_node_inventory(pg_temp.policy('{"project":"qorpera-build","network":"qorpera0","cpuMillis":8000}'))$q$,
 	'Invalid node inventory policy');
-select pg_temp.fails($q$select public.qorpera_enroll_runtime_node_inventory(pg_temp.policy('{"project":"qorpera-build","cpuMillis":8000,"memoryBytes":1,"x":1}'))$q$,
+select pg_temp.fails($q$select public.qorpera_enroll_runtime_node_inventory(pg_temp.policy('{"project":"qorpera-build","cpuMillis":8000,"memoryBytes":1}'))$q$,
 	'Invalid node inventory policy');
-select pg_temp.fails($q$select public.qorpera_enroll_runtime_node_inventory(pg_temp.policy('{"project":"../b","cpuMillis":8000,"memoryBytes":1}'))$q$,
+select pg_temp.fails($q$select public.qorpera_enroll_runtime_node_inventory(pg_temp.policy('{"project":"qorpera-build","network":"../n","cpuMillis":8000,"memoryBytes":1}'))$q$,
 	'Invalid node inventory policy');
-select pg_temp.fails($q$select public.qorpera_enroll_runtime_node_inventory(pg_temp.policy('{"project":"qorpera-build","cpuMillis":"8000","memoryBytes":1}'))$q$,
+select pg_temp.fails($q$select public.qorpera_enroll_runtime_node_inventory(pg_temp.policy('{"project":"qorpera-build","network":"qorpera0","cpuMillis":8000,"memoryBytes":1,"x":1}'))$q$,
 	'Invalid node inventory policy');
-select pg_temp.fails($q$select public.qorpera_enroll_runtime_node_inventory(pg_temp.policy('{"project":"qorpera-build","cpuMillis":8001,"memoryBytes":12884901888}'))$q$,
+select pg_temp.fails($q$select public.qorpera_enroll_runtime_node_inventory(pg_temp.policy('{"project":"../b","network":"qorpera0","cpuMillis":8000,"memoryBytes":1}'))$q$,
+	'Invalid node inventory policy');
+select pg_temp.fails($q$select public.qorpera_enroll_runtime_node_inventory(pg_temp.policy('{"project":"qorpera-build","network":"qorpera0","cpuMillis":"8000","memoryBytes":1}'))$q$,
+	'Invalid node inventory policy');
+select pg_temp.fails($q$select public.qorpera_enroll_runtime_node_inventory(pg_temp.policy('{"project":"qorpera-build","network":"qorpera0","cpuMillis":8001,"memoryBytes":12884901888}'))$q$,
 	'Infrastructure exceeds reserved headroom or duplicates identity');
-select pg_temp.fails($q$select public.qorpera_enroll_runtime_node_inventory(pg_temp.policy('{"project":"qorpera-build","cpuMillis":4000,"memoryBytes":4294967296}',
+select pg_temp.fails($q$select public.qorpera_enroll_runtime_node_inventory(pg_temp.policy('{"project":"qorpera-build","network":"qorpera0","cpuMillis":4000,"memoryBytes":4294967296}',
 	jsonb_build_array(jsonb_build_object('project','qorpera-build','name','exec','physicalId','64100000-0000-4000-8000-0000000000e1',
 		'type','virtual-machine','configurationSha256',repeat('c',64),'cpuMillis',1000,'memoryBytes',1073741824))))$q$,
 	'Infrastructure exceeds reserved headroom or duplicates identity');
-select public.qorpera_enroll_runtime_node_inventory(pg_temp.policy('{"project":"qorpera-build","cpuMillis":8000,"memoryBytes":12884901888}'));
+-- Rollout direction: the node starts without a space, then its policy is replaced with one.
+select public.qorpera_enroll_runtime_node_inventory(pg_temp.policy(null));
+reset role;
+select set_config('qorpera_test.build_policy',(select policy_sha256 from public.qorpera_runtime_node_inventory_policies
+	where node_id = '64100000-0000-4000-8000-000000000001'),true);
+set local role service_role;
+select public.qorpera_replace_runtime_node_inventory(pg_temp.policy('{"project":"qorpera-build","network":"qorpera0","cpuMillis":8000,"memoryBytes":12884901888}'),
+	current_setting('qorpera_test.build_policy'));
 
 -- A builder and its verifier inside the space: the node stays ready.
 select pg_temp.observe('ready','[]');
@@ -97,13 +108,18 @@ select pg_temp.fails($q$select pg_temp.observe('ready',jsonb_build_array(pg_temp
 
 -- Only in the declared project; never with an allocation; nothing unclassified in the build project.
 select pg_temp.fails($q$select pg_temp.observe('ready',jsonb_build_array(pg_temp.build('qn25b2','image-build',1000,1073741824)))$q$,
-	'Node inventory reports a build machine outside the build space');
+	'Node inventory mixes the build space with other instances');
+select pg_temp.fails($q$select pg_temp.observe('ready',jsonb_build_array(pg_temp.build('qorpera-build','image-build',1000,1073741824)
+	|| '{"type":"container"}'::jsonb))$q$,'A build machine must be a virtual machine');
+select pg_temp.fails($q$select pg_temp.observe('ready',jsonb_build_array(pg_temp.build('qorpera-build','guest',1000,1073741824)
+	|| jsonb_build_object('category','managed','allocation',jsonb_build_object('allocationId',extensions.gen_random_uuid()))))$q$,
+	'Node inventory mixes the build space with other instances');
 select pg_temp.fails($q$select pg_temp.observe('ready',jsonb_build_array(pg_temp.build('qorpera-build','image-build',1000,1073741824)
 	|| jsonb_build_object('allocation',jsonb_build_object('allocationId',extensions.gen_random_uuid()))))$q$,
 	'A build machine cannot claim an allocation');
 select pg_temp.fails($q$select pg_temp.observe('unavailable',jsonb_build_array(pg_temp.build('qorpera-build','stray',1000,1073741824)
 	|| '{"category":"unmanaged","reason":"UNREGISTERED_INSTANCE"}'::jsonb))$q$,
-	'Node inventory leaves an instance in the build space unclassified');
+	'Node inventory mixes the build space with other instances');
 
 -- Without a declared space a build entry is refused outright, and an unregistered builder keeps the node unavailable, as before.
 reset role;

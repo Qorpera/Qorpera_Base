@@ -510,7 +510,7 @@ describe("shared execution host identity devices (2026-09-27)", () => {
 });
 
 describe("image build space (identical nodes, 2026-09-28)", () => {
-	const space = { project: "qorpera-build", cpuMillis: 2000, memoryBytes: 4 * 1024 ** 3 };
+	const space = { project: "qorpera-build", network: "qorpera0", cpuMillis: 2000, memoryBytes: 4 * 1024 ** 3 };
 	function builder(name: string, cpu = "1", memory = "2GiB"): TestInstance {
 		const config = {
 			"limits.cpu": cpu,
@@ -529,7 +529,17 @@ describe("image build space (identical nodes, 2026-09-28)", () => {
 			config,
 			expandedConfig: { ...config },
 			devices,
-			expandedDevices: { ...devices, eth0: { type: "nic", network: "qorpera0", name: "eth0" } },
+			expandedDevices: {
+				...devices,
+				eth0: {
+					type: "nic",
+					network: "qorpera0",
+					name: "eth0",
+					"security.mac_filtering": "true",
+					"security.ipv4_filtering": "true",
+					"security.ipv6_filtering": "true",
+				},
+			},
 			profiles: ["default"],
 			status: "Running",
 			statusCode: 103,
@@ -627,6 +637,84 @@ describe("image build space (identical nodes, 2026-09-28)", () => {
 			},
 		],
 		[
+			"a physical NIC",
+			(i) => {
+				i.expandedDevices.eth1 = { type: "nic", nictype: "physical", parent: "enp1s0" };
+			},
+		],
+		[
+			"a macvlan NIC",
+			(i) => {
+				i.expandedDevices.eth0 = { ...i.expandedDevices.eth0, nictype: "macvlan", parent: "nas-vlan" };
+			},
+		],
+		[
+			"an undeclared network",
+			(i) => {
+				i.expandedDevices.eth0 = { ...i.expandedDevices.eth0, network: "lxdbr0" };
+			},
+		],
+		[
+			"MAC filtering off",
+			(i) => {
+				i.expandedDevices.eth0 = { ...i.expandedDevices.eth0, "security.mac_filtering": "false" };
+			},
+		],
+		[
+			"port isolation off",
+			(i) => {
+				i.expandedDevices.eth0 = { ...i.expandedDevices.eth0, "security.port_isolation": "false" };
+			},
+		],
+		[
+			"a guest API setting",
+			(i) => {
+				i.expandedConfig["security.devlxd.management.volumes"] = "true";
+			},
+		],
+		[
+			"cloud-init user data",
+			(i) => {
+				i.config["cloud-init.user-data"] = "#cloud-config";
+			},
+		],
+		[
+			"stateful migration",
+			(i) => {
+				i.expandedConfig["migration.stateful"] = "true";
+			},
+		],
+		[
+			"autostart",
+			(i) => {
+				i.expandedConfig["boot.autostart"] = "true";
+			},
+		],
+		[
+			"raw settings in its own config only",
+			(i) => {
+				i.config["raw.qemu"] = "-device x";
+			},
+		],
+		[
+			"a root disk without a size",
+			(i) => {
+				i.expandedDevices.root = { type: "disk", path: "/", pool: "qorpera-vm" };
+			},
+		],
+		[
+			"no root disk",
+			(i) => {
+				delete i.expandedDevices.root;
+			},
+		],
+		[
+			"two root disks",
+			(i) => {
+				i.expandedDevices.root2 = { type: "disk", path: "/", pool: "qorpera-vm", size: "1GiB" };
+			},
+		],
+		[
 			"a GPU",
 			(i) => {
 				i.expandedDevices.g = { type: "gpu" };
@@ -681,11 +769,14 @@ describe("image build space (identical nodes, 2026-09-28)", () => {
 	it("parses the space strictly and never next to infrastructure in the same project", () => {
 		const base = fixture().policy;
 		expect(parseRuntimeNodeInventoryPolicy({ ...base, buildSpace: space }).buildSpace).toEqual(space);
+		const { network: _network, ...withoutNetwork } = space;
 		expect(parseRuntimeNodeInventoryPolicy(base)).not.toHaveProperty("buildSpace");
 		for (const bad of [
 			{ ...space, extra: 1 },
-			{ project: space.project, cpuMillis: 0, memoryBytes: 1 },
-			{ project: "../x", cpuMillis: 1000, memoryBytes: 1 },
+			withoutNetwork,
+			{ ...space, network: "../net" },
+			{ ...space, cpuMillis: 0 },
+			{ ...space, project: "../x" },
 			null,
 		])
 			expect(() => parseRuntimeNodeInventoryPolicy({ ...base, buildSpace: bad })).toThrow(
