@@ -217,7 +217,7 @@ every draw count from then, in live records.
 
 ## Payments (build step 4)
 
-Migration `20260929110000_runtime_computer_hours_payments` (4a) and the Edge Function
+Migration `20260928248910_runtime_computer_hours_payments` (4a) and the Edge Function
 `supabase/functions/computer-billing` (4b). Stripe API version pinned to `2026-08-26.dahlia` in
 every request.
 
@@ -287,7 +287,7 @@ every request.
 - Refunds remove the unused hours of their purchase. A dispute freezes only its purchase.
 - A pack paid for a company that is gone or being deleted (company delete's
   `qorpera_company_deleting`) adds no credit: a guard on the sources refuses it (migration
-  `20260929170000`), so the Stripe event goes to review and an operator refunds the payment. A
+  `20260928248970`), so the Stripe event goes to review and an operator refunds the payment. A
   repeated delivery of a payment already credited stays a no-op. Known limit: the guard does not
   lock the company, so a deletion requested in the same instant can let one credit through. That
   payment is not sent to review: an operator finds it as a credit whose company is in
