@@ -884,6 +884,23 @@ function interactionFromOutput(output: string): NativeHarnessLoginPrompt {
 	};
 }
 
+/** Kills what a detached harness left running in its own process group after it exited: an
+ * orphan is no longer the harness's child, but it keeps the group (Codex's plugin sync left
+ * `git fetch` writing into `CODEX_HOME/.tmp` after `codex exec` returned). */
+function stopHarnessProcessGroup(child: NativeHarnessChild): void {
+	if (process.platform === "win32" || child.pid === undefined) return;
+	try {
+		process.kill(-child.pid, "SIGKILL");
+	} catch {
+		// Nothing of the group is left.
+	}
+}
+
+/** Removes a harness root; a directory that gains an entry while it is emptied is retried. */
+async function removeHarnessRoot(root: string): Promise<void> {
+	await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+}
+
 async function terminateChild(child: NativeHarnessChild): Promise<void> {
 	if (child.exitCode !== null || child.signalCode !== null) return;
 	child.kill("SIGTERM");
@@ -1103,6 +1120,10 @@ export class OfficialCliNativeHarnessDriver implements NativeHarnessDriver {
 						// effort low unless a turn explicitly raises it.
 						"-c",
 						"model_reasoning_effort=low",
+						// No plugin startup sync: it clones a plugin repository into
+						// CODEX_HOME/.tmp with `git`, which outlives the turn.
+						"-c",
+						"features.plugins=false",
 						"-c",
 						`mcp_servers.qorpera={url=${JSON.stringify(input.mouth.url)},bearer_token_env_var="QORPERA_AGENT_SEND_TOKEN",required=true,enabled_tools=["send_message"]}`,
 						...modelArgs,
@@ -1144,6 +1165,8 @@ export class OfficialCliNativeHarnessDriver implements NativeHarnessDriver {
 			env: environment,
 			stdio: ["pipe", "pipe", "pipe"],
 			windowsHide: true,
+			// Its own process group, which is stopped with it.
+			detached: process.platform !== "win32",
 		});
 		const capture = collectChildOutput(child);
 		const abort = (): void => {
@@ -1188,6 +1211,7 @@ export class OfficialCliNativeHarnessDriver implements NativeHarnessDriver {
 			return { ...(providerSessionId ? { providerSessionId } : {}) };
 		} finally {
 			input.signal?.removeEventListener("abort", abort);
+			stopHarnessProcessGroup(child);
 		}
 	}
 }
@@ -1336,7 +1360,7 @@ export class NativeProviderHost {
 
 	async #wipeRoot(root: string): Promise<void> {
 		await this.#cloudRuntime?.disposeSpares?.(root).catch(() => undefined);
-		await rm(root, { recursive: true, force: true });
+		await removeHarnessRoot(root);
 	}
 
 	/** Wipes a kept capsule root now (service shutdown). */
@@ -1512,7 +1536,7 @@ export class NativeProviderHost {
 			state.status = "failed";
 			state.error = error instanceof Error ? error : new Error(String(error));
 			await handle.cancel().catch(() => undefined);
-			await rm(root, { recursive: true, force: true });
+			await removeHarnessRoot(root);
 			throw state.error;
 		}
 		void this.#finishLogin(state).catch((error: unknown) => {
@@ -1885,7 +1909,7 @@ export class NativeProviderHost {
 				if (!kept) {
 					try {
 						await this.#cloudRuntime?.disposeSpares?.(usedRoot).catch(() => undefined);
-						await rm(usedRoot, { recursive: true, force: true });
+						await removeHarnessRoot(usedRoot);
 					} catch (error) {
 						failure ??= new Error(
 							`Native provider execution cleanup stage failed (${harnessExecutionFailureCategory(error)})`,
@@ -1935,7 +1959,7 @@ export class NativeProviderHost {
 			const reason = stage === "credential-sealing" ? ` (${credentialSealingFailure(error)})` : "";
 			throw new Error(`Native provider login ${stage} stage failed${reason}`, { cause: error });
 		} finally {
-			await rm(state.root, { recursive: true, force: true });
+			await removeHarnessRoot(state.root);
 		}
 	}
 }
