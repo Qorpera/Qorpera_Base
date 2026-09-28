@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto";
-import { setTimeout as sleep } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
 import {
 	type CloudMachineCommandReceipt,
@@ -35,8 +34,24 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-
 const NAME = /^[a-z0-9][a-z0-9-]{0,39}$/;
 const KEY = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,191}$/;
 const WORKER_KEY = /^[a-z0-9][a-z0-9._-]{0,79}$/;
-/** How often a waiting read looks again. */
-const WAIT_STEP_MS = 3000;
+/** How often a waiting worker looks at the machine's status again. */
+const WAIT_STEP_MS = 5000;
+
+/** A pause that the run's abort ends early. */
+function pause(ms: number, signal: AbortSignal): Promise<void> {
+	return new Promise((resolve, reject) => {
+		if (signal.aborted) return reject(signal.reason);
+		const stop = (): void => {
+			clearTimeout(timer);
+			reject(signal.reason);
+		};
+		const timer = setTimeout(() => {
+			signal.removeEventListener("abort", stop);
+			resolve();
+		}, ms);
+		signal.addEventListener("abort", stop, { once: true });
+	});
+}
 
 export const CLOUD_MACHINE_START_DESCRIPTION =
 	"Start a machine: a whole Linux virtual machine on the company's own servers, for tests, builds, Docker stacks and long jobs. " +
@@ -52,7 +67,8 @@ export const CLOUD_MACHINE_START_DESCRIPTION =
 /** A worker (an agent's background helper) is never woken: it has no conversation to continue. */
 export const CLOUD_MACHINE_START_WORKER_DESCRIPTION = CLOUD_MACHINE_START_DESCRIPTION.replace(
 	"If it is not running yet, finish this run normally: you are woken when it runs.",
-	"You are a worker: nothing wakes you. If it is not running yet, it waits for room: use another running machine from machine_list, or say in your report that it is waiting so your agent can retry.",
+	"You are a worker: nothing wakes you. With waitSeconds (1 to 300) the call waits while it starts, and no model turn is spent; start it again by name to wait longer. " +
+		"A machine that waits in line for room returns at once: use another running machine from machine_list, or say in your report that it is waiting so your agent can retry.",
 );
 export const CLOUD_MACHINE_RUN_DESCRIPTION =
 	"Run a shell command as root on a running machine (a bash login shell in /root). It returns a durable command handle; running is not success. " +
@@ -68,8 +84,9 @@ export const CLOUD_MACHINE_RUN_WORKER_DESCRIPTION = CLOUD_MACHINE_RUN_DESCRIPTIO
 );
 export const CLOUD_MACHINE_READ_DESCRIPTION =
 	"Read a machine command's retained output and status, whoever started it. Use log.nextOffset as the next byte cursor, or tail true for recent output; offset and tail cannot be combined. " +
-	"Pages may be smaller than limit. Logs keep 64 MiB; limitReached means later output was dropped. running or unconfirmed is not success; lost means the machine stopped or restarted under it. After the machine moved to another server, its earlier commands have no log (refused). " +
-	"waitSeconds (1 to 300) first waits until the command ends or that time passes, then reads.";
+	"Pages may be smaller than limit. Logs keep 64 MiB; limitReached means later output was dropped. running or unconfirmed is not success; lost means the machine stopped or restarted under it. After the machine moved to another server, its earlier commands have no log (refused).";
+/** A worker waits for its commands within its own run. */
+export const CLOUD_MACHINE_READ_WORKER_DESCRIPTION = `${CLOUD_MACHINE_READ_DESCRIPTION} waitSeconds (1 to 300) first waits until the command ends or that time passes, then reads; no model turn is spent.`;
 export const CLOUD_MACHINE_CANCEL_DESCRIPTION =
 	"Stop a running machine command and everything it started. Files on the machine stay. Keep operationKey stable after an uncertain result.";
 export const CLOUD_MACHINE_STOP_DESCRIPTION =
@@ -92,7 +109,7 @@ export function cloudMachineTools(options: {
 	control: CloudCompanyPathControl;
 	operations: Pick<CloudNativeToolOperations, "execute">;
 	gateway: CloudMachineCommandGateway;
-	/** The run is an agent's worker: no notify and no waking; it waits for its commands with machine_read. */
+	/** The run is an agent's worker: no notify and no waking; it waits inside machine_start and machine_read. */
 	worker?: boolean;
 }): readonly CloudNativeTool[] {
 	const worker = options.worker === true;
@@ -156,6 +173,51 @@ export function cloudMachineTools(options: {
 			return refused(refusal, `${machine} stopped; its commands stopped with it`);
 		throw error;
 	};
+	const workStopped = () =>
+		refused(
+			"WORK_STOPPED",
+			"your work was stopped (your agent cancelled it, or the company paused work); end your run",
+		);
+	/** One machine's state and, with commandId, how that command stands as the executor last recorded it. */
+	const status = async (
+		machine: string,
+		commandId: string | undefined,
+		signal: AbortSignal,
+	): Promise<{ workStopped?: true; machine?: MachineView | null; command?: { state: string } | null }> => {
+		const result = await manage(
+			{ action: "status", machine, ...(commandId === undefined ? {} : { commandId }) },
+			signal,
+		);
+		if (result.schema !== "qorpera.machine-status/v1") throw new Error("Machine status differs");
+		return result as { workStopped?: true; machine?: MachineView | null; command?: { state: string } | null };
+	};
+	/** A worker waits: it looks every few seconds until settled, the time passes or its work is stopped. No model
+	 * turn is spent. A failed look is only a failed look; the answer comes after the wait either way. */
+	const waitUntil = async (
+		seconds: number,
+		signal: AbortSignal,
+		settled: () => Promise<boolean | "stopped">,
+	): Promise<"stopped" | undefined> => {
+		const deadline = Date.now() + seconds * 1000;
+		for (;;) {
+			try {
+				const outcome = await settled();
+				if (outcome === "stopped") return "stopped";
+				if (outcome) return undefined;
+			} catch {
+				signal.throwIfAborted();
+			}
+			const left = deadline - Date.now();
+			if (left <= 0) return undefined;
+			await pause(Math.min(WAIT_STEP_MS, left), signal);
+		}
+	};
+	const waitSecondsOf = (value: JsonValue): number => {
+		if (!worker || !Number.isSafeInteger(value) || Number(value) < 1 || Number(value) > 300)
+			throw new Error("Invalid machine wait");
+		return Number(value);
+	};
+	const waitSchema = { type: "integer", minimum: 1, maximum: 300 };
 	const fits = (value: unknown): boolean =>
 		Buffer.byteLength(
 			JSON.stringify(cloudToolJsonText(value as JsonValue, 131072)).replace(
@@ -219,18 +281,33 @@ export function cloudMachineTools(options: {
 				lifetime: { type: "string", enum: ["task", "always-on"] },
 				repositoryWorker: { type: "string", pattern: WORKER_KEY.source },
 				machine: machineName,
+				...(worker ? { waitSeconds: waitSchema } : {}),
 			},
 		},
 		parseArguments(value): JsonValue {
 			const input = closed(
 				value,
 				["operationKey"],
-				["name", "purpose", "cpus", "memoryGiB", "diskGiB", "lifetime", "repositoryWorker", "machine"],
+				[
+					"name",
+					"purpose",
+					"cpus",
+					"memoryGiB",
+					"diskGiB",
+					"lifetime",
+					"repositoryWorker",
+					"machine",
+					...(worker ? ["waitSeconds"] : []),
+				],
 			);
 			key(input.operationKey);
+			// The wait is how this call answers, never part of the start or its receipt.
+			const wait: Record<string, JsonValue> =
+				input.waitSeconds === undefined ? {} : { waitSeconds: waitSecondsOf(input.waitSeconds) };
 			if (Object.hasOwn(input, "machine")) {
-				if (Object.keys(input).length !== 2) throw new Error("A wake names only the machine");
-				return { operationKey: input.operationKey, machine: name(input.machine) };
+				if (Object.keys(input).length !== 2 + Object.keys(wait).length)
+					throw new Error("A wake names only the machine");
+				return { operationKey: input.operationKey, machine: name(input.machine), ...wait };
 			}
 			const integer = (field: string, fallback: number, min: number, max: number): number => {
 				const n = input[field] ?? fallback;
@@ -257,12 +334,13 @@ export function cloudMachineTools(options: {
 				diskGiB: integer("diskGiB", 40, 10, 2048),
 				lifetime: (input.lifetime as string | undefined) ?? "task",
 				...(input.repositoryWorker === undefined ? {} : { repositoryWorker: input.repositoryWorker }),
+				...wait,
 			};
 		},
 		async execute(value, context) {
 			check(context);
-			const { operationKey: logicalOperationKey, ...args } = value as Record<string, JsonValue>;
-			return options.operations.execute({
+			const { operationKey: logicalOperationKey, waitSeconds, ...args } = value as Record<string, JsonValue>;
+			const result = await options.operations.execute({
 				operation: {
 					tool: "machine_start",
 					toolVersion: CLOUD_MACHINE_TOOL_VERSION,
@@ -315,6 +393,20 @@ export function cloudMachineTools(options: {
 					return { content: { kind: "json", value: result } };
 				},
 			});
+			// A worker waits while its machine starts; one waiting in line for room answers at once.
+			const started = result.kind === "json" ? (result.value as Record<string, JsonValue>) : undefined;
+			const machine = started?.machine as MachineView | undefined;
+			if (waitSeconds === undefined || machine?.state !== "starting") return result;
+			let latest: MachineView = machine;
+			const outcome = await waitUntil(Number(waitSeconds), context.signal, async () => {
+				const now = await status(machine.name, undefined, context.signal);
+				if (now.workStopped) return "stopped";
+				latest = now.machine ?? { ...latest, state: "deleted" };
+				return latest.state !== "starting";
+			});
+			check(context);
+			if (outcome === "stopped") return workStopped();
+			return { kind: "json", value: { ...started, machine: latest } as JsonValue };
 		},
 	};
 
@@ -415,7 +507,7 @@ export function cloudMachineTools(options: {
 	const read: CloudNativeTool = {
 		name: "machine_read" satisfies CloudRuntimeToolOperation,
 		source: "runtime",
-		description: CLOUD_MACHINE_READ_DESCRIPTION,
+		description: worker ? CLOUD_MACHINE_READ_WORKER_DESCRIPTION : CLOUD_MACHINE_READ_DESCRIPTION,
 		inputSchema: {
 			type: "object",
 			additionalProperties: false,
@@ -426,21 +518,20 @@ export function cloudMachineTools(options: {
 				offset: { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER },
 				limit: { type: "integer", minimum: 4, maximum: 16384 },
 				tail: { type: "boolean" },
-				waitSeconds: { type: "integer", minimum: 1, maximum: 300 },
+				...(worker ? { waitSeconds: waitSchema } : {}),
 			},
 		},
 		parseArguments(value) {
-			const input = closed(value, ["machine", "commandId"], ["offset", "limit", "tail", "waitSeconds"]);
+			const input = closed(
+				value,
+				["machine", "commandId"],
+				["offset", "limit", "tail", ...(worker ? ["waitSeconds"] : [])],
+			);
 			name(input.machine);
 			const { machine, waitSeconds, ...rest } = input;
-			if (
-				waitSeconds !== undefined &&
-				(!Number.isSafeInteger(waitSeconds) || Number(waitSeconds) < 1 || Number(waitSeconds) > 300)
-			)
-				throw new Error("Invalid machine read wait");
 			return {
 				machine,
-				...(waitSeconds === undefined ? {} : { waitSeconds }),
+				...(waitSeconds === undefined ? {} : { waitSeconds: waitSecondsOf(waitSeconds) }),
 				...parseCloudCodingCommandRead(rest),
 			} as unknown as JsonValue;
 		},
@@ -457,35 +548,16 @@ export function cloudMachineTools(options: {
 						state: machine.state,
 					},
 				);
-			// Waiting: the status is read every few seconds until the command ends or the time passes.
-			// No model turn is spent; the answer is the read below either way.
+			// A worker waits until the executor recorded the command's end (a pass every 10 s), its machine stopped
+			// or the time passed. It looks at the kernel's status, not at the machine; the read below answers.
 			if (waitSeconds !== undefined) {
-				const deadline = Date.now() + Number(waitSeconds) * 1000;
-				for (;;) {
-					let status: CloudMachineCommandReceipt;
-					try {
-						status = parseCloudMachineCommandReceipt(
-							await cloudToolRequest(
-								(signal) =>
-									options.gateway.read(
-										{ machineId: machine.machineId },
-										parseCloudCodingCommandRead({ commandId: query.commandId, tail: true, limit: 4 }),
-										signal,
-									),
-								context.signal,
-							),
-						);
-					} catch (error) {
-						return commandGone(error, machine.name);
-					}
-					check(context);
-					if (
-						(status.state !== "running" && status.state !== "unconfirmed") ||
-						Date.now() + WAIT_STEP_MS > deadline
-					)
-						break;
-					await sleep(WAIT_STEP_MS, undefined, { signal: context.signal });
-				}
+				const outcome = await waitUntil(Number(waitSeconds), context.signal, async () => {
+					const now = await status(machine.name, String(query.commandId), context.signal);
+					if (now.workStopped) return "stopped";
+					return now.machine?.state !== "running" || now.command?.state !== "running";
+				});
+				check(context);
+				if (outcome === "stopped") return workStopped();
 			}
 			let limit = Number(query.limit ?? 4096);
 			for (;;) {

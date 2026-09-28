@@ -2,7 +2,8 @@
 -- Workers use machines too (Jonas, 2026-09-28): a worker starts and uses the
 -- company's machines like its agent, and its commands are its own; a worker has
 -- no conversation to continue, so no machine ever wakes it: it is never on a
--- machine's list of runs to tell, and its commands never ask to be notified.
+-- machine's list of runs to tell, and its commands never ask to be notified. It
+-- waits by looking at the machine's status here, until its work is stopped.
 select pg_temp.path_claims('service_role');
 
 create function pg_temp.child() returns jsonb language sql as $$ select current_setting('qorpera_test.child_binding')::jsonb $$;
@@ -70,8 +71,8 @@ end $$;
 do $$
 declare v_result jsonb; v_child_run uuid := (pg_temp.child() ->> 'runId')::uuid;
 begin
-	perform pg_temp.wake_assert(public.qorpera_machine_run_is_worker(v_child_run)
-		and not public.qorpera_machine_run_is_worker((current_setting('qorpera_test.parent_binding')::jsonb ->> 'runId')::uuid),
+	perform pg_temp.wake_assert((public.qorpera_run_worker(v_child_run)).id is not null
+		and (public.qorpera_run_worker((current_setting('qorpera_test.parent_binding')::jsonb ->> 'runId')::uuid)).id is null,
 		'The worker run is known as one');
 	v_result := pg_temp.machine_start(pg_temp.child(),'w-shard',
 		'{"name":"shard-1","purpose":"One test shard","cpus":2,"memoryGiB":4,"diskGiB":40,"lifetime":"task"}');
@@ -85,7 +86,7 @@ end $$;
 
 -- 3. A worker's command is its own and never asks to be notified; an agent's may.
 do $$
-declare v_scope jsonb := jsonb_build_object('machineId',(pg_temp.machine('shard-1')).id); v_auth jsonb;
+declare v_scope jsonb := jsonb_build_object('machineId',(pg_temp.machine('shard-1')).id); v_auth jsonb; v_status jsonb;
 	v_child_run uuid := (pg_temp.child() ->> 'runId')::uuid;
 begin
 	perform public.qorpera_begin_native_tool_operation(pg_temp.child(),'30000000-0000-4000-8000-000000000601','machine_run:t1',
@@ -99,6 +100,32 @@ begin
 	perform pg_temp.wake_assert(v_auth ->> 'state' = 'authorized' and exists (select 1 from public.qorpera_company_machine_commands
 		where id = '30000000-0000-4000-8000-000000000601' and run_id = v_child_run and not notify),
 		'The command is the worker''s, without notify');
+	-- The worker waits by looking at the status here: the command runs until the executor records its end.
+	v_status := public.qorpera_native_machine_manage(pg_temp.child(),
+		'{"action":"status","machine":"shard-1","commandId":"30000000-0000-4000-8000-000000000601"}');
+	perform pg_temp.wake_assert(v_status ->> 'schema' = 'qorpera.machine-status/v1' and v_status #>> '{machine,state}' = 'running'
+		and v_status #>> '{command,state}' = 'running' and v_status #> '{command,endedAt}' = 'null'::jsonb,
+		'A waiting worker sees its command running: '||v_status::text);
+	perform public.qorpera_record_company_machine_commands((pg_temp.placement('shard-1')).id,'mx-a',
+		public.qorpera_company_machine_binding_text((pg_temp.placement('shard-1')).binding),repeat('c',64),
+		(pg_temp.placement('shard-1')).boot_id,
+		'[{"commandId":"30000000-0000-4000-8000-000000000601","state":"failed","exitCode":1,"outputTail":"1 failing"}]',false);
+	v_status := public.qorpera_native_machine_manage(pg_temp.child(),
+		'{"action":"status","machine":"shard-1","commandId":"30000000-0000-4000-8000-000000000601"}');
+	perform pg_temp.wake_assert(v_status #>> '{command,state}' = 'failed' and v_status #>> '{command,endedAt}' is not null
+		and not v_status ? 'workStopped',
+		'Once recorded, the worker sees how it ended: '||v_status::text);
+	perform pg_temp.wake_assert(public.qorpera_native_machine_manage(pg_temp.child(),
+			'{"action":"status","machine":"shard-1","commandId":"30000000-0000-4000-8000-000000000999"}') -> 'command' = 'null'::jsonb
+		and public.qorpera_native_machine_manage(pg_temp.child(),'{"action":"status","machine":"no-such"}') -> 'machine' = 'null'::jsonb
+		and not public.qorpera_native_machine_manage(pg_temp.child(),'{"action":"status","machine":"shard-1"}') ? 'command',
+		'Another machine''s command, or no such machine, is none');
+	perform pg_temp.wake_error(format($sql$select public.qorpera_native_machine_manage(%L,
+		'{"action":"stop","machine":"shard-1","commandId":"30000000-0000-4000-8000-000000000601"}')$sql$,pg_temp.child()),'22023',
+		'Invalid machine request');
+	perform pg_temp.wake_error(format($sql$select public.qorpera_native_machine_manage(%L,
+		'{"action":"status","machine":"shard-1","commandId":"not-a-command"}')$sql$,pg_temp.child()),'22023',
+		'Invalid machine request');
 	-- The agent itself may still ask to be woken by a command on the worker's machine.
 	perform public.qorpera_begin_native_tool_operation(current_setting('qorpera_test.parent_binding')::jsonb,
 		'30000000-0000-4000-8000-000000000602','machine_run:t2',repeat('6',64),repeat('5',64),false);
@@ -107,15 +134,46 @@ begin
 	perform pg_temp.wake_assert(v_auth ->> 'state' = 'authorized','Any agent may use the worker''s machine, with notify');
 end $$;
 
--- 4. A worker waking a stopped machine by name is not put on its list either.
+-- 4. A worker waking a machine that is really asleep (powered off) is not put on its list either.
 do $$
-declare v_result jsonb;
+declare v_result jsonb; v_text text;
 begin
 	perform pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
 	perform public.qorpera_member_manage_company_machine('30000000-0000-4000-8000-000000000010',(pg_temp.machine('shard-1')).id,'stop');
 	perform pg_temp.path_claims('service_role');
+	v_text := public.qorpera_company_machine_binding_text((pg_temp.placement('shard-1')).binding);
+	perform public.qorpera_authorize_executor_machine((pg_temp.placement('shard-1')).id,'mx-a',v_text,repeat('c',64),'stop');
+	perform public.qorpera_suspend_company_machine((pg_temp.placement('shard-1')).id,'mx-a',v_text,repeat('c',64));
+	perform pg_temp.wake_assert((pg_temp.placement('shard-1')).running_at is null, 'The machine is asleep');
 	v_result := pg_temp.machine_start(pg_temp.child(),'w-wake','{"machine":"shard-1"}');
 	perform pg_temp.wake_assert((pg_temp.machine('shard-1')).desired_state = 'running'
+		and v_result #>> '{machine,state}' in ('waiting','starting')
 		and cardinality((pg_temp.machine('shard-1')).notify_run_ids) = 0,
 		'A worker''s wake asks for room without asking to be told: '||v_result::text);
+	perform pg_temp.wake_assert(public.qorpera_native_machine_manage(pg_temp.child(),'{"action":"status","machine":"shard-1"}')
+		#>> '{machine,state}' = v_result #>> '{machine,state}', 'The worker can look while it starts');
+end $$;
+
+-- 5. The parent conversation's card shows the machine its agent's worker started.
+do $$
+declare v_session uuid := (select session_id from public.qorpera_execution_runs
+		where id = (current_setting('qorpera_test.parent_binding')::jsonb ->> 'runId')::uuid);
+	v_list jsonb;
+begin
+	perform pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
+	v_list := public.qorpera_list_session_machines(v_session);
+	perform pg_temp.path_claims('service_role');
+	perform pg_temp.wake_assert(v_session is not null and jsonb_path_exists(v_list, '$.machines[*] ? (@.name == "shard-1")'),
+		'The worker''s machine is on its conversation''s card: '||v_list::text);
+end $$;
+
+-- 6. A cancelled worker stops waiting: its status look says its work stopped.
+do $$
+declare v_worker public.qorpera_runtime_workers%rowtype := public.qorpera_run_worker((pg_temp.child() ->> 'runId')::uuid); v_status jsonb;
+begin
+	perform public.qorpera_cancel_worker(v_worker,(current_setting('qorpera_test.parent_binding')::jsonb ->> 'runId')::uuid,'parent_cancelled');
+	v_status := public.qorpera_native_machine_manage(pg_temp.child(),
+		'{"action":"status","machine":"shard-1","commandId":"30000000-0000-4000-8000-000000000601"}');
+	perform pg_temp.wake_assert(v_status = '{"schema":"qorpera.machine-status/v1","workStopped":true}'::jsonb,
+		'A cancelled worker is told its work stopped: '||v_status::text);
 end $$;
