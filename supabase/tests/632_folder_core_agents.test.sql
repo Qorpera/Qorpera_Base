@@ -534,9 +534,9 @@ begin
 		raise exception 'A read-path function takes a lock'; end if;
 end $$;
 
--- The hook's targets at the commit's own ranks are merged into the commit's passes, never dropped: a required
--- member row at rank 1 or grant row at rank 7 that does not exist refuses the commit; a table the commit does not
--- own at its ranks is a defect. The stub comes back at the end of the block.
+-- The hook's targets at the commit's own ranks go into the commit's passes, never dropped: a member row at rank 1 is
+-- locked with the commit's own (633 H shows the commit waiting for it); a table the commit does not own at its
+-- ranks, and a malformed target, are defects (XX000). The stub comes back at the end of the block.
 do $$
 begin
 	create or replace function public.qorpera_folder_structured_targets(p_environment_id uuid, p_actor jsonb, p_units jsonb)
@@ -550,6 +550,12 @@ begin
 	perform set_config('qorpera_test.targets', jsonb_build_array(jsonb_build_object('rank', 6, 'tbl', 'qorpera_profile_members',
 		'key', 'x', 'mode', 'keyshare'))::text, true);
 	perform pg_temp.raises(format('select pg_temp.commit(%L, %L, %L)', pg_temp.member(2), 'targets-bad-1', '[{"op":"mkdir","path":"targets-bad"}]'), 'XX000');
+	perform set_config('qorpera_test.targets', jsonb_build_array(jsonb_build_object('rank', 10, 'tbl', 'qorpera_profile_members',
+		'key', 'x', 'mode', 'keyshare'))::text, true);
+	perform pg_temp.raises(format('select pg_temp.commit(%L, %L, %L)', pg_temp.member(2), 'targets-bad-2', '[{"op":"mkdir","path":"targets-bad"}]'), 'XX000');
+	perform set_config('qorpera_test.targets', jsonb_build_array(jsonb_build_object('rank', 1, 'tbl', 'qorpera_profile_members',
+		'key', '63200000-0000-4000-8000-000000000010:63200000-0000-4000-8000-000000000003', 'mode', 'exclusive'))::text, true);
+	perform pg_temp.raises(format('select pg_temp.commit(%L, %L, %L)', pg_temp.member(2), 'targets-bad-3', '[{"op":"mkdir","path":"targets-bad"}]'), 'XX000');
 	-- (A hook's targets carry no 'required' flag in F2's signature; the hook checks the rows it relies on in decide.)
 	create or replace function public.qorpera_folder_structured_targets(p_environment_id uuid, p_actor jsonb, p_units jsonb)
 	returns table(rank smallint, tbl text, key text, mode text) language sql stable set search_path = '' as $f$

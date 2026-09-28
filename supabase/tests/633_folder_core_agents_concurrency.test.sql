@@ -267,6 +267,32 @@ begin
 	perform pg_temp.outcome('arace_two');
 end $$;
 
+-- H. A hook target at rank 1 is locked by the real commit: while another session holds that member row FOR UPDATE,
+-- a member's commit whose hook names the row waits, then saves (review probe r432impl/rank1wait.sql). The hook is
+-- replaced for this company only, and the stub comes back after.
+create or replace function public.qorpera_folder_structured_targets(p_environment_id uuid, p_actor jsonb, p_units jsonb)
+returns table(rank smallint, tbl text, key text, mode text) language sql stable set search_path = '' as $f$
+	select 1::smallint, 'qorpera_profile_members', '63300000-0000-4000-8000-000000000010:63300000-0000-4000-8000-000000000002', 'keyshare'
+	where p_environment_id = '63300000-0000-4000-8000-000000000020'
+$f$;
+do $$
+declare r jsonb;
+begin
+	perform dblink_exec('arace_one', 'begin');
+	perform * from dblink('arace_one', $q$select 1 from public.qorpera_profile_members where profile_id = '63300000-0000-4000-8000-000000000010'
+		and user_id = '63300000-0000-4000-8000-000000000002' for update$q$) as t(x integer);
+	perform dblink_send_query('arace_two', pg_temp.sql_commit('{"kind":"member","userId":"63300000-0000-4000-8000-000000000001"}',
+		'race-h-1', '[{"op":"mkdir","path":"h-one"}]'));
+	if not pg_temp.waits_for('arace_two', 'arace_one') then raise exception 'A hook target at rank 1 was not locked by the commit'; end if;
+	perform dblink_exec('arace_one', 'rollback');
+	r := pg_temp.result('arace_two');
+	if r -> 'units' -> 0 ->> 'outcome' <> 'saved' then raise exception 'The commit after the hook row was free: %', r; end if;
+end $$;
+create or replace function public.qorpera_folder_structured_targets(p_environment_id uuid, p_actor jsonb, p_units jsonb)
+returns table(rank smallint, tbl text, key text, mode text) language sql stable set search_path = '' as $f$
+	select null::smallint, null::text, null::text, null::text where false
+$f$;
+
 select dblink_disconnect(name) from unnest(array['arace_one','arace_two']) name;
 
 -- Every function that ends a job lease starts with an explicit FOR UPDATE on the job: the whole guarantee that it

@@ -169,14 +169,14 @@ begin
 	-- Rows merge by (table, key) and the strongest mode wins, so no row is locked twice or upgraded. Within a
 	-- rank, tables go in a fixed order (rooms before room members), then rows in key order.
 	for v_target in
-		select min((t ->> 'rank')::smallint) as rank, t ->> 'tbl' as tbl, t ->> 'key' as key,
+		select min((t ->> 'rank')::smallint) as rank, t ->> 'tbl' as tbl, lower(t ->> 'key') as key,
 			max(array_position(array['keyshare','share','nokeyupdate','update'], t ->> 'mode')) as strength,
 			bool_or(coalesce((t ->> 'required')::boolean, false)) as required
 		from jsonb_array_elements(coalesce(p_targets, '[]'::jsonb)) t
 		group by 2, 3
 		having min((t ->> 'rank')::smallint) between p_from_rank and p_to_rank
 		order by 1, array_position(array['qorpera_profile_staff','qorpera_company_rooms','qorpera_company_room_members',
-			'qorpera_cloud_routines'], t ->> 'tbl'), (t ->> 'key') collate "C"
+			'qorpera_cloud_routines'], t ->> 'tbl'), lower(t ->> 'key') collate "C"
 	loop
 		v_clause := public.qorpera_folder_lock_clause((array['keyshare','share','nokeyupdate','update'])[v_target.strength]);
 		if v_clause is null then raise exception 'Folder lock mode is unknown' using errcode = 'XX000'; end if;
@@ -202,15 +202,16 @@ begin
 end $$;
 
 -- The commit's own ranks: 1 members (key 'profile_id:user_id'), 3 execution authorities ('profile_id:staff_agent_id'),
--- 6 resources (key: id; locked ancestors first, by folder key), 7 grants (key: id). Rows merge by (table, key) into
--- their strongest mode; a row marked required must exist. A target of another table at these ranks is a defect.
+-- 6 resources (key: id; locked ancestors first, by folder key), 7 grants (key: id; this company's only). Rows merge by
+-- (table, lowercase key) into their strongest mode; a row marked required must exist. A target of another table at
+-- these ranks is a defect.
 create function public.qorpera_folder_lock_commit_rank(p_environment_id uuid, p_targets jsonb, p_rank smallint)
 returns void language plpgsql security definer set search_path = '' as $$
 declare v_target record; v_clause text; v_count bigint;
 begin
 	for v_target in
 		select g.tbl, g.key, g.strength, g.required
-		from (select t ->> 'tbl' as tbl, t ->> 'key' as key,
+		from (select t ->> 'tbl' as tbl, lower(t ->> 'key') as key,
 				max(array_position(array['keyshare','share','nokeyupdate','update'], t ->> 'mode')) as strength,
 				bool_or(coalesce((t ->> 'required')::boolean, false)) as required
 			from jsonb_array_elements(coalesce(p_targets, '[]'::jsonb)) t
@@ -232,7 +233,8 @@ begin
 			execute 'select 1 from public.qorpera_company_path_resources where id = $1 and environment_id = $2' || v_clause
 			using v_target.key::uuid, p_environment_id;
 		elsif p_rank = 7 and v_target.tbl = 'qorpera_company_path_grants' then
-			execute 'select 1 from public.qorpera_company_path_grants where id = $1' || v_clause using v_target.key::uuid;
+			execute 'select 1 from public.qorpera_company_path_grants g join public.qorpera_company_path_resources r on r.id = g.resource_id
+				where g.id = $1 and r.environment_id = $2' || v_clause || ' of g' using v_target.key::uuid, p_environment_id;
 		else
 			raise exception 'Folder lock target table % at rank % is unknown', v_target.tbl, p_rank using errcode = 'XX000';
 		end if;
@@ -755,6 +757,11 @@ begin
 		|| coalesce((select jsonb_agg(to_jsonb(t))
 			from public.qorpera_folder_structured_targets(p_environment_id, v_hook_actor, p_units) t), '[]'::jsonb);
 
+	-- Every target names a rank 1-9, a table, a key and a known mode; anything else is a defect, never a silent skip.
+	if exists (select 1 from jsonb_array_elements(v_targets) t
+		where jsonb_typeof(t) <> 'object' or coalesce(t ->> 'rank', '') !~ '^[1-9]$' or t ->> 'tbl' is null or t ->> 'key' is null
+			or coalesce(t ->> 'mode', '') not in ('keyshare','share','nokeyupdate','update')) then
+		raise exception 'Folder lock targets are malformed' using errcode = 'XX000'; end if;
 	perform public.qorpera_folder_lock_commit_rank(p_environment_id, v_targets, 1::smallint);
 	perform public.qorpera_folder_structured_lock(p_environment_id, v_targets, 2::smallint, 2::smallint);
 	perform public.qorpera_folder_lock_commit_rank(p_environment_id, v_targets, 3::smallint);
