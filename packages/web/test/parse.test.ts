@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { buildCompanyHierarchy, parseHostedCompanyOrganization } from "../src/cloud/organization.ts";
 import {
+	parseAccountMatch,
 	parseCreatedCompany,
 	parseFriends,
 	parseProfiles,
@@ -103,6 +104,15 @@ describe("parsers", () => {
 		expect(friends[0]?.direction).toBe("incoming");
 		expect(friends[1]?.status).toBe("accepted");
 		expect(friends[1]?.displayName).toBe("Lena Berg");
+	});
+
+	it("reads the account an address found, and null when none holds it", () => {
+		expect(parseAccountMatch(null)).toBeNull();
+		expect(
+			parseAccountMatch({ user_id: U.toUpperCase(), email: "mia@havnegade.dk", display_name: "Mia", self: false }),
+		).toEqual({ userId: U, email: "mia@havnegade.dk", displayName: "Mia", self: false });
+		expect(() => parseAccountMatch({ user_id: U, email: "mia@havnegade.dk", display_name: "Mia" })).toThrow();
+		expect(() => parseAccountMatch({ email: "mia@havnegade.dk", display_name: "Mia", self: false })).toThrow();
 	});
 
 	it("rejects a friend without an account identity", () => {

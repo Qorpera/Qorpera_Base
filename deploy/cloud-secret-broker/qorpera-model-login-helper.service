@@ -1,0 +1,63 @@
+[Unit]
+Description=Qorpera model login helper (official Codex for the vault)
+Documentation=https://github.com/Qorpera/Qorpera_Base
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=3
+
+[Service]
+Type=exec
+User=qorpera-login-helper
+Group=qorpera-login-helper
+LoadCredential=qorpera-model-login-helper-config:/etc/qorpera-model-login-helper/config.json
+LoadCredential=qorpera-model-login-helper-token:/etc/qorpera-model-login-helper/token
+ExecStart=/usr/bin/node /opt/qorpera-model-login-helper/qorpera-model-login-helper.mjs
+Restart=on-failure
+RestartSec=10
+# Stop lets renewals in flight finish (each ends within 25 s): SIGTERM reaches only the
+# main process, which stops taking new work; Codex is not killed under a renewal.
+KillMode=mixed
+TimeoutStopSec=40
+UMask=0077
+# The socket and each operation's private Codex home live here, in memory.
+# The broker reaches the socket through this group (its unit adds
+# SupplementaryGroups=qorpera-login-helper); nothing else can.
+RuntimeDirectory=qorpera-model-login-helper
+RuntimeDirectoryMode=0750
+InaccessiblePaths=-/etc/qorpera-secret-broker
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectProc=invisible
+# The isolation launcher reads overflowuid/overflowgid and mounts a fresh procfs
+# for Codex in its own PID namespace (as in qorpera-native-company-host.service).
+ProcSubset=all
+ProtectHostname=private
+ProtectClock=yes
+ProtectKernelTunables=no
+ProtectKernelModules=yes
+ProtectKernelLogs=no
+ProtectControlGroups=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+# Only the trusted launcher creates these; bubblewrap disables nested user
+# namespaces before Codex runs. Codex's network is the egress relay to
+# auth.openai.com and chatgpt.com only.
+RestrictNamespaces=user mnt pid net ipc uts cgroup
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+# Sized for 4 renewals and 6 sign-ins at once (each an isolated Codex); measure on the vault
+# host during the first real sign-in and renewal. Running out stops the whole unit.
+MemoryMax=2G
+MemorySwapMax=0
+TasksMax=512
+CPUQuota=100%
+LockPersonality=yes
+RestrictSUIDSGID=yes
+SystemCallArchitectures=native
+SystemCallFilter=~@clock @cpu-emulation @debug @module @obsolete @raw-io @reboot @swap
+
+[Install]
+WantedBy=multi-user.target

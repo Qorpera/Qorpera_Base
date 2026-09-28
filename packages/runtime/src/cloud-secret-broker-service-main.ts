@@ -5,6 +5,10 @@ import { basename, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Pool } from "pg";
 import { composeCloudConnectorService, parseCloudConnectorServiceConfig } from "./cloud-connector-service.ts";
+import { ModelLoginHelperClient } from "./cloud-model-login-helper.ts";
+import { CloudModelLoginVault } from "./cloud-model-login-vault.ts";
+import { CloudModelLoginSignIns } from "./cloud-model-login-vault-sign-in.ts";
+import { CloudModelLoginUsage } from "./cloud-model-login-vault-usage.ts";
 import {
 	CloudSecretBroker,
 	type CloudSecretConnectorAdapter,
@@ -115,6 +119,20 @@ async function readCredential(directory: string, name: string): Promise<string> 
 	}
 }
 
+function parseLoginHelper(value: string): { socketPath: string; token: string } {
+	const input = record(JSON.parse(value), ["schema", "socketPath", "token"], "Cloud secret broker login helper");
+	if (
+		input.schema !== "qorpera.model-login-helper-client/v1" ||
+		typeof input.socketPath !== "string" ||
+		!isAbsolute(input.socketPath) ||
+		resolve(input.socketPath) !== input.socketPath ||
+		typeof input.token !== "string" ||
+		!TOKEN.test(input.token)
+	)
+		throw new Error("Cloud secret broker login helper is invalid");
+	return { socketPath: input.socketPath, token: input.token };
+}
+
 function parseKeyring(value: string): CloudSecretKeyring {
 	const input = record(JSON.parse(value), ["schema", "keys"], "Cloud secret keyring");
 	if (input.schema !== "qorpera.cloud-secret-keyring/v1" || !Array.isArray(input.keys)) {
@@ -195,11 +213,18 @@ export async function runCloudSecretBrokerServiceMain(
 	// Only a broker whose company runs coding sessions gets it (a drop-in);
 	// without it the route answers 404. Never the runtime token guests hold.
 	const codingExecutorToken = await readOptionalCredential(directory, "qorpera-cloud-secret-coding-executor");
+	// Model logins in the vault (Stateless Compute step 1, change 2): the login helper's socket
+	// and token. Without it the vault hands logins out as stored and never renews them.
+	const loginHelperText = await readOptionalCredential(directory, "qorpera-cloud-secret-login-helper");
+	const loginHelper = loginHelperText === undefined ? undefined : parseLoginHelper(loginHelperText);
+	const secrets = [database.password, brokerCapability, runtimeToken, codingExecutorToken, loginHelper?.token].filter(
+		(value): value is string => value !== undefined,
+	);
 	if (
 		!CAPABILITY.test(brokerCapability) ||
 		!TOKEN.test(runtimeToken) ||
 		(codingExecutorToken !== undefined && !TOKEN.test(codingExecutorToken)) ||
-		new Set([database.password, brokerCapability, runtimeToken, codingExecutorToken ?? ""]).size !== 4
+		new Set(secrets).size !== secrets.length
 	)
 		throw new Error("Cloud secret broker credentials are invalid");
 	const keyring = parseKeyring(await readCredential(directory, "qorpera-cloud-secret-keyring"));
@@ -244,12 +269,26 @@ export async function runCloudSecretBrokerServiceMain(
 			keyring,
 			adapters: [...adapters, ...(connectors?.adapters ?? [])],
 		});
+		const helper = loginHelper ? new ModelLoginHelperClient(loginHelper) : undefined;
+		// Members' sign-ins to the vault: the broker collects finished ones in the background.
+		const signIns = helper ? new CloudModelLoginSignIns({ authority, keyring, helper }) : undefined;
 		const service = new HttpCloudSecretBrokerService(broker, runtimeToken, {
 			host: "127.0.0.1",
 			port: config.port as number,
 			memberOrigins,
 			...(connectors ? { oauth: connectors.oauth } : {}),
 			...(codingExecutorToken ? { codingExecutorToken } : {}),
+			// Model logins in the vault (Stateless Compute step 1). The helper renews and runs a
+			// member's sign-in; without it a login is handed out as stored, nothing renews it, and
+			// the sign-in route answers 404.
+			modelLogins: new CloudModelLoginVault({
+				authority,
+				keyring,
+				...(helper ? { renewer: helper } : {}),
+			}),
+			...(signIns ? { modelLoginSignIns: signIns } : {}),
+			// Usage of vault logins needs no helper: the broker reads it with the pass.
+			modelLoginUsage: new CloudModelLoginUsage({ authority, keyring }),
 		});
 		const stop = new AbortController();
 		const shutdown = (): void => stop.abort();
@@ -257,6 +296,7 @@ export async function runCloudSecretBrokerServiceMain(
 		process.once("SIGTERM", shutdown);
 		try {
 			await service.start();
+			signIns?.start();
 			await new Promise<void>((resolveWait) => {
 				if (stop.signal.aborted) resolveWait();
 				else stop.signal.addEventListener("abort", () => resolveWait(), { once: true });
@@ -264,6 +304,7 @@ export async function runCloudSecretBrokerServiceMain(
 		} finally {
 			process.removeListener("SIGINT", shutdown);
 			process.removeListener("SIGTERM", shutdown);
+			await signIns?.close();
 			await service.close();
 		}
 	} finally {

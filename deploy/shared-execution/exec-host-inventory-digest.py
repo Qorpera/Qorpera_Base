@@ -14,9 +14,13 @@ it leaves out (each exactly identity-<uuid> = {type: disk, pool, source:
 <prefix><uuid>, path: /var/lib/qorpera/identities/<uuid>}, the same in the
 instance's own and expanded devices). Without --pool/--source-prefix it prints
 the digest of an entry without identityVolumes, where every device counts.
+With --role execution-host it prints the digest of an entry listed by role
+(`"role": "execution-host"`): LXD's image.* keys are left out, because the
+observer checks the image against the node's signed releases instead, so a
+rebuild onto a released image keeps the digest.
 
 Operator wrappers (refresh-host.py, snapshot.py, operator.py) may import
-`configuration(instance, pool, prefix)` instead of their own `shape()`.
+`configuration(instance, pool, prefix, role)` instead of their own `shape()`.
 """
 import argparse
 import hashlib
@@ -28,6 +32,7 @@ IDENTITY_ROOT = "/var/lib/qorpera/identities/"
 DEVICE = re.compile(r"identity-([0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})")
 POOL = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,62}")
 PREFIX = re.compile(r"[a-z][a-z0-9-]{0,31}")
+ROLES = ("execution-host",)
 
 
 def identity_of(pool, prefix, name, device):
@@ -39,8 +44,10 @@ def identity_of(pool, prefix, name, device):
     return identity if device == expected else None
 
 
-def configuration(instance, pool=None, prefix=None):
+def configuration(instance, pool=None, prefix=None, role=None):
     """(configurationSha256, identities) of an `lxc query /1.0/instances/<name>` document."""
+    if role is not None and role not in ROLES:
+        raise ValueError("invalid role")
     devices, expanded = instance["devices"], instance["expanded_devices"]
     identities = []
     if pool is not None or prefix is not None:
@@ -55,7 +62,9 @@ def configuration(instance, pool=None, prefix=None):
         identities = sorted(name[len("identity-"):] for name in names)
         devices = {k: v for k, v in devices.items() if k not in names}
         expanded = {k: v for k, v in expanded.items() if k not in names}
-    stable = lambda config: {k: v for k, v in config.items() if not k.startswith("volatile.")}  # noqa: E731
+    stable = lambda config: {  # noqa: E731
+        k: v for k, v in config.items() if not k.startswith("volatile.") and not (role and k.startswith("image."))
+    }
     shape = {
         "type": instance["type"],
         "profiles": instance["profiles"],
@@ -73,9 +82,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--pool")
     parser.add_argument("--source-prefix")
+    parser.add_argument("--role", choices=ROLES)
     args = parser.parse_args()
     instance = json.load(sys.stdin)
-    digest, identities = configuration(instance, args.pool, args.source_prefix)
+    digest, identities = configuration(instance, args.pool, args.source_prefix, args.role)
     print(json.dumps({"configurationSha256": digest, "identities": identities}))
 
 
