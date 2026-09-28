@@ -136,8 +136,9 @@ No reserve, release, suspend or observe function is copied or patched.
 - Each pass adds one row per company to `qorpera_computer_hour_usage`: exact standard seconds per
   kind, and `standard_seconds`, what the pass adds after the company's running total
   (`qorpera_computer_hour_totals`) is rounded up to whole seconds.
-- It takes no lock on company or plan rows (`qorpera_lock_profile_gc_fence` takes the profile row
-  FOR UPDATE on every reservation, suspend and lease check).
+- It takes no lock on company or member rows (`qorpera_lock_profile_gc_fence` takes the profile
+  row FOR UPDATE on every reservation, suspend and lease check). Its only lock besides the
+  advisory lock is on billing sources it charges (step 3).
 - Reads are indexed and bounded by what changed. It never scans old receipts.
 - `qorpera_read_company_computer_hours(profile, month)`: any member of the company; the calendar
   month in Europe/Copenhagen time.
@@ -231,6 +232,13 @@ every draw count from then, in live records.
   - Unknown or unsupported events are stored as `needs_review` and still answered 2xx (#326
     answered 5xx, so Stripe would retry for days and then disable the endpoint).
 - Refunds remove the unused hours of their purchase. A dispute freezes only its purchase.
+- Hours arrive as new source rows (a period whose start has come, a credit) or an unfreeze, so
+  what the company owes is repaid at once (step 3's trigger). A period recorded ahead of its start,
+  an upgrade that raises a period's hours, and a member made founder repay owed time at the
+  company's next use instead; the webhook writes periods at their start and upgrades as an extra
+  period row for the rest of the period, so the common paths repay at once. Webhook writes run
+  under READ COMMITTED and take `qorpera_computer_hour_lock_billing()` first (a statement trigger
+  on the sources table also takes it).
 - The plan catalog lives in the database with each Stripe price id; checkout re-verifies the price.
   Prices exclude VAT. Stripe Tax adds Danish VAT, or reverse charge for EU buyers with a VAT id;
   checkout collects the address and an optional CVR/VAT number.

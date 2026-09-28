@@ -7,7 +7,7 @@
 -- dry run, and live records start fresh. Usage rows are inserted here directly; the meter that
 -- writes them is covered by test 710.
 
--- A second founder.
+-- A second founder (and two more for section 7).
 insert into auth.users(id,email) values
 	('71100000-0000-4000-8000-000000000002','hours-founder-2@example.test'),
 	('71100000-0000-4000-8000-000000000003','hours-founder-3@example.test'),
@@ -159,9 +159,21 @@ select pg_temp.wake_assert(bool_and(
 		where repayment.owed_source_id = source.id), 0)), 'Totals match the draws and repayments')
 from public.qorpera_computer_hour_sources source where source.dry_run;
 
--- 6. Live: records start fresh, with new free hours; the dry run is not counted, and the live
--- credit that arrived during the dry run counts now.
+-- 6. A switch set for later is not live yet.
+update public.qorpera_computer_hour_billing set live_since = clock_timestamp() + interval '1 hour';
+select set_config('qorpera_test.u75', pg_temp.hours_use(10)::text, true);
+select pg_temp.wake_assert(pg_temp.hours_left() = 590 and (select bool_and(source.dry_run)
+	from public.qorpera_computer_hour_draws draw join public.qorpera_computer_hour_sources source on source.id = draw.source_id
+	where draw.usage_id = current_setting('qorpera_test.u75')::bigint), 'Before live_since everything is still a dry run');
+-- Live: records start fresh, with new free hours; the dry run is not counted, and the live
+-- credit that arrived during the dry run counts now. A pass metered before the switch stays a dry run.
 update public.qorpera_computer_hour_billing set live_since = clock_timestamp();
+insert into public.qorpera_computer_hour_usage (profile_id, metered_at, run_seconds, standard_seconds)
+values ('30000000-0000-4000-8000-000000000010', clock_timestamp() - interval '1 second', 5, 5);
+select pg_temp.wake_assert((select bool_and(source.dry_run) from public.qorpera_computer_hour_draws draw
+	join public.qorpera_computer_hour_sources source on source.id = draw.source_id
+	join public.qorpera_computer_hour_usage usage on usage.id = draw.usage_id where usage.standard_seconds = 5),
+	'Use metered before the switch is charged as a dry run');
 select pg_temp.wake_assert(pg_temp.hours_left() = 18000 + 4000, 'Live: five free hours and the live credit, nothing of the dry run');
 select set_config('qorpera_test.u8', pg_temp.hours_use(60)::text, true);
 select pg_temp.wake_assert(pg_temp.hours_paid(current_setting('qorpera_test.u8')::bigint, 'free') = 60
@@ -194,7 +206,20 @@ select pg_temp.wake_assert(
 	and pg_temp.hours_plan_drawn('30000000-0000-4000-8000-000000000001', 60) = 0,
 	'One share per founder; a founder''s period that ends soonest pays first');
 
--- 8. A zero-second row charges nothing, and the records are append-only.
+-- 8. A freeze repays nothing; unfreezing repays at once. 400 s: 292 from the plans, 108 owed.
+select pg_temp.hours_use(400);
+select pg_temp.wake_assert(pg_temp.hours_left() = -108, '108 s owed');
+insert into public.qorpera_computer_hour_sources (kind, profile_id, user_id, granted_seconds, expires_at, frozen_at, dry_run)
+values ('credit', '30000000-0000-4000-8000-000000000010', '30000000-0000-4000-8000-000000000001', 500,
+	clock_timestamp() + interval '1 year', clock_timestamp(), false);
+select pg_temp.wake_assert((pg_temp.hours_owed()).repaid_seconds = 0 and pg_temp.hours_left() = -108,
+	'A frozen credit repays nothing');
+update public.qorpera_computer_hour_sources set frozen_at = null
+where kind = 'credit' and granted_seconds = 500 and not dry_run;
+select pg_temp.wake_assert((pg_temp.hours_owed()).repaid_seconds = 108 and pg_temp.hours_left() = 392,
+	'Unfrozen, it repays the owed time at once');
+
+-- 9. A zero-second row charges nothing, and the records are append-only.
 select set_config('qorpera_test.u0', pg_temp.hours_use(0)::text, true);
 select pg_temp.wake_assert(not exists (select 1 from public.qorpera_computer_hour_draws
 	where usage_id = current_setting('qorpera_test.u0')::bigint), 'Nothing to pay for zero seconds');

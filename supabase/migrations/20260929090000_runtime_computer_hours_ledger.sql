@@ -138,6 +138,24 @@ as $$
 $$;
 revoke all on function public.qorpera_computer_hour_lock_billing() from public, anon, authenticated, service_role;
 
+-- Every statement that writes sources takes the billing lock before it touches a row, so a writer
+-- that forgot to take it first still cannot deadlock with a meter pass (which already holds it;
+-- taking it again in the same transaction is immediate).
+create function public.qorpera_computer_hour_lock_sources()
+returns trigger
+language plpgsql
+set search_path = ''
+as $$
+begin
+	perform public.qorpera_computer_hour_lock_billing();
+	return null;
+end
+$$;
+revoke all on function public.qorpera_computer_hour_lock_sources() from public, anon, authenticated, service_role;
+create trigger qorpera_computer_hour_lock_sources
+	before insert or update or delete on public.qorpera_computer_hour_sources
+	for each statement execute function public.qorpera_computer_hour_lock_sources();
+
 -- True while time at p_at is a dry run: billing is not live, or went live after p_at.
 create function public.qorpera_computer_hour_dry_run(p_at timestamptz)
 returns boolean
@@ -274,7 +292,7 @@ begin
 					coalesce((v_paid ->> v_key)::bigint, 0) + least(v_rest, v_source.room));
 				v_rest := v_rest - least(v_rest, v_source.room);
 			end loop;
-			v_left := v_left - v_take;
+			v_left := v_left - (v_take - v_rest);
 		end loop;
 	end loop;
 	-- 3. Credits, the soonest to expire first.
@@ -433,13 +451,14 @@ set search_path = ''
 as $$
 declare
 	v_now timestamptz := clock_timestamp();
-	v_dry_run boolean := public.qorpera_computer_hour_dry_run(clock_timestamp());
+	v_dry_run boolean;
 	v_founders uuid[];
 	v_left bigint;
 begin
 	if public.qorpera_computer_hour_complimentary_founder(p_profile_id) is not null then
 		return null;
 	end if;
+	v_dry_run := public.qorpera_computer_hour_dry_run(v_now);
 	v_founders := array(select founder.user_id from public.qorpera_company_founders(p_profile_id) founder);
 	select
 		-- Free hours not created yet are all still there.
