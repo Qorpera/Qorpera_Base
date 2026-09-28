@@ -260,7 +260,7 @@ function fetchProvisioner(
 		const url = String(input);
 		if (url.includes("qorpera_compute_identity_login_in_vault")) {
 			expect(JSON.parse(String(init?.body))).toEqual({ p_compute_identity_id: expectedWork.computeIdentityId });
-			// A database before migration 20260928161000 has no such function.
+			// A database before migration 20260928180600 has no such function.
 			if (loginInVault === "missing") return Response.json({ code: "PGRST202" }, { status: 404 });
 			return Response.json(loginInVault);
 		}
