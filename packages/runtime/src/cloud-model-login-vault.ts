@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { CloudSecretEnvelopeIdentity, CloudSecretKeyring } from "./cloud-secret-crypto.ts";
+import { nativeProviderAccountIdentity } from "./native-provider-account.ts";
 
 /**
  * Model logins in the vault (Stateless Compute step 1).
@@ -84,6 +85,21 @@ export interface ModelLoginAuthority {
 	): Promise<unknown>;
 	/** Takes the renewal lock of this broker's most urgent idle login, with its current version. */
 	takeIdleModelLoginRenewal(signal: AbortSignal): Promise<unknown>;
+	/** This broker's logins with no recorded ChatGPT account yet, with their current versions. */
+	listModelLoginsWithoutAccount(signal: AbortSignal): Promise<unknown>;
+	recordModelLoginAccount(
+		account: { loginId: string; accountIdentity: string },
+		signal: AbortSignal,
+	): Promise<unknown>;
+	/** One pass switching off members' old node logins that a vault login of the same account replaced. */
+	switchOffReplacedNodeLogins(signal: AbortSignal): Promise<unknown>;
+}
+
+/** What one switch-off pass did: old node logins switched off, still in use, or not movable yet. */
+export interface ModelLoginSwitchOff {
+	readonly switchedOff: number;
+	readonly waiting: number;
+	readonly refused: number;
 }
 
 /** Runs the official Codex against a full login to renew it. `refused` means the provider
@@ -301,7 +317,10 @@ function parseIdleRenewal(value: unknown): IssueResult | null {
 	return result;
 }
 
-function envelopeIdentity(issue: IssueResult, versionNumber: number, keyId: string): CloudSecretEnvelopeIdentity {
+/** Whose login an envelope holds: its company, Compute Identity and login. */
+type LoginOwner = Pick<IssueResult, "loginId" | "companyId" | "computeIdentityId">;
+
+function envelopeIdentity(issue: LoginOwner, versionNumber: number, keyId: string): CloudSecretEnvelopeIdentity {
 	return {
 		companyId: issue.companyId,
 		environmentId: issue.computeIdentityId,
@@ -386,8 +405,49 @@ export class CloudModelLoginVault {
 		return renewed && renewed.version > issue.version ? "renewed" : "failed";
 	}
 
+	/** Records the ChatGPT account of each login this broker keeps that has none yet, read from its
+	 * current version (the digest nodes and the vault record for usage). Returns how many it recorded;
+	 * a login it cannot read is tried again at the next pass. */
+	async recordAccounts(signal: AbortSignal): Promise<number> {
+		const input = record(await this.#authority.listModelLoginsWithoutAccount(signal), "Model login accounts");
+		if (input.schema !== "qorpera.model-login-accounts/v1" || !Array.isArray(input.logins) || input.logins.length > 8)
+			throw new Error("Model login accounts are invalid");
+		let recorded = 0;
+		for (const item of input.logins) {
+			try {
+				const entry = record(item, "Model login account");
+				const login: LoginOwner = {
+					loginId: uuid(entry.loginId, "Model login"),
+					companyId: uuid(entry.companyId, "Model login company"),
+					computeIdentityId: uuid(entry.computeIdentityId, "Model login compute identity"),
+				};
+				const opened = await this.#open(login, version(entry.version, "Model login version"), parseEnvelope(entry));
+				const accountIdentity = nativeProviderAccountIdentity(opened.text);
+				if (!accountIdentity) continue;
+				await this.#authority.recordModelLoginAccount({ loginId: login.loginId, accountIdentity }, signal);
+				recorded += 1;
+			} catch {
+				// This login is tried again at the next pass; the others go on.
+			}
+		}
+		return recorded;
+	}
+
+	/** One pass switching off members' old node logins that a vault login of the same ChatGPT account
+	 * replaced (the database moves their pins first and waits for their work to finish). */
+	async switchOffReplacedNodeLogins(signal: AbortSignal): Promise<ModelLoginSwitchOff> {
+		const input = record(await this.#authority.switchOffReplacedNodeLogins(signal), "Model login switch-off");
+		const count = (value: unknown): number => {
+			if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0 || value > 4)
+				throw new Error("Model login switch-off is invalid");
+			return value;
+		};
+		if (input.schema !== "qorpera.model-login-switch-off/v1") throw new Error("Model login switch-off is invalid");
+		return { switchedOff: count(input.switchedOff), waiting: count(input.waiting), refused: count(input.refused) };
+	}
+
 	#open(
-		issue: IssueResult,
+		issue: LoginOwner,
 		versionNumber: number,
 		envelope: { keyId: string; bytes: Uint8Array },
 	): Promise<CodexLogin> {
