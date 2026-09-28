@@ -28,9 +28,16 @@ An agent picks the size (CPUs, memory, disk). Inside, the agent's commands run a
 
 `setup-machine-network.sh` creates the machine network (default `machine-net`, `10.88.0.1/22`). It is a NAT bridge with IPv4 only and an ACL that drops these destinations:
 
-- 0/8, 10/8, 100.64/10, 127/8, 169.254/16, 172.16/12, 192.0.0/24, 192.168/16, 198.18/15, 224/4 and 240/4.
+- 0/8, 10/8, 100.64/10, 127/8, 169.254/16, 172.16/12, 192.0.0/24, 192.168/16, 198.18/15, 224/4 and 240/4;
+- except two addresses, left out of those ranges by exact CIDRs (61 drop rules in all): the bridge's gateway, which answers only DNS (53) and DHCP (67), and 255.255.255.255, where a DHCP discover goes.
+
+LXD applies drop and reject rules before allow rules, and its baseline DHCP and DNS allowances do not open a hole in them (seen on node 2, `deploy/test-machine/README.md`). An ACL that drops 10/8 or 240/4 whole leaves machines without an address; the script refuses one it finds.
 
 Together these cover the NAS and the node LAN, Tailscale, cloud metadata, the other bridges and the node itself. Other outbound traffic is allowed and all inbound is dropped. Each machine's NIC carries MAC and IPv4 filtering and port isolation, so machines on the bridge cannot reach each other. Offices refuse networks with ACLs, so this network is used by machines only.
+
+### Inside a machine (node 2, 2026-09-28)
+
+Measured on node 2 in a test VM of the same kind (`deploy/test-machine/README.md`): nested KVM works with LXD's defaults (`/dev/kvm`, `KVM_CREATE_VM`), and Docker runs as root with no extra LXD setting (the hosted-db suite passed in 1 min 57 s). Ubuntu's default Docker AppArmor profile blocks remounting `/sys/fs/cgroup` read-write, so a container that runs systemd needs `--security-opt apparmor=unconfined`.
 
 ### A coding session's repository
 
