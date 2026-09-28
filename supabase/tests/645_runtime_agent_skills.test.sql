@@ -1,6 +1,7 @@
 -- @fixture 300_runtime_wake_bus.test.sql until "-- END WAKE FIXTURE"
--- Agent skills (contract 15.2): skill files have no path rule of their own. With the
--- default agent grant an agent writes the company library (skills/) and its own
+-- Agent skills (contract 15.2): skill files have no path rule of their own. With a read
+-- and write grant on the company root (the platform default since 20260926035000; the
+-- fixture grants it explicitly) an agent writes the company library (skills/) and its own
 -- library in its agent folder; with read only, it writes neither. The runtime observes
 -- the three skill tools.
 select pg_temp.path_claims('service_role');
@@ -24,7 +25,7 @@ end $$;
 -- A human wake owes its acknowledgement before any work.
 select pg_temp.wake_public_send(current_setting('qorpera_test.wake_binding')::jsonb,'progress','skills-ack');
 
--- The fixture's agent holds the default read and write grant on the company root.
+-- The fixture's agent holds a read and write grant on the company root.
 do $$
 declare
 	v_binding jsonb := current_setting('qorpera_test.wake_binding')::jsonb;
@@ -35,14 +36,14 @@ begin
 	perform pg_temp.mkdir_as(v_binding,'skills-dir-2','skills/customer-refund');
 	v_write := pg_temp.write_as(v_binding,'skills-write-1','skills/customer-refund/SKILL.md',
 		'---' || chr(10) || 'name: customer-refund' || chr(10) || 'description: "Refund."' || chr(10) || '---' || chr(10));
-	perform pg_temp.wake_assert(v_write ->> 'state' = 'applied','An agent writes a company skill under the default grant');
+	perform pg_temp.wake_assert(v_write ->> 'state' = 'applied','An agent writes a company skill under a write grant');
 	perform pg_temp.mkdir_as(v_binding,'skills-dir-3','agents');
 	perform pg_temp.mkdir_as(v_binding,'skills-dir-4','agents/30000000-0000-4000-8000-000000000030');
 	perform pg_temp.mkdir_as(v_binding,'skills-dir-5',v_own);
 	perform pg_temp.mkdir_as(v_binding,'skills-dir-6',v_own || '/monthly-vat-report');
 	v_write := pg_temp.write_as(v_binding,'skills-write-2',v_own || '/monthly-vat-report/SKILL.md',
 		'---' || chr(10) || 'name: monthly-vat-report' || chr(10) || 'description: "VAT."' || chr(10) || '---' || chr(10));
-	perform pg_temp.wake_assert(v_write ->> 'state' = 'applied','An agent writes a skill into its own library under the default grant');
+	perform pg_temp.wake_assert(v_write ->> 'state' = 'applied','An agent writes a skill into its own library under a write grant');
 end $$;
 
 -- Read only: no skill path is writable, the agent's own library included (no special rule).
