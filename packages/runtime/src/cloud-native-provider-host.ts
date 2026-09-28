@@ -1213,7 +1213,8 @@ export class OfficialCliNativeHarnessDriver implements NativeHarnessDriver {
 			return { ...(providerSessionId ? { providerSessionId } : {}) };
 		} finally {
 			input.signal?.removeEventListener("abort", abort);
-			stopHarnessProcessGroup(child);
+			// An exited harness's group was stopped on exit, and its number may be free again.
+			if (child.exitCode === null && child.signalCode === null) stopHarnessProcessGroup(child);
 		}
 	}
 }
