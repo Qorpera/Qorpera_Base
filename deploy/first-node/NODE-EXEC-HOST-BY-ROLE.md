@@ -26,8 +26,10 @@ An infrastructure entry in a node's inventory policy may declare `"role": "execu
 - In their place it checks the image itself. The host's `volatile.base_image` (the same in its own and
   its expanded configuration) must be a runner image that a signed node-agent release on the node pins:
   - the provider role's `QORPERA_LXD_IMAGE_FINGERPRINT`,
-  - in any release folder under `/opt/qorpera-node/releases` (staged, current or the rollback; the
-    newest 16 by revision),
+  - in any release folder under `/opt/qorpera-node/releases`: staged, current, the rollback, and
+    any older one `agent gc` has not removed yet (at most the newest 16 by revision),
+  - with `release.json` and `release.sig` small regular files (a pipe or device is skipped, so it
+    cannot block the scan),
   - whose `release.json` verifies against the node's enrolled release key
     (`/etc/qorpera-node/keys/release.pem`).
 - Otherwise the entry is `INSTANCE_IMAGE_NOT_RELEASED` and the node is unavailable. No key or no
@@ -51,18 +53,29 @@ lxc query '/1.0/instances/<host>?project=<project>' \
 No runner, image or guest change, and no bundle input. The migration is safe for the running bundle,
 so it needs no pause.
 
-0. **Read-only checks.** The node agent runs on the node (phase B, live on both nodes since
-   2026-09-23), with the release key installed. The fast host's current image is pinned by a release
-   on the node: compare the host's `volatile.base_image` with the provider role's
-   `QORPERA_LXD_IMAGE_FINGERPRINT` in `/opt/qorpera-node/current/release.json`.
+0. **Read-only checks.**
+   - The node agent runs on the node (phase B, live on both nodes since 2026-09-23), with the
+     release key installed.
+   - The observer's account can read the key and the releases, whatever drop-ins the live unit has:
+     `sudo -u qorpera-node-observer test -r /etc/qorpera-node/keys/release.pem` and the same for
+     `/opt/qorpera-node/current/release.json` and `release.sig`.
+   - The fast host's current image is pinned by a release on the node: compare the host's
+     `volatile.base_image` with the provider role's `QORPERA_LXD_IMAGE_FINGERPRINT` in
+     `/opt/qorpera-node/current/release.json`.
 1. **Migration.** Apply `20260928186000` (dry run first). Guard marker for the release branch:
    `'INSTANCE_IMAGE_NOT_RELEASED'` in `qorpera_observe_runtime_node_inventory`. Check that it is
    ABSENT live first. Existing policies are unaffected.
 2. **Observer.** Build the observer package from the release commit
    (`node scripts/package-runtime-node-observer.mjs --out <dir>`) and install it on each node through
    the reviewed observer installation (`NODE-OBSERVER-INSTALLATION.md`). With no role in the policy,
-   it behaves as before.
-3. **Policy, per node with a fast host** (node 2 today; node 1 once its host exists, #434):
+   it behaves as before. The build space (#425, `20260928180500`) needs a new observer too; ship
+   one observer update for both.
+3. **Gate: the cut tooling.** The cut lane re-enrols the fast host after each rebuild with a digest
+   that includes `image.*` (its `operator.py`). For a host listed by role that digest is wrong, and
+   the first cut after this step would make the node unavailable (`INSTANCE_AUTHORITY_DIFFERS`).
+   Update the lane to compute the digest with `--role execution-host`, or to skip the re-enrol for
+   a host listed by role, before this step.
+4. **Policy, per node with a fast host** (node 2 today; node 1 once its host exists, #434):
    - compute the entry's digest with `--role execution-host` as above;
    - replace the node's policy with the same policy, the host's entry carrying
      `"role": "execution-host"` and that digest (`qorpera_replace_runtime_node_inventory`);
@@ -70,7 +83,7 @@ so it needs no pause.
 
    Between the replace and the restart the node reports unavailable for a few seconds
    (`NODE_OBSERVER_POLICY_DIFFERS`). Do it in a quiet moment, or empty the node first (change 1).
-4. **Check** that the node reports `ready` and the host's entry has reason `null`.
+5. **Check** that the node reports `ready` and the host's entry has reason `null`.
 
 ## After the rollout
 
@@ -81,9 +94,20 @@ so it needs no pause.
 - The cut lane's re-enrol step after the fast host rebuild is dropped for a host listed by role.
 - A change to anything else about the host (size, devices, profile) still needs a new policy, as
   before.
+- **Prove it at the first rebuild.** That a rebuild changes only `image.*` and `volatile.*` keys
+  follows from how LXD rebuilds an instance, but no receipt records it yet. Compute the host's
+  `--role execution-host` digest right before and right after the first rebuild; they must be
+  equal. If they differ, re-enrol as before and report it.
+- The receipt's digest no longer covers the image; the observer checks it on the node. To see which
+  image the host runs, read its `volatile.base_image`.
+- The older image-builder planning tools (`scripts/node-builder-inventory-plan.mjs`, before build
+  spaces) check without the node's releases, so they always find a host listed by role not ready
+  and refuse. Build spaces (#425) replace them.
 
 ## Rollback
 
 Replace the policy with the exact entry again (no role, digest with `image.*`, from
-`exec-host-inventory-digest.py` without `--role`), write it to the observer configuration and restart
-the observer. Only then may an older observer be installed, since it refuses a policy with a role.
+`exec-host-inventory-digest.py` without `--role` but with the same `--pool`/`--source-prefix` when
+the entry declares identity volumes), write it to the observer configuration and restart the
+observer. Only then may an older observer be installed, since it refuses a policy with a role. The
+migration may stay: without a role it behaves as before.

@@ -7,6 +7,7 @@ const RELEASE_KEY = "/etc/qorpera-node/keys/release.pem";
 const REVISION = /^(0|[1-9][0-9]{0,8})$/;
 const SHA256 = /^[0-9a-f]{64}$/;
 const MAX_RELEASE_BYTES = 1048576;
+const MAX_SIGNATURE_BYTES = 4096;
 const MAX_RELEASES = 16;
 const field = (value: unknown, key: string): unknown =>
 	value && typeof value === "object" && !Array.isArray(value) && Object.hasOwn(value, key)
@@ -35,10 +36,20 @@ export async function readNodeReleaseImages(root = RELEASES, keyPath = RELEASE_K
 		.slice(0, MAX_RELEASES);
 	for (const revision of revisions) {
 		try {
-			const path = join(root, revision, "release.json");
-			if ((await stat(path)).size > MAX_RELEASE_BYTES) continue;
+			// Only small regular files are read: a pipe or device would block the observer's scan.
+			const path = join(root, revision, "release.json"),
+				signaturePath = join(root, revision, "release.sig");
+			const [info, signatureInfo] = await Promise.all([stat(path), stat(signaturePath)]);
+			if (
+				!info.isFile() ||
+				!signatureInfo.isFile() ||
+				info.size > MAX_RELEASE_BYTES ||
+				signatureInfo.size > MAX_SIGNATURE_BYTES
+			)
+				continue;
 			const bytes = await readFile(path);
-			const signature = Buffer.from((await readFile(join(root, revision, "release.sig"), "utf8")).trim(), "base64");
+			if (bytes.length > MAX_RELEASE_BYTES) continue;
+			const signature = Buffer.from((await readFile(signaturePath, "utf8")).trim(), "base64");
 			if (!verify(null, bytes, key, signature)) continue;
 			const release: unknown = JSON.parse(new TextDecoder("utf8", { fatal: true }).decode(bytes));
 			if (field(release, "schema") !== "qorpera.node-release/v1" || field(release, "revision") !== Number(revision))
