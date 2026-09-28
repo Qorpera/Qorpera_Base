@@ -198,6 +198,21 @@ function answer(
 	};
 }
 
+/** The database answered, and it was not a sign-in this broker may complete. */
+class SignInRefused extends Error {
+	constructor() {
+		super("Vault sign-in description is invalid");
+	}
+}
+
+/** A definite refusal (not an outage): the database's authority or request errors, or an answer
+ * the broker cannot read. */
+function refused(error: unknown): boolean {
+	if (error instanceof SignInRefused) return true;
+	const code = error && typeof error === "object" ? (error as { code?: unknown }).code : undefined;
+	return code === "42501" || code === "22023";
+}
+
 export class CloudModelLoginSignIns {
 	readonly #authority: ModelLoginSignInAuthority;
 	readonly #keys: CloudSecretKeyring;
@@ -327,21 +342,27 @@ export class CloudModelLoginSignIns {
 		this.#inFlight.add(signInId);
 		const target = { signInId, companyId };
 		const finish = () => this.#helper.finishSignIn(target, AbortSignal.timeout(10_000)).catch(() => undefined);
-		const describe = async (): Promise<SignInDescription> =>
-			parseDescription(
-				await this.#authority.describeModelLoginSignIn(
-					{ loginId: signInId, capabilitySha256 },
-					AbortSignal.timeout(SAVE_DEADLINE_MS),
-				),
+		const describe = async (): Promise<SignInDescription> => {
+			const answer = await this.#authority.describeModelLoginSignIn(
+				{ loginId: signInId, capabilitySha256 },
+				AbortSignal.timeout(SAVE_DEADLINE_MS),
 			);
+			try {
+				return parseDescription(answer);
+			} catch {
+				throw new SignInRefused();
+			}
+		};
 		try {
 			let description: SignInDescription;
 			try {
 				description = await describe();
 				this.#refusals.delete(signInId);
 			} catch (error) {
-				// The company was switched back or its broker authority changed while the member
-				// finished: the helper must not keep the login until its own timer ends.
+				// Only a refusal counts: the company was switched back or its broker authority
+				// changed while the member finished, and the helper must not keep the login until its
+				// own timer ends. An outage or a timeout keeps it for the next collection.
+				if (!refused(error)) throw error;
 				const refusals = (this.#refusals.get(signInId) ?? 0) + 1;
 				if (refusals >= REFUSALS_BEFORE_END) {
 					this.#refusals.delete(signInId);

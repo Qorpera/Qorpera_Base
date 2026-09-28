@@ -272,13 +272,19 @@ it("keeps a finished login for the next collection when saving fails, and settle
 	expect(w.completions).toHaveLength(1);
 });
 
-it("drops a finished login from the helper once the database keeps refusing it", async () => {
+it("drops a finished login from the helper once the database keeps refusing it, but not during an outage", async () => {
 	const w = world();
 	const scripted = scriptedHelper(w);
 	scripted.set({ status: "completed", authJson: LOGIN });
-	// The company was switched back while the member finished: every lookup is refused.
-	vi.mocked(w.authority.describeModelLoginSignIn).mockRejectedValue(new Error("model login sign-in is unavailable"));
 	const signIns = new CloudModelLoginSignIns({ authority: w.authority, keyring: w.keyring, helper: scripted.helper });
+	// A database outage is no refusal: the helper keeps the login for the next collection.
+	vi.mocked(w.authority.describeModelLoginSignIn).mockRejectedValue(new Error("connect ECONNREFUSED"));
+	for (let pass = 0; pass < 4; pass += 1) await signIns.collect();
+	expect(scripted.helper.finishSignIn).not.toHaveBeenCalled();
+	// The company was switched back while the member finished: every lookup is refused.
+	vi.mocked(w.authority.describeModelLoginSignIn).mockRejectedValue(
+		Object.assign(new Error("model login sign-in is unavailable"), { code: "42501" }),
+	);
 	await signIns.collect();
 	await signIns.collect();
 	expect(scripted.helper.finishSignIn).not.toHaveBeenCalled();

@@ -111,11 +111,13 @@ begin
 		raise exception 'Vault sign-in companies are exposed'; end if;
 end $$;
 
--- Change 3's vault check: the switch needs it. A database without it (this change alone)
--- refuses the switch; the test then stands one in for the rest of this transaction.
+-- Change 3's vault check and change 2C's usage read: the switch needs both. A database without
+-- them (this change alone) refuses the switch; the test then stands them in for the rest of this
+-- transaction.
 do $$
 begin
-	if to_regprocedure('public.qorpera_compute_identity_login_in_vault(uuid)') is null then
+	if to_regprocedure('public.qorpera_compute_identity_login_in_vault(uuid)') is null
+		or to_regprocedure('public.qorpera_describe_model_login_account_refresh(uuid,text,uuid,text)') is null then
 		perform set_config('qorpera_test.sign_in_stub', 'yes', false);
 	end if;
 end $$;
@@ -126,9 +128,13 @@ select pg_temp.sign_in_expect(case when current_setting('qorpera_test.sign_in_st
 reset role;
 do $$
 begin
-	if current_setting('qorpera_test.sign_in_stub', true) = 'yes' then
+	if to_regprocedure('public.qorpera_compute_identity_login_in_vault(uuid)') is null then
 		create function public.qorpera_compute_identity_login_in_vault(p_compute_identity_id uuid)
 		returns boolean language sql stable as 'select false';
+	end if;
+	if to_regprocedure('public.qorpera_describe_model_login_account_refresh(uuid,text,uuid,text)') is null then
+		create function public.qorpera_describe_model_login_account_refresh(uuid, text, uuid, text)
+		returns jsonb language sql stable as 'select null::jsonb';
 	end if;
 end $$;
 

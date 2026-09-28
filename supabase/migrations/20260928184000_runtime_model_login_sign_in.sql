@@ -7,7 +7,7 @@
 -- connection version that points at the pointer capsule. No node key exists for such a login,
 -- so the recovery backup a node sign-in needs does not apply to it. Claude sign-ins and
 -- companies not switched keep the node path unchanged. A company can be switched only once
--- runs take their login from the vault (change 3). Usage checks move in a later change.
+-- runs take their login from the vault (change 3) and the vault reads usage (change 2C).
 
 -- The sign-in that created a vault login. It is the evidence the recovery pin reads.
 alter table public.qorpera_model_logins
@@ -31,8 +31,10 @@ begin
 		raise exception 'model login sign-in switch requires service authority' using errcode = '42501';
 	end if;
 	if p_enabled then
-		-- A vault login is usable only once runs take their login from the vault (change 3).
-		if to_regprocedure('public.qorpera_compute_identity_login_in_vault(uuid)') is null then
+		-- A vault login is usable only once runs take their login from the vault (change 3) and the
+		-- vault reads its usage (change 2C); neither may boot a node machine for it.
+		if to_regprocedure('public.qorpera_compute_identity_login_in_vault(uuid)') is null
+			or to_regprocedure('public.qorpera_describe_model_login_account_refresh(uuid,text,uuid,text)') is null then
 			raise exception 'vault login runs are not installed' using errcode = '55000';
 		end if;
 		if not exists (select 1 from public.qorpera_cloud_secret_broker_authorities
