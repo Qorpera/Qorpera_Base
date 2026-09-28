@@ -582,10 +582,11 @@ export class CodingSessionElement {
 		const focused = active instanceof HTMLElement && this.el.contains(active) ? active : undefined;
 		this.#renderTranscript(names);
 		this.#renderFooter(names, status);
-		// A redraw that took or disabled the focused control (a choice just used, the fold, the send button while
-		// the answer is on its way) keeps the focus in the session, not on the page's body, so Escape still reaches
-		// the thread: the field for the send button, else the log (where a phone opens no keyboard).
-		if (focused && (!focused.isConnected || focused.matches(":disabled")))
+		// A redraw that took, hid or disabled the focused control (a choice just used, the fold, Archive once the
+		// session is archived, the send button while the answer is on its way) keeps the focus in the session, not
+		// on the page's body, so Escape still reaches the thread: the field for the send button, else the log
+		// (where a phone opens no keyboard).
+		if (focused && (!focused.isConnected || focused.matches(":disabled") || focused.closest("[hidden]")))
 			(focused === this.#sendButton ? this.#field : this.#log).focus({ preventScroll: true });
 		this.#pinToBottom();
 	}

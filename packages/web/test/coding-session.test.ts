@@ -735,6 +735,10 @@ describe("the element in the thread", () => {
 		expect(element.el.querySelector(".coding-status-text")?.textContent).toContain("running biome");
 		expect(document.activeElement).toBe(pill);
 		expect(pill.isConnected).toBe(true);
+		// Archived elsewhere (the agent, another tab) while the pill has the focus: it stays in the session.
+		element.update(codingSession({ archivedAt: "2026-09-22T10:06:00Z", updatedAt: "2026-09-22T10:06:00Z" }));
+		expect(pill.hidden).toBe(true);
+		expect(document.activeElement).toBe(element.el.querySelector(".coding-log"));
 	});
 
 	it("keeps what it read over an older copy of the same update handed in after", async () => {
