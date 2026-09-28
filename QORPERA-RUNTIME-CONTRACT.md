@@ -3344,10 +3344,7 @@ hosts, login machines, the proposal-review guest or one-run runner machines.
     the machine's own disk, until the code is in the company folder;
   - the browser sign-in store lives beside the profiles on the workbench and
     in a machine generation's company root (2026-09-17 amendments "the
-    company browser" and "kept company state");
-  - an agent waiting for a new company machine waits for that machine, even
-    if a computer frees on another machine meanwhile; a new message to the
-    agent places it again at once.
+    company browser" and "kept company state").
 
 1. **More than one company machine per company.** Section 12's additional
    machine is no longer optional, and it is accepted as Order 4 capacity work.
@@ -3357,13 +3354,27 @@ hosts, login machines, the proposal-review guest or one-run runner machines.
      profiles, and its own scratch, journal, ports and credentials (its own
      TLS certificate and key, guest registry credential and objects token).
    - An agent that needs a computer gets one in this order: its own open
-     computer; a free computer on a running company machine; a stopped
-     machine, woken; a machine that is already starting; a new machine for
+     computer; a free computer on a running company machine; a seat nobody
+     holds on a machine that is starting, waking or asleep; a new machine for
      the same company environment. An owner or admin who opens an agent's
-     computer follows the same order. A burst of demand adds at most one new
-     machine at a time. A machine in maintenance for another reason is waited
-     for, never replaced. An agent holds a computer on one company machine at
-     a time.
+     computer follows the same order. An agent holds a computer on one
+     company machine at a time.
+   - **No waiting for a seat** (founder, 28 September: "if a machine is full,
+     the agent always should start a new one, not wait"). An agent never
+     waits for a seat on a full machine; it starts another one. A burst of
+     demand starts as many machines as it needs.
+     - An agent waiting for a machine holds a seat on it while it waits and,
+       once woken, until its woken run ends. Seats go first come.
+     - It is woken when that machine starts. If it runs again before then and
+       a computer is free on a running machine, it takes that one. A start
+       keeps the machine it asked for.
+     - A starting, waking or sleeping machine is joined only while it has a
+       seat nobody holds; otherwise a new machine starts.
+     - A sleeping machine whose node cannot take it now is passed over when
+       another node has room for a new machine. When no node has room, it is
+       woken and waits for room.
+     - A machine in maintenance for another reason, or whose start was
+       cancelled, is passed over: never waited for, never replaced.
    - A new machine is set up automatically on any node with room, with no
      operator step. It uses the same image, bootstrap and number of computers
      as the company's newest machine, and is set up from the node's own
@@ -3395,9 +3406,10 @@ hosts, login machines, the proposal-review guest or one-run runner machines.
      its descriptor and effect-time grants. A run that cannot reach its
      machine continues without computer tools; it does not fail.
    - Several machines per company are turned on only once every run can reach
-     any machine of its company and company machines work in the company
-     folder. Until then a company runs one machine, so an agent never loses
-     sight of its files by moving to another machine.
+     any machine of its company, company machines work in the company folder,
+     and a new machine is set up automatically on a node with room. Until
+     then a company runs one machine, so an agent never loses sight of its
+     files by moving to another machine.
    - Acceptance (Order 4): a seventh agent gets a computer on a
      second machine of the same company, set up and started with no operator
      step; a seat another agent left idle changes hands after its desktop is
