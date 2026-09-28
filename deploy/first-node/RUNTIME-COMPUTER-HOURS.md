@@ -487,9 +487,9 @@ Coordinator (nothing secret):
 
   Machines not starting or waking (6b), the finishing window, the zero "out of hours" notice and
   the renewal-gap handling for machines (6c), and the web (6d) follow. Before the live switch:
-  - the listing checks zero once per due routine, and with the rule on each check sums the
-    company's hours (about 0.4 ms locally): check each company once, and measure with
-    production-sized data;
+  - the listing checks zero per routine (for the page and for the next-page check), and with the
+    rule on each check sums the company's hours (about 0.4 ms locally): check each company once,
+    and measure with production-sized data;
   - held wakes still take the wake step's slots and locks, as a paused company's do;
   - a routine created or retimed at zero gets its first slot only once hours arrive, so 6d shows
     "Waiting for computer hours" on it.
@@ -528,9 +528,8 @@ Coordinator (nothing secret):
   never sees it. It needs its own occasion, and step 5's claim rule, which drops an "out of hours"
   unless the company still owes in the same time, must learn to keep it.
 - A plan renewal is recorded when Stripe's renewal invoice arrives, which can trail the period's
-  end by minutes. The check must not hold work back in that gap: for instance, it can treat a
-  founder's active subscription whose recorded period just ended as still paying for a short
-  grace window.
+  end by minutes. The check must not hold work back in that gap. For runs, 6a's renewal grace does
+  this (see above); machines follow in 6c.
 - It ships switched off, in its own release, with a 30-minute database watch after the cut. It is
   switched on together with live payments and hour notices.
 
