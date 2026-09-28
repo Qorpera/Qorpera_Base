@@ -14,8 +14,11 @@
 -- Members who are not founders are never a source.
 --
 -- Until an operator sets qorpera_computer_hour_billing.live_since (with live payments, build
--- step 7), every source and draw is a dry run: it shows who would have paid. Live records start
--- fresh at the switch; dry-run records are never counted in live balances. Nothing here charges a
+-- step 7), every source and draw is a dry run: it shows who would have paid. Usage metered before
+-- live_since stays a dry run. Live records start fresh at the switch; dry-run records are never
+-- counted in live balances. Every writer of billing records takes the meter's advisory lock first
+-- (qorpera_computer_hour_lock_billing), so charges, arriving hours, refunds and freezes never
+-- interleave; charging also locks the sources it may draw from, in id order. Nothing here charges a
 -- card or stops work. Billing records carry no foreign key to qorpera_profiles or auth.users: they
 -- outlive the company and the account for bookkeeping.
 
@@ -77,11 +80,13 @@ create table public.qorpera_computer_hour_draws (
 );
 create index qorpera_computer_hour_draws_source on public.qorpera_computer_hour_draws (source_id);
 
--- Owed time paid back from a later source.
+-- Owed time paid back from a later source: when that source arrives, or at the company's next use
+-- (then named by usage_id).
 create table public.qorpera_computer_hour_repayments (
 	id bigint generated always as identity primary key,
 	owed_source_id uuid not null references public.qorpera_computer_hour_sources(id) on delete restrict,
 	source_id uuid not null references public.qorpera_computer_hour_sources(id) on delete restrict,
+	usage_id bigint references public.qorpera_computer_hour_usage(id) on delete restrict,
 	standard_seconds bigint not null check (standard_seconds > 0),
 	created_at timestamptz not null default clock_timestamp()
 );
@@ -123,7 +128,29 @@ as $$
 $$;
 revoke all on function public.qorpera_computer_hour_complimentary_founder(uuid) from public, anon, authenticated, service_role;
 
--- The company's source of a kind with one row per company (free or owed), created when first needed.
+-- Serialises every writer of billing records with the meter's passes.
+create function public.qorpera_computer_hour_lock_billing()
+returns void
+language sql
+set search_path = ''
+as $$
+	select pg_advisory_xact_lock(hashtextextended('qorpera.computer-hour-meter', 0))
+$$;
+revoke all on function public.qorpera_computer_hour_lock_billing() from public, anon, authenticated, service_role;
+
+-- True while time at p_at is a dry run: billing is not live, or went live after p_at.
+create function public.qorpera_computer_hour_dry_run(p_at timestamptz)
+returns boolean
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+	select billing.live_since is null or billing.live_since > p_at from public.qorpera_computer_hour_billing billing
+$$;
+revoke all on function public.qorpera_computer_hour_dry_run(timestamptz) from public, anon, authenticated, service_role;
+
+-- The company's free or owed source (one per company and mode), created when first needed.
 create function public.qorpera_computer_hour_company_source(p_profile_id uuid, p_kind text, p_dry_run boolean)
 returns public.qorpera_computer_hour_sources
 language plpgsql
@@ -140,17 +167,18 @@ begin
 	values (p_kind, p_profile_id, case when p_kind = 'free' then 5 * 3600 end, p_dry_run)
 	on conflict do nothing;
 	select * into strict v_source from public.qorpera_computer_hour_sources
-	where kind = p_kind and profile_id = p_profile_id and dry_run = p_dry_run
-	for update;
+	where kind = p_kind and profile_id = p_profile_id and dry_run = p_dry_run;
 	return v_source;
 end
 $$;
 revoke all on function public.qorpera_computer_hour_company_source(uuid, text, boolean)
 	from public, anon, authenticated, service_role;
 
--- Pays p_seconds of the company's time at p_at from its free hours, then its founders' plans
--- (evenly), then its credits. Records draws for a usage row, or repayments of an owed source.
--- Returns the seconds nothing could pay.
+-- Pays p_seconds of the company's time at p_at from its free hours, then its founders' current
+-- plan periods (evenly between the founders with hours left), then its credits (the soonest to
+-- expire first). Records draws for a usage row (p_owed_source_id null) or repayments of an owed
+-- source (then p_usage_id, if any, names the use that triggered them). Returns the seconds
+-- nothing could pay.
 create function public.qorpera_computer_hour_pay(
 	p_profile_id uuid,
 	p_seconds bigint,
@@ -167,10 +195,12 @@ as $$
 declare
 	v_left bigint := p_seconds;
 	v_paid jsonb := '{}'::jsonb;
+	v_founders uuid[];
 	v_free public.qorpera_computer_hour_sources%rowtype;
 	v_take bigint;
-	v_plans uuid[];
-	v_room bigint[];
+	v_rest bigint;
+	v_users uuid[];
+	v_rooms bigint[];
 	v_count integer;
 	v_share bigint;
 	v_extra bigint;
@@ -178,42 +208,73 @@ declare
 	v_source record;
 	v_key text;
 begin
-	if (p_usage_id is null) = (p_owed_source_id is null) or p_seconds < 0 then
-		raise exception 'A payment is for one usage row or one owed source' using errcode = '22023';
+	if p_seconds < 0 or (p_owed_source_id is null and p_usage_id is null) then
+		raise exception 'A payment is for a usage row or an owed source' using errcode = '22023';
 	end if;
+	if p_seconds = 0 then
+		return 0;
+	end if;
+	v_founders := array(select founder.user_id from public.qorpera_company_founders(p_profile_id) founder);
+	v_free := public.qorpera_computer_hour_company_source(p_profile_id, 'free', p_dry_run);
+	-- Lock every source this payment may draw from, in id order, and read them after the lock.
+	perform 1 from public.qorpera_computer_hour_sources source
+	where source.dry_run = p_dry_run and (
+		source.id = v_free.id
+		or (source.kind = 'plan_period' and source.user_id = any(v_founders)
+			and source.period_start <= p_at and p_at < source.period_end)
+		or (source.kind = 'credit' and source.profile_id = p_profile_id and source.expires_at > p_at))
+	order by source.id
+	for update;
+	select * into strict v_free from public.qorpera_computer_hour_sources where id = v_free.id;
 	-- 1. Free hours.
-	if v_left > 0 then
-		v_free := public.qorpera_computer_hour_company_source(p_profile_id, 'free', p_dry_run);
+	if v_free.withdrawn_at is null and v_free.frozen_at is null then
 		v_take := least(v_left, v_free.granted_seconds - v_free.drawn_seconds);
 		if v_take > 0 then
 			v_paid := v_paid || jsonb_build_object(v_free.id::text, v_take);
 			v_left := v_left - v_take;
 		end if;
 	end if;
-	-- 2. The founders' current plan periods, evenly between those with hours left. The most hours
-	-- left gets a remainder second first; when one runs out, the others carry the rest.
+	-- 2. The founders' current plan periods, evenly between the founders with hours left (one
+	-- share per founder, however many plan rows they have). The most hours left gets a remainder
+	-- second first; when one runs out, the others carry the rest. Within a founder, the period
+	-- that ends soonest pays first.
 	while v_left > 0 loop
-		select coalesce(array_agg(plan.id order by plan.granted_seconds - plan.drawn_seconds
-				- coalesce((v_paid ->> plan.id::text)::bigint, 0) desc, plan.id), '{}'),
-			coalesce(array_agg(plan.granted_seconds - plan.drawn_seconds - coalesce((v_paid ->> plan.id::text)::bigint, 0)
-				order by plan.granted_seconds - plan.drawn_seconds - coalesce((v_paid ->> plan.id::text)::bigint, 0) desc, plan.id), '{}')
-		into v_plans, v_room
-		from public.qorpera_computer_hour_sources plan
-		join public.qorpera_company_founders(p_profile_id) founder on founder.user_id = plan.user_id
-		where plan.kind = 'plan_period' and plan.dry_run = p_dry_run and plan.withdrawn_at is null and plan.frozen_at is null
-			and plan.period_start <= p_at and p_at < plan.period_end
-			and plan.granted_seconds - plan.drawn_seconds - coalesce((v_paid ->> plan.id::text)::bigint, 0) > 0;
-		v_count := cardinality(v_plans);
+		select coalesce(array_agg(founder.user_id order by founder.room desc, founder.user_id), '{}'),
+			coalesce(array_agg(founder.room order by founder.room desc, founder.user_id), '{}')
+		into v_users, v_rooms
+		from (
+			select plan.user_id,
+				sum(plan.granted_seconds - plan.drawn_seconds - coalesce((v_paid ->> plan.id::text)::bigint, 0))::bigint as room
+			from public.qorpera_computer_hour_sources plan
+			where plan.kind = 'plan_period' and plan.dry_run = p_dry_run and plan.user_id = any(v_founders)
+				and plan.withdrawn_at is null and plan.frozen_at is null
+				and plan.period_start <= p_at and p_at < plan.period_end
+			group by plan.user_id
+		) founder
+		where founder.room > 0;
+		v_count := cardinality(v_users);
 		exit when v_count = 0;
 		v_share := v_left / v_count;
 		v_extra := v_left % v_count;
 		for v_index in 1 .. v_count loop
-			v_take := least(v_share + case when v_index <= v_extra then 1 else 0 end, v_room[v_index]);
-			if v_take > 0 then
-				v_key := v_plans[v_index]::text;
-				v_paid := v_paid || jsonb_build_object(v_key, coalesce((v_paid ->> v_key)::bigint, 0) + v_take);
-				v_left := v_left - v_take;
-			end if;
+			v_take := least(v_share + case when v_index <= v_extra then 1 else 0 end, v_rooms[v_index]);
+			v_rest := v_take;
+			for v_source in
+				select plan.id, plan.granted_seconds - plan.drawn_seconds - coalesce((v_paid ->> plan.id::text)::bigint, 0) as room
+				from public.qorpera_computer_hour_sources plan
+				where plan.kind = 'plan_period' and plan.dry_run = p_dry_run and plan.user_id = v_users[v_index]
+					and plan.withdrawn_at is null and plan.frozen_at is null
+					and plan.period_start <= p_at and p_at < plan.period_end
+				order by plan.period_end, plan.id
+			loop
+				exit when v_rest = 0;
+				continue when v_source.room <= 0;
+				v_key := v_source.id::text;
+				v_paid := v_paid || jsonb_build_object(v_key,
+					coalesce((v_paid ->> v_key)::bigint, 0) + least(v_rest, v_source.room));
+				v_rest := v_rest - least(v_rest, v_source.room);
+			end loop;
+			v_left := v_left - v_take;
 		end loop;
 	end loop;
 	-- 3. Credits, the soonest to expire first.
@@ -230,23 +291,49 @@ begin
 		v_paid := v_paid || jsonb_build_object(v_source.id::text, v_take);
 		v_left := v_left - v_take;
 	end loop;
-	-- Record what each source paid. Sources are locked in id order, so two payers never deadlock.
+	-- Record what each source paid.
 	for v_key in select key from jsonb_each(v_paid) order by key::uuid loop
 		v_take := (v_paid ->> v_key)::bigint;
 		update public.qorpera_computer_hour_sources set drawn_seconds = drawn_seconds + v_take
 		where id = v_key::uuid;
-		if p_usage_id is not null then
+		if p_owed_source_id is null then
 			insert into public.qorpera_computer_hour_draws (usage_id, source_id, standard_seconds)
 			values (p_usage_id, v_key::uuid, v_take);
 		else
-			insert into public.qorpera_computer_hour_repayments (owed_source_id, source_id, standard_seconds)
-			values (p_owed_source_id, v_key::uuid, v_take);
+			insert into public.qorpera_computer_hour_repayments (owed_source_id, source_id, usage_id, standard_seconds)
+			values (p_owed_source_id, v_key::uuid, p_usage_id, v_take);
 		end if;
 	end loop;
 	return v_left;
 end
 $$;
 revoke all on function public.qorpera_computer_hour_pay(uuid, bigint, timestamptz, boolean, bigint, uuid)
+	from public, anon, authenticated, service_role;
+
+-- Pays what the company owes (in one mode) from the hours it has now. p_usage_id names the use
+-- that triggered it, if any.
+create function public.qorpera_computer_hour_repay(p_profile_id uuid, p_dry_run boolean, p_at timestamptz, p_usage_id bigint)
+returns void
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+	v_owed public.qorpera_computer_hour_sources%rowtype;
+	v_left bigint;
+begin
+	select * into v_owed from public.qorpera_computer_hour_sources
+	where kind = 'owed' and profile_id = p_profile_id and dry_run = p_dry_run
+	for update;
+	if not found or v_owed.drawn_seconds <= v_owed.repaid_seconds then
+		return;
+	end if;
+	v_left := public.qorpera_computer_hour_pay(p_profile_id, v_owed.drawn_seconds - v_owed.repaid_seconds,
+		p_at, p_dry_run, p_usage_id, v_owed.id);
+	update public.qorpera_computer_hour_sources set repaid_seconds = drawn_seconds - v_left where id = v_owed.id;
+end
+$$;
+revoke all on function public.qorpera_computer_hour_repay(uuid, boolean, timestamptz, bigint)
 	from public, anon, authenticated, service_role;
 
 -- Charges one usage row as the meter inserts it.
@@ -257,7 +344,7 @@ security definer
 set search_path = ''
 as $$
 declare
-	v_dry_run boolean;
+	v_dry_run boolean := public.qorpera_computer_hour_dry_run(new.metered_at);
 	v_founder uuid;
 	v_source public.qorpera_computer_hour_sources%rowtype;
 	v_owed public.qorpera_computer_hour_sources%rowtype;
@@ -266,7 +353,6 @@ begin
 	if new.standard_seconds = 0 then
 		return null;
 	end if;
-	select billing.live_since is null into strict v_dry_run from public.qorpera_computer_hour_billing billing;
 	v_founder := public.qorpera_computer_hour_complimentary_founder(new.profile_id);
 	if v_founder is not null then
 		insert into public.qorpera_computer_hour_sources (kind, profile_id, user_id, dry_run)
@@ -281,17 +367,8 @@ begin
 		values (new.id, v_source.id, new.standard_seconds);
 		return null;
 	end if;
-	-- Owed time is paid first.
-	select * into v_owed from public.qorpera_computer_hour_sources
-	where kind = 'owed' and profile_id = new.profile_id and dry_run = v_dry_run
-	for update;
-	if found and v_owed.drawn_seconds > v_owed.repaid_seconds then
-		v_left := public.qorpera_computer_hour_pay(new.profile_id, v_owed.drawn_seconds - v_owed.repaid_seconds,
-			new.metered_at, v_dry_run, null, v_owed.id);
-		update public.qorpera_computer_hour_sources
-		set repaid_seconds = drawn_seconds - v_left
-		where id = v_owed.id;
-	end if;
+	-- Owed time is paid first (normally already, when the hours arrived).
+	perform public.qorpera_computer_hour_repay(new.profile_id, v_dry_run, new.metered_at, new.id);
 	v_left := public.qorpera_computer_hour_pay(new.profile_id, new.standard_seconds, new.metered_at, v_dry_run, new.id, null);
 	if v_left > 0 then
 		v_owed := public.qorpera_computer_hour_company_source(new.profile_id, 'owed', v_dry_run);
@@ -307,6 +384,43 @@ create trigger qorpera_computer_hour_charge_usage
 	after insert on public.qorpera_computer_hour_usage
 	for each row execute function public.qorpera_computer_hour_charge_usage();
 
+-- Hours arriving (a plan period or credits, or a source unfrozen) pay what is owed at once: for a
+-- credit the company's, for a plan period every company its holder is a founder of.
+create function public.qorpera_computer_hour_hours_arrived()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+	v_profile uuid;
+begin
+	if new.kind not in ('plan_period', 'credit') then
+		return null;
+	end if;
+	if tg_op = 'UPDATE' and not (old.frozen_at is not null and new.frozen_at is null) then
+		return null;
+	end if;
+	perform public.qorpera_computer_hour_lock_billing();
+	for v_profile in
+		select new.profile_id where new.kind = 'credit'
+		union
+		select member.profile_id from public.qorpera_profile_members member
+		where new.kind = 'plan_period' and member.user_id = new.user_id and member.role = 'owner'
+		order by 1
+	loop
+		if public.qorpera_computer_hour_complimentary_founder(v_profile) is null then
+			perform public.qorpera_computer_hour_repay(v_profile, new.dry_run, clock_timestamp(), null);
+		end if;
+	end loop;
+	return null;
+end
+$$;
+revoke all on function public.qorpera_computer_hour_hours_arrived() from public, anon, authenticated, service_role;
+create trigger qorpera_computer_hour_hours_arrived
+	after insert or update of frozen_at on public.qorpera_computer_hour_sources
+	for each row execute function public.qorpera_computer_hour_hours_arrived();
+
 -- The company's hours left now, in standard seconds: its free hours, its founders' current plan
 -- periods and its credits, minus what it owes. Null for a complimentary company, which has no
 -- limit. In the current mode (dry run or live).
@@ -318,23 +432,26 @@ security definer
 set search_path = ''
 as $$
 declare
-	v_dry_run boolean;
 	v_now timestamptz := clock_timestamp();
+	v_dry_run boolean := public.qorpera_computer_hour_dry_run(clock_timestamp());
+	v_founders uuid[];
 	v_left bigint;
 begin
 	if public.qorpera_computer_hour_complimentary_founder(p_profile_id) is not null then
 		return null;
 	end if;
-	select billing.live_since is null into strict v_dry_run from public.qorpera_computer_hour_billing billing;
+	v_founders := array(select founder.user_id from public.qorpera_company_founders(p_profile_id) founder);
 	select
 		-- Free hours not created yet are all still there.
-		coalesce((select free.granted_seconds - free.drawn_seconds from public.qorpera_computer_hour_sources free
+		coalesce((select case when free.withdrawn_at is null and free.frozen_at is null
+				then free.granted_seconds - free.drawn_seconds else 0 end
+			from public.qorpera_computer_hour_sources free
 			where free.kind = 'free' and free.profile_id = p_profile_id and free.dry_run = v_dry_run), 5 * 3600)
 		+ coalesce((select sum(plan.granted_seconds - plan.drawn_seconds)
 			from public.qorpera_computer_hour_sources plan
-			join public.qorpera_company_founders(p_profile_id) founder on founder.user_id = plan.user_id
-			where plan.kind = 'plan_period' and plan.dry_run = v_dry_run and plan.withdrawn_at is null
-				and plan.frozen_at is null and plan.period_start <= v_now and v_now < plan.period_end), 0)
+			where plan.kind = 'plan_period' and plan.dry_run = v_dry_run and plan.user_id = any(v_founders)
+				and plan.withdrawn_at is null and plan.frozen_at is null
+				and plan.period_start <= v_now and v_now < plan.period_end), 0)
 		+ coalesce((select sum(credit.granted_seconds - credit.drawn_seconds)
 			from public.qorpera_computer_hour_sources credit
 			where credit.kind = 'credit' and credit.profile_id = p_profile_id and credit.dry_run = v_dry_run
@@ -348,19 +465,24 @@ $$;
 revoke all on function public.qorpera_company_computer_hours_left(uuid) from public, anon, authenticated;
 grant execute on function public.qorpera_company_computer_hours_left(uuid) to service_role;
 
--- For operators: the company's sources in the current mode, with what each has paid.
+-- For operators: the company's sources in the current mode. A plan period's figures are its
+-- founder's whole plan, across every company it pays for.
 create function public.qorpera_read_company_computer_hour_sources(p_profile_id uuid)
 returns jsonb
-language sql
+language plpgsql
 stable
 security definer
 set search_path = ''
 as $$
-	select jsonb_build_object(
+declare
+	v_dry_run boolean := public.qorpera_computer_hour_dry_run(clock_timestamp());
+	v_founders uuid[] := array(select founder.user_id from public.qorpera_company_founders(p_profile_id) founder);
+begin
+	return jsonb_build_object(
 		'schema', 'qorpera.company-computer-hour-sources/v1',
 		'profileId', p_profile_id,
-		'mode', case when billing.live_since is null then 'dry_run' else 'live' end,
-		'liveSince', billing.live_since,
+		'mode', case when v_dry_run then 'dry_run' else 'live' end,
+		'liveSince', (select billing.live_since from public.qorpera_computer_hour_billing billing),
 		'hoursLeftSeconds', public.qorpera_company_computer_hours_left(p_profile_id),
 		'sources', coalesce((
 			select jsonb_agg(jsonb_build_object(
@@ -370,13 +492,16 @@ as $$
 				'periodEnd', source.period_end, 'expiresAt', source.expires_at,
 				'withdrawnAt', source.withdrawn_at, 'frozenAt', source.frozen_at
 			) order by source.created_at, source.id)
-			from public.qorpera_computer_hour_sources source
-			where source.dry_run = (billing.live_since is null)
-				and (source.profile_id = p_profile_id or (source.kind = 'plan_period'
-					and source.user_id in (select founder.user_id from public.qorpera_company_founders(p_profile_id) founder)))
+			from (
+				select * from public.qorpera_computer_hour_sources
+				where profile_id = p_profile_id and dry_run = v_dry_run
+				union all
+				select * from public.qorpera_computer_hour_sources
+				where kind = 'plan_period' and user_id = any(v_founders) and dry_run = v_dry_run
+			) source
 		), '[]'::jsonb)
-	)
-	from public.qorpera_computer_hour_billing billing
+	);
+end
 $$;
 revoke all on function public.qorpera_read_company_computer_hour_sources(uuid) from public, anon, authenticated;
 grant execute on function public.qorpera_read_company_computer_hour_sources(uuid) to service_role;
