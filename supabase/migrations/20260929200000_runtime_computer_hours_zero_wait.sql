@@ -6,8 +6,9 @@
 -- function that creates runs, and the work stays queued, with no age limit, until hours arrive:
 -- * wakes (agents, rooms, workers, coding turns): the wake stays queued with the reason "Waiting
 --   for computer hours" (its visit moves it to the back of the queue, as a paused company's does);
--- * routines: a slot is deferred as while the company is paused (no wake is queued and the cursor
---   stays, so the same slot is offered again once hours arrive), so waiting work does not pile up;
+-- * routines: the routine listing leaves the company's due routines out, and a slot asked for anyway
+--   is deferred as while the company is paused (no wake is queued and the cursor stays, so the same
+--   slot is offered again once hours arrive), so waiting work does not pile up;
 -- * member messages, turn requests (hiring's first run included) and proposal reviews: they stay
 --   queued, and members see why through `waitingForHours` in qorpera_read_company_computer_hours;
 -- * the two direct enqueue calls (legacy clients, which cannot wait) are refused with that reason;
@@ -58,7 +59,7 @@ begin
 			and subscription.livemode and subscription.status in ('active', 'past_due')
 			and not exists (
 				select 1 from public.qorpera_computer_hour_sources later
-				where later.kind = 'plan_period' and not later.dry_run
+				where later.user_id = plan.user_id and later.kind = 'plan_period' and not later.dry_run
 					and later.reference ~ '^sub_[A-Za-z0-9]+:[0-9]+$'
 					and split_part(later.reference, ':', 1) = split_part(plan.reference, ':', 1)
 					and later.period_start >= plan.period_end
@@ -154,6 +155,22 @@ begin
 	end if;
 	if v_occurrence.id is null then
 		insert into public.qorpera_wake_occurrences ($new$, 'routine slot');
+	execute v_definition;
+end
+$patch$;
+
+-- Routine listing: a company at zero has its due routines left out, so the orchestrator does not ask
+-- about each deferred slot on every pass; they are listed again once hours arrive.
+do $patch$
+declare v_definition text := pg_get_functiondef('public.qorpera_list_routine_schedule_heads(uuid,integer)'::regprocedure);
+begin
+	v_definition := pg_temp.zero_wait_replace(v_definition, $old$		where routine.status = 'active'
+			and (p_after_routine_id is null or routine.id > p_after_routine_id)$old$, $new$		where routine.status = 'active'
+			and (p_after_routine_id is null or routine.id > p_after_routine_id)
+			and not public.qorpera_company_at_zero(routine.profile_id, statement_timestamp())$new$, 'routine listing');
+	v_definition := pg_temp.zero_wait_replace(v_definition, $old$		where routine.status = 'active' and v_next is not null and routine.id > v_next$old$,
+		$new$		where routine.status = 'active' and v_next is not null and routine.id > v_next
+			and not public.qorpera_company_at_zero(routine.profile_id, statement_timestamp())$new$, 'routine listing next page');
 	execute v_definition;
 end
 $patch$;

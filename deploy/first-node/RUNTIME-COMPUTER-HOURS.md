@@ -390,8 +390,11 @@ Live keys come later, with the live switch (build step 7).
   end by minutes, and the subscription's own dates can move first.
 - Build step 6a (migration `20260929200000`, runs only):
   - wakes stay queued with `blocked_reason = 'Waiting for computer hours'`;
-  - a routine's slot is deferred, as while the company is paused: no wake is queued and the cursor
-    stays, so the slot is offered again once hours arrive, and waiting work does not pile up;
+  - the routine listing (`qorpera_list_routine_schedule_heads`) leaves the company's due routines
+    out, so the orchestrator does not ask about each one on every pass;
+  - a routine's slot asked for anyway is deferred, as while the company is paused: no wake is
+    queued and the cursor stays, so the slot is offered again once hours arrive, and waiting work
+    does not pile up;
   - member messages, turn requests and proposal reviews are not picked (checked again after the
     admission lock) and stay queued;
   - members see the wait through `waitingForHours` in `qorpera_read_company_computer_hours`;
