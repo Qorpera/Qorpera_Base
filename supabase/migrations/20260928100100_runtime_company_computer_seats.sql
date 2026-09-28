@@ -495,49 +495,26 @@ $patch$;
 
 -- Idle: the company's first computer keeps today's rule (every authorized
 -- run of the company is demand). Another computer counts only the runs of
--- agents placed on it, so an extra computer really turns off.
-do $guard$ begin
-	if encode(extensions.digest(pg_get_functiondef('public.qorpera_runtime_office_has_demand(public.qorpera_runtime_offices)'::regprocedure), 'sha256'), 'hex')
-		<> 'f3839d5eedd23d30a6d1c01d0c87e1c935b381b6b51b1a65fcb865383a43fccb' then
-		raise exception 'Reviewed function definition changed: qorpera_runtime_office_has_demand';
-	end if;
-end $guard$;
-
-create or replace function public.qorpera_runtime_office_has_demand(p_office public.qorpera_runtime_offices)
-returns boolean
-language sql
-security definer
-set search_path = ''
-as $$
-	select p_office.privacy_state<>'shared'
-		or exists(select 1 from public.qorpera_runtime_office_screens s where s.office_id=p_office.id
-			and (s.drain_pending or s.takeover_user_id is not null or s.lease_id is not null))
-		or exists(select 1 from public.qorpera_runtime_office_resources r where r.office_id=p_office.id and r.state<>'drained')
-		or exists(select 1 from public.qorpera_runtime_office_viewers v where v.office_id=p_office.id
-			and v.state<>'ended' and (v.expires_at>clock_timestamp() or v.mode='control' or v.state='draining'))
-		-- Tool discovery precedes the first guest lease. Retain a warm office for
-		-- its currently authorized turns, including routines while members are away.
-		or exists(select 1 from public.qorpera_execution_runs e join public.qorpera_runner_jobs j on j.id=e.job_id
-			join public.qorpera_runtime_office_access g on g.office_id=p_office.id and g.profile_id=e.profile_id and g.staff_agent_id=e.staff_agent_id
-			join public.qorpera_profile_staff s on s.profile_id=e.profile_id and s.staff_agent_id=e.staff_agent_id
-			where e.profile_id=p_office.profile_id and e.environment_id=p_office.environment_id
-			and e.audience_kind='company' and e.audience_user_id is null and j.status in ('queued','leased')
-			and e.deadline_at>clock_timestamp() and g.state='active' and s.employment_status='active' and s.version=e.staff_version
+-- agents placed on it, so an extra computer really turns off. Patched in
+-- place, so other patches of this function commute with it.
+do $patch$
+declare
+	v_definition text := pg_get_functiondef('public.qorpera_runtime_office_has_demand(public.qorpera_runtime_offices)'::regprocedure);
+	v_old text;
+	v_new text;
+begin
+	v_old := $old$			and e.deadline_at>clock_timestamp() and g.state='active' and s.employment_status='active' and s.version>=e.staff_version)$old$;
+	v_new := $new$			and e.deadline_at>clock_timestamp() and g.state='active' and s.employment_status='active' and s.version>=e.staff_version
+			-- Several computers per company (20260928100100): the first keeps every run,
+			-- another only the runs of agents placed on it.
 			and (p_office.computer_number=(select min(o.computer_number) from public.qorpera_runtime_offices o
 					where o.environment_id=p_office.environment_id and o.state<>'retired')
-				or public.qorpera_runtime_office_placement(e.profile_id,e.environment_id,e.staff_agent_id)->>'officeId'=p_office.id::text))
-		or exists(select 1 from public.qorpera_runtime_office_start_waiters w
-			join public.qorpera_runtime_office_start_intents i on i.id=w.intent_id
-			join public.qorpera_execution_runs e on e.id=w.parent_run_id
-			join public.qorpera_runner_jobs j on j.id=e.job_id
-			where i.office_id=p_office.id and i.computer_generation=p_office.generation
-			and w.state='waiting' and j.status not in ('failed','cancelled'))
-		or exists(select 1 from public.qorpera_wake_occurrences w
-			left join public.qorpera_execution_runs e on e.id=w.run_id
-			left join public.qorpera_runner_jobs j on j.id=e.job_id
-			where w.source_kind='office-activation' and w.payload->>'companyComputerId'=p_office.id::text
-			and (w.status='queued' or j.status in ('queued','leased','running')))
-$$;
+				or public.qorpera_runtime_office_placement(e.profile_id,e.environment_id,e.staff_agent_id)->>'officeId'=p_office.id::text))$new$;
+	if (length(v_definition) - length(replace(v_definition, v_old, ''))) / length(v_old) <> 1 then
+		raise exception 'Office demand run clause differs'; end if;
+	execute replace(v_definition, v_old, v_new);
+end
+$patch$;
 
 -- Members: the computer an agent's panel shows. Owners and admins may add the
 -- next computer when every one is running and full, as an agent can.
@@ -583,3 +560,44 @@ end
 $$;
 revoke all on function public.qorpera_member_agent_office(uuid, uuid) from public, anon, authenticated, service_role;
 grant execute on function public.qorpera_member_agent_office(uuid, uuid) to authenticated;
+
+-- Operators: computers that need a host. A started computer with no provider
+-- yet waits for its host to be prepared ('setup') or for room ('room'); an
+-- added computer that nobody started yet is listed too, so a spare can be set
+-- up ahead. `template` is the company's computer that already has a provider:
+-- the host documents of the new one are planned from it
+-- (qorpera-office-next-computer, deploy/office-fleet/README.md).
+create function public.qorpera_runtime_office_setup_queue()
+returns jsonb
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+	select coalesce(jsonb_agg(item order by item->>'requestedAt' nulls last, item->>'companyComputerId'), '[]'::jsonb)
+	from (
+		select jsonb_build_object(
+			'companyId', o.profile_id, 'environmentId', o.environment_id, 'companyComputerId', o.id,
+			'logicalComputerId', o.logical_computer_id, 'computerNumber', o.computer_number,
+			'computerGeneration', o.generation, 'intentId', i.id, 'requestedAt', i.created_at,
+			'waiting', case when i.id is null then 'unstarted' else public.qorpera_runtime_office_start_wait(o) end,
+			'template', (select jsonb_build_object('companyComputerId', t.id, 'computerNumber', t.computer_number,
+					'providerId', p.provider_id, 'policySha256', p.policy_sha256,
+					'nodeId', (select n.node_id from public.qorpera_runtime_node_providers n
+						where n.provider_kind = 'office' and n.provider_id = p.provider_id::text and n.policy_sha256 = p.policy_sha256))
+				from public.qorpera_runtime_offices t
+				join public.qorpera_runtime_office_providers p on p.office_id = t.id and p.computer_generation = t.generation
+				where t.environment_id = o.environment_id and t.id <> o.id and t.state <> 'retired'
+				order by t.computer_number limit 1)) as item
+		from public.qorpera_runtime_offices o
+		left join public.qorpera_runtime_office_start_intents i
+			on i.office_id = o.id and i.computer_generation = o.generation and i.state <> 'cancelled'
+		where o.state in ('provisioning', 'recovering')
+			and not exists(select 1 from public.qorpera_runtime_office_providers p
+				where p.office_id = o.id and p.computer_generation = o.generation)
+		order by i.created_at nulls last
+		limit 200
+	) queue
+$$;
+revoke all on function public.qorpera_runtime_office_setup_queue() from public, anon, authenticated, service_role;
+grant execute on function public.qorpera_runtime_office_setup_queue() to service_role;

@@ -58,10 +58,14 @@ environment.
   `qorpera_native_office_start` locks every computer of the company in one
   order before reading the descriptor.
 - **Idle.** Computer 1 keeps today's rule: every authorized run of the company
-  keeps it on. Another computer stays on only for runs of agents placed on it,
+  keeps it on (patched in place, so other patches of the idle check commute). Another computer stays on only for runs of agents placed on it,
   besides its own leases, viewers, resources, start waiters and activation
   wakes. Stopped computers already give their node CPU and memory back
   (`20260923060000`, bundle v82).
+- `qorpera_runtime_office_setup_queue()` (service role) lists computers that
+  need a host: started ones waiting for `setup` or `room`, and added ones not
+  started yet (`unstarted`), each with the company computer whose host
+  documents to copy (`template`: provider, policy, node).
 - `qorpera_member_agent_office(environment, agent)` tells the web which
   computer shows an agent's screen, its number, how many computers the company
   has, and why a started computer is not up yet (`setup`: no prepared host has
@@ -77,8 +81,8 @@ adding a computer takes the fence first.
 
 - **Hosts.** Adding a computer records demand; a host must still be prepared
   for it (see `deploy/office-fleet/README.md`). Until then its start waits
-  (`waiting: setup`). The one-command setup for a company's next computer is a
-  separate change.
+  (`waiting: setup`). Planning the host documents of a company's next computer
+  from its first is a separate change (`qorpera-office-next-computer`).
 - **Runs reaching computer 2.** A native job reaches one configured office URL
   and the routes file allows one route per company environment. Several routes
   per company are a separate runtime change; until it lands, only computer 1

@@ -79,6 +79,14 @@ select pg_temp.wake_assert(pg_temp.member('select public.qorpera_member_office_c
 insert into public.qorpera_runtime_office_start_intents(id,office_id,computer_generation,state,requested_by_user_id)
 values(extensions.gen_random_uuid(),(pg_temp.office(2)).id,1,'requested','30000000-0000-4000-8000-000000000001');
 select pg_temp.wake_assert(public.qorpera_runtime_office_start_wait(pg_temp.office(2))='setup','no host offers computer 2 yet');
+select set_config('qorpera_test.office2',(pg_temp.office(2)).id::text,true);
+select pg_temp.path_claims('service_role');
+set local role service_role;
+select set_config('qorpera_test.queue',public.qorpera_runtime_office_setup_queue()::text,true);
+reset role;
+select pg_temp.wake_assert(exists(select 1 from jsonb_array_elements(current_setting('qorpera_test.queue')::jsonb) q
+	where q->>'companyComputerId'=current_setting('qorpera_test.office2') and q->>'waiting'='setup'
+	and q->>'computerNumber'='2' and q->'intentId' is not null),'operators see computer 2 waiting for its host');
 select pg_temp.wake_assert(pg_temp.place('30000000-0000-4000-8000-000000000032')
 	=jsonb_build_object('decision','starting','officeId',(pg_temp.office(2)).id),'Carol waits for computer 2 to start');
 
