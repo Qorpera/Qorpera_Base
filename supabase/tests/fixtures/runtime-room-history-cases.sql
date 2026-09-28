@@ -15,7 +15,8 @@ begin
  perform pg_temp.path_claims('service_role');
 end $$;
 
--- Consumed after the existing real wake fixture, in one rollback transaction.
+-- Consumed after the existing real wake fixture. Migrations with their own commit end
+-- the fixture's transaction, so each block sets its own claims.
 do $$
 #variable_conflict use_variable
 declare
@@ -25,6 +26,7 @@ declare
  path text; document text; receipt jsonb; replay jsonb; events jsonb; stored_hash text; stored_body jsonb;
  input_id uuid; session_id uuid; run_id uuid; speaker jsonb; event_id uuid;
 begin
+ perform pg_temp.path_claims('service_role');
  select * into strict base from public.qorpera_execution_runs where id=(binding->>'runId')::uuid;
  path:='organization/rooms/'||room::text||'.json';
  document:=jsonb_build_object('schema','qorpera.company-room/v1','roomId',room,'key','history-room',
