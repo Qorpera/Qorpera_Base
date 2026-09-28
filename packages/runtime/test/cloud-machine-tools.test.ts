@@ -11,7 +11,10 @@ import {
 import { CLOUD_RUNTIME_TOOL_OPERATIONS } from "../src/cloud-runtime-observability.ts";
 import { nativeToolAuthorityFixture } from "./fixtures/native-tool-authority-fixture.ts";
 
-function fixture(machines: { name: string; state: string }[] = [{ name: "build-a", state: "running" }]) {
+function fixture(
+	machines: { name: string; state: string }[] = [{ name: "build-a", state: "running" }],
+	worker = false,
+) {
 	const { authority, binding } = nativeToolAuthorityFixture();
 	const identity = authority.identity;
 	const listed = machines.map((machine) => ({
@@ -85,6 +88,7 @@ function fixture(machines: { name: string; state: string }[] = [{ name: "build-a
 		control: control as unknown as CloudCompanyPathControl,
 		operations: { execute },
 		gateway,
+		worker,
 	});
 	const boundary = new CloudNativeToolBoundary({
 		companyId: identity.companyId,
@@ -103,6 +107,71 @@ function fixture(machines: { name: string; state: string }[] = [{ name: "build-a
 }
 
 describe("machine tools", () => {
+	it("gives a worker the same seven tools, without notify, and tells it that nothing wakes it", async () => {
+		const agent = fixture();
+		const helper = fixture(undefined, true);
+		try {
+			expect(helper.tools.map((tool) => tool.name)).toEqual(agent.tools.map((tool) => tool.name));
+			const run = helper.tools.find((tool) => tool.name === "machine_run")!;
+			const start = helper.tools.find((tool) => tool.name === "machine_start")!;
+			expect(run.inputSchema.properties).not.toHaveProperty("notify");
+			expect(run.description).toContain("You are a worker: nothing wakes you.");
+			expect(run.description).not.toContain("With notify true");
+			expect(start.description).toContain("You are a worker: nothing wakes you.");
+			expect(start.description).not.toContain("you are woken when it runs");
+			expect(() =>
+				run.parseArguments({ operationKey: "k", machine: "build-a", command: "npm test", notify: true }),
+			).toThrow();
+			expect(run.parseArguments({ operationKey: "k", machine: "build-a", command: "npm test" })).toMatchObject({
+				notify: false,
+			});
+		} finally {
+			agent.boundary.close();
+			helper.boundary.close();
+		}
+	});
+
+	it("waits for a command inside the read, without a model turn, then reads it", async () => {
+		vi.useFakeTimers();
+		const f = fixture(undefined, true);
+		try {
+			let reads = 0;
+			f.gateway.read.mockImplementation(
+				async (scope, input) =>
+					({
+						schema: "qorpera.machine-command-result/v1",
+						machineId: scope.machineId,
+						commandId: input.commandId,
+						inputSha256: "a".repeat(64),
+						state: ++reads < 3 ? "running" : "succeeded",
+						exitCode: reads < 3 ? null : 0,
+						output: "",
+						truncated: false,
+						log: { offset: 0, nextOffset: 0, totalBytes: 0, limitBytes: 67108864, limitReached: false },
+					}) as never,
+			);
+			const read = f.boundary.invoke("r1", "qorpera", "machine_read", {
+				machine: "build-a",
+				commandId: randomUUID(),
+				tail: true,
+				waitSeconds: 60,
+			});
+			await vi.advanceTimersByTimeAsync(10000);
+			const result = await read;
+			expect(result.success).toBe(true);
+			expect(result.contentItems[0].text).toContain("succeeded");
+			// Two waiting looks while it ran, one when it ended, then the answer.
+			expect(f.gateway.read).toHaveBeenCalledTimes(4);
+			const read2 = f.tools.find((tool) => tool.name === "machine_read")!;
+			expect(() =>
+				read2.parseArguments({ machine: "build-a", commandId: randomUUID(), waitSeconds: 301 }),
+			).toThrow();
+		} finally {
+			f.boundary.close();
+			vi.useRealTimers();
+		}
+	});
+
 	it("are the seven machine operations the runtime observes by name", () => {
 		const f = fixture();
 		expect(f.tools.map((tool) => tool.name)).toEqual([

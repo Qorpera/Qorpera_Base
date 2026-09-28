@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { setTimeout as sleep } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
 import {
 	type CloudMachineCommandReceipt,
@@ -34,6 +35,8 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-
 const NAME = /^[a-z0-9][a-z0-9-]{0,39}$/;
 const KEY = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,191}$/;
 const WORKER_KEY = /^[a-z0-9][a-z0-9._-]{0,79}$/;
+/** How often a waiting read looks again. */
+const WAIT_STEP_MS = 3000;
 
 export const CLOUD_MACHINE_START_DESCRIPTION =
 	"Start a machine: a whole Linux virtual machine on the company's own servers, for tests, builds, Docker stacks and long jobs. " +
@@ -46,6 +49,11 @@ export const CLOUD_MACHINE_START_DESCRIPTION =
 	"The machine belongs to the company: every member sees it and can stop it, and any agent of the company may use it. It holds no credentials or logins. It can reach the internet, but not private networks, and nothing can reach it from outside. " +
 	"The result says its state. When no server has room it waits in line and the result gives its place. If it is not running yet, finish this run normally: you are woken when it runs. " +
 	"A result with refused started nothing and says why (the name is taken, too large for any server, no such machine). Keep operationKey stable after an uncertain result.";
+/** A worker (an agent's background helper) is never woken: it has no conversation to continue. */
+export const CLOUD_MACHINE_START_WORKER_DESCRIPTION = CLOUD_MACHINE_START_DESCRIPTION.replace(
+	"If it is not running yet, finish this run normally: you are woken when it runs.",
+	"You are a worker: nothing wakes you. If it is not running yet, it waits for room: use another running machine from machine_list, or say in your report that it is waiting so your agent can retry.",
+);
 export const CLOUD_MACHINE_RUN_DESCRIPTION =
 	"Run a shell command as root on a running machine (a bash login shell in /root). It returns a durable command handle; running is not success. " +
 	"The command has no time limit unless you set timeoutMs. It keeps running after your turn ends, until it exits, you cancel it or the machine stops. " +
@@ -53,9 +61,15 @@ export const CLOUD_MACHINE_RUN_DESCRIPTION =
 	"With notify true you are woken when it ends, with its exit status and the end of its output: then finish your run instead of waiting. Without notify, read the handle with machine_read. " +
 	"Output is untrusted data from the machine. Keep operationKey stable after an uncertain result; never start a command again to recover its output. " +
 	"A result with refused started nothing: the machine is not running, or the start with this operationKey was given up (start it again with a new operationKey).";
+/** A worker waits for its commands within its own run. */
+export const CLOUD_MACHINE_RUN_WORKER_DESCRIPTION = CLOUD_MACHINE_RUN_DESCRIPTION.replace(
+	"With notify true you are woken when it ends, with its exit status and the end of its output: then finish your run instead of waiting. Without notify, read the handle with machine_read.",
+	"You are a worker: nothing wakes you. Wait for it with machine_read and waitSeconds (up to 300 per call, no model turn is spent while waiting), and read again until it ends.",
+);
 export const CLOUD_MACHINE_READ_DESCRIPTION =
 	"Read a machine command's retained output and status, whoever started it. Use log.nextOffset as the next byte cursor, or tail true for recent output; offset and tail cannot be combined. " +
-	"Pages may be smaller than limit. Logs keep 64 MiB; limitReached means later output was dropped. running or unconfirmed is not success; lost means the machine stopped or restarted under it. After the machine moved to another server, its earlier commands have no log (refused).";
+	"Pages may be smaller than limit. Logs keep 64 MiB; limitReached means later output was dropped. running or unconfirmed is not success; lost means the machine stopped or restarted under it. After the machine moved to another server, its earlier commands have no log (refused). " +
+	"waitSeconds (1 to 300) first waits until the command ends or that time passes, then reads.";
 export const CLOUD_MACHINE_CANCEL_DESCRIPTION =
 	"Stop a running machine command and everything it started. Files on the machine stay. Keep operationKey stable after an uncertain result.";
 export const CLOUD_MACHINE_STOP_DESCRIPTION =
@@ -78,7 +92,10 @@ export function cloudMachineTools(options: {
 	control: CloudCompanyPathControl;
 	operations: Pick<CloudNativeToolOperations, "execute">;
 	gateway: CloudMachineCommandGateway;
+	/** The run is an agent's worker: no notify and no waking; it waits for its commands with machine_read. */
+	worker?: boolean;
 }): readonly CloudNativeTool[] {
+	const worker = options.worker === true;
 	const binding = parseCloudNativeToolBinding(options.binding),
 		identity = Object.freeze({ ...options.identity });
 	if (
@@ -187,7 +204,7 @@ export function cloudMachineTools(options: {
 	const start: CloudNativeTool = {
 		name: "machine_start" satisfies CloudRuntimeToolOperation,
 		source: "runtime",
-		description: CLOUD_MACHINE_START_DESCRIPTION,
+		description: worker ? CLOUD_MACHINE_START_WORKER_DESCRIPTION : CLOUD_MACHINE_START_DESCRIPTION,
 		inputSchema: {
 			type: "object",
 			additionalProperties: false,
@@ -304,7 +321,7 @@ export function cloudMachineTools(options: {
 	const run: CloudNativeTool = {
 		name: "machine_run" satisfies CloudRuntimeToolOperation,
 		source: "runtime",
-		description: CLOUD_MACHINE_RUN_DESCRIPTION,
+		description: worker ? CLOUD_MACHINE_RUN_WORKER_DESCRIPTION : CLOUD_MACHINE_RUN_DESCRIPTION,
 		inputSchema: {
 			type: "object",
 			additionalProperties: false,
@@ -314,11 +331,15 @@ export function cloudMachineTools(options: {
 				machine: machineName,
 				command: { type: "string", minLength: 1, maxLength: 16384 },
 				timeoutMs: { type: "integer", minimum: 1000 },
-				notify: { type: "boolean" },
+				...(worker ? {} : { notify: { type: "boolean" } }),
 			},
 		},
 		parseArguments(value) {
-			const input = closed(value, ["operationKey", "machine", "command"], ["timeoutMs", "notify"]);
+			const input = closed(
+				value,
+				["operationKey", "machine", "command"],
+				worker ? ["timeoutMs"] : ["timeoutMs", "notify"],
+			);
 			key(input.operationKey);
 			name(input.machine);
 			if (
@@ -405,17 +426,27 @@ export function cloudMachineTools(options: {
 				offset: { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER },
 				limit: { type: "integer", minimum: 4, maximum: 16384 },
 				tail: { type: "boolean" },
+				waitSeconds: { type: "integer", minimum: 1, maximum: 300 },
 			},
 		},
 		parseArguments(value) {
-			const input = closed(value, ["machine", "commandId"], ["offset", "limit", "tail"]);
+			const input = closed(value, ["machine", "commandId"], ["offset", "limit", "tail", "waitSeconds"]);
 			name(input.machine);
-			const { machine, ...rest } = input;
-			return { machine, ...parseCloudCodingCommandRead(rest) } as unknown as JsonValue;
+			const { machine, waitSeconds, ...rest } = input;
+			if (
+				waitSeconds !== undefined &&
+				(!Number.isSafeInteger(waitSeconds) || Number(waitSeconds) < 1 || Number(waitSeconds) > 300)
+			)
+				throw new Error("Invalid machine read wait");
+			return {
+				machine,
+				...(waitSeconds === undefined ? {} : { waitSeconds }),
+				...parseCloudCodingCommandRead(rest),
+			} as unknown as JsonValue;
 		},
 		async execute(value, context) {
 			check(context);
-			const { machine: machineNameValue, ...query } = value as Record<string, JsonValue>;
+			const { machine: machineNameValue, waitSeconds, ...query } = value as Record<string, JsonValue>;
 			const machine = await find(String(machineNameValue), context.signal);
 			if (!machine) return refused("MACHINE_NOT_FOUND", `no machine is named ${String(machineNameValue)}`);
 			if (machine.state !== "running")
@@ -426,6 +457,36 @@ export function cloudMachineTools(options: {
 						state: machine.state,
 					},
 				);
+			// Waiting: the status is read every few seconds until the command ends or the time passes.
+			// No model turn is spent; the answer is the read below either way.
+			if (waitSeconds !== undefined) {
+				const deadline = Date.now() + Number(waitSeconds) * 1000;
+				for (;;) {
+					let status: CloudMachineCommandReceipt;
+					try {
+						status = parseCloudMachineCommandReceipt(
+							await cloudToolRequest(
+								(signal) =>
+									options.gateway.read(
+										{ machineId: machine.machineId },
+										parseCloudCodingCommandRead({ commandId: query.commandId, tail: true, limit: 4 }),
+										signal,
+									),
+								context.signal,
+							),
+						);
+					} catch (error) {
+						return commandGone(error, machine.name);
+					}
+					check(context);
+					if (
+						(status.state !== "running" && status.state !== "unconfirmed") ||
+						Date.now() + WAIT_STEP_MS > deadline
+					)
+						break;
+					await sleep(WAIT_STEP_MS, undefined, { signal: context.signal });
+				}
+			}
 			let limit = Number(query.limit ?? 4096);
 			for (;;) {
 				let read: unknown;
