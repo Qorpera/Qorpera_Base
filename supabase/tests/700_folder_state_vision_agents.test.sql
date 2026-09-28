@@ -112,19 +112,19 @@ begin
 		jsonb_build_object('op','mkdir','path','rules')));
 	for i in 1..9 loop perform pg_temp.expect(r, i, 'saved'); end loop;
 	select * into x from public.qorpera_folder_company_index where environment_id = '70000000-0000-4000-8000-000000000020';
-	if x.name <> 'Nordlys Studio' or not x.vision_seeded or x.vision_path_version <> pg_temp.version('vision/vision.md') then
+	if x.name is distinct from 'Nordlys Studio' or not x.vision_seeded or x.vision_path_version is distinct from pg_temp.version('vision/vision.md') then
 		raise exception 'The seeded vision must index the company name: %', to_jsonb(x); end if;
 	c := pg_temp.staff(cofounder);
-	if c.staff_agent_id is null or c.template_id <> 'co-founder' or c.folder_path <> 'agents/co-founder/agent.md'
-		or c.folder_path_version <> pg_temp.version('agents/co-founder/agent.md') or c.employment_status <> 'active'
-		or c.display_name <> 'Co-Founder' or c.charter <> 'Sell.' or c.appearance_color <> 'native' or c.source_path is not null
-		or c.hire_overlay is not null or c.updated_by_user_id <> '70000000-0000-4000-8000-000000000001' then
+	if c.staff_agent_id is null or c.template_id is distinct from 'co-founder' or c.folder_path is distinct from 'agents/co-founder/agent.md'
+		or c.folder_path_version is distinct from pg_temp.version('agents/co-founder/agent.md') or c.employment_status is distinct from 'active'
+		or c.display_name is distinct from 'Co-Founder' or c.charter is distinct from 'Sell.' or c.appearance_color is distinct from 'native' or c.source_path is not null
+		or c.hire_overlay is not null or c.updated_by_user_id is distinct from '70000000-0000-4000-8000-000000000001' then
 		raise exception 'The seeded Co-Founder must be indexed: %', to_jsonb(c); end if;
 	if not exists (select 1 from public.qorpera_company_cofounders where profile_id = '70000000-0000-4000-8000-000000000010'
 		and staff_agent_id = cofounder and formation_id is null) then
 		raise exception 'The creation commit records the Co-Founder'; end if;
 	if (select count(*) from public.qorpera_folder_path_versions v where v.commit_id = (r ->> 'commitId')::uuid
-		and v.structured is not null) <> 3 then
+		and v.structured is not null) is distinct from 3 then
 		raise exception 'Every structured file keeps its checked parse on its version'; end if;
 end $$;
 
@@ -135,7 +135,7 @@ declare r jsonb; u jsonb;
 begin
 	r := pg_temp.commit(pg_temp.owner(), 'vision-0001', jsonb_build_array(pg_temp.vision('Nordlys Health')));
 	perform pg_temp.expect(r, 1, 'saved');
-	if (select name from public.qorpera_folder_company_index where environment_id = '70000000-0000-4000-8000-000000000020') <> 'Nordlys Health'
+	if (select name from public.qorpera_folder_company_index where environment_id = '70000000-0000-4000-8000-000000000020') is distinct from 'Nordlys Health'
 		or (select vision_seeded from public.qorpera_folder_company_index where environment_id = '70000000-0000-4000-8000-000000000020') then
 		raise exception 'A new vision name reaches the index, and the vision is no longer the seed'; end if;
 	-- No parse: the writer could not read it.
@@ -149,7 +149,7 @@ begin
 	u := jsonb_set(pg_temp.vision('Other') #- '{structured,0,parse}', '{structured,0,problems}',
 		'[{"line":1,"key":null,"code":"body","message":"the first line must be # and the company''s name"}]');
 	r := pg_temp.commit(pg_temp.owner(), 'vision-0004', jsonb_build_array(u));
-	if pg_temp.expect(r, 1, 'refused', 'structured_invalid') -> 'problems' -> 0 ->> 'code' <> 'body' then
+	if pg_temp.expect(r, 1, 'refused', 'structured_invalid') -> 'problems' -> 0 ->> 'code' is distinct from 'body' then
 		raise exception 'A refusal carries the parser''s problems: %', r; end if;
 	-- A parse of the wrong shape.
 	u := jsonb_set(pg_temp.vision('Other'), '{structured,0,parse,extra}', '1');
@@ -174,7 +174,7 @@ begin
 	r := pg_temp.commit(pg_temp.owner(), 'hire-0001', jsonb_build_array(pg_temp.hire('nora-dahl', nora, 'Nora Dahl')));
 	perform pg_temp.expect(r, 1, 'saved');
 	s := pg_temp.staff(nora);
-	if s.folder_path <> 'agents/nora-dahl/agent.md' or s.template_id is not null or s.lifecycle_state <> 'setup' or s.version <> 1 then
+	if s.folder_path is distinct from 'agents/nora-dahl/agent.md' or s.template_id is not null or s.lifecycle_state is distinct from 'setup' or s.version is distinct from 1 then
 		raise exception 'A hire is a roster row pointing at its agent.md: %', to_jsonb(s); end if;
 	-- A later hire cannot be a co-founder, nor take an id another folder holds.
 	r := pg_temp.commit(pg_temp.owner(), 'hire-0002', jsonb_build_array(
@@ -195,8 +195,8 @@ begin
 		pg_temp.version('agents/nora-dahl/agent.md'))));
 	perform pg_temp.expect(r, 1, 'saved');
 	s := pg_temp.staff(nora);
-	if s.display_name <> 'Nora Skov' or s.employment_status <> 'archived' or s.version <> 2
-		or s.folder_path_version <> pg_temp.version('agents/nora-dahl/agent.md') then
+	if s.display_name is distinct from 'Nora Skov' or s.employment_status is distinct from 'archived' or s.version is distinct from 2
+		or s.folder_path_version is distinct from pg_temp.version('agents/nora-dahl/agent.md') then
 		raise exception 'An edit reaches the roster: %', to_jsonb(s); end if;
 	-- The Co-Founder keeps its kind and is never archived.
 	r := pg_temp.commit(pg_temp.owner(), 'edit-0003', jsonb_build_array(
@@ -224,9 +224,9 @@ begin
 	perform pg_temp.expect(r, 2, 'saved');
 	s := pg_temp.staff(nora);
 	moved := pg_temp.version('agents/nora-skov/agent.md');
-	if s.folder_path <> 'agents/nora-skov/agent.md' or s.folder_path_version <> moved or s.employment_status <> 'active' then
+	if s.folder_path is distinct from 'agents/nora-skov/agent.md' or s.folder_path_version is distinct from moved or s.employment_status is distinct from 'active' then
 		raise exception 'A rename moves the roster row with the folder: %', to_jsonb(s); end if;
-	if (select structured -> 'parse' ->> 'name' from public.qorpera_folder_path_versions where version = moved) <> 'Nora Skov' then
+	if (select structured -> 'parse' ->> 'name' from public.qorpera_folder_path_versions where version = moved) is distinct from 'Nora Skov' then
 		raise exception 'A moved agent.md keeps its parse'; end if;
 	-- agent.md never goes alone, the Co-Founder's folder is never deleted, and names follow the rule.
 	r := pg_temp.commit(pg_temp.owner(), 'delete-0001', jsonb_build_array(
@@ -247,12 +247,12 @@ begin
 		'expectedVersion',pg_temp.version('agents/nora-skov'),'asOfSeq',pg_temp.seq())));
 	perform pg_temp.expect(r, 1, 'saved');
 	s := pg_temp.staff(nora);
-	if s.folder_retired_at is null or s.employment_status <> 'archived' or s.deleted_at is not null then
+	if s.folder_retired_at is null or s.employment_status is distinct from 'archived' or s.deleted_at is not null then
 		raise exception 'Deleting the folder retires the agent: %', to_jsonb(s); end if;
 	r := pg_temp.commit(pg_temp.owner(), 'restore-0001', jsonb_build_array(pg_temp.hire('nora-back', nora, 'Nora Skov')));
 	perform pg_temp.expect(r, 1, 'saved');
 	s := pg_temp.staff(nora);
-	if s.folder_retired_at is not null or s.employment_status <> 'active' or s.folder_path <> 'agents/nora-back/agent.md' then
+	if s.folder_retired_at is not null or s.employment_status is distinct from 'active' or s.folder_path is distinct from 'agents/nora-back/agent.md' then
 		raise exception 'A restored folder brings the agent back: %', to_jsonb(s); end if;
 end $$;
 
@@ -298,16 +298,16 @@ declare nora constant uuid := '70000000-0000-4000-8000-0000000000a1'; run jsonb 
 	env constant uuid := '70000000-0000-4000-8000-000000000020';
 begin
 	if public.qorpera_folder_structured_review_class(env, run, pg_temp.hire('newbie', '70000000-0000-4000-8000-0000000000a3', 'New'),
-		'agents/newbie', null) <> 'delegation' then raise exception 'A hire is delegation'; end if;
+		'agents/newbie', null) is distinct from 'delegation' then raise exception 'A hire is delegation'; end if;
 	if public.qorpera_folder_structured_review_class(env, run, pg_temp.write('agents/nora-back/agent.md', 'agent',
 		pg_temp.agent_text(nora, 'Nora B'), pg_temp.agent_parse(nora, 'Nora B'), pg_temp.version('agents/nora-back/agent.md')),
-		'agents/nora-back/agent.md', null) <> 'plain' then raise exception 'A rename of an agent is plain'; end if;
+		'agents/nora-back/agent.md', null) is distinct from 'plain' then raise exception 'A rename of an agent is plain'; end if;
 	if public.qorpera_folder_structured_review_class(env, run, pg_temp.write('agents/nora-back/agent.md', 'agent',
 		pg_temp.agent_text(nora, 'Nora', 'agent', 'archived'), pg_temp.agent_parse(nora, 'Nora', 'agent', 'archived'),
-		pg_temp.version('agents/nora-back/agent.md')), 'agents/nora-back/agent.md', null) <> 'delegation' then
+		pg_temp.version('agents/nora-back/agent.md')), 'agents/nora-back/agent.md', null) is distinct from 'delegation' then
 		raise exception 'Archiving an agent is delegation'; end if;
-	if public.qorpera_folder_structured_review_class(env, run, pg_temp.vision('X'), 'vision/vision.md', null) <> 'plain'
-		or public.qorpera_folder_structured_review_class(env, run, jsonb_build_object('op','mkdir','path','notes2'), 'notes2', null) <> 'plain' then
+	if public.qorpera_folder_structured_review_class(env, run, pg_temp.vision('X'), 'vision/vision.md', null) is distinct from 'plain'
+		or public.qorpera_folder_structured_review_class(env, run, jsonb_build_object('op','mkdir','path','notes2'), 'notes2', null) is distinct from 'plain' then
 		raise exception 'The vision and ordinary paths are plain'; end if;
 end $$;
 
@@ -327,7 +327,7 @@ begin
 		('agents/groups', true, 0), ('Agents/Groups', true, 1), ('agents/Groups', true, 1), ('AGENTS/GROUPS', true, 1),
 		('Agents/groups/launch', true, 1)) v(path, folder, problems)
 	loop
-		if jsonb_array_length(public.qorpera_company_state_path_problems(t.path, t.folder)) <> t.problems then
+		if jsonb_array_length(public.qorpera_company_state_path_problems(t.path, t.folder)) is distinct from t.problems then
 			raise exception 'Path % (folder %) expected % problems, got %', t.path, t.folder, t.problems,
 				public.qorpera_company_state_path_problems(t.path, t.folder); end if;
 	end loop;
@@ -353,7 +353,7 @@ begin
 	select id into room from public.qorpera_company_rooms where profile_id = '70000000-0000-4000-8000-000000000010'
 		and bound_staff_agent_id = nora;
 	if room is null then raise exception 'A hire gets its thread room from the roster trigger'; end if;
-	select jsonb_agg(to_jsonb(x)) into t from public.qorpera_folder_structured_targets(env, pg_temp.owner(), jsonb_build_array(
+	select coalesce(jsonb_agg(to_jsonb(x)), '[]'::jsonb) into t from public.qorpera_folder_structured_targets(env, pg_temp.owner(), jsonb_build_array(
 		pg_temp.write('agents/nora-back/agent.md', 'agent', pg_temp.agent_text(nora, 'Nora New'), pg_temp.agent_parse(nora, 'Nora New'),
 			pg_temp.version('agents/nora-back/agent.md')))) x;
 	if not t @> jsonb_build_array(jsonb_build_object('rank', 2, 'tbl', 'qorpera_profile_staff', 'mode', 'nokeyupdate',
@@ -362,12 +362,12 @@ begin
 		or not t @> jsonb_build_array(jsonb_build_object('rank', 2, 'tbl', 'qorpera_profiles', 'mode', 'keyshare',
 			'key', '70000000-0000-4000-8000-000000000010')) then
 		raise exception 'A rename locks the company row, the roster row and the thread room: %', t; end if;
-	select jsonb_agg(to_jsonb(x)) into t from public.qorpera_folder_structured_targets(env, pg_temp.owner(), jsonb_build_array(
+	select coalesce(jsonb_agg(to_jsonb(x)), '[]'::jsonb) into t from public.qorpera_folder_structured_targets(env, pg_temp.owner(), jsonb_build_array(
 		pg_temp.write('agents/nora-back/agent.md', 'agent', pg_temp.agent_text(nora, 'Nora Skov'), pg_temp.agent_parse(nora, 'Nora Skov'),
 			pg_temp.version('agents/nora-back/agent.md')))) x;
 	if t @> '[{"tbl":"qorpera_company_rooms"}]' or not t @> '[{"rank":2,"tbl":"qorpera_profiles","mode":"keyshare"}]' then
 		raise exception 'An edit that keeps name and status leaves the room, and takes the company row: %', t; end if;
-	select jsonb_agg(to_jsonb(x)) into t from public.qorpera_folder_structured_targets(env, pg_temp.owner(), jsonb_build_array(
+	select coalesce(jsonb_agg(to_jsonb(x)), '[]'::jsonb) into t from public.qorpera_folder_structured_targets(env, pg_temp.owner(), jsonb_build_array(
 		jsonb_build_object('op','delete','path','agents/nora-back','expectedVersion',pg_temp.version('agents/nora-back'),'asOfSeq',pg_temp.seq()))) x;
 	if not t @> jsonb_build_array(jsonb_build_object('rank', 4, 'tbl', 'qorpera_company_rooms', 'key', room::text, 'mode', 'update'))
 		or not t @> jsonb_build_array(jsonb_build_object('rank', 2, 'tbl', 'qorpera_profiles', 'key', '70000000-0000-4000-8000-000000000010',
@@ -375,7 +375,7 @@ begin
 		raise exception 'Retiring an active agent locks the company row and its thread room: %', t; end if;
 	-- A folder move, and deleting an archived agent's folder, touch no room but still write the roster row, so they
 	-- take the company row too.
-	select jsonb_agg(to_jsonb(x)) into t from public.qorpera_folder_structured_targets(env, pg_temp.owner(), jsonb_build_array(
+	select coalesce(jsonb_agg(to_jsonb(x)), '[]'::jsonb) into t from public.qorpera_folder_structured_targets(env, pg_temp.owner(), jsonb_build_array(
 		jsonb_build_object('op','move','from','agents/nora-back','to','agents/nora-new'))) x;
 	if t @> '[{"tbl":"qorpera_company_rooms"}]' or not t @> jsonb_build_array(jsonb_build_object('rank', 2, 'tbl', 'qorpera_profiles',
 			'key', '70000000-0000-4000-8000-000000000010', 'mode', 'keyshare')) then
@@ -383,7 +383,7 @@ begin
 	begin
 		update public.qorpera_profile_staff set employment_status = 'archived'
 		where profile_id = '70000000-0000-4000-8000-000000000010' and staff_agent_id = nora;
-		select jsonb_agg(to_jsonb(x)) into t from public.qorpera_folder_structured_targets(env, pg_temp.owner(), jsonb_build_array(
+		select coalesce(jsonb_agg(to_jsonb(x)), '[]'::jsonb) into t from public.qorpera_folder_structured_targets(env, pg_temp.owner(), jsonb_build_array(
 			jsonb_build_object('op','delete','path','agents/nora-back'))) x;
 		if t @> '[{"tbl":"qorpera_company_rooms"}]' or not t @> jsonb_build_array(jsonb_build_object('rank', 2, 'tbl', 'qorpera_profiles',
 				'key', '70000000-0000-4000-8000-000000000010', 'mode', 'keyshare')) then
@@ -413,7 +413,7 @@ begin
 	r := pg_temp.commit(pg_temp.owner(), 'gone-0003', jsonb_build_array(jsonb_build_object('op','move','from','agents/gone','to','agents/gone-2',
 		'expectedVersion',pg_temp.version('agents/gone'),'asOfSeq',pg_temp.seq())));
 	perform pg_temp.expect(r, 1, 'saved');
-	if (pg_temp.staff(gone)).folder_path <> 'agents/gone/agent.md' then raise exception 'A removed row is never repointed'; end if;
+	if (pg_temp.staff(gone)).folder_path is distinct from 'agents/gone/agent.md' then raise exception 'A removed row is never repointed'; end if;
 end $$;
 
 -- 10. Instructions without control characters (tabs kept), and a Co-Founder rename within agents/.
@@ -427,7 +427,7 @@ begin
 	r := pg_temp.commit(pg_temp.owner(), 'cofounder-rename-0001', jsonb_build_array(jsonb_build_object('op','move','from','agents/co-founder',
 		'to','agents/founder','expectedVersion',pg_temp.version('agents/co-founder'),'asOfSeq',pg_temp.seq())));
 	perform pg_temp.expect(r, 1, 'saved');
-	if (pg_temp.staff(cofounder)).folder_path <> 'agents/founder/agent.md' then raise exception 'The Co-Founder can be renamed'; end if;
+	if (pg_temp.staff(cofounder)).folder_path is distinct from 'agents/founder/agent.md' then raise exception 'The Co-Founder can be renamed'; end if;
 	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'cofounder-rename-0002', jsonb_build_array(jsonb_build_object('op','delete',
 		'path','agents/founder','expectedVersion',pg_temp.version('agents/founder'),'asOfSeq',pg_temp.seq()))), 1, 'refused', 'cofounder');
 end $$;
