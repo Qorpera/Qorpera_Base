@@ -1911,7 +1911,12 @@ by default (2026-09-19/20 amendment, item 2) and covers only the owner's own
 work. A company account is a company-owned account added by an owner or
 admin; it pays only once its kind of account can run. The company OpenAI API
 account, and its use by the usage-limit handoff and for work no member
-started, follow in a later change.
+started, follow in a later change. When a member signs in again, the control
+plane may move the bindings that pay with their old login to their new one,
+as a new version of each binding with the same owner and kind; routine wakes
+and coding turns then take the binding's newest same-owner version that can
+pay, so a routine or coding session keeps working after the member's old
+ChatGPT login is switched off. Claude logins are never moved.
 
 ## 18. Short constitution
 
