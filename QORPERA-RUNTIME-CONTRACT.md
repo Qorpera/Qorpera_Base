@@ -3075,9 +3075,11 @@ those words until it is rewritten.
      machine, woken; a machine that is already starting; a new machine for
      the same company environment.
    - A computer is a seat. It is taken only while it is in use: a live lease,
-     a live viewer, a takeover or a running desktop. Six computers in use is
-     the target per machine (2026-09-16 amendment). Having used a computer
-     once does not keep it.
+     a live viewer, a takeover, agent work not yet finished, a running
+     command, or being opened in the last two minutes. A desktop left open
+     with none of these does not keep it; it is closed before the computer
+     changes hands. Six computers in use is the target per machine
+     (2026-09-16 amendment). Having used a computer once does not keep it.
    - There is no count of machines per company. When no node has room, the
      request waits in order, and the agent and members see why.
    - Each machine powers off by its own idle rule. Only work on that machine
