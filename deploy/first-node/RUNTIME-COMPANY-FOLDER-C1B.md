@@ -850,7 +850,8 @@ it. The facts below come from the read-only inventory of 2026-09-29
   null);
 - the anchor (§3), in kind-specific columns that a check keeps complete:
   - run box: `run_id`, `job_id`, `runner_id` and `client_lease_id`;
-  - desktop: `screen_id`, `screen_generation`, and the holder
+  - desktop: `screen_id`, `screen_generation`, `activation_id` (the office
+    activation it opened under; each boot makes a new one), and the holder
     (`holder_run_id` or `holder_user_id`);
   - coding session: `worker_id` and `attachment_token`;
   - later `shell_command_id`, `company_machine_id`, `placement_id` and
@@ -864,8 +865,9 @@ it. The facts below come from the read-only inventory of 2026-09-29
   `closed_at` and `close_reason` (`closed`, `superseded`, `ended`,
   `expired`).
 
-One open desktop view per screen, and later one per test machine: partial
-unique indexes. The table is revoked from every API role; only the folder
+One open view per screen, per coding session, and later per test machine:
+partial unique indexes. The office service retries an open that meets a
+concurrent one (23505). The table is revoked from every API role; only the folder
 core's functions write it.
 
 ### 2. The view actor
@@ -926,17 +928,20 @@ computer, or end an attachment, use plain UPDATEs with no row lock
 `qorpera_cancel_worker`). A plain UPDATE takes `FOR NO KEY UPDATE`. That
 does not wait for `KEY SHARE`, but it does wait for `FOR SHARE`.
 
-So the commit's anchor step locks the anchor `FOR SHARE` in the same
-statement that checks the predicate, and refuses when no row comes back. At
-READ COMMITTED, a row lock taken by key returns the newest committed
-version, so the predicate sees any change that committed first. A change
-that comes later waits for the save to finish. No shared legacy path needs
-a patch.
+So the commit's anchor step locks the anchor `FOR SHARE`, then checks the
+full predicate in a new statement, and refuses when it fails. The lock waits
+for any change in flight on the anchor row. The new statement's snapshot then
+sees that change, and every other table the predicate reads (access, the
+activation, the coding refusal's joins). A statement that locks and checks
+at once would re-check only the locked row after a lock wait (review round
+2, finding 4, reproduced). A change that comes after the lock waits for the
+save to finish. None of the legacy holder-changing paths needs a patch (the
+only legacy change is `screen_in_use`, §9).
 
 | Kind | Anchor | Valid while (the predicate) |
 | --- | --- | --- |
 | `run_box` | the job, `KEY SHARE`, taken at step 3 as for a run | the run actor checks pass, and the job still carries the view's `runner_id` and `client_lease_id` |
-| `computer_desktop` | the screen row, `FOR SHARE` | the view is the newest open view of its screen; the screen's `generation` is the view's; the office's allocation the view opened on is still current; the agent's `qorpera_runtime_office_access` is active |
+| `computer_desktop` | the screen row, `FOR SHARE` | the view is the newest open view of its screen; the screen's `generation` is the view's; the screen is held by the view's holder, by nobody, or is in a drain still pending (the old holder's final publish); privacy is shared, unless this is the private member's view; the office's current activation is the view's; the agent's `qorpera_runtime_office_access` is active |
 | `coding_session` | the session row, `FOR SHARE` | the session carries the view's `attachment_token`, and `qorpera_coding_attachment_refusal` finds nothing (not archived, not expired, repository not withdrawn, executor enabled) |
 | `computer_shell_command` (C1b-3b) | the command row, `FOR SHARE` | the command has not ended (§5 has the end boundary), and the screen's `generation` and the office's allocation are unchanged |
 | `test_machine` (C1b-3b) | the machine row and its current placement, `FOR SHARE` | the placement and `boot_id` are the view's |
@@ -953,23 +958,28 @@ a patch.
   - ends a view at a private sign-in, where no `takeover_user_id` is set;
   - never lets an old view come back after a later holder leaves (A, B,
     then nobody).
+- The holder term ends the old view at once. When another run acquires the
+  screen, when a takeover's drain is acknowledged, or when a member signs in
+  privately, the predicate refuses before any new view opens. So a new
+  holder's saves never go through the old holder's view.
 - A view ends when:
-  - the office stops (its allocation ends);
+  - the office stops, powers off, resumes or reboots (a new activation);
   - the seat changes agent (`generation`);
   - the agent loses computer access, which writes no screen row but is
     checked by the predicate.
 
 **The end boundary: a final save before a takeover.** A takeover is a drain
 (#411: it drains the whole computer).
-- The office service opens the member's view only after the drain's ack.
-  The member cannot drive before the ack either: the viewer check refuses
-  while `drain_pending`.
-- Between the drain and its ack, the run's view is still the newest, so its
-  last publish, the changes made before the drain, is saved and credited
-  to the agent.
-- The ack takes the screen `FOR UPDATE`, so it waits for that save.
-- A stop works the same way: a final publish is accepted until the stop is
-  acknowledged and the allocation ends.
+- While the drain is pending, the run's view stays valid (the holder term's
+  pending-drain case), so its last publish, the changes made before the
+  drain, is saved and credited to the agent.
+- **The node publishes those final changes before it acknowledges the
+  drain.** The ack then ends the old view. The member cannot drive before the
+  ack either: the viewer check refuses while `drain_pending`.
+- The office service opens the member's view right after the ack. Changes
+  the member makes before it opens stay pending and publish as the member.
+- A stop works the same way: the node publishes before it acknowledges the
+  stop, and the new activation ends the view.
 
 ### 4. Lock order
 
@@ -1052,6 +1062,14 @@ by a machine.
   by view, with `qorpera_folder_view_releases` for release ids. With a live
   run it also writes the run's read set. So a desktop program that read a
   file during a run is still rechecked when it saves after the run ends.
+- **A coding view's release, while one of its worker's turns is leased,
+  also writes that turn's run read set** (review round 2, finding 3).
+  - Coding views resolve detached, so without this, coding reads would reach
+    no run's set.
+  - The agent-wake parent check for the worker's completion (C1b-2 §4) reads
+    the parent run's set, so it would pass without checking anything.
+  - Coding commits record the turn's run too, for attribution. Its authority
+    is still the coding rule's.
 - **Every view commit rechecks the view's read set at rank 10**, and the
   run's when a run is live (`qorpera_folder_view_reads_current`, same rules
   as the run's).
@@ -1111,11 +1129,14 @@ by a machine.
     the command's mount namespace. The row does not change.
 
   The per-screen activity row stays the awake and seat signal.
-- **The end boundary for commands** is as for desktops (§3):
+- **The end boundary for commands and test machines** (review round 2,
+  finding 5):
   - a drain or a normal exit records `end_reason`, but the view stays valid
-    for its final publish until the drain's ack, or until that final
-    publish lands;
-  - the view then refuses.
+    for one final publish;
+  - that publish carries `final`, and the commit closes the view in the same
+    transaction;
+  - a test machine's "command not ended" check accepts a publish made at
+    that command's end.
 - **Takeover drains the whole computer** (#411), so it ends the agent's
   commands. The folder design says so.
 - **Findings sent to #411's session on 2026-09-29.** The first was a real
@@ -1148,8 +1169,13 @@ by a machine.
   `qorpera_runtime_office_screen_in_use`) does not yet count a screen as in
   use while its open desktop view has unsaved changes. C1b-3a adds that
   condition to `screen_in_use`, so a seat with unsaved work is not
-  recycled.
-- **F2's roster targets** move to rank 0 (§4).
+  recycled. `unsaved_since` is up to one renewal (40 s) stale; the folder
+  service also renews early when a mount first gets unsaved changes.
+- **F2's roster targets** move to rank 0 (§4). The rank-0 lock is taken only
+  when a target asks for it, so every F2 apply path that inserts a row
+  referencing the company must declare the rank-0 target. C1b-3a adds a
+  test that runs each structured kind's save and checks that no company-row
+  lock appears after rank 0 (review round 2, finding 6).
 - **C1c** removes legacy company-row `FOR UPDATE` from folder-v2 paths before
   any view goes live, and resolves a run's commit against its own
   requester's removal.
@@ -1177,9 +1203,16 @@ by a machine.
   - a dblink race shows each plain UPDATE (the office lifecycle, privacy,
     the coding archive) waiting for a save in flight, and the save after it
     refused.
-- **The end boundary:** after a takeover's drain, the run's view makes its
-  final save, credited to the agent. The ack waits for it, and the member's
-  view opens after.
+- **The end boundary:** during a takeover's pending drain, the run's view
+  makes its final save, credited to the agent. After the ack it refuses, and
+  the member's view opens. Another run's acquire and a private sign-in
+  refuse the old view before any new view opens.
+- **Activations:** a power-off, resume and reboot each end a desktop view.
+- **Coding reads** during a leased turn land in the turn's run set, and the
+  worker completion's parent check sees them.
+- **The anchor step after a lock wait:** a revocation of computer access that
+  commits while the save waits for the screen lock is seen, and the save is
+  refused.
 - **Detached saves** keep `workerAccess`. A unit needing review returns
   `review_required`.
 - **Reads:** every view release writes the view's set, and a live run's too.
