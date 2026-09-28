@@ -287,21 +287,24 @@ no database login and no service key; it sees a login only for one operation and
 - Each login moves by signing in again (test company first; company Qorpera after the "who pays"
   work and the founder's go), then the member's old node account is removed: the identity counts
   as in the vault only once no node login of it is active. The old path serves a login until then.
-  The vault switches it off by itself (founder decision 2026-09-28, migration `20260928241000`),
+  The vault switches it off by itself (founder decision 2026-09-28, migration `20260929080000`),
   in its upkeep pass every 5 minutes:
   - The broker records the ChatGPT account of each vault login it keeps
     (`qorpera_model_logins_without_account`, `qorpera_record_model_login_account`: sha256 of
     `openai-account:` + `account_id`, the digest nodes and the vault record for usage).
   - While the company takes sign-ins in the vault, `qorpera_switch_off_replaced_node_logins` finds each
     active node Codex connection of the same member that is older than the member's vault connection
-    and has the same recorded account (at most 4 per pass).
+    and whose current login (the node capsule its latest version uses) was recorded as the same account;
+    a record of an earlier login of the connection never counts (at most 4 per pass).
   - It moves the member's pins to the vault connection first (`qorpera_move_member_login_pins`, #450:
     routines, coding sessions and agent work follow).
-  - Once no queued or leased job, live lease, queued wake or queued turn names the old login, it
-    revokes it exactly as the member's Disconnect does. A refused move (busy, the vault login not
-    usable or not consented) or remaining work waits for the next pass.
+  - Once no queued or leased job, live lease, queued wake, queued turn or queued change review names
+    the old login, it makes the same updates as the member's Disconnect (the connection, its native
+    capsules and versions, its live leases). A refused move (busy, the vault login not usable or not
+    consented), remaining work or a row held longer than 2 s waits for the next pass.
   - Another account, another member, a Claude login, a node login newer than the vault login and a
-    company switched back to node sign-ins are never touched. Locks: rows only, taken without waiting.
+    company switched back to node sign-ins are never touched. Locks: rows only; the move and the old
+    connection row are taken without waiting, the rows Disconnect updates wait at most 2 s.
   - A node login whose account no node has read yet is not matched; the member can still remove it in
     Settings.
 - After every active login has run from the vault for a week, retire in separate changes: the home

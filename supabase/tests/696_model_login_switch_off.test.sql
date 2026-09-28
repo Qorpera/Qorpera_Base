@@ -1,6 +1,6 @@
 -- @fixture 160_native_subscription_compute_identity.test.sql until "-- Exercise the Step 2 authority/receipt RPCs using this real admitted native run."
 -- Stateless Compute step 1, vault upkeep: a member's old node Codex login is switched off by itself once
--- the member signed in to the vault with the same ChatGPT account (20260928241000). The broker records
+-- the member signed in to the vault with the same ChatGPT account (20260929080000). The broker records
 -- each vault login's account; while the company takes sign-ins in the vault, it moves the old login's
 -- pins to the vault login, waits for the old login's work, then revokes it as Disconnect does. Another
 -- account, a newer node login and a company switched back are left alone.
