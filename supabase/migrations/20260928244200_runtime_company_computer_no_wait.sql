@@ -390,7 +390,7 @@ begin
 	select * into v_office from public.qorpera_runtime_offices
 		where id=(v_descriptor#>>'{scope,companyComputerId}')::uuid for update;$old$;
 	v_new := $new$	-- The machine this start names stays placed for its agent while it can be
-	-- started (20260928238000).
+	-- started (20260928244200).
 	begin
 		perform set_config('qorpera.office_start_target',(v_authority#>>'{identity,staffAgentId}')||':'||
 			coalesce(p_envelope::jsonb#>>'{operation,target,scope,companyComputerId}',''),true);

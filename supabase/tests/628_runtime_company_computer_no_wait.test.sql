@@ -1,5 +1,5 @@
 -- @fixture 405_runtime_office_browser_idle_lease_reap.test.sql until "create function pg_temp.browser("
--- 20260928238000: an agent never waits for a seat. The fixture registers computer 1
+-- 20260928244200: an agent never waits for a seat. The fixture registers computer 1
 -- with two screens and gives Alice (…030) a native run and a screen lease on it.
 -- Alice's computer_start runs through the real native start (authorize, receipt,
 -- begin). Other agents' waits are start waiters on a computer's start intent:
