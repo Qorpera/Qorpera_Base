@@ -237,15 +237,19 @@ $$;
 -- The machine's executor keeps its sessions attached, every few seconds while
 -- the machine is awake, and reports what it saw inside: which of each
 -- session's commands still run and whether any used the processor. A session
--- that may stay gets its deadline renewed for a minute and its current turn
--- (open while the turn is preparing or running: only then may a command
--- start); one that may not has its attachment ended now, and the executor
--- detaches it. Nothing here waits for the profile row: sessions, then the machine.
+-- that may stay gets its deadline renewed for a minute and its latest admitted
+-- turn: the current one once claimed, else the one before (a follow-up waiting
+-- in the queue has not been admitted, and the guest never reopens a turn it
+-- was told is closed). The turn is open while it is preparing or running with
+-- a live lease: only then may a command start. A session that may not stay has
+-- its attachment ended now, and the executor detaches it. Nothing here waits
+-- for the profile row: sessions, then the machine.
 create function public.qorpera_keep_coding_attachments(p_machine_id uuid, p_owner text, p_binding_text text, p_machine_id_sha256 text,
 	p_observation jsonb)
 returns jsonb language plpgsql security definer set search_path = '' as $$
 declare v_machine public.qorpera_coding_machines%rowtype; v_session public.qorpera_coding_sessions%rowtype;
 	v_worker public.qorpera_runtime_workers%rowtype; v_seen jsonb; v_refusal text; v_entries jsonb := '[]'::jsonb; v_busy boolean;
+	v_admitted integer;
 begin
 	v_machine := public.qorpera_coding_machine_owned(p_machine_id, p_owner, p_binding_text, p_machine_id_sha256);
 	if p_observation is not null and (jsonb_typeof(p_observation) <> 'object'
@@ -274,10 +278,13 @@ begin
 			observed_at = case when v_seen is null then observed_at else clock_timestamp() end,
 			busy_at = case when (v_seen ->> 'busy')::boolean then clock_timestamp() else busy_at end
 		where worker_id = v_session.worker_id returning * into v_session;
+		v_admitted := case when v_worker.state = 'active' and v_session.phase in ('queued','input_ready')
+			then greatest(v_worker.sequence - 1, 1) else v_worker.sequence end;
 		v_entries := v_entries || jsonb_build_array(case when v_refusal is null then jsonb_build_object('workerId',v_session.worker_id,'state','kept',
 			'attachmentToken',v_session.attachment_token,'validForMs',59000,
-			'turn',jsonb_build_object('sequence',v_worker.sequence,'turnId',public.qorpera_coding_turn_id(v_worker.id, v_worker.sequence),
-				'open',v_worker.state = 'active' and v_session.phase in ('preparing','running') and v_session.lease_until > clock_timestamp()))
+			'turn',jsonb_build_object('sequence',v_admitted,'turnId',public.qorpera_coding_turn_id(v_worker.id, v_admitted),
+				'open',v_admitted = v_worker.sequence and v_worker.state = 'active' and v_session.phase in ('preparing','running')
+					and v_session.lease_until > clock_timestamp()))
 			else jsonb_build_object('workerId',v_session.worker_id,'state','release','reason',v_refusal,'attachmentToken',v_session.attachment_token) end);
 	end loop;
 	v_busy := coalesce((p_observation ->> 'busy')::boolean, false);

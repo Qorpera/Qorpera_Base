@@ -119,7 +119,7 @@ describe("fixed coding guest transport", () => {
 			`/run/qorpera-coding/${f.workerId}/configuration/guest.json`,
 		);
 		expect(push[4]).toBe(0o444);
-		expect(JSON.parse(push[3])).toEqual({ schema: "qorpera.coding-command-request/v1", ...f.scope, ...f.input });
+		expect(JSON.parse(push[3])).toEqual({ schema: "qorpera.coding-command-request/v2", ...f.scope, ...f.input });
 		expect(f.authorize).toHaveBeenCalledWith("start", f.scope, f.input.commandId, f.input.inputSha256, f.signal);
 	});
 	it("refuses another VM scope before any guest access", async () => {

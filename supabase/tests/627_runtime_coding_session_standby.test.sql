@@ -103,6 +103,13 @@ begin
 	update public.qorpera_coding_machines set busy_at = clock_timestamp() - interval '11 minutes' where id = pg_temp.vm();
 	perform pg_temp.wake_assert(pg_temp.listed() ->> 'sleepDue' = 'true','Ten quiet minutes make the machine due to sleep, a waiting server or not');
 	update public.qorpera_coding_machines set last_used_at = clock_timestamp(), busy_at = null where id = pg_temp.vm();
+	perform pg_temp.as_user('30000000-0000-4000-8000-000000000001');
+	perform public.qorpera_answer_coding_session(v_worker.id,'Yes, keep it.','30000000-0000-4000-8000-000000000702');
+	perform pg_temp.path_claims('service_role');
+	-- A follow-up waiting in the queue is not admitted yet: the keeper still names the turn before it, closed.
+	perform pg_temp.wake_assert(pg_temp.kept(pg_temp.keep(null),'fix-send') #> '{turn}' = jsonb_build_object('sequence',3,
+			'turnId',public.qorpera_coding_turn_id(v_worker.id,3),'open',false),
+		'A queued follow-up does not move the attachment''s turn');
 	-- A withdrawn repository grant ends the attachment at the keeper's next pass; granting it again does not revive it.
 	update public.qorpera_coding_repository_grants set enabled = false where environment_id = '30000000-0000-4000-8000-000000000020';
 	v_keep := pg_temp.keep(null);
@@ -120,9 +127,6 @@ declare v_worker public.qorpera_runtime_workers := pg_temp.worker_row('fix-send'
 	v_attach jsonb; v_command uuid := current_setting('qorpera_test.command3')::uuid; v_other uuid := extensions.gen_random_uuid();
 begin
 	-- The sleep of another machine, as the executor records it, is in the thread and in the context.
-	perform pg_temp.as_user('30000000-0000-4000-8000-000000000001');
-	perform public.qorpera_answer_coding_session(v_worker.id,'Yes, keep it.','30000000-0000-4000-8000-000000000702');
-	perform pg_temp.path_claims('service_role');
 	perform public.qorpera_coding_event(v_worker.id,4,'step','executor',jsonb_build_object('text','The machine went to sleep','reason','SLEEP',
 		'stopped',jsonb_build_array(jsonb_build_object('commandId',v_other,'turn',2,'command','npm test -- --watch'))));
 	v_turn := pg_temp.next_turn('fix-send');

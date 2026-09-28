@@ -19,16 +19,29 @@ under `/run/qorpera-coding/<workerId>`, its commands run in
 named `qorpera-coding-<worker32>-<commandId>.service`, where `<worker32>` is the
 worker id without dashes.
 
-A session is attached only while its turn runs. The executor hot-plugs its two
-NAS folders (LXD disk devices `data-<worker32>` and `custody-<worker32>`, virtiofs)
-and waits until the guest has mounted both; the storage helper's `prepare`,
-`install` and `initialize` actions then set it up. At the end of the turn the
-helper's `detach` action stops the session's slice and sees it stopped, syncs,
-and removes its boot-local configuration, lease and user; the executor then
-unplugs its folders. The NAS folders themselves are never removed. A machine
-that sleeps is stopped with every session's commands stopped and flushed first,
-and its session folders are unplugged while it is off; it wakes with no session
-attached.
+A session is attached by its first turn and stays attached between turns
+until it is archived, its attachment ends or the machine sleeps. The executor
+hot-plugs its two NAS folders (LXD disk devices `data-<worker32>` and
+`custody-<worker32>`, virtiofs) and waits until the guest has mounted both; the
+storage helper's `prepare`, `install` and `initialize` actions then set it up (a
+later turn on the same boot repeats them, and they find everything as it is).
+When the executor takes a session off, it first cancels the session's running
+commands through the command helper, then the storage helper's `detach` action
+stops the session's slice and sees it stopped, syncs, and removes its
+boot-local configuration, lease and user; the executor then unplugs its
+folders. The NAS folders themselves are never removed. A machine that sleeps
+takes every attached session off that way first, is stopped with every
+remaining command stopped and flushed, and has its session folders unplugged
+while it is off; it wakes with no session attached.
+
+The storage helper's `observe` action (no session argument) publishes, root-owned
+0444 at `/run/qorpera-coding/observation.json`, what runs in each session
+attached this boot: the commands whose units still have running processes (a
+unit only retained after its last process exited does not count), each with its
+turn and its first 300 bytes (at most 64 per session, the rest counted), and
+`usage_usec` of the session's slice. It starts, stops and repairs nothing. The
+executor reads it back to keep attachments, to tell the next turn what still
+runs, and to judge whether the machine is quiet enough to sleep.
 
 Each session runs as its own uid/gid (200000-524287, assigned in SQL per member
 and environment when its NAS volume is first used, never reused within them). The
@@ -66,8 +79,8 @@ The host intent alone never counts as proof of guest delivery.
 Bundle the runtime helper to the manifest's fixed entrypoint. The root provider
 stages one singly linked, root-owned 0444 request at
 `/var/lib/qorpera-coding/<workerId>/inbox/<commandId>.json`. Its closed schema is
-`qorpera.coding-command-request/v1`: `workerId`, `vmId`, `commandId`, `requestId`,
-`turn`, `inputSha256`, `command`, and `timeoutMs`. On the session kernel `requestId` is the
+`qorpera.coding-command-request/v2`: `workerId`, `vmId`, `commandId`, `requestId`,
+`turn`, `inputSha256`, `command`, and `timeoutMs` (a deadline the agent chose, at least 1000, or null for none). On the session kernel `requestId` is the
 derived turn id (`qorpera_coding_turn_id(worker, sequence)`) and `turn` is the session's
 sequence; the guest protocol keeps the older names. The input digest is the cloud
 operation receipt digest; the helper also seals a digest of command and timeout.
@@ -104,11 +117,17 @@ starts exits 125 and writes one line with only its fixed code into the command's
 empty `output.log` (never following, creating or appending to anything else), so
 `read` reports `failed` with that code instead of staying unconfirmed. The same
 line goes to the unit's stderr, which is the guest's journal. The helper invokes bash
-without profile files and with a cleared environment. Systemd bounds wall time,
-memory, tasks and CPU, applies filesystem protections, and kills the whole
-command cgroup on cancellation. ExitType=cgroup keeps the command running
-until all descendant processes exit; the deadline applies to that entire group. Commands lasting more than an RPC deadline keep
-running under systemd; `read` inspects them independently. Terminal units remain
+without profile files and with a cleared environment. A command has no time,
+memory, CPU or task limit of its own: systemd applies only a deadline the agent
+chose (RuntimeMaxSec), filesystem protections, and kills the whole command
+cgroup on cancellation. ExitType=cgroup keeps the command running until all
+descendant processes exit, so a server started in the background keeps its
+command running; a deadline applies to that entire group. Commands keep running
+under systemd after the turn that started them; `read` and `cancel` inspect and
+stop them independently of any turn. The session's slice takes an equal share of
+the machine with the member's other sessions when they are busy, and
+`qorpera-coding.slice` keeps `MemoryMax=90%`, so the guest's own control
+(lxd-agent, systemd, the watchdog) always has memory. Terminal units remain
 available until reviewed retention cleanup; this change performs no cleanup.
 
 The protected receipt is
@@ -148,9 +167,13 @@ Install the separately packaged watchdog helper and the supplied systemd
 watchdog service, timer, and coding slice before enabling execution. The
 trusted provider stages a root-owned 0444 `<workerId>/inbox/lease-refresh.json`
 under the custody root with schema
-`qorpera.coding-guest-lease-refresh/v1`, workerId, vmId, requestId, turn,
-leaseTokenSha256, and ttlMs (at most 60000), after checking and renewing the
-current cloud queue lease. It invokes the fixed helper with `refresh-lease` and
+`qorpera.coding-guest-lease-refresh/v2`, workerId, vmId, requestId, turn, open,
+leaseTokenSha256, and ttlMs (at most 60000), after renewing the session's
+attachment in SQL (`qorpera_keep_coding_attachments`, or the turn's own
+`qorpera_attach_coding_session`); the TTL never reaches past the attachment's
+SQL deadline. The digest is the attachment token's: one generation per
+attachment, across the session's turns. `requestId` and `turn` name the latest
+turn admitted under it, and `open` whether that turn may start commands. It invokes the fixed helper with `refresh-lease` and
 the worker UUID, and no command UUID. The guest refuses renewal unless its watchdog timer is
 active. The digest is a generation marker; the queue token stays on the host.
 
@@ -158,9 +181,13 @@ The helper records Linux boot identity and guest uptime in the session's
 root-owned 0444 `/run/qorpera-coding/<workerId>/lease.json` on the guest’s
 boot-local runtime filesystem. Clock adjustments, supervisor replacement, VM suspension, and
 stale host timestamps cannot prolong that lease. An expired generation cannot
-be renewed; a newly authorized turn must stop all previous command groups before
-publishing its lease. Both the privileged command start and the unprivileged
-child check the matching request and turn before executing bash.
+be renewed; the same generation never goes back to an earlier turn and never
+reopens a turn it closed, and advancing it to the next turn stops nothing: the
+session's commands keep running across its turns. A new generation (a new
+attachment) must stop all previous command groups before publishing its lease.
+Both the privileged command start and the unprivileged child check the lease's
+turn is the request's and open before executing bash; reading and cancelling
+need no open turn.
 
 Every command belongs to its session's slice, a child of `qorpera-coding.slice`.
 The independent local timer checks every session under `/run/qorpera-coding` and
@@ -176,14 +203,13 @@ shutdown remain deployment acceptance checks.
 
 ## NAS paths, resource profile and software
 
-The closed guest configuration is `qorpera.coding-command-guest/v3`, containing
+The closed guest configuration is `qorpera.coding-command-guest/v4`, containing
 workerId, vmId (the member's machine), bootId, uid, gid, workspacePath, homePath,
 cachePath, outputRoot and resourceProfile. The paths must be the session's
-layout; nothing else is accepted. The profile has maxTimeoutMs, memoryBytes, tasksMax,
-cpuQuotaPercent and maxLogBytes. Values are explicit and pinned; no model
-argument can raise them. Host admission must ensure memory/CPU fit the VM and
-company reservation. The command timeout cannot exceed the profile. Changing a
-profile requires a reviewed configuration/activation, not editing a live unit.
+layout; nothing else is accepted. The profile has only maxLogBytes, a storage
+bound on one command's retained output, explicit and pinned; no model argument
+can raise it. Changing it requires a reviewed configuration/activation, not
+editing a live unit.
 
 Expected NAS projections are `/workspace/<workerId>/repository`,
 `/workspace/<workerId>/home`, `/workspace/<workerId>/cache`, and protected
