@@ -552,7 +552,7 @@ describe("agent todo and worker tools", () => {
 			const sent = await f.boundary.invoke("c1", "qorpera", "manage_worker", coding);
 			expect(body(sent).status).toBe("ok");
 			const request = (
-				f.call.mock.calls.findLast(([method]) => method === "qorpera_manage_agent_worker")?.[1] as {
+				f.call.mock.calls.filter(([method]) => method === "qorpera_manage_agent_worker").at(-1)?.[1] as {
 					p_request: Record<string, unknown>;
 				}
 			).p_request;
