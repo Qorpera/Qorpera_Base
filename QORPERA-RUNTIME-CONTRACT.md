@@ -3691,9 +3691,10 @@ owner role. Model use is not billed here: it follows the 2026-09-28 amendment
 7. **At zero.** A company's hours left are what its sources hold minus what
    it owes. While it has none:
    - No machine of the company starts or wakes (a run created before the
-     company ran out keeps its run box), no run of the company is created,
-     and agents' requests for machines wait. A coding turn starts only from a
-     run, so it waits with that run. The work waits before a
+     company ran out gets or keeps its run box), no run of the company is
+     created, and agents' requests for machines wait. A new coding turn,
+     whether a run or the session's owner starts it, waits like other new
+     work, with the same stated reason. The work waits before a
      run is created, with a stated reason that its agents and members see,
      and starts by itself, in the order it arrived, once the company has hours
      left again. Waiting for hours never fails work by age: 7.4's one-day
@@ -3702,10 +3703,12 @@ owner role. Model use is not billed here: it follows the 2026-09-28 amendment
    - Work already running may finish for at most one hour. Then its runs end
      as failed with the stated reason "out of computer hours", shown in their
      conversations and never retried by themselves, and its machines are
-     stopped with their disks kept, always-on machines included; a coding
-     machine's running commands end as when it sleeps. Nothing else changes:
-     no routine is paused and no worker is cancelled; their next work waits
-     for hours like any other.
+     stopped with their disks kept, always-on machines included. A coding turn
+     cut off then ends "out of computer hours", and its machine's running
+     commands end as when it sleeps. A worker whose run is ended reports "out
+     of computer hours" to its parent. Nothing else changes: no routine is
+     paused and no worker is cancelled beyond that; their next work waits for
+     hours like any other.
    - Time used while the company has no hours is owed. Owed time is paid in
      the order of item 4 from the next hours that arrive (free hours, then
      founders' plans evenly, then credits). Owed time of a deleted company is

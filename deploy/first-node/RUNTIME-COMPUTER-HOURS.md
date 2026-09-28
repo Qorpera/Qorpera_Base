@@ -37,8 +37,8 @@ Chosen on the page (recommended option each time):
 
 Carried over, not a new founder decision: while any founder of a company has the internal account
 entitlement (`qorpera_account_entitlements.plan_key = 'internal'`), the company is complimentary.
-Its time is measured and paid by a `complimentary` source naming that founder; it is never charged
-and never waits. Founder plans are billing records, never new `plan_key` values: the entitlement
+Its time is measured and paid by a `complimentary` source naming the first internal founder in the
+founder list; it is never charged and never waits. Founder plans are billing records, never new `plan_key` values: the entitlement
 table keeps only `freemium` and `internal`, and the client refuses other keys.
 
 ## What counts
@@ -245,18 +245,24 @@ draws are discarded, and free hours, owed time and every draw count from then.
   fails by age.
 - Running work may finish for at most 1 hour at zero. Then its runs end as `failed` with the
   reason "out of computer hours" through the system path that ends a runner attempt, with no
-  automatic retry. That reason is shown on the run's card in place of the generic review text. It
-  is not a member's Stop: no routine is paused and no worker cancelled. Its machines, always-on
-  ones included, are stopped with their disks kept; a coding machine's running commands end as
-  when it sleeps.
-- A coding turn starts only from a run, so it waits with that run.
+  automatic retry. The job's `last_error` carries a stable code for it, and the web's failed-run
+  card (`packages/web/src/ui/run-failure.ts`) learns to show it as "Out of computer hours" rather
+  than an internal error or a usage limit. It is not a member's Stop: no routine is paused and no
+  worker cancelled. Its machines, always-on ones included, are stopped with their disks kept. A
+  coding turn cut off then ends "out of computer hours", and its machine's running commands end
+  as when it sleeps. An in-house worker whose run is ended reports "out of computer hours" to its
+  parent instead of the generic "ended without reporting a result".
+- A new coding turn waits like other new work, whether a run starts it or the session's owner
+  answers the session directly (`qorpera_answer_coding_session`, which opens a turn with no run);
+  the hook list includes that path, and the waiting reason shows in the session's thread.
 - It ships switched off, in its own release, with a 30-minute database watch after the cut. It is
   switched on together with live payments and hour notices.
 
 ## Plan & usage (web)
 
 - The company card, seen by every member: hours used this month, by kind; from the live switch
-  also by source, and hours left. Founders also see each founder's share and a "Buy hours" button.
+  also by source, and hours left. From the live switch, founders also see each founder's share
+  and a "Buy hours" button.
 - Your plan, seen only by you: plan, hours used per company, reset date, "Change plan" and
   "Payments and invoices" (Stripe's billing page).
 - Admins, contributors and viewers see the company's hours without names or cards: "Computer
