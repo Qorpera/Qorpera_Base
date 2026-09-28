@@ -1,6 +1,9 @@
 // @vitest-environment jsdom
 
-import type { CloudMemberCompanyFileClient } from "@qorpera/cloud-client/cloud-member-company-editor";
+import {
+	CloudMemberCompanyAccessDenied,
+	type CloudMemberCompanyFileClient,
+} from "@qorpera/cloud-client/cloud-member-company-editor";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CompanyController } from "../src/app/company.ts";
 import { ConversationView } from "../src/app/views/conversation.ts";
@@ -81,6 +84,8 @@ describe("calling a skill from the composer", () => {
 		expect(f.field.getAttribute("aria-controls")).toBe(f.list.id);
 		f.type("Please /");
 		// The list is read once, for this agent's thread: its own skills and the company's.
+		// The adapter is called a step later, as a failed read if it throws.
+		await Promise.resolve();
 		expect(skills).toHaveBeenCalledExactlyOnceWith(staff.id, expect.any(AbortSignal));
 		expect(f.menu.hidden).toBe(false);
 		expect(f.list.getAttribute("aria-busy")).toBe("true");
@@ -96,6 +101,9 @@ describe("calling a skill from the composer", () => {
 		expect(f.field.getAttribute("aria-activedescendant")).toBe(`${f.list.id}-0`);
 		f.type("Please /RE");
 		expect(f.options().map((option) => option.name)).toEqual(["/customer-refund", "/monthly-vat-report"]);
+		// Neither name starts with "re": nothing is highlighted until an arrow key chooses.
+		expect(f.options().some((option) => option.selected)).toBe(false);
+		expect(f.key("ArrowDown").defaultPrevented).toBe(true);
 		expect(f.key("ArrowDown").defaultPrevented).toBe(true);
 		expect(f.options()[1]?.selected).toBe(true);
 		expect(f.field.getAttribute("aria-activedescendant")).toBe(`${f.list.id}-1`);
@@ -173,6 +181,7 @@ describe("calling a skill from the composer", () => {
 	it("colours the names in a restored draft once the list arrives, and offers a group chat the company's", async () => {
 		const skills = vi.fn(async () => SKILLS);
 		const f = setup({ skills }, "Use /triage today");
+		await Promise.resolve();
 		expect(skills).toHaveBeenCalledOnce();
 		await settle();
 		expect(f.view.el.querySelector(".composer-skill")?.textContent).toBe("/triage");
@@ -193,6 +202,7 @@ describe("calling a skill from the composer", () => {
 		field.value = "/";
 		field.setSelectionRange(1, 1);
 		field.dispatchEvent(new Event("input", { bubbles: true }));
+		await Promise.resolve();
 		expect(roomSkills).toHaveBeenCalledExactlyOnceWith(null, expect.any(AbortSignal));
 	});
 
@@ -213,6 +223,7 @@ describe("calling a skill from the composer", () => {
 		vi.advanceTimersByTime(61_000);
 		skills.mockRejectedValueOnce(new Error("Company File unavailable"));
 		f.type("/");
+		await Promise.resolve();
 		expect(skills).toHaveBeenCalledTimes(2);
 		await settle();
 		// The earlier list stays in use while it was being refreshed, and after a failure.
@@ -223,12 +234,13 @@ describe("calling a skill from the composer", () => {
 		vi.advanceTimersByTime(11_000);
 		skills.mockResolvedValueOnce(SKILLS);
 		f.type("/t");
+		await Promise.resolve();
 		expect(skills).toHaveBeenCalledTimes(3);
 		await settle();
 		expect(f.options().map((option) => option.name)).toEqual(["/triage", "/customer-refund", "/monthly-vat-report"]);
 	});
 
-	it("offers a match found only in a description, but Enter sends the text as written", async () => {
+	it("offers a match inside a name or a description, but Enter sends the text as written", async () => {
 		const sendMessage = vi.fn().mockResolvedValue(true);
 		const skills = vi.fn(
 			async (): Promise<SkillSuggestion[]> => [
@@ -253,6 +265,34 @@ describe("calling a skill from the composer", () => {
 		expect(f.options()[0]?.selected).toBe(true);
 		f.key("Enter");
 		expect(f.field.value).toBe("Deploy to /release-checklist ");
+		// A name that only contains the word is not taken either: "/api" is not "/rapid-response".
+		skills.mockResolvedValue([{ name: "rapid-response", description: null, scope: "company" }]);
+		vi.advanceTimersByTime(61_000);
+		sendMessage.mockClear();
+		f.type("Call the /api");
+		await settle();
+		expect(f.options()).toEqual([{ name: "/rapid-response", scope: "Company", selected: false }]);
+		f.key("Enter");
+		expect(sendMessage).toHaveBeenCalledExactlyOnceWith(session.sessionId, "Call the /api", expect.any(AbortSignal));
+	});
+
+	it("treats an adapter that throws at once as a failed read, never as an error in the view", async () => {
+		const skills = vi.fn<NonNullable<WorkspaceActions["skills"]>>(() => {
+			throw new Error("Conversation access changed.");
+		});
+		// A restored draft that names a skill reads the list while the view is built.
+		const f = setup({ skills }, "Use /triage");
+		await settle();
+		expect(skills).toHaveBeenCalledOnce();
+		f.type("/");
+		await settle();
+		expect(f.menu.hidden).toBe(true);
+		expect(skills).toHaveBeenCalledOnce();
+		vi.advanceTimersByTime(11_000);
+		skills.mockResolvedValueOnce(SKILLS);
+		f.type("/t");
+		await settle();
+		expect(f.options().map((option) => option.name)[0]).toBe("/triage");
 	});
 
 	it("does not open inside a name already written, and closes when the field is disabled or replaced", async () => {
@@ -302,7 +342,7 @@ describe("calling a skill from the composer", () => {
 });
 
 describe("reading the skill list", () => {
-	function files(tree: Record<string, string | null>, failing: string[] = []) {
+	function files(tree: Record<string, string | null>, failing: string[] = [], denied: string[] = []) {
 		const entries = Object.keys(tree);
 		const folders = new Set(
 			entries.flatMap((path) =>
@@ -313,7 +353,8 @@ describe("reading the skill list", () => {
 			),
 		);
 		const list = vi.fn(async (path: string) => {
-			if (failing.includes(path)) throw new Error("Company File listing refused");
+			if (failing.includes(path)) throw new Error("Company File is unavailable.");
+			if (denied.includes(path)) throw new CloudMemberCompanyAccessDenied();
 			const children = new Map<string, "file" | "directory">();
 			for (const folder of folders)
 				if (folder.startsWith(`${path}/`) && !folder.slice(path.length + 1).includes("/"))
@@ -361,17 +402,23 @@ describe("reading the skill list", () => {
 		expect(company.every((skill) => skill.scope === "company")).toBe(true);
 	});
 
-	it("offers the company's skills when the agent's folder is closed, and fails when the company's cannot be listed", async () => {
-		const client = files({ "skills/customer-refund/SKILL.md": "---\ndescription: Refund.\n---\n" }, [
-			`agents/${staff.id}/skills`,
-		]);
+	it("offers the company's skills when the agent's folder is closed, and fails on any other failed listing", async () => {
+		const client = files(
+			{ "skills/customer-refund/SKILL.md": "---\ndescription: Refund.\n---\n" },
+			[],
+			[`agents/${staff.id}/skills`],
+		);
 		expect(await loadSkillSuggestions(client, staff.id, new AbortController().signal)).toEqual([
 			{ name: "customer-refund", description: "Refund.", scope: "company" },
 		]);
 		// Never "no skills" for a failed listing: the composer keeps its last list and reads again.
 		await expect(loadSkillSuggestions(files({}, ["skills"]), staff.id, new AbortController().signal)).rejects.toThrow(
-			"Company File listing refused",
+			"Company File is unavailable.",
 		);
+		// An outage of the agent's folder is not a closed folder: the agent's skills are not dropped quietly.
+		await expect(
+			loadSkillSuggestions(files({}, [`agents/${staff.id}/skills`]), staff.id, new AbortController().signal),
+		).rejects.toThrow("Company File is unavailable.");
 	});
 
 	it("lists every page on one snapshot, and starts again when the company changes in between", async () => {

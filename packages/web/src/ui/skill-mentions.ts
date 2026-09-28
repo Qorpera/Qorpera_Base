@@ -14,8 +14,9 @@ const TOKEN = /(^|\s)\/([a-z0-9]+(?:-[a-z0-9]+)*)(?=$|[\s.,;:!?)])/g;
 /** A draft that may name a skill: its list is read so the name can be coloured. */
 const MAY_NAME_SKILL = /(?:^|\s)\/[a-z0-9]/;
 const SHOWN = 8;
-/** A list older than this is read again when the member next types "/". */
-const FRESH_MS = 60_000;
+/** A list older than this is read again when the member next types "/" (the company's shared
+ * list answers most of those reads; together they keep a list under a minute old). */
+const FRESH_MS = 20_000;
 /** After a failed read, the next "/" tries again only after this long. */
 const RETRY_MS = 10_000;
 let menus = 0;
@@ -55,7 +56,7 @@ export class SkillMentions {
 	 * the caret stays in that name. */
 	#dismissed: number | undefined;
 	#options: Ranked[] = [];
-	/** The highlighted option; -1 when only descriptions match, so Enter still sends. */
+	/** The highlighted option; -1 when no name starts with what was typed, so Enter still sends. */
 	#active = -1;
 	/** What the menu shows now: the same list and query draw nothing new. */
 	#drawn: { skills: readonly SkillSuggestion[] | undefined; query: string; loading: boolean } | undefined;
@@ -154,8 +155,8 @@ export class SkillMentions {
 			this.#select((from + (matchesKey(event, "next") ? 1 : -1) + count) % count);
 			return consume();
 		}
-		// Enter and Tab pick only a highlighted skill: a "/word" that merely appears in some
-		// description is the member's own text, and Enter sends it as written.
+		// Enter and Tab pick only a highlighted skill: a "/word" that merely appears inside some
+		// name or description is the member's own text, and Enter sends it as written.
 		const active = this.#options[this.#active];
 		if (active && (matchesKey(event, "accept") || matchesKey(event, "tab")) && !event.shiftKey) {
 			this.#accept(active.skill);
@@ -183,7 +184,10 @@ export class SkillMentions {
 		)
 			return this.#loading ?? Promise.resolve();
 		// An older list stays in use while the new one is read, and after a failed read.
-		this.#loading = this.#load(this.#signal)
+		// An adapter that throws at once is a failed read like any other, never an error in the view.
+		const load = this.#load;
+		this.#loading = Promise.resolve()
+			.then(() => load(this.#signal))
 			.then(
 				(skills) => {
 					this.#skills = skills;
@@ -298,8 +302,9 @@ export class SkillMentions {
 			this.#open();
 			return;
 		}
-		// A name that matches is highlighted, ready for Enter; a match in a description only is offered.
-		this.#active = (this.#options[0]?.rank ?? 2) < 2 ? 0 : -1;
+		// A name that starts with what was typed is highlighted, ready for Enter. Other matches are
+		// only offered: "/api" at the end of a message is not "/rapid-response" unless chosen.
+		this.#active = this.#options[0]?.rank === 0 ? 0 : -1;
 		const owner = this.#ownerName() ?? t("Agent");
 		this.#list.replaceChildren(
 			...this.#options.map(({ skill }, index) =>

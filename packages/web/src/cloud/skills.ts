@@ -1,4 +1,7 @@
-import type { CloudMemberCompanyFileClient } from "@qorpera/cloud-client/cloud-member-company-editor";
+import {
+	CloudMemberCompanyAccessDenied,
+	type CloudMemberCompanyFileClient,
+} from "@qorpera/cloud-client/cloud-member-company-editor";
 import { isCloudSkillName, parseCloudSkillFile } from "@qorpera/cloud-client/cloud-skill-file";
 
 /** A skill the composer can offer after "/" (contract 15.2): the company library
@@ -76,8 +79,9 @@ export async function loadSkillSuggestions(
 			library(files, root, signal).catch((error: unknown) => {
 				signal.throwIfAborted();
 				// The agent's own folder may be closed to this member: its skills are then not offered.
-				// The company's library failing is a failure: the composer keeps its last list and tries again.
-				if (scope === "agent") return [];
+				// Any other failure, and the company's library failing at all, is a failure: the composer
+				// keeps its last list and tries again.
+				if (scope === "agent" && error instanceof CloudMemberCompanyAccessDenied) return [];
 				throw error;
 			}),
 		),
@@ -109,11 +113,12 @@ export async function loadSkillSuggestions(
 	});
 }
 
-/** How long a list read in one conversation serves the company's other conversations. */
-const SHARED_FRESH_MS = 60_000;
+/** How long a list read in one conversation serves the company's other conversations. With
+ * the composer's own 20 s, a skill saved in the Company File shows within a minute. */
+const SHARED_FRESH_MS = 40_000;
 
 /** The skill lists of one company, shared by its conversations: a list read in one thread
- * serves the others for a minute, and threads opened together share one read. A failed read
+ * serves the others for a while, and threads opened together share one read. A failed read
  * is forgotten at once, so the next "/" reads again. */
 export class SkillLists {
 	readonly #lists = new Map<string, { at: number; list: Promise<SkillSuggestion[]> }>();

@@ -4,6 +4,7 @@
 
 ### Added
 
+- `CloudMemberCompanyAccessDenied`: the member Company File client's refusal (401/403) is now its own error class, with the same message, so a caller can tell a closed folder from an outage.
 - Added `cloud-skill-file`: the one SKILL.md parser and writer (name rule, YAML front matter with `description`, body, line endings kept) shared by the runtime skill tools and the web client.
 - `CloudCompanyComputerStart.withdraw(generation, requestId, signal)` takes back the member's own idle wake request (`qorpera_withdraw_runtime_office_wake`). It never cancels the wake or a first start; it lets idle stop the computer one minute after it is up once every requester has withdrawn and nothing used it.
 

@@ -792,7 +792,7 @@ export function mountApplication(
 							sendMessage: (id, text, signal) => controller.sendPrompt(id, text, signal),
 							// One read serves the company's threads for a minute, so it lives with the company,
 							// not with this thread; a thread that closes simply stops listening.
-							skills: (agentId) => {
+							skills: async (agentId) => {
 								checkConversationAccess();
 								const lists = skillLists.get(controller) ?? new SkillLists();
 								skillLists.set(controller, lists);
