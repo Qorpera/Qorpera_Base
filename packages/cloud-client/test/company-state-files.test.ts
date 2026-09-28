@@ -1,12 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
 	type AgentFile,
+	COMPANY_STATE_SEEDED_PATHS,
 	type CompanyStateFileResult,
 	canonicalCompanyStateInstant,
 	companyPathKey,
 	companyStateName,
 	companyStatePath,
 	companyStatePathProblems,
+	companyStateSeedTree,
 	companyStateTimeZoneProblem,
 	companyStateValue,
 	freeCompanyStateName,
@@ -1004,5 +1006,33 @@ describe("setCompanyStateSettings", () => {
 		const text = `---\nid: ${ANNA}\nstatus: active\n---\nx\n`;
 		const changed = setCompanyStateSettings(text, { status: "paused\nkind: co-founder", runs: 3 });
 		expect(changed).toBe(`---\nid: ${ANNA}\nstatus: "paused\\nkind: co-founder"\nruns: 3\n---\nx\n`);
+	});
+});
+
+describe("companyStateSeedTree", () => {
+	it("seeds the tree of contract 5.6, parents first, with files that parse", () => {
+		const tree = companyStateSeedTree({ companyName: "Nordlys Studio", cofounderId: ANNA });
+		const paths = tree.map((entry) => entry.path);
+		for (const [index, entry] of tree.entries()) {
+			const parent = entry.path.split("/").slice(0, -1).join("/");
+			if (parent) expect(paths.slice(0, index)).toContain(parent);
+			expect(companyStatePathProblems(entry.path, entry.kind === "folder")).toEqual([]);
+			if (entry.kind === "file") expect(parseCompanyStateFile(entry.path, entry.text ?? "")?.ok).toBe(true);
+		}
+		for (const seeded of COMPANY_STATE_SEEDED_PATHS) expect(paths).toContain(seeded);
+		expect(ok("vision/vision.md", tree.find((entry) => entry.path === "vision/vision.md")?.text ?? "")).toEqual({
+			kind: "vision",
+			name: "Nordlys Studio",
+		});
+		expect(
+			ok(
+				"agents/co-founder/agent.md",
+				tree.find((entry) => entry.path === "agents/co-founder/agent.md")?.text ?? "",
+			),
+		).toMatchObject({ id: ANNA, agentKind: "co-founder", status: "active", colour: "blue", figure: "crown" });
+		expect(ok("agents/sections.md", tree.find((entry) => entry.path === "agents/sections.md")?.text ?? "")).toEqual({
+			kind: "sections",
+			sections: [],
+		});
 	});
 });

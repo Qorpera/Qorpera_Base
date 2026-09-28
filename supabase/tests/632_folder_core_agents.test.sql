@@ -343,24 +343,24 @@ begin
 	r := pg_temp.commit(v, 'auth-private-other', jsonb_build_array(jsonb_build_object('op','write','path','shared/q.txt','file',a)));
 	perform pg_temp.expect(r, 1, 'denied', 'denied');
 
-	-- rules/.
+	-- rules/. Ordinary files there (a rule file, rules/*.md, needs its parse since F2-1): the authority is the same.
 	r := pg_temp.commit(pg_temp.member(1), 'rules-owner-1', jsonb_build_array(jsonb_build_object('op','mkdir','path','rules'),
-		jsonb_build_object('op','write','path','rules/tone.md','file',a)));
+		jsonb_build_object('op','write','path','rules/tone.txt','file',a)));
 	perform pg_temp.expect(r, 1, 'saved'); perform pg_temp.expect(r, 2, 'saved');
-	if (pg_temp.read('rules/tone.md', pg_temp.member(3)) ->> 'found')::boolean is not true then raise exception 'A viewer reads rules/'; end if;
+	if (pg_temp.read('rules/tone.txt', pg_temp.member(3)) ->> 'found')::boolean is not true then raise exception 'A viewer reads rules/'; end if;
 	perform pg_temp.expect(pg_temp.commit(pg_temp.member(5), 'rules-admin-1', jsonb_build_array(jsonb_build_object('op','write',
-		'path','rules/admin.md','file',a))), 1, 'saved');
-	r := pg_temp.commit(pg_temp.member(2), 'rules-contrib-1', jsonb_build_array(jsonb_build_object('op','write','path','rules/mine.md','file',a),
+		'path','rules/admin.txt','file',a))), 1, 'saved');
+	r := pg_temp.commit(pg_temp.member(2), 'rules-contrib-1', jsonb_build_array(jsonb_build_object('op','write','path','rules/mine.txt','file',a),
 		jsonb_build_object('op','move','from','shared/p.txt','to','rules/p.txt',
 			'expectedVersion',pg_temp.read('shared/p.txt') -> 'entry' ->> 'version')));
 	perform pg_temp.expect(r, 1, 'denied', 'denied'); perform pg_temp.expect(r, 2, 'denied', 'denied');
 	v := pg_temp.run('human', c_member);
-	r := pg_temp.commit(v, 'rules-agent-1', jsonb_build_array(jsonb_build_object('op','write','path','rules/agent.md','file',a)));
+	r := pg_temp.commit(v, 'rules-agent-1', jsonb_build_array(jsonb_build_object('op','write','path','rules/agent.txt','file',a)));
 	perform pg_temp.expect(r, 1, 'denied', 'denied');
-	if (pg_temp.read('rules/tone.md', v) ->> 'found')::boolean is not true then raise exception 'An agent reads rules/'; end if;
+	if (pg_temp.read('rules/tone.txt', v) ->> 'found')::boolean is not true then raise exception 'An agent reads rules/'; end if;
 	perform pg_temp.fx('update public.qorpera_company_path_grants set revoked_at = clock_timestamp()
 		where principal_kind = ''staff_agent'' and principal_id = ''63200000-0000-4000-8000-0000000000a1''');
-	if (pg_temp.read('rules/tone.md', v) ->> 'found')::boolean is not true or (pg_temp.read('shared/p.txt', v) ->> 'found')::boolean then
+	if (pg_temp.read('rules/tone.txt', v) ->> 'found')::boolean is not true or (pg_temp.read('shared/p.txt', v) ->> 'found')::boolean then
 		raise exception 'Without its root grant an agent still reads rules/ and nothing shared'; end if;
 	perform pg_temp.fx('update public.qorpera_company_path_grants set revoked_at = null
 		where principal_kind = ''staff_agent'' and principal_id = ''63200000-0000-4000-8000-0000000000a1''');

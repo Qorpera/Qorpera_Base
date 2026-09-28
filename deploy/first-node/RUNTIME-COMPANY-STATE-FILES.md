@@ -1,7 +1,8 @@
 # Company state files
 
-Status: design, with the shared parser built (F2-0). Nothing reads or writes these files in
-production yet. This is workstream F2 of the Rebuild Map: company state moves out of database
+Status: the shared parser is built (F2-0, #421). The vision and agents are indexed in the database
+(F2-1, migration 20260929020000), for `folder-v2` companies only, so nothing reads or writes these
+files in production yet. This is workstream F2 of the Rebuild Map: company state moves out of database
 rows into the company folder of contract 5.6. It defines the fixed format of each structured
 file, the database index each one feeds, how a refused file is reported, and what the runtime
 and the web app read. The storage core that saves the files and calls these checks is
@@ -475,7 +476,7 @@ of the body, for readers that should not reach the storage server.
 | Kind | Index | Keeps | Stays runtime state |
 | --- | --- | --- | --- |
 | vision | new `qorpera_folder_company_index` row | name, vision version, `vision_seeded`; `qorpera_profiles.name` is copied by the follow-up queue | — |
-| agent | `qorpera_profile_staff` | every setting, the instructions (charter), handle, path, path version; retired on folder delete | lifecycle (setup), execution authority |
+| agent | `qorpera_profile_staff` (folder columns `folder_environment_id`, `folder_path`: the stored path of its `agent.md`, `folder_path_version`, `folder_commit_id`, `folder_retired_at`) | name, role, instructions (charter), colour (`native` when none), figure, status; the Co-Founder's `template_id = 'co-founder'` and its `qorpera_company_cofounders` row (no formation) | lifecycle (setup), execution authority, `reasoning_policy`; the file's `model` and `effort` stay in the parse until the runtime reads them (F2-1b) |
 | sections | sidebar sections and placements (+ #370's room placements) | section order, members in order | member pins and hidden |
 | group | `qorpera_company_rooms`, room members | name, subtitle, purpose copy, members | conversation, drafts, mentions, session model |
 | connection | `qorpera_cloud_secrets` descriptor columns | path, path version, purpose copy | secret versions, grants, audit |
@@ -487,17 +488,26 @@ of the body, for readers that should not reach the storage server.
 - **Moves** repoint index rows without re-parsing. An agent rename carries its routines and
   todos along (core §5).
 - **Deletes** mark rows retired at the last version. Runs and conversations that reference them
-  keep working. **Restores** re-parse and bring them back.
+  keep working. **Restores** re-parse and bring them back. An agent's row is retired with
+  `folder_retired_at` and `archived`, never `deleted_at`: `qorpera_protect_deleted_staff` freezes a
+  row with `deleted_at` for good, which would make a restore impossible.
+- **The roster's triggers** stay as they are and run for folder-v2 rows too: the agent's thread,
+  the default grants, office access, execution access, connector grants, secret revocation on
+  archive. The index writer sets only the columns that change, in one statement, so a trigger that
+  runs on a column fires for real changes only, and every change bumps `version`, which pins a
+  running agent's instructions (`qorpera_record_staff_operation`). A new id that another change set
+  took first aborts this change set (23505); its retry is refused by `decide`.
 - **Rebuild:** a job lists every structured path, reads the bytes and parses them with the
   shared parser. It then calls `qorpera_folder_index_rebuild(env, kind, rows)`, which fixes rows
   under the same locks as a commit. In dry-run mode it is the daily drift check, reported to
   operators only. Each stored parse records `COMPANY_STATE_PARSER_VERSION`, so drift from a rule
   change is told apart from drift in the data.
-- **Follow-ups** (core §5 "After the commit"):
-  - a hire's session, grants and first run;
-  - an archive's paused routines and revoked secret grants;
+- **Follow-ups** (core §5 "After the commit"), which need C2's queue:
+  - a hire's first run (its thread, grants and execution access come from the roster's
+    triggers today);
+  - an archive's paused routines and removed execution access (no trigger does these);
   - a cancelled todo's workers;
-  - the company name copy.
+  - the company name copy to `qorpera_profiles.name`.
 
   Consumers that must react at once read the index directly: wake admission, routine firing,
   the secret broker, coding admission, screens and run authority.
@@ -590,12 +600,16 @@ claims by kind then key (F2). All nine come before paths, objects, admission and
 ## 8. Build order
 
 1. **F2-0** (this): this document and the shared parser, with tests. No SQL; inert.
-2. **F2-1** vision and agents:
-   - the pattern table, the company index, and the staff index for `folder-v2`;
-   - the Co-Founder and naming rules, and the seeding templates;
-   - hire, rename, archive and delete, with their follow-ups;
-   - the context composer;
-   - the agent-folder helper for memory and skills.
+2. **F2-1** vision and agents, in the database (migration 20260929020000):
+   - the pattern table, the path checks, the stored parse, the company index, and the staff
+     index for `folder-v2`;
+   - the seeded-path, Co-Founder, lone-file, kind-change and copy refusals, and the review
+     class;
+   - hire, edit, archive, rename, delete and restore;
+   - the seed tree for C2's creation commit (`companyStateSeedTree`, §9).
+
+   **F2-1b** follows: the follow-ups on C2's queue, the context composer reading the vision and
+   `agent.md`, and the agent-folder helper for memory and skills.
 3. **F2-2** group chats and sections (replaces #370's tables and `organize_sidebar` for new
    companies).
 4. **F2-3** connections (the vault writes the file).
@@ -607,3 +621,28 @@ claims by kind then key (F2). All nine come before paths, objects, admission and
 Each step comes after F1's C1 (C1b brings the call sites), is `folder-v2` only, rides the release
 train, and gets an independent exact-head review. The web screens for each kind follow with
 core step C4.
+
+## 9. The seeded tree
+
+`companyStateSeedTree({companyName, cofounderId})` lists what a new company's folder holds, parents
+first, and C2's creation commit writes it in one change set as the platform:
+
+- `vision/` and `vision/vision.md` (the name, then the four seeded headings);
+- `agents/` and `agents/sections.md` (no sections);
+- `agents/co-founder/` with `agent.md` (`kind: co-founder`, `status: active`, colour blue,
+  figure crown, and `COMPANY_STATE_COFOUNDER_INSTRUCTIONS`, whose first job is the vision), and
+  its empty `memory/`, `skills/`, `routines/` and `todos/`;
+- `agents/groups/`, `connections/`, `skills/` and `rules/`.
+
+The creation commit's `agent.md` with `kind: co-founder` also records the Co-Founder
+(`qorpera_company_cofounders`), since no Co-Founder is recorded yet and the actor is the platform.
+After that, only that id has the kind. For folder-v2 companies the creation path must not also run
+the old chain (`qorpera_seed_company_cofounder`, the snapshot bootstrap): that would add a second
+Co-Founder row and a second first run (C2; #444 comment 5872662909).
+
+Found while building F2-1, for F1 (C1c): `qorpera_put_profile_staff` and
+`qorpera_delete_profile_staff` still write folder-v2 roster rows directly, since their guards look
+at snapshot-v1 columns, and `qorpera_ensure_default_agent_read_grants` (the roster's default-grant
+trigger) inserts grants outside the authority journal and the rank-6 lock of C1b-2. A folder-v2
+index row should change only through its file.
+
