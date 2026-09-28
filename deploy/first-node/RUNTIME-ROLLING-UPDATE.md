@@ -90,10 +90,12 @@ the same ones today's cut runs, one node at a time.
    - `agent apply N+1`. A is quiet, so no role needs `--defer`.
    - Roll the office provider and coding executor if the release changes them. Machines already
      running there keep running (decision 4) and take new guest software at their next start.
-   - Rebuild the fast host, then declare its orchestrator N+1 by hand
-     (`qorpera_declare_runner_orchestrator_bundle`). Change 5's rebuild script does this itself with
-     `EXEC_RUNTIME_BUNDLE_SHA256=<N+1>` once it is merged. The rebuild's re-registration clears any
-     older declaration.
+   - Rebuild the fast host with `EXEC_RUNTIME_BUNDLE_SHA256=<N+1>` (`rebuild-exec-host.sh`,
+     change 5, #434). Its re-registration clears the older declaration, and the script then
+     declares N+1. Without the variable, or before #434, declare it by hand
+     (`qorpera_declare_runner_orchestrator_bundle`); until then it claims runs of any bundle, which
+     is harmless only while A is switched off. The re-registration keeps the host's dispatch role
+     (change 3).
    - Re-enrol A's inventory digest if the policy still pins the fast host's image (change 6
      removes that step).
    - Declare **every** active orchestrator on A as N+1, including the fresh-VM path.
@@ -113,8 +115,9 @@ the same ones today's cut runs, one node at a time.
    - A sponsorship request approved later, or a retried run, also stays on N.
 
    Decide each remaining input as today's "unclaimed input" check does. Never relabel one.
-8. **Empty and update node B** as in steps 4–5 with N+1. B's fast-host rebuild clears B's
-   declarations, so declare all of B's orchestrators as N+1 before returning it.
+8. **Empty and update node B** as in steps 4–5 with N+1. B's fast host is rebuilt with
+   `EXEC_RUNTIME_BUNDLE_SHA256=<N+1>`; declare B's other orchestrators as N+1 too before returning
+   it.
 9. **Finish.**
    - Clear every declaration (`… , null`).
    - Check that `qorpera_runtime_bundle_roll_status()` shows only N+1 and `undeclaredLive` holds
