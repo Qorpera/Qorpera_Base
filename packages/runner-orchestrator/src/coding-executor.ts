@@ -132,9 +132,9 @@ export interface CodingExecutorHost {
 	/** The end of a turn, whatever its outcome: nothing more starts, publishes
 	 * or seeds for it. The session stays attached for the keeper. */
 	endTurn(claim: CodingSessionClaim): void;
-	/** Quiesce guest commands, export the submitted commit as a bundle, validate
-	 * and push it through the broker and create or verify the draft PR. Keeps its
-	 * own effect journals across restarts. */
+	/** Export the submitted commit as a bundle while the session's commands keep
+	 * running, validate and push it through the broker and create or verify the
+	 * draft PR. Keeps its own effect journals across restarts. */
 	publish(
 		claim: CodingSessionClaim,
 		submission: Extract<CodingSubmission, { kind: "finish" }>,

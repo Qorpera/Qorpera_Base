@@ -55,6 +55,8 @@
       "maxLogBytes"
     ],
     "observationPath": "/run/qorpera-coding/observation.json",
+    "observationSessionPath": "/run/qorpera-coding/observation-<workerId>.json",
+    "observationMaxBytes": 65536,
     "observedCommandsPerSession": 64,
     "commandPreviewBytes": 300
   },

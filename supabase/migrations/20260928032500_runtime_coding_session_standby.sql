@@ -44,6 +44,9 @@ alter table public.qorpera_coding_sessions
 	add column attached_machine_id uuid references public.qorpera_coding_machines(id) on delete restrict,
 	add column attachment_token uuid,
 	add column attachment_until timestamptz,
+	-- The turn the attachment was last taken under (only a turn's own attach moves it) and when.
+	add column attachment_turn integer,
+	add column attached_at timestamptz,
 	-- The executor's last look inside the machine: the session's commands still running,
 	-- each {commandId, turn, command} (the command's first 300 bytes), and when they last used the processor.
 	add column running_commands jsonb not null default '[]'::jsonb
@@ -51,8 +54,8 @@ alter table public.qorpera_coding_sessions
 	add column observed_at timestamptz,
 	add column busy_at timestamptz,
 	add constraint qorpera_coding_sessions_archived check ((archived_at is null) = (archived_by is null)),
-	add constraint qorpera_coding_sessions_attachment check ((attached_machine_id is null) = (attachment_token is null)
-		and (attachment_token is null) = (attachment_until is null));
+	add constraint qorpera_coding_sessions_attachment check (num_nulls(attached_machine_id, attachment_token, attachment_until,
+		attachment_turn, attached_at) in (0, 5));
 create index qorpera_coding_sessions_attached on public.qorpera_coding_sessions (attached_machine_id) where attached_machine_id is not null;
 create index qorpera_coding_sessions_open on public.qorpera_coding_sessions (environment_id, updated_at) where archived_at is null;
 
@@ -73,7 +76,8 @@ update public.qorpera_coding_executors set machine_remove_after_seconds = 600 wh
 -- Internal: the caller holds the worker (qorpera_lock_coding_worker, or the
 -- agent's todo and worker). A turn still working is cancelled first. The
 -- attachment ends now, so the executor's next pass detaches the session.
-create function public.qorpera_archive_coding_worker(p_worker public.qorpera_runtime_workers, p_by text, p_run_id uuid, p_user_id uuid)
+create function public.qorpera_archive_coding_worker(p_worker public.qorpera_runtime_workers, p_by text, p_run_id uuid, p_user_id uuid,
+	p_client_request_id uuid default null)
 returns boolean language plpgsql volatile security definer set search_path = '' as $$
 begin
 	if p_worker.species <> 'coding' or p_by not in ('member','agent','kernel') then
@@ -84,7 +88,7 @@ begin
 	where worker_id = p_worker.id and archived_at is null;
 	if not found then return false; end if;
 	perform public.qorpera_coding_event(p_worker.id, p_worker.sequence, 'step', 'kernel',
-		jsonb_build_object('text', 'Archived', 'archived', true, 'by', p_by, 'userId', p_user_id));
+		jsonb_build_object('text', 'Archived', 'archived', true, 'by', p_by, 'userId', p_user_id, 'clientRequestId', p_client_request_id));
 	return true;
 end
 $$;
@@ -97,7 +101,7 @@ begin
 	if p_client_request_id is null then raise exception 'Coding session archive is invalid' using errcode = '22023'; end if;
 	v_worker := public.qorpera_coding_session_owner_row(p_worker_id);
 	v_worker := public.qorpera_lock_coding_worker(v_worker.id);
-	perform public.qorpera_archive_coding_worker(v_worker, 'member', null, auth.uid());
+	perform public.qorpera_archive_coding_worker(v_worker, 'member', null, auth.uid(), p_client_request_id);
 	select * into v_worker from public.qorpera_runtime_workers where id = v_worker.id;
 	select * into v_session from public.qorpera_coding_sessions where worker_id = v_worker.id;
 	return public.qorpera_coding_session_view(v_session, v_worker);
@@ -123,7 +127,13 @@ begin
 	loop
 		-- The todo and worker first, as every other writer of a coding worker.
 		v_worker := public.qorpera_lock_coding_worker(v_candidate.worker_id);
-		if v_worker.state <> 'active' and public.qorpera_archive_coding_worker(v_worker, 'kernel', null, null) then
+		-- Still quiet once held: a follow-up or a busy command in the meantime keeps it open.
+		if v_worker.state <> 'active' and exists (select 1 from public.qorpera_coding_sessions session
+				join public.qorpera_coding_executors executor on executor.environment_id = session.environment_id and executor.owner = p_owner
+				where session.worker_id = v_worker.id and session.archived_at is null
+					and greatest(session.updated_at, coalesce(session.busy_at, session.updated_at))
+						< clock_timestamp() - make_interval(secs => executor.session_archive_after_seconds))
+			and public.qorpera_archive_coding_worker(v_worker, 'kernel', null, null) then
 			v_count := v_count + 1; end if;
 	end loop;
 	return v_count;
@@ -149,6 +159,14 @@ select pg_temp.standby_patch('public.qorpera_open_coding_turn(public.qorpera_run
 		perform public.qorpera_coding_event(p_worker.id, p_worker.sequence, 'step', 'kernel', jsonb_build_object('text', 'Reopened', 'reopened', true));
 	end if;$new$);
 
+-- The owner's answer shows the session as the turn it opened left it: reopened, not archived.
+select pg_temp.standby_patch('public.qorpera_answer_coding_session(uuid,text,uuid)',
+	$old$	v_todo := public.qorpera_touch_agent_todo(v_worker.todo_id, null);
+	return public.qorpera_coding_session_view(v_session, v_worker);$old$,
+	$new$	v_todo := public.qorpera_touch_agent_todo(v_worker.todo_id, null);
+	select * into strict v_session from public.qorpera_coding_sessions where worker_id = v_worker.id;
+	return public.qorpera_coding_session_view(v_session, v_worker);$new$);
+
 -- The agent archives a coding session with manage_worker action "archive".
 select pg_temp.standby_patch('public.qorpera_manage_agent_worker(jsonb,jsonb)',
 	$old$		or v_action not in ('status','dispatch','followup','cancel','decide') then$old$,
@@ -167,16 +185,22 @@ select pg_temp.standby_patch('public.qorpera_manage_agent_worker(jsonb,jsonb)',
 -- 3. The attachment
 -- ---------------------------------------------------------------------------
 -- The turn that has installed its session on the member's machine records the
--- attachment, under the same run authority as every other effect of the turn.
--- The same machine with a live attachment keeps its token (a new turn of a
--- session standing by); otherwise a new token starts a new generation, and the
--- guest stops whatever an earlier generation left before it takes it.
+-- attachment, under the same run authority as every other effect of the turn,
+-- and it becomes this turn's. The attachment keeps its token (its generation,
+-- and with it whatever the session left running) only on the same machine,
+-- while it is live, and while the guest still holds a live lease of it
+-- (p_guest_generation, the digest of the token the guest's lease names, read by
+-- the executor just before). Otherwise a new token starts a new generation: the
+-- guest stops whatever an earlier one left before it takes it, and the
+-- commands last seen running are recorded as stopped.
 create function public.qorpera_attach_coding_session(p_worker_id uuid, p_lease_token uuid, p_binding_text text, p_storage jsonb,
-	p_machine_id_sha256 text)
+	p_machine_id_sha256 text, p_guest_generation text)
 returns jsonb language plpgsql security definer set search_path = '' as $$
 declare v_admission jsonb; v_session public.qorpera_coding_sessions%rowtype; v_worker public.qorpera_runtime_workers%rowtype;
 	v_machine_id uuid; v_token uuid;
 begin
+	if p_guest_generation is not null and p_guest_generation !~ '^[0-9a-f]{64}$' then
+		raise exception 'Coding attachment input invalid' using errcode = '22023'; end if;
 	v_admission := public.qorpera_authorize_coding_machine_run(p_worker_id, p_lease_token, p_binding_text, p_storage, p_machine_id_sha256);
 	if v_admission ->> 'schema' is distinct from 'qorpera.coding-machine-admission/v1' then return v_admission; end if;
 	v_machine_id := (v_admission ->> 'machineId')::uuid;
@@ -187,14 +211,39 @@ begin
 	if v_session.attached_machine_id is distinct from v_machine_id and v_session.attachment_until > clock_timestamp() then
 		raise exception 'Coding session is attached to another machine' using errcode = '42501'; end if;
 	v_token := case when v_session.attached_machine_id = v_machine_id and v_session.attachment_until > clock_timestamp()
+			and p_guest_generation = encode(extensions.digest(convert_to(v_session.attachment_token::text,'utf8'),'sha256'),'hex')
 		then v_session.attachment_token else extensions.gen_random_uuid() end;
+	if v_token is distinct from v_session.attachment_token and jsonb_array_length(v_session.running_commands) > 0 then
+		perform public.qorpera_coding_event(v_worker.id, v_worker.sequence, 'step', 'executor',
+			public.qorpera_coding_stopped_event('EXPIRED', v_session.running_commands));
+	end if;
 	update public.qorpera_coding_sessions set attached_machine_id = v_machine_id, attachment_token = v_token,
-		attachment_until = clock_timestamp() + interval '60 seconds'
+		attachment_until = clock_timestamp() + interval '60 seconds', attachment_turn = v_worker.sequence, attached_at = clock_timestamp(),
+		running_commands = case when v_token is distinct from v_session.attachment_token then '[]'::jsonb else running_commands end
 	where worker_id = v_worker.id returning * into v_session;
 	return jsonb_build_object('schema','qorpera.coding-attachment/v1','state','attached','workerId',v_worker.id,'machineId',v_machine_id,
 		'attachmentToken',v_token,'validForMs',59000,
 		'turn',jsonb_build_object('sequence',v_worker.sequence,'turnId',public.qorpera_coding_turn_id(v_worker.id, v_worker.sequence),'open',true));
 end
+$$;
+
+-- Internal: the thread's and the next turn's record of commands an attachment's
+-- end stopped. At most 32 are named; the rest are counted.
+create function public.qorpera_coding_stopped_event(p_reason text, p_stopped jsonb)
+returns jsonb language sql immutable set search_path = '' as $$
+	select jsonb_build_object('text', case p_reason when 'SLEEP' then 'The machine went to sleep'
+			when 'RETIRED' then 'The machine was replaced by a newer one'
+			when 'ARCHIVED' then 'Archived'
+			when 'EXPIRED' then 'The session lost its machine'
+			when 'OWNER_LEFT' then 'The owner is no longer a member'
+			when 'REPOSITORY_WITHDRAWN' then 'The agent no longer has the repository'
+			else 'Coding is not enabled here any more' end
+			|| case jsonb_array_length(p_stopped) when 0 then '' when 1 then '; 1 command was stopped'
+				else '; ' || jsonb_array_length(p_stopped) || ' commands were stopped' end,
+		'reason', p_reason,
+		'stopped', coalesce((select jsonb_agg(value order by ordinal) from jsonb_array_elements(p_stopped) with ordinality as item(value, ordinal)
+			where ordinal <= 32), '[]'::jsonb),
+		'moreStopped', greatest(jsonb_array_length(p_stopped) - 32, 0))
 $$;
 
 -- Internal: the machine this executor planned on this node, read without a lock.
@@ -237,19 +286,25 @@ $$;
 -- The machine's executor keeps its sessions attached, every few seconds while
 -- the machine is awake, and reports what it saw inside: which of each
 -- session's commands still run and whether any used the processor. A session
--- that may stay gets its deadline renewed for a minute and its latest admitted
--- turn: the current one once claimed, else the one before (a follow-up waiting
--- in the queue has not been admitted, and the guest never reopens a turn it
--- was told is closed). The turn is open while it is preparing or running with
--- a live lease: only then may a command start. A session that may not stay has
--- its attachment ended now, and the executor detaches it. Nothing here waits
--- for the profile row: sessions, then the machine.
+-- that may stay gets its deadline renewed for a minute and the turn its
+-- attachment was taken under, which only that turn's own attach moves (a
+-- follow-up waiting in the queue, or a turn sent back to wait for its machine,
+-- never moves it, and the guest never goes back a turn). The turn is open while
+-- it is the session's current turn, preparing or running with a live lease:
+-- only then may a command start. A session that may not stay has its
+-- attachment ended now, and the executor detaches it. So does a session the
+-- observation does not name, unless it was attached in the last 30 seconds (the
+-- observation may predate it): the guest no longer carries it (the machine
+-- restarted under it, or its guest step already ran), or its guest lease of
+-- this generation ran out and can never be renewed (the executor leaves such a
+-- session out; the watchdog has stopped its commands). A session that ends keeps
+-- the commands last seen running, for its detach record. Nothing here waits for
+-- the profile row: sessions, then the machine.
 create function public.qorpera_keep_coding_attachments(p_machine_id uuid, p_owner text, p_binding_text text, p_machine_id_sha256 text,
 	p_observation jsonb)
 returns jsonb language plpgsql security definer set search_path = '' as $$
 declare v_machine public.qorpera_coding_machines%rowtype; v_session public.qorpera_coding_sessions%rowtype;
 	v_worker public.qorpera_runtime_workers%rowtype; v_seen jsonb; v_refusal text; v_entries jsonb := '[]'::jsonb; v_busy boolean;
-	v_admitted integer;
 begin
 	v_machine := public.qorpera_coding_machine_owned(p_machine_id, p_owner, p_binding_text, p_machine_id_sha256);
 	if p_observation is not null and (jsonb_typeof(p_observation) <> 'object'
@@ -265,25 +320,25 @@ begin
 				or exists (select 1 from jsonb_array_elements(entry -> 'running') command
 					where jsonb_typeof(command) <> 'object' or command - array['commandId','turn','command'] <> '{}'::jsonb
 						or coalesce(command ->> 'commandId','') !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
-						or jsonb_typeof(command -> 'turn') <> 'number' or (command ->> 'turn')::numeric < 1
+						or jsonb_typeof(command -> 'turn') <> 'number' or (command ->> 'turn') !~ '^[1-9][0-9]{0,8}$'
 						or jsonb_typeof(command -> 'command') <> 'string' or octet_length(command ->> 'command') > 300))) then
 		raise exception 'Coding machine observation invalid' using errcode = '22023'; end if;
 	for v_session in select * from public.qorpera_coding_sessions where attached_machine_id = v_machine.id order by worker_id for update loop
 		select * into strict v_worker from public.qorpera_runtime_workers where id = v_session.worker_id;
 		v_refusal := public.qorpera_coding_attachment_refusal(v_session, v_worker, v_machine);
 		select entry into v_seen from jsonb_array_elements(p_observation -> 'sessions') entry where entry ->> 'workerId' = v_session.worker_id::text limit 1;
+		if v_refusal is null and p_observation is not null and v_seen is null and v_session.attached_at < clock_timestamp() - interval '30 seconds' then
+			v_refusal := 'EXPIRED'; end if;
 		update public.qorpera_coding_sessions set
 			attachment_until = case when v_refusal is null then clock_timestamp() + interval '60 seconds' else least(attachment_until, clock_timestamp()) end,
-			running_commands = case when v_seen is null then running_commands else v_seen -> 'running' end,
+			running_commands = case when v_seen is null or v_refusal is not null then running_commands else v_seen -> 'running' end,
 			observed_at = case when v_seen is null then observed_at else clock_timestamp() end,
 			busy_at = case when (v_seen ->> 'busy')::boolean then clock_timestamp() else busy_at end
 		where worker_id = v_session.worker_id returning * into v_session;
-		v_admitted := case when v_worker.state = 'active' and v_session.phase in ('queued','input_ready')
-			then greatest(v_worker.sequence - 1, 1) else v_worker.sequence end;
 		v_entries := v_entries || jsonb_build_array(case when v_refusal is null then jsonb_build_object('workerId',v_session.worker_id,'state','kept',
 			'attachmentToken',v_session.attachment_token,'validForMs',59000,
-			'turn',jsonb_build_object('sequence',v_admitted,'turnId',public.qorpera_coding_turn_id(v_worker.id, v_admitted),
-				'open',v_admitted = v_worker.sequence and v_worker.state = 'active' and v_session.phase in ('preparing','running')
+			'turn',jsonb_build_object('sequence',v_session.attachment_turn,'turnId',public.qorpera_coding_turn_id(v_worker.id, v_session.attachment_turn),
+				'open',v_session.attachment_turn = v_worker.sequence and v_worker.state = 'active' and v_session.phase in ('preparing','running')
 					and v_session.lease_until > clock_timestamp()))
 			else jsonb_build_object('workerId',v_session.worker_id,'state','release','reason',v_refusal,'attachmentToken',v_session.attachment_token) end);
 	end loop;
@@ -301,15 +356,15 @@ create function public.qorpera_record_coding_session_detached(p_machine_id uuid,
 	p_worker_id uuid, p_attachment_token uuid, p_reason text, p_stopped jsonb)
 returns jsonb language plpgsql security definer set search_path = '' as $$
 declare v_machine public.qorpera_coding_machines%rowtype; v_session public.qorpera_coding_sessions%rowtype;
-	v_worker public.qorpera_runtime_workers%rowtype; v_text text;
+	v_worker public.qorpera_runtime_workers%rowtype; v_stopped jsonb;
 begin
 	if p_reason is null or p_reason not in ('ARCHIVED','EXPIRED','OWNER_LEFT','REPOSITORY_WITHDRAWN','EXECUTOR_DISABLED','SLEEP','RETIRED')
 		or jsonb_typeof(p_stopped) is distinct from 'array' or pg_column_size(p_stopped) > 65536
 		or exists (select 1 from jsonb_array_elements(p_stopped) command
 			where jsonb_typeof(command) <> 'object' or command - array['commandId','turn','command'] <> '{}'::jsonb
 				or coalesce(command ->> 'commandId','') !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
-				or jsonb_typeof(command -> 'turn') <> 'number' or jsonb_typeof(command -> 'command') <> 'string'
-				or octet_length(command ->> 'command') > 300) then
+				or jsonb_typeof(command -> 'turn') <> 'number' or (command ->> 'turn') !~ '^[1-9][0-9]{0,8}$'
+				or jsonb_typeof(command -> 'command') <> 'string' or octet_length(command ->> 'command') > 300) then
 		raise exception 'Coding session detach record invalid' using errcode = '22023'; end if;
 	select * into v_session from public.qorpera_coding_sessions where worker_id = p_worker_id for update;
 	v_machine := public.qorpera_coding_machine_owned(p_machine_id, p_owner, p_binding_text, p_machine_id_sha256);
@@ -321,21 +376,15 @@ begin
 	-- retirement end every attachment, and the executor may find the guest's own lease gone (it cannot be renewed).
 	if p_reason not in ('SLEEP','RETIRED','EXPIRED') and public.qorpera_coding_attachment_refusal(v_session, v_worker, v_machine) is null then
 		raise exception 'Coding session attachment is live' using errcode = '55000'; end if;
+	-- What it stopped: what the executor saw running as it took the session off, else what was last seen running
+	-- (the watchdog stops an expired lease's commands before the executor looks).
+	v_stopped := case when jsonb_array_length(p_stopped) > 0 then p_stopped else v_session.running_commands end;
 	update public.qorpera_coding_sessions set attached_machine_id = null, attachment_token = null, attachment_until = null,
-		running_commands = '[]'::jsonb, observed_at = clock_timestamp()
+		attachment_turn = null, attached_at = null, running_commands = '[]'::jsonb, observed_at = clock_timestamp()
 	where worker_id = v_session.worker_id;
-	if jsonb_array_length(p_stopped) > 0 or p_reason in ('SLEEP','RETIRED') then
-		v_text := case p_reason when 'SLEEP' then 'The machine went to sleep'
-			when 'RETIRED' then 'The machine was replaced by a newer one'
-			when 'ARCHIVED' then 'Archived'
-			when 'EXPIRED' then 'The coding service lost track of the session'
-			when 'OWNER_LEFT' then 'The owner is no longer a member'
-			when 'REPOSITORY_WITHDRAWN' then 'The agent no longer has the repository'
-			else 'Coding is not enabled here any more' end
-			|| case jsonb_array_length(p_stopped) when 0 then '' when 1 then '; 1 command was stopped'
-				else '; ' || jsonb_array_length(p_stopped) || ' commands were stopped' end;
+	if jsonb_array_length(v_stopped) > 0 or p_reason in ('SLEEP','RETIRED','EXPIRED') then
 		perform public.qorpera_coding_event(v_worker.id, v_worker.sequence, 'step', 'executor',
-			jsonb_build_object('text', v_text, 'reason', p_reason, 'stopped', p_stopped));
+			public.qorpera_coding_stopped_event(p_reason, v_stopped));
 	end if;
 	return jsonb_build_object('schema','qorpera.coding-detached/v1','workerId',v_session.worker_id,'state','detached');
 end
@@ -431,8 +480,10 @@ select pg_temp.standby_patch('public.qorpera_read_coding_turn_context(jsonb)',
 	from (select event.id, command.ordinal, command.value || jsonb_build_object('reason', event.body ->> 'reason') as entry
 		from public.qorpera_coding_session_events event
 		cross join lateral jsonb_array_elements(event.body -> 'stopped') with ordinality as command(value, ordinal)
-		where event.worker_id = v_worker_id and event.sequence >= v_sequence - 1 and event.kind = 'step' and event.actor = 'executor'
-			and jsonb_typeof(event.body -> 'stopped') = 'array') stopped;
+		where event.worker_id = v_worker_id and event.kind = 'step' and event.actor = 'executor' and jsonb_typeof(event.body -> 'stopped') = 'array'
+			-- Since the previous turn ended: shown to the next turn once.
+			and event.created_at >= (select coalesce(turn.settled_at, turn.created_at) from public.qorpera_coding_session_turns turn
+				where turn.worker_id = v_worker_id and turn.sequence = v_sequence - 1)) stopped;
 	return jsonb_build_object('schema','qorpera.coding-turn-context/v2','workerId',v_worker_id,'sequence',v_sequence,
 		'input', jsonb_build_object('from', v_turn.input_from, 'text', v_turn.input_text, 'answers', v_answers),
 		'earlierTurns', v_earlier, 'omittedEarlierTurns', v_omitted,
@@ -444,10 +495,11 @@ select pg_temp.standby_patch('public.qorpera_read_coding_turn_context(jsonb)',
 -- ---------------------------------------------------------------------------
 -- 6. Grants
 -- ---------------------------------------------------------------------------
-revoke all on function public.qorpera_archive_coding_worker(public.qorpera_runtime_workers, text, uuid, uuid),
+revoke all on function public.qorpera_archive_coding_worker(public.qorpera_runtime_workers, text, uuid, uuid, uuid),
+	public.qorpera_coding_stopped_event(text, jsonb),
 	public.qorpera_archive_coding_session(uuid, uuid),
 	public.qorpera_archive_quiet_coding_sessions(text),
-	public.qorpera_attach_coding_session(uuid, uuid, text, jsonb, text),
+	public.qorpera_attach_coding_session(uuid, uuid, text, jsonb, text, text),
 	public.qorpera_coding_machine_owned(uuid, text, text, text),
 	public.qorpera_coding_attachment_refusal(public.qorpera_coding_sessions, public.qorpera_runtime_workers, public.qorpera_coding_machines),
 	public.qorpera_keep_coding_attachments(uuid, text, text, text, jsonb),
@@ -456,7 +508,7 @@ revoke all on function public.qorpera_archive_coding_worker(public.qorpera_runti
 	from public, anon, authenticated, service_role, qorpera_secret_broker;
 grant execute on function public.qorpera_archive_coding_session(uuid, uuid) to authenticated;
 grant execute on function public.qorpera_archive_quiet_coding_sessions(text),
-	public.qorpera_attach_coding_session(uuid, uuid, text, jsonb, text),
+	public.qorpera_attach_coding_session(uuid, uuid, text, jsonb, text, text),
 	public.qorpera_keep_coding_attachments(uuid, text, text, text, jsonb),
 	public.qorpera_record_coding_session_detached(uuid, text, text, text, uuid, uuid, text, jsonb)
 	to service_role;

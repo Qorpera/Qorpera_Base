@@ -89,6 +89,10 @@ export const CONVERSATION: Record<string, string> = {
 	"Your model account needs to be connected again.": "Din modelkonto skal forbindes igen.",
 	"No computer could be started for this run. The problem is on Qorpera's side.":
 		"Der kunne ikke startes en computer til denne kørsel. Fejlen ligger hos Qorpera.",
+	"The computer running this run stopped answering. The problem is on Qorpera's side.":
+		"Computeren bag kørslen holdt op med at svare. Fejlen ligger hos Qorpera.",
+	"One of the run's steps got no answer in time. The problem is on Qorpera's side.":
+		"Et af kørslens trin fik ikke svar i tide. Fejlen ligger hos Qorpera.",
 	"The run took too long and was stopped.": "Kørslen tog for lang tid og blev stoppet.",
 	"The run started, but one of its steps was refused. The problem is on Qorpera's side.":
 		"Kørslen startede, men et af dens trin blev afvist. Fejlen ligger hos Qorpera.",
@@ -286,9 +290,9 @@ export const CONVERSATION: Record<string, string> = {
 	"Personal rule: {rule}": "Personlig regel: {rule}",
 	"Always allow when an agent wants to": "Tillad altid, når en agent vil",
 	"Save rule and allow": "Gem regel og tillad",
-	Waiting: "Venter",
-	Allowed: "Tilladt",
-	"Exact action": "Præcis handling",
+	"Don't send": "Send ikke",
+	Bcc: "Bcc",
+	"Delete “{name}”": "Slet “{name}”",
 	Deny: "Afvis",
 	"Always allow…": "Tillad altid…",
 	"Allow once": "Tillad én gang",
