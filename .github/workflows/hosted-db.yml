@@ -83,10 +83,11 @@ jobs:
 
   # The provenance script admits real runs under the source's runtime bundle, so it
   # needs the derived bundle files to match the source. Only release branches
-  # guarantee that; feature branches lag until the next cut (release train).
+  # guarantee that; feature branches lag until the next cut (release train). A
+  # manual run on any branch whose bundle is fresh (master right after a cut) works too.
   runtime-provenance:
     name: Runtime bundle provenance and historical upgrade
-    if: ${{ (github.event_name == 'pull_request' && startsWith(github.head_ref, 'release/runtime-')) || (github.event_name == 'push' && startsWith(github.ref_name, 'release/runtime-')) }}
+    if: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && startsWith(github.head_ref, 'release/runtime-')) || (github.event_name == 'push' && startsWith(github.ref_name, 'release/runtime-')) }}
     runs-on: ubuntu-26.04
     timeout-minutes: 15
     steps:

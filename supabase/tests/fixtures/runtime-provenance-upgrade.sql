@@ -1,5 +1,6 @@
 -- The driver clones the pre-19700 database and admits a real native v1 run
--- before applying the remaining migration chain. No producer or authority helper is substituted.
+-- before applying the remaining migration chain. No producer or authority helper is substituted;
+-- only the run's own lease windows are renewed before the wake refusal below.
 begin;
 set local "request.jwt.claims" = '{"role":"service_role"}';
 do $$
@@ -10,6 +11,9 @@ begin
 	select * into strict v_run from public.qorpera_execution_runs where id = (v_history.binding ->> 'runId')::uuid;
 	select jsonb_agg(to_jsonb(input) order by input.id) into v_inputs from public.qorpera_session_inputs input
 	where input.id = any(v_run.input_ids);
+	if coalesce(cardinality(v_run.input_ids),0) = 0
+		or jsonb_array_length(v_history.inputs) is distinct from cardinality(v_run.input_ids) then
+		raise exception 'History fixture must record the run''s admitted inputs'; end if;
 	-- Every recorded column keeps its exact value. Columns added after the history
 	-- was recorded (reasoning effort and its policy, the fast mode service tier
 	-- of 20260927161500, ...) must stay empty on historical work.
