@@ -360,14 +360,72 @@ Live keys come later, with the live switch (build step 7).
 - Stripe sends receipts and invoices to the paying member (customer email = account email).
 - Qorpera's hour notices use an outbox drained by an Edge Function that sends through Resend, like
   invitations (`supabase/INVITATION-EMAIL.md`). They go only to founders:
-  - "hours running low" (a fifth or less of the hours the company had at the start of the month,
-    or less than one hour, is left) and "out of hours" go to the founders whose plans pay, the
-    founders who bought the credits in use, or every founder on free hours;
+  - "hours running low" (a fifth or less of the hours in what pays now is left: the free hours
+    while they last, the founders' current plan periods and the company's credits in use; or less
+    than one hour) and "out of hours" go to the founders whose plans pay, the founders who bought
+    the credits in use, or every founder on free hours;
   - "out of hours" also goes to every founder;
   - one monthly summary to each founder whose plan was used, at the end of that plan's period,
     listing each company's use.
 - Built switched off; switched on together with live payments.
 - Admins, contributors and viewers get no billing email. In-app notices mirror the emails.
+
+Migration `20260929160000_runtime_computer_hour_notices` and the Edge Function
+`supabase/functions/computer-hour-notices` (logic in `supabase/functions/_shared/computer-hour-notices.ts`):
+
+- `qorpera_computer_hour_notices` is the outbox: one row per recipient and occasion (kind, founder,
+  occasion unique), with what the email says fixed when queued (a company deleted later keeps its
+  name there).
+- An AFTER INSERT trigger on `qorpera_computer_hour_usage`, running after the charge trigger,
+  queues "running low" and "out of hours". It acts only on live charges, so before the live switch
+  nothing is queued: that is the "switched off". Complimentary companies get none.
+  - Running low: once a calendar month (Danish time) per company.
+  - Out of hours: once per time the company runs out. The time starts when it begins to owe and
+    ends when hours arrive and repay it (the owed source's repaid total names the time).
+- Summaries are queued by the worker's claim for plan periods that ended in the last seven days
+  and were used, one per founder and period (its `sub_…:start` reference), listing each
+  company's draws and repayments across the period and its upgrade top-up.
+- `qorpera_claim_computer_hour_notices(limit, lease)` (service_role) leases due rows for five
+  minutes with `skip locked`, drops a running-low or out-of-hours row whose recipient is no longer
+  a founder of the company, or has no email address, and returns each row with the founder's
+  current address. `qorpera_complete_computer_hour_notice` and `qorpera_fail_computer_hour_notice`
+  record the outcome: retryable failures wait 1, 2, 4 ... minutes (at most an hour) and stop after
+  eight attempts. Resend gets `qorpera-computer-hour-notice/<id>` as its idempotency key.
+- The emails are in English, like invitations, and link to the web app's account page (Plan &
+  usage).
+
+### Turning the notices on (with the live switch)
+
+Jonas (secrets):
+
+1. The Resend sender: the existing `RESEND_API_KEY` serves; set the function secrets
+   `QORPERA_HOURS_FROM` (for example `Qorpera <hours@mail.qorpera.com>`, on the verified domain) and
+   `QORPERA_APP_URL` (`https://app.qorpera.com/`).
+2. In the database's Vault, the project URL and a Supabase secret key for the worker, as the
+   invitation email needs (`supabase/INVITATION-EMAIL.md`, "Schedule"):
+   `select vault.create_secret('https://<project>.supabase.co', 'qorpera_project_url');` (once, shared
+   with invitations) and `select vault.create_secret('<sb_secret_…>', 'qorpera_computer_hour_notice_key');`.
+   The key is created in the Supabase dashboard and never passes through a session.
+
+Coordinator (nothing secret):
+
+1. Deploy the function: `supabase functions deploy computer-hour-notices`.
+2. Schedule the worker every minute (pg_cron and pg_net):
+
+   ```sql
+   select cron.schedule('qorpera-computer-hour-notices', '* * * * *', $$
+   	select net.http_post(
+   		url := (select decrypted_secret from vault.decrypted_secrets where name = 'qorpera_project_url')
+   			|| '/functions/v1/computer-hour-notices',
+   		headers := jsonb_build_object('content-type', 'application/json',
+   			'apikey', (select decrypted_secret from vault.decrypted_secrets where name = 'qorpera_computer_hour_notice_key')),
+   		body := '{}'::jsonb)
+   $$);
+   ```
+
+   Scheduling it before the live switch is harmless: nothing is queued until then.
+3. Watch it by count, not by address:
+   `select kind, status, count(*) from public.qorpera_computer_hour_notices group by 1, 2 order by 1, 2`.
 
 ## Zero (build step 6; built switched off)
 

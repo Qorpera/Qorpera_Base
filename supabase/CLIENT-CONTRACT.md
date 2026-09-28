@@ -577,7 +577,8 @@ machine.
   `?checkout=done` or `?checkout=cancelled` after the hash; hours arrive with
   Stripe's webhook, not with the return.
 - `profile-invitation-email`, `company-file-verifier`, `artifact-gc-worker`,
-  `runner-control`, `runner-broker`, `runner-orchestrator` — service or
+  `runner-control`, `runner-broker`, `runner-orchestrator`,
+  `computer-hour-notices` (20260929160000, founders' hour emails) — service or
   runner authority only. Clients never call them.
 
 ## 6. Stability by Order (what a client may build now)
