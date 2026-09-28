@@ -5,7 +5,8 @@ begin;
 -- turn it into a semi join that re-reads the node's history per row. Timing is not asserted (not
 -- reliable in CI); the function's source is checked instead, and what the delete removes is checked
 -- exactly: the calling node's receipts observed more than seven days ago, oldest first, at most 500 per
--- call, never the receipt its latest row names, and nothing of any other node.
+-- call, never the receipt its latest row names, and nothing of any other node. A receipt exactly at the
+-- cut stays: the cut is strict and is the transaction's now(), not the later clock_timestamp().
 create function pg_temp.ok(p_value boolean,p_message text) returns void language plpgsql as $$
 begin if p_value is distinct from true then raise exception '%',p_message; end if; end $$;
 create function pg_temp.definition() returns text language sql as $$
@@ -34,7 +35,8 @@ select pg_temp.ok(has_function_privilege('service_role','public.qorpera_observe_
 	'Execute privileges changed');
 
 -- 2. Two nodes with enrolled policies. Node A: 1100 receipts from eight days ago, one a minute past the
---    cut, one a minute inside it and three from yesterday; its latest row names its oldest receipt.
+--    cut, one exactly at it, one a minute inside it and three from yesterday; its latest row names its
+--    oldest receipt.
 --    Node B: seven receipts from nine days ago, older than all of node A's (a selection that forgot the
 --    node would take them first); its latest row names its oldest one.
 insert into public.qorpera_runtime_nodes(id,machine_id_sha256,label,version,cpu_millis,memory_bytes,
@@ -95,6 +97,12 @@ create function pg_temp.exactly_deleted(p_label text) returns boolean language s
 select pg_temp.stored('71600000-0000-4000-8000-00000000000a',interval '8 days',1100);
 select pg_temp.stored('71600000-0000-4000-8000-00000000000a',interval '7 days 1 minute',1);
 select pg_temp.stored('71600000-0000-4000-8000-00000000000a',interval '7 days' - interval '1 minute',1);
+-- Exactly at the cut, to the microsecond (the observation's own time is only kept to the millisecond).
+select set_config('qorpera_test.at_cut',(extensions.gen_random_uuid())::text,true);
+insert into public.qorpera_runtime_node_health_receipts(node_id,observation_id,observed_at,observation)
+select '71600000-0000-4000-8000-00000000000a',current_setting('qorpera_test.at_cut')::uuid,now() - interval '7 days',
+	pg_temp.health('71600000-0000-4000-8000-00000000000a',now() - interval '7 days')
+		|| jsonb_build_object('observationId',current_setting('qorpera_test.at_cut'));
 select pg_temp.stored('71600000-0000-4000-8000-00000000000a',interval '1 day',3);
 select pg_temp.stored('71600000-0000-4000-8000-00000000000b',interval '9 days',7);
 insert into public.qorpera_runtime_node_health_latest(node_id,observation_id,observed_at)
@@ -106,7 +114,7 @@ select set_config('qorpera_test.latest_a',(select observation_id::text from publ
 select set_config('qorpera_test.latest_b',(select observation_id::text from public.qorpera_runtime_node_health_latest
 	where node_id = '71600000-0000-4000-8000-00000000000b'),true);
 select pg_temp.ok(pg_temp.old('71600000-0000-4000-8000-00000000000a') = 1101
-	and pg_temp.kept('71600000-0000-4000-8000-00000000000a') = 4
+	and pg_temp.kept('71600000-0000-4000-8000-00000000000a') = 5
 	and pg_temp.old('71600000-0000-4000-8000-00000000000b') = 7,'Retention fixture differs');
 select set_config('request.jwt.claims','{"role":"service_role"}',true);
 
@@ -124,7 +132,7 @@ select pg_temp.ok(public.qorpera_observe_runtime_node_health((select observation
 	'A replay of the latest receipt no longer answers with its original receipt');
 select pg_temp.ok(pg_temp.exactly_deleted('replay'),'The replay did not delete exactly the 500 oldest receipts but the latest');
 select pg_temp.ok(pg_temp.old('71600000-0000-4000-8000-00000000000a') = 601
-	and pg_temp.kept('71600000-0000-4000-8000-00000000000a') = 4
+	and pg_temp.kept('71600000-0000-4000-8000-00000000000a') = 5
 	and (select observation_id::text = current_setting('qorpera_test.latest_a')
 		from public.qorpera_runtime_node_health_latest where node_id = '71600000-0000-4000-8000-00000000000a'),
 	'The replay deleted more than 500, a receipt inside seven days, or the latest receipt');
@@ -136,19 +144,21 @@ select pg_temp.ok(public.qorpera_observe_runtime_node_health(pg_temp.health('716
 select pg_temp.ok(not exists(select 1 from public.qorpera_runtime_node_health_receipts
 		where observation_id = current_setting('qorpera_test.latest_a')::uuid)
 	and pg_temp.old('71600000-0000-4000-8000-00000000000a') = 101
-	and pg_temp.kept('71600000-0000-4000-8000-00000000000a') = 5,
+	and pg_temp.kept('71600000-0000-4000-8000-00000000000a') = 6,
 	'The first current observation did not delete exactly 500 old receipts including the former latest');
 select pg_temp.remember('current');
 select pg_temp.ok(jsonb_array_length(current_setting('qorpera_test.current_gone')::jsonb) = 101,
 	'The last pass does not select the 101 remaining old receipts');
 
--- 5. The next observation deletes the remaining 101, including the one a minute past the cut; the one a
---    minute inside the cut, yesterday's three and both new observations stay.
+-- 5. The next observation deletes the remaining 101, including the one a minute past the cut; the one
+--    exactly at the cut, the one a minute inside it, yesterday's three and both new observations stay.
 select set_config('qorpera_test.newest',public.qorpera_observe_runtime_node_health(
 	pg_temp.health('71600000-0000-4000-8000-00000000000a',date_trunc('milliseconds',clock_timestamp())))::text,true);
 select pg_temp.ok(pg_temp.exactly_deleted('current'),'The last pass did not delete exactly the remaining old receipts');
 select pg_temp.ok(pg_temp.old('71600000-0000-4000-8000-00000000000a') = 0
-	and pg_temp.kept('71600000-0000-4000-8000-00000000000a') = 6
+	and pg_temp.kept('71600000-0000-4000-8000-00000000000a') = 7
+	and exists(select 1 from public.qorpera_runtime_node_health_receipts
+		where observation_id = current_setting('qorpera_test.at_cut')::uuid and observed_at = now() - interval '7 days')
 	and exists(select 1 from public.qorpera_runtime_node_health_receipts
 		where node_id = '71600000-0000-4000-8000-00000000000a'
 			and observed_at >= now() - interval '7 days' and observed_at < now() - interval '6 days'),
@@ -156,10 +166,17 @@ select pg_temp.ok(pg_temp.old('71600000-0000-4000-8000-00000000000a') = 0
 select pg_temp.ok((select observation_id = (current_setting('qorpera_test.newest')::jsonb->>'observationId')::uuid
 	from public.qorpera_runtime_node_health_latest where node_id = '71600000-0000-4000-8000-00000000000a'),
 	'The latest row does not name the newest observation');
--- Nothing is left to delete: one more observation deletes nothing.
-select pg_temp.ok(public.qorpera_observe_runtime_node_health(pg_temp.health('71600000-0000-4000-8000-00000000000a',
-	date_trunc('milliseconds',clock_timestamp()))) is not null
-	and pg_temp.kept('71600000-0000-4000-8000-00000000000a') = 7,'An observation with nothing to delete lost a receipt');
+-- Nothing is left to delete: one more observation, made as service_role through its own EXECUTE grant
+-- rather than as the owner, deletes nothing.
+select set_config('qorpera_test.last_observation',pg_temp.health('71600000-0000-4000-8000-00000000000a',
+	date_trunc('milliseconds',clock_timestamp()))::text,true);
+set local role service_role;
+select set_config('qorpera_test.last_result',public.qorpera_observe_runtime_node_health(
+	current_setting('qorpera_test.last_observation')::jsonb)::text,true);
+reset role;
+select pg_temp.ok(current_setting('qorpera_test.last_result')::jsonb->>'observationId'
+		= current_setting('qorpera_test.last_observation')::jsonb->>'observationId'
+	and pg_temp.kept('71600000-0000-4000-8000-00000000000a') = 8,'An observation with nothing to delete lost a receipt');
 
 -- 6. Node B was never the calling node: all seven old receipts and its latest row stay.
 select pg_temp.ok(pg_temp.old('71600000-0000-4000-8000-00000000000b') = 7
