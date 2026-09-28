@@ -947,6 +947,34 @@ describe("warm conversations", () => {
 		expect(changed.units.log[0]).toBe(`kill ${hostUnit(0)}`);
 	});
 
+	it("parks a vault login's host and reuses it only while the identity's login stays in the vault", async () => {
+		const mountInfo = join(await root(), "mountinfo");
+		await writeFile(mountInfo, "22 1 0:21 / / rw,relatime shared:1 - ext4 /dev/sda1 rw\n");
+		const f = await fixture({ warmIdleMs: 300_000, mountInfoPath: mountInfo });
+		f.loginInVault = true;
+		const signal = new AbortController().signal;
+		await f.backend.acquire(runId, work(), signal);
+		await finishRun(f);
+		expect(f.units.activeUnits.has(hostUnit(0))).toBe(true);
+		f.units.log.length = 0;
+		await f.backend.acquire(secondRun, work({ runId: secondRun, sourceId: secondRun }), signal);
+		expect(f.units.log).toEqual([`start ${runnerUnit(0)}`]);
+		expect(
+			await readFile(join(f.runRoot, "slots", "0", "credentials", "qorpera-native-provider-master-key"), "utf8"),
+		).toBe("");
+		await finishRun(f);
+		// The member signed in on a node again: the parked host holds no key and must not serve.
+		f.loginInVault = false;
+		await writeFile(
+			mountInfo,
+			`22 1 0:21 / / rw,relatime shared:1 - ext4 /dev/sda1 rw\n23 22 0:30 / ${join(f.identityRoot, computeIdentityId)} rw - ext4 /dev/sdb rw\n`,
+		);
+		f.units.log.length = 0;
+		const thirdRun = "30000000-0000-4000-8000-000000000023";
+		await f.backend.acquire(thirdRun, work({ runId: thirdRun, sourceId: thirdRun }), signal).catch(() => undefined);
+		expect(f.units.log[0]).toBe(`kill ${hostUnit(0)}`);
+	});
+
 	it("keeps a slot parked when its claim fails before the run's journal holds it", async () => {
 		const f = await fixture({ warmIdleMs: 300_000 });
 		const signal = new AbortController().signal;

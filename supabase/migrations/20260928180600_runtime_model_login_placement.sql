@@ -37,16 +37,18 @@ declare
 	v_definition text;
 	v_count integer;
 begin
-	-- Claim: a vault identity's run may be claimed by any orchestrator.
+	-- Claim: a vault identity's run may be claimed by any orchestrator. The check is the last arm of
+	-- the identity-home rule, so the claim asks it only for a run whose home is elsewhere.
 	v_target := 'public.qorpera_claim_runner_job_for_orchestrator(uuid,uuid,integer)'::regprocedure;
 	v_definition := pg_get_functiondef(v_target);
 	if position('qorpera_compute_identity_login_in_vault' in v_definition) = 0 then
 		select count(*) into v_count
-		from regexp_matches(v_definition, 'and \(run\.compute_identity_id is null(\s+)or not exists \(', 'g');
+		from regexp_matches(v_definition,
+			'(and home\.provider_adapter = v_adapter\s+\))\)(\s+order by job\.created_at)', 'g');
 		if v_count <> 1 then raise exception 'Claim identity home source differs (% matches)', v_count; end if;
 		execute regexp_replace(v_definition,
-			'and \(run\.compute_identity_id is null(\s+)or not exists \(',
-			'and (run.compute_identity_id is null\1or public.qorpera_compute_identity_login_in_vault(run.compute_identity_id)\1or not exists (');
+			'(and home\.provider_adapter = v_adapter\s+\))\)(\s+order by job\.created_at)',
+			E'\\1\n\t\t\tor public.qorpera_compute_identity_login_in_vault(run.compute_identity_id))\\2');
 	end if;
 
 	-- Placement: a vault identity falls through to the least-loaded branch.

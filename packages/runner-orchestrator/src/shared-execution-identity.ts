@@ -124,6 +124,12 @@ export function supabaseSharedExecutionLoginCustody(
 				signal: AbortSignal.any([signal, AbortSignal.timeout(10_000)]),
 			},
 		);
+		// A database without the check (this build reached the node before its migration)
+		// answers 404: the login is then on a node, as before.
+		if (response.status === 404) {
+			void response.body?.cancel().catch(() => undefined);
+			return false;
+		}
 		if (!response.ok) {
 			void response.body?.cancel().catch(() => undefined);
 			throw new Error(`Native identity custody is unavailable (${response.status})`);
