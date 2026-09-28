@@ -143,6 +143,26 @@ select pg_temp.wake_assert((select decision = 'placed' and reason = 'CLAIM_TURN_
 	'The placement record names the claim turn, not the node chooser');
 set local role service_role;
 rollback to savepoint recorded;
+-- A fast runner whose adapter has no node row is recorded as unbound; the preferred node is kept.
+savepoint unbound;
+select public.qorpera_register_runner_orchestrator('64300000-0000-4000-8000-0000000000c9','No node runner','nonode',repeat('9',64),3600);
+select public.qorpera_set_runner_orchestrator_dispatch_role('64300000-0000-4000-8000-0000000000c9','fast');
+reset role;
+select pg_temp.fp_age(current_setting('qorpera_test.fp_r0')::uuid,2);
+set local role service_role;
+select pg_temp.wake_assert(pg_temp.fp_claim('64300000-0000-4000-8000-0000000000c9') #>> '{work,run_id}' = current_setting('qorpera_test.fp_r0'),
+	'A fast runner without a node row claims after the head start');
+select set_config('qorpera_test.fp_runner',(public.qorpera_provision_execution_runner(current_setting('qorpera_test.fp_r0')::uuid,
+	'64300000-0000-4000-8000-0000000000c3','nonode',repeat('1',64)) ->> 'runner_id'),true);
+select public.qorpera_reserve_runtime_machine('64300000-0000-4000-8000-0000000000c3','nonode',repeat('7',64),
+	current_setting('qorpera_test.fp_r0')::uuid,current_setting('qorpera_test.fp_runner')::uuid);
+reset role;
+select pg_temp.wake_assert((select decision = 'unbound' and reason = 'CLAIM_TURN_PROVIDER_UNBOUND' and node_id is null
+		and preferred_node_id is not null
+	from public.qorpera_runtime_node_placements where allocation_id = '64300000-0000-4000-8000-0000000000c3'),
+	'A runner without a node row is recorded unbound');
+set local role service_role;
+rollback to savepoint unbound;
 
 -- Both paths full: the overflow refused a moment ago, then the fast host refused. The overflow does not
 -- take the job again at once (no claim/refuse loop); it waits out its own refusal.
@@ -157,6 +177,25 @@ select pg_temp.fp_refuse('64300000-0000-4000-8000-0000000000b1',pg_temp.fp_claim
 select pg_temp.wake_assert(pg_temp.fp_claim('64300000-0000-4000-8000-0000000000a2') = 'null'::jsonb,
 	'The overflow that refused 15 s ago does not take the job back at once');
 rollback to savepoint loop_guard;
+-- The same without resetting the wait: the overflow refused, then the fast host refused inside that wait
+-- (everyone waits). The overflow does not bypass the wait its own refusal started; once its refusal is
+-- 15 s old, it may.
+savepoint loop_guard_claim;
+reset role;
+select pg_temp.fp_age(current_setting('qorpera_test.fp_r0')::uuid,11);
+set local role service_role;
+select pg_temp.fp_refuse('64300000-0000-4000-8000-0000000000a2',pg_temp.fp_claim('64300000-0000-4000-8000-0000000000a2'),'NODE_CAPACITY_EXHAUSTED');
+select pg_temp.fp_refuse('64300000-0000-4000-8000-0000000000b1',pg_temp.fp_claim('64300000-0000-4000-8000-0000000000b1'),'SANDBOX_CAPACITY_EXHAUSTED');
+select pg_temp.wake_assert(pg_temp.fp_claim('64300000-0000-4000-8000-0000000000a2') = 'null'::jsonb,
+	'The overflow does not bypass a wait its own refusal started');
+reset role;
+update public.qorpera_runner_job_claims set released_at = released_at - interval '16 seconds'
+where run_id = current_setting('qorpera_test.fp_r0')::uuid and orchestrator_id = '64300000-0000-4000-8000-0000000000a2'
+	and status = 'released';
+set local role service_role;
+select pg_temp.wake_assert(pg_temp.fp_claim('64300000-0000-4000-8000-0000000000a2') #>> '{work,run_id}' = current_setting('qorpera_test.fp_r0'),
+	'Once its own refusal is 15 s old, the overflow takes the job inside the fast host''s wait');
+rollback to savepoint loop_guard_claim;
 
 -- An orchestrator without a role among role holders claims at once, as before.
 savepoint no_role;
@@ -294,6 +333,8 @@ where run_id = (current_setting('qorpera_test.wake_binding')::jsonb ->> 'runId')
 set local role service_role;
 select pg_temp.wake_assert(pg_temp.fp_placement(current_setting('qorpera_test.fp_r0')::uuid) ->> 'reason' = 'LEAST_BUSY',
 	'Past 5 minutes the conversation is cold');
+select pg_temp.wake_assert(pg_temp.fp_placement(current_setting('qorpera_test.fp_r0')::uuid) ->> 'nodeId' = '64300000-0000-4000-8000-00000000000a',
+	'A finished run is not busy: A and B tie and the lower id wins');
 
 -- An emptying node, or a fast host whose heartbeat stopped, is not a place to wait for.
 select public.qorpera_set_runtime_node_serving('64300000-0000-4000-8000-00000000000a',false,1,'update');

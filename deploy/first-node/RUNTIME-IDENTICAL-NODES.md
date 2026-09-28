@@ -189,7 +189,8 @@ It sorts after change 4 because it reads its bundle declarations.
   - Instead, the reservation records the claim turn's placement in `qorpera_runtime_node_placements`
     (`decision placed`, `reason CLAIM_TURN_<reason>`).
   - The claim's `orchestrator_claimed` event carries `placement: {reason, nodeId}`. Since the run's
-    own claim never counts, the event and the record name the same node. A fast host whose
+    own claim never counts, the event and the record name the same preferred node (an overflow
+    claim is recorded on its own node, with the fast host's node as preferred). A fast host whose
     adapter has no node row is recorded as `unbound`.
 - **Roles and re-registration.** A rebuild re-registers on the same adapter and keeps the role.
   Re-registering on another adapter (another node or path) clears it.
@@ -226,6 +227,7 @@ It sorts after change 4 because it reads its bundle declarations.
    by one of them first and then goes to the overflow at once; it may meet both fast hosts, as it
    does without roles.
 4. **Check.**
+   - the query in step 2 lists nothing;
    - `orchestrator_claimed` events carry `placement`;
    - `qorpera_runtime_node_placements` rows read `CLAIM_TURN_*`;
    - member reply start is about 2 s.

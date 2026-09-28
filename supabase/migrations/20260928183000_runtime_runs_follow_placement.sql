@@ -147,7 +147,8 @@ end
 $$;
 
 -- Did this orchestrator refuse this run's job in the last 15 s? (Its own refusal can be hidden when
--- another orchestrator's refusal made everyone wait; the released claim still says it.)
+-- another orchestrator's refusal made everyone wait; the released claim still says it.) The 15 s is the
+-- capacity wait of qorpera_release_runner_job_claim (20260928180000); keep the two equal.
 create function public.qorpera_runtime_refused_recently(p_run_id uuid, p_orchestrator_id uuid)
 returns boolean
 language sql
@@ -287,9 +288,9 @@ begin
 	v_new := '			or (job.dispatch_refused_by is not null and job.dispatch_refused_by <> p_orchestrator_id)
 			or (btrim(coalesce(job.last_error, '''')) in (''ADMISSION_REFUSED:SANDBOX_CAPACITY_EXHAUSTED'',''ADMISSION_REFUSED:SANDBOX_RETIRING'')
 				and job.dispatch_refused_by is distinct from p_orchestrator_id
-				and not public.qorpera_runtime_refused_recently(job.run_id, p_orchestrator_id)
 				and exists (select 1 from public.qorpera_runner_orchestrators as overflow
-					where overflow.id = p_orchestrator_id and overflow.dispatch_role = ''overflow'')))
+					where overflow.id = p_orchestrator_id and overflow.dispatch_role = ''overflow'')
+				and not public.qorpera_runtime_refused_recently(job.run_id, p_orchestrator_id)))
 		-- Runs follow the placement: the preferred node''s fast host first, the fresh-VM path as overflow.
 		and public.qorpera_runtime_claim_turn(p_orchestrator_id, job, run)
 ';
