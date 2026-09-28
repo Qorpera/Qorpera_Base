@@ -136,22 +136,25 @@ No reserve, release, suspend or observe function is copied or patched.
 - Each pass adds one row per company to `qorpera_computer_hour_usage`: exact standard seconds per
   kind, and `standard_seconds`, what the pass adds after the company's running total
   (`qorpera_computer_hour_totals`) is rounded up to whole seconds.
-- It takes no lock on company or plan rows (`qorpera_lock_profile_gc_fence` takes the profile row
-  FOR UPDATE on every reservation, suspend and lease check).
+- It takes no lock on company or member rows (`qorpera_lock_profile_gc_fence` takes the profile
+  row FOR UPDATE on every reservation, suspend and lease check). Besides the advisory lock it
+  locks only its own working rows and the billing sources a charge may draw from (step 3).
 - Reads are indexed and bounded by what changed. It never scans old receipts.
 - `qorpera_read_company_computer_hours(profile, month)`: any member of the company; the calendar
   month in Europe/Copenhagen time.
-- One usage row per company per minute with use. Step 3 rolls rows older than the current month up
-  to one per company per day (days cut in Europe/Copenhagen time, like the months), keeping the
-  per-kind seconds and the draws.
+- One usage row per company per pass with use, append-only. A roll-up of old rows (to one per
+  company per day, cut in Europe/Copenhagen time) is deferred: usage rows and their draws are kept
+  as written until a later step moves old months into daily tables, through a path of its own past
+  the append-only guards.
 
 Step 2 shows the measured hours in Plan & usage and charges nothing.
 
 ## Billing records (build step 3)
 
-In the database (5.6: plan, usage and billing), never in the company folder. No billing table has
-a cascading link to `qorpera_profiles` (`qorpera_delete_hosted_profile` hard-deletes it) or to
-`auth.users`; `profile_id` and `user_id` are plain columns kept for bookkeeping.
+Migration `20260929090000_runtime_computer_hours_ledger`. In the database (5.6: plan, usage and
+billing), never in the company folder. No billing table has a cascading link to `qorpera_profiles`
+(`qorpera_delete_hosted_profile` hard-deletes it) or to `auth.users`; `profile_id` and `user_id`
+are plain columns kept for bookkeeping.
 
 - `qorpera_computer_hour_sources`, one row per source of hours:
   - `free`: one per company, 5 × 3600 standard seconds;
@@ -165,32 +168,48 @@ a cascading link to `qorpera_profiles` (`qorpera_delete_hosted_profile` hard-del
   - `complimentary`: one per complimentary company and founder (see Decisions), unlimited;
   - `owed`: time used while the company had no hours, unlimited.
 - `qorpera_computer_hour_draws(usage_id, source_id, standard_seconds)` records which source paid
-  each usage row. The draws of a free, plan or credit source never exceed its hours; a usage row's
-  draws equal its `standard_seconds`.
-- A cached balance per source, updated with the draws, keeps the zero check one indexed read.
-- Hours left = what the company's sources hold minus what it owes.
+  each usage row, and `qorpera_computer_hour_repayments` which source paid back owed time (with the
+  use that triggered it, if any). Both are append-only. The draws of a free, plan or credit source
+  never exceed its hours; a usage row's draws equal its `standard_seconds`.
+- Each source keeps its drawn (and, for owed, repaid) total, so hours left are a few indexed reads:
+  `qorpera_company_computer_hours_left(profile)` = what the company's sources hold minus what it
+  owes; null for a complimentary company. `qorpera_read_company_computer_hour_sources(profile)`
+  shows operators the sources in the current mode.
+- Charging runs in an AFTER INSERT trigger on `qorpera_computer_hour_usage`, inside the meter's
+  pass; the meter itself is unchanged.
+- Every writer of billing records (the meter, the Stripe webhook of step 4, operators) takes the
+  meter's advisory lock first (`qorpera_computer_hour_lock_billing()`), and a charge locks the
+  sources it may draw from in id order, so charges, arriving hours, refunds and freezes never
+  interleave.
 
 ### Charging order (applied by the meter, per usage row)
 
 1. The company's `free` source.
 2. The founders' current `plan_period` sources. Founders come from
-   `public.qorpera_company_founders(p_profile_id)` (S2, not on master yet; until it lands, the one
-   member with the owner role). No lock is taken: a founder change that races one pass is harmless.
-   Split evenly in whole seconds between those with hours left; the remainder goes to the one with
-   the most hours left, and when one runs out the others carry the rest.
-3. The company's `credit` sources, oldest expiry first.
-4. `owed`. New hours pay owed time first, in the same order (free, plans evenly, credits).
+   `public.qorpera_company_founders(p_profile_id)` (#462), read once per charge; no lock is taken
+   on company or member rows, so a founder change that races one pass is harmless. Split evenly in
+   whole seconds between the founders with hours left, one share per founder however many current
+   periods they have (within a founder, the period that ends soonest pays first). The remainder
+   goes a second at a time to the most hours left (then the lowest user id), and when one runs out
+   the others carry the rest.
+3. The company's `credit` sources, the soonest to expire first.
+4. `owed`. Owed time is paid as soon as hours arrive (a trigger on a new plan period, a new credit,
+   or a source unfrozen: for a credit its company, for a plan period every company its holder is a
+   founder of), and again before each new use, in the same order (free, plans evenly, credits).
 
 A complimentary company draws only from its `complimentary` source (naming the first internal
 founder in the founder list), instead of the order above, so its free hours stay unused. It is
 checked per pass with "any founder has the internal entitlement" (not through
 `qorpera_profile_entitlement_json`, which picks one owner). A member who is not a founder is never a
 source. A founder who leaves stops appearing in the founder list, which ends their share at once.
-Owed time of a deleted company is written off.
+Owed time of a deleted company is written off, once company deletion reaches billing (a later
+step; until then a deleted company's records simply stay).
 
-Until live payments are switched on, step 3 runs as a dry run: operators can see who would have
-paid, and members see only measured hours (no hours left, no warnings). At the switch the dry-run
-draws are discarded, and free hours, owed time and every draw count from then.
+Until live payments are switched on (`qorpera_computer_hour_billing.live_since`), step 3 runs as a
+dry run: every source and draw is marked `dry_run`, operators can see who would have paid, and
+members see only measured hours (no hours left, no warnings). Usage metered before `live_since`
+stays a dry run. At the switch the dry-run records stop counting, and free hours, owed time and
+every draw count from then, in live records.
 
 ## Payments (build step 4)
 
@@ -213,6 +232,14 @@ draws are discarded, and free hours, owed time and every draw count from then.
   - Unknown or unsupported events are stored as `needs_review` and still answered 2xx (#326
     answered 5xx, so Stripe would retry for days and then disable the endpoint).
 - Refunds remove the unused hours of their purchase. A dispute freezes only its purchase.
+- Hours arrive as new source rows (a period whose start has come, a credit) or an unfreeze, so
+  what the company owes is repaid at once (step 3's trigger). A period recorded ahead of its start,
+  an upgrade that raises a period's hours, and a member made founder repay owed time at the
+  company's next use instead; the webhook writes periods at their start and upgrades as an extra
+  period row for the rest of the period, so the common paths repay at once. Webhook writes run
+  under READ COMMITTED and take `qorpera_computer_hour_lock_billing()` before anything else,
+  including any `SELECT ... FOR UPDATE` on a source (a statement trigger on the sources table
+  also takes it, but only once a write starts).
 - The plan catalog lives in the database with each Stripe price id; checkout re-verifies the price.
   Prices exclude VAT. Stripe Tax adds Danish VAT, or reverse charge for EU buyers with a VAT id;
   checkout collects the address and an optional CVR/VAT number.
@@ -237,7 +264,8 @@ draws are discarded, and free hours, owed time and every draw count from then.
 
 ## Zero (build step 6; built switched off)
 
-- One function, `qorpera_company_has_computer_hours(p_profile_id)`, reads the cached balances.
+- The check is `qorpera_company_computer_hours_left(p_profile_id)` (step 3): more than zero, or
+  null for a complimentary company.
 - A complimentary company always passes.
 - It is checked before a run is created (not at claim or placement: a run waiting there is
   invisible to members) and at each machine kind's own start or wake step. A run created before
