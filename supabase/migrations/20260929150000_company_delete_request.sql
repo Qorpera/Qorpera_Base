@@ -339,7 +339,7 @@ begin
 		end if;
 		if v_error is not null then
 			update public.qorpera_company_deletions
-			set checked_at = clock_timestamp(), holdings = v_holdings, last_error = v_error
+			set checked_at = clock_timestamp(), holdings = coalesce(v_holdings, holdings), last_error = v_error
 			where profile_id = p_profile_id;
 			return jsonb_build_object('profileId', p_profile_id, 'state', 'failed', 'error', v_error);
 		end if;
@@ -353,10 +353,10 @@ $$;
 revoke all on function public.qorpera_finish_company_deletion(uuid) from public, anon, authenticated, service_role;
 
 -- The operator's pg_cron runs this every minute: cron.schedule('qorpera-company-deletions', '* * * * *',
--- 'select public.qorpera_finish_company_deletions()'). One company per call by default, so one slow or
--- cancelled purge holds no other company's locks and rolls back nothing else; companies are taken in
--- random order, so one that keeps failing does not stall the rest. Serialised by an advisory lock.
-create function public.qorpera_finish_company_deletions(p_limit integer default 1)
+-- 'select public.qorpera_finish_company_deletions()'). Up to ten companies per call, each in its own
+-- subtransaction, taken in random order so one that keeps failing does not stall the rest (a cancelled
+-- statement rolls the whole call back, and the next call picks others). Serialised by an advisory lock.
+create function public.qorpera_finish_company_deletions(p_limit integer default 10)
 returns jsonb
 language plpgsql
 security definer

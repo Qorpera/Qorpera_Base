@@ -30,7 +30,7 @@ begin
 			or has_function_privilege(v_role, 'public.qorpera_finish_company_deletion(uuid)', 'EXECUTE')
 			or has_function_privilege(v_role, 'public.qorpera_finish_company_deletions(integer)', 'EXECUTE')
 			or has_table_privilege(v_role, 'public.qorpera_company_deletions', 'INSERT,SELECT,UPDATE,DELETE')
-			or (v_role <> 'service_role' and has_function_privilege(v_role, 'public.qorpera_company_deleting(uuid)', 'EXECUTE'))
+			or has_function_privilege(v_role, 'public.qorpera_company_deleting(uuid)', 'EXECUTE')
 			or has_function_privilege(v_role, 'public.qorpera_company_purge_active()', 'EXECUTE')
 			or has_function_privilege(v_role, 'public.qorpera_company_node_holdings(uuid)', 'EXECUTE')
 			or has_table_privilege(v_role, 'public.qorpera_company_purges', 'INSERT,SELECT,UPDATE,DELETE')

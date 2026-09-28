@@ -27,8 +27,9 @@ kept. Usage and computer-hour records stay for bookkeeping, with plain ids (cont
    - The founding lobby drops the table at once and withdraws its invited seats; identity recovery
      refuses the company.
 2. **Drain.** Node components remove what the company has on the nodes, each through its own custody.
-3. **Finish** (`qorpera_finish_company_deletions`, an operator's pg_cron every minute, one company per
-   call, picked at random so a company that keeps failing never stalls the rest). It repeats
+3. **Finish** (`qorpera_finish_company_deletions`, an operator's pg_cron every minute, up to ten
+   companies per call, picked at random so a company that keeps failing never stalls the rest; with
+   more open requests than that, each is visited less than once a minute). It repeats
    `qorpera_stop_company_work`, reads `qorpera_company_node_holdings`, and runs `qorpera_purge_company`
    (20260929120000) once nothing is held; stop and purge run in separate subtransactions. Its state
    (`holdings`, `last_error`, `purged_at`) is on the request row. The member's account cannot be deleted
@@ -70,7 +71,9 @@ records what it waits for.
   the node demand and write the meter's `gone`), drops the node binding and sets the office `retired`.
   Needs a new office provider build. RUNTIME-OFFICE-RETENTION.md is updated with it.
 - **D4** identity retirement: per (node, identity) rows; the login gateway detaches the device from the
-  exec host, deletes the volume, confirms; the holdings rule then waits only for unconfirmed rows.
+  exec host, deletes the volume, confirms; the holdings rule then waits only for unconfirmed rows. It
+  also ends identity recoveries requested before the deletion (consent, activation and review do not
+  check the deletion in D1).
 - **D5** storage and NAS queues, written before the purge, consumed by the artifact GC worker and the
   coding executor.
 - **D6** upstream token revoke on delete and on Disconnect.
