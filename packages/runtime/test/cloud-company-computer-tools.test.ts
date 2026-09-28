@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import {
 	CompanyComputerActionNotStartedError,
 	type CompanyComputerOperations,
@@ -463,6 +464,36 @@ describe("model-facing cloud computer tools (adapter tests, not native cloud acc
 		{ operationKey: " ", action: { kind: "screen", action: "open" } },
 	])("rejects model-supplied targeting or malformed operations", (arguments_) => {
 		expect(() => parseCompanyComputerToolArguments(arguments_)).toThrow();
+	});
+
+	it("sends exactly the shell shapes the office's operation check takes, and never one it refuses", () => {
+		// Shared with supabase/tests/628_runtime_office_shell_activity.test.sql, which
+		// runs each through qorpera_valid_office_shell_action.
+		const sql = readFileSync(
+			new URL("../../../supabase/tests/628_runtime_office_shell_activity.test.sql", import.meta.url),
+			"utf8",
+		);
+		const shapes = (kind: "VALID" | "INVALID") => {
+			const section = sql.slice(
+				sql.indexOf(`-- BEGIN ${kind} COMPUTER_SHELL SHAPES\n`),
+				sql.indexOf(`-- END ${kind} COMPUTER_SHELL SHAPES\n`),
+			);
+			return [...section.matchAll(/^\t'(\{.*\})',?$/gm)].map((match) => JSON.parse(match[1].replaceAll("''", "'")));
+		};
+		const valid = shapes("VALID");
+		const invalid = shapes("INVALID");
+		expect(valid.length).toBeGreaterThan(10);
+		expect(invalid.length).toBeGreaterThan(20);
+		for (const shape of valid) expect(parseCompanyComputerAction(shape)).toEqual(shape);
+		for (const shape of invalid) {
+			let sent: unknown;
+			try {
+				sent = parseCompanyComputerAction(shape);
+			} catch {
+				continue;
+			}
+			expect(sent).not.toEqual(shape);
+		}
 	});
 
 	it("parses the long-running shell actions and fills their defaults", () => {

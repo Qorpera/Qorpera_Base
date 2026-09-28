@@ -52,6 +52,8 @@ from unnest(array[
 	'{"kind":"shell","command":"ls","timeoutMs":1000}']::jsonb[]) as arguments;
 select pg_temp.wake_error($q$select pg_temp.shell_authorize('{"kind":"shell","action":"start","command":"ls","waitMs":20000}')$q$,
 	'22023','Invalid office shell operation');
+select pg_temp.wake_error($q$select pg_temp.shell_authorize('{"kind":"shell","timeoutMs":1000}')$q$,
+	'22023','Invalid office shell operation');
 select pg_temp.office_call('release',current_setting('qorpera_test.office_lease')::jsonb);
 reset role;
 select set_config('qorpera_test.screen',current_setting('qorpera_test.office_lease')::jsonb#>>'{binding,screenId}',true);
@@ -139,42 +141,64 @@ update public.qorpera_runtime_office_shell_activity set busy_until=clock_timesta
 select pg_temp.wake_assert(not pg_temp.seat(),'a stale report keeps no seat');
 
 -- 20260929070200: the office's operation check takes every shell action the
--- tool sends, and the 15-second form of older bundles, and nothing else.
+-- tool sends, and the 15-second form of older bundles, and nothing else. The
+-- shapes between the markers are shared with cloud-company-computer-tools.test.ts:
+-- the tool sends each valid one exactly as written, and never an invalid one.
 create function pg_temp.shell_ok(p_arguments text) returns boolean language sql as $$
 	select public.qorpera_valid_office_shell_action(p_arguments::jsonb)
 $$;
-select pg_temp.wake_assert(pg_temp.shell_ok('{"kind":"shell","action":"start","command":"npm run build","waitMs":10000}')
-	and pg_temp.shell_ok('{"kind":"shell","action":"start","command":"sleep 3600","waitMs":0}')
-	and pg_temp.shell_ok('{"kind":"shell","action":"start","command":"x","waitMs":15000}')
-	and pg_temp.shell_ok('{"kind":"shell","action":"read","sessionId":"00000000-0000-4000-8000-0000000000a1","waitMs":5000}')
-	and pg_temp.shell_ok('{"kind":"shell","action":"write","sessionId":"00000000-0000-4000-8000-0000000000a1","text":"y\n","endInput":false,"waitMs":1000}')
-	and pg_temp.shell_ok('{"kind":"shell","action":"write","sessionId":"00000000-0000-4000-8000-0000000000a1","text":"","endInput":true,"waitMs":1000}')
-	and pg_temp.shell_ok('{"kind":"shell","action":"stop"}')
-	and pg_temp.shell_ok('{"kind":"shell","action":"stop","sessionId":"00000000-0000-4000-8000-0000000000a1"}')
-	and pg_temp.shell_ok('{"kind":"shell","action":"list"}')
-	and pg_temp.shell_ok('{"kind":"shell","command":"ls","timeoutMs":15000}'),
-	'every shell action the tool sends, and the older form, is valid');
-select pg_temp.wake_assert(not pg_temp.shell_ok(bad),'invalid shell arguments: '||bad) from unnest(array[
+select pg_temp.wake_assert(coalesce(pg_temp.shell_ok(shape),false),'valid shell arguments: '||shape) from unnest(array[
+-- BEGIN VALID COMPUTER_SHELL SHAPES
+	'{"kind":"shell","action":"start","command":"npm run build","waitMs":10000}',
+	'{"kind":"shell","action":"start","command":"sleep 3600","waitMs":0}',
+	'{"kind":"shell","action":"start","command":"x","waitMs":15000}',
+	'{"kind":"shell","action":"start","command":"  printf \"a\\tb\\n\" | tr a c\n","waitMs":10000}',
+	'{"kind":"shell","action":"read","sessionId":"00000000-0000-4000-8000-0000000000a1","waitMs":5000}',
+	'{"kind":"shell","action":"write","sessionId":"00000000-0000-4000-8000-0000000000a1","text":"y\n","endInput":false,"waitMs":1000}',
+	'{"kind":"shell","action":"write","sessionId":"00000000-0000-4000-8000-0000000000a1","text":" ","endInput":false,"waitMs":1000}',
+	'{"kind":"shell","action":"write","sessionId":"00000000-0000-4000-8000-0000000000a1","text":"","endInput":true,"waitMs":1000}',
+	'{"kind":"shell","action":"stop"}',
+	'{"kind":"shell","action":"stop","sessionId":"00000000-0000-4000-8000-0000000000a1"}',
+	'{"kind":"shell","action":"list"}',
+	'{"kind":"shell","command":"ls","timeoutMs":15000}',
+	'{"kind":"shell","command":"ls","timeoutMs":1}'
+-- END VALID COMPUTER_SHELL SHAPES
+]) as shape;
+select pg_temp.wake_assert(not coalesce(pg_temp.shell_ok(shape),true),'invalid shell arguments: '||shape) from unnest(array[
+-- BEGIN INVALID COMPUTER_SHELL SHAPES
 	'{"kind":"shell","action":"start","command":"ls"}',
 	'{"kind":"shell","action":"start","command":"ls","waitMs":15001}',
 	'{"kind":"shell","action":"start","command":"ls","waitMs":1.5}',
 	'{"kind":"shell","action":"start","command":"ls","waitMs":"100"}',
 	'{"kind":"shell","action":"start","command":"ls","waitMs":-1}',
+	'{"kind":"shell","action":"start","command":"ls","waitMs":null}',
 	'{"kind":"shell","action":"start","command":"   ","waitMs":0}',
+	'{"kind":"shell","action":"start","command":"\n\t ","waitMs":0}',
+	'{"kind":"shell","action":"start","command":null,"waitMs":0}',
 	'{"kind":"shell","action":"start","command":"ls","waitMs":0,"timeoutMs":1000}',
 	'{"kind":"shell","action":"read","sessionId":"not-a-command","waitMs":0}',
+	'{"kind":"shell","action":"read","sessionId":"00000000-0000-4000-8000-0000000000A1","waitMs":0}',
+	'{"kind":"shell","action":"read","sessionId":null,"waitMs":0}',
 	'{"kind":"shell","action":"read","sessionId":"00000000-0000-4000-8000-0000000000a1"}',
 	'{"kind":"shell","action":"write","sessionId":"00000000-0000-4000-8000-0000000000a1","text":"","endInput":false,"waitMs":0}',
 	'{"kind":"shell","action":"write","sessionId":"00000000-0000-4000-8000-0000000000a1","text":"y","endInput":"true","waitMs":0}',
+	'{"kind":"shell","action":"write","sessionId":"00000000-0000-4000-8000-0000000000a1","text":null,"endInput":true,"waitMs":0}',
 	'{"kind":"shell","action":"stop","sessionId":"00000000-0000-4000-8000-0000000000a1","waitMs":0}',
 	'{"kind":"shell","action":"list","waitMs":0}',
 	'{"kind":"shell","action":"kill"}',
+	'{"kind":"shell","timeoutMs":1000}',
+	'{"kind":"shell","command":"ls","timeoutMs":"1000"}',
 	'{"kind":"shell","command":"ls","timeoutMs":0}',
 	'{"kind":"shell","command":"ls","timeoutMs":16000}',
 	'{"kind":"shell","command":"ls","timeoutMs":1000,"waitMs":0}',
-	'{"kind":"browser","action":"list"}']) as bad;
-select pg_temp.wake_assert(not pg_temp.shell_ok(jsonb_build_object('kind','shell','action','start','command',repeat('x',16385),'waitMs',0)::text),
-	'a command over 16 KiB is invalid');
+	'{"kind":"browser","action":"list"}'
+-- END INVALID COMPUTER_SHELL SHAPES
+]) as shape;
+select pg_temp.wake_assert(not coalesce(pg_temp.shell_ok(jsonb_build_object('kind','shell','action','start','command',repeat('x',16385),'waitMs',0)::text),true)
+	and not coalesce(pg_temp.shell_ok(jsonb_build_object('kind','shell','action','write','sessionId','00000000-0000-4000-8000-0000000000a1',
+		'text',repeat('x',16385),'endInput',false,'waitMs',0)::text),true)
+	and coalesce(pg_temp.shell_ok(jsonb_build_object('kind','shell','action','start','command',repeat('é',8192),'waitMs',0)::text),false),
+	'a command or input over 16 KiB is invalid, one of exactly 16 KiB is not');
 
 
 -- The operator pauses the company: a report records nothing and tells the
