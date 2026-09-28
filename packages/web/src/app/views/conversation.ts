@@ -33,6 +33,7 @@ import { groupChatAvatar, isGroupChat } from "../../ui/group-chat.ts";
 import { renderInteractionCard } from "../../ui/interaction-card.ts";
 import { matchesKey } from "../../ui/keys.ts";
 import { markdownBubbles } from "../../ui/markdown.ts";
+import { findMentions, type MentionTarget, matchTargets, mentionParts, mentionQuery } from "../../ui/mentions.ts";
 import { presentationLocale, t } from "../../ui/preferences.ts";
 import { quietScroll } from "../../ui/quiet-scroll.ts";
 import { ReceivedAttachments } from "../../ui/received-attachments.ts";
@@ -89,6 +90,11 @@ export class ConversationView {
 	readonly #composerShell: HTMLElement;
 	/** Other members' unsent messages above the composer, and who writes in this member's own. */
 	readonly #sharedDrafts: SharedDrafts;
+	/** Names to mention, shown while "@" and the start of a name are typed. */
+	readonly #mentionPicker: HTMLElement;
+	#mention: { start: number; end: number; options: MentionTarget[]; active: number } | undefined;
+	/** In a group chat, which agents will answer the message being written. */
+	readonly #mentionNote = h("p", { class: "composer-mention-note", role: "status", hidden: true });
 	readonly #attachments: AttachmentTray;
 	readonly #more: HTMLButtonElement;
 	readonly #menu: HTMLElement;
@@ -196,6 +202,7 @@ export class ConversationView {
 			placeholder: t("Message…"),
 			"aria-label": t("Message"),
 			onkeydown: (event: KeyboardEvent) => {
+				if (this.#mentionKey(event)) return;
 				if (matchesKey(event, "accept") && !event.shiftKey) {
 					event.preventDefault();
 					this.#submit();
@@ -205,7 +212,21 @@ export class ConversationView {
 				this.#autosize();
 				company.conversation(sessionId).set({ draft: this.#composer.value });
 				this.#sharedDrafts.input();
+				this.#updateMention();
 			},
+		});
+		// Moving the caret with the keys or a click opens or closes the names as well.
+		this.#composer.addEventListener("keyup", (event) => {
+			if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) this.#updateMention();
+		});
+		this.#composer.addEventListener("click", () => this.#updateMention());
+		this.#composer.addEventListener("blur", () => this.#closeMention());
+		this.#mentionPicker = h("div", {
+			class: "mention-picker",
+			role: "listbox",
+			id: `mention-picker-${sessionId}`,
+			hidden: true,
+			"aria-label": t("People and agents to mention"),
 		});
 		this.#send = h(
 			"button",
@@ -320,6 +341,7 @@ export class ConversationView {
 			this.#send,
 			fileInput,
 			this.#menu,
+			this.#mentionPicker,
 		);
 		this.#composerShell.addEventListener("paste", (event) => {
 			if (this.#composer.disabled) return;
@@ -347,6 +369,7 @@ export class ConversationView {
 			{ class: "composer" },
 			this.#sharedDrafts.el,
 			this.#composerShell,
+			this.#mentionNote,
 			this.#attachments.status,
 		);
 		this.#identity = h("button", {
@@ -711,6 +734,177 @@ export class ConversationView {
 		this.#send.disabled = stop ? this.#run?.stopping === true : this.#submitting || this.#cannotSend;
 	}
 
+	/** Names that match the "@" being typed at the caret, shown above the composer. */
+	#updateMention(): void {
+		const composer = this.#composer;
+		const targets =
+			composer.disabled || composer.selectionStart !== composer.selectionEnd
+				? []
+				: this.#company.mentionTargets(this.#sessionId);
+		const query = targets.length ? mentionQuery(composer.value, composer.selectionStart) : undefined;
+		const options = query ? matchTargets(query.query, targets) : [];
+		this.#renderMentionNote();
+		if (!query || !options.length) {
+			this.#closeMention();
+			return;
+		}
+		const chosen = this.#mention?.options[this.#mention.active]?.id;
+		this.#mention = {
+			start: query.start,
+			end: composer.selectionStart,
+			options,
+			active: Math.max(
+				0,
+				options.findIndex((option) => option.id === chosen),
+			),
+		};
+		this.#renderMention();
+	}
+
+	#renderMention(): void {
+		const mention = this.#mention;
+		if (!mention) return;
+		const optionId = (index: number) => `${this.#mentionPicker.id}-${index}`;
+		replace(
+			this.#mentionPicker,
+			...mention.options.map((option, index) =>
+				h(
+					"div",
+					{
+						class: "mention-option",
+						role: "option",
+						id: optionId(index),
+						"aria-selected": String(index === mention.active),
+						// The composer keeps the keyboard: a click chooses without taking focus.
+						onmousedown: (event: MouseEvent) => {
+							event.preventDefault();
+							this.#chooseMention(index);
+						},
+						onmousemove: () => {
+							if (this.#mention && this.#mention.active !== index) {
+								this.#mention.active = index;
+								this.#renderMention();
+							}
+						},
+					},
+					option.kind === "agent"
+						? agentFigure(this.#company.staffById(option.id), option.name, { size: 26 })
+						: personAvatar(option.name, option.id),
+					h("span", { class: "mention-name" }, option.name),
+					h("small", null, option.kind === "agent" ? t("Agent") : t("Member")),
+				),
+			),
+		);
+		this.#mentionPicker.hidden = false;
+		this.#composer.setAttribute("aria-autocomplete", "list");
+		this.#composer.setAttribute("aria-controls", this.#mentionPicker.id);
+		this.#composer.setAttribute("aria-activedescendant", optionId(mention.active));
+	}
+
+	#closeMention(): void {
+		if (!this.#mention && this.#mentionPicker.hidden) return;
+		this.#mention = undefined;
+		this.#mentionPicker.hidden = true;
+		replace(this.#mentionPicker);
+		for (const name of ["aria-activedescendant", "aria-controls", "aria-autocomplete"])
+			this.#composer.removeAttribute(name);
+	}
+
+	/** Keys while names are shown: arrows choose, Enter or Tab puts the name in, Escape closes. */
+	#mentionKey(event: KeyboardEvent): boolean {
+		const mention = this.#mention;
+		if (!mention || event.isComposing) return false;
+		const step = event.key === "ArrowDown" ? 1 : event.key === "ArrowUp" ? -1 : 0;
+		if (step) {
+			event.preventDefault();
+			mention.active = (mention.active + step + mention.options.length) % mention.options.length;
+			this.#renderMention();
+			return true;
+		}
+		if ((matchesKey(event, "accept") || event.key === "Tab") && !event.shiftKey) {
+			event.preventDefault();
+			this.#chooseMention(mention.active);
+			return true;
+		}
+		if (matchesKey(event, "dismiss")) {
+			event.preventDefault();
+			event.stopPropagation();
+			this.#closeMention();
+			return true;
+		}
+		return false;
+	}
+
+	#chooseMention(index: number): void {
+		const option = this.#mention?.options[index];
+		if (!option) return;
+		const value = this.#composer.value;
+		// The text may have changed under the list (a teammate's words): read where the name starts now.
+		const end = this.#composer.selectionStart;
+		const query = this.#composer.selectionEnd === end ? mentionQuery(value, end) : undefined;
+		if (!query) {
+			this.#closeMention();
+			return;
+		}
+		const name = `@${option.name} `;
+		this.#composer.value = value.slice(0, query.start) + name + value.slice(end);
+		const caret = query.start + name.length;
+		this.#composer.focus();
+		this.#composer.setSelectionRange(caret, caret);
+		this.#closeMention();
+		this.#composer.dispatchEvent(new Event("input", { bubbles: true }));
+	}
+
+	/** In a group chat the agents a message names answer and the others stay quiet: say so as it is written. */
+	#renderMentionNote(): void {
+		const targets = this.#company.mentionTargets(this.#sessionId);
+		const named =
+			targets.filter((target) => target.kind === "agent").length > 1
+				? [
+						...new Map(
+							findMentions(this.#composer.value, targets)
+								.filter((mention) => mention.target.kind === "agent")
+								.map((mention) => [mention.target.id, mention.target.name]),
+						).values(),
+					]
+				: [];
+		const text = named.length
+			? t("Only {names} will answer", {
+					names: new Intl.ListFormat(presentationLocale(), { style: "long", type: "conjunction" }).format(named),
+				})
+			: "";
+		this.#mentionNote.hidden = !text;
+		if (this.#mentionNote.textContent !== text) this.#mentionNote.textContent = text;
+	}
+
+	/** Every name a message here may mention, this member's own included. */
+	#shownMentionTargets(): MentionTarget[] {
+		const me = this.#company.userId;
+		const own = this.#company.store.get().team?.members.find((member) => member.userId === me)?.displayName;
+		return [
+			...this.#company.mentionTargets(this.#sessionId),
+			...(own ? [{ kind: "member" as const, id: me, name: own }] : []),
+		];
+	}
+
+	/** A member's message with its mentions set apart, this member's own name most of all. */
+	#withMentions(text: string): (string | HTMLElement)[] {
+		const me = this.#company.userId;
+		return mentionParts(text, this.#shownMentionTargets()).map((part) =>
+			typeof part === "string"
+				? part
+				: h(
+						"span",
+						{
+							class: part.targets.some((target) => target.kind === "member" && target.id === me)
+								? "mention mention-me"
+								: "mention",
+						},
+						text.slice(part.start, part.end),
+					),
+		);
+	}
+
 	#submit(): void {
 		const text = this.#composer.value;
 		if (
@@ -843,6 +1037,11 @@ export class ConversationView {
 			this.#composer.value = conversation.draft ?? "";
 			this.#autosize();
 		}
+		if (this.#composer.disabled) this.#closeMention();
+		// A teammate's words can land in this composer (shared drafts) while names are shown:
+		// where the name being typed now starts is read again, or the names close.
+		else if (this.#mention && document.activeElement === this.#composer) this.#updateMention();
+		this.#renderMentionNote();
 		this.#sharedDrafts.update();
 	}
 
@@ -1019,6 +1218,7 @@ export class ConversationView {
 		);
 		const key = JSON.stringify([
 			items,
+			this.#shownMentionTargets(),
 			// Only what the line shows: the header's poll changes the rest every few seconds.
 			codingSessions.map((coding) => [coding.workerId, coding.harness, coding.title, coding.createdAt]),
 			agentName,
@@ -1097,7 +1297,7 @@ export class ConversationView {
 					item.kind === "agent"
 						? markdownBubbles(item.text)
 						: item.text || !item.attachmentCount
-							? [h("div", { class: "text" }, item.text || t("(empty)"))]
+							? [h("div", { class: "text" }, ...(item.text ? this.#withMentions(item.text) : [t("(empty)")]))]
 							: [];
 				nodes.push(
 					h(

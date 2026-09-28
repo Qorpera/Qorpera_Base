@@ -20,6 +20,10 @@ export const CONVERSATION: Record<string, string> = {
 	"Sending messages is not available yet. Your draft stays here.":
 		"Beskeder kan ikke sendes endnu. Din kladde bliver her.",
 	"The message could not be confirmed. Try again.": "Beskeden kunne ikke bekræftes. Prøv igen.",
+	// Mentions: "@" and a name in a message (conversation.ts, ui/mentions.ts, shell.ts)
+	"People and agents to mention": "Personer og agenter, du kan nævne",
+	"Only {names} will answer": "Kun {names} svarer",
+	"You were mentioned": "Du blev nævnt",
 	// Who is here: the other members with the conversation open (conversation.ts)
 	"{name} is here": "{name} er her",
 	"{names} are here": "{names} er her",

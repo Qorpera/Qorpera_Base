@@ -43,6 +43,7 @@ import type {
 	PendingSessionInput,
 } from "../cloud/types.ts";
 import { attachmentProblemText } from "../ui/attachments.ts";
+import type { MentionTarget } from "../ui/mentions.ts";
 import { t } from "../ui/preferences.ts";
 import { RoomDrafts } from "./room-drafts.ts";
 import { debounce, Store } from "./state.ts";
@@ -149,6 +150,12 @@ export interface CompanyState {
 	railError?: string;
 	realtime: RealtimePhase;
 	realtimeError?: string;
+	/** Mentions of this member not seen yet, by conversation (session id → count). */
+	mentions?: Readonly<Record<string, number>>;
+	/** The cloud does not read mentions yet: no mention picker, no badges. */
+	mentionsUnavailable?: boolean;
+	/** The cloud answered a mentions read: it reads mentions, so names are offered. */
+	mentionsReady?: boolean;
 	/** The other members' open browser tabs and the conversation each shows (presence). */
 	here?: readonly PresenceMember[];
 	loading: boolean;
@@ -311,6 +318,7 @@ export class CompanyController {
 	#recoveriesMissing = false;
 	/** Members' unsent messages in the conversations they share (20260928000500). */
 	readonly roomDrafts: RoomDrafts;
+	#mentionReads = 0;
 	/** This tab on the company's presence channel, once another member could be here. */
 	#presence: CloudPresenceHandle | undefined;
 	/** The conversation this tab says it shows: the open one while the tab is visible. */
@@ -366,6 +374,8 @@ export class CompanyController {
 		);
 		await this.refreshAll();
 		if (!this.#stopped) this.#poll = setInterval(() => void this.#tick(), 30_000);
+		if (!this.#stopped && typeof document !== "undefined")
+			document.addEventListener("visibilitychange", () => this.#seeMentions(), { signal: this.signal });
 	}
 
 	stop(): void {
@@ -407,6 +417,65 @@ export class CompanyController {
 		]);
 		await this.refreshGroups();
 		this.store.set({ loading: false });
+		void this.refreshMentions();
+	}
+
+	/** Re-read where this member was mentioned and has not looked yet. */
+	async refreshMentions(): Promise<void> {
+		if (this.#stopped || this.store.get().mentionsUnavailable || !this.store.get().team?.capabilities.read) return;
+		const version = ++this.#mentionReads;
+		try {
+			const sessions = await this.#api.listMemberMentions(this.profile.profileId);
+			if (this.#stopped || version !== this.#mentionReads) return;
+			this.store.set({
+				mentions: Object.fromEntries(sessions.map((item) => [item.sessionId, item.count])),
+				mentionsReady: true,
+			});
+			this.#seeMentions();
+		} catch (error) {
+			if (this.#stopped || version !== this.#mentionReads) return;
+			if (error instanceof CloudRpcError && error.missing)
+				this.store.set({ mentionsUnavailable: true, mentions: {} });
+		}
+	}
+
+	/** Mentions in the conversation on screen are seen: the badge goes, for this member only. */
+	#seeMentions(): void {
+		const sessionId = this.#openSessionId;
+		const visible = typeof document === "undefined" || document.visibilityState !== "hidden";
+		if (!sessionId || !visible || this.#stopped || !this.store.get().mentions?.[sessionId]) return;
+		this.store.set((state) => {
+			const { [sessionId]: _seen, ...rest } = state.mentions ?? {};
+			return { mentions: rest };
+		});
+		void this.#api.markMentionsSeen(sessionId).catch(() => void this.refreshMentions());
+	}
+
+	/** Whom a message in this conversation can mention: the room's other members and, in a
+	 * group chat, its agents (only those named then answer). None where the cloud reads no mentions. */
+	mentionTargets(sessionId: string): MentionTarget[] {
+		const state = this.store.get();
+		const session = state.sessions.find((item) => item.sessionId === sessionId);
+		const roomId = session?.executionScope?.roomId;
+		if (this.#stopped || !state.mentionsReady || !session || typeof roomId !== "string" || !state.team) return [];
+		const name = (userId: string) => state.team?.members.find((member) => member.userId === userId)?.displayName;
+		if (isAgentThreadSession(session))
+			// An agent's thread: every writing member is in it; its one agent answers anyway.
+			return state.team.members
+				.filter((member) => member.userId !== this.#userId && member.role !== "viewer")
+				.map((member) => ({ kind: "member", id: member.userId, name: member.displayName }));
+		// A group chat: its own members and agents, once they are known.
+		const group = state.groups?.[roomId];
+		if (session.staffAgentId || !group) return [];
+		return [
+			...this.groupAgents(sessionId).map(
+				(agent): MentionTarget => ({ kind: "agent", id: agent.id, name: agent.displayName }),
+			),
+			...group.members.flatMap((member): MentionTarget[] => {
+				const display = member.kind === "member" && member.id !== this.#userId ? name(member.id) : undefined;
+				return display ? [{ kind: "member", id: member.id, name: display }] : [];
+			}),
+		];
 	}
 
 	async refreshTeam(): Promise<void> {
@@ -1028,6 +1097,7 @@ export class CompanyController {
 	setOpenSession(sessionId: string | undefined): void {
 		this.#openSessionId = sessionId;
 		this.#trackOpen();
+		this.#seeMentions();
 	}
 
 	/** The other members who have this conversation open now, one entry per member. */
@@ -1661,6 +1731,8 @@ export class CompanyController {
 	/** Hints about one change arrive together (a move, then another member's echo). */
 	readonly #refreshSidebarSoon = debounce(() => void this.refreshSidebar(), 250);
 
+	readonly #refreshMentionsSoon = debounce(() => void this.refreshMentions(), 400);
+
 	readonly #refreshOpenConversation = debounce(() => {
 		if (this.#openSessionId) void this.loadConversation(this.#openSessionId);
 		void this.refreshActivity();
@@ -1672,6 +1744,7 @@ export class CompanyController {
 		if (resource === "sessions") {
 			void this.refreshSessions();
 			this.#refreshOpenConversation();
+			this.#refreshMentionsSoon();
 		} else if (resource === "staff") {
 			void this.refreshStaff();
 			void this.refreshOrganization();
@@ -1706,7 +1779,7 @@ export class CompanyController {
 			// Refresh this surface even with a healthy Realtime channel.
 			if (!this.#stopped) for (const listener of this.#invalidations) listener("company-file");
 			if (this.#openSessionId) await this.loadConversation(this.#openSessionId);
-			await Promise.all([this.refreshActivity(), this.refreshSidebar()]);
+			await Promise.all([this.refreshActivity(), this.refreshSidebar(), this.refreshMentions()]);
 		} finally {
 			this.#polling = false;
 		}

@@ -355,6 +355,24 @@ profile RPCs; RLS is the second read boundary.
 - `qorpera_update_profile_member_role`
 
 
+### Mentions (20260928010000_runtime_room_mentions)
+
+- The cloud reads mentions from a room post's text: "@" at the start or after a
+  space, an opening bracket or a quote; a room member's or agent's name; then the
+  end, a space or punctuation. Only A-Z fold case and every Unicode space counts as
+  a space (`qorpera_mention_fold`), so the rule does not depend on the database's
+  locale. Longer names first; everyone who shares a name named is named. Clients
+  follow the same rule (`packages/web/src/ui/mentions.ts`, `mentionFold`) to
+  suggest names and say who will answer.
+- `qorpera_post_company_room_message` is unchanged in shape. A post that names
+  agents wakes only those agents; a named agent's room wake has a required
+  reply. A post that names no agent wakes every agent in the room, as before.
+- `qorpera_list_member_mentions(p_profile_id)` → `qorpera.member-mentions/v1`:
+  the caller's unseen mentions by conversation (`sessionId`, `count`,
+  `latestAt`). `qorpera_mark_member_mentions_seen(p_session_id)` marks the
+  caller's mentions in a conversation seen. The author is never told about
+  their own post.
+
 ## 3. Realtime
 
 - `qorpera-profile-{profileId}` — durable-lane invalidation hints for a profile
