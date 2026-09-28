@@ -1,5 +1,5 @@
 -- @fixture 300_runtime_wake_bus.test.sql until "-- END WAKE FIXTURE"
--- Computer hours (20260929170000_computer_hour_credits_deleted_company): a pack of hours paid for a
+-- Computer hours (20260928248970_computer_hour_credits_deleted_company): a pack of hours paid for a
 -- company that is gone or being deleted adds no credit. The billing door refuses it (22023), so the
 -- computer-billing function records the Stripe event for review and a refund.
 
