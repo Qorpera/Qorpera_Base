@@ -237,14 +237,53 @@ begin
 	perform pg_temp.outcome('arace_two');
 end $$;
 
+-- F. The commit's own ranks lock a hook's member row in its merged mode: asked for KEY SHARE and FOR UPDATE, the
+-- member row is held FOR UPDATE, so a KEY SHARE elsewhere waits.
+do $$
+declare v_key text := '63300000-0000-4000-8000-000000000010:63300000-0000-4000-8000-000000000002';
+begin
+	perform dblink_exec('arace_one', 'begin');
+	perform * from dblink('arace_one', format($q$select public.qorpera_folder_lock_commit_rank('63300000-0000-4000-8000-000000000020',
+		%L::jsonb, 1::smallint)::text$q$, jsonb_build_array(
+			jsonb_build_object('rank', 1, 'tbl', 'qorpera_profile_members', 'key', v_key, 'mode', 'keyshare', 'required', true),
+			jsonb_build_object('rank', 1, 'tbl', 'qorpera_profile_members', 'key', v_key, 'mode', 'update')))) as t(x text);
+	perform dblink_send_query('arace_two', $q$select 1 from public.qorpera_profile_members where profile_id = '63300000-0000-4000-8000-000000000010'
+		and user_id = '63300000-0000-4000-8000-000000000002' for key share$q$);
+	if not pg_temp.waits_for('arace_two', 'arace_one') then raise exception 'The member row was not taken in its merged mode'; end if;
+	perform dblink_exec('arace_one', 'rollback');
+	perform pg_temp.outcome('arace_two');
+end $$;
+
+-- G. The real terminalize waits for a commit holding the job (its first statement takes the job FOR UPDATE).
+do $$
+declare v jsonb := pg_temp.actor('run_one');
+begin
+	perform dblink_exec('arace_one', 'begin');
+	perform * from dblink('arace_one', pg_temp.sql_commit(v, 'race-g-1', '[{"op":"mkdir","path":"g-one"}]')) as t(r jsonb);
+	perform dblink_send_query('arace_two', format($q$select public.qorpera_terminalize_runner_attempt(%L, 'cancelled', 'race', false)::text$q$,
+		v ->> 'jobId'));
+	if not pg_temp.waits_for('arace_two', 'arace_one') then raise exception 'Terminalize did not wait for the commit'; end if;
+	perform dblink_exec('arace_one', 'commit');
+	perform pg_temp.outcome('arace_two');
+end $$;
+
 select dblink_disconnect(name) from unnest(array['arace_one','arace_two']) name;
 
 -- Every function that ends a job lease starts with an explicit FOR UPDATE on the job: the whole guarantee that it
 -- waits for commits holding KEY SHARE (a plain UPDATE of non-key columns would not).
 do $$
+declare v_missing text;
 begin
 	if (select prosrc from pg_proc where proname = 'qorpera_terminalize_runner_attempt') !~* 'from public\.qorpera_runner_jobs where id = p_job_id for update' then
 		raise exception 'Terminalize must take the job FOR UPDATE'; end if;
+	-- The functions that end a lease themselves (the design review's list of the live job writers).
+	select string_agg(f, ', ') into v_missing from unnest(array['qorpera_terminalize_runner_attempt_before_native_start',
+		'qorpera_complete_runner_job_v6','qorpera_complete_runner_job_before_path_runtime','qorpera_complete_runner_job',
+		'qorpera_fail_runner_job','qorpera_handoff_run_sponsor','qorpera_revoke_runner','qorpera_reissue_runner_activation',
+		'qorpera_resolve_failed_execution_run','qorpera_retry_room_delivery','qorpera_claim_runner_job',
+		'qorpera_reconcile_runner_orchestrator_without_sponsored_turns']) f
+	where not exists (select 1 from pg_proc where proname = f and prosrc ~* '\mfor\s+update\M');
+	if v_missing is not null then raise exception 'Lease-ending functions without FOR UPDATE: %', v_missing; end if;
 end $$;
 
 -- The committed fixture leaves the shared suite database.

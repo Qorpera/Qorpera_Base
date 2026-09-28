@@ -151,6 +151,10 @@ where the archive waits for effects in flight and then applies. The journal
 may still give that save a later `seq` than the archive's own change, if the
 archive writes to the folder.
 
+**Also carried over from today's actor** (20260920030500:384-401): the run's
+session still has the run's audience, and each of the run's inputs is still
+bound to its session, run, author and runtime bundle.
+
 **Reads.** `read` and `list` run the same checks as plain reads, with no
 locks, in one statement. A paused company refuses run reads (55000), as
 today's actor does. Runs keep no read provenance until C1b-2, so C1b-2 must
@@ -190,6 +194,8 @@ resolver:
   boundary.
 - **Members** go through the same principal wrapper, so an owner or admin
   writes `rules/` through the member path.
+- **Reads are stricter than C1a** about the actor's shape: a member or
+  platform actor with extra keys is invalid (22023). C1a ignored extra keys.
 
 **Explicit bases in C1b-1:**
 
@@ -280,7 +286,8 @@ per reviewed change set:
 - the reviewer's decision (`allow`, `ask` or `deny`);
 - the answer, if asked (`allow` or `deny`, the answering member and the time).
 
-The commit takes an optional `p_review_id`.
+The commit takes an optional `p_review_id`. Only a run carries one; a member or
+platform commit with a review id is refused (22023).
 
 **Enforcement.** For each unit whose class is not plain:
 
@@ -369,14 +376,26 @@ of 2026-09-28 07:07Z), and calls them from the commit:
   - rank 4: `qorpera_company_rooms`, then `qorpera_company_room_members`;
   - rank 5: sections, routines (`qorpera_cloud_routines`) with their cursors,
     todos, connections, rules, in the order F2 fixes.
-- **Keys.** A uuid table's key is the uuid as text. Keys with no single uuid
-  are encoded:
-  - staff: `profile_id:staff_agent_id`;
+- **Keys.** A uuid table's key is the uuid as text (resources, grants,
+  rooms, routines). Keys with no single uuid are encoded:
+  - members: `profile_id:user_id`;
+  - staff and execution authorities: `profile_id:staff_agent_id`;
   - room members: `room_id:principal_kind:principal_id`. Sorted with
     `collate "C"`, this orders by room, then kind, then id, which is today's
     order (20260920030500:52).
 
   F2's claim keys keep F2's encoding.
+
+**Who locks what.** `qorpera_folder_lock_commit_rank` locks the commit's
+ranks (1, 3, 6, 7): members, execution authorities, resources (ancestors
+first, by folder key) and grants.
+- A hook target at those ranks is merged into that pass, never dropped.
+- A target of any other table at a commit rank is a defect (XX000).
+- A row the commit relies on (its member or requester, the run's agent, the
+  wake's room, room members or routine) is marked `required`, and a missing
+  one refuses the commit (42501).
+- F2's targets carry no `required` flag; the hook checks the rows it relies
+  on in `decide`.
 
 **Stubs.**
 - `targets` returns no rows.
@@ -547,3 +566,18 @@ checked and attributed.
   it lands with the first real runs (C3). Until then renewal's `FOR UPDATE`
   only waits for commits, which are short.
 - Cards, member answers and parked proposals: C2.
+
+## Notes for later slices
+
+- **C1c's per-caller list** includes `qorpera_remove_profile_member` and
+  `qorpera_leave_hosted_profile`. They lock the member row `FOR UPDATE`, and
+  their triggers then terminalize the runs the member's connections sponsor
+  (job `FOR UPDATE`). A run commit takes the job first and the member after,
+  so a member removed during their own run's commit can deadlock (40P01)
+  until those paths take the job first.
+- **C1b-3** relaxes `qorpera_folder_commits_run_attribution`: a view's save
+  after its turn has an agent actor and no live run.
+- **Runbook, after a PostgreSQL major upgrade** (or any change to
+  `qorpera_folder_key`): besides recomputing stored keys (core §2), run
+  `REINDEX INDEX qorpera_company_path_resources_folder_key`. An `update …
+  set path = path` can be a HOT update and write no new index entry.

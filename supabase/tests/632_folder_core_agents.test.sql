@@ -7,14 +7,16 @@ insert into auth.users(id,email) values
 	('63200000-0000-4000-8000-000000000001','agents-owner@example.test'),
 	('63200000-0000-4000-8000-000000000002','agents-member@example.test'),
 	('63200000-0000-4000-8000-000000000003','agents-viewer@example.test'),
-	('63200000-0000-4000-8000-000000000004','agents-other@example.test');
+	('63200000-0000-4000-8000-000000000004','agents-other@example.test'),
+	('63200000-0000-4000-8000-000000000005','agents-admin@example.test');
 insert into public.qorpera_profiles(id,name,created_by_user_id)
 values ('63200000-0000-4000-8000-000000000010','Folder agents fixture','63200000-0000-4000-8000-000000000001');
 insert into public.qorpera_profile_members(profile_id,user_id,email,display_name,role) values
 	('63200000-0000-4000-8000-000000000010','63200000-0000-4000-8000-000000000001','agents-owner@example.test','Owner','owner'),
 	('63200000-0000-4000-8000-000000000010','63200000-0000-4000-8000-000000000002','agents-member@example.test','Member','contributor'),
 	('63200000-0000-4000-8000-000000000010','63200000-0000-4000-8000-000000000003','agents-viewer@example.test','Viewer','viewer'),
-	('63200000-0000-4000-8000-000000000010','63200000-0000-4000-8000-000000000004','agents-other@example.test','Other','contributor');
+	('63200000-0000-4000-8000-000000000010','63200000-0000-4000-8000-000000000004','agents-other@example.test','Other','contributor'),
+	('63200000-0000-4000-8000-000000000010','63200000-0000-4000-8000-000000000005','agents-admin@example.test','Admin','admin');
 insert into public.qorpera_company_environments(id,profile_id,name,contract_version,created_by_user_id) values
 	('63200000-0000-4000-8000-000000000020','63200000-0000-4000-8000-000000000010','Environment',1,'63200000-0000-4000-8000-000000000001');
 insert into public.qorpera_profile_staff(profile_id, staff_agent_id, display_name, role, charter, appearance_color, appearance_shape,
@@ -24,6 +26,12 @@ insert into public.qorpera_profile_staff(profile_id, staff_agent_id, display_nam
 
 select set_config('request.jwt.claims', '{"role":"service_role"}', true) \g /dev/null
 select public.qorpera_folder_enable('63200000-0000-4000-8000-000000000020') \g /dev/null
+set local session_replication_role = replica;
+insert into public.qorpera_execution_sponsor_versions(binding_id, version, sponsor_kind, provider_connection_id, provider_connection_version,
+	created_by_user_id)
+values ('63200000-0000-4000-8000-0000000000b1', 1, 'member_connection', '63200000-0000-4000-8000-0000000000b3', 1,
+	'63200000-0000-4000-8000-000000000002');
+set local session_replication_role = origin;
 
 create function pg_temp.stage(p_text text) returns jsonb language plpgsql security definer as $$
 declare v_hash text := encode(extensions.digest(convert_to(p_text,'utf8'),'sha256'),'hex'); v_manifest text; v_manifest_hash text;
@@ -57,7 +65,7 @@ declare
 	v_bundle uuid := '63200000-0000-4000-8000-0000000000b2';
 begin
 	set local session_replication_role = replica;
-	if p_kind = 'human' then
+	if p_kind in ('human','first-run') then
 		-- One open session per agent and audience; reuse it.
 		select id into v_session from public.qorpera_shared_sessions where profile_id = v_profile and staff_agent_id = v_staff::text
 			and status = 'open' and audience_kind = p_audience
@@ -71,7 +79,9 @@ begin
 		end if;
 		insert into public.qorpera_session_inputs(id, session_id, client_input_id, author_user_id, actor_kind, kind,
 			runtime_bundle_id, runtime_bundle_sha256, execution_run_id)
-		values (v_input, v_session, extensions.gen_random_uuid(), p_requester, 'human', 'user_message', v_bundle, repeat('b', 64), v_run);
+		values (v_input, v_session, extensions.gen_random_uuid(), p_requester,
+			case when p_kind = 'first-run' then 'control_plane' else 'human' end,
+			case when p_kind = 'first-run' then 'kickoff' else 'user_message' end, v_bundle, repeat('b', 64), v_run);
 	end if;
 	insert into public.qorpera_runner_jobs(id, profile_id, environment_id, substrate_version_id, client_job_id, required_capability,
 		job_type, payload, created_by_user_id, status, runner_id, client_lease_id, lease_token_sha256, lease_expires_at, run_id)
@@ -81,20 +91,20 @@ begin
 		company_snapshot_id, staff_agent_id, staff_version, sponsor_binding_id, sponsor_version, required_capability, job_type,
 		payload_sha256, transcript_start_sequence, created_by_user_id, requested_by_user_id, model_provider, model_id, model_selection,
 		audience_kind, audience_user_id, runtime_bundle_id, runtime_bundle_sha256, session_id, input_ids)
-	values (v_run, v_profile, v_env, case when p_kind = 'human' then 'session_turn' else 'wake' end,
-		case when p_kind = 'human' then v_input else v_wake end, v_job, extensions.gen_random_uuid(), extensions.gen_random_uuid(),
+	values (v_run, v_profile, v_env, case when p_kind in ('human','first-run') then 'session_turn' else 'wake' end,
+		case when p_kind in ('human','first-run') then v_input else v_wake end, v_job, extensions.gen_random_uuid(), extensions.gen_random_uuid(),
 		v_staff, 1, v_sponsor, 1, 'agent_turn', 'agent_turn', repeat('c', 64), 0, p_requester, p_requester, 'openai', 'gpt-test',
 		'provider_default', p_audience, case when p_audience = 'member_private' then p_requester end, v_bundle, repeat('b', 64),
-		v_session, case when p_kind = 'human' then array[v_input] else '{}'::uuid[] end);
+		v_session, case when p_kind in ('human','first-run') then array[v_input] else '{}'::uuid[] end);
 	insert into public.qorpera_wake_occurrences(id, profile_id, environment_id, trigger_id, occurrence_key, scheduled_for, not_before,
 		wake_kind, source_kind, source_id, run_id, status, staff_agent_id, staff_version, requested_by_user_id, sponsor_binding_id,
 		sponsor_version, session_id, causal_root_id, causal_agent_ids, payload, routine_id, routine_version)
 	values (v_wake, v_profile, v_env, case when p_kind = 'routine' then 'every-5' else 'input' end, v_wake::text,
 		clock_timestamp(), clock_timestamp(), p_kind,
-		case when p_kind = 'human' then 'input' when p_kind = 'routine' then coalesce(p_source, 'schedule') else 'coworker' end,
-		case when p_kind = 'human' then v_input when p_kind = 'routine' then p_routine else v_wake end,
+		case when p_kind in ('human','first-run') then 'input' when p_kind = 'routine' then coalesce(p_source, 'schedule') else 'coworker' end,
+		case when p_kind in ('human','first-run') then v_input when p_kind = 'routine' then p_routine else v_wake end,
 		v_run, 'materialized', v_staff, 1, p_requester, v_sponsor, 1, v_session, v_wake, array[v_staff],
-		case when p_kind = 'human' then jsonb_build_object('inputIds', jsonb_build_array(v_input)) else '{}'::jsonb end,
+		case when p_kind in ('human','first-run') then jsonb_build_object('inputIds', jsonb_build_array(v_input)) else '{}'::jsonb end,
 		p_routine, p_routine_version);
 	set local session_replication_role = origin;
 	return jsonb_build_object('kind','run','runId',v_run,'jobId',v_job,'runnerId',v_runner,'assignmentId',v_assignment);
@@ -125,6 +135,53 @@ begin
 	set local session_replication_role = replica;
 	execute p_sql;
 	set local session_replication_role = origin;
+end $$;
+
+-- A room wake: the room, its session, the poster and agent A as active members, the input in the room, and the run
+-- as a room delivery (review probe r432impl/room.sql). Sets qorpera_test.room and qorpera_test.room_session.
+create function pg_temp.room_run(p_poster uuid) returns jsonb language plpgsql as $$
+declare
+	v_profile uuid := '63200000-0000-4000-8000-000000000010'; v_env uuid := '63200000-0000-4000-8000-000000000020';
+	v_staff uuid := '63200000-0000-4000-8000-0000000000a1';
+	v_run uuid := extensions.gen_random_uuid(); v_job uuid := extensions.gen_random_uuid(); v_wake uuid := extensions.gen_random_uuid();
+	v_runner uuid := extensions.gen_random_uuid(); v_assignment uuid := extensions.gen_random_uuid();
+	v_session uuid := extensions.gen_random_uuid(); v_room uuid := extensions.gen_random_uuid(); v_input uuid := extensions.gen_random_uuid();
+	v_sponsor uuid := '63200000-0000-4000-8000-0000000000b1'; v_bundle uuid := '63200000-0000-4000-8000-0000000000b2';
+begin
+	set local session_replication_role = replica;
+	insert into public.qorpera_shared_sessions(id, profile_id, environment_id, title, created_by_user_id, staff_agent_id, staff_version,
+		audience_kind, audience_user_id, execution_scope)
+	values (v_session, v_profile, v_env, 'Room', p_poster, null, 1, 'company', null, jsonb_build_object('roomId', v_room));
+	insert into public.qorpera_company_rooms(id, profile_id, environment_id, room_key, name, purpose, status, session_id, version,
+		created_by_user_id, source_path, source_path_version, source_snapshot_id, source_file_sha256)
+	values (v_room, v_profile, v_env, 'room-' || left(v_room::text, 8), 'Room', 'Talk', 'active', v_session, 1, p_poster,
+		'agents/groups/room', extensions.gen_random_uuid(), extensions.gen_random_uuid(), repeat('f', 64));
+	insert into public.qorpera_company_room_members(room_id, principal_kind, principal_id, status, source_path_version) values
+		(v_room, 'member', p_poster, 'active', extensions.gen_random_uuid()),
+		(v_room, 'staff_agent', v_staff, 'active', extensions.gen_random_uuid());
+	insert into public.qorpera_session_inputs(id, session_id, client_input_id, author_user_id, actor_kind, kind,
+		runtime_bundle_id, runtime_bundle_sha256)
+	values (v_input, v_session, extensions.gen_random_uuid(), p_poster, 'human', 'user_message', v_bundle, repeat('b', 64));
+	insert into public.qorpera_runner_jobs(id, profile_id, environment_id, substrate_version_id, client_job_id, required_capability,
+		job_type, payload, created_by_user_id, status, runner_id, client_lease_id, lease_token_sha256, lease_expires_at, run_id)
+	values (v_job, v_profile, v_env, extensions.gen_random_uuid(), extensions.gen_random_uuid(), 'agent_turn', 'agent_turn', '{}',
+		p_poster, 'leased', v_runner, v_assignment, repeat('a', 64), clock_timestamp() + interval '5 minutes', v_run);
+	insert into public.qorpera_execution_runs(id, profile_id, environment_id, source_kind, source_id, job_id, substrate_version_id,
+		company_snapshot_id, staff_agent_id, staff_version, sponsor_binding_id, sponsor_version, required_capability, job_type,
+		payload_sha256, transcript_start_sequence, created_by_user_id, requested_by_user_id, model_provider, model_id, model_selection,
+		audience_kind, audience_user_id, runtime_bundle_id, runtime_bundle_sha256, session_id, input_ids)
+	values (v_run, v_profile, v_env, 'room_delivery', v_wake, v_job, extensions.gen_random_uuid(), extensions.gen_random_uuid(),
+		v_staff, 1, v_sponsor, 1, 'agent_turn', 'agent_turn', repeat('c', 64), 0, p_poster, p_poster, 'openai', 'gpt-test',
+		'provider_default', 'company', null, v_bundle, repeat('b', 64), v_session, '{}'::uuid[]);
+	insert into public.qorpera_wake_occurrences(id, profile_id, environment_id, trigger_id, occurrence_key, scheduled_for, not_before,
+		wake_kind, source_kind, source_id, run_id, status, staff_agent_id, staff_version, requested_by_user_id, sponsor_binding_id,
+		sponsor_version, session_id, causal_root_id, causal_agent_ids, payload)
+	values (v_wake, v_profile, v_env, 'room', v_wake::text, clock_timestamp(), clock_timestamp(), 'room', 'room', v_input,
+		v_run, 'materialized', v_staff, 1, p_poster, v_sponsor, 1, v_session, v_wake, array[v_staff], '{}'::jsonb);
+	set local session_replication_role = origin;
+	perform set_config('qorpera_test.room', v_room::text, true);
+	perform set_config('qorpera_test.room_session', v_session::text, true);
+	return jsonb_build_object('kind','run','runId',v_run,'jobId',v_job,'runnerId',v_runner,'assignmentId',v_assignment);
 end $$;
 
 create function pg_temp.commit(p_actor jsonb, p_key text, p_units jsonb, p_review uuid default null) returns jsonb language sql as $$
@@ -165,7 +222,8 @@ begin
 		or c.requester_id <> '63200000-0000-4000-8000-000000000002' or c.run_id <> (v_actor ->> 'runId')::uuid
 		or c.causal_wake_id is null or c.session_kind <> 'in_house' or c.audience ->> 'kind' <> 'company'
 		or c.sponsor_binding_id <> '63200000-0000-4000-8000-0000000000b1' or c.sponsor_version <> 1
-		or c.runtime_bundle_id <> '63200000-0000-4000-8000-0000000000b2' or c.routine_id is not null then
+		or c.runtime_bundle_id <> '63200000-0000-4000-8000-0000000000b2' or c.routine_id is not null
+		or c.provider_connection_id is distinct from '63200000-0000-4000-8000-0000000000b3' then
 		raise exception 'Run attribution: %', to_jsonb(c); end if;
 	if (pg_temp.read('docs/a.txt', v_actor) ->> 'found')::boolean is not true then raise exception 'A run reads what it may read'; end if;
 end $$;
@@ -290,6 +348,8 @@ begin
 		jsonb_build_object('op','write','path','rules/tone.md','file',a)));
 	perform pg_temp.expect(r, 1, 'saved'); perform pg_temp.expect(r, 2, 'saved');
 	if (pg_temp.read('rules/tone.md', pg_temp.member(3)) ->> 'found')::boolean is not true then raise exception 'A viewer reads rules/'; end if;
+	perform pg_temp.expect(pg_temp.commit(pg_temp.member(5), 'rules-admin-1', jsonb_build_array(jsonb_build_object('op','write',
+		'path','rules/admin.md','file',a))), 1, 'saved');
 	r := pg_temp.commit(pg_temp.member(2), 'rules-contrib-1', jsonb_build_array(jsonb_build_object('op','write','path','rules/mine.md','file',a),
 		jsonb_build_object('op','move','from','shared/p.txt','to','rules/p.txt',
 			'expectedVersion',pg_temp.read('shared/p.txt') -> 'entry' ->> 'version')));
@@ -443,6 +503,58 @@ begin
 			is distinct from 'member_private'
 		or (public.qorpera_folder_path_resource(c_env, 'rules/x.md')).scope is distinct from 'company_rules' then
 		raise exception 'The indexed resolver'; end if;
+end $$;
+
+-- First-run and room wakes: a kickoff run saves; a room delivery saves, and is refused once its poster leaves the
+-- room or its session closes.
+do $$
+declare v jsonb; r jsonb; c_member constant uuid := '63200000-0000-4000-8000-000000000002';
+begin
+	perform pg_temp.expect(pg_temp.commit(pg_temp.run('first-run', c_member), 'first-run-1', '[{"op":"mkdir","path":"from-kickoff"}]'), 1, 'saved');
+	perform pg_temp.expect(pg_temp.commit(pg_temp.room_run(c_member), 'room-save-1', '[{"op":"mkdir","path":"from-room"}]'), 1, 'saved');
+	v := pg_temp.room_run(c_member);
+	perform pg_temp.fx(format('update public.qorpera_company_room_members set status = ''removed'', removed_at = clock_timestamp()
+		where room_id = %L and principal_kind = ''member''', current_setting('qorpera_test.room')));
+	perform pg_temp.raises(format('select pg_temp.commit(%L, %L, %L)', v, 'room-left-1', '[{"op":"mkdir","path":"room-left"}]'), '42501');
+	v := pg_temp.room_run(c_member);
+	perform pg_temp.fx(format('update public.qorpera_shared_sessions set status = ''closed'' where id = %L', current_setting('qorpera_test.room_session')));
+	perform pg_temp.raises(format('select pg_temp.commit(%L, %L, %L)', v, 'room-closed-1', '[{"op":"mkdir","path":"room-closed"}]'), '42501');
+	-- A review id is a run's: a member's commit refuses one.
+	perform pg_temp.raises(format('select pg_temp.commit(%L, %L, %L, %L)', pg_temp.member(2), 'member-review-1',
+		'[{"op":"mkdir","path":"member-review"}]', extensions.gen_random_uuid()), '22023');
+end $$;
+
+-- Run reads take no locks: none of the read path's functions locks a row.
+do $$
+begin
+	if exists (select 1 from pg_proc where proname in ('qorpera_folder_read','qorpera_folder_list','qorpera_folder_read_actor',
+			'qorpera_folder_run_resolve','qorpera_folder_wake_authorized','qorpera_folder_actor_allowed','qorpera_folder_actor_resource_allowed',
+			'qorpera_folder_path_resource','qorpera_folder_principal_allowed')
+		and prosrc ~* '\mfor\s+(update|share|key\s+share|no\s+key\s+update)\M') then
+		raise exception 'A read-path function takes a lock'; end if;
+end $$;
+
+-- The hook's targets at the commit's own ranks are merged into the commit's passes, never dropped: a required
+-- member row at rank 1 or grant row at rank 7 that does not exist refuses the commit; a table the commit does not
+-- own at its ranks is a defect. The stub comes back at the end of the block.
+do $$
+begin
+	create or replace function public.qorpera_folder_structured_targets(p_environment_id uuid, p_actor jsonb, p_units jsonb)
+	returns table(rank smallint, tbl text, key text, mode text) language sql stable set search_path = '' as $f$
+		select (t ->> 'rank')::smallint, t ->> 'tbl', t ->> 'key', t ->> 'mode'
+		from jsonb_array_elements(coalesce(current_setting('qorpera_test.targets', true), '[]')::jsonb) t
+	$f$;
+	perform set_config('qorpera_test.targets', jsonb_build_array(jsonb_build_object('rank', 1, 'tbl', 'qorpera_profile_members',
+		'key', '63200000-0000-4000-8000-000000000010:63200000-0000-4000-8000-000000000003', 'mode', 'update'))::text, true);
+	perform pg_temp.expect(pg_temp.commit(pg_temp.member(2), 'targets-member-1', '[{"op":"mkdir","path":"targets-one"}]'), 1, 'saved');
+	perform set_config('qorpera_test.targets', jsonb_build_array(jsonb_build_object('rank', 6, 'tbl', 'qorpera_profile_members',
+		'key', 'x', 'mode', 'keyshare'))::text, true);
+	perform pg_temp.raises(format('select pg_temp.commit(%L, %L, %L)', pg_temp.member(2), 'targets-bad-1', '[{"op":"mkdir","path":"targets-bad"}]'), 'XX000');
+	-- (A hook's targets carry no 'required' flag in F2's signature; the hook checks the rows it relies on in decide.)
+	create or replace function public.qorpera_folder_structured_targets(p_environment_id uuid, p_actor jsonb, p_units jsonb)
+	returns table(rank smallint, tbl text, key text, mode text) language sql stable set search_path = '' as $f$
+		select null::smallint, null::text, null::text, null::text where false
+	$f$;
 end $$;
 
 -- Folder invariants, and no claim outlives its transaction.

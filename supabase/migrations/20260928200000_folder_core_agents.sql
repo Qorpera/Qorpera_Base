@@ -164,13 +164,14 @@ $$;
 
 create function public.qorpera_folder_structured_lock(p_environment_id uuid, p_targets jsonb, p_from_rank smallint, p_to_rank smallint)
 returns void language plpgsql security definer set search_path = '' as $$
-declare v_target record; v_clause text;
+declare v_target record; v_clause text; v_count bigint;
 begin
 	-- Rows merge by (table, key) and the strongest mode wins, so no row is locked twice or upgraded. Within a
 	-- rank, tables go in a fixed order (rooms before room members), then rows in key order.
 	for v_target in
 		select min((t ->> 'rank')::smallint) as rank, t ->> 'tbl' as tbl, t ->> 'key' as key,
-			max(array_position(array['keyshare','share','nokeyupdate','update'], t ->> 'mode')) as strength
+			max(array_position(array['keyshare','share','nokeyupdate','update'], t ->> 'mode')) as strength,
+			bool_or(coalesce((t ->> 'required')::boolean, false)) as required
 		from jsonb_array_elements(coalesce(p_targets, '[]'::jsonb)) t
 		group by 2, 3
 		having min((t ->> 'rank')::smallint) between p_from_rank and p_to_rank
@@ -194,6 +195,50 @@ begin
 		else
 			raise exception 'Folder lock target table % is unknown', v_target.tbl using errcode = 'XX000';
 		end if;
+		get diagnostics v_count = row_count;
+		if v_count = 0 and v_target.required then
+			raise exception 'A row this change set relies on is unavailable' using errcode = '42501'; end if;
+	end loop;
+end $$;
+
+-- The commit's own ranks: 1 members (key 'profile_id:user_id'), 3 execution authorities ('profile_id:staff_agent_id'),
+-- 6 resources (key: id; locked ancestors first, by folder key), 7 grants (key: id). Rows merge by (table, key) into
+-- their strongest mode; a row marked required must exist. A target of another table at these ranks is a defect.
+create function public.qorpera_folder_lock_commit_rank(p_environment_id uuid, p_targets jsonb, p_rank smallint)
+returns void language plpgsql security definer set search_path = '' as $$
+declare v_target record; v_clause text; v_count bigint;
+begin
+	for v_target in
+		select g.tbl, g.key, g.strength, g.required
+		from (select t ->> 'tbl' as tbl, t ->> 'key' as key,
+				max(array_position(array['keyshare','share','nokeyupdate','update'], t ->> 'mode')) as strength,
+				bool_or(coalesce((t ->> 'required')::boolean, false)) as required
+			from jsonb_array_elements(coalesce(p_targets, '[]'::jsonb)) t
+			where (t ->> 'rank')::smallint = p_rank
+			group by 1, 2) g
+		left join lateral (select public.qorpera_folder_key(r.path) as folder_key from public.qorpera_company_path_resources r
+			where r.id = case when g.tbl = 'qorpera_company_path_resources' then g.key::uuid end) res on true
+		order by g.tbl, res.folder_key collate "C", g.key collate "C"
+	loop
+		v_clause := public.qorpera_folder_lock_clause((array['keyshare','share','nokeyupdate','update'])[v_target.strength]);
+		if v_clause is null then raise exception 'Folder lock mode is unknown' using errcode = 'XX000'; end if;
+		if p_rank = 1 and v_target.tbl = 'qorpera_profile_members' then
+			execute 'select 1 from public.qorpera_profile_members where profile_id = $1 and user_id = $2' || v_clause
+			using split_part(v_target.key, ':', 1)::uuid, split_part(v_target.key, ':', 2)::uuid;
+		elsif p_rank = 3 and v_target.tbl = 'qorpera_staff_execution_authorities' then
+			execute 'select 1 from public.qorpera_staff_execution_authorities where profile_id = $1 and staff_agent_id = $2' || v_clause
+			using split_part(v_target.key, ':', 1)::uuid, split_part(v_target.key, ':', 2)::uuid;
+		elsif p_rank = 6 and v_target.tbl = 'qorpera_company_path_resources' then
+			execute 'select 1 from public.qorpera_company_path_resources where id = $1 and environment_id = $2' || v_clause
+			using v_target.key::uuid, p_environment_id;
+		elsif p_rank = 7 and v_target.tbl = 'qorpera_company_path_grants' then
+			execute 'select 1 from public.qorpera_company_path_grants where id = $1' || v_clause using v_target.key::uuid;
+		else
+			raise exception 'Folder lock target table % at rank % is unknown', v_target.tbl, p_rank using errcode = 'XX000';
+		end if;
+		get diagnostics v_count = row_count;
+		if v_count = 0 and v_target.required then
+			raise exception 'A row this change set relies on is unavailable' using errcode = '42501'; end if;
 	end loop;
 end $$;
 
@@ -398,7 +443,8 @@ $$;
 
 -- qorpera_wake_authorized (20260920030500:29 and its patches) for the wake kinds C1b-1 accepts (human, first-run,
 -- routine from a schedule, room), without its locks: it took the per-kind row FOR SHARE NOWAIT before members and
--- staff. The commit takes those rows FOR KEY SHARE at their ranks instead. Plain reads only.
+-- staff. The commit takes those rows FOR KEY SHARE at their ranks instead. Plain reads only. The worker-completion
+-- session variant (20260922170000:277-280) comes with agent wakes in C1b-2.
 create function public.qorpera_folder_wake_authorized(p_wake public.qorpera_wake_occurrences)
 returns boolean language plpgsql stable security definer set search_path = '' as $$
 declare v_ancestry jsonb; v_standing_version bigint := public.qorpera_wake_standing_sponsor_version(p_wake);
@@ -484,24 +530,34 @@ begin
 	if v_wake.staff_agent_id is distinct from v_run.staff_agent_id or not public.qorpera_folder_wake_authorized(v_wake)
 		or public.qorpera_runtime_wake_policy_internal(v_run.id) ->> 'kind' is distinct from v_wake.wake_kind then
 		raise exception 'Admitted wake authority is unavailable' using errcode = '42501'; end if;
+	-- The run's session and inputs are still the ones it was admitted for (today's actor, 20260920030500:384-401).
+	if v_run.session_id is not null and not exists (select 1 from public.qorpera_shared_sessions session
+		where session.id = v_run.session_id and session.audience_kind = v_run.audience_kind
+			and session.audience_user_id is not distinct from v_run.audience_user_id) then
+		raise exception 'Run session is unavailable' using errcode = '42501'; end if;
+	if cardinality(v_run.input_ids) > 0 and exists (select 1 from unnest(v_run.input_ids) i(id)
+		where not exists (select 1 from public.qorpera_session_inputs input where input.id = i.id and input.session_id = v_run.session_id
+			and input.execution_run_id = v_run.id and input.author_user_id = v_run.requested_by_user_id
+			and input.runtime_bundle_id = v_run.runtime_bundle_id and input.runtime_bundle_sha256 = v_run.runtime_bundle_sha256)) then
+		raise exception 'Run inputs are unavailable' using errcode = '42501'; end if;
 	v_worker := public.qorpera_run_worker(v_run.id);
 	if v_worker.id is not null and v_worker.species = 'coding' then v_session_kind := 'coding'; end if;
 	select provider_connection_id into v_connection from public.qorpera_execution_sponsor_versions
 	where binding_id = v_run.sponsor_binding_id and version = v_run.sponsor_version;
 
 	v_targets := v_targets || jsonb_build_array(jsonb_build_object('rank', 2, 'tbl', 'qorpera_profile_staff',
-		'key', p_profile_id::text || ':' || v_run.staff_agent_id::text, 'mode', 'keyshare'));
+		'key', p_profile_id::text || ':' || v_run.staff_agent_id::text, 'mode', 'keyshare', 'required', true));
 	if v_wake.wake_kind = 'routine' then
 		v_targets := v_targets || jsonb_build_array(jsonb_build_object('rank', 5, 'tbl', 'qorpera_cloud_routines',
-			'key', v_wake.routine_id::text, 'mode', 'keyshare'));
+			'key', v_wake.routine_id::text, 'mode', 'keyshare', 'required', true));
 	elsif v_wake.wake_kind = 'room' then
 		select id into v_room from public.qorpera_company_rooms where session_id = v_wake.session_id;
 		v_targets := v_targets || jsonb_build_array(
-			jsonb_build_object('rank', 4, 'tbl', 'qorpera_company_rooms', 'key', v_room::text, 'mode', 'keyshare'),
+			jsonb_build_object('rank', 4, 'tbl', 'qorpera_company_rooms', 'key', v_room::text, 'mode', 'keyshare', 'required', true),
 			jsonb_build_object('rank', 4, 'tbl', 'qorpera_company_room_members',
-				'key', v_room::text || ':member:' || v_run.requested_by_user_id::text, 'mode', 'keyshare'),
+				'key', v_room::text || ':member:' || v_run.requested_by_user_id::text, 'mode', 'keyshare', 'required', true),
 			jsonb_build_object('rank', 4, 'tbl', 'qorpera_company_room_members',
-				'key', v_room::text || ':staff_agent:' || v_run.staff_agent_id::text, 'mode', 'keyshare'));
+				'key', v_room::text || ':staff_agent:' || v_run.staff_agent_id::text, 'mode', 'keyshare', 'required', true));
 	end if;
 
 	return jsonb_build_object('kind', 'staff_agent', 'staffAgentId', v_run.staff_agent_id, 'staffVersion', v_staff.version,
@@ -571,6 +627,9 @@ begin
 	else
 		raise exception 'Folder actor is invalid' using errcode = '22023';
 	end if;
+	-- Reviews bind a run's change set; members and the platform are never reviewed.
+	if p_review_id is not null and v_actor_kind <> 'run' then
+		raise exception 'Only a run carries a review' using errcode = '22023'; end if;
 	if p_operation_key is null or p_operation_key !~ '^[A-Za-z0-9._:-]{8,200}$' then
 		raise exception 'Operation key is invalid' using errcode = '22023'; end if;
 	if jsonb_typeof(p_units) is distinct from 'array' or jsonb_array_length(p_units) not between 1 and 1000 then
@@ -653,25 +712,6 @@ begin
 		v_hook_actor := p_actor;
 	end if;
 
-	-- Step 4, rank 1: members, KEY SHARE: the member actor, or a run's requester.
-	if v_actor_kind = 'member' then
-		select role into v_role from public.qorpera_profile_members
-		where profile_id = v_file.profile_id and user_id = v_actor_id for key share;
-		if v_role is null then raise exception 'Company membership is required' using errcode = '42501'; end if;
-	elsif v_actor_kind = 'run' then
-		perform 1 from public.qorpera_profile_members
-		where profile_id = v_file.profile_id and user_id = (v_resolved ->> 'requesterUserId')::uuid for key share;
-		if not found then raise exception 'Run requester is unavailable' using errcode = '42501'; end if;
-	end if;
-
-	-- Ranks 2, 4 and 5 (staff; rooms and room members; routines and the other index rows), and later 8 and 9, go
-	-- through the structured-file hook's lock, as one merged list: the commit's own rows and the hook's targets
-	-- (C1B §8). Ranks 3 and 7 (execution authorities, grants) have no rows to lock in C1b-1.
-	v_targets := v_targets || coalesce((select jsonb_agg(to_jsonb(t))
-		from public.qorpera_folder_structured_targets(p_environment_id, v_hook_actor, p_units) t), '[]'::jsonb);
-	perform public.qorpera_folder_structured_lock(p_environment_id, v_targets, 2::smallint, 2::smallint);
-	perform public.qorpera_folder_structured_lock(p_environment_id, v_targets, 4::smallint, 5::smallint);
-
 	-- The lock set: each unit's targets and sources FOR UPDATE, and every ancestor of them FOR KEY SHARE. The
 	-- stronger mode wins. A copy's source is held FOR UPDATE too, so its subtree cannot change between the
 	-- checks and the copy (writers below it hold it KEY SHARE). A key past the bound is never claimed (it could
@@ -696,11 +736,31 @@ begin
 		end if;
 	end loop;
 
-	-- Rank 6: covering resources, FOR SHARE, ancestors first.
-	perform 1 from public.qorpera_company_path_resources r
-	where r.environment_id = p_environment_id
-		and r.id in (select (public.qorpera_folder_path_resource(p_environment_id, l.value ->> 'path')).id from jsonb_each(v_locks) l)
-	order by public.qorpera_folder_key(r.path) collate "C", r.id for share of r;
+	-- Step 4. One merged list of the rows to lock before the paths (C1B §8): the commit's own (the member actor or a
+	-- run's requester at rank 1; a run's agent at 2 and its wake's room or routine at 4 or 5; the covering
+	-- resources at 6) and the structured-file hook's targets, at any rank. Rows merge by (table, key), the stronger
+	-- mode wins, and a row the commit relies on must exist. The commit locks ranks 1, 3, 6 and 7; the hook's lock
+	-- takes 2, 4, 5, 8 and 9. Nothing is locked twice or upgraded.
+	if v_actor_kind = 'member' then
+		v_targets := v_targets || jsonb_build_array(jsonb_build_object('rank', 1, 'tbl', 'qorpera_profile_members',
+			'key', v_file.profile_id::text || ':' || v_actor_id::text, 'mode', 'keyshare', 'required', true));
+	elsif v_actor_kind = 'run' then
+		v_targets := v_targets || jsonb_build_array(jsonb_build_object('rank', 1, 'tbl', 'qorpera_profile_members',
+			'key', v_file.profile_id::text || ':' || (v_resolved ->> 'requesterUserId'), 'mode', 'keyshare', 'required', true));
+	end if;
+	v_targets := v_targets || coalesce((select jsonb_agg(jsonb_build_object('rank', 6, 'tbl', 'qorpera_company_path_resources',
+			'key', s.resource_id::text, 'mode', 'share'))
+		from (select distinct (public.qorpera_folder_path_resource(p_environment_id, l.value ->> 'path')).id as resource_id
+			from jsonb_each(v_locks) l) s where s.resource_id is not null), '[]'::jsonb)
+		|| coalesce((select jsonb_agg(to_jsonb(t))
+			from public.qorpera_folder_structured_targets(p_environment_id, v_hook_actor, p_units) t), '[]'::jsonb);
+
+	perform public.qorpera_folder_lock_commit_rank(p_environment_id, v_targets, 1::smallint);
+	perform public.qorpera_folder_structured_lock(p_environment_id, v_targets, 2::smallint, 2::smallint);
+	perform public.qorpera_folder_lock_commit_rank(p_environment_id, v_targets, 3::smallint);
+	perform public.qorpera_folder_structured_lock(p_environment_id, v_targets, 4::smallint, 5::smallint);
+	perform public.qorpera_folder_lock_commit_rank(p_environment_id, v_targets, 6::smallint);
+	perform public.qorpera_folder_lock_commit_rank(p_environment_id, v_targets, 7::smallint);
 
 	-- Rank 7b: the review, FOR SHARE, which an answer's FOR NO KEY UPDATE waits for (and the other way round).
 	if p_review_id is not null then
@@ -914,7 +974,7 @@ begin
 		if v_ok then
 			v_dec := public.qorpera_folder_structured_decide(p_environment_id, v_hook_actor, v_commit_id, v_no, v_unit, v_eff_path, v_eff_to);
 			if coalesce((v_dec ->> 'ok')::boolean, false) is not true then
-				v_ok := false; v_reason := coalesce(v_dec ->> 'reason', 'structure_invalid'); v_problems := v_dec -> 'problems';
+				v_ok := false; v_reason := coalesce(v_dec ->> 'reason', 'structured_invalid'); v_problems := v_dec -> 'problems';
 			end if;
 		end if;
 
@@ -1069,6 +1129,7 @@ revoke all on function public.qorpera_folder_principal_allowed(uuid, public.qorp
 	public.qorpera_folder_lock_clause(text),
 	public.qorpera_folder_structured_targets(uuid, jsonb, jsonb),
 	public.qorpera_folder_structured_lock(uuid, jsonb, smallint, smallint),
+	public.qorpera_folder_lock_commit_rank(uuid, jsonb, smallint),
 	public.qorpera_folder_structured_decide(uuid, jsonb, uuid, integer, jsonb, text, text),
 	public.qorpera_folder_structured_review_class(uuid, jsonb, jsonb, text, text),
 	public.qorpera_folder_structured_apply(uuid, uuid, integer, jsonb, text, text),
