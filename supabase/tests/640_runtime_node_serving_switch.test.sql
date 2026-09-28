@@ -208,14 +208,43 @@ select pg_temp.wake_assert(pg_temp.sw_status('64000000-0000-4000-8000-0000000000
 	and (pg_temp.sw_status('64000000-0000-4000-8000-000000000003') ->> 'readyForRestart')::boolean,
 	'A sleeping machine keeps its disk on the node and does not block a restart');
 
--- The older signed updater keeps `enabled` while it holds a node.
+-- Replays still work on an emptying node: a claim taken before the switch comes back after it.
+savepoint replay;
+reset role;
+insert into public.qorpera_session_inputs(id,session_id,client_input_id,kind,author_user_id,body)
+values('64000000-0000-4000-8000-000000000110','30000000-0000-4000-8000-000000000042',extensions.gen_random_uuid(),
+	'user_message','30000000-0000-4000-8000-000000000001','{"schema":"qorpera.session-prompt/v1","text":"Replay","images":[]}');
+select set_config('qorpera_test.sw_replay_run',pg_temp.wake_input_run(array['64000000-0000-4000-8000-000000000110'::uuid])::text,true);
+set local role service_role;
+select pg_temp.wake_assert(public.qorpera_claim_runner_job_for_orchestrator('30000000-0000-4000-8000-000000000092',
+	'64000000-0000-4000-8000-0000000000aa',120) #>> '{work,run_id}' = current_setting('qorpera_test.sw_replay_run'),'Claimed before the switch');
+select public.qorpera_set_runtime_node_serving('64000000-0000-4000-8000-000000000001',false,3,'replay check');
+select pg_temp.wake_assert(public.qorpera_claim_runner_job_for_orchestrator('30000000-0000-4000-8000-000000000092',
+	'64000000-0000-4000-8000-0000000000aa',120) #>> '{work,run_id}' = current_setting('qorpera_test.sw_replay_run'),
+	'The same claim replays on the emptying node');
+select pg_temp.wake_assert(pg_temp.sw_claim('30000000-0000-4000-8000-000000000092') = 'null'::jsonb,'But no new claim');
+rollback to savepoint replay;
+
+-- An adapter enrolled on a second, serving node is not stopped by the switch: the drain status says so.
+savepoint elsewhere;
+select public.qorpera_configure_runtime_node(pg_temp.sw_policy('64000000-0000-4000-8000-000000000004',repeat('d',64),'node-d'),0);
+select public.qorpera_enroll_runtime_node_provider('64000000-0000-4000-8000-000000000004',repeat('d',64),'native','process',repeat('5',64),4000,8589934592);
+select public.qorpera_set_runtime_node_serving('64000000-0000-4000-8000-000000000001',false,3,'drain with a doubled adapter');
+select pg_temp.wake_assert(pg_temp.sw_status('64000000-0000-4000-8000-000000000001') -> 'orchestratorsServingElsewhere'
+		= '["30000000-0000-4000-8000-000000000092"]'::jsonb
+	and not (pg_temp.sw_status('64000000-0000-4000-8000-000000000001') ->> 'readyForUpdate')::boolean
+	and (pg_temp.sw_status('64000000-0000-4000-8000-000000000001') ->> 'codingTurns')::bigint = 0,
+	'A doubled adapter blocks readiness: ' || pg_temp.sw_status('64000000-0000-4000-8000-000000000001')::text);
+rollback to savepoint elsewhere;
+
+-- The older signed updater keeps `enabled` while it holds a node, and while an update is prepared.
 reset role;
 insert into public.qorpera_node_update_enrollments(node_id,capability_revision,capability_sha256,enabled,current_revision,
 	current_release_sha256,current_artifact_sha256)
 values('64000000-0000-4000-8000-000000000002',1,repeat('d',64),true,0,repeat('d',64),repeat('d',64));
 insert into public.qorpera_node_update_targets(node_id,revision,release_sha256,release_text,signature,publication_evidence_sha256,
-	company_ids,disabled_version)
-values('64000000-0000-4000-8000-000000000002',1,repeat('9',64),'{}','x',repeat('9',64),array['30000000-0000-4000-8000-000000000010'::uuid],2);
+	company_ids)
+values('64000000-0000-4000-8000-000000000002',1,repeat('9',64),'{}','x',repeat('9',64),array['30000000-0000-4000-8000-000000000010'::uuid]);
 set local role service_role;
 select pg_temp.wake_error($q$select public.qorpera_set_runtime_node_serving('64000000-0000-4000-8000-000000000002',false,1,'drain')$q$,
 	'55000','A node update holds this node');

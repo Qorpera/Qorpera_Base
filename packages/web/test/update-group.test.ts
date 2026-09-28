@@ -5,7 +5,7 @@ import type {
 } from "@qorpera/cloud-client/cloud-member-company-editor";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CompanyController } from "../src/app/company.ts";
-import { createGroupUpdater } from "../src/app/update-group.ts";
+import { createGroupDeleter, createGroupUpdater } from "../src/app/update-group.ts";
 import { GroupEdits } from "../src/app/views/group-edits.ts";
 import type { GroupChatDetails, GroupChatDraft } from "../src/cloud/group-details.ts";
 import { deferred, fixture, id, profileA, session, settle, staff, team, timestamp, userA } from "./fixtures.ts";
@@ -364,5 +364,53 @@ describe("editing group details", () => {
 		read.resolve(f.currentFile);
 		await expect(pending).rejects.toThrow();
 		expect(f.editor.edit).not.toHaveBeenCalled();
+	});
+});
+
+describe("deleting a group chat", () => {
+	it("deletes the room document at its current version and approves the review", async () => {
+		const f = setup();
+		const remove = createGroupDeleter({ company: f.company, editor: f.getEditor, current: f.current });
+		await remove(session.sessionId, f.observed.roomId, f.signal);
+		expect(f.editor.read).toHaveBeenCalledWith(f.path, f.signal);
+		expect(f.editor.edit).toHaveBeenCalledWith(
+			{
+				operation: "delete",
+				operationKey: expect.stringMatching(new RegExp(`^group-delete:${f.observed.roomId}:`)),
+				path: f.path,
+				expectedVersion: f.currentFile.version,
+			},
+			f.signal,
+		);
+		expect(f.editor.review).toHaveBeenCalledWith(
+			expect.objectContaining({ state: "review_required" }),
+			"approve",
+			f.signal,
+		);
+	});
+	it("is done when the document is already gone", async () => {
+		const f = setup();
+		f.editor.read.mockResolvedValueOnce({ path: f.path, kind: "absent" } as never);
+		const remove = createGroupDeleter({ company: f.company, editor: f.getEditor, current: f.current });
+		await remove(session.sessionId, f.observed.roomId, f.signal);
+		expect(f.editor.edit).not.toHaveBeenCalled();
+	});
+	it("leaves deleting to owners and admins, and never deletes another room's document", async () => {
+		const f = setup();
+		const remove = createGroupDeleter({ company: f.company, editor: f.getEditor, current: f.current });
+		await expect(remove(session.sessionId, id(80), f.signal)).rejects.toThrow("no longer available");
+		f.editor.read.mockResolvedValueOnce({ ...f.currentFile, text: JSON.stringify({ ...f.room, roomId: id(80) }) });
+		await expect(remove(session.sessionId, f.observed.roomId, f.signal)).rejects.toThrow("no longer available");
+		f.company.store.set({
+			team: { ...team, role: "contributor", capabilities: { ...team.capabilities, authorize: false } },
+		});
+		await expect(remove(session.sessionId, f.observed.roomId, f.signal)).rejects.toThrow("owner or admin");
+		expect(f.editor.edit).not.toHaveBeenCalled();
+	});
+	it("says so when the delete does not apply", async () => {
+		const f = setup();
+		f.editor.review.mockResolvedValueOnce({ commandId: id(101), state: "rejected", result: null } as never);
+		const remove = createGroupDeleter({ company: f.company, editor: f.getEditor, current: f.current });
+		await expect(remove(session.sessionId, f.observed.roomId, f.signal)).rejects.toThrow("could not be deleted");
 	});
 });

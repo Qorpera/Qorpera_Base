@@ -14,8 +14,15 @@
 --     it kept taking runs on an emptying node.
 --   * Node-local admission refusals (a full fast host, a full or switched-off node) now make
 --     only the refusing orchestrator wait. Before, a full fast host made every node wait 15 s.
---     When a second orchestrator refuses the same job inside the first one's wait, every
---     orchestrator waits, as before, so two full nodes do not trade the job back and forth.
+--     When another orchestrator already holds an unexpired refuser-only wait on the job (any
+--     refusal of its own, a node preference included), every orchestrator waits, as before, so two
+--     full nodes do not trade the job back and forth.
+--
+-- Work bound to the node by a disk stays pinned while the node empties: runs of a member whose
+-- login lives on the node (the identity-home rule, until logins move into the vault), a sleeping
+-- machine's wake, a coding session on an awake member machine there, and a sign-in already routed
+-- there. Those wait for the node to return; the switch needs no pause, but for them emptying acts
+-- like one.
 --   * qorpera_runtime_node_drain_status: what is still on a node (runs, run machines, sign-ins,
 --     awake and sleeping machines) and whether it is empty enough to update or to restart.
 
@@ -53,9 +60,9 @@ begin
 		raise sqlstate 'PGRST' using message = jsonb_build_object('code', 'QRC01', 'message', 'Node policy version changed',
 			'details', null, 'hint', null)::text, detail = '{"status":409,"headers":{}}';
 	end if;
-	-- The signed updater owns `enabled` while it holds this node.
+	-- The signed updater owns `enabled` while it holds this node, and a prepared update pins the node's version.
 	if exists (select 1 from public.qorpera_node_update_targets target
-		where target.node_id = p_node_id and target.resumed_version is null and target.disabled_version is not null) then
+		where target.node_id = p_node_id and target.resumed_version is null) then
 		raise exception 'A node update holds this node' using errcode = '55000';
 	end if;
 	if v_node.enabled = p_serving then
@@ -94,9 +101,9 @@ begin
 	from public.qorpera_runner_orchestrators as orchestrator
 	where orchestrator.id = p_orchestrator_id;
 ';
-	v_new := v_old || '	-- An emptying node takes no new runs. Its orchestrators still replay the claims they hold.
-	if exists (select 1 from public.qorpera_runtime_orchestrator_nodes(v_adapter))
-		and not exists (select 1 from public.qorpera_runtime_orchestrator_nodes(v_adapter) as serving where serving.enabled) then
+	v_new := v_old || '	-- An emptying node takes no new runs (all of the adapter''s nodes switched off; no node row: as before).
+	-- Its orchestrators still replay the claims they hold (above).
+	if (select bool_or(serving.enabled) from public.qorpera_runtime_orchestrator_nodes(v_adapter) as serving) is false then
 		return ''null''::jsonb;
 	end if;
 ';
@@ -136,9 +143,12 @@ $release$;
 
 -- What is still on a node. Runs: claims held by the node's orchestrators (the fast host's runs
 -- included; the node agent's quiet check cannot see those). Run machines and sign-ins: the node
--- ledger. Machines (company, coding, test): awake ones hold a reservation, sleeping ones only a
--- suspended one. Parked warm hosts inside the fast host are not recorded here; they end within
--- the warm window (5 minutes) or when the host is cleared.
+-- ledger. Coding turns: sessions leased by the node's coding executors (an executor swap ends a
+-- turn). Machines (demand kinds office and coding; 'machine' once test machines exist): awake ones
+-- hold a reservation, sleeping ones only a suspended one. An orchestrator whose adapter also maps to
+-- another serving node is not stopped by the switch and blocks readiness. Parked warm hosts inside
+-- the fast host are not recorded here; they end within the warm window (5 minutes) or when the host
+-- is cleared.
 create function public.qorpera_runtime_node_drain_status(p_node_id uuid)
 returns jsonb
 language plpgsql
@@ -148,22 +158,39 @@ set search_path = ''
 as $$
 declare v_node public.qorpera_runtime_nodes%rowtype; v_change public.qorpera_runtime_node_serving_changes%rowtype;
 	v_runs bigint; v_run_machines bigint; v_logins bigint; v_awake jsonb; v_asleep bigint; v_other bigint;
-	v_orchestrators jsonb; v_awake_count bigint;
+	v_orchestrators jsonb; v_awake_count bigint; v_coding bigint; v_elsewhere jsonb;
 begin
 	if auth.role() is distinct from 'service_role' then raise exception 'Operator access required' using errcode = '42501'; end if;
 	select * into v_node from public.qorpera_runtime_nodes where id = p_node_id;
 	if not found then raise exception 'Node is not configured' using errcode = '42501'; end if;
 	select * into v_change from public.qorpera_runtime_node_serving_changes where node_id = p_node_id order by version desc limit 1;
-	-- A claim is 'claimed'/'assigned' until its runner accepts, then stays 'accepted' while the job runs.
+	-- A claim is 'claimed'/'assigned' until its runner accepts, then stays 'accepted' while the job is
+	-- leased. A retried job keeps older accepted claims: only its newest one counts (claims by run, indexed).
 	select count(distinct active.job_id) into v_runs from (
 		select claim.job_id, claim.orchestrator_id from public.qorpera_runner_job_claims claim
 		where claim.status in ('claimed', 'assigned')
 		union all
-		select claim.job_id, claim.orchestrator_id from public.qorpera_runner_jobs job
-		join public.qorpera_runner_job_claims claim on claim.job_id = job.id and claim.status = 'accepted'
-		where job.status in ('leased', 'running')) active
+		select job.id, latest.orchestrator_id from public.qorpera_runner_jobs job
+		cross join lateral (select claim.orchestrator_id from public.qorpera_runner_job_claims claim
+			where claim.run_id = job.run_id and claim.job_id = job.id and claim.status = 'accepted'
+			order by claim.created_at desc, claim.id desc limit 1) latest
+		where job.status = 'leased') active
 	join public.qorpera_runner_orchestrators orchestrator on orchestrator.id = active.orchestrator_id
 	where exists (select 1 from public.qorpera_runtime_orchestrator_nodes(orchestrator.provider_adapter) n where n.node_id = p_node_id);
+	-- Coding turns in progress on this node's coding executors (the executor holds the turn's lease).
+	select count(*) into v_coding
+	from public.qorpera_coding_sessions session
+	join public.qorpera_coding_executors executor on executor.environment_id = session.environment_id
+		and executor.owner = session.lease_owner
+	where session.phase in ('preparing', 'running', 'publishing') and session.lease_until > clock_timestamp()
+		and executor.nas_machine_id_sha256 = v_node.machine_id_sha256;
+	-- An orchestrator of this node whose adapter also maps to another serving node keeps claiming.
+	select coalesce(jsonb_agg(distinct orchestrator.id), '[]'::jsonb) into v_elsewhere
+	from public.qorpera_runner_orchestrators orchestrator
+	where orchestrator.status <> 'revoked'
+		and exists (select 1 from public.qorpera_runtime_orchestrator_nodes(orchestrator.provider_adapter) n where n.node_id = p_node_id)
+		and exists (select 1 from public.qorpera_runtime_orchestrator_nodes(orchestrator.provider_adapter) n
+			where n.node_id <> p_node_id and n.enabled);
 	select count(*) filter (where demand.provider_kind = 'native' and demand.suspended_at is null),
 		count(*) filter (where demand.provider_kind = 'login' and demand.suspended_at is null),
 		count(*) filter (where demand.suspended_at is not null),
@@ -186,10 +213,13 @@ begin
 		'version', v_node.version, 'serving', v_node.enabled,
 		'lastChange', case when v_change.node_id is null then null else jsonb_build_object('version', v_change.version,
 			'serving', v_change.serving, 'reason', v_change.reason, 'changedAt', v_change.changed_at) end,
-		'runs', v_runs, 'runMachines', v_run_machines, 'signIns', v_logins, 'otherReservations', v_other,
-		'machinesAwake', v_awake, 'machinesAsleep', v_asleep, 'orchestrators', v_orchestrators,
-		'readyForUpdate', not v_node.enabled and v_runs = 0 and v_run_machines = 0 and v_logins = 0 and v_other = 0,
-		'readyForRestart', not v_node.enabled and v_runs = 0 and v_run_machines = 0 and v_logins = 0 and v_other = 0 and v_awake_count = 0);
+		'runs', v_runs, 'runMachines', v_run_machines, 'signIns', v_logins, 'codingTurns', v_coding,
+		'otherReservations', v_other, 'machinesAwake', v_awake, 'machinesAsleep', v_asleep, 'orchestrators', v_orchestrators,
+		'orchestratorsServingElsewhere', v_elsewhere,
+		'readyForUpdate', not v_node.enabled and v_runs = 0 and v_run_machines = 0 and v_logins = 0 and v_coding = 0
+			and v_other = 0 and jsonb_array_length(v_elsewhere) = 0,
+		'readyForRestart', not v_node.enabled and v_runs = 0 and v_run_machines = 0 and v_logins = 0 and v_coding = 0
+			and v_other = 0 and jsonb_array_length(v_elsewhere) = 0 and v_awake_count = 0);
 end
 $$;
 
