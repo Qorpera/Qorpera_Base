@@ -270,6 +270,50 @@ no database login and no service key; it sees a login only for one operation and
   image carry this change. Before that, `qorpera_compute_identity_login_in_vault` is false for every
   identity and nothing changes.
 
+## Vault by default for new companies (founder decisions 2026-09-28)
+
+Every company created after the shared vault starts serves from it by itself: no hand-made authority, key
+or switch. Existing companies keep their own brokers (or none) and are switched one by one as before.
+Picks: one shared vault; each company's capability and key derived from the vault's own secrets (nothing
+new stored); new companies only; node 1 serves, node 2 stands ready with the same secrets.
+
+- **Part 1, database** (migration `20260929130000`): `qorpera_cloud_secret_broker_principals` is the
+  shared vault's identity (service origin, the key id its companies get, a capability hash, and the time
+  after which the companies it registers were created). Broker role only:
+  - `qorpera_broker_principal_companies`: the companies it serves (authorities with its `principal_id`)
+    and, at most 50 at a time, the companies created after its start time that have no authority at all.
+  - `qorpera_register_company_with_broker_principal`: creates the company's authority row (the
+    principal's origin and key id, the capability hash the broker derived for the company, `principal_id`)
+    and its row in `qorpera_model_login_sign_in_companies`. A repeat with the same capability, by either
+    copy of the shared vault, answers the same authority; another capability, another principal, a company
+    created before the start time or a company with its own vault is refused.
+  - Every existing broker function then serves the company unchanged: each call names the company's own
+    authority and capability. Locks: the new authority row and the switch row only.
+  - An operator creates the principal once (`insert` with the capability hash and the start time).
+- **Part 2, the broker** (`cloud-secret-broker-shared.ts`): config `qorpera.cloud-secret-broker-service/v3`
+  names the principal (`principalId`, `port`, optional `memberOrigins`) and loads two credentials instead
+  of one company's capability and keyring: `qorpera-cloud-secret-principal` (32 random bytes, base64url)
+  and `qorpera-cloud-secret-master-keys` (`{"schema":"qorpera.cloud-secret-master-keys/v1","keys":[{"keyId":
+  "<the principal's key id>","keyBase64url":"<32 bytes>"}]}`). The runtime token, database login, CA,
+  login helper, connectors and coding executor credentials are the same as a one-company broker's.
+  - Capabilities: the principal's is HMAC-SHA256(principal secret, `qorpera.broker-principal/v1`), a
+    company's HMAC-SHA256(principal secret, `qorpera.broker-authority/v1:<company>`), both base64url
+    (`sharedBrokerCapability`); the database holds only their sha256. Keys: a company's wrapping key is
+    HKDF-SHA256(master key, salt `qorpera.company-kek/v1`, info `<company>`). Both copies of the vault
+    derive the same ones, and nothing new is stored.
+  - Every 10 s it registers the companies the principal lists and serves every registered company with
+    its own broker, login vault, sign-ins and usage on that company's authority. A company it does not
+    know yet (created a moment ago) is looked up again at most every 2 s.
+  - Each request's company comes from the path (sign-in, account refresh) or the `?company=` every
+    client adds; a company it does not serve gets 404. Every database call still names the company's
+    own authority and capability.
+  - Background work per company: finished sign-ins every 2 s for a company whose member is signing in
+    (20 minutes after the member's last poll) and every 30 s for all; each company's upkeep pass
+    (accounts, switch-off, idle renewals) in turn every 5 minutes. The database pool has 8 connections.
+  - One-company brokers (config v2) are unchanged.
+- **Part 3, deploy** (next change): the shared broker's unit and secrets, and a default route on both
+  fronts for any company without a map line of its own; node 2 as a warm standby.
+
 ## Failure cases
 
 | Case | Result |
