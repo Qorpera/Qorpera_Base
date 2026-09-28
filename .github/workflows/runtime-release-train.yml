@@ -6,8 +6,8 @@ name: Runtime release train
 # every such PR. A PR that changes only web client files (the web and member-web
 # packages, outside what the runtime and cloud-client tests read: the web's cloud
 # client and the tsconfig it compiles under, its avatar scripts and member-web's
-# screen viewer) cannot touch a
-# release-owned file or a runtime test, so it does not start this workflow.
+# screen viewer) cannot touch a release-owned file or a runtime test, so it does
+# not start this workflow.
 on:
   workflow_dispatch:
   push:
