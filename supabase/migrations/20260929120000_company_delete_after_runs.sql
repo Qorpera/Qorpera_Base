@@ -202,6 +202,7 @@ declare
 	v_join text;
 	v_deletes text[] := '{}';
 	v_table oid;
+	v_foreign boolean;
 	v_counts jsonb;
 begin
 	if p_profile_id is null then
@@ -269,6 +270,22 @@ begin
 		end loop;
 		exit when not exists (select 1 from pg_temp.qorpera_purge_rows as found where found.level = v_level + 1);
 		v_level := v_level + 1;
+	end loop;
+
+	-- A row that names another company is never this company's to delete: refuse instead.
+	for v_table in
+		select distinct found.table_id from pg_temp.qorpera_purge_rows as found
+		join pg_catalog.pg_attribute as company_column on company_column.attrelid = found.table_id
+			and company_column.attname = 'profile_id' and not company_column.attisdropped
+	loop
+		execute format(
+			'select exists (select 1 from %1$s as candidate where candidate.profile_id <> %2$L and candidate.ctid in (
+				select found.row_id from pg_temp.qorpera_purge_rows as found where found.table_id = %3$s))',
+			v_table::regclass, p_profile_id, v_table)
+		into v_foreign;
+		if v_foreign then
+			raise exception 'Rows of another company depend on this company (%)', v_table::regclass using errcode = '55000';
+		end if;
 	end loop;
 
 	select jsonb_object_agg(counted.table_id::regclass::text, counted.row_count order by counted.table_id::regclass::text)
