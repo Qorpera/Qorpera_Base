@@ -235,6 +235,13 @@ export function fixture() {
 	vi.spyOn(api, "listRoomDrafts").mockRejectedValue(
 		new CloudRpcError("qorpera_list_room_drafts", { message: "missing", code: "PGRST202" }, 404),
 	);
+	// Presence joins the company's live channel; the fixture's tabs see nobody else.
+	vi.spyOn(api, "joinPresence").mockReturnValue({
+		setOpenThread: vi.fn(),
+		sendTyping: vi.fn(),
+		sendActivity: vi.fn(),
+		stop: vi.fn(async () => {}),
+	});
 	vi.spyOn(api, "readSessionEvents").mockResolvedValue([]);
 	vi.spyOn(api, "listSessionInputs").mockResolvedValue({ items: [], hasMore: false, nextAfterPosition: 0 });
 	vi.spyOn(api, "listCodingSessions").mockResolvedValue([]);

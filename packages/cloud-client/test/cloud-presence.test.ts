@@ -253,6 +253,58 @@ describe("shared browser presence", () => {
 			await handle.stop();
 		}
 	});
+	it("looks a tab up once a minute and reports members only when they change", async () => {
+		const f = fixture();
+		const handle = f.join();
+		try {
+			await vi.waitFor(() => expect(f.channels).toHaveLength(1));
+			const c = f.channels[0];
+			c.status("SUBSCRIBED");
+			c.state = { [remoteId]: [signed("open_thread", 1)] };
+			c.sync();
+			await vi.waitFor(() => expect(f.members).toHaveBeenCalledOnce());
+			expect(f.members.mock.calls[0]?.[0]).toEqual([
+				{ clientId: remoteId, userId: identity.userId, name: identity.name, staffAgentId: "legal-agent" },
+			]);
+			// Another sync with nothing new (an agent re-tracking its file presence): no lookup, no report.
+			c.sync();
+			c.sync();
+			await new Promise((resolve) => setTimeout(resolve, 20));
+			expect(f.list).toHaveBeenCalledOnce();
+			expect(f.members).toHaveBeenCalledOnce();
+			c.state = { [remoteId]: [signed("open_thread", 2, "sales-agent")] };
+			c.sync();
+			await vi.waitFor(() => expect(f.members).toHaveBeenCalledTimes(2));
+			expect(f.list).toHaveBeenCalledOnce();
+			const later = Date.now() + 61_000;
+			vi.spyOn(Date, "now").mockReturnValue(later);
+			c.sync();
+			await vi.waitFor(() => expect(f.list).toHaveBeenCalledTimes(2));
+			expect(f.members).toHaveBeenCalledTimes(2);
+		} finally {
+			await handle.stop();
+		}
+	});
+	it("tries a failed lookup again", async () => {
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+		const f = fixture();
+		f.list.mockRejectedValueOnce(new Error("busy"));
+		const handle = f.join();
+		try {
+			await vi.waitFor(() => expect(f.channels).toHaveLength(1));
+			const c = f.channels[0];
+			c.status("SUBSCRIBED");
+			c.state = { [remoteId]: [signed("open_thread", 1)] };
+			c.sync();
+			await vi.waitFor(() => expect(f.list).toHaveBeenCalledOnce());
+			expect(f.members).not.toHaveBeenCalled();
+			await vi.advanceTimersByTimeAsync(3_000);
+			await vi.waitFor(() => expect(f.members).toHaveBeenCalledOnce());
+			expect(f.list).toHaveBeenCalledTimes(2);
+		} finally {
+			await handle.stop();
+		}
+	});
 	it("cannot restore members after a newer empty sync while signature verification is pending", async () => {
 		const f = fixture();
 		const handle = f.join();

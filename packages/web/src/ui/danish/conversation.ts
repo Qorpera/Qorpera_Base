@@ -20,6 +20,9 @@ export const CONVERSATION: Record<string, string> = {
 	"Sending messages is not available yet. Your draft stays here.":
 		"Beskeder kan ikke sendes endnu. Din kladde bliver her.",
 	"The message could not be confirmed. Try again.": "Beskeden kunne ikke bekræftes. Prøv igen.",
+	// Who is here: the other members with the conversation open (conversation.ts)
+	"{name} is here": "{name} er her",
+	"{names} are here": "{names} er her",
 
 	// Shared drafts: other members' unsent messages above the composer (app/views/shared-drafts.ts)
 	"{name} is writing a message. Open it to write with them": "{name} skriver en besked. Åbn den for at skrive med",
