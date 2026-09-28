@@ -142,56 +142,82 @@ migration can go in any cut without a pause.
    Until logins are in the vault, runs of members whose login lives on the node wait while it is
    empty. Keep that window short.
 
-## Change 3: runs follow the placement (migration `20260928181000`)
+## Change 3: runs follow the placement (migration `20260928183000`)
 
-Stacked on logins in the vault change 3 (`20260928161000`, #427). Its
-`qorpera_compute_identity_login_in_vault` frees a run from the login's home node. It is also
-stacked on change 1 (`20260928180000`, #424).
+It is stacked on three changes:
+- logins in the vault change 3 (`20260928180600`, #427), whose `qorpera_compute_identity_login_in_vault`
+  frees a run from the login's home node;
+- change 1 (`20260928180000`, #424);
+- change 4 (`20260928182000`, #429).
+
+It sorts after change 4 because it reads its bundle declarations.
 
 - **Dispatch roles.** `qorpera_set_runner_orchestrator_dispatch_role(orchestrator, 'fast' |
   'overflow' | null)` (service role). `fast` is a shared execution host; `overflow` is the
-  fresh-VM path. An orchestrator without a role claims exactly as before, so nothing changes until
-  roles are set.
-- **Who may take a run.** Only fast hosts that are active, live (heartbeat within 30 s), on a
-  serving node, and allowed by the run's login (`qorpera_runtime_run_adapter_allowed`, the claim's
-  own home rule) count.
+  fresh-VM path. An orchestrator without a role claims exactly as before.
+- **Which fast hosts count.** Only fast hosts that are:
+  - active and live (heartbeat within 30 s);
+  - on a serving node;
+  - allowed by the run's login (`qorpera_runtime_run_adapter_allowed`, the claim's own home rule);
+  - declared for the run's bundle, or for none.
 - **`qorpera_runtime_run_placement(job, run)`** (service role) gives the preferred node and the
   reason:
-  - `WARM_CONVERSATION`: the conversation's previous run completed within 5 minutes on one of
-    those fast hosts. It is found through the new index
-    `qorpera_execution_runs_session_created (session_id, created_at desc)`.
-  - `LEAST_BUSY`: the node whose fast hosts hold the fewest runs.
+  - `WARM_CONVERSATION`: the conversation's previous run completed within 5 minutes, and its
+    newest accepted claim is one of those fast hosts. It is found through the new index
+    `qorpera_execution_runs_session_created`. The lookup is keyed on the conversation only. In a
+    group chat the previous run may be another agent's, which is harmless: the fast host matches
+    its warm slots by agent and version itself.
+  - `LEAST_BUSY`: the node whose fast hosts hold the fewest runs. It counts held claims, and each
+    leased job's newest accepted claim. Every node has the same fast host, so this is the most
+    free fast room. Ties go to the lower node id.
   - `NO_FAST_HOST`: none may take it.
-- **Claim turn**, a claim predicate costed high so it is evaluated last:
-  - A fast host claims at once on the preferred node. Elsewhere it claims after a 1.5 s head start,
-    or at once when the preferred node's orchestrator refused the run.
+- **Claim turn**, a claim predicate:
+  - A fast host claims at once on the preferred node. Elsewhere it claims after a 1.5 s head
+    start, or at once when the preferred node's orchestrator refused.
   - An overflow orchestrator claims when:
+    - a fast host refused the run (`SANDBOX_CAPACITY_EXHAUSTED`, `SANDBOX_RETIRING`, or
+      `NODE_NOT_PREFERRED` from a fast host), even inside that refusal's wait but never inside
+      its own;
     - no fast host may take the run;
-    - a fast host refused it (`SANDBOX_CAPACITY_EXHAUSTED`, `SANDBOX_RETIRING`,
-      `NODE_NOT_PREFERRED`), even inside that refusal's wait;
     - or the run has waited 10 s.
-
-    The claim's deferral clause lets an overflow orchestrator through a fast host's capacity wait,
-    including the "everyone waits" after two fast refusals from change 1.
-- **Cost.** It reads orchestrators and node rows by key, held claims through the partial index,
-  leased jobs through the queue index, and claims by run. It adds no lock.
+  - Waits count from `queued_at`, so a retry or a sponsor handoff starts them again.
+- **One authority.** `qorpera_reserve_runtime_machine` no longer asks the node chooser
+  (`qorpera_runtime_node_placement_decide`) about a run claimed by an orchestrator with a role.
+  - The chooser ranks by free ledger slots and could refuse the chosen fast host (the fast host
+    reserves no node demand).
+  - Instead, the reservation records the claim turn's placement in `qorpera_runtime_node_placements`
+    (`decision placed`, `reason CLAIM_TURN_<reason>`).
+  - The claim's `orchestrator_claimed` event carries `placement: {reason, nodeId}`, decided before
+    that claim counts.
+- **Cost.** It reads orchestrators and node rows by key, held claims through their partial index,
+  leased jobs through the queue index, claims by run, and previous runs through the new index. It
+  returns early on the time checks before it computes a placement, and it adds no lock.
 
 ### Rollout (coordinator)
 
-1. Apply after `20260928161000` and `20260928180000` (dry run first). The index build takes a
-   short write lock on `qorpera_execution_runs`: check the row count first, and apply it in the
-   cut's window. **Activation guard:** `qorpera_runtime_claim_turn(p_orchestrator_id, job, run)`
-   present in the claim function. Check that it is ABSENT live first.
-2. Set roles when the node 1 fast host exists (change 5), or earlier, for the effect on overflow
-   alone:
+1. **Order.** Apply after `20260928180000`, `20260928180600` and `20260928182000` (dry run first).
+   - The index is built first, under `lock_timeout 10s`. It holds a short write lock on
+     `qorpera_execution_runs` (about 0.25 s per 300k rows).
+   - The orchestrator table is altered last, so claims wait only for the rest of the transaction.
+   - **Activation guard:** `qorpera_runtime_claim_turn(p_orchestrator_id, job, run)` present in the
+     claim function. Check that it is ABSENT live first.
+2. **Before setting roles** (read-only):
+   - every active orchestrator maps to exactly one node (change 1's step 2 query);
+   - no live orchestrator stays without a role, because a runner without one claims at once and
+     bypasses the placement. Revoke stale ones: da49750d was revoked in v142.
+3. **Set roles**, and don't use roles for member runs before every active login is in the vault:
    - node 2's exec host orchestrator: `fast`;
    - node 1's fresh-VM orchestrator: `overflow`;
    - node 1's fast host, once created: `fast`.
 
    With only node 2's fast host, runs whose login lives on node 1 still go to node 1 at once,
    because no fast host may take them. Runs node 2's fast host refuses go to node 1 at once.
-3. Check: `qorpera_runtime_run_placement` on a few queued runs, and the claim latency of member
-   runs, which should be about 2 s. To undo, clear the roles (`null`).
+4. **Check.**
+   - `orchestrator_claimed` events carry `placement`;
+   - `qorpera_runtime_node_placements` rows read `CLAIM_TURN_*`;
+   - member reply start is about 2 s.
+
+   To undo, set the roles to `null`.
 
 ## Change 4: each run keeps its version (migration `20260928182000`)
 
