@@ -3117,6 +3117,63 @@ them.
   together with the section 19 checkpoint and the section 20 matrix once the
   reset and build step 4 have landed.
 
+### 2026-09-28 amendment: model logins live in the vault
+
+Founder decisions of 28 September 2026 on the "Logins in the Vault" page
+(Stateless Compute, step 1). This is the later amendment the 2026-09-22 shared
+execution amendment names: login custody moves into the cloud secret broker,
+which makes nodes symmetric for every member. Design:
+`deploy/first-node/RUNTIME-LOGIN-VAULT.md`.
+
+1. **Where a login lives.** A member's model login (the official harness's
+   login, Codex `auth.json`) is a secret like any other (5.6, 11.5). The
+   company's broker keeps it as immutable versions, each envelope-encrypted
+   under the company's broker key. A node keeps no login, no login key and no
+   login volume. A connection version reaches its login through a credential
+   capsule row that names the vault login (`model-login/<id>`).
+2. **One renewer.** Only the vault renews a login, one renewal at a time per
+   login, with the unmodified official harness in a locked-down helper beside
+   the broker. A renewal is saved only by the holder of that login's renewal
+   lock, on exactly the version it renewed from, and only for a later pass.
+   The lock is one row of that login; no company, fence or authority row is
+   locked for update, and nothing is held while the helper talks to the
+   provider. After a failed renewal the next try waits (1, 2, 4 ... minutes, at
+   most an hour). A renewal the provider refuses, or one it made that the
+   vault could not save, marks the login for a new sign-in.
+3. **What a run gets.** The vault hands a login only to a run the native
+   lease validator would accept: exactly bound (lease, run, job, runner,
+   assignment, capsule, compute identity), job and assignment live, sponsor,
+   connection and capsule active, identity not fenced, company not paused. The
+   vault reads these without company-wide locks. The run receives a copy of
+   the login's known fields without the renewal token. Its host keeps that copy fresh from the vault during the run, the
+   harness picks the fresh copy up by itself, and the run never writes a login
+   back. A lost node loses only passes that end by themselves.
+4. **Sign-in and usage checks.** The member's official sign-in runs in the
+   vault helper and is stored as version 1. Usage checks read the pass in the
+   vault. Neither boots a machine on a node.
+5. **Placement.** A run whose login is in the vault is placed like any other
+   work, on the eligible node with the most free capacity. The identity home
+   rule does not apply to it.
+6. **Who a login serves.** A member's login powers only work that member
+   started or owns. The vault enforces this when handing out a login once the
+   "who pays" work has landed (follow-up work paid by the member who started
+   it, a company API account for work no member started). From change 3 until
+   then, it records mismatches without refusing.
+7. **Claude logins stay out.** Anthropic subscription logins are not kept in
+   the vault until Anthropic confirms it in writing.
+8. **Superseded, per login.** For a login kept in the vault: the 2026-09-16
+   rule "Runs follow the member's identity home", the 2026-09-17 identity
+   recovery inside a member login, the login custody paragraph of the
+   2026-09-22 shared execution amendment, and the capsule lines of the
+   2026-09-27 warm conversations amendment. Logins not yet moved keep the old
+   path until they are.
+9. **Order.** (1) vault storage, (2) sign-in and usage in the vault helper,
+   (3) runs use the vault and placement ignores the home rule for them. Then
+   each login moves by signing in again, the test company first; company
+   Qorpera after the "who pays" work and the founder's go. The node login
+   volumes, home rules, sign-in and refresh machines and login recovery are
+   retired once every active login has run from the vault for a week.
+
 ## 20. Enforcement matrix
 
 > **Note, 2026-09-27.** Rows naming responsibility objects, ceilings, a schema
