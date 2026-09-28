@@ -204,7 +204,21 @@ reset role;
 select pg_temp.wake_assert((select policy ->> 'enabled' from public.qorpera_runtime_node_policies
 	where node_id = '64000000-0000-4000-8000-000000000003' and version = 1) = 'false',
 	'The stored policy of the node''s version follows the switch');
+select pg_temp.wake_assert((select policy ->> 'enabled' from public.qorpera_runtime_node_policies
+	where node_id = '64000000-0000-4000-8000-000000000002' and version = 1) = 'true',
+	'Another node''s stored policy is untouched');
 set local role service_role;
+-- Only the current version's stored policy follows; an older version keeps what it said.
+savepoint policy_versions;
+select public.qorpera_configure_runtime_node(pg_temp.sw_policy('64000000-0000-4000-8000-000000000002',repeat('b',64),'node-b')
+	|| '{"headroomCpuMillis":7000}'::jsonb,1);
+select public.qorpera_set_runtime_node_serving('64000000-0000-4000-8000-000000000002',false,2,'older versions stay');
+reset role;
+select pg_temp.wake_assert((select jsonb_object_agg(version::text, policy -> 'enabled') from public.qorpera_runtime_node_policies
+	where node_id = '64000000-0000-4000-8000-000000000002') = '{"1": true, "2": false}'::jsonb,
+	'The switch writes only the current version''s stored policy');
+set local role service_role;
+rollback to savepoint policy_versions;
 select pg_temp.wake_assert(pg_temp.sw_reserve(2) ->> 'reason' = 'NODE_DISABLED','An emptying node admits no new machine');
 -- The machine already there keeps its reservation and passes admission again (its coding turn re-asks
 -- before each step), with no new observation: the switch kept the node's version.
@@ -241,8 +255,42 @@ select pg_temp.wake_assert((pg_temp.sw_status('64000000-0000-4000-8000-000000000
 rollback to savepoint coding_owner;
 select pg_temp.wake_assert(public.qorpera_claim_coding_session('coding-node-c',60) is null,
 	'The emptying node''s executor starts no new coding turn');
+-- Queued turns pinned to the emptying node's executor stay out of the candidates: ten older ones (nine
+-- made here and the queued turn from above) do not crowd a lapsed turn out of the window of 8, so it is
+-- still failed visibly. The running turn from above holds its lease on coding-node-c, which is what
+-- pins the member's queued turns to that executor.
+savepoint coding_window;
+reset role;
+insert into public.qorpera_runtime_workers(id,profile_id,environment_id,staff_agent_id,todo_id,worker_key,species,title,access,revival,
+	dispatch,requested_by_user_id,steering_run_id,owner_user_id,owner_sponsor_binding_id,owner_sponsor_version)
+select ('64000000-0000-4000-8000-0000000005' || lpad(n::text,2,'0'))::uuid,todo.profile_id,todo.environment_id,todo.staff_agent_id,todo.id,
+	'window-' || n,'coding','Window ' || n,'read','each','{}'::jsonb,'30000000-0000-4000-8000-000000000001',todo.created_by_run_id,
+	'30000000-0000-4000-8000-000000000001',(current_setting('qorpera_test.wake_sponsor')::jsonb ->> 'binding_id')::uuid,1
+from public.qorpera_runtime_agent_todos todo cross join generate_series(1,10) n where todo.todo_key = 'serving';
+insert into public.qorpera_coding_sessions(worker_id,profile_id,environment_id,harness,repository,branch,updated_at)
+select id,profile_id,environment_id,'codex','{"host":"github.com","owner":"acme","name":"app","baseBranch":"main"}'::jsonb,'w-' || worker_key,
+	clock_timestamp() - interval '1 hour'
+from public.qorpera_runtime_workers where worker_key like 'window-%' and worker_key <> 'window-10';
+insert into public.qorpera_coding_sessions(worker_id,profile_id,environment_id,harness,repository,branch,phase,lease_owner,lease_token,
+	lease_until,started_at,updated_at)
+select id,profile_id,environment_id,'codex','{"host":"github.com","owner":"acme","name":"app","baseBranch":"main"}'::jsonb,'w-window-10',
+	'running','coding-node-c',extensions.gen_random_uuid(),clock_timestamp() - interval '1 minute',clock_timestamp() - interval '10 minutes',
+	clock_timestamp()
+from public.qorpera_runtime_workers where worker_key = 'window-10';
+set local role service_role;
+select pg_temp.wake_assert(public.qorpera_claim_coding_session('coding-node-c',60) is null,'Still no new turn on the emptying node');
+reset role;
+select pg_temp.wake_assert((select phase from public.qorpera_coding_sessions where worker_id = '64000000-0000-4000-8000-000000000510') = 'failed',
+	'A lapsed turn is failed although ten older queued turns are pinned to the emptying executor');
+set local role service_role;
+rollback to savepoint coding_window;
 savepoint coding_serving;
 select public.qorpera_set_runtime_node_serving('64000000-0000-4000-8000-000000000003',true,1,'serving again');
+reset role;
+select pg_temp.wake_assert((select policy ->> 'enabled' from public.qorpera_runtime_node_policies
+	where node_id = '64000000-0000-4000-8000-000000000003' and version = 1) = 'true',
+	'Switching back on writes the stored policy too');
+set local role service_role;
 select pg_temp.wake_assert(public.qorpera_claim_coding_session('coding-node-c',60) is not null,
 	'Serving again, the executor starts the member''s next turn');
 rollback to savepoint coding_serving;

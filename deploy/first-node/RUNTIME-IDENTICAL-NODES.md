@@ -64,7 +64,12 @@ change.
     and restores `enabled` from it, and anyone who rebuilds a policy from it see the node as it is.
   - The version check guards against a policy change in between, not against another switch: two
     operators or scripts switching the same node do not see each other. `lastChange` in the drain
-    status says who switched last.
+    status says who switched last. `qorpera_configure_runtime_node`'s version check does not see a
+    switch either: a configure built from a policy read before a switch sets `enabled` back to what
+    that policy said. Do not switch a node while its policy is being changed; read the stored
+    policy right before a configure, and check `lastChange` in the drain status afterwards.
+  - A node switched off before a signed update stays off after it, because the updater restores
+    `enabled`. Switch it back on once the update has finished.
   - It needs no company pause and locks no company row.
   - It refuses with 55000 while the older signed updater (`20260921010000`) has any unresumed
     target for the node, because a prepared update binds `enabled`.
