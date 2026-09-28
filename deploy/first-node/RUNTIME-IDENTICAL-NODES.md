@@ -131,3 +131,54 @@ migration can go in any cut without a pause.
    Until logins are in the vault, runs of members whose login lives on the node wait while it is
    empty. Keep that window short.
 
+## Change 3: runs follow the placement (migration `20260928181000`)
+
+Stacked on logins in the vault change 3 (`20260928161000`, #427). Its
+`qorpera_compute_identity_login_in_vault` frees a run from the login's home node. It is also
+stacked on change 1 (`20260928180000`, #424).
+
+- **Dispatch roles.** `qorpera_set_runner_orchestrator_dispatch_role(orchestrator, 'fast' |
+  'overflow' | null)` (service role). `fast` is a shared execution host; `overflow` is the
+  fresh-VM path. An orchestrator without a role claims exactly as before, so nothing changes until
+  roles are set.
+- **Who may take a run.** Only fast hosts that are active, live (heartbeat within 30 s), on a
+  serving node, and allowed by the run's login (`qorpera_runtime_run_adapter_allowed`, the claim's
+  own home rule) count.
+- **`qorpera_runtime_run_placement(job, run)`** (service role) gives the preferred node and the
+  reason:
+  - `WARM_CONVERSATION`: the conversation's previous run completed within 5 minutes on one of
+    those fast hosts. It is found through the new index
+    `qorpera_execution_runs_session_created (session_id, created_at desc)`.
+  - `LEAST_BUSY`: the node whose fast hosts hold the fewest runs.
+  - `NO_FAST_HOST`: none may take it.
+- **Claim turn**, a claim predicate costed high so it is evaluated last:
+  - A fast host claims at once on the preferred node. Elsewhere it claims after a 1.5 s head start,
+    or at once when the preferred node's orchestrator refused the run.
+  - An overflow orchestrator claims when:
+    - no fast host may take the run;
+    - a fast host refused it (`SANDBOX_CAPACITY_EXHAUSTED`, `SANDBOX_RETIRING`,
+      `NODE_NOT_PREFERRED`), even inside that refusal's wait;
+    - or the run has waited 10 s.
+
+    The claim's deferral clause lets an overflow orchestrator through a fast host's capacity wait,
+    including the "everyone waits" after two fast refusals from change 1.
+- **Cost.** It reads orchestrators and node rows by key, held claims through the partial index,
+  leased jobs through the queue index, and claims by run. It adds no lock.
+
+### Rollout (coordinator)
+
+1. Apply after `20260928161000` and `20260928180000` (dry run first). The index build takes a
+   short write lock on `qorpera_execution_runs`: check the row count first, and apply it in the
+   cut's window. **Activation guard:** `qorpera_runtime_claim_turn(p_orchestrator_id, job, run)`
+   present in the claim function. Check that it is ABSENT live first.
+2. Set roles when the node 1 fast host exists (change 5), or earlier, for the effect on overflow
+   alone:
+   - node 2's exec host orchestrator: `fast`;
+   - node 1's fresh-VM orchestrator: `overflow`;
+   - node 1's fast host, once created: `fast`.
+
+   With only node 2's fast host, runs whose login lives on node 1 still go to node 1 at once,
+   because no fast host may take them. Runs node 2's fast host refuses go to node 1 at once.
+3. Check: `qorpera_runtime_run_placement` on a few queued runs, and the claim latency of member
+   runs, which should be about 2 s. To undo, clear the roles (`null`).
+
