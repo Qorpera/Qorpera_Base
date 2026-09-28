@@ -695,7 +695,7 @@ check reports drift.
   The journal is kept for good, so "resync" is returned only for an invalid
   cursor.
 
-  As built in C1f (`20260928202000_folder_core_feed`):
+  As built in C1f (`20260928234000_folder_core_feed`):
   - The signature is `qorpera_folder_feed(env, actor, after_seq, limit,
     cursor)`. It is for service_role only. Its actors are the platform, a
     member and a run, resolved as `qorpera_folder_read` resolves them; view
