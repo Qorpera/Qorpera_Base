@@ -323,9 +323,11 @@ new stored); new companies only; node 1 serves, node 2 stands ready with the sam
     (accounts, switch-off, idle renewals) in turn every 5 minutes. The database pool has 8 connections.
     A stop ends the company pass in hand after its current renewal and save, inside the unit's 90 s.
   - A member's sign-in marks its company for frequent collection only once the database accepted it.
-  - Connector sign-ins: one set of pending starts for all companies (256), at most 32 per company; a
-    confirm routed to one company refuses another company's flow before anything is exchanged.
-  - One-company brokers (config v2) are unchanged.
+  - Connector sign-ins: one set of flows for all companies (256 started, 256 back from the provider), at
+    most 32 per company across both; a confirm routed to one company refuses another company's flow
+    before anything is exchanged.
+  - One-company brokers (config v2) are unchanged, except that the 32-per-company share of connector
+    sign-ins applies to them too.
 - **Part 3, deploy** (next change): the shared broker's unit and secrets, and a default route on both
   fronts for any company without a map line of its own; node 2 as a warm standby.
 

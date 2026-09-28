@@ -158,6 +158,8 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 			console.error("Shared vault: this vault does not hold the principal's key; it registers no company.");
 		} else {
 			for (const waiting of answer.unregistered) {
+				// Out of time: the next refresh registers the rest.
+				if (signal.aborted) break;
 				try {
 					const done = record(
 						await this.#principal.register(company(waiting), signal),

@@ -218,6 +218,13 @@ it("never serves a company whose key this vault cannot derive, and survives a fa
 	});
 	await withoutKey.refresh(new AbortController().signal);
 	expect(keyless.principal.register).not.toHaveBeenCalled();
+	// An answer that does not name the principal's key is refused outright.
+	keyless.principal.companies.mockResolvedValueOnce({
+		schema: "qorpera.broker-principal-companies/v1",
+		registered: [],
+		unregistered: [second],
+	} as never);
+	await expect(withoutKey.refresh(new AbortController().signal)).rejects.toThrow("Shared vault companies are invalid");
 	expect(logged).toHaveBeenCalledWith(
 		"Shared vault: this vault does not hold the principal's key; it registers no company.",
 	);
