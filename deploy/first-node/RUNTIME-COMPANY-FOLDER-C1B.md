@@ -1025,21 +1025,35 @@ by a machine.
 
 ### 8. C1b-3b: shell commands and test machines
 
-- **`computer_shell_command` needs a row per command, added with #411 or right
-  after it.** Today the run → command link lives only in guest memory, keyed
-  by the start receipt. #411's `qorpera_runtime_office_shell_activity` is
-  one row per screen and names no command. The row needs:
-  - id = the start receipt;
-  - `screen_id`, the screen `generation` and `run_id`;
-  - `started_at` and `ended_at`, set from the guest's per-command `close`
-    event once its background processes end.
+- **`computer_shell_command` needs a row per command.** #411's session builds
+  it in a follow-up stacked on #411 (agreed 2026-09-29). Today the run →
+  command link lives only in guest memory, keyed by the start receipt, and
+  #411's `qorpera_runtime_office_shell_activity` is one row per screen that
+  names no command. `qorpera_runtime_office_shell_commands`:
+  - `id` = the start effect's receipt, and `command_id` = the guest's session
+    id;
+  - `office_id`, `screen_id`, the screen `generation`, `run_id`,
+    `staff_agent_id` and `requested_by_user_id` (from the run);
+  - `started_at`, then `ended_at` and `end_reason` (`exited`, `stopped`,
+    `drained`, `paused`, `lost`).
+
+  It is inserted with the start effect, under the office and screen locks
+  that path already takes. It is ended by the guest's report once no process
+  is left in the command's own mount namespace, which catches setsid and
+  daemons that leave the process group, or by a drain of its screen. The
+  per-screen activity row stays the awake and seat signal.
+- **Takeover drains the whole computer** (#411): it ends the agent's
+  commands. The folder design now says so; a command's changes made before
+  the drain publish at that end boundary, credited to the agent.
 
   It was sent to #411's session on 2026-09-29, with two other findings:
   - #411's new shell arguments (`action`, `waitMs`) look refused by the
     live `qorpera_native_office_operation` (inferred, not run);
-  - any drain of the screen closes the shell today, so a takeover ends the
-    agent's command, where RUNTIME-COMPANY-FOLDER.md says its saves stay
-    the agent's.
+  - any drain of the screen closes the shell, so a takeover ends the agent's
+    command. #411's session keeps that (a command left running could still
+    use the screen the member now controls). RUNTIME-COMPANY-FOLDER.md is
+    amended to match. The first finding was a real bug, fixed in #411 at
+    3822194a1 (migration 20260929070200).
 - **`test_machine`: the view is anchored on the machine row and its current
   placement.** It is owned by the starter's run: the lease, and what is
   visible. A publish names the commands running while its changes were
