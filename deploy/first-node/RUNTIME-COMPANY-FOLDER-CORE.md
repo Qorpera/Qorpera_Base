@@ -769,7 +769,7 @@ GC is the largest correctness risk of the design, so it gets its own tests:
 | --- | --- | --- |
 | Company File row | every call, `FOR UPDATE` | never |
 | Profile row | every call, `FOR UPDATE` | never `FOR UPDATE` or `NOWAIT`, on any path. Foreign-key inserts take their KEY SHARE, which nothing now blocks |
-| Folder fence row | not present (the wake-admission fence, `FOR UPDATE`) | effects and the post-commit worker `FOR KEY SHARE`; stop and resume `FOR UPDATE`; reads, admission and GC never |
+| Folder fence row | not present (the wake-admission fence, `FOR UPDATE`) | effects, wake admission and the post-commit worker `FOR KEY SHARE`; stop and resume `FOR UPDATE`; reads and GC never |
 | Admission row | not present | every wake-inserting or wake-admitting transaction `FOR NO KEY UPDATE`, last before the clock; multi-company loops one company per transaction |
 | Job row | `FOR UPDATE`, which also serializes a run's own reads | commits and effects `FOR KEY SHARE`; renewal `FOR NO KEY UPDATE`; lease-ending changes `FOR UPDATE`; reads never |
 | Members, staff, rooms, index rows, resources, grants, vault rows, unique claims | various, unordered | once, in the order of §3 step 4: `FOR NO KEY UPDATE` for rows rewritten, `FOR KEY SHARE` for rows referenced |
