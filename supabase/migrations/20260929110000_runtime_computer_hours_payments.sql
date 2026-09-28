@@ -194,6 +194,23 @@ begin
 			'priceId', case when v_livemode then v_item.stripe_price_live else v_item.stripe_price_test end);
 	end if;
 
+	if p_method = 'catalog_item_by_price' then
+		-- The catalog item a Stripe price belongs to, in a mode.
+		select * into v_item from public.qorpera_computer_hour_catalog
+		where (v_livemode and stripe_price_live = p_args ->> 'priceId') or (not v_livemode and stripe_price_test = p_args ->> 'priceId');
+		return jsonb_build_object('itemKey', v_item.item_key, 'kind', v_item.kind, 'hours', v_item.hours);
+	end if;
+
+	if p_method = 'customer_get' then
+		return jsonb_build_object('customerId', (select customer.stripe_customer_id from public.qorpera_computer_hour_customers customer
+			where customer.user_id = (p_args ->> 'userId')::uuid and customer.livemode = v_livemode));
+	end if;
+
+	if p_method = 'customer_user' then
+		return jsonb_build_object('userId', (select customer.user_id from public.qorpera_computer_hour_customers customer
+			where customer.stripe_customer_id = p_args ->> 'customerId'));
+	end if;
+
 	perform public.qorpera_computer_hour_lock_billing();
 
 	if p_method = 'checkout_begin' then
@@ -240,9 +257,6 @@ begin
 		return jsonb_build_object('customerId', (select customer.stripe_customer_id from public.qorpera_computer_hour_customers customer
 			where customer.user_id = (p_args ->> 'userId')::uuid and customer.livemode = v_livemode));
 
-	elsif p_method = 'customer_user' then
-		return jsonb_build_object('userId', (select customer.user_id from public.qorpera_computer_hour_customers customer
-			where customer.stripe_customer_id = p_args ->> 'customerId'));
 
 	elsif p_method = 'event_begin' then
 		insert into public.qorpera_computer_hour_stripe_events (event_id, type, livemode, body_sha256)

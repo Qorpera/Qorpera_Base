@@ -25,6 +25,9 @@ select pg_temp.wake_assert(pg_temp.bill('catalog_price', '{"itemKey":"standard"}
 	"priceMinor":63000,"currency":"dkk","hours":286,"active":true,"priceId":"price_standard"}'::jsonb, 'The catalog price');
 select pg_temp.wake_assert(pg_temp.bill('catalog_price', '{"itemKey":"basis","livemode":true}') ->> 'priceId' is null,
 	'No live price until an operator sets one');
+select pg_temp.wake_assert(pg_temp.bill('catalog_item_by_price', '{"priceId":"price_standard"}') ->> 'itemKey' = 'standard'
+	and pg_temp.bill('catalog_item_by_price', '{"priceId":"price_standard","livemode":true}') ->> 'itemKey' is null,
+	'A Stripe price maps back to its item in its own mode');
 
 -- Checkout: founders buy credits for their company; a contributor may not.
 select pg_temp.wake_assert(pg_temp.bill('checkout_begin', '{"userId":"30000000-0000-4000-8000-000000000002","itemKey":"hours_20",
@@ -36,7 +39,9 @@ select pg_temp.wake_assert((current_setting('qorpera_test.cr')::jsonb ->> 'price
 	and current_setting('qorpera_test.cr')::jsonb -> 'customerId' = 'null'::jsonb, 'A founder starts a credit checkout');
 select pg_temp.wake_assert(pg_temp.bill('customer_set', '{"userId":"30000000-0000-4000-8000-000000000001","customerId":"cus_A1"}')
 	->> 'customerId' = 'cus_A1' and pg_temp.bill('customer_set', '{"userId":"30000000-0000-4000-8000-000000000001","customerId":"cus_B2"}')
-	->> 'customerId' = 'cus_A1' and pg_temp.bill('customer_user', '{"customerId":"cus_A1"}') ->> 'userId' = '30000000-0000-4000-8000-000000000001',
+	->> 'customerId' = 'cus_A1' and pg_temp.bill('customer_user', '{"customerId":"cus_A1"}') ->> 'userId' = '30000000-0000-4000-8000-000000000001'
+	and pg_temp.bill('customer_get', '{"userId":"30000000-0000-4000-8000-000000000001"}') ->> 'customerId' = 'cus_A1'
+	and pg_temp.bill('customer_get', '{"userId":"30000000-0000-4000-8000-000000000001","livemode":true}') ->> 'customerId' is null,
 	'One Stripe customer per member and mode, and back from it to the member');
 select pg_temp.wake_assert((pg_temp.bill('checkout_attach', jsonb_build_object('checkoutId', current_setting('qorpera_test.cr')::jsonb ->> 'checkoutId',
 	'sessionId', 'cs_test_credits1')) ->> 'attached')::boolean
