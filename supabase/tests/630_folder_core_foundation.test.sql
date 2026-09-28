@@ -65,6 +65,29 @@ create function pg_temp.read(p_path text, p_actor jsonb default null) returns js
 	select public.qorpera_folder_read('63000000-0000-4000-8000-000000000020', coalesce(p_actor, '{"kind":"platform"}'), p_path)
 $$;
 
+-- The folder's invariants: no claim outlives a transaction; every entry below the root has a live parent
+-- folder whose stored path is its own parent's spelling; every version that made a path live is still
+-- current, or a later version names it as its prior.
+create function pg_temp.folder_invariants(p_environment_id uuid) returns void language plpgsql as $$
+declare v_claims bigint; v_orphans bigint; v_spelling bigint; v_lost bigint;
+begin
+	select count(*) filter (where e.kind = 'claim'),
+		count(*) filter (where strpos(e.path, '/') > 0 and not exists (select 1 from public.qorpera_folder_entries p
+			where p.environment_id = e.environment_id and p.key_sha256 = e.parent_key_sha256 and p.kind = 'folder')),
+		count(*) filter (where strpos(e.path, '/') > 0 and exists (select 1 from public.qorpera_folder_entries p
+			where p.environment_id = e.environment_id and p.key_sha256 = e.parent_key_sha256 and p.kind = 'folder'
+				and p.path <> public.qorpera_folder_parent_path(e.path)))
+	into v_claims, v_orphans, v_spelling
+	from public.qorpera_folder_entries e where e.environment_id = p_environment_id;
+	select count(*) into v_lost from public.qorpera_folder_path_versions v
+	where v.environment_id = p_environment_id and v.op in ('write','mkdir','copy','move_in')
+		and not exists (select 1 from public.qorpera_folder_entries e where e.environment_id = v.environment_id and e.version = v.version)
+		and not exists (select 1 from public.qorpera_folder_path_versions w where w.environment_id = v.environment_id and w.prior_version = v.version);
+	if v_claims + v_orphans + v_spelling + v_lost <> 0 then
+		raise exception 'Folder invariants: % claims, % orphans, % spelling mismatches, % lost versions', v_claims, v_orphans, v_spelling, v_lost;
+	end if;
+end $$;
+
 -- The flag: snapshot-v1 by default, folder-v2 only through enabling an untouched company, then immutable.
 do $$
 begin
@@ -317,6 +340,132 @@ begin
 	end;
 end $$;
 
+-- Review round 2: a unit that creates a key an earlier unit of the same change set removed, or lands under a
+-- move or copy target, really lands; new-folder contents take their folders' spelling; an exact resource on
+-- a folder does not stand in for its descendants; a copy source cannot change under the copy.
+do $$
+declare r jsonb; a jsonb := pg_temp.stage('alpha'); b jsonb := pg_temp.stage('beta'); v uuid;
+begin
+	r := pg_temp.commit(pg_temp.member(2), 'r2-setup', jsonb_build_array(
+		jsonb_build_object('op','mkdir','path','la'), jsonb_build_object('op','write','path','la/x','file',a),
+		jsonb_build_object('op','write','path','lf.txt','file',a), jsonb_build_object('op','mkdir','path','lm'),
+		jsonb_build_object('op','mkdir','path','lc')));
+	perform pg_temp.expect(r, 5, 'saved');
+
+	-- 1. Replace a file by deleting it and writing it again.
+	v := (pg_temp.read('lf.txt') -> 'entry' ->> 'version')::uuid;
+	r := pg_temp.commit(pg_temp.member(2), 'r2-delete-write', jsonb_build_array(
+		jsonb_build_object('op','delete','path','lf.txt','expectedVersion',v),
+		jsonb_build_object('op','write','path','lf.txt','file',b)));
+	perform pg_temp.expect(r, 1, 'saved');
+	if (pg_temp.read('lf.txt') -> 'entry' ->> 'version') is distinct from (pg_temp.expect(r, 2, 'saved') ->> 'version')
+		or (pg_temp.read('lf.txt') -> 'entry' ->> 'fileSha256') is distinct from b ->> 'fileSha256' then
+		raise exception 'Delete then write must leave the new file: %', pg_temp.read('lf.txt'); end if;
+
+	-- 2. Move a folder away, then make a folder at its old name.
+	r := pg_temp.commit(pg_temp.member(2), 'r2-move-mkdir', jsonb_build_array(
+		jsonb_build_object('op','move','from','lm','to','lm2','expectedVersion',pg_temp.read('lm') -> 'entry' ->> 'version','asOfSeq',pg_temp.seq()),
+		jsonb_build_object('op','mkdir','path','lm')));
+	perform pg_temp.expect(r, 1, 'saved'); perform pg_temp.expect(r, 2, 'saved');
+	if pg_temp.read('lm') -> 'entry' ->> 'kind' is distinct from 'folder' or pg_temp.read('lm2') -> 'entry' ->> 'kind' is distinct from 'folder' then
+		raise exception 'Move then mkdir at the old name must leave both folders'; end if;
+
+	-- 3. Copy a folder, then write a new file under the copy.
+	r := pg_temp.commit(pg_temp.member(2), 'r2-copy-write', jsonb_build_array(
+		jsonb_build_object('op','copy','from','la','to','lb'), jsonb_build_object('op','write','path','lb/new.txt','file',b)));
+	perform pg_temp.expect(r, 1, 'saved'); perform pg_temp.expect(r, 2, 'saved');
+	if (pg_temp.read('lb/new.txt') ->> 'found')::boolean is not true or (pg_temp.read('lb/x') ->> 'found')::boolean is not true then
+		raise exception 'Copy then write under the copy must leave both files'; end if;
+
+	-- 4. Copy a folder, then a new folder with contents under the copy.
+	r := pg_temp.commit(pg_temp.member(2), 'r2-copy-new-folder', jsonb_build_array(
+		jsonb_build_object('op','copy','from','lc','to','ld'),
+		jsonb_build_object('op','new_folder','path','ld/nf','contents',jsonb_build_array(jsonb_build_object('path','k.txt','kind','file','file',b)))));
+	perform pg_temp.expect(r, 1, 'saved'); perform pg_temp.expect(r, 2, 'saved');
+	if pg_temp.read('ld/nf') -> 'entry' ->> 'kind' is distinct from 'folder' or (pg_temp.read('ld/nf/k.txt') ->> 'found')::boolean is not true then
+		raise exception 'Copy then new folder under the copy must leave the folder and its file'; end if;
+
+	-- New-folder contents take their folder's spelling, whatever case a deeper path uses.
+	r := pg_temp.commit(pg_temp.member(2), 'r2-new-folder-spelling', jsonb_build_array(jsonb_build_object('op','new_folder','path','nfs',
+		'contents',jsonb_build_array(jsonb_build_object('path','sub/f.txt','kind','file','file',a),
+			jsonb_build_object('path','Sub','kind','folder'), jsonb_build_object('path','SUB/deep','kind','folder'),
+			jsonb_build_object('path','sub/DEEP/g.txt','kind','file','file',a)))));
+	perform pg_temp.expect(r, 1, 'saved');
+	if pg_temp.read('nfs/sub/f.txt') -> 'entry' ->> 'path' is distinct from 'nfs/Sub/f.txt'
+		or pg_temp.read('nfs/sub/deep/g.txt') -> 'entry' ->> 'path' is distinct from 'nfs/Sub/deep/g.txt' then
+		raise exception 'New-folder contents must take their folder''s spelling: % %', pg_temp.read('nfs/sub/f.txt'), pg_temp.read('nfs/sub/deep/g.txt'); end if;
+
+	-- A move or copy that would push a stored path past the limit is refused, not raised.
+	r := pg_temp.commit(pg_temp.member(2), 'r2-long-setup', jsonb_build_array(jsonb_build_object('op','mkdir','path','tl'),
+		jsonb_build_object('op','write','path','tl/' || repeat('a', 4090),'file',a)));
+	perform pg_temp.expect(r, 2, 'saved');
+	r := pg_temp.commit(pg_temp.member(2), 'r2-long-move', jsonb_build_array(jsonb_build_object('op','move','from','tl','to','tl-longer',
+		'expectedVersion',pg_temp.read('tl') -> 'entry' ->> 'version','asOfSeq',pg_temp.seq()),
+		jsonb_build_object('op','copy','from','tl','to','tl-copy'), jsonb_build_object('op','copy','from','tl','to','tlc')));
+	perform pg_temp.expect(r, 1, 'refused', 'too_long'); perform pg_temp.expect(r, 2, 'refused', 'too_long');
+	perform pg_temp.expect(r, 3, 'saved');
+
+	-- An exact resource on a folder covers the folder only. Its descendants fall to the nearest subtree
+	-- resource above, here member 2's own: member 4 may not delete, move or copy the folder with them.
+	insert into public.qorpera_company_path_resources(environment_id,path,path_match,scope,owner_user_id,policy,created_by_user_id) values
+		('63000000-0000-4000-8000-000000000020','locked','subtree','member_private','63000000-0000-4000-8000-000000000002','normal','63000000-0000-4000-8000-000000000001'),
+		('63000000-0000-4000-8000-000000000020','locked/open','exact','company_shared',null,'normal','63000000-0000-4000-8000-000000000001');
+	r := pg_temp.commit('{"kind":"platform"}', 'r2-locked-setup', jsonb_build_array(jsonb_build_object('op','mkdir','path','locked'),
+		jsonb_build_object('op','mkdir','path','locked/open'), jsonb_build_object('op','write','path','locked/open/x.txt','file',a)));
+	perform pg_temp.expect(r, 3, 'saved');
+	v := (pg_temp.read('locked/open') -> 'entry' ->> 'version')::uuid;
+	r := pg_temp.commit(pg_temp.member(4), 'r2-exact-delete', jsonb_build_array(jsonb_build_object('op','delete','path','locked/open',
+		'expectedVersion',v,'asOfSeq',pg_temp.seq())));
+	perform pg_temp.expect(r, 1, 'denied', 'denied');
+	r := pg_temp.commit(pg_temp.member(4), 'r2-exact-copy', '[{"op":"copy","from":"locked/open","to":"unlocked"}]');
+	perform pg_temp.expect(r, 1, 'denied', 'denied');
+	r := pg_temp.commit(pg_temp.member(4), 'r2-exact-new-folder', jsonb_build_array(jsonb_build_object('op','new_folder',
+		'path','locked/open/mine','contents','[]'::jsonb)));
+	perform pg_temp.expect(r, 1, 'denied', 'denied');
+	r := pg_temp.commit(pg_temp.member(2), 'r2-exact-owner-delete', jsonb_build_array(jsonb_build_object('op','delete','path','locked/open',
+		'expectedVersion',v,'asOfSeq',pg_temp.seq())));
+	perform pg_temp.expect(r, 1, 'saved');
+end $$;
+
+-- Review round 2: the core flag trusts the marker only from the table's owner, since any session can set it.
+do $$
+begin
+	create role folder_guard_probe bypassrls;
+	grant usage on schema public to folder_guard_probe;
+	grant select, update on public.qorpera_company_files to folder_guard_probe;
+	set local role folder_guard_probe;
+	perform set_config('qorpera.folder_enable', 'on', true);
+	begin
+		update public.qorpera_company_files set core = 'folder-v2' where environment_id = '63000000-0000-4000-8000-000000000021';
+		raise exception 'A session that set the marker changed the core flag';
+	exception when insufficient_privilege then null;
+	end;
+	perform set_config('qorpera.folder_enable', '', true);
+	reset role;
+	if (select core from public.qorpera_company_files where environment_id = '63000000-0000-4000-8000-000000000021') <> 'snapshot-v1' then
+		raise exception 'The core flag changed'; end if;
+end $$;
+
+-- Review round 2: artifact GC collects nothing of a folder-v2 company until the folder core's GC.
+do $$
+declare v_plan uuid := extensions.gen_random_uuid(); v_lease uuid := extensions.gen_random_uuid(); v_claimed jsonb;
+	a jsonb := pg_temp.stage('alpha');
+begin
+	-- The plan's own artifact, graph and restore proof do not matter here.
+	set local session_replication_role = replica;
+	insert into public.qorpera_artifact_gc_plans(id, profile_id, artifact_id, graph_id, restore_proof_id, client_plan_id, status,
+		lease_id, lease_expires_at, created_by_user_id, started_at)
+	values (v_plan, '63000000-0000-4000-8000-000000000010', extensions.gen_random_uuid(), extensions.gen_random_uuid(),
+		extensions.gen_random_uuid(), extensions.gen_random_uuid(), 'deleting', v_lease, statement_timestamp() + interval '10 minutes',
+		'63000000-0000-4000-8000-000000000001', statement_timestamp());
+	insert into public.qorpera_artifact_gc_plan_entries(plan_id, object_sha256, bytes)
+	values (v_plan, a ->> 'manifestSha256', 1), (v_plan, a ->> 'fileSha256', 1);
+	set local session_replication_role = origin;
+	v_claimed := public.qorpera_claim_artifact_gc_objects(v_plan, v_lease, 100);
+	if v_claimed <> '[]'::jsonb or exists (select 1 from public.qorpera_artifact_gc_plan_entries where plan_id = v_plan and status <> 'retained') then
+		raise exception 'Artifact GC must retain a folder-v2 company''s objects: %', v_claimed; end if;
+end $$;
+
 -- Operation keys: a replay returns the stored outcomes; a reused key for another change set is refused.
 -- Agent actors arrive with C1b/C1c. No claim outlives its transaction.
 do $$
@@ -342,6 +491,7 @@ begin
 		or exists (select 1 from public.qorpera_folder_commits c where c.seq is not null and not exists
 			(select 1 from public.qorpera_folder_journal j where j.commit_id = c.id and j.seq = c.seq)) then
 		raise exception 'Every sequence number has exactly one journal row'; end if;
+	perform pg_temp.folder_invariants('63000000-0000-4000-8000-000000000020');
 end $$;
 
 rollback;
