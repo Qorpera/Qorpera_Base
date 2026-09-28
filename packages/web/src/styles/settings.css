@@ -34,16 +34,32 @@
 .settings-content .notice { font-size: 12px; overflow-wrap: anywhere; }
 .settings-content .row { flex-wrap: wrap; }
 .settings-group { margin: 28px 0; }
-/* Settings → Rules (auto-review, v130): one row per rule, the form below. */
-.settings-rule-list { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
-.settings-rule { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 12px; padding: 11px 13px; border-radius: 13px; background: #f1f1ef; }
-.settings-rule .settings-copy { display: grid; gap: 2px; min-width: 0; overflow-wrap: anywhere; }
-.settings-rule .settings-copy small { color: var(--text-muted); }
-.settings-rule-form label { display: grid; gap: 6px; margin: 10px 0; color: var(--text-muted); font-size: 13px; }
-.settings-rule-form input, .settings-rule-form select { padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; background: transparent; color: var(--text); font: inherit; font-size: 14px; }
+/* Settings → General → rules (auto-review, v130), as Grok Bot's Auto-review
+   rules: the form, then one table of every rule with its edit and remove icons. */
+/* The account's page above keeps its last group's margin (it scrolls, so margins do not
+   collapse through it): no margin of its own, the rules stand one group gap below. */
+.settings-rules { margin-top: 0; }
+.settings-rule-form { display: grid; gap: 14px; }
+.settings-rule-field { display: grid; gap: 7px; min-width: 0; margin: 0; font-size: 12.5px; font-weight: 500; }
+.settings-rule-form input, .settings-rule-table input { width: 100%; min-width: 0; height: 36px; padding: 0 12px; border: 1px solid #deded9; border-radius: 9px; background: #f1f1ef; color: inherit; font-size: 13px; }
+.settings-rule-form input::placeholder, .settings-rule-table input::placeholder { color: #8a8a86; }
+.settings-rule-form select, .settings-rule-table select { width: max-content; max-width: 100%; height: 30px; min-height: 0; padding: 0 8px 0 11px; border: 1px solid #d7d7d3; border-radius: 9px; background: #e7e7e4; color: inherit; font-size: 12.5px; cursor: pointer; }
 .settings-rule-choices { display: flex; flex-wrap: wrap; align-items: end; gap: 12px; }
-.settings-rule-choices label { margin: 0; }
 .settings-rule-choices .btn { margin-left: auto; }
+.settings-rule-table { margin-top: 18px; overflow: hidden; border: 1px solid #e3e3df; border-radius: 12px; }
+.settings-rule-table table { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 13px; }
+.settings-rule-table th { height: 38px; padding: 0 14px; border-bottom: 1px solid #e3e3df; color: #73736f; font-size: 12px; font-weight: 400; text-align: left; }
+.settings-rule-table td { height: 44px; padding: 4px 14px; overflow-wrap: anywhere; }
+.settings-rule-table tbody tr + tr td { border-top: 1px solid #efefec; }
+.settings-rule-table .settings-rule-outcome, .settings-rule-table .settings-rule-scope { width: 24%; }
+.settings-rule-table th.settings-rule-actions { width: 80px; }
+.settings-rule-table td.settings-rule-actions { padding: 4px 8px; text-align: right; white-space: nowrap; }
+.settings-rule-table tr.is-editing td { padding-block: 6px; }
+.settings-rule-table tr.is-editing td:first-child { padding-left: 8px; }
+.settings-rule-actions .icon-button { width: 30px; height: 30px; }
+.settings-rule-actions .icon { width: 16px; height: 16px; }
+.settings-rule-locked { display: inline-grid; place-items: center; width: 30px; height: 30px; color: var(--text-muted); }
+.settings-rule-note { margin: 12px 0 0; color: #797975; font-size: 11.5px; }
 .settings-card { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 11px; min-height: 72px; padding: 11px 13px; border-radius: 13px; background: #f1f1ef; }
 /* The account card leads with the member's picture: a camera badge says it can
  * be changed, a click picks a photo, and once there is one a small menu offers
@@ -326,6 +342,21 @@
  .connection-usage { grid-column: 1 / -1; }
  .connection-account { flex-wrap: wrap; }
  .person-meta { display: none; }
+ /* Rules: each row stacks, the sentence over its behaviour and scope, the icons beside. */
+ /* Headers stay for screen readers (as .visually-hidden), and the table keeps its roles. */
+ .settings-rule-table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+ .settings-rule-table :is(table, tbody) { display: block; }
+ .settings-rule-table tr { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; grid-template-areas: "when when actions" "outcome scope actions"; align-items: center; column-gap: 4px; row-gap: 3px; padding: 10px 6px 10px 14px; }
+ .settings-rule-table td { height: auto; padding: 0; }
+ .settings-rule-table tbody tr + tr { border-top: 1px solid #efefec; }
+ .settings-rule-table tbody tr + tr td { border-top: 0; }
+ .settings-rule-table td:nth-child(1) { grid-area: when; }
+ .settings-rule-table td:nth-child(2) { grid-area: outcome; }
+ .settings-rule-table td:nth-child(3) { grid-area: scope; }
+ .settings-rule-table td:is(:nth-child(2), :nth-child(3)) { color: var(--text-muted); font-size: 12px; }
+ .settings-rule-table td:nth-child(3)::before { content: "· "; }
+ .settings-rule-table td.settings-rule-actions { grid-area: actions; padding: 0; }
+ .settings-rule-table tr.is-editing td:first-child { padding-left: 0; }
 }
 /* Services (Step 7 connectors) share the model-account card grid. */
 .service-card { display: grid; grid-template-columns: 42px minmax(0, 1fr) auto; gap: 14px; align-items: center; padding: 18px 0; }
