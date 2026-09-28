@@ -3,6 +3,7 @@ import {
 	prepareCloudCodingGuestSession,
 } from "./cloud-coding-configuration-install.ts";
 import { codingErrorCode } from "./cloud-coding-error-code.ts";
+import { observeCloudCodingGuest } from "./cloud-coding-guest-observation.ts";
 import { detachCloudCodingGuestSession } from "./cloud-coding-session-guest.ts";
 import { initializeCloudCodingGuestStorage } from "./cloud-coding-storage-guest.ts";
 import { assertGuestImageSelfUpdateMasked } from "./lxd-guest-image-updates.ts";
@@ -23,9 +24,14 @@ const run =
 	// image cannot update itself.
 	action === "image" && process.argv.length === 3
 		? () => assertGuestImageSelfUpdateMasked()
-		: Object.hasOwn(SESSION_ACTIONS, action) && process.argv.length === 4
-			? () => SESSION_ACTIONS[action](workerId)
-			: undefined;
+		: // The executor's keeper: what runs in each attached session, published for readback.
+			action === "observe" && process.argv.length === 3
+			? async () => {
+					await observeCloudCodingGuest();
+				}
+			: Object.hasOwn(SESSION_ACTIONS, action) && process.argv.length === 4
+				? () => SESSION_ACTIONS[action](workerId)
+				: undefined;
 if (!run) {
 	process.stderr.write("CODING_GUEST_STORAGE_ARGUMENTS_INVALID\n");
 	process.exitCode = 1;

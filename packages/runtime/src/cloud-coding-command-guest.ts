@@ -35,7 +35,7 @@ const ENV = Object.freeze({ PATH: "/usr/bin:/bin", LANG: "C.UTF-8" });
 export const CODING_GUEST_REFUSED_EXIT_CODE = 125;
 
 export interface CodingGuestCommandRequest {
-	readonly schema: "qorpera.coding-command-request/v1";
+	readonly schema: "qorpera.coding-command-request/v2";
 	readonly workerId: string;
 	readonly vmId: string;
 	readonly commandId: string;
@@ -43,7 +43,8 @@ export interface CodingGuestCommandRequest {
 	readonly turn: number;
 	readonly inputSha256: string;
 	readonly command: string;
-	readonly timeoutMs: number;
+	/** A deadline the agent chose for this command; null runs it until it exits or is cancelled. */
+	readonly timeoutMs: number | null;
 }
 export type CodingGuestCommandReceipt = CloudCodingCommandReceipt;
 interface Intent {
@@ -99,7 +100,7 @@ export function parseCodingGuestCommandRequest(value: unknown): CodingGuestComma
 		"timeoutMs",
 	]);
 	if (
-		input.schema !== "qorpera.coding-command-request/v1" ||
+		input.schema !== "qorpera.coding-command-request/v2" ||
 		Buffer.byteLength(JSON.stringify(input)) > 65536 ||
 		!Number.isSafeInteger(input.turn) ||
 		(input.turn as number) < 1 ||
@@ -111,13 +112,11 @@ export function parseCodingGuestCommandRequest(value: unknown): CodingGuestComma
 		input.command.includes("\0") ||
 		/[\ud800-\udfff]/u.test(input.command) ||
 		Buffer.byteLength(input.command) > 16384 ||
-		!Number.isSafeInteger(input.timeoutMs) ||
-		(input.timeoutMs as number) < 1000 ||
-		(input.timeoutMs as number) > 1800000
+		(input.timeoutMs !== null && (!Number.isSafeInteger(input.timeoutMs) || (input.timeoutMs as number) < 1000))
 	)
 		throw new Error("INVALID_CODING_GUEST_REQUEST");
 	return Object.freeze({
-		schema: "qorpera.coding-command-request/v1",
+		schema: "qorpera.coding-command-request/v2",
 		workerId: uuid(input.workerId),
 		vmId: uuid(input.vmId),
 		commandId: uuid(input.commandId),
@@ -125,7 +124,7 @@ export function parseCodingGuestCommandRequest(value: unknown): CodingGuestComma
 		turn: input.turn as number,
 		inputSha256: input.inputSha256,
 		command: input.command,
-		timeoutMs: input.timeoutMs as number,
+		timeoutMs: input.timeoutMs as number | null,
 	});
 }
 async function system(executable: string, args: readonly string[]): Promise<string> {
@@ -279,7 +278,6 @@ export async function runCodingGuestCommand(
 	);
 	if (request.commandId !== commandId || request.workerId !== guest.workerId || request.vmId !== guest.vmId)
 		throw new Error("CODING_GUEST_COMMAND_SCOPE_CHANGED");
-	if (request.timeoutMs > guest.resourceProfile.maxTimeoutMs) throw new Error("CODING_COMMAND_PROFILE_TIMEOUT");
 	if (action === "start")
 		await requireCodingGuestLease(request, guest, {
 			...ports,
@@ -390,10 +388,10 @@ export async function runCodingGuestCommand(
 				`--uid=${guest.uid}`,
 				`--gid=${guest.gid}`,
 				`--property=WorkingDirectory=${guest.workspacePath}`,
-				`--property=RuntimeMaxSec=${Math.ceil(request.timeoutMs / 1000)}`,
-				`--property=MemoryMax=${guest.resourceProfile.memoryBytes}`,
-				`--property=TasksMax=${guest.resourceProfile.tasksMax}`,
-				`--property=CPUQuota=${guest.resourceProfile.cpuQuotaPercent}%`,
+				// No time, memory, CPU or task limit of its own: the command shares
+				// its session's slice, which shares the machine with the member's
+				// other sessions by equal weight. Only a deadline the agent chose.
+				...(request.timeoutMs === null ? [] : [`--property=RuntimeMaxSec=${Math.ceil(request.timeoutMs / 1000)}`]),
 				"--property=RemainAfterExit=yes",
 				"--property=ExitType=cgroup",
 				"--property=KillMode=control-group",

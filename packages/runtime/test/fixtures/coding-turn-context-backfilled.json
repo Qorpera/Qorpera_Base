@@ -10,7 +10,7 @@
 			"question": "Should the poll also back off after errors?"
 		}
 	},
-	"schema": "qorpera.coding-turn-context/v1",
+	"schema": "qorpera.coding-turn-context/v2",
 	"sequence": 4,
 	"workerId": "00000000-0000-4000-8000-000000000000",
 	"earlierTurns": [
@@ -79,5 +79,10 @@
 			}
 		}
 	],
-	"omittedEarlierTurns": 0
+	"omittedEarlierTurns": 0,
+	"commands": {
+		"omitted": 0,
+		"running": [],
+		"stopped": []
+	}
 }

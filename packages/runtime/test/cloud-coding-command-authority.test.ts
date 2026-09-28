@@ -5,19 +5,18 @@ import type { CloudCodingCommandHttpRequest } from "../src/cloud-coding-command-
 import { cloudNativeToolOperationEnvelope } from "../src/cloud-native-tool-operations.ts";
 import { nativeToolAuthorityFixture } from "./fixtures/native-tool-authority-fixture.ts";
 
-function fixture() {
+function fixture(timeoutMs: number | null = 1000) {
 	const { authority, binding } = nativeToolAuthorityFixture();
 	const scope = { workerId: randomUUID(), vmId: randomUUID(), requestId: randomUUID(), turn: 1 };
 	const operationKey = "build:1";
 	const command = "printf 'test € 😀'";
-	const timeoutMs = 1000;
 	const inputSha256 = createHash("sha256")
 		.update(
 			cloudNativeToolOperationEnvelope(authority.identity, {
 				tool: "coding_run_command",
 				toolVersion: "v1",
 				logicalOperationKey: operationKey,
-				arguments: { operationKey, command, timeoutMs },
+				arguments: { operationKey, command, ...(timeoutMs === null ? {} : { timeoutMs }) },
 				target: { schema: "qorpera.coding-command-target/v1", ...scope },
 				requiresCompanyRevision: false,
 			}),
@@ -39,6 +38,14 @@ describe("coding command receipt binding", () => {
 	it("verifies exact canonical operation bytes including Unicode", async () => {
 		const f = fixture();
 		expect(await authorizeCodingCommand(f, f.request, f.signal)).toEqual({ inputSha256: f.inputSha256 });
+	});
+	it("binds a command without a deadline to the arguments the tool recorded without one", async () => {
+		const f = fixture(null);
+		expect(await authorizeCodingCommand(f, f.request, f.signal)).toEqual({ inputSha256: f.inputSha256 });
+		if (f.request.action !== "start") throw new Error("fixture");
+		await expect(
+			authorizeCodingCommand(f, { ...f.request, input: { ...f.request.input, timeoutMs: 1000 } }, f.signal),
+		).rejects.toThrow("INPUT_DIFFERS");
 	});
 	it.each([{ command: "different" }, { timeoutMs: 2000 }])(
 		"rejects changed execution arguments %j despite a real receipt",

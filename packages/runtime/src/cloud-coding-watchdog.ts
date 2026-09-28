@@ -11,7 +11,12 @@ const HASH = /^[0-9a-f]{64}$/;
 // Execution authority is boot-local, not durable task data. A NAS outage must
 // never block the watchdog's lease read before it can stop command cgroups.
 // Each session attached to the member's machine has its own lease in its
-// runtime folder (cloudCodingSessionLayout) and its own command slice.
+// runtime folder (cloudCodingSessionLayout) and its own command slice. The
+// lease follows the session's attachment, not its turn: its generation is the
+// attachment token's digest, so the session's commands keep running between
+// turns while the executor renews it, and stop when it expires. It also names
+// the latest turn admitted under it and whether that turn is open: only an
+// open turn's commands may start.
 const executeFile = promisify(execFile);
 export interface CodingGuestLeaseConfiguration {
 	workerId: string;
@@ -25,13 +30,16 @@ export interface CodingGuestLeaseScope {
 	turn: number;
 }
 export interface CodingGuestLeaseRefresh extends CodingGuestLeaseScope {
-	schema: "qorpera.coding-guest-lease-refresh/v1";
+	schema: "qorpera.coding-guest-lease-refresh/v2";
+	/** The turn may start commands (it is preparing or running). */
+	open: boolean;
 	leaseTokenSha256: string;
 	ttlMs: number;
 	notAfterMonoMs?: number;
 }
 interface Lease extends CodingGuestLeaseScope {
-	schema: "qorpera.coding-guest-lease/v1";
+	schema: "qorpera.coding-guest-lease/v2";
+	open: boolean;
 	bootId: string;
 	leaseTokenSha256: string;
 	refreshedAtMonoMs: number;
@@ -71,13 +79,15 @@ export function parseCodingGuestLeaseRefresh(value: unknown): CodingGuestLeaseRe
 		"vmId",
 		"requestId",
 		"turn",
+		"open",
 		"leaseTokenSha256",
 		"ttlMs",
 		...(value && typeof value === "object" && Object.hasOwn(value, "notAfterMonoMs") ? ["notAfterMonoMs"] : []),
 	]);
 	scope(v);
 	if (
-		v.schema !== "qorpera.coding-guest-lease-refresh/v1" ||
+		v.schema !== "qorpera.coding-guest-lease-refresh/v2" ||
+		typeof v.open !== "boolean" ||
 		typeof v.leaseTokenSha256 !== "string" ||
 		!HASH.test(v.leaseTokenSha256) ||
 		!Number.isSafeInteger(v.ttlMs) ||
@@ -95,6 +105,7 @@ function lease(value: unknown): Lease {
 		"vmId",
 		"requestId",
 		"turn",
+		"open",
 		"bootId",
 		"leaseTokenSha256",
 		"refreshedAtMonoMs",
@@ -102,7 +113,8 @@ function lease(value: unknown): Lease {
 	]);
 	scope(v);
 	if (
-		v.schema !== "qorpera.coding-guest-lease/v1" ||
+		v.schema !== "qorpera.coding-guest-lease/v2" ||
+		typeof v.open !== "boolean" ||
 		typeof v.bootId !== "string" ||
 		!UUID.test(v.bootId) ||
 		typeof v.leaseTokenSha256 !== "string" ||
@@ -182,10 +194,13 @@ function match(l: Lease, c: CodingGuestLeaseConfiguration): void {
 	if (l.workerId !== c.workerId || l.vmId !== c.vmId || l.bootId !== c.bootId)
 		throw new Error("CODING_GUEST_LEASE_SCOPE_CHANGED");
 }
+/** The live lease of this boot, naming the scope's turn and, for a command
+ * start (turnOpen), with that turn open. The watchdog checks liveness only. */
 export async function requireCodingGuestLease(
 	s: CodingGuestLeaseScope,
 	c: CodingGuestLeaseConfiguration,
 	ports: CodingGuestWatchdogPorts = {},
+	turnOpen = true,
 ): Promise<void> {
 	const l = await current(ports, c.workerId);
 	match(l, c);
@@ -196,6 +211,7 @@ export async function requireCodingGuestLease(
 		s.vmId !== l.vmId ||
 		s.requestId !== l.requestId ||
 		s.turn !== l.turn ||
+		(turnOpen && !l.open) ||
 		time < l.refreshedAtMonoMs ||
 		time >= l.expiresAtMonoMs
 	)
@@ -206,9 +222,10 @@ export async function refreshCodingGuestLease(
 	c: CodingGuestLeaseConfiguration,
 	ports: CodingGuestWatchdogPorts = {},
 ): Promise<{
-	schema: "qorpera.coding-guest-lease-receipt/v1";
+	schema: "qorpera.coding-guest-lease-receipt/v2";
 	requestId: string;
 	turn: number;
+	open: boolean;
 	validForMs: number;
 }> {
 	if (process.getuid?.() !== (ports.protectedUid ?? 0)) throw new Error("CODING_GUEST_LEASE_ROOT_REQUIRED");
@@ -229,30 +246,34 @@ export async function refreshCodingGuestLease(
 		} catch (e) {
 			if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
 		}
+		// Turns never go back. The same generation renews only while it is live
+		// and never reopens a turn it closed. Another generation (a new
+		// attachment) first stops everything an earlier one left.
+		const same = prior?.leaseTokenSha256 === v.leaseTokenSha256;
 		if (prior) {
 			if (
 				prior.workerId !== c.workerId ||
 				prior.vmId !== c.vmId ||
 				v.turn < prior.turn ||
-				(v.turn === prior.turn &&
-					(v.requestId !== prior.requestId ||
-						v.leaseTokenSha256 !== prior.leaseTokenSha256 ||
-						prior.bootId !== c.bootId ||
+				(same &&
+					(prior.bootId !== c.bootId ||
 						time < prior.refreshedAtMonoMs ||
-						time >= prior.expiresAtMonoMs))
+						time >= prior.expiresAtMonoMs ||
+						(v.turn === prior.turn && (v.requestId !== prior.requestId || (v.open && !prior.open)))))
 			)
 				throw new Error("CODING_GUEST_LEASE_GENERATION_UNAVAILABLE");
 		}
-		if (!prior || prior.turn !== v.turn) await stop(ports, c.workerId);
+		if (!same) await stop(ports, c.workerId);
 		const stamped = await now(ports);
 		const expiresAt = Math.min(stamped + v.ttlMs, v.notAfterMonoMs ?? Number.MAX_SAFE_INTEGER);
 		if (expiresAt <= stamped) throw new Error("CODING_GUEST_LEASE_REFRESH_EXPIRED");
 		const record: Lease = {
-			schema: "qorpera.coding-guest-lease/v1",
+			schema: "qorpera.coding-guest-lease/v2",
 			workerId: v.workerId,
 			vmId: v.vmId,
 			requestId: v.requestId,
 			turn: v.turn,
+			open: v.open,
 			bootId: c.bootId,
 			leaseTokenSha256: v.leaseTokenSha256,
 			refreshedAtMonoMs: stamped,
@@ -283,9 +304,10 @@ export async function refreshCodingGuestLease(
 			await d.close();
 		}
 		return {
-			schema: "qorpera.coding-guest-lease-receipt/v1",
+			schema: "qorpera.coding-guest-lease-receipt/v2",
 			requestId: v.requestId,
 			turn: v.turn,
+			open: v.open,
 			validForMs: expiresAt - stamped,
 		};
 	} finally {
@@ -298,7 +320,7 @@ export async function reconcileCodingGuestLease(
 ): Promise<"active" | "stopped"> {
 	try {
 		const l = await current(ports, c.workerId);
-		await requireCodingGuestLease(l, c, ports);
+		await requireCodingGuestLease(l, c, ports, false);
 		return "active";
 	} catch {
 		await stop(ports, c.workerId);

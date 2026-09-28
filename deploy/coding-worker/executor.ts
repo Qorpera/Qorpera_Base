@@ -21,7 +21,7 @@ import { readCodingServiceCredential } from "./credentials.ts";
 import { BrokerRepositoryCredentials, REPOSITORY_TOKEN } from "./repository-credentials.ts";
 
 interface Config {
-	schema: "qorpera.coding-executor-service/v6";
+	schema: "qorpera.coding-executor-service/v7";
 	owner: string;
 	supabaseUrl: string;
 	commandPort: number;
@@ -59,12 +59,12 @@ function broker(value: unknown): Config["broker"] {
 		input.executorTokenCredential.startsWith("qorpera-coding-repository-")) throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
 	return { origin: origin(input.origin), executorTokenCredential: input.executorTokenCredential };
 }
-/** The reviewed JSON configuration (v6: SQL placement routes commands across
+/** The reviewed JSON configuration (v7: SQL placement routes commands across
  * per-node executors using a separate, local-only peer listener and credential;
- * one coding machine per member, many
- * sessions per machine; every guest path derives from the session, so the
- * guest section names only the image's own coding user, the per-command
- * resource profile and the helper pins). The executor claims coding sessions
+ * one coding machine per member, many sessions per machine, each attached
+ * until it is archived; every guest path derives from the session, so the
+ * guest section names only the image's own coding user, the log bound and the
+ * helper pins. A command has no time, memory, CPU or task limit of its own). The executor claims coding sessions
  * for `owner` (qorpera_coding_executors.owner) and serves the command gateway
  * on `commandPort` behind the node's HTTPS reverse proxy. `repositories` is the
  * executor's own allowlist; SQL repository grants stay the authority. */
@@ -72,7 +72,7 @@ export function parseCodingExecutorConfiguration(value: unknown): Config {
 	const config = object(value);
 	const keys = Object.keys(config).sort().join();
 	if ((keys !== CONFIG_KEYS && keys !== `broker,${CONFIG_KEYS}`) ||
-		config.schema !== "qorpera.coding-executor-service/v6" || typeof config.owner !== "string" || !/^[A-Za-z0-9_.:-]{1,120}$/.test(config.owner) ||
+		config.schema !== "qorpera.coding-executor-service/v7" || typeof config.owner !== "string" || !/^[A-Za-z0-9_.:-]{1,120}$/.test(config.owner) ||
 		!Number.isSafeInteger(config.commandPort) || Number(config.commandPort) < 1024 || Number(config.commandPort) > 65535 ||
 		!Number.isSafeInteger(config.peerCommandPort) || Number(config.peerCommandPort) < 1024 || Number(config.peerCommandPort) > 65535 || config.peerCommandPort === config.commandPort ||
 		!Array.isArray(config.commandPeers) || config.commandPeers.length > 100 ||
@@ -111,14 +111,12 @@ export function parseCodingExecutorConfiguration(value: unknown): Config {
 	if (Object.keys(guest).sort().join() !== "commandHelperSha256,gid,gitHelperSha256,resourceProfile,storageHelperSha256,uid,watchdogHelperSha256" ||
 		![guest.commandHelperSha256, guest.gitHelperSha256, guest.watchdogHelperSha256, guest.storageHelperSha256].every((v) => typeof v === "string" && /^[0-9a-f]{64}$/.test(v))) throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
 	const layout = cloudCodingSessionLayout(id);
-	const parsedGuest = parseCodingGuestConfiguration({ schema: "qorpera.coding-command-guest/v3", workerId: id, vmId: id, bootId: id,
+	const parsedGuest = parseCodingGuestConfiguration({ schema: "qorpera.coding-command-guest/v4", workerId: id, vmId: id, bootId: id,
 		uid: guest.uid, gid: guest.gid, workspacePath: layout.workspacePath, homePath: layout.homePath, cachePath: layout.cachePath,
 		outputRoot: layout.outputRoot, resourceProfile: guest.resourceProfile });
-	if (parsedGuest.uid >= 200000 || parsedGuest.gid >= 200000 || parsedGuest.resourceProfile.memoryBytes > Number(vmPolicy.memoryBytes) ||
-		parsedGuest.resourceProfile.cpuQuotaPercent > Number(vmPolicy.cpus) * 100)
-		throw new Error("CODING_EXECUTOR_RESOURCE_POLICY_INVALID");
+	if (parsedGuest.uid >= 200000 || parsedGuest.gid >= 200000) throw new Error("CODING_EXECUTOR_RESOURCE_POLICY_INVALID");
 	return {
-		schema: "qorpera.coding-executor-service/v6", owner: config.owner, supabaseUrl: origin(config.supabaseUrl),
+		schema: "qorpera.coding-executor-service/v7", owner: config.owner, supabaseUrl: origin(config.supabaseUrl),
 		commandPort: Number(config.commandPort), peerCommandPort: Number(config.peerCommandPort), commandPeers, storagePolicy, vmPolicy: vmPolicy as unknown as Config["vmPolicy"],
 		guest: guest as unknown as Config["guest"], broker: brokerConfig, repositories,
 	};

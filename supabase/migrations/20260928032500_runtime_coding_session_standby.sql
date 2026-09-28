@@ -310,8 +310,9 @@ begin
 	select * into strict v_worker from public.qorpera_runtime_workers where id = v_session.worker_id;
 	if v_session.attached_machine_id is distinct from v_machine.id or v_session.attachment_token is distinct from p_attachment_token then
 		return jsonb_build_object('schema','qorpera.coding-detached/v1','workerId',v_session.worker_id,'state','unchanged'); end if;
-	-- A live attachment of this generation that may stay is not detached behind its back (sleep and retirement end every one).
-	if p_reason not in ('SLEEP','RETIRED') and public.qorpera_coding_attachment_refusal(v_session, v_worker, v_machine) is null then
+	-- A live attachment of this generation that may stay is not detached for a keeper reason it does not have. Sleep and
+	-- retirement end every attachment, and the executor may find the guest's own lease gone (it cannot be renewed).
+	if p_reason not in ('SLEEP','RETIRED','EXPIRED') and public.qorpera_coding_attachment_refusal(v_session, v_worker, v_machine) is null then
 		raise exception 'Coding session attachment is live' using errcode = '55000'; end if;
 	update public.qorpera_coding_sessions set attached_machine_id = null, attachment_token = null, attachment_until = null,
 		running_commands = '[]'::jsonb, observed_at = clock_timestamp()
