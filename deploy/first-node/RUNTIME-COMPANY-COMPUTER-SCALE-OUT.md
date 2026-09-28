@@ -71,10 +71,14 @@ environment.
   `max_screens` agents without a seat.
 - **Placement** (`qorpera_runtime_office_placement`), in order (switch on):
   1. `screen`: the agent's screen in use on a running computer;
-  2. held: the computer the agent's start in progress names, then the one it
-     holds a seat on, while it can be used or started (decision by its state);
+  2. held: the computer the agent's start in progress names, while it can be
+     started, then a running computer where the agent holds a seat (it was
+     woken for it);
   3. `room`: a running computer with a seat nobody holds, the one the agent
      used last first, then the lowest number, so extra computers can go idle;
+  3b. waited for: a computer not up yet where the agent holds a seat. A free
+     seat on a running computer comes first; the wait's wake still comes when
+     this computer is up;
   4. `stopped`: a computer that is off after its idle time, with a seat nobody
      holds, woken (agent's last first), only when its node would admit it now
      (switched on, seen ready with its inventory confirmed, its CPU by the
@@ -124,7 +128,7 @@ environment.
 
 **Switch.** `qorpera_runtime_office_scale_out` (one row, off by default) keeps
 placement on each company's first computer, exactly as before (with seats).
-It stays off until both hold:
+It stays off until all three hold:
 
 - every runtime can reach any of a company's computers: an old runtime refuses
   a computer other than its one configured office and would fail the run
@@ -133,6 +137,10 @@ It stays off until both hold:
   (`canonicalMount: false`): an agent's files sit in the computer's scratch
   area and reach the company folder only through `computer_transfer`, so a file
   made on computer 1 would not be visible on computer 2.
+- a new computer is set up on a node with room without an operator (automatic
+  setup, the identical-nodes session). Placement passes over computers that
+  are updating, or cancelled, or asleep on a full node, and adds a new one
+  (`20260928238000`); without automatic setup that new one would wait.
 
 Then:
 `update public.qorpera_runtime_office_scale_out set enabled = true, changed_at = clock_timestamp();`

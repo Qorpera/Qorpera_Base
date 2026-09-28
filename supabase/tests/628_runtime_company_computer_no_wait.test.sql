@@ -298,6 +298,11 @@ select pg_temp.wake_assert(not public.qorpera_runtime_office_can_wake(pg_temp.of
 select pg_temp.synthetic('update public.qorpera_runtime_nodes set enabled=true where id=''62800000-0000-4000-8000-00000000000a''');
 select pg_temp.synthetic('delete from public.qorpera_runtime_node_inventory_receipts where node_id=''62800000-0000-4000-8000-00000000000a''');
 select pg_temp.wake_assert(not public.qorpera_runtime_office_can_wake(pg_temp.office(4)),'nor does a node whose inventory is not confirmed');
+select pg_temp.synthetic('insert into public.qorpera_runtime_node_inventory_receipts(node_id,observation_id,node_version,policy_sha256,
+	context_sha256,inventory) select node_id,observation_id,1,repeat(''a'',64),repeat(''b'',64),''{}'' from public.qorpera_runtime_node_observations
+	where node_id=''62800000-0000-4000-8000-00000000000a''');
+select pg_temp.synthetic('update public.qorpera_runtime_node_demands set cpu_millis=13000 where allocation_id=''62800000-0000-4000-8000-000000000003''');
+select pg_temp.wake_assert(not public.qorpera_runtime_office_can_wake(pg_temp.office(4)),'node A is confirmed again, and full');
 
 -- 7. Computer 3's last seat is held by Jay; computer 4 cannot wake; computer 5 is
 -- updating. With no node able to take a new computer, sleeping computer 4 is still
@@ -329,9 +334,14 @@ select pg_temp.wake_assert(pg_temp.place('30000000-0000-4000-8000-000000000037')
 select pg_temp.wake_assert(pg_temp.agent_office('30000000-0000-4000-8000-000000000037')->>'placement'='unstarted'
 	and (pg_temp.office(6)).computer_number=6,'computer 6 is added for Ivy');
 
--- 8. Idle: a waiting agent keeps its computer awake; placement agrees with its wait.
-select pg_temp.wake_assert(pg_temp.place('30000000-0000-4000-8000-000000000038')=pg_temp.at('starting',3),
-	'Jay, waiting for computer 3, is placed there');
+-- 8. A waiting agent is placed on the computer it waits for, which stays awake for
+-- it, until a running computer has a free seat: then that one comes first.
+select pg_temp.wake_assert(pg_temp.place('30000000-0000-4000-8000-000000000038')=pg_temp.at('starting',3)
+	and public.qorpera_runtime_office_has_demand(pg_temp.office(3)),'Jay, waiting for computer 3, is placed there and keeps it awake');
+update public.qorpera_runtime_office_screens set touched_at=clock_timestamp()-interval '3 minutes'
+where staff_agent_id='30000000-0000-4000-8000-000000000036' and office_id=(pg_temp.office(2)).id;
+select pg_temp.wake_assert(pg_temp.place('30000000-0000-4000-8000-000000000038')=pg_temp.at('room',2),
+	'Gus left computer 2: Jay takes its free seat instead of waiting for computer 3');
 
 -- 9. Held seats never add rows: a computer never holds more screen rows than screens.
 select pg_temp.wake_assert(not exists(select 1 from public.qorpera_runtime_office_screens s
