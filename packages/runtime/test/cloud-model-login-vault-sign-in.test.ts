@@ -272,6 +272,21 @@ it("keeps a finished login for the next collection when saving fails, and settle
 	expect(w.completions).toHaveLength(1);
 });
 
+it("drops a finished login from the helper once the database keeps refusing it", async () => {
+	const w = world();
+	const scripted = scriptedHelper(w);
+	scripted.set({ status: "completed", authJson: LOGIN });
+	// The company was switched back while the member finished: every lookup is refused.
+	vi.mocked(w.authority.describeModelLoginSignIn).mockRejectedValue(new Error("model login sign-in is unavailable"));
+	const signIns = new CloudModelLoginSignIns({ authority: w.authority, keyring: w.keyring, helper: scripted.helper });
+	await signIns.collect();
+	await signIns.collect();
+	expect(scripted.helper.finishSignIn).not.toHaveBeenCalled();
+	await signIns.collect();
+	expect(scripted.helper.finishSignIn).toHaveBeenCalledTimes(1);
+	expect(w.authority.completeModelLoginSignIn).not.toHaveBeenCalled();
+});
+
 it("ends the helper's copy of a sign-in that failed, ended, holds unknown fields or cannot be sealed", async () => {
 	const cases: Array<[string, ModelLoginSignInState]> = [
 		["failed", { status: "failed", reason: "sign_in_not_completed" }],
