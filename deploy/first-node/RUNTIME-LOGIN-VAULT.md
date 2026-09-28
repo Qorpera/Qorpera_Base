@@ -383,7 +383,7 @@ Node 1:
 4. `shared-vault-secrets.py helper-token`. Only then (systemd refuses to start a unit whose credential
    file is missing, which would stop the helper for every broker on the host) the helper's drop-in
    `/etc/systemd/system/qorpera-model-login-helper.service.d/vault-token.conf`, `systemctl daemon-reload`,
-   and a helper restart:
+   and a helper restart (like its reinstall, at a moment with no sign-in pending):
 
    ```ini
    [Service]
@@ -436,7 +436,8 @@ command runs as a plain argv (no shell needed):
    config `codexSha256`, and install it root-owned 0555 at the same path.
 4. Isolation: root-owned `/usr/bin/bwrap` (0.8 or later) and `/usr/bin/node` (the version node 1 runs),
    and unprivileged user namespaces allowed for bubblewrap as on node 1. The helper checks bubblewrap,
-   the namespaces, Codex and its own files at start; it does not check the Node version.
+   the namespaces, Codex, the isolation child, its config and its token at start; it does not check the
+   Node version.
 5. The helper from the release (`node scripts/package-model-login-helper.mjs --out <dir>`, its
    `manifest.json` lists each file's SHA-256): `qorpera-model-login-helper.mjs` and
    `qorpera-native-isolation-child.mjs` to `/opt/qorpera-model-login-helper/` (root, 0444), the unit to
@@ -449,9 +450,11 @@ command runs as a plain argv (no shell needed):
    reboot without it, node 2's vault copy would count every idle renewal it tries as failed, which delays
    those logins' renewals on both nodes). It logs `Model login helper: sandbox self-check ok (…)` or stops
    visibly. The self-check does not reach OpenAI: watch node 2's first renewal after its vault starts.
-8. The broker package from the release: `qorpera-cloud-secret-broker-service.mjs` to
-   `/opt/qorpera-secret-broker/` (root, 0444), `shared-vault-secrets.py` beside it (root, 0500), and the CA
-   to `/etc/qorpera-secret-broker/supabase-prod-ca-2021.crt` (root, 0444).
+8. The broker package from the release: `install -d -o root -g root -m 0755 /opt/qorpera-secret-broker`
+   and `install -d -o root -g root -m 0755 /etc/qorpera-secret-broker`, then
+   `qorpera-cloud-secret-broker-service.mjs` to `/opt/qorpera-secret-broker/` (root, 0444),
+   `shared-vault-secrets.py` beside it (root, 0500), and the CA to
+   `/etc/qorpera-secret-broker/supabase-prod-ca-2021.crt` (root, 0444).
 
 Node 2 (warm standby), between node 1's steps 6 and 8:
 
