@@ -140,7 +140,9 @@ no database login and no service key; it sees a login only for one operation and
     vault login. A repeat after a lost answer finds its own login.
   - Deploy: the broker's public front must route `POST /v1/model-logins/<company>/login` and
     `POST /v1/model-logins/<company>/account-refresh` to that company's broker by path (the edge
-    function adds no query). The helper must run beside the
+    function adds no query). On node 1 (2026-09-28): `map $uri $qorpera_model_login_broker` (one line
+    per company: its broker's port, no fallback) and `location ~ ^/v1/model-logins/<uuid>/(login|account-refresh)$`
+    (POST only, no query, 64k body, `proxy_pass` without a URI). The helper must run beside the
     broker (without it the route answers 404). A helper restart ends sign-ins in flight; the member
     signs in again.
 - **Part C, usage** (migration `20260928185000`, `cloud-model-login-vault-usage.ts`): the vault reads
@@ -257,6 +259,11 @@ no database login and no service key; it sees a login only for one operation and
   fenced, and writes empty key and epoch credential sources for the unchanged host unit. The guest
   bootstrap unit no longer has a mount condition on the identity path (it would skip the bootstrap
   silently); the bootstrap requires the mount for a node login itself.
+- Deploy: the runtime front that runs reach (`QORPERA_CLOUD_SECRET_BROKER_URL`, node 1's `:10000`) must
+  route the run form `POST /v1/model-logins?company=<company>` to that company's broker by the query, as
+  it routes operations: on node 1 (2026-09-28) `map $args $qorpera_model_login_run_broker` (one line per
+  company, no fallback) and `location = /v1/model-logins` (POST only, 64k body, `proxy_pass` without a
+  URI). Without it every vault run fails at `credential-download` (step 7's second run did).
 - Deploy order: free. A database without the check answers 404, and the orchestrator, exec host and
   LXD provider then keep the node path, as before.
 - Activation: move no login into the vault until every node's orchestrator, exec host and guest
