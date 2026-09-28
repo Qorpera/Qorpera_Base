@@ -497,6 +497,34 @@ begin
 	perform pg_temp.expect(r, 1, 'refused', 'too_long');
 end $$;
 
+-- Review round 4: a sibling of members/<id>/private is not that private folder; two resources sharing one
+-- folder key cover nothing, so nobody but the platform reaches the path.
+do $$
+declare r jsonb; a jsonb := pg_temp.stage('alpha');
+begin
+	-- Member 4 has no private folder, so a boundary wrongly taken at members/<m4>/private would deny this.
+	r := pg_temp.commit('{"kind":"platform"}', 'r4-private-sibling-setup', '[{"op":"mkdir","path":"members/63000000-0000-4000-8000-000000000004"}]');
+	perform pg_temp.expect(r, 1, 'saved');
+	r := pg_temp.commit(pg_temp.member(4), 'r4-private-sibling', jsonb_build_array(jsonb_build_object('op','new_folder',
+		'path','members/63000000-0000-4000-8000-000000000004/privatenotes','contents',jsonb_build_array(
+			jsonb_build_object('path','private','kind','folder'), jsonb_build_object('path','private/n.txt','kind','file','file',a)))));
+	perform pg_temp.expect(r, 1, 'saved');
+	r := pg_temp.commit(pg_temp.member(4), 'r4-private-sibling-delete', jsonb_build_array(jsonb_build_object('op','delete',
+		'path','members/63000000-0000-4000-8000-000000000004/privatenotes',
+		'expectedVersion',pg_temp.read('members/63000000-0000-4000-8000-000000000004/privatenotes') -> 'entry' ->> 'version','asOfSeq',pg_temp.seq())));
+	perform pg_temp.expect(r, 1, 'saved');
+
+	insert into public.qorpera_company_path_resources(environment_id,path,path_match,scope,owner_user_id,policy,created_by_user_id) values
+		('63000000-0000-4000-8000-000000000020','Østen','subtree','member_private','63000000-0000-4000-8000-000000000002','normal','63000000-0000-4000-8000-000000000001'),
+		('63000000-0000-4000-8000-000000000020','østen','subtree','company_shared',null,'normal','63000000-0000-4000-8000-000000000001');
+	r := pg_temp.commit('{"kind":"platform"}', 'r4-tie-setup', '[{"op":"mkdir","path":"Østen"}]');
+	perform pg_temp.expect(r, 1, 'saved');
+	r := pg_temp.commit(pg_temp.member(4), 'r4-tie-other', jsonb_build_array(jsonb_build_object('op','write','path','østen/x.txt','file',a)));
+	perform pg_temp.expect(r, 1, 'denied', 'denied');
+	r := pg_temp.commit(pg_temp.member(2), 'r4-tie-owner', jsonb_build_array(jsonb_build_object('op','write','path','østen/x.txt','file',a)));
+	perform pg_temp.expect(r, 1, 'denied', 'denied');
+end $$;
+
 -- Review round 2: the core flag trusts the marker only from the table's owner, since any session can set it.
 do $$
 begin

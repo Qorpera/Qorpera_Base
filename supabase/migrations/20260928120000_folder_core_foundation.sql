@@ -315,6 +315,12 @@ begin
 	where r.environment_id = p_environment_id
 		and (k.key = v_key or (r.path_match = 'subtree' and (k.key = '' or left(v_key, length(k.key) + 1) = k.key || '/')))
 	order by length(k.key) desc, r.id limit 1;
+	-- Two resources can share one folder key, because the shared unique key folds ASCII only ('Østen' and
+	-- 'østen'). Neither is picked: the path has no covering resource, so nobody but the platform reaches it.
+	if v_resource.id is not null and exists (select 1 from public.qorpera_company_path_resources r
+		where r.environment_id = p_environment_id and r.id <> v_resource.id
+			and public.qorpera_folder_key(r.path) = public.qorpera_folder_key(v_resource.path)) then
+		return null; end if;
 	if split_part(v_key, '/', 1) = 'members' and split_part(v_key, '/', 3) = 'private'
 		and (v_resource.scope is distinct from 'member_private'
 			or v_resource.owner_user_id::text is distinct from split_part(v_key, '/', 2)) then return null; end if;
@@ -360,7 +366,7 @@ begin
 			where exists (select 1 from unnest(p_keys) k(key) where k.key = i.key
 				or (i.path_match = 'subtree' and k.key like public.qorpera_folder_under(i.key)))
 			union
-			select distinct substring(k.key from '^members/[^/]+/private') from unnest(p_keys) k(key)
+			select distinct substring(k.key from '^(members/[^/]+/private)(?:/|$)') from unnest(p_keys) k(key)
 			where k.key like 'members/%/private' or k.key like 'members/%/private/%'
 		)
 		select 1 from boundaries b

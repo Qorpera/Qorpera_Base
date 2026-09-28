@@ -149,7 +149,16 @@ All tables are keyed by company environment.
     `collate "C"`, which folds ASCII only. Without it, a key generated from
     `Økonomi` would differ from one computed from request text (C1a review
     round 3). Resources are resolved by the same key
-    (`qorpera_folder_path_resource`). `snapshot-v1` keeps today's key.
+    (`qorpera_folder_path_resource`). When two resources share one folder key
+    (possible while the shared unique key folds ASCII only), the path has no
+    covering resource and only the platform reaches it; C1b gives the stored
+    folder key a unique index. `snapshot-v1` keeps today's key.
+  - **After a PostgreSQL major upgrade**, the Unicode tables behind
+    `normalize()` and `pg_c_utf8` case mapping may have changed. The runbook
+    step: find entries and resources whose stored key differs from
+    `qorpera_folder_key(path)`, and recompute them (`update ... set path =
+    path`, which regenerates the keys) before the folder is served again.
+    `snapshot-v1`'s keys share the exposure.
   - A key is at most 2,600 bytes: `key_text` sits in two btree indexes, whose
     rows hold at most 2,704 bytes. A unit that would store a longer key, or
     a path over 4,096 bytes, is refused as `too_long`.
