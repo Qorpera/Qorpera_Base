@@ -96,6 +96,7 @@
 
 ### Changed
 
+- Native office routes may name every computer of a company (`/office/{companyComputerId}/native`); still one route per company environment, and its token is accepted by all of that company's computers.
 - Warm conversations (contract amendment 2026-09-27), off unless `QORPERA_SHARED_EXECUTION_WARM_IDLE_MS` is set: after an attended run the shared execution service parks its slot (runner stopped and wiped, capacity released, native host kept with its scratch and bridge credential) for the conversation's next run, which claims it after the identity is verified again and starts only its runner. A changed identity, a stopped host or a passed window evicts the slot; under capacity pressure the slot parked longest gives way.
 - The orchestrator asks for new work on every poll (250 ms) and reconciles (control renewal, occurrence reconcilers, expired claims, provider, retained claims) every `QORPERA_RUNNER_ORCHESTRATOR_RECONCILE_MS` (default 2 s) instead of before every claim; a failed reconcile still blocks claims and is retried on the next poll, a failed dispatch brings the next reconcile forward to the next poll, and retained claims keep their priority until they have been re-read. An assignment that races a runner's activation is retried after 50 ms, doubling to 3 s, instead of after 250 ms.
 - The shared execution service starts a sandbox's runner unit right after its host unit (systemd orders it after the host's start) and waits for both health endpoints together, polling every 25 ms; the assignment is still delivered only once both answer.
@@ -108,6 +109,7 @@
 
 ### Fixed
 
+- Fixed a deadlock between a node's first inventory binding and admission of the same machine: an inventory observation now takes the binding foreign-key locks on its managed allocations, in UUID order, before the node lock, matching admission's allocation-then-node order (migration `20260928242000`, re-cut of closed draft #326). Historical receipt replay and every check after the node lock are unchanged.
 - Continue completed office startup and wake phases without waiting for the next polling interval, while retaining backoff for pending work and failures.
 - Bound office-provider startup to the enrolled journal and NAS workbench mounts, so a node reboot cannot leave required storage inactive when the provider starts. Mount dependency paths preserve literal dollar signs while escaping systemd specifiers.
 - Corrected boot-successor SQL admission to preserve the original preparation observation while requiring fresh boot, configuration and receipt evidence. The prior check required a new preparation digest and rejected the concrete retained-workbench resume path. An additive migration preserves existing history and refuses a substituted preparation identity.

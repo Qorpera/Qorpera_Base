@@ -393,6 +393,7 @@ it("uses only the static broker-role SQL calls and binds downstream idempotency"
 		{ requestId: refreshId, capabilitySha256: "c".repeat(64) },
 		new AbortController().signal,
 	);
+	await authority.takeIdleModelLoginRenewal(new AbortController().signal);
 	expect(queries.map((query) => query.text)).toEqual([
 		"select public.qorpera_describe_cloud_secret_capture($1::uuid,$2::text,$3::uuid,$4::text) as result",
 		"select public.qorpera_complete_cloud_secret_capture($1::uuid,$2::text,$3::uuid,$4::text,$5::text,$6::text,$7::text) as result",
@@ -407,7 +408,9 @@ it("uses only the static broker-role SQL calls and binds downstream idempotency"
 		"select public.qorpera_describe_model_login_account_refresh($1::uuid,$2::text,$3::uuid,$4::text) as result",
 		"select public.qorpera_record_model_login_account_metadata($1::uuid,$2::text,$3::uuid,$4::text,$5::uuid,$6::uuid,$7::bigint,$8::text,$9::jsonb,$10::text) as result",
 		"select public.qorpera_complete_model_login_account_refresh($1::uuid,$2::text,$3::uuid,$4::text) as result",
+		"select public.qorpera_take_idle_model_login_renewal($1::uuid,$2::text) as result",
 	]);
+	expect(queries[13]?.values).toHaveLength(2);
 	expect(queries[11]?.values[8]).toBe(JSON.stringify({ observedAt: "2026-09-28T00:00:00.000Z", windows: [] }));
 	expect(queries[7]?.values).toHaveLength(2);
 	expect(queries[8]?.values.slice(2)).toEqual([signInId, "a".repeat(64)]);
