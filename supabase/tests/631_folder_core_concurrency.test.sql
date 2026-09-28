@@ -83,7 +83,7 @@ select pg_temp.commit('race-setup-1', jsonb_build_array(
 	jsonb_build_object('op','mkdir','path','ksrc'),
 	jsonb_build_object('op','write','path','ksrc/x','file',current_setting('qorpera_test.race_one')::jsonb)));
 
-select dblink_connect(name, 'dbname=qorpera_test') from unnest(array['race_zero','race_one','race_two']) name;
+select dblink_connect(name, 'dbname=' || current_database()) from unnest(array['race_zero','race_one','race_two']) name;
 select dblink_exec(name, $q$set request.jwt.claims = '{"role":"service_role"}'$q$)
 from unnest(array['race_zero','race_one','race_two']) name;
 select set_config('qorpera_test.pid_' || name, pid::text, false)
