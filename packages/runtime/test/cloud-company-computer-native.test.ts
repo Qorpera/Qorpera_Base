@@ -335,12 +335,10 @@ describe("native runtime to office transport (real TLS, synthetic SQL and guest 
 		cleanups.push(session.close);
 		expect(session.tools.map((tool) => tool.name)).toContain("computer_screen");
 		await session.close();
-		// A one-computer route still refuses every other computer.
+		// A one-computer route never reaches another computer: the run gets no computer tools.
 		const other = f.url.replace(f.scope.companyComputerId, randomUUID());
 		const pinned = createHttpCompanyComputerSessionFactory({ url: other, token: f.token, registry: f.registry });
-		await expect(pinned(f.run, new CloudNativeToolOperations(f.run, control))).rejects.toThrow(
-			"OFFICE_NATIVE_CONFIGURATION_DIFFERS",
-		);
+		expect(await pinned(f.run, new CloudNativeToolOperations(f.run, control))).toBeUndefined();
 	});
 	it("omits office tools for unavailable offices and never queries office metadata for private runs", async () => {
 		const f = await fixture({ unavailable: true });

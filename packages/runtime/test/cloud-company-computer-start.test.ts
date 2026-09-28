@@ -222,10 +222,11 @@ describe("native office startup without a running guest", () => {
 		expect(f.guest).not.toHaveBeenCalled();
 		expect(f.control.beginToolOperation).not.toHaveBeenCalled();
 	});
-	it("rejects startup metadata for a different configured office", async () => {
+	it("offers no startup for a computer a one-computer route cannot reach, and the run goes on", async () => {
 		const f = await fixture();
 		f.descriptor.scope.companyComputerId = randomUUID();
-		await expect(f.factory(f.run, f.operations)).rejects.toThrow("OFFICE_NATIVE_CONFIGURATION_DIFFERS");
+		expect(await f.factory(f.run, f.operations)).toBeUndefined();
+		expect(f.guest).not.toHaveBeenCalled();
 	});
 	it("offers startup of any of the company's computers through a company route", async () => {
 		const f = await fixture();
