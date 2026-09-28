@@ -4,6 +4,8 @@
 
 ### Added
 
+- `company-state-files`: the shared reader and canonical writers for the company folder's structured files (contract 5.6; `deploy/first-node/RUNTIME-COMPANY-STATE-FILES.md`): vision, agent, sections, group chat, connection, rule, routine, todo and worker brief and results. `parseCompanyStateFile` answers null for an ordinary file, the parse, or line-numbered problems; `companyStateName` and `freeCompanyStateName` make folder names; `setCompanyStateSettings` changes one setting and keeps every other byte. Nothing calls it yet.
+
 - `SupabaseCloudPresenceTransport` takes any client with `channel`/`removeChannel` and just the three presence device calls (`PresenceDevices`), so the web app joins presence without the whole hosted primary.
 
 - `CloudCompanyComputerStart.withdraw(generation, requestId, signal)` takes back the member's own idle wake request (`qorpera_withdraw_runtime_office_wake`). It never cancels the wake or a first start; it lets idle stop the computer one minute after it is up once every requester has withdrawn and nothing used it.
