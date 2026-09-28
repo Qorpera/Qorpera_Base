@@ -227,9 +227,27 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 				if (!claimed) await setTimeout(2000, undefined, { signal: stop.signal }).catch(() => undefined);
 			}
 		})();
-		// Housekeeping (sleep, removal, release) runs beside claiming, at start and
-		// every 30 s after a pass: a long pass never holds up a turn. Every step is
-		// logged; a failed one as coding-machine-error, and recorded on the machine.
+		// The keeper renews every attached session (standing by or in a turn) every
+		// 10 s, well inside the guest lease's 45 s: a session's commands run as long
+		// as this process keeps its attachment, and stop within a minute after it
+		// cannot. Released sessions (archived, revoked, lost) are taken off here.
+		const keeping = (async () => {
+			while (!stop.signal.aborted) {
+				try {
+					for (const outcome of await running.keep(stop.signal))
+						if (outcome.state === "failed") console.error(JSON.stringify({ event: "coding-session-error", ...outcome }));
+						else if (outcome.step === "detach" || outcome.state === "not-now")
+							console.log(JSON.stringify({ event: "coding-session", ...outcome }));
+				} catch (error) {
+					if (!stop.signal.aborted) console.error(JSON.stringify({ event: "coding-session-error", code: errorCode(error) }));
+				}
+				await setTimeout(10_000, undefined, { signal: stop.signal }).catch(() => undefined);
+			}
+		})();
+		// Housekeeping (quiet sessions archived, sleep, removal, release) runs beside
+		// claiming, at start and every 30 s after a pass: a long pass never holds up
+		// a turn. Every step is logged; a failed one as coding-machine-error, and
+		// recorded on the machine.
 		const housekeeping = (async () => {
 			while (!stop.signal.aborted) {
 				try {
@@ -242,7 +260,7 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 				await setTimeout(30_000, undefined, { signal: stop.signal }).catch(() => undefined);
 			}
 		})();
-		await Promise.all([claiming, housekeeping]);
+		await Promise.all([claiming, keeping, housekeeping]);
 	} finally {
 		stop.abort();
 		await executor?.drain();
