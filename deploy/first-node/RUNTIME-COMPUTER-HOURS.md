@@ -35,9 +35,11 @@ Chosen on the page (recommended option each time):
 7. The Dedicated plan (1,592 kr) is not sold until always-on machines are priced.
 8. "Out of hours" email also goes to every founder.
 
-Added while writing the contract: a company the operator marks complimentary (today, a company with
-a founder on an internal account, `qorpera_account_entitlements.plan_key = 'internal'`) is measured
-but never charged and never waits.
+Carried over, not a new founder decision: while any founder of a company has the internal account
+entitlement (`qorpera_account_entitlements.plan_key = 'internal'`), the company is complimentary.
+Its time is measured and paid by a `complimentary` source naming that founder; it is never charged
+and never waits. Founder plans are billing records, never new `plan_key` values: the entitlement
+table keeps only `freemium` and `internal`, and the client refuses other keys.
 
 ## What counts
 
@@ -54,9 +56,11 @@ but never charged and never waits.
   awake stretch. A size change while awake starts a new stretch.
 - Awake = the node demand is reserved, not suspended and not released. Admission clears
   `suspended_at` on wake, so the demand row holds no sleep history; the power log does.
-- A run counts from `accepted_at` of its runner assignment to `finished_at`, or to `expires_at`
-  when the assignment expires. A retry is a new assignment; the wait between attempts counts
-  nothing. Every execution run counts, proposal reviews included. Run allocations and `native`
+- A run counts from `accepted_at` of its runner assignment to the earlier of `finished_at` and
+  `expires_at`. The assignment's `expires_at` follows the job lease
+  (`20260824002000_runner_assignment_lease_renewal`), so a lost host counts only to its lapsed
+  lease; an accepted assignment ends when its job leaves `leased`, stamped with that time. A retry
+  is a new assignment; the wait between attempts counts nothing. Every execution run counts, proposal reviews included. Run allocations and `native`
   demands are never read, so a fresh-VM run and a run on the shared execution host cost the same,
   and a late-closed allocation (for example a lost reserve reply on the fast host) never extends a
   run.
@@ -84,6 +88,9 @@ No reserve, release, suspend or observe function is copied or patched.
   that commits late (a lower id after a higher one) is still read. Per machine or run, transitions
   commit in order, because each comes from an update of that machine's demand row or that run's
   assignment row.
+- Log times are the database's: `clock_timestamp()` for machines, the assignment's own times for
+  runs. Counted time is never taken back: a transition that arrives for time a pass already
+  counted (at most about a minute) ends the stretch there.
 - The migration logs everything awake at that moment as awake from then on. Nothing earlier is
   counted.
 
@@ -116,8 +123,9 @@ No reserve, release, suspend or observe function is copied or patched.
 - `qorpera_meter_computer_hours()` runs once a minute. It is scheduled with pg_cron directly
   (`select cron.schedule('qorpera-computer-hour-meter', '* * * * *',
   'select public.qorpera_meter_computer_hours()')`), an operator step at the cut. The cron job runs
-  as the function's owner; EXECUTE is otherwise granted only to service_role. A concurrent call
-  returns `busy` (advisory lock), and a call within the same half minute returns `current`.
+  as the function's owner; EXECUTE is otherwise granted only to service_role, and the body has no
+  role check of its own. A concurrent call returns `busy` (advisory lock), and a call within the
+  same half minute returns `current`.
 - Each pass counts up to 30 seconds ago, so late reports and transitions of that time have arrived.
 - `qorpera_computer_hour_subjects` holds the machines and runs not yet fully counted; a finished one
   is deleted once counted. The log keeps the history.
@@ -129,6 +137,8 @@ No reserve, release, suspend or observe function is copied or patched.
 - Reads are indexed and bounded by what changed. It never scans old receipts.
 - `qorpera_read_company_computer_hours(profile, month)`: any member of the company; the calendar
   month in Europe/Copenhagen time.
+- One usage row per company per minute with use. Step 3 rolls rows older than the current month up
+  to one per company per day, keeping the per-kind seconds and the draws.
 
 Step 2 shows the measured hours in Plan & usage and charges nothing.
 
@@ -140,15 +150,18 @@ a cascading link to `qorpera_profiles` (`qorpera_delete_hosted_profile` hard-del
 
 - `qorpera_computer_hour_sources`, one row per source of hours:
   - `free`: one per company, 5 × 3600 standard seconds;
-  - `plan_period`: one per founder plan per period (`user_id`, `period_start`, `period_end`);
-    created at the period start. If that period's payment finally fails, its unused part is
-    withdrawn and its used part forgiven;
+  - `plan_period`: one per founder plan per period (`user_id`, `period_start`, `period_end`).
+    A new plan's first period is created when its first invoice is paid. A renewal's period is
+    created at the period start; if that period's payment finally fails, its unused part is
+    withdrawn and its used part forgiven. An upgrade adds, once its charge is paid, the new plan's
+    extra hours in proportion to the time left in the period;
   - `credit`: one per paid purchase (`profile_id`, the buying founder's `user_id`,
     `expires_at` = purchase + 12 months);
-  - `owed`: time used while the company had no hours.
+  - `complimentary`: one per complimentary company and founder (see Decisions), unlimited;
+  - `owed`: time used while the company had no hours, unlimited.
 - `qorpera_computer_hour_draws(usage_id, source_id, standard_seconds)` records which source paid
-  each usage row. A source's draws never exceed its hours; a usage row's draws equal its
-  `standard_seconds`.
+  each usage row. The draws of a free, plan or credit source never exceed its hours; a usage row's
+  draws equal its `standard_seconds`.
 - A cached balance per source, updated with the draws, keeps the zero check one indexed read.
 - Hours left = what the company's sources hold minus what it owes.
 
@@ -163,21 +176,24 @@ a cascading link to `qorpera_profiles` (`qorpera_delete_hosted_profile` hard-del
 3. The company's `credit` sources, oldest expiry first.
 4. `owed`. New hours pay owed time first, in the same order (free, plans evenly, credits).
 
-A complimentary company draws nothing. A member who is not a founder is never a source. A founder
+A complimentary company draws only from its `complimentary` source, checked per pass with "any
+founder has the internal entitlement" (not through `qorpera_profile_entitlement_json`, which picks
+one owner). A member who is not a founder is never a source. A founder
 who leaves stops appearing in the founder list, which ends their share at once. Owed time of a
 deleted company is written off.
 
-Until live payments are switched on, step 3 runs as a dry run: it shows who would have paid. At the
-switch the dry-run draws are discarded, and free hours, owed time and every draw count from then.
+Until live payments are switched on, step 3 runs as a dry run: operators can see who would have
+paid, and members see only measured hours (no hours left, no warnings). At the switch the dry-run
+draws are discarded, and free hours, owed time and every draw count from then.
 
 ## Payments (build step 4)
 
 - A new Edge Function `computer-billing`:
   - `POST /checkout` (member JWT): a plan (`mode=subscription`, the member for themselves) or
     credits (`mode=payment`, founders only, for their company);
-  - `POST /portal` (member JWT): Stripe's billing page, with plan switching on. An upgrade adds the
-    difference in hours at once and Stripe prorates the price; a downgrade applies at the next
-    period;
+  - `POST /portal` (member JWT): Stripe's billing page, with plan switching on. An upgrade is
+    charged pro rata by Stripe and, once paid, adds the new plan's extra hours pro rata; a
+    downgrade applies at the next period;
   - `POST /webhook`: Stripe's messages.
 - Webhook, patterns kept from #326:
   - verify the raw body's HMAC signature (tolerance 5 minutes, several signatures);
@@ -203,23 +219,29 @@ switch the dry-run draws are discarded, and free hours, owed time and every draw
 - Stripe sends receipts and invoices to the paying member (customer email = account email).
 - Qorpera's hour notices use an outbox drained by an Edge Function that sends through Resend, like
   invitations (`supabase/INVITATION-EMAIL.md`). They go only to founders:
-  - hours running low, when a fifth of the hours the company had at the start of the month is
-    left, and out of hours go to the founders whose plans pay, the founders who bought the credits
-    in use, or every founder on free hours;
+  - "hours running low" (a fifth or less of the hours the company had at the start of the month,
+    or less than one hour, is left) and "out of hours" go to the founders whose plans pay, the
+    founders who bought the credits in use, or every founder on free hours;
   - "out of hours" also goes to every founder;
-  - one monthly summary per founder plan period, listing each company's use.
+  - one monthly summary to each founder whose plan was used, at the end of that plan's period,
+    listing each company's use.
+- Built switched off; switched on together with live payments.
 - Admins, contributors and viewers get no billing email. In-app notices mirror the emails.
 
 ## Zero (build step 6; built switched off)
 
 - One function, `qorpera_company_has_computer_hours(p_profile_id)`, reads the cached balances.
+- A complimentary company always passes.
 - It is checked before a run is created (not at claim or placement: a run waiting there is
-  invisible to members) and at each machine kind's own start or wake step. The hook list is agreed
-  with the nodes (S3), machines, company-machine and coding sessions before building.
+  invisible to members) and at each machine kind's own start or wake step. A run created before
+  the company ran out is running work. The hook list is agreed with the nodes (S3), machines,
+  company-machine and coding sessions before building.
 - Work that cannot start waits before a run exists, with a stated reason ("waiting for computer
-  hours"), and starts by itself, in order, once the company has hours left. It never fails by age.
-- Running work may finish for at most 1 hour at zero. Then its runs are stopped as by a member's
-  Stop, and its machines, always-on ones included, are stopped with their disks kept.
+  hours"), and starts by itself in the order it arrived once the company has hours left. It never
+  fails by age.
+- Running work may finish for at most 1 hour at zero. Then its runs end with the reason "out of
+  computer hours" (not a member's Stop: no routine is paused and no worker cancelled), and its
+  machines, always-on ones included, are stopped with their disks kept.
 - It ships switched off, in its own release, with a 30-minute database watch after the cut. It is
   switched on together with live payments.
 
@@ -244,10 +266,10 @@ exact-head review, and a hand-off to the coordinator (message, PR comment, regis
    with a database watch, and the cron job.
 3. Billing records and the charging order, as a dry run.
 4. Payments in Stripe test mode: checkout, billing page, webhook, catalog.
-5. Email.
+5. Email, switched off.
 6. Zero: the check, the waiting state, the finishing window, switched off. Its own release.
-7. Live: Jonas sets the live Stripe keys; the coordinator switches payments and the zero rule on
-   together.
+7. Live: Jonas sets the live Stripe keys; the coordinator switches payments, hour notices and the
+   zero rule on together.
 
 ## Not repeated from #326
 

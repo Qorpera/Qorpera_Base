@@ -3672,9 +3672,14 @@ owner role. Model use is not billed here: it follows the 2026-09-28 amendment
 
    The billing records say which source paid for each second. A founder who
    leaves, steps down or is removed stops paying for the company at that
-   moment; what their plan already paid stays paid. A company the operator
-   marks complimentary (today: a company with a founder on an internal
-   account) is measured but never charged and never waits for hours.
+   moment; what their plan already paid stays paid.
+
+   Complimentary companies carry over the operator's existing internal
+   accounts and are not a new founder decision: while any founder of a
+   company has the internal account entitlement (`qorpera_account_entitlements`,
+   plan `internal`), its machine time is measured and recorded as paid by a
+   complimentary source naming that founder. It is never charged and never
+   waits for hours.
 5. **Members who are not founders are never billed.** Admins, contributors
    and viewers are never billed personally for machine time: neither their
    plan nor their card pays for a company's machines. Their work uses the
@@ -3684,15 +3689,18 @@ owner role. Model use is not billed here: it follows the 2026-09-28 amendment
    the start of its first work, never asks for a payment or a card.
 7. **At zero.** A company's hours left are what its sources hold minus what
    it owes. While it has none:
-   - No machine of the company starts or wakes, no run of the company
-     starts, and agents' requests for machines wait. The work waits before a
+   - No machine of the company starts or wakes, no run of the company is
+     created, and agents' requests for machines wait. The work waits before a
      run is created, with a stated reason that its agents and members see,
-     and starts by itself, in order, once the company has hours left again.
-     Waiting for hours never fails work by age: 7.4's one-day failure of a
-     queued run does not apply to it.
-   - Work already running may finish for at most one hour. Then its runs are
-     stopped as by a member's Stop, and its machines are stopped with their
-     disks kept; an always-on machine included.
+     and starts by itself, in the order it arrived, once the company has hours
+     left again. Waiting for hours never fails work by age: 7.4's one-day
+     failure of a queued run does not apply to it. A run created before the
+     company ran out is running work.
+   - Work already running may finish for at most one hour. Then its runs end
+     with the stated reason "out of computer hours", and its machines are
+     stopped with their disks kept, always-on machines included. Nothing else
+     changes: no routine is paused and no worker is cancelled; their next work
+     waits for hours like any other.
    - Time used while the company has no hours is owed. Owed time is paid in
      the order of item 4 from the next hours that arrive (free hours, then
      founders' plans evenly, then credits). Owed time of a deleted company is
@@ -3709,7 +3717,8 @@ owner role. Model use is not billed here: it follows the 2026-09-28 amendment
      arrive when the period starts, before its invoice is paid. If that
      payment finally fails, the period's unused hours are withdrawn and its
      used hours are forgiven; nobody else pays for them.
-   - An upgrade adds the difference between the two plans' hours at once; a
+   - An upgrade adds the new plan's extra hours for the rest of the period,
+     in proportion to the time left, once the upgrade's charge is paid. A
      downgrade applies from the next period.
    - A refund removes the unused hours of its purchase. A dispute freezes only
      that purchase, never the company.
@@ -3724,18 +3733,20 @@ owner role. Model use is not billed here: it follows the 2026-09-28 amendment
    member's account, and they are kept for bookkeeping after a company or an
    account is deleted.
 10. **Email.** The payment provider sends receipts and invoices to the member
-    who paid. Qorpera sends hour notices (hours running low, out of hours, a
-    monthly summary) only to founders: those whose plans pay, those who
-    bought the credits in use, or every founder while the company uses its
-    free hours. "Out of hours" also goes to every founder. Admins,
-    contributors and viewers get no billing email.
+    who paid. Qorpera sends hour notices only to founders. "Hours running
+    low" and "out of hours" go to the founders whose plans pay, the founders
+    who bought the credits in use, or every founder while the company uses
+    its free hours; "out of hours" also goes to every founder. A monthly
+    summary goes to each founder whose plan was used, listing each company's
+    use. Admins, contributors and viewers get no billing email.
 11. **What this replaces.**
     - 7.4: "a company starts as many computers as the nodes have room for" and
       "machines an agent starts are bounded only by the room on the nodes"
       read with item 7: they also wait while the company has no hours. The
       one-day failure of a queued run does not apply to work waiting for
-      hours, and a run stopped after the hour at zero ends as if a member
-      stopped it.
+      hours, and a run may also end "out of computer hours" (item 7). "The
+      machines an agent starts are not counted" there means they are not
+      limited in number; they do count for computer hours (item 2).
     - Section 12, its note on additional machines, and "compute for agents"
       items 1 and 4: a machine that could start or wake also waits while the
       company has no hours; at zero an always-on machine is stopped after the
@@ -3756,9 +3767,10 @@ owner role. Model use is not billed here: it follows the 2026-09-28 amendment
 12. **Order.** Measure first, charge later, each step shippable alone: the
     measured hours shown to members; the billing records with their sources
     and order as a dry run; payments in the provider's test mode; hour
-    notices; the zero rule of item 7, built switched off. Live payments and
-    the zero rule are switched on together. Free hours, owed time and every
-    draw count from that moment; dry-run draws before it are discarded.
+    notices and the zero rule of item 7, both built switched off. Live
+    payments, hour notices and the zero rule are switched on together. Free
+    hours, owed time and every draw count from that moment; dry-run draws
+    before it are discarded, and members see only measured hours until then.
     Acceptance is section 21 item 31.
 
 ## 20. Enforcement matrix
@@ -3913,16 +3925,17 @@ while Azure backup/overflow remains disabled.
     stop operation pauses the company, and the founder is notified from the
     control plane. (Amended 2026-09-24, see 7.4: only the operator stop
     remains; since bundle v92 there is no machine limit either.)
-31. Computer hours (2026-09-28 amendment "computer hours"): a company's
-    machine time is counted once per machine at its size and matches the
-    central records, and a machine that stops, sleeps or crashes stops
-    counting. A new company starts without a payment and uses its five free
-    hours first. Founders' plans pay before the company's credits, shared
-    evenly between the founders with hours left, and the plan or card of a
-    member who is not a founder is never used. A new plan or new
-    credits add hours only once paid. At zero no machine starts or wakes and
-    new work waits with its reason; running work ends within one hour, and
-    waiting work starts by itself once the company has hours left again.
+31. Computer hours (2026-09-28 amendment "computer hours"), proven on a
+    company with no founder on an internal account: a company's machine time
+    is counted once per machine at its size and matches the central records,
+    and a machine that stops, sleeps or crashes stops counting. A new company
+    starts without a payment and uses its five free hours first. Founders'
+    plans pay before the company's credits, shared evenly between the founders
+    with hours left, and the plan or card of a member who is not a founder is
+    never used. A new plan or new credits add hours only once paid. At zero no
+    machine starts or wakes and new work waits with its reason; running work
+    ends within one hour, and waiting work starts by itself once the company
+    has hours left again.
 32. **Deferred post-build enablement gate, not a launch prerequisite:** before
     Azure backup/overflow is enabled, demand beyond local capacity is attributable
     to Azure placements and rented allocation intervals. The view distinguishes
