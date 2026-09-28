@@ -30,7 +30,8 @@ It compares what the runtime depends on:
   Build machines (`user.qorpera.image_builder=true`) come and go, so they are left out.
 - the node agent's role releases, and the **names** of each role's fixed settings and secret keys.
 
-It never reads a setting's value, a credential or an env file.
+It takes only the names of a role's settings and secret keys. It never prints or stores a
+setting's value or a credential, and never reads an env file.
 
 The node's name is replaced by `<node>` in every name. For the label `company41-node-01` that is
 the full label and its short forms `node01`, `node-01`, `node1` and `node-1`. So
@@ -54,7 +55,10 @@ checked-in class allows only role releases. As of 2026-09-28 the known gaps are:
 - node 1 mounts the company objects `noexec`, and node 2 does not;
 - per-node coding and office workbench shares;
 - node 1 alone has the production company machine, the recovery mounts and the object gateway;
-- node 1 has no fast host.
+- node 1 has no fast host;
+- the LXD project names are compared as they are. If the two nodes' run projects have different
+  names (node 2's is `qn25b2`), their fast hosts show as two different hosts until the projects
+  share a name or the class lists them.
 
 Each gap closes with its own change. The changes are listed on the design page and, once change 1
 (#424) is merged, in `deploy/first-node/RUNTIME-IDENTICAL-NODES.md`.

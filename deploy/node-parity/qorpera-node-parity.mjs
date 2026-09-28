@@ -185,7 +185,8 @@ function flatten(value, path, out) {
 /** Differences between two nodes' setups, minus what the class allows. Pure.
  * A class entry in `mayDiffer` is a prefix of a difference path ("nfs › /srv/qorpera/coding",
  * "agent › roles"). `onlyOn: {"<label>": [prefix, …]}` names what only that node has: it must be
- * missing on the other node and present on it. */
+ * missing on the other node and present on it. `unusedOnlyOn` lists entries of the two nodes that
+ * excused nothing, so a gap that has closed is noticed and its entry removed. */
 export function compareSetups(klass, a, b) {
 	for (const setup of [a, b]) if (setup?.schema !== SETUP_SCHEMA) throw new Error("INVALID_NODE_SETUP");
 	if (a.label === b.label) throw new Error("SAME_NODE_TWICE");
@@ -193,8 +194,13 @@ export function compareSetups(klass, a, b) {
 	const left = flatten({ services: a.services, nfs: a.nfs, lxd: a.lxd, agent: a.agent }, [], new Map());
 	const right = flatten({ services: b.services, nfs: b.nfs, lxd: b.lxd, agent: b.agent }, [], new Map());
 	const allowed = (path) => c.mayDiffer.some((prefix) => path === prefix || path.startsWith(`${prefix} › `));
+	const used = new Set();
 	const only = (label, path) =>
-		(c.onlyOn[label] ?? []).some((prefix) => path === prefix || path.startsWith(`${prefix} › `));
+		(c.onlyOn[label] ?? []).some((prefix) => {
+			const match = path === prefix || path.startsWith(`${prefix} › `);
+			if (match) used.add(JSON.stringify([label, prefix]));
+			return match;
+		});
 	const differences = [];
 	for (const path of [...new Set([...left.keys(), ...right.keys()])].sort()) {
 		const x = left.get(path),
@@ -207,10 +213,17 @@ export function compareSetups(klass, a, b) {
 	return {
 		identical: differences.every((difference) => difference.allowed),
 		differences,
+		unusedOnlyOn: [a.label, b.label].flatMap((label) =>
+			(c.onlyOn[label] ?? [])
+				.filter((prefix) => !used.has(JSON.stringify([label, prefix])))
+				.map((prefix) => ({ label, prefix })),
+		),
 	};
 }
 
-const run = promisify(execFile);
+const exec = promisify(execFile);
+// Every command is read-only and quick; one that hangs (a stuck NFS mount under findmnt) is stopped.
+const run = (command, args, options) => exec(command, args, { ...options, timeout: 60000 });
 // A JSON.parse error quotes part of its input, so it is replaced by a fixed message.
 function parse(text, what) {
 	try {
@@ -272,6 +285,8 @@ async function main(argv) {
 			process.stdout.write(
 				`${difference.allowed ? "allowed " : "DIFFERS "} ${difference.path}\n    ${a.label}: ${difference[a.label]}\n    ${b.label}: ${difference[b.label]}\n`,
 			);
+		for (const { label, prefix } of result.unusedOnlyOn)
+			process.stdout.write(`note     onlyOn ${label}: "${prefix}" excuses nothing; remove it from the class.\n`);
 		process.stdout.write(result.identical ? "Same setup (allowed differences only).\n" : "Setups differ.\n");
 		return result.identical ? 0 : 1;
 	}

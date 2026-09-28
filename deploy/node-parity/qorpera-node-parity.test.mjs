@@ -101,7 +101,7 @@ test("two nodes set up the same way compare equal, their own names neutralised",
 		b = raw("node02", 2);
 	assert.deepEqual(Object.keys(a.lxd.hosts), ["qn25b2/qorpera-exec-<node>"]);
 	assert.deepEqual(Object.keys(a.nfs), ["/srv/qorpera/canonical", "/srv/qorpera/workbench-<node>"]);
-	assert.deepEqual(compareSetups(klass, a, b), { identical: true, differences: [] });
+	assert.deepEqual(compareSetups(klass, a, b), { identical: true, differences: [], unusedOnlyOn: [] });
 });
 
 test("values are never read: only the names of a role's settings", () => {
@@ -181,6 +181,15 @@ test("build machines are left out; sizes come from the expanded configuration", 
 		o.instances[0].expanded_config = { "limits.cpu": "8", "limits.memory": "16GiB" };
 	});
 	assert.deepEqual(compareSetups(klass, raw("node01", 1), b).differences, []);
+});
+
+test("an onlyOn entry that excuses nothing is listed, without changing the verdict", () => {
+	const onlyOn = { schema: CLASS_SCHEMA, mayDiffer: [], onlyOn: { node01: ["lxd › projects › gone"] } };
+	const result = compareSetups(onlyOn, raw("node01", 1), raw("node02", 2));
+	assert.equal(result.identical, true);
+	assert.deepEqual(result.unusedOnlyOn, [{ label: "node01", prefix: "lxd › projects › gone" }]);
+	const a = raw("node01", 1, (o) => o.projects.push({ name: "gone", config: {} }));
+	assert.deepEqual(compareSetups(onlyOn, a, raw("node02", 2)).unusedOnlyOn, []);
 });
 
 test("refuses malformed input", () => {
