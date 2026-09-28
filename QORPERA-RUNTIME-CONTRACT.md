@@ -2926,23 +2926,35 @@ section 12.2 and the 2026-09-16 storage rule. Design:
      review of a networked shell do not apply to them.
    - Branches still leave the company only as pull requests (5.1).
 
-**Founder decisions of 28 September 2026 on how machines reach the folder.**
-Design: the section "Decided on 28 September 2026" of
-`deploy/first-node/RUNTIME-COMPANY-FOLDER.md`.
+### 2026-09-28 amendment: how machines reach the company folder
 
-- **A folder program in each machine.** Each machine shows the folder
-  through a program of its own. That program reaches the folder service of
-  the node the machine runs on over a private link that is not the machine's
-  network. Every node runs the same folder service, so a machine sees the
-  folder the same way on any node. The folder service does every check.
-- **Company machines show what every agent may see.** A company machine's
-  computers are not walls between agents, so it shows only the company-wide
-  part of the folder. A folder shared with only some agents is worked on from
-  the agent's own run box. Each computer's saves are attributed to its
-  holder.
-- **A crash loses only what was not yet published.** When a machine or a
-  node dies, the changes it had not yet published are lost and reported.
-  Nothing a company owns is kept on a node or a machine disk to rescue them.
+Founder decisions of 28 September 2026. They complete the amendment above
+("every machine works in the company folder"). Design: the section "Decided on
+28 September 2026" of `deploy/first-node/RUNTIME-COMPANY-FOLDER.md`.
+
+Words used here: a *company machine* is the virtual machine that section 12
+calls the Company Computer, and a *computer* is one of its screens. The
+*folder service* is the trusted program that serves the folder to machines.
+
+1. **A folder program in each machine.** Each machine shows the folder
+   through a program of its own. That program reaches the folder service of
+   the node the machine runs on, over a private link that is not the
+   machine's network. Every node runs the same folder service, so a machine
+   sees the folder the same way on any node.
+   - No machine mounts the NAS directly.
+   - Nothing inside a machine decides what it may see or save. The folder
+     service checks every listing, read and save, and the mutation gateway
+     checks every save again.
+2. **Company machines show only the part of the folder shared with every
+   agent.** A company machine's computers are not walls between agents
+   (section 12).
+   - A folder shared with only some agents is worked on from the agent's own
+     run box.
+   - Each computer's saves are attributed to whoever made them: the agent
+     whose command or turn it was, or a member who took the computer over.
+3. **A crash loses only what was not yet published.** When a machine or a
+   node dies, the changes it had not yet published are lost and reported.
+   Nothing a company owns is kept on a node or a machine disk to rescue them.
 
 ### 2026-09-27 amendment: the company folder layout
 
