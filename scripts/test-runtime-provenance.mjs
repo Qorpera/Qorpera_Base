@@ -21,6 +21,7 @@ const claims = `set local "request.jwt.claims" = '{"role":"service_role"}';`;
 // Split-owner path helper grants, keyed by the migration that (re)creates the helper.
 const laterPathHelpers = new Map([
 	["20260920001000_", ["qorpera_agent_creatable_path_kind(text)", "qorpera_company_path_allowed(jsonb,text,text)"]],
+	["20260922170000_", ["qorpera_company_path_allowed(jsonb,text,text)"]],
 	["20260924020000_", ["qorpera_company_path_allowed(jsonb,text,text)"]],
 	["20260926035000_", ["qorpera_assert_agent_default_delegation(uuid,uuid)"]],
 ]);
