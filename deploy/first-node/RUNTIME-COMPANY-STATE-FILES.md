@@ -419,8 +419,19 @@ decision that also changes the title or the instructions is reviewed as delegati
 - `done` is refused while a worker is active.
 - A closed todo is not opened again; write a new file instead.
 - `cancelled` stops the todo's active workers (follow-up queue).
-- Moving a todo with an active worker is refused.
-- `requested_by` is checked only when the save changes it.
+- Moving or deleting a todo with an active worker is refused, and so is moving or deleting a
+  folder that carries one (an agent's rename or retirement included).
+- `requested_by` is checked (a member) only when the save changes it.
+
+**Also:** the todo belongs to the agent whose folder holds it (its indexed `agent.md`, or the
+`agent.md` the same unit brings, as a hire with its first todo); a move lands only in an agent's
+`todos/`. The id never changes and belongs to one file; a file saved before this slice is the
+saved version only once the index points at its path. The key is the file name.
+
+**Index:** a folder row has no run ids (the commit records the actor) and may have no requester.
+Deleting the file cancels an open or blocked todo, retires the row and gives its key a tombstone
+with a `.` (no file name has one), so a new file of that name is free; a restore brings it back.
+A todo save takes the company row at rank 2 (the row's foreign key).
 
 Not reviewed. Dispatching a worker is reviewed.
 
@@ -525,7 +536,7 @@ of the body, for readers that should not reach the storage server.
 | connection | new `qorpera_folder_connection_index`, one row per account keyed by the vault row's id (its own table, so a connection save never writes or locks a vault row) | path, path version, purpose copy | the vault row, secret versions, grants, audit |
 | rule | `qorpera_review_rules` (company scope, folder columns as the roster's, `created_via` `folder`) | outcome, `when_text` copy | personal rules, review records |
 | routine | `qorpera_cloud_routines`, `_versions` | owner from the folder, title, trigger, timezone, ends, runs, quiet with its zone, effort, reply, status, conclusion, intent copy | schedule cursors, occurrences, retries, sponsor, `pause_reason`, `authorization_failures`, `origin` (who created it, from the first commit) |
-| todo | `qorpera_runtime_agent_todos` | owner from the folder, title, status, requester, detail copy | — |
+| todo | `qorpera_runtime_agent_todos` (folder columns as the roster's; run ids and requester optional for folder rows) | owner from the folder, key from the name, title, status, requester, detail copy | revision, publication columns (moot for folder rows) |
 | worker-brief/results | `qorpera_runtime_workers` | dispatch and result copies | handles, leases, revival, completion |
 
 - **Moves** repoint index rows without re-parsing. An agent rename carries its routines and
@@ -704,7 +715,8 @@ claims by kind then key (F2). All nine come before paths, objects, admission and
    commits.
 5. **F2-4** rules (migration 20260929190000): the reviewer reads the rule index, its own table;
    the Settings RPCs refuse company rules for folder-v2.
-6. **F2-5** todos and worker files.
+6. **F2-5** todos and worker files: **F2-5a** todos (migration 20260929210000); **F2-5b** worker
+   briefs and results, with core C3's writers, which dispatch and report through the platform.
 7. **F2-6** routines, last because the scheduler, schedule positions and decisions are the
    most delicate part.
 
