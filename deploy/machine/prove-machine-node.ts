@@ -17,7 +17,9 @@ import { LxdUnixClient } from "../../packages/runner-orchestrator/src/lxd-client
 // Run as the coding executor's account (LXD socket, NAS control directory):
 //   node prove-machine-node.mjs <proof.json>
 // proof.json: { policy, helperSha256, storagePolicy, journalRoot, cpus, memoryGiB, diskGiB,
-//               repositoryBundle?: "/path/qorpera.tar.gz" }
+//               repositoryBundle?: "/path/qorpera.tar.gz", blockedTargets?: ["host[:port]", ...] }
+// blockedTargets are what must stay out of reach; the default is node 2's NAS, router,
+// Tailscale, cloud metadata and the bridge gateway's SSH.
 // The machine is an unregistered instance while it exists: the node's
 // observer reports the node unavailable for the few minutes the proof runs.
 // Run it in an agreed quiet window.
@@ -32,6 +34,7 @@ interface Proof {
 	memoryGiB: number;
 	diskGiB: number;
 	repositoryBundle?: string;
+	blockedTargets?: string[];
 }
 
 async function main(path: string): Promise<void> {
@@ -168,7 +171,9 @@ async function main(path: string): Promise<void> {
 		"docker compose stack",
 	);
 	expect((await command("curl -fsS -o /dev/null -w '%{http_code}' https://github.com")).state === "succeeded", "internet out");
-	for (const target of ["192.168.1.40", "192.168.1.1", "100.100.100.100", "169.254.169.254", "10.88.0.1:22"])
+	const blocked = proof.blockedTargets ?? ["192.168.1.40", "192.168.1.1", "100.100.100.100", "169.254.169.254", "10.88.0.1:22"];
+	if (!blocked.every((target) => /^[0-9.]+(:[0-9]{1,5})?$/.test(target))) throw new Error("invalid blocked target");
+	for (const target of blocked)
 		expect(
 			(await command(`! curl -sS -m 5 -o /dev/null http://${target}/`)).state === "succeeded",
 			`blocked: ${target}`,

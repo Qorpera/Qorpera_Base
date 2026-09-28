@@ -54,12 +54,15 @@ without() {
 mapfile -t -O "${#DROP[@]}" DROP < <(without "$GATEWAY" 8; without 255.255.255.255 4)
 (( ${#DROP[@]} == 9 + 24 + 28 )) || { echo "ranges miscounted" >&2; exit 1; }
 
+# LXD 6.9 takes no description key or flag on create; `acl create` reads one from stdin YAML,
+# `network create` ignores stdin (proved on node 2's test machine, 2026-09-29).
 if ! lxc network show "$NET" >/dev/null 2>&1; then
-	lxc network create "$NET" --type=bridge ipv4.address="$CIDR" ipv4.nat=true ipv4.dhcp=true ipv6.address=none \
-		dns.mode=managed description="Qorpera company machines: internet out, nothing of ours, nothing in"
+	lxc network create "$NET" --type=bridge ipv4.address="$CIDR" ipv4.nat=true ipv4.dhcp=true ipv6.address=none dns.mode=managed
 fi
 if ! lxc network acl show "$ACL" >/dev/null 2>&1; then
-	lxc network acl create "$ACL" description="Qorpera company machines: drop private and special ranges"
+	lxc network acl create "$ACL" <<-YAML
+		description: 'Qorpera company machines: drop private and special ranges'
+	YAML
 	for destination in "${DROP[@]}"; do
 		lxc network acl rule add "$ACL" egress action=drop destination="$destination" state=enabled
 	done
