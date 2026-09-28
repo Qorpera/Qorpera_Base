@@ -1,0 +1,252 @@
+import type { ModelLoginSignInHelper } from "./cloud-model-login-sign-in.ts";
+import { CloudModelLoginUpkeep } from "./cloud-model-login-upkeep.ts";
+import { CloudModelLoginVault, type ModelLoginRenewer } from "./cloud-model-login-vault.ts";
+import { CloudModelLoginSignIns } from "./cloud-model-login-vault-sign-in.ts";
+import { CloudModelLoginUsage } from "./cloud-model-login-vault-usage.ts";
+import {
+	CloudSecretBroker,
+	type CloudSecretConnectorAdapter,
+	type PostgresCloudSecretBrokerPrincipal,
+} from "./cloud-secret-broker.ts";
+import type { CloudSecretKeyring } from "./cloud-secret-crypto.ts";
+
+/**
+ * The shared vault (Vault By Default, founder decisions 2026-09-28): one broker process serves every
+ * company created after its start time. It registers each new company itself (its authority row, with the
+ * capability derived for it, and its switch to vault sign-in), and gives every company it serves its own
+ * broker, login vault, sign-ins and usage, each on that company's own authority. Every database call
+ * still names the company's authority and capability, so a request routed to the wrong company is refused
+ * there. The background work of the single-company broker runs here for every company: finished sign-ins
+ * are collected (often for a company whose member is signing in, now and then for all), and each company's
+ * upkeep pass runs in turn.
+ */
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const KEY_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+/** A company the list does not know yet is looked up again at most this often. */
+const MISSING_LOOKUP_MS = 2000;
+/** After a member's sign-in poll, the company's finished sign-ins are collected often for this long. */
+const SIGNING_IN_MS = 20 * 60_000;
+const DEADLINE_MS = 15_000;
+
+/** One company's services on its own authority. */
+export interface CloudSecretBrokerCompanyScope {
+	readonly companyId: string;
+	readonly broker: CloudSecretBroker;
+	readonly modelLogins: CloudModelLoginVault;
+	readonly modelLoginSignIns: CloudModelLoginSignIns | undefined;
+	readonly modelLoginUsage: CloudModelLoginUsage;
+}
+
+/** How a broker service finds the company a request is for. */
+export interface CloudSecretBrokerCompanies {
+	/** The company's services, or undefined when this vault does not serve it. */
+	resolve(companyId: string, signal: AbortSignal): Promise<CloudSecretBrokerCompanyScope | undefined>;
+	/** A member of the company is signing in: collect its finished sign-ins often for a while. */
+	signingIn(companyId: string): void;
+}
+
+interface Served {
+	readonly authorityId: string;
+	readonly keyId: string;
+	readonly scope: CloudSecretBrokerCompanyScope;
+	readonly upkeep: CloudModelLoginUpkeep;
+}
+
+function record(value: unknown, label: string): Record<string, unknown> {
+	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} is invalid`);
+	return value as Record<string, unknown>;
+}
+
+function company(value: unknown): string {
+	if (typeof value !== "string" || !UUID.test(value.toLowerCase())) throw new Error("Shared vault company is invalid");
+	return value.toLowerCase();
+}
+
+function servedEntry(value: unknown): { companyId: string; authorityId: string; keyId: string } {
+	const input = record(value, "Shared vault company");
+	if (typeof input.keyId !== "string" || !KEY_ID.test(input.keyId)) throw new Error("Shared vault company is invalid");
+	return { companyId: company(input.companyId), authorityId: company(input.authorityId), keyId: input.keyId };
+}
+
+export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompanies {
+	readonly #principal: Pick<PostgresCloudSecretBrokerPrincipal, "companies" | "register" | "authority">;
+	readonly #keyring: CloudSecretKeyring;
+	readonly #adapters: readonly CloudSecretConnectorAdapter[];
+	readonly #helper: (ModelLoginSignInHelper & ModelLoginRenewer) | undefined;
+	readonly #refreshEveryMs: number;
+	readonly #collectEveryMs: number;
+	readonly #sweepEveryMs: number;
+	readonly #upkeepEveryMs: number;
+	readonly #now: () => number;
+	readonly #served = new Map<string, Served>();
+	readonly #signingIn = new Map<string, number>();
+	#lastLookup = Number.NEGATIVE_INFINITY;
+	#lastSweep = Number.NEGATIVE_INFINITY;
+	#refreshing: Promise<void> | undefined;
+	readonly #timers = new Set<ReturnType<typeof setTimeout>>();
+	#running = new Set<Promise<void>>();
+	#started = false;
+	#closed = false;
+
+	constructor(options: {
+		principal: Pick<PostgresCloudSecretBrokerPrincipal, "companies" | "register" | "authority">;
+		keyring: CloudSecretKeyring;
+		adapters: readonly CloudSecretConnectorAdapter[];
+		/** The login helper on this host: renewals and members' sign-ins. Absent, nothing renews or signs in. */
+		helper?: ModelLoginSignInHelper & ModelLoginRenewer;
+		refreshEveryMs?: number;
+		collectEveryMs?: number;
+		sweepEveryMs?: number;
+		upkeepEveryMs?: number;
+		now?: () => number;
+	}) {
+		this.#principal = options.principal;
+		this.#keyring = options.keyring;
+		this.#adapters = options.adapters;
+		this.#helper = options.helper;
+		this.#refreshEveryMs = options.refreshEveryMs ?? 10_000;
+		this.#collectEveryMs = options.collectEveryMs ?? 2000;
+		this.#sweepEveryMs = options.sweepEveryMs ?? 30_000;
+		this.#upkeepEveryMs = options.upkeepEveryMs ?? 5 * 60_000;
+		this.#now = options.now ?? Date.now;
+	}
+
+	async resolve(companyId: string, signal: AbortSignal): Promise<CloudSecretBrokerCompanyScope | undefined> {
+		const id = company(companyId);
+		const known = this.#served.get(id);
+		if (known) return known.scope;
+		// A company created a moment ago may not be on the list yet: look again, but not on every request.
+		if (this.#now() - this.#lastLookup < MISSING_LOOKUP_MS) return undefined;
+		this.#lastLookup = this.#now();
+		await this.refresh(signal);
+		return this.#served.get(id)?.scope;
+	}
+
+	signingIn(companyId: string): void {
+		this.#signingIn.set(company(companyId), this.#now() + SIGNING_IN_MS);
+	}
+
+	/** One refresh: registers the new companies, serves every registered one, drops the rest. */
+	refresh(signal: AbortSignal): Promise<void> {
+		this.#refreshing ??= this.#refresh(signal).finally(() => {
+			this.#refreshing = undefined;
+		});
+		return this.#refreshing;
+	}
+
+	async #refresh(signal: AbortSignal): Promise<void> {
+		const answer = record(await this.#principal.companies(signal), "Shared vault companies");
+		if (
+			answer.schema !== "qorpera.broker-principal-companies/v1" ||
+			!Array.isArray(answer.registered) ||
+			!Array.isArray(answer.unregistered)
+		)
+			throw new Error("Shared vault companies are invalid");
+		const registered = answer.registered.map(servedEntry);
+		for (const waiting of answer.unregistered) {
+			try {
+				const done = record(await this.#principal.register(company(waiting), signal), "Shared vault registration");
+				if (done.schema !== "qorpera.broker-principal-registration/v1")
+					throw new Error("Shared vault registration is invalid");
+				registered.push(servedEntry(done));
+			} catch {
+				// Another copy of the vault registered it first, or it gained a vault of its own: the next
+				// refresh lists it as it is.
+			}
+		}
+		const listed = new Set<string>();
+		for (const entry of registered) {
+			listed.add(entry.companyId);
+			const known = this.#served.get(entry.companyId);
+			if (known && known.authorityId === entry.authorityId && known.keyId === entry.keyId) continue;
+			// A key this vault cannot derive would strand every login the company seals: serve it only
+			// once the vault holds that master key.
+			if (!this.#keyring.has(entry.keyId)) continue;
+			this.#served.set(entry.companyId, this.#serve(entry));
+		}
+		for (const companyId of [...this.#served.keys()]) if (!listed.has(companyId)) this.#served.delete(companyId);
+	}
+
+	#serve(entry: { companyId: string; authorityId: string; keyId: string }): Served {
+		const authority = this.#principal.authority(entry.companyId, entry.authorityId);
+		const helper = this.#helper;
+		const modelLogins = new CloudModelLoginVault({
+			authority,
+			keyring: this.#keyring,
+			...(helper ? { renewer: helper } : {}),
+		});
+		return {
+			authorityId: entry.authorityId,
+			keyId: entry.keyId,
+			scope: {
+				companyId: entry.companyId,
+				broker: new CloudSecretBroker({ authority, keyring: this.#keyring, adapters: this.#adapters }),
+				modelLogins,
+				modelLoginSignIns: helper
+					? new CloudModelLoginSignIns({ authority, keyring: this.#keyring, helper })
+					: undefined,
+				modelLoginUsage: new CloudModelLoginUsage({ authority, keyring: this.#keyring }),
+			},
+			// Its timer never runs: the shared upkeep loop runs each company's pass in turn.
+			upkeep: new CloudModelLoginUpkeep({ vault: modelLogins }),
+		};
+	}
+
+	/** Finished sign-ins: every pass for a company whose member is signing in, every sweep for all. */
+	async collect(): Promise<void> {
+		const now = this.#now();
+		const sweep = now - this.#lastSweep >= this.#sweepEveryMs;
+		if (sweep) this.#lastSweep = now;
+		for (const [companyId, until] of this.#signingIn) if (until <= now) this.#signingIn.delete(companyId);
+		for (const served of this.#served.values()) {
+			if (this.#closed) return;
+			const signIns = served.scope.modelLoginSignIns;
+			if (signIns && (sweep || this.#signingIn.has(served.scope.companyId))) await signIns.collect();
+		}
+	}
+
+	/** Each company's upkeep pass in turn (accounts, switch-off, idle renewals). */
+	async upkeep(): Promise<void> {
+		for (const served of [...this.#served.values()]) {
+			if (this.#closed) return;
+			await served.upkeep.pass();
+		}
+	}
+
+	start(): void {
+		if (this.#started || this.#closed) return;
+		this.#started = true;
+		this.#loop(() => this.refresh(AbortSignal.timeout(DEADLINE_MS)), this.#refreshEveryMs, 0);
+		this.#loop(() => this.collect(), this.#collectEveryMs, this.#collectEveryMs);
+		// A random start, so both copies of the vault and a restart spread their renewals.
+		this.#loop(() => this.upkeep(), this.#upkeepEveryMs, 30_000 + Math.floor(Math.random() * this.#upkeepEveryMs));
+	}
+
+	#loop(work: () => Promise<void>, everyMs: number, firstMs: number): void {
+		const schedule = (delayMs: number): void => {
+			const timer = setTimeout(() => {
+				this.#timers.delete(timer);
+				if (this.#closed) return;
+				const running = work()
+					.catch(() => {
+						console.error("Shared vault: a background pass failed; the next one tries again.");
+					})
+					.finally(() => {
+						this.#running.delete(running);
+						if (!this.#closed) schedule(everyMs);
+					});
+				this.#running.add(running);
+			}, delayMs);
+			this.#timers.add(timer);
+		};
+		schedule(firstMs);
+	}
+
+	async close(): Promise<void> {
+		this.#closed = true;
+		for (const timer of this.#timers) clearTimeout(timer);
+		this.#timers.clear();
+		await Promise.all([...this.#running]);
+	}
+}

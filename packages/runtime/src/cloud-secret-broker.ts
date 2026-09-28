@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import {
 	readBoundedCloudResponse,
 	supabaseServiceHeaders,
@@ -1227,17 +1227,89 @@ export class PostgresCloudSecretBrokerAuthority
 		);
 	}
 
-	async #rpc(text: string, values: readonly unknown[], signal: AbortSignal): Promise<unknown> {
-		return withCloudDeadline(
-			async () => {
-				const result = await this.#database.query<{ result: unknown }>(text, values);
-				if (result.rowCount !== 1 || result.rows.length !== 1 || !("result" in (result.rows[0] ?? {}))) {
-					throw new Error("Cloud secret authority returned invalid data");
-				}
-				return result.rows[0]?.result;
-			},
-			5000,
+	#rpc(text: string, values: readonly unknown[], signal: AbortSignal): Promise<unknown> {
+		return oneCloudSecretRpc(this.#database, text, values, signal);
+	}
+}
+
+/** One broker database call: exactly one row with a `result`, within 5 s. */
+function oneCloudSecretRpc(
+	database: CloudSecretPostgresClient,
+	text: string,
+	values: readonly unknown[],
+	signal: AbortSignal,
+): Promise<unknown> {
+	return withCloudDeadline(
+		async () => {
+			const result = await database.query<{ result: unknown }>(text, values);
+			if (result.rowCount !== 1 || result.rows.length !== 1 || !("result" in (result.rows[0] ?? {}))) {
+				throw new Error("Cloud secret authority returned invalid data");
+			}
+			return result.rows[0]?.result;
+		},
+		5000,
+		signal,
+	);
+}
+
+const PRINCIPAL_SECRET = /^[A-Za-z0-9_-]{43}$/;
+
+/** The shared vault's capabilities (Vault By Default), all derived from its one principal secret so both
+ * copies of the vault hold the same ones and nothing is stored: its own, which lets it register new
+ * companies, and each company's, whose hash is that company's authority row. */
+export function sharedBrokerCapability(principalSecret: string, companyId?: string): string {
+	if (!PRINCIPAL_SECRET.test(principalSecret)) throw new Error("Shared cloud secret broker secret is invalid");
+	const label =
+		companyId === undefined
+			? "qorpera.broker-principal/v1"
+			: `qorpera.broker-authority/v1:${uuid(companyId, "Shared cloud secret broker company").toLowerCase()}`;
+	return createHmac("sha256", Buffer.from(principalSecret, "base64url")).update(label).digest("base64url");
+}
+
+/** The shared vault's principal: it lists the companies it serves and registers new ones, and hands out
+ * each company's own authority, which every existing broker call uses unchanged. */
+export class PostgresCloudSecretBrokerPrincipal {
+	readonly #database: CloudSecretPostgresClient;
+	readonly #principalId: string;
+	readonly #principalSecret: string;
+	readonly #capabilitySha256: string;
+
+	constructor(options: { database: CloudSecretPostgresClient; principalId: string; principalSecret: string }) {
+		this.#database = options.database;
+		this.#principalId = uuid(options.principalId, "Shared cloud secret broker principal");
+		this.#principalSecret = options.principalSecret;
+		this.#capabilitySha256 = createHash("sha256")
+			.update(sharedBrokerCapability(options.principalSecret))
+			.digest("hex");
+	}
+
+	/** The companies it serves and the new companies it should register. */
+	companies(signal: AbortSignal): Promise<unknown> {
+		return oneCloudSecretRpc(
+			this.#database,
+			"select public.qorpera_broker_principal_companies($1::uuid,$2::text) as result",
+			[this.#principalId, this.#capabilitySha256],
 			signal,
 		);
+	}
+
+	/** Registers a new company: its authority row carries the hash of the capability derived for it. */
+	register(companyId: string, signal: AbortSignal): Promise<unknown> {
+		const capability = sharedBrokerCapability(this.#principalSecret, companyId);
+		return oneCloudSecretRpc(
+			this.#database,
+			"select public.qorpera_register_company_with_broker_principal($1::uuid,$2::text,$3::uuid,$4::text) as result",
+			[this.#principalId, this.#capabilitySha256, companyId, createHash("sha256").update(capability).digest("hex")],
+			signal,
+		);
+	}
+
+	/** A registered company's own authority: every existing broker call with its derived capability. */
+	authority(companyId: string, authorityId: string): PostgresCloudSecretBrokerAuthority {
+		return new PostgresCloudSecretBrokerAuthority({
+			database: this.#database,
+			brokerAuthorityId: authorityId,
+			brokerCapability: sharedBrokerCapability(this.#principalSecret, companyId),
+		});
 	}
 }

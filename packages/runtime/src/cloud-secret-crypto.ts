@@ -1,4 +1,4 @@
-import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
+import { createCipheriv, createDecipheriv, createHash, hkdfSync, randomBytes } from "node:crypto";
 
 const ENVELOPE_SCHEMA = "qorpera.cloud-secret-envelope/v1";
 const PAYLOAD_SCHEMA = "qorpera.cloud-secret-payload/v1";
@@ -281,43 +281,77 @@ export async function withCloudSecretFields<T>(
 	}
 }
 
-/** A broker keyring never exposes raw key material to an adapter. */
+/** A company's wrapping key under a derived key id (Vault By Default): HKDF-SHA256 of the master key
+ * with the company id, so both copies of the shared vault get the same key and nothing is stored. */
+function derivedWrappingKey(masterKey: Uint8Array, companyId: string): Buffer {
+	if (!UUID.test(companyId)) throw new Error("Cloud secret company is invalid");
+	return Buffer.from(hkdfSync("sha256", masterKey, "qorpera.company-kek/v1", companyId.toLowerCase(), 32));
+}
+
+/** A broker keyring never exposes raw key material to an adapter. It holds each company's own keys
+ * and, for the shared vault (Vault By Default), master keys from which each company's key is derived. */
 export class CloudSecretKeyring {
 	readonly #keys = new Map<string, Buffer>();
+	readonly #derived = new Map<string, Buffer>();
 
-	constructor(keys: Readonly<Record<string, Uint8Array>>) {
-		for (const [keyId, value] of Object.entries(keys)) {
-			if (!KEY_ID.test(keyId) || value.byteLength !== 32 || this.#keys.has(keyId)) {
-				this.close();
-				throw new Error("Cloud secret keyring is invalid");
+	constructor(
+		keys: Readonly<Record<string, Uint8Array>>,
+		/** Master keys by key id: a company's key under such an id is derived for that company. */
+		derivedKeys: Readonly<Record<string, Uint8Array>> = {},
+	) {
+		for (const [target, entries] of [
+			[this.#keys, keys],
+			[this.#derived, derivedKeys],
+		] as const) {
+			for (const [keyId, value] of Object.entries(entries)) {
+				if (!KEY_ID.test(keyId) || value.byteLength !== 32 || this.#keys.has(keyId) || this.#derived.has(keyId)) {
+					this.close();
+					throw new Error("Cloud secret keyring is invalid");
+				}
+				target.set(keyId, Buffer.from(value));
 			}
-			this.#keys.set(keyId, Buffer.from(value));
 		}
-		if (this.#keys.size < 1) throw new Error("Cloud secret keyring is empty");
+		if (this.#keys.size + this.#derived.size < 1) throw new Error("Cloud secret keyring is empty");
 	}
 
 	has(keyId: string): boolean {
-		return this.#keys.has(keyId);
+		return this.#keys.has(keyId) || this.#derived.has(keyId);
 	}
 
 	seal(fields: Readonly<Record<string, string>>, identity: CloudSecretEnvelopeIdentity): Uint8Array {
-		const wrappingKey = this.#keys.get(identity.keyId);
-		if (!wrappingKey) throw new Error("Cloud secret wrapping key is unavailable");
-		return sealCloudSecretFields(fields, wrappingKey, identity);
+		const own = this.#keys.get(identity.keyId);
+		if (own) return sealCloudSecretFields(fields, own, identity);
+		const master = this.#derived.get(identity.keyId);
+		if (!master) throw new Error("Cloud secret wrapping key is unavailable");
+		const derived = derivedWrappingKey(master, identity.companyId);
+		try {
+			return sealCloudSecretFields(fields, derived, identity);
+		} finally {
+			derived.fill(0);
+		}
 	}
 
-	use<T>(
+	async use<T>(
 		envelope: Uint8Array,
 		identity: CloudSecretEnvelopeIdentity,
 		callback: (fields: Readonly<Record<string, string>>) => Promise<T>,
 	): Promise<T> {
-		const wrappingKey = this.#keys.get(identity.keyId);
-		if (!wrappingKey) throw new Error("Cloud secret wrapping key is unavailable");
-		return withCloudSecretFields(envelope, wrappingKey, identity, callback);
+		const own = this.#keys.get(identity.keyId);
+		if (own) return withCloudSecretFields(envelope, own, identity, callback);
+		const master = this.#derived.get(identity.keyId);
+		if (!master) throw new Error("Cloud secret wrapping key is unavailable");
+		const derived = derivedWrappingKey(master, identity.companyId);
+		try {
+			return await withCloudSecretFields(envelope, derived, identity, callback);
+		} finally {
+			derived.fill(0);
+		}
 	}
 
 	close(): void {
 		for (const value of this.#keys.values()) value.fill(0);
+		for (const value of this.#derived.values()) value.fill(0);
 		this.#keys.clear();
+		this.#derived.clear();
 	}
 }

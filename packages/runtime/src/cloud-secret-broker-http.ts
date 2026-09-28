@@ -18,7 +18,7 @@ import type { CloudModelLoginUsage } from "./cloud-model-login-vault-usage.ts";
 import { parseCloudNativeToolBinding } from "./cloud-native-tool-authority.ts";
 import { type CloudToolContent, cloudToolJsonText } from "./cloud-native-tool-boundary.ts";
 import {
-	type CloudSecretBroker,
+	CloudSecretBroker,
 	type CloudSecretCaptureRequest,
 	type CloudSecretDescriptor,
 	type CloudSecretOperationRequest,
@@ -26,6 +26,7 @@ import {
 	parseCloudSecretAccountLabel,
 	parseCodingRepositoryCredentialRequest,
 } from "./cloud-secret-broker.ts";
+import type { CloudSecretBrokerCompanies } from "./cloud-secret-broker-shared.ts";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SHA = /^[0-9a-f]{64}$/;
@@ -392,6 +393,15 @@ export interface HttpCloudSecretBrokerServiceOptions {
 	readonly modelLoginUsage?: CloudModelLoginUsage;
 }
 
+/** What a request's company gets: a single-company broker's own services (some may be off), or one
+ * company's on the shared vault. */
+interface RequestScope {
+	readonly broker: CloudSecretBroker;
+	readonly modelLogins: CloudModelLoginVault | undefined;
+	readonly modelLoginSignIns: CloudModelLoginSignIns | undefined;
+	readonly modelLoginUsage: CloudModelLoginUsage | undefined;
+}
+
 /**
  * Separate-process broker surface. Capture is authorized only by the one-time
  * member ticket; operation execution additionally requires a private service
@@ -400,7 +410,9 @@ export interface HttpCloudSecretBrokerServiceOptions {
  * the database's current session lease, repository grant and connection grant.
  */
 export class HttpCloudSecretBrokerService {
-	readonly #broker: CloudSecretBroker;
+	/** One company's broker, or the shared vault's companies (Vault By Default). */
+	readonly #broker: CloudSecretBroker | undefined;
+	readonly #companies: CloudSecretBrokerCompanies | undefined;
 	readonly #runtimeToken: string;
 	readonly #host: string;
 	readonly #port: number;
@@ -413,7 +425,7 @@ export class HttpCloudSecretBrokerService {
 	#server?: Server;
 
 	constructor(
-		broker: CloudSecretBroker,
+		target: CloudSecretBroker | CloudSecretBrokerCompanies,
 		runtimeToken: string,
 		hostOrOptions: string | HttpCloudSecretBrokerServiceOptions = "127.0.0.1",
 		port = 0,
@@ -436,7 +448,13 @@ export class HttpCloudSecretBrokerService {
 		) {
 			throw new Error("Cloud secret broker service configuration is invalid");
 		}
-		this.#broker = broker;
+		if (target instanceof CloudSecretBroker) this.#broker = target;
+		else {
+			// The shared vault gets each company's login vault, sign-ins and usage from its own list.
+			if (options.modelLogins || options.modelLoginSignIns || options.modelLoginUsage)
+				throw new Error("Cloud secret broker service configuration is invalid");
+			this.#companies = target;
+		}
 		this.#runtimeToken = runtimeToken;
 		this.#host = host;
 		this.#port = listenPort;
@@ -471,6 +489,22 @@ export class HttpCloudSecretBrokerService {
 		this.#server = undefined;
 		if (!server) return;
 		await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+	}
+
+	/** The services a request's company gets: this broker's own, or its company's on the shared vault
+	 * (the company from the path or the `?company=` every client adds; unknown means not served here). */
+	async #scope(companyId: string | undefined): Promise<RequestScope | undefined> {
+		const companies = this.#companies;
+		if (!companies) {
+			return {
+				broker: this.#broker as CloudSecretBroker,
+				modelLogins: this.#modelLogins,
+				modelLoginSignIns: this.#modelLoginSignIns,
+				modelLoginUsage: this.#modelLoginUsage,
+			};
+		}
+		if (companyId === undefined || !UUID.test(companyId)) return undefined;
+		return companies.resolve(companyId, AbortSignal.timeout(10_000));
 	}
 
 	async #handle(request: IncomingMessage, reply: ServerResponse): Promise<void> {
@@ -512,8 +546,19 @@ export class HttpCloudSecretBrokerService {
 				response(reply, 403, { schema: "qorpera.cloud-secret-error/v1", error: "unavailable" });
 				return;
 			}
+			const companyId = (
+				signIn?.[1] ??
+				accountRefresh?.[1] ??
+				url.searchParams.get("company") ??
+				undefined
+			)?.toLowerCase();
+			const scope = await this.#scope(companyId);
+			if (!scope) {
+				response(reply, 404, { schema: "qorpera.cloud-secret-error/v1", error: "not_found" }, cors);
+				return;
+			}
 			if (capture && UUID.test(capture[1])) {
-				const descriptor = await this.#broker.capture(
+				const descriptor = await scope.broker.capture(
 					parseCapture(await readRequest(request), capture[1]),
 					AbortSignal.timeout(15_000),
 				);
@@ -525,7 +570,7 @@ export class HttpCloudSecretBrokerService {
 				exact(input, ["schema", "capability"], "Email draft action");
 				if (input.schema !== "qorpera.email-draft-action/v1" || typeof input.capability !== "string")
 					throw new Error("Email draft action invalid");
-				const state = await this.#broker.executeEmailDraft(
+				const state = await scope.broker.executeEmailDraft(
 					emailDraft[1],
 					input.capability,
 					AbortSignal.timeout(60_000),
@@ -541,7 +586,7 @@ export class HttpCloudSecretBrokerService {
 				if (oauthStart) {
 					const start = parseOAuthStart(await readRequest(request));
 					const ticketId = oauthStart[1].toLowerCase();
-					const summary = await this.#broker.describeCapture(
+					const summary = await scope.broker.describeCapture(
 						{ ticketId, captureCapability: start.captureCapability },
 						AbortSignal.timeout(10_000),
 					);
@@ -593,7 +638,7 @@ export class HttpCloudSecretBrokerService {
 					return;
 				}
 				try {
-					await this.#broker.capture(
+					await scope.broker.capture(
 						{
 							ticketId: completion.ticketId,
 							captureCapability: completion.captureCapability,
@@ -619,7 +664,7 @@ export class HttpCloudSecretBrokerService {
 				return;
 			}
 			if (path === "/v1/operations" && tokenMatches(this.#runtimeToken, request.headers.authorization)) {
-				const result = await this.#broker.execute(
+				const result = await scope.broker.execute(
 					parseOperation(await readRequest(request)),
 					AbortSignal.timeout(35_000),
 				);
@@ -631,11 +676,12 @@ export class HttpCloudSecretBrokerService {
 			// function posts its unchanged sign-in request there, server to server, with the
 			// sign-in's capability as bearer (never the runtime token). The database decides
 			// whether that capability names a pending sign-in of this broker's company.
-			if (signIn && UUID.test(signIn[1]) && this.#modelLoginSignIns !== undefined) {
+			if (signIn && UUID.test(signIn[1]) && scope.modelLoginSignIns !== undefined) {
 				const authorization = request.headers.authorization;
 				if (typeof authorization !== "string" || !authorization.startsWith("Bearer "))
 					throw new Error("Vault sign-in capability is missing");
-				const answer = await this.#modelLoginSignIns.signIn(
+				this.#companies?.signingIn(signIn[1]);
+				const answer = await scope.modelLoginSignIns.signIn(
 					{
 						companyId: signIn[1],
 						capability: authorization.slice("Bearer ".length),
@@ -649,11 +695,11 @@ export class HttpCloudSecretBrokerService {
 			// The usage of the logins the vault keeps (change 2C): the account refresh chooser names
 			// the same base; the edge function posts its unchanged refresh with the refresh's own
 			// capability as bearer.
-			if (accountRefresh && UUID.test(accountRefresh[1]) && this.#modelLoginUsage !== undefined) {
+			if (accountRefresh && UUID.test(accountRefresh[1]) && scope.modelLoginUsage !== undefined) {
 				const authorization = request.headers.authorization;
 				if (typeof authorization !== "string" || !authorization.startsWith("Bearer "))
 					throw new Error("Vault account refresh capability is missing");
-				const answer = await this.#modelLoginUsage.refresh(
+				const answer = await scope.modelLoginUsage.refresh(
 					{
 						companyId: accountRefresh[1],
 						capability: authorization.slice("Bearer ".length),
@@ -670,10 +716,10 @@ export class HttpCloudSecretBrokerService {
 			// `?company=`; the broker ignores the query.
 			if (
 				path === "/v1/model-logins" &&
-				this.#modelLogins !== undefined &&
+				scope.modelLogins !== undefined &&
 				tokenMatches(this.#runtimeToken, request.headers.authorization)
 			) {
-				const login = await this.#modelLogins.issue(
+				const login = await scope.modelLogins.issue(
 					parseModelLoginRequest(await readRequest(request)),
 					AbortSignal.timeout(60_000),
 				);
@@ -690,7 +736,7 @@ export class HttpCloudSecretBrokerService {
 				this.#codingExecutorToken !== undefined &&
 				tokenMatches(this.#codingExecutorToken, request.headers.authorization)
 			) {
-				const credential = await this.#broker.repositoryCredential(
+				const credential = await scope.broker.repositoryCredential(
 					parseRepositoryCredentialRequest(await readRequest(request)),
 					AbortSignal.timeout(10_000),
 				);
