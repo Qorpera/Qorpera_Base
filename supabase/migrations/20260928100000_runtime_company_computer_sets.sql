@@ -95,6 +95,32 @@ $$;
 revoke all on function public.qorpera_add_runtime_office_computer(uuid, text, uuid, uuid, uuid)
 	from public, anon, authenticated, service_role;
 
+-- Computer access is company-wide: an agent's grant is the same on all of the
+-- company's computers. Changing it on one changes it on the others, so an agent
+-- revoked on purpose is never placed on, or given, another computer.
+create function public.qorpera_runtime_office_access_company_wide()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+	update public.qorpera_runtime_office_access other
+		set state = new.state, version = other.version + 1, configured_by_user_id = new.configured_by_user_id
+	from public.qorpera_runtime_offices changed, public.qorpera_runtime_offices office
+	where changed.id = new.office_id and office.environment_id = changed.environment_id
+		and office.id <> new.office_id and office.state <> 'retired'
+		and other.office_id = office.id and other.staff_agent_id = new.staff_agent_id
+		and other.state is distinct from new.state;
+	return null;
+end
+$$;
+revoke all on function public.qorpera_runtime_office_access_company_wide() from public, anon, authenticated, service_role;
+create trigger qorpera_runtime_office_access_company_wide
+	after update of state on public.qorpera_runtime_office_access
+	for each row when (old.state is distinct from new.state)
+	execute function public.qorpera_runtime_office_access_company_wide();
+
 -- Registration and the member catalog keep meaning "the company's first
 -- computer": an owner registers computer 1, and clients that predate several
 -- computers keep seeing it. Without an order these lookups would take an

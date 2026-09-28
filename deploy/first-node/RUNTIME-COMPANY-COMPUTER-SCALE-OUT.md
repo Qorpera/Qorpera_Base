@@ -63,8 +63,9 @@ environment.
      computer is added around a revoked grant;
   8. `none`: no computer the agent can use (none registered, or one is in
      maintenance for another reason, which waits for its owner as today).
-- A new computer keeps every revocation: an agent revoked on any of the
-  company's computers is revoked on the new one too.
+- Computer access is company-wide: changing an agent's grant on one computer
+  changes it on all the company's computers, and a new computer keeps every
+  revocation.
 - The native tool descriptor offers screen tools on `screen`/`room`. The start
   descriptor offers `computer_start` for `starting`/`stopped`/`unstarted`, and
   on `new` adds the next computer under the company fence and the seat lock.

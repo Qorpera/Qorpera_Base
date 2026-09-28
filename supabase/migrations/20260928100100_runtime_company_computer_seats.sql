@@ -232,6 +232,7 @@ begin
 		join public.qorpera_runtime_office_access a on a.office_id = o.id and a.staff_agent_id = p_staff_agent_id and a.state = 'active'
 		where o.environment_id = p_environment_id and o.profile_id = p_profile_id
 			and public.qorpera_runtime_office_idle_pending(o)
+			and public.qorpera_runtime_office_maintenance(o) ->> 'state' is distinct from 'resumed'
 			and not exists(select 1 from public.qorpera_runtime_office_start_intents i
 				where i.office_id = o.id and i.computer_generation = o.generation and i.state = 'cancelled')
 		order by (select max(s.touched_at) from public.qorpera_runtime_office_screens s

@@ -188,6 +188,9 @@ select pg_temp.wake_assert(current_setting('qorpera_test.start_again')::jsonb->'
 select pg_temp.wake_assert((select count(*)=3 from public.qorpera_runtime_offices where environment_id='30000000-0000-4000-8000-000000000020'),
 	'three computers');
 select pg_temp.wake_assert((select state='revoked' from public.qorpera_runtime_office_access
+	where office_id=(pg_temp.office(2)).id and staff_agent_id='30000000-0000-4000-8000-000000000034'),
+	'computer access is company-wide: revoking Erin on computer 1 revokes her on computer 2');
+select pg_temp.wake_assert((select state='revoked' from public.qorpera_runtime_office_access
 	where office_id=(pg_temp.office(3)).id and staff_agent_id='30000000-0000-4000-8000-000000000034')
 	and (select state='active' from public.qorpera_runtime_office_access
 	where office_id=(pg_temp.office(3)).id and staff_agent_id='30000000-0000-4000-8000-000000000030'),
