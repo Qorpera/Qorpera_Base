@@ -255,8 +255,10 @@ select pg_temp.wake_assert((pg_temp.sw_status('64000000-0000-4000-8000-000000000
 rollback to savepoint coding_owner;
 select pg_temp.wake_assert(public.qorpera_claim_coding_session('coding-node-c',60) is null,
 	'The emptying node''s executor starts no new coding turn');
--- Queued turns pinned to the emptying node's executor stay out of the candidates: ten older ones do not
--- crowd a lapsed turn out of the window of 8, so it is still failed visibly.
+-- Queued turns pinned to the emptying node's executor stay out of the candidates: ten older ones (nine
+-- made here and the queued turn from above) do not crowd a lapsed turn out of the window of 8, so it is
+-- still failed visibly. The running turn from above holds its lease on coding-node-c, which is what
+-- pins the member's queued turns to that executor.
 savepoint coding_window;
 reset role;
 insert into public.qorpera_runtime_workers(id,profile_id,environment_id,staff_agent_id,todo_id,worker_key,species,title,access,revival,
