@@ -1,13 +1,15 @@
 -- Stateless Compute step 1, change 2C: the vault reads the usage of the logins it keeps.
 --
--- The account refresh chooser sends a refresh of an identity whose login is in the vault (change
--- 3's rule: every active login of it is a live vault login) to its company's broker
--- (`<service origin>/v1/model-logins/<company>/`), whether or not the company still takes new
--- sign-ins in the vault. The broker reads, under the refresh's own capability, the current version
--- of each vault login of that identity, reads its usage with the pass (the same `wham/usage` call
--- a node makes, no machine), records the display metadata for the connection version that uses
--- the login, and completes the refresh. An identity with any node login (one still moving) keeps
--- the node path, which reads its node logins and skips its vault ones.
+-- The account refresh chooser sends a refresh of an identity whose Codex login is in the vault (it
+-- has a vault login and no Codex login on a node) to its company's broker (`<service origin>/v1/
+-- model-logins/<company>/`), whether or not the company still takes new sign-ins in the vault. A
+-- Claude login stays on a node and is never refreshed there (nodes read Codex usage only), so it
+-- does not keep a Codex vault login's usage on the node path. The broker reads, under the
+-- refresh's own capability, the current version of each vault login of that identity, reads its
+-- usage with the pass (the same `wham/usage` call a node makes, no machine), records the display
+-- metadata for the connection version that uses the login, and completes the refresh. An
+-- identity still moving (a Codex login on a node beside its vault login) keeps the node path,
+-- which reads its node logins and skips its vault ones.
 
 -- The company's vault base, when it has an active broker.
 create function public.qorpera_model_login_vault_url(p_profile_id uuid)
@@ -20,6 +22,27 @@ language sql stable security definer set search_path = '' as $$
 	limit 1
 $$;
 revoke all on function public.qorpera_model_login_vault_url(uuid) from public, anon, authenticated, service_role;
+
+-- Whether an identity's Codex usage is read in the vault: it has a vault login behind an active
+-- pointer (in any state: one that needs a new sign-in reads nothing there, and boots no machine)
+-- and no active Codex login on a node.
+create function public.qorpera_model_login_usage_in_vault(p_compute_identity_id uuid)
+returns boolean
+language sql stable security definer set search_path = '' as $$
+	select exists (
+			select 1 from public.qorpera_model_logins as vault
+			join public.qorpera_native_credential_capsules as capsule on capsule.id = vault.credential_capsule_id
+			where vault.compute_identity_id = p_compute_identity_id and capsule.status = 'active'
+				and capsule.encrypted_capsule_reference = 'model-login/' || vault.id::text
+		)
+		and not exists (
+			select 1 from public.qorpera_native_credential_capsules as capsule
+			where capsule.compute_identity_id = p_compute_identity_id and capsule.status = 'active'
+				and capsule.provider = 'openai' and capsule.native_harness = 'codex-cli'
+				and capsule.encrypted_capsule_reference !~ '^model-login/[0-9a-f-]{36}$'
+		)
+$$;
+revoke all on function public.qorpera_model_login_usage_in_vault(uuid) from public, anon, authenticated, service_role;
 
 do $$
 declare
@@ -36,7 +59,7 @@ begin
 		v_count := (length(v_definition) - length(replace(v_definition, v_anchor, ''))) / length(v_anchor);
 		if v_count <> 1 then raise exception 'Account refresh chooser source differs (% matches)', v_count; end if;
 		execute replace(v_definition, v_anchor,
-			E'\tif v_session.id is not null and public.qorpera_compute_identity_login_in_vault(v_session.compute_identity_id)\n'
+			E'\tif v_session.id is not null and public.qorpera_model_login_usage_in_vault(v_session.compute_identity_id)\n'
 			|| E'\t\tand public.qorpera_model_login_vault_url(v_session.profile_id) is not null then\n'
 			|| E'\t\treturn jsonb_build_object(''url'', public.qorpera_model_login_vault_url(v_session.profile_id),\n'
 			|| E'\t\t\t''providerId'', ''model-login-vault'', ''nodeId'', null, ''reason'', ''MODEL_LOGIN_VAULT'',\n'
@@ -131,6 +154,9 @@ begin
 				and connection_version.authorization_state = 'active'
 			join public.qorpera_provider_connections as connection
 				on connection.id = connection_version.connection_id and connection.status = 'active'
+			left join public.qorpera_native_provider_account_metadata as seen
+				on seen.connection_id = connection_version.connection_id
+				and seen.connection_version = connection_version.version
 			where vault.compute_identity_id = v_request.compute_identity_id
 				and vault.profile_id = v_request.profile_id
 				and vault.status = 'active'
@@ -138,7 +164,8 @@ begin
 				and not exists (select 1 from public.qorpera_provider_connection_versions as newer
 					where newer.connection_id = connection_version.connection_id
 						and newer.version > connection_version.version)
-			order by vault.id
+			-- Never read first, then the longest unread, as a node lists them.
+			order by seen.checked_at nulls first, vault.id
 			limit 8) as logins
 		), '[]'::jsonb) end
 	);

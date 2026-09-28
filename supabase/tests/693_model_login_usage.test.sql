@@ -1,8 +1,9 @@
 -- @fixture 160_native_subscription_compute_identity.test.sql until "-- Exercise the Step 2 authority/receipt RPCs using this real admitted native run."
 -- Stateless Compute step 1 (change 2C): the vault reads the usage of the logins it keeps. The
--- account refresh chooser names the company's broker for an identity whose login is in the vault
--- (every active login of it is a vault login), whether or not the company still takes new
--- sign-ins in the vault; an identity still moving (with a node login) keeps the node path. The
+-- account refresh chooser names the company's broker for an identity whose Codex login is in the
+-- vault (a vault login, and no Codex login on a node; a Claude login stays on a node and does not
+-- count), whether or not the company still takes new sign-ins in the vault; an identity still
+-- moving (with a Codex login on a node) keeps the node path. The
 -- broker (only) reads the refresh and the current version of that login under the refresh's
 -- capability, records its display metadata, and completes the refresh.
 reset role;
@@ -51,10 +52,11 @@ grant execute on function pg_temp.usage_choose(text) to service_role;
 
 -- A pending account refresh of the member's identity.
 insert into public.qorpera_native_account_refresh_requests(id,profile_id,client_request_id,compute_identity_id,
-	requested_by_user_id,capability_sha256,compute_recovery_epoch)
+	requested_by_user_id,capability_sha256,compute_recovery_epoch,created_at,expires_at)
 select '69300000-0000-4000-8000-000000000201', identity.profile_id, '69300000-0000-4000-8000-000000000202', identity.id,
-	identity.owner_user_id, encode(sha256('refresh-one'::bytea),'hex'), identity.recovery_epoch
-from public.qorpera_member_compute_identities identity
+	identity.owner_user_id, encode(sha256('refresh-one'::bytea),'hex'), identity.recovery_epoch,
+	moment.at, moment.at + interval '4 minutes'
+from public.qorpera_member_compute_identities identity, (select clock_timestamp() as at) moment
 where identity.id = current_setting('qorpera_test.usage_identity')::uuid;
 
 do $$
@@ -135,6 +137,29 @@ select pg_temp.usage_expect(pg_temp.usage_choose('refresh-one') ->> 'url',
 	'https://secrets.qorpera.test/v1/model-logins/' || current_setting('qorpera_test.usage_company') || '/',
 	'an identity whose login is in the vault refreshes in its vault');
 reset role;
+-- A Claude login stays on a node (nodes never read its usage): the Codex usage is still the vault's.
+insert into public.qorpera_native_credential_capsules(id,profile_id,compute_identity_id,ownership_kind,owner_user_id,
+	owner_scope_key,provider,native_harness,encrypted_capsule_reference,attestation_policy_sha256,created_by_user_id)
+select '69300000-0000-4000-8000-000000000070', capsule.profile_id, capsule.compute_identity_id, capsule.ownership_kind,
+	capsule.owner_user_id, capsule.owner_scope_key, 'anthropic', 'claude-code',
+	'native-capsule/69300000-0000-4000-8000-000000000070', capsule.attestation_policy_sha256, capsule.created_by_user_id
+from public.qorpera_native_credential_capsules capsule where capsule.id = '69300000-0000-4000-8000-000000000060';
+set role service_role;
+select pg_temp.usage_expect(pg_temp.usage_choose('refresh-one') ->> 'reason','MODEL_LOGIN_VAULT',
+	'a Claude login on a node keeps the Codex usage in the vault');
+reset role;
+-- A vault login that needs a new sign-in: the vault reads nothing, and no node machine boots.
+update public.qorpera_model_logins set status = 'needs_sign_in' where id = '69300000-0000-4000-8000-000000000050';
+set role service_role;
+select pg_temp.usage_expect(pg_temp.usage_choose('refresh-one') ->> 'reason','MODEL_LOGIN_VAULT',
+	'a login that needs a new sign-in still refreshes in the vault');
+reset role;
+set local session authorization qorpera_secret_broker;
+select pg_temp.usage_expect(pg_temp.usage_call($q$select (public.qorpera_describe_model_login_account_refresh(
+	'69300000-0000-4000-8000-000000000040',repeat('c',64),'69300000-0000-4000-8000-000000000201',
+	encode(sha256('refresh-one'::bytea),'hex')) ->> 'logins')$q$),'[]','the vault reads no login that needs a new sign-in');
+reset session authorization;
+update public.qorpera_model_logins set status = 'active' where id = '69300000-0000-4000-8000-000000000050';
 
 set local session authorization qorpera_secret_broker;
 -- The broker reads the refresh and its login's current version.
@@ -205,14 +230,14 @@ reset session authorization;
 insert into public.qorpera_native_account_refresh_requests(id,profile_id,client_request_id,compute_identity_id,
 	requested_by_user_id,capability_sha256,compute_recovery_epoch,status,created_at,expires_at,completed_at)
 select refresh.id, identity.profile_id, refresh.client_id, identity.id, identity.owner_user_id,
-	encode(sha256(refresh.secret::bytea),'hex'), identity.recovery_epoch, refresh.status, refresh.created,
-	refresh.expires, refresh.completed
-from public.qorpera_member_compute_identities identity,
+	encode(sha256(refresh.secret::bytea),'hex'), identity.recovery_epoch, refresh.status, moment.at + refresh.created,
+	moment.at + refresh.expires, moment.at + refresh.completed
+from public.qorpera_member_compute_identities identity, (select clock_timestamp() as at) moment,
 	(values ('69300000-0000-4000-8000-000000000301'::uuid,'69300000-0000-4000-8000-000000000302'::uuid,'refresh-two',
-		'pending', clock_timestamp(), clock_timestamp() + interval '5 minutes', null::timestamptz),
+		'pending', interval '0', interval '4 minutes', null::interval),
 		('69300000-0000-4000-8000-000000000401'::uuid,'69300000-0000-4000-8000-000000000402'::uuid,'refresh-three',
-		'completed', clock_timestamp() - interval '10 minutes', clock_timestamp() - interval '5 minutes',
-		clock_timestamp() - interval '9 minutes')) as refresh(id, client_id, secret, status, created, expires, completed)
+		'completed', interval '-10 minutes', interval '-6 minutes', interval '-9 minutes'))
+		as refresh(id, client_id, secret, status, created, expires, completed)
 where identity.id = current_setting('qorpera_test.usage_identity')::uuid;
 
 -- New sign-ins switched back to nodes: the vault still reads the usage of the logins it keeps.

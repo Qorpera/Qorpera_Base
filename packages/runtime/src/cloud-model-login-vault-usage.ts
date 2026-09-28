@@ -95,6 +95,47 @@ function positive(value: unknown, label: string): number {
 	return value as number;
 }
 
+function parseLogin(item: unknown): RefreshLogin {
+	const login = record(
+		item,
+		[
+			"loginId",
+			"version",
+			"keyId",
+			"encryptedEnvelopeBase64",
+			"envelopeSha256",
+			"connectionId",
+			"connectionVersion",
+			"credentialCapsuleId",
+		],
+		"Vault account refresh login",
+	);
+	if (
+		typeof login.keyId !== "string" ||
+		!KEY_ID.test(login.keyId) ||
+		typeof login.encryptedEnvelopeBase64 !== "string" ||
+		typeof login.envelopeSha256 !== "string" ||
+		!SHA256.test(login.envelopeSha256)
+	)
+		throw new Error("Vault account refresh login is invalid");
+	const envelope = Buffer.from(login.encryptedEnvelopeBase64, "base64");
+	if (
+		envelope.byteLength < 1 ||
+		envelope.byteLength > 131_072 ||
+		createHash("sha256").update(envelope).digest("hex") !== login.envelopeSha256
+	)
+		throw new Error("Vault account refresh login is invalid");
+	uuid(login.credentialCapsuleId, "Vault account refresh capsule");
+	return {
+		loginId: uuid(login.loginId, "Vault account refresh login id"),
+		version: positive(login.version, "Vault account refresh login version"),
+		keyId: login.keyId,
+		envelope,
+		connectionId: uuid(login.connectionId, "Vault account refresh connection"),
+		connectionVersion: positive(login.connectionVersion, "Vault account refresh connection version"),
+	};
+}
+
 function parseDescription(value: unknown): RefreshDescription {
 	const input = record(
 		value,
@@ -109,6 +150,14 @@ function parseDescription(value: unknown): RefreshDescription {
 		!Array.isArray(input.logins)
 	)
 		throw new Error("Vault account refresh is invalid");
+	// Every envelope read so far is wiped if a later login is unreadable.
+	const read: RefreshLogin[] = [];
+	try {
+		for (const item of input.logins.slice(0, MAX_LOGINS)) read.push(parseLogin(item));
+	} catch (error) {
+		for (const login of read) login.envelope.fill(0);
+		throw error;
+	}
 	return {
 		requestId: uuid(input.requestId, "Vault account refresh id"),
 		companyId: uuid(input.profileId, "Vault account refresh company"),
@@ -117,46 +166,7 @@ function parseDescription(value: unknown): RefreshDescription {
 		status: input.status === "pending" || input.status === "completed" ? input.status : "expired",
 		expiresAt: input.expiresAt,
 		// The database hands out at most this many; any more would wait for the next refresh.
-		logins: input.logins.slice(0, MAX_LOGINS).map((item) => {
-			const login = record(
-				item,
-				[
-					"loginId",
-					"version",
-					"keyId",
-					"encryptedEnvelopeBase64",
-					"envelopeSha256",
-					"connectionId",
-					"connectionVersion",
-					"credentialCapsuleId",
-				],
-				"Vault account refresh login",
-			);
-			if (
-				typeof login.keyId !== "string" ||
-				!KEY_ID.test(login.keyId) ||
-				typeof login.encryptedEnvelopeBase64 !== "string" ||
-				typeof login.envelopeSha256 !== "string" ||
-				!SHA256.test(login.envelopeSha256)
-			)
-				throw new Error("Vault account refresh login is invalid");
-			const envelope = Buffer.from(login.encryptedEnvelopeBase64, "base64");
-			if (
-				envelope.byteLength < 1 ||
-				envelope.byteLength > 131_072 ||
-				createHash("sha256").update(envelope).digest("hex") !== login.envelopeSha256
-			)
-				throw new Error("Vault account refresh login is invalid");
-			uuid(login.credentialCapsuleId, "Vault account refresh capsule");
-			return {
-				loginId: uuid(login.loginId, "Vault account refresh login id"),
-				version: positive(login.version, "Vault account refresh login version"),
-				keyId: login.keyId,
-				envelope,
-				connectionId: uuid(login.connectionId, "Vault account refresh connection"),
-				connectionVersion: positive(login.connectionVersion, "Vault account refresh connection version"),
-			};
-		}),
+		logins: read,
 	};
 }
 

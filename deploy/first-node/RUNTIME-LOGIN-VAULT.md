@@ -141,17 +141,21 @@ no database login and no service key; it sees a login only for one operation and
     signs in again.
 - **Part C, usage** (migration `20260928185000`, `cloud-model-login-vault-usage.ts`): the vault reads
   the usage of the logins it keeps; the web client is unchanged.
-  - The account refresh chooser answers a refresh of an identity whose login is in the vault
-    (change 3's `qorpera_compute_identity_login_in_vault`: every active login of it is a live vault
-    login) with `<broker service origin>/v1/model-logins/<company>/` (reason `MODEL_LOGIN_VAULT`)
-    when the company has an active broker, whether or not it still takes new sign-ins in the vault.
-    An identity still moving (a node login active beside its vault login) keeps the node path,
-    which reads its node logins and skips the vault ones. The edge function posts its unchanged
-    `qorpera.native-account-refresh/v1` to `<base>account-refresh` with the refresh's capability.
+  - The account refresh chooser answers a refresh of an identity whose Codex usage is the vault's
+    (`qorpera_model_login_usage_in_vault`: it has a vault login behind an active pointer, in any
+    state, and no active Codex login on a node) with `<broker service origin>/v1/model-logins/
+    <company>/` (reason `MODEL_LOGIN_VAULT`) when the company has an active broker, whether or not
+    it still takes new sign-ins in the vault. A Claude login stays on a node and does not count
+    (nodes read Codex usage only); a vault login that needs a new sign-in reads nothing there and
+    boots no machine. An identity still moving (a Codex login on a node beside its vault login)
+    keeps the node path, which reads its node logins and skips the vault ones. The edge function
+    posts its unchanged `qorpera.native-account-refresh/v1` to `<base>account-refresh` with the
+    refresh's capability.
   - The broker reads the refresh (`qorpera_describe_model_login_account_refresh`, broker role) with
     the node route's checks (live, the member still owns the identity with a role that may
     refresh, the broker's own company), and while it is pending the current version of up to 8
-    vault logins of that identity that the latest version of an active connection uses. It opens
+    active vault logins of that identity that the latest version of an active connection uses
+    (never read first, then the longest unread). It opens
     them all at once, reads each one's usage with the pass (the node's own `wham/usage` reader,
     8 s each, inside the route's 25 s), records the display metadata (email, account identity
     digest, usage) for that connection version with the node record's checks
