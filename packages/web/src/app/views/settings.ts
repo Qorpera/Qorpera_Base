@@ -121,7 +121,8 @@ export class SettingsView {
 	#hours: CompanyComputerHours | undefined;
 	#hoursLoading = false;
 	#hoursMissing = false;
-	#hoursError: string | undefined;
+	/** Set once a lookup failed: the hours are not asked again until the company changes. */
+	#hoursFailed = false;
 
 	constructor(
 		api: CloudApi,
@@ -462,7 +463,7 @@ export class SettingsView {
 			!this.#hours &&
 			!this.#hoursLoading &&
 			!this.#hoursMissing &&
-			!this.#hoursError
+			!this.#hoursFailed
 		)
 			void this.#loadHours();
 		renderPlan(
@@ -477,9 +478,9 @@ export class SettingsView {
 						retry: () => void this.#loadFile(true),
 						hours: {
 							value: this.#hours,
-							loading: this.#hoursLoading || (!this.#hours && !this.#hoursMissing && !this.#hoursError),
+							loading: this.#hoursLoading || (!this.#hours && !this.#hoursMissing && !this.#hoursFailed),
 							missing: this.#hoursMissing,
-							error: this.#hoursError,
+							failed: this.#hoursFailed,
 						},
 					}
 				: undefined,
@@ -522,7 +523,7 @@ export class SettingsView {
 		this.#hours = undefined;
 		this.#hoursLoading = false;
 		this.#hoursMissing = false;
-		this.#hoursError = undefined;
+		this.#hoursFailed = false;
 		for (const tab of ["company", "connections"] as const) this.#panels.delete(tab);
 		if (company) {
 			this.#unsubscribe = company.store.subscribe(() => {
@@ -648,11 +649,10 @@ export class SettingsView {
 			const hours = await this.#api.getCompanyComputerHours(company.profile.profileId);
 			if (signal.aborted || this.#lifetime.signal.aborted) return;
 			this.#hours = hours;
-			this.#hoursError = undefined;
 		} catch (error) {
 			if (signal.aborted || this.#lifetime.signal.aborted) return;
 			if (error instanceof CloudRpcError && error.missing) this.#hoursMissing = true;
-			else this.#hoursError = describeError(error);
+			else this.#hoursFailed = true;
 		} finally {
 			if (!signal.aborted && !this.#lifetime.signal.aborted) {
 				this.#hoursLoading = false;

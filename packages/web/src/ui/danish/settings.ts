@@ -102,6 +102,8 @@ export const SETTINGS: Record<string, string> = {
 		"Alle planer starter med en gratis prøveperiode uden betalingskort. Priserne er ekskl. moms.",
 	"Computer hours in your plan": "Computertimer i dit abonnement",
 	"Computer hours this month": "Computertimer denne måned",
+	"Computer hours unavailable": "Computertimer ikke tilgængelige",
+	"Counted once plans open": "Tælles, når abonnementerne åbner",
 	"Measured, not charged yet": "Målt, endnu ikke opkrævet",
 	"Company machines": "Virksomhedens maskiner",
 	"Agent runs": "Agentkørsler",

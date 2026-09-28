@@ -74,7 +74,7 @@ describe("Plan & usage", () => {
 	it("shows placeholders for computer hours and billing until the cloud reports them", () => {
 		renderPlan(container, { loaded: true, entitlement: entitlement("freemium") }, undefined);
 		const hours = container.querySelector(".settings-hours")!;
-		expect(hours.querySelector("strong")?.textContent).toBe("Not measured yet");
+		expect(hours.querySelector("strong")?.textContent).toBe("Counted once plans open");
 		expect(hours.textContent).toContain("Included in your free trial");
 		expect(hours.querySelector("progress")).toBeNull();
 		expect(text()).toContain("Open a company to see its storage.");
@@ -88,7 +88,7 @@ describe("Plan & usage", () => {
 		expect(addCard.disabled).toBe(true);
 		// A paid plan without a measurement gets no bar either: an empty bar reads as zero use.
 		renderPlan(container, { loaded: true, entitlement: entitlement("basis") }, undefined);
-		expect(container.querySelector(".settings-hours strong")?.textContent).toBe("Not measured yet");
+		expect(container.querySelector(".settings-hours strong")?.textContent).toBe("Counted once plans open");
 		expect(container.querySelector(".settings-hours small:not(.settings-eyebrow)")?.textContent).toBe(
 			"74 h a month with Basis",
 		);
@@ -187,7 +187,7 @@ describe("Plan & usage", () => {
 			month: "2026-09",
 			timeZone: "Europe/Copenhagen",
 			usedSeconds: 149_400,
-			byKind: { companyMachines: 79_200, agentMachines: 0, codingMachines: 10_800, runs: 52_200 },
+			byKind: { companyMachines: 79_200, agentMachines: 179, codingMachines: 10_800, runs: 52_200 },
 			awakeNow: { companyMachines: 1, agentMachines: 0, codingMachines: 0, runs: 2 },
 			meteredUntil: "2026-09-28T18:00:00Z",
 		};
@@ -201,6 +201,7 @@ describe("Plan & usage", () => {
 		expect(card.querySelector(".settings-eyebrow")?.textContent).toBe("Computer hours this month");
 		expect(card.querySelector("strong")?.textContent).toBe("41.5 h used");
 		expect(card.textContent).toContain("Company A · Measured, not charged yet");
+		// Under three minutes of agents' machines would read "0 h": left out.
 		expect(card.querySelector(".settings-hours-kinds")?.textContent).toBe(
 			"Company machines 22 h · Agent runs 14.5 h · Coding machines 3 h",
 		);
@@ -224,9 +225,9 @@ describe("Plan & usage", () => {
 		renderPlan(
 			container,
 			{ loaded: true, entitlement: entitlement("basis") },
-			{ ...usage, hours: { loading: false, error: "Offline" } },
+			{ ...usage, hours: { loading: false, failed: true } },
 		);
-		expect(container.querySelector(".settings-company-hours strong")?.textContent).toBe("Offline");
+		expect(container.querySelector(".settings-company-hours strong")?.textContent).toBe("Computer hours unavailable");
 		renderPlan(container, { loaded: true, entitlement: entitlement("basis") }, undefined);
 		expect(container.querySelector(".settings-company-hours")).toBeNull();
 	});

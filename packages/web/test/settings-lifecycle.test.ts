@@ -958,6 +958,21 @@ describe("settings session lifecycle", () => {
 		await draw();
 		expect(f.api.getCompanyComputerHours).toHaveBeenCalledTimes(1);
 	});
+	it("asks for a company's computer hours once when the lookup fails, whatever the error says", async () => {
+		const f = await setup();
+		// A gateway error can arrive with an empty message.
+		vi.mocked(f.api.getCompanyComputerHours).mockRejectedValue(new Error(""));
+		open(f.root);
+		click(f.root, "#settings-tab-plan");
+		await draw();
+		await draw();
+		const card = f.root.querySelector("#settings-content .settings-company-hours")!;
+		expect(card.querySelector("strong")?.textContent).toBe("Computer hours unavailable");
+		click(f.root, "#settings-tab-company");
+		click(f.root, "#settings-tab-plan");
+		await draw();
+		expect(f.api.getCompanyComputerHours).toHaveBeenCalledTimes(1);
+	});
 	it("asks to open a company for usage and retries a failed storage lookup", async () => {
 		const fixtureState = fixture();
 		vi.mocked(fixtureState.api.listProfiles).mockResolvedValue([profileA, profileB]);

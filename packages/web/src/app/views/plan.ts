@@ -117,7 +117,8 @@ export interface CompanyHoursState {
 	loading: boolean;
 	/** The cloud does not measure computer hours yet. */
 	missing?: boolean;
-	error?: string;
+	/** The lookup failed; the card says so instead of showing the raw error. */
+	failed?: boolean;
 }
 
 /** Storage and computer hours of the company Settings show, as the Company tab loads them. */
@@ -145,11 +146,12 @@ function companyHoursCard(companyName: string, state: CompanyHoursState | undefi
 		? uiText("{used} used", { used: hoursText(value.usedSeconds / 3600) })
 		: state.loading
 			? uiText("Loading…")
-			: state.missing
-				? uiText("Not measured yet")
-				: (state.error ?? uiText("Not measured yet"));
+			: state.failed
+				? uiText("Computer hours unavailable")
+				: uiText("Not measured yet");
+	// A kind under three minutes would read "0 h": left out, like a kind with none.
 	const kinds = value
-		? HOURS_BY_KIND.filter(([key]) => value.byKind[key] > 0).map(
+		? HOURS_BY_KIND.filter(([key]) => value.byKind[key] >= 180).map(
 				([key, label]) => `${t(label)} ${hoursText(value.byKind[key] / 3600)}`,
 			)
 		: [];
@@ -280,7 +282,7 @@ export function renderPlan(
 		? hoursIncluded
 			? uiText("{used} used of {total}", { used: hoursText(hours.used), total: hoursText(hoursIncluded) })
 			: uiText("{used} used", { used: hoursText(hours.used) })
-		: uiText("Not measured yet");
+		: uiText("Counted once plans open");
 	const hoursDetail = trial
 		? uiText("Included in your free trial")
 		: offer && offer.includedHours === undefined
