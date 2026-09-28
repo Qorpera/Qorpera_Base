@@ -749,6 +749,10 @@ export async function runOfficeCreationSqlProbe(
 				kernelLock: async () => {},
 				readProtected: async (path: string) => {
 					if (path === request.reviewPath) return reviewBytes;
+					// No operator preparation recovery is published; the ordinary
+					// attempt must stand on its own.
+					if (path === `${request.reviewPath}.preparation-recovery`)
+						throw Object.assign(new Error("no preparation recovery review"), { code: "ENOENT" });
 					assert.equal(path, request.writerFencePath);
 					return handoffBytes;
 				},
