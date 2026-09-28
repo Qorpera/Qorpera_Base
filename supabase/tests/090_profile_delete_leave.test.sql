@@ -80,7 +80,7 @@ $$;
 reset role;
 select set_config('request.jwt.claims', '', false);
 
--- The last founder can neither leave nor delete while a member remains (20260929030000). They
+-- The last founder can neither leave nor delete while a member remains (20260928248100). They
 -- remove the member, and then, as the last member, delete instead of leaving.
 select set_config('request.jwt.claims', '{"sub":"80000000-0000-4000-8000-00000000000a","email":"sep-owner-a@example.test","role":"authenticated","user_metadata":{}}', false);
 set role authenticated;

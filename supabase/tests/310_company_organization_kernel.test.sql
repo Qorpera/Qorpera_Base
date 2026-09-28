@@ -103,7 +103,7 @@ select set_config('qorpera_test.org_company',public.qorpera_create_cloud_company
 reset role;
 
 -- Company setup runs for the founder who created the company: while it runs, that founder neither
--- leaves nor steps down, even with a co-founder, and the team page does not offer it (20260929030000).
+-- leaves nor steps down, even with a co-founder, and the team page does not offer it (20260928248100).
 savepoint setup_founder;
 insert into auth.users(id,email) values ('31000000-0000-4000-8000-0000000000f1','org-cofounder@example.test');
 insert into public.qorpera_profile_members(profile_id,user_id,email,display_name,role)
