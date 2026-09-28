@@ -24,9 +24,11 @@ refer to.
 > - Stateless Compute: nodes are to become interchangeable. Live since v144
 >   for runs whose login is in the vault (contract, "2026-09-28 amendment:
 >   model logins live in the vault").
-> - Computers get internet and long-running shells: contract text in draft
->   #409 (item 2), build in draft #411.
-> - Coding sessions stand by between turns: #409 (item 3), build in #430.
+> - Computers get internet and long-running shells: contract, "2026-09-28
+>   amendment: compute for agents" (#409 item 2, ratified), build in draft
+>   #411.
+> - Coding sessions stand by between turns: the same amendment (#409 item 3),
+>   build in #430.
 >
 > The section [Decided on 28 September 2026](#decided-on-28-september-2026)
 > records the result. Where it differs from a later section, it governs, and
@@ -105,8 +107,10 @@ Computer) hosts up to six computers.
   authority covers the company-wide view. Its one view is opened by the
   starter's run, holds the lease and sets what can be seen. Any agent whose
   authority covers that view may run commands there, as on a computer.
-  - Changes made while commands run are published at each command's end.
-    They are credited to that command's agent and requester, taken from
+  - Changes made while commands run are published at each command's end,
+    and while a command runs each time its output is read, as a computer's
+    shell commands publish (section 2; compute amendment, item 2). They are
+    credited to that command's agent and requester, taken from
     #419's command records on the node. When commands overlap, each of their
     receipts lists the others.
   - Changes made while no command runs go to the machine's starter, at the
@@ -177,7 +181,7 @@ live before the next:
 | 3 | Writes: boundaries, change sets, reports, conflicts, reviewed units, `apply_patch`; streamed binary writes and the folder service's upload binding; restore in the web app (from old step 4; the file history view is core slice C4). A write spike first, including two machines on two nodes editing the same file | C1b–C1d, C2, C3 | the five `company_*` tools, for folder-v2 companies |
 | 4 | Company machines: a new office image with the folder program, a mount for each desktop and each shell command, desktop folders in `/company`, saves after a quiet period, shell commands per command and reviewed. Unblocks the scale-out switch (#414) | step 3; #411 in the same image | the Company File part of `computer_transfer`; work files in the scratch area |
 | 5 | Coding machines: one mount per attached session, code areas (section 6), a final publish before sleep and archive | step 3; coding standby (#430) | the private repository folder, its seed and export chain, the 64 MiB bundle |
-| 6 | Test machines: one view per machine, publishing at command end | step 3; test machines (#419, Rebuild Map C4) | `/mnt/repository` and copies to the machine's disk |
+| 6 | Test machines: one view per machine, publishing at command end and while a command runs (section 2) | step 3; test machines (#419, Rebuild Map C4) | `/mnt/repository` and copies to the machine's disk |
 
 Steps 4, 5 and 6 do not depend on each other. Milestone M3 of the Rebuild Map
 is reached when two machines on two nodes edit the same folder live and
@@ -342,6 +346,12 @@ desktop-terminal command. `computer_shell` sessions follow the run-box rule.
 (Amended 2026-09-28: each `computer_shell` command has its own mount and
 publishes when it ends and each time its output is read; it may outlive its
 run, and its last publish comes when its processes end; section 5.)
+
+**On a test machine**, each command's changes publish the same way: when the
+command ends, and each time its output is read while it runs (amended
+2026-09-28: the compute amendment, item 2, has a long-running command's
+changes published while it runs too). Changes made while no command runs
+publish at the next command end or at stop.
 
 **Never published:**
 - a file still open for writing by any process (it waits for a later
@@ -647,8 +657,8 @@ browser profiles and caches. The rest is kept off it:
 - The 15-second stop is replaced by long-running sessions like the run
   box's.
 - It keeps the automatic review: since the compute amendment (#409, item 2)
-  it has internet, so its commands are outside effects (amended 2026-09-28;
-  this answers open question 2).
+  it has internet, so starting a command and typing into one are outside
+  effects (amended 2026-09-28; this closes open question 2).
 
 **Many machines.** A company's Company Computers all mount the same folder.
 A save on one appears on the others within about a second.
@@ -937,8 +947,11 @@ publish. Mount file modes are a convenience, not the boundary.
 **Untrusted content.** File content is data. The run box has no network, so
 its mount opens no new way out of the company. (Amended 2026-09-28: a
 computer's shell and a test machine have internet, so company data read there
-can leave, as #409 item 2 (draft) and #419 item 3 (proposed) accept. Their
-commands are outside effects and pass the automatic review.) The existing
+can leave, as the compute amendment accepts (contract, "2026-09-28
+amendment: compute for agents", items 2 and 4, ratified). A firewall there
+blocks private and special ranges, the machine itself and the other
+computers; it is not a security boundary between agents. Starting a command
+and typing into one are outside effects and pass the automatic review.) The existing
 exits are connectors and the browser (both reviewed), and coding machines,
 whose sessions keep open network and are not reviewed.
 With the mount, company data a coding session reads can leave through that
@@ -1094,9 +1107,10 @@ folder that fits. This wording ships ahead of the mount, in PR #366.
    27 September). A cheap mitigation that keeps coding working would be to
    limit coding machines to the sites coding needs: GitHub, package
    registries and the model providers. Not decided.
-2. **Company Computer shell review.** Answered by #409 item 2 (draft,
-   2026-09-28): a computer's shell has internet, so it keeps the automatic
-   review.
+2. **Company Computer shell review.** Closed: it keeps the automatic review.
+   The compute amendment (#409 item 2, ratified 2026-09-28) gives a
+   computer's shell a network, so starting a command and typing into one are
+   outside effects.
 3. **Internet in the run box.** Founder decision 7 leaves this for later. If
    it opens, shell commands become outside effects and pass review.
 4. **Large files.** Files over 256 MiB.
