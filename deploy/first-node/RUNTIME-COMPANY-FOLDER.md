@@ -66,7 +66,8 @@ Computer) hosts up to six computers.
     addresses.
   - LXD gives every VM a vsock link (`volatile.vsock_id`), so no device is
     added. Step 0 confirms this first.
-- **Views.** Each mount is a view with one owner. In the core it is a
+- **Views.** Each mount is a view with one owner. On a test machine the
+  owner is the starter, while saves are credited per command (below). In the core it is a
   `qorpera_folder_views` row (C1b-3, as answered on #432):
   - a pass of 32 random bytes, of which SQL keeps the sha256;
   - a lease of 120 s that the folder service renews every 40 s.
@@ -100,12 +101,21 @@ Computer) hosts up to six computers.
   may read it. Its computers are not walls between agents (section 12). Such
   folders are worked on from the agent's own run box. A test machine follows
   the same rule, since any agent of the company may use it (#419).
-- On a test machine any agent whose authority covers the company-wide view
-  may run commands, as on a computer. Each command's end publishes what
-  changed on the machine since the last publish, attributed to that
-  command's agent, with overlapping commands listed in the receipt. The
-  agent is root, so this attribution is best effort; it can misname the
-  saver, never widen the view.
+- On a test machine, `/company` is mounted only when the starter's
+  authority covers the company-wide view. Its one view is opened by the
+  starter's run, holds the lease and sets what can be seen. Any agent whose
+  authority covers that view may run commands there, as on a computer.
+  - Changes made while commands run are published at each command's end.
+    They are credited to that command's agent and requester, taken from
+    #419's command records on the node. When commands overlap, each of their
+    receipts lists the others.
+  - Changes made while no command runs go to the machine's starter, at the
+    next command end or at stop.
+  - Reads made while commands run are recorded in the read set of every run
+    with a command running at the time. Reads made while none runs are
+    recorded on the starter's view.
+  - The agent is root, so this attribution is best effort: it can misname
+    the saver, never widen the view.
 - A computer's holder changes only as #409 item 1 allows. A computer with a
   running command stays in use, and its desktop is closed before the seat
   changes hands. A member who takes over while an agent's command runs does
