@@ -15,26 +15,39 @@
 # network is its relay), not this machine's own, with no link yet. Nothing is
 # plumbed without the machine's firewall, and every computer also gets a filter
 # of its own inside its namespace, which it cannot change.
+#
+# One step at a time on this machine (requests, --up and --down), so a late
+# request never undoes a newer one. The lock is this file itself, which only
+# root can open (installed 0500): no computer can hold it.
 set -euo pipefail
 export PATH=/usr/sbin:/usr/bin:/sbin:/bin
 nft_file=${QORPERA_COMPUTER_NETWORK_NFT:-/usr/local/share/qorpera/computer-network.nft}
-
+office_user=${QORPERA_OFFICE_USER:-qorpera-office}
+refuse() {
+	printf 'refused %s\n' "$1"
+	exit 0
+}
 # Every link of ours on this machine.
 links() {
 	ip -o link show | sed -n 's/^[0-9]*: \(qcmp[0-9]*[sd]\)@.*/\1/p'
 }
+exec 9<"${BASH_SOURCE[0]}"
 
 case ${1-} in
 --up)
+	flock 9
 	nft -f "${nft_file}"
-	# Room for every computer's connections (the firewall bounds each one) and
-	# the machine's own. Only the machine's own kernel may raise it.
+	# Room for every computer's connections (the firewall bounds them) and the
+	# machine's own. Only the machine's own kernel may raise it.
 	sysctl -q -w net.netfilter.nf_conntrack_max=262144 2>/dev/null || true
-	sysctl -q -w net.ipv4.conf.all.send_redirects=0 net.ipv4.conf.default.send_redirects=0
+	# No redirects from any interface: the kernel ORs "all" with each one's own.
+	sysctl -q -w net.ipv4.conf.default.send_redirects=0
+	for setting in /proc/sys/net/ipv4/conf/*/send_redirects; do printf 0 >"${setting}"; done
 	sysctl -q -w net.ipv4.ip_forward=1
 	exit 0
 	;;
 --down)
+	flock 9
 	for link in $(links); do ip link del "${link}" 2>/dev/null || true; done
 	sysctl -q -w net.ipv4.ip_forward=0
 	nft delete table inet qorpera_computers 2>/dev/null || true
@@ -44,20 +57,11 @@ case ${1-} in
 *) exit 2 ;;
 esac
 
-office_user=${QORPERA_OFFICE_USER:-qorpera-office}
-refuse() {
-	printf 'refused %s\n' "$1"
-	exit 0
-}
 IFS= read -r -t 5 request || refuse request
 [[ ${request} =~ ^plumb\ ([1-9]|[12][0-9]|3[0-2])\ (shell|desktop)\ ([1-9][0-9]{0,9})$ ]] || refuse request
 ordinal=${BASH_REMATCH[1]}
 role=${BASH_REMATCH[2]}
 pid=${BASH_REMATCH[3]}
-
-# One request at a time on this machine: the checks below and the plumbing
-# are one step, so a late request never undoes a newer one.
-exec 9<"${BASH_SOURCE[0]}"
 flock -w 10 9 || refuse busy
 
 # The machine's firewall is loaded: its input and forward chains as shipped.

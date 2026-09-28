@@ -1,6 +1,6 @@
 -- 20260929070100: a command still running in a computer's shell keeps its
 -- agent's seat, as it keeps the machine awake (20260929070000). Patched into
--- qorpera_runtime_office_screen_in_use (20260929010100) in place, after it:
+-- qorpera_runtime_office_screen_in_use (20260928237200) in place, after it:
 -- a fresh shell-activity report for the screen, from the office's current
 -- generation, means the screen is in use and cannot change hands.
 

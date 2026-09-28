@@ -91,7 +91,7 @@ try {
 		// The image's network pieces exactly as packaged: the firewall and the root plumber.
 		await copyFile(join(repository, "deploy/lxd-company-computer-guest/qorpera-computer-network.nft"), join(root, "computer-network.nft"));
 		await copyFile(join(repository, "deploy/lxd-company-computer-guest/qorpera-computer-plumb"), join(root, "qorpera-computer-plumb"));
-		await writeFile(join(root, "Dockerfile"), `FROM ${image}\nRUN mkdir -p /usr/local/lib/qorpera /usr/local/share/qorpera && chmod 0755 /usr/local/lib/qorpera /usr/local/share/qorpera\nCOPY --chmod=0444 office-browser-child.mjs /usr/local/lib/qorpera/office-browser-child.mjs\nCOPY --chmod=0555 qorpera-computer-plumb /usr/local/lib/qorpera/qorpera-computer-plumb\nCOPY --chmod=0444 computer-network.nft /usr/local/share/qorpera/computer-network.nft\n`);
+		await writeFile(join(root, "Dockerfile"), `FROM ${image}\nRUN mkdir -p /usr/local/lib/qorpera /usr/local/share/qorpera && chmod 0755 /usr/local/lib/qorpera /usr/local/share/qorpera\nCOPY --chmod=0444 office-browser-child.mjs /usr/local/lib/qorpera/office-browser-child.mjs\nCOPY --chmod=0500 qorpera-computer-plumb /usr/local/lib/qorpera/qorpera-computer-plumb\nCOPY --chmod=0444 computer-network.nft /usr/local/share/qorpera/computer-network.nft\n`);
 		// Stand-ins, as root in the container: systemd's socket activation of the
 		// plumber (one script per connection), and hosts behind the machine.
 		await writeFile(join(root, "plumb-socket.mjs"), `import { execFileSync, spawn } from "node:child_process";

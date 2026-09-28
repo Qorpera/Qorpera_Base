@@ -123,7 +123,7 @@ describe("office image installation contract", () => {
 		// Each computer's own network: the root plumber, its firewall and units.
 		expect(officeImageDestination("qorpera-computer-plumb")).toEqual({
 			path: "/usr/local/lib/qorpera/qorpera-computer-plumb",
-			mode: 0o555,
+			mode: 0o500,
 		});
 		expect(officeImageDestination("qorpera-computer-network.nft")).toEqual({
 			path: "/usr/local/share/qorpera/computer-network.nft",

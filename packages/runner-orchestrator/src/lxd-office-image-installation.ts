@@ -147,7 +147,8 @@ export function officeImageDestination(file: string): { path: string; mode: numb
 		return { path: "/usr/local/lib/qorpera/office-browser-child.mjs", mode: 0o444 };
 	if (file === "qorpera-computer-network.nft")
 		return { path: "/usr/local/share/qorpera/computer-network.nft", mode: 0o444 };
-	if (file === "qorpera-computer-plumb") return { path: "/usr/local/lib/qorpera/qorpera-computer-plumb", mode: 0o555 };
+	// Root only: the plumber locks its own file, which no computer may open.
+	if (file === "qorpera-computer-plumb") return { path: "/usr/local/lib/qorpera/qorpera-computer-plumb", mode: 0o500 };
 	if (
 		["qorpera-computer-network.service", "qorpera-computer-plumb.socket", "qorpera-computer-plumb@.service"].includes(
 			file,

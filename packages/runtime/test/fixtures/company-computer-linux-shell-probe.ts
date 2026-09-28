@@ -212,8 +212,14 @@ printf isolated`),
 			socket.on("error", reject);
 			socket.end(`${request}\n`);
 		});
-	assert.equal(await ask(`plumb 1 shell ${shell.namespacePid}`), "refused process\n");
-	assert.equal(await ask(`plumb 9 desktop ${process.pid}`), "refused process\n");
+	// The namespace's own Tini (its program runs, so nothing waits at the gate),
+	// Bubblewrap's monitor outside it, and any other process.
+	const monitor = shell.namespacePid;
+	const tini = (await readFile(`/proc/${monitor}/task/${monitor}/children`, "utf8")).trim();
+	assert.match(tini, /^[0-9]+$/);
+	assert.match(await readFile(`/proc/${tini}/cmdline`, "utf8"), /^\/usr\/bin\/tini\0/);
+	for (const pid of [tini, monitor, process.pid])
+		assert.equal(await ask(`plumb 1 shell ${pid}`), "refused process\n", `pid ${pid}`);
 	assert.match(await done("cat /proc/net/dev"), /^ *eth0:/m);
 
 	// Without the machine's firewall (an accident), each computer's own filter
