@@ -294,7 +294,13 @@ export function createHttpCompanyComputerSessionFactory(options: {
 			// A one-computer route cannot reach another of the company's computers: the
 			// run goes on without computer tools instead of failing as a whole.
 			if (!start || !reaches(start.scope.companyComputerId)) return undefined;
-			return createCompanyComputerStartSession({ run, operations, descriptor: start, registry: options.registry });
+			return createCompanyComputerStartSession({
+				run,
+				operations,
+				descriptor: start,
+				registry: options.registry,
+				reaches,
+			});
 		}
 		if (!reaches(descriptor.scope.companyComputerId)) return undefined;
 		const url = route.urlFor(descriptor.scope.companyComputerId);

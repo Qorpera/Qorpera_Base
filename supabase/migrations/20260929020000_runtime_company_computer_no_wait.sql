@@ -6,34 +6,43 @@
 -- found the running machines full was placed on the one machine that was
 -- starting, however many agents there were, and those that did not fit on it
 -- waited again for the next. A sleeping machine was woken even when its node
--- had no room for it, so the agent waited for room that another node had. A
--- machine in maintenance for an update or reset, or with a cancelled start,
--- stopped any new machine from being added.
+-- had no room for it, while another node had room for a new one. A machine in
+-- maintenance for an update or reset, or with a cancelled start, stopped any
+-- new machine from being added.
 --
 -- Now, with the scale-out switch on:
 --   * Held seats. An agent waiting for a machine holds a seat on it: its start
---     waiter on the machine's current generation, while it waits and for two
---     minutes after it is woken (the moment between the wake and its run
---     opening the screen). A machine is full when its screens in use and the
---     seats other agents hold reach max_screens. A seat is held once per agent,
---     and not while the agent has a screen in use on any machine of the company.
---   * Placement joins a sleeping, waking or starting machine only while it has
---     a seat nobody holds; otherwise it goes on down the list and a new machine
---     is added. A burst of demand adds as many machines as it needs: one for
---     each max_screens agents without a seat. Native starts record the waiter
---     under the seat lock (20260929010100), so two starts never hold the same
---     last seat.
---   * An agent is placed first on the machine where it holds a seat, so the
---     descriptors and has_demand agree with its waiter.
---   * A sleeping machine is woken only when its node would admit it now: the
---     node is switched on and observed ready, and the machine's CPU and memory
---     fit what is left (the node ledger's admission rule; its demand is still
---     suspended). Otherwise the agent starts a new machine, which is placed on
---     any node with room. (A sleeping machine waking on another node is later
---     work of the identical-nodes plan.)
+--     waiter on the machine's current generation, while it waits (its request's
+--     run did not fail) and, once woken, until its woken run ends (the two
+--     clauses has_demand uses to keep the machine awake). Only for an employed
+--     agent with active access, once per agent, and not while the agent has a
+--     screen in use on a running machine. A machine whose start has waited 30
+--     minutes for a host that never offered it holds no waiting seats, so a
+--     broken setup does not add machine after machine.
+--   * A machine is full when its screens in use and the seats other agents
+--     hold reach max_screens. Seats go first come: an agent holding a seat
+--     counts only the seats held before its own, so a machine asked for by
+--     more agents than it has seats (starts in flight at the same moment) seats
+--     the earliest, and the others are placed again.
+--   * Placement, after the agent's own screen, returns the machine the agent
+--     holds a seat on, or the machine its start in progress names (native
+--     start passes it). So a start never moves under the agent: authorize,
+--     begin and the check after completion all see the same machine. Then free
+--     seats on running machines; then sleeping, waking and starting machines,
+--     each only while it has a seat nobody holds; then a new machine. A burst
+--     adds one machine for each max_screens agents without a seat.
+--   * A sleeping machine is woken only when its node would admit it now (the
+--     node ledger's admission rule; its demand is still suspended). If its node
+--     is full but some node has room for a new machine, a new machine is added
+--     instead; if no node has room, the sleeping machine is still woken and its
+--     wake waits for room, as before. (Waking a sleeping machine on another
+--     node is later work of the identical-nodes plan.)
 --   * A machine in maintenance for an update or reset, or with a cancelled
 --     start, is passed over, never waited for and never replaced: it is used
 --     again once it is back.
+-- The runtime asks for the machine to start when the agent calls
+-- computer_start, not when the run began (packages/runtime), so the start
+-- names the machine placement picks at that moment, a new one included.
 -- Switched off, nothing changes: the company has one machine, seats are taken
 -- first come as before, and held seats are not counted.
 
@@ -52,8 +61,23 @@ begin
 end
 $guard$;
 
--- Agents other than p_staff_agent_id (or, with p_own, that agent itself) holding
--- a seat on the machine.
+-- A started machine that no host has offered for 30 minutes.
+create function public.qorpera_runtime_office_start_stuck(p_office public.qorpera_runtime_offices)
+returns boolean
+language sql
+volatile
+security definer
+set search_path = ''
+as $$
+	select p_office.state in ('provisioning', 'recovering')
+		and public.qorpera_runtime_office_start_wait(p_office) = 'setup'
+		and exists(select 1 from public.qorpera_runtime_office_start_intents i where i.office_id = p_office.id
+			and i.computer_generation = p_office.generation and i.state <> 'cancelled'
+			and i.created_at < clock_timestamp() - interval '30 minutes')
+$$;
+
+-- With p_own, whether the agent holds a seat on the machine (0 or 1). Otherwise
+-- how many other agents hold one there before it: all of them when it holds none.
 create function public.qorpera_runtime_office_seat_claims(p_office_id uuid, p_staff_agent_id uuid, p_own boolean)
 returns integer
 language sql
@@ -61,27 +85,45 @@ volatile
 security definer
 set search_path = ''
 as $$
-	select count(distinct r.staff_agent_id)::integer
-	from public.qorpera_runtime_offices o
-	join public.qorpera_runtime_office_start_intents i on i.office_id = o.id
-		and i.computer_generation = o.generation and i.state <> 'cancelled'
-	join public.qorpera_runtime_office_start_waiters w on w.intent_id = i.id
-	join public.qorpera_execution_runs r on r.id = w.parent_run_id
-	left join public.qorpera_wake_occurrences k on k.id = w.occurrence_id
-	where o.id = p_office_id
-		and (r.staff_agent_id = p_staff_agent_id) = p_own
-		and (w.state = 'waiting'
-			or (w.state = 'delivered' and k.created_at > clock_timestamp() - interval '2 minutes'))
-		and not exists(select 1 from public.qorpera_runtime_offices so
-			join public.qorpera_runtime_office_screens s on s.office_id = so.id
-			where so.environment_id = o.environment_id and so.profile_id = o.profile_id
-				and s.staff_agent_id = r.staff_agent_id and public.qorpera_runtime_office_screen_in_use(s))
+	with holds as (
+		select r.staff_agent_id as agent, min(w.created_at) as since
+		from public.qorpera_runtime_offices o
+		join public.qorpera_runtime_office_start_intents i on i.office_id = o.id
+			and i.computer_generation = o.generation and i.state <> 'cancelled'
+		join public.qorpera_runtime_office_start_waiters w on w.intent_id = i.id
+			and (w.state = 'waiting' or (w.state = 'delivered' and w.created_at > clock_timestamp() - interval '1 day'))
+		join public.qorpera_execution_runs r on r.id = w.parent_run_id
+		join public.qorpera_runner_jobs j on j.id = r.job_id
+		join public.qorpera_profile_staff st on st.profile_id = o.profile_id and st.staff_agent_id = r.staff_agent_id
+			and st.employment_status = 'active'
+		join public.qorpera_runtime_office_access a on a.office_id = o.id and a.staff_agent_id = r.staff_agent_id
+			and a.state = 'active'
+		left join public.qorpera_wake_occurrences k on k.id = w.occurrence_id
+		left join public.qorpera_execution_runs kr on kr.id = k.run_id
+		left join public.qorpera_runner_jobs kj on kj.id = kr.job_id
+		where o.id = p_office_id
+			and ((w.state = 'waiting' and j.status not in ('failed', 'cancelled')
+					and not public.qorpera_runtime_office_start_stuck(o))
+				or (w.state = 'delivered' and (k.status = 'queued' or kj.status in ('queued', 'leased', 'running'))))
+			and not exists(select 1 from public.qorpera_runtime_offices so
+				join public.qorpera_runtime_office_screens s on s.office_id = so.id
+				join public.qorpera_runtime_office_access sa on sa.office_id = so.id and sa.staff_agent_id = s.staff_agent_id
+					and sa.state = 'active'
+				where so.environment_id = o.environment_id and so.profile_id = o.profile_id and so.state = 'active'
+					and s.staff_agent_id = r.staff_agent_id and public.qorpera_runtime_office_screen_in_use(s))
+		group by r.staff_agent_id
+	)
+	select case when p_own then (select count(*) from holds where agent = p_staff_agent_id)
+		else (select count(*) from holds h where h.agent <> p_staff_agent_id
+			and (h.since, h.agent) < (coalesce((select m.since from holds m where m.agent = p_staff_agent_id),
+				'infinity'::timestamptz), p_staff_agent_id)) end::integer
 $$;
 
 -- A sleeping machine can wake now: its node slot is still held, or its node
--- would admit it again (qorpera_reserve_runtime_node_machine's rule, as
--- qorpera_runtime_node_placement_candidates restates it). A machine with no
--- node demand on record wakes as before.
+-- would admit it again under qorpera_reserve_runtime_node_machine's rule (as
+-- qorpera_runtime_node_placement_candidates restates it), counting sleeping
+-- machines on the node whose wake is already requested. A machine with no node
+-- demand on record wakes as before.
 create function public.qorpera_runtime_office_can_wake(p_office public.qorpera_runtime_offices)
 returns boolean
 language sql
@@ -94,9 +136,10 @@ as $$
 			and ob.observed_at > clock_timestamp() - interval '60 seconds'
 			and ob.observed_at <= clock_timestamp() + interval '2 seconds'
 			and ob.observation ->> 'state' = 'ready'
+			and public.qorpera_runtime_node_inventory_ready(n.id, ob.observation_id, n.version)
 			and (ob.observation ->> 'cpuMillis')::bigint >= n.cpu_millis
 			and (ob.observation ->> 'memoryBytes')::bigint >= n.memory_bytes
-			and d.cpu_millis + u.cpu <= (n.cpu_millis - n.headroom_cpu_millis) * n.cpu_allocation_ratio
+			and d.cpu_millis + u.cpu <= public.qorpera_runtime_node_cpu_budget(n)
 			and d.memory_bytes + u.memory <= n.memory_bytes - n.headroom_memory_bytes, false)
 		from public.qorpera_runtime_machine_allocations a
 		join public.qorpera_runtime_node_demands d on d.allocation_id = a.id and d.released_at is null
@@ -105,11 +148,51 @@ as $$
 		cross join lateral (
 			select coalesce(sum(x.cpu_millis), 0)::bigint as cpu, coalesce(sum(x.memory_bytes), 0)::bigint as memory
 			from public.qorpera_runtime_node_demands x
-			where x.node_id = n.id and x.reserved_at is not null and x.released_at is null and x.suspended_at is null
+			where x.node_id = n.id and x.reserved_at is not null and x.released_at is null
+				and (x.suspended_at is null or (x.allocation_id <> d.allocation_id and exists(
+					select 1 from public.qorpera_runtime_machine_allocations xa
+					join public.qorpera_runtime_office_idle_cycles c on c.office_id = xa.office_id
+						and c.computer_generation = xa.computer_generation
+					where xa.id = x.allocation_id and c.wake_requested_at is not null and c.activated_at is null
+						and c.superseded_at is null)))
 		) u
 		where a.office_id = p_office.id and a.computer_generation = p_office.generation and a.released_at is null
 		order by a.reserved_at desc
 		limit 1), true)
+$$;
+
+-- Some node could take a new company machine now.
+create function public.qorpera_runtime_office_new_machine_room()
+returns boolean
+language sql
+volatile
+security definer
+set search_path = ''
+as $$
+	select exists(select 1 from jsonb_array_elements(public.qorpera_runtime_node_placement_candidates('office')) c
+		where (c ->> 'eligible')::boolean and (c ->> 'fits')::boolean)
+$$;
+
+-- What placing an agent on the machine means now; null when it cannot be used
+-- or started (maintenance for an update or reset, a cancelled start, retired).
+create function public.qorpera_runtime_office_start_decision(p_office public.qorpera_runtime_offices)
+returns text
+language sql
+volatile
+security definer
+set search_path = ''
+as $$
+	select case
+		when p_office.state = 'active' then 'room'
+		when exists(select 1 from public.qorpera_runtime_office_start_intents i where i.office_id = p_office.id
+			and i.computer_generation = p_office.generation and i.state = 'cancelled') then null
+		when p_office.state in ('provisioning', 'recovering') and exists(select 1 from public.qorpera_runtime_office_start_intents i
+			where i.office_id = p_office.id and i.computer_generation = p_office.generation) then 'starting'
+		when p_office.state in ('provisioning', 'recovering') then 'unstarted'
+		when public.qorpera_runtime_office_idle_pending(p_office) then
+			case when public.qorpera_runtime_office_maintenance(p_office) ->> 'state' = 'resumed' then 'starting' else 'stopped' end
+		when p_office.state = 'maintenance' and public.qorpera_runtime_office_maintenance(p_office) is not null then 'starting'
+		else null end
 $$;
 
 create or replace function public.qorpera_runtime_office_seats_taken(p_office_id uuid, p_staff_agent_id uuid)
@@ -133,7 +216,7 @@ volatile
 security definer
 set search_path = ''
 as $$
-declare v_office public.qorpera_runtime_offices%rowtype;
+declare v_office public.qorpera_runtime_offices%rowtype; v_target uuid; v_setting text;
 begin
 	-- denied: a revoked grant stays revoked, and no computer is added around it.
 	if exists(select 1 from public.qorpera_runtime_offices where environment_id = p_environment_id
@@ -171,18 +254,39 @@ begin
 			and public.qorpera_runtime_office_screen_in_use(s)
 		order by s.touched_at desc, o.computer_number limit 1;
 	if found then return jsonb_build_object('decision', 'screen', 'officeId', v_office.id); end if;
-	-- room: a free seat nobody holds; the machine where the agent holds a seat first.
+	-- held: the machine the agent's start in progress names (set by
+	-- qorpera_native_office_start for its own agent), then the machine where the
+	-- agent holds a seat. The start's machine stays while it can be started, even
+	-- if other agents' starts in flight took its seats meanwhile.
+	v_setting := current_setting('qorpera.office_start_target', true);
+	if v_setting ~ ('^' || p_staff_agent_id::text || ':[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$') then
+		v_target := split_part(v_setting, ':', 2)::uuid;
+	end if;
+	select o.* into v_office from public.qorpera_runtime_offices o
+		join public.qorpera_runtime_office_access a on a.office_id = o.id and a.staff_agent_id = p_staff_agent_id and a.state = 'active'
+		where o.environment_id = p_environment_id and o.profile_id = p_profile_id and o.state <> 'retired'
+			and public.qorpera_runtime_office_start_decision(o) is not null
+			and (o.id = v_target
+				or (public.qorpera_runtime_office_seat_claims(o.id, p_staff_agent_id, true) > 0
+					and public.qorpera_runtime_office_seats_taken(o.id, p_staff_agent_id) < o.max_screens
+					and (not public.qorpera_runtime_office_idle_pending(o) or public.qorpera_runtime_office_can_wake(o)
+						or not public.qorpera_runtime_office_new_machine_room())))
+		order by o.id = v_target desc nulls last, o.computer_number
+		limit 1;
+	if found then
+		return jsonb_build_object('decision', public.qorpera_runtime_office_start_decision(v_office), 'officeId', v_office.id);
+	end if;
+	-- room: a free seat nobody holds.
 	select o.* into v_office from public.qorpera_runtime_offices o
 		join public.qorpera_runtime_office_access a on a.office_id = o.id and a.staff_agent_id = p_staff_agent_id and a.state = 'active'
 		where o.environment_id = p_environment_id and o.profile_id = p_profile_id and o.state = 'active'
 			and public.qorpera_runtime_office_seats_taken(o.id, p_staff_agent_id) < o.max_screens
-		order by public.qorpera_runtime_office_seat_claims(o.id, p_staff_agent_id, true) > 0 desc,
-			(select max(s.touched_at) from public.qorpera_runtime_office_screens s
+		order by (select max(s.touched_at) from public.qorpera_runtime_office_screens s
 				where s.office_id = o.id and s.staff_agent_id = p_staff_agent_id) desc nulls last,
 			o.computer_number
 		limit 1;
 	if found then return jsonb_build_object('decision', 'room', 'officeId', v_office.id); end if;
-	-- stopped: a sleeping machine with a seat nobody holds, only if its node would admit it now.
+	-- stopped: a sleeping machine with a seat nobody holds, whose node would admit it now.
 	select o.* into v_office from public.qorpera_runtime_offices o
 		join public.qorpera_runtime_office_access a on a.office_id = o.id and a.staff_agent_id = p_staff_agent_id and a.state = 'active'
 		where o.environment_id = p_environment_id and o.profile_id = p_profile_id
@@ -192,8 +296,7 @@ begin
 			and public.qorpera_runtime_office_seats_taken(o.id, p_staff_agent_id) < o.max_screens
 			and public.qorpera_runtime_office_can_wake(o)
 		-- One already waking comes first, so repeated asks wake no second machine.
-		order by public.qorpera_runtime_office_seat_claims(o.id, p_staff_agent_id, true) > 0 desc,
-			public.qorpera_runtime_office_maintenance(o) ->> 'state' = 'resumed' desc,
+		order by public.qorpera_runtime_office_maintenance(o) ->> 'state' = 'resumed' desc,
 			(select max(s.touched_at) from public.qorpera_runtime_office_screens s
 				where s.office_id = o.id and s.staff_agent_id = p_staff_agent_id) desc nulls last,
 			o.computer_number
@@ -202,19 +305,21 @@ begin
 		return jsonb_build_object('officeId', v_office.id, 'decision',
 			case when public.qorpera_runtime_office_maintenance(v_office) ->> 'state' = 'resumed' then 'starting' else 'stopped' end);
 	end if;
-	-- starting: a machine that is starting, waking or back from a host reboot, with a seat nobody holds.
+	-- starting: a machine that is starting, waking or back from a host reboot, with
+	-- a seat nobody holds; a waking one only if its node takes it or no node has
+	-- room for a new machine.
 	select o.* into v_office from public.qorpera_runtime_offices o
 		join public.qorpera_runtime_office_access a on a.office_id = o.id and a.staff_agent_id = p_staff_agent_id and a.state = 'active'
 		where o.environment_id = p_environment_id and o.profile_id = p_profile_id
 			and ((o.state in ('provisioning', 'recovering') and exists(select 1 from public.qorpera_runtime_office_start_intents i
 					where i.office_id = o.id and i.computer_generation = o.generation and i.state <> 'cancelled'))
 				or (o.state = 'maintenance' and public.qorpera_runtime_office_maintenance(o) ->> 'reason' = 'idle'
-					and public.qorpera_runtime_office_maintenance(o) ->> 'state' = 'resumed')
+					and public.qorpera_runtime_office_maintenance(o) ->> 'state' = 'resumed'
+					and (public.qorpera_runtime_office_can_wake(o) or not public.qorpera_runtime_office_new_machine_room()))
 				or (o.state = 'maintenance' and public.qorpera_runtime_office_maintenance(o) ->> 'reason' is distinct from 'idle'
 					and public.qorpera_runtime_office_maintenance(o) is not null))
 			and public.qorpera_runtime_office_seats_taken(o.id, p_staff_agent_id) < o.max_screens
-		order by public.qorpera_runtime_office_seat_claims(o.id, p_staff_agent_id, true) > 0 desc, o.computer_number
-		limit 1;
+		order by o.computer_number limit 1;
 	if found then return jsonb_build_object('decision', 'starting', 'officeId', v_office.id); end if;
 	-- unstarted
 	select o.* into v_office from public.qorpera_runtime_offices o
@@ -225,6 +330,23 @@ begin
 			and public.qorpera_runtime_office_seats_taken(o.id, p_staff_agent_id) < o.max_screens
 		order by o.computer_number limit 1;
 	if found then return jsonb_build_object('decision', 'unstarted', 'officeId', v_office.id); end if;
+	-- A sleeping machine whose node is full is still woken when no node has room
+	-- for a new machine either: its wake waits for room, as before.
+	if not public.qorpera_runtime_office_new_machine_room() then
+		select o.* into v_office from public.qorpera_runtime_offices o
+			join public.qorpera_runtime_office_access a on a.office_id = o.id and a.staff_agent_id = p_staff_agent_id and a.state = 'active'
+			where o.environment_id = p_environment_id and o.profile_id = p_profile_id
+				and public.qorpera_runtime_office_idle_pending(o)
+				and not exists(select 1 from public.qorpera_runtime_office_start_intents i
+					where i.office_id = o.id and i.computer_generation = o.generation and i.state = 'cancelled')
+				and public.qorpera_runtime_office_seats_taken(o.id, p_staff_agent_id) < o.max_screens
+			order by public.qorpera_runtime_office_maintenance(o) ->> 'state' = 'resumed' desc, o.computer_number
+			limit 1;
+		if found then
+			return jsonb_build_object('officeId', v_office.id, 'decision',
+				case when public.qorpera_runtime_office_maintenance(v_office) ->> 'state' = 'resumed' then 'starting' else 'stopped' end);
+		end if;
+	end if;
 	-- new: no machine has a seat for the agent now or when it is up, and the agent
 	-- may use the company's machines. A machine in maintenance for an update or
 	-- reset, or with a cancelled start, is passed over: never waited for.
@@ -238,8 +360,40 @@ begin
 end
 $$;
 
-revoke all on function public.qorpera_runtime_office_seat_claims(uuid, uuid, boolean),
-	public.qorpera_runtime_office_can_wake(public.qorpera_runtime_offices)
+-- computer_start names the machine it starts; placement keeps that machine for
+-- the start's own agent while it reads the descriptor (authorize, begin and the
+-- check after completion), so the start does not move under it.
+do $patch$
+declare
+	v_definition text := pg_get_functiondef('public.qorpera_native_office_start(jsonb,text,text,uuid,text)'::regprocedure);
+	v_old text;
+	v_new text;
+begin
+	v_old := $old$	v_descriptor:=public.qorpera_native_office_start_descriptor(p_binding,p_action='authorize');
+	select * into v_office from public.qorpera_runtime_offices
+		where id=(v_descriptor#>>'{scope,companyComputerId}')::uuid for update;$old$;
+	v_new := $new$	-- The machine this start names stays placed for its agent while it can be
+	-- started (20260929020000).
+	begin
+		perform set_config('qorpera.office_start_target',(v_authority#>>'{identity,staffAgentId}')||':'||
+			coalesce(p_envelope::jsonb#>>'{operation,target,scope,companyComputerId}',''),true);
+	exception when invalid_text_representation then null;
+	end;
+	v_descriptor:=public.qorpera_native_office_start_descriptor(p_binding,p_action='authorize');
+	perform set_config('qorpera.office_start_target','',true);
+	select * into v_office from public.qorpera_runtime_offices
+		where id=(v_descriptor#>>'{scope,companyComputerId}')::uuid for update;$new$;
+	if (length(v_definition) - length(replace(v_definition, v_old, ''))) / length(v_old) <> 1 then
+		raise exception 'Office start descriptor call differs'; end if;
+	execute replace(v_definition, v_old, v_new);
+end
+$patch$;
+
+revoke all on function public.qorpera_runtime_office_start_stuck(public.qorpera_runtime_offices),
+	public.qorpera_runtime_office_seat_claims(uuid, uuid, boolean),
+	public.qorpera_runtime_office_can_wake(public.qorpera_runtime_offices),
+	public.qorpera_runtime_office_new_machine_room(),
+	public.qorpera_runtime_office_start_decision(public.qorpera_runtime_offices)
 	from public, anon, authenticated, service_role;
 
 -- The runtime authority functions have private owners in production: the
@@ -261,8 +415,11 @@ begin
 	]) loop
 		if v_owner in ('anon', 'authenticated', 'service_role', 'qorpera_secret_broker') then
 			raise exception 'Office seat function has an API owner'; end if;
-		execute format('grant execute on function public.qorpera_runtime_office_seat_claims(uuid, uuid, boolean),
-			public.qorpera_runtime_office_can_wake(public.qorpera_runtime_offices) to %I', v_owner);
+		execute format('grant execute on function public.qorpera_runtime_office_start_stuck(public.qorpera_runtime_offices),
+			public.qorpera_runtime_office_seat_claims(uuid, uuid, boolean),
+			public.qorpera_runtime_office_can_wake(public.qorpera_runtime_offices),
+			public.qorpera_runtime_office_new_machine_room(),
+			public.qorpera_runtime_office_start_decision(public.qorpera_runtime_offices) to %I', v_owner);
 	end loop;
 end
 $grant$;
