@@ -76,6 +76,7 @@ function codingSession(overrides: Partial<CodingSession> = {}): CodingSession {
 		createdAt: "2026-09-22T10:01:00Z",
 		sessionId: session.sessionId,
 		isOwner: true,
+		standby: true,
 		attached: false,
 		runningCommands: 0,
 		machineAsleep: false,

@@ -1,7 +1,7 @@
 import type { NativeExecutionConnections } from "@qorpera/cloud-client/cloud-native-subscription-control";
 import type { CloudApi } from "../cloud/api.ts";
 import { CloudRpcError, describeError } from "../cloud/client.ts";
-import type { CodingSession, CodingSessionRead } from "../cloud/coding-session.ts";
+import { type CodingSession, type CodingSessionRead, compareCodingSessions } from "../cloud/coding-session.ts";
 import {
 	type EmailDraftAction,
 	EmailDraftClient,
@@ -243,7 +243,7 @@ function newerCodingSessions(
 	const byWorker = new Map((known ?? []).map((session) => [session.workerId, session]));
 	return listed.map((session) => {
 		const current = byWorker.get(session.workerId);
-		return current && Date.parse(current.updatedAt) > Date.parse(session.updatedAt)
+		return current && compareCodingSessions(current, session) > 0
 			? { ...current, isOwner: session.isOwner ?? current.isOwner }
 			: session;
 	});
@@ -1259,7 +1259,9 @@ export class CompanyController {
 		const current = store.get().codingSessions ?? [];
 		const merged = current.some((item) => item.workerId === session.workerId)
 			? current.map((item) =>
-					item.workerId === session.workerId ? { ...session, isOwner: session.isOwner ?? item.isOwner } : item,
+					item.workerId === session.workerId && compareCodingSessions(session, item) >= 0
+						? { ...session, isOwner: session.isOwner ?? item.isOwner }
+						: item,
 				)
 			: [...current, session];
 		store.set({ codingSessions: merged });

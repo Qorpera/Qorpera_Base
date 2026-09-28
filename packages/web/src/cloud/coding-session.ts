@@ -87,17 +87,34 @@ export interface CodingSession {
 	sessionId?: string;
 	/** Whether the signed-in member owns the session (only the listing says). */
 	isOwner?: boolean;
-	/** Archived: taken off its computer, files kept; a new message reopens it. */
+	/** Whether the cloud keeps sessions on their machine between turns (its view names `attached`). Before it
+	 * does, nothing about standing by or archiving is shown, and Archive is not offered. */
+	standby: boolean;
+	/** Archived: taken off its machine, files kept; a new message reopens it. */
 	archivedAt?: string;
-	archivedBy?: "member" | "agent" | "kernel";
-	/** On its awake computer between turns (standing by), with what it left running. */
+	/** On its awake machine between turns (standing by), with what it left running. */
 	attached: boolean;
 	/** Commands still running at the last look, while attached. */
 	runningCommands: number;
-	/** When its commands last used the processor. */
-	busyAt?: string;
-	/** Its computer is asleep: programs stopped, files kept, the next message wakes it. */
+	/** Its machine is asleep: programs stopped, files kept, the next message wakes it. */
 	machineAsleep: boolean;
+	/** When this client asked for this copy (performance clock). The cloud moves `updatedAt` only when the
+	 * session's phase or turn changes, so of two copies with the same `updatedAt` the one asked for later knows
+	 * more (standing by, asleep, archived). */
+	askedAt?: number;
+}
+
+/** Orders two copies of a session: positive when `a` is the newer, 0 when they are the same copy. */
+export function compareCodingSessions(
+	a: Pick<CodingSession, "updatedAt" | "askedAt">,
+	b: Pick<CodingSession, "updatedAt" | "askedAt">,
+): number {
+	return Date.parse(a.updatedAt) - Date.parse(b.updatedAt) || (a.askedAt ?? 0) - (b.askedAt ?? 0);
+}
+
+/** Still going: neither settled nor archived. An archived session that was asking waits for nothing. */
+export function codingSessionGoing(session: Pick<CodingSession, "phase" | "archivedAt">): boolean {
+	return !codingSessionSettled(session.phase) && !session.archivedAt;
 }
 
 export interface CodingSessionEvent {
@@ -170,7 +187,8 @@ function parseChecks(value: unknown): CodingCheck[] {
 	return checks;
 }
 
-export function parseCodingSession(value: unknown): CodingSession {
+/** `askedAt`: when the request that returned it was sent. */
+export function parseCodingSession(value: unknown, askedAt = performance.now()): CodingSession {
 	const item = record(value, "Coding session");
 	const session: CodingSession = {
 		workerId: uuid(item.workerId, "Coding session worker id"),
@@ -189,19 +207,15 @@ export function parseCodingSession(value: unknown): CodingSession {
 		artifacts: Array.isArray(item.artifacts) ? item.artifacts.map(jsonValue) : [],
 		updatedAt: timestamp(item.updatedAt, "Coding session updated at"),
 		createdAt: timestamp(item.createdAt ?? item.updatedAt, "Coding session created at"),
+		standby: Object.hasOwn(item, "attached"),
 		attached: item.attached === true,
 		runningCommands:
 			typeof item.runningCommands === "number" && item.runningCommands > 0 ? Math.floor(item.runningCommands) : 0,
 		machineAsleep: item.machineAsleep === true,
+		askedAt,
 	};
 	const archivedAt = optionalTimestamp(item.archivedAt, "Coding session archived at");
-	if (archivedAt) {
-		session.archivedAt = archivedAt;
-		if (item.archivedBy === "member" || item.archivedBy === "agent" || item.archivedBy === "kernel")
-			session.archivedBy = item.archivedBy;
-	}
-	const busyAt = optionalTimestamp(item.busyAt, "Coding session busy at");
-	if (busyAt) session.busyAt = busyAt;
+	if (archivedAt) session.archivedAt = archivedAt;
 	const model = optionalString(item.model, 96);
 	if (model) session.model = model;
 	const baseSha = optionalString(item.baseSha, 40);
@@ -224,9 +238,9 @@ export function parseCodingSession(value: unknown): CodingSession {
 }
 
 /** qorpera_list_coding_sessions: the sessions dispatched from one conversation, oldest first. */
-export function parseCodingSessions(value: unknown): CodingSession[] {
+export function parseCodingSessions(value: unknown, askedAt = performance.now()): CodingSession[] {
 	const page = record(value, "Coding sessions");
-	return array(page.sessions, "Coding sessions").map(parseCodingSession);
+	return array(page.sessions, "Coding sessions").map((session) => parseCodingSession(session, askedAt));
 }
 
 export function parseCodingSessionEvent(value: unknown): CodingSessionEvent {
@@ -242,10 +256,10 @@ export function parseCodingSessionEvent(value: unknown): CodingSessionEvent {
 }
 
 /** qorpera_read_coding_session: the view plus the events after a cursor. */
-export function parseCodingSessionRead(value: unknown): CodingSessionRead {
+export function parseCodingSessionRead(value: unknown, askedAt = performance.now()): CodingSessionRead {
 	const item = record(value, "Coding session read");
 	return {
-		session: parseCodingSession(item.session),
+		session: parseCodingSession(item.session, askedAt),
 		isOwner: item.isOwner === true,
 		events: array(item.events, "Coding session events").map(parseCodingSessionEvent),
 	};
