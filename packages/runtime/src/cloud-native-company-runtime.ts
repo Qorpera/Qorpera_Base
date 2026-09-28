@@ -480,6 +480,10 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 							request: cloudActionReviewRequest(context, wake),
 							holdMs: ["human", "room", "first-run"].includes(wake.kind) ? CLOUD_ACTION_REVIEW_HOLD_MS : 0,
 							connectorEffects: cloudConnectorEffects(connectorDescriptors),
+							facts: {
+								coworkers: new Map(context.coworkers.map((coworker) => [coworker.id, coworker.name])),
+								timeZone: wake.time.timeZone,
+							},
 							observability,
 						}),
 					tools: async (identity, operations, run) => {

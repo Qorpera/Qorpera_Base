@@ -7,8 +7,9 @@
  * Two libraries, both ordinary Company File objects:
  * - the company library, skills/<name>/SKILL.md, shared by every member and
  *   agent and governed by the usual path authority (a protected path proposes);
- * - an agent's own library, agents/<staffAgentId>/skills/<name>/SKILL.md, which
- *   only that agent writes (like its memory notebook).
+ * - an agent's own library, <agent folder>/skills/<name>/SKILL.md, in the agent's folder
+ *   of contract 5.6 (`agents/<agent-name>/`, found through cloudAgentFolder), under the
+ *   same path authority.
  * A flat skills/<name>.md is read as a skill too; a new skill is always a folder.
  *
  * Every turn composes a catalog, never the bodies: the agent's own skills with
@@ -20,6 +21,7 @@
  * edit someone else made meanwhile is never overwritten unseen (contract 5.2).
  * A skill is guidance: it grants nothing and never replaces a current source. */
 import { createHash } from "node:crypto";
+import { cloudAgentFolder } from "@qorpera/cloud-client/cloud-agent-folder";
 import {
 	CLOUD_SKILL_NAME_MAX_CHARS,
 	type CloudSkillDocument,
@@ -73,7 +75,6 @@ const READ_CONCURRENCY = 16;
 const DISTINCTIVE_WORD_CHARS = 3;
 /** Room for the result fence's provenance around a page (read_context keeps the same). */
 const RESULT_FENCE_RESERVE_BYTES = 3072;
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const VERSION = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 /** The characters the result fence and prompt escape as six-byte \uXXXX sequences. */
 const FENCE_ESCAPED = new RegExp(`[<>&${String.fromCodePoint(0x2028, 0x2029)}]`, "g");
@@ -110,9 +111,7 @@ export interface CloudAgentSkillsBlock {
 
 /** Where a library keeps its skills. */
 export function cloudSkillRoot(scope: CloudSkillScope, staffAgentId: string): string {
-	if (scope === "company") return CLOUD_COMPANY_SKILLS_ROOT;
-	if (!UUID.test(staffAgentId)) throw new Error("Invalid skill owner");
-	return `agents/${staffAgentId}/skills`;
+	return scope === "company" ? CLOUD_COMPANY_SKILLS_ROOT : `${cloudAgentFolder({ id: staffAgentId })}/skills`;
 }
 
 /** The composed shape when neither library could be read; the run still starts. */
