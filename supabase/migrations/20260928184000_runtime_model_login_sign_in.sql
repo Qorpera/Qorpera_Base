@@ -5,7 +5,8 @@
 -- broker runs the official sign-in in its helper and completes it here in one transaction: a
 -- pointer capsule 'model-login/<login id>', the vault login and its version 1, and the
 -- connection version that points at the pointer capsule. No node key exists for such a login,
--- so the recovery backup a node sign-in needs does not apply to it. Claude sign-ins and
+-- so the recovery backup a node sign-in needs does not apply to it, and it does not stop a node
+-- from creating the identity's key for a later node sign-in. Claude sign-ins and
 -- companies not switched keep the node path unchanged. A company can be switched only once
 -- runs take their login from the vault (change 3) and the vault reads usage (change 2C).
 
@@ -84,6 +85,20 @@ begin
 			'if new.status=''completed'' and not exists(select 1 from public.qorpera_model_logins vault'
 				|| ' where vault.sign_in_session_id=new.id)'
 				|| ' and exists(select 1 from public.qorpera_identity_recovery_authorities');
+	end if;
+
+	-- A node may create an identity's key when no login of that identity was ever sealed under a
+	-- node key. A vault login never was, so it does not stop a member who signed in to the vault
+	-- first from signing in on a node later (a Claude login, or a company switched back).
+	v_target := 'public.qorpera_identity_recovery_runtime_state(uuid)'::regprocedure;
+	v_definition := pg_get_functiondef(v_target);
+	if position('model-login/' in v_definition) = 0 then
+		v_anchor := E'not exists(select 1 from public.qorpera_native_credential_capsules\n\t\t\t\twhere compute_identity_id = p_compute_identity_id))';
+		v_count := (length(v_definition) - length(replace(v_definition, v_anchor, ''))) / length(v_anchor);
+		if v_count <> 1 then raise exception 'Identity recovery state source differs (% matches)', v_count; end if;
+		execute replace(v_definition, v_anchor,
+			E'not exists(select 1 from public.qorpera_native_credential_capsules\n\t\t\t\twhere compute_identity_id = p_compute_identity_id'
+				|| E' and encrypted_capsule_reference !~ ''^model-login/[0-9a-f-]{36}$''))');
 	end if;
 
 	-- The login gateway chooser: a switched company's Codex sign-in goes to its vault.

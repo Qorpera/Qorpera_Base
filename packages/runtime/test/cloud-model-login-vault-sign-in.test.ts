@@ -278,8 +278,14 @@ it("drops a finished login from the helper once the database keeps refusing it, 
 	scripted.set({ status: "completed", authJson: LOGIN });
 	const signIns = new CloudModelLoginSignIns({ authority: w.authority, keyring: w.keyring, helper: scripted.helper });
 	// A database outage is no refusal: the helper keeps the login for the next collection.
-	vi.mocked(w.authority.describeModelLoginSignIn).mockRejectedValue(new Error("connect ECONNREFUSED"));
-	for (let pass = 0; pass < 4; pass += 1) await signIns.collect();
+	for (const outage of [
+		new Error("timeout"),
+		Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" }),
+		Object.assign(new Error("canceling statement due to statement timeout"), { code: "57014" }),
+	]) {
+		vi.mocked(w.authority.describeModelLoginSignIn).mockRejectedValue(outage);
+		for (let pass = 0; pass < 3; pass += 1) await signIns.collect();
+	}
 	expect(scripted.helper.finishSignIn).not.toHaveBeenCalled();
 	// The company was switched back while the member finished: every lookup is refused.
 	vi.mocked(w.authority.describeModelLoginSignIn).mockRejectedValue(
@@ -291,6 +297,26 @@ it("drops a finished login from the helper once the database keeps refusing it, 
 	await signIns.collect();
 	expect(scripted.helper.finishSignIn).toHaveBeenCalledTimes(1);
 	expect(w.authority.completeModelLoginSignIn).not.toHaveBeenCalled();
+	// An invalid request, and an answer the broker cannot read, are refusals too.
+	for (const refusal of [
+		(describe: ModelLoginSignInAuthority["describeModelLoginSignIn"]) =>
+			vi
+				.mocked(describe)
+				.mockRejectedValue(Object.assign(new Error("model login sign-in request is invalid"), { code: "22023" })),
+		(describe: ModelLoginSignInAuthority["describeModelLoginSignIn"]) => vi.mocked(describe).mockResolvedValue({}),
+	]) {
+		const other = world();
+		const otherHelper = scriptedHelper(other);
+		otherHelper.set({ status: "completed", authJson: LOGIN });
+		const otherSignIns = new CloudModelLoginSignIns({
+			authority: other.authority,
+			keyring: other.keyring,
+			helper: otherHelper.helper,
+		});
+		refusal(other.authority.describeModelLoginSignIn);
+		for (let pass = 0; pass < 3; pass += 1) await otherSignIns.collect();
+		expect(otherHelper.helper.finishSignIn).toHaveBeenCalledTimes(1);
+	}
 });
 
 it("ends the helper's copy of a sign-in that failed, ended, holds unknown fields or cannot be sealed", async () => {

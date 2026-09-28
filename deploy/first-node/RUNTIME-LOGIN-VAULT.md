@@ -131,8 +131,10 @@ no database login and no service key; it sees a login only for one operation and
     (`sign_in`), and the connection version pointing at the pointer capsule, recorded exactly as a
     node sign-in records it), then ends the helper's copy. A broker that restarted finds finished
     sign-ins on its first pass; the helper keeps a finished login at most 5 minutes, and ends it
-    after three refused lookups in a row (`42501` or `22023`: the company was switched back or its
-    broker authority changed meanwhile; an outage or a timeout is no refusal). An ended
+    after three refused lookups (`42501` or `22023`, or an answer it cannot read: the company was
+    switched back or its broker authority changed meanwhile). An outage or a timeout neither counts
+    nor resets the count; a successful lookup resets it. A node may still create the identity's key
+    later: a vault login never counts as a login sealed under a node key. An ended
     sign-in is never started again by a late poll. The recovery
     pin still fences a recovering identity, but asks no node key backup of a sign-in that created a
     vault login. A repeat after a lost answer finds its own login.
