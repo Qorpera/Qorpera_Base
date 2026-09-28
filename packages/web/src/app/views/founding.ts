@@ -547,7 +547,7 @@ export class FoundingView {
 			table.waitingFor.length > 0
 				? t("Waiting for {names} to be ready", { names: names(table, table.waitingFor, me) })
 				: t("Everyone is ready.");
-		this.#owners.textContent = t("Everyone at the table becomes an owner of {name}.", { name: table.companyName });
+		this.#owners.textContent = t("Everyone at the table becomes a founder of {name}.", { name: table.companyName });
 		this.#withdrawn.textContent = t("Invitations nobody has answered are withdrawn at Start.");
 		this.#withdrawn.hidden = !table.seats.some((seat) => seat.state === "invited");
 
@@ -717,7 +717,7 @@ export class FoundingView {
 								{ class: "founding-seat-top" },
 								personAvatar(seat.displayName, seat.userId),
 								h("div", { class: "founding-who" }, h("strong", null, seat.displayName)),
-								h("span", { class: "founding-kind founding-kind-owner" }, t("Owner")),
+								h("span", { class: "founding-kind founding-kind-owner" }, t("Founder")),
 							),
 							seat.role ? h("p", { class: "founding-role" }, seat.role) : null,
 						),

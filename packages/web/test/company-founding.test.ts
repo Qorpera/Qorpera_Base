@@ -142,7 +142,7 @@ describe("founding table", () => {
 		expect(text).toContain("Connect ChatGPT");
 		expect(text).toContain("Invite Co-founder");
 		expect(text).toContain("Waiting for you to be ready");
-		expect(text).toContain("Everyone at the table becomes an owner of Nordlys Kaffe.");
+		expect(text).toContain("Everyone at the table becomes a founder of Nordlys Kaffe.");
 		expect(container.querySelector<HTMLButtonElement>(".founding-start")?.disabled).toBe(true);
 		// No payment step or billing text anywhere at the table.
 		expect(text.toLowerCase()).not.toMatch(/billing|payment|plan|credit|computer hours|pays/);

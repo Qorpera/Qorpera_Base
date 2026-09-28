@@ -415,6 +415,10 @@ begin
 			elsif v_probe = 'staff' then
 				update public.qorpera_profile_staff set employment_status = 'archived' where staff_agent_id = '29000000-0000-4000-8000-000000000030';
 			elsif v_probe = 'requester' then
+				-- The last founder cannot step down while others remain: a second founder joins first.
+				insert into auth.users(id,email) values ('29000000-0000-4000-8000-0000000000f1','path-cofounder@example.test');
+				insert into public.qorpera_profile_members(profile_id,user_id,email,display_name,role)
+				values ('29000000-0000-4000-8000-000000000010','29000000-0000-4000-8000-0000000000f1','path-cofounder@example.test','Co-founder','owner');
 				update public.qorpera_profile_members set role = 'viewer' where user_id = '29000000-0000-4000-8000-000000000001';
 			elsif v_probe = 'sponsor' then
 				update public.qorpera_execution_sponsor_bindings set status = 'revoked'

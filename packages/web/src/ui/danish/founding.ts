@@ -11,7 +11,7 @@ export const FOUNDING: Record<string, string> = {
 	"Connect ChatGPT": "Forbind ChatGPT",
 	"Connect your ChatGPT account": "Forbind din ChatGPT-konto",
 	"Connect your own ChatGPT account to be Ready": "Forbind din egen ChatGPT-konto for at blive klar",
-	"Everyone at the table becomes an owner of {name}.": "Alle ved bordet bliver ejere af {name}.",
+	"Everyone at the table becomes a founder of {name}.": "Alle ved bordet bliver stiftere af {name}.",
 	"Everyone is ready.": "Alle er klar.",
 	"Friend request sent to {email}. Invite them here once they accept.":
 		"Venneanmodning sendt til {email}. Inviter dem her, når de har sagt ja.",
@@ -36,7 +36,6 @@ export const FOUNDING: Record<string, string> = {
 	"Opening a table for {name}": "Åbner et bord til {name}",
 	"Opening the table": "Åbner bordet",
 	"Opens a table for you and your co-founders": "Åbner et bord til dig og dine medstiftere",
-	Owner: "Ejer",
 	"Preparing {name}": "Gør {name} klar",
 	Ready: "Klar",
 	"Ready ✓": "Klar ✓",

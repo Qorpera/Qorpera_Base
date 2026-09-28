@@ -20,7 +20,7 @@ import { mountCrown } from "./crown.ts";
 
 /** A role as the hub names it; the English is the role's own word. */
 const ROLE_LABELS: Record<HostedProfileRole, string> = {
-	owner: phrase("owner"),
+	owner: phrase("founder"),
 	admin: phrase("admin"),
 	contributor: phrase("contributor"),
 	viewer: phrase("viewer"),
