@@ -32,8 +32,11 @@ A release **rolls** when both of these hold:
   - the orchestrators' claim loop;
   - the office provider and the coding executor;
   - the node observer and the login gateway.
-- Every service both nodes share works with both bundles. The secret broker, the object gateway and
-  the web API serve both nodes at once, so they cannot be updated one node at a time.
+- Every service both nodes share works with both bundles. The secret broker, the object gateway,
+  the web API and the edge functions (such as `runner-orchestrator`) serve both nodes at once, so
+  they cannot be updated one node at a time. A release that changes one of them is deployed at
+  step 2 only if the new version works with both bundles; otherwise the release pauses.
+- Its node release's `order` is not `pause`; with `pause`, `agent apply` insists on `--defer`.
 
 That covers:
 
@@ -80,7 +83,12 @@ sent in that short gap wait for A; work already running is not touched.
 Node A is the node that is emptier: fewer awake machines, and not the only fast host during a busy
 hour. N is the running bundle and N+1 the new one; R+1 is the node release that carries N+1. The
 observer, provider and fast host steps are the same ones today's cut runs, one node at a time.
-Calls that change state run with service role claims.
+Run the SQL as `postgres` with service-role claims (`request.jwt.claims` with role
+`service_role`), not under the `service_role` role itself: `qorpera_runtime_orchestrator_nodes` refuses
+that role.
+
+Never run `qorpera_configure_runtime_node` on a switched-off node during a roll: its policy sets
+`enabled` again, which returns the node before it is declared.
 
 1. **Preflight** (read-only):
    - both nodes are `serving` and `ready`;
@@ -168,9 +176,19 @@ Calls that change state run with service role claims.
    - Re-enrol A's inventory digest if the policy still pins the fast host's image (with the fast
      host listed by role, change 6, this step goes away).
    - Start A's orchestrators. While A is switched off they report heartbeats but claim nothing.
-6. **Switch.** Do these right after each other; new messages wait for A in between.
-   1. Apply the activation migration with A still switched off. New inputs and runs bind to N+1.
-      Nobody claims them yet: B is declared N, and A is off.
+6. **Switch.** The activation cannot be undone without a pause, so check first, then do the rest
+   right after each other; new messages wait for A in between.
+   0. Before the activation, all of these must hold:
+      - every active orchestrator on B is still declared N (the query of step 6.3 for B and N
+        returns no rows);
+      - every active orchestrator on A runs: its heartbeat is less than 30 s old;
+      - A's observer publishes `ready` for A, so A's run machines, sign-ins and machine wakes are
+        admitted once it returns.
+
+      If one fails, fix it first. A stays off and B serves N meanwhile.
+   1. Apply the activation migration with A still switched off, and record it in the migration
+      history as today's cut does. New inputs and runs bind to N+1. Nobody claims them yet: B is
+      declared N, and A is off.
    2. Declare every active orchestrator on A as N+1 (the query of step 3, with A and N+1).
    3. Gate: `qorpera_runtime_bundle_roll_status()` shows `undeclared = []`, and no active
       orchestrator on A is declared anything but N+1:
@@ -182,15 +200,16 @@ Calls that change state run with service role claims.
         and o.runtime_bundle_sha256 is distinct from '<N+1 sha>';
       ```
 
-      It must return no rows. The `undeclared` list ignores heartbeats, so a rebuilt host left
-      stopped still shows.
+      It must return no rows. (The `undeclared` list ignores heartbeats, so a rebuilt host whose
+      orchestrator was never declared still shows there.)
    4. Return A: `qorpera_set_runtime_node_serving(A, true, …)`. It takes the waiting N+1 runs.
    5. Renew packaged offices' packages for N+1, as today's cut does.
 
    Check that one new run completes on A.
 7. **Let node B finish N.** Watch `qorpera_runtime_bundle_roll_status()` until N has 0 queued and
-   0 running runs. Then compare N's pending input ids with the baseline. An id not in the baseline,
-   or a baseline input that can still run, is live N work:
+   0 running runs. Then compare N's pending input ids with the baseline. Every N input that is not
+   in the baseline is live N work. A baseline input was already pending before the roll; it is live
+   too if its conversation gets a new N run while B still serves N. For example:
    - inputs accepted before the switch run on N, on B;
    - a sponsorship request approved later, or a retried run, also stays on N.
 
@@ -223,6 +242,9 @@ Calls that change state run with service role claims.
   (`agent rollback`, and rebuild the fast host from N), declare A's orchestrators as N (N is
   registered), and return A. Clear the declarations once both nodes run N. The switch never
   happened, and B served throughout.
+- **A does not come back after the activation** (a declaration or the return fails). New messages
+  wait for A; B keeps serving N and cannot take N+1 work. Fix the step and return A. If that cannot
+  be done within minutes, roll back as below.
 - **N+1 misbehaves after the switch.** There is no rolling way back once N+1 is active. The node
   agent's rollback after an activation runs under a pause. So:
   1. Pause as today's cut does.
@@ -234,7 +256,9 @@ Calls that change state run with service role claims.
   3. Move **every** node that runs N+1 back to N (`agent rollback`, fast host rebuilt from N), node B
      too if step 8 has started, and clear all declarations. Never declare a node as N while it still
      runs N+1: it would take N runs and refuse them.
-  4. Resume.
+  4. Renew packaged offices' packages for N again; offices renewed for N+1 cannot start or reset
+     under N.
+  5. Resume.
 
   Runs and pending inputs already bound to N+1 fail with their reason.
 - **N work left over** (an input that can never run, or a session held on a sponsorship): see steps
