@@ -109,7 +109,7 @@ const refusals: [string, string, Change][] = [
 		},
 	],
 	[
-		"the same working folder",
+		"the same scratch area",
 		"OFFICE_NEXT_COMPUTER_WORKBENCH_TAKEN",
 		(v) => {
 			v.host.workbench.source = "192.0.2.1:/offices/test/";
@@ -207,7 +207,7 @@ const refusals: [string, string, Change][] = [
 		},
 	],
 	[
-		"documents inside the working folder",
+		"documents inside the scratch area",
 		"OFFICE_NEXT_COMPUTER_DOCUMENTS_TAKEN",
 		(v) => {
 			v.host.configRoot = "/mnt/office-workbench-2/etc";

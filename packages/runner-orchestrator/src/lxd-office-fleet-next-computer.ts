@@ -43,7 +43,8 @@ export interface OfficeNextComputerInput {
 		nodeId: string;
 		/** A new root-protected directory for this computer's documents. */
 		configRoot: string;
-		/** A new NFS mount of a new folder on the template's NAS: one writer per working folder. */
+		/** A new NFS mount of a new scratch area (the workbench) on the template's NAS: one writer per scratch area.
+		 * It holds tool settings, caches, browser history and temporary files only, never company files. */
 		workbench: { mountPoint: string; source: string };
 		/** A new directory on the template's local journal filesystem. */
 		journalPath: string;
@@ -128,7 +129,7 @@ function installed(value: OfficeInstalledDocuments) {
  * company's computer already installed on the same host. Pure: it reads no
  * file, mints no credential and changes nothing. Every output passes the same
  * parsers the provider uses. Nothing per computer is shared with any office on
- * the host (provider, computer, NAS folder, mount, journal, documents, ports),
+ * the host (provider, computer, NAS scratch area, mount, journal, documents, ports),
  * so the new computer can never become a second writer of another's state. */
 export function planOfficeNextComputer(input: OfficeNextComputerInput): OfficeNextComputerPlan {
 	const template = installed(input.template);
@@ -304,7 +305,7 @@ export function planOfficeNextComputer(input: OfficeNextComputerInput): OfficeNe
 		},
 		lifecyclePlan: {
 			path: paths.plan,
-			// The new working folder is empty: nothing is carried over or quarantined.
+			// The new scratch area is empty: nothing is carried over or quarantined.
 			input: {
 				schema: "qorpera.lxd-office-adoption-input/v1",
 				adoptionId: host.adoptionId,
@@ -317,7 +318,7 @@ export function planOfficeNextComputer(input: OfficeNextComputerInput): OfficeNe
 			serviceBootstrapPath: paths.bootstrap,
 		},
 		steps: [
-			`NAS: create the new working folder ${workbench.source}, owned by ${owner}, mode 0700. It is not inside, and does not contain, any office's folder.`,
+			`NAS: create the new scratch area ${workbench.source} (the machine's workbench: tool settings, caches, browser history and temporary files, never company files), owned by ${owner}, mode 0700. It is not inside, and does not contain, any office's scratch area.`,
 			`Mount it at ${mountPoint} (${template.policy.workbench.filesystem}, hard, persistent in fstab: the units require the mount) with the template's options.`,
 			`Journal: create ${journalPath} (${owner}, 0700) and an empty ${journalPath}/adoption.lock (${owner}, 0600, one link).`,
 			`Create ${configRoot} (root, 0755) and publish the files of this plan byte for byte (root, 0444); check each sha256.`,
@@ -328,7 +329,7 @@ export function planOfficeNextComputer(input: OfficeNextComputerInput): OfficeNe
 				? "The template has no passthrough: route this computer's viewer and native ports the same way as the template's."
 				: `Web mux: route /office/${office.companyComputerId}/view and /office/${office.companyComputerId}/native to this host's ports ${ports.viewer} and ${ports.native}, pinning this computer's own TLS certificate.`,
 			`Enable qorpera-office-fleet-${instance}.service: it waits for the computer's start intent (a spare waits until someone starts it). Once the intent exists, run qorpera-office-fleet-stage-${instance}.service on each candidate host.`,
-			`At review, write ${paths.plan} with the intent and observation from the provider's status and this plan's adoption input (layout ${host.layout}, like the template), ${paths.writerFence} (this host is the only writer of the new folder) and ${paths.review}.`,
+			`At review, write ${paths.plan} with the intent and observation from the provider's status and this plan's adoption input (layout ${host.layout}, like the template), ${paths.writerFence} (this host is the only writer of the new scratch area) and ${paths.review}.`,
 			`Service bootstrap ${paths.bootstrap}: copy the template's endpoints, listener ports, origins and time zone. Mint for this computer its own TLS certificate and key, guest registry credential and objects token; never copy the template's TLS key. Native token: the company route's token when the company uses /office/{companyComputerId}/native, otherwise a new token with its own route entry.`,
 			"Before members use it, bring the computer to the template's office software revision: the image may lack guest-code fixes the template received later.",
 			"Sign-ins are kept in step only between computers that see the same company directory; until that directory is shared, this computer keeps its own.",

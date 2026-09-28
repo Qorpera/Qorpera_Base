@@ -124,9 +124,23 @@ computer to copy (`template`).
 The next computer copies the company's computer already on that host: the same
 image and provenance, company account (workbench uid/gid), project, network,
 pool, size, registry endpoint and provider credential. Only these are new:
-provider id, computer identity, NAS working folder and its mount, journal
+provider id, computer identity, NAS scratch area and its mount, journal
 directory, host ports, mux routes and the fleet units. Two computers never
-share a working folder: the single-writer rule of the workbench holds.
+share a scratch area: the single-writer rule of the workbench holds.
+
+The scratch area is the machine's workbench. It holds only tool settings,
+caches, browser history and temporary files, never company files. Company files
+live only in the one company folder on the NAS, which every machine reads and
+writes directly (contract 5.6; 2026-09-27 amendment: the workbench holds no
+work files).
+
+**Before a company runs a second machine:** the company folder must be mounted
+on its company machines. Today it is not (`canonicalMount: false`): an agent's
+files sit in the scratch area and reach the company folder only through
+`computer_transfer`, so a file made on machine 1 would not be visible on
+machine 2. The scale-out switch (`qorpera_runtime_office_scale_out`) stays off
+until that mount is live and every runtime can reach any machine of a company
+(company native routes). Preparing a spare ahead is fine.
 
 1. Write a request: the service document of the company's computer on this
    host (the template), the service documents of every other office on this
@@ -164,7 +178,7 @@ share a working folder: the single-writer rule of the workbench holds.
    lifecycle plan's adoption input and paths, and the remaining root steps. It
    writes nothing and mints nothing. It refuses a template on another image
    than the queued computer, and anything another office on the host already
-   uses: provider, computer, NAS folder (also nested ones), mount, journal,
+   uses: provider, computer, NAS scratch area (also nested ones), mount, journal,
    document folder or port. Errors print a fixed code only.
 3. Follow the plan's steps as root. Credentials are the dangerous part: the new
    computer gets its own TLS certificate and key, guest registry credential
