@@ -15,11 +15,16 @@
 --   identity a node may still hold, deletion is refused. Deleting those rows would leave the VM or the
 --   identity volume behind with nothing to remove it, and the node inventory would then mark the whole
 --   node unavailable (UNREGISTERED_INSTANCE, or an identity device it no longer accepts). Released run,
---   office and coding machines are only records by then, and go with the company.
+--   office and coding machines are only records by then, and go with the company. Also refused while a
+--   node's latest update target names the company: its every poll locks that company's fence.
+--   Removing a deleted company's machines, identities and other node state is a follow-up.
+-- * The purge refuses rather than delete a row that names another company, and a row the walk can
+--   reach must not have a delete trigger that ignores the purge (test 715 checks both).
 -- * Stored bytes: unchanged. qorpera_profile_objects has no link to the company; its rows stay behind as
 --   the deleted-company cleanup queue (ARTIFACT-GC.md).
 -- * Lock order: the company row, then its wake admission fence (qorpera_lock_profile_gc_fence), then
---   every dependent row FOR UPDATE, level by level outward from the company.
+--   every dependent row FOR UPDATE, level by level outward from the company. A runtime call that locks
+--   a job before the fence can deadlock with a purge; PostgreSQL ends one of them and a retry works.
 
 -- Dropping a foreign key locks both tables; never queue the company table behind this migration.
 set local lock_timeout = '3s';
@@ -36,6 +41,11 @@ alter table public.qorpera_runner_model_usage_observations
 	drop constraint qorpera_runner_model_usage_observations_job_id_fkey,
 	drop constraint qorpera_runner_model_usage_observations_request_id_fkey,
 	drop constraint qorpera_runner_model_usage_observations_runner_id_fkey;
+
+-- Only the governed completion functions (SECURITY DEFINER) write the ledgers; with the links gone,
+-- no API role may insert an unchecked row either.
+revoke insert, update, delete, truncate on public.qorpera_runner_usage_observations,
+	public.qorpera_runner_model_usage_observations from public, anon, authenticated, service_role;
 
 -- The purge registers its transaction here, so immutable history lets its deletes through and nothing
 -- else's. The row never outlives the purge's own transaction.
@@ -170,8 +180,11 @@ begin
 end
 $$;
 
--- What a company still has on the nodes: a machine that is not released, or an account identity a
--- node's execution host may hold (any sign-in or account-refresh machine, released or not).
+-- What a company still has on the nodes: machines that are not released; account identities a
+-- node's execution host may hold (any sign-in or account-refresh machine, released or not: the host
+-- never detaches an identity volume, and the node inventory accepts it only while its login demand
+-- exists); and the latest update target of any node, which locks the fences of the companies it names
+-- on every poll (qorpera_node_update_locked) and would fail for a deleted one.
 create function public.qorpera_company_node_holdings(p_profile_id uuid)
 returns jsonb
 language sql
@@ -180,10 +193,16 @@ security definer
 set search_path = ''
 as $$
 	select jsonb_build_object(
-		'machines', count(*) filter (where allocation.released_at is null),
-		'identities', count(distinct allocation.login_compute_identity_id))
-	from public.qorpera_runtime_machine_allocations as allocation
-	where allocation.profile_id = p_profile_id
+		'machines', (select count(*) from public.qorpera_runtime_machine_allocations as allocation
+			where allocation.profile_id = p_profile_id and allocation.released_at is null),
+		'identities', (select count(distinct allocation.login_compute_identity_id)
+			from public.qorpera_runtime_machine_allocations as allocation
+			where allocation.profile_id = p_profile_id),
+		'node_updates', (select count(*) from (
+			select distinct on (target.node_id) target.company_ids
+			from public.qorpera_node_update_targets as target
+			order by target.node_id, target.revision desc) as latest
+			where p_profile_id = any(latest.company_ids)))
 $$;
 revoke all on function public.qorpera_company_node_holdings(uuid) from public, anon, authenticated, service_role;
 
@@ -211,8 +230,14 @@ begin
 	perform public.qorpera_lock_profile_gc_fence(p_profile_id);
 	-- The company row is locked: no new machine can be reserved for it until this transaction ends.
 	v_holdings := public.qorpera_company_node_holdings(p_profile_id);
-	if (v_holdings ->> 'machines')::bigint > 0 or (v_holdings ->> 'identities')::bigint > 0 then
-		raise exception 'This company still has machines on our servers, so it cannot be deleted yet'
+	if (v_holdings ->> 'machines')::bigint > 0 then
+		raise exception 'This company still has machines running on our servers, so it cannot be deleted yet'
+			using errcode = '55000', detail = v_holdings::text;
+	elsif (v_holdings ->> 'identities')::bigint > 0 then
+		raise exception 'This company still has sign-ins stored on our servers, so it cannot be deleted yet'
+			using errcode = '55000', detail = v_holdings::text;
+	elsif (v_holdings ->> 'node_updates')::bigint > 0 then
+		raise exception 'This company is part of a server update, so it cannot be deleted yet'
 			using errcode = '55000', detail = v_holdings::text;
 	end if;
 	insert into public.qorpera_company_purges (xact_id, profile_id) values (pg_current_xact_id(), p_profile_id);

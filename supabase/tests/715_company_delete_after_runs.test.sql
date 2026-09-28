@@ -26,15 +26,77 @@ begin
 		if has_function_privilege(v_role, 'public.qorpera_purge_company(uuid)', 'EXECUTE')
 			or has_function_privilege(v_role, 'public.qorpera_company_purge_active()', 'EXECUTE')
 			or has_function_privilege(v_role, 'public.qorpera_company_node_holdings(uuid)', 'EXECUTE')
-			or has_table_privilege(v_role, 'public.qorpera_company_purges', 'INSERT,SELECT,UPDATE,DELETE') then
-			raise exception 'the company purge is open to %', v_role;
+			or has_table_privilege(v_role, 'public.qorpera_company_purges', 'INSERT,SELECT,UPDATE,DELETE')
+			or has_table_privilege(v_role, 'public.qorpera_runner_usage_observations', 'INSERT,UPDATE,DELETE,TRUNCATE')
+			or has_table_privilege(v_role, 'public.qorpera_runner_model_usage_observations', 'INSERT,UPDATE,DELETE,TRUNCATE') then
+			raise exception 'the company purge or the usage ledgers are open to %', v_role;
 		end if;
 	end loop;
 end
 $$;
 
--- 1. The fixture's human run acknowledges, writes a note through the Company File, answers and
--- completes with the governed v6 completion (result, usage record, lease history).
+-- Every delete trigger on a table the purge can reach lets the purge through: a new one must too.
+do $$
+declare v_unexpected text;
+begin
+	with recursive reachable(table_id) as (
+		select 'public.qorpera_profiles'::regclass::oid
+		union
+		select constraint_row.conrelid from pg_constraint as constraint_row
+		join reachable on constraint_row.confrelid = reachable.table_id
+		where constraint_row.contype = 'f' and constraint_row.confdeltype in ('c', 'r', 'a')
+	)
+	select string_agg(trigger_row.tgrelid::regclass || '.' || trigger_row.tgname, ', ') into v_unexpected
+	from pg_trigger as trigger_row
+	where trigger_row.tgrelid in (select table_id from reachable) and not trigger_row.tgisinternal
+		and trigger_row.tgtype & 8 = 8
+		and trigger_row.tgrelid <> 'public.qorpera_profile_members'::regclass
+		and trigger_row.tgfoid not in (
+			'public.qorpera_reject_runtime_bundle_mutation()'::regprocedure,
+			'public.qorpera_guard_native_launch_replacement()'::regprocedure,
+			'public.qorpera_coding_session_turn_guard()'::regprocedure,
+			'public.qorpera_guard_legacy_company_computer_teardown()'::regprocedure,
+			'public.qorpera_guard_torn_down_legacy_company_computer()'::regprocedure,
+			'public.qorpera_guard_office_delete_disposition()'::regprocedure);
+	if v_unexpected is not null then
+		raise exception 'Delete triggers the company purge does not know: %', v_unexpected;
+	end if;
+end
+$$;
+
+-- Each immutable history guard refuses a delete outside a purge and lets it through inside one.
+create temp table purge_guard_probe (id uuid primary key);
+do $$
+declare v_guard record;
+begin
+	for v_guard in select * from (values
+		('qorpera_reject_runtime_bundle_mutation', '42501', 'Runtime bundles are immutable'),
+		('qorpera_guard_native_launch_replacement', '42501', 'Native launch provenance is immutable'),
+		('qorpera_coding_session_turn_guard', '55000', 'A coding turn is history and cannot be removed'),
+		('qorpera_guard_legacy_company_computer_teardown', '42501', 'Legacy company computer teardown evidence is immutable'),
+		('qorpera_guard_torn_down_legacy_company_computer', null, null),
+		('qorpera_guard_office_delete_disposition', '42501', 'Office delete disposition is immutable')) as guard(name, state, message)
+	loop
+		execute format('create trigger purge_guard before delete on purge_guard_probe for each row execute function public.%I()', v_guard.name);
+		insert into purge_guard_probe values (extensions.gen_random_uuid());
+		if v_guard.state is not null then
+			perform pg_temp.refused('delete from purge_guard_probe', v_guard.state, v_guard.message);
+		end if;
+		insert into public.qorpera_company_purges (xact_id, profile_id) values (pg_current_xact_id(), extensions.gen_random_uuid());
+		delete from purge_guard_probe;
+		if found is not true or exists (select 1 from purge_guard_probe) then
+			raise exception '% did not let a purge through', v_guard.name;
+		end if;
+		delete from public.qorpera_company_purges;
+		drop trigger purge_guard on purge_guard_probe;
+	end loop;
+end
+$$;
+drop table purge_guard_probe;
+
+-- 1. The fixture's human run acknowledges, writes a note through the Company File, reads it, records
+-- a model request's context, answers and completes with the governed v6 completion (result, usage
+-- record, lease history).
 select pg_temp.path_claims('service_role');
 do $$
 declare v_binding jsonb := current_setting('qorpera_test.wake_binding')::jsonb; v_identity jsonb;
@@ -50,6 +112,11 @@ begin
 	perform pg_temp.wake_public_send(v_binding, 'progress');
 	perform pg_temp.path_commit(pg_temp.path_plan('delete-note', 'note.md',
 		pg_temp.path_stage_file('note.md', 'Written before the company is deleted')));
+	-- A read and a model request's context view: immutable history of the company.
+	perform public.qorpera_read_company_path_v2('30000000-0000-4000-8000-000000000020', 'note.md', 0, 16, v_binding);
+	perform public.qorpera_record_native_context_view('30000000-0000-4000-8000-000000000020', v_binding, jsonb_build_object(
+		'schema', 'qorpera.native-context-view/v1', 'requestId', 'delete-request', 'threadId', 'thread-1',
+		'turnId', 'turn-1', 'purpose', 'turn', 'outputs', '[]'::jsonb));
 	perform pg_temp.wake_public_send(v_binding, 'final');
 	select * into strict v_job from public.qorpera_runner_jobs where id = (v_binding ->> 'jobId')::uuid;
 	select count(*), max(send.event_id::text) filter (where send.phase = 'final') into v_sends, v_final
@@ -86,6 +153,33 @@ end
 $$;
 reset role;
 
+-- Another company, untouched by all of this: its rows are counted now and after the delete.
+insert into auth.users(id, email) values ('30000000-0000-4000-8000-000000000005', 'delete-neighbour@example.test');
+select set_config('request.jwt.claims',
+	'{"sub":"30000000-0000-4000-8000-000000000005","email":"delete-neighbour@example.test","role":"authenticated","user_metadata":{}}', true);
+set local role authenticated;
+select set_config('qorpera_test.delete_neighbour',
+	public.qorpera_create_hosted_profile('Neighbour company', 'main', 1) ->> 'profile_id', true);
+reset role;
+create function pg_temp.company_rows(p_profile_id uuid) returns jsonb language plpgsql as $$
+declare v_table regclass; v_rows bigint; v_result jsonb := '{}';
+begin
+	for v_table in
+		select class.oid::regclass from pg_class as class
+		join pg_attribute as column_row on column_row.attrelid = class.oid and column_row.attname = 'profile_id'
+			and not column_row.attisdropped
+		where class.relnamespace = 'public'::regnamespace and class.relkind = 'r'
+		order by 1
+	loop
+		execute format('select count(*) from %s where profile_id = %L', v_table, p_profile_id) into v_rows;
+		if v_rows > 0 then v_result := v_result || jsonb_build_object(v_table::text, v_rows); end if;
+	end loop;
+	return v_result;
+end
+$$;
+select set_config('qorpera_test.delete_neighbour_rows',
+	pg_temp.company_rows(current_setting('qorpera_test.delete_neighbour')::uuid)::text, true);
+
 -- What the company has now, to check after the delete.
 create temp table delete_before as
 select
@@ -109,8 +203,10 @@ begin
 		or not exists (select 1 from public.qorpera_native_provider_connection_leases
 			where run_id = any(v.runs) and status = 'active')
 		or not exists (select 1 from public.qorpera_native_execution_launches where run_id = any(v.runs))
+		or not exists (select 1 from public.qorpera_company_read_observations where run_id = any(v.runs))
+		or not exists (select 1 from public.qorpera_native_context_views where run_id = any(v.runs))
 		or not exists (select 1 from public.qorpera_cloud_routines where profile_id = '30000000-0000-4000-8000-000000000010') then
-		raise exception 'The fixture company lacks a publication, a working lease, a launch or a routine';
+		raise exception 'The fixture company lacks a publication, a working lease, history or a routine';
 	end if;
 end
 $$;
@@ -127,7 +223,8 @@ reset role;
 
 -- 4. A machine still on a node refuses the delete, and nothing is removed. A released machine is
 -- only a record and goes with the company. A sign-in identity a node may still hold refuses it too,
--- released or not.
+-- released or not; so do a node's latest update target naming the company, and a row of another
+-- company that depends on this one.
 insert into public.qorpera_runtime_machine_allocations(id, profile_id, run_id, runner_id, provider_adapter, instance_sha256)
 select '30000000-0000-4000-8000-000000000160', '30000000-0000-4000-8000-000000000010',
 	(binding ->> 'runId')::uuid, (binding ->> 'runnerId')::uuid, 'lxd', repeat('7', 64)
@@ -135,7 +232,7 @@ from (select current_setting('qorpera_test.delete_working')::jsonb as binding) a
 select pg_temp.path_claims('authenticated', '30000000-0000-4000-8000-000000000001');
 set local role authenticated;
 select pg_temp.refused($q$select public.qorpera_delete_hosted_profile('30000000-0000-4000-8000-000000000010')$q$,
-	'55000', 'This company still has machines on our servers, so it cannot be deleted yet');
+	'55000', 'This company still has machines running on our servers, so it cannot be deleted yet');
 reset role;
 do $$
 begin
@@ -160,9 +257,70 @@ values ('30000000-0000-4000-8000-000000000161', '30000000-0000-4000-8000-0000000
 select pg_temp.path_claims('authenticated', '30000000-0000-4000-8000-000000000001');
 set local role authenticated;
 select pg_temp.refused($q$select public.qorpera_delete_hosted_profile('30000000-0000-4000-8000-000000000010')$q$,
-	'55000', 'This company still has machines on our servers, so it cannot be deleted yet');
+	'55000', 'This company still has sign-ins stored on our servers, so it cannot be deleted yet');
 reset role;
 rollback to signed_in_identity;
+
+savepoint node_update;
+insert into public.qorpera_runtime_nodes(id, machine_id_sha256, label, version, cpu_millis, memory_bytes,
+	headroom_cpu_millis, headroom_memory_bytes, standard_cpu_millis, standard_memory_bytes, enabled)
+values ('30000000-0000-4000-8000-000000000180', repeat('9', 64), 'delete-node', 1, 8000, 17179869184, 1000,
+	1073741824, 4000, 8589934592, true);
+insert into public.qorpera_node_update_enrollments(node_id, capability_revision, capability_sha256, enabled,
+	current_revision, current_release_sha256, current_artifact_sha256)
+values ('30000000-0000-4000-8000-000000000180', 1, repeat('a', 64), true, 0, repeat('b', 64), repeat('c', 64));
+insert into public.qorpera_node_update_targets(node_id, revision, release_sha256, release_text, signature,
+	publication_evidence_sha256, company_ids)
+values ('30000000-0000-4000-8000-000000000180', 1, repeat('d', 64), '{}', 'fixture', repeat('e', 64),
+	array['30000000-0000-4000-8000-000000000010'::uuid]);
+select pg_temp.path_claims('authenticated', '30000000-0000-4000-8000-000000000001');
+set local role authenticated;
+select pg_temp.refused($q$select public.qorpera_delete_hosted_profile('30000000-0000-4000-8000-000000000010')$q$,
+	'55000', 'This company is part of a server update, so it cannot be deleted yet');
+reset role;
+rollback to node_update;
+
+savepoint neighbour_row;
+insert into public.qorpera_runtime_machine_allocations(id, profile_id, run_id, runner_id, provider_adapter, instance_sha256,
+	released_at)
+select '30000000-0000-4000-8000-000000000162', current_setting('qorpera_test.delete_neighbour')::uuid,
+	(binding ->> 'runId')::uuid, (binding ->> 'runnerId')::uuid, 'lxd', repeat('6', 64), clock_timestamp()
+from (select current_setting('qorpera_test.wake_binding')::jsonb as binding) as first_run;
+select pg_temp.path_claims('authenticated', '30000000-0000-4000-8000-000000000001');
+set local role authenticated;
+select pg_temp.refused($q$select public.qorpera_delete_hosted_profile('30000000-0000-4000-8000-000000000010')$q$,
+	'55000', 'Rows of another company depend on this company (public.qorpera_runtime_machine_allocations)');
+reset role;
+rollback to neighbour_row;
+
+-- The purge deletes exactly the rows it found, table by table: no cascade reaches further.
+savepoint exact_rows;
+create temp table purge_table_rows (table_id oid primary key, before_rows bigint, after_rows bigint);
+do $$
+declare v_table oid; v_rows bigint; v_found jsonb; v_wrong text;
+begin
+	for v_table in select oid from pg_class where relnamespace = 'public'::regnamespace and relkind = 'r' loop
+		execute format('select count(*) from %s', v_table::regclass) into v_rows;
+		insert into purge_table_rows values (v_table, v_rows, null);
+	end loop;
+	v_found := public.qorpera_purge_company('30000000-0000-4000-8000-000000000010');
+	for v_table in select oid from pg_class where relnamespace = 'public'::regnamespace and relkind = 'r' loop
+		execute format('select count(*) from %s', v_table::regclass) into v_rows;
+		update purge_table_rows set after_rows = v_rows where table_id = v_table;
+	end loop;
+	select string_agg(counted.table_id::regclass || ' ' || (counted.before_rows - counted.after_rows) || '/'
+		|| coalesce(found.value, '0'), ', ')
+	into v_wrong
+	from purge_table_rows as counted
+	left join jsonb_each_text(v_found) as found on found.key::regclass::oid = counted.table_id
+	where counted.before_rows - counted.after_rows <> coalesce(found.value::bigint, 0);
+	if v_wrong is not null or (select count(*) from jsonb_each_text(v_found)) < 40
+		or (select value from jsonb_each_text(v_found) where key::regclass = 'public.qorpera_profiles'::regclass) <> '1' then
+		raise exception 'The purge removed other rows than it found (removed/found): %', v_wrong;
+	end if;
+end
+$$;
+rollback to exact_rows;
 
 -- 5. The last member deletes the company.
 select pg_temp.path_claims('authenticated', '30000000-0000-4000-8000-000000000001');
@@ -218,6 +376,10 @@ begin
 	end if;
 	if exists (select 1 from public.qorpera_company_purges) then
 		raise exception 'The purge left its marker';
+	end if;
+	if pg_temp.company_rows(current_setting('qorpera_test.delete_neighbour')::uuid)
+		<> current_setting('qorpera_test.delete_neighbour_rows')::jsonb then
+		raise exception 'Deleting one company changed another';
 	end if;
 end
 $$;
