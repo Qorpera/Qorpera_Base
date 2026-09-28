@@ -113,11 +113,17 @@ server.listen("/run/qorpera-computer-network/plumb.sock", () => {
 import { createServer as createHttp } from "node:http";
 import { createServer } from "node:net";
 const name = process.argv[2];
-createHttp((request, response) => response.end(name + ":" + request.url)).listen(80, "0.0.0.0");
-createServer((socket) => socket.end("SSH-2.0-" + name + "\\r\\n")).listen(22, "0.0.0.0");
+// High ports: the container keeps no right to bind low ones.
+createHttp((request, response) => response.end(name + ":" + request.url)).listen(8080, "0.0.0.0");
+createServer((socket) => {
+	// A client may hang up as soon as it has read enough.
+	socket.on("error", () => undefined);
+	socket.end("SSH-2.0-" + name + "\\r\\n");
+}).listen(2222, "0.0.0.0");
 const udp = createSocket("udp4");
 udp.on("message", (message, from) => udp.send(Buffer.concat([Buffer.from(name + ":"), message]), from.port, from.address));
-udp.bind(5353, "0.0.0.0");
+// Answers from the host's own address, as a real server does, so the reply matches.
+udp.bind(5353, process.argv[3]);
 `);
 		runningImage = `qorpera-office-shell-probe:${randomUUID()}`;
 		await run(["build", "--tag", runningImage, root]);
@@ -189,8 +195,8 @@ for side in pub:1:93.184.216.34 priv:5:10.9.9.9; do
 done
 ip -n priv addr add 169.254.169.254/32 dev lo
 ip route add 169.254.169.254/32 via 192.0.2.6
-ip netns exec pub node /opt/probe/stand-in.mjs public &
-ip netns exec priv node /opt/probe/stand-in.mjs private &
+ip netns exec pub node /opt/probe/stand-in.mjs public 93.184.216.34 &
+ip netns exec priv node /opt/probe/stand-in.mjs private 10.9.9.9 &
 node /opt/probe/plumb-socket.mjs "$(getent passwd 1000 | cut -d: -f1)" &
 sleep 1
 ` : ""}exec setpriv --reuid=1000 --regid=1000 --clear-groups --bounding-set=-all node /opt/probe/probe.mjs
@@ -198,7 +204,7 @@ sleep 1
 	// Docker's default seccomp and proc masks block nested user/PID namespaces.
 	// The outer container permits that setup; the real bwrap boundary then runs
 	// as uid 1000 with no capabilities, no network, and finite cgroup ceilings.
-	const guestArgs = ["run", ...(combined ? ["-i"] : []), "--rm", "--name", container, "--network", "none", "--read-only", "--memory", browser ? "2g" : desktop ? "1g" : shell ? "768m" : "512m", "--memory-swap", browser ? "2g" : desktop ? "1g" : shell ? "768m" : "512m",
+	const guestArgs = ["run", ...(combined ? ["-i"] : []), "--rm", "--name", container, "--network", "none", "--read-only", "--memory", browser ? "2g" : desktop ? "1g" : shell ? "640m" : "512m", "--memory-swap", browser ? "2g" : desktop ? "1g" : shell ? "640m" : "512m",
 		"--pids-limit", browser ? "512" : desktop || shell ? "256" : "128", "--cpus", desktop ? "2" : "1", "--cap-drop", "ALL", "--cap-add", "CHOWN", "--cap-add", "SETUID", "--cap-add", "SETGID", "--cap-add", "SETPCAP",
 		// The shell proof's root plumber and machine firewall; the probe itself drops them.
 		...(shell ? ["--cap-add", "NET_ADMIN", "--cap-add", "SYS_ADMIN", "--cap-add", "SYS_PTRACE", "--security-opt", "apparmor=unconfined",

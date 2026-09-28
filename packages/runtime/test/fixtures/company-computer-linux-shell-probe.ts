@@ -36,8 +36,8 @@ const workbenchMount = parseRecoveryDirectoryMount(
 	await readFile(`/proc/self/fdinfo/${directory.fd}`, "utf8"),
 );
 await directory.close();
-// The container's own limits (768 MiB keeps the proof inside a shared test machine's memory).
-const limits = { memoryBytes: 805306368, pids: 256, cpuQuota: 100000, cpuPeriod: 100000 };
+// The container's own limits (640 MiB keeps the proof inside a shared test machine's memory).
+const limits = { memoryBytes: 671088640, pids: 256, cpuQuota: 100000, cpuPeriod: 100000 };
 const exists = (path: string) =>
 	lstat(path).then(
 		() => true,
@@ -144,8 +144,11 @@ printf isolated`),
 	);
 
 	// The real network: any port and protocol to public addresses, no proxy.
-	assert.equal(await done("curl -sS --max-time 10 http://93.184.216.34/hello"), "public:/hello");
-	assert.equal(await done("timeout 10 bash -c 'exec 3<>/dev/tcp/93.184.216.34/22; head -c 14 <&3'"), "SSH-2.0-public");
+	assert.equal(await done("curl -sS --max-time 10 http://93.184.216.34:8080/hello"), "public:/hello");
+	assert.equal(
+		await done("timeout 10 bash -c 'exec 3<>/dev/tcp/93.184.216.34/2222; head -c 14 <&3'"),
+		"SSH-2.0-public",
+	);
 	assert.equal(
 		await done(
 			"node -e \"const s=require('dgram').createSocket('udp4');s.on('message',m=>{console.log(String(m));s.close()});s.send('ping',5353,'93.184.216.34');setTimeout(()=>process.exit(3),8000).unref()\"",
@@ -155,9 +158,10 @@ printf isolated`),
 	assert.match(await done("ping -c 1 -W 5 93.184.216.34"), /1 received/);
 	// Never private, metadata or this machine, whichever port or protocol.
 	for (const address of ["10.9.9.9", "169.254.169.254"]) {
-		const fetching = await run(`curl -sS --max-time 4 http://${address}/`);
+		// Something listens there; the firewall drops the packets, so curl times out (28).
+		const fetching = await run(`curl -sS --max-time 4 http://${address}:8080/`);
 		const blocked = await settled(fetching.sessionId, fetching);
-		assert.notEqual(blocked.exitCode, 0, `${address}: ${blocked.output}`);
+		assert.equal(blocked.exitCode, 28, `${address}: ${blocked.output}`);
 		const pinging = await run(`ping -c 1 -W 3 ${address}`);
 		const pinged = await settled(pinging.sessionId, pinging);
 		assert.notEqual(pinged.exitCode, 0, `${address}: ${pinged.output}`);
@@ -248,7 +252,7 @@ printf isolated`),
 	// Memory safety: nearing the machine's limit, the guard ends the shell
 	// holding the most, before the kernel's own stop would end the service.
 	const hog = await run(
-		"node -e \"globalThis.b=Buffer.alloc(450*1024*1024,1);console.log('holding');setInterval(()=>{},1000)\"",
+		"node -e \"globalThis.b=Buffer.alloc(300*1024*1024,1);console.log('holding');setInterval(()=>{},1000)\"",
 		5000,
 	);
 	assert.equal(hog.state, "running", hog.output);
@@ -257,7 +261,7 @@ printf isolated`),
 	const pid = shell.namespacePid;
 	assert.ok(pid);
 	const usage = (await readCompanyComputerShellUsage([pid])).get(pid)!;
-	assert.ok(usage.memoryBytes > 400 * 1024 * 1024, JSON.stringify(usage));
+	assert.ok(usage.memoryBytes > 250 * 1024 * 1024, JSON.stringify(usage));
 	assert.ok(usage.tasks >= 3, JSON.stringify(usage));
 	const guard = new CompanyComputerShellPressureGuard({ shells: () => [shell!], intervalMs: 500 });
 	try {
@@ -278,8 +282,9 @@ printf isolated`),
 		if (/sleep|--shell-host|bwrap|tini/.test(command)) survivors.push(command.replaceAll("\0", " "));
 	}
 	assert.deepEqual(survivors, []);
-	// The computers' network cards went with their namespaces.
-	assert.doesNotMatch(execFileSync("ip", ["-o", "link"], { encoding: "utf8" }), /qcmp/);
+	// The computers' network cards go with their namespaces (the kernel frees a
+	// namespace shortly after its last process).
+	await until(() => !/qcmp/.test(execFileSync("ip", ["-o", "link"], { encoding: "utf8" })), "network cards removed");
 	assert.deepEqual(await readdir("/run/office-screens"), []);
 	process.stdout.write("Company Computer shell Linux proof passed\n");
 } finally {
