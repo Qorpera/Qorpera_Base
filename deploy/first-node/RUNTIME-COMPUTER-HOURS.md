@@ -126,9 +126,13 @@ No reserve, release, suspend or observe function is copied or patched.
 
 - `qorpera_meter_computer_hours()` runs once a minute. It is scheduled with pg_cron directly
   (`select cron.schedule('qorpera-computer-hour-meter', '* * * * *',
-  'select public.qorpera_meter_computer_hours()')`), an operator step at the cut. The cron job runs
-  as the function's owner; EXECUTE is otherwise granted only to service_role, and the body has no
-  role check of its own. A concurrent call returns `busy` (advisory lock), and a call within the
+  'select public.qorpera_meter_computer_hours()')`), an operator step at the cut. pg_cron must be
+  enabled first: `create extension if not exists pg_cron with schema pg_catalog` (it needs pg_cron
+  in `shared_preload_libraries`; production had it preloaded but not created, and the coordinator
+  created it at the v147 cut, 2026-09-28). The extension and the job live outside the migrations,
+  so a database built by replaying them has neither: enable the extension and schedule the job
+  again there. The cron job runs as the function's owner; EXECUTE is otherwise granted only to
+  service_role, and the body has no role check of its own. A concurrent call returns `busy` (advisory lock), and a call within the
   same half minute returns `current`.
 - Each pass counts up to 30 seconds ago, so late reports and transitions of that time have arrived.
 - `qorpera_computer_hour_subjects` holds the machines and runs not yet fully counted; a finished one
@@ -286,7 +290,12 @@ every request.
   pays for both, and one is cancelled on the billing page); the subscription state kept is the
   newest by event time.
 
-### Setting up Stripe (Jonas; test mode first)
+### Setting up Stripe (test mode first)
+
+Secrets never pass through a session: Jonas creates and stores every key himself, in the Stripe
+dashboard and as Supabase function secrets. The coordinator writes only what is not secret.
+
+Jonas:
 
 1. A Stripe account for Qorpera in test mode (a sandbox). Account default API version:
    `2026-08-26.dahlia`.
@@ -294,7 +303,7 @@ every request.
 3. Five prices, each tax-exclusive (`tax_behavior=exclusive`, which cannot be changed later): two
    products for the plans, each with one monthly DKK price (Basis 185, Standard 630), and one-off
    DKK prices for 20, 100 and 500 hours (70, 350, 1750). Send the five `price_...` ids (not
-   secret); an operator writes them into the catalog.
+   secret) to the coordinator.
 4. Customer portal (Settings → Billing → Customer portal): switching between the Basis and
    Standard products with "invoice immediately" for prorations and the billing date unchanged
    (`billing_cycle_anchor=unchanged`), downgrades scheduled at the period end, cancel at the
@@ -314,17 +323,35 @@ every request.
    `invoice.marked_uncollectible`, `customer.subscription.created`,
    `customer.subscription.updated`, `customer.subscription.deleted`, `charge.refunded`,
    `charge.dispute.created`, `charge.dispute.updated`, `charge.dispute.closed`.
-7. Supabase secrets (Jonas sets them; no session reads them): `QORPERA_STRIPE_SECRET_KEY`
-   (`sk_test_...`), `QORPERA_STRIPE_WEBHOOK_SECRET` (`whsec_...`), `QORPERA_COMPUTER_BILLING_KEY`
-   (a random secret of at least 32 characters), `QORPERA_BILLING_RETURN_URL`
-   (`https://app.qorpera.com/#/account`), `QORPERA_WEB_ORIGINS` (`["https://app.qorpera.com"]`) and
-   optionally `QORPERA_STRIPE_PORTAL_CONFIGURATION`. The coordinator enrolls the SHA-256 of the
-   billing key.
-8. Test accounts: the coordinator enrolls the accounts that may buy in test mode in
-   `qorpera_computer_hour_testers`. To see plans and credits being drawn, a tester founds a test
-   company with no founder on an internal account.
+7. The billing key. On the Mac, this makes a new random key, puts it on the clipboard and prints
+   only its SHA-256 (the key itself is never shown):
 
-Live keys come later, with the live switch (step 7).
+   ```bash
+   K=$(openssl rand -hex 32); printf %s "$K" | pbcopy; printf %s "$K" | shasum -a 256 | cut -d' ' -f1; unset K
+   ```
+
+   Paste the clipboard as the secret `QORPERA_COMPUTER_BILLING_KEY`, then send the printed hash
+   to the coordinator (a hash is not secret), or enroll it yourself (coordinator step 2). For a
+   key that already exists, `read -rs K; printf %s "$K" | shasum -a 256 | cut -d' ' -f1; unset K`
+   prints its hash: paste the key, press Enter, nothing is echoed.
+8. The other Supabase function secrets: `QORPERA_STRIPE_SECRET_KEY` (`sk_test_...`),
+   `QORPERA_STRIPE_WEBHOOK_SECRET` (`whsec_...`, from step 6), `QORPERA_BILLING_RETURN_URL`
+   (`https://app.qorpera.com/#/account`), `QORPERA_WEB_ORIGINS` (`["https://app.qorpera.com"]`)
+   and optionally `QORPERA_STRIPE_PORTAL_CONFIGURATION`.
+9. Name the accounts that may buy in test mode (for example a second account of his). To see
+   plans and credits being drawn, a tester founds a test company with no founder on an internal
+   account (a company with an internal founder is complimentary and never draws).
+
+Coordinator (nothing secret):
+
+1. Deploy the function: `supabase functions deploy computer-billing`.
+2. Enroll the billing key's hash from Jonas:
+   `insert into public.qorpera_computer_hour_billing_keys (key_sha256) values ('<hash>')`.
+3. Write the five test price ids into `qorpera_computer_hour_catalog.stripe_price_test`.
+4. Enroll the test accounts: `insert into public.qorpera_computer_hour_testers (user_id, note)
+   values ('<user id>', '<who>')`.
+
+Live keys come later, with the live switch (build step 7).
 
 ## Email (build step 5)
 
@@ -381,7 +408,7 @@ Live keys come later, with the live switch (step 7).
 
 - The company card, seen by every member: hours used this month, by kind; from the live switch
   also by source, and hours left. From the live switch, founders also see each founder's share
-  and a "Buy hours" button.
+  and a "Buy hours" button (before it, only enrolled testers see it, in Stripe's test mode).
 - Your plan, seen only by you: plan, hours used per company, reset date, "Change plan" and
   "Payments and invoices" (Stripe's billing page).
 - Admins, contributors and viewers see the company's hours without names or cards: "Computer
