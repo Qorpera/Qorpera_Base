@@ -8,12 +8,13 @@
 -- "the vault writes connection files"); its body, what the account is for, is the company's. This slice adds the
 -- parse's shape, the rules and the index; it never writes a vault row.
 -- * Rules: only the platform creates the file or changes its settings; a member or an agent edits the body. The id is
---   a vault row of this company, and one file holds one account. Deleting the file is refused while the vault holds
---   the account; disconnecting removes it. A move within connections/ repoints the index (the kind rule refuses a
---   move out). Never reviewed.
+--   a company-owned vault row of this company and environment, and one file holds one account. Only the platform
+--   deletes the file, and only once the account is revoked (disconnecting removes it). A move within connections/
+--   repoints the index (the kind rule refuses a move out). A file saved before this slice is not trusted until the
+--   index points at it. Never reviewed.
 -- * Index: qorpera_folder_connection_index, one row per account, keyed by the vault row's id, with the path, its
---   version and the body copy. It is its own table so that a folder save never updates a vault row: the vault's own
---   lock chains (capture, share, revoke, run authorization) never meet a folder commit, and no lock target is needed.
+--   version and the body copy, and no foreign key to the company row (its KEY SHARE would come after the paths). It is
+--   its own table, so a connection save never writes or locks a vault row and needs no lock target.
 --
 -- Builds on F2-2 (20260929100000) and replaces its hook functions (parse shape, checked parse, decide, apply,
 -- verify) with the connection branches added.

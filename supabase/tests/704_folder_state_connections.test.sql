@@ -134,7 +134,8 @@ $$;
 
 -- 1. The company, and the platform writing its first connection file ---------------------------------------------------
 
-select set_config('qorpera_test.vault_xmin', (select xmin::text from public.qorpera_cloud_secrets where id = '70400000-0000-4000-8000-0000000000e1'), true) \g /dev/null
+-- The vault row's place: an update in this same transaction keeps xmin but moves the row (ctid).
+select set_config('qorpera_test.vault_ctid', (select ctid::text from public.qorpera_cloud_secrets where id = '70400000-0000-4000-8000-0000000000e1'), true) \g /dev/null
 
 do $$
 declare r jsonb; i integer; x public.qorpera_folder_connection_index;
@@ -152,7 +153,7 @@ begin
 	if x.secret_id is null or x.folder_path is distinct from 'connections/hello.md' or x.purpose is distinct from ''
 		or x.folder_path_version is distinct from pg_temp.version('connections/hello.md') or x.retired_at is not null then
 		raise exception 'The platform''s connection file is indexed: %', to_jsonb(x); end if;
-	if (select xmin::text from public.qorpera_cloud_secrets where id = '70400000-0000-4000-8000-0000000000e1') is distinct from current_setting('qorpera_test.vault_xmin') then
+	if (select ctid::text from public.qorpera_cloud_secrets where id = '70400000-0000-4000-8000-0000000000e1') is distinct from current_setting('qorpera_test.vault_ctid') then
 		raise exception 'A save never writes the vault row'; end if;
 end $$;
 
