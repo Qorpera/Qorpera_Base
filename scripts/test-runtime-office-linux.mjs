@@ -145,7 +145,7 @@ exec setpriv --reuid=1000 --regid=1000 --clear-groups --bounding-set=-all node /
 	// Docker's default seccomp and proc masks block nested user/PID namespaces.
 	// The outer container permits that setup; the real bwrap boundary then runs
 	// as uid 1000 with no capabilities, no network, and finite cgroup ceilings.
-	const guestArgs = ["run", ...(combined ? ["-i"] : []), "--rm", "--name", container, "--network", "none", "--read-only", "--memory", browser ? "2g" : desktop || shell ? "1g" : "512m", "--memory-swap", browser ? "2g" : desktop || shell ? "1g" : "512m",
+	const guestArgs = ["run", ...(combined ? ["-i"] : []), "--rm", "--name", container, "--network", "none", "--read-only", "--memory", browser ? "2g" : desktop ? "1g" : shell ? "768m" : "512m", "--memory-swap", browser ? "2g" : desktop ? "1g" : shell ? "768m" : "512m",
 		"--pids-limit", browser ? "512" : desktop || shell ? "256" : "128", "--cpus", desktop ? "2" : "1", "--cap-drop", "ALL", "--cap-add", "CHOWN", "--cap-add", "SETUID", "--cap-add", "SETGID", "--cap-add", "SETPCAP",
 		// Root attester reads uid-1000 private mounts; setpriv drops this before the broker probe.
 		...(boundary ? ["--cap-add", "DAC_READ_SEARCH"] : []),

@@ -36,7 +36,8 @@ const workbenchMount = parseRecoveryDirectoryMount(
 	await readFile(`/proc/self/fdinfo/${directory.fd}`, "utf8"),
 );
 await directory.close();
-const limits = { memoryBytes: 1073741824, pids: 256, cpuQuota: 100000, cpuPeriod: 100000 };
+// The container's own limits (768 MiB keeps the proof inside a shared test machine's memory).
+const limits = { memoryBytes: 805306368, pids: 256, cpuQuota: 100000, cpuPeriod: 100000 };
 const exists = (path: string) =>
 	lstat(path).then(
 		() => true,
@@ -261,7 +262,7 @@ printf isolated`),
 	// Memory safety: nearing the machine's limit, the guard ends the shell
 	// holding the most, before the kernel's own stop would end the service.
 	const hog = await run(
-		"node -e \"globalThis.b=Buffer.alloc(700*1024*1024,1);console.log('holding');setInterval(()=>{},1000)\"",
+		"node -e \"globalThis.b=Buffer.alloc(450*1024*1024,1);console.log('holding');setInterval(()=>{},1000)\"",
 		5000,
 	);
 	assert.equal(hog.state, "running", hog.output);
@@ -270,7 +271,7 @@ printf isolated`),
 	const pid = shell.namespacePid;
 	assert.ok(pid);
 	const usage = (await readCompanyComputerShellUsage([pid])).get(pid)!;
-	assert.ok(usage.memoryBytes > 600 * 1024 * 1024, JSON.stringify(usage));
+	assert.ok(usage.memoryBytes > 400 * 1024 * 1024, JSON.stringify(usage));
 	assert.ok(usage.tasks >= 3, JSON.stringify(usage));
 	const guard = new CompanyComputerShellPressureGuard({ shells: () => [shell!], intervalMs: 500 });
 	try {

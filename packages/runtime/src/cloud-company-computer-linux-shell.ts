@@ -137,6 +137,14 @@ export class CompanyComputerLinuxShell implements CompanyComputerGuestShell {
 	#pid?: number;
 	/** Why a namespace is ending (the machine relieving pressure, or a failed start), for the commands that end with it. */
 	#endNote?: { environment: Promise<CompanyComputerShellEnvironment>; note: string };
+	/** A namespace being stopped as a whole: new commands wait for the next one. */
+	#ending?: Promise<CompanyComputerShellEnvironment>;
+	/** Each launch's own cancellation, joined with the shell's lifetime. */
+	readonly #launches = new Map<Promise<CompanyComputerShellEnvironment>, AbortController>();
+	/** Namespaces let go of before they were confirmed gone; closing waits for each and fails if one is not. */
+	readonly #released = new Set<Promise<void>>();
+	/** Of those, the ones still stopping. */
+	#releasing = 0;
 	#processes = 0;
 	#closing?: Promise<void>;
 
@@ -146,6 +154,9 @@ export class CompanyComputerLinuxShell implements CompanyComputerGuestShell {
 
 	/** Anything still running in the shell keeps the computer from powering off. */
 	get busy(): boolean {
+		// A namespace still being stopped may still run something. One whose stop
+		// could not be confirmed does not keep the machine on: powering off ends it.
+		if (this.#releasing) return true;
 		if (!this.#environment) return false;
 		return (
 			this.#processes > 0 ||
@@ -222,6 +233,8 @@ export class CompanyComputerLinuxShell implements CompanyComputerGuestShell {
 		this.#environment = undefined;
 		this.#ready = undefined;
 		this.#pid = undefined;
+		this.#launches.delete(environment);
+		if (this.#ending === environment) this.#ending = undefined;
 		this.#processes = 0;
 		for (const session of this.#sessions.values())
 			if (session.state === "starting" || session.state === "running") {
@@ -240,34 +253,76 @@ export class CompanyComputerLinuxShell implements CompanyComputerGuestShell {
 	#open(): Promise<CompanyComputerShellEnvironment> {
 		this.#stop.signal.throwIfAborted();
 		if (this.#environment) return this.#environment;
+		const cancel = new AbortController();
 		const environment: Promise<CompanyComputerShellEnvironment> = this.#launch(
 			(event) => this.#event(environment, event),
-			this.#stop.signal,
+			AbortSignal.any([this.#stop.signal, cancel.signal]),
 		);
 		this.#environment = environment;
+		this.#launches.set(environment, cancel);
 		environment.then(
 			(opened) => {
 				if (this.#environment === environment) {
 					this.#ready = opened;
 					this.#pid = opened.pid;
 				}
-				// Everything in it was stopped while it was starting.
-				else void opened.stop().catch(() => undefined);
 				void opened.exited.then(
 					() => this.#ended(environment),
 					() => this.#ended(environment),
 				);
 			},
 			(error: unknown) => {
-				if (this.#endNote?.environment !== environment)
-					this.#endNote = {
-						environment,
-						note: `The shell could not start (${error instanceof Error ? error.message : "unknown error"}); start the command again.`,
-					};
+				// A start that could not confirm its namespace gone stays an unknown
+				// outcome: closing waits for nothing more but reports it unconfirmed.
+				if (!(error instanceof CompanyComputerActionFailedError))
+					this.#release(Promise.reject(new Error("OFFICE_SHELL_DRAIN_UNCONFIRMED", { cause: error })));
+				if (this.#endNote?.environment !== environment && !this.#stop.signal.aborted)
+					this.#endNote = { environment, note: "The shell could not start; start the command again." };
 				this.#ended(environment);
 			},
 		);
 		return environment;
+	}
+
+	/** Tracks a namespace that was let go of until its stop is confirmed. */
+	#release(teardown: Promise<void>): void {
+		this.#released.add(teardown);
+		this.#releasing++;
+		// A confirmed stop is forgotten; an unconfirmed one stays for closing to report.
+		void teardown
+			.then(
+				() => this.#released.delete(teardown),
+				() => undefined,
+			)
+			.finally(() => this.#releasing--);
+	}
+
+	/**
+	 * Stop everything in the current namespace. A namespace still starting is
+	 * cancelled and let go of now, and closing waits for its stop; a ready one
+	 * is stopped here. New commands meanwhile wait for the next namespace.
+	 */
+	async #stopAll(note?: string): Promise<void> {
+		const current = this.#environment;
+		if (!current) return;
+		const opened = this.#ready;
+		if (note) this.#endNote = { environment: current, note };
+		if (!opened) {
+			this.#launches.get(current)?.abort();
+			this.#release(
+				current.then(
+					(launched) => launched.stop(),
+					(error: unknown) => {
+						if (!(error instanceof CompanyComputerActionFailedError)) throw error;
+					},
+				),
+			);
+			this.#ended(current);
+			return;
+		}
+		this.#ending = current;
+		await opened.stop();
+		this.#ended(current);
 	}
 
 	#session(sessionId: string): Session {
@@ -347,8 +402,7 @@ export class CompanyComputerLinuxShell implements CompanyComputerGuestShell {
 		const known = this.#keys.get(input.key);
 		if (known && this.#sessions.has(known)) return { sessionId: known };
 		// A command must not land in a shell the machine is ending; the next start opens a fresh one.
-		if (this.#environment && this.#endNote?.environment === this.#environment)
-			throw new Error("OFFICE_SHELL_RESTARTING");
+		if (this.#environment && this.#ending === this.#environment) throw new Error("OFFICE_SHELL_RESTARTING");
 		input.signal.throwIfAborted();
 		const environment = this.#open();
 		const session: Session = {
@@ -409,13 +463,7 @@ export class CompanyComputerLinuxShell implements CompanyComputerGuestShell {
 			const running = [...this.#sessions.values()].filter(
 				(s) => s.state === "starting" || s.state === "running",
 			).length;
-			const current = this.#environment;
-			const opened = this.#ready;
-			if (current) {
-				// A shell still starting is let go of now and stopped once its start finishes.
-				await opened?.stop();
-				this.#ended(current);
-			}
+			await this.#stopAll();
 			return { stopped: running };
 		}
 		const session = this.#session(input.sessionId);
@@ -470,14 +518,11 @@ export class CompanyComputerLinuxShell implements CompanyComputerGuestShell {
 	 * fresh one. A storage-safety stop, taken before the kernel's own.
 	 */
 	async relieve(note: string): Promise<void> {
-		const current = this.#environment;
-		const opened = this.#ready;
-		if (!current || !opened) return;
-		// Tracked until its stop is confirmed: an unconfirmed stop stays busy and weighed.
-		// The note stays until this namespace ends, even if that is after a stop that timed out.
-		this.#endNote = { environment: current, note };
-		await opened.stop();
-		this.#ended(current);
+		// Only a ready namespace holds anything to weigh. Tracked until its stop is
+		// confirmed: an unconfirmed stop stays busy and weighed, and the note stays
+		// until this namespace ends, even if that is after a stop that timed out.
+		if (!this.#ready) return;
+		await this.#stopAll(note);
 	}
 
 	/** Ends every process in the shell and the namespace itself. A timeout is never success. */
@@ -486,10 +531,15 @@ export class CompanyComputerLinuxShell implements CompanyComputerGuestShell {
 		this.#closing ??= cloudToolRequest(
 			async () => {
 				const current = this.#environment;
-				if (!current) return;
-				const opened = await current.catch(() => undefined);
-				await opened?.stop();
-				this.#ended(current);
+				if (current) {
+					// Closing aborts a start in progress; its launch then settles quickly.
+					const opened = await current.catch(() => undefined);
+					await opened?.stop();
+					this.#ended(current);
+				}
+				const released = await Promise.allSettled([...this.#released]);
+				if (released.some((result) => result.status === "rejected"))
+					throw new Error("OFFICE_SHELL_DRAIN_UNCONFIRMED");
 			},
 			new AbortController().signal,
 			15000,

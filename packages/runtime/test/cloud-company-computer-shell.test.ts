@@ -1,4 +1,5 @@
 import { PassThrough } from "node:stream";
+import { CompanyComputerActionFailedError } from "@qorpera/runtime/cloud-company-computer-leases";
 import {
 	COMPANY_COMPUTER_SHELL_KEPT_OUTPUT,
 	CompanyComputerLinuxShell,
@@ -228,28 +229,37 @@ describe("a shell that is slow to start", () => {
 	function slow() {
 		let emit: (event: CompanyComputerShellHostEvent) => void = () => undefined;
 		const sent: { t: string; id: string }[] = [];
-		const launch: { resolve(): void; reject(error: Error): void } = {
+		const stopped = vi.fn(async () => undefined);
+		const launch: { resolve(): void; reject(error: Error): void; cancelled: boolean } = {
 			resolve: () => undefined,
 			reject: () => undefined,
+			cancelled: false,
 		};
 		const shell = new CompanyComputerLinuxShell(
 			(onEvent, lifetime) =>
 				new Promise((resolve, reject) => {
-					// Like the real launcher, closing the shell ends a start still in progress.
-					lifetime.addEventListener("abort", () => reject(new Error("OFFICE_SHELL_CLOSED")), { once: true });
+					// Like the real launcher: a cancelled start is confirmed gone and fails as its own.
+					lifetime.addEventListener(
+						"abort",
+						() => {
+							launch.cancelled = true;
+							reject(new CompanyComputerActionFailedError(new Error("OFFICE_SHELL_CANCELLED")));
+						},
+						{ once: true },
+					);
 					emit = onEvent;
 					launch.resolve = () =>
 						resolve({
 							send: (request) => void sent.push(request as { t: string; id: string }),
 							exited: new Promise<void>(() => undefined),
-							stop: async () => undefined,
+							stop: stopped,
 							pid: 601,
 						});
 					launch.reject = reject;
 				}),
 		);
 		shells.push(shell);
-		return { shell, launch, sent, emit: (event: CompanyComputerShellHostEvent) => emit(event) };
+		return { shell, launch, sent, stopped, emit: (event: CompanyComputerShellHostEvent) => emit(event) };
 	}
 
 	it("answers at once and sends the command when the shell is ready", async () => {
@@ -275,16 +285,57 @@ describe("a shell that is slow to start", () => {
 		expect(f.sent).toEqual([]);
 	});
 
-	it("ends its commands with the reason when the shell cannot start, and the next start tries again", async () => {
+	it("ends its commands with a fixed reason when the shell cannot start, and the next start tries again", async () => {
 		const f = slow();
 		const { sessionId } = await f.shell.start({ key: "a", command: "make", signal });
-		f.launch.reject(new Error("OFFICE_PROCESS_GATE_TIMEOUT"));
+		f.launch.reject(
+			new CompanyComputerActionFailedError(new Error("OFFICE_PROCESS_GATE_TIMEOUT /run/office-screens/x")),
+		);
 		const ended = await f.shell.result({ sessionId, waitMs: 5000, signal });
-		expect(ended).toMatchObject({ state: "stopped" });
-		expect(ended.note).toMatch(/could not start \(OFFICE_PROCESS_GATE_TIMEOUT\)/);
+		expect(ended).toMatchObject({ state: "stopped", note: "The shell could not start; start the command again." });
 		expect(f.shell.busy).toBe(false);
 		await f.shell.start({ key: "b", command: "make", signal });
 		expect(f.shell.busy).toBe(true);
+	});
+
+	it("cancels a start when everything is stopped, and closing waits for it", async () => {
+		const f = slow();
+		const { sessionId } = await f.shell.start({ key: "a", command: "sleep 600", signal });
+		expect(await f.shell.stop({ signal })).toEqual({ stopped: 1 });
+		expect(f.launch.cancelled).toBe(true);
+		expect((await f.shell.result({ sessionId, waitMs: 0, signal })).state).toBe("stopped");
+		await f.shell.close();
+		expect(f.sent).toEqual([]);
+	});
+
+	it("stops a start that finished just as everything was stopped, before closing reports it gone", async () => {
+		const f = slow();
+		await f.shell.start({ key: "a", command: "sleep 600", signal });
+		f.launch.resolve();
+		// The launch has resolved but its handlers have not run yet.
+		expect(await f.shell.stop({ signal })).toEqual({ stopped: 1 });
+		await f.shell.close();
+		expect(f.stopped).toHaveBeenCalled();
+	});
+
+	it("reports a start whose namespace could not be confirmed gone when closing", async () => {
+		const f = slow();
+		const { sessionId } = await f.shell.start({ key: "a", command: "make", signal });
+		f.launch.reject(new Error("OFFICE_SHELL_DRAIN_UNCONFIRMED"));
+		expect((await f.shell.result({ sessionId, waitMs: 5000, signal })).state).toBe("stopped");
+		// It does not keep the machine on: powering off ends it.
+		expect(f.shell.busy).toBe(false);
+		shells.splice(shells.indexOf(f.shell), 1);
+		await expect(f.shell.close()).rejects.toThrow("OFFICE_SHELL_DRAIN_UNCONFIRMED");
+	});
+
+	it("gives no restart reason to commands ended by closing", async () => {
+		const f = slow();
+		const { sessionId } = await f.shell.start({ key: "a", command: "make", signal });
+		await f.shell.close();
+		const ended = await f.shell.result({ sessionId, waitMs: 0, signal });
+		expect(ended.state).toBe("stopped");
+		expect(ended.note).toBeUndefined();
 	});
 });
 
@@ -465,6 +516,27 @@ describe("the machine's memory and task safety", () => {
 		await vi.waitFor(() => expect(finish).toBeDefined());
 		(finish as (() => void) | undefined)?.();
 		await closing;
+	});
+
+	it("refuses a start while everything is being stopped", async () => {
+		let finish: (() => void) | undefined;
+		const shell = new CompanyComputerLinuxShell(async () => ({
+			send: () => undefined,
+			exited: new Promise<void>(() => undefined),
+			stop: () =>
+				new Promise<void>((resolve) => {
+					finish = resolve;
+				}),
+			pid: 701,
+		}));
+		shells.push(shell);
+		await shell.start({ key: "a", command: "sleep 600", signal });
+		const stopping = shell.stop({ signal });
+		await vi.waitFor(() => expect(finish).toBeDefined());
+		await expect(shell.start({ key: "b", command: "echo hi", signal })).rejects.toThrow("OFFICE_SHELL_RESTARTING");
+		(finish as (() => void) | undefined)?.();
+		await stopping;
+		shells.splice(shells.indexOf(shell), 1);
 	});
 
 	it("weighs tasks when the machine runs out of processes", async () => {
