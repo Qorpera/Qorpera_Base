@@ -49,7 +49,16 @@ import {
 	parseTeam,
 	UUID_PATTERN,
 } from "./parse.ts";
+import type { RealtimePhase } from "./realtime.ts";
 import { type ActionReviewAnswer, type ActionReviewReceipt, parseActionReviewReceipt } from "./review-rules.ts";
+import {
+	listRoomDrafts,
+	putRoomDraft,
+	type RoomDraft,
+	type RoomDraftSubscription,
+	type RoomDraftWrite,
+	subscribeRoomDrafts,
+} from "./room-drafts.ts";
 import { type CompanySidebar, parseCompanySidebar, type SidebarRequest } from "./sidebar.ts";
 import type {
 	CreatedCompanyResult,
@@ -281,6 +290,32 @@ export class CloudApi {
 		return this.cloud
 			.rpc("qorpera_company_organization_json", { p_profile_id: requiredUuid(profileId, "Profile id") })
 			.then(parseHostedCompanyOrganization);
+	}
+
+	// Shared drafts: a member's unsent message in a room, which the room's other
+	// members see and edit live (20260928000500). Only its owner sends it.
+
+	listRoomDrafts(roomId: string): Promise<RoomDraft[]> {
+		return listRoomDrafts(this.cloud, requiredUuid(roomId, "Room id").toLowerCase());
+	}
+
+	putRoomDraft(roomId: string, ownerUserId: string, baseRevision: number, body: string): Promise<RoomDraftWrite> {
+		if (!Number.isSafeInteger(baseRevision) || baseRevision < 0) throw new Error("Draft revision is invalid");
+		return putRoomDraft(
+			this.cloud,
+			requiredUuid(roomId, "Room id").toLowerCase(),
+			requiredUuid(ownerUserId, "Draft owner").toLowerCase(),
+			baseRevision,
+			body,
+		);
+	}
+
+	subscribeRoomDrafts(
+		roomId: string,
+		onDraft: (draft: RoomDraft) => void,
+		onHealth: (phase: RealtimePhase) => void,
+	): RoomDraftSubscription {
+		return subscribeRoomDrafts(this.cloud, requiredUuid(roomId, "Room id").toLowerCase(), onDraft, onHealth);
 	}
 
 	/** The conversations where the signed-in member was mentioned and has not looked yet. */

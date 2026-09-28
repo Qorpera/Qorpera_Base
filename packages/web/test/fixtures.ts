@@ -231,6 +231,10 @@ export function fixture() {
 	vi.spyOn(api, "readCompanySidebar").mockRejectedValue(
 		new CloudRpcError("qorpera_read_company_sidebar", { message: "missing", code: "PGRST202" }, 404),
 	);
+	// A cloud without shared drafts: conversations keep each member's draft to themselves.
+	vi.spyOn(api, "listRoomDrafts").mockRejectedValue(
+		new CloudRpcError("qorpera_list_room_drafts", { message: "missing", code: "PGRST202" }, 404),
+	);
 	// A cloud that reads no mentions yet: no names to pick, no badges.
 	vi.spyOn(api, "listMemberMentions").mockRejectedValue(
 		new CloudRpcError("qorpera_list_member_mentions", { message: "missing", code: "PGRST202" }, 404),

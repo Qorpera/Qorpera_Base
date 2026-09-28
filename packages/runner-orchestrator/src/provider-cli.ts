@@ -5,6 +5,7 @@ import { isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { LxdUnixClient } from "./lxd-client.ts";
 import { lxdNativeCompanyRuntimeFromEnvironment } from "./lxd-company-runtime.ts";
+import { LxdExecutionHostIdentities } from "./lxd-execution-host-identity.ts";
 import { verifyLxdImageProvenanceFiles } from "./lxd-image-provenance.ts";
 import {
 	HttpLxdNativeLoginGateway,
@@ -197,6 +198,22 @@ function lxdLoginConfig(config: LxdCloudRunnerProviderConfig): LxdNativeLoginGat
 	};
 }
 
+/** The node's shared execution host (deploy/shared-execution), both or neither:
+ * the login gateway attaches every identity volume it creates to it. */
+function lxdExecutionHost(config: LxdCloudRunnerProviderConfig, client: LxdUnixClient) {
+	const instance = process.env.QORPERA_LXD_EXECUTION_HOST_INSTANCE;
+	const project = process.env.QORPERA_LXD_EXECUTION_HOST_PROJECT;
+	if (!instance && !project) return undefined;
+	return new LxdExecutionHostIdentities(
+		{
+			instance: required("QORPERA_LXD_EXECUTION_HOST_INSTANCE"),
+			project: required("QORPERA_LXD_EXECUTION_HOST_PROJECT"),
+		},
+		{ pool: config.storagePool, sourcePrefix: config.identityVolumePrefix },
+		client,
+	);
+}
+
 function optionalCredentialFile(name: string): string | undefined {
 	const path = process.env[name];
 	if (!path) return undefined;
@@ -245,7 +262,7 @@ function runtime(): ProviderRuntime {
 				nodeHttpFetch,
 			),
 			loginGateway: new HttpLxdNativeLoginGateway(
-				new LxdNativeLoginGateway(lxdLoginConfig(config), client, nodeHttpFetch),
+				new LxdNativeLoginGateway(lxdLoginConfig(config), client, nodeHttpFetch, lxdExecutionHost(config, client)),
 				process.env.QORPERA_LXD_LOGIN_GATEWAY_HOST ?? "127.0.0.1",
 				integer("QORPERA_LXD_LOGIN_GATEWAY_PORT", 18082),
 			),

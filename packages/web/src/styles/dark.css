@@ -113,6 +113,7 @@
 :root[data-theme="dark"] .mine .bubble { background: var(--composer-accent); color: var(--composer-on-accent); box-shadow: none; }
 :root[data-theme="dark"] .message-progress .bubble { color: #dedcd8; }
 :root[data-theme="dark"] .composer-shell { background: #242423; }
+:root[data-theme="dark"] .draft-panel { background: #242423; }
 :root[data-theme="dark"] .composer-shell.is-dragging { border-color: var(--composer-accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--composer-accent) 22%, transparent); }
 :root[data-theme="dark"] .composer-send:disabled { background: #353534; color: #71706c; }
 :root[data-theme="dark"] .composer-send:not(:disabled):hover { background: var(--composer-accent-hover); }
@@ -124,7 +125,13 @@
 :root[data-theme="dark"] .auth-card { border-color: var(--border); background: #262625; }
 :root[data-theme="dark"] .review-call { background: #1e1e1d; }
 :root[data-theme="dark"] .review-rule-input { border-color: var(--border); background: #1e1e1d; }
-:root[data-theme="dark"] .settings-rule { background: #333332; }
+:root[data-theme="dark"] :is(.settings-rule-form, .settings-rule-table) input { border-color: rgba(255, 255, 255, 0.1); background: #333332; }
+:root[data-theme="dark"] :is(.settings-rule-form, .settings-rule-table) input::placeholder { color: #8f8e89; }
+:root[data-theme="dark"] :is(.settings-rule-form, .settings-rule-table) select { border-color: rgba(255, 255, 255, 0.12); background: #3a3a38; }
+:root[data-theme="dark"] :is(.settings-rule-table, .settings-rule-table th) { border-color: rgba(255, 255, 255, 0.1); }
+:root[data-theme="dark"] .settings-rule-table th { color: #9d9c97; }
+:root[data-theme="dark"] :is(.settings-rule-table tbody tr + tr, .settings-rule-table tbody tr + tr td) { border-color: rgba(255, 255, 255, 0.06); }
+:root[data-theme="dark"] .settings-rule-note { color: #a3a29d; }
 :root[data-theme="dark"] .received-file { border-color: var(--border); background: #262625; }
 :root[data-theme="dark"] .received-file:hover { background: #2e2e2d; }
 :root[data-theme="dark"] .received-file-visual { color: #8f8e89; }
