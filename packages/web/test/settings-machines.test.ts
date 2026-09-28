@@ -283,6 +283,41 @@ describe("company machines in settings", () => {
 		expect(list).toHaveBeenCalledTimes(1);
 	});
 
+	it("drops a waiting focus return once the member moves on, and names a permission refusal", async () => {
+		let refuse!: (error: Error) => void;
+		const client = {
+			list: vi.fn(async () =>
+				parseMachines({ schema: "qorpera.company-machines/v1", machines: [machine({ commandsRunning: 0 })] }),
+			),
+			change: vi.fn(() => new Promise<void>((_resolve, reject) => (refuse = reject))),
+		};
+		const search = document.createElement("input");
+		document.body.append(search);
+		view = new MachinesView(client, new AbortController().signal);
+		document.body.append(view.el);
+		await settle();
+		const stop = [...view.el.querySelectorAll("button")].find((button) => button.textContent === "Stop")!;
+		stop.focus();
+		stop.click();
+		await settle();
+		search.focus();
+		refuse(
+			new CloudRpcError("qorpera_member_manage_company_machine", {
+				code: "42501",
+				message: "Company is unavailable",
+			}),
+		);
+		await settle();
+		expect(document.activeElement).toBe(search);
+		expect(view.el.querySelector("[role=alert]")?.textContent).toBe(
+			"Only members who can change the company can stop, wake or delete its machines.",
+		);
+		search.blur();
+		view.shown();
+		await settle();
+		expect(document.activeElement).toBe(document.body);
+	});
+
 	it("asks before stopping a machine whose commands still run", async () => {
 		const client = {
 			list: vi.fn(async () => parseMachines({ schema: "qorpera.company-machines/v1", machines: [machine()] })),
