@@ -145,7 +145,7 @@ export class MachinesView {
 		// read the company is told so, not to try again.
 		if (failed)
 			this.#refused =
-				failed instanceof CloudRpcError && failed.denied
+				failed instanceof CloudRpcError && failed.code === "42501"
 					? t("Only members who can change the company can stop, wake or delete its machines.")
 					: t("{name} could not be changed. Try again.", { name: machine.name });
 		await this.#read();
@@ -174,6 +174,8 @@ export class MachinesView {
 			: !active || active === document.body
 				? this.#focusKey
 				: undefined;
+		// Moved on to something else: the waiting return is dropped, not put off.
+		if (!here && active && active !== document.body) this.#focusKey = undefined;
 		replace(
 			this.el,
 			h("h1", null, t("Machines")),
@@ -184,7 +186,7 @@ export class MachinesView {
 					"p",
 					{ class: "muted" },
 					t(
-						"Virtual machines your agents start for tests, builds and long jobs. They belong to the company: anyone here can stop, wake or delete them.",
+						"Virtual machines your agents start for tests, builds and long jobs. They belong to the company: anyone who can change the company can stop, wake or delete them.",
 					),
 				),
 				this.#refused ? notice("danger", this.#refused) : null,

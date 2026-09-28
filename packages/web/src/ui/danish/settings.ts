@@ -315,8 +315,8 @@ export const SETTINGS: Record<string, string> = {
 	"The company's machines could not be read.": "Virksomhedens maskiner kunne ikke hentes.",
 	"Delete {name} and its disk? This cannot be undone.": "Slet {name} og dens disk? Det kan ikke fortrydes.",
 	"{name} could not be changed. Try again.": "{name} kunne ikke ændres. Prøv igen.",
-	"Virtual machines your agents start for tests, builds and long jobs. They belong to the company: anyone here can stop, wake or delete them.":
-		"Virtuelle maskiner, som jeres agenter starter til test, builds og lange opgaver. De tilhører virksomheden: alle her kan stoppe, starte eller slette dem.",
+	"Virtual machines your agents start for tests, builds and long jobs. They belong to the company: anyone who can change the company can stop, wake or delete them.":
+		"Virtuelle maskiner, som jeres agenter starter til test, builds og lange opgaver. De tilhører virksomheden: alle, der kan ændre virksomheden, kan stoppe, starte eller slette dem.",
 	"Waiting for room, number {position} in line": "Venter på plads, nummer {position} i køen",
 	"{cpus} CPUs, {memory} GB memory, {disk} GB disk": "{cpus} CPU'er, {memory} GB hukommelse, {disk} GB disk",
 	"1 CPU, {memory} GB memory, {disk} GB disk": "1 CPU, {memory} GB hukommelse, {disk} GB disk",

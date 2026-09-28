@@ -420,6 +420,8 @@
 .thread-machine { display: inline-flex; flex: 0 1 auto; gap: 5px; align-items: center; min-width: 28px; max-width: 150px; height: 28px; padding: 0 9px; border: 0; border-radius: 14px; background: var(--hover); color: var(--text); font: inherit; font-size: 12px; cursor: pointer; }
 .thread-machine:hover { background: var(--pane-strong); }
 .thread-machine-more { padding: 0 8px; color: var(--text-muted); }
+/* The group clips overflow, so the focus ring is drawn inside the chip. */
+.thread-machine:focus-visible { outline-offset: -2px; }
 .thread-machine .icon { flex: none; width: 14px; height: 14px; }
 .thread-machine-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .thread-machine[data-state="running"] .icon { color: #2f8f4e; }
@@ -428,6 +430,7 @@
 [data-theme="dark"] .thread-machine:is([data-state="waiting"], [data-state="starting"], [data-state="stopping"]) .icon { color: var(--warning); }
 /* A phone's header has room for the machines' figures, not their names. */
 @media (max-width: 640px) {
+	.thread-machines { flex-shrink: 0; }
 	.thread-machine { padding: 0 7px; }
 	.thread-machine-name { display: none; }
 }
