@@ -4,8 +4,10 @@
 --
 -- A company at zero starts no new run: the check sits beside the company-paused check in each
 -- function that creates runs, and the work stays queued, with no age limit, until hours arrive:
--- * wakes (routines, agents, rooms, workers, coding turns): the wake stays queued with the reason
---   "Waiting for computer hours";
+-- * wakes (agents, rooms, workers, coding turns): the wake stays queued with the reason "Waiting
+--   for computer hours" (its visit moves it to the back of the queue, as a paused company's does);
+-- * routines: a slot is deferred as while the company is paused (no wake is queued and the cursor
+--   stays, so the same slot is offered again once hours arrive), so waiting work does not pile up;
 -- * member messages, turn requests (hiring's first run included) and proposal reviews: they stay
 --   queued, and members see why through `waitingForHours` in qorpera_read_company_computer_hours;
 -- * the two direct enqueue calls (legacy clients, which cannot wait) are refused with that reason;
@@ -20,9 +22,11 @@ set local lock_timeout = '10s';
 
 alter table public.qorpera_computer_hour_billing add column zero_rule_since timestamptz;
 
--- At zero: the rule is on, the company is not complimentary and has no hours left. A founder's
--- subscription whose recorded period ended in the last 30 minutes counts as still paying: Stripe's
--- renewal invoice can trail the period's end by minutes, and work must not wait at every renewal.
+-- At zero: the rule is on, payments are live (before the live switch every balance is a dry run
+-- and nothing waits), the company is not complimentary and has no hours left. A founder's plan
+-- period that ended in the last 30 minutes, with no next period recorded yet and its subscription
+-- still active or past due, counts as still paying: Stripe's renewal invoice can trail the
+-- period's end by minutes, and work must not wait at every renewal.
 create function public.qorpera_company_at_zero(p_profile_id uuid, p_at timestamptz)
 returns boolean
 language plpgsql
@@ -34,7 +38,8 @@ declare
 	v_since timestamptz := (select billing.zero_rule_since from public.qorpera_computer_hour_billing billing);
 	v_left bigint;
 begin
-	if v_since is null or p_at < v_since or p_profile_id is null then
+	if v_since is null or p_at < v_since or p_profile_id is null
+		or public.qorpera_computer_hour_dry_run(p_at) then
 		return false;
 	end if;
 	v_left := public.qorpera_company_computer_hours_left(p_profile_id);
@@ -42,10 +47,22 @@ begin
 		return false;
 	end if;
 	return not exists (
-		select 1 from public.qorpera_computer_hour_subscriptions subscription
-		where subscription.livemode and subscription.status in ('active', 'past_due')
-			and subscription.period_end <= p_at and subscription.period_end > p_at - interval '30 minutes'
-			and subscription.user_id in (select founder.user_id from public.qorpera_company_founders(p_profile_id) founder)
+		select 1
+		from public.qorpera_computer_hour_sources plan
+		join public.qorpera_computer_hour_subscriptions subscription
+			on subscription.stripe_subscription_id = split_part(plan.reference, ':', 1)
+		where plan.kind = 'plan_period' and not plan.dry_run and plan.withdrawn_at is null
+			and plan.reference ~ '^sub_[A-Za-z0-9]+:[0-9]+$'
+			and plan.user_id in (select founder.user_id from public.qorpera_company_founders(p_profile_id) founder)
+			and plan.period_end <= p_at and plan.period_end > p_at - interval '30 minutes'
+			and subscription.livemode and subscription.status in ('active', 'past_due')
+			and not exists (
+				select 1 from public.qorpera_computer_hour_sources later
+				where later.kind = 'plan_period' and not later.dry_run
+					and later.reference ~ '^sub_[A-Za-z0-9]+:[0-9]+$'
+					and split_part(later.reference, ':', 1) = split_part(plan.reference, ':', 1)
+					and later.period_start >= plan.period_end
+			)
 	);
 end
 $$;
@@ -123,26 +140,46 @@ begin
 end
 $patch$;
 
--- The direct enqueue calls cannot wait: refused with the reason.
+-- Routines: a slot is deferred at zero, as while paused, so waiting wakes do not pile up.
 do $patch$
-declare v_definition text := pg_get_functiondef((select p.oid from pg_proc p join pg_namespace n on n.oid = p.pronamespace
-	where n.nspname = 'public' and p.proname = 'qorpera_enqueue_execution_run'));
+declare v_definition text := pg_get_functiondef(
+	'public.qorpera_enqueue_routine_wake(uuid,bigint,uuid,text,text,timestamptz,timestamptz,timestamptz,jsonb)'::regprocedure);
 begin
-	v_definition := pg_temp.zero_wait_replace(v_definition, $old$		raise exception 'execution run requires company write access' using errcode = '42501';
-	end if;$old$, $new$		raise exception 'execution run requires company write access' using errcode = '42501';
+	v_definition := pg_temp.zero_wait_replace(v_definition, $old$	if v_occurrence.id is null then
+		insert into public.qorpera_wake_occurrences ($old$, $new$	if v_occurrence.id is null and public.qorpera_company_at_zero(v_routine.profile_id, clock_timestamp()) then
+		return jsonb_build_object(
+			'occurrence_id', null, 'status', 'deferred', 'run_id', null,
+			'scheduled_for', p_scheduled_for, 'reason', 'Waiting for computer hours'
+		);
+	end if;
+	if v_occurrence.id is null then
+		insert into public.qorpera_wake_occurrences ($new$, 'routine slot');
+	execute v_definition;
+end
+$patch$;
+
+-- The direct enqueue calls cannot wait: refused with the reason (after their idempotent replay, so a
+-- retry of work made before zero still answers).
+do $patch$
+declare v_definition text := pg_get_functiondef(
+	'public.qorpera_enqueue_execution_run(uuid,uuid,uuid,text,uuid,uuid,uuid,bigint,uuid,bigint,text,text,jsonb,text,text,uuid[],uuid)'::regprocedure);
+begin
+	v_definition := pg_temp.zero_wait_replace(v_definition, $old$		return public.qorpera_execution_run_json(v_run);
+	end if;
+	insert into public.qorpera_runner_jobs ($old$, $new$		return public.qorpera_execution_run_json(v_run);
 	end if;
 	if public.qorpera_company_at_zero(v_environment.profile_id, clock_timestamp()) then
 		raise exception 'Waiting for computer hours: the company has none left' using errcode = '55000';
-	end if;$new$, 'direct execution run');
+	end if;
+	insert into public.qorpera_runner_jobs ($new$, 'direct execution run');
 	execute v_definition;
 end
 $patch$;
 do $patch$
-declare v_definition text := pg_get_functiondef((select p.oid from pg_proc p join pg_namespace n on n.oid = p.pronamespace
-	where n.nspname = 'public' and p.proname = 'qorpera_enqueue_runner_job'));
+declare v_definition text := pg_get_functiondef('public.qorpera_enqueue_runner_job(uuid,uuid,uuid,uuid,text,text,jsonb)'::regprocedure);
 begin
-	v_definition := pg_temp.zero_wait_replace(v_definition, $old$		raise exception 'runner job creation requires write access' using errcode = '42501';
-	end if;$old$, $new$		raise exception 'runner job creation requires write access' using errcode = '42501';
+	v_definition := pg_temp.zero_wait_replace(v_definition, $old$		return public.qorpera_runner_job_json(v_existing);
+	end if;$old$, $new$		return public.qorpera_runner_job_json(v_existing);
 	end if;
 	if public.qorpera_company_at_zero(v_profile_id, clock_timestamp()) then
 		raise exception 'Waiting for computer hours: the company has none left' using errcode = '55000';

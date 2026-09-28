@@ -382,16 +382,21 @@ Live keys come later, with the live switch (build step 7).
 
 - The check is `qorpera_company_at_zero(p_profile_id, at)` (migration `20260929200000`). It is true
   only when the rule is switched on (`qorpera_computer_hour_billing.zero_rule_since`, null until the
-  live switch) and `qorpera_company_computer_hours_left(p_profile_id)` (step 3) is zero or less.
-  That value is null for a complimentary company, which always passes. A founder's live
-  subscription (`active` or `past_due`) whose recorded period ended in the last 30 minutes counts
-  as still paying: Stripe's renewal invoice can trail the period's end by minutes.
+  live switch), payments are live (dry-run balances never hold work), and
+  `qorpera_company_computer_hours_left(p_profile_id)` (step 3) is zero or less. That value is null
+  for a complimentary company, which always passes. There is a renewal grace: a founder's plan
+  period that ended in the last 30 minutes still counts as paying, while no next period is recorded
+  and its subscription is `active` or `past_due`. Stripe's renewal invoice can trail the period's
+  end by minutes, and the subscription's own dates can move first.
 - Build step 6a (migration `20260929200000`, runs only):
   - wakes stay queued with `blocked_reason = 'Waiting for computer hours'`;
+  - a routine's slot is deferred, as while the company is paused: no wake is queued and the cursor
+    stays, so the slot is offered again once hours arrive, and waiting work does not pile up;
   - member messages, turn requests and proposal reviews are not picked (checked again after the
     admission lock) and stay queued;
   - members see the wait through `waitingForHours` in `qorpera_read_company_computer_hours`;
-  - the two direct enqueue calls (legacy clients) are refused (55000);
+  - the two direct enqueue calls (legacy clients) are refused (55000) after their idempotent
+    replay, so a retry of work made before zero still answers;
   - a BEFORE INSERT trigger on `qorpera_execution_runs` stops any path that did not check.
 
   Machines not starting or waking (6b), the finishing window, the zero "out of hours" notice and

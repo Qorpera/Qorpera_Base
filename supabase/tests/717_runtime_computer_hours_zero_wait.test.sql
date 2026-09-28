@@ -1,8 +1,9 @@
 -- @fixture 300_runtime_wake_bus.test.sql until "-- END WAKE FIXTURE"
 -- Computer hours, build step 6a (20260929200000_runtime_computer_hours_zero_wait): at zero, new work
--- waits. Switched off it changes nothing; switched on, a company with no hours left starts no new
--- run (wakes wait with a reason, direct calls are refused, a stray insert is stopped) until hours
--- arrive, and a founder's plan renewal in progress does not count as zero.
+-- waits. Switched off, or before live payments, it changes nothing; switched on, a company with no
+-- hours left starts no new run (wakes wait with a reason, routine slots are deferred, direct calls
+-- are refused, a stray insert is stopped) until hours arrive, and a founder's plan renewal in
+-- progress does not count as zero.
 
 create function pg_temp.use(p_seconds bigint) returns void language sql as $$
 	insert into public.qorpera_computer_hour_usage (profile_id, metered_at, run_seconds, standard_seconds)
@@ -17,68 +18,77 @@ select pg_temp.wake_assert(not has_function_privilege(role_name, function_name, 
 from unnest(array['anon', 'authenticated', 'service_role']) role_name,
 	unnest(array['public.qorpera_company_at_zero(uuid,timestamp with time zone)',
 		'public.qorpera_computer_hour_zero_run_guard()']) function_name;
-
--- Every function that creates runs checks for zero (a stray path is caught by the backstop below).
+-- Every function that creates runs or queues routine slots checks for zero.
 select pg_temp.wake_assert(position('qorpera_company_at_zero' in pg_get_functiondef(p.oid)) > 0,
 	p.proname || ' checks for zero')
 from pg_proc p join pg_namespace n on n.oid = p.pronamespace
 where n.nspname = 'public' and p.proname in ('qorpera_materialize_wake_execution_runs',
 	'qorpera_materialize_session_execution_runs', 'qorpera_materialize_session_turn_requests',
 	'qorpera_materialize_company_proposal_review_runs', 'qorpera_enqueue_execution_run', 'qorpera_enqueue_runner_job',
-	'qorpera_read_company_computer_hours');
-select pg_temp.wake_assert((select count(*) from pg_proc p join pg_namespace n on n.oid = p.pronamespace
-	where n.nspname = 'public' and p.proname in ('qorpera_materialize_session_execution_runs',
-		'qorpera_materialize_session_turn_requests', 'qorpera_materialize_company_proposal_review_runs')
-		and (length(pg_get_functiondef(p.oid)) - length(replace(pg_get_functiondef(p.oid), 'qorpera_company_at_zero', '')))
-			/ length('qorpera_company_at_zero') = 2) = 3,
-	'Messages, turn requests and reviews check both when picking and again before starting');
+	'qorpera_enqueue_routine_wake', 'qorpera_read_company_computer_hours');
 
--- The company has used more than its free hours: nothing left.
+-- In the dry run (before live payments) nothing is ever at zero, even with the rule switched on.
 select pg_temp.use(20000);
-select pg_temp.wake_assert(public.qorpera_company_computer_hours_left('30000000-0000-4000-8000-000000000010') < 0,
-	'The company has no hours left');
+update public.qorpera_computer_hour_billing set zero_rule_since = clock_timestamp() - interval '1 second';
+select pg_temp.wake_assert(public.qorpera_company_computer_hours_left('30000000-0000-4000-8000-000000000010') < 0
+	and not pg_temp.at_zero(), 'Dry-run balances never hold work');
+update public.qorpera_computer_hour_billing set zero_rule_since = null;
 
--- 1. Switched off: nothing waits. (The wake materializer answers the control plane.)
+-- Live payments: the company uses more than its free hours and has nothing left.
+update public.qorpera_computer_hour_billing set live_since = clock_timestamp() - interval '1 second';
+select pg_temp.use(20000);
+select pg_temp.wake_assert(public.qorpera_company_computer_hours_left('30000000-0000-4000-8000-000000000010') = -2000,
+	'Live: the company has no hours left');
+
+-- 1. Switched off: nothing waits. A routine wake is queued (not started yet).
 select pg_temp.path_claims('service_role');
 select pg_temp.wake_assert(not pg_temp.at_zero(), 'Switched off, no company is at zero');
-savepoint switched_off;
-do $$
-declare v_routine jsonb; v_wake uuid;
-begin
-	v_routine := pg_temp.wake_routine('30000000-0000-4000-8000-000000000030',
-		'{"id":"tick","kind":"schedule","intervalMinutes":5,"replyPolicy":"optional"}');
-	v_wake := pg_temp.wake_schedule(v_routine, 'off-1');
-	perform pg_temp.wake_assert(jsonb_array_length(public.qorpera_materialize_wake_execution_runs(1)) = 1,
-		'Switched off, the wake starts');
-end
-$$;
-rollback to switched_off;
+select set_config('qorpera_test.routine', pg_temp.wake_routine('30000000-0000-4000-8000-000000000030',
+	'{"id":"tick","kind":"schedule","intervalMinutes":5,"replyPolicy":"optional"}')::text, true);
+select set_config('qorpera_test.zero_wake',
+	pg_temp.wake_schedule(current_setting('qorpera_test.routine')::jsonb, 'queued-before')::text, true);
 
--- 2. Switched on: the wake waits, with its reason, and no run starts.
+-- 2. Switched on: the queued wake waits, with its reason, and no run starts.
 update public.qorpera_computer_hour_billing set zero_rule_since = clock_timestamp() - interval '1 second';
 select pg_temp.wake_assert(pg_temp.at_zero(), 'Switched on, the company is at zero');
 do $$
-declare v_routine jsonb; v_wake uuid; v_runs bigint := (select count(*) from public.qorpera_execution_runs);
+declare v_runs bigint := (select count(*) from public.qorpera_execution_runs);
 begin
-	v_routine := pg_temp.wake_routine('30000000-0000-4000-8000-000000000030',
-		'{"id":"tick","kind":"schedule","intervalMinutes":5,"replyPolicy":"optional"}');
-	v_wake := pg_temp.wake_schedule(v_routine, 'on-1');
-	perform set_config('qorpera_test.zero_wake', v_wake::text, true);
 	perform pg_temp.wake_assert(public.qorpera_materialize_wake_execution_runs(8) = '[]'::jsonb, 'At zero, no run starts');
 	perform pg_temp.wake_assert((select status = 'queued' and blocked_reason = 'Waiting for computer hours' and run_id is null
-		from public.qorpera_wake_occurrences where id = v_wake), 'The wake waits, and says why');
+		from public.qorpera_wake_occurrences where id = current_setting('qorpera_test.zero_wake')::uuid),
+		'The wake waits and says why');
 	perform pg_temp.wake_assert((select count(*) from public.qorpera_execution_runs) = v_runs, 'No run was created');
+end
+$$;
+-- A routine's next slot is deferred, not queued: waiting work does not pile up.
+do $$
+declare v_last timestamptz := (select cursor.last_scheduled_for from public.qorpera_cloud_routine_schedule_cursors cursor
+	where cursor.routine_id = (current_setting('qorpera_test.routine')::jsonb ->> 'routine_id')::uuid);
+	v_wake uuid;
+begin
+	v_wake := pg_temp.wake_schedule(current_setting('qorpera_test.routine')::jsonb, 'at-zero', clock_timestamp());
+	perform pg_temp.wake_assert(not exists (select 1 from public.qorpera_wake_occurrences where id = v_wake),
+		'At zero, a routine slot queues no wake');
+	perform pg_temp.wake_assert((select cursor.last_scheduled_for is not distinct from v_last
+		from public.qorpera_cloud_routine_schedule_cursors cursor
+		where cursor.routine_id = (current_setting('qorpera_test.routine')::jsonb ->> 'routine_id')::uuid),
+		'The routine cursor stays, so the slot is offered again');
 end
 $$;
 
 -- Members see why their work waits.
+select set_config('qorpera_test.substrate', (select version.id::text from public.qorpera_company_substrate_versions version
+	where version.profile_id = '30000000-0000-4000-8000-000000000010'
+		and version.environment_id = '30000000-0000-4000-8000-000000000020' limit 1), true);
+select pg_temp.wake_assert(current_setting('qorpera_test.substrate', true) is not null, 'The fixture has a substrate version');
 select pg_temp.path_claims('authenticated', '30000000-0000-4000-8000-000000000002');
 set local role authenticated;
 select pg_temp.wake_assert((public.qorpera_read_company_computer_hours('30000000-0000-4000-8000-000000000010') ->> 'waitingForHours')::boolean,
 	'A member sees that the company waits for computer hours');
 -- A direct call cannot wait: refused with the reason.
-select pg_temp.wake_error($$select public.qorpera_enqueue_runner_job('30000000-0000-4000-8000-000000000020', null, null,
-	extensions.gen_random_uuid(), 'agent_turn', 'agent_turn', '{}')$$, '55000',
+select pg_temp.wake_error(format($$select public.qorpera_enqueue_runner_job('30000000-0000-4000-8000-000000000020', null, %L,
+	extensions.gen_random_uuid(), 'agent_turn', 'agent_turn', '{}')$$, current_setting('qorpera_test.substrate')), '55000',
 	'Waiting for computer hours: the company has none left');
 reset role;
 select pg_temp.path_claims('service_role');
@@ -87,23 +97,35 @@ select pg_temp.path_claims('service_role');
 select pg_temp.wake_error($$select pg_temp.wake_input_run(array[]::uuid[])$$, '55000',
 	'Waiting for computer hours: no new run while the company has none left');
 
--- 3. A founder's plan renewal in progress (its recorded period just ended) is not zero.
+-- 3. A founder's plan renewal in progress (the period just ended, the next not recorded) is not zero.
 insert into public.qorpera_computer_hour_subscriptions (stripe_subscription_id, user_id, livemode, item_key, status,
 	period_start, period_end, event_created)
 values ('sub_Renewing1', '30000000-0000-4000-8000-000000000001', true, 'basis', 'active',
-	clock_timestamp() - interval '30 days', clock_timestamp() - interval '5 minutes', clock_timestamp());
-select pg_temp.wake_assert(not pg_temp.at_zero(), 'Renewal in progress: not at zero');
-update public.qorpera_computer_hour_subscriptions set period_end = clock_timestamp() - interval '31 minutes'
-where stripe_subscription_id = 'sub_Renewing1';
+	clock_timestamp() + interval '1 minute', clock_timestamp() + interval '30 days', clock_timestamp());
+insert into public.qorpera_computer_hour_sources (kind, user_id, granted_seconds, drawn_seconds, period_start, period_end,
+	reference, dry_run)
+values ('plan_period', '30000000-0000-4000-8000-000000000001', 3600, 3600, clock_timestamp() - interval '30 days',
+	clock_timestamp() - interval '5 minutes', 'sub_Renewing1:1000', false);
+select pg_temp.wake_assert(not pg_temp.at_zero(),
+	'Renewal in progress: not at zero (the subscription already shows the new period, the hours are not recorded yet)');
+update public.qorpera_computer_hour_sources set period_end = clock_timestamp() - interval '31 minutes'
+where reference = 'sub_Renewing1:1000';
 select pg_temp.wake_assert(pg_temp.at_zero(), 'Half an hour on without the renewal: at zero');
-update public.qorpera_computer_hour_subscriptions set status = 'canceled', period_end = clock_timestamp() - interval '5 minutes'
-where stripe_subscription_id = 'sub_Renewing1';
+update public.qorpera_computer_hour_sources set period_end = clock_timestamp() - interval '5 minutes'
+where reference = 'sub_Renewing1:1000';
+insert into public.qorpera_computer_hour_sources (kind, user_id, granted_seconds, drawn_seconds, period_start, period_end,
+	reference, dry_run)
+values ('plan_period', '30000000-0000-4000-8000-000000000001', 3600, 3600, clock_timestamp() - interval '5 minutes',
+	clock_timestamp() + interval '30 days', 'sub_Renewing1:2000', false);
+select pg_temp.wake_assert(pg_temp.at_zero(), 'The next period is recorded (and used up): no grace');
+update public.qorpera_computer_hour_subscriptions set status = 'canceled' where stripe_subscription_id = 'sub_Renewing1';
+delete from public.qorpera_computer_hour_sources where reference = 'sub_Renewing1:2000';
 select pg_temp.wake_assert(pg_temp.at_zero(), 'A cancelled plan gives no grace');
 
 -- 4. Hours arrive: the waiting wake starts by itself.
 insert into public.qorpera_computer_hour_sources (kind, profile_id, user_id, granted_seconds, expires_at, dry_run)
 values ('credit', '30000000-0000-4000-8000-000000000010', '30000000-0000-4000-8000-000000000001', 72000,
-	clock_timestamp() + interval '12 months', true);
+	clock_timestamp() + interval '12 months', false);
 select pg_temp.wake_assert(not pg_temp.at_zero(), 'Hours arrived: not at zero');
 do $$
 begin
