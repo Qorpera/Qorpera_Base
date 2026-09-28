@@ -8,7 +8,7 @@ import {
 const config = () => {
 	const workerId = randomUUID();
 	return {
-		schema: "qorpera.coding-command-guest/v3",
+		schema: "qorpera.coding-command-guest/v4",
 		workerId,
 		vmId: randomUUID(),
 		bootId: randomUUID(),
@@ -39,19 +39,19 @@ describe("admitted coding guest profile", () => {
 		{ homePath: "/workspace/home writable" },
 		{ workspacePath: "/workspace/repository" },
 		{ uid: 0 },
-		{ schema: "qorpera.coding-command-guest/v2" },
+		{ schema: "qorpera.coding-command-guest/v3" },
 		{ token: "hidden" },
 	])("rejects unsafe or ambiguous path/identity profile %j", (change) => {
 		expect(() => parseCodingGuestConfiguration({ ...config(), ...change })).toThrow();
 	});
 	it.each([
 		{ maxLogBytes: 0 },
-		{ memoryBytes: 1024 },
-		{ tasksMax: 100000 },
-		{ cpuQuotaPercent: 0 },
-		{ maxTimeoutMs: 1800001 },
+		{ maxLogBytes: 1073741825 },
+		// The per-command limits are gone: a profile naming one is refused.
+		{ memoryBytes: 2147483648 },
+		{ maxTimeoutMs: 1800000 },
 		{ extra: 1 },
-	])("rejects resource ceilings outside the supported profile %j", (change) => {
+	])("rejects a log bound outside the supported profile, or any other field %j", (change) => {
 		const c = config();
 		expect(() =>
 			parseCodingGuestConfiguration({ ...c, resourceProfile: { ...c.resourceProfile, ...change } }),

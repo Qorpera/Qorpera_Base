@@ -98,6 +98,22 @@ describe("protected company-scoped native office routes", () => {
 		},
 	);
 
+	it("accepts one company route that covers every computer of that company", async () => {
+		const { current, routePath, document } = await officeEnvironment();
+		const route = { ...document.offices[0], url: "https://office.example.test/office/{companyComputerId}/native" };
+		await writeFile(routePath, JSON.stringify({ ...document, offices: [route] }));
+		expect(lxdNativeCompanyRuntimeFromEnvironment(current)?.offices?.[0]?.url).toBe(route.url);
+		// Still one route per company environment, and no half-filled template.
+		for (const offices of [
+			[route, { ...route, url: document.offices[0].url }],
+			[{ ...route, url: "https://office.example.test/{companyComputerId}/native" }],
+			[{ ...route, url: "https://office.example.test/office/{companyComputerId}/native?x=1" }],
+		]) {
+			await writeFile(routePath, JSON.stringify({ ...document, offices }));
+			expect(() => lxdNativeCompanyRuntimeFromEnvironment(current)).toThrow();
+		}
+	});
+
 	it.each(["scope", "target", "token", "url", "company", "unknown-field", "unknown-document", "empty"])(
 		"rejects ambiguous or malformed route authority (%s)",
 		async (kind) => {

@@ -145,7 +145,7 @@ begin
 	v_turn5 := pg_temp.next_turn('fix-send');
 	perform set_config('qorpera_test.turn5',v_turn5::text,true);
 	v_context := public.qorpera_read_coding_turn_context(v_turn5 -> 'binding');
-	perform pg_temp.wake_assert(v_context ->> 'schema' = 'qorpera.coding-turn-context/v1' and v_context ->> 'workerId' = v_worker.id::text
+	perform pg_temp.wake_assert(v_context ->> 'schema' = 'qorpera.coding-turn-context/v2' and v_context ->> 'workerId' = v_worker.id::text
 		and (v_context ->> 'sequence')::int = 5 and (v_context ->> 'omittedEarlierTurns')::int = 0
 		and v_context -> 'input' = jsonb_build_object('from','member','text','B','answers',
 			jsonb_build_object('question','Which retry cap?','options',jsonb_build_array('A: 3 tries','B: 5 tries'))),

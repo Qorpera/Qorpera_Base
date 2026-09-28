@@ -1,5 +1,5 @@
 {
-  "schema": "qorpera.coding-command-installation/v3",
+  "schema": "qorpera.coding-command-installation/v4",
   "state": "requires-reviewed-image-installation",
   "entrypoint": {
     "source": "packages/runtime/src/cloud-coding-command-guest.ts",
@@ -11,7 +11,7 @@
     "path": "/run/qorpera-coding/<workerId>/configuration/guest.json",
     "owner": "root:root",
     "mode": "0444",
-    "schema": "qorpera.coding-command-guest/v3",
+    "schema": "qorpera.coding-command-guest/v4",
     "requiredFields": [
       "workerId",
       "vmId",
@@ -40,7 +40,7 @@
     "One image coding uid/gid, >=1000 and below 200000, with no privileged groups: only sessions whose NAS volume predates member machines run as it; every other session runs as its own uid/gid in 200000-524287, registered per boot",
     "coding-user-owned isolated repository workspace per session",
     "Each attached session's NAS data volume at /workspace/<workerId> and separate protected NAS custody volume at /var/lib/qorpera-coding/<workerId>, hot-plugged over virtiofs; no local directory fallback",
-    "Explicit resourceProfile compatible with the admitted machine",
+    "resourceProfile names only the log bound (maxLogBytes): a command has no time, memory, CPU or task limit of its own; sessions share the machine by equal cgroup weights, and qorpera-coding.slice keeps MemoryMax=90% so the guest's own control (lxd-agent, systemd, the watchdog) always has memory",
     "Pinned Node/Python/native toolchain and browser dependencies selected in the signed image recipe",
     "No self-update: apt-daily.timer, apt-daily-upgrade.timer, apt-daily.service, apt-daily-upgrade.service and unattended-upgrades.service masked (links from /etc/systemd/system to /dev/null); every storage-checked action refuses otherwise with RUNNER_IMAGE_SELF_UPDATE_ENABLED"
   ],
@@ -51,14 +51,14 @@
     "defaultOutputPageBytes": 4096,
     "defaultMaxLogBytes": 67108864,
     "maxLogBytesCeiling": 1073741824,
-    "maxTimeoutMsCeiling": 1800000,
     "resourceProfileFields": [
-      "maxTimeoutMs",
-      "memoryBytes",
-      "tasksMax",
-      "cpuQuotaPercent",
       "maxLogBytes"
-    ]
+    ],
+    "observationPath": "/run/qorpera-coding/observation.json",
+    "observationSessionPath": "/run/qorpera-coding/observation-<workerId>.json",
+    "observationMaxBytes": 65536,
+    "observedCommandsPerSession": 64,
+    "commandPreviewBytes": 300
   },
   "credentialPolicy": "No provider, GitHub, cloud-control, member or office credentials enter the command environment or coding user home.",
   "installationPerformed": false,
