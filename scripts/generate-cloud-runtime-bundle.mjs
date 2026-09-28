@@ -91,6 +91,7 @@ export async function cloudRuntimeBundle(root = repository) {
 	await include("packages/runner-orchestrator/src/lxd-office-image-installation-cli.ts");
 	await include("packages/runner-orchestrator/src/lxd-office-fleet-cli.ts");
 	await include("packages/runner-orchestrator/src/lxd-office-fleet-installation-cli.ts");
+	await include("packages/runner-orchestrator/src/lxd-office-node-base-cli.ts");
 	await include("scripts/package-lxd-office-fleet.mjs");
 	for (const name of ["office-code-package-control.ts", "office-code-package-measure.ts"]) await include(`deploy/lxd-company-computer-guest/${name}`);
 	await include("packages/runner-orchestrator/src/lxd-office-code-package-loader.ts");

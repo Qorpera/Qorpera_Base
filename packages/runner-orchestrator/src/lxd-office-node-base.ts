@@ -1,4 +1,4 @@
-import { lstat, readFile } from "node:fs/promises";
+import { lstat, readFile, realpath } from "node:fs/promises";
 import { isIP } from "node:net";
 import { isDeepStrictEqual } from "node:util";
 import {
@@ -8,13 +8,14 @@ import {
 	LxdUnixClient,
 } from "./lxd-client.ts";
 import { officeDigest, officeRecord, officeSha } from "./lxd-office-image-provenance.ts";
-import { readLxdOfficeProtectedFile } from "./lxd-office-physical-host.ts";
+import { assertLxdOfficeHostNamespace, readLxdOfficeProtectedFile } from "./lxd-office-physical-host.ts";
 import {
 	type LxdOfficeMountPolicy,
 	type LxdOfficePhysicalPolicy,
 	officePhysicalPath,
 } from "./lxd-office-physical-policy.ts";
 import { readRuntimeNodeHost } from "./runtime-node-host.ts";
+import { parseRuntimeNodeInventoryPolicy } from "./runtime-node-inventory.ts";
 
 // Automatic company machine setup, step 1 (design page "Company Machine Setup"). A node declares once
 // where its company machines live (LXD project, network, pool, the local journal mount, the NAS and the
@@ -26,6 +27,9 @@ import { readRuntimeNodeHost } from "./runtime-node-host.ts";
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const LXD_NAME = /^[a-z][a-z0-9-]{0,62}$/;
 const JOURNAL_FILESYSTEMS = ["ext4", "xfs", "btrfs", "zfs"];
+// The guest binding refuses a scratch folder under any of these; a root under one could never be used.
+const FORBIDDEN_SEGMENT = /(?:^|\/)(?:live|company-live|identity|credentials|\.codex|\.claude)(?:\/|$)/;
+const under = (path: string, root: string) => path === root || path.startsWith(`${root}/`);
 
 export interface LxdOfficeNodeBaseConfig {
 	schema: "qorpera.office-node-base-config/v1";
@@ -85,18 +89,24 @@ export function parseLxdOfficeNodeBaseConfig(value: unknown): LxdOfficeNodeBaseC
 	const from = port(ports.from),
 		to = port(ports.to);
 	const journalMount = officePhysicalPath(journal.mountPoint),
-		mountRoot = officePhysicalPath(workbench.mountRoot);
+		mountRoot = officePhysicalPath(workbench.mountRoot),
+		socketPath = officePhysicalPath(c.socketPath);
 	if (
+		// Two ports per machine (viewer and native), so an even count.
 		to - from < 1 ||
-		journalMount === mountRoot ||
-		journalMount.startsWith(`${mountRoot}/`) ||
-		mountRoot.startsWith(`${journalMount}/`)
+		(to - from + 1) % 2 !== 0 ||
+		under(journalMount, mountRoot) ||
+		under(mountRoot, journalMount) ||
+		FORBIDDEN_SEGMENT.test(mountRoot) ||
+		// The policy refuses a socket under a machine's scratch folder or journal.
+		under(socketPath, mountRoot) ||
+		under(socketPath, journalMount)
 	)
 		throw new Error("INVALID_OFFICE_NODE_BASE_CONFIG");
 	return {
 		schema: c.schema,
 		nodeId: c.nodeId,
-		socketPath: officePhysicalPath(c.socketPath),
+		socketPath,
 		project: lxdName(c.project),
 		network: lxdName(c.network),
 		storagePool: lxdName(c.storagePool),
@@ -119,8 +129,10 @@ export interface LxdOfficeNodeBasePorts {
 		signal: AbortSignal,
 	): Promise<LxdOfficeInfrastructure>;
 	mountInfo(): Promise<string>;
-	/** The node observer's enrolled host record, or null when this node has no observer configuration. */
-	observerHost(): Promise<unknown>;
+	/** Refuses unless this process sees the host's own mount namespace (PID 1's). */
+	hostNamespace(): Promise<void>;
+	/** The node observer's enrolled node id and host; refuses when the node has no observer configuration. */
+	observer(): Promise<{ nodeId: string; host: LxdOfficeNodeBase["host"] }>;
 }
 
 function decodeMountField(value: string): string {
@@ -162,6 +174,7 @@ export function officeNodeJournalMount(mountInfo: string, mountPoint: string): L
 		!m.superOptions.includes("rw")
 	)
 		throw new Error("OFFICE_NODE_BASE_JOURNAL_UNSUITABLE");
+	if (m.source.length < 1 || m.source.length > 4096) throw new Error("OFFICE_NODE_BASE_JOURNAL_UNSUITABLE");
 	return { mountPoint, root: "/", filesystem: m.filesystem, source: m.source };
 }
 
@@ -173,6 +186,7 @@ export async function measureLxdOfficeNodeBase(
 	signal: AbortSignal,
 ): Promise<LxdOfficeNodeBase> {
 	const c = parseLxdOfficeNodeBaseConfig(configValue);
+	await ports.hostNamespace();
 	const machineIdSha256 = officeSha(await ports.machineIdSha256(signal));
 	const socketGid = await ports.socketGid(c.socketPath);
 	if (!Number.isSafeInteger(socketGid) || socketGid < 1 || socketGid > 4294967294)
@@ -194,8 +208,9 @@ export async function measureLxdOfficeNodeBase(
 	};
 	// The node observer checks the same host; a different answer means the configuration names another
 	// socket or the observer's record is stale. Either way, stop before anything is built on it.
-	const observed = await ports.observerHost();
-	if (observed !== null && !isDeepStrictEqual(observed, host)) throw new Error("OFFICE_NODE_BASE_OBSERVER_DIFFERS");
+	const observed = await ports.observer();
+	if (observed.nodeId !== c.nodeId || !isDeepStrictEqual(observed.host, host))
+		throw new Error("OFFICE_NODE_BASE_OBSERVER_DIFFERS");
 	return {
 		schema: "qorpera.office-node-base/v1",
 		nodeId: c.nodeId,
@@ -214,6 +229,33 @@ export async function measureLxdOfficeNodeBase(
 
 const OBSERVER_CONFIG = "/etc/qorpera/node-observer.json";
 
+/** The node observer's configuration ({registryUrl, policy}) reduced to what the base compares. */
+export function lxdOfficeNodeObserverRecord(bytes: Buffer): { nodeId: string; host: LxdOfficeNodeBase["host"] } {
+	let value: unknown;
+	try {
+		value = JSON.parse(new TextDecoder("utf8", { fatal: true }).decode(bytes));
+	} catch {
+		throw new Error("OFFICE_NODE_BASE_OBSERVER_UNREADABLE");
+	}
+	let policy: ReturnType<typeof parseRuntimeNodeInventoryPolicy>;
+	try {
+		policy = parseRuntimeNodeInventoryPolicy(officeRecord(value, ["registryUrl", "policy"]).policy);
+	} catch {
+		throw new Error("OFFICE_NODE_BASE_OBSERVER_UNREADABLE");
+	}
+	return { nodeId: policy.nodeId, host: { ...policy.host } };
+}
+
+async function protectedParents(path: string): Promise<void> {
+	let current = path;
+	while (current !== "/") {
+		current = current.slice(0, current.lastIndexOf("/")) || "/";
+		const info = await lstat(current);
+		if (!info.isDirectory() || info.uid !== 0 || (info.mode & 0o6022) !== 0)
+			throw new Error("OFFICE_NODE_BASE_SOCKET_UNPROTECTED");
+	}
+}
+
 /** The production readers: the node's own files and its local LXD daemon. */
 export function lxdOfficeNodeBasePorts(
 	socketPath: string,
@@ -222,9 +264,16 @@ export function lxdOfficeNodeBasePorts(
 	const lxd = client ?? new LxdUnixClient(socketPath);
 	return {
 		machineIdSha256: async (signal) => (await readRuntimeNodeHost(signal)).machineIdSha256,
+		// The same custody the office gate and the node observer require of the socket.
 		socketGid: async (path) => {
+			await protectedParents(path);
 			const socket = await lstat(path);
-			if (!socket.isSocket() || socket.uid !== 0 || (socket.mode & 0o7777) !== 0o660)
+			if (
+				!socket.isSocket() ||
+				socket.uid !== 0 ||
+				(socket.mode & 0o7777) !== 0o660 ||
+				(await realpath(path)) !== path
+			)
 				throw new Error("OFFICE_NODE_BASE_SOCKET_UNPROTECTED");
 			return socket.gid;
 		},
@@ -232,18 +281,18 @@ export function lxdOfficeNodeBasePorts(
 		infrastructure: (project, network, pool, signal) =>
 			lxd.inspectOfficeInfrastructure(project, network, pool, signal),
 		mountInfo: () => readFile("/proc/self/mountinfo", "utf8"),
-		observerHost: async () => {
+		hostNamespace: async () => {
+			const bootId = (await readFile("/proc/sys/kernel/random/boot_id", "utf8")).trim();
+			await assertLxdOfficeHostNamespace(bootId);
+		},
+		observer: async () => {
 			let bytes: Buffer;
 			try {
 				bytes = await readLxdOfficeProtectedFile(OBSERVER_CONFIG, 65536);
-			} catch (error) {
-				if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return null;
-				throw error;
+			} catch {
+				throw new Error("OFFICE_NODE_BASE_OBSERVER_UNAVAILABLE");
 			}
-			const config = JSON.parse(new TextDecoder("utf8", { fatal: true }).decode(bytes)) as {
-				policy?: { host?: unknown };
-			};
-			return config.policy?.host ?? null;
+			return lxdOfficeNodeObserverRecord(bytes);
 		},
 	};
 }

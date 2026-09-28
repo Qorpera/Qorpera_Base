@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { isDeepStrictEqual } from "node:util";
+import { officeRecord } from "./lxd-office-image-provenance.ts";
 import {
 	type LxdOfficeNodeBase,
 	lxdOfficeNodeBasePorts,
@@ -38,8 +39,16 @@ async function main(argv: string[]): Promise<number> {
 		process.stdout.write(`${JSON.stringify({ base, sha256: lxdOfficeNodeBaseSha256(base) }, null, 2)}\n`);
 		return 0;
 	}
-	const stored = (await readJson(basePath)) as { base?: LxdOfficeNodeBase };
-	const same = isDeepStrictEqual(stored.base, base);
+	// A stored base is exactly what `measure` printed: {base, sha256}, with the digest of that base.
+	let stored: LxdOfficeNodeBase;
+	try {
+		const file = officeRecord(await readJson(basePath), ["base", "sha256"]);
+		stored = file.base as LxdOfficeNodeBase;
+		if (file.sha256 !== lxdOfficeNodeBaseSha256(stored)) throw new Error();
+	} catch {
+		throw new Error("OFFICE_NODE_BASE_STORED_INVALID");
+	}
+	const same = isDeepStrictEqual(stored, base);
 	process.stdout.write(
 		same
 			? `Same node base (${lxdOfficeNodeBaseSha256(base)}).\n`
@@ -54,7 +63,7 @@ main(process.argv.slice(2)).then(
 	},
 	(error: unknown) => {
 		const message =
-			error instanceof Error && /^[A-Z_]{3,80}$/.test(error.message)
+			error instanceof Error && /^[A-Z0-9_]{3,80}$/.test(error.message)
 				? error.message
 				: "OFFICE_NODE_BASE_UNCONFIRMED";
 		process.stderr.write(`${message}\n`);

@@ -30,7 +30,7 @@ On each host, prepare the existing office installation inputs:
   bootstrap. Import the image into the policy's project on both hosts before
   publishing either offer. Existing LXD project/network names alone do not
   establish image readiness.
-- The dedicated non-root service user, local ext4 journal mount, journal
+- The dedicated non-root service user, local journal mount (ext4, xfs, btrfs or zfs), journal
   directory and existing `adoption.lock` inode. Ownership, permissions, mount
   source and mount namespace must pass the existing physical gate and
   process-owned kernel flock checks. The host mount namespace record comes from
@@ -75,12 +75,17 @@ example `/etc/qorpera-node/office-node-base.json`:
 }
 ```
 
-Then, as root (read-only; it changes nothing):
+Then, as root (the tool only reads; the two file steps store its output):
 
 ```sh
-node qorpera-office-node-base.cjs measure /etc/qorpera-node/office-node-base.json > office-node-base.measured.json
-node qorpera-office-node-base.cjs check /etc/qorpera-node/office-node-base.json office-node-base.measured.json
+node qorpera-office-node-base.cjs measure /etc/qorpera-node/office-node-base.json > /root/office-node-base.measured.json
+install -o root -g root -m 0444 /root/office-node-base.measured.json /etc/qorpera-node/office-node-base.measured.json
+node qorpera-office-node-base.cjs check /etc/qorpera-node/office-node-base.json /etc/qorpera-node/office-node-base.measured.json
 ```
+
+Both files are read as protected files: absolute paths, root-owned, not group- or
+other-writable, no hard or symbolic links, every parent directory root-owned
+and not group- or other-writable (so not under `/tmp`).
 
 - `measure` prints the base and its digest:
   - the host identity (machine id, LXD socket and its group, the daemon's
@@ -89,11 +94,13 @@ node qorpera-office-node-base.cjs check /etc/qorpera-node/office-node-base.json 
     compares them;
   - the journal mount (one local, whole, writable ext4/xfs/btrfs/zfs mount);
   - the NAS address, the scratch mount root and the port range.
-- It refuses if the host differs from the node observer's enrolled record
-  (`/etc/qorpera/node-observer.json`).
+- It refuses unless it runs in the host's own mount namespace, and unless the
+  node observer's configuration (`/etc/qorpera/node-observer.json`) exists and
+  names the same node id and host.
 - `check` measures again and compares with a stored base. Exit 0: same.
-  1: the node changed. 2: usage or an error, printed as one short code with no
-  values. Use it as the pre-check before any machine is prepared.
+  1: the node changed. 2: usage or an error, including a stored file that is not
+  exactly what `measure` printed; errors print one short code with no values.
+  Use it as the pre-check before any machine is prepared.
 - A machine's physical policy takes `host`, `infrastructure` and the journal
   mount from the base, `guest.project/network/storagePool` from `guest`, and
   `workbench.serverAddress` from `workbench`. The waiting machine and its size
@@ -193,7 +200,7 @@ hardware yet. Automatic setup (step 3 on the design page) builds on it, so run
 the acceptance above once by hand first, with a test company. Fill the node
 parts of both candidates' policies from each node's measured base. Record the
 fleet status, the selected node, the unit states and the first ordinary
-computer operation. Put the evidence in the fleet runbook's acceptance history.
+computer operation, and hand them over with the proof run (PR comment and registry line).
 
 Local proofs: `node scripts/test-runtime-office-fleet.mjs` exercises actual SQL
 admission with synthetic host measurements. The focused
