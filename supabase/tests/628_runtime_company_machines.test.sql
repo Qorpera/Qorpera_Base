@@ -204,7 +204,7 @@ begin
 		and (select count(*) from public.qorpera_company_machines) = 1,'Name taken: '||v_again::text);
 	v_again := pg_temp.start('m-huge','{"name":"huge","purpose":"Too big","cpus":16,"memoryGiB":8,"diskGiB":40,"lifetime":"task"}');
 	perform pg_temp.wake_assert(v_again #>> '{refused,reason}' = 'MACHINE_TOO_LARGE'
-		and v_again #>> '{refused,message}' = 'the largest machine a node makes is 8 CPUs, 32 GiB memory and 300 GiB disk'
+		and v_again #>> '{refused,message}' = 'no server holds that size; the largest are 8 CPUs, 32 GiB memory and 300 GiB disk, not always on one server'
 		and pg_temp.machine('huge') is null,'A machine that can never fit is refused and not kept: '||v_again::text);
 	v_again := pg_temp.start('m-deep','{"name":"deep","purpose":"More disk than a node gives","cpus":1,"memoryGiB":1,"diskGiB":400,"lifetime":"task"}');
 	perform pg_temp.wake_assert(v_again #>> '{refused,reason}' = 'MACHINE_TOO_LARGE' and pg_temp.machine('deep') is null,

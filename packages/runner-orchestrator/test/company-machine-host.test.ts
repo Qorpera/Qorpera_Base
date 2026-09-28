@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { chmod, mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, realpath, rm, utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -359,6 +359,48 @@ describe("company machine host", () => {
 		Object.assign(g.entry, { desiredState: "deleted", removeDue: true, reserved: false });
 		expect(await g.host.pass(g.signal)).toEqual([{ placementId: id(6), step: "release", state: "done" }]);
 		expect(g.methods()).toContain("qorpera_release_company_machine");
+	});
+
+	it("settles a start LXD no longer knows from the VM itself", async () => {
+		const f = await fixture();
+		const effect = f.client.inspectInstanceOperation.getMockImplementation();
+		if (!effect) throw new Error("fixture");
+		let forgot = false;
+		f.client.inspectInstanceOperation.mockImplementation(async () => {
+			const state = await effect();
+			// LXD started it, then forgot the operation (a daemon restart).
+			if (f.client.submitInstanceOperation.mock.calls.at(-1)?.[1].action === "start" && !forgot) {
+				forgot = true;
+				throw new Error("LXD_OPERATION_UNKNOWN");
+			}
+			return state;
+		});
+		expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "start", state: "done" }]);
+		expect(f.client.submitInstanceOperation.mock.calls.map((call) => call[1].action)).toEqual(["create", "start"]);
+	});
+
+	it("settles an effect LXD never confirmed once any operation it could have started is long over", async () => {
+		const f = await fixture();
+		// The create was written down but LXD refused it (or the executor stopped before it heard back).
+		f.client.submitInstanceOperation.mockRejectedValueOnce(new Error("LXD_REQUEST_FAILED"));
+		expect((await f.host.pass(f.signal))[0]).toMatchObject({
+			state: "failed",
+			code: "COMPANY_MACHINE_RECOVERY_REQUIRED",
+		});
+		expect((await f.host.pass(f.signal))[0]).toMatchObject({
+			state: "failed",
+			code: "COMPANY_MACHINE_RECOVERY_REQUIRED",
+		});
+		const dispatch = join(state.controlPath, "company-machines", id(6), "000000.json");
+		const old = new Date(Date.now() - 11 * 60_000);
+		await utimes(dispatch, old, old);
+		// No VM: the create did not happen, so it is made again.
+		expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "start", state: "done" }]);
+		expect(f.client.submitInstanceOperation.mock.calls.map((call) => call[1].action)).toEqual([
+			"create",
+			"create",
+			"start",
+		]);
 	});
 
 	it("keeps trusting the helper of an earlier image this node still runs, and nothing else", async () => {
