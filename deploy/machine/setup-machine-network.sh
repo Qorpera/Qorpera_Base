@@ -12,11 +12,15 @@
 # LXD applies drop and reject rules before allow rules, and its baseline DHCP
 # and DNS allowances do not open a hole in them (seen on node 2, 2026-09-28,
 # deploy/test-machine/README.md). So the dropped ranges leave out exactly two
-# addresses: the bridge's gateway, where only DNS (53) and DHCP (67) stay open,
-# and 255.255.255.255, where a DHCP discover goes. Nothing may come in.
-# Machines on the bridge cannot reach each other either: the rest of the bridge
-# is dropped, and their NICs carry port isolation and MAC/IPv4 filtering
+# addresses: the bridge's gateway, where TCP and UDP stay open only for DNS (53)
+# and DHCP (67) (ICMP to it is not dropped), and 255.255.255.255, where a DHCP
+# discover goes. Nothing may come in. Machines on the bridge cannot reach each
+# other: their NICs carry port isolation and MAC/IPv4 filtering
 # (company-machine.ts).
+#
+# An ACL made before 2026-09-28 drops 10/8 and 240/4 whole, so its machines get
+# no address; the script refuses it. Replace it by hand, then run this again:
+#   lxc network unset <network> security.acls && lxc network acl delete <network>-egress
 #
 # Idempotent: an existing network or ACL is checked, never replaced.
 set -euo pipefail
@@ -36,7 +40,7 @@ DROP=(
 )
 [[ $(id -u) -eq 0 ]] || { echo "run as root" >&2; exit 1; }
 [[ $NET =~ ^[a-z][a-z0-9-]{0,14}$ ]] || { echo "invalid network name" >&2; exit 1; }
-[[ $CIDR =~ ^10\.[0-9]{1,3}\.[0-9]{1,3}\.1/2[0-4]$ ]] || { echo "gateway must be 10.x.y.1/20-24" >&2; exit 1; }
+[[ $CIDR =~ ^10\.(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})\.1/2[0-4]$ ]] || { echo "gateway must be 10.x.y.1/20-24" >&2; exit 1; }
 GATEWAY=${CIDR%/*}
 # A block without one address: the sibling of that address's path at every prefix length below the block's.
 without() {
@@ -69,12 +73,12 @@ lxc network set "$NET" security.acls="$ACL" security.acls.default.egress.action=
 lxc network show "$NET"
 lxc network acl show "$ACL"
 RULES=$(lxc network acl show "$ACL")
+for whole in 10.0.0.0/8 240.0.0.0/4; do
+	# An ACL from before 2026-09-28 (see the top of this script to replace it).
+	! grep -q -- "destination: $whole\$" <<<"$RULES" || { echo "ACL drops $whole whole: machines would get no address" >&2; exit 1; }
+done
 for destination in "${DROP[@]}"; do
 	grep -q -- "destination: $destination\$" <<<"$RULES" || { echo "ACL misses $destination" >&2; exit 1; }
-done
-for whole in 10.0.0.0/8 240.0.0.0/4; do
-	# An ACL from before 2026-09-28 dropped these whole, DHCP and DNS included: replace it by hand.
-	! grep -q -- "destination: $whole\$" <<<"$RULES" || { echo "ACL drops $whole whole: machines would get no address" >&2; exit 1; }
 done
 [[ $(grep -c -- "destination: $GATEWAY/32\$" <<<"$RULES") -eq 2 ]] || { echo "ACL misses the gateway's port rules" >&2; exit 1; }
 [[ $(lxc network get "$NET" ipv4.address) == "$CIDR" ]] || { echo "network $NET has another address" >&2; exit 1; }

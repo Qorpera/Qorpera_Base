@@ -29,9 +29,9 @@ An agent picks the size (CPUs, memory, disk). Inside, the agent's commands run a
 `setup-machine-network.sh` creates the machine network (default `machine-net`, `10.88.0.1/22`). It is a NAT bridge with IPv4 only and an ACL that drops these destinations:
 
 - 0/8, 10/8, 100.64/10, 127/8, 169.254/16, 172.16/12, 192.0.0/24, 192.168/16, 198.18/15, 224/4 and 240/4;
-- except two addresses, left out of those ranges by exact CIDRs (61 drop rules in all): the bridge's gateway, which answers only DNS (53) and DHCP (67), and 255.255.255.255, where a DHCP discover goes.
+- except two addresses, left out of those ranges by exact CIDRs (61 ranges, plus 2 rules for the gateway's ports): the bridge's gateway, where TCP and UDP are open only for DNS (53) and DHCP (67) (ICMP to it is not dropped), and 255.255.255.255, where a DHCP discover goes.
 
-LXD applies drop and reject rules before allow rules, and its baseline DHCP and DNS allowances do not open a hole in them (seen on node 2, `deploy/test-machine/README.md`). An ACL that drops 10/8 or 240/4 whole leaves machines without an address; the script refuses one it finds.
+LXD applies drop and reject rules before allow rules, and its baseline DHCP and DNS allowances do not open a hole in them (seen on node 2, `deploy/test-machine/README.md`). An ACL that drops 10/8 or 240/4 whole leaves machines without an address; the script refuses one it finds (replace it: `lxc network unset <network> security.acls && lxc network acl delete <network>-egress`, then run the script again).
 
 Together these cover the NAS and the node LAN, Tailscale, cloud metadata, the other bridges and the node itself. Other outbound traffic is allowed and all inbound is dropped. Each machine's NIC carries MAC and IPv4 filtering and port isolation, so machines on the bridge cannot reach each other. Offices refuse networks with ACLs, so this network is used by machines only.
 
