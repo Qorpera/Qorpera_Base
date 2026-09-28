@@ -44,7 +44,7 @@ select public.qorpera_configure_runtime_node(pg_temp.node_policy(false),1);
 -- A new policy version (here: disabled) fences every admission, an existing restart included, until a fresh receipt.
 select pg_temp.wake_assert(pg_temp.node_reserve()->>'reason'='NODE_OBSERVATION_UNAVAILABLE','a new node policy fences even an existing restart until the next receipt');
 select public.qorpera_test_observe_runtime_node(pg_temp.node_observation());
--- Switched off (20260928180000): the reservation the node holds, reserved and awake, is admitted again; a new one is not.
+-- Switched off (20260928180700): the reservation the node holds, reserved and awake, is admitted again; a new one is not.
 select pg_temp.wake_assert(pg_temp.node_reserve()->>'state'='reserved','a disabled node keeps the reservation it holds');
 select pg_temp.wake_assert(pg_temp.node_reserve(true)->>'reason'='NODE_DISABLED','a disabled node admits no new reservation');
 select pg_temp.wake_assert(pg_temp.node_capacity()->>'allocatedCpuMillis'='3000','disabled node retains allocated CPU');
