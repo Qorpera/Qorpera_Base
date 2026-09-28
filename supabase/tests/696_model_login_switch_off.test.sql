@@ -170,6 +170,47 @@ reset session authorization;
 update public.qorpera_native_provider_account_metadata set provider_account_identity = current_setting('qorpera_test.so_account')
 where connection_id = current_setting('qorpera_test.so_node')::uuid;
 
+-- 3b. Only the account recorded for the node's current login counts. A newer version of the node
+-- connection holds another login (another account); version 1's record of the same account does not
+-- make it the member's replaced login.
+do $$
+declare v_identity public.qorpera_member_compute_identities%rowtype;
+begin
+	select * into strict v_identity from public.qorpera_member_compute_identities
+	where id = current_setting('qorpera_test.so_identity')::uuid;
+	insert into public.qorpera_native_credential_capsules(id,profile_id,compute_identity_id,ownership_kind,owner_user_id,
+		owner_scope_key,provider,native_harness,encrypted_capsule_reference,attestation_policy_sha256,created_by_user_id)
+	values ('69600000-0000-4000-8000-0000000000a1',v_identity.profile_id,v_identity.id,v_identity.ownership_kind,
+		v_identity.owner_user_id,v_identity.owner_scope_key,'openai','codex-cli','capsule/69600000-0000-4000-8000-0000000000a1',
+		repeat('a',64),v_identity.owner_user_id);
+	insert into public.qorpera_provider_connection_versions(connection_id,version,authentication_mode,native_harness,
+		secret_reference,provider_account_reference,provider_account_email,billing_source,consent_version,
+		consented_by_user_id,allow_autonomous,commercial_approval_reference,quota_policy,created_by_user_id,
+		credential_capsule_id,authorization_state,max_native_concurrency)
+	select previous.connection_id, previous.version + 1, previous.authentication_mode, previous.native_harness,
+		previous.secret_reference, previous.provider_account_reference, previous.provider_account_email,
+		previous.billing_source, previous.consent_version, previous.consented_by_user_id, previous.allow_autonomous,
+		previous.commercial_approval_reference, previous.quota_policy, previous.created_by_user_id,
+		'69600000-0000-4000-8000-0000000000a1', 'active', previous.max_native_concurrency
+	from public.qorpera_provider_connection_versions previous
+	where previous.connection_id = current_setting('qorpera_test.so_node')::uuid
+	order by previous.version desc limit 1;
+	insert into public.qorpera_native_provider_account_metadata(connection_id, connection_version, provider_account_identity)
+	select version.connection_id, version.version, repeat('b',64)
+	from public.qorpera_provider_connection_versions version
+	where version.connection_id = current_setting('qorpera_test.so_node')::uuid
+		and version.credential_capsule_id = '69600000-0000-4000-8000-0000000000a1';
+end $$;
+set local session authorization qorpera_secret_broker;
+select pg_temp.so_expect(pg_temp.so_pass(), '0/0/0', 'an earlier login''s account does not match the node''s current login');
+reset session authorization;
+-- The current login turns out to be the same account after all: its own record now counts.
+update public.qorpera_native_provider_account_metadata seen set provider_account_identity = current_setting('qorpera_test.so_account')
+from public.qorpera_provider_connection_versions version
+where seen.connection_id = current_setting('qorpera_test.so_node')::uuid
+	and version.connection_id = seen.connection_id and version.version = seen.connection_version
+	and version.credential_capsule_id = '69600000-0000-4000-8000-0000000000a1';
+
 -- 4. A move the database refuses (the vault login's provider is not enabled) changes nothing.
 update public.qorpera_provider_execution_policies set enablement_status = 'disabled', disabled_reason = 'Switch-off test'
 where provider = 'openai' and authentication_mode = 'native_subscription' and native_harness = 'codex-cli';

@@ -9,16 +9,19 @@
 --      vault already record for usage: sha256 of 'openai-account:' || account_id; a login's account never
 --      changes, since a renewal must keep it);
 --   2. finds, while the company takes new sign-ins in the vault, each active node Codex connection of the
---      same member that is older than the member's vault connection and whose recorded account is the same;
+--      same member that is older than the member's vault connection and whose current login (the node
+--      capsule its latest version uses) was recorded as the same account;
 --   3. moves every sponsor binding that pays with it to the vault connection (qorpera_move_member_login_pins,
 --      20260928231000: routines, coding sessions and agent work follow the member's live login);
---   4. once no queued or leased job, live lease, queued wake or queued turn still names the old login,
---      revokes it exactly as the member's own Disconnect does (qorpera_revoke_native_provider_connection).
+--   4. once no queued or leased job, live lease, queued wake, queued turn or queued change review still
+--      names the old login, makes the same updates as the member's own Disconnect
+--      (qorpera_revoke_native_provider_connection): the connection, its native capsules and versions, and
+--      its live leases are revoked.
 -- Another account, another member's login, a Claude login, a node login newer than the vault login and a
 -- company switched back to node sign-ins are left alone. A busy row makes the pair wait for the next pass.
 -- Locks: rows only (the move's own row locks, taken without waiting; the old connection row, taken without
--- waiting; then the rows Disconnect updates). No company-wide lock.
-set local lock_timeout = '10s';
+-- waiting; then the rows Disconnect updates, waiting at most 2 s). No company-wide lock.
+set local lock_timeout = '3s';
 
 alter table public.qorpera_model_logins
 	add column account_identity text check (account_identity is null or account_identity ~ '^[0-9a-f]{64}$');
@@ -29,7 +32,7 @@ create function public.qorpera_model_logins_without_account(
 	p_broker_capability_sha256 text
 )
 returns jsonb
-language plpgsql stable security definer set search_path = '' as $$
+language plpgsql security definer set search_path = '' as $$
 declare
 	v_authority public.qorpera_cloud_secret_broker_authorities%rowtype;
 	v_logins jsonb;
@@ -53,7 +56,8 @@ begin
 			on version.login_id = login.id and version.version = login.current_version
 		where login.broker_authority_id = v_authority.id and login.profile_id = v_authority.profile_id
 			and login.status = 'active' and login.account_identity is null
-		order by login.created_at, login.id
+		-- In random order: a login the broker cannot read never keeps the others from being recorded.
+		order by random()
 		limit 8
 	) as missing;
 	return jsonb_build_object('schema', 'qorpera.model-login-accounts/v1', 'logins', v_logins);
@@ -69,7 +73,7 @@ create function public.qorpera_record_model_login_account(
 	p_account_identity text
 )
 returns jsonb
-language plpgsql security definer set search_path = '' set lock_timeout = '5s' as $$
+language plpgsql security definer set search_path = '' set lock_timeout = '2s' as $$
 declare
 	v_authority public.qorpera_cloud_secret_broker_authorities%rowtype;
 	v_recorded text;
@@ -98,7 +102,7 @@ create function public.qorpera_switch_off_replaced_node_logins(
 	p_broker_capability_sha256 text
 )
 returns jsonb
-language plpgsql security definer set search_path = '' set lock_timeout = '5s' as $$
+language plpgsql security definer set search_path = '' set lock_timeout = '2s' as $$
 declare
 	v_authority public.qorpera_cloud_secret_broker_authorities%rowtype;
 	v_pair record;
@@ -136,8 +140,13 @@ begin
 				and node_version.authentication_mode = 'native_subscription' and node_version.native_harness = 'codex-cli'
 				and node_version.authorization_state = 'active'
 				and node_capsule.status = 'active' and node_capsule.encrypted_capsule_reference !~ '^model-login/'
+				-- The account recorded for the node's current login (a version using the capsule the latest
+				-- version uses), never one recorded for an earlier login of the connection.
 				and exists (select 1 from public.qorpera_native_provider_account_metadata as seen
-					where seen.connection_id = node.id and seen.provider_account_identity = login.account_identity)
+					join public.qorpera_provider_connection_versions as seen_version
+						on seen_version.connection_id = seen.connection_id and seen_version.version = seen.connection_version
+					where seen.connection_id = node.id and seen_version.credential_capsule_id = node_version.credential_capsule_id
+						and seen.provider_account_identity = login.account_identity)
 			order by node.id, vault_connection.created_at desc, vault_connection.id
 			limit 4
 		loop
@@ -175,6 +184,12 @@ begin
 					join public.qorpera_execution_sponsor_versions as sponsor
 						on sponsor.binding_id = request.sponsor_binding_id and sponsor.version = request.sponsor_version
 					where request.status = 'queued' and request.profile_id = v_authority.profile_id
+						and sponsor.provider_connection_id = v_pair.old_connection_id)
+				or exists (
+					select 1 from public.qorpera_company_proposal_review_assignments as review
+					join public.qorpera_execution_sponsor_versions as sponsor
+						on sponsor.binding_id = review.reviewer_sponsor_binding_id and sponsor.version = review.reviewer_sponsor_version
+					where review.status = 'queued' and review.profile_id = v_authority.profile_id
 						and sponsor.provider_connection_id = v_pair.old_connection_id) then
 				v_waiting := v_waiting + 1;
 				continue;
@@ -190,21 +205,27 @@ begin
 				v_waiting := v_waiting + 1;
 				continue;
 			end;
-			-- The member's own Disconnect (qorpera_revoke_native_provider_connection), statement for statement;
-			-- the connection's status trigger fails any job that still names it (none, checked above).
-			update public.qorpera_provider_connections set status = 'revoked' where id = v_pair.old_connection_id;
-			update public.qorpera_native_credential_capsules
-			set status = 'revoked', revoked_at = coalesce(revoked_at, statement_timestamp())
-			where id in (
-				select version.credential_capsule_id from public.qorpera_provider_connection_versions as version
-				where version.connection_id = v_pair.old_connection_id
-					and version.authentication_mode = 'native_subscription' and version.credential_capsule_id is not null
-			) and status <> 'revoked';
-			update public.qorpera_provider_connection_versions set authorization_state = 'revoked'
-			where connection_id = v_pair.old_connection_id and authentication_mode = 'native_subscription'
-				and authorization_state <> 'revoked';
-			update public.qorpera_native_provider_connection_leases set status = 'revoked', released_at = statement_timestamp()
-			where provider_connection_id = v_pair.old_connection_id and status = 'active';
+			-- The same updates as the member's own Disconnect (qorpera_revoke_native_provider_connection); the
+			-- connection's status trigger fails any job that still names it (none, checked above). A row
+			-- another transaction holds for more than 2 s makes the pair wait for the next pass.
+			begin
+				update public.qorpera_provider_connections set status = 'revoked' where id = v_pair.old_connection_id;
+				update public.qorpera_native_credential_capsules
+				set status = 'revoked', revoked_at = coalesce(revoked_at, statement_timestamp())
+				where id in (
+					select version.credential_capsule_id from public.qorpera_provider_connection_versions as version
+					where version.connection_id = v_pair.old_connection_id
+						and version.authentication_mode = 'native_subscription' and version.credential_capsule_id is not null
+				) and status <> 'revoked';
+				update public.qorpera_provider_connection_versions set authorization_state = 'revoked'
+				where connection_id = v_pair.old_connection_id and authentication_mode = 'native_subscription'
+					and authorization_state <> 'revoked';
+				update public.qorpera_native_provider_connection_leases set status = 'revoked', released_at = statement_timestamp()
+				where provider_connection_id = v_pair.old_connection_id and status = 'active';
+			exception when lock_not_available then
+				v_waiting := v_waiting + 1;
+				continue;
+			end;
 			v_switched := v_switched + 1;
 		end loop;
 	end if;
