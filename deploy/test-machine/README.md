@@ -65,6 +65,26 @@ Access needs the key `~/.ssh/id_ed25519_qorpera_testvm` and SSH to `company41-no
 Override the target with `QORPERA_TEST_MACHINE`, `QORPERA_TEST_MACHINE_JUMP` and
 `QORPERA_TEST_MACHINE_KEY`.
 
+## The systemd suites
+
+The `scripts/*-systemd.mjs` suites boot systemd as PID 1 in a disposable container and take a
+digest-pinned local image in `QORPERA_OFFICE_SYSTEMD_TEST_IMAGE`: Ubuntu 26.04 with systemd, its Node 22
+package and the executables the office image installer measures. Build it on the test machine
+(about 90 s cold) and use the image ID the build prints. Every build prints a new ID, even from cache.
+The tag keeps the current build out of the weekly prune of dangling images.
+
+```sh
+node scripts/run-on-node.mjs --no-install -- sh -c 'docker build -q -t qorpera-systemd-test:local - < scripts/fixtures/systemd-test-image.Dockerfile'
+node scripts/run-on-node.mjs --env QORPERA_OFFICE_SYSTEMD_TEST_IMAGE=sha256:<id> scripts/test-office-image-installation-systemd.mjs
+node scripts/run-on-node.mjs --env QORPERA_OFFICE_SYSTEMD_TEST_IMAGE=sha256:<id> scripts/test-office-service-stop-systemd.mjs -- --restart
+```
+
+The same Dockerfile builds on Docker Desktop. On a Linux Docker host the suites differ from Docker
+Desktop in four ways, all handled in the scripts: the containers run without AppArmor (the trade-off
+is in `scripts/fixtures/systemd-container.mjs`), the fixture sees the host's AppArmor as disabled because
+the container cannot load profiles, staged packages are chowned to root because a copy keeps the
+invoking user's owner, and the suites package with umask 022 instead of Ubuntu's user default 0002.
+
 ## Proof (2026-09-28, VM enrolled at node 2 version 23)
 
 | Check | Result |

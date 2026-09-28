@@ -1,9 +1,9 @@
 # Disposable image for the scripts/*-systemd.mjs suites (QORPERA_OFFICE_SYSTEMD_TEST_IMAGE).
-# Build with no context, then pass the printed image ID:
-#   docker build -q - < scripts/fixtures/systemd-test-image.Dockerfile
+# Build with no context, then pass the printed image ID (deploy/test-machine/README.md):
+#   docker build -q -t qorpera-systemd-test:local - < scripts/fixtures/systemd-test-image.Dockerfile
 # Ubuntu 26.04 as on the nodes and office guests; its nodejs package is the one production pins
 # (deploy/first-node/bootstrap-azure-step2-pilot-lxd.sh). Package versions follow the archive at
-# build time, so every build gets a new image ID; the suites run the exact ID they are given.
+# build time and every build gets a new image ID; the suites run the exact ID they are given.
 FROM docker.io/library/ubuntu:26.04@sha256:da6fc2be547864451aa253836dd926da33623312df4a9a243e35dc877c378a78
 # systemd as PID 1, util-linux/mount/e2fsprogs for the loop filesystem and mount probes, openssl for
 # the boot fixtures' loopback certificates, and the executables the office image installer measures
