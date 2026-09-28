@@ -13,26 +13,25 @@ import { launchIsolatedNativeProcess, type NativeIsolationConfiguration } from "
  *
  * Codex answers `account/read` the same way whether the renewal worked or not, so the outcome is
  * read from the login file (changed means renewed) and, on failure, from Codex's own error line
- * ("Failed to refresh token: <status>: <body>"). Codex treats 401, a known refresh-token code or
- * a 400 `invalid_grant` as permanent; so does this runner. Anything else may be retried.
+ * `Failed to refresh token: <status>: <body>`, with Codex's own rule (0.155.1
+ * `request_chatgpt_token_refresh`): a 401, the body code `refresh_token_expired`,
+ * `refresh_token_reused` or `refresh_token_invalidated` (any case), or a 400 with the code
+ * `invalid_grant` is permanent. Anything else may be retried.
  */
 
-const REFUSED = [
-	["refresh_token_reused", /refresh_token_reused/],
-	["refresh_token_expired", /refresh_token_expired/],
-	["refresh_token_invalidated", /refresh_token_invalidated/],
-	["refresh_token_unauthorized", /Failed to refresh token: 401\b/],
-	["refresh_token_invalid_grant", /Failed to refresh token: 400\b[^\n]*invalid_grant/],
-] as const;
+/** Every step of one renewal ends inside this budget, well within the vault's 35 s. */
+export const CODEX_RENEWAL_BUDGET_MS = 25_000;
 const MAX_OUTPUT_BYTES = 64 * 1024;
 const MAX_AUTH_JSON_BYTES = 32 * 1024;
 const CLIENT_NAME = "qorpera_model_login_vault";
+const REFUSED_CODES = new Set(["refresh_token_expired", "refresh_token_reused", "refresh_token_invalidated"]);
 
 interface RenewalProcess {
-	stdin: NodeJS.WritableStream;
+	stdin: NodeJS.WritableStream & { writable: boolean };
 	stdout: NodeJS.ReadableStream;
 	stderr: NodeJS.ReadableStream;
 	exited: Promise<void>;
+	kill(): void;
 	close(): Promise<void>;
 }
 
@@ -52,8 +51,9 @@ function harnessEnvironment(root: string): NodeJS.ProcessEnv {
 	};
 }
 
-/** Reads newline-delimited JSON-RPC answers by id; notifications and other lines are ignored. */
-function answers(stdout: NodeJS.ReadableStream): (id: number) => Promise<unknown> {
+/** Reads newline-delimited JSON-RPC answers by id; notifications and other lines are ignored.
+ * Output past the cap stops Codex: the renewal then ends at once instead of waiting it out. */
+function answers(stdout: NodeJS.ReadableStream, overflow: () => void): (id: number) => Promise<unknown> {
 	const waiting = new Map<number, { resolve(value: unknown): void; reject(error: Error): void }>();
 	const settled = new Map<number, { result?: unknown; error?: unknown }>();
 	let buffered = "";
@@ -61,7 +61,10 @@ function answers(stdout: NodeJS.ReadableStream): (id: number) => Promise<unknown
 	stdout.setEncoding?.("utf8");
 	stdout.on("data", (chunk: string) => {
 		total += Buffer.byteLength(chunk);
-		if (total > 4 * MAX_OUTPUT_BYTES) return;
+		if (total > 4 * MAX_OUTPUT_BYTES) {
+			overflow();
+			return;
+		}
 		buffered += chunk;
 		let end = buffered.indexOf("\n");
 		while (end >= 0) {
@@ -97,8 +100,49 @@ function answers(stdout: NodeJS.ReadableStream): (id: number) => Promise<unknown
 		});
 }
 
+/** Codex's `extract_refresh_token_error_code`: `error.code`, a string `error`, or `code`. */
+function refreshErrorCode(body: string): string | undefined {
+	let value: unknown;
+	try {
+		value = JSON.parse(body);
+	} catch {
+		return undefined;
+	}
+	if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+	const map = value as Record<string, unknown>;
+	const error = map.error;
+	if (error && typeof error === "object" && !Array.isArray(error)) {
+		const code = (error as Record<string, unknown>).code;
+		if (typeof code === "string") return code;
+	} else if (typeof error === "string") return error;
+	return typeof map.code === "string" ? map.code : undefined;
+}
+
+/** The body after a `Failed to refresh token: <status>: ` line: the longest leading JSON value. */
+function refreshErrorBody(rest: string): string {
+	const body = rest.slice(0, 16 * 1024);
+	for (let end = body.lastIndexOf("}"); end > 0; end = body.lastIndexOf("}", end - 1)) {
+		const candidate = body.slice(0, end + 1);
+		try {
+			JSON.parse(candidate);
+			return candidate;
+		} catch {
+			// A shorter prefix may be the JSON body followed by later log lines.
+		}
+	}
+	return body.split("\n")[0] ?? "";
+}
+
+/** Applies Codex's own permanent-failure rule to its `Failed to refresh token` error lines. */
 export function classifyCodexRenewalFailure(stderr: string): string | undefined {
-	for (const [reason, pattern] of REFUSED) if (pattern.test(stderr)) return reason;
+	const line = /Failed to refresh token: (\d{3})\b[^:\n]*: /g;
+	for (let found = line.exec(stderr); found; found = line.exec(stderr)) {
+		const status = Number(found[1]);
+		const code = refreshErrorCode(refreshErrorBody(stderr.slice(found.index + found[0].length)))?.toLowerCase();
+		if (code && REFUSED_CODES.has(code)) return code;
+		if (status === 400 && code === "invalid_grant") return "refresh_token_invalid_grant";
+		if (status === 401) return "refresh_token_unauthorized";
+	}
 	return undefined;
 }
 
@@ -107,19 +151,23 @@ export class CodexLoginRenewer implements ModelLoginRenewer {
 	readonly #temporaryRoot: string;
 	readonly #isolation: NativeIsolationConfiguration | undefined;
 	readonly #timeoutMs: number;
+	readonly #beforeLaunch: (() => Promise<void>) | undefined;
 
 	constructor(options: {
 		codexPath: string;
 		temporaryRoot: string;
 		isolation?: NativeIsolationConfiguration;
 		timeoutMs?: number;
+		/** Checked before every launch (the helper re-checks its pinned binary). */
+		beforeLaunch?: () => Promise<void>;
 	}) {
 		for (const path of [options.codexPath, options.temporaryRoot])
 			if (!isAbsolute(path) || resolve(path) !== path) throw new Error("Codex login renewer paths must be absolute");
 		this.#codexPath = options.codexPath;
 		this.#temporaryRoot = options.temporaryRoot;
 		this.#isolation = options.isolation ? Object.freeze({ ...options.isolation }) : undefined;
-		this.#timeoutMs = options.timeoutMs ?? 45_000;
+		this.#timeoutMs = options.timeoutMs ?? CODEX_RENEWAL_BUDGET_MS;
+		this.#beforeLaunch = options.beforeLaunch;
 	}
 
 	async renew(authJson: string, signal: AbortSignal): Promise<ModelLoginRenewal> {
@@ -132,43 +180,52 @@ export class CodexLoginRenewer implements ModelLoginRenewer {
 			const loginPath = join(root, "codex", "auth.json");
 			await writeFile(loginPath, authJson, { mode: 0o600, flag: "wx" });
 			let stderr = "";
-			const launched = await this.#launch(root, deadline);
-			launched.stderr.setEncoding?.("utf8");
-			launched.stderr.on("data", (chunk: string) => {
-				if (stderr.length < MAX_OUTPUT_BYTES) stderr += chunk.slice(0, MAX_OUTPUT_BYTES - stderr.length);
-			});
 			try {
-				const answer = answers(launched.stdout);
-				const send = (message: Record<string, unknown>): void => {
-					launched.stdin.write(`${JSON.stringify(message)}\n`);
-				};
-				const request = async (id: number, method: string, params: unknown): Promise<unknown> => {
-					const answered = answer(id);
-					send({ id, method, params });
-					return Promise.race([
-						answered,
-						launched.exited.then(() => {
-							throw new Error("Codex stopped before answering");
-						}),
-						new Promise<never>((_resolve, reject) => {
-							if (deadline.aborted) reject(new Error("Codex renewal timed out"));
-							deadline.addEventListener("abort", () => reject(new Error("Codex renewal timed out")), {
-								once: true,
-							});
-						}),
-					]);
-				};
-				await request(1, "initialize", { clientInfo: { name: CLIENT_NAME, version: "1" } });
-				send({ method: "initialized", params: {} });
-				await request(2, "account/read", { refreshToken: true });
+				await this.#beforeLaunch?.();
+				const launched = await this.#launch(root, deadline);
+				launched.stderr.setEncoding?.("utf8");
+				launched.stderr.on("data", (chunk: string) => {
+					if (stderr.length < MAX_OUTPUT_BYTES) stderr += chunk.slice(0, MAX_OUTPUT_BYTES - stderr.length);
+				});
+				try {
+					const answer = answers(launched.stdout, () => launched.kill());
+					const send = (message: Record<string, unknown>): void => {
+						if (launched.stdin.writable) launched.stdin.write(`${JSON.stringify(message)}\n`);
+					};
+					const request = async (id: number, method: string, params: unknown): Promise<unknown> => {
+						const answered = answer(id);
+						send({ id, method, params });
+						return Promise.race([
+							answered,
+							launched.exited.then(() => {
+								throw new Error("Codex stopped before answering");
+							}),
+							new Promise<never>((_resolve, reject) => {
+								if (deadline.aborted) reject(new Error("Codex renewal timed out"));
+								deadline.addEventListener("abort", () => reject(new Error("Codex renewal timed out")), {
+									once: true,
+								});
+							}),
+						]);
+					};
+					await request(1, "initialize", { clientInfo: { name: CLIENT_NAME, version: "1" } });
+					send({ method: "initialized", params: {} });
+					await request(2, "account/read", { refreshToken: true });
+				} catch {
+					// The login file and Codex's own error line decide below.
+				} finally {
+					await launched.close().catch(() => undefined);
+				}
 			} catch {
-				// The login file and Codex's own error line decide below.
-			} finally {
-				await launched.close();
+				// A launch that failed still leaves the login file to read below.
 			}
+			// Whatever happened, the file decides: Codex saves a renewed login before it answers.
 			const renewed = await readFile(loginPath, "utf8").catch(() => undefined);
-			if (renewed !== undefined && renewed !== authJson && Buffer.byteLength(renewed) <= MAX_AUTH_JSON_BYTES)
+			if (renewed !== undefined && renewed !== authJson) {
+				if (Buffer.byteLength(renewed) > MAX_AUTH_JSON_BYTES)
+					return { outcome: "transient", reason: "renewal_too_large" };
 				return { outcome: "renewed", authJson: renewed };
+			}
 			const refused = classifyCodexRenewalFailure(stderr);
 			return refused
 				? { outcome: "refused", reason: refused }
@@ -187,24 +244,27 @@ export class CodexLoginRenewer implements ModelLoginRenewer {
 				stdio: ["pipe", "pipe", "pipe"],
 				windowsHide: true,
 			});
+			// A closed pipe or a failed start must never crash the helper.
+			for (const stream of [child.stdin, child.stdout, child.stderr]) stream.on("error", () => undefined);
 			const exited = new Promise<void>((resolveExit) => {
 				child.once("exit", () => resolveExit());
 				child.once("error", () => resolveExit());
 			});
-			const stop = (): void => {
+			const kill = (): void => {
 				child.kill("SIGKILL");
 			};
-			signal.addEventListener("abort", stop, { once: true });
+			signal.addEventListener("abort", kill, { once: true });
 			return {
 				stdin: child.stdin,
 				stdout: child.stdout,
 				stderr: child.stderr,
 				exited,
+				kill,
 				async close() {
-					signal.removeEventListener("abort", stop);
+					signal.removeEventListener("abort", kill);
 					child.stdin.end();
 					if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
-					await Promise.race([exited, new Promise((resolveWait) => setTimeout(resolveWait, 3000))]);
+					await Promise.race([exited, new Promise((resolveWait) => setTimeout(resolveWait, 2000))]);
 					if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
 					await exited;
 				},
@@ -222,19 +282,28 @@ export class CodexLoginRenewer implements ModelLoginRenewer {
 				codexHome: join(root, "codex"),
 				signal,
 			});
+			const child = isolated.child;
+			for (const stream of [child.stdin, child.stdout, child.stderr]) stream.on("error", () => undefined);
 			const exited = new Promise<void>((resolveExit) => {
-				if (isolated.child.exitCode !== null || isolated.child.signalCode !== null) resolveExit();
-				isolated.child.once("exit", () => resolveExit());
+				if (child.exitCode !== null || child.signalCode !== null) resolveExit();
+				child.once("exit", () => resolveExit());
+				child.once("error", () => resolveExit());
 			});
 			return {
-				stdin: isolated.child.stdin,
-				stdout: isolated.child.stdout,
-				stderr: isolated.child.stderr,
+				stdin: child.stdin,
+				stdout: child.stdout,
+				stderr: child.stderr,
 				exited,
+				kill: () => {
+					child.kill("SIGKILL");
+				},
 				async close() {
-					isolated.child.stdin.end();
-					await isolated.close();
-					await rm(scratchRoot, { recursive: true, force: true });
+					child.stdin.end();
+					try {
+						await isolated.close();
+					} finally {
+						await rm(scratchRoot, { recursive: true, force: true });
+					}
 				},
 			};
 		} catch (error) {

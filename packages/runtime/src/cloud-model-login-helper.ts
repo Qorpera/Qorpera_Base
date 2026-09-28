@@ -2,6 +2,7 @@ import { timingSafeEqual } from "node:crypto";
 import { chmod, rm } from "node:fs/promises";
 import { createServer, request as httpRequest, type IncomingMessage, type Server } from "node:http";
 import { isAbsolute, resolve } from "node:path";
+import { CODEX_RENEWAL_BUDGET_MS } from "./cloud-model-login-renewal.ts";
 import type { ModelLoginRenewal, ModelLoginRenewer } from "./cloud-model-login-vault.ts";
 
 /**
@@ -17,6 +18,10 @@ const TOKEN = /^[A-Za-z0-9_-]{43}$/;
 const MAX_REQUEST_BYTES = 48 * 1024;
 const MAX_RESPONSE_BYTES = 48 * 1024;
 const REASON = /^[a-z][a-z0-9_]{0,63}$/;
+/** The helper answers inside this, and the broker waits a little longer: both stay well inside
+ * the vault's 35 s renewal budget, so a renewal the provider made is never answered too late. */
+const HELPER_ANSWER_MS = CODEX_RENEWAL_BUDGET_MS + 3_000;
+const CLIENT_WAIT_MS = HELPER_ANSWER_MS + 2_000;
 
 function tokenMatches(expected: string, authorization: string | undefined): boolean {
 	if (!authorization?.startsWith("Bearer ")) return false;
@@ -110,8 +115,13 @@ export class ModelLoginHelperService {
 		this.#server = server;
 		await new Promise<void>((resolveListen, reject) => {
 			server.once("error", reject);
-			server.listen(this.#socketPath, () => resolveListen());
+			server.listen(this.#socketPath, () => {
+				server.removeListener("error", reject);
+				resolveListen();
+			});
 		});
+		// A later server error must not end the process with renewals in flight.
+		server.on("error", () => undefined);
 		// The broker's account reaches the socket through the helper's group; nobody else does.
 		await chmod(this.#socketPath, 0o660);
 	}
@@ -145,7 +155,7 @@ export class ModelLoginHelperService {
 			};
 		this.#running += 1;
 		try {
-			const result = await this.#renewer.renew(authJson, AbortSignal.timeout(50_000));
+			const result = await this.#renewer.renew(authJson, AbortSignal.timeout(HELPER_ANSWER_MS));
 			return { status: 200, body: { schema: "qorpera.model-login-renewal/v1", ...result } };
 		} catch {
 			return {
@@ -184,7 +194,7 @@ export class ModelLoginHelperClient implements ModelLoginRenewer {
 						"content-type": "application/json",
 						"content-length": Buffer.byteLength(body),
 					},
-					signal: AbortSignal.any([signal, AbortSignal.timeout(55_000)]),
+					signal: AbortSignal.any([signal, AbortSignal.timeout(CLIENT_WAIT_MS)]),
 				},
 				(response) => {
 					const chunks: Buffer[] = [];

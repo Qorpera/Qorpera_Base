@@ -314,7 +314,7 @@ export class CloudModelLoginVault {
 			if (issue.renewal) await this.#release(issue, issue.renewal, false, "login_unreadable");
 			throw error;
 		}
-		const renewed = issue.renewal ? await this.#renew(issue, issue.renewal, current, signal) : undefined;
+		const renewed = issue.renewal ? await this.#renew(issue, issue.renewal, current) : undefined;
 		const login = renewed?.login ?? current;
 		if (Date.parse(login.accessExpiresAt) <= Date.now()) throw new Error("Model login pass has ended");
 		return {
@@ -345,7 +345,6 @@ export class CloudModelLoginVault {
 		issue: IssueResult,
 		renewal: NonNullable<IssueResult["renewal"]>,
 		current: CodexLogin,
-		signal: AbortSignal,
 	): Promise<{ login: CodexLogin; version: number } | undefined> {
 		const renewer = this.#renewer;
 		// A key the broker cannot seal with would strand a renewal the provider already made.
@@ -355,8 +354,9 @@ export class CloudModelLoginVault {
 		}
 		let result: ModelLoginRenewal;
 		try {
-			// The renewer's budget leaves room to save within the caller's minute.
-			result = await renewer.renew(current.text, AbortSignal.any([signal, AbortSignal.timeout(RENEWAL_BUDGET_MS)]));
+			// Once asked, a renewal runs to its own budget whatever the caller does: the provider may
+			// already have spent the old token, and only this call can save the new one.
+			result = await renewer.renew(current.text, AbortSignal.timeout(RENEWAL_BUDGET_MS));
 		} catch {
 			result = { outcome: "transient", reason: "renewer_failed" };
 		}

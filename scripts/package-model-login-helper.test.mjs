@@ -23,7 +23,7 @@ test("packages the model login helper apart from the broker and every execution 
 		assert.equal(manifest.schema, "qorpera.model-login-helper-package/v1");
 		assert.deepEqual(
 			manifest.artifacts.map((artifact) => artifact.file),
-			["qorpera-model-login-helper.mjs", "qorpera-model-login-helper.service"],
+			["qorpera-model-login-helper.mjs", "qorpera-native-isolation-child.mjs", "qorpera-model-login-helper.service"],
 		);
 		for (const artifact of manifest.artifacts) {
 			const bytes = await readFile(join(destination, artifact.file));
@@ -36,6 +36,10 @@ test("packages the model login helper apart from the broker and every execution 
 		assert.ok(!bundle.includes("CloudSecretKeyring"));
 		assert.ok(!bundle.includes("qorpera_secret_broker"));
 		assert.ok(!bundle.includes("NativeProviderHost"));
+		for (const file of ["qorpera-model-login-helper.mjs", "qorpera-native-isolation-child.mjs"]) {
+			const syntax = spawnSync(process.execPath, ["--check", join(destination, file)], { encoding: "utf8" });
+			assert.equal(syntax.status, 0, syntax.stderr);
+		}
 		const help = spawnSync(process.execPath, [executable, "--help"], { encoding: "utf8" });
 		assert.equal(help.status, 0, help.stderr);
 		assert.match(help.stdout, /pinned official Codex/);
@@ -47,6 +51,14 @@ test("packages the model login helper apart from the broker and every execution 
 		assert.match(service, /^LoadCredential=qorpera-model-login-helper-token:/m);
 		assert.doesNotMatch(service, /qorpera-cloud-secret-keyring|qorpera-supabase-service-key/);
 		assert.ok(!service.includes("Environment=QORPERA_"));
+		assert.match(service, /^KillMode=mixed$/m);
+		const encoded = await readFile(join(destination, "manifest.json"), "utf8");
+		const repeated = spawnSync(process.execPath, ["scripts/package-model-login-helper.mjs", "--out", destination], {
+			cwd: repositoryRoot,
+			encoding: "utf8",
+		});
+		assert.notEqual(repeated.status, 0);
+		assert.equal(await readFile(join(destination, "manifest.json"), "utf8"), encoded);
 	} finally {
 		await rm(temporary, { recursive: true, force: true });
 	}

@@ -1,5 +1,6 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { chmod, mkdtemp, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ModelLoginHelperClient, ModelLoginHelperService } from "@qorpera/runtime/cloud-model-login-helper";
@@ -35,7 +36,7 @@ const LOGIN = `${JSON.stringify({
 /** A stand-in for `codex app-server`: answers initialize and account/read, and on the forced
  * renewal does what the mode says, as the official Codex would. */
 async function fakeCodex(
-	mode: "renew" | "renew-jwt" | "reused" | "unauthorized" | "outage" | "exit" | "silent",
+	mode: "renew" | "renew-jwt" | "reused" | "unauthorized" | "outage" | "exit" | "silent" | "close-stdin" | "flood",
 ): Promise<string> {
 	const directory = await temporary("qorpera-fake-codex-");
 	const path = join(directory, "codex");
@@ -59,6 +60,15 @@ process.stdin.on("data", (chunk) => {
 		if (message.method === "initialize") {
 			send({ method: "configWarning", params: {} });
 			send({ id: message.id, result: { userAgent: "fake" } });
+			if (${JSON.stringify(mode)} === "close-stdin") {
+				process.stdin.destroy();
+				setTimeout(() => process.exit(0), 300);
+			}
+			if (${JSON.stringify(mode)} === "flood") {
+				const line = JSON.stringify({ method: "noise", params: { text: "x".repeat(8192) } }) + "\\n";
+				const flood = () => { while (process.stdout.write(line)) {} process.stdout.once("drain", flood); };
+				flood();
+			}
 		} else if (message.method === "account/read") {
 			if (message.params.refreshToken !== true) process.exit(65);
 			const mode = ${JSON.stringify(mode)};
@@ -150,8 +160,14 @@ it("classifies Codex's renewal errors the way Codex does", () => {
 	expect(classifyCodexRenewalFailure('Failed to refresh token: 400 Bad Request: {"error":"invalid_grant"}')).toBe(
 		"refresh_token_invalid_grant",
 	);
-	expect(classifyCodexRenewalFailure("refresh_token_expired")).toBe("refresh_token_expired");
-	expect(classifyCodexRenewalFailure("refresh_token_invalidated")).toBe("refresh_token_invalidated");
+	expect(
+		classifyCodexRenewalFailure(
+			'Failed to refresh token: 400 Bad Request: {"error":{"code":"refresh_token_expired"}}',
+		),
+	).toBe("refresh_token_expired");
+	expect(
+		classifyCodexRenewalFailure('Failed to refresh token: 400 Bad Request: {"code":"refresh_token_invalidated"}'),
+	).toBe("refresh_token_invalidated");
 	expect(classifyCodexRenewalFailure("Failed to refresh token: 500 Internal Server Error: x")).toBeUndefined();
 	expect(classifyCodexRenewalFailure("Failed to refresh token: 400 Bad Request: rate limited")).toBeUndefined();
 });
@@ -279,4 +295,97 @@ it("renews end to end: vault, helper socket, official Codex, next version sealed
 	).resolves.toMatchObject({ tokens: { refresh_token: "rt-renewed-by-codex", account_id: "account-1" } });
 	expect(authority.releaseModelLoginRenewal).not.toHaveBeenCalled();
 	keyring.close();
+});
+
+it("survives Codex closing its input, a missing binary, a caller's abort and runaway output", async () => {
+	const closing = await renewer("close-stdin");
+	await expect(closing.renewer.renew(LOGIN, new AbortController().signal)).resolves.toEqual({
+		outcome: "transient",
+		reason: "renewal_unchanged",
+	});
+	expect(await readdir(closing.temporaryRoot)).toEqual([]);
+
+	const temporaryRoot = await temporary("qorpera-renewal-root-");
+	const missing = new CodexLoginRenewer({ codexPath: join(temporaryRoot, "no-such-codex"), temporaryRoot });
+	await expect(missing.renew(LOGIN, new AbortController().signal)).resolves.toEqual({
+		outcome: "transient",
+		reason: "renewal_unchanged",
+	});
+	expect(await readdir(temporaryRoot)).toEqual([]);
+
+	const silent = await renewer("silent", 20_000);
+	const abort = new AbortController();
+	setTimeout(() => abort.abort(), 200);
+	const started = Date.now();
+	await expect(silent.renewer.renew(LOGIN, abort.signal)).resolves.toMatchObject({ outcome: "transient" });
+	expect(Date.now() - started).toBeLessThan(10_000);
+	expect(await readdir(silent.temporaryRoot)).toEqual([]);
+
+	const flood = await renewer("flood", 20_000);
+	const floodStarted = Date.now();
+	await expect(flood.renewer.renew(LOGIN, new AbortController().signal)).resolves.toMatchObject({
+		outcome: "transient",
+	});
+	expect(Date.now() - floodStarted).toBeLessThan(10_000);
+	expect(await readdir(flood.temporaryRoot)).toEqual([]);
+});
+
+it("reads Codex's error body as Codex does: the code field, any case, a multi-line body", () => {
+	expect(
+		classifyCodexRenewalFailure(
+			'ERROR x: Failed to refresh token: 400 Bad Request: {"error":{"code":"REFRESH_TOKEN_EXPIRED"}}',
+		),
+	).toBe("refresh_token_expired");
+	expect(
+		classifyCodexRenewalFailure(
+			'ERROR x: Failed to refresh token: 400 Bad Request: {\n  "error": "INVALID_GRANT"\n}\nINFO next line',
+		),
+	).toBe("refresh_token_invalid_grant");
+	expect(
+		classifyCodexRenewalFailure(
+			'ERROR x: Failed to refresh token: 401 Unauthorized: {"code":"refresh_token_reused"}',
+		),
+	).toBe("refresh_token_reused");
+	// A message that only mentions a code is not the code: Codex retries it, so does the vault.
+	expect(
+		classifyCodexRenewalFailure(
+			'ERROR x: Failed to refresh token: 503 Service Unavailable: {"error":{"message":"refresh_token_reused is not the issue"}}',
+		),
+	).toBeUndefined();
+	expect(
+		classifyCodexRenewalFailure('ERROR x: Failed to refresh token: 400 Bad Request: {"error":"rate_limited"}'),
+	).toBeUndefined();
+	// The proactive-renewal log line carries no status and is not a provider answer.
+	expect(
+		classifyCodexRenewalFailure(
+			"ERROR x: Failed to refresh token: Your refresh token was already used (refresh_token_reused)",
+		),
+	).toBeUndefined();
+});
+
+it("refuses a helper answer that is not a clean renewal result", async () => {
+	for (const [status, body] of [
+		[500, JSON.stringify({ schema: "qorpera.model-login-renewal/v1", outcome: "renewed", authJson: LOGIN })],
+		[200, "not json"],
+		[
+			200,
+			JSON.stringify({ schema: "qorpera.model-login-renewal/v1", outcome: "renewed", authJson: LOGIN, extra: 1 }),
+		],
+		[200, JSON.stringify({ schema: "qorpera.model-login-renewal/v1", outcome: "refused", reason: "Bad Reason" })],
+		[200, "x".repeat(60 * 1024)],
+	] as const) {
+		const directory = await temporary("qlh-");
+		const socketPath = join(directory, "fake.sock");
+		const server = createServer((_request, reply) => {
+			reply.writeHead(status, { "content-type": "application/json" });
+			reply.end(body);
+		});
+		await new Promise<void>((resolveListen) => server.listen(socketPath, () => resolveListen()));
+		try {
+			const client = new ModelLoginHelperClient({ socketPath, token: randomBytes(32).toString("base64url") });
+			await expect(client.renew(LOGIN, new AbortController().signal)).rejects.toThrow();
+		} finally {
+			await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
+		}
+	}
 });

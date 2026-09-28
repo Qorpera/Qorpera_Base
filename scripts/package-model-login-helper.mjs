@@ -13,7 +13,11 @@ const output = resolve(args[1]);
 await mkdir(output, { mode: 0o700 });
 await build({
 	absWorkingDir: root,
-	entryPoints: { "qorpera-model-login-helper": "packages/runtime/src/cloud-model-login-helper-main.ts" },
+	entryPoints: {
+		"qorpera-model-login-helper": "packages/runtime/src/cloud-model-login-helper-main.ts",
+		// The isolation launcher's child, shipped with the helper: a vault host runs no execution host.
+		"qorpera-native-isolation-child": "packages/runtime/src/cloud-native-isolation-child.ts",
+	},
 	outdir: output,
 	outExtension: { ".js": ".mjs" },
 	bundle: true,
@@ -31,7 +35,11 @@ await copyFile(
 	join(output, "qorpera-model-login-helper.service"),
 );
 const artifacts = [];
-for (const file of ["qorpera-model-login-helper.mjs", "qorpera-model-login-helper.service"]) {
+for (const file of [
+	"qorpera-model-login-helper.mjs",
+	"qorpera-native-isolation-child.mjs",
+	"qorpera-model-login-helper.service",
+]) {
 	const bytes = await readFile(join(output, file));
 	artifacts.push({ file, bytes: bytes.byteLength, sha256: createHash("sha256").update(bytes).digest("hex") });
 }

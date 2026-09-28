@@ -15,14 +15,17 @@ LoadCredential=qorpera-model-login-helper-token:/etc/qorpera-model-login-helper/
 ExecStart=/usr/bin/node /opt/qorpera-model-login-helper/qorpera-model-login-helper.mjs
 Restart=on-failure
 RestartSec=10
-TimeoutStopSec=30
-KillMode=control-group
-UMask=0007
+# Stop lets renewals in flight finish (each ends within 25 s): SIGTERM reaches only the
+# main process, which stops taking new work; Codex is not killed under a renewal.
+KillMode=mixed
+TimeoutStopSec=40
+UMask=0077
 # The socket and each operation's private Codex home live here, in memory.
 # The broker reaches the socket through this group (its unit adds
 # SupplementaryGroups=qorpera-login-helper); nothing else can.
 RuntimeDirectory=qorpera-model-login-helper
 RuntimeDirectoryMode=0750
+InaccessiblePaths=-/etc/qorpera-secret-broker
 PrivateTmp=yes
 PrivateDevices=yes
 ProtectSystem=strict
@@ -52,6 +55,7 @@ CPUQuota=100%
 LockPersonality=yes
 RestrictSUIDSGID=yes
 SystemCallArchitectures=native
+SystemCallFilter=~@clock @cpu-emulation @debug @module @obsolete @raw-io @reboot @swap
 
 [Install]
 WantedBy=multi-user.target

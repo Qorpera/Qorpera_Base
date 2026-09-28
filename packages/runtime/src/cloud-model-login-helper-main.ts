@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import { constants, realpathSync } from "node:fs";
-import { lstat, open, readFile } from "node:fs/promises";
+import { constants, createReadStream, realpathSync } from "node:fs";
+import { lstat, open, realpath } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ModelLoginHelperService } from "./cloud-model-login-helper.ts";
@@ -49,23 +49,44 @@ function absolute(value: unknown, label: string): string {
 	return value;
 }
 
-/** The pinned official Codex: root-owned, not writable by anyone else, exactly the bytes
- * the configuration names. */
-async function verifiedCodex(path: string, sha256: string): Promise<void> {
+/** What the isolation launcher requires of every artifact it runs, checked once at start so a
+ * bad install stops the helper instead of failing every renewal: a physical path, root-owned
+ * and not writable by others all the way up, one link. */
+async function rootOwnedArtifact(path: string): Promise<void> {
+	if ((await realpath(path)) !== path) throw new Error("Login helper artifact is not a physical path");
 	let current = path;
 	while (true) {
 		const metadata = await lstat(current);
-		if (metadata.uid !== 0 || (metadata.mode & 0o022) !== 0 || metadata.isSymbolicLink())
-			throw new Error("Login helper Codex binary is not root-owned");
+		if (
+			metadata.uid !== 0 ||
+			(metadata.mode & 0o022) !== 0 ||
+			metadata.isSymbolicLink() ||
+			(current === path ? !metadata.isFile() || metadata.nlink !== 1 : !metadata.isDirectory())
+		)
+			throw new Error("Login helper artifact is not root-owned");
 		if (current === "/") break;
 		current = dirname(current);
 	}
-	if (
-		createHash("sha256")
-			.update(await readFile(path))
-			.digest("hex") !== sha256
-	)
-		throw new Error("Login helper Codex binary differs from its pin");
+}
+
+async function fileSha256(path: string): Promise<string> {
+	const hash = createHash("sha256");
+	for await (const chunk of createReadStream(path)) hash.update(chunk as Buffer);
+	return hash.digest("hex");
+}
+
+/** The pinned official Codex: exactly the bytes the configuration names. Its identity at start
+ * (device, inode, size, times) is checked again before every launch. */
+async function pinnedCodex(path: string, sha256: string): Promise<() => Promise<void>> {
+	const identity = async (): Promise<string> => {
+		const metadata = await lstat(path);
+		return [metadata.dev, metadata.ino, metadata.size, metadata.mtimeMs, metadata.ctimeMs].join(":");
+	};
+	const pinned = await identity();
+	if ((await fileSha256(path)) !== sha256) throw new Error("Login helper Codex binary differs from its pin");
+	return async () => {
+		if ((await identity()) !== pinned) throw new Error("Login helper Codex binary changed since start");
+	};
 }
 
 /**
@@ -90,7 +111,10 @@ export async function runModelLoginHelperMain(environment: NodeJS.ProcessEnv = p
 	)
 		throw new Error("Login helper configuration is invalid");
 	const codexPath = absolute(config.codexPath, "Login helper Codex path");
-	await verifiedCodex(codexPath, config.codexSha256);
+	const isolationEntryPoint = absolute(config.isolationEntryPoint, "Login helper isolation entry point");
+	for (const artifact of ["/usr/bin/bwrap", "/usr/bin/node", isolationEntryPoint, codexPath])
+		await rootOwnedArtifact(artifact);
+	const beforeLaunch = await pinnedCodex(codexPath, config.codexSha256);
 	const token = await readCredential(directory, "qorpera-model-login-helper-token");
 	if (!TOKEN.test(token)) throw new Error("Login helper token is invalid");
 	const service = new ModelLoginHelperService({
@@ -99,7 +123,8 @@ export async function runModelLoginHelperMain(environment: NodeJS.ProcessEnv = p
 		renewer: new CodexLoginRenewer({
 			codexPath,
 			temporaryRoot: absolute(config.temporaryRoot, "Login helper temporary root"),
-			isolation: { entryPoint: absolute(config.isolationEntryPoint, "Login helper isolation entry point") },
+			isolation: { entryPoint: isolationEntryPoint },
+			beforeLaunch,
 		}),
 	});
 	const stop = new AbortController();

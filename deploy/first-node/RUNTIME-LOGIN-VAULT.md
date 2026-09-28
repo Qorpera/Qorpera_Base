@@ -91,8 +91,11 @@ no database login and no service key; it sees a login only for one operation and
   existing bubblewrap launcher (egress only to `auth.openai.com` and `chatgpt.com`), sends
   `initialize` and `account/read {refreshToken: true}`, and wipes the home. A changed `auth.json` is
   the renewed login. Otherwise Codex's own error line decides: 401, `refresh_token_reused|expired|
-  invalidated` or a 400 `invalid_grant` is refused (the login needs a new sign-in), anything else is
-  retried later. At most 4 renewals run at once; 45 s per renewal.
+  invalidated` (from the JSON body, any case, as Codex reads it) or a 400 `invalid_grant` is refused
+  (the login needs a new sign-in), anything else is retried later. At most 4 renewals run at once.
+  Budgets nest: Codex 25 s, helper answer 28 s, broker wait 30 s, vault renewal 35 s; once asked, a
+  renewal runs to its budget whatever the member's request does, because only it can save the new
+  login. Stopping the unit lets renewals in flight finish (`KillMode=mixed`, 40 s).
 - **Part B, sign-in and usage** (next): sign-in (`codex login --device-auth`, the same prompt
   scraping as today) answering the node login gateway's `/login` protocol so the web client is
   unchanged, and usage reads (the existing `wham/usage` call with the pass, from the vault, no
@@ -105,15 +108,17 @@ no database login and no service key; it sees a login only for one operation and
    Verify, extract the single binary to `/opt/qorpera-model-login-helper/codex`, root-owned 0555,
    and record its own SHA-256 for the configuration. The helper refuses to start on any other
    bytes or on a path that is not root-owned.
-2. Isolation: the same root-owned `bwrap`, `node` and isolation entry point the native host uses
-   (`/opt/qorpera-runner/qorpera-native-isolation-child.mjs`), and unprivileged user namespaces.
-3. `npm run pack:model-login-helper -- --out <dir>`; install `qorpera-model-login-helper.mjs` to
-   `/opt/qorpera-model-login-helper/` and the unit; create the `qorpera-login-helper` user and group.
+2. Isolation: root-owned `/usr/bin/bwrap` and `/usr/bin/node`, and unprivileged user namespaces.
+   The helper checks these, its isolation entry point and the Codex binary at start and refuses to
+   run on a bad install.
+3. `npm run pack:model-login-helper -- --out <dir>`; install `qorpera-model-login-helper.mjs` and
+   `qorpera-native-isolation-child.mjs` (shipped with the helper) to `/opt/qorpera-model-login-helper/`,
+   root-owned 0444, and the unit; create the `qorpera-login-helper` user and group.
 4. `/etc/qorpera-model-login-helper/config.json`:
    `{"schema": "qorpera.model-login-helper/v1", "socketPath": "/run/qorpera-model-login-helper/helper.sock",
    "codexPath": "/opt/qorpera-model-login-helper/codex", "codexSha256": "<binary sha256>",
    "temporaryRoot": "/run/qorpera-model-login-helper", "isolationEntryPoint":
-   "/opt/qorpera-runner/qorpera-native-isolation-child.mjs"}` and `/etc/qorpera-model-login-helper/token`
+   "/opt/qorpera-model-login-helper/qorpera-native-isolation-child.mjs"}` and `/etc/qorpera-model-login-helper/token`
    (43 base64url characters, distinct from every broker token).
 5. Broker drop-in: `SupplementaryGroups=qorpera-login-helper` and
    `LoadCredential=qorpera-cloud-secret-login-helper:/etc/qorpera-secret-broker/login-helper.json`
