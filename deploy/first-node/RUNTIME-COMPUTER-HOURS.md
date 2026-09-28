@@ -403,7 +403,13 @@ Live keys come later, with the live switch (build step 7).
   - a BEFORE INSERT trigger on `qorpera_execution_runs` stops any path that did not check.
 
   Machines not starting or waking (6b), the finishing window, the zero "out of hours" notice and
-  the renewal-gap handling for machines (6c), and the web (6d) follow.
+  the renewal-gap handling for machines (6c), and the web (6d) follow. Before the live switch:
+  - the listing checks zero once per due routine, and with the rule on each check sums the
+    company's hours (about 0.4 ms locally): check each company once, and measure with
+    production-sized data;
+  - held wakes still take the wake step's slots and locks, as a paused company's do;
+  - a routine created or retimed at zero gets its first slot only once hours arrive, so 6d shows
+    "Waiting for computer hours" on it.
 - It is checked before a run is created (not at claim or placement: a run waiting there is
   invisible to members) and at each machine kind's own start or wake step. A run created before
   the company ran out is running work. The hook list is agreed with the nodes (S3), machines,

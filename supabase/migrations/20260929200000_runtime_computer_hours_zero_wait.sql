@@ -2,8 +2,9 @@
 -- Contract: section 19, 2026-09-28 amendment "computer hours", item 7 ("At zero") and item 12.
 -- Design: deploy/first-node/RUNTIME-COMPUTER-HOURS.md ("Zero").
 --
--- A company at zero starts no new run: the check sits beside the company-paused check in each
--- function that creates runs, and the work stays queued, with no age limit, until hours arrive:
+-- A company at zero starts no new run: the check sits in each function that creates runs (beside
+-- the company-paused check) and in the routine listing, and the work stays queued, with no age
+-- limit, until hours arrive:
 -- * wakes (agents, rooms, workers, coding turns): the wake stays queued with the reason "Waiting
 --   for computer hours" (its visit moves it to the back of the queue, as a paused company's does);
 -- * routines: the routine listing leaves the company's due routines out, and a slot asked for anyway

@@ -97,7 +97,9 @@ declare v_last timestamptz := (select cursor.last_scheduled_for from public.qorp
 	where cursor.routine_id = (current_setting('qorpera_test.routine')::jsonb ->> 'routine_id')::uuid);
 	v_wake uuid;
 begin
-	v_wake := pg_temp.wake_schedule(current_setting('qorpera_test.routine')::jsonb, 'at-zero', clock_timestamp());
+	perform set_config('qorpera_test.at_zero_slot', clock_timestamp()::text, true);
+	v_wake := pg_temp.wake_schedule(current_setting('qorpera_test.routine')::jsonb, 'at-zero',
+		current_setting('qorpera_test.at_zero_slot')::timestamptz);
 	perform pg_temp.wake_assert(not exists (select 1 from public.qorpera_wake_occurrences where id = v_wake),
 		'At zero, a routine slot queues no wake');
 	perform pg_temp.wake_assert((select cursor.last_scheduled_for is not distinct from v_last
@@ -192,10 +194,12 @@ end
 $$;
 select pg_temp.wake_assert(pg_temp.routine_listed(), 'Hours arrived: the due routine is listed again');
 do $$
-declare v_wake uuid := pg_temp.wake_schedule(current_setting('qorpera_test.routine')::jsonb, 'zero-hours-back', clock_timestamp());
+declare v_wake uuid := pg_temp.wake_schedule(current_setting('qorpera_test.routine')::jsonb, 'at-zero',
+	current_setting('qorpera_test.at_zero_slot')::timestamptz);
 begin
+	-- The same slot as at zero: accepted only because the cursor did not move past it.
 	perform pg_temp.wake_assert(exists (select 1 from public.qorpera_wake_occurrences where id = v_wake),
-		'Hours arrived: the deferred slot is queued');
+		'Hours arrived: the deferred slot is offered again and queued');
 end
 $$;
 select pg_temp.wake_assert(not pg_temp.hours_read_waits(), 'Hours arrived: members see no waiting');
