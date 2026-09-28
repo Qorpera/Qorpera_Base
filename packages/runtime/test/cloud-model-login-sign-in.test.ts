@@ -141,9 +141,9 @@ it("runs the official device sign-in, shows the link and code, and keeps the fin
 	expect((await service.readSignIn(target, signal())).status).toBe("completed");
 	await service.finishSignIn(target, signal());
 	expect(await service.readSignIn(target, signal())).toEqual({ status: "unknown" });
-	await expect(service.beginSignIn({ ...signIn, companyId: randomUUID() }, signal())).resolves.toMatchObject({
-		status: "awaiting_member",
-	});
+	// An ended sign-in is not started again, whoever asks: a late poll finds it complete instead.
+	await expect(service.beginSignIn(signIn, signal())).resolves.toEqual({ status: "preparing" });
+	expect(await readdir(temporaryRoot)).toEqual([]);
 });
 
 it("binds a sign-in to its company and capability, starts Codex once, and replaces a member's older sign-in", async () => {

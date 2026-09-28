@@ -114,7 +114,10 @@ no database login and no service key; it sees a login only for one operation and
     (`OfficialCliNativeHarnessDriver`, in the same isolation, its scratch under the helper's runtime
     directory, the pinned binary checked before each launch) in a private home. A sign-in is bound
     to its company, identity and capability digest; a newer sign-in of the same identity ends the
-    older one; at most 8 run at once, 3 per company. Codex stops after 10 minutes at the latest;
+    older one (also when two members share a company identity: the second sign-in ends the first);
+    at most 6 run at once, 2 per company. The binding is a consistency check: the brokers on one
+    host share the helper's token (one broker per host today; give each its own token before a
+    helper serves several companies). Codex stops after 10 minutes at the latest;
     its home is wiped as soon as it stops. The answer is the node gateway's
     `qorpera.native-provider-login-result/v1`: `preparing`, `awaiting_member` with the link and code,
     or `completed`.
@@ -126,7 +129,9 @@ no database login and no service key; it sees a login only for one operation and
     capsule `model-login/<login id>`, the vault login with `sign_in_session_id`, its version 1
     (`sign_in`), and the connection version pointing at the pointer capsule, recorded exactly as a
     node sign-in records it), then ends the helper's copy. A broker that restarted finds finished
-    sign-ins on its first pass; the helper keeps a finished login at most 5 minutes. The recovery
+    sign-ins on its first pass; the helper keeps a finished login at most 5 minutes, and ends it
+    after three refused lookups in a row (the company was switched back meanwhile). An ended
+    sign-in is never started again by a late poll. The recovery
     pin still fences a recovering identity, but asks no node key backup of a sign-in that created a
     vault login. A repeat after a lost answer finds its own login.
   - Deploy: the broker's public front must route `POST /v1/model-logins/<company>/login` to that
@@ -197,7 +202,8 @@ no database login and no service key; it sees a login only for one operation and
 ## Moving and retiring
 
 - Each login moves by signing in again (test company first; company Qorpera after the "who pays"
-  work and the founder's go). The old path serves a login until then.
+  work and the founder's go), then the member's old node account is removed: the identity counts
+  as in the vault only once no node login of it is active. The old path serves a login until then.
 - After every active login has run from the vault for a week, retire in separate changes: the home
   rule in placement and claim, exec-host identity devices and inventory `identityVolumes`, the login
   and refresh machines for Codex, login key backups and recovery, then the volumes (renamed

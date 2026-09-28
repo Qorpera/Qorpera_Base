@@ -22,6 +22,8 @@ const MAX_AUTH_JSON_BYTES = 32 * 1024;
 const MAX_SIGN_IN_MS = 15 * 60_000;
 /** A finished or failed sign-in waits this long for its broker (which may be restarting). */
 const SETTLED_KEEP_MS = 5 * 60_000;
+/** An ended sign-in is not started again for this long (a late poll racing its completion). */
+const ENDED_MEMORY_MS = MAX_SIGN_IN_MS;
 
 export type ModelLoginSignInState =
 	| { readonly status: "preparing" }
@@ -93,6 +95,8 @@ export class CodexSignIns implements ModelLoginSignInHelper {
 	readonly #companyLimit: number;
 	readonly #promptWaitMs: number;
 	readonly #entries = new Map<string, Entry>();
+	/** Sign-ins ended recently, with the time until which they stay ended. */
+	readonly #ended = new Map<string, number>();
 
 	constructor(options: {
 		driver: Pick<NativeHarnessDriver, "beginLogin">;
@@ -106,8 +110,8 @@ export class CodexSignIns implements ModelLoginSignInHelper {
 			throw new Error("Sign-in temporary root must be absolute");
 		this.#driver = options.driver;
 		this.#temporaryRoot = options.temporaryRoot;
-		this.#limit = options.limit ?? 8;
-		this.#companyLimit = options.companyLimit ?? 3;
+		this.#limit = options.limit ?? 6;
+		this.#companyLimit = options.companyLimit ?? 2;
 		this.#promptWaitMs = options.promptWaitMs ?? 12_000;
 	}
 
@@ -124,6 +128,9 @@ export class CodexSignIns implements ModelLoginSignInHelper {
 		if (!entry) {
 			const lifetime = Math.min(expiresAt - Date.now(), MAX_SIGN_IN_MS);
 			if (lifetime <= 0) return { status: "failed", reason: "sign_in_expired" };
+			for (const [id, until] of this.#ended) if (until <= Date.now()) this.#ended.delete(id);
+			// Ended moments ago (its broker completed it): the caller's next look finds it complete.
+			if (this.#ended.has(binding.signInId)) return { status: "preparing" };
 			// A newer sign-in of the same identity replaces the older one (a member who retried).
 			for (const [id, other] of this.#entries)
 				if (
@@ -277,6 +284,7 @@ export class CodexSignIns implements ModelLoginSignInHelper {
 		const entry = this.#entries.get(signInId);
 		if (!entry) return;
 		this.#entries.delete(signInId);
+		this.#ended.set(signInId, Date.now() + ENDED_MEMORY_MS);
 		entry.ended = true;
 		clearTimeout(entry.timer);
 		entry.notify();

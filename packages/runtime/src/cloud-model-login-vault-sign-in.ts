@@ -21,6 +21,8 @@ const KEY_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const SIGN_IN_SCHEMA = "qorpera.native-provider-login/v1";
 const RESULT_SCHEMA = "qorpera.native-provider-login-result/v1";
 const SAVE_DEADLINE_MS = 15_000;
+/** Refused lookups in a row (about 6 s of collections) before a finished login is dropped. */
+const REFUSALS_BEFORE_END = 3;
 const REQUEST_KEYS = [
 	"client_connection_id",
 	"compute_identity_id",
@@ -202,6 +204,8 @@ export class CloudModelLoginSignIns {
 	readonly #helper: ModelLoginSignInHelper;
 	readonly #collectEveryMs: number;
 	readonly #inFlight = new Set<string>();
+	/** Collections the database refused in a row, per sign-in: after a few the helper's copy ends. */
+	readonly #refusals = new Map<string, number>();
 	#company: string | undefined;
 	#collector: ReturnType<typeof setTimeout> | undefined;
 	#collecting: Promise<void> | undefined;
@@ -331,7 +335,20 @@ export class CloudModelLoginSignIns {
 				),
 			);
 		try {
-			const description = await describe();
+			let description: SignInDescription;
+			try {
+				description = await describe();
+				this.#refusals.delete(signInId);
+			} catch (error) {
+				// The company was switched back or its broker authority changed while the member
+				// finished: the helper must not keep the login until its own timer ends.
+				const refusals = (this.#refusals.get(signInId) ?? 0) + 1;
+				if (refusals >= REFUSALS_BEFORE_END) {
+					this.#refusals.delete(signInId);
+					await finish();
+				} else this.#refusals.set(signInId, refusals);
+				throw error;
+			}
 			if (description.companyId !== companyId || description.loginId !== signInId) return false;
 			if (description.status !== "pending") {
 				await finish();
