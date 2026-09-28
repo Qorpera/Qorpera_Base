@@ -137,6 +137,8 @@ interface Fixture {
 	/** How the fake control plane answers a release: confirmed, an unconfirmed shape, or an HTTP error. */
 	release: "released" | "unconfirmed" | "error";
 	identityState: SharedExecutionIdentityState;
+	/** Whether the identity's login is kept by the vault (Stateless Compute step 1). */
+	loginInVault: boolean;
 	provisioned: number;
 	activations: Map<string, string>;
 	clock: { now: number };
@@ -211,6 +213,7 @@ async function fixture(
 		reservation: { state: "reserved" },
 		release: "released",
 		identityState: { companyId, computeIdentityId, epoch, blocked: false, keySha256, canInitialize: false },
+		loginInVault: false,
 		provisioned: 0,
 		activations: new Map<string, string>(),
 		clock: { now: Date.parse("2026-09-22T12:00:00Z") },
@@ -246,6 +249,7 @@ async function fixture(
 			const name = url.pathname.slice("/rest/v1/rpc/".length);
 			const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
 			state.rpc.push({ name, body });
+			if (name === "qorpera_compute_identity_login_in_vault") return Response.json(state.loginInVault);
 			if (name === "qorpera_provision_execution_runner") {
 				// The control plane binds the client runner id to its first activation
 				// secret: a second, different secret for the same id is refused.
@@ -384,6 +388,8 @@ describe("shared execution provider backend", () => {
 		expect(f.rpc.map((call) => call.name)).toEqual([
 			"qorpera_provision_execution_runner",
 			"qorpera_reserve_runtime_machine",
+			// The host's material asks whether the identity's login is in the vault.
+			"qorpera_compute_identity_login_in_vault",
 		]);
 		expect(f.rpc[1]?.body).toMatchObject({
 			p_allocation_id: runId,
@@ -656,7 +662,8 @@ describe("shared execution provider backend", () => {
 		);
 		expect(refused).toBeInstanceOf(ProviderAdmissionRefused);
 		expect(refused).toMatchObject({ reason: "NODE_IDENTITY_ELSEWHERE" });
-		expect(f.rpc).toEqual([]);
+		// Only the question whether the login is kept by the vault (it is not) comes before.
+		expect(f.rpc.map((call) => call.name)).toEqual(["qorpera_compute_identity_login_in_vault"]);
 		expect(f.units.log).toEqual([]);
 		// The wait is bounded: after two minutes the start fails like any other, visibly.
 		f.clock.now += 60_000;
@@ -671,7 +678,7 @@ describe("shared execution provider backend", () => {
 		expect(expired).toBeInstanceOf(Error);
 		expect(expired).not.toBeInstanceOf(ProviderAdmissionRefused);
 		expect(String(expired)).toContain("not attached to this execution host in time");
-		expect(f.rpc).toEqual([]);
+		expect(f.rpc.every((call) => call.name === "qorpera_compute_identity_login_in_vault")).toBe(true);
 		const volume = join(f.identityRoot, computeIdentityId).replaceAll(" ", "\\040");
 		await writeFile(mountInfo, `22 1 0:21 / / rw - ext4 /dev/sda1 rw\n90 22 0:50 / ${volume} rw - virtiofs id rw\n`);
 		await expect(f.backend.acquire(runId, work(), new AbortController().signal)).resolves.toMatchObject({ runnerId });
@@ -824,6 +831,20 @@ describe("shared execution provider backend", () => {
 		expect(f.rpc.filter((call) => call.name === "qorpera_release_runtime_machine")).toHaveLength(1);
 	});
 
+	it("starts a vault login's sandbox without any volume, key or epoch file", async () => {
+		const mountInfo = join(await root(), "mountinfo");
+		await writeFile(mountInfo, "22 1 0:21 / / rw,relatime shared:1 - ext4 /dev/sda1 rw\n");
+		const f = await fixture({ mountInfoPath: mountInfo });
+		f.loginInVault = true;
+		await expect(f.backend.acquire(runId, work(), new AbortController().signal)).resolves.toMatchObject({ runnerId });
+		const credentials = join(f.runRoot, "slots", "0", "credentials");
+		expect(await readFile(join(credentials, "qorpera-native-provider-master-key"), "utf8")).toBe("");
+		expect(await readFile(join(credentials, "qorpera-native-identity-epoch"), "utf8")).toBe("");
+		expect(await readFile(join(f.runRoot, "slots", "0", "native-provider.env"), "utf8")).toContain(
+			"QORPERA_NATIVE_LOGIN_CUSTODY=vault",
+		);
+	});
+
 	it("does not hold the service lock while units are stopping", async () => {
 		const f = await fixture();
 		const signal = new AbortController().signal;
@@ -924,6 +945,34 @@ describe("warm conversations", () => {
 			.acquire(secondRun, work({ runId: secondRun, sourceId: secondRun }), signal)
 			.catch(() => undefined);
 		expect(changed.units.log[0]).toBe(`kill ${hostUnit(0)}`);
+	});
+
+	it("parks a vault login's host and reuses it only while the identity's login stays in the vault", async () => {
+		const mountInfo = join(await root(), "mountinfo");
+		await writeFile(mountInfo, "22 1 0:21 / / rw,relatime shared:1 - ext4 /dev/sda1 rw\n");
+		const f = await fixture({ warmIdleMs: 300_000, mountInfoPath: mountInfo });
+		f.loginInVault = true;
+		const signal = new AbortController().signal;
+		await f.backend.acquire(runId, work(), signal);
+		await finishRun(f);
+		expect(f.units.activeUnits.has(hostUnit(0))).toBe(true);
+		f.units.log.length = 0;
+		await f.backend.acquire(secondRun, work({ runId: secondRun, sourceId: secondRun }), signal);
+		expect(f.units.log).toEqual([`start ${runnerUnit(0)}`]);
+		expect(
+			await readFile(join(f.runRoot, "slots", "0", "credentials", "qorpera-native-provider-master-key"), "utf8"),
+		).toBe("");
+		await finishRun(f);
+		// The member signed in on a node again: the parked host holds no key and must not serve.
+		f.loginInVault = false;
+		await writeFile(
+			mountInfo,
+			`22 1 0:21 / / rw,relatime shared:1 - ext4 /dev/sda1 rw\n23 22 0:30 / ${join(f.identityRoot, computeIdentityId)} rw - ext4 /dev/sdb rw\n`,
+		);
+		f.units.log.length = 0;
+		const thirdRun = "30000000-0000-4000-8000-000000000023";
+		await f.backend.acquire(thirdRun, work({ runId: thirdRun, sourceId: thirdRun }), signal).catch(() => undefined);
+		expect(f.units.log[0]).toBe(`kill ${hostUnit(0)}`);
 	});
 
 	it("keeps a slot parked when its claim fails before the run's journal holds it", async () => {
