@@ -285,11 +285,21 @@ describe("company machines in settings", () => {
 
 	it("drops a waiting focus return once the member moves on, and names a permission refusal", async () => {
 		let refuse!: (error: Error) => void;
+		let reads = 0;
 		const client = {
+			// Each read differs, so every read redraws and the focus rules run.
 			list: vi.fn(async () =>
-				parseMachines({ schema: "qorpera.company-machines/v1", machines: [machine({ commandsRunning: 0 })] }),
+				parseMachines({
+					schema: "qorpera.company-machines/v1",
+					machines: [machine({ commandsRunning: 0, purpose: `Read ${++reads}` })],
+				}),
 			),
-			change: vi.fn(() => new Promise<void>((_resolve, reject) => (refuse = reject))),
+			change: vi.fn(
+				() =>
+					new Promise<void>((_resolve, reject) => {
+						refuse = reject;
+					}),
+			),
 		};
 		const search = document.createElement("input");
 		document.body.append(search);
@@ -316,6 +326,18 @@ describe("company machines in settings", () => {
 		view.shown();
 		await settle();
 		expect(document.activeElement).toBe(document.body);
+		// Any other refusal is one to try again.
+		const stopAgain = [...view.el.querySelectorAll("button")].find((button) => button.textContent === "Stop")!;
+		stopAgain.click();
+		await settle();
+		refuse(
+			new CloudRpcError("qorpera_member_manage_company_machine", {
+				code: "P0002",
+				message: "Machine is unavailable",
+			}),
+		);
+		await settle();
+		expect(view.el.querySelector("[role=alert]")?.textContent).toBe("build-a could not be changed. Try again.");
 	});
 
 	it("asks before stopping a machine whose commands still run", async () => {

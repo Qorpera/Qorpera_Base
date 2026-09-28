@@ -430,8 +430,9 @@
 [data-theme="dark"] .thread-machine:is([data-state="waiting"], [data-state="starting"], [data-state="stopping"]) .icon { color: var(--warning); }
 /* A phone's header has room for the machines' figures, not their names. */
 @media (max-width: 640px) {
-	/* The title gives way first, down to the agent's figure, so the chips and the computer button stay on screen. */
-	.thread-identity { flex-shrink: 1000; min-width: 38px; }
+	/* The title gives way first, down to the agent's figure (clipped beyond it), so the chips and the computer
+	   button stay on screen. The header's selector outweighs the title's base rule in conversation.css. */
+	.thread-header .thread-identity { flex-shrink: 1000; min-width: 38px; overflow: hidden; }
 	.thread-machine { padding: 0 7px; }
 	.thread-machine-name { display: none; }
 }
