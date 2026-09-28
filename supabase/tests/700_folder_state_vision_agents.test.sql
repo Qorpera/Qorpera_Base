@@ -344,8 +344,8 @@ begin
 end $$;
 
 -- 8. Lock targets: the roster row at rank 2, and the agent's thread room at rank 4 (FOR UPDATE) when its name or
--- status changes or it retires, since the roster's thread trigger takes that room after the paths otherwise. With the
--- room goes the company row, FOR KEY SHARE at rank 2 (701 races it against posting).
+-- status changes or it retires, since the roster's thread trigger takes that room after the paths otherwise. With
+-- every roster row goes the company row, FOR KEY SHARE at rank 2 (701 races it against posting).
 do $$
 declare nora constant uuid := '70000000-0000-4000-8000-0000000000a1'; env constant uuid := '70000000-0000-4000-8000-000000000020';
 	room uuid; t jsonb;
@@ -365,8 +365,8 @@ begin
 	select jsonb_agg(to_jsonb(x)) into t from public.qorpera_folder_structured_targets(env, pg_temp.owner(), jsonb_build_array(
 		pg_temp.write('agents/nora-back/agent.md', 'agent', pg_temp.agent_text(nora, 'Nora Skov'), pg_temp.agent_parse(nora, 'Nora Skov'),
 			pg_temp.version('agents/nora-back/agent.md')))) x;
-	if t @> '[{"tbl":"qorpera_company_rooms"}]' or t @> '[{"tbl":"qorpera_profiles"}]' then
-		raise exception 'An edit that keeps name and status leaves the room and the company row: %', t; end if;
+	if t @> '[{"tbl":"qorpera_company_rooms"}]' or not t @> '[{"rank":2,"tbl":"qorpera_profiles","mode":"keyshare"}]' then
+		raise exception 'An edit that keeps name and status leaves the room, and takes the company row: %', t; end if;
 	select jsonb_agg(to_jsonb(x)) into t from public.qorpera_folder_structured_targets(env, pg_temp.owner(), jsonb_build_array(
 		jsonb_build_object('op','delete','path','agents/nora-back','expectedVersion',pg_temp.version('agents/nora-back'),'asOfSeq',pg_temp.seq()))) x;
 	if not t @> jsonb_build_array(jsonb_build_object('rank', 4, 'tbl', 'qorpera_company_rooms', 'key', room::text, 'mode', 'update'))

@@ -1,7 +1,7 @@
 -- Company state files, F2-1, under concurrency (deploy/first-node/RUNTIME-COMPANY-STATE-FILES.md §4, "Lock order
--- with the triggers"). A save that renames or archives an agent takes the company row FOR KEY SHARE before the
--- agent's thread room, as posting takes the company row (qorpera_lock_profile_gc_fence) before the room. The
--- fixture is committed so other connections see it, and removed at the end. Waits are detected with
+-- with the triggers"). A save that writes a roster row takes the company row FOR KEY SHARE before the agent's thread
+-- room and the company's operation clock, as posting takes the company row (qorpera_lock_profile_gc_fence) before
+-- both. The fixture is committed so other connections see it, and removed at the end. Waits are detected with
 -- pg_blocking_pids, never by wall-clock time.
 
 insert into auth.users(id,email) values
@@ -150,6 +150,33 @@ begin
 		raise exception 'The rename reaches the roster'; end if;
 end $$;
 
+-- B. An instructions edit (no room) ends in the roster's company operation: the clock, then the company row.
+-- Posting holds the company row and appends its own operations later; the edit waits before it takes the clock.
+select set_config('qorpera_test.state_edit', format('select public.qorpera_folder_commit(%L, %L, %L, %L)', '70100000-0000-4000-8000-000000000020',
+	pg_temp.owner()::text, 'race-edit-0001', jsonb_build_array(pg_temp.write('agents/nora-dahl/agent.md', 'agent',
+		replace(pg_temp.agent_text('70100000-0000-4000-8000-0000000000a1', 'Nora Skov'), 'Sell.', 'Sell more.'),
+		pg_temp.agent_parse('70100000-0000-4000-8000-0000000000a1', 'Nora Skov') || '{"instructions":"Sell more."}',
+		pg_temp.version('agents/nora-dahl/agent.md')))::text), false) \g /dev/null
+do $$
+declare v jsonb;
+begin
+	perform dblink_exec('srace_post', 'begin');
+	perform * from dblink('srace_post', $q$select public.qorpera_lock_profile_gc_fence('70100000-0000-4000-8000-000000000010')::text$q$)
+		as t(x text);
+	perform dblink_send_query('srace_save', current_setting('qorpera_test.state_edit'));
+	if not pg_temp.waits_for('srace_save', 'srace_post') then raise exception 'The edit must wait for the posting company row'; end if;
+	-- The company's operation clock is free: posting's own operations do not wait.
+	perform * from dblink('srace_post', $q$select 1 from public.qorpera_profile_operation_clocks
+		where profile_id = '70100000-0000-4000-8000-000000000010' for update nowait$q$) as t(x integer);
+	perform dblink_exec('srace_post', 'rollback');
+	select r into v from dblink_get_result('srace_save') as t(r jsonb);
+	perform * from dblink_get_result('srace_save') as t(r jsonb);
+	if v -> 'units' -> 0 ->> 'outcome' <> 'saved' then raise exception 'The edit saves once posting is done: %', v; end if;
+	if (select charter from public.qorpera_profile_staff where profile_id = '70100000-0000-4000-8000-000000000010'
+		and staff_agent_id = '70100000-0000-4000-8000-0000000000a1') <> 'Sell more.' then
+		raise exception 'The edit reaches the roster'; end if;
+end $$;
+
 select dblink_disconnect(name) from unnest(array['srace_post','srace_save']) name;
 
 -- The committed fixture leaves the shared suite database.
@@ -165,14 +192,16 @@ delete from public.qorpera_company_room_members where room_id in (select id from
 delete from public.qorpera_company_rooms where profile_id = '70100000-0000-4000-8000-000000000010';
 delete from public.qorpera_shared_sessions where profile_id = '70100000-0000-4000-8000-000000000010';
 delete from public.qorpera_profile_staff where profile_id = '70100000-0000-4000-8000-000000000010';
-delete from storage.objects where bucket_id = 'qorpera-profile-objects' and name like '70100000-0000-4000-8000-000000000010/%';
 set session_replication_role = origin;
+-- With triggers on, so the object mirror (qorpera_profile_objects) goes too.
+delete from storage.objects where bucket_id = 'qorpera-profile-objects' and name like '70100000-0000-4000-8000-000000000010/%';
 delete from public.qorpera_profiles where id = '70100000-0000-4000-8000-000000000010';
 delete from auth.users where id in ('70100000-0000-4000-8000-000000000001','70100000-0000-4000-8000-000000000002');
 do $$
 begin
 	if exists (select 1 from public.qorpera_company_files where environment_id = '70100000-0000-4000-8000-000000000020')
 		or exists (select 1 from public.qorpera_profile_staff where profile_id = '70100000-0000-4000-8000-000000000010')
-		or exists (select 1 from storage.objects where name like '70100000-0000-4000-8000-000000000010/%') then
+		or exists (select 1 from storage.objects where name like '70100000-0000-4000-8000-000000000010/%')
+		or exists (select 1 from public.qorpera_profile_objects where profile_id = '70100000-0000-4000-8000-000000000010') then
 		raise exception 'The race fixture must be removed'; end if;
 end $$;

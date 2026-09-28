@@ -287,10 +287,11 @@ end $$;
 
 -- 7. The hook: targets --------------------------------------------------------------------------------------------
 
--- The lock of the hook's targets (C1b-1), with one more table: the company row, first within its rank. A save
--- that takes an agent's thread room FOR UPDATE ends in the thread trigger's session update, whose company
--- operation takes qorpera_profiles FOR KEY SHARE. Posting (qorpera_lock_profile_gc_fence) takes the company row
--- FOR UPDATE before the room, so the save takes it first too.
+-- The lock of the hook's targets (C1b-1), with one more table: the company row, first within its rank. Every
+-- roster write ends in a company operation (qorpera_record_staff_operation, and the thread trigger's session
+-- update), which takes the company's operation clock and then qorpera_profiles FOR KEY SHARE. Posting
+-- (qorpera_lock_profile_gc_fence) takes the company row FOR UPDATE before the agent's room and the clock, so the
+-- save takes it first too.
 create or replace function public.qorpera_folder_structured_lock(p_environment_id uuid, p_targets jsonb, p_from_rank smallint, p_to_rank smallint)
 returns void language plpgsql security definer set search_path = '' as $$
 declare v_target record; v_clause text; v_count bigint;
@@ -338,8 +339,8 @@ end $$;
 -- subtree's asOfSeq rule refuse a subtree that changed meanwhile). Rank 4: the agent's thread room, FOR UPDATE,
 -- when its name or status changes or it retires: the roster's thread trigger (qorpera_ensure_agent_thread_internal)
 -- takes that room FOR UPDATE, and a run of that room holds it FOR KEY SHARE at rank 4 before its paths, so the
--- trigger must not be the first to take it after the paths. With the room goes the company row, FOR KEY SHARE at
--- rank 2 (see the lock above).
+-- trigger must not be the first to take it after the paths. With every roster row goes the company row, FOR KEY
+-- SHARE at rank 2 (see the lock above).
 create or replace function public.qorpera_folder_structured_targets(p_environment_id uuid, p_actor jsonb, p_units jsonb)
 returns table(rank smallint, tbl text, key text, mode text) language plpgsql stable set search_path = '' as $$
 declare v_profile uuid; v_unit jsonb; v_op text; v_key text; v_entry jsonb; v_staff record; v_room uuid;
@@ -355,14 +356,14 @@ begin
 			loop
 				rank := 2; tbl := 'qorpera_profile_staff'; key := v_profile::text || ':' || (v_entry -> 'parse' ->> 'id'); mode := 'nokeyupdate';
 				return next;
+				rank := 2; tbl := 'qorpera_profiles'; key := v_profile::text; mode := 'keyshare';
+				return next;
 				select s.display_name, s.employment_status, s.folder_retired_at into v_staff from public.qorpera_profile_staff s
 				where s.profile_id = v_profile and s.staff_agent_id = (v_entry -> 'parse' ->> 'id')::uuid;
 				if found and (v_staff.display_name is distinct from v_entry -> 'parse' ->> 'name'
 					or v_staff.employment_status is distinct from v_entry -> 'parse' ->> 'status' or v_staff.folder_retired_at is not null) then
 					for v_room in select r.id from public.qorpera_company_rooms r
 						where r.profile_id = v_profile and r.bound_staff_agent_id = (v_entry -> 'parse' ->> 'id')::uuid loop
-						rank := 2; tbl := 'qorpera_profiles'; key := v_profile::text; mode := 'keyshare';
-						return next;
 						rank := 4; tbl := 'qorpera_company_rooms'; key := v_room::text; mode := 'update';
 						return next;
 					end loop;
@@ -378,11 +379,11 @@ begin
 				loop
 					rank := 2; tbl := 'qorpera_profile_staff'; key := v_profile::text || ':' || v_staff.staff_agent_id::text; mode := 'nokeyupdate';
 					return next;
+					rank := 2; tbl := 'qorpera_profiles'; key := v_profile::text; mode := 'keyshare';
+					return next;
 					if v_op = 'delete' and v_staff.employment_status = 'active' then
 						for v_room in select r.id from public.qorpera_company_rooms r
 							where r.profile_id = v_profile and r.bound_staff_agent_id = v_staff.staff_agent_id loop
-							rank := 2; tbl := 'qorpera_profiles'; key := v_profile::text; mode := 'keyshare';
-							return next;
 							rank := 4; tbl := 'qorpera_company_rooms'; key := v_room::text; mode := 'update';
 							return next;
 						end loop;

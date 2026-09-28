@@ -502,17 +502,21 @@ of the body, for readers that should not reach the storage server.
   runs on a column fires for real changes only, and every change bumps `version`, which pins a
   running agent's instructions (`qorpera_record_staff_operation`). A new id that another change set
   took first aborts this change set (23505); its retry is refused by `decide`.
-- **Lock order with the triggers:** when a save renames, archives or retires an agent, the
-  thread trigger takes the agent's room `FOR UPDATE`. It then updates the thread's session, whose
-  company operation takes the company row (`qorpera_profiles`) `FOR KEY SHARE`. A run of the room
-  takes the room `FOR KEY SHARE` at rank 4 before its paths. Posting takes the company row
-  `FOR UPDATE` (`qorpera_lock_profile_gc_fence`) before the room. So `targets` returns the company
-  row at rank 2 (`keyshare`, first within the rank) and the room at rank 4 (`update`), both before
-  the paths. Test 701 races a rename against posting.
+- **Lock order with the triggers:**
+  - Every roster write ends in a company operation (`qorpera_record_staff_operation`). That takes the
+    company's operation clock and then the company row (`qorpera_profiles`) `FOR KEY SHARE`.
+  - When a save renames, archives or retires an agent, the thread trigger also takes the agent's room
+    `FOR UPDATE` and updates the thread's session, which is another company operation.
+  - A run of the room takes the room `FOR KEY SHARE` at rank 4, before its paths.
+  - Posting takes the company row `FOR UPDATE` (`qorpera_lock_profile_gc_fence`) before the room and
+    the clock.
+  - So `targets` returns the company row at rank 2 (`keyshare`, first within the rank) with every
+    roster row, and the room at rank 4 (`update`) for a rename, archive or retire, all before the
+    paths. Test 701 races a rename and an instructions edit against posting.
 - `targets` reads the roster with no lock. A legacy roster write (`qorpera_put_profile_staff`)
-  between `targets` and the rank-2 lock can still make the trigger take the room after the paths
-  and deadlock with a run of that room (40P01; one side retries, no data is wrong). This ends when
-  C1c stops legacy writes to folder-v2 rows (§9).
+  between `targets` and the rank-2 lock can still make the trigger take the room after the paths.
+  That save can then deadlock with a run of that room, or with posting (40P01; one side retries, no
+  data is wrong). This ends when C1c stops legacy writes to folder-v2 rows (§9).
 - A row removed outside its folder (`deleted_at`, the legacy roster delete): `decide` refuses an
   edit of its `agent.md`; moving or deleting its folder is saved and leaves the row alone.
 - **Rebuild:** a job lists every structured path, reads the bytes and parses them with the
