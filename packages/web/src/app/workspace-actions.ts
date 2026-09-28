@@ -4,6 +4,7 @@ import type { WebNativeSubscription } from "../cloud/native-subscription.ts";
 import type { WebRoutines } from "../cloud/routines.ts";
 import type { WebSessionModel } from "../cloud/session-model.ts";
 import type { WebSessionRunControl } from "../cloud/session-run-control.ts";
+import type { SkillSuggestion } from "../cloud/skills.ts";
 import type { HostedStaffAgent } from "../cloud/types.ts";
 import type { FigureChoice } from "../ui/figure-picker.ts";
 import type { ComputerPanels } from "./views/computer.ts";
@@ -43,6 +44,8 @@ export interface WorkspaceActions {
 	/** Supplies already-authorized bytes. No URL from a transcript is fetched. */
 	previewAttachment?: (messageId: string, attachmentIndex: number, signal: AbortSignal) => Promise<Blob>;
 	sendMessage?: (sessionId: string, text: string, signal: AbortSignal) => Promise<boolean>;
+	/** The skills a member calls with "/" in the composer: the agent's own (agentId), then the company's. */
+	skills?: (agentId: string | null, signal: AbortSignal) => Promise<readonly SkillSuggestion[]>;
 	/** Opens the selected recipients and submits the first message. Failed sends
 	 * remain in the returned session so its normal retry UI can recover them. */
 	startConversation?: (recipientIds: readonly string[], text: string, signal: AbortSignal) => Promise<string>;
