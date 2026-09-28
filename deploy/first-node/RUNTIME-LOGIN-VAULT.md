@@ -116,9 +116,9 @@ no database login and no service key; it sees a login only for one operation and
     directory, the pinned binary checked before each launch) in a private home. A sign-in is bound
     to its company, identity and capability digest; a newer sign-in of the same identity ends the
     older one (also when two members share a company identity: the second sign-in ends the first);
-    at most 6 run at once, 2 per company. The binding is a consistency check: the brokers on one
-    host share the helper's token (one broker per host today; give each its own token before a
-    helper serves several companies). Codex stops after 10 minutes at the latest;
+    at most 6 run at once, 2 per company. The binding is a consistency check: the company brokers on
+    one host share the helper's token; the shared vault has its own (Vault By Default, part 3), and the
+    helper answers a sign-in only to the client that began it. Codex stops after 10 minutes at the latest;
     its home is wiped as soon as it stops. The answer is the node gateway's
     `qorpera.native-provider-login-result/v1`: `preparing`, `awaiting_member` with the link and code,
     or `completed`.
@@ -362,13 +362,7 @@ Prerequisites on each host: the broker build and the CA file
 (`/etc/qorpera-secret-broker/supabase-prod-ca-2021.crt`); the `qorpera-shared-vault` user and group
 (`useradd --system --no-create-home --shell /usr/sbin/nologin qorpera-shared-vault`); the login helper
 reinstalled from this build **first** (an older helper refuses a config with the new limit keys and a
-vault token, and stops for every broker on the host), with its drop-in
-`/etc/systemd/system/qorpera-model-login-helper.service.d/vault-token.conf`:
-
-```ini
-[Service]
-LoadCredential=qorpera-model-login-helper-vault-token:/etc/qorpera-model-login-helper/vault-token
-```
+vault token, and stops for every broker on the host).
 
 Node 1:
 
@@ -382,24 +376,35 @@ Node 1:
    and the same for `runtime`, the connectors credential (as `connectors.json`) and the coding executor
    token (as `coding-executor`). Then `shared-vault-secrets.py fingerprint`: keep its `fingerprintsSha256`
    for node 2.
-4. `shared-vault-secrets.py helper-token`, then restart the helper so it loads the vault token.
+4. `shared-vault-secrets.py helper-token`. Only then (systemd refuses to start a unit whose credential
+   file is missing, which would stop the helper for every broker on the host) the helper's drop-in
+   `/etc/systemd/system/qorpera-model-login-helper.service.d/vault-token.conf`, `systemctl daemon-reload`,
+   and a helper restart:
+
+   ```ini
+   [Service]
+   LoadCredential=qorpera-model-login-helper-vault-token:/etc/qorpera-model-login-helper/vault-token
+   ```
 5. `config.json`: `{"schema": "qorpera.cloud-secret-broker-service/v3", "principalId": "<a new uuid>",
    "port": 18660, "memberOrigins": ["https://app.qorpera.com"]}` (any free loopback port; 18660 below).
 6. nginx, before the vault starts: every map that picks a company's broker sends a company it has no line
    for to the vault. Every existing company keeps an explicit line; a company that rides on a map's
    fallback today (the acceptance company) gets its own line first.
+   Regex keys hold `{}`, so each stays quoted (Step 7 doc); nginx tries exact keys first and regex keys in
+   order.
    - `?company=` maps (`$qorpera_capture_broker` for captures, email drafts and connector sign-in start and
      confirm; `$qorpera_operations_broker` for `/v1/operations` and `/v1/repository-credentials`;
-     `$qorpera_model_login_run_broker` for runs' `/v1/model-logins`): a line matching any company,
-     `~(^|&)company=[0-9a-fA-F-]{36}(&|$) 127.0.0.1:18660;`, after the explicit lines (regex lines match in
-     order). Keep any `""` line that routes requests without `company=` where they go today.
-   - `$qorpera_model_login_broker` (vault sign-in and account refresh, by path): a line matching any company
-     path, `~^/v1/model-logins/[0-9a-fA-F-]{36}/(login|account-refresh)$ 127.0.0.1:18660;`, after the
-     explicit lines.
-   - `$qorpera_oauth_broker` (the connector callback, by the state's company prefix): a line matching any
-     company prefix, `~^[0-9a-fA-F-]{36}\. 127.0.0.1:18660;`, after the explicit lines; keep `"" "";` and
-     `default "";`, since a state without a company prefix belongs to no broker.
-   `nginx -t`, then reload.
+     `$qorpera_model_login_run_broker` for runs' `/v1/model-logins`):
+     `"~(^|&)company=[0-9a-fA-F-]{36}(&|$)" 127.0.0.1:18660;`. Keep any `""` line that routes requests
+     without `company=` where they go today.
+   - `$qorpera_model_login_broker` (vault sign-in and account refresh, by path):
+     `"~^/v1/model-logins/[0-9a-fA-F-]{36}/(login|account-refresh)$" 127.0.0.1:18660;`.
+   - `$qorpera_oauth_broker` (the connector callback): it is keyed on the bare company id that
+     `$qorpera_oauth_state_company` takes from the state, so `"~^[0-9a-f-]{36}$" 127.0.0.1:18660;`. Keep
+     `default "";`: a state without a valid company prefix leaves the id empty, which matches no line and
+     belongs to no broker.
+   `nginx -t`, then reload. Check one request per map for a company without its own line (it reaches the
+   vault) and one without a company (it goes where it went before).
 7. Node 2's hand-over (below), so the keys never live on one host alone once anything is sealed under them.
 8. The principal row (a database write, the coordinator's):
    `insert into public.qorpera_cloud_secret_broker_principals(id, service_origin, key_id, capability_sha256,

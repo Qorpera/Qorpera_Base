@@ -324,3 +324,49 @@ it("answers a sign-in only to the client that began it: the shared vault and the
 	await vault.finishSignIn(own(vaults), signal());
 	expect(fake.finishSignIn).toHaveBeenCalledOnce();
 });
+
+it("claims a sign-in for its client before waiting for Codex, and frees the claim when the start fails", async () => {
+	const directory = await temporary("qorpera-sign-in-claim-");
+	const socketPath = join(directory, "helper.sock");
+	const token = randomBytes(32).toString("base64url");
+	const vaultToken = randomBytes(32).toString("base64url");
+	const slow = binding();
+	let release = (): void => undefined;
+	const fake: ModelLoginSignInHelper = {
+		beginSignIn: vi.fn(
+			() =>
+				new Promise<{ status: "preparing" }>((resolveBegin) => {
+					release = () => resolveBegin({ status: "preparing" });
+				}),
+		),
+		readSignIn: vi.fn(async () => ({ status: "completed" as const, authJson: '{"tokens":{}}' })),
+		listCompletedSignIns: vi.fn(async () => []),
+		finishSignIn: vi.fn(async () => undefined),
+	};
+	const service = new ModelLoginHelperService({
+		socketPath,
+		token,
+		vaultToken,
+		renewer: { renew: vi.fn() },
+		signIns: fake,
+	});
+	await service.start();
+	closers.push(() => service.close());
+	const broker = new ModelLoginHelperClient({ socketPath, token });
+	const vault = new ModelLoginHelperClient({ socketPath, token: vaultToken });
+	const beginning = broker.beginSignIn(slow, signal());
+	await vi.waitFor(() => expect(fake.beginSignIn).toHaveBeenCalledOnce());
+	// While the broker's start still waits, the vault cannot read or take it.
+	await expect(vault.readSignIn({ signInId: slow.signInId, companyId: slow.companyId }, signal())).resolves.toEqual({
+		status: "unknown",
+	});
+	await expect(vault.beginSignIn(slow, signal())).rejects.toThrow();
+	release();
+	await expect(beginning).resolves.toEqual({ status: "preparing" });
+	// A start that fails leaves no claim behind: the id is free again.
+	const failed = binding();
+	vi.mocked(fake.beginSignIn).mockRejectedValueOnce(new Error("Sign-in limit reached"));
+	await expect(broker.beginSignIn(failed, signal())).rejects.toThrow();
+	vi.mocked(fake.beginSignIn).mockResolvedValueOnce({ status: "preparing" });
+	await expect(vault.beginSignIn(failed, signal())).resolves.toEqual({ status: "preparing" });
+});
