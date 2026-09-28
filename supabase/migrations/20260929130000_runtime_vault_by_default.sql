@@ -11,7 +11,8 @@
 --
 -- Existing companies keep their own brokers, or none, and are switched one by one as before. A principal
 -- never registers a company created before its start time, and never takes over an authority. Locks: the
--- new authority row and the company's switch row only.
+-- new authority row and the company's switch row, plus the key-share locks their foreign keys take on the
+-- company's profile row and the principal row.
 set local lock_timeout = '3s';
 
 create table public.qorpera_cloud_secret_broker_principals (
@@ -84,14 +85,16 @@ begin
 		order by profile.created_at, profile.id
 		limit 50
 	) as waiting;
-	return jsonb_build_object('schema', 'qorpera.broker-principal-companies/v1',
+	return jsonb_build_object('schema', 'qorpera.broker-principal-companies/v1', 'keyId', v_principal.key_id,
 		'registered', v_registered, 'unregistered', v_unregistered);
 end
 $$;
 
 -- Registers a new company with the shared broker: its authority row (the principal's origin and key id,
 -- the capability hash the broker derived for it) and its switch to vault sign-in. A repeat with the same
--- capability, by either copy of the shared broker, answers the same authority.
+-- capability, by either copy of the shared broker and at the same moment too, answers the same authority
+-- and changes nothing: only the call that creates the authority switches the company on, so an operator's
+-- later switch-off stays.
 create function public.qorpera_register_company_with_broker_principal(
 	p_principal_id uuid,
 	p_capability_sha256 text,
@@ -104,6 +107,7 @@ declare
 	v_principal public.qorpera_cloud_secret_broker_principals%rowtype;
 	v_created_at timestamptz;
 	v_authority public.qorpera_cloud_secret_broker_authorities%rowtype;
+	v_created boolean := false;
 begin
 	v_principal := public.qorpera_broker_principal(p_principal_id, p_capability_sha256);
 	if p_profile_id is null or coalesce(p_authority_capability_sha256, '') !~ '^[0-9a-f]{64}$'
@@ -114,22 +118,35 @@ begin
 	if v_created_at is null or v_created_at <= v_principal.registers_companies_created_after then
 		raise exception 'company is not the shared vault''s to register' using errcode = '42501';
 	end if;
-	insert into public.qorpera_cloud_secret_broker_authorities(profile_id, service_origin, key_id, capability_sha256,
-		principal_id)
-	values (p_profile_id, v_principal.service_origin, v_principal.key_id, p_authority_capability_sha256, v_principal.id)
-	on conflict (profile_id) do nothing
-	returning * into v_authority;
-	if v_authority.id is null then
+	begin
+		insert into public.qorpera_cloud_secret_broker_authorities(profile_id, service_origin, key_id,
+			capability_sha256, principal_id)
+		values (p_profile_id, v_principal.service_origin, v_principal.key_id, p_authority_capability_sha256,
+			v_principal.id)
+		on conflict (profile_id) do nothing
+		returning * into v_authority;
+		v_created := v_authority.id is not null;
+	exception when unique_violation then
+		-- The other copy registered the same company at the same moment, and its capability hash (unique too)
+		-- clashed first. The unique check waited for that copy's commit: the row below is its.
+		v_created := false;
+	end;
+	if not v_created then
 		select authority.* into v_authority from public.qorpera_cloud_secret_broker_authorities as authority
 		where authority.profile_id = p_profile_id;
+		if v_authority.id is null then
+			-- The capability hash names another company's authority.
+			raise exception 'company registration capability is taken' using errcode = '22023';
+		end if;
 		if v_authority.principal_id is distinct from v_principal.id
 			or v_authority.capability_sha256 is distinct from p_authority_capability_sha256
 			or v_authority.status <> 'active' then
 			raise exception 'company already has a vault' using errcode = '23505';
 		end if;
+	else
+		insert into public.qorpera_model_login_sign_in_companies(profile_id) values (p_profile_id)
+		on conflict (profile_id) do nothing;
 	end if;
-	insert into public.qorpera_model_login_sign_in_companies(profile_id) values (p_profile_id)
-	on conflict (profile_id) do nothing;
 	return jsonb_build_object('schema', 'qorpera.broker-principal-registration/v1', 'companyId', p_profile_id,
 		'authorityId', v_authority.id, 'keyId', v_authority.key_id);
 end

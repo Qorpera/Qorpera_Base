@@ -280,16 +280,24 @@ new stored); new companies only; node 1 serves, node 2 stands ready with the sam
 - **Part 1, database** (migration `20260929130000`): `qorpera_cloud_secret_broker_principals` is the
   shared vault's identity (service origin, the key id its companies get, a capability hash, and the time
   after which the companies it registers were created). Broker role only:
-  - `qorpera_broker_principal_companies`: the companies it serves (authorities with its `principal_id`)
-    and, at most 50 at a time, the companies created after its start time that have no authority at all.
+  - `qorpera_broker_principal_companies`: the principal's key id, the companies it serves (authorities
+    with its `principal_id`) and, at most 50 at a time, the companies created after its start time that
+    have no authority at all. The served list is not paged: about 1 MB at 8,000 companies, fine until then.
   - `qorpera_register_company_with_broker_principal`: creates the company's authority row (the
     principal's origin and key id, the capability hash the broker derived for the company, `principal_id`)
     and its row in `qorpera_model_login_sign_in_companies`. A repeat with the same capability, by either
-    copy of the shared vault, answers the same authority; another capability, another principal, a company
-    created before the start time or a company with its own vault is refused.
+    copy of the shared vault and at the same moment too, answers the same authority and changes nothing
+    (an operator's later switch-off stays). Another capability, another principal, a company created at or
+    before the start time, or a company with a vault of its own (retired included) is refused (`23505` or
+    `42501`); a capability hash that names another company's authority is refused with `22023`.
   - Every existing broker function then serves the company unchanged: each call names the company's own
-    authority and capability. Locks: the new authority row and the switch row only.
-  - An operator creates the principal once (`insert` with the capability hash and the start time).
+    authority and capability. Locks: the new authority row and the switch row, plus the key-share locks
+    their foreign keys take on the company's profile row and the principal row (a registration waits at
+    most 2 s behind a lock on the company's profile).
+  - An operator creates the principal once (`insert` with the capability hash and the start time). One
+    principal is active at a time; a second with an overlapping start time is harmless (the two race to
+    register each new company and the loser is refused) but serves no purpose. Retiring a principal stops
+    its vault; its companies' authorities stay active until each is retired too.
 - **Part 2, the broker** (next change): one process serves many companies; the company comes from each
   request's path or query; per-company capability and key derived from the vault's secrets.
 - **Part 3, deploy** (next change): the shared broker's unit and secrets, and a default route on both
