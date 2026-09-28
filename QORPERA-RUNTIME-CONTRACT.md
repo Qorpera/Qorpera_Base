@@ -3398,8 +3398,9 @@ hosts, login machines, the proposal-review guest or one-run runner machines.
      settings, which are the same on every node, never by copying another
      machine's node-specific setup. Operators see every machine waiting for a
      node, and why (no node has set it up yet, or no room).
-   - A computer is a seat. Besides being in use, a seat can be held by a
-     waiting agent (below). It is in use only while it has a live lease or a
+   - A computer is a seat. Besides being in use, a seat can be held by an
+     agent waiting for its machine, or woken and still running ("No waiting
+     for a seat" above). It is in use only while it has a live lease or a
      live viewer, is being taken over or drained, still has resources the
      agent started there that have not drained, has a command running in its
      shell, or was opened less than about two minutes ago. A desktop left open
