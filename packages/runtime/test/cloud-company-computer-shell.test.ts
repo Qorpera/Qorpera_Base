@@ -398,7 +398,7 @@ describe("the machine's memory and task safety", () => {
 		expect(launches).toEqual([0, 1]);
 		const closing = shell.close();
 		await vi.waitFor(() => expect(finish).toBeDefined());
-		finish?.();
+		(finish as (() => void) | undefined)?.();
 		await closing;
 	});
 
