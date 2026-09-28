@@ -544,7 +544,8 @@ of today's `revision`.
 
 ## 7. The hook interface with the storage core
 
-Agreed with F1 on #408 (comments 5864281465 and 5865135113; F1's answers). C1b adds the call
+Agreed with F1 on #408: F2 proposed in comments 5864281465 and 5865135113, and F1 answered in
+5864414721 and 5865197696. C1b adds the call
 sites to `qorpera_folder_commit` with inert stubs of exactly these signatures, and F2's SQL
 slices replace the stub bodies with `create or replace`, never touching the commit. F1 owns the
 commit, its lock order, and the follow-up queue table and its drain loop. F2 owns the functions it calls. All are plpgsql,
@@ -603,6 +604,6 @@ claims by kind then key (F2). All nine come before paths, objects, admission and
 7. **F2-6** routines, last because the scheduler, schedule positions and decisions are the
    most delicate part.
 
-Each step comes after F1's C1 (and the C2 dispatch), is `folder-v2` only, rides the release
+Each step comes after F1's C1 (C1b brings the call sites), is `folder-v2` only, rides the release
 train, and gets an independent exact-head review. The web screens for each kind follow with
 core step C4.
