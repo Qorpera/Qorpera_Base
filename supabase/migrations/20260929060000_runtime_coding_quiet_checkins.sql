@@ -215,15 +215,28 @@ select pg_temp.checkin_patch('public.qorpera_open_coding_turn(public.qorpera_run
 	update public.qorpera_wake_occurrences set status = 'cancelled', finished_at = clock_timestamp()
 	where status = 'queued' and source_kind = 'worker-completion' and source_id = p_worker.id and occurrence_key like 'coding-quiet:%';$new$);
 
--- A question's run archives the session only as it was when asked: never after a
--- new turn started (the owner answered, or someone followed up meanwhile).
+-- A question's run archives or cancels the session only as it was when asked:
+-- never after a new turn started (the owner answered, or someone followed up).
+create function public.qorpera_coding_question_stale(p_run_id uuid, p_worker public.qorpera_runtime_workers)
+returns boolean language sql stable security definer set search_path = '' as $$
+	select exists (select 1 from public.qorpera_wake_occurrences asked where asked.run_id = p_run_id
+		and asked.occurrence_key like 'coding-quiet:%' and asked.source_id = p_worker.id
+		and (p_worker.state = 'active' or p_worker.sequence is distinct from (asked.payload #>> '{completions,0,sequence}')::integer))
+$$;
+revoke all on function public.qorpera_coding_question_stale(uuid, public.qorpera_runtime_workers)
+	from public, anon, authenticated, service_role, qorpera_secret_broker;
+select pg_temp.checkin_patch('public.qorpera_manage_agent_worker(jsonb,jsonb)',
+	$old$	elsif v_action = 'cancel' then
+		perform public.qorpera_cancel_worker(v_worker, v_run.id, 'parent_cancelled');$old$,
+	$new$	elsif v_action = 'cancel' then
+		if public.qorpera_coding_question_stale(v_run.id, v_worker) then
+			raise exception 'The session has a new turn since you were asked; leave it' using errcode = '55000'; end if;
+		perform public.qorpera_cancel_worker(v_worker, v_run.id, 'parent_cancelled');$new$);
 select pg_temp.checkin_patch('public.qorpera_manage_agent_worker(jsonb,jsonb)',
 	$old$		if v_worker.species <> 'coding' then raise exception 'Only a coding session can be archived' using errcode = '22023'; end if;
 		perform public.qorpera_archive_coding_worker(v_worker, 'agent', v_run.id, null);$old$,
 	$new$		if v_worker.species <> 'coding' then raise exception 'Only a coding session can be archived' using errcode = '22023'; end if;
-		if exists (select 1 from public.qorpera_wake_occurrences asked where asked.run_id = v_run.id
-			and asked.occurrence_key like 'coding-quiet:%' and asked.source_id = v_worker.id
-			and (v_worker.state = 'active' or v_worker.sequence is distinct from (asked.payload #>> '{completions,0,sequence}')::integer)) then
+		if public.qorpera_coding_question_stale(v_run.id, v_worker) then
 			raise exception 'The session has a new turn since you were asked; leave it' using errcode = '55000'; end if;
 		perform public.qorpera_archive_coding_worker(v_worker, 'agent', v_run.id, null);$new$);
 

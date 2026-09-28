@@ -174,6 +174,11 @@ begin
 		raise exception 'A question taken before the new turn archived the session';
 	exception when object_not_in_prerequisite_state then null;
 	end;
+	begin
+		perform pg_temp.worker('{"action":"cancel","operationKey":"quiet-cancel-b","todoKey":"composer-latency","workerKey":"fix-send"}', v_binding);
+		raise exception 'A question taken before the new turn cancelled it';
+	exception when object_not_in_prerequisite_state then null;
+	end;
 	perform pg_temp.wake_assert((pg_temp.worker_row('fix-send')).state = 'active' and (pg_temp.session_row('fix-send')).archived_at is null,
 		'The new turn goes on');
 	-- A person who stops a question run stops only that run: the parent's reports and workers are held back only by a
