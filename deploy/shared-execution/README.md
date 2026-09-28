@@ -140,7 +140,9 @@ last week, parked warm hosts included. The start is 4 slots of 2 vCPU / 4 GiB ea
   - it creates the VM with the run VMs' profile, pool and isolated NIC and no identity devices;
   - it installs through `rebuild-exec-host.sh` in its new-host mode (`EXEC_FRESH=1`: nothing to
     stop, check or rebuild);
-  - it prints the infrastructure entry to enroll;
+  - it prints two infrastructure entries: the exact one, and one listed by its job
+    (`"role": "execution-host"`, `deploy/first-node/NODE-EXEC-HOST-BY-ROLE.md`). Use the one
+    listed by its job only once that document's rollout steps 0–3 are done for the node;
   - if a step after `lxc init` fails, it deletes the VM it made. An orchestrator row it
     registered stays: nothing runs behind it, but the bundle roll status lists it as undeclared
     until it is revoked. There is no function for that: the coordinator sets its `status` to `revoked` in
@@ -151,11 +153,11 @@ last week, parked warm hosts included. The start is 4 slots of 2 vCPU / 4 GiB ea
 
 ### Node 1, in this order (coordinator)
 
-1. **Prerequisites.** Logins in the vault change 3 is live (`20260928161000`), so member runs are
+1. **Prerequisites.** Logins in the vault change 3 is live (`20260928180600`), so member runs are
    no longer pinned to node 2's identity volumes. Identical nodes change 3 is live too (runs
    follow the placement: fast hosts first, the fresh-VM orchestrator only as overflow). Until
    then a fast host on node 1 would race node 1's fresh-VM orchestrator for the same jobs.
-2. **Quiet time.** From `lxc init` until step 5, node 1's observer sees an instance its policy does
+2. **Quiet time.** From `lxc init` (step 5) until step 6, node 1's observer sees an instance its policy does
    not list and reports node 1 unavailable: node 1 takes no new work. Empty node 1 first
    (`qorpera_set_runtime_node_serving`, change 1) or pick a quiet time; new work goes to node 2
    meanwhile. Work already running on node 1 is not stopped.
@@ -177,9 +179,12 @@ last week, parked warm hosts included. The start is 4 slots of 2 vCPU / 4 GiB ea
 5. **Create.**
    `EXEC_VM=qorpera-exec-node01 EXEC_PROJECT=<node 1 run project> EXEC_PROFILE=<run profile> EXEC_POOL=qorpera-vm EXEC_NETWORK=qorpera0 EXEC_SLOTS=4 EXEC_PACKAGE=… EXEC_STAGING=… create-exec-host.sh <current image>`.
    Its orchestrator stays stopped.
-6. **Enroll.** Replace node 1's inventory policy with the printed entry added
+6. **Enroll.** Replace node 1's inventory policy with one printed entry added
    (`qorpera_replace_runtime_node_inventory`). Write the observer configuration and restart the
-   observer, then check that node 1 reports `ready`.
+   observer, then check that node 1 reports `ready`. Use the entry listed by its job once
+   `NODE-EXEC-HOST-BY-ROLE.md` rollout steps 0–3 are done for node 1: rebuilds then need no
+   re-enrol while the release that pins the image is staged on the node. Until then use the exact
+   entry.
 7. **Start.** Start the host's orchestrator (and return node 1 to serving if it was emptied). The first member run on node 1 should start in
    about 2 s.
 

@@ -1891,6 +1891,33 @@ and provider outage (wait or fail over). Agents MAY later configure model and
 sponsor routing for routines, workers, and teammate questions through
 versioned policy objects.
 
+2026-09-28 amendment: the member who started the work pays. A member's own
+model login pays only for work that member started: their turns and room
+posts, and everything that follows from them — coworker messages, workers
+and their reports, reviews of a change, a computer that finished starting,
+coding sessions, and routines an agent sets up for them. The kernel already
+carries that member as the run's requester; the payer for follow-up work is
+the requester's own login with room left (the parent run's first), else a
+company account whose kind can run, else the requester's own used-up login
+(whose run then meets the usage-limit handoff), else nothing, and the work
+does not start. Claude logins never pay for agent work. An agent's standing
+execution authority names a company account only; it never pays with a
+member's login. A coding session runs for the member who asked, on their
+account; the model cannot name another member. A member cannot ask another
+member to pay for a turn. Every run is checked where it is created and where
+a handoff moves it: a member-connection sponsor must be owned by the run's
+requester; a company sponsor serves any member. Unattended use stays granted
+by default (2026-09-19/20 amendment, item 2) and covers only the owner's own
+work. A company account is a company-owned account added by an owner or
+admin; it pays only once its kind of account can run. The company OpenAI API
+account, and its use by the usage-limit handoff and for work no member
+started, follow in a later change. When a member signs in again, the control
+plane may move the bindings that pay with their old login to their new one,
+as a new version of each binding with the same owner and kind; routine wakes
+and coding turns then take the binding's newest same-owner version that can
+pay, so a routine or coding session keeps working after the member's old
+ChatGPT login is switched off. Claude logins are never moved.
+
 ## 18. Short constitution
 
 The cached constitution is written after the kernel behavior it describes has
@@ -3153,12 +3180,15 @@ which makes nodes symmetric for every member. Design:
    vault. Neither boots a machine on a node.
 5. **Placement.** A run whose login is in the vault is placed like any other
    work, on the eligible node with the most free capacity. The identity home
-   rule does not apply to it.
+   rule does not apply to it, and any orchestrator may claim it. An identity
+   counts as in the vault only while every active login of it is a vault
+   login. The machine that runs it mounts no identity volume and holds no
+   login key.
 6. **Who a login serves.** A member's login powers only work that member
    started or owns. The vault enforces this when handing out a login once the
    "who pays" work has landed (follow-up work paid by the member who started
-   it, a company API account for work no member started). From change 3 until
-   then, it records mismatches without refusing.
+   it, a company API account for work no member started). Until then a vault
+   login serves exactly the runs its node login served.
 7. **Claude logins stay out.** Anthropic subscription logins are not kept in
    the vault until Anthropic confirms it in writing.
 8. **Superseded, per login.** For a login kept in the vault: the 2026-09-16

@@ -1,6 +1,7 @@
-import { spawn } from "node:child_process";
+import { type ChildProcessByStdio, type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
+import type { Readable } from "node:stream";
 import { CODEX_RENEWAL_BUDGET_MS } from "./cloud-model-login-budget.ts";
 import type { ModelLoginRenewal, ModelLoginRenewer } from "./cloud-model-login-vault.ts";
 import { launchIsolatedNativeProcess, type NativeIsolationConfiguration } from "./cloud-native-isolation.ts";
@@ -145,6 +146,78 @@ export function classifyCodexRenewalFailure(stderr: string): string | undefined 
 		if (status === 401) return "refresh_token_unauthorized";
 	}
 	return undefined;
+}
+
+/**
+ * The helper's start-up self-check: the pinned Codex, launched exactly as a renewal or sign-in
+ * launches it (inside the isolation when configured), answers `--version`. It proves the binary,
+ * the sandbox and the unit's system-call filter on the real host; it makes no network call.
+ */
+export async function codexSelfCheck(options: {
+	codexPath: string;
+	temporaryRoot: string;
+	isolation?: NativeIsolationConfiguration;
+	timeoutMs?: number;
+}): Promise<string> {
+	const signal = AbortSignal.timeout(options.timeoutMs ?? 20_000);
+	const root = await mkdtemp(join(options.temporaryRoot, "qorpera-login-self-check-"));
+	try {
+		const scratchRoot = join(root, "scratch");
+		for (const path of [
+			"codex",
+			"scratch",
+			...["workspace", "home", "config", "data", "cache"].map((name) => join("scratch", name)),
+		])
+			await mkdir(join(root, path), { recursive: true, mode: 0o700 });
+		let child: ChildProcessWithoutNullStreams | ChildProcessByStdio<null, Readable, Readable>;
+		let close: () => Promise<void>;
+		if (options.isolation) {
+			const isolated = await launchIsolatedNativeProcess({
+				configuration: options.isolation,
+				command: options.codexPath,
+				args: ["--version"],
+				scratchRoot,
+				codexHome: join(root, "codex"),
+				signal,
+			});
+			isolated.child.stdin.end();
+			child = isolated.child;
+			close = () => isolated.close();
+		} else {
+			const direct = spawn(options.codexPath, ["--version"], {
+				cwd: root,
+				env: harnessEnvironment(root),
+				stdio: ["ignore", "pipe", "pipe"],
+				windowsHide: true,
+			});
+			child = direct;
+			const kill = (): void => {
+				direct.kill("SIGKILL");
+			};
+			signal.addEventListener("abort", kill, { once: true });
+			close = async () => {
+				signal.removeEventListener("abort", kill);
+				if (direct.exitCode === null && direct.signalCode === null) direct.kill("SIGKILL");
+			};
+		}
+		let output = "";
+		child.stdout.setEncoding("utf8");
+		child.stdout.on("data", (chunk: string) => {
+			if (output.length < 4096) output += chunk.slice(0, 4096 - output.length);
+		});
+		child.stderr.on("data", () => undefined);
+		const exitCode = await new Promise<number | null>((resolveExit, reject) => {
+			child.once("error", reject);
+			child.once("exit", (code) => resolveExit(code));
+			signal.addEventListener("abort", () => reject(new Error("Codex self-check timed out")), { once: true });
+		}).finally(() => close().catch(() => undefined));
+		const version = output.split("\n")[0]?.trim() ?? "";
+		if (exitCode !== 0 || !/^codex[\w-]* v?\d+\.\d+\.\d+/i.test(version) || version.length > 120)
+			throw new Error("Codex self-check did not answer its version");
+		return version;
+	} finally {
+		await rm(root, { recursive: true, force: true, maxRetries: 3 }).catch(() => undefined);
+	}
 }
 
 export class CodexLoginRenewer implements ModelLoginRenewer {

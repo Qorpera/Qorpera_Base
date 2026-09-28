@@ -17,7 +17,7 @@
 # The host gets no identity devices: with logins in the vault (Stateless Compute
 # step 1) no fast host mounts a login disk. A node whose logins still live on
 # identity volumes keeps its existing host (node 2) until those logins move.
-# The script prints the host's inventory entry; the operator enrolls it
+# The script prints the host's two possible inventory entries; the operator enrolls one
 # (qorpera_replace_runtime_node_inventory) and writes the observer configuration
 # before the node can take work again: from `lxc init` until then the node's
 # observer sees an instance its policy does not list and publishes the node
@@ -116,12 +116,24 @@ lxc config device add "${VM}" eth0 nic "network=${EXEC_NETWORK}" name=eth0 \
 # without the stop, sandbox check and rebuild a new host has no use for.
 EXEC_FRESH=1 bash "${HERE}/rebuild-exec-host.sh" "${FINGERPRINT}"
 
-echo "Inventory entry for this node's policy (enroll it, then write the observer configuration):"
-digest=$(lxc query "/1.0/instances/${VM}?project=${PROJECT}" | python3 "${HERE}/exec-host-inventory-digest.py" \
-	| python3 -c 'import json,sys; print(json.load(sys.stdin)["configurationSha256"])')
-[[ ${digest} =~ ^[0-9a-f]{64}$ ]] || { echo "Could not compute the host's inventory digest." >&2; exit 1; }
+instance=$(lxc query "/1.0/instances/${VM}?project=${PROJECT}")
+digest_of() { printf '%s' "${instance}" | python3 "${HERE}/exec-host-inventory-digest.py" "$@" \
+	| python3 -c 'import json,sys; print(json.load(sys.stdin)["configurationSha256"])'; }
+digest=$(digest_of)
+role_digest=$(digest_of --role execution-host)
+[[ ${digest} =~ ^[0-9a-f]{64}$ && ${role_digest} =~ ^[0-9a-f]{64}$ ]] || { echo "Could not compute the host's inventory digest." >&2; exit 1; }
 uuid=$(lxc config get "${VM}" volatile.uuid --project "${PROJECT}")
 [[ ${uuid} =~ ^[0-9a-f-]{36}$ ]] || { echo "Could not read the host's physical id." >&2; exit 1; }
-printf '{"project":"%s","name":"%s","physicalId":"%s","type":"virtual-machine","configurationSha256":"%s","cpuMillis":%d,"memoryBytes":%d}\n' \
-	"${PROJECT}" "${VM}" "${uuid}" "${digest}" $((CPU * 1000)) $((MEMORY_GIB * 1024 * 1024 * 1024))
+# The host is complete: from here on nothing deletes it, even if printing fails.
 created=
+entry='{"project":"%s","name":"%s","physicalId":"%s","type":"virtual-machine","configurationSha256":"%s","cpuMillis":%d,"memoryBytes":%d%s}\n'
+# Listed by its job (deploy/first-node/NODE-EXEC-HOST-BY-ROLE.md), a rebuild onto a released image
+# needs no new policy, as long as the release that pins the image is staged on the node. Use it only
+# once that document's rollout steps 0-3 are done for this node (migration 20260928186000, the new
+# observer, and the cut lane no longer re-enrolling the host with the exact digest). Until then,
+# enroll the exact entry and re-enrol it after every rebuild.
+echo "Inventory entry listed by its job (only once steps 0-3 of NODE-EXEC-HOST-BY-ROLE.md are done for this node):"
+printf "${entry}" "${PROJECT}" "${VM}" "${uuid}" "${role_digest}" $((CPU * 1000)) $((MEMORY_GIB * 1024 * 1024 * 1024)) ',"role":"execution-host"'
+echo "Exact entry, until then (re-enrol it after every rebuild):"
+printf "${entry}" "${PROJECT}" "${VM}" "${uuid}" "${digest}" $((CPU * 1000)) $((MEMORY_GIB * 1024 * 1024 * 1024)) ''
+echo "Enroll one of them (qorpera_replace_runtime_node_inventory), then write the observer configuration."

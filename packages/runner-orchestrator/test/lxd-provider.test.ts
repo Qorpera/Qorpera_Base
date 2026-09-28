@@ -21,6 +21,7 @@ import {
 	type LxdGuestTransport,
 } from "../src/lxd-provider.ts";
 import type { CloudRunnerAssignmentDelivery, CloudRunnerWork } from "../src/orchestrator.ts";
+import { canonical } from "../src/provider-shared.ts";
 import { readRuntimeNodeHost } from "../src/runtime-node-host.ts";
 import { nodeAdmissionFixture } from "./fixtures/node-admission.ts";
 
@@ -253,10 +254,17 @@ function config(stateRoot: string): LxdCloudRunnerProviderConfig {
 function fetchProvisioner(
 	requests: Array<{ url: string; body: Record<string, unknown> }>,
 	expectedWork: CloudRunnerWork = work(),
+	loginInVault: boolean | "missing" = false,
 ): typeof fetch {
 	return vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
 		expect(init?.redirect).toBe("error");
 		const url = String(input);
+		if (url.includes("qorpera_compute_identity_login_in_vault")) {
+			expect(JSON.parse(String(init?.body))).toEqual({ p_compute_identity_id: expectedWork.computeIdentityId });
+			// A database before migration 20260928180600 has no such function.
+			if (loginInVault === "missing") return Response.json({ code: "PGRST202" }, { status: 404 });
+			return Response.json(loginInVault);
+		}
 		if (url.includes("qorpera_reserve_runtime_node_machine"))
 			return Response.json(nodeAdmissionFixture(JSON.parse(String(init?.body))));
 		if (url.includes("qorpera_reserve_runtime_machine") || url.includes("qorpera_release_runtime_machine")) {
@@ -346,6 +354,23 @@ async function acquiredFixture() {
 	};
 }
 
+describe("canonical device comparison (2026-09-28)", () => {
+	it("keeps a device named __proto__ in the comparison, and every other key as before", () => {
+		// As LXD's JSON carries it: an own key. Assigned into a copy, it became
+		// the copy's prototype, and the drift check compared equal without it.
+		const live = JSON.parse(
+			'{"root":{"type":"disk","path":"/"},"__proto__":{"type":"disk","source":"/","path":"/host"}}',
+		);
+		const expected = { root: { type: "disk", path: "/" } };
+		expect(JSON.stringify(canonical(live))).not.toBe(JSON.stringify(canonical(expected)));
+		expect(JSON.stringify(canonical(live))).toBe(
+			'{"__proto__":{"path":"/host","source":"/","type":"disk"},"root":{"path":"/","type":"disk"}}',
+		);
+		expect(JSON.stringify(canonical({ b: [{ z: 1, a: undefined }], a: "x", c: undefined }))).toBe(
+			'{"a":"x","b":[{"z":1}]}',
+		);
+	});
+});
 describe("native physical node policy", () => {
 	it("pins public resource and host policy independently of credential rotation", () => {
 		const original = governedConfig("/provider-state");
@@ -1820,6 +1845,98 @@ describe("LXD cloud runner provider", () => {
 		await restarted.deliver(runner, delivery(work()));
 		await restarted.stop(runner, "idle");
 		expect(lxd.volumes.has(`native-recovery-${runId}`)).toBe(true);
+	});
+
+	it("gives a vault login guest no identity volume and tells its host to ask the vault", async () => {
+		const directory = await root();
+		const settings = governedConfig(join(directory, "state"));
+		const lxd = new FakeLxd();
+		const guest = new FakeGuest();
+		const backend = new LxdCloudRunnerProviderBackend(settings, lxd, guest, fetchProvisioner([], work(), true));
+		const runner = await backend.acquire(runId, work(), new AbortController().signal);
+		expect(lxd.createVolumeCalls.map((call) => call.name)).toEqual([`native-recovery-${runId}`]);
+		expect(Object.keys(lxd.createCalls[0]?.devices ?? {}).sort()).toEqual(["enp5s0", "root", "runner-recovery"]);
+		const files = new Map(lxd.filePushes.map((file) => [file.path, file.content]));
+		const bootstrap = JSON.parse(files.get("/var/lib/qorpera-bootstrap/bootstrap.json") ?? "null");
+		expect(bootstrap.company_runtime.login_custody).toBe("vault");
+		expect(files.get("/var/lib/qorpera-bootstrap/native-provider.env")).toContain(
+			"QORPERA_NATIVE_LOGIN_CUSTODY=vault\n",
+		);
+		const journal = JSON.parse(await readFile(join(settings.stateRoot, runId, "journal.json"), "utf-8"));
+		expect(journal.lxd.loginCustody).toBe("vault");
+		// The custody is sealed into the journal: a restart neither asks again nor adds a volume.
+		const recheck = fetchProvisioner([], work(), false);
+		const restarted = new LxdCloudRunnerProviderBackend(settings, lxd, guest, recheck);
+		await expect(restarted.acquire(runId, work(), new AbortController().signal)).resolves.toEqual(runner);
+		expect(
+			vi.mocked(recheck).mock.calls.some(([url]) => String(url).includes("qorpera_compute_identity_login_in_vault")),
+		).toBe(false);
+		expect(lxd.createVolumeCalls).toHaveLength(1);
+		await restarted.deliver(runner, delivery(work()));
+		await restarted.stop(runner, "idle");
+	});
+
+	it("keeps the node login path when the database has no vault custody check yet", async () => {
+		const directory = await root();
+		const settings = governedConfig(join(directory, "state"));
+		const lxd = new FakeLxd();
+		const backend = new LxdCloudRunnerProviderBackend(
+			settings,
+			lxd,
+			new FakeGuest(),
+			fetchProvisioner([], work(), "missing"),
+		);
+		await backend.acquire(runId, work(), new AbortController().signal);
+		expect(Object.keys(lxd.createCalls[0]?.devices ?? {})).toContain("compute-identity");
+		const journal = JSON.parse(await readFile(join(settings.stateRoot, runId, "journal.json"), "utf-8"));
+		expect(journal.lxd.loginCustody).toBeUndefined();
+	});
+
+	it("refuses a vault login guest that gained an identity device", async () => {
+		const directory = await root();
+		const settings = governedConfig(join(directory, "state"));
+		const lxd = new FakeLxd();
+		const guest = new FakeGuest();
+		const backend = new LxdCloudRunnerProviderBackend(settings, lxd, guest, fetchProvisioner([], work(), true));
+		const runner = await backend.acquire(runId, work(), new AbortController().signal);
+		const instance = lxd.instance;
+		expect(instance).toBeDefined();
+		const identity = {
+			type: "disk",
+			path: "/var/lib/qorpera/identity",
+			pool: "qorpera-vm",
+			source: `${settings.identityVolumePrefix}${work().computeIdentityId}`,
+		};
+		lxd.instance = {
+			...instance!,
+			devices: { ...instance!.devices, "compute-identity": identity },
+			expandedDevices: { ...instance!.expandedDevices, "compute-identity": identity },
+		};
+		await expect(backend.deliver(runner, delivery(work()))).rejects.toThrow("drifted");
+	});
+
+	it("rejects an unknown login custody in a retained journal", async () => {
+		const directory = await root();
+		const settings = governedConfig(join(directory, "state"));
+		const lxd = new FakeLxd();
+		const backend = new LxdCloudRunnerProviderBackend(
+			settings,
+			lxd,
+			new FakeGuest(),
+			fetchProvisioner([], work(), true),
+		);
+		await backend.acquire(runId, work(), new AbortController().signal);
+		const path = join(settings.stateRoot, runId, "journal.json");
+		const journal = JSON.parse(await readFile(path, "utf-8"));
+		journal.lxd.loginCustody = "node";
+		await writeFile(path, JSON.stringify(journal), { mode: 0o600 });
+		const restarted = new LxdCloudRunnerProviderBackend(
+			settings,
+			lxd,
+			new FakeGuest(),
+			fetchProvisioner([], work(), true),
+		);
+		await expect(restarted.acquire(runId, work(), new AbortController().signal)).rejects.toThrow("login custody");
 	});
 
 	it.each(["matching", "foreign-company", "foreign-environment"])(

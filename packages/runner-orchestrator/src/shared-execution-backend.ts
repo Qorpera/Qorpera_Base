@@ -23,7 +23,10 @@ import {
 	mountInfoHasMountPoint,
 	readSharedExecutionIdentity,
 	type SharedExecutionIdentityAuthority,
+	type SharedExecutionIdentityState,
+	type SharedExecutionLoginCustody,
 	supabaseSharedExecutionIdentityAuthority,
+	supabaseSharedExecutionLoginCustody,
 } from "./shared-execution-identity.ts";
 
 /** Shared execution service: one long-lived execution host serves every
@@ -66,6 +69,9 @@ const REFUSAL_RETIRING = "SANDBOX_RETIRING";
 /** The run's Compute Identity volume is not attached here (yet): this orchestrator
  * defers, and takes the job once the volume is attached. */
 const REFUSAL_IDENTITY_ABSENT = "NODE_IDENTITY_ELSEWHERE";
+/** Stands in a warm record's key digest for a host that holds no key: its identity's login is
+ * kept by the vault. */
+const VAULT_LOGIN_MARKER = sha256("qorpera.model-login-vault/v1");
 /** How long a run attempt waits for its identity volume before that becomes a counted
  * failure: the deferral has no bound of its own (the run deadline is a century). */
 const IDENTITY_WAIT_MS = 120_000;
@@ -179,6 +185,7 @@ export interface SharedExecutionProviderDependencies {
 	fetch?: ServiceHttpFetch;
 	units?: SharedExecutionUnitControl;
 	identityAuthority?: SharedExecutionIdentityAuthority;
+	loginCustody?: SharedExecutionLoginCustody;
 	/** Resolve a slot account by name (defaults to `id -u` / `id -g`). */
 	account?: (name: string) => Promise<SharedExecutionAccount>;
 	now?: () => number;
@@ -446,6 +453,7 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 	readonly #fetch: ServiceHttpFetch;
 	readonly #units: SharedExecutionUnitControl;
 	readonly #identityAuthority: SharedExecutionIdentityAuthority;
+	readonly #loginCustody: SharedExecutionLoginCustody;
 	readonly #account: (name: string) => Promise<SharedExecutionAccount>;
 	readonly #now: () => number;
 	readonly #requireIdentityMount: boolean | undefined;
@@ -469,6 +477,9 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 		this.#identityAuthority =
 			dependencies.identityAuthority ??
 			supabaseSharedExecutionIdentityAuthority(config.supabaseUrl, config.supabaseServiceKey, this.#fetch);
+		this.#loginCustody =
+			dependencies.loginCustody ??
+			supabaseSharedExecutionLoginCustody(config.supabaseUrl, config.supabaseServiceKey, this.#fetch);
 		this.#account = dependencies.account ?? systemAccount;
 		this.#now = dependencies.now ?? Date.now;
 		this.#requireIdentityMount = dependencies.requireIdentityMount;
@@ -561,13 +572,15 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 			// Before any slot, runner row or reservation: a run whose identity volume is not
 			// attached yet (a login that just moved here) waits instead of failing, for at
 			// most IDENTITY_WAIT_MS; then it fails like any other start, visibly.
+			// A login kept by the vault has no volume anywhere (Stateless Compute step 1).
 			if (
 				work.computeIdentityId &&
 				(this.#requireIdentityMount ?? process.platform === "linux") &&
 				!mountInfoHasMountPoint(
 					await readFile(this.#mountInfoPath, "utf-8"),
 					join(this.#config.identityRoot, work.computeIdentityId),
-				)
+				) &&
+				!(await this.#loginCustody(work.computeIdentityId, signal))
 			) {
 				const firstSeen = this.#identityWaits.get(acquisitionId) ?? this.#now();
 				this.#identityWaits.delete(acquisitionId);
@@ -1124,18 +1137,25 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 			)
 		)
 			throw new Error("Governed native runtime credentials must be independent");
-		// A reused host was verified when its warm slot was claimed and keeps its credentials.
-		const identity = current.reusedHost
-			? undefined
-			: await readSharedExecutionIdentity({
-					identityRoot: this.#config.identityRoot,
-					computeIdentityId: current.computeIdentityId,
-					authority: this.#identityAuthority,
-					signal,
-					...(this.#requireIdentityMount === undefined ? {} : { requireMount: this.#requireIdentityMount }),
-					mountInfoPath: this.#mountInfoPath,
-					...(this.#identityOwnerUid === undefined ? {} : { expectedUid: this.#identityOwnerUid }),
-				});
+		// A reused host was verified when its warm slot was claimed and keeps its credentials. A
+		// login kept by the vault has no volume: its host gets empty key and epoch files and asks
+		// the vault for the run's login.
+		const vaultLogin = !current.reusedHost && (await this.#loginCustody(current.computeIdentityId, signal));
+		const vaultState = vaultLogin ? await this.#identityAuthority(current.computeIdentityId, signal) : undefined;
+		if (vaultState && (vaultState.blocked || vaultState.computeIdentityId !== current.computeIdentityId))
+			throw new Error("The run's Compute Identity is fenced");
+		const identity =
+			current.reusedHost || vaultLogin
+				? undefined
+				: await readSharedExecutionIdentity({
+						identityRoot: this.#config.identityRoot,
+						computeIdentityId: current.computeIdentityId,
+						authority: this.#identityAuthority,
+						signal,
+						...(this.#requireIdentityMount === undefined ? {} : { requireMount: this.#requireIdentityMount }),
+						mountInfoPath: this.#mountInfoPath,
+						...(this.#identityOwnerUid === undefined ? {} : { expectedUid: this.#identityOwnerUid }),
+					});
 		if (
 			identity &&
 			(identity.masterKey === credentials.nativeBridgeToken || identity.masterKey === credentials.activationToken)
@@ -1205,6 +1225,7 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 				: []),
 			...(office ? [`QORPERA_COMPANY_COMPUTER_URL=${office.url}`] : []),
 			...(coding ? [`QORPERA_CODING_COMMAND_URL=${coding.origin}`] : []),
+			...(vaultLogin ? ["QORPERA_NATIVE_LOGIN_CUSTODY=vault"] : []),
 			"",
 		].join("\n");
 		// The runner reads its configuration from a file it owns, as the one-run
@@ -1212,7 +1233,7 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 		const runnerConfigPath = join(runnerState, "config.json");
 		await rm(runnerConfigPath, { force: true });
 		await writePrivateFile(runnerConfigPath, `${runnerConfig}\n`, runnerAccount);
-		if (!identity) return undefined;
+		if (!identity && !vaultState) return undefined;
 		const slotRun = this.#slotRun(current.slot);
 		const credentialDirectory = join(slotRun, "credentials");
 		const files: Array<[string, string]> = [
@@ -1224,14 +1245,15 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 			// An unconfigured route has no authority; the credential source still exists and is empty.
 			[join(credentialDirectory, "qorpera-office-native"), office ? `${office.token}\n` : ""],
 			[join(credentialDirectory, "qorpera-coding-command"), coding ? `${coding.token}\n` : ""],
-			[join(credentialDirectory, "qorpera-native-provider-master-key"), `${identity.masterKey}\n`],
-			[join(credentialDirectory, "qorpera-native-identity-epoch"), identity.epochCredential],
+			[join(credentialDirectory, "qorpera-native-provider-master-key"), identity ? `${identity.masterKey}\n` : ""],
+			[join(credentialDirectory, "qorpera-native-identity-epoch"), identity ? identity.epochCredential : ""],
 		];
 		for (const [path, content] of files) {
 			await rm(path, { force: true });
 			await writePrivateFile(path, content);
 		}
-		return { epoch: identity.epoch, masterKeySha256: sha256(identity.masterKey) };
+		if (identity) return { epoch: identity.epoch, masterKeySha256: sha256(identity.masterKey) };
+		return { epoch: (vaultState as SharedExecutionIdentityState).epoch, masterKeySha256: VAULT_LOGIN_MARKER };
 	}
 
 	async #wipeSlot(slot: number): Promise<void> {
@@ -1335,17 +1357,28 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 				!(await this.#units.active(this.#unit("host", warm.slot), signal))
 			)
 				throw new Error("Warm slot expired");
-			const identity = await readSharedExecutionIdentity({
-				identityRoot: this.#config.identityRoot,
-				computeIdentityId: work.computeIdentityId,
-				authority: this.#identityAuthority,
-				signal,
-				...(this.#requireIdentityMount === undefined ? {} : { requireMount: this.#requireIdentityMount }),
-				mountInfoPath: this.#mountInfoPath,
-				...(this.#identityOwnerUid === undefined ? {} : { expectedUid: this.#identityOwnerUid }),
-			});
-			if (identity.epoch !== warm.epoch || sha256(identity.masterKey) !== warm.masterKeySha256)
-				throw new Error("Warm slot identity changed");
+			if (warm.masterKeySha256 === VAULT_LOGIN_MARKER) {
+				// A host that holds no key: the identity must still be at that epoch and in the vault.
+				const state = await this.#identityAuthority(work.computeIdentityId, signal);
+				if (
+					state.blocked ||
+					state.epoch !== warm.epoch ||
+					!(await this.#loginCustody(work.computeIdentityId, signal))
+				)
+					throw new Error("Warm slot identity changed");
+			} else {
+				const identity = await readSharedExecutionIdentity({
+					identityRoot: this.#config.identityRoot,
+					computeIdentityId: work.computeIdentityId,
+					authority: this.#identityAuthority,
+					signal,
+					...(this.#requireIdentityMount === undefined ? {} : { requireMount: this.#requireIdentityMount }),
+					mountInfoPath: this.#mountInfoPath,
+					...(this.#identityOwnerUid === undefined ? {} : { expectedUid: this.#identityOwnerUid }),
+				});
+				if (identity.epoch !== warm.epoch || sha256(identity.masterKey) !== warm.masterKeySha256)
+					throw new Error("Warm slot identity changed");
+			}
 		} catch {
 			signal.throwIfAborted();
 			await this.#evict(warm.slot, signal);

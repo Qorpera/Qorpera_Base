@@ -1,4 +1,4 @@
-import { type CodingSession, codingSessionSettled } from "../../cloud/coding-session.ts";
+import { type CodingSession, codingSessionGoing } from "../../cloud/coding-session.ts";
 import type { EmailDraftAction, EmailDraftContent } from "../../cloud/email-drafts.ts";
 import {
 	ACTION_REVIEW_SCHEMA,
@@ -1763,9 +1763,7 @@ export class ConversationView {
 		// The session open as its own thread takes the fresh listing too.
 		const open = this.#codingThread && sessions.find((session) => session.workerId === this.#codingThread?.workerId);
 		if (open) this.#codingThread?.view.update(open);
-		const going = [...sessions]
-			.filter((session) => !codingSessionSettled(session.phase))
-			.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+		const going = [...sessions].filter(codingSessionGoing).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
 		const names = this.#codingNames(agent?.displayName ?? t("Agent"));
 		const slots = going.map((session) => {
 			let slot = this.#codingSlotViews.get(session.workerId);
@@ -1801,9 +1799,7 @@ export class ConversationView {
 	 * a follow-up starts it again from the next render. */
 	#watchCodingSessions(): void {
 		if (this.#codingPoll !== undefined || this.#codingReading || this.#disposed) return;
-		const going = (this.#company.conversation(this.#sessionId).get().codingSessions ?? []).filter(
-			(session) => !codingSessionSettled(session.phase),
-		);
+		const going = (this.#company.conversation(this.#sessionId).get().codingSessions ?? []).filter(codingSessionGoing);
 		if (!going.length) return;
 		const pace = document.hidden
 			? CODING_POLL_HIDDEN_MS
@@ -1860,6 +1856,8 @@ export class ConversationView {
 					company.answerCodingSession(sessionId, workerId, text, clientRequestId),
 				delegate: (workerId: string, clientRequestId: string) =>
 					company.delegateCodingSession(sessionId, workerId, clientRequestId),
+				archive: (workerId: string, clientRequestId: string) =>
+					company.archiveCodingSession(sessionId, workerId, clientRequestId),
 			},
 			signal: AbortSignal.any([this.#lifetime.signal, company.signal]),
 			askAgent: this.#actions.sendMessage
