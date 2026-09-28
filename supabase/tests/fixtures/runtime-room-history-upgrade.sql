@@ -25,3 +25,8 @@ begin
  perform set_config('qorpera_test.legacy_send_events',(select jsonb_agg(to_jsonb(event))::text
   from public.qorpera_session_events event where event.execution_id=base.id),true);
 end $$;
+-- Later migrations carry their own begin/commit (20260920011000 onward). The first one
+-- commits this fixture and drops its transaction-local settings, so the checks
+-- after the upgrade read these three from the session instead.
+select set_config(name,current_setting(name),false) from unnest(array['qorpera_test.wake_binding',
+ 'qorpera_test.legacy_room_receipt','qorpera_test.legacy_send_events']) name;

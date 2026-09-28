@@ -180,6 +180,16 @@ try {
 				grant execute on function public.qorpera_company_additional_retained_object_hashes(uuid) to runtime_retention_owner;`);
 		}
 	}
+	// Path helpers added after the split owner above revoke PUBLIC execution and grant
+	// no other owner (agent hiring 20260920001000, memory notebook 20260924020000,
+	// default write grants 20260926035000). Production keeps one owner (postgres) for
+	// every definer that calls them, so only this split owner needs the grant.
+	const laterPathHelpers = `grant execute on function public.qorpera_agent_creatable_path_kind(text),
+		public.qorpera_company_path_allowed(jsonb,text,text),
+		public.qorpera_assert_agent_default_delegation(uuid,uuid) to runtime_path_owner;`;
+	sql(laterPathHelpers);
+	docker(upgradePsql, laterPathHelpers);
+	docker(authorityPsql, laterPathHelpers);
 	assert.equal(sql("select runtime_bundle_sha256 from public.qorpera_active_runtime_bundle;").trim(), bundle.sha256);
 	assert.deepEqual(JSON.parse(sql(`select bundle.manifest from public.qorpera_runtime_bundles bundle
 		join public.qorpera_active_runtime_bundle active on active.runtime_bundle_id=bundle.id
@@ -210,7 +220,8 @@ try {
 		// below so a failed writer is never mistaken for a concurrency proof.
 		writer.catch(() => undefined);
 		let atBarrier = false;
-		for (let attempt = 0; attempt < 20 && !atBarrier; attempt++) {
+		// A loaded Docker host can take seconds to start the writer's psql.
+		for (let attempt = 0; attempt < 200 && !atBarrier; attempt++) {
 			atBarrier = sql("select exists(select 1 from pg_locks where locktype='advisory' and classid=18200 and objid=307 and granted);").trim() === "t";
 			if (!atBarrier) await new Promise((resolve) => setTimeout(resolve, 50));
 		}
