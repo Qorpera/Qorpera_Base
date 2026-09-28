@@ -2894,9 +2894,9 @@ A review of master at bundle v137 found three problems:
     ordinary folders for project work.
 
 The file formats in 5.6 are design that follows from these decisions, and so
-are the tools, computers and migration below. They may be refined without a
-new founder decision, as long as the decisions and the authority and review
-rules of 5.6 hold.
+are the tools, computers and state table below. They may be refined without a
+new founder decision, as long as the decisions, the authority and review rules
+of 5.6, and the clean reset below hold.
 
 **What this supersedes.** Where these passages conflict with 5.6, 5.6
 governs:
@@ -2941,7 +2941,7 @@ governs:
 edit tools once the mount is accepted, and through the Company File tools
 until then.
 
-- **Retired as their state moves into files** (or kept only as thin writers of
+- **Retired as their state becomes files** (or kept only as thin writers of
   the same files): `manage_routine`, `decide_routine`, `manage_todo`,
   `organize_sidebar`, `update_memory`, `recall_memory`, `update_skill`,
   `hire_agent` and `create_group_chat`.
@@ -2987,9 +2987,12 @@ into the new layout. When the company folder lands:
 - it sets up the company folder on the NAS; and
 - the layout is proven on new companies created for the test.
 
-The exact scope of the deletion (projects, tables, storage buckets and NAS
-paths) is confirmed with the founder before it runs. The storage core is
-rebuilt without carrying today's tables or paths forward.
+The exact scope of the deletion is confirmed with the founder before it runs:
+Supabase projects, tables and storage buckets, NAS paths, machine disks, and
+vault credentials (revoked at the provider). This decision plus that
+confirmation is the authorization section 24.3 requires for a shared live
+change. One owner runs the reset, and acceptance evidence (24.4) is kept.
+The storage core is rebuilt without carrying today's tables or paths forward.
 
 The table below records where each piece of today's state belongs in the new
 layout. It guides the new code; it is not a data migration.
@@ -3002,7 +3005,7 @@ layout. It guides the new code; it is not a data migration.
 | `agents/<uuid>/skills/` (from #387, if merged first) | `agents/<agent-name>/skills/` |
 | routine rows and versions | `agents/<agent-name>/routines/<routine>.md` |
 | `work/todos/<uuid>/` and the todo rows | `agents/<agent-name>/todos/`, with worker briefs and results beside each todo |
-| `organization/rooms/<uuid>.json` | `agents/groups/<group-name>/group.md`; a group without a name gets one before it moves |
+| `organization/rooms/<uuid>.json` | `agents/groups/<group-name>/group.md`; a group is named when it is created (5.6) |
 | agent-thread room rows | no file; the thread follows the agent's folder |
 | sidebar section and placement rows | `agents/sections.md` |
 | company review rule rows | `rules/<rule>.md` |
@@ -3010,8 +3013,8 @@ layout. It guides the new code; it is not a data migration.
 | connection records (non-secret fields) | `connections/<connection>.md` |
 | `organization/formation.json` and formation text | `vision/vision.md` |
 | the company name | the top of `vision/vision.md`; the database keeps an index copy |
-| `organization/projects/*.json` and project rows | stay where they are as ordinary files; the rows are dropped |
-| `organization/responsibilities/*.json` | stay where they are as ordinary files |
+| `organization/projects/*.json` and project rows | nothing; the new code stops writing them |
+| `organization/responsibilities/*.json` | nothing; the new code stops writing them |
 
 Time zone and language are account settings in the database, and runs receive
 them.
@@ -3025,7 +3028,7 @@ them.
   Co-Founder.
 - Items 20 and 22–25 and item 30 describe withdrawn models. They are rewritten
   together with the section 19 checkpoint and the section 20 matrix once the
-  state has moved.
+  reset and build step 4 have landed.
 
 ## 20. Enforcement matrix
 

@@ -130,5 +130,8 @@ The build does not yet match this file:
 
 The contract's 2026-09-27 layout amendment lists where each item belongs and
 the order of work. The storage core changes first, before any machine writes
-through the folder. Today's companies are test companies: they are reset,
-not migrated (founder decision, 28 September 2026).
+through the folder. Today's companies are test companies: their data is
+deleted, their company state and indexes are cleared from Supabase, the
+folder is set up on the NAS, and the layout is proven on new companies. The
+exact scope is confirmed with the founder before anything is deleted (founder
+decision, 28 September 2026).
