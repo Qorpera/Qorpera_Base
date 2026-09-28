@@ -23,7 +23,8 @@ create function pg_temp.fp_placement(p_run uuid) returns jsonb language sql as $
 	select public.qorpera_runtime_run_placement(job,run) from public.qorpera_runner_jobs job
 	join public.qorpera_execution_runs run on run.id = job.run_id where run.id = p_run
 $$;
--- Waits count from queued_at (a retry queues the job again); created_at stays.
+-- Waits count from queued_at (a retry queues the job again); created_at stays. A negative age puts
+-- queued_at a little ahead, so a "still waits" check never depends on how fast the database runs.
 create function pg_temp.fp_age(p_run uuid,p_seconds numeric) returns void language sql as $$
 	update public.qorpera_runner_jobs set queued_at = statement_timestamp() - make_interval(secs => p_seconds)
 	where run_id = p_run
@@ -80,6 +81,9 @@ select pg_temp.wake_assert(pg_temp.fp_placement(current_setting('qorpera_test.fp
 	and pg_temp.fp_placement(current_setting('qorpera_test.fp_r0')::uuid) ->> 'reason' = 'LEAST_BUSY'
 	and jsonb_array_length(pg_temp.fp_placement(current_setting('qorpera_test.fp_r0')::uuid) -> 'fast') = 2,
 	'Placement: ' || pg_temp.fp_placement(current_setting('qorpera_test.fp_r0')::uuid)::text);
+reset role;
+select pg_temp.fp_age(current_setting('qorpera_test.fp_r0')::uuid,-30);
+set local role service_role;
 select pg_temp.wake_assert(pg_temp.fp_claim('30000000-0000-4000-8000-000000000092') = 'null'::jsonb,
 	'The busier node''s fast host leaves the run to the preferred node during the head start');
 select pg_temp.wake_assert(pg_temp.fp_claim('64300000-0000-4000-8000-0000000000a2') = 'null'::jsonb,
@@ -313,6 +317,9 @@ select pg_temp.wake_assert(pg_temp.fp_placement(current_setting('qorpera_test.fp
 	and pg_temp.fp_placement(current_setting('qorpera_test.fp_r0')::uuid) ->> 'reason' = 'WARM_CONVERSATION',
 	'A warm conversation prefers its node: ' || pg_temp.fp_placement(current_setting('qorpera_test.fp_r0')::uuid)::text);
 savepoint warm;
+reset role;
+select pg_temp.fp_age(current_setting('qorpera_test.fp_r0')::uuid,-30);
+set local role service_role;
 select pg_temp.wake_assert(pg_temp.fp_claim('64300000-0000-4000-8000-0000000000b1') = 'null'::jsonb,'The other node leaves a warm run alone');
 select pg_temp.wake_assert(pg_temp.fp_claim('30000000-0000-4000-8000-000000000092') #>> '{work,run_id}' = current_setting('qorpera_test.fp_r0'),
 	'The warm node''s fast host takes it');
