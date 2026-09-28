@@ -94,9 +94,4 @@ invoking user's owner, and the suites package with umask 022 instead of Ubuntu's
 | `test-office-storage-inventory-linux.mjs` | Passed. `npm ci` 30 s with a cold cache, suite 1.1 s |
 | Docker | Rootful Docker 29.8.1 runs `hello-world` as `tester` |
 | Nested KVM | `/dev/kvm` present, all 6 vCPUs show `svm`, `kvm_amd` loaded, `KVM_GET_API_VERSION` 12 and `KVM_CREATE_VM` succeed (the check from `deploy/first-node/verify-azure-step2-pilot-kvm.sh`). A 1 vCPU / 1 GiB Ubuntu 26.04 VM inside it answers `lxc exec` 25.8 s after launch; `systemctl is-system-running --wait` returns at 32.3 s |
-
-**Known limit: the `scripts/*-systemd.mjs` suites.** They remount `/sys/fs/cgroup` read-write to boot
-systemd in a container. Docker's default AppArmor profile on Ubuntu refuses that mount ("cgroup is
-write-protected"), so as written they fail here and on any Ubuntu Docker host. They have only run on
-Docker Desktop, which has no AppArmor. The same container with `--security-opt apparmor=unconfined`
-boots systemd in under a second. They also need prepared, digest-pinned local images.
+| `scripts/*-systemd.mjs` | On master 65472c537 the office image suite stopped with "Disposable systemd manager did not start". At 9a13bb289 with the image built as above (`sha256:0e595c04…`), all six suites pass, plus `QORPERA_OFFICE_FIXTURE_LAYOUT_VERSION=2`, `--later-boot` and `--restart`. Suites 10 to 61 s, whole runs 17 to 89 s, three runs at a time. The office image and observer suites also pass on Docker Desktop (arm64) with the same Dockerfile |
