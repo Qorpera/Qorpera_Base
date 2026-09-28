@@ -76,6 +76,18 @@ returns text[] language sql immutable set search_path = '' as $$
 	from (select string_to_array(p_path, '/') as parts) p, generate_series(1, cardinality(p.parts) - 1) as n
 $$;
 
+-- The folder's key: NFKC, then case folding by Unicode simple case mapping, then NFKC again. The case mapping
+-- is pinned to the built-in pg_c_utf8 collation inside the body, so a key generated from a stored path
+-- (collate "C") and one computed from request text (the database collation) always agree: 'Økonomi' and
+-- 'ØKONOMI' are one key. plpgsql, so the pinned collation never leaks into the caller's expression and its
+-- comparisons keep using the "C" indexes. snapshot-v1 keeps qorpera_company_path_key, whose case mapping
+-- follows its argument's collation (ASCII only under "C").
+create function public.qorpera_folder_key(p_path text)
+returns text language plpgsql immutable strict parallel safe set search_path = '' as $$
+begin
+	return normalize(lower(upper(normalize(p_path, NFKC) collate "pg_c_utf8")), NFKC);
+end $$;
+
 -- Per-company clock: the journal's sequence. Taken last in a commit (core §3 step 11). Not indexed on
 -- last_seq, so its updates stay HOT. The folder tables reference this row, never the Company File row:
 -- their foreign-key checks take KEY SHARE, which the clock's own updates never block, while the Company
@@ -136,11 +148,11 @@ create table public.qorpera_folder_operation_keys (
 create table public.qorpera_folder_entries (
 	environment_id uuid not null references public.qorpera_folder_clocks(environment_id) on delete cascade,
 	path text collate "C" not null check (public.qorpera_company_path_valid(path)),
-	key_text text collate "C" generated always as (public.qorpera_company_path_key(path)) stored,
-	key_sha256 bytea generated always as (extensions.digest(public.qorpera_company_path_key(path), 'sha256')) stored,
+	key_text text collate "C" generated always as (public.qorpera_folder_key(path)) stored,
+	key_sha256 bytea generated always as (extensions.digest(public.qorpera_folder_key(path), 'sha256')) stored,
 	-- A top-level path's parent key is the sha256 of '', so every listing is one indexed equality.
 	parent_key_sha256 bytea generated always as (extensions.digest(
-		public.qorpera_company_path_key(coalesce(public.qorpera_folder_parent_path(path), '')), 'sha256')) stored,
+		public.qorpera_folder_key(coalesce(public.qorpera_folder_parent_path(path), '')), 'sha256')) stored,
 	name text collate "C" generated always as (regexp_replace(path, '^.*/', '')) stored,
 	kind text not null check (kind in ('file','folder','claim')),
 	version uuid,
@@ -286,6 +298,29 @@ returns text language sql immutable set search_path = '' as $$
 	select replace(replace(replace(p_key, '\', '\\'), '%', '\%'), '_', '\_') || '/%'
 $$;
 
+-- The covering resource of a path, as qorpera_company_path_resource resolves it (longest match; credentials and
+-- secrets never; a members/<id>/private path only under that member's own private resource), but by folder
+-- keys. The shared resolver compares resources' path_key, which is generated under "C" and so casefolds ASCII
+-- only: a narrower resource on 'Økonomi' would not cover 'økonomi/x'. Resources of a folder-v2 company are
+-- few until C1b stores their folder key.
+create function public.qorpera_folder_path_resource(p_environment_id uuid, p_path text)
+returns public.qorpera_company_path_resources language plpgsql stable security definer set search_path = '' as $$
+declare v_resource public.qorpera_company_path_resources%rowtype; v_key text;
+begin
+	if not public.qorpera_company_path_valid(p_path, true) then return null; end if;
+	v_key := public.qorpera_folder_key(p_path);
+	if split_part(v_key, '/', 1) in ('credentials','secrets') then return null; end if;
+	select r.* into v_resource
+	from public.qorpera_company_path_resources r, lateral (select public.qorpera_folder_key(r.path) as key) k
+	where r.environment_id = p_environment_id
+		and (k.key = v_key or (r.path_match = 'subtree' and (k.key = '' or left(v_key, length(k.key) + 1) = k.key || '/')))
+	order by length(k.key) desc, r.id limit 1;
+	if split_part(v_key, '/', 1) = 'members' and split_part(v_key, '/', 3) = 'private'
+		and (v_resource.scope is distinct from 'member_private'
+			or v_resource.owner_user_id::text is distinct from split_part(v_key, '/', 2)) then return null; end if;
+	return v_resource;
+end $$;
+
 -- Member authority over one path, through today's resources and grants (core §4; revisions arrive with
 -- C1b). An unreadable path answers exactly like a missing one.
 create function public.qorpera_folder_member_allowed(p_environment_id uuid, p_profile_id uuid, p_user_id uuid,
@@ -293,7 +328,7 @@ create function public.qorpera_folder_member_allowed(p_environment_id uuid, p_pr
 returns boolean language plpgsql stable security definer set search_path = '' as $$
 declare v_resource public.qorpera_company_path_resources%rowtype;
 begin
-	v_resource := public.qorpera_company_path_resource(p_environment_id, p_path);
+	v_resource := public.qorpera_folder_path_resource(p_environment_id, p_path);
 	if v_resource.id is null then return false; end if;
 	return public.qorpera_company_path_principal_allowed(p_profile_id, v_resource, 'member', p_user_id, p_permission);
 end $$;
@@ -305,28 +340,32 @@ end $$;
 create function public.qorpera_folder_member_keys_allowed(p_environment_id uuid, p_profile_id uuid, p_user_id uuid,
 	p_root_path text, p_keys text[], p_permission text)
 returns boolean language plpgsql stable security definer set search_path = '' as $$
-declare v_root_key text := public.qorpera_company_path_key(p_root_path);
+declare v_root_key text := public.qorpera_folder_key(p_root_path);
 begin
 	if not public.qorpera_folder_member_allowed(p_environment_id, p_profile_id, p_user_id, p_root_path, p_permission) then
 		return false; end if;
 	if cardinality(p_keys) = 0 then return true; end if;
 	return not exists (
-		with keys as (select unnest(p_keys) as key), boundaries as (
-			(select r.path_key as key from public.qorpera_company_path_resources r
-			where r.environment_id = p_environment_id and r.path_match = 'subtree'
-				and (r.path_key = '' or r.path_key = v_root_key or left(v_root_key, length(r.path_key) + 1) = r.path_key || '/')
-			order by length(r.path_key) desc limit 1)
+		with res as materialized (
+			select r.path_match, public.qorpera_folder_key(r.path) as key from public.qorpera_company_path_resources r
+			where r.environment_id = p_environment_id
+		), inside as materialized (
+			select res.path_match, res.key from res where res.key like public.qorpera_folder_under(v_root_key)
+		), boundaries as (
+			(select res.key from res
+			where res.path_match = 'subtree' and (res.key = '' or res.key = v_root_key or left(v_root_key, length(res.key) + 1) = res.key || '/')
+			order by length(res.key) desc limit 1)
 			union
-			select r.path_key from public.qorpera_company_path_resources r
-			where r.environment_id = p_environment_id and r.path_key like public.qorpera_folder_under(v_root_key)
-				and exists (select 1 from keys k where k.key = r.path_key
-					or (r.path_match = 'subtree' and k.key like public.qorpera_folder_under(r.path_key)))
+			select i.key from inside i
+			where exists (select 1 from unnest(p_keys) k(key) where k.key = i.key
+				or (i.path_match = 'subtree' and k.key like public.qorpera_folder_under(i.key)))
 			union
-			select regexp_replace(k.key, '^(members/[^/]+/private)(/.*)?$', '\1') from keys k
-			where k.key ~ '^members/[^/]+/private(/|$)'
+			select distinct substring(k.key from '^members/[^/]+/private') from unnest(p_keys) k(key)
+			where k.key like 'members/%/private' or k.key like 'members/%/private/%'
 		)
 		select 1 from boundaries b
-		where not public.qorpera_folder_member_allowed(p_environment_id, p_profile_id, p_user_id, b.key, p_permission));
+		where b.key is not null
+			and not public.qorpera_folder_member_allowed(p_environment_id, p_profile_id, p_user_id, b.key, p_permission));
 end $$;
 
 -- Member authority over a whole subtree, mapped from p_from_key onto p_to_path (p_to_path = the subtree's
@@ -335,7 +374,7 @@ create function public.qorpera_folder_member_subtree_allowed(p_environment_id uu
 	p_from_key text, p_to_path text, p_permission text)
 returns boolean language sql stable security definer set search_path = '' as $$
 	select public.qorpera_folder_member_keys_allowed(p_environment_id, p_profile_id, p_user_id, p_to_path,
-		array(select public.qorpera_company_path_key(p_to_path) || substr(e.key_text, char_length(p_from_key) + 1)
+		array(select public.qorpera_folder_key(p_to_path) || substr(e.key_text, char_length(p_from_key) + 1)
 			from public.qorpera_folder_entries e
 			where e.environment_id = p_environment_id and e.kind <> 'claim' and e.key_text like public.qorpera_folder_under(p_from_key)),
 		p_permission)
@@ -345,7 +384,7 @@ $$;
 -- new version, so it moves the time too.
 create function public.qorpera_folder_entry_json(p_path text, p_kind text, p_version uuid, p_seq bigint,
 	p_manifest text, p_file text, p_bytes bigint, p_media text, p_executable boolean, p_updated_at timestamptz)
-returns jsonb language sql immutable set search_path = '' as $$
+returns jsonb language sql stable set search_path = '' as $$
 	select jsonb_strip_nulls(jsonb_build_object('path', p_path, 'kind', p_kind, 'version', p_version, 'seq', p_seq,
 		'manifestSha256', p_manifest, 'fileSha256', p_file, 'bytes', p_bytes, 'mediaType', p_media, 'executable', p_executable,
 		'updatedAt', p_updated_at))
@@ -358,13 +397,13 @@ create function public.qorpera_folder_spelled_contents(p_root_path text, p_conte
 returns table(ord bigint, path text, kind text, file jsonb) language sql stable set search_path = '' as $$
 	with c as materialized (
 		select t.ord, t.value ->> 'kind' as kind, string_to_array(t.value ->> 'path', '/') as parts,
-			public.qorpera_company_path_key(t.value ->> 'path') as key,
+			public.qorpera_folder_key(t.value ->> 'path') as key,
 			case when t.value ->> 'kind' = 'file' then t.value -> 'file' end as file
 		from jsonb_array_elements(p_contents) with ordinality as t(value, ord)
 	), spelled as (
 		select c.ord, p_root_path || '/' || string_agg(a.parts[cardinality(a.parts)], '/' order by x.i) as path
 		from c cross join lateral generate_series(1, cardinality(c.parts)) as x(i)
-		join c as a on a.key = public.qorpera_company_path_key(array_to_string(c.parts[1:x.i], '/'))
+		join c as a on a.key = public.qorpera_folder_key(array_to_string(c.parts[1:x.i], '/'))
 		group by c.ord
 	)
 	select c.ord, s.path, c.kind, c.file from spelled s join c on c.ord = s.ord
@@ -374,7 +413,7 @@ $$;
 -- inserted the claim. A concurrent claim is waited for by the insert, never missed.
 create function public.qorpera_folder_lock_path(p_environment_id uuid, p_path text, p_mode text)
 returns boolean language plpgsql security definer set search_path = '' as $$
-declare v_key bytea := extensions.digest(public.qorpera_company_path_key(p_path), 'sha256'); v_claimed boolean := false;
+declare v_key bytea := extensions.digest(public.qorpera_folder_key(p_path), 'sha256'); v_claimed boolean := false;
 begin
 	for v_attempt in 1..8 loop
 		if p_mode = 'update' then
@@ -399,7 +438,7 @@ create function public.qorpera_folder_apply_unit(p_environment_id uuid, p_commit
 	p_op text, p_path text, p_to text, p_unit jsonb)
 returns uuid language plpgsql security definer set search_path = '' as $$
 declare
-	v_key text := public.qorpera_company_path_key(p_path);
+	v_key text := public.qorpera_folder_key(p_path);
 	v_row public.qorpera_folder_entries%rowtype;
 	v_version uuid := extensions.gen_random_uuid(); v_file jsonb; v_prior uuid;
 	v_placed bigint; v_expected bigint := 1;
@@ -444,7 +483,7 @@ begin
 			), versions as (
 				insert into public.qorpera_folder_path_versions(version, environment_id, path, key_sha256, op, kind, commit_id,
 					unit_no, manifest_sha256, file_sha256, bytes, media_type, executable)
-				select c.version, p_environment_id, c.path, extensions.digest(public.qorpera_company_path_key(c.path), 'sha256'),
+				select c.version, p_environment_id, c.path, extensions.digest(public.qorpera_folder_key(c.path), 'sha256'),
 					case when c.kind = 'file' then 'write' else 'mkdir' end, c.kind, p_commit_id, p_unit_no,
 					c.file ->> 'manifestSha256', c.file ->> 'fileSha256', (c.file ->> 'bytes')::bigint, c.file ->> 'mediaType',
 					(c.file ->> 'executable')::boolean
@@ -500,19 +539,19 @@ begin
 			insert into public.qorpera_folder_path_versions(version, environment_id, path, key_sha256, prior_version, op, kind,
 				commit_id, unit_no, manifest_sha256, file_sha256, bytes, media_type, executable)
 			select src.new_version, p_environment_id, src.new_path,
-				extensions.digest(public.qorpera_company_path_key(src.new_path), 'sha256'),
+				extensions.digest(public.qorpera_folder_key(src.new_path), 'sha256'),
 				case when p_op = 'move' then src.version end, case when p_op = 'move' then 'move_in' else 'copy' end, src.kind,
 				p_commit_id, p_unit_no, src.manifest_sha256, src.file_sha256, src.bytes, src.media_type, src.executable
 			from src
 		), respelled as (
 			update public.qorpera_folder_entries e set path = src.new_path, version = src.new_version, commit_id = p_commit_id,
 				updated_at = clock_timestamp()
-			from src where p_op = 'move' and public.qorpera_company_path_key(src.new_path) = src.key_text
+			from src where p_op = 'move' and public.qorpera_folder_key(src.new_path) = src.key_text
 				and e.environment_id = p_environment_id and e.key_sha256 = src.key_sha256
 			returning 1
 		), removed as (
 			delete from public.qorpera_folder_entries e using src
-			where p_op = 'move' and public.qorpera_company_path_key(src.new_path) <> src.key_text
+			where p_op = 'move' and public.qorpera_folder_key(src.new_path) <> src.key_text
 				and e.environment_id = p_environment_id and e.key_sha256 = src.key_sha256
 			returning 1
 		), placed as (
@@ -520,7 +559,7 @@ begin
 				file_sha256, bytes, media_type, executable)
 			select p_environment_id, src.new_path, src.kind, src.new_version, p_commit_id, src.manifest_sha256, src.file_sha256,
 				src.bytes, src.media_type, src.executable
-			from src where p_op = 'copy' or public.qorpera_company_path_key(src.new_path) <> src.key_text
+			from src where p_op = 'copy' or public.qorpera_folder_key(src.new_path) <> src.key_text
 			on conflict (environment_id, key_sha256) do update set path = excluded.path, kind = excluded.kind,
 				version = excluded.version, commit_id = excluded.commit_id, manifest_sha256 = excluded.manifest_sha256,
 				file_sha256 = excluded.file_sha256, bytes = excluded.bytes, media_type = excluded.media_type,
@@ -531,7 +570,7 @@ begin
 		-- Every source row lands once, and a move removes each old key it re-inserts.
 		select (select count(*) from placed) + (select count(*) from respelled) + (select count(*) from removed),
 			(select count(*) from src)
-				+ (select count(*) from src where p_op = 'move' and public.qorpera_company_path_key(src.new_path) <> src.key_text)
+				+ (select count(*) from src where p_op = 'move' and public.qorpera_folder_key(src.new_path) <> src.key_text)
 		into v_placed, v_expected;
 	else
 		raise exception 'Unknown folder unit' using errcode = '22023';
@@ -560,6 +599,9 @@ declare
 	v_ok boolean; v_reason text; v_committed boolean := false; v_eff_path text; v_eff_to text;
 	v_locks jsonb := '{}'::jsonb; v_claims text[] := '{}'; v_lock record; v_invalid boolean;
 	c_subtree_bound constant integer := 50000;
+	-- key_text sits in two btree indexes, whose rows hold at most 2704 bytes: a longer key cannot be stored.
+	c_key_bound constant integer := 2600;
+	v_longest_path integer; v_longest_key integer;
 begin
 	if auth.role() is distinct from 'service_role' then
 		raise exception 'Folder core authority is required' using errcode = '42501'; end if;
@@ -635,27 +677,32 @@ begin
 
 	-- The lock set: each unit's targets and sources FOR UPDATE, and every ancestor of them FOR KEY SHARE. The
 	-- stronger mode wins. A copy's source is held FOR UPDATE too, so its subtree cannot change between the
-	-- checks and the copy (writers below it hold it KEY SHARE).
+	-- checks and the copy (writers below it hold it KEY SHARE). A key past the bound is never claimed (it could
+	-- not be stored); its unit is refused as too_long.
 	for v_unit in select value from jsonb_array_elements(p_units) loop
 		v_op := v_unit ->> 'op';
 		v_path := case when v_op in ('move','copy') then v_unit ->> 'from' else v_unit ->> 'path' end;
 		v_to := v_unit ->> 'to';
 		foreach v_ancestor in array public.qorpera_folder_ancestors(v_path) || coalesce(public.qorpera_folder_ancestors(v_to), '{}') loop
-			v_key := public.qorpera_company_path_key(v_ancestor);
-			if not v_locks ? v_key then
+			v_key := public.qorpera_folder_key(v_ancestor);
+			if octet_length(v_key) <= c_key_bound and not v_locks ? v_key then
 				v_locks := v_locks || jsonb_build_object(v_key, jsonb_build_object('path', v_ancestor, 'mode', 'keyshare'));
 			end if;
 		end loop;
-		v_locks := v_locks || jsonb_build_object(public.qorpera_company_path_key(v_path), jsonb_build_object('path', v_path, 'mode', 'update'));
-		if v_to is not null then
-			v_locks := v_locks || jsonb_build_object(public.qorpera_company_path_key(v_to), jsonb_build_object('path', v_to, 'mode', 'update'));
+		v_key := public.qorpera_folder_key(v_path);
+		if octet_length(v_key) <= c_key_bound then
+			v_locks := v_locks || jsonb_build_object(v_key, jsonb_build_object('path', v_path, 'mode', 'update'));
+		end if;
+		v_key := public.qorpera_folder_key(v_to);
+		if octet_length(v_key) <= c_key_bound then
+			v_locks := v_locks || jsonb_build_object(v_key, jsonb_build_object('path', v_to, 'mode', 'update'));
 		end if;
 	end loop;
 
 	perform 1 from public.qorpera_company_path_resources r
 	where r.environment_id = p_environment_id
-		and r.id in (select (public.qorpera_company_path_resource(p_environment_id, l.value ->> 'path')).id from jsonb_each(v_locks) l)
-	order by r.path_key for share of r;
+		and r.id in (select (public.qorpera_folder_path_resource(p_environment_id, l.value ->> 'path')).id from jsonb_each(v_locks) l)
+	order by public.qorpera_folder_key(r.path) collate "C", r.id for share of r;
 
 	-- Step 5. Paths, in one increasing key order. Ancestors sort before descendants, so every transaction
 	-- takes a parent before its children.
@@ -673,8 +720,8 @@ begin
 		v_op := v_unit ->> 'op';
 		v_path := case when v_op in ('move','copy') then v_unit ->> 'from' else v_unit ->> 'path' end;
 		v_to := v_unit ->> 'to';
-		v_key := public.qorpera_company_path_key(v_path);
-		v_to_key := case when v_to is not null then public.qorpera_company_path_key(v_to) end;
+		v_key := public.qorpera_folder_key(v_path);
+		v_to_key := case when v_to is not null then public.qorpera_folder_key(v_to) end;
 		select * into v_row from public.qorpera_folder_entries
 		where environment_id = p_environment_id and key_sha256 = extensions.digest(v_key, 'sha256') and kind <> 'claim';
 		if not found then v_row := null; end if;
@@ -684,7 +731,7 @@ begin
 		if v_parent is not null then
 			select * into v_parent_row from public.qorpera_folder_entries
 			where environment_id = p_environment_id and kind = 'folder'
-				and key_sha256 = extensions.digest(public.qorpera_company_path_key(v_parent), 'sha256');
+				and key_sha256 = extensions.digest(public.qorpera_folder_key(v_parent), 'sha256');
 			if not found then v_parent_row := null; end if;
 		end if;
 		v_eff_path := case when v_op in ('move','copy') then coalesce(v_row.path, v_path)
@@ -694,14 +741,19 @@ begin
 			when v_parent_row.path is not null then v_parent_row.path || '/' || regexp_replace(v_to, '^.*/', '')
 			else v_to end;
 
+		-- A request key past the bound was never locked: refused before anything else is decided.
+		if octet_length(v_key) > c_key_bound or octet_length(v_to_key) > c_key_bound then
+			v_ok := false; v_reason := 'too_long';
+		end if;
+
 		-- Names the folder never holds, on every path the unit produces.
-		if public.qorpera_folder_path_reserved(coalesce(v_to_key, v_key))
+		if v_ok and (public.qorpera_folder_path_reserved(coalesce(v_to_key, v_key))
 			or (v_op in ('move','copy') and exists (select 1 from public.qorpera_folder_entries e
 				where e.environment_id = p_environment_id and e.kind <> 'claim'
 					and e.key_text like public.qorpera_folder_under(v_key)
 					and public.qorpera_folder_path_reserved(v_to_key || substr(e.key_text, char_length(v_key) + 1))))
 			or (v_op = 'new_folder' and exists (select 1 from jsonb_array_elements(v_unit -> 'contents') c
-				where public.qorpera_folder_path_reserved(public.qorpera_company_path_key(v_path || '/' || (c.value ->> 'path'))))) then
+				where public.qorpera_folder_path_reserved(public.qorpera_folder_key(v_path || '/' || (c.value ->> 'path')))))) then
 			v_ok := false; v_reason := 'reserved';
 		end if;
 
@@ -712,7 +764,7 @@ begin
 				v_ok := public.qorpera_folder_member_allowed(p_environment_id, v_file.profile_id, v_actor_id, v_path, 'write');
 			elsif v_op = 'new_folder' then
 				v_ok := public.qorpera_folder_member_keys_allowed(p_environment_id, v_file.profile_id, v_actor_id, v_path,
-					array(select public.qorpera_company_path_key(v_path || '/' || (c.value ->> 'path'))
+					array(select public.qorpera_folder_key(v_path || '/' || (c.value ->> 'path'))
 						from jsonb_array_elements(v_unit -> 'contents') c), 'write');
 			elsif v_op = 'delete' then
 				v_ok := public.qorpera_folder_member_subtree_allowed(p_environment_id, v_file.profile_id, v_actor_id,
@@ -737,16 +789,16 @@ begin
 			if v_row.kind is not null then v_ok := false; v_reason := 'exists'; end if;
 		elsif v_ok and v_op = 'new_folder' then
 			-- Contents: no duplicate keys, each parent a folder inside the unit, valid files, nothing already there.
-			-- Keys are computed once and matched by hash, not per pair.
+			-- Keys are computed once and matched as sets (hash aggregate, EXCEPT), never per pair: the planner
+			-- estimates jsonb_array_elements at 100 rows and would pick a nested loop for NOT EXISTS.
 			with c as materialized (
-				select value, value ->> 'kind' as kind, public.qorpera_company_path_key(value ->> 'path') as key,
-					public.qorpera_company_path_key(public.qorpera_folder_parent_path(value ->> 'path')) as parent_key
+				select value, value ->> 'kind' as kind, public.qorpera_folder_key(value ->> 'path') as key,
+					public.qorpera_folder_key(public.qorpera_folder_parent_path(value ->> 'path')) as parent_key
 				from jsonb_array_elements(v_unit -> 'contents')
 			)
 			select exists (select 1 from c group by key having count(*) > 1)
 				or exists (select 1 from c where kind is distinct from 'folder' and kind is distinct from 'file')
-				or exists (select 1 from c where parent_key is not null
-					and not exists (select 1 from c as p where p.kind = 'folder' and p.key = c.parent_key))
+				or exists (select parent_key from c where parent_key is not null except select key from c where kind = 'folder')
 				or exists (select 1 from c where kind = 'file'
 					and (jsonb_typeof(value -> 'file') is distinct from 'object'
 						or jsonb_typeof(value -> 'file' -> 'executable') is distinct from 'boolean'
@@ -801,13 +853,20 @@ begin
 		if v_ok and v_op in ('write','mkdir','new_folder','move','copy') and v_parent is not null and v_parent_row.path is null then
 			v_ok := false; v_reason := 'parent_missing';
 		end if;
-		-- Every path the unit produces stays within the path limit, spelled as it will be stored.
+		-- Every path the unit produces stays within the path limit, spelled as it will be stored, and every key
+		-- within the key bound. Descendants of a moved or copied folder carry their ancestors' stored bytes, and
+		-- keys compose over '/', so the longest one below the source decides.
+		v_longest_path := null; v_longest_key := null;
+		if v_ok and v_op in ('move','copy') and v_row.kind = 'folder' then
+			select max(octet_length(e.path)), max(octet_length(e.key_text)) into v_longest_path, v_longest_key
+			from public.qorpera_folder_entries e
+			where e.environment_id = p_environment_id and e.kind <> 'claim' and e.key_text like public.qorpera_folder_under(v_key);
+		end if;
 		if v_ok and (octet_length(coalesce(v_eff_to, v_eff_path)) > 4096
-			or (v_op in ('move','copy') and v_row.kind = 'folder' and octet_length(v_eff_to) - octet_length(v_row.path)
-				+ coalesce((select max(octet_length(e.path)) from public.qorpera_folder_entries e
-					where e.environment_id = p_environment_id and e.kind <> 'claim' and e.key_text like public.qorpera_folder_under(v_key)), 0) > 4096)
+			or octet_length(v_eff_to) - octet_length(v_row.path) + v_longest_path > 4096
+			or octet_length(v_to_key) - octet_length(v_key) + v_longest_key > c_key_bound
 			or (v_op = 'new_folder' and exists (select 1 from public.qorpera_folder_spelled_contents(v_eff_path, v_unit -> 'contents') c
-				where octet_length(c.path) > 4096))) then
+				where octet_length(c.path) > 4096 or octet_length(public.qorpera_folder_key(c.path)) > c_key_bound))) then
 			v_ok := false; v_reason := 'too_long';
 		end if;
 		-- Bytes (step 6): a written file must be verified content of this company. Its manifest object is held
@@ -891,7 +950,7 @@ begin
 	from public.qorpera_company_files f
 	join public.qorpera_folder_clocks k on k.environment_id = f.environment_id
 	left join public.qorpera_folder_entries e on e.environment_id = f.environment_id and e.kind <> 'claim'
-		and e.key_sha256 = extensions.digest(public.qorpera_company_path_key(p_path), 'sha256')
+		and e.key_sha256 = extensions.digest(public.qorpera_folder_key(p_path), 'sha256')
 		and (v_kind = 'platform' or public.qorpera_folder_member_allowed(f.environment_id, f.profile_id, v_user, p_path, 'read'))
 	left join public.qorpera_folder_commits c on c.id = e.commit_id
 	where f.environment_id = p_environment_id and f.core = 'folder-v2';
@@ -914,9 +973,9 @@ begin
 	if p_limit is null or p_limit not between 1 and 1000 or not public.qorpera_company_path_valid(coalesce(p_parent, ''), true)
 		or (p_after is not null and not public.qorpera_company_path_valid(p_after)) then
 		raise exception 'Listing is invalid' using errcode = '22023'; end if;
-	v_parent_key := public.qorpera_company_path_key(coalesce(p_parent, ''));
+	v_parent_key := public.qorpera_folder_key(coalesce(p_parent, ''));
 	v_under := case when v_parent_key = '' then '%' else public.qorpera_folder_under(v_parent_key) end;
-	v_after := case when p_after is not null then public.qorpera_company_path_key(p_after) end;
+	v_after := case when p_after is not null then public.qorpera_folder_key(p_after) end;
 	with page as (
 		select e.*, c.seq as commit_seq from public.qorpera_folder_entries e
 		join public.qorpera_folder_commits c on c.id = e.commit_id
@@ -943,7 +1002,8 @@ end $$;
 -- 9. Grants ---------------------------------------------------------------------------------------------
 
 revoke all on function public.qorpera_company_file_core_guard(), public.qorpera_folder_parent_path(text),
-	public.qorpera_folder_ancestors(text), public.qorpera_folder_path_reserved(text), public.qorpera_folder_under(text),
+	public.qorpera_folder_ancestors(text), public.qorpera_folder_key(text), public.qorpera_folder_path_resource(uuid,text),
+	public.qorpera_folder_path_reserved(text), public.qorpera_folder_under(text),
 	public.qorpera_folder_member_allowed(uuid,uuid,uuid,text,text),
 	public.qorpera_folder_member_keys_allowed(uuid,uuid,uuid,text,text[],text),
 	public.qorpera_folder_member_subtree_allowed(uuid,uuid,uuid,text,text,text),

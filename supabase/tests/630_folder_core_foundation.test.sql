@@ -411,9 +411,10 @@ begin
 		or pg_temp.read('nfs/sub/deep/g.txt') -> 'entry' ->> 'path' is distinct from 'nfs/Sub/deep/g.txt' then
 		raise exception 'New-folder contents must take their folder''s spelling: % %', pg_temp.read('nfs/sub/f.txt'), pg_temp.read('nfs/sub/deep/g.txt'); end if;
 
-	-- A move or copy that would push a stored path past the limit is refused, not raised.
+	-- A move or copy that would push a stored path past the limit is refused, not raised. Full-width letters
+	-- take 3 bytes in the path and 1 in the key, so the path limit binds before the key bound.
 	r := pg_temp.commit(pg_temp.member(2), 'r2-long-setup', jsonb_build_array(jsonb_build_object('op','mkdir','path','tl'),
-		jsonb_build_object('op','write','path','tl/' || repeat('a', 4090),'file',a)));
+		jsonb_build_object('op','write','path','tl/' || repeat(U&'\FF41', 1364),'file',a)));
 	perform pg_temp.expect(r, 2, 'saved');
 	r := pg_temp.commit(pg_temp.member(2), 'r2-long-move', jsonb_build_array(jsonb_build_object('op','move','from','tl','to','tl-longer',
 		'expectedVersion',pg_temp.read('tl') -> 'entry' ->> 'version','asOfSeq',pg_temp.seq()),
@@ -441,6 +442,59 @@ begin
 	r := pg_temp.commit(pg_temp.member(2), 'r2-exact-owner-delete', jsonb_build_array(jsonb_build_object('op','delete','path','locked/open',
 		'expectedVersion',v,'asOfSeq',pg_temp.seq())));
 	perform pg_temp.expect(r, 1, 'saved');
+end $$;
+
+-- Review round 3: keys casefold every letter, not only ASCII, the same way from stored paths and from requests
+-- (Æ, Ø and Å included); a narrower resource on such a path covers it; a key past the index bound is refused.
+do $$
+declare r jsonb; a jsonb := pg_temp.stage('alpha'); v text; long_name text;
+begin
+	r := pg_temp.commit(pg_temp.member(2), 'r3-dk-mkdir', '[{"op":"mkdir","path":"Økonomi"}]');
+	perform pg_temp.expect(r, 1, 'saved');
+	r := pg_temp.commit(pg_temp.member(2), 'r3-dk-write', jsonb_build_array(jsonb_build_object('op','write','path','ØKONOMI/Budget.txt','file',a)));
+	if pg_temp.expect(r, 1, 'saved') ->> 'path' <> 'Økonomi/Budget.txt' then raise exception 'A Danish name must keep its folder''s spelling: %', r; end if;
+	r := pg_temp.commit(pg_temp.member(2), 'r3-dk-lower', '[{"op":"mkdir","path":"økonomi"}]');
+	perform pg_temp.expect(r, 1, 'conflict', 'exists');
+	if pg_temp.read('økonomi') -> 'entry' ->> 'path' is distinct from 'Økonomi' then
+		raise exception 'Reading økonomi must find Økonomi: %', pg_temp.read('økonomi'); end if;
+	v := pg_temp.read('økonomi') -> 'entry' ->> 'version';
+	r := pg_temp.commit(pg_temp.member(2), 'r3-dk-move', jsonb_build_array(jsonb_build_object('op','move','from','ØKONOMI','to','Æble',
+		'expectedVersion',v,'asOfSeq',pg_temp.seq())));
+	perform pg_temp.expect(r, 1, 'saved');
+	if pg_temp.read('æble/budget.txt') -> 'entry' ->> 'path' is distinct from 'Æble/Budget.txt' or (pg_temp.read('Økonomi') ->> 'found')::boolean then
+		raise exception 'A Danish move must carry its subtree: %', pg_temp.read('æble/budget.txt'); end if;
+	r := pg_temp.commit(pg_temp.member(2), 'r3-dk-dup', jsonb_build_array(jsonb_build_object('op','new_folder','path','dkdup',
+		'contents',jsonb_build_array(jsonb_build_object('path','Å','kind','folder'), jsonb_build_object('path','å','kind','folder')))));
+	perform pg_temp.expect(r, 1, 'refused', 'invalid');
+	r := pg_temp.commit(pg_temp.member(2), 'r3-dk-new-folder', jsonb_build_array(jsonb_build_object('op','new_folder','path','dknf',
+		'contents',jsonb_build_array(jsonb_build_object('path','Å','kind','folder'), jsonb_build_object('path','å/x.txt','kind','file','file',a)))));
+	perform pg_temp.expect(r, 1, 'saved');
+	if pg_temp.read('dknf/å/x.txt') -> 'entry' ->> 'path' is distinct from 'dknf/Å/x.txt' then
+		raise exception 'New-folder contents must take their Danish folder''s spelling: %', pg_temp.read('dknf/å/x.txt'); end if;
+
+	-- A narrower resource on a path with Ø covers the same path in any case.
+	insert into public.qorpera_company_path_resources(environment_id,path,path_match,scope,owner_user_id,policy,created_by_user_id)
+	values ('63000000-0000-4000-8000-000000000020','Løn','subtree','member_private','63000000-0000-4000-8000-000000000002','normal','63000000-0000-4000-8000-000000000001');
+	r := pg_temp.commit('{"kind":"platform"}', 'r3-dk-private-setup', '[{"op":"mkdir","path":"LØN"}]');
+	perform pg_temp.expect(r, 1, 'saved');
+	r := pg_temp.commit(pg_temp.member(4), 'r3-dk-private-other', jsonb_build_array(jsonb_build_object('op','write','path','løn/x.txt','file',a)));
+	perform pg_temp.expect(r, 1, 'denied', 'denied');
+	r := pg_temp.commit(pg_temp.member(2), 'r3-dk-private-owner', jsonb_build_array(jsonb_build_object('op','write','path','løn/x.txt','file',a)));
+	perform pg_temp.expect(r, 1, 'saved');
+	if (pg_temp.read('LØN/X.TXT', pg_temp.member(4)) ->> 'found')::boolean then
+		raise exception 'Another member must not see a private Danish folder'; end if;
+
+	-- A key past the index bound is refused, not raised: a long name that does not compress, and a move that
+	-- would push a key past it.
+	select string_agg(md5(i::text), '') into long_name from generate_series(1, 90) i;
+	r := pg_temp.commit(pg_temp.member(2), 'r3-long-key', jsonb_build_array(jsonb_build_object('op','write','path','kb-' || long_name,'file',a),
+		jsonb_build_object('op','mkdir','path','kb')));
+	perform pg_temp.expect(r, 1, 'refused', 'too_long'); perform pg_temp.expect(r, 2, 'saved');
+	r := pg_temp.commit(pg_temp.member(2), 'r3-long-key-setup', jsonb_build_array(jsonb_build_object('op','write','path','kb/' || left(long_name, 2550),'file',a)));
+	perform pg_temp.expect(r, 1, 'saved');
+	r := pg_temp.commit(pg_temp.member(2), 'r3-long-key-move', jsonb_build_array(jsonb_build_object('op','move','from','kb','to','kb-' || repeat('x', 100),
+		'expectedVersion',pg_temp.read('kb') -> 'entry' ->> 'version','asOfSeq',pg_temp.seq())));
+	perform pg_temp.expect(r, 1, 'refused', 'too_long');
 end $$;
 
 -- Review round 2: the core flag trusts the marker only from the table's owner, since any session can set it.
