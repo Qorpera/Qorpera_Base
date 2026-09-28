@@ -360,9 +360,9 @@ Live keys come later, with the live switch (build step 7).
 - Stripe sends receipts and invoices to the paying member (customer email = account email).
 - Qorpera's hour notices use an outbox drained by an Edge Function that sends through Resend, like
   invitations (`supabase/INVITATION-EMAIL.md`). They go only to founders:
-  - "hours running low" (a fifth or less of the hours in what pays now is left: the free hours
-    while they last, the founders' current plan periods and the company's credits with hours
-    left; or less than one hour) and "out of hours" go to the founders whose plans pay, the
+  - "hours running low" (a fifth or less of the hours in what pays now is left: the free hours,
+    the founders' current plan periods and the company's credits, each while it has hours left;
+    or less than one hour) and "out of hours" go to the founders whose plans pay, the
     founders who bought the credits in use, or every founder on free hours;
   - "out of hours" also goes to every founder;
   - one monthly summary to each founder whose plan was used, at the end of that plan's period,
@@ -382,12 +382,18 @@ Migration `20260929160000_runtime_computer_hour_notices` and the Edge Function
   nothing is queued: that is the "switched off". Complimentary companies get none.
   - Running low: once a calendar month (Danish time) per company and recipient; a company still
     low when a month begins is told again that month. The payers are founders whose current plan
-    period has hours left and founders whose credits have hours left.
+    period has hours left and founders whose credits have hours left. A founder's plan used up by
+    another company does not count toward this company's "what pays now".
   - Out of hours: once per time the company runs out. A time starts when it begins to owe; any
     hours arriving (even too few to clear the debt) end it, and running out again is a new time.
   - Both wait ten minutes before they are sent. The worker drops one (cancelled) if the company
     is no longer low, no longer owes, or owes in a newer time; for instance, a plan renewal
-    recorded moments after the meter charged. Same if the recipient is no longer a founder.
+    recorded moments after the meter charged. It also drops "running low" once the company has run
+    out ("out of hours" says it), or once the company is complimentary. A dropped "running low"
+    frees its month, so running low again is told. A recipient who is no longer a founder is
+    marked failed.
+  - Known limit: a renewal recorded more than ten minutes late (a delayed Stripe webhook) still
+    sends "out of hours" for the gap.
   - Reaching zero without owing (hours taken back, credits expiring, a plan ending) queues nothing,
     since no use follows once the zero rule holds work back. Build step 6 sends "out of hours"
     when it first holds a company's work back.
@@ -483,7 +489,12 @@ Coordinator (nothing secret):
 - When it first holds a company's work back, it queues "out of hours" for every founder in step
   5's outbox, if none is open for that time. This covers a company reaching zero without owing:
   hours taken back, credits expiring, or a plan ending. No use follows then, so step 5's trigger
-  never sees it.
+  never sees it. It needs its own occasion, and step 5's claim rule, which drops an "out of hours"
+  unless the company still owes in the same time, must learn to keep it.
+- A plan renewal is recorded when Stripe's renewal invoice arrives, which can trail the period's
+  end by minutes. The check must not hold work back in that gap: for instance, it can treat a
+  founder's active subscription whose recorded period just ended as still paying for a short
+  grace window.
 - It ships switched off, in its own release, with a 30-minute database watch after the cut. It is
   switched on together with live payments and hour notices.
 
@@ -510,7 +521,7 @@ exact-head review, and a hand-off to the coordinator (message, PR comment, regis
    with a database watch, and the cron job.
 3. Billing records and the charging order, as a dry run.
 4. Payments in Stripe test mode: checkout, billing page, webhook, catalog.
-5. Email, switched off.
+5. Email, switched off. In-app notices that mirror the emails follow in a web PR.
 6. Zero: the check, the waiting state, the finishing window, switched off. Its own release.
 7. Live: Jonas sets the live Stripe keys; the coordinator switches payments, hour notices and the
    zero rule on together.

@@ -31,8 +31,9 @@ const wire = (kind: string, details: Record<string, unknown>, overrides: Record<
 });
 const low = { companyName: "Nordlys ApS", leftSeconds: 3500, month: "2026-10", hoursSeconds: 18000 };
 const summary = {
-	periodStart: "2026-09-10T00:00:00Z",
-	periodEnd: "2026-10-10T00:00:00Z",
+	// 23:30 UTC is already the next day in Copenhagen.
+	periodStart: "2026-09-09T23:30:00Z",
+	periodEnd: "2026-10-09T23:30:00Z",
 	grantedSeconds: 286 * 3600,
 	companies: [
 		{ companyName: "Nordlys ApS", seconds: 36_000 },
@@ -113,6 +114,7 @@ describe("computer hour notices", () => {
 			wire("running_low", low, { noticeId: "71300000-0000-4000-8000-0000000000b2" }),
 			wire("running_low", low, { noticeId: "71300000-0000-4000-8000-0000000000b3" }),
 			wire("running_low", low, { noticeId: "71300000-0000-4000-8000-0000000000b4" }),
+			wire("running_low", low, { noticeId: "71300000-0000-4000-8000-0000000000b5" }),
 		]);
 		const keys: string[] = [];
 		const done: string[] = [];
@@ -125,6 +127,7 @@ describe("computer hour notices", () => {
 					keys.push(key);
 					if (job.noticeId.endsWith("b2")) throw new ComputerHourEmailSendError("Resend 503", true);
 					if (job.noticeId.endsWith("b3")) throw new ComputerHourEmailSendError("Invalid recipient", false);
+					if (job.noticeId.endsWith("b5")) throw new ComputerHourEmailSendError("Resend 500", true);
 					return { messageId: `re_${job.noticeId.slice(-2)}` };
 				},
 			},
@@ -134,11 +137,13 @@ describe("computer hour notices", () => {
 					done.push(`${job.noticeId.slice(-2)}:${messageId}`);
 				},
 				async fail(job, message, retryable) {
+					// Recording this failure fails too; the batch must go on.
+					if (job.noticeId.endsWith("b5")) throw new Error("database away");
 					failed.push([job.noticeId.slice(-2), message, retryable]);
 				},
 			},
 		);
-		assert.deepEqual(result, { claimed: 4, delivered: 1, retrying: 1, failed: 1, completionPending: 1 });
+		assert.deepEqual(result, { claimed: 5, delivered: 1, retrying: 1, failed: 1, completionPending: 2 });
 		assert.deepEqual(done, ["b1:re_b1"]);
 		assert.deepEqual(failed, [
 			["b2", "Resend 503", true],

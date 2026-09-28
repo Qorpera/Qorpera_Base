@@ -7,13 +7,15 @@
 --   nothing is queued (switched off until live payments). Complimentary companies get none.
 -- * "Hours running low": once a calendar month per company and recipient, when what is left is a
 --   fifth or less of the hours in what pays now (the free hours while they last, the founders'
---   current plan periods and the company's credits with hours left), or under one hour. It goes to
+--   current plan periods and the company's credits, each while it has hours left), or under one hour. It goes to
 --   the founders whose plans pay (a current plan period with hours left), the founders who bought
 --   the credits in use, or, while neither pays, every founder (the company is on its free hours).
 -- * "Out of hours": once per time the company runs out (it starts to owe time), to every founder.
 -- * Both wait ten minutes before they are sent and are dropped if hours arrived meanwhile (a plan
 --   renewal recorded moments after the meter charged, say; for "out of hours", any hours arriving,
---   since running out again is a new notice), or the recipient is no longer a founder.
+--   since running out again is a new notice), if "running low" was overtaken by running out, or if
+--   the recipient is no longer a founder. A dropped "running low" frees its month, so the company can
+--   be told if it runs low again.
 -- * A monthly summary: when a founder's plan period ended (ten minutes ago or more, so the last
 --   meter pass has committed), one email to that founder listing each company's use of it; a period
 --   nobody used is marked done without an email.
@@ -21,8 +23,9 @@
 --   sends through Resend, like invitations (supabase/INVITATION-EMAIL.md); addresses are read when a
 --   notice is claimed.
 -- * Reaching zero without owing (hours taken back, credits expiring, a plan ending) queues nothing
---   here, since no use follows once the zero rule holds work back: build step 6 sends "out of hours"
---   when it first holds a company's work back.
+--   here, since no use follows once the zero rule holds work back. Build step 6 sends "out of hours"
+--   when it first holds a company's work back; it must give that case its own occasion and change
+--   the claim's out-of-hours drop rule below, which keeps only a notice for owing that still lasts.
 
 set local lock_timeout = '10s';
 
@@ -85,7 +88,7 @@ begin
 			where free.kind = 'free' and free.profile_id = p_profile_id and not free.dry_run), 5 * 3600)
 		+ coalesce((select sum(plan.granted_seconds) from public.qorpera_computer_hour_sources plan
 			where plan.kind = 'plan_period' and not plan.dry_run and plan.user_id = any(v_founders)
-				and plan.withdrawn_at is null and plan.frozen_at is null
+				and plan.withdrawn_at is null and plan.frozen_at is null and plan.drawn_seconds < plan.granted_seconds
 				and plan.period_start <= p_at and p_at < plan.period_end), 0)
 		+ coalesce((select sum(credit.granted_seconds) from public.qorpera_computer_hour_sources credit
 			where credit.kind = 'credit' and not credit.dry_run and credit.profile_id = p_profile_id
@@ -198,6 +201,7 @@ declare
 	v_period record;
 	v_companies jsonb;
 	v_queued integer := 0;
+	v_rows integer;
 begin
 	for v_period in
 		select base.id, base.user_id, base.reference, base.period_start, base.period_end, base.granted_seconds
@@ -243,8 +247,9 @@ begin
 			case when v_companies is null then 'cancelled' else 'pending' end,
 			case when v_companies is null then 'The plan was not used' end)
 		on conflict (kind, user_id, occasion) do nothing;
+		get diagnostics v_rows = row_count;
 		if v_companies is not null then
-			v_queued := v_queued + 1;
+			v_queued := v_queued + v_rows;
 		end if;
 	end loop;
 	return v_queued;
@@ -281,14 +286,25 @@ begin
 				and owed.drawn_seconds > owed.repaid_seconds
 				and notice.occasion = notice.profile_id::text || ':' || owed.repaid_seconds::text
 		);
+	-- A dropped "running low" gets its id in its occasion, so its month is free again.
 	update public.qorpera_computer_hour_notices notice
-	set status = 'cancelled', last_error = 'Hours arrived before it was sent', lease_id = null, lease_expires_at = null
-	where (notice.status in ('pending', 'retrying') or (notice.status = 'delivering' and notice.lease_expires_at <= v_now))
-		and notice.kind = 'running_low'
-		and exists (
-			select 1 from public.qorpera_computer_hour_notice_hours(notice.profile_id, v_now) hours
-			where hours.left_seconds is null or (hours.left_seconds >= 3600 and hours.left_seconds * 5 > hours.hours_seconds)
-		);
+	set status = 'cancelled', occasion = notice.occasion || ':dropped:' || notice.id::text,
+		last_error = case
+			when hours.left_seconds is null then 'The company no longer pays for its hours'
+			when owing.id is not null then 'The company ran out before it was sent'
+			else 'Hours arrived before it was sent' end,
+		lease_id = null, lease_expires_at = null
+	from public.qorpera_computer_hour_notices open_notice
+	cross join lateral public.qorpera_computer_hour_notice_hours(open_notice.profile_id, v_now) hours
+	left join public.qorpera_computer_hour_sources owing
+		on owing.kind = 'owed' and owing.profile_id = open_notice.profile_id and not owing.dry_run
+			and owing.drawn_seconds > owing.repaid_seconds
+	where notice.id = open_notice.id
+		and (open_notice.status in ('pending', 'retrying')
+			or (open_notice.status = 'delivering' and open_notice.lease_expires_at <= v_now))
+		and open_notice.kind = 'running_low'
+		and (hours.left_seconds is null or owing.id is not null
+			or (hours.left_seconds >= 3600 and hours.left_seconds * 5 > hours.hours_seconds));
 	update public.qorpera_computer_hour_notices notice
 	set status = 'failed', last_error = 'The recipient is no longer a founder of the company', lease_id = null,
 		lease_expires_at = null

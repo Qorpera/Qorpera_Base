@@ -8,7 +8,11 @@
 -- A second founder of the fixture company.
 insert into auth.users(id,email) values
 	('71300000-0000-4000-8000-000000000002','notice-founder-2@example.test'),
-	('71300000-0000-4000-8000-000000000005','notice-internal@example.test');
+	('71300000-0000-4000-8000-000000000005','notice-internal@example.test'),
+	('71300000-0000-4000-8000-000000000006','notice-plan-holder@example.test'),
+	('71300000-0000-4000-8000-000000000007','notice-founder-7@example.test'),
+	('71300000-0000-4000-8000-000000000008','notice-soon-staff@example.test'),
+	('71300000-0000-4000-8000-000000000009','');
 insert into public.qorpera_profile_members(profile_id,user_id,email,display_name,role) values
 	('30000000-0000-4000-8000-000000000010','71300000-0000-4000-8000-000000000002','notice-founder-2@example.test','Founder 2','owner');
 -- A second company with the same two founders, and a complimentary company (an internal founder).
@@ -111,7 +115,30 @@ insert into public.qorpera_computer_hour_sources (kind, profile_id, user_id, gra
 values ('credit', '71300000-0000-4000-8000-000000000040', '30000000-0000-4000-8000-000000000001', 360000,
 	clock_timestamp() + interval '12 months', false);
 
--- 5b. A complimentary company gets no notices.
+-- 5b. Running low goes to the founder whose plan pays, not to every founder.
+insert into public.qorpera_profiles(id,name,created_by_user_id)
+values ('71300000-0000-4000-8000-000000000060','Plan company','71300000-0000-4000-8000-000000000006');
+insert into public.qorpera_profile_members(profile_id,user_id,email,display_name,role) values
+	('71300000-0000-4000-8000-000000000060','71300000-0000-4000-8000-000000000006','notice-plan-holder@example.test','Plan holder','owner'),
+	('71300000-0000-4000-8000-000000000060','71300000-0000-4000-8000-000000000007','notice-founder-7@example.test','Founder 7','owner');
+insert into public.qorpera_computer_hour_sources (kind, user_id, granted_seconds, period_start, period_end, reference, dry_run)
+values ('plan_period', '71300000-0000-4000-8000-000000000006', 36000, clock_timestamp() - interval '1 day',
+	clock_timestamp() + interval '29 days', 'sub_T6:1', false);
+select pg_temp.use('71300000-0000-4000-8000-000000000060', 18000);
+select pg_temp.use('71300000-0000-4000-8000-000000000060', 28800);
+select pg_temp.wake_assert(pg_temp.notices('running_low', '71300000-0000-4000-8000-000000000060')
+	= array['71300000-0000-4000-8000-000000000006']::uuid[], 'A fifth of the plan left: the plan holder only');
+
+-- 5c. A company whose founder turns out to be on an internal account before the email goes.
+insert into public.qorpera_profiles(id,name,created_by_user_id)
+values ('71300000-0000-4000-8000-000000000050','Soon staff company','71300000-0000-4000-8000-000000000008');
+insert into public.qorpera_profile_members(profile_id,user_id,email,display_name,role)
+values ('71300000-0000-4000-8000-000000000050','71300000-0000-4000-8000-000000000008','notice-soon-staff@example.test','Soon staff','owner');
+select pg_temp.use('71300000-0000-4000-8000-000000000050', 16000);
+select pg_temp.wake_assert(pg_temp.notices('running_low', '71300000-0000-4000-8000-000000000050')
+	= array['71300000-0000-4000-8000-000000000008']::uuid[], 'Low on free hours');
+
+-- 5d. A complimentary company gets no notices.
 select pg_temp.use('71300000-0000-4000-8000-000000000030', 100000);
 select pg_temp.wake_assert(not exists (select 1 from public.qorpera_computer_hour_notices
 	where profile_id = '71300000-0000-4000-8000-000000000030'), 'Complimentary: nothing');
@@ -142,62 +169,95 @@ select pg_temp.wake_assert(public.qorpera_computer_hour_queue_summaries(clock_ti
 	and not exists (select 1 from public.qorpera_computer_hour_notices where occasion = 'sub_T4:1000'),
 	'Not before ten minutes after the period ends');
 
--- 7. The worker. Ten minutes on (moved back here): notices that no longer hold are dropped (hours
--- arrived, an older time of owing, a recipient no longer a founder or without an address, eight
--- attempts made); the rest are leased once, with addresses.
-update public.qorpera_computer_hour_notices set next_attempt_at = clock_timestamp() - interval '1 second'
-where status = 'pending';
+-- 7. The worker. Notices that no longer hold are dropped at each claim, whether due or not: hours
+-- arrived, an older time of owing, running low overtaken by running out, a company now
+-- complimentary, a recipient no longer a founder or without an address, eight attempts made.
 update public.qorpera_profile_members set role = 'contributor'
 where profile_id = '71300000-0000-4000-8000-000000000020' and user_id = '71300000-0000-4000-8000-000000000002';
-insert into public.qorpera_computer_hour_notices (kind, profile_id, user_id, occasion, details, status, attempt_count,
+insert into public.qorpera_account_entitlements (user_id, plan_key, billing_mode, feature_set, storage_allocation, operator_reference, reason)
+values ('71300000-0000-4000-8000-000000000008', 'internal', 'complimentary', 'all', 'unlimited', 'test', 'Company41 staff');
+insert into public.qorpera_computer_hour_notices (kind, user_id, occasion, details, status, attempt_count,
 	lease_id, lease_expires_at) values
-	('running_low', '30000000-0000-4000-8000-000000000010', '30000000-0000-4000-8000-000000000001', 'tried-8-times',
+	('monthly_summary', '30000000-0000-4000-8000-000000000001', 'tried-8-times',
 		'{}', 'delivering', 8, '71300000-0000-4000-8000-0000000000a9', clock_timestamp() - interval '1 second');
-insert into public.qorpera_computer_hour_notices (kind, user_id, occasion, details)
-values ('monthly_summary', '71300000-0000-4000-8000-0000000000ff', 'sub_T9:1000', '{}');
+insert into public.qorpera_computer_hour_notices (kind, user_id, occasion, details) values
+	('monthly_summary', '71300000-0000-4000-8000-0000000000ff', 'sub_T9:1000', '{}'),
+	('monthly_summary', '71300000-0000-4000-8000-000000000009', 'sub_T8:1000', '{}');
+create function pg_temp.notice(p_kind text, p_profile uuid, p_user uuid) returns text language sql as $$
+	select string_agg(status || ':' || coalesce(last_error, ''), ',' order by created_at)
+	from public.qorpera_computer_hour_notices where kind = p_kind and profile_id = p_profile and user_id = p_user
+$$;
+-- Nothing is sent before its ten minutes: the first claim leases only the summary, due at once.
+select set_config('qorpera_test.early', public.qorpera_claim_computer_hour_notices(50,
+	'71300000-0000-4000-8000-0000000000a0')::text, true);
+select pg_temp.wake_assert(jsonb_array_length(current_setting('qorpera_test.early')::jsonb) = 1
+	and current_setting('qorpera_test.early')::jsonb -> 0 ->> 'kind' = 'monthly_summary'
+	and current_setting('qorpera_test.early')::jsonb -> 0 ->> 'recipientEmail' = 'notice-founder-2@example.test',
+	'Only the summary is due now: ' || current_setting('qorpera_test.early'));
+select pg_temp.wake_assert(
+	(select count(*) from public.qorpera_computer_hour_notices where kind = 'out_of_hours' and status = 'cancelled'
+		and last_error = 'Hours arrived before it was sent' and occasion = '30000000-0000-4000-8000-000000000010:0') = 2,
+	'The first time of owing, repaid before it was sent, is dropped for both founders');
+select pg_temp.wake_assert(pg_temp.notice('running_low', '30000000-0000-4000-8000-000000000010',
+	'71300000-0000-4000-8000-000000000002') = 'cancelled:The company ran out before it was sent',
+	'Running low overtaken by running out: dropped');
+select pg_temp.wake_assert(pg_temp.notice('running_low', '71300000-0000-4000-8000-000000000040',
+	'30000000-0000-4000-8000-000000000001') = 'cancelled:Hours arrived before it was sent', 'Low no more: dropped');
+select pg_temp.wake_assert(pg_temp.notice('running_low', '71300000-0000-4000-8000-000000000050',
+	'71300000-0000-4000-8000-000000000008') = 'cancelled:The company no longer pays for its hours',
+	'Complimentary now: dropped');
+select pg_temp.wake_assert(pg_temp.notice('running_low', '71300000-0000-4000-8000-000000000020',
+	'71300000-0000-4000-8000-000000000002') = 'failed:The recipient is no longer a founder of the company',
+	'A former founder gets no running-low email');
+select pg_temp.wake_assert((select status || ':' || last_error from public.qorpera_computer_hour_notices
+	where occasion = 'tried-8-times') = 'failed:Gave up after eight attempts', 'Eight attempts, then no more');
+select pg_temp.wake_assert((select string_agg(status || ':' || last_error, ',' order by occasion)
+	from public.qorpera_computer_hour_notices where occasion in ('sub_T8:1000', 'sub_T9:1000'))
+	= 'failed:The recipient has no email address,failed:The recipient has no email address', 'No address, blank or missing: failed');
+-- A dropped "running low" frees its month: running low again is told.
+select pg_temp.use('71300000-0000-4000-8000-000000000040', 290000);
+select pg_temp.wake_assert(pg_temp.notice('running_low', '71300000-0000-4000-8000-000000000040',
+	'30000000-0000-4000-8000-000000000001') = 'cancelled:Hours arrived before it was sent,pending:',
+	'Running low again the same month, after a dropped notice, is told');
+
+-- Ten minutes on (moved back here): the rest are leased once, with addresses.
+update public.qorpera_computer_hour_notices set next_attempt_at = clock_timestamp() - interval '1 second'
+where status = 'pending';
 select set_config('qorpera_test.claim', public.qorpera_claim_computer_hour_notices(50,
 	'71300000-0000-4000-8000-0000000000a1')::text, true);
-select pg_temp.wake_assert(
-	(select array_agg(status || ':' || coalesce(last_error, '') order by status, last_error)
-		from public.qorpera_computer_hour_notices where kind = 'out_of_hours' and status = 'cancelled')
-		= array['cancelled:Hours arrived before it was sent', 'cancelled:Hours arrived before it was sent'],
-	'The first time of owing, repaid before it was sent, is dropped for both founders');
-select pg_temp.wake_assert(status = 'cancelled', 'Low no more: dropped')
-from public.qorpera_computer_hour_notices where profile_id = '71300000-0000-4000-8000-000000000040';
-select pg_temp.wake_assert(status = 'failed' and last_error = 'Gave up after eight attempts', 'Eight attempts, then no more')
-from public.qorpera_computer_hour_notices where occasion = 'tried-8-times';
-select pg_temp.wake_assert(status = 'failed' and last_error = 'The recipient has no email address', 'No address: failed')
-from public.qorpera_computer_hour_notices where occasion = 'sub_T9:1000';
-select pg_temp.wake_assert(status = 'failed' and last_error = 'The recipient is no longer a founder of the company',
-	'A former founder gets no running-low email')
-from public.qorpera_computer_hour_notices
-where kind = 'running_low' and profile_id = '71300000-0000-4000-8000-000000000020';
-select pg_temp.wake_assert(jsonb_array_length(current_setting('qorpera_test.claim')::jsonb) = 5
-	and exists (select 1 from jsonb_array_elements(current_setting('qorpera_test.claim')::jsonb) job
-		where job ->> 'kind' = 'monthly_summary' and job ->> 'recipientEmail' = 'notice-founder-2@example.test'),
-	'Five notices claimed (running low and the current out of hours for both founders, one summary), each with its address: '
-	|| current_setting('qorpera_test.claim'));
+select pg_temp.wake_assert((select array_agg(job ->> 'kind' || ':' || (job ->> 'recipientEmail') order by job ->> 'kind', job ->> 'recipientEmail')
+	from jsonb_array_elements(current_setting('qorpera_test.claim')::jsonb) job)
+	= array['out_of_hours:notice-founder-2@example.test', 'out_of_hours:path-owner@example.test',
+		'running_low:notice-plan-holder@example.test', 'running_low:path-owner@example.test'],
+	'The current out of hours for both founders, and two running low: ' || current_setting('qorpera_test.claim'));
 select pg_temp.wake_assert(public.qorpera_claim_computer_hour_notices(50, '71300000-0000-4000-8000-0000000000a2') = '[]',
 	'Leased notices are not claimed twice');
 select set_config('qorpera_test.first', current_setting('qorpera_test.claim')::jsonb -> 0 ->> 'noticeId', true);
 select set_config('qorpera_test.second', current_setting('qorpera_test.claim')::jsonb -> 1 ->> 'noticeId', true);
 select set_config('qorpera_test.third', current_setting('qorpera_test.claim')::jsonb -> 2 ->> 'noticeId', true);
+select set_config('qorpera_test.fourth', current_setting('qorpera_test.claim')::jsonb -> 3 ->> 'noticeId', true);
 select pg_temp.wake_assert(public.qorpera_complete_computer_hour_notice(current_setting('qorpera_test.first')::uuid,
 	'71300000-0000-4000-8000-0000000000a1', 're_1')
 	and not public.qorpera_complete_computer_hour_notice(current_setting('qorpera_test.first')::uuid,
 	'71300000-0000-4000-8000-0000000000a1', 're_1'), 'Sent once');
 select pg_temp.wake_assert(not public.qorpera_complete_computer_hour_notice(current_setting('qorpera_test.second')::uuid,
 	'71300000-0000-4000-8000-0000000000a2', 're_2'), 'Another lease cannot complete it');
+update public.qorpera_computer_hour_notices set attempt_count = 8 where id = current_setting('qorpera_test.fourth')::uuid;
 select pg_temp.wake_assert(public.qorpera_fail_computer_hour_notice(current_setting('qorpera_test.second')::uuid,
 	'71300000-0000-4000-8000-0000000000a1', 'Resend 503', true)
 	and public.qorpera_fail_computer_hour_notice(current_setting('qorpera_test.third')::uuid,
-	'71300000-0000-4000-8000-0000000000a1', 'Invalid recipient', false), 'Failures recorded');
+	'71300000-0000-4000-8000-0000000000a1', 'Invalid recipient', false)
+	and public.qorpera_fail_computer_hour_notice(current_setting('qorpera_test.fourth')::uuid,
+	'71300000-0000-4000-8000-0000000000a1', 'Resend 503', true), 'Failures recorded');
 select pg_temp.wake_assert(
 	(select status = 'sent' and sent_at is not null and provider_message_id = 're_1' from public.qorpera_computer_hour_notices
 		where id = current_setting('qorpera_test.first')::uuid)
 	and (select status = 'retrying' and next_attempt_at > clock_timestamp() from public.qorpera_computer_hour_notices
 		where id = current_setting('qorpera_test.second')::uuid)
 	and (select status = 'failed' and last_error = 'Invalid recipient' from public.qorpera_computer_hour_notices
-		where id = current_setting('qorpera_test.third')::uuid), 'Sent, retrying later, failed');
+		where id = current_setting('qorpera_test.third')::uuid)
+	and (select status = 'failed' from public.qorpera_computer_hour_notices
+		where id = current_setting('qorpera_test.fourth')::uuid),
+	'Sent; retrying later; failed for good; and failed on the eighth attempt even if retryable');
 select pg_temp.wake_error($$select public.qorpera_claim_computer_hour_notices(0, '71300000-0000-4000-8000-0000000000a3')$$, '22023');
 rollback;

@@ -288,7 +288,14 @@ export async function deliverComputerHourNoticeBatch(
 			providerMessageId = text(sent.messageId, "provider message id", 256);
 		} catch (error) {
 			const failure = deliveryError(error);
-			await store.fail(job, failure.message, failure.retryable);
+			try {
+				await store.fail(job, failure.message, failure.retryable);
+			} catch {
+				// Not recorded: the lease runs out and the notice is claimed again (the eight-attempt
+				// limit still holds). The rest of the batch goes on.
+				result.completionPending += 1;
+				continue;
+			}
 			if (failure.retryable) result.retrying += 1;
 			else result.failed += 1;
 			continue;
