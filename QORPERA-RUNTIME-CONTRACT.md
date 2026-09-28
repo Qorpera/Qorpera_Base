@@ -747,7 +747,7 @@ subscriptions, which self-limit.
 >   per member and environment
 >   (carrying any number of that member's sessions; amended 2026-09-24), and
 >   account concurrency (64 per subscription);
-> - a queued run that no computer starts within a day of being queued fails
+> - a queued run that no runner starts within a day of being queued fails
 >   (this applies to runner jobs, not to computer or machine requests);
 > - machines an agent starts are bounded only by the room on the nodes; there
 >   is no count of machines per company or agent (2026-09-28 amendment
@@ -2237,8 +2237,8 @@ does not reorder the implementation order.
   mutation gateway (12.1). Node-local disk holds only machine roots, the
   runtime, images and journals. Usage and capacity records live in the
   backend (Order 4 records), not on nodes. An agent may install any software
-  inside a machine of its company (amended 2026-09-28, "compute for agents",
-  item 4). Company machines and coding machines keep their reviewed images:
+  inside a machine started under item 4 of the 2026-09-28 amendment "compute
+  for agents". Company machines and coding machines keep their reviewed images:
   agents install user-level tools in a machine's scratch, and system images
   change only by release.
 - **Order.** The chooser, the address fix and the sizing policies are Order 4
@@ -3267,8 +3267,9 @@ which makes nodes symmetric for every member. Design:
 ### 2026-09-28 amendment: compute for agents
 
 Founder decisions of 28 September 2026, after the compute audit. They amend
-section 5.6, section 7.4, section 12, section 13.1, section 19's Order rows,
-section 20, section 21, section 23, section 24.1, the 2026-09-01 amendment
+section 5.6, section 7.4, section 12, section 13.1, section 19 (its Order
+rows, observability line and deferred Azure overflow), section 20, section
+21, section 23, section 24.1, the 2026-09-01 amendment
 placement, the 2026-09-16 amendment "multi-node capacity and Company Computer
 sizing", the 2026-09-17 amendments "the company browser and the Company
 Computer as a given" and "kept company state and credential rotation", and the
@@ -3290,8 +3291,9 @@ the company folder".
   the company machine, and "screen" means the computer. "Runtime-hosting
   machine" means a node. "Node machine" (2026-09-22) means a node's execution
   host. A "member execution machine" is a virtual machine that ran a member's
-  session. "Member machine" in 12.2, section 20 and section 21 item 16 means a
-  member's own device. "Run machine" means the run box. Older text keeps its
+  session; the 2026-09-16 amendment's "member machines" are these. "Member
+  machine" in 12.2, section 20 and section 21 item 16 means a member's own
+  device. "Run machine" means the run box. Older text keeps its
   words until it is rewritten.
 
 **Company machines, coding machines and agents' machines.** These rules
@@ -3303,7 +3305,8 @@ hosts, login machines, the proposal-review guest or one-run runner machines.
   the Azure overflow text in section 19 and section 23 is not a current plan.
   A machine starts on any node with room, and placement picks the node by
   free capacity. Nodes hold nothing a company owns, so losing a node loses
-  capacity and running programs, not company files. A company's machines need
+  capacity, running programs and changes not yet published ("how machines
+  reach the company folder", item 3), not company files. A company's machines need
   not share a node.
 - **The files are the company folder.** A machine's files are the company
   folder, projected from the storage server (5.6). A machine keeps no copy of
@@ -3323,8 +3326,9 @@ hosts, login machines, the proposal-review guest or one-run runner machines.
   is never company state.
 - **Member logins.** A member's model login is the member's own secret, used
   only for work that member started or owns (4.3, 11.5). Where it lives
-  follows the 2026-09-28 amendment "model logins live in the vault"; a login
-  not yet moved keeps the identity-home rule until it is.
+  follows the 2026-09-28 amendment "model logins live in the vault", which
+  also says when that rule is enforced (its item 6); a login not yet moved
+  keeps the identity-home rule until it is.
 - **Gaps, not rules.** Where today's build ties a machine to one node or works
   through copies, that is a gap to close. At the time of this amendment:
   - the production company machine runs on one node, with its disk and
@@ -3340,7 +3344,10 @@ hosts, login machines, the proposal-review guest or one-run runner machines.
     the machine's own disk, until the code is in the company folder;
   - the browser sign-in store lives beside the profiles on the workbench and
     in a machine generation's company root (2026-09-17 amendments "the
-    company browser" and "kept company state").
+    company browser" and "kept company state");
+  - an agent waiting for a new company machine waits for that machine, even
+    if a computer frees on another machine meanwhile; a new message to the
+    agent places it again at once.
 
 1. **More than one company machine per company.** Section 12's additional
    machine is no longer optional, and it is accepted as Order 4 capacity work.
@@ -3361,17 +3368,17 @@ hosts, login machines, the proposal-review guest or one-run runner machines.
      operator step. It uses the same image, bootstrap and number of computers
      as the company's newest machine, and is set up from the node's own
      settings, which are the same on every node, never by copying another
-     machine's setup. Operators see every machine waiting for a node, and why
-     (not set up yet, or no room).
+     machine's node-specific setup. Operators see every machine waiting for a
+     node, and why (no node has set it up yet, or no room).
    - A computer is a seat. It is in use only while it has a live lease or a
      live viewer, is being taken over or drained, still has resources the
      agent started there that have not drained, has a command running in its
      shell, or was opened less than about two minutes ago. A desktop left open
      with none of these does not keep the seat. The two-minute window may be
      tuned without a new founder decision.
-   - Before a seat changes hands, its desktop is closed. Unsaved application
-     state on it is lost, and the agent and any viewer are told what was
-     closed.
+   - Before a seat changes hands, its desktop and shell are closed. Unsaved
+     application state on it is lost, and the agent and any viewer are told
+     what was closed.
    - Having used a computer once does not keep it. Computer access is
      company-wide: an agent refused on one machine is refused on all, and a
      new machine keeps every refusal.
@@ -3380,8 +3387,6 @@ hosts, login machines, the proposal-review guest or one-run runner machines.
      wait, and in which order waiting requests are served, are not decided
      yet (founder, 28 September). 7.4's rule that a queued run fails after a
      day applies to runner jobs, not to these requests.
-   - An agent waiting for a new machine gets its computer when that machine
-     starts, even if a computer frees on another machine meanwhile.
    - Each machine powers off by its own idle rule. Only use of that machine
      keeps it awake: its computers in use, its viewers, requests and runs
      waiting for it, and runs of agents placed on it.
@@ -3393,7 +3398,7 @@ hosts, login machines, the proposal-review guest or one-run runner machines.
      any machine of its company and company machines work in the company
      folder. Until then a company runs one machine, so an agent never loses
      sight of its files by moving to another machine.
-   - Acceptance (Order 4 capacity): a seventh agent gets a computer on a
+   - Acceptance (Order 4): a seventh agent gets a computer on a
      second machine of the same company, set up and started with no operator
      step; a seat another agent left idle changes hands after its desktop is
      closed; each machine powers off on its own.
@@ -3405,8 +3410,9 @@ hosts, login machines, the proposal-review guest or one-run runner machines.
      own, with outbound internet on any port and protocol, not only through
      the browser. A firewall on the machine blocks every private and special
      address range (the NAS, the nodes, the office network, the control plane
-     and cloud metadata), the machine itself and the other computers. The
-     browser keeps its own separate path.
+     and cloud metadata), the machine itself and the other computers. This
+     separates work; it is not a security boundary between agents (section
+     12). The browser keeps its own separate path.
    - A command has no fixed time limit. A call returns after a short wait
      while the command keeps running, and a later call reads it, writes to it
      or stops it (7.3). That wait is not a limit on the command.
@@ -3420,9 +3426,10 @@ hosts, login machines, the proposal-review guest or one-run runner machines.
    - The last 1 MiB of each command's output is kept, and one reply shows at
      most 16 KiB. These are storage-safety bounds, not limits on the work;
      they never stop a command.
-   - A command that runs for a long time publishes its changes to the company
-     folder at intervals as well as when it ends, so other agents see them and
-     a crash loses little. The interval belongs to the folder design.
+   - A long-running command's changes are also published while it runs, so
+     other agents see them and a crash loses little. When and how is folder
+     design, not a founder decision (`RUNTIME-COMPANY-FOLDER.md` publishes at
+     each read of a command's output).
    - A command started under a computer's lease may outlive the lease. The
      lease covers starting it, typing into it and stopping it, and each step
      is attributed to its run (section 12, "explicit resource leases").
@@ -3538,7 +3545,7 @@ hosts, login machines, the proposal-review guest or one-run runner machines.
      the agent's own run box. Any agent of the company whose authority covers
      that view may run commands there; an agent whose default grant was
      revoked or held back may not. A command's changes are published when it
-     ends (and at intervals while it runs, item 2) and attributed to the agent
+     ends (and while it runs, item 2) and attributed to the agent
      that ran it; changes made with no command running are attributed to the
      starting agent. Because company files can then leave through the
      machine's network, these commands pass the automatic review as outside
@@ -3555,7 +3562,9 @@ hosts, login machines, the proposal-review guest or one-run runner machines.
 
 **What this replaces.** In-place edits are marked "(changed in place)".
 - Section 5.6: "The company owns them", said of secrets, does not cover a
-  member's model login, which is the member's own (4.3, 11.5).
+  member's model login, which is the member's own (4.3, 11.5). "Machines keep
+  only their system, applications and caches" reads with the wider scratch
+  list above (tool settings, browser profiles, temporary files).
 - Section 7.4: crash detection names coding attachment leases (changed in
   place); "one machine per run" means one run box per run, and the machines
   an agent starts are not counted (changed in place); machines join the
@@ -3570,8 +3579,8 @@ hosts, login machines, the proposal-review guest or one-run runner machines.
 - Section 13.1: the coding worker's "removed later" is replaced by item 3,
   and machines are listed as not a worker species (both changed in place).
 - Section 19: the Order 4 row (more machines per company as Order 4 capacity
-  work; its "persistent cloud workbench" is per-machine scratch) and the Order
-  9 row (sessions stand by) are changed in place. The observability line
+  work) and the Order 9 row (sessions stand by) are changed in place; the
+  Order 4 row's "persistent cloud workbench" reads as per-machine scratch. The observability line
   "admission follows its bounded queue" reads with item 1's undecided wait.
 - Section 20: the rows naming the "NAS workbench" and the coding "VM" read
   with the scratch rule and item 3.
@@ -3592,6 +3601,11 @@ hosts, login machines, the proposal-review guest or one-run runner machines.
 - The 2026-09-17 amendments: the browser sign-in store beside the profiles on
   the workbench, and company-owned sign-ins in a machine's company root, move
   to the vault (5.6). Until then they are a gap.
+- The 2026-09-27 amendment "every machine works in the company folder", item
+  4: a command's changes are also published while it runs (item 2).
+- The 2026-09-27 amendment "the company folder layout", its "Computers"
+  paragraph: "The machine keeps only its system, applications and caches"
+  reads with the wider scratch list above.
 
 ## 20. Enforcement matrix
 
