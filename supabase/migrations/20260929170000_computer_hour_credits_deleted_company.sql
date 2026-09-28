@@ -6,7 +6,10 @@
 -- refused (22023, a permanent refusal), so the computer-billing function records the Stripe event
 -- for review and an operator refunds the payment. A company is being deleted from the moment its
 -- deletion is requested (public.qorpera_company_deleting, company delete D1), which is used when
--- that function exists; before it, a company without a row is gone.
+-- that function exists; before it, a company without a row is gone. A credit already added (a
+-- repeated delivery of the same payment) is left to the insert's own "on conflict do nothing".
+-- Known limit: the guard does not lock the company, so a deletion requested in the same instant
+-- as the payment can let one credit through; the company's purge then leaves it unused.
 
 set local lock_timeout = '10s';
 
@@ -19,6 +22,12 @@ as $$
 declare
 	v_deleting boolean := false;
 begin
+	if exists (
+		select 1 from public.qorpera_computer_hour_sources credit
+		where credit.kind = 'credit' and credit.reference = new.reference and credit.dry_run = new.dry_run
+	) then
+		return new;
+	end if;
 	if not exists (select 1 from public.qorpera_profiles profile where profile.id = new.profile_id) then
 		raise exception 'Billing: credits for a company that no longer exists' using errcode = '22023';
 	end if;
