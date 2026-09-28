@@ -322,6 +322,45 @@ describe("company machine host", () => {
 		expect(f.client.execInstance).not.toHaveBeenCalled();
 	});
 
+	it("settles a VM that stopped by itself from LXD's view: a run starts it again, a delete deletes it", async () => {
+		const f = await fixture();
+		await f.host.pass(f.signal);
+		// root inside ran poweroff (or the node rebooted)
+		Object.assign(f.instance() as object, { status: "Stopped", statusCode: 102 });
+		expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "start", state: "done" }]);
+		expect(f.instance()?.status).toBe("Running");
+		Object.assign(f.instance() as object, { status: "Stopped", statusCode: 102 });
+		Object.assign(f.entry, { desiredState: "deleted", removeDue: true, reserved: false });
+		expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "release", state: "done" }]);
+		expect(f.instance()).toBeUndefined();
+	});
+
+	it("tries a failed create again, and releases a placement whose VM was never made", async () => {
+		const f = await fixture();
+		f.client.inspectInstanceOperation.mockImplementationOnce(async () => "failed");
+		expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "start", state: "done" }]);
+		expect(f.client.submitInstanceOperation.mock.calls.map((call) => call[1].action)).toEqual([
+			"create",
+			"create",
+			"start",
+		]);
+		const g = await fixture();
+		g.client.inspectInstanceOperation.mockImplementation(async () => "failed");
+		expect((await g.host.pass(g.signal))[0]).toMatchObject({
+			state: "failed",
+			code: "COMPANY_MACHINE_RECOVERY_REQUIRED",
+		});
+		expect(g.client.submitInstanceOperation.mock.calls.map((call) => call[1].action)).toEqual([
+			"create",
+			"create",
+			"create",
+		]);
+		// Nothing was ever made: a member's delete has nothing to wait for.
+		Object.assign(g.entry, { desiredState: "deleted", removeDue: true, reserved: false });
+		expect(await g.host.pass(g.signal)).toEqual([{ placementId: id(6), step: "release", state: "done" }]);
+		expect(g.methods()).toContain("qorpera_release_company_machine");
+	});
+
 	it("keeps trusting the helper of an earlier image this node still runs, and nothing else", async () => {
 		const f = await fixture({ helperSha256: "0".repeat(64), previousHelperSha256s: [helperSha256] });
 		expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "start", state: "done" }]);

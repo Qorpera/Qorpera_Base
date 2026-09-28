@@ -261,6 +261,8 @@ export function lxdCompanyMachineJournalPlan(
 		journalName: plan.binding.placementId,
 		binding: plan.binding,
 		request: plan.request,
+		// Scratch: LXD's view settles what the journal cannot (a poweroff inside, a node reboot, a failed create).
+		disposable: true,
 		text: plan.text,
 		assertInstance: (instance: LxdInstanceRecord) => {
 			assertLxdCompanyMachineInstance(plan.request, plan.binding.imageFingerprint, instance);

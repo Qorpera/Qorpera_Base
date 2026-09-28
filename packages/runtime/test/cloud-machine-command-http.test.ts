@@ -74,6 +74,13 @@ describe("machine command gateway", () => {
 			action: "start",
 			input,
 		});
+		// The machine stopped just after the guest started the command: the start still stands.
+		authorize
+			.mockResolvedValueOnce({ inputSha256 })
+			.mockRejectedValueOnce(new CloudMachineCommandRefusal("MACHINE_NOT_RUNNING"));
+		expect(await gateway.start({ machineId }, input, new AbortController().signal)).toEqual(
+			receiptFor(machineId, commandId, inputSha256),
+		);
 	});
 
 	it("tells the agent a machine is not running by its code, and hides every other failure", async () => {

@@ -364,16 +364,19 @@ begin
 		and (pg_temp.listed('mx-a',repeat('c',64),'big') ->> 'stopDue')::boolean,'Stopping: '||v_changed::text);
 	v_stop := pg_temp.custody('big','stop');
 	perform pg_temp.wake_assert(v_stop ->> 'intent' = 'stop' and (pg_temp.placement('big')).stop_authorized_at is not null,'Stop custody');
-	perform pg_temp.wake_assert((select count(*) from public.qorpera_company_machine_events where kind = 'stopped'
-			and machine_id = (pg_temp.machine('big')).id and parent_run_id = (pg_temp.binding() ->> 'runId')::uuid) = 1
-		and cardinality((pg_temp.machine('big')).notify_run_ids) = 0,'The run waiting for it hears it was stopped before it ran');
+	perform pg_temp.wake_assert(not exists (select 1 from public.qorpera_company_machine_events where kind = 'stopped')
+		and cardinality((pg_temp.machine('big')).notify_run_ids) = 0,'The run that stops its own waiting machine is not woken for it');
 	v_stop := pg_temp.suspend('big');
 	perform pg_temp.wake_assert(v_stop ->> 'state' = 'suspended'
 		and public.qorpera_company_machine_state(pg_temp.machine('big')) = 'stopped'
 		and exists (select 1 from public.qorpera_runtime_node_demands where allocation_id = (pg_temp.placement('big')).id and suspended_at is not null),
 		'Asleep, it holds no room: '||v_stop::text);
 	perform pg_temp.observe_a();
+	-- It waited longer than the idle delay: getting room restarts its idle clock.
+	update public.qorpera_company_machines set last_used_at = clock_timestamp() - interval '2 hours' where name = 'wait';
 	v_admitted := public.qorpera_admit_executor_machines('mx-a',repeat('c',64));
+	perform pg_temp.wake_assert((pg_temp.machine('wait')).last_used_at > clock_timestamp() - interval '1 minute'
+		and not (pg_temp.listed('mx-a',repeat('c',64),'wait') ->> 'sleepDue')::boolean,'Room given restarts the idle clock');
 	perform pg_temp.wake_assert(v_admitted = jsonb_build_array((pg_temp.machine('wait')).id)
 		and public.qorpera_company_machine_state(pg_temp.machine('wait')) = 'starting' and (pg_temp.placement('wait')).owner = 'mx-a'
 		and public.qorpera_admit_executor_machines('mx-a',repeat('c',64)) = '[]'::jsonb,
@@ -485,7 +488,7 @@ begin
 		'A deleted machine''s placement is retired, and stops before it is deleted');
 	perform pg_temp.start('m-filler','{"name":"filler","purpose":"Takes the room","cpus":8,"memoryGiB":32,"diskGiB":40,"lifetime":"task"}');
 	perform pg_temp.start('m-lonely','{"name":"lonely","purpose":"Never placed","cpus":8,"memoryGiB":32,"diskGiB":40,"lifetime":"task"}');
-	perform pg_temp.start('m-wide','{"name":"wide","purpose":"Room for it, but not disk","cpus":1,"memoryGiB":1,"diskGiB":250,"lifetime":"task"}');
+	perform pg_temp.start('m-wide','{"name":"wide","purpose":"Room for it, but not disk","cpus":1,"memoryGiB":1,"diskGiB":290,"lifetime":"task"}');
 	perform pg_temp.wake_assert(public.qorpera_company_machine_state(pg_temp.machine('filler')) = 'starting'
 		and public.qorpera_company_machine_state(pg_temp.machine('lonely')) = 'waiting'
 		and public.qorpera_company_machine_state(pg_temp.machine('wide')) = 'waiting'
@@ -493,8 +496,8 @@ begin
 		'One fits; one waits for processors, one for disk (asleep and retired placements keep theirs)');
 	perform public.qorpera_native_machine_manage(pg_temp.binding(),'{"action":"delete","machine":"lonely"}');
 	perform pg_temp.wake_assert(pg_temp.machine('lonely') is null
-		and exists (select 1 from public.qorpera_company_machine_events event join public.qorpera_company_machines machine on machine.id = event.machine_id
-			where machine.name = 'lonely' and event.kind = 'stopped'),'An unplaced machine is deleted at once, and its run is told');
+		and not exists (select 1 from public.qorpera_company_machine_events where kind = 'stopped'),
+		'An unplaced machine is deleted at once; the run that deleted it is not woken for it');
 	perform pg_temp.wake_assert(public.qorpera_native_machine_manage(pg_temp.binding(),'{"action":"stop","machine":"nobody"}') #>> '{refused,reason}' = 'MACHINE_NOT_FOUND',
 		'An unknown machine is a refusal the agent reads');
 	perform pg_temp.wake_assert(jsonb_array_length(public.qorpera_native_machine_manage(pg_temp.binding(),'{"action":"list"}') -> 'machines') = 4,
@@ -537,7 +540,9 @@ begin
 		and jsonb_array_length(public.qorpera_list_session_machines('30000000-0000-4000-8000-000000000042') -> 'machines') = 0,
 		'The conversation that started them shows its machines');
 	v_view := public.qorpera_member_manage_company_machine('30000000-0000-4000-8000-000000000010',(pg_temp.machine('big')).id,'stop');
-	perform pg_temp.wake_assert(v_view ->> 'state' = 'stopping' and v_view ->> 'stoppedBy' = 'member','A member stops a machine');
+	perform pg_temp.wake_assert(v_view ->> 'state' = 'stopping' and v_view ->> 'stoppedBy' = 'member'
+		and (select count(*) from public.qorpera_company_machine_events where kind = 'stopped' and machine_id = (pg_temp.machine('big')).id) = 1,
+		'A member stops a machine; the run waiting for it hears it was stopped before it ran');
 	perform pg_temp.path_claims('service_role');
 	perform pg_temp.custody('big','stop');
 	perform pg_temp.suspend('big');
@@ -560,7 +565,71 @@ begin
 		'The next pass wakes it where it slept: '||v_view::text);
 end $$;
 
--- 14. The observation ledger names the new tools; the binding text is the executor's exactly
+-- 14. Disk given back: the first machine in line that lacks only disk that stopped machines hold on
+--     a node gets it. Their scratch disks are given up, the longest asleep first, and it takes the disk
+--     once their deletes are proven; disks already being deleted count as coming free.
+do $$
+declare v_build public.qorpera_company_machine_placements; v_filler public.qorpera_company_machine_placements; v_admitted jsonb;
+begin
+	perform pg_temp.observe_a();
+	perform public.qorpera_native_machine_manage(pg_temp.binding(),'{"action":"stop","machine":"filler"}');
+	perform pg_temp.custody('filler','stop');
+	perform pg_temp.suspend('filler');
+	v_filler := pg_temp.placement('filler');
+	-- build-a's deleted placement is deleted and released: 40 GiB of A's 300 are then held by filler, asleep.
+	select placement.* into strict v_build from public.qorpera_company_machine_placements placement
+	join public.qorpera_company_machines machine on machine.id = placement.machine_id where machine.name = 'build-a';
+	perform pg_temp.custody_at(v_build,'stop');
+	perform public.qorpera_suspend_company_machine(v_build.id,'mx-a',public.qorpera_company_machine_binding_text(v_build.binding),repeat('c',64));
+	perform pg_temp.custody_at(v_build,'delete');
+	select * into strict v_build from public.qorpera_company_machine_placements where id = v_build.id;
+	perform pg_temp.release_at(v_build);
+	perform pg_temp.observe_a();
+	v_admitted := public.qorpera_admit_executor_machines('mx-a',repeat('c',64));
+	perform pg_temp.wake_assert(v_admitted = '[]'::jsonb
+		and (select retired_at is not null from public.qorpera_company_machine_placements where id = v_filler.id)
+		and (pg_temp.machine('filler')).desired_state = 'stopped' and pg_temp.placement('filler') is null
+		and public.qorpera_company_machine_state(pg_temp.machine('wide')) = 'waiting',
+		'The stopped machine''s scratch disk is given up for the machine in line');
+	v_admitted := public.qorpera_admit_executor_machines('mx-a',repeat('c',64));
+	perform pg_temp.wake_assert(v_admitted = '[]'::jsonb
+		and (select count(*) from public.qorpera_company_machine_placements where owner = 'mx-a' and retired_at is not null and removed_at is null) = 1,
+		'Nothing more is given up while that disk is being deleted');
+	select * into strict v_filler from public.qorpera_company_machine_placements where id = v_filler.id;
+	perform pg_temp.custody_at(v_filler,'delete');
+	select * into strict v_filler from public.qorpera_company_machine_placements where id = v_filler.id;
+	perform pg_temp.release_at(v_filler);
+	perform pg_temp.observe_a();
+	v_admitted := public.qorpera_admit_executor_machines('mx-a',repeat('c',64));
+	perform pg_temp.wake_assert(v_admitted = jsonb_build_array((pg_temp.machine('wide')).id)
+		and (pg_temp.machine('filler')).id is not null,'Once it is deleted, the waiting machine gets the disk; the stopped one lives on without it');
+end $$;
+
+-- 15. A new image: a placement made under a machine policy its node no longer uses is never woken;
+--     the machine starts fresh from the current image, on the same node too.
+do $$
+declare v_old public.qorpera_company_machine_placements; v_new public.qorpera_company_machine_placements;
+	v_policy jsonb := jsonb_build_object('providerId','machine-fixture-b','providerPolicySha256',repeat('9',64),'project','machines',
+		'imageFingerprint',repeat('8',64),'bootstrapSha256',repeat('b',64),'storagePool','machines','network','machine-net');
+begin
+	perform public.qorpera_native_machine_manage(pg_temp.binding(),'{"action":"stop","machine":"big"}');
+	perform pg_temp.custody('big','stop');
+	perform pg_temp.suspend('big');
+	v_old := pg_temp.placement('big');
+	perform public.qorpera_enroll_runtime_node_provider('30000000-0000-4000-8000-000000000420',repeat('d',64),'machine','machine-fixture-b',
+		repeat('9',64),8000,34359738368);
+	perform public.qorpera_configure_machine_executor('mx-b',repeat('d',64),true,v_policy,322122547200);
+	perform pg_temp.observe('30000000-0000-4000-8000-000000000420',repeat('d',64),16000,68719476736);
+	perform pg_temp.start('m-wake-big-2','{"machine":"big"}');
+	v_new := pg_temp.placement('big');
+	select * into strict v_old from public.qorpera_company_machine_placements where id = v_old.id;
+	perform pg_temp.wake_assert(v_new.id <> v_old.id and v_new.owner = 'mx-b' and v_new.binding @> v_policy
+		and v_old.retired_at is not null and v_old.binding ->> 'imageFingerprint' = repeat('a',64)
+		and public.qorpera_company_machine_state(pg_temp.machine('big')) = 'starting',
+		'Woken fresh from the new image: '||v_new.binding::text);
+end $$;
+
+-- 16. The observation ledger names the new tools; the binding text is the executor's exactly
 --     (packages/runner-orchestrator/test/company-machine.test.ts asserts the same string).
 do $$
 begin
@@ -581,25 +650,25 @@ begin
 		'Machine tools are known operations');
 end $$;
 
--- 15. The events wait for the parent run to end, then wake it as a continuation in its conversation.
+-- 17. The events wait for the parent run to end, then wake it as a continuation in its conversation.
 --     A wake holds 8 KiB: it carries as many events as fit (never more than eight, each with the
---     end of its output), and the rest follow. Six events are waiting: build-a running, its failed
---     command, big stopped before it ran, wait running, lonely deleted before it ran, big stopped again.
+--     end of its output), and the rest follow. Four events are waiting: build-a running, its failed
+--     command, wait running, and big stopped by a member before it ran.
 do $$
 declare v_wake public.qorpera_wake_occurrences; v_parent public.qorpera_execution_runs; v_count integer;
 begin
 	select * into strict v_parent from public.qorpera_execution_runs where id = (pg_temp.binding() ->> 'runId')::uuid;
-	perform pg_temp.wake_assert((select count(*) from public.qorpera_company_machine_events where delivery = 'waiting') = 6,
-		'Six events wait for the parent');
+	perform pg_temp.wake_assert((select count(*) from public.qorpera_company_machine_events where delivery = 'waiting') = 4,
+		'Four events wait for the parent');
 	-- Eight test shards that ended together, each with 4000 bytes of output and a long command.
 	with shards as (
 		insert into public.qorpera_company_machine_commands(id, machine_id, run_id, staff_agent_id, placement_id, command_head, notify, ended_at,
 			state, exit_code, output_tail)
-		select extensions.gen_random_uuid(), (pg_temp.machine('filler')).id, v_parent.id, v_parent.staff_agent_id,
-			(pg_temp.placement('filler')).id, 'shard ' || n || ' ' || repeat('é', 280), true, clock_timestamp(), 'succeeded', 0, repeat('é', 2000)
+		select extensions.gen_random_uuid(), (pg_temp.machine('wide')).id, v_parent.id, v_parent.staff_agent_id,
+			(pg_temp.placement('wide')).id, 'shard ' || n || ' ' || repeat('é', 280), true, clock_timestamp(), 'succeeded', 0, repeat('é', 2000)
 		from generate_series(1, 8) n returning id)
 	insert into public.qorpera_company_machine_events(machine_id, profile_id, environment_id, staff_agent_id, parent_run_id, kind, command_id)
-	select (pg_temp.machine('filler')).id, v_parent.profile_id, v_parent.environment_id, v_parent.staff_agent_id, v_parent.id, 'command', id
+	select (pg_temp.machine('wide')).id, v_parent.profile_id, v_parent.environment_id, v_parent.staff_agent_id, v_parent.id, 'command', id
 	from shards;
 	perform public.qorpera_drain_machine_wakes(32);
 	perform pg_temp.wake_assert(not exists (select 1 from public.qorpera_wake_occurrences where source_kind = 'machine-event'),
@@ -613,24 +682,22 @@ begin
 	perform pg_temp.wake_assert(v_wake.status = 'materialized' and v_wake.wake_kind = 'agent' and v_wake.parent_run_id = v_parent.id
 		and v_wake.staff_agent_id = v_parent.staff_agent_id and v_wake.session_id = v_parent.session_id
 		and v_wake.occurrence_key = 'machine-event:' || v_wake.id::text
-		and v_wake.payload ->> 'schema' = 'qorpera.machine-event/v1' and v_count between 7 and 8
+		and v_wake.payload ->> 'schema' = 'qorpera.machine-event/v1' and v_count between 5 and 7
 		and pg_column_size(v_wake.payload) <= 6144
 		and v_wake.payload #>> '{events,0,kind}' = 'running' and v_wake.payload #>> '{events,0,machine}' = 'build-a'
 		and v_wake.payload #>> '{events,1,commandState}' = 'failed' and v_wake.payload #>> '{events,1,command}' = 'npm test'
 		and v_wake.payload #>> '{events,1,outputTail}' = '1 test failed' and (v_wake.payload #>> '{events,1,exitCode}')::int = 2
-		and v_wake.payload #>> '{events,2,kind}' = 'stopped' and v_wake.payload #>> '{events,2,machine}' = 'big'
-		and v_wake.payload #>> '{events,3,kind}' = 'running' and v_wake.payload #>> '{events,3,machine}' = 'wait'
-		and v_wake.payload #>> '{events,4,kind}' = 'stopped' and v_wake.payload #>> '{events,4,machine}' = 'lonely'
-		and v_wake.payload #>> '{events,5,kind}' = 'stopped' and v_wake.payload #>> '{events,5,machine}' = 'big'
-		and v_wake.payload #>> '{events,6,outputTail}' = repeat('é', 300)
-		and (v_wake.payload ->> 'stillWaiting')::int = 14 - v_count
-		and (select count(*) from public.qorpera_company_machine_events where delivery = 'waiting') = 14 - v_count
+		and v_wake.payload #>> '{events,2,kind}' = 'running' and v_wake.payload #>> '{events,2,machine}' = 'wait'
+		and v_wake.payload #>> '{events,3,kind}' = 'stopped' and v_wake.payload #>> '{events,3,machine}' = 'big'
+		and v_wake.payload #>> '{events,4,outputTail}' = repeat('é', 300)
+		and (v_wake.payload ->> 'stillWaiting')::int = 12 - v_count
+		and (select count(*) from public.qorpera_company_machine_events where delivery = 'waiting') = 12 - v_count
 		and public.qorpera_wake_authorized(v_wake),
 		'One continuation carries what fits: '||v_count||' events, '||pg_column_size(v_wake.payload)||' bytes');
 	perform set_config('qorpera_test.first_count',v_count::text,true);
 end $$;
 
--- 16. The continuation becomes a run of the same agent in the same conversation; its context
+-- 18. The continuation becomes a run of the same agent in the same conversation; its context
 --     carries its events with all of their kept output, and what the parent run already did.
 do $$
 declare v_wake public.qorpera_wake_occurrences; v_run public.qorpera_execution_runs; v_continuation jsonb;
@@ -642,13 +709,13 @@ begin
 		and v_run.session_id = v_wake.session_id and v_continuation ->> 'schema' = 'qorpera.machine-event-continuation/v1'
 		and v_continuation ->> 'parentRunId' = v_wake.parent_run_id::text
 		and jsonb_array_length(v_continuation -> 'events') = current_setting('qorpera_test.first_count')::int
-		and v_continuation #>> '{events,6,outputTail}' = repeat('é', 2000)
+		and v_continuation #>> '{events,4,outputTail}' = repeat('é', 2000)
 		and exists (select 1 from jsonb_array_elements(v_continuation -> 'receipts') r where r ->> 'logicalOperationKey' = 'machine_start:m-build-a')
 		and (public.qorpera_runtime_wake_policy(v_run.id) ->> 'final') is not null,
 		'The continuation run: '||left(v_continuation::text, 2000));
 end $$;
 
--- 17. The rest follow once that continuation has ended, one continuation at a time and never more
+-- 19. The rest follow once that continuation has ended, one continuation at a time and never more
 --     than a wake holds; a person who stops a continuation hears nothing more from that run's machines.
 do $$
 declare v_first public.qorpera_wake_occurrences; v_second public.qorpera_wake_occurrences; v_event uuid; v_count integer;
@@ -663,7 +730,7 @@ begin
 	perform public.qorpera_materialize_wake_execution_runs(32);
 	select * into strict v_second from public.qorpera_wake_occurrences where source_kind = 'machine-event' and id <> v_first.id;
 	v_count := jsonb_array_length(v_second.payload -> 'events');
-	v_left := 14 - current_setting('qorpera_test.first_count')::int - v_count;
+	v_left := 12 - current_setting('qorpera_test.first_count')::int - v_count;
 	perform pg_temp.wake_assert(v_second.status = 'materialized' and v_second.parent_run_id = v_first.parent_run_id
 		and v_count between 2 and 5 and v_left > 0 and pg_column_size(v_second.payload) <= 6144
 		and (v_second.payload ->> 'stillWaiting')::int = v_left
@@ -674,7 +741,7 @@ begin
 		'A person stops the continuation');
 	perform pg_temp.path_claims('service_role');
 	insert into public.qorpera_company_machine_events(machine_id, profile_id, environment_id, staff_agent_id, parent_run_id, kind)
-	select (pg_temp.machine('filler')).id, profile_id, environment_id, staff_agent_id, id, 'running'
+	select (pg_temp.machine('wide')).id, profile_id, environment_id, staff_agent_id, id, 'running'
 	from public.qorpera_execution_runs where id = v_first.parent_run_id
 	returning id into v_event;
 	perform public.qorpera_drain_machine_wakes(32);

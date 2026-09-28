@@ -64,8 +64,8 @@ export interface CompanyMachineHostOptions {
 	storagePolicy: CloudCodingNasPolicy;
 	/** The sha-256 of the packaged machine guest helper the image carries. */
 	helperSha256: string;
-	/** Helpers of earlier images still on this node: their machines keep running until they sleep and
-	 * start fresh from the current image (their placement's policy is gone). */
+	/** Helpers of earlier images still on this node: their machines keep running until they sleep, and
+	 * wake fresh from the current image (their placement's policy is no longer the node's). */
 	previousHelperSha256s?: readonly string[];
 	/** How long a started guest may take before its agent answers (default 180 s). */
 	guestReadyTimeoutMs?: number;
