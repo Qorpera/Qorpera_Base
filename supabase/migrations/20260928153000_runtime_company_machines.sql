@@ -1017,6 +1017,21 @@ begin
 end
 $$;
 
+-- The machines started from one conversation, for its thread card: a member
+-- who can read the conversation sees them (the company's list shows them all).
+create function public.qorpera_list_session_machines(p_session_id uuid)
+returns jsonb language plpgsql stable security definer set search_path = '' as $$
+begin
+	if auth.uid() is null or p_session_id is null or not public.qorpera_can_read_session(p_session_id) then
+		raise exception 'Conversation is unavailable' using errcode = '42501'; end if;
+	return jsonb_build_object('schema','qorpera.session-machines/v1','sessionId',p_session_id,'machines',coalesce((select jsonb_agg(
+			public.qorpera_company_machine_view(machine) order by machine.created_at, machine.id)
+		from public.qorpera_company_machines machine join public.qorpera_execution_runs run on run.id = machine.started_by_run_id
+		where run.session_id = p_session_id
+			and (machine.removed_at is null or machine.removed_at > clock_timestamp() - interval '1 day')), '[]'::jsonb));
+end
+$$;
+
 -- A member stops, wakes or deletes any machine of the company.
 create function public.qorpera_member_manage_company_machine(p_profile_id uuid, p_machine_id uuid, p_action text)
 returns jsonb language plpgsql security definer set search_path = '' as $$
@@ -1290,6 +1305,7 @@ revoke all on function public.qorpera_configure_machine_executor(text, text, boo
 	public.qorpera_record_company_machine_error(uuid, text, text, text, text),
 	public.qorpera_record_company_machine_commands(uuid, text, text, text, uuid, jsonb, boolean),
 	public.qorpera_list_company_machines(uuid),
+	public.qorpera_list_session_machines(uuid),
 	public.qorpera_member_manage_company_machine(uuid, uuid, text),
 	public.qorpera_machine_wake_ancestry(public.qorpera_wake_occurrences),
 	public.qorpera_machine_event_view(public.qorpera_company_machine_events),
@@ -1313,5 +1329,6 @@ grant execute on function public.qorpera_configure_machine_executor(text, text, 
 	public.qorpera_drain_machine_wakes(integer)
 	to service_role;
 grant execute on function public.qorpera_list_company_machines(uuid),
+	public.qorpera_list_session_machines(uuid),
 	public.qorpera_member_manage_company_machine(uuid, uuid, text)
 	to authenticated;

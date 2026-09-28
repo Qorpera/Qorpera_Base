@@ -133,6 +133,8 @@ declare v_receipt uuid := extensions.gen_random_uuid(); v_first jsonb; v_again j
 	v_allocation public.qorpera_runtime_machine_allocations; v_demand public.qorpera_runtime_node_demands;
 	v_args jsonb := '{"name":"build-a","purpose":"Run the SQL suite","cpus":2,"memoryGiB":4,"diskGiB":40,"lifetime":"task"}';
 begin
+	-- A fresh node observation: placement needs one younger than a minute.
+	perform pg_temp.observe('30000000-0000-4000-8000-000000000410',repeat('c',64),16000,68719476736);
 	perform pg_temp.wake_error(format($sql$select public.qorpera_native_machine_start(%L,%L,'authorize')$sql$,pg_temp.binding(),
 		pg_temp.start_envelope('bad','{"name":"Bad Name","purpose":"x","cpus":1,"memoryGiB":1,"diskGiB":10,"lifetime":"task"}')),'42501');
 	perform pg_temp.wake_error(format($sql$select public.qorpera_native_machine_start(%L,%L,'authorize')$sql$,pg_temp.binding(),
@@ -176,6 +178,8 @@ end $$;
 do $$
 declare v_big jsonb; v_wait jsonb; v_row public.qorpera_company_machines;
 begin
+	-- A fresh node observation: placement needs one younger than a minute.
+	perform pg_temp.observe('30000000-0000-4000-8000-000000000410',repeat('c',64),16000,68719476736);
 	v_big := pg_temp.start('m-big','{"name":"big","purpose":"Long data job","cpus":6,"memoryGiB":28,"diskGiB":100,"lifetime":"always-on"}');
 	v_wait := pg_temp.start('m-wait','{"name":"wait","purpose":"Second data job","cpus":6,"memoryGiB":28,"diskGiB":100,"lifetime":"task"}');
 	v_row := pg_temp.machine('wait');
@@ -192,6 +196,8 @@ end $$;
 do $$
 declare v_entry jsonb; v_run jsonb; v_boot uuid := extensions.gen_random_uuid(); v_marked jsonb;
 begin
+	-- A fresh node observation: placement needs one younger than a minute.
+	perform pg_temp.observe('30000000-0000-4000-8000-000000000410',repeat('c',64),16000,68719476736);
 	v_entry := pg_temp.listed('mx-a',repeat('c',64),'build-a');
 	perform pg_temp.wake_assert(v_entry ->> 'schema' = 'qorpera.company-machine-state/v1' and v_entry ->> 'desiredState' = 'running'
 		and (v_entry ->> 'reserved')::boolean and not (v_entry ->> 'sleepDue')::boolean and not (v_entry ->> 'removeDue')::boolean
@@ -305,6 +311,8 @@ end $$;
 do $$
 declare v_boot uuid := extensions.gen_random_uuid(); v_released jsonb;
 begin
+	-- A fresh node observation: placement needs one younger than a minute.
+	perform pg_temp.observe('30000000-0000-4000-8000-000000000410',repeat('c',64),16000,68719476736);
 	perform public.qorpera_configure_machine_lifecycle('mx-a',60,300);
 	perform pg_temp.running('wait',v_boot);
 	update public.qorpera_company_machines set last_used_at = clock_timestamp() - interval '2 minutes' where name = 'wait';
@@ -343,6 +351,8 @@ end $$;
 -- 10. Deleting an awake machine waits for its stop; a machine that never got a node is gone at once.
 do $$
 begin
+	-- A fresh node observation: placement needs one younger than a minute.
+	perform pg_temp.observe('30000000-0000-4000-8000-000000000410',repeat('c',64),16000,68719476736);
 	perform public.qorpera_native_machine_manage(pg_temp.binding(),'{"action":"delete","machine":"build-a"}');
 	perform pg_temp.wake_assert(pg_temp.custody('build-a','delete') ->> 'reason' = 'MACHINE_AWAKE'
 		and (pg_temp.listed('mx-a',repeat('c',64),'build-a') ->> 'stopDue')::boolean
@@ -373,10 +383,15 @@ begin
 			and m #>> '{commands,0,command}' = 'npm test' and m #>> '{commands,0,state}' = 'failed' and m #>> '{startedBy,name}' = 'Agent')
 		and not exists (select 1 from jsonb_array_elements(v_list -> 'machines') m where m ? 'binding' or m ? 'instanceSha256'),
 		'Members see the machines, their commands and who started them: '||v_list::text);
+	perform pg_temp.wake_assert(public.qorpera_list_session_machines('30000000-0000-4000-8000-000000000040') ->> 'schema' = 'qorpera.session-machines/v1'
+		and jsonb_array_length(public.qorpera_list_session_machines('30000000-0000-4000-8000-000000000040') -> 'machines') = 5
+		and jsonb_array_length(public.qorpera_list_session_machines('30000000-0000-4000-8000-000000000042') -> 'machines') = 0,
+		'The conversation that started them shows its machines');
 	v_view := public.qorpera_member_manage_company_machine('30000000-0000-4000-8000-000000000010',(pg_temp.machine('big')).id,'stop');
 	perform pg_temp.wake_assert(v_view ->> 'state' = 'stopped' and v_view ->> 'stoppedBy' = 'member','A member stops a waiting machine');
 	perform pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000099');
 	perform pg_temp.wake_error($sql$select public.qorpera_list_company_machines('30000000-0000-4000-8000-000000000010')$sql$,'42501');
+	perform pg_temp.wake_error($sql$select public.qorpera_list_session_machines('30000000-0000-4000-8000-000000000040')$sql$,'42501');
 	perform pg_temp.wake_error(format($sql$select public.qorpera_member_manage_company_machine('30000000-0000-4000-8000-000000000010',%L,'delete')$sql$,
 		(pg_temp.machine('big')).id),'42501');
 	perform pg_temp.path_claims('service_role');
