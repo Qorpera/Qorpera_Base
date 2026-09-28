@@ -282,7 +282,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					signal.throwIfAborted();
 					return unavailableCloudAgentMemory(cloudRuntimeErrorCategory(error, signal));
 				}),
-				composeCloudAgentSkills(gateway, context.identity.staffAgentId, signal).catch((error) => {
+				composeCloudAgentSkills(gateway, context.identity, signal).catch((error) => {
 					signal.throwIfAborted();
 					return unavailableCloudAgentSkills(cloudRuntimeErrorCategory(error, signal));
 				}),
