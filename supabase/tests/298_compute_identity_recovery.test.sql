@@ -161,6 +161,10 @@ select pg_temp.recovery_denied(format('select public.qorpera_prepare_identity_ke
 select pg_temp.assert_recovery((public.qorpera_identity_recovery_runtime_state(
   '29800000-0000-4000-8000-000000000020')->>'blocked')::boolean,'Expiry revived the lost identity generation');
 rollback to savepoint current_authority;
+-- The last founder cannot step down while others remain: a second founder joins first.
+insert into auth.users(id,email) values ('29800000-0000-4000-8000-0000000000f1','recovery-cofounder@example.test');
+insert into public.qorpera_profile_members(profile_id,user_id,email,display_name,role)
+values ('29800000-0000-4000-8000-000000000010','29800000-0000-4000-8000-0000000000f1','recovery-cofounder@example.test','Co-founder','owner');
 update public.qorpera_profile_members set role='contributor'
 where profile_id='29800000-0000-4000-8000-000000000010' and user_id='29800000-0000-4000-8000-000000000001';
 set local role service_role;

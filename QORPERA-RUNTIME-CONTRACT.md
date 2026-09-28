@@ -1087,8 +1087,9 @@ capacity work after it.
 > our own nodes with room, and their files are the company folder. Each
 > machine has its own scratch: this section's workbench is not shared between
 > machines and never holds company work. An additional machine is no longer
-> optional: once every run can reach any machine of its company and company
-> machines work in the company folder, it starts when every computer on the
+> optional: once every run can reach any machine of its company, company
+> machines work in the company folder and a new machine is set up
+> automatically on a node with room, it starts when every computer on the
 > company's machines is taken and no stopped or starting machine can give one.
 > Computers are seats that free up. A computer's shell, terminal and desktop
 > have their own network to the internet, and commands have no fixed time
@@ -1246,6 +1247,18 @@ Explicit restrictions, expiry and revocation MUST survive reactivation and
 root resource version changes. Protected paths, private scopes, and narrower
 responsibility- or project-scoped resources keep their own rules; the default
 never overrides them.
+
+Amended 2026-09-28: several founders. A company has one or more founders
+(members with the role `owner`); "the company owner" above means its first
+founder: the creator while a founder, otherwise the founder who joined first.
+Any founder may make another member a founder; a founder steps down or leaves
+only on their own; nobody removes or changes a fellow founder. The last
+founder cannot step down, and cannot leave while other members remain. While
+company setup runs for a founder, that founder neither leaves nor steps down.
+Only the last member may delete the company; everyone else leaves. Founders remove other
+members; admins keep managing contributors and viewers. The founder list is
+one stable, ordered set per company, which computer-hours billing pools
+across. Membership rows are member data and stay in the database (5.6).
 
 Automatic hiring MUST verify that the creator can delegate the child's entire
 default: current, nonexpiring read/write authority on every live shared root
@@ -2076,8 +2089,9 @@ records MUST preserve placement changes so historical usage remains attributable
 to the actual compute source. Azure-specific integration and accounting are
 deferred together to the post-build enablement gate below.
 
-Basic usage accounting MUST count running computer-hours once per computer,
-regardless of the number of agents or members sharing it. Screen lifetimes are
+Basic usage accounting MUST count running computer-hours once per machine,
+regardless of the number of computers, agents or members sharing it (2026-09-28
+amendment "computer hours", item 1). Screen lifetimes are
 separate screen-hours; suspended time is separate from running time. Retain
 screen transitions so later time-weighted average/median/maximum concurrency
 reports can be derived for explicit observation windows. Those richer reports
@@ -3345,9 +3359,8 @@ hosts, login machines, the proposal-review guest or one-run runner machines.
   - the browser sign-in store lives beside the profiles on the workbench and
     in a machine generation's company root (2026-09-17 amendments "the
     company browser" and "kept company state");
-  - an agent waiting for a new company machine waits for that machine, even
-    if a computer frees on another machine meanwhile; a new message to the
-    agent places it again at once.
+  - an agent waiting for a machine is not woken when a computer frees on
+    another machine; it takes one only if it runs again first.
 
 1. **More than one company machine per company.** Section 12's additional
    machine is no longer optional, and it is accepted as Order 4 capacity work.
@@ -3356,21 +3369,51 @@ hosts, login machines, the proposal-review guest or one-run runner machines.
      generation, allocation, provider, idle cycle, computers and browser
      profiles, and its own scratch, journal, ports and credentials (its own
      TLS certificate and key, guest registry credential and objects token).
+   - A seat is free when no computer is in use on it and no other agent holds
+     it. A machine is full when its computers in use and the seats agents hold
+     fill it.
    - An agent that needs a computer gets one in this order: its own open
-     computer; a free computer on a running company machine; a stopped
-     machine, woken; a machine that is already starting; a new machine for
-     the same company environment. An owner or admin who opens an agent's
-     computer follows the same order. A burst of demand adds at most one new
-     machine at a time. A machine in maintenance for another reason is waited
-     for, never replaced. An agent holds a computer on one company machine at
-     a time.
+     computer, or a seat it holds on a running machine; a free computer on a
+     running company machine; a seat it holds on a machine that is not up
+     yet; a free seat on a machine that is starting, waking, back from a host
+     reboot, added but not started, or asleep; a new machine for the same
+     company environment. An owner or admin who opens an agent's computer
+     follows the same order. An agent holds a computer on one company machine
+     at a time; a seat it holds elsewhere lapses while it has a computer in
+     use.
+   - **No waiting for a seat** (founder, 28 September: "if a machine is full,
+     the agent always should start a new one, not wait"). An agent never
+     waits for a seat on a full machine; it goes on down the order, and a new
+     machine starts when no machine has a free seat. A burst of demand starts
+     as many machines as it needs.
+     - An agent waiting for a machine holds a seat on it while it waits and,
+       once woken, until its woken run ends. Seats on one machine go first
+       come; when starts in flight ask for more seats than a machine has, the
+       latest are placed again when they run.
+     - It is woken when that machine is up. If it runs again before then and
+       a computer is free on a running machine, it takes that one, and its
+       hold lapses.
+     - One start request stays on the machine it named when the agent called
+       it, from authorization to its end, while that machine can still be
+       started.
+     - A sleeping or waking machine whose node cannot take it now is passed
+       over when another node has room for a new machine. When no node has
+       room, it is woken and waits for room.
+     - A machine in maintenance for an update or reset, or whose start was
+       cancelled, is passed over; it is used again once it is back.
+     - When no node has set up a started machine for 30 minutes, the agents
+       waiting for it stop holding its seats, so a broken setup does not add
+       machine after machine. The 30 minutes may be tuned without a new
+       founder decision.
    - A new machine is set up automatically on any node with room, with no
      operator step. It uses the same image, bootstrap and number of computers
      as the company's newest machine, and is set up from the node's own
      settings, which are the same on every node, never by copying another
      machine's node-specific setup. Operators see every machine waiting for a
      node, and why (no node has set it up yet, or no room).
-   - A computer is a seat. It is in use only while it has a live lease or a
+   - A computer is a seat. Besides being in use, a seat can be held by an
+     agent waiting for its machine, or woken and still running ("No waiting
+     for a seat" above). It is in use only while it has a live lease or a
      live viewer, is being taken over or drained, still has resources the
      agent started there that have not drained, has a command running in its
      shell, or was opened less than about two minutes ago. A desktop left open
@@ -3384,8 +3427,8 @@ hosts, login machines, the proposal-review guest or one-run runner machines.
      new machine keeps every refusal.
    - There is no count of machines per company. When no node has room, the
      request waits, and the agent and members see why. How long a request may
-     wait, and in which order waiting requests are served, are not decided
-     yet (founder, 28 September). 7.4's rule that a queued run fails after a
+     wait, and in which order machines waiting for room get it, are not
+     decided yet (founder, 28 September). 7.4's rule that a queued run fails after a
      day applies to runner jobs, not to these requests.
    - Each machine powers off by its own idle rule. Only use of that machine
      keeps it awake: its computers in use, its viewers, requests and runs
@@ -3395,13 +3438,17 @@ hosts, login machines, the proposal-review guest or one-run runner machines.
      its descriptor and effect-time grants. A run that cannot reach its
      machine continues without computer tools; it does not fail.
    - Several machines per company are turned on only once every run can reach
-     any machine of its company and company machines work in the company
-     folder. Until then a company runs one machine, so an agent never loses
-     sight of its files by moving to another machine.
+     any machine of its company, company machines work in the company folder,
+     and a new machine is set up automatically on a node with room. Until
+     then a company runs one machine, so an agent never loses sight of its
+     files by moving to another machine.
    - Acceptance (Order 4): a seventh agent gets a computer on a
      second machine of the same company, set up and started with no operator
      step; a seat another agent left idle changes hands after its desktop is
-     closed; each machine powers off on its own.
+     closed; each machine powers off on its own;
+     a burst of more agents than one machine seats starts enough machines at
+     once, and none waits on a full machine; a sleeping machine on a full
+     node is passed over for a new machine on a node with room.
 2. **Computers have internet, and their shell runs as long as the work
    needs.** The first build gave the shell no network, stopped every command
    after 15 seconds, and failed a command whose output passed 16 KiB. Those
@@ -3607,6 +3654,179 @@ hosts, login machines, the proposal-review guest or one-run runner machines.
   paragraph: "The machine keeps only its system, applications and caches"
   reads with the wider scratch list above.
 
+### 2026-09-28 amendment: computer hours
+
+Founder decisions of 28 September 2026: those recorded when draft PR #326 was
+closed, and the eight choices on the "Computer Hours" page, approved as
+recommended. They define the billing of machine time, which section 22 left to
+a separate launch responsibility, and they amend 7.4, section 12, section 19
+("Minimum operational observability"), section 20, section 21, section 22 and
+the 2026-09-28 amendment "compute for agents". Words as in that amendment: a
+*computer* is one agent's screen and a *machine* is a virtual machine. A *run
+box* is where one run executes: a slot on a shared execution host (the
+2026-09-22 amendment) or a machine of its own. A *founder* is a member with the
+owner role. Model use is not billed here: it follows the 2026-09-28 amendment
+"the member who started the work pays" (section 17). Design:
+`deploy/first-node/RUNTIME-COMPUTER-HOURS.md`.
+
+1. **What is billed.** Qorpera bills machine time, named *computer hours*.
+   One computer hour is one hour of an awake standard machine of 4 vCPU and
+   8 GiB. A machine counts by the larger of its reserved processors and its
+   reserved memory, each divided by the standard: a company machine of 8 vCPU
+   and 16 GiB counts two hours per hour, a machine of 2 vCPU and 4 GiB half an
+   hour. A machine counts once, however many computers, agents or members use
+   it. A stopped or sleeping machine counts nothing, also while it keeps its
+   disk.
+2. **What counts.**
+   - Company machines, agents' machines (item 4 of "compute for agents") and
+     coding machines (including the retiring per-session coding machines),
+     while awake, at their reserved size.
+   - Run boxes: every run, review runs included, from its runner's acceptance
+     to the end of that attempt, at the standard size, whether it runs in a
+     slot of a shared execution host or in a machine of its own. A run costs
+     the same wherever it is placed. A retry is a new attempt; the wait
+     between attempts counts nothing. A coding turn's model run is a run like
+     any other; the turn's commands count through the coding machine.
+   - Nothing else: sign-in machines (they serve one member's model login),
+     shared execution hosts themselves, build machines, warm spares and every
+     other platform machine count nothing.
+3. **Measured from central records.** Machine time MUST come from records the
+   database keeps by its own clock: the machine allocation ledger, an
+   append-only power log written at every wake, sleep and release, and the
+   start and end of each run's runner assignment. No node keeps billing state,
+   billing keys or billing journals, and what a machine costs never depends on
+   the node it runs on.
+   - The node inventory observations are a check on the power log. A report
+     that shows a machine stopped, failed or gone pauses its charge, and so
+     does a node that publishes no report for five minutes. A later report
+     that shows the machine running resumes the charge. A report never starts
+     a charge for a machine the power log shows asleep or released.
+   - Time is counted to the second, with no minimum per start. Each company's
+     running total of standard seconds is rounded up to whole seconds once, so
+     counting more often never adds to a bill.
+   - The operator query of computer history estimates running hours from
+     observations; billing uses only this meter.
+4. **Who pays, in order.** Each second of machine time is paid from the first
+   source that has hours left:
+   1. the company's five free computer hours, once per company and first for
+      every company, whether or not a founder already pays;
+   2. its founders' plans, shared evenly between the founders who still have
+      hours in their current plan period. A plan's hours serve every company
+      in which its holder is a founder, and they end with the plan period;
+   3. the company's purchased credits, oldest first, each lasting twelve
+      months from its purchase.
+
+   The billing records say which source paid for each second. A founder who
+   leaves, steps down or is removed stops paying for the company at that
+   moment; what their plan already paid stays paid.
+
+   Complimentary companies carry over the operator's existing internal
+   accounts and are not a new founder decision: while any founder of a
+   company has the internal account entitlement (`qorpera_account_entitlements`,
+   plan `internal`), its machine time is measured and recorded as paid by a
+   complimentary source naming the first such founder in the founder list,
+   instead of the order above; its free hours stay unused. It is never
+   charged and never waits for hours.
+5. **Members who are not founders are never billed.** Admins, contributors
+   and viewers are never billed personally for machine time: neither their
+   plan nor their card pays for a company's machines. Their work uses the
+   company's hours like anyone else's. They see how many hours the company has
+   left, not who paid.
+6. **No payment to found a company.** Founding a company, up to and including
+   the start of its first work, never asks for a payment or a card.
+7. **At zero.** A company's hours left are what its sources hold minus what
+   it owes. While it has none:
+   - No machine of the company starts or wakes (a run created before the
+     company ran out gets or keeps its run box), no run of the company is
+     created, and agents' requests for machines wait. A new coding turn,
+     whether a run or the session's owner starts it, waits like other new
+     work, with the same stated reason. The work waits before a
+     run is created, with a stated reason that its agents and members see,
+     and starts by itself, in the order it arrived, once the company has hours
+     left again. Waiting for hours never fails work by age: 7.4's one-day
+     failure of a queued run does not apply to it. A run created before the
+     company ran out is running work.
+   - Work already running may finish for at most one hour. Then its runs end
+     as failed with the stated reason "out of computer hours", shown in their
+     conversations and never retried by themselves, and its machines are
+     stopped with their disks kept, always-on machines included. A coding turn
+     cut off then ends failed with the same reason, and its machine's running
+     commands end as when it sleeps. A worker whose run is ended reports "out
+     of computer hours" to its parent. Nothing else changes: no routine is
+     paused and no worker is cancelled; their next work waits for hours like
+     any other.
+   - Time used while the company has no hours is owed. Owed time is paid in
+     the order of item 4 from the next hours that arrive (free hours, then
+     founders' plans evenly, then credits). Owed time of a deleted company is
+     written off.
+   - Besides the room on the nodes, waiting for hours is the only limit on
+     machine time. There is still no cap on a run's length or tools (7.4)
+     while the company has hours.
+8. **Payments.** Founder plans are monthly subscriptions, and company credits
+   are one-off purchases made by a founder. Both are paid on the payment
+   provider's own checkout page; Qorpera never receives or stores card data.
+   - A new plan and new credits add hours only once paid. Returning from the
+     checkout page adds nothing.
+   - A plan's renewal is the one exception: its hours for the new period
+     arrive when the period starts, before its invoice is paid. If that
+     payment finally fails, the period's unused hours are withdrawn and its
+     used hours are forgiven; nobody else pays for them.
+   - An upgrade adds the new plan's extra hours for the rest of the period,
+     in proportion to the time left, once the upgrade's charge is paid. A
+     downgrade applies from the next period.
+   - A refund removes the unused hours of its purchase. A dispute freezes only
+     that purchase, never the company.
+   - Prices exclude VAT. The catalog (plans, hours, credit price and packs)
+     is data, not contract. At ratification: Basis 185 kr a month with 74
+     hours, Standard 630 kr with 286 hours, credits 3.50 kr an hour in packs
+     of 20, 100 and 500 hours. The Dedicated plan is not sold until always-on
+     machines are priced.
+9. **Records.** Plan, usage and billing records are Qorpera's own records.
+   They live in the database (5.6), never in the company folder, and agents
+   cannot write them. They carry no cascading link to the company or to a
+   member's account, and they are kept for bookkeeping after a company or an
+   account is deleted.
+10. **Email.** The payment provider sends receipts and invoices to the member
+    who paid. Qorpera sends hour notices only to founders. "Hours running
+    low" and "out of hours" go to the founders whose plans pay, the founders
+    who bought the credits in use, or every founder while the company uses
+    its free hours; "out of hours" also goes to every founder. A monthly
+    summary goes to each founder whose plan was used, listing each company's
+    use. Admins, contributors and viewers get no billing email.
+11. **What this replaces.**
+    - 7.4: "a company starts as many computers as the nodes have room for" and
+      "machines an agent starts are bounded only by the room on the nodes"
+      read with item 7: they also wait while the company has no hours. The
+      one-day failure of a queued run does not apply to work waiting for
+      hours, and a run may also end "out of computer hours" (item 7). "The
+      machines an agent starts are not counted" there means they are not
+      limited in number; they do count for computer hours (item 2).
+    - Section 12, its note on additional machines, and "compute for agents"
+      items 1 and 4: a machine that could start or wake also waits while the
+      company has no hours; at zero an always-on machine is stopped after the
+      hour like any other.
+    - Section 19, "Minimum operational observability": "count running
+      computer-hours once per computer" reads "once per machine", measured as
+      in item 1 (changed in place).
+    - Section 20: the row "Computer hours come from central records" (added).
+    - Section 21: its opening paragraph now names items 1–31 and item 32
+      (changed in place); in item 27, "computer-hours" is machine time and
+      "computer" the machine (changed in place); item 31 is added, and the
+      deferred Azure gate becomes item 32.
+    - Section 22: billing of machine time is defined here. Operating the
+      payment provider account and tax registration remain launch
+      responsibilities (changed in place).
+    - Draft PR #326's per-member allowance pools, host keys, host journals and
+      payment gate on founding are not part of this contract.
+12. **Order.** Measure first, charge later, each step shippable alone: the
+    measured hours shown to members; the billing records with their sources
+    and order as a dry run; payments in the provider's test mode; hour
+    notices and the zero rule of item 7, both built switched off. Live
+    payments, hour notices and the zero rule are switched on together. Free
+    hours, owed time and every draw count from that moment; dry-run draws
+    before it are discarded, and members see only measured hours until then.
+    Acceptance is section 21 item 31.
+
 ## 20. Enforcement matrix
 
 > **Note, 2026-09-27.** Rows naming responsibility objects, ceilings, a schema
@@ -3646,6 +3866,7 @@ hosts, login machines, the proposal-review guest or one-run runner machines.
 | Basic diagnostics stay attributable | Runtime boundaries, canonical records, node monitoring and operator queries | Investigate recorded outcomes; do not invent missing measurements. |
 | Capacity and enabled overflow reflect allocations | Scheduler inventory, reservations, provider state and placement records; Azure extension is post-build | Do not treat idle allocated resources as free or equate computers with users. |
 | Usage preserves lifecycle meaning | Computer/screen lifecycle owners and basic usage accounting | Distinguish running, suspended, allocated and actively used resources. |
+| Computer hours come from central records | Machine allocation ledger, power log, run records, hour meter, billing records and the payment webhook; no node state | Machines cost the company hours: use one when the work needs it and let it sleep when done. |
 
 ## 21. Launch acceptance
 
@@ -3655,8 +3876,8 @@ hosts, login machines, the proposal-review guest or one-run runner machines.
 > vision the Co-Founder writes.
 
 The runtime launch gate passes only when a deployed environment proves the
-mandatory items 1–30 without manual database repair or a hidden desktop
-executor. Item 31 is a separate post-build enablement gate and is not required
+mandatory items 1–31 without manual database repair or a hidden desktop
+executor. Item 32 is a separate post-build enablement gate and is not required
 while Azure backup/overflow remains disabled.
 
 1. One always-on cloud Company File remains readable and mutable through its
@@ -3741,7 +3962,8 @@ while Azure backup/overflow remains disabled.
     Missing diagnostics and stale node observations are visible.
 27. Computer/screen lifecycle records distinguish viewer closure, computer
     shutdown and resource release; basic computer-hours do not multiply when
-    several agents or users share the computer. Missing intervals remain unknown.
+    several agents or users share the machine (2026-09-28 amendment "computer
+    hours"). Missing intervals remain unknown.
 28. The operational view shows local allocations, pending starts, unavailable
     resources, waiting demand and remaining admissible whole-computer capacity.
     Concurrent starts cannot consume the same slot, and a stopped or failed
@@ -3757,7 +3979,18 @@ while Azure backup/overflow remains disabled.
     stop operation pauses the company, and the founder is notified from the
     control plane. (Amended 2026-09-24, see 7.4: only the operator stop
     remains; since bundle v92 there is no machine limit either.)
-31. **Deferred post-build enablement gate, not a launch prerequisite:** before
+31. Computer hours (2026-09-28 amendment "computer hours"), proven on a
+    company with no founder on an internal account: a company's machine time
+    is counted once per machine at its size and matches the central records,
+    and a machine that stops, sleeps or crashes stops counting. A new company
+    starts without a payment and uses its five free hours first. Founders'
+    plans pay before the company's credits, shared evenly between the founders
+    with hours left, and the plan or card of a member who is not a founder is
+    never used. A new plan or new credits add hours only once paid. At zero no
+    machine starts or wakes and new work waits with its reason; running work
+    ends within one hour, and waiting work starts by itself once the company
+    has hours left again.
+32. **Deferred post-build enablement gate, not a launch prerequisite:** before
     Azure backup/overflow is enabled, demand beyond local capacity is attributable
     to Azure placements and rented allocation intervals. The view distinguishes
     computers, companies, associated users and observed active users, retains
@@ -3777,8 +4010,10 @@ company and durable cloud coworkers that work over it with a real mouth, real wa
 path authority, real tools, a shared office, governed memory, routines, and
 workers.
 
-Product quality, provider policy, operational reliability, billing, support,
-and security-response readiness remain separate launch responsibilities. This
+Product quality, provider policy, operational reliability, operating the
+payment provider account, tax registration, support, and security-response
+readiness remain separate launch responsibilities. Billing of machine time is
+defined by the 2026-09-28 amendment "computer hours" (section 19). This
 contract defines the agent-runtime bar; it does not waive those gates.
 
 ## 23. Failure model

@@ -136,8 +136,33 @@ function fixture(options: {
 			};
 			return options.change ? options.change(answer) : answer;
 		}),
+		listModelLoginsWithoutAccount: vi.fn(async () => ({
+			schema: "qorpera.model-login-accounts/v1",
+			logins: [
+				{
+					loginId,
+					companyId,
+					computeIdentityId: run.computeIdentityId,
+					version: 3,
+					keyId,
+					encryptedEnvelopeBase64: Buffer.from(envelope).toString("base64"),
+					envelopeSha256: createHash("sha256").update(envelope).digest("hex"),
+				},
+			],
+		})),
+		recordModelLoginAccount: vi.fn(async (account: { loginId: string }) => ({
+			schema: "qorpera.model-login-account/v1",
+			loginId: account.loginId,
+			recorded: true,
+		})),
+		switchOffReplacedNodeLogins: vi.fn(async () => ({
+			schema: "qorpera.model-login-switch-off/v1",
+			switchedOff: 1,
+			waiting: 2,
+			refused: 0,
+		})),
 	};
-	return { authority, keyring, wrappingKey, run, loginId, companyId, identity, renewalToken };
+	return { authority, keyring, wrappingKey, run, loginId, companyId, identity, renewalToken, envelope };
 }
 
 function tokens(text: string): Record<string, string> {
@@ -517,6 +542,61 @@ it("gives an idle login's lock back when the renewal is refused, fails or the an
 		reason: "login_unreadable",
 	});
 	expect(renewer.renew).not.toHaveBeenCalled();
+});
+
+it("records a login's ChatGPT account from its current version, as nodes record it", async () => {
+	const stored = codexLogin({ ageSeconds: 60, lifeSeconds: 864_000, refresh: "rt", account: "account-7" });
+	const f = fixture({ stored });
+	const vault = new CloudModelLoginVault({ authority: f.authority, keyring: f.keyring });
+	await expect(vault.recordAccounts(new AbortController().signal)).resolves.toBe(1);
+	expect(f.authority.recordModelLoginAccount).toHaveBeenCalledWith(
+		{
+			loginId: f.loginId,
+			accountIdentity: createHash("sha256").update("openai-account:").update("account-7").digest("hex"),
+		},
+		expect.any(AbortSignal),
+	);
+
+	// A login sealed for another login cannot be opened: it is skipped, and nothing is recorded.
+	f.authority.listModelLoginsWithoutAccount.mockResolvedValueOnce({
+		schema: "qorpera.model-login-accounts/v1",
+		logins: [
+			{
+				loginId: randomUUID(),
+				companyId: f.companyId,
+				computeIdentityId: f.run.computeIdentityId,
+				version: 3,
+				keyId: "company-kek-1",
+				encryptedEnvelopeBase64: Buffer.from(f.envelope).toString("base64"),
+				envelopeSha256: createHash("sha256").update(f.envelope).digest("hex"),
+			},
+		],
+	});
+	f.authority.recordModelLoginAccount.mockClear();
+	await expect(vault.recordAccounts(new AbortController().signal)).resolves.toBe(0);
+	expect(f.authority.recordModelLoginAccount).not.toHaveBeenCalled();
+	f.authority.listModelLoginsWithoutAccount.mockResolvedValueOnce({ schema: "other", logins: [] });
+	await expect(vault.recordAccounts(new AbortController().signal)).rejects.toThrow("Model login accounts are invalid");
+});
+
+it("reads one switch-off pass and refuses an answer it does not know", async () => {
+	const f = fixture({ stored: codexLogin({ ageSeconds: 60, lifeSeconds: 864_000, refresh: "rt" }) });
+	const vault = new CloudModelLoginVault({ authority: f.authority, keyring: f.keyring });
+	await expect(vault.switchOffReplacedNodeLogins(new AbortController().signal)).resolves.toEqual({
+		switchedOff: 1,
+		waiting: 2,
+		refused: 0,
+	});
+	for (const answer of [
+		{ schema: "qorpera.model-login-switch-off/v1", switchedOff: -1, waiting: 0, refused: 0 },
+		{ schema: "qorpera.model-login-switch-off/v1", switchedOff: 0, waiting: 5, refused: 0 },
+		{ schema: "other", switchedOff: 0, waiting: 0, refused: 0 },
+	]) {
+		f.authority.switchOffReplacedNodeLogins.mockResolvedValueOnce(answer);
+		await expect(vault.switchOffReplacedNodeLogins(new AbortController().signal)).rejects.toThrow(
+			"Model login switch-off is invalid",
+		);
+	}
 });
 
 it("serves the route only with the runtime token, uncached, and the client reads it", async () => {
