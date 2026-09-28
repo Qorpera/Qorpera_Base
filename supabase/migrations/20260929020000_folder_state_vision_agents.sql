@@ -287,12 +287,59 @@ end $$;
 
 -- 7. The hook: targets --------------------------------------------------------------------------------------------
 
+-- The lock of the hook's targets (C1b-1), with one more table: the company row, first within its rank. A save
+-- that takes an agent's thread room FOR UPDATE ends in the thread trigger's session update, whose company
+-- operation takes qorpera_profiles FOR KEY SHARE. Posting (qorpera_lock_profile_gc_fence) takes the company row
+-- FOR UPDATE before the room, so the save takes it first too.
+create or replace function public.qorpera_folder_structured_lock(p_environment_id uuid, p_targets jsonb, p_from_rank smallint, p_to_rank smallint)
+returns void language plpgsql security definer set search_path = '' as $$
+declare v_target record; v_clause text; v_count bigint;
+begin
+	-- Rows merge by (table, key) and the strongest mode wins, so no row is locked twice or upgraded. Within a
+	-- rank, tables go in a fixed order (the company row first, rooms before room members), then rows in key order.
+	for v_target in
+		select min((t ->> 'rank')::smallint) as rank, t ->> 'tbl' as tbl, lower(t ->> 'key') as key,
+			max(array_position(array['keyshare','share','nokeyupdate','update'], t ->> 'mode')) as strength,
+			bool_or(coalesce((t ->> 'required')::boolean, false)) as required
+		from jsonb_array_elements(coalesce(p_targets, '[]'::jsonb)) t
+		group by 2, 3
+		having min((t ->> 'rank')::smallint) between p_from_rank and p_to_rank
+		order by 1, array_position(array['qorpera_profiles','qorpera_profile_staff','qorpera_company_rooms',
+			'qorpera_company_room_members','qorpera_cloud_routines'], t ->> 'tbl'), lower(t ->> 'key') collate "C"
+	loop
+		v_clause := public.qorpera_folder_lock_clause((array['keyshare','share','nokeyupdate','update'])[v_target.strength]);
+		if v_clause is null then raise exception 'Folder lock mode is unknown' using errcode = 'XX000'; end if;
+		if v_target.tbl = 'qorpera_profiles' then
+			-- key: the profile id.
+			execute 'select 1 from public.qorpera_profiles where id = $1' || v_clause using v_target.key::uuid;
+		elsif v_target.tbl = 'qorpera_profile_staff' then
+			-- key: 'profile_id:staff_agent_id'.
+			execute 'select 1 from public.qorpera_profile_staff where profile_id = $1 and staff_agent_id = $2' || v_clause
+			using split_part(v_target.key, ':', 1)::uuid, split_part(v_target.key, ':', 2)::uuid;
+		elsif v_target.tbl = 'qorpera_company_rooms' then
+			execute 'select 1 from public.qorpera_company_rooms where id = $1' || v_clause using v_target.key::uuid;
+		elsif v_target.tbl = 'qorpera_company_room_members' then
+			-- key: 'room_id:principal_kind:principal_id'.
+			execute 'select 1 from public.qorpera_company_room_members where room_id = $1 and principal_kind = $2 and principal_id = $3'
+				|| v_clause using split_part(v_target.key, ':', 1)::uuid, split_part(v_target.key, ':', 2), split_part(v_target.key, ':', 3)::uuid;
+		elsif v_target.tbl = 'qorpera_cloud_routines' then
+			execute 'select 1 from public.qorpera_cloud_routines where id = $1' || v_clause using v_target.key::uuid;
+		else
+			raise exception 'Folder lock target table % is unknown', v_target.tbl using errcode = 'XX000';
+		end if;
+		get diagnostics v_count = row_count;
+		if v_count = 0 and v_target.required then
+			raise exception 'A row this change set relies on is unavailable' using errcode = '42501'; end if;
+	end loop;
+end $$;
+
 -- Rank 2: the roster rows this change set rewrites (FOR NO KEY UPDATE): an agent.md's id, and the rows of agents
 -- under a folder that is deleted or moved (read from the index with no lock; the path locks that follow and the
 -- subtree's asOfSeq rule refuse a subtree that changed meanwhile). Rank 4: the agent's thread room, FOR UPDATE,
 -- when its name or status changes or it retires: the roster's thread trigger (qorpera_ensure_agent_thread_internal)
 -- takes that room FOR UPDATE, and a run of that room holds it FOR KEY SHARE at rank 4 before its paths, so the
--- trigger must not be the first to take it after the paths.
+-- trigger must not be the first to take it after the paths. With the room goes the company row, FOR KEY SHARE at
+-- rank 2 (see the lock above).
 create or replace function public.qorpera_folder_structured_targets(p_environment_id uuid, p_actor jsonb, p_units jsonb)
 returns table(rank smallint, tbl text, key text, mode text) language plpgsql stable set search_path = '' as $$
 declare v_profile uuid; v_unit jsonb; v_op text; v_key text; v_entry jsonb; v_staff record; v_room uuid;
@@ -314,6 +361,8 @@ begin
 					or v_staff.employment_status is distinct from v_entry -> 'parse' ->> 'status' or v_staff.folder_retired_at is not null) then
 					for v_room in select r.id from public.qorpera_company_rooms r
 						where r.profile_id = v_profile and r.bound_staff_agent_id = (v_entry -> 'parse' ->> 'id')::uuid loop
+						rank := 2; tbl := 'qorpera_profiles'; key := v_profile::text; mode := 'keyshare';
+						return next;
 						rank := 4; tbl := 'qorpera_company_rooms'; key := v_room::text; mode := 'update';
 						return next;
 					end loop;
@@ -332,6 +381,8 @@ begin
 					if v_op = 'delete' and v_staff.employment_status = 'active' then
 						for v_room in select r.id from public.qorpera_company_rooms r
 							where r.profile_id = v_profile and r.bound_staff_agent_id = v_staff.staff_agent_id loop
+							rank := 2; tbl := 'qorpera_profiles'; key := v_profile::text; mode := 'keyshare';
+							return next;
 							rank := 4; tbl := 'qorpera_company_rooms'; key := v_room::text; mode := 'update';
 							return next;
 						end loop;
@@ -388,12 +439,12 @@ end $$;
 
 -- The database rules for one agent.md (contract 5.6): the id never changes and belongs to one folder; only the
 -- seeded Co-Founder is kind co-founder, it stays so, and it is never archived. The creation commit (the platform,
--- before any Co-Founder is recorded) seeds it.
+-- before any Co-Founder is recorded) seeds it as a new agent; an agent already on the roster never becomes it.
 create function public.qorpera_company_state_agent_rules(p_environment_id uuid, p_profile_id uuid, p_actor jsonb,
 	p_path text, p_key text, p_parse jsonb)
 returns jsonb language plpgsql stable set search_path = '' as $$
 declare
-	v_id uuid := (p_parse ->> 'id')::uuid; v_cofounder uuid; v_base jsonb; v_other record;
+	v_id uuid := (p_parse ->> 'id')::uuid; v_cofounder uuid; v_base jsonb; v_other record; v_exists boolean;
 	v_problem text;
 begin
 	select staff_agent_id into v_cofounder from public.qorpera_company_cofounders where profile_id = p_profile_id;
@@ -402,18 +453,19 @@ begin
 	where e.environment_id = p_environment_id and e.key_sha256 = extensions.digest(p_key, 'sha256') and e.kind = 'file';
 	select s.folder_path, s.folder_retired_at, s.deleted_at into v_other from public.qorpera_profile_staff s
 	where s.profile_id = p_profile_id and s.staff_agent_id = v_id;
+	v_exists := found;
 	if v_base is not null and v_base ->> 'id' is distinct from p_parse ->> 'id' then
 		v_problem := 'id never changes; it is ' || (v_base ->> 'id');
-	elsif found and v_other.deleted_at is not null then
+	elsif v_exists and v_other.deleted_at is not null then
 		-- Removed outside its folder (the legacy roster delete); its row is frozen for good.
 		v_problem := 'this agent was removed outside the company folder; give this agent a new id';
-	elsif found and v_other.folder_path is null then
+	elsif v_exists and v_other.folder_path is null then
 		v_problem := 'this id belongs to an agent outside the company folder';
-	elsif found and v_other.folder_retired_at is null
+	elsif v_exists and v_other.folder_retired_at is null
 		and public.qorpera_folder_key(v_other.folder_path) <> p_key then
 		v_problem := 'this id belongs to the agent at ' || left(v_other.folder_path, 100) || '; give this agent a new id';
 	elsif p_parse ->> 'agentKind' = 'co-founder' and v_cofounder is distinct from v_id
-		and not (v_cofounder is null and p_actor ->> 'kind' = 'platform') then
+		and not (v_cofounder is null and p_actor ->> 'kind' = 'platform' and not v_exists) then
 		v_problem := 'only the Co-Founder has kind: co-founder';
 	elsif v_id = v_cofounder and p_parse ->> 'agentKind' <> 'co-founder' then
 		v_problem := 'the Co-Founder keeps kind: co-founder';

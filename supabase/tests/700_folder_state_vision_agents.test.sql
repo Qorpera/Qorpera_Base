@@ -322,7 +322,10 @@ begin
 		('agents/anna', true, 0), ('agents/Anna', true, 1), ('agents/anna/Routines', true, 1), ('agents/anna/todos/Old Stuff', true, 1),
 		('agents/groups/Launch', true, 1), ('agents/anna/Notes', true, 0), ('Sales', true, 0), ('agents/Anna/', true, 1),
 		('agents/anna/Agent.md', false, 1), ('Agents/anna/agent.md', false, 1), ('rules/.md', false, 1), ('AGENTS/anna/AGENT.MD', false, 1),
-		('vision/vision.md', false, 0), ('agents/groups/launch-team/group.md', false, 0)) v(path, folder, problems)
+		('vision/vision.md', false, 0), ('agents/groups/launch-team/group.md', false, 0),
+		-- The seeded agents/groups is spelled in lowercase; any other spelling is read as an agent's folder.
+		('agents/groups', true, 0), ('Agents/Groups', true, 1), ('agents/Groups', true, 1), ('AGENTS/GROUPS', true, 1),
+		('Agents/groups/launch', true, 1)) v(path, folder, problems)
 	loop
 		if jsonb_array_length(public.qorpera_company_state_path_problems(t.path, t.folder)) <> t.problems then
 			raise exception 'Path % (folder %) expected % problems, got %', t.path, t.folder, t.problems,
@@ -341,7 +344,8 @@ begin
 end $$;
 
 -- 8. Lock targets: the roster row at rank 2, and the agent's thread room at rank 4 (FOR UPDATE) when its name or
--- status changes or it retires, since the roster's thread trigger takes that room after the paths otherwise.
+-- status changes or it retires, since the roster's thread trigger takes that room after the paths otherwise. With the
+-- room goes the company row, FOR KEY SHARE at rank 2 (701 races it against posting).
 do $$
 declare nora constant uuid := '70000000-0000-4000-8000-0000000000a1'; env constant uuid := '70000000-0000-4000-8000-000000000020';
 	room uuid; t jsonb;
@@ -354,16 +358,21 @@ begin
 			pg_temp.version('agents/nora-back/agent.md')))) x;
 	if not t @> jsonb_build_array(jsonb_build_object('rank', 2, 'tbl', 'qorpera_profile_staff', 'mode', 'nokeyupdate',
 			'key', '70000000-0000-4000-8000-000000000010:' || nora))
-		or not t @> jsonb_build_array(jsonb_build_object('rank', 4, 'tbl', 'qorpera_company_rooms', 'key', room::text, 'mode', 'update')) then
-		raise exception 'A rename locks the roster row and the thread room: %', t; end if;
+		or not t @> jsonb_build_array(jsonb_build_object('rank', 4, 'tbl', 'qorpera_company_rooms', 'key', room::text, 'mode', 'update'))
+		or not t @> jsonb_build_array(jsonb_build_object('rank', 2, 'tbl', 'qorpera_profiles', 'mode', 'keyshare',
+			'key', '70000000-0000-4000-8000-000000000010')) then
+		raise exception 'A rename locks the company row, the roster row and the thread room: %', t; end if;
 	select jsonb_agg(to_jsonb(x)) into t from public.qorpera_folder_structured_targets(env, pg_temp.owner(), jsonb_build_array(
 		pg_temp.write('agents/nora-back/agent.md', 'agent', pg_temp.agent_text(nora, 'Nora Skov'), pg_temp.agent_parse(nora, 'Nora Skov'),
 			pg_temp.version('agents/nora-back/agent.md')))) x;
-	if t @> '[{"tbl":"qorpera_company_rooms"}]' then raise exception 'An edit that keeps name and status leaves the room: %', t; end if;
+	if t @> '[{"tbl":"qorpera_company_rooms"}]' or t @> '[{"tbl":"qorpera_profiles"}]' then
+		raise exception 'An edit that keeps name and status leaves the room and the company row: %', t; end if;
 	select jsonb_agg(to_jsonb(x)) into t from public.qorpera_folder_structured_targets(env, pg_temp.owner(), jsonb_build_array(
 		jsonb_build_object('op','delete','path','agents/nora-back','expectedVersion',pg_temp.version('agents/nora-back'),'asOfSeq',pg_temp.seq()))) x;
-	if not t @> jsonb_build_array(jsonb_build_object('rank', 4, 'tbl', 'qorpera_company_rooms', 'key', room::text, 'mode', 'update')) then
-		raise exception 'Retiring an active agent locks its thread room: %', t; end if;
+	if not t @> jsonb_build_array(jsonb_build_object('rank', 4, 'tbl', 'qorpera_company_rooms', 'key', room::text, 'mode', 'update'))
+		or not t @> jsonb_build_array(jsonb_build_object('rank', 2, 'tbl', 'qorpera_profiles', 'key', '70000000-0000-4000-8000-000000000010',
+			'mode', 'keyshare')) then
+		raise exception 'Retiring an active agent locks the company row and its thread room: %', t; end if;
 end $$;
 
 -- 9. A roster row removed outside its folder (the legacy roster delete) is refused, and never repointed.
@@ -398,7 +407,16 @@ begin
 		'path','agents/founder','expectedVersion',pg_temp.version('agents/founder'),'asOfSeq',pg_temp.seq()))), 1, 'refused', 'cofounder');
 end $$;
 
--- 11. Before any Co-Founder is recorded, the creation commit may seed one, never two, and one id belongs to one folder.
+create function pg_temp.env2_hire(p_handle text, p_id uuid, p_kind text) returns jsonb language sql as $$
+	select jsonb_build_object('op','new_folder','path','agents/' || p_handle,
+		'contents', jsonb_build_array(jsonb_build_object('path','agent.md','kind','file',
+			'file',pg_temp.stage(pg_temp.agent_text(p_id, 'Agent', p_kind), '70000000-0000-4000-8000-000000000011'))),
+		'structured', jsonb_build_array(pg_temp.entry('agents/' || p_handle || '/agent.md', 'agent',
+			pg_temp.agent_text(p_id, 'Agent', p_kind), pg_temp.agent_parse(p_id, 'Agent', p_kind))))
+$$;
+
+-- 11. Before any Co-Founder is recorded, the creation commit may seed one, never two, and never by making an agent on
+-- the roster one; and one id belongs to one folder.
 do $$
 declare r jsonb; a text; env2 constant uuid := '70000000-0000-4000-8000-000000000021';
 begin
@@ -420,6 +438,37 @@ begin
 			pg_temp.entry('agents/b/agent.md','agent',a,pg_temp.agent_parse('70000000-0000-4000-8000-0000000000b1','One','co-founder'))))));
 	if r -> 'units' -> 0 ->> 'reason' is distinct from 'structured_rule' then
 		raise exception 'Two agent.md files with one id in one unit are refused: %', r; end if;
+	-- Two co-founders with two ids in one unit.
+	r := public.qorpera_folder_commit(env2, '{"kind":"platform"}', 'twins-0002', jsonb_build_array(jsonb_build_object('op','new_folder',
+		'path','agents','contents',jsonb_build_array(
+			jsonb_build_object('path','a','kind','folder'), jsonb_build_object('path','b','kind','folder'),
+			jsonb_build_object('path','a/agent.md','kind','file','file',pg_temp.stage(a, '70000000-0000-4000-8000-000000000011')),
+			jsonb_build_object('path','b/agent.md','kind','file','file',pg_temp.stage(
+				pg_temp.agent_text('70000000-0000-4000-8000-0000000000b2', 'Two', 'co-founder'), '70000000-0000-4000-8000-000000000011'))),
+		'structured',jsonb_build_array(
+			pg_temp.entry('agents/a/agent.md','agent',a,pg_temp.agent_parse('70000000-0000-4000-8000-0000000000b1','One','co-founder')),
+			pg_temp.entry('agents/b/agent.md','agent',pg_temp.agent_text('70000000-0000-4000-8000-0000000000b2', 'Two', 'co-founder'),
+				pg_temp.agent_parse('70000000-0000-4000-8000-0000000000b2','Two','co-founder'))))));
+	if r -> 'units' -> 0 ->> 'reason' is distinct from 'structured_rule' then
+		raise exception 'Two co-founders in one unit are refused: %', r; end if;
+	-- One id in two units: the first saves, the second finds the id held by the first's folder.
+	r := public.qorpera_folder_commit(env2, pg_temp.owner(), 'twins-0003', jsonb_build_array(
+		jsonb_build_object('op','mkdir','path','agents'),
+		pg_temp.env2_hire('c', '70000000-0000-4000-8000-0000000000b3', 'agent'),
+		pg_temp.env2_hire('d', '70000000-0000-4000-8000-0000000000b3', 'agent')));
+	perform pg_temp.expect(r, 2, 'saved');
+	if r -> 'units' -> 2 ->> 'reason' is distinct from 'structured_rule' then
+		raise exception 'One id in two units: the second is refused: %', r; end if;
+	-- The platform, before any Co-Founder is recorded, cannot make the agent on the roster one.
+	a := pg_temp.agent_text('70000000-0000-4000-8000-0000000000b3', 'Agent', 'co-founder');
+	r := public.qorpera_folder_commit(env2, '{"kind":"platform"}', 'twins-0004', jsonb_build_array(jsonb_build_object('op','write',
+		'path','agents/c/agent.md','file',pg_temp.stage(a, '70000000-0000-4000-8000-000000000011'),
+		'expectedVersion',(select version from public.qorpera_folder_entries where environment_id = env2 and key_text = 'agents/c/agent.md'),
+		'structured',jsonb_build_array(pg_temp.entry('agents/c/agent.md','agent',a,
+			pg_temp.agent_parse('70000000-0000-4000-8000-0000000000b3','Agent','co-founder'))))));
+	if r -> 'units' -> 0 ->> 'reason' is distinct from 'structured_rule'
+		or exists (select 1 from public.qorpera_company_cofounders where profile_id = '70000000-0000-4000-8000-000000000011') then
+		raise exception 'An agent on the roster never becomes the Co-Founder: %', r; end if;
 end $$;
 
 rollback;

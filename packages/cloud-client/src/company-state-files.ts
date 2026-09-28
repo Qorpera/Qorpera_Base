@@ -1706,8 +1706,20 @@ function seedVision(options: CompanyStateSeedOptions): string {
 }
 
 /** The folders and files a new company starts with, parents before children. The creation commit writes them in
- * one change set, as the platform. */
+ * one change set, as the platform. Throws when a file would not parse, e.g. a founders' vision past the size limit,
+ * so the caller never sends a creation commit the database refuses. */
 export function companyStateSeedTree(options: CompanyStateSeedOptions): CompanyStateSeedEntry[] {
+	const tree = seedEntries(options);
+	for (const entry of tree) {
+		if (entry.kind !== "file") continue;
+		const parsed = parseCompanyStateFile(entry.path, entry.text ?? "");
+		if (parsed && !parsed.ok)
+			throw new RangeError(`The seeded ${entry.path} would be refused: ${parsed.problems[0]?.message ?? "invalid"}`);
+	}
+	return tree;
+}
+
+function seedEntries(options: CompanyStateSeedOptions): CompanyStateSeedEntry[] {
 	const cofounder = `agents/${COMPANY_STATE_COFOUNDER_HANDLE}`;
 	return [
 		{ path: "vision", kind: "folder" },

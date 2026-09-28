@@ -174,6 +174,10 @@ describe("companyStatePath", () => {
 		expect(codes("agents/anna/Routines", true)).toEqual(["name"]);
 		expect(codes("agents/anna/todos/Old Stuff", true)).toEqual(["name"]);
 		expect(codes("agents/groups/Launch", true)).toEqual(["name"]);
+		// The seeded agents/groups is spelled in lowercase; any other spelling is read as an agent's folder.
+		expect(codes("agents/groups", true)).toEqual([]);
+		for (const spelled of ["Agents/Groups", "agents/Groups", "AGENTS/GROUPS", "Agents/groups/launch"])
+			expect(codes(spelled, true)).toEqual(["name"]);
 		expect(codes("agents/anna/Notes", true)).toEqual([]);
 		expect(codes("Sales", true)).toEqual([]);
 		expect(codes("agents/Anna/", true)).toEqual(["name"]);
@@ -1065,5 +1069,11 @@ describe("companyStateSeedTree", () => {
 		expect(ok(todo?.path ?? "", todo?.text ?? "")).toMatchObject({ id: ID, status: "open", requestedBy: JONAS });
 		const paths = tree.map((entry) => entry.path);
 		expect(paths.indexOf("agents/co-founder/todos")).toBeLessThan(paths.indexOf(todo?.path ?? ""));
+	});
+
+	it("throws rather than seed a file the database would refuse", () => {
+		expect(() =>
+			companyStateSeedTree({ companyName: "Nordlys Studio", cofounderId: ANNA, vision: "x".repeat(70000) }),
+		).toThrow(/vision\/vision\.md would be refused/);
 	});
 });
