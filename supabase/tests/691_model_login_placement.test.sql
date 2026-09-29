@@ -30,7 +30,7 @@ end $$;
 -- claim asks it last, only for a run whose home is elsewhere).
 do $$
 declare v_claim text := pg_get_functiondef('public.qorpera_claim_runner_job_for_orchestrator(uuid,uuid,integer)'::regprocedure);
-	-- Since 20260929240000 the chooser's body takes a fifth argument (a node to rank last); the four-argument
+	-- Since 20260928249240 the chooser's body takes a fifth argument (a node to rank last); the four-argument
 	-- form only passes none.
 	v_decide text := pg_get_functiondef('public.qorpera_runtime_node_placement_decide(uuid,text,text,uuid,uuid)'::regprocedure);
 	v_decide_four text := pg_get_functiondef('public.qorpera_runtime_node_placement_decide(uuid,text,text,uuid)'::regprocedure);

@@ -1,7 +1,7 @@
 # Company state files
 
 Status: the shared parser is built (F2-0, #421). The vision and agents are indexed in the database
-(F2-1, migration 20260929020000), for `folder-v2` companies only, so nothing reads or writes these
+(F2-1, migration 20260928249020), for `folder-v2` companies only, so nothing reads or writes these
 files in production yet. This is workstream F2 of the Rebuild Map: company state moves out of database
 rows into the company folder of contract 5.6. It defines the fixed format of each structured
 file, the database index each one feeds, how a refused file is reported, and what the runtime
@@ -419,8 +419,21 @@ decision that also changes the title or the instructions is reviewed as delegati
 - `done` is refused while a worker is active.
 - A closed todo is not opened again; write a new file instead.
 - `cancelled` stops the todo's active workers (follow-up queue).
-- Moving a todo with an active worker is refused.
-- `requested_by` is checked only when the save changes it.
+- Moving or deleting a todo with an active worker is refused, and so is moving or deleting a
+  folder that carries one (an agent's rename or retirement included).
+- `requested_by` is checked (a member) only when the save changes it.
+
+**Also:** the todo belongs to the agent whose folder holds it (its indexed `agent.md`, or the
+`agent.md` the same unit writes, as a hire with its first todo); a move lands only in an agent's
+`todos/`. The id never changes and belongs to one file; a file saved before this slice is the
+saved version only once the index points at its path, and a restore is compared with the todo's
+last file. The key is the file name.
+
+**Index:** a folder row has no run ids (the commit records the actor) and may have no requester.
+Deleting the file cancels an open or blocked todo, retires the row and gives its key a tombstone
+with a `.` (no file name has one) and the whole id, so a new file of that name is free and two
+tombstones never meet; a restore brings it back.
+A todo save takes the company row at rank 2 (the row's foreign key).
 
 Not reviewed. Dispatching a worker is reviewed.
 
@@ -525,7 +538,7 @@ of the body, for readers that should not reach the storage server.
 | connection | new `qorpera_folder_connection_index`, one row per account keyed by the vault row's id (its own table, so a connection save never writes or locks a vault row) | path, path version, purpose copy | the vault row, secret versions, grants, audit |
 | rule | `qorpera_review_rules` (company scope, folder columns as the roster's, `created_via` `folder`) | outcome, `when_text` copy | personal rules, review records |
 | routine | `qorpera_cloud_routines`, `_versions` | owner from the folder, title, trigger, timezone, ends, runs, quiet with its zone, effort, reply, status, conclusion, intent copy | schedule cursors, occurrences, retries, sponsor, `pause_reason`, `authorization_failures`, `origin` (who created it, from the first commit) |
-| todo | `qorpera_runtime_agent_todos` | owner from the folder, title, status, requester, detail copy | — |
+| todo | `qorpera_runtime_agent_todos` (folder columns as the roster's; run ids and requester optional for folder rows) | owner from the folder, key from the name, title, status, requester, detail copy | revision, publication columns (moot for folder rows) |
 | worker-brief/results | `qorpera_runtime_workers` | dispatch and result copies | handles, leases, revival, completion |
 
 - **Moves** repoint index rows without re-parsing. An agent rename carries its routines and
@@ -682,7 +695,7 @@ claims by kind then key (F2). All nine come before paths, objects, admission and
 ## 8. Build order
 
 1. **F2-0** (this): this document and the shared parser, with tests. No SQL; inert.
-2. **F2-1** vision and agents, in the database (migration 20260929020000):
+2. **F2-1** vision and agents, in the database (migration 20260928249020):
    - the pattern table, the path checks, the stored parse, the company index, and the staff
      index for `folder-v2`;
    - the seeded-path, Co-Founder, lone-file, kind-change and copy refusals, and the review
@@ -692,19 +705,20 @@ claims by kind then key (F2). All nine come before paths, objects, admission and
 
    **F2-1b** follows: the follow-ups on C2's queue, the context composer reading the vision and
    `agent.md`, and the agent-folder helper for memory and skills.
-3. **F2-2** group chats and sections (migration 20260929100000; for new companies it replaces
+3. **F2-2** group chats and sections (migration 20260928249100; for new companies it replaces
    #370's writes and `organize_sidebar`):
    - the rooms table's folder columns, and the parse shape and database rules of both kinds;
    - `group.md` to rooms, room members and the conversation; `sections.md` to the sidebar's
      sections and placements;
    - the member RPC's section actions refused for `folder-v2`.
-4. **F2-3** connections (migration 20260929140000): the parse's shape, the rules and the index
+4. **F2-3** connections (migration 20260928249140): the parse's shape, the rules and the index
    table. The vault's writer is core C3's; the vault's SQL cannot create file bytes, so it stages
    the text through the object gateway first, or C2's queue writes the file after the vault
    commits.
-5. **F2-4** rules (migration 20260929190000): the reviewer reads the rule index, its own table;
+5. **F2-4** rules (migration 20260928249190): the reviewer reads the rule index, its own table;
    the Settings RPCs refuse company rules for folder-v2.
-6. **F2-5** todos and worker files.
+6. **F2-5** todos and worker files: **F2-5a** todos (migration 20260929210000); **F2-5b** worker
+   briefs and results, with core C3's writers, which dispatch and report through the platform.
 7. **F2-6** routines, last because the scheduler, schedule positions and decisions are the
    most delicate part.
 

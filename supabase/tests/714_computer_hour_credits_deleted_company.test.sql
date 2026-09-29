@@ -29,7 +29,7 @@ select pg_temp.wake_assert(not exists (select 1 from public.qorpera_computer_hou
 select pg_temp.wake_assert((pg_temp.bill('credits_paid', '{"sessionId":"cs_test_before","paymentIntentId":"pi_before",
 	"paidAt":"2026-09-28T12:00:00Z"}') ->> 'added')::boolean, 'Paid before the deletion: credited');
 
--- Being deleted: company delete (20260929150000) records the request in qorpera_company_deletions and
+-- Being deleted: company delete (20260928249150) records the request in qorpera_company_deletions and
 -- answers qorpera_company_deleting. Where that table is not in the database yet, a stand-in function
 -- for this test (rolled back) answers for the leaving company. With the table present the guard must
 -- use company delete's own function, so a rename there fails this test.

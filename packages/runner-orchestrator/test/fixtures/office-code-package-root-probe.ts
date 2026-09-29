@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { generateKeyPairSync, randomUUID, sign } from "node:crypto";
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { chmod, chown, link, lstat, mkdir, open, readFile, rename, symlink, unlink, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import {
@@ -43,6 +43,20 @@ async function put(path: string, bytes: Buffer, mode: number) {
 	await chmod(path, mode);
 }
 for (const [path, file] of f.originFiles) await put(path, file.bytes, file.mode);
+// The image's tmpfiles fragment (qorpera-office-preparation.conf) creates this
+// directory root-only and empty on every boot, so a recreated root carries it.
+const credentials = "/etc/qorpera-office/credentials";
+await mkdir(credentials, { mode: 0o700 });
+await chmod(credentials, 0o700);
+/** No predecessor credential was restored: still the image's private empty directory. */
+const assertNoOldCredentials = () => {
+	const s = lstatSync(credentials);
+	assert.ok(
+		s.isDirectory() && s.uid === 0 && s.gid === 0 && (s.mode & 0o7777) === 0o700,
+		"credential directory changed",
+	);
+	assert.deepEqual(readdirSync(credentials), [], "historical credentials restored");
+};
 await mkdir(f.historyDirectory, { recursive: true, mode: 0o700 });
 for (const [path, bytes] of f.archiveFiles) await put(path, bytes, 0o600);
 for (const path of [dirname(f.receipt.layout.workbenchRoot), ...Object.values(f.receipt.layout)]) {
@@ -333,7 +347,10 @@ if (scenario !== "compatible-noop")
 	for (const name of COMPANY_COMPUTER_CODE_PACKAGE_RESET_ARTIFACTS)
 		await assert.rejects(lstat(`/opt/qorpera-office/${name}`), { code: "ENOENT" });
 const timings: Array<{ purpose: string; mode: string; elapsedMs: number; status: number | null }> = [];
+/** QORPERA_CODE_PACKAGE_DIAGNOSTIC tools append stacks here: their stdio is ignored. */
+const diagnosticLog = "/tmp/qorpera-code-package-diagnostic.log";
 const run = (args: string[], purpose = "bootstrap") => {
+	rmSync(diagnosticLog, { force: true });
 	const started = performance.now();
 	const result = spawnSync(
 		"/usr/bin/node",
@@ -349,14 +366,35 @@ const run = (args: string[], purpose = "bootstrap") => {
 		{ cwd: "/", env: {}, encoding: "utf8", timeout: 30000 },
 	);
 	timings.push({ purpose, mode: args[0], elapsedMs: Math.round(performance.now() - started), status: result.status });
+	// LXD records this exec's output on the host: nothing on success, one fixed
+	// line on refusal. A run killed by a signal (status null, e.g. the 30 s
+	// timeout) may be silent; callers count it as a refusal, as before.
+	const detail = `${purpose}:${args[0]} status=${result.status} signal=${result.signal} ${result.error?.message ?? ""} ${JSON.stringify(timings)}`;
+	assert.equal(result.stdout, "", detail);
+	assert.ok(
+		(result.status === 0
+			? [""]
+			: result.status === null
+				? ["", "OFFICE_CODE_PACKAGE_LOADER_UNCONFIRMED\n"]
+				: ["OFFICE_CODE_PACKAGE_LOADER_UNCONFIRMED\n"]
+		).includes(result.stderr),
+		`${detail} stderr=${JSON.stringify(result.stderr)}`,
+	);
 	return result;
 };
+/** The locked tool's stdio is ignored; its result is the file it published. */
+const resultPath = (args: string[], purpose: string) =>
+	purpose === "measure"
+		? `${stage}/${args[0]}-${args[3]}.json`
+		: args[0] === "preflight"
+			? `${stage}/preflight-${args[3]}.json`
+			: `/etc/qorpera-office/code-packages/${plan.provisionId}/installed.json`;
 const checked = (args: string[], purpose = "bootstrap") => {
 	const r = run(args, purpose);
 	if (r.status !== 0 && purpose === "bootstrap" && args[0] === "install") {
 		assert.equal(readFileSync(note, "utf8"), "edited before package provisioning");
 		assert.equal(statSync(note).ino, noteBefore.ino);
-		assert.equal(existsSync("/etc/qorpera-office/credentials"), false);
+		assertNoOldCredentials();
 		console.log(
 			JSON.stringify({
 				scenario,
@@ -373,13 +411,16 @@ const checked = (args: string[], purpose = "bootstrap") => {
 			}),
 		);
 	}
-	assert.equal(r.status, 0, `${purpose}:${args[0]} ${r.stderr} ${JSON.stringify(timings)}`);
-	return JSON.parse(r.stdout.trim());
+	const diagnostic = existsSync(diagnosticLog) ? readFileSync(diagnosticLog, "utf8") : "";
+	assert.equal(r.status, 0, `${purpose}:${args[0]} ${diagnostic} ${JSON.stringify(timings)}`);
+	return JSON.parse(readFileSync(resultPath(args, purpose), "utf8"));
 };
 const preflightId = randomUUID();
 if (scenario === "bad-stage")
 	await writeFile(`${stage}/artifacts/${COMPANY_COMPUTER_CODE_PACKAGE_ARTIFACTS[0]}`, "tampered");
-if (scenario === "old-credentials") await mkdir("/etc/qorpera-office/credentials", { mode: 0o700 });
+if (scenario === "old-credentials")
+	await put(`${credentials}/config.json`, Buffer.from("predecessor configuration"), 0o400);
+if (scenario === "open-credentials") await chmod(credentials, 0o755);
 if (scenario === "bad-target-owner")
 	await chown("/opt/qorpera-office/qorpera-company-computer-service.mjs", 1000, 1000);
 const servicePath = "/opt/qorpera-office/qorpera-company-computer-service.mjs";
@@ -397,6 +438,7 @@ if (
 	[
 		"bad-stage",
 		"old-credentials",
+		"open-credentials",
 		"bad-target-owner",
 		"changed-nas",
 		"changed-history",
@@ -425,12 +467,18 @@ if (
 } else {
 	const probe = checked(["preflight", hash(packet), hash(trustBytes), preflightId]);
 	if (
-		["partial-claim", "mutated-after-preflight", "noncode-after-preflight", "external-after-preflight"].includes(
-			scenario,
-		)
+		[
+			"partial-claim",
+			"mutated-after-preflight",
+			"noncode-after-preflight",
+			"external-after-preflight",
+			"credentials-after-preflight",
+		].includes(scenario)
 	) {
 		if (scenario === "partial-claim")
 			await put(`/etc/qorpera-office/code-packages/${plan.provisionId}/claim.json`, Buffer.from("partial"), 0o400);
+		else if (scenario === "credentials-after-preflight")
+			await put(`${credentials}/config.json`, Buffer.from("predecessor configuration"), 0o400);
 		else if (scenario === "mutated-after-preflight")
 			await writeFile(`${stage}/artifacts/${COMPANY_COMPUTER_CODE_PACKAGE_ARTIFACTS[0]}`, "mutated");
 		else if (scenario === "external-after-preflight")
@@ -448,6 +496,11 @@ if (
 		await assert.rejects(lstat(`/etc/qorpera-office/code-packages/${plan.provisionId}/installed.json`), {
 			code: "ENOENT",
 		});
+		// Refused before the claim, so no code file was replaced.
+		if (scenario === "credentials-after-preflight")
+			await assert.rejects(lstat(`/etc/qorpera-office/code-packages/${plan.provisionId}/claim.json`), {
+				code: "ENOENT",
+			});
 		console.log(JSON.stringify({ scenario, actualRootRefusal: true, noInstalledReceipt: true }));
 	} else if (scenario === "wrong-nonce" || scenario === "expired-probe") {
 		assert.notEqual(
@@ -584,7 +637,7 @@ if (
 		}
 		assert.equal(await readFile(note, "utf8"), "edited before package provisioning");
 		assert.equal((await lstat(note)).ino, noteBefore.ino);
-		await assert.rejects(lstat("/etc/qorpera-office/credentials"), { code: "ENOENT" });
+		assertNoOldCredentials();
 		console.log(
 			JSON.stringify({
 				scenario,

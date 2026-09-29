@@ -1,5 +1,5 @@
 /* Computer hour notices (build step 5; contract section 19, 2026-09-28 amendment "computer hours",
- * item 10). The database queues them (migration 20260929160000_runtime_computer_hour_notices) and
+ * item 10). The database queues them (migration 20260928249160_runtime_computer_hour_notices) and
  * the computer-hour-notices Edge Function sends each one through Resend, like invitations
  * (supabase/INVITATION-EMAIL.md). Only founders receive them. */
 

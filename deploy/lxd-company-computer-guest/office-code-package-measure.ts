@@ -6,12 +6,7 @@ import {
 	parseCompanyComputerServiceSoftwareInvocationChallenge,
 } from "../../packages/contracts/src/index.ts";
 import { verifyLxdOfficeCodePackageProvisionReceipt } from "../../packages/runner-orchestrator/src/lxd-office-code-package-provision-verification.ts";
-import {
-	officeCanonical,
-	officeDigest,
-	officeRecord,
-	officeSha,
-} from "../../packages/runner-orchestrator/src/lxd-office-image-provenance.ts";
+import { officeDigest, officeRecord, officeSha } from "../../packages/runner-orchestrator/src/lxd-office-image-provenance.ts";
 import { assertCompanyComputerPreparationLockAndBoot } from "../../packages/runtime/src/cloud-company-computer-preparation-control.ts";
 import { measureCompanyComputerServiceSoftware } from "../../packages/runtime/src/cloud-company-computer-service-software-measurement.ts";
 import {
@@ -72,7 +67,6 @@ export async function runOfficeCodePackageTool(purpose: string, id: string, args
 			monotonicNs: String(process.hrtime.bigint()),
 		};
 		await claimPackageFile(probePath, packageEncode(probe));
-		process.stdout.write(`${officeCanonical(probe)}\n`);
 		return probe;
 	}
 	const probe = parseOfficeCodePackageProbe(packageDecode((await readPackageFile(probePath, 4096, 0o400)).bytes));
@@ -274,7 +268,6 @@ export async function runOfficeCodePackageTool(purpose: string, id: string, args
 		const result = { ...output, evidenceSha256: officeDigest(output) };
 		await claimPackageFile(outputPath, packageEncode(result));
 		assertDeadline();
-		process.stdout.write(`${officeCanonical(result)}\n`);
 		return result;
 	} finally {
 		await fresh?.close();

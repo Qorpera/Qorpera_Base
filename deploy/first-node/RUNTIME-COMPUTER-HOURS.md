@@ -380,7 +380,7 @@ Live keys come later, with the live switch (build step 7).
 - Admins, contributors and viewers get no billing email. In-app notices that mirror the emails
   come with a later web step.
 
-Migration `20260929160000_runtime_computer_hour_notices` and the Edge Function
+Migration `20260928249160_runtime_computer_hour_notices` and the Edge Function
 `supabase/functions/computer-hour-notices` (logic in `supabase/functions/_shared/computer-hour-notices.ts`):
 
 - `qorpera_computer_hour_notices` is the outbox: one row per recipient and occasion (kind, founder,
@@ -466,7 +466,7 @@ Coordinator (nothing secret):
 
 ## Zero (build step 6; built switched off)
 
-- The check is `qorpera_company_at_zero(p_profile_id, at)` (migration `20260929200000`). It is true
+- The check is `qorpera_company_at_zero(p_profile_id, at)` (migration `20260928249200`). It is true
   only when the rule is switched on (`qorpera_computer_hour_billing.zero_rule_since`, null until the
   live switch), payments are live (dry-run balances never hold work), and
   `qorpera_company_computer_hours_left(p_profile_id)` (step 3) is zero or less. That value is null
@@ -474,7 +474,7 @@ Coordinator (nothing secret):
   period that ended in the last 30 minutes still counts as paying, while no next period is recorded
   and its subscription is `active` or `past_due`. Stripe's renewal invoice can trail the period's
   end by minutes, and the subscription's own dates can move first.
-- Build step 6a (migration `20260929200000`, runs only):
+- Build step 6a (migration `20260928249200`, runs only):
   - wakes stay queued with `blocked_reason = 'Waiting for computer hours'`;
   - the routine listing (`qorpera_list_routine_schedule_heads`) leaves the company's due routines
     out, so the orchestrator does not ask about each one on every pass;
@@ -488,7 +488,7 @@ Coordinator (nothing secret):
     replay, so a retry of work made before zero still answers;
   - a BEFORE INSERT trigger on `qorpera_execution_runs` stops any path that did not check.
 
-- Build step 6c part 1 (migration `20260929250000`, when a company ran out):
+- Build step 6c part 1 (migration `20260928249250`, when a company ran out):
   - `qorpera_computer_hour_zero_state` holds, for each company at zero, when it ran out; the
     finishing window counts its hour from there;
   - a sweep after each meter pass (`qorpera_meter_computer_hours()`, in its transaction and under
@@ -512,8 +512,26 @@ Coordinator (nothing secret):
     recorded more than about 40 minutes late (grace plus the email's ten-minute wait) sends a
     false "out of hours".
 
-  Machines not starting or waking (6b), the finishing window and the renewal-gap handling for
-  machines (6c part 2), and the web (6d) follow. Before the live switch:
+- Build step 6c part 3b (migration `20260929270000`, the finishing window for runs): one hour
+  after a company ran out, while it is still at zero (`qorpera_computer_hour_finish_window_over`,
+  which checks at zero again, so a record up to one sweep old never ends work):
+  - the orchestrator heartbeat (`qorpera_reconcile_runner_orchestrator_without_sponsored_turns`)
+    ends the company's leased jobs through `qorpera_terminalize_runner_attempt(job, 'failed',
+    'Out of computer hours [code=COMPUTER_HOURS_EXHAUSTED]', false)`, after its deadline, sponsor
+    and computer checks, and fails its queued jobs with the same reason, beside its other
+    queued-job failures. No retry; no routine is paused and no worker cancelled;
+  - an in-house worker so ended reports reason `out_of_computer_hours` ("The background work was
+    stopped because the company is out of computer hours.") to its parent, from
+    `qorpera_drain_worker_wakes`;
+  - a job picked for a reason that no longer holds when it is ended (hours arrived meanwhile) is
+    left alone while its lease is live, instead of ending as "lease expired";
+  - "one hour" is an hour after the ran-out time, which is the sweep's (up to a minute late),
+    until the next heartbeat or claim; the heartbeat also runs at the start of every claim, and
+    checks each leased or queued job's company with one key lookup in the zero state (the at-zero
+    check only for a company past its hour).
+
+  Machines not starting or waking, and stopping after the hour (6b), the renewal-gap handling for
+  machines, and the web (6d) follow. Before the live switch:
   - the listing checks zero per routine (for the page and for the next-page check), and with the
     rule on each check sums the company's hours (about 0.4 ms locally): check each company once,
     and measure with production-sized data;
@@ -563,7 +581,7 @@ Coordinator (nothing secret):
   never sees it. Built in 6c part 1 (above).
 - A plan renewal is recorded when Stripe's renewal invoice arrives, which can trail the period's
   end by minutes. The check must not hold work back in that gap. For runs, 6a's renewal grace does
-  this (see above); machines follow in 6c.
+  this (see above); machines follow in 6b.
 - It ships switched off, in its own release, with a 30-minute database watch after the cut. It is
   switched on together with live payments and hour notices.
 

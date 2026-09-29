@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawn, spawnSync } from "node:child_process";
+import { type SpawnSyncReturns, spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
 	chmodSync,
@@ -22,15 +22,16 @@ const root = "/run/qorpera-office-preparation",
 const bytes = Buffer.from(
 	`require('node:fs').writeFileSync('${marker}','top-level executed');exports.runOfficeCodePackageTool=()=>{};`,
 );
-const sha = createHash("sha256").update(bytes).digest("hex");
-function setup() {
+const hash = (value: Buffer) => createHash("sha256").update(value).digest("hex");
+const sha = hash(bytes);
+function setup(tool = bytes) {
 	rmSync(stage, { recursive: true, force: true });
 	rmSync(marker, { force: true });
 	rmSync("/tmp/loader-link", { force: true });
 	chmodSync(root, 0o700);
 	mkdirSync(stage, { mode: 0o700 });
-	writeFileSync(`${stage}/bootstrap.cjs`, bytes, { mode: 0o400 });
-	writeFileSync(`${stage}/measure.cjs`, bytes, { mode: 0o400 });
+	writeFileSync(`${stage}/bootstrap.cjs`, tool, { mode: 0o400 });
+	writeFileSync(`${stage}/measure.cjs`, tool, { mode: 0o400 });
 	writeFileSync(`${root}/control.lock`, "", { mode: 0o600 });
 }
 function invoke(args: string[] = ["bootstrap", id, sha, String(bytes.length)]) {
@@ -41,22 +42,52 @@ function invoke(args: string[] = ["bootstrap", id, sha, String(bytes.length)]) {
 		timeout: 10000,
 	});
 }
+/** LXD records the loader's stdout/stderr on the host: nothing on success,
+ * exactly one fixed line on any refusal, never tool output. */
+function recorded(scenario: string, result: SpawnSyncReturns<string>, accepted: boolean) {
+	assert.equal(result.stdout, "", `${scenario}: stdout`);
+	assert.equal(result.stderr, accepted ? "" : "OFFICE_CODE_PACKAGE_LOADER_UNCONFIRMED\n", `${scenario}: stderr`);
+}
 function denied(scenario: string, args?: string[]) {
 	const result = invoke(args);
 	assert.notEqual(result.status, 0, `${scenario}: loader unexpectedly accepted`);
+	recorded(scenario, result, false);
 	assert.equal(existsSync(marker), false, `${scenario}: top-level tool side effect executed before refusal`);
 	console.log(JSON.stringify({ scenario, actualLinux: true, topLevelExecutionDenied: true }));
 }
 assert.equal(process.platform, "linux");
 assert.equal(process.getuid?.(), 0);
 setup();
-assert.equal(invoke().status, 0);
+const bootstrap = invoke();
+assert.equal(bootstrap.status, 0);
+recorded("verified-bootstrap", bootstrap, true);
 assert.equal(existsSync(marker), true);
 console.log(JSON.stringify({ scenario: "verified-bootstrap", actualLinux: true, executionConfirmed: true }));
 setup();
-assert.equal(invoke(["measure", id, sha, String(bytes.length)]).status, 0);
+const measure = invoke(["measure", id, sha, String(bytes.length)]);
+assert.equal(measure.status, 0);
+recorded("verified-measure", measure, true);
 assert.equal(existsSync(marker), true);
 console.log(JSON.stringify({ scenario: "verified-measure", actualLinux: true, executionConfirmed: true }));
+// The locked child holds the protected packet. Whatever it writes, throws or
+// rejects, the recorded loader output stays empty or the one fixed line.
+const secret = "protected-request-and-credential-bytes";
+const noise = `const fs=require('node:fs');for(const write of [console.log,console.error,console.warn,(m)=>process.stdout.write(m),(m)=>process.stderr.write(m),(m)=>fs.writeSync(1,m),(m)=>fs.writeSync(2,m),(m)=>process.emitWarning(m)])write('${secret}');`;
+for (const [scenario, source] of Object.entries({
+	"noisy-tool-success": `${noise}exports.runOfficeCodePackageTool=async()=>{${noise}};`,
+	"noisy-tool-refusal": `${noise}exports.runOfficeCodePackageTool=async()=>{${noise}throw new Error('${secret}');};`,
+	"tool-uncaught-exception": `exports.runOfficeCodePackageTool=()=>{setImmediate(()=>{throw new Error('${secret}');});return new Promise(()=>{});};`,
+	"tool-unhandled-rejection": `exports.runOfficeCodePackageTool=async()=>{Promise.reject(new Error('${secret}'));};`,
+	"tool-top-level-throw": `${noise}throw new Error('${secret}');`,
+})) {
+	const tool = Buffer.from(source);
+	setup(tool);
+	const result = invoke(["bootstrap", id, hash(tool), String(tool.length)]);
+	const accepted = scenario === "noisy-tool-success";
+	assert.equal(result.status, accepted ? 0 : 1, scenario);
+	recorded(scenario, result, accepted);
+	console.log(JSON.stringify({ scenario, actualLinux: true, toolOutputRecorded: false }));
+}
 for (const scenario of [
 	"wrong-hash",
 	"wrong-size",
@@ -109,6 +140,7 @@ try {
 		{ cwd: "/", env: {}, encoding: "utf8", timeout: 10000, stdio: ["ignore", "pipe", "pipe", unlocked] },
 	);
 	assert.notEqual(result.status, 0, "unlocked inherited descriptor was accepted");
+	recorded("unlocked-inherited-descriptor", result, false);
 	assert.equal(existsSync(marker), false, "unlocked descriptor allowed top-level execution");
 	console.log(
 		JSON.stringify({ scenario: "unlocked-inherited-descriptor", actualLinux: true, topLevelExecutionDenied: true }),
