@@ -21,6 +21,8 @@ NODE_SHA256=${3:?sha-256 of node-vNODE_VERSION-linux-x64.tar.xz from nodejs.org 
 PROJECT=${4:-machines}
 NETWORK=${5:-machine-net}
 [[ $(id -u) -eq 0 ]] || { echo "run as root" >&2; exit 1; }
+# Only the build record goes to stdout (> image-build.json); the builder's own output goes to stderr.
+exec 3>&1 1>&2
 [[ $NODE_VERSION =~ ^2[4-9]\.[0-9]+\.[0-9]+$ ]] || { echo "invalid Node.js version" >&2; exit 1; }
 [[ $NODE_SHA256 =~ ^[0-9a-f]{64}$ ]] || { echo "invalid Node.js sha-256" >&2; exit 1; }
 for file in cloud-machine-guest.mjs qorpera-machine.slice qorpera-machine-watchdog.service qorpera-machine-watchdog.timer manifest.json; do
@@ -94,4 +96,4 @@ BOOTSTRAP=$(cat "$0" "$PACKAGE/manifest.json" | sha256sum | cut -d' ' -f1)
 jq -n --arg imageFingerprint "$FINGERPRINT" --arg bootstrapSha256 "$BOOTSTRAP" --arg alias "$ALIAS" \
 	--arg helperSha256 "$(jq -r '.artifacts[0].sha256' "$PACKAGE/manifest.json")" --arg node "$NODE_VERSION" \
 	'{schema: "qorpera.machine-image-build/v1", alias: $alias, imageFingerprint: $imageFingerprint,
-	  bootstrapSha256: $bootstrapSha256, helperSha256: $helperSha256, node: $node}'
+	  bootstrapSha256: $bootstrapSha256, helperSha256: $helperSha256, node: $node}' >&3
