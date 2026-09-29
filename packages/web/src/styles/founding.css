@@ -77,8 +77,6 @@ textarea.founding-role-mine:focus-visible { outline: none; border-color: var(--t
 	background: var(--overlay); border: 1px solid var(--border); border-radius: var(--radius-xl); box-shadow: none;
 }
 .founding-connect { width: min(720px, 100%); }
-/* The accounts panel is Settings → Connections; its page title is not needed here. */
-.founding-connect h1 { display: none; }
 .founding-sheet-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .founding-sheet h2 { margin: 0; font-size: 18px; font-weight: 650; letter-spacing: -0.01em; }
 .founding-close {

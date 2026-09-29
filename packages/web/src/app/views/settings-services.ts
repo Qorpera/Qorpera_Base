@@ -9,7 +9,7 @@ import { button, fmtTime, h, replace } from "../../ui/dom.ts";
 import { phrase, t } from "../../ui/preferences.ts";
 
 /**
- * Settings → Connections → Services: the Runtime Step 7 connectors (Gmail,
+ * Settings → Company connections → Services: the Runtime Step 7 connectors (Gmail,
  * Google Drive, GitHub). Company first: each card shows the company's one
  * connection for that service. An owner or admin connects it by signing in
  * with the provider (the browser leaves for the provider and comes back here)
@@ -196,7 +196,7 @@ export class ServicesView {
 			}
 		} catch {
 			if (this.#lifetime.signal.aborted) return;
-			this.#error = t("Your connected services could not be read.");
+			this.#error = t("The company's services could not be read.");
 		} finally {
 			this.#loading = false;
 			if (!this.#lifetime.signal.aborted) this.#draw();
@@ -415,15 +415,9 @@ export class ServicesView {
 				"div",
 				{ class: "connection-section-heading" },
 				h("h2", null, t("Services")),
-				h(
-					"small",
-					null,
-					this.#access.canManage()
-						? t("Connected for the company; its agents use them through the company's secret broker.")
-						: t(
-								"Connected for the company by an owner or admin; its agents use them through the company's secret broker.",
-							),
-				),
+				this.#access.canManage()
+					? null
+					: h("small", null, t("Only founders and admins connect or disconnect them.")),
 			),
 			this.#error ? h("p", { class: "connection-empty service-error", role: "alert" }, this.#error) : "",
 			h("div", { class: "connection-list" }, ...HOSTED_CONNECTORS.map((connector) => this.#card(connector))),
