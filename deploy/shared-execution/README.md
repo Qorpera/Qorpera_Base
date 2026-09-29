@@ -336,7 +336,12 @@ lxc query '/1.0/instances/qorpera-exec-node02?project=qn25b2' \
 Without `--pool/--source-prefix` it prints the old full digest (every device
 counted), for an entry without `identityVolumes`.
 
-**Detach.** Nothing detaches automatically. A device of an identity whose
+**Detach.** Only a deleted company's identities are detached automatically:
+the login gateway detaches the device, deletes the volume and confirms both
+gone (company delete D4, `deploy/first-node/RUNTIME-COMPANY-DELETE.md`). A
+rebuild that runs meanwhile stops with "lost Compute Identity devices"; when
+the volume is gone too, it was retired: run the rebuild again. Nothing else
+detaches automatically. A device of an identity whose
 home moved to another node, or of a member who left, stays harmless: the
 service refuses a stale copy (recovery epoch marker) and the identity stays
 accepted, so it never takes the node out. To remove one (no live sandbox of
