@@ -285,6 +285,7 @@ after that line stays byte-identical, and its digest is checked at migration tim
 | `enforce_company_context_send` | requires the marker the folder send sets; refuses without it | 2b |
 | `pin_wake_occurrence`, `routine_occurrence_lifecycle` | their `folder-v2` modes (§5.6): text patches, each keeping the legacy statement as its `else` branch; the digest is of the patched text with the patch reversed | 2c part 1 |
 | `send_coworker_message`, `read_native_wake` | their `folder-v2` bodies (§5.6), by a first line | 2c part 1 |
+| `enqueue_routine_wake` (routine firing) | its `folder-v2` mode in place of the gc fence, after its argument checks (§5.6); moved here from C1c-3 because part 1 closes the legacy path (F2-6's test 709 fires file routines) | 2c part 1 |
 | the legacy multi-company loops: `materialize_wake_execution_runs`, the drains (`office_activation`, `worker`, `machine`, `company_file` with the dynamic-routine tick), `materialize_session_execution_runs` | skip `folder-v2` companies in the scan's `WHERE` clause, before their first lock. `materialize_session_turn_requests` needs no skip: its scan requires the company's head snapshot, which a `folder-v2` company never has (`qorpera_company_files_core_head`) | 2c part 1 |
 | `handoff_run_sponsor`, receipt recovery | their `folder-v2` modes (§5.6, §5.9) | 2c part 2 |
 | `complete_runner_job_v6` | the folder completion lane, in place of C1c-1's guard | 2c part 2 |
@@ -414,8 +415,16 @@ after that line stays byte-identical, and its digest is checked at migration tim
       it is routine firing, which gets its folder mode in C1c-3. The routine expiry sweep does not skip: it inserts no
       wake and takes no company row, and F2-6 relies on it for file routines (its 40P01 against a multi-routine save
       is documented there).
-    - The routine scheduler (`list_routine_schedule_heads`, then `enqueue_routine_wake` per routine, which takes the gc
-      fence) is routine firing too: C1c-3 moves it (§6). Until then it fails closed on `folder-v2` at the pin trigger.
+    - Routine firing (`enqueue_routine_wake`, which the scheduler calls per routine after `list_routine_schedule_heads`)
+      gets its `folder-v2` mode here, not in C1c-3: part 1 closes the legacy path, and F2-6's test 709 fires file
+      routines. `qorpera_folder_enqueue_routine_wake`, after the legacy argument checks, in place of the gc fence: the
+      folder fence and this company's row `KEY SHARE`; the version's member, agent and execution authority `KEY SHARE`;
+      the routine `FOR NO KEY UPDATE`, then its schedule position `FOR UPDATE` (a routine save holds the routine the
+      same way, so the two meet at the routine row); the routine's public session `KEY SHARE` before admission (the
+      wake's foreign key takes it, and after admission it could wait on a message that holds that conversation and
+      waits for admission: 657 D2); admission; the wake. A session the pin trigger chose differently refuses as a
+      retryable conflict. Today's results are kept: the replay, the version and position conflicts, the pause and
+      zero-hours deferrals.
     - No legacy wake inserter serves `folder-v2` after this: each lacks the mark and refuses (55000).
 - **`send_coworker_message`** (`qorpera_folder_send_coworker_message`, 2c part 1):
   1. the run mutex, the job, the fence, rank 0;
@@ -523,8 +532,8 @@ The **provider-session owner** is locked in completion after the recheck.
 - Office-activation and machine-event runs make no tool call: `run_resolve` refuses them (0A000), as offices refuse
   `folder-v2` today.
 - **After C1c-2c, legacy wake inserters fail closed on `folder-v2`.** Posting, `answer_interaction`,
-  `answer_action_review`, `retry_room_delivery`, routine firing and coding turns stay closed until C1c-3 gives them
-  folder modes. So no real `folder-v2` company is created before C1c-3.
+  `answer_action_review`, `retry_room_delivery`, the dynamic-routine tick and coding turns stay closed until C1c-3
+  gives them folder modes. Scheduled routine firing has its folder mode from 2c part 1. So no real `folder-v2` company is created before C1c-3.
 
 ### 5.9 Split and tests
 
@@ -624,7 +633,8 @@ Needed before any view goes live (C1B §4).
   close function exists, or an operator delete may hit 40P01 once and succeed on retry.
 - **The other company-row sites** a `folder-v2` company still uses, moved to the folder fence in their caller's mode
   or to their own row: posting, `append_session_input`, `answer_interaction`, `retry_room_delivery`, `get_email_draft`,
-  `answer_action_review`, `save_review_rule` (personal scope), routine firing, coding attach, #419's machine fence
+  `answer_action_review`, `save_review_rule` (personal scope), the dynamic-routine tick (`ensure_dynamic_routine_run`;
+  scheduled firing moved to 2c part 1), coding attach, #419's machine fence
   (`company_machine_fence_briefly`, custody, `admit_executor_machines`), the office paths (which must also serve
   `folder-v2` for C1b-3a's desktop views), member exports and attachments.
 - **Personal review rules.** Today `save_review_rule` (a member's own rule) stays in step with an agent's
