@@ -251,3 +251,98 @@ end
 $$;
 
 rollback;
+
+-- The switch's own table locked (a later migration altering it): the switch is read inside the same 200 ms
+-- budget, and a switch that cannot be read counts as off. The enqueue waits about 200 ms, sends nothing and
+-- does not fail; once the lock is gone the same transaction wakes every orchestrator. This runs after the
+-- fixture's transaction, which has read the switch and so would keep another session from locking it: the
+-- switch is committed on for the check and committed off again at the end.
+do $$
+declare
+	v_topics text[] := array(select public.qorpera_runner_orchestrator_wake_topic(repeat(n::text, 64))
+		from generate_series(4, 6) as n order by 1);
+	v_count text := format('select count(*)::integer from realtime.messages where topic = any (%L::text[])', v_topics);
+	v_warm integer;
+	v_started timestamptz;
+	v_elapsed interval;
+	v_rows integer;
+	v_locked integer;
+	v_unlocked integer;
+	v_timeout text;
+	v_waits integer;
+begin
+	perform dblink_connect('switch_worker', 'dbname=' || current_database());
+	perform dblink_connect('switch_locker', 'dbname=' || current_database());
+	perform dblink_exec('switch_locker', 'update public.qorpera_orchestrator_wake_settings set enabled = true');
+	-- The caller's own lock timeout, which the wake-up must leave as it was.
+	perform dblink_exec('switch_worker', 'set lock_timeout = ''1s''');
+	perform dblink_exec('switch_worker', 'create temp table switch_work (n integer)');
+	perform dblink_exec('switch_worker', 'create trigger switch_work_wake after insert on switch_work for each row '
+		|| 'execute function public.qorpera_wake_runner_orchestrators_internal()');
+	-- Three orchestrators, uncommitted in the worker's transaction. The first round, with nothing locked, also
+	-- warms the worker (plans, compiled functions).
+	for v_waits in 0..1 loop
+		perform dblink_exec('switch_worker', 'begin');
+		perform dblink_exec('switch_worker', $worker$
+			do $setup$
+			begin
+				perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
+				perform public.qorpera_register_runner_orchestrator(('74800000-0000-4000-8000-00000000000' || n)::uuid,
+					'Wake switch ' || n, 'lxd', repeat(n::text, 64), 3600)
+				from generate_series(4, 6) as n;
+			end
+			$setup$
+		$worker$);
+		exit when v_waits = 1;
+		perform dblink_exec('switch_worker', 'insert into switch_work values (0)');
+		select sent into v_warm from dblink('switch_worker', v_count) as t(sent integer);
+		perform dblink_exec('switch_worker', 'rollback');
+	end loop;
+	perform dblink_send_query('switch_locker',
+		'begin; lock table public.qorpera_orchestrator_wake_settings in access exclusive mode; select pg_sleep(30)');
+	for v_waits in 1..500 loop
+		exit when exists (select 1 from pg_catalog.pg_locks
+			where relation = 'public.qorpera_orchestrator_wake_settings'::regclass
+				and mode = 'AccessExclusiveLock' and granted);
+		perform pg_sleep(0.01);
+	end loop;
+	v_started := clock_timestamp();
+	perform dblink_exec('switch_worker', 'insert into switch_work values (1)');
+	v_elapsed := clock_timestamp() - v_started;
+	select rows into v_rows from dblink('switch_worker', 'select count(*)::integer from switch_work where n = 1')
+		as t(rows integer);
+	select sent into v_locked from dblink('switch_worker', v_count) as t(sent integer);
+	perform dblink_cancel_query('switch_locker');
+	perform dblink_disconnect('switch_locker');
+	for v_waits in 1..500 loop
+		exit when not exists (select 1 from pg_catalog.pg_locks
+			where relation = 'public.qorpera_orchestrator_wake_settings'::regclass and mode = 'AccessExclusiveLock');
+		perform pg_sleep(0.01);
+	end loop;
+	-- The same transaction, as if new to the once-per-transaction guard, with the lock gone.
+	perform guard from dblink('switch_worker', 'select set_config(''qorpera.runner_orchestrators_woken'', '''', true)')
+		as t(guard text);
+	perform dblink_exec('switch_worker', 'insert into switch_work values (2)');
+	select sent into v_unlocked from dblink('switch_worker', v_count) as t(sent integer);
+	select setting into v_timeout from dblink('switch_worker', 'select current_setting(''lock_timeout'')')
+		as t(setting text);
+	perform dblink_exec('switch_worker', 'rollback');
+	perform dblink_exec('switch_worker', 'update public.qorpera_orchestrator_wake_settings set enabled = false');
+	perform dblink_disconnect('switch_worker');
+	if v_warm is distinct from 3 then
+		raise exception 'Wake assertion: the switch on and nothing locked wakes every orchestrator (%)', v_warm;
+	end if;
+	if not (v_elapsed between interval '150 milliseconds' and interval '350 milliseconds') or v_rows <> 1
+		or v_locked <> 0 then
+		raise exception 'Wake assertion: a locked switch counts as off within the 200 ms budget and never fails the '
+			'enqueue (% ms, % rows, % sent)', round(extract(epoch from v_elapsed) * 1000), v_rows, v_locked;
+	end if;
+	if v_unlocked is distinct from 3 or v_timeout is distinct from '1s' then
+		raise exception 'Wake assertion: once the lock is gone the enqueue wakes every orchestrator (%), and the '
+			'caller''s lock timeout stays as it was (%)', v_unlocked, v_timeout;
+	end if;
+	if (select enabled from public.qorpera_orchestrator_wake_settings) then
+		raise exception 'Wake assertion: the switch is off again';
+	end if;
+end
+$$;

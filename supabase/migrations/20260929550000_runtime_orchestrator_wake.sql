@@ -6,7 +6,9 @@
 -- (runner-orchestrator QORPERA_RUNNER_ORCHESTRATOR_WAKE, off unless set).
 --
 -- Switch: nothing is sent until an operator sets qorpera_orchestrator_wake_settings.enabled (off here).
--- While it is off, each trigger below costs one lookup of that row and nothing else.
+-- While it is off, each transaction pays once for a subtransaction (no transaction id) with one lookup of
+-- that row, and nothing else. The lookup shares the sends' 200 ms budget below, and a switch that cannot be
+-- read in time, or at all, counts as off.
 --
 -- Topic: 'qorpera-orchestrator-wake-' || hex(sha256('qorpera.orchestrator-wake/v1:' || control_token_sha256)).
 -- Only this database keeps the control token's sha256, and the orchestrator computes it from its token, so
@@ -23,9 +25,9 @@
 --
 -- Cost inside the enqueuing transaction: a plain read of the active orchestrators (no row locks), then one
 -- realtime.send each, which inserts a row into realtime.messages (Realtime reads it from the WAL after
--- commit; no network call). All sends together wait at most 200 ms for Realtime's table (its partition
--- maintenance), and a missing or failing Realtime is absorbed: a wake-up never fails an enqueue and never
--- holds it up longer than that.
+-- commit; no network call). The switch lookup and all sends together wait at most 200 ms for a lock (on the
+-- switch's table, or Realtime's during its partition maintenance), and a missing or failing Realtime is
+-- absorbed: a wake-up never fails an enqueue and never holds it up longer than that.
 --
 -- Reception: the orchestrator joins with the publishable key (the anon role). The policy lets anon read a
 -- row only on the topic it joined, and only a wake topic; there is no insert policy, so only the database
@@ -61,29 +63,31 @@ begin
 		return null;
 	end if;
 	perform set_config('qorpera.runner_orchestrators_woken', 'yes', true);
-	if not coalesce((select settings.enabled from public.qorpera_orchestrator_wake_settings as settings), false) then
-		return null;
-	end if;
-	-- One subtransaction for all sends. realtime.send only inserts a row into realtime.messages, and turns its
-	-- own failures (a lock timeout included) into a warning, so the sends share one 200 ms budget: each waits
-	-- at most what is left of it, and none starts once it is spent. The block also absorbs a missing Realtime.
+	-- One subtransaction for the switch and all sends, under one 200 ms budget for lock waits. The switch is read
+	-- inside it, so a lock on its table (a migration altering it) holds the enqueue up at most 200 ms and counts
+	-- as off. realtime.send only inserts a row into realtime.messages, and turns its own failures (a lock timeout
+	-- included) into a warning, so each send waits at most what is left of the budget, and none starts once it
+	-- is spent. The block also absorbs a missing Realtime.
 	v_started := clock_timestamp();
 	begin
 		perform set_config('lock_timeout', '200ms', true);
-		for v_topic in
-			-- A plain read: no row lock on the orchestrators, so heartbeats and rotation never wait on this.
-			select public.qorpera_runner_orchestrator_wake_topic(orchestrator.control_token_sha256)
-			from public.qorpera_runner_orchestrators as orchestrator
-			where orchestrator.status = 'active' and orchestrator.control_token_expires_at > statement_timestamp()
-		loop
-			v_left := 200 - floor(extract(epoch from clock_timestamp() - v_started) * 1000)::integer;
-			exit when v_left < 1;
-			perform set_config('lock_timeout', v_left || 'ms', true);
-			perform realtime.send(jsonb_build_object('schema', 'qorpera.orchestrator-wake/v1'), 'wake', v_topic, true);
-		end loop;
+		if coalesce((select settings.enabled from public.qorpera_orchestrator_wake_settings as settings), false) then
+			for v_topic in
+				-- A plain read: no row lock on the orchestrators, so heartbeats and rotation never wait on this.
+				select public.qorpera_runner_orchestrator_wake_topic(orchestrator.control_token_sha256)
+				from public.qorpera_runner_orchestrators as orchestrator
+				where orchestrator.status = 'active' and orchestrator.control_token_expires_at > statement_timestamp()
+			loop
+				v_left := 200 - floor(extract(epoch from clock_timestamp() - v_started) * 1000)::integer;
+				exit when v_left < 1;
+				perform set_config('lock_timeout', v_left || 'ms', true);
+				perform realtime.send(jsonb_build_object('schema', 'qorpera.orchestrator-wake/v1'), 'wake', v_topic, true);
+			end loop;
+		end if;
 		perform set_config('lock_timeout', v_lock_timeout, true);
 	exception when others then
-		-- Rolling the subtransaction back also restores lock_timeout. The backstop poll finds the work.
+		-- A switch that cannot be read counts as off. Rolling the subtransaction back also restores lock_timeout.
+		-- The backstop poll finds the work.
 		null;
 	end;
 	return null;
