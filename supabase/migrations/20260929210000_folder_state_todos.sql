@@ -19,7 +19,7 @@
 --   KEY SHARE, so a todo save takes the company row at rank 2 first.
 -- * Follow-ups for C2's queue: a cancelled todo stops its workers.
 --
--- Builds on F2-4 (20260929190000) and replaces the hook functions with the todo branches added.
+-- Builds on F2-4 (20260928249190) and replaces the hook functions with the todo branches added.
 
 -- 1. The todo table as the index of todo files --------------------------------------------------------------------------
 
