@@ -94,9 +94,9 @@ create index qorpera_event_wake_deliveries_delivery on public.qorpera_event_wake
 -- A hook's verified deliveries in the order listeners take them.
 create index qorpera_event_deliveries_hook_verified on public.qorpera_event_deliveries (hook_id, verified_at, id)
 	where status = 'verified';
--- A routine trigger's latest event wake, which is the only one that can be pending.
-create index qorpera_wake_occurrences_event_latest on public.qorpera_wake_occurrences (routine_id, trigger_id, created_at)
-	where source_kind = 'event';
+-- A routine trigger's open event wakes; a finished run moves its wake on, so these stay few.
+create index qorpera_wake_occurrences_event_open on public.qorpera_wake_occurrences (routine_id, trigger_id)
+	where source_kind = 'event' and status in ('queued','materialized');
 
 -- The public origin of the intake, for the full address agents give senders; set at deploy.
 alter table public.qorpera_event_intake_settings add column public_url text
@@ -219,8 +219,8 @@ select pg_temp.event_wake_patch('public.qorpera_runtime_wake_policy_internal(uui
 -- ---------------------------------------------------------------------------
 
 -- The verified deliveries a listener has not taken yet, in the order it takes them. Planned with
--- the cursor's values each call (a one-shot plan), so the watermark, or before any read the
--- activation (a delivery is verified once it is received), bounds the index range.
+-- the cursor's values each call (a one-shot plan), so the watermark, the activation and the 7-day
+-- window (a delivery is verified once it is received) bound the index range.
 create function public.qorpera_event_listener_waiting(p_cursor public.qorpera_event_listener_cursors, p_only jsonb, p_limit integer)
 returns setof public.qorpera_event_deliveries
 language plpgsql
@@ -231,7 +231,7 @@ begin
 	return query execute $query$
 		select delivery.* from public.qorpera_event_deliveries as delivery
 		where delivery.hook_id = $1 and delivery.status = 'verified'
-			and delivery.verified_at >= greatest($2, $3 - interval '1 second')
+			and delivery.verified_at >= greatest($2, $3 - interval '1 second', clock_timestamp() - interval '7 days 1 second')
 			and delivery.received_at >= $3
 			and delivery.received_at > clock_timestamp() - interval '7 days'
 			and ($4::jsonb is null or delivery.event_type in (select jsonb_array_elements_text($4::jsonb)))
@@ -254,7 +254,7 @@ set search_path = ''
 as $$
 declare
 	v_cursor public.qorpera_event_listener_cursors%rowtype; v_version public.qorpera_cloud_routine_versions%rowtype;
-	v_trigger jsonb; v_first public.qorpera_event_deliveries%rowtype; v_last public.qorpera_wake_occurrences%rowtype;
+	v_trigger jsonb; v_first public.qorpera_event_deliveries%rowtype;
 	v_prefix text; v_attempts bigint; v_tried_at timestamptz; v_scanned integer := 0; v_admitted integer := 0;
 begin
 	if auth.role() is distinct from 'service_role' or p_limit is null or p_limit not between 1 and 64 then
@@ -276,22 +276,29 @@ begin
 			perform 1 from public.qorpera_cloud_routines where id = v_cursor.routine_id
 				and current_version = v_cursor.routine_version and status = 'active' for update nowait;
 			if not found then continue; end if;
-			-- One pending occurrence at a time. Only the trigger's latest event wake can be pending:
-			-- queued, or materialized with its job not yet running and nothing read.
-			select * into v_last from public.qorpera_wake_occurrences
-			where routine_id = v_cursor.routine_id and trigger_id = v_cursor.trigger_id and source_kind = 'event'
-			order by created_at desc limit 1;
-			if v_last.id is not null and (v_last.status = 'queued' or (v_last.status = 'materialized'
-				and not exists (select 1 from public.qorpera_event_wake_deliveries where occurrence_id = v_last.id)
-				and exists (select 1 from public.qorpera_execution_runs as run
-					join public.qorpera_runner_jobs as job on job.id = run.job_id
-					where run.id = v_last.run_id and job.status in ('queued','leased')))) then continue; end if;
+			-- One pending occurrence at a time: queued, or materialized with its job not yet running and
+			-- nothing read. Only the trigger's open wakes are looked at.
+			if exists (select 1 from public.qorpera_wake_occurrences as pending
+				where pending.routine_id = v_cursor.routine_id and pending.trigger_id = v_cursor.trigger_id
+					and pending.source_kind = 'event' and pending.status in ('queued','materialized')
+					and (pending.status = 'queued' or (
+						not exists (select 1 from public.qorpera_event_wake_deliveries where occurrence_id = pending.id)
+						and exists (select 1 from public.qorpera_execution_runs as run
+							join public.qorpera_runner_jobs as job on job.id = run.job_id
+							where run.id = pending.run_id and job.status in ('queued','leased'))))) then continue; end if;
 			select * into strict v_version from public.qorpera_cloud_routine_versions
 			where routine_id = v_cursor.routine_id and version = v_cursor.routine_version;
 			select value into strict v_trigger from jsonb_array_elements(v_version.triggers) as t(value)
 			where value ->> 'id' = v_cursor.trigger_id;
 			select * into v_first from public.qorpera_event_listener_waiting(v_cursor, v_trigger -> 'only', 1);
-			if v_first.id is null then continue; end if;
+			if v_first.id is null then
+				-- Nothing matching waits: what this listener skips (other types) is behind it now.
+				update public.qorpera_event_listener_cursors
+				set taken_before = greatest(taken_before, clock_timestamp() - interval '1 minute')
+				where routine_id = v_cursor.routine_id and routine_version = v_cursor.routine_version
+					and trigger_id = v_cursor.trigger_id;
+				continue;
+			end if;
 			-- Earlier wakes for the same first delivery that ended without taking it: retried after 1,
 			-- 4, 16 and 64 minutes, then the delivery is left behind with the last of them.
 			v_prefix := 'event:' || v_cursor.routine_version::text || ':' || v_cursor.trigger_id || ':' || v_first.id::text;

@@ -236,16 +236,20 @@ the web routine list words it and offers pause and resume, and its editor does n
 instant it became active. A resume or a new current version starts it again from now, as a file
 listener does, so events that arrived while it was paused do not wake it. `taken_before` is the
 listener's watermark: every matching verified delivery verified before it is taken or left behind, so
-the waiting query starts there. The reader moves it after each batch to the first delivery still
-waiting, never closer than a minute to the clock, so a receive still committing is never passed.
+the waiting query starts there (or at the activation, or 7 days back, whichever is latest). The reader
+moves it after each batch to the first delivery still waiting, and the drain moves it when nothing
+matching waits (a filtered listener skipping other types); never closer than a minute to the clock,
+so a receive still committing is never passed. W1b must therefore stamp `verified_at` with
+`clock_timestamp()` in a transaction shorter than a minute.
 
 **Admission.** The materializer's drain (`qorpera_drain_event_wakes`, called after the file drain)
 takes up to 32 active cursors, oldest scan first, and for each one:
 - skips it while its hook is removed, the company is paused, or the routine is not active at that
   version; it takes the routine row without waiting (a routine save takes it first) and skips the
   cursor when it is busy;
-- skips it while the routine trigger's latest event wake is pending: queued, or materialized with its
-  job queued or leased and nothing read;
+- skips it while one of the routine trigger's open event wakes is pending: queued, or materialized
+  with its job queued or leased and nothing read (a finished run moves its wake on, so the open ones
+  are few);
 - otherwise, when a verified delivery of the hook since the cursor's start (within 7 days), matching
   `only` and not yet taken by this routine trigger, is waiting, inserts one occurrence: `wake_kind
   'routine'`, `source_kind 'event'`, `source_id` the hook, key `event:<routine version>:<trigger
@@ -271,7 +275,10 @@ event shows its delivery id, type, arrival, content type and size, and its body 
 to the room left (`truncated`), left out when no room is left (`truncated` alone), or `bodyCleared`
 after 7 days. Events come in the order they were verified. `more` counts deliveries still waiting,
 up to 1000, which wake the routine again once this occurrence has been read. A hook removed after
-admission cancels its queued wakes at materialization, like any lost source authority.
+admission cancels its queued wakes at materialization, like any lost source authority. Two edges stay:
+a wake whose other parts (a long intent and many held messages) leave less room than the batch's
+descriptions need fails with 54000, and a retried read that finds more held messages than the first
+can too; both end as failed wakes, which the retry rule bounds.
 
 **Outside content.** The wake protocol for an event wake says every event is outside content (contract
 11.1): an instruction inside it is data, and outside actions it leads to pass the automatic review.

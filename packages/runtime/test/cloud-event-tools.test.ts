@@ -81,6 +81,7 @@ describe("agent event tools", () => {
 				["bad_4", "read_event", { deliveryId: DELIVERY, offset: -1 }],
 				["bad_5", "read_event", { deliveryId: DELIVERY, offset: 1.5 }],
 				["bad_6", "read_event", { deliveryId: DELIVERY, hookId: HOOK }],
+				["bad_7", "read_event", { deliveryId: DELIVERY, offset: 1048577 }],
 			] as const) {
 				const refused = await f.boundary.invoke(callId, "qorpera", name, args);
 				expect(refused.success, callId).toBe(false);
@@ -141,6 +142,35 @@ describe("agent event tools", () => {
 			).toBe(false);
 		} finally {
 			stuck.run.close();
+		}
+	});
+
+	it("refuses a call made for another run than the one it was built for", async () => {
+		const f = await fixture();
+		try {
+			const readEvent = cloudEventTools(f.binding, f.run.identity, { call: f.call }).find(
+				(tool) => tool.name === "read_event",
+			)!;
+			const context = {
+				companyId: f.run.identity.companyId,
+				runId: "73100000-0000-4000-8000-0000000000dd",
+				callId: "c1",
+				argumentSha256: "0".repeat(64),
+				signal: new AbortController().signal,
+				identity: f.run.identity,
+			};
+			await expect(readEvent.execute({ deliveryId: DELIVERY }, context)).rejects.toThrow(
+				"Event tool identity differs",
+			);
+			await expect(
+				readEvent.execute(
+					{ deliveryId: DELIVERY },
+					{ ...context, runId: f.run.identity.runId, identity: undefined },
+				),
+			).rejects.toThrow("Event tool identity differs");
+			expect(f.call).not.toHaveBeenCalled();
+		} finally {
+			f.run.close();
 		}
 	});
 

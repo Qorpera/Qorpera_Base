@@ -273,6 +273,17 @@ describe("agent routine tool", () => {
 			"an event listener with a path",
 			{ trigger: { kind: "event", hookId: randomUUID(), path: "x", timeZone: "UTC" } },
 		],
+		[
+			"an event listener with 21 types",
+			{
+				trigger: {
+					kind: "event",
+					hookId: randomUUID(),
+					only: Array.from({ length: 21 }, (_, index) => `type.${index}`),
+					timeZone: "UTC",
+				},
+			},
+		],
 		["equal quiet bounds", { quietHours: { start: "08:00", end: "08:00", timeZone: "UTC" } }],
 		["a dynamic routine without a time zone", { trigger: { kind: "dynamic" } }],
 		["a dynamic routine with a cadence", { trigger: { kind: "dynamic", timeZone: "UTC", minutes: 30 } }],

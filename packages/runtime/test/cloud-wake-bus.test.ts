@@ -1172,6 +1172,53 @@ describe("event wakes", () => {
 			},
 		],
 		["a negative remainder", { more: -1 }],
+		[
+			"a content type over 256 characters",
+			{
+				events: [
+					{
+						deliveryId: randomUUID(),
+						type: null,
+						receivedAt: "2026-09-29T02:00:00.000000Z",
+						contentType: "c".repeat(257),
+						bytes: 0,
+					},
+				],
+			},
+		],
+		[
+			"a cleared body that also has text",
+			{
+				events: [
+					{
+						deliveryId: randomUUID(),
+						type: null,
+						receivedAt: "2026-09-29T02:00:00.000000Z",
+						contentType: null,
+						bytes: 1,
+						encoding: "utf8",
+						text: "x",
+						truncated: false,
+						bodyCleared: true,
+					},
+				],
+			},
+		],
+		[
+			"a body marked not cleared",
+			{
+				events: [
+					{
+						deliveryId: randomUUID(),
+						type: null,
+						receivedAt: "2026-09-29T02:00:00.000000Z",
+						contentType: null,
+						bytes: 1,
+						bodyCleared: false,
+					},
+				],
+			},
+		],
 		["an unknown key", { note: "hi" }],
 		[
 			"a body without its truncation flag",
@@ -1208,6 +1255,14 @@ describe("event wakes", () => {
 		const { wake, identity } = eventWake(payload, source);
 		const changed = label === "a parent run" ? ({ ...wake, parentRunId: randomUUID() } as CloudWakeEnvelope) : wake;
 		expect(() => parseCloudWakeEnvelope(changed, identity)).toThrow();
+	});
+	it("rejects a hook purpose over 2048 bytes", () => {
+		const { wake, identity } = eventWake();
+		const payload = wake.payload as { hook: Record<string, unknown> };
+		payload.hook.purpose = "p".repeat(2048);
+		expect(() => parseCloudWakeEnvelope(wake, identity)).not.toThrow();
+		payload.hook.purpose = "p".repeat(2049);
+		expect(() => parseCloudWakeEnvelope(wake, identity)).toThrow();
 	});
 	it("rejects the same event twice in one batch", () => {
 		const { wake, identity } = eventWake();

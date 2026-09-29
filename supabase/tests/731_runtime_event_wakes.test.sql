@@ -5,21 +5,21 @@
 -- the batch fits the wake whatever the bodies; failed wakes back off and give up; pauses, filters,
 -- unverified and old deliveries, removed hooks and company pauses hold.
 
--- Work other tests left committed never becomes a job this test's materializer calls create
--- beside its own, where the fixture's runner could claim it first.
+-- Work other tests or the fixture left queued (a session turn, for one) never becomes a job this
+-- test's materializer calls create beside its own, where the fixture's runner could claim it first.
 set local session_replication_role = replica;
 update public.qorpera_runner_jobs set dispatch_deferred_until = 'infinity', dispatch_refused_by = null
-where profile_id <> '30000000-0000-4000-8000-000000000010' and status = 'queued';
+where status = 'queued';
 update public.qorpera_wake_occurrences set status = 'cancelled', finished_at = clock_timestamp(),
 	blocked_reason = 'Set aside by test 731'
 where profile_id <> '30000000-0000-4000-8000-000000000010' and status = 'queued';
 set local session_replication_role = origin;
 
 -- Starts a routine run and reads its wake (the binding is kept for the run's tools).
-create function pg_temp.event_start(p_run uuid) returns jsonb language plpgsql as $$
+create function pg_temp.event_start(p_run uuid, p_binding jsonb default null) returns jsonb language plpgsql as $$
 declare v_binding jsonb; v_identity jsonb; v_wake jsonb;
 begin
-	v_binding := pg_temp.wake_start(p_run);
+	v_binding := coalesce(p_binding, pg_temp.wake_start(p_run));
 	v_wake := public.qorpera_read_native_wake(v_binding);
 	perform set_config('qorpera_test.event_binding', v_binding::text, true);
 	perform set_config('qorpera_test.event_run', v_binding ->> 'runId', true);
@@ -195,6 +195,8 @@ begin
 	perform pg_temp.wake_assert((select count(*) from pg_temp.event_wakes(v_row.id)) = 2
 		and not exists (select 1 from pg_temp.event_wakes(v_filtered.id)),
 		'The unfiltered listener wakes again; the filtered one ignores other types and earlier events');
+	perform pg_temp.wake_assert((select taken_before > '-infinity' from public.qorpera_event_listener_cursors
+		where routine_id = v_filtered.id), 'What a filtered listener skips moves its watermark');
 	select * into strict v_occurrence from pg_temp.event_wakes(v_row.id) offset 1;
 	v_wake := pg_temp.event_run(v_occurrence.run_id);
 	perform pg_temp.wake_assert(jsonb_array_length(v_wake #> '{payload,events}') = 1
@@ -220,14 +222,23 @@ do $$
 declare v_row public.qorpera_cloud_routines := pg_temp.routine_row('form-reply'); v_wake jsonb; v_occurrence public.qorpera_wake_occurrences;
 begin
 	perform pg_temp.post('{"n":' || n || '}', 'contact.submitted') from generate_series(1, 22) as n;
+	-- They arrived ten minutes ago, so after the first read the watermark must stop at the first one
+	-- still waiting, not a minute behind the clock.
+	update public.qorpera_event_deliveries set received_at = received_at - interval '10 minutes',
+		verified_at = verified_at - interval '10 minutes'
+	where hook_id = '30000000-0000-4000-8000-0000000007b1' and convert_from(body, 'UTF8') ~ '^\{"n":[0-9]+\}$';
+	update public.qorpera_event_listener_cursors set activated_at = activated_at - interval '20 minutes',
+		taken_before = '-infinity' where routine_id = v_row.id;
 	perform public.qorpera_materialize_wake_execution_runs(8);
-	select * into strict v_occurrence from pg_temp.event_wakes(v_row.id) offset 3;
+	select * into strict v_occurrence from pg_temp.event_wakes(v_row.id) where payload ->> 'firstDeliveryId' = (
+		select id::text from public.qorpera_event_deliveries where body = convert_to('{"n":1}', 'UTF8'));
 	v_wake := pg_temp.event_run(v_occurrence.run_id);
 	perform pg_temp.wake_assert(jsonb_array_length(v_wake #> '{payload,events}') = 20
 		and v_wake #>> '{payload,events,0,text}' = '{"n":1}'
 		and (v_wake #>> '{payload,more}')::integer = 2, 'A wake takes at most 20 and says how many wait');
 	perform public.qorpera_materialize_wake_execution_runs(8);
-	select * into strict v_occurrence from pg_temp.event_wakes(v_row.id) offset 4;
+	select * into strict v_occurrence from pg_temp.event_wakes(v_row.id) where payload ->> 'firstDeliveryId' = (
+		select id::text from public.qorpera_event_deliveries where body = convert_to('{"n":21}', 'UTF8'));
 	v_wake := pg_temp.event_run(v_occurrence.run_id);
 	perform pg_temp.wake_assert(jsonb_array_length(v_wake #> '{payload,events}') = 2
 		and v_wake #>> '{payload,events,1,text}' = '{"n":22}'
@@ -401,6 +412,15 @@ begin
 		perform public.qorpera_drain_event_wakes(8);
 		perform pg_temp.wake_assert((select count(*) from pg_temp.event_wakes(v_row.id)) = v_try,
 			'A failed try is not repeated at once');
+		if v_try >= 2 then
+			-- Two minutes are enough after the first failure only.
+			set local session_replication_role = replica;
+			update public.qorpera_wake_occurrences set created_at = created_at - interval '2 minutes' where routine_id = v_row.id;
+			set local session_replication_role = origin;
+			perform public.qorpera_drain_event_wakes(8);
+			perform pg_temp.wake_assert((select count(*) from pg_temp.event_wakes(v_row.id)) = v_try,
+				'Try ' || v_try || ' waits longer than the one before');
+		end if;
 		set local session_replication_role = replica;
 		update public.qorpera_wake_occurrences set created_at = created_at - interval '2 hours' where routine_id = v_row.id;
 		set local session_replication_role = origin;
@@ -415,7 +435,103 @@ begin
 	perform public.qorpera_drain_event_wakes(8);
 	perform pg_temp.wake_assert((select count(*) from pg_temp.event_wakes(v_row.id) where status = 'queued'
 		and occurrence_key like '%:1') = 1, 'The next delivery wakes the routine');
+	-- Out of the way of the runs that follow.
+	perform pg_temp.routine('{"action":"pause","operationKey":"ev-t2","routineKey":"retry"}');
 end $$;
+
+-- Long descriptions (types that JSON escapes, long content types) beside a long intent: the batch
+-- takes only as many events as fit, its bodies share what the descriptions leave, and the rest wait.
+do $$
+declare v_row public.qorpera_cloud_routines; v_wake jsonb; v_occurrence public.qorpera_wake_occurrences; v_taken integer;
+begin
+	perform pg_temp.routine(jsonb_build_object('action','upsert','operationKey','ev-d1','routineKey','descriptions',
+		'title','Long descriptions','intent',repeat('Describe the events. ', 1500),
+		'trigger',jsonb_build_object('kind','listener','source','event','hookId','30000000-0000-4000-8000-0000000007b4',
+			'only',jsonb_build_array(repeat('"', 128)),'timeZone','UTC','replyPolicy','silent')));
+	v_row := pg_temp.routine_row('descriptions');
+	insert into public.qorpera_event_deliveries(hook_id, profile_id, status, delivery_key, event_type, content_type,
+		body, body_bytes, body_sha256, verified_at)
+	select '30000000-0000-4000-8000-0000000007b4', '30000000-0000-4000-8000-000000000010', 'verified', 'long-' || n,
+		repeat('"', 128), repeat('c', 256), convert_to(repeat('b', 2000), 'UTF8'), 2000, repeat('0', 64), clock_timestamp()
+	from generate_series(1, 20) as n;
+	perform public.qorpera_materialize_wake_execution_runs(8);
+	select * into strict v_occurrence from pg_temp.event_wakes(v_row.id);
+	v_wake := pg_temp.event_start(v_occurrence.run_id);
+	v_taken := jsonb_array_length(v_wake #> '{payload,events}');
+	perform pg_temp.wake_assert(octet_length((v_wake -> 'payload')::text) <= 49152 and pg_column_size(v_wake) <= 49152
+		and v_taken between 1 and 19 and (v_wake #>> '{payload,more}')::integer = 20 - v_taken,
+		'The batch takes as many long descriptions as fit: ' || v_taken || ' of 20, '
+			|| octet_length((v_wake -> 'payload')::text) || ' bytes');
+	perform pg_temp.event_finish();
+	-- The rest would wake it again; out of the way of the runs that follow.
+	perform pg_temp.routine('{"action":"pause","operationKey":"ev-d2","routineKey":"descriptions"}');
+end $$;
+
+-- A binary body: base64 without line breaks, within the room the wake leaves, and read_event serves
+-- it in pieces of 24 KiB that fit a tool result. A wake whose job is leased but not yet read stays
+-- pending however long ago it was made.
+do $$
+declare v_row public.qorpera_cloud_routines; v_wake jsonb; v_occurrence public.qorpera_wake_occurrences; v_binding jsonb;
+	v_piece jsonb; v_offset integer := 0; v_pieces integer := 0; v_data bytea := ''; v_body bytea := decode(repeat('ff00', 30000), 'hex');
+begin
+	perform pg_temp.routine(jsonb_build_object('action','upsert','operationKey','ev-b1','routineKey','binary',
+		'title','Binary','intent',repeat('Handle it. ', 2000),
+		'trigger',jsonb_build_object('kind','listener','source','event','hookId','30000000-0000-4000-8000-0000000007b4',
+			'only',jsonb_build_array('bin.test'),'timeZone','UTC','replyPolicy','silent')));
+	v_row := pg_temp.routine_row('binary');
+	perform pg_temp.wake_assert(public.qorpera_receive_event(repeat('H', 43), 'application/octet-stream',
+		'{"x-qorpera-event":"bin.test"}', encode(v_body, 'base64')) ->> 'outcome' = 'accepted', 'A binary delivery is accepted');
+	perform public.qorpera_materialize_wake_execution_runs(8);
+	select * into strict v_occurrence from pg_temp.event_wakes(v_row.id);
+	-- However little room the rest of a wake leaves, the batch takes its first delivery.
+	perform pg_temp.wake_assert(jsonb_array_length(public.qorpera_event_wake_payload(v_occurrence, 10) -> 'events') = 1,
+		'A batch always takes its first delivery');
+	v_binding := pg_temp.wake_start(v_occurrence.run_id);
+	set local session_replication_role = replica;
+	update public.qorpera_wake_occurrences set created_at = created_at - interval '2 hours' where routine_id = v_row.id;
+	set local session_replication_role = origin;
+	perform public.qorpera_drain_event_wakes(8);
+	perform pg_temp.wake_assert((select count(*) from pg_temp.event_wakes(v_row.id)) = 1, 'A leased, unread wake is pending');
+	v_wake := pg_temp.event_start(v_occurrence.run_id, v_binding);
+	perform pg_temp.wake_assert(octet_length((v_wake -> 'payload')::text) <= 49152
+		and v_wake #>> '{payload,events,0,encoding}' = 'base64' and (v_wake #>> '{payload,events,0,truncated}')::boolean
+		and octet_length(v_wake #>> '{payload,events,0,data}') between 1 and 8192
+		and position(chr(10) in v_wake #>> '{payload,events,0,data}') = 0,
+		'The binary body is cut base64 without line breaks: ' || octet_length((v_wake -> 'payload')::text));
+	loop
+		v_piece := public.qorpera_read_agent_event(v_binding, jsonb_build_object('deliveryId',
+			v_wake #>> '{payload,events,0,deliveryId}', 'offset', v_offset));
+		v_pieces := v_pieces + 1;
+		perform pg_temp.wake_assert(v_piece ->> 'encoding' = 'base64' and octet_length(v_piece ->> 'data') <= 32768
+			and position(chr(10) in v_piece ->> 'data') = 0 and (v_piece ->> 'total')::integer = 60000
+			and ((v_piece ->> 'done')::boolean or (v_piece ->> 'next')::integer = v_offset + 24576),
+			'A binary piece fits a tool result: ' || (v_piece - 'data' - 'headers')::text);
+		v_data := v_data || decode(v_piece ->> 'data', 'base64');
+		exit when (v_piece ->> 'done')::boolean or v_pieces > 3;
+		v_offset := (v_piece ->> 'next')::integer;
+	end loop;
+	perform pg_temp.wake_assert(v_pieces = 3 and v_data = v_body, 'Three pieces make the whole binary body');
+	-- The run has read its batch, so a new delivery wakes the routine again while it works.
+	perform pg_temp.wake_assert(public.qorpera_receive_event(repeat('H', 43), 'application/octet-stream',
+		'{"x-qorpera-event":"bin.test"}', encode('\x0102'::bytea, 'base64')) ->> 'outcome' = 'accepted', 'A second binary delivery');
+	perform public.qorpera_drain_event_wakes(8);
+	perform pg_temp.wake_assert((select count(*) from pg_temp.event_wakes(v_row.id)) = 2,
+		'A wake that read its batch does not hold back the next');
+	perform pg_temp.event_finish();
+	perform pg_temp.routine('{"action":"pause","operationKey":"ev-b2","routineKey":"binary"}');
+end $$;
+
+-- A routine version saved outside the agent's tool (a member's save) cannot listen to another
+-- company's hook: its activation refuses it.
+select pg_temp.wake_error($q$insert into public.qorpera_cloud_routine_versions
+	select * from jsonb_populate_record(null::public.qorpera_cloud_routine_versions, (
+		select to_jsonb(saved) || jsonb_build_object('version', saved.version + 1,
+			'client_version_id', extensions.gen_random_uuid(), 'triggers', jsonb_build_array(jsonb_build_object(
+				'id', 'agent', 'kind', 'listener', 'source', 'event', 'hookId', '30000000-0000-4000-8000-0000000007b2',
+				'timeZone', 'UTC', 'replyPolicy', 'silent')))
+		from public.qorpera_cloud_routine_versions as saved join public.qorpera_cloud_routines as routine
+			on routine.id = saved.routine_id and routine.current_version = saved.version
+		where routine.routine_key = 'retry' and routine.origin = 'agent'))$q$, '42501');
 
 -- Privileges: the new tables are closed; the drain, the reader and the tools belong to service_role.
 do $$
