@@ -12,7 +12,9 @@
 --   Plain conversations refuse (0A000) until C3/C4 give them folder-v2 runs, as their inputs do since C1c-3a.
 -- * An email draft's completion (qorpera_finish_email_draft_action) takes that prelude before its own conversation
 --   lock, when the draft sits in an agent's thread. The answer it then gives takes the same rows again in the same
---   modes, which never waits. So the answer to a sent email reaches the agent on folder-v2.
+--   modes, which never waits. So the answer to a sent email reaches the agent on folder-v2. The broker's claim
+--   (qorpera_claim_email_draft_action) takes it before its conversation lock too: a claim of an action already
+--   completed replays the completion under that lock.
 -- * An answer to an action-review card (qorpera_answer_action_review) in an agent's thread: the prelude, the
 --   conversation, then the review (C1C §5.7's card exception), "Always allow"'s company rule, the input, the events,
 --   admission, then the wake. A card still held by a call adds the input and the events only. Plain conversations
@@ -100,6 +102,17 @@ begin
 		|| E'  join public.qorpera_shared_sessions s on s.id=d.session_id where a.id=p_action_id and s.profile_id=v_profile;\n'
 		|| E' end if;\n'
 		|| E' perform 1 from public.qorpera_shared_sessions s join public.qorpera_member_email_drafts d on d.session_id=s.id', 1);
+
+	-- The broker's claim of an email action: the same prelude before its conversation lock. A claim of an action already
+	-- completed replays the completion (finish, then the answer) under that lock, so the prelude must come first here too.
+	perform pg_temp.c1c3b_replace('public.qorpera_claim_email_draft_action(uuid,text,uuid,text)',
+		E' -- Same lock order as member preparation: session, draft, action.\n',
+		E' if public.qorpera_company_is_folder_v2(v_broker.profile_id) then\n'
+		|| E'  perform public.qorpera_folder_enter_agent_thread(d.session_id, d.user_id) from public.qorpera_member_email_drafts d\n'
+		|| E'  join public.qorpera_member_email_actions a on a.interaction_id=d.interaction_id\n'
+		|| E'  join public.qorpera_shared_sessions s on s.id=d.session_id where a.id=p_action_id and s.profile_id=v_broker.profile_id;\n'
+		|| E' end if;\n'
+		|| E' -- Same lock order as member preparation: session, draft, action.\n', 1);
 
 	-- An answer to an action-review card: the prelude in place of the gc fence (a card outside an agent's thread
 	-- refuses on folder-v2); then, when the answer wakes the agent, the events and admission before the wake.

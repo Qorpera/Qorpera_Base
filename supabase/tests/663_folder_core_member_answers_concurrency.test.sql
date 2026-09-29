@@ -1,9 +1,9 @@
 -- @fixture 648_folder_core_run_fence_concurrency.test.sql until "-- A. Two tool calls of one run"
 -- Company folder core, C1c-3b under concurrency (deploy/first-node/RUNTIME-COMPANY-FOLDER-C1C.md §6.3): an answer to a
--- card, an email draft's completion and an answer to an action-review card each wait at the agent's thread room, behind
--- a holder of it FOR UPDATE (an agent's rename), before they take the conversation; both answers wait at the operation
--- clock holding no admission, beside a member's post. Cards are raised by hand in the agents' threads, for the
--- owner. 648's committed fixture, removed at the end.
+-- card, an email draft's completion, the broker's replayed claim of one, and an answer to an action-review card each
+-- wait at the agent's thread room, behind a holder of it FOR UPDATE (an agent's rename), before they take the
+-- conversation; both answers wait at the operation clock holding no admission, beside a member's post. Cards are
+-- raised by hand in the agents' threads, for the owner. 648's committed fixture, removed at the end.
 
 -- The company's login pays for unattended work (as 661's).
 set session_replication_role = replica;
@@ -142,6 +142,24 @@ begin
 	if v_state <> 'ok' or (select status from public.qorpera_member_email_drafts where interaction_id = '66300000-0000-4000-8000-0000000000b1') <> 'sent'
 		or pg_temp.wakes_on_answer('66300000-0000-4000-8000-0000000000b1') <> 1 then
 		raise exception 'B: the completion after the room: %', v_state; end if;
+end $$;
+
+-- E. The broker's claim of B's action, already completed, replays the completion: it too waits at the thread room
+-- before its conversation lock (a replay after the lock met an agent's rename in a cycle). The replay adds no answer.
+do $$
+declare v_state text;
+begin
+	perform dblink_exec('fence_one', 'set session authorization qorpera_secret_broker');
+	perform pg_temp.hold_room();
+	perform dblink_send_query('fence_one', $q$select public.qorpera_claim_email_draft_action('66300000-0000-4000-8000-0000000000b0',
+		repeat('a', 64), '66300000-0000-4000-8000-0000000000b2', repeat('d', 64))::text$q$);
+	if not pg_temp.waits_at('fence_one', 'public.qorpera_company_rooms') then raise exception 'E: the replayed claim must wait at the room'; end if;
+	if not pg_temp.thread_free() then raise exception 'E: the replayed claim must hold no conversation while it waits at the room'; end if;
+	perform dblink_exec('fence_three', 'rollback');
+	v_state := pg_temp.outcome('fence_one');
+	perform dblink_exec('fence_one', 'reset session authorization');
+	if v_state <> 'ok' or pg_temp.wakes_on_answer('66300000-0000-4000-8000-0000000000b1') <> 1 then
+		raise exception 'E: the replayed claim after the room: %', v_state; end if;
 end $$;
 
 -- C. An answer to an action-review card waits at the thread room before the conversation and the review, then wakes

@@ -771,18 +771,26 @@ Decisions:
   conversation lock when the draft sits in an agent's thread (663 B). The answer it gives then takes the same rows again
   in the same modes, which never waits (core §9's activation check refuses only a stronger mode). The answer to a sent
   email now reaches the agent (662 §5); before, it refused at the wake and the completion swallowed the refusal.
+- **The broker's claim** (`claim_email_draft_action`) takes the same prelude before its conversation lock (663 E). A
+  claim of an action already completed (a double click, a retry after a sent email) replays the completion under that
+  lock; with the prelude after it, an agent's rename of the thread's agent met the replay in a cycle (review r1 S1).
 - **An answer to an action-review card** (`answer_action_review`): the prelude, the conversation, then the review
   (§5.7's card exception), "Always allow"'s company rule, the input, the events, admission, then the wake (663 C). A
   card still held by a call takes the input and the events only, with no admission. A card outside an agent's thread
   refuses 0A000.
+- **Refusal order.** On `folder-v2` the answers' new refusals (a group chat's 22023, a plain conversation's 0A000) come
+  before the cleanup refusal, the argument checks, the author and approver checks and the replay receipt. No
+  `folder-v2` company holds data that would show the difference: cards left group chats before `folder-v2` existed.
 - **The rule cap is not serialized.** "Always allow" inserts a company rule row (F2-4 keeps it a row until C3) with
   no company row `FOR UPDATE`, so two answers at once can each pass the 48 KiB check and go over by one rule. The cap
-  bounds the reviewer's prompt; it is not an invariant, and `folder-v2` companies keep their rules in `rules/`.
+  bounds the reviewer's prompt; it is not an invariant, and `folder-v2` companies keep their rules in `rules/` (F2-4's
+  saves there are not serialized with "Always allow" either).
 - **The thread room `FOR SHARE`** extends §6.2's exception to the answers. Today every writer of a thread room takes it
-  `FOR UPDATE` (an agent's rename or archive), so `KEY SHARE` would also wait for them. `FOR SHARE` matches posting and
-  also holds off a `FOR NO KEY UPDATE` writer, such as a change of the room's members (663 A).
-- Not in 3b: `prepare_email_draft_action` inserts an action row after its draft `FOR UPDATE`; the row's foreign keys
-  take the company row `KEY SHARE` then, which only legacy member management (`FOR UPDATE`, until 3c) can hold.
+  `FOR UPDATE` (an agent's rename or archive, and member changes through `ensure_agent_thread_internal`), so `KEY
+  SHARE` would also wait for them. `FOR SHARE` matches posting and would also hold off a future `FOR NO KEY UPDATE`
+  writer of a thread room (663 A).
+- Not in 3b: `prepare_email_draft_action` takes the draft `FOR UPDATE` and inserts an action row whose only foreign key
+  names the draft, so it takes no company row at all.
 
 ## 7. Traps for C1c-2 and C1c-3
 

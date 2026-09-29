@@ -109,6 +109,14 @@ begin
 		|| E'  join public.qorpera_shared_sessions s on s.id=d.session_id where a.id=p_action_id and s.profile_id=v_profile;\n'
 		|| E' end if;\n', '');
 	if md5(v_def) <> '981da163ef5d23768e4403d48e0bce35' then raise exception 'The email completion''s snapshot-v1 text changed'; end if;
+
+	v_def := pg_get_functiondef('public.qorpera_claim_email_draft_action(uuid,text,uuid,text)'::regprocedure);
+	v_def := replace(v_def, E' if public.qorpera_company_is_folder_v2(v_broker.profile_id) then\n'
+		|| E'  perform public.qorpera_folder_enter_agent_thread(d.session_id, d.user_id) from public.qorpera_member_email_drafts d\n'
+		|| E'  join public.qorpera_member_email_actions a on a.interaction_id=d.interaction_id\n'
+		|| E'  join public.qorpera_shared_sessions s on s.id=d.session_id where a.id=p_action_id and s.profile_id=v_broker.profile_id;\n'
+		|| E' end if;\n', '');
+	if md5(v_def) <> '5fd11fbe416b12c11a2f66e636593f09' then raise exception 'The email claim''s snapshot-v1 text changed'; end if;
 end $$;
 
 -- 2. An answer to an agent's card in its thread: the input, the transcript events, admission and the agent's room wake;
