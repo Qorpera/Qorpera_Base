@@ -6,7 +6,7 @@ import { connectorRequest } from "./cloud-connector-http.ts";
 import type { CloudSecretKeyring } from "./cloud-secret-crypto.ts";
 
 /**
- * Upstream revoke of connected-account tokens (company delete D6, migration 20260929500000). When a
+ * Upstream revoke of connected-account tokens (company delete D6, migration 20260928269500). When a
  * Gmail, Drive or GitHub connection is disconnected or its company deleted, SQL queues each stored
  * version for the broker that sealed it. The broker claims its entries, opens each envelope, cancels the
  * token at the provider and records the outcome; an error is recorded and SQL offers the entry again
