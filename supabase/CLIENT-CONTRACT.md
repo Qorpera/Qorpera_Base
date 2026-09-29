@@ -652,10 +652,10 @@ machine.
 - `event-intake` (20260928259260) — the public address of a company's
   hooks: `POST /functions/v1/event-intake/<address>` from the sender, not
   from clients. Answers 202 (accepted), 200 (duplicate), 400 (malformed), 404
-  (no such hook), 405 (not POST), 409 (paused or not ready), 413 (over the
-  hook's size limit or 256 KiB), 429 (over the hook's minute or the company's
-  hourly budget, with `Retry-After`), 431 (headers too large) or 503 (switched
-  off, or retry).
+  (not a hook address, by its shape, or no such hook), 405 (not POST), 409
+  (paused or not ready), 413 (over the hook's size limit or 256 KiB), 429
+  (over the hook's minute or the company's hourly budget, with `Retry-After`),
+  431 (headers too large) or 503 (switched off, or retry).
 - `profile-invitation-email`, `company-file-verifier`, `artifact-gc-worker`,
   `runner-control`, `runner-broker`, `runner-orchestrator`,
   `computer-hour-notices` (20260928249160, founders' hour emails) — service or

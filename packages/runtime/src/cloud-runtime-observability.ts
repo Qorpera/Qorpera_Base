@@ -52,6 +52,9 @@ export const CLOUD_RUNTIME_TOOL_OPERATIONS = [
 	"machine_stop",
 	"machine_delete",
 	"machine_list",
+	// Event wakes (W2): the company's hooks and one event's body.
+	"list_hooks",
+	"read_event",
 ] as const;
 /** Closed vocabulary; the SQL ingestion function checks the same list. */
 export const CLOUD_RUNTIME_OPERATIONS = [
