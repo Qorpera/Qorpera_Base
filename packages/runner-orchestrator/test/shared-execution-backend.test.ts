@@ -583,6 +583,7 @@ describe("shared execution provider backend", () => {
 		const signal = new AbortController().signal;
 		const otherRun = "30000000-0000-4000-8000-000000000051";
 		await f.backend.acquire(runId, work(), signal);
+		const firstMachine = ((await journal(f, runId)) as { instanceSha256: string }).instanceSha256;
 		await f.backend.acquire(otherRun, work({ runId: otherRun, sourceId: otherRun }), signal);
 		expect(await journal(f, otherRun)).toMatchObject({ slot: 1, hostPort: 20002, inboxPort: 20003 });
 		expect(f.units.activeUnits).toEqual(
@@ -602,6 +603,8 @@ describe("shared execution provider backend", () => {
 		await f.backend.reconcile();
 		await f.backend.acquire(runId, work({ attempt: 2 }), signal);
 		expect(await journal(f, retry)).toMatchObject({ physicalState: "registered", attempt: 2, slot: 0 });
+		// Same slot, new attempt: its own machine key (the first attempt's stays taken by its allocation).
+		expect(((await journal(f, retry)) as { instanceSha256: string }).instanceSha256).not.toBe(firstMachine);
 	});
 
 	it("refuses work outside the governed native runtime", async () => {
