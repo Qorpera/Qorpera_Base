@@ -493,7 +493,8 @@ Node 2 (warm standby), between node 1's steps 6 and 8:
    here. To rebuild node 1, run the hand-over the other way (ticket on node 1, serve on node 2).
 5. The two secrets live on node 1 and node 2 only. Losing both nodes loses them: every vault company's
    stored secrets, connector connections and model logins can then no longer be opened, and members sign
-   in and reconnect again. A copy beyond the two nodes is the founder's choice (pending).
+   in and reconnect again. By founder decision (29 September 2026) there is no third copy: "if the key is
+   lost on both vaults, it's lost".
 
 ## Failure cases
 
