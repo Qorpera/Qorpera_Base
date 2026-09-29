@@ -719,6 +719,13 @@ begin
 	if x.status is distinct from 'active' or x.pause_reason is not null or v.sponsor_binding_id is distinct from '70800000-0000-4000-8000-0000000000b2'
 		or v.sponsor_version is distinct from 2::bigint then
 		raise exception 'A paying login ends the wait: %, %', to_jsonb(x), to_jsonb(v); end if;
+	-- The member hands the owner's routine to Otto: the new agent's runs are on the mover's login.
+	perform pg_temp.expect(pg_temp.commit(pg_temp.mem(), 'waits-0031', jsonb_build_array(
+		pg_temp.move('agents/nora/routines/inbox-old.md', 'agents/otis/routines/inbox-old.md'))), 1, 'saved');
+	v := pg_temp.rv('70800000-0000-4000-8000-0000000000e1');
+	if v.staff_agent_id is distinct from '70700000-0000-4000-8000-0000000000a2' or v.sponsor_binding_id is distinct from '70800000-0000-4000-8000-0000000000b2'
+		or v.created_by_user_id is distinct from '70700000-0000-4000-8000-000000000002' then
+		raise exception 'A handover is paid by the mover: %', to_jsonb(v); end if;
 	-- That login stops paying again. A resume moves the routine to the saver's login, a new version with the same content.
 	perform pg_temp.fx($f$insert into public.qorpera_provider_connection_versions
 		select (jsonb_populate_record(null::public.qorpera_provider_connection_versions,

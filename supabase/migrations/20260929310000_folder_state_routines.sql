@@ -1033,7 +1033,7 @@ begin
 		-- including the run's changes after it decided or after another change settled the decision (contract 16.3).
 		if v_kind = 'routine' and not coalesce(p_actor ->> 'wakeKind' = 'routine' and v_base ->> 'id' = p_actor ->> 'routineId'
 			and v_entry -> 'parse' ->> 'id' = p_actor ->> 'routineId' and v_base -> 'trigger' ->> 'when' = 'once'
-			and public.qorpera_company_state_routine_of_run((p_actor ->> 'runId')::uuid) = (p_actor ->> 'routineId')::uuid
+			-- Owed: the run's wake is this routine's current dynamic version.
 			and public.qorpera_routine_decision_pending((p_actor ->> 'runId')::uuid)
 			and ((v_entry -> 'parse' ->> 'status' = 'active' and v_entry -> 'parse' -> 'trigger' ->> 'when' = 'once'
 					and (v_entry -> 'parse') - array['trigger','effort','reply'] = v_base - array['trigger','effort','reply'])
