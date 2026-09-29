@@ -1,5 +1,6 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { CloudConnectorOAuthFlows } from "@qorpera/runtime/cloud-connector-oauth";
+import { CloudConnectorTokenRevocations } from "@qorpera/runtime/cloud-connector-token-revocation";
 import type { ModelLoginSignInHelper } from "@qorpera/runtime/cloud-model-login-sign-in";
 import { CloudModelLoginUpkeep } from "@qorpera/runtime/cloud-model-login-upkeep";
 import { CloudModelLoginVault, type ModelLoginRenewer } from "@qorpera/runtime/cloud-model-login-vault";
@@ -345,6 +346,31 @@ it("collects a signing-in company's sign-ins every pass and every company's on a
 	now += 2000;
 	await companies.collect();
 	expect(asked()).toEqual([]);
+});
+
+it("runs every served company's connector token revocations in turn, on the company's own authority", async () => {
+	const pass = vi
+		.spyOn(CloudConnectorTokenRevocations.prototype, "pass")
+		.mockResolvedValue({ completed: 0, failed: 0 });
+	const one = randomUUID();
+	const two = randomUUID();
+	const { principal } = principalFixture({ registered: [one, two] });
+	const revoke = vi.fn();
+	const companies = new SharedCloudSecretBrokerCompanies({
+		principal,
+		keyring: new CloudSecretKeyring({}, { "vault-root-1": randomBytes(32) }),
+		adapters: [],
+		revoker: { revoke },
+	});
+	await companies.refresh(new AbortController().signal);
+	await companies.revokeTokens();
+	expect(pass).toHaveBeenCalledTimes(2);
+	expect(pass.mock.calls.every(([signal]) => signal instanceof AbortSignal && !signal.aborted)).toBe(true);
+	// The loop stops with the vault: a pass in hand sees the close.
+	await companies.close();
+	expect(pass.mock.calls[0]![0].aborted).toBe(true);
+	await companies.revokeTokens();
+	expect(pass).toHaveBeenCalledTimes(2);
 });
 
 it("runs every served company's upkeep pass in turn, and its loops until closed", async () => {

@@ -56,7 +56,7 @@ Rollback: `select cron.unschedule('qorpera-company-deletions')`. Requests then w
 | Credential capsules and recovery backups in Storage | artifact GC worker, from `qorpera_company_storage_deletions` (D5a) | D5a; same worker |
 | Recovery backups on the recovery service's NAS and journal | operator runbook (a per-company service) | last |
 | Coding NAS workspaces `workers/<company>/` | coding executor (D5b) | D5b |
-| Connected-account tokens at Google/GitHub | secret broker, best-effort revoke (D6) | D6 |
+| Connected-account tokens at Google/GitHub | the broker or shared vault that sealed them, from `qorpera_connector_token_revocations` (D6) | D6; live once the broker and vault builds are rolled |
 | Model logins (ChatGPT, Claude) | our rows are purged and a node capsule's Storage object goes with D5a; the member signs out at the provider | by design |
 | Per-company broker units, recovery services, office host config (older companies) | operator runbook | last |
 
@@ -160,4 +160,44 @@ records what it waits for.
      ARTIFACT-GC.md).
 - **D5b** NAS: coding workspaces `workers/<company>/` (the coding executor cannot remove them alone:
   their files belong to session users) and the Company Computer workbench (the office provider).
-- **D6** upstream token revoke on delete and on Disconnect.
+- **D6** upstream token revoke on Disconnect and on delete (migration 20260929500000;
+  `cloud-connector-token-revocation.ts`). Until now Disconnect only marked the secret revoked, and a
+  deleted company's tokens stayed live at Google and GitHub (GitHub's never expire).
+  - Each time a Gmail, Drive or GitHub secret goes from active to revoked (Disconnect, a member's
+    removal, a company's deletion), a trigger queues each stored version in
+    `qorpera_connector_token_revocations`. The ledger has no link to the company and never holds a
+    token or an account name, so its rows outlive the purge as receipts.
+  - Deleting a company: each finisher pass revokes the company's connector secrets and their grants
+    (a connection captured late goes too), counts the open entries as `holdings.connector_tokens` and
+    waits for them. Each entry gets six hours from the later of the deletion request and its own
+    queueing; then the finisher marks what is still open `abandoned` right before the purge, which
+    deletes the envelopes.
+  - The broker that sealed a version claims it once a minute (a company's own broker, or the shared
+    vault for each company it serves; `qorpera_claim_connector_token_revocations`, leased five
+    minutes, entries that keep failing last), opens the envelope, cancels the token and records the
+    outcome (`qorpera_complete_connector_token_revocation`). An error is recorded as a fixed phrase and
+    the entry is offered again after one minute, doubling to an hour. Google: `POST /revoke` with the
+    refresh token in the form body; 200 `revoked`, 400 `invalid_token` `already_invalid`. GitHub (our
+    one OAuth App): `DELETE /applications/{client_id}/token`, which revokes that one token and never
+    the user's whole grant; 204 `revoked`, 404 `already_invalid`; a typed personal token is `not_ours`.
+  - Google withdraws the account's whole grant to our client on any revoke. By Jonas's option A
+    (29 Sep), an entry whose Google account is still connected (an active Gmail or Drive secret with
+    the same account name, in any company not being deleted, this one included) completes as
+    `kept_shared` without a call; so does one with no account name. Our copy is revoked either way.
+  - Not covered, for the member or the operator: a Google account kept connected elsewhere
+    (`kept_shared`) and typed GitHub tokens (`not_ours`) are revoked by the member at the provider;
+    connections disconnected before this migration are not queued (no backfill); an older version
+    captured for a different account than the secret's current name is judged by the current name; the
+    GitHub revoke uses the current client secret, so rotating it before the queue is done fails those
+    entries; an entry whose broker was retired is never claimed (a deletion abandons it at six hours).
+  Coordinator's lane for D6, at the cut that carries 20260929500000:
+  1. Build `node scripts/package-cloud-secret-broker.mjs` from the release commit and roll it to the
+     shared vault (node 1 and node 2's standby) and to every company broker unit still running
+     (`qorpera-phql-broker` 18448 for b116763d, the Qorpera company's 18547 for 4168e335; both
+     companies are being deleted). Until a unit runs the new build, its companies' entries wait, and
+     a deletion purges after six hours with them `abandoned`.
+  2. Check: `journalctl -u <unit>` shows `Connector token revocation: N completed` after a deletion or
+     Disconnect with a connected account, and `select outcome, count(*) from
+     public.qorpera_connector_token_revocations group by 1` has no entry left open for long.
+  3. After those two companies' purge, retire their broker units and delete their keyrings (operator
+     runbook, "Per-company broker units").
