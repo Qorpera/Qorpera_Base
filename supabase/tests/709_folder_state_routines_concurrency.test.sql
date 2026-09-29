@@ -1,7 +1,8 @@
 -- Company state files, F2-6, under concurrency (deploy/first-node/RUNTIME-COMPANY-STATE-FILES.md §4): a routine save takes
 -- the company row FOR KEY SHARE at rank 0 and the routine FOR NO KEY UPDATE at rank 5, before its paths and the clock. The
--- scheduler (qorpera_enqueue_routine_wake) takes the company row FOR UPDATE (the fence), then the routine and its schedule
--- position, so whichever starts first, the other waits at the company row and nothing waits in a circle. A save that makes
+-- scheduler (qorpera_enqueue_routine_wake; its folder-v2 mode since C1c-2c part 1) takes the folder fence and the company
+-- row FOR KEY SHARE, then the routine FOR NO KEY UPDATE and its schedule position, so whichever starts first, the other
+-- waits at the routine row and nothing waits in a circle. A save that makes
 -- a new version supersedes the slot the scheduler queued and carries it to the new version; a scheduler that finds a
 -- new version refuses (QRC01) and reads again. A member's edit and a dynamic routine's own run meet at the routine row,
 -- before either has a path or the clock. The fixture is committed so other connections see it, and removed at the end.
@@ -235,8 +236,8 @@ begin
 	return false;
 end $$;
 
--- A. The scheduler holds the company fence and the routine (it waits on the schedule position another connection holds).
--- The save waits for it at the company row, before the routine. Then the new version supersedes the queued slot and
+-- A. The scheduler holds the routine (it waits on the schedule position another connection holds). The save waits for it
+-- at the routine row, before its paths. Then the new version supersedes the queued slot and
 -- carries it: the slot is offered again at the new version.
 do $$
 declare v jsonb; v_slot timestamptz := current_setting('qorpera_test.slot')::timestamptz;
@@ -248,7 +249,7 @@ begin
 	perform dblink_send_query('rrace_sched', current_setting('qorpera_test.enqueue'));
 	if not pg_temp.waits_for('rrace_sched', 'rrace_hold') then raise exception 'The scheduler must wait on the held position'; end if;
 	perform dblink_send_query('rrace_save', current_setting('qorpera_test.retitle'));
-	if not pg_temp.waits_for('rrace_save', 'rrace_sched') then raise exception 'The save must wait for the scheduler''s company fence'; end if;
+	if not pg_temp.waits_for('rrace_save', 'rrace_sched') then raise exception 'The save must wait for the scheduler at the routine'; end if;
 	perform dblink_exec('rrace_hold', 'rollback');
 	select t.r::jsonb into v from dblink_get_result('rrace_sched') as t(r text);
 	perform * from dblink_get_result('rrace_sched') as t(r text);
@@ -265,8 +266,8 @@ begin
 end $$;
 
 -- B. The other order: the save holds the company row and the routine (it waits on a path another connection holds), and
--- the scheduler starts. The scheduler waits for the save at its company fence, before the routine, and then finds a new
--- version: it refuses, and reads the routine again.
+-- the scheduler starts. The scheduler waits for the save at the routine row, and then finds a new version: it refuses,
+-- and reads the routine again.
 select set_config('qorpera_test.retitle_2', format('select public.qorpera_folder_commit(%L, %L, %L, %L)', '70900000-0000-4000-8000-000000000020',
 	pg_temp.owner()::text, 'race-retitle-0002', jsonb_build_array(pg_temp.routine('agents/nora/routines/inbox.md',
 		pg_temp.rparse('70900000-0000-4000-8000-0000000000e1', 'Inbox, second look', pg_temp.every())))::text), false) \g /dev/null
@@ -283,7 +284,7 @@ begin
 	perform dblink_send_query('rrace_save', current_setting('qorpera_test.retitle_2'));
 	if not pg_temp.waits_for('rrace_save', 'rrace_hold') then raise exception 'The save must wait on the held path'; end if;
 	perform dblink_send_query('rrace_sched', current_setting('qorpera_test.enqueue_2'));
-	if not pg_temp.waits_for('rrace_sched', 'rrace_save') then raise exception 'The scheduler must wait for the save at its fence'; end if;
+	if not pg_temp.waits_for('rrace_sched', 'rrace_save') then raise exception 'The scheduler must wait for the save at the routine'; end if;
 	perform dblink_exec('rrace_hold', 'rollback');
 	select r into v from dblink_get_result('rrace_save') as t(r jsonb);
 	perform * from dblink_get_result('rrace_save') as t(r jsonb);
