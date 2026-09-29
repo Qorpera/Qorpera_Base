@@ -474,6 +474,19 @@ Coordinator (nothing secret):
   period that ended in the last 30 minutes still counts as paying, while no next period is recorded
   and its subscription is `active` or `past_due`. Stripe's renewal invoice can trail the period's
   end by minutes, and the subscription's own dates can move first.
+- Bounded cost (migration `20260929300000`): `qorpera_company_at_zero` first looks the company up in
+  the zero state the sweep keeps (6c part 1). A company not recorded there is not at zero, at the
+  cost of one key lookup; the full check (`qorpera_company_at_zero_now`, as above) runs only for a
+  recorded company, so leaving zero counts at once and running out counts from the next sweep, up
+  to a minute later (the meter charges use once a minute anyway). Hours left for many companies
+  come from one query (`qorpera_computer_hour_left_many`, which the one-company
+  `qorpera_company_computer_hours_left` uses too). The sweep runs the full check only for a company
+  with no hours left (a newly recorded one, or a recorded one near a founder's period end); the
+  routine listing reads the zero state only. Locally, under heavy load, with 3,000 companies (1,000
+  at zero) a quiet sweep took about 0.4 s instead of about 2 s.
+- Members read the wait with `qorpera_company_waiting_for_hours(p_profile_id)` (migration
+  `20260929280000`), shown above the composer in agent threads and group chats, and with
+  `waitingForHours` in the hours read on Plan & usage.
 - Build step 6a (migration `20260928249200`, runs only):
   - wakes stay queued with `blocked_reason = 'Waiting for computer hours'`;
   - the routine listing (`qorpera_list_routine_schedule_heads`) leaves the company's due routines
@@ -532,14 +545,9 @@ Coordinator (nothing secret):
 
   Machines not starting or waking, and stopping after the hour (6b), the renewal-gap handling for
   machines, and the web (6d) follow. Before the live switch:
-  - the listing checks zero per routine (for the page and for the next-page check), and with the
-    rule on each check sums the company's hours (about 0.4 ms locally): check each company once,
-    and measure with production-sized data;
   - held wakes still take the wake step's slots and locks, as a paused company's do;
-  - the sweep checks, once a minute and under the meter lock (which Stripe webhooks also wait
-    on), every company whose free hours are used up, and a company that used its free hours and
-    never paid stays on that list: work out hours left for all of them in one query, or re-check
-    only companies whose inputs changed, and measure with production-sized data;
+  - measure the sweep (once a minute, under the meter lock, which Stripe webhooks also wait on)
+    and the orchestrator reconcile with production-sized data;
   - a routine created or retimed at zero gets its first slot only once hours arrive, so 6d shows
     "Waiting for computer hours" on it;
   - at the switch, and after it, watch the sweep: `select swept_at, failed_at, last_error from
