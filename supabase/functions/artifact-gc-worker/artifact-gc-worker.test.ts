@@ -6,14 +6,18 @@ import {
 	parseArtifactGcWorkerObjects,
 	parseAuthorizedArtifactGcWorkerObjects,
 	parseCompanyObjectGcWorkerJob,
+	parseCompanyStorageDeletions,
 	resolveArtifactGcWorkerAuthorization,
 	runArtifactGcWorkerBatch,
 	runCompanyObjectGcWorkerJob,
+	runCompanyStorageDeletions,
 	reconcileAuthorizedArtifactGcWorkerObjects,
 	type ArtifactGcStorageProvider,
 	type ArtifactGcWorkerJob,
 	type ArtifactGcWorkerStore,
 	type CompanyObjectGcWorkerStore,
+	type CompanyStorageDeletion,
+	type CompanyStorageDeletionStore,
 } from "./artifact-gc-worker.ts";
 
 const planId = "a8450f9d-c912-43ea-81f6-62c7247d752a";
@@ -344,5 +348,119 @@ describe("artifact cleanup worker", () => {
 			{ claimed: 1, completed: 0, failed: 1 },
 		);
 		assert.equal(released, true);
+	});
+});
+
+describe("a deleted company's Storage objects (company delete D5a)", () => {
+	const company = "30000000-0000-4000-8000-000000000010";
+	const capsule: CompanyStorageDeletion = {
+		bucket: "qorpera-native-compute-capsules",
+		path: "30000000-0000-4000-8000-0000000001a1.capsule",
+	};
+	const recovery: CompanyStorageDeletion = { bucket: "qorpera-identity-recovery", path: `${company}/` };
+	const fakeStorage = (objects: Record<string, string[]>) => {
+		const calls: string[] = [];
+		const completed: Array<{ path: string; error?: string }> = [];
+		const store: CompanyStorageDeletionStore = {
+			list: async (bucket, prefix) => {
+				calls.push(`list ${bucket} ${prefix}`);
+				return (objects[bucket] ?? [])
+					.filter((path) => path.startsWith(prefix))
+					.slice(0, 100)
+					.map((path) => path.slice(prefix.length));
+			},
+			remove: async (bucket, paths) => {
+				calls.push(`remove ${bucket} ${paths.length}`);
+				objects[bucket] = (objects[bucket] ?? []).filter((path) => !paths.includes(path));
+			},
+			complete: async (entry, error) => {
+				completed.push({ path: entry.path, ...(error ? { error } : {}) });
+			},
+		};
+		return { store, calls, completed, objects };
+	};
+	it("accepts only a capsule object or a company's recovery prefix", () => {
+		assert.deepEqual(parseCompanyStorageDeletions([capsule, recovery]), [capsule, recovery]);
+		for (const bad of [
+			[{ bucket: "qorpera-profile-objects", path: `${company}/x` }],
+			[{ bucket: "qorpera-identity-recovery", path: `${company}` }],
+			[{ bucket: "qorpera-identity-recovery", path: `${company}/../` }],
+			[{ bucket: "qorpera-native-compute-capsules", path: `${company}/` }],
+			[{ bucket: "qorpera-identity-recovery", path: capsule.path }],
+			[{ bucket: "qorpera-native-compute-capsules", path: "30000000-0000-4000-8000-0000000001a1.capsule/x" }],
+			[{ bucket: "qorpera-native-compute-capsules", path: "30000000-0000-4000-8000-0000000001A1.capsule" }],
+			[{ ...capsule, extra: 1 }],
+			{ ...capsule },
+			Array.from({ length: 101 }, () => capsule),
+		])
+			assert.throws(() => parseCompanyStorageDeletions(bad), /invalid/);
+	});
+	it("removes a capsule and empties the recovery prefix in rounds, then completes both", async () => {
+		const backups = Array.from({ length: 150 }, (_, index) => `${company}/${index.toString(16).padStart(64, "0")}`);
+		const fake = fakeStorage({
+			"qorpera-native-compute-capsules": [capsule.path, "30000000-0000-4000-8000-0000000001a9.capsule"],
+			"qorpera-identity-recovery": [...backups, "30000000-0000-4000-8000-000000000099/" + "e".repeat(64)],
+		});
+		assert.deepEqual(await runCompanyStorageDeletions([capsule, recovery], fake.store), {
+			claimed: 2,
+			completed: 2,
+			failed: 0,
+		});
+		assert.deepEqual(fake.objects["qorpera-native-compute-capsules"], ["30000000-0000-4000-8000-0000000001a9.capsule"]);
+		assert.deepEqual(fake.objects["qorpera-identity-recovery"], ["30000000-0000-4000-8000-000000000099/" + "e".repeat(64)]);
+		assert.deepEqual(fake.completed, [{ path: capsule.path }, { path: recovery.path }]);
+		assert.equal(fake.calls.filter((call) => call.startsWith("remove qorpera-identity-recovery")).length, 2);
+	});
+	it("records a failure on its entry, leaves anything unexpected under the prefix, and goes on", async () => {
+		const fake = fakeStorage({ "qorpera-identity-recovery": [`${company}/journal`, `${company}/${"a".repeat(64)}`] });
+		const store: CompanyStorageDeletionStore = {
+			...fake.store,
+			remove: async (bucket, paths) => {
+				if (bucket === "qorpera-native-compute-capsules") throw new Error("Storage object removal failed");
+				await fake.store.remove(bucket, paths);
+			},
+		};
+		assert.deepEqual(await runCompanyStorageDeletions([capsule, recovery], store), {
+			claimed: 2,
+			completed: 0,
+			failed: 2,
+		});
+		assert.deepEqual(fake.completed, [
+			{ path: capsule.path, error: "Storage object removal failed" },
+			{ path: recovery.path, error: "The recovery prefix holds an unexpected object" },
+		]);
+		assert.equal(fake.objects["qorpera-identity-recovery"]?.length, 2);
+	});
+	it("stops a prefix that does not empty after ten rounds, and records a short error without NUL", async () => {
+		const stuck = fakeStorage({ "qorpera-identity-recovery": [`${company}/${"b".repeat(64)}`] });
+		let removes = 0;
+		const store: CompanyStorageDeletionStore = {
+			...stuck.store,
+			remove: async () => {
+				removes += 1;
+			},
+		};
+		assert.deepEqual(await runCompanyStorageDeletions([recovery], store), { claimed: 1, completed: 0, failed: 1 });
+		assert.equal(removes, 10);
+		assert.deepEqual(stuck.completed, [{ path: recovery.path, error: "Recovery objects remain" }]);
+		const noisy = fakeStorage({});
+		await runCompanyStorageDeletions([capsule], {
+			...noisy.store,
+			remove: async () => {
+				throw new Error(`\u0000${"😀".repeat(600)}`);
+			},
+		});
+		const recorded = noisy.completed[0]?.error ?? "";
+		// 500 code points, as SQL counts them (a UTF-16 cut would split the last pair).
+		assert.equal(Array.from(recorded).length, 500);
+		assert.equal(recorded, "😀".repeat(500));
+		const blank = fakeStorage({});
+		await runCompanyStorageDeletions([capsule], {
+			...blank.store,
+			remove: async () => {
+				throw new Error("\u0000\u0000");
+			},
+		});
+		assert.deepEqual(blank.completed, [{ path: capsule.path, error: "Storage cleanup failed" }]);
 	});
 });
