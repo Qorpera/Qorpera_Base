@@ -210,7 +210,7 @@ export interface ConversationState {
 	/** What went wrong with the last card answer, in the member's words. */
 	interactionError?: string;
 	/** Older transcript events exist that this browser has not read: a thread opens at its newest
-	 * events (migration 20260929410000) and "Show earlier" reads further back (loadEarlier). */
+	 * events (migration 20260928279410) and "Show earlier" reads further back (loadEarlier). */
 	hasEarlier?: boolean;
 	/** "Show earlier" is reading, or why it could not. */
 	earlierLoading?: boolean;
@@ -270,7 +270,7 @@ const TAIL_PAGE = 200;
 const TAIL_ITEMS = 150;
 const TAIL_PAGES = 5;
 
-/** A cloud without the newest-first read (before 20260929410000): the thread reads forward. */
+/** A cloud without the newest-first read (before 20260928279410): the thread reads forward. */
 function missingTailRead(error: unknown): boolean {
 	return error instanceof CloudRpcError && (error.missing || error.code === "42883");
 }
@@ -368,7 +368,7 @@ export class CompanyController {
 	#polling = false;
 	readonly #invalidations = new Set<(resource: RealtimeResource) => void>();
 	readonly #conversationLoads = new Map<string, { promise: Promise<void>; repeat: boolean }>();
-	/** The cloud has no newest-first transcript read (before 20260929410000): threads read forward. */
+	/** The cloud has no newest-first transcript read (before 20260928279410): threads read forward. */
 	#tailMissing = false;
 	/** Taken inputs a thread has read back for once: never again (a run queued for hours stays taken
 	 * without an event, and each load would read further back). */
@@ -1326,7 +1326,7 @@ export class CompanyController {
 						return true;
 					} catch (error) {
 						if (!missingTailRead(error) || !live()) throw error;
-						// A cloud before 20260929410000 reads the whole history forward, as before.
+						// A cloud before 20260928279410 reads the whole history forward, as before.
 						this.#tailMissing = true;
 					}
 				}

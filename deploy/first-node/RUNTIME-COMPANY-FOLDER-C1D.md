@@ -206,10 +206,10 @@ that the Storage mirror inserted is still served.
   commit keeps retrying past the sealed intent's hour, it renews the intent, or `put` again re-puts every object it
   may not yet read.
 
-**Split.** C1d-1a is the SQL (§2–§7, slot 20260929520000) with tests 761 and 762. C1d-1b is the gateway route and the
+**Split.** C1d-1a is the SQL (§2–§7, slot 20260928279520) with tests 761 and 762. C1d-1b is the gateway route and the
 runtime adapter, with no migration.
 
-**Built (C1d-1a, migration 20260929520000).**
+**Built (C1d-1a, migration 20260928279520).**
 - The tables of §2; the manifest check `qorpera_folder_manifest`; the actor checks `qorpera_folder_upload_scope`,
   `qorpera_folder_upload_actor` (the stop for staging only) and `qorpera_folder_put_intent`; the read rule
   `qorpera_folder_object_readable`.
