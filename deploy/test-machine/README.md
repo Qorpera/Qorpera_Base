@@ -11,12 +11,13 @@ credentials and no product role. Agents' test machines (#419) are a separate pro
 | --- | --- |
 | VM | `qorpera-testvm-node02` in LXD project `testmachines` |
 | Size | 6 vCPU, 16 GiB RAM, 150 GiB root disk on pool `qorpera-vm`. Sized for PR #326's physical acceptance (6+ CPUs, 16 GiB, KVM). Setup records whether `/dev/kvm` is present |
-| Image | Ubuntu 26.04 server, then Docker Engine (rootful), Node 24.21.0 (pinned checksum), Git, build tools, Python, LXD 6.9 rev 40424 for nested tests. The pinned PostgreSQL image of `scripts/test-hosted-db.mjs` and `node:24-bookworm-slim` are pre-pulled. Stopped containers, dangling images and build cache older than a week are pruned weekly |
+| Image | Ubuntu 26.04 server, then [`guest-setup.sh`](guest-setup.sh): Docker Engine (rootful), Node 24.21.0 (pinned checksum), Git, build tools, Python, bubblewrap, LXD 6.9 rev 40424 for nested tests. The pinned PostgreSQL image of `scripts/test-hosted-db.mjs`, `node:24-bookworm-slim` and `node:22-bookworm-slim` (the runtime office probes, as in CI) are pre-pulled. Stopped containers, dangling images and build cache older than a week are pruned weekly |
 | Self-update | `apt-daily*` and `unattended-upgrades` are masked, as for coding images (`deploy/coding-worker/COMMAND-GUEST.md`), and every snap is held |
 | Network | Bridge `testmach0` (10.201.0.1/24, NAT, no IPv6), VM at 10.201.0.2 with MAC/IP filtering and port isolation |
 | Egress | ACL `testmach-egress`: the internet only. Rejected: 10/8 except the bridge's own /24, 172.16/12, 192.168/16 (LAN and NAS), 100.64/10 (Tailscale), 169.254/16, 127/8, 0/8, 192.0.0/24, 198.18/15, 224/4 and all IPv6. The node itself (the gateway) is rejected on every TCP and UDP port except DNS and DHCP; ICMP to it is not blocked. LXD applies reject rules before allow rules, so the rejects are written to leave the needed holes rather than relying on allow rules |
 | Ingress | Only SSH from the node (10.201.0.1). Developer sessions jump through the node's normal SSH login |
 | Login | User `tester` (docker and passwordless sudo inside the VM), key only. Root login and passwords are off |
+| Runner users | `ci01` to `ci16`, same rights as `tester`. Each run takes a free one for its whole duration (below) |
 
 ## Node accounting
 
@@ -36,18 +37,55 @@ does not change the digest.
 ## Running a suite
 
 ```sh
+node scripts/run-on-node.mjs changed
+node scripts/run-on-node.mjs test
 node scripts/run-on-node.mjs hosted-db
 node scripts/run-on-node.mjs --env QORPERA_OFFICE_TEST_IMAGE=node:24-bookworm-slim scripts/test-office-storage-inventory-linux.mjs
 node scripts/run-on-node.mjs --no-install -- docker run --rm hello-world
 node scripts/run-on-node.mjs --dry-run npm:test:scripts
 ```
 
+`changed` is the everyday check: it runs what the files changed against `origin/master` (or `--base REF`)
+need, and prints what it chose and why. The steps and the paths that start them are in
+[`scripts/run-on-node-plan.mjs`](../../scripts/run-on-node-plan.mjs). They replace the switched-off GitHub
+workflows and run at least what those ran for the same change:
+
+- documentation alone: nothing;
+- any other change: lint, the root and member-web typechecks, and the repository checks (pinned dependencies,
+  imports, cloud boundaries, connector catalog, runtime bundle);
+- any change that is not web-only: also all runtime and cloud-client tests and all script tests (packaging and
+  installer pins included), as the old release train did;
+- on top, by path: the web client (with its release build), member-web, object-gateway, runner-orchestrator,
+  Supabase functions, node deploy tests, deploy shell syntax, hosted-db with its PostgreSQL scripts;
+- shared configuration (`package.json`, the lockfile, `tsconfig`, `vitest.base.ts`, `biome.json`,
+  `packages/contracts`, `packages/company`) and any path no rule knows: every step.
+
+A moved file counts at both paths. Every step runs even when an earlier one fails. The full `test` suite is
+for release candidates.
+
 The wrapper copies the working tree git sees: tracked and untracked files that are not ignored,
 uncommitted changes included, `node_modules` and `.git` left out. It copies them to a fresh
 directory on the VM, and only changed files cross the network (rsync `--copy-dest` against a
 per-worktree copy). It runs `npm ci --ignore-scripts` there (skipped for `hosted-db`, which needs
-no packages), streams the output, and exits with the suite's exit code. The run directory is
-deleted afterwards (`--keep` keeps it). At the start of every run, runs older than a day (by the UTC time
+no packages), streams the output, and exits with the suite's exit code. The `test` suite is the whole
+repository's `npm test`; it first runs `npm run build:web-sdk`, because the script tests import the built
+`@qorpera/contracts` (`--build` does the same for any suite).
+
+Each run takes one of the runner users `ci01` to `ci16`, under a lock held until the run ends, and hands
+it the run directory; install and suite run as that user. Kernel limits per user then count one run
+only. This matters: the coding Git sandbox runs under `prlimit --nproc=512`, and RLIMIT_NPROC counts
+every task of the user on the machine. When all runs shared `tester`, a few parallel sessions pushed it
+past 512 and bubblewrap failed with "Creating new namespace failed: Resource temporarily unavailable".
+When all 16 are busy, a run waits (up to an hour).
+
+At most three runs execute at once, and each runs vitest with `VITEST_MAX_WORKERS` = vCPUs / 3 (2 on
+6 vCPUs, 4 on 12; a `--env VITEST_MAX_WORKERS=n` on the command wins), so the three slots together use the
+machine's vCPUs. The record notes the load and the uncapped test processes (older clients) at start. A full
+`npm test` is about 881 CPU-seconds; on 2026-09-29 two full runs plus other sessions drove the load to 22
+and timing-bound tests failed that pass on a quiet machine. Later runs wait in arrival order and print
+their queue position; the record notes the slot and the time spent queued. Each runner user keeps its own npm cache, so
+`npm ci` takes about 30 s the first time and 5-6 s after that. The run directory is
+deleted afterwards (`--keep` keeps it; it then belongs to the runner user, so use sudo inside it). At the start of every run, runs older than a day (by the UTC time
 in their name), worktree copies unused for 14 days and hosted-db containers older than 6 hours are removed.
 Untracked files that look like credentials (`.env`, `.env.*`, `*.env`, `.envrc`, `.npmrc`, `.netrc`, `.pgpass`,
 `.git-credentials`, `.aws/credentials`, `*.pem`, `*.key`, `*.p12`, `*.tfvars`, `id_*` without an extension,
@@ -55,11 +93,13 @@ Untracked files that look like credentials (`.env`, `.env.*`, `*.env`, `.envrc`,
 
 The last line is a JSON record: host, OS, kernel, Node, npm, Docker and Git versions, KVM, source
 commit and a digest of exactly the files copied, command, copy, preparation and elapsed time, and the
-result (`passed`, `failed`, or `setup-failed` when `npm ci` failed). This
+result (`passed`, `failed`, `setup-failed` when `npm ci`, the build or the harness failed, or `unknown`
+when the status could not be read back), the runner user, the slot and time queued, and for `changed` the
+plan and its base. This
 is the record contract 24.4 asks for. `--record FILE` also writes it to a file.
 
-Several sessions can run at once. Each run has its own directory, and the hosted-db harness
-names its containers per process.
+Several sessions can use the machine at once. Each run has its own directory and runner user, and the
+hosted-db harness names its containers per process.
 
 Access needs the key `~/.ssh/id_ed25519_qorpera_testvm` and SSH to `company41-node-02`.
 Override the target with `QORPERA_TEST_MACHINE`, `QORPERA_TEST_MACHINE_JUMP` and
