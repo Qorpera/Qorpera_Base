@@ -333,13 +333,14 @@ begin
 		perform 1 from public.qorpera_runtime_office_screens where id = (p_anchor ->> 'screenId')::uuid for share;
 		select * into v_screen from public.qorpera_runtime_office_screens where id = (p_anchor ->> 'screenId')::uuid;
 		select * into v_office from public.qorpera_runtime_offices where id = v_screen.office_id;
+		-- coalesce: a screen with no holder must refuse, not compare to null.
 		if v_screen.id is null or v_office.environment_id <> p_environment_id or v_screen.drain_pending
-			or not (
+			or not coalesce(
 				(v_holder_run is not null and v_screen.run_id = v_holder_run and v_screen.lease_expires_at > clock_timestamp()
 					and v_office.privacy_state = 'shared')
 				or (v_holder_user is not null and (v_screen.takeover_user_id = v_holder_user
 					or (v_office.privacy_state in ('entering','private') and v_office.privacy_challenge ->> 'memberId' = v_holder_user::text
-						and v_office.privacy_challenge ->> 'screenId' = v_screen.id::text)))) then
+						and v_office.privacy_challenge ->> 'screenId' = v_screen.id::text))), false) then
 			raise exception 'Folder view holder is not current' using errcode = '42501'; end if;
 		v_staff := v_screen.staff_agent_id;
 		if v_holder_run is not null then
