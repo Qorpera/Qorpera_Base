@@ -8,6 +8,7 @@
 
 ### Added
 
+- `CloudRunnerControlRequest` has a `start` action: an acceptance plus, in the same transaction, the broker description and (with `nativeLeaseSeconds`) the native authority.
 - Added `cloud-agent-folder`: `cloudAgentFolder(agent)`, the one resolver of an agent's folder in the company folder (contract 5.6), `agents/<staffAgentId>` until agents have named folders with an `agent.md` index.
 - `CloudMemberCompanyAccessDenied`: the member Company File client's refusal (401/403) is now its own error class, with the same message, so a caller can tell a closed folder from an outage.
 - Added `cloud-skill-file`: the one SKILL.md parser and writer (name rule, YAML front matter with `description`, body, line endings kept) shared by the runtime skill tools and the web client.

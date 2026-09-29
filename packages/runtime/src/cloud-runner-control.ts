@@ -26,7 +26,7 @@ import {
 	uuid,
 } from "@qorpera/cloud-client/node/cloud-runner-protocol";
 import type { JsonValue } from "@qorpera/contracts";
-import { type CloudRunnerBrokerTransport, CloudRunnerJobBroker } from "./cloud-runner-broker.ts";
+import { type CloudRunnerBrokerTransport, CloudRunnerJobBroker, type CloudRunnerStart } from "./cloud-runner-broker.ts";
 
 interface PendingHeartbeat {
 	nextToken: string;
@@ -298,6 +298,9 @@ export class DisposableCloudRunner {
 	#pendingAssignment?: PendingAssignment;
 	#runner?: CloudRunner;
 	#consumedRepairSha256?: string;
+	/** The control plane refused the start action before doing anything (400: an Edge Function
+	 * without it; 501: a database without it). This process accepts alone from then on. */
+	#startUnavailable = false;
 	readonly #leases = new Map<string, ActiveRunnerLease>();
 	readonly #recoveries = new Map<string, CloudRunnerRecovery>();
 	#persistTail: Promise<void> = Promise.resolve();
@@ -478,6 +481,34 @@ export class DisposableCloudRunner {
 	}
 
 	async acceptAssignment(assignment: CloudRunnerAssignmentAcceptance): Promise<CloudRunnerJob> {
+		return (await this.#accept(assignment)).job;
+	}
+
+	/** Accepts exactly like acceptAssignment and, in the acceptance's own database transaction,
+	 * reads the broker description and, with `nativeLeaseSeconds`, the native authority, so the
+	 * job's broker needs no further round trip before execution. `start` is absent when the cloud
+	 * deferred those reads (the broker then makes the separate calls) or does not offer the start
+	 * action at all: a 400 or 501 proves nothing ran, and this runner then accepts alone. */
+	async startAssignment(
+		assignment: CloudRunnerAssignmentAcceptance,
+		nativeLeaseSeconds?: number,
+	): Promise<{ job: CloudRunnerJob; start?: CloudRunnerStart }> {
+		if (!this.#startUnavailable) {
+			try {
+				return await this.#accept(assignment, { nativeLeaseSeconds });
+			} catch (error) {
+				const status = cloudRunnerControlRequestStatus(error);
+				if (status !== 400 && status !== 501) throw error;
+				this.#startUnavailable = true;
+			}
+		}
+		return this.#accept(assignment);
+	}
+
+	async #accept(
+		assignment: CloudRunnerAssignmentAcceptance,
+		start?: { nativeLeaseSeconds: number | undefined },
+	): Promise<{ job: CloudRunnerJob; start?: CloudRunnerStart }> {
 		if (this.#recoveries.has(assignment.jobId))
 			throw new Error("Runner job requires outcome reconciliation before another execution");
 		const token = this.#sessionToken;
@@ -498,15 +529,45 @@ export class DisposableCloudRunner {
 			this.#pendingAssignment = received;
 			await this.#persist();
 		}
-		const job = parseCloudRunnerJob(
-			await this.#transport.request(token, {
-				action: "accept",
-				runnerId: this.#runnerId,
-				assignmentId: received.assignmentId,
-				jobId: received.jobId,
-				assignmentCapability: received.capability,
-			}),
+		const acceptance = {
+			runnerId: this.#runnerId,
+			assignmentId: received.assignmentId,
+			jobId: received.jobId,
+			assignmentCapability: received.capability,
+		};
+		const value = await this.#transport.request(
+			token,
+			start
+				? {
+						action: "start",
+						...acceptance,
+						...(start.nativeLeaseSeconds === undefined ? {} : { nativeLeaseSeconds: start.nativeLeaseSeconds }),
+					}
+				: { action: "accept", ...acceptance },
 		);
+		let started: CloudRunnerStart | undefined;
+		let accepted = value;
+		if (start) {
+			const receipt = record(value, "runner start");
+			const description = receipt.description ?? undefined;
+			const nativeAuthority = receipt.native_authority ?? undefined;
+			if (
+				Object.keys(receipt).some((key) => !["job", "description", "native_authority"].includes(key)) ||
+				(nativeAuthority !== undefined && (description === undefined || start.nativeLeaseSeconds === undefined))
+			) {
+				throw new Error("Runner start returned an inconsistent receipt");
+			}
+			accepted = receipt.job;
+			if (description !== undefined) {
+				started = {
+					description,
+					...(nativeAuthority !== undefined && start.nativeLeaseSeconds !== undefined
+						? { nativeAuthority: { value: nativeAuthority, leaseSeconds: start.nativeLeaseSeconds } }
+						: {}),
+				};
+			}
+		}
+		const job = parseCloudRunnerJob(accepted);
 		if (
 			job.jobId !== received.jobId ||
 			(job.assignmentId !== undefined && job.assignmentId !== received.assignmentId) ||
@@ -538,7 +599,7 @@ export class DisposableCloudRunner {
 			this.#pendingAssignment = received;
 			throw error;
 		}
-		return job;
+		return { job, ...(started ? { start: started } : {}) };
 	}
 
 	async renew(jobId: string): Promise<CloudRunnerJob> {
@@ -556,7 +617,12 @@ export class DisposableCloudRunner {
 		return job;
 	}
 
-	broker(job: CloudRunnerJob, transport: CloudRunnerBrokerTransport, signal?: AbortSignal): CloudRunnerJobBroker {
+	broker(
+		job: CloudRunnerJob,
+		transport: CloudRunnerBrokerTransport,
+		signal?: AbortSignal,
+		start?: CloudRunnerStart,
+	): CloudRunnerJobBroker {
 		if (job.runnerId !== this.#runnerId || job.status !== "leased" || !this.#leases.has(job.jobId)) {
 			throw new Error("Runner job lease is unavailable");
 		}
@@ -565,6 +631,7 @@ export class DisposableCloudRunner {
 			runnerId: this.#runnerId,
 			transport,
 			...(signal ? { signal } : {}),
+			...(start ? { start } : {}),
 			credentials: () => {
 				const sessionToken = this.#sessionToken;
 				const lease = this.#leases.get(job.jobId);

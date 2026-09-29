@@ -110,6 +110,15 @@ export type CloudRunnerControlRequest =
 			jobId: string;
 			assignmentCapability: string;
 	  }
+	| {
+			/** Accept, describe and (with `nativeLeaseSeconds`) native authority in one transaction. */
+			action: "start";
+			runnerId: string;
+			assignmentId: string;
+			jobId: string;
+			assignmentCapability: string;
+			nativeLeaseSeconds?: number;
+	  }
 	| { action: "renew"; runnerId: string; jobId: string; leaseToken: string }
 	| {
 			action: "complete";
