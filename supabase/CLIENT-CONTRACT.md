@@ -50,9 +50,14 @@ Founders (2026-09-28, migration 20260928248100): every member with the role
 - `qorpera_leave_hosted_profile`: anyone leaves, except the last member (who
   deletes instead), the last founder while others remain, and a founder while
   company setup runs for them (42501).
-- `qorpera_delete_hosted_profile`: only the last member.
+- `qorpera_delete_hosted_profile`: only the last member. Since 20260928249150 it
+  requests the deletion: the company disappears at once (no role for anyone, gone
+  from `qorpera_list_hosted_profiles` and the founding lobby, the member's access
+  state turns `revoked`) and all its work stops. Its rows are removed later, once
+  the servers hold nothing of it (deploy/first-node/RUNTIME-COMPANY-DELETE.md). A
+  second call answers 42501, like any call for a company the caller is not in.
 - Deleting an account (operators only; no client RPC; migration
-  20260929180000) takes the person's memberships as a leave does, with the
+  20260928249180) takes the person's memberships as a leave does, with the
   same refusals, and is also refused for the only member of a company that is
   not being deleted. It never removes company data: conversations, messages
   and runs keep naming the person, as they do after a leave. Closing an
@@ -494,8 +499,13 @@ wake), so no agent runs and nothing is charged before it.
   computer hour = 3600), `byKind` (`companyMachines`, `agentMachines`,
   `codingMachines`, `runs`, standard seconds rounded per kind, so their sum
   may differ from the total by a few seconds), `awakeNow` (the same kinds,
-  counted now) and `meteredUntil` (the meter counts up to about a minute
-  ago). Any member of the company, viewers included; anyone else gets 42501.
+  counted now), `meteredUntil` (the meter counts up to about a minute
+  ago) and, from 20260928249200, `waitingForHours` (true while the zero rule
+  holds the company's new work: show "Waiting for computer hours"). Any
+  member of the company, viewers included; anyone else gets 42501. While
+  the rule holds a company, `qorpera_enqueue_execution_run` and
+  `qorpera_enqueue_runner_job` refuse new work with 55000 ("Waiting for
+  computer hours: the company has none left").
   A client shows "Not measured yet" while the function is missing (PGRST202).
 
 - 20260928248910_runtime_computer_hours_payments:
@@ -590,7 +600,7 @@ machine.
   Stripe's webhook, not with the return.
 - `profile-invitation-email`, `company-file-verifier`, `artifact-gc-worker`,
   `runner-control`, `runner-broker`, `runner-orchestrator`,
-  `computer-hour-notices` (20260929160000, founders' hour emails) — service or
+  `computer-hour-notices` (20260928249160, founders' hour emails) — service or
   runner authority only. Clients never call them.
 
 ## 6. Stability by Order (what a client may build now)

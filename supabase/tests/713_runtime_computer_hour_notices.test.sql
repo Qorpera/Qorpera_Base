@@ -1,5 +1,5 @@
 -- @fixture 300_runtime_wake_bus.test.sql until "-- END WAKE FIXTURE"
--- Computer hours, build step 5 (20260929160000_runtime_computer_hour_notices): hour notices to
+-- Computer hours, build step 5 (20260928249160_runtime_computer_hour_notices): hour notices to
 -- founders as an email outbox. Nothing before the live switch; "running low" once a month to the
 -- payers (or every founder on free hours); "out of hours" once per time the company runs out, to
 -- every founder; both sent ten minutes later unless hours arrived; a summary per used plan period;

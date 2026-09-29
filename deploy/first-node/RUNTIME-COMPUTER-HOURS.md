@@ -380,7 +380,7 @@ Live keys come later, with the live switch (build step 7).
 - Admins, contributors and viewers get no billing email. In-app notices that mirror the emails
   come with a later web step.
 
-Migration `20260929160000_runtime_computer_hour_notices` and the Edge Function
+Migration `20260928249160_runtime_computer_hour_notices` and the Edge Function
 `supabase/functions/computer-hour-notices` (logic in `supabase/functions/_shared/computer-hour-notices.ts`):
 
 - `qorpera_computer_hour_notices` is the outbox: one row per recipient and occasion (kind, founder,
@@ -393,19 +393,22 @@ Migration `20260929160000_runtime_computer_hour_notices` and the Edge Function
     low when a month begins is told again that month. The payers are founders whose current plan
     period has hours left and founders whose credits have hours left. A founder's plan used up by
     another company does not count toward this company's "what pays now".
-  - Out of hours: once per time the company runs out. A time starts when it begins to owe; any
-    hours arriving (even too few to clear the debt) end it, and running out again is a new time.
+  - Out of hours, while the zero rule is off: once per time the company runs out. A time starts
+    when it begins to owe; any hours arriving (even too few to clear the debt) end it, and running
+    out again is a new time. With the zero rule on, the trigger sends none: the zero sweep sends
+    it once per time at zero (see "Zero", build step 6c part 1).
   - Both wait ten minutes before they are sent. The worker drops one (cancelled) if the company
     is no longer low, no longer owes, or owes in a newer time; for instance, a plan renewal
     recorded moments after the meter charged. It also drops "running low" once the company has run
     out ("out of hours" says it), or once the company is complimentary. A dropped "running low"
     frees its month, so running low again is told. A recipient who is no longer a founder is
     marked failed.
-  - Known limit: a renewal recorded more than ten minutes late (a delayed Stripe webhook) still
-    sends "out of hours" for the gap.
+  - Known limit, while the zero rule is off: a renewal recorded more than ten minutes late (a
+    delayed Stripe webhook) still sends "out of hours" for the gap. With the rule on, the renewal
+    grace covers the first 30 minutes (see "Zero").
   - Reaching zero without owing (hours taken back, credits expiring, a plan ending) queues nothing,
-    since no use follows once the zero rule holds work back. Build step 6 sends "out of hours"
-    when it first holds a company's work back.
+    since no use follows once the zero rule holds work back. Build step 6c part 1 sends "out of
+    hours" when the company is first recorded at zero, under its own occasion (see "Zero").
 - Summaries are queued by the worker's claim for plan periods that ended ten minutes ago or more
   (so the last meter pass has committed) and within seven days, one per founder and period (its
   `sub_…:start` reference). Each lists the company's draws and repayments across the period and its
@@ -463,9 +466,68 @@ Coordinator (nothing secret):
 
 ## Zero (build step 6; built switched off)
 
-- The check is `qorpera_company_computer_hours_left(p_profile_id)` (step 3): more than zero, or
-  null for a complimentary company.
-- A complimentary company always passes.
+- The check is `qorpera_company_at_zero(p_profile_id, at)` (migration `20260928249200`). It is true
+  only when the rule is switched on (`qorpera_computer_hour_billing.zero_rule_since`, null until the
+  live switch), payments are live (dry-run balances never hold work), and
+  `qorpera_company_computer_hours_left(p_profile_id)` (step 3) is zero or less. That value is null
+  for a complimentary company, which always passes. There is a renewal grace: a founder's plan
+  period that ended in the last 30 minutes still counts as paying, while no next period is recorded
+  and its subscription is `active` or `past_due`. Stripe's renewal invoice can trail the period's
+  end by minutes, and the subscription's own dates can move first.
+- Build step 6a (migration `20260928249200`, runs only):
+  - wakes stay queued with `blocked_reason = 'Waiting for computer hours'`;
+  - the routine listing (`qorpera_list_routine_schedule_heads`) leaves the company's due routines
+    out, so the orchestrator does not ask about each one on every pass;
+  - a routine's slot asked for anyway is deferred, as while the company is paused: no wake is
+    queued and the cursor stays, so the slot is offered again once hours arrive, and waiting work
+    does not pile up;
+  - member messages, turn requests and proposal reviews are not picked (checked again after the
+    admission lock) and stay queued;
+  - members see the wait through `waitingForHours` in `qorpera_read_company_computer_hours`;
+  - the two direct enqueue calls (legacy clients) are refused (55000) after their idempotent
+    replay, so a retry of work made before zero still answers;
+  - a BEFORE INSERT trigger on `qorpera_execution_runs` stops any path that did not check.
+
+- Build step 6c part 1 (migration `20260928249250`, when a company ran out):
+  - `qorpera_computer_hour_zero_state` holds, for each company at zero, when it ran out; the
+    finishing window counts its hour from there;
+  - a sweep after each meter pass (`qorpera_meter_computer_hours()`, in its transaction and under
+    its lock) removes a company no longer at zero and adds one newly at zero. Only a company whose
+    live free hours are used up can be at zero, so only those are looked at. A company being
+    deleted is skipped. While the rule is off, or in the dry run, the table is kept empty. A
+    failing sweep is undone with a warning and never holds metering back;
+  - with the rule on, "out of hours" goes once per time at zero: when the sweep adds a company, to
+    every founder, ten minutes later, under its own occasion `<company>:zero:<when it ran out, in
+    microseconds>`, whether it got there by owing or not (hours taken back, credits expiring, a
+    plan ending, which no use follows). The usage trigger's own "out of hours" is for the rule
+    off only. The claim keeps the notice while its record is there and the company is still at
+    zero (hours too few to clear a debt keep it), and drops it once the company leaves zero; the
+    claim also drops "running low" at zero;
+  - each sweep's time and the last failure (time and message) are kept in
+    `qorpera_computer_hour_zero_sweep_status` for operators. The sweep waits at most 2 s for a company
+    row held elsewhere;
+  - known limits: the ran-out time is the sweep's, up to a minute late. A founder's renewal grace
+    takes a company at zero off the list at the period's end, and it is added again, with a new
+    ran-out time and a new email, if no renewal is recorded within the 30 minutes. A renewal
+    recorded more than about 40 minutes late (grace plus the email's ten-minute wait) sends a
+    false "out of hours".
+
+  Machines not starting or waking (6b), the finishing window and the renewal-gap handling for
+  machines (6c part 2), and the web (6d) follow. Before the live switch:
+  - the listing checks zero per routine (for the page and for the next-page check), and with the
+    rule on each check sums the company's hours (about 0.4 ms locally): check each company once,
+    and measure with production-sized data;
+  - held wakes still take the wake step's slots and locks, as a paused company's do;
+  - the sweep checks, once a minute and under the meter lock (which Stripe webhooks also wait
+    on), every company whose free hours are used up, and a company that used its free hours and
+    never paid stays on that list: work out hours left for all of them in one query, or re-check
+    only companies whose inputs changed, and measure with production-sized data;
+  - a routine created or retimed at zero gets its first slot only once hours arrive, so 6d shows
+    "Waiting for computer hours" on it;
+  - at the switch, and after it, watch the sweep: `select swept_at, failed_at, last_error from
+    public.qorpera_computer_hour_zero_sweep_status`. With the rule on it is the only sender of
+    "out of hours", and the finishing window acts on its records, so a sweep that keeps failing
+    means neither.
 - It is checked before a run is created (not at claim or placement: a run waiting there is
   invisible to members) and at each machine kind's own start or wake step. A run created before
   the company ran out is running work. The hook list is agreed with the nodes (S3), machines,
@@ -498,12 +560,10 @@ Coordinator (nothing secret):
 - When it first holds a company's work back, it queues "out of hours" for every founder in step
   5's outbox, if none is open for that time. This covers a company reaching zero without owing:
   hours taken back, credits expiring, or a plan ending. No use follows then, so step 5's trigger
-  never sees it. It needs its own occasion, and step 5's claim rule, which drops an "out of hours"
-  unless the company still owes in the same time, must learn to keep it.
+  never sees it. Built in 6c part 1 (above).
 - A plan renewal is recorded when Stripe's renewal invoice arrives, which can trail the period's
-  end by minutes. The check must not hold work back in that gap: for instance, it can treat a
-  founder's active subscription whose recorded period just ended as still paying for a short
-  grace window.
+  end by minutes. The check must not hold work back in that gap. For runs, 6a's renewal grace does
+  this (see above); machines follow in 6c.
 - It ships switched off, in its own release, with a 30-minute database watch after the cut. It is
   switched on together with live payments and hour notices.
 

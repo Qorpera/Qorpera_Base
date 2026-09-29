@@ -30,8 +30,13 @@ end $$;
 -- claim asks it last, only for a run whose home is elsewhere).
 do $$
 declare v_claim text := pg_get_functiondef('public.qorpera_claim_runner_job_for_orchestrator(uuid,uuid,integer)'::regprocedure);
-	v_decide text := pg_get_functiondef('public.qorpera_runtime_node_placement_decide(uuid,text,text,uuid)'::regprocedure);
+	-- Since 20260928249240 the chooser's body takes a fifth argument (a node to rank last); the four-argument
+	-- form only passes none.
+	v_decide text := pg_get_functiondef('public.qorpera_runtime_node_placement_decide(uuid,text,text,uuid,uuid)'::regprocedure);
+	v_decide_four text := pg_get_functiondef('public.qorpera_runtime_node_placement_decide(uuid,text,text,uuid)'::regprocedure);
 begin
+	if position('public.qorpera_runtime_node_placement_decide(p_allocation_id,p_provider_kind,p_provider_id,p_compute_identity_id,null::uuid)' in v_decide_four) = 0 then
+		raise exception 'The four-argument chooser does not pass through'; end if;
 	if (select count(*) from regexp_matches(v_claim,
 		'and home\.provider_adapter = v_adapter\s+\)\s+or public\.qorpera_compute_identity_login_in_vault\(run\.compute_identity_id\)\)\s+order by job\.created_at', 'g')) <> 1
 		or (select count(*) from regexp_matches(v_claim, 'qorpera_compute_identity_login_in_vault', 'g')) <> 1 then
