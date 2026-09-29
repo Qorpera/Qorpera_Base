@@ -51,7 +51,8 @@ Rollback: `select cron.unschedule('qorpera-company-deletions')`. Requests then w
 | Coding machines | coding executor housekeeping (retiring machine → stop, sleep, delete, release) | works |
 | Agent machines (#419) | executor, once the machine is set `deleted` | #531 adds them to `qorpera_stop_company_work`; until it lands their allocations hold the purge |
 | Company Computers | office provider: power off (works), delete and release (D3) | D3; live once the D3b provider build is installed per office |
-| Sign-in identity volumes on the exec host, recovery volumes | login gateway / LXD provider (D4) | D4 |
+| Sign-in identity volumes on the nodes and their exec host devices | LXD provider's login gateway (D4) | D4; live once the LXD provider build is rolled |
+| Run recovery volumes (`user.qorpera.profile_id`), identity volumes from before node demands (8 Sep) | operator runbook: a run's recovery volume only once its journal is archived (a day after it settles; the provider still requires it before) | last |
 | Company File and folder objects (Storage, NAS) | artifact GC worker, deleted-profile phase (catalog rows outlive the purge) | exists; runs once the worker is deployed (not deployed on 29 Sep) |
 | Credential capsules and recovery backups in Storage | artifact GC worker, from `qorpera_company_storage_deletions` (D5a) | D5a; same worker |
 | Recovery backups on the recovery service's NAS and journal | operator runbook (a per-company service) | last |
@@ -119,10 +120,45 @@ records what it waits for.
   6. Rollback: put the `.retired-<sha12>` file back and restart. Not for an office that already has
      `office-retirement-request.json` in its journal: an older build would keep asking for the deleted
      VM. Leave that office on the new build.
-- **D4** identity retirement: per (node, identity) rows; the login gateway detaches the device from the
-  exec host, deletes the volume, confirms; the holdings rule then waits only for unconfirmed rows. It
-  also ends identity recoveries requested before the deletion (consent, activation and review do not
-  check the deletion in D1).
+- **D4** sign-in identity retirement (migration 20260929450000; `lxd-login-gateway.ts`). A node-held
+  sign-in keeps its key on an LXD volume named after the identity, on its sign-in machine's node and on
+  every node its runs used; on node 2 the volume is also attached to the execution host. The holdings
+  count the company's (node, identity) placements: each identity that had a sign-in machine, on each
+  node where the company had a reserved machine. A company without node sign-ins (Vault By Default, or
+  none) has none and purges as before.
+  Once none of the company's machines was released in the last ten minutes (a parked execution-host
+  slot keeps an identity mounted up to five), each node's LXD provider (its login gateway, at most once
+  a minute) gets the identities from `qorpera_runtime_identity_retirements_due`, and tries each at
+  most once a minute, eight a pass: it skips one with a sign-in machine of its own not yet released,
+  checks the volume is exactly the identity's, detaches the execution-host device of exactly the
+  identity shape, deletes the volume (LXD refuses one still in use), confirms both gone and records it
+  with `qorpera_confirm_runtime_identity_retirement`. While SQL names it, its sweep does not attach it
+  again. A node whose inventory policy has an execution host with identity volumes cannot report
+  `device: none`. The ledger `qorpera_runtime_identity_retirements` outlives the purge, and a replay
+  after a lost reply may report `absent` for what it removed (never the reverse).
+  The node inventory keeps accepting the device from the company's login demands until the purge, which
+  now waits for the detach. No new volume appears while deleting: node reservations refuse a paused
+  company, and the run provider neither needs nor re-creates the identity volume of a stopped or lost
+  run it keeps reconciling (up to a day, also after a restart). Identity recoveries need no node step:
+  the escrowed key reaches a node only through a sign-in machine, refused while deleting; their rows go
+  with the purge and their Storage backups are D5a.
+  Once the migration is live, an open deletion that waited only on sign-ins never placed on a node
+  purges at the next finisher pass.
+  A pair no node can confirm (a node taken out of service, a volume that is not exactly the identity's,
+  a device refused) keeps the deletion waiting; `qorpera_company_deletions.holdings` counts it, and
+  `select * from public.qorpera_company_identity_placements('<company>') as p where not exists (select 1
+  from public.qorpera_runtime_identity_retirements as r where r.node_id = p.node_id and
+  r.compute_identity_id = p.compute_identity_id)` names it. After checking the node by hand (no volume
+  `<prefix><identity>`, and on node 2 no `identity-<identity>` device on the execution host, or the
+  purge takes node 2 out of the inventory), an operator records it as the provider would:
+  `insert into public.qorpera_runtime_identity_retirements (node_id, compute_identity_id, provider_id,
+  volume, device) values ('<node>', '<identity>', '<provider id>', 'absent', 'absent');`
+  Not covered, for the operator runbook: volumes from before node demands existed (8 September), and
+  run recovery volumes. An execution-host rebuild that runs while a device is retired stops with "lost
+  Compute Identity devices": check the volume is gone (retired), then run it again.
+  Rollout: the LXD provider build on every node (node-agent `provider` role) after the release carrying
+  the migration is live. Before that, the due list 404s (logged once a minute) and a company with node
+  sign-ins keeps waiting, as it did.
 - **D5a** Storage (migration 20260929480000). Company File and folder objects need nothing new: their
   catalog rows have no link to the company, and the worker's deleted-profile phase removes them once
   the company is gone. Credential capsules (`qorpera-native-compute-capsules/<capsule>.capsule`, named
