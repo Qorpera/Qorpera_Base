@@ -29,10 +29,10 @@ const resendApiKey = required("RESEND_API_KEY");
 const secret = required("RESEND_WEBHOOK_SECRET");
 
 const store: MailStore = {
-	async receive(emailId, recipient, message) {
+	async receive(emailId, recipients, message) {
 		const { data, error } = await supabase.rpc("qorpera_receive_mail", {
 			p_email_id: emailId,
-			p_recipient: recipient,
+			p_recipients: recipients,
 			p_message: message,
 		});
 		if (error) throw new MailStoreError(error.code ?? undefined, error.message);
@@ -46,7 +46,7 @@ const provider: MailProvider = {
 	async fetch(emailId) {
 		const response = await fetch(`https://api.resend.com/emails/receiving/${encodeURIComponent(emailId)}`, {
 			headers: { authorization: `Bearer ${resendApiKey}` },
-			signal: AbortSignal.timeout(15_000),
+			signal: AbortSignal.timeout(8_000),
 		});
 		if (response.status === 404) return null;
 		if (!response.ok) throw new Error(`Resend returned HTTP ${response.status}`);

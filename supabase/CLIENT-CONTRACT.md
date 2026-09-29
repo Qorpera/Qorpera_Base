@@ -677,7 +677,9 @@ machine.
 - `mail-intake` (20260929650000) — the mail provider's (Resend's) webhook for
   received email, not for clients: `POST /functions/v1/mail-intake`, signed
   with the platform's signing secret (Standard Webhooks). Answers 200 (every
-  recipient settled), 400 (not a received-mail event), 401 (bad or stale
+  recipient settled, other event types ignored, or a message the database
+  refuses as malformed, which is logged), 400 (a payload that is not JSON, or
+  an `email.received` without a valid message id), 401 (bad or stale
   signature), 405, 413 (over 64 KiB), 429 (a mailbox over its limits, with
   `Retry-After`) or 503 (mail switched off, or retry).
 - `profile-invitation-email`, `company-file-verifier`, `artifact-gc-worker`,

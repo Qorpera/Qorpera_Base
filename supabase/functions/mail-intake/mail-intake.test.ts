@@ -3,6 +3,7 @@ import { createHmac } from "node:crypto";
 import { describe, it } from "node:test";
 import {
 	bareAddress,
+	clean,
 	handleMailIntake,
 	MAX_MESSAGE_BYTES,
 	type MailProvider,
@@ -17,13 +18,14 @@ const SECRET_BYTES = Buffer.from("0123456789abcdef0123456789abcdef");
 const SECRET = `whsec_${SECRET_BYTES.toString("base64")}`;
 const NOW = 1_790_000_000;
 const URL = "https://project.example.test/functions/v1/mail-intake";
+const EMAIL_ID = "56761188-7520-42d8-8898-ff6fc54ce618";
 
 function sign(id: string, timestamp: number, body: string, key = SECRET_BYTES): string {
 	return `v1,${createHmac("sha256", key).update(`${id}.${timestamp}.${body}`).digest("base64")}`;
 }
 
-function webhook(event: Json, options: { id?: string; timestamp?: number; signature?: string } = {}): Request {
-	const body = JSON.stringify(event);
+function webhook(event: Json | string, options: { id?: string; timestamp?: number; signature?: string } = {}): Request {
+	const body = typeof event === "string" ? event : JSON.stringify(event);
 	const id = options.id ?? "msg_1";
 	const timestamp = options.timestamp ?? NOW;
 	return new Request(URL, {
@@ -42,11 +44,12 @@ const received = (data: Json = {}): Json => ({
 	type: "email.received",
 	created_at: "2026-09-29T20:00:00.000Z",
 	data: {
-		email_id: "56761188-7520-42d8-8898-ff6fc54ce618",
+		email_id: EMAIL_ID,
 		from: "Customer <customer@example.org>",
 		to: ["Support <Support@Mail.Example.Test>"],
 		cc: ["sales@mail.example.test"],
-		received_for: ["support@mail.example.test"],
+		bcc: ["hidden@mail.example.test"],
+		received_for: ["support@mail.example.test", "forwarded@mail.example.test"],
 		subject: "Order 1042",
 		attachments: [],
 		...data,
@@ -54,7 +57,7 @@ const received = (data: Json = {}): Json => ({
 });
 
 const message: Json = {
-	id: "56761188-7520-42d8-8898-ff6fc54ce618",
+	id: EMAIL_ID,
 	from: "Customer <customer@example.org>",
 	to: ["support@mail.example.test"],
 	cc: [],
@@ -71,15 +74,16 @@ const message: Json = {
 	],
 };
 
-function fixture(outcomes: Json[] | Error = [{ outcome: "accepted", deliveryId: "d1" }], fetched: Json | null | Error = message) {
-	const calls: { emailId: string; recipient: string; message: Json }[] = [];
+const settled = (...results: Json[]): Json => ({ outcome: "settled", results });
+
+function fixture(answer: Json | Error = settled({ outcome: "accepted", deliveryId: "d1" }), fetched: Json | null | Error = message) {
+	const calls: { emailId: string; recipients: string[]; message: string }[] = [];
 	const fetches: string[] = [];
-	let index = 0;
 	const store: MailStore = {
-		async receive(emailId, recipient, body) {
-			calls.push({ emailId, recipient, message: body });
-			if (outcomes instanceof Error) throw outcomes;
-			return outcomes[Math.min(index++, outcomes.length - 1)];
+		async receive(emailId, recipients, body) {
+			calls.push({ emailId, recipients, message: body });
+			if (answer instanceof Error) throw answer;
+			return answer;
 		},
 	};
 	const provider: MailProvider = {
@@ -93,25 +97,20 @@ function fixture(outcomes: Json[] | Error = [{ outcome: "accepted", deliveryId: 
 }
 
 describe("mail intake signatures", () => {
-	it("accepts a Standard Webhooks signature and refuses a changed, stale or unsigned one", async () => {
+	it("accepts a Standard Webhooks signature and refuses a changed, stale, future or unsigned one", async () => {
 		const body = new TextEncoder().encode('{"a":1}');
 		const headers = (signature: string, timestamp = NOW) =>
 			new Headers({ "svix-id": "msg_1", "svix-timestamp": String(timestamp), "svix-signature": signature });
 		assert.equal(await verifySignature(SECRET, headers(sign("msg_1", NOW, '{"a":1}')), body, NOW), true);
 		// Any of several signatures may match (secret rotation).
-		assert.equal(
-			await verifySignature(SECRET, headers(`v1,AAAA ${sign("msg_1", NOW, '{"a":1}')}`), body, NOW),
-			true,
-		);
+		assert.equal(await verifySignature(SECRET, headers(`v1,AAAA ${sign("msg_1", NOW, '{"a":1}')}`), body, NOW), true);
 		assert.equal(await verifySignature(SECRET, headers(sign("msg_1", NOW, '{"a":2}')), body, NOW), false);
 		assert.equal(
 			await verifySignature(SECRET, headers(sign("msg_1", NOW, '{"a":1}', Buffer.from("x".repeat(32)))), body, NOW),
 			false,
 		);
-		assert.equal(
-			await verifySignature(SECRET, headers(sign("msg_1", NOW - 301, '{"a":1}'), NOW - 301), body, NOW),
-			false,
-		);
+		for (const when of [NOW - 301, NOW + 301])
+			assert.equal(await verifySignature(SECRET, headers(sign("msg_1", when, '{"a":1}'), when), body, NOW), false);
 		assert.equal(await verifySignature(SECRET, new Headers(), body, NOW), false);
 		assert.equal(
 			await verifySignature(SECRET, headers(sign("msg_1", NOW, '{"a":1}').replace("v1,", "v2,")), body, NOW),
@@ -131,71 +130,95 @@ describe("mail intake signatures", () => {
 });
 
 describe("mail intake", () => {
-	it("stores a received message once for each recipient, fetched whole and bounded", async () => {
-		const f = fixture([
-			{ outcome: "accepted", deliveryId: "d1" },
-			{ outcome: "unknown" },
-		]);
+	it("hands the whole message and every recipient to the mail door once", async () => {
+		const f = fixture(settled({ outcome: "accepted", deliveryId: "d1" }, { outcome: "unknown" }));
 		const response = await handleMailIntake(webhook(received()), f.intake);
 		assert.equal(response.status, 200);
 		assert.deepEqual(await response.json(), { stored: 1 });
-		assert.deepEqual(f.fetches, ["56761188-7520-42d8-8898-ff6fc54ce618"]);
-		assert.deepEqual(
-			f.calls.map((call) => call.recipient),
-			["support@mail.example.test", "sales@mail.example.test"],
-		);
-		const stored = f.calls[0].message;
-		assert.equal(stored.schema, "qorpera.mail/v1");
+		assert.deepEqual(f.fetches, [EMAIL_ID]);
+		assert.equal(f.calls.length, 1);
+		assert.deepEqual(f.calls[0].recipients, [
+			"support@mail.example.test",
+			"sales@mail.example.test",
+			"hidden@mail.example.test",
+			"forwarded@mail.example.test",
+		]);
+		const stored = JSON.parse(f.calls[0].message) as Json;
+		// The subject and the trust results come before the bodies, as the text is stored as written.
+		assert.deepEqual(Object.keys(stored).slice(0, 4), ["schema", "emailId", "subject", "from"]);
+		assert.deepEqual(Object.keys(stored).slice(-2), ["text", "html"]);
 		assert.equal(stored.subject, "Order 1042");
 		assert.equal(stored.text, "Where is my order?");
 		assert.equal(stored.inReplyTo, "<earlier@example.org>");
 		assert.deepEqual(stored.replyTo, ["customer@example.org"]);
+		assert.deepEqual(stored.authentication, { spf: "pass", dkim: "pass", dmarc: "pass" });
 		assert.deepEqual(stored.attachments, [
-			{
-				id: "a1",
-				filename: "receipt.pdf",
-				contentType: "application/pdf",
-				size: 4096,
-				disposition: "attachment",
-				contentId: null,
-			},
+			{ id: "a1", filename: "receipt.pdf", contentType: "application/pdf", size: 4096, disposition: "attachment", contentId: null },
 		]);
-		assert.equal(JSON.stringify(stored).includes("x-other"), false);
+		assert.equal(f.calls[0].message.includes("x-other"), false);
 	});
 
-	it("maps outcomes: limited asks for a retry, switched off and failures answer 503", async () => {
+	it("passes a mailbox on however many other recipients come first", async () => {
+		const others = Array.from({ length: 30 }, (_, index) => `person${index}@example.org`);
+		const f = fixture();
+		await handleMailIntake(webhook(received({ to: others, cc: ["support@mail.example.test"], bcc: [], received_for: [] })), f.intake);
+		assert.equal(f.calls[0].recipients.length, 31);
+		assert.equal(f.calls[0].recipients.at(-1), "support@mail.example.test");
+	});
+
+	it("maps the answer: the longest wait for limits, 503 when off or failing, and settles a malformed message", async () => {
 		const limited = await handleMailIntake(
 			webhook(received()),
-			fixture([{ outcome: "accepted" }, { outcome: "limited", retryAfterSeconds: 600 }]).intake,
+			fixture(
+				settled(
+					{ outcome: "limited", retryAfterSeconds: 600 },
+					{ outcome: "accepted" },
+					{ outcome: "limited", retryAfterSeconds: 60 },
+				),
+			).intake,
 		);
 		assert.equal(limited.status, 429);
 		assert.equal(limited.headers.get("retry-after"), "600");
-		const off = await handleMailIntake(webhook(received()), fixture([{ outcome: "unavailable" }]).intake);
+		const off = await handleMailIntake(webhook(received()), fixture({ outcome: "unavailable" }).intake);
 		assert.equal(off.status, 503);
 		assert.equal(off.headers.get("retry-after"), "300");
 		const broken = await handleMailIntake(webhook(received()), fixture(new MailStoreError("XX000", "down")).intake);
 		assert.equal(broken.status, 503);
+		const malformed = await handleMailIntake(webhook(received()), fixture(new MailStoreError("22023", "bad")).intake);
+		assert.deepEqual([malformed.status, await malformed.json()], [200, { stored: 0, refused: true }]);
 		const unreachable = await handleMailIntake(webhook(received()), fixture(undefined, new Error("timeout")).intake);
 		assert.equal(unreachable.status, 503);
-		const settled = await handleMailIntake(
+		const quiet = await handleMailIntake(
 			webhook(received()),
-			fixture([{ outcome: "duplicate" }, { outcome: "paused" }]).intake,
+			fixture(settled({ outcome: "duplicate" }, { outcome: "paused" })).intake,
 		);
-		assert.equal(settled.status, 200);
-		const odd = await handleMailIntake(webhook(received()), fixture([{ outcome: "surprise" }]).intake);
+		assert.deepEqual([quiet.status, await quiet.json()], [200, { stored: 0 }]);
+		const odd = await handleMailIntake(webhook(received()), fixture({ outcome: "surprise" }).intake);
 		assert.equal(odd.status, 503);
 	});
 
-	it("refuses bad signatures, other methods and oversized webhooks before fetching anything", async () => {
+	it("refuses bad signatures, other methods, invalid payloads and oversized webhooks before fetching anything", async () => {
 		const f = fixture();
-		const forged = await handleMailIntake(webhook(received(), { signature: "v1,AAAA" }), f.intake);
-		assert.equal(forged.status, 401);
-		const stale = await handleMailIntake(webhook(received(), { timestamp: NOW - 600 }), f.intake);
-		assert.equal(stale.status, 401);
-		const get = await handleMailIntake(new Request(URL), f.intake);
-		assert.equal(get.status, 405);
-		const big = await handleMailIntake(webhook(received({ subject: "x".repeat(70 * 1024) })), f.intake);
-		assert.equal(big.status, 413);
+		assert.equal((await handleMailIntake(webhook(received(), { signature: "v1,AAAA" }), f.intake)).status, 401);
+		assert.equal((await handleMailIntake(webhook(received(), { timestamp: NOW - 600 }), f.intake)).status, 401);
+		assert.equal((await handleMailIntake(new Request(URL), f.intake)).status, 405);
+		assert.equal((await handleMailIntake(webhook("{not json"), f.intake)).status, 400);
+		for (const id of ["not an id", ".", "..", "56761188-7520-42D8-8898-FF6FC54CE618"])
+			assert.equal((await handleMailIntake(webhook(received({ email_id: id })), f.intake)).status, 400, id);
+		assert.equal(
+			(await handleMailIntake(webhook(received({ subject: "x".repeat(70 * 1024) })), f.intake)).status,
+			413,
+		);
+		// A body with no declared length is capped while it is read.
+		const chunk = new Uint8Array(16 * 1024).fill(97);
+		const stream = new ReadableStream({
+			start(controller) {
+				for (let index = 0; index < 5; index++) controller.enqueue(chunk);
+				controller.close();
+			},
+		});
+		const streamed = new Request(URL, { method: "POST", body: stream, duplex: "half" } as RequestInit);
+		assert.equal((await handleMailIntake(streamed, f.intake)).status, 413);
 		assert.equal(f.fetches.length, 0);
 		assert.equal(f.calls.length, 0);
 	});
@@ -205,15 +228,13 @@ describe("mail intake", () => {
 		const other = await handleMailIntake(webhook({ type: "email.sent", data: {} }), f.intake);
 		assert.deepEqual([other.status, await other.json()], [200, { ignored: true }]);
 		const none = await handleMailIntake(
-			webhook(received({ to: ["not an address"], cc: [], received_for: [] })),
+			webhook(received({ to: ["not an address"], cc: [], bcc: [], received_for: [] })),
 			f.intake,
 		);
 		assert.deepEqual([none.status, await none.json()], [200, { stored: 0 }]);
 		assert.equal(f.fetches.length, 0);
 		const gone = await handleMailIntake(webhook(received()), fixture(undefined, null).intake);
 		assert.deepEqual([gone.status, await gone.json()], [200, { stored: 0, missing: true }]);
-		const malformed = await handleMailIntake(webhook(received({ email_id: "not an id" })), f.intake);
-		assert.equal(malformed.status, 400);
 	});
 });
 
@@ -225,19 +246,32 @@ describe("mail message", () => {
 		assert.equal(bareAddress(42), null);
 	});
 
-	it("decodes an HTML data URI and cuts HTML before text to fit 256 KiB", () => {
-		const decoded = normalizeMessage("e1", {
+	it("keeps only text the database can hold", () => {
+		assert.equal(clean("a\u0000b"), "ab");
+		assert.equal(clean("x\ud83dy"), "x�y");
+		assert.equal(clean("x\ude00y"), "x�y");
+		assert.equal(clean("ok 😀"), "ok 😀");
+		const normalized = normalizeMessage(EMAIL_ID, { ...message, text: "a\u0000b\ud83d", subject: "\ud83d" });
+		assert.equal(normalized.text, "ab�");
+		assert.equal(normalized.subject, "�");
+	});
+
+	it("decodes an HTML data URI and cuts HTML before text to fit 256 KiB of the text it stores", () => {
+		const decoded = normalizeMessage(EMAIL_ID, {
 			...message,
 			html: `data:text/html;base64,${Buffer.from("<b>Hej</b>").toString("base64")}`,
 		});
 		assert.equal(decoded.html, "<b>Hej</b>");
-		const big = normalizeMessage("e1", { ...message, text: "t".repeat(200_000), html: "h".repeat(200_000) });
+		const big = normalizeMessage(EMAIL_ID, { ...message, text: "t".repeat(200_000), html: "h".repeat(200_000) });
 		assert.ok(Buffer.byteLength(JSON.stringify(big)) <= MAX_MESSAGE_BYTES);
 		assert.equal(big.truncated, true);
 		assert.equal(big.text, "t".repeat(200_000));
 		assert.ok(typeof big.html === "string" && big.html.length < 200_000);
-		const huge = normalizeMessage("e1", { ...message, text: "é".repeat(300_000), html: null });
-		assert.ok(Buffer.byteLength(JSON.stringify(huge)) <= MAX_MESSAGE_BYTES);
-		assert.ok(typeof huge.text === "string" && huge.text.length > 100_000);
+		// Multibyte text, escapes and emoji: the cut is by bytes and never splits a surrogate pair.
+		const emoji = normalizeMessage(EMAIL_ID, { ...message, text: `"${"é😀\n".repeat(80_000)}`, html: null });
+		const written = JSON.stringify(emoji);
+		assert.ok(Buffer.byteLength(written) <= MAX_MESSAGE_BYTES);
+		assert.ok(typeof emoji.text === "string" && emoji.text.length > 50_000);
+		assert.equal(clean(emoji.text as string), emoji.text);
 	});
 });

@@ -354,16 +354,20 @@ wait for N1: when founding gives companies handles, their first mailbox can be m
 **The mail door.** The Edge Function `mail-intake` checks the webhook's Standard Webhooks signature
 (`svix-*` headers, five minutes' tolerance) with the platform's signing secret, which is an Edge Function
 secret like the Resend key: mailboxes are the platform's, so no company vault is involved. It fetches the
-message and hands it, once per recipient in To, Cc and the envelope, to `qorpera_receive_mail`, which
-finds the live mailbox for the address and stores a verified delivery: event type `mail.received`,
-content type JSON, key `mail:<provider message id>` (a retried webhook is a duplicate and writes
-nothing). The JSON (`qorpera.mail/v1`) has the message id, sender, recipients, reply-to, subject,
-received time, In-Reply-To and References, the SPF, DKIM and DMARC results, the attachments' descriptions,
-and the text and HTML bodies, cut to 256 KiB (HTML first, `truncated`). The hook's minute and the
-company's hourly budget apply as to any delivery. A message for an address with no mailbox is dropped.
-The door answers the provider 200 when every recipient is settled, 429 with `Retry-After` when a
-mailbox is over its limits, and 503 when mail is switched off or something failed, so the provider
-retries.
+message, writes it as JSON text (`qorpera.mail/v1`) and hands it in one call, with every recipient in To,
+Cc, Bcc and the envelope, to `qorpera_receive_mail`. The database knows the domain: it looks up each
+address on it and stores the message once in every live mailbox among them, as a verified delivery of
+event type `mail.received`, content type JSON and key `mail:<provider message id>` (a retried webhook is
+a duplicate and writes nothing). The text is stored as written, so its size is what the function
+measured and its keys keep their order: subject, sender, recipients, reply-to, received time, message id,
+In-Reply-To and References, the SPF, DKIM and DMARC results, the attachments' descriptions, then the text
+and HTML bodies, cut to 256 KiB (HTML first, `truncated`). Text the database cannot hold (NUL, half a
+surrogate pair) is cleaned first, and the recipient lists are bounded. The hook's minute and the company's
+hourly budget apply as to any delivery. Mail for an address with no live mailbox, for a paused mailbox, or
+that the provider no longer has is dropped. The door answers the provider 200 when every recipient is
+settled, 429 with the longest `Retry-After` when a mailbox is over its limits, and 503 when mail is
+switched off or something failed, so the provider retries; a message the database calls malformed is
+logged and settled with 200, since a retry would send the same message.
 
 **Agents.** A routine on a mailbox is an event routine on its hook: `{kind:"event", hookId}`, optionally
 `only: ["mail.received"]`. The wake shows the message (cut to fit the wake), `read_event` reads it

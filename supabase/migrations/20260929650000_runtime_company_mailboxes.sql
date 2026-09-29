@@ -108,6 +108,11 @@ select pg_temp.mailbox_patch('public.qorpera_event_hook_descriptor(public.qorper
 		'email', (select mailbox.local_part || '@' || settings.domain from public.qorpera_company_mailboxes as mailbox,
 			public.qorpera_mail_settings as settings where mailbox.hook_id = p_hook.id),$new$);
 
+-- Hook names beginning 'mail-' belong to mailboxes.
+select pg_temp.mailbox_patch('public.qorpera_create_event_hook(uuid,uuid,text,text,text,integer,integer)'::regprocedure,
+	$old$	if p_name is null or p_name !~ '^[a-z][a-z0-9-]{0,63}$' then$old$,
+	$new$	if p_name is null or p_name !~ '^[a-z][a-z0-9-]{0,63}$' or p_name like 'mail-%' then$new$);
+
 select pg_temp.mailbox_patch('public.qorpera_list_agent_event_hooks(jsonb)'::regprocedure,
 	$old$			|| case when v_addresses and v_url is not null$old$,
 	$new$			|| case when v_addresses and v_url is not null and hook.proof <> 'mail'$new$);
@@ -179,7 +184,13 @@ begin
 		where local_part = p_local_part and removed_at is null) then
 		raise exception 'This address is taken' using errcode = '23505';
 	end if;
-	v_name := 'mail-' || left(regexp_replace(p_local_part, '[^a-z0-9-]', '-', 'g'), 59);
+	-- mail-<local part>, or with a short digest when the local part does not fit a hook name as it is, so
+	-- two addresses never share a name ('a.b' and 'a_b').
+	v_name := 'mail-' || p_local_part;
+	if v_name !~ '^[a-z][a-z0-9-]{0,63}$' then
+		v_name := 'mail-' || left(regexp_replace(p_local_part, '[^a-z0-9-]', '-', 'g'), 52) || '-'
+			|| left(encode(extensions.digest(p_local_part, 'sha256'), 'hex'), 6);
+	end if;
 	if exists (select 1 from public.qorpera_event_hooks as hook where hook.profile_id = p_profile_id
 		and hook.environment_id = p_environment_id and hook.name = v_name and hook.status <> 'removed') then
 		raise exception 'A hook with this name already exists' using errcode = '23505';
@@ -205,13 +216,16 @@ revoke all on function public.qorpera_create_company_mailbox(uuid, uuid, text, t
 grant execute on function public.qorpera_create_company_mailbox(uuid, uuid, text, text) to authenticated;
 
 -- ---------------------------------------------------------------------------
--- 5. The mail door (service_role only): one received message to one recipient
+-- 5. The mail door (service_role only): one received message and its recipients
 -- ---------------------------------------------------------------------------
--- Answers accepted (with the delivery id), duplicate (the provider's message was stored for this mailbox already),
--- unknown (no live mailbox has this address), paused, too_large, limited (with retryAfterSeconds) or unavailable
--- (company mail is switched off). The per-hook minute and the company's hourly budget are the event intake's. A
--- refused message writes nothing.
-create function public.qorpera_receive_mail(p_email_id text, p_recipient text, p_message jsonb)
+-- The message arrives as JSON text and is stored as those exact bytes, so its size and key order are the
+-- sender's (the function puts the subject and trust results before the bodies). Every recipient on the mail
+-- domain is looked up; each live mailbox among them gets the message once. The answer is unavailable (company
+-- mail is switched off) or settled, with one result for each address on the mail domain: accepted (with the
+-- delivery id), duplicate (this mailbox has the message already), unknown (no live mailbox has this address),
+-- paused, or limited (with retryAfterSeconds). The per-hook minute and the company's hourly budget are the event
+-- intake's. A refused message writes nothing.
+create function public.qorpera_receive_mail(p_email_id text, p_recipients text[], p_message text)
 returns jsonb
 language plpgsql
 security definer
@@ -221,83 +235,104 @@ as $$
 declare
 	v_settings public.qorpera_mail_settings%rowtype;
 	v_intake public.qorpera_event_intake_settings%rowtype;
+	v_parsed jsonb;
 	v_recipient text;
-	v_local text;
-	v_domain text;
 	v_mailbox public.qorpera_company_mailboxes%rowtype;
 	v_hook public.qorpera_event_hooks%rowtype;
 	v_body bytea;
-	v_delivery_id uuid := extensions.gen_random_uuid();
+	v_sha256 text;
+	v_delivery_id uuid;
 	v_inserted uuid;
 	v_hour timestamptz := date_trunc('hour', clock_timestamp(), 'UTC');
 	v_used_deliveries bigint;
 	v_used_bytes bigint;
+	v_results jsonb := '[]'::jsonb;
 begin
-	if p_email_id is null or p_email_id !~ '^[A-Za-z0-9._:-]{1,128}$'
-		or p_recipient is null or char_length(p_recipient) not between 3 and 320
-		or jsonb_typeof(p_message) is distinct from 'object' or octet_length(p_message::text) > 262144 then
+	if p_email_id is null or p_email_id !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+		or p_recipients is null or cardinality(p_recipients) not between 1 and 200
+		or p_message is null or octet_length(p_message) > 262144 then
+		raise exception 'The message is malformed' using errcode = '22023';
+	end if;
+	begin
+		v_parsed := p_message::jsonb;
+	exception when others then
+		raise exception 'The message is malformed' using errcode = '22023';
+	end;
+	if jsonb_typeof(v_parsed) <> 'object' then
 		raise exception 'The message is malformed' using errcode = '22023';
 	end if;
 	select settings.* into v_settings from public.qorpera_mail_settings as settings;
 	if not coalesce(v_settings.enabled, false) or v_settings.domain is null then
 		return jsonb_build_object('outcome', 'unavailable');
 	end if;
-	v_recipient := lower(btrim(p_recipient));
-	v_local := substring(v_recipient from '^(.*)@[^@]*$');
-	v_domain := substring(v_recipient from '@([^@]*)$');
-	if v_local is null or v_domain is distinct from v_settings.domain then
-		return jsonb_build_object('outcome', 'unknown');
-	end if;
-	select mailbox.* into v_mailbox from public.qorpera_company_mailboxes as mailbox
-	where mailbox.local_part = v_local and mailbox.removed_at is null;
-	select hook.* into v_hook from public.qorpera_event_hooks as hook where hook.id = v_mailbox.hook_id;
-	if v_hook.id is null or v_hook.status = 'removed' or v_hook.proof <> 'mail'
-		or public.qorpera_company_deleting(v_hook.profile_id) then
-		return jsonb_build_object('outcome', 'unknown');
-	end if;
-	if v_hook.status = 'paused' then
-		return jsonb_build_object('outcome', 'paused');
-	end if;
-	v_body := convert_to(p_message::text, 'UTF8');
-	if octet_length(v_body) > v_hook.max_body_bytes then
-		return jsonb_build_object('outcome', 'too_large', 'maxBodyBytes', v_hook.max_body_bytes);
-	end if;
-	if exists (select 1 from public.qorpera_event_deliveries as earlier
-		where earlier.hook_id = v_hook.id and earlier.status = 'verified' and earlier.delivery_key = 'mail:' || p_email_id) then
-		return jsonb_build_object('outcome', 'duplicate');
-	end if;
-	if (select count(*) from public.qorpera_event_deliveries as recent
-		where recent.hook_id = v_hook.id and recent.received_at > clock_timestamp() - interval '60 seconds')
-		>= v_hook.per_minute then
-		return jsonb_build_object('outcome', 'limited', 'retryAfterSeconds', 60);
-	end if;
 	select settings.* into v_intake from public.qorpera_event_intake_settings as settings;
-	select coalesce(sum(usage.deliveries), 0), coalesce(sum(usage.bytes), 0) into v_used_deliveries, v_used_bytes
-	from public.qorpera_event_intake_usage as usage
-	where usage.profile_id = v_hook.profile_id and usage.hour >= v_hour - interval '1 hour';
-	if v_used_deliveries + 1 > v_intake.company_hourly_deliveries
-		or v_used_bytes + octet_length(v_body) > v_intake.company_hourly_bytes then
-		return jsonb_build_object('outcome', 'limited', 'retryAfterSeconds', 600);
-	end if;
-	insert into public.qorpera_event_deliveries (
-		id, hook_id, profile_id, status, delivery_key, event_type, content_type, headers,
-		body, body_bytes, body_sha256, verified_at
-	) values (
-		v_delivery_id, v_hook.id, v_hook.profile_id, 'verified', 'mail:' || p_email_id, 'mail.received',
-		'application/json', '{}'::jsonb, v_body, octet_length(v_body),
-		encode(extensions.digest(v_body, 'sha256'), 'hex'), clock_timestamp()
-	)
-	on conflict (hook_id, delivery_key) where status = 'verified' do nothing
-	returning id into v_inserted;
-	if v_inserted is null then
-		return jsonb_build_object('outcome', 'duplicate');
-	end if;
-	insert into public.qorpera_event_intake_usage as usage (profile_id, hour, deliveries, bytes)
-	values (v_hook.profile_id, v_hour, 1, octet_length(v_body))
-	on conflict (profile_id, hour) do update
-	set deliveries = usage.deliveries + 1, bytes = usage.bytes + excluded.bytes;
-	return jsonb_build_object('outcome', 'accepted', 'deliveryId', v_delivery_id);
+	v_body := convert_to(p_message, 'UTF8');
+	v_sha256 := encode(extensions.digest(v_body, 'sha256'), 'hex');
+	for v_recipient in
+		select distinct lower(btrim(recipient)) from unnest(p_recipients) as recipient
+		where recipient is not null and char_length(recipient) between 3 and 320
+			and lower(btrim(recipient)) like '%@' || v_settings.domain
+			and lower(btrim(recipient)) = substring(lower(btrim(recipient)) from '^[^@]+') || '@' || v_settings.domain
+		order by 1
+	loop
+		v_mailbox := null;
+		v_hook := null;
+		select mailbox.* into v_mailbox from public.qorpera_company_mailboxes as mailbox
+		where mailbox.local_part = substring(v_recipient from '^([^@]+)@') and mailbox.removed_at is null;
+		select hook.* into v_hook from public.qorpera_event_hooks as hook where hook.id = v_mailbox.hook_id;
+		if v_hook.id is null or v_hook.status = 'removed' or v_hook.proof <> 'mail'
+			or public.qorpera_company_deleting(v_hook.profile_id) then
+			v_results := v_results || jsonb_build_array(jsonb_build_object('recipient', v_recipient, 'outcome', 'unknown'));
+			continue;
+		end if;
+		if v_hook.status = 'paused' then
+			v_results := v_results || jsonb_build_array(jsonb_build_object('recipient', v_recipient, 'outcome', 'paused'));
+			continue;
+		end if;
+		if exists (select 1 from public.qorpera_event_deliveries as earlier where earlier.hook_id = v_hook.id
+			and earlier.status = 'verified' and earlier.delivery_key = 'mail:' || p_email_id) then
+			v_results := v_results || jsonb_build_array(jsonb_build_object('recipient', v_recipient, 'outcome', 'duplicate'));
+			continue;
+		end if;
+		if (select count(*) from public.qorpera_event_deliveries as recent
+			where recent.hook_id = v_hook.id and recent.received_at > clock_timestamp() - interval '60 seconds')
+			>= v_hook.per_minute then
+			v_results := v_results || jsonb_build_array(jsonb_build_object('recipient', v_recipient, 'outcome', 'limited',
+				'retryAfterSeconds', 60));
+			continue;
+		end if;
+		select coalesce(sum(usage.deliveries), 0), coalesce(sum(usage.bytes), 0) into v_used_deliveries, v_used_bytes
+		from public.qorpera_event_intake_usage as usage
+		where usage.profile_id = v_hook.profile_id and usage.hour >= v_hour - interval '1 hour';
+		if v_used_deliveries + 1 > v_intake.company_hourly_deliveries
+			or v_used_bytes + octet_length(v_body) > v_intake.company_hourly_bytes then
+			v_results := v_results || jsonb_build_array(jsonb_build_object('recipient', v_recipient, 'outcome', 'limited',
+				'retryAfterSeconds', 600));
+			continue;
+		end if;
+		v_delivery_id := extensions.gen_random_uuid();
+		insert into public.qorpera_event_deliveries (
+			id, hook_id, profile_id, status, delivery_key, event_type, content_type, headers,
+			body, body_bytes, body_sha256, verified_at
+		) values (
+			v_delivery_id, v_hook.id, v_hook.profile_id, 'verified', 'mail:' || p_email_id, 'mail.received',
+			'application/json', '{}'::jsonb, v_body, octet_length(v_body), v_sha256, clock_timestamp()
+		)
+		on conflict (hook_id, delivery_key) where status = 'verified' do nothing
+		returning id into v_inserted;
+		if v_inserted is null then
+			v_results := v_results || jsonb_build_array(jsonb_build_object('recipient', v_recipient, 'outcome', 'duplicate'));
+			continue;
+		end if;
+		insert into public.qorpera_event_intake_usage as usage (profile_id, hour, deliveries, bytes)
+		values (v_hook.profile_id, v_hour, 1, octet_length(v_body))
+		on conflict (profile_id, hour) do update
+		set deliveries = usage.deliveries + 1, bytes = usage.bytes + excluded.bytes;
+		v_results := v_results || jsonb_build_array(jsonb_build_object('recipient', v_recipient, 'outcome', 'accepted',
+			'deliveryId', v_delivery_id));
+	end loop;
+	return jsonb_build_object('outcome', 'settled', 'results', v_results);
 end
 $$;
-revoke all on function public.qorpera_receive_mail(text, text, jsonb) from public, anon, authenticated, service_role;
-grant execute on function public.qorpera_receive_mail(text, text, jsonb) to service_role;
+revoke all on function public.qorpera_receive_mail(text, text[], text) from public, anon, authenticated, service_role;
+grant execute on function public.qorpera_receive_mail(text, text[], text) to service_role;
