@@ -15,11 +15,13 @@
 -- headers, in the current and previous UTC clock hour) and by the switch. A refused request
 -- writes nothing.
 --
--- Lock order: the company row when creating a hook, then the hook row. A receive locks neither the
--- company nor the hook: deliveries and usage carry the company id without a foreign key (they go
--- with the company through the hook, and usage expires within a day), so a receive never waits for
--- the company row's gc fence. Duplicates of a sender id are decided by a unique index; only the
--- company's hourly usage row is locked, briefly, to count a stored delivery.
+-- Lock order: the company row, then its Company File row (shared), when creating a hook; a status
+-- change locks the hook row without its key. A receive never waits for the company row:
+-- deliveries and usage carry the company id without a foreign key (they go with the company
+-- through the hook, and usage expires within a day). Its delivery's foreign key shares the hook
+-- row's key, so it waits for the hook only while the hook is deleted. Duplicates of a sender id are
+-- decided by a unique index; the company's hourly usage row is locked, briefly, to count a stored
+-- delivery.
 
 set local lock_timeout = '3s';
 
@@ -92,6 +94,9 @@ create index qorpera_event_deliveries_company on public.qorpera_event_deliveries
 create index qorpera_event_deliveries_received_at on public.qorpera_event_deliveries (received_at);
 create index qorpera_event_deliveries_waiting on public.qorpera_event_deliveries (received_at)
 	where status = 'received';
+-- Deliveries whose body or headers the purge has yet to clear.
+create index qorpera_event_deliveries_uncleared on public.qorpera_event_deliveries (received_at)
+	where body is not null or headers <> '{}'::jsonb;
 
 -- Stored deliveries (accepted or duplicate) per company and UTC clock hour, for the company budget.
 -- No foreign key, like the deliveries; rows expire after a day.
@@ -174,6 +179,7 @@ as $$
 declare
 	v_role text := public.qorpera_member_role(p_profile_id)::text;
 	v_hook public.qorpera_event_hooks%rowtype;
+	v_core text;
 begin
 	if auth.uid() is null or v_role is null or v_role not in ('owner', 'admin') then
 		raise exception 'Only owners and admins can create hooks' using errcode = '42501';
@@ -204,17 +210,18 @@ begin
 	if p_per_minute is not null and p_per_minute not between 1 and 120 then
 		raise exception 'A hook accepts between 1 and 120 deliveries a minute' using errcode = '22023';
 	end if;
-	if exists (
-		select 1 from public.qorpera_company_files as file
-		where file.environment_id = p_environment_id and file.core = 'folder-v2'
-	) then
-		raise exception 'Hooks for folder companies come with their connection file' using errcode = '0A000';
-	end if;
 	-- Serialize hook creation per company so the limit of 50 holds, then check the company again:
 	-- a deletion request may have committed while this call waited.
 	perform 1 from public.qorpera_profiles where id = p_profile_id for update;
 	if public.qorpera_company_deleting(p_profile_id) then
 		raise exception 'Only owners and admins can create hooks' using errcode = '42501';
+	end if;
+	-- The Company File row, shared: qorpera_folder_enable locks it for update before it looks for
+	-- hooks, so a company never becomes folder-v2 with a hook created alongside.
+	select file.core into v_core from public.qorpera_company_files as file
+	where file.environment_id = p_environment_id for share;
+	if v_core = 'folder-v2' then
+		raise exception 'Hooks for folder companies come with their connection file' using errcode = '0A000';
 	end if;
 	if (select count(*) from public.qorpera_event_hooks as hook
 		where hook.profile_id = p_profile_id and hook.status <> 'removed') >= 50 then
@@ -254,7 +261,8 @@ declare
 	v_hook public.qorpera_event_hooks%rowtype;
 	v_role text;
 begin
-	select hook.* into v_hook from public.qorpera_event_hooks as hook where hook.id = p_hook_id for update;
+	-- No key changes, so a receive's foreign key check (key share) does not wait for this lock.
+	select hook.* into v_hook from public.qorpera_event_hooks as hook where hook.id = p_hook_id for no key update;
 	v_role := public.qorpera_member_role(v_hook.profile_id)::text;
 	if v_hook.id is null or auth.uid() is null or v_role is null or v_role not in ('owner', 'admin') then
 		raise exception 'Only owners and admins can change hooks' using errcode = '42501';
@@ -569,7 +577,7 @@ declare v_definition text := pg_get_functiondef('public.qorpera_folder_enable(uu
 	v_old text := $old$		or exists (select 1 from public.qorpera_company_snapshots where environment_id = p_environment_id) then$old$;
 begin
 	if (length(v_definition) - length(replace(v_definition, v_old, ''))) / length(v_old) <> 1 then
-		raise exception 'qorpera_folder_enable differs from 20260928249000'; end if;
+		raise exception 'qorpera_folder_enable differs from 20260928200000'; end if;
 	execute replace(v_definition, v_old, $new$		or exists (select 1 from public.qorpera_company_snapshots where environment_id = p_environment_id)
 		or exists (select 1 from public.qorpera_event_hooks where environment_id = p_environment_id and status <> 'removed') then$new$);
 end

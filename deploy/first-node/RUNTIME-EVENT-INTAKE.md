@@ -74,14 +74,20 @@ Table `qorpera_event_hooks`, one row per hook:
 | `created_by_user_id` / `created_by_staff_agent_id` | who made it: at most one, a member (cleared if the account is deleted) or an agent (from W2) |
 
 A company has at most 50 live hooks. A hook's last delivery time is read from its deliveries; the
-hook row is never written or locked by a receive. A removed hook's row is deleted 30 days after its
+hook row is never written by a receive. A receive's delivery shares the hook row's key (its foreign
+key), so it waits only while the hook is deleted; a status change locks the row without its key. A removed hook's row is deleted 30 days after its
 removal, once its deliveries have gone.
 
 **Which companies.** In W1a, hooks exist for `snapshot-v1` companies, whose connections are rows.
-For a `folder-v2` company a hook is described by its connection file, `connections/<name>.md`, which
-the platform writes in the same step as the hook (contract amendment, item 2). That waits for the
+For a `folder-v2` company a hook is described by its connection file, `connections/hook-<name>.md`,
+which the platform writes in the same step as the hook (contract amendment, item 2). The writer step
+reserves the `hook-` prefix for hook files: today's connection-file rules (20260928249140) let an
+account file be renamed within `connections/` and require a vault row per file, which an
+address-proven hook lacks, so they gain a hook branch then. That waits for the
 core's writer (F1 C3), so creating a hook there refuses with 0A000 until then. A company with live hooks is not
-untouched, so `qorpera_folder_enable` refuses it (55000); its hooks go with it at the reset.
+untouched, so `qorpera_folder_enable` refuses it (55000); its hooks go with it at the reset. Creating a
+hook holds the company's Company File row shared, which `qorpera_folder_enable` locks for update before
+it looks for hooks, so the two cannot pass each other.
 
 **Proof.**
 - `address`: whoever knows the address may post. The address works like a key that only lets
@@ -114,8 +120,8 @@ writes nothing: no delivery, no counter.
 - **Per company:** `qorpera_event_intake_usage` counts stored deliveries (accepted or duplicate) and
   their stored bytes, body and headers, per UTC clock hour. A delivery is refused when the current
   and previous hour together would pass the budget in `qorpera_event_intake_settings` (default 2,000
-  deliveries and 64 MiB). The usage row is the only row a receive locks, briefly, and the public door
-  waits at most 2 seconds for it. Deliveries and usage carry the company id without a foreign key,
+  deliveries and 64 MiB). The usage row is the only row a receive locks for update, briefly, and the
+  public door waits at most 2 seconds for any lock. Deliveries and usage carry the company id without a foreign key,
   so a receive never waits for the company row (whose gc fence a company purge holds): deliveries go
   with the company through the hook, and usage rows, which hold only counts, expire within a day.
 - **The platform switch:** `qorpera_event_intake_settings.enabled` is built off. While it is off,
@@ -255,7 +261,8 @@ lost source authority.
 **Tools.** `list_hooks` lists the company's live hooks with their addresses. `read_event(deliveryId,
 offset?)` reads one verified delivery of the agent's own company in pieces of 16,000 characters (UTF-8)
 or 24 KiB (base64). Both are reads for the automatic review. Agents creating and removing hooks
-(`manage_hook`, reviewed as a new connection) follows in a later step.
+(`manage_hook`, reviewed as a new connection; a signed hook asks a member for its secret, connector
+`event_hook`, secret name `h<hook id without hyphens>`) follows in a later step.
 
 **Folder companies.** Event wakes of `folder-v2` companies are refused like their file-change wakes
 until routine files (F2-6) and the folder's writer land.
@@ -274,8 +281,10 @@ Mail design follows in M2.
 
 ## Deploy (W1a)
 
-The migration only adds tables and functions that nothing calls yet, so it is safe for both bundles
-during a roll. After it is live:
+The migration adds tables and functions that nothing calls yet, and patches `qorpera_folder_enable`
+(operator-only) by exact text so it also refuses a company with hooks, a condition that cannot hold
+before the migration. It is safe for both bundles during a roll. Before merging, compare the patch's
+anchor with master again (RUNTIME-RELEASE-TRAIN.md). After it is live:
 
 1. Deploy the function: `supabase functions deploy event-intake` (`verify_jwt = false` in
    `supabase/config.toml`). It needs only `SUPABASE_URL` and the service key the platform provides.
@@ -300,7 +309,8 @@ during a roll. After it is live:
 - Limits bound storage: at most `per_minute × max_body_bytes` a minute per hook (30 MiB at the
   maximums), the company's hourly budget across all its hooks (64 MiB by default), and the platform
   switch. Refused requests write nothing.
-- A company being deleted stops receiving at once (`unknown`). The company purge removes its hooks,
-  deliveries and usage with the company (foreign keys cascade; test 730 runs the purge).
+- A company being deleted stops receiving at once (`unknown`). The company purge removes its hooks and
+  deliveries with the company (foreign keys cascade; test 730 runs the purge). Its usage rows hold
+  only counts and expire within a day.
 - No table is readable by `anon`, `authenticated` or the broker role. Members read through the
   listed functions, and the broker reads only through its two functions (W1b).
