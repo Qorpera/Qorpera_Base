@@ -474,8 +474,9 @@ Node 2 (warm standby), between node 1's steps 6 and 8:
       /opt/qorpera-secret-broker/shared-vault-secrets.py serve --bind 100.75.4.70 --peer 100.80.160.64
       --port 39579 --ticket-sha256 <ticketSha256> --ttl 120`.
       It reads the files as root, then serves as nobody: it closes any other address before reading a
-      byte, gives a connection 5 s to ask, answers once, and stops (or stops after 120 s). Its one output
-      line (in the unit's journal) repeats `fingerprintsSha256`.
+      byte, gives a connection 5 s to ask, answers once, and stops (or stops after 120 s). It writes two
+      lines to the unit's journal: `serving once on 100.75.4.70:39579` once the port is bound (start step
+      3 after it), then one that repeats `fingerprintsSha256`.
    3. node 2: `shared-vault-secrets.py fetch --source 100.75.4.70 --port 39579 --expect <node 1's
       fingerprintsSha256>`. The ticket is used up either way. It checks what arrived against node 1's
       digest before writing anything and answers `"match": "match"`; a mismatch or any failure leaves
