@@ -93,6 +93,7 @@ describe("shared office control entry", () => {
 	it.each([
 		["noisy-refusal"],
 		["ended-streams-refusal"],
+		["ended-streams-later-refusal"],
 		["synchronous-throw"],
 		["uncaught-exception"],
 		["uncaught-after-success"],

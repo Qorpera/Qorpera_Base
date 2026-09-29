@@ -47,6 +47,8 @@ export function runCompanyComputerControlEntry(entry: CompanyComputerControlEntr
 	for (const stream of [process.stdout, process.stderr]) {
 		stream._write = (_chunk, _encoding, done) => done();
 		stream._writev = (_chunks, done) => done();
+		// end() must not shut down a socket descriptor the failure line still needs.
+		stream._final = (done) => done();
 	}
 	try {
 		if (realpathSync(resolve(script)) !== realpathSync(fileURLToPath(entry.moduleUrl)))

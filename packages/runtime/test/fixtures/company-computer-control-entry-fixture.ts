@@ -26,6 +26,12 @@ const scenarios: Record<string, () => Promise<void>> = {
 		process.stderr.end(secret);
 		throw new Error(secret);
 	},
+	"ended-streams-later-refusal": async () => {
+		process.stdout.end(secret);
+		process.stderr.end(secret);
+		await new Promise((done) => setTimeout(done, 50));
+		throw new Error(secret);
+	},
 	"noisy-refusal": async () => {
 		noise();
 		throw new Error(secret);

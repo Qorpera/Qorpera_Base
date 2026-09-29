@@ -353,7 +353,8 @@ const run = (args: string[], purpose = "bootstrap") => {
 	);
 	timings.push({ purpose, mode: args[0], elapsedMs: Math.round(performance.now() - started), status: result.status });
 	// LXD records this exec's output on the host: nothing on success, one fixed
-	// line on refusal. A run killed at the timeout (status null) may be silent.
+	// line on refusal. A run killed by a signal (status null, e.g. the 30 s
+	// timeout) may be silent; callers count it as a refusal, as before.
 	const detail = `${purpose}:${args[0]} status=${result.status} signal=${result.signal} ${result.error?.message ?? ""} ${JSON.stringify(timings)}`;
 	assert.equal(result.stdout, "", detail);
 	assert.ok(
