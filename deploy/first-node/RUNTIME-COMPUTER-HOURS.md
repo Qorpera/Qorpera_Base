@@ -593,42 +593,63 @@ creates and stores every key himself; the coordinator writes only what is not se
 
 Before the switch (all of these hold):
 
-- Every part of the zero rule is live, switched off: 6a, 6c parts 1 and 3b, the bounded checks
-  (`20260929300000`), 6b (machines) and 6d. 6b's refusal `COMPUTER_HOURS_EXHAUSTED` is known to
-  the node admission, coding executor, fleet and provider parsers on both nodes (their binaries
-  are installed), since those must accept it before it can be returned.
+- Every part of the zero rule is live, switched off: 6a (#503), the zero state and "out of hours"
+  (#508), the finishing window for runs (#514), members seeing the wait (#515, #516), the bounded
+  checks (#520), and 6b (machines not starting, waking or staying up at zero; not built yet). 6b's
+  node refusal must be known to the node admission, coding executor, fleet and provider parsers on
+  both nodes (their binaries installed) before it can be returned.
+- Members see their hours left, and what pays for them, on Plan & usage from the switch on
+  (contract items 5 and 12; "Plan & usage (web)" below). Today the company card says "Measured,
+  not charged yet" and no member read returns hours left: that read and its web card are built
+  and live first.
 - The meter job runs every minute (`qorpera-computer-hour-meter`), and
   `select swept_at, failed_at, last_error from public.qorpera_computer_hour_zero_sweep_status`
   shows a recent `swept_at` and no fresh failure.
 - The notice worker is scheduled ("Turning the notices on").
 - Test mode was accepted end to end with an enrolled tester (contract section 21, item 31): a plan,
-  a pack, an upgrade, a refund, a failed payment, the emails, and the Plan & usage page.
-- The reviews' "Before the live switch" list under "Zero" is settled, and the reconcile and sweep
-  were measured on production-sized data.
+  a pack, an upgrade, a refund, a failed payment, Stripe's receipts and invoices, and the Plan &
+  usage page. Qorpera's own hour emails come only from live charges, so they are accepted after
+  the switch.
+- The reviews' "Before the live switch" list under "Zero" is settled, and the orchestrator
+  reconcile and the sweep were measured on production-sized data.
 
-Jonas (secrets and Stripe):
+In advance (nothing secret):
 
-1. In Stripe's live mode, repeat test-mode steps 2 to 6 (tax, the five prices, the customer
-   portal, failed payments, the webhook endpoint with the same address and events). Send the five
-   live `price_...` ids to the coordinator (not secret).
-2. At the agreed minute, replace the function secrets `QORPERA_STRIPE_SECRET_KEY` (`sk_live_...`)
-   and `QORPERA_STRIPE_WEBHOOK_SECRET` (the live endpoint's `whsec_...`). From then the function
-   bills for real; test purchases stop working, which is intended.
+- Jonas, in Stripe's live mode: repeat test-mode steps 2 to 6 (tax, the five prices, the customer
+  portal, failed payments, the webhook endpoint with the same address and events), and send the
+  five live `price_...` ids to the coordinator.
+- The coordinator writes them into `qorpera_computer_hour_catalog.stripe_price_live`, by
+  `item_key` (harmless before the switch: live checkout stays closed until `live_since`).
 
-Coordinator (nothing secret), right after Jonas's step 2:
+At the agreed minute, in this order:
 
-1. Write the live price ids into `qorpera_computer_hour_catalog.stripe_price_live`, by `item_key`.
-2. Switch payments and the zero rule on together, in one statement:
+1. Jonas sets both function secrets in one command (`supabase secrets set
+   QORPERA_STRIPE_SECRET_KEY=sk_live_... QORPERA_STRIPE_WEBHOOK_SECRET=whsec_...`, the live
+   endpoint's secret), and replaces `QORPERA_STRIPE_PORTAL_CONFIGURATION` with the live portal
+   configuration's id, or unsets it, if it was set in test mode. One command, because a live
+   webhook secret with the test key drops live events for good. From here until step 2 nobody can
+   buy (checkout answers "unavailable"), and test purchases stop working, as intended.
+2. The coordinator switches payments and the zero rule on together, with one time for both:
 
    ```sql
    update public.qorpera_computer_hour_billing
-   set live_since = clock_timestamp(), zero_rule_since = clock_timestamp();
+   set live_since = now.at, zero_rule_since = now.at
+   from (select clock_timestamp() as at) now;
    ```
 
+   Never the other way round: with the test key still in place and `live_since` set, the zero rule
+   would hold work while nothing can be bought.
+
    From then, use is charged live (every company starts with its five free hours; dry-run
-   balances stay as they were and never count), live checkout opens to every founder, the hour
-   emails are queued, and a company that runs out is recorded by the next sweep.
-3. Watch for 30 minutes, then daily for the first week:
+   balances stay as they were and never count). Plans can be bought by every signed-in account,
+   packs by a company's founders. The hour emails are queued, and a company that runs out is
+   recorded by the next sweep.
+3. Within the first 30 minutes, a real purchase (a pack, refunded afterwards in Stripe) proves the
+   live webhook: Stripe's dashboard shows the delivery answered 2xx, and
+   `select type, outcome from public.qorpera_computer_hour_stripe_events where livemode order by
+   received_at desc limit 5` shows it applied. A wrong webhook secret is answered 400 before
+   anything is recorded, so only the dashboard shows it.
+4. Watch for 30 minutes, then daily for the first week:
    - `select swept_at, failed_at, last_error from public.qorpera_computer_hour_zero_sweep_status`;
    - `select count(*) from public.qorpera_computer_hour_zero_state` (companies at zero);
    - `select kind, status, count(*) from public.qorpera_computer_hour_notices group by 1, 2`;
@@ -636,25 +657,41 @@ Coordinator (nothing secret), right after Jonas's step 2:
      public.qorpera_computer_hour_stripe_events where outcome = 'needs_review' and livemode group by 1`;
    - the meter's lag: `select clock_timestamp() - metered_until from public.qorpera_computer_hour_meter`
      (about a minute).
-4. Acceptance on a test company whose founder has no internal account: withdraw its free hours
+5. Acceptance on a test company with no founder on an internal account (one such founder makes
+   the company complimentary): after its first live use has created its free hours, withdraw them
    (`update public.qorpera_computer_hour_sources set withdrawn_at = clock_timestamp() where kind =
-   'free' and profile_id = '<test company>' and not dry_run`, after its first live use created
-   them). Within a minute it is recorded at zero: a new message waits with the notice above the
-   composer, Plan & usage says it is out of hours, its founders get "out of hours" ten minutes
-   later, a machine does not start, and an hour on its running work ends with "out of computer
-   hours". Buying a pack releases the waiting work by itself.
+   'free' and profile_id = '<test company>' and not dry_run`). Within a minute it is recorded at
+   zero: a new message waits with the notice above the composer, Plan & usage says it is out of
+   hours, its founders get "out of hours" ten minutes later, and a machine does not start or wake.
+   An hour on, work that was still running ends with "out of computer hours" (start work that runs
+   longer than an hour to see it) and its awake machines stop. Buying a pack (a real charge,
+   refunded afterwards) releases the waiting work by itself.
+6. Afterwards, switch off the sandbox webhook endpoint and cancel the testers' test subscriptions.
 
-Rollback, from the least to the most:
+Rollback:
 
 - Stop holding work: `update public.qorpera_computer_hour_billing set zero_rule_since = null`.
-  The next sweep empties the zero state; nothing else changes.
-- Stop the emails: `select cron.unschedule('qorpera-computer-hour-notices')`.
-- Stop selling: the coordinator sets `live_since = null`. Live checkout closes and every balance
-  goes back to the dry run; live purchases already made stay in the ledger and count again when
-  live mode is next switched on. Keep the live keys in place, so Stripe's events are still
-  verified: Stripe keeps billing existing subscriptions, and their renewals are then recorded as
-  dry-run hours, so Jonas pauses those subscriptions in Stripe (or refunds) while payments are
-  off.
+  Held work is released at once (routines with the next sweep), and the next sweep empties the
+  zero state. Companies at zero run again and owe what they use; "out of hours" is again sent by
+  the usage trigger, once per time of owing.
+- Stop the hour emails: `select cron.unschedule('qorpera-computer-hour-notices')`.
+- Stop selling is not a clean undo once real money has moved, so it is for emergencies only.
+  While `live_since` is null every Stripe event is recorded as dry run, even with the live key:
+  a refund or dispute of a live purchase goes to review and takes no hours back, a live renewal
+  whose payment finally fails is not withdrawn, and a checkout page opened before the stop can
+  still be paid (a pack for an hour, a plan for a day), for dry-run hours. So, in this order:
+  1. Jonas expires the open checkout sessions and pauses the live subscriptions in Stripe, and
+     keeps the live keys in place (so Stripe's events are still verified).
+  2. The coordinator runs `update public.qorpera_computer_hour_billing set live_since = null,
+     zero_rule_since = null`. Live checkout closes and balances go back to the dry run; live
+     purchases already made stay in the ledger and count again when live mode is next on.
+  3. When live mode is on again, the coordinator resends from Stripe's dashboard the live events
+     left for review while it was off (refunds and disputes), so they are applied; an event
+     already handled is not run again. A live plan whose final payment failed while it was off
+     was recorded without taking its hours back: the coordinator withdraws that period by hand
+     (`update public.qorpera_computer_hour_sources set withdrawn_at = clock_timestamp() where
+     reference = '<sub_…>:<period start>' and not dry_run`). A renewal paid while it was off is
+     only dry-run hours (pausing, in step 1, prevents it); Jonas refunds any that slipped through.
 
 ## Plan & usage (web)
 
