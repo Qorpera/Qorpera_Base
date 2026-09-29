@@ -93,11 +93,11 @@ insert into api_function_allowlist(signature, anon, authenticated, reason) value
 	('public.qorpera_close_shared_session(uuid)', false, true, 'member: auth.uid() + membership/ownership'),
 	('public.qorpera_commit_company_snapshot(uuid,uuid,uuid,text,integer,integer,integer,bigint)', true, false, 'internal: auth.uid() + membership/ownership; anon only through the platform default'),
 	('public.qorpera_company_founding_available()', false, true, 'member: self-scoped or pure helper'),
-	('public.qorpera_company_is_folder_v2(uuid)', false, true, 'member: self-scoped or pure helper'),
+	('public.qorpera_company_is_folder_v2(uuid)', false, true, 'member: any signed-in user, a per-company flag with no membership check (low: one boolean per company id); the Storage policies that run as the member call it'),
 	('public.qorpera_company_organization_bootstrap(uuid)', false, true, 'member: self-scoped or pure helper'),
 	('public.qorpera_company_organization_json(uuid)', false, true, 'member: self-scoped or pure helper'),
 	('public.qorpera_company_presence_scope(uuid,jsonb,text[])', false, true, 'internal: self-scoped or pure helper'),
-	('public.qorpera_company_uses_path_gateway(uuid)', false, true, 'member: self-scoped or pure helper'),
+	('public.qorpera_company_uses_path_gateway(uuid)', false, true, 'member: any signed-in user, a per-company flag with no membership check (low: one boolean per company id); CLIENT-CONTRACT, the web and the Storage policies call it'),
 	('public.qorpera_company_waiting_for_hours(uuid)', false, true, 'member: auth.uid() + membership/ownership'),
 	('public.qorpera_complete_artifact_gc_objects(uuid,uuid,text[])', true, true, 'internal: auth.role() = service_role; anon only through the platform default, authenticated only through the platform default'),
 	('public.qorpera_complete_artifact_gc_plan(uuid,uuid)', true, true, 'internal: auth.role() = service_role; anon only through the platform default, authenticated only through the platform default'),
@@ -341,7 +341,7 @@ insert into api_function_allowlist(signature, anon, authenticated, reason) value
 	('public.qorpera_runner_prepare_company_revision(uuid,text,uuid,text,uuid,uuid,text,integer,integer,integer,bigint)', true, true, 'internal: runner broker: service_role or secret-broker session + runner session token + job lease token; anon only through the platform default, authenticated only through the platform default'),
 	('public.qorpera_runtime_office_access_status(jsonb,uuid)', false, true, 'member: auth.uid() + membership/ownership'),
 	('public.qorpera_runtime_office_member_status(jsonb)', false, true, 'member: auth.uid() + membership/ownership'),
-	('public.qorpera_runtime_office_privacy_status(jsonb)', false, true, 'member: auth.role() = service_role'),
+	('public.qorpera_runtime_office_privacy_status(jsonb)', false, true, 'member: service_role, or a signed-in member of the office''s company'),
 	('public.qorpera_runtime_office_start_status(jsonb)', false, true, 'member: auth.uid() + membership/ownership'),
 	('public.qorpera_save_review_rule(uuid,uuid,text,text,text)', false, true, 'member: auth.uid() + membership/ownership'),
 	('public.qorpera_select_member_session_account(uuid,uuid)', false, true, 'member: auth.uid() + membership/ownership'),
@@ -396,19 +396,27 @@ begin
 		where to_regprocedure(list.signature) is not null
 	)
 	select
-		array_agg(format('%s (anon %s, authenticated %s)', exposed.signature, exposed.anon, exposed.authenticated)
+		array_agg(format('%s (anon %s, authenticated %s)', exposed.signature, exposed.anon::text, exposed.authenticated::text)
 			order by exposed.signature) filter (where listed.oid is null),
-		array_agg(format('%s (anon %s, authenticated %s; listed %s, %s)', exposed.signature, exposed.anon,
-			exposed.authenticated, listed.anon, listed.authenticated) order by exposed.signature)
+		array_agg(format('%s (anon %s, authenticated %s; listed anon %s, authenticated %s)', exposed.signature,
+			exposed.anon::text, exposed.authenticated::text, listed.anon::text, listed.authenticated::text) order by exposed.signature)
 			filter (where listed.oid is not null and (listed.anon, listed.authenticated) <> (exposed.anon, exposed.authenticated)),
 		array_agg(listed.signature order by listed.signature) filter (where exposed.oid is null)
 	into v_unlisted, v_changed, v_stale
 	from exposed full join listed on listed.oid = exposed.oid;
-	if v_unknown is not null or v_unlisted is not null or v_changed is not null or v_stale is not null then
-		raise exception E'API function allowlist is out of date.\nUnlisted:\n  %\nChanged:\n  %\nListed but not exposed, or no such function:\n  %',
+	v_stale := coalesce(v_unknown, '{}') || coalesce(v_stale, '{}');
+	if v_unlisted is not null or v_changed is not null or cardinality(v_stale) > 0 then
+		raise exception E'API functions differ from supabase/tests/001_api_function_allowlist.test.sql.\n'
+			'Executable by anon or authenticated but not listed (new, or reopened by a grant or a re-create):\n  %\n'
+			'Listed, but anon or authenticated can execute it differently from its row:\n  %\n'
+			'Listed, but no longer executable by anon or authenticated, or no such function:\n  %',
 			coalesce(array_to_string(v_unlisted, E'\n  '), 'none'),
 			coalesce(array_to_string(v_changed, E'\n  '), 'none'),
-			coalesce(array_to_string(coalesce(v_unknown, '{}') || coalesce(v_stale, '{}'), E'\n  '), 'none');
+			coalesce(nullif(array_to_string(v_stale, E'\n  '), ''), 'none')
+			using hint = 'If the function is internal, revoke it by name in its migration: revoke all on function <signature> '
+				'from public, anon, authenticated (and service_role when no service caller exists). "revoke ... from public" '
+				'alone leaves the platform''s grants. Only a member or anon RPC that checks its caller belongs in the list: '
+				'add or edit its row here with the reason (see the header). A revoke that closes a listed role edits its row too.';
 	end if;
 end
 $$;
