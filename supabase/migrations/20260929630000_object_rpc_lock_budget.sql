@@ -53,15 +53,20 @@ comment on function public.qorpera_object_rpc_lock_budget() is
 revoke all on function public.qorpera_object_rpc_lock_budget() from public, anon, authenticated, service_role;
 
 -- Each RPC sets the budget first, before any lock: the call goes right after its body's top-level begin (the only
--- unindented one). The live text is patched, so later changes to these bodies are kept.
+-- unindented one), or after the folder-v2 line that leads three of them. That line stays first (C1D section 8, test
+-- 761), and a folder-v2 company takes no company-wide lock there. The live text is patched, so later changes to these
+-- bodies are kept.
 create function pg_temp.object_rpc_lock_budget_patch(p_target regprocedure)
 returns void language plpgsql as $$
-declare v_definition text := pg_get_functiondef(p_target);
+declare v_definition text := pg_get_functiondef(p_target); v_at integer; v_line text;
 begin
 	if (length(v_definition) - length(replace(v_definition, E'\nbegin\n', ''))) / length(E'\nbegin\n') <> 1
 		or v_definition like '%qorpera_object_rpc_lock_budget%' then
 		raise exception 'Object RPC lock budget: % differs', p_target; end if;
-	execute replace(v_definition, E'\nbegin\n', E'\nbegin\n\tperform public.qorpera_object_rpc_lock_budget();\n');
+	v_at := position(E'\nbegin\n' in v_definition) + length(E'\nbegin\n');
+	v_line := substr(v_definition, v_at, position(E'\n' in substr(v_definition, v_at)));
+	if v_line like E'\tif public.qorpera_company_is_folder_v2(%' then v_at := v_at + length(v_line); end if;
+	execute substr(v_definition, 1, v_at - 1) || E'\tperform public.qorpera_object_rpc_lock_budget();\n' || substr(v_definition, v_at);
 end
 $$;
 

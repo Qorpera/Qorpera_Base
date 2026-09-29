@@ -122,7 +122,8 @@ begin
 		'qorpera_authorize_member_company_path_object(uuid,text,uuid,text)', 'qorpera_authorize_member_company_snapshot_object(uuid,text,uuid,text)',
 		'qorpera_authorize_profile_object_replication(uuid,text,bigint)', 'qorpera_confirm_profile_object_replica(uuid,text,bigint)'] loop
 		perform pg_temp.wake_assert(pg_get_functiondef(('public.' || v_function)::regprocedure)
-			like E'%\nbegin\n\tperform public.qorpera_object_rpc_lock_budget();\n%', v_function || ' sets the budget before its first lock');
+			~ '\nbegin\n(\tif public\.qorpera_company_is_folder_v2\([^\n]*\n)?\tperform public\.qorpera_object_rpc_lock_budget\(\);\n',
+			v_function || ' sets the budget before its first lock');
 	end loop;
 	perform pg_temp.wake_assert(not has_function_privilege(role_name, 'public.qorpera_object_rpc_lock_budget()', 'EXECUTE'),
 		'Only the object RPCs set their budget: ' || role_name)

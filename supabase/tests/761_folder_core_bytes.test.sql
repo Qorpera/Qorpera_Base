@@ -468,9 +468,10 @@ begin
 		('public.qorpera_refresh_company_storage_usage()',
 			'if public.qorpera_folder_storage_usage_changed(tg_op, old, new) then return case when tg_op = ''DELETE'' then old else new end; end if;',
 			'f70353b583f7cf6853f57331bc9fa897eaa96251d13eb3d120838522965b5075'),
+		-- With the object gateway's 2 s lock budget after the folder-v2 line (20260929630000).
 		('public.qorpera_authorize_profile_object_replication(uuid,text,bigint)',
 			'if public.qorpera_company_is_folder_v2(p_profile_id) then return public.qorpera_folder_authorize_replication(p_profile_id, p_sha256, p_bytes); end if;',
-			'483143cc9ae9e1d4b3c7eec128b047f99161632303f628df572ddc2060961beb'),
+			'b428e2d5857983ffea34bfef05fe8cefa486d44edfc0e540685da1ee5a45d6fe'),
 		('public.qorpera_confirm_profile_object_upload(uuid,text,bigint,text)',
 			'if public.qorpera_company_is_folder_v2(p_profile_id) then raise exception ''This Company File path does not serve folder-v2 companies'' using errcode = ''0A000''; end if;',
 			'e97bb1724e5235cd41d1f2ed6af295f17765d7ab4e87e8ad98262303714e0059')) c(target, guard, digest)
