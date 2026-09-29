@@ -134,6 +134,19 @@ records what it waits for.
   objects there, and completes each (`qorpera_complete_company_storage_deletion`); a failure is
   recorded and the entry offered again. A vault sign-in has no Storage object. The worker is not
   deployed (coordinator, 29 Sep): until it is, nothing of a deleted company's Storage is removed.
+  Switching the worker on (supabase/ARTIFACT-GC.md "Deployment"; the coordinator bundles it with the
+  other function deploys once Jonas has created the worker key):
+  1. Apply the migrations, including 20260929480000.
+  2. Deploy `supabase/functions/artifact-gc-worker` with JWT verification off (`config.toml`).
+  3. Edge Function secrets: `QORPERA_ARTIFACT_GC_WORKER_KEY` (a new random invocation key, nowhere
+     else), and for NAS-backed Company File objects `QORPERA_OBJECT_GATEWAY_URL` and
+     `QORPERA_OBJECT_GATEWAY_CONTROL_TOKEN`. The function's own Supabase service credential comes from
+     the platform (`SUPABASE_SECRET_KEYS`), or `QORPERA_ARTIFACT_GC_SERVICE_KEY` if set.
+  4. Vault secrets for the schedule: `qorpera_project_url` and `qorpera_artifact_gc_worker_key` (the same
+     invocation key).
+  5. After one manual run that answers without an error, schedule it every five minutes
+     (`qorpera-artifact-gc-worker`, the `cron.schedule` in ARTIFACT-GC.md). Check with the queries in
+     ARTIFACT-GC.md "Monitoring and recovery".
 - **D5b** NAS: coding workspaces `workers/<company>/` (the coding executor cannot remove them alone:
   their files belong to session users) and the Company Computer workbench (the office provider).
 - **D6** upstream token revoke on delete and on Disconnect.
