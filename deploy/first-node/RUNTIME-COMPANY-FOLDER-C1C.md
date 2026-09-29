@@ -423,7 +423,8 @@ after that line stays byte-identical, and its digest is checked at migration tim
      (`FOR UPDATE` when a thread must be created or reopened: `ensure_agent_thread_internal` locks the room that way,
      and the target must not be strengthened later). The targets come from an unlocked read before the run check;
      after it, a thread room that exists and is not held in the mode its thread now needs refuses the message as
-     retryable (40001 "Coworker thread changed while the message waited"; test 657 C);
+     a retryable conflict (QRC01, 409, "Coworker thread changed while the message waited"; test 657 C; never 40001,
+     which PostgREST would retry on its own, test 361);
   3. the receipt (run-owned);
   4. the recheck, plus the parent read-set check of C1B-2 §4 (`qorpera_folder_parent_reads_allowed` on the wake the
      message would insert: every row of the run's read set is readable by the requester and the recipient);

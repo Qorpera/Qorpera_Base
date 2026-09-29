@@ -199,8 +199,8 @@ begin
 end $$;
 
 -- C. The Co-Founder's thread is closed while Ada's message waits for its room: the message took the room KEY SHARE (an
--- open thread when it looked), so it cannot reopen the thread now without strengthening a lock. It refuses as retryable
--- (40001), and the retry takes the room FOR UPDATE and reopens the thread.
+-- open thread when it looked), so it cannot reopen the thread now without strengthening a lock. It refuses as a
+-- retryable conflict (QRC01, 409), and the retry takes the room FOR UPDATE and reopens the thread.
 do $$
 declare v_state text; c_cf constant uuid := '64800000-0000-4000-8000-0000000000c0';
 begin
@@ -215,7 +215,7 @@ begin
 		raise exception 'The message must wait at the room, not on %', pg_temp.queued_on('fence_one'); end if;
 	perform dblink_exec('fence_two', 'commit');
 	v_state := pg_temp.outcome('fence_one');
-	if v_state <> '40001 Coworker thread changed while the message waited' then
+	if v_state not like 'PGRST %"QRC01"%Coworker thread changed while the message waited%' then
 		raise exception 'A thread that changed while the message waited: %', v_state; end if;
 	perform * from dblink('fence_one', pg_temp.sql_cw('qorpera_test.binding', c_cf, 'changed-1')) as t(x text);
 	if (select status from public.qorpera_shared_sessions where id = current_setting('qorpera_test.cf_thread')::uuid) <> 'open' then

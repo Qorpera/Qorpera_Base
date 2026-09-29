@@ -78,7 +78,8 @@ $$;
 --   1. the run check with the recipient's rows as targets: staff (rank 2) and execution authority (rank 3) KEY SHARE,
 --      and both agents' thread rooms (rank 4), KEY SHARE, or FOR UPDATE for a thread that must be created or reopened
 --      (qorpera_ensure_agent_thread_internal locks its room that way, and a lock is never strengthened later). The
---      targets come from an unlocked read; if a thread changed before the locks, the send refuses as retryable (40001);
+--      targets come from an unlocked read; if a thread changed before the locks, the send refuses as a retryable
+--      conflict (QRC01, 409);
 --   2. the receipt (run-owned);
 --   3. the recheck at rank 10, and the recipient reads everything the run has read (C1B-2 §4, the parent's reads);
 --   4. the pair lock;
@@ -136,7 +137,7 @@ begin
 			and not exists (select 1 from jsonb_array_elements(v_targets) t
 				where t ->> 'tbl' = 'qorpera_company_rooms' and t ->> 'key' = room.id::text
 					and (t ->> 'mode' = 'update' or coalesce(room.status = 'active' and session.status = 'open', false)))) then
-		raise exception 'Coworker thread changed while the message waited' using errcode = '40001'; end if;
+		raise sqlstate 'PGRST' using message = jsonb_build_object('code', 'QRC01', 'message', 'Coworker thread changed while the message waited', 'details', null, 'hint', null)::text, detail = '{"status":409,"headers":{}}'; end if;
 	-- The member who started this chain pays for the recipient's run (20260928230000).
 	select payer.binding_id, payer.version into v_sponsor, v_sponsor_version
 	from public.qorpera_starter_sponsor(v_run.profile_id, v_run.requested_by_user_id, p_recipient_staff_id,
