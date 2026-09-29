@@ -5,12 +5,14 @@ import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import test from "node:test";
 import {
+	CPU_SLOTS,
 	includeRules,
 	parseArgs,
 	parseStatus,
 	pruneScript,
 	RUNNERS,
 	runScript,
+	VITEST_WORKERS,
 	secretLooking,
 	shellQuote,
 	suiteCommand,
@@ -95,6 +97,21 @@ test("each run takes a free runner user and installs and runs as that user", () 
 	const inner = script.slice(script.indexOf("bash -c '"));
 	assert.ok(inner.indexOf("npm ci") < inner.indexOf("build:web-sdk") && inner.indexOf("build:web-sdk") < inner.indexOf("npm test"));
 	assert.doesNotMatch(runScript({ run: "R", runDir: "/r", treeDir: "/t", files: 1, copySeconds: 0, install: false, build: false, runCommand: "true" }), /npm ci|build:web-sdk/);
+});
+
+test("at most three runs execute at once, in arrival order, with two vitest workers each", () => {
+	assert.deepEqual([CPU_SLOTS, VITEST_WORKERS], [3, 2]);
+	const script = runScript({ run: "R", runDir: "/r", treeDir: "/t", files: 1, copySeconds: 0, install: false, build: false, runCommand: "true" });
+	// The queue ticket sorts by arrival; only the first ticket may take a slot; a dead run's ticket is dropped.
+	assert.match(script, /ticket=\/run\/lock\/qorpera-test-machine-queue\/\$\(date \+%s%N\)-\$\$/);
+	assert.match(script, /if \[ "\$position" = 1 \]; then/);
+	assert.match(script, /! kill -0 "\$\{t##\*-\}" 2>\/dev\/null && rm -f "\$t"/);
+	assert.match(script, /for candidate in \$\(seq 1 3\); do\n\t\t\texec 9>"\/run\/lock\/qorpera-test-machine-slot\$candidate\.lock"/);
+	assert.match(script, /waiting for a slot \(all 3 busy\), queue position \$position/);
+	// The slot is taken before the runner user, and both stay locked for the session (fds 9 and 8).
+	assert.ok(script.indexOf("qorpera-test-machine-slot") < script.indexOf("qorpera-test-machine-$candidate"));
+	assert.match(script, /export VITEST_MAX_WORKERS=2/);
+	assert.match(parseArgs(["--sudo", "--", "npm", "test"]).command.join(" "), /npm test/);
 });
 
 test("the status file reads back runner, install and times", () => {

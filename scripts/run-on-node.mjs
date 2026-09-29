@@ -41,6 +41,11 @@ const HOME = "/home/tester";
  * duration, so per-user kernel limits count that run alone: the coding Git sandbox caps RLIMIT_NPROC
  * at 512 tasks, which every concurrent run under one shared user exhausted together. */
 export const RUNNERS = Array.from({ length: 16 }, (_, i) => `ci${String(i + 1).padStart(2, "0")}`);
+/** At most this many runs execute at once, each with at most VITEST_WORKERS vitest workers: 3 x 2 matches
+ * the VM's 6 vCPUs. Measured 2026-09-29: a full npm test is ~881 CPU-seconds; two full runs plus other
+ * sessions drove the load to 22 and timing-bound tests failed. Later runs wait in arrival order. */
+export const CPU_SLOTS = 3;
+export const VITEST_WORKERS = 2;
 const SECRET =
 	/(^|\/)(\.env(\.[^/]*)?|\.envrc|\.dev\.vars|\.npmrc|\.netrc|\.pgpass|\.git-credentials|\.aws\/credentials|[^/]*\.(env|pem|p12|pfx|key|tfvars)|id_[^/.]+|credentials[^/]*\.json|service-account[^/]*\.json|[^/]*\.private\.json)$/i;
 
@@ -201,8 +206,11 @@ export function pruneScript() {
  * carries the runner user and times back to the record. Exit codes 91-93 are harness failures. */
 export function runScript({ run, runDir, treeDir, files, copySeconds, install, build, runCommand }) {
 	const status = `${runDir}/.run-on-node-status`;
+	const queue = "/run/lock/qorpera-test-machine-queue";
 	const inner = [
 		`cd ${runDir} || exit 91`,
+		// A --env VITEST_MAX_WORKERS=n on the command still wins: it is set later, on the command itself.
+		`export VITEST_MAX_WORKERS=${VITEST_WORKERS}`,
 		"t0=$(date +%s%N)",
 		install
 			? `npm ci --ignore-scripts --no-audit --no-fund --prefer-offline >.run-on-node-npm-ci.log 2>&1 || { tail -50 .run-on-node-npm-ci.log; echo installed=0 >>${status}; exit 90; }`
@@ -220,6 +228,29 @@ export function runScript({ run, runDir, treeDir, files, copySeconds, install, b
 		"set -uo pipefail",
 		// The base copy is only a cache: a busy or failed refresh never fails the run.
 		`flock -w 60 ${treeDir}.lock rsync -a --delete ${runDir}/ ${treeDir}/ || echo "== run-on-node: base copy refresh skipped"`,
+		// Arrival-ordered queue for the CPU slots: a ticket per waiting run (its name sorts by arrival and
+		// ends in this shell's pid), and only the first ticket may take a free slot. Tickets of runs that
+		// died are dropped. The slot lock stays on fd 9 until this session ends.
+		`mkdir -p ${queue}`,
+		`ticket=${queue}/$(date +%s%N)-$$; : >"$ticket"; trap 'rm -f "$ticket"' EXIT`,
+		'slot=""; queued=$(date +%s); shown=""',
+		'while [ -z "$slot" ]; do',
+		`\tfor t in ${queue}/*; do [ -e "$t" ] && ! kill -0 "\${t##*-}" 2>/dev/null && rm -f "$t"; done`,
+		`\tposition=$(ls ${queue} | sort | grep -n -x -F "$(basename "$ticket")" | cut -d: -f1)`,
+		'\tif [ "$position" = 1 ]; then',
+		`\t\tfor candidate in $(seq 1 ${CPU_SLOTS}); do`,
+		'\t\t\texec 9>"/run/lock/qorpera-test-machine-slot$candidate.lock"',
+		'\t\t\tif flock -n 9; then slot=$candidate; break; fi',
+		"\t\tdone",
+		"\tfi",
+		'\tif [ -z "$slot" ]; then',
+		`\t\t[ "$position" != "$shown" ] && echo "== run-on-node: waiting for a slot (all ${CPU_SLOTS} busy), queue position $position" && shown=$position`,
+		'\t\t[ $(( $(date +%s) - queued )) -ge 7200 ] && { echo "== run-on-node: no slot free for two hours"; exit 94; }',
+		"\t\tsleep 2",
+		"\tfi",
+		"done",
+		'rm -f "$ticket"',
+		'queued_s=$(( $(date +%s) - queued ))',
 		'runner=""; waited=0',
 		'while [ -z "$runner" ]; do',
 		`\tfor candidate in ${RUNNERS.join(" ")}; do`,
@@ -232,9 +263,9 @@ export function runScript({ run, runDir, treeDir, files, copySeconds, install, b
 		"\t\tsleep 1",
 		"\tfi",
 		"done",
-		`echo "runner=$runner" >${status}`,
+		`echo "runner=$runner slot=$slot queued_s=$queued_s" >${status}`,
 		`sudo -n chown -R "$runner:$runner" ${runDir} || exit 93`,
-		`echo "== run-on-node: $(hostname) ${run} as $runner (${files} files, copy ${copySeconds.toFixed(1)} s)"`,
+		`echo "== run-on-node: $(hostname) ${run} as $runner in slot $slot of ${CPU_SLOTS} (${files} files, copy ${copySeconds.toFixed(1)} s, queued $queued_s s)"`,
 		`sudo -n -u "$runner" -H bash -c ${shellQuote(inner)}`,
 	].join("\n");
 }
@@ -334,7 +365,7 @@ async function main() {
 	const env = options.env.map(([k, v]) => `${k}=${shellQuote(v)}`).join(" ");
 	const command = options.command.map(shellQuote).join(" ");
 	const runCommand = options.sudo
-		? `sudo -n env ${env} PATH="$PATH" ${command}`
+		? `sudo -n env VITEST_MAX_WORKERS="$VITEST_MAX_WORKERS" ${env} PATH="$PATH" ${command}`
 		: `${env ? `env ${env} ` : ""}${command}`;
 	if (options.dryRun) {
 		console.log(
@@ -420,6 +451,9 @@ async function main() {
 		build: options.build,
 		run: options.keep ? runDir : run,
 		runner: status.runner ?? null,
+		cpuSlot: status.slot ? Number(status.slot) : null,
+		queuedSeconds: status.queued_s ? Number(status.queued_s) : null,
+		vitestMaxWorkers: VITEST_WORKERS,
 		startedAt: new Date(started).toISOString(),
 		copySeconds: (synced - started) / 1000,
 		prepareSeconds: status.prepare_ms ? Number(status.prepare_ms) / 1000 : null,

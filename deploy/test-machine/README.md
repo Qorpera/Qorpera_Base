@@ -66,7 +66,13 @@ it the run directory; install and suite run as that user. Kernel limits per user
 only. This matters: the coding Git sandbox runs under `prlimit --nproc=512`, and RLIMIT_NPROC counts
 every task of the user on the machine. When all runs shared `tester`, a few parallel sessions pushed it
 past 512 and bubblewrap failed with "Creating new namespace failed: Resource temporarily unavailable".
-When all 16 are busy, a run waits (up to an hour). Each runner user keeps its own npm cache, so
+When all 16 are busy, a run waits (up to an hour).
+
+At most three runs execute at once, and each runs vitest with `VITEST_MAX_WORKERS=2` (a `--env
+VITEST_MAX_WORKERS=n` on the command wins). Three runs times two workers matches the 6 vCPUs. A full
+`npm test` is about 881 CPU-seconds; on 2026-09-29 two full runs plus other sessions drove the load to 22
+and timing-bound tests failed that pass on a quiet machine. Later runs wait in arrival order and print
+their queue position; the record notes the slot and the time spent queued. Each runner user keeps its own npm cache, so
 `npm ci` takes about 30 s the first time and 5-6 s after that. The run directory is
 deleted afterwards (`--keep` keeps it). At the start of every run, runs older than a day (by the UTC time
 in their name), worktree copies unused for 14 days and hosted-db containers older than 6 hours are removed.
@@ -79,8 +85,8 @@ commit and a digest of exactly the files copied, command, copy, preparation and 
 result (`passed`, `failed`, or `setup-failed` when `npm ci` or the build failed), and the runner user. This
 is the record contract 24.4 asks for. `--record FILE` also writes it to a file.
 
-Several sessions can run at once. Each run has its own directory, and the hosted-db harness
-names its containers per process.
+Several sessions can use the machine at once. Each run has its own directory and runner user, and the
+hosted-db harness names its containers per process.
 
 Access needs the key `~/.ssh/id_ed25519_qorpera_testvm` and SSH to `company41-node-02`.
 Override the target with `QORPERA_TEST_MACHINE`, `QORPERA_TEST_MACHINE_JUMP` and
