@@ -123,6 +123,12 @@ export const STEPS = [
 		commands: ["npm test --workspace packages/company"],
 	},
 	{
+		name: "contracts",
+		why: "packages/contracts (a change there runs every step)",
+		paths: [/^packages\/contracts\//],
+		commands: ["npm test --workspace packages/contracts"],
+	},
+	{
 		name: "cloud-client",
 		why: "every change that is not web-only (runtime-release-train.yml)",
 		paths: NOT_WEB_ONLY,
