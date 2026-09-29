@@ -2,10 +2,8 @@
 // and scope helpers are fixture stubs; this tests activation selection and its
 // complete returned identity, not the unchanged authorization implementation.
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
-import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { POSTGRES_IMAGE } from "./test-hosted-db.mjs";
+import { hostedDatabase } from "./test-hosted-db-cluster.mjs";
 
 assert(process.argv.length === 2 || (process.argv.length === 3 && process.argv[2] === "--sql"),
 	"Usage: node scripts/test-runtime-office-current-provider-activation.mjs [--sql]");
@@ -102,30 +100,11 @@ select 'PASS: current activation identity, immutable history, prepared successor
 if (process.argv[2] === "--sql") {
 	process.stdout.write(sql);
 } else {
-	const container = `qorpera-current-activation-${randomBytes(6).toString("hex")}`;
-	const docker = (args, input) => {
-		const result = spawnSync("docker", args, { input, encoding: "utf8", timeout: 60000, maxBuffer: 1048576 });
-		assert(!result.error && result.status === 0, result.stderr || String(result.error));
-		return result.stdout.trim();
-	};
-	let started = false;
+	// Stub tables only: a database without the bootstrap or any migration, in the suite's PostgreSQL when it runs there.
+	const database = await hostedDatabase("current_activation", { empty: true });
 	try {
-		docker(["run", "--rm", "-d", "--network", "none", "--pull", "never", "--name", container,
-			"--tmpfs", "/var/lib/postgresql/data:rw,size=128m", "-e", "POSTGRES_PASSWORD=local-fixture-only", POSTGRES_IMAGE]);
-		started = true;
-		let ready = false;
-		for (let i = 0; i < 80; i++) {
-			const result = spawnSync("docker", ["logs", container], { encoding: "utf8", timeout: 2000, maxBuffer: 1048576 });
-			if ((result.stdout + result.stderr).includes("PostgreSQL init process complete") &&
-				spawnSync("docker", ["exec", container, "pg_isready", "-U", "postgres"], { timeout: 2000 }).status === 0) {
-				ready = true;
-				break;
-			}
-			await new Promise(resolve => setTimeout(resolve, 250));
-		}
-		assert(ready, "Disposable PostgreSQL not ready");
-		console.log(docker(["exec", "-i", container, "psql", "-X", "-qAt", "-U", "postgres", "-v", "ON_ERROR_STOP=1"], sql));
+		console.log(database.cluster.psql("current_activation", sql, ["-qAt"]).trim());
 	} finally {
-		if (started) docker(["rm", "-f", "-v", container]);
+		database.close();
 	}
 }

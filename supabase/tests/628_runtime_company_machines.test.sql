@@ -796,7 +796,7 @@ begin
 		'Every placement is given up and every allocation released, once: '||v_given||' of '||cardinality(v_ids));
 end $$;
 
--- 21. A deleted company's machines are deleted too (20260929360000): under its fence, once, waking no run.
+-- 21. A deleted company's machines are deleted too (20260928269360): under its fence, once, waking no run.
 do $$
 declare v_profile uuid := '30000000-0000-4000-8000-000000000010'; v_open integer; v_events integer; v_result jsonb; v_again jsonb;
 begin

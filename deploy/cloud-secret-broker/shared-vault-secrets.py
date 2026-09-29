@@ -13,7 +13,7 @@ secret passes through the operator's machine: only hashes and "match"/"mismatch"
                          vault's members' sign-ins.
   ticket                 node 2: make a one-time ticket as a root-only file (replacing an unused one); print
                          only its sha256.
-  serve --bind IP --peer IP --port P --ticket-sha256 H [--ttl S]
+  serve --bind IP --peer IP --port P --ticket-sha256 H [--ttl S]   (port 0: a free one, named on stderr)
                          node 1: hand the standby everything it needs, once, over the hosts' private
                          (WireGuard) network, to the peer that presents the ticket: both secrets and the
                          vault's database login, runtime token, connector clients and coding executor token
@@ -296,6 +296,9 @@ def serve(args: argparse.Namespace) -> dict:
         os.setgroups([])
         os.setgid(NOBODY)
         os.setuid(NOBODY)
+    # One line on stderr once the port is bound (port 0 picks a free one): the caller waits for it instead of
+    # guessing how long start-up takes. It names no secret.
+    print(f"shared-vault-secrets: serving once on {args.bind}:{server.server_address[1]}", file=sys.stderr, flush=True)
     server.timeout = 1
     deadline = time.monotonic() + args.ttl
     try:
