@@ -52,10 +52,12 @@ Rollback: `select cron.unschedule('qorpera-company-deletions')`. Requests then w
 | Agent machines (#419) | executor, once the machine is set `deleted` | #531 adds them to `qorpera_stop_company_work`; until it lands their allocations hold the purge |
 | Company Computers | office provider: power off (works), delete and release (D3) | D3; live once the D3b provider build is installed per office |
 | Sign-in identity volumes on the exec host, recovery volumes | login gateway / LXD provider (D4) | D4 |
-| Credential capsules and recovery backups in storage | deleted-company storage queue (D5) | D5 |
-| Coding NAS workspaces `workers/<company>/` | coding executor (D5) | D5 |
+| Company File and folder objects (Storage, NAS) | artifact GC worker, deleted-profile phase (catalog rows outlive the purge) | exists; runs once the worker is deployed (not deployed on 29 Sep) |
+| Credential capsules and recovery backups in Storage | artifact GC worker, from `qorpera_company_storage_deletions` (D5a) | D5a; same worker |
+| Recovery backups on the recovery service's NAS and journal | operator runbook (a per-company service) | last |
+| Coding NAS workspaces `workers/<company>/` | coding executor (D5b) | D5b |
 | Connected-account tokens at Google/GitHub | secret broker, best-effort revoke (D6) | D6 |
-| Model logins (ChatGPT, Claude) | our copies are purged; the member signs out at the provider | by design |
+| Model logins (ChatGPT, Claude) | our rows are purged and a node capsule's Storage object goes with D5a; the member signs out at the provider | by design |
 | Per-company broker units, recovery services, office host config (older companies) | operator runbook | last |
 
 Until a step lands, a company holding that kind of state stays hidden and stopped, and the finisher
@@ -113,7 +115,7 @@ records what it waits for.
   5. A retired office's unit exits 0 and stays stopped. Disable it, and disable this office's fleet
      units on the other candidate hosts too: they have no marker and would call SQL for a purged office
      at their next start. The protected configuration and journal are left for the operator runbook. The
-     workbench NAS directory stays (D5).
+     workbench NAS directory stays (D5b).
   6. Rollback: put the `.retired-<sha12>` file back and restart. Not for an office that already has
      `office-retirement-request.json` in its journal: an older build would keep asking for the deleted
      VM. Leave that office on the new build.
@@ -121,6 +123,41 @@ records what it waits for.
   exec host, deletes the volume, confirms; the holdings rule then waits only for unconfirmed rows. It
   also ends identity recoveries requested before the deletion (consent, activation and review do not
   check the deletion in D1).
-- **D5** storage and NAS queues, written before the purge, consumed by the artifact GC worker and the
-  coding executor.
+- **D5a** Storage (migration 20260929480000). Company File and folder objects need nothing new: their
+  catalog rows have no link to the company, and the worker's deleted-profile phase removes them once
+  the company is gone. Credential capsules (`qorpera-native-compute-capsules/<capsule>.capsule`, named
+  only by the capsule) and the identity recovery prefix (`qorpera-identity-recovery/<company>/`) have
+  no such record: the finisher writes them into `qorpera_company_storage_deletions` right before the
+  purge, in the same step, so a purge never happens without the record. The artifact GC worker claims
+  up to 100 entries a run (`qorpera_claim_company_storage_deletions`, entries that keep failing last),
+  removes each through the Storage API (SQL cannot), empties the recovery prefix in rounds, and
+  completes each (`qorpera_complete_company_storage_deletion`); a failure is recorded and the entry
+  offered again. A name under the recovery prefix that is not a recovery object (or a folder) stops
+  that prefix before anything more is removed; the entry then keeps failing (`last_error`) until an
+  operator looks. A capsule is recorded only when its reference names its own id. A vault sign-in has
+  no Storage object. The worker is not deployed (coordinator, 29 Sep): until it is, nothing of a
+  deleted company's Storage is removed.
+  Not covered, for the operator: companies deleted before this migration by the old direct delete or
+  by the finisher, and capsule objects whose sign-in failed after the upload (no row names them). A
+  one-off sweep removes `<uuid>.capsule` objects older than a day that no capsule row names as
+  `native-capsule/<uuid>` (a sign-in uploads its capsule before its row commits), and recovery folders
+  of companies that no longer exist.
+  Switching the worker on (supabase/ARTIFACT-GC.md "Deployment"; the coordinator bundles it with the
+  other function deploys once Jonas has created the worker key):
+  1. Apply the migrations, including 20260929480000.
+  2. Deploy `supabase/functions/artifact-gc-worker` with JWT verification off (`config.toml`).
+  3. Edge Function secrets: `QORPERA_ARTIFACT_GC_WORKER_KEY` (a new random invocation key, kept only
+     there and in Vault), and for NAS-backed Company File objects `QORPERA_OBJECT_GATEWAY_URL` and
+     `QORPERA_OBJECT_GATEWAY_CONTROL_TOKEN`. `SUPABASE_URL` and the function's Supabase service
+     credential come from the platform (`SUPABASE_SECRET_KEYS`, else `SUPABASE_SERVICE_ROLE_KEY`), or
+     `QORPERA_ARTIFACT_GC_SERVICE_KEY` if set.
+  4. Vault secrets for the schedule: `qorpera_project_url` and `qorpera_artifact_gc_worker_key` (the same
+     invocation key). The schedule posts with pg_net.
+  5. The worker has no dry run: its first run already removes the objects of every deleted company in
+     the catalog and the D5a entries. Check the counts first (ARTIFACT-GC.md "Monitoring and
+     recovery": deleted companies' catalog objects and open D5a entries), run it once by hand, then
+     schedule it every five minutes (`qorpera-artifact-gc-worker`, the `cron.schedule` in
+     ARTIFACT-GC.md).
+- **D5b** NAS: coding workspaces `workers/<company>/` (the coding executor cannot remove them alone:
+  their files belong to session users) and the Company Computer workbench (the office provider).
 - **D6** upstream token revoke on delete and on Disconnect.
