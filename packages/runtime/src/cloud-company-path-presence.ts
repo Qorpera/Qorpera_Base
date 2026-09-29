@@ -50,6 +50,8 @@ export type CloudCompanyPathPresenceFactory = (
 const OBSERVATION_DEADLINE_MS = 2000;
 /** Paths whose latest observation is kept for later tool results. */
 const CACHED_OBSERVATIONS = 64;
+/** Every publisher renews its signed statement this often; a statement lives COMPANY_PATH_PRESENCE_TTL_MS. */
+const RENEWAL_MS = 10_000;
 
 function unavailableView(path: string, observedAt = Date.now()): CompanyPathPresenceView {
 	return {
@@ -161,7 +163,7 @@ export class CloudNativeCompanyPresence implements CloudCompanyPathPresence {
 		this.#signal.addEventListener("abort", this.#abort, { once: true });
 		this.#timer = setInterval(() => {
 			void this.#refresh();
-		}, 10_000);
+		}, RENEWAL_MS);
 		this.#timer.unref?.();
 		if (this.#signal.aborted) void this.close();
 		else void this.#refresh();
@@ -333,11 +335,18 @@ export class CloudNativeCompanyPresence implements CloudCompanyPathPresence {
 		this.#queued = { path, extent, activity };
 		this.#observeQueued();
 		const cached = this.#views.get(path);
-		// Participants carry their own expiry; no observation outlives one statement lifetime.
+		// No observation outlives one statement lifetime.
 		if (!cached || cached.observedAt <= now - COMPANY_PATH_PRESENCE_TTL_MS) return unavailableView(path, now);
+		const listed = cached.paths[0].participants;
+		const participants = listed.filter((item) => item.expiresAt > now);
+		// Within one renewal period every peer seen then still has a current statement. Past it, or
+		// once a listed statement lapsed, a peer may be working unseen: partial, never a complete
+		// "available" that lists nobody.
+		const aged = now - cached.observedAt >= RENEWAL_MS || participants.length < listed.length;
 		return {
 			...cached,
-			paths: [{ path, participants: cached.paths[0].participants.filter((item) => item.expiresAt > now) }],
+			state: aged && cached.state === "available" ? "partial" : cached.state,
+			paths: [{ path, participants }],
 		};
 	}
 	/** Runs the newest queued claim once the previous background observation settled. */

@@ -373,6 +373,77 @@ describe("native Company File presence", () => {
 			await f.close();
 		}
 	});
+	it("reports an aging view as partial and never as a complete view that lists nobody", async () => {
+		const f = fixture();
+		try {
+			await f.publish(1, "note.md", "object", "writing");
+			await vi.waitFor(() =>
+				expect(f.agents[0].claim("note.md", "object", "reading").paths[0].participants).toHaveLength(1),
+			);
+			const view = f.agents[0].claim("note.md", "object", "reading");
+			const peer = view.paths[0].participants[0];
+			expect(view.state).toBe("available");
+			// Read back synchronously: no background observation can land between these.
+			const clock = vi.spyOn(Date, "now");
+			// Past one renewal period the peer is still listed, but someone may be working unseen.
+			clock.mockReturnValue(view.observedAt + 10_000);
+			expect(f.agents[0].claim("note.md", "object", "reading")).toMatchObject({
+				state: "partial",
+				paths: [{ participants: [expect.objectContaining({ runId: peer.runId, activity: "writing" })] }],
+			});
+			// Its statement lapsed: dropped, and the view says it may be incomplete.
+			expect(peer.expiresAt).toBeLessThan(view.observedAt + 30_000);
+			clock.mockReturnValue(peer.expiresAt);
+			expect(f.agents[0].claim("note.md", "object", "reading")).toMatchObject({
+				state: "partial",
+				paths: [{ path: "note.md", participants: [] }],
+			});
+			clock.mockReturnValue(view.observedAt + 30_000);
+			expect(f.agents[0].claim("note.md", "object", "reading")).toMatchObject({ state: "unavailable" });
+		} finally {
+			await f.close();
+		}
+	});
+	it("holds a background observation past its deadline as unavailable and then runs the newest waiting claim", async () => {
+		const f = fixture();
+		try {
+			await f.publish(1, "note.md");
+			// A fresh observation seeds the view the deadline result must replace.
+			await expect(f.agents[0].observe("note.md", "object", "reading", f.signal)).resolves.toMatchObject({
+				state: "available",
+				paths: [{ participants: [expect.anything()] }],
+			});
+			const original = f.call.getMockImplementation()!;
+			// Every publisher lookup for note.md hangs; other paths answer.
+			f.call.mockImplementation(async (method, args, signal) =>
+				method === "qorpera_native_presence_subject" && (args.p_paths as string[]).includes("note.md")
+					? new Promise<never>(() => undefined)
+					: original(method, args, signal),
+			);
+			const observe = vi.spyOn(f.agents[0], "observe");
+			const started = Date.now();
+			expect(f.agents[0].claim("note.md", "object", "reading")).toMatchObject({
+				state: "available",
+				paths: [{ participants: [expect.anything()] }],
+			});
+			f.agents[0].claim("other.md", "object", "reading");
+			await vi.waitFor(() => expect(observe).toHaveBeenCalledTimes(2), { timeout: 5000 });
+			expect(Date.now() - started).toBeGreaterThanOrEqual(1900);
+			expect(observe.mock.calls.map(([path]) => path)).toEqual(["note.md", "other.md"]);
+			await vi.waitFor(() =>
+				expect(f.agents[0].claim("other.md", "object", "reading")).toMatchObject({
+					state: "available",
+					paths: [{ path: "other.md", participants: [] }],
+				}),
+			);
+			expect(f.agents[0].claim("note.md", "object", "reading")).toMatchObject({
+				state: "unavailable",
+				paths: [{ path: "note.md", participants: [] }],
+			});
+		} finally {
+			await f.close();
+		}
+	}, 10_000);
 	it("runs one background observation at a time and then only the newest waiting claim", async () => {
 		const f = fixture();
 		try {
