@@ -535,6 +535,31 @@ begin
 	if v_state <> 'ok' then raise exception 'The release after the job was free: %', v_state; end if;
 end $$;
 
+-- K. The view row comes before the fence and the principal rows too: a transaction that closes a member's views (the
+-- view, then the member row, both FOR UPDATE) never deadlocks with a release in flight, which waits at the view
+-- holding only its job.
+select pg_temp.renew('desk3');
+do $$
+declare v_state text; e jsonb := public.qorpera_folder_read('64400000-0000-4000-8000-000000000020', pg_temp.vactor('desk3'), 'shared') -> 'entry';
+begin
+	perform dblink_exec('view_one', 'begin');
+	perform * from dblink('view_one', format('select 1 from public.qorpera_folder_views where id = %L for update',
+		current_setting('qorpera_test.desk3')::jsonb ->> 'viewId')) as t(x integer);
+	perform dblink_send_query('view_two', format('select public.qorpera_folder_record_release(%L, %L, %L, %L, %L)',
+		'64400000-0000-4000-8000-000000000020', pg_temp.vactor('desk3'), extensions.gen_random_uuid(),
+		jsonb_build_array(jsonb_build_object('path', e ->> 'path', 'version', e ->> 'version', 'authority', e -> 'authority')), repeat('d', 64)));
+	if not pg_temp.waits_for('view_two', 'view_one') then raise exception 'The release did not wait at the view row'; end if;
+	perform dblink_send_query('view_one', $q$select 1 from public.qorpera_profile_members where profile_id = '64400000-0000-4000-8000-000000000010'
+		and user_id = '64400000-0000-4000-8000-000000000002' for update$q$);
+	if not pg_temp.finishes_unblocked('view_one', 'view_two') then
+		raise exception 'The release holds the member row while it waits for the view'; end if;
+	v_state := pg_temp.outcome('view_one');
+	if v_state <> 'ok' then raise exception 'The member lock beside the release: %', v_state; end if;
+	perform dblink_exec('view_one', 'rollback');
+	v_state := pg_temp.outcome('view_two');
+	if v_state <> 'ok' then raise exception 'The release after the view was free: %', v_state; end if;
+end $$;
+
 select dblink_disconnect(name) from unnest(array['view_one','view_two','view_three']) name;
 
 -- The committed fixture leaves the shared suite database.

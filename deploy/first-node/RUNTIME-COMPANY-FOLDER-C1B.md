@@ -1044,12 +1044,14 @@ it. Legacy `FOR UPDATE` on the company row (native tool calls, coding
 attach, #419's two-second `fence_briefly`) waits only for those. C1c removes
 those locks from folder-v2 paths before any view goes live.
 
-**One order for a view and its run: the job first, then the view row.** The
+**One order for a view and what it acts through: the job, then the view
+row, then the fence and the principal rows (members, staff, rooms).** The
 commit and the release both take them in that order. So does anything that
-locks both more strongly, for example C3 ending a run and closing its run box
-views in one transaction (job `FOR UPDATE`, then the view `FOR UPDATE`).
-Taking the view first would deadlock with a release or a save in flight
-(implementation review r3, finding 1, reproduced).
+locks two of them more strongly, for example C3 ending a run and closing its
+run box views (job `FOR UPDATE`, then the view `FOR UPDATE`), or C1c closing
+a leaving member's views (the view, then the member row). Another order
+deadlocks with a release or a save in flight (implementation review r3,
+finding 1, and r4, finding 1, both reproduced).
 
 Renewal takes the view `FOR NO KEY UPDATE`, which never waits for a commit's
 `KEY SHARE`. Closing and superseding take it `FOR UPDATE`, which waits out
@@ -1172,10 +1174,10 @@ by a machine.
   This is how "that next run inherits them" (F3, #432) happens: at the
   moment the output reaches a model.
 - **A view release locks in the commit's order**: a plain resolve; the job
-  of the run it acts or reads through (`KEY SHARE`, the run check); the view
-  row `KEY SHARE`; then the resolve again, refusing as retryable (409
-  `folder_view_changed`) if the view now names a run whose job it does not
-  hold. An open superseding the view (`FOR UPDATE`) either finishes first,
+  of the run it acts or reads through (`KEY SHARE`); the view row `KEY
+  SHARE`; the resolve again, refusing as retryable (409 `folder_view_changed`)
+  if the view now names a run whose job it does not hold; then the run check
+  with its fence and principal rows (`run_enter`). An open superseding the view (`FOR UPDATE`) either finishes first,
   and the release then refuses, or waits for the release and carries its
   reads (implementation review r2, finding 2; r3, finding 1).
 - **Feed pages** carry no receipts and only invalidate (agreed with F3 on

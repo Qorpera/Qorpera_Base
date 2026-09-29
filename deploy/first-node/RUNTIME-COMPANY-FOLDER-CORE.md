@@ -287,8 +287,9 @@ is never upgraded. The steps:
      the member as approver, and refuses the unit if either check fails.
    - **A view** (C1B "C1b-3: views" §4): the job of its live run, if any, then
      the view row `FOR KEY SHARE`, which closing and superseding (`FOR
-     UPDATE`) wait for. Releases take the same two in the same order, and so
-     must anything that locks both: the job first, then the view.
+     UPDATE`) wait for. Releases take them in the same order, and so must
+     anything that locks two of them: the job, then the view, then the fence
+     (step 3) and the principal rows (step 4).
 3. **The folder fence.** The company's fence row is taken `FOR KEY SHARE`.
    - Stop and resume take it `FOR UPDATE`.
    - After this lock, the pause is read again, as today's rule requires
