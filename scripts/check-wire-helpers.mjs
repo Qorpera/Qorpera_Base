@@ -99,7 +99,9 @@ function main(argv) {
 			);
 		return 0;
 	}
-	console.error("New local copies of wire checks. Import them from @qorpera/contracts (wire-values.ts) instead:");
+	console.error(
+		"New local copies of wire checks. Import them from @qorpera/contracts (wire-values.ts) instead; `git diff` against the base branch shows which file added one. Files holding copies now:",
+	);
 	for (const rise of rises) {
 		console.error(`  ${rise.package}: ${rise.metric} ${rise.count}, baseline ${rise.allowed}`);
 		const holding = Object.entries(files).filter(
