@@ -3,7 +3,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CompanyController } from "../src/app/company.ts";
 import type { PageCursor } from "../src/cloud/pagination.ts";
-import type { HostedSession, HostedSessionEvent } from "../src/cloud/types.ts";
+import type { HostedSession, HostedSessionEvent, HostedStaffExecutionActivity } from "../src/cloud/types.ts";
 import { event, fixture, id, profileA, session, settle, staff, userA } from "./fixtures.ts";
 
 /* Realtime hints carry no bodies, and every transcript event touches its conversation's row: a
@@ -33,10 +33,21 @@ const other: HostedSession = {
 	executionScope: { roomId: id(64), agentThread: true },
 };
 
+const working = (): HostedStaffExecutionActivity[] => [
+	{
+		runId: id(70),
+		staffAgentId: staff.id,
+		sourceKind: "session_turn",
+		jobStatus: "leased",
+		activity: "working",
+		updatedAt: new Date().toISOString(),
+	},
+];
+
 /** A company with two agents' threads, the member reading the first (its agent working, unless
  * not); `write` has an agent add an event to a thread, which changes the thread's row and sends a
- * sessions hint. */
-async function company(realtime: "connected" | "degraded", working = true) {
+ * sessions hint (unless not); `status` is the Realtime channel's own status callback. */
+async function company(realtime: "connected" | "degraded", busy = true) {
 	vi.useFakeTimers({
 		now: Date.parse("2026-09-29T10:00:00Z"),
 		toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"],
@@ -52,43 +63,41 @@ async function company(realtime: "connected" | "degraded", working = true) {
 	]);
 	const after = (item: HostedSession, since: PageCursor) =>
 		item.updatedAt > since.time || (item.updatedAt === since.time && item.sessionId > since.id);
+	/** A delta read that is slow (held until released) or fails. */
+	const delta: { hold?: Promise<void>; fail?: boolean } = {};
 	vi.mocked(f.api.listSessions).mockImplementation(async (_environment, _signal, since) => {
-		return [...sessions.values()]
+		const read = [...sessions.values()]
 			.filter((item) => !since || after(item, since))
 			.sort((a, b) =>
 				a.updatedAt === b.updatedAt ? a.sessionId.localeCompare(b.sessionId) : a.updatedAt < b.updatedAt ? -1 : 1,
 			);
+		if (since && delta.fail) throw new Error("Network blip");
+		if (since && delta.hold) await delta.hold;
+		return read;
 	});
 	vi.mocked(f.api.readSessionEvents).mockImplementation(async (sessionId, afterSequence) =>
 		(events.get(sessionId) ?? []).filter((item) => item.sequence > (afterSequence ?? 0)),
 	);
-	vi.mocked(f.api.listStaffActivity).mockImplementation(async () =>
-		working
-			? [
-					{
-						runId: id(70),
-						staffAgentId: staff.id,
-						sourceKind: "session_turn",
-						jobStatus: "leased",
-						activity: "working",
-						updatedAt: new Date().toISOString(),
-					},
-				]
-			: [],
-	);
+	const activity = { rows: busy ? working() : [] };
+	vi.mocked(f.api.listStaffActivity).mockImplementation(async () => activity.rows);
 	vi.mocked(f.api.listMemberMentions).mockResolvedValue([]);
 	const controller = new CompanyController(f.api, profileA, userA.id);
 	cleanup.push(() => controller.stop());
 	await controller.start();
-	controller.store.set({ realtime });
+	const channel = vi.mocked(f.cloud.supabase.channel).mock.results[0]?.value as {
+		subscribe: ReturnType<typeof vi.fn>;
+	};
+	const status = channel.subscribe.mock.calls[0]?.[0] as (state: string) => void;
+	status(realtime === "connected" ? "SUBSCRIBED" : "CHANNEL_ERROR");
 	controller.setOpenSession(open.sessionId);
 	const store = controller.conversation(open.sessionId);
 	await vi.advanceTimersByTimeAsync(1_000);
-	const write = (sessionId: string) => {
+	const hint = () => f.hints.get("qorpera_shared_sessions")?.();
+	const write = (sessionId: string, notify = true) => {
 		const list = events.get(sessionId)!;
 		list.push({ ...event(list.length + 1), sessionId, createdAt: new Date().toISOString() });
 		sessions.set(sessionId, { ...sessions.get(sessionId)!, updatedAt: new Date().toISOString() });
-		f.hints.get("qorpera_shared_sessions")?.();
+		if (notify) hint();
 	};
 	/** Every read the controller sent, by name. */
 	const rpcs = () => {
@@ -118,7 +127,16 @@ async function company(realtime: "connected" | "degraded", working = true) {
 		);
 		return { read, total: Object.values(read).reduce((sum, count) => sum + count, 0) };
 	};
-	return { f, controller, store, events, sessions, write, rpcs, minute };
+	return { f, controller, store, events, sessions, write, hint, status, activity, delta, rpcs, minute };
+}
+
+/** Seconds until `seen` holds, one second at a time (at most a minute). */
+async function secondsUntil(seen: () => boolean): Promise<number> {
+	for (let second = 1; second <= 60; second++) {
+		await vi.advanceTimersByTimeAsync(1_000);
+		if (seen()) return second;
+	}
+	return Number.POSITIVE_INFINITY;
 }
 
 describe("reading again after a hint", () => {
@@ -159,17 +177,120 @@ describe("reading again after a hint", () => {
 		// Another thread changed: the open one is not read again.
 		expect(reads()).toBe(before.reads);
 		// The open thread changed: its new events at once; its waiting inputs and coding sessions
-		// again once ten seconds passed since they were last read.
+		// within ten seconds of their last read, also with no later hint.
 		busy.write(open.sessionId);
 		await vi.advanceTimersByTimeAsync(1_000);
 		expect(reads()).toBe(before.reads + 1);
 		expect(inputs()).toBe(before.inputs);
 		expect(busy.store.get().events).toHaveLength(1);
 		await vi.advanceTimersByTimeAsync(9_000);
-		busy.write(open.sessionId);
-		await vi.advanceTimersByTimeAsync(1_000);
 		expect(inputs()).toBe(before.inputs + 1);
-		expect(busy.store.get().events).toHaveLength(2);
+	});
+
+	it("reads a thread's waiting inputs within ten seconds of their hint, also when no later hint comes", async () => {
+		const busy = await company("connected", false);
+		await vi.advanceTimersByTimeAsync(40_000);
+		busy.write(open.sessionId);
+		await vi.advanceTimersByTimeAsync(2_000);
+		const inputs = () => vi.mocked(busy.f.api.listSessionInputs).mock.calls.length;
+		const before = inputs();
+		await vi.advanceTimersByTimeAsync(1_000);
+		// Another member's message is queued: its conversation's row changes, one hint.
+		busy.sessions.set(open.sessionId, { ...busy.sessions.get(open.sessionId)!, updatedAt: new Date().toISOString() });
+		busy.hint();
+		expect(await secondsUntil(() => inputs() > before)).toBeLessThanOrEqual(10);
+	});
+
+	it("keeps reading the agents' activity while one works, also for a change no hint announces", async () => {
+		const busy = await company("connected");
+		await vi.advanceTimersByTimeAsync(5_000);
+		// The run fails to start: its job changes, no conversation does, so no hint comes.
+		busy.activity.rows = [{ ...working()[0]!, jobStatus: "failed", activity: "needs_attention" }];
+		expect(
+			await secondsUntil(() => busy.controller.store.get().activity[0]?.activity === "needs_attention"),
+		).toBeLessThanOrEqual(3);
+	});
+
+	it("keeps the open thread live when Realtime says connected but no hints arrive", async () => {
+		const busy = await company("connected");
+		let worst = 0;
+		const written: number[] = [];
+		for (let tick = 1; tick <= 240; tick++) {
+			if (tick % 3 === 0) {
+				busy.write(open.sessionId, false);
+				written.push(Date.now());
+			}
+			await vi.advanceTimersByTimeAsync(500);
+			const seen = busy.store.get().events.length;
+			if (seen < written.length) worst = Math.max(worst, Date.now() - written[seen]!);
+		}
+		// One watch at most (two seconds, rounded to the half-second steps).
+		expect(worst).toBeLessThanOrEqual(2_500);
+	});
+
+	it("catches up once when Realtime comes back after an error", async () => {
+		const busy = await company("connected", false);
+		await vi.advanceTimersByTimeAsync(5_000);
+		busy.status("CHANNEL_ERROR");
+		// While it is away, another conversation is archived and the open thread gets a message;
+		// neither hint arrives.
+		busy.sessions.set(other.sessionId, {
+			...busy.sessions.get(other.sessionId)!,
+			status: "closed",
+			updatedAt: new Date().toISOString(),
+		});
+		busy.write(open.sessionId, false);
+		await vi.advanceTimersByTimeAsync(5_000);
+		const closed = () =>
+			busy.controller.store.get().sessions.find((item) => item.sessionId === other.sessionId)?.status === "closed";
+		expect(closed()).toBe(false);
+		busy.status("SUBSCRIBED");
+		await vi.advanceTimersByTimeAsync(1_000);
+		expect(closed()).toBe(true);
+		expect(busy.store.get().events).toHaveLength(1);
+	});
+
+	it("does not let a delta that started before a whole read put back older copies", async () => {
+		const busy = await company("connected", false);
+		await vi.advanceTimersByTimeAsync(5_000);
+		let release = () => {};
+		busy.delta.hold = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		busy.write(other.sessionId);
+		await vi.advanceTimersByTimeAsync(300);
+		// Renamed while the delta is on its way; a whole read (a send, the clock) lands first.
+		busy.sessions.set(other.sessionId, {
+			...busy.sessions.get(other.sessionId)!,
+			title: "Renamed",
+			updatedAt: new Date().toISOString(),
+		});
+		await busy.controller.refreshSessions();
+		const title = () =>
+			busy.controller.store.get().sessions.find((item) => item.sessionId === other.sessionId)?.title;
+		expect(title()).toBe("Renamed");
+		busy.delta.hold = undefined;
+		release();
+		await vi.advanceTimersByTimeAsync(1_000);
+		expect(title()).toBe("Renamed");
+	});
+
+	it("still reads what a hint touches when its delta read fails", async () => {
+		const busy = await company("connected", false);
+		await vi.advanceTimersByTimeAsync(40_000);
+		const reads = () =>
+			vi.mocked(busy.f.api.readSessionEvents).mock.calls.filter((call) => call[0] === open.sessionId).length;
+		const before = reads();
+		busy.delta.fail = true;
+		busy.write(open.sessionId);
+		await vi.advanceTimersByTimeAsync(2_000);
+		expect(reads()).toBe(before + 1);
+		expect(busy.store.get().events).toHaveLength(1);
+		expect(busy.controller.store.get().sessionsError).toBe("Network blip");
+		busy.delta.fail = false;
+		busy.write(open.sessionId);
+		await vi.advanceTimersByTimeAsync(2_000);
+		expect(busy.controller.store.get().sessionsError).toBeUndefined();
 	});
 
 	it("reads the whole list again every five minutes, so nothing a delta missed stays missed", async () => {

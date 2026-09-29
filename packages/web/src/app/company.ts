@@ -366,6 +366,12 @@ export class CompanyController {
 	#changedAgain = false;
 	/** When each conversation was last read (Date.now()), at all and in full. */
 	readonly #conversationReadAt = new Map<string, { any: number; full: number }>();
+	/** Whole reads of the conversations that landed: a delta that started before one drops its copies. */
+	#sessionsWholeReads = 0;
+	/** The open conversation's next full read, when a hint read only its events. */
+	#openFullTimer: ReturnType<typeof setTimeout> | undefined;
+	/** Realtime was connected once: a return to connected catches up on what it may have missed. */
+	#connectedBefore = false;
 	/** Per failed run: when its details may be read next (performance.now()), and
 	 * the latest request, so an older answer never replaces a newer one. */
 	readonly #recoveryReads = new Map<string, { due: number; request: number }>();
@@ -425,7 +431,11 @@ export class CompanyController {
 			this.profile.profileId,
 			(resource) => this.#onHint(resource),
 			(phase, error) => {
-				if (!this.#stopped) this.store.set({ realtime: phase, realtimeError: error });
+				if (this.#stopped) return;
+				const back = phase === "connected" && this.#connectedBefore && this.store.get().realtime !== "connected";
+				if (phase === "connected") this.#connectedBefore = true;
+				this.store.set({ realtime: phase, realtimeError: error });
+				if (back) this.#catchUp();
 			},
 		);
 		await this.refreshAll();
@@ -447,6 +457,7 @@ export class CompanyController {
 		this.#presence = undefined;
 		if (this.#poll) clearInterval(this.#poll);
 		clearTimeout(this.#watching);
+		clearTimeout(this.#openFullTimer);
 		this.#invalidations.clear();
 		// Deliver a final access-loss update before dropping observers.
 		queueMicrotask(() => {
@@ -610,6 +621,7 @@ export class CompanyController {
 				if (this.#stopped || version !== this.#versions.sessions) return;
 				this.#sessionsCursor = newestSession(sessions);
 				this.#sessionsReadAt = started;
+				this.#sessionsWholeReads += 1;
 				this.store.set({ sessions, sessionsError: undefined });
 				if (!this.store.get().loading) await this.refreshGroups();
 			} catch (error) {
@@ -662,6 +674,7 @@ export class CompanyController {
 			return undefined;
 		}
 		const since = Date.parse(cursor.time) - SESSIONS_OVERLAP_MS;
+		const wholeReads = this.#sessionsWholeReads;
 		try {
 			const read = await this.#api.listSessions(
 				this.profile.environmentId,
@@ -669,13 +682,14 @@ export class CompanyController {
 				Number.isFinite(since) ? { time: new Date(since).toISOString(), id: NO_ID } : undefined,
 			);
 			if (this.#stopped) return [];
-			// A whole read that landed meanwhile is newer than what this one saw of its own window.
-			if (this.#sessionsFullRead) return undefined;
+			// A whole read on its way, or one that landed meanwhile, is newer than this one's copies.
+			if (this.#sessionsFullRead || wholeReads !== this.#sessionsWholeReads) return undefined;
 			const known = new Map(this.store.get().sessions.map((session) => [session.sessionId, session]));
 			const changed = read.filter((session) => known.get(session.sessionId)?.updatedAt !== session.updatedAt);
 			this.#sessionsCursor = newestSession(read, this.#sessionsCursor);
 			if (changed.length)
 				this.store.set((state) => ({ sessions: mergeSessions(state.sessions, changed), sessionsError: undefined }));
+			else if (this.store.get().sessionsError) this.store.set({ sessionsError: undefined });
 			// A room's conversation changed (or appeared): its details are read again, as a whole read does.
 			if (
 				!this.store.get().loading &&
@@ -685,7 +699,8 @@ export class CompanyController {
 			return changed;
 		} catch (error) {
 			if (!this.#stopped) this.store.set({ sessionsError: describeError(error) });
-			return [];
+			// Unknown, not unchanged: what the hint would have read is read anyway.
+			return undefined;
 		}
 	}
 
@@ -1997,6 +2012,9 @@ export class CompanyController {
 				const open = this.#openSessionId;
 				if (open && Date.now() - (this.#conversationReadAt.get(open)?.any ?? 0) >= WATCH_SKIP_MS)
 					void this.loadConversation(open, { eventsOnly: true });
+				// Activity also changes without a hint (a lease, a run that fails to start), and reading
+				// it is what keeps the watch going while an agent works: on the hints' 3 s bound.
+				this.#refreshActivitySoon();
 				return;
 			}
 			if (this.#openSessionId) void this.loadConversation(this.#openSessionId);
@@ -2014,9 +2032,27 @@ export class CompanyController {
 	readonly #refreshOpenConversation = debounce(() => {
 		const open = this.#openSessionId;
 		if (!open) return;
-		const full = Date.now() - (this.#conversationReadAt.get(open)?.full ?? 0) >= OPEN_FULL_MS;
-		void this.loadConversation(open, { eventsOnly: !full });
+		const due = (this.#conversationReadAt.get(open)?.full ?? 0) + OPEN_FULL_MS - Date.now();
+		void this.loadConversation(open, { eventsOnly: due > 0 });
+		// Its waiting inputs and coding sessions are read within OPEN_FULL_MS of the hint, also
+		// when no later hint comes; a full read meanwhile (a send, the clock) makes this one moot.
+		if (due > 0 && !this.#openFullTimer)
+			this.#openFullTimer = setTimeout(() => {
+				this.#openFullTimer = undefined;
+				if (this.#stopped || this.#openSessionId !== open) return;
+				if (Date.now() - (this.#conversationReadAt.get(open)?.full ?? 0) >= OPEN_FULL_MS)
+					void this.loadConversation(open);
+			}, due);
 	}, 400);
+
+	/** Realtime is back after an error: what changed while hints could not arrive is read once. */
+	#catchUp(): void {
+		if (this.#stopped || this.store.get().loading) return;
+		void this.#sessionsChanged();
+		void this.refreshActivity();
+		void this.refreshMentions();
+		if (this.#openSessionId) void this.loadConversation(this.#openSessionId);
+	}
 
 	/** A burst of transcript events is one hint's worth of reads. */
 	readonly #sessionsChangedSoon = debounce(() => void this.#sessionsChanged(), 250);
@@ -2061,7 +2097,8 @@ export class CompanyController {
 					for (const listener of this.#invalidations) {
 						listener("sessions");
 					}
-			} else if (Date.now() - this.#sessionsReadAt > SESSIONS_FULL_MS) await this.refreshSessions();
+			} else if (Date.now() - this.#sessionsReadAt > SESSIONS_FULL_MS)
+				await (this.#sessionsFullRead ?? this.refreshSessions());
 			// Proposal comments/rejections do not all touch the Company File head.
 			// Refresh this surface even with a healthy Realtime channel.
 			if (!this.#stopped) for (const listener of this.#invalidations) listener("company-file");
