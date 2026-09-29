@@ -37,6 +37,8 @@ export const AGENTS: Record<string, string> = {
 	"every day": "hver dag",
 	"When {path} or anything under it changes": "Når {path} eller noget i den ændres",
 	"When {path} changes": "Når {path} ændres",
+	"When a hook receives an event": "Når en hook modtager en hændelse",
+	"When a hook receives {types}": "Når en hook modtager {types}",
 	"{days} at {time} ({zone})": "{days} kl. {time} ({zone})",
 	"Every day at {time}": "Hver dag kl. {time}",
 	"Weekdays at {time}": "Hverdage kl. {time}",
