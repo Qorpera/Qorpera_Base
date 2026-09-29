@@ -205,8 +205,8 @@ describe("Plan & usage", () => {
 		};
 		const left = {
 			complimentary: false as const,
-			leftSeconds: 90_000,
-			freeSeconds: 0,
+			leftSeconds: 90_100,
+			freeSeconds: 100,
 			planSeconds: 18_000,
 			creditSeconds: 72_000,
 			owedSeconds: 0,
@@ -220,8 +220,24 @@ describe("Plan & usage", () => {
 		);
 		expect(card().textContent).toContain("Company A · 25 h left");
 		expect(card().textContent).not.toContain("Measured, not charged yet");
+		// Under three minutes of free hours would read "0 h": left out.
 		expect(card().querySelector(".settings-hours-sources")?.textContent).toBe("Plans 5 h · Packs 20 h");
 		expect(card().querySelector(".settings-hours-founder")).toBeNull();
+		renderPlan(
+			container,
+			{ loaded: true, entitlement: entitlement("basis") },
+			{
+				...usage,
+				founder: false,
+				hours: {
+					value: { ...hours, hoursLeft: { ...left, freeSeconds: 7200, leftSeconds: 97_200 } },
+					loading: false,
+				},
+			},
+		);
+		expect(card().querySelector(".settings-hours-sources")?.textContent).toBe(
+			"Free hours 2 h · Plans 5 h · Packs 20 h",
+		);
 		// A founder also sees each founder's share.
 		renderPlan(
 			container,
@@ -236,8 +252,10 @@ describe("Plan & usage", () => {
 							...left,
 							founders: [
 								{ userId: anna, creditSeconds: 72_000 },
-								{ userId: bo, planSeconds: 18_000, planEndsAt: "2026-10-28T00:00:00Z" },
+								{ userId: bo, planSeconds: 18_000 },
 								{ userId: "00000000-0000-4000-8000-00000000000c" },
+								{ userId: "00000000-0000-4000-8000-00000000000d", creditSeconds: 3600 },
+								{ creditSeconds: 7200 },
 							],
 						},
 					},
@@ -247,8 +265,13 @@ describe("Plan & usage", () => {
 		);
 		expect([...card().querySelectorAll(".settings-hours-founder")].map((line) => line.textContent)).toEqual([
 			"Anna: packs 20 h",
-			"Bo: plan 5 h, until 28 Oct 2026",
+			"Bo: plan 5 h",
+			"A founder: packs 1 h",
+			"Former founders: packs 2 h",
 		]);
+		expect(card().querySelector(".settings-hours-shared")?.textContent).toBe(
+			"A founder's plan is shared by every company it pays for.",
+		);
 		// Past zero: nothing left, and what it owes.
 		renderPlan(
 			container,

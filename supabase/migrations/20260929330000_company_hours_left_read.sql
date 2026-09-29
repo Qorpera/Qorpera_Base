@@ -10,8 +10,11 @@
 --   periods and the company's packs, minus what it owes) and the parts: `freeSeconds`,
 --   `planSeconds`, `creditSeconds`, `owedSeconds`. A founder's plan period is the founder's whole
 --   plan, shared by every company it pays for.
--- * For a founder reading it, also `founders`: each founder's current plan period and the packs
---   they bought for this company, with hours left (who pays). Other members never see names.
+-- * For a founder reading it, also `founders`: each founder's hours left in their current plan
+--   period (the whole plan, shared by every company it pays for; its dates stay on the founder's
+--   own plan) and in the packs they bought for this company, and, as `userId` null, packs bought by
+--   members who are no longer founders (who pays). Other members never see names.
+-- * `hoursLeft` is always now, whatever month is read.
 
 set local lock_timeout = '3s';
 
@@ -60,9 +63,8 @@ begin
 		select coalesce(jsonb_agg(jsonb_build_object(
 				'userId', payer.user_id,
 				'planSeconds', payer.plan_seconds,
-				'planEndsAt', payer.plan_ends_at,
 				'creditSeconds', payer.credit_seconds
-			) order by payer.position), '[]'::jsonb)
+			) order by payer.position nulls last), '[]'::jsonb)
 		into v_payers
 		from (
 			select founder.user_id, founder.position,
@@ -71,16 +73,20 @@ begin
 					where plan.kind = 'plan_period' and not plan.dry_run and plan.user_id = founder.user_id
 						and plan.withdrawn_at is null and plan.frozen_at is null
 						and plan.period_start <= v_now and v_now < plan.period_end) as plan_seconds,
-				(select max(plan.period_end)
-					from public.qorpera_computer_hour_sources plan
-					where plan.kind = 'plan_period' and not plan.dry_run and plan.user_id = founder.user_id
-						and plan.withdrawn_at is null and plan.period_start <= v_now and v_now < plan.period_end) as plan_ends_at,
 				(select sum(credit.granted_seconds - credit.drawn_seconds)
 					from public.qorpera_computer_hour_sources credit
 					where credit.kind = 'credit' and credit.profile_id = p_profile_id and not credit.dry_run
 						and credit.user_id = founder.user_id and credit.withdrawn_at is null and credit.frozen_at is null
 						and credit.expires_at > v_now) as credit_seconds
 			from public.qorpera_company_founders(p_profile_id) with ordinality as founder(user_id, position)
+			union all
+			-- Packs bought by members who are no longer founders still pay: one line, without a name.
+			select null, null, null, sum(credit.granted_seconds - credit.drawn_seconds)
+			from public.qorpera_computer_hour_sources credit
+			where credit.kind = 'credit' and credit.profile_id = p_profile_id and not credit.dry_run
+				and not credit.user_id = any(v_founders) and credit.withdrawn_at is null and credit.frozen_at is null
+				and credit.expires_at > v_now
+			having count(*) > 0
 		) payer;
 	end if;
 	return jsonb_build_object(

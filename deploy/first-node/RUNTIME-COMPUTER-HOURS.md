@@ -616,9 +616,8 @@ Before the switch (all of these hold):
   node refusal must be known to the node admission, coding executor, fleet and provider parsers on
   both nodes (their binaries installed) before it can be returned.
 - Members see their hours left, by source, on Plan & usage from the switch on
-  (contract items 5 and 12; "Plan & usage (web)" below). Today the company card says "Measured,
-  not charged yet" and no member read returns hours left: that read and its web card are built
-  and live first.
+  (contract items 5 and 12; "Plan & usage (web)" below): `hoursLeft` in the member hours read
+  and the company card (migration `20260929330000`) are live first.
 - The meter job runs every minute (`qorpera-computer-hour-meter`), and
   `select swept_at, failed_at, last_error from public.qorpera_computer_hour_zero_sweep_status`
   shows a recent `swept_at` and no fresh failure.
@@ -725,9 +724,10 @@ Rollback:
 - The company card, seen by every member: hours used this month, by kind; from the live switch also
   by source, and hours left (`hoursLeft` in `qorpera_read_company_computer_hours`, migration
   `20260929330000`: null before the switch, "complimentary", or hours left with free, plans, packs
-  and owed; `founders` only for a founder reading it). From the live switch, founders also see each
-  founder's share and a "Buy hours" button (before it, only founders who are enrolled testers see
-  it, in Stripe's test mode).
+  and owed; `founders` only for a founder reading it: each founder's plan and packs, without the
+  plan's dates, and former founders' packs on one line). From the live switch, founders also see
+  each founder's share and a "Buy hours" button (before it, only founders who are enrolled testers
+  see it, in Stripe's test mode).
 - Your plan, seen only by you: plan, hours used per company, reset date, "Change plan" and
   "Payments and invoices" (Stripe's billing page).
 - Admins, contributors and viewers see the company's hours without names or cards: "Computer

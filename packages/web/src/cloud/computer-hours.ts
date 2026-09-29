@@ -16,10 +16,10 @@ export interface ComputerHoursByKind {
 
 /** One founder's share of what pays for the company's hours, shown to founders only. */
 export interface HoursLeftFounder {
-	userId: string;
+	/** Absent for the packs of members who are no longer founders (one line, without a name). */
+	userId?: string;
 	/** Left in the founder's current plan period (the whole plan, shared by every company it pays for). */
 	planSeconds?: number;
-	planEndsAt?: string;
 	/** Left in the packs this founder bought for the company. */
 	creditSeconds?: number;
 }
@@ -82,11 +82,10 @@ function hoursLeft(value: unknown): CompanyHoursLeft {
 					const planSeconds = optionalSeconds(founder.planSeconds, "founder plan hours");
 					const creditSeconds = optionalSeconds(founder.creditSeconds, "founder pack hours");
 					return {
-						userId: uuid(founder.userId, "computer hours founder"),
-						...(planSeconds === undefined ? {} : { planSeconds }),
-						...(founder.planEndsAt === null || founder.planEndsAt === undefined
+						...(founder.userId === null || founder.userId === undefined
 							? {}
-							: { planEndsAt: timestamp(founder.planEndsAt, "founder plan end") }),
+							: { userId: uuid(founder.userId, "computer hours founder") }),
+						...(planSeconds === undefined ? {} : { planSeconds }),
 						...(creditSeconds === undefined ? {} : { creditSeconds }),
 					};
 				});

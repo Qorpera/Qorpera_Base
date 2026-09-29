@@ -513,8 +513,10 @@ wake), so no agent runs and nothing is charged before it.
   it owes) with `freeSeconds`, `planSeconds` (the founders' current plans,
   each shared by every company it pays for), `creditSeconds` and
   `owedSeconds`. A founder reading it also gets `founders`: each founder's
-  `userId`, and `planSeconds`, `planEndsAt` and `creditSeconds` where they
-  have them (who pays); other members never see who paid.
+  `userId`, with `planSeconds` and `creditSeconds` where they have them (who
+  pays), and, with `userId` null, the packs of members who are no longer
+  founders; other members never see who paid. `hoursLeft` is always now,
+  whatever month is read.
   From 20260929280000, `qorpera_company_waiting_for_hours(p_profile_id)` →
   boolean says the same as `waitingForHours` without the month's figures,
   for a client that asks with its other periodic reads (any member; anyone

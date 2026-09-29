@@ -162,44 +162,49 @@ function packText(offer: ComputerHourOffer): string {
 	return `${hoursText(offer.hours)} · ${priceKr(offer.priceMinor / 100)}`;
 }
 
-/** What the company's hours left come from, "Free hours 2 h · Packs 20 h"; with what it owes. */
+/** What the company's hours left come from, "Free hours 2 h · Packs 20 h"; with what it owes.
+ * Under three minutes would read "0 h": left out, as on the kinds line. */
 function sourcesText(left: Extract<CompanyHoursLeft, { complimentary: false }>): string {
 	const parts = [
-		left.freeSeconds > 0 ? t("Free hours {hours}", { hours: hoursText(left.freeSeconds / 3600) }) : null,
-		left.planSeconds > 0 ? t("Plans {hours}", { hours: hoursText(left.planSeconds / 3600) }) : null,
-		left.creditSeconds > 0 ? t("Packs {hours}", { hours: hoursText(left.creditSeconds / 3600) }) : null,
-		left.owedSeconds > 0 ? t("Owed {hours}", { hours: hoursText(left.owedSeconds / 3600) }) : null,
+		left.freeSeconds >= 180 ? t("Free hours {hours}", { hours: hoursText(left.freeSeconds / 3600) }) : null,
+		left.planSeconds >= 180 ? t("Plans {hours}", { hours: hoursText(left.planSeconds / 3600) }) : null,
+		left.creditSeconds >= 180 ? t("Packs {hours}", { hours: hoursText(left.creditSeconds / 3600) }) : null,
+		left.owedSeconds >= 180 ? t("Owed {hours}", { hours: hoursText(left.owedSeconds / 3600) }) : null,
 	];
 	return parts.filter((part) => part !== null).join(" · ");
 }
 
-/** For a founder: each founder's plan and packs that pay for the company. */
+/** For a founder: each founder's plan and packs that pay for the company, packs from former
+ * founders on one line, and that a plan is shared by every company it pays for. */
 function foundersLines(left: Extract<CompanyHoursLeft, { complimentary: false }>, usage: PlanUsage): HTMLElement[] {
-	return (left.founders ?? [])
-		.filter((founder) => founder.planSeconds !== undefined || founder.creditSeconds !== undefined)
-		.map((founder) => {
-			const parts = [
-				founder.planSeconds === undefined
-					? null
-					: founder.planEndsAt
-						? t("plan {hours}, until {date}", {
-								hours: hoursText(founder.planSeconds / 3600),
-								date: dateText(founder.planEndsAt),
-							})
-						: t("plan {hours}", { hours: hoursText(founder.planSeconds / 3600) }),
-				founder.creditSeconds === undefined
-					? null
-					: t("packs {hours}", { hours: hoursText(founder.creditSeconds / 3600) }),
-			].filter((part) => part !== null);
-			return h(
+	const payers = (left.founders ?? []).filter(
+		(founder) => founder.planSeconds !== undefined || founder.creditSeconds !== undefined,
+	);
+	const lines = payers.map((founder) => {
+		const parts = [
+			founder.planSeconds === undefined ? null : t("plan {hours}", { hours: hoursText(founder.planSeconds / 3600) }),
+			founder.creditSeconds === undefined
+				? null
+				: t("packs {hours}", { hours: hoursText(founder.creditSeconds / 3600) }),
+		].filter((part) => part !== null);
+		return h(
+			"small",
+			{ class: "settings-hours-founder" },
+			t("{name}: {parts}", {
+				name: founder.userId ? (usage.memberName?.(founder.userId) ?? t("A founder")) : t("Former founders"),
+				parts: parts.join(" · "),
+			}),
+		);
+	});
+	if (payers.some((founder) => founder.planSeconds !== undefined))
+		lines.push(
+			h(
 				"small",
-				{ class: "settings-hours-founder" },
-				t("{name}: {parts}", {
-					name: usage.memberName?.(founder.userId) ?? t("A founder"),
-					parts: parts.join(" · "),
-				}),
-			);
-		});
+				{ class: "settings-hours-shared" },
+				uiText("A founder's plan is shared by every company it pays for."),
+			),
+		);
+	return lines;
 }
 
 /** The company's hours card: this month's use, what it was used on, and (for

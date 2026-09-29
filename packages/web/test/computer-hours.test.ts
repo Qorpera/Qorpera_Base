@@ -46,15 +46,17 @@ describe("company computer hours", () => {
 			...left,
 		});
 		const founders = [
-			{ userId: P, planSeconds: 7200, planEndsAt: "2026-10-28T00:00:00+00:00", creditSeconds: null },
-			{ userId: P.replace("a", "b"), planSeconds: null, planEndsAt: null, creditSeconds: 72_000 },
+			{ userId: P, planSeconds: 7200, creditSeconds: null },
+			{ userId: P.replace("a", "b"), planSeconds: null, creditSeconds: 72_000 },
+			{ userId: null, planSeconds: null, creditSeconds: 3600 },
 		];
 		expect(parseCompanyComputerHours(reply({ hoursLeft: { ...left, founders } })).hoursLeft).toEqual({
 			complimentary: false,
 			...left,
 			founders: [
-				{ userId: P, planSeconds: 7200, planEndsAt: "2026-10-28T00:00:00+00:00" },
+				{ userId: P, planSeconds: 7200 },
 				{ userId: P.replace("a", "b"), creditSeconds: 72_000 },
+				{ creditSeconds: 3600 },
 			],
 		});
 		expect(() => parseCompanyComputerHours(reply({ hoursLeft: { ...left, freeSeconds: -1 } }))).toThrow(
