@@ -821,6 +821,8 @@ it.each([
 				"manage_worker",
 				"organize_sidebar",
 				"add_review_rule",
+				"list_hooks",
+				"read_event",
 				"read_context",
 				"read_skill",
 				"recall_memory",

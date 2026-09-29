@@ -187,6 +187,32 @@ $$;
 select set_config('qorpera_test.delete_neighbour_rows',
 	pg_temp.company_rows(current_setting('qorpera_test.delete_neighbour')::uuid)::text, true);
 
+-- The folder core's byte path keeps rows per company too (C1d): an upload intent with its objects, a chunk row and the
+-- usage row. The purge must remove each (step 7), and the chunk's manifest joins the stored-object queue (step 9).
+do $$
+declare v_intent uuid;
+begin
+	insert into public.qorpera_profile_objects(profile_id, sha256, bytes, backend)
+	values ('30000000-0000-4000-8000-000000000010', repeat('c', 64), 10, 'nas-object-gateway');
+	-- (An intent names its environment's folder clock.)
+	insert into public.qorpera_folder_clocks(environment_id) values ('30000000-0000-4000-8000-000000000020')
+	on conflict (environment_id) do nothing;
+	insert into public.qorpera_folder_upload_intents(environment_id, profile_id, actor_kind, scope_id, manifest_sha256, manifest_text,
+		file_sha256, bytes, media_type, executable, expires_at)
+	values ('30000000-0000-4000-8000-000000000020', '30000000-0000-4000-8000-000000000010', 'platform',
+		'00000000-0000-0000-0000-000000000000', repeat('c', 64), '{}', repeat('d', 64), 5, 'text/plain', false,
+		clock_timestamp() + interval '15 minutes')
+	returning id into v_intent;
+	insert into public.qorpera_folder_upload_intent_objects(intent_id, sha256, bytes, profile_id)
+	values (v_intent, repeat('d', 64), 5, '30000000-0000-4000-8000-000000000010');
+	insert into public.qorpera_folder_file_chunks(profile_id, chunk_sha256, manifest_sha256)
+	values ('30000000-0000-4000-8000-000000000010', repeat('d', 64), repeat('c', 64));
+	insert into public.qorpera_folder_storage_usage(profile_id, bytes, objects)
+	values ('30000000-0000-4000-8000-000000000010', 10, 1)
+	on conflict (profile_id) do update set bytes = excluded.bytes;
+end
+$$;
+
 -- What the company has now, to check after the delete.
 create temp table delete_before as
 select
@@ -318,7 +344,7 @@ values ('30000000-0000-4000-8000-000000000161', '30000000-0000-4000-8000-0000000
 	(current_setting('qorpera_test.wake_login')::jsonb ->> 'login_id')::uuid,
 	(current_setting('qorpera_test.wake_identity')::jsonb ->> 'compute_identity_id')::uuid,
 	'lxd-login', repeat('8', 64), clock_timestamp());
--- Only a sign-in placed on a node can have left a volume there (20260929450000, D4).
+-- Only a sign-in placed on a node can have left a volume there (20260928269450, D4).
 savepoint unplaced_identity;
 select pg_temp.wake_assert(pg_temp.finish() ->> 'state' = 'purged', 'A sign-in never placed on a node holds nothing');
 rollback to unplaced_identity;

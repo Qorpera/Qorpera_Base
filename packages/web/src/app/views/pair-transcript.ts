@@ -17,7 +17,7 @@ import type { CompanyController } from "../company.ts";
 /** What the panel needs from the company: the pair session's events and the agents' names. */
 export type PairTranscriptHost = Pick<
 	CompanyController,
-	"conversation" | "conversations" | "loadConversation" | "staffById" | "signal"
+	"conversation" | "conversations" | "loadConversation" | "loadEarlier" | "staffById" | "signal"
 >;
 
 const REFRESH_MS = 5_000;
@@ -42,6 +42,9 @@ export class PairTranscriptView {
 	#placeholder: HTMLElement | undefined;
 	#renderedKey = "";
 	#disposed = false;
+	/** "Show earlier": older messages come in above, and the reader stays where they were. */
+	#earlier: HTMLButtonElement | undefined;
+	#keepPlace = false;
 
 	/** @param agentIds the coworker (shown on the left) and the thread's own agent (on the right). */
 	constructor(host: PairTranscriptHost, sessionId: string, agentIds: readonly [string, string], onClose: () => void) {
@@ -121,6 +124,9 @@ export class PairTranscriptView {
 			items,
 			conversation.loading,
 			conversation.error,
+			conversation.hasEarlier,
+			conversation.earlierLoading,
+			conversation.earlierError,
 			first.name,
 			second.name,
 			first.agent?.appearance,
@@ -142,6 +148,38 @@ export class PairTranscriptView {
 			),
 		);
 		const nodes: HTMLElement[] = [];
+		if (conversation.hasEarlier && !conversation.loading) {
+			this.#earlier ??= h(
+				"button",
+				{
+					type: "button",
+					class: "btn btn-small thread-earlier-button",
+					onclick: () => {
+						this.#keepPlace = true;
+						void this.#host.loadEarlier(this.#sessionId);
+					},
+				},
+				t("Show earlier messages"),
+			);
+			const label = conversation.earlierLoading ? t("Loading earlier messages…") : t("Show earlier messages");
+			if (this.#earlier.textContent !== label) this.#earlier.textContent = label;
+			if (conversation.earlierLoading) this.#earlier.setAttribute("aria-disabled", "true");
+			else this.#earlier.removeAttribute("aria-disabled");
+			nodes.push(
+				h(
+					"div",
+					{ class: "thread-earlier" },
+					this.#earlier,
+					conversation.earlierError
+						? h(
+								"p",
+								{ class: "thread-earlier-note", role: "status" },
+								t("Earlier messages could not be loaded. {reason}", { reason: conversation.earlierError }),
+							)
+						: null,
+				),
+			);
+		}
 		let previous: Date | undefined;
 		for (const item of items) {
 			const date = parseConversationTimestamp(item.createdAt);
@@ -202,10 +240,17 @@ export class PairTranscriptView {
 			nodes.push(h("div", { class: "empty" }, t("No messages yet.")));
 		if (conversation.error) nodes.push(h("div", { class: "empty" }, conversation.error));
 		// Nodes already in place stay put: a live log re-reads what is taken out and put back.
+		const fromBottom = this.#messages.scrollHeight - this.#messages.scrollTop;
+		const focused = this.#earlier?.contains(document.activeElement) === true;
 		const kept = this.#messages.childNodes;
 		if (nodes.length !== kept.length || nodes.some((node, index) => node !== kept[index]))
 			replace(this.#messages, ...nodes);
-		this.#messages.scrollTop = this.#messages.scrollHeight;
+		if (focused && this.#earlier?.isConnected) this.#earlier.focus({ preventScroll: true });
+		// Older messages came in above: the reader stays with what they were reading.
+		if (this.#keepPlace && !conversation.earlierLoading) {
+			this.#keepPlace = false;
+			this.#messages.scrollTop = this.#messages.scrollHeight - fromBottom;
+		} else if (!this.#keepPlace) this.#messages.scrollTop = this.#messages.scrollHeight;
 	}
 
 	dispose(): void {

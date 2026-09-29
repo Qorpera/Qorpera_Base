@@ -124,7 +124,10 @@ export type CloudCompanyPathRpc =
 	| "qorpera_folder_read"
 	| "qorpera_folder_list"
 	| "qorpera_folder_commit"
-	| "qorpera_folder_record_release";
+	| "qorpera_folder_record_release"
+	// Event wakes (W2): the company's hooks and one event's body.
+	| "qorpera_list_agent_event_hooks"
+	| "qorpera_read_agent_event";
 
 /** Service-only transport. Never exposed as an arbitrary RPC tool. */
 export interface CloudCompanyPathControl {

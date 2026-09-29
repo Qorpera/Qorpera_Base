@@ -3914,7 +3914,7 @@ complete section 16.3's listener triggers and section 11.5's broker. Design:
    agent grant, and the secret and its plaintext never leave the broker's
    memory. The result is only verified, duplicate or refused.
 
-Section 21 gains an event-wake acceptance item when event wakes (W2) land.
+Section 21, item 33, is the event-wake acceptance item.
 
 ### 2026-09-29 amendment: one call before a model request
 
@@ -4003,7 +4003,7 @@ immediately before an effect, and section 9.1's context views, are unchanged.
 > vision the Co-Founder writes.
 
 The runtime launch gate passes only when a deployed environment proves the
-mandatory items 1–31 without manual database repair or a hidden desktop
+mandatory items 1–31 and 33 without manual database repair or a hidden desktop
 executor. Item 32 is a separate post-build enablement gate and is not required
 while Azure backup/overflow remains disabled.
 
@@ -4122,6 +4122,12 @@ while Azure backup/overflow remains disabled.
     to Azure placements and rented allocation intervals. The view distinguishes
     computers, companies, associated users and observed active users, retains
     local/Azure placement history, and exposes failed or unavailable overflow.
+33. Events wake agents (2026-09-29 amendment "events wake agents", section
+    19): posts from a website form to an address-proven hook wake a routine
+    listening to it once per burst, and the run reads every event, a large one
+    through read_event. An instruction inside an event gains no authority (the
+    event case of item 10). A duplicate or unverified delivery wakes nothing,
+    and a removed hook wakes nothing more.
 
 Passing unit tests against a local provider, describing the behavior in an
 instruction file, or leaving a desktop open to execute work does not pass this
