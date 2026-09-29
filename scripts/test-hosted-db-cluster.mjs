@@ -18,6 +18,11 @@ const TESTS = join(repositoryRoot, "supabase", "tests");
 /** Where the files are copied inside the container (psql runs there and reads them with `\i`). */
 const IN_CONTAINER = "/qorpera";
 const PASSWORD = "qorpera-test-only";
+/** Production's function default privileges (Supabase grants EXECUTE on new public functions to the API
+ * roles), applied after the test bootstrap and before any migration, so every database built here has
+ * production's function ACLs. Scripts that load bootstrap.sql themselves do not get them yet. */
+const PLATFORM_DEFAULTS = "platform-function-defaults.sql";
+const BOOTSTRAP = [`${IN_CONTAINER}/bootstrap.sql`, `${IN_CONTAINER}/${PLATFORM_DEFAULTS}`];
 /** The migrated database every copy is taken from; it is never connected to after the build. */
 export const MIGRATED = "qorpera_migrated";
 /** Set by the suite for the scripts it starts: the shared container and its snapshots. */
@@ -121,6 +126,7 @@ export class HostedDbCluster {
 			run("docker", ["exec", container, "mkdir", "-p", IN_CONTAINER]);
 			run("docker", ["cp", MIGRATIONS, `${container}:${IN_CONTAINER}/migrations`]);
 			run("docker", ["cp", join(TESTS, "bootstrap.sql"), `${container}:${IN_CONTAINER}/bootstrap.sql`]);
+			run("docker", ["cp", join(TESTS, PLATFORM_DEFAULTS), `${container}:${IN_CONTAINER}/${PLATFORM_DEFAULTS}`]);
 		} catch (error) {
 			cluster.stop();
 			throw error;
@@ -233,7 +239,7 @@ export class HostedDbCluster {
 				: "";
 		};
 		let text = `\\connect postgres\ncreate database ${MIGRATED};\n`;
-		text += sessionPerFile(MIGRATED, [`${IN_CONTAINER}/bootstrap.sql`]);
+		text += sessionPerFile(MIGRATED, BOOTSTRAP);
 		names.forEach((name, index) => {
 			text += snapshotAt(index);
 			text += sessionPerFile(MIGRATED, [`${IN_CONTAINER}/migrations/${name}`], { echo: progress });
@@ -265,7 +271,7 @@ export class HostedDbCluster {
 		}
 		// Owned by the bootstrap superuser, as the image's own database is; postgres gets every right on it.
 		this.admin(`create database ${name};${this.#admin === "postgres" ? "" : ` grant all on database ${name} to postgres;`}`);
-		this.script(name, sessionPerFile(name, [`${IN_CONTAINER}/bootstrap.sql`]));
+		this.script(name, sessionPerFile(name, BOOTSTRAP));
 		this.migrate(name, wanted);
 		return { copied: 0, replayed: wanted.length };
 	}

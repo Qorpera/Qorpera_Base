@@ -135,10 +135,13 @@ $$;
 -- Reproduce the platform's default privilege posture so migration-level
 -- revokes and RLS policies are exercised the way production exercises them:
 -- schemas usable, tables and sequences default-granted (which the protected
--- tables then explicitly revoke), functions NOT default-granted (matching the
--- observed production ACLs, where every callable RPC carries an explicit
--- grant). Without this block every role-based test would fail on schema
--- access and prove nothing about the actual separation model.
+-- tables then explicitly revoke). Production also default-grants functions
+-- (deploy/first-node/RUNTIME-STEP-1.md, the 2026-08-27 permission audit); the
+-- hosted-db cluster (scripts/test-hosted-db-cluster.mjs) adds that with
+-- platform-function-defaults.sql, which the scripts that load this file
+-- themselves do not yet. Without this block every role-based
+-- test would fail on schema access and prove nothing about the actual
+-- separation model.
 grant usage on schema public to anon, authenticated, service_role;
 grant usage on schema extensions to anon, authenticated, service_role;
 grant usage on schema auth to anon, authenticated, service_role;
