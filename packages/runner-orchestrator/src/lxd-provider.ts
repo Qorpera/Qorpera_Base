@@ -1785,7 +1785,16 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 			await this.#writeJournal({ ...current, physicalState: "lost", stopReason: "idle" });
 			return;
 		}
-		if (current.lxd.loginCustody !== "vault")
+		// A run that never starts again needs no identity volume: stopped or lost, or its guest's
+		// deletion or capacity release already recorded. A deleted company's volume may be retired
+		// (company delete D4) while its journal is kept for a day.
+		if (
+			current.lxd.loginCustody !== "vault" &&
+			current.physicalState !== "stopped" &&
+			current.physicalState !== "lost" &&
+			!current.deletionConfirmed &&
+			!this.#capacityReleased(current)
+		)
 			await this.#ensureIdentityVolume(current, current.runner.computeIdentityId, signal);
 		const instance = await this.#lxd.getInstance(current.lxd.project, current.instanceName, signal);
 		// A lost run never restarts. When its guest is gone as well, a recovery volume that was never
