@@ -5,6 +5,9 @@
 -- Realtime topic and ask for work when this database broadcasts a wake-up, with a slow backstop poll
 -- (runner-orchestrator QORPERA_RUNNER_ORCHESTRATOR_WAKE, off unless set).
 --
+-- Switch: nothing is sent until an operator sets qorpera_orchestrator_wake_settings.enabled (off here).
+-- While it is off, each trigger below costs one lookup of that row and nothing else.
+--
 -- Topic: 'qorpera-orchestrator-wake-' || hex(sha256('qorpera.orchestrator-wake/v1:' || control_token_sha256)).
 -- Only this database keeps the control token's sha256, and the orchestrator computes it from its token, so
 -- nobody else can name the topic; it moves with every control rotation. The payload names nothing.
@@ -12,14 +15,30 @@
 -- Broadcast: once per transaction, to every active orchestrator whose control token has not expired, when
 -- claimable work may have appeared: a runner job inserted or changing status (a finished job can make its
 -- session's next input materializable), a session turn request or wake occurrence becoming queued, a session
--- input, or a queued proposal review. Nine row triggers; a WHEN clause filters rows before the function
--- runs, and after the first send in a transaction the function returns at once. A lost broadcast costs
--- only latency: the orchestrator still polls. The sends never fail the enqueuing transaction and wait at
--- most 200 ms for Realtime's table (see the function); they take no lock on any Qorpera row.
+-- input, or a queued proposal review. Nine AFTER row triggers; a WHEN clause filters rows before the
+-- function runs, and after the first send in a transaction the function returns at once. Work that becomes
+-- claimable by time or elsewhere sends no wake-up and is found by the orchestrator's poll: an expired
+-- placement deferral or claim lease, a node switched back on, a completed sign-in, bought hours, a declared
+-- bundle.
 --
--- Reception: the orchestrator joins with the publishable key (the anon role). The policy lets anon read
--- broadcasts on wake topics only; there is no insert policy, so only the database publishes to them.
+-- Cost inside the enqueuing transaction: a plain read of the active orchestrators (no row locks), then one
+-- realtime.send each, which inserts a row into realtime.messages (Realtime reads it from the WAL after
+-- commit; no network call). All sends together wait at most 200 ms for Realtime's table (its partition
+-- maintenance), and a missing or failing Realtime is absorbed: a wake-up never fails an enqueue and never
+-- holds it up longer than that.
+--
+-- Reception: the orchestrator joins with the publishable key (the anon role). The policy lets anon read a
+-- row only on the topic it joined, and only a wake topic; there is no insert policy, so only the database
+-- publishes to them.
 set local lock_timeout = '3s';
+
+create table public.qorpera_orchestrator_wake_settings (
+	singleton boolean primary key default true check (singleton),
+	enabled boolean not null default false
+);
+insert into public.qorpera_orchestrator_wake_settings (singleton) values (true);
+alter table public.qorpera_orchestrator_wake_settings enable row level security;
+revoke all on public.qorpera_orchestrator_wake_settings from public, anon, authenticated;
 
 create function public.qorpera_runner_orchestrator_wake_topic(p_control_token_sha256 text)
 returns text language sql immutable set search_path = '' as $$
@@ -33,6 +52,8 @@ create function public.qorpera_wake_runner_orchestrators_internal()
 returns trigger language plpgsql security definer set search_path = '' as $$
 declare
 	v_lock_timeout text := current_setting('lock_timeout');
+	v_started timestamptz;
+	v_left integer;
 	v_topic text;
 begin
 	-- One wake-up per orchestrator per transaction, however many rows change.
@@ -40,10 +61,13 @@ begin
 		return null;
 	end if;
 	perform set_config('qorpera.runner_orchestrators_woken', 'yes', true);
-	-- One subtransaction for all sends. realtime.send only inserts a row into realtime.messages (Realtime
-	-- reads it from the WAL after commit), and turns its own failures into a warning. The block also
-	-- absorbs a missing Realtime, and bounds any wait for Realtime's table (its partition maintenance)
-	-- to 200 ms: the enqueuing transaction never fails and never waits longer because of a wake-up.
+	if not coalesce((select settings.enabled from public.qorpera_orchestrator_wake_settings as settings), false) then
+		return null;
+	end if;
+	-- One subtransaction for all sends. realtime.send only inserts a row into realtime.messages, and turns its
+	-- own failures (a lock timeout included) into a warning, so the sends share one 200 ms budget: each waits
+	-- at most what is left of it, and none starts once it is spent. The block also absorbs a missing Realtime.
+	v_started := clock_timestamp();
 	begin
 		perform set_config('lock_timeout', '200ms', true);
 		for v_topic in
@@ -52,6 +76,9 @@ begin
 			from public.qorpera_runner_orchestrators as orchestrator
 			where orchestrator.status = 'active' and orchestrator.control_token_expires_at > statement_timestamp()
 		loop
+			v_left := 200 - floor(extract(epoch from clock_timestamp() - v_started) * 1000)::integer;
+			exit when v_left < 1;
+			perform set_config('lock_timeout', v_left || 'ms', true);
 			perform realtime.send(jsonb_build_object('schema', 'qorpera.orchestrator-wake/v1'), 'wake', v_topic, true);
 		end loop;
 		perform set_config('lock_timeout', v_lock_timeout, true);
@@ -103,13 +130,15 @@ create trigger qorpera_proposal_reviews_status_wake_orchestrators
 	for each row when (new.status = 'queued' and old.status is distinct from 'queued')
 	execute function public.qorpera_wake_runner_orchestrators_internal();
 
--- The orchestrator receives its wake-ups as anon (publishable key). Only well-formed wake topics, and
--- nothing may be published to them by a client: there is no insert policy.
+-- The orchestrator receives its wake-ups as anon (publishable key): a row only on the wake topic it joined
+-- (Realtime's join check sets realtime.topic and reads with it), so no other setting widens what anon sees.
+-- Nothing may be published to a wake topic by a client: there is no insert policy.
 create policy qorpera_orchestrator_wake_receive
 	on realtime.messages
 	for select
 	to anon
 	using (
 		realtime.messages.extension = 'broadcast'
-		and realtime.topic() ~ '^qorpera-orchestrator-wake-[0-9a-f]{64}$'
+		and realtime.messages.topic = (select realtime.topic())
+		and realtime.messages.topic ~ '^qorpera-orchestrator-wake-[0-9a-f]{64}$'
 	);

@@ -613,6 +613,14 @@ wake), so no agent runs and nothing is charged before it.
   any active member of the room edits an existing draft. Access is the room post
   rule: an active member of an active room. Drafts never send, wake or sponsor
   anything; the owner sends with `qorpera_post_company_room_message` as before.
+- `qorpera-orchestrator-wake-{64 hex}` — **node only, not for clients**
+  (migration `20260929550000_runtime_orchestrator_wake`). A runner orchestrator's
+  wake-up: while `qorpera_orchestrator_wake_settings.enabled` is on, the database
+  broadcasts event `wake`, payload `{"schema":"qorpera.orchestrator-wake/v1"}`
+  and nothing else, when claimable work may have appeared. Private channel read
+  by `anon` (the orchestrator joins with the publishable key) on that topic only.
+  The name derives from the control token's sha256, which only the database
+  keeps; nobody publishes but the database.
 
 ## 4. Object gateway (HTTP, `packages/object-gateway`)
 
