@@ -47,8 +47,8 @@ begin
 		raise exception 'Runtime observation batch is invalid' using errcode = '22023';
 	end if;
 	for v_row in
-		select item.value from jsonb_array_elements(p_observations) with ordinality as item(value, position)
-		order by item.position
+		select item.value from jsonb_array_elements(p_observations) with ordinality as item(value, ordinal)
+		order by item.ordinal
 	loop
 		begin
 			v_receipts := v_receipts || jsonb_build_array(public.qorpera_record_runtime_observation(p_run_id, v_row));

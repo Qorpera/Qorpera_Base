@@ -50,7 +50,7 @@ begin
 	reset role;
 	if v_result - 'receipts' <> jsonb_build_object('schema','qorpera.runtime-observation-batch-receipt/v1','runId',v_run)
 		or jsonb_array_length(v_result -> 'receipts') <> 6
-		or v_result #> '{receipts,0}' - 'replayed' <> v_replay - 'replayed'
+		or (v_result #> '{receipts,0}') - 'replayed' <> v_replay - 'replayed'
 		or v_result #> '{receipts,0,replayed}' <> 'false'::jsonb
 		or v_result #> '{receipts,1}' <> '{"schema":"qorpera.runtime-observation-refusal/v1","code":"22023"}'::jsonb
 		or v_result #> '{receipts,2}' <> v_replay
