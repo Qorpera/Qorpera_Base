@@ -183,6 +183,8 @@ try {
 	 'nodeId',node_id,'reservedAt',reserved_at,'suspendedAt',suspended_at)
 	 from public.qorpera_runtime_node_demands where allocation_id=${sqlText(allocationId)}),'{"state":"none"}');`));
 	const nodeAdmissions=[],suspensions=[];
+	let suspensionAttempts=0;
+	const suspendNode=(args)=>`${service} select public.qorpera_suspend_runtime_node_machine(${Object.entries(args).map(([name,value])=>`${name}=>${sqlText(value)}`).join(",")});`;
 	const nodeCall=(args)=>{
 		nodeAdmissionCalls++;
 		nodeAdmissions.push(nodeDemand(args.p_allocation_id));
@@ -273,16 +275,19 @@ try {
    signal.throwIfAborted();
    if (method === "qorpera_suspend_runtime_node_machine") {
     // After the confirmed stop of an explicit power-off the worker gives the node slot back
-    // (lxd-office-node-admission.ts). Its exact six arguments reach the real SQL unchanged.
+    // (lxd-office-node-admission.ts). Its exact six arguments reach the real SQL unchanged, by name.
+    // Counted first: a failed check below surfaces only as OFFICE_POWER_OFF_UNCONFIRMED, which several
+    // probe steps expect, so the end compares attempts with confirmed calls.
+    suspensionAttempts++;
     assert(powerOffMode);
-    assert.deepEqual(Object.keys(args), ["p_allocation_id", "p_provider_id", "p_policy_sha256", "p_instance_sha256", "p_machine_id_sha256", "p_transition_id"]);
+    assert.deepEqual(Object.keys(args).sort(), ["p_allocation_id", "p_instance_sha256", "p_machine_id_sha256", "p_policy_sha256", "p_provider_id", "p_transition_id"]);
     const { policy, digest } = creationPolicies.get(providerId);
     assert.deepEqual([args.p_provider_id, args.p_policy_sha256, args.p_machine_id_sha256], [providerId, digest, policy.host.machineIdSha256]);
     assert.deepEqual(JSON.parse(docker(psql, `select jsonb_build_object('action',t.request->>'action','instanceSha256',a.instance_sha256)
      from public.qorpera_runtime_office_lifecycle_transitions t join public.qorpera_runtime_machine_allocations a on a.id=t.allocation_id and a.released_at is null
      where t.id=${sqlText(args.p_transition_id)} and t.allocation_id=${sqlText(args.p_allocation_id)};`)), { action: "power_off", instanceSha256: args.p_instance_sha256 });
     if (suspensions.length) assert.deepEqual(args, suspensions[0].args); // One explicit power-off per run; later VM cycles are reboots.
-    const receipt = JSON.parse(docker(psql, `${service} select public.qorpera_suspend_runtime_node_machine(${Object.values(args).map(sqlText).join(",")});`));
+    const receipt = JSON.parse(docker(psql, suspendNode(args)));
     // Every replay repeats the one receipt. All of them come before the resume re-admits the demand.
     assert(!nodeAdmissions.some(({ state }) => state === "suspended"));
     if (suspensions.length) assert.deepEqual(receipt, suspensions[0].receipt);
@@ -358,7 +363,7 @@ try {
          assert.equal(docker(psql, "select count(*) from public.qorpera_runtime_office_stops;"), resumeMode ? (vmCyclesMode ? "6" : "4") : successorWorkerMode ? "2" : "1");
          assert.equal(docker(psql, "select count(*) from public.qorpera_runtime_office_lifecycle_transitions;"), resumeMode ? (vmCyclesMode ? "6" : "4") : successorWorkerMode ? "2" : "1");
          assert.equal(docker(psql, "select count(*) from public.qorpera_runtime_office_screens where drain_pending;"), "0");
-         if(!successorWorkerMode)console.log("PASS: concrete serialized stop worker with real SQL and Unix HTTP survives lost revocation, physical stop and committed acknowledgement replies plus database restart; maintenance and machine capacity remain fenced");
+         if(!successorWorkerMode)console.log("PASS: concrete serialized stop worker with real SQL and Unix HTTP survives lost revocation, physical stop and committed acknowledgement replies plus database restart; maintenance and the machine allocation remain fenced");
          if(powerOffMode)console.log("PASS: explicit power-off worker uses current SQL stop authority, retains one VM stop through lost operation polling and database/provider recovery, and preserves maintenance and the company's allocation; VM measurement is synthetic");
          if(resumeMode){assert(bootIntentReplyLost&&bootSuccessorPrepareLost&&bootSuccessorActivateLost);assert.equal(revocationLosses.size,vmCyclesMode?6:4);assert.equal(stopAckLosses.size,vmCyclesMode?6:4);assert.equal(bootIntentLosses.size,vmCyclesMode?3:1);assert.equal(bootPreparationLosses.size,vmCyclesMode?3:1);assert.equal(bootActivationLosses.size,vmCyclesMode?3:1);assert.equal(successorPreparationLosses.size,2);assert.equal(successorActivationLosses.size,2);assert.equal(docker(psql,"select count(*) from public.qorpera_runtime_office_boot_intents i join public.qorpera_runtime_office_successors s on s.activation_id=i.activation_id;"),vmCyclesMode?"3":"1");assert.equal(docker(psql,"select count(*) from public.qorpera_runtime_office_activations where superseded_at is null;"),"1");if(vmCyclesMode)console.log("PASS: two additional VM resume/configuration/activation cycles with exact lost-reply recovery; six activation histories, six stops, three boot intents and one charged allocation in maintenance");
          if(!vmCyclesMode)console.log("PASS: serialized resume, boot configuration, activation and two complete service restart/stop cycles with actual SQL and Unix HTTP survive lost committed intent/preparation/activation/revocation/stop acknowledgements, lost physical replies and database restarts; four activation histories, original configuration and one charged allocation are preserved in maintenance");}
@@ -367,6 +372,12 @@ try {
         // placed but suspended, so the node counts no computer; resume re-admits it. A fresh
         // observation makes the free capacity readable.
         const slotGivenBack=powerOffMode&&!resumeMode, guest=creationPolicies.get(providerId).policy.guest;
+        const allocationId=docker(psql,"select id from public.qorpera_runtime_machine_allocations where released_at is null;");
+        // With real rows: once resume re-admitted the demand, the same power-off's suspension is kept.
+        if(resumeMode){
+         assert.deepEqual(JSON.parse(docker(psql,suspendNode(suspensions[0].args))),{state:"kept",reason:"RESUME_PENDING"});
+         assert.equal(nodeDemand(allocationId).state,"reserved");
+        }
         observeNode();
         const nodeCapacity=JSON.parse(docker(psql,`${service} select public.qorpera_runtime_node_capacity('${nodeId}');`));
         assert.equal(nodeCapacity.state,"eligible");
@@ -374,23 +385,28 @@ try {
         assert.deepEqual([nodeCapacity.allocatedCpuMillis,nodeCapacity.allocatedMemoryBytes],slotGivenBack?[0,0]:[guest.cpus*1000,guest.memoryBytes]);
         assert.deepEqual([nodeCapacity.freeCpuMillis,nodeCapacity.freeMemoryBytes],slotGivenBack?[guest.cpus*1000,guest.memoryBytes]:[0,0]);
         assert.equal(nodeAdmissionCalls,1+(bootMode?1:0)+(resumeMode?(vmCyclesMode?3:1):0));
-        const demand=nodeDemand(docker(psql,"select id from public.qorpera_runtime_machine_allocations where released_at is null;"));
+        const demand=nodeDemand(allocationId);
         assert.equal(demand.state,slotGivenBack?"suspended":"reserved"); assert.equal(demand.nodeId,nodeId);
+        const candidates=JSON.parse(docker(psql,`${service} select public.qorpera_runtime_node_placement_candidates('office');`)).filter((candidate)=>candidate.nodeId===nodeId);
+        assert.deepEqual(candidates.map(({eligible,fits,freeSlots})=>({eligible,fits,freeSlots})),[{eligible:true,fits:slotGivenBack,freeSlots:slotGivenBack?1:0}]);
         // One demand across every boot: each later admission finds it on this node with its first reservation
         // time; only the resume after the explicit power-off finds it suspended.
         const admissionsFound=nodeAdmissions.map(({state})=>state);
         assert.deepEqual(admissionsFound,["none",...(bootMode?["reserved"]:[]),...(resumeMode?["suspended",...(vmCyclesMode?["reserved","reserved"]:[])]:[])]);
         for(const found of nodeAdmissions.slice(1))assert.deepEqual([found.nodeId,found.reservedAt],[nodeId,demand.reservedAt]);
+        const oneDemandAcrossBoots=docker(psql,"select count(*) from public.qorpera_runtime_node_demands;")==="1"
+         &&nodeAdmissions.slice(1).every((found)=>found.nodeId===nodeId&&found.reservedAt===demand.reservedAt);
+        assert(oneDemandAcrossBoots);
         // The confirmed pass and its replay; resume modes replay once more while the resume plan is retained.
-        assert.equal(suspensions.length,resumeMode?3:powerOffMode?2:0);
+        assert.equal(suspensions.length,resumeMode?3:powerOffMode?2:0); assert.equal(suspensionAttempts,suspensions.length);
         if(slotGivenBack)assert.equal(demand.suspendedAt,suspensions[0].receipt.suspendedAt);
         console.log(JSON.stringify({schema:"qorpera.office-node-admission-proof/v2",nodeAdmissionCalls,admissionsFound,
          allocatedComputers:nodeCapacity.allocatedComputers,allocatedCpuMillis:nodeCapacity.allocatedCpuMillis,allocatedMemoryBytes:nodeCapacity.allocatedMemoryBytes,
-         freeCpuMillis:nodeCapacity.freeCpuMillis,freeMemoryBytes:nodeCapacity.freeMemoryBytes,demand:demand.state,oneDemandAcrossBoots:true,
+         freeCpuMillis:nodeCapacity.freeCpuMillis,freeMemoryBytes:nodeCapacity.freeMemoryBytes,demand:demand.state,oneDemandAcrossBoots,placementFits:slotGivenBack,
          nodeSlot:resumeMode?"suspended by the power-off, re-admitted by resume":powerOffMode?"given back by the power-off":"held",
          suspensionCalls:suspensions.length,suspensionReceipt:suspensions[0]?.receipt,actualSql:true,actualProviderWorkers:true,hostMeasurements:"synthetic",physicalVm:false}));
         if(slotGivenBack)console.log("PASS: the confirmed explicit power-off suspends the computer's node demand with one exact receipt through every replay; the node counts no computer and has its slot free while the demand stays placed and the allocation retained");
-        if(resumeMode)console.log(`PASS: resume re-admits the suspended node demand through the ordinary reservation, keeping its node and first reservation time${vmCyclesMode?"; the two later reboots keep the slot without suspension":""}`);
+        if(resumeMode)console.log(`PASS: resume re-admits the suspended node demand through the ordinary reservation, keeping its node and first reservation time; a later suspension of that power-off is kept (RESUME_PENDING)${vmCyclesMode?"; the two later reboots keep the slot without suspension":""}`);
         if (activationWorkerMode) { assert(activationReplyLost); assert.equal(docker(psql, "select count(*) from public.qorpera_runtime_office_activations where state='active';"), successorWorkerMode ? "3" : resumeMode ? (vmCyclesMode ? "6" : "4") : "1"); }
         if(successorWorkerMode){
          assert(successorPrepareLost&&successorActivateLost);
