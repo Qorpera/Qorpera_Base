@@ -5,7 +5,7 @@
 -- message waited refuses as retryable; a wake insert with rank 0 and admission held never meets 55P03, and the routine
 -- lifecycle's FOR NO KEY UPDATE runs beside a routine run's tool call and after a routine save; removing another member
 -- while a run messages; the materializer never touches a folder-v2 company row; a save archiving the sender against its
--- message. 648's committed fixture (Ada's leased human run), with a Co-Founder run in its thread, removed at the end.
+-- message; the scheduler waits for a message into its agent's thread before admission. 648's committed fixture (Ada's leased human run), with a Co-Founder run in its thread, removed at the end.
 
 -- Ada's run acknowledges, so its tool calls may work.
 select public.qorpera_send_native_agent_message((b ->> 'leaseId')::uuid, (b ->> 'runId')::uuid, (b ->> 'jobId')::uuid,
@@ -75,6 +75,17 @@ begin
 		'64800000-0000-4000-8000-0000000000a1', 'Check in', 'Check the numbers.',
 		'[{"id":"t1","kind":"once","at":"2026-10-01T09:00:00Z","timeZone":"UTC"}]', 'medium',
 		'64800000-0000-4000-8000-0000000000b1', 1, repeat('e', 64), v_requester);
+	-- A scheduled routine of Ada, with its schedule position, for the scheduler's race.
+	insert into public.qorpera_cloud_routines(id, profile_id, environment_id, client_routine_id, current_version, status,
+		created_by_user_id, origin)
+	values ('65700000-0000-4000-8000-0000000000e3', v_profile, v_env, extensions.gen_random_uuid(), 1, 'active', v_requester, 'member');
+	insert into public.qorpera_cloud_routine_versions(routine_id, version, client_version_id, profile_id, environment_id,
+		staff_agent_id, title, prompt, triggers, effort, sponsor_binding_id, sponsor_version, content_sha256, created_by_user_id)
+	values ('65700000-0000-4000-8000-0000000000e3', 1, extensions.gen_random_uuid(), v_profile, v_env,
+		'64800000-0000-4000-8000-0000000000a1', 'Hourly', 'Check the inbox.', '[{"id":"s1","kind":"schedule","intervalMinutes":60}]',
+		'medium', '64800000-0000-4000-8000-0000000000b1', 1, repeat('e', 64), v_requester);
+	insert into public.qorpera_cloud_routine_schedule_cursors(routine_id, routine_version, trigger_id, next_due_at)
+	values ('65700000-0000-4000-8000-0000000000e3', 1, 's1', date_trunc('second', clock_timestamp()));
 	-- A queued snapshot-v1 wake the materializer takes.
 	insert into public.qorpera_wake_occurrences(id, profile_id, environment_id, trigger_id, occurrence_key, scheduled_for, not_before,
 		wake_kind, source_kind, status, payload, admission_scan_at)
@@ -270,6 +281,31 @@ begin
 		raise exception 'Both routine wakes landed'; end if;
 end $$;
 
+-- D2. The scheduler against a message into the routine agent's thread: the message holds the thread FOR UPDATE, and the
+-- scheduler waits for it there, KEY SHARE before admission, holding no admission row; a scheduler that took admission
+-- first and then waited at the thread would deadlock with a message waiting for admission.
+do $$
+declare v_state text; v_slot timestamptz;
+begin
+	select next_due_at into v_slot from public.qorpera_cloud_routine_schedule_cursors where routine_id = '65700000-0000-4000-8000-0000000000e3';
+	perform dblink_exec('fence_two', 'begin');
+	perform * from dblink('fence_two', pg_temp.sql_cw('qorpera_test.cofounder', '64800000-0000-4000-8000-0000000000a1', 'before-slot'))
+		as t(x text);
+	perform dblink_send_query('fence_one', format('select public.qorpera_enqueue_routine_wake(%L, 1, %L, %L, %L, %L, null, %L)::text',
+		'65700000-0000-4000-8000-0000000000e3', '65700000-0000-4000-8000-0000000000f3', 'slot-1', 's1', v_slot, v_slot + interval '1 hour'));
+	if not pg_temp.waits_for('fence_one', 'fence_two') then raise exception 'The scheduler must wait for the message into the thread'; end if;
+	if pg_temp.queued_on('fence_one') is distinct from 'public.qorpera_shared_sessions'::regclass then
+		raise exception 'The scheduler must wait at the thread, not on %', pg_temp.queued_on('fence_one'); end if;
+	if exists (select 1 from pg_locks where pid = current_setting('qorpera_test.pid_fence_one')::integer
+		and relation = 'public.qorpera_folder_admissions'::regclass and mode = 'RowExclusiveLock') then
+		raise exception 'The scheduler waits before admission'; end if;
+	perform dblink_exec('fence_two', 'commit');
+	v_state := pg_temp.outcome('fence_one');
+	if v_state <> 'ok' then raise exception 'The scheduler after the message: %', v_state; end if;
+	if (select status from public.qorpera_wake_occurrences where id = '65700000-0000-4000-8000-0000000000f3') is distinct from 'queued' then
+		raise exception 'The scheduler queues its slot'; end if;
+end $$;
+
 -- E. Removing another member while a run messages, in both orders: removal takes the company row FOR UPDATE, the message
 -- this company's row KEY SHARE (rank 0) before anything else of the company, so they meet there.
 do $$
@@ -391,7 +427,9 @@ begin
 		using case v_table.column_name when 'profile_id' then v_profiles when 'environment_id' then v_envs
 			when 'run_id' then v_runs when 'job_id' then v_jobs when 'session_id' then v_sessions else v_rooms end;
 	end loop;
-	delete from public.qorpera_cloud_routine_versions where routine_id = '65700000-0000-4000-8000-0000000000e1';
+	delete from public.qorpera_cloud_routine_versions where routine_id in ('65700000-0000-4000-8000-0000000000e1',
+		'65700000-0000-4000-8000-0000000000e3');
+	delete from public.qorpera_cloud_routine_schedule_cursors where routine_id = '65700000-0000-4000-8000-0000000000e3';
 	delete from public.qorpera_provider_connection_versions where connection_id = '64800000-0000-4000-8000-0000000000b3';
 	delete from public.qorpera_execution_sponsor_versions where binding_id = '64800000-0000-4000-8000-0000000000b1';
 	delete from public.qorpera_shared_sessions where id = any (v_sessions);

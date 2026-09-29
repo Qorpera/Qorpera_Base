@@ -12,6 +12,9 @@
 --   until C1c-3 gives them folder modes.
 -- * The routine lifecycle trigger takes the routine FOR NO KEY UPDATE on folder-v2 (rank 5, where the inserter holds it).
 -- * send_coworker_message and read_native_wake get folder bodies (below).
+-- * Routine firing (qorpera_enqueue_routine_wake) gets its folder mode here rather than in C1c-3, since this migration
+--   closes the legacy path: the fence and this company's row KEY SHARE, the routine's member, agent and authority, the
+--   routine FOR NO KEY UPDATE and its schedule position, the public session, admission, the wake. No gc fence.
 -- * The legacy multi-company loops skip folder-v2 companies in their scans' WHERE clauses, before their first lock:
 --   the wake materializer, the office, worker, machine and Company File drains (with the dynamic-routine tick), and
 --   the session materializer. The turn materializer already skips folder-v2 (its scan requires a head snapshot, which a
@@ -316,7 +319,130 @@ begin
 	return v_payload;
 end $$;
 
--- 5. Dispatch, the triggers' folder modes and the loops' skips ------------------------------------------------------
+-- 5. Routine firing on folder-v2 --------------------------------------------------------------------------------
+
+-- The scheduler's queueing of a routine slot (qorpera_enqueue_routine_wake), after its argument checks, without the gc
+-- fence. Today's rules and results (the version and trigger check, the schedule position compare-and-set, the replay,
+-- the pause and zero-hours deferrals), in core §3's order:
+--   1. the folder fence KEY SHARE (stop's second phase waits out wake admission), then this company's row (rank 0);
+--   2. the routine's member and agent, and the agent's execution authority (ranks 1 to 3), KEY SHARE;
+--   3. the routine FOR NO KEY UPDATE, then its schedule position FOR UPDATE (rank 5): a routine save holds the routine
+--      FOR NO KEY UPDATE there too, so the two meet at the routine row (test 709);
+--   4. the routine's public session KEY SHARE (the wake's foreign key takes it; taken now, not after admission, where
+--      it could wait on a message holding that conversation and waiting for admission);
+--   5. admission, then the wake.
+create function public.qorpera_folder_enqueue_routine_wake(p_routine_id uuid, p_expected_version bigint, p_occurrence_id uuid,
+	p_occurrence_key text, p_trigger_id text, p_scheduled_for timestamptz, p_expected_last_scheduled_for timestamptz,
+	p_next_due_at timestamptz, p_payload jsonb)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare
+	v_routine public.qorpera_cloud_routines%rowtype; v_version public.qorpera_cloud_routine_versions%rowtype;
+	v_occurrence public.qorpera_wake_occurrences%rowtype; v_cursor public.qorpera_cloud_routine_schedule_cursors%rowtype;
+	v_session uuid;
+begin
+	select * into v_routine from public.qorpera_cloud_routines where id = p_routine_id;
+	perform 1 from public.qorpera_folder_fences where profile_id = v_routine.profile_id for key share;
+	if not found then raise exception 'Company folder is unavailable' using errcode = '42501'; end if;
+	perform 1 from public.qorpera_profiles where id = v_routine.profile_id for key share;
+	-- The expected version names the member and agent (a version never changes).
+	select * into v_version from public.qorpera_cloud_routine_versions
+	where routine_id = p_routine_id and version = p_expected_version;
+	perform 1 from public.qorpera_profile_members where profile_id = v_routine.profile_id
+		and user_id = v_version.created_by_user_id for key share;
+	perform 1 from public.qorpera_profile_staff where profile_id = v_routine.profile_id
+		and staff_agent_id = v_version.staff_agent_id for key share;
+	perform 1 from public.qorpera_staff_execution_authorities where profile_id = v_routine.profile_id
+		and staff_agent_id = v_version.staff_agent_id for key share;
+	select * into v_routine from public.qorpera_cloud_routines where id = p_routine_id for no key update;
+	if v_routine.id is null or v_routine.status <> 'active'
+		or v_routine.current_version <> p_expected_version or v_version.routine_id is null
+		or not exists (
+			select 1 from jsonb_array_elements(v_version.triggers) as trigger(value)
+			where trigger.value ->> 'id' = btrim(p_trigger_id)
+				and trigger.value ->> 'kind' = 'schedule'
+		) then
+		raise sqlstate 'PGRST' using message = jsonb_build_object('code', 'QRC01', 'message', 'wake routine version is unavailable', 'details', null, 'hint', null)::text, detail = '{"status":409,"headers":{}}';
+	end if;
+	select cursor.* into v_cursor
+	from public.qorpera_cloud_routine_schedule_cursors as cursor
+	where cursor.routine_id = p_routine_id
+		and cursor.routine_version = p_expected_version
+		and cursor.trigger_id = btrim(p_trigger_id)
+	for update;
+	if not found then
+		raise sqlstate 'PGRST' using message = jsonb_build_object('code', 'QRC01', 'message', 'wake schedule cursor is unavailable', 'details', null, 'hint', null)::text, detail = '{"status":409,"headers":{}}';
+	end if;
+	select occurrence.* into v_occurrence
+	from public.qorpera_wake_occurrences as occurrence
+	where occurrence.routine_id = p_routine_id and occurrence.occurrence_key = btrim(p_occurrence_key);
+	if found then
+		if v_occurrence.id <> p_occurrence_id
+			or v_occurrence.routine_version <> p_expected_version
+			or v_occurrence.trigger_id <> btrim(p_trigger_id)
+			or v_occurrence.scheduled_for <> p_scheduled_for
+			or v_occurrence.payload <> p_payload then
+			raise exception 'wake occurrence key is already bound to other work' using errcode = '23505';
+		end if;
+	end if;
+	if v_cursor.last_scheduled_for is distinct from p_expected_last_scheduled_for then
+		if v_cursor.last_scheduled_for = p_scheduled_for and v_cursor.next_due_at = p_next_due_at
+			and v_occurrence.id is not null then
+			return jsonb_build_object(
+				'occurrence_id', v_occurrence.id, 'status', v_occurrence.status,
+				'run_id', v_occurrence.run_id, 'scheduled_for', v_occurrence.scheduled_for
+			);
+		end if;
+		raise sqlstate 'PGRST' using message = jsonb_build_object('code', 'QRC01', 'message', 'wake schedule cursor changed', 'details', null, 'hint', null)::text, detail = '{"status":409,"headers":{}}';
+	end if;
+	if p_expected_last_scheduled_for is not null and p_scheduled_for <= p_expected_last_scheduled_for then
+		raise exception 'wake schedule did not advance' using errcode = '22023';
+	end if;
+	-- A pause defers standing work (the fence is held, so a stop in its second phase waits for this).
+	if v_occurrence.id is null and public.qorpera_company_execution_paused(v_routine.profile_id) then
+		return jsonb_build_object(
+			'occurrence_id', null, 'status', 'deferred', 'run_id', null,
+			'scheduled_for', p_scheduled_for, 'reason', 'Company execution is paused'
+		);
+	end if;
+	if v_occurrence.id is null and public.qorpera_company_at_zero(v_routine.profile_id, clock_timestamp()) then
+		return jsonb_build_object(
+			'occurrence_id', null, 'status', 'deferred', 'run_id', null,
+			'scheduled_for', p_scheduled_for, 'reason', 'Waiting for computer hours'
+		);
+	end if;
+	if v_occurrence.id is null then
+		-- The session the pin trigger will choose, KEY SHARE before admission.
+		v_session := public.qorpera_folder_wake_public_session(v_routine.profile_id, v_routine.environment_id,
+			v_version.staff_agent_id, v_version.created_by_user_id);
+		if v_session is not null then
+			perform 1 from public.qorpera_shared_sessions where id = v_session for key share; end if;
+		perform public.qorpera_folder_admit_wakes(v_routine.profile_id);
+		insert into public.qorpera_wake_occurrences (
+			id, profile_id, environment_id, routine_id, routine_version,
+			trigger_id, occurrence_key, scheduled_for, not_before, payload
+		) values (
+			p_occurrence_id, v_routine.profile_id, v_routine.environment_id,
+			v_routine.id, v_version.version, btrim(p_trigger_id), btrim(p_occurrence_key),
+			p_scheduled_for, p_scheduled_for, p_payload
+		) returning * into v_occurrence;
+		-- The trigger chose the session without a lock: it must be the one this call locked.
+		if v_occurrence.session_id is distinct from v_session then
+			raise sqlstate 'PGRST' using message = jsonb_build_object('code', 'QRC01', 'message', 'wake routine audience changed', 'details', null, 'hint', null)::text, detail = '{"status":409,"headers":{}}';
+		end if;
+	end if;
+	update public.qorpera_cloud_routine_schedule_cursors
+	set last_scheduled_for = p_scheduled_for,
+		next_due_at = p_next_due_at,
+		updated_at = statement_timestamp()
+	where routine_id = p_routine_id and routine_version = p_expected_version
+		and trigger_id = btrim(p_trigger_id);
+	return jsonb_build_object(
+		'occurrence_id', v_occurrence.id, 'status', v_occurrence.status,
+		'run_id', v_occurrence.run_id, 'scheduled_for', v_occurrence.scheduled_for
+	);
+end $$;
+
+-- 6. Dispatch, the triggers' folder modes and the loops' skips ------------------------------------------------------
 
 do $$
 begin
@@ -325,6 +451,15 @@ begin
 		|| 'p_binding, p_recipient_staff_id, p_operation_key, p_text, p_priority); end if;');
 	perform pg_temp.c1c2c1_guard('public.qorpera_read_native_wake(jsonb)',
 		'if public.qorpera_binding_is_folder_v2(p_binding) then return public.qorpera_folder_read_wake(p_binding); end if;');
+	-- Routine firing: after the scheduler's own argument checks, in place of the gc fence (which takes the company row
+	-- FOR UPDATE), the folder mode.
+	perform pg_temp.c1c2c1_replace('public.qorpera_enqueue_routine_wake(uuid,bigint,uuid,text,text,timestamp with time zone,timestamp with time zone,timestamp with time zone,jsonb)',
+		E'\tperform public.qorpera_lock_profile_gc_fence((select profile_id from public.qorpera_cloud_routines where id=p_routine_id));\n',
+		E'\tif public.qorpera_company_is_folder_v2((select profile_id from public.qorpera_cloud_routines where id = p_routine_id)) then\n'
+		|| E'\t\treturn public.qorpera_folder_enqueue_routine_wake(p_routine_id, p_expected_version, p_occurrence_id, p_occurrence_key,\n'
+		|| E'\t\t\tp_trigger_id, p_scheduled_for, p_expected_last_scheduled_for, p_next_due_at, p_payload);\n'
+		|| E'\tend if;\n'
+		|| E'\tperform public.qorpera_lock_profile_gc_fence((select profile_id from public.qorpera_cloud_routines where id=p_routine_id));\n', 1);
 
 	-- The pin trigger. On folder-v2 it locks nothing: the admission mark instead of the legacy fence and the profile row
 	-- FOR UPDATE NOWAIT; the recipient's staff row without FOR SHARE; a routine's public session without FOR SHARE NOWAIT.
@@ -396,7 +531,7 @@ begin
 	-- has (qorpera_company_files_core_head).
 end $$;
 
--- 6. Privileges ------------------------------------------------------------------------------------------------------
+-- 7. Privileges ------------------------------------------------------------------------------------------------------
 
 -- Internal: reached only through the dispatchers and the folder paths.
 revoke all on function public.qorpera_folder_admit_wakes(uuid) from public, anon, authenticated, service_role;
@@ -404,3 +539,5 @@ revoke all on function public.qorpera_folder_wake_public_session(uuid, uuid, uui
 revoke all on function public.qorpera_folder_send_coworker_message(jsonb, uuid, text, text, boolean)
 	from public, anon, authenticated, service_role;
 revoke all on function public.qorpera_folder_read_wake(jsonb) from public, anon, authenticated, service_role;
+revoke all on function public.qorpera_folder_enqueue_routine_wake(uuid, bigint, uuid, text, text, timestamptz, timestamptz, timestamptz, jsonb)
+	from public, anon, authenticated, service_role;

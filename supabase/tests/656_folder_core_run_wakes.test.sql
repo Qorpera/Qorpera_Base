@@ -127,6 +127,12 @@ begin
 		or md5(pg_get_functiondef('public.qorpera_materialize_session_turn_requests(integer)'::regprocedure))
 			<> '61c8e5025e60e568e45fcaf5c7ef5c96' then
 		raise exception 'A legacy loop''s snapshot-v1 text changed'; end if;
+	if md5(replace(pg_get_functiondef('public.qorpera_enqueue_routine_wake(uuid,bigint,uuid,text,text,timestamp with time zone,timestamp with time zone,timestamp with time zone,jsonb)'::regprocedure),
+			E'\tif public.qorpera_company_is_folder_v2((select profile_id from public.qorpera_cloud_routines where id = p_routine_id)) then\n'
+			|| E'\t\treturn public.qorpera_folder_enqueue_routine_wake(p_routine_id, p_expected_version, p_occurrence_id, p_occurrence_key,\n'
+			|| E'\t\t\tp_trigger_id, p_scheduled_for, p_expected_last_scheduled_for, p_next_due_at, p_payload);\n'
+			|| E'\tend if;\n', '')) <> '34767af5c81374abb47dbcd413c64d90' then
+		raise exception 'The scheduler''s snapshot-v1 text changed'; end if;
 end $$;
 
 -- 2. Admission: the admission row counts, and marks the transaction for its company. A folder-v2 wake without the mark
@@ -207,6 +213,45 @@ begin
 		'active', v_routine));
 	perform pg_temp.raises_like(format('select pg_temp.routine_wake(%L, %L)', v_routine, 'once:1:2'), '55000',
 		'Routine occurrence limit reached');
+end $$;
+
+-- 3b. Routine firing on folder-v2: the scheduler queues a slot with admission and no gc fence, into the agent's thread;
+-- a replay returns it; a changed version refuses (QRC01); a pause defers the slot and leaves the position where it was.
+do $$
+declare
+	c_profile constant uuid := '63400000-0000-4000-8000-000000000010'; c_a constant uuid := '63400000-0000-4000-8000-0000000000a1';
+	v_routine uuid := pg_temp.routine('member'); v_before bigint; v jsonb; v2 jsonb; v_slot timestamptz := date_trunc('second', clock_timestamp());
+	v_wake public.qorpera_wake_occurrences%rowtype;
+begin
+	perform pg_temp.fx(format($f$update public.qorpera_cloud_routine_versions set triggers = '[{"id":"s1","kind":"schedule","intervalMinutes":60}]'
+		where routine_id = %L$f$, v_routine));
+	perform pg_temp.fx(format('insert into public.qorpera_cloud_routine_schedule_cursors(routine_id, routine_version, trigger_id, next_due_at)
+		values (%L, 1, %L, %L)', v_routine, 's1', v_slot));
+	perform pg_temp.path_claims('service_role');
+	v_before := pg_temp.admitted();
+	v := public.qorpera_enqueue_routine_wake(v_routine, 1, '65600000-0000-4000-8000-0000000000f1', 'slot-1', 's1', v_slot, null,
+		v_slot + interval '1 hour');
+	select * into v_wake from public.qorpera_wake_occurrences where id = '65600000-0000-4000-8000-0000000000f1';
+	if v ->> 'status' is distinct from 'queued' or v_wake.session_id is distinct from pg_temp.thread(c_a) or v_wake.staff_agent_id <> c_a
+		or pg_temp.admitted() <> v_before + 1
+		or (select last_scheduled_for from public.qorpera_cloud_routine_schedule_cursors where routine_id = v_routine) is distinct from v_slot then
+		raise exception 'A folder-v2 routine slot: % %', v, to_jsonb(v_wake); end if;
+	v2 := public.qorpera_enqueue_routine_wake(v_routine, 1, '65600000-0000-4000-8000-0000000000f1', 'slot-1', 's1', v_slot, null,
+		v_slot + interval '1 hour');
+	if v2 ->> 'occurrence_id' is distinct from v ->> 'occurrence_id' or pg_temp.admitted() <> v_before + 1 then
+		raise exception 'A replayed slot: %', v2; end if;
+	perform pg_temp.raises_like(format('select public.qorpera_enqueue_routine_wake(%L, 2, %L, %L, %L, %L, %L, %L)', v_routine,
+		extensions.gen_random_uuid(), 'slot-2', 's1', v_slot + interval '1 hour', v_slot, v_slot + interval '2 hours'), 'PGRST',
+		'%wake routine version is unavailable%');
+	perform pg_temp.fx(format('insert into public.qorpera_company_execution_pauses(profile_id, paused_by_user_id, reason) values (%L, %L, %L)',
+		c_profile, '63400000-0000-4000-8000-000000000001', 'test'));
+	v := public.qorpera_enqueue_routine_wake(v_routine, 1, extensions.gen_random_uuid(), 'slot-2', 's1', v_slot + interval '1 hour',
+		v_slot, v_slot + interval '2 hours');
+	if v ->> 'status' is distinct from 'deferred' or v ->> 'reason' is distinct from 'Company execution is paused'
+		or exists (select 1 from public.qorpera_wake_occurrences where routine_id = v_routine and occurrence_key = 'slot-2')
+		or (select last_scheduled_for from public.qorpera_cloud_routine_schedule_cursors where routine_id = v_routine) is distinct from v_slot then
+		raise exception 'A paused company defers the slot: %', v; end if;
+	perform pg_temp.fx(format('delete from public.qorpera_company_execution_pauses where profile_id = %L', c_profile));
 end $$;
 
 -- 4. A coworker message from a folder-v2 run: the message, the peer chips, the wake with admission; a replay, a held
@@ -450,7 +495,8 @@ do $$
 declare v_fn text;
 begin
 	foreach v_fn in array array['public.qorpera_folder_admit_wakes(uuid)', 'public.qorpera_folder_wake_public_session(uuid,uuid,uuid,uuid)',
-		'public.qorpera_folder_send_coworker_message(jsonb,uuid,text,text,boolean)', 'public.qorpera_folder_read_wake(jsonb)'] loop
+		'public.qorpera_folder_send_coworker_message(jsonb,uuid,text,text,boolean)', 'public.qorpera_folder_read_wake(jsonb)',
+		'public.qorpera_folder_enqueue_routine_wake(uuid,bigint,uuid,text,text,timestamptz,timestamptz,timestamptz,jsonb)'] loop
 		if has_function_privilege('service_role', v_fn, 'execute') or has_function_privilege('authenticated', v_fn, 'execute')
 			or has_function_privilege('anon', v_fn, 'execute') then
 			raise exception '% must be postgres-only', v_fn; end if;
