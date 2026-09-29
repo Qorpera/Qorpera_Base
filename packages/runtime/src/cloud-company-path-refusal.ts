@@ -77,11 +77,24 @@ export class CloudCompanyFormationRefused extends CloudRuntimeDiagnosticError {
  * stop, a run that is no longer live, a read the run may no longer see, or a change it retries with the same key. */
 export class CloudCompanyFolderRpcError extends CloudRuntimeDiagnosticError {
 	readonly code: string;
-	readonly detail: string;
+	readonly #detail: string;
 
 	constructor(code: string, message: string) {
-		super("authority_unavailable", "Company folder authority unavailable");
+		super(
+			code.startsWith("22") || code === "25000"
+				? "invalid_arguments"
+				: code === "42501" || code === "0A000" || code === "55000"
+					? "authority_unavailable"
+					: "transport_unavailable",
+			"Company folder authority unavailable",
+		);
 		this.code = code;
-		this.detail = message.slice(0, 200);
+		this.#detail = message.slice(0, 200);
+	}
+
+	/** SQL's message, for the folder client to tell its refusals apart. It is kept off the error's text and out of
+	 * its serialization, so SQL's words reach no model and no log. */
+	get detail(): string {
+		return this.#detail;
 	}
 }

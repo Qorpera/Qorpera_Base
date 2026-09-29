@@ -706,21 +706,31 @@ entry points: `read`, `readText`, `list`/`listAll`, `commit` and `release`.
   - every structured file in a write or a new folder carries `structured: [{path, kind, text, parse,
     parserVersion}]`, or `[{path, kind, problems}]` without the text, built by the shared parser from the same
     bytes. SQL decides every unit;
-  - the operation key comes from the tool call, so a retry replays;
+  - the operation key comes from the tool call. A retry with the same key, units and receipt replays the stored
+    outcome, so `CloudCompanyFolderBytes.put` must return the same reference for the same bytes and media type;
   - `receiptId` carries the tool call's folder receipt once core C1c-2b has it. That receipt is the model-facing
     gate (lease, sponsor, wake and the wake work gate), bound to the one commit.
 - **Outcomes:** `saved`, `conflict` (re-read, then redo under a new key), `refused` with `problems`, `denied` and
   `waiting_for_review`, each with SQL's reason.
 - **Retries and errors:**
-  - QRC01 (the authority changed after the commit decided), 40P01 and 23505 are retried with the same key; a
-    release retries QRC01 and 40P01 with the same id;
+  - QRC01 (the authority changed after the commit decided), 40P01, 23505 (the structured hook's "taken by another
+    change set") and 55P03 (a path claim that gave up waiting) are retried with the same key; a release retries
+    QRC01 and 40P01 with the same id;
+  - a lost answer (a timeout or a dropped connection) is retried the same way, since the transaction may have
+    committed and a replay returns its outcome;
   - `CloudCompanyFolderError` says why a call did not complete: `stopped` (55000), `unavailable` (42501, 0A000),
-    `read_revoked` (the recheck's "no longer readable": the model saw something it may no longer see) and
-    `contended` (still changing after four tries);
-  - 22023 and 25000 are defects.
+    `read_revoked` (the recheck's "no longer readable": the model saw something it may no longer see), `contended`
+    (still changing after four tries; nothing was recorded) and `unknown` (every try lost its answer: the caller
+    retries later with the same key, units and receipt);
+  - 22023 and 25000 are defects. SQL's words stay off the errors.
+- **Open for C1c-2b (F1):** a commit carries at most one folder receipt, and a receipt one commit. A conflict's redo
+  is a second commit, so under a receipt it needs 2b to refuse a used receipt with its own code under the receipt
+  lock (the client must not read it as the hook's retryable 23505), or to leave the receipt unused by a commit that
+  saved nothing. Until that is settled, the conflict rule above is for writers that carry no receipt.
 - **Releases:** one per tool result that shows folder content, before the result leaves the tool. A listing's
   entries are reads too. The caller keeps the release id and the output hash with its tool call, because a replay
-  with another output is refused. Composition releases once, before the first model request that uses it.
+  with another output is refused. Composition releases once, before the first model request that uses it. A result
+  that shows more than 10,000 entries is released in parts, each with its own id and the same output hash.
 - **Bytes:** `CloudCompanyFolderBytes` is the one place core C1d plugs in (upload intents, and a byte check that
   never locks the company row). Until then a folder-v2 run moves no bytes: C1c-1 refuses its object upload and
   download. The client checks what it stages against its own hash, and what it reads against the entry.

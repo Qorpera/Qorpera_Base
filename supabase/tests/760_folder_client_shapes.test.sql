@@ -20,8 +20,11 @@ begin
 	a := pg_temp.run('63400000-0000-4000-8000-0000000000a1', 'human', '63400000-0000-4000-8000-000000000001');
 	v_seed := public.qorpera_folder_commit(env, '{"kind":"platform"}', 'client-shape-seed', jsonb_build_array(
 		jsonb_build_object('op','mkdir','path','notes'),
-		jsonb_build_object('op','write','path','notes/a.md','file',pg_temp.stage('hello'))));
-	if v_seed -> 'units' -> 1 ->> 'outcome' is distinct from 'saved' then raise exception 'Fixture: %', v_seed; end if;
+		jsonb_build_object('op','write','path','notes/a.md','file',pg_temp.stage('hello')),
+		jsonb_build_object('op','mkdir','path','agents'),
+		jsonb_build_object('op','mkdir','path','agents/x')));
+	if exists (select 1 from jsonb_array_elements(v_seed -> 'units') u where u ->> 'outcome' <> 'saved') then
+		raise exception 'Fixture: %', v_seed; end if;
 
 	-- A read of a file, a folder and nothing.
 	r := public.qorpera_folder_read(env, a, 'notes/a.md');
@@ -50,6 +53,9 @@ begin
 		raise exception 'A full page: %', r; end if;
 	r := public.qorpera_folder_list(env, a, 'notes', null, 200, false);
 	if jsonb_array_length(r -> 'entries') <> 1 or jsonb_typeof(r -> 'next') <> 'null' then raise exception 'The last page: %', r; end if;
+	perform pg_temp.shape(r -> 'entries' -> 0,
+		'authority,bytes,executable,fileSha256,kind,manifestSha256,mediaType,path,seq,updatedAt,version', 'a listed file');
+	perform pg_temp.shape(r -> 'entries' -> 0 -> 'authority', 'grantId,grantRevision,resourceId,resourceRevision', 'a listed receipt');
 
 	-- A commit as the run: a saved unit carries its version, a conflict its reason; a replay returns the same units.
 	r := public.qorpera_folder_commit(env, a, 'client-shape-commit', jsonb_build_array(
@@ -70,6 +76,37 @@ begin
 		jsonb_build_object('op','copy','from','notes/a.md','to','notes/c.md')));
 	if not (e ->> 'replay')::boolean or e -> 'units' <> r -> 'units' or e -> 'seq' <> r -> 'seq' then
 		raise exception 'A replay: %', e; end if;
+	-- A move. An in-house run's move is a deletion, denied without a review, and names its target even so; saved (as
+	-- the platform, which the same outcome code answers), it names its source and target; a missing source is a conflict.
+	r := public.qorpera_folder_commit(env, a, 'client-shape-move', jsonb_build_array(
+		jsonb_build_object('op','move','from','notes/c.md','to','notes/d.md','expectedVersion',
+			public.qorpera_folder_read(env, a, 'notes/c.md') -> 'entry' ->> 'version')));
+	perform pg_temp.shape(r -> 'units' -> 0, 'op,outcome,path,reason,to,unit', 'a move that was not saved');
+	if r -> 'units' -> 0 ->> 'outcome' <> 'denied' or r -> 'units' -> 0 ->> 'reason' <> 'review_required' then
+		raise exception 'A run''s move: %', r; end if;
+	r := public.qorpera_folder_commit(env, '{"kind":"platform"}', 'client-shape-move-platform', jsonb_build_array(
+		jsonb_build_object('op','move','from','notes/c.md','to','notes/d.md','expectedVersion',
+			public.qorpera_folder_read(env, a, 'notes/c.md') -> 'entry' ->> 'version'),
+		jsonb_build_object('op','move','from','notes/missing.md','to','notes/e.md','expectedVersion',extensions.gen_random_uuid())));
+	perform pg_temp.shape(r -> 'units' -> 0, 'op,outcome,path,to,unit,version', 'a saved move');
+	perform pg_temp.shape(r -> 'units' -> 1, 'op,outcome,path,reason,to,unit', 'a move with a missing source');
+	if r -> 'units' -> 0 ->> 'path' <> 'notes/c.md' or r -> 'units' -> 0 ->> 'to' <> 'notes/d.md'
+		or r -> 'units' -> 1 ->> 'outcome' <> 'conflict' or r -> 'units' -> 1 ->> 'reason' <> 'missing' then
+		raise exception 'A saved move: %', r; end if;
+
+	-- A structured file refused with problems: the commit strips nulls inside each outcome, so a problem without a
+	-- line or key comes back without those keys (the client reads them as null).
+	r := public.qorpera_folder_commit(env, a, 'client-shape-refused', jsonb_build_array(
+		jsonb_build_object('op','write','path','agents/x/agent.md','file',pg_temp.stage('not an agent'),
+			'structured', jsonb_build_array(jsonb_build_object('path','agents/x/agent.md','kind','agent','problems',
+				jsonb_build_array(jsonb_build_object('line', null, 'key', null, 'code', 'front_matter', 'message', 'no front matter'),
+					jsonb_build_object('line', 2, 'key', 'name', 'code', 'value', 'message', 'a name')))))));
+	perform pg_temp.shape(r -> 'units' -> 0, 'op,outcome,path,problems,reason,unit', 'a refused structured unit');
+	perform pg_temp.shape(r -> 'units' -> 0 -> 'problems' -> 0, 'code,message', 'a problem without a line or key');
+	perform pg_temp.shape(r -> 'units' -> 0 -> 'problems' -> 1, 'code,key,line,message', 'a problem with a line and key');
+	if r -> 'units' -> 0 ->> 'outcome' <> 'refused' or r -> 'units' -> 0 ->> 'reason' <> 'structured_invalid' then
+		raise exception 'A refused structured unit: %', r; end if;
+
 	-- Nothing saved: no sequence number.
 	r := public.qorpera_folder_commit(env, a, 'client-shape-nothing', jsonb_build_array(jsonb_build_object('op','mkdir','path','notes')));
 	if jsonb_typeof(r -> 'seq') <> 'null' or r -> 'units' -> 0 ->> 'outcome' <> 'conflict' then raise exception 'Nothing saved: %', r; end if;
@@ -88,14 +125,23 @@ begin
 	if not (r ->> 'replay')::boolean then raise exception 'A replayed release: %', r; end if;
 end $$;
 
--- The recheck's refusal words the client tells apart from a run that ended (42501 either way).
+-- The words and codes the client reads: the recheck's refusals, which it tells apart from a run that ended (42501
+-- either way), and the commit's authority change, which PostgREST answers as 409 QRC01 and the client retries.
 do $$
+declare v_check record;
 begin
-	if not exists (select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace
-		where n.nspname = 'public' and p.proname = 'qorpera_folder_release_pairs'
-			and p.prosrc like '%''A released read is no longer readable''%') then
-		raise exception 'The client matches the release recheck''s refusal by its words';
-	end if;
+	for v_check in select * from (values
+		('qorpera_folder_release_pairs', '%''A released read is no longer readable'' using errcode = ''42501''%'),
+		('qorpera_folder_run_reads_current', '%''A read is no longer readable'' using errcode = ''42501''%'),
+		('qorpera_folder_commit', '%''code'', ''QRC01'', ''message'', ''Company folder authority changed''%'),
+		('qorpera_folder_commit', '%detail = ''{"status":409,"headers":{}}''%'),
+		('qorpera_folder_commit', '%''Company execution is paused'' using errcode = ''55000''%')) c(fn, text)
+	loop
+		if not exists (select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+			where n.nspname = 'public' and p.proname = v_check.fn and p.prosrc like v_check.text) then
+			raise exception 'The client reads % in %', v_check.text, v_check.fn;
+		end if;
+	end loop;
 end $$;
 
 rollback;

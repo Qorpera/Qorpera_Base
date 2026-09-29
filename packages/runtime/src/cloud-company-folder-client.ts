@@ -3,7 +3,6 @@ import { parseCloudCompanyPath } from "@qorpera/cloud-client/company-path-schema
 import {
 	COMPANY_STATE_PARSER_VERSION,
 	type CompanyStateProblem,
-	companyPathKey,
 	companyStatePath,
 	parseCompanyStateFile,
 } from "@qorpera/cloud-client/company-state-files";
@@ -42,18 +41,17 @@ const OPERATION_KEY = /^[A-Za-z0-9._:-]{8,200}$/;
 const MEDIA_TYPE = /^[a-z0-9!#$&^_.+-]{1,127}\/[a-z0-9!#$&^_.+-]{1,127}$/;
 /** The commit's bound on units in one change set. */
 const MAX_UNITS = 1000;
-/** One listing page. SQL accepts up to 1000; 200 entries with their receipts stay well inside the control's
- * 256 KiB response bound. */
+/** One listing page. SQL accepts up to 1000. An entry with its receipt is about 550 bytes plus its path (at most
+ * 4096), so 200 fit the control's 1 MiB bound for listings. */
 const LIST_PAGE = 200;
-/** A whole listing stops at the core's subtree bound (core §3, units). */
-const MAX_LISTED = 50_000;
 /** A release names at most this many reads (SQL's bound). */
 const MAX_RELEASED = 10_000;
 /** Tries of one commit or release that met a retryable error: the same operation key or release id each time. */
 const ATTEMPTS = 4;
-/** An authority change after the commit decided (QRC01), a deadlock, and a parallel change set that took a new id:
- * each is retried with the same key (F1, #533). A release retries the first two with the same id. */
-const COMMIT_RETRY = new Set(["QRC01", "40P01", "23505"]);
+/** Retried with the same key (F1, #533): an authority change after the commit decided (QRC01), a deadlock, a
+ * parallel change set that took an index row first (the structured hook's 23505; the retry's decide refuses the unit),
+ * and a path claim that gave up waiting (55P03). A release retries the first two with the same id. */
+const COMMIT_RETRY = new Set(["QRC01", "40P01", "23505", "55P03"]);
 const RELEASE_RETRY = new Set(["QRC01", "40P01"]);
 /** The recheck's refusals in commit and release: the model saw something it may no longer see. */
 const READ_REVOKED = new Set(["A read is no longer readable", "A released read is no longer readable"]);
@@ -107,13 +105,15 @@ export interface CloudCompanyFolderReadResult {
 export interface CloudCompanyFolderPage {
 	readonly asOfSeq: number;
 	readonly entries: readonly CloudCompanyFolderEntry[];
-	/** The last path of a full page, to pass as `after`; null on the last page. */
+	/** The last path of a full page, to pass as `after`; null on a page that is not full. A full last page still names
+	 * it, and the next page is then empty. */
 	readonly next: string | null;
 }
 
 /** Where a folder-v2 run's file bytes go and come from. Core C1d provides the one runs use (upload intents, and a
  * byte check that never locks the company row). The client checks what `put` returns against its own hash, and what
- * `get` returns against the entry. */
+ * `get` returns against the entry. `put` must return the same reference for the same bytes and media type: a retried
+ * commit sends the same units, and SQL refuses an operation key reused for a different change set (22023). */
 export interface CloudCompanyFolderBytes {
 	put(bytes: Uint8Array, mediaType: string, signal: AbortSignal): Promise<CloudFileReference>;
 	get(file: CloudCompanyFolderFile, signal: AbortSignal): Promise<Uint8Array>;
@@ -154,7 +154,8 @@ export type CloudCompanyFolderOutcome = "saved" | "conflict" | "refused" | "deni
 export interface CloudCompanyFolderUnitResult {
 	readonly unit: number;
 	readonly op: CloudCompanyFolderUnit["op"];
-	/** The path as stored (a saved move or copy keeps its source here and its target in `to`). */
+	/** The path as stored for a saved write, mkdir, new folder or delete; the requested path of a unit that was not
+	 * saved; and the source of a move or copy, whose target is `to`. */
 	readonly path: string;
 	readonly to: string | null;
 	/** The new version of a saved unit's path, where it has one. */
@@ -196,24 +197,33 @@ export interface CloudCompanyFolderReleaseResult {
  * - `unavailable`: the run ended, lost its authority, or the company is not folder-v2 (42501, 0A000);
  * - `read_revoked`: something the model saw may no longer be seen (the recheck's 42501); the change or release was
  *   not recorded, and the caller reports it as denied;
- * - `contended`: the folder kept changing under a retried commit or release.
+ * - `contended`: the folder kept changing under a retried commit or release; nothing was recorded;
+ * - `unknown`: a commit or release timed out or lost its connection on every try, so it may have been recorded. The
+ *   caller retries with the same operation key (or release id), the same units and the same receipt, whose replay
+ *   returns the stored outcome.
  * Other SQL errors (22023, 25000) are defects and stay a `CloudCompanyFolderRpcError`.
  */
-export type CloudCompanyFolderFailure = "stopped" | "unavailable" | "read_revoked" | "contended";
+export type CloudCompanyFolderFailure = "stopped" | "unavailable" | "read_revoked" | "contended" | "unknown";
 
 export class CloudCompanyFolderError extends CloudRuntimeDiagnosticError {
 	readonly failure: CloudCompanyFolderFailure;
 
 	constructor(failure: CloudCompanyFolderFailure) {
 		super(
-			failure === "contended" ? "stale_version" : "authority_unavailable",
+			failure === "contended"
+				? "stale_version"
+				: failure === "unknown"
+					? "transport_unavailable"
+					: "authority_unavailable",
 			failure === "stopped"
 				? "Company work is stopped"
 				: failure === "read_revoked"
 					? "Company folder read is no longer readable"
 					: failure === "contended"
 						? "Company folder kept changing"
-						: "Company folder is unavailable",
+						: failure === "unknown"
+							? "Company folder outcome is unknown"
+							: "Company folder is unavailable",
 		);
 		this.failure = failure;
 	}
@@ -224,6 +234,7 @@ function failure(error: unknown): unknown {
 	if (error.code === "55000") return new CloudCompanyFolderError("stopped");
 	if (error.code === "42501")
 		return new CloudCompanyFolderError(READ_REVOKED.has(error.detail) ? "read_revoked" : "unavailable");
+	if (error.code === "55P03") return new CloudCompanyFolderError("contended");
 	if (error.code === "0A000") return new CloudCompanyFolderError("unavailable");
 	return error;
 }
@@ -311,16 +322,20 @@ function entry(value: unknown): CloudCompanyFolderEntry {
 function problems(value: unknown): CompanyStateProblem[] {
 	if (value === undefined) return [];
 	if (!Array.isArray(value) || value.length > 51) invalid();
+	// The commit strips nulls from each outcome, nested ones included: a problem without a line or key comes back
+	// without those keys.
 	return value.map((item) => {
-		const problem = record(item, ["line", "key", "code", "message"]);
+		const problem = record(item, ["code", "message"], ["line", "key"]);
+		const line = problem.line ?? null;
+		const key = problem.key ?? null;
 		if (
-			(problem.line !== null && (!Number.isSafeInteger(problem.line) || (problem.line as number) < 1)) ||
-			(problem.key !== null && typeof problem.key !== "string") ||
+			(line !== null && (!Number.isSafeInteger(line) || (line as number) < 1)) ||
+			(key !== null && typeof key !== "string") ||
 			typeof problem.code !== "string" ||
 			typeof problem.message !== "string"
 		)
 			invalid();
-		return problem as unknown as CompanyStateProblem;
+		return { line, key, code: problem.code, message: problem.message } as CompanyStateProblem;
 	});
 }
 
@@ -361,6 +376,107 @@ export function cloudCompanyFolderRelease(entry: CloudCompanyFolderEntry): Cloud
 		: { path: entry.path, version: entry.version, authority: entry.authority };
 }
 
+/** A unit after its checks, before its bytes are staged. */
+interface PlannedFile {
+	readonly path: string;
+	readonly bytes: Uint8Array;
+	readonly mediaType: string;
+	readonly executable: boolean;
+}
+
+type PlannedUnit =
+	| { readonly op: "write"; readonly sql: Record<string, unknown>; readonly file: PlannedFile }
+	| {
+			readonly op: "new_folder";
+			readonly sql: Record<string, unknown>;
+			readonly contents: readonly (
+				| { readonly path: string; readonly file: PlannedFile }
+				| { readonly path: string }
+			)[];
+	  }
+	| { readonly op: "mkdir" | "delete" | "move" | "copy"; readonly sql: Record<string, unknown> };
+
+function planned(content: CloudCompanyFolderContent, path: string): PlannedFile {
+	const mediaType = content.mediaType ?? mediaTypeFor(path);
+	if (!MEDIA_TYPE.test(mediaType)) throw new Error("Invalid Company folder media type");
+	return {
+		path,
+		bytes: "text" in content ? new TextEncoder().encode(content.text) : content.bytes,
+		mediaType,
+		executable: content.executable ?? false,
+	};
+}
+
+/** Checks one unit and shapes it as SQL takes it (move and copy name `from`), without staging anything. */
+function plan(unit: CloudCompanyFolderUnit): PlannedUnit {
+	const version = (value: string | undefined): Record<string, unknown> => {
+		if (value === undefined) return {};
+		if (!UUID.test(value)) throw new Error("Invalid Company folder version");
+		return { expectedVersion: value };
+	};
+	const asOf = (value: number | undefined): Record<string, unknown> => {
+		if (value === undefined) return {};
+		if (!Number.isSafeInteger(value) || value < 0) throw new Error("Invalid Company folder sequence");
+		return { asOfSeq: value };
+	};
+	switch (unit.op) {
+		case "write": {
+			const path = parseCloudCompanyPath(unit.path);
+			return {
+				op: "write",
+				sql: { op: "write", path, ...version(unit.expectedVersion) },
+				file: planned(unit.content, path),
+			};
+		}
+		case "mkdir":
+			return { op: "mkdir", sql: { op: "mkdir", path: parseCloudCompanyPath(unit.path) } };
+		case "new_folder": {
+			const path = parseCloudCompanyPath(unit.path);
+			return {
+				op: "new_folder",
+				sql: { op: "new_folder", path },
+				contents: unit.contents.map((item) => {
+					const inner = parseCloudCompanyPath(item.path);
+					// SQL checks the joined path for the whole change set; a bad one is this unit's, not a defect.
+					const whole = parseCloudCompanyPath(`${path}/${inner}`);
+					return item.kind === "folder" ? { path: inner } : { path: inner, file: planned(item.content, whole) };
+				}),
+			};
+		}
+		case "delete":
+			return {
+				op: "delete",
+				sql: {
+					op: "delete",
+					path: parseCloudCompanyPath(unit.path),
+					...version(unit.expectedVersion),
+					...asOf(unit.asOfSeq),
+				},
+			};
+		case "move":
+			return {
+				op: "move",
+				sql: {
+					op: "move",
+					from: parseCloudCompanyPath(unit.from),
+					to: parseCloudCompanyPath(unit.to),
+					...version(unit.expectedVersion),
+					...asOf(unit.asOfSeq),
+				},
+			};
+		case "copy":
+			return {
+				op: "copy",
+				sql: {
+					op: "copy",
+					from: parseCloudCompanyPath(unit.from),
+					to: parseCloudCompanyPath(unit.to),
+					...version(unit.expectedVersion),
+				},
+			};
+	}
+}
+
 export class CloudCompanyFolderClient {
 	readonly #binding: CloudNativeToolBinding;
 	readonly #identity: CloudNativeToolIdentity;
@@ -387,12 +503,13 @@ export class CloudCompanyFolderClient {
 		this.#identity = Object.freeze({ ...options.identity });
 		this.#control = options.control;
 		this.#bytes = options.bytes;
+		// The run actor's ids as SQL checks them: lower case.
 		this.#actor = Object.freeze({
 			kind: "run",
-			runId: this.#binding.runId,
-			jobId: this.#binding.jobId,
-			runnerId: this.#binding.runnerId,
-			assignmentId: this.#binding.assignmentId,
+			runId: this.#binding.runId.toLowerCase(),
+			jobId: this.#binding.jobId.toLowerCase(),
+			runnerId: this.#binding.runnerId.toLowerCase(),
+			assignmentId: this.#binding.assignmentId.toLowerCase(),
 		});
 	}
 
@@ -421,26 +538,35 @@ export class CloudCompanyFolderClient {
 		}
 	}
 
-	/** One commit or release, retried with the same key or id while SQL says to. */
+	/** One commit or release, tried again with the same key or id while SQL says so, or while the answer was lost (a
+	 * timeout or a dropped connection: the transaction may have committed, and a replay returns its outcome). */
 	async #retried(
 		method: CloudCompanyPathRpc,
 		args: Record<string, unknown>,
 		retryable: ReadonlySet<string>,
 		signal: AbortSignal,
 	): Promise<unknown> {
+		let uncertain = false;
 		for (let attempt = 1; ; attempt++) {
 			try {
 				return await this.#call(method, args, signal);
 			} catch (error) {
-				if (!(error instanceof CloudCompanyFolderRpcError) || !retryable.has(error.code) || signal.aborted)
+				// A cancel by the caller comes back as a cancel (cloudToolRequest), which is neither lost nor retryable.
+				const lost =
+					error instanceof CloudRuntimeDiagnosticError &&
+					!(error instanceof CloudCompanyFolderRpcError) &&
+					(error.category === "timeout" || error.category === "transport_unavailable");
+				if (!lost && !(error instanceof CloudCompanyFolderRpcError && retryable.has(error.code)))
 					throw failure(error);
-				if (attempt === ATTEMPTS) throw new CloudCompanyFolderError("contended");
+				uncertain ||= lost;
+				if (attempt === ATTEMPTS) throw new CloudCompanyFolderError(uncertain ? "unknown" : "contended");
+				// A cancel during the pause ends the next try before it is sent, as a cancel (cloudToolRequest).
 				await new Promise((resolve) => setTimeout(resolve, 20 * attempt + randomInt(20)));
-				signal.throwIfAborted();
 			}
 		}
 	}
 
+	/** The entry at a path, as SQL found it by the path's key (its stored spelling may differ), or none. */
 	async read(path: string, signal: AbortSignal): Promise<CloudCompanyFolderReadResult> {
 		const input = record(await this.#once("qorpera_folder_read", { p_path: parseCloudCompanyPath(path) }, signal), [
 			"schema",
@@ -453,10 +579,7 @@ export class CloudCompanyFolderClient {
 			if (input.entry !== null) invalid();
 			return { asOfSeq: counter(input.asOfSeq), entry: null };
 		}
-		const found = entry(input.entry);
-		// The entry is the path's, in its stored spelling: one key, as the folder decides.
-		if (companyPathKey(found.path) !== companyPathKey(path)) invalid();
-		return { asOfSeq: counter(input.asOfSeq), entry: found };
+		return { asOfSeq: counter(input.asOfSeq), entry: entry(input.entry) };
 	}
 
 	/** A file's text, checked against its entry, or null when nothing is at the path. A folder, a file larger than
@@ -521,13 +644,17 @@ export class CloudCompanyFolderClient {
 		};
 	}
 
-	/** Every entry under a folder, page by page. `asOfSeq` is the first page's: a change after it may be in later
-	 * pages, so a subtree delete or move that names it is refused rather than missing it (core §4). */
+	/** Every entry under a folder, page by page, up to the caller's bound (the client keeps them all in memory, so a
+	 * caller that may meet a large folder pages with `list`). `asOfSeq` is the first page's. A subtree delete or move
+	 * sends it, so a change after it, even one a later page shows, makes that unit a conflict rather than going unseen
+	 * (core §3, §4). */
 	async listAll(
 		parent: string,
-		options: { recursive?: boolean },
+		options: { recursive?: boolean; maxEntries: number },
 		signal: AbortSignal,
 	): Promise<{ asOfSeq: number; entries: CloudCompanyFolderEntry[] }> {
+		if (!Number.isSafeInteger(options.maxEntries) || options.maxEntries < 1)
+			throw new Error("Invalid Company folder listing bound");
 		const entries: CloudCompanyFolderEntry[] = [];
 		let asOfSeq: number | null = null;
 		let after: string | undefined;
@@ -535,52 +662,49 @@ export class CloudCompanyFolderClient {
 			const page = await this.list(parent, { after, recursive: options.recursive }, signal);
 			asOfSeq ??= page.asOfSeq;
 			entries.push(...page.entries);
-			if (entries.length > MAX_LISTED) throw new Error("Company folder listing is past the core's subtree bound");
+			if (entries.length > options.maxEntries)
+				throw new Error("Company folder listing has more entries than its bound");
 			if (page.next === null) return { asOfSeq, entries };
 			after = page.next;
 		}
 	}
 
-	/** Stages one file's bytes and returns its reference, checked against the bytes. */
+	/** Stages one file's bytes once per commit and returns its reference, checked against the bytes. */
 	async #stage(
-		content: CloudCompanyFolderContent,
-		path: string,
+		file: PlannedFile,
 		staged: Map<string, CloudFileReference>,
 		signal: AbortSignal,
-	): Promise<{ file: CloudCompanyFolderFile; bytes: Uint8Array }> {
-		const bytes = "text" in content ? new TextEncoder().encode(content.text) : content.bytes;
-		const mediaType = content.mediaType ?? mediaTypeFor(path);
-		if (!MEDIA_TYPE.test(mediaType)) throw new Error("Invalid Company folder media type");
-		const hash = sha256(bytes);
-		let reference = staged.get(`${hash}:${mediaType}`);
+	): Promise<CloudCompanyFolderFile> {
+		const hash = sha256(file.bytes);
+		let reference = staged.get(`${hash}:${file.mediaType}`);
 		if (!reference) {
-			reference = await this.#bytes.put(bytes, mediaType, signal);
+			reference = await this.#bytes.put(file.bytes, file.mediaType, signal);
 			if (
 				!SHA.test(reference.manifestSha256) ||
 				reference.fileSha256 !== hash ||
-				reference.bytes !== bytes.byteLength ||
-				reference.mediaType !== mediaType
+				reference.bytes !== file.bytes.byteLength ||
+				reference.mediaType !== file.mediaType
 			)
 				throw new CloudRuntimeDiagnosticError("invalid_response", "Company folder bytes were stored differently");
-			staged.set(`${hash}:${mediaType}`, reference);
+			staged.set(`${hash}:${file.mediaType}`, reference);
 		}
 		return {
-			bytes,
-			file: {
-				manifestSha256: reference.manifestSha256,
-				fileSha256: reference.fileSha256,
-				bytes: reference.bytes,
-				mediaType,
-				executable: content.executable ?? false,
-			},
+			manifestSha256: reference.manifestSha256,
+			fileSha256: reference.fileSha256,
+			bytes: reference.bytes,
+			mediaType: file.mediaType,
+			executable: file.executable,
 		};
 	}
 
-	/** Commits one change set as the run (core §3). Each file's bytes are staged first; every structured file in a
-	 * write or a new folder carries its parse from the shared parser, made from the same bytes, or its problems, and
-	 * SQL decides each unit (RUNTIME-COMPANY-STATE-FILES.md §8). The operation key comes from the caller's tool call,
-	 * so a retry replays the stored outcome. `receiptId` is the tool call's folder receipt (core C1c-2b), which a
-	 * model-facing write carries once that exists. */
+	/** Commits one change set as the run (core §3). Every unit is checked before any bytes are staged. Each file is
+	 * staged once; every structured file in a write or a new folder carries its parse from the shared parser, made
+	 * from the same bytes, or its problems, and SQL decides each unit (RUNTIME-COMPANY-STATE-FILES.md §8).
+	 *
+	 * The operation key comes from the caller's tool call. A retry with the same key, the same units and the same
+	 * receipt replays the stored outcome; this call already retries a lost answer, and reports `unknown` when every
+	 * try was lost. `receiptId` is the tool call's folder receipt (core C1c-2b), which a model-facing write carries
+	 * once that exists; it is part of the change set, so a retry must send the same one. */
 	async commit(
 		operationKey: string,
 		units: readonly CloudCompanyFolderUnit[],
@@ -594,9 +718,29 @@ export class CloudCompanyFolderClient {
 			(options.receiptId !== undefined && !UUID.test(options.receiptId))
 		)
 			throw new Error("Invalid Company folder review or receipt");
+		const plans = units.map(plan);
 		const staged = new Map<string, CloudFileReference>();
 		const sent: Record<string, unknown>[] = [];
-		for (const unit of units) sent.push(await this.#unit(unit, staged, signal));
+		for (const unit of plans) {
+			if (unit.op === "write") {
+				const file = await this.#stage(unit.file, staged, signal);
+				const entry = structured(unit.file.path, unit.file.bytes);
+				sent.push({ ...unit.sql, file, ...(entry ? { structured: [entry] } : {}) });
+			} else if (unit.op === "new_folder") {
+				const contents: Record<string, unknown>[] = [];
+				const entries: Record<string, unknown>[] = [];
+				for (const item of unit.contents) {
+					if (!("file" in item)) {
+						contents.push({ path: item.path, kind: "folder" });
+						continue;
+					}
+					contents.push({ path: item.path, kind: "file", file: await this.#stage(item.file, staged, signal) });
+					const entry = structured(item.file.path, item.file.bytes);
+					if (entry) entries.push(entry);
+				}
+				sent.push({ ...unit.sql, contents, ...(entries.length ? { structured: entries } : {}) });
+			} else sent.push(unit.sql);
+		}
 		const input = record(
 			await this.#retried(
 				"qorpera_folder_commit",
@@ -624,82 +768,15 @@ export class CloudCompanyFolderClient {
 		return { commitId: uuid(input.commitId), seq, replay: input.replay, units: results };
 	}
 
-	async #unit(
-		unit: CloudCompanyFolderUnit,
-		staged: Map<string, CloudFileReference>,
-		signal: AbortSignal,
-	): Promise<Record<string, unknown>> {
-		const version = (value: string | undefined): Record<string, unknown> => {
-			if (value === undefined) return {};
-			if (!UUID.test(value)) throw new Error("Invalid Company folder version");
-			return { expectedVersion: value };
-		};
-		const asOf = (value: number | undefined): Record<string, unknown> => {
-			if (value === undefined) return {};
-			if (!Number.isSafeInteger(value) || value < 0) throw new Error("Invalid Company folder sequence");
-			return { asOfSeq: value };
-		};
-		switch (unit.op) {
-			case "write": {
-				const path = parseCloudCompanyPath(unit.path);
-				const { file, bytes } = await this.#stage(unit.content, path, staged, signal);
-				const entry = structured(path, bytes);
-				return {
-					op: "write",
-					path,
-					file,
-					...version(unit.expectedVersion),
-					...(entry ? { structured: [entry] } : {}),
-				};
-			}
-			case "mkdir":
-				return { op: "mkdir", path: parseCloudCompanyPath(unit.path) };
-			case "new_folder": {
-				const path = parseCloudCompanyPath(unit.path);
-				const contents: Record<string, unknown>[] = [];
-				const entries: Record<string, unknown>[] = [];
-				for (const item of unit.contents) {
-					const inner = parseCloudCompanyPath(item.path);
-					if (item.kind === "folder") {
-						contents.push({ path: inner, kind: "folder" });
-						continue;
-					}
-					const { file, bytes } = await this.#stage(item.content, `${path}/${inner}`, staged, signal);
-					contents.push({ path: inner, kind: "file", file });
-					const entry = structured(`${path}/${inner}`, bytes);
-					if (entry) entries.push(entry);
-				}
-				return { op: "new_folder", path, contents, ...(entries.length ? { structured: entries } : {}) };
-			}
-			case "delete":
-				return {
-					op: "delete",
-					path: parseCloudCompanyPath(unit.path),
-					...version(unit.expectedVersion),
-					...asOf(unit.asOfSeq),
-				};
-			case "move":
-				return {
-					op: "move",
-					from: parseCloudCompanyPath(unit.from),
-					to: parseCloudCompanyPath(unit.to),
-					...version(unit.expectedVersion),
-					...asOf(unit.asOfSeq),
-				};
-			case "copy":
-				return {
-					op: "copy",
-					from: parseCloudCompanyPath(unit.from),
-					to: parseCloudCompanyPath(unit.to),
-					...version(unit.expectedVersion),
-				};
-		}
-	}
-
 	/** Records the reads a tool result shows the model, before the result leaves the tool (C1B §C1b-2 3; one release
-	 * per tool result, F1 on #533). A listing's entries are reads too: names are content. A release id is used once:
-	 * the same reads and output hash replay, anything else is refused, so the caller keeps the id and the output hash
-	 * with its tool call. */
+	 * per tool result, F1 on #533):
+	 * - a listing's entries are reads too: names are content;
+	 * - a release id is used once: the same reads and output hash replay, anything else is refused, so the caller keeps
+	 *   the id and the output hash with its tool call (this call retries a lost answer, and reports `unknown` when every
+	 *   try was lost);
+	 * - context composition (memory, skills) releases once, before the first model request that uses it;
+	 * - a result that shows more than 10,000 entries is released in parts, each with its own id and the same output hash.
+	 */
 	async release(
 		releaseId: string,
 		reads: readonly CloudCompanyFolderRelease[],

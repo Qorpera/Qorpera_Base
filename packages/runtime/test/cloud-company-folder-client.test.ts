@@ -138,7 +138,12 @@ describe("reads and listings", () => {
 				found: true,
 				entry: { ...folderEntry("notes"), extra: true },
 			},
-			{ schema: "qorpera.folder-read/v1", asOfSeq: 9, found: true, entry: folderEntry("other.md", file) },
+			{
+				schema: "qorpera.folder-read/v1",
+				asOfSeq: 9,
+				found: true,
+				entry: folderEntry("notes/a.md", { ...file, mediaType: "Text/Plain" }),
+			},
 			{
 				schema: "qorpera.folder-read/v1",
 				asOfSeq: 9,
@@ -151,6 +156,14 @@ describe("reads and listings", () => {
 				found: true,
 				entry: { ...folderEntry("notes"), authority: { ...RECEIPT, grantRevision: null } },
 			},
+			{
+				schema: "qorpera.folder-read/v1",
+				asOfSeq: 9,
+				found: true,
+				entry: folderEntry("notes/a.md", { ...file, executable: "no" } as unknown as CloudCompanyFolderFile),
+			},
+			// SQL finds an entry by the path's key, with its own case rules: another spelling is its answer.
+			{ schema: "qorpera.folder-read/v1", asOfSeq: 9, found: true, entry: folderEntry("İstanbul.md", file) },
 		];
 		const { client } = fixture(() => answers.shift());
 		const read = await client.read("notes/a.md", signal());
@@ -167,11 +180,10 @@ describe("reads and listings", () => {
 			},
 		});
 		expect((await client.read("notes", signal())).entry?.kind).toBe("folder");
-		// An unknown key, another path's entry, a bad size and a half receipt are not answers.
-		for (let i = 0; i < 4; i++)
-			await expect(client.read(i === 2 ? "notes/a.md" : "notes", signal())).rejects.toThrow(
-				"Company folder response is invalid",
-			);
+		// An unknown key, a bad media type, a bad size, a half receipt and a bad executable bit are not answers.
+		for (let i = 0; i < 5; i++)
+			await expect(client.read("notes/a.md", signal())).rejects.toThrow("Company folder response is invalid");
+		await expect(client.read("istanbul.md", signal())).resolves.toMatchObject({ entry: { path: "İstanbul.md" } });
 	});
 
 	it("reads a file's text, checked against its entry", async () => {
@@ -197,6 +209,9 @@ describe("reads and listings", () => {
 		await expect(client.readText("binary.bin", 1024, signal())).rejects.toThrow("do not match their entry");
 		stored.set(sha("\u0000"), Uint8Array.of(0));
 		await expect(client.readText("binary.bin", 1024, signal())).resolves.toMatchObject({ text: "\u0000" });
+		// The right bytes under an entry that states another size.
+		entries["short.bin"] = folderEntry("short.bin", { ...stagedFile("\u0000"), bytes: 2 });
+		await expect(client.readText("short.bin", 1024, signal())).rejects.toThrow("do not match their entry");
 	});
 
 	it("refuses bytes that are not UTF-8 text", async () => {
@@ -231,7 +246,7 @@ describe("reads and listings", () => {
 			{ schema: "qorpera.folder-list/v1", asOfSeq: 6, entries: [folderEntry("t/200")], next: null },
 		];
 		const { client, calls } = fixture(() => pages.shift());
-		const all = await client.listAll("t", { recursive: true }, signal());
+		const all = await client.listAll("t", { recursive: true, maxEntries: 201 }, signal());
 		expect(all.asOfSeq).toBe(5);
 		expect(all.entries.map((entry) => entry.path)).toEqual([...first, "t/200"]);
 		expect(
@@ -240,6 +255,21 @@ describe("reads and listings", () => {
 			["t", null, 200, true],
 			["t", "t/199", 200, true],
 		]);
+	});
+
+	it("stops a whole listing at the caller's bound", async () => {
+		const first = Array.from({ length: 200 }, (_, index) => `t/${String(index).padStart(3, "0")}`);
+		const { client, calls } = fixture(() => ({
+			schema: "qorpera.folder-list/v1",
+			asOfSeq: 5,
+			entries: first.map((path) => folderEntry(path)),
+			next: "t/199",
+		}));
+		await expect(client.listAll("t", { maxEntries: 150 }, signal())).rejects.toThrow("more entries than its bound");
+		expect(calls).toHaveLength(1);
+		await expect(client.listAll("t", { maxEntries: 0 }, signal())).rejects.toThrow(
+			"Invalid Company folder listing bound",
+		);
 	});
 
 	it("refuses a page that does not fit its request", async () => {
@@ -252,6 +282,17 @@ describe("reads and listings", () => {
 		await expect(client.list("", { limit: 1 }, signal())).rejects.toThrow("Company folder response is invalid");
 		await expect(client.list("", { limit: 201 }, signal())).rejects.toThrow("Invalid Company folder page");
 		await expect(client.list("", { limit: 2 }, signal())).resolves.toMatchObject({ next: null });
+		// `next` only on a full page.
+		const partial = fixture(() => ({
+			schema: "qorpera.folder-list/v1",
+			asOfSeq: 5,
+			entries: [folderEntry("a"), folderEntry("b")],
+			next: "b",
+		}));
+		await expect(partial.client.list("", { limit: 3 }, signal())).rejects.toThrow(
+			"Company folder response is invalid",
+		);
+		await expect(partial.client.list("", { limit: 2 }, signal())).resolves.toMatchObject({ next: "b" });
 	});
 });
 
@@ -354,6 +395,8 @@ describe("commits", () => {
 
 	it("reports each unit's outcome, reason and problems", async () => {
 		const problem = { line: 3, key: "status", code: "value", message: "status is one of active or archived" };
+		// The commit strips nulls from each outcome, nested ones included.
+		const whole = { code: "front_matter", message: "the platform could not read this file; save it again" };
 		const { client } = fixture(() => ({
 			schema: "qorpera.folder-commit/v1",
 			commitId: randomUUID(),
@@ -367,7 +410,7 @@ describe("commits", () => {
 					path: "agents/x/agent.md",
 					outcome: "refused",
 					reason: "structured_invalid",
-					problems: [problem],
+					problems: [problem, whole],
 				},
 				{ unit: 3, op: "delete", path: "b", outcome: "waiting_for_review", reason: "waiting_for_review" },
 			],
@@ -402,7 +445,7 @@ describe("commits", () => {
 				version: null,
 				outcome: "refused",
 				reason: "structured_invalid",
-				problems: [problem],
+				problems: [problem, { line: null, key: null, ...whole }],
 			},
 			{
 				unit: 3,
@@ -443,9 +486,40 @@ describe("commits", () => {
 				replay: false,
 				units: [{ ...unit, unit: 2 }],
 			},
+			// A unit that was not saved without its reason, a sequence number with nothing saved, too many problems.
+			{
+				schema: "qorpera.folder-commit/v1",
+				commitId: randomUUID(),
+				seq: null,
+				replay: false,
+				units: [{ unit: 1, op: "mkdir", path: "a", outcome: "conflict" }],
+			},
+			{
+				schema: "qorpera.folder-commit/v1",
+				commitId: randomUUID(),
+				seq: 1,
+				replay: false,
+				units: [{ unit: 1, op: "mkdir", path: "a", outcome: "conflict", reason: "exists" }],
+			},
+			{
+				schema: "qorpera.folder-commit/v1",
+				commitId: randomUUID(),
+				seq: null,
+				replay: false,
+				units: [
+					{
+						unit: 1,
+						op: "mkdir",
+						path: "a",
+						outcome: "refused",
+						reason: "structured_invalid",
+						problems: Array(52).fill({ code: "value", message: "x" }),
+					},
+				],
+			},
 		];
 		const { client } = fixture(() => answers.shift());
-		for (let i = 0; i < 5; i++)
+		for (let i = 0; i < 8; i++)
 			await expect(client.commit("tool-call-3", [{ op: "mkdir", path: "a" }], {}, signal())).rejects.toThrow(
 				"Company folder response is invalid",
 			);
@@ -462,8 +536,91 @@ describe("commits", () => {
 		await expect(
 			client.commit("tool-call-4", [{ ...write, content: { text: "x", mediaType: "Text/Plain" } }], {}, signal()),
 		).rejects.toThrow("media type");
+		// A bad later unit stops the change set before the first unit's bytes are staged.
+		await expect(
+			client.commit("tool-call-4", [write, { op: "delete", path: "b", expectedVersion: "nope" }], {}, signal()),
+		).rejects.toThrow("version");
+		await expect(
+			client.commit(
+				"tool-call-4",
+				[write, { op: "delete", path: "b", expectedVersion: randomUUID(), asOfSeq: -1 }],
+				{},
+				signal(),
+			),
+		).rejects.toThrow("sequence");
+		await expect(
+			client.commit(
+				"tool-call-4",
+				[
+					write,
+					{
+						op: "new_folder",
+						path: "a".repeat(3000),
+						contents: [{ path: "b".repeat(2000), kind: "file", content: { text: "x" } }],
+					},
+				],
+				{},
+				signal(),
+			),
+		).rejects.toThrow("Invalid Company File path");
 		expect(calls).toEqual([]);
 		expect(bytes.put).not.toHaveBeenCalled();
+	});
+
+	it("stages by content and media type, and names text by its path", async () => {
+		const { client, calls, bytes } = fixture((_method, args) =>
+			saved((args.p_units as Record<string, unknown>[]).map((unit) => ({ op: unit.op, path: unit.path as string }))),
+		);
+		await client.commit(
+			"tool-call-13",
+			[
+				{ op: "write", path: "a.txt", content: { text: "same" } },
+				{ op: "write", path: "b.md", content: { text: "same" } },
+				{ op: "write", path: "c.md", content: { text: "same" } },
+				{
+					op: "write",
+					path: "d.bin",
+					content: { bytes: Uint8Array.of(1), mediaType: "application/octet-stream", executable: true },
+				},
+			],
+			{},
+			signal(),
+		);
+		expect(vi.mocked(bytes.put).mock.calls.map(([, mediaType]) => mediaType)).toEqual([
+			"text/plain",
+			"text/markdown",
+			"application/octet-stream",
+		]);
+		const files = (calls[0]!.args.p_units as { file: CloudCompanyFolderFile }[]).map((unit) => unit.file);
+		expect(files.map((file) => [file.mediaType, file.executable])).toEqual([
+			["text/plain", false],
+			["text/markdown", false],
+			["text/markdown", false],
+			["application/octet-stream", true],
+		]);
+	});
+
+	it("sends a structured file whose bytes are not text with its problem, and lets SQL refuse it", async () => {
+		const { client, calls } = fixture(() => saved([{ op: "write", path: "agents/x/agent.md" }]));
+		await client.commit(
+			"tool-call-14",
+			[
+				{
+					op: "write",
+					path: "agents/x/agent.md",
+					content: { bytes: Uint8Array.of(0xc3, 0x28), mediaType: "text/markdown" },
+				},
+			],
+			{},
+			signal(),
+		);
+		expect((calls[0]!.args.p_units as Record<string, unknown>[])[0]!.structured).toEqual([
+			{
+				path: "agents/x/agent.md",
+				kind: "agent",
+				problems: [{ line: null, key: null, code: "encoding", message: "the file is not UTF-8 text" }],
+			},
+		]);
 	});
 
 	it("passes a review and a folder receipt only when the caller has them", async () => {
@@ -477,23 +634,34 @@ describe("commits", () => {
 		expect(calls[1]!.args).not.toHaveProperty("p_receipt_id");
 	});
 
-	it("refuses bytes stored differently from what it sent", async () => {
-		const { client, bytes } = fixture(() => null);
-		vi.mocked(bytes.put).mockResolvedValueOnce({
-			manifestSha256: sha("m"),
-			fileSha256: sha("other"),
-			bytes: 1,
-			mediaType: "text/markdown",
-		});
-		await expect(
-			client.commit("tool-call-7", [{ op: "write", path: "a.md", content: { text: "x" } }], {}, signal()),
-		).rejects.toThrow("stored differently");
-	});
+	it.each([{ fileSha256: sha("other") }, { bytes: 2 }, { mediaType: "text/plain" }, { manifestSha256: "not-a-hash" }])(
+		"refuses bytes stored differently from what it sent (%j)",
+		async (change) => {
+			const { client, bytes } = fixture(() => null);
+			vi.mocked(bytes.put).mockResolvedValueOnce({
+				manifestSha256: sha("m"),
+				fileSha256: sha("x"),
+				bytes: 1,
+				mediaType: "text/markdown",
+				...change,
+			});
+			await expect(
+				client.commit("tool-call-7", [{ op: "write", path: "a.md", content: { text: "x" } }], {}, signal()),
+			).rejects.toThrow("stored differently");
+		},
+	);
 
-	it.each(["QRC01", "40P01", "23505"])("retries %s with the same key and the same units", async (code) => {
+	it.each([
+		sqlError("QRC01", "Company folder authority changed"),
+		sqlError("40P01", "deadlock detected"),
+		sqlError("23505", "duplicate key value violates unique constraint"),
+		sqlError("55P03", "Company folder path could not be locked"),
+		new CloudRuntimeDiagnosticError("timeout", "Cloud tool authority unavailable"),
+		new CloudRuntimeDiagnosticError("transport_unavailable", "Company File authority unavailable"),
+	])("retries %s with the same key and the same units", async (thrown) => {
 		let tries = 0;
 		const { client, calls, bytes } = fixture(() => {
-			if (++tries < 3) throw sqlError(code, "retry me");
+			if (++tries < 3) throw thrown;
 			return saved([{ op: "write", path: "a.md" }]);
 		});
 		await client.commit("tool-call-8", [{ op: "write", path: "a.md", content: { text: "x" } }], {}, signal());
@@ -520,6 +688,56 @@ describe("commits", () => {
 			invalidRequest.client.commit("tool-call-10", [{ op: "mkdir", path: "a" }], {}, signal()),
 		).rejects.toBeInstanceOf(CloudCompanyFolderRpcError);
 		expect(invalidRequest.calls).toHaveLength(1);
+		const locked = fixture(() => {
+			throw sqlError("55P03", "Company folder path could not be locked");
+		});
+		await expect(
+			locked.client.commit("tool-call-15", [{ op: "mkdir", path: "a" }], {}, signal()),
+		).rejects.toMatchObject({
+			failure: "contended",
+		});
+		await expect(locked.client.read("a", signal())).rejects.toMatchObject({ failure: "contended" });
+	});
+
+	it("reports an outcome it could not learn as unknown, after the same tries", async () => {
+		let tries = 0;
+		const { client, calls } = fixture(() => {
+			// A lost answer, then the folder moving on: the first try may have been recorded.
+			throw ++tries === 1
+				? new CloudRuntimeDiagnosticError("timeout", "Cloud tool authority unavailable")
+				: sqlError("QRC01", "Company folder authority changed");
+		});
+		const error = await client
+			.commit("tool-call-16", [{ op: "mkdir", path: "a" }], {}, signal())
+			.catch((error: unknown) => error);
+		expect(error).toMatchObject({ failure: "unknown", category: "transport_unavailable" });
+		expect(calls).toHaveLength(4);
+		expect(new Set(calls.map((call) => JSON.stringify(call.args))).size).toBe(1);
+	});
+
+	it("stops retrying once the caller cancels", async () => {
+		const aborted = new AbortController();
+		const first = fixture(() => {
+			aborted.abort();
+			throw sqlError("QRC01", "Company folder authority changed");
+		});
+		const error17 = await first.client
+			.commit("tool-call-17", [{ op: "mkdir", path: "a" }], {}, aborted.signal)
+			.catch((error: unknown) => error);
+		expect(error17).toMatchObject({ category: "cancelled" });
+		expect(first.calls).toHaveLength(1);
+		// A cancel during the pause between tries is a cancel, not the folder's error.
+		const later = new AbortController();
+		const second = fixture(() => {
+			setTimeout(() => later.abort(), 1);
+			throw sqlError("QRC01", "Company folder authority changed");
+		});
+		const error = await second.client
+			.commit("tool-call-18", [{ op: "mkdir", path: "a" }], {}, later.signal)
+			.catch((error: unknown) => error);
+		expect(error).toMatchObject({ category: "cancelled" });
+		expect(error).not.toBeInstanceOf(CloudCompanyFolderRpcError);
+		expect(second.calls).toHaveLength(1);
 	});
 
 	it.each([
@@ -543,12 +761,60 @@ describe("commits", () => {
 		expect(read).toMatchObject({ failure });
 	});
 
-	it("passes transport failures through unchanged", async () => {
-		const transport = new CloudRuntimeDiagnosticError("transport_unavailable", "Company File authority unavailable");
-		const { client } = fixture(() => {
-			throw transport;
+	it("passes other failures through unchanged, without retrying them", async () => {
+		const invalidAnswer = new CloudRuntimeDiagnosticError(
+			"invalid_response",
+			"Company File control response too large",
+		);
+		const { client, calls } = fixture(() => {
+			throw invalidAnswer;
 		});
-		await expect(client.commit("tool-call-12", [{ op: "mkdir", path: "a" }], {}, signal())).rejects.toBe(transport);
+		await expect(client.commit("tool-call-12", [{ op: "mkdir", path: "a" }], {}, signal())).rejects.toBe(
+			invalidAnswer,
+		);
+		expect(calls).toHaveLength(1);
+	});
+
+	it("sends the actor's ids in the lower case SQL checks", async () => {
+		const { binding, authority } = nativeToolAuthorityFixture();
+		const upper = {
+			...binding,
+			runId: binding.runId.toUpperCase(),
+			jobId: binding.jobId.toUpperCase(),
+			runnerId: binding.runnerId.toUpperCase(),
+			assignmentId: binding.assignmentId.toUpperCase(),
+		};
+		const client = new CloudCompanyFolderClient({
+			binding: upper,
+			identity: { ...authority.identity, ...upper },
+			control: { call: vi.fn() },
+			bytes: { put: vi.fn(), get: vi.fn() },
+		});
+		expect(client.actor).toEqual({
+			kind: "run",
+			runId: binding.runId,
+			jobId: binding.jobId,
+			runnerId: binding.runnerId,
+			assignmentId: binding.assignmentId,
+		});
+	});
+
+	it("keeps SQL's words off its errors", () => {
+		const cases = [
+			["22023", "invalid_arguments"],
+			["25000", "invalid_arguments"],
+			["42501", "authority_unavailable"],
+			["0A000", "authority_unavailable"],
+			["55000", "authority_unavailable"],
+			["40P01", "transport_unavailable"],
+			["QRC01", "transport_unavailable"],
+		] as const;
+		for (const [code, category] of cases) {
+			const error = sqlError(code, "PRIVATE_SQL_WORDS");
+			expect(error.category).toBe(category);
+			expect(error.detail).toBe("PRIVATE_SQL_WORDS");
+			expect(`${String(error)} ${JSON.stringify(error)}`).not.toContain("PRIVATE_SQL_WORDS");
+		}
 	});
 });
 
@@ -604,5 +870,28 @@ describe("releases", () => {
 			"Company folder response is invalid",
 		);
 		await expect(client.release("nope", [], sha("x"), signal())).rejects.toThrow("Invalid Company folder release");
+	});
+
+	it("retries an authority change, and checks what it sends and what it hears", async () => {
+		const entry = { path: "a.md", version: randomUUID(), authority: RECEIPT, fileSha256: sha("x") };
+		let tries = 0;
+		const { client, calls } = fixture((_method, args) => {
+			if (++tries === 1) throw sqlError("QRC01", "Company folder authority changed");
+			return {
+				schema: "qorpera.folder-release/v1",
+				releaseId: args.p_release_id,
+				reads: tries === 2 ? 1 : 2,
+				replay: false,
+			};
+		});
+		await expect(client.release(randomUUID(), [entry], sha("out"), signal())).resolves.toMatchObject({ reads: 1 });
+		expect(calls).toHaveLength(2);
+		// SQL counting other reads than were sent is not this release's answer.
+		await expect(client.release(randomUUID(), [entry], sha("out"), signal())).rejects.toThrow(
+			"Company folder response is invalid",
+		);
+		await expect(client.release(randomUUID(), [{ ...entry, fileSha256: "x" }], sha("out"), signal())).rejects.toThrow(
+			"Invalid Company folder release",
+		);
 	});
 });

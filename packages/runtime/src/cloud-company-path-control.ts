@@ -139,9 +139,14 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 						? 16 * 1024 * 1024
 						: response.ok && method === "qorpera_describe_company_run_context"
 							? 1024 * 1024
-							: response.ok
-								? 256 * 1024
-								: 4096;
+							: // A listing page of 200 entries with 4096-byte paths, and a change set's outcomes.
+								response.ok && method === "qorpera_folder_list"
+								? 1024 * 1024
+								: response.ok && method === "qorpera_folder_commit"
+									? 16 * 1024 * 1024
+									: response.ok
+										? 256 * 1024
+										: 4096;
 				const reader = response.body?.getReader();
 				if (!reader)
 					throw new CloudRuntimeDiagnosticError("invalid_response", "Company File authority unavailable");
