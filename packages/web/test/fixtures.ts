@@ -252,7 +252,7 @@ export function fixture() {
 	);
 	vi.spyOn(api, "companyWaitingForHours").mockResolvedValue(false);
 	vi.spyOn(api, "readSessionEvents").mockResolvedValue([]);
-	// A cloud before the newest-first read (20260929410000): threads read their history forward.
+	// A cloud before the newest-first read (20260928279410): threads read their history forward.
 	vi.spyOn(api, "readSessionEventsTail").mockRejectedValue(
 		new CloudRpcError("qorpera_read_session_events_tail", { message: "missing", code: "PGRST202" }, 404),
 	);

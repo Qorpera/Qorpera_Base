@@ -1,4 +1,4 @@
--- The newest-first transcript read (20260929410000): for every caller it refuses what the
+-- The newest-first transcript read (20260928279410): for every caller it refuses what the
 -- transcript read refuses, returns the same events in the same shape, and pages back through a
 -- thread without skipping or repeating an event, also while new events arrive.
 begin;

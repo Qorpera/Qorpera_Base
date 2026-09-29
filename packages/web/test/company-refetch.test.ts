@@ -48,7 +48,7 @@ const working = (): HostedStaffExecutionActivity[] => [
  * not); `write` has an agent add an event to a thread, which changes the thread's row and sends a
  * sessions hint (unless not); `status` is the Realtime channel's own status callback. With
  * `history`, the open thread already holds that many messages, one a minute, and the cloud has the
- * newest-first read (20260929410000): the thread opens at its newest events. `holds` keeps the next
+ * newest-first read (20260928279410): the thread opens at its newest events. `holds` keeps the next
  * newest-first or forward read of the open thread on its way until released. */
 async function company(realtime: "connected" | "degraded", busy = true, history = 0) {
 	vi.useFakeTimers({
