@@ -218,24 +218,30 @@ select pg_temp.event_wake_patch('public.qorpera_runtime_wake_policy_internal(uui
 -- 5. The drain: one event occurrence per routine trigger while deliveries wait
 -- ---------------------------------------------------------------------------
 
--- The verified deliveries a listener has not taken yet, in the order it takes them.
+-- The verified deliveries a listener has not taken yet, in the order it takes them. Planned with
+-- the cursor's values each call (a one-shot plan), so the watermark, or before any read the
+-- activation (a delivery is verified once it is received), bounds the index range.
 create function public.qorpera_event_listener_waiting(p_cursor public.qorpera_event_listener_cursors, p_only jsonb, p_limit integer)
 returns setof public.qorpera_event_deliveries
-language sql
+language plpgsql
 security definer
 set search_path = ''
 as $$
-	select delivery.* from public.qorpera_event_deliveries as delivery
-	where delivery.hook_id = p_cursor.hook_id and delivery.status = 'verified'
-		and delivery.verified_at >= p_cursor.taken_before
-		and delivery.received_at >= p_cursor.activated_at
-		and delivery.received_at > clock_timestamp() - interval '7 days'
-		and (p_only is null or delivery.event_type in (select jsonb_array_elements_text(p_only)))
-		and not exists (select 1 from public.qorpera_event_wake_deliveries as taken
-			where taken.routine_id = p_cursor.routine_id and taken.trigger_id = p_cursor.trigger_id
-				and taken.delivery_id = delivery.id)
-	order by delivery.verified_at, delivery.id
-	limit p_limit
+begin
+	return query execute $query$
+		select delivery.* from public.qorpera_event_deliveries as delivery
+		where delivery.hook_id = $1 and delivery.status = 'verified'
+			and delivery.verified_at >= greatest($2, $3 - interval '1 second')
+			and delivery.received_at >= $3
+			and delivery.received_at > clock_timestamp() - interval '7 days'
+			and ($4::jsonb is null or delivery.event_type in (select jsonb_array_elements_text($4::jsonb)))
+			and not exists (select 1 from public.qorpera_event_wake_deliveries as taken
+				where taken.routine_id = $5 and taken.trigger_id = $6 and taken.delivery_id = delivery.id)
+		order by delivery.verified_at, delivery.id
+		limit $7$query$
+	using p_cursor.hook_id, p_cursor.taken_before, p_cursor.activated_at, p_only, p_cursor.routine_id,
+		p_cursor.trigger_id, p_limit;
+end
 $$;
 revoke all on function public.qorpera_event_listener_waiting(public.qorpera_event_listener_cursors, jsonb, integer)
 	from public, anon, authenticated, service_role;
