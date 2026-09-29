@@ -25,7 +25,60 @@ export interface ComputerViewerOptions {
 	onClosed(): void;
 }
 
-/** The bundled renderer receives an authenticated channel, never a ticket URL. */
+/** The screen renderer could not be loaded into this page. A browser keeps a
+ * module it failed to load for the page's whole life, without fetching it
+ * again, so only reloading the page brings the renderer back (reloadPage). */
+export class ComputerViewerUnavailable extends Error {
+	constructor(cause: unknown) {
+		super("The screen renderer could not be loaded.", { cause });
+		this.name = "ComputerViewerUnavailable";
+	}
+}
+
+let rendererLoad: Promise<void> | undefined;
+
+/** How long the renderer chunk (about 50 KiB compressed) may take before the
+ * page counts it as unavailable: a download that stalls without failing would
+ * otherwise leave the panel on "Connecting…" with nothing to press. */
+export const RENDERER_DEADLINE_MS = 20_000;
+
+/** The renderer and its licensed noVNC (member-web/ui/SOURCE.json; about
+ * 190 KB minified) are their own chunk, fetched when a computer panel opens
+ * rather than with the app. Loading it defines `window.qorperaScreenViewer`.
+ * Like the browser, this keeps the outcome: after a failed load (a deploy
+ * renamed the chunk while the tab was open, or the network dropped during the
+ * fetch), or one still unfinished at the deadline, every call rejects with
+ * ComputerViewerUnavailable. A stalled load that does finish later serves the
+ * panels opened after it. */
+export function loadComputerViewer(): Promise<void> {
+	rendererLoad ??= new Promise<void>((resolve, reject) => {
+		const deadline = setTimeout(
+			() => reject(new ComputerViewerUnavailable(new Error("The screen renderer took too long to load."))),
+			RENDERER_DEADLINE_MS,
+		);
+		import("./screen-viewer.mjs").then(
+			() => {
+				clearTimeout(deadline);
+				resolve();
+				rendererLoad = Promise.resolve();
+			},
+			(cause: unknown) => {
+				clearTimeout(deadline);
+				reject(new ComputerViewerUnavailable(cause));
+			},
+		);
+	});
+	return rendererLoad;
+}
+
+/** The way back from a renderer that could not load. index.html is revalidated
+ * on every load, so the page comes back with the current deployment's files. */
+export function reloadPage(): void {
+	location.reload();
+}
+
+/** The bundled renderer receives an authenticated channel, never a ticket URL.
+ * Call loadComputerViewer() first. */
 export function openComputerViewer(options: ComputerViewerOptions): ComputerViewer {
 	const renderer = (
 		window as unknown as { qorperaScreenViewer?: { open(options: ComputerViewerOptions): ComputerViewer } }
