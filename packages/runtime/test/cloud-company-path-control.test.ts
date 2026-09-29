@@ -48,7 +48,7 @@ describe("Company File bounded control transport", () => {
 	});
 
 	it.each([
-		"qorpera_record_runtime_observation",
+		"qorpera_record_runtime_observation_batch",
 		"qorpera_begin_native_company_execution_v2",
 		"qorpera_describe_company_run_context",
 		"qorpera_read_company_run_context",

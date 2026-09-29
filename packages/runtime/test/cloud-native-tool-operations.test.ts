@@ -34,8 +34,8 @@ afterEach(async () => {
 
 function observe(assignmentId: string) {
 	const rows: CloudRuntimeObservation[] = [];
-	const publish = vi.fn(async (row: CloudRuntimeObservation) => {
-		rows.push(structuredClone(row));
+	const publish = vi.fn(async (batch: readonly CloudRuntimeObservation[]) => {
+		rows.push(...structuredClone(batch));
 	});
 	const observability = new CloudRuntimeObservability({ assignmentId, publish });
 	observations.push(observability);
@@ -783,6 +783,7 @@ it("keeps effects and canonical replay independent of diagnostic exporter failur
 	await f.execute({ observation: replay });
 	expect(first.result?.status).toBe("succeeded");
 	expect(replay.result).toMatchObject({ status: "replayed", receiptId: first.result?.receiptId });
+	await observed.observability.close();
 	expect(observed.observability.state.status).toBe("unavailable");
 	expect(f.perform).toHaveBeenCalledTimes(1);
 	expect(f.authorize).toHaveBeenCalledTimes(4);

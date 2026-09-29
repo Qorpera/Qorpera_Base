@@ -47,8 +47,8 @@ export async function runNativeCodexCompositionProbe(
 	const metadataLog = join(root, "composition-events.jsonl");
 	const observability = new CloudRuntimeObservability({
 		assignmentId: randomUUID(),
-		publish: async (observation) => {
-			observations.push(observation);
+		publish: async (batch) => {
+			observations.push(...batch);
 		},
 	});
 	let requests = 0;

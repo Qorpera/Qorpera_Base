@@ -58,7 +58,7 @@ import { cloudReviewRuleTools } from "./cloud-review-rule-tools.ts";
 import { cloudRoutineDecisionTool, cloudRoutineTools } from "./cloud-routine-tools.ts";
 import { assertCloudRuntimeBundle } from "./cloud-runtime-bundle.ts";
 import {
-	assertCloudRuntimeObservationReceipt,
+	assertCloudRuntimeObservationBatchReceipt,
 	CloudRuntimeObservability,
 	type CloudRuntimeToolOperation,
 	cloudRuntimeErrorCategory,
@@ -197,14 +197,17 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		});
 		const observability = new CloudRuntimeObservability({
 			assignmentId: binding.assignmentId,
-			publish: async (observation, requestSignal) => {
-				const receipt = await this.#paths.call(
-					"qorpera_record_runtime_observation",
-					{ p_run_id: binding.runId, p_observation: observation },
-					requestSignal,
-				);
-				assertCloudRuntimeObservationReceipt(receipt, binding.runId, observation);
-			},
+			// One call per batch of up to 50 rows (20260929370000); each row still passes the single-row checks.
+			publish: async (observations, requestSignal) =>
+				assertCloudRuntimeObservationBatchReceipt(
+					await this.#paths.call(
+						"qorpera_record_runtime_observation_batch",
+						{ p_run_id: binding.runId, p_observations: observations },
+						requestSignal,
+					),
+					binding.runId,
+					observations,
+				),
 		});
 		const composition = observability.start("company_context");
 		let stage: NativeRuntimeFailureStage = "company-context";

@@ -419,8 +419,8 @@ describe("cloud Company File path gateway", () => {
 			const rows: CloudRuntimeObservation[] = [];
 			const observability = new CloudRuntimeObservability({
 				assignmentId: null,
-				publish: async (row) => {
-					rows.push(row);
+				publish: async (batch) => {
+					rows.push(...batch);
 				},
 			});
 			const boundary = new CloudNativeToolBoundary({
@@ -583,8 +583,8 @@ describe("cloud Company File path gateway", () => {
 		const rows: CloudRuntimeObservation[] = [];
 		const observability = new CloudRuntimeObservability({
 			assignmentId: null,
-			publish: async (row) => {
-				rows.push(row);
+			publish: async (batch) => {
+				rows.push(...batch);
 			},
 		});
 		const boundary = formationBoundary(db, observability);
@@ -1443,8 +1443,8 @@ describe("cloud Company File path gateway", () => {
 			const rows: CloudRuntimeObservation[] = [];
 			const observability = new CloudRuntimeObservability({
 				assignmentId: null,
-				publish: async (row) => {
-					rows.push(row);
+				publish: async (batch) => {
+					rows.push(...batch);
 				},
 			});
 			const f = fixture(observability);

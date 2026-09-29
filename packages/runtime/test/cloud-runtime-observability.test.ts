@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { type CloudNativeTool, CloudNativeToolBoundary } from "@qorpera/runtime/cloud-native-tool-boundary";
 import {
+	assertCloudRuntimeObservationBatchReceipt,
 	assertCloudRuntimeObservationReceipt,
 	CLOUD_RUNTIME_OBSERVATION_SCHEMA,
 	CLOUD_RUNTIME_OPERATIONS,
@@ -30,17 +31,29 @@ function syntheticTool(
 	};
 }
 
-function observer(publish?: (row: CloudRuntimeObservation, signal: AbortSignal) => Promise<unknown>) {
+function observer(
+	publish?: (batch: readonly CloudRuntimeObservation[], signal: AbortSignal) => Promise<unknown>,
+	options: { flushMs?: number; batchDelayMs?: number } = {},
+) {
 	const rows: CloudRuntimeObservation[] = [];
 	const metrics = new CloudRuntimeObservability({
 		assignmentId: randomUUID(),
 		publish:
 			publish ??
-			(async (row) => {
-				rows.push(row);
+			(async (batch) => {
+				rows.push(...batch);
 			}),
+		...options,
 	});
 	return { metrics, rows };
+}
+
+function deferred() {
+	let resolve!: () => void;
+	const promise = new Promise<void>((accept) => {
+		resolve = accept;
+	});
+	return { promise, resolve };
 }
 
 function sample(): CloudRuntimeObservation {
@@ -152,6 +165,49 @@ describe("closed runtime diagnostics", () => {
 			);
 	});
 
+	it("requires one exact receipt or a known refusal per batch row, in row order", () => {
+		const rows = [sample(), sample(), sample()];
+		const runId = randomUUID();
+		const receipt = (row: CloudRuntimeObservation) => ({
+			schema: "qorpera.runtime-observation-receipt/v1",
+			runId,
+			attemptId: row.attemptId,
+			phase: row.phase,
+			ingestedAt: "2026-08-31T12:34:56.123456+00:00",
+			replayed: false,
+		});
+		const refusal = (code: string) => ({ schema: "qorpera.runtime-observation-refusal/v1", code });
+		const batch = (receipts: unknown[]) => ({
+			schema: "qorpera.runtime-observation-batch-receipt/v1",
+			runId,
+			receipts,
+		});
+		expect(assertCloudRuntimeObservationBatchReceipt(batch(rows.map(receipt)), runId, rows)).toBe(0);
+		expect(
+			assertCloudRuntimeObservationBatchReceipt(
+				batch([receipt(rows[0]), refusal("22023"), refusal("23505")]),
+				runId,
+				rows,
+			),
+		).toBe(2);
+		for (const value of [
+			null,
+			[],
+			{ ...batch(rows.map(receipt)), secret: "PRIVATE_RECEIPT" },
+			{ ...batch(rows.map(receipt)), schema: "qorpera.runtime-observation-receipt/v1" },
+			{ ...batch(rows.map(receipt)), runId: randomUUID() },
+			batch(rows.slice(1).map(receipt)),
+			batch([...rows.map(receipt), receipt(rows[0])]),
+			batch([receipt(rows[1]), receipt(rows[0]), receipt(rows[2])]),
+			batch([receipt(rows[0]), refusal("PT409"), receipt(rows[2])]),
+			batch([receipt(rows[0]), { ...refusal("22023"), message: "PRIVATE" }, receipt(rows[2])]),
+			batch([receipt(rows[0]), null, receipt(rows[2])]),
+		])
+			expect(() => assertCloudRuntimeObservationBatchReceipt(value, runId, rows)).toThrow(
+				"Runtime observation acknowledgement unavailable",
+			);
+	});
+
 	it("pins child spans to their parent and returns an immutable copy of replay metadata", async () => {
 		const { metrics, rows } = observer();
 		const parent = metrics.start("connector");
@@ -193,8 +249,8 @@ describe("closed runtime diagnostics", () => {
 			assignmentId: null,
 			clock: () => wall,
 			monotonicClock: () => monotonic,
-			publish: async (row) => {
-				rows.push(row);
+			publish: async (batch) => {
+				rows.push(...batch);
 			},
 		});
 		const span = metrics.start("model_turn");
@@ -237,32 +293,169 @@ describe("closed runtime diagnostics", () => {
 });
 
 describe("optional exporter isolation", () => {
-	it("absorbs a synchronous exporter failure without retrying or echoing it", async () => {
+	it("sends queued rows in order, at most 50 a call and one call at a time", async () => {
+		const gate = deferred();
+		const batches: CloudRuntimeObservation[][] = [];
+		let inFlight = 0;
+		let maxInFlight = 0;
+		const { metrics } = observer(async (batch) => {
+			maxInFlight = Math.max(maxInFlight, ++inFlight);
+			batches.push([...batch]);
+			if (batches.length === 1) await gate.promise;
+			inFlight--;
+		});
+		const spans = Array.from({ length: 60 }, () => metrics.start("company_read"));
+		for (const span of spans) span.finish("succeeded");
+		gate.resolve();
+		await metrics.close();
+		// Rows gather until 50 wait; close() sends the rest at once.
+		expect(batches.map((batch) => batch.length)).toEqual([50, 50, 20]);
+		expect(maxInFlight).toBe(1);
+		const sent = batches.flat();
+		expect(sent.map((row) => `${row.attemptId}:${row.phase}`)).toEqual([
+			...spans.map((span) => `${span.attemptId}:start`),
+			...spans.map((span) => `${span.attemptId}:finish`),
+		]);
+		expect(metrics.state).toEqual({ sent: 120, dropped: 0, pending: 0, status: "closed" });
+	});
+
+	it("gathers rows for a second before a call that is not full", async () => {
+		vi.useFakeTimers();
+		try {
+			const sizes: number[] = [];
+			const { metrics } = observer(async (batch) => {
+				sizes.push(batch.length);
+			});
+			metrics.start("company_read").finish("succeeded");
+			await vi.advanceTimersByTimeAsync(900);
+			metrics.start("company_read");
+			expect(sizes).toEqual([]);
+			await vi.advanceTimersByTimeAsync(100);
+			expect(sizes).toEqual([3]);
+			for (let index = 0; index < 50; index++) metrics.start("company_read");
+			await vi.advanceTimersByTimeAsync(0);
+			expect(sizes).toEqual([3, 50]);
+			await metrics.close();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("retries a failed batch with backoff, resending the same rows in order", async () => {
+		vi.useFakeTimers();
+		try {
+			const calls: string[][] = [];
+			const { metrics } = observer(
+				async (batch) => {
+					calls.push(batch.map((row) => row.phase));
+					if (calls.length <= 2) throw new Error("PRIVATE_EXPORT_DOWN");
+				},
+				{ batchDelayMs: 0 },
+			);
+			metrics.start("company_write").finish("succeeded");
+			await vi.advanceTimersByTimeAsync(0);
+			expect(calls).toEqual([["start", "finish"]]);
+			expect(metrics.state.status).toBe("unavailable");
+			// Backoff: nothing is sent again at once; then the same rows go first, a newer one after them.
+			metrics.start("company_read");
+			await vi.advanceTimersByTimeAsync(100);
+			expect(calls).toHaveLength(1);
+			await vi.advanceTimersByTimeAsync(5000);
+			expect(calls).toEqual([
+				["start", "finish"],
+				["start", "finish", "start"],
+				["start", "finish", "start"],
+			]);
+			expect(metrics.state).toMatchObject({ sent: 3, dropped: 0, pending: 0, status: "active" });
+			await metrics.close();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("drops a batch that fails every attempt and goes on with the next", async () => {
+		vi.useFakeTimers();
+		try {
+			let calls = 0;
+			const sent: CloudRuntimeObservation[] = [];
+			const { metrics } = observer(
+				async (batch) => {
+					if (++calls <= 4) throw new Error("PRIVATE_EXPORT_DOWN");
+					sent.push(...batch);
+				},
+				{ batchDelayMs: 0 },
+			);
+			const first = metrics.start("company_write");
+			await vi.advanceTimersByTimeAsync(0);
+			for (let index = 0; index < 60; index++) metrics.start("company_read");
+			await vi.advanceTimersByTimeAsync(20_000);
+			// The first batch (its one row plus 49 queued meanwhile) failed four times and was dropped.
+			expect(calls).toBe(5);
+			expect(sent).toHaveLength(11);
+			expect(sent.some((row) => row.attemptId === first.attemptId)).toBe(false);
+			expect(metrics.state).toMatchObject({ sent: 11, dropped: 50, status: "active" });
+			await metrics.close();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("counts rows the database refused as dropped, not sent", async () => {
+		// The database refused the start row (its only row), then took the finish.
+		const answers = [1, 0];
+		const { metrics } = observer(async () => answers.shift());
+		metrics.start("company_write").finish("succeeded");
+		await metrics.close();
+		expect(metrics.state).toMatchObject({ sent: 1, dropped: 1 });
+	});
+
+	it("absorbs a synchronous exporter failure without echoing it", async () => {
 		const publish = vi.fn(() => {
 			throw new Error("PRIVATE_CREDENTIAL");
 		});
-		const { metrics } = observer(publish);
+		const { metrics } = observer(publish, { flushMs: 50 });
 		metrics.start("company_write").finish("succeeded");
 		await metrics.close();
-		expect(publish).toHaveBeenCalledTimes(1);
+		expect(publish.mock.calls.length).toBeGreaterThanOrEqual(1);
+		expect(publish.mock.calls.length).toBeLessThanOrEqual(4);
 		expect(metrics.state.status).toBe("unavailable");
 		expect(metrics.state.dropped).toBe(2);
 		expect(JSON.stringify(metrics.state)).not.toContain("PRIVATE_CREDENTIAL");
 	});
 
-	it("bounds a stalled exporter, its queue and all later work", async () => {
+	it("bounds a stalled exporter, its queue, its flush and all later work", async () => {
 		const publish = vi.fn(async () => new Promise(() => undefined));
-		const metrics = new CloudRuntimeObservability({ assignmentId: randomUUID(), publish, timeoutMs: 20 });
+		const metrics = new CloudRuntimeObservability({
+			assignmentId: randomUUID(),
+			publish,
+			timeoutMs: 20,
+			flushMs: 100,
+		});
 		for (let index = 0; index < 600; index++) metrics.start("company_read").finish("succeeded");
-		expect(metrics.state.pending).toBeLessThanOrEqual(257);
+		expect(metrics.state.pending).toBeLessThanOrEqual(256);
 		expect(metrics.state.dropped).toBeGreaterThan(0);
 		const begin = Date.now();
 		await metrics.close();
 		expect(Date.now() - begin).toBeLessThan(1000);
-		expect(publish).toHaveBeenCalledTimes(1);
-		expect(metrics.state.status).toBe("unavailable");
+		// One call at a time: the first, then at most one retry within the flush bound.
+		expect(publish.mock.calls.length).toBeLessThanOrEqual(2);
+		expect(metrics.state).toMatchObject({ sent: 0, dropped: 1200, pending: 0, status: "unavailable" });
+		const calls = publish.mock.calls.length;
 		metrics.start("company_write").finish("failed");
-		expect(publish).toHaveBeenCalledTimes(1);
+		expect(publish).toHaveBeenCalledTimes(calls);
+		expect(metrics.state.dropped).toBe(1202);
+	});
+
+	it("flushes what is queued on close within its bound", async () => {
+		const sent: CloudRuntimeObservation[] = [];
+		const { metrics } = observer(async (batch) => {
+			await new Promise((resolve) => setTimeout(resolve, 10));
+			sent.push(...batch);
+		});
+		for (let index = 0; index < 100; index++) metrics.start("company_read").finish("succeeded");
+		await metrics.close();
+		expect(sent).toHaveLength(200);
+		expect(metrics.state).toEqual({ sent: 200, dropped: 0, pending: 0, status: "closed" });
 	});
 
 	it("cannot alter a tool effect or turn it into a retry when diagnostic delivery fails", async () => {
@@ -312,8 +505,8 @@ describe("optional exporter isolation", () => {
 					if (mode === "ticks-throw") throw new Error("PRIVATE_CLOCK_ERROR");
 					return performance.now();
 				},
-				publish: async (row) => {
-					rows.push(row);
+				publish: async (batch) => {
+					rows.push(...batch);
 				},
 			});
 			const effect = vi.fn(async () => {
