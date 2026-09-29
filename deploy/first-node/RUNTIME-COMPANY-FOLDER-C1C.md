@@ -83,7 +83,7 @@ test. A caller left alone stays refused. Paths that never went through the actor
 
 ## 4. C1c-1: explicit refusals (this slice)
 
-Migration 20260929430000. Every guard is false for snapshot-v1 companies, and sits at the start of the function,
+Migration 20260928259430. Every guard is false for snapshot-v1 companies, and sits at the start of the function,
 before any lock. The error is 0A000, "This Company File path does not serve folder-v2 companies".
 
 - **Raw objects.** A member's raw download refuses `folder-v2`, and so does the read lease, which calls the same

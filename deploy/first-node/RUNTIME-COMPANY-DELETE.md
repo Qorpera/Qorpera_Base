@@ -67,7 +67,7 @@ records what it waits for.
 - **D1** (this migration): request, stop, finisher; coding machines and Company Computer power-off.
 - **D2** orchestrator: retire `registered`/`assigned` guests whose job is terminal (one-run VMs and
   exec-host sandboxes).
-- **D3** office retirement (D3a SQL: migration 20260929320000). After a deleting company's idle power-off
+- **D3** office retirement (D3a SQL: migration 20260928259320). After a deleting company's idle power-off
   (stop acknowledged, node demand suspended, no later transition, boot intent or open reset), the
   provider asks `qorpera_runtime_office_retirement(request)` for the retirement and its delete command
   id, takes a five-second window (`qorpera_prepare_runtime_office_retirement`), deletes the VM under its
@@ -88,7 +88,7 @@ records what it waits for.
   way when the deletion came (its boot intent or successor stays; the pause keeps it from finishing),
   and an office whose node rebooted between its power-off record and its node-demand suspension.
   Coordinator's lane for D3b: the coordinator rolls the office provider build at the cut (RUNTIME
-  release roll, as #505), after the release carrying 20260929320000 is live.
+  release roll, as #505), after the release carrying 20260928259320 is live.
   1. Build `node scripts/package-lxd-office-provider.mjs --out <dir>` from the release commit on node 2;
      its sha256 must match the review. Stage it on the node.
   2. Before the roll, read the provider's last observation (`journalctl -u <unit> -n 5`). Roll on
