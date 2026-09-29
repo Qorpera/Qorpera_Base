@@ -287,6 +287,11 @@ is never upgraded. The steps:
      The commit re-checks the agent's current authority and status, and the
      approver's right to answer the card. It records the agent as actor and
      the member as approver, and refuses the unit if either check fails.
+   - **A view** (C1B "C1b-3: views" §4): the job of its live run, if any, then
+     the view row `FOR KEY SHARE`, which closing and superseding (`FOR
+     UPDATE`) wait for. Releases take them in the same order, and so must
+     anything that locks two of them: the job, then the view, then the fence
+     (step 3) and the principal rows (step 4).
 3. **The folder fence.** The company's fence row is taken `FOR KEY SHARE`.
    - Stop and resume take it `FOR UPDATE`.
    - After this lock, the pause is read again, as today's rule requires
@@ -301,12 +306,16 @@ is never upgraded. The steps:
      `folder-v2` path (§9).
 4. **Principals, indexes, authority and uniques.** These are taken once, in
    one global order used everywhere:
+   0. the company's profile row, `FOR KEY SHARE` (never stronger, and only this company's), in every
+      save whose hook writes a roster row (C1b-3a; it was the head of rank 2 in F2-1). A roster write ends in a company
+      operation: the operation clock, then a foreign key to `qorpera_profiles`. The thread trigger's
+      session update is another one. Until C1c, posting takes the profile row `FOR UPDATE` (gc fence)
+      before the room and the clock, so the save takes the profile row first too (F2-1, #461; test
+      701). It comes before the members because #462's leave, remove and role change lock the
+      profile row and then the member (C1B "C1b-3: views" §4). The commit refuses
+      `qorpera_profiles` at any other rank;
    1. members;
-   2. staff, opened by the company's profile row `FOR KEY SHARE` (never stronger) in every save
-      whose hook writes a roster row. A roster write ends in a company operation: the operation
-      clock, then a foreign key to `qorpera_profiles`. The thread trigger's session update is
-      another one. Until C1c, posting takes the profile row `FOR UPDATE` (gc fence) before the room
-      and the clock, so the save takes the profile row first too (F2-1, #461; test 701);
+   2. staff;
    3. execution authorities;
    4. rooms, then room members;
    5. the other index rows (sections, routines with their schedule cursors,
@@ -389,6 +398,10 @@ is never upgraded. The steps:
    index row written points at its entry's current version. The folder core's
    tables have no deferred constraints or deferred triggers; an activation
    check verifies this for them. So nothing heavy runs at COMMIT.
+   - **The anchor step, for a view** (C1B "C1b-3: views" §3, §4): the view's
+     anchor `FOR SHARE` (the screen or the coding session), then the view's
+     full validity re-checked in a new statement. It comes after the check and
+     before admission and the clock, so it is held only to the end.
 10. **Admission.** If the transaction inserts a wake, it takes the company's
     admission row `FOR NO KEY UPDATE` as its last lock before the clock, and
     inserts its wakes after it. That covers:

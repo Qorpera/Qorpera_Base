@@ -9,6 +9,8 @@ import type { LxdOfficeStorageObservation } from "../src/lxd-office-inventory-wo
 import { publish } from "../src/lxd-office-journal-files.ts";
 import { LxdOfficeLifecycle, runLxdOfficeLifecycle } from "../src/lxd-office-lifecycle.ts";
 import { lxdOfficePhysicalPolicySha256 } from "../src/lxd-office-physical-policy.ts";
+import { OFFICE_RETIRED_MARKER } from "../src/lxd-office-retirement-control.ts";
+import { OFFICE_RETIREMENT_REQUEST } from "../src/lxd-office-retirement-worker.ts";
 import { officePhysicalFixture } from "./fixtures/office-physical-policy.ts";
 
 const intentId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -269,6 +271,15 @@ async function fixture() {
 			},
 		),
 	};
+	const retirementWorker = {
+		result: "kept" as "kept" | "retired" | "pending" | "unknown" | "failed",
+		reconcileSettled: vi.fn(async (intent: string, request: { transitionId: string }) => ({
+			state: retirementWorker.result,
+			intentId: intent,
+			allocationId,
+			transitionId: request.transitionId,
+		})),
+	};
 	const bootConfigurationWorker = {
 		reconcileSettled: vi.fn(async (input: { request: { bootIntentId: string; activationId: string } }) => ({
 			state: "awaiting_boot_admission" as const,
@@ -341,6 +352,7 @@ async function fixture() {
 				resetWorker: resetWorker as unknown as NonNullable<
 					ConstructorParameters<typeof LxdOfficeLifecycle>[3]
 				>["resetWorker"],
+				retirementWorker,
 			},
 		);
 	const approve = () => {
@@ -369,6 +381,7 @@ async function fixture() {
 		bootConfigurationWorker,
 		bootActivationWorker,
 		resetWorker,
+		retirementWorker,
 		preparePackageInvocation,
 		resetPlan,
 		recovery,
@@ -391,6 +404,119 @@ describe("serialized office lifecycle", () => {
 		});
 		expect(f.resumeWorker.reconcileSettled).not.toHaveBeenCalled();
 		expect(f.stopWorker.reconcileSettled).toHaveBeenCalledTimes(1);
+	});
+	it("retires a deleted company's powered-off computer; a pinned delete runs alone, and a retired office makes no call", async () => {
+		const f = await fixture();
+		await f.toPhase(7);
+		await f.open().reconcile(signal());
+		const request = { ...f.recovery, action: "power_off" as const };
+		f.state.idle = request;
+		const idle = () => f.open(undefined, undefined, 300000);
+		await expect(idle().reconcile(signal())).resolves.toMatchObject({ state: "progressed", phase: "service_stop" });
+		f.retirementWorker.result = "pending";
+		await expect(idle().reconcile(signal())).resolves.toEqual({
+			state: "pending",
+			phase: "retirement",
+			intentId,
+			transitionId: request.transitionId,
+		});
+		expect(f.retirementWorker.reconcileSettled).toHaveBeenLastCalledWith(intentId, request, expect.anything());
+		const deleteCommandId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+		await publish(
+			f.root,
+			OFFICE_RETIREMENT_REQUEST,
+			Buffer.from(
+				JSON.stringify({
+					schema: "qorpera.lxd-office-retirement-request/v1",
+					intentId,
+					request,
+					stopCommandId: intentId,
+					deleteCommandId,
+				}),
+			),
+		);
+		// The company may be purged by now: no status, idle or power-off call.
+		const calls = f.registry.call.mock.calls.length,
+			stops = f.powerOffWorker.reconcileSettled.mock.calls.length;
+		f.state.office = "retired";
+		f.retirementWorker.result = "retired";
+		await expect(idle().reconcile(signal())).resolves.toMatchObject({ state: "retired", phase: "retirement" });
+		expect(f.retirementWorker.reconcileSettled).toHaveBeenLastCalledWith(intentId, request, expect.anything());
+		await publish(
+			f.root,
+			OFFICE_RETIRED_MARKER,
+			Buffer.from(
+				JSON.stringify({
+					schema: "qorpera.lxd-office-retired/v1",
+					intentId,
+					retirement: {
+						schema: "qorpera.office-retirement/v1",
+						companyComputerId: request.startup.scope.companyComputerId,
+						computerGeneration: request.startup.computerGeneration,
+						allocationId,
+						instanceSha256: "a".repeat(64),
+						transitionId: request.transitionId,
+						deleteCommandId,
+						deleteOperationId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+						state: "retired",
+					},
+				}),
+			),
+		);
+		const retirements = f.retirementWorker.reconcileSettled.mock.calls.length;
+		const onResult = vi.fn();
+		await runLxdOfficeLifecycle(idle(), signal(), onResult, vi.fn(), 1000);
+		expect(onResult).toHaveBeenCalledExactlyOnceWith({
+			state: "retired",
+			phase: "retirement",
+			transitionId: request.transitionId,
+		});
+		expect(f.retirementWorker.reconcileSettled).toHaveBeenCalledTimes(retirements);
+		expect(f.registry.call).toHaveBeenCalledTimes(calls);
+		expect(f.powerOffWorker.reconcileSettled).toHaveBeenCalledTimes(stops);
+	});
+	it("asks about a living company's powered-off computer once per process, then only after a minute", async () => {
+		const f = await fixture();
+		await f.toPhase(7);
+		await f.open().reconcile(signal());
+		f.state.idle = { ...f.recovery, action: "power_off" };
+		const idle = () => f.open(undefined, undefined, 300000);
+		await idle().reconcile(signal());
+		const base = performance.now();
+		let elapsed = 0;
+		const now = vi.spyOn(performance, "now").mockImplementation(() => base + elapsed);
+		const lifecycle = idle();
+		for (let n = 0; n < 3; n++) {
+			await expect(lifecycle.reconcile(signal())).resolves.toMatchObject({
+				state: "powered_off",
+				phase: "power_off",
+			});
+			elapsed += 31000;
+		}
+		// Asked at 0 s and 62 s, not at 31 s.
+		expect(f.retirementWorker.reconcileSettled).toHaveBeenCalledTimes(2);
+		now.mockRestore();
+		await expect(idle().reconcile(signal())).resolves.toMatchObject({ state: "powered_off" });
+		expect(f.retirementWorker.reconcileSettled).toHaveBeenCalledTimes(3);
+		expect(f.powerOffWorker.reconcileSettled).toHaveBeenCalledTimes(4);
+	});
+	it("retires a deleted company's computer whose power-off no longer replays after a host reboot", async () => {
+		const f = await fixture();
+		await f.toPhase(7);
+		await f.open().reconcile(signal());
+		f.state.idle = { ...f.recovery, action: "power_off" };
+		const idle = () => f.open(undefined, undefined, 300000);
+		await idle().reconcile(signal());
+		f.powerOffWorker.reconcileSettled.mockRejectedValue(new Error("power-off host changed"));
+		// Without a completed power-off nothing is retired.
+		await expect(idle().reconcile(signal())).rejects.toThrow("OFFICE_LIFECYCLE_UNCONFIRMED");
+		expect(f.retirementWorker.reconcileSettled).not.toHaveBeenCalled();
+		await publish(f.root, `power-off-completed-${allocationId}-${f.recovery.transitionId}.json`, Buffer.from("{}"));
+		// A living company's computer: the power-off error stands.
+		await expect(idle().reconcile(signal())).rejects.toMatchObject({ cause: { message: "power-off host changed" } });
+		expect(f.retirementWorker.reconcileSettled).toHaveBeenCalledOnce();
+		f.retirementWorker.result = "pending";
+		await expect(idle().reconcile(signal())).resolves.toMatchObject({ state: "pending", phase: "retirement" });
 	});
 	it("retained completed protected recovery permits later idle while a fresh operator plan takes precedence", async () => {
 		const f = await fixture();
@@ -590,6 +716,8 @@ describe("serialized office lifecycle", () => {
 		expect(f.bootActivationWorker.reconcileSettled).toHaveBeenCalledTimes(2);
 		expect(f.powerOffWorker.reconcileSettled).toHaveBeenCalledTimes(stops);
 		expect(f.stopWorker.reconcileSettled).toHaveBeenCalledOnce();
+		// Retirement is asked only after a power_off without a resume.
+		expect(f.retirementWorker.reconcileSettled).toHaveBeenCalledTimes(action === "power_off" ? 1 : 0);
 		f.state.resume = undefined;
 		await expect(f.open().reconcile(signal())).rejects.toThrow("OFFICE_LIFECYCLE_UNCONFIRMED");
 		expect(f.powerOffWorker.reconcileSettled).toHaveBeenCalledTimes(stops);
