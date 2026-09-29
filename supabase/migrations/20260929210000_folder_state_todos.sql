@@ -14,9 +14,9 @@
 --   requested_by is checked (a member) only when the save changes it; a move or delete that carries a todo with a
 --   working worker is refused. The id never changes and belongs to one file. Not reviewed.
 -- * Index: a folder row has no run ids (the commit records the actor). Deleting the file cancels an open todo, retires
---   the row and gives its key a tombstone with a '.' (no file name has one), so a new file of that name is free; a
---   restore brings it back. The row's foreign key to the company row takes it KEY SHARE, so a todo save takes the
---   company row at rank 2 first.
+--   the row and gives its key a tombstone with a '.' (no file name has one) and the whole id, so a new file of that name
+--   is free and two tombstones never meet; a restore brings it back. The row's foreign key to the company row takes it
+--   KEY SHARE, so a todo save takes the company row at rank 2 first.
 -- * Follow-ups for C2's queue: a cancelled todo stops its workers.
 --
 -- Builds on F2-4 (20260929190000) and replaces the hook functions with the todo branches added.
@@ -231,7 +231,7 @@ returns text language sql immutable set search_path = '' as $$
 	select regexp_replace(regexp_replace(p_path, '^.*/', ''), '[.]md$', '')
 $$;
 
--- One todo file (§2): it lives in an agent's folder (an indexed agent, or the agent.md the same unit brings, as a hire
+-- One todo file (§2): it lives in an agent's folder (an indexed agent, or the agent.md the same unit writes, as a hire
 -- with its first todo); the id never changes and belongs to this file's todo only; a closed todo stays closed; done
 -- waits for its working workers; a changed requested_by is a member.
 create function public.qorpera_company_state_todo_rules(p_environment_id uuid, p_profile_id uuid, p_key text, p_parse jsonb,
@@ -393,7 +393,7 @@ declare
 	v_op text := p_unit ->> 'op'; v_profile uuid; v_key text; v_row public.qorpera_folder_entries%rowtype;
 	v_file record; v_checked jsonb; v_rule jsonb; v_problems jsonb; v_cofounder_path text; v_content jsonb;
 	v_entries jsonb; v_ids text[] := '{}'; v_cofounders integer := 0; v_groups text[] := '{}'; v_connections text[] := '{}';
-	v_rules text[] := '{}'; v_rule_bytes bigint := 0; v_todos text[] := '{}';
+	v_rules text[] := '{}'; v_rule_bytes bigint := 0; v_todos text[] := '{}'; v_agent_files text[];
 begin
 	select profile_id into v_profile from public.qorpera_company_files where environment_id = p_environment_id;
 	v_key := public.qorpera_folder_key(p_eff_path);
@@ -529,10 +529,12 @@ begin
 				return jsonb_build_object('ok', false, 'reason', 'structured_rule', 'problems', jsonb_build_array(
 					public.qorpera_company_state_problem('value', null, null, 'two todo files in one change carry the same id'))); end if;
 			v_todos := array_append(v_todos, v_checked -> 'parse' ->> 'id');
+			-- The agent.md files this unit writes, read once for the whole unit.
+			if v_agent_files is null then
+				v_agent_files := array(select o.key from public.qorpera_company_state_unit_files(p_unit, p_eff_path) o
+					where v_entries -> o.key ->> 'kind' is not distinct from 'agent'); end if;
 			v_rule := public.qorpera_company_state_todo_rules(p_environment_id, v_profile, v_file.key, v_checked -> 'parse',
-				exists (select 1 from public.qorpera_company_state_unit_files(p_unit, p_eff_path) o
-					where o.key = regexp_replace(v_file.key, '/todos/[^/]+[.]md$', '/agent.md')
-						and v_entries -> o.key ->> 'kind' is not distinct from 'agent'));
+				regexp_replace(v_file.key, '/todos/[^/]+[.]md$', '/agent.md') = any (v_agent_files));
 			if v_rule is not null then return v_rule; end if;
 		end if;
 	end loop;
@@ -748,12 +750,14 @@ create or replace function public.qorpera_folder_structured_verify(p_environment
 returns void language plpgsql stable security definer set search_path = '' as $$
 begin
 	if exists (select 1 from public.qorpera_profile_staff s
-		where s.folder_environment_id = p_environment_id and s.folder_commit_id = p_commit_id and s.folder_retired_at is null
+		where s.folder_environment_id = p_environment_id and s.folder_path is not null and s.folder_commit_id = p_commit_id
+			and s.folder_retired_at is null
 			and s.deleted_at is null and not exists (select 1 from public.qorpera_folder_entries e where e.environment_id = p_environment_id
 				and e.key_sha256 = extensions.digest(public.qorpera_folder_key(s.folder_path), 'sha256')
 				and e.version = s.folder_path_version and e.path = s.folder_path))
 		or exists (select 1 from public.qorpera_company_rooms r
-			where r.folder_environment_id = p_environment_id and r.folder_commit_id = p_commit_id and r.folder_retired_at is null
+			where r.folder_environment_id = p_environment_id and r.folder_path is not null and r.folder_commit_id = p_commit_id
+				and r.folder_retired_at is null
 				and not exists (select 1 from public.qorpera_folder_entries e where e.environment_id = p_environment_id
 					and e.key_sha256 = extensions.digest(public.qorpera_folder_key(r.folder_path), 'sha256')
 					and e.version = r.folder_path_version and e.path = r.folder_path))
@@ -763,12 +767,14 @@ begin
 					and e.key_sha256 = extensions.digest(public.qorpera_folder_key(c.folder_path), 'sha256')
 					and e.version = c.folder_path_version and e.path = c.folder_path))
 		or exists (select 1 from public.qorpera_review_rules r
-			where r.folder_environment_id = p_environment_id and r.folder_commit_id = p_commit_id and r.archived_at is null
+			where r.folder_environment_id = p_environment_id and r.folder_path is not null and r.folder_commit_id = p_commit_id
+				and r.archived_at is null
 				and not exists (select 1 from public.qorpera_folder_entries e where e.environment_id = p_environment_id
 					and e.key_sha256 = extensions.digest(public.qorpera_folder_key(r.folder_path), 'sha256')
 					and e.version = r.folder_path_version and e.path = r.folder_path))
 		or exists (select 1 from public.qorpera_runtime_agent_todos t
-			where t.folder_environment_id = p_environment_id and t.folder_commit_id = p_commit_id and t.folder_retired_at is null
+			where t.folder_environment_id = p_environment_id and t.folder_path is not null and t.folder_commit_id = p_commit_id
+				and t.folder_retired_at is null
 				and not exists (select 1 from public.qorpera_folder_entries e where e.environment_id = p_environment_id
 					and e.key_sha256 = extensions.digest(public.qorpera_folder_key(t.folder_path), 'sha256')
 					and e.version = t.folder_path_version and e.path = t.folder_path))

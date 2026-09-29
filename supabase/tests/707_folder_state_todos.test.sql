@@ -131,6 +131,20 @@ create function pg_temp.stop_working(p_todo uuid) returns void language sql as $
 	delete from public.qorpera_runtime_workers where todo_id = p_todo
 $$;
 
+create function pg_temp.hire_todos(p_handle text, p_id uuid, p_todos jsonb) returns jsonb language sql as $$
+	-- A hire with its todos: p_todos is [[name, id, title], ...].
+	select jsonb_build_object('op','new_folder','path','agents/' || p_handle,
+		'contents', jsonb_build_array(jsonb_build_object('path','todos','kind','folder'),
+			jsonb_build_object('path','agent.md','kind','file','file',pg_temp.stage(pg_temp.agent_text(p_id, p_handle))))
+			|| coalesce((select jsonb_agg(jsonb_build_object('path','todos/' || (t ->> 0) || '.md','kind','file',
+				'file',pg_temp.stage(pg_temp.todo_text((t ->> 1)::uuid, t ->> 2, 'open', null, '')))) from jsonb_array_elements(p_todos) t), '[]'),
+		'structured', jsonb_build_array(pg_temp.entry('agents/' || p_handle || '/agent.md', 'agent', pg_temp.agent_text(p_id, p_handle),
+				pg_temp.agent_parse(p_id, p_handle)))
+			|| coalesce((select jsonb_agg(pg_temp.entry('agents/' || p_handle || '/todos/' || (t ->> 0) || '.md', 'todo',
+				pg_temp.todo_text((t ->> 1)::uuid, t ->> 2, 'open', null, ''), pg_temp.todo_parse((t ->> 1)::uuid, t ->> 2, 'open', null, '')))
+				from jsonb_array_elements(p_todos) t), '[]'))
+$$;
+
 -- 1. The company, two agents, and a todo -------------------------------------------------------------------------------
 
 do $$
@@ -289,7 +303,7 @@ end $$;
 do $$
 declare r jsonb; x public.qorpera_runtime_agent_todos;
 begin
-	-- The same name deleted twice: two tombstones, and the agent's folder can still go.
+	-- The same name deleted twice: two tombstones.
 	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'tomb-0001', jsonb_build_array(
 		pg_temp.todo('agents/otto/todos/sync.md', '70700000-0000-4000-8000-0000000000d7', 'Sync one'))), 1, 'saved');
 	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'tomb-0002', jsonb_build_array(jsonb_build_object('op','delete',
@@ -383,6 +397,62 @@ begin
 	if not pg_temp.refused(pg_temp.commit(pg_temp.owner(), 'shape-0003', jsonb_build_array(
 		pg_temp.todo('agents/otto/todos/long-detail.md', '70700000-0000-4000-8000-0000000000de', 'Long', 'open', null, repeat('d', 4001)))), 'structured_invalid') then
 		raise exception 'The detail is at most 4000 bytes'; end if;
+end $$;
+
+-- 8. Folders whose names share a prefix, and a cancelled todo through a restore -------------------------------------------
+
+do $$
+declare r jsonb;
+begin
+	r := pg_temp.commit(pg_temp.owner(), 'pat-0001', jsonb_build_array(
+		pg_temp.hire_todos('pat', '70700000-0000-4000-8000-0000000000b1', jsonb_build_array(jsonb_build_array('x', '70700000-0000-4000-8000-0000000000f1', 'X'), jsonb_build_array('x-y', '70700000-0000-4000-8000-0000000000f2', 'XY'),
+			jsonb_build_array('x0', '70700000-0000-4000-8000-0000000000f3', 'X0'))),
+		pg_temp.hire_todos('pat-2', '70700000-0000-4000-8000-0000000000b2', jsonb_build_array(jsonb_build_array('t', '70700000-0000-4000-8000-0000000000f4', 'T'))),
+		pg_temp.hire_todos('pat0', '70700000-0000-4000-8000-0000000000b3', jsonb_build_array(jsonb_build_array('t', '70700000-0000-4000-8000-0000000000f5', 'T'))),
+		pg_temp.hire_todos('pata', '70700000-0000-4000-8000-0000000000b4', jsonb_build_array(jsonb_build_array('t', '70700000-0000-4000-8000-0000000000f6', 'T')))));
+	perform pg_temp.expect(r, 4, 'saved');
+	-- The siblings have working workers; they never block pat's changes.
+	perform pg_temp.working('70700000-0000-4000-8000-0000000000f4', '70700000-0000-4000-8000-0000000000b2');
+	perform pg_temp.working('70700000-0000-4000-8000-0000000000f5', '70700000-0000-4000-8000-0000000000b3');
+	perform pg_temp.working('70700000-0000-4000-8000-0000000000f6', '70700000-0000-4000-8000-0000000000b4');
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'pat-0002', jsonb_build_array(jsonb_build_object('op','delete',
+		'path','agents/pat/todos/x.md','expectedVersion',pg_temp.version('agents/pat/todos/x.md')))), 1, 'saved');
+	if (pg_temp.row('70700000-0000-4000-8000-0000000000f1')).folder_retired_at is null or (pg_temp.row('70700000-0000-4000-8000-0000000000f2')).folder_retired_at is not null
+		or (pg_temp.row('70700000-0000-4000-8000-0000000000f3')).folder_retired_at is not null then
+		raise exception 'Deleting x.md retires x only'; end if;
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'pat-0003', jsonb_build_array(pg_temp.move('agents/pat', 'agents/pat-b'))), 1, 'saved');
+	if (pg_temp.row('70700000-0000-4000-8000-0000000000f2')).folder_path is distinct from 'agents/pat-b/todos/x-y.md'
+		or (pg_temp.row('70700000-0000-4000-8000-0000000000f4')).folder_path is distinct from 'agents/pat-2/todos/t.md'
+		or (pg_temp.row('70700000-0000-4000-8000-0000000000f6')).folder_path is distinct from 'agents/pata/todos/t.md' then
+		raise exception 'A rename moves its own todos only'; end if;
+	-- A sibling whose name starts with the deleted folder's name and a hyphen is not in it.
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'pat-0035', jsonb_build_array(
+		pg_temp.hire_todos('pat-b-2', '70700000-0000-4000-8000-0000000000b5', jsonb_build_array(jsonb_build_array('t', '70700000-0000-4000-8000-0000000000f8', 'T'))))), 1, 'saved');
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'pat-0004', jsonb_build_array(jsonb_build_object('op','delete',
+		'path','agents/pat-b','expectedVersion',pg_temp.version('agents/pat-b'),'asOfSeq',pg_temp.seq()))), 1, 'saved');
+	if (pg_temp.row('70700000-0000-4000-8000-0000000000f2')).folder_retired_at is null or (pg_temp.row('70700000-0000-4000-8000-0000000000f3')).folder_retired_at is null
+		or (pg_temp.row('70700000-0000-4000-8000-0000000000f2')).state is distinct from 'cancelled'
+		or (pg_temp.row('70700000-0000-4000-8000-0000000000f4')).folder_retired_at is not null or (pg_temp.row('70700000-0000-4000-8000-0000000000f5')).folder_retired_at is not null
+		or (pg_temp.row('70700000-0000-4000-8000-0000000000f6')).folder_retired_at is not null
+		or (pg_temp.row('70700000-0000-4000-8000-0000000000f8')).folder_retired_at is not null then
+		raise exception 'Deleting an agent''s folder retires and cancels its own todos only'; end if;
+	-- A todos folder moved under a folder with no agent would leave its todos without one.
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'pat-0045', jsonb_build_array(jsonb_build_object('op','new_folder',
+		'path','agents/nobody','contents','[]'::jsonb))), 1, 'saved');
+	if not pg_temp.refused(pg_temp.commit(pg_temp.owner(), 'pat-0046', jsonb_build_array(
+		pg_temp.move('agents/pat-b-2/todos', 'agents/nobody/todos')))) then
+		raise exception 'A todos folder moves only to an agent'; end if;
+	if not pg_temp.refused(pg_temp.commit(pg_temp.owner(), 'pat-0005', jsonb_build_array(jsonb_build_object('op','delete',
+		'path','agents/pat-2','expectedVersion',pg_temp.version('agents/pat-2'),'asOfSeq',pg_temp.seq())))) then
+		raise exception 'A sibling whose todo has a working worker stays'; end if;
+	-- A cancelled todo is not opened again by a restore either.
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'pat-0006', jsonb_build_array(
+		pg_temp.todo('agents/otto/todos/drop.md', '70700000-0000-4000-8000-0000000000f7', 'Drop it', 'cancelled'))), 1, 'saved');
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'pat-0007', jsonb_build_array(jsonb_build_object('op','delete',
+		'path','agents/otto/todos/drop.md','expectedVersion',pg_temp.version('agents/otto/todos/drop.md')))), 1, 'saved');
+	if not pg_temp.refused(pg_temp.commit(pg_temp.owner(), 'pat-0008', jsonb_build_array(
+		pg_temp.todo('agents/otto/todos/drop.md', '70700000-0000-4000-8000-0000000000f7', 'Drop it', 'open')))) then
+		raise exception 'A cancelled todo is not opened again by a restore'; end if;
 end $$;
 
 rollback;
