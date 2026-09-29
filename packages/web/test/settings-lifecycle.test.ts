@@ -1436,7 +1436,7 @@ describe("settings session lifecycle", () => {
 		const content = f.root.querySelector<HTMLElement>("#settings-content")!;
 		expect(content.querySelector("h1")?.textContent).toBe("My connections");
 		expect(content.querySelector(".settings-lead")?.textContent).toBe(
-			"Your own AI subscriptions. They pay only for the work you start, and they leave with you.",
+			"Your own AI subscriptions. They pay for the work you start, including your routines, and they leave with you.",
 		);
 		expect(content.querySelectorAll(".connection-card")).toHaveLength(0);
 		expect(content.querySelector<HTMLButtonElement>(".connection-add")!.disabled).toBe(true);

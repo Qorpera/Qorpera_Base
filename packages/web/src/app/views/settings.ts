@@ -394,7 +394,9 @@ export class SettingsView {
 					tab,
 					connectionsPage(
 						t("My connections"),
-						t("Your own AI subscriptions. They pay only for the work you start, and they leave with you."),
+						t(
+							"Your own AI subscriptions. They pay for the work you start, including your routines, and they leave with you.",
+						),
 						this.#connections.el,
 					),
 				);

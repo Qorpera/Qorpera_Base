@@ -239,8 +239,8 @@ export const SETTINGS: Record<string, string> = {
 	// My connections and Company connections (app/views/settings.ts)
 	"My connections": "Mine forbindelser",
 	"Company connections": "Virksomhedens forbindelser",
-	"Your own AI subscriptions. They pay only for the work you start, and they leave with you.":
-		"Dine egne AI-abonnementer. De betaler kun for det arbejde, du selv starter, og de følger med dig, når du går.",
+	"Your own AI subscriptions. They pay for the work you start, including your routines, and they leave with you.":
+		"Dine egne AI-abonnementer. De betaler for det arbejde, du starter, også dine rutiner, og de følger med dig, når du går.",
 	"The company's own accounts. Every agent can use them, and they stay when someone leaves.":
 		"Virksomhedens egne konti. Alle agenter kan bruge dem, og de bliver, når nogen går.",
 
