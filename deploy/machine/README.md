@@ -35,9 +35,22 @@ LXD applies drop and reject rules before allow rules, and its baseline DHCP and 
 
 Together these cover the NAS and the node LAN, Tailscale, cloud metadata, the other bridges and the node itself. Other outbound traffic is allowed and all inbound is dropped. Each machine's NIC carries MAC and IPv4 filtering and port isolation, so machines on the bridge cannot reach each other. Offices refuse networks with ACLs, so this network is used by machines only.
 
-### Inside a machine (node 2, 2026-09-28)
+### Proof on node 2 (2026-09-29)
 
-Measured on node 2 in a test VM of the same kind (`deploy/test-machine/README.md`): nested KVM works with LXD's defaults (`/dev/kvm`, `KVM_CREATE_VM`), and Docker runs as root with no extra LXD setting (the hosted-db suite passed in 1 min 57 s). Ubuntu's default Docker AppArmor profile blocks remounting `/sys/fs/cgroup` read-write, so a container that runs systemd needs `--security-opt apparmor=unconfined`.
+Run inside node 2's operator test VM with nested LXD 6.9 (`deploy/test-machine/README.md`), so nothing on node 2's own LXD changed. It was the real code at #419's head: `setup-machine-network.sh`, `build-machine-image.sh`, and `prove-machine-node.ts`, which runs the executor's journaled lifecycle, guest helper and commands with an in-memory kernel. A loopback NFSv4 export stood in for the NAS.
+
+| Check | Result |
+| --- | --- |
+| Network | The bridge and 63-rule ACL came up as designed. Machines got their address by DHCP and resolved names through the gateway |
+| Image | Built in 243 s (Ubuntu 26.04, Docker 29, Compose 2.40.3, Node 24.21.0), 1.1 GiB; its own checks passed |
+| Machine | 4 CPUs, 8 GiB, 40 GiB disk, usable 63 s after the first pass |
+| Docker | `hello-world` as root, and a Compose stack (Postgres, healthcheck, `psql`) up and down |
+| Out | HTTPS to github.com works, and a TCP connect to 1.1.1.1:443 succeeds |
+| Dropped (TCP connect times out) | The bridge gateway's SSH, the test VM's own and node 2's SSH, another bridge's DNS, the NAS (22, 2049), cloud metadata, Tailscale |
+| Qorpera | `npm ci` and `npm run test:hosted-db` inside the machine: 471 migrations and 137 tests passed |
+| Delete | A running `sleep 3600` stopped with the machine, which was deleted and released |
+
+Nested KVM also works inside a machine (`/dev/kvm`, `svm` on every CPU). Docker's default AppArmor profile blocks remounting `/sys/fs/cgroup` read-write, so a container that runs systemd needs `--security-opt apparmor=unconfined` (the test machine's note).
 
 ### A coding session's repository
 
