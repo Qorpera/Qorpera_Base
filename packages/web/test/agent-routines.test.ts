@@ -139,6 +139,31 @@ describe("routine triggers", () => {
 				}),
 			),
 		).toBe("When finance/invoices or anything under it changes");
+		const hook = "10000000-0000-4000-8000-0000000000a1";
+		expect(
+			describeCloudRoutineTrigger(
+				parseCloudRoutineTrigger({ id: "e", kind: "listener", source: "event", hookId: hook, timeZone: "UTC" }),
+			),
+		).toBe("When a hook receives an event");
+		const typed = parseCloudRoutineTrigger({
+			id: "e",
+			kind: "listener",
+			source: "event",
+			hookId: hook,
+			only: ["order.paid", "order.refunded"],
+			timeZone: "UTC",
+			replyPolicy: "optional",
+		});
+		expect(typed).toEqual({
+			id: "e",
+			kind: "listener",
+			source: "event",
+			hookId: hook,
+			only: ["order.paid", "order.refunded"],
+			timeZone: "UTC",
+			replyPolicy: "optional",
+		});
+		expect(describeCloudRoutineTrigger(typed)).toBe("When a hook receives order.paid, order.refunded");
 	});
 	it.each([
 		{ id: "a", kind: "schedule", intervalMinutes: 4 },
@@ -147,6 +172,32 @@ describe("routine triggers", () => {
 		{ id: "a", kind: "schedule", intervalMinutes: 60, weekdays: ["monday"], localTime: "09:00", timeZone: "auto" },
 		{ id: "a", kind: "listener", source: "company-file", path: "../x", match: "exact", timeZone: "UTC" },
 		{ id: "a", kind: "schedule", intervalMinutes: 60, cron: "* * * * *" },
+		{ id: "a", kind: "listener", source: "event", hookId: "10000000-0000-4000-8000-0000000000A1", timeZone: "UTC" },
+		{ id: "a", kind: "listener", source: "event", hookId: "forms", timeZone: "UTC" },
+		{
+			id: "a",
+			kind: "listener",
+			source: "event",
+			hookId: "10000000-0000-4000-8000-0000000000a1",
+			only: ["x", "x"],
+			timeZone: "UTC",
+		},
+		{
+			id: "a",
+			kind: "listener",
+			source: "event",
+			hookId: "10000000-0000-4000-8000-0000000000a1",
+			only: ["has space"],
+			timeZone: "UTC",
+		},
+		{
+			id: "a",
+			kind: "listener",
+			source: "event",
+			hookId: "10000000-0000-4000-8000-0000000000a1",
+			path: "finance",
+			timeZone: "UTC",
+		},
 	])("refuses %j", (value) => {
 		expect(() => parseCloudRoutineTrigger(value)).toThrow();
 	});
@@ -434,9 +485,28 @@ describe("agent routines section", () => {
 				{ id: "f", kind: "listener", source: "company-file", path: "finance", match: "subtree", timeZone: "UTC" },
 			],
 		});
-		const f = mount([routine(), windowed, two]);
+		const hooked = routine({
+			routineId: "10000000-0000-4000-8000-000000000012",
+			title: "New orders",
+			triggers: [
+				{
+					id: "e",
+					kind: "listener",
+					source: "event",
+					hookId: "10000000-0000-4000-8000-0000000000a1",
+					timeZone: "UTC",
+				},
+			],
+		});
+		const f = mount([routine(), windowed, two, hooked]);
 		await settle();
-		expect(cards(f.view.el).map(controls)).toEqual([["Edit", "switch:true"], ["switch:true"], ["switch:true"]]);
+		expect(cards(f.view.el).map(controls)).toEqual([
+			["Edit", "switch:true"],
+			["switch:true"],
+			["switch:true"],
+			["switch:true"],
+		]);
+		expect(cards(f.view.el)[3]!.textContent).toContain("When a hook receives an event");
 	});
 	it("offers each account once, by email, and numbers a repeated account", async () => {
 		const connections = [

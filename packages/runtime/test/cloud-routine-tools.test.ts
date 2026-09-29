@@ -159,6 +159,40 @@ describe("agent routine tool", () => {
 			f.run.close();
 		}
 	});
+	it("compiles an event listener on a hook, with and without a type filter", async () => {
+		const f = await fixture();
+		const hookId = "3B2C9E4A-1D7F-4E60-9A2B-5C8D0E1F2A3B";
+		try {
+			await f.boundary.invoke("e1", "qorpera", "manage_routine", {
+				...weekly,
+				operationKey: "e1",
+				trigger: { kind: "event", hookId, timeZone: "Europe/Copenhagen", report: "silent" },
+			});
+			await f.boundary.invoke("e2", "qorpera", "manage_routine", {
+				...weekly,
+				operationKey: "e2",
+				trigger: { kind: "event", hookId, only: ["invoice.paid", "charge.refunded"], timeZone: "UTC" },
+			});
+			const [all, filtered] = f.call.mock.calls.map((call) => (call[1] as { p_request: any }).p_request);
+			expect(all.trigger).toEqual({
+				kind: "listener",
+				source: "event",
+				hookId: hookId.toLowerCase(),
+				timeZone: "Europe/Copenhagen",
+				replyPolicy: "silent",
+			});
+			expect(filtered.trigger).toEqual({
+				kind: "listener",
+				source: "event",
+				hookId: hookId.toLowerCase(),
+				only: ["invoice.paid", "charge.refunded"],
+				timeZone: "UTC",
+				replyPolicy: "optional",
+			});
+		} finally {
+			f.run.close();
+		}
+	});
 	it("compiles a dynamic routine to one next run and concludes with a reason", async () => {
 		const f = await fixture();
 		try {
@@ -222,6 +256,34 @@ describe("agent routine tool", () => {
 		["a one-minute loop", { trigger: { kind: "every", minutes: 1 } }],
 		["an unknown time zone", { trigger: { kind: "weekly", localTime: "08:00", timeZone: "Mars/Olympus" } }],
 		["a path escape", { trigger: { kind: "file_change", path: "../secrets", timeZone: "UTC" } }],
+		["an event listener without a hook id", { trigger: { kind: "event", hookId: "forms", timeZone: "UTC" } }],
+		[
+			"an event listener with an empty filter",
+			{ trigger: { kind: "event", hookId: randomUUID(), only: [], timeZone: "UTC" } },
+		],
+		[
+			"an event listener with a spaced type",
+			{ trigger: { kind: "event", hookId: randomUUID(), only: ["invoice paid"], timeZone: "UTC" } },
+		],
+		[
+			"an event listener with a repeated type",
+			{ trigger: { kind: "event", hookId: randomUUID(), only: ["a", "a"], timeZone: "UTC" } },
+		],
+		[
+			"an event listener with a path",
+			{ trigger: { kind: "event", hookId: randomUUID(), path: "x", timeZone: "UTC" } },
+		],
+		[
+			"an event listener with 21 types",
+			{
+				trigger: {
+					kind: "event",
+					hookId: randomUUID(),
+					only: Array.from({ length: 21 }, (_, index) => `type.${index}`),
+					timeZone: "UTC",
+				},
+			},
+		],
 		["equal quiet bounds", { quietHours: { start: "08:00", end: "08:00", timeZone: "UTC" } }],
 		["a dynamic routine without a time zone", { trigger: { kind: "dynamic" } }],
 		["a dynamic routine with a cadence", { trigger: { kind: "dynamic", timeZone: "UTC", minutes: 30 } }],
