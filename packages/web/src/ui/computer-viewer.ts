@@ -25,21 +25,38 @@ export interface ComputerViewerOptions {
 	onClosed(): void;
 }
 
-let rendererLoading: Promise<void> | undefined;
+/** The screen renderer could not be loaded into this page. A browser keeps a
+ * module it failed to load for the page's whole life, without fetching it
+ * again, so only reloading the page brings the renderer back (reloadPage). */
+export class ComputerViewerUnavailable extends Error {
+	constructor(cause: unknown) {
+		super("The screen renderer could not be loaded.", { cause });
+		this.name = "ComputerViewerUnavailable";
+	}
+}
+
+let rendererLoad: Promise<void> | undefined;
 
 /** The renderer and its licensed noVNC (member-web/ui/SOURCE.json; about
  * 190 KB minified) are their own chunk, fetched when a computer panel opens
  * rather than with the app. Loading it defines `window.qorperaScreenViewer`.
- * A failed fetch is tried again by the next call. */
+ * Like the browser, this keeps the outcome: after a failed load (a deploy
+ * renamed the chunk while the tab was open, or the network dropped during the
+ * fetch) every call rejects with ComputerViewerUnavailable. */
 export function loadComputerViewer(): Promise<void> {
-	rendererLoading ??= import("./screen-viewer.mjs").then(
+	rendererLoad ??= import("./screen-viewer.mjs").then(
 		() => undefined,
-		(error: unknown) => {
-			rendererLoading = undefined;
-			throw error;
+		(cause: unknown) => {
+			throw new ComputerViewerUnavailable(cause);
 		},
 	);
-	return rendererLoading;
+	return rendererLoad;
+}
+
+/** The way back from a renderer that could not load. index.html is revalidated
+ * on every load, so the page comes back with the current deployment's files. */
+export function reloadPage(): void {
+	location.reload();
 }
 
 /** The bundled renderer receives an authenticated channel, never a ticket URL.

@@ -9,7 +9,7 @@ vi.mock("../public/assets/avatars/status-2d-v1/recorded-motion.mjs", () => ({
 	drawRecordedEyes: vi.fn(),
 	drawWorkingStrokes: vi.fn(),
 }));
-// The recorded motion is its own chunk; here it arrives when the first describe says so.
+// The recorded motion is its own chunk; here it arrives when a test says so.
 const motionArrives = vi.hoisted(() => {
 	let arrive = () => {};
 	const promise = new Promise<void>((resolve) => {
@@ -163,6 +163,8 @@ describe("before the recorded motion arrives", () => {
 
 describe("2D studio playback in the shell", () => {
 	beforeAll(async () => {
+		// Also when these tests run without the one above.
+		motionArrives.arrive();
 		await loadFigureMotion();
 	});
 	it("keeps writing dots synchronized across views, coloured and static under reduced motion", async () => {

@@ -398,6 +398,32 @@ describe("automatic computer popover", () => {
 		await settle();
 		expect(open).toHaveBeenCalledOnce();
 	});
+	it("asks for a reload, and starts, wakes or opens nothing, when this page cannot load the screen renderer", async () => {
+		// A deploy renamed the renderer chunk while the tab was open: the failed load stays failed.
+		vi.mocked(viewer.loadComputerViewer).mockRejectedValue(
+			new viewer.ComputerViewerUnavailable(new TypeError("Failed to fetch dynamically imported module")),
+		);
+		const reload = vi.spyOn(viewer, "reloadPage").mockImplementation(() => {});
+		const f = setup({
+			qorpera_runtime_office_start_status: { ...start, officeState: "provisioning" },
+			qorpera_request_runtime_office_start: intent,
+		});
+		const open = spyViewer();
+		const p = await opened(f.computer);
+		await poll();
+		expect(statusLine(p)).toBe("The computer screen could not be loaded in this tab. Reload the page to open it.");
+		// Only where the agent's screen is was read; nothing was asked of the machine.
+		expect(methods(f)).toEqual(["qorpera_member_agent_office", "qorpera_member_office_catalog"]);
+		expect(open).not.toHaveBeenCalled();
+		expect(p.el.querySelector<HTMLElement>(".computer-loading-spinner")?.hidden).toBe(true);
+		// Try again could never help: the page has to fetch the renderer anew.
+		const offered = [...p.el.querySelectorAll<HTMLButtonElement>(".computer-loading button")].filter(
+			(button) => !button.hidden,
+		);
+		expect(offered.map((button) => button.textContent)).toEqual(["Reload page"]);
+		offered[0]!.click();
+		expect(reload).toHaveBeenCalledOnce();
+	});
 	it("keeps unavailable and missing computers inside the popover without starting a runtime", async () => {
 		const unavailable = new ComputerPanel(staff);
 		cleanup.push(() => unavailable.dispose());

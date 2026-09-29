@@ -62,16 +62,16 @@ describe("viewer presentation races", () => {
 		await f.host.open(options);
 		expect(open).toHaveBeenCalledOnce();
 	});
-	it("reports a renderer that could not be fetched and tries again on the next open", async () => {
+	it("opens nothing while the renderer cannot load, open after open", async () => {
 		const f = { host: new ComputerViewHost(new AbortController().signal) },
 			open = vi.spyOn(viewer, "openComputerViewer").mockReturnValue({ close: vi.fn(async () => {}) });
-		load.mockRejectedValueOnce(new TypeError("Failed to fetch dynamically imported module"));
+		// loadComputerViewer keeps a failed load, as the browser keeps the failed module.
+		load.mockRejectedValue(new viewer.ComputerViewerUnavailable(new TypeError("Failed to fetch")));
 		const options = { binding, title: "Computer", canControl: false, requestConnection: vi.fn() };
-		await expect(f.host.open(options)).rejects.toThrow("Failed to fetch");
+		await expect(f.host.open(options)).rejects.toBeInstanceOf(viewer.ComputerViewerUnavailable);
+		await expect(f.host.open(options)).rejects.toBeInstanceOf(viewer.ComputerViewerUnavailable);
 		expect(open).not.toHaveBeenCalled();
-		await f.host.open(options);
-		expect(load).toHaveBeenCalledTimes(2);
-		expect(open).toHaveBeenCalledOnce();
+		expect(options.requestConnection).not.toHaveBeenCalled();
 	});
 	it("releases a late connection after the viewer closes", async () => {
 		const f = { host: new ComputerViewHost(new AbortController().signal) },

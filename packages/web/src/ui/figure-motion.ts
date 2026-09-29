@@ -26,9 +26,12 @@ export interface FigureMotion {
  * after it has, so everything that paints can rely on it. */
 let motion: typeof MotionData | undefined;
 let motionLoading: Promise<typeof MotionData> | undefined;
+let motionFailed = false;
 
 /** Fetch the recorded motion (its own chunk, about 950 KB before compression)
- * once, on the first figure; a failed fetch is tried again by the next one. */
+ * once, on the first figure. A browser keeps a module it failed to load for
+ * the page's life without fetching it again, so a failed load stays failed
+ * here too: every figure keeps its still artwork until the page is reloaded. */
 export function loadFigureMotion(): Promise<typeof MotionData> {
 	motionLoading ??= import("./figure-motion-data.ts").then(
 		(loaded) => {
@@ -36,7 +39,7 @@ export function loadFigureMotion(): Promise<typeof MotionData> {
 			return loaded;
 		},
 		(error: unknown) => {
-			motionLoading = undefined;
+			motionFailed = true;
 			throw error;
 		},
 	);
@@ -506,7 +509,10 @@ export function mountFigureMotion(
 			recolor(entry);
 		})
 		.catch(() => {
-			if (live.has(entry)) host.dataset.motionUnavailable = "true";
+			// Artwork that failed is fetched again by a figure built anew (the rail
+			// rebuilds these). The recorded motion cannot come back in this page, so
+			// without it the figure keeps its still artwork and asks for no rebuild.
+			if (live.has(entry) && !motionFailed) host.dataset.motionUnavailable = "true";
 		});
 	return {
 		dispose() {
