@@ -563,6 +563,31 @@ describe("LXD Unix client", () => {
 		expect(requests[0]).toMatchObject({ method: "POST", body: volumeRequest });
 	});
 
+	it("deletes a custom volume: true when it existed, false when LXD had none, and throws when LXD refuses", async () => {
+		const path =
+			"/1.0/storage-pools/qorpera-vm/volumes/custom/identity-20000000-0000-4000-8000-000000000011?project=qorpera-runners";
+		let answer: { status?: number; body: unknown } = {
+			body: { type: "sync", status: "Success", status_code: 200, metadata: null },
+		};
+		const requests: string[] = [];
+		const socket = await unixServer((method, url) => {
+			requests.push(`${method} ${url}`);
+			if (method === "DELETE" && url === path) return answer;
+			throw new Error(`unexpected request ${method} ${url}`);
+		});
+		const client = new LxdUnixClient(socket, 30);
+		const name = "identity-20000000-0000-4000-8000-000000000011";
+		await expect(client.deleteStorageVolume("qorpera-runners", "qorpera-vm", name)).resolves.toBe(true);
+		answer = { status: 404, body: { type: "error", error_code: 404, error: "Storage volume not found" } };
+		await expect(client.deleteStorageVolume("qorpera-runners", "qorpera-vm", name)).resolves.toBe(false);
+		answer = { status: 400, body: { type: "error", error_code: 400, error: "The storage volume is still in use" } };
+		await expect(client.deleteStorageVolume("qorpera-runners", "qorpera-vm", name)).rejects.toThrow();
+		await expect(client.deleteStorageVolume("qorpera-runners", "qorpera-vm", "../other")).rejects.toThrow(
+			"LXD storage scope is invalid",
+		);
+		expect(requests).toEqual([`DELETE ${path}`, `DELETE ${path}`, `DELETE ${path}`]);
+	});
+
 	describe("an exec operation that fails", () => {
 		const name = "qorpera-20000000000040008000000000000001";
 		const agentOffline = "LXD VM agent is not currently running";

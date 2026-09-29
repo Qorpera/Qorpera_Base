@@ -148,6 +148,12 @@ class FakeLxd implements LxdClient {
 		return volume ? structuredClone(volume) : undefined;
 	}
 
+	async deleteStorageVolume(_project: string, _pool: string, name: string): Promise<boolean> {
+		const existed = this.volumes.delete(name) || this.volume?.name === name;
+		if (this.volume?.name === name) this.volume = undefined;
+		return existed;
+	}
+
 	async createStorageVolume(_project: string, _pool: string, request: LxdCreateStorageVolumeRequest): Promise<void> {
 		this.createVolumeCalls.push(structuredClone(request));
 		this.volume = {
