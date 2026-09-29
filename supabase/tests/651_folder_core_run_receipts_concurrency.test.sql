@@ -118,6 +118,14 @@ begin
 	if not pg_temp.waits_for('fence_one', 'fence_two') then raise exception 'A commit must lock the sessions its hook names'; end if;
 	if pg_temp.queued_on('fence_one') is distinct from 'public.qorpera_shared_sessions'::regclass then
 		raise exception 'The commit must wait at the session, not on %', pg_temp.queued_on('fence_one'); end if;
+	-- The ranks come first: the committing member's row is already held (rank 1).
+	begin
+		perform * from dblink('fence_four', $q$select 1 from public.qorpera_profile_members where profile_id = '64800000-0000-4000-8000-000000000010'
+			and user_id = '64800000-0000-4000-8000-000000000001' for update nowait$q$) as t(x integer);
+		raise exception 'The member row must be held before the sessions' using errcode = 'QTF04';
+	exception when others then
+		if sqlstate = 'QTF04' or sqlerrm not like '%could not obtain lock%' then raise; end if;
+	end;
 	-- It holds no path yet: another commit of the same path saves at once.
 	perform dblink_send_query('fence_three', format('select public.qorpera_folder_commit(%L, %L, %L, %L)::text', '64800000-0000-4000-8000-000000000020',
 		'{"kind":"member","userId":"64800000-0000-4000-8000-000000000001"}', 'race-session-2', '[{"op":"mkdir","path":"race-session"}]'));
@@ -131,6 +139,84 @@ begin
 	if v -> 'units' -> 0 ->> 'outcome' is distinct from 'conflict' then raise exception 'The waiting commit, after the other: %', v; end if;
 	perform dblink_exec('fence_one', 'reset qorpera_test.targets');
 end $$;
+-- E. With sessions at rank 11, this company's row comes first (rank 0) even when the hook names only the sessions: a
+-- commit whose apply step writes a session (here a trigger standing in for F2's group-chat rename) meets legacy posting
+-- (the company row FOR UPDATE, then the session) at the company row, holding no session. Without rank 0 it held the
+-- session and then waited at the company row for its operations' foreign key: 40P01.
+create function public.qorpera_test_touch_session() returns trigger language plpgsql security definer set search_path = '' as $f$
+begin
+	if new.kind <> 'claim' and coalesce(current_setting('qorpera_test.touch_session', true), '') <> '' then
+		update public.qorpera_shared_sessions set title = title || '.' where id = current_setting('qorpera_test.touch_session')::uuid;
+	end if;
+	return new;
+end $f$;
+create trigger qorpera_test_touch_session after insert or update on public.qorpera_folder_entries
+	for each row execute function public.qorpera_test_touch_session();
+do $$
+declare v_state text; v jsonb;
+begin
+	perform dblink_exec('fence_one', format('set qorpera_test.targets = %L', jsonb_build_array(jsonb_build_object('rank', 11,
+		'tbl', 'qorpera_shared_sessions', 'key', '64800000-0000-4000-8000-0000000000f7', 'mode', 'update'))::text));
+	perform dblink_exec('fence_one', $q$set qorpera_test.touch_session = '64800000-0000-4000-8000-0000000000f7'$q$);
+	perform dblink_exec('fence_two', 'begin');
+	perform * from dblink('fence_two', $q$select 1 from public.qorpera_profiles where id = '64800000-0000-4000-8000-000000000010' for update$q$)
+		as t(x integer);
+	perform dblink_send_query('fence_one', format('select public.qorpera_folder_commit(%L, %L, %L, %L)::text', '64800000-0000-4000-8000-000000000020',
+		'{"kind":"member","userId":"64800000-0000-4000-8000-000000000001"}', 'race-rank-zero', '[{"op":"mkdir","path":"race-rank-zero"}]'));
+	if not pg_temp.waits_for('fence_one', 'fence_two') then raise exception 'The commit must wait for the posting company row'; end if;
+	if pg_temp.queued_on('fence_one') is distinct from 'public.qorpera_profiles'::regclass then
+		raise exception 'The commit must wait at the company row, not on %', pg_temp.queued_on('fence_one'); end if;
+	perform dblink_send_query('fence_two', $q$select 1 from public.qorpera_shared_sessions where id = '64800000-0000-4000-8000-0000000000f7'
+		for update$q$);
+	if not pg_temp.finishes_unblocked('fence_two', 'fence_one') then raise exception 'Posting must take the session at once'; end if;
+	v_state := pg_temp.outcome('fence_two');
+	perform dblink_exec('fence_two', 'commit');
+	select r::jsonb into v from dblink_get_result('fence_one') as t(r text);
+	perform * from dblink_get_result('fence_one') as t(r text);
+	if v -> 'units' -> 0 ->> 'outcome' is distinct from 'saved' then raise exception 'The commit after posting: %', v; end if;
+	perform dblink_exec('fence_one', 'reset qorpera_test.targets');
+	perform dblink_exec('fence_one', 'reset qorpera_test.touch_session');
+end $$;
+drop trigger qorpera_test_touch_session on public.qorpera_folder_entries;
+drop function public.qorpera_test_touch_session();
+
+-- F. The receipt's place in the order: after the ranks, before the sessions (C1C §5.7). A commit carrying a receipt that
+-- a completion holds waits at the receipt, already holding the agent's roster row (rank 2) and not yet the session it
+-- names.
+do $$
+declare r uuid := extensions.gen_random_uuid();
+begin
+	perform public.qorpera_begin_native_tool_operation(current_setting('qorpera_test.binding')::jsonb, r, 'race-order', repeat('a', 64),
+		repeat('b', 64), true);
+	perform set_config('qorpera_test.receipt', r::text, false);
+end $$;
+do $$
+declare v_state text; v jsonb; r uuid := current_setting('qorpera_test.receipt')::uuid;
+begin
+	perform dblink_exec('fence_one', format('set qorpera_test.targets = %L', jsonb_build_array(jsonb_build_object('rank', 11,
+		'tbl', 'qorpera_shared_sessions', 'key', '64800000-0000-4000-8000-0000000000f7', 'mode', 'update'))::text));
+	perform dblink_exec('fence_two', 'begin');
+	perform * from dblink('fence_two', format('select 1 from public.qorpera_run_operation_receipts where id = %L for update', r)) as t(x integer);
+	perform dblink_send_query('fence_one', pg_temp.sql_rcommit('race-order-1', 'race-order', r));
+	if not pg_temp.waits_for('fence_one', 'fence_two') then raise exception 'The commit must wait for its receipt'; end if;
+	if pg_temp.queued_on('fence_one') is distinct from 'public.qorpera_run_operation_receipts'::regclass then
+		raise exception 'The commit must wait at the receipt, not on %', pg_temp.queued_on('fence_one'); end if;
+	begin
+		perform * from dblink('fence_three', $q$select 1 from public.qorpera_profile_staff where profile_id = '64800000-0000-4000-8000-000000000010'
+			and staff_agent_id = '64800000-0000-4000-8000-0000000000a1' for update nowait$q$) as t(x integer);
+		raise exception 'The ranks must come before the receipt' using errcode = 'QTF04';
+	exception when others then
+		if sqlstate = 'QTF04' or sqlerrm not like '%could not obtain lock%' then raise; end if;
+	end;
+	perform * from dblink('fence_three', $q$select 1 from public.qorpera_shared_sessions where id = '64800000-0000-4000-8000-0000000000f7'
+		for update nowait$q$) as t(x integer);
+	perform dblink_exec('fence_two', 'rollback');
+	select r2::jsonb into v from dblink_get_result('fence_one') as t(r2 text);
+	perform * from dblink_get_result('fence_one') as t(r2 text);
+	if v -> 'units' -> 0 ->> 'outcome' is distinct from 'saved' then raise exception 'The commit after its receipt: %', v; end if;
+	perform dblink_exec('fence_one', 'reset qorpera_test.targets');
+end $$;
+
 -- Put F2's hook back.
 select current_setting('qorpera_test.saved_hook') \gexec
 

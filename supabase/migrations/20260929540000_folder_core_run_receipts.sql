@@ -23,10 +23,14 @@ alter table public.qorpera_folder_commits
 		references public.qorpera_run_operation_receipts(id) on delete set null;
 create unique index qorpera_folder_commits_one_per_receipt on public.qorpera_folder_commits(receipt_id)
 	where receipt_id is not null;
+-- The receipts table is busy: the new column is added without a default (no rewrite), and its constraints NOT VALID,
+-- since every existing row holds null there (they still hold for every new or changed row).
+alter table public.qorpera_run_operation_receipts add column folder_commit_id uuid;
 alter table public.qorpera_run_operation_receipts
-	add column folder_commit_id uuid references public.qorpera_folder_commits(id) on delete set null,
+	add constraint qorpera_run_operation_receipts_folder_commit_id_fkey foreign key (folder_commit_id)
+		references public.qorpera_folder_commits(id) on delete set null not valid,
 	add constraint qorpera_run_operation_receipts_folder_commit check (folder_commit_id is null
-		or (output_snapshot_id is null and proposal_id is null and company_path_proposal_id is null));
+		or (output_snapshot_id is null and proposal_id is null and company_path_proposal_id is null)) not valid;
 
 -- 2. Patch helpers (names unique to this migration: pg_temp lives for the whole session) ------------------------
 
@@ -52,6 +56,8 @@ begin
 	into v_ids, v_required
 	from jsonb_array_elements(coalesce(p_targets, '[]'::jsonb)) t where t ->> 'rank' = '11';
 	if cardinality(v_ids) = 0 then return; end if;
+	if exists (select 1 from public.qorpera_shared_sessions where id = any (v_ids) and environment_id <> p_environment_id) then
+		raise exception 'A session target belongs to another company' using errcode = 'XX000'; end if;
 	select coalesce(array_agg(id), '{}') into v_locked from (select s.id from public.qorpera_shared_sessions s
 		where s.id = any (v_ids) and s.environment_id = p_environment_id order by s.id for update) locked;
 	if exists (select 1 from unnest(v_required) r(id) where not (r.id = any (v_locked))) then
@@ -93,6 +99,15 @@ begin
 			|| E'\t\t\tor (t ->> ''rank'' = ''11'') <> (t ->> ''tbl'' = ''qorpera_shared_sessions'')\n'
 			|| E'\t\t\tor (t ->> ''rank'' = ''11'' and (t ->> ''mode'' <> ''update''\n'
 			|| E'\t\t\t\tor coalesce(t ->> ''key'', '''') !~ ''^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$''))',
+		-- A session the apply step writes inserts company operations (a foreign key on this company's row): with rank 11
+		-- targets, this company's row comes first, at rank 0, whatever the hook named (legacy posting takes the company row
+		-- FOR UPDATE, then the session).
+		E'\tperform public.qorpera_folder_structured_lock(p_environment_id, v_targets, 0::smallint, 0::smallint);' || chr(1)
+			|| E'\tif exists (select 1 from jsonb_array_elements(v_targets) t where t ->> ''rank'' = ''11'') then\n'
+			|| E'\t\tv_targets := v_targets || jsonb_build_array(jsonb_build_object(''rank'', 0, ''tbl'', ''qorpera_profiles'',\n'
+			|| E'\t\t\t''key'', v_file.profile_id::text, ''mode'', ''keyshare'', ''required'', true));\n'
+			|| E'\tend if;\n'
+			|| E'\tperform public.qorpera_folder_structured_lock(p_environment_id, v_targets, 0::smallint, 0::smallint);',
 		-- The receipt, a run-owned row, after ranks 8 and 9 and before rank 10 (C1C §5.7).
 		E'\t-- Rank 10: a run''s released reads still hold (C1B-2 §3).' || chr(1)
 			|| E'\t-- Run-owned rows (C1C §5.7): the tool call''s receipt, FOR NO KEY UPDATE. It must be this run''s own, executing and\n'
@@ -100,11 +115,13 @@ begin
 			|| E'\t-- (a writer''s redo takes a new receipt); a replay of this commit was answered at step 0.\n'
 			|| E'\tif p_receipt_id is not null then\n'
 			|| E'\t\tselect * into v_receipt from public.qorpera_run_operation_receipts where id = p_receipt_id for no key update;\n'
-			|| E'\t\tif not found or v_receipt.run_id is distinct from (p_actor ->> ''runId'')::uuid or v_receipt.status <> ''executing''\n'
-			|| E'\t\t\tor not v_receipt.requires_company_revision then\n'
+			|| E'\t\tif not found or v_receipt.run_id is distinct from (p_actor ->> ''runId'')::uuid then\n'
 			|| E'\t\t\traise exception ''Run receipt is unavailable'' using errcode = ''42501''; end if;\n'
+			|| E'\t\t-- Before its status: a receipt completed with its commit is still "satisfied" (a redo reusing it is a defect).\n'
 			|| E'\t\tif exists (select 1 from public.qorpera_folder_commits where receipt_id = p_receipt_id) then\n'
 			|| E'\t\t\traise exception ''Run receipt is already satisfied by another commit'' using errcode = ''22023''; end if;\n'
+			|| E'\t\tif v_receipt.status <> ''executing'' or not v_receipt.requires_company_revision then\n'
+			|| E'\t\t\traise exception ''Run receipt is unavailable'' using errcode = ''42501''; end if;\n'
 			|| E'\tend if;\n\n'
 			|| E'\t-- Rank 10: a run''s released reads still hold (C1B-2 §3).',
 		-- The sessions, after rank 10 and before the paths and the apply step's session writes.
@@ -142,10 +159,12 @@ begin
 	v_run := jsonb_populate_record(null::public.qorpera_execution_runs, public.qorpera_folder_tool_run(p_binding, '[]'::jsonb) -> 'run');
 	-- No governed effect before a required acknowledgement or after the final report (contract 7.1).
 	perform public.qorpera_assert_wake_work_allowed(v_run.id);
-	if p_receipt_id is null or char_length(btrim(coalesce(p_logical_operation_key, ''))) not between 1 and 256
-		or coalesce(p_input_sha256, '') !~ '^[0-9a-f]{64}$' or coalesce(p_downstream_idempotency_sha256, '') !~ '^[0-9a-f]{64}$'
-		or p_requires_company_revision is null then
+	-- The legacy codes: a missing argument is invalid (22023); a malformed one refuses the operation (42501).
+	if p_input_sha256 is null or p_downstream_idempotency_sha256 is null or p_requires_company_revision is null then
 		raise exception 'native tool operation is invalid' using errcode = '22023'; end if;
+	if p_receipt_id is null or char_length(btrim(coalesce(p_logical_operation_key, ''))) not between 1 and 256
+		or p_input_sha256 !~ '^[0-9a-f]{64}$' or p_downstream_idempotency_sha256 !~ '^[0-9a-f]{64}$' then
+		raise exception 'run operation authority is invalid' using errcode = '42501'; end if;
 	select * into v_receipt from public.qorpera_run_operation_receipts
 	where run_id = v_run.id and logical_operation_key = btrim(p_logical_operation_key) for update;
 	if found then

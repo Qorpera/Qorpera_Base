@@ -279,7 +279,7 @@ after that line stays byte-identical, and its digest is checked at migration tim
 | the five "unchanged" callers (§3) | a text patch: their actor call becomes `company_run_actor`; `begin_native_company_execution_v2` also takes the run mutex; the digest is of the patched text | 2a |
 | the read-type branches: `describe_company_run_context` (company name from `qorpera_folder_company_index`; its session check stays `FOR SHARE`, after rank 10's recheck at the sessions rank of §5.7; and F2's folder facts: `|| case when v_folder is null then '{}' else jsonb_build_object('folder', v_folder) end`, with `v_folder := qorpera_company_state_run_folder(env, staff, <the coworker ids the body lists>)`, called by name at run time so snapshot-v1 never needs it. It is given the same ids the body puts in `coworkers` and names no others, so `folder` never names an unlisted coworker even when a roster change lands between the two statements; a coworker whose folder retired in between is left out, as one without a folder is. From F2-1b's migration 20260929440000 on #534; the runtime's closed parser checks that every coworker in `folder` is listed, and memory and skills then use `agents/<handle>`), the presence functions (a folder `presence_path_routes` on `qorpera_folder_path_resource` and `folder_actor_allowed`; a refusal is 42501, which `native_presence_subject` reads as "absent"), `native_company_object_actor`, `member_file_export_source` (no gc fence) | their `folder-v2` body | 2a |
 | `native_office_start`, `_start_descriptor`, `_capture`, `_file_export`, `native_shared_file_export_source`, `self_approve_organization_proposal`, **`native_machine_start`** | refuse 0A000 until C1c-3: after the run check they take the gc fence or a legacy proposal lock. Machine start holds the machine row and then asks for the company row `FOR UPDATE`, the reverse of #419's custody order | 2a |
-| `send_native_agent_message`, `send_runner_agent_message`, `append_native_interaction_request`, `append_runner_transcript_event`, `begin_`/`complete_native_tool_operation`, `begin_`/`complete_run_operation_receipt` | 2a: refuse 0A000. 2b-1: the folder receipts (`begin_`/`complete_native_tool_operation`). 2b-2: the folder native send and interaction request. The transcript append, the runner broker's send and its direct receipt calls keep refusing (C3) | 2a, 2b |
+| `send_native_agent_message`, `send_runner_agent_message`, `append_native_interaction_request`, `append_runner_transcript_event`, `begin_`/`complete_native_tool_operation`, `begin_`/`complete_run_operation_receipt` | 2a: refuse 0A000. 2b-1: the folder receipts (`begin_`/`complete_native_tool_operation`). 2b-2: the folder native send and interaction request. The runner broker's `append_runner_transcript_event`, its send and its direct receipt calls keep refusing (C3) | 2a, 2b |
 | `record_action_review` | 2a: under the mutex; its card path refuses through the transcript append. 2b: the folder card path (§5.6) | 2a, 2b |
 | `assert_company_path_reads`, `record_native_context_view`, `add_agent_review_rule` | their `folder-v2` body (§5.6) | 2b |
 | `enforce_company_context_send` | requires the marker the folder send sets; refuses without it | 2b |
@@ -349,6 +349,14 @@ after that line stays byte-identical, and its digest is checked at migration tim
     operation key.
   - **One commit signature.** The six-argument commit (with `p_receipt_id`, default null) replaces the five-argument
     one; PostgREST never sees both.
+  - Only a run's commit carries a receipt. A view's commit (a desktop, a shell command, a coding session) is not a tool
+    call and carries none.
+  - The check order under the receipt lock: the run's own receipt (else 42501), then "satisfied by another commit"
+    (22023, even once the receipt is completed, so a redo that reuses it is always the defect), then executing and
+    requiring a revision (42501).
+  - **Sessions bring rank 0.** A commit with rank 11 session targets takes this company's row at rank 0 whatever the hook
+    named: its session writes insert company operations, a foreign key on the company row, and legacy posting takes the
+    company row `FOR UPDATE` before the session (test 651 E).
   - The legacy `complete_native_tool_operation` names a snapshot or a proposal, never a folder commit. On `folder-v2`
     it takes neither (22023) and completes a receipt that requires no revision; a writer completes its receipt with
     its commit through `qorpera_folder_complete_run_receipt`, which the runtime calls directly.
@@ -475,7 +483,10 @@ functions.
   - the sessions rule, with the commit's sessions rank and F2's session targets;
   - `assert_company_path_reads`, `record_native_context_view`, the folder receipts and the receipt ↔ commit link, the
     card path, and `add_agent_review_rule`.
-- **C1c-2c, wakes and completion:**
+- **C1c-2c, wakes and completion** (also: receipt recovery. `terminalize_runner_attempt_before_native_start` marks
+  executing receipts ambiguous, and `resolve_run_operation_receipt` needs a snapshot or proposal for
+  `confirmed_completed`. Their `folder-v2` modes: `confirmed_completed` records the commit that carries the receipt,
+  and `confirmed_not_run` refuses while a commit carries it):
   - the admission helper, the pin trigger's and routine lifecycle's folder modes;
   - `send_coworker_message`, `read_native_wake`, `handoff_run_sponsor`;
   - the v6 folder lane with its dispositions;
