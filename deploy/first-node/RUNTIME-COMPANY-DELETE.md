@@ -50,7 +50,7 @@ Rollback: `select cron.unschedule('qorpera-company-deletions')`. Requests then w
 | Run machines (one-run VMs, exec-host sandboxes) | provider reconcile after the run ends | works; a guest that never got its assignment runs on (D2) |
 | Coding machines | coding executor housekeeping (retiring machine → stop, sleep, delete, release) | works |
 | Agent machines (#419) | executor, once the machine is set `deleted` | #531 adds them to `qorpera_stop_company_work`; until it lands their allocations hold the purge |
-| Company Computers | office provider: power off (works), delete and release (D3) | D3; live once the D3b provider build is installed per office |
+| Company Computers | office provider: power off (works), delete and release (D3), then its NAS workbench (D5b) | D3 live since v150; D5b once its provider build is rolled |
 | Sign-in identity volumes on the nodes and their exec host devices | LXD provider's login gateway (D4) | D4; live once the LXD provider build is rolled |
 | Run recovery volumes (`user.qorpera.profile_id`), identity volumes from before node demands (8 Sep) | operator runbook: a run's recovery volume only once its journal is archived (a day after it settles; the provider still requires it before) | last |
 | Company File and folder objects (Storage, NAS) | artifact GC worker, deleted-profile phase (catalog rows outlive the purge) | exists; runs once the worker is deployed (not deployed on 29 Sep) |
@@ -59,7 +59,7 @@ Rollback: `select cron.unschedule('qorpera-company-deletions')`. Requests then w
 | Coding NAS workspaces `workers/<company>/` | coding executor (D5b) | D5b |
 | Connected-account tokens at Google/GitHub | secret broker, best-effort revoke (D6) | D6 |
 | Model logins (ChatGPT, Claude) | our rows are purged and a node capsule's Storage object goes with D5a; the member signs out at the provider | by design |
-| Per-company broker units, recovery services, office host config (older companies) | operator runbook | last |
+| Per-company broker units, recovery services, office host config (older companies), office reset archives, the emptied workbench mount and its NAS export | operator runbook | last |
 
 Until a step lands, a company holding that kind of state stays hidden and stopped, and the finisher
 records what it waits for.
@@ -82,21 +82,37 @@ records what it waits for.
   RUNTIME-OFFICE-RETENTION.md). After a confirmed power-off, also one from before a node reboot, the
   lifecycle asks SQL; until a delete is pinned, at most once a minute per process. For a deleting
   company it pins the delete command id in `office-retirement-request.json`, and from then on runs only
-  the retirement, before any other call (the fleet unit goes straight to it). It writes
-  `office-retired.json` from SQL's receipt; with that marker the provider, the fleet unit on that host
-  and the root host guards make no call, and the provider service ends. It needs a new office provider
-  build, which the coordinator rolls at the cut (lane below). Not covered, and held for an operator: offices whose VM was created but
-  never activated, offices mid-reset, an office whose resume (a wake before the deletion) was under
-  way when the deletion came (its boot intent or successor stays; the pause keeps it from finishing),
-  and an office whose node rebooted between its power-off record and its node-demand suspension.
-  Coordinator's lane for D3b: the coordinator rolls the office provider build at the cut (RUNTIME
-  release roll, as #505), after the release carrying 20260928259320 is live.
+  the retirement, before any other call (the fleet unit goes straight to it). Once the VM is gone and
+  before SQL hears, it empties the office's workbench (D5b; "Office retirement" in
+  RUNTIME-OFFICE-RETENTION.md): the top-level entries its journal accounts for on the NAS workbench
+  mount, after checking that no other instance or mount on the host reaches that export; the mount root
+  stays. A large workbench takes several passes (`state: pending`); anything it may not remove holds
+  the office for an operator. It writes `office-retired.json` from SQL's receipt; with that marker the
+  provider, the fleet unit on that host and the root host guards make no call, and the provider service
+  ends. Not covered, and held for an operator: offices whose VM was created but never activated,
+  offices mid-reset, an office whose resume (a wake before the deletion) was under way when the
+  deletion came (its boot intent or successor stays; the pause keeps it from finishing), and an office
+  whose node rebooted between its power-off record and its node-demand suspension.
+  Coordinator's lane for D3b (rolled on node 1 at the v150 cut, qorpera-prod-office-a1 f125fae6 →
+  a115c550) and, the same way, for the D5b build at the cut that carries it: the coordinator rolls the
+  office provider build at the cut (RUNTIME release roll, as #505). No company deletion had been
+  requested by 29 Sep. An office retired by the D3b build before the D5b build reaches it keeps its
+  workbench (its marker ends the provider). After the D5b roll, list them with `select office_id,
+  provider_id, retired_at from public.qorpera_runtime_office_retirements where retired_at <
+  '<roll time>'`. For each, find the node and unit whose protected policy names that office
+  (`guest.companyComputerId`) and provider; its `workbench.mountPoint` is the mount. Empty it by hand
+  as the workbench account (`workbench.uid`), keeping the mount root, with the provider's limits:
+  only the names it accounts for ("Office retirement" in RUNTIME-OFFICE-RETENTION.md), nothing that
+  `find <mount> -xdev ! -uid <uid>` lists, and only after checking that no other office's mount or
+  instance reaches the same export.
   1. Build `node scripts/package-lxd-office-provider.mjs --out <dir>` from the release commit on node 2;
      its sha256 must match the review. Stage it on the node.
   2. Before the roll, read the provider's last observation (`journalctl -u <unit> -n 5`). Roll on
      `active`, `idle` or `power_off`/`powered_off`, and on `unconfirmed` with `power-off host changed`
      (a computer powered off before a node reboot, which the old build cannot replay; the new build
-     retires it if its company is being deleted). Wait while it is mid-reset, mid-resume or `pending`.
+     retires it if its company is being deleted). Wait while it is mid-reset, mid-resume or `pending`;
+     a retirement that is `pending` while it empties the workbench may be rolled (the new build carries
+     on).
   3. As root: check the live file's sha is the expected old one, keep it beside the live file as
      `.retired-<sha12>` (root 0400), `install -m 0444` the new build to `.new`, move it over the live
      file, restart the unit and wait for active. Production is `qorpera-prod-office-a1`
@@ -109,17 +125,20 @@ records what it waits for.
      installed under `/opt/qorpera/office-fleet/<sha>/`, a path named by its sha). Build it too, check
      its sha, and install it with the fleet installer as an explicit reviewed reinstall; never move new
      bytes over a sha-named path.
-  4. Check: deleting companies with a Company Computer (4168e335 and b116763d on 2026-09-28) show
-     `phase: retirement`, then `state: retired`; `qorpera_runtime_office_retirements.retired_at` is set;
-     LXD lists no instance for the office; the node's inventory stays ready (no unmanaged instance);
-     `qorpera_company_deletions.holdings` drops the machine and the finisher purges the company.
+  4. Check, at the first deletion of a company with a Company Computer: its office shows
+     `phase: retirement` (with the D5b build `state: pending` while it empties the workbench), then
+     `state: retired`; `qorpera_runtime_office_retirements.retired_at` is set; LXD lists no instance for
+     the office; the node's inventory stays ready (no unmanaged instance); the office's workbench mount
+     is empty; `qorpera_company_deletions.holdings` drops the machine and the finisher purges the
+     company. A held removal logs `OFFICE_WORKBENCH_<reason>`; `find <mount> -xdev ! -uid <uid>` finds
+     a foreign entry. Once an operator removes what holds it, the provider carries on by itself.
   5. A retired office's unit exits 0 and stays stopped. Disable it, and disable this office's fleet
      units on the other candidate hosts too: they have no marker and would call SQL for a purged office
-     at their next start. The protected configuration and journal are left for the operator runbook. The
-     workbench NAS directory stays (D5b).
+     at their next start. The protected configuration and journal, the emptied workbench mount
+     and its NAS export are left for the operator runbook.
   6. Rollback: put the `.retired-<sha12>` file back and restart. Not for an office that already has
      `office-retirement-request.json` in its journal: an older build would keep asking for the deleted
-     VM. Leave that office on the new build.
+     VM (and would retire it without emptying the workbench). Leave that office on the new build.
 - **D4** sign-in identity retirement (migration 20260929450000; `lxd-login-gateway.ts`). A node-held
   sign-in keeps its key on an LXD volume named after the identity, on its sign-in machine's node and on
   every node its runs used; on node 2 the volume is also attached to the execution host. The holdings
@@ -194,6 +213,8 @@ records what it waits for.
      recovery": deleted companies' catalog objects and open D5a entries), run it once by hand, then
      schedule it every five minutes (`qorpera-artifact-gc-worker`, the `cron.schedule` in
      ARTIFACT-GC.md).
-- **D5b** NAS: coding workspaces `workers/<company>/` (the coding executor cannot remove them alone:
-  their files belong to session users) and the Company Computer workbench (the office provider).
+- **D5b** NAS: the Company Computer workbench, emptied by the office provider as the last step of its
+  retirement (D3b above; "Office retirement" in RUNTIME-OFFICE-RETENTION.md), and coding workspaces
+  `workers/<company>/` (the coding executor cannot remove them alone: their files belong to session
+  users; not built yet).
 - **D6** upstream token revoke on delete and on Disconnect.
