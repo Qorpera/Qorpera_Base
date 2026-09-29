@@ -73,6 +73,10 @@ gateway checked their hash), or bytes it may already read. An intent row records
 cannot learn that the company stores a hash it may not read, and cannot seal or commit a file over such bytes. The
 platform reads everything and holds every stored object.
 
+Possession is judged when the intent opens. Bytes the actor could read then are bytes it could have fetched then, so a
+later narrowing does not revoke an intent already open or sealed; a sealed intent lapses within the hour unless its
+writer renews it, and a new intent judges again. (Reviewer round 2, L1; F1 may ask for a re-check at seal instead.)
+
 1. **`qorpera_folder_open_upload(env, actor, manifest text)`**
    - the actor's plain check (`qorpera_folder_read_actor`: no job or fence lock), and for a member the membership
      row (plain), since `read_actor` does not check it;
@@ -87,7 +91,9 @@ platform reads everything and holds every stored object.
 3. **`qorpera_folder_confirm_object(env, actor, intent, sha256, bytes)`**, after the gateway's NAS put: the same
    checks, then marks the row `put`. For an object the catalog lacks, the soft quota (§5), then
    `insert into profile_objects … on conflict do nothing`; then `KEY SHARE` on the row. A row already there with
-   another size is 23505, as today. The transaction is this statement and the trigger.
+   another size is 23505, as today. The transaction is this statement and the trigger. Its `stored` flag (and the
+   gateway's 201 or 200) says whether the company already held the bytes; only trusted code sees it, and the runtime
+   never shows it to the model.
 4. **`qorpera_folder_seal_upload(env, actor, intent)`**
    - the actor's plain check again (a member who left is refused), and the intent must be this actor's own
      (environment, kind, scope: the run, view or member id). A run's job, runner and assignment ids are not
@@ -121,10 +127,12 @@ included):
 
 A copy's source files are found by an equality probe on the source key and a range probe under it
 (`key_text > k || '/' and key_text < k || '0'`, both on the `(environment_id, key_text)` index). A source over the
-core's subtree bound (50,000 entries) adds no objects, since step 7 refuses it as `too_large`. A copy needs no
-possession check: its source is already in the folder, and the actor may read it or step 7 refuses the copy.
+core's subtree bound (50,000 entries) adds no objects, since step 7 refuses it as `too_large`. With a copy in the
+change set, each move's source counts as a source too: an earlier move may carry files into the copy's source, and the
+copy's check runs after it. A copy needs no possession check: its source is already in the folder, and the actor may
+read it or step 7 refuses the copy.
 
-A move references nothing new and locks no object. The commit is found by name (it must have exactly one
+A move alone references nothing new and locks no object. The commit is found by name (it must have exactly one
 definition), and the patch is five replacements in its declarations and byte block, each of which must match exactly
 once.
 
@@ -194,7 +202,9 @@ that the Storage mirror inserted is still served.
   - `get(file)`: fetches the manifest and its chunks, checks each and the whole.
   - The client's `CloudCompanyFolderBytes.put` gains the executable bit, which the manifest now carries.
   - Open, renew and seal join the Company File control's allow-lists.
-- Nothing constructs either yet; the thin writers do, after C1c-2b.
+- Nothing constructs either yet; the thin writers do, after C1c-2b. A writer commits right after `put`. If its
+  commit keeps retrying past the sealed intent's hour, it renews the intent, or `put` again re-puts every object it
+  may not yet read.
 
 **Split.** C1d-1a is the SQL (§2–§7, slot 20260929520000) with tests 761 and 762. C1d-1b is the gateway route and the
 runtime adapter, with no migration.
@@ -225,15 +235,17 @@ runtime adapter, with no migration.
 **Tests (C1d-1a).** 761 (rules), 762 (locks and races, on 635's fixture, which it leaves as it found it), and 715
 (the company purge removes a row of each new table).
 - Every refusal: an unlisted hash, another actor's intent or kind, an expired or sealed intent at put, a stop at each
-  step, a size mismatch at confirm and at seal, a missing chunk at seal, a member who left (at open and at seal), a bad or non-canonical
-  manifest.
+  step, a size mismatch at confirm and at seal, a missing chunk at seal, a member who left (at open and at seal), a
+  bad or non-canonical manifest.
 - Possession: open reports only readable objects; an object that is only in the catalog stays missing until put; a
-  commit over bytes the actor cannot read, and a seal over a chunk it never put, are refused; the owner's copy then
-  makes them readable.
+  commit over bytes the actor cannot read, and a seal over a chunk it never put, are refused; so is a commit through
+  an open intent over the exact manifest text, or an expired sealed one; a chunk the actor reads seals as held; the
+  owner's copy then makes the secret readable.
 - The download rule: readable, unreadable, an old path version, a chunk through a manifest, a second `folder-v2`
   environment of the same company, a pause (runs refused, members served) and a deletion (everyone refused).
 - Commit step 6: object locks for write, `new_folder` and copy; a version-2 media type or bit mismatch; a missing
-  chunk for a write and for a copy.
+  chunk for a write and for a copy; a closure object outside the locked set; a move into a folder, then a copy of it,
+  in one change set.
 - Usage and the soft quota at the exact limit, for new and for stored objects; the lazy seed; the snapshot-v1 paths
   unchanged (digests, and the old functions' results).
 - Races (dblink, `current_database()`): a commit against a seal of the same file; two uploads of one hash; open,
