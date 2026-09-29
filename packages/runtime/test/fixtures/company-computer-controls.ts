@@ -101,9 +101,10 @@ export const CONTROL_FAULT_SECRET = "protected-request-and-credential-bytes";
 /** Test-only faults prepended to a packaged control. The recorded (outer)
  * process takes its fault from QORPERA_TEST_OUTER_FAULT and raises it once the
  * entry is running. The locked child always starts with an empty environment,
- * so it takes its fault from /tmp/qorpera-test-child-fault, writes the secret
- * to every stream and descriptor before anything else runs, and exits. */
-const prologue = `{
+ * so it takes its fault from the file `childFault` (absent unless a test writes
+ * it), writes the secret to every stream and descriptor before anything else
+ * runs, records that it ran in `${childFault}-ran`, and exits. */
+const prologue = (childFault: string) => `{
 	const secret = ${JSON.stringify(CONTROL_FAULT_SECRET)};
 	const fs = process.getBuiltinModule("node:fs");
 	const noise = () => {
@@ -112,13 +113,13 @@ const prologue = `{
 	if (process.argv[2] === "--locked") {
 		let fault = "";
 		try {
-			fault = fs.readFileSync("/tmp/qorpera-test-child-fault", "utf8");
+			fault = fs.readFileSync(${JSON.stringify(childFault)}, "utf8");
 		} catch {}
 		if (fault) {
 			noise();
 			fs.writeSync(1, secret);
 			fs.writeSync(2, secret);
-			fs.writeFileSync("/tmp/qorpera-test-child-ran", fault);
+			fs.writeFileSync(${JSON.stringify(`${childFault}-ran`)}, fault);
 			if (fault === "success") process.exit(0);
 			if (fault === "refusal") process.exit(1);
 			throw new Error(secret);
@@ -133,6 +134,6 @@ const prologue = `{
 	}
 }
 `;
-export async function withControlFaults(source: string, destination: string): Promise<void> {
-	await writeFile(destination, prologue + (await readFile(source, "utf8")), { mode: 0o444 });
+export async function withControlFaults(source: string, destination: string, childFault: string): Promise<void> {
+	await writeFile(destination, prologue(childFault) + (await readFile(source, "utf8")), { mode: 0o444 });
 }

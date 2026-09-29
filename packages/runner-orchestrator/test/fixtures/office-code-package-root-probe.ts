@@ -352,9 +352,19 @@ const run = (args: string[], purpose = "bootstrap") => {
 		{ cwd: "/", env: {}, encoding: "utf8", timeout: 30000 },
 	);
 	timings.push({ purpose, mode: args[0], elapsedMs: Math.round(performance.now() - started), status: result.status });
-	// LXD records this exec's output on the host: nothing on success, one fixed line otherwise.
-	assert.equal(result.stdout, "", `${purpose}:${args[0]} wrote stdout`);
-	assert.equal(result.stderr, result.status === 0 ? "" : "OFFICE_CODE_PACKAGE_LOADER_UNCONFIRMED\n");
+	// LXD records this exec's output on the host: nothing on success, one fixed
+	// line on refusal. A run killed at the timeout (status null) may be silent.
+	const detail = `${purpose}:${args[0]} status=${result.status} signal=${result.signal} ${result.error?.message ?? ""} ${JSON.stringify(timings)}`;
+	assert.equal(result.stdout, "", detail);
+	assert.ok(
+		(result.status === 0
+			? [""]
+			: result.status === null
+				? ["", "OFFICE_CODE_PACKAGE_LOADER_UNCONFIRMED\n"]
+				: ["OFFICE_CODE_PACKAGE_LOADER_UNCONFIRMED\n"]
+		).includes(result.stderr),
+		`${detail} stderr=${JSON.stringify(result.stderr)}`,
+	);
 	return result;
 };
 /** The locked tool's stdio is ignored; its result is the file it published. */

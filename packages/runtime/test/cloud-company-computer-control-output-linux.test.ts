@@ -19,7 +19,7 @@ it("keeps the recorded output of every packaged office control and the code pack
 		await mkdir(probe);
 		const staged = [];
 		for (const control of controls) {
-			await withControlFaults(control.file, join(probe, basename(control.file)));
+			await withControlFaults(control.file, join(probe, basename(control.file)), "/tmp/qorpera-test-child-fault");
 			staged.push({ ...control, file: `/probe/${basename(control.file)}` });
 		}
 		await writeFile(join(probe, "controls.json"), JSON.stringify(staged));

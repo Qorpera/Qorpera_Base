@@ -12,13 +12,6 @@ export interface CompanyComputerControlEntry {
 	readonly run: (args: readonly string[]) => Promise<void>;
 }
 
-/** Keeps a caller that awaits the write callback from hanging. */
-function discard(...args: unknown[]): boolean {
-	const callback = args.at(-1);
-	if (typeof callback === "function") process.nextTick(callback as () => void);
-	return true;
-}
-
 /** LXD 6.9 keeps a VM exec alive only with `record-output`, so the host keeps
  * whatever an office control writes. When the process runs under one of
  * `names`, this entry owns both streams:
@@ -27,8 +20,9 @@ function discard(...args: unknown[]): boolean {
  *   unhandled rejection), writes exactly `failure` and a newline to stderr,
  *   once, and exits 1;
  * - `--help` alone writes exactly `help` and a newline to stdout;
- * - nothing else is written: console and stream writes are dropped and Node's
- *   warning printer is removed.
+ * - nothing else is written: every stdout/stderr stream write (console,
+ *   `write`, `end(chunk)`) completes without output and Node's warning printer
+ *   is removed. Only raw descriptor writes, which no control makes, bypass it.
  * Protected requests, credentials and evidence are read only by the locked
  * child, which runs with ignored stdio. */
 export function runCompanyComputerControlEntry(entry: CompanyComputerControlEntry): void {
@@ -50,8 +44,10 @@ export function runCompanyComputerControlEntry(entry: CompanyComputerControlEntr
 	process.on("uncaughtException", abort);
 	process.on("unhandledRejection", abort);
 	process.removeAllListeners("warning");
-	process.stdout.write = discard;
-	process.stderr.write = discard;
+	for (const stream of [process.stdout, process.stderr]) {
+		stream._write = (_chunk, _encoding, done) => done();
+		stream._writev = (_chunks, done) => done();
+	}
 	try {
 		if (realpathSync(resolve(script)) !== realpathSync(fileURLToPath(entry.moduleUrl)))
 			throw new Error("OFFICE_CONTROL_ENTRY_UNCONFIRMED");

@@ -17,7 +17,7 @@ interface Control {
 const controls = JSON.parse(readFileSync("/probe/controls.json", "utf8")) as Control[];
 const lock = "/run/qorpera-office-preparation/control.lock",
 	childFault = "/tmp/qorpera-test-child-fault",
-	childRan = "/tmp/qorpera-test-child-ran";
+	childRan = `${childFault}-ran`;
 assert.equal(process.platform, "linux");
 assert.equal(process.getuid?.(), 0);
 if (!existsSync("/usr/bin/node")) {

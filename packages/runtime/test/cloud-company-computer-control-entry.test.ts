@@ -86,12 +86,13 @@ afterAll(async () => {
 describe("shared office control entry", () => {
 	const failure = "Fixture office control could not confirm its request.\n";
 	it("writes nothing on success, whatever the work tried to print", async () => {
-		for (const scenario of ["noisy-success", "awaited-write"])
+		for (const scenario of ["noisy-success", "awaited-write", "ended-streams"])
 			expect(await run(fixture.entry, [scenario])).toEqual({ status: 0, stdout: "", stderr: "" });
 	});
 
 	it.each([
 		["noisy-refusal"],
+		["ended-streams-refusal"],
 		["synchronous-throw"],
 		["uncaught-exception"],
 		["uncaught-after-success"],
@@ -137,7 +138,8 @@ describe("packaged office controls under failure injection", () => {
 		async (purpose) => {
 			const control = controls.find((candidate) => candidate.purpose === purpose)!;
 			const faulted = join(directory, "faulted", control.file.split("/").at(-1)!);
-			await withControlFaults(control.file, faulted);
+			// Never created here: only the Linux probe drives the locked child's faults.
+			await withControlFaults(control.file, faulted, join(directory, "child-fault"));
 			const refusal = { status: 1, stdout: "", stderr: `${control.failure}\n` };
 			const shaped = providerArgs(purpose);
 			const cases: Array<[string, string[], Record<string, string>]> = [

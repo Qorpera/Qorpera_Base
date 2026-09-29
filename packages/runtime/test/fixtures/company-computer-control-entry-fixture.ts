@@ -17,6 +17,15 @@ function noise() {
 const scenarios: Record<string, () => Promise<void>> = {
 	"noisy-success": async () => noise(),
 	"awaited-write": () => new Promise<void>((done) => process.stdout.write(secret, () => done())),
+	"ended-streams": async () => {
+		process.stdout.end(secret);
+		process.stderr.end(secret);
+	},
+	"ended-streams-refusal": async () => {
+		process.stdout.end(secret);
+		process.stderr.end(secret);
+		throw new Error(secret);
+	},
 	"noisy-refusal": async () => {
 		noise();
 		throw new Error(secret);
