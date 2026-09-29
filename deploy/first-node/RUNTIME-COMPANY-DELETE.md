@@ -66,10 +66,18 @@ records what it waits for.
 - **D1** (this migration): request, stop, finisher; coding machines and Company Computer power-off.
 - **D2** orchestrator: retire `registered`/`assigned` guests whose job is terminal (one-run VMs and
   exec-host sandboxes).
-- **D3** office retirement: retirement rows; after power-off the provider deletes the VM under its
-  operation journal, confirms absence, then one SQL call releases the allocation (the triggers release
-  the node demand and write the meter's `gone`), drops the node binding and sets the office `retired`.
-  Needs a new office provider build. RUNTIME-OFFICE-RETENTION.md is updated with it.
+- **D3** office retirement (D3a SQL: migration 20260929320000). After a deleting company's idle power-off
+  (stop acknowledged, node demand suspended, no later transition, boot intent or open reset), the
+  provider asks `qorpera_runtime_office_retirement(request)` for the retirement and its delete command
+  id, takes a five-second window (`qorpera_prepare_runtime_office_retirement`), deletes the VM under its
+  operation journal, confirms it is absent, then `qorpera_retire_runtime_office(request, evidence)`
+  releases the allocation (the release trigger releases the already suspended node demand; the meter
+  ended the stretch at the suspension), drops the node binding, sets the office `retired` and cancels its
+  start intent. The ledger `qorpera_runtime_office_retirements` has no link to the company, so
+  `qorpera_runtime_office_retirement_receipt` still answers after the purge. D3b is the provider step
+  (a new office provider build, reinstalled per office in the coordinator's lane); it also updates
+  RUNTIME-OFFICE-RETENTION.md. Offices whose VM was created but never activated, and offices mid-reset,
+  are not covered and stay held.
 - **D4** identity retirement: per (node, identity) rows; the login gateway detaches the device from the
   exec host, deletes the volume, confirms; the holdings rule then waits only for unconfirmed rows. It
   also ends identity recoveries requested before the deletion (consent, activation and review do not
