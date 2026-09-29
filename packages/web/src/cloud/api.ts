@@ -135,7 +135,7 @@ export class CloudApi {
 	}
 
 	/** Whether the company is out of computer hours, so new work waits until hours are added
-	 * (the zero rule; migration 20260929280000_company_waiting_for_hours). Any member may ask. */
+	 * (the zero rule; migration 20260928259280_company_waiting_for_hours). Any member may ask. */
 	companyWaitingForHours(profileId: string): Promise<boolean> {
 		return this.cloud
 			.rpc("qorpera_company_waiting_for_hours", { p_profile_id: requiredUuid(profileId, "Profile id") })
@@ -518,6 +518,23 @@ export class CloudApi {
 			.rpc("qorpera_read_session_events", {
 				p_session_id: requiredUuid(sessionId, "Session id"),
 				p_after_sequence: afterSequence,
+				p_limit: limit,
+			})
+			.then(parseEvents);
+	}
+
+	/** The newest `limit` events of a transcript, or the newest before `beforeSequence`, oldest
+	 * first as readSessionEvents returns them (migration 20260929410000; a cloud without it
+	 * answers with a missing RPC). Same authorization as the forward read, which it runs. */
+	readSessionEventsTail(
+		sessionId: string,
+		beforeSequence: number | undefined,
+		limit: number,
+	): Promise<HostedSessionEvent[]> {
+		return this.cloud
+			.rpc("qorpera_read_session_events_tail", {
+				p_session_id: requiredUuid(sessionId, "Session id"),
+				p_before_sequence: beforeSequence ?? null,
 				p_limit: limit,
 			})
 			.then(parseEvents);

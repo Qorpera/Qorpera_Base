@@ -21,6 +21,46 @@ async function root(): Promise<string> {
 	return join(directory, "vault");
 }
 
+/** Starts a one-shot hand-over on a free port and waits for its "serving" line: never a guess at how long
+ * start-up takes on a busy machine. */
+async function serve(root: string, peer: string, ticketSha256: string, ttl: number) {
+	const serving = spawn(
+		"python3",
+		[
+			tool,
+			"--root",
+			root,
+			"serve",
+			"--bind",
+			"127.0.0.1",
+			"--peer",
+			peer,
+			"--port",
+			"0",
+			"--ticket-sha256",
+			ticketSha256,
+			"--ttl",
+			String(ttl),
+		],
+		{ stdio: ["ignore", "pipe", "pipe"] },
+	);
+	let printed = "";
+	let errors = "";
+	serving.stdout.on("data", (chunk: Buffer) => {
+		printed += chunk.toString();
+	});
+	const exited = new Promise<number | null>((resolveExit) => serving.once("exit", resolveExit));
+	const port = await new Promise<number>((resolvePort, rejectPort) => {
+		serving.stderr.on("data", (chunk: Buffer) => {
+			errors += chunk.toString();
+			const ready = /serving once on 127\.0\.0\.1:(\d+)/.exec(errors);
+			if (ready) resolvePort(Number(ready[1]));
+		});
+		void exited.then((code) => rejectPort(new Error(`serve exited (${code}) before it was ready: ${errors}`)));
+	});
+	return { port, exited, printed: () => printed };
+}
+
 function run(args: string[]): { status: number | null; stdout: string; stderr: string } {
 	const done = spawnSync("python3", [tool, ...args], { encoding: "utf8" });
 	return { status: done.status, stdout: done.stdout, stderr: done.stderr };
@@ -99,39 +139,9 @@ it("hands the standby its files once, on a ticket that never leaves it, checked 
 	const held = (await readFile(join(nodeTwo, "fetch-ticket"), "utf8")).trim();
 	expect(ticket.stdout).not.toContain(held);
 	expect(createHash("sha256").update(held).digest("hex")).toBe(ticketSha256);
-	const serveOnce = (ticketDigest: string) => {
-		const port = 40_000 + Math.floor(Math.random() * 20_000);
-		const serving = spawn(
-			"python3",
-			[
-				tool,
-				"--root",
-				nodeOne,
-				"serve",
-				"--bind",
-				"127.0.0.1",
-				"--peer",
-				"127.0.0.1",
-				"--port",
-				String(port),
-				"--ticket-sha256",
-				ticketDigest,
-				"--ttl",
-				"20",
-			],
-			{ stdio: ["ignore", "pipe", "pipe"] },
-		);
-		let printed = "";
-		serving.stdout.on("data", (chunk: Buffer) => {
-			printed += chunk.toString();
-		});
-		const exited = new Promise<number | null>((resolveExit) => serving.once("exit", resolveExit));
-		return { port, exited, printed: () => printed };
-	};
 	// A wrong digest from node 1 (the expected one does not match what arrives): nothing is written, and the
 	// ticket is used up.
-	const first = serveOnce(ticketSha256);
-	await new Promise((resolveWait) => setTimeout(resolveWait, 700));
+	const first = await serve(nodeOne, "127.0.0.1", ticketSha256, 20);
 	const refused = run([
 		"--root",
 		nodeTwo,
@@ -164,8 +174,7 @@ it("hands the standby its files once, on a ticket that never leaves it, checked 
 	// connection came first (it is closed after 5 s, well inside the fetch's own 15 s).
 	const again = JSON.parse(run(["--root", nodeTwo, "ticket"]).stdout) as { ticketSha256: string };
 	expect(again.ticketSha256).not.toBe(unused.ticketSha256);
-	const second = serveOnce(again.ticketSha256);
-	await new Promise((resolveWait) => setTimeout(resolveWait, 700));
+	const second = await serve(nodeOne, "127.0.0.1", again.ticketSha256, 20);
 	const silent = connect({ host: "127.0.0.1", port: second.port });
 	await new Promise((resolveConnect) => silent.once("connect", resolveConnect));
 	const fetched = run([
@@ -205,29 +214,8 @@ it("hands the standby its files once, on a ticket that never leaves it, checked 
 	// Another address gets nothing: node 1 closes it before reading, and stops at its deadline.
 	const nodeThree = await root();
 	const other = JSON.parse(run(["--root", nodeThree, "ticket"]).stdout) as { ticketSha256: string };
-	const port = 40_000 + Math.floor(Math.random() * 20_000);
-	const elsewhere = spawn(
-		"python3",
-		[
-			tool,
-			"--root",
-			nodeOne,
-			"serve",
-			"--bind",
-			"127.0.0.1",
-			"--peer",
-			"127.0.0.2",
-			"--port",
-			String(port),
-			"--ticket-sha256",
-			other.ticketSha256,
-			"--ttl",
-			"3",
-		],
-		{ stdio: ["ignore", "pipe", "pipe"] },
-	);
-	const stopped = new Promise<number | null>((resolveExit) => elsewhere.once("exit", resolveExit));
-	await new Promise((resolveWait) => setTimeout(resolveWait, 700));
+	const elsewhere = await serve(nodeOne, "127.0.0.2", other.ticketSha256, 3);
+	const port = elsewhere.port;
 	const refusedElsewhere = run([
 		"--root",
 		nodeThree,
@@ -241,8 +229,8 @@ it("hands the standby its files once, on a ticket that never leaves it, checked 
 	]);
 	expect(refusedElsewhere.status).not.toBe(0);
 	await expect(stat(join(nodeThree, "principal-secret"))).rejects.toThrow();
-	expect(await stopped).not.toBe(0);
-}, 30_000);
+	expect(await elsewhere.exited).not.toBe(0);
+}, 60_000);
 
 it("gives the shared vault its own login helper token, written on the host and never printed", async () => {
 	const vault = await root();

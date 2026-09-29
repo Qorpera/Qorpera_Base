@@ -347,6 +347,7 @@ Founders (2026-09-28, migration 20260928248100): every member with the role
 - `qorpera_list_wake_occurrences`
 - `qorpera_quarantine_session_turn`
 - `qorpera_read_session_events`
+- `qorpera_read_session_events_tail(p_session_id, p_before_sequence, p_limit)` — the newest events below a sequence (the newest overall when null), oldest first, in the shape of `qorpera_read_session_events`, which it runs for its authorization and page check (20260929410000); a thread opens with it and "Show earlier" pages back
 - `qorpera_renew_session_turn_v2`
 - `qorpera_renew_wake`
 - `qorpera_request_session_turn_v2`
@@ -510,7 +511,7 @@ wake), so no agent runs and nothing is charged before it.
   `qorpera_enqueue_runner_job` refuse new work with 55000 ("Waiting for
   computer hours: the company has none left").
   A client shows "Not measured yet" while the function is missing (PGRST202).
-  From 20260929330000, `hoursLeft`: null before the live switch (show measured
+  From 20260928259330, `hoursLeft`: null before the live switch (show measured
   hours only); `{"complimentary": true}` for a company that is never limited;
   otherwise `leftSeconds` (zero or less when out of hours, below zero by what
   it owes) with `freeSeconds`, `planSeconds` (the founders' current plans,
@@ -520,7 +521,7 @@ wake), so no agent runs and nothing is charged before it.
   pays), and, with `userId` null, the packs of members who are no longer
   founders; other members never see who paid. `hoursLeft` is always now,
   whatever month is read.
-  From 20260929280000, `qorpera_company_waiting_for_hours(p_profile_id)` →
+  From 20260928259280, `qorpera_company_waiting_for_hours(p_profile_id)` →
   boolean says the same as `waitingForHours` without the month's figures,
   for a client that asks with its other periodic reads (any member; anyone
   else gets 42501). A client treats a missing function (PGRST202) as not
@@ -543,7 +544,7 @@ wake), so no agent runs and nothing is charged before it.
   `grantedSeconds` this period and `companies` (`profileId`, `seconds` this
   period paid by the plan)). The signed-in member's own plan only.
 
-### Event hooks (20260929260000_runtime_event_intake)
+### Event hooks (20260928259260_runtime_event_intake)
 
 - Contract: section 19, 2026-09-29 amendment "events wake agents"; design
   `deploy/first-node/RUNTIME-EVENT-INTAKE.md`. Step W1a: address-proven hooks
@@ -649,13 +650,13 @@ machine.
   `QORPERA_BILLING_RETURN_URL` (`https://app.qorpera.com/#/account`) with
   `?checkout=done` or `?checkout=cancelled` after the hash; hours arrive with
   Stripe's webhook, not with the return.
-- `event-intake` (20260929260000) — the public address of a company's
+- `event-intake` (20260928259260) — the public address of a company's
   hooks: `POST /functions/v1/event-intake/<address>` from the sender, not
   from clients. Answers 202 (accepted), 200 (duplicate), 400 (malformed), 404
-  (no such hook), 405 (not POST), 409 (paused or not ready), 413 (over the
-  hook's size limit or 256 KiB), 429 (over the hook's minute or the company's
-  hourly budget, with `Retry-After`), 431 (headers too large) or 503 (switched
-  off, or retry).
+  (not a hook address, by its shape, or no such hook), 405 (not POST), 409
+  (paused or not ready), 413 (over the hook's size limit or 256 KiB), 429
+  (over the hook's minute or the company's hourly budget, with `Retry-After`),
+  431 (headers too large) or 503 (switched off, or retry).
 - `profile-invitation-email`, `company-file-verifier`, `artifact-gc-worker`,
   `runner-control`, `runner-broker`, `runner-orchestrator`,
   `computer-hour-notices` (20260928249160, founders' hour emails) — service or
@@ -813,7 +814,7 @@ does locally that the contract forbids.
 | `profile:migrate-local` | desktop-only transitional (qorpera_promote_local_profile) — no web equivalent by design |
 | `room:archive` | qorpera_close_shared_session |
 | `room:create` | rooms: Order 3 fan-out; today shared sessions (qorpera_create_shared_session_v4) |
-| `room:open` | qorpera_read_session_events + Realtime |
+| `room:open` | qorpera_read_session_events_tail (the newest page; older pages on "Show earlier") + qorpera_read_session_events (new events) + Realtime |
 | `room:restore` | review |
 | `room:send` | qorpera_append_session_input |
 | `room:update` | review |

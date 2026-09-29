@@ -131,7 +131,7 @@ Boundary of the current implementation:
 
 `LxdOfficeRetirementWorker` retires the Company Computer of a company being
 deleted (RUNTIME-COMPANY-DELETE.md, D3; migration
-`20260929320000_runtime_office_retirement.sql`). It runs only after the
+`20260928259320_runtime_office_retirement.sql`). It runs only after the
 power-off worker's confirmed `powered_off` for a `power_off` transition with no
 resume, or after that power-off's completion when its replay fails (for
 example after a node reboot: the power-off worker binds its host boot). The
@@ -145,7 +145,40 @@ end with that stop, so the delete follows `[create, start, …, stop]` under the
 VM lineage grammar. A durable nonce file records each requested five-second SQL
 window (at most 64). Inside a window the worker rechecks that the VM is
 `Stopped` (status code 102, LXD instance and state), then dispatches the one
-journaled `delete`. It settles only on a settled delete and an absent VM:
+journaled `delete`. It settles only on a settled delete and an absent VM.
+It then empties the workbench (D5b, `lxd-office-workbench-removal.ts`):
+- What goes: the top-level entries this office's journal accounts for, that is
+  its adoptions' trees and staging trees (by adoption id) and the top-level
+  names its retained inventories saw (sources an adoption left in place,
+  including state it quarantined, which is removed unreviewed by the founder's
+  decision). The mount root stays. Any other top-level name, another office's
+  adoption tree above all, holds the office.
+- The workbench must be this office's alone: no other LXD instance on the host
+  has a disk at, under or above the mount, and no other NFS mount on the host
+  reaches the same export (same server; same, enclosing or enclosed path). An
+  export shared with another host cannot be seen here: one export per office is
+  a provisioning rule.
+- The walk holds a descriptor per directory and names each entry through its
+  parent's descriptor (`/proc/self/fd`), as bytes, so depth is not limited by
+  path length and a name that is not UTF-8 goes too; a directory is opened only
+  as the inode it was checked as. Each entry must belong to the workbench
+  account and sit on the root's mount (checked per directory); a symbolic link
+  is removed, never followed; a directory its owner cannot read, write or
+  search is set to 0700 first.
+- A pass ends 30 seconds after it starts or 10 seconds before the
+  retirement's 60-second budget ends, whichever is first (the time its reads
+  take counts against it), and reports `pending`; the next pass continues. When the root lists nothing, the gate and the VM's
+  absence are checked again.
+- A failure holds the office and logs `OFFICE_WORKBENCH_<reason>` (for example
+  `FOREIGN_ENTRY`, `UNACCOUNTED_ENTRY`, `SHARED`, `REMOVAL_EACCES`). The
+  lifecycle keeps retrying about every two seconds, asking SQL for the
+  retirement each time but never releasing. `find <mount> -xdev ! -uid <uid>`
+  finds a foreign entry. For `UNACCOUNTED_ENTRY`, the accounted names are
+  `.qorpera-adopted-<id>` and `.qorpera-adoption-staging-<id>` for each
+  `adoption-<id>.json` or `adoption-result-<id>.json` in the journal, and the
+  top-level paths of each `inventory-*.json` whose root is this mount. Once
+  what holds it is gone the provider carries on.
+Only then
 `qorpera_retire_runtime_office` releases the allocation and node demand, drops
 the node binding and marks the office `retired`. The worker then writes
 `office-retired.json` from SQL's receipt. An unknown or failed delete is held
@@ -162,10 +195,12 @@ Fleet units of the same office on other candidate hosts have no marker; the
 operator disables them (RUNTIME-COMPANY-DELETE.md, D3 lane).
 
 Retirement keeps no custody: by the founder's decision (28 September 2026) no
-copy of a deleted company's machine is kept. The private
+copy of a deleted company's machine is kept. Reset archives from earlier resets
+of this office (`<archiveRoot>/<resetId>/`, never deleted by the worker) still
+hold its event outbox and stop history; the operator runbook removes them. The private
 `/var/lib/qorpera-office-events` outbox is lost with the root, including
-undelivered records. The workbench is a host directory and is not touched here
-(deleted-company NAS queue, D5). Not retired, and held for an operator: a
+undelivered records, and the workbench goes before the release. Not retired,
+and held for an operator: a
 computer created but never activated, one mid-reset, one whose resume was
 under way at the deletion, and one whose node rebooted between the power-off
 record and its node-demand suspension (SQL keeps answering "not ready" until an

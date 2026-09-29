@@ -50,12 +50,12 @@ type Shape = "interval" | "weekly" | "file";
 const UNITS = { minutes: 1, hours: 60, days: 1440 } as const;
 
 /** The editor shows a routine's one trigger: an interval, days at a time, or a file
- * change. Anything else (more triggers, a time window) has no shape here, and a
- * save would drop what the editor cannot show. */
+ * change. Anything else (more triggers, a time window, a hook's events) has no
+ * shape here, and a save would drop what the editor cannot show. */
 function editorShape(routine: CloudRoutine): Shape | undefined {
 	const [trigger, ...more] = routine.triggers;
 	if (!trigger || more.length) return undefined;
-	if (trigger.kind === "listener") return "file";
+	if (trigger.kind === "listener") return trigger.source === "company-file" ? "file" : undefined;
 	if (trigger.kind !== "schedule" || "windowStart" in trigger) return undefined;
 	return "localTime" in trigger ? "weekly" : "interval";
 }
@@ -707,7 +707,7 @@ export class AgentRoutines {
 		});
 		const path = h("input", {
 			type: "text",
-			value: first?.kind === "listener" ? first.path : "",
+			value: first?.kind === "listener" && first.source === "company-file" ? first.path : "",
 			placeholder: "finance/invoices",
 			"aria-label": t("Company File path"),
 		});
@@ -717,7 +717,7 @@ export class AgentRoutines {
 			h("option", { value: "subtree" }, t("This folder and everything in it")),
 			h("option", { value: "exact" }, t("Exactly this file")),
 		);
-		match.value = first?.kind === "listener" ? first.match : "subtree";
+		match.value = first?.kind === "listener" && first.source === "company-file" ? first.match : "subtree";
 		const reply = h(
 			"select",
 			{ "aria-label": t("Reply") },
