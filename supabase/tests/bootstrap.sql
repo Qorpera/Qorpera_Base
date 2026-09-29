@@ -134,13 +134,13 @@ $$;
 
 -- Reproduce the platform's default privilege posture so migration-level
 -- revokes and RLS policies are exercised the way production exercises them:
--- schemas usable, and tables, sequences and functions default-granted to the
--- API roles, which the migrations then explicitly revoke. A function revoked
--- from PUBLIC only stays executable by anon, authenticated and service_role,
--- as in production (deploy/first-node/RUNTIME-STEP-1.md, the 2026-08-27
--- permission audit; 20260929570000). Without this block every role-based test
--- would fail on schema access and prove nothing about the actual separation
--- model.
+-- schemas usable, tables and sequences default-granted (which the protected
+-- tables then explicitly revoke). Production also default-grants functions
+-- (deploy/first-node/RUNTIME-STEP-1.md, the 2026-08-27 permission audit); the
+-- SQL suite adds that with platform-function-defaults.sql, which the scripts
+-- that reuse this file do not load yet. Without this block every role-based
+-- test would fail on schema access and prove nothing about the actual
+-- separation model.
 grant usage on schema public to anon, authenticated, service_role;
 grant usage on schema extensions to anon, authenticated, service_role;
 grant usage on schema auth to anon, authenticated, service_role;
@@ -151,7 +151,6 @@ grant execute on function auth.uid() to anon, authenticated, service_role;
 grant execute on function auth.role() to anon, authenticated, service_role;
 alter default privileges in schema public grant all on tables to anon, authenticated, service_role;
 alter default privileges in schema public grant all on sequences to anon, authenticated, service_role;
-alter default privileges in schema public grant all on functions to anon, authenticated, service_role;
 grant all on storage.objects to authenticated, service_role;
 grant select on storage.buckets to authenticated, service_role;
 -- Matching the platform posture on realtime.messages: table privileges are

@@ -1,9 +1,10 @@
 -- The API's reach into SECURITY DEFINER functions. Production's platform defaults grant EXECUTE on every
--- new public function to anon, authenticated and service_role, and bootstrap.sql mirrors them, so a
--- function stays callable with the publishable key unless its migration revokes those roles by name
--- ("revoke ... from public" is not enough; 20260929570000 closed 44 that relied on it). This is the
--- reviewed list of every non-trigger SECURITY DEFINER function in public that anon or authenticated may
--- execute, with whether each role may, and why that is safe. It runs first, against the migrations alone.
+-- new public function to anon, authenticated and service_role, and this suite mirrors them
+-- (platform-function-defaults.sql), so a function stays callable with the publishable key unless its
+-- migration revokes those roles by name ("revoke ... from public" is not enough; 20260929570000 closed
+-- 44 that relied on it). This is the reviewed list of every non-trigger SECURITY DEFINER function in
+-- public that anon or authenticated may execute, with whether each role may, and why that is safe. It
+-- runs first, against the migrations alone.
 --
 -- A new or changed function that anon or authenticated can execute fails this until it is listed here.
 -- Before listing it: is it meant for members (in supabase/CLIENT-CONTRACT.md, and it checks the caller)
@@ -11,7 +12,7 @@
 -- (and from service_role when no service caller exists). A function the roles can no longer execute, or
 -- that no longer exists, must leave the list too, so the list never grants ahead of time.
 -- Generated 2026-09-29 from a production-posture build; "only through the platform default" marks a grant
--- that no migration made, which CI never had before bootstrap.sql mirrored the defaults.
+-- that no migration made, which CI never had before the suite mirrored the defaults.
 begin;
 set local search_path = pg_catalog;
 

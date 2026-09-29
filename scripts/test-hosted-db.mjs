@@ -137,6 +137,8 @@ async function main() {
 		const bootstrapPath = join(repositoryRoot, "supabase", "tests", "bootstrap.sql");
 		process.stdout.write("Applying disposable Supabase fixture\n");
 		runPsql(containerName, readFileSync(bootstrapPath, "utf-8"));
+		// Production's function default privileges: the SQL suite runs against production's function ACLs.
+		runPsql(containerName, readFileSync(join(repositoryRoot, "supabase", "tests", "platform-function-defaults.sql"), "utf-8"));
 
 		const migrationsRoot = join(repositoryRoot, "supabase", "migrations");
 		const migrations = sortMigrationNames(readdirSync(migrationsRoot));

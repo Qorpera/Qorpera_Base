@@ -5,7 +5,8 @@
 -- signature, shows that the grant is the only gate in front of the worst of them, and runs their real
 -- callers as the real roles: the invitation email worker as service_role, and member RPCs that reach the
 -- revoked functions SQL-to-SQL as the owner.
--- bootstrap.sql mirrors the platform's function defaults, so part 1 fails without the migration's revokes.
+-- The suite mirrors the platform's function defaults (platform-function-defaults.sql), so part 1 fails
+-- without the migration's revokes.
 begin;
 reset role;
 -- Counts the calls of every function below, so part 4 can show the real callers reached them.

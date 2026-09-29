@@ -165,6 +165,7 @@ select set_config('request.jwt.claims', '', false);
 -- Posture. This file used to assert that the database has no default privileges
 -- handing EXECUTE to the client roles, the assumption that "revoke from public"
 -- protects an internal function. Production does have them (Supabase's platform
--- defaults), and bootstrap.sql now mirrors them, so that assumption is gone:
--- 001_api_function_allowlist.test.sql pins every SECURITY DEFINER function the
--- client roles can execute, and the revokes above name the roles.
+-- defaults), and the SQL suite now mirrors them (platform-function-defaults.sql),
+-- so that assumption is gone. 001_api_function_allowlist.test.sql pins every
+-- SECURITY DEFINER function the client roles can execute, and the revokes above
+-- name the roles.
