@@ -117,6 +117,7 @@ export type CloudCompanyPathRpc =
 	// Machines agents start (2026-09-28).
 	| "qorpera_native_machine_start"
 	| "qorpera_native_machine_manage"
+	| "qorpera_company_machines_available"
 	// Event wakes (W2): the company's hooks and one event's body.
 	| "qorpera_list_agent_event_hooks"
 	| "qorpera_read_agent_event";

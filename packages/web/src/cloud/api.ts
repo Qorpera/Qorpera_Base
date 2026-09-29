@@ -135,7 +135,7 @@ export class CloudApi {
 	}
 
 	/** Whether the company is out of computer hours, so new work waits until hours are added
-	 * (the zero rule; migration 20260929280000_company_waiting_for_hours). Any member may ask. */
+	 * (the zero rule; migration 20260928259280_company_waiting_for_hours). Any member may ask. */
 	companyWaitingForHours(profileId: string): Promise<boolean> {
 		return this.cloud
 			.rpc("qorpera_company_waiting_for_hours", { p_profile_id: requiredUuid(profileId, "Profile id") })

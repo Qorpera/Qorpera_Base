@@ -340,21 +340,22 @@ closes the conversation; a restore reopens both, with the same conversation.
 - **Index:** a new rule inserts a company row (`created_via` `folder`, the file's id); an edit
   updates it; deleting the file archives it (review records keep citing it) and a restore brings
   it back; a move repoints it. The row's foreign key to the company row takes it `KEY SHARE`, so a
-  rule save takes the company row at rank 2 first.
+  rule save takes the company row at rank 0 first.
 - Never reviewed.
 
 ### `agents/<handle>/routines/<name>.md`
 
-**Pending decision 3:** exactly one trigger per file.
+**Pending decision 3:** exactly one trigger per file. F2-6 (migration 20260928259310) is built on
+it; a different answer changes the parser and `qorpera_company_state_routine_trigger` only.
 
 | Key | Required | Values |
 | --- | --- | --- |
 | `id` | yes | UUID: the routine id cursors and occurrences use |
 | `title` | yes | 1–160 bytes |
 | `status` | yes | `active`, `paused`, `concluded` ("expired" is derived by the scheduler) |
-| `when` | yes | `every`, `weekly`, `window`, `once`, `file-change` |
+| `when` | yes | `every`, `weekly`, `window`, `once`, `file-change` (refused on `folder-v2` until core C4 brings the folder's file events); `event` comes with W2 (#519): `hook` (the hook's lowercase uuid), optional `only` (1–20 distinct event types), plus `timezone` and `reply`, added by whichever of W2 and F2-6 lands second |
 | `minutes` | every, window | 5–10080 |
-| `starts` | every, weekly: optional | UTC instant |
+| `starts` | every, weekly: optional | UTC instant, to the millisecond at most (what a schedule keeps) |
 | `days` | weekly (required), window (optional) | list of `mon`…`sun`, at least one |
 | `time` | weekly | `HH:MM` |
 | `from`, `to` | window | `HH:MM`, `from` ≤ `to` |
@@ -362,7 +363,7 @@ closes the conversation; a restore reopens both, with the same conversation.
 | `at` | once | UTC instant; before `ends` |
 | `watch` | file-change | a path in the company; a trailing `/` is dropped |
 | `match` | file-change | `exact` or `subtree` |
-| `timezone` | all but `every` | IANA name |
+| `timezone` | all but `every` | IANA name the database knows |
 | `ends` | no | UTC instant |
 | `runs` | no (not for `once`) | 1–100000 |
 | `quiet` | no | `"HH:MM-HH:MM"`, start ≠ end |
@@ -376,13 +377,40 @@ closes the conversation; a restore reopens both, with the same conversation.
 - A key of another `when` is refused by name.
 - The owner is the agent whose folder holds the file. Moving the file to another agent's
   `routines/` hands the routine over.
-- Who pays for a routine's runs is not in the file (the "starter pays" work, S2).
+- Who pays for a routine's runs is not in the file (the "starter pays" work, S2: a member's login
+  pays only for work that member started). The saver's own login that pays for unattended work
+  (a member's, or a run's requester's; the rule of `qorpera_agent_routine_sponsor`, read without
+  its lock on the login) pays for a new version and for work a save starts or extends: a resume,
+  a reopen, reviving an expired routine, more runs, a later end, a handover to another agent. A
+  version on another login moves to the saver's. A pause, a conclusion, fewer runs, an earlier
+  end or new quiet hours need no login.
+- A member without such a login cannot make those saves, and neither can an agent acting with no
+  run (a coding session, or a desktop whose run ended: C1b-3a's views) for a member without one. A
+  run whose requester has none pins the run's login, and the routine waits (`needs_model_account`). Unlike an agent's save today, the
+  commit never sets up a login for unattended work (that takes the login `FOR UPDATE` and writes
+  rows after the clock): the runtime's routine writer does it before its commit (F2-1b).
+- The index row's `origin` is who made the first commit: `agent` for a run, else `member`.
 
 **Versions and schedule positions:**
-- Each saved change of the parse is a new routine version.
-- Schedule positions follow the 2026-09-25 rules: the same timing keeps its position. The rules
-  compare the two parses' timing, keyed by the routine id with one trigger. Instants are
-  compared canonically, so re-spelling `starts` changes nothing.
+- A saved change of what a run pins (the agent, title, instructions, trigger with its reply, and
+  effort) is a new routine version. Status, `ends`, `runs`, quiet hours and the conclusion are
+  the routine row's, so pausing or timing a routine needs no login. A dynamic routine's own run
+  always makes its decision a new version, even at the same `at`.
+- Schedule positions follow the 2026-09-25 rules (`qorpera_routine_version_schedule_position`):
+  the same timing keeps its position, and a slot the scheduler queued for the old version is
+  offered again at the new one. The file's trigger id is always `file`. Instants are canonical,
+  so re-spelling `starts` changes nothing.
+- The commit never inserts a wake. The tick starts a dynamic routine's next run
+  (`qorpera_restore_dynamic_routine_runs`), so no admission fence is taken after the clock.
+
+**Status:**
+- The file's status is the saver's word when the save changes it, and when it restores the file.
+- Otherwise a pause, expiry or suspension that the platform recorded stays until core C2's queue
+  writes it into the file. The only exceptions: a save revives an expired routine (the sweep
+  expires it again while it has ended), and a new version with a paying login (a save's, or a
+  handover's) ends a wait for one. A platform commit's pause keeps the recorded reason.
+- A routine whose runs are used up has ended (`expired`), as the recorded occurrence at its limit
+  leaves it; more runs start it again.
 
 **Database rules (contract 16.3):**
 - While a run owes its routine's end-of-run decision, a unit from that run on that routine's
@@ -390,20 +418,46 @@ closes the conversation; a restore reopens both, with the same conversation.
   title, instructions, effort or reply, or concludes with a `conclusion`. The run cannot pause,
   remove, move or otherwise change its own routine.
 - A member's commit cannot create a `when: once` routine, or change a routine to it: "a
-  member's save … cannot create a dynamic routine".
+  member's save … cannot create a dynamic routine". Nor does a routine a member made become
+  dynamic (the tick runs only an agent's dynamic routines).
+- The platform starts no routine: nothing would pay for it.
+- The id never changes and belongs to one file; the name is one no routine row of the agent from
+  before the files has.
 - The platform writes `status: paused` for:
   - an agent's archiving (the follow-up queue, so a restore does not revive the routine);
   - the authorization-failure suspension;
   - a member's Stop of a dynamic routine's run;
   - a routine left without a model account.
 
-  Each platform commit records its reason. The index keeps it as `pause_reason`.
+  Each platform commit records its reason. The index keeps it as `pause_reason`. Until C2's
+  queue exists, the runtime writes these pauses to the index only.
 
 **Review:** an agent creating, changing, moving or deleting a routine is delegation. The one
-exception is the routine run's own end-of-run decision, when the actor's wake is this routine's
-occurrence and only `at`, `effort`, `reply`, or `status: concluded` with `conclusion` change. A
+exception is the routine run's own end-of-run decision while it is owed, when the actor's wake is
+this routine's occurrence and only `at`, `effort`, `reply`, or `status: concluded` with
+`conclusion` change. After the run decided, or another change settled the decision, its changes
+are delegation. A run that concludes its routine (reviewed, for a fixed routine) keeps working to
+its end. A
 decision that also changes the title or the instructions is reviewed as delegation (contract
 16.3; `cloud-action-review.ts`).
+
+**Index:** a new routine inserts `qorpera_cloud_routines` (`client_routine_id` is the file's id)
+and its first version; deleting the file retires it (its runs and history stay) and gives its
+key a tombstone, as a todo's; a restore brings it back; a move repoints it, and a move to
+another agent's folder is a version like the last one with the new agent, paid by the mover. The routine row is
+locked at rank 5 `FOR NO KEY UPDATE` (a run of that routine holds it `FOR KEY SHARE`), with the
+company row at rank 0 for the rows' foreign keys. The scheduler takes the company row `FOR
+UPDATE` (its fence) before the routine, so it and a save wait for each other at the company row
+(test 709). The member RPC (`qorpera_upsert_cloud_routine`) refuses a `folder-v2` company's
+routines with 55000, except rows from before it became `folder-v2`; the agent tools
+(`qorpera_manage_agent_routine`, `qorpera_decide_agent_routine`) refuse on a `folder-v2` company, whose
+agents write routine files (their file writers come with F2-1b). The name index
+(`qorpera_cloud_routines_agent_key`) covers file routines of either origin. Known: a save that
+carries several routines (an agent folder's delete or move) locks them in id order while the
+expiry sweep updates ended routines in its own order, so the two can deadlock (40P01; one side
+retries, nothing is wrong). F1's C1b-3a (#497,
+20260928259230) moved the company row to rank 0, before the members; F2-6 takes it there too (its
+migration stops if that change has not run).
 
 ### `agents/<handle>/todos/<name>.md`
 
@@ -433,7 +487,7 @@ last file. The key is the file name.
 Deleting the file cancels an open or blocked todo, retires the row and gives its key a tombstone
 with a `.` (no file name has one) and the whole id, so a new file of that name is free and two
 tombstones never meet; a restore brings it back.
-A todo save takes the company row at rank 2 (the row's foreign key).
+A todo save takes the company row at rank 0 (the row's foreign key).
 
 Not reviewed. Dispatching a worker is reviewed.
 
@@ -561,7 +615,7 @@ of the body, for readers that should not reach the storage server.
   - A run of the room takes the room `FOR KEY SHARE` at rank 4, before its paths.
   - Posting takes the company row `FOR UPDATE` (`qorpera_lock_profile_gc_fence`) before the room and
     the clock.
-  - So `targets` returns the company row at rank 2 (`keyshare`, first within the rank) with every
+  - So `targets` returns the company row at rank 0 (`keyshare`; C1b-3a moved it from the head of rank 2) with every
     roster row, and the room at rank 4 (`update`) for a rename, archive or retire, all before the
     paths. Test 701 races a rename and an instructions edit against posting.
   - A `group.md` write takes the company row the same way: a new chat's room and conversation,
@@ -581,13 +635,13 @@ of the body, for readers that should not reach the storage server.
     writer. The member RPC's section and move actions refuse for `folder-v2` companies (55000), and
     the sidebar's revision row is not bumped; the web reads the folder feed (C4).
 - `targets` reads the roster with no lock. A legacy roster write (`qorpera_put_profile_staff`)
-  between `targets` and the rank-2 lock can still make the trigger take the room after the paths.
+  between `targets` and the company-row lock can still make the trigger take the room after the paths.
   That save can then deadlock with a run of that room (40P01; one side retries, no data is wrong).
   This ends when C1c stops legacy writes to folder-v2 rows (§9).
-- The member RPCs of #462 (remove, change role, leave) take the company row before the member's row,
-  while a save takes its member row at rank 1 and the company row at rank 2. So a membership change
-  of the saving member can deadlock with that member's roster save (40P01; the save retries). This
-  ends when F1 takes the company row before the members (a rank 0), which fits posting and #462.
+- The member RPCs of #462 (remove, change role, leave) take the company row before the member's row.
+  A save used to take its member row at rank 1 and the company row at rank 2, so a membership change
+  of the saving member could deadlock with that member's roster save. Resolved in C1b-3a: the
+  company row is rank 0, before the members, which fits posting and #462 (test 644 D).
 - A row removed outside its folder (`deleted_at`, the legacy roster delete): `decide` refuses an
   edit of its `agent.md`; moving or deleting its folder is saved and leaves the row alone.
 - **Rebuild:** a job lists every structured path, reads the bytes and parses them with the
@@ -717,10 +771,10 @@ claims by kind then key (F2). All nine come before paths, objects, admission and
    commits.
 5. **F2-4** rules (migration 20260928249190): the reviewer reads the rule index, its own table;
    the Settings RPCs refuse company rules for folder-v2.
-6. **F2-5** todos and worker files: **F2-5a** todos (migration 20260929210000); **F2-5b** worker
+6. **F2-5** todos and worker files: **F2-5a** todos (migration 20260928259210); **F2-5b** worker
    briefs and results, with core C3's writers, which dispatch and report through the platform.
-7. **F2-6** routines, last because the scheduler, schedule positions and decisions are the
-   most delicate part.
+7. **F2-6** routines (migration 20260928259310), last because the scheduler, schedule positions
+   and decisions are the most delicate part. `file-change` routines wait for core C4.
 
 Each step comes after F1's C1 (C1b brings the call sites), is `folder-v2` only, rides the release
 train, and gets an independent exact-head review. The web screens for each kind follow with

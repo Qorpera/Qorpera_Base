@@ -1312,6 +1312,69 @@ describe("LXD cloud runner provider", () => {
 		await expect(backend.acquire(runId, request, new AbortController().signal)).rejects.toThrow("cannot be replayed");
 	});
 
+	it("retires a guest still waiting two minutes after its job ended, and keeps one whose job goes on", async () => {
+		// 29 Sep 2026 (company deletion): an unknown assign or delivery leaves the guest up for a replay,
+		// but an ended job is never replayed, so the guest waited on its inbox forever with its machine.
+		const f = await acquiredFixture();
+		const asked: string[][] = [];
+		let ended = false;
+		const fetcher = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+			if (String(input).includes("qorpera_runtime_ended_runners")) {
+				const body = JSON.parse(String(init?.body)) as { p_runner_ids: string[] };
+				asked.push(body.p_runner_ids);
+				return Response.json(ended ? body.p_runner_ids : []);
+			}
+			return f.fetchImplementation(input, init);
+		}) as typeof fetch;
+		const journal = async () => JSON.parse(await readFile(f.journalPath, "utf8")) as Record<string, unknown>;
+		const age = async (ms: number) =>
+			writeFile(
+				f.journalPath,
+				JSON.stringify({ ...(await journal()), updatedAt: new Date(Date.now() - ms).toISOString() }),
+			);
+		// A fresh guest is not asked about.
+		await new LxdCloudRunnerProviderBackend(config(f.stateRoot), f.lxd, f.guest, fetcher).reconcile();
+		expect(asked).toEqual([]);
+		// Waiting two minutes: asked once per minute; while the job goes on the guest stays.
+		await age(2 * 60_000 + 1_000);
+		const backend = new LxdCloudRunnerProviderBackend(config(f.stateRoot), f.lxd, f.guest, fetcher);
+		await backend.reconcile();
+		await backend.reconcile();
+		expect(asked).toEqual([[runnerId]]);
+		expect(f.lxd.deleteCalls).toEqual([]);
+		expect(await journal()).toMatchObject({ physicalState: "registered" });
+		// Its job ended: a later pass retires the guest and releases its machine.
+		ended = true;
+		const later = new LxdCloudRunnerProviderBackend(config(f.stateRoot), f.lxd, f.guest, fetcher);
+		await later.reconcile();
+		expect(f.lxd.deleteCalls).toEqual([f.lxd.createCalls[0]?.name]);
+		expect(await journal()).toMatchObject({
+			physicalState: "stopped",
+			stopReason: "revoked",
+			capacityReleased: true,
+		});
+	});
+
+	it("keeps waiting guests when the database has no ended-runner check yet", async () => {
+		const f = await acquiredFixture();
+		const journal = async () => JSON.parse(await readFile(f.journalPath, "utf8")) as Record<string, unknown>;
+		await writeFile(
+			f.journalPath,
+			JSON.stringify({ ...(await journal()), updatedAt: new Date(Date.now() - 10 * 60_000).toISOString() }),
+		);
+		const fetcher = vi.fn(async (input: string | URL | Request, init?: RequestInit) =>
+			String(input).includes("qorpera_runtime_ended_runners")
+				? Response.json({ code: "PGRST202" }, { status: 404 })
+				: f.fetchImplementation(input, init),
+		) as typeof fetch;
+		await new LxdCloudRunnerProviderBackend(config(f.stateRoot), f.lxd, f.guest, fetcher).reconcile();
+		expect(
+			vi.mocked(fetcher).mock.calls.filter(([url]) => String(url).includes("qorpera_runtime_ended_runners")),
+		).toHaveLength(1);
+		expect(f.lxd.deleteCalls).toEqual([]);
+		expect(await journal()).toMatchObject({ physicalState: "registered" });
+	});
+
 	it("continues a sponsor handoff in a fresh attempt while preserving the retired guest and recovery history", async () => {
 		const stateRoot = join(await root(), "state");
 		const settings = governedConfig(stateRoot);

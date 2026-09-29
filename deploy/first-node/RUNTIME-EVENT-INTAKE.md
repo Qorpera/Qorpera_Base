@@ -14,8 +14,8 @@ Founder decisions of 29 September 2026, on the Q1 page "Qorpera on Qorpera"
 Contract: section 16.3 and the 2026-09-29 amendment "events wake agents" (section 19). This file is
 the technical design. The Q1 page is the plain one.
 
-Status: W1a in review (PR #509, `20260929260000_runtime_event_intake`); W2 in review (PR #519,
-`20260929290000_runtime_event_wakes`). W1b reserves `20260929260100`.
+Status: W1a shipped in release v150 (PR #509, re-slotted to `20260928259260_runtime_event_intake`);
+W2 in review (PR #519, `20260929290000_runtime_event_wakes`). W1b reserves `20260929260100`.
 
 ## Words
 
@@ -31,7 +31,7 @@ Status: W1a in review (PR #509, `20260929260000_runtime_event_intake`); W2 in re
 
 | Step | What | Slot |
 | --- | --- | --- |
-| W1a | Hooks, deliveries, the public intake function, address-proven hooks end to end, member RPCs | `20260929260000` |
+| W1a | Hooks, deliveries, the public intake function, address-proven hooks end to end, member RPCs | `20260928259260` |
 | W1b | Signed hooks: the vault verifies Stripe, GitHub and HMAC signatures | `20260929260100` (reserved) |
 | W2 | Routine trigger on a hook, event wakes, the agent tools `list_hooks` and `read_event` | `20260929290000` |
 | W3 | Agents create, pause and remove hooks (`manage_hook`) | registered when started |

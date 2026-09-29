@@ -49,8 +49,8 @@ Rollback: `select cron.unschedule('qorpera-company-deletions')`. Requests then w
 |---|---|---|
 | Run machines (one-run VMs, exec-host sandboxes) | provider reconcile after the run ends | works; a guest that never got its assignment runs on (D2) |
 | Coding machines | coding executor housekeeping (retiring machine → stop, sleep, delete, release) | works |
-| Agent machines (#419, not yet merged) | executor, once the machine is set `deleted` | to add with #419 |
-| Company Computers | office provider: power off (works), delete and release (D3) | D3 |
+| Agent machines (#419) | executor, once the machine is set `deleted` | #531 adds them to `qorpera_stop_company_work`; until it lands their allocations hold the purge |
+| Company Computers | office provider: power off (works), delete and release (D3) | D3; live once the D3b provider build is installed per office |
 | Sign-in identity volumes on the exec host, recovery volumes | login gateway / LXD provider (D4) | D4 |
 | Credential capsules and recovery backups in storage | deleted-company storage queue (D5) | D5 |
 | Coding NAS workspaces `workers/<company>/` | coding executor (D5) | D5 |
@@ -66,10 +66,57 @@ records what it waits for.
 - **D1** (this migration): request, stop, finisher; coding machines and Company Computer power-off.
 - **D2** orchestrator: retire `registered`/`assigned` guests whose job is terminal (one-run VMs and
   exec-host sandboxes).
-- **D3** office retirement: retirement rows; after power-off the provider deletes the VM under its
-  operation journal, confirms absence, then one SQL call releases the allocation (the triggers release
-  the node demand and write the meter's `gone`), drops the node binding and sets the office `retired`.
-  Needs a new office provider build. RUNTIME-OFFICE-RETENTION.md is updated with it.
+- **D3** office retirement (D3a SQL: migration 20260928259320). After a deleting company's idle power-off
+  (stop acknowledged, node demand suspended, no later transition, boot intent or open reset), the
+  provider asks `qorpera_runtime_office_retirement(request)` for the retirement and its delete command
+  id, takes a five-second window (`qorpera_prepare_runtime_office_retirement`), deletes the VM under its
+  operation journal, confirms it is absent, then `qorpera_retire_runtime_office(request, evidence)`
+  releases the allocation (the release trigger releases the already suspended node demand; the meter
+  ended the stretch at the suspension), drops the node binding, sets the office `retired` and cancels its
+  start intent. The ledger `qorpera_runtime_office_retirements` has no link to the company, so
+  `qorpera_runtime_office_retirement_receipt` still answers after the purge.
+  D3b is the provider step (`lxd-office-retirement-worker.ts`, see "Office retirement" in
+  RUNTIME-OFFICE-RETENTION.md). After a confirmed power-off, also one from before a node reboot, the
+  lifecycle asks SQL; until a delete is pinned, at most once a minute per process. For a deleting
+  company it pins the delete command id in `office-retirement-request.json`, and from then on runs only
+  the retirement, before any other call (the fleet unit goes straight to it). It writes
+  `office-retired.json` from SQL's receipt; with that marker the provider, the fleet unit on that host
+  and the root host guards make no call, and the provider service ends. It needs a new office provider
+  build, which the coordinator rolls at the cut (lane below). Not covered, and held for an operator: offices whose VM was created but
+  never activated, offices mid-reset, an office whose resume (a wake before the deletion) was under
+  way when the deletion came (its boot intent or successor stays; the pause keeps it from finishing),
+  and an office whose node rebooted between its power-off record and its node-demand suspension.
+  Coordinator's lane for D3b: the coordinator rolls the office provider build at the cut (RUNTIME
+  release roll, as #505), after the release carrying 20260928259320 is live.
+  1. Build `node scripts/package-lxd-office-provider.mjs --out <dir>` from the release commit on node 2;
+     its sha256 must match the review. Stage it on the node.
+  2. Before the roll, read the provider's last observation (`journalctl -u <unit> -n 5`). Roll on
+     `active`, `idle` or `power_off`/`powered_off`, and on `unconfirmed` with `power-off host changed`
+     (a computer powered off before a node reboot, which the old build cannot replay; the new build
+     retires it if its company is being deleted). Wait while it is mid-reset, mid-resume or `pending`.
+  3. As root: check the live file's sha is the expected old one, keep it beside the live file as
+     `.retired-<sha12>` (root 0400), `install -m 0444` the new build to `.new`, move it over the live
+     file, restart the unit and wait for active. Production is `qorpera-prod-office-a1`
+     (`/opt/qorpera-prod-office-a1/qorpera-office-provider.cjs`); the acceptance provider
+     `qorpera-phql-office-a1` only when named. Before the roll, find the unit that serves each target
+     office of step 4 (its policy's `companyComputerId`). The VM keeps running across the restart;
+     confirm the next observation has the state from step 2, except for a deleting company's office,
+     which goes to `phase: retirement` (step 4).
+     Fleet units, where installed, run their own bundle (`scripts/package-lxd-office-fleet.mjs`,
+     installed under `/opt/qorpera/office-fleet/<sha>/`, a path named by its sha). Build it too, check
+     its sha, and install it with the fleet installer as an explicit reviewed reinstall; never move new
+     bytes over a sha-named path.
+  4. Check: deleting companies with a Company Computer (4168e335 and b116763d on 2026-09-28) show
+     `phase: retirement`, then `state: retired`; `qorpera_runtime_office_retirements.retired_at` is set;
+     LXD lists no instance for the office; the node's inventory stays ready (no unmanaged instance);
+     `qorpera_company_deletions.holdings` drops the machine and the finisher purges the company.
+  5. A retired office's unit exits 0 and stays stopped. Disable it, and disable this office's fleet
+     units on the other candidate hosts too: they have no marker and would call SQL for a purged office
+     at their next start. The protected configuration and journal are left for the operator runbook. The
+     workbench NAS directory stays (D5).
+  6. Rollback: put the `.retired-<sha12>` file back and restart. Not for an office that already has
+     `office-retirement-request.json` in its journal: an older build would keep asking for the deleted
+     VM. Leave that office on the new build.
 - **D4** identity retirement: per (node, identity) rows; the login gateway detaches the device from the
   exec host, deletes the volume, confirms; the holdings rule then waits only for unconfirmed rows. It
   also ends identity recoveries requested before the deletion (consent, activation and review do not
