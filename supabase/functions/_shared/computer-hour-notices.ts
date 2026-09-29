@@ -248,7 +248,7 @@ export function buildComputerHourEmail(job: ComputerHourNoticeJob, appUrlBase: s
 		footer = `You get this email as a founder of ${companyName}. Admins, contributors and viewers are never charged.`;
 		title = `${companyName} is out of computer hours`;
 		paragraphs = [
-			`${companyName} has used all its computer hours.`,
+			`${companyName} has no computer hours left.`,
 			"Machines do not start and new work waits until hours arrive. Work already running may finish within the hour. A plan or a pack of hours adds hours, and what was used past zero is paid from them first.",
 		];
 	}
