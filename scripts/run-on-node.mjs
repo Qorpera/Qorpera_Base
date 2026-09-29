@@ -395,7 +395,9 @@ async function main() {
 		for (const line of describePlan(plan, `${options.base} ${mergeBase.slice(0, 9)}, ${changed.length} files`)) console.log(line);
 		changedPlan = { base: options.base, mergeBase, files: changed.length, full: plan.full, steps: plan.steps.map((step) => step.name) };
 		if (!plan.steps.length) {
-			github.post("success", "nothing to run: documentation only");
+			// Documentation only is a result; no changed file at all (a commit master already contains) is not.
+			if (changed.length) github.post("success", "nothing to run: documentation only");
+			else console.error("== run-on-node: no change against master: nothing posted (run the test suite to check this commit)");
 			return 0;
 		}
 		options.command = ["bash", "-c", planScript(plan.steps)];
@@ -565,6 +567,9 @@ function githubStatus(root, options, source) {
 		plain: options.plain,
 		base: options.base,
 	});
+	// The status says "on node 2": a run pointed at another machine does not speak for it.
+	if (decision.post && (process.env.QORPERA_TEST_MACHINE || process.env.QORPERA_TEST_MACHINE_JUMP !== undefined))
+		decision = { post: false, reason: "QORPERA_TEST_MACHINE* points the run at another machine" };
 	if (decision.post) {
 		const pushed = commitPushed(slug, source.head);
 		const onBranch = git(root, ["branch", "-r", "--contains", source.head]).toString().trim().length > 0;
@@ -605,6 +610,7 @@ function githubStatus(root, options, source) {
 				pending = true;
 				process.once("SIGINT", interrupted("SIGINT", 130));
 				process.once("SIGTERM", interrupted("SIGTERM", 143));
+				process.once("SIGHUP", interrupted("SIGHUP", 129));
 			} else if (state !== "pending") pending = false;
 			return { ...plan, state, description: text, posted: ok };
 		},

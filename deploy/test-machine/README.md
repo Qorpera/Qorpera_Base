@@ -112,7 +112,8 @@ as a check. The statuses API uses no Actions minutes.
 Nothing is posted, and the run says why, for: uncommitted or untracked changes; a commit on no pushed branch;
 ad-hoc `-- command` runs; suite arguments, `--env`, `--sudo` or an install/build override (a narrowed run cannot
 speak for the suite); `changed` with a `--base` other than `origin/master` (a later base can make its plan
-empty); `--no-status`. If the working tree changes while it is copied, the run posts `error` instead of a
+empty), or on a commit master already contains (nothing changed: run `test` instead); a target set through
+`QORPERA_TEST_MACHINE*`; `--no-status`. If the working tree changes while it is copied, the run posts `error` instead of a
 result. A failed post never changes the run's exit code.
 
 The statuses are advisory: the repository's plan has no branch protection, so merging cannot require them,
