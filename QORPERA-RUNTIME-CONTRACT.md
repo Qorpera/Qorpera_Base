@@ -3882,8 +3882,9 @@ complete section 16.3's listener triggers and section 11.5's broker. Design:
    of at most 256 KiB and at most 120 deliveries a minute; per company, 50
    live hooks and an hourly budget of stored deliveries and bytes (bodies and
    headers) that operators set; and a platform switch, built off and turned on
-   at acceptance. A refused request writes nothing, and a receive takes no
-   lock on the company or the hook.
+   at acceptance. A refused request writes nothing, and a receive never
+   waits for the company row; it waits for its hook only while the hook is
+   deleted.
 4. **One wake per burst.** A listener routine has at most one queued event
    occurrence per trigger. The occurrence takes the waiting deliveries when it
    is read (at most 20, with bodies cut to fit the wake's size bound; the agent
@@ -3897,8 +3898,9 @@ complete section 16.3's listener triggers and section 11.5's broker. Design:
    once the core's writer lands, the platform also saves each verified event
    in the company folder under `hooks/<hook>/`, in the same change set. The
    platform creates `hooks/` with the first saved event, as it creates `code/`
-   when coding starts (5.6), and only the platform writes under it; agents and
-   members read it. Those files stay until the company deletes them.
+   when coding starts (5.6), and only the platform adds or changes files
+   under it; agents and members read them, and owners and admins may delete
+   them. Otherwise they stay until the company is deleted.
 7. **Today's routines take the trigger too.** Event wakes are added to the
    routine rows of `snapshot-v1` companies before the clean reset, and hooks
    exist for those companies (item 2), although new company state otherwise
