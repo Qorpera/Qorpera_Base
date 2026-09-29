@@ -1,11 +1,9 @@
-import { realpathSync } from "node:fs";
-import { basename, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import { parseCompanyComputerPreparationCommand } from "@qorpera/contracts";
 import {
 	controlCompanyComputerBootConfiguration,
 	createCompanyComputerBootConfigurationSystemdManager,
 } from "./cloud-company-computer-boot-configuration-control.ts";
+import { runCompanyComputerControlEntry } from "./cloud-company-computer-control-entry.ts";
 import { lockedCompanyComputerControlChild } from "./cloud-company-computer-preparation-control-main.ts";
 
 export async function runCompanyComputerBootConfigurationControlMain(args: readonly string[]): Promise<void> {
@@ -41,23 +39,13 @@ export async function runCompanyComputerBootConfigurationControlMain(args: reado
 		process.removeListener("SIGTERM", shutdown);
 	}
 }
-if (
-	process.argv[1] &&
-	[
+runCompanyComputerControlEntry({
+	moduleUrl: import.meta.url,
+	names: [
 		"cloud-company-computer-boot-configuration-control-main.ts",
 		"qorpera-company-computer-boot-configuration-control.mjs",
-	].includes(basename(process.argv[1])) &&
-	realpathSync(resolve(process.argv[1])) === realpathSync(fileURLToPath(import.meta.url))
-) {
-	if (process.argv.length === 3 && process.argv[2] === "--help")
-		console.log(
-			"Protected office configuration after VM resume. Requires retained shutdown history, current boot and kernel lock; never starts or activates the office.",
-		);
-	else
-		runCompanyComputerBootConfigurationControlMain(process.argv.slice(2)).catch(() => {
-			console.error(
-				"Office boot configuration could not confirm retained history, workbench custody and credentials.",
-			);
-			process.exitCode = 1;
-		});
-}
+	],
+	help: "Protected office configuration after VM resume. Requires retained shutdown history, current boot and kernel lock; never starts or activates the office.",
+	failure: "Office boot configuration could not confirm retained history, workbench custody and credentials.",
+	run: runCompanyComputerBootConfigurationControlMain,
+});

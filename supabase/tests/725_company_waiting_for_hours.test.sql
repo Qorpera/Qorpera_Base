@@ -31,6 +31,7 @@ select pg_temp.wake_assert(not pg_temp.waiting_as('30000000-0000-4000-8000-00000
 
 -- Switched on, at zero: every member, founder, contributor or viewer, sees it.
 update public.qorpera_computer_hour_billing set zero_rule_since = clock_timestamp() - interval '1 second';
+select public.qorpera_computer_hour_zero_sweep(clock_timestamp());
 select pg_temp.wake_assert(pg_temp.waiting_as('30000000-0000-4000-8000-000000000002')
 	and pg_temp.waiting_as('30000000-0000-4000-8000-000000000001')
 	and pg_temp.waiting_as('30000000-0000-4000-8000-000000000003'), 'At zero: waiting');

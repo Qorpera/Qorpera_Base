@@ -271,7 +271,7 @@ export async function openOfficeCodePackageFreshRoot(m: OfficeCodePackageMateria
 		const verify = async () => {
 			signal.throwIfAborted();
 			await assertCompanyComputerPreparationLockAndBoot(command);
-			await assertCompanyComputerResetRootClean(m.reset.successorActivationId);
+			await assertCompanyComputerResetRootClean(m.reset.successorActivationId, command.bootId);
 			await m.verifyMaterial();
 			await workbench.verify();
 			await assertPackageInventoryStamps(stamps);

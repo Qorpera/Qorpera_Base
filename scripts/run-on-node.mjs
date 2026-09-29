@@ -4,6 +4,7 @@ import { existsSync, lstatSync, mkdtempSync, readFileSync, readlinkSync, rmSync,
 import { constants, homedir, hostname, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { describePlan, planChanged, planScript } from "./run-on-node-plan.mjs";
 
 /** Runs one test suite on the operator test machine on node 2 instead of Docker on a
  * developer Mac (contract 24.1). The working tree git would see (tracked plus untracked,
@@ -14,16 +15,20 @@ import { pathToFileURL } from "node:url";
 const USAGE = `Usage: node scripts/run-on-node.mjs [options] <suite> [-- args]
        node scripts/run-on-node.mjs [options] -- <command...>
 
-Suites: hosted-db            npm run test:hosted-db (no npm ci needed)
+Suites: changed              what the files changed against --base need (scripts/run-on-node-plan.mjs)
+        test                 npm test, the whole repository (builds the shared packages first)
+        hosted-db            npm run test:hosted-db (no npm ci needed)
         npm:<script>         npm run <script>
         scripts/<file>.mjs   node scripts/<file>.mjs
 
 Options: --install / --no-install   run npm ci --ignore-scripts first (default: yes, except hosted-db)
+         --build / --no-build       then npm run build:web-sdk, which script tests import (default: only for test)
          --env NAME=VALUE           pass an environment variable (repeatable)
          --sudo                     run the command as root inside the test machine
          --keep                     keep the run directory on the test machine
          --record FILE              also write the run record as JSON to FILE
          --allow-secrets            copy untracked files that look like secrets (.env*, *.pem, keys)
+         --base REF                 compare against REF for changed (default: origin/master)
          --dry-run                  print what would run, change nothing
 
 Target (environment): QORPERA_TEST_MACHINE      default tester@10.201.0.2
@@ -32,32 +37,49 @@ Target (environment): QORPERA_TEST_MACHINE      default tester@10.201.0.2
 
 const NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const HOME = "/home/tester";
+/** Runner users on the test machine (guest-setup.sh creates them). Each run takes one for its whole
+ * duration, so per-user kernel limits count that run alone: the coding Git sandbox caps RLIMIT_NPROC
+ * at 512 tasks, which every concurrent run under one shared user exhausted together. */
+export const RUNNERS = Array.from({ length: 16 }, (_, i) => `ci${String(i + 1).padStart(2, "0")}`);
+/** At most this many runs execute at once, each with (vCPUs / CPU_SLOTS) vitest workers, so the slots
+ * together use the machine's vCPUs: 2 each on 6 vCPUs, 4 each on 12. Measured 2026-09-29: a full npm test
+ * is ~881 CPU-seconds; two full runs plus other sessions drove 6 vCPUs to load 22 and timing-bound tests
+ * failed. Later runs wait in arrival order. */
+export const CPU_SLOTS = 3;
 const SECRET =
 	/(^|\/)(\.env(\.[^/]*)?|\.envrc|\.dev\.vars|\.npmrc|\.netrc|\.pgpass|\.git-credentials|\.aws\/credentials|[^/]*\.(env|pem|p12|pfx|key|tfvars)|id_[^/.]+|credentials[^/]*\.json|service-account[^/]*\.json|[^/]*\.private\.json)$/i;
 
 export function parseArgs(argv) {
 	const options = {
 		install: undefined,
+		build: undefined,
 		env: [],
 		sudo: false,
 		keep: false,
 		record: null,
 		allowSecrets: false,
 		dryRun: false,
+		base: "origin/master",
 	};
 	let i = 0;
 	for (; i < argv.length && argv[i] !== "--" && argv[i].startsWith("--"); i++) {
 		const flag = argv[i];
 		if (flag === "--install") options.install = true;
 		else if (flag === "--no-install") options.install = false;
+		else if (flag === "--build") options.build = true;
+		else if (flag === "--no-build") options.build = false;
 		else if (flag === "--sudo") options.sudo = true;
 		else if (flag === "--keep") options.keep = true;
 		else if (flag === "--allow-secrets") options.allowSecrets = true;
 		else if (flag === "--dry-run") options.dryRun = true;
-		else if (flag === "--env" || flag === "--record") {
+		else if (flag === "--env" || flag === "--record" || flag === "--base") {
 			const value = argv[++i];
 			if (value === undefined) throw new Error(`${flag} needs a value`);
 			if (flag === "--record") options.record = value;
+			else if (flag === "--base") {
+				if (!/^[A-Za-z0-9._/@^~][A-Za-z0-9._/@^~-]*$/.test(value)) throw new Error(`Invalid --base ${value}`);
+				options.base = value;
+			}
 			else {
 				const equals = value.indexOf("=");
 				if (equals < 1 || !NAME.test(value.slice(0, equals))) throw new Error(`Invalid --env ${value}`);
@@ -76,14 +98,23 @@ export function parseArgs(argv) {
 		if (!suite) throw new Error(USAGE);
 		if (rest[1] !== undefined && rest[1] !== "--") throw new Error(`Put suite arguments after --\n\n${USAGE}`);
 		const extra = rest.slice(2);
+		if (suite === "changed") {
+			if (extra.length) throw new Error("changed takes no suite arguments");
+			// The plan, and with it the command and the build, is made from git in main().
+			return { ...options, install: options.install ?? true, build: options.build, suite, command: [] };
+		}
 		const base = suiteCommand(suite);
 		// npm keeps --flags after the script name for itself unless they follow a literal --.
 		command = base[0] === "npm" && extra.length ? [...base, "--", ...extra] : [...base, ...extra];
 	}
-	return { ...options, install: options.install ?? suite !== "hosted-db", suite, command };
+	const build = options.build ?? (suite === "test" && options.install !== false);
+	const install = options.install ?? (suite !== "hosted-db" || build);
+	if (build && !install) throw new Error("--build needs --install");
+	return { ...options, install, build, suite, command };
 }
 
 export function suiteCommand(suite) {
+	if (suite === "test") return ["npm", "test"];
 	if (suite === "hosted-db") return ["npm", "run", "test:hosted-db"];
 	if (/^npm:[A-Za-z0-9:_.-]+$/.test(suite)) return ["npm", "run", suite.slice(4)];
 	if (/^scripts\/[A-Za-z0-9_.-]+\.mjs$/.test(suite)) return ["node", suite];
@@ -170,6 +201,94 @@ export function pruneScript() {
 	].join("\n");
 }
 
+/** One ssh session: refresh the base copy, take a free runner user under a lock held until the
+ * session ends, hand it the run directory, then install and run as that user. The status file
+ * carries the runner user and times back to the record. Exit codes 90 (install or build) and 91-94
+ * (harness: cd, runner user, chown, CPU slot) are recorded as setup-failed. */
+export function runScript({ run, runDir, treeDir, files, copySeconds, install, build, runCommand }) {
+	const status = `${runDir}/.run-on-node-status`;
+	const queue = "/run/lock/qorpera-test-machine-queue";
+	const inner = [
+		`cd ${runDir} || exit 91`,
+		// A --env VITEST_MAX_WORKERS=n on the command still wins: it is set later, on the command itself.
+		`export VITEST_MAX_WORKERS=$(( $(nproc) / ${CPU_SLOTS} > 0 ? $(nproc) / ${CPU_SLOTS} : 1 ))`,
+		`echo "workers=$VITEST_MAX_WORKERS" >>${status}`,
+		"t0=$(date +%s%N)",
+		install
+			? `npm ci --ignore-scripts --no-audit --no-fund --prefer-offline >.run-on-node-npm-ci.log 2>&1 || { tail -50 .run-on-node-npm-ci.log; echo installed=0 >>${status}; exit 90; }`
+			: "true",
+		build
+			? `npm run build:web-sdk >.run-on-node-build.log 2>&1 || { tail -50 .run-on-node-build.log; echo installed=0 >>${status}; exit 90; }`
+			: "true",
+		`echo "installed=1 prepare_ms=$(( ($(date +%s%N) - t0) / 1000000 ))" >>${status}`,
+		`start=$(date +%s%N); ${runCommand}; code=$?; end=$(date +%s%N)`,
+		`echo "suite_ms=$(( (end - start) / 1000000 ))" >>${status}`,
+		'echo "== run-on-node: exit $code after $(( (end - start) / 1000000 )) ms"',
+		"exit $code",
+	].join("\n");
+	return [
+		"set -uo pipefail",
+		// The base copy is only a cache: a busy or failed refresh never fails the run.
+		`flock -w 60 ${treeDir}.lock rsync -a --delete ${runDir}/ ${treeDir}/ || echo "== run-on-node: base copy refresh skipped"`,
+		// Arrival-ordered queue for the CPU slots: a ticket per waiting run, its name sorting by arrival.
+		// The run holds a lock on its own ticket (fd 7) while it waits, so a ticket nobody holds belongs
+		// to a run that died, whatever its pid became; it is dropped. Only the first ticket may take a
+		// free slot. The slot lock stays on fd 9 until this session ends.
+		`mkdir -p ${queue}`,
+		`ticket=${queue}/$(date +%s%N)-$$; exec 7>"$ticket"; flock -n 7; trap 'rm -f "$ticket"' EXIT`,
+		'slot=""; queued=$(date +%s); shown=""',
+		'while [ -z "$slot" ]; do',
+		`\tfor t in ${queue}/*; do [ "$t" != "$ticket" ] && [ -e "$t" ] && flock -n "$t" true 2>/dev/null && rm -f "$t"; done`,
+		'\t[ -e "$ticket" ] || { exec 7>"$ticket"; flock -n 7; }',
+		`\tposition=$(ls ${queue} | sort | grep -n -x -F "$(basename "$ticket")" | cut -d: -f1)`,
+		'\tif [ "$position" = 1 ]; then',
+		`\t\tfor candidate in $(seq 1 ${CPU_SLOTS}); do`,
+		'\t\t\t{ exec 9>"/run/lock/qorpera-test-machine-slot$candidate.lock"; } 2>/dev/null || continue',
+		'\t\t\tif flock -n 9; then slot=$candidate; break; fi',
+		"\t\tdone",
+		"\tfi",
+		'\tif [ -z "$slot" ]; then',
+		`\t\t[ "$position" != "$shown" ] && echo "== run-on-node: waiting for a slot (${CPU_SLOTS} runs at a time), queue position $position" && shown=$position`,
+		'\t\t[ $(( $(date +%s) - queued )) -ge 7200 ] && { echo "== run-on-node: no slot free for two hours"; exit 94; }',
+		"\t\tsleep 2",
+		"\tfi",
+		"done",
+		'rm -f "$ticket"; exec 7>&-',
+		'queued_s=$(( $(date +%s) - queued ))',
+		'runner=""; waited=0',
+		'while [ -z "$runner" ]; do',
+		`\tfor candidate in ${RUNNERS.join(" ")}; do`,
+		'\t\t{ exec 8>"/run/lock/qorpera-test-machine-$candidate.lock"; } 2>/dev/null || continue',
+		'\t\tif flock -n 8; then runner=$candidate; break; fi',
+		"\tdone",
+		'\tif [ -z "$runner" ]; then',
+		'\t\t[ "$waited" = 0 ] && echo "== run-on-node: every runner user is busy; waiting"',
+		'\t\twaited=$((waited + 1)); [ "$waited" -ge 3600 ] && { echo "== run-on-node: no runner user free for an hour"; exit 92; }',
+		"\t\tsleep 1",
+		"\tfi",
+		"done",
+		// Holding the runner lock proves no live run uses this user: processes a killed run left behind would
+		// still count against its RLIMIT_NPROC and take CPU outside the slots.
+		'sudo -n pkill -KILL -u "$runner" 2>/dev/null; true',
+		// The load at start and uncapped test processes (older clients run suites as tester) explain a slow
+		// run. The pattern is anchored on node: this script's own shell carries the words in its command line.
+		`echo "runner=$runner slot=$slot queued_s=$queued_s load=$(cut -d' ' -f1 /proc/loadavg) uncapped=$(pgrep -u tester -fc '^([^ ]*/)?node .*(vitest|--test)' || true)" >${status}`,
+		`sudo -n chown -R "$runner:$runner" ${runDir} || exit 93`,
+		`echo "== run-on-node: $(hostname) ${run} as $runner in slot $slot of ${CPU_SLOTS} (${files} files, copy ${copySeconds.toFixed(1)} s, queued $queued_s s)"`,
+		`sudo -n -u "$runner" -H bash -c ${shellQuote(inner)}`,
+	].join("\n");
+}
+
+/** `key=value` words from the status file; later lines win. */
+export function parseStatus(text) {
+	const status = {};
+	for (const word of text.split(/\s+/)) {
+		const equals = word.indexOf("=");
+		if (equals > 0) status[word.slice(0, equals)] = word.slice(equals + 1);
+	}
+	return status;
+}
+
 function target() {
 	const host = process.env.QORPERA_TEST_MACHINE || "tester@10.201.0.2";
 	const jump = process.env.QORPERA_TEST_MACHINE_JUMP ?? "company41-node-02";
@@ -213,6 +332,17 @@ def r(c):
  except Exception: return None
 print(json.dumps({"machine":p.node(),"kernel":p.release(),"os":r(["sh","-c",". /etc/os-release; echo $PRETTY_NAME"]),"node":r(["node","--version"]),"npm":r(["npm","--version"]),"docker":r(["docker","version","--format","{{.Server.Version}}"]),"git":r(["git","--version"]),"cpus":r(["nproc"]),"kvm":os.path.exists("/dev/kvm")}))'`;
 
+/** Paths changed against the merge base with `base`: committed, uncommitted and untracked. */
+export function changedFiles(root, base, untracked) {
+	const mergeBase = git(root, ["merge-base", base, "HEAD"]).toString().trim();
+	// --no-renames: a move lists its old path too, so the tests of the place it left still run.
+	const tracked = git(root, ["diff", "--no-ext-diff", "--no-renames", "--name-only", "-z", mergeBase])
+		.toString("utf8")
+		.split("\0")
+		.filter(Boolean);
+	return { mergeBase, files: [...new Set([...tracked, ...untracked])].sort() };
+}
+
 async function main() {
 	const options = parseArgs(process.argv.slice(2));
 	const root = git(process.cwd(), ["rev-parse", "--show-toplevel"]).toString().trim();
@@ -221,6 +351,17 @@ async function main() {
 	const secrets = secretLooking(untracked);
 	if (secrets.length && !options.allowSecrets)
 		throw new Error(`Untracked files that look like secrets would be copied (use --allow-secrets): ${secrets.join(", ")}`);
+	let changedPlan = null;
+	if (options.suite === "changed") {
+		const { mergeBase, files: changed } = changedFiles(root, options.base, untracked);
+		const plan = planChanged(changed);
+		for (const line of describePlan(plan, `${options.base} ${mergeBase.slice(0, 9)}, ${changed.length} files`)) console.log(line);
+		changedPlan = { base: options.base, mergeBase, files: changed.length, full: plan.full, steps: plan.steps.map((step) => step.name) };
+		if (!plan.steps.length) return 0;
+		options.command = ["bash", "-c", planScript(plan.steps)];
+		options.build = options.build ?? plan.build;
+		if (options.build && !options.install) throw new Error("--build needs --install");
+	}
 	const source = {
 		head: git(root, ["rev-parse", "HEAD"]).toString().trim(),
 		dirty: git(root, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]).length > 0,
@@ -235,7 +376,7 @@ async function main() {
 	const env = options.env.map(([k, v]) => `${k}=${shellQuote(v)}`).join(" ");
 	const command = options.command.map(shellQuote).join(" ");
 	const runCommand = options.sudo
-		? `sudo -n env ${env} PATH="$PATH" ${command}`
+		? `sudo -n env VITEST_MAX_WORKERS="$VITEST_MAX_WORKERS" ${env} PATH="$PATH" ${command}`
 		: `${env ? `env ${env} ` : ""}${command}`;
 	if (options.dryRun) {
 		console.log(
@@ -275,33 +416,26 @@ async function main() {
 	if (rsync.status !== 0) throw new Error(`Copying the working tree failed (rsync exit ${rsync.status})`);
 	const synced = Date.now();
 
-	const prepared = await sshRun(
+	const code = await sshRun(
 		t,
-		[
-			"set -euo pipefail",
-			// The base copy is only a cache: a busy or failed refresh never fails the run.
-			`flock -w 60 ${treeDir}.lock rsync -a --delete ${runDir}/ ${treeDir}/ || echo "== run-on-node: base copy refresh skipped"`,
-			`cd ${runDir}`,
-			`echo "== run-on-node: $(hostname) ${run} (${files.length} files, copy ${((synced - started) / 1000).toFixed(1)} s)"`,
-			options.install
-				? "npm ci --ignore-scripts --no-audit --no-fund --prefer-offline >.run-on-node-npm-ci.log 2>&1 || { tail -50 .run-on-node-npm-ci.log; exit 90; }"
-				: "true",
-		].join("\n"),
+		runScript({
+			run,
+			runDir,
+			treeDir,
+			files: files.length,
+			copySeconds: (synced - started) / 1000,
+			install: options.install,
+			build: options.build,
+			runCommand,
+		}),
 	);
-	const installed = Date.now();
-	const code =
-		prepared === 0
-			? await sshRun(
-					t,
-					[
-						`cd ${runDir} || exit 91`,
-						`start=$(date +%s%N); ${runCommand}; code=$?; end=$(date +%s%N)`,
-						'echo "== run-on-node: exit $code after $(( (end - start) / 1000000 )) ms"',
-						"exit $code",
-					].join("\n"),
-				)
-			: prepared;
 	const finished = Date.now();
+	let status = {};
+	try {
+		status = parseStatus(sshCapture(t, `cat ${runDir}/.run-on-node-status 2>/dev/null || true`));
+	} catch {
+		// The record says the status is unknown.
+	}
 
 	let environment;
 	try {
@@ -325,13 +459,29 @@ async function main() {
 		command: options.command,
 		sudo: options.sudo,
 		install: options.install,
+		build: options.build,
 		run: options.keep ? runDir : run,
+		runner: status.runner ?? null,
+		cpuSlot: status.slot ? Number(status.slot) : null,
+		queuedSeconds: status.queued_s ? Number(status.queued_s) : null,
+		vitestMaxWorkers: Number(options.env.findLast(([name]) => name === "VITEST_MAX_WORKERS")?.[1] ?? status.workers ?? Number.NaN) || null,
+		loadAtStart: status.load ? Number(status.load) : null,
+		uncappedTestProcesses: status.uncapped ? Number(status.uncapped) : null,
+		...(changedPlan ? { changed: changedPlan } : {}),
 		startedAt: new Date(started).toISOString(),
 		copySeconds: (synced - started) / 1000,
-		prepareSeconds: (installed - synced) / 1000,
+		prepareSeconds: status.prepare_ms ? Number(status.prepare_ms) / 1000 : null,
+		suiteSeconds: status.suite_ms ? Number(status.suite_ms) / 1000 : null,
 		elapsedSeconds: (finished - started) / 1000,
 		exitCode: code,
-		result: prepared !== 0 ? "setup-failed" : code === 0 ? "passed" : "failed",
+		result:
+			status.installed === "1"
+				? code === 0
+					? "passed"
+					: "failed"
+				: code === 0 && !status.runner
+					? "unknown"
+					: "setup-failed",
 	};
 	console.log(`== run-on-node record ${JSON.stringify(record)}`);
 	if (options.record) {
