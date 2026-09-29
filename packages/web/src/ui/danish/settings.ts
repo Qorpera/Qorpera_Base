@@ -105,6 +105,8 @@ export const SETTINGS: Record<string, string> = {
 	"Computer hours unavailable": "Computertimer ikke tilgængelige",
 	"Counted once plans open": "Tælles, når abonnementerne åbner",
 	"Measured, not charged yet": "Målt, endnu ikke opkrævet",
+	"Out of computer hours. New work waits and starts by itself once hours are added.":
+		"Ingen computertimer tilbage. Nyt arbejde venter og starter af sig selv, når der er tilføjet timer.",
 	"Company machines": "Virksomhedens maskiner",
 	"Agent runs": "Agentkørsler",
 	"Coding machines": "Kodemaskiner",

@@ -10,7 +10,7 @@ kept. Usage and computer-hour records stay for bookkeeping, with plain ids (cont
 
 ## The flow
 
-1. **Request** (`qorpera_delete_hosted_profile` → `qorpera_request_company_deletion`, 20260929150000).
+1. **Request** (`qorpera_delete_hosted_profile` → `qorpera_request_company_deletion`, 20260928249150).
    In one transaction, after the company fence:
    - a row in `qorpera_company_deletions` (ids and times only, no link to the company, so it
      outlives the purge);

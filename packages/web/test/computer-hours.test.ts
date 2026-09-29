@@ -24,7 +24,14 @@ describe("company computer hours", () => {
 			byKind: { companyMachines: 79_200, agentMachines: 0, codingMachines: 10_800, runs: 52_200 },
 			awakeNow: { companyMachines: 1, agentMachines: 0, codingMachines: 0, runs: 2 },
 			meteredUntil: "2026-09-28T18:00:00.123456+00:00",
+			waitingForHours: false,
 		});
+	});
+
+	it("reads whether the company waits for computer hours, and an older reply as not waiting", () => {
+		expect(parseCompanyComputerHours(reply({ waitingForHours: true })).waitingForHours).toBe(true);
+		expect(parseCompanyComputerHours(reply({ waitingForHours: false })).waitingForHours).toBe(false);
+		expect(parseCompanyComputerHours(reply()).waitingForHours).toBe(false);
 	});
 
 	it("refuses another schema or a malformed figure", () => {

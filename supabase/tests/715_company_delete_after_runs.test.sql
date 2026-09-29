@@ -1,5 +1,5 @@
 -- @fixture 300_runtime_wake_bus.test.sql until "-- END WAKE FIXTURE"
--- Deleting a company that has used its agents (20260928248920, and since 20260929150000 in two steps:
+-- Deleting a company that has used its agents (20260928248920, and since 20260928249150 in two steps:
 -- the request hides the company and stops its work, the finisher purges it). Before, qorpera_delete_hosted_profile
 -- failed with 23503 for any company with a run: runner assignments, claims, leases and events restrict
 -- their parents and have no link to the company. Here the fixture company finishes one real run that
@@ -235,7 +235,7 @@ values ('30000000-0000-4000-8000-000000000010', 'late-invitee@example.test', 'co
 select set_config('qorpera_test.delete_fence', (select revision::text from public.qorpera_company_wake_admission_fences
 	where profile_id = '30000000-0000-4000-8000-000000000010'), true);
 
--- 4. The last member deletes the company (20260929150000). It disappears at once and all its work
+-- 4. The last member deletes the company (20260928249150). It disappears at once and all its work
 -- stops, but its rows stay until the nodes hold nothing of it.
 select pg_temp.path_claims('authenticated', '30000000-0000-4000-8000-000000000001');
 set local role authenticated;

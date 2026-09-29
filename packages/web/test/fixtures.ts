@@ -266,6 +266,7 @@ export function fixture() {
 		byKind: { companyMachines: 3_600, agentMachines: 0, codingMachines: 0, runs: 3_600 },
 		awakeNow: { companyMachines: 0, agentMachines: 0, codingMachines: 0, runs: 0 },
 		meteredUntil: "2026-09-28T18:00:00Z",
+		waitingForHours: false,
 	});
 	vi.spyOn(api, "listWorkspaces").mockResolvedValue([]);
 	vi.spyOn(api, "listSnapshots").mockResolvedValue([snapshot]);

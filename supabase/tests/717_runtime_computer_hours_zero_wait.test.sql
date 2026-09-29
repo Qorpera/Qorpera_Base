@@ -1,5 +1,5 @@
 -- @fixture 300_runtime_wake_bus.test.sql until "-- END WAKE FIXTURE"
--- Computer hours, build step 6a (20260929200000_runtime_computer_hours_zero_wait): at zero, new work
+-- Computer hours, build step 6a (20260928249200_runtime_computer_hours_zero_wait): at zero, new work
 -- waits. Switched off, or before live payments, it changes nothing; switched on, a company with no
 -- hours left starts no new run (wakes wait with a reason, routine slots are deferred, direct calls
 -- are refused, a stray insert is stopped) until hours arrive, and a founder's plan renewal in

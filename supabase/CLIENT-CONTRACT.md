@@ -50,14 +50,14 @@ Founders (2026-09-28, migration 20260928248100): every member with the role
 - `qorpera_leave_hosted_profile`: anyone leaves, except the last member (who
   deletes instead), the last founder while others remain, and a founder while
   company setup runs for them (42501).
-- `qorpera_delete_hosted_profile`: only the last member. Since 20260929150000 it
+- `qorpera_delete_hosted_profile`: only the last member. Since 20260928249150 it
   requests the deletion: the company disappears at once (no role for anyone, gone
   from `qorpera_list_hosted_profiles` and the founding lobby, the member's access
   state turns `revoked`) and all its work stops. Its rows are removed later, once
   the servers hold nothing of it (deploy/first-node/RUNTIME-COMPANY-DELETE.md). A
   second call answers 42501, like any call for a company the caller is not in.
 - Deleting an account (operators only; no client RPC; migration
-  20260929180000) takes the person's memberships as a leave does, with the
+  20260928249180) takes the person's memberships as a leave does, with the
   same refusals, and is also refused for the only member of a company that is
   not being deleted. It never removes company data: conversations, messages
   and runs keep naming the person, as they do after a leave. Closing an
@@ -500,7 +500,7 @@ wake), so no agent runs and nothing is charged before it.
   `codingMachines`, `runs`, standard seconds rounded per kind, so their sum
   may differ from the total by a few seconds), `awakeNow` (the same kinds,
   counted now), `meteredUntil` (the meter counts up to about a minute
-  ago) and, from 20260929200000, `waitingForHours` (true while the zero rule
+  ago) and, from 20260928249200, `waitingForHours` (true while the zero rule
   holds the company's new work: show "Waiting for computer hours"). Any
   member of the company, viewers included; anyone else gets 42501. While
   the rule holds a company, `qorpera_enqueue_execution_run` and
@@ -543,9 +543,9 @@ wake), so no agent runs and nothing is charged before it.
   URL plus this path), `maxBodyBytes` (1024–262144, default 65536),
   `perMinute` (1–120, default 60), `createdAt`, `lastReceivedAt` (absent
   until the first delivery). Owners and admins only (42501); 23505 for a
-  name in use, 54000 past 50 live hooks, 22023 for a bad name, purpose, proof
-  or limit, 0A000 for a `folder-v2` company (its hooks come with their
-  connection file).
+  name in use, 54000 past 50 live hooks, 22023 for a bad environment, name,
+  purpose, proof or limit, 0A000 for a `folder-v2` company (its hooks come
+  with their connection file).
 - `qorpera_set_event_hook_status(p_hook_id, p_status)` with `active`,
   `paused` or `removed` → the same descriptor. Removing is final (55000
   afterwards) and frees the name. Owners and admins only.
@@ -640,7 +640,7 @@ machine.
   off, or retry).
 - `profile-invitation-email`, `company-file-verifier`, `artifact-gc-worker`,
   `runner-control`, `runner-broker`, `runner-orchestrator`,
-  `computer-hour-notices` (20260929160000, founders' hour emails) — service or
+  `computer-hour-notices` (20260928249160, founders' hour emails) — service or
   runner authority only. Clients never call them.
 
 ## 6. Stability by Order (what a client may build now)
