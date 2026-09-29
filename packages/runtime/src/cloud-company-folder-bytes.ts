@@ -33,8 +33,9 @@ const MAX_CHUNKS = 64;
 const MAX_MANIFEST_BYTES = 32 * 1024;
 /** An open intent lasts 15 minutes; a long upload renews it before that. */
 const RENEW_AFTER_MS = 10 * 60 * 1000;
-/** A busy gateway (503: its NAS lanes or its database circuit) is asked twice more, after a short random wait. An
- * object is content-addressed, so a put asked again under the same intent is the same put. */
+/** A busy gateway (503) is asked twice more, after a short random wait: meant for its NAS lanes, two operations in
+ * flight. A database 500 opens its circuit for 5 s, so those tries fail fast without reaching the database. An object
+ * is content-addressed, so a put asked again under the same intent is the same put. */
 const BUSY_RETRIES = 2;
 
 interface Manifest {
@@ -377,6 +378,12 @@ export class HttpCloudCompanyFolderBytes implements CloudCompanyFolderBytes {
 				if (!(error instanceof GatewayBusyError) || attempt >= BUSY_RETRIES) throw error;
 			}
 			await new Promise<void>((resolve, reject) => {
+				const cancelled = (): CloudRuntimeDiagnosticError =>
+					new CloudRuntimeDiagnosticError("cancelled", "Cloud tool authority unavailable");
+				if (signal.aborted) {
+					reject(cancelled());
+					return;
+				}
 				const timer = setTimeout(done, 50 + Math.floor(Math.random() * 200));
 				function done(): void {
 					signal.removeEventListener("abort", stop);
@@ -384,10 +391,9 @@ export class HttpCloudCompanyFolderBytes implements CloudCompanyFolderBytes {
 				}
 				function stop(): void {
 					clearTimeout(timer);
-					reject(new CloudRuntimeDiagnosticError("cancelled", "Cloud tool authority unavailable"));
+					reject(cancelled());
 				}
 				signal.addEventListener("abort", stop, { once: true });
-				if (signal.aborted) stop();
 			});
 		}
 	}

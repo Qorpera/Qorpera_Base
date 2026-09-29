@@ -7,8 +7,9 @@ import { HttpCloudCompanyFolderBytes } from "@qorpera/runtime/cloud-company-fold
 import { CloudCompanyFolderError, type CloudCompanyFolderFile } from "@qorpera/runtime/cloud-company-folder-client";
 import type { CloudCompanyPathControl, CloudCompanyPathRpc } from "@qorpera/runtime/cloud-company-path-gateway";
 import { afterEach, expect, it, vi } from "vitest";
+import { ObjectDependencyError } from "../../object-gateway/src/dependency.ts";
 import { ObjectGatewayJournal } from "../../object-gateway/src/journal.ts";
-import { FileSystemObjectStore } from "../../object-gateway/src/object-store.ts";
+import { FileSystemObjectStore, type ObjectWriteResult } from "../../object-gateway/src/object-store.ts";
 import { ObjectGatewayReplication } from "../../object-gateway/src/replication.ts";
 import { createObjectGatewayHandler } from "../../object-gateway/src/service.ts";
 import { SupabaseObjectAuthority } from "../../object-gateway/src/supabase-authority.ts";
@@ -34,7 +35,30 @@ interface Intent {
 	expiresAt: number;
 }
 
-async function fixture(options: { upperCaseBinding?: boolean } = {}) {
+/** The NAS store, whose next puts or gets can meet a busy lane (503), as when two operations are in flight. */
+class BusyObjectStore extends FileSystemObjectStore {
+	busyPuts = 0;
+	busyGets = 0;
+
+	async put(profileId: string, sha256: string, bytes: Uint8Array): Promise<ObjectWriteResult> {
+		if (this.busyPuts > 0) {
+			this.busyPuts -= 1;
+			throw new ObjectDependencyError(503);
+		}
+		return super.put(profileId, sha256, bytes);
+	}
+
+	async get(profileId: string, sha256: string, expectedBytes: number): Promise<Uint8Array> {
+		if (this.busyGets > 0) {
+			this.busyGets -= 1;
+			throw new ObjectDependencyError(503);
+		}
+		return super.get(profileId, sha256, expectedBytes);
+	}
+}
+
+/** `productionCircuit` keeps the gateway's own 5 s circuit cooldown; the other tests turn it off. */
+async function fixture(options: { upperCaseBinding?: boolean; productionCircuit?: boolean } = {}) {
 	const f = nativeToolAuthorityFixture();
 	const environmentId = f.authority.identity.environmentId;
 	const companyId = f.authority.identity.companyId;
@@ -63,8 +87,8 @@ async function fixture(options: { upperCaseBinding?: boolean } = {}) {
 		confirmFailures: [] as string[],
 		/** When set, how many more download authorizations pass before the run's read is revoked. */
 		downloadGrants: undefined as number | undefined,
-		/** When set, the state renew answers with, in place of the intent's. */
-		renewState: undefined as string | undefined,
+		/** When set, fields renew answers with in place of its own. */
+		renewAnswer: undefined as Record<string, unknown> | undefined,
 	};
 	const puts: string[] = [];
 	/** The folder RPCs the gateway made, in order. */
@@ -81,6 +105,8 @@ async function fixture(options: { upperCaseBinding?: boolean } = {}) {
 	const rpc = vi.fn<typeof fetch>(async (url, init) => {
 		const request = new Request(url, init);
 		const pathname = new URL(request.url).pathname;
+		// Storage has no copy of a folder object until replication runs; the fixture never replicates.
+		if (pathname.startsWith("/storage/v1/object/authenticated/")) return Response.json({}, { status: 404 });
 		if (pathname.startsWith("/storage/")) return Response.json({});
 		const method = pathname.split("/").at(-1)!;
 		const args = (await request.json()) as Record<string, unknown>;
@@ -172,8 +198,9 @@ async function fixture(options: { upperCaseBinding?: boolean } = {}) {
 				return {
 					schema: "qorpera.folder-upload-renew/v1",
 					intentId: args.p_intent,
-					state: sql.renewState ?? intent.state,
+					state: intent.state,
 					expiresAt: new Date(intent.expiresAt).toISOString(),
+					...sql.renewAnswer,
 				};
 			}
 			const missing = [...intent.objects.keys()]
@@ -202,9 +229,9 @@ async function fixture(options: { upperCaseBinding?: boolean } = {}) {
 		publishableKey: "synthetic-public-key",
 		secretKey: "synthetic-service-key",
 		fetch: rpc,
-		circuitCooldownMs: 0,
+		...(options.productionCircuit ? {} : { circuitCooldownMs: 0 }),
 	});
-	const store = new FileSystemObjectStore(join(root, "objects"));
+	const store = new BusyObjectStore(join(root, "objects"));
 	const replication = new ObjectGatewayReplication(new ObjectGatewayJournal(join(root, "journal")), store, authority);
 	const server: Server = createServer(
 		createObjectGatewayHandler({
@@ -262,6 +289,7 @@ async function fixture(options: { upperCaseBinding?: boolean } = {}) {
 		authority,
 		control,
 		store,
+		replication,
 		gatewayCalls,
 		environmentId,
 		actor: JSON.parse(actor) as Record<string, string>,
@@ -348,11 +376,13 @@ it("renews a long upload's intent before it lapses", async () => {
 		"qorpera_folder_renew_upload",
 		"qorpera_folder_seal_upload",
 	]);
-	// A renew that does not answer for an open intent is not trusted.
-	sql.renewState = "sealed";
-	await expect(
-		bytes.put(randomBytes(9 * 1024 * 1024), "application/octet-stream", false, new AbortController().signal),
-	).rejects.toMatchObject({ category: "invalid_response" });
+	// A renew that does not answer for this open intent is not trusted.
+	for (const answer of [{ state: "sealed" }, { intentId: randomUUID() }]) {
+		sql.renewAnswer = answer;
+		await expect(
+			bytes.put(randomBytes(9 * 1024 * 1024), "application/octet-stream", false, new AbortController().signal),
+		).rejects.toMatchObject({ category: "invalid_response" });
+	}
 });
 
 it("refuses bytes it may not read, and bytes that are not the entry's", async () => {
@@ -470,7 +500,7 @@ it("refuses a read whose authority is revoked while the gateway reads it", async
 	});
 });
 
-it("reads a stop, a lock conflict and a lock timeout at confirm as the run's, and a statement timeout as an outage", async () => {
+it("reads a stop, a lock conflict and a lock timeout at confirm as the run's", async () => {
 	const { bytes, sql, authority, gatewayCalls } = await fixture();
 	const signal = new AbortController().signal;
 	sql.confirmFailures.push("55000");
@@ -482,17 +512,43 @@ it("reads a stop, a lock conflict and a lock timeout at confirm as the run's, an
 		});
 	}
 	expect(authority.health().api.status).toBe("healthy");
-	// Any other 500 is the database's: the circuit opens and the gateway answers 503, which the adapter asks again
-	// twice. One statement timeout is ridden out; three are an outage.
+	expect(gatewayCalls.filter((method) => method === "qorpera_folder_confirm_object")).toHaveLength(4);
+});
+
+it("fails fast on any other database 500, which opens the gateway's circuit", async () => {
+	const { bytes, sql, authority, gatewayCalls } = await fixture({ productionCircuit: true });
+	// A statement timeout is the database's: the gateway answers 503, and the adapter's two more tries meet the open
+	// circuit (5 s) without reaching the database again.
 	sql.confirmFailures.push("57014");
-	const before = gatewayCalls.filter((method) => method === "qorpera_folder_confirm_object").length;
-	expect(await bytes.put(Buffer.from("once"), "text/plain", false, signal)).toMatchObject({ fileSha256: sha("once") });
-	expect(gatewayCalls.filter((method) => method === "qorpera_folder_confirm_object").length - before).toBe(3);
-	sql.confirmFailures.push("57014", "57014", "57014");
-	await expect(bytes.put(Buffer.from("thrice"), "text/plain", false, signal)).rejects.toMatchObject({
+	await expect(
+		bytes.put(Buffer.from("timeout"), "text/plain", false, new AbortController().signal),
+	).rejects.toMatchObject({ category: "transport_unavailable" });
+	expect(gatewayCalls).toEqual([
+		"qorpera_folder_authorize_object_upload",
+		"qorpera_folder_authorize_object_upload",
+		"qorpera_folder_confirm_object",
+	]);
+	expect(authority.health().api.status).toBe("unavailable");
+});
+
+it("rides out a busy NAS lane on put and on read, twice at most", async () => {
+	const { bytes, sql, store, replication } = await fixture();
+	const signal = new AbortController().signal;
+	store.busyPuts = 2;
+	const reference = await bytes.put(Buffer.from("busy lane"), "text/plain", false, signal);
+	expect((await replication.status()).blocked).toBe(0);
+	sql.readable.add(reference.manifestSha256);
+	// Right after staging Storage has no copy, so a busy lane is the gateway's 503, asked again, not Storage's miss.
+	store.busyGets = 2;
+	expect(Buffer.from(await bytes.get({ ...reference, executable: false }, signal)).toString()).toBe("busy lane");
+	store.busyPuts = 3;
+	await expect(bytes.put(Buffer.from("still busy"), "text/plain", false, signal)).rejects.toMatchObject({
 		category: "transport_unavailable",
 	});
-	expect(authority.health().api.status).toBe("unavailable");
+	store.busyGets = 3;
+	await expect(bytes.get({ ...reference, executable: false }, signal)).rejects.toMatchObject({
+		category: "transport_unavailable",
+	});
 });
 
 it("checks the whole file against its reference, not only each chunk against its hash", async () => {

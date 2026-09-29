@@ -118,7 +118,19 @@ export async function serveFolderObject(
 			(error.message !== "Object not found" && !(error instanceof ObjectDependencyError && error.unavailable))
 		)
 			throw error;
-		bytes = await options.authority.readLegacyObject(authority.profileId, sha256);
+		try {
+			bytes = await options.authority.readLegacyObject(authority.profileId, sha256);
+		} catch (fallback) {
+			// A busy NAS lane and no Storage copy yet (replication pending, right after staging) is the lane's 503,
+			// which the runtime asks again, not Storage's miss.
+			if (
+				error instanceof ObjectDependencyError &&
+				fallback instanceof ObjectDependencyError &&
+				!fallback.unavailable
+			)
+				throw error;
+			throw fallback;
+		}
 	}
 	if (bytes.byteLength !== authority.bytes || createHash("sha256").update(bytes).digest("hex") !== sha256)
 		throw new ObjectDependencyError(503);

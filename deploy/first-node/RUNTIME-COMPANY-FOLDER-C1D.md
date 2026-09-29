@@ -91,9 +91,9 @@ writer renews it, and a new intent judges again. (Reviewer round 2, L1; F1 may a
 3. **`qorpera_folder_confirm_object(env, actor, intent, sha256, bytes)`**, after the gateway's NAS put: the same
    checks, then marks the row `put`. For an object the catalog lacks, the soft quota (§5), then
    `insert into profile_objects … on conflict do nothing`; then `KEY SHARE` on the row. A row already there with
-   another size is 23505, as today. The transaction is this statement and the trigger. Its `stored` flag says whether
-   the catalog already held the object (the gateway's 201 or 200 says the same of the NAS file); only trusted code
-   sees either, and the runtime never shows them to the model.
+   another size is 23505, as today. The transaction is this statement and the trigger. Its `stored` flag is true when
+   this confirm added the object to the catalog (the gateway's 201 or 200 says the same of the NAS file); only
+   trusted code sees either, and the runtime never shows them to the model.
 4. **`qorpera_folder_seal_upload(env, actor, intent)`**
    - the actor's plain check again (a member who left is refused), and the intent must be this actor's own
      (environment, kind, scope: the run, view or member id). A run's job, runner and assignment ids are not
@@ -242,17 +242,22 @@ runtime adapter, with no migration.
   whole file against the reference's hash (the manifest's `fileSha256` is only its writer's word); it reads into one
   buffer of the file's size. A refusal of the folder core's checks (403) is `CloudCompanyFolderError('unavailable')`,
   a stop (423) `stopped`, a lock conflict (409) `contended`; a busy gateway (503) is asked twice more after a short
-  random wait (an object is content-addressed, so a put asked again is the same put).
+  random wait (an object is content-addressed, so a put asked again is the same put). That is for the NAS lanes: a
+  database 500 opens the gateway's circuit for 5 s, so those tries fail fast without reaching the database. The folder
+  route answers a busy NAS lane with no Storage copy yet (replication pending, right after staging) as the lane's
+  503, not Storage's miss, so a read-back right after staging is asked again.
 
 **Follow-ups from C1d-1b's review** (for C1d-2 and the thin writers):
-- **Quota before the NAS write.** `_authorize_object_upload` checks the soft quota for an object the catalog lacks, so
-  a company at its limit is refused before the gateway writes. Today confirm refuses after the write, the NAS file
+- **Quota before the NAS write, before C1c-3 enables a real `folder-v2` company.** `_authorize_object_upload` checks
+  the soft quota for an object the catalog lacks, so a company at its limit is refused before the gateway writes;
+  until then each over-quota put leaves up to 4 MiB on the NAS that C1d-2's catalog-driven GC never collects. Today confirm refuses after the write, the NAS file
   stays outside the catalog, and the gateway's journal entry turns `blocked` (it reports degraded), as on the native
   route; the gateway drops that entry when confirm refuses. The writers get a typed "storage full" failure.
 - **Lock waits inside the gateway's deadline.** Before GC holds objects `FOR UPDATE`, the folder functions the gateway
   calls set `lock_timeout` below its 5 s deadline (2 s), so a long wait ends as 55P03, which the gateway answers 409,
   rather than as a deadline 503 that opens its circuit for every company.
-- **The gateway's NAS lanes.** It allows two operations in flight; core §7 raises that with content storage.
+- **The gateway's NAS lanes.** It allows two operations in flight; core §7 raises that with content storage. The
+  native route's read still answers Storage's miss when its NAS lane is busy; give it the folder route's 503.
 - **Labels.** On the byte path a size clash (23505) reads as `contended` and a refused run kind (0A000) as
   `transport_unavailable`; the control path reads deadlocks at open, seal and renew as raw errors. The writers align
   them.
