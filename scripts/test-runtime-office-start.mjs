@@ -276,8 +276,9 @@ try {
    if (method === "qorpera_suspend_runtime_node_machine") {
     // After the confirmed stop of an explicit power-off the worker gives the node slot back
     // (lxd-office-node-admission.ts). Its exact six arguments reach the real SQL unchanged, by name.
-    // Counted first: a failed check below surfaces only as OFFICE_POWER_OFF_UNCONFIRMED, which several
-    // probe steps expect, so the end compares attempts with confirmed calls.
+    // Counted first: a failed check below surfaces only as the supervisor's OFFICE_LIFECYCLE_UNCONFIRMED
+    // (around the worker's OFFICE_POWER_OFF_UNCONFIRMED), which several probe steps expect, so the end
+    // compares attempts with confirmed calls.
     suspensionAttempts++;
     assert(powerOffMode);
     assert.deepEqual(Object.keys(args).sort(), ["p_allocation_id", "p_instance_sha256", "p_machine_id_sha256", "p_policy_sha256", "p_provider_id", "p_transition_id"]);
