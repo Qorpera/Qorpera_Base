@@ -49,3 +49,8 @@ verify_jwt = false
 # carries Stripe's signature instead of a JWT.
 [functions.computer-billing]
 verify_jwt = false
+
+# Event intake: public. A hook's address is its route; signed hooks carry the sender's signature,
+# which the vault checks. There is no JWT to check.
+[functions.event-intake]
+verify_jwt = false
