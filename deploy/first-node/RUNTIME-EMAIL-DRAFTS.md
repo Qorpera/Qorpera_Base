@@ -63,6 +63,10 @@ before notifying the agent; notification recovery never sends another email.
    }
    ```
 
+   Node 1's front (as found on 2026-09-29) routes this location with a `?company=` map of its own,
+   `$qorpera_email_draft_broker`, in place of `$qorpera_capture_broker`; the shared vault's install adds
+   its line there too (RUNTIME-LOGIN-VAULT.md, node 1 step 6).
+
    Validate `nginx -t` on the target before reloading; this new location has
    not been tested on the production proxy.
 5. With a designated test mailbox, verify draft card rendering, edits, save,
