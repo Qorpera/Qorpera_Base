@@ -396,8 +396,9 @@ Node 1:
    fallback today (the acceptance company) gets its own line first.
    Regex keys hold `{}`, so each stays quoted (Step 7 doc); nginx tries exact keys first and regex keys in
    order.
-   - `?company=` maps (`$qorpera_capture_broker` for captures, email drafts and connector sign-in start and
-     confirm; `$qorpera_operations_broker` for `/v1/operations` and `/v1/repository-credentials`;
+   - `?company=` maps (`$qorpera_capture_broker` for captures and connector sign-in start and confirm;
+     `$qorpera_email_draft_broker` for email drafts (node 1 routes them with a map of their own);
+     `$qorpera_operations_broker` for `/v1/operations` and `/v1/repository-credentials`;
      `$qorpera_model_login_run_broker` for runs' `/v1/model-logins`):
      `"~(^|&)company=[0-9a-fA-F-]{36}(&|$)" 127.0.0.1:18660;`. Keep any `""` line that routes requests
      without `company=` where they go today.
