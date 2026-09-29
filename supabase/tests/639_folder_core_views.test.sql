@@ -329,7 +329,7 @@ end $$;
 do $$
 declare p jsonb := pg_temp.run('human', '63200000-0000-4000-8000-000000000002'); w uuid := extensions.gen_random_uuid();
 	tok uuid := extensions.gen_random_uuid(); cm uuid := extensions.gen_random_uuid(); cv jsonb; r jsonb; c public.qorpera_folder_commits%rowtype;
-	t jsonb; e jsonb; wk public.qorpera_wake_occurrences%rowtype;
+	t jsonb; tx jsonb; e jsonb; wk public.qorpera_wake_occurrences%rowtype;
 	repo jsonb := '{"host":"github.com","owner":"acme","name":"app","baseBranch":"main"}';
 begin
 	set local session_replication_role = replica;
@@ -393,6 +393,15 @@ begin
 	r := pg_temp.vcommit(cv, 'coding-turn-ended', '[{"op":"mkdir","path":"code/between"}]');
 	perform pg_temp.expect(r, 1, 'saved');
 	if (pg_temp.last_commit(r)).turn_run_id is not null then raise exception 'A save between turns records no turn'; end if;
+	-- A release during a turn goes through that turn's full run check: a turn whose requester is not the session's owner
+	-- does not act, so the view's release refuses instead of filing into its read set.
+	tx := pg_temp.turn(pg_temp.run('human', '63200000-0000-4000-8000-000000000001'), w);
+	e := pg_temp.read('cread/c.txt', pg_temp.vactor(cv)) -> 'entry';
+	perform pg_temp.raises(format('select public.qorpera_folder_record_release(%L, %L, %L, %L, %L)', '63200000-0000-4000-8000-000000000020',
+		pg_temp.vactor(cv), extensions.gen_random_uuid(), jsonb_build_array(jsonb_build_object('path', e ->> 'path', 'version', e ->> 'version',
+			'authority', e -> 'authority')), repeat('3', 64)), '42501');
+	perform pg_temp.fx(format('update public.qorpera_runner_jobs set lease_expires_at = clock_timestamp() - interval ''1 second'' where id = %L',
+		tx ->> 'jobId'));
 	-- The view's reads during the next turn land in that turn's read set as well as the view's, so the parent check of
 	-- the worker's completion (a wake whose parent is that turn) sees them: after a narrowing it refuses.
 	t := pg_temp.turn(p, w);
