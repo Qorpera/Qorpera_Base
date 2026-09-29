@@ -270,8 +270,9 @@ export function runScript({ run, runDir, treeDir, files, copySeconds, install, b
 		// Holding the runner lock proves no live run uses this user: processes a killed run left behind would
 		// still count against its RLIMIT_NPROC and take CPU outside the slots.
 		'sudo -n pkill -KILL -u "$runner" 2>/dev/null; true',
-		// The load at start and uncapped test processes (older clients run as tester) explain a slow run.
-		`echo "runner=$runner slot=$slot queued_s=$queued_s load=$(cut -d' ' -f1 /proc/loadavg) uncapped=$(pgrep -u tester -fc 'vitest|node --test' || true)" >${status}`,
+		// The load at start and uncapped test processes (older clients run suites as tester) explain a slow
+		// run. The pattern is anchored on node: this script's own shell carries the words in its command line.
+		`echo "runner=$runner slot=$slot queued_s=$queued_s load=$(cut -d' ' -f1 /proc/loadavg) uncapped=$(pgrep -u tester -fc '^([^ ]*/)?node .*(vitest|--test)' || true)" >${status}`,
 		`sudo -n chown -R "$runner:$runner" ${runDir} || exit 93`,
 		`echo "== run-on-node: $(hostname) ${run} as $runner in slot $slot of ${CPU_SLOTS} (${files} files, copy ${copySeconds.toFixed(1)} s, queued $queued_s s)"`,
 		`sudo -n -u "$runner" -H bash -c ${shellQuote(inner)}`,
