@@ -404,8 +404,8 @@ Migration `20260929160000_runtime_computer_hour_notices` and the Edge Function
   - Known limit: a renewal recorded more than ten minutes late (a delayed Stripe webhook) still
     sends "out of hours" for the gap.
   - Reaching zero without owing (hours taken back, credits expiring, a plan ending) queues nothing,
-    since no use follows once the zero rule holds work back. Build step 6 sends "out of hours"
-    when it first holds a company's work back.
+    since no use follows once the zero rule holds work back. Build step 6c part 1 sends "out of
+    hours" when the company is first recorded at zero, under its own occasion (see "Zero").
 - Summaries are queued by the worker's claim for plan periods that ended ten minutes ago or more
   (so the last meter pass has committed) and within seven days, one per founder and period (its
   `sub_…:start` reference). Each lists the company's draws and repayments across the period and its
@@ -485,12 +485,29 @@ Coordinator (nothing secret):
     replay, so a retry of work made before zero still answers;
   - a BEFORE INSERT trigger on `qorpera_execution_runs` stops any path that did not check.
 
-  Machines not starting or waking (6b), the finishing window, the zero "out of hours" notice and
-  the renewal-gap handling for machines (6c), and the web (6d) follow. Before the live switch:
+- Build step 6c part 1 (migration `20260929250000`, when a company ran out):
+  - `qorpera_computer_hour_zero_state` holds, for each company at zero, when it ran out; the
+    finishing window counts its hour from there;
+  - a sweep after each meter pass (`qorpera_meter_computer_hours()`, in its transaction and under
+    its lock) removes a company no longer at zero and adds one newly at zero. Only a company whose
+    live free hours are used up can be at zero, so only those are looked at. A company being
+    deleted is skipped. While the rule is off, or in the dry run, the table is kept empty. A
+    failing sweep is undone with a warning and never holds metering back;
+  - a company that reaches zero without owing gets "out of hours" for every founder, ten minutes
+    later, under its own occasion `<company>:zero:<when it ran out, in microseconds>`. The claim
+    keeps it while that time at zero lasts and drops it once hours arrive. A company that owes
+    was told when it started to owe;
+  - while a company is at zero, the usage trigger queues no further "out of hours" (work running
+    out its hour starts owing then), and the claim drops "running low".
+
+  Machines not starting or waking (6b), the finishing window and the renewal-gap handling for
+  machines (6c part 2), and the web (6d) follow. Before the live switch:
   - the listing checks zero per routine (for the page and for the next-page check), and with the
     rule on each check sums the company's hours (about 0.4 ms locally): check each company once,
     and measure with production-sized data;
   - held wakes still take the wake step's slots and locks, as a paused company's do;
+  - the sweep checks each company whose free hours are used up once a minute: measure it with
+    production-sized data;
   - a routine created or retimed at zero gets its first slot only once hours arrive, so 6d shows
     "Waiting for computer hours" on it.
 - It is checked before a run is created (not at claim or placement: a run waiting there is
@@ -525,8 +542,7 @@ Coordinator (nothing secret):
 - When it first holds a company's work back, it queues "out of hours" for every founder in step
   5's outbox, if none is open for that time. This covers a company reaching zero without owing:
   hours taken back, credits expiring, or a plan ending. No use follows then, so step 5's trigger
-  never sees it. It needs its own occasion, and step 5's claim rule, which drops an "out of hours"
-  unless the company still owes in the same time, must learn to keep it.
+  never sees it. Built in 6c part 1 (above).
 - A plan renewal is recorded when Stripe's renewal invoice arrives, which can trail the period's
   end by minutes. The check must not hold work back in that gap. For runs, 6a's renewal grace does
   this (see above); machines follow in 6c.
