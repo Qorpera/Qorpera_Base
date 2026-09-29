@@ -81,6 +81,8 @@ begin
 		E' if public.qorpera_company_is_folder_v2(new.profile_id) then\n'
 		|| E'\t\tif current_setting(''qorpera.folder_wake_admission'', true) is distinct from new.profile_id::text then\n'
 		|| E'\t\t\traise exception ''Folder wake admission is required'' using errcode = ''55000''; end if;\n'
+		|| E'\t\tif new.source_kind in (''office-activation'', ''machine-event'') then\n'
+		|| E'\t\t\traise exception ''This wake source does not serve folder-v2 yet'' using errcode = ''0A000''; end if;\n'
 		|| E'\telse\n'
 		|| E' perform public.qorpera_serialize_wake_admission(new.profile_id);\n'
 		|| E'\tend if;\n',
@@ -133,6 +135,18 @@ begin
 			|| E'\t\t\tp_trigger_id, p_scheduled_for, p_expected_last_scheduled_for, p_next_due_at, p_payload);\n'
 			|| E'\tend if;\n', '')) <> '34767af5c81374abb47dbcd413c64d90' then
 		raise exception 'The scheduler''s snapshot-v1 text changed'; end if;
+	if md5(replace(pg_get_functiondef('public.qorpera_advance_routine_next_due(uuid,bigint,text,timestamp with time zone,timestamp with time zone)'::regprocedure),
+			E'\tif public.qorpera_company_is_folder_v2(v_profile_id) then\n'
+			|| E'\t\tperform 1 from public.qorpera_profiles where id = v_profile_id for key share;\n'
+			|| E'\telse\n'
+			|| E'\tperform public.qorpera_lock_profile_gc_fence(v_profile_id);\n'
+			|| E'\tend if;\n',
+			E'\tperform public.qorpera_lock_profile_gc_fence(v_profile_id);\n')) <> '4f905dad99d07aea0198c2ff744cfa47' then
+		raise exception 'The schedule advance''s snapshot-v1 text changed'; end if;
+	v_def := pg_get_functiondef('public.qorpera_agent_threads_on_member()'::regprocedure);
+	if position(E'\nbegin\n\tif public.qorpera_company_is_folder_v2(v_profile) then perform public.qorpera_folder_lock_agent_threads(v_profile); end if;' in v_def) = 0
+		or md5(pg_temp.without_guard(v_def)) <> '8411201170b8aacb963cc5d9e3690e9b' then
+		raise exception 'The member trigger''s snapshot-v1 body changed'; end if;
 end $$;
 
 -- 2. Admission: the admission row counts, and marks the transaction for its company. A folder-v2 wake without the mark
@@ -181,6 +195,12 @@ begin
 		wake_schema, trigger_id, occurrence_key, scheduled_for, not_before, payload)
 		values (extensions.gen_random_uuid(), %L, %L, 'agent', 'coworker', 'qorpera.unknown/v1', 'coworker', 'folder-control',
 			clock_timestamp(), clock_timestamp(), '{}')$f$, c_profile, c_env), '55000', 'Folder wake admission is required');
+	-- Sources whose ancestry checks lock rows refuse on folder-v2 until they get folder modes, admitted or not.
+	perform public.qorpera_folder_admit_wakes(c_profile);
+	perform pg_temp.raises_like(replace(replace(replace(v_sql, '''agent'', ''coworker''', '''agent'', ''office-activation'''),
+		'65600000-0000-4000-8000-0000000000e1', '65600000-0000-4000-8000-0000000000e3'), 'admission-test', 'admission-office'),
+		'0A000', 'This wake source does not serve folder-v2 yet');
+	perform set_config('qorpera.folder_wake_admission', '', true);
 	-- A company that is not folder-v2 has no admission row.
 	perform pg_temp.raises_like('select public.qorpera_folder_admit_wakes(''64700000-0000-4000-8000-000000000011'')', '42501',
 		'Company folder is unavailable');
@@ -252,6 +272,12 @@ begin
 		or (select last_scheduled_for from public.qorpera_cloud_routine_schedule_cursors where routine_id = v_routine) is distinct from v_slot then
 		raise exception 'A paused company defers the slot: %', v; end if;
 	perform pg_temp.fx(format('delete from public.qorpera_company_execution_pauses where profile_id = %L', c_profile));
+	-- The scheduler's other step moves the position forward, without the gc fence.
+	v := public.qorpera_advance_routine_next_due(v_routine, 1, 's1', v_slot, v_slot + interval '3 hours');
+	if v ->> 'status' is distinct from 'advanced'
+		or (select next_due_at from public.qorpera_cloud_routine_schedule_cursors where routine_id = v_routine)
+			is distinct from v_slot + interval '3 hours' then
+		raise exception 'The schedule advance on folder-v2: %', v; end if;
 end $$;
 
 -- 4. A coworker message from a folder-v2 run: the message, the peer chips, the wake with admission; a replay, a held
@@ -496,7 +522,8 @@ declare v_fn text;
 begin
 	foreach v_fn in array array['public.qorpera_folder_admit_wakes(uuid)', 'public.qorpera_folder_wake_public_session(uuid,uuid,uuid,uuid)',
 		'public.qorpera_folder_send_coworker_message(jsonb,uuid,text,text,boolean)', 'public.qorpera_folder_read_wake(jsonb)',
-		'public.qorpera_folder_enqueue_routine_wake(uuid,bigint,uuid,text,text,timestamptz,timestamptz,timestamptz,jsonb)'] loop
+		'public.qorpera_folder_enqueue_routine_wake(uuid,bigint,uuid,text,text,timestamptz,timestamptz,timestamptz,jsonb)',
+		'public.qorpera_folder_lock_agent_threads(uuid)'] loop
 		if has_function_privilege('service_role', v_fn, 'execute') or has_function_privilege('authenticated', v_fn, 'execute')
 			or has_function_privilege('anon', v_fn, 'execute') then
 			raise exception '% must be postgres-only', v_fn; end if;
