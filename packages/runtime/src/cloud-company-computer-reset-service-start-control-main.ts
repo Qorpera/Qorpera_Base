@@ -1,7 +1,5 @@
-import { realpathSync } from "node:fs";
-import { basename, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import { parseCompanyComputerPreparationCommand } from "@qorpera/contracts";
+import { runCompanyComputerControlEntry } from "./cloud-company-computer-control-entry.ts";
 import { lockedCompanyComputerControlChild } from "./cloud-company-computer-preparation-control-main.ts";
 import {
 	controlCompanyComputerResetServiceStart,
@@ -44,22 +42,13 @@ export async function runCompanyComputerResetServiceStartControlMain(args: reado
 		process.removeListener("SIGTERM", shutdown);
 	}
 }
-if (
-	process.argv[1] &&
-	["cloud-company-computer-reset-service-start-control-main.ts", basename(executable)].includes(
-		basename(process.argv[1]),
-	) &&
-	realpathSync(resolve(process.argv[1])) === realpathSync(fileURLToPath(import.meta.url))
-) {
-	if (process.argv.length === 3 && process.argv[2] === "--help")
-		console.log(
-			"Protected reset-successor service start and inspection on a recreated office root. Requires the acknowledged reset configuration and the existing kernel lock; SQL admission remains provider-controlled.",
-		);
-	else
-		runCompanyComputerResetServiceStartControlMain(process.argv.slice(2)).catch(() => {
-			console.error(
-				"Office reset service start could not confirm the restored configuration and the current invocation.",
-			);
-			process.exitCode = 1;
-		});
-}
+runCompanyComputerControlEntry({
+	moduleUrl: import.meta.url,
+	names: [
+		"cloud-company-computer-reset-service-start-control-main.ts",
+		"qorpera-company-computer-reset-service-start-control.mjs",
+	],
+	help: "Protected reset-successor service start and inspection on a recreated office root. Requires the acknowledged reset configuration and the existing kernel lock; SQL admission remains provider-controlled.",
+	failure: "Office reset service start could not confirm the restored configuration and the current invocation.",
+	run: runCompanyComputerResetServiceStartControlMain,
+});

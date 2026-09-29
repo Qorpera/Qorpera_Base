@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { generateKeyPairSync, randomUUID, sign } from "node:crypto";
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, statSync } from "node:fs";
 import { chmod, chown, link, lstat, mkdir, open, readFile, rename, symlink, unlink, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import {
@@ -333,7 +333,10 @@ if (scenario !== "compatible-noop")
 	for (const name of COMPANY_COMPUTER_CODE_PACKAGE_RESET_ARTIFACTS)
 		await assert.rejects(lstat(`/opt/qorpera-office/${name}`), { code: "ENOENT" });
 const timings: Array<{ purpose: string; mode: string; elapsedMs: number; status: number | null }> = [];
+/** QORPERA_CODE_PACKAGE_DIAGNOSTIC tools append stacks here: their stdio is ignored. */
+const diagnosticLog = "/tmp/qorpera-code-package-diagnostic.log";
 const run = (args: string[], purpose = "bootstrap") => {
+	rmSync(diagnosticLog, { force: true });
 	const started = performance.now();
 	const result = spawnSync(
 		"/usr/bin/node",
@@ -349,8 +352,18 @@ const run = (args: string[], purpose = "bootstrap") => {
 		{ cwd: "/", env: {}, encoding: "utf8", timeout: 30000 },
 	);
 	timings.push({ purpose, mode: args[0], elapsedMs: Math.round(performance.now() - started), status: result.status });
+	// LXD records this exec's output on the host: nothing on success, one fixed line otherwise.
+	assert.equal(result.stdout, "", `${purpose}:${args[0]} wrote stdout`);
+	assert.equal(result.stderr, result.status === 0 ? "" : "OFFICE_CODE_PACKAGE_LOADER_UNCONFIRMED\n");
 	return result;
 };
+/** The locked tool's stdio is ignored; its result is the file it published. */
+const resultPath = (args: string[], purpose: string) =>
+	purpose === "measure"
+		? `${stage}/${args[0]}-${args[3]}.json`
+		: args[0] === "preflight"
+			? `${stage}/preflight-${args[3]}.json`
+			: `/etc/qorpera-office/code-packages/${plan.provisionId}/installed.json`;
 const checked = (args: string[], purpose = "bootstrap") => {
 	const r = run(args, purpose);
 	if (r.status !== 0 && purpose === "bootstrap" && args[0] === "install") {
@@ -373,8 +386,9 @@ const checked = (args: string[], purpose = "bootstrap") => {
 			}),
 		);
 	}
-	assert.equal(r.status, 0, `${purpose}:${args[0]} ${r.stderr} ${JSON.stringify(timings)}`);
-	return JSON.parse(r.stdout.trim());
+	const diagnostic = existsSync(diagnosticLog) ? readFileSync(diagnosticLog, "utf8") : "";
+	assert.equal(r.status, 0, `${purpose}:${args[0]} ${diagnostic} ${JSON.stringify(timings)}`);
+	return JSON.parse(readFileSync(resultPath(args, purpose), "utf8"));
 };
 const preflightId = randomUUID();
 if (scenario === "bad-stage")

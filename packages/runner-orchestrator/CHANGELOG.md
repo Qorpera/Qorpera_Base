@@ -111,6 +111,7 @@
 
 ### Fixed
 
+- The code package loader's locked child, which reads the protected packet, now runs with ignored stdio like the other office controls. Before, it inherited the exec's recorded streams, so its tools' JSON results and any uncaught stack trace were stored in LXD's host exec logs. The loader now writes nothing on success and only `OFFICE_CODE_PACKAGE_LOADER_UNCONFIRMED` on failure; `bootstrap.cjs` and `measure.cjs` no longer print their results, which the provider already reads back from the files they publish.
 - Fixed a deadlock between a node's first inventory binding and admission of the same machine: an inventory observation now takes the binding foreign-key locks on its managed allocations, in UUID order, before the node lock, matching admission's allocation-then-node order (migration `20260928242000`, re-cut of closed draft #326). Historical receipt replay and every check after the node lock are unchanged.
 - Continue completed office startup and wake phases without waiting for the next polling interval, while retaining backoff for pending work and failures.
 - Bound office-provider startup to the enrolled journal and NAS workbench mounts, so a node reboot cannot leave required storage inactive when the provider starts. Mount dependency paths preserve literal dollar signs while escaping systemd specifiers.
