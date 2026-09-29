@@ -146,7 +146,15 @@ export class ConversationView {
 	readonly #company: CompanyController;
 	readonly #sessionId: string;
 	readonly #header = h("header", { class: "thread-header" });
-	readonly #messages = h("div", { class: "messages", role: "log", "aria-live": "polite" });
+	/** The thread's scroller: "Show earlier", the older items it read, then the live log. */
+	readonly #messages = h("div", { class: "messages" });
+	/** The live log: the items the thread opened with and everything that comes after. A screen
+	 * reader hears what is added here, so older items never come in here. */
+	readonly #log = h("div", { class: "messages-log", role: "log", "aria-live": "polite" });
+	/** Older items "Show earlier" read, above the live log and outside it: they are history, not news. */
+	readonly #older = h("div", { class: "thread-older" });
+	/** The first sequence of the live log: the oldest item the thread showed first. */
+	#liveFrom: number | undefined;
 	readonly #status = h("div", { class: "thread-status" });
 	readonly #composer: HTMLTextAreaElement;
 	/** "/" in the composer: the conversation's skills, and their names in blue. */
@@ -238,6 +246,15 @@ export class ConversationView {
 	/** The working figure's row and the empty thread's line, kept while they read the same. */
 	#activityRow: { key: string; element: HTMLElement } | undefined;
 	#emptyRow: HTMLElement | undefined;
+	/** "Show earlier" at the top of a thread that has not read all its history yet. */
+	readonly #earlierButton: HTMLButtonElement;
+	readonly #earlierNote = h("p", { class: "thread-earlier-note", role: "status", hidden: true });
+	readonly #earlier: HTMLElement;
+	/** Says how many older messages "Show earlier" brought, which come in outside the live log. */
+	readonly #earlierStatus = h("p", { class: "visually-hidden", role: "status" });
+	/** "Show earlier" was reading at the last render, and the sequence of the oldest item then. */
+	#earlierWasLoading = false;
+	#oldestSequence: number | undefined;
 	/** A coding session opened as its own thread over this one, from its line or its
 	 * figure in the header; focus returns to the opener when it closes. */
 	#codingThread: { workerId: string; view: CodingSessionThreadView } | undefined;
@@ -541,6 +558,17 @@ export class ConversationView {
 			},
 			{ signal: this.#lifetime.signal },
 		);
+		this.#earlierButton = h(
+			"button",
+			{
+				type: "button",
+				class: "btn btn-small thread-earlier-button",
+				onclick: () => void this.#company.loadEarlier(this.#sessionId),
+			},
+			t("Show earlier messages"),
+		);
+		this.#earlier = h("div", { class: "thread-earlier" }, this.#earlierButton, this.#earlierNote);
+		this.#messages.append(this.#log);
 		this.#refreshFade = quietScroll(this.#messages);
 		this.#messages.addEventListener("scroll", () => {
 			const { scrollTop, scrollHeight, clientHeight } = this.#messages;
@@ -559,6 +587,7 @@ export class ConversationView {
 			{ class: "thread-conversation" },
 			this.#header,
 			this.#messages,
+			this.#earlierStatus,
 			this.#status,
 			...(actions.notificationHost ? [actions.notificationHost] : []),
 			this.#runNotification,
@@ -1379,9 +1408,14 @@ export class ConversationView {
 		const answerable = items.flatMap((item) =>
 			item.kind === "interaction" || item.kind === "authorization_request" ? [canAnswer(item.actorUserId)] : [],
 		);
-		const codingSessions = [...(conversation.codingSessions ?? [])].sort((a, b) =>
-			a.createdAt.localeCompare(b.createdAt),
-		);
+		// While older history is unread, a coding session started before the oldest item read belongs
+		// to it: it shows once "Show earlier" reaches its place.
+		const start = conversation.hasEarlier
+			? conversation.projection.items.find((item) => !(item.kind === "member" && item.pending))?.createdAt
+			: undefined;
+		const codingSessions = [...(conversation.codingSessions ?? [])]
+			.filter((coding) => start === undefined || coding.createdAt.localeCompare(start) >= 0)
+			.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
 		const mentionTargets = this.#shownMentionTargets();
 		const clock = this.#clock();
 		const skillNames = [...this.#skills.names()].sort().join(" ");
@@ -1410,6 +1444,9 @@ export class ConversationView {
 			conversation.interactionError,
 			members,
 			conversation.projection.hiddenCount,
+			conversation.hasEarlier,
+			conversation.earlierLoading,
+			conversation.earlierError,
 			conversation.loading,
 			conversation.error,
 			this.#agentState,
@@ -1432,8 +1469,10 @@ export class ConversationView {
 			}
 		// Approval cards of agents' actions (auto-review, v130) show their own outcome.
 		const reviews = new Map<string, ActionReviewCard>();
+		const requests = new Set<string>();
 		for (const item of items)
 			if (item.kind === "authorization_request") {
+				requests.add(item.id.toLowerCase());
 				const review = actionReviewCard(authorizationData(item.body));
 				if (review) reviews.set(item.id.toLowerCase(), review);
 			}
@@ -1477,9 +1516,7 @@ export class ConversationView {
 		const previousAt = (slot: string) => {
 			const previous = this.#drawn.get(slot);
 			// A card that replaced itself (an answered interaction redraws in place) is gone from the log.
-			return previous && !taken.has(previous) && previous.element.parentNode === this.#messages
-				? previous
-				: undefined;
+			return previous && !taken.has(previous) && this.#inThread(previous.element) ? previous : undefined;
 		};
 		const keep = (id: string, itemKey: string, time: string, draw: () => HTMLElement): HTMLElement => {
 			const slot = slotFor(id);
@@ -1528,7 +1565,7 @@ export class ConversationView {
 				),
 			);
 			const entry = handoffs.get(item.pending ? item.id : (eventInputs.get(item.id) ?? ""));
-			return entry && !taken.has(entry) && entry.element.parentNode === this.#messages ? entry : undefined;
+			return entry && !taken.has(entry) && this.#inThread(entry.element) ? entry : undefined;
 		};
 		const message = (item: TranscriptMessage, author: string, mine: boolean): HTMLElement => {
 			const slot = slotFor(item.id);
@@ -1613,7 +1650,17 @@ export class ConversationView {
 				if (date) markTime(date, line);
 			}
 		};
+		// Items the thread showed first, and all that come after, stand in the live log; older ones
+		// "Show earlier" reads stand above it, outside the log, which announces only what is new.
+		// A waiting message has no place in the transcript yet (it stands by its send time), so it
+		// never opens the log: one sent before the first item shown stays above the log, in its place.
+		const waiting = (item: TranscriptItem) => item.kind === "member" && item.pending !== undefined;
+		this.#liveFrom ??= conversation.projection.items.find((item) => !waiting(item))?.sequence;
+		const liveFrom = this.#liveFrom;
+		let liveStart: number | undefined;
 		for (const item of items) {
+			if (liveStart === undefined && (liveFrom === undefined || (!waiting(item) && item.sequence >= liveFrom)))
+				liveStart = nodes.length;
 			placeSessions(item.createdAt);
 			if (item.kind === "member" || item.kind === "agent") {
 				const mine = item.kind === "member" && item.authorUserId === this.#company.userId;
@@ -1713,7 +1760,12 @@ export class ConversationView {
 						}),
 					),
 				);
-			} else if (item.kind === "authorization_decision" && reviews.has(authorizationRequestId(item.body) ?? "")) {
+			} else if (
+				item.kind === "authorization_decision" &&
+				(reviews.has(authorizationRequestId(item.body) ?? "") ||
+					// While older history is unread, a decision on a card not read yet waits for its card.
+					(conversation.hasEarlier && !requests.has(authorizationRequestId(item.body) ?? "")))
+			) {
 				// Its approval card already shows this decision; it draws nothing, so it marks no time either.
 				continue;
 			} else if (item.kind === "authorization_request" || item.kind === "authorization_decision") {
@@ -1819,6 +1871,7 @@ export class ConversationView {
 			const node = nodes[nodes.length - 1];
 			if (date && node) markTime(date, node);
 		}
+		liveStart ??= nodes.length;
 		placeSessions(undefined);
 		// Items gone from the thread, and messages whose element passed on, let what they held go.
 		const live = new Set(drawn.values());
@@ -1828,7 +1881,27 @@ export class ConversationView {
 			this.#messagesPlaceholder ??= messagesSkeleton();
 			nodes.push(this.#messagesPlaceholder);
 		} else this.#messagesPlaceholder = undefined;
-		if (!conversation.loading && !items.length && !codingSessions.length && !conversation.error && !this.#working) {
+		if (conversation.hasEarlier && !conversation.loading) {
+			// The thread opened at its newest messages; older ones are read a page at a time.
+			const label = conversation.earlierLoading ? t("Loading earlier messages…") : t("Show earlier messages");
+			if (this.#earlierButton.textContent !== label) this.#earlierButton.textContent = label;
+			// Not disabled while it reads, so a keyboard user on it keeps it.
+			if (conversation.earlierLoading) this.#earlierButton.setAttribute("aria-disabled", "true");
+			else this.#earlierButton.removeAttribute("aria-disabled");
+			const note = conversation.earlierError
+				? t("Earlier messages could not be loaded. {reason}", { reason: conversation.earlierError })
+				: "";
+			if (this.#earlierNote.textContent !== note) this.#earlierNote.textContent = note;
+			this.#earlierNote.hidden = !note;
+		}
+		if (
+			!conversation.loading &&
+			!items.length &&
+			!codingSessions.length &&
+			!conversation.error &&
+			!this.#working &&
+			!conversation.hasEarlier
+		) {
 			const empty = t("No messages yet.");
 			if (this.#emptyRow?.textContent !== empty) this.#emptyRow = h("div", { class: "empty" }, empty);
 			nodes.push(this.#emptyRow);
@@ -1893,13 +1966,58 @@ export class ConversationView {
 		// (replaceChildren would also drop keyboard focus, selection and an in-progress IME edit.)
 		const separatorOf = new Map<HTMLElement, HTMLTimeElement>();
 		for (const row of this.#timestampRows) if (row.separator) separatorOf.set(row.node, row.separator);
-		placeChildren(
-			this.#messages,
-			nodes.flatMap((node) => {
+		// A reader scrolled up keeps their place when items come in above ("Show earlier"): the
+		// first item in view stays where it was on screen.
+		const anchor = this.#stickToBottom ? undefined : this.#firstInView();
+		const anchorTop = anchor ? anchor.getBoundingClientRect().top - this.#messages.getBoundingClientRect().top : 0;
+		const earlierFocused = this.#earlier.contains(document.activeElement);
+		// "Show earlier" brought its page: it comes in above the live log, outside it, and one status
+		// line says how many.
+		// Counted by sequence: a waiting message moves to its place in the new page.
+		const oldest = this.#oldestSequence;
+		const earlierLoaded = this.#earlierWasLoading && !conversation.earlierLoading && !conversation.earlierError;
+		this.#earlierWasLoading = conversation.earlierLoading === true;
+		this.#oldestSequence = conversation.projection.items.find((item) => !waiting(item))?.sequence;
+		const older =
+			earlierLoaded && oldest !== undefined
+				? conversation.projection.items.filter((item) => !waiting(item) && item.sequence < oldest).length
+				: -1;
+		if (earlierLoaded)
+			this.#earlierStatus.textContent = [
+				older === 1
+					? t("Loaded 1 earlier message.")
+					: older > 1
+						? t("Loaded {count} earlier messages.", { count: older })
+						: "",
+				conversation.hasEarlier ? "" : t("This is the start of the conversation."),
+			]
+				.filter(Boolean)
+				.join(" ");
+		const rows = (part: HTMLElement[]) =>
+			part.flatMap((node) => {
 				const separator = separatorOf.get(node);
 				return separator ? [separator, node] : [node];
-			}),
+			});
+		const olderNodes = nodes.slice(0, liveStart);
+		placeChildren(this.#older, rows(olderNodes));
+		placeChildren(this.#log, rows(nodes.slice(liveStart)));
+		placeChildren(
+			this.#messages,
+			[
+				conversation.hasEarlier && !conversation.loading ? this.#earlier : undefined,
+				olderNodes.length ? this.#older : undefined,
+				this.#log,
+			].filter((node): node is HTMLElement => Boolean(node)),
 		);
+		if (anchor?.isConnected) {
+			const top = anchor.getBoundingClientRect().top - this.#messages.getBoundingClientRect().top;
+			if (top !== anchorTop) this.#messages.scrollTop += top - anchorTop;
+		}
+		// The whole history is read: the keyboard stays in the thread where "Show earlier" stood.
+		if (earlierFocused && !this.#earlier.isConnected) {
+			this.#messages.tabIndex = -1;
+			this.#messages.focus({ preventScroll: true });
+		}
 		for (const item of items) if (item.kind === "member" || item.kind === "agent") this.#skills.want(item.text);
 		// A keyboard user reading the row keeps it through a state change or a new message.
 		if (rowFocus) this.#messages.querySelector<HTMLElement>(".thread-activity")?.focus({ preventScroll: true });
@@ -1929,6 +2047,20 @@ export class ConversationView {
 			}
 		}
 		this.#pinToBottom();
+	}
+
+	/** The first item of the thread in view: a message, card or line. Not the "Show earlier" row, which
+	 * stays first when older items come in, nor a day separator, which may move to the new page. */
+	#firstInView(): Element | undefined {
+		const top = this.#messages.getBoundingClientRect().top;
+		for (const child of [...this.#older.children, ...this.#log.children])
+			if (!child.matches("time.conversation-timestamp") && child.getBoundingClientRect().bottom > top) return child;
+		return undefined;
+	}
+
+	/** Whether an item's element still stands in the thread (a card may have replaced itself). */
+	#inThread(element: HTMLElement): boolean {
+		return element.parentNode === this.#log || element.parentNode === this.#older;
 	}
 
 	/** A member's or agent's message: its author, its text (an agent's as markdown), its files

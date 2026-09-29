@@ -12,15 +12,8 @@
  *
  * Release candidates still run the full `test` suite before a cut. */
 
-const HOSTED_DB_SCRIPTS = [
-	"scripts/test-runtime-bundle-activation.mjs",
-	"scripts/test-email-draft-e2e.mjs",
-	"scripts/test-runtime-node-capacity.mjs",
-	"scripts/test-runtime-office-delete-disposition.mjs",
-	"scripts/test-runtime-office-current-provider-activation.mjs",
-	"scripts/test-coding-turn-backfill.mjs",
-	"scripts/test-runtime-room-history.mjs",
-];
+import { HOSTED_DB_SCRIPTS } from "./test-hosted-db.mjs";
+
 /** The function tests the old workflows ran (web-client and step2-lxd); the others never ran in CI. */
 const FUNCTION_TESTS = [
 	"supabase/functions/native-provider-login/native-provider-login.test.ts",
@@ -30,6 +23,8 @@ const FUNCTION_TESTS = [
 	"supabase/functions/company-file-verifier/object-loader.test.ts",
 	"supabase/functions/company-file-verifier/company-file-verifier.test.ts",
 	"supabase/functions/runner-orchestrator/runner-orchestrator.test.ts",
+	"supabase/functions/event-intake/event-intake.test.ts",
+	"supabase/functions/mail-intake/mail-intake.test.ts",
 ];
 const WEB_RELEASE_CONFIG = JSON.stringify({
 	projectUrl: "https://project.example.invalid",
@@ -78,12 +73,13 @@ export const STEPS = [
 	},
 	{
 		name: "checks",
-		why: "pinned dependencies, imports, cloud boundaries, connector catalog, runtime bundle",
+		why: "pinned dependencies, imports, cloud boundaries, wire helper copies, connector catalog, runtime bundle",
 		paths: ANY,
 		commands: [
 			"npm run check:pinned-deps",
 			"npm run check:ts-imports",
 			"npm run check:cloud-boundaries",
+			"npm run check:wire-helpers",
 			"npm run check:connector-catalog",
 			"npm run check:runtime-bundle:release-train",
 		],
@@ -121,6 +117,12 @@ export const STEPS = [
 		why: "packages/company",
 		paths: [/^packages\/company\//],
 		commands: ["npm test --workspace packages/company"],
+	},
+	{
+		name: "contracts",
+		why: "packages/contracts (a change there runs every step)",
+		paths: [/^packages\/contracts\//],
+		commands: ["npm test --workspace packages/contracts"],
 	},
 	{
 		name: "cloud-client",
@@ -198,11 +200,8 @@ export const STEPS = [
 			/^packages\/web\/src\/cloud\/email-drafts\.ts$/,
 			...HOSTED_DB_SCRIPTS.map(regex),
 		],
-		commands: [
-			"node --test scripts/test-hosted-db.test.mjs",
-			"npm run test:hosted-db",
-			...HOSTED_DB_SCRIPTS.map((script) => `node ${script}`),
-		],
+		// One PostgreSQL and one migration replay for the SQL tests and every script (scripts/test-hosted-db.mjs).
+		commands: ["node --test scripts/test-hosted-db.test.mjs", "node scripts/test-hosted-db.mjs --scripts"],
 	},
 ];
 

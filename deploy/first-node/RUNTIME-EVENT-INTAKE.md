@@ -14,8 +14,9 @@ Founder decisions of 29 September 2026, on the Q1 page "Qorpera on Qorpera"
 Contract: section 16.3 and the 2026-09-29 amendment "events wake agents" (section 19). This file is
 the technical design. The Q1 page is the plain one.
 
-Status: W1a shipped in release v150 (PR #509, re-slotted to `20260928259260_runtime_event_intake`);
-W2 in review (PR #519, `20260929290000_runtime_event_wakes`). W1b reserves `20260929260100`.
+Status: W1a is live (v150, `20260928259260_runtime_event_intake`) and W2 is live (v151,
+`20260928269290_runtime_event_wakes`), both accepted; the intake is switched on. M2a in review
+(`20260929650000_runtime_company_mailboxes`). W1b reserves `20260929260100`.
 
 ## Words
 
@@ -33,9 +34,10 @@ W2 in review (PR #519, `20260929290000_runtime_event_wakes`). W1b reserves `2026
 | --- | --- | --- |
 | W1a | Hooks, deliveries, the public intake function, address-proven hooks end to end, member RPCs | `20260928259260` |
 | W1b | Signed hooks: the vault verifies Stripe, GitHub and HMAC signatures | `20260929260100` (reserved) |
-| W2 | Routine trigger on a hook, event wakes, the agent tools `list_hooks` and `read_event` | `20260929290000` |
+| W2 | Routine trigger on a hook, event wakes, the agent tools `list_hooks` and `read_event` | `20260928269290` |
 | W3 | Agents create, pause and remove hooks (`manage_hook`) | registered when started |
-| M2 | Company mailboxes: the mail provider posts to a platform-owned hook per mailbox | registered when started |
+| M2a | Company mailboxes, receiving: owners create them, the mail provider's webhook fills them, routines wake on mail | `20260929650000` |
+| M2b | Sending as a mailbox (as the agent, with an AI line), and attachments' contents | registered when started |
 
 Each step is a release-train feature PR: no bundle, manifest or activation files, an independent
 exact-head review, and a hand-off to the coordinator.
@@ -128,8 +130,9 @@ writes nothing: no delivery, no counter.
   so a receive never waits for the company row (whose gc fence a company purge holds): deliveries go
   with the company through the hook, and usage rows, which hold only counts, expire within a day.
 - **The platform switch:** `qorpera_event_intake_settings.enabled` is built off. While it is off,
-  every delivery is answered 503. Operators turn it on at acceptance, and can turn it off at any time
-  or change the budget, in SQL.
+  every delivery that reaches the database (a POST to a well-formed address) is answered 503, before
+  the address is looked up. Operators turn it on at acceptance, and can turn it off at any time or
+  change the budget, in SQL.
 
 ## Deliveries
 
@@ -184,7 +187,7 @@ Table `qorpera_event_deliveries`:
 | `limited` | 429 | over the hook's minute (`Retry-After: 60`) or the company's budget (`Retry-After: 600`) |
 | `unavailable` | 503 | the intake is switched off (`Retry-After: 300`) |
 | — | 400 | input the database calls malformed |
-| — | 404, 405 | a path that is no address; a method other than POST |
+| — | 404, 405 | a path that is not a hook address ("This is not a hook address"); a method other than POST |
 | — | 413, 431 | a body over 256 KiB; kept headers over 8000 bytes |
 | — | 503 | the database cannot be reached; the sender retries |
 
@@ -218,7 +221,7 @@ helpers are shared with the intake function's tests, so both sides agree on ever
 
 ## Event wakes (W2)
 
-W2a (migration `20260929290000_runtime_event_wakes`, on today's routine rows per decision 6) and the
+W2a (migration `20260928269290_runtime_event_wakes`, on today's routine rows per decision 6) and the
 runtime side ship in one cut. Acceptance is contract section 21, item 33.
 
 **The trigger.** A routine version may carry one listener trigger on a hook:
@@ -326,10 +329,73 @@ After it is live:
 
 ## Mail (M2)
 
-A company mailbox is a platform-owned hook per address. The mail provider posts each inbound message
-to it, signed with Standard Webhooks or Svix headers, and the vault checks them like the other signed
-kinds. A connected Gmail is read by the platform once a minute and becomes deliveries the same way.
-Mail design follows in M2.
+Email waking agents is the top priority after events (29 September), and a company's first address is on
+a mail domain Qorpera owns (decision 7). Mail reuses the event machinery: a mailbox is a hook, a
+received message is a delivery, and routines wake on it through the event trigger (W2).
+
+**Provider.** Resend, which already sends the platform's invitations and hour notices. It receives
+every message sent to a domain whose MX record points to it, parses it, and posts a signed
+`email.received` webhook carrying only metadata; the body, headers and attachments' descriptions come
+from its API (`GET /emails/receiving/{id}`) with the platform's key. The domain and the cost are Jonas's
+call; until the domain exists, the build runs against Resend's `<id>.resend.app` receiving domain.
+
+**Mailboxes (M2a).** An owner or admin creates one with `qorpera_create_company_mailbox`: a local part
+(1–64 lowercase letters, digits, dots, hyphens and underscores; RFC 2142 names and `noreply` reserved)
+on the platform's mail domain, and a purpose. An address belongs to one live mailbox across the
+platform. The domain is one setting (`qorpera_mail_settings.domain`): a mailbox keeps only its local
+part, so going live on the real domain is that one change plus its MX record, and every mailbox made on
+the test domain moves with it. Each mailbox is a hook with the proof `mail`, named `mail-<local part>` (with a short digest when the
+local part holds a dot or an underscore, which hook names cannot; hook names beginning `mail-` are
+reserved for mailboxes), owned by the
+platform: it has a random hook address that is never shown, and the public intake answers `unknown`
+for it, so only the mail door fills it. Pausing, resuming and removing are the hook's; removing frees
+the address. Members see the address (`email`) in the hook list. At most 20 mailboxes a company, within
+its 50 hooks. `folder-v2` companies get mailboxes with their connection file, as hooks. Mailboxes do not
+wait for N1: when founding gives companies handles, their first mailbox can be made from the handle.
+
+**The mail door.** The Edge Function `mail-intake` checks the webhook's Standard Webhooks signature
+(`svix-*` headers, five minutes' tolerance) with the platform's signing secret, which is an Edge Function
+secret like the Resend key: mailboxes are the platform's, so no company vault is involved. It fetches the
+message, writes it as JSON text (`qorpera.mail/v1`) and hands it in one call, with every recipient in To,
+Cc, Bcc and the envelope, to `qorpera_receive_mail`. The database knows the domain: it looks up each
+address on it and stores the message once in every live mailbox among them, as a verified delivery of
+event type `mail.received`, content type JSON and key `mail:<provider message id>` (a retried webhook is
+a duplicate and writes nothing). The text is stored as written, so its size is what the function
+measured and its keys keep their order: subject, sender, recipients, reply-to, received time, message id,
+In-Reply-To and References, the SPF, DKIM and DMARC results, the attachments' descriptions, then the text
+and HTML bodies, cut to 256 KiB (HTML first, `truncated`). Text the database cannot hold (NUL, half a
+surrogate pair) is cleaned first, and the recipient lists are bounded. The hook's minute and the company's
+hourly budget apply as to any delivery. Mail for an address with no live mailbox, for a paused mailbox, or
+that the provider no longer has is dropped. The door answers the provider 200 when every recipient is
+settled, 429 with the longest `Retry-After` when a mailbox is over its limits, and 503 when mail is
+switched off or something failed, so the provider retries; a message the database calls malformed is
+logged and settled with 200, since a retry would send the same message.
+
+**Agents.** A routine on a mailbox is an event routine on its hook: `{kind:"event", hookId}`, optionally
+`only: ["mail.received"]`. The wake shows the message (cut to fit the wake), `read_event` reads it
+whole, and `list_hooks` lists mailboxes with their addresses. Mail is outside content: the wake protocol
+says so and names the authentication results.
+
+**Next (M2b).** Sending as a mailbox, as the agent with an AI line, through the same provider; attachments'
+contents into the company's storage (and `mail/<address>/` in the folder once its writer lands); threads.
+A connected Gmail read once a minute can become deliveries the same way.
+
+## Deploy (M2a)
+
+The migration adds tables and functions, and patches four existing ones by exact text: the intake door
+(`qorpera_receive_event`: a mailbox's hook is unknown), the hook descriptor (a mailbox shows `email`,
+never its hook address), the agents' hook list (no `url` for a mailbox) and hook creation
+(`qorpera_create_event_hook`: names beginning `mail-` are the mailboxes'; production had none when this
+was written). It rolls: nothing uses mailboxes before they exist. After it is live:
+
+1. Deploy the function: `supabase functions deploy mail-intake` (`verify_jwt = false`), with the secret
+   `RESEND_WEBHOOK_SECRET` (the webhook's signing secret, `whsec_…`); `RESEND_API_KEY` is already set.
+2. In Resend: add the receiving domain (or use the `<id>.resend.app` one for acceptance), and a webhook for
+   `email.received` to `<supabase url>/functions/v1/mail-intake`.
+3. Set the domain and switch mail on:
+   `update public.qorpera_mail_settings set domain = '<receiving domain>', enabled = true;`
+4. Acceptance: an owner creates a mailbox on a test company; an agent sets up a routine on its hook; an
+   email sent to the address wakes it, and the run reads the message.
 
 ## Deploy (W1a)
 
@@ -340,7 +406,11 @@ anchor with master again (RUNTIME-RELEASE-TRAIN.md). After it is live:
 
 1. Deploy the function: `supabase functions deploy event-intake` (`verify_jwt = false` in
    `supabase/config.toml`). It needs only `SUPABASE_URL` and the service key the platform provides.
-   Until the switch is on it answers every delivery 503.
+   Until the switch is on it answers every delivery that reaches the database, a POST to a
+   well-formed address, 503 ("Events are unavailable right now"), before looking the address up. The
+   function's own answers (405, 413, 431) come first either way. A path that is not a 43-character
+   address gets 404 ("This is not a hook address") from the function itself, by its shape alone;
+   an address with no live hook gets 404 ("No hook has this address") once the switch is on.
 2. Schedule retention:
    `select cron.schedule('qorpera-event-deliveries-purge', '*/5 * * * *',
    $$select public.qorpera_purge_event_deliveries(10000)$$);`
