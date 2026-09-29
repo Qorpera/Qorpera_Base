@@ -10,7 +10,9 @@
 --   [code=COMPUTER_HOURS_EXHAUSTED]". It is not a member's Stop: no routine is paused and no worker
 --   cancelled;
 -- * an in-house worker whose run was ended so reports "out of computer hours" to its parent,
---   instead of "ended without reporting a result".
+--   instead of "ended without reporting a result";
+-- * a leased job picked for a reason that no longer holds when it is ended (hours arrived meanwhile)
+--   is left alone while its lease is live, instead of ending as "lease expired".
 -- Machines stopping after the hour, and a coding turn's machine, are build step 6b; the web's
 -- failed-run card is 6d. With the rule off there is no zero state, so nothing here acts.
 
@@ -45,7 +47,7 @@ as $$
 		select 1 from public.qorpera_wake_occurrences wake
 		join public.qorpera_execution_runs run on run.id = wake.run_id
 		join public.qorpera_runner_jobs job on job.id = run.job_id
-		where wake.id = p_occurrence_id and job.last_error like '%[code=COMPUTER_HOURS_EXHAUSTED]%'
+		where wake.id = p_occurrence_id and position('[code=COMPUTER_HOURS_EXHAUSTED]' in job.last_error) > 0
 	)
 $$;
 revoke all on function public.qorpera_computer_hour_wake_ended_out_of_hours(uuid)
@@ -77,9 +79,8 @@ begin
 	where job.id = run.job_id and job.status = 'queued'
 		and job.id in (select candidate.id from public.qorpera_runner_jobs as candidate
 			join public.qorpera_execution_runs as candidate_run on candidate_run.job_id = candidate.id
-			where candidate.status = 'queued' and candidate_run.profile_id in (
-				select zero.profile_id from public.qorpera_computer_hour_zero_state as zero
-				where public.qorpera_computer_hour_finish_window_over(zero.profile_id, statement_timestamp()))
+			where candidate.status = 'queued'
+				and public.qorpera_computer_hour_finish_window_over(candidate_run.profile_id, statement_timestamp())
 			order by candidate.id for update of candidate skip locked);
 	update public.qorpera_runner_jobs as job
 	set status = 'failed', finished_at = statement_timestamp(),
@@ -88,9 +89,8 @@ begin
 	v_definition := pg_temp.finish_window_replace(v_definition, $old$			or not public.qorpera_execution_compute_available(run)
 		)
 		for update skip locked$old$, $new$			or not public.qorpera_execution_compute_available(run)
-			or run.profile_id in (
-				select zero.profile_id from public.qorpera_computer_hour_zero_state as zero
-				where public.qorpera_computer_hour_finish_window_over(zero.profile_id, statement_timestamp()))
+			-- Per job: a key lookup in the zero state, and the at-zero check only past the hour.
+			or public.qorpera_computer_hour_finish_window_over(run.profile_id, statement_timestamp())
 		)
 		for update skip locked$new$, 'leased jobs pick');
 	v_definition := pg_temp.finish_window_replace(v_definition, $old$		else
@@ -100,7 +100,9 @@ begin
 			perform public.qorpera_terminalize_runner_attempt(
 				v_job.id, 'failed', 'Out of computer hours [code=COMPUTER_HOURS_EXHAUSTED]', false
 			);
-		else
+		-- Picked for a reason that no longer holds (hours arrived meanwhile, say) with its lease
+		-- still live: left alone, not ended as expired.
+		elsif v_job.lease_expires_at <= statement_timestamp() then
 			perform public.qorpera_terminalize_runner_attempt(
 				v_job.id, 'failed', 'Runner lease expired before durable completion', true
 			);$new$, 'leased jobs end');

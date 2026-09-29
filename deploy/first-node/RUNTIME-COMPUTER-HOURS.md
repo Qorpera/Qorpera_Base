@@ -522,7 +522,13 @@ Coordinator (nothing secret):
     queued-job failures. No retry; no routine is paused and no worker cancelled;
   - an in-house worker so ended reports reason `out_of_computer_hours` ("The background work was
     stopped because the company is out of computer hours.") to its parent, from
-    `qorpera_drain_worker_wakes`.
+    `qorpera_drain_worker_wakes`;
+  - a job picked for a reason that no longer holds when it is ended (hours arrived meanwhile) is
+    left alone while its lease is live, instead of ending as "lease expired";
+  - "one hour" is an hour after the ran-out time, which is the sweep's (up to a minute late),
+    until the next heartbeat or claim; the heartbeat also runs at the start of every claim, and
+    checks each leased or queued job's company with one key lookup in the zero state (the at-zero
+    check only for a company past its hour).
 
   Machines not starting or waking, and stopping after the hour (6b), the renewal-gap handling for
   machines, and the web (6d) follow. Before the live switch:
@@ -575,7 +581,7 @@ Coordinator (nothing secret):
   never sees it. Built in 6c part 1 (above).
 - A plan renewal is recorded when Stripe's renewal invoice arrives, which can trail the period's
   end by minutes. The check must not hold work back in that gap. For runs, 6a's renewal grace does
-  this (see above); machines follow in 6c.
+  this (see above); machines follow in 6b.
 - It ships switched off, in its own release, with a 30-minute database watch after the cut. It is
   switched on together with live payments and hour notices.
 
