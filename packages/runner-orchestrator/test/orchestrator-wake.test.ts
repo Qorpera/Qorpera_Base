@@ -198,7 +198,8 @@ describe("Realtime wake-up channel", () => {
 	it("joins the orchestrator's private topic with the publishable key and passes its wake-ups on", async () => {
 		const realtime = await fakeRealtime();
 		const topic = cloudRunnerOrchestratorWakeTopic("c".repeat(43));
-		expect(topic).toMatch(/^qorpera-orchestrator-wake-[0-9a-f]{64}$/);
+		// The database derives the same name from the stored sha256 (0c49d892…); its SQL test pins this value.
+		expect(topic).toBe("qorpera-orchestrator-wake-cab2795dd16fc7b4a1303f59434bd9ff1be1cac1204e30dcf267af3c56a1da88");
 		const { wake, states, wakeUps } = channel(realtime, () => topic);
 		await until(() => wake.listening);
 		expect(realtime.apikeys).toEqual(["sb_publishable_test"]);
