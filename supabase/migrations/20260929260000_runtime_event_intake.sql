@@ -11,12 +11,15 @@
 -- and a receipt. Nothing wakes yet: event wakes are step W2.
 --
 -- The intake is built switched off (qorpera_event_intake_settings.enabled) and bounded three ways:
--- per hook (body size, deliveries a minute), per company (deliveries and bytes in the current and
--- previous clock hour) and by the switch. A refused request writes nothing.
+-- per hook (body size, deliveries a minute), per company (deliveries and stored bytes, body and
+-- headers, in the current and previous UTC clock hour) and by the switch. A refused request
+-- writes nothing.
 --
--- Lock order: the company row when creating a hook, then the hook row. A receive takes no hook
--- lock: duplicates of a sender id are decided by a unique index; only the company's hourly usage
--- row is locked, briefly, to count an accepted delivery.
+-- Lock order: the company row when creating a hook, then the hook row. A receive locks neither the
+-- company nor the hook: deliveries and usage carry the company id without a foreign key (they go
+-- with the company through the hook, and usage expires within a day), so a receive never waits for
+-- the company row's gc fence. Duplicates of a sender id are decided by a unique index; only the
+-- company's hourly usage row is locked, briefly, to count a stored delivery.
 
 set local lock_timeout = '3s';
 
@@ -59,7 +62,8 @@ create index qorpera_event_hooks_company on public.qorpera_event_hooks (profile_
 create table public.qorpera_event_deliveries (
 	id uuid primary key default extensions.gen_random_uuid(),
 	hook_id uuid not null references public.qorpera_event_hooks(id) on delete cascade,
-	profile_id uuid not null references public.qorpera_profiles(id) on delete cascade,
+	-- The hook's company, copied for indexes; no foreign key, so a receive takes no company lock.
+	profile_id uuid not null,
 	received_at timestamptz not null default clock_timestamp(),
 	status text not null check (status in ('received', 'verified', 'refused', 'duplicate')),
 	-- The sender's own id; for a sender without one, 'body:<sha256>:<delivery id>' (never repeats).
@@ -89,10 +93,11 @@ create index qorpera_event_deliveries_received_at on public.qorpera_event_delive
 create index qorpera_event_deliveries_waiting on public.qorpera_event_deliveries (received_at)
 	where status = 'received';
 
--- Accepted deliveries per company and clock hour, for the company budget.
+-- Stored deliveries (accepted or duplicate) per company and UTC clock hour, for the company budget.
+-- No foreign key, like the deliveries; rows expire after a day.
 create table public.qorpera_event_intake_usage (
-	profile_id uuid not null references public.qorpera_profiles(id) on delete cascade,
-	hour timestamptz not null check (hour = date_trunc('hour', hour)),
+	profile_id uuid not null,
+	hour timestamptz not null check (hour = date_trunc('hour', hour, 'UTC')),
 	deliveries integer not null default 0 check (deliveries >= 0),
 	bytes bigint not null default 0 check (bytes >= 0),
 	primary key (profile_id, hour)
@@ -368,9 +373,10 @@ declare
 	v_event_type text;
 	v_delivery_id uuid := extensions.gen_random_uuid();
 	v_inserted uuid;
-	v_hour timestamptz := date_trunc('hour', clock_timestamp());
+	v_hour timestamptz := date_trunc('hour', clock_timestamp(), 'UTC');
 	v_used_deliveries bigint;
 	v_used_bytes bigint;
+	v_header_bytes integer;
 begin
 	if p_headers is null or jsonb_typeof(p_headers) <> 'object' or octet_length(p_headers::text) > 8192
 		or p_body_base64 is null or char_length(p_body_base64) > 349528
@@ -393,6 +399,7 @@ begin
 	if octet_length(v_body) > 262144 then
 		raise exception 'The delivery body is over 256 KiB' using errcode = '22023';
 	end if;
+	v_header_bytes := octet_length(v_headers::text);
 
 	select settings.* into v_settings from public.qorpera_event_intake_settings as settings;
 	if not coalesce(v_settings.enabled, false) then
@@ -423,7 +430,7 @@ begin
 	from public.qorpera_event_intake_usage as usage
 	where usage.profile_id = v_hook.profile_id and usage.hour >= v_hour - interval '1 hour';
 	if v_used_deliveries + 1 > v_settings.company_hourly_deliveries
-		or v_used_bytes + octet_length(v_body) > v_settings.company_hourly_bytes then
+		or v_used_bytes + octet_length(v_body) + v_header_bytes > v_settings.company_hourly_bytes then
 		return jsonb_build_object('outcome', 'limited', 'retryAfterSeconds', 600);
 	end if;
 	if v_hook.proof <> 'address' then
@@ -432,11 +439,11 @@ begin
 	end if;
 
 	v_body_sha256 := encode(extensions.digest(v_body, 'sha256'), 'hex');
-	v_sender_key := coalesce(v_headers ->> 'x-qorpera-delivery', v_headers ->> 'idempotency-key');
-	if v_sender_key is not null and (char_length(v_sender_key) not between 1 and 256
-		or v_sender_key !~ '^[\x21-\x7e]+$' or v_sender_key like 'body:%') then
-		v_sender_key := null;
-	end if;
+	-- The first well-formed sender id of the two headers.
+	select candidate into v_sender_key
+	from unnest(array[v_headers ->> 'x-qorpera-delivery', v_headers ->> 'idempotency-key']) with ordinality as sent(candidate, place)
+	where char_length(candidate) between 1 and 256 and candidate ~ '^[\x21-\x7e]+$' and candidate not like 'body:%'
+	order by place limit 1;
 	v_event_type := v_headers ->> 'x-qorpera-event';
 	if v_event_type is not null and (char_length(v_event_type) not between 1 and 128
 		or v_event_type !~ '^[\x21-\x7e]+$') then
@@ -483,7 +490,7 @@ begin
 		);
 	end if;
 	insert into public.qorpera_event_intake_usage as usage (profile_id, hour, deliveries, bytes)
-	values (v_hook.profile_id, v_hour, 1, case when v_inserted is null then 0 else octet_length(v_body) end)
+	values (v_hook.profile_id, v_hour, 1, v_header_bytes + case when v_inserted is null then 0 else octet_length(v_body) end)
 	on conflict (profile_id, hour) do update
 	set deliveries = usage.deliveries + 1, bytes = usage.bytes + excluded.bytes;
 	return jsonb_build_object('outcome', case when v_inserted is null then 'duplicate' else 'accepted' end,
@@ -493,9 +500,9 @@ $$;
 revoke all on function public.qorpera_receive_event(text, text, jsonb, text) from public, anon, authenticated, service_role;
 grant execute on function public.qorpera_receive_event(text, text, jsonb, text) to service_role;
 
--- Retention, scheduled by the coordinator (pg_cron, hourly): a delivery still waiting for the vault
--- after 24 hours is refused, rows are deleted after 30 days, bodies are cleared after 7, and hourly
--- usage is kept for a day.
+-- Retention, scheduled by the coordinator (pg_cron, every 5 minutes): a delivery still waiting for
+-- the vault after 24 hours is refused, rows are deleted after 30 days, bodies and headers are
+-- cleared after 7, hooks removed over 30 days ago are deleted, and hourly usage is kept for a day.
 create function public.qorpera_purge_event_deliveries(p_limit integer default 1000)
 returns jsonb
 language plpgsql
@@ -531,20 +538,39 @@ begin
 
 	with old as (
 		select delivery.id from public.qorpera_event_deliveries as delivery
-		where delivery.body is not null and delivery.received_at < clock_timestamp() - interval '7 days'
+		where (delivery.body is not null or delivery.headers <> '{}'::jsonb)
+			and delivery.received_at < clock_timestamp() - interval '7 days'
 		order by delivery.received_at limit v_limit
 		for update skip locked
 	)
 	update public.qorpera_event_deliveries as delivery
-	set body = null
+	set body = null, headers = '{}'::jsonb
 	from old where delivery.id = old.id;
 	get diagnostics v_cleared = row_count;
 
+	delete from public.qorpera_event_hooks as hook
+	where hook.id in (select removed.id from public.qorpera_event_hooks as removed
+		where removed.status = 'removed' and removed.removed_at < clock_timestamp() - interval '30 days'
+		order by removed.removed_at limit v_limit
+		for update skip locked);
+
 	delete from public.qorpera_event_intake_usage as usage
-	where usage.hour < date_trunc('hour', clock_timestamp()) - interval '1 day';
+	where usage.hour < date_trunc('hour', clock_timestamp(), 'UTC') - interval '1 day';
 
 	return jsonb_build_object('expired', v_expired, 'cleared', v_cleared, 'deleted', v_deleted);
 end
 $$;
 revoke all on function public.qorpera_purge_event_deliveries(integer) from public, anon, authenticated, service_role;
 grant execute on function public.qorpera_purge_event_deliveries(integer) to service_role;
+
+-- A company with hooks is not untouched: the folder core is enabled only for a company without them.
+do $$
+declare v_definition text := pg_get_functiondef('public.qorpera_folder_enable(uuid)'::regprocedure);
+	v_old text := $old$		or exists (select 1 from public.qorpera_company_snapshots where environment_id = p_environment_id) then$old$;
+begin
+	if (length(v_definition) - length(replace(v_definition, v_old, ''))) / length(v_old) <> 1 then
+		raise exception 'qorpera_folder_enable differs from 20260928249000'; end if;
+	execute replace(v_definition, v_old, $new$		or exists (select 1 from public.qorpera_company_snapshots where environment_id = p_environment_id)
+		or exists (select 1 from public.qorpera_event_hooks where environment_id = p_environment_id and status <> 'removed') then$new$);
+end
+$$;

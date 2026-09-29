@@ -543,9 +543,9 @@ wake), so no agent runs and nothing is charged before it.
   URL plus this path), `maxBodyBytes` (1024–262144, default 65536),
   `perMinute` (1–120, default 60), `createdAt`, `lastReceivedAt` (absent
   until the first delivery). Owners and admins only (42501); 23505 for a
-  name in use, 54000 past 50 live hooks, 22023 for a bad name, purpose, proof
-  or limit, 0A000 for a `folder-v2` company (its hooks come with their
-  connection file).
+  name in use, 54000 past 50 live hooks, 22023 for a bad environment, name,
+  purpose, proof or limit, 0A000 for a `folder-v2` company (its hooks come
+  with their connection file).
 - `qorpera_set_event_hook_status(p_hook_id, p_status)` with `active`,
   `paused` or `removed` → the same descriptor. Removing is final (55000
   afterwards) and frees the name. Owners and admins only.
