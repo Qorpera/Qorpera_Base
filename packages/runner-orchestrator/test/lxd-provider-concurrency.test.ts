@@ -87,7 +87,8 @@ async function until(condition: () => boolean | Promise<boolean>): Promise<void>
 
 describe("LXD provider concurrency", () => {
 	it("boots independent runs side by side and creates their shared identity volume once", async () => {
-		const f = await fixture();
+		// LXD takes a while to create the volume; a second create meanwhile would be refused (409).
+		const f = await fixture({ timings: { volumeCreate: 300 } });
 		const runners = await Promise.all(
 			runIds.map((runId) => f.backend.acquire(runId, fakeWork(runId), new AbortController().signal)),
 		);
@@ -95,6 +96,7 @@ describe("LXD provider concurrency", () => {
 		expect(f.lxd.peakBooting).toBe(4);
 		expect(new Set(runners.map((runner) => runner.runnerId)).size).toBe(4);
 		expect(f.lxd.volumes.size).toBe(1);
+		expect(f.lxd.volumeCreates).toBe(1);
 		for (const runId of runIds) expect(await f.journal(runId)).toMatchObject({ physicalState: "registered" });
 		await Promise.all(runners.map((runner, index) => f.backend.deliver(runner, delivery(runIds[index]!, runner))));
 		expect(f.lxd.deliveries.sort()).toEqual(runIds.map(instance).sort());
@@ -172,6 +174,50 @@ describe("LXD provider concurrency", () => {
 		await f.backend.reconcile();
 		expect(await f.journal(slow)).toMatchObject({ physicalState: "stopped", capacityReleased: true });
 		expect([...f.lxd.instances.keys()]).toEqual([instance(first)]);
+		expect(f.lxd.unexpected).toEqual([]);
+	});
+
+	it("stops a guest once when two stops for it arrive together", async () => {
+		const f = await fixture();
+		const runId = runIds[0]!;
+		const runner = await f.backend.acquire(runId, fakeWork(runId), new AbortController().signal);
+		await Promise.all([f.backend.stop(runner, "idle"), f.backend.stop(runner, "idle")]);
+		// The second stop reads the journal again under its lock and finds it stopped. Working from the
+		// copy it found before the first stop ran, it would have rewritten the retired guest as lost.
+		expect(await f.journal(runId)).toMatchObject({
+			physicalState: "stopped",
+			stopReason: "idle",
+			capacityReleased: true,
+		});
+		expect(f.releases()).toBe(1);
+		expect(f.lxd.instances.size).toBe(0);
+		expect(f.lxd.unexpected).toEqual([]);
+	});
+
+	it("looks again at the end of a pass at a journal that was busy when the pass began", async () => {
+		// Retiring the finished guest keeps the pass busy for 800 ms.
+		const f = await fixture({ timings: { delete: 800 }, guestReadyTimeoutMs: 60_000 });
+		const [cancelled, finished] = runIds as [string, string];
+		f.lxd.neverReady.add(instance(cancelled));
+		await f.backend.acquire(finished, fakeWork(finished), new AbortController().signal);
+		const cancel = new AbortController();
+		const acquisition = f.backend.acquire(cancelled, fakeWork(cancelled), cancel.signal);
+		acquisition.catch(() => undefined);
+		await until(async () => (await f.journal(cancelled).catch(() => undefined))?.physicalState === "bootstrapping");
+		f.lxd.instances.get(instance(finished))!.status = "Stopped";
+		const pass = f.backend.reconcile();
+		// The orchestrator gives up on the boot just after the pass began; the acquisition marks its guest
+		// for retirement and lets go of the journal while the pass is still busy.
+		setTimeout(() => cancel.abort(), 50);
+		await pass;
+		await expect(acquisition).rejects.toThrow();
+		expect(await f.journal(finished)).toMatchObject({ physicalState: "stopped" });
+		expect(await f.journal(cancelled)).toMatchObject({
+			physicalState: "stopped",
+			stopReason: "delivery_failed",
+			capacityReleased: true,
+		});
+		expect(f.lxd.instances.size).toBe(0);
 		expect(f.lxd.unexpected).toEqual([]);
 	});
 

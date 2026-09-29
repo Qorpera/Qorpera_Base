@@ -27,6 +27,8 @@ export interface FakeLxdTimings {
 	delete: number;
 	/** Every control-plane RPC. */
 	rpc: number;
+	/** A custom storage volume's creation. */
+	volumeCreate: number;
 }
 
 interface FakeInstance {
@@ -60,6 +62,9 @@ export class FakeLxdSocket {
 	};
 	readonly instances = new Map<string, FakeInstance>();
 	readonly volumes = new Map<string, Record<string, unknown>>();
+	readonly #creatingVolumes = new Set<string>();
+	/** Custom volume creations LXD accepted. */
+	volumeCreates = 0;
 	readonly operations = new Map<string, FakeOperation>();
 	readonly unexpected: string[] = [];
 	readonly events: Array<{ at: number; instance: string; event: "create" | "start" | "ready" | "delete" }> = [];
@@ -99,6 +104,7 @@ export class FakeLxdSocket {
 			stop: 10,
 			delete: 10,
 			rpc: 2,
+			volumeCreate: 1,
 			...timings,
 		};
 	}
@@ -245,15 +251,22 @@ export class FakeLxdSocket {
 			}
 			if (method === "POST" && !name && json) {
 				const created = String(json.name);
-				if (this.volumes.has(created)) return error(409, "Volume by that name already exists");
-				this.volumes.set(created, {
-					name: created,
-					type: "custom",
-					content_type: json.content_type,
-					description: json.description,
-					config: json.config,
+				// A volume being created is not listed yet, but its name is taken.
+				if (this.volumes.has(created) || this.#creatingVolumes.has(created))
+					return error(409, "Volume by that name already exists");
+				this.#creatingVolumes.add(created);
+				this.volumeCreates++;
+				return this.#async(answer, this.timings.volumeCreate, {}, () => {
+					this.#creatingVolumes.delete(created);
+					this.volumes.set(created, {
+						name: created,
+						type: "custom",
+						content_type: json.content_type,
+						description: json.description,
+						config: json.config,
+					});
+					return undefined;
 				});
-				return answer(200, { type: "sync", metadata: {} });
 			}
 		}
 		if (path === "/1.0/instances" && method === "POST" && json) {

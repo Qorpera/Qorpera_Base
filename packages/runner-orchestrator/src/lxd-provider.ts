@@ -858,8 +858,12 @@ class KeyedLock {
 /** One journal per acquisition, each under its own lock: acquisitions, deliveries, stops and reconcile
  * passes on different journals run side by side, so one VM's boot (about 17 s, up to the readiness
  * timeout) never holds up another run's start, delivery or retirement. Nothing process-wide needs a
- * lock: the company and node ceilings are admitted by the database for each allocation, and the
- * capacity inventory check before a new start only reads journals, each written by one atomic rename. */
+ * lock. The provider keeps no slot count: what bounds concurrent starts is the node ceiling, which the
+ * database admits for each allocation under the node row's lock (qorpera_reserve_runtime_node_machine)
+ * right before every create and start. The capacity inventory check before a new start only reads
+ * journals, each written by one atomic rename. Lock waits are not abortable, as the old process-wide
+ * lock's were not: a caller that gave up still gets its turn once the journal is free and stops at its
+ * first call that takes its signal (a stop has by then marked its guest for retirement, as it asked). */
 export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderServiceBackend {
 	readonly #registeredCapacity = new Set<string>();
 	readonly #releasedCapacity = new Set<string>();
@@ -899,11 +903,13 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 
 	/** Every journal is reconciled on every pass until it is settled (see #settled), up to
 	 * RECONCILE_CONCURRENCY at a time, each under its own lock. A journal that an acquisition, delivery
-	 * or stop holds is theirs to move and is looked at again on the next pass. One journal that cannot
-	 * make progress (for example a reserving acquisition the node ceiling refuses while another guest
-	 * still holds the slot, or an unreadable one) must not stop the retirement of finished guests beside
-	 * it, or the slot is never released and the provider livelocks. Failures are still reported after
-	 * the pass; an abort stops it. */
+	 * or stop holds is theirs to move. It is looked at again at the end of the pass once they have let
+	 * it go (an acquisition its caller just cancelled marks its guest for retirement and lets go within
+	 * moments), and otherwise, as for a boot in progress, on the next pass. One journal that cannot make
+	 * progress (for example a reserving acquisition the node ceiling refuses while another guest still
+	 * holds the slot, or an unreadable one) must not stop the retirement of finished guests beside it,
+	 * or the slot is never released and the provider livelocks. Failures are still reported after the
+	 * pass; an abort stops it. */
 	async reconcile(signal?: AbortSignal): Promise<void> {
 		await mkdir(this.#config.stateRoot, { recursive: true, mode: 0o700 });
 		await chmod(this.#config.stateRoot, 0o700);
@@ -911,21 +917,29 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 			.filter((entry) => entry.isDirectory() && UUID_PATTERN.test(entry.name))
 			.map((entry) => entry.name);
 		const failures: unknown[] = [];
-		let next = 0;
-		const lane = async (): Promise<void> => {
-			while (next < names.length) {
-				signal?.throwIfAborted();
-				const acquisitionId = names[next++]!;
-				if (this.#journals.held(acquisitionId)) continue;
-				try {
-					await this.#journals.run(acquisitionId, () => this.#reconcileEntry(acquisitionId, signal));
-				} catch (error) {
-					if (signal?.aborted) throw error;
-					failures.push(error);
+		const busy: string[] = [];
+		const reconcileAll = async (acquisitionIds: readonly string[]): Promise<void> => {
+			let next = 0;
+			const lane = async (): Promise<void> => {
+				while (next < acquisitionIds.length) {
+					signal?.throwIfAborted();
+					const acquisitionId = acquisitionIds[next++]!;
+					if (this.#journals.held(acquisitionId)) {
+						busy.push(acquisitionId);
+						continue;
+					}
+					try {
+						await this.#journals.run(acquisitionId, () => this.#reconcileEntry(acquisitionId, signal));
+					} catch (error) {
+						if (signal?.aborted) throw error;
+						failures.push(error);
+					}
 				}
-			}
+			};
+			await Promise.all(Array.from({ length: Math.min(RECONCILE_CONCURRENCY, acquisitionIds.length) }, lane));
 		};
-		await Promise.all(Array.from({ length: Math.min(RECONCILE_CONCURRENCY, names.length) }, lane));
+		await reconcileAll(names);
+		await reconcileAll(busy.splice(0).filter((acquisitionId) => !this.#journals.held(acquisitionId)));
 		try {
 			await this.#retireEndedRunners(signal);
 		} catch (error) {
@@ -2171,9 +2185,9 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 		return `qorpera-${acquisitionId.replaceAll("-", "")}`;
 	}
 
-	/** Before a new start, every journal whose guest may still exist must have its company and node
-	 * capacity on record. It only reads, so it holds no lock: a journal written meanwhile is either a new
-	 * one, still reserving (its capacity is reserved before any guest is created), or one moving towards
+	/** Before a new start, every journal whose guest may still exist must have its machine allocation and
+	 * node demand on record. It only reads, so it holds no lock: a journal written meanwhile is either a
+	 * new one, still reserving (both are reserved before any guest is created), or one moving towards
 	 * registered or deleted. */
 	async #assertCapacityInventory(signal: AbortSignal): Promise<void> {
 		await mkdir(this.#config.stateRoot, { recursive: true, mode: 0o700 });
