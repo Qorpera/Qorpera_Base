@@ -119,7 +119,12 @@ export type CloudCompanyPathRpc =
 	// Machines agents start (2026-09-28).
 	| "qorpera_native_machine_start"
 	| "qorpera_native_machine_manage"
-	| "qorpera_company_machines_available";
+	| "qorpera_company_machines_available"
+	// The folder core for folder-v2 companies (core C3): reads, listings, change sets and releases.
+	| "qorpera_folder_read"
+	| "qorpera_folder_list"
+	| "qorpera_folder_commit"
+	| "qorpera_folder_record_release";
 
 /** Service-only transport. Never exposed as an arbitrary RPC tool. */
 export interface CloudCompanyPathControl {

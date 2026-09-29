@@ -1,6 +1,7 @@
 import { HttpCloudCompanyPathControl } from "@qorpera/runtime/cloud-company-path-control";
 import { CloudCompanyHeadConflict } from "@qorpera/runtime/cloud-company-path-gateway";
 import {
+	CloudCompanyFolderRpcError,
 	CloudCompanyPathRpcMissing,
 	CloudCompanyPathRpcParentMissing,
 	CloudCompanyPathRpcPrecondition,
@@ -281,5 +282,135 @@ describe("Company File bounded control transport", () => {
 		expect(String(error)).toBe("Error: Company File authority unavailable");
 		expect(JSON.stringify(error)).not.toMatch(/PRIVATE_PATH|PRIVATE_CREDENTIAL/);
 		expect(transport).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe("the folder core's entry points (core C3)", () => {
+	const FOLDER = [
+		"qorpera_folder_read",
+		"qorpera_folder_list",
+		"qorpera_folder_commit",
+		"qorpera_folder_record_release",
+	] as const;
+
+	it.each(FOLDER)("permits %s over the fixed RPC route", async (method) => {
+		const transport = vi.fn<typeof fetch>(async () => Response.json({ schema: "fixture" }));
+		await expect(fixture(transport).call(method, { p_path: "a" }, new AbortController().signal)).resolves.toEqual({
+			schema: "fixture",
+		});
+		expect(transport).toHaveBeenCalledWith(`https://authority.example/rest/v1/rpc/${method}`, expect.anything());
+	});
+
+	it.each([
+		// The commit's authority check, raised through PostgREST with its own status and code.
+		[409, "QRC01", "Company folder authority changed", "folder_authority_changed"],
+		[500, "55000", "Company execution is paused", null],
+		[403, "42501", "Run is unavailable", null],
+		[403, "42501", "A read is no longer readable", null],
+		[500, "40P01", "deadlock detected", "PRIVATE_PROCESS_DETAIL"],
+		[409, "23505", "duplicate key value violates unique constraint", "PRIVATE_KEY_DETAIL"],
+		[400, "22023", "Change set unit 1 is invalid", null],
+	] as const)("keeps a folder error's code and message (%i %s)", async (status, code, message, details) => {
+		for (const method of FOLDER) {
+			const transport = vi.fn<typeof fetch>(async () =>
+				Response.json({ code, message, details, hint: null }, { status }),
+			);
+			const error = await fixture(transport)
+				.call(method, {}, new AbortController().signal)
+				.catch((error: unknown) => error);
+			expect(error).toBeInstanceOf(CloudCompanyFolderRpcError);
+			expect(error).toMatchObject({ code, detail: message });
+			// The SQL's words stay out of the error's text; only the folder client reads them.
+			expect(String(error)).not.toContain(message);
+		}
+	});
+
+	it("keeps today's mapping for every other RPC, and brands no incomplete folder error", async () => {
+		const denial = { code: "42501", message: "Run is unavailable", details: null, hint: null };
+		const other = await fixture(vi.fn<typeof fetch>(async () => Response.json(denial, { status: 403 })))
+			.call("qorpera_read_company_path_v2", {}, new AbortController().signal)
+			.catch((error: unknown) => error);
+		expect(other).toBeInstanceOf(CloudCompanyPathRpcRefusal);
+		for (const body of [
+			{ code: "55000", message: "Company execution is paused" },
+			{ code: "55000", message: "Company execution is paused", details: null, hint: null, extra: 1 },
+			{ code: 55000, message: "Company execution is paused", details: null, hint: null },
+			{ code: "5500", message: "Company execution is paused", details: null, hint: null },
+		]) {
+			const error = await fixture(vi.fn<typeof fetch>(async () => Response.json(body, { status: 500 })))
+				.call("qorpera_folder_commit", {}, new AbortController().signal)
+				.catch((error: unknown) => error);
+			expect(error).not.toBeInstanceOf(CloudCompanyFolderRpcError);
+			expect(error).toBeInstanceOf(CloudRuntimeDiagnosticError);
+		}
+	});
+
+	it("brands PostgREST's own codes as requests nothing ran, and reads an unreadable 5xx as a lost answer", async () => {
+		const missing = await fixture(
+			vi.fn<typeof fetch>(async () =>
+				Response.json(
+					{ code: "PGRST202", message: "Could not find the function", details: "PRIVATE", hint: null },
+					{ status: 404 },
+				),
+			),
+		)
+			.call("qorpera_folder_commit", {}, new AbortController().signal)
+			.catch((error: unknown) => error);
+		expect(missing).toBeInstanceOf(CloudCompanyFolderRpcError);
+		expect(missing).toMatchObject({ code: "PGRST202", category: "invalid_arguments" });
+		const page = "<html><body>504 Gateway Time-out</body></html>";
+		// PostgREST's connection errors are lost answers, not requests it refused; its service-key errors are authority.
+		for (const [status, code, category] of [
+			[503, "PGRST000", "transport_unavailable"],
+			[503, "PGRST001", "transport_unavailable"],
+			[504, "PGRST003", "transport_unavailable"],
+			[401, "PGRST301", "authority_unavailable"],
+		] as const) {
+			const error = await fixture(
+				vi.fn<typeof fetch>(async () =>
+					Response.json({ code, message: "x", details: null, hint: null }, { status }),
+				),
+			)
+				.call("qorpera_folder_commit", {}, new AbortController().signal)
+				.catch((error: unknown) => error);
+			expect(error).toMatchObject({ category });
+			expect(error instanceof CloudCompanyFolderRpcError).toBe(code === "PGRST301");
+		}
+		for (const [status, body, method, category] of [
+			[500, page, "qorpera_folder_list", "transport_unavailable"],
+			[504, page, "qorpera_folder_commit", "transport_unavailable"],
+			[502, "x".repeat(5000), "qorpera_folder_record_release", "transport_unavailable"],
+			[504, page, "qorpera_read_company_path_v2", "invalid_response"],
+			[400, page, "qorpera_folder_commit", "invalid_response"],
+		] as const) {
+			const error = await fixture(vi.fn<typeof fetch>(async () => new Response(body, { status })))
+				.call(method, {}, new AbortController().signal)
+				.catch((error: unknown) => error);
+			expect(error).toMatchObject({ category });
+			expect(error).not.toBeInstanceOf(CloudCompanyFolderRpcError);
+		}
+	});
+
+	it("gives a listing page and a change set's outcomes room, and nothing else", async () => {
+		const sized = (bytes: number) => ({ padding: "x".repeat(bytes) });
+		for (const [method, bytes, fits] of [
+			["qorpera_folder_list", 1_900_000, true],
+			["qorpera_folder_list", 2_200_000, false],
+			["qorpera_folder_commit", 3_000_000, true],
+			["qorpera_folder_read", 300_000, false],
+			["qorpera_folder_record_release", 300_000, false],
+			["qorpera_read_company_path_v2", 300_000, false],
+		] as const) {
+			const result = await fixture(vi.fn<typeof fetch>(async () => Response.json(sized(bytes))))
+				.call(method, {}, new AbortController().signal)
+				.then(
+					() => true,
+					(error: unknown) => {
+						expect(error).toMatchObject({ category: "invalid_response" });
+						return false;
+					},
+				);
+			expect([method, bytes, result]).toEqual([method, bytes, fits]);
+		}
 	});
 });
