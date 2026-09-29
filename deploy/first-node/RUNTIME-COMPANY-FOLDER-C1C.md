@@ -442,8 +442,10 @@ checked by each slice's functional test (647, 652, 656, 658).
       checks lock rows (`qorpera_office_waiter_authorized` takes the company row `FOR UPDATE NOWAIT`), and neither
       source serves `folder-v2` until C1c-3.
     - Foreign-key `KEY SHARE` locks after admission: a wake insert's keys to the environment, the parent run, the
-      requester, the sponsor version, the logical computer and the routine version. No path locks those rows more
-      strongly in a way that waits for admission today; C1c-3's activation check lists them (review r1 N4).
+      requester, the sponsor version, the logical computer and the routine version; and #519's listener sync, which
+      locks event listener cursors `FOR UPDATE` when a count limit expires a routine (folder-v2 routines have no event
+      cursors before C4). No path locks those rows more strongly in a way that waits for admission today; C1c-3's
+      activation check lists them (review r1 N4).
 - **`send_coworker_message`** (`qorpera_folder_send_coworker_message`, 2c part 1):
   1. the run mutex, the job, the fence, rank 0;
   2. ranks 1 and 2 for sender and recipient, rank 3 for the recipient's authority, rank 4 for both agents' thread rooms
@@ -486,8 +488,8 @@ checked by each slice's functional test (647, 652, 656, 658).
 - **Completion**, the `complete_runner_job_v6` lane, in order:
   1. the job `FOR UPDATE` (the lease ends);
   2. the run's run box views `FOR UPDATE`, in id order (C1B §4's one order: job, then view);
-  3. the fence, rank 0, and the ranks, with the routine `FOR NO KEY UPDATE`;
-  4. the recheck;
+  3. the fence, rank 0, and the ranks (a routine run's routine at the run check's `KEY SHARE`: see "As built");
+  4. the native lease check, then the recheck;
   5. receipts matched to their commits;
   6. the provider-session owner;
   7. the job update.
@@ -522,6 +524,10 @@ checked by each slice's functional test (647, 652, 656, 658).
   - The job's `company_file` result: `runtime: folder-v2`, the disposition, `folder_commit_id`, the native binary's
     hash and the receipts that name commits.
   - The run's run box views close with `ended`.
+  - `review_pending` reads the units' outcomes, so it is right only while nothing writes folder reviews (C2 decides
+    them); the wake still ends `completed`, not `requires_review` (C2).
+  - The attempt terminalizer's partial-output check does not look at folder commits: only the native-start guard stops
+    a run that already saved from being retried as pristine (C3).
   - `complete_runner_job_v2` skips its source substrate lookup for a `folder-v2` job, which has none once C4 makes
     runs without substrate ids possible, and refuses artifacts there instead. Only v6 is granted to the runtime, so
     v4, v3 and v2 are reached only through a lane.
@@ -547,6 +553,10 @@ In step 4, after rank 9:
 
 Admission and the folder clock stay last. The **run mutex** comes after the operation key and before the job (step 2).
 The **provider-session owner** is locked in completion after the recheck.
+
+One exception to "run-owned rows, then sessions": an action-review card, and a member's answer to one, take the
+conversation `FOR UPDATE` before the review row, because the review row's foreign keys point at the conversation and a
+`KEY SHARE` taken first would have to be strengthened (2b part 2 review r1; 653 H).
 
 ### 5.8 Moved to C3 and C4, and what stays closed
 
@@ -678,6 +688,72 @@ Needed before any view goes live (C1B §4).
     the run mutex takes it before the job (C1C §5.2);
   - no deferred constraints or triggers on the folder core's tables.
 - **Deletion drains the folder fence** for `folder-v2` (C1C §5.5): the folder pause's second phase, with no gc fence.
+
+### 6.1 Inventory, split and decisions (2026-09-29)
+
+The inventory (scratchpad `reports/C1c3-inventory.md`) covers every site above and finds more: the founding lobby,
+invitation joins, model logins and account refresh, identity recovery, a run's machine reservation, node update drains.
+It splits C1c-3 into thirteen PRs, in dependency order: 3a (a member's posts and writes, below), 3b (the answers:
+`answer_interaction`'s thread branch, `finish_email_draft_action`, `answer_action_review`), 3c and 3d (member
+management and its triggers, joins and the founding lobby), 3e (the dynamic-routine tick), 3f (the compute fence and
+company machines), 3g (deletion drains the fence), 3h and 3i (coding machines, attach and turns), 3j to 3l (offices,
+screens, agents starting the computer) and 3m (the activation checks, last). A real company needs 3a to 3e; Company
+Computers and views need 3f, 3j, 3k and 3m too.
+
+Decisions:
+- **Member management serializes on the folder fence `FOR NO KEY UPDATE`**: remove, leave, role change, joins,
+  founding and company deletion's last-member check. Every effect holds the fence `KEY SHARE`, which that mode does
+  not block; stop and resume (`FOR UPDATE`) and other member management wait for it. No new row.
+- **Plain conversations refuse `folder-v2`** (0A000) until C3 and C4 give them `folder-v2` runs: today their inputs
+  would be accepted and never delivered. Their creators still run: `qorpera_ensure_staff_session` (web `api.ts`, cloud
+  client `hosted-primary.ts`) and the seven `create_shared_session` functions open `folder-v2` conversations, and
+  `ensure_staff_session` adds a kickoff input that nothing delivers (part 1's session materializer skips `folder-v2`).
+  Nothing is lost, since every later input refuses. C3 and C4 refuse or deliver them. 3b's answers keep the gc fence
+  on `folder-v2` until 3b.
+- Who creates a `folder-v2` office, and who owns the machine-event and worker drains on `folder-v2`, are decided with
+  3f and 3j.
+
+### 6.2 C1c-3a as built (migration 20260929620000, tests 660 and 661)
+
+- `qorpera_folder_company_enter(env, profile, targets, refuse_paused)`: the prelude of a member's action without a
+  run: the pause (refused when asked), the fence `KEY SHARE` with the pause read again, rank 0, then the targets at
+  ranks 1 to 7 as the run entry locks them. The company row is never a target; ranks 8 and 9 are not taken.
+- **Posting** (`qorpera_folder_post_room_message`): the enter helper with the poster (rank 1), the room's agents
+  (rank 2), the room `FOR SHARE`, and the poster's and the agents' memberships `KEY SHARE` (rank 4); the agents read
+  again under those locks, a changed set refusing as a retryable conflict (QRC01, 661 C); the conversation `FOR
+  UPDATE`; the input and mentions; the transcript events (the operation clock), then admission, which is the last lock
+  before the folder clock (661 K: a coworker message holds the clock and then wants admission); admission only when a
+  wake follows; the wakes. Images refuse first, before the pause and the login (660 §3), until C1d. A group chat with
+  no agent posts without admission; F2's group files need two agents, so on `folder-v2` that happens only once none
+  of a chat's agents is active any more, for example all archived (660 §4 uses hand-built rows).
+- **The room `FOR SHARE` is a named exception to core §9** ("`FOR KEY SHARE` for rows referenced"). Snapshot-v1
+  posting took its room `FOR SHARE` too.
+  - A save that changes a group chat (F2's group hook) takes the room `FOR NO KEY UPDATE` at rank 4 and names no
+    conversation. It writes the clock in an earlier unit (another chat's rename, an agent's edit) before it updates this
+    chat's conversation.
+  - With the room only `KEY SHARE`, a post holding the conversation and wanting the clock met such a save holding the
+    clock and wanting the conversation: a deadlock (review r1 B1). A membership change also landed beside a post past
+    its recheck, which then refused at its wake with 42501, not QRC01.
+  - With `FOR SHARE`, the save waits at the room before it writes: a two-chat rename (661 I), an agent or the poster
+    leaving (661 J), and the same for a retry (661 L).
+  - Nothing else conflicts: runs hold group rooms `KEY SHARE`, thread-room writers already took `FOR UPDATE`, and within
+    rank 4 rooms come before members, in key order.
+  - F2 naming the chat's conversation at rank 11 (§5.9, test 10b) would make the exception unnecessary.
+  - Not held off: an agent archived while a post waits (the staff row `FOR NO KEY UPDATE` and its own thread rooms, not
+    the group chat's room). The post then refuses at its wake (42501 "Wake recipient authority is unavailable"), and
+    the member posts again.
+- **A room delivery's retry**: its job and run locks first, as today, then the enter helper in place of the gc fence
+  (the room `FOR SHARE`, as a post takes it; its targets are optional, since the checks after them refuse as today), and
+  admission before its wake.
+- **An email draft** takes neither the company row nor the fence on `folder-v2` (it names the company in no row it
+  writes): the conversation, the draft, the action.
+- **A member's own review rule**: the company row `KEY SHARE`, then the member's row `FOR NO KEY UPDATE`, where an agent's
+  rule for that member serializes too (661 E); a member removed while the rule waited refuses (42501).
+- **Refusals** (0A000): `append_session_input`, `request_session_turn` and its v2; the conversation attachment uploads;
+  and any `folder-v2` input with images, inserted or changed (the upload check returned early for every company off
+  the path gateway).
+- Not in 3a: `member_manage_company_machine` goes with 3f. `member_office_catalog` takes the gc fence before checking
+  membership on either core; that is fixed on its own (it affects live companies).
 
 ## 7. Traps for C1c-2 and C1c-3
 
