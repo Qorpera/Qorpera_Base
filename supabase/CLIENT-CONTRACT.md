@@ -347,6 +347,7 @@ Founders (2026-09-28, migration 20260928248100): every member with the role
 - `qorpera_list_wake_occurrences`
 - `qorpera_quarantine_session_turn`
 - `qorpera_read_session_events`
+- `qorpera_read_session_events_tail(p_session_id, p_before_sequence, p_limit)` — the newest events below a sequence (the newest overall when null), oldest first, in the shape of `qorpera_read_session_events`, which it runs for its authorization and page check (20260928279410); a thread opens with it and "Show earlier" pages back
 - `qorpera_renew_session_turn_v2`
 - `qorpera_renew_wake`
 - `qorpera_request_session_turn_v2`
@@ -652,10 +653,10 @@ machine.
 - `event-intake` (20260928259260) — the public address of a company's
   hooks: `POST /functions/v1/event-intake/<address>` from the sender, not
   from clients. Answers 202 (accepted), 200 (duplicate), 400 (malformed), 404
-  (no such hook), 405 (not POST), 409 (paused or not ready), 413 (over the
-  hook's size limit or 256 KiB), 429 (over the hook's minute or the company's
-  hourly budget, with `Retry-After`), 431 (headers too large) or 503 (switched
-  off, or retry).
+  (not a hook address, by its shape, or no such hook), 405 (not POST), 409
+  (paused or not ready), 413 (over the hook's size limit or 256 KiB), 429
+  (over the hook's minute or the company's hourly budget, with `Retry-After`),
+  431 (headers too large) or 503 (switched off, or retry).
 - `profile-invitation-email`, `company-file-verifier`, `artifact-gc-worker`,
   `runner-control`, `runner-broker`, `runner-orchestrator`,
   `computer-hour-notices` (20260928249160, founders' hour emails) — service or
@@ -813,7 +814,7 @@ does locally that the contract forbids.
 | `profile:migrate-local` | desktop-only transitional (qorpera_promote_local_profile) — no web equivalent by design |
 | `room:archive` | qorpera_close_shared_session |
 | `room:create` | rooms: Order 3 fan-out; today shared sessions (qorpera_create_shared_session_v4) |
-| `room:open` | qorpera_read_session_events + Realtime |
+| `room:open` | qorpera_read_session_events_tail (the newest page; older pages on "Show earlier") + qorpera_read_session_events (new events) + Realtime |
 | `room:restore` | review |
 | `room:send` | qorpera_append_session_input |
 | `room:update` | review |

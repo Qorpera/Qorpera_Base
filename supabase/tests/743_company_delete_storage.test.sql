@@ -1,5 +1,5 @@
 -- @fixture 715_company_delete_after_runs.test.sql until "-- 5. A machine still on a node keeps the deletion waiting"
--- 20260929480000: the finisher records a deleted company's Storage objects that no other record names
+-- 20260928269480: the finisher records a deleted company's Storage objects that no other record names
 -- (credential capsules, the identity recovery prefix) right before the purge, in the same step; the
 -- artifact GC worker claims and completes them, and the record outlives the company.
 reset role;
