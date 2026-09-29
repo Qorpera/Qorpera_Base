@@ -499,8 +499,13 @@ wake), so no agent runs and nothing is charged before it.
   computer hour = 3600), `byKind` (`companyMachines`, `agentMachines`,
   `codingMachines`, `runs`, standard seconds rounded per kind, so their sum
   may differ from the total by a few seconds), `awakeNow` (the same kinds,
-  counted now) and `meteredUntil` (the meter counts up to about a minute
-  ago). Any member of the company, viewers included; anyone else gets 42501.
+  counted now), `meteredUntil` (the meter counts up to about a minute
+  ago) and, from 20260929200000, `waitingForHours` (true while the zero rule
+  holds the company's new work: show "Waiting for computer hours"). Any
+  member of the company, viewers included; anyone else gets 42501. While
+  the rule holds a company, `qorpera_enqueue_execution_run` and
+  `qorpera_enqueue_runner_job` refuse new work with 55000 ("Waiting for
+  computer hours: the company has none left").
   A client shows "Not measured yet" while the function is missing (PGRST202).
 
 - 20260928248910_runtime_computer_hours_payments:

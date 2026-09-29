@@ -23,6 +23,9 @@
 
 -- 1. The rules table as the index of rules/ -------------------------------------------------------------------------
 
+-- The runtime reads and writes these tables on every turn and request: never queue them behind this change.
+set local lock_timeout = '3s';
+
 alter table public.qorpera_review_rules
 	add column folder_environment_id uuid,
 	add column folder_path text collate "C",

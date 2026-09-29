@@ -25,6 +25,9 @@
 
 -- 1. The checked parse on each path version ----------------------------------------------------------------
 
+-- The runtime reads and writes these tables on every turn and request: never queue them behind this change.
+set local lock_timeout = '3s';
+
 alter table public.qorpera_folder_path_versions add column structured jsonb
 	check (structured is null or (jsonb_typeof(structured) = 'object' and structured ? 'kind' and structured ? 'parse'
 		and structured ? 'parserVersion'));
