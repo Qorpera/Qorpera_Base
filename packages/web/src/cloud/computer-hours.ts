@@ -24,7 +24,7 @@ export interface HoursLeftFounder {
 	creditSeconds?: number;
 }
 
-/** The company's hours left, from the live switch on (migration 20260929330000_company_hours_left_read). */
+/** The company's hours left, from the live switch on (migration 20260928259330_company_hours_left_read). */
 export type CompanyHoursLeft =
 	| { complimentary: true }
 	| {

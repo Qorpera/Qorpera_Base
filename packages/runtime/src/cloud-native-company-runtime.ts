@@ -227,6 +227,17 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				CLOUD_PAIRED_REQUEST_TIMEOUT_MS,
 			);
 			wakeRequest.catch(() => undefined);
+			// Machines are offered only once a node can serve them (an enabled machine executor):
+			// until then every call would only be refused. Anything but a clear yes keeps them away.
+			const machinesRequest = this.#machines
+				? cloudToolRequest(
+						(requestSignal) => this.#paths.call("qorpera_company_machines_available", {}, requestSignal),
+						signal,
+					).then(
+						(value) => value === true,
+						() => false,
+					)
+				: Promise.resolve(false);
 			const context = parseCloudNativeCompanyContext(await contextRequest, binding);
 			// Where the company keeps its agents' folders: by id today, by name in a folder-v2 company.
 			const agentFolders = cloudAgentFolderPlace(context);
@@ -254,6 +265,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					observability,
 				});
 			}
+			const machinesAvailable = await machinesRequest;
 			const wakeControl: CloudWakeControl = {
 				call: (method, argumentsValue, requestSignal) => this.#paths.call(method, argumentsValue, requestSignal),
 			};
@@ -567,7 +579,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 								// Machines are the company's: any agent run in a company conversation may start and
 								// use them and hears about them in that conversation; a worker uses them like its agent
 								// but waits for its own commands in its run (Jonas, 2026-09-28).
-								...(this.#machines && identity.audienceKind === "company"
+								...(this.#machines && machinesAvailable && identity.audienceKind === "company"
 									? cloudMachineTools({
 											binding,
 											identity,
@@ -595,7 +607,9 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 								...(identity.audienceKind === "company"
 									? [
 											...(work.isWorker ? [] : cloudHiringTools(gateway, identity)),
-											...cloudWorkerTools(binding, identity, this.#paths, gateway, wake),
+											...cloudWorkerTools(binding, identity, this.#paths, gateway, wake, {
+												machines: Boolean(this.#machines) && machinesAvailable,
+											}),
 										]
 									: []),
 								...(identity.sessionId && wake.policy.final !== "forbidden" ? [send] : []),

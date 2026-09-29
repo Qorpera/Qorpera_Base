@@ -15,7 +15,7 @@ Contract: section 16.3 and the 2026-09-29 amendment "events wake agents" (sectio
 the technical design. The Q1 page is the plain one.
 
 Status: design, and build step W1a in review (PR #509). W1a takes migration slot
-`20260929260000_runtime_event_intake`. W1b reserves `20260929260100`.
+`20260928259260_runtime_event_intake`. W1b reserves `20260929260100`.
 
 ## Words
 
@@ -31,7 +31,7 @@ Status: design, and build step W1a in review (PR #509). W1a takes migration slot
 
 | Step | What | Slot |
 | --- | --- | --- |
-| W1a | Hooks, deliveries, the public intake function, address-proven hooks end to end, member RPCs | `20260929260000` |
+| W1a | Hooks, deliveries, the public intake function, address-proven hooks end to end, member RPCs | `20260928259260` |
 | W1b | Signed hooks: the vault verifies Stripe, GitHub and HMAC signatures | `20260929260100` (reserved) |
 | W2 | Routine trigger on a hook, event wakes, the agent tools `manage_hook` and `read_event` | registered when started |
 | M2 | Company mailboxes: the mail provider posts to a platform-owned hook per mailbox | registered when started |

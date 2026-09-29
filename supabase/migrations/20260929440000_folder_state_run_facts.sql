@@ -11,7 +11,7 @@
 --
 -- Part B: qorpera_prepare_routine_login, which the runtime's routine writer will call before it commits a routine file.
 -- A routine version is paid by the saver's own login that pays for unattended work, and the commit reads that without a
--- lock (qorpera_company_state_routine_payer, 20260929310000). Setting such a login up takes the login FOR UPDATE and
+-- lock (qorpera_company_state_routine_payer, 20260928259310). Setting such a login up takes the login FOR UPDATE and
 -- writes rows, as an agent's routine save does today (qorpera_ensure_unattended_sponsor), so it happens here, in its own
 -- transaction, before the commit. The consent and binding it records stay if the save is then refused; they are the
 -- default consent an agent's save records today, and the next save uses them. It takes the run's job, then the login, as
