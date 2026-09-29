@@ -18,12 +18,12 @@ export type RunFailureKind =
 	| "other";
 
 export function classifyRunFailure(lastError: string | undefined, jobStatus: "failed" | "cancelled"): RunFailureKind {
-	// A refused step carries the provider's fixed code (e.g. "[code=NATIVE_CREDENTIAL_SEALING:TIMEOUT]").
+	// The company ran out of computer hours and its hour to finish running work ended: the one
+	// code that decides the class, since it names the company's hours, not Qorpera's machinery.
+	if ((lastError ?? "").includes("[code=COMPUTER_HOURS_EXHAUSTED]")) return "computer_hours";
+	// Any other refused step carries the provider's fixed code (e.g. "[code=NATIVE_CREDENTIAL_SEALING:TIMEOUT]").
 	// It names Qorpera's own machinery, not a member's account or a time limit, so it
 	// never decides the class: the step stays "bridge", as it was before the code.
-	// The company ran out of computer hours and its hour to finish running work ended. The
-	// only code that decides the class: it is the company's hours, not Qorpera's machinery.
-	if ((lastError ?? "").includes("[code=COMPUTER_HOURS_EXHAUSTED]")) return "computer_hours";
 	const error = (lastError ?? "").replace(/ \[code=[A-Z0-9_:]{1,85}\]/g, "");
 	if (/usage limit|quota|rate.?limit|insufficient|billing/i.test(error)) return "usage_limit";
 	if (/not signed in|sign.?in|unauthori[sz]ed|credential|token (is )?(expired|invalid)/i.test(error))
@@ -63,8 +63,8 @@ export function runFailureReason(lastError: string | undefined, jobStatus: "fail
 /** Whether the run was interrupted rather than refused: its computer stopped
  * answering, a step got no answer in time, it was stopped for time, cancelled, or
  * never got a computer. Those are worth trying again as they are.
- * A reached usage limit or a disconnected account need the member to act first,
- * so their card offers Dismiss only and says what to do. */
+ * A reached usage limit, a disconnected account or a company out of computer hours
+ * need someone to act first, so their card offers Dismiss only and says what to do. */
 export function runFailureInterrupted(lastError: string | undefined, jobStatus: "failed" | "cancelled"): boolean {
 	const kind = classifyRunFailure(lastError, jobStatus);
 	return (

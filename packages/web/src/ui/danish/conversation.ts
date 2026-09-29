@@ -58,7 +58,6 @@ export const CONVERSATION: Record<string, string> = {
 	"Failed · {reason}": "Mislykkedes · {reason}",
 	Processing: "Behandles",
 	Queued: "I kø",
-	"Waiting for computer hours": "Venter på computertimer",
 	"a coworker": "en kollega",
 	"Left a note for {name}": "Efterlod en note til {name}",
 	"Note from {name}": "Note fra {name}",

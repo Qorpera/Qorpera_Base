@@ -161,9 +161,6 @@ export interface CompanyState {
 	mentionsReady?: boolean;
 	/** The other members' open browser tabs and the conversation each shows (presence). */
 	here?: readonly PresenceMember[];
-	/** The company is out of computer hours, so new work waits until hours are added (the zero
-	 * rule). Read while something of the company waits in a queue; see computerHoursWaiting(). */
-	waitingForHours?: boolean;
 	loading: boolean;
 	error?: string;
 	accessLost?: boolean;
@@ -316,8 +313,6 @@ export class CompanyController {
 	#poll: ReturnType<typeof setInterval> | undefined;
 	#openSessionId: string | undefined;
 	#stopped = false;
-	#hoursCheckedAt = 0;
-	#hoursChecking = false;
 	readonly #abort = new AbortController();
 	readonly #versions = { team: 0, staff: 0, sessions: 0, groups: 0, organization: 0, activity: 0, sidebar: 0 };
 	#polling = false;
@@ -969,29 +964,6 @@ export class CompanyController {
 		return row.jobStatus === "cancelled" || this.store.get().recoveries[row.runId]?.proposalId
 			? "decision"
 			: "failed";
-	}
-
-	/** Whether the company is out of computer hours, so what waits in a queue waits for hours.
-	 * Asked for by a view showing queued work; read from the cloud at most once a minute. */
-	computerHoursWaiting(): boolean {
-		const now = Date.now();
-		if (!this.#stopped && !this.#hoursChecking && now - this.#hoursCheckedAt >= 60_000) {
-			this.#hoursChecking = true;
-			this.#hoursCheckedAt = now;
-			void this.#api
-				.getCompanyComputerHours(this.profile.profileId)
-				.then(
-					(hours) => {
-						if (!this.#stopped && hours.waitingForHours !== (this.store.get().waitingForHours === true))
-							this.store.set({ waitingForHours: hours.waitingForHours });
-					},
-					() => undefined,
-				)
-				.finally(() => {
-					this.#hoursChecking = false;
-				});
-		}
-		return this.store.get().waitingForHours === true;
 	}
 
 	failedRunFor(staffAgentId: string | undefined): FailedRun | undefined {
