@@ -78,12 +78,13 @@ export const STEPS = [
 	},
 	{
 		name: "checks",
-		why: "pinned dependencies, imports, cloud boundaries, connector catalog, runtime bundle",
+		why: "pinned dependencies, imports, cloud boundaries, wire helper copies, connector catalog, runtime bundle",
 		paths: ANY,
 		commands: [
 			"npm run check:pinned-deps",
 			"npm run check:ts-imports",
 			"npm run check:cloud-boundaries",
+			"npm run check:wire-helpers",
 			"npm run check:connector-catalog",
 			"npm run check:runtime-bundle:release-train",
 		],
@@ -121,6 +122,12 @@ export const STEPS = [
 		why: "packages/company",
 		paths: [/^packages\/company\//],
 		commands: ["npm test --workspace packages/company"],
+	},
+	{
+		name: "contracts",
+		why: "packages/contracts (a change there runs every step)",
+		paths: [/^packages\/contracts\//],
+		commands: ["npm test --workspace packages/contracts"],
 	},
 	{
 		name: "cloud-client",
