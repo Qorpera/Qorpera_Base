@@ -1,6 +1,10 @@
 /** Fixed provider-owned loader. The selected bundle is measured from a held
  * descriptor BEFORE compilation. No guest module, path or environment can
- * supply executable loader text. Both processes verify the same pin. */
+ * supply executable loader text. Both processes verify the same pin.
+ * LXD records this exec's stdout/stderr on the host. The locked child reads the
+ * protected packet, so it runs with ignored stdio; the recorded process writes
+ * nothing on success and exactly one fixed line on any failure. Tool results
+ * are read back from their root-owned files, never from exec output. */
 export const OFFICE_CODE_PACKAGE_LOADER = String.raw`(function run() {
   const fs = require('node:fs'), crypto = require('node:crypto'), path = require('node:path');
   const { spawnSync } = require('node:child_process'), Module = require('node:module');
@@ -50,7 +54,7 @@ export const OFFICE_CODE_PACKAGE_LOADER = String.raw`(function run() {
           parents(path.dirname(exe)); const x=fs.lstatSync(exe);
           if(!x.isFile() || x.uid!==0 || x.gid!==0 || x.nlink!==1 || (x.mode&0o6022)!==0 || fs.realpathSync(exe)!==exe) throw Error('executable');
         }
-        const child=spawnSync('/usr/bin/flock',['--exclusive','--nonblock','--no-fork','/proc/self/fd/3','/usr/bin/node','-e','('+run.toString()+')()',purpose,id,sha,count,'--locked',...rest],{cwd:'/',env:{},stdio:['ignore','inherit','inherit',lock],timeout:120000,killSignal:'SIGKILL'});
+        const child=spawnSync('/usr/bin/flock',['--exclusive','--nonblock','--no-fork','/proc/self/fd/3','/usr/bin/node','-e','('+run.toString()+')()',purpose,id,sha,count,'--locked',...rest],{cwd:'/',env:{},stdio:['ignore','ignore','ignore',lock],timeout:120000,killSignal:'SIGKILL'});
         if(child.error || child.status!==0) throw Error('child');
       } finally {fs.closeSync(lock);}
     } else {

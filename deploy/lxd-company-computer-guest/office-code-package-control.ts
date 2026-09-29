@@ -1,10 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { parseCompanyComputerPreparationCommand } from "../../packages/contracts/src/index.ts";
-import {
-	officeCanonical,
-	officeDigest,
-	officeRecord,
-} from "../../packages/runner-orchestrator/src/lxd-office-image-provenance.ts";
+import { officeDigest, officeRecord } from "../../packages/runner-orchestrator/src/lxd-office-image-provenance.ts";
 import { assertCompanyComputerPreparationLockAndBoot } from "../../packages/runtime/src/cloud-company-computer-preparation-control.ts";
 import {
 	assertPackageAbsent,
@@ -122,7 +118,6 @@ export async function runOfficeCodePackageTool(purpose: string, id: string, args
 				monotonicNs: String(process.hrtime.bigint()),
 			};
 			await claimPackageFile(preflightPath, packageEncode(probe));
-			process.stdout.write(`${officeCanonical(probe)}\n`);
 			return probe;
 		}
 		const probe = parseOfficeCodePackageProbe(
@@ -185,7 +180,6 @@ export async function runOfficeCodePackageTool(purpose: string, id: string, args
 		assertDeadline();
 		await claimPackageFile(`${journal}/installed.json`, packageEncode(receipt));
 		assertDeadline();
-		process.stdout.write(`${officeCanonical(receipt)}\n`);
 		return receipt;
 	} finally {
 		await fresh.close();

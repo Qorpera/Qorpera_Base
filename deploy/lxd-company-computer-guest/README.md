@@ -434,6 +434,34 @@ matching receipt/configuration before fenced activation. Linux control fixtures
 exercise real root file custody, atomic installation and kernel flock with a
 synthetic systemd manager. Actual systemd execution remains an acceptance gate.
 
+### Recorded exec output
+
+LXD 6.9 runs a VM exec only with `record-output` and keeps the recorded stdout
+and stderr on the host. Every pinned control the provider runs in an office has
+one output contract (the provider's public procfs reads, `cat` of the boot id and
+uptime, are separate: their stdout is their result):
+
+- The eleven `/opt/qorpera-office/qorpera-company-computer-*-control.mjs` helpers
+  and the two temporary software tools start through `runCompanyComputerControlEntry`
+  (`packages/runtime/src/cloud-company-computer-control-entry.ts`). Success writes
+  nothing. Any refusal or unexpected error (bad arguments, wrong boot, held lock,
+  changed request, protected-file errors, an uncaught exception or an unhandled
+  rejection) writes exactly the helper's fixed failure line to stderr, once, and
+  exits 1. `--help` writes one fixed line to stdout. Every stdout/stderr stream
+  write (console, `write`, `end(chunk)`) is dropped and Node's warning printer is
+  removed.
+- The code package loader (`OFFICE_CODE_PACKAGE_LOADER`) writes nothing on success
+  and exactly `OFFICE_CODE_PACKAGE_LOADER_UNCONFIRMED` on any failure. Its
+  `bootstrap.cjs` and `measure.cjs` tools print nothing; the provider reads their
+  probe, receipt and measurement back from the root-owned files they publish.
+- In all three lanes, only the locked flock child reads protected requests,
+  credentials or evidence, and it runs with ignored stdio.
+
+`packages/runtime/test/cloud-company-computer-control-entry.test.ts` runs the
+packaged helpers with injected faults. `cloud-company-computer-control-output-linux.test.ts`
+runs them and the loader as root on Linux, with a locked child that writes to
+every stream and descriptor.
+
 ## Browser and shell
 
 `PersistentCompanyComputerBrowser` uses the installed Chrome and existing

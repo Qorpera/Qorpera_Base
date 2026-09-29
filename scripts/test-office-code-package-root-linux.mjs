@@ -39,7 +39,7 @@ try {
 		process.env.QORPERA_CODE_PACKAGE_DIAGNOSTIC === "1"
 			? {
 					stdin: {
-						contents: `import {runOfficeCodePackageTool as run} from ${JSON.stringify(join(source, "deploy/lxd-company-computer-guest/office-code-package-control.ts"))}; export async function runOfficeCodePackageTool(...args){try{return await run(...args);}catch(error){process.stderr.write(String(error.stack)+'\\n');throw error;}}`,
+						contents: `import {appendFileSync} from "node:fs"; import {runOfficeCodePackageTool as run} from ${JSON.stringify(join(source, "deploy/lxd-company-computer-guest/office-code-package-control.ts"))}; export async function runOfficeCodePackageTool(...args){try{return await run(...args);}catch(error){appendFileSync('/tmp/qorpera-code-package-diagnostic.log',String(error.stack)+'\\n');throw error;}}`,
 						resolveDir: source,
 						sourcefile: "proof-tool.ts",
 						loader: "ts",
@@ -152,6 +152,7 @@ try {
 		"compatible-noop",
 		"bad-stage",
 		"old-credentials",
+		"open-credentials",
 		"bad-target-owner",
 		"base-hardlink",
 		"base-symlink",
@@ -166,6 +167,7 @@ try {
 		"mutated-after-preflight",
 		"noncode-after-preflight",
 		"external-after-preflight",
+		"credentials-after-preflight",
 		"observation-external",
 		"observation-mutated",
 		"observation-replay",
