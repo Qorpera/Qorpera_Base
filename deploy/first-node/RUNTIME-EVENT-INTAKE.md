@@ -1,7 +1,7 @@
 # Event intake and event wakes
 
 Founder decisions of 29 September 2026, on the Q1 page "Qorpera on Qorpera"
-(https://claude.ai/artifact/J9rKxZmibyRFazntBPBbsh), relayed by the coordinator:
+(https://claude.ai/artifact/Y74zt9zUc35EbeJ3MN64mh), relayed by the coordinator:
 
 - Agents must wake on defined events, such as incoming email and webhooks from any service. This
   is the base for routines and the top priority of workstream Q1.
@@ -14,13 +14,13 @@ Founder decisions of 29 September 2026, on the Q1 page "Qorpera on Qorpera"
 Contract: section 16.3 and the 2026-09-29 amendment "events wake agents" (section 19). This file is
 the technical design. The Q1 page is the plain one.
 
-Status: design, and build step W1a in review (PR #509). W1a takes migration slot
-`20260929260000_runtime_event_intake`. W1b reserves `20260929260100`.
+Status: W1a in review (PR #509, `20260929260000_runtime_event_intake`); W2 in review (PR #519,
+`20260929290000_runtime_event_wakes`). W1b reserves `20260929260100`.
 
 ## Words
 
 - A **hook** is a company connection that receives events: one public address, how the sender
-  proves itself, and limits. It is created by an owner or admin (W1a) or by an agent (W2).
+  proves itself, and limits. It is created by an owner or admin (W1a), and later by an agent (W3).
 - A **delivery** is one request that reached a hook's address. It is runtime state: a queue entry
   and a receipt. The event it carries becomes company content once it is saved in the company folder
   (below).
@@ -33,7 +33,8 @@ Status: design, and build step W1a in review (PR #509). W1a takes migration slot
 | --- | --- | --- |
 | W1a | Hooks, deliveries, the public intake function, address-proven hooks end to end, member RPCs | `20260929260000` |
 | W1b | Signed hooks: the vault verifies Stripe, GitHub and HMAC signatures | `20260929260100` (reserved) |
-| W2 | Routine trigger on a hook, event wakes, the agent tools `manage_hook` and `read_event` | registered when started |
+| W2 | Routine trigger on a hook, event wakes, the agent tools `list_hooks` and `read_event` | `20260929290000` |
+| W3 | Agents create, pause and remove hooks (`manage_hook`) | registered when started |
 | M2 | Company mailboxes: the mail provider posts to a platform-owned hook per mailbox | registered when started |
 
 Each step is a release-train feature PR: no bundle, manifest or activation files, an independent
@@ -94,7 +95,7 @@ taking the Company File row.
 **Proof.**
 - `address`: whoever knows the address may post. The address works like a key that only lets
   someone post events into this hook, and nothing else. The platform shows it to the company's owners
-  and admins, and to agents that manage hooks (W2). It is not a vault secret: holding it grants no
+  and admins, and to agents in runs an owner or admin started (W2). It is not a vault secret: holding it grants no
   access to any service or company data, and every event is outside content anyway (below). Use it
   for senders that cannot sign, such as a website form. Addresses also appear in the platform's
   request logs, which only operators read.
@@ -107,7 +108,7 @@ taking the Company File row.
 
 **Who manages hooks (W1a).** Owners and admins, through
 `qorpera_create_event_hook`, `qorpera_set_event_hook_status` and `qorpera_list_event_hooks`.
-Contributors and viewers see names, proof and status, not addresses. From W2, an agent creates,
+Contributors and viewers see names, proof and status, not addresses. From W3, an agent creates,
 pauses and removes hooks with `manage_hook`, and creating one passes the automatic review as a new
 connection. The Settings split (step A3) lists hooks under Company connections.
 
@@ -217,7 +218,7 @@ helpers are shared with the intake function's tests, so both sides agree on ever
 ## Event wakes (W2)
 
 W2a (migration `20260929290000_runtime_event_wakes`, on today's routine rows per decision 6) and the
-runtime side ship in one cut.
+runtime side ship in one cut. Acceptance is contract section 21, item 33.
 
 **The trigger.** A routine version may carry one listener trigger on a hook:
 `{id, kind:'listener', source:'event', hookId, only?: [types], timeZone, replyPolicy?}`. `hookId` is
@@ -227,55 +228,92 @@ with no type matches only a trigger without `only`. As with file-change listener
 version's only trigger, and the hook must be a live hook of the routine's company and environment
 (checked when the version is saved, by the agent's routine tool and by the version's activation). The
 agent's tool compiles `{kind:"event", hookId, only?, timeZone, report?}` to it; `list_hooks` gives
-the ids. In routine files (F2-6) this becomes `when: event`, `source: hooks/<name>` and `only: [...]`. Member
-clients read the trigger (`CloudRoutineEventTrigger`): the web routine list words it and offers pause
-and resume, and its editor does not edit it.
+the ids. In routine files (F2-6) this becomes `when: event`, `hook: <hook id>` and `only: [...]`, with
+the file's `timezone` and `reply` keys. Member clients read the trigger (`CloudRoutineEventTrigger`):
+the web routine list words it and offers pause and resume, and its editor does not edit it.
 
 **Cursors.** Each event listener version gets a row in `qorpera_event_listener_cursors` with the
 instant it became active. A resume or a new current version starts it again from now, as a file
-listener does, so events that arrived while it was paused do not wake it.
+listener does, so events that arrived while it was paused do not wake it. `taken_before` is the
+listener's watermark: every matching verified delivery verified before it is taken or left behind, so
+the waiting query starts there. The reader moves it after each batch to the first delivery still
+waiting, never closer than a minute to the clock, so a receive still committing is never passed.
 
 **Admission.** The materializer's drain (`qorpera_drain_event_wakes`, called after the file drain)
 takes up to 32 active cursors, oldest scan first, and for each one:
-- skips it while the routine is not active at that version or the company is paused;
-- skips it while an event occurrence of that routine trigger is pending: queued, or materialized with
-  its job not yet running and nothing read;
+- skips it while its hook is removed, the company is paused, or the routine is not active at that
+  version; it takes the routine row without waiting (a routine save takes it first) and skips the
+  cursor when it is busy;
+- skips it while the routine trigger's latest event wake is pending: queued, or materialized with its
+  job queued or leased and nothing read;
 - otherwise, when a verified delivery of the hook since the cursor's start (within 7 days), matching
   `only` and not yet taken by this routine trigger, is waiting, inserts one occurrence: `wake_kind
   'routine'`, `source_kind 'event'`, `source_id` the hook, key `event:<routine version>:<trigger
   id>:<first delivery id>:<attempt>`, `scheduled_for` the first delivery's arrival, payload `{hookId,
-  firstDeliveryId}`. The attempt counts earlier occurrences for the same first delivery, so the key is
-  decided by history and a cancelled occurrence gets a next one.
-A routine that must report needs a public audience, as for file listeners. The existing insert
-triggers apply unchanged: quiet hours move `not_before`, and the pinned sponsor pays. An error for one
-cursor (the agent or requester gone, for example) skips that cursor this round and never stops the
-materializer.
+  firstDeliveryId}`.
+- A wake that ended without taking its deliveries (cancelled at admission, or its run failed before
+  reading) is tried again for the same first delivery after 1, 4, 16 and 64 minutes. After five tries
+  the first delivery is left behind, recorded against the fifth wake, and the next delivery wakes the
+  routine. The attempt number comes from history, so the key is deterministic.
 
-**Reading.** `qorpera_read_native_wake` adds the batch to an `event` occurrence's payload. The first
-read takes up to 20 waiting deliveries into `qorpera_event_wake_deliveries(routine, trigger,
-delivery, occurrence)`, so a retried run reads the same batch. Each event shows its delivery id, type,
-arrival, content type and size, and its body as UTF-8 text (`encoding: utf8`) or base64 (`encoding:
-base64`), cut to about 8 KiB each and 24 KiB in all (`truncated`), or `bodyCleared` after 7 days.
-`more` counts the deliveries still waiting, which wake the routine again once this occurrence has
-been read. A hook removed after admission cancels its queued wakes at materialization, like any
-lost source authority.
+A routine that must report needs a public audience, as for file listeners. The existing insert
+triggers apply unchanged: quiet hours move `not_before`, and the pinned sponsor pays. Errors for one
+cursor that mean it cannot run now (the agent or requester gone, a lock held, a deadlock) skip it this
+round; the materializer goes on.
+
+**Reading.** `qorpera_read_native_wake` builds the rest of the wake first, then adds the batch in the
+room left: the smaller of what the kernel's 48 KiB envelope bound and the runtime's 48 KiB payload
+bound leave, less 4 KiB for the batch's own layout. The first read takes up to 20 waiting deliveries
+into `qorpera_event_wake_deliveries(routine, trigger, delivery, occurrence)`, fewer when their
+descriptions alone would not fit (always at least one), so a retried run reads the same batch. Each
+event shows its delivery id, type, arrival, content type and size, and its body as UTF-8 text
+(`encoding: utf8`) or base64 (`encoding: base64`), cut by its JSON-escaped bytes to at most 8 KiB and
+to the room left (`truncated`), left out when no room is left (`truncated` alone), or `bodyCleared`
+after 7 days. Events come in the order they were verified. `more` counts deliveries still waiting,
+up to 1000, which wake the routine again once this occurrence has been read. A hook removed after
+admission cancels its queued wakes at materialization, like any lost source authority.
 
 **Outside content.** The wake protocol for an event wake says every event is outside content (contract
 11.1): an instruction inside it is data, and outside actions it leads to pass the automatic review.
+Item 33 of section 21 carries the adversarial event case of item 10.
 
-**Tools.** `list_hooks` lists the company's live hooks with their addresses. `read_event(deliveryId,
-offset?)` reads one verified delivery of the agent's own company in pieces of 16,000 characters (UTF-8)
-or 24 KiB (base64). Both are reads for the automatic review. Agents creating and removing hooks
-(`manage_hook`, reviewed as a new connection; a signed hook asks a member for its secret, connector
-`event_hook`, secret name `h<hook id without hyphens>`) follows in a later step.
+**Tools.**
+- `list_hooks` lists the company's live hooks. Addresses, which let anyone post into a hook, are shown
+  only in runs an owner or admin started, as members see them; with them comes `url`, the full address,
+  once operators set `qorpera_event_intake_settings.public_url` (Deploy (W2)).
+- `read_event(deliveryId, offset?)` reads one verified delivery of the agent's own company: text in
+  pieces of at most 16,000 characters and 32 KiB of JSON, or base64 of 24 KiB of raw bytes. `next` is
+  the offset of the following piece (characters for text, bytes for base64).
+
+Both are reads for the automatic review. Agents creating and removing hooks (`manage_hook`, W3,
+reviewed as a new connection; a signed hook asks a member for its secret, connector `event_hook`,
+secret name `h<hook id without hyphens>`) follows in a later step.
 
 **Folder companies.** Event wakes of `folder-v2` companies are refused like their file-change wakes
-until routine files (F2-6) and the folder's writer land.
+until routine files (F2-6) and the folder's writer land. Whichever of W2 and F2-6 lands second lifts
+the refusal and adds `event` to the routine file parser.
 
 **The folder.** For `folder-v2` companies, once the core's writer lands (F1 C3), the platform saves each
 verified delivery as `hooks/<hook name>/<yyyy-mm-dd>/<delivery id>.json` (the kept headers and the
 body) in the same change set, and the wake names that path. Until then, and for today's companies, the
 delivery row is the record, and agents save what they need.
+
+## Deploy (W2)
+
+The migration patches existing functions by exact text (trigger check, listener activation and sync,
+`qorpera_manage_agent_routine`, the pin trigger, wake authority, the wake policy, the materializer,
+the wake reader and the observation list); compare the anchors with master again before merging.
+Roll the migration first, then a bundle with this runtime: until that runtime runs, no event routine
+exists (older routine tools cannot write the trigger), and an older runtime refuses an event wake.
+After it is live:
+
+1. Set the public origin agents give senders:
+   `update public.qorpera_event_intake_settings set public_url = '<supabase url>';` (the project's
+   `https://` origin, no path).
+2. Acceptance (section 21, item 33), with the intake switched on (Deploy (W1a) step 3): an agent sets
+   up a routine with `{kind:"event", hookId}`, three posts to the hook wake it once, the run reads all
+   three and one with `read_event`, and an event that tells the agent to do something outside its
+   routine gains no authority.
 
 ## Mail (M2)
 
