@@ -152,7 +152,9 @@ describe("node WebSocket client", () => {
 		);
 		await until(() => received.length === 2);
 		expect(received[1]).toBe(big);
-		expect(realtime.pongs).toHaveLength(2);
+		// The pong written between fragments reaches the server on its own schedule.
+		await until(() => realtime.pongs.length === 2);
+		expect(realtime.pongs[1]!.toString()).toBe("between fragments");
 		socket.close();
 		await until(() => realtime.closes.length === 1);
 		expect(realtime.closes).toEqual([1000]);
@@ -258,6 +260,44 @@ describe("Realtime wake-up channel", () => {
 		await until(() => wakeUps() === before + 1);
 	});
 
+	it("moves to the new topic at once when told the control token rotated", async () => {
+		const realtime = await fakeRealtime();
+		let token = "c".repeat(43);
+		const { wake } = channel(realtime, () => cloudRunnerOrchestratorWakeTopic(token));
+		await until(() => wake.listening);
+		token = "e".repeat(43);
+		const next = cloudRunnerOrchestratorWakeTopic(token);
+		wake.refresh();
+		// Not listening until the new topic is joined, so the loop polls meanwhile.
+		expect(wake.listening).toBe(false);
+		await until(() => wake.listening, 1000);
+		expect(realtime.joins.at(-1)?.topic).toBe(next);
+		expect(realtime.wake(next)).toBe(1);
+	});
+
+	it("drops and rejoins a channel whose join is never answered", async () => {
+		const realtime = await fakeRealtime();
+		realtime.ignoreJoins = true;
+		const topic = cloudRunnerOrchestratorWakeTopic("c".repeat(43));
+		const states: string[] = [];
+		const wake = new RealtimeOrchestratorWake({
+			supabaseUrl: realtime.url,
+			publishableKey: "sb_publishable_test",
+			topic: () => topic,
+			heartbeatMs: 50,
+			connectTimeoutMs: 100,
+			reconnectInitialMs: 20,
+			reconnectMaximumMs: 20,
+			onState: (state, reason) => states.push(`${state}: ${reason ?? ""}`),
+		});
+		wake.start();
+		cleanup.push(() => wake.stop());
+		await until(() => states.includes("dropped: Realtime did not answer the join"));
+		realtime.ignoreJoins = false;
+		await until(() => wake.listening);
+		expect(realtime.connections).toBeGreaterThanOrEqual(2);
+	});
+
 	it("moves to the new topic when the control token rotates", async () => {
 		const realtime = await fakeRealtime();
 		let token = "c".repeat(43);
@@ -360,6 +400,30 @@ describe("claim loop with wake-ups", () => {
 		const announcedAt = Date.now();
 		await until(() => f.acquired.length === 2);
 		expect(Date.now() - announcedAt).toBeLessThan(1000);
+	});
+
+	it("does not report a missed wake-up that arrives while the claim that finds its work is in flight", async () => {
+		const wake = new ManualWake();
+		const f = loop({ wake, wakeBackstopMs: 300 });
+		await until(() => f.calls() === 1);
+		const claimNext = FakeClaimQueue.prototype.claimNext.bind(f.queue);
+		vi.spyOn(f.queue, "claimNext").mockImplementation(async (...args) => {
+			const claim = await claimNext(...args);
+			// The job's wake-up lands while this backstop claim is still on its way back.
+			if (claim) wake.fire();
+			await sleep(50);
+			return claim;
+		});
+		f.queue.queued.push(fakeWork(runId(1)));
+		await until(() => f.acquired.length === 1);
+		await sleep(2300);
+		expect(f.errors).toEqual([]);
+	});
+
+	it("keeps a poll interval above the backstop when wake-ups are off", async () => {
+		const f = loop({ pollIntervalMs: 6000 });
+		await until(() => f.calls() === 1);
+		expect(f.errors).toEqual([]);
 	});
 
 	it("asks every poll interval while wake-ups are not being delivered", async () => {

@@ -1905,14 +1905,15 @@ export class CloudRunnerOrchestrator {
 		const wake = options.wake;
 		const wakeBackstopMs = options.wakeBackstopMs ?? 5_000;
 		const wakeActiveMs = options.wakeActiveMs ?? 30_000;
-		if (!Number.isSafeInteger(wakeActiveMs) || wakeActiveMs < 0 || wakeActiveMs > 600_000) {
+		if (wake && (!Number.isSafeInteger(wakeActiveMs) || wakeActiveMs < 0 || wakeActiveMs > 600_000)) {
 			throw new Error("Orchestrator wake-up activity window is outside the supported range");
 		}
 		if (
-			!Number.isSafeInteger(wakeBackstopMs) ||
-			wakeBackstopMs < 10 ||
-			wakeBackstopMs > 60_000 ||
-			wakeBackstopMs < pollIntervalMs
+			wake &&
+			(!Number.isSafeInteger(wakeBackstopMs) ||
+				wakeBackstopMs < 10 ||
+				wakeBackstopMs > 60_000 ||
+				wakeBackstopMs < pollIntervalMs)
 		) {
 			throw new Error("Orchestrator wake-up backstop is outside the supported range");
 		}
@@ -1945,6 +1946,8 @@ export class CloudRunnerOrchestrator {
 		const wakes = {
 			/** A wake-up arrived since the last claim batch. */
 			announced: false,
+			/** Wake-ups so far: one that arrives while a claim batch is in flight still counts for it. */
+			sequence: 0,
 			/** Poll at pollIntervalMs until this time (performance.now()): after activity or a missed wake-up. */
 			fastUntil: 0,
 			/** The wait before the current claim batch was a backstop wait. */
@@ -1958,6 +1961,7 @@ export class CloudRunnerOrchestrator {
 		const slowPolling = (): boolean => wake?.listening === true && performance.now() >= wakes.fastUntil;
 		const unsubscribe = wake?.subscribe(() => {
 			wakes.announced = true;
+			wakes.sequence++;
 			wakes.unannouncedSince = undefined;
 			claimTimer.wake();
 		});
@@ -1988,6 +1992,7 @@ export class CloudRunnerOrchestrator {
 				if (available > 0 && !reconcile.failed && reconcile.succeeded >= reconcile.required) {
 					// A wake-up that arrives while every slot is busy waits for the next claim (see below).
 					const announced = wakes.announced;
+					const sequence = wakes.sequence;
 					wakes.announced = false;
 					const reconciled = reconcile.succeeded;
 					const includeRetained = reconciled > reconcile.retainedRead;
@@ -1995,7 +2000,8 @@ export class CloudRunnerOrchestrator {
 					const { claims, fresh } = await this.#claimBatch(available, signal, inFlightClaimIds, includeRetained);
 					if (includeRetained) reconcile.retainedRead = Math.max(reconcile.retainedRead, reconciled);
 					if (claims.length > 0) wakes.fastUntil = Math.max(wakes.fastUntil, performance.now() + wakeActiveMs);
-					if (wake && fresh > 0 && wakes.slow && !announced) wakes.unannouncedSince ??= performance.now();
+					if (wake && fresh > 0 && wakes.slow && !announced && wakes.sequence === sequence)
+						wakes.unannouncedSince ??= performance.now();
 					for (const claim of claims) {
 						if (inFlightClaimIds.has(claim.claimId)) continue;
 						inFlightClaimIds.add(claim.claimId);
@@ -2059,6 +2065,7 @@ export class SupabaseCloudRunnerOrchestratorControlPlane implements CloudRunnerO
 	#controlToken: string;
 	#pendingControlToken?: string;
 	readonly #persistControlTokens?: (state: { current: string; pending?: string }) => Promise<void>;
+	readonly #onControlRotated?: () => void;
 	readonly #controlTokenSeconds: number;
 	readonly #now: () => number;
 	#nextControlRotationAt = 0;
@@ -2073,6 +2080,8 @@ export class SupabaseCloudRunnerOrchestratorControlPlane implements CloudRunnerO
 		options: {
 			pendingControlToken?: string;
 			persistControlTokens?: (state: { current: string; pending?: string }) => Promise<void>;
+			/** Called after the control token changed, for example to move to its new wake-up topic. */
+			onControlRotated?: () => void;
 			controlTokenSeconds?: number;
 			now?: () => number;
 		} = {},
@@ -2100,6 +2109,7 @@ export class SupabaseCloudRunnerOrchestratorControlPlane implements CloudRunnerO
 		this.#controlToken = controlToken;
 		this.#pendingControlToken = options.pendingControlToken;
 		this.#persistControlTokens = options.persistControlTokens;
+		this.#onControlRotated = options.onControlRotated;
 		this.#controlTokenSeconds = controlTokenSeconds;
 		this.#now = options.now ?? Date.now;
 		this.#fetch = fetchImplementation;
@@ -2136,6 +2146,11 @@ export class SupabaseCloudRunnerOrchestratorControlPlane implements CloudRunnerO
 		}
 		this.#controlToken = next;
 		this.#pendingControlToken = undefined;
+		try {
+			this.#onControlRotated?.();
+		} catch {
+			// A listener never holds up rotation.
+		}
 		await this.#persistControlTokens?.({ current: next });
 		this.#nextControlRotationAt = now + Math.floor((this.#controlTokenSeconds * 1000) / 2);
 	}

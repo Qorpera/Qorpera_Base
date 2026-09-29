@@ -39,6 +39,8 @@ export class FakeRealtime {
 	readonly closes: number[] = [];
 	connections = 0;
 	refuseJoins = false;
+	/** Never answer a join (a hung channel). */
+	ignoreJoins = false;
 	answerHeartbeats = true;
 	readonly #open = new Set<Connection>();
 	#server?: Server;
@@ -160,6 +162,7 @@ export class FakeRealtime {
 		const topic = message.topic.startsWith("realtime:") ? message.topic.slice("realtime:".length) : message.topic;
 		if (message.event === "phx_join") {
 			this.joins.push({ topic, payload: message.payload });
+			if (this.ignoreJoins) return;
 			if (this.refuseJoins) {
 				this.#reply(connection, message, "error", {
 					reason: "Unauthorized: You do not have permissions to read from this Channel topic",

@@ -89,6 +89,14 @@ describe("runner orchestrator service boundary", () => {
 			QORPERA_RUNNER_PROVIDER_TOKEN: "provider-service-token",
 		};
 		expect(cloudRunnerOrchestratorServiceConfigFromEnvironment(environment).wake).toBeUndefined();
+		// With wake-ups off, their backstop is not read: a slow poll and a stray value stay accepted.
+		expect(
+			cloudRunnerOrchestratorServiceConfigFromEnvironment({
+				...environment,
+				QORPERA_RUNNER_ORCHESTRATOR_POLL_MS: "6000",
+				QORPERA_RUNNER_ORCHESTRATOR_WAKE_BACKSTOP_MS: "250",
+			}),
+		).toMatchObject({ pollIntervalMs: 6000 });
 		expect(
 			cloudRunnerOrchestratorServiceConfigFromEnvironment({
 				...environment,

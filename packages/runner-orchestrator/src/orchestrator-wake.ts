@@ -45,6 +45,8 @@ export class RealtimeOrchestratorWake implements CloudRunnerWakeSource {
 	#socket?: NodeWebSocket;
 	#topic?: string;
 	#joinRef?: string;
+	/** When the pending join was sent; a join unanswered by the next heartbeat is a drop. */
+	#joinSentAt?: number;
 	#heartbeatRef?: string;
 	#ref = 0;
 	#listening = false;
@@ -81,6 +83,12 @@ export class RealtimeOrchestratorWake implements CloudRunnerWakeSource {
 	subscribe(listener: () => void): () => void {
 		this.#listeners.add(listener);
 		return () => this.#listeners.delete(listener);
+	}
+
+	/** The control token rotated: move to the new topic now rather than at the next heartbeat. */
+	refresh(): void {
+		if (!this.#socket) return;
+		this.#follow(this.#options.topic());
 	}
 
 	start(): void {
@@ -127,12 +135,13 @@ export class RealtimeOrchestratorWake implements CloudRunnerWakeSource {
 		}
 		this.#socket = socket;
 		this.#join(this.#options.topic());
-		this.#schedule(this.#options.heartbeatMs, () => this.#heartbeat());
+		if (this.#socket) this.#schedule(this.#options.heartbeatMs, () => this.#heartbeat());
 	}
 
 	#join(topic: string): void {
 		this.#topic = topic;
 		this.#joinRef = this.#nextRef();
+		this.#joinSentAt = Date.now();
 		this.#send({
 			topic: `realtime:${topic}`,
 			event: "phx_join",
@@ -158,18 +167,30 @@ export class RealtimeOrchestratorWake implements CloudRunnerWakeSource {
 			this.#drop("Realtime heartbeat went unanswered");
 			return;
 		}
-		const topic = this.#options.topic();
-		if (topic !== this.#topic) {
-			// The control token rotated: leave the old topic and join the new one.
-			const wasListening = this.#listening;
-			this.#listening = false;
-			this.#send({ topic: `realtime:${this.#topic}`, event: "phx_leave", payload: {}, ref: this.#nextRef() });
-			this.#join(topic);
-			if (wasListening) this.#notify();
+		if (
+			!this.#listening &&
+			this.#joinSentAt !== undefined &&
+			Date.now() - this.#joinSentAt >= this.#options.connectTimeoutMs
+		) {
+			this.#drop("Realtime did not answer the join");
+			return;
 		}
+		this.#follow(this.#options.topic());
+		if (!this.#socket) return;
 		this.#heartbeatRef = this.#nextRef();
 		this.#send({ topic: "phoenix", event: "heartbeat", payload: {}, ref: this.#heartbeatRef });
-		this.#schedule(this.#options.heartbeatMs, () => this.#heartbeat());
+		if (this.#socket) this.#schedule(this.#options.heartbeatMs, () => this.#heartbeat());
+	}
+
+	/** Leaves the joined topic and joins `topic` when they differ (after a control rotation). */
+	#follow(topic: string): void {
+		if (topic === this.#topic) return;
+		const wasListening = this.#listening;
+		this.#listening = false;
+		this.#send({ topic: `realtime:${this.#topic}`, event: "phx_leave", payload: {}, ref: this.#nextRef() });
+		if (!this.#socket) return;
+		this.#join(topic);
+		if (wasListening) this.#notify();
 	}
 
 	#message(text: string): void {
@@ -188,6 +209,7 @@ export class RealtimeOrchestratorWake implements CloudRunnerWakeSource {
 			if (message.topic !== `realtime:${this.#topic}` || message.ref !== this.#joinRef) return;
 			if (payload?.status === "ok") {
 				this.#attempt = 0;
+				this.#joinSentAt = undefined;
 				this.#listening = true;
 				this.#options.onState?.("joined");
 				// Catch up on anything announced while the channel was not joined.
@@ -211,6 +233,7 @@ export class RealtimeOrchestratorWake implements CloudRunnerWakeSource {
 		this.#socket = undefined;
 		this.#heartbeatRef = undefined;
 		this.#joinRef = undefined;
+		this.#joinSentAt = undefined;
 		socket?.close();
 		const wasListening = this.#listening;
 		this.#listening = false;

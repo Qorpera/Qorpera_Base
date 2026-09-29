@@ -224,8 +224,9 @@ publishes to it. While the channel is joined and the loop has been idle for
 poll interval. Wake-ups that bring a claim forward stay at least one poll
 interval apart. While the channel is not joined, the loop polls as without
 wake-ups. A backstop claim that finds work no wake-up announced makes it poll
-that way for ten minutes and is reported. The database side (the broadcast on
-enqueue and the Realtime policy) must be live before the switch is turned on.
+that way for ten minutes and is reported. The database side (migration
+`20260929550000`) broadcasts only while `qorpera_orchestrator_wake_settings.enabled`
+is on; switch it on before the nodes.
 
 The bootstrap orchestrator token is used only when the control-state file does
 not exist. The service persists a pending replacement before rotation, sends

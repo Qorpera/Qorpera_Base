@@ -91,7 +91,13 @@ export function cloudRunnerOrchestratorServiceConfigFromEnvironment(
 		throw new Error("QORPERA_RUNNER_ORCHESTRATOR_WAKE must be off or realtime");
 	}
 	const wakeBackstopMs = Number(environment.QORPERA_RUNNER_ORCHESTRATOR_WAKE_BACKSTOP_MS?.trim() || "5000");
-	if (!Number.isSafeInteger(wakeBackstopMs) || wakeBackstopMs < 1000 || wakeBackstopMs > 60_000) {
+	if (
+		wakeMode === "realtime" &&
+		(!Number.isSafeInteger(wakeBackstopMs) ||
+			wakeBackstopMs < 1000 ||
+			wakeBackstopMs > 60_000 ||
+			wakeBackstopMs < pollIntervalMs)
+	) {
 		throw new Error("QORPERA_RUNNER_ORCHESTRATOR_WAKE_BACKSTOP_MS is outside the supported range");
 	}
 	return {
@@ -128,6 +134,7 @@ export async function runCloudRunnerOrchestratorService(options: CloudRunnerOrch
 	const transport = options.fetchImplementation ?? nodeHttpFetch;
 	const controlTokenStore = new FileRunnerOrchestratorControlTokenStore(options.config.orchestratorControlStatePath);
 	const controlTokens = await controlTokenStore.load(options.config.orchestratorControlToken);
+	let wake: RealtimeOrchestratorWake | undefined;
 	const controlPlane = new SupabaseCloudRunnerOrchestratorControlPlane(
 		options.config.supabaseUrl,
 		options.config.supabasePublishableKey,
@@ -137,6 +144,8 @@ export async function runCloudRunnerOrchestratorService(options: CloudRunnerOrch
 		{
 			...(controlTokens.pending ? { pendingControlToken: controlTokens.pending } : {}),
 			persistControlTokens: (state) => controlTokenStore.save(state),
+			// Every start rotates the control token on its first reconcile pass: follow it to its new topic.
+			onControlRotated: () => wake?.refresh(),
 		},
 	);
 	const providerAdapter = new HttpCloudRunnerProviderAdapter(
@@ -151,7 +160,7 @@ export async function runCloudRunnerOrchestratorService(options: CloudRunnerOrch
 		providerAdapter,
 		dispatchConcurrency: options.config.dispatchConcurrency,
 	});
-	const wake = options.config.wake
+	wake = options.config.wake
 		? new RealtimeOrchestratorWake({
 				supabaseUrl: options.config.supabaseUrl,
 				publishableKey: options.config.supabasePublishableKey,
