@@ -44,6 +44,14 @@ export const CLOUD_RUNTIME_TOOL_OPERATIONS = [
 	"organize_sidebar",
 	// Auto-review (v130): an agent adds an Ask first rule for its member.
 	"add_review_rule",
+	// Machines agents start for tests and long jobs (2026-09-28).
+	"machine_start",
+	"machine_run",
+	"machine_read",
+	"machine_cancel",
+	"machine_stop",
+	"machine_delete",
+	"machine_list",
 ] as const;
 /** Closed vocabulary; the SQL ingestion function checks the same list. */
 export const CLOUD_RUNTIME_OPERATIONS = [

@@ -31,8 +31,14 @@ select pg_temp.wake_assert(not has_function_privilege(role_name, function_name, 
 from unnest(array['anon', 'authenticated', 'service_role']) role_name,
 	unnest(array['public.qorpera_company_at_zero(uuid,timestamp with time zone)',
 		'public.qorpera_computer_hour_zero_run_guard()']) function_name;
--- Every function that creates runs, lists or queues routine slots checks for zero; the three that pick
--- queued work check when picking and again before starting it, and the listing on both pages.
+-- The routine listing reads the zero state (on both pages), with no full check.
+select pg_temp.wake_assert((length(pg_get_functiondef('public.qorpera_list_routine_schedule_heads(uuid,integer)'::regprocedure))
+	- length(replace(pg_get_functiondef('public.qorpera_list_routine_schedule_heads(uuid,integer)'::regprocedure),
+		'qorpera_computer_hour_zero_state', ''))) / length('qorpera_computer_hour_zero_state') = 2,
+	'The routine listing reads the zero state on both pages');
+-- Every function that creates runs or queues routine slots checks for zero (the listing reads the
+-- zero state instead, above); the three that pick queued work check when picking and again before
+-- starting it.
 select pg_temp.wake_assert(count(*) = 9 and bool_and(checks.found = checks.expected),
 	'Checks for zero: ' || string_agg(checks.fn || ' ' || checks.found || '/' || checks.expected, ', '))
 from (
@@ -48,7 +54,7 @@ from (
 		('public.qorpera_enqueue_execution_run(uuid,uuid,uuid,text,uuid,uuid,uuid,bigint,uuid,bigint,text,text,jsonb,text,text,uuid[],uuid)', 1),
 		('public.qorpera_enqueue_runner_job(uuid,uuid,uuid,uuid,text,text,jsonb)', 1),
 		('public.qorpera_enqueue_routine_wake(uuid,bigint,uuid,text,text,timestamptz,timestamptz,timestamptz,jsonb)', 1),
-		('public.qorpera_list_routine_schedule_heads(uuid,integer)', 2),
+		('public.qorpera_list_routine_schedule_heads(uuid,integer)', 0),
 		('public.qorpera_read_company_computer_hours(uuid,date)', 1)
 	) wanted(fn, expected)
 ) checks;
@@ -78,6 +84,9 @@ select pg_temp.wake_assert(not pg_temp.hours_read_waits(), 'Switched off, member
 
 -- 2. Switched on: the queued wake waits, with its reason, and no run starts.
 update public.qorpera_computer_hour_billing set zero_rule_since = clock_timestamp() - interval '1 second';
+-- Recorded at zero by the next sweep (after each meter pass): until then work still starts.
+select pg_temp.wake_assert(not pg_temp.at_zero(), 'Not recorded yet: not at zero');
+select pg_temp.wake_assert(public.qorpera_computer_hour_zero_sweep(clock_timestamp()) ->> 'ranOut' = '1', 'Recorded');
 select pg_temp.wake_assert(pg_temp.at_zero(), 'Switched on, the company is at zero');
 do $$
 declare v_runs bigint := (select count(*) from public.qorpera_execution_runs);
@@ -192,6 +201,9 @@ begin
 		'The wake is no longer waiting');
 end
 $$;
+-- The listing reads the zero state only: the routine comes back with the next sweep.
+select pg_temp.wake_assert(not pg_temp.routine_listed(), 'Until the next sweep, the routine stays out of the listing');
+select pg_temp.wake_assert(public.qorpera_computer_hour_zero_sweep(clock_timestamp()) ->> 'cleared' = '1', 'The sweep clears it');
 select pg_temp.wake_assert(pg_temp.routine_listed(), 'Hours arrived: the due routine is listed again');
 do $$
 declare v_wake uuid := pg_temp.wake_schedule(current_setting('qorpera_test.routine')::jsonb, 'at-zero',
@@ -204,9 +216,13 @@ end
 $$;
 select pg_temp.wake_assert(not pg_temp.hours_read_waits(), 'Hours arrived: members see no waiting');
 
--- 5. A complimentary company is never at zero.
+-- 5. A complimentary company is never at zero, even while still recorded there.
+select pg_temp.use(1000000);
+select pg_temp.wake_assert(public.qorpera_computer_hour_zero_sweep(clock_timestamp()) ->> 'ranOut' = '1', 'At zero again');
+select pg_temp.wake_assert(pg_temp.at_zero(), 'Recorded: at zero');
 insert into public.qorpera_account_entitlements (user_id, plan_key, billing_mode, feature_set, storage_allocation, operator_reference, reason)
 values ('30000000-0000-4000-8000-000000000001', 'internal', 'complimentary', 'all', 'unlimited', 'test', 'Company41 staff');
-select pg_temp.use(1000000);
 select pg_temp.wake_assert(not pg_temp.at_zero(), 'Complimentary: never at zero');
+select pg_temp.wake_assert(public.qorpera_computer_hour_zero_sweep(clock_timestamp()) ->> 'cleared' = '1',
+	'And the sweep clears it');
 rollback;

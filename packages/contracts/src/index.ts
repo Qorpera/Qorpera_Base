@@ -58,6 +58,7 @@ export * from "./cloud-coding.ts";
 export * from "./cloud-coding-command.ts";
 export * from "./cloud-coding-session.ts";
 export * from "./cloud-coding-storage.ts";
+export * from "./cloud-machine.ts";
 export * from "./company-computer-activation.ts";
 export * from "./company-computer-boot-intent.ts";
 export * from "./company-computer-boot-successor.ts";

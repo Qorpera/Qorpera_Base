@@ -150,6 +150,7 @@ async function retainedHistory(
 	f: Awaited<ReturnType<typeof fixture>>,
 	count: 381 | 384,
 	lastState: "succeeded" | "failed" = "succeeded",
+	lastAction?: "start",
 ) {
 	await f.reconcile();
 	await f.reconcile();
@@ -164,7 +165,14 @@ async function retainedHistory(
 			`${JSON.stringify({
 				sequence,
 				previousSha256,
-				action: sequence < 3 ? "create" : Math.floor(sequence / 3) % 2 ? "start" : "stop",
+				action:
+					sequence < 3
+						? "create"
+						: lastAction && sequence >= count - 3
+							? lastAction
+							: Math.floor(sequence / 3) % 2
+								? "start"
+								: "stop",
 				kind: ["dispatch", "accepted", "settled"][phase],
 				operationId: phase === 0 ? null : id(1000 + Math.floor(sequence / 3)),
 				state: phase === 2 ? (sequence === count - 1 ? lastState : "succeeded") : null,
@@ -212,6 +220,24 @@ describe("a coding machine's journaled lifecycle", () => {
 		expect((await f.reconcile()).state).toBe("pending");
 		expect((await f.reconcile()).state).toBe("pending");
 		expect((await f.reconcile()).state).toBe("running");
+	});
+	it("rolls over a disposable VM's full journal that ends with a start whose VM stopped by itself", async () => {
+		const f = await fixture();
+		const root = await retainedHistory(f, 381, "succeeded", "start");
+		const plan = { ...f.journal, disposable: true as const };
+		const reconcile = (desiredState: "running" | "stopped" | "deleted" = "running") =>
+			reconcileCodingMachine({ ...f.options, plan, desiredState });
+		// A coding machine never accepts that journal (a start after a start).
+		await expect(f.reconcile()).rejects.toThrow("CODING_MACHINE_JOURNAL_INVALID");
+		expect((await reconcile()).state).toBe("pending");
+		expect(JSON.parse(await readFile(join(root, "segment-000001", "checkpoint.json"), "utf8"))).toMatchObject({
+			segment: 1,
+			previousEventCount: 381,
+		});
+		expect((await reconcile()).state).toBe("pending");
+		expect((await reconcile()).state).toBe("running");
+		expect((await reconcile("stopped")).state).toBe("pending");
+		expect((await reconcile("stopped")).state).toBe("stopped");
 	});
 	it("rolls over after a failed stop whose VM LXD shows stopped", async () => {
 		const f = await fixture();

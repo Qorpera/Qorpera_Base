@@ -1,0 +1,11 @@
+[Unit]
+Description=Check the machine's executor lease independently of the network
+
+[Timer]
+OnBootSec=10s
+OnUnitInactiveSec=10s
+AccuracySec=1s
+Unit=qorpera-machine-watchdog.service
+
+[Install]
+WantedBy=timers.target

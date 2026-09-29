@@ -750,10 +750,18 @@ export async function runOfficeCreationSqlProbe(
 				reviewPath: "/synthetic-review",
 				writerFencePath: "/synthetic-handoff",
 			};
+			// No operator preparation recovery is published; the ordinary attempt
+			// must stand on its own. Only the one pending pass may look for it: a
+			// succeeded preparation never reads the review again.
+			let recoveryReads = 0;
 			const ports = {
 				kernelLock: async () => {},
 				readProtected: async (path: string) => {
 					if (path === request.reviewPath) return reviewBytes;
+					if (path === `${request.reviewPath}.preparation-recovery`) {
+						recoveryReads++;
+						throw Object.assign(new Error("no preparation recovery review"), { code: "ENOENT" });
+					}
 					assert.equal(path, request.writerFencePath);
 					return handoffBytes;
 				},
@@ -816,6 +824,7 @@ export async function runOfficeCreationSqlProbe(
 				assert.equal(completed.state, "awaiting_activation");
 				if (!lifecycleMode) assert.deepEqual(await prepare().reconcile(request, signal()), completed);
 				assert.deepEqual(preparation.counts(), { posts: 1, polls: 2, uploads: 1 });
+				assert.equal(recoveryReads, 1);
 				prepared = {
 					...completed,
 					...preparation.counts(),
@@ -1324,6 +1333,7 @@ export async function runOfficeCreationSqlProbe(
 				assert.deepEqual(preparation.counts(), { posts: 1, polls: 2, uploads: 1 });
 			}
 			assert.equal(startPosts, 1);
+			assert.equal(recoveryReads, bootOptions.prepare ? 1 : 0);
 			assert.deepEqual(failures, []);
 			firstBoot = {
 				...observed,
