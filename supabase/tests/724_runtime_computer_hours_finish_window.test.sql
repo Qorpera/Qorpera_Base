@@ -46,23 +46,31 @@ select pg_temp.wake_assert((pg_temp.job(current_setting('qorpera_test.child_run'
 		on wake.id = worker.occurrence_id where worker.worker_key = 'scan'
 		and wake.run_id = current_setting('qorpera_test.child_run')::uuid),
 	'The worker''s child run is running');
--- A queued run made before the company ran out: another agent's routine wake.
+-- A running run that has not started its native turn: another agent's routine wake, leased.
 select set_config('qorpera_test.routine', pg_temp.wake_routine('30000000-0000-4000-8000-000000000031',
 	'{"id":"tick","kind":"schedule","intervalMinutes":5,"replyPolicy":"optional"}')::text, true);
 select set_config('qorpera_test.routine_wake',
-	pg_temp.wake_schedule(current_setting('qorpera_test.routine')::jsonb, 'hours-queued')::text, true);
+	pg_temp.wake_schedule(current_setting('qorpera_test.routine')::jsonb, 'hours-leased')::text, true);
+select public.qorpera_materialize_wake_execution_runs(8);
+select set_config('qorpera_test.leased_run', (select run_id::text from public.qorpera_wake_occurrences
+	where id = current_setting('qorpera_test.routine_wake')::uuid), true);
+select pg_temp.wake_start(current_setting('qorpera_test.leased_run')::uuid);
+-- A queued run made before the company ran out: a third agent's routine wake.
+select set_config('qorpera_test.routine2', pg_temp.wake_routine('30000000-0000-4000-8000-000000000032',
+	'{"id":"tick","kind":"schedule","intervalMinutes":5,"replyPolicy":"optional"}')::text, true);
+select set_config('qorpera_test.routine2_wake',
+	pg_temp.wake_schedule(current_setting('qorpera_test.routine2')::jsonb, 'hours-queued')::text, true);
 select public.qorpera_materialize_wake_execution_runs(8);
 select set_config('qorpera_test.queued_run', (select run_id::text from public.qorpera_wake_occurrences
-	where id = current_setting('qorpera_test.routine_wake')::uuid), true);
-select pg_temp.wake_assert((pg_temp.job(current_setting('qorpera_test.queued_run')::uuid)).status = 'queued', 'A queued run');
+	where id = current_setting('qorpera_test.routine2_wake')::uuid), true);
+select pg_temp.wake_assert((pg_temp.job(current_setting('qorpera_test.queued_run')::uuid)).status = 'queued'
+	and (pg_temp.job(current_setting('qorpera_test.leased_run')::uuid)).status = 'leased', 'A queued run and a running one');
 
--- The worker's child had started its native turn, as most running work has. Only the start
--- event matters to the path that ends it, so the start guard is set aside to record it.
-alter table public.qorpera_execution_run_events disable trigger qorpera_native_company_execution_start_once;
+-- The worker's child had started its native turn, as most running work has (only the start event
+-- matters to the path that ends it).
 insert into public.qorpera_execution_run_events (run_id, event_type, payload)
 values (current_setting('qorpera_test.child_run')::uuid, 'runner_started',
 	'{"schema":"qorpera.native-company-execution-start/v1"}');
-alter table public.qorpera_execution_run_events enable trigger qorpera_native_company_execution_start_once;
 
 -- Another company, with another founder, which will be past its hour at zero.
 insert into auth.users(id,email) values ('72400000-0000-4000-8000-000000000002','other-founder@example.test');
@@ -85,6 +93,7 @@ where profile_id = '72400000-0000-4000-8000-000000000020';
 select pg_temp.backdate(59);
 select pg_temp.heartbeat();
 select pg_temp.wake_assert((pg_temp.job(current_setting('qorpera_test.child_run')::uuid)).status = 'leased'
+	and (pg_temp.job(current_setting('qorpera_test.leased_run')::uuid)).status = 'leased'
 	and (pg_temp.job(current_setting('qorpera_test.queued_run')::uuid)).status = 'queued', 'Within the hour: left alone');
 
 -- 2. Past the hour but no longer at zero (the record not yet swept), while another company is past
@@ -94,6 +103,7 @@ insert into public.qorpera_account_entitlements (user_id, plan_key, billing_mode
 values ('30000000-0000-4000-8000-000000000001', 'internal', 'complimentary', 'all', 'unlimited', 'test', 'Company41 staff');
 select pg_temp.heartbeat();
 select pg_temp.wake_assert((pg_temp.job(current_setting('qorpera_test.child_run')::uuid)).status = 'leased'
+	and (pg_temp.job(current_setting('qorpera_test.leased_run')::uuid)).status = 'leased'
 	and (pg_temp.job(current_setting('qorpera_test.queued_run')::uuid)).status = 'queued', 'No longer at zero: left alone');
 delete from public.qorpera_account_entitlements where user_id = '30000000-0000-4000-8000-000000000001';
 
@@ -104,11 +114,20 @@ select pg_temp.wake_assert((pg_temp.job(current_setting('qorpera_test.child_run'
 	'The running job ended out of computer hours: ' || coalesce((pg_temp.job(current_setting('qorpera_test.child_run')::uuid)).last_error, 'no error'));
 select pg_temp.wake_assert((select status = 'requires_review' from public.qorpera_wake_occurrences
 	where run_id = current_setting('qorpera_test.child_run')::uuid), 'A started native turn ends for review');
+-- A run that had not started its turn ends failed too, and is not put back in the queue.
+select pg_temp.wake_assert((pg_temp.job(current_setting('qorpera_test.leased_run')::uuid)).status = 'failed'
+	and (pg_temp.job(current_setting('qorpera_test.leased_run')::uuid)).last_error = 'Out of computer hours [code=COMPUTER_HOURS_EXHAUSTED]'
+	and (select status = 'failed' from public.qorpera_wake_occurrences
+		where run_id = current_setting('qorpera_test.leased_run')::uuid),
+	'A running job that had not started ends failed, not retried: ' || (select row(job.status, job.last_error, wake.status)::text
+		from public.qorpera_runner_jobs job join public.qorpera_wake_occurrences wake on wake.run_id = job.run_id
+		where job.run_id = current_setting('qorpera_test.leased_run')::uuid));
 select pg_temp.wake_assert((pg_temp.job(current_setting('qorpera_test.queued_run')::uuid)).status = 'failed'
 	and (pg_temp.job(current_setting('qorpera_test.queued_run')::uuid)).last_error = 'Out of computer hours [code=COMPUTER_HOURS_EXHAUSTED]',
 	'The queued job failed out of computer hours');
 select pg_temp.wake_assert(not exists (select 1 from public.qorpera_runner_jobs job
-	where job.run_id in (current_setting('qorpera_test.child_run')::uuid, current_setting('qorpera_test.queued_run')::uuid)
+	where job.run_id in (current_setting('qorpera_test.child_run')::uuid, current_setting('qorpera_test.queued_run')::uuid,
+		current_setting('qorpera_test.leased_run')::uuid)
 		and job.status in ('queued', 'leased')), 'No retry');
 
 -- 4. The worker, not cancelled, tells its parent why; the parent's revival waits for hours.
