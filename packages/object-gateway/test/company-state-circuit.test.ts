@@ -277,15 +277,54 @@ describe("member Company File authority", () => {
 				return respond(args, init!.signal!);
 			},
 		});
-		const call = (company: Company) =>
+		const call = (company: Company, signal = new AbortController().signal) =>
 			authority.member(
 				"qorpera_company_presence_scope",
 				memberToken,
 				{ p_environment_id: companies[company].environmentId },
-				new AbortController().signal,
+				signal,
 			);
 		return { calls, call };
 	}
+
+	const hangUntilAborted = (signal: AbortSignal) =>
+		new Promise<Response>((_resolve, reject) => {
+			signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+		});
+
+	it.each([
+		["its client disconnects", (caller: AbortController) => setTimeout(() => caller.abort(), 20)],
+		[
+			"its own deadline passes",
+			(caller: AbortController) => setTimeout(() => caller.abort(new DOMException("", "TimeoutError")), 20),
+		],
+	] as const)("leaves the circuit closed when a caller gives up because %s", async (_label, giveUp) => {
+		// The reviewer's probe on #568: a caller abort used to count as a dependency failure, so the next
+		// company's call got 503 without reaching the database.
+		const { calls, call } = memberAuthority(async (args, signal) =>
+			args.p_environment_id === companies.a.environmentId ? hangUntilAborted(signal) : Response.json({ ok: true }),
+		);
+		const caller = new AbortController();
+		const abandoned = call("a", caller.signal);
+		giveUp(caller);
+		await expect(abandoned).rejects.toBeInstanceOf(ObjectDependencyError);
+		await expect(call("b")).resolves.toEqual({ ok: true });
+		expect(calls).toHaveLength(2);
+	});
+
+	it("still opens its circuit on its own deadline, even when the caller gives up at the same moment", async () => {
+		const caller = new AbortController();
+		const { calls, call } = memberAuthority(async (args, signal) => {
+			if (args.p_environment_id !== companies.a.environmentId) return Response.json({ ok: true });
+			// The gateway's deadline aborts the fetch; the caller gives up in the same tick.
+			signal.addEventListener("abort", () => caller.abort(), { once: true });
+			return hangUntilAborted(signal);
+		});
+		await expect(call("a", caller.signal)).rejects.toMatchObject({ status: 503 });
+		expect(caller.signal.aborted).toBe(true);
+		await expect(call("b")).rejects.toMatchObject({ status: 503 });
+		expect(calls).toHaveLength(1);
+	});
 
 	it.each([
 		["40P01", 409],
@@ -309,6 +348,98 @@ describe("member Company File authority", () => {
 		await expect(call("b")).rejects.toMatchObject({ status: 503 });
 		expect(calls).toHaveLength(1);
 	});
+});
+
+describe("member presence route and the caller's own abort", () => {
+	const token = "a".repeat(64);
+	async function presence() {
+		const calls: Company[] = [];
+		const abandoned: Company[] = [];
+		const authority = new SupabaseMemberCompanyAuthority({
+			projectUrl: "https://cloud.test",
+			publishableKey: "public",
+			secretKey: "secret",
+			requestTimeoutMs: 5_000,
+			fetch: async (_input, init) => {
+				const args = JSON.parse(String(init?.body)) as Record<string, unknown>;
+				const company = (Object.keys(companies) as Company[]).find(
+					(key) => args.p_environment_id === companies[key].environmentId,
+				)!;
+				calls.push(company);
+				// Company A's scope waits on its locks until the request is abandoned.
+				if (company === "a")
+					return new Promise<Response>((_resolve, reject) => {
+						init!.signal!.addEventListener(
+							"abort",
+							() => {
+								abandoned.push(company);
+								reject(init!.signal!.reason);
+							},
+							{ once: true },
+						);
+					});
+				return Response.json({
+					schema: "qorpera.company-presence-scope/v1",
+					companyId: companies.b.companyId,
+					environmentId: companies.b.environmentId,
+					paths: [{ path, routes: [{ path, token }] }],
+				});
+			},
+		});
+		const server = createServer(
+			createObjectGatewayHandler({
+				store: {} as never,
+				authority: {} as never,
+				controlToken: "synthetic-control",
+				verifierToken: "synthetic-verifier",
+				memberPresence: authority,
+			}),
+		);
+		await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+		const address = server.address();
+		if (!address || typeof address === "string") throw new Error("Missing fixture server");
+		cleanups.push(async () => {
+			server.closeAllConnections();
+			await new Promise<void>((resolve) => server.close(() => resolve()));
+		});
+		const post = (company: Company, signal?: AbortSignal) =>
+			fetch(
+				`http://127.0.0.1:${address.port}/v1/member-company-presence/${companies[company].companyId}/${companies[company].environmentId}`,
+				{
+					method: "POST",
+					headers: { authorization: `Bearer ${memberToken}`, "content-type": "application/json" },
+					body: JSON.stringify({ paths: [path], candidates: [], truncated: false }),
+					...(signal ? { signal } : {}),
+				},
+			);
+		return { calls, abandoned, post };
+	}
+
+	it("serves another company after one member closes the tab mid-request", async () => {
+		const { calls, abandoned, post } = await presence();
+		const tab = new AbortController();
+		const closed = post("a", tab.signal).catch((error: unknown) => error);
+		await expect.poll(() => calls.includes("a")).toBe(true);
+		tab.abort();
+		await closed;
+		// The gateway sees the disconnect and abandons A's call; B's presence still reaches the database.
+		await expect.poll(() => abandoned).toEqual(["a"]);
+		await new Promise((resolve) => setImmediate(resolve));
+		const other = await post("b");
+		expect(other.status).toBe(200);
+		expect(await other.json()).toMatchObject({ view: { state: "available" } });
+		expect(calls).toEqual(["a", "b", "b"]);
+	});
+
+	it("serves another company after one presence request passes its 2.5 s deadline", async () => {
+		const { calls, abandoned, post } = await presence();
+		const late = await post("a");
+		expect(abandoned).toEqual(["a"]);
+		expect(late.status).toBe(503);
+		const other = await post("b");
+		expect(other.status).toBe(200);
+		expect(calls).toEqual(["a", "b", "b"]);
+	}, 10_000);
 });
 
 describe("dependency circuit and statement timeouts", () => {

@@ -146,7 +146,10 @@ export class ObjectDependency {
 		return { ...this.#health };
 	}
 
-	async run<T>(operation: (signal: AbortSignal) => Promise<T>): Promise<T> {
+	/** `caller` is the caller's own signal. A call that fails after the caller gave up (its own deadline, or its
+	 * client disconnecting) before this dependency's deadline says nothing about the dependency: the circuit and
+	 * health stay as they are. Only this deadline and the dependency's own failures count. */
+	async run<T>(operation: (signal: AbortSignal) => Promise<T>, caller?: AbortSignal): Promise<T> {
 		if (this.#retryAt > this.#now() || (this.#retryAt > 0 && this.#probing)) {
 			throw new ObjectDependencyError(503);
 		}
@@ -155,8 +158,10 @@ export class ObjectDependency {
 		const successes = this.#successes;
 		const controller = new AbortController();
 		let timer: ReturnType<typeof setTimeout> | undefined;
+		let expired = false;
 		const timeout = new Promise<never>((_resolve, reject) => {
 			timer = setTimeout(() => {
+				expired = true;
 				const error = new ObjectDependencyError(503);
 				controller.abort(error);
 				reject(error);
@@ -171,6 +176,7 @@ export class ObjectDependency {
 		} catch (error) {
 			const failure = error instanceof ObjectDependencyError ? error : new ObjectDependencyError(503);
 			controller.abort(failure);
+			if (caller?.aborted && !expired) throw failure;
 			// Another call succeeded while this statement ran: the database is serving, and one company's slow
 			// statement leaves the circuit as it is. With no success meanwhile, it counts like any 5xx.
 			if (failure instanceof ObjectStatementTimeout && this.#successes !== successes) throw failure;
