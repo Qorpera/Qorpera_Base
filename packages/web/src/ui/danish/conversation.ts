@@ -101,6 +101,8 @@ export const CONVERSATION: Record<string, string> = {
 		"Kørslen startede, men et af dens trin blev afvist. Fejlen ligger hos Qorpera.",
 	"The run was stopped before it finished.": "Kørslen blev stoppet, før den var færdig.",
 	"The run stopped because of an internal error.": "Kørslen stoppede på grund af en intern fejl.",
+	"The company is out of computer hours. New work starts again once hours are added.":
+		"Virksomheden har ikke flere computertimer. Nyt arbejde starter igen, når der er tilføjet timer.",
 
 	// The model menu (app/views/composer-models.ts)
 	Model: "Model",
