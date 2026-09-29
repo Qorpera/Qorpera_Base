@@ -95,13 +95,40 @@ select pg_temp.wake_assert((pg_temp.fa_release('72100000-0000-4000-8000-00000000
 	'A failure while the machine is still reserved does not abandon the attempt');
 reset role;
 select pg_temp.wake_assert((select job.attempt_count = 0 and job.dispatch_failure_count = 1 and runner.status = 'pending'
+		and job.dispatch_refused_by is null and job.dispatch_deferred_until > statement_timestamp() + interval '10 seconds'
 	from public.qorpera_runner_jobs job, public.qorpera_runners runner
 	where job.run_id = current_setting('qorpera_test.fa_run')::uuid and runner.id = current_setting('qorpera_test.fa_runner1')::uuid),
-	'The machine may still exist: the attempt waits for its provider');
+	'The machine may still exist: everyone waits for its provider, and the attempt stays');
 
--- 2b. The provider released the machine (its start failed): the next failure abandons the attempt.
+-- 2b. The provider released the machine (its start failed).
 update public.qorpera_runtime_machine_allocations set released_at = clock_timestamp()
 where id = current_setting('qorpera_test.fa_first')::uuid;
+-- A refusal still never moves the attempt, even now.
+select pg_temp.fa_ready(current_setting('qorpera_test.fa_run')::uuid);
+set local role service_role;
+select set_config('qorpera_test.fa_claim',pg_temp.fa_claim('72100000-0000-4000-8000-0000000000b1')::text,true);
+select pg_temp.fa_release('72100000-0000-4000-8000-0000000000b1',current_setting('qorpera_test.fa_claim')::jsonb,'ADMISSION_REFUSED:NODE_NOT_PREFERRED');
+reset role;
+select pg_temp.wake_assert((select job.attempt_count = 0 and runner.status = 'pending'
+	from public.qorpera_runner_jobs job, public.qorpera_runners runner
+	where job.run_id = current_setting('qorpera_test.fa_run')::uuid and runner.id = current_setting('qorpera_test.fa_runner1')::uuid),
+	'A refusal after the release leaves the attempt and its runner alone');
+-- A runner that did activate is not revoked: only a pending one.
+savepoint activated;
+update public.qorpera_runners set status = 'active', activated_at = clock_timestamp(), session_token_sha256 = repeat('6',64),
+	session_expires_at = clock_timestamp() + interval '1 hour'
+where id = current_setting('qorpera_test.fa_runner1')::uuid;
+select pg_temp.fa_ready(current_setting('qorpera_test.fa_run')::uuid);
+set local role service_role;
+select set_config('qorpera_test.fa_claim',pg_temp.fa_claim('72100000-0000-4000-8000-0000000000b1')::text,true);
+select pg_temp.wake_assert((pg_temp.fa_release('72100000-0000-4000-8000-0000000000b1',current_setting('qorpera_test.fa_claim')::jsonb,
+	'Runner provider request failed (422) [code=PROVIDER_ACQUIRE]') ->> 'attempt_abandoned')::boolean = false,
+	'An activated runner''s attempt is not abandoned');
+reset role;
+select pg_temp.wake_assert((select status = 'active' from public.qorpera_runners where id = current_setting('qorpera_test.fa_runner1')::uuid),
+	'An activated runner is not revoked');
+rollback to savepoint activated;
+-- The next infrastructure failure abandons the attempt.
 select pg_temp.fa_ready(current_setting('qorpera_test.fa_run')::uuid);
 set local role service_role;
 select set_config('qorpera_test.fa_claim',pg_temp.fa_claim('72100000-0000-4000-8000-0000000000b1')::text,true);
@@ -111,6 +138,7 @@ select pg_temp.wake_assert((pg_temp.fa_release('72100000-0000-4000-8000-00000000
 	'A failed start after the machine was released abandons the attempt');
 reset role;
 select pg_temp.wake_assert((select job.attempt_count = 1 and job.dispatch_failure_count = 2 and job.status = 'queued'
+		and job.queued_at >= statement_timestamp() - interval '1 second'
 		and runner.status = 'revoked' and runner.revoked_by_user_id = runner.registered_by_user_id
 	from public.qorpera_runner_jobs job, public.qorpera_runners runner
 	where job.run_id = current_setting('qorpera_test.fa_run')::uuid and runner.id = current_setting('qorpera_test.fa_runner1')::uuid),
@@ -143,8 +171,10 @@ select pg_temp.wake_assert(pg_temp.fa_placement(current_setting('qorpera_test.fa
 rollback to savepoint only_b;
 
 -- 3 and 6. Attempt 2 through the claim turn on node A: a new runner, a new allocation and a new placement row.
-select pg_temp.fa_ready(current_setting('qorpera_test.fa_run')::uuid);
+-- The attempt was queued again, so the head start is node A's: the failed node's fast host gets no turn.
 set local role service_role;
+select pg_temp.wake_assert(pg_temp.fa_claim('72100000-0000-4000-8000-0000000000b1') = 'null'::jsonb,
+	'The failed node''s fast host leaves attempt 2 to node A during the head start');
 select set_config('qorpera_test.fa_claim',pg_temp.fa_claim('30000000-0000-4000-8000-000000000092')::text,true);
 select pg_temp.wake_assert(current_setting('qorpera_test.fa_claim')::jsonb #>> '{work,run_id}' = current_setting('qorpera_test.fa_run')
 	and current_setting('qorpera_test.fa_claim')::jsonb #>> '{work,attempt}' = '2','Node A''s fast host claims attempt 2');

@@ -348,12 +348,14 @@ Now:
   - raises the job's attempt count;
   - records the node that failed in `qorpera_runtime_run_start_failures` (one row per run, the latest);
   - adds `attempt_abandoned` and `start_failed_node_id` to the `infrastructure_retry` event.
-  The next claim is the next attempt: a new acquisition id, runner, allocation and placement row.
+  The next claim is the next attempt: a new acquisition id, runner, allocation and placement row. The job is
+  queued again (`queued_at`), so the claim turn's head start goes to the node the placement names.
 - **Not moved on:**
   - a placement refusal (`ADMISSION_REFUSED:*`, including `NODE_NOT_PREFERRED`);
   - a pending runner without an allocation (the rebind of `20260928235000` gives it to the next provider);
-  - an allocation that is not yet released (its machine may still exist). Its provider releases it, and a
-    later failure then moves the attempt on.
+  - an allocation that is not yet released (its machine may still exist). Every orchestrator then waits 15
+    seconds so its provider can release it (the LXD provider does on its next reconcile; without the wait
+    the other node's refusals would use up the retries), and the next failure moves the attempt on.
 - **The attempt budget.** If the raised count reaches the cap (8), the job fails at once ("Runner failed to
   start on its final attempt") instead of waiting unclaimable.
 - **The failed node ranks last.** Both the node chooser (`qorpera_runtime_node_placement_decide`, now with a
@@ -363,9 +365,11 @@ Now:
   run still goes there. Logins are unchanged.
 - **The exec host's machine key names the attempt** (runner-orchestrator). The key of a released allocation
   stays taken, so a later attempt of the same run on the same slot needs its own.
-- **Locks.** The release takes the job row (as before), then the runner row, and reads the allocation and its
-  placement by primary key; the run's failure row is written last. A reservation reads the failure row by the
-  run id it already holds. No company-wide lock.
+- **Locks.** The release takes the job row, the claim and the assignment (as before), then the runner row; it
+  reads the allocation and its placement by primary key and writes the run's failure row last. The runner
+  receipt's foreign key takes a key-share lock on the company's profile row, after the job row: the same order
+  as a reservation (job, then the company fence). A reservation reads the failure row by the run id it already
+  holds.
 
 ### Rollout (coordinator)
 

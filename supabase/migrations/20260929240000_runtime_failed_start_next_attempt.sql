@@ -15,17 +15,22 @@
 -- the run. The next claim gets the next attempt: a new acquisition id, runner, allocation and placement row.
 -- - A placement refusal (ADMISSION_REFUSED:*) never does this.
 -- - A runner without an allocation keeps the rebind of 20260928235000.
--- - An allocation not yet released (its machine may still exist) is left to its provider; a later release
---   moves the attempt on once the provider released it.
+-- - An allocation not yet released (its machine may still exist) is left to its provider, and every
+--   orchestrator waits 15 seconds so the provider can release it (a node that releases on its next reconcile,
+--   the LXD provider, would otherwise see its retries used up by the other node's refusals); the next
+--   failure then moves the attempt on.
 -- - If the attempt count reaches its cap (8), the job fails at once instead of waiting unclaimable.
 --
 -- The node chooser (native runs) and the claim turn's placement (runs with dispatch roles) rank the node
 -- where the run's previous attempt failed to start after every other eligible node that fits; when it is
--- the only one, the run still goes there.
+-- the only one, the run still goes there. The next attempt is queued again (queued_at), so the claim turn's
+-- head start goes to the node the placement names.
 --
--- Locks: the release takes the job row (as before), then the runner row, and reads the allocation and its
--- placement by primary key; the run's failure row is written last. A reservation reads that row by the run
--- id it already holds. No company-wide lock.
+-- Locks: the release takes the job row, the claim and the assignment (as before), then the runner row; it
+-- reads the allocation and its placement by primary key and writes the run's failure row last. The runner
+-- receipt's foreign key takes a key-share lock on the company's profile row, after the job row, the same
+-- order as a reservation (job, then the company fence). A reservation reads the failure row by the run id
+-- it already holds.
 set local lock_timeout = '3s';
 
 -- The attempt's acquisition id exactly as the providers derive it (runAttemptAcquisitionId in
@@ -69,6 +74,7 @@ declare
 	v_runner public.qorpera_runners%rowtype;
 	v_failed_node uuid;
 	v_abandoned boolean := false;
+	v_machine_pending boolean := false;
 begin
 	if auth.role() <> 'service_role' or p_client_assignment_id is null
 		or char_length(btrim(coalesce(p_error, ''))) not between 1 and 1000 then
@@ -164,10 +170,20 @@ begin
 			end if;
 			v_abandoned := true;
 		end if;
+	elsif found and v_allocation.run_id = v_claim.run_id and v_allocation.released_at is null
+		and exists (select 1 from public.qorpera_runners as runner where runner.id = v_allocation.runner_id and runner.status = 'pending') then
+		-- The attempt's machine is still reserved: its provider releases it (the LXD provider on its next
+		-- reconcile). Every orchestrator waits a moment instead of spending the retries on refusals.
+		v_machine_pending := true;
 	end if;
 	update public.qorpera_runner_jobs
 	set dispatch_failure_count = dispatch_failure_count + 1,
 		attempt_count = attempt_count + case when v_abandoned then 1 else 0 end,
+		-- The next attempt is queued again: the claim turn's head start goes to the node the placement names.
+		queued_at = case when v_abandoned then statement_timestamp() else queued_at end,
+		dispatch_refused_by = case when v_machine_pending then null else dispatch_refused_by end,
+		dispatch_deferred_until = case when v_machine_pending then statement_timestamp() + interval '15 seconds'
+			else dispatch_deferred_until end,
 		last_error = btrim(p_error)
 	where id = v_claim.job_id and status = 'queued' and dispatch_failure_count < 8
 	returning * into v_job;
