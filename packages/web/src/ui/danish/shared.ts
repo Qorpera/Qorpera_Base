@@ -6,7 +6,6 @@
 export const SHARED: Record<string, string> = {
 	General: "Generelt",
 	Company: "Virksomhed",
-	Connections: "Forbindelser",
 	Account: "Konto",
 	Retry: "Prøv igen",
 	"Loading…": "Henter…",

@@ -109,8 +109,8 @@ export const AGENTS: Record<string, string> = {
 	"Effort: {effort}": "Indsats: {effort}",
 	"Saving lets {name} use this account for this routine while you are away. Pause the routine to stop it.":
 		"Når du gemmer, kan {name} bruge kontoen til rutinen, mens du er væk. Sæt rutinen på pause for at stoppe den.",
-	"Connect a model account in Settings → Connections first. A routine runs on a member's own account.":
-		"Forbind først en modelkonto i Indstillinger → Forbindelser. En rutine kører på et medlems egen konto.",
+	"Connect a model account in Settings → My connections first. A routine runs on a member's own account.":
+		"Forbind først en modelkonto i Indstillinger → Mine forbindelser. En rutine kører på et medlems egen konto.",
 
 	// Group details (app/views/group-details.ts, group-edits.ts, app/update-group.ts)
 	Participants: "Deltagere",
