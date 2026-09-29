@@ -149,6 +149,11 @@ begin
 	perform pg_temp.wake_assert(public.qorpera_company_fence_shared(), 'The tool authority is a reader');
 	perform set_config('request.path', '/rest/v1/rpc/qorpera_assert_company_path_reads', true);
 	perform pg_temp.wake_assert(public.qorpera_company_fence_shared(), 'The read-set check is a reader');
+	-- The one-call context fence (20260929400000) makes the first three readers' calls in one transaction.
+	perform set_config('request.path', '/rpc/qorpera_fence_native_context', true);
+	perform pg_temp.wake_assert(public.qorpera_company_fence_shared(), 'The one-call context fence is a reader');
+	perform set_config('request.path', '/rest/v1/rpc/qorpera_fence_native_context', true);
+	perform pg_temp.wake_assert(public.qorpera_company_fence_shared(), 'The one-call context fence is a reader under /rest/v1');
 	foreach v_path in array array['/rpc/qorpera_commit_company_path_mutation', '/rpc/qorpera_begin_native_tool_operation',
 		'/rpc/qorpera_validate_native_provider_execution_lease',
 		-- Supabase Storage sets request.path to its own URL, query string included.
@@ -156,7 +161,8 @@ begin
 		'/object/some-bucket/folder/rpc/qorpera_list_company_paths',
 		'/upload/resumable/abc?cb=/rpc/qorpera_describe_native_tool_authority',
 		'/storage/v1/object/rpc/qorpera_read_company_path_v2', 'rpc/qorpera_read_company_path_v2',
-		'/rpc/qorpera_describe_native_tool_authority_x', '/rpc/qorpera_describe_native_tool_authority/', '/qorpera_read_company_path_v2', ''] loop
+		'/rpc/qorpera_describe_native_tool_authority_x', '/rpc/qorpera_describe_native_tool_authority/', '/qorpera_read_company_path_v2',
+		'/rpc/qorpera_fence_native_context_x', '/object/b/abc?x=/rpc/qorpera_fence_native_context', ''] loop
 		perform set_config('request.path', v_path, true);
 		perform pg_temp.wake_assert(not public.qorpera_company_fence_shared(), 'Not a reader: ' || v_path);
 	end loop;

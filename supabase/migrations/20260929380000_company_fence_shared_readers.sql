@@ -46,6 +46,9 @@
 -- qorpera_office_waiter_authorized's profile row FOR UPDATE NOWAIT for an office activation wake, now takes
 -- FOR SHARE NOWAIT in a shared call. Direct SQL callers (tests, the secret broker's own connection) do not
 -- set request.path and keep the exclusive fence, as before.
+-- qorpera_fence_native_context (20260929400000, the one-call context fence) is a reader too: it only calls
+-- the first three readers in the list, in one transaction, and reads the run's read set. Until that
+-- migration is applied no such RPC exists, so its name matches no request.
 --
 -- Kept FOR UPDATE, not FOR NO KEY UPDATE: the exclusive fence's profile row. FOR UPDATE also waits for every
 -- transaction that inserted a row pointing at the company (KEY SHARE) and is still open, and callers rely on
@@ -99,7 +102,8 @@ as $$
 		'qorpera_company_presence_scope',
 		'qorpera_native_presence_subject',
 		'qorpera_describe_company_run_context',
-		'qorpera_read_company_run_context'
+		'qorpera_read_company_run_context',
+		'qorpera_fence_native_context'
 	]), false)
 $$;
 comment on function public.qorpera_company_fence_shared() is
