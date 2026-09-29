@@ -7,7 +7,6 @@ import { publish } from "../src/lxd-office-journal-files.ts";
 import { LxdOfficeOperationJournal } from "../src/lxd-office-operations.ts";
 import { OFFICE_RETIRED_MARKER, readLxdOfficeRetiredMarker } from "../src/lxd-office-retirement-control.ts";
 import { LxdOfficeRetirementWorker, OFFICE_RETIREMENT_REQUEST } from "../src/lxd-office-retirement-worker.ts";
-import { removeLxdOfficeWorkbench } from "../src/lxd-office-workbench-removal.ts";
 import { officePowerOffWorkerFixture } from "./fixtures/office-power-off-worker.ts";
 import { serviceStartId as id } from "./fixtures/office-service-start.ts";
 
@@ -87,17 +86,29 @@ async function fixture() {
 	const adopted = join(workbench, ".qorpera-adopted-a0000000-0000-4000-8000-000000000001");
 	await mkdir(join(adopted, "desktop"), { recursive: true });
 	await writeFile(join(adopted, "desktop", "notes.txt"), "company work");
-	const removal = { passMs: 30000, fail: undefined as Error | undefined };
-	const removeWorkbench = vi.fn(async (root: string, uid: number, checked: AbortSignal) => {
-		expect([root, uid]).toEqual([f.policy.workbench.mountPoint, f.policy.workbench.uid]);
+	// The removal pass itself is tested in lxd-office-workbench-removal.test.ts (Linux); here it empties
+	// the directory, or runs out of time (`passes` more passes), or fails, or reports done without
+	// removing (an older build).
+	const removal = { passes: 0, fail: undefined as Error | undefined, skip: false, after: () => {} };
+	const removeWorkbench = vi.fn(async (checked: AbortSignal, passMs: number) => {
+		checked.throwIfAborted();
+		expect(passMs).toBeGreaterThan(0);
+		expect(passMs).toBeLessThanOrEqual(30000);
 		if (removal.fail) throw removal.fail;
-		return removeLxdOfficeWorkbench(workbench, process.getuid!(), checked, removal.passMs);
+		if (removal.passes > 0) {
+			removal.passes -= 1;
+			return { done: false, removed: 1 };
+		}
+		if (!removal.skip)
+			for (const name of await readdir(workbench)) await rm(join(workbench, name), { recursive: true });
+		removal.after();
+		return { done: true, removed: 1 };
 	});
 	const run = () =>
 		new LxdOfficeRetirementWorker(
 			{ policy: f.policy, check: f.check },
 			{ call: registry as never },
-			{ client: f.client, kernelLock: f.kernelLock, removeWorkbench },
+			{ client: f.client, kernelLock: f.kernelLock, emptyWorkbench: removeWorkbench },
 		).reconcileSettled(f.activation.request.intentId, f.request, signal());
 	const methods = () => registry.mock.calls.map(([method]) => method);
 	const record = async (file: string) => JSON.parse(await readFile(join(f.root, file), "utf8"));
@@ -274,16 +285,38 @@ describe("retiring a deleted company's powered-off computer", () => {
 	});
 	it("empties a large workbench over several passes before SQL hears", async () => {
 		const f = await fixture();
-		f.removal.passMs = 0;
+		f.removal.passes = 2;
 		await expect(f.run()).resolves.toMatchObject({ state: "pending", deleteCommandId });
 		await expect(f.run()).resolves.toMatchObject({ state: "pending", deleteCommandId });
 		expect(f.methods()).not.toContain("qorpera_retire_runtime_office");
 		expect(await readdir(f.workbench)).toHaveLength(1);
 		await expect(readFile(join(f.root, OFFICE_RETIRED_MARKER))).rejects.toThrow("ENOENT");
-		f.removal.passMs = 30000;
 		await expect(f.run()).resolves.toMatchObject({ state: "retired" });
 		expect(await readdir(f.workbench)).toEqual([]);
 		expect(f.submit).toHaveBeenCalledOnce();
+	});
+	it("checks the mount again after the workbench is empty, before SQL hears", async () => {
+		const f = await fixture();
+		f.removal.after = () => {
+			f.check.mockRejectedValueOnce(new Error("OFFICE_HOST_MOUNT_MISMATCH"));
+		};
+		await expect(f.run()).rejects.toEqual(f.cause("OFFICE_HOST_MOUNT_MISMATCH"));
+		expect(f.methods()).not.toContain("qorpera_retire_runtime_office");
+		f.removal.after = () => {};
+		await expect(f.run()).resolves.toMatchObject({ state: "retired" });
+	});
+	it("empties the workbench on the replay too, before the marker", async () => {
+		const f = await fixture();
+		// A first pass that reported done without removing, and lost SQL's release reply.
+		f.removal.skip = true;
+		f.sql.loseRetireReply = true;
+		await expect(f.run()).rejects.toThrow("OFFICE_RETIREMENT_UNCONFIRMED");
+		expect(await readdir(f.workbench)).toHaveLength(1);
+		f.removal.skip = false;
+		await expect(f.run()).resolves.toMatchObject({ state: "retired" });
+		expect(await readdir(f.workbench)).toEqual([]);
+		expect(f.methods().filter((method) => method === "qorpera_retire_runtime_office")).toHaveLength(1);
+		expect(f.removeWorkbench).toHaveBeenCalledTimes(2);
 	});
 	it("holds the office while its workbench cannot be emptied", async () => {
 		const f = await fixture();

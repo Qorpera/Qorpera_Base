@@ -147,15 +147,31 @@ window (at most 64). Inside a window the worker rechecks that the VM is
 `Stopped` (status code 102, LXD instance and state), then dispatches the one
 journaled `delete`. It settles only on a settled delete and an absent VM.
 It then empties the workbench (D5b, `lxd-office-workbench-removal.ts`):
-everything under the dedicated NAS workbench mount, that is the adopted
-desktop, screens, browser profiles and working files and any sources an
-adoption left in place. The mount root stays. The physical gate has just
-checked the mount, and with the VM gone nothing else writes there. Each entry
-must belong to the workbench account and sit on the mount's file system; a
-symbolic link is removed, never followed, and a directory its owner cannot
-write is made writable first. A pass stops after 30 seconds and reports
-`pending`; the next pass continues. An entry of another account or file system
-holds the office for an operator, with no SQL call. Only then
+- What goes: the top-level entries this office's journal accounts for, that is
+  its adoptions' trees and staging trees (by adoption id) and the top-level
+  names its retained inventories saw (sources an adoption left in place,
+  including state it quarantined, which is removed unreviewed by the founder's
+  decision). The mount root stays. Any other top-level name, another office's
+  adoption tree above all, holds the office.
+- The workbench must be this office's alone: no other LXD instance on the host
+  has a disk at, under or above the mount, and no other NFS mount on the host
+  reaches the same export (same server; same, enclosing or enclosed path). An
+  export shared with another host cannot be seen here: one export per office is
+  a provisioning rule.
+- The walk holds a descriptor per directory and names entries through
+  `/proc/self/fd`, so no path is resolved twice and depth is not limited by
+  path length. Each entry must belong to the workbench account and sit on the
+  root's mount (checked per directory); a symbolic link is removed, never
+  followed; a directory is set to 0700 before it is read.
+- A pass takes what is left of the retirement's 60-second budget (at most 30
+  seconds) and reports `pending`; the next pass continues. When the root lists
+  nothing, the gate and the VM's absence are checked again.
+- A failure holds the office and logs `OFFICE_WORKBENCH_<reason>` (for example
+  `FOREIGN_ENTRY`, `UNACCOUNTED_ENTRY`, `SHARED`, `REMOVAL_EACCES`). The
+  lifecycle keeps retrying about every two seconds, asking SQL for the
+  retirement each time but never releasing. `find <mount> -xdev ! -uid <uid>`
+  finds a foreign entry; once it is gone the provider carries on.
+Only then
 `qorpera_retire_runtime_office` releases the allocation and node demand, drops
 the node binding and marks the office `retired`. The worker then writes
 `office-retired.json` from SQL's receipt. An unknown or failed delete is held
@@ -172,7 +188,9 @@ Fleet units of the same office on other candidate hosts have no marker; the
 operator disables them (RUNTIME-COMPANY-DELETE.md, D3 lane).
 
 Retirement keeps no custody: by the founder's decision (28 September 2026) no
-copy of a deleted company's machine is kept. The private
+copy of a deleted company's machine is kept. Reset archives from earlier resets
+of this office (`<archiveRoot>/<resetId>/`, never deleted by the worker) still
+hold its event outbox and stop history; the operator runbook removes them. The private
 `/var/lib/qorpera-office-events` outbox is lost with the root, including
 undelivered records, and the workbench goes before the release. Not retired,
 and held for an operator: a

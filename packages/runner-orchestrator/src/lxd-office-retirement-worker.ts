@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { type CompanyComputerLifecycleRequest, parseCompanyComputerLifecycleRequest } from "@qorpera/contracts";
-import { type LxdTrackedClient, LxdUnixClient } from "./lxd-client.ts";
+import { type LxdHostInventoryClient, type LxdTrackedClient, LxdUnixClient } from "./lxd-client.ts";
 import { assertOfficeAdoptionKernelLock } from "./lxd-office-adoption-files.ts";
 import { openLxdOfficeCreationIdentity } from "./lxd-office-creation-journal.ts";
 import { assertLxdOfficeGuestInstance, lxdOfficeGuestPlan } from "./lxd-office-guest.ts";
@@ -19,12 +19,14 @@ import {
 	readLxdOfficeRetiredMarker,
 } from "./lxd-office-retirement-control.ts";
 import type { LxdOfficeVmLineageCommand } from "./lxd-office-vm-lineage.ts";
-import { removeLxdOfficeWorkbench } from "./lxd-office-workbench-removal.ts";
+import { emptyLxdOfficeWorkbench } from "./lxd-office-workbench-removal.ts";
 
 interface Ports {
 	client?: LxdTrackedClient;
 	kernelLock?: typeof assertOfficeAdoptionKernelLock;
-	removeWorkbench?: typeof removeLxdOfficeWorkbench;
+	hostInventory?: LxdHostInventoryClient;
+	/** One pass of emptying the workbench within its budget. */
+	emptyWorkbench?: (signal: AbortSignal, passMs: number) => Promise<{ done: boolean; removed: number }>;
 }
 export interface LxdOfficeRetirementResult {
 	/** kept: the company lives, the powered-off computer stays. */
@@ -34,6 +36,9 @@ export interface LxdOfficeRetirementResult {
 	transitionId: string;
 	deleteCommandId?: string;
 }
+/** The retirement's whole budget, and the time kept for its steps after the workbench pass. */
+const RUN_MS = 60000;
+const AFTER_WORKBENCH_MS = 10000;
 /** The delete SQL issued, pinned before it can be dispatched. One per provider. */
 export const OFFICE_RETIREMENT_REQUEST = "office-retirement-request.json";
 const pending = new Set<string>();
@@ -44,15 +49,16 @@ const pending = new Set<string>();
  * of the stopped VM. Only a settled delete and a confirmed absent VM release the
  * machine in SQL, and only SQL's receipt writes the local retired marker. An
  * unknown or failed delete holds the office for an operator. Once the VM is
- * gone, the workbench is emptied (D5b), over several passes if it is large,
- * before SQL is told; an entry the provider may not remove holds the office. */
+ * gone, the workbench is emptied (D5b, lxd-office-workbench-removal.ts), over
+ * several passes if it is large; the gate and the VM's absence are checked again
+ * before SQL is told. An entry the provider may not remove holds the office. */
 export class LxdOfficeRetirementWorker {
 	readonly #gate: Pick<LxdOfficePhysicalGate, "policy" | "check">;
 	readonly #policy;
 	readonly #registry: LxdOfficeRetirementRegistry;
 	readonly #client: LxdTrackedClient;
 	readonly #kernelLock;
-	readonly #removeWorkbench;
+	readonly #emptyWorkbench;
 	constructor(
 		gate: Pick<LxdOfficePhysicalGate, "policy" | "check">,
 		registry: LxdOfficeRetirementRegistry,
@@ -63,7 +69,18 @@ export class LxdOfficeRetirementWorker {
 		this.#registry = registry;
 		this.#client = ports.client ?? new LxdUnixClient(this.#policy.host.socketPath);
 		this.#kernelLock = ports.kernelLock ?? assertOfficeAdoptionKernelLock;
-		this.#removeWorkbench = ports.removeWorkbench ?? removeLxdOfficeWorkbench;
+		const workbench = this.#policy.workbench;
+		const scope = {
+			root: workbench.mountPoint,
+			source: workbench.source,
+			serverAddress: workbench.serverAddress,
+			uid: workbench.uid,
+			journalRoot: this.#policy.journal.path,
+		};
+		const host = ports.hostInventory ?? new LxdUnixClient(this.#policy.host.socketPath);
+		this.#emptyWorkbench =
+			ports.emptyWorkbench ??
+			((signal: AbortSignal, passMs: number) => emptyLxdOfficeWorkbench(scope, host, signal, passMs));
 	}
 	async reconcileSettled(
 		intentId: string,
@@ -76,8 +93,9 @@ export class LxdOfficeRetirementWorker {
 		if (request.action !== "power_off") throw new Error("OFFICE_RETIREMENT_ACTION_REQUIRED");
 		if (pending.has(root)) throw new Error("OFFICE_RETIREMENT_PENDING");
 		pending.add(root);
+		const end = performance.now() + RUN_MS;
 		try {
-			return await this.#run(intentId, request, AbortSignal.any([caller, AbortSignal.timeout(60000)]));
+			return await this.#run(intentId, request, AbortSignal.any([caller, AbortSignal.timeout(RUN_MS)]), end);
 		} catch (error) {
 			throw new Error("OFFICE_RETIREMENT_UNCONFIRMED", { cause: error });
 		} finally {
@@ -88,6 +106,7 @@ export class LxdOfficeRetirementWorker {
 		intentId: string,
 		recovery: CompanyComputerLifecycleRequest,
 		signal: AbortSignal,
+		end: number,
 	): Promise<LxdOfficeRetirementResult> {
 		const root = this.#policy.journal.path;
 		await this.#kernelLock(root);
@@ -252,14 +271,13 @@ export class LxdOfficeRetirementWorker {
 		if (operation.state !== "succeeded") return { ...result, state: operation.state, deleteCommandId };
 		const { instance } = await physical();
 		if (instance !== undefined) throw new Error("retirement VM present");
-		// The gate has just checked the workbench mount; with the VM gone nothing
-		// else writes there. A large workbench takes several passes.
-		const workbench = await this.#removeWorkbench(
-			this.#policy.workbench.mountPoint,
-			this.#policy.workbench.uid,
-			signal,
-		);
+		// With the VM gone nothing of this office writes there. A pass takes what is
+		// left of the run's budget (at most 30 s); a large workbench takes several.
+		const passMs = Math.max(0, Math.min(30000, end - AFTER_WORKBENCH_MS - performance.now()));
+		const workbench = await this.#emptyWorkbench(signal, passMs);
 		if (!workbench.done) return { ...result, state: "pending", deleteCommandId };
+		// The mount may have gone during the pass: the gate checks it again.
+		if ((await physical()).instance !== undefined) throw new Error("retirement VM present");
 		const receipt: LxdOfficeRetirement =
 			answer.state === "retired"
 				? answer
