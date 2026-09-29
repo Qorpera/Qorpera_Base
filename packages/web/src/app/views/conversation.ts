@@ -1661,6 +1661,7 @@ export class ConversationView {
 			company.accessLost,
 			company.team?.role,
 			company.team?.capabilities,
+			company.waitingForHours,
 		]);
 		if (key === this.#statusKey) return;
 		this.#statusKey = key;
@@ -1677,6 +1678,12 @@ export class ConversationView {
 				),
 			);
 		if (this.#execution) children.push(this.#execution.el);
+		// The company is out of computer hours: what is sent here waits, and starts by itself once
+		// hours are added (the zero rule). The message itself is sent and shown as usual.
+		if (company.waitingForHours && session?.status !== "closed")
+			children.push(
+				notice("neutral", t("Out of computer hours. New work waits and starts by itself once hours are added.")),
+			);
 		if (!canWrite && session?.status === "closed")
 			children.push(notice("neutral", t("This conversation is archived.")));
 		else if (

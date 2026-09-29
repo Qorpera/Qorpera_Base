@@ -507,6 +507,11 @@ wake), so no agent runs and nothing is charged before it.
   `qorpera_enqueue_runner_job` refuse new work with 55000 ("Waiting for
   computer hours: the company has none left").
   A client shows "Not measured yet" while the function is missing (PGRST202).
+  From 20260929280000, `qorpera_company_waiting_for_hours(p_profile_id)` →
+  boolean says the same as `waitingForHours` without the month's figures,
+  for a client that asks with its other periodic reads (any member; anyone
+  else gets 42501). A client treats a missing function (PGRST202) as not
+  waiting and stops asking.
 
 - 20260928248910_runtime_computer_hours_payments:
   `qorpera_list_computer_hour_offers()` → `qorpera.computer-hour-offers/v1`:
