@@ -32,6 +32,8 @@
 /* Bubbles wrap and tables and code scroll on their own, so the thread never scrolls sideways; its bar is hidden (quietScroll). */
 .messages { flex: 1; overflow: hidden auto; overscroll-behavior: contain; padding: 16px 16px 40px; display: flex; flex-direction: column; gap: 4px; font-family: var(--font-sans); font-size: 16px; line-height: 21px; letter-spacing: 0; font-optical-sizing: auto; font-synthesis: none; text-rendering: optimizeLegibility; }
 .messages > .empty { margin: auto; text-align: center; font-size: 16px; }
+.thread-earlier { display: flex; flex: none; flex-direction: column; align-items: center; gap: 6px; margin: 4px 0 12px; }
+.thread-earlier-note { margin: 0; color: var(--text-muted); font-size: 12px; line-height: 1.4; text-align: center; overflow-wrap: anywhere; }
 .conversation-timestamp { flex: none; align-self: center; max-width: 100%; margin: 20px 0 14px; color: var(--text-muted); font-size: 11px; font-weight: 500; line-height: 1.5; text-align: center; overflow-wrap: anywhere; }
 .conversation-timestamp:first-child { margin-top: 4px; }
 .message { display: flex; flex: none; flex-direction: column; align-items: flex-start; align-self: flex-start; gap: 7px; min-width: 0; width: fit-content; max-width: min(72%, 720px); }
