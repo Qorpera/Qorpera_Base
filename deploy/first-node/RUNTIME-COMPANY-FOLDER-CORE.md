@@ -274,7 +274,9 @@ is never upgraded. The steps:
 
 1. **Commit id and operation key.** The commit id is assigned and the
    operation key claimed. A replay stops here and returns the stored outcomes.
-2. **The run.** The job is taken `FOR KEY SHARE`.
+2. **The run.** For an effect that needs its run to itself (a tool call, a send, a receipt; not a commit or a
+   release), the run mutex first: the run's budget row `FOR UPDATE` (C1C §5.2). Then the job is taken
+   `FOR KEY SHARE`.
    - Lease renewal takes `FOR NO KEY UPDATE`, which does not conflict with
      it, so renewal is never starved.
    - Every change that ends a lease (requeue, cancel, handoff, completion,
@@ -322,6 +324,10 @@ is never upgraded. The steps:
    7. grants;
    8. vault rows;
    9. unique-key claims, by kind then key.
+
+   After rank 9 (C1C §5.7): run-owned rows (receipts, action reviews, context views); rank 10's recheck of read sets;
+   every session the transaction will write, `FOR UPDATE` in id order; and the company's operation clock, which the
+   first session write takes (an insert, a title or status change, or an event). Admission and the folder clock stay last.
 
    These numbers are the lock ranks, and all nine come before paths (step 5),
    objects (step 6), admission (step 10) and the clock (step 11). The commit

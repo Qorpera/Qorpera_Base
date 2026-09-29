@@ -137,8 +137,9 @@ $$;
 -- schemas usable, tables and sequences default-granted (which the protected
 -- tables then explicitly revoke). Production also default-grants functions
 -- (deploy/first-node/RUNTIME-STEP-1.md, the 2026-08-27 permission audit); the
--- SQL suite adds that with platform-function-defaults.sql, which the scripts
--- that reuse this file do not load yet. Without this block every role-based
+-- hosted-db cluster (scripts/test-hosted-db-cluster.mjs) adds that with
+-- platform-function-defaults.sql, which the scripts that load this file
+-- themselves do not yet. Without this block every role-based
 -- test would fail on schema access and prove nothing about the actual
 -- separation model.
 grant usage on schema public to anon, authenticated, service_role;

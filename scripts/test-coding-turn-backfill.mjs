@@ -11,17 +11,15 @@
 // and an input without its worker event taken from the session's input event.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { randomBytes } from "node:crypto";
-import { readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { expandTestFixture, POSTGRES_IMAGE, sortMigrationNames } from "./test-hosted-db.mjs";
+import { expandTestFixture } from "./test-hosted-db.mjs";
+import { hostedDatabase, migrationNames } from "./test-hosted-db-cluster.mjs";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const migration = "20260925113000_runtime_coding_turn_continuity.sql";
 const sample = "packages/runtime/test/fixtures/coding-turn-context-backfilled.json";
-const container = `qorpera-coding-turn-backfill-${randomBytes(6).toString("hex")}`;
-const psql = ["exec", "-i", container, "psql", "-X", "-qAt", "-U", "postgres", "-d", "qorpera_test", "-v", "ON_ERROR_STOP=1"];
 const read = (path) => readFileSync(join(root, path), "utf8");
 function docker(args, input) {
 	const result = spawnSync("docker", args, { input, encoding: "utf8", timeout: 120_000, maxBuffer: 32 * 1024 * 1024 });
@@ -121,24 +119,14 @@ const helpers = [...read("supabase/tests/300_runtime_wake_bus.test.sql").matchAl
 	.join("");
 assert.equal((helpers.match(/create function/g) ?? []).length, 3, "Test 300's helpers are available");
 
-let started = false;
+const migrations = migrationNames();
+assert(migrations.includes(migration), `${migration} is in the migration chain`);
+// Every migration before the boundary, the seed, then the rest, each migration in its own session.
+const database = await hostedDatabase("qorpera_test", { before: migration });
+const psql = database.cluster.psqlArgs("qorpera_test", ["-qAt"]);
 try {
-	docker(["run", "-d", "--rm", "--name", container, "--network", "none", "-e", "POSTGRES_PASSWORD=qorpera-test-only",
-		"-e", "POSTGRES_DB=qorpera_test", "--tmpfs", "/var/lib/postgresql/data:rw,noexec,nosuid,size=1g", POSTGRES_IMAGE]);
-	started = true;
-	let ready = 0;
-	for (let attempt = 0; attempt < 60 && ready < 2; attempt++) {
-		const probe = spawnSync("docker", ["exec", container, "pg_isready", "-U", "postgres", "-d", "qorpera_test"], { timeout: 2000 });
-		ready = probe.status === 0 ? ready + 1 : 0;
-		if (ready < 2) await new Promise((resolve) => setTimeout(resolve, 500));
-	}
-	assert.equal(ready, 2, "Disposable database must start");
-	sql(read("supabase/tests/bootstrap.sql"));
-	const migrations = sortMigrationNames(readdirSync(join(root, "supabase/migrations")));
-	assert(migrations.includes(migration), `${migration} is in the migration chain`);
-	for (const name of migrations.filter((name) => name < migration)) sql(read(`supabase/migrations/${name}`));
 	sql(expandTestFixture("seed", (name) => (name === "seed" ? seed : read(`supabase/tests/${name}`))));
-	for (const name of migrations.filter((name) => name >= migration)) sql(read(`supabase/migrations/${name}`));
+	database.cluster.migrate("qorpera_test", migrations.filter((name) => name >= migration));
 
 	// Every turn has its row; the stuck submission is back in the turn that made it.
 	const turns = JSON.parse(sql(`select jsonb_agg(jsonb_build_object('key',w.worker_key,'sequence',t.sequence,'from',t.input_from,'text',t.input_text,
@@ -217,5 +205,5 @@ rollback;`).split("\n").at(-1));
 	assert.deepEqual(context, JSON.parse(read(sample)), "The retry reads the committed sample context");
 	process.stdout.write("Coding turn backfill: turns recorded, the stuck retry runs, context matches the sample\n");
 } finally {
-	if (started) spawnSync("docker", ["rm", "--force", container], { encoding: "utf8" });
+	database.close();
 }

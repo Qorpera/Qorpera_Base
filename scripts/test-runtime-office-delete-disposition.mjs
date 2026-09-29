@@ -4,14 +4,14 @@
 // and archive observation is synthetic; no LXD, NAS, node or hosted database.
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { readFileSync, readdirSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { build } from "esbuild";
-import { POSTGRES_IMAGE, sortMigrationNames } from "./test-hosted-db.mjs";
+import { hostedDatabase, migrationNames, newestBundleActivation } from "./test-hosted-db-cluster.mjs";
 import { testOfficeActivation } from "./test-runtime-office-activation-cases.mjs";
 import { testOfficeAdoptionAuthority } from "./test-runtime-office-adoption-cases.mjs";
 import { testOfficeLifecycleRevocation } from "./test-runtime-office-lifecycle-cases.mjs";
@@ -24,8 +24,9 @@ import { testRuntimeScreenLifecycle } from "./test-runtime-screen-lifecycle-case
 
 if (process.argv.length !== 2) throw new Error("Usage: node scripts/test-runtime-office-delete-disposition.mjs");
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
-const container = `qorpera-office-disposition-${randomBytes(6).toString("hex")}`;
-const psql = ["exec", "-i", container, "psql", "-X", "-qAt", "-U", "postgres", "-d", "office", "-v", "ON_ERROR_STOP=1"];
+/** The database, in the suite's PostgreSQL or a container of this script's own; set once the bundles are built. */
+let database;
+let psql;
 const children = new Set();
 function docker(args, input) {
 	const result = spawnSync("docker", args, { input, encoding: "utf8", timeout: 60_000, maxBuffer: 8 * 1024 * 1024 });
@@ -52,15 +53,6 @@ async function until(check) {
 		await new Promise((resolve) => setTimeout(resolve, 25));
 	}
 }
-async function databaseReady() {
-	let consecutive = 0;
-	for (let attempt = 0; attempt < 60 && consecutive < 2; attempt++) {
-		const result = spawnSync("docker", ["exec", container, "pg_isready", "-U", "fixture_admin", "-d", "office"], { timeout: 2000 });
-		consecutive = result.status === 0 ? consecutive + 1 : 0;
-		if (consecutive < 2) await new Promise((resolve) => setTimeout(resolve, 500));
-	}
-	assert.equal(consecutive, 2);
-}
 async function race(statements) {
 	const contenders = statements.map(() => session());
 	contenders.forEach((contender, index) => contender.child.stdin.end(statements[index]));
@@ -74,7 +66,6 @@ const owner = `set request.jwt.claims='{"role":"authenticated","sub":"30000000-0
 // Restarting a container clears its disposable tmpfs; reboot proof belongs to the existing driver.
 console.log("FOCUSED_PROOF_SCOPE: reused fixture log restart labels are inherited; this tmpfs driver performs no database/container restart and claims no restart proof.");
 const restartDatabase = async () => {};
-let started = false;
 const bundleRoot = await realpath(await mkdtemp(join(tmpdir(), "office-reset-control-")));
 try {
 	await build({
@@ -101,18 +92,15 @@ try {
 	const load = async (name) => import(pathToFileURL(join(bundleRoot, `${name}.mjs`)).href);
 	const { LxdOfficeStartControl, lxdOfficeProviderBindingSha256 } = await load("control");
 	const { LxdOfficeProviderControl } = await load("provider");
-	docker(["run", "-d", "--rm", "--name", container, "--network", "none", "--pull", "never",
-		"--tmpfs", "/var/lib/postgresql/data:rw,size=1g", "-e", "POSTGRES_USER=fixture_admin", "-e", "POSTGRES_PASSWORD=disposable-office-only", "-e", "POSTGRES_DB=office", POSTGRES_IMAGE]);
-	started = true;
-	await databaseReady();
-	docker(psql.map(x => x === "postgres" ? "fixture_admin" : x), "create role postgres login superuser; grant all on database office to postgres;");
-	docker(psql, readFileSync(join(root, "supabase/tests/bootstrap.sql"), "utf8"));
 	// The newest bundle activation is held back: the cases apply it mid-test as "a newer bundle than the office was built for".
-	const names = sortMigrationNames(readdirSync(join(root, "supabase/migrations")));
-	const future = names.filter(name => /runtime_bundle_activation_v\d+\.sql$/.test(name)).sort((l, r) => Number(/_v(\d+)\.sql$/.exec(l)[1]) - Number(/_v(\d+)\.sql$/.exec(r)[1])).at(-1);
+	const names = migrationNames();
+	const future = newestBundleActivation(names);
 	assert.ok(future);
 	const migrations = names.filter(name => name !== future);
-	for (const name of migrations) docker(psql, readFileSync(join(root, "supabase/migrations", name), "utf8"));
+	// The reset cases demote postgres to the managed operator shape (no superuser), a cluster-wide change:
+	// this script keeps a PostgreSQL of its own, with fixture_admin as the bootstrap superuser.
+	database = await hostedDatabase("office", { skip: [future], alterablePostgres: true });
+	psql = database.cluster.psqlArgs("office", ["-qAt"]);
 	docker(psql, readFileSync(join(root, "supabase/tests/fixtures/runtime-node-inventory-observer.sql"), "utf8"));
 	const wake = readFileSync(join(root, "supabase/tests/300_runtime_wake_bus.test.sql"), "utf8").split("-- END WAKE FIXTURE");
 	const office = readFileSync(join(root, "supabase/tests/fixtures/runtime-office-registry-cases.sql"), "utf8").split("-- Synthetic guest readiness only.");
@@ -195,5 +183,5 @@ try {
 	console.log(`PASS: governed office root reset after ${migrations.length} migrations; no hosted database, LXD, NAS, node or canonical file access`);
 } finally {
 	for (const child of children) child.kill("SIGKILL");
-	try { if (started) docker(["rm", "-f", "-v", container]); } finally { await rm(bundleRoot, { recursive: true, force: true }); }
+	try { database?.close(); } finally { await rm(bundleRoot, { recursive: true, force: true }); }
 }
