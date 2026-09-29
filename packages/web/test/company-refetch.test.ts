@@ -46,8 +46,11 @@ const working = (): HostedStaffExecutionActivity[] => [
 
 /** A company with two agents' threads, the member reading the first (its agent working, unless
  * not); `write` has an agent add an event to a thread, which changes the thread's row and sends a
- * sessions hint (unless not); `status` is the Realtime channel's own status callback. */
-async function company(realtime: "connected" | "degraded", busy = true) {
+ * sessions hint (unless not); `status` is the Realtime channel's own status callback. With
+ * `history`, the open thread already holds that many messages, one a minute, and the cloud has the
+ * newest-first read (20260929410000): the thread opens at its newest events. `holds` keeps the next
+ * newest-first or forward read of the open thread on its way until released. */
+async function company(realtime: "connected" | "degraded", busy = true, history = 0) {
 	vi.useFakeTimers({
 		now: Date.parse("2026-09-29T10:00:00Z"),
 		toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"],
@@ -58,7 +61,14 @@ async function company(realtime: "connected" | "degraded", busy = true) {
 		[other.sessionId, { ...other, updatedAt: new Date().toISOString() }],
 	]);
 	const events = new Map<string, HostedSessionEvent[]>([
-		[open.sessionId, []],
+		[
+			open.sessionId,
+			Array.from({ length: history }, (_, index) => ({
+				...event(index + 1),
+				sessionId: open.sessionId,
+				createdAt: new Date(Date.now() - (history - index) * 60_000).toISOString(),
+			})),
+		],
 		[other.sessionId, []],
 	]);
 	const after = (item: HostedSession, since: PageCursor) =>
@@ -75,9 +85,26 @@ async function company(realtime: "connected" | "degraded", busy = true) {
 		if (since && delta.hold) await delta.hold;
 		return read;
 	});
-	vi.mocked(f.api.readSessionEvents).mockImplementation(async (sessionId, afterSequence) =>
-		(events.get(sessionId) ?? []).filter((item) => item.sequence > (afterSequence ?? 0)),
-	);
+	const holds: { tail?: Promise<void>; forward?: Promise<void> } = {};
+	/** The next held read of the open thread waits for its release; the ones after it do not. */
+	const held = async (sessionId: string, kind: keyof typeof holds) => {
+		const hold = sessionId === open.sessionId ? holds[kind] : undefined;
+		if (hold) {
+			holds[kind] = undefined;
+			await hold;
+		}
+	};
+	vi.mocked(f.api.readSessionEvents).mockImplementation(async (sessionId, afterSequence) => {
+		await held(sessionId, "forward");
+		return (events.get(sessionId) ?? []).filter((item) => item.sequence > (afterSequence ?? 0));
+	});
+	if (history)
+		vi.mocked(f.api.readSessionEventsTail).mockImplementation(async (sessionId, before, limit) => {
+			await held(sessionId, "tail");
+			return (events.get(sessionId) ?? [])
+				.filter((item) => before === undefined || item.sequence < before)
+				.slice(-limit);
+		});
 	const activity = { rows: busy ? working() : [] };
 	vi.mocked(f.api.listStaffActivity).mockImplementation(async () => activity.rows);
 	vi.mocked(f.api.listMemberMentions).mockResolvedValue([]);
@@ -127,7 +154,7 @@ async function company(realtime: "connected" | "degraded", busy = true) {
 		);
 		return { read, total: Object.values(read).reduce((sum, count) => sum + count, 0) };
 	};
-	return { f, controller, store, events, sessions, write, hint, status, activity, delta, rpcs, minute };
+	return { f, controller, store, events, sessions, write, hint, status, activity, delta, holds, rpcs, minute };
 }
 
 /** Seconds until `seen` holds, one second at a time (at most a minute). */
@@ -317,5 +344,155 @@ describe("reading again after a hint", () => {
 			whole + 1,
 		);
 		await settle();
+	});
+});
+
+describe("hints on a thread that opened at its newest events", () => {
+	const sequences = (from: number, to: number) => Array.from({ length: to - from + 1 }, (_, index) => from + index);
+	/** Where each read of the open thread started: forward reads after this sequence, newest-first
+	 * reads before it. */
+	const reads = (busy: Awaited<ReturnType<typeof company>>) => ({
+		forward: vi
+			.mocked(busy.f.api.readSessionEvents)
+			.mock.calls.filter((call) => call[0] === open.sessionId)
+			.map((call) => call[1]),
+		tail: vi
+			.mocked(busy.f.api.readSessionEventsTail)
+			.mock.calls.filter((call) => call[0] === open.sessionId)
+			.map((call) => call[1]),
+	});
+
+	it("appends what a hint brings after the newest event read, and never reads the history from the start", async () => {
+		const busy = await company("connected", false, 1000);
+		expect(reads(busy)).toEqual({ forward: [], tail: [undefined] });
+		expect(busy.store.get().events.map((item) => item.sequence)).toEqual(sequences(801, 1000));
+		expect(busy.store.get().hasEarlier).toBe(true);
+		busy.write(open.sessionId);
+		await vi.advanceTimersByTimeAsync(1_000);
+		// The hint's read of new events: forward from the newest event read, nothing before it.
+		expect(reads(busy)).toEqual({ forward: [1000], tail: [undefined] });
+		expect(busy.store.get().events.map((item) => item.sequence)).toEqual(sequences(801, 1001));
+		// The trailing full read (waiting inputs, coding sessions) reads events the same way.
+		const inputs = vi.mocked(busy.f.api.listSessionInputs).mock.calls.length;
+		await vi.advanceTimersByTimeAsync(10_000);
+		expect(vi.mocked(busy.f.api.listSessionInputs).mock.calls.length).toBe(inputs + 1);
+		expect(reads(busy)).toEqual({ forward: [1000, 1001], tail: [undefined] });
+		expect(busy.store.get()).toMatchObject({ hasEarlier: true, complete: true });
+		expect(busy.store.get().events).toHaveLength(201);
+	});
+
+	it("keeps the window through a busy minute of hints and watches", async () => {
+		const busy = await company("connected", true, 1000);
+		const { total } = await busy.minute();
+		await vi.advanceTimersByTimeAsync(2_500);
+		const { forward, tail } = reads(busy);
+		expect(tail).toEqual([undefined]);
+		expect(Math.min(...forward.map((after) => after ?? 0))).toBeGreaterThanOrEqual(1000);
+		// 40 new messages after the 200 it opened with; the rest of the history stays unread.
+		expect(busy.store.get().events.map((item) => item.sequence)).toEqual(sequences(801, 1040));
+		expect(busy.store.get().hasEarlier).toBe(true);
+		expect(total).toBeLessThan(160);
+	});
+
+	it("catches up after Realtime returns from the newest event read, and Show earlier goes on from the window", async () => {
+		const busy = await company("connected", false, 1000);
+		await vi.advanceTimersByTimeAsync(5_000);
+		busy.status("CHANNEL_ERROR");
+		for (let count = 0; count < 3; count++) busy.write(open.sessionId, false);
+		await vi.advanceTimersByTimeAsync(5_000);
+		busy.status("SUBSCRIBED");
+		await vi.advanceTimersByTimeAsync(1_000);
+		expect(busy.store.get().events.map((item) => item.sequence)).toEqual(sequences(801, 1003));
+		const { forward, tail } = reads(busy);
+		expect(tail).toEqual([undefined]);
+		expect(forward.length).toBeGreaterThan(0);
+		expect(Math.min(...forward.map((after) => after ?? 0))).toBeGreaterThanOrEqual(1000);
+		expect(busy.store.get().hasEarlier).toBe(true);
+		await busy.controller.loadEarlier(open.sessionId);
+		expect(reads(busy).tail).toEqual([undefined, 801]);
+		expect(busy.store.get().events.map((item) => item.sequence)).toEqual(sequences(601, 1003));
+	});
+
+	it("keeps both a Show earlier page and a hint's new events, whichever lands first", async () => {
+		// The older page is on its way while the hint's read lands.
+		const first = await company("connected", false, 1000);
+		await vi.advanceTimersByTimeAsync(5_000);
+		let release = () => {};
+		first.holds.tail = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const showing = first.controller.loadEarlier(open.sessionId);
+		first.write(open.sessionId);
+		await vi.advanceTimersByTimeAsync(1_000);
+		expect(first.store.get().events.map((item) => item.sequence)).toEqual(sequences(801, 1001));
+		expect(first.store.get().earlierLoading).toBe(true);
+		release();
+		await showing;
+		expect(first.store.get().events.map((item) => item.sequence)).toEqual(sequences(601, 1001));
+		expect(first.store.get()).toMatchObject({ hasEarlier: true, earlierLoading: false });
+		first.controller.stop();
+
+		// The hint's read is on its way while Show earlier lands, and reaches the start.
+		const second = await company("connected", false, 350);
+		expect(second.store.get().events.map((item) => item.sequence)).toEqual(sequences(151, 350));
+		await vi.advanceTimersByTimeAsync(5_000);
+		second.holds.forward = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		second.write(open.sessionId);
+		await vi.advanceTimersByTimeAsync(1_000);
+		await second.controller.loadEarlier(open.sessionId);
+		expect(second.store.get()).toMatchObject({ hasEarlier: false, earlierLoading: false });
+		expect(second.store.get().events.map((item) => item.sequence)).toEqual(sequences(1, 350));
+		release();
+		await vi.advanceTimersByTimeAsync(1_000);
+		// The older read of new events adds its message and leaves the start where Show earlier found it.
+		expect(second.store.get().events.map((item) => item.sequence)).toEqual(sequences(1, 351));
+		expect(second.store.get().hasEarlier).toBe(false);
+		expect(reads(second).tail).toEqual([undefined, 151]);
+	});
+
+	it("does not bring back Show earlier when a shorter read-back lands after it reached the start", async () => {
+		const busy = await company("connected", false, 1000);
+		await vi.advanceTimersByTimeAsync(5_000);
+		// Everything before the window is run receipts, which show nothing: Show earlier reads back
+		// to the start. A message taken at minute 700 has no event yet: its read-back stops at 601.
+		const history = busy.events.get(open.sessionId)!;
+		for (let index = 0; index < 800; index++)
+			history[index] = {
+				...history[index]!,
+				eventType: "run_receipt",
+				body: { schema: "qorpera.run-receipt/v1" },
+			};
+		vi.mocked(busy.f.api.listSessionInputs).mockResolvedValue({
+			items: [
+				{
+					inputId: id(3700),
+					position: 1,
+					kind: "user_message",
+					authorUserId: userA.id,
+					authorDisplayName: "Account A",
+					body: { schema: "qorpera.session-prompt/v1", text: "Taken long ago", images: [] },
+					createdAt: history[699]!.createdAt,
+					status: "processing",
+				},
+			],
+			hasMore: false,
+			nextAfterPosition: 1,
+		});
+		let release = () => {};
+		busy.holds.tail = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const loading = busy.controller.loadConversation(open.sessionId);
+		await vi.advanceTimersByTimeAsync(0);
+		expect(reads(busy).tail).toEqual([undefined, 801]);
+		await busy.controller.loadEarlier(open.sessionId);
+		expect(busy.store.get()).toMatchObject({ hasEarlier: false });
+		expect(busy.store.get().events[0]?.sequence).toBe(1);
+		release();
+		await loading;
+		expect(busy.store.get().hasEarlier).toBe(false);
+		expect(busy.store.get().events).toHaveLength(1000);
 	});
 });

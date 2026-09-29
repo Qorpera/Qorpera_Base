@@ -318,6 +318,19 @@ function mergeEvents(...reads: readonly (readonly HostedSessionEvent[])[]): Host
 	return [...bySequence.values()].sort((a, b) => a.sequence - b.sequence);
 }
 
+/** Whether older events exist before two reads of one transcript taken together. Each read's
+ * `hasEarlier` speaks for its own oldest event, so the read that reached further back decides (a
+ * Show-earlier page and a read-back can land in either order); at the same start, one that saw
+ * the start decides. */
+function earlierOf(
+	a: { events: readonly HostedSessionEvent[]; hasEarlier?: boolean },
+	b: { events: readonly HostedSessionEvent[]; hasEarlier?: boolean },
+): boolean {
+	const start = (read: typeof a) => read.events[0]?.sequence ?? Number.POSITIVE_INFINITY;
+	if (start(a) !== start(b)) return (start(a) < start(b) ? a.hasEarlier : b.hasEarlier) ?? false;
+	return (a.hasEarlier ?? false) && (b.hasEarlier ?? false);
+}
+
 /** An input a run has taken already stands in the transcript (the run's start writes it) and is
  * listed until the run ends: one sent before the oldest event read may stand in the part not read
  * yet. (A queued input has no event yet; it shows as waiting wherever the history begins.) */
@@ -1417,7 +1430,10 @@ export class CompanyController {
 	}
 
 	/** Reads a conversation's new events, its waiting inputs and its coding sessions; with
-	 * `eventsOnly`, only its new events (a thread that has read its history before). */
+	 * `eventsOnly`, only its new events (a thread that has read its history before). Full or not,
+	 * a thread with events reads forward from the newest one it has: one that opened at its newest
+	 * events keeps that window and only "Show earlier" reads further back, so hints, the trailing
+	 * full read, the watch and a catch-up after Realtime returns never read from the start. */
 	loadConversation(sessionId: string, options: { eventsOnly?: boolean } = {}): Promise<void> {
 		if (this.#stopped) return Promise.resolve();
 		const full = !options.eventsOnly;
@@ -1525,8 +1541,9 @@ export class CompanyController {
 					for (const input of taken) this.#readBackFor.add(input.inputId);
 					const read = await this.#readTail(sessionId, merged, taken, () => !this.#stopped);
 					if (!read) return;
+					// "Show earlier" may have landed meanwhile, and reached further back.
 					merged = mergeEvents(store.get().events, read.events);
-					earlier = read.hasEarlier;
+					earlier = earlierOf(read, store.get());
 				}
 				const optimistic = reconcileOptimistic({ optimistic: store.get().optimistic, pending, events: merged });
 				const projection = projectTranscript(merged, pending);
@@ -1606,13 +1623,15 @@ export class CompanyController {
 		try {
 			const read = await this.#readTail(sessionId, state.events, undefined, () => !this.#stopped);
 			if (!read) return;
+			// A read of new events that landed meanwhile keeps them; a read-back that went further
+			// back meanwhile keeps its start.
 			const current = store.get();
 			const events = mergeEvents(read.events, current.events);
 			const projection = projectTranscript(events, current.pending);
 			store.set({
 				events,
 				projection,
-				hasEarlier: read.hasEarlier,
+				hasEarlier: earlierOf(read, current),
 				earlierLoading: false,
 				optimistic: reconcileOptimistic({ optimistic: current.optimistic, pending: current.pending, events }),
 				interactionAnswers: reconcileInteractionAnswers(current.interactionAnswers, projection, current.pending),
