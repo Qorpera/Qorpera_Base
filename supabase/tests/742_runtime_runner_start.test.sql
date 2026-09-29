@@ -309,4 +309,109 @@ begin
 end $$;
 reset role;
 
+-- A started native execution keeps its lease when its job lease runs out: it follows today's
+-- recovery path (no pristine retry), and the re-queue release never touches it.
+do $$
+declare
+	v_start jsonb := current_setting('qorpera_test.start')::jsonb;
+	v_lease uuid := (select id from public.qorpera_native_provider_connection_leases
+		where run_id = (v_start ->> 'run')::uuid);
+begin
+	begin
+		insert into public.qorpera_execution_run_events(run_id, event_type, payload)
+		values ((v_start ->> 'run')::uuid, 'runner_started', jsonb_build_object(
+			'schema', 'qorpera.native-company-execution-start/v1', 'runId', v_start ->> 'run',
+			'jobId', v_start ->> 'job', 'leaseId', v_lease, 'binarySha256', repeat('a', 64)));
+		update public.qorpera_runner_jobs set lease_expires_at = statement_timestamp() - interval '1 second'
+		where id = (v_start ->> 'job')::uuid;
+		perform public.qorpera_reconcile_runner_orchestrator('16000000-0000-4000-8000-000000000092');
+		if (select status from public.qorpera_runner_jobs where id = (v_start ->> 'job')::uuid) = 'queued'
+			or not exists (select 1 from public.qorpera_native_provider_connection_leases where id = v_lease)
+			or exists (select 1 from public.qorpera_native_provider_connection_lease_history where lease_id = v_lease) then
+			raise exception 'a started native execution lost its lease to the re-queue release';
+		end if;
+		raise exception using errcode = 'QTS02';
+	exception when sqlstate 'QTS02' then null;
+	end;
+end $$;
+
+-- A start whose response is lost: the runner never replays, its job lease runs out, and the sweep
+-- re-queues the run as a pristine retry. The superseded assignment's runner is refused before and
+-- after the sweep (both orders serialise on the job row); the next assignment starts with its own lease.
+update public.qorpera_runner_jobs set lease_expires_at = statement_timestamp() - interval '1 second'
+where id = (current_setting('qorpera_test.start')::jsonb ->> 'job')::uuid;
+set role service_role;
+do $$
+declare
+	v_start jsonb := current_setting('qorpera_test.start')::jsonb;
+	v_old public.qorpera_native_provider_connection_leases%rowtype;
+	v_outcome jsonb;
+	v_claim jsonb;
+	v_assignment jsonb;
+	v_started jsonb;
+begin
+	select * into strict v_old from public.qorpera_native_provider_connection_leases
+	where run_id = (v_start ->> 'run')::uuid;
+	-- A late start of the old assignment before the sweep is refused like a late acceptance.
+	v_outcome := pg_temp.start_outcome(pg_temp.start_call('start'));
+	if v_outcome ? 'result' or v_outcome is distinct from pg_temp.start_outcome(pg_temp.start_call('accept')) then
+		raise exception 'a late start of an expired assignment was not refused like acceptance: %', v_outcome;
+	end if;
+	perform public.qorpera_reconcile_runner_orchestrator('16000000-0000-4000-8000-000000000092');
+	if (select status from public.qorpera_runner_jobs where id = (v_start ->> 'job')::uuid) <> 'queued'
+		or (select status from public.qorpera_runner_assignments where id = (v_start ->> 'assignment')::uuid) <> 'failed'
+		or exists (select 1 from public.qorpera_native_provider_connection_leases
+			where run_id = (v_start ->> 'run')::uuid) then
+		raise exception 'the pristine retry did not release the unstarted native lease';
+	end if;
+	perform set_config('qorpera_test.released_lease', v_old.id::text, false);
+	-- After the sweep the old assignment's runner gets nothing: no start, no lease, no renewal,
+	-- no execution check.
+	v_outcome := pg_temp.start_outcome(pg_temp.start_call('start'));
+	if v_outcome ? 'result' or v_outcome is distinct from pg_temp.start_outcome(pg_temp.start_call('accept')) then
+		raise exception 'the superseded assignment started again: %', v_outcome;
+	end if;
+	foreach v_outcome in array array[
+		pg_temp.start_outcome(format('select public.qorpera_acquire_native_provider_connection_lease(%L::uuid,%L::uuid,%L,%L::uuid,%L,120)',
+			v_start ->> 'run', v_start ->> 'runner', repeat('2', 64), v_start ->> 'assignment', repeat('3', 64))),
+		pg_temp.start_outcome(format('select public.qorpera_renew_native_provider_connection_lease(%L::uuid,%L::uuid,%L,%L::uuid,%L,120)',
+			v_old.id, v_start ->> 'runner', repeat('2', 64), v_start ->> 'job', repeat('3', 64))),
+		pg_temp.start_outcome(format('select public.qorpera_validate_native_provider_execution_lease(%L::uuid,%L::uuid,%L::uuid,%L::uuid,%L::uuid,%L::uuid,%L::uuid,%L,%L)',
+			v_old.id, v_start ->> 'run', v_start ->> 'job', v_start ->> 'runner', v_start ->> 'assignment',
+			v_old.credential_capsule_id, v_old.compute_identity_id, 'openai', 'codex-cli'))
+	] loop
+		if v_outcome ? 'result' then
+			raise exception 'the superseded assignment still holds native authority: %', v_outcome;
+		end if;
+	end loop;
+	-- The next assignment of the same run starts with a lease of its own.
+	v_claim := public.qorpera_claim_runner_job_for_orchestrator(
+		'16000000-0000-4000-8000-000000000092', '73100000-0000-4000-8000-000000000004', 120);
+	if (v_claim -> 'work' ->> 'job_id')::uuid is distinct from (v_start ->> 'job')::uuid then
+		raise exception 'the re-queued run was not claimed again: %', v_claim;
+	end if;
+	v_assignment := public.qorpera_assign_runner_job(
+		'16000000-0000-4000-8000-000000000092', (v_claim ->> 'claim_id')::uuid, (v_start ->> 'runner')::uuid,
+		'73100000-0000-4000-8000-000000000005', repeat('4', 64), 120);
+	v_started := public.qorpera_start_runner_assignment((v_start ->> 'runner')::uuid, repeat('2', 64),
+		(v_assignment ->> 'assignment_id')::uuid, (v_start ->> 'job')::uuid, repeat('4', 64), 120);
+	if v_started -> 'native_authority' = 'null'::jsonb
+		or (v_started #>> '{native_authority,lease_id}')::uuid = v_old.id
+		or v_started #>> '{native_authority,assignment_id}' <> v_assignment ->> 'assignment_id'
+		or (select count(*) from public.qorpera_native_provider_connection_leases
+			where run_id = (v_start ->> 'run')::uuid and status = 'active') <> 1 then
+		raise exception 'the retry did not start with its own native lease: %', v_started;
+	end if;
+end $$;
+reset role;
+-- The released lease is kept in the lease history, which only its owner reads.
+do $$ begin
+	if not exists (select 1 from public.qorpera_native_provider_connection_lease_history as history
+		where history.lease_id = current_setting('qorpera_test.released_lease')::uuid
+			and history.assignment_id = (current_setting('qorpera_test.start')::jsonb ->> 'assignment')::uuid
+			and history.status = 'revoked' and history.released_at is not null) then
+		raise exception 'the released native lease is missing from the lease history';
+	end if;
+end $$;
+
 rollback;
