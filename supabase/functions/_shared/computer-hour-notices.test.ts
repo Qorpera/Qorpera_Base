@@ -92,7 +92,10 @@ describe("computer hour notices", () => {
 		assert.ok(email.html.includes("&lt;Nordlys&gt; &amp; Co"));
 		assert.ok(!email.html.includes("<Nordlys>"));
 		const [out] = jobsOf([wire("out_of_hours", { companyName: "Havn", leftSeconds: -600 })]);
-		assert.equal(buildComputerHourEmail(out!, APP).subject, "Havn is out of computer hours");
+		const outEmail = buildComputerHourEmail(out!, APP);
+		assert.equal(outEmail.subject, "Havn is out of computer hours");
+		// Also right when it reached zero without owing (hours taken back, credits expired).
+		assert.match(outEmail.text, /Havn has no computer hours left\./);
 		const [month] = jobsOf([wire("monthly_summary", summary)]);
 		const monthly = buildComputerHourEmail(month!, APP);
 		assert.equal(monthly.subject, "Your plan used 10.5 hours of 286 hours");
