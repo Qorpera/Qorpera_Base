@@ -324,7 +324,25 @@ describe("the folder core's entry points (core C3)", () => {
 		expect(missing).toBeInstanceOf(CloudCompanyFolderRpcError);
 		expect(missing).toMatchObject({ code: "PGRST202", category: "invalid_arguments" });
 		const page = "<html><body>504 Gateway Time-out</body></html>";
+		// PostgREST's connection errors are lost answers, not requests it refused; its service-key errors are authority.
+		for (const [status, code, category] of [
+			[503, "PGRST000", "transport_unavailable"],
+			[503, "PGRST001", "transport_unavailable"],
+			[504, "PGRST003", "transport_unavailable"],
+			[401, "PGRST301", "authority_unavailable"],
+		] as const) {
+			const error = await fixture(
+				vi.fn<typeof fetch>(async () =>
+					Response.json({ code, message: "x", details: null, hint: null }, { status }),
+				),
+			)
+				.call("qorpera_folder_commit", {}, new AbortController().signal)
+				.catch((error: unknown) => error);
+			expect(error).toMatchObject({ category });
+			expect(error instanceof CloudCompanyFolderRpcError).toBe(code === "PGRST301");
+		}
 		for (const [status, body, method, category] of [
+			[500, page, "qorpera_folder_list", "transport_unavailable"],
 			[504, page, "qorpera_folder_commit", "transport_unavailable"],
 			[502, "x".repeat(5000), "qorpera_folder_record_release", "transport_unavailable"],
 			[504, page, "qorpera_read_company_path_v2", "invalid_response"],

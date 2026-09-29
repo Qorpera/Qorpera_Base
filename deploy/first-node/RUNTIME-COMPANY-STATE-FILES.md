@@ -720,9 +720,10 @@ entry points: `read`, `readText`, `list`/`listAll`, `commit` and `release`.
     committed and a replay returns its outcome;
   - `CloudCompanyFolderError` says why a call did not complete: `stopped` (55000), `unavailable` (42501, 0A000),
     `read_revoked` (the recheck's "no longer readable": the model saw something it may no longer see), `contended`
-    (still changing after four tries; nothing was recorded) and `unknown` (a try lost its answer and none answered
-    after it: the caller retries later with the same key, units and receipt);
-  - 22023 and 25000 are defects. SQL's words stay off the errors.
+    (still changing after four tries; nothing was recorded) and `unknown` (a try lost its answer or was cancelled
+    while it was sent, and none answered after it: the caller retries later with the same key, units and receipt);
+  - 22023, 25000 and PostgREST's answers about the request (`PGRST1nn`-`PGRST3nn`) are defects; its connection errors
+    (`PGRST0nn`) are lost answers. SQL's words stay off the errors.
 - **Open for C1c-2b (F1):** a commit carries at most one folder receipt, and a receipt one commit. A conflict's redo
   is a second commit, so under a receipt it needs 2b to refuse a used receipt with its own code under the receipt
   lock (the client must not read it as the hook's retryable 23505), or to leave the receipt unused by a commit that

@@ -745,6 +745,38 @@ describe("commits", () => {
 		expect(calls).toHaveLength(2);
 	});
 
+	it("reports a cancel while a try was sent as unknown, and one before any try as a cancel", async () => {
+		const during = new AbortController();
+		const inFlight = fixture(async (): Promise<unknown> => {
+			during.abort();
+			return new Promise(() => undefined);
+		});
+		await expect(
+			inFlight.client.commit("tool-call-21", [{ op: "mkdir", path: "a" }], {}, during.signal),
+		).rejects.toMatchObject({ failure: "unknown" });
+		const before = new AbortController();
+		before.abort();
+		const idle = fixture(() => null);
+		const error = await idle.client
+			.commit("tool-call-22", [{ op: "mkdir", path: "a" }], {}, before.signal)
+			.catch((error: unknown) => error);
+		expect(error).toMatchObject({ category: "cancelled" });
+		expect(error).not.toBeInstanceOf(CloudCompanyFolderError);
+		expect(idle.calls).toHaveLength(0);
+	});
+
+	it("reports a cancel in the pause after a lost try as unknown", async () => {
+		const paused = new AbortController();
+		const { client, calls } = fixture(() => {
+			setTimeout(() => paused.abort(), 1);
+			throw new CloudRuntimeDiagnosticError("timeout", "Cloud tool authority unavailable");
+		});
+		await expect(
+			client.commit("tool-call-23", [{ op: "mkdir", path: "a" }], {}, paused.signal),
+		).rejects.toMatchObject({ failure: "unknown" });
+		expect(calls).toHaveLength(1);
+	});
+
 	it("never retries a request PostgREST could not run", async () => {
 		const { client, calls } = fixture(() => {
 			throw sqlError("PGRST202", "Could not find the function public.qorpera_folder_commit");
@@ -763,10 +795,11 @@ describe("commits", () => {
 			aborted.abort();
 			throw sqlError("QRC01", "Company folder authority changed");
 		});
+		// Cancelled while the try was sent: it may have committed.
 		const error17 = await first.client
 			.commit("tool-call-17", [{ op: "mkdir", path: "a" }], {}, aborted.signal)
 			.catch((error: unknown) => error);
-		expect(error17).toMatchObject({ category: "cancelled" });
+		expect(error17).toMatchObject({ failure: "unknown" });
 		expect(first.calls).toHaveLength(1);
 		// A cancel during the pause between tries is a cancel, not the folder's error.
 		const later = new AbortController();

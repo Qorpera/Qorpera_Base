@@ -210,10 +210,12 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 						FOLDER_RPCS.has(method) && value && typeof value === "object" && !Array.isArray(value)
 							? (value as Record<string, unknown>).code
 							: undefined;
-					// A SQLSTATE, or PostgREST's own code (PGRSTnnn: no such function, a bad request), which nothing ran.
+					// A SQLSTATE, or PostgREST's own answer about the request (PGRST1nn a bad request, 2nn no such
+					// function, 3nn the service key), which nothing ran. Its connection errors (PGRST0nn) stay lost
+					// answers, which the folder client retries.
 					if (
 						typeof folderCode === "string" &&
-						/^(?:[0-9A-Z]{5}|PGRST[0-9]{3})$/.test(folderCode) &&
+						/^(?:[0-9A-Z]{5}|PGRST[1-9][0-9]{2})$/.test(folderCode) &&
 						postgrestError(folderCode)
 					)
 						throw new CloudCompanyFolderRpcError(folderCode, (value as { message: string }).message);
