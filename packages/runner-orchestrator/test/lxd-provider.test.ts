@@ -4,14 +4,15 @@ import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type {
-	LxdClient,
-	LxdCreateInstanceRequest,
-	LxdCreateStorageVolumeRequest,
-	LxdInstancePowerAction,
-	LxdInstanceRecord,
-	LxdInstanceStateRecord,
-	LxdStorageVolumeRecord,
+import {
+	type LxdClient,
+	type LxdCreateInstanceRequest,
+	type LxdCreateStorageVolumeRequest,
+	type LxdInstancePowerAction,
+	type LxdInstanceRecord,
+	type LxdInstanceStateRecord,
+	LxdOperationFailed,
+	type LxdStorageVolumeRecord,
 } from "../src/lxd-client.ts";
 import { lxdNativeNodePolicy, lxdResourceBytes } from "../src/lxd-native-node-policy.ts";
 import {
@@ -125,6 +126,8 @@ class FakeLxd implements LxdClient {
 	filePushes: Array<{ path: string; content: string; mode: number }> = [];
 	execCalls: string[][] = [];
 	deleteCalls: string[] = [];
+	/** Set to make the next create fail as this error, with no guest. */
+	createFailure?: Error;
 
 	async getInstance(_project: string, name: string): Promise<LxdInstanceRecord | undefined> {
 		return this.instance?.name === name ? structuredClone(this.instance) : undefined;
@@ -159,6 +162,11 @@ class FakeLxd implements LxdClient {
 
 	async createInstance(_project: string, request: LxdCreateInstanceRequest): Promise<void> {
 		this.createCalls.push(structuredClone(request));
+		const failure = this.createFailure;
+		if (failure) {
+			this.createFailure = undefined;
+			throw failure;
+		}
 		this.instance = {
 			name: request.name,
 			type: request.type,
@@ -826,51 +834,48 @@ describe("LXD cloud runner provider", () => {
 		});
 	});
 
-	it("releases a lost journal's capacity once its guest stayed missing past the settle time", async () => {
-		// Production (2026-09-29): a start failed before its guest existed; the journal became lost and its
-		// allocation stayed reserved, so the run's attempt could never move on.
-		const f = await acquiredFixture();
-		const journal = JSON.parse(await readFile(f.journalPath, "utf8")) as Record<string, unknown>;
-		f.lxd.instance = undefined;
+	it("releases the capacity of a create LXD reports as failed, at once and once", async () => {
+		// A start that failed before its guest existed kept its allocation reserved for good, so the run's
+		// attempt could never move on (2026-09-29). LXD's own Failure is proof no guest will appear.
+		const directory = await root();
+		const stateRoot = join(directory, "state");
+		const lxd = new FakeLxd();
+		lxd.createFailure = new LxdOperationFailed("LXD operation failed");
+		const fetcher = fetchProvisioner([]);
+		const backend = new LxdCloudRunnerProviderBackend(config(stateRoot), lxd, new FakeGuest(), fetcher);
+		await expect(backend.acquire(runId, work(), new AbortController().signal)).rejects.toThrow(
+			"LXD operation failed",
+		);
 		const releases = () =>
-			vi
-				.mocked(f.fetchImplementation)
-				.mock.calls.filter(([url]) => String(url).includes("qorpera_release_runtime_machine"));
-		const backend = new LxdCloudRunnerProviderBackend(config(f.stateRoot), f.lxd, f.guest, f.fetchImplementation);
-		// Just lost: a create may still be pending in LXD, so nothing is released.
-		const lost = (updatedAt: string) =>
-			writeFile(f.journalPath, JSON.stringify({ ...journal, physicalState: "lost", updatedAt }), { mode: 0o600 });
-		await lost(new Date().toISOString());
-		await backend.reconcile();
-		expect(releases()).toHaveLength(0);
-		// Missing past the settle time: released once, and marked.
-		await lost(new Date(Date.now() - 11 * 60_000).toISOString());
-		await backend.reconcile();
-		await backend.reconcile();
+			vi.mocked(fetcher).mock.calls.filter(([url]) => String(url).includes("qorpera_release_runtime_machine"));
 		expect(releases()).toHaveLength(1);
-		expect(JSON.parse(await readFile(f.journalPath, "utf8"))).toMatchObject({
+		expect(JSON.parse(await readFile(join(stateRoot, runId, "journal.json"), "utf8"))).toMatchObject({
 			physicalState: "lost",
+			stopReason: "delivery_failed",
+			deletionConfirmed: true,
 			capacityReleased: true,
 		});
+		await backend.reconcile();
+		expect(releases()).toHaveLength(1);
 	});
 
-	it("removes a guest that exists for a lost journal and releases its capacity", async () => {
-		// A create that finished after its journal was lost: the run never restarts, so its guest goes.
-		const f = await acquiredFixture();
-		const journal = JSON.parse(await readFile(f.journalPath, "utf8")) as Record<string, unknown>;
-		await writeFile(f.journalPath, JSON.stringify({ ...journal, physicalState: "lost" }), { mode: 0o600 });
-		const releases = () =>
-			vi
-				.mocked(f.fetchImplementation)
-				.mock.calls.filter(([url]) => String(url).includes("qorpera_release_runtime_machine"));
-		const backend = new LxdCloudRunnerProviderBackend(config(f.stateRoot), f.lxd, f.guest, f.fetchImplementation);
-		await backend.reconcile();
-		expect(f.lxd.deleteCalls).toHaveLength(1);
-		expect(releases()).toHaveLength(1);
-		expect(JSON.parse(await readFile(f.journalPath, "utf8"))).toMatchObject({
-			physicalState: "stopped",
-			stopReason: "delivery_failed",
-			capacityReleased: true,
+	it("keeps the capacity of a create whose outcome is unknown", async () => {
+		// A wait that timed out, or a lost reply: the guest may still appear, so nothing is released.
+		const directory = await root();
+		const stateRoot = join(directory, "state");
+		const lxd = new FakeLxd();
+		lxd.createFailure = new Error("LXD operation failed");
+		const fetcher = fetchProvisioner([]);
+		const backend = new LxdCloudRunnerProviderBackend(config(stateRoot), lxd, new FakeGuest(), fetcher);
+		await expect(backend.acquire(runId, work(), new AbortController().signal)).rejects.toThrow(
+			"LXD operation failed",
+		);
+		expect(
+			vi.mocked(fetcher).mock.calls.filter(([url]) => String(url).includes("qorpera_release_runtime_machine")),
+		).toHaveLength(0);
+		expect(JSON.parse(await readFile(join(stateRoot, runId, "journal.json"), "utf8"))).toMatchObject({
+			physicalState: "creating",
+			capacityRegistered: true,
 		});
 	});
 

@@ -1177,12 +1177,21 @@ function storageVolume(value: unknown): LxdStorageVolumeRecord {
 const AGENT_OFFLINE = /\bVM agent (?:is not|isn't) currently running\b/;
 /** A failed operation as a fixed code: the agent being offline is its own
  * case (a starting VM), anything else is a plain failure. */
-function operationFailure(message: unknown): Error {
-	return new Error(
+/** LXD reported the operation's end as Failure or Cancelled: it did not happen, and never will. Any other
+ * failed wait (a timeout while it still runs, a lost reply) leaves the outcome unknown. */
+export class LxdOperationFailed extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = "LxdOperationFailed";
+	}
+}
+
+function operationFailure(message: unknown, definitive = false): Error {
+	const text =
 		typeof message === "string" && AGENT_OFFLINE.test(message)
 			? "LXD instance agent not running"
-			: "LXD operation failed",
-	);
+			: "LXD operation failed";
+	return definitive ? new LxdOperationFailed(text) : new Error(text);
 }
 
 function lxdError(result: HttpResult, fallback: string): Error {
@@ -3069,7 +3078,8 @@ export class LxdUnixClient
 		// ({"type":"error","error_code":500,"error":"...","metadata":null}). Newer
 		// LXD renders the failed operation itself (status_code 400, err "...").
 		const waited = record(wait.body, "LXD response");
-		if (wait.status >= 200 && wait.status < 300 && waited.type === "error") throw operationFailure(waited.error);
+		if (wait.status >= 200 && wait.status < 300 && waited.type === "error")
+			throw operationFailure(waited.error, true);
 		const operation = record(envelopeMetadata(wait), "LXD operation");
 		if (
 			typeof operation.status_code !== "number" ||
@@ -3077,7 +3087,12 @@ export class LxdUnixClient
 			operation.status_code >= 300 ||
 			(typeof operation.err === "string" && operation.err.length > 0)
 		) {
-			throw operationFailure(operation.err);
+			// Only an ended operation is a known failure; a wait that timed out returns it still running.
+			throw operationFailure(
+				operation.err,
+				(operation.status_code === 400 && operation.status === "Failure") ||
+					(operation.status_code === 401 && operation.status === "Cancelled"),
+			);
 		}
 		return operation;
 	}

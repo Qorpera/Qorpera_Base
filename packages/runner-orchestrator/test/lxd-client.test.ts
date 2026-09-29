@@ -3,7 +3,12 @@ import { createServer, type IncomingHttpHeaders, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { type LxdCreateInstanceRequest, type LxdCreateStorageVolumeRequest, LxdUnixClient } from "../src/lxd-client.ts";
+import {
+	type LxdCreateInstanceRequest,
+	type LxdCreateStorageVolumeRequest,
+	LxdOperationFailed,
+	LxdUnixClient,
+} from "../src/lxd-client.ts";
 import { HttpLxdGuestTransport } from "../src/lxd-provider.ts";
 
 const roots: string[] = [];
@@ -639,6 +644,17 @@ describe("LXD Unix client", () => {
 			],
 		])("keeps %s a plain failure", async (_case, wait, expected) => {
 			await expect(exec(wait)).rejects.toThrow(expected);
+		});
+		it("marks only an ended failure as definite, never a wait that returned it still running", async () => {
+			// A provider releases a failed create's capacity only on proof that no guest will appear.
+			await expect(exec(failedOperation("Command not found"))).rejects.toBeInstanceOf(LxdOperationFailed);
+			await expect(exec(errorEnvelope("Instance is not running"))).rejects.toBeInstanceOf(LxdOperationFailed);
+			const running = failedOperation("");
+			running.body.metadata.status = "Running";
+			running.body.metadata.status_code = 103;
+			const pending = await exec(running).catch((error: unknown) => error);
+			expect(pending).toBeInstanceOf(Error);
+			expect(pending).not.toBeInstanceOf(LxdOperationFailed);
 		});
 		it("still separates a command that ran and exited non-zero", async () => {
 			const ran = {
