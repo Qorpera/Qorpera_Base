@@ -14,10 +14,12 @@
 --   or effort.
 --   Status, ends, runs, quiet hours and the conclusion live on the row. A new version's schedule position follows the
 --   2026-09-25 rules (qorpera_routine_version_schedule_position), as a member's or an agent's save does today.
--- * Who pays: the saver's own login that pays for unattended work (qorpera_agent_routine_sponsor's rule, read without
---   its lock on the login). A member without one cannot save a new version; a run whose requester has none pins the
---   run's, and the routine waits, as an agent's save does today. A move keeps the version's payer; a resume on a login
---   that stopped paying moves to the saver's.
+-- * Who pays (S2: a member's login pays only for work that member started): the saver's own login that pays for
+--   unattended work (qorpera_agent_routine_sponsor's rule, read without its lock on the login), for a new version and for
+--   work a save starts or extends (a resume, a revival, more runs, a later end, a handover). A version on another login
+--   moves to the saver's. A member without one cannot make those saves; a run whose requester has none pins the run's,
+--   and the routine waits. Unlike an agent's save today, the commit never sets up a login for unattended work (that
+--   takes the login FOR UPDATE and writes rows): the runtime's routine writer does that before its commit (F2-1b).
 -- * Status: the file's status is the saver's word when the save changes it (or restores the file). Otherwise a pause,
 --   expiry or suspension the platform recorded stays, until core C2's queue writes it into the file; a save still
 --   revives an expired routine, and a new version with a paying login ends a wait for one.
@@ -31,11 +33,26 @@
 --   SHARE), with the company row at rank 2 for the rows' foreign keys. The commit never inserts a wake: the tick starts
 --   a dynamic routine's next run (qorpera_restore_dynamic_routine_runs), so no admission fence is taken after the clock.
 -- * The member RPC (qorpera_upsert_cloud_routine) refuses a folder-v2 company's routines, except rows from before it
---   became folder-v2.
+--   became folder-v2; the agent tools (qorpera_manage_agent_routine, qorpera_decide_agent_routine) refuse any on a
+--   folder-v2 company, whose agents write routine files. The name index covers file routines of either origin.
+-- * Known: a save that carries several routines (an agent folder's delete or move) locks them in id order, while the
+--   expiry sweep updates the routines that ended in its own order; the two can deadlock (40P01, one side retries,
+--   nothing is wrong).
 -- * Follow-ups for C2's queue: the platform's pauses written into the files; a notification when a routine waits for
 --   its requester's login.
 --
 -- Builds on F2-5a (20260929210000) and replaces the hook functions with the routine branches added.
+
+-- F1's C1b-3a (20260929230000, #497) moves the company row in the hook's targets to rank 0. This migration's targets
+-- (section 4) take it at rank 2, so it must not run after that change without being moved to rank 0 too: stop, before
+-- anything changes, rather than undo it.
+do $$
+begin
+	if pg_get_functiondef('public.qorpera_folder_structured_targets(uuid,jsonb,jsonb)'::regprocedure)
+		like '%rank := 0; tbl := ''qorpera_profiles''%' then
+		raise exception 'F2-6 routine targets take the company row at rank 2; move them to rank 0 after 20260929230000'; end if;
+end
+$$;
 
 -- 1. The routine table as the index of routine files --------------------------------------------------------------------
 
@@ -60,6 +77,10 @@ alter table public.qorpera_cloud_routines
 		and (folder_retired_at is null or folder_path is not null));
 create index qorpera_cloud_routines_folder_path on public.qorpera_cloud_routines(folder_environment_id, folder_path collate "C")
 	where folder_path is not null;
+-- An agent's routine names are unique, a file's too whoever made it.
+drop index public.qorpera_cloud_routines_agent_key;
+create unique index qorpera_cloud_routines_agent_key on public.qorpera_cloud_routines(profile_id, environment_id, owner_staff_agent_id,
+	routine_key) where origin <> 'member' or folder_path is not null;
 
 -- 2. The parse's shape, now for routines too ------------------------------------------------------------------------
 
@@ -412,7 +433,7 @@ returns table(binding_id uuid, version bigint) language sql stable security defi
 $$;
 
 -- Whether a routine version's login still pays for it: its binding still serves the version's creator, at the pinned
--- version or one that follows it (the resume check of qorpera_manage_agent_routine).
+-- version or one that follows it.
 create function public.qorpera_company_state_routine_paid(p_version public.qorpera_cloud_routine_versions)
 returns boolean language sql stable security definer set search_path = '' as $$
 	select exists (select 1 from public.qorpera_company_state_routine_payer(p_version.profile_id, p_version.created_by_user_id,
@@ -430,11 +451,54 @@ returns uuid language sql stable security definer set search_path = '' as $$
 	limit 1
 $$;
 
+-- Whether a save starts or extends a routine's work: it makes the routine run again (a first save, a restore, a resume,
+-- a reopen, or reviving an expired routine), or it allows more runs or a later end. A pause, a conclusion, fewer runs or
+-- an earlier end does not, and quiet hours only delay runs.
+create function public.qorpera_company_state_routine_restarts(p_row public.qorpera_cloud_routines, p_prev jsonb, p_parse jsonb)
+returns boolean language sql stable set search_path = '' as $$
+	select coalesce(p_parse ->> 'status' = 'active' and (p_row.id is null or p_row.status in ('expired','retired')
+			or p_prev ->> 'status' is distinct from 'active'), false)
+		or (p_row.max_occurrences is not null and coalesce((p_parse ->> 'runs')::integer > p_row.max_occurrences, true))
+		or (p_row.expires_at is not null and coalesce((p_parse ->> 'ends')::timestamptz > p_row.expires_at, true))
+$$;
+
+-- Who pays from a save on (S2: a member's login pays only for work that member started): the saver's own login that
+-- pays, the version's pinned one first. When they have none, paid is false and the routine waits for a login: a run's
+-- requester pins the run's login, and a member whose login stopped paying after the save was decided their newest.
+-- The platform keeps the version's.
+create function public.qorpera_company_state_routine_saver_pays(p_commit public.qorpera_folder_commits, p_profile_id uuid,
+	p_current public.qorpera_cloud_routine_versions, out binding_id uuid, out version bigint, out user_id uuid, out paid boolean)
+language plpgsql stable security definer set search_path = '' as $$
+begin
+	if p_commit.actor_kind = 'platform' then
+		binding_id := p_current.sponsor_binding_id; version := p_current.sponsor_version; user_id := p_current.created_by_user_id;
+		paid := public.qorpera_company_state_routine_paid(p_current);
+		return;
+	end if;
+	user_id := p_commit.requester_id;
+	select p.binding_id, p.version into binding_id, version
+	from public.qorpera_company_state_routine_payer(p_profile_id, p_commit.requester_id,
+		coalesce(p_current.sponsor_binding_id, p_commit.sponsor_binding_id)) p;
+	paid := binding_id is not null;
+	if paid then return; end if;
+	if p_commit.actor_kind = 'staff_agent' then
+		binding_id := p_commit.sponsor_binding_id; version := p_commit.sponsor_version;
+	else
+		select s.binding_id, s.version into binding_id, version
+		from public.qorpera_execution_sponsor_versions s
+		join public.qorpera_execution_sponsor_bindings b on b.id = s.binding_id
+		join public.qorpera_provider_connections c on c.id = s.provider_connection_id
+		where b.profile_id = p_profile_id and c.owner_user_id = p_commit.requester_id
+		order by s.created_at desc, s.binding_id limit 1;
+	end if;
+end $$;
+
 -- One routine file (§2): it lives in an agent's folder (an indexed agent, or the agent.md the same unit writes); the id
 -- never changes and belongs to this file's routine only; the file name (at most 64 characters of a-z, 0-9 and hyphens,
--- which the routine key allows) is a key no other routine of the agent has; its timing is one the scheduler runs; only an agent's run makes a routine dynamic, and never one a member made; a
--- dynamic routine's own run never pauses it, and while it owes its decision its save of the file is only the decision
--- (contract 16.3); a member's save that makes a new version needs the member's own login to pay for it.
+-- which the routine key allows) is a key no other routine of the agent has; its timing is one the scheduler runs; only
+-- an agent's run makes a routine dynamic, and never one a member made; a dynamic routine's own run never pauses it, and
+-- while it owes its decision its save of the file is only the decision (contract 16.3); a member's save that makes a
+-- new version, or starts or extends the routine's work, needs the member's own login to pay for it.
 create function public.qorpera_company_state_routine_rules(p_environment_id uuid, p_profile_id uuid, p_actor jsonb, p_key text,
 	p_parse jsonb, p_owner_in_unit boolean)
 returns jsonb language plpgsql stable security definer set search_path = '' as $$
@@ -509,7 +573,8 @@ begin
 				and p_parse - array['status','conclusion'] = v_prev - array['status','conclusion']), false) then
 		v_problem := 'this run owes its routine''s decision: set a new at (and, if needed, the title, instructions, effort or '
 			|| 'reply), or conclude it with a conclusion';
-	elsif not (v_exists and public.qorpera_company_state_routine_same(v_version, v_owner, p_parse, v_trigger)) then
+	elsif not (v_exists and public.qorpera_company_state_routine_same(v_version, v_owner, p_parse, v_trigger))
+		or public.qorpera_company_state_routine_restarts(v_row, v_prev, p_parse) then
 		if p_actor ->> 'kind' = 'member' and not exists (select 1 from public.qorpera_company_state_routine_payer(p_profile_id,
 				(p_actor ->> 'userId')::uuid, v_version.sponsor_binding_id)) then
 			v_problem := 'a routine runs on the AI login of the member who saves it; connect yours in Settings, then save again';
@@ -522,12 +587,12 @@ begin
 		'problems', jsonb_build_array(public.qorpera_company_state_problem('value', null, null, v_problem)));
 end $$;
 
--- One routine file's rows (§4). The row follows the file. A new version comes only when what a run pins changes, or when
--- a dynamic routine's own run decides; the saver's own login pays for it, else (a run's requester without one) the run's
--- does and the routine waits for a login; the platform's keeps the version's. Its schedule position is inserted before
--- the routine moves to it: the move supersedes the old version's waiting runs, and one still waiting is offered again
--- only while it is visible there. Status: see the header. A second change set that wrote another file with the same new
--- id first makes this one abort (its retry is refused by decide).
+-- One routine file's rows (§4). The row follows the file. A new version comes when what a run pins changes, when a
+-- dynamic routine's own run decides, and when the saver's login is not the one pinned for work the save starts or
+-- extends (see qorpera_company_state_routine_saver_pays). Its schedule position is inserted before the routine moves to
+-- it: the move supersedes the old version's waiting runs, and one still waiting is offered again only while it is
+-- visible there. Status: see the header. A second change set that wrote another file with the same new id first makes
+-- this one abort (its retry is refused by decide).
 create function public.qorpera_company_state_index_routine(p_environment_id uuid, p_profile_id uuid, p_commit_id uuid,
 	p_path text, p_version uuid, p_parse jsonb)
 returns void language plpgsql security definer set search_path = '' as $$
@@ -536,34 +601,46 @@ declare
 	v_current public.qorpera_cloud_routine_versions%rowtype; v_id uuid := (p_parse ->> 'id')::uuid;
 	v_owner uuid := public.qorpera_company_state_routine_owner(p_environment_id, public.qorpera_folder_key(p_path));
 	v_trigger jsonb := public.qorpera_company_state_routine_trigger(p_parse); v_status text := p_parse ->> 'status';
-	v_prev jsonb; v_user uuid; v_binding uuid; v_sponsor bigint; v_paid boolean := true; v_new boolean; v_own boolean;
+	v_prev jsonb; v_pay record; v_paid boolean := true; v_new boolean; v_restarts boolean; v_woken boolean; v_own boolean;
 	v_set boolean; v_reason text; v_next bigint; v_created timestamptz; v_count bigint;
 begin
 	select * into v_commit from public.qorpera_folder_commits where id = p_commit_id;
-	-- The member, or the run's requester; the platform keeps the version's.
-	v_user := case when v_commit.actor_kind <> 'platform' then v_commit.requester_id end;
-	v_own := v_commit.run_id is not null and public.qorpera_company_state_routine_of_run(v_commit.run_id) = v_id;
+	-- A run this routine woke (it may conclude the routine and still finish), and whether it is the routine's dynamic run.
+	v_woken := v_commit.run_id is not null and v_commit.routine_id = v_id;
+	v_own := v_woken and public.qorpera_company_state_routine_of_run(v_commit.run_id) = v_id;
 	select * into v_row from public.qorpera_cloud_routines where id = v_id;
-	if not found then
-		insert into public.qorpera_cloud_routines(id, profile_id, environment_id, client_routine_id, status, created_by_user_id,
-			origin, owner_staff_agent_id, routine_key, folder_environment_id, folder_path, folder_path_version, folder_commit_id)
-		values (v_id, p_profile_id, p_environment_id, v_id, 'paused', v_user,
-			case when v_commit.actor_kind = 'staff_agent' then 'agent' else 'member' end, v_owner,
-			public.qorpera_company_state_todo_key(p_path), p_environment_id, p_path, p_version, p_commit_id)
-		on conflict (id) do nothing;
-		get diagnostics v_count = row_count;
-		if v_count = 0 then raise exception 'A routine id was taken by another change set' using errcode = '23505'; end if;
-		select * into v_row from public.qorpera_cloud_routines where id = v_id;
-	else
+	if found then
 		-- The file this save follows: the one the routine points at (for a restore, its last file).
 		select v.structured -> 'parse' into v_prev from public.qorpera_folder_path_versions v where v.version = v_row.folder_path_version;
 		if v_prev is not null and jsonb_array_length(public.qorpera_company_state_parse_problems('routine', v_prev)) > 0 then
 			v_prev := null; end if;
 		select * into v_current from public.qorpera_cloud_routine_versions where routine_id = v_id and version = v_row.current_version;
 	end if;
-
+	v_restarts := public.qorpera_company_state_routine_restarts(v_row, v_prev, p_parse);
 	v_new := v_current.routine_id is null or (v_own and v_status = 'active')
 		or not public.qorpera_company_state_routine_same(v_current, v_owner, p_parse, v_trigger);
+	-- The saver pays for a new version and for work the save starts or extends; when the saver's login is not the one
+	-- pinned, a version like the last pins it.
+	if v_new or v_restarts then
+		select * into v_pay from public.qorpera_company_state_routine_saver_pays(v_commit, p_profile_id, v_current);
+		v_paid := v_pay.paid;
+		if v_pay.paid and not coalesce(v_pay.binding_id = v_current.sponsor_binding_id
+			and public.qorpera_sponsor_version_follows(v_current.sponsor_binding_id, v_current.sponsor_version, v_pay.version), false) then
+			v_new := true; end if;
+		if v_new and v_pay.binding_id is null then raise exception 'A routine version has no login to pin' using errcode = 'XX000'; end if;
+	end if;
+	if v_row.id is null then
+		insert into public.qorpera_cloud_routines(id, profile_id, environment_id, client_routine_id, status, created_by_user_id,
+			origin, owner_staff_agent_id, routine_key, folder_environment_id, folder_path, folder_path_version, folder_commit_id)
+		values (v_id, p_profile_id, p_environment_id, v_id, 'paused', v_pay.user_id,
+			case when v_commit.actor_kind = 'staff_agent' then 'agent' else 'member' end, v_owner,
+			public.qorpera_company_state_todo_key(p_path), p_environment_id, p_path, p_version, p_commit_id)
+		on conflict (id) do nothing;
+		get diagnostics v_count = row_count;
+		if v_count = 0 then raise exception 'A routine id was taken by another change set' using errcode = '23505'; end if;
+		select * into v_row from public.qorpera_cloud_routines where id = v_id;
+	end if;
+
 	-- The saver's word on the status: a change of it, a restore or a first save. Otherwise the platform's record stays,
 	-- except that a save revives an expired routine and a new version ends a wait for a login.
 	v_set := v_current.routine_id is null or v_row.status = 'retired' or v_prev is null
@@ -572,38 +649,6 @@ begin
 			or (v_row.status = 'paused' and v_row.pause_reason = 'needs_model_account' and v_new)))
 		or (v_status = 'paused' and v_row.status = 'active')
 		or (v_status = 'concluded' and v_row.status <> 'concluded');
-	-- A routine that starts again on a login that no longer pays for it: the saver's pays from a new version.
-	if v_set and v_status = 'active' and not v_new then
-		v_paid := public.qorpera_company_state_routine_paid(v_current);
-		if not v_paid and v_user is not null
-			and exists (select 1 from public.qorpera_company_state_routine_payer(p_profile_id, v_user, null)) then
-			v_new := true; end if;
-	end if;
-	if v_new then
-		if v_user is null then
-			v_binding := v_current.sponsor_binding_id; v_sponsor := v_current.sponsor_version; v_user := v_current.created_by_user_id;
-			v_paid := public.qorpera_company_state_routine_paid(v_current);
-		else
-			select p.binding_id, p.version into v_binding, v_sponsor
-			from public.qorpera_company_state_routine_payer(p_profile_id, v_user,
-				coalesce(v_commit.sponsor_binding_id, v_current.sponsor_binding_id)) p;
-			v_paid := v_binding is not null;
-			if v_binding is null and v_commit.actor_kind = 'staff_agent' then
-				-- A requester without a login of their own: the run's is pinned, and the routine waits for theirs.
-				v_binding := v_commit.sponsor_binding_id; v_sponsor := v_commit.sponsor_version;
-			elsif v_binding is null then
-				-- A member whose login stopped paying after the save was decided: their newest is pinned, and the routine
-				-- waits for one that pays.
-				select s.binding_id, s.version into v_binding, v_sponsor
-				from public.qorpera_execution_sponsor_versions s
-				join public.qorpera_execution_sponsor_bindings b on b.id = s.binding_id
-				join public.qorpera_provider_connections c on c.id = s.provider_connection_id
-				where b.profile_id = p_profile_id and c.owner_user_id = v_user
-				order by s.created_at desc, s.binding_id limit 1;
-			end if;
-		end if;
-		if v_binding is null then raise exception 'A routine version has no login to pin' using errcode = 'XX000'; end if;
-	end if;
 	if not v_set then v_status := v_row.status; v_reason := v_row.pause_reason;
 	elsif v_status = 'paused' then
 		v_reason := case v_commit.actor_kind when 'member' then 'member' when 'staff_agent' then 'agent'
@@ -611,15 +656,19 @@ begin
 	end if;
 	-- A routine no login pays for waits for one, as an agent's save leaves it today.
 	if v_status = 'active' and not v_paid then v_status := 'paused'; v_reason := 'needs_model_account'; end if;
+	-- A routine whose runs are used up has ended, as the recorded occurrence at its limit leaves it.
+	if v_status = 'active' and p_parse ->> 'runs' is not null
+		and public.qorpera_routine_occurrence_count(v_id) >= (p_parse ->> 'runs')::integer then
+		v_status := 'expired'; v_reason := null; end if;
 
 	if v_new then
 		v_next := v_row.current_version + 1;
 		insert into public.qorpera_cloud_routine_versions(routine_id, version, client_version_id, profile_id, environment_id,
 			staff_agent_id, title, prompt, triggers, effort, sponsor_binding_id, sponsor_version, content_sha256, created_by_user_id)
 		values (v_id, v_next, extensions.gen_random_uuid(), p_profile_id, p_environment_id, v_owner, p_parse ->> 'title',
-			p_parse ->> 'instructions', jsonb_build_array(v_trigger), p_parse ->> 'effort', v_binding, v_sponsor,
+			p_parse ->> 'instructions', jsonb_build_array(v_trigger), p_parse ->> 'effort', v_pay.binding_id, v_pay.version,
 			public.qorpera_company_state_routine_sha(v_owner, p_parse ->> 'title', p_parse ->> 'instructions',
-				jsonb_build_array(v_trigger), p_parse ->> 'effort', v_binding, v_sponsor), v_user)
+				jsonb_build_array(v_trigger), p_parse ->> 'effort', v_pay.binding_id, v_pay.version), v_pay.user_id)
 		returning created_at into v_created;
 		if v_trigger ->> 'kind' = 'schedule' then
 			insert into public.qorpera_cloud_routine_schedule_cursors(routine_id, routine_version, trigger_id, last_scheduled_for,
@@ -634,7 +683,7 @@ begin
 		conclusion = case when v_status = 'concluded' then coalesce(p_parse ->> 'conclusion', conclusion) end,
 		concluded_at = case when v_status = 'concluded' then coalesce(concluded_at, statement_timestamp()) end,
 		concluded_by_run_id = case when v_status <> 'concluded' then null when status = 'concluded' then concluded_by_run_id
-			when v_own then v_commit.run_id end,
+			when v_woken then v_commit.run_id end,
 		expires_at = (p_parse ->> 'ends')::timestamptz, max_occurrences = (p_parse ->> 'runs')::integer,
 		quiet_start = (p_parse -> 'quiet' ->> 'start')::time, quiet_end = (p_parse -> 'quiet' ->> 'end')::time,
 		quiet_time_zone = p_parse -> 'quiet' ->> 'timezone', owner_staff_agent_id = v_owner,
@@ -644,16 +693,6 @@ begin
 end $$;
 
 -- 4. The hooks, with the routine branches ---------------------------------------------------------------------------
-
--- F1's C1b-3a (20260929230000, #497) moves the company row in these targets to rank 0. This redefinition takes it at
--- rank 2, so it must not run after that change without being moved to rank 0 too: stop rather than undo it.
-do $$
-begin
-	if pg_get_functiondef('public.qorpera_folder_structured_targets(uuid,jsonb,jsonb)'::regprocedure)
-		like '%rank := 0; tbl := ''qorpera_profiles''%' then
-		raise exception 'F2-6 routine targets take the company row at rank 2; move them to rank 0 after 20260929230000'; end if;
-end
-$$;
 
 create or replace function public.qorpera_folder_structured_targets(p_environment_id uuid, p_actor jsonb, p_units jsonb)
 returns table(rank smallint, tbl text, key text, mode text) language plpgsql stable set search_path = '' as $$
@@ -826,9 +865,10 @@ begin
 						'this run cannot remove or move its own routine; conclude it instead'))); end if;
 		end if;
 		-- A routine moves only into an agent's routines folder (its folder may move along), onto a name no routine row of
-		-- that agent from before the files has. Anywhere else is a kind change, which the next check refuses.
+		-- that agent from before the files has. Anywhere else is a kind change, which the next check refuses. A handover
+		-- to another agent is a new version: a member's needs the member's own login to pay for it.
 		if v_op = 'move' then
-			for v_carried in select r.id, r.folder_path from public.qorpera_cloud_routines r
+			for v_carried in select r.id, r.folder_path, r.current_version from public.qorpera_cloud_routines r
 				where r.folder_environment_id = p_environment_id and r.folder_retired_at is null
 					and (r.folder_path = v_key collate "C"
 						or (r.folder_path > (v_key || '/') collate "C" and r.folder_path < (v_key || '0') collate "C"))
@@ -854,6 +894,13 @@ begin
 						public.qorpera_company_state_problem('value', null, null,
 							'that agent has another routine called ' || public.qorpera_company_state_todo_key(v_dest)
 								|| '; choose another name'))); end if;
+				if p_actor ->> 'kind' = 'member' and exists (select 1 from public.qorpera_cloud_routine_versions cv
+						where cv.routine_id = v_carried.id and cv.version = v_carried.current_version and cv.staff_agent_id <> v_dest_owner)
+					and not exists (select 1 from public.qorpera_company_state_routine_payer(v_profile, (p_actor ->> 'userId')::uuid, null)) then
+					return jsonb_build_object('ok', false, 'reason', 'structured_rule', 'problems', jsonb_build_array(
+						public.qorpera_company_state_problem('value', null, null,
+							'a routine handed to another agent runs on the AI login of the member who moves it; connect yours in Settings, '
+								|| 'then move it again'))); end if;
 			end loop;
 		end if;
 		if v_op = 'move' then return public.qorpera_company_state_carried(p_environment_id, v_op, v_key, p_eff_to, v_row); end if;
@@ -981,11 +1028,13 @@ begin
 		if v_kind = 'agent' and (v_base is null
 			or v_base ->> 'status' is distinct from v_entry -> 'parse' ->> 'status') then return 'delegation'; end if;
 		if v_kind = 'group' and v_base is null then return 'delegation'; end if;
-		-- A dynamic routine's own run deciding it: a new at, effort or reply, or its conclusion. A decision that also
-		-- changes the title or the instructions is delegation, and so is every other routine change (contract 16.3).
+		-- A dynamic routine's own run deciding it while the decision is owed: a new at, effort or reply, or its conclusion.
+		-- A decision that also changes the title or the instructions is delegation, and so is every other routine change,
+		-- including the run's changes after it decided or after another change settled the decision (contract 16.3).
 		if v_kind = 'routine' and not coalesce(p_actor ->> 'wakeKind' = 'routine' and v_base ->> 'id' = p_actor ->> 'routineId'
 			and v_entry -> 'parse' ->> 'id' = p_actor ->> 'routineId' and v_base -> 'trigger' ->> 'when' = 'once'
 			and public.qorpera_company_state_routine_of_run((p_actor ->> 'runId')::uuid) = (p_actor ->> 'routineId')::uuid
+			and public.qorpera_routine_decision_pending((p_actor ->> 'runId')::uuid)
 			and ((v_entry -> 'parse' ->> 'status' = 'active' and v_entry -> 'parse' -> 'trigger' ->> 'when' = 'once'
 					and (v_entry -> 'parse') - array['trigger','effort','reply'] = v_base - array['trigger','effort','reply'])
 				or (v_entry -> 'parse' ->> 'status' = 'concluded'
@@ -1001,7 +1050,8 @@ returns void language plpgsql security definer set search_path = '' as $$
 declare
 	v_op text := p_unit ->> 'op'; v_profile uuid; v_user uuid; v_file record; v_kind text; v_entry jsonb; v_version uuid;
 	v_key text; v_staff record; v_room record; v_connection record; v_new_path text; v_actor jsonb; v_entries jsonb;
-	v_routine record; v_owner uuid; v_next bigint; v_created timestamptz;
+	v_routine record; v_owner uuid; v_next bigint; v_created timestamptz; v_commit public.qorpera_folder_commits%rowtype;
+	v_moved public.qorpera_cloud_routine_versions%rowtype; v_pay record; v_waits boolean;
 begin
 	select profile_id into v_profile from public.qorpera_company_files where environment_id = p_environment_id;
 	select jsonb_build_object('kind', c.actor_kind, 'requesterUserId', c.requester_id) into v_actor
@@ -1150,7 +1200,8 @@ begin
 		end loop;
 		-- Routine files follow their path: a new name is the new key, and a new agent folder the new owner (read after the
 		-- roster rows above were repointed), whose runs the routine then makes: a version like the last one with the new
-		-- agent, paid as before, at its schedule position.
+		-- agent, paid by the mover's login (S2), at its schedule position; without a paying login it waits for one.
+		select * into v_commit from public.qorpera_folder_commits where id = p_commit_id;
 		for v_routine in select r.id, r.folder_path, r.current_version, r.status from public.qorpera_cloud_routines r
 			where r.profile_id = v_profile and r.folder_environment_id = p_environment_id and r.folder_retired_at is null
 				and (r.folder_path = v_key collate "C"
@@ -1164,30 +1215,34 @@ begin
 			v_new_path := (select e.path from public.qorpera_folder_entries e where e.environment_id = p_environment_id
 				and e.key_sha256 = extensions.digest(public.qorpera_folder_key(v_new_path), 'sha256'));
 			v_owner := public.qorpera_company_state_routine_owner(p_environment_id, public.qorpera_folder_key(v_new_path));
-			v_next := v_routine.current_version;
-			if exists (select 1 from public.qorpera_cloud_routine_versions cv
-				where cv.routine_id = v_routine.id and cv.version = v_routine.current_version and cv.staff_agent_id is distinct from v_owner) then
+			v_next := v_routine.current_version; v_waits := false;
+			select * into v_moved from public.qorpera_cloud_routine_versions cv
+			where cv.routine_id = v_routine.id and cv.version = v_routine.current_version;
+			if v_moved.staff_agent_id is distinct from v_owner then
+				select * into v_pay from public.qorpera_company_state_routine_saver_pays(v_commit, v_profile, v_moved);
+				if v_pay.binding_id is null then raise exception 'A routine version has no login to pin' using errcode = 'XX000'; end if;
+				v_waits := not v_pay.paid and v_routine.status = 'active';
 				v_next := v_routine.current_version + 1;
 				insert into public.qorpera_cloud_routine_versions(routine_id, version, client_version_id, profile_id, environment_id,
 					staff_agent_id, title, prompt, triggers, effort, sponsor_binding_id, sponsor_version, content_sha256, created_by_user_id)
-				select cv.routine_id, v_next, extensions.gen_random_uuid(), cv.profile_id, cv.environment_id, v_owner, cv.title, cv.prompt,
-					cv.triggers, cv.effort, cv.sponsor_binding_id, cv.sponsor_version,
-					public.qorpera_company_state_routine_sha(v_owner, cv.title, cv.prompt, cv.triggers, cv.effort, cv.sponsor_binding_id,
-						cv.sponsor_version), cv.created_by_user_id
-				from public.qorpera_cloud_routine_versions cv where cv.routine_id = v_routine.id and cv.version = v_routine.current_version
+				values (v_routine.id, v_next, extensions.gen_random_uuid(), v_moved.profile_id, v_moved.environment_id, v_owner,
+					v_moved.title, v_moved.prompt, v_moved.triggers, v_moved.effort, v_pay.binding_id, v_pay.version,
+					public.qorpera_company_state_routine_sha(v_owner, v_moved.title, v_moved.prompt, v_moved.triggers, v_moved.effort,
+						v_pay.binding_id, v_pay.version), v_pay.user_id)
 				returning created_at into v_created;
 				insert into public.qorpera_cloud_routine_schedule_cursors(routine_id, routine_version, trigger_id, last_scheduled_for,
 					next_due_at)
 				select v_routine.id, v_next, t.value ->> 'id', position.last_scheduled_for, position.next_due_at
-				from public.qorpera_cloud_routine_versions cv
-				cross join lateral jsonb_array_elements(cv.triggers) t(value)
+				from jsonb_array_elements(v_moved.triggers) t(value)
 				cross join lateral public.qorpera_routine_version_schedule_position(v_routine.id, v_routine.current_version, t.value,
-					v_created, v_routine.status = 'active', v_routine.status = 'active') position
-				where cv.routine_id = v_routine.id and cv.version = v_next and t.value ->> 'kind' = 'schedule';
+					v_created, v_routine.status = 'active', v_routine.status = 'active' and not v_waits) position
+				where t.value ->> 'kind' = 'schedule';
 			end if;
 			update public.qorpera_cloud_routines set folder_path = v_new_path, folder_path_version = v_version,
 				folder_commit_id = p_commit_id, routine_key = public.qorpera_company_state_todo_key(v_new_path),
-				owner_staff_agent_id = v_owner, current_version = v_next, updated_at = statement_timestamp()
+				owner_staff_agent_id = v_owner, current_version = v_next,
+				status = case when v_waits then 'paused' else status end,
+				pause_reason = case when v_waits then 'needs_model_account' else pause_reason end, updated_at = statement_timestamp()
 			where id = v_routine.id;
 		end loop;
 		return;
@@ -1324,6 +1379,28 @@ begin
 end
 $$;
 
+-- The agent tools refuse on a folder-v2 company: its agents write routine files, and the runtime's writers of them come
+-- with F2-1b. Before the run's other checks, so nothing is recorded.
+do $$
+declare v_definition text; v_target regprocedure;
+	v_old constant text := $old$	v_run := public.qorpera_native_tool_locked_run(p_binding);
+$old$;
+	v_new constant text := $new$	v_run := public.qorpera_native_tool_locked_run(p_binding);
+	if exists (select 1 from public.qorpera_company_files f where f.profile_id = v_run.profile_id and f.core = 'folder-v2') then
+		raise exception 'This company keeps its routines in its agents'' routines folders; write the routine''s file'
+			using errcode = '55000'; end if;
+$new$;
+begin
+	foreach v_target in array array['public.qorpera_manage_agent_routine(jsonb,jsonb)'::regprocedure,
+		'public.qorpera_decide_agent_routine(jsonb,jsonb)'::regprocedure] loop
+		v_definition := pg_get_functiondef(v_target);
+		if (length(v_definition) - length(replace(v_definition, v_old, ''))) / length(v_old) <> 1 then
+			raise exception 'Routine tool guard anchor differs: %', v_target; end if;
+		execute replace(v_definition, v_old, v_new);
+	end loop;
+end
+$$;
+
 -- 6. Grants ------------------------------------------------------------------------------------------------------------
 
 revoke all on function public.qorpera_company_state_instant(jsonb) from public, anon, authenticated, service_role;
@@ -1337,6 +1414,10 @@ revoke all on function public.qorpera_company_state_routine_payer(uuid, uuid, uu
 revoke all on function public.qorpera_company_state_routine_paid(public.qorpera_cloud_routine_versions)
 	from public, anon, authenticated, service_role;
 revoke all on function public.qorpera_company_state_routine_of_run(uuid) from public, anon, authenticated, service_role;
+revoke all on function public.qorpera_company_state_routine_restarts(public.qorpera_cloud_routines, jsonb, jsonb)
+	from public, anon, authenticated, service_role;
+revoke all on function public.qorpera_company_state_routine_saver_pays(public.qorpera_folder_commits, uuid,
+	public.qorpera_cloud_routine_versions) from public, anon, authenticated, service_role;
 revoke all on function public.qorpera_company_state_routine_rules(uuid, uuid, jsonb, text, jsonb, boolean)
 	from public, anon, authenticated, service_role;
 revoke all on function public.qorpera_company_state_index_routine(uuid, uuid, uuid, text, uuid, jsonb)

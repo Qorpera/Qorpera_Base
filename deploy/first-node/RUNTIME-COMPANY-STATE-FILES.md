@@ -353,7 +353,7 @@ it; a different answer changes the parser and `qorpera_company_state_routine_tri
 | `id` | yes | UUID: the routine id cursors and occurrences use |
 | `title` | yes | 1–160 bytes |
 | `status` | yes | `active`, `paused`, `concluded` ("expired" is derived by the scheduler) |
-| `when` | yes | `every`, `weekly`, `window`, `once`, `file-change` (refused on `folder-v2` until core C4 brings the folder's file events) |
+| `when` | yes | `every`, `weekly`, `window`, `once`, `file-change` (refused on `folder-v2` until core C4 brings the folder's file events); `event` comes with W2 (#519): `hook` (the hook's lowercase uuid), optional `only` (1–20 distinct event types), plus `timezone` and `reply`, added by whichever of W2 and F2-6 lands second |
 | `minutes` | every, window | 5–10080 |
 | `starts` | every, weekly: optional | UTC instant, to the millisecond at most (what a schedule keeps) |
 | `days` | weekly (required), window (optional) | list of `mon`…`sun`, at least one |
@@ -377,12 +377,17 @@ it; a different answer changes the parser and `qorpera_company_state_routine_tri
 - A key of another `when` is refused by name.
 - The owner is the agent whose folder holds the file. Moving the file to another agent's
   `routines/` hands the routine over.
-- Who pays for a routine's runs is not in the file (the "starter pays" work, S2). A version is
-  paid by the saver's own login that pays for unattended work, as today's saves are: a member's,
-  or a run's requester's (the rule of `qorpera_agent_routine_sponsor`, read without its lock on
-  the login). A member without one cannot save a new version. A run whose requester has none
-  pins the run's login, and the routine waits (`needs_model_account`), as an agent's save does
-  today. A move keeps the payer. A resume on a login that stopped paying moves to the saver's.
+- Who pays for a routine's runs is not in the file (the "starter pays" work, S2: a member's login
+  pays only for work that member started). The saver's own login that pays for unattended work
+  (a member's, or a run's requester's; the rule of `qorpera_agent_routine_sponsor`, read without
+  its lock on the login) pays for a new version and for work a save starts or extends: a resume,
+  a reopen, reviving an expired routine, more runs, a later end, a handover to another agent. A
+  version on another login moves to the saver's. A pause, a conclusion, fewer runs, an earlier
+  end or new quiet hours need no login.
+- A member without such a login cannot make those saves. A run whose requester has none pins the
+  run's login, and the routine waits (`needs_model_account`). Unlike an agent's save today, the
+  commit never sets up a login for unattended work (that takes the login `FOR UPDATE` and writes
+  rows after the clock): the runtime's routine writer does it before its commit (F2-1b).
 - The index row's `origin` is who made the first commit: `agent` for a run, else `member`.
 
 **Versions and schedule positions:**
@@ -403,6 +408,8 @@ it; a different answer changes the parser and `qorpera_company_state_routine_tri
   writes it into the file. The only exceptions: a save revives an expired routine (the sweep
   expires it again while it has ended), and a new version with a paying login ends a wait for
   one. A platform commit's pause keeps the recorded reason.
+- A routine whose runs are used up has ended (`expired`), as the recorded occurrence at its limit
+  leaves it; more runs start it again.
 
 **Database rules (contract 16.3):**
 - While a run owes its routine's end-of-run decision, a unit from that run on that routine's
@@ -425,20 +432,29 @@ it; a different answer changes the parser and `qorpera_company_state_routine_tri
   queue exists, the runtime writes these pauses to the index only.
 
 **Review:** an agent creating, changing, moving or deleting a routine is delegation. The one
-exception is the routine run's own end-of-run decision, when the actor's wake is this routine's
-occurrence and only `at`, `effort`, `reply`, or `status: concluded` with `conclusion` change. A
+exception is the routine run's own end-of-run decision while it is owed, when the actor's wake is
+this routine's occurrence and only `at`, `effort`, `reply`, or `status: concluded` with
+`conclusion` change. After the run decided, or another change settled the decision, its changes
+are delegation. A run that concludes its routine (reviewed, for a fixed routine) keeps working to
+its end. A
 decision that also changes the title or the instructions is reviewed as delegation (contract
 16.3; `cloud-action-review.ts`).
 
 **Index:** a new routine inserts `qorpera_cloud_routines` (`client_routine_id` is the file's id)
 and its first version; deleting the file retires it (its runs and history stay) and gives its
 key a tombstone, as a todo's; a restore brings it back; a move repoints it, and a move to
-another agent's folder is a version like the last one with the new agent. The routine row is
+another agent's folder is a version like the last one with the new agent, paid by the mover. The routine row is
 locked at rank 5 `FOR NO KEY UPDATE` (a run of that routine holds it `FOR KEY SHARE`), with the
 company row at rank 2 for the rows' foreign keys. The scheduler takes the company row `FOR
 UPDATE` (its fence) before the routine, so it and a save wait for each other at the company row
 (test 709). The member RPC (`qorpera_upsert_cloud_routine`) refuses a `folder-v2` company's
-routines with 55000, except rows from before it became `folder-v2`. F1's C1b-3a (#497,
+routines with 55000, except rows from before it became `folder-v2`; the agent tools
+(`qorpera_manage_agent_routine`, `qorpera_decide_agent_routine`) refuse on a `folder-v2` company, whose
+agents write routine files (their file writers come with F2-1b). The name index
+(`qorpera_cloud_routines_agent_key`) covers file routines of either origin. Known: a save that
+carries several routines (an agent folder's delete or move) locks them in id order while the
+expiry sweep updates ended routines in its own order, so the two can deadlock (40P01; one side
+retries, nothing is wrong). F1's C1b-3a (#497,
 20260929230000) moves the company row to rank 0; F2-6 lands after it and takes the row there too
 (its migration stops if it would put it back at rank 2).
 

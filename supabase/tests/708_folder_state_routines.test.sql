@@ -101,6 +101,19 @@ begin
 	set local session_replication_role = origin;
 	return jsonb_build_object('kind','run','runId',v_run,'jobId',v_job,'runnerId',v_runner,'assignmentId',v_assignment);
 end $$;
+-- A slot the scheduler queued for a routine's current version (it counts toward runs).
+create function pg_temp.occurred(p_routine uuid) returns void language plpgsql as $$
+declare v_version public.qorpera_cloud_routine_versions := pg_temp.rv(p_routine); v_wake uuid := extensions.gen_random_uuid();
+begin
+	set local session_replication_role = replica;
+	insert into public.qorpera_wake_occurrences(id, profile_id, environment_id, routine_id, routine_version, trigger_id, occurrence_key,
+		scheduled_for, not_before, wake_kind, source_kind, source_id, status, staff_agent_id, staff_version, requested_by_user_id,
+		sponsor_binding_id, sponsor_version, causal_root_id, causal_agent_ids, causal_hop_count, payload)
+	values (v_wake, v_version.profile_id, v_version.environment_id, p_routine, v_version.version, 'file', v_wake::text, clock_timestamp(),
+		clock_timestamp(), 'routine', 'schedule', p_routine, 'queued', v_version.staff_agent_id, 1, v_version.created_by_user_id,
+		v_version.sponsor_binding_id, v_version.sponsor_version, v_wake, array[v_version.staff_agent_id], 0, '{}');
+	set local session_replication_role = origin;
+end $$;
 -- A run's change set with an allowed review, as an owner's "Allow" leaves it.
 create function pg_temp.reviewed(p_actor jsonb, p_key text, p_units jsonb) returns jsonb language plpgsql as $$
 declare v_review uuid;
@@ -213,23 +226,49 @@ do $$
 declare x public.qorpera_cloud_routines; c public.qorpera_cloud_routine_schedule_cursors; v_at timestamptz;
 	e1 constant uuid := '70800000-0000-4000-8000-0000000000e1';
 begin
-	-- The member has no login that pays for unattended work, yet pauses, resumes and times the routine.
+	-- The member has no login that pays for unattended work: they pause the routine, limit it and move its quiet hours,
+	-- but starting or extending its work needs a paying login (S2).
 	perform pg_temp.expect(pg_temp.commit(pg_temp.mem(), 'routine-0002', jsonb_build_array(pg_temp.routine('agents/nora/routines/inbox.md',
 		pg_temp.rparse(e1, 'Inbox', pg_temp.every(), '{"status":"paused"}')))), 1, 'saved');
 	x := pg_temp.rt(e1);
 	if x.status is distinct from 'paused' or x.pause_reason is distinct from 'member' or x.current_version is distinct from 1::bigint then
 		raise exception 'A pause is the row''s: %', to_jsonb(x); end if;
 	perform pg_temp.expect(pg_temp.commit(pg_temp.mem(), 'routine-0003', jsonb_build_array(pg_temp.routine('agents/nora/routines/inbox.md',
-		pg_temp.rparse(e1, 'Inbox', pg_temp.every(), '{"ends":"2031-01-01T00:00:00Z","runs":40,
+		pg_temp.rparse(e1, 'Inbox', pg_temp.every(), '{"status":"paused","ends":"2031-01-01T00:00:00Z","runs":40,
 			"quiet":{"start":"22:00","end":"07:00","timezone":"Europe/Copenhagen"}}')))), 1, 'saved');
 	x := pg_temp.rt(e1);
-	if x.status is distinct from 'active' or x.pause_reason is not null or x.current_version is distinct from 1::bigint
+	if x.status is distinct from 'paused' or x.current_version is distinct from 1::bigint
 		or x.expires_at is distinct from '2031-01-01T00:00:00Z'::timestamptz or x.max_occurrences is distinct from 40
 		or x.quiet_start is distinct from '22:00'::time or x.quiet_end is distinct from '07:00'::time
 		or x.quiet_time_zone is distinct from 'Europe/Copenhagen' then
-		raise exception 'A resume, the end, the runs and quiet hours are the row''s: %', to_jsonb(x); end if;
+		raise exception 'The end, the runs and quiet hours are the row''s: %', to_jsonb(x); end if;
+	if pg_temp.problem(pg_temp.commit(pg_temp.mem(), 'routine-0031', jsonb_build_array(pg_temp.routine('agents/nora/routines/inbox.md',
+		pg_temp.rparse(e1, 'Inbox', pg_temp.every(), '{"ends":"2031-01-01T00:00:00Z","runs":40,
+			"quiet":{"start":"22:00","end":"07:00","timezone":"Europe/Copenhagen"}}'))))) is distinct from
+		'a routine runs on the AI login of the member who saves it; connect yours in Settings, then save again' then
+		raise exception 'A resume needs the saver''s paying login'; end if;
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'routine-0032', jsonb_build_array(pg_temp.routine('agents/nora/routines/inbox.md',
+		pg_temp.rparse(e1, 'Inbox', pg_temp.every(), '{"ends":"2031-01-01T00:00:00Z","runs":40,
+			"quiet":{"start":"22:00","end":"07:00","timezone":"Europe/Copenhagen"}}')))), 1, 'saved');
+	x := pg_temp.rt(e1);
+	if x.status is distinct from 'active' or x.pause_reason is not null or x.current_version is distinct from 1::bigint then
+		raise exception 'The owner resumes on the login already pinned: %', to_jsonb(x); end if;
+	perform pg_temp.expect(pg_temp.commit(pg_temp.mem(), 'routine-0033', jsonb_build_array(pg_temp.routine('agents/nora/routines/inbox.md',
+		pg_temp.rparse(e1, 'Inbox', pg_temp.every(), '{"ends":"2030-06-01T00:00:00Z","runs":30,
+			"quiet":{"start":"22:00","end":"07:00","timezone":"Europe/Copenhagen"}}')))), 1, 'saved');
+	if (pg_temp.rt(e1)).max_occurrences is distinct from 30 or (pg_temp.rt(e1)).status is distinct from 'active' then
+		raise exception 'Fewer runs and an earlier end need no login: %', to_jsonb(pg_temp.rt(e1)); end if;
+	if pg_temp.problem(pg_temp.commit(pg_temp.mem(), 'routine-0034', jsonb_build_array(pg_temp.routine('agents/nora/routines/inbox.md',
+		pg_temp.rparse(e1, 'Inbox', pg_temp.every(), '{"ends":"2030-06-01T00:00:00Z","runs":50,
+			"quiet":{"start":"22:00","end":"07:00","timezone":"Europe/Copenhagen"}}'))))) is distinct from
+		'a routine runs on the AI login of the member who saves it; connect yours in Settings, then save again'
+		or pg_temp.problem(pg_temp.commit(pg_temp.mem(), 'routine-0035', jsonb_build_array(pg_temp.routine('agents/nora/routines/inbox.md',
+		pg_temp.rparse(e1, 'Inbox', pg_temp.every(), '{"ends":"2031-06-01T00:00:00Z","runs":30,
+			"quiet":{"start":"22:00","end":"07:00","timezone":"Europe/Copenhagen"}}'))))) is distinct from
+		'a routine runs on the AI login of the member who saves it; connect yours in Settings, then save again' then
+		raise exception 'More runs or a later end need the saver''s paying login'; end if;
 	if pg_temp.problem(pg_temp.commit(pg_temp.mem(), 'routine-0004', jsonb_build_array(pg_temp.routine('agents/nora/routines/inbox.md',
-		pg_temp.rparse(e1, 'Inbox today', pg_temp.every(), '{"ends":"2031-01-01T00:00:00Z","runs":40,
+		pg_temp.rparse(e1, 'Inbox today', pg_temp.every(), '{"ends":"2030-06-01T00:00:00Z","runs":30,
 			"quiet":{"start":"22:00","end":"07:00","timezone":"Europe/Copenhagen"}}'))))) is distinct from
 		'a routine runs on the AI login of the member who saves it; connect yours in Settings, then save again' then
 		raise exception 'A member without a paying login makes no version'; end if;
@@ -315,6 +354,14 @@ begin
 	x := pg_temp.rt(e1);
 	if x.status is distinct from 'active' or x.expired_while_active or x.expires_at is distinct from '2031-01-01T00:00:00Z'::timestamptz then
 		raise exception 'A save revives an expired routine: %', to_jsonb(x); end if;
+	-- A routine whose runs are used up has ended; more runs start it again.
+	perform pg_temp.occurred(e1);
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'record-0008', jsonb_build_array(pg_temp.routine('agents/nora/routines/inbox.md',
+		pg_temp.rparse(e1, 'Inbox, weekdays', pg_temp.every(30), '{"effort":"high","ends":"2031-01-01T00:00:00Z","runs":1}')))), 1, 'saved');
+	if (pg_temp.rt(e1)).status is distinct from 'expired' then raise exception 'Used-up runs end it: %', to_jsonb(pg_temp.rt(e1)); end if;
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'record-0009', jsonb_build_array(pg_temp.routine('agents/nora/routines/inbox.md',
+		pg_temp.rparse(e1, 'Inbox, weekdays', pg_temp.every(30), '{"effort":"high","ends":"2031-01-01T00:00:00Z"}')))), 1, 'saved');
+	if (pg_temp.rt(e1)).status is distinct from 'active' then raise exception 'More runs start it again: %', to_jsonb(pg_temp.rt(e1)); end if;
 end $$;
 
 -- 5. The trigger a version stores for weekly and window timing ------------------------------------------------------------------
@@ -414,6 +461,15 @@ begin
 	if pg_temp.problem(pg_temp.commit(pg_temp.owner(), 'rule-0012', jsonb_build_array(pg_temp.routine('agents/nora/routines/legacy.md',
 		pg_temp.rparse(ea, 'Legacy', pg_temp.every()))))) is distinct from 'this agent has another routine called legacy; choose another name' then
 		raise exception 'An agent''s routine names stay unique'; end if;
+	-- The name index covers file routines of either origin: no row of any origin takes the name of a member's file routine.
+	begin
+		perform pg_temp.fx(format($f$insert into public.qorpera_cloud_routines(id, profile_id, environment_id, client_routine_id, status,
+			created_by_user_id, origin, owner_staff_agent_id, routine_key) values (%L, %L, %L, %L, 'active', %L, 'agent', %L, 'inbox')$f$,
+			extensions.gen_random_uuid(), '70700000-0000-4000-8000-000000000010', '70700000-0000-4000-8000-000000000020',
+			extensions.gen_random_uuid(), '70700000-0000-4000-8000-000000000001', '70700000-0000-4000-8000-0000000000a1'));
+		raise exception 'A second row took a file routine''s name';
+	exception when unique_violation then null;
+	end;
 	-- The parse's shape, the same rules as the TS parser's.
 	perform pg_temp.misread('shape-0001', pg_temp.rparse(ea, 'X', pg_temp.once('2030-01-01T09:00:00Z'), '{"runs":3}'), 'runs');
 	perform pg_temp.misread('shape-0002', pg_temp.rparse(ea, 'X', pg_temp.every(), '{"conclusion":"Done."}'), 'conclusion');
@@ -481,6 +537,11 @@ begin
 		pg_temp.move('agents/otto/routines/report.md', 'agents/nora/routines/legacy.md')))) is distinct from
 		'that agent has another routine called legacy; choose another name' then
 		raise exception 'A moved routine keeps names unique'; end if;
+	-- A handover makes the new agent's runs: a member without a paying login cannot move a routine to another agent.
+	if pg_temp.problem(pg_temp.commit(pg_temp.mem(), 'move-0051', jsonb_build_array(
+		pg_temp.move('agents/otto/routines/report.md', 'agents/nora/routines/report.md')))) is distinct from
+		'a routine handed to another agent runs on the AI login of the member who moves it; connect yours in Settings, then move it again' then
+		raise exception 'A handover needs the mover''s paying login'; end if;
 	-- An agent's rename carries its routines, which keep their agent and version.
 	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'move-0006', jsonb_build_array(pg_temp.move('agents/otto', 'agents/otis'))), 1, 'saved');
 	if (pg_temp.rt(e2)).folder_path is distinct from 'agents/otis/routines/report.md' or (pg_temp.rt(e2)).current_version is distinct from 2::bigint
@@ -566,6 +627,10 @@ begin
 		pg_temp.rparse(e8, 'Follow up', pg_temp.once('2030-01-01T09:00:00Z'))))), 1, 'saved');
 	if (pg_temp.rt(e8)).current_version is distinct from 2::bigint or public.qorpera_routine_decision_pending((b ->> 'runId')::uuid) then
 		raise exception 'The same at is a decision: %', to_jsonb(pg_temp.rt(e8)); end if;
+	-- Once it decided, its further changes are delegation.
+	if pg_temp.review_class(b, pg_temp.routine(p, pg_temp.rparse(e8, 'Follow up', pg_temp.once('2030-02-01T09:00:00Z'))))
+			is distinct from 'delegation' then
+		raise exception 'A decided run''s change is delegation'; end if;
 	-- The next run decides a new at and more effort, a new version paid as before.
 	c := pg_temp.routine_run(e8);
 	perform pg_temp.expect(pg_temp.commit(c, 'dynamic-0009', jsonb_build_array(pg_temp.routine(p,
@@ -605,6 +670,21 @@ begin
 	if pg_temp.review_class(b, pg_temp.routine('agents/nora/routines/later.md', pg_temp.rparse('70800000-0000-4000-8000-0000000000ef',
 		'Later', pg_temp.once('2030-02-01T09:00:00Z')))) is distinct from 'delegation' then
 		raise exception 'A scheduled run''s change is delegation'; end if;
+	-- A run of a fixed routine concludes it (a reviewed change) and keeps working to its end.
+	perform pg_temp.expect(pg_temp.reviewed(a, 'dynamic-0015', jsonb_build_array(pg_temp.routine('agents/nora/routines/inbox.md',
+		pg_temp.rparse('70800000-0000-4000-8000-0000000000ec', 'New inbox', pg_temp.every(), '{"status":"concluded","conclusion":"Inbox zero."}')))),
+		1, 'saved');
+	if (pg_temp.rt('70800000-0000-4000-8000-0000000000ec')).concluded_by_run_id is distinct from (a ->> 'runId')::uuid then
+		raise exception 'The run that concluded its routine: %', to_jsonb(pg_temp.rt('70800000-0000-4000-8000-0000000000ec')); end if;
+	perform public.qorpera_folder_run_resolve('70700000-0000-4000-8000-000000000020', '70700000-0000-4000-8000-000000000010', a);
+	-- A dynamic routine handed to another agent keeps being dynamic, on the mover's login.
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'dynamic-0016', jsonb_build_array(
+		pg_temp.move(p, 'agents/otis/routines/follow-up.md'))), 1, 'saved');
+	x := pg_temp.rt(e8); v := pg_temp.rv(e8);
+	if x.owner_staff_agent_id is distinct from '70700000-0000-4000-8000-0000000000a2' or x.current_version is distinct from 5::bigint
+		or v.staff_agent_id is distinct from '70700000-0000-4000-8000-0000000000a2' or v.triggers -> 0 ->> 'kind' is distinct from 'once'
+		or x.origin is distinct from 'agent' then
+		raise exception 'A dynamic routine''s handover: %, %', to_jsonb(x), to_jsonb(v); end if;
 end $$;
 
 -- 9. A run whose requester has no paying login: the routine waits for one ----------------------------------------------------
