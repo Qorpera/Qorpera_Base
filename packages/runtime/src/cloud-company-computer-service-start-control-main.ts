@@ -1,7 +1,5 @@
-import { realpathSync } from "node:fs";
-import { basename, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import { parseCompanyComputerPreparationCommand } from "@qorpera/contracts";
+import { runCompanyComputerControlEntry } from "./cloud-company-computer-control-entry.ts";
 import { lockedCompanyComputerControlChild } from "./cloud-company-computer-preparation-control-main.ts";
 import {
 	controlCompanyComputerServiceStart,
@@ -56,23 +54,13 @@ export async function runCompanyComputerServiceStartControlMain(args: readonly s
 		process.removeListener("SIGTERM", shutdown);
 	}
 }
-if (
-	process.argv[1] &&
-	[
+runCompanyComputerControlEntry({
+	moduleUrl: import.meta.url,
+	names: [
 		"cloud-company-computer-service-start-control-main.ts",
 		"qorpera-company-computer-service-start-control.mjs",
-	].includes(basename(process.argv[1])) &&
-	realpathSync(resolve(process.argv[1])) === realpathSync(fileURLToPath(import.meta.url))
-) {
-	if (process.argv.length === 3 && process.argv[2] === "--help")
-		console.log(
-			"Protected office service start. Requires completed configuration and the existing kernel lock; activation remains provider-controlled.",
-		);
-	else
-		runCompanyComputerServiceStartControlMain(process.argv.slice(2)).catch(() => {
-			console.error(
-				"Office service start could not confirm protected configuration and the current service invocation.",
-			);
-			process.exitCode = 1;
-		});
-}
+	],
+	help: "Protected office service start. Requires completed configuration and the existing kernel lock; activation remains provider-controlled.",
+	failure: "Office service start could not confirm protected configuration and the current service invocation.",
+	run: runCompanyComputerServiceStartControlMain,
+});

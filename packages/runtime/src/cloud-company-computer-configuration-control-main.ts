@@ -1,8 +1,6 @@
-import { realpathSync } from "node:fs";
-import { basename, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import { parseCompanyComputerPreparationCommand } from "@qorpera/contracts";
 import { controlCompanyComputerConfiguration } from "./cloud-company-computer-configuration-control.ts";
+import { runCompanyComputerControlEntry } from "./cloud-company-computer-control-entry.ts";
 import { lockedCompanyComputerControlChild } from "./cloud-company-computer-preparation-control-main.ts";
 import { createCompanyComputerPreparationSystemdManager } from "./cloud-company-computer-preparation-systemd.ts";
 
@@ -36,23 +34,13 @@ export async function runCompanyComputerConfigurationControlMain(args: readonly 
 	}
 }
 
-if (
-	process.argv[1] &&
-	[
+runCompanyComputerControlEntry({
+	moduleUrl: import.meta.url,
+	names: [
 		"cloud-company-computer-configuration-control-main.ts",
 		"qorpera-company-computer-configuration-control.mjs",
-	].includes(basename(process.argv[1])) &&
-	realpathSync(resolve(process.argv[1])) === realpathSync(fileURLToPath(import.meta.url))
-) {
-	if (process.argv.length === 3 && process.argv[2] === "--help")
-		console.log(
-			"Protected office configuration installation. Requires completed preparation and the existing kernel lock; never activates or starts the office.",
-		);
-	else
-		runCompanyComputerConfigurationControlMain(process.argv.slice(2)).catch(() => {
-			console.error(
-				"Office configuration installation could not confirm protected preparation, configuration and credentials.",
-			);
-			process.exitCode = 1;
-		});
-}
+	],
+	help: "Protected office configuration installation. Requires completed preparation and the existing kernel lock; never activates or starts the office.",
+	failure: "Office configuration installation could not confirm protected preparation, configuration and credentials.",
+	run: runCompanyComputerConfigurationControlMain,
+});

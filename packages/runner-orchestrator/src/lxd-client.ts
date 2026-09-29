@@ -1926,8 +1926,11 @@ export class LxdUnixClient
 					"wait-for-websocket": false,
 					// LXD's VM exec bridge closes its control socket early when
 					// stdout/stderr have no recording targets, killing the guest
-					// command. Pinned controls emit only fixed diagnostics; their
-					// protected requests and credentials never enter these streams.
+					// command. LXD keeps the recorded output on the host, so every
+					// pinned control writes nothing on success and one fixed line on
+					// failure; the locked child that reads protected requests and
+					// credentials runs with ignored stdio (guest README, "Recorded
+					// exec output").
 					"record-output": true,
 					user: 0,
 					group: 0,
