@@ -512,8 +512,20 @@ Coordinator (nothing secret):
     recorded more than about 40 minutes late (grace plus the email's ten-minute wait) sends a
     false "out of hours".
 
-  Machines not starting or waking (6b), the finishing window and the renewal-gap handling for
-  machines (6c part 2), and the web (6d) follow. Before the live switch:
+- Build step 6c part 3b (migration `20260929270000`, the finishing window for runs): one hour
+  after a company ran out, while it is still at zero (`qorpera_computer_hour_finish_window_over`,
+  which checks at zero again, so a record up to one sweep old never ends work):
+  - the orchestrator heartbeat (`qorpera_reconcile_runner_orchestrator_without_sponsored_turns`)
+    ends the company's leased jobs through `qorpera_terminalize_runner_attempt(job, 'failed',
+    'Out of computer hours [code=COMPUTER_HOURS_EXHAUSTED]', false)`, after its deadline, sponsor
+    and computer checks, and fails its queued jobs with the same reason, beside its other
+    queued-job failures. No retry; no routine is paused and no worker cancelled;
+  - an in-house worker so ended reports reason `out_of_computer_hours` ("The background work was
+    stopped because the company is out of computer hours.") to its parent, from
+    `qorpera_drain_worker_wakes`.
+
+  Machines not starting or waking, and stopping after the hour (6b), the renewal-gap handling for
+  machines, and the web (6d) follow. Before the live switch:
   - the listing checks zero per routine (for the page and for the next-page check), and with the
     rule on each check sums the company's hours (about 0.4 ms locally): check each company once,
     and measure with production-sized data;
