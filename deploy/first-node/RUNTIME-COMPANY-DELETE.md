@@ -83,8 +83,9 @@ records what it waits for.
   `office-retired.json` from SQL's receipt; with that marker the provider, the fleet unit on that host
   and the root host guards make no call, and the provider service ends. It needs a new office provider
   build, reinstalled per office in the coordinator's lane below. Not covered, and held for an operator: offices whose VM was created but
-  never activated, offices mid-reset, and an office whose resume (a wake before the deletion) was under
-  way when the deletion came (its boot intent or successor stays; the pause keeps it from finishing).
+  never activated, offices mid-reset, an office whose resume (a wake before the deletion) was under
+  way when the deletion came (its boot intent or successor stays; the pause keeps it from finishing),
+  and an office whose node rebooted between its power-off record and its node-demand suspension.
   Coordinator's lane for D3b (after the release carrying 20260929320000 is live):
   1. Package the office provider and the office fleet from the release commit
      (`scripts/package-lxd-office-provider.mjs`, `scripts/package-lxd-office-fleet.mjs`).

@@ -106,8 +106,10 @@ Boundary of the current implementation:
 deleted (RUNTIME-COMPANY-DELETE.md, D3; migration
 `20260929320000_runtime_office_retirement.sql`). It runs only after the
 power-off worker's confirmed `powered_off` for a `power_off` transition with no
-resume, or after that power-off's completion when the power-off worker cannot
-replay it because the node rebooted since. Until a delete is pinned, SQL is asked
+resume, or after that power-off's completion when its replay fails (for
+example after a node reboot: the power-off worker binds its host boot). The
+retirement worker rechecks the completion, the lineage and the stopped VM
+itself. Until a delete is pinned, SQL is asked
 at most once a minute per process; it answers null while the company lives. For a deleting company SQL
 issues one delete command id; the worker pins it in
 `office-retirement-request.json` (with the power-off request) before anything
@@ -137,8 +139,10 @@ copy of a deleted company's machine is kept. The private
 `/var/lib/qorpera-office-events` outbox is lost with the root, including
 undelivered records. The workbench is a host directory and is not touched here
 (deleted-company NAS queue, D5). Not retired, and held for an operator: a
-computer created but never activated, one mid-reset, and one whose resume was
-under way at the deletion.
+computer created but never activated, one mid-reset, one whose resume was
+under way at the deletion, and one whose node rebooted between the power-off
+record and its node-demand suspension (SQL keeps answering "not ready" until an
+operator suspends the demand).
 
 ## Destructive maintenance and host loss
 
