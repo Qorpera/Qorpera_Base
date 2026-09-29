@@ -463,9 +463,36 @@ Coordinator (nothing secret):
 
 ## Zero (build step 6; built switched off)
 
-- The check is `qorpera_company_computer_hours_left(p_profile_id)` (step 3): more than zero, or
-  null for a complimentary company.
-- A complimentary company always passes.
+- The check is `qorpera_company_at_zero(p_profile_id, at)` (migration `20260929200000`). It is true
+  only when the rule is switched on (`qorpera_computer_hour_billing.zero_rule_since`, null until the
+  live switch), payments are live (dry-run balances never hold work), and
+  `qorpera_company_computer_hours_left(p_profile_id)` (step 3) is zero or less. That value is null
+  for a complimentary company, which always passes. There is a renewal grace: a founder's plan
+  period that ended in the last 30 minutes still counts as paying, while no next period is recorded
+  and its subscription is `active` or `past_due`. Stripe's renewal invoice can trail the period's
+  end by minutes, and the subscription's own dates can move first.
+- Build step 6a (migration `20260929200000`, runs only):
+  - wakes stay queued with `blocked_reason = 'Waiting for computer hours'`;
+  - the routine listing (`qorpera_list_routine_schedule_heads`) leaves the company's due routines
+    out, so the orchestrator does not ask about each one on every pass;
+  - a routine's slot asked for anyway is deferred, as while the company is paused: no wake is
+    queued and the cursor stays, so the slot is offered again once hours arrive, and waiting work
+    does not pile up;
+  - member messages, turn requests and proposal reviews are not picked (checked again after the
+    admission lock) and stay queued;
+  - members see the wait through `waitingForHours` in `qorpera_read_company_computer_hours`;
+  - the two direct enqueue calls (legacy clients) are refused (55000) after their idempotent
+    replay, so a retry of work made before zero still answers;
+  - a BEFORE INSERT trigger on `qorpera_execution_runs` stops any path that did not check.
+
+  Machines not starting or waking (6b), the finishing window, the zero "out of hours" notice and
+  the renewal-gap handling for machines (6c), and the web (6d) follow. Before the live switch:
+  - the listing checks zero per routine (for the page and for the next-page check), and with the
+    rule on each check sums the company's hours (about 0.4 ms locally): check each company once,
+    and measure with production-sized data;
+  - held wakes still take the wake step's slots and locks, as a paused company's do;
+  - a routine created or retimed at zero gets its first slot only once hours arrive, so 6d shows
+    "Waiting for computer hours" on it.
 - It is checked before a run is created (not at claim or placement: a run waiting there is
   invisible to members) and at each machine kind's own start or wake step. A run created before
   the company ran out is running work. The hook list is agreed with the nodes (S3), machines,
@@ -501,9 +528,8 @@ Coordinator (nothing secret):
   never sees it. It needs its own occasion, and step 5's claim rule, which drops an "out of hours"
   unless the company still owes in the same time, must learn to keep it.
 - A plan renewal is recorded when Stripe's renewal invoice arrives, which can trail the period's
-  end by minutes. The check must not hold work back in that gap: for instance, it can treat a
-  founder's active subscription whose recorded period just ended as still paying for a short
-  grace window.
+  end by minutes. The check must not hold work back in that gap. For runs, 6a's renewal grace does
+  this (see above); machines follow in 6c.
 - It ships switched off, in its own release, with a 30-minute database watch after the cut. It is
   switched on together with live payments and hour notices.
 
