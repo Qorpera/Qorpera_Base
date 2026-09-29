@@ -1,5 +1,6 @@
 -- @fixture 300_runtime_wake_bus.test.sql until "-- END WAKE FIXTURE"
--- Deleting a company that has used its agents (20260929120000). Before, qorpera_delete_hosted_profile
+-- Deleting a company that has used its agents (20260928248920, and since 20260928249150 in two steps:
+-- the request hides the company and stops its work, the finisher purges it). Before, qorpera_delete_hosted_profile
 -- failed with 23503 for any company with a run: runner assignments, claims, leases and events restrict
 -- their parents and have no link to the company. Here the fixture company finishes one real run that
 -- wrote a Company File note, keeps a second run working, has a routine, and is then deleted by its
@@ -24,6 +25,12 @@ declare v_role text;
 begin
 	foreach v_role in array array['anon', 'authenticated', 'service_role'] loop
 		if has_function_privilege(v_role, 'public.qorpera_purge_company(uuid)', 'EXECUTE')
+			or has_function_privilege(v_role, 'public.qorpera_request_company_deletion(uuid,uuid)', 'EXECUTE')
+			or has_function_privilege(v_role, 'public.qorpera_stop_company_work(uuid)', 'EXECUTE')
+			or has_function_privilege(v_role, 'public.qorpera_finish_company_deletion(uuid)', 'EXECUTE')
+			or has_function_privilege(v_role, 'public.qorpera_finish_company_deletions(integer)', 'EXECUTE')
+			or has_table_privilege(v_role, 'public.qorpera_company_deletions', 'INSERT,SELECT,UPDATE,DELETE')
+			or has_function_privilege(v_role, 'public.qorpera_company_deleting(uuid)', 'EXECUTE')
 			or has_function_privilege(v_role, 'public.qorpera_company_purge_active()', 'EXECUTE')
 			or has_function_privilege(v_role, 'public.qorpera_company_node_holdings(uuid)', 'EXECUTE')
 			or has_table_privilege(v_role, 'public.qorpera_company_purges', 'INSERT,SELECT,UPDATE,DELETE')
@@ -221,26 +228,83 @@ set local role authenticated;
 select public.qorpera_leave_hosted_profile('30000000-0000-4000-8000-000000000010');
 reset role;
 
--- 4. A machine still on a node refuses the delete, and nothing is removed. A released machine is
--- only a record and goes with the company. A sign-in identity a node may still hold refuses it too,
--- released or not; so do a node's latest update target naming the company, and a row of another
--- company that depends on this one.
+-- A pending invitation, which the delete withdraws.
+insert into public.qorpera_profile_invitations(profile_id, email, role, invited_by_user_id, expires_at)
+values ('30000000-0000-4000-8000-000000000010', 'late-invitee@example.test', 'contributor',
+	'30000000-0000-4000-8000-000000000001', clock_timestamp() + interval '7 days');
+select set_config('qorpera_test.delete_fence', (select revision::text from public.qorpera_company_wake_admission_fences
+	where profile_id = '30000000-0000-4000-8000-000000000010'), true);
+
+-- 4. The last member deletes the company (20260928249150). It disappears at once and all its work
+-- stops, but its rows stay until the nodes hold nothing of it.
+select pg_temp.path_claims('authenticated', '30000000-0000-4000-8000-000000000001');
+set local role authenticated;
+select public.qorpera_delete_hosted_profile('30000000-0000-4000-8000-000000000010');
+do $$
+begin
+	if public.qorpera_member_role('30000000-0000-4000-8000-000000000010') is not null
+		or public.qorpera_list_hosted_profiles() @> jsonb_build_array(jsonb_build_object(
+			'profile_id', '30000000-0000-4000-8000-000000000010'))
+		or exists (select 1 from public.qorpera_company_environments
+			where profile_id = '30000000-0000-4000-8000-000000000010')
+		or (select status from public.qorpera_profile_access_state
+			where profile_id = '30000000-0000-4000-8000-000000000010'
+				and user_id = '30000000-0000-4000-8000-000000000001') is distinct from 'revoked' then
+		raise exception 'A company being deleted is still visible to its member';
+	end if;
+end
+$$;
+select pg_temp.refused($q$select public.qorpera_profile_team_info('30000000-0000-4000-8000-000000000010')$q$,
+	'42501', 'profile read access is required');
+select pg_temp.refused($q$select public.qorpera_delete_hosted_profile('30000000-0000-4000-8000-000000000010')$q$,
+	'42501', 'deleting a company requires membership');
+reset role;
+do $$
+declare v_working jsonb := current_setting('qorpera_test.delete_working')::jsonb;
+begin
+	if not public.qorpera_company_execution_paused('30000000-0000-4000-8000-000000000010')
+		or not exists (select 1 from public.qorpera_company_execution_pauses
+			where profile_id = '30000000-0000-4000-8000-000000000010' and reason = 'Company deleted')
+		or (select revision from public.qorpera_company_wake_admission_fences
+			where profile_id = '30000000-0000-4000-8000-000000000010') <= current_setting('qorpera_test.delete_fence')::bigint then
+		raise exception 'A company being deleted is not paused';
+	end if;
+	if exists (select 1 from public.qorpera_runner_jobs
+			where profile_id = '30000000-0000-4000-8000-000000000010' and status in ('queued', 'leased'))
+		or (select status from public.qorpera_runner_jobs where id = (v_working ->> 'jobId')::uuid) <> 'failed'
+		or exists (select 1 from public.qorpera_profile_invitations where profile_id = '30000000-0000-4000-8000-000000000010') then
+		raise exception 'A company being deleted still has work or invitations';
+	end if;
+	if not exists (select 1 from public.qorpera_profiles where id = '30000000-0000-4000-8000-000000000010')
+		or (select count(*) from public.qorpera_execution_runs where profile_id = '30000000-0000-4000-8000-000000000010')
+			<> (select cardinality(runs) from delete_before) then
+		raise exception 'Requesting the deletion removed rows before the nodes were clear';
+	end if;
+end
+$$;
+select pg_temp.refused($q$select public.qorpera_set_company_execution_pause('30000000-0000-4000-8000-000000000010', false)$q$,
+	'55000', 'The company is being deleted');
+
+-- 5. A machine still on a node keeps the deletion waiting, and nothing is removed. A released machine
+-- is only a record and goes with the company. A sign-in identity a node may still hold waits too,
+-- released or not; so does a node's latest update target naming the company; and a row of another
+-- company that depends on this one fails the purge, which is recorded and retried.
+create function pg_temp.finish() returns jsonb language sql as $$
+	select public.qorpera_finish_company_deletion('30000000-0000-4000-8000-000000000010')
+$$;
 insert into public.qorpera_runtime_machine_allocations(id, profile_id, run_id, runner_id, provider_adapter, instance_sha256)
 select '30000000-0000-4000-8000-000000000160', '30000000-0000-4000-8000-000000000010',
 	(binding ->> 'runId')::uuid, (binding ->> 'runnerId')::uuid, 'lxd', repeat('7', 64)
 from (select current_setting('qorpera_test.delete_working')::jsonb as binding) as working;
-select pg_temp.path_claims('authenticated', '30000000-0000-4000-8000-000000000001');
-set local role authenticated;
-select pg_temp.refused($q$select public.qorpera_delete_hosted_profile('30000000-0000-4000-8000-000000000010')$q$,
-	'55000', 'This company still has machines running on our servers, so it cannot be deleted yet');
-reset role;
 do $$
+declare v_result jsonb := pg_temp.finish();
 begin
-	if not exists (select 1 from public.qorpera_profiles where id = '30000000-0000-4000-8000-000000000010')
-		or (select count(*) from public.qorpera_execution_runs where profile_id = '30000000-0000-4000-8000-000000000010')
-			<> (select cardinality(runs) from delete_before)
+	if v_result ->> 'state' <> 'waiting' or v_result #>> '{holdings,machines}' <> '1'
+		or (select holdings #>> '{machines}' from public.qorpera_company_deletions
+			where profile_id = '30000000-0000-4000-8000-000000000010') <> '1'
+		or not exists (select 1 from public.qorpera_profiles where id = '30000000-0000-4000-8000-000000000010')
 		or exists (select 1 from public.qorpera_company_purges) then
-		raise exception 'A refused delete changed the company';
+		raise exception 'A machine on a node did not keep the deletion waiting: %', v_result;
 	end if;
 end
 $$;
@@ -254,11 +318,7 @@ values ('30000000-0000-4000-8000-000000000161', '30000000-0000-4000-8000-0000000
 	(current_setting('qorpera_test.wake_login')::jsonb ->> 'login_id')::uuid,
 	(current_setting('qorpera_test.wake_identity')::jsonb ->> 'compute_identity_id')::uuid,
 	'lxd-login', repeat('8', 64), clock_timestamp());
-select pg_temp.path_claims('authenticated', '30000000-0000-4000-8000-000000000001');
-set local role authenticated;
-select pg_temp.refused($q$select public.qorpera_delete_hosted_profile('30000000-0000-4000-8000-000000000010')$q$,
-	'55000', 'This company still has sign-ins stored on our servers, so it cannot be deleted yet');
-reset role;
+select pg_temp.wake_assert(pg_temp.finish() #>> '{holdings,identities}' = '1', 'A stored sign-in keeps the deletion waiting');
 rollback to signed_in_identity;
 
 savepoint node_update;
@@ -273,11 +333,9 @@ insert into public.qorpera_node_update_targets(node_id, revision, release_sha256
 	publication_evidence_sha256, company_ids)
 values ('30000000-0000-4000-8000-000000000180', 1, repeat('d', 64), '{}', 'fixture', repeat('e', 64),
 	array['30000000-0000-4000-8000-000000000010'::uuid]);
-select pg_temp.path_claims('authenticated', '30000000-0000-4000-8000-000000000001');
-set local role authenticated;
-select pg_temp.refused($q$select public.qorpera_delete_hosted_profile('30000000-0000-4000-8000-000000000010')$q$,
+select pg_temp.wake_assert(pg_temp.finish() #>> '{holdings,node_updates}' = '1', 'An update target keeps the deletion waiting');
+select pg_temp.refused($q$select public.qorpera_purge_company('30000000-0000-4000-8000-000000000010')$q$,
 	'55000', 'This company is part of a server update, so it cannot be deleted yet');
-reset role;
 rollback to node_update;
 
 savepoint neighbour_row;
@@ -286,11 +344,18 @@ insert into public.qorpera_runtime_machine_allocations(id, profile_id, run_id, r
 select '30000000-0000-4000-8000-000000000162', current_setting('qorpera_test.delete_neighbour')::uuid,
 	(binding ->> 'runId')::uuid, (binding ->> 'runnerId')::uuid, 'lxd', repeat('6', 64), clock_timestamp()
 from (select current_setting('qorpera_test.wake_binding')::jsonb as binding) as first_run;
-select pg_temp.path_claims('authenticated', '30000000-0000-4000-8000-000000000001');
-set local role authenticated;
-select pg_temp.refused($q$select public.qorpera_delete_hosted_profile('30000000-0000-4000-8000-000000000010')$q$,
-	'55000', 'Rows of another company depend on this company (public.qorpera_runtime_machine_allocations)');
-reset role;
+do $$
+declare v_result jsonb := pg_temp.finish();
+begin
+	if v_result ->> 'state' <> 'failed'
+		or v_result ->> 'error' <> '55000: Rows of another company depend on this company (public.qorpera_runtime_machine_allocations)'
+		or (select last_error from public.qorpera_company_deletions where profile_id = '30000000-0000-4000-8000-000000000010')
+			<> v_result ->> 'error'
+		or not exists (select 1 from public.qorpera_profiles where id = '30000000-0000-4000-8000-000000000010') then
+		raise exception 'A failed purge was not recorded, or it changed the company: %', v_result;
+	end if;
+end
+$$;
 rollback to neighbour_row;
 
 -- The purge deletes exactly the rows it found, table by table: no cascade reaches further.
@@ -322,14 +387,25 @@ end
 $$;
 rollback to exact_rows;
 
--- 5. The last member deletes the company.
-select pg_temp.path_claims('authenticated', '30000000-0000-4000-8000-000000000001');
-set local role authenticated;
-select public.qorpera_delete_hosted_profile('30000000-0000-4000-8000-000000000010');
-reset role;
+-- 6. With the nodes clear, the operator's finisher purges the company; the deletion record stays.
+do $$
+declare v_result jsonb := public.qorpera_finish_company_deletions(5);
+begin
+	if not v_result -> 'companies' @> jsonb_build_array(jsonb_build_object(
+			'profileId', '30000000-0000-4000-8000-000000000010', 'state', 'purged'))
+		or (select purged_at is null or last_error is not null from public.qorpera_company_deletions
+			where profile_id = '30000000-0000-4000-8000-000000000010')
+		or pg_temp.finish() ->> 'state' <> 'purged'
+		or public.qorpera_finish_company_deletions(5) -> 'companies' @> jsonb_build_array(jsonb_build_object(
+			'profileId', '30000000-0000-4000-8000-000000000010')) then
+		raise exception 'The finisher did not purge the company once: %', v_result;
+	end if;
+end
+$$;
 
--- 6. Nothing that depended on the company is left: no row with its id in any table but the usage
--- ledgers, the computer-hour records and the stored-object queue, and no run, job or runner of it.
+-- 7. Nothing that depended on the company is left: no row with its id in any table but the usage
+-- ledgers, the computer-hour records, the stored-object queue and the deletion record, and no run,
+-- job or runner of it.
 do $$
 declare v delete_before%rowtype; v_table record; v_rows bigint; v_left text[] := '{}';
 begin
@@ -343,7 +419,8 @@ begin
 			and not column_row.attisdropped
 		where class.relnamespace = 'public'::regnamespace and class.relkind = 'r'
 			and class.relname not in ('qorpera_runner_usage_observations', 'qorpera_runner_model_usage_observations',
-				'qorpera_profile_objects', 'qorpera_deleted_profile_object_gc_leases', 'qorpera_deleted_profile_object_gc_entries')
+				'qorpera_profile_objects', 'qorpera_deleted_profile_object_gc_leases', 'qorpera_deleted_profile_object_gc_entries',
+				'qorpera_company_deletions')
 			and class.relname not like 'qorpera\_computer\_hour\_%'
 	loop
 		execute format('select count(*) from %s where profile_id = %L', v_table.name, '30000000-0000-4000-8000-000000000010')
@@ -384,13 +461,13 @@ begin
 end
 $$;
 
--- 7. Outside a purge, history stays immutable.
+-- 8. Outside a purge, history stays immutable.
 select pg_temp.refused($q$delete from public.qorpera_runner_usage_observations
 	where profile_id = '30000000-0000-4000-8000-000000000010'$q$, '55000', 'usage observations are immutable');
 select pg_temp.refused($q$delete from public.qorpera_runtime_bundles
 	where id = (select runtime_bundle_id from public.qorpera_active_runtime_bundle)$q$, '42501', 'Runtime bundles are immutable');
 
--- 8. The stored bytes go through the deleted-company cleanup, as before.
+-- 9. The stored bytes go through the deleted-company cleanup, as before.
 select set_config('qorpera_test.delete_objects', (select objects::text from delete_before), true);
 select pg_temp.path_claims('service_role');
 set local role service_role;

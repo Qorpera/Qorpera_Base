@@ -1260,6 +1260,23 @@ members; admins keep managing contributors and viewers. The founder list is
 one stable, ordered set per company, which computer-hours billing pools
 across. Membership rows are member data and stay in the database (5.6).
 
+Amended 2026-09-28: deleting an account. Deleting a member's account removes
+only what is theirs: their memberships (as if they left), their own settings,
+drafts, notifications, picture, friends, devices, unanswered invitations they
+sent and their founding-table seats. It MUST NOT remove company data: the
+company, its environment and folder, conversations and the messages in them,
+runs and every other company record stay, also when the account created them.
+Plan and usage records stay as well (section 19, "computer hours", item 9). An
+account deletion is refused while the account is the last founder of a company
+with other members, a founder whose company setup is still running, or the
+only member of a company whose deletion has not been requested; that member
+deletes the company first. The creator of a company stays refused at least
+until the company is gone. Company records keep naming former members, so an
+account is closed (its sign-in record stays as an empty shell that cannot sign
+in) rather than erased. Closing is an update that no database link or guard
+acts on: closing an account MUST make these removals, and the founder and
+only-member refusals, itself.
+
 Automatic hiring MUST verify that the creator can delegate the child's entire
 default: current, nonexpiring read/write authority on every live shared root
 in the company. Verify this both at policy approval and before publication.

@@ -191,6 +191,7 @@ describe("Plan & usage", () => {
 			byKind: { companyMachines: 79_200, agentMachines: 179, codingMachines: 10_800, runs: 52_200 },
 			awakeNow: { companyMachines: 1, agentMachines: 0, codingMachines: 0, runs: 2 },
 			meteredUntil: "2026-09-28T18:00:00Z",
+			waitingForHours: false,
 		};
 		const usage = { companyName: "Company A", file, loading: false, retry() {} };
 		renderPlan(
@@ -205,6 +206,16 @@ describe("Plan & usage", () => {
 		// Under three minutes of agents' machines would read "0 h": left out.
 		expect(card.querySelector(".settings-hours-kinds")?.textContent).toBe(
 			"Company machines 22 h · Agent runs 14.5 h · Coding machines 3 h",
+		);
+		expect(card.querySelector(".settings-hours-waiting")).toBeNull();
+		// Out of computer hours: the card says that new work waits.
+		renderPlan(
+			container,
+			{ loaded: true, entitlement: entitlement("basis") },
+			{ ...usage, hours: { value: { ...hours, waitingForHours: true }, loading: false } },
+		);
+		expect(container.querySelector(".settings-company-hours .settings-hours-waiting")?.textContent).toBe(
+			"Out of computer hours. New work waits and starts by itself once hours are added.",
 		);
 		// The plan's own allowance is a separate card, still waiting for plans.
 		expect(container.querySelector(".settings-hours .settings-eyebrow")?.textContent).toBe(
@@ -275,6 +286,7 @@ describe("Plan & usage", () => {
 						byKind: { companyMachines: 0, agentMachines: 0, codingMachines: 0, runs: 149_400 },
 						awakeNow: { companyMachines: 0, agentMachines: 0, codingMachines: 0, runs: 0 },
 						meteredUntil: "2026-09-28T18:00:00Z",
+						waitingForHours: false,
 					},
 				},
 			},
@@ -313,6 +325,7 @@ describe("Plan & usage with payments", () => {
 		byKind: { companyMachines: 7_200, agentMachines: 0, codingMachines: 0, runs: 0 },
 		awakeNow: { companyMachines: 0, agentMachines: 0, codingMachines: 0, runs: 0 },
 		meteredUntil: "2026-09-28T18:00:00Z",
+		waitingForHours: false,
 	};
 	const usage = (founder?: boolean) => ({
 		companyName: "Company A",

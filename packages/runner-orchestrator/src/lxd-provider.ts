@@ -5,7 +5,13 @@ import { isAbsolute, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { parseCompanyComputerNativeRoute } from "@qorpera/contracts";
 import type { ServiceHttpFetch } from "./http-transport.ts";
-import type { LxdClient, LxdCreateInstanceRequest, LxdInstanceRecord, LxdStorageVolumeRecord } from "./lxd-client.ts";
+import {
+	type LxdClient,
+	type LxdCreateInstanceRequest,
+	type LxdInstanceRecord,
+	LxdOperationFailed,
+	type LxdStorageVolumeRecord,
+} from "./lxd-client.ts";
 import {
 	exactHttpsOrigin,
 	type LxdNativeCompanyRuntimeConfig,
@@ -1196,7 +1202,23 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 			}
 			const admitted = await this.#reserveMachine(current, signal);
 			admitted.throwIfAborted();
-			await this.#lxd.createInstance(current.lxd.project, this.#createRequest(current), signal, admitted);
+			try {
+				await this.#lxd.createInstance(current.lxd.project, this.#createRequest(current), signal, admitted);
+			} catch (error) {
+				// LXD says the create failed: no guest will appear for this journal. With none there, the
+				// capacity it reserved is released now, so the run's next attempt does not wait on it; a
+				// failed release is retried by reconcile (deletion confirmed). Any other failure leaves the
+				// outcome unknown, and the journal as it is.
+				if (
+					error instanceof LxdOperationFailed &&
+					!(await this.#lxd.getInstance(current.lxd.project, current.instanceName, signal))
+				) {
+					current = { ...current, physicalState: "lost", stopReason: "delivery_failed", deletionConfirmed: true };
+					await this.#writeJournal(current);
+					await this.#releaseMachine(current, signal);
+				}
+				throw error;
+			}
 			instance = await this.#lxd.getInstance(current.lxd.project, current.instanceName, signal);
 			if (!instance) throw new Error("LXD did not persist the created guest");
 		}

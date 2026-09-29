@@ -161,6 +161,10 @@ export interface CompanyState {
 	mentionsReady?: boolean;
 	/** The other members' open browser tabs and the conversation each shows (presence). */
 	here?: readonly PresenceMember[];
+	/** The company is out of computer hours: new work waits until hours are added (the zero rule). */
+	waitingForHours?: boolean;
+	/** The deployed cloud cannot say yet whether the company waits for computer hours. */
+	hoursWaitUnavailable?: boolean;
 	loading: boolean;
 	error?: string;
 	accessLost?: boolean;
@@ -326,6 +330,7 @@ export class CompanyController {
 	/** Members' unsent messages in the conversations they share (20260928000500). */
 	readonly roomDrafts: RoomDrafts;
 	#mentionReads = 0;
+	#hoursWaitReads = 0;
 	/** This tab on the company's presence channel, once another member could be here. */
 	#presence: CloudPresenceHandle | undefined;
 	/** The conversation this tab says it shows: the open one while the tab is visible. */
@@ -425,6 +430,22 @@ export class CompanyController {
 		await this.refreshGroups();
 		this.store.set({ loading: false });
 		void this.refreshMentions();
+		void this.refreshHoursWait();
+	}
+
+	/** Re-read whether the company waits for computer hours. */
+	async refreshHoursWait(): Promise<void> {
+		if (this.#stopped || this.store.get().hoursWaitUnavailable || !this.store.get().team?.capabilities.read) return;
+		const version = ++this.#hoursWaitReads;
+		try {
+			const waiting = await this.#api.companyWaitingForHours(this.profile.profileId);
+			if (this.#stopped || version !== this.#hoursWaitReads) return;
+			if (waiting !== (this.store.get().waitingForHours === true)) this.store.set({ waitingForHours: waiting });
+		} catch (error) {
+			if (this.#stopped || version !== this.#hoursWaitReads) return;
+			if (error instanceof CloudRpcError && error.missing)
+				this.store.set({ hoursWaitUnavailable: true, waitingForHours: false });
+		}
 	}
 
 	/** Re-read where this member was mentioned and has not looked yet. */
@@ -1864,7 +1885,12 @@ export class CompanyController {
 			// Refresh this surface even with a healthy Realtime channel.
 			if (!this.#stopped) for (const listener of this.#invalidations) listener("company-file");
 			if (this.#openSessionId) await this.loadConversation(this.#openSessionId);
-			await Promise.all([this.refreshActivity(), this.refreshSidebar(), this.refreshMentions()]);
+			await Promise.all([
+				this.refreshActivity(),
+				this.refreshSidebar(),
+				this.refreshMentions(),
+				this.refreshHoursWait(),
+			]);
 		} finally {
 			this.#polling = false;
 		}

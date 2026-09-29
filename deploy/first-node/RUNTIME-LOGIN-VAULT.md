@@ -277,7 +277,7 @@ or switch. Existing companies keep their own brokers (or none) and are switched 
 Picks: one shared vault; each company's capability and key derived from the vault's own secrets (nothing
 new stored); new companies only; node 1 serves, node 2 stands ready with the same secrets.
 
-- **Part 1, database** (migration `20260929130000`): `qorpera_cloud_secret_broker_principals` is the
+- **Part 1, database** (migration `20260928248930`): `qorpera_cloud_secret_broker_principals` is the
   shared vault's identity (service origin, the key id its companies get, a capability hash, and the time
   after which the companies it registers were created). Broker role only:
   - `qorpera_broker_principal_companies`: the principal's key id, the companies it serves (authorities
@@ -364,6 +364,9 @@ Prerequisites on each host: the broker build and the CA file
 reinstalled from this build **first** (an older helper refuses a config with the new limit keys and a
 vault token, and stops for every broker on the host); a host without a helper installs it as in
 "Installing the helper" above, its own token included (`helper-token` refuses on a host without one).
+Reinstalling node 1's helper restarts it: renewals in flight finish (its stop waits up to 40 s), but a
+member in the middle of a sign-in has to start again, so pick a moment with none pending (no
+`qorpera_native_provider_login_sessions` row with status `pending` and `expires_at` in the future).
 
 Node 1:
 
@@ -380,7 +383,7 @@ Node 1:
 4. `shared-vault-secrets.py helper-token`. Only then (systemd refuses to start a unit whose credential
    file is missing, which would stop the helper for every broker on the host) the helper's drop-in
    `/etc/systemd/system/qorpera-model-login-helper.service.d/vault-token.conf`, `systemctl daemon-reload`,
-   and a helper restart:
+   and a helper restart (like its reinstall, at a moment with no sign-in pending):
 
    ```ini
    [Service]
@@ -393,8 +396,9 @@ Node 1:
    fallback today (the acceptance company) gets its own line first.
    Regex keys hold `{}`, so each stays quoted (Step 7 doc); nginx tries exact keys first and regex keys in
    order.
-   - `?company=` maps (`$qorpera_capture_broker` for captures, email drafts and connector sign-in start and
-     confirm; `$qorpera_operations_broker` for `/v1/operations` and `/v1/repository-credentials`;
+   - `?company=` maps (`$qorpera_capture_broker` for captures and connector sign-in start and confirm;
+     `$qorpera_email_draft_broker` for email drafts (node 1 routes them with a map of their own);
+     `$qorpera_operations_broker` for `/v1/operations` and `/v1/repository-credentials`;
      `$qorpera_model_login_run_broker` for runs' `/v1/model-logins`):
      `"~(^|&)company=[0-9a-fA-F-]{36}(&|$)" 127.0.0.1:18660;`. Keep any `""` line that routes requests
      without `company=` where they go today.
@@ -419,6 +423,39 @@ Node 1:
 10. Acceptance: a test company created after the start time; an owner connects a connector, a member signs
     in to Codex from the web client, usage shows, and one agent run uses the vault login. Nobody handles a
     login or a secret.
+
+Node 2 baseline (before its standby steps). In September 2026 the company brokers and the login helper
+run on node 1 only, so node 2 first gets the rest of a vault host, from the same release as node 1. Each
+command runs as a plain argv (no shell needed):
+
+1. Accounts: `qorpera-login-helper` and `qorpera-shared-vault` system users and groups (no home, no login
+   shell).
+2. Folders: `install -d -o root -g root -m 0755 /opt/qorpera-model-login-helper` (the helper's user must
+   enter it) and `install -d -o root -g root -m 0700 /etc/qorpera-model-login-helper`.
+3. Codex: copy node 1's `/opt/qorpera-model-login-helper/codex` host to host (no new download; the binary
+   is public and its hash is the check, so any copy path will do), check its SHA-256 equals node 1's helper
+   config `codexSha256`, and install it root-owned 0555 at the same path.
+4. Isolation: root-owned `/usr/bin/bwrap` (0.8 or later) and `/usr/bin/node` (the version node 1 runs),
+   and unprivileged user namespaces allowed for bubblewrap as on node 1. The helper checks bubblewrap,
+   the namespaces, Codex, the isolation child, its config and its token at start; it does not check the
+   Node version.
+5. The helper from the release (`node scripts/package-model-login-helper.mjs --out <dir>`, its
+   `manifest.json` lists each file's SHA-256): `qorpera-model-login-helper.mjs` and
+   `qorpera-native-isolation-child.mjs` to `/opt/qorpera-model-login-helper/` (root, 0444), the unit to
+   `/etc/systemd/system/`.
+6. The helper's config: node 1's `config.json` as is (same paths, same `codexSha256`), and a token of its
+   own for company brokers, made on the host, never shown and never over an existing file, although no
+   company broker runs there (the helper requires one):
+   `python3 -I -c 'import base64, os; fd = os.open("/etc/qorpera-model-login-helper/token", os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o400); os.write(fd, base64.urlsafe_b64encode(os.urandom(32)).rstrip(b"=") + b"\n"); os.close(fd)'`.
+7. `systemctl daemon-reload`, `systemctl enable --now qorpera-model-login-helper` (enabled: after a
+   reboot without it, node 2's vault copy would count every idle renewal it tries as failed, which delays
+   those logins' renewals on both nodes). It logs `Model login helper: sandbox self-check ok (…)` or stops
+   visibly. The self-check does not reach OpenAI: watch node 2's first renewal after its vault starts.
+8. The broker package from the release: `install -d -o root -g root -m 0755 /opt/qorpera-secret-broker`
+   and `install -d -o root -g root -m 0755 /etc/qorpera-secret-broker`, then
+   `qorpera-cloud-secret-broker-service.mjs` to `/opt/qorpera-secret-broker/` (root, 0444),
+   `shared-vault-secrets.py` beside it (root, 0500), and the CA to
+   `/etc/qorpera-secret-broker/supabase-prod-ca-2021.crt` (root, 0444).
 
 Node 2 (warm standby), between node 1's steps 6 and 8:
 
@@ -457,7 +494,8 @@ Node 2 (warm standby), between node 1's steps 6 and 8:
    here. To rebuild node 1, run the hand-over the other way (ticket on node 1, serve on node 2).
 5. The two secrets live on node 1 and node 2 only. Losing both nodes loses them: every vault company's
    stored secrets, connector connections and model logins can then no longer be opened, and members sign
-   in and reconnect again. A copy beyond the two nodes is the founder's choice (pending).
+   in and reconnect again. By founder decision (29 September 2026) there is no third copy: "if the key is
+   lost on both vaults, it's lost".
 
 ## Failure cases
 
