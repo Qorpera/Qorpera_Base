@@ -53,7 +53,8 @@ function postgrest(code: string): Response {
 /** Failures that mean the database or its path is down, answered for every company. */
 const outages: Array<[string, (signal: AbortSignal) => Promise<Response>]> = [
 	["500 with another SQLSTATE", async () => postgrest("XX000")],
-	["500 with a resource SQLSTATE", async () => postgrest("53300")],
+	["500 with an I/O SQLSTATE", async () => postgrest("58030")],
+	["500 for an administrator shutdown", async () => postgrest("57P01")],
 	["500 without a body", async () => new Response(null, { status: 500 })],
 	["500 that is not JSON", async () => new Response("<html>upstream</html>", { status: 500 })],
 	["502", async () => new Response("bad gateway", { status: 502 })],
