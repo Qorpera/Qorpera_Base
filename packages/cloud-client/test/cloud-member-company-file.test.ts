@@ -102,9 +102,12 @@ describe("shared member file downloads", () => {
 			mediaType: "application/octet-stream",
 		});
 		// Compared as bytes: toEqual walks a 4 MiB array element by element (6.5 s on the test machine).
+		// Only a mismatch pays for finding its first offset, which the failure then names.
 		expect(bytes).toBeInstanceOf(Uint8Array);
-		expect(bytes.byteLength).toBe(f.bytes.byteLength);
-		expect(Buffer.compare(bytes, f.bytes)).toBe(0);
+		expect(bytes.byteLength, "downloaded length").toBe(f.bytes.byteLength);
+		const firstDifference =
+			Buffer.compare(bytes, f.bytes) === 0 ? -1 : bytes.findIndex((byte, index) => byte !== f.bytes[index]);
+		expect(firstDifference, "first offset where the downloaded bytes differ").toBe(-1);
 		expect(f.token).toHaveBeenCalledOnce();
 	});
 	it("rejects a stale member selection before immutable object reads", async () => {

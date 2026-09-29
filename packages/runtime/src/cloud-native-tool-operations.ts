@@ -136,14 +136,16 @@ export class CloudNativeToolOperations {
 	readonly #remembered: number;
 	#pending: Promise<void> = Promise.resolve();
 
-	/** `rememberedOperations` exists for tests, which cannot afford 65,536 real operations. */
+	/** `rememberedOperations` exists for tests, which cannot afford 65,536 real operations; it can only
+	 * lower the bound, never switch forgetting off. */
 	constructor(
 		run: CloudNativeToolRun,
 		control: CloudNativeToolOperationControlPlane,
 		options: { rememberedOperations?: number } = {},
 	) {
 		const remembered = options.rememberedOperations ?? CLOUD_NATIVE_TOOL_REMEMBERED_OPERATIONS;
-		if (!Number.isSafeInteger(remembered) || remembered < 1) throw new Error("Invalid remembered operation count");
+		if (!Number.isSafeInteger(remembered) || remembered < 1 || remembered > CLOUD_NATIVE_TOOL_REMEMBERED_OPERATIONS)
+			throw new Error("Invalid remembered operation count");
 		this.#run = run;
 		this.#control = control;
 		this.#remembered = remembered;

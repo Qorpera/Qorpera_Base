@@ -843,22 +843,47 @@ it("never refuses a run's operations by count; a forgotten one replays through i
 		value: { changed: true },
 	});
 	expect(control.beginToolOperation).toHaveBeenCalledTimes(total);
-	// The first operation is no longer remembered locally: its replay reads the
-	// completed receipt and never performs the effect again.
-	await expect(f.execute({ operation: keyed(0) }, operations)).resolves.toEqual({
+	// Exactly the last `remembered` operations are kept: the oldest of them still
+	// replays locally (a whole-map clear would lose it) ...
+	await expect(f.execute({ operation: keyed(total - remembered) }, operations)).resolves.toEqual({
+		kind: "json",
+		value: { changed: true },
+	});
+	expect(control.beginToolOperation).toHaveBeenCalledTimes(total);
+	// ... and the one just before them is forgotten (keeping one too many would not).
+	await expect(f.execute({ operation: keyed(total - remembered - 1) }, operations)).resolves.toEqual({
 		kind: "json",
 		value: { changed: true },
 	});
 	expect(control.beginToolOperation).toHaveBeenCalledTimes(total + 1);
+	// The first operation is no longer remembered locally either: its replay reads
+	// the completed receipt and never performs the effect again.
+	await expect(f.execute({ operation: keyed(0) }, operations)).resolves.toEqual({
+		kind: "json",
+		value: { changed: true },
+	});
+	expect(control.beginToolOperation).toHaveBeenCalledTimes(total + 2);
 	expect(f.perform).toHaveBeenCalledTimes(total);
 	expect(receipts.size).toBe(total);
 	expect(control.completeToolOperation).toHaveBeenCalledTimes(total);
+	// Without the option the bound is the default: eight operations forget nothing.
+	const defaults = new CloudNativeToolOperations(f.run, control);
+	const unbounded = (index: number) => ({ ...f.operation, logicalOperationKey: `job-default-${index}` });
+	for (let index = 0; index < 8; index++) await f.execute({ operation: unbounded(index) }, defaults);
+	const begun = control.beginToolOperation.mock.calls.length;
+	await expect(f.execute({ operation: unbounded(0) }, defaults)).resolves.toEqual({
+		kind: "json",
+		value: { changed: true },
+	});
+	expect(control.beginToolOperation).toHaveBeenCalledTimes(begun);
 });
 
 it("refuses an invalid remembered operation count", async () => {
 	const f = await fixture();
-	for (const rememberedOperations of [0, -1, 1.5, Number.NaN])
+	// Only lower than the default: a larger count would switch forgetting off in practice.
+	for (const rememberedOperations of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 65_537, Number.MAX_SAFE_INTEGER])
 		expect(() => new CloudNativeToolOperations(f.run, f.control, { rememberedOperations })).toThrow(
 			"Invalid remembered operation count",
 		);
+	expect(() => new CloudNativeToolOperations(f.run, f.control, { rememberedOperations: 65_536 })).not.toThrow();
 });
