@@ -535,8 +535,9 @@ begin
 		raise exception 'Folder-v2 run context folders: %', c -> 'folder'; end if;
 end $$;
 
--- 9. Refusals: the office, machine start and the self-approval until C1c-3; the legacy effects until C1c-2b. The same
--- calls on a snapshot-v1 company are not refused as folder-v2.
+-- 9. Refusals: the office, machine start and the self-approval until C1c-3; the legacy sends, the interaction request,
+-- the transcript append and the runner broker's receipts until C1c-2b gives them folder bodies (the tool operation
+-- receipts have theirs since C1c-2b, test 650). The same calls on a snapshot-v1 company are not refused as folder-v2.
 do $$
 declare
 	p jsonb := pg_temp.run('63400000-0000-4000-8000-0000000000a1', 'human', '63400000-0000-4000-8000-000000000002');
@@ -553,9 +554,6 @@ begin
 			format('select public.qorpera_native_shared_file_export_source(%L, %L)', v, '{}'),
 			format('select public.qorpera_self_approve_organization_proposal(%L, %L)', v, extensions.gen_random_uuid()),
 			format('select public.qorpera_native_machine_start(%L, %L, %L, %L, %L)', v, '{}', 'start', extensions.gen_random_uuid(), repeat('a', 64)),
-			format('select public.qorpera_begin_native_tool_operation(%L, %L, %L, %L, %L, false)', v, extensions.gen_random_uuid(), 'k',
-				repeat('a', 64), repeat('b', 64)),
-			format('select public.qorpera_complete_native_tool_operation(%L, %L, %L, %L)', v, extensions.gen_random_uuid(), repeat('a', 64), '{}'),
 			format('select public.qorpera_begin_run_operation_receipt(%L, %L, %L, %L, %L, %L, %L, %L, %L, %L, false)', v ->> 'runnerId',
 				repeat('f', 64), v ->> 'jobId', repeat('a', 64), v ->> 'assignmentId', extensions.gen_random_uuid(), 'k', 'tool', repeat('a', 64),
 				repeat('b', 64)),

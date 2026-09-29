@@ -190,8 +190,10 @@ The run's budget row, `qorpera_execution_run_budgets` (primary key `run_id`, one
   at the job: at most one tool call holds the job at a time. When that call commits, a waiting completion or renewal
   and the next tool call race for the job row. The waiter usually wins, since it only re-reads the row while the next
   call first takes the mutex and runs its checks; at worst it waits for that one call, and it meets the same race,
-  with the same head start, at each hand-off. That bounds the wait; strict first-come order would need completion and
-  renewal to take the mutex too, which they do not (test 648 C).
+  with the same head start, at each hand-off. That bound holds per hand-off, not over many: strict first-come order
+  would need completion and renewal to take the mutex too, which they do not (test 648 C). The run's own commits,
+  releases and views also hold the job `KEY SHARE`, without the mutex, so a waiting completion or renewal waits for
+  those too; they are short and never queue behind each other at the job.
 - A run without its budget row refuses (42501).
 - Folder commits and releases do not take it: disjoint saves of one run stay parallel.
 
@@ -277,7 +279,7 @@ after that line stays byte-identical, and its digest is checked at migration tim
 | the five "unchanged" callers (§3) | a text patch: their actor call becomes `company_run_actor`; `begin_native_company_execution_v2` also takes the run mutex; the digest is of the patched text | 2a |
 | the read-type branches: `describe_company_run_context` (company name from `qorpera_folder_company_index`; its session check stays `FOR SHARE`, after rank 10's recheck at the sessions rank of §5.7; and F2's folder facts: `|| case when v_folder is null then '{}' else jsonb_build_object('folder', v_folder) end`, with `v_folder := qorpera_company_state_run_folder(env, staff, <the coworker ids the body lists>)`, called by name at run time so snapshot-v1 never needs it. It is given the same ids the body puts in `coworkers` and names no others, so `folder` never names an unlisted coworker even when a roster change lands between the two statements; a coworker whose folder retired in between is left out, as one without a folder is. From F2-1b's migration 20260929440000 on #534; the runtime's closed parser checks that every coworker in `folder` is listed, and memory and skills then use `agents/<handle>`), the presence functions (a folder `presence_path_routes` on `qorpera_folder_path_resource` and `folder_actor_allowed`; a refusal is 42501, which `native_presence_subject` reads as "absent"), `native_company_object_actor`, `member_file_export_source` (no gc fence) | their `folder-v2` body | 2a |
 | `native_office_start`, `_start_descriptor`, `_capture`, `_file_export`, `native_shared_file_export_source`, `self_approve_organization_proposal`, **`native_machine_start`** | refuse 0A000 until C1c-3: after the run check they take the gc fence or a legacy proposal lock. Machine start holds the machine row and then asks for the company row `FOR UPDATE`, the reverse of #419's custody order | 2a |
-| `send_native_agent_message`, `send_runner_agent_message`, `append_native_interaction_request`, `append_runner_transcript_event`, `begin_`/`complete_native_tool_operation`, `begin_`/`complete_run_operation_receipt` | 2a: refuse 0A000. 2b: the folder send, interaction request and receipts; the transcript append and the runner broker's direct receipt calls keep refusing | 2a, 2b |
+| `send_native_agent_message`, `send_runner_agent_message`, `append_native_interaction_request`, `append_runner_transcript_event`, `begin_`/`complete_native_tool_operation`, `begin_`/`complete_run_operation_receipt` | 2a: refuse 0A000. 2b-1: the folder receipts (`begin_`/`complete_native_tool_operation`). 2b-2: the folder native send and interaction request. The transcript append, the runner broker's send and its direct receipt calls keep refusing (C3) | 2a, 2b |
 | `record_action_review` | 2a: under the mutex; its card path refuses through the transcript append. 2b: the folder card path (§5.6) | 2a, 2b |
 | `assert_company_path_reads`, `record_native_context_view`, `add_agent_review_rule` | their `folder-v2` body (§5.6) | 2b |
 | `enforce_company_context_send` | requires the marker the folder send sets; refuses without it | 2b |
@@ -339,6 +341,17 @@ after that line stays byte-identical, and its digest is checked at migration tim
   - `_complete_run_receipt` names the commit id. It checks that the commit exists, belongs to the run and carries this
     receipt. Whatever the units' outcomes, the commit satisfies the receipt. The run's disposition comes from the
     outcomes (below).
+  - **A receipt is carried once** (decided on #548). Under the receipt lock, before the insert, a commit whose receipt
+    another commit already satisfied refuses with 22023 "Run receipt is already satisfied by another commit": a caller
+    defect, which clients do not retry. The unique index is only the backstop for a true race. A replay (same key,
+    units and receipt) is answered first, since the receipt is part of the digest. A writer's conflict redo completes
+    the first receipt with the conflicted commit, begins a new receipt (its own logical key), and commits under a new
+    operation key.
+  - **One commit signature.** The six-argument commit (with `p_receipt_id`, default null) replaces the five-argument
+    one; PostgREST never sees both.
+  - The legacy `complete_native_tool_operation` names a snapshot or a proposal, never a folder commit. On `folder-v2`
+    it takes neither (22023) and completes a receipt that requires no revision; a writer completes its receipt with
+    its commit through `qorpera_folder_complete_run_receipt`, which the runtime calls directly.
 - **`assert_company_path_reads`** (the runtime's check before every model request): `folder_tool_run`, then the
   recheck at rank 10. It ignores the path list and never writes `company_run_read_paths`: the run's releases already
   carry its reads.
@@ -447,7 +460,17 @@ functions.
   - **interim refusals** of the legacy effect entry points (the receipts, both sends, the interaction request, the
     transcript append), so no `folder-v2` path takes the job and then the budget row between 2a and 2b;
   - the stop check in every folder function.
-- **C1c-2b, effects:**
+- **C1c-2b, effects**, in two PRs:
+  - **2b-1** (migration 20260929540000, tests 650 and 651): the folder receipts and the receipt ↔ commit link, the
+    commit's single six-argument signature, and the commit's rank 11 (the sessions the hook names, `FOR UPDATE` in id
+    order, after rank 10 and before the paths). F2's hook then names its sessions (agent threads, pair sessions,
+    group chats) in its own PR.
+  - **2b-2**: the send family and its marker, the folder interaction request and transcript append, the card path,
+    `assert_company_path_reads`, `record_native_context_view` and `add_agent_review_rule`. The runner broker's
+    `send_runner_agent_message`, like its direct receipt calls and transcript append, keeps refusing `folder-v2`: the
+    runner broker cannot start a `folder-v2` run before C3 (its describe refuses), and only the native send gets the
+    folder body.
+  The full list:
   - the send family and its trigger marker, the folder transcript append and interaction request;
   - the sessions rule, with the commit's sessions rank and F2's session targets;
   - `assert_company_path_reads`, `record_native_context_view`, the folder receipts and the receipt ↔ commit link, the
