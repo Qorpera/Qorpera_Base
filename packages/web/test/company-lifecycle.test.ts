@@ -747,6 +747,81 @@ describe("conversation lifecycle regressions", () => {
 		expect(api.listSessionInputs).toHaveBeenNthCalledWith(2, session.sessionId, 100, 100);
 	});
 
+	it("reads the history, the waiting inputs and the coding sessions side by side and draws once", async () => {
+		const { api, controller } = company();
+		const history = Array.from({ length: 501 }, (_, index) => event(index + 1));
+		const firstPage = deferred<HostedSessionEvent[]>();
+		const lastPage = deferred<HostedSessionEvent[]>();
+		const inputs = deferred<Awaited<ReturnType<typeof api.listSessionInputs>>>();
+		const coding = deferred<Awaited<ReturnType<typeof api.listCodingSessions>>>();
+		vi.mocked(api.readSessionEvents).mockReturnValueOnce(firstPage.promise).mockReturnValueOnce(lastPage.promise);
+		vi.mocked(api.listSessionInputs).mockReturnValueOnce(inputs.promise);
+		vi.mocked(api.listCodingSessions).mockReturnValueOnce(coding.promise);
+		const store = controller.conversation(session.sessionId, false);
+		await settle();
+		const drawn: number[] = [];
+		store.subscribe((state) => drawn.push(state.projection.items.length));
+		const load = controller.loadConversation(session.sessionId);
+		// None of the three waits for another.
+		expect(api.readSessionEvents).toHaveBeenCalledTimes(1);
+		expect(api.listSessionInputs).toHaveBeenCalledTimes(1);
+		expect(api.listCodingSessions).toHaveBeenCalledTimes(1);
+		inputs.resolve({ items: [pending(900, "Still waiting")], hasMore: false, nextAfterPosition: 900 });
+		coding.resolve([]);
+		firstPage.resolve(history.slice(0, 500));
+		await settle();
+		// The next page follows the first; nothing is drawn halfway through the history.
+		expect(api.readSessionEvents).toHaveBeenNthCalledWith(2, session.sessionId, 500, 500);
+		expect(drawn).toEqual([]);
+		lastPage.resolve(history.slice(500));
+		await load;
+		await settle();
+		expect(drawn).toEqual([502]);
+		expect(store.get()).toMatchObject({ loading: false, complete: true, codingSessions: [] });
+		expect(store.get().events).toHaveLength(501);
+	});
+
+	it("keeps the history read before a page that failed, and resumes after it", async () => {
+		const { api, controller } = company();
+		const history = Array.from({ length: 500 }, (_, index) => event(index + 1));
+		vi.mocked(api.readSessionEvents)
+			.mockResolvedValueOnce(history)
+			.mockRejectedValueOnce(new Error("Fixture page failed"))
+			.mockResolvedValueOnce([event(501)]);
+		const store = controller.conversation(session.sessionId, false);
+		await controller.loadConversation(session.sessionId);
+		expect(store.get()).toMatchObject({ complete: false, error: "Fixture page failed" });
+		expect(store.get().events).toHaveLength(500);
+		expect(store.get().projection.lastSequence).toBe(500);
+		await controller.loadConversation(session.sessionId);
+		expect(api.readSessionEvents).toHaveBeenLastCalledWith(session.sessionId, 500, 500);
+		expect(store.get()).toMatchObject({ complete: true, error: undefined });
+		expect(store.get().events).toHaveLength(501);
+	});
+
+	it("writes nothing and reads no further page when membership is revoked during a load", async () => {
+		const { api, controller } = company();
+		const page = deferred<HostedSessionEvent[]>();
+		const inputs = deferred<Awaited<ReturnType<typeof api.listSessionInputs>>>();
+		vi.mocked(api.readSessionEvents).mockReturnValueOnce(page.promise);
+		vi.mocked(api.listSessionInputs).mockReturnValueOnce(inputs.promise);
+		const store = controller.conversation(session.sessionId, false);
+		const load = controller.loadConversation(session.sessionId);
+		vi.mocked(api.getTeam).mockRejectedValue(new CloudRpcError("team", { code: "42501", message: "revoked" }, 403));
+		await controller.refreshTeam();
+		// Both would ask for another page.
+		page.resolve(Array.from({ length: 500 }, (_, index) => event(index + 1, "Private data")));
+		inputs.resolve({ items: [pending(1, "Private input")], hasMore: true, nextAfterPosition: 1 });
+		await load;
+		await settle();
+		expect(controller.store.get().accessLost).toBe(true);
+		expect(store.get().events).toEqual([]);
+		expect(store.get().pending).toEqual([]);
+		expect(store.get().projection.items).toEqual([]);
+		expect(api.readSessionEvents).toHaveBeenCalledTimes(1);
+		expect(api.listSessionInputs).toHaveBeenCalledTimes(1);
+	});
+
 	it("discards outstanding reads after membership is revoked", async () => {
 		const { api, controller } = company();
 		const read = deferred<HostedSessionEvent[]>();

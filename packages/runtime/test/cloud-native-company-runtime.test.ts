@@ -260,7 +260,13 @@ async function fixture(
 	};
 	const decisions: Record<string, unknown>[] = [];
 	const reviewedTools: string[] = [];
+	/** The kernel's answer to whether any node can serve machines (an Error: the call fails). */
+	let machinesAnswer: unknown = true;
 	const pathCall = vi.fn<CloudCompanyPathControl["call"]>(async (method, args) => {
+		if (method === "qorpera_company_machines_available") {
+			if (machinesAnswer instanceof Error) throw machinesAnswer;
+			return machinesAnswer;
+		}
 		if (method === "qorpera_record_runtime_observation") {
 			expect(args.p_run_id).toBe(f.binding.runId);
 			const observation = parseCloudRuntimeObservation(args.p_observation);
@@ -581,6 +587,9 @@ async function fixture(
 		runtime,
 		control,
 		pathCall,
+		machinesAnswer: (value: unknown) => {
+			machinesAnswer = value;
+		},
 		decisions,
 		reviewedTools,
 		store,
@@ -1293,7 +1302,7 @@ it("gives a worker the company's machine tools, without notify (Jonas, 2026-09-2
 
 it("gives a company conversation's run the machine tools with notify, and no waiting", async () => {
 	const f = await fixture("company-runtime", false, undefined, true);
-	await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+	expect(await machineToolNames(f)).toHaveLength(7);
 	const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
 	const tools = evidence.threadParameters.dynamicTools[0].tools as {
 		name: string;
@@ -1305,6 +1314,46 @@ it("gives a company conversation's run the machine tools with notify, and no wai
 		"waitSeconds",
 	);
 	expect(tools.find((tool) => tool.name === "machine_read")?.inputSchema.properties).not.toHaveProperty("waitSeconds");
+});
+
+async function machineToolNames(f: Awaited<ReturnType<typeof fixture>>): Promise<string[]> {
+	await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+	const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
+	const tools = evidence.threadParameters.dynamicTools[0].tools as { name: string; description: string }[];
+	// Workers are offered for machine work only where the tools are.
+	const machines = tools.some((tool) => tool.name.startsWith("machine_"));
+	expect(tools.find((tool) => tool.name === "manage_worker")?.description.includes("company's machines")).toBe(
+		machines,
+	);
+	return tools.map((tool) => tool.name).filter((name) => name.startsWith("machine_"));
+}
+const machinesAsked = (f: Awaited<ReturnType<typeof fixture>>) =>
+	f.pathCall.mock.calls.filter(([method]) => method === "qorpera_company_machines_available");
+
+it("offers no machine tools until a node can serve them (no machine executor enabled)", async () => {
+	const f = await fixture("company-runtime", false, undefined, true);
+	f.machinesAnswer(false);
+	expect(await machineToolNames(f)).toEqual([]);
+	expect(machinesAsked(f)).toHaveLength(1);
+	expect(machinesAsked(f)[0][1]).toEqual({});
+});
+
+it("keeps the machine tools away when the kernel cannot say, and still starts the run", async () => {
+	const f = await fixture("company-runtime", false, undefined, true);
+	f.machinesAnswer(new Error("function does not exist"));
+	expect(await machineToolNames(f)).toEqual([]);
+});
+
+it("offers the machine tools only on a clear yes", async () => {
+	const f = await fixture("company-runtime", false, undefined, true);
+	f.machinesAnswer("true");
+	expect(await machineToolNames(f)).toEqual([]);
+});
+
+it("never asks about machines on a node without the machines gateway", async () => {
+	const f = await fixture("company-runtime");
+	expect(await machineToolNames(f)).toEqual([]);
+	expect(machinesAsked(f)).toHaveLength(0);
 });
 
 it("starts the run without the open-work count when the kernel cannot give it", async () => {
