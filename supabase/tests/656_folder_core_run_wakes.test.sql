@@ -75,7 +75,7 @@ begin
 		raise exception 'The coworker message''s snapshot-v1 body changed'; end if;
 	v_def := pg_get_functiondef('public.qorpera_read_native_wake(jsonb)'::regprocedure);
 	if position(E'\nbegin\n\tif public.qorpera_binding_is_folder_v2(p_binding) then return public.qorpera_folder_read_wake(p_binding); end if;' in v_def) = 0
-		or md5(pg_temp.without_guard(v_def)) <> 'da06c84c1b0a02a14934a5ded438282d' then
+		or md5(pg_temp.without_guard(v_def)) <> '38c1993cf99b1aba48809bdc9bee678a' then
 		raise exception 'The wake read''s snapshot-v1 body changed'; end if;
 	v_text := replace(replace(replace(pg_get_functiondef('public.qorpera_pin_wake_occurrence()'::regprocedure),
 		E' if public.qorpera_company_is_folder_v2(new.profile_id) then\n'
@@ -100,7 +100,7 @@ begin
 		|| E'\t\t\tthen public.qorpera_folder_wake_public_session(new.profile_id,new.environment_id,new.staff_agent_id,new.requested_by_user_id)\n'
 		|| E'\t\t\telse public.qorpera_wake_public_session(new.profile_id,new.environment_id,new.staff_agent_id,new.requested_by_user_id) end;\n',
 		E'\t\tnew.session_id := public.qorpera_wake_public_session(new.profile_id,new.environment_id,new.staff_agent_id,new.requested_by_user_id);\n');
-	if md5(v_text) <> '401c8df2b2d533cbaa960ad9339702ae' then raise exception 'The pin trigger''s snapshot-v1 text changed'; end if;
+	if md5(v_text) <> '2a577812246baee7f79e7f4089077dc8' then raise exception 'The pin trigger''s snapshot-v1 text changed'; end if;
 	v_text := replace(pg_get_functiondef('public.qorpera_routine_occurrence_lifecycle()'::regprocedure),
 		E'\tif public.qorpera_company_is_folder_v2(new.profile_id) then\n'
 		|| E'\t\tselect * into v_routine from public.qorpera_cloud_routines where id = new.routine_id for no key update;\n'
@@ -110,7 +110,7 @@ begin
 		E'\tselect * into v_routine from public.qorpera_cloud_routines where id = new.routine_id for update;\n');
 	if md5(v_text) <> '7d57b1f875d2d5dc884d40e3f6593084' then raise exception 'The routine lifecycle''s snapshot-v1 text changed'; end if;
 	if md5(replace(pg_get_functiondef('public.qorpera_materialize_wake_execution_runs(integer)'::regprocedure),
-			E'\t\t\tand not public.qorpera_company_is_folder_v2(profile_id)\n', '')) <> 'aab5b00768d92f22dc3703fcb81b7080'
+			E'\t\t\tand not public.qorpera_company_is_folder_v2(profile_id)\n', '')) <> '74f0959bb20aab0d1ad2f9807b2e82d9'
 		or md5(replace(pg_get_functiondef('public.qorpera_drain_office_activation_wakes(integer)'::regprocedure),
 			E'  and not exists (select 1 from public.qorpera_execution_runs parent\n'
 			|| E'   where parent.id = qorpera_runtime_office_start_waiters.parent_run_id and public.qorpera_company_is_folder_v2(parent.profile_id))\n',
@@ -122,6 +122,8 @@ begin
 			E'\t\tand not public.qorpera_company_is_folder_v2(profile_id)\n', '')) <> '321660ab090981a2d9c00a465fcee245'
 		or md5(replace(pg_get_functiondef('public.qorpera_drain_company_file_wakes_before_lifecycle(integer)'::regprocedure),
 			E'\t\t\tand not public.qorpera_environment_is_folder_v2(c.environment_id)\n', '')) <> 'c8e5412280656f0daa565cf7f3e2a87b'
+		or md5(replace(pg_get_functiondef('public.qorpera_drain_event_wakes(integer)'::regprocedure),
+			E'\t\t\tand not public.qorpera_company_is_folder_v2(cursor.profile_id)\n', '')) <> 'a593a6c77a98730ebfcb5857b0ea6b16'
 		or md5(replace(pg_get_functiondef('public.qorpera_restore_dynamic_routine_runs()'::regprocedure),
 			E'\t\t\tand not public.qorpera_company_is_folder_v2(routine.profile_id)\n', '')) <> 'b38842ca5c8c3a8d2f834ba947685773'
 		or md5(replace(pg_get_functiondef('public.qorpera_materialize_session_execution_runs(integer)'::regprocedure),
@@ -463,6 +465,9 @@ begin
 		state, scanned_at)
 	values (v_waiter, extensions.gen_random_uuid(), (h -> 'actor' ->> 'runId')::uuid, extensions.gen_random_uuid(), 1,
 		extensions.gen_random_uuid(), 1, 'waiting', v_epoch);
+	insert into public.qorpera_event_listener_cursors(routine_id, routine_version, trigger_id, hook_id, profile_id, environment_id,
+		last_scanned_at)
+	values (v_routine, 1, 't1', extensions.gen_random_uuid(), c_profile, c_env, v_epoch);
 	insert into public.qorpera_company_file_wake_cursors(routine_id, routine_version, trigger_id, environment_id, activation_head,
 		processed_head, active, last_scanned_at)
 	values (v_routine, 1, 't1', c_env, extensions.gen_random_uuid(), extensions.gen_random_uuid(), true, v_epoch);
@@ -503,6 +508,8 @@ begin
 		raise exception 'The office drain scanned a folder-v2 waiter'; end if;
 	if (select last_scanned_at from public.qorpera_company_file_wake_cursors where routine_id = v_routine) <> v_epoch then
 		raise exception 'The Company File drain scanned a folder-v2 cursor'; end if;
+	if (select last_scanned_at from public.qorpera_event_listener_cursors where routine_id = v_routine) <> v_epoch then
+		raise exception 'The event drain scanned a folder-v2 cursor'; end if;
 	if exists (select 1 from public.qorpera_wake_occurrences where routine_id = v_dynamic) then
 		raise exception 'The dynamic-routine tick started a folder-v2 routine''s run'; end if;
 	if (select admission_scan_at from public.qorpera_session_execution_bindings where session_id = v_session) <> v_epoch then

@@ -21,6 +21,7 @@ import {
 	type CloudCompanyPathPresenceFactory,
 	observeCloudCompanyPathPresence,
 } from "./cloud-company-path-presence.ts";
+import { cloudEventTools } from "./cloud-event-tools.ts";
 import { cloudHiringTools } from "./cloud-hiring-tools.ts";
 import type { CloudMachineCommandGateway } from "./cloud-machine-command-http.ts";
 import { cloudMachineTools } from "./cloud-machine-tools.ts";
@@ -575,6 +576,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 												: []),
 											...cloudSidebarTools(binding, identity, this.#paths),
 											...cloudReviewRuleTools(binding, identity, this.#paths),
+											...cloudEventTools(binding, identity, this.#paths),
 										]),
 								// Machines are the company's: any agent run in a company conversation may start and
 								// use them and hears about them in that conversation; a worker uses them like its agent
