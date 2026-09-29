@@ -119,7 +119,8 @@ Boundary of the current implementation:
   original `/etc/qorpera-office/credentials/config.json`, which reset
   configuration never writes. Configuring a reset-born root after a reboot is
   therefore unproven and expected to be refused.
-- There is no automatic deletion, host failover, generation change or general
+- Apart from the retirement of a deleted company's computer (below), there is
+  no automatic deletion, host failover, generation change or general
   update mechanism. The plan grants exactly one reset for one retained
   `replace` request; a plan for another predecessor is refused.
 - The archive is never deleted by the worker. It is not delivery evidence: the

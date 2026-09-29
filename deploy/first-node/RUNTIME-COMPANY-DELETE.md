@@ -49,7 +49,7 @@ Rollback: `select cron.unschedule('qorpera-company-deletions')`. Requests then w
 |---|---|---|
 | Run machines (one-run VMs, exec-host sandboxes) | provider reconcile after the run ends | works; a guest that never got its assignment runs on (D2) |
 | Coding machines | coding executor housekeeping (retiring machine → stop, sleep, delete, release) | works |
-| Agent machines (#419, not yet merged) | executor, once the machine is set `deleted` | to add with #419 |
+| Agent machines (#419) | executor, once the machine is set `deleted` | #419 merged without it: `qorpera_stop_company_work` does not set them `deleted` yet, so their allocations hold the purge |
 | Company Computers | office provider: power off (works), delete and release (D3) | D3; live once the D3b provider build is installed per office |
 | Sign-in identity volumes on the exec host, recovery volumes | login gateway / LXD provider (D4) | D4 |
 | Credential capsules and recovery backups in storage | deleted-company storage queue (D5) | D5 |
