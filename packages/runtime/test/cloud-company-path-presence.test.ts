@@ -335,6 +335,82 @@ describe("native Company File presence", () => {
 			await f.close();
 		}
 	});
+	it("claims without waiting and reports the latest observation of that path on a later claim", async () => {
+		const f = fixture();
+		try {
+			await f.publish(1, "projects/report.md", "object", "writing");
+			// Nothing observed on this path yet: unavailable at once, observed in the background.
+			expect(f.agents[0].claim("projects/report.md", "object", "reading")).toMatchObject({
+				state: "unavailable",
+				paths: [{ path: "projects/report.md", participants: [] }],
+			});
+			// The claim itself is published without anyone waiting for it.
+			await vi.waitFor(() =>
+				expect((f.channels[0]?.data?.routes as unknown[] | undefined)?.length ?? 0).toBeGreaterThan(0),
+			);
+			await vi.waitFor(() =>
+				expect(f.agents[0].claim("projects/report.md", "object", "reading")).toMatchObject({
+					state: "available",
+					paths: [
+						{
+							path: "projects/report.md",
+							participants: [
+								{ runId: f.identities[1].binding.runId, activity: "writing", overlap: "same_object" },
+							],
+						},
+					],
+				}),
+			);
+			// Another path has its own observation.
+			expect(f.agents[0].claim("elsewhere.md", "object", "reading")).toMatchObject({ state: "unavailable" });
+			// An observation older than one statement lifetime is not reported.
+			vi.spyOn(Date, "now").mockReturnValue(Date.now() + 31_000);
+			expect(f.agents[0].claim("projects/report.md", "object", "reading")).toMatchObject({
+				state: "unavailable",
+				paths: [{ participants: [] }],
+			});
+		} finally {
+			await f.close();
+		}
+	});
+	it("runs one background observation at a time and then only the newest waiting claim", async () => {
+		const f = fixture();
+		try {
+			await f.publish(1, "note.md");
+			const observe = vi.spyOn(f.agents[0], "observe");
+			f.agents[0].claim("a.md", "object", "reading");
+			f.agents[0].claim("b.md", "object", "reading");
+			f.agents[0].claim("c.md", "object", "writing");
+			await vi.waitFor(() => expect(observe).toHaveBeenCalledTimes(2));
+			await vi.waitFor(() => expect(f.agents[0].claim("c.md", "object", "writing").state).toBe("available"));
+			expect(observe.mock.calls.slice(0, 2).map(([path, , activity]) => [path, activity])).toEqual([
+				["a.md", "reading"],
+				["c.md", "writing"],
+			]);
+		} finally {
+			await f.close();
+		}
+	});
+	it("closes without waiting for a background observation and forgets its registration", async () => {
+		const f = fixture();
+		const gate = deferred<boolean>();
+		try {
+			await f.publish(1, "note.md");
+			const verifying = vi.spyOn(PresenceSignatures, "verify").mockReturnValueOnce(gate.promise);
+			f.agents[0].claim("note.md", "object", "reading");
+			await vi.waitFor(() => expect(verifying).toHaveBeenCalled());
+			await f.agents[0].close();
+			gate.resolve(true);
+			expect(f.agents[0].claim("note.md", "object", "reading")).toMatchObject({
+				state: "unavailable",
+				paths: [{ participants: [] }],
+			});
+			expect([...f.registrations.values()].map((item) => item.runId)).toEqual([f.identities[1].binding.runId]);
+		} finally {
+			gate.resolve(false);
+			await f.close();
+		}
+	});
 	it("clears a disconnected channel and fails lossy path observation without failing the run", async () => {
 		const f = fixture();
 		try {
