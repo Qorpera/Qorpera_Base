@@ -287,8 +287,21 @@ function mergeEvents(...reads: readonly (readonly HostedSessionEvent[])[]): Host
  * listed until the run ends: one sent before the oldest event read may stand in the part not read
  * yet. (A queued input has no event yet; it shows as waiting wherever the history begins.) */
 function waitingBefore(pending: readonly PendingSessionInput[], events: readonly HostedSessionEvent[]): boolean {
+	return takenBefore(pending, events).length > 0;
+}
+
+/** The taken inputs whose event is not read and that were sent before the oldest event read. (A
+ * taken input's event carries its send time and the sequence of when the run took it: it is often
+ * already in the newest page.) */
+function takenBefore(
+	pending: readonly PendingSessionInput[],
+	events: readonly HostedSessionEvent[],
+): PendingSessionInput[] {
 	const start = events[0] ? Date.parse(events[0].createdAt) : Number.NaN;
-	return pending.some((input) => input.status === "processing" && Date.parse(input.createdAt) < start);
+	const read = new Set(events.flatMap((event) => (event.sessionInputId ? [event.sessionInputId] : [])));
+	return pending.filter(
+		(input) => input.status === "processing" && !read.has(input.inputId) && Date.parse(input.createdAt) < start,
+	);
 }
 
 /** Company-audience staff conversations, as the desktop arbiter selects them. */
@@ -357,6 +370,9 @@ export class CompanyController {
 	readonly #conversationLoads = new Map<string, { promise: Promise<void>; repeat: boolean }>();
 	/** The cloud has no newest-first transcript read (before 20260929410000): threads read forward. */
 	#tailMissing = false;
+	/** Taken inputs a thread has read back for once: never again (a run queued for hours stays taken
+	 * without an event, and each load would read further back). */
+	readonly #readBackFor = new Set<string>();
 	/** Per failed run: when its details may be read next (performance.now()), and
 	 * the latest request, so an older answer never replaces a newer one. */
 	readonly #recoveryReads = new Map<string, { due: number; request: number }>();
@@ -1359,8 +1375,12 @@ export class CompanyController {
 				let earlier = hasEarlier ?? store.get().hasEarlier ?? false;
 				// An input a run took before the oldest event read stands in the transcript before it: read
 				// back until its place is read, so it is not shown again as waiting.
-				if (earlier && waitingBefore(pending, merged)) {
-					const read = await this.#readTail(sessionId, merged, pending, () => !this.#stopped);
+				const taken = earlier
+					? takenBefore(pending, merged).filter((input) => !this.#readBackFor.has(input.inputId))
+					: [];
+				if (taken.length) {
+					for (const input of taken) this.#readBackFor.add(input.inputId);
+					const read = await this.#readTail(sessionId, merged, taken, () => !this.#stopped);
 					if (!read) return;
 					merged = mergeEvents(store.get().events, read.events);
 					earlier = read.hasEarlier;

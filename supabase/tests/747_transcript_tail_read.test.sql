@@ -68,12 +68,14 @@ create function pg_temp.tail_sequences(p_events jsonb) returns bigint[] language
 $$;
 
 -- 1. Refusals. For every caller, thread and page the transcript read is asked for, the tail read
--- gives the same outcome: the same refusal, or (for a reader) events.
+-- gives the same outcome, whatever sequence it reads before: the same refusal, or (for a reader)
+-- events. Nothing is refused ahead of the transcript read, not even an extreme sequence.
 do $$
 declare
 	v_caller record;
 	v_session uuid;
 	v_limit integer;
+	v_before bigint;
 	v_forward text;
 	v_tail text;
 	v_cases integer := 0;
@@ -94,22 +96,27 @@ begin
 			'74400000-0000-4000-8000-000000000034'::uuid,
 			'74400000-0000-4000-8000-0000000000ff'::uuid
 		] loop
-			foreach v_limit in array array[1, 200, 500, 0, 501, -1] loop
+			foreach v_limit in array array[1, 200, 500, 0, 501, -1, null] loop
 				perform pg_temp.tail_as(v_caller.role, v_caller.user_id);
-				v_forward := pg_temp.tail_outcome(format('public.qorpera_read_session_events(%L::uuid, 0, %s)', v_session, v_limit));
-				v_tail := pg_temp.tail_outcome(format('public.qorpera_read_session_events_tail(%L::uuid, null, %s)', v_session, v_limit));
+				v_forward := pg_temp.tail_outcome(format('public.qorpera_read_session_events(%L::uuid, 0, %L::integer)', v_session, v_limit));
 				reset role;
-				-- A read that succeeds may return other events (the newest page rather than the first);
-				-- a refusal must be the same refusal.
-				perform pg_temp.tail_assert(
-					(v_forward like 'ok %' and v_tail like 'ok %') or v_forward = v_tail,
-					format('%s %s on %s limit %s: transcript read %s, tail read %s',
-						v_caller.role, v_caller.user_id, v_session, v_limit, v_forward, v_tail));
-				v_cases := v_cases + 1;
+				foreach v_before in array array[null, -9223372036854775808, 0, 5]::bigint[] loop
+					perform pg_temp.tail_as(v_caller.role, v_caller.user_id);
+					v_tail := pg_temp.tail_outcome(format('public.qorpera_read_session_events_tail(%L::uuid, %L::bigint, %L::integer)',
+						v_session, v_before, v_limit));
+					reset role;
+					-- A read that succeeds may return other events (the newest page rather than the first);
+					-- a refusal must be the same refusal.
+					perform pg_temp.tail_assert(
+						(v_forward like 'ok %' and v_tail like 'ok %') or v_forward = v_tail,
+						format('%s %s on %s limit %s before %s: transcript read %s, tail read %s',
+							v_caller.role, v_caller.user_id, v_session, v_limit, v_before, v_forward, v_tail));
+					v_cases := v_cases + 1;
+				end loop;
 			end loop;
 		end loop;
 	end loop;
-	perform pg_temp.tail_assert(v_cases = 192, 'every case ran');
+	perform pg_temp.tail_assert(v_cases = 896, 'every case ran');
 end
 $$;
 
@@ -152,6 +159,11 @@ begin
 		'nothing before the first event');
 	perform pg_temp.tail_assert(public.qorpera_read_session_events_tail('74400000-0000-4000-8000-000000000034') = '[]'::jsonb,
 		'an empty thread reads empty');
+	-- A null limit reads the default page, not the whole transcript.
+	perform pg_temp.tail_assert(pg_temp.tail_sequences(public.qorpera_read_session_events_tail('74400000-0000-4000-8000-000000000030', null, null))
+		= array(select generate_series(1004, 1203)::bigint), 'a null limit reads the default 200');
+	perform pg_temp.tail_assert(public.qorpera_read_session_events_tail('74400000-0000-4000-8000-000000000030', -9223372036854775808, 200) = '[]'::jsonb,
+		'nothing before the lowest sequence');
 	reset role;
 	perform pg_temp.tail_as('authenticated', '74400000-0000-4000-8000-000000000002');
 	perform pg_temp.tail_assert(pg_temp.tail_sequences(public.qorpera_read_session_events_tail('74400000-0000-4000-8000-000000000032', null, 5))

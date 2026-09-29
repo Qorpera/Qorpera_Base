@@ -242,6 +242,14 @@ export class ConversationView {
 	readonly #earlierButton: HTMLButtonElement;
 	readonly #earlierNote = h("p", { class: "thread-earlier-note", role: "status", hidden: true });
 	readonly #earlier: HTMLElement;
+	/** Says how many older messages "Show earlier" brought: the log stays quiet while they come in
+	 * above, so a screen reader hears this one line instead of each message. */
+	readonly #earlierStatus = h("p", { class: "visually-hidden", role: "status" });
+	/** "Show earlier" was reading at the last render, and the oldest item then. */
+	#earlierWasLoading = false;
+	#oldestItemId: string | undefined;
+	/** Gives the log its voice back after a quiet insert. */
+	#quietTimer: ReturnType<typeof setTimeout> | undefined;
 	/** A coding session opened as its own thread over this one, from its line or its
 	 * figure in the header; focus returns to the opener when it closes. */
 	#codingThread: { workerId: string; view: CodingSessionThreadView } | undefined;
@@ -573,6 +581,7 @@ export class ConversationView {
 			{ class: "thread-conversation" },
 			this.#header,
 			this.#messages,
+			this.#earlierStatus,
 			this.#status,
 			...(actions.notificationHost ? [actions.notificationHost] : []),
 			this.#runNotification,
@@ -623,6 +632,7 @@ export class ConversationView {
 		this.#disposed = true;
 		this.#lifetime.abort();
 		window.clearInterval(this.#timestampTimer);
+		clearTimeout(this.#quietTimer);
 		this.#sizes?.disconnect();
 		this.#runNotification.remove();
 		this.#details?.dispose();
@@ -1395,7 +1405,9 @@ export class ConversationView {
 		);
 		// While older history is unread, a coding session started before the oldest item read belongs
 		// to it: it shows once "Show earlier" reaches its place.
-		const start = conversation.hasEarlier ? conversation.projection.items[0]?.createdAt : undefined;
+		const start = conversation.hasEarlier
+			? conversation.projection.items.find((item) => !(item.kind === "member" && item.pending))?.createdAt
+			: undefined;
 		const codingSessions = [...(conversation.codingSessions ?? [])]
 			.filter((coding) => start === undefined || coding.createdAt.localeCompare(start) >= 0)
 			.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
@@ -1946,6 +1958,33 @@ export class ConversationView {
 		const anchor = this.#stickToBottom ? undefined : this.#firstInView();
 		const anchorTop = anchor ? anchor.getBoundingClientRect().top - this.#messages.getBoundingClientRect().top : 0;
 		const earlierFocused = this.#earlier.contains(document.activeElement);
+		// "Show earlier" brought its page: the older items come in with the log quiet, and one line
+		// outside it says how many (a log would read each of them out as if it were new).
+		const oldest = this.#oldestItemId;
+		const earlierLoaded = this.#earlierWasLoading && !conversation.earlierLoading && !conversation.earlierError;
+		this.#earlierWasLoading = conversation.earlierLoading === true;
+		this.#oldestItemId = conversation.projection.items[0]?.id;
+		const older =
+			earlierLoaded && oldest ? conversation.projection.items.findIndex((item) => item.id === oldest) : -1;
+		if (older > 0) {
+			clearTimeout(this.#quietTimer);
+			this.#messages.setAttribute("aria-live", "off");
+			this.#quietTimer = setTimeout(() => {
+				this.#quietTimer = undefined;
+				this.#messages.setAttribute("aria-live", "polite");
+			}, 500);
+		}
+		if (earlierLoaded)
+			this.#earlierStatus.textContent = [
+				older === 1
+					? t("Loaded 1 earlier message.")
+					: older > 1
+						? t("Loaded {count} earlier messages.", { count: older })
+						: "",
+				conversation.hasEarlier ? "" : t("This is the start of the conversation."),
+			]
+				.filter(Boolean)
+				.join(" ");
 		placeChildren(
 			this.#messages,
 			nodes.flatMap((node) => {
@@ -1993,10 +2032,17 @@ export class ConversationView {
 		this.#pinToBottom();
 	}
 
-	/** The first node of the thread whose bottom is below the top of the view. */
+	/** The first item of the thread in view: a message, card or line. Not the "Show earlier" row, which
+	 * stays first when older items come in, nor a day separator, which may move to the new page. */
 	#firstInView(): Element | undefined {
 		const top = this.#messages.getBoundingClientRect().top;
-		for (const child of this.#messages.children) if (child.getBoundingClientRect().bottom > top) return child;
+		for (const child of this.#messages.children)
+			if (
+				child !== this.#earlier &&
+				!child.matches("time.conversation-timestamp") &&
+				child.getBoundingClientRect().bottom > top
+			)
+				return child;
 		return undefined;
 	}
 

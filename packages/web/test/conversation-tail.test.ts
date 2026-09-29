@@ -126,6 +126,33 @@ describe("a thread opens at its newest events", () => {
 		expect(shown[0]).not.toHaveProperty("pending");
 	});
 
+	it("does not read back for a taken message whose event it has, and reads back for one only once", async () => {
+		const { api, controller } = company();
+		// Sent at minute 10 while the agent was busy, taken at sequence 2,990: its event carries its
+		// send time but stands in the newest page.
+		const history = transcript(3000);
+		const inputId = id(3010);
+		history.events[2989] = { ...history.events[2989]!, sessionInputId: inputId, createdAt: at(10) };
+		vi.mocked(api.readSessionEventsTail).mockImplementation(history.tail);
+		const taken = { ...pending(10, "Message 2990"), inputId, createdAt: at(10), status: "processing" as const };
+		vi.mocked(api.listSessionInputs).mockResolvedValue({ items: [taken], hasMore: false, nextAfterPosition: 10 });
+		const store = controller.conversation(session.sessionId, false);
+		await controller.loadConversation(session.sessionId);
+		expect(api.readSessionEventsTail).toHaveBeenCalledOnce();
+		expect(store.get().events).toHaveLength(200);
+		// A taken input with no event yet (a run queued for hours): read back once (five pages at
+		// most), never again, however often the thread is read.
+		const waiting = { ...pending(11, "Still queued"), createdAt: at(11), status: "processing" as const };
+		vi.mocked(api.listSessionInputs).mockResolvedValue({ items: [waiting], hasMore: false, nextAfterPosition: 11 });
+		await controller.loadConversation(session.sessionId);
+		expect(api.readSessionEventsTail).toHaveBeenCalledTimes(6);
+		await controller.loadConversation(session.sessionId);
+		await controller.loadConversation(session.sessionId);
+		expect(api.readSessionEventsTail).toHaveBeenCalledTimes(6);
+		expect(store.get().events).toHaveLength(1200);
+		expect(store.get().hasEarlier).toBe(true);
+	});
+
 	it("falls back to reading forward on a cloud without the newest-first read, once", async () => {
 		const { api, controller } = company();
 		vi.mocked(api.readSessionEvents).mockImplementation(async (_session, after) =>
@@ -243,7 +270,7 @@ describe("the thread view with unread history", () => {
 			controller.stop();
 		});
 		const log = thread.el.querySelector<HTMLElement>('[role="log"]')!;
-		return { controller, store, log };
+		return { controller, store, log, thread };
 	}
 	const item = (n: number): TranscriptItem => ({
 		kind: "member",
@@ -281,6 +308,86 @@ describe("the thread view with unread history", () => {
 		expect(log.querySelector("button.thread-earlier-button")).toBeNull();
 		// The keyboard stays in the thread.
 		expect(document.activeElement).toBe(log);
+	});
+
+	/** A layout for jsdom (which has none): the log shows 300 px, each of its rows is 100 px tall. */
+	function layout(log: HTMLElement) {
+		let scrollTop = 0;
+		Object.defineProperty(log, "scrollTop", {
+			configurable: true,
+			get: () => scrollTop,
+			set: (value: number) => {
+				scrollTop = Math.max(0, Math.min(value, log.children.length * 100 - 300));
+			},
+		});
+		Object.defineProperty(log, "scrollHeight", { configurable: true, get: () => log.children.length * 100 });
+		Object.defineProperty(log, "clientHeight", { configurable: true, get: () => 300 });
+		const rect = (top: number, height: number) =>
+			({ top, bottom: top + height, left: 0, right: 800, width: 800, height, x: 0, y: top }) as DOMRect;
+		vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (this: Element) {
+			if (this === log) return rect(0, 300);
+			const row = [...log.children].indexOf(this);
+			return row < 0 ? rect(0, 0) : rect(row * 100 - scrollTop, 100);
+		});
+		return {
+			top: (node: Element) => node.getBoundingClientRect().top,
+			scroll(to: number) {
+				log.scrollTop = to;
+				log.dispatchEvent(new Event("scroll"));
+			},
+		};
+	}
+
+	it("keeps the reader on the message they were reading when older ones come in above", async () => {
+		const items = [3, 4, 5, 6, 7, 8].map(item);
+		const { store, log } = view(items);
+		const screen = layout(log);
+		// Scrolled to the top: "Show earlier" is in view, the first message below it.
+		screen.scroll(0);
+		const reading = log.querySelector<HTMLElement>(`[data-message-id="${id(503)}"]`)!;
+		const before = screen.top(reading);
+		expect(screen.top(log.querySelector(".thread-earlier")!)).toBe(0);
+		store.set({ earlierLoading: true });
+		await settle();
+		store.set({
+			earlierLoading: false,
+			projection: { items: [1, 2, ...[3, 4, 5, 6, 7, 8]].map(item), hiddenCount: 0, lastSequence: 8 },
+		});
+		await settle();
+		// The two older messages came in above; the reader still sees message 3 where it was.
+		expect(log.querySelector(`[data-message-id="${id(501)}"]`)).not.toBeNull();
+		expect(screen.top(reading)).toBe(before);
+		expect(log.scrollTop).toBe(200);
+	});
+
+	it("brings older messages in quietly and says how many in one line", async () => {
+		const { store, log, thread } = view([item(3), item(4)]);
+		store.set({ earlierLoading: true });
+		await settle();
+		const order: string[] = [];
+		const observer = new MutationObserver((records) => {
+			for (const record of records)
+				if (record.type === "attributes") order.push(`aria-live=${log.getAttribute("aria-live")}`);
+				else
+					for (const node of record.addedNodes)
+						if (node instanceof HTMLElement && node.dataset.messageId) order.push("message");
+		});
+		observer.observe(log, { attributes: true, attributeFilter: ["aria-live"], childList: true });
+		store.set({
+			earlierLoading: false,
+			hasEarlier: false,
+			projection: { items: [item(1), item(2), item(3), item(4)], hiddenCount: 0, lastSequence: 4 },
+		});
+		await settle();
+		observer.disconnect();
+		// The log was quiet before the older messages came in, and one status line speaks instead.
+		expect(order).toEqual(["aria-live=off", "message", "message"]);
+		const status = thread.el.querySelector<HTMLElement>(".visually-hidden[role='status']");
+		expect(log.contains(status)).toBe(false);
+		expect(status?.textContent).toBe("Loaded 2 earlier messages. This is the start of the conversation.");
+		// It speaks again for what comes next.
+		await new Promise((resolve) => setTimeout(resolve, 600));
+		expect(log.getAttribute("aria-live")).toBe("polite");
 	});
 
 	it("says when older messages could not be read", async () => {
