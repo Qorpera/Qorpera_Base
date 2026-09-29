@@ -345,7 +345,7 @@ closes the conversation; a restore reopens both, with the same conversation.
 
 ### `agents/<handle>/routines/<name>.md`
 
-**Pending decision 3:** exactly one trigger per file. F2-6 (migration 20260929310000) is built on
+**Pending decision 3:** exactly one trigger per file. F2-6 (migration 20260928259310) is built on
 it; a different answer changes the parser and `qorpera_company_state_routine_trigger` only.
 
 | Key | Required | Values |
@@ -456,7 +456,7 @@ agents write routine files (their file writers come with F2-1b). The name index
 carries several routines (an agent folder's delete or move) locks them in id order while the
 expiry sweep updates ended routines in its own order, so the two can deadlock (40P01; one side
 retries, nothing is wrong). F1's C1b-3a (#497,
-20260929230000) moved the company row to rank 0, before the members; F2-6 takes it there too (its
+20260928259230) moved the company row to rank 0, before the members; F2-6 takes it there too (its
 migration stops if that change has not run).
 
 ### `agents/<handle>/todos/<name>.md`
@@ -771,9 +771,9 @@ claims by kind then key (F2). All nine come before paths, objects, admission and
    commits.
 5. **F2-4** rules (migration 20260928249190): the reviewer reads the rule index, its own table;
    the Settings RPCs refuse company rules for folder-v2.
-6. **F2-5** todos and worker files: **F2-5a** todos (migration 20260929210000); **F2-5b** worker
+6. **F2-5** todos and worker files: **F2-5a** todos (migration 20260928259210); **F2-5b** worker
    briefs and results, with core C3's writers, which dispatch and report through the platform.
-7. **F2-6** routines (migration 20260929310000), last because the scheduler, schedule positions
+7. **F2-6** routines (migration 20260928259310), last because the scheduler, schedule positions
    and decisions are the most delicate part. `file-change` routines wait for core C4.
 
 Each step comes after F1's C1 (C1b brings the call sites), is `folder-v2` only, rides the release
