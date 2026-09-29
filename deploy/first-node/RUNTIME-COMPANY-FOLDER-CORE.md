@@ -316,6 +316,10 @@ is never upgraded. The steps:
    8. vault rows;
    9. unique-key claims, by kind then key.
 
+   After rank 9 (C1C §5.7): run-owned rows (receipts, action reviews, context views); rank 10's recheck of read sets;
+   every session the transaction will write, `FOR UPDATE` in id order; and the company's operation clock, which the
+   first session event takes. Admission and the folder clock stay last.
+
    These numbers are the lock ranks, and all nine come before paths (step 5),
    objects (step 6), admission (step 10) and the clock (step 11). The commit
    locks ranks 1, 3, 6 and 7 itself (members, execution authorities,
@@ -385,8 +389,6 @@ is never upgraded. The steps:
    index row written points at its entry's current version. The folder core's
    tables have no deferred constraints or deferred triggers; an activation
    check verifies this for them. So nothing heavy runs at COMMIT.
-   - **Run-owned rows** (receipts, action reviews, context views) come after the ranks, before rank 10's recheck;
-     **sessions** after rank 10, before admission (C1C §5.7).
 10. **Admission.** If the transaction inserts a wake, it takes the company's
     admission row `FOR NO KEY UPDATE` as its last lock before the clock, and
     inserts its wakes after it. That covers:

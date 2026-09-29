@@ -140,7 +140,8 @@ they keep theirs in case that call moves.
 ## 5. C1c-2: run paths on the folder fence
 
 C1c-2 lets a `folder-v2` run make tool calls, send, record its context, start and finish, on the folder core's locks
-instead of the company row. The design comes from a second read-only inventory (2026-09-29, 1,468 live definitions).
+instead of the company row. The design comes from a second read-only inventory (2026-09-29, 1,468 live definitions)
+and one design review round, whose findings are folded in.
 
 ### 5.1 What today's run check does, and why it cannot simply move to `KEY SHARE`
 
@@ -152,8 +153,14 @@ instead of the company row. The design comes from a second read-only inventory (
 
 Two facts shape the `folder-v2` version:
 - **Nested job locks.** With the job at `KEY SHARE`, every legacy helper that later takes the job `FOR UPDATE` becomes
-  a lock upgrade, and two effects of one run would deadlock. The sites are receipt begin and complete, the transcript
-  append, both send functions, and the lease validation. The `folder-v2` paths never call them.
+  a lock upgrade, and two effects of one run would deadlock. The sites:
+  - receipt begin and complete: `begin_`/`complete_native_tool_operation` and the runner broker's direct
+    `begin_`/`complete_run_operation_receipt`;
+  - the transcript append;
+  - both send functions and the interaction request;
+  - the lease validation.
+
+  The `folder-v2` paths never call them. Until C1c-2b replaces them, C1c-2a makes them refuse `folder-v2` (§5.9).
 - **The job lock is today's per-run mutual exclusion.** Several callers check, then write, relying on it:
   - receipt begin: "one unresolved operation", which has no unique index;
   - the send: its public-send budget, acknowledgement counts and "already final" check;
@@ -164,172 +171,285 @@ Two facts shape the `folder-v2` version:
 
 ### 5.2 The run mutex
 
-The run's budget row, `qorpera_execution_run_budgets` (one per sponsored run, primary key `run_id`), taken
-`FOR UPDATE` **before the job**, as a commit claims its operation key before the job (core §3 step 1).
-- Only four functions touch that row, all same-run effects: the transcript append, receipt begin, the runner's file
-  object check, and the reservation that inserts it. No lease-ending path touches it (completion, requeue, cancel,
-  handoff, re-claim), and neither does renewal. So nothing takes the job and then the budget row on a `folder-v2` path,
-  and the order cannot invert.
-- Before the job, not after: a tool call that arrives while completion holds the job waits at the mutex, then finds the
-  run ended and refuses. It never takes the job `KEY SHARE` beside a waiting completion, so completion is not starved.
+The run's budget row, `qorpera_execution_run_budgets` (primary key `run_id`, one per run), taken `FOR UPDATE`
+**before the job**, as a commit claims its operation key before the job (core §3 step 1).
+- **Who touches that row.** Only four functions, all same-run effects:
+  - the transcript append;
+  - receipt begin (through `begin_native_tool_operation`, or directly from the runner broker);
+  - the runner's file object check;
+  - the reservation that inserts the row.
+
+  The table has no triggers and no policies. No lease-ending path (completion, requeue, cancel, handoff, re-claim)
+  touches it, and neither does renewal. On a `folder-v2` path, every function that would take the job and then that
+  row is dispatched to a folder body or refused (§5.4). An activation check keeps it so (§6).
+  `purge_company` locks jobs, then budgets, but it runs only after the stop, which refuses tool calls first.
+- **Why before the job.** A tool call that arrives while completion holds the job takes the mutex, then waits at the
+  job; once completion commits, it finds the run ended and refuses. A second tool call of the run waits at the mutex
+  and never takes the job `KEY SHARE` beside a waiting completion. PostgreSQL grants a new shared locker while an
+  exclusive one waits, so the mutex, not the job lock, keeps completion from starving.
 - A run without its budget row refuses (42501).
 - Folder commits and releases do not take it: disjoint saves of one run stay parallel.
 
 ### 5.3 New functions
 
-- **`qorpera_folder_tool_run(p_binding jsonb, p_targets jsonb default '[]')`**, the `folder-v2` NTLR. The steps, in
-  order:
-  1. the host authority check, as today;
+All are postgres-only, like NTLR (the runtime reaches them through the dispatching legacy functions). Names stay
+within 63 characters.
+
+- **`qorpera_folder_tool_run(p_binding jsonb, p_targets jsonb)`**, the `folder-v2` NTLR. The steps, in order:
+  1. NTLR's own checks:
+     - the host authority;
+     - the binding's ten keys and their types;
+     - provider `openai` and harness `codex-cli`;
+     - later, the run's model match and `required_capability`;
   2. the stop check (§5.5), as a plain read;
   3. the run mutex;
-  4. `qorpera_folder_run_enter` with the caller's targets: the job `KEY SHARE`, the fence `KEY SHARE` with the stop
-     re-read, then ranks 0 to 5;
+  4. `qorpera_folder_run_enter` with the caller's targets:
+     - the job `KEY SHARE`;
+     - the fence `KEY SHARE`, with the stop re-read;
+     - **rank 0 always** (this company's row, `KEY SHARE`);
+     - then ranks 1 to 5.
+
+     Rank 0 on every tool call orders every caller that inserts a row referencing the company (action reviews,
+     presence devices, usage signals), and every session lock that follows, before the members, as core §3 requires.
   5. `qorpera_folder_native_lease_current`: a plain check of the native lease tuple (lease against run, job, runner,
      assignment, capsule and identity), the runner's recovery epoch, lease and assignment expiry, the connection,
      capsule and policy, and sponsor availability, plus the existing plain `qorpera_runner_broker_job`. The save check
      (C1B §2) leaves the lease and the sponsor out; model-facing tool calls keep them.
 
   It returns the resolved run actor and the run row. The binding's ids are normalized (`::uuid::text`).
-- **`qorpera_folder_run_enter(env, profile, actor, p_targets)`**, an overload. It merges the caller's targets into the
-  run's own, validated as C1b-3a's commit validates them: rank 0 is only this company's row `KEY SHARE`, ranks 6 and 7
-  are `KEY SHARE` only, and the stronger mode wins. It locks them in rank order.
-- **`qorpera_company_run_actor(env, p_binding, p_targets default '[]')`**, the new entry point.
+- **`qorpera_folder_run_enter(env, profile, actor, p_targets jsonb)`**, a four-argument overload with no default, so
+  the three-argument calls stay unambiguous. It merges the caller's targets into the run's own, validated as C1b-3a's
+  commit validates them:
+  - rank 0 is only this company's row, `KEY SHARE`;
+  - ranks 6 and 7 are `KEY SHARE` only;
+  - the stronger mode wins.
+
+  It locks them in rank order.
+- **`qorpera_company_run_actor(env, p_binding)`**, the new entry point. It takes no locks.
   - snapshot-v1: it returns `qorpera_company_path_actor(...)` unchanged;
-  - `folder-v2`, run: the legacy field names callers read (`companyId`, `environmentId`, `userId`, `staffAgentId`,
-    `runId`, `jobId`, `assignmentId`, `audience`, `audienceUserId`, `sponsorBindingId`, `sponsorVersion`,
-    `runtimeBundleId`), plus `core: 'folder-v2'` and `folder: {actor, resolved}`;
+  - `folder-v2`, run: `qorpera_folder_run_resolve`, a plain resolve. It returns the legacy field names callers read
+    (`companyId`, `environmentId`, `userId`, `staffAgentId`, `runId`, `jobId`, `assignmentId`, `audience`,
+    `audienceUserId`, `sponsorBindingId`, `sponsorVersion`, `runtimeBundleId`), plus `core: 'folder-v2'` and
+    `folder: {actor, resolved}`;
   - `folder-v2`, member: a plain membership read.
-- **The `assert_context` dispatch.** With `actor ->> 'core' = 'folder-v2'` it calls `qorpera_folder_run_reads_current`
-  at rank 10, and never falls through to the legacy loop. A `folder-v2` run has no rows in
-  `company_run_read_paths`, so that loop would pass vacuously. `wake_authorized`'s agent branch has the same trap.
-- The send family, the receipts, the completion lane and the wake admission (§5.6).
+
+  Callers that need locks run `folder_tool_run` first, and presence stays lock-free (core §6).
+- **The `assert_context` dispatch.** It decides by **the company's core**, looked up from the actor's environment, not
+  by a field of the actor. For `folder-v2` it calls `qorpera_folder_run_reads_current` at rank 10, and refuses (42501)
+  an actor that carries no folder run actor. It never falls through to the legacy loop: a `folder-v2` run has no rows in
+  `company_run_read_paths`, so that loop would pass vacuously.
+- The send family, the receipts, the card path, the completion lane and the wake admission (§5.6).
 
 ### 5.4 Dispatch on core
 
 As in C1c-1, a line inserted at the start of each function sends `folder-v2` to its new body. The snapshot-v1 text
 after that line stays byte-identical, and its digest is checked at migration time.
 
-| Function | `folder-v2` |
-| --- | --- |
-| `native_tool_locked_run` | `folder_tool_run(binding)`, returning the run row |
-| `validate_native_provider_execution_lease` (also called directly by the runtime) | `folder_native_lease_current` plus the stop check |
-| `run_wake_authorized` | `folder_wake_authorized` plus the policy kind (its other callers include `assert_wake_work_allowed` and `handoff_run_sponsor`) |
-| `company_path_assert_context` | `run_reads_current`, never the loop |
-| the five "unchanged" callers (§3) | their actor call becomes `company_run_actor`; `begin_native_company_execution_v2` also takes the run mutex |
-| the read-type branches: `describe_company_run_context` (company name from `qorpera_folder_company_index`; session read plain), the presence functions (a folder `presence_path_routes` on `qorpera_folder_path_resource` and `folder_actor_allowed`; a refusal is 42501, which `native_presence_subject` reads as "absent"), `native_company_object_actor`, `member_file_export_source` (no gc fence) | their `folder-v2` body |
-| `send_native_agent_message`, `send_runner_agent_message`, `append_native_interaction_request` | the folder send (§5.6) |
-| `append_runner_transcript_event` (the runner broker's bypass of the send path) | refuses 0A000 |
-| `begin_`, `complete_native_tool_operation` | the folder receipts |
-| `enforce_company_context_send` | requires the marker the folder send sets; refuses without it |
-| `pin_wake_occurrence`, `routine_occurrence_lifecycle` | the folder admission mode (§5.6) |
-| `complete_runner_job_v6` | the folder completion lane, in place of C1c-1's guard |
-| `native_office_start`, `_start_descriptor`, `_capture`, `_file_export`, `native_shared_file_export_source`, `self_approve_organization_proposal` | refuse 0A000 until C1c-3: they take the gc fence or a legacy proposal lock after the run check |
+| Function | `folder-v2` | Slice |
+| --- | --- | --- |
+| `native_tool_locked_run` | `folder_tool_run(binding, '[]')`, returning the run row | 2a |
+| `validate_native_provider_execution_lease` (also called directly by the runtime) | `folder_native_lease_current` plus the stop check | 2a |
+| `run_wake_authorized`, and `wake_authorized` itself (the materializer calls it directly; its agent branch passes vacuously on `folder-v2`) | `folder_wake_authorized` plus the policy kind | 2a |
+| `company_path_assert_context` | by the company's core: `run_reads_current`, never the loop | 2a |
+| the five "unchanged" callers (§3) | a text patch: their actor call becomes `company_run_actor`; `begin_native_company_execution_v2` also takes the run mutex; the digest is of the patched text | 2a |
+| the read-type branches: `describe_company_run_context` (company name from `qorpera_folder_company_index`; session read plain), the presence functions (a folder `presence_path_routes` on `qorpera_folder_path_resource` and `folder_actor_allowed`; a refusal is 42501, which `native_presence_subject` reads as "absent"), `native_company_object_actor`, `member_file_export_source` (no gc fence) | their `folder-v2` body | 2a |
+| `native_office_start`, `_start_descriptor`, `_capture`, `_file_export`, `native_shared_file_export_source`, `self_approve_organization_proposal`, **`native_machine_start`** | refuse 0A000 until C1c-3: after the run check they take the gc fence or a legacy proposal lock. Machine start holds the machine row and then asks for the company row `FOR UPDATE`, the reverse of #419's custody order | 2a |
+| `send_native_agent_message`, `send_runner_agent_message`, `append_native_interaction_request`, `append_runner_transcript_event`, `begin_`/`complete_native_tool_operation`, `begin_`/`complete_run_operation_receipt` | 2a: refuse 0A000. 2b: the folder send, interaction request and receipts; the transcript append and the runner broker's direct receipt calls keep refusing | 2a, 2b |
+| `record_action_review` | 2a: under the mutex; its card path refuses through the transcript append. 2b: the folder card path (§5.6) | 2a, 2b |
+| `assert_company_path_reads`, `record_native_context_view`, `add_agent_review_rule` | their `folder-v2` body (§5.6) | 2b |
+| `enforce_company_context_send` | requires the marker the folder send sets; refuses without it | 2b |
+| `pin_wake_occurrence`, `routine_occurrence_lifecycle`, `send_coworker_message`, `read_native_wake`, `handoff_run_sponsor` | their `folder-v2` modes (§5.6) | 2c |
+| `complete_runner_job_v6` | the folder completion lane, in place of C1c-1's guard | 2c |
+| the legacy multi-company loops: `materialize_wake_execution_runs`, the drains (`office_activation`, `worker`, `machine`, `company_file`), `materialize_session_*` | skip `folder-v2` companies before their first lock | 2c |
 
-### 5.5 The stop check includes deletions
+### 5.5 The stop check
 
-The folder functions (`run_enter`, the commit, `record_release`, `read_actor`) read only
-`qorpera_company_execution_pauses`. A company under deletion is paused for today's NTLR (`company_execution_paused`
-reads pauses and deletions), but would not be for the folder core. C1c-2a switches every folder function to
-`qorpera_company_execution_paused`.
+- **Deletion already pauses.** `request_company_deletion` calls `stop_company_work`, which inserts the pause row the
+  folder core reads. The exception is when the requester's account is gone: the pause row's foreign key to
+  `auth.users` cannot be met.
+- **So every folder function reads `qorpera_company_execution_paused`** (pauses and deletions), in C1c-2a:
+  - `run_enter` and the commit;
+  - `record_release` and `read_actor`;
+  - C1b-3a's view functions: `folder_view_resolve`, the view inheritance, and its bodies of `read_actor`,
+    `record_release` and the commit.
+- **The real gap is the fence.** Deletion never drains the folder fence. It takes the gc fence (the company row
+  `FOR UPDATE`), and it fails jobs with `SKIP LOCKED`, so jobs a folder effect holds at `KEY SHARE` are skipped. An
+  effect that passed its post-fence re-read before the deletion committed finishes after it. C1c-3 makes deletion run
+  the folder pause's second phase for `folder-v2`: the fence `FOR UPDATE` and its revision bump, with no gc fence.
 
 ### 5.6 Effects, wakes and completion
 
+- **Sessions and the operation clock.**
+  - Every session event, session state change and staff change updates one company-wide row, the operation clock
+    (`qorpera_profile_operation_clocks`).
+  - On snapshot-v1 the company row `FOR UPDATE` hides the ordering. On `folder-v2` nothing does: a coworker message
+    that takes the clock at the pair event and then wants the recipient's thread deadlocks with the recipient's own
+    send, which holds that thread and wants the clock (reproduced).
+  - The rule: **every `folder-v2` path locks every session it will write to, `FOR UPDATE` in id order, before its
+    first session event**, which is when it takes the operation clock. Sessions and the clock come after rank 10 and
+    before admission (§5.7).
+  - A folder commit's session events come from F2's staff triggers (an agent's thread, and on archive its pair
+    sessions). **F2's hook names those sessions**, and the commit locks them at the sessions rank before it applies.
+    The commit's target check gains that rank (sessions only, `FOR UPDATE`).
 - **The folder send** (both send functions and the interaction request), in order:
-  1. the stop check;
-  2. the run mutex;
-  3. the job `KEY SHARE`, then the fence with the stop re-read;
-  4. **rank 0**, then ranks 1, 2, 4 and 5;
-  5. the plain lease check;
-  6. the recheck at rank 10;
-  7. the session `FOR UPDATE`;
-  8. the marker, then the insert (the trigger checks the marker), then the transcript append, with no broker job lock.
-
-  Rank 0 is needed until C1c-3: legacy posting, `answer_interaction`, `get_email_draft` and `retry_room_delivery` take
-  the company row, then the session. A send takes the session, then the company row through the operation clock's
-  foreign key.
-- **Receipts** (`qorpera_folder_begin_run_receipt`, `_complete_run_receipt`): under the run mutex, with no broker job
-  lock. A receipt that "requires a company revision" is completed by a folder commit carrying it: the commit writes
-  `qorpera_folder_commits.receipt_id`, which nothing writes today.
-- **`record_native_context_view`:** each output's `readId` is a release in `qorpera_folder_run_releases` and its
+  1. the stop check, the run mutex, the job `KEY SHARE`, the fence with the stop re-read;
+  2. rank 0 (the company row: legacy posting, `answer_interaction`, `get_email_draft` and `retry_room_delivery` take it
+     `FOR UPDATE` before the session), then ranks 1, 2, 4 and 5;
+  3. the plain lease check;
+  4. the recheck at rank 10;
+  5. the session `FOR UPDATE`;
+  6. the marker (bound to the run id, and cleared after the insert), then the insert, which the trigger checks, then the
+     transcript append, with no broker job lock.
+- **Receipts** (`qorpera_folder_begin_run_receipt`, `_complete_run_receipt`), under the run mutex, with no broker job
+  lock. A receipt that "requires a company revision" is satisfied by a folder commit that carries it:
+  - The commit takes an optional receipt id. It locks the receipt `FOR NO KEY UPDATE` as a run-owned row (§5.7) and
+    checks that the receipt belongs to the commit's run, is `executing`, and requires a revision. It then writes
+    `qorpera_folder_commits.receipt_id`, which gets a unique partial index: one commit per receipt.
+  - `_complete_run_receipt` names the commit id. It checks that the commit exists, belongs to the run and carries this
+    receipt. Whatever the units' outcomes, the commit satisfies the receipt. The run's disposition comes from the
+    outcomes (below).
+- **`record_native_context_view`:** each output's `readId` is a release in `qorpera_folder_run_releases`, and its
   `readSha256` the read record's `output_sha256`, instead of `company_read_confirmations`. The run mutex orders the
   ordinal and the replay. The v149 marker stays.
+- **`record_action_review`'s card** (an "ask" in a conversation) is public output: it shows the action's arguments.
+  Its folder path runs:
+  1. the run mutex, the job, the fence;
+  2. rank 0, then the ranks;
+  3. the recheck at rank 10;
+  4. the review row (run-owned);
+  5. the session `FOR UPDATE`;
+  6. the folder transcript append.
 - **`add_agent_review_rule`:** the requester's member row `FOR NO KEY UPDATE` at rank 1 (merged with the run's
   `KEY SHARE`, so no upgrade), plus rank 0 and the recheck. It no longer takes the company row.
-- **Wakes.** Every `folder-v2` inserter takes the recipient's rows at ranks 1 to 5 (the routine `FOR NO KEY UPDATE`),
-  then `qorpera_folder_admit_wakes(profile)`: the folder admission row `FOR NO KEY UPDATE`, last before the clock
-  (core §3 step 10), which sets a transaction marker. Then it inserts.
-  - In `folder-v2` mode the pin trigger takes no lock, and refuses a wake without the marker.
-  - `routine_occurrence_lifecycle` takes the routine `FOR NO KEY UPDATE` instead of `FOR UPDATE`.
-  - The legacy admission fence (`qorpera_company_wake_admission_fences`, today's stop fence as well) and the folder
+- **Wakes.**
+  - Every `folder-v2` inserter:
+    1. takes the recipient's rows at ranks 1 to 5 (the routine `FOR NO KEY UPDATE`), and the sessions it will write;
+    2. calls `qorpera_folder_admit_wakes(profile)`: the fence `KEY SHARE` with the stop re-read (a no-op if already
+       held), then the folder admission row `FOR NO KEY UPDATE`, last before the folder clock (core §3 step 10). It
+       sets a transaction marker;
+    3. inserts.
+  - In `folder-v2` mode the pin trigger:
+    - takes no lock;
+    - keeps today's stop rule (an autonomous wake is cancelled, a human one refused);
+    - refuses a wake without the marker, with 55000 "Folder wake admission is required".
+  - `routine_occurrence_lifecycle` takes the routine `FOR NO KEY UPDATE`.
+  - The legacy admission fence (`qorpera_company_wake_admission_fences`, also today's stop fence) and the folder
     admission row are different tables. `folder-v2` never touches the legacy one.
-  - The drains that admit many companies in one transaction stay legacy-only (C4).
-- **`send_coworker_message`:** the parent's read-set check of C1B-2 §4, then admission; the recipient's rows are
-  targets.
+  - The legacy multi-company loops skip `folder-v2` companies before their first lock, so one company never stops the
+    pass for others. They stay legacy-only (C4).
+- **`send_coworker_message`:**
+  1. the run mutex, the job, the fence, rank 0;
+  2. ranks 1 and 2 for sender and recipient, rank 3 for the recipient's authority, rank 4 for the thread room;
+  3. the recheck, plus the parent read-set check of C1B-2 §4;
+  4. the receipt;
+  5. the pair lock;
+  6. the pair session and both thread sessions, `FOR UPDATE` in id order;
+  7. the events;
+  8. admission, then the wake.
 - **`read_native_wake`:**
   - the wake check comes from `run_resolve`;
   - a company-file wake refuses (C4);
-  - the parent's folder read set is inherited into the run, idempotent per wake;
+  - the parent's folder read set is inherited into the run as of this call, rechecked under the run's own authority,
+    idempotent per wake;
   - no `companySnapshotId` pin. `companySeq` has no column yet (C4), and the transcript's session pin reads NULL for
     `folder-v2` today, so it is not enforced until then.
 - **Completion**, the `complete_runner_job_v6` lane, in order:
   1. the job `FOR UPDATE` (the lease ends);
-  2. the run box views of the run `FOR UPDATE`, in id order (C1B §4's one order: job, then view);
-  3. the fence and ranks, with the routine `FOR NO KEY UPDATE`;
+  2. the run's run box views `FOR UPDATE`, in id order (C1B §4's one order: job, then view);
+  3. the fence, rank 0, and the ranks, with the routine `FOR NO KEY UPDATE`;
   4. the recheck;
-  5. receipts matched to folder commits;
-  6. the provider-session owner, then the job update.
+  5. receipts matched to their commits;
+  6. the provider-session owner;
+  7. the job update.
 
   It reuses `complete_runner_job_v4`, v3 and v2 and `bind_execution_provider_session`, and never routes to
-  `complete_runner_job_before_path_runtime`. The run-results check forbids `published` without a snapshot, so it gains a
-  `folder-v2` disposition.
+  `complete_runner_job_before_path_runtime`. The run-results check forbids `published` and `review_pending` without a
+  snapshot, so it gains `folder-v2` dispositions:
+  - `published` when a commit of the run saved a unit;
+  - `unchanged` when its commits saved nothing;
+  - `review_pending` when a unit waits for review (C2).
+- **`handoff_run_sponsor`** refuses a run whose revision receipts have no snapshot. Its `folder-v2` mode accepts
+  receipts satisfied by commits (C1c-2c).
 
 ### 5.7 Additions to core §3's order
 
-- **The run mutex:** after the operation key, before the job.
-- **Run-owned rows** (receipts, action reviews, context views): after the ranks, before rank 10.
-- **Sessions:** after rank 10, before admission.
-- **The provider-session owner:** in completion, after the recheck.
+In step 4, after rank 9:
+- **run-owned rows** (receipts, action reviews, context views), then **rank 10's recheck**;
+- **sessions**, every one the transaction will write, `FOR UPDATE` in id order;
+- **the operation clock**, at the first session event.
 
-### 5.8 Moved to C3 and C4
+Admission and the folder clock stay last. The **run mutex** comes after the operation key and before the job (step 2).
+The **provider-session owner** is locked in completion after the recheck.
+
+### 5.8 Moved to C3 and C4, and what stays closed
 
 - The runner broker's describe and input-object checks. Their legacy bodies read the substrate and company snapshot,
   and the runner accepts only the two legacy runtimes (`cloud-runner-broker.ts:1042`). C1c-1's refusals stay until C3
   gives `folder-v2` runs their substrate model.
 - `companySeq` pins on runs and wakes (C4's schema).
+- Renewal's move to `FOR NO KEY UPDATE` stays in C3 (C1B). Until then renewal waits for the one tool call in flight.
 - Office-activation and machine-event runs make no tool call: `run_resolve` refuses them (0A000), as offices refuse
   `folder-v2` today.
+- **After C1c-2c, legacy wake inserters fail closed on `folder-v2`.** Posting, `answer_interaction`,
+  `answer_action_review`, `retry_room_delivery`, routine firing and coding turns stay closed until C1c-3 gives them
+  folder modes. So no real `folder-v2` company is created before C1c-3.
 
 ### 5.9 Split and tests
 
-Three PRs, in order. Each needs C1b-3a (#497) and C1c-1 (#532) on master first; their migrations sort after
+Three PRs, in order. Each needs C1b-3a (#497) and C1c-1 (#532) on master first. Their migrations sort after
 `20260929430000` and after #419's patches of the wake functions.
 - **C1c-2a, the fence, the actor and reads:**
   - `folder_native_lease_current`, the targets overload of `run_enter`, `folder_tool_run` with the run mutex, and the
-    dispatch in NTLR, the lease validation and `run_wake_authorized`;
-  - `company_run_actor`, the `assert_context` dispatch, and the five swapped callers;
-  - the read-type branches, the explicit refusals, the stop check, and `record_action_review` under the mutex.
-- **C1c-2b, effects:** the send family and its trigger marker, the folder transcript append and interaction request,
-  `assert_company_path_reads`, `record_native_context_view`, the folder receipts and the commit ↔ receipt link, and
-  `add_agent_review_rule`.
-- **C1c-2c, wakes and completion:** the admission helper, the pin trigger's and routine lifecycle's folder modes,
-  `send_coworker_message`, `read_native_wake`, and the v6 folder lane with the run-results disposition. C2's creation
-  commit depends on it.
+    dispatch in NTLR, the lease validation, `run_wake_authorized` and `wake_authorized`;
+  - `company_run_actor` and the `assert_context` dispatch by core; the five swapped callers;
+  - the read-type branches, and `record_action_review` under the mutex;
+  - the explicit refusals, `native_machine_start` included;
+  - **interim refusals** of the legacy effect entry points (the receipts, both sends, the interaction request, the
+    transcript append), so no `folder-v2` path takes the job and then the budget row between 2a and 2b;
+  - the stop check in every folder function.
+- **C1c-2b, effects:**
+  - the send family and its trigger marker, the folder transcript append and interaction request;
+  - the sessions rule, with the commit's sessions rank and F2's session targets;
+  - `assert_company_path_reads`, `record_native_context_view`, the folder receipts and the receipt ↔ commit link, the
+    card path, and `add_agent_review_rule`.
+- **C1c-2c, wakes and completion:**
+  - the admission helper, the pin trigger's and routine lifecycle's folder modes;
+  - `send_coworker_message`, `read_native_wake`, `handoff_run_sponsor`;
+  - the v6 folder lane with its dispositions;
+  - the legacy loops skipping `folder-v2`.
 
-Concurrency tests (dblink, with `current_database()`):
-1. Two tool calls of one run: the second waits at the mutex, and nothing deadlocks. Concurrent receipt begins leave
-   one `executing` receipt; concurrent context views get ordinals 1 and 2.
-2. Renewal (job `FOR NO KEY UPDATE`) is never blocked by a tool call.
-3. Stop: the drain waits for a tool call in flight, and a call that waited behind it refuses.
-4. A commit rewriting the agent's `agent.md` runs beside that agent's tool call and send: no 55P03, no deadlock.
-5. A send against legacy posting or `answer_interaction` on the same session, both orders: no deadlock. Removing rank
-   0 gives 40P01.
-6. Completion waits for a send and for a release in flight.
-7. Coworker sends A → B and B → A at the same time: no deadlock.
-8. A `folder-v2` wake insert without admission refuses. With rank 0 and admission held it never meets 55P03 (C2's
-   creation shape).
-9. `add_agent_review_rule` twice with the same text leaves one row; against a role change, no deadlock.
-10. Removing another member while a run sends: no deadlock. Removing the run's own requester is C1c-3's case.
-11. A snapshot-v1 control for every dispatcher, and a digest of each snapshot-v1 body after the inserted line.
+  C2's creation commit depends on it.
+
+Concurrency tests (dblink, with `current_database()`), by slice:
+- **C1c-2a:**
+  1. Two tool calls of one run: the second waits at the mutex, and nothing deadlocks. Concurrent context views get
+     ordinals 1 and 2.
+  2. Renewal waits only for the one tool call in flight.
+  3. Stop: the drain waits for a tool call in flight, and a call that waited behind it refuses. A deletion row with no
+     pause row also refuses a tool call.
+  4. A commit rewriting the agent's `agent.md` runs beside that agent's tool call: no 55P03, no deadlock.
+  5. `assert_context` with a revoked read refuses rather than passing, and so does `run_wake_authorized` for a coworker
+     wake whose parent's reads are no longer readable.
+  6. Every `folder-v2` refusal, a run with no budget row included, and a snapshot-v1 control for every dispatcher, plus
+     a digest of each snapshot-v1 body.
+- **C1c-2b:**
+  7. Concurrent receipt begins leave one `executing` receipt.
+  8. A send, an ask card and a coworker send against legacy posting or `answer_interaction` on the same session, both
+     orders: no deadlock. Removing rank 0 gives 40P01.
+  9. `add_agent_review_rule` twice with the same text leaves one row. Against a role change, no deadlock.
+  10. Receipts: a commit carrying the receipt completes it; no commit refuses; another run's commit refuses; two commits
+      cannot carry one receipt.
+- **C1c-2c:**
+  11. A coworker message A → B against B's own send into its thread, and a commit archiving A against A's coworker
+      send: no deadlock. Also A → B and B → A at the same time.
+  12. Completion waits for a send and for a release in flight. A `folder-v2` job never reaches
+      `before_path_runtime`. Each disposition.
+  13. A `folder-v2` wake insert without admission refuses. With rank 0 and admission held it never meets 55P03 (C2's
+      creation shape). The routine lifecycle at `FOR NO KEY UPDATE` runs beside a routine-file commit and beside the
+      routine run's tool call.
+  14. A materializer pass with a `folder-v2` wake beside a snapshot-v1 wake: the snapshot-v1 wake materializes, and the
+      `folder-v2` company row is never locked.
+  15. Removing another member while a run sends: no deadlock. Removing the run's own requester is C1c-3's case.
 
 ## 6. C1c-3: the remaining company-row locks and the activation checks
 
