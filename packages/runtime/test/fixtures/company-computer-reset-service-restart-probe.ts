@@ -19,8 +19,10 @@ import {
 } from "node:fs/promises";
 import { dirname } from "node:path";
 import {
+	COMPANY_COMPUTER_BOOTS_ROOT,
 	COMPANY_COMPUTER_PREPARATION_MAX_BYTES,
 	COMPANY_COMPUTER_RESET_CONFIGURATION_MAX_BYTES,
+	companyComputerBootDirectory,
 } from "@qorpera/contracts";
 import { readCompanyComputerPreparationProtected } from "../../src/cloud-company-computer-preparation-control.ts";
 import { controlCompanyComputerResetConfiguration } from "../../src/cloud-company-computer-reset-configuration-control.ts";
@@ -187,10 +189,13 @@ if (mode === "--configure") {
 	const scenarios = [
 		"configuration-old-credentials",
 		"configuration-open-credentials",
+		"configuration-other-boot-credentials",
+		"configuration-other-boot-empty-credentials",
 		"configuration-stage-mode",
 		"configuration-stage-owner",
 		"configuration-preparation-differs",
 		"normal",
+		"start-other-boot-credentials",
 		"initial-lost-reply",
 		"initial-unknown",
 		"initial-crash",
@@ -233,6 +238,10 @@ if (mode === "--configure") {
 		// tmpfiles fragment (qorpera-office-preparation.conf) creates root-only and empty.
 		await mkdir(credentials, { mode: 0o700 });
 		await chmod(credentials, 0o700);
+		// The same fragment creates the boots root empty; a reset restores no boot
+		// directory, so only this boot's reset configuration adds one.
+		await mkdir(COMPANY_COMPUTER_BOOTS_ROOT, { mode: 0o755 });
+		await chmod(COMPANY_COMPUTER_BOOTS_ROOT, 0o755);
 		await mkdir(f.historyDirectory, { recursive: true, mode: 0o700 });
 		for (const [path, bytes] of f.archiveFiles) await writeFile(path, bytes, { mode: 0o600 });
 		for (const path of [dirname(f.receipt.layout.workbenchRoot), ...Object.values(f.receipt.layout)]) {
@@ -246,6 +255,15 @@ if (mode === "--configure") {
 		await save(`${root}/fixture-configuration.json`, f.configurationCommand);
 		await writeFile(`${root}/control.lock`, "", { mode: 0o600 });
 		const lock = await open(`${root}/control.lock`, "r+");
+		/** A surviving root keeps its earlier boots' directories, 0755 with 0700 credentials. */
+		const otherBootCredentials = async (filled: boolean) => {
+			const other = companyComputerBootDirectory(f.input.predecessor.startup.bootId);
+			assert.notEqual(other, f.directory);
+			await mkdir(`${other}/credentials`, { recursive: true, mode: 0o700 });
+			await chmod(other, 0o755);
+			await chmod(`${other}/credentials`, 0o700);
+			if (filled) await writeFile(`${other}/credentials/config.json`, "predecessor configuration", { mode: 0o400 });
+		};
 		const run = (mode: string, selected = "normal", locked = true) =>
 			spawnSync(
 				locked ? "/usr/bin/flock" : process.execPath,
@@ -267,6 +285,8 @@ if (mode === "--configure") {
 				if (scenario === "configuration-old-credentials")
 					await writeFile(`${credentials}/config.json`, "predecessor configuration", { mode: 0o400 });
 				if (scenario === "configuration-open-credentials") await chmod(credentials, 0o755);
+				if (scenario.startsWith("configuration-other-boot-"))
+					await otherBootCredentials(scenario === "configuration-other-boot-credentials");
 				if (scenario === "configuration-stage-mode") await chmod(stage, 0o644);
 				if (scenario === "configuration-stage-owner") await chown(stage, 1000, 1000);
 				if (scenario === "configuration-preparation-differs")
@@ -323,6 +343,29 @@ if (mode === "--configure") {
 			await save(`${root}/fixture-initial-command.json`, f.startCommand);
 			await save(`${root}/fixture-initial-target.json`, f.startCompletion);
 			await save(`${root}/fixture-starts.json`, 0);
+			if (scenario === "start-other-boot-credentials") {
+				// After reset configuration wrote this boot's credentials, another boot's
+				// directory still refuses the start before any claim or dispatch.
+				await otherBootCredentials(true);
+				const refused = run("--initial-start");
+				assert.equal(refused.status, 1, "another boot's credentials must refuse the reset start");
+				assert.match(refused.stderr, /\[cause\]: Error: stale root authority present/);
+				assert.equal(await load(`${root}/fixture-starts.json`), 0, "refused start dispatched");
+				await assert.rejects(lstat(f.paths.claim), { code: "ENOENT" });
+				await assert.rejects(lstat(f.paths.completion), { code: "ENOENT" });
+				console.log(
+					JSON.stringify({
+						scenario,
+						actualRootControl: true,
+						actualKernelFlock: true,
+						actualResetConfiguration: true,
+						starts: 0,
+						syntheticSystemdSqlAndPriorBoot: true,
+						deployed: false,
+					}),
+				);
+				continue;
+			}
 			if (scenario.startsWith("initial-")) {
 				const selected = scenario.slice("initial-".length),
 					first = run("--initial-start", selected);

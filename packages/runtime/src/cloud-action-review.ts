@@ -187,6 +187,8 @@ export function cloudActionEffect(
 		case "read_skill":
 		case "search_skills":
 		case "computer_screenshot":
+		case "machine_read":
+		case "machine_list":
 			return "read";
 		case "company_write":
 		case "company_mkdir":
@@ -209,6 +211,13 @@ export function cloudActionEffect(
 		case "coding_cancel_command":
 		case "coding_ask":
 		case "coding_finish":
+		// A company machine is the company's own scratch compute, isolated like a
+		// coding VM: starting, using, stopping and deleting it stays inside.
+		case "machine_start":
+		case "machine_run":
+		case "machine_cancel":
+		case "machine_stop":
+		case "machine_delete":
 			return "internal";
 		case "company_delete":
 			return "destructive";

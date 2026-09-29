@@ -113,7 +113,7 @@ export function officeBootServiceRestartHttpFixture(
 					environment: {},
 					"wait-for-websocket": false,
 					interactive: false,
-					"record-output": false,
+					"record-output": true,
 					user: 0,
 					group: 0,
 					cwd: "/",
