@@ -91,6 +91,17 @@ end $$;
 -- Every refusal of acceptance is the start's refusal: same SQLSTATE, same message. The probes
 -- change rows directly, so they run as the table owner; the service role claim stays.
 reset role;
+-- The run's Company File snapshot is closure-verified, which the broker description requires.
+insert into public.qorpera_object_reachability_graphs (
+	id, profile_id, environment_id, root_kind, root_id, client_graph_id,
+	root_object_sha256, contract_version, content_sha256, object_count,
+	storage_bytes, status, created_by_user_id, completed_at, closure_verified
+) values (
+	'73100000-0000-4000-8000-000000000010', '16000000-0000-4000-8000-000000000010',
+	'16000000-0000-4000-8000-000000000020', 'company_snapshot', '16000000-0000-4000-8000-000000000023',
+	'73100000-0000-4000-8000-000000000011', repeat('c', 64), 1, repeat('b', 64), 1, 2, 'complete',
+	'16000000-0000-4000-8000-000000000001', statement_timestamp(), true
+);
 do $$
 declare
 	v_start jsonb := current_setting('qorpera_test.start')::jsonb;
@@ -105,8 +116,9 @@ begin
 		('an unknown assignment', jsonb_build_object('assignment', gen_random_uuid()), null, '42501'),
 		('another job', jsonb_build_object('job', gen_random_uuid()), null, '42501'),
 		('another runner', jsonb_build_object('runner', gen_random_uuid()), null, '42501'),
-		('a revoked runner', '{}'::jsonb, format('update public.qorpera_runners set status = %L where id = %L',
-			'revoked', v_start ->> 'runner'), '42501'),
+		('an expired runner session', '{}'::jsonb, format(
+			'update public.qorpera_runners set session_expires_at = statement_timestamp() - interval ''1 second'' where id = %L',
+			v_start ->> 'runner'), '42501'),
 		('an expired offer', '{}'::jsonb, format(
 			'update public.qorpera_runner_assignments set expires_at = statement_timestamp() - interval ''1 second'' where id = %L',
 			v_start ->> 'assignment'), 'PGRST'),
