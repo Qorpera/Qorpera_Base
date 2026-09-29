@@ -438,7 +438,12 @@ export function createObjectGatewayHandler(options: ObjectGatewayServiceOptions)
 					return;
 				}
 				if (error instanceof ObjectDependencyError) {
-					json(response, error.unavailable ? 503 : error.status, { error: error.message }, observation);
+					json(
+						response,
+						error.unavailable ? 503 : error.status,
+						error.lockConflict ? { error: error.message, code: "lock_conflict" } : { error: error.message },
+						observation,
+					);
 					return;
 				}
 				json(response, 503, { error: "Object gateway operation failed" }, observation);
