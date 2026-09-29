@@ -46,12 +46,12 @@ from unnest(array['anon', 'authenticated', 'service_role']) role_name,
 select pg_temp.wake_assert(not has_table_privilege(role_name, table_name, privilege),
 	role_name || ' has no ' || privilege || ' on ' || table_name)
 from unnest(array['anon', 'authenticated', 'service_role']) role_name,
-	unnest(array['public.qorpera_computer_hour_zero_state', 'public.qorpera_computer_hour_zero_sweep']) table_name,
+	unnest(array['public.qorpera_computer_hour_zero_state', 'public.qorpera_computer_hour_zero_sweep_status']) table_name,
 	unnest(array['INSERT', 'UPDATE', 'DELETE']) privilege;
 select pg_temp.wake_assert(not has_table_privilege(role_name, table_name, 'SELECT'),
 	role_name || ' cannot read ' || table_name)
 from unnest(array['anon', 'authenticated']) role_name,
-	unnest(array['public.qorpera_computer_hour_zero_state', 'public.qorpera_computer_hour_zero_sweep']) table_name;
+	unnest(array['public.qorpera_computer_hour_zero_state', 'public.qorpera_computer_hour_zero_sweep_status']) table_name;
 select pg_temp.wake_assert(has_function_privilege('service_role', 'public.qorpera_meter_computer_hours()', 'EXECUTE'),
 	'The meter pass is still callable by service_role');
 
@@ -169,7 +169,7 @@ select public.qorpera_meter_computer_hours();
 reset role;
 select pg_temp.wake_assert(pg_temp.ran_out() is not null, 'The meter pass recorded the company at zero');
 select pg_temp.wake_assert((select swept_at > clock_timestamp() - interval '1 minute' and failed_at is null
-	from public.qorpera_computer_hour_zero_sweep), 'The sweep''s time is kept');
+	from public.qorpera_computer_hour_zero_sweep_status), 'The sweep''s time is kept');
 
 -- 9. Switched off again: nothing is kept.
 update public.qorpera_computer_hour_billing set zero_rule_since = null;
@@ -190,5 +190,5 @@ set local role service_role;
 select pg_temp.wake_assert(jsonb_typeof(public.qorpera_meter_computer_hours()) = 'object', 'The meter pass still answers');
 reset role;
 select pg_temp.wake_assert((select failed_at > clock_timestamp() - interval '1 minute' and last_error = 'sweep broke (P0001)'
-	from public.qorpera_computer_hour_zero_sweep) and pg_temp.ran_out() is null, 'The failure is kept and its work undone');
+	from public.qorpera_computer_hour_zero_sweep_status) and pg_temp.ran_out() is null, 'The failure is kept and its work undone');
 rollback;

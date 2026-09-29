@@ -18,10 +18,10 @@
 -- * The notices claim keeps a zero notice while that time at zero lasts (its record is there and
 --   the company is still at zero), drops it once the company leaves zero, and drops "running low"
 --   at zero.
--- * Each sweep's time, and the last failure, are kept in `qorpera_computer_hour_zero_sweep` for
---   operators: the finishing window (part 2) acts on this table.
+-- * Each sweep's time, and the last failure, are kept in `qorpera_computer_hour_zero_sweep_status`
+--   for operators: the finishing window (part 2) acts on the zero state.
 
-set local lock_timeout = '10s';
+set local lock_timeout = '3s';
 
 create table public.qorpera_computer_hour_zero_state (
 	-- State, not a billing record: it goes with the company.
@@ -32,16 +32,16 @@ alter table public.qorpera_computer_hour_zero_state enable row level security;
 revoke all on public.qorpera_computer_hour_zero_state from public, anon, authenticated, service_role;
 grant select on public.qorpera_computer_hour_zero_state to service_role;
 
-create table public.qorpera_computer_hour_zero_sweep (
+create table public.qorpera_computer_hour_zero_sweep_status (
 	id boolean primary key default true check (id),
 	swept_at timestamptz,
 	failed_at timestamptz,
 	last_error text check (last_error is null or char_length(last_error) <= 1000)
 );
-insert into public.qorpera_computer_hour_zero_sweep (id) values (true);
-alter table public.qorpera_computer_hour_zero_sweep enable row level security;
-revoke all on public.qorpera_computer_hour_zero_sweep from public, anon, authenticated, service_role;
-grant select on public.qorpera_computer_hour_zero_sweep to service_role;
+insert into public.qorpera_computer_hour_zero_sweep_status (id) values (true);
+alter table public.qorpera_computer_hour_zero_sweep_status enable row level security;
+revoke all on public.qorpera_computer_hour_zero_sweep_status from public, anon, authenticated, service_role;
+grant select on public.qorpera_computer_hour_zero_sweep_status to service_role;
 
 -- The occasion of one time at zero, for the notices' one-per-occasion rule.
 create function public.qorpera_computer_hour_zero_occasion(p_profile_id uuid, p_ran_out_at timestamptz)
@@ -125,10 +125,10 @@ declare
 begin
 	begin
 		if not public.qorpera_computer_hour_zero_sweep(clock_timestamp()) ? 'skipped' then
-			update public.qorpera_computer_hour_zero_sweep set swept_at = clock_timestamp();
+			update public.qorpera_computer_hour_zero_sweep_status set swept_at = clock_timestamp();
 		end if;
 	exception when others then
-		update public.qorpera_computer_hour_zero_sweep
+		update public.qorpera_computer_hour_zero_sweep_status
 		set failed_at = clock_timestamp(), last_error = left(sqlerrm || ' (' || sqlstate || ')', 1000);
 		raise warning 'Computer hours zero sweep failed: % (%)', sqlerrm, sqlstate;
 	end;

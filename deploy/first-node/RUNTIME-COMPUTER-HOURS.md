@@ -403,8 +403,9 @@ Migration `20260929160000_runtime_computer_hour_notices` and the Edge Function
     out ("out of hours" says it), or once the company is complimentary. A dropped "running low"
     frees its month, so running low again is told. A recipient who is no longer a founder is
     marked failed.
-  - Known limit: a renewal recorded more than ten minutes late (a delayed Stripe webhook) still
-    sends "out of hours" for the gap.
+  - Known limit, while the zero rule is off: a renewal recorded more than ten minutes late (a
+    delayed Stripe webhook) still sends "out of hours" for the gap. With the rule on, the renewal
+    grace covers the first 30 minutes (see "Zero").
   - Reaching zero without owing (hours taken back, credits expiring, a plan ending) queues nothing,
     since no use follows once the zero rule holds work back. Build step 6c part 1 sends "out of
     hours" when the company is first recorded at zero, under its own occasion (see "Zero").
@@ -503,7 +504,7 @@ Coordinator (nothing secret):
     zero (hours too few to clear a debt keep it), and drops it once the company leaves zero; the
     claim also drops "running low" at zero;
   - each sweep's time and the last failure (time and message) are kept in
-    `qorpera_computer_hour_zero_sweep` for operators. The sweep waits at most 2 s for a company
+    `qorpera_computer_hour_zero_sweep_status` for operators. The sweep waits at most 2 s for a company
     row held elsewhere;
   - known limits: the ran-out time is the sweep's, up to a minute late. A founder's renewal grace
     takes a company at zero off the list at the period's end, and it is added again, with a new
@@ -522,7 +523,11 @@ Coordinator (nothing secret):
     never paid stays on that list: work out hours left for all of them in one query, or re-check
     only companies whose inputs changed, and measure with production-sized data;
   - a routine created or retimed at zero gets its first slot only once hours arrive, so 6d shows
-    "Waiting for computer hours" on it.
+    "Waiting for computer hours" on it;
+  - at the switch, and after it, watch the sweep: `select swept_at, failed_at, last_error from
+    public.qorpera_computer_hour_zero_sweep_status`. With the rule on it is the only sender of
+    "out of hours", and the finishing window acts on its records, so a sweep that keeps failing
+    means neither.
 - It is checked before a run is created (not at claim or placement: a run waiting there is
   invisible to members) and at each machine kind's own start or wake step. A run created before
   the company ran out is running work. The hook list is agreed with the nodes (S3), machines,
