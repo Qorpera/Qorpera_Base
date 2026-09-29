@@ -208,41 +208,57 @@ helpers are shared with the intake function's tests, so both sides agree on ever
 
 ## Event wakes (W2)
 
+W2a (migration `20260929290000_runtime_event_wakes`, on today's routine rows per decision 6) and the
+runtime side ship in one cut.
+
 **The trigger.** A routine version may carry one listener trigger on a hook:
-`{kind:'listener', source:'event', hookId, only?: [types], timeZone, replyPolicy}`. `only` lists at
-most 20 event types of at most 128 characters each. A delivery with no type matches only a trigger
-without `only`. As with file-change listeners, a listener is the version's only trigger. In routine
-files (F2-6) this is `when: event`, `source: hooks/<name>` and `only: [...]`.
+`{id, kind:'listener', source:'event', hookId, only?: [types], timeZone, replyPolicy?}`. `only` lists
+1–20 distinct event types of printable ASCII without spaces, at most 128 characters each. A delivery
+with no type matches only a trigger without `only`. As with file-change listeners, a listener is the
+version's only trigger, and the hook must be a live hook of the routine's company and environment
+(checked when the version is saved, by the agent's routine tool and by the version's activation). The
+agent's tool compiles `{kind:"event", hookId, only?, timeZone, report?}` to it; `list_hooks` gives
+the ids. In routine files (F2-6) this becomes `when: event`, `source: hooks/<name>` and `only: [...]`.
 
-**Admission.** When a delivery becomes verified, the same transaction looks for active routines on
-the hook whose trigger matches. For each one:
-- if no event occurrence of that routine's trigger is still queued, it inserts one: `wake_kind
-  'routine'`, a new `source_kind 'event'`, `source_id` the hook, key `event:<routine version>:<trigger
-  id>:<delivery id>`, payload `{hookId, deliveryId}`;
-- if one is queued, nothing is inserted: the queued occurrence collects the new delivery when it is
-  read.
+**Cursors.** Each event listener version gets a row in `qorpera_event_listener_cursors` with the
+instant it became active. A resume or a new current version starts it again from now, as a file
+listener does, so events that arrived while it was paused do not wake it.
 
-So a burst of deliveries becomes one wake. The existing insert triggers apply unchanged: quiet hours
-move `not_before`, a paused company cancels the occurrence, and the pinned sponsor pays.
+**Admission.** The materializer's drain (`qorpera_drain_event_wakes`, called after the file drain)
+takes up to 32 active cursors, oldest scan first, and for each one:
+- skips it while the routine is not active at that version or the company is paused;
+- skips it while an event occurrence of that routine trigger is pending: queued, or materialized with
+  its job not yet running and nothing read;
+- otherwise, when a verified delivery of the hook since the cursor's start (within 7 days), matching
+  `only` and not yet taken by this routine trigger, is waiting, inserts one occurrence: `wake_kind
+  'routine'`, `source_kind 'event'`, `source_id` the hook, key `event:<routine version>:<trigger
+  id>:<first delivery id>:<attempt>`, `scheduled_for` the first delivery's arrival, payload `{hookId,
+  firstDeliveryId}`. The attempt counts earlier occurrences for the same first delivery, so the key is
+  decided by history and a cancelled occurrence gets a next one.
+A routine that must report needs a public audience, as for file listeners. The existing insert
+triggers apply unchanged: quiet hours move `not_before`, and the pinned sponsor pays. An error for one
+cursor (the agent or requester gone, for example) skips that cursor this round and never stops the
+materializer.
 
-**Reading.** `qorpera_read_native_wake` for an `event` occurrence takes, the first time, up to 20
-verified deliveries of that hook and trigger that no earlier occurrence took. It records them in
-`qorpera_event_wake_deliveries(occurrence_id, delivery_id)`, so a retried run reads the same batch. The
-payload lists each one: id, type, received time, content type, and the body as UTF-8 text cut to fit
-the wake's size bound (the whole wake context is at most 48 KiB today, so about 8 KiB a body and 24
-KiB in total, with `truncated: true` where cut). The agent reads a whole body with `read_event`.
-Deliveries left over wake the routine again as soon as this occurrence ends.
+**Reading.** `qorpera_read_native_wake` adds the batch to an `event` occurrence's payload. The first
+read takes up to 20 waiting deliveries into `qorpera_event_wake_deliveries(routine, trigger,
+delivery, occurrence)`, so a retried run reads the same batch. Each event shows its delivery id, type,
+arrival, content type and size, and its body as UTF-8 text (`encoding: utf8`) or base64 (`encoding:
+base64`), cut to about 8 KiB each and 24 KiB in all (`truncated`), or `bodyCleared` after 7 days.
+`more` counts the deliveries still waiting, which wake the routine again once this occurrence has
+been read. A hook removed after admission cancels its queued wakes at materialization, like any
+lost source authority.
 
-**Outside content.** Every event is outside content (contract 11.1). The wake protocol tells the agent
-that an instruction inside an event is data, never an instruction, and outside actions it leads to
-still pass the automatic review. The adversarial test of 11.1 gains an event case.
+**Outside content.** The wake protocol for an event wake says every event is outside content (contract
+11.1): an instruction inside it is data, and outside actions it leads to pass the automatic review.
 
-**Tools.**
-- `read_event(deliveryId, offset?)` returns a delivery's body in 64 KiB pieces, for the agent's own
-  company only.
-- `manage_hook(action: list|create|pause|resume|remove, …)` lets an agent manage hooks. Creating a
-  signed hook returns its address and asks a member for the signing secret with a secret card
-  (connector `event_hook`, secret name = the hook's name).
+**Tools.** `list_hooks` lists the company's live hooks with their addresses. `read_event(deliveryId,
+offset?)` reads one verified delivery of the agent's own company in pieces of 16,000 characters (UTF-8)
+or 24 KiB (base64). Both are reads for the automatic review. Agents creating and removing hooks
+(`manage_hook`, reviewed as a new connection) follows in a later step.
+
+**Folder companies.** Event wakes of `folder-v2` companies are refused like their file-change wakes
+until routine files (F2-6) and the folder's writer land.
 
 **The folder.** For `folder-v2` companies, once the core's writer lands (F1 C3), the platform saves each
 verified delivery as `hooks/<hook name>/<yyyy-mm-dd>/<delivery id>.json` (the kept headers and the

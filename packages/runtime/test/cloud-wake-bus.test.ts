@@ -1071,3 +1071,118 @@ describe("dynamic routine wakes", () => {
 		expect(() => parseCloudWakeEnvelope(wake, identity)).toThrow();
 	});
 });
+
+describe("event wakes", () => {
+	function eventWake(payload: Record<string, unknown> = {}, source: Record<string, unknown> = {}) {
+		const { authority, envelope } = fixture();
+		const routineId = randomUUID();
+		const hookId = randomUUID();
+		const deliveryId = randomUUID();
+		return {
+			identity: authority.identity,
+			hookId,
+			wake: {
+				...envelope,
+				kind: "routine",
+				actorUserId: null,
+				source: { kind: "event", id: hookId, occurrenceKey: `event:1:agent:${deliveryId}:1`, ...source },
+				policy: policies[2].policy,
+				routine: { id: routineId, version: 1, intent: "Answer each form submission." },
+				payload: {
+					hookId,
+					firstDeliveryId: deliveryId,
+					hook: { id: hookId, name: "forms", purpose: "Website form" },
+					events: [
+						{
+							deliveryId,
+							type: "contact.submitted",
+							receivedAt: "2026-09-29T02:00:00.000000Z",
+							contentType: "application/json",
+							bytes: 14,
+							encoding: "utf8",
+							text: '{"name":"Ada"}',
+							truncated: false,
+						},
+						{
+							deliveryId: randomUUID(),
+							type: null,
+							receivedAt: "2026-09-29T02:00:01.000000Z",
+							contentType: null,
+							bytes: 3,
+							encoding: "base64",
+							data: "/wAQ",
+							truncated: false,
+						},
+						{
+							deliveryId: randomUUID(),
+							type: null,
+							receivedAt: "2026-09-22T02:00:00.000000Z",
+							contentType: null,
+							bytes: 9,
+							bodyCleared: true,
+						},
+					],
+					more: 0,
+					...payload,
+				},
+			} as unknown as CloudWakeEnvelope,
+		};
+	}
+	it("admits a routine wake with a batch of events from its hook", () => {
+		const { wake, identity } = eventWake();
+		const parsed = parseCloudWakeEnvelope(wake, identity);
+		expect(parsed.source.kind).toBe("event");
+		expect(parsed.payload.events).toHaveLength(3);
+	});
+	it.each<[string, Record<string, unknown>, Record<string, unknown>?]>([
+		["another hook's events", { hookId: randomUUID() }],
+		["a hook named otherwise", { hook: { id: randomUUID(), name: "forms", purpose: "Website form" } }],
+		["more than 20 events", { events: Array.from({ length: 21 }, () => ({})) }],
+		["a negative remainder", { more: -1 }],
+		["an unknown key", { note: "hi" }],
+		[
+			"a body without its truncation flag",
+			{
+				events: [
+					{
+						deliveryId: randomUUID(),
+						type: null,
+						receivedAt: "2026-09-29T02:00:00.000000Z",
+						contentType: null,
+						bytes: 1,
+						encoding: "utf8",
+						text: "x",
+					},
+				],
+			},
+		],
+		[
+			"a type with a space",
+			{
+				events: [
+					{
+						deliveryId: randomUUID(),
+						type: "invoice paid",
+						receivedAt: "2026-09-29T02:00:00.000000Z",
+						contentType: null,
+						bytes: 0,
+					},
+				],
+			},
+		],
+		["a parent run", {}, {}],
+	])("rejects %s", (label, payload, source) => {
+		const { wake, identity } = eventWake(payload, source);
+		const changed = label === "a parent run" ? ({ ...wake, parentRunId: randomUUID() } as CloudWakeEnvelope) : wake;
+		expect(() => parseCloudWakeEnvelope(changed, identity)).toThrow();
+	});
+	it("rejects the same event twice in one batch", () => {
+		const { wake, identity } = eventWake();
+		const events = (wake.payload as { events: Record<string, unknown>[] }).events;
+		const doubled = {
+			...wake,
+			payload: { ...wake.payload, events: [events[0], { ...events[0] }] },
+		} as CloudWakeEnvelope;
+		expect(() => parseCloudWakeEnvelope(doubled, identity)).toThrow();
+	});
+});

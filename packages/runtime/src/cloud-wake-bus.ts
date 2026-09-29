@@ -192,7 +192,8 @@ export interface CloudWakeEnvelope {
 			| "room"
 			| "office-activation"
 			| "worker-dispatch"
-			| "worker-completion";
+			| "worker-completion"
+			| "event";
 		id: string;
 		occurrenceKey: string;
 	}>;
@@ -370,6 +371,58 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 			nullableUuid(event.previousVersion);
 			nullableUuid(event.receiptId);
 			nullableUuid(event.proposalId);
+		} else if (source.kind === "event") {
+			// Events from one of the company's hooks (W2): outside content, at most 20 a wake.
+			const batch = closed(payloadBody, ["hookId", "firstDeliveryId", "hook", "events", "more"]);
+			const hook = closed(batch.hook, ["id", "name", "purpose"]);
+			if (
+				uuidKey(batch.hookId) !== uuidKey(source.id) ||
+				uuidKey(hook.id) !== uuidKey(source.id) ||
+				typeof hook.name !== "string" ||
+				!/^[a-z][a-z0-9-]{0,63}$/.test(hook.name) ||
+				typeof hook.purpose !== "string" ||
+				Buffer.byteLength(hook.purpose) > 2048 ||
+				!Array.isArray(batch.events) ||
+				batch.events.length > 20 ||
+				!Number.isSafeInteger(batch.more) ||
+				(batch.more as number) < 0 ||
+				parentRunId !== null ||
+				actorStaffId !== null
+			)
+				throw new Error("Invalid event wake");
+			uuid(batch.firstDeliveryId);
+			const seen = new Set<string>();
+			for (const item of batch.events) {
+				const event = closedWithOptional(
+					item,
+					["deliveryId", "type", "receivedAt", "contentType", "bytes"],
+					["encoding", "text", "data", "truncated", "bodyCleared"],
+				);
+				const id = uuidKey(event.deliveryId);
+				const body = event.encoding === "utf8" ? event.text : event.encoding === "base64" ? event.data : undefined;
+				if (
+					seen.has(id) ||
+					(event.type !== null && (typeof event.type !== "string" || !/^[\x21-\x7e]{1,128}$/.test(event.type))) ||
+					typeof event.receivedAt !== "string" ||
+					!Number.isFinite(Date.parse(event.receivedAt)) ||
+					(event.contentType !== null &&
+						(typeof event.contentType !== "string" || event.contentType.length > 256)) ||
+					!Number.isSafeInteger(event.bytes) ||
+					(event.bytes as number) < 0 ||
+					(event.encoding !== undefined && event.encoding !== "utf8" && event.encoding !== "base64") ||
+					(event.encoding !== undefined &&
+						(typeof body !== "string" ||
+							Buffer.byteLength(body) > 48 * 1024 ||
+							typeof event.truncated !== "boolean")) ||
+					(event.encoding === "utf8" && event.data !== undefined) ||
+					(event.encoding === "base64" && event.text !== undefined) ||
+					(event.encoding === undefined && (event.text !== undefined || event.data !== undefined)) ||
+					(event.truncated !== undefined && typeof event.truncated !== "boolean") ||
+					(event.bodyCleared !== undefined && (event.bodyCleared !== true || event.encoding !== undefined))
+				)
+					throw new Error("Invalid event wake");
+				seen.add(id);
+			}
 		} else throw new Error("Invalid routine source");
 	} else if (wake.kind === "room") {
 		const post = closed(payloadBody, ["roomId", "inputIds", "recipientStaffId"]);

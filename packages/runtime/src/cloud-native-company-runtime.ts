@@ -20,6 +20,7 @@ import {
 	type CloudCompanyPathPresenceFactory,
 	observeCloudCompanyPathPresence,
 } from "./cloud-company-path-presence.ts";
+import { cloudEventTools } from "./cloud-event-tools.ts";
 import { cloudHiringTools } from "./cloud-hiring-tools.ts";
 import { cloudMemoryTools, composeCloudAgentMemory, unavailableCloudAgentMemory } from "./cloud-memory-tools.ts";
 import type { CloudNativeCodingDriver } from "./cloud-native-coding-runtime.ts";
@@ -543,6 +544,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 												: []),
 											...cloudSidebarTools(binding, identity, this.#paths),
 											...cloudReviewRuleTools(binding, identity, this.#paths),
+											...cloudEventTools(binding, identity, this.#paths),
 										]),
 								// The notebook is the agent's own: a worker of the same agent recalls it,
 								// and writes to it only when its dispatch allows Company File writes.

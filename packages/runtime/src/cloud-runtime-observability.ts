@@ -44,6 +44,9 @@ export const CLOUD_RUNTIME_TOOL_OPERATIONS = [
 	"organize_sidebar",
 	// Auto-review (v130): an agent adds an Ask first rule for its member.
 	"add_review_rule",
+	// Event wakes (W2): the company's hooks and one event's body.
+	"list_hooks",
+	"read_event",
 ] as const;
 /** Closed vocabulary; the SQL ingestion function checks the same list. */
 export const CLOUD_RUNTIME_OPERATIONS = [

@@ -4,10 +4,13 @@
 -- the materializer, admission, a runner lease and the wake reader); the run reads a whole event;
 -- pauses, filters, removed hooks and company pauses hold.
 
--- Work other tests left committed (360 commits through dblink) never competes with this test's
--- runs for the fixture's runner, however long after it this test runs.
+-- Work other tests left committed never becomes a job this test's materializer calls create
+-- beside its own, where the fixture's runner could claim it first.
 set local session_replication_role = replica;
 update public.qorpera_runner_jobs set dispatch_deferred_until = 'infinity', dispatch_refused_by = null
+where profile_id <> '30000000-0000-4000-8000-000000000010' and status = 'queued';
+update public.qorpera_wake_occurrences set status = 'cancelled', finished_at = clock_timestamp(),
+	blocked_reason = 'Set aside by test 731'
 where profile_id <> '30000000-0000-4000-8000-000000000010' and status = 'queued';
 set local session_replication_role = origin;
 
@@ -63,7 +66,8 @@ create function pg_temp.post(p_body text, p_type text default null, p_address te
 		jsonb_strip_nulls(jsonb_build_object('x-qorpera-event', p_type)), encode(convert_to(p_body, 'UTF8'), 'base64')) ->> 'outcome'
 $$;
 create function pg_temp.event_wakes(p_routine uuid) returns setof public.qorpera_wake_occurrences language sql as $$
-	select * from public.qorpera_wake_occurrences where routine_id = p_routine and source_kind = 'event' order by created_at, id
+	-- scheduled_for is the first delivery's arrival: distinct and in order, unlike created_at within one statement.
+	select * from public.qorpera_wake_occurrences where routine_id = p_routine and source_kind = 'event' order by scheduled_for, id
 $$;
 
 -- Hooks: one of this company, one of another company.
@@ -87,6 +91,11 @@ select pg_temp.wake_error($q$select pg_temp.routine('{"action":"upsert","operati
 	"trigger":{"kind":"listener","source":"event","hookId":"30000000-0000-4000-8000-0000000007b1","path":"x","timeZone":"UTC"}}')$q$,'22023');
 select pg_temp.wake_error($q$select pg_temp.routine('{"action":"upsert","operationKey":"ev-x4","routineKey":"ev-x","title":"t","intent":"i",
 	"trigger":{"kind":"listener","source":"event","hookId":"30000000-0000-4000-8000-0000000007b2","timeZone":"UTC","replyPolicy":"silent"}}')$q$,'42501');
+-- One spelling of a hook id, and each event type once.
+select pg_temp.wake_error($q$select pg_temp.routine('{"action":"upsert","operationKey":"ev-x5","routineKey":"ev-x","title":"t","intent":"i",
+	"trigger":{"kind":"listener","source":"event","hookId":"30000000-0000-4000-8000-0000000007B1","timeZone":"UTC"}}')$q$,'22023');
+select pg_temp.wake_error($q$select pg_temp.routine('{"action":"upsert","operationKey":"ev-x6","routineKey":"ev-x","title":"t","intent":"i",
+	"trigger":{"kind":"listener","source":"event","hookId":"30000000-0000-4000-8000-0000000007b1","only":["a.b","a.b"],"timeZone":"UTC"}}')$q$,'22023');
 
 -- A routine on the form hook; nothing wakes it before a delivery.
 do $$

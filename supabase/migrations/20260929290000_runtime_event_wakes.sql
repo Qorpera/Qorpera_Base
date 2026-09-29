@@ -75,7 +75,9 @@ create table public.qorpera_event_wake_deliveries (
 	trigger_id text not null,
 	delivery_id uuid not null references public.qorpera_event_deliveries(id) on delete cascade,
 	occurrence_id uuid not null references public.qorpera_wake_occurrences(id) on delete cascade,
-	profile_id uuid not null references public.qorpera_profiles(id) on delete cascade,
+	-- The company id for indexes; no foreign key, so reading a wake takes no company lock. Rows go
+	-- with the company through their occurrence and delivery.
+	profile_id uuid not null,
 	taken_at timestamptz not null default clock_timestamp(),
 	primary key (routine_id, trigger_id, delivery_id)
 );
@@ -97,12 +99,15 @@ select pg_temp.event_wake_patch('public.qorpera_cloud_routine_trigger_valid(json
 			and p_trigger - array['id','kind','source','hookId','only','timeZone','replyPolicy'] = '{}'::jsonb
 			and jsonb_typeof(p_trigger -> 'id') = 'string'
 			and p_trigger ->> 'id' ~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$'
+			-- One spelling of the hook id, so every reader compares it as text.
 			and jsonb_typeof(p_trigger -> 'hookId') = 'string'
-			and (p_trigger ->> 'hookId')::uuid is not null
+			and p_trigger ->> 'hookId' ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
 			and (not p_trigger ? 'only' or (jsonb_typeof(p_trigger -> 'only') = 'array'
 				and jsonb_array_length(p_trigger -> 'only') between 1 and 20
 				and not exists (select 1 from jsonb_array_elements(p_trigger -> 'only') as only_type(value)
-					where jsonb_typeof(only_type.value) <> 'string' or only_type.value #>> '{}' !~ '^[\x21-\x7e]{1,128}$')))
+					where jsonb_typeof(only_type.value) <> 'string' or only_type.value #>> '{}' !~ '^[\x21-\x7e]{1,128}$')
+				and (select count(distinct only_type.value) from jsonb_array_elements(p_trigger -> 'only') as only_type(value))
+					= jsonb_array_length(p_trigger -> 'only')))
 			and jsonb_typeof(p_trigger -> 'timeZone') = 'string'
 			and public.qorpera_runtime_time_zone_name_valid(p_trigger ->> 'timeZone'),false);
 	end if;
@@ -419,7 +424,7 @@ begin
 				'total', octet_length(v_delivery.body), 'done', v_offset + 24576 >= octet_length(v_delivery.body));
 		end;
 	end if;
-	return jsonb_build_object('schema', 'qorpera.agent-event/v1', 'deliveryId', v_delivery.id,
+	return jsonb_build_object('schema', 'qorpera.agent-event/v1', 'runId', v_run.id, 'deliveryId', v_delivery.id,
 		'hook', jsonb_build_object('id', v_hook.id, 'name', v_hook.name), 'type', v_delivery.event_type,
 		'receivedAt', v_delivery.received_at, 'contentType', v_delivery.content_type,
 		'headers', v_delivery.headers, 'bytes', v_delivery.body_bytes) || v_piece;
@@ -439,7 +444,7 @@ as $$
 declare v_run public.qorpera_execution_runs%rowtype;
 begin
 	v_run := public.qorpera_native_tool_locked_run(p_binding);
-	return jsonb_build_object('schema', 'qorpera.agent-event-hooks/v1', 'hooks', coalesce((
+	return jsonb_build_object('schema', 'qorpera.agent-event-hooks/v1', 'runId', v_run.id, 'hooks', coalesce((
 		select jsonb_agg(public.qorpera_event_hook_descriptor(hook, true) order by hook.name)
 		from public.qorpera_event_hooks as hook
 		where hook.profile_id = v_run.profile_id and hook.environment_id = v_run.environment_id
@@ -448,3 +453,10 @@ end
 $$;
 revoke all on function public.qorpera_list_agent_event_hooks(jsonb) from public, anon, authenticated;
 grant execute on function public.qorpera_list_agent_event_hooks(jsonb) to service_role;
+
+-- ---------------------------------------------------------------------------
+-- 8. Observations name the new tools
+-- ---------------------------------------------------------------------------
+select pg_temp.event_wake_patch('public.qorpera_record_runtime_observation(uuid,jsonb)'::regprocedure,
+	$old$'organize_sidebar','add_review_rule',$old$,
+	$new$'organize_sidebar','add_review_rule','list_hooks','read_event',$new$);

@@ -113,7 +113,10 @@ export type CloudCompanyPathRpc =
 	| "qorpera_begin_action_review"
 	| "qorpera_record_action_review"
 	| "qorpera_await_action_review"
-	| "qorpera_add_agent_review_rule";
+	| "qorpera_add_agent_review_rule"
+	// Event wakes (W2): the company's hooks and one event's body.
+	| "qorpera_list_agent_event_hooks"
+	| "qorpera_read_agent_event";
 
 /** Service-only transport. Never exposed as an arbitrary RPC tool. */
 export interface CloudCompanyPathControl {

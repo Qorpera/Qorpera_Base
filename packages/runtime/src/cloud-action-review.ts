@@ -187,6 +187,8 @@ export function cloudActionEffect(
 		case "read_skill":
 		case "search_skills":
 		case "computer_screenshot":
+		case "list_hooks":
+		case "read_event":
 			return "read";
 		case "company_write":
 		case "company_mkdir":
@@ -332,6 +334,11 @@ function routineSchedule(args: Record<string, JsonValue>, fallbackZone: string):
 	const timeZone = knownZone(trigger.timeZone) ?? fallbackZone;
 	let words: string;
 	if (trigger.kind === "once") words = "The agent picks each next run";
+	else if (trigger.kind === "listener" && trigger.source === "event")
+		words =
+			Array.isArray(trigger.only) && trigger.only.length > 0
+				? `When a hook receives ${list(trigger.only.filter((type): type is string => typeof type === "string").map((type) => `“${type}”`))} events`
+				: "When a hook receives an event";
 	else if (trigger.kind === "listener" && typeof trigger.path === "string")
 		words =
 			trigger.match === "subtree"
