@@ -14,11 +14,13 @@ import { pathToFileURL } from "node:url";
 const USAGE = `Usage: node scripts/run-on-node.mjs [options] <suite> [-- args]
        node scripts/run-on-node.mjs [options] -- <command...>
 
-Suites: hosted-db            npm run test:hosted-db (no npm ci needed)
+Suites: test                 npm test, the whole repository (builds the shared packages first)
+        hosted-db            npm run test:hosted-db (no npm ci needed)
         npm:<script>         npm run <script>
         scripts/<file>.mjs   node scripts/<file>.mjs
 
 Options: --install / --no-install   run npm ci --ignore-scripts first (default: yes, except hosted-db)
+         --build / --no-build       then npm run build:web-sdk, which script tests import (default: only for test)
          --env NAME=VALUE           pass an environment variable (repeatable)
          --sudo                     run the command as root inside the test machine
          --keep                     keep the run directory on the test machine
@@ -32,12 +34,17 @@ Target (environment): QORPERA_TEST_MACHINE      default tester@10.201.0.2
 
 const NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const HOME = "/home/tester";
+/** Runner users on the test machine (guest-setup.sh creates them). Each run takes one for its whole
+ * duration, so per-user kernel limits count that run alone: the coding Git sandbox caps RLIMIT_NPROC
+ * at 512 tasks, which every concurrent run under one shared user exhausted together. */
+export const RUNNERS = Array.from({ length: 16 }, (_, i) => `ci${String(i + 1).padStart(2, "0")}`);
 const SECRET =
 	/(^|\/)(\.env(\.[^/]*)?|\.envrc|\.dev\.vars|\.npmrc|\.netrc|\.pgpass|\.git-credentials|\.aws\/credentials|[^/]*\.(env|pem|p12|pfx|key|tfvars)|id_[^/.]+|credentials[^/]*\.json|service-account[^/]*\.json|[^/]*\.private\.json)$/i;
 
 export function parseArgs(argv) {
 	const options = {
 		install: undefined,
+		build: undefined,
 		env: [],
 		sudo: false,
 		keep: false,
@@ -50,6 +57,8 @@ export function parseArgs(argv) {
 		const flag = argv[i];
 		if (flag === "--install") options.install = true;
 		else if (flag === "--no-install") options.install = false;
+		else if (flag === "--build") options.build = true;
+		else if (flag === "--no-build") options.build = false;
 		else if (flag === "--sudo") options.sudo = true;
 		else if (flag === "--keep") options.keep = true;
 		else if (flag === "--allow-secrets") options.allowSecrets = true;
@@ -80,10 +89,14 @@ export function parseArgs(argv) {
 		// npm keeps --flags after the script name for itself unless they follow a literal --.
 		command = base[0] === "npm" && extra.length ? [...base, "--", ...extra] : [...base, ...extra];
 	}
-	return { ...options, install: options.install ?? suite !== "hosted-db", suite, command };
+	const build = options.build ?? suite === "test";
+	const install = options.install ?? (suite !== "hosted-db" || build);
+	if (build && !install) throw new Error("--build needs --install");
+	return { ...options, install, build, suite, command };
 }
 
 export function suiteCommand(suite) {
+	if (suite === "test") return ["npm", "test"];
 	if (suite === "hosted-db") return ["npm", "run", "test:hosted-db"];
 	if (/^npm:[A-Za-z0-9:_.-]+$/.test(suite)) return ["npm", "run", suite.slice(4)];
 	if (/^scripts\/[A-Za-z0-9_.-]+\.mjs$/.test(suite)) return ["node", suite];
@@ -168,6 +181,59 @@ export function pruneScript() {
 		`for id in $(docker ps -aq --filter name=^qorpera-hosted-db- 2>/dev/null); do c=$(docker inspect -f '{{.Created}}' "$id") && [ $(( $(date +%s) - $(date -d "$c" +%s) )) -gt 21600 ] && docker rm -f "$id" >/dev/null; done`,
 		"true",
 	].join("\n");
+}
+
+/** One ssh session: refresh the base copy, take a free runner user under a lock held until the
+ * session ends, hand it the run directory, then install and run as that user. The status file
+ * carries the runner user and times back to the record. Exit codes 91-93 are harness failures. */
+export function runScript({ run, runDir, treeDir, files, copySeconds, install, build, runCommand }) {
+	const status = `${runDir}/.run-on-node-status`;
+	const inner = [
+		`cd ${runDir} || exit 91`,
+		"t0=$(date +%s%N)",
+		install
+			? `npm ci --ignore-scripts --no-audit --no-fund --prefer-offline >.run-on-node-npm-ci.log 2>&1 || { tail -50 .run-on-node-npm-ci.log; echo installed=0 >>${status}; exit 90; }`
+			: "true",
+		build
+			? `npm run build:web-sdk >.run-on-node-build.log 2>&1 || { tail -50 .run-on-node-build.log; echo installed=0 >>${status}; exit 90; }`
+			: "true",
+		`echo "installed=1 prepare_ms=$(( ($(date +%s%N) - t0) / 1000000 ))" >>${status}`,
+		`start=$(date +%s%N); ${runCommand}; code=$?; end=$(date +%s%N)`,
+		`echo "suite_ms=$(( (end - start) / 1000000 ))" >>${status}`,
+		'echo "== run-on-node: exit $code after $(( (end - start) / 1000000 )) ms"',
+		"exit $code",
+	].join("\n");
+	return [
+		"set -uo pipefail",
+		// The base copy is only a cache: a busy or failed refresh never fails the run.
+		`flock -w 60 ${treeDir}.lock rsync -a --delete ${runDir}/ ${treeDir}/ || echo "== run-on-node: base copy refresh skipped"`,
+		'runner=""; waited=0',
+		'while [ -z "$runner" ]; do',
+		`\tfor candidate in ${RUNNERS.join(" ")}; do`,
+		'\t\texec 8>"/run/lock/qorpera-test-machine-$candidate.lock"',
+		'\t\tif flock -n 8; then runner=$candidate; break; fi',
+		"\tdone",
+		'\tif [ -z "$runner" ]; then',
+		'\t\t[ "$waited" = 0 ] && echo "== run-on-node: every runner user is busy; waiting"',
+		'\t\twaited=$((waited + 1)); [ "$waited" -ge 3600 ] && { echo "== run-on-node: no runner user free for an hour"; exit 92; }',
+		"\t\tsleep 1",
+		"\tfi",
+		"done",
+		`echo "runner=$runner" >${status}`,
+		`sudo -n chown -R "$runner:$runner" ${runDir} || exit 93`,
+		`echo "== run-on-node: $(hostname) ${run} as $runner (${files} files, copy ${copySeconds.toFixed(1)} s)"`,
+		`sudo -n -u "$runner" -H bash -c ${shellQuote(inner)}`,
+	].join("\n");
+}
+
+/** `key=value` words from the status file; later lines win. */
+export function parseStatus(text) {
+	const status = {};
+	for (const word of text.split(/\s+/)) {
+		const equals = word.indexOf("=");
+		if (equals > 0) status[word.slice(0, equals)] = word.slice(equals + 1);
+	}
+	return status;
 }
 
 function target() {
@@ -275,33 +341,26 @@ async function main() {
 	if (rsync.status !== 0) throw new Error(`Copying the working tree failed (rsync exit ${rsync.status})`);
 	const synced = Date.now();
 
-	const prepared = await sshRun(
+	const code = await sshRun(
 		t,
-		[
-			"set -euo pipefail",
-			// The base copy is only a cache: a busy or failed refresh never fails the run.
-			`flock -w 60 ${treeDir}.lock rsync -a --delete ${runDir}/ ${treeDir}/ || echo "== run-on-node: base copy refresh skipped"`,
-			`cd ${runDir}`,
-			`echo "== run-on-node: $(hostname) ${run} (${files.length} files, copy ${((synced - started) / 1000).toFixed(1)} s)"`,
-			options.install
-				? "npm ci --ignore-scripts --no-audit --no-fund --prefer-offline >.run-on-node-npm-ci.log 2>&1 || { tail -50 .run-on-node-npm-ci.log; exit 90; }"
-				: "true",
-		].join("\n"),
+		runScript({
+			run,
+			runDir,
+			treeDir,
+			files: files.length,
+			copySeconds: (synced - started) / 1000,
+			install: options.install,
+			build: options.build,
+			runCommand,
+		}),
 	);
-	const installed = Date.now();
-	const code =
-		prepared === 0
-			? await sshRun(
-					t,
-					[
-						`cd ${runDir} || exit 91`,
-						`start=$(date +%s%N); ${runCommand}; code=$?; end=$(date +%s%N)`,
-						'echo "== run-on-node: exit $code after $(( (end - start) / 1000000 )) ms"',
-						"exit $code",
-					].join("\n"),
-				)
-			: prepared;
 	const finished = Date.now();
+	let status = {};
+	try {
+		status = parseStatus(sshCapture(t, `cat ${runDir}/.run-on-node-status 2>/dev/null || true`));
+	} catch {
+		// The record says the status is unknown.
+	}
 
 	let environment;
 	try {
@@ -325,13 +384,16 @@ async function main() {
 		command: options.command,
 		sudo: options.sudo,
 		install: options.install,
+		build: options.build,
 		run: options.keep ? runDir : run,
+		runner: status.runner ?? null,
 		startedAt: new Date(started).toISOString(),
 		copySeconds: (synced - started) / 1000,
-		prepareSeconds: (installed - synced) / 1000,
+		prepareSeconds: status.prepare_ms ? Number(status.prepare_ms) / 1000 : null,
+		suiteSeconds: status.suite_ms ? Number(status.suite_ms) / 1000 : null,
 		elapsedSeconds: (finished - started) / 1000,
 		exitCode: code,
-		result: prepared !== 0 ? "setup-failed" : code === 0 ? "passed" : "failed",
+		result: status.installed !== "1" ? "setup-failed" : code === 0 ? "passed" : "failed",
 	};
 	console.log(`== run-on-node record ${JSON.stringify(record)}`);
 	if (options.record) {

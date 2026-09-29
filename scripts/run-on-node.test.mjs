@@ -7,7 +7,10 @@ import test from "node:test";
 import {
 	includeRules,
 	parseArgs,
+	parseStatus,
 	pruneScript,
+	RUNNERS,
+	runScript,
 	secretLooking,
 	shellQuote,
 	suiteCommand,
@@ -16,6 +19,7 @@ import {
 } from "./run-on-node.mjs";
 
 test("suites map to their commands", () => {
+	assert.deepEqual(suiteCommand("test"), ["npm", "test"]);
 	assert.deepEqual(suiteCommand("hosted-db"), ["npm", "run", "test:hosted-db"]);
 	assert.deepEqual(suiteCommand("npm:test:scripts"), ["npm", "run", "test:scripts"]);
 	assert.deepEqual(suiteCommand("scripts/test-office-preparation-linux.mjs"), [
@@ -43,6 +47,12 @@ test("options, install default and extra arguments", () => {
 	]);
 	assert.equal(parseArgs(["--install", "hosted-db"]).install, true);
 	assert.equal(parseArgs(["--allow-secrets", "hosted-db"]).allowSecrets, true);
+	const whole = parseArgs(["test"]);
+	assert.deepEqual([whole.install, whole.build], [true, true]);
+	assert.deepEqual([linux.build, hosted.build], [false, false]);
+	assert.equal(parseArgs(["--build", "hosted-db"]).install, true);
+	assert.equal(parseArgs(["--no-build", "test"]).build, false);
+	assert.throws(() => parseArgs(["--no-install", "--build", "test"]), /--build needs --install/);
 	assert.throws(() => parseArgs(["hosted-db", "extra"]), /after --/);
 	assert.throws(() => parseArgs(["--env", "1BAD=x", "hosted-db"]), /Invalid --env/);
 	assert.throws(() => parseArgs(["--bogus", "hosted-db"]), /Unknown option/);
@@ -60,6 +70,42 @@ test("npm suites pass their arguments to the script, not to npm", () => {
 	]);
 	assert.deepEqual(parseArgs(["hosted-db", "--", "--x"]).command, ["npm", "run", "test:hosted-db", "--", "--x"]);
 	assert.deepEqual(parseArgs(["npm:test:scripts"]).command, ["npm", "run", "test:scripts"]);
+});
+
+test("each run takes a free runner user and installs and runs as that user", () => {
+	assert.equal(RUNNERS.length, 16);
+	assert.deepEqual([RUNNERS[0], RUNNERS[15]], ["ci01", "ci16"]);
+	const script = runScript({
+		run: "R",
+		runDir: "/home/tester/runs/R",
+		treeDir: "/home/tester/trees/T",
+		files: 3,
+		copySeconds: 1.25,
+		install: true,
+		build: true,
+		runCommand: "npm test -- --x 'a b'",
+	});
+	assert.equal(spawnSync("bash", ["-n", "-c", script]).status, 0);
+	// The slot lock stays on fd 8 of the session, so it is held until the run ends.
+	assert.match(script, /exec 8>"\/run\/lock\/qorpera-test-machine-\$candidate\.lock"/);
+	assert.match(script, /flock -n 8; then runner=\$candidate/);
+	assert.match(script, /for candidate in ci01 ci02 .* ci16; do/);
+	assert.match(script, /sudo -n chown -R "\$runner:\$runner" \/home\/tester\/runs\/R \|\| exit 93/);
+	assert.match(script, /sudo -n -u "\$runner" -H bash -c '/);
+	const inner = script.slice(script.indexOf("bash -c '"));
+	assert.ok(inner.indexOf("npm ci") < inner.indexOf("build:web-sdk") && inner.indexOf("build:web-sdk") < inner.indexOf("npm test"));
+	assert.doesNotMatch(runScript({ run: "R", runDir: "/r", treeDir: "/t", files: 1, copySeconds: 0, install: false, build: false, runCommand: "true" }), /npm ci|build:web-sdk/);
+});
+
+test("the status file reads back runner, install and times", () => {
+	assert.deepEqual(parseStatus("runner=ci03\ninstalled=1 prepare_ms=1200\nsuite_ms=900\n"), {
+		runner: "ci03",
+		installed: "1",
+		prepare_ms: "1200",
+		suite_ms: "900",
+	});
+	assert.deepEqual(parseStatus("runner=ci03\ninstalled=0\n"), { runner: "ci03", installed: "0" });
+	assert.deepEqual(parseStatus(""), {});
 });
 
 test("shell quoting survives a round trip through bash", () => {
