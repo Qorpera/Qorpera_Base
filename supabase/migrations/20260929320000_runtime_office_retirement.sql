@@ -39,7 +39,6 @@ $$;
 create table public.qorpera_runtime_office_retirements (
 	office_id uuid not null,
 	computer_generation bigint not null,
-	profile_id uuid not null,
 	provider_id uuid not null,
 	provider_policy_sha256 text not null check (provider_policy_sha256 ~ '^[0-9a-f]{64}$'),
 	allocation_id uuid not null unique,
@@ -48,7 +47,7 @@ create table public.qorpera_runtime_office_retirements (
 	-- The provider journals the LXD delete under this id; it is issued here, once.
 	delete_command_id uuid not null unique default extensions.gen_random_uuid(),
 	requested_at timestamptz not null default clock_timestamp(),
-	delete_operation_id text check (delete_operation_id is null or char_length(delete_operation_id) between 1 and 200),
+	delete_operation_id uuid,
 	retired_at timestamptz,
 	primary key (office_id, computer_generation),
 	check ((retired_at is null) = (delete_operation_id is null))
@@ -87,7 +86,7 @@ revoke all on function public.qorpera_runtime_office_retirement_json(public.qorp
 
 -- Checks a power_off request against the office's current state and answers the retirement row, or
 -- null when the office is not to be retired (its company is not being deleted). Creates the row once.
--- Refuses (42501) while anything could still bring the VM back or holds it: the stop not yet
+-- Refuses (55000) while anything could still bring the VM back or holds it: the stop not yet
 -- acknowledged, the node demand not suspended, a later transition or a boot intent for this one, an
 -- open root reset.
 create function public.qorpera_lock_runtime_office_retirement(p_request jsonb)
@@ -118,11 +117,12 @@ begin
 		or exists (select 1 from public.qorpera_runtime_office_boot_intents where transition_id = v_transition.id)
 		or exists (select 1 from public.qorpera_runtime_office_resets as reset
 			where reset.office_id = v_office.id and reset.phase <> 'active') then
-		raise exception 'Office is not ready to retire' using errcode = '42501';
+		-- Not yet (55000): the provider asks again after its next pass.
+		raise exception 'Office is not ready to retire' using errcode = '55000';
 	end if;
-	insert into public.qorpera_runtime_office_retirements (office_id, computer_generation, profile_id, provider_id,
+	insert into public.qorpera_runtime_office_retirements (office_id, computer_generation, provider_id,
 		provider_policy_sha256, allocation_id, instance_sha256, transition_id)
-	values (v_office.id, v_office.generation, v_office.profile_id, (p_request ->> 'providerId')::uuid,
+	values (v_office.id, v_office.generation, (p_request ->> 'providerId')::uuid,
 		p_request ->> 'providerPolicySha256', v_transition.allocation_id, p_request #>> '{startup,instanceSha256}',
 		v_transition.id)
 	on conflict (office_id, computer_generation) do nothing;
@@ -182,6 +182,7 @@ as $$
 declare
 	v_retirement public.qorpera_runtime_office_retirements%rowtype;
 	v_challenge public.qorpera_runtime_office_retirement_challenges%rowtype;
+	v_now timestamptz := clock_timestamp();
 begin
 	if auth.role() is distinct from 'service_role' then
 		raise exception 'Office provider required' using errcode = '42501';
@@ -207,8 +208,7 @@ begin
 			raise exception 'Office retirement challenges are exhausted' using errcode = '54000';
 		end if;
 		insert into public.qorpera_runtime_office_retirement_challenges (id, office_id, computer_generation, issued_at, expires_at)
-		values (p_challenge_id, v_retirement.office_id, v_retirement.computer_generation, clock_timestamp(),
-			clock_timestamp() + interval '5 seconds')
+		values (p_challenge_id, v_retirement.office_id, v_retirement.computer_generation, v_now, v_now + interval '5 seconds')
 		returning * into v_challenge;
 	end if;
 	return jsonb_build_object('schema', 'qorpera.office-retirement-challenge/v1', 'challengeId', v_challenge.id,
@@ -239,14 +239,14 @@ begin
 		or p_evidence ->> 'schema' is distinct from 'qorpera.office-retirement-evidence/v1'
 		or jsonb_typeof(p_evidence -> 'deleteCommandId') is distinct from 'string'
 		or jsonb_typeof(p_evidence -> 'deleteOperationId') is distinct from 'string'
-		or char_length(p_evidence ->> 'deleteOperationId') not between 1 and 200 then
+		or p_evidence ->> 'deleteOperationId' !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$' then
 		raise exception 'Invalid office retirement evidence' using errcode = '22023';
 	end if;
 	select * into v_retirement from public.qorpera_runtime_office_retirements
 	where transition_id = (p_request ->> 'transitionId')::uuid and retired_at is not null;
 	if found then
 		if v_retirement.delete_command_id::text <> p_evidence ->> 'deleteCommandId'
-			or v_retirement.delete_operation_id <> p_evidence ->> 'deleteOperationId'
+			or v_retirement.delete_operation_id::text <> p_evidence ->> 'deleteOperationId'
 			or v_retirement.provider_id::text <> p_request ->> 'providerId'
 			or v_retirement.provider_policy_sha256 <> p_request ->> 'providerPolicySha256' then
 			raise exception 'Office retirement differs' using errcode = '42501';
@@ -268,7 +268,7 @@ begin
 	update public.qorpera_runtime_office_start_intents set state = 'cancelled', cancelled_at = coalesce(cancelled_at, clock_timestamp())
 	where office_id = v_retirement.office_id and computer_generation = v_retirement.computer_generation and state <> 'cancelled';
 	update public.qorpera_runtime_office_retirements
-	set retired_at = clock_timestamp(), delete_operation_id = p_evidence ->> 'deleteOperationId'
+	set retired_at = clock_timestamp(), delete_operation_id = (p_evidence ->> 'deleteOperationId')::uuid
 	where office_id = v_retirement.office_id and computer_generation = v_retirement.computer_generation
 	returning * into v_retirement;
 	return public.qorpera_runtime_office_retirement_json(v_retirement);

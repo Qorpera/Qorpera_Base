@@ -76,8 +76,9 @@ records what it waits for.
   start intent. The ledger `qorpera_runtime_office_retirements` has no link to the company, so
   `qorpera_runtime_office_retirement_receipt` still answers after the purge. D3b is the provider step
   (a new office provider build, reinstalled per office in the coordinator's lane); it also updates
-  RUNTIME-OFFICE-RETENTION.md. Offices whose VM was created but never activated, and offices mid-reset,
-  are not covered and stay held.
+  RUNTIME-OFFICE-RETENTION.md. Not covered, and held for an operator: offices whose VM was created but
+  never activated, offices mid-reset, and an office whose resume (a wake before the deletion) was under
+  way when the deletion came (its boot intent or successor stays; the pause keeps it from finishing).
 - **D4** identity retirement: per (node, identity) rows; the login gateway detaches the device from the
   exec host, deletes the volume, confirms; the holdings rule then waits only for unconfirmed rows. It
   also ends identity recoveries requested before the deletion (consent, activation and review do not
