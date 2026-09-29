@@ -535,9 +535,9 @@ begin
 		raise exception 'Folder-v2 run context folders: %', c -> 'folder'; end if;
 end $$;
 
--- 9. Refusals: the office, machine start and the self-approval until C1c-3; the legacy sends, the interaction request,
--- the transcript append and the runner broker's receipts until C1c-2b gives them folder bodies (the tool operation
--- receipts have theirs since C1c-2b, test 650). The same calls on a snapshot-v1 company are not refused as folder-v2.
+-- 9. Refusals: the office, machine start and the self-approval until C1c-3; the runner broker's send, direct receipts
+-- and transcript append until C3 (the native send, the interaction request and the tool operation receipts have folder
+-- bodies since C1c-2b, tests 650 and 652). The same calls on a snapshot-v1 company are not refused as folder-v2.
 do $$
 declare
 	p jsonb := pg_temp.run('63400000-0000-4000-8000-0000000000a1', 'human', '63400000-0000-4000-8000-000000000002');
@@ -559,14 +559,8 @@ begin
 				repeat('b', 64)),
 			format('select public.qorpera_complete_run_operation_receipt(%L, %L, %L, %L, %L, %L, %L, %L)', v ->> 'runnerId', repeat('f', 64),
 				v ->> 'jobId', repeat('a', 64), v ->> 'assignmentId', extensions.gen_random_uuid(), repeat('a', 64), '{}'),
-			format('select public.qorpera_send_native_agent_message(%L, %L, %L, %L, %L, %L, %L, %L, %L, %L, %L, %L)', v ->> 'leaseId',
-				v ->> 'runId', v ->> 'jobId', v ->> 'runnerId', v ->> 'assignmentId', v ->> 'credentialCapsuleId', v ->> 'computeIdentityId',
-				'openai', 'codex-cli', 'k', 'Hello.', 'progress'),
 			format('select public.qorpera_send_runner_agent_message(%L, %L, %L, %L, %L, %L, %L, %L)', v ->> 'runnerId', repeat('f', 64),
 				v ->> 'jobId', repeat('a', 64), v ->> 'assignmentId', 'k', 'Hello.', 'progress'),
-			format('select public.qorpera_append_native_interaction_request(%L, %L, %L, %L, %L, %L, %L, %L, %L, %L, %L)', v ->> 'leaseId',
-				v ->> 'runId', v ->> 'jobId', v ->> 'runnerId', v ->> 'assignmentId', v ->> 'credentialCapsuleId', v ->> 'computeIdentityId',
-				'openai', 'codex-cli', extensions.gen_random_uuid(), '{}'),
 			format('select public.qorpera_append_runner_transcript_event(%L, %L, %L, %L, %L, %L, %L, %L, 0)', v ->> 'runnerId', repeat('f', 64),
 				v ->> 'jobId', repeat('a', 64), v ->> 'assignmentId', extensions.gen_random_uuid(), 'message', '{}')] loop
 			if v = b then
