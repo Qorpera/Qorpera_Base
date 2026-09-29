@@ -128,7 +128,10 @@ Founders (2026-09-28, migration 20260928248100): every member with the role
 ### Routines (2)
 
 - `qorpera_list_cloud_routines`
-- `qorpera_upsert_cloud_routine`
+- `qorpera_upsert_cloud_routine`: a folder-v2 company keeps its routines in
+  `agents/<handle>/routines/` files: saving a new routine, or one that comes
+  from a file, is refused with 55000; a routine saved before the company became
+  folder-v2 is saved as before.
 
 
 ### Credentials, provider connections, identity recovery (13)
