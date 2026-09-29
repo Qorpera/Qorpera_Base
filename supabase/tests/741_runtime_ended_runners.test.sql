@@ -1,5 +1,5 @@
 -- @fixture 300_runtime_wake_bus.test.sql until "-- END WAKE FIXTURE"
--- 20260929220000: providers ask which waiting runners belong to a job that ended at least two minutes
+-- 20260928259220: providers ask which waiting runners belong to a job that ended at least two minutes
 -- ago, and retire those guests. The fixture's runner holds its run's lease; its machine allocation
 -- stands in for the provider's reservation.
 reset role;

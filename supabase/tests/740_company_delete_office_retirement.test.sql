@@ -1,5 +1,5 @@
 -- @fixture 718_company_delete_office_power_off.test.sql until "-- Deleting the company powers the computer off"
--- 20260929320000: after a deleting company's idle power_off, the provider retires the Company Computer:
+-- 20260928259320: after a deleting company's idle power_off, the provider retires the Company Computer:
 -- it asks for the retirement, takes a five-second window, deletes the VM, and retires the office, which
 -- releases its machine; then the finisher purges the company. The stop acknowledgement below is
 -- synthetic (the provider's inspection is not modelled); everything else is the real SQL path.

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { type CloudAgentFolderPlace, cloudAgentFolder } from "@qorpera/cloud-client/cloud-agent-folder";
 import type { CloudCompanyPathGateway } from "@qorpera/runtime/cloud-company-path-gateway";
 import { CloudCompanyPathVersionChanged } from "@qorpera/runtime/cloud-company-path-refusal";
 import {
@@ -82,7 +83,7 @@ function companyFile(initial: Record<string, string> = {}) {
 
 const NOW = new Date(Date.UTC(2026, 8, 22, 21, 30, 0));
 
-async function fixture(initial: Record<string, string> = {}) {
+async function fixture(initial: Record<string, string> = {}, place?: CloudAgentFolderPlace) {
 	const { binding, authority } = nativeToolAuthorityFixture();
 	const run = await CloudNativeToolRun.open(
 		binding,
@@ -90,7 +91,8 @@ async function fixture(initial: Record<string, string> = {}) {
 		new AbortController().signal,
 	);
 	const agent = run.identity.staffAgentId;
-	const paths = cloudMemoryPaths(agent);
+	const folder = cloudAgentFolder(run.identity.companyId, agent, place);
+	const paths = cloudMemoryPaths(folder);
 	const store = companyFile(
 		Object.fromEntries(Object.entries(initial).map(([key, text]) => [key.replace("<agent>", agent), text])),
 	);
@@ -98,16 +100,43 @@ async function fixture(initial: Record<string, string> = {}) {
 		companyId: run.identity.companyId,
 		runId: run.identity.runId,
 		identity: run.identity,
-		tools: cloudMemoryTools(store.gateway, run.identity, () => NOW),
+		tools: cloudMemoryTools(store.gateway, run.identity, () => NOW, place),
 		assertActive: (signal) => run.assertActive(signal),
 		signal: run.signal,
 	});
 	const receipt = (result: Awaited<ReturnType<CloudNativeToolBoundary["invoke"]>>) =>
 		JSON.parse(JSON.parse(result.contentItems[0].text).content.text);
-	return { run, agent, paths, store, boundary, receipt };
+	return { run, agent, folder, paths, store, boundary, receipt };
 }
 
 describe("agent memory notebook", () => {
+	it("lives in the agent's named folder in a folder-v2 company", async () => {
+		const f = await fixture({}, { core: "folder-v2", handle: "anna-berg" });
+		try {
+			const logged = await f.boundary.invoke("m1", "qorpera", "update_memory", {
+				action: "write",
+				fact: "Clinics book by phone.",
+			});
+			expect(logged.success, JSON.stringify(logged)).toBe(true);
+			expect(f.paths.root).toBe("agents/anna-berg/memory");
+			expect(f.store.files.get("agents/anna-berg/memory/log/2026-09.md")?.text).toBe(
+				"- (2026-09-22) Clinics book by phone.\n",
+			);
+			const mkdirs = f.store.mutate.mock.calls.filter(([operation]) => operation === "mkdir");
+			expect(mkdirs.map(([, input]) => input.path)).toEqual([
+				"agents",
+				"agents/anna-berg",
+				"agents/anna-berg/memory",
+				"agents/anna-berg/memory/log",
+			]);
+			const block = await composeCloudAgentMemory(f.store.gateway, f.folder, NOW, new AbortController().signal);
+			expect(block.profile.path).toBe("agents/anna-berg/memory/profile.md");
+			expect(block.recentLog.facts.map((fact) => fact.fact)).toEqual(["Clinics book by phone."]);
+		} finally {
+			f.run.close();
+		}
+	});
+
 	it("keeps the Grok Bot layout: profile.md plus one dated log file per month, one fact per line", async () => {
 		const f = await fixture();
 		try {
@@ -131,11 +160,11 @@ describe("agent memory notebook", () => {
 				fact: "The September export is still running.",
 			});
 			expect(f.receipt(noted).state).toBe("written");
-			expect(f.store.files.get(cloudMemoryLogPath(f.agent, NOW))?.text).toBe(
+			expect(f.store.files.get(cloudMemoryLogPath(f.folder, NOW))?.text).toBe(
 				"- (2026-09-22) Jonas prefers short replies in Danish.\n- (2026-09-22) [note] The September export is still running.\n",
 			);
 			expect(f.store.files.get(f.paths.profile)?.text).toBe("- (2026-09-22) I own the weekly ledger review.\n");
-			expect(cloudMemoryLogPath(f.agent, NOW)).toBe(`agents/${f.agent}/memory/log/2026-09.md`);
+			expect(cloudMemoryLogPath(f.folder, NOW)).toBe(`agents/${f.agent}/memory/log/2026-09.md`);
 			// The first fact created the notebook's folders, once each and in order.
 			const mkdirs = f.store.mutate.mock.calls.filter(([operation]) => operation === "mkdir");
 			expect(mkdirs.map(([, input]) => input.path)).toEqual([
@@ -288,7 +317,7 @@ describe("agent memory notebook", () => {
 			expect(JSON.parse(full.contentItems[0].text).status).toBe("ok");
 			expect(f.receipt(full)).toMatchObject({ state: "full", tier: "profile", saved: false });
 			expect(f.receipt(full).hint).toMatch(/forget/i);
-			const block = await composeCloudAgentMemory(f.store.gateway, f.agent, NOW, new AbortController().signal);
+			const block = await composeCloudAgentMemory(f.store.gateway, f.folder, NOW, new AbortController().signal);
 			expect(block.profile.facts).toHaveLength(5);
 			expect(block.profile).not.toHaveProperty("moreFacts");
 		} finally {
@@ -366,7 +395,7 @@ describe("agent memory notebook", () => {
 			expect(f.store.mutate.mock.calls[1][1].expectedVersion).not.toBe(
 				f.store.mutate.mock.calls[0][1].expectedVersion,
 			);
-			expect(f.store.files.get(cloudMemoryLogPath(f.agent, NOW))?.text).toBe(
+			expect(f.store.files.get(cloudMemoryLogPath(f.folder, NOW))?.text).toBe(
 				"- (2026-09-01) First.\n- (2026-09-22) Second.\n",
 			);
 		} finally {
@@ -488,7 +517,8 @@ function httpNotebook() {
 		JSON.parse(result.contentItems[0].text);
 	const receipt = (result: Awaited<ReturnType<CloudNativeToolBoundary["invoke"]>>) =>
 		JSON.parse(envelope(result).content.text);
-	return { db, agent, paths: cloudMemoryPaths(agent), boundary, envelope, receipt };
+	const folder = cloudAgentFolder(db.identity.companyId, agent);
+	return { db, agent, folder, paths: cloudMemoryPaths(folder), boundary, envelope, receipt };
 }
 
 describe("agent memory over the real Company File HTTP adapter", () => {
@@ -497,7 +527,7 @@ describe("agent memory over the real Company File HTTP adapter", () => {
 		["between prepare and commit", "qorpera_commit_company_path_mutation"],
 	])("re-reads and retries when another writer changed the month file %s (HTTP 412, PT412)", async (_label, stage) => {
 		const f = httpNotebook();
-		const month = cloudMemoryLogPath(f.agent, NOW);
+		const month = cloudMemoryLogPath(f.folder, NOW);
 		await f.db.seed(month, "- (2026-09-01) First.\n");
 		let raced = false;
 		f.db.before.hook = async (method, args) => {
@@ -526,7 +556,7 @@ describe("agent memory over the real Company File HTTP adapter", () => {
 
 	it("says nothing was saved, instead of an unknown outcome, when the file keeps changing", async () => {
 		const f = httpNotebook();
-		const month = cloudMemoryLogPath(f.agent, NOW);
+		const month = cloudMemoryLogPath(f.folder, NOW);
 		await f.db.seed(month, "- (2026-09-01) First.\n");
 		let writers = 0;
 		f.db.before.hook = async (method, args) => {
@@ -551,7 +581,7 @@ describe("agent memory over the real Company File HTTP adapter", () => {
 
 	it("writes again after a member deleted the profile or the whole log folder", async () => {
 		const f = httpNotebook();
-		const month = cloudMemoryLogPath(f.agent, NOW);
+		const month = cloudMemoryLogPath(f.folder, NOW);
 		await f.db.seed(f.paths.profile, "- (2026-09-01) Old profile fact.\n");
 		await f.db.seed(month, "- (2026-09-01) Old log fact.\n");
 		// Deletions leave tombstones that keep a version; the notebook must name it to recreate the path.
@@ -607,11 +637,11 @@ describe("agent memory over the real Company File HTTP adapter", () => {
 			expect(forgotten).toMatchObject({ state: "partial", removed: 1, searched: { unreadable } });
 			expect(await f.db.text(`${f.paths.log}/2026-07.md`)).toBe("");
 			// Only a write into the unreadable file itself is refused, and it says so.
-			await f.db.seedBytes(cloudMemoryLogPath(f.agent, NOW), Buffer.alloc(40 * 1024, 0x62));
+			await f.db.seedBytes(cloudMemoryLogPath(f.folder, NOW), Buffer.alloc(40 * 1024, 0x62));
 			const refused = f.receipt(
 				await f.boundary.invoke("w2", "qorpera", "update_memory", { action: "write", fact: "Another fact." }),
 			);
-			expect(refused).toMatchObject({ state: "unreadable", saved: false, path: cloudMemoryLogPath(f.agent, NOW) });
+			expect(refused).toMatchObject({ state: "unreadable", saved: false, path: cloudMemoryLogPath(f.folder, NOW) });
 		} finally {
 			f.boundary.close();
 		}
@@ -619,7 +649,7 @@ describe("agent memory over the real Company File HTTP adapter", () => {
 
 	it("does not append a fact to a month another run created with it after the listing", async () => {
 		const f = httpNotebook();
-		const month = cloudMemoryLogPath(f.agent, NOW);
+		const month = cloudMemoryLogPath(f.folder, NOW);
 		let raced = false;
 		f.db.before.hook = async (method, args) => {
 			if (method !== "qorpera_read_company_path" || args.p_path !== month || raced) return;
@@ -639,10 +669,10 @@ describe("agent memory over the real Company File HTTP adapter", () => {
 
 	it("composes around a recent month that is not notebook text, and names it", async () => {
 		const f = httpNotebook();
-		await f.db.seed(cloudMemoryLogPath(f.agent, NOW), "- (2026-09-21) Current fact.\n");
+		await f.db.seed(cloudMemoryLogPath(f.folder, NOW), "- (2026-09-21) Current fact.\n");
 		await f.db.seedBytes(`${f.paths.log}/2026-08.md`, Buffer.alloc(40 * 1024, 0x61));
 		await f.db.seed(f.paths.profile, "- (2026-01-01) I keep the books.\n");
-		const block = await composeCloudAgentMemory(f.db.gateway, f.agent, NOW, new AbortController().signal);
+		const block = await composeCloudAgentMemory(f.db.gateway, f.folder, NOW, new AbortController().signal);
 		expect(block).toMatchObject({
 			available: true,
 			profile: { facts: [{ fact: "I keep the books." }] },
@@ -651,7 +681,7 @@ describe("agent memory over the real Company File HTTP adapter", () => {
 		// An unreadable profile cannot be composed whole, so the block degrades with a named reason.
 		await f.db.seedBytes(f.paths.profile, Buffer.from([0xff, 0xfe]));
 		await expect(
-			composeCloudAgentMemory(f.db.gateway, f.agent, NOW, new AbortController().signal),
+			composeCloudAgentMemory(f.db.gateway, f.folder, NOW, new AbortController().signal),
 		).rejects.toMatchObject({ category: "invalid_response" });
 		f.boundary.close();
 	});
@@ -687,7 +717,7 @@ describe("agent memory over the real Company File HTTP adapter", () => {
 			await f.db.seed(`${f.paths.log}/${month}.md`, `- (${month}-01) ${fact}\n`);
 		}
 		// The same fact again this month, written before notebook-wide dedupe existed.
-		await f.db.seed(cloudMemoryLogPath(f.agent, NOW), "- (2026-09-02) ancient archive  needle.\n");
+		await f.db.seed(cloudMemoryLogPath(f.folder, NOW), "- (2026-09-02) ancient archive  needle.\n");
 		await f.db.seed(f.paths.profile, "- (2026-01-01) I keep the books.\n");
 		// Another writer moves the company's head between the first and second listing page, once.
 		let moved = false;
@@ -715,7 +745,7 @@ describe("agent memory over the real Company File HTTP adapter", () => {
 			);
 			expect(forgotten).toMatchObject({ state: "forgotten", removed: 2 });
 			expect(forgotten.changes.map((change: { path: string }) => change.path)).toEqual([
-				cloudMemoryLogPath(f.agent, NOW),
+				cloudMemoryLogPath(f.folder, NOW),
 				`${f.paths.log}/2015-09.md`,
 			]);
 			expect(await f.db.text(`${f.paths.log}/2015-09.md`)).toBe("");
@@ -747,7 +777,7 @@ describe("composed agent memory", () => {
 			[`agents/${agent}/memory/log/2026-09.md`]:
 				"- (2026-09-18) [note] Fresh note.\n- (2026-09-21) Ledger review moved to Fridays.\n",
 		});
-		const block = await composeCloudAgentMemory(store.gateway, agent, NOW, new AbortController().signal);
+		const block = await composeCloudAgentMemory(store.gateway, `agents/${agent}`, NOW, new AbortController().signal);
 		expect(block).toMatchObject({
 			schema: "qorpera.agent-memory/v1",
 			trust: "own_notebook_not_authority",
@@ -790,14 +820,19 @@ describe("composed agent memory", () => {
 			inFlight--;
 			return read(path, signal);
 		});
-		const block = await composeCloudAgentMemory(store.gateway, agent, NOW, new AbortController().signal);
+		const block = await composeCloudAgentMemory(store.gateway, `agents/${agent}`, NOW, new AbortController().signal);
 		expect(most).toBe(3);
 		expect(block.profile.facts).toHaveLength(1);
 	});
 
 	it("is an empty notebook for a new agent and an unavailable block when the read lane fails", async () => {
 		const agent = randomUUID();
-		const block = await composeCloudAgentMemory(companyFile().gateway, agent, NOW, new AbortController().signal);
+		const block = await composeCloudAgentMemory(
+			companyFile().gateway,
+			`agents/${agent}`,
+			NOW,
+			new AbortController().signal,
+		);
 		expect(block).toMatchObject({
 			available: true,
 			profile: { version: null, facts: [] },
