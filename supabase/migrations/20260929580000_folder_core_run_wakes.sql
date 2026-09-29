@@ -21,7 +21,7 @@
 -- * The pin trigger's folder-v2 mode refuses office-activation and machine-event wakes (0A000): their ancestry checks
 --   lock rows, and neither source serves folder-v2 yet (C1c-3).
 -- * The legacy multi-company loops skip folder-v2 companies in their scans' WHERE clauses, before their first lock:
---   the wake materializer, the office, worker, machine and Company File drains (with the dynamic-routine tick), and
+--   the wake materializer, the office, worker, machine, Company File (with the dynamic-routine tick) and event drains, and
 --   the session materializer. The turn materializer already skips folder-v2 (its scan requires a head snapshot, which a
 --   folder-v2 company never has). The routine expiry sweep is left as F2-6 designed it: it inserts no wake and takes no
 --   company row.
@@ -563,6 +563,12 @@ begin
 		E'\t\tselect c.* from public.qorpera_company_file_wake_cursors c where c.active\n',
 		E'\t\tselect c.* from public.qorpera_company_file_wake_cursors c where c.active\n'
 		|| E'\t\t\tand not public.qorpera_environment_is_folder_v2(c.environment_id)\n', 1);
+	-- #519's event drain (20260929290000): its cursors name their company. It locks the routine NOWAIT and then the legacy
+	-- admission fence, so folder-v2 cursors stay out of its scan (folder-v2 routines carry no event listener before C4).
+	perform pg_temp.c1c2c1_replace('public.qorpera_drain_event_wakes(integer)',
+		E'\t\tselect cursor.* from public.qorpera_event_listener_cursors as cursor where cursor.active\n',
+		E'\t\tselect cursor.* from public.qorpera_event_listener_cursors as cursor where cursor.active\n'
+		|| E'\t\t\tand not public.qorpera_company_is_folder_v2(cursor.profile_id)\n', 1);
 	-- The dynamic-routine tick runs inside the Company File drain; routine firing gets its folder mode in C1c-3.
 	perform pg_temp.c1c2c1_replace('public.qorpera_restore_dynamic_routine_runs()',
 		E'\t\t\tand not public.qorpera_company_execution_paused(routine.profile_id)\n',
