@@ -189,6 +189,16 @@ begin
 	if (pg_temp.open(pg_temp.member(2), pg_temp.manifest(array['m'])) ->> 'intentId') is null
 		or (pg_temp.open('{"kind":"platform"}', pg_temp.manifest(array['m'])) ->> 'intentId') is null then
 		raise exception 'A member and the platform stage'; end if;
+	-- A member who leaves after opening cannot seal (the membership row is restored by the rollback below).
+	v_open := pg_temp.open(pg_temp.member(2), pg_temp.manifest(array['leave']));
+	begin
+		perform pg_temp.fx($f$delete from public.qorpera_profile_members where profile_id = '63400000-0000-4000-8000-000000000010'
+			and user_id = '63400000-0000-4000-8000-000000000002'$f$);
+		perform pg_temp.raises(format('select public.qorpera_folder_seal_upload(%L, %L, %L)', c_env, pg_temp.member(2),
+			v_open ->> 'intentId'), '42501');
+		raise exception 'undo' using errcode = 'P0761';
+	exception when sqlstate 'P0761' then null;
+	end;
 end $$;
 
 -- 3. The stop: every upload call refuses once the company is paused or being deleted.
@@ -207,9 +217,16 @@ begin
 		v_open ->> 'intentId', pg_temp.hash('stop')), '55000');
 	perform pg_temp.raises(format('select public.qorpera_folder_seal_upload(%L, %L, %L)', c_env, pg_temp.member(1), v_open ->> 'intentId'),
 		'55000');
+	-- A pause stops work, not reading (F1): downloads follow qorpera_folder_read, which refuses a paused company's runs.
 	perform pg_temp.raises(format('select pg_temp.download(%L, %L)', pg_temp.member(1), repeat('a', 64)), '42501');
 	perform pg_temp.raises(format('select pg_temp.download(%L, %L)', a, repeat('a', 64)), '55000');
 	delete from public.qorpera_company_execution_pauses where profile_id = '63400000-0000-4000-8000-000000000010';
+	-- A company being deleted serves no bytes to anyone.
+	perform pg_temp.fx($f$insert into public.qorpera_company_deletions(profile_id) values ('63400000-0000-4000-8000-000000000010')$f$);
+	perform pg_temp.raises(format('select pg_temp.download(%L, %L)', pg_temp.member(1), repeat('a', 64)), '55000');
+	perform pg_temp.raises(format('select pg_temp.download(%L, %L)', '{"kind":"platform"}', repeat('a', 64)), '55000');
+	perform pg_temp.raises(format('select pg_temp.open(%L, %L)', pg_temp.member(1), pg_temp.manifest(array['x'])), '55000');
+	delete from public.qorpera_company_deletions where profile_id = '63400000-0000-4000-8000-000000000010';
 end $$;
 
 -- 4. Commit step 6 --------------------------------------------------------------------------------------------------

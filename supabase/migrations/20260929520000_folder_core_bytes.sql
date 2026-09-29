@@ -179,11 +179,11 @@ returns uuid language sql immutable set search_path = '' as $$
 	end
 $$;
 
--- An actor's check for staging (p_stop) and for downloads (C1D §3, §7): the company is folder-v2, the actor's plain
--- check (qorpera_folder_read_actor: no job or fence lock; it refuses a paused company's runs, as reads do), and a
--- member's membership, which read_actor does not check. Staging also refuses once the company's work is stopped
--- (paused or being deleted), for every actor. Returns {profileId, kind, scopeId, auth} (auth: read_actor's, null for
--- the platform). Plain reads only.
+-- An actor's check for staging (p_stop) and for downloads (C1D §3, §7): the company is folder-v2 and not being
+-- deleted, the actor's plain check (qorpera_folder_read_actor: no job or fence lock; it refuses a paused company's
+-- runs, as reads do), and a member's membership, which read_actor does not check. Staging also refuses once the
+-- company's work is stopped (paused or being deleted), for every actor; a pause alone leaves downloads to reads' rule
+-- (F1, #558). Returns {profileId, kind, scopeId, auth} (auth: read_actor's, null for the platform). Plain reads only.
 create function public.qorpera_folder_upload_actor(p_environment_id uuid, p_actor jsonb, p_stop boolean)
 returns jsonb language plpgsql stable security definer set search_path = '' as $$
 declare v_profile uuid; v_scope uuid := public.qorpera_folder_upload_scope(p_actor); v_auth jsonb;
@@ -192,6 +192,8 @@ begin
 	if v_profile is null then raise exception 'Company folder is unavailable' using errcode = '42501'; end if;
 	if p_stop and public.qorpera_company_execution_paused(v_profile) then
 		raise exception 'Company execution is paused' using errcode = '55000'; end if;
+	if exists (select 1 from public.qorpera_company_deletions where profile_id = v_profile) then
+		raise exception 'Company is being deleted' using errcode = '55000'; end if;
 	if v_scope is null then raise exception 'Folder actor is invalid' using errcode = '22023'; end if;
 	v_auth := public.qorpera_folder_read_actor(p_environment_id, p_actor);
 	if p_actor ->> 'kind' = 'member' and not exists (select 1 from public.qorpera_profile_members
