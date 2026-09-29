@@ -492,24 +492,12 @@ begin
 	perform pg_temp.path_claims('service_role');
 end $$;
 
--- 8. The run context: the company name from the folder index and F2's agent folders (F2-1b, #534). Until that
--- migration is on master, this test gives its helper the same definition, and drops it with the rollback.
+-- 8. The run context: the company name from the folder index and F2's agent folders (F2-1b, 20260929440000), whose
+-- helper the run context calls by name.
 do $$
 begin
 	if to_regprocedure('public.qorpera_company_state_run_folder(uuid,uuid,uuid[])') is null then
-		execute $f$create function public.qorpera_company_state_run_folder(p_environment_id uuid, p_staff_agent_id uuid, p_coworkers uuid[])
-		returns jsonb language sql stable security definer set search_path = '' as $b$
-			select jsonb_build_object('agent', split_part(s.folder_path, '/', 2),
-				'coworkers', coalesce((select jsonb_object_agg(c.staff_agent_id, split_part(c.folder_path, '/', 2))
-					from public.qorpera_profile_staff c
-					where c.profile_id = f.profile_id and c.staff_agent_id = any (p_coworkers) and c.staff_agent_id <> p_staff_agent_id
-						and c.folder_environment_id = p_environment_id and c.folder_retired_at is null), '{}'::jsonb))
-			from public.qorpera_company_files f
-			join public.qorpera_profile_staff s on s.profile_id = f.profile_id and s.staff_agent_id = p_staff_agent_id
-				and s.folder_environment_id = p_environment_id and s.folder_retired_at is null
-			where f.environment_id = p_environment_id and f.core = 'folder-v2'
-		$b$ $f$;
-	end if;
+		raise exception 'F2-1b''s qorpera_company_state_run_folder is missing'; end if;
 end $$;
 do $$
 declare
