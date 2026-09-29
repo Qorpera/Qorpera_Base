@@ -27,57 +27,78 @@ Everything here runs only for `folder-v2` companies. No real one exists before C
 ## 2. Tables
 
 - **`qorpera_folder_upload_intents`**: one per staged file.
-  - `id`, `environment_id` and `profile_id` (both cascade on delete, so a purge of the company removes them).
-  - The actor: `actor_kind` (`run`, `view` or `member`) and `scope_id` (the run, the view or the member). A view's
-    pass is never stored.
+  - `id`, `environment_id` and `profile_id`. Both cascade on delete, so a purge of the company removes them. The
+    environment's link is to `qorpera_folder_clocks`, like every other `folder-v2` table, and not to `company_files`,
+    which no `folder-v2` path locks (core §9).
+  - The actor: `actor_kind` (`run`, `view`, `member` or `platform`) and `scope_id` (the run, the view, the member, or
+    a nil scope for the platform). A view's pass is never stored.
   - The manifest: `manifest_text`, `manifest_sha256`, `file_sha256`, `bytes`, `media_type`, `executable`.
   - `state` (`open`, `sealed`), `expires_at`, `created_at`, `sealed_at`.
-- **`qorpera_folder_upload_intent_objects`** `(intent_id, sha256, bytes, profile_id)`, primary key
-  `(intent_id, sha256)`, indexed by `(profile_id, sha256)`: the manifest and each chunk an intent lists. A chunk's
-  put is authorized by this row alone, and C1d-2's root check finds open intents by hash here.
-- **`qorpera_folder_file_chunks`** `(profile_id, chunk_sha256, manifest_sha256)`, primary key in that order, and a
-  foreign key `(profile_id, manifest_sha256)` to `profile_objects` that cascades: which version-2 manifests contain a
-  chunk. The download check finds a chunk's manifests here in one indexed step.
+  - Indexed by `(profile_id, expires_at)` and by `(environment_id, manifest_sha256)`, for the commit's own-intent check.
+- **`qorpera_folder_upload_intent_objects`** `(intent_id, sha256, bytes, profile_id, held, put)`, primary key
+  `(intent_id, sha256)`, indexed by `(profile_id, sha256)`: the manifest and each chunk an intent lists, and how the
+  actor holds each (§3). A chunk's put is authorized by this row alone, and C1d-2's root check finds open intents by
+  hash here.
+- **`qorpera_folder_file_chunks`** `(profile_id, chunk_sha256, manifest_sha256)`, primary key in that order, a foreign
+  key to `qorpera_profiles` and a foreign key `(profile_id, manifest_sha256)` to `profile_objects`, both cascading:
+  which version-2 manifests contain a chunk. The download check finds a chunk's manifests here in one indexed step.
 - **`qorpera_folder_storage_usage`** `(profile_id primary key, bytes, objects, updated_at)`: a `folder-v2` company's
   stored bytes. Only the catalog trigger writes it (§5); nothing else locks it.
 - **Proofs.** `qorpera_verified_company_file_objects` accepts verifier version 2: any media type of core §3 and an
-  `executable` bit, both taken from a version-2 manifest. Version 1 (octet-stream, no bit) stays exactly as it is.
+  `executable` bit, both taken from a version-2 manifest. Version 1 (octet-stream, no bit) stays exactly as it is. The
+  new check is added `not valid`: the old checks and the new null column already hold for every row, so the migration
+  scans nothing under the table lock.
 - **Indexes for the download check**: `qorpera_folder_entries (environment_id, manifest_sha256) where kind = 'file'`
   and `qorpera_folder_path_versions (environment_id, manifest_sha256)`.
+
+The migration sets `lock_timeout = '3s'`, so the scheduler and wake admission never queue behind its table locks.
 
 ### The version-2 manifest
 
 `{schema: 'qorpera.cloud-file-manifest/v2', fileSha256, bytes, mediaType, executable, chunks: [{sha256, bytes}]}`,
-as canonical JSON (keys in this order, no spaces), so the same file always has the same manifest hash:
+as canonical JSON (keys in this order, no spaces), so the same file always has the same manifest hash. The check
+rebuilds the canonical text and refuses any other spelling:
 - at most 64 chunks of at most 4 MiB, the sum being `bytes` (256 MiB); manifests of manifests come later (§7);
 - the media type follows core §3; the same content under two media types is two manifests over the same chunks.
 
 ## 3. Staging, as a folder actor
 
-All four are service-role, plpgsql, `search_path = ''`. Each reads `qorpera_company_execution_paused` (pauses and
-deletions) first and refuses with 55000, so a stop halts uploads within one chunk. None takes the profile row
-`FOR UPDATE`, the folder fence, `company_files`, the job, or any row of another actor.
+All five are service-role, plpgsql, `search_path = ''`. Each reads `qorpera_company_execution_paused` (pauses and
+deletions) and refuses with 55000, so a stop halts uploads within one chunk. None takes the profile row
+`FOR UPDATE`, the folder fence, `company_files`, the job, or any row of another actor. Every object lock is taken in
+hash order, `order by sha256 collate "C"`, the order C1d-2's GC must use too.
+
+**Possession before reference.** An actor references only bytes it possesses: bytes it put under its own intent (the
+gateway checked their hash), or bytes it may already read. An intent row records which (`held` or `put`). So an actor
+cannot learn that the company stores a hash it may not read, and cannot seal or commit a file over such bytes. The
+platform reads everything and holds every stored object.
 
 1. **`qorpera_folder_open_upload(env, actor, manifest text)`**
    - the actor's plain check (`qorpera_folder_read_actor`: no job or fence lock), and for a member the membership
      row (plain), since `read_actor` does not check it;
    - validates the manifest (§2) and inserts the intent and its object rows, `expires_at` = now + 15 minutes;
-   - takes the objects the catalog already has `FOR KEY SHARE`, in hash order (G1), and returns them, so the writer
-     puts only the others: `{schema: 'qorpera.folder-upload/v1', intentId, manifestSha256, expiresAt, present: [sha256…]}`.
+   - finds the listed objects the catalog already has and the actor may already read (§7's rule; the platform: all),
+     takes them `FOR KEY SHARE` in hash order (G1), marks them `held`, and returns them, so the writer puts only the
+     others: `{schema: 'qorpera.folder-upload/v1', intentId, manifestSha256, expiresAt, present: [sha256…]}`.
 2. **`qorpera_folder_authorize_object_upload(env, actor, intent, sha256, bytes)`**, per chunk, from the gateway:
    plain reads of the intent (this environment, this actor's kind and scope, `open`, unexpired) and of its object row
-   for `(sha256, bytes)`. Returns the profile, the object's path on the NAS. No run check per chunk (core §7).
+   for `(sha256, bytes)`. Returns the company (`profileId`); the gateway derives the NAS path. No run check per chunk
+   (core §7).
 3. **`qorpera_folder_confirm_object(env, actor, intent, sha256, bytes)`**, after the gateway's NAS put: the same
-   checks, the soft quota (§5), then `insert into profile_objects … on conflict do nothing` and `KEY SHARE` on the
-   row. A row already there with another size is 23505, as today. The transaction is this statement and the trigger.
+   checks, then marks the row `put`. For an object the catalog lacks, the soft quota (§5), then
+   `insert into profile_objects … on conflict do nothing`; then `KEY SHARE` on the row. A row already there with
+   another size is 23505, as today. The transaction is this statement and the trigger.
 4. **`qorpera_folder_seal_upload(env, actor, intent)`**
-   - the actor's plain check again, and the intent must be this actor's own (environment, kind, scope);
-   - every listed object must be in the catalog with its size, taken `KEY SHARE` in hash order; otherwise
-     `{state: 'incomplete', missing: […]}`;
+   - the actor's plain check again (a member who left is refused), and the intent must be this actor's own
+     (environment, kind, scope: the run, view or member id). A run's job, runner and assignment ids are not
+     compared, as the commit's digest treats lease bindings;
+   - every listed object must be `held` or `put` under this intent and in the catalog with its size, taken
+     `KEY SHARE` in hash order; otherwise `{state: 'incomplete', missing: […]}`;
    - writes the version-2 proof and the chunk rows (both idempotent), sets the intent `sealed` with a short renewable
      expiry (one hour), and returns `{state: 'sealed', file: {manifestSha256, fileSha256, bytes, mediaType,
      executable}}`.
-5. **`qorpera_folder_renew_upload(env, actor, intent)`** extends an open or sealed intent's expiry.
+5. **`qorpera_folder_renew_upload(env, actor, intent)`** extends an open or sealed intent's expiry:
+   `{schema: 'qorpera.folder-upload-renew/v1', intentId, state, expiresAt}`.
 
 The commit leaves intents alone (F1, Q4): the saved path version becomes the root, and the intent expires. C1d-2
 treats an intent's `expires_at` as the end of that root (G4).
@@ -89,49 +110,77 @@ included):
 - the proof row matches `(profile, manifest, file, bytes)`;
 - a version-2 proof's media type and executable bit must equal the unit's; a difference raises 22023 for the change
   set, so an entry never disagrees with its bytes. A version-1 proof keeps today's rule;
-- the manifest and every chunk of the proof's closure are taken `FOR KEY SHARE`, sorted by hash, inside step 6
-  (after paths, before admission); a missing row is `bytes_unverified`.
+- the manifest and every chunk of the proof's closure are taken `FOR KEY SHARE`, sorted `collate "C"`, inside step 6
+  (after paths, before admission). Step 6 keeps the set it locked, and the decision refuses as `bytes_unverified` any
+  closure object outside that set or missing from the catalog with its size. A proof that became visible after
+  step 6 therefore never passes with unlocked chunks;
+- possession (§3), for a `write` or `new_folder` file with a version-2 proof: the actor has an unexpired sealed intent
+  of its own for that manifest, or may already read it (§7; the platform always may). Otherwise `bytes_unverified`. A
+  replay is answered at step 0 and is unaffected. Version-1 proofs are exempt: only the SQL test fixtures make them
+  for `folder-v2`, until C5 moves the fixtures and refuses `verify_company_path_file` there (§6).
 
-A move references nothing new and locks no object. The patch is anchored exactly once in the commit's byte block, and
-the migration checks the anchors.
+A copy's source files are found by an equality probe on the source key and a range probe under it
+(`key_text > k || '/' and key_text < k || '0'`, both on the `(environment_id, key_text)` index). A source over the
+core's subtree bound (50,000 entries) adds no objects, since step 7 refuses it as `too_large`. A copy needs no
+possession check: its source is already in the folder, and the actor may read it or step 7 refuses the copy.
+
+A move references nothing new and locks no object. The commit is found by name (it must have exactly one
+definition), and the patch is five replacements in its declarations and byte block, each of which must match exactly
+once.
 
 ## 5. Usage and the quota
 
 - **`refresh_company_storage_usage`** (on `profile_objects`): for a `folder-v2` company it adds the delta to
-  `qorpera_folder_storage_usage` (`bytes = bytes + x, objects = objects ± 1`, an upsert) and leaves `company_files`
-  alone. It runs only when the catalog row changes, so an upload of a hash already stored adds nothing.
-- **`enforce_company_storage_quota`** (on `storage.objects`): for a `folder-v2` company it reads the usage row and the
-  limit plainly and takes neither the fence nor `company_files`.
+  `qorpera_folder_storage_usage` (`bytes = bytes + x, objects = objects ± 1`) and leaves `company_files` alone. It
+  runs only when the catalog row changes, so an upload of a hash already stored adds nothing.
+- **The row seeds itself.** The first change after a company became `folder-v2` inserts the catalog's sum without the
+  change itself (`on conflict do nothing`), then adds the change. So a company enabled while it holds objects starts
+  right, with no seed in the migration or in `qorpera_folder_enable`. Two first changes at once seed the same base,
+  and each adds its own.
+- **`enforce_company_storage_quota`** (on `storage.objects`): for a `folder-v2` company it reads the usage and the
+  limit plainly, takes neither the fence nor `company_files`, and checks only objects the catalog lacks.
 - **The quota is soft** for `folder-v2`: uploads in flight at once can pass the limit by what they carry, as F2-3's
-  48 KiB budget can. `confirm_object` checks the same way before its insert.
+  48 KiB budget can. `confirm_object` checks the same way before its insert. An object already stored never counts
+  again, so a company at its limit can still stage a file from bytes it has.
 - GC (C1d-2) decrements the row through the same trigger.
+- `qorpera_company_file_json` still reports `company_files.storage_used_bytes`, which stops moving for `folder-v2`.
+  C4's clients read the usage row instead.
 
 ## 6. Replication and the old entry points
 
 - **`authorize_profile_object_replication`** (called by the replica guard trigger and by `confirm_profile_object_replica`):
-  for a `folder-v2` company, the object row `KEY SHARE` and the company row `KEY SHARE`, with no fence and no
-  deletion gate (C1d-2's GC needs none).
+  for a `folder-v2` company, the company row `KEY SHARE` and the object row `FOR NO KEY UPDATE`, with no fence and no
+  deletion gate (C1d-2's GC needs none). `NO KEY UPDATE` is the strongest mode its callers then take on that row (the
+  mirror trigger's upsert, `confirm_profile_object_replica`'s update), so the transaction never strengthens a lock it
+  holds (core §9); it does not conflict with a commit's `KEY SHARE`.
 - **`confirm_profile_object_upload`** refuses `folder-v2` with 0A000. Its `folder-v2` callers are already refused
   (C1c-1); this closes the fence path itself.
 - **`verify_company_path_file` and `_tree`** stay as they are. No production writer calls them for `folder-v2` after
   C1d (the runtime's folder client seals instead, and members have no `folder-v2` upload before C4). The SQL test
-  fixtures still stage bytes through them until C5 moves the fixtures; they then refuse `folder-v2` too.
+  fixtures still stage bytes through them, which is why the commit exempts version-1 proofs from possession (§4).
+  **C5** moves the fixtures to version-2 staging, refuses both functions for `folder-v2` (they take the gc fence), and
+  drops the exemption.
 
 Each changed function gets a `folder-v2` line after `begin`; the snapshot-v1 text after it stays byte-identical, and
 the migration checks its digest.
 
 ## 7. The download check
 
-**`qorpera_folder_authorize_object_download(env, actor, sha256)`**, lock-free, one statement:
-- the actor's plain check and the stop;
-- the hash's manifests: the hash itself, and the manifests whose chunk rows name it;
-- allowed when an entry or path version of this environment has one of those manifests and the actor may read its
-  path now (`qorpera_folder_actor_allowed`, current authority, for an old version too). So a private folder's old
-  versions stay the owner's.
+**`qorpera_folder_authorize_object_download(env, actor, sha256)`**, lock-free:
+- the actor's plain check. A pause applies as it does to `qorpera_folder_read` (F1, #558): a paused company's runs
+  are refused (55000, by `read_actor`), while its members and the platform can still open what they can list. A
+  company being deleted serves no bytes to anyone (55000);
+- `qorpera_folder_object_readable`: the hash's manifests (the hash itself, and the manifests whose chunk rows name
+  it), then an entry or path version of this environment with one of those manifests whose path the actor may read
+  now (`qorpera_folder_actor_allowed`, current authority, for an old version too). So a private folder's old versions
+  stay the owner's. Open's `present` and the commit's possession check use the same function.
 
 It returns `{profileId, bytes}`. The bytes never form a read set: the read receipt comes from `qorpera_folder_read`,
 and releases cover what the model sees. The chunks of a version-1 proof (fixtures, and bytes staged before C1d) have no
 chunk rows, so only their manifests are found; every file a `folder-v2` writer stages has a version-2 proof.
+
+It returns no backend. The gateway reads the NAS first and falls back to Storage on a miss (C1d-1b), so a catalog row
+that the Storage mirror inserted is still served.
 
 ## 8. The gateway and the runtime
 
@@ -151,16 +200,19 @@ chunk rows, so only their manifests are found; every file a `folder-v2` writer s
 runtime adapter, with no migration.
 
 **Built (C1d-1a, migration 20260929520000).**
-- The tables of §2; the manifest check `qorpera_folder_manifest`; the actor check `qorpera_folder_upload_actor`.
+- The tables of §2; the manifest check `qorpera_folder_manifest`; the actor checks `qorpera_folder_upload_scope`,
+  `qorpera_folder_upload_actor` (the stop for staging only) and `qorpera_folder_put_intent`; the read rule
+  `qorpera_folder_object_readable`.
 - Staging: `qorpera_folder_open_upload`, `_authorize_object_upload`, `_confirm_object`, `_seal_upload`, `_renew_upload`.
 - The download check `qorpera_folder_authorize_object_download`.
 - Commit step 6: `qorpera_folder_unit_objects` (what a change set references) and `qorpera_folder_file_bytes_problem`
-  (a reference's proof, its version-2 match and its closure), patched into `qorpera_folder_commit` at three anchors
-  that must each be found exactly once.
-- Usage and quota: `qorpera_folder_storage_usage_changed` and `qorpera_folder_storage_quota`, one line each at the
-  start of the two triggers; `qorpera_folder_authorize_replication` at the start of
-  `authorize_profile_object_replication`; `confirm_profile_object_upload` refuses `folder-v2` (0A000). The four
-  snapshot-v1 definitions are pinned by digest before the lines go in.
+  (a reference's proof, its version-2 match, its closure against the locked set, and possession), patched into
+  `qorpera_folder_commit` by five replacements that must each match exactly once.
+- Usage and quota: `qorpera_folder_storage_usage_changed` and `qorpera_folder_storage_quota` (with
+  `qorpera_folder_storage_quota_check`), one line each at the start of the two triggers;
+  `qorpera_folder_authorize_replication` at the start of `authorize_profile_object_replication`;
+  `confirm_profile_object_upload` refuses `folder-v2` (0A000). The four snapshot-v1 definitions are pinned by digest
+  before the lines go in.
 
 **Built (C1d-1b, no migration).**
 - Gateway: `packages/object-gateway/src/folder-objects.ts` serves `/v1/folder-objects/` when the native options name
@@ -174,18 +226,32 @@ runtime adapter, with no migration.
   against the reference and each chunk against its hash. A refusal of the folder core's checks is
   `CloudCompanyFolderError('unavailable')`.
 
-**Activation checks.** Every `folder-v2` body's lock text (none takes the profile row `FOR UPDATE`, the fence,
-`company_files` or the job), and the digests of the snapshot-v1 bodies this changes, triggers included.
+**Activation checks** (test 761 §8 runs them; the coordinator may copy them into the activation file):
+- each of the four patched snapshot-v1 bodies, with its `folder-v2` line removed, has its reviewed digest, so the
+  snapshot-v1 text after the line stays byte-identical;
+- none of the new functions contains `for update`, `for share`, `nowait`, `qorpera_lock_profile_gc_fence`,
+  `qorpera_folder_fences` or `qorpera_runner_jobs`; `for no key update` appears only in
+  `qorpera_folder_authorize_replication` (§6);
+- the commit's step 6 locks in `order by o.sha256 collate "C" for key share`.
 
-**Tests (C1d-1a).**
-- Every refusal: an unlisted hash, another actor's intent, an expired or sealed intent at put, a stop at each step, a
-  size mismatch, a missing chunk at seal, a member who left, a bad manifest.
-- The download rule: readable, unreadable, an old path version, a chunk through a manifest, another environment.
-- Commit step 6: chunk locks for write, `new_folder` and copy; a version-2 media type or bit mismatch; a missing
-  chunk.
-- Usage and the soft quota; the snapshot-v1 paths unchanged (digests, and the old functions' results).
-- Races (dblink, `current_database()`): a commit against a seal of the same file; two uploads of one hash; a stop
-  against an open; an upload against a commit, showing no wait on `company_files` or the profile row.
+**Tests (C1d-1a).** 761 (rules), 762 (locks and races, on 635's fixture, which it leaves as it found it), and 715
+(the company purge removes a row of each new table).
+- Every refusal: an unlisted hash, another actor's intent or kind, an expired or sealed intent at put, a stop at each
+  step, a size mismatch at confirm and at seal, a missing chunk at seal, a member who left (at open and at seal), a bad or non-canonical
+  manifest.
+- Possession: open reports only readable objects; an object that is only in the catalog stays missing until put; a
+  commit over bytes the actor cannot read, and a seal over a chunk it never put, are refused; the owner's copy then
+  makes them readable.
+- The download rule: readable, unreadable, an old path version, a chunk through a manifest, a second `folder-v2`
+  environment of the same company, a pause (runs refused, members served) and a deletion (everyone refused).
+- Commit step 6: object locks for write, `new_folder` and copy; a version-2 media type or bit mismatch; a missing
+  chunk for a write and for a copy.
+- Usage and the soft quota at the exact limit, for new and for stored objects; the lazy seed; the snapshot-v1 paths
+  unchanged (digests, and the old functions' results).
+- Races (dblink, `current_database()`): a commit against a seal of the same file; two uploads of one hash; open,
+  confirm and seal against a waiting `FOR UPDATE` on their objects; a stop against an open; replication behind a held
+  profile row; staging, download and replication calls (and a replica insert) that finish while `company_files` and
+  the profile row are held.
 
 ## 9. C1d-2, garbage collection
 
@@ -194,7 +260,17 @@ runtime adapter, with no migration.
   no company fence. Mark before unlink; quarantine rename, re-check and restore; a put that meets a deleting mark
   waits or rewrites (the gateway's catalog check on put, the one change snapshot-v1 sees); grace from
   `unreferenced_since`.
-- G1's "refuse rows marked deleting" at every reference point of C1d-1: open's present objects, seal, and commit
-  step 6.
+- GC takes objects `FOR UPDATE` in the same order as open, seal and step 6 (`sha256 collate "C"`), or one object per
+  transaction, so it cannot deadlock with a commit. `KEY SHARE` holders can starve a waiting `FOR UPDATE` (a hot
+  object such as the empty file's manifest), so the claim uses `SKIP LOCKED` or `NOWAIT` and retries later. The usage row stays the last lock of any transaction that adds or
+  removes objects: a GC batch locks all its objects before its first delete.
+- G1's "refuse rows marked deleting" at every reference point of C1d-1: open's present objects, seal, commit step 6,
+  and folder replication.
+- Expired intents are swept: an intent past `expires_at` plus the grace window, after the G4 root check, with its
+  object rows.
 - The gateway's remove for `folder-v2` objects goes only through this lane. Erasure hands off here, and the six race
   tests of §8 follow. It fits D5a (#543, a deleted company's storage).
+- A deleted company's bytes: the purge removes C1d's rows with the company (every table cascades from
+  `qorpera_profiles`; test 715 pins it), and the deleted-profile GC removes what the catalog lists, which is every
+  confirmed chunk. A NAS put whose confirm never ran has no catalog row; a sweep of `<root>/<companyId>/` once the
+  company is gone removes it.

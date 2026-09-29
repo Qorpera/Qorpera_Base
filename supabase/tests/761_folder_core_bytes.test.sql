@@ -64,6 +64,9 @@ begin
 		replace(v_ok, '"bytes":3,', '"bytes":4,'),
 		replace(v_ok, '"chunks":[', '"extra":1,"chunks":['),
 		replace(v_ok, '{"sha256":"', '{"extra":1,"sha256":"'),
+		-- Not the canonical text: a space, and keys in another order.
+		replace(v_ok, '","bytes"', '", "bytes"'),
+		replace(replace(v_ok, '"schema":"qorpera.cloud-file-manifest/v2",', ''), '"chunks":[', '"schema":"qorpera.cloud-file-manifest/v2","chunks":['),
 		'{not json',
 		format('{"schema":"qorpera.cloud-file-manifest/v2","fileSha256":"%s","bytes":10,"mediaType":"text/plain","executable":false,"chunks":[{"sha256":"%s","bytes":4},{"sha256":"%s","bytes":6}]}',
 			repeat('a', 64), repeat('b', 64), repeat('b', 64)),
@@ -82,9 +85,10 @@ declare
 	a jsonb := pg_temp.run('63400000-0000-4000-8000-0000000000a1', 'human', '63400000-0000-4000-8000-000000000001');
 	b jsonb := pg_temp.run('63400000-0000-4000-8000-0000000000a2', 'human', '63400000-0000-4000-8000-000000000001');
 	v_manifest text := pg_temp.manifest(array['one ', 'two']); v_open jsonb; v_intent uuid; v_seal jsonb; v_usage public.qorpera_folder_storage_usage;
-	v_row public.qorpera_folder_upload_intents;
+	v_row public.qorpera_folder_upload_intents; v_text text;
 begin
-	-- A chunk already stored is reported present, and not put again.
+	-- A chunk already stored is present only to an actor that may read it: agent A must put it (which proves it has the
+	-- bytes); the platform, which reads everything, need not.
 	insert into public.qorpera_profile_objects(profile_id, sha256, bytes, backend)
 	values ('63400000-0000-4000-8000-000000000010', pg_temp.hash('one '), 4, 'nas-object-gateway');
 	-- (The trigger counted it: 4 bytes, one object.)
@@ -93,12 +97,17 @@ begin
 	v_open := pg_temp.open(a, v_manifest);
 	v_intent := (v_open ->> 'intentId')::uuid;
 	select * into v_row from public.qorpera_folder_upload_intents where id = v_intent;
-	if v_open -> 'present' <> jsonb_build_array(pg_temp.hash('one ')) or v_open ->> 'manifestSha256' <> pg_temp.hash(v_manifest)
+	if v_open -> 'present' <> '[]'::jsonb or v_open ->> 'manifestSha256' <> pg_temp.hash(v_manifest)
 		or v_row.actor_kind <> 'run' or v_row.scope_id <> (a ->> 'runId')::uuid or v_row.state <> 'open'
 		or v_row.expires_at not between clock_timestamp() + interval '14 minutes' and clock_timestamp() + interval '16 minutes'
 		or v_row.media_type <> 'text/markdown' or v_row.executable or v_row.bytes <> 7
-		or (select count(*) from public.qorpera_folder_upload_intent_objects where intent_id = v_intent) <> 3 then
+		or (select count(*) from public.qorpera_folder_upload_intent_objects where intent_id = v_intent and not held and not put) <> 3 then
 		raise exception 'An open intent: % %', v_open, to_jsonb(v_row); end if;
+	if pg_temp.open('{"kind":"platform"}', v_manifest) -> 'present' <> jsonb_build_array(pg_temp.hash('one ')) then
+		raise exception 'The platform holds what the company stores'; end if;
+	-- Another kind of actor with the same id is not the intent's actor.
+	perform pg_temp.raises(format('select public.qorpera_folder_authorize_object_upload(%L, %L, %L, %L, 3)', c_env,
+		jsonb_build_object('kind', 'member', 'userId', a ->> 'runId'), v_intent, pg_temp.hash('two')), '42501');
 
 	-- Each chunk's put: listed, this actor's, open and unexpired.
 	if public.qorpera_folder_authorize_object_upload(c_env, a, v_intent, pg_temp.hash('two'), 3) ->> 'profileId'
@@ -114,8 +123,8 @@ begin
 
 	-- Sealing before every object is there says what is missing, and changes nothing.
 	v_seal := pg_temp.seal(a, v_intent);
-	if v_seal ->> 'state' <> 'incomplete' or v_seal -> 'missing' <> (select jsonb_agg(h order by h)
-		from unnest(array[pg_temp.hash('two'), pg_temp.hash(v_manifest)]) h)
+	if v_seal ->> 'state' <> 'incomplete' or v_seal -> 'missing' <> (select jsonb_agg(h order by h collate "C")
+		from unnest(array[pg_temp.hash('one '), pg_temp.hash('two'), pg_temp.hash(v_manifest)]) h)
 		or exists (select 1 from public.qorpera_verified_company_file_objects where manifest_sha256 = pg_temp.hash(v_manifest)) then
 		raise exception 'An incomplete seal: %', v_seal; end if;
 
@@ -125,6 +134,11 @@ begin
 	if (pg_temp.usage()).bytes <> v_usage.bytes + 3 or (pg_temp.usage()).objects <> v_usage.objects + 1 then
 		raise exception 'Usage counts each stored object once: %, %', to_jsonb(v_usage), to_jsonb(pg_temp.usage()); end if;
 	perform pg_temp.confirm(a, v_intent, v_manifest);
+	-- A stored chunk the actor has not put or read is still missing; putting it stores nothing new.
+	if pg_temp.seal(a, v_intent) -> 'missing' <> jsonb_build_array(pg_temp.hash('one ')) then
+		raise exception 'Seal counts only what the actor put or holds'; end if;
+	if (pg_temp.confirm(a, v_intent, 'one ') ->> 'stored')::boolean or (pg_temp.usage()).objects <> v_usage.objects + 2 then
+		raise exception 'Putting a stored chunk proves possession and stores nothing'; end if;
 	v_seal := pg_temp.seal(a, v_intent);
 	if v_seal ->> 'state' <> 'sealed' or v_seal -> 'file' <> jsonb_build_object('manifestSha256', pg_temp.hash(v_manifest),
 			'fileSha256', pg_temp.hash('one two'), 'bytes', 7, 'mediaType', 'text/markdown', 'executable', false)
@@ -155,10 +169,17 @@ begin
 	perform pg_temp.raises(format('select public.qorpera_folder_renew_upload(%L, %L, %L)', c_env, a, v_open ->> 'intentId'), '42501');
 
 	-- A hash already stored with another size.
-	v_open := pg_temp.open(a, format('{"schema":"qorpera.cloud-file-manifest/v2","fileSha256":"%s","bytes":5,"mediaType":"text/plain","executable":false,"chunks":[{"sha256":"%s","bytes":5}]}',
-		pg_temp.hash('one '), pg_temp.hash('one ')));
+	v_text := format('{"schema":"qorpera.cloud-file-manifest/v2","fileSha256":"%s","bytes":5,"mediaType":"text/plain","executable":false,"chunks":[{"sha256":"%s","bytes":5}]}',
+		pg_temp.hash('one '), pg_temp.hash('one '));
+	v_open := pg_temp.open(a, v_text);
 	perform pg_temp.raises(format('select public.qorpera_folder_confirm_object(%L, %L, %L, %L, 5)', c_env, a, v_open ->> 'intentId',
 		pg_temp.hash('one ')), '23505');
+	-- Seal checks the size too: with the manifest put, the object put under another size is the one missing.
+	perform pg_temp.confirm(a, (v_open ->> 'intentId')::uuid, v_text);
+	update public.qorpera_folder_upload_intent_objects set put = true where intent_id = (v_open ->> 'intentId')::uuid;
+	v_seal := pg_temp.seal(a, (v_open ->> 'intentId')::uuid);
+	if v_seal ->> 'state' <> 'incomplete' or v_seal -> 'missing' <> jsonb_build_array(pg_temp.hash('one ')) then
+		raise exception 'An object of another size is missing: %', v_seal; end if;
 
 	-- Refused at open: a bad manifest, a member who left, another kind of actor, a snapshot-v1 company.
 	perform pg_temp.raises(format('select pg_temp.open(%L, %L)', a, '{"schema":"x"}'), '22023');
@@ -168,6 +189,16 @@ begin
 	if (pg_temp.open(pg_temp.member(2), pg_temp.manifest(array['m'])) ->> 'intentId') is null
 		or (pg_temp.open('{"kind":"platform"}', pg_temp.manifest(array['m'])) ->> 'intentId') is null then
 		raise exception 'A member and the platform stage'; end if;
+	-- A member who leaves after opening cannot seal (the membership row is restored by the rollback below).
+	v_open := pg_temp.open(pg_temp.member(2), pg_temp.manifest(array['leave']));
+	begin
+		perform pg_temp.fx($f$delete from public.qorpera_profile_members where profile_id = '63400000-0000-4000-8000-000000000010'
+			and user_id = '63400000-0000-4000-8000-000000000002'$f$);
+		perform pg_temp.raises(format('select public.qorpera_folder_seal_upload(%L, %L, %L)', c_env, pg_temp.member(2),
+			v_open ->> 'intentId'), '42501');
+		raise exception 'undo' using errcode = 'P0761';
+	exception when sqlstate 'P0761' then null;
+	end;
 end $$;
 
 -- 3. The stop: every upload call refuses once the company is paused or being deleted.
@@ -186,8 +217,16 @@ begin
 		v_open ->> 'intentId', pg_temp.hash('stop')), '55000');
 	perform pg_temp.raises(format('select public.qorpera_folder_seal_upload(%L, %L, %L)', c_env, pg_temp.member(1), v_open ->> 'intentId'),
 		'55000');
-	perform pg_temp.raises(format('select pg_temp.download(%L, %L)', pg_temp.member(1), repeat('a', 64)), '55000');
+	-- A pause stops work, not reading (F1): downloads follow qorpera_folder_read, which refuses a paused company's runs.
+	perform pg_temp.raises(format('select pg_temp.download(%L, %L)', pg_temp.member(1), repeat('a', 64)), '42501');
+	perform pg_temp.raises(format('select pg_temp.download(%L, %L)', a, repeat('a', 64)), '55000');
 	delete from public.qorpera_company_execution_pauses where profile_id = '63400000-0000-4000-8000-000000000010';
+	-- A company being deleted serves no bytes to anyone.
+	perform pg_temp.fx($f$insert into public.qorpera_company_deletions(profile_id) values ('63400000-0000-4000-8000-000000000010')$f$);
+	perform pg_temp.raises(format('select pg_temp.download(%L, %L)', pg_temp.member(1), repeat('a', 64)), '55000');
+	perform pg_temp.raises(format('select pg_temp.download(%L, %L)', '{"kind":"platform"}', repeat('a', 64)), '55000');
+	perform pg_temp.raises(format('select pg_temp.open(%L, %L)', pg_temp.member(1), pg_temp.manifest(array['x'])), '55000');
+	delete from public.qorpera_company_deletions where profile_id = '63400000-0000-4000-8000-000000000010';
 end $$;
 
 -- 4. Commit step 6 --------------------------------------------------------------------------------------------------
@@ -222,6 +261,8 @@ begin
 		jsonb_build_object('op','new_folder','path','docs/g','contents',jsonb_build_array(
 			jsonb_build_object('path','g.md','kind','file','file',v_file)))));
 	perform pg_temp.expect(r, 1, 'refused', 'bytes_unverified'); perform pg_temp.expect(r, 2, 'refused', 'bytes_unverified');
+	perform pg_temp.expect(pg_temp.commit(a, 'c1d-copy-missing', jsonb_build_array(
+		jsonb_build_object('op','copy','from','docs/a.md','to','docs/a-copy.md'))), 1, 'refused', 'bytes_unverified');
 	-- The objects a change set references, manifests and chunks, for step 6's lock.
 	if (select array_agg(h order by h) from public.qorpera_folder_unit_objects('63400000-0000-4000-8000-000000000020',
 			'63400000-0000-4000-8000-000000000010', jsonb_build_array(jsonb_build_object('op','copy','from','docs','to','docs2'))) h) is distinct from
@@ -236,7 +277,8 @@ declare
 	c_env constant uuid := '63400000-0000-4000-8000-000000000020';
 	a jsonb := pg_temp.run('63400000-0000-4000-8000-0000000000a1', 'human', '63400000-0000-4000-8000-000000000001');
 	b jsonb := pg_temp.run('63400000-0000-4000-8000-0000000000a2', 'human', '63400000-0000-4000-8000-000000000001');
-	v_old jsonb; v_new jsonb; v_res uuid; v_version uuid;
+	v_old jsonb; v_new jsonb; v_res uuid; v_version uuid; v_open jsonb; v_seal jsonb; v_there jsonb;
+	c_env2 constant uuid := '63400000-0000-4000-8000-000000000022';
 begin
 	perform pg_temp.expect(pg_temp.commit('{"kind":"platform"}', 'dl-seed-1', '[{"op":"mkdir","path":"secret"}]'), 1, 'saved');
 	v_old := pg_temp.stage_v2(a, array['old secret ', 'text']);
@@ -261,6 +303,22 @@ begin
 	perform pg_temp.download(a, v_old ->> 'manifestSha256');
 	perform pg_temp.raises(format('select pg_temp.download(%L, %L)', b, v_old ->> 'manifestSha256'), '42501');
 	perform pg_temp.raises(format('select pg_temp.download(%L, %L)', b, pg_temp.hash('text')), '42501');
+
+	-- Possession before reference (C1D §3). Agent B knows the secret file's reference but may not read it: a file it
+	-- writes with that reference is refused, and the bytes stay out of its reach.
+	perform pg_temp.expect(pg_temp.commit(b, 'dl-minted', jsonb_build_array(
+		jsonb_build_object('op','write','path','docs/minted.md','file',v_old))), 1, 'refused', 'bytes_unverified');
+	perform pg_temp.raises(format('select pg_temp.download(%L, %L)', b, pg_temp.hash('old secret ')), '42501');
+	-- Knowing only a chunk's hash does not help either: the intent does not report it present, and seal counts it
+	-- missing until B puts its bytes.
+	v_open := pg_temp.open(b, pg_temp.manifest(array['old secret ', 'mine']));
+	if v_open -> 'present' <> '[]'::jsonb then raise exception 'No oracle of stored bytes: %', v_open; end if;
+	perform pg_temp.confirm(b, (v_open ->> 'intentId')::uuid, 'mine');
+	perform pg_temp.confirm(b, (v_open ->> 'intentId')::uuid, pg_temp.manifest(array['old secret ', 'mine']));
+	v_seal := pg_temp.seal(b, (v_open ->> 'intentId')::uuid);
+	if v_seal ->> 'state' <> 'incomplete' or v_seal -> 'missing' <> jsonb_build_array(pg_temp.hash('old secret ')) then
+		raise exception 'A chunk the actor neither put nor reads is missing: %', v_seal; end if;
+
 	-- An old version stays readable to who may read the path now.
 	v_version := (pg_temp.read('secret/s.md', a) -> 'entry' ->> 'version')::uuid;
 	v_new := pg_temp.stage_v2(a, array['new secret']);
@@ -268,9 +326,23 @@ begin
 		jsonb_build_object('op','write','path','secret/s.md','file',v_new,'expectedVersion',v_version))), 1, 'saved');
 	perform pg_temp.download(a, pg_temp.hash('old secret '));
 	perform pg_temp.raises(format('select pg_temp.download(%L, %L)', b, pg_temp.hash('old secret ')), '42501');
-	-- Another environment of the company has none of it.
-	perform pg_temp.raises(format('select pg_temp.download(%L, %L, %L)', a, v_new ->> 'manifestSha256',
-		'63400000-0000-4000-8000-000000000099'), '42501');
+	-- Another environment of the company: a file there is readable there, and not through this environment.
+	insert into public.qorpera_company_environments(id, profile_id, name, contract_version, created_by_user_id)
+	values (c_env2, '63400000-0000-4000-8000-000000000010', 'Second', 1, '63400000-0000-4000-8000-000000000001');
+	perform public.qorpera_folder_enable(c_env2);
+	v_open := public.qorpera_folder_open_upload(c_env2, pg_temp.member(1), pg_temp.manifest(array['elsewhere']));
+	perform public.qorpera_folder_confirm_object(c_env2, pg_temp.member(1), (v_open ->> 'intentId')::uuid, pg_temp.hash('elsewhere'), 9);
+	perform public.qorpera_folder_confirm_object(c_env2, pg_temp.member(1), (v_open ->> 'intentId')::uuid,
+		pg_temp.hash(pg_temp.manifest(array['elsewhere'])), octet_length(pg_temp.manifest(array['elsewhere'])));
+	v_there := public.qorpera_folder_seal_upload(c_env2, pg_temp.member(1), (v_open ->> 'intentId')::uuid) -> 'file';
+	perform pg_temp.expect(public.qorpera_folder_commit(c_env2, pg_temp.member(1), 'dl-there-1', jsonb_build_array(
+		jsonb_build_object('op','write','path','there.md','file',v_there))), 1, 'saved');
+	perform pg_temp.download(pg_temp.member(1), pg_temp.hash('elsewhere'), c_env2);
+	perform pg_temp.raises(format('select pg_temp.download(%L, %L)', pg_temp.member(1), pg_temp.hash('elsewhere')), '42501');
+	-- The owner, who may read the secret, may reference it: a copy where agents read it shares its bytes with them.
+	perform pg_temp.expect(pg_temp.commit(pg_temp.member(1), 'dl-owner-copy', jsonb_build_array(
+		jsonb_build_object('op','write','path','docs/owner-copy.md','file',v_old))), 1, 'saved');
+	perform pg_temp.download(b, pg_temp.hash('old secret '));
 end $$;
 
 -- 6. Usage, the soft quota, replication and the old catalog insert ----------------------------------------------------
@@ -280,12 +352,12 @@ declare
 	v_before public.qorpera_folder_storage_usage := pg_temp.usage(); v_files bigint;
 	v_open jsonb;
 begin
-	select storage_used_bytes into v_files from public.qorpera_company_files where profile_id = c_profile;
+	select storage_used_bytes into v_files from public.qorpera_company_files where environment_id = '63400000-0000-4000-8000-000000000020';
 	-- The catalog trigger counts folder-v2 bytes in the usage row, never in company_files.
 	insert into public.qorpera_profile_objects(profile_id, sha256, bytes, backend) values (c_profile, repeat('1', 64), 100, 'nas-object-gateway');
 	update public.qorpera_profile_objects set backend = 'supabase-storage' where profile_id = c_profile and sha256 = repeat('1', 64);
 	if (pg_temp.usage()).bytes <> v_before.bytes + 100 or (pg_temp.usage()).objects <> v_before.objects + 1
-		or (select storage_used_bytes from public.qorpera_company_files where profile_id = c_profile) <> v_files then
+		or (select storage_used_bytes from public.qorpera_company_files where environment_id = '63400000-0000-4000-8000-000000000020') <> v_files then
 		raise exception 'Folder-v2 usage: %', to_jsonb(pg_temp.usage()); end if;
 	delete from public.qorpera_profile_objects where profile_id = c_profile and sha256 = repeat('1', 64);
 	if (pg_temp.usage()).bytes <> v_before.bytes or (pg_temp.usage()).objects <> v_before.objects then
@@ -293,13 +365,25 @@ begin
 
 	-- The quota is read plainly: a new object past the limit is refused, at confirm and at the Storage trigger; one
 	-- already stored is not counted again.
-	update public.qorpera_company_files set storage_limit_bytes = (pg_temp.usage()).bytes + 10 where profile_id = c_profile;
-	v_open := pg_temp.open(pg_temp.member(1), pg_temp.manifest(array['eleven byte']));
-	perform pg_temp.raises(format('select pg_temp.confirm(%L, %L, %L)', pg_temp.member(1), v_open ->> 'intentId', 'eleven byte'), '23514');
-	perform pg_temp.raises(format($f$insert into storage.objects(bucket_id, name, metadata) values ('qorpera-profile-objects', %L, '{"size":11}')$f$,
+	update public.qorpera_company_files set storage_limit_bytes = (pg_temp.usage()).bytes where profile_id = c_profile;
+	v_open := pg_temp.open(pg_temp.member(1), pg_temp.manifest(array['x']));
+	perform pg_temp.raises(format('select pg_temp.confirm(%L, %L, %L)', pg_temp.member(1), v_open ->> 'intentId', 'x'), '23514');
+	perform pg_temp.raises(format($f$insert into storage.objects(bucket_id, name, metadata) values ('qorpera-profile-objects', %L, '{"size":1}')$f$,
 		c_profile || '/' || repeat('2', 64)), '23514');
-	perform public.qorpera_folder_storage_quota('qorpera-profile-objects', c_profile || '/' || pg_temp.hash('text'), '{"size":4}');
+	-- An object already stored costs nothing more, at the confirm and at the Storage trigger.
+	v_open := pg_temp.open(pg_temp.member(1), pg_temp.manifest(array['text']));
+	perform pg_temp.confirm(pg_temp.member(1), (v_open ->> 'intentId')::uuid, 'text');
+	if not public.qorpera_folder_storage_quota('qorpera-profile-objects', c_profile || '/' || pg_temp.hash('text'), '{"size":4}') then
+		raise exception 'The Storage trigger decides for folder-v2'; end if;
 	update public.qorpera_company_files set storage_limit_bytes = 53687091200 where profile_id = c_profile;
+
+	-- A company whose row is missing (switched to folder-v2 with objects already stored) seeds it from the catalog at
+	-- its first change.
+	delete from public.qorpera_folder_storage_usage where profile_id = c_profile;
+	insert into public.qorpera_profile_objects(profile_id, sha256, bytes, backend) values (c_profile, repeat('5', 64), 7, 'nas-object-gateway');
+	if (pg_temp.usage()).bytes <> (select sum(bytes) from public.qorpera_profile_objects where profile_id = c_profile)
+		or (pg_temp.usage()).objects <> (select count(*) from public.qorpera_profile_objects where profile_id = c_profile) then
+		raise exception 'The usage row seeds from the catalog: %', to_jsonb(pg_temp.usage()); end if;
 
 	-- Replication of a folder-v2 object: the object and the company, no fence; the old catalog insert refuses.
 	if not public.qorpera_authorize_profile_object_replication(c_profile, pg_temp.hash('text'), 4) then
@@ -328,7 +412,47 @@ begin
 			from public.qorpera_folder_storage_usage u where profile_id = c_profile); end if;
 end $$;
 
--- 8. Only the service role stages and downloads.
+-- 8. The lock text (C1D §8): the snapshot-v1 bodies are the reviewed ones but for their folder-v2 line, the folder-v2
+-- bodies take no company-wide lock, and step 6 keeps its sorted locks.
+do $$
+declare v_check record; v_definition text;
+begin
+	for v_check in select * from (values
+		('public.qorpera_enforce_company_storage_quota()',
+			'if public.qorpera_folder_storage_quota(new.bucket_id, new.name, new.metadata) then return new; end if;',
+			'339d3122eed3d8f154b6a671a836dd074aaa9a6b07c47e42998fd8003c58eb59'),
+		('public.qorpera_refresh_company_storage_usage()',
+			'if public.qorpera_folder_storage_usage_changed(tg_op, old, new) then return case when tg_op = ''DELETE'' then old else new end; end if;',
+			'f70353b583f7cf6853f57331bc9fa897eaa96251d13eb3d120838522965b5075'),
+		('public.qorpera_authorize_profile_object_replication(uuid,text,bigint)',
+			'if public.qorpera_company_is_folder_v2(p_profile_id) then return public.qorpera_folder_authorize_replication(p_profile_id, p_sha256, p_bytes); end if;',
+			'483143cc9ae9e1d4b3c7eec128b047f99161632303f628df572ddc2060961beb'),
+		('public.qorpera_confirm_profile_object_upload(uuid,text,bigint,text)',
+			'if public.qorpera_company_is_folder_v2(p_profile_id) then raise exception ''This Company File path does not serve folder-v2 companies'' using errcode = ''0A000''; end if;',
+			'e97bb1724e5235cd41d1f2ed6af295f17765d7ab4e87e8ad98262303714e0059')) c(target, guard, digest)
+	loop
+		v_definition := pg_get_functiondef(v_check.target::regprocedure);
+		if position(E'\t' || v_check.guard || E'\n' in v_definition) = 0
+			or encode(extensions.digest(replace(v_definition, E'\t' || v_check.guard || E'\n', ''), 'sha256'), 'hex') <> v_check.digest then
+			raise exception 'The snapshot-v1 body of % changed beyond its folder-v2 line', v_check.target; end if;
+	end loop;
+	for v_check in select p.proname, p.prosrc from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname in (
+		'qorpera_folder_manifest', 'qorpera_folder_upload_scope', 'qorpera_folder_upload_actor', 'qorpera_folder_object_readable',
+		'qorpera_folder_open_upload', 'qorpera_folder_put_intent', 'qorpera_folder_authorize_object_upload', 'qorpera_folder_confirm_object',
+		'qorpera_folder_seal_upload', 'qorpera_folder_renew_upload', 'qorpera_folder_storage_quota_check', 'qorpera_folder_storage_quota',
+		'qorpera_folder_storage_usage_changed', 'qorpera_folder_authorize_replication', 'qorpera_folder_authorize_object_download',
+		'qorpera_folder_unit_objects', 'qorpera_folder_file_bytes_problem')
+	loop
+		if v_check.prosrc ~* '(for update|for share\M|nowait|lock_profile_gc_fence|qorpera_folder_fences|qorpera_runner_jobs)'
+			or (v_check.prosrc ~* 'for no key update' and v_check.proname <> 'qorpera_folder_authorize_replication') then
+			raise exception 'A folder-v2 body takes a lock it must not: %', v_check.proname; end if;
+	end loop;
+	if position('order by o.sha256 collate "C" for key share' in (select prosrc from pg_proc
+		where pronamespace = 'public'::regnamespace and proname = 'qorpera_folder_commit')) = 0 then
+		raise exception 'Step 6 locks the objects in one hash order'; end if;
+end $$;
+
+-- 9. Only the service role stages and downloads.
 set local role authenticated;
 do $$
 declare v_fn text;
