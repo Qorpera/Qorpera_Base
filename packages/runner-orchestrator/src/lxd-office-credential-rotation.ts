@@ -220,6 +220,7 @@ export async function runLxdOfficeCredentialRotation(
 		minValidityMs = ports.minValidityMs ?? 14 * 86400000;
 	if (!DOMAIN.test(domain)) throw new Error("OFFICE_CREDENTIAL_DOMAIN_INVALID");
 	const guard = await openGuard(configPath, signal);
+	if (guard.retired) return { state: "skipped", reason: "office retired" };
 	const lifecycle = officeRecordLoose(decode(await readLxdOfficeProtectedFile(guard.planPath, 65536)));
 	const planPath = officePhysicalPath(officeRecordLoose(lifecycle.request).serviceBootstrapPath);
 	const planBytes = await readLxdOfficeProtectedFile(planPath, 16384);

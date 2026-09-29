@@ -19,6 +19,7 @@ import { LxdOfficePhysicalGate as PhysicalGate } from "./lxd-office-physical-gat
 import { readLxdOfficeCredentialFile, readLxdOfficeProtectedFile } from "./lxd-office-physical-host.ts";
 import { lxdOfficePhysicalPolicySha256, officePhysicalPath } from "./lxd-office-physical-policy.ts";
 import { LxdOfficeProviderHttpRegistry } from "./lxd-office-provider-registry.ts";
+import { readLxdOfficeRetiredMarker } from "./lxd-office-retirement-control.ts";
 
 /** 2026-09-17 amendment: a host reboot is an orderly `reboot` transition whose
  * resume happens in a different host boot. The lineage stays anchored to the
@@ -414,6 +415,13 @@ export async function openGuard(configPath: string, signal: AbortSignal) {
 		identity,
 		root: policy.journal.path,
 		planPath: officePhysicalPath(config.planPath),
+		// A retired office (its company deleted) has no VM and makes no call.
+		retired:
+			(await readLxdOfficeRetiredMarker(
+				policy.journal.path,
+				{ scope: identity.p_scope, computerGeneration: g.computerGeneration },
+				readJournalRecordAsRoot,
+			)) !== undefined,
 	};
 }
 
@@ -428,6 +436,7 @@ export async function runLxdOfficeHostShutdown(
 		pollMs = options.pollMs ?? 2000,
 		now = options.now ?? Date.now;
 	const guard = await openGuard(configPath, signal);
+	if (guard.retired) return { state: "skipped", reason: "office retired" };
 	// The provider's physical inspection is for its unprivileged account; the
 	// root guard reads the kernel boot id itself (same source, same format).
 	const physical = uuid(
@@ -551,6 +560,7 @@ export async function runLxdOfficeHostResume(
 	signal: AbortSignal,
 ): Promise<LxdOfficeHostGuardResult> {
 	const guard = await openGuard(configPath, signal);
+	if (guard.retired) return { state: "skipped", reason: "office retired" };
 	const recoveryPath = `${guard.planPath}.recovery`,
 		resumePath = `${guard.planPath}.resume`;
 	if (!(await exists(recoveryPath))) return { state: "skipped", reason: "no recovery plan" };
