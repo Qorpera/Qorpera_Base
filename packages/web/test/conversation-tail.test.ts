@@ -6,7 +6,7 @@ import { ConversationView } from "../src/app/views/conversation.ts";
 import { PairTranscriptView } from "../src/app/views/pair-transcript.ts";
 import { CloudRpcError } from "../src/cloud/client.ts";
 import type { CodingSession } from "../src/cloud/coding-session.ts";
-import type { TranscriptItem } from "../src/cloud/transcript.ts";
+import { projectTranscript, type TranscriptItem } from "../src/cloud/transcript.ts";
 import type { HostedSessionEvent } from "../src/cloud/types.ts";
 import { deferred, event, fixture, id, pending, profileA, session, settle, staff, team, userA } from "./fixtures.ts";
 
@@ -402,6 +402,47 @@ describe("the thread view with unread history", () => {
 		observer.disconnect();
 		expect(heard).toEqual(["Message 5"]);
 		expect(log.getAttribute("aria-live")).toBe("polite");
+	});
+
+	it("keeps older messages out of the live log when a waiting message was sent before the first one shown", async () => {
+		// Sent between minutes 2 and 3 and still waiting; the thread opens at messages 5 and 6. The
+		// transcript places a waiting message by its send time, before the first message sent after it.
+		const queued = { ...pending(90, "Still waiting"), createdAt: new Date(Date.parse(at(2)) + 30_000).toISOString() };
+		const read = (last: number, first = 5) =>
+			projectTranscript(
+				Array.from({ length: last - first + 1 }, (_, index) => message(first + index)),
+				[queued],
+			);
+		const opened = read(6);
+		const { store, log, scroller, thread } = view(opened.items);
+		const ids = (part: Element) =>
+			[...part.querySelectorAll<HTMLElement>("[data-message-id]")].map((node) => node.dataset.messageId);
+		const idOf = (n: number) => read(n, n).items.find((item) => item.kind === "member" && !item.pending)!.id;
+		expect(ids(scroller)).toEqual([queued.inputId, idOf(5), idOf(6)]);
+		expect(ids(log)).toEqual([idOf(5), idOf(6)]);
+		store.set({ earlierLoading: true });
+		await settle();
+		const heard: string[] = [];
+		const observer = new MutationObserver((records) => {
+			for (const record of records)
+				for (const node of record.addedNodes)
+					if (node instanceof HTMLElement && node.dataset.messageId) heard.push(node.textContent ?? "");
+		});
+		observer.observe(log, { childList: true, subtree: true });
+		store.set({ earlierLoading: false, hasEarlier: false, projection: read(6, 1) });
+		await settle();
+		// The waiting message moved to its place among the older ones; none of them came into the log.
+		expect(ids(scroller)).toEqual([idOf(1), idOf(2), queued.inputId, idOf(3), idOf(4), idOf(5), idOf(6)]);
+		expect(ids(log)).toEqual([idOf(5), idOf(6)]);
+		expect(heard).toEqual([]);
+		const status = thread.el.querySelector<HTMLElement>(".visually-hidden[role='status']");
+		expect(status?.textContent).toBe("Loaded 4 earlier messages. This is the start of the conversation.");
+		// A new message still goes into the live log, which announces it.
+		store.set({ projection: read(7, 1) });
+		await settle();
+		observer.disconnect();
+		expect(heard).toEqual(["Message 7"]);
+		expect(ids(log)).toEqual([idOf(5), idOf(6), idOf(7)]);
 	});
 
 	it("says when older messages could not be read", async () => {

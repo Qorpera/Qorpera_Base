@@ -252,9 +252,9 @@ export class ConversationView {
 	readonly #earlier: HTMLElement;
 	/** Says how many older messages "Show earlier" brought, which come in outside the live log. */
 	readonly #earlierStatus = h("p", { class: "visually-hidden", role: "status" });
-	/** "Show earlier" was reading at the last render, and the oldest item then. */
+	/** "Show earlier" was reading at the last render, and the sequence of the oldest item then. */
 	#earlierWasLoading = false;
-	#oldestItemId: string | undefined;
+	#oldestSequence: number | undefined;
 	/** A coding session opened as its own thread over this one, from its line or its
 	 * figure in the header; focus returns to the opener when it closes. */
 	#codingThread: { workerId: string; view: CodingSessionThreadView } | undefined;
@@ -1652,13 +1652,15 @@ export class ConversationView {
 		};
 		// Items the thread showed first, and all that come after, stand in the live log; older ones
 		// "Show earlier" reads stand above it, outside the log, which announces only what is new.
-		this.#liveFrom ??= conversation.projection.items.find(
-			(item) => !(item.kind === "member" && item.pending),
-		)?.sequence;
+		// A waiting message has no place in the transcript yet (it stands by its send time), so it
+		// never opens the log: one sent before the first item shown stays above the log, in its place.
+		const waiting = (item: TranscriptItem) => item.kind === "member" && item.pending !== undefined;
+		this.#liveFrom ??= conversation.projection.items.find((item) => !waiting(item))?.sequence;
 		const liveFrom = this.#liveFrom;
 		let liveStart: number | undefined;
 		for (const item of items) {
-			if (liveStart === undefined && (liveFrom === undefined || item.sequence >= liveFrom)) liveStart = nodes.length;
+			if (liveStart === undefined && (liveFrom === undefined || (!waiting(item) && item.sequence >= liveFrom)))
+				liveStart = nodes.length;
 			placeSessions(item.createdAt);
 			if (item.kind === "member" || item.kind === "agent") {
 				const mine = item.kind === "member" && item.authorUserId === this.#company.userId;
@@ -1971,12 +1973,15 @@ export class ConversationView {
 		const earlierFocused = this.#earlier.contains(document.activeElement);
 		// "Show earlier" brought its page: it comes in above the live log, outside it, and one status
 		// line says how many.
-		const oldest = this.#oldestItemId;
+		// Counted by sequence: a waiting message moves to its place in the new page.
+		const oldest = this.#oldestSequence;
 		const earlierLoaded = this.#earlierWasLoading && !conversation.earlierLoading && !conversation.earlierError;
 		this.#earlierWasLoading = conversation.earlierLoading === true;
-		this.#oldestItemId = conversation.projection.items[0]?.id;
+		this.#oldestSequence = conversation.projection.items.find((item) => !waiting(item))?.sequence;
 		const older =
-			earlierLoaded && oldest ? conversation.projection.items.findIndex((item) => item.id === oldest) : -1;
+			earlierLoaded && oldest !== undefined
+				? conversation.projection.items.filter((item) => !waiting(item) && item.sequence < oldest).length
+				: -1;
 		if (earlierLoaded)
 			this.#earlierStatus.textContent = [
 				older === 1
