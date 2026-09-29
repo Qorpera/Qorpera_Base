@@ -340,7 +340,7 @@ closes the conversation; a restore reopens both, with the same conversation.
 - **Index:** a new rule inserts a company row (`created_via` `folder`, the file's id); an edit
   updates it; deleting the file archives it (review records keep citing it) and a restore brings
   it back; a move repoints it. The row's foreign key to the company row takes it `KEY SHARE`, so a
-  rule save takes the company row at rank 2 first.
+  rule save takes the company row at rank 0 first.
 - Never reviewed.
 
 ### `agents/<handle>/routines/<name>.md`
@@ -486,7 +486,7 @@ last file. The key is the file name.
 Deleting the file cancels an open or blocked todo, retires the row and gives its key a tombstone
 with a `.` (no file name has one) and the whole id, so a new file of that name is free and two
 tombstones never meet; a restore brings it back.
-A todo save takes the company row at rank 2 (the row's foreign key).
+A todo save takes the company row at rank 0 (the row's foreign key).
 
 Not reviewed. Dispatching a worker is reviewed.
 
@@ -614,7 +614,7 @@ of the body, for readers that should not reach the storage server.
   - A run of the room takes the room `FOR KEY SHARE` at rank 4, before its paths.
   - Posting takes the company row `FOR UPDATE` (`qorpera_lock_profile_gc_fence`) before the room and
     the clock.
-  - So `targets` returns the company row at rank 2 (`keyshare`, first within the rank) with every
+  - So `targets` returns the company row at rank 0 (`keyshare`; C1b-3a moved it from the head of rank 2) with every
     roster row, and the room at rank 4 (`update`) for a rename, archive or retire, all before the
     paths. Test 701 races a rename and an instructions edit against posting.
   - A `group.md` write takes the company row the same way: a new chat's room and conversation,
@@ -634,13 +634,13 @@ of the body, for readers that should not reach the storage server.
     writer. The member RPC's section and move actions refuse for `folder-v2` companies (55000), and
     the sidebar's revision row is not bumped; the web reads the folder feed (C4).
 - `targets` reads the roster with no lock. A legacy roster write (`qorpera_put_profile_staff`)
-  between `targets` and the rank-2 lock can still make the trigger take the room after the paths.
+  between `targets` and the company-row lock can still make the trigger take the room after the paths.
   That save can then deadlock with a run of that room (40P01; one side retries, no data is wrong).
   This ends when C1c stops legacy writes to folder-v2 rows (§9).
-- The member RPCs of #462 (remove, change role, leave) take the company row before the member's row,
-  while a save takes its member row at rank 1 and the company row at rank 2. So a membership change
-  of the saving member can deadlock with that member's roster save (40P01; the save retries). This
-  ends when F1 takes the company row before the members (a rank 0), which fits posting and #462.
+- The member RPCs of #462 (remove, change role, leave) take the company row before the member's row.
+  A save used to take its member row at rank 1 and the company row at rank 2, so a membership change
+  of the saving member could deadlock with that member's roster save. Resolved in C1b-3a: the
+  company row is rank 0, before the members, which fits posting and #462 (test 644 D).
 - A row removed outside its folder (`deleted_at`, the legacy roster delete): `decide` refuses an
   edit of its `agent.md`; moving or deleting its folder is saved and leaves the row alone.
 - **Rebuild:** a job lists every structured path, reads the bytes and parses them with the

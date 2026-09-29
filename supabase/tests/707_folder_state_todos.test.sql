@@ -158,10 +158,10 @@ begin
 	for i in 1..5 loop perform pg_temp.expect(r, i, 'saved'); end loop;
 	r := pg_temp.commit(pg_temp.owner(), 'hire-0001', jsonb_build_array(pg_temp.hire('nora', '70700000-0000-4000-8000-0000000000a1', 'Nora'), pg_temp.hire('otto', '70700000-0000-4000-8000-0000000000a2', 'Otto')));
 	for i in 1..2 loop perform pg_temp.expect(r, i, 'saved'); end loop;
-	-- A todo save takes the company row at rank 2.
+	-- A todo save takes the company row at rank 0 (C1b-3a moved it from rank 2).
 	select coalesce(jsonb_agg(to_jsonb(y)), '[]'::jsonb) into t from public.qorpera_folder_structured_targets('70700000-0000-4000-8000-000000000020', pg_temp.owner(),
 		jsonb_build_array(pg_temp.todo('agents/nora/todos/call-clinic.md', '70700000-0000-4000-8000-0000000000d1', 'Call the clinic'))) y;
-	if t is distinct from '[{"rank":2,"tbl":"qorpera_profiles","key":"70700000-0000-4000-8000-000000000010","mode":"keyshare"}]' then
+	if t is distinct from '[{"rank":0,"tbl":"qorpera_profiles","key":"70700000-0000-4000-8000-000000000010","mode":"keyshare"}]' then
 		raise exception 'A todo save locks the company row only: %', t; end if;
 	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'todo-0001', jsonb_build_array(
 		pg_temp.todo('agents/nora/todos/call-clinic.md', '70700000-0000-4000-8000-0000000000d1', 'Call the clinic', 'open', '70700000-0000-4000-8000-000000000002', 'Ask about times.'))), 1, 'saved');
