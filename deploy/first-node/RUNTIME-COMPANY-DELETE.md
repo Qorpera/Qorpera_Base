@@ -140,7 +140,7 @@ records what it waits for.
   6. Rollback: put the `.retired-<sha12>` file back and restart. Not for an office that already has
      `office-retirement-request.json` in its journal: an older build would keep asking for the deleted
      VM (and would retire it without emptying the workbench). Leave that office on the new build.
-- **D4** sign-in identity retirement (migration 20260929450000; `lxd-login-gateway.ts`). A node-held
+- **D4** sign-in identity retirement (migration 20260928269450; `lxd-login-gateway.ts`). A node-held
   sign-in keeps its key on an LXD volume named after the identity, on its sign-in machine's node and on
   every node its runs used; on node 2 the volume is also attached to the execution host. The holdings
   count the company's (node, identity) placements: each identity that had a sign-in machine, on each
@@ -179,7 +179,7 @@ records what it waits for.
   Rollout: the LXD provider build on every node (node-agent `provider` role) after the release carrying
   the migration is live. Before that, the due list 404s (logged once a minute) and a company with node
   sign-ins keeps waiting, as it did.
-- **D5a** Storage (migration 20260929480000). Company File and folder objects need nothing new: their
+- **D5a** Storage (migration 20260928269480). Company File and folder objects need nothing new: their
   catalog rows have no link to the company, and the worker's deleted-profile phase removes them once
   the company is gone. Credential capsules (`qorpera-native-compute-capsules/<capsule>.capsule`, named
   only by the capsule) and the identity recovery prefix (`qorpera-identity-recovery/<company>/`) have
@@ -200,7 +200,7 @@ records what it waits for.
   of companies that no longer exist.
   Switching the worker on (supabase/ARTIFACT-GC.md "Deployment"; the coordinator bundles it with the
   other function deploys once Jonas has created the worker key):
-  1. Apply the migrations, including 20260929480000.
+  1. Apply the migrations, including 20260928269480.
   2. Deploy `supabase/functions/artifact-gc-worker` with JWT verification off (`config.toml`).
   3. Edge Function secrets: `QORPERA_ARTIFACT_GC_WORKER_KEY` (a new random invocation key, kept only
      there and in Vault), and for NAS-backed Company File objects `QORPERA_OBJECT_GATEWAY_URL` and
@@ -218,7 +218,7 @@ records what it waits for.
   retirement (D3b above; "Office retirement" in RUNTIME-OFFICE-RETENTION.md), and coding workspaces
   `workers/<company>/` (the coding executor cannot remove them alone: their files belong to session
   users; not built yet).
-- **D6** upstream token revoke on Disconnect and on delete (migration 20260929500000;
+- **D6** upstream token revoke on Disconnect and on delete (migration 20260928269500;
   `cloud-connector-token-revocation.ts`). Until now Disconnect only marked the secret revoked, and a
   deleted company's tokens stayed live at Google and GitHub (GitHub's never expire).
   - Each time a Gmail, Drive or GitHub secret goes from active to revoked (Disconnect, a member's
@@ -265,7 +265,7 @@ records what it waits for.
     - the GitHub revoke uses the unit's current client credentials: a rotated or wrong secret fails
       those entries or records them `already_invalid`; an entry whose broker was retired is never
       claimed (a deletion abandons it at six hours).
-  Coordinator's lane for D6, at the cut that carries 20260929500000:
+  Coordinator's lane for D6, at the cut that carries 20260928269500:
   1. Build `node scripts/package-cloud-secret-broker.mjs` from the release commit and roll it, within
      six hours of the cut (before it is fine: without the migration a pass logs one line and does
      nothing), to the shared vault (node 1 and node 2's standby) and to every company broker unit

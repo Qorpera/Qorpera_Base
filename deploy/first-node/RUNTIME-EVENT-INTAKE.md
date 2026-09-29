@@ -15,7 +15,7 @@ Contract: section 16.3 and the 2026-09-29 amendment "events wake agents" (sectio
 the technical design. The Q1 page is the plain one.
 
 Status: W1a shipped in release v150 (PR #509, re-slotted to `20260928259260_runtime_event_intake`);
-W2 in review (PR #519, `20260929290000_runtime_event_wakes`). W1b reserves `20260929260100`.
+W2 in review (PR #519, `20260928269290_runtime_event_wakes`). W1b reserves `20260929260100`.
 
 ## Words
 
@@ -33,7 +33,7 @@ W2 in review (PR #519, `20260929290000_runtime_event_wakes`). W1b reserves `2026
 | --- | --- | --- |
 | W1a | Hooks, deliveries, the public intake function, address-proven hooks end to end, member RPCs | `20260928259260` |
 | W1b | Signed hooks: the vault verifies Stripe, GitHub and HMAC signatures | `20260929260100` (reserved) |
-| W2 | Routine trigger on a hook, event wakes, the agent tools `list_hooks` and `read_event` | `20260929290000` |
+| W2 | Routine trigger on a hook, event wakes, the agent tools `list_hooks` and `read_event` | `20260928269290` |
 | W3 | Agents create, pause and remove hooks (`manage_hook`) | registered when started |
 | M2 | Company mailboxes: the mail provider posts to a platform-owned hook per mailbox | registered when started |
 
@@ -128,8 +128,9 @@ writes nothing: no delivery, no counter.
   so a receive never waits for the company row (whose gc fence a company purge holds): deliveries go
   with the company through the hook, and usage rows, which hold only counts, expire within a day.
 - **The platform switch:** `qorpera_event_intake_settings.enabled` is built off. While it is off,
-  every delivery is answered 503. Operators turn it on at acceptance, and can turn it off at any time
-  or change the budget, in SQL.
+  every delivery that reaches the database (a POST to a well-formed address) is answered 503, before
+  the address is looked up. Operators turn it on at acceptance, and can turn it off at any time or
+  change the budget, in SQL.
 
 ## Deliveries
 
@@ -184,7 +185,7 @@ Table `qorpera_event_deliveries`:
 | `limited` | 429 | over the hook's minute (`Retry-After: 60`) or the company's budget (`Retry-After: 600`) |
 | `unavailable` | 503 | the intake is switched off (`Retry-After: 300`) |
 | — | 400 | input the database calls malformed |
-| — | 404, 405 | a path that is no address; a method other than POST |
+| — | 404, 405 | a path that is not a hook address ("This is not a hook address"); a method other than POST |
 | — | 413, 431 | a body over 256 KiB; kept headers over 8000 bytes |
 | — | 503 | the database cannot be reached; the sender retries |
 
@@ -218,7 +219,7 @@ helpers are shared with the intake function's tests, so both sides agree on ever
 
 ## Event wakes (W2)
 
-W2a (migration `20260929290000_runtime_event_wakes`, on today's routine rows per decision 6) and the
+W2a (migration `20260928269290_runtime_event_wakes`, on today's routine rows per decision 6) and the
 runtime side ship in one cut. Acceptance is contract section 21, item 33.
 
 **The trigger.** A routine version may carry one listener trigger on a hook:
@@ -340,7 +341,11 @@ anchor with master again (RUNTIME-RELEASE-TRAIN.md). After it is live:
 
 1. Deploy the function: `supabase functions deploy event-intake` (`verify_jwt = false` in
    `supabase/config.toml`). It needs only `SUPABASE_URL` and the service key the platform provides.
-   Until the switch is on it answers every delivery 503.
+   Until the switch is on it answers every delivery that reaches the database, a POST to a
+   well-formed address, 503 ("Events are unavailable right now"), before looking the address up. The
+   function's own answers (405, 413, 431) come first either way. A path that is not a 43-character
+   address gets 404 ("This is not a hook address") from the function itself, by its shape alone;
+   an address with no live hook gets 404 ("No hook has this address") once the switch is on.
 2. Schedule retention:
    `select cron.schedule('qorpera-event-deliveries-purge', '*/5 * * * *',
    $$select public.qorpera_purge_event_deliveries(10000)$$);`
