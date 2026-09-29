@@ -517,9 +517,25 @@ describe("commits", () => {
 					},
 				],
 			},
+			{
+				schema: "qorpera.folder-commit/v1",
+				commitId: randomUUID(),
+				seq: null,
+				replay: false,
+				units: [
+					{
+						unit: 1,
+						op: "mkdir",
+						path: "a",
+						outcome: "refused",
+						reason: "structured_invalid",
+						problems: [{ line: 0, code: "value", message: "x" }],
+					},
+				],
+			},
 		];
 		const { client } = fixture(() => answers.shift());
-		for (let i = 0; i < 8; i++)
+		for (let i = 0; i < 9; i++)
 			await expect(client.commit("tool-call-3", [{ op: "mkdir", path: "a" }], {}, signal())).rejects.toThrow(
 				"Company folder response is invalid",
 			);
@@ -715,6 +731,32 @@ describe("commits", () => {
 		expect(new Set(calls.map((call) => JSON.stringify(call.args))).size).toBe(1);
 	});
 
+	it("reports a cancel after a lost try as unknown", async () => {
+		const aborted = new AbortController();
+		let tries = 0;
+		const { client, calls } = fixture(() => {
+			if (++tries === 1) throw new CloudRuntimeDiagnosticError("timeout", "Cloud tool authority unavailable");
+			aborted.abort();
+			throw sqlError("QRC01", "Company folder authority changed");
+		});
+		await expect(
+			client.commit("tool-call-19", [{ op: "mkdir", path: "a" }], {}, aborted.signal),
+		).rejects.toMatchObject({ failure: "unknown" });
+		expect(calls).toHaveLength(2);
+	});
+
+	it("never retries a request PostgREST could not run", async () => {
+		const { client, calls } = fixture(() => {
+			throw sqlError("PGRST202", "Could not find the function public.qorpera_folder_commit");
+		});
+		const error = await client
+			.commit("tool-call-20", [{ op: "mkdir", path: "a" }], { receiptId: randomUUID() }, signal())
+			.catch((error: unknown) => error);
+		expect(error).toBeInstanceOf(CloudCompanyFolderRpcError);
+		expect(error).toMatchObject({ code: "PGRST202", category: "invalid_arguments" });
+		expect(calls).toHaveLength(1);
+	});
+
 	it("stops retrying once the caller cancels", async () => {
 		const aborted = new AbortController();
 		const first = fixture(() => {
@@ -802,6 +844,8 @@ describe("commits", () => {
 	it("keeps SQL's words off its errors", () => {
 		const cases = [
 			["22023", "invalid_arguments"],
+			["22P02", "invalid_arguments"],
+			["PGRST202", "invalid_arguments"],
 			["25000", "invalid_arguments"],
 			["42501", "authority_unavailable"],
 			["0A000", "authority_unavailable"],

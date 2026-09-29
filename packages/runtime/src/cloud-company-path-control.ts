@@ -139,14 +139,22 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 						? 16 * 1024 * 1024
 						: response.ok && method === "qorpera_describe_company_run_context"
 							? 1024 * 1024
-							: // A listing page of 200 entries with 4096-byte paths, and a change set's outcomes.
+							: // A listing page of 200 entries with 4096-byte paths (each character escaped at worst), and a
+								// change set's outcomes.
 								response.ok && method === "qorpera_folder_list"
-								? 1024 * 1024
+								? 2 * 1024 * 1024
 								: response.ok && method === "qorpera_folder_commit"
 									? 16 * 1024 * 1024
 									: response.ok
 										? 256 * 1024
 										: 4096;
+				// A folder call's 5xx that is not PostgREST's own answer (a proxy's page, a cut body) is a lost answer:
+				// the transaction may have committed, and the folder client retries it with the same key.
+				const unreadable = (message: string): CloudRuntimeDiagnosticError =>
+					new CloudRuntimeDiagnosticError(
+						FOLDER_RPCS.has(method) && response.status >= 500 ? "transport_unavailable" : "invalid_response",
+						message,
+					);
 				const reader = response.body?.getReader();
 				if (!reader)
 					throw new CloudRuntimeDiagnosticError("invalid_response", "Company File authority unavailable");
@@ -167,11 +175,7 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 						});
 						if (chunk.done) break;
 						count += chunk.value.byteLength;
-						if (count > maximum)
-							throw new CloudRuntimeDiagnosticError(
-								"invalid_response",
-								"Company File control response too large",
-							);
+						if (count > maximum) throw unreadable("Company File control response too large");
 						chunks.push(chunk.value);
 					}
 				} finally {
@@ -184,7 +188,7 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 				try {
 					value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks)));
 				} catch {
-					throw new CloudRuntimeDiagnosticError("invalid_response", "Company File authority unavailable");
+					throw unreadable("Company File authority unavailable");
 				}
 				if (!response.ok) {
 					// A complete PostgREST error body with exactly this SQLSTATE.
@@ -206,7 +210,12 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 						FOLDER_RPCS.has(method) && value && typeof value === "object" && !Array.isArray(value)
 							? (value as Record<string, unknown>).code
 							: undefined;
-					if (typeof folderCode === "string" && /^[0-9A-Z]{5}$/.test(folderCode) && postgrestError(folderCode))
+					// A SQLSTATE, or PostgREST's own code (PGRSTnnn: no such function, a bad request), which nothing ran.
+					if (
+						typeof folderCode === "string" &&
+						/^(?:[0-9A-Z]{5}|PGRST[0-9]{3})$/.test(folderCode) &&
+						postgrestError(folderCode)
+					)
 						throw new CloudCompanyFolderRpcError(folderCode, (value as { message: string }).message);
 					if (response.status === 403 && postgrestError("42501")) throw new CloudCompanyPathRpcRefusal();
 					if (response.status === 412 && postgrestError("PT412")) throw new CloudCompanyPathRpcPrecondition();

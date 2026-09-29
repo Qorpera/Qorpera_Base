@@ -309,4 +309,55 @@ describe("the folder core's entry points (core C3)", () => {
 			expect(error).toBeInstanceOf(CloudRuntimeDiagnosticError);
 		}
 	});
+
+	it("brands PostgREST's own codes as requests nothing ran, and reads an unreadable 5xx as a lost answer", async () => {
+		const missing = await fixture(
+			vi.fn<typeof fetch>(async () =>
+				Response.json(
+					{ code: "PGRST202", message: "Could not find the function", details: "PRIVATE", hint: null },
+					{ status: 404 },
+				),
+			),
+		)
+			.call("qorpera_folder_commit", {}, new AbortController().signal)
+			.catch((error: unknown) => error);
+		expect(missing).toBeInstanceOf(CloudCompanyFolderRpcError);
+		expect(missing).toMatchObject({ code: "PGRST202", category: "invalid_arguments" });
+		const page = "<html><body>504 Gateway Time-out</body></html>";
+		for (const [status, body, method, category] of [
+			[504, page, "qorpera_folder_commit", "transport_unavailable"],
+			[502, "x".repeat(5000), "qorpera_folder_record_release", "transport_unavailable"],
+			[504, page, "qorpera_read_company_path_v2", "invalid_response"],
+			[400, page, "qorpera_folder_commit", "invalid_response"],
+		] as const) {
+			const error = await fixture(vi.fn<typeof fetch>(async () => new Response(body, { status })))
+				.call(method, {}, new AbortController().signal)
+				.catch((error: unknown) => error);
+			expect(error).toMatchObject({ category });
+			expect(error).not.toBeInstanceOf(CloudCompanyFolderRpcError);
+		}
+	});
+
+	it("gives a listing page and a change set's outcomes room, and nothing else", async () => {
+		const sized = (bytes: number) => ({ padding: "x".repeat(bytes) });
+		for (const [method, bytes, fits] of [
+			["qorpera_folder_list", 1_900_000, true],
+			["qorpera_folder_list", 2_200_000, false],
+			["qorpera_folder_commit", 3_000_000, true],
+			["qorpera_folder_read", 300_000, false],
+			["qorpera_folder_record_release", 300_000, false],
+			["qorpera_read_company_path_v2", 300_000, false],
+		] as const) {
+			const result = await fixture(vi.fn<typeof fetch>(async () => Response.json(sized(bytes))))
+				.call(method, {}, new AbortController().signal)
+				.then(
+					() => true,
+					(error: unknown) => {
+						expect(error).toMatchObject({ category: "invalid_response" });
+						return false;
+					},
+				);
+			expect([method, bytes, result]).toEqual([method, bytes, fits]);
+		}
+	});
 });

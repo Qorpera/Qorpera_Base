@@ -42,7 +42,7 @@ const MEDIA_TYPE = /^[a-z0-9!#$&^_.+-]{1,127}\/[a-z0-9!#$&^_.+-]{1,127}$/;
 /** The commit's bound on units in one change set. */
 const MAX_UNITS = 1000;
 /** One listing page. SQL accepts up to 1000. An entry with its receipt is about 550 bytes plus its path (at most
- * 4096), so 200 fit the control's 1 MiB bound for listings. */
+ * 4096, twice that escaped), so 200 fit the control's 2 MiB bound for listings. */
 const LIST_PAGE = 200;
 /** A release names at most this many reads (SQL's bound). */
 const MAX_RELEASED = 10_000;
@@ -198,9 +198,9 @@ export interface CloudCompanyFolderReleaseResult {
  * - `read_revoked`: something the model saw may no longer be seen (the recheck's 42501); the change or release was
  *   not recorded, and the caller reports it as denied;
  * - `contended`: the folder kept changing under a retried commit or release; nothing was recorded;
- * - `unknown`: a commit or release timed out or lost its connection on every try, so it may have been recorded. The
- *   caller retries with the same operation key (or release id), the same units and the same receipt, whose replay
- *   returns the stored outcome.
+ * - `unknown`: a try of a commit or release timed out or lost its connection, and no later try gave an answer (or
+ *   the caller cancelled), so it may have been recorded. The caller retries with the same operation key (or release
+ *   id), the same units and the same receipt, whose replay returns the stored outcome.
  * Other SQL errors (22023, 25000) are defects and stay a `CloudCompanyFolderRpcError`.
  */
 export type CloudCompanyFolderFailure = "stopped" | "unavailable" | "read_revoked" | "contended" | "unknown";
@@ -551,7 +551,10 @@ export class CloudCompanyFolderClient {
 			try {
 				return await this.#call(method, args, signal);
 			} catch (error) {
-				// A cancel by the caller comes back as a cancel (cloudToolRequest), which is neither lost nor retryable.
+				// A cancel by the caller comes back as a cancel (cloudToolRequest), which is neither lost nor retryable;
+				// after a lost try, the outcome is still unknown.
+				if (uncertain && error instanceof CloudRuntimeDiagnosticError && error.category === "cancelled")
+					throw new CloudCompanyFolderError("unknown");
 				const lost =
 					error instanceof CloudRuntimeDiagnosticError &&
 					!(error instanceof CloudCompanyFolderRpcError) &&
@@ -702,8 +705,8 @@ export class CloudCompanyFolderClient {
 	 * from the same bytes, or its problems, and SQL decides each unit (RUNTIME-COMPANY-STATE-FILES.md §8).
 	 *
 	 * The operation key comes from the caller's tool call. A retry with the same key, the same units and the same
-	 * receipt replays the stored outcome; this call already retries a lost answer, and reports `unknown` when every
-	 * try was lost. `receiptId` is the tool call's folder receipt (core C1c-2b), which a model-facing write carries
+	 * receipt replays the stored outcome; this call already retries a lost answer, and reports `unknown` when a try was
+	 * lost and none answered after it. `receiptId` is the tool call's folder receipt (core C1c-2b), which a model-facing write carries
 	 * once that exists; it is part of the change set, so a retry must send the same one. */
 	async commit(
 		operationKey: string,
@@ -772,8 +775,8 @@ export class CloudCompanyFolderClient {
 	 * per tool result, F1 on #533):
 	 * - a listing's entries are reads too: names are content;
 	 * - a release id is used once: the same reads and output hash replay, anything else is refused, so the caller keeps
-	 *   the id and the output hash with its tool call (this call retries a lost answer, and reports `unknown` when every
-	 *   try was lost);
+	 *   the id and the output hash with its tool call (this call retries a lost answer, and reports `unknown` when a try
+	 *   was lost and none answered after it);
 	 * - context composition (memory, skills) releases once, before the first model request that uses it;
 	 * - a result that shows more than 10,000 entries is released in parts, each with its own id and the same output hash.
 	 */
