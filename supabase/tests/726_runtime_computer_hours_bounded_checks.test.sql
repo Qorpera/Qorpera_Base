@@ -74,7 +74,8 @@ select pg_temp.wake_assert(pg_temp.left_many() = jsonb_build_object(
 		'72600000-0000-4000-8000-000000000030', 6200, '72600000-0000-4000-8000-000000000040', -2000,
 		'72600000-0000-4000-8000-000000000050', null),
 	'Hours left for many companies at once: ' || pg_temp.left_many()::text);
-select pg_temp.wake_assert(pg_temp.left_one() = pg_temp.left_many(), 'One company at a time gives the same (one definition)');
+-- Two definitions of the same terms (one company, many companies): kept equal here.
+select pg_temp.wake_assert(pg_temp.left_one() = pg_temp.left_many(), 'One company at a time gives the same');
 select pg_temp.wake_assert((select count(*) from public.qorpera_computer_hour_left_many(array['72600000-0000-4000-8000-000000000040',
 	'72600000-0000-4000-8000-000000000040', null, '72600000-0000-4000-8000-000000000010']::uuid[])) = 2,
 	'A company named twice is one row, a null none');
@@ -135,4 +136,6 @@ select pg_temp.wake_assert(public.qorpera_computer_hour_zero_sweep(clock_timesta
 select pg_temp.wake_assert((select count(*)::text from public.qorpera_computer_hour_notices
 	where kind = 'out_of_hours' and profile_id = '72600000-0000-4000-8000-000000000030') = current_setting('qorpera_test.notices'),
 	'No second "out of hours"');
+-- With a withdrawn pack and ended plan periods about, the two definitions still agree.
+select pg_temp.wake_assert(pg_temp.left_one() = pg_temp.left_many(), 'Still the same: ' || pg_temp.left_many()::text);
 rollback;

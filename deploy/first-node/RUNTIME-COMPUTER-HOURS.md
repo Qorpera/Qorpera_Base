@@ -480,13 +480,15 @@ Coordinator (nothing secret):
   cost of one key lookup; the full check (`qorpera_company_at_zero_now`, as above) runs only for a
   recorded company, so leaving zero counts at once and running out counts from the next sweep, up
   to a minute later (the meter charges use once a minute anyway). Hours left for many companies
-  come from one query (`qorpera_computer_hour_left_many`, which the one-company
-  `qorpera_company_computer_hours_left` uses too). The sweep runs the full check only for a company
-  with no hours left (a newly recorded one, or a recorded one near a founder's period end); the
-  routine listing reads the zero state only. Locally, under heavy load, with a third of the
-  companies paying by credits, a third by a founder's plan and a third at zero, a quiet sweep took
-  about 0.28 s for 3,000 companies and 0.54 s for 6,000 (it grows in a straight line); the old
-  checks took about 2 s for 3,000.
+  come from one query (`qorpera_computer_hour_left_many`: the same terms as the one-company
+  `qorpera_company_computer_hours_left`, which stays as it is, being quicker for one company; test
+  726 keeps the two equal, and a change to either changes both). The sweep runs the full check only
+  for a company with no hours left (a newly recorded one, or a recorded one near a founder's period
+  end); the routine listing reads the zero state only. Locally, under heavy load, with a third of
+  the companies paying by credits, a third by a founder's plan and a third at zero, hours left for
+  all of them took 0.06 s for 3,000 companies and 0.14 s for 6,000, and a quiet sweep 0.11 s and
+  0.22 s (it grows in a straight line, each term an index lookup for its company); the old checks
+  took about 2 s for 3,000. One company's hours left cost the same as before.
 - Members read the wait with `qorpera_company_waiting_for_hours(p_profile_id)` (migration
   `20260929280000`), shown above the composer in agent threads and group chats, and with
   `waitingForHours` in the hours read on Plan & usage.
