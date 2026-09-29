@@ -15,7 +15,7 @@ Contract: section 16.3 and the 2026-09-29 amendment "events wake agents" (sectio
 the technical design. The Q1 page is the plain one.
 
 Status: W1a shipped in release v150 (PR #509, re-slotted to `20260928259260_runtime_event_intake`);
-W2 in review (PR #519, `20260929290000_runtime_event_wakes`). W1b reserves `20260929260100`.
+W2 in review (PR #519, `20260928269290_runtime_event_wakes`). W1b reserves `20260929260100`.
 
 ## Words
 
@@ -33,7 +33,7 @@ W2 in review (PR #519, `20260929290000_runtime_event_wakes`). W1b reserves `2026
 | --- | --- | --- |
 | W1a | Hooks, deliveries, the public intake function, address-proven hooks end to end, member RPCs | `20260928259260` |
 | W1b | Signed hooks: the vault verifies Stripe, GitHub and HMAC signatures | `20260929260100` (reserved) |
-| W2 | Routine trigger on a hook, event wakes, the agent tools `list_hooks` and `read_event` | `20260929290000` |
+| W2 | Routine trigger on a hook, event wakes, the agent tools `list_hooks` and `read_event` | `20260928269290` |
 | W3 | Agents create, pause and remove hooks (`manage_hook`) | registered when started |
 | M2 | Company mailboxes: the mail provider posts to a platform-owned hook per mailbox | registered when started |
 
@@ -218,7 +218,7 @@ helpers are shared with the intake function's tests, so both sides agree on ever
 
 ## Event wakes (W2)
 
-W2a (migration `20260929290000_runtime_event_wakes`, on today's routine rows per decision 6) and the
+W2a (migration `20260928269290_runtime_event_wakes`, on today's routine rows per decision 6) and the
 runtime side ship in one cut. Acceptance is contract section 21, item 33.
 
 **The trigger.** A routine version may carry one listener trigger on a hook:

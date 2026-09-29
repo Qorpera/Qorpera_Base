@@ -1,5 +1,5 @@
 -- @fixture 715_company_delete_after_runs.test.sql until "-- 5. A machine still on a node keeps the deletion waiting"
--- 20260929500000: a connected account's tokens are revoked upstream on Disconnect and when the company
+-- 20260928269500: a connected account's tokens are revoked upstream on Disconnect and when the company
 -- is deleted. Every version of a Gmail, Drive or GitHub secret that goes active→revoked is queued; the
 -- finisher revokes a deleting company's connector secrets, waits for its queue (at most six hours) and
 -- marks what is still open abandoned before the purge. A Google account still connected in a living
