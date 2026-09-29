@@ -103,7 +103,7 @@ revoke all on function public.qorpera_company_identities_retirable(uuid) from pu
 create function public.qorpera_runtime_identity_retirement_json(p_retirement public.qorpera_runtime_identity_retirements)
 returns jsonb
 language sql
-immutable
+stable
 set search_path = ''
 as $$
 	select jsonb_build_object('schema', 'qorpera.identity-retirement/v1', 'nodeId', p_retirement.node_id,
@@ -184,6 +184,11 @@ begin
 			raise exception 'Identity retirement differs' using errcode = '42501';
 		end if;
 		return public.qorpera_runtime_identity_retirement_json(v_retirement);
+	end if;
+	-- A node whose inventory policy has an execution host with identity volumes (node 2) must detach.
+	if p_evidence ->> 'device' = 'none' and exists (select 1 from public.qorpera_runtime_node_inventory_policies
+			where node_id = v_node and jsonb_path_exists(policy, '$.infrastructure[*] ? (exists (@.identityVolumes))')) then
+		raise exception 'This node has an execution host: detach the identity' using errcode = '42501';
 	end if;
 	if v_profile is null or not exists (select 1 from public.qorpera_company_identity_placements(v_profile) as placement
 			where placement.node_id = v_node and placement.compute_identity_id = p_compute_identity_id) then

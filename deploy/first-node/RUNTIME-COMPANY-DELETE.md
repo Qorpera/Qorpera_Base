@@ -126,17 +126,27 @@ records what it waits for.
   none) has none and purges as before.
   Once none of the company's machines was released in the last ten minutes (a parked execution-host
   slot keeps an identity mounted up to five), each node's LXD provider (its login gateway, at most once
-  a minute) gets the identities from `qorpera_runtime_identity_retirements_due`, skips one with an
-  unreleased sign-in machine of its own, checks the volume is exactly the identity's, detaches the
-  execution-host device of exactly the identity shape, deletes the volume (LXD refuses one still in
-  use), confirms both gone and records it with `qorpera_confirm_runtime_identity_retirement`. Until
-  confirmed, its sweep never attaches that identity again. The ledger
-  `qorpera_runtime_identity_retirements` outlives the purge, and a replay after a lost reply may report
-  `absent` for what it removed.
+  a minute) gets the identities from `qorpera_runtime_identity_retirements_due`, and tries each at
+  most once a minute, eight a pass: it skips one with a sign-in machine of its own not yet released,
+  checks the volume is exactly the identity's, detaches the execution-host device of exactly the
+  identity shape, deletes the volume (LXD refuses one still in use), confirms both gone and records it
+  with `qorpera_confirm_runtime_identity_retirement`. While SQL names it, its sweep does not attach it
+  again. A node whose inventory policy has an execution host with identity volumes cannot report
+  `device: none`. The ledger `qorpera_runtime_identity_retirements` outlives the purge, and a replay
+  after a lost reply may report `absent` for what it removed (never the reverse).
   The node inventory keeps accepting the device from the company's login demands until the purge, which
   now waits for the detach. No new volume appears while deleting: node reservations refuse a paused
-  company. Identity recoveries need no node step: the escrowed key reaches a node only through a sign-in
-  machine, refused while deleting; their rows go with the purge and their backups are D5.
+  company, and the run provider neither needs nor re-creates the identity volume of a stopped or lost
+  run it keeps reconciling (up to a day, also after a restart). Identity recoveries need no node step:
+  the escrowed key reaches a node only through a sign-in machine, refused while deleting; their rows go
+  with the purge and their backups are D5.
+  Once the migration is live, an open deletion that waited only on sign-ins never placed on a node
+  purges at the next finisher pass.
+  A pair no node can confirm (a node taken out of service, a volume that is not exactly the identity's,
+  a device refused) keeps the deletion waiting; `qorpera_company_deletions.holdings` shows it. After
+  checking the node by hand, an operator records it as the provider would:
+  `insert into public.qorpera_runtime_identity_retirements (node_id, compute_identity_id, provider_id,
+  volume, device) values ('<node>', '<identity>', '<provider id>', 'absent', 'absent');`
   Not covered, for the operator runbook: volumes from before node demands existed (8 September), and
   run recovery volumes. An execution-host rebuild that runs while a device is retired stops with "lost
   Compute Identity devices": check the volume is gone (retired), then run it again.

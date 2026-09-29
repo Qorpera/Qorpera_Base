@@ -216,8 +216,8 @@ export interface LxdNativeLoginGatewayConfig {
 	releasedJournalRetentionMs?: number;
 }
 
-/** The ids SQL names for this node's retirement: canonical, distinct, at most 64. */
-function parseRetirementsDue(value: unknown): string[] {
+/** This node and the ids SQL names for its retirement: canonical, distinct, at most 64. */
+function parseRetirementsDue(value: unknown): { nodeId: string; computeIdentityIds: string[] } {
 	const answer = record(value, "Identity retirements");
 	const ids = answer.computeIdentityIds;
 	if (
@@ -231,7 +231,7 @@ function parseRetirementsDue(value: unknown): string[] {
 		new Set(ids).size !== ids.length
 	)
 		throw new Error("Identity retirements are invalid");
-	return ids as string[];
+	return { nodeId: answer.nodeId as string, computeIdentityIds: ids as string[] };
 }
 
 function record(value: unknown, label: string): Record<string, unknown> {
@@ -572,8 +572,14 @@ export class LxdNativeLoginGateway {
 	#executionHostLogged = { text: "", at: 0 };
 	/** When this node last asked which deleted companies' identities to retire (at most once a minute). */
 	#retirementCheckedAt = Number.NEGATIVE_INFINITY;
-	/** Identities of deleted companies not yet confirmed retired: the sweep never attaches them again. */
+	/** SQL's last answer: this node and the deleted companies' identities on it not yet confirmed
+	 * retired. The sweep never attaches them again. */
 	#retiring = new Set<string>();
+	#retiringOn: { nodeId: string; machineIdSha256: string } | undefined;
+	/** When each was last tried: each at most once a minute, at most eight a pass. */
+	#retirementTried = new Map<string, number>();
+	/** Last retirement problem logged, so a lasting one is logged once a minute. */
+	#retirementLogged = { text: "", at: 0 };
 
 	constructor(
 		config: LxdNativeLoginGatewayConfig,
@@ -1065,10 +1071,12 @@ export class LxdNativeLoginGateway {
 				continue;
 			}
 			scanned++;
+			let identity: string | undefined;
 			try {
 				let released = this.#released.get(name);
 				if (!released) {
 					const journal = await LxdLoginJournal.open(this.#config.stateRoot, name, this.#lxd);
+					identity = journal.binding.computeIdentityId;
 					let wasPlaced = false;
 					const releasedAt = await this.#exclusive(journal.binding.computeIdentityId, async () => {
 						const state = await journal.state();
@@ -1095,6 +1103,8 @@ export class LxdNativeLoginGateway {
 			} catch {
 				signal.throwIfAborted();
 				unconfirmed++;
+				// A sign-in machine whose state is unconfirmed may still be live.
+				if (identity) live.add(identity);
 			}
 		}
 		await this.#retireDeletedIdentities(live, signal);
@@ -1109,47 +1119,64 @@ export class LxdNativeLoginGateway {
 	 * released yet waits. Each is detached from the execution host, its volume deleted, both confirmed
 	 * gone, and only then confirmed to SQL, which lets the company's purge go on. */
 	async #retireDeletedIdentities(live: ReadonlySet<string>, signal: AbortSignal): Promise<void> {
-		if (Date.now() - this.#retirementCheckedAt < 60_000) return;
-		this.#retirementCheckedAt = Date.now();
-		let due: string[];
-		let machineIdSha256: string;
-		try {
-			machineIdSha256 = (await readRuntimeNodeHost(signal)).machineIdSha256;
-			due = parseRetirementsDue(
-				await this.#rpc(
-					"qorpera_runtime_identity_retirements_due",
-					{ p_provider_id: this.#config.adapterId, p_machine_id_sha256: machineIdSha256 },
-					signal,
-				),
-			);
-		} catch (error) {
-			signal.throwIfAborted();
-			this.#logExecutionHost(
-				`LXD native login could not ask which deleted companies' identities to retire: ${error instanceof Error ? error.message : "unknown"}`,
-			);
-			return;
-		}
-		this.#retiring = new Set(due);
-		for (const id of due) {
-			if (live.has(id)) continue;
+		if (Date.now() - this.#retirementCheckedAt >= 60_000) {
+			this.#retirementCheckedAt = Date.now();
 			try {
-				const receipt = await this.#exclusive(id, () => this.#retireIdentity(id, machineIdSha256, signal));
+				const machineIdSha256 = (await readRuntimeNodeHost(signal)).machineIdSha256;
+				const due = parseRetirementsDue(
+					await this.#rpc(
+						"qorpera_runtime_identity_retirements_due",
+						{ p_provider_id: this.#config.adapterId, p_machine_id_sha256: machineIdSha256 },
+						signal,
+					),
+				);
+				this.#retiring = new Set(due.computeIdentityIds);
+				this.#retiringOn = { nodeId: due.nodeId, machineIdSha256 };
+				for (const id of [...this.#retirementTried.keys()])
+					if (!this.#retiring.has(id)) this.#retirementTried.delete(id);
+			} catch (error) {
+				signal.throwIfAborted();
+				this.#logRetirement(
+					`LXD native login could not ask which deleted companies' identities to retire: ${error instanceof Error ? error.message : "unknown"}`,
+				);
+				return;
+			}
+		}
+		const on = this.#retiringOn;
+		if (!on) return;
+		let tried = 0;
+		for (const id of [...this.#retiring]) {
+			if (tried >= 8) break;
+			if (live.has(id) || Date.now() - (this.#retirementTried.get(id) ?? Number.NEGATIVE_INFINITY) < 60_000)
+				continue;
+			this.#retirementTried.set(id, Date.now());
+			tried++;
+			try {
+				const receipt = await this.#exclusive(id, () => this.#retireIdentity(id, on, signal));
 				this.#retiring.delete(id);
+				this.#retirementTried.delete(id);
 				console.error(
 					`LXD native login retired Compute Identity ${id} of a deleted company (volume ${receipt.volume}, device ${receipt.device})`,
 				);
 			} catch (error) {
 				signal.throwIfAborted();
-				console.error(
+				this.#logRetirement(
 					`LXD native login could not retire Compute Identity ${id} of a deleted company: ${error instanceof Error ? error.message : "unknown"}`,
 				);
 			}
 		}
 	}
 
+	#logRetirement(text: string): void {
+		const now = Date.now();
+		if (text === this.#retirementLogged.text && now - this.#retirementLogged.at < 60_000) return;
+		this.#retirementLogged = { text, at: now };
+		console.error(text);
+	}
+
 	async #retireIdentity(
 		computeIdentityId: string,
-		machineIdSha256: string,
+		on: { nodeId: string; machineIdSha256: string },
 		signal: AbortSignal,
 	): Promise<{ volume: "deleted" | "absent"; device: "detached" | "absent" | "none" }> {
 		const host = this.#executionHost;
@@ -1169,7 +1196,7 @@ export class LxdNativeLoginGateway {
 			"qorpera_confirm_runtime_identity_retirement",
 			{
 				p_provider_id: this.#config.adapterId,
-				p_machine_id_sha256: machineIdSha256,
+				p_machine_id_sha256: on.machineIdSha256,
 				p_compute_identity_id: computeIdentityId,
 				p_evidence: evidence,
 			},
@@ -1180,8 +1207,7 @@ export class LxdNativeLoginGateway {
 			Object.keys(confirmed).sort().join() !== "computeIdentityId,device,nodeId,retiredAt,schema,volume" ||
 			confirmed.schema !== "qorpera.identity-retirement/v1" ||
 			confirmed.computeIdentityId !== computeIdentityId ||
-			typeof confirmed.nodeId !== "string" ||
-			!LOGIN_UUID.test(confirmed.nodeId) ||
+			confirmed.nodeId !== on.nodeId ||
 			typeof confirmed.retiredAt !== "string" ||
 			(confirmed.volume !== volume && !(confirmed.volume === "deleted" && volume === "absent")) ||
 			(confirmed.device !== device && !(confirmed.device === "detached" && device === "absent"))

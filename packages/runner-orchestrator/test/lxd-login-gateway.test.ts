@@ -281,6 +281,7 @@ function fetchBoundary(logins: NativeLoginResponse[], statuses: Array<"pending" 
 		retirementsDueAnswer: undefined as unknown,
 		retirements: [] as Record<string, unknown>[],
 		retirementReceipts: new Map<string, Record<string, unknown>>(),
+		receiptPatch: {} as Record<string, unknown>,
 		loseRetirement: 0,
 	};
 	const fetchImplementation = vi.fn<typeof fetch>(async (input, init) => {
@@ -423,7 +424,8 @@ function fetchBoundary(logins: NativeLoginResponse[], statuses: Array<"pending" 
 				control.retirementsDueAnswer ?? {
 					schema: "qorpera.identity-retirements-due/v1",
 					nodeId: "30000000-0000-4000-8000-000000000010",
-					computeIdentityIds: control.retirementsDue,
+					// As SQL: an identity leaves the list once its retirement is recorded.
+					computeIdentityIds: control.retirementsDue.filter((id) => !control.retirementReceipts.has(String(id))),
 				},
 			);
 		if (url.endsWith("qorpera_confirm_runtime_identity_retirement")) {
@@ -439,7 +441,7 @@ function fetchBoundary(logins: NativeLoginResponse[], statuses: Array<"pending" 
 			};
 			control.retirementReceipts.set(args.p_compute_identity_id, receipt);
 			if (control.loseRetirement-- > 0) throw new Error("lost retirement reply");
-			return Response.json(receipt);
+			return Response.json({ ...receipt, ...control.receiptPatch });
 		}
 		if (url.endsWith("/healthz")) return Response.json({ ok: true });
 		if (url.endsWith("/login")) {
@@ -1805,7 +1807,7 @@ describe("LXD native login gateway and the node's shared execution host", () => 
 				errors.mockRestore();
 			}
 		});
-		it("answers a lost confirmation from the receipt on the next pass, with nothing left to remove", async () => {
+		it("leaves an identity whose confirmation reply was lost: SQL recorded it and no longer names it", async () => {
 			const { lxd, boundary, fake, gateway } = await retireSetup();
 			vi.useFakeTimers({ toFake: ["Date"] });
 			boundary.control.loseRetirement = 1;
@@ -1818,11 +1820,47 @@ describe("LXD native login gateway and the node's shared execution host", () => 
 				await gateway.reconcile(new AbortController().signal);
 				expect(boundary.control.retirements.map((call) => call.p_evidence)).toEqual([
 					evidence("deleted", "detached"),
-					evidence("absent", "absent"),
 				]);
+				expect(fake.devices[`identity-${deleted}`]).toBeUndefined();
+			} finally {
+				errors.mockRestore();
+			}
+		});
+		it("confirms nothing while the device or the volume is still there after its removal", async () => {
+			const kept = await retireSetup();
+			kept.fake.updateInstanceDevices = async () => true;
+			const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
+			try {
+				await kept.gateway.reconcile(new AbortController().signal);
+				expect(kept.lxd.volumeDeletes).toEqual([]);
+				expect(kept.boundary.control.retirements).toEqual([]);
+				const volume = await retireSetup();
+				volume.lxd.deleteStorageVolume = async () => true;
+				await volume.gateway.reconcile(new AbortController().signal);
+				expect(volume.fake.devices[`identity-${deleted}`]).toBeUndefined();
+				expect(volume.boundary.control.retirements).toEqual([]);
+				expect(
+					errors.mock.calls.flat().some((line) => String(line).includes("still has the Compute Identity volume")),
+				).toBe(true);
+			} finally {
+				errors.mockRestore();
+			}
+		});
+		it.each([
+			["another identity", { computeIdentityId: "30000000-0000-4000-8000-0000000000d5" }],
+			["another node", { nodeId: "30000000-0000-4000-8000-000000000011" }],
+			["a volume never removed", { volume: "absent" }],
+		])("does not take a receipt naming %s as its retirement", async (_label, patch) => {
+			const { boundary, gateway } = await retireSetup();
+			boundary.control.receiptPatch = patch;
+			const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
+			try {
+				await gateway.reconcile(new AbortController().signal);
+				expect(boundary.control.retirements).toHaveLength(1);
+				expect(errors.mock.calls.flat().some((line) => String(line).includes("receipt differs"))).toBe(true);
 				expect(
 					errors.mock.calls.flat().some((line) => String(line).includes(`retired Compute Identity ${deleted}`)),
-				).toBe(true);
+				).toBe(false);
 			} finally {
 				errors.mockRestore();
 			}
@@ -1847,13 +1885,16 @@ describe("LXD native login gateway and the node's shared execution host", () => 
 			expect(Object.keys(fake.devices)).toEqual(["root"]);
 		});
 		it.each([
-			["another schema", { schema: "x", nodeId: "30000000-0000-4000-8000-000000000010", computeIdentityIds: [] }],
+			[
+				"another schema",
+				{ schema: "x", nodeId: "30000000-0000-4000-8000-000000000010", computeIdentityIds: [deleted] },
+			],
 			[
 				"a malformed id",
 				{
 					schema: "qorpera.identity-retirements-due/v1",
 					nodeId: "30000000-0000-4000-8000-000000000010",
-					computeIdentityIds: ["X"],
+					computeIdentityIds: [deleted, "X"],
 				},
 			],
 			[
@@ -1861,7 +1902,7 @@ describe("LXD native login gateway and the node's shared execution host", () => 
 				{
 					schema: "qorpera.identity-retirements-due/v1",
 					nodeId: "30000000-0000-4000-8000-000000000010",
-					computeIdentityIds: [],
+					computeIdentityIds: [deleted],
 					more: 1,
 				},
 			],

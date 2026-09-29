@@ -58,7 +58,15 @@ insert into public.qorpera_runtime_node_providers(provider_kind, provider_id, no
 values ('native', 'lxd-sign-in', '30000000-0000-4000-8000-000000000190', repeat('1', 64), 2000, 4294967296),
 	('login', 'lxd-sign-in', '30000000-0000-4000-8000-000000000190', repeat('2', 64), 2000, 4294967296),
 	('native', 'lxd-run', '30000000-0000-4000-8000-000000000191', repeat('3', 64), 2000, 4294967296),
-	('native', 'lxd-other', '30000000-0000-4000-8000-000000000194', repeat('4', 64), 2000, 4294967296);
+	('native', 'lxd-other', '30000000-0000-4000-8000-000000000194', repeat('4', 64), 2000, 4294967296),
+	-- Another run provider on the sign-in node, and a coding executor there (not an LXD provider).
+	('native', 'lxd-alt', '30000000-0000-4000-8000-000000000190', repeat('6', 64), 2000, 4294967296),
+	('coding', 'lxd-coding', '30000000-0000-4000-8000-000000000190', repeat('7', 64), 2000, 4294967296);
+-- The sign-in node has a shared execution host that mounts identity volumes (as node 2).
+insert into public.qorpera_runtime_node_inventory_policies(node_id, policy, policy_sha256)
+values ('30000000-0000-4000-8000-000000000190',
+	'{"infrastructure":[{"project":"qn25b2","name":"qorpera-exec-node02","identityVolumes":{"pool":"qorpera-vm","sourcePrefix":"identity-"}}]}',
+	repeat('a', 64));
 
 -- The sign-in machine placed on the first node; a run placed on the second (it made the identity's volume
 -- there too); a run whose node demand was never reserved (it made nothing). All released.
@@ -113,7 +121,14 @@ select pg_temp.identity_confirm_refused('lxd-sign-in', repeat('9', 64), current_
 select pg_temp.identity_refused(format('select pg_temp.identity_due(%L, %L)', 'lxd-sign-in', repeat('8', 64)), '42501');
 select pg_temp.identity_refused(format('select pg_temp.identity_due(%L, %L)', 'lxd-missing', repeat('9', 64)), '42501');
 select pg_temp.identity_refused(format('select pg_temp.identity_due(%L, %L)', 'LXD', repeat('9', 64)), '22023');
+-- Only an LXD provider (run or sign-in) answers for its node.
+select pg_temp.identity_refused(format('select pg_temp.identity_due(%L, %L)', 'lxd-coding', repeat('9', 64)), '42501');
 reset role;
+-- A living company is never retirable, however long ago its machines ended.
+select pg_temp.wake_assert(not public.qorpera_company_identities_retirable(current_setting('qorpera_test.delete_neighbour')::uuid)
+	and not exists (select 1 from public.qorpera_runtime_machine_allocations
+		where profile_id = current_setting('qorpera_test.delete_neighbour')::uuid and released_at is null),
+	'A living company is not retirable');
 update public.qorpera_runtime_machine_allocations set released_at = clock_timestamp() - interval '11 minutes'
 where profile_id = '30000000-0000-4000-8000-000000000010';
 
@@ -143,6 +158,9 @@ begin
 	-- A living company's identity.
 	perform pg_temp.identity_confirm_refused('lxd-sign-in', repeat('9', 64),
 		current_setting('qorpera_test.neighbour_identity')::uuid, pg_temp.identity_evidence('absent', 'none'), '42501');
+	-- The node with an execution host cannot report that it has none.
+	perform pg_temp.identity_confirm_refused('lxd-sign-in', repeat('9', 64), v_signed_in,
+		pg_temp.identity_evidence('deleted', 'none'), '42501');
 	v_first := pg_temp.identity_confirm('lxd-sign-in', repeat('9', 64), v_signed_in,
 		pg_temp.identity_evidence('deleted', 'detached'));
 	if v_first ->> 'schema' <> 'qorpera.identity-retirement/v1' or v_first ->> 'volume' <> 'deleted'
@@ -162,6 +180,9 @@ begin
 	end if;
 	perform pg_temp.identity_confirm_refused('lxd-sign-in', repeat('9', 64), v_signed_in,
 		pg_temp.identity_evidence('deleted', 'none'), '42501');
+	-- Another provider of the same node cannot replay it.
+	perform pg_temp.identity_confirm_refused('lxd-alt', repeat('9', 64), v_signed_in,
+		pg_temp.identity_evidence('deleted', 'detached'), '42501');
 end
 $$;
 reset role;
@@ -178,7 +199,10 @@ $$;
 select pg_temp.path_claims('service_role');
 set local role service_role;
 select pg_temp.identity_confirm('lxd-run', repeat('8', 64), current_setting('qorpera_test.signed_in')::uuid,
-	pg_temp.identity_evidence('deleted', 'none'));
+	pg_temp.identity_evidence('absent', 'none'));
+-- A replay may not report more than was confirmed: a volume found absent was not deleted.
+select pg_temp.identity_confirm_refused('lxd-run', repeat('8', 64), current_setting('qorpera_test.signed_in')::uuid,
+	pg_temp.identity_evidence('deleted', 'none'), '42501');
 reset role;
 do $$
 declare v_result jsonb := pg_temp.identity_finish();
@@ -219,3 +243,4 @@ select pg_temp.identity_refused(format('select public.qorpera_confirm_runtime_id
 	'lxd-sign-in', repeat('9', 64), current_setting('qorpera_test.signed_in'), pg_temp.identity_evidence('absent', 'none')),
 	'42501');
 reset role;
+rollback;
