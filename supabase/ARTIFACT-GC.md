@@ -8,10 +8,11 @@ Artifact cleanup is a recoverable, service-owned workflow. Desktop clients can c
 - Creating a plan quarantines the artifact and snapshots only objects that are exclusive at that point. The plan cannot run for 24 hours, so it can be reviewed and cancelled before deletion starts.
 - The worker rechecks the profile safety proof when it claims a plan. Claim decisions and root, retention, index, and substrate writes serialize on the same profile row, closing the READ COMMITTED write-skew window. While a plan is deleting, new profile object roots and graph completion are fenced.
 - Before each object batch, objects referenced by another completed root are changed to `retained` and are never sent to Storage removal.
-- Immediately before every Storage batch, the worker revalidates and renews the exact plan lease. It then commits a service-only deletion authorization for the exact object, size, backend, and lease before asking the backend to remove bytes. The catalog is finalized only after backend success. Outstanding authorizations fence cancellation and lease release and are reconciled before any new cleanup claim, so ambiguous or partial failures retry idempotently without a post-cancel deletion window.
+- Immediately before every Storage batch, the worker revalidates and renews the exact plan lease. It then commits a service-only deletion authorization for the exact object, size, backend, and lease before asking the backend to remove bytes. The catalog is finalized only after backend success. Outstanding authorizations fence cancellation and lease release and are reconciled before any new profile-object cleanup claim, so ambiguous or partial failures retry idempotently without a post-cancel deletion window. (The deleted-company Storage phase below runs first; it has its own ledger and buckets.)
 - Completion is refused while a pending plan entry or an acknowledged Storage row still exists. Audit receipts contain counts and state transitions, not object paths.
 - Active deletion cannot be cancelled. If the worker disappears, an owner or admin can cancel only after the lease plus a one-minute stale-request grace has expired, which lifts the profile fence without accepting a late worker acknowledgement.
 - Deleting a profile leaves its immutable object-catalog rows as a durable cleanup queue. Independent deleted-profile leases allow the service worker to reclaim those bytes without restoring the deleted company or weakening the gateway's exact-lease check.
+- A deleted company's credential capsules and identity recovery backups have no catalog row. The company deletion finisher records them in `qorpera_company_storage_deletions` right before the purge (company delete D5a). The worker's first phase claims up to 100 entries (entries that keep failing last), removes a capsule object or empties the company's recovery prefix, and completes each entry; a failed entry is offered again. A name under the prefix that is not a recovery object stops that prefix before anything more is removed, and the entry keeps failing until an operator looks. The table has no API grants; only the finisher's capture and the worker's two service-role functions change it.
 
 ## Deployment
 
@@ -77,3 +78,22 @@ order by status;
 NAS objects are removed only through the trusted object gateway. Qorpera
 Computers use the lease-scoped runner broker and never receive NAS filesystem
 authority, the gateway control token, or database service credentials.
+
+Catalog objects of companies deleted through the company deletion finisher (indexed per company):
+
+```sql
+select deletion.profile_id, deletion.purged_at,
+	(select count(*) from public.qorpera_profile_objects as object where object.profile_id = deletion.profile_id) as objects
+from public.qorpera_company_deletions as deletion
+where deletion.purged_at is not null
+order by deletion.purged_at;
+```
+
+A deleted company's Storage entries that are still open:
+
+```sql
+select bucket, count(*) filter (where last_error is null) as waiting, count(*) filter (where last_error is not null) as failing
+from public.qorpera_company_storage_deletions
+where removed_at is null
+group by bucket;
+```
