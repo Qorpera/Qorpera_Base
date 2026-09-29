@@ -351,24 +351,24 @@ begin
 	r := pg_temp.commit(v, 'auth-private-other', jsonb_build_array(jsonb_build_object('op','write','path','shared/q.txt','file',a)));
 	perform pg_temp.expect(r, 1, 'denied', 'denied');
 
-	-- rules/.
+	-- rules/. Ordinary files there (a rule file, rules/*.md, needs its parse since F2-1): the authority is the same.
 	r := pg_temp.commit(pg_temp.member(1), 'rules-owner-1', jsonb_build_array(jsonb_build_object('op','mkdir','path','rules'),
-		jsonb_build_object('op','write','path','rules/tone.md','file',a)));
+		jsonb_build_object('op','write','path','rules/tone.txt','file',a)));
 	perform pg_temp.expect(r, 1, 'saved'); perform pg_temp.expect(r, 2, 'saved');
-	if (pg_temp.read('rules/tone.md', pg_temp.member(3)) ->> 'found')::boolean is not true then raise exception 'A viewer reads rules/'; end if;
+	if (pg_temp.read('rules/tone.txt', pg_temp.member(3)) ->> 'found')::boolean is not true then raise exception 'A viewer reads rules/'; end if;
 	perform pg_temp.expect(pg_temp.commit(pg_temp.member(5), 'rules-admin-1', jsonb_build_array(jsonb_build_object('op','write',
-		'path','rules/admin.md','file',a))), 1, 'saved');
-	r := pg_temp.commit(pg_temp.member(2), 'rules-contrib-1', jsonb_build_array(jsonb_build_object('op','write','path','rules/mine.md','file',a),
+		'path','rules/admin.txt','file',a))), 1, 'saved');
+	r := pg_temp.commit(pg_temp.member(2), 'rules-contrib-1', jsonb_build_array(jsonb_build_object('op','write','path','rules/mine.txt','file',a),
 		jsonb_build_object('op','move','from','shared/p.txt','to','rules/p.txt',
 			'expectedVersion',pg_temp.read('shared/p.txt') -> 'entry' ->> 'version')));
 	perform pg_temp.expect(r, 1, 'denied', 'denied'); perform pg_temp.expect(r, 2, 'denied', 'denied');
 	v := pg_temp.run('human', c_member);
-	r := pg_temp.commit(v, 'rules-agent-1', jsonb_build_array(jsonb_build_object('op','write','path','rules/agent.md','file',a)));
+	r := pg_temp.commit(v, 'rules-agent-1', jsonb_build_array(jsonb_build_object('op','write','path','rules/agent.txt','file',a)));
 	perform pg_temp.expect(r, 1, 'denied', 'denied');
-	if (pg_temp.read('rules/tone.md', v) ->> 'found')::boolean is not true then raise exception 'An agent reads rules/'; end if;
+	if (pg_temp.read('rules/tone.txt', v) ->> 'found')::boolean is not true then raise exception 'An agent reads rules/'; end if;
 	perform pg_temp.fx('update public.qorpera_company_path_grants set revoked_at = clock_timestamp()
 		where principal_kind = ''staff_agent'' and principal_id = ''63200000-0000-4000-8000-0000000000a1''');
-	if (pg_temp.read('rules/tone.md', v) ->> 'found')::boolean is not true or (pg_temp.read('shared/p.txt', v) ->> 'found')::boolean then
+	if (pg_temp.read('rules/tone.txt', v) ->> 'found')::boolean is not true or (pg_temp.read('shared/p.txt', v) ->> 'found')::boolean then
 		raise exception 'Without its root grant an agent still reads rules/ and nothing shared'; end if;
 	perform pg_temp.fx('update public.qorpera_company_path_grants set revoked_at = null
 		where principal_kind = ''staff_agent'' and principal_id = ''63200000-0000-4000-8000-0000000000a1''');
@@ -544,8 +544,10 @@ end $$;
 
 -- The hook's targets at the commit's own ranks go into the commit's passes, never dropped: a member row at rank 1 is
 -- locked with the commit's own (633 H shows the commit waiting for it); a table the commit does not own at its
--- ranks, and a malformed target, are defects (XX000). The stub comes back at the end of the block.
+-- ranks, and a malformed target, are defects (XX000). The hook's current definition (F2's since 20260928249020) comes
+-- back at the end of the block.
 do $$
+declare v_saved text := pg_get_functiondef('public.qorpera_folder_structured_targets(uuid,jsonb,jsonb)'::regprocedure);
 begin
 	create or replace function public.qorpera_folder_structured_targets(p_environment_id uuid, p_actor jsonb, p_units jsonb)
 	returns table(rank smallint, tbl text, key text, mode text) language sql stable set search_path = '' as $f$
@@ -565,10 +567,7 @@ begin
 		'key', '63200000-0000-4000-8000-000000000010:63200000-0000-4000-8000-000000000003', 'mode', 'exclusive'))::text, true);
 	perform pg_temp.raises(format('select pg_temp.commit(%L, %L, %L)', pg_temp.member(2), 'targets-bad-3', '[{"op":"mkdir","path":"targets-bad"}]'), 'XX000');
 	-- (A hook's targets carry no 'required' flag in F2's signature; the hook checks the rows it relies on in decide.)
-	create or replace function public.qorpera_folder_structured_targets(p_environment_id uuid, p_actor jsonb, p_units jsonb)
-	returns table(rank smallint, tbl text, key text, mode text) language sql stable set search_path = '' as $f$
-		select null::smallint, null::text, null::text, null::text where false
-	$f$;
+	execute v_saved;
 end $$;
 
 -- Folder invariants, and no claim outlives its transaction.

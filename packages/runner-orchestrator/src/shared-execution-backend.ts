@@ -660,11 +660,14 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 				slot,
 				hostPort: this.#config.portBase + slot * 2,
 				inboxPort: this.#config.portBase + slot * 2 + 1,
+				// The machine key names the attempt: the key of a released allocation stays taken, so a later
+				// attempt of the same run on the same slot needs its own.
 				instanceSha256: sha256(
 					JSON.stringify(
 						canonical({
 							host: this.#config.hostId,
 							adapter: this.adapterId,
+							acquisition: acquisitionId,
 							slot,
 							work: digest,
 							runtime: sha256(JSON.stringify(canonical(this.#config.nativeCompanyRuntime))),

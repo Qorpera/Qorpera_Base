@@ -63,7 +63,7 @@ export function createConversationStarter(options: {
 					// Check account availability before creating a conversation.
 				}
 			}
-			if (!sponsor) throw new Error(t("Connect a model account in Settings → Connections to send messages."));
+			if (!sponsor) throw new Error(t("Connect a model account in Settings → My connections to send messages."));
 			let sessionId: string;
 			if (ids.length === 1) {
 				sessionId = await company.openStaffConversation(company.staffById(ids[0]!)!);

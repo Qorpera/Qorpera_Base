@@ -398,7 +398,7 @@ export class SessionExecutionView {
 								? t(
 										"Your model accounts have reached their usage limits. Sending resumes when an account resets.",
 									)
-								: t("Connect a model account in Settings → Connections to send messages."),
+								: t("Connect a model account in Settings → My connections to send messages."),
 						)
 					: null,
 		);

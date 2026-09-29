@@ -253,7 +253,7 @@ begin
 	r := pg_temp.commit(pg_temp.member(2), 'unit-new-folder', jsonb_build_array(jsonb_build_object('op','mkdir','path','agents'),
 		jsonb_build_object('op','new_folder','path','agents/mark','contents',jsonb_build_array(
 			jsonb_build_object('path','memory/profile.md','kind','file','file',a),
-			jsonb_build_object('path','agent.md','kind','file','file',a),
+			jsonb_build_object('path','notes.md','kind','file','file',a),
 			jsonb_build_object('path','memory','kind','folder')))));
 	perform pg_temp.expect(r, 1, 'saved'); perform pg_temp.expect(r, 2, 'saved');
 	if (pg_temp.read('agents/mark/memory/profile.md') ->> 'found')::boolean is not true then
