@@ -109,6 +109,9 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 			"qorpera_folder_open_upload",
 			"qorpera_folder_seal_upload",
 			"qorpera_folder_renew_upload",
+			// Event wakes (W2).
+			"qorpera_list_agent_event_hooks",
+			"qorpera_read_agent_event",
 		];
 		if (!permitted.includes(method)) throw new Error("Unknown Company File control operation");
 		const body = JSON.stringify(argumentsValue);
