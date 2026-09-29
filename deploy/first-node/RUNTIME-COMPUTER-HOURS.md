@@ -466,14 +466,32 @@ Coordinator (nothing secret):
 
 ## Zero (build step 6; built switched off)
 
-- The check is `qorpera_company_at_zero(p_profile_id, at)` (migration `20260928249200`). It is true
-  only when the rule is switched on (`qorpera_computer_hour_billing.zero_rule_since`, null until the
+- The check is `qorpera_company_at_zero(p_profile_id, at)` (migration `20260928249200`; since
+  `20260929300000` it also needs the company recorded in the zero state, see "Bounded cost"). The
+  full check is true only when the rule is switched on (`qorpera_computer_hour_billing.zero_rule_since`, null until the
   live switch), payments are live (dry-run balances never hold work), and
   `qorpera_company_computer_hours_left(p_profile_id)` (step 3) is zero or less. That value is null
   for a complimentary company, which always passes. There is a renewal grace: a founder's plan
   period that ended in the last 30 minutes still counts as paying, while no next period is recorded
   and its subscription is `active` or `past_due`. Stripe's renewal invoice can trail the period's
   end by minutes, and the subscription's own dates can move first.
+- Bounded cost (migration `20260929300000`): `qorpera_company_at_zero` first looks the company up in
+  the zero state the sweep keeps (6c part 1). A company not recorded there is not at zero, at the
+  cost of one key lookup; the full check (`qorpera_company_at_zero_now`, as above) runs only for a
+  recorded company, so leaving zero counts at once and running out counts from the next sweep, up
+  to a minute later (the meter charges use once a minute anyway). Hours left for many companies
+  come from one query (`qorpera_computer_hour_left_many`: the same terms as the one-company
+  `qorpera_company_computer_hours_left`, which stays as it is, being quicker for one company; test
+  726 keeps the two equal, and a change to either changes both). The sweep runs the full check only
+  for a company with no hours left (a newly recorded one, or a recorded one near a founder's period
+  end); the routine listing reads the zero state only. Locally, under heavy load, with a third of
+  the companies paying by credits, a third by a founder's plan and a third at zero, hours left for
+  all of them took 0.06 s for 3,000 companies and 0.14 s for 6,000, and a quiet sweep 0.11 s and
+  0.22 s (it grows in a straight line, each term an index lookup for its company); the old checks
+  took about 2 s for 3,000. One company's hours left cost the same as before.
+- Members read the wait with `qorpera_company_waiting_for_hours(p_profile_id)` (migration
+  `20260929280000`), shown above the composer in agent threads and group chats, and with
+  `waitingForHours` in the hours read on Plan & usage.
 - Build step 6a (migration `20260928249200`, runs only):
   - wakes stay queued with `blocked_reason = 'Waiting for computer hours'`;
   - the routine listing (`qorpera_list_routine_schedule_heads`) leaves the company's due routines
@@ -532,20 +550,19 @@ Coordinator (nothing secret):
 
   Machines not starting or waking, and stopping after the hour (6b), the renewal-gap handling for
   machines, and the web (6d) follow. Before the live switch:
-  - the listing checks zero per routine (for the page and for the next-page check), and with the
-    rule on each check sums the company's hours (about 0.4 ms locally): check each company once,
-    and measure with production-sized data;
   - held wakes still take the wake step's slots and locks, as a paused company's do;
-  - the sweep checks, once a minute and under the meter lock (which Stripe webhooks also wait
-    on), every company whose free hours are used up, and a company that used its free hours and
-    never paid stays on that list: work out hours left for all of them in one query, or re-check
-    only companies whose inputs changed, and measure with production-sized data;
+  - measure the sweep (once a minute, under the meter lock, which Stripe webhooks also wait on)
+    and the orchestrator reconcile with production-sized data;
   - a routine created or retimed at zero gets its first slot only once hours arrive, so 6d shows
     "Waiting for computer hours" on it;
   - at the switch, and after it, watch the sweep: `select swept_at, failed_at, last_error from
     public.qorpera_computer_hour_zero_sweep_status`. With the rule on it is the only sender of
-    "out of hours", and the finishing window acts on its records, so a sweep that keeps failing
-    means neither.
+    "out of hours", the finishing window acts on its records, and (since `20260929300000`) the
+    zero check needs its record: a sweep that keeps failing, or a stopped meter job, means no
+    email, no finishing window and no held work, so a company that runs out keeps starting work
+    and owing;
+  - a company recorded at zero with waiting wakes still pays the full check (about 0.4 ms) each
+    time the wake step visits it.
 - It is checked before a run is created (not at claim or placement: a run waiting there is
   invisible to members) and at each machine kind's own start or wake step. A run created before
   the company ran out is running work. The hook list is agreed with the nodes (S3), machines,
@@ -585,6 +602,124 @@ Coordinator (nothing secret):
 - It ships switched off, in its own release, with a 30-minute database watch after the cut. It is
   switched on together with live payments and hour notices.
 
+## Going live (build step 7)
+
+One switch turns on real payments, the hour emails and the zero rule together. Nothing before it
+charges a card for real hours or holds work back. Secrets never pass through a session: Jonas
+creates and stores every key himself; the coordinator writes only what is not secret.
+
+Before the switch (all of these hold):
+
+- Every part of the zero rule is live, switched off: 6a (#503), the zero state and "out of hours"
+  (#508), the finishing window for runs (#514), members seeing the wait (#515, #516), the bounded
+  checks (#520), and 6b (machines not starting, waking or staying up at zero; not built yet). 6b's
+  node refusal must be known to the node admission, coding executor, fleet and provider parsers on
+  both nodes (their binaries installed) before it can be returned.
+- Members see their hours left, by source, on Plan & usage from the switch on
+  (contract items 5 and 12; "Plan & usage (web)" below). Today the company card says "Measured,
+  not charged yet" and no member read returns hours left: that read and its web card are built
+  and live first.
+- The meter job runs every minute (`qorpera-computer-hour-meter`), and
+  `select swept_at, failed_at, last_error from public.qorpera_computer_hour_zero_sweep_status`
+  shows a recent `swept_at` and no fresh failure.
+- The notice worker is scheduled ("Turning the notices on").
+- Test mode was accepted end to end with an enrolled tester (contract section 21, item 31): a plan,
+  a pack, an upgrade, a refund, a failed payment, Stripe's receipts and invoices, and the Plan &
+  usage page. Qorpera's own hour emails come only from live charges, so they are accepted after
+  the switch.
+- The reviews' "Before the live switch" list under "Zero" is settled, and the orchestrator
+  reconcile and the sweep were measured on production-sized data.
+
+In advance (nothing secret):
+
+- Jonas, in Stripe's live mode: repeat test-mode steps 2 to 6 (tax, the five prices, the customer
+  portal, failed payments, the webhook endpoint with the same address and events), and send the
+  five live `price_...` ids to the coordinator.
+- The coordinator writes them into `qorpera_computer_hour_catalog.stripe_price_live`, by
+  `item_key` (harmless before the switch: live checkout stays closed until `live_since`).
+
+At the agreed minute, in this order:
+
+1. Jonas sets both function secrets in one command, from a file so the live key stays out of the
+   shell's history: a file with the lines `QORPERA_STRIPE_SECRET_KEY=sk_live_...` and
+   `QORPERA_STRIPE_WEBHOOK_SECRET=whsec_...` (the live endpoint's secret), then
+   `supabase secrets set --env-file <file>`, then deleting the file. He also replaces
+   `QORPERA_STRIPE_PORTAL_CONFIGURATION` with the live portal configuration's id, or unsets it, if
+   it was set in test mode. One command, because a live webhook secret with the test key drops live
+   events for good. From here until step 2 nobody can
+   buy (checkout answers "unavailable"), and test purchases stop working, as intended.
+2. The coordinator switches payments and the zero rule on together, with one time for both:
+
+   ```sql
+   update public.qorpera_computer_hour_billing
+   set live_since = now.at, zero_rule_since = now.at
+   from (select clock_timestamp() as at) now;
+   ```
+
+   Never the other way round: with the test key still in place and `live_since` set, the zero rule
+   would hold work while nothing can be bought.
+
+   From then, use is charged live (every company starts with its five free hours; dry-run
+   balances stay as they were and never count). Plans can be bought by every signed-in account,
+   packs by a company's founders. The hour emails are queued, and a company that runs out is
+   recorded by the next sweep.
+3. Within the first 30 minutes, a real purchase proves the live webhook: a pack for a company
+   other than step 5's test company (or refunded before step 5, which also proves a live refund),
+   refunded afterwards in Stripe: Stripe's dashboard shows the delivery answered 2xx, and
+   `select type, outcome from public.qorpera_computer_hour_stripe_events where livemode order by
+   received_at desc limit 5` shows it applied. A wrong webhook secret is answered 400 before
+   anything is recorded, so only the dashboard shows it.
+4. Watch for 30 minutes, then daily for the first week:
+   - `select swept_at, failed_at, last_error from public.qorpera_computer_hour_zero_sweep_status`;
+   - `select count(*) from public.qorpera_computer_hour_zero_state` (companies at zero);
+   - `select kind, status, count(*) from public.qorpera_computer_hour_notices group by 1, 2`;
+   - webhook events left for review: `select type, count(*) from
+     public.qorpera_computer_hour_stripe_events where outcome = 'needs_review' and livemode group by 1`;
+   - the meter's lag: `select clock_timestamp() - metered_until from public.qorpera_computer_hour_meter`
+     (about a minute).
+5. Acceptance on a test company with no founder on an internal account (one such founder makes
+   the company complimentary): after its first live use has created its free hours, withdraw them
+   (`update public.qorpera_computer_hour_sources set withdrawn_at = clock_timestamp() where kind =
+   'free' and profile_id = '<test company>' and not dry_run`). Within a minute it is recorded at
+   zero: a new message waits with the notice above the composer, Plan & usage says it is out of
+   hours, its founders get "out of hours" ten minutes later, and a machine does not start or wake.
+   An hour on, work that was still running ends with "out of computer hours" (start work that runs
+   longer than an hour to see it) and its awake machines stop. Buying a pack (a real charge,
+   refunded afterwards) releases the waiting work by itself.
+6. Afterwards, Jonas switches off the sandbox webhook endpoint in Stripe, then cancels the testers'
+   test subscriptions.
+
+Rollback:
+
+- Stop holding work: `update public.qorpera_computer_hour_billing set zero_rule_since = null`.
+  Held work is released at once (routines with the next sweep), and the next sweep empties the
+  zero state. Companies at zero run again and owe what they use; "out of hours" is again sent by
+  the usage trigger, once per time of owing.
+- Stop the hour emails: `select cron.unschedule('qorpera-computer-hour-notices')`.
+- Stop selling is not a clean undo once real money has moved, so it is for emergencies only.
+  While `live_since` is null every Stripe event is recorded as dry run, even with the live key:
+  a refund or dispute of a live purchase goes to review and takes no hours back, a live renewal
+  whose payment finally fails is not withdrawn, and a checkout page opened before the stop can
+  still be paid (a pack for an hour, a plan for a day), for dry-run hours. So, in this order:
+  1. The coordinator runs `update public.qorpera_computer_hour_billing set live_since = null,
+     zero_rule_since = null`. New checkouts close at once and balances go back to the dry run;
+     live purchases already made stay in the ledger and count again when live mode is next on.
+  2. Jonas expires the checkout sessions still open (the coordinator lists them:
+     `select stripe_session_id from public.qorpera_computer_hour_checkouts where livemode and
+     completed_at is null and created_at > clock_timestamp() - interval '1 day'`; only packs set
+     `completed_at`, so paid plan sessions show up too and are skipped in Stripe), pauses the
+     live subscriptions, and keeps the live keys in place (so Stripe's events are still verified).
+  3. When live mode is on again, the coordinator resends from Stripe's dashboard the live events
+     left for review while it was off (refunds and disputes), so they are applied; an event
+     already handled is not run again. A live plan whose final payment failed while it was off
+     was recorded without taking its hours back (its event is a live one from that window with
+     the detail "renewal withdrawn: 0"): the coordinator withdraws that period by hand
+     (`update public.qorpera_computer_hour_sources set withdrawn_at = clock_timestamp() where
+     reference = '<sub_…>:<period start in Unix seconds>' and not dry_run`). A pack or plan paid
+     while it was off is only dry-run hours (pausing, in step 2, prevents renewals); Jonas refunds
+     any. Stripe keeps events for a limited time (about 30 days), so a long stop may leave some
+     that can no longer be resent: those are then handled by hand from Stripe's dashboard.
+
 ## Plan & usage (web)
 
 - The company card, seen by every member: hours used this month, by kind; from the live switch also
@@ -613,7 +748,7 @@ exact-head review, and a hand-off to the coordinator (message, PR comment, regis
 5. Email, switched off. In-app notices that mirror the emails follow in a web PR.
 6. Zero: the check, the waiting state, the finishing window, switched off. Its own release.
 7. Live: Jonas sets the live Stripe keys; the coordinator switches payments, hour notices and the
-   zero rule on together.
+   zero rule on together ("Going live").
 
 ## Not repeated from #326
 
