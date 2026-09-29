@@ -48,8 +48,10 @@ begin
 	insert into public.qorpera_company_storage_deletions (bucket, object_path, profile_id)
 	select 'qorpera-native-compute-capsules', substring(capsule.encrypted_capsule_reference from 16) || '.capsule', p_profile_id
 	from public.qorpera_native_credential_capsules as capsule
+	-- Only a reference that names the capsule's own id (as its reader requires): a row can never
+	-- point the worker at another company's capsule.
 	where capsule.profile_id = p_profile_id
-		and capsule.encrypted_capsule_reference ~ '^native-capsule/[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+		and capsule.encrypted_capsule_reference = 'native-capsule/' || capsule.id::text
 	union
 	select 'qorpera-identity-recovery', p_profile_id::text || '/', p_profile_id
 	where exists (select 1 from public.qorpera_identity_recovery_authorities where profile_id = p_profile_id)
@@ -83,7 +85,8 @@ begin
 		where (deletion.bucket, deletion.object_path) in (
 			select bucket, object_path from public.qorpera_company_storage_deletions
 			where removed_at is null and (lease_until is null or lease_until <= clock_timestamp())
-			order by requested_at, bucket, object_path
+			-- Entries that keep failing do not hold up newer ones.
+			order by attempts, requested_at, bucket, object_path
 			limit p_limit
 			for update skip locked)
 		returning deletion.bucket, deletion.object_path)
@@ -111,13 +114,14 @@ begin
 	if p_error is not null and char_length(p_error) not between 1 and 500 then
 		raise exception 'Invalid storage cleanup error' using errcode = '22023';
 	end if;
+	-- A removed entry stays removed; a late error does not touch it.
 	update public.qorpera_company_storage_deletions
 	set removed_at = case when p_error is null then coalesce(removed_at, clock_timestamp()) else removed_at end,
-		last_error = case when p_error is null then null else p_error end,
+		last_error = case when removed_at is not null then last_error when p_error is null then null else p_error end,
 		lease_until = null
 	where bucket = p_bucket and object_path = p_path;
 	if not found then
-		raise exception 'Unknown storage cleanup entry' using errcode = '42501';
+		raise exception 'Unknown storage cleanup entry' using errcode = 'P0002';
 	end if;
 	return true;
 end

@@ -290,8 +290,9 @@ export function parseCompanyStorageDeletions(value: unknown): CompanyStorageDele
 }
 
 /** Removes each entry and completes it; a failure is recorded on its entry and it is offered again.
- * A recovery prefix is emptied in rounds of 100 and completed only once it lists nothing; anything
- * under it but a recovery object is left and reported. */
+ * A recovery prefix is emptied in rounds of 100 and completed only once it lists nothing. A listed name
+ * that is not a recovery object (a folder is listed with a trailing slash) stops that prefix before
+ * anything more is removed, and the entry keeps failing until an operator looks. */
 export async function runCompanyStorageDeletions(
 	entries: readonly CompanyStorageDeletion[],
 	store: CompanyStorageDeletionStore,
@@ -318,7 +319,8 @@ export async function runCompanyStorageDeletions(
 		} catch (error) {
 			result.failed += 1;
 			try {
-				await store.complete(entry, cleanupError(error).slice(0, 500));
+				// At most 500 characters (code points, as SQL counts them), never a NUL.
+				await store.complete(entry, Array.from(cleanupError(error).replaceAll("\u0000", "")).slice(0, 500).join(""));
 			} catch {
 				// The lease expires server-side; a later invocation offers the entry again.
 			}

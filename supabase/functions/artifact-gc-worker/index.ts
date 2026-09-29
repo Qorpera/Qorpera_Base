@@ -71,6 +71,42 @@ Deno.serve(async (request) => {
 	const client = createClient(config.supabaseUrl, config.secretKey, {
 		auth: { autoRefreshToken: false, persistSession: false },
 	});
+	// A deleted company's capsules and recovery backups, recorded before its purge (company delete D5a).
+	// First, so a failure in another phase never holds it up. An invalid claim skips it; its lease
+	// expires and the entries are offered again.
+	const { data: storageClaim, error: storageClaimError } = await client.rpc(
+		"qorpera_claim_company_storage_deletions",
+		{ p_limit: 100 },
+	);
+	let companyStorage = { claimed: 0, completed: 0, failed: 0 };
+	if (!storageClaimError) {
+		let entries;
+		try {
+			entries = parseCompanyStorageDeletions(storageClaim);
+		} catch {
+			entries = undefined;
+		}
+		if (entries) companyStorage = await runCompanyStorageDeletions(entries, {
+			list: async (bucket, prefix) => {
+				const { data, error } = await client.storage.from(bucket).list(prefix.slice(0, -1), { limit: 100 });
+				if (error || !Array.isArray(data)) throw new Error("Storage listing failed");
+				// A folder (no id) is listed with a trailing slash, so it is never taken for an object.
+				return data.map((item) => (item.id === null ? `${item.name}/` : item.name));
+			},
+			remove: async (bucket, paths) => {
+				const { error } = await client.storage.from(bucket).remove(paths);
+				if (error) throw new Error("Storage object removal failed");
+			},
+			complete: async (entry, message) => {
+				const { error } = await client.rpc("qorpera_complete_company_storage_deletion", {
+					p_bucket: entry.bucket,
+					p_path: entry.path,
+					p_error: message ?? null,
+				});
+				if (error) throw new Error("Company storage cleanup completion failed");
+			},
+		});
+	}
 	const gatewayUrl = Deno.env.get("QORPERA_OBJECT_GATEWAY_URL")?.replace(/\/$/, "");
 	const gatewayControlToken = Deno.env.get("QORPERA_OBJECT_GATEWAY_CONTROL_TOKEN")?.trim();
 	const finalizeDeletion = async (input: {
@@ -319,39 +355,6 @@ Deno.serve(async (request) => {
 			storage,
 			deletedProfileStore,
 		);
-	}
-	// A deleted company's capsules and recovery backups, recorded before its purge (company delete D5a).
-	const { data: storageClaim, error: storageClaimError } = await client.rpc(
-		"qorpera_claim_company_storage_deletions",
-		{ p_limit: 100 },
-	);
-	let companyStorage = { claimed: 0, completed: 0, failed: 0 };
-	if (!storageClaimError) {
-		let entries;
-		try {
-			entries = parseCompanyStorageDeletions(storageClaim);
-		} catch {
-			return jsonResponse({ error: "Company storage cleanup claim was invalid" }, 503);
-		}
-		companyStorage = await runCompanyStorageDeletions(entries, {
-			list: async (bucket, prefix) => {
-				const { data, error } = await client.storage.from(bucket).list(prefix.slice(0, -1), { limit: 100 });
-				if (error || !Array.isArray(data)) throw new Error("Storage listing failed");
-				return data.map((item) => item.name);
-			},
-			remove: async (bucket, paths) => {
-				const { error } = await client.storage.from(bucket).remove(paths);
-				if (error) throw new Error("Storage object removal failed");
-			},
-			complete: async (entry, message) => {
-				const { error } = await client.rpc("qorpera_complete_company_storage_deletion", {
-					p_bucket: entry.bucket,
-					p_path: entry.path,
-					p_error: message ?? null,
-				});
-				if (error) throw new Error("Company storage cleanup completion failed");
-			},
-		});
 	}
 	return jsonResponse({ ...artifactResult, companyObjects, deletedProfileObjects, companyStorage });
 });

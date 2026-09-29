@@ -386,6 +386,9 @@ describe("a deleted company's Storage objects (company delete D5a)", () => {
 			[{ bucket: "qorpera-identity-recovery", path: `${company}` }],
 			[{ bucket: "qorpera-identity-recovery", path: `${company}/../` }],
 			[{ bucket: "qorpera-native-compute-capsules", path: `${company}/` }],
+			[{ bucket: "qorpera-identity-recovery", path: capsule.path }],
+			[{ bucket: "qorpera-native-compute-capsules", path: "30000000-0000-4000-8000-0000000001a1.capsule/x" }],
+			[{ bucket: "qorpera-native-compute-capsules", path: "30000000-0000-4000-8000-0000000001A1.capsule" }],
 			[{ ...capsule, extra: 1 }],
 			{ ...capsule },
 			Array.from({ length: 101 }, () => capsule),
@@ -427,5 +430,28 @@ describe("a deleted company's Storage objects (company delete D5a)", () => {
 			{ path: recovery.path, error: "The recovery prefix holds an unexpected object" },
 		]);
 		assert.equal(fake.objects["qorpera-identity-recovery"]?.length, 2);
+	});
+	it("stops a prefix that does not empty after ten rounds, and records a short error without NUL", async () => {
+		const stuck = fakeStorage({ "qorpera-identity-recovery": [`${company}/${"b".repeat(64)}`] });
+		let removes = 0;
+		const store: CompanyStorageDeletionStore = {
+			...stuck.store,
+			remove: async () => {
+				removes += 1;
+			},
+		};
+		assert.deepEqual(await runCompanyStorageDeletions([recovery], store), { claimed: 1, completed: 0, failed: 1 });
+		assert.equal(removes, 10);
+		assert.deepEqual(stuck.completed, [{ path: recovery.path, error: "Recovery objects remain" }]);
+		const noisy = fakeStorage({});
+		await runCompanyStorageDeletions([capsule], {
+			...noisy.store,
+			remove: async () => {
+				throw new Error(`\u0000${"é".repeat(600)}`);
+			},
+		});
+		const recorded = noisy.completed[0]?.error ?? "";
+		assert.equal(Array.from(recorded).length, 500);
+		assert.equal(recorded.includes("\u0000"), false);
 	});
 });
