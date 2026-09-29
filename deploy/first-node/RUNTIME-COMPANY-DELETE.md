@@ -79,8 +79,11 @@ records what it waits for.
   RUNTIME-OFFICE-RETENTION.md). After a confirmed power-off, also one from before a node reboot, the
   lifecycle asks SQL; until a delete is pinned, at most once a minute per process. For a deleting
   company it pins the delete command id in `office-retirement-request.json`, and from then on runs only
-  the retirement, before any other call (the fleet unit goes straight to it). It writes
-  `office-retired.json` from SQL's receipt; with that marker the provider, the fleet unit on that host
+  the retirement, before any other call (the fleet unit goes straight to it). Once the VM is gone and
+  before SQL hears, it empties the office's workbench (D5b): everything under the dedicated NAS
+  workbench mount, each entry checked to be the workbench account's and on that mount; the mount root
+  stays. A large workbench takes several passes (`state: pending`); an entry of another account or file
+  system holds the office for an operator. It writes `office-retired.json` from SQL's receipt; with that marker the provider, the fleet unit on that host
   and the root host guards make no call, and the provider service ends. It needs a new office provider
   build, which the coordinator rolls at the cut (lane below). Not covered, and held for an operator: offices whose VM was created but
   never activated, offices mid-reset, an office whose resume (a wake before the deletion) was under
@@ -109,11 +112,13 @@ records what it waits for.
   4. Check: deleting companies with a Company Computer (4168e335 and b116763d on 2026-09-28) show
      `phase: retirement`, then `state: retired`; `qorpera_runtime_office_retirements.retired_at` is set;
      LXD lists no instance for the office; the node's inventory stays ready (no unmanaged instance);
-     `qorpera_company_deletions.holdings` drops the machine and the finisher purges the company.
+     `qorpera_company_deletions.holdings` drops the machine and the finisher purges the company. The
+     office's workbench mount is empty. An office retired by an older D3b build kept its workbench: empty
+     it as the workbench account (its policy's `workbench.uid`), keeping the mount root.
   5. A retired office's unit exits 0 and stays stopped. Disable it, and disable this office's fleet
      units on the other candidate hosts too: they have no marker and would call SQL for a purged office
-     at their next start. The protected configuration and journal are left for the operator runbook. The
-     workbench NAS directory stays (D5).
+     at their next start. The protected configuration and journal, the emptied workbench mount
+     and its NAS export are left for the operator runbook.
   6. Rollback: put the `.retired-<sha12>` file back and restart. Not for an office that already has
      `office-retirement-request.json` in its journal: an older build would keep asking for the deleted
      VM. Leave that office on the new build.

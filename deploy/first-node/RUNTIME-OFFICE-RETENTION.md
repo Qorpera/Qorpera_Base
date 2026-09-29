@@ -145,7 +145,17 @@ end with that stop, so the delete follows `[create, start, …, stop]` under the
 VM lineage grammar. A durable nonce file records each requested five-second SQL
 window (at most 64). Inside a window the worker rechecks that the VM is
 `Stopped` (status code 102, LXD instance and state), then dispatches the one
-journaled `delete`. It settles only on a settled delete and an absent VM:
+journaled `delete`. It settles only on a settled delete and an absent VM.
+It then empties the workbench (D5b, `lxd-office-workbench-removal.ts`):
+everything under the dedicated NAS workbench mount, that is the adopted
+desktop, screens, browser profiles and working files and any sources an
+adoption left in place. The mount root stays. The physical gate has just
+checked the mount, and with the VM gone nothing else writes there. Each entry
+must belong to the workbench account and sit on the mount's file system; a
+symbolic link is removed, never followed, and a directory its owner cannot
+write is made writable first. A pass stops after 30 seconds and reports
+`pending`; the next pass continues. An entry of another account or file system
+holds the office for an operator, with no SQL call. Only then
 `qorpera_retire_runtime_office` releases the allocation and node demand, drops
 the node binding and marks the office `retired`. The worker then writes
 `office-retired.json` from SQL's receipt. An unknown or failed delete is held
@@ -164,8 +174,8 @@ operator disables them (RUNTIME-COMPANY-DELETE.md, D3 lane).
 Retirement keeps no custody: by the founder's decision (28 September 2026) no
 copy of a deleted company's machine is kept. The private
 `/var/lib/qorpera-office-events` outbox is lost with the root, including
-undelivered records. The workbench is a host directory and is not touched here
-(deleted-company NAS queue, D5). Not retired, and held for an operator: a
+undelivered records, and the workbench goes before the release. Not retired,
+and held for an operator: a
 computer created but never activated, one mid-reset, one whose resume was
 under way at the deletion, and one whose node rebooted between the power-off
 record and its node-demand suspension (SQL keeps answering "not ready" until an

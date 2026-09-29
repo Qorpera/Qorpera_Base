@@ -19,10 +19,12 @@ import {
 	readLxdOfficeRetiredMarker,
 } from "./lxd-office-retirement-control.ts";
 import type { LxdOfficeVmLineageCommand } from "./lxd-office-vm-lineage.ts";
+import { removeLxdOfficeWorkbench } from "./lxd-office-workbench-removal.ts";
 
 interface Ports {
 	client?: LxdTrackedClient;
 	kernelLock?: typeof assertOfficeAdoptionKernelLock;
+	removeWorkbench?: typeof removeLxdOfficeWorkbench;
 }
 export interface LxdOfficeRetirementResult {
 	/** kept: the company lives, the powered-off computer stays. */
@@ -41,14 +43,16 @@ const pending = new Set<string>();
  * pinned here before a five-second SQL window admits the one journaled LXD delete
  * of the stopped VM. Only a settled delete and a confirmed absent VM release the
  * machine in SQL, and only SQL's receipt writes the local retired marker. An
- * unknown or failed delete holds the office for an operator. The workbench host
- * directory is not touched. */
+ * unknown or failed delete holds the office for an operator. Once the VM is
+ * gone, the workbench is emptied (D5b), over several passes if it is large,
+ * before SQL is told; an entry the provider may not remove holds the office. */
 export class LxdOfficeRetirementWorker {
 	readonly #gate: Pick<LxdOfficePhysicalGate, "policy" | "check">;
 	readonly #policy;
 	readonly #registry: LxdOfficeRetirementRegistry;
 	readonly #client: LxdTrackedClient;
 	readonly #kernelLock;
+	readonly #removeWorkbench;
 	constructor(
 		gate: Pick<LxdOfficePhysicalGate, "policy" | "check">,
 		registry: LxdOfficeRetirementRegistry,
@@ -59,6 +63,7 @@ export class LxdOfficeRetirementWorker {
 		this.#registry = registry;
 		this.#client = ports.client ?? new LxdUnixClient(this.#policy.host.socketPath);
 		this.#kernelLock = ports.kernelLock ?? assertOfficeAdoptionKernelLock;
+		this.#removeWorkbench = ports.removeWorkbench ?? removeLxdOfficeWorkbench;
 	}
 	async reconcileSettled(
 		intentId: string,
@@ -247,6 +252,14 @@ export class LxdOfficeRetirementWorker {
 		if (operation.state !== "succeeded") return { ...result, state: operation.state, deleteCommandId };
 		const { instance } = await physical();
 		if (instance !== undefined) throw new Error("retirement VM present");
+		// The gate has just checked the workbench mount; with the VM gone nothing
+		// else writes there. A large workbench takes several passes.
+		const workbench = await this.#removeWorkbench(
+			this.#policy.workbench.mountPoint,
+			this.#policy.workbench.uid,
+			signal,
+		);
+		if (!workbench.done) return { ...result, state: "pending", deleteCommandId };
 		const receipt: LxdOfficeRetirement =
 			answer.state === "retired"
 				? answer
