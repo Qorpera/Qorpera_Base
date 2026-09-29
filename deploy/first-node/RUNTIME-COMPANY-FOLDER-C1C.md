@@ -467,8 +467,39 @@ after that line stays byte-identical, and its digest is checked at migration tim
   - `published` when a commit of the run saved a unit;
   - `unchanged` when its commits saved nothing;
   - `review_pending` when a unit waits for review (C2).
+
+  As built (2c part 2, migration 20260929600000, `qorpera_folder_complete_run_job`, v6's first line in place of
+  C1c-1's refusal):
+  - The result is the path lane's shape (`runtime: company-path-v1`): the runtime does not name the core. A snapshot
+    or artifacts refuse (22023), as on the path lane.
+  - Step 3 is `qorpera_folder_run_enter` with rank 0 and, for a routine run, the routine `FOR NO KEY UPDATE` as
+    targets. Completion never takes the run mutex: the mutex comes before the job, and completion holds the job
+    first. A tool call that arrives meanwhile holds the mutex, waits at the job, and refuses once the job is done
+    (659 C).
+  - Step 5: no reserved model request, no executing or ambiguous receipt, no job artifact (55000, as today); every
+    completed receipt that requires a revision names, in `folder_commit_id`, a commit of this run whose `receipt_id`
+    is that receipt (else 55000 "Governed completion omitted a folder commit receipt").
+  - The disposition: `review_pending` when a unit of any commit of the run is `waiting_for_review`, naming the latest
+    such commit; else `published`, naming the saving commit with the highest `seq`; else `unchanged`. A commit that
+    saved nothing keeps its row with no `seq`.
+  - The job's `company_file` result: `runtime: folder-v2`, the disposition, `folder_commit_id`, the native binary's
+    hash and the receipts that name commits.
+  - The run's run box views close with `ended`.
+  - `complete_runner_job_v2` skips its source substrate lookup for a `folder-v2` job, which has none once C4 makes
+    runs without substrate ids possible, and refuses artifacts there instead. Only v6 is granted to the runtime, so
+    v4, v3 and v2 are reached only through a lane.
+  - `qorpera_execution_run_results.folder_commit_id` restricts deletes, as `output_snapshot_id` does: the company
+    purge finds a result through that key and deletes both in one statement. The new check is added `NOT VALID`
+    (every existing row met the old one, which the new one only widens).
 - **`handoff_run_sponsor`** refuses a run whose revision receipts have no snapshot. Its `folder-v2` mode accepts
-  receipts satisfied by commits (C1c-2c).
+  receipts satisfied by commits (C1c-2c part 2: one more condition, `folder_commit_id is null`, which only
+  `folder-v2` receipts can fail).
+- **Receipt recovery** (2c part 2). `terminalize_runner_attempt_before_native_start` needs no change: it marks
+  executing receipts ambiguous on either core. `resolve_run_operation_receipt` dispatches a `folder-v2` receipt to
+  `qorpera_folder_resolve_run_receipt`: `confirmed_completed` records the commit that carries the receipt (one per
+  receipt) and refuses a snapshot or proposal, and a revision receipt that no commit carries cannot be confirmed
+  completed (22023); `confirmed_not_run` refuses while a commit carries the receipt (55000, "A folder commit carries
+  this operation: it ran").
 
 ### 5.7 Additions to core §3's order
 
@@ -530,7 +561,8 @@ functions.
   - **2c part 1** (migration 20260929580000, tests 656 and 657): the admission helper, the pin trigger's and routine
     lifecycle's folder modes, `send_coworker_message` and `read_native_wake`, and the legacy loops skipping
     `folder-v2`. C2's creation commit needs this part.
-  - **2c part 2**: `handoff_run_sponsor`, receipt recovery, and the v6 folder lane with its dispositions.
+  - **2c part 2** (migration 20260929600000, tests 658 and 659): `handoff_run_sponsor`, receipt recovery, and the v6
+    folder lane with its dispositions. Test 646's v6 case changes from "refused" to "not refused as folder-v2".
 
 Concurrency tests (dblink, with `current_database()`), by slice:
 - **C1c-2a:**
@@ -571,7 +603,10 @@ Concurrency tests (dblink, with `current_database()`), by slice:
   sender; the archiving save is rolled back in its first order, and 647 covers an archived run's agent), 13 (656 §2
   and §3, 657 D; "beside a routine-file commit" is a wait at the routine, then the insert lands), 14 (656 §7 for every
   loop, 657 F with the `folder-v2` company row held `FOR UPDATE` elsewhere) and 15 (657 E), plus the thread that
-  changed while a message waited (657 C). 12 is part 2's.
+  changed while a message waited (657 C). Part 2 builds 12 (658 §2–§4 for the dispositions and the lane's checks, 659
+  A and B for a send and a release in flight, 659 C for a tool call during completion; a `folder-v2` job never
+  reaches `before_path_runtime`, shown by its `company_file.runtime`), plus the handoff (658 §7) and recovery (658
+  §6).
 
 ## 6. C1c-3: the remaining company-row locks and the activation checks
 
