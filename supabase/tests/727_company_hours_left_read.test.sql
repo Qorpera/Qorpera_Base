@@ -1,5 +1,5 @@
 -- @fixture 300_runtime_wake_bus.test.sql until "-- END WAKE FIXTURE"
--- Computer hours (20260929330000_company_hours_left_read): from the live switch on, every member
+-- Computer hours (20260928259330_company_hours_left_read): from the live switch on, every member
 -- reads how many hours the company has left and from what; founders also see each founder's share;
 -- nothing before the switch; a complimentary company says so.
 

@@ -510,7 +510,7 @@ wake), so no agent runs and nothing is charged before it.
   `qorpera_enqueue_runner_job` refuse new work with 55000 ("Waiting for
   computer hours: the company has none left").
   A client shows "Not measured yet" while the function is missing (PGRST202).
-  From 20260929330000, `hoursLeft`: null before the live switch (show measured
+  From 20260928259330, `hoursLeft`: null before the live switch (show measured
   hours only); `{"complimentary": true}` for a company that is never limited;
   otherwise `leftSeconds` (zero or less when out of hours, below zero by what
   it owes) with `freeSeconds`, `planSeconds` (the founders' current plans,
@@ -520,7 +520,7 @@ wake), so no agent runs and nothing is charged before it.
   pays), and, with `userId` null, the packs of members who are no longer
   founders; other members never see who paid. `hoursLeft` is always now,
   whatever month is read.
-  From 20260929280000, `qorpera_company_waiting_for_hours(p_profile_id)` →
+  From 20260928259280, `qorpera_company_waiting_for_hours(p_profile_id)` →
   boolean says the same as `waitingForHours` without the month's figures,
   for a client that asks with its other periodic reads (any member; anyone
   else gets 42501). A client treats a missing function (PGRST202) as not
@@ -543,7 +543,7 @@ wake), so no agent runs and nothing is charged before it.
   `grantedSeconds` this period and `companies` (`profileId`, `seconds` this
   period paid by the plan)). The signed-in member's own plan only.
 
-### Event hooks (20260929260000_runtime_event_intake)
+### Event hooks (20260928259260_runtime_event_intake)
 
 - Contract: section 19, 2026-09-29 amendment "events wake agents"; design
   `deploy/first-node/RUNTIME-EVENT-INTAKE.md`. Step W1a: address-proven hooks
@@ -649,7 +649,7 @@ machine.
   `QORPERA_BILLING_RETURN_URL` (`https://app.qorpera.com/#/account`) with
   `?checkout=done` or `?checkout=cancelled` after the hash; hours arrive with
   Stripe's webhook, not with the return.
-- `event-intake` (20260929260000) — the public address of a company's
+- `event-intake` (20260928259260) — the public address of a company's
   hooks: `POST /functions/v1/event-intake/<address>` from the sender, not
   from clients. Answers 202 (accepted), 200 (duplicate), 400 (malformed), 404
   (no such hook), 405 (not POST), 409 (paused or not ready), 413 (over the
