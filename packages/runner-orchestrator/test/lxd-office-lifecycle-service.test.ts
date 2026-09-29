@@ -4,6 +4,7 @@ import {
 	createOfficeLifecycleReporter,
 	createOfficeLifecycleWriter,
 	parseLxdOfficeLifecycleServiceConfig,
+	runOfficeLifecycleLoops,
 } from "../src/lxd-office-lifecycle-service.ts";
 
 const config = () => ({
@@ -171,4 +172,24 @@ it("accepts only a local protected reset image package path while preserving old
 	expect(() =>
 		parseLxdOfficeLifecycleServiceConfig({ ...config(), resetImagePackageManifestPath: "../manifest.json" }),
 	).toThrow();
+});
+
+describe("a retired office", () => {
+	it("ends every provider loop, so the service exits", async () => {
+		const reconcile = vi.fn(async () => ({
+			state: "retired" as const,
+			phase: "retirement" as const,
+			transitionId: "30000000-0000-4000-8000-000000000060",
+		}));
+		const observe = vi.fn(async () => {});
+		const emit = vi.fn();
+		await runOfficeLifecycleLoops(
+			{ reconcile, observeControlOperations: observe, observeVmOperations: observe },
+			new AbortController().signal,
+			1000,
+			emit,
+		);
+		expect(reconcile).toHaveBeenCalledOnce();
+		expect(emit).toHaveBeenCalledWith(expect.objectContaining({ state: "retired" }));
+	});
 });

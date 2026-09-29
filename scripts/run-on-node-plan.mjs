@@ -270,7 +270,8 @@ export function planScript(steps) {
 			// && and not set -e: errexit is ignored inside an if condition, so a failed first command would pass.
 			`if ( ${step.commands.join(" && ")} ); then echo "== changed: ${step.name} passed in $(( $(date +%s) - started )) s"; else echo "== changed: ${step.name} FAILED after $(( $(date +%s) - started )) s"; failed="$failed ${step.name}"; fi`,
 		]),
-		'if [ -n "$failed" ]; then echo "== changed: failed:$failed"; exit 1; fi',
+		// The failed step names reach the run record (and the GitHub status) through the status file.
+		'if [ -n "$failed" ]; then echo "== changed: failed:$failed"; echo "failed_steps=$(echo $failed | tr \' \' ,)" >>.run-on-node-status; exit 1; fi',
 		'echo "== changed: all steps passed"',
 	].join("\n");
 }
