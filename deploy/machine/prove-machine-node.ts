@@ -19,8 +19,10 @@ import { LxdUnixClient } from "../../packages/runner-orchestrator/src/lxd-client
 // proof.json: { policy, helperSha256, storagePolicy, journalRoot, cpus, memoryGiB, diskGiB,
 //               repositoryBundle?: "/path/qorpera.tar.gz", blockedTargets?: ["host:port", ...] }
 // blockedTargets must stay out of reach: a TCP connect to each must time out (the ACL drops
-// it), where an open port would connect and a closed one refuse. The default is node 2's NAS,
-// router, Tailscale, cloud metadata and the bridge gateway's SSH.
+// it), where an open port would connect and a closed one refuse. A timeout proves a drop only
+// where something would otherwise answer: pick targets that answer or refuse from the node
+// (cloud metadata on bare metal times out with or without the ACL). The default is node 2's
+// NAS, router, Tailscale, cloud metadata and the bridge gateway's SSH.
 // The machine is an unregistered instance while it exists: the node's
 // observer reports the node unavailable for the few minutes the proof runs.
 // Run it in an agreed quiet window.
