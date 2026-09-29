@@ -3916,6 +3916,32 @@ complete section 16.3's listener triggers and section 11.5's broker. Design:
 
 Section 21 gains an event-wake acceptance item when event wakes (W2) land.
 
+### 2026-09-29 amendment: one call before a model request
+
+Proposed 29 September 2026 (stack audit, fix 9); pending founder approval. It
+changes how the checks before each model request are carried out, not what
+they check. Section 4's rule that authorization is checked again immediately
+before an effect, and section 9.1's context views, are unchanged.
+
+1. **One call, every check.** Before a model request the host used to make
+   seven database calls in four rounds, each in its own transaction: the run's
+   authority and its read set (twice), the context view, then both once more.
+   `qorpera_fence_native_context` makes the same seven calls, in the same
+   order, in one transaction. It calls those functions rather than copying
+   them, so each check and lock is exactly theirs. Nothing is released to the
+   model until the call has returned; if any check fails, the view is rolled
+   back with it.
+2. **The read set stays whole.** The database keeps the run's read set, never
+   pruned during a run, and every check still covers the whole set. The host
+   sends each path once, until a check that included it succeeds, instead of
+   its whole list every time.
+3. **The same budget.** The one call gets 3.5 s of the result fence's 4 s. A
+   timeout, like any failure, stops the run with nothing released, as a lapsed
+   fence did before; a view may have been recorded for a request that never
+   left.
+4. **Until the database has the call** the host makes the separate calls, all
+   of them.
+
 ## 20. Enforcement matrix
 
 > **Note, 2026-09-27.** Rows naming responsibility objects, ceilings, a schema
