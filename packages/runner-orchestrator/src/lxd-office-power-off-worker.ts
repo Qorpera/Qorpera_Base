@@ -494,7 +494,7 @@ export class LxdOfficePowerOffWorker {
 		});
 		// An explicit power-off gives the node slot back until resume re-admits it.
 		// A reboot resumes at once and keeps its slot. Every confirmed answer
-		// (suspended, already suspended, or kept for a resume or later transition)
+		// (suspended, already suspended, kept NOT_RESERVED, or kept RESUME_PENDING)
 		// is final for this transition: the lifecycle replays a stopped computer
 		// every pass, and each call locks the node row (2026-09-28: 16 calls a
 		// minute for 42 hours). A new process asks once more.

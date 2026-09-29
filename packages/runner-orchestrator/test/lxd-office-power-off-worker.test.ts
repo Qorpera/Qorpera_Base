@@ -86,32 +86,33 @@ describe("serialized VM power-off", () => {
 	// 2026-09-28: the lifecycle replays a stopped computer every pass; each suspend
 	// call locked the node row although the demand was suspended 42 hours earlier.
 	it.each([
-		["suspends", "2026-09-23T15:00:00.000000+00:00"],
-		["was already suspended", "2026-09-20T01:03:57.405869+00:00"],
-		["kept the slot for a resume", undefined],
-	])("asks SQL once per transition while the same process replays (%s)", async (_, suspendedAt) => {
+		[
+			"was already suspended",
+			(allocationId: string) => ({
+				state: "suspended",
+				allocationId,
+				nodeId: "36000000-0000-4000-8000-000000000010",
+				suspendedAt: "2026-09-27T01:03:57.405869+00:00",
+			}),
+		],
+		["kept the slot for a resume", () => ({ state: "kept", reason: "RESUME_PENDING" })],
+		["kept no reservation", () => ({ state: "kept", reason: "NOT_RESERVED" })],
+	])("asks SQL once per transition while the same process replays (%s)", async (_, answer) => {
 		const f = await fixture(),
 			worker = f.create(),
-			replay = () => worker.reconcile(f.activation.request.intentId, f.request, signal());
-		f.suspension.value =
-			suspendedAt === undefined
-				? { state: "kept", reason: "RESUME_PENDING" }
-				: {
-						state: "suspended",
-						allocationId: f.binding.allocationId,
-						nodeId: "36000000-0000-4000-8000-000000000010",
-						suspendedAt,
-					};
+			replay = () => worker.reconcile(f.activation.request.intentId, f.request, signal()),
+			authority = () =>
+				f.registry.mock.calls.filter(([method]) => method === "qorpera_runtime_office_stop_status").length;
+		f.suspension.value = answer(f.binding.allocationId);
 		const result = await replay();
 		expect(result.state).toBe("powered_off");
+		const checked = authority();
 		f.file.mockRejectedValue(new Error("stopped guest has no file API"));
 		for (let n = 0; n < 3; n++) await expect(replay()).resolves.toEqual(result);
 		expect(f.suspensions()).toHaveLength(1);
 		expect(f.submit).toHaveBeenCalledOnce();
-		// Replays still recheck the stopped VM and SQL stop authority.
-		expect(
-			f.registry.mock.calls.filter(([method]) => method === "qorpera_runtime_office_stop_status").length,
-		).toBeGreaterThanOrEqual(4);
+		// Each replay still rechecks the stopped VM and SQL stop authority.
+		expect(authority()).toBe(checked + 3);
 	});
 	it("asks again in the same process until SQL answers, then stops asking", async () => {
 		const f = await fixture(),
