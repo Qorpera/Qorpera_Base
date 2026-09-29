@@ -162,6 +162,18 @@ runtime adapter, with no migration.
   `authorize_profile_object_replication`; `confirm_profile_object_upload` refuses `folder-v2` (0A000). The four
   snapshot-v1 definitions are pinned by digest before the lines go in.
 
+**Built (C1d-1b, no migration).**
+- Gateway: `packages/object-gateway/src/folder-objects.ts` serves `/v1/folder-objects/` when the native options name
+  a `folder` authority (`cli.ts` gives it the Supabase authority on the native credential). Each put is authorized by
+  `qorpera_folder_authorize_object_upload`, stored through `uploadWithAuthority`, and confirmed by
+  `qorpera_folder_confirm_object`; each get by `qorpera_folder_authorize_object_download`, before and after the NAS
+  read. The native route's token and binding checks are shared, not copied.
+- Runtime: `packages/runtime/src/cloud-company-folder-bytes.ts`, `HttpCloudCompanyFolderBytes`. A put builds the
+  canonical manifest, opens the intent, puts the missing objects, renews the intent when ten minutes have passed, and
+  seals; an object the catalog lost is put once more, then the put fails as `contended`. A get checks the manifest
+  against the reference and each chunk against its hash. A refusal of the folder core's checks is
+  `CloudCompanyFolderError('unavailable')`.
+
 **Activation checks.** Every `folder-v2` body's lock text (none takes the profile row `FOR UPDATE`, the fence,
 `company_files` or the job), and the digests of the snapshot-v1 bodies this changes, triggers included.
 

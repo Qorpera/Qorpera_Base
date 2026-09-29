@@ -4,6 +4,8 @@
 
 ### Added
 
+- Added the folder core's byte route for folder-v2 runs (core C1d-1b): `/v1/folder-objects/<environmentId>/<sha256>` on the native credential with the run's binding. A put names its upload intent (`x-qorpera-upload-intent`) and is authorized by that intent alone, then stored, confirmed and replicated as native objects are; a get is allowed when an entry or path version the run may read references the hash, checked before and after the NAS read. The native route's token and binding checks are now shared helpers; its behaviour is unchanged.
+
 - Added a bounded member presence endpoint that verifies native signatures and intersects current member/native path permissions in separate authority transactions. Responses contain display metadata only, with explicit browser CORS and no native bindings or routing keys.
 
 - Added member-authenticated shared export downloads with exact asset/hash selection, completed receipt and audience checks, bounded binary verification, live authority rechecks and narrowly scoped browser CORS.

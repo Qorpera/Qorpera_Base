@@ -1,6 +1,7 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { boundedObjectOperation, ObjectDependencyError } from "./dependency.ts";
+import type { FolderObjectAuthority } from "./folder-objects.ts";
 import type { FileSystemObjectStore } from "./object-store.ts";
 import type { ObjectGatewayReplication } from "./replication.ts";
 import type { AuthorizedObject } from "./supabase-authority.ts";
@@ -29,6 +30,8 @@ export interface NativeCompanyObjectAuthority {
 export interface NativeCompanyObjectOptions {
 	token: string;
 	authority: NativeCompanyObjectAuthority;
+	/** The folder core's route for folder-v2 runs (C1d), on the same credential. */
+	folder?: FolderObjectAuthority;
 }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -45,44 +48,12 @@ export async function serveNativeCompanyObject(
 	store: FileSystemObjectStore,
 	replication: ObjectGatewayReplication,
 ): Promise<void> {
-	const header = request.headers.authorization;
-	if (
-		!header?.startsWith("Bearer ") ||
-		!timingSafeEqual(
-			createHash("sha256").update(header.slice(7)).digest(),
-			createHash("sha256").update(options.token).digest(),
-		)
-	)
-		throw new ObjectDependencyError(401);
+	assertNativeToken(request, options.token);
 	const match = /^\/v1\/native-company-objects\/([0-9a-f-]{36})\/([0-9a-f]{64})$/.exec(request.url ?? "");
 	if (!match || !UUID.test(match[1]!)) throw new ObjectDependencyError(404);
 	const companyId = match[1]!;
 	const sha256 = match[2]!;
-	const encoded = request.headers["x-qorpera-native-binding"];
-	if (typeof encoded !== "string" || encoded.length > 2048 || !/^[A-Za-z0-9_-]+$/.test(encoded))
-		throw new ObjectDependencyError(400);
-	let value: unknown;
-	try {
-		const bytes = Buffer.from(encoded, "base64url");
-		if (bytes.toString("base64url") !== encoded) throw new Error("Noncanonical binding");
-		value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
-	} catch {
-		throw new ObjectDependencyError(400);
-	}
-	if (!value || typeof value !== "object" || Array.isArray(value)) throw new ObjectDependencyError(400);
-	const binding = value as Record<string, unknown>;
-	const ids = ["leaseId", "runId", "jobId", "runnerId", "assignmentId", "credentialCapsuleId", "computeIdentityId"];
-	if (
-		ids.some((key) => typeof binding[key] !== "string" || !UUID.test(binding[key] as string)) ||
-		Object.keys(binding).some((key) => ![...ids, "provider", "nativeHarness", "model"].includes(key)) ||
-		binding.provider !== "openai" ||
-		binding.nativeHarness !== "codex-cli" ||
-		typeof binding.model !== "string" ||
-		!binding.model.trim() ||
-		binding.model.length > 160 ||
-		/[\0\r\n]/.test(binding.model)
-	)
-		throw new ObjectDependencyError(400);
+	const binding = nativeBinding(request);
 	if (request.method === "PUT") {
 		const declared = request.headers["content-length"];
 		if (!declared || !/^(0|[1-9][0-9]{0,7})$/.test(declared) || Number(declared) > MAX_BYTES)
@@ -138,4 +109,47 @@ export async function serveNativeCompanyObject(
 		etag: `"sha256-${sha256}"`,
 	});
 	response.end(bytes);
+}
+
+/** The native route's bearer check: the gateway's native credential, compared in constant time. */
+export function assertNativeToken(request: IncomingMessage, token: string): void {
+	const header = request.headers.authorization;
+	if (
+		!header?.startsWith("Bearer ") ||
+		!timingSafeEqual(
+			createHash("sha256").update(header.slice(7)).digest(),
+			createHash("sha256").update(token).digest(),
+		)
+	)
+		throw new ObjectDependencyError(401);
+}
+
+/** The run's binding from its header: canonical base64url JSON of its ten fields. */
+export function nativeBinding(request: IncomingMessage): Record<string, unknown> {
+	const encoded = request.headers["x-qorpera-native-binding"];
+	if (typeof encoded !== "string" || encoded.length > 2048 || !/^[A-Za-z0-9_-]+$/.test(encoded))
+		throw new ObjectDependencyError(400);
+	let value: unknown;
+	try {
+		const bytes = Buffer.from(encoded, "base64url");
+		if (bytes.toString("base64url") !== encoded) throw new Error("Noncanonical binding");
+		value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+	} catch {
+		throw new ObjectDependencyError(400);
+	}
+	if (!value || typeof value !== "object" || Array.isArray(value)) throw new ObjectDependencyError(400);
+	const binding = value as Record<string, unknown>;
+	const ids = ["leaseId", "runId", "jobId", "runnerId", "assignmentId", "credentialCapsuleId", "computeIdentityId"];
+	if (
+		ids.some((key) => typeof binding[key] !== "string" || !UUID.test(binding[key] as string)) ||
+		Object.keys(binding).some((key) => ![...ids, "provider", "nativeHarness", "model"].includes(key)) ||
+		binding.provider !== "openai" ||
+		binding.nativeHarness !== "codex-cli" ||
+		typeof binding.model !== "string" ||
+		!binding.model.trim() ||
+		binding.model.length > 160 ||
+		/[\0\r\n]/.test(binding.model)
+	)
+		throw new ObjectDependencyError(400);
+	return binding;
 }
