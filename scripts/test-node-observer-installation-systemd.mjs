@@ -4,8 +4,9 @@ import {mkdtemp,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {basename,join,resolve} from 'node:path';
 import {setTimeout as delay} from 'node:timers/promises';
-const repository=resolve(import.meta.dirname,'..'),image='sha256:312b463e63804a2641841c84fe7fe5eb9ebcd5885f2b5c626d5a3c0ceeb3edc1';
-if(process.argv.length!==2)throw new Error('Usage: node scripts/test-node-observer-installation-systemd.mjs');
+import {SYSTEMD_CONTAINER_SECURITY,systemdContainerBoot} from './fixtures/systemd-container.mjs';
+const repository=resolve(import.meta.dirname,'..'),image=process.env.QORPERA_OFFICE_SYSTEMD_TEST_IMAGE;
+if(process.argv.length!==2||!image||!/^(?:[^\s]+@)?sha256:[0-9a-f]{64}$/.test(image))throw new Error('Usage: QORPERA_OFFICE_SYSTEMD_TEST_IMAGE=<digest-pinned local image> node scripts/test-node-observer-installation-systemd.mjs');
 const temporary=await mkdtemp(join(tmpdir(),'node-observer-install-systemd-'));let container;
 const command=(file,args,timeout=60000)=>{const r=spawnSync(file,args,{cwd:repository,encoding:'utf8',timeout});assert.equal(r.status,0,`${file}: ${r.stderr}`);return r.stdout.trim();};
 try {
@@ -15,9 +16,9 @@ try {
 	// Container-only capabilities for its private systemd manager. The actual
 	// installed observer unit retains an empty capability bounding set.
 	for(const cap of ['SYS_ADMIN','SYS_PTRACE','SYS_RESOURCE','SYS_CHROOT','CHOWN','DAC_OVERRIDE','FOWNER','FSETID','KILL','SETGID','SETUID','SETPCAP','AUDIT_WRITE'])args.push('--cap-add',cap);
-	args.push('--security-opt','no-new-privileges','--cpus','2','--memory','768m','--pids-limit','1024','--tmpfs','/run:rw,nosuid,nodev,size=128m,mode=755','--tmpfs','/tmp:rw,nosuid,nodev,size=128m,mode=1777','--tmpfs','/var/log/journal:rw,nosuid,nodev,size=16m,mode=755','--tmpfs','/etc/systemd/system:rw,nosuid,nodev,size=16m,mode=755','--env','container=docker');
+	args.push(...SYSTEMD_CONTAINER_SECURITY,'--cpus','2','--memory','768m','--pids-limit','1024','--tmpfs','/run:rw,nosuid,nodev,size=128m,mode=755','--tmpfs','/tmp:rw,nosuid,nodev,size=128m,mode=1777','--tmpfs','/var/log/journal:rw,nosuid,nodev,size=16m,mode=755','--tmpfs','/etc/systemd/system:rw,nosuid,nodev,size=16m,mode=755','--env','container=docker');
 	for(const [source,target] of [[packaged,'/fixture/package'],[join(repository,'scripts/fixtures/node-observer-installation-systemd.mjs'),'/fixture/check.mjs'],[temporary,'/fixture/tls']])args.push('--mount',`type=bind,src=${source},dst=${target},readonly`);
-	args.push(image,'/bin/bash','-c','groupadd --gid 2302 node-lxd-fixture && mount -o remount,bind,rw /sys/fs/cgroup && exec /lib/systemd/systemd --log-target=console');
+	args.push(image,'/bin/bash','-c',systemdContainerBoot('groupadd --gid 2302 node-lxd-fixture'));
 	container=command('docker',args);let ready=false;
 	for(let n=0;n<40;n++){const state=spawnSync('docker',['exec',container,'systemctl','is-system-running'],{encoding:'utf8',timeout:10000}).stdout?.trim();if(['running','degraded'].includes(state)){ready=true;break;}await delay(500);}assert(ready,'Private systemd did not start: '+command('docker',['logs',container]));
 	await new Promise((done,reject)=>{const child=spawn('docker',['exec',container,'node','/fixture/check.mjs'],{stdio:'inherit',timeout:180000});child.once('error',reject);child.once('exit',code=>code===0?done():reject(new Error('Observer systemd installation proof failed')));});
