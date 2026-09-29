@@ -330,10 +330,18 @@ export class CloudNativeToolBoundary {
 		this.#stop.abort();
 	}
 
-	/** Only the patched native request boundary can release these bodies to the model. */
-	async fenceNativeResults(inputs: readonly CloudNativeResultInput[]): Promise<CloudNativeFencedResult[]> {
+	/**
+	 * Only the patched native request boundary can release these bodies to the model.
+	 * `authority: "with-record"`: the result fence checks run authority and the read set in
+	 * the one call that records this view, before it releases anything (qorpera_fence_native_context),
+	 * so this does not check first; otherwise it checks here.
+	 */
+	async fenceNativeResults(
+		inputs: readonly CloudNativeResultInput[],
+		fence: { authority: "here" | "with-record" } = { authority: "here" },
+	): Promise<CloudNativeFencedResult[]> {
 		this.#signal.throwIfAborted();
-		await untilStopped(() => this.#assertActive(this.#signal), this.#signal);
+		if (fence.authority === "here") await untilStopped(() => this.#assertActive(this.#signal), this.#signal);
 		this.#signal.throwIfAborted();
 		const seen = new Set<string>();
 		// No count of outputs: only their size is bounded, by the reply frame they

@@ -612,6 +612,8 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 							assertContext: (requestSignal) => gateway.assertReadableContext(requestSignal),
 							recordContextView: (frame, outputs, requestSignal) =>
 								gateway.recordContextView(frame, outputs, requestSignal),
+							fenceContextView: (frame, outputs, requestSignal) =>
+								gateway.fenceContextView(frame, outputs, requestSignal),
 							...(computer ? { close: () => computer.close() } : {}),
 						};
 					},

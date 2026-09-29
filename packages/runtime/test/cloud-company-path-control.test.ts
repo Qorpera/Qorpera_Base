@@ -1,6 +1,7 @@
 import { HttpCloudCompanyPathControl } from "@qorpera/runtime/cloud-company-path-control";
 import { CloudCompanyHeadConflict } from "@qorpera/runtime/cloud-company-path-gateway";
 import {
+	CloudCompanyPathRpcMissing,
 	CloudCompanyPathRpcParentMissing,
 	CloudCompanyPathRpcPrecondition,
 	CloudCompanyPathRpcRefusal,
@@ -58,6 +59,7 @@ describe("Company File bounded control transport", () => {
 		"qorpera_list_company_paths",
 		"qorpera_confirm_company_path_read",
 		"qorpera_record_native_context_view",
+		"qorpera_fence_native_context",
 		"qorpera_check_company_path_mutation",
 		"qorpera_verify_company_path_tree",
 		"qorpera_prepare_company_path_mutation",
@@ -177,6 +179,25 @@ describe("Company File bounded control transport", () => {
 		expect(error instanceof CloudCompanyPathRpcParentMissing).toBe(missing);
 		expect(error instanceof CloudCompanyPathRpcPrecondition).toBe(false);
 		if (missing) expect((error as CloudRuntimeDiagnosticError).category).toBe("parent_missing");
+		expect(String(error)).not.toContain("PRIVATE_DIAGNOSTIC");
+		expect(transport).toHaveBeenCalledOnce();
+	});
+
+	it.each([
+		[
+			404,
+			{ code: "PGRST202", message: "Could not find the function", details: "PRIVATE_DIAGNOSTIC", hint: null },
+			true,
+		],
+		[404, { code: "PGRST202", message: "PRIVATE_DIAGNOSTIC" }, false],
+		[404, { code: "PGRST116", message: "PRIVATE_DIAGNOSTIC", details: null, hint: null }, false],
+		[400, { code: "PGRST202", message: "PRIVATE_DIAGNOSTIC", details: null, hint: null }, false],
+	] as const)("brands only a complete missing-function answer (%i, %j)", async (status, body, missing) => {
+		const transport = vi.fn<typeof fetch>(async () => Response.json(body, { status }));
+		const error = await fixture(transport)
+			.call("qorpera_fence_native_context", {}, new AbortController().signal)
+			.catch((error: unknown) => error);
+		expect(error instanceof CloudCompanyPathRpcMissing).toBe(missing);
 		expect(String(error)).not.toContain("PRIVATE_DIAGNOSTIC");
 		expect(transport).toHaveBeenCalledOnce();
 	});

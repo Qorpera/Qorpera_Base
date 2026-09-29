@@ -192,6 +192,9 @@ export function parseCloudNativeToolAuthority(
 
 /** Two cloud reads sent together that the database serialises on the run's job row. */
 export const CLOUD_PAIRED_REQUEST_TIMEOUT_MS = 10_000;
+/** The one call before each model request (qorpera_fence_native_context) gets most of the
+ * native result fence's 4 s budget; the rest covers the host's own steps and the reply. */
+export const CLOUD_NATIVE_FENCE_CALL_TIMEOUT_MS = 3_500;
 
 /** Bounded, cancellation-aware wait, including transports which ignore AbortSignal. */
 export function cloudToolRequest<T>(
@@ -286,31 +289,14 @@ export class CloudNativeToolRun {
 			combined.throwIfAborted();
 			if (this.#identity && performance.now() >= this.#deadline) throw new Error("Cloud tool authority expired");
 			const started = performance.now();
-			const authority = parseCloudNativeToolAuthority(
+			this.#apply(
 				await cloudToolRequest(
 					(requestSignal) => this.#reader.describeToolAuthority(this.binding, requestSignal),
 					combined,
 					timeoutMs,
 				),
-				this.binding,
-			);
-			combined.throwIfAborted();
-			const identityText = JSON.stringify(authority.identity);
-			const deadline = started + authority.validForMs;
-			if ((this.#identityText && this.#identityText !== identityText) || deadline <= performance.now()) {
-				throw new Error("Cloud tool authority changed or expired");
-			}
-			this.#identity = authority.identity;
-			this.#identityText = identityText;
-			this.#deadline = deadline;
-			clearTimeout(this.#watchdog);
-			clearTimeout(this.#refresh);
-			this.#watchdog = setTimeout(() => this.close(), Math.max(1, deadline - performance.now()));
-			this.#refresh = setTimeout(
-				() => {
-					void this.assertActive(this.signal).catch(() => undefined);
-				},
-				Math.min(REFRESH_MS, Math.max(1, (deadline - performance.now()) / 2)),
+				started,
+				combined,
 			);
 		});
 		this.#checking = check.catch(() => {
@@ -323,6 +309,53 @@ export class CloudNativeToolRun {
 			// The cause only tells a timed-out check apart in observations.
 			throw new Error("Cloud tool authority unavailable", { cause: error });
 		}
+	}
+
+	/**
+	 * Takes the authority another cloud call read in its own transaction (the one-call
+	 * context fence reads it with the same describe function), with the checks
+	 * assertActive applies to its own read: same identity, not expired, new deadline.
+	 * `started` is when that call was sent.
+	 */
+	async acceptAuthority(value: unknown, started: number, signal: AbortSignal): Promise<void> {
+		const combined = AbortSignal.any([signal, this.signal]);
+		const check = this.#checking.then(() => {
+			combined.throwIfAborted();
+			// The call was sent after the last known authority lapsed: as assertActive, refuse.
+			if (this.#identity && started >= this.#deadline) throw new Error("Cloud tool authority expired");
+			this.#apply(value, started, combined);
+		});
+		this.#checking = check.catch(() => {
+			this.close();
+		});
+		try {
+			await check;
+		} catch (error) {
+			this.close();
+			throw new Error("Cloud tool authority unavailable", { cause: error });
+		}
+	}
+
+	#apply(value: unknown, started: number, signal: AbortSignal): void {
+		const authority = parseCloudNativeToolAuthority(value, this.binding);
+		signal.throwIfAborted();
+		const identityText = JSON.stringify(authority.identity);
+		const deadline = started + authority.validForMs;
+		if ((this.#identityText && this.#identityText !== identityText) || deadline <= performance.now()) {
+			throw new Error("Cloud tool authority changed or expired");
+		}
+		this.#identity = authority.identity;
+		this.#identityText = identityText;
+		this.#deadline = deadline;
+		clearTimeout(this.#watchdog);
+		clearTimeout(this.#refresh);
+		this.#watchdog = setTimeout(() => this.close(), Math.max(1, deadline - performance.now()));
+		this.#refresh = setTimeout(
+			() => {
+				void this.assertActive(this.signal).catch(() => undefined);
+			},
+			Math.min(REFRESH_MS, Math.max(1, (deadline - performance.now()) / 2)),
+		);
 	}
 
 	close(): void {
