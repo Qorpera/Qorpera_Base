@@ -83,6 +83,7 @@ The steps below need root on the node and a maintenance window. The coordinator 
    - Restart the executor while it is drained.
    - Run the two printed SQL statements as service role.
    - An executor without a `machines` block makes no machines, but still forwards machine commands to its peers.
+   - Agents see the machine tools only once some executor is enabled (`qorpera_company_machines_available()`, asked at the start of every company run). Until then they are not offered at all, so the SQL statement above is the switch that turns machines on for agents, and disabling every executor turns them off again. Running machines keep their leases either way.
 6. **Roll the observer.** Roll the node observer build that knows `qorpera.lxd-company-machine/v1` before the first machine. An older observer marks the node unavailable when it meets one.
 
 Rollback:

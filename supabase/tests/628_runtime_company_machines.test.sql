@@ -143,6 +143,12 @@ do $$
 declare v_policy jsonb := jsonb_build_object('providerId','machine-fixture','providerPolicySha256',repeat('f',64),'project','machines',
 	'imageFingerprint',repeat('a',64),'bootstrapSha256',repeat('b',64),'storagePool','machines','network','machine-net');
 begin
+	-- Agents are offered machine tools only once a node can serve them (20260929350000).
+	perform pg_temp.wake_assert(not public.qorpera_company_machines_available()
+		and has_function_privilege('service_role','public.qorpera_company_machines_available()','execute')
+		and not has_function_privilege('authenticated','public.qorpera_company_machines_available()','execute')
+		and not has_function_privilege('anon','public.qorpera_company_machines_available()','execute'),
+		'No machine executor yet: no machine tools, and only the service role may ask');
 	perform pg_temp.node('30000000-0000-4000-8000-000000000410',repeat('c',64),'machine-a',16000,68719476736);
 	perform public.qorpera_enroll_runtime_node_provider('30000000-0000-4000-8000-000000000410',repeat('c',64),'machine','machine-fixture',
 		repeat('f',64),8000,34359738368);
@@ -150,7 +156,10 @@ begin
 	perform pg_temp.wake_error($sql$select public.qorpera_configure_machine_executor('mx-a',repeat('c',64),true,'{"providerId":"x"}',322122547200)$sql$,'22023');
 	-- The disk the node's pool gives machines is part of enabling it.
 	perform pg_temp.wake_error(format($sql$select public.qorpera_configure_machine_executor('mx-a',repeat('c',64),true,%L,null)$sql$,v_policy),'22023');
+	perform public.qorpera_configure_machine_executor('mx-a',repeat('c',64),false,v_policy,322122547200);
+	perform pg_temp.wake_assert(not public.qorpera_company_machines_available(), 'A disabled executor serves no machines');
 	perform public.qorpera_configure_machine_executor('mx-a',repeat('c',64),true,v_policy,322122547200);
+	perform pg_temp.wake_assert(public.qorpera_company_machines_available(), 'An enabled executor offers the machine tools');
 	perform pg_temp.wake_error($sql$select public.qorpera_configure_machine_executor('mx-a',repeat('d',64),true,null,322122547200)$sql$,'22023');
 	perform pg_temp.wake_error(format($sql$select public.qorpera_configure_machine_executor('mx-a',repeat('d',64),true,%L,322122547200)$sql$,v_policy),'42501');
 end $$;

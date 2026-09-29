@@ -225,6 +225,17 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				CLOUD_PAIRED_REQUEST_TIMEOUT_MS,
 			);
 			wakeRequest.catch(() => undefined);
+			// Machines are offered only once a node can serve them (an enabled machine executor):
+			// until then every call would only be refused. Anything but a clear yes keeps them away.
+			const machinesRequest = this.#machines
+				? cloudToolRequest(
+						(requestSignal) => this.#paths.call("qorpera_company_machines_available", {}, requestSignal),
+						signal,
+					).then(
+						(value) => value === true,
+						() => false,
+					)
+				: Promise.resolve(false);
 			const context = parseCloudNativeCompanyContext(await contextRequest, binding);
 			stage = "bundle-compatibility";
 			assertCloudRuntimeBundle(context.identity, this.#sha256);
@@ -236,6 +247,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			// occurrence's typed envelope and kernel-owned reply policy, never a job flag.
 			stage = "wake-envelope";
 			const wake = parseCloudWakeEnvelope(await wakeRequest, context.identity);
+			const machinesAvailable = await machinesRequest;
 			// A coding session's turn is its own composition: three command tools in
 			// the credential-free repository VM and two ways to end the turn.
 			if (wake.kind === "agent" && wake.source.kind === "worker-dispatch" && wake.payload.species === "coding") {
@@ -554,7 +566,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 								// Machines are the company's: any agent run in a company conversation may start and
 								// use them and hears about them in that conversation; a worker uses them like its agent
 								// but waits for its own commands in its run (Jonas, 2026-09-28).
-								...(this.#machines && identity.audienceKind === "company"
+								...(this.#machines && machinesAvailable && identity.audienceKind === "company"
 									? cloudMachineTools({
 											binding,
 											identity,
