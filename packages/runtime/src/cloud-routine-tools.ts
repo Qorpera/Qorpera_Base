@@ -21,6 +21,9 @@ const WEEKDAYS = ["sunday", "monday", "tuesday", "wednesday", "thursday", "frida
 const BUSINESS_DAYS = ["monday", "tuesday", "wednesday", "thursday", "friday"] as const;
 const REPLY = ["optional", "required", "silent"] as const;
 const ACTIONS = ["list", "upsert", "pause", "resume", "remove", "conclude"] as const;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+/** An event type as a sender names it: printable ASCII without spaces, at most 128 characters. */
+const EVENT_TYPE = /^[\x21-\x7e]{1,128}$/;
 const DECISIONS = ["next", "conclude"] as const;
 
 function object(value: unknown, allowed: readonly string[], required: readonly string[]): Record<string, unknown> {
@@ -152,6 +155,29 @@ function compileTrigger(value: unknown): Record<string, unknown> {
 			replyPolicy: reply(t.report),
 		};
 	}
+	if (kind === "event") {
+		const t = object(value, ["kind", "hookId", "only", "timeZone", "report"], ["kind", "hookId", "timeZone"]);
+		if (typeof t.hookId !== "string" || !UUID.test(t.hookId)) throw new Error("Invalid routine hook");
+		const only =
+			t.only === undefined
+				? {}
+				: Array.isArray(t.only) &&
+						t.only.length >= 1 &&
+						t.only.length <= 20 &&
+						new Set(t.only).size === t.only.length &&
+						t.only.every((type) => typeof type === "string" && EVENT_TYPE.test(type))
+					? { only: [...t.only] }
+					: undefined;
+		if (!only) throw new Error("Invalid routine event types");
+		return {
+			kind: "listener",
+			source: "event",
+			hookId: t.hookId.toLowerCase(),
+			...only,
+			timeZone: timeZone(t.timeZone),
+			replyPolicy: reply(t.report),
+		};
+	}
 	throw new Error("Invalid routine trigger");
 }
 
@@ -159,8 +185,8 @@ export const CLOUD_ROUTINE_TOOL_DESCRIPTION =
 	"Set up your own standing work. A routine wakes you, this same agent, with the stored intent, while no member is online. " +
 	"No member approval is needed; use it whenever a responsibility or a request calls for repeated attention, and tell the member what you set up. " +
 	"Actions: list, upsert, pause, resume, conclude, remove. A routine always belongs to you. Reuse one routineKey for the same standing work so a change becomes a new version instead of a duplicate; list first when unsure. " +
-	"trigger is exactly one of: dynamic (you choose each next run: optional firstRunAt with its offset, default now, or for an existing dynamic routine its next run if that is still ahead; and the member's IANA timeZone), every (minutes 5-10080, optional firstRunAt with its offset), weekly (localTime HH:MM, IANA timeZone, weekdays default Monday to Friday, optional firstRunAt with its offset), or file_change (a Company File path you can read, match exact or subtree). Use the member's time zone from the wake time context. " +
-	"Prefer dynamic when the right time for the next look depends on what you find: learning a new responsibility, following something up, watching a situation. It runs once at firstRunAt; each run then sets the next run, with adjusted instructions if the work changed, or concludes the routine. Use every or weekly for work tied to the clock, such as a Monday report, and file_change to react to a file. " +
+	"trigger is exactly one of: dynamic (you choose each next run: optional firstRunAt with its offset, default now, or for an existing dynamic routine its next run if that is still ahead; and the member's IANA timeZone), every (minutes 5-10080, optional firstRunAt with its offset), weekly (localTime HH:MM, IANA timeZone, weekdays default Monday to Friday, optional firstRunAt with its offset), file_change (a Company File path you can read, match exact or subtree), or event (hookId, the id of one of the company's hooks from list_hooks; optional only, the event types to take; and an IANA timeZone). Use the member's time zone from the wake time context. " +
+	"Prefer dynamic when the right time for the next look depends on what you find: learning a new responsibility, following something up, watching a situation. It runs once at firstRunAt; each run then sets the next run, with adjusted instructions if the work changed, or concludes the routine. Use every or weekly for work tied to the clock, such as a Monday report, file_change to react to a file, and event to react to what other services send, such as a form submission, a payment or an alert: each run gets the events that arrived, up to 20 at a time. " +
 	"A new every or weekly routine runs once right away as a kickoff, then on its schedule; give firstRunAt only when the first run really must wait. Start dense while a responsibility is new to you and use those early runs to learn what the work needs. Never leave new standing work idle for days waiting for its first slot. " +
 	"Write intent as a complete instruction to your future self: what to read, what to decide, when to tell someone and when to stay silent. report is optional (speak only when useful), required (always report) or silent (never speak). When you pick a threshold or cadence nobody gave you, tell the member it is your starting assumption so they can correct it. " +
 	"effort is the thinking depth of each routine run: low, medium or high; a new routine starts at medium and a save without effort keeps what it has. Choose high for judgement-heavy analysis, low for a quick check; conversations with members stay at the thread default. " +
@@ -287,6 +313,24 @@ export function cloudRoutineTools(
 								kind: { const: "file_change" },
 								path: { type: "string", minLength: 1, maxLength: 1024 },
 								match: { type: "string", enum: ["exact", "subtree"] },
+								timeZone: zoneSchema,
+								report: reportSchema,
+							},
+						},
+						{
+							type: "object",
+							additionalProperties: false,
+							required: ["kind", "hookId", "timeZone"],
+							properties: {
+								kind: { const: "event" },
+								hookId: { type: "string", pattern: UUID.source },
+								only: {
+									type: "array",
+									minItems: 1,
+									maxItems: 20,
+									uniqueItems: true,
+									items: { type: "string", pattern: EVENT_TYPE.source },
+								},
 								timeZone: zoneSchema,
 								report: reportSchema,
 							},
