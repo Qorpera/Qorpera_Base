@@ -62,7 +62,12 @@ afterEach(async () => {
 	await rm(root, { recursive: true, force: true });
 });
 
-async function fixture(mode = "company-runtime", httpPathControl = false, presence?: CloudCompanyPathPresenceFactory) {
+async function fixture(
+	mode = "company-runtime",
+	httpPathControl = false,
+	presence?: CloudCompanyPathPresenceFactory,
+	machines = false,
+) {
 	const f = nativeCompanyContextFixture();
 	if (mode === "company-silent" || mode === "company-worker") {
 		f.context = { ...f.context, identity: { ...f.context.identity, sessionId: null } };
@@ -528,6 +533,22 @@ async function fixture(mode = "company-runtime", httpPathControl = false, presen
 		timeoutMs: 10_000,
 		...(secretBroker ? { secretBroker } : {}),
 		...(mode === "company-office" ? { computerSession: officeSession } : {}),
+		// A machines gateway only offers the tools here; this suite never runs a command.
+		...(machines
+			? {
+					machines: () => ({
+						start: async () => {
+							throw new Error("No machine command in this suite");
+						},
+						read: async () => {
+							throw new Error("No machine command in this suite");
+						},
+						cancel: async () => {
+							throw new Error("No machine command in this suite");
+						},
+					}),
+				}
+			: {}),
 	});
 	const identityRoot = join(root, "identity");
 	await mkdir(join(identityRoot, "codex"), { recursive: true, mode: 0o700 });
@@ -1237,6 +1258,54 @@ it("runs a background worker blank: reading tools and its report, no mouth, no c
 	// A read-only worker follows skills but writes none, so it gets no guidance on keeping them.
 	expect(evidence.threadParameters.developerInstructions).not.toContain("# Skills");
 	expect(evidence.threadParameters.developerInstructions).not.toContain("# This wake: a message from a coworker");
+});
+
+it("gives a worker the company's machine tools, without notify (Jonas, 2026-09-28)", async () => {
+	const f = await fixture("company-worker", false, undefined, true);
+	await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+	const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
+	const tools = evidence.threadParameters.dynamicTools[0].tools as {
+		name: string;
+		inputSchema: { properties: object };
+	}[];
+	expect(
+		tools
+			.map((tool) => tool.name)
+			.filter((name) => name.startsWith("machine_"))
+			.sort(),
+	).toEqual([
+		"machine_cancel",
+		"machine_delete",
+		"machine_list",
+		"machine_read",
+		"machine_run",
+		"machine_start",
+		"machine_stop",
+	]);
+	expect(tools.find((tool) => tool.name === "machine_run")?.inputSchema.properties).not.toHaveProperty("notify");
+	// It waits inside the call instead.
+	expect(tools.find((tool) => tool.name === "machine_start")?.inputSchema.properties).toHaveProperty("waitSeconds");
+	expect(tools.find((tool) => tool.name === "machine_read")?.inputSchema.properties).toHaveProperty("waitSeconds");
+	// Still no mouth, coworkers or delegation.
+	expect(tools.map((tool) => tool.name)).not.toContain("send_message");
+	expect(tools.map((tool) => tool.name)).not.toContain("manage_worker");
+	expect(tools.map((tool) => tool.name)).not.toContain("send_coworker_message");
+});
+
+it("gives a company conversation's run the machine tools with notify, and no waiting", async () => {
+	const f = await fixture("company-runtime", false, undefined, true);
+	await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+	const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
+	const tools = evidence.threadParameters.dynamicTools[0].tools as {
+		name: string;
+		inputSchema: { properties: object };
+	}[];
+	expect(tools.filter((tool) => tool.name.startsWith("machine_"))).toHaveLength(7);
+	expect(tools.find((tool) => tool.name === "machine_run")?.inputSchema.properties).toHaveProperty("notify");
+	expect(tools.find((tool) => tool.name === "machine_start")?.inputSchema.properties).not.toHaveProperty(
+		"waitSeconds",
+	);
+	expect(tools.find((tool) => tool.name === "machine_read")?.inputSchema.properties).not.toHaveProperty("waitSeconds");
 });
 
 it("starts the run without the open-work count when the kernel cannot give it", async () => {

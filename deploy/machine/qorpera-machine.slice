@@ -1,0 +1,10 @@
+[Unit]
+Description=Commands agents run on this company machine
+
+[Slice]
+CPUAccounting=yes
+MemoryAccounting=yes
+TasksAccounting=yes
+# Keep a little memory for the machine's own control (the executor's helper,
+# the watchdog and the LXD agent) when a job fills the rest.
+MemoryMax=95%

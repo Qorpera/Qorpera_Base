@@ -19,8 +19,10 @@ import {
 } from "node:fs/promises";
 import { dirname } from "node:path";
 import {
+	COMPANY_COMPUTER_BOOTS_ROOT,
 	COMPANY_COMPUTER_PREPARATION_MAX_BYTES,
 	COMPANY_COMPUTER_RESET_CONFIGURATION_MAX_BYTES,
+	companyComputerBootDirectory,
 } from "@qorpera/contracts";
 import { readCompanyComputerPreparationProtected } from "../../src/cloud-company-computer-preparation-control.ts";
 import { controlCompanyComputerResetConfiguration } from "../../src/cloud-company-computer-reset-configuration-control.ts";
@@ -39,7 +41,8 @@ import {
 } from "./company-computer-reset-service-restart.ts";
 
 const root = "/run/qorpera-office-preparation",
-	mountPoint = "/var/lib/qorpera-office";
+	mountPoint = "/var/lib/qorpera-office",
+	credentials = "/etc/qorpera-office/credentials";
 const load = async (path: string) => JSON.parse(await readFile(path, "utf8"));
 const save = (path: string, value: unknown, mode = 0o600) => writeFile(path, encode(value), { mode });
 const inactive = {
@@ -185,10 +188,14 @@ if (mode === "--configure") {
 	);
 	const scenarios = [
 		"configuration-old-credentials",
+		"configuration-open-credentials",
+		"configuration-other-boot-credentials",
+		"configuration-other-boot-empty-credentials",
 		"configuration-stage-mode",
 		"configuration-stage-owner",
 		"configuration-preparation-differs",
 		"normal",
+		"start-other-boot-credentials",
 		"initial-lost-reply",
 		"initial-unknown",
 		"initial-crash",
@@ -224,10 +231,17 @@ if (mode === "--configure") {
 	for (const scenario of scenarios) {
 		for (const parent of [root, "/etc/qorpera-office", mountPoint])
 			for (const name of await readdir(parent)) await rm(`${parent}/${name}`, { recursive: true, force: true });
-		// Recreated root deliberately has no historical credential directory.
 		const f = resetServiceRestartFixture({ bootId, mount: { ...mount, mountPoint }, tlsCert, tlsKey }),
 			r = f.restart;
 		for (const [path, file] of f.originFiles) await writeFile(path, file.bytes, { mode: file.mode });
+		// Recreated root has no historical credential, only the directory the image's
+		// tmpfiles fragment (qorpera-office-preparation.conf) creates root-only and empty.
+		await mkdir(credentials, { mode: 0o700 });
+		await chmod(credentials, 0o700);
+		// The same fragment creates the boots root empty; a reset restores no boot
+		// directory, so only this boot's reset configuration adds one.
+		await mkdir(COMPANY_COMPUTER_BOOTS_ROOT, { mode: 0o755 });
+		await chmod(COMPANY_COMPUTER_BOOTS_ROOT, 0o755);
 		await mkdir(f.historyDirectory, { recursive: true, mode: 0o700 });
 		for (const [path, bytes] of f.archiveFiles) await writeFile(path, bytes, { mode: 0o600 });
 		for (const path of [dirname(f.receipt.layout.workbenchRoot), ...Object.values(f.receipt.layout)]) {
@@ -241,6 +255,15 @@ if (mode === "--configure") {
 		await save(`${root}/fixture-configuration.json`, f.configurationCommand);
 		await writeFile(`${root}/control.lock`, "", { mode: 0o600 });
 		const lock = await open(`${root}/control.lock`, "r+");
+		/** A surviving root keeps its earlier boots' directories, 0755 with 0700 credentials. */
+		const otherBootCredentials = async (filled: boolean) => {
+			const other = companyComputerBootDirectory(f.input.predecessor.startup.bootId);
+			assert.notEqual(other, f.directory);
+			await mkdir(`${other}/credentials`, { recursive: true, mode: 0o700 });
+			await chmod(other, 0o755);
+			await chmod(`${other}/credentials`, 0o700);
+			if (filled) await writeFile(`${other}/credentials/config.json`, "predecessor configuration", { mode: 0o400 });
+		};
 		const run = (mode: string, selected = "normal", locked = true) =>
 			spawnSync(
 				locked ? "/usr/bin/flock" : process.execPath,
@@ -260,12 +283,18 @@ if (mode === "--configure") {
 			if (scenario.startsWith("configuration-")) {
 				const stage = `${root}/reset-configuration-incoming-${f.configurationCommand.requestSha256}.json`;
 				if (scenario === "configuration-old-credentials")
-					await mkdir("/etc/qorpera-office/credentials", { mode: 0o700 });
+					await writeFile(`${credentials}/config.json`, "predecessor configuration", { mode: 0o400 });
+				if (scenario === "configuration-open-credentials") await chmod(credentials, 0o755);
+				if (scenario.startsWith("configuration-other-boot-"))
+					await otherBootCredentials(scenario === "configuration-other-boot-credentials");
 				if (scenario === "configuration-stage-mode") await chmod(stage, 0o644);
 				if (scenario === "configuration-stage-owner") await chown(stage, 1000, 1000);
 				if (scenario === "configuration-preparation-differs")
 					await writeFile("/etc/qorpera-office/preparation.json", "changed", { mode: 0o444 });
-				assert.equal(run("--configure").status, 1, "invalid reset configuration custody must be refused");
+				const refused = run("--configure");
+				assert.equal(refused.status, 1, "invalid reset configuration custody must be refused");
+				if (scenario.endsWith("-credentials"))
+					assert.match(refused.stderr, /\[cause\]: Error: stale root authority present/);
 				await assert.rejects(lstat(f.paths.configuration), { code: "ENOENT" });
 				await assert.rejects(lstat(f.paths.completion), { code: "ENOENT" });
 				assert.equal(await readFile(note, "utf8"), "edited after adoption");
@@ -314,6 +343,29 @@ if (mode === "--configure") {
 			await save(`${root}/fixture-initial-command.json`, f.startCommand);
 			await save(`${root}/fixture-initial-target.json`, f.startCompletion);
 			await save(`${root}/fixture-starts.json`, 0);
+			if (scenario === "start-other-boot-credentials") {
+				// After reset configuration wrote this boot's credentials, another boot's
+				// directory still refuses the start before any claim or dispatch.
+				await otherBootCredentials(true);
+				const refused = run("--initial-start");
+				assert.equal(refused.status, 1, "another boot's credentials must refuse the reset start");
+				assert.match(refused.stderr, /\[cause\]: Error: stale root authority present/);
+				assert.equal(await load(`${root}/fixture-starts.json`), 0, "refused start dispatched");
+				await assert.rejects(lstat(f.paths.claim), { code: "ENOENT" });
+				await assert.rejects(lstat(f.paths.completion), { code: "ENOENT" });
+				console.log(
+					JSON.stringify({
+						scenario,
+						actualRootControl: true,
+						actualKernelFlock: true,
+						actualResetConfiguration: true,
+						starts: 0,
+						syntheticSystemdSqlAndPriorBoot: true,
+						deployed: false,
+					}),
+				);
+				continue;
+			}
 			if (scenario.startsWith("initial-")) {
 				const selected = scenario.slice("initial-".length),
 					first = run("--initial-start", selected);
@@ -340,7 +392,12 @@ if (mode === "--configure") {
 			ok("--initial-start");
 			assert.equal(await load(`${root}/fixture-starts.json`), 1);
 			assert.deepEqual(await load(f.paths.completion), f.startCompletion);
-			await assert.rejects(lstat("/etc/qorpera-office/credentials"), { code: "ENOENT" });
+			const kept = await lstat(credentials);
+			assert.ok(
+				kept.isDirectory() && kept.uid === 0 && kept.gid === 0 && (kept.mode & 0o7777) === 0o700,
+				"credential directory changed",
+			);
+			assert.deepEqual(await readdir(credentials), [], "historical credentials restored");
 			await stop(r);
 			assert.equal(run("--initial-start").status, 1, "stopped reset origin cannot replay its initial start");
 			await save(`${root}/fixture-command.json`, {

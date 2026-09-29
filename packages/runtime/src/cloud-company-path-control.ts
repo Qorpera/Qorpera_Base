@@ -85,6 +85,9 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 			"qorpera_record_action_review",
 			"qorpera_await_action_review",
 			"qorpera_add_agent_review_rule",
+			// Machines agents start (2026-09-28).
+			"qorpera_native_machine_start",
+			"qorpera_native_machine_manage",
 			// Event wakes (W2).
 			"qorpera_list_agent_event_hooks",
 			"qorpera_read_agent_event",
