@@ -143,7 +143,7 @@ do $$
 declare v_policy jsonb := jsonb_build_object('providerId','machine-fixture','providerPolicySha256',repeat('f',64),'project','machines',
 	'imageFingerprint',repeat('a',64),'bootstrapSha256',repeat('b',64),'storagePool','machines','network','machine-net');
 begin
-	-- Agents are offered machine tools only once a node can serve them (20260929350000).
+	-- Agents are offered machine tools only once a node can serve them (20260928259350).
 	perform pg_temp.wake_assert(not public.qorpera_company_machines_available()
 		and has_function_privilege('service_role','public.qorpera_company_machines_available()','execute')
 		and not has_function_privilege('authenticated','public.qorpera_company_machines_available()','execute')

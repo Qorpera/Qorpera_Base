@@ -467,7 +467,7 @@ Coordinator (nothing secret):
 ## Zero (build step 6; built switched off)
 
 - The check is `qorpera_company_at_zero(p_profile_id, at)` (migration `20260928249200`; since
-  `20260929300000` it also needs the company recorded in the zero state, see "Bounded cost"). The
+  `20260928259300` it also needs the company recorded in the zero state, see "Bounded cost"). The
   full check is true only when the rule is switched on (`qorpera_computer_hour_billing.zero_rule_since`, null until the
   live switch), payments are live (dry-run balances never hold work), and
   `qorpera_company_computer_hours_left(p_profile_id)` (step 3) is zero or less. That value is null
@@ -475,7 +475,7 @@ Coordinator (nothing secret):
   period that ended in the last 30 minutes still counts as paying, while no next period is recorded
   and its subscription is `active` or `past_due`. Stripe's renewal invoice can trail the period's
   end by minutes, and the subscription's own dates can move first.
-- Bounded cost (migration `20260929300000`): `qorpera_company_at_zero` first looks the company up in
+- Bounded cost (migration `20260928259300`): `qorpera_company_at_zero` first looks the company up in
   the zero state the sweep keeps (6c part 1). A company not recorded there is not at zero, at the
   cost of one key lookup; the full check (`qorpera_company_at_zero_now`, as above) runs only for a
   recorded company, so leaving zero counts at once and running out counts from the next sweep, up
@@ -490,7 +490,7 @@ Coordinator (nothing secret):
   0.22 s (it grows in a straight line, each term an index lookup for its company); the old checks
   took about 2 s for 3,000. One company's hours left cost the same as before.
 - Members read the wait with `qorpera_company_waiting_for_hours(p_profile_id)` (migration
-  `20260929280000`), shown above the composer in agent threads and group chats, and with
+  `20260928259280`), shown above the composer in agent threads and group chats, and with
   `waitingForHours` in the hours read on Plan & usage.
 - Build step 6a (migration `20260928249200`, runs only):
   - wakes stay queued with `blocked_reason = 'Waiting for computer hours'`;
@@ -530,7 +530,7 @@ Coordinator (nothing secret):
     recorded more than about 40 minutes late (grace plus the email's ten-minute wait) sends a
     false "out of hours".
 
-- Build step 6c part 3b (migration `20260929270000`, the finishing window for runs): one hour
+- Build step 6c part 3b (migration `20260928259270`, the finishing window for runs): one hour
   after a company ran out, while it is still at zero (`qorpera_computer_hour_finish_window_over`,
   which checks at zero again, so a record up to one sweep old never ends work):
   - the orchestrator heartbeat (`qorpera_reconcile_runner_orchestrator_without_sponsored_turns`)
@@ -557,7 +557,7 @@ Coordinator (nothing secret):
     "Waiting for computer hours" on it;
   - at the switch, and after it, watch the sweep: `select swept_at, failed_at, last_error from
     public.qorpera_computer_hour_zero_sweep_status`. With the rule on it is the only sender of
-    "out of hours", the finishing window acts on its records, and (since `20260929300000`) the
+    "out of hours", the finishing window acts on its records, and (since `20260928259300`) the
     zero check needs its record: a sweep that keeps failing, or a stopped meter job, means no
     email, no finishing window and no held work, so a company that runs out keeps starting work
     and owing;
@@ -617,7 +617,7 @@ Before the switch (all of these hold):
   both nodes (their binaries installed) before it can be returned.
 - Members see their hours left, by source, on Plan & usage from the switch on
   (contract items 5 and 12; "Plan & usage (web)" below): `hoursLeft` in the member hours read
-  and the company card (migration `20260929330000`) are live first.
+  and the company card (migration `20260928259330`) are live first.
 - The meter job runs every minute (`qorpera-computer-hour-meter`), and
   `select swept_at, failed_at, last_error from public.qorpera_computer_hour_zero_sweep_status`
   shows a recent `swept_at` and no fresh failure.
@@ -723,7 +723,7 @@ Rollback:
 
 - The company card, seen by every member: hours used this month, by kind; from the live switch also
   by source, and hours left (`hoursLeft` in `qorpera_read_company_computer_hours`, migration
-  `20260929330000`: null before the switch, "complimentary", or hours left with free, plans, packs
+  `20260928259330`: null before the switch, "complimentary", or hours left with free, plans, packs
   and owed; `founders` only for a founder reading it: each founder's plan and packs, without the
   plan's dates, and former founders' packs on one line). From the live switch, founders also see
   each founder's share and a "Buy hours" button (before it, only founders who are enrolled testers

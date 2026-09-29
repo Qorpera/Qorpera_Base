@@ -116,7 +116,7 @@ async function bounded<T>(
 }
 
 /** SQL authority for retiring a deleted company's powered-off office
- * (20260929320000). The answer to the power_off request is null while the company
+ * (20260928259320). The answer to the power_off request is null while the company
  * lives. After the retirement completed it answers the retired receipt, also
  * after the company's purge. Each call is bounded to five seconds; the delete
  * window is SQL's five-second challenge, counted from before the call. */
