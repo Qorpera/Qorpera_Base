@@ -598,7 +598,7 @@ Before the switch (all of these hold):
   checks (#520), and 6b (machines not starting, waking or staying up at zero; not built yet). 6b's
   node refusal must be known to the node admission, coding executor, fleet and provider parsers on
   both nodes (their binaries installed) before it can be returned.
-- Members see their hours left, and what pays for them, on Plan & usage from the switch on
+- Members see their hours left, by source, on Plan & usage from the switch on
   (contract items 5 and 12; "Plan & usage (web)" below). Today the company card says "Measured,
   not charged yet" and no member read returns hours left: that read and its web card are built
   and live first.
@@ -623,11 +623,13 @@ In advance (nothing secret):
 
 At the agreed minute, in this order:
 
-1. Jonas sets both function secrets in one command (`supabase secrets set
-   QORPERA_STRIPE_SECRET_KEY=sk_live_... QORPERA_STRIPE_WEBHOOK_SECRET=whsec_...`, the live
-   endpoint's secret), and replaces `QORPERA_STRIPE_PORTAL_CONFIGURATION` with the live portal
-   configuration's id, or unsets it, if it was set in test mode. One command, because a live
-   webhook secret with the test key drops live events for good. From here until step 2 nobody can
+1. Jonas sets both function secrets in one command, from a file so the live key stays out of the
+   shell's history: a file with the lines `QORPERA_STRIPE_SECRET_KEY=sk_live_...` and
+   `QORPERA_STRIPE_WEBHOOK_SECRET=whsec_...` (the live endpoint's secret), then
+   `supabase secrets set --env-file <file>`, then deleting the file. He also replaces
+   `QORPERA_STRIPE_PORTAL_CONFIGURATION` with the live portal configuration's id, or unsets it, if
+   it was set in test mode. One command, because a live webhook secret with the test key drops live
+   events for good. From here until step 2 nobody can
    buy (checkout answers "unavailable"), and test purchases stop working, as intended.
 2. The coordinator switches payments and the zero rule on together, with one time for both:
 
@@ -644,8 +646,9 @@ At the agreed minute, in this order:
    balances stay as they were and never count). Plans can be bought by every signed-in account,
    packs by a company's founders. The hour emails are queued, and a company that runs out is
    recorded by the next sweep.
-3. Within the first 30 minutes, a real purchase (a pack, refunded afterwards in Stripe) proves the
-   live webhook: Stripe's dashboard shows the delivery answered 2xx, and
+3. Within the first 30 minutes, a real purchase proves the live webhook: a pack for a company
+   other than step 5's test company (or refunded before step 5, which also proves a live refund),
+   refunded afterwards in Stripe: Stripe's dashboard shows the delivery answered 2xx, and
    `select type, outcome from public.qorpera_computer_hour_stripe_events where livemode order by
    received_at desc limit 5` shows it applied. A wrong webhook secret is answered 400 before
    anything is recorded, so only the dashboard shows it.
@@ -666,7 +669,8 @@ At the agreed minute, in this order:
    An hour on, work that was still running ends with "out of computer hours" (start work that runs
    longer than an hour to see it) and its awake machines stop. Buying a pack (a real charge,
    refunded afterwards) releases the waiting work by itself.
-6. Afterwards, switch off the sandbox webhook endpoint and cancel the testers' test subscriptions.
+6. Afterwards, Jonas switches off the sandbox webhook endpoint in Stripe, then cancels the testers'
+   test subscriptions.
 
 Rollback:
 
@@ -680,18 +684,24 @@ Rollback:
   a refund or dispute of a live purchase goes to review and takes no hours back, a live renewal
   whose payment finally fails is not withdrawn, and a checkout page opened before the stop can
   still be paid (a pack for an hour, a plan for a day), for dry-run hours. So, in this order:
-  1. Jonas expires the open checkout sessions and pauses the live subscriptions in Stripe, and
-     keeps the live keys in place (so Stripe's events are still verified).
-  2. The coordinator runs `update public.qorpera_computer_hour_billing set live_since = null,
-     zero_rule_since = null`. Live checkout closes and balances go back to the dry run; live
-     purchases already made stay in the ledger and count again when live mode is next on.
+  1. The coordinator runs `update public.qorpera_computer_hour_billing set live_since = null,
+     zero_rule_since = null`. New checkouts close at once and balances go back to the dry run;
+     live purchases already made stay in the ledger and count again when live mode is next on.
+  2. Jonas expires the checkout sessions still open (the coordinator lists them:
+     `select stripe_session_id from public.qorpera_computer_hour_checkouts where livemode and
+     completed_at is null and created_at > clock_timestamp() - interval '1 day'`; only packs set
+     `completed_at`, so paid plan sessions show up too and are skipped in Stripe), pauses the
+     live subscriptions, and keeps the live keys in place (so Stripe's events are still verified).
   3. When live mode is on again, the coordinator resends from Stripe's dashboard the live events
      left for review while it was off (refunds and disputes), so they are applied; an event
      already handled is not run again. A live plan whose final payment failed while it was off
-     was recorded without taking its hours back: the coordinator withdraws that period by hand
+     was recorded without taking its hours back (its event is a live one from that window with
+     the detail "renewal withdrawn: 0"): the coordinator withdraws that period by hand
      (`update public.qorpera_computer_hour_sources set withdrawn_at = clock_timestamp() where
-     reference = '<sub_…>:<period start>' and not dry_run`). A renewal paid while it was off is
-     only dry-run hours (pausing, in step 1, prevents it); Jonas refunds any that slipped through.
+     reference = '<sub_…>:<period start in Unix seconds>' and not dry_run`). A pack or plan paid
+     while it was off is only dry-run hours (pausing, in step 2, prevents renewals); Jonas refunds
+     any. Stripe keeps events for a limited time (about 30 days), so a long stop may leave some
+     that can no longer be resent: those are then handled by hand from Stripe's dashboard.
 
 ## Plan & usage (web)
 
