@@ -49,8 +49,10 @@ as $$
 			- coalesce(owed.seconds, 0) end
 	from companies company
 	cross join moment
+	-- offset 0 keeps the founders read once per company (not copied into each term).
 	cross join lateral (
 		select array(select founder.user_id from public.qorpera_company_founders(company.profile_id) founder) as ids
+		offset 0
 	) founders
 	cross join lateral (
 		select exists (
@@ -63,6 +65,8 @@ as $$
 			then free.granted_seconds - free.drawn_seconds else 0 end as seconds
 		from public.qorpera_computer_hour_sources free
 		where free.kind = 'free' and free.profile_id = company.profile_id and free.dry_run = moment.dry_run
+		-- One row at most (a unique index); the limit keeps it a lookup, not a join over every row.
+		limit 1
 	) free on true
 	left join lateral (
 		select sum(plan.granted_seconds - plan.drawn_seconds) as seconds
@@ -81,6 +85,7 @@ as $$
 		select owed.drawn_seconds - owed.repaid_seconds as seconds
 		from public.qorpera_computer_hour_sources owed
 		where owed.kind = 'owed' and owed.profile_id = company.profile_id and owed.dry_run = moment.dry_run
+		limit 1
 	) owed on true
 $$;
 revoke all on function public.qorpera_computer_hour_left_many(uuid[]) from public, anon, authenticated, service_role;
