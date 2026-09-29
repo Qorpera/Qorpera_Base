@@ -1,4 +1,10 @@
-import { ObjectDependency, ObjectDependencyError, readBoundedObjectResponse } from "./dependency.ts";
+import {
+	companyStateFailure,
+	ObjectDependency,
+	ObjectDependencyError,
+	postgrestErrorCode,
+	readBoundedObjectResponse,
+} from "./dependency.ts";
 import type {
 	AuthorizedMemberCompanyObject,
 	MemberCompanyObjectAuthority,
@@ -223,6 +229,7 @@ export class SupabaseObjectAuthority
 				},
 				userToken,
 				this.#publishableKey,
+				true,
 			),
 			"member Company File authority",
 		);
@@ -310,6 +317,7 @@ export class SupabaseObjectAuthority
 				},
 				undefined,
 				this.#secretKey,
+				true,
 			)) !== true
 		)
 			throw new ObjectDependencyError(403);
@@ -332,6 +340,7 @@ export class SupabaseObjectAuthority
 				},
 				undefined,
 				this.#secretKey,
+				true,
 			)) !== true
 		)
 			throw new ObjectDependencyError(403);
@@ -352,6 +361,7 @@ export class SupabaseObjectAuthority
 				},
 				undefined,
 				this.#secretKey,
+				true,
 			),
 		);
 	}
@@ -538,11 +548,15 @@ export class SupabaseObjectAuthority
 		});
 	}
 
+	/** `companyState`: the RPC acts for one company, so its 500s are read with `companyStateFailure`. Profile,
+	 * replication, deletion and migration RPCs keep every 500 a dependency failure: the replication reconciler
+	 * blocks an object on a non-5xx refusal, and a profile read drops its member's read leases on one. */
 	async #rpc(
 		name: string,
 		body: Record<string, unknown>,
 		bearer: string | undefined,
 		apiKey: string,
+		companyState = false,
 	): Promise<unknown> {
 		const headers: Record<string, string> = {
 			...supabaseRequestHeaders(apiKey, bearer),
@@ -556,6 +570,8 @@ export class SupabaseObjectAuthority
 				signal,
 			});
 			if (!response.ok) {
+				if (companyState && response.status === 500)
+					throw companyStateFailure(await postgrestErrorCode(response, signal));
 				void response.body?.cancel().catch(() => undefined);
 				throw new ObjectDependencyError(response.status);
 			}
