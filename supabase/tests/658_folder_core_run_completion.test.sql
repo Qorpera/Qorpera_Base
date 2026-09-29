@@ -259,7 +259,7 @@ begin
 	-- A revoked native lease refuses completion (the folder run check's plain lease check, as on the legacy lane).
 	perform pg_temp.fx(format($f$update public.qorpera_native_provider_connection_leases set status = 'revoked', released_at = clock_timestamp()
 		where id = %L$f$, b ->> 'leaseId'));
-	perform pg_temp.raises(format('select pg_temp.complete(%L)', b), '42501');
+	perform pg_temp.raises_like(format('select pg_temp.complete(%L)', b), '42501', 'native provider execution authority is unavailable');
 	perform pg_temp.fx(format($f$update public.qorpera_native_provider_connection_leases set status = 'active', released_at = null
 		where id = %L$f$, b ->> 'leaseId'));
 	perform pg_temp.fx(format($f$insert into public.qorpera_execution_run_events(run_id, event_type, payload)
@@ -280,14 +280,16 @@ end $$;
 -- nothing in completion writes it.
 do $$
 declare h jsonb := pg_temp.routine_run(); b jsonb := h -> 'binding'; r public.qorpera_execution_run_results;
-	v_before public.qorpera_cloud_routines;
+	v_before public.qorpera_cloud_routines; v_ctid tid;
 begin
 	select * into v_before from public.qorpera_cloud_routines where id = (h ->> 'routine')::uuid;
+	select ctid into v_ctid from public.qorpera_cloud_routines where id = (h ->> 'routine')::uuid;
 	perform pg_temp.complete(b);
 	r := pg_temp.outcome(b ->> 'runId');
 	if r.company_disposition is distinct from 'unchanged'
 		or (select status from public.qorpera_runner_jobs where id = (b ->> 'jobId')::uuid) is distinct from 'completed'
-		or (select to_jsonb(x) from public.qorpera_cloud_routines x where id = (h ->> 'routine')::uuid) is distinct from to_jsonb(v_before) then
+		or (select to_jsonb(x) from public.qorpera_cloud_routines x where id = (h ->> 'routine')::uuid) is distinct from to_jsonb(v_before)
+		or (select ctid from public.qorpera_cloud_routines where id = (h ->> 'routine')::uuid) is distinct from v_ctid then
 		raise exception 'A routine run''s completion: %', to_jsonb(r); end if;
 end $$;
 
