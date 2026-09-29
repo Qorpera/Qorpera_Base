@@ -30,7 +30,8 @@ kept. Usage and computer-hour records stay for bookkeeping, with plain ids (cont
 3. **Finish** (`qorpera_finish_company_deletions`, an operator's pg_cron every minute, up to ten
    companies per call, picked at random so a company that keeps failing never stalls the rest; with
    more open requests than that, each is visited less than once a minute). It repeats
-   `qorpera_stop_company_work`, reads `qorpera_company_node_holdings`, and runs `qorpera_purge_company`
+   `qorpera_stop_company_work`, reads `qorpera_company_node_holdings`, revokes the company's connected
+   accounts and waits for their upstream revoke (D6, at most six hours), and runs `qorpera_purge_company`
    (20260928248920) once nothing is held; stop and purge run in separate subtransactions. Its state
    (`holdings`, `last_error`, `purged_at`) is on the request row. The member's account cannot be deleted
    until the purge (their rows restrict it).
@@ -57,7 +58,7 @@ Rollback: `select cron.unschedule('qorpera-company-deletions')`. Requests then w
 | Credential capsules and recovery backups in Storage | artifact GC worker, from `qorpera_company_storage_deletions` (D5a) | D5a; same worker |
 | Recovery backups on the recovery service's NAS and journal | operator runbook (a per-company service) | last |
 | Coding NAS workspaces `workers/<company>/` | coding executor (D5b) | D5b |
-| Connected-account tokens at Google/GitHub | secret broker, best-effort revoke (D6) | D6 |
+| Connected-account tokens at Google/GitHub | the broker or shared vault that sealed them, from `qorpera_connector_token_revocations` (D6) | D6; live once the broker and vault builds are rolled |
 | Model logins (ChatGPT, Claude) | our rows are purged and a node capsule's Storage object goes with D5a; the member signs out at the provider | by design |
 | Per-company broker units, recovery services, office host config (older companies), office reset archives, the emptied workbench mount and its NAS export | operator runbook | last |
 
@@ -217,4 +218,67 @@ records what it waits for.
   retirement (D3b above; "Office retirement" in RUNTIME-OFFICE-RETENTION.md), and coding workspaces
   `workers/<company>/` (the coding executor cannot remove them alone: their files belong to session
   users; not built yet).
-- **D6** upstream token revoke on delete and on Disconnect.
+- **D6** upstream token revoke on Disconnect and on delete (migration 20260929500000;
+  `cloud-connector-token-revocation.ts`). Until now Disconnect only marked the secret revoked, and a
+  deleted company's tokens stayed live at Google and GitHub (GitHub's never expire).
+  - Each time a Gmail, Drive or GitHub secret goes from active to revoked (Disconnect, a member's
+    removal, a company's deletion), a trigger queues each stored version in
+    `qorpera_connector_token_revocations`. The ledger has no link to the company and never holds a
+    token or an account name, so its rows outlive the purge as receipts.
+  - Deleting a company: each finisher pass revokes the company's connector secrets and their grants
+    (secrets locked in id order; a connection captured late goes too), counts the open entries as
+    `holdings.connector_tokens` and waits for them. Each entry gets six hours from the later of the
+    deletion request and its own queueing; then the finisher marks what is still open `abandoned` right
+    before the purge, which deletes the envelopes. A member's Disconnect racing a deleting company's
+    finisher can deadlock; Postgres ends one of them and the finisher retries at its next pass.
+  - The broker that sealed a version claims it once a minute (a company's own broker, or the shared
+    vault for each company it serves; `qorpera_claim_connector_token_revocations`, leased five
+    minutes, entries that keep failing last), opens the envelope, cancels the token and records the
+    outcome (`qorpera_complete_connector_token_revocation`). An error is recorded as a fixed phrase and
+    the entry is offered again after one minute, doubling to an hour. Google: `POST /revoke` with the
+    refresh token in the form body; 200 `revoked`, 400 `invalid_token` `already_invalid`. GitHub (our
+    one OAuth App): `DELETE /applications/{client_id}/token`, which revokes that one token and never
+    the user's whole grant; 204 `revoked`; any other answer is checked with GitHub's token check
+    (`POST` to the same path), where 404 means `already_invalid` (to confirm at the first real
+    revoke). GitHub may also answer 404 when the client credentials are wrong, so a unit with a wrong
+    GitHub client secret would record live tokens as `already_invalid` (lane step 2 checks it). A typed
+    personal token (`ghp_`, `github_pat_`) is `not_ours`; a `gho_` token of another OAuth app comes out
+    `already_invalid`.
+  - Google withdraws the account's whole grant to our client on any revoke. By Jonas's option A
+    (29 Sep), an entry whose Google account is still connected (an active Gmail or Drive secret with
+    the same account name, in any company not being deleted, this one included) completes as
+    `kept_shared` without a call; so does one with no account name. Only a Google secret's current
+    version is revoked: its account name is the only one known (a reconnect may have changed the
+    account), and the revoke withdraws the older tokens of that account too; older versions complete
+    as `superseded`. A disconnected Google entry is due ten minutes after the Disconnect, so a quick
+    reconnect of the same account counts as still connected. Our copy is revoked either way.
+  - Not covered, for the member or the operator:
+    - revoked by the member at the provider: a Google account kept connected elsewhere
+      (`kept_shared`), a Google connection with no account name, the older tokens of another account
+      that a reconnect replaced (`superseded`), and typed GitHub tokens (`not_ours`);
+    - a current Google version whose account name is stale (a reconnect whose identity lookup failed
+      keeps the old name) is judged by that name, and so could withdraw another company's grant of
+      the new account;
+    - a reconnect of the same Google account whose consent lands between the claim and the revoke
+      call (after the ten minutes) loses its new grant; the member connects again;
+    - connections disconnected before this migration are not queued (no backfill);
+    - the GitHub revoke uses the unit's current client credentials: a rotated or wrong secret fails
+      those entries or records them `already_invalid`; an entry whose broker was retired is never
+      claimed (a deletion abandons it at six hours).
+  Coordinator's lane for D6, at the cut that carries 20260929500000:
+  1. Build `node scripts/package-cloud-secret-broker.mjs` from the release commit and roll it, within
+     six hours of the cut (before it is fine: without the migration a pass logs one line and does
+     nothing), to the shared vault (node 1 and node 2's standby) and to every company broker unit
+     still running. Each unit needs its `qorpera-cloud-secret-connectors` credential with the GitHub
+     client, or its GitHub entries fail with "the GitHub client is not configured". Until a unit runs
+     the new build, its companies' entries wait, and a deletion purges after six hours with them
+     `abandoned`.
+  2. Check: `journalctl -u <unit>` shows `Connector token revocation: N completed` after a deletion or
+     Disconnect with a connected account, and `select outcome, count(*) from
+     public.qorpera_connector_token_revocations group by 1` has no entry left open for long. On each
+     unit, connect and then disconnect a throwaway GitHub account: its entry must complete `revoked`
+     (a wrong client secret shows as `already_invalid`). Where no member session in that unit's
+     company is at hand, compare the unit's GitHub client credentials with the shared vault's. At the
+     first revoke of a token GitHub no longer knows, confirm it completes as `already_invalid`.
+  3. After a company with its own broker unit is purged, retire the unit and delete its keyring
+     (operator runbook, "Per-company broker units").
