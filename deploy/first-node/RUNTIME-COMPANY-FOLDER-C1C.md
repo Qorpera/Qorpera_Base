@@ -268,7 +268,8 @@ within 63 characters.
 ### 5.4 Dispatch on core
 
 As in C1c-1, a line inserted at the start of each function sends `folder-v2` to its new body. The snapshot-v1 text
-after that line stays byte-identical, and its digest is checked at migration time.
+after that line stays byte-identical, and its digest (the body without the line, or with a text patch reversed) is
+checked by each slice's functional test (647, 652, 656, 658).
 
 | Function | `folder-v2` | Slice |
 | --- | --- | --- |
@@ -401,7 +402,10 @@ after that line stays byte-identical, and its digest is checked at migration tim
     admission row are different tables. `folder-v2` never touches the legacy one.
   - The legacy multi-company loops skip `folder-v2` companies before their first lock, so one company never stops the
     pass for others. The skip sits in each scan's `WHERE` clause: a skip after the select would leave those wakes at
-    the head of every pass, and snapshot-v1 wakes would stop materializing. They stay legacy-only (C4).
+    the head of every pass, and snapshot-v1 wakes would stop materializing. They stay legacy-only (C4). Two limits:
+    skipped `folder-v2` wakes are never stamped, so they stay at the head of the scan's order and each pass checks
+    them again (none exist before C2; C4 gives them their own drain); and the routine expiry sweep, which does not
+    skip (below), can still end a pass with its documented 40P01 against a multi-routine folder save.
   - As built (2c part 1, migration 20260929580000):
     - `qorpera_folder_admit_wakes(profile)` updates the admission row (its `admitted` count), which takes it `FOR NO KEY
       UPDATE`, and sets the transaction mark `qorpera.folder_wake_admission` to the company id. A company with no
@@ -426,6 +430,20 @@ after that line stays byte-identical, and its digest is checked at migration tim
       retryable conflict. Today's results are kept: the replay, the version and position conflicts, the pause and
       zero-hours deferrals.
     - No legacy wake inserter serves `folder-v2` after this: each lacks the mark and refuses (55000).
+    - The scheduler's other step, `advance_routine_next_due`, takes this company's row `KEY SHARE` on `folder-v2`
+      instead of the gc fence; its routine `FOR SHARE` and position `FOR UPDATE` follow as today (review r1 S3; 657 D3).
+    - A member joining, leaving or changing role fires `qorpera_agent_threads_on_member`, which re-ensures every agent
+      thread: a room `FOR UPDATE`, its members, its conversation, one agent after another in scan order. On
+      `folder-v2` it first takes every thread room `FOR UPDATE` in id order, then every thread conversation, through
+      `qorpera_folder_lock_agent_threads`, so it never holds one room and waits for another that a message holds
+      (review r1 S2; 657 E2). The rest of member management (the company row `FOR UPDATE` in removal and role
+      change) is C1c-3's.
+    - The pin trigger's `folder-v2` mode refuses office-activation and machine-event wakes (0A000): their ancestry
+      checks lock rows (`qorpera_office_waiter_authorized` takes the company row `FOR UPDATE NOWAIT`), and neither
+      source serves `folder-v2` until C1c-3.
+    - Foreign-key `KEY SHARE` locks after admission: a wake insert's keys to the environment, the parent run, the
+      requester, the sponsor version, the logical computer and the routine version. No path locks those rows more
+      strongly in a way that waits for admission today; C1c-3's activation check lists them (review r1 N4).
 - **`send_coworker_message`** (`qorpera_folder_send_coworker_message`, 2c part 1):
   1. the run mutex, the job, the fence, rank 0;
   2. ranks 1 and 2 for sender and recipient, rank 3 for the recipient's authority, rank 4 for both agents' thread rooms
@@ -433,11 +451,17 @@ after that line stays byte-identical, and its digest is checked at migration tim
      and the target must not be strengthened later). The targets come from an unlocked read before the run check;
      after it, a thread room that exists and is not held in the mode its thread now needs refuses the message as
      a retryable conflict (QRC01, 409, "Coworker thread changed while the message waited"; test 657 C; never 40001,
-     which PostgREST would retry on its own, test 361);
+     which PostgREST would retry on its own, test 361). The same check runs again once the conversations are locked
+     (step 6): a member may close a thread holding only its conversation (`qorpera_close_shared_session`), so a
+     thread can close after the first check; the helper would then take its room `FOR UPDATE` over this message's
+     `KEY SHARE`, an upgrade that deadlocks two crossed messages (review r1 B1; 657 C2). The runtime does not retry
+     QRC01 today (C3);
   3. the receipt (run-owned);
   4. the recheck, plus the parent read-set check of C1B-2 §4 (`qorpera_folder_parent_reads_allowed` on the wake the
      message would insert: every row of the run's read set is readable by the requester and the recipient);
-  5. the pair lock (`pg_advisory_xact_lock` on the pair key, as `agent_pair_session_internal` takes it);
+  5. the pair lock (`pg_advisory_xact_lock` on the pair key, as `agent_pair_session_internal` takes it), before the
+     pair conversation is read: a first message of the pair may be creating it, and a message that read it before
+     that commits would lock the pair conversation after the threads, out of id order (review r1 S1; 657 C3);
   6. the existing pair and thread sessions, `FOR UPDATE` in id order (`qorpera_folder_lock_sessions`), then any that
      must be created;
   7. the events;

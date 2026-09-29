@@ -14,7 +14,12 @@
 -- * send_coworker_message and read_native_wake get folder bodies (below).
 -- * Routine firing (qorpera_enqueue_routine_wake) gets its folder mode here rather than in C1c-3, since this migration
 --   closes the legacy path: the fence and this company's row KEY SHARE, the routine's member, agent and authority, the
---   routine FOR NO KEY UPDATE and its schedule position, the public session, admission, the wake. No gc fence.
+--   routine FOR NO KEY UPDATE and its schedule position, the public session, admission, the wake. No gc fence. Its other
+--   step, qorpera_advance_routine_next_due, takes this company's row KEY SHARE instead of the gc fence.
+-- * The member trigger (qorpera_agent_threads_on_member) takes every agent thread room, then every thread conversation,
+--   FOR UPDATE in id order before it re-ensures the threads, so a member joining never crosses a message.
+-- * The pin trigger's folder-v2 mode refuses office-activation and machine-event wakes (0A000): their ancestry checks
+--   lock rows, and neither source serves folder-v2 yet (C1c-3).
 -- * The legacy multi-company loops skip folder-v2 companies in their scans' WHERE clauses, before their first lock:
 --   the wake materializer, the office, worker, machine and Company File drains (with the dynamic-routine tick), and
 --   the session materializer. The turn materializer already skips folder-v2 (its scan requires a head snapshot, which a
@@ -81,8 +86,8 @@ $$;
 --   1. the run check with the recipient's rows as targets: staff (rank 2) and execution authority (rank 3) KEY SHARE,
 --      and both agents' thread rooms (rank 4), KEY SHARE, or FOR UPDATE for a thread that must be created or reopened
 --      (qorpera_ensure_agent_thread_internal locks its room that way, and a lock is never strengthened later). The
---      targets come from an unlocked read; if a thread changed before the locks, the send refuses as a retryable
---      conflict (QRC01, 409);
+--      targets come from an unlocked read; if a thread changed before the locks, or before its session is locked in step
+--      5 (a member may close a thread holding only its session), the send refuses as a retryable conflict (QRC01, 409);
 --   2. the receipt (run-owned);
 --   3. the recheck at rank 10, and the recipient reads everything the run has read (C1B-2 §4, the parent's reads);
 --   4. the pair lock;
@@ -175,6 +180,15 @@ begin
 		from (select v_pair as id union select room.session_id from public.qorpera_company_rooms room
 			where room.profile_id = v_run.profile_id and room.bound_staff_agent_id in (v_run.staff_agent_id, p_recipient_staff_id)) s
 		where s.id is not null), '[]'::jsonb));
+	-- The sessions are held now, so no thread can close any more: a thread that closed after the check above, while its
+	-- room was taken KEY SHARE, refuses here rather than making the thread helper take the room FOR UPDATE (an upgrade).
+	if exists (select 1 from public.qorpera_company_rooms room
+		left join public.qorpera_shared_sessions session on session.id = room.session_id
+		where room.profile_id = v_run.profile_id and room.bound_staff_agent_id in (v_run.staff_agent_id, p_recipient_staff_id)
+			and not exists (select 1 from jsonb_array_elements(v_targets) t
+				where t ->> 'tbl' = 'qorpera_company_rooms' and t ->> 'key' = room.id::text
+					and (t ->> 'mode' = 'update' or coalesce(room.status = 'active' and session.status = 'open', false)))) then
+		raise sqlstate 'PGRST' using message = jsonb_build_object('code', 'QRC01', 'message', 'Coworker thread changed while the message waited', 'details', null, 'hint', null)::text, detail = '{"status":409,"headers":{}}'; end if;
 	-- The budget: hops along this chain (a held message extends no chain).
 	select coalesce(parent.causal_hop_count,0) + 1,parent.causal_agent_ids into v_hops,v_parent_agents
 	from public.qorpera_wake_occurrences parent where parent.run_id = v_run.id;
@@ -425,7 +439,9 @@ begin
 			v_routine.id, v_version.version, btrim(p_trigger_id), btrim(p_occurrence_key),
 			p_scheduled_for, p_scheduled_for, p_payload
 		) returning * into v_occurrence;
-		-- The trigger chose the session without a lock: it must be the one this call locked.
+		-- The trigger chose the session without a lock: it must be the one this call locked. (If it chose another, that
+		-- session's KEY SHARE came after admission; no holder of a routine's public session waits for admission today:
+		-- messages lock only threads and pair conversations. The refusal below undoes it.)
 		if v_occurrence.session_id is distinct from v_session then
 			raise sqlstate 'PGRST' using message = jsonb_build_object('code', 'QRC01', 'message', 'wake routine audience changed', 'details', null, 'hint', null)::text, detail = '{"status":409,"headers":{}}';
 		end if;
@@ -442,6 +458,21 @@ begin
 	);
 end $$;
 
+-- 5b. A member joining, leaving or changing role on folder-v2 ------------------------------------------------------
+
+-- The member trigger re-ensures every agent thread (qorpera_ensure_agent_thread_internal: the room FOR UPDATE, its
+-- members, then its conversation), one agent after another in scan order. On folder-v2 a message takes the thread rooms
+-- KEY SHARE in id order and then their conversations, so the trigger first takes every thread room FOR UPDATE in id
+-- order and then every thread conversation FOR UPDATE in id order (ranks 4, then sessions), before any of those writes.
+create function public.qorpera_folder_lock_agent_threads(p_profile_id uuid)
+returns void language plpgsql security definer set search_path = '' as $$
+begin
+	perform 1 from public.qorpera_company_rooms where profile_id = p_profile_id and bound_staff_agent_id is not null
+		order by id for update;
+	perform 1 from public.qorpera_shared_sessions where id in (select session_id from public.qorpera_company_rooms
+		where profile_id = p_profile_id and bound_staff_agent_id is not null) order by id for update;
+end $$;
+
 -- 6. Dispatch, the triggers' folder modes and the loops' skips ------------------------------------------------------
 
 do $$
@@ -451,6 +482,18 @@ begin
 		|| 'p_binding, p_recipient_staff_id, p_operation_key, p_text, p_priority); end if;');
 	perform pg_temp.c1c2c1_guard('public.qorpera_read_native_wake(jsonb)',
 		'if public.qorpera_binding_is_folder_v2(p_binding) then return public.qorpera_folder_read_wake(p_binding); end if;');
+	perform pg_temp.c1c2c1_guard('public.qorpera_agent_threads_on_member()',
+		'if public.qorpera_company_is_folder_v2(v_profile) then perform public.qorpera_folder_lock_agent_threads(v_profile); end if;');
+	-- The scheduler's other step moves a schedule position forward: on folder-v2, this company's row KEY SHARE instead of
+	-- the gc fence; the routine FOR SHARE and the position FOR UPDATE follow as today, meeting saves and the scheduler at
+	-- the routine row.
+	perform pg_temp.c1c2c1_replace('public.qorpera_advance_routine_next_due(uuid,bigint,text,timestamp with time zone,timestamp with time zone)',
+		E'\tperform public.qorpera_lock_profile_gc_fence(v_profile_id);\n',
+		E'\tif public.qorpera_company_is_folder_v2(v_profile_id) then\n'
+		|| E'\t\tperform 1 from public.qorpera_profiles where id = v_profile_id for key share;\n'
+		|| E'\telse\n'
+		|| E'\tperform public.qorpera_lock_profile_gc_fence(v_profile_id);\n'
+		|| E'\tend if;\n', 1);
 	-- Routine firing: after the scheduler's own argument checks, in place of the gc fence (which takes the company row
 	-- FOR UPDATE), the folder mode.
 	perform pg_temp.c1c2c1_replace('public.qorpera_enqueue_routine_wake(uuid,bigint,uuid,text,text,timestamp with time zone,timestamp with time zone,timestamp with time zone,jsonb)',
@@ -468,6 +511,8 @@ begin
 		E' if public.qorpera_company_is_folder_v2(new.profile_id) then\n'
 		|| E'\t\tif current_setting(''qorpera.folder_wake_admission'', true) is distinct from new.profile_id::text then\n'
 		|| E'\t\t\traise exception ''Folder wake admission is required'' using errcode = ''55000''; end if;\n'
+		|| E'\t\tif new.source_kind in (''office-activation'', ''machine-event'') then\n'
+		|| E'\t\t\traise exception ''This wake source does not serve folder-v2 yet'' using errcode = ''0A000''; end if;\n'
 		|| E'\telse\n'
 		|| E' perform public.qorpera_serialize_wake_admission(new.profile_id);\n'
 		|| E'\tend if;\n', 1);
@@ -541,3 +586,4 @@ revoke all on function public.qorpera_folder_send_coworker_message(jsonb, uuid, 
 revoke all on function public.qorpera_folder_read_wake(jsonb) from public, anon, authenticated, service_role;
 revoke all on function public.qorpera_folder_enqueue_routine_wake(uuid, bigint, uuid, text, text, timestamptz, timestamptz, timestamptz, jsonb)
 	from public, anon, authenticated, service_role;
+revoke all on function public.qorpera_folder_lock_agent_threads(uuid) from public, anon, authenticated, service_role;
