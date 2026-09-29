@@ -116,6 +116,32 @@ begin
 end
 $$;
 
+-- A retry must not wait for the attempt it repeats. Another session holds the row lock a still-running
+-- first attempt holds (the single-row function's advisory lock on run and attempt); the batch gives up
+-- after its 1 s lock timeout with 55P03, which the runtime backs off on, and records nothing.
+do $$
+declare v_run uuid := (current_setting('qorpera_test.path_binding')::jsonb ->> 'runId')::uuid;
+	v_row jsonb := pg_temp.observation('34000000-0000-4000-8000-0000000000b1'); v_started timestamptz; v_waited interval;
+begin
+	perform dblink_connect('attempt_peer','dbname=' || current_database());
+	perform * from dblink('attempt_peer', format('select pg_advisory_lock(hashtextextended(%L,19970))',
+		'runtime-observation:' || v_run || ':' || (v_row ->> 'attemptId'))) as held(held text);
+	v_started := clock_timestamp();
+	begin
+		set local role service_role;
+		perform public.qorpera_record_runtime_observation_batch(v_run,jsonb_build_array(v_row));
+		raise exception 'A batch waited out a held row lock' using errcode = 'QTB03';
+	exception when lock_not_available then null; end;
+	reset role;
+	v_waited := clock_timestamp() - v_started;
+	perform dblink_disconnect('attempt_peer');
+	if v_waited < interval '0.9 seconds' or v_waited > interval '3 seconds'
+		or exists (select 1 from public.qorpera_runtime_observations where run_id = v_run
+			and attempt_id = '34000000-0000-4000-8000-0000000000b1') then
+		raise exception 'The batch lock timeout differs: waited %', v_waited; end if;
+end
+$$;
+
 -- Retention: the purge's rows only (over 30 days old, terminal job), 200 at a time, bounded per call.
 reset role;
 insert into public.qorpera_runtime_observations(run_id,attempt_id,phase,assignment_id,parent_attempt_id,
@@ -207,6 +233,20 @@ begin
 	if v_command <> 'select public.qorpera_run_runtime_observation_retention()' then
 		raise exception 'Scheduled retention runs another command: %',v_command; end if;
 	execute v_command;
+	-- A caller that may not use pg_cron gets scheduled false, never an error that would fail the migration:
+	-- without USAGE on schema cron, then with USAGE but without the right to schedule.
+	create role retention_scheduler nologin;
+	grant execute on function public.qorpera_schedule_runtime_observation_retention() to retention_scheduler;
+	for v_step in 1..2 loop
+		if v_step = 2 then
+			grant usage on schema cron to retention_scheduler;
+			revoke execute on function cron.schedule(text,text,text) from public;
+		end if;
+		set local role retention_scheduler;
+		if public.qorpera_schedule_runtime_observation_retention() ->> 'scheduled' <> 'false' then
+			raise exception 'A caller without pg_cron rights scheduled retention (step %)', v_step; end if;
+		reset role;
+	end loop;
 end
 $$;
 set constraints all immediate;

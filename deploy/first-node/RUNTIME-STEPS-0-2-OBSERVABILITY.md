@@ -97,15 +97,23 @@ null, not a guessed host name or capacity identity.
   when pg_cron is installed; on a database without pg_cron, enable it and run
   `select public.qorpera_schedule_runtime_observation_retention();` (it
   replaces the job by name, so running it again is safe). Rollback:
-  `select cron.unschedule('qorpera-runtime-observations-retention');`. The
-  service-only purge remains for manual use (`moreEligible` signals further
+  `select cron.unschedule('qorpera-runtime-observations-retention');`, as the
+  role that owns the job (the one that applied the migration or ran the
+  helper). Running the helper again may re-activate a job an operator paused
+  with `cron.alter_job`. Check after each cut that the job exists:
+  `select jobname, schedule, command, active from cron.job where jobname =
+  'qorpera-runtime-observations-retention';`. The service-only purge remains
+  for manual use (`moreEligible` signals further
   work). Active-job observations and canonical records are never pruned.
 - The native exporter gathers events for up to a second (at once for the live
   writing phase, or when 50 wait) and sends up to 50 in one call, in order, one
   call at a time, with at most 256 events queued. A failed, malformed,
   mismatched or timed-out call is tried again with backoff (about 0.25, 0.5 and
-  1 s); a batch that fails four times is dropped and the next one goes. Closing
-  a run flushes for at most one second. It never retries the tool, changes
+  1 s); a batch that fails four times is dropped, and the next one goes after
+  about 2 s. The batch function waits at most 1 s for a lock, so a retry never
+  waits for its own abandoned first attempt (PostgREST keeps running it) while
+  holding a pooled connection. Closing a run flushes for at most one second,
+  after its public reply. It never retries the tool, changes
   authorization or treats an uncertain effect as completed. There is no local
   spool/fallback.
 - SQL views explicitly identify absent diagnostics, missing start/finish or

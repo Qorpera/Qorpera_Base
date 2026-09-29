@@ -10,8 +10,11 @@
 --    gets a refusal in its slot and the other rows are still recorded: each row runs in its own
 --    subtransaction, and 50 stays under the 64 a backend caches before other sessions' snapshots slow
 --    down. Any other error fails the whole call, and the runtime sends it again (an exact replay is
---    acknowledged, never recorded twice). The single-row function stays for runners of the previous
---    bundle during a cut.
+--    acknowledged, never recorded twice). The call waits at most 1 s for any lock (lock_timeout,
+--    55P03): a retry the runtime sends while its abandoned first attempt still runs (PostgREST does
+--    not cancel it) waits on that attempt's row lock, and must fail fast and back off instead of
+--    holding a pooled connection until the first commits. The single-row function stays for runners
+--    of the previous bundle during a cut.
 -- 2. qorpera_purge_runtime_observations (20260828019970) had no caller, so the table only grew.
 --    qorpera_run_runtime_observation_retention() deletes the rows that purge deletes and only those:
 --    observations ingested more than 30 days ago whose run's job is completed, failed or cancelled.
@@ -20,7 +23,8 @@
 --    call and about two seconds, one call at a time (advisory lock). pg_cron runs it every five
 --    minutes as 'qorpera-runtime-observations-retention': up to 5,000 rows each time, 1.44 million a
 --    day, so the table keeps about 30 days. Where pg_cron is not installed (a database built only by
---    replaying migrations) nothing is scheduled; after enabling it, run
+--    replaying migrations), or the applying role may not use it, nothing is scheduled and the
+--    migration still applies; after enabling it, run, as the role that should own the job,
 --    select public.qorpera_schedule_runtime_observation_retention(). Scheduling by the same name
 --    replaces that one job, so running this file or the helper again is safe.
 set local lock_timeout = '3s';
@@ -30,6 +34,7 @@ returns jsonb
 language plpgsql
 security definer
 set search_path = ''
+set lock_timeout = '1s'
 as $$
 declare
 	v_row jsonb;
@@ -113,8 +118,9 @@ revoke all on function public.qorpera_run_runtime_observation_retention()
 	from public, anon, authenticated, service_role, qorpera_secret_broker;
 grant execute on function public.qorpera_run_runtime_observation_retention() to service_role;
 
--- Migration and operator only. Runs as its caller, who then owns the job and runs it. A caller pg_cron
--- does not let schedule gets scheduled false and a warning, never a failed migration.
+-- Migration and operator only. Runs as its caller, who then owns the job and runs it. Without pg_cron,
+-- or for a caller that may not use it (no USAGE on schema cron, or no right to schedule), the answer is
+-- scheduled false (with a warning in the second case), never a failed migration.
 create or replace function public.qorpera_schedule_runtime_observation_retention()
 returns jsonb
 language plpgsql
@@ -123,10 +129,14 @@ as $$
 declare
 	v_job bigint;
 begin
-	if to_regnamespace('cron') is null or to_regprocedure('cron.schedule(text,text,text)') is null then
+	if to_regnamespace('cron') is null then
 		return jsonb_build_object('schema', 'qorpera.runtime-observation-retention-schedule/v1', 'scheduled', false);
 	end if;
 	begin
+		-- Looking up a function in schema cron already needs USAGE on it.
+		if to_regprocedure('cron.schedule(text,text,text)') is null then
+			return jsonb_build_object('schema', 'qorpera.runtime-observation-retention-schedule/v1', 'scheduled', false);
+		end if;
 		v_job := cron.schedule('qorpera-runtime-observations-retention', '*/5 * * * *',
 			'select public.qorpera_run_runtime_observation_retention()');
 	exception when insufficient_privilege then

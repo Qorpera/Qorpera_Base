@@ -341,6 +341,30 @@ describe("optional exporter isolation", () => {
 		}
 	});
 
+	it("sends a live writing row at once, with the rows gathered before it", async () => {
+		vi.useFakeTimers();
+		try {
+			const batches: string[][] = [];
+			const { metrics } = observer(async (batch) => {
+				batches.push(batch.map((row) => `${row.operation}:${row.phase}`));
+			});
+			metrics.start("company_read").finish("succeeded");
+			await vi.advanceTimersByTimeAsync(100);
+			expect(batches).toEqual([]);
+			// The member-visible writing phase (20260920011000) does not wait for the gather.
+			const writing = metrics.start("message_composition");
+			await vi.advanceTimersByTimeAsync(0);
+			expect(batches).toEqual([["company_read:start", "company_read:finish", "message_composition:start"]]);
+			// Its finish is live too.
+			writing.finish("succeeded");
+			await vi.advanceTimersByTimeAsync(0);
+			expect(batches.at(-1)).toEqual(["message_composition:finish"]);
+			await metrics.close();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	it("retries a failed batch with backoff, resending the same rows in order", async () => {
 		vi.useFakeTimers();
 		try {
