@@ -19,22 +19,37 @@ export class WireValueError extends Error {
 }
 
 /**
- * The one UUID rule. PostgreSQL's `uuid` type accepts any letter case and always prints lower
- * case: an id the database emitted is lower case, while one a person, a URL or another system
- * hands over may not be. So the check accepts either case, in the canonical hyphenated form of an
- * RFC 9562 UUID (version 1 to 8, variant `10xx`), and `parseUuid` returns it lower-cased, the form
- * the database prints, so a checked id compares equal to the database's own.
+ * The one UUID rule: a check that returns the value you pass in accepts lower case only; either case
+ * comes in only through `parseUuid`/`normalizeUuid`, which return the lower-cased value to use.
+ *
+ * - The form is the canonical hyphenated RFC 9562 UUID: version 1 to 8, variant `10xx`. The nil
+ *   UUID and other versions are refused.
+ * - PostgreSQL's `uuid` type accepts either case and always prints lower case. So an id bound for a
+ *   `uuid` column or parameter, or compared with one the database printed, may arrive in either case
+ *   through `parseUuid`/`normalizeUuid`. A writer stores the value they return, never its input.
+ * - Where the exact text matters, use `isUuid`/`UUID_PATTERN` and refuse upper case: ids in paths
+ *   and file names (case-sensitive), inside documents that are digested or compared whole, stored
+ *   as text keys, or covered by a signature (check the raw bytes before anything else).
  */
-export const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+export const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
+/** A UUID already in the lower case the database prints (see `UUID_PATTERN`); upper case is refused. */
 export function isUuid(value: unknown): value is string {
 	return typeof value === "string" && UUID_PATTERN.test(value);
 }
 
+/** A UUID in either letter case, returned lower-cased, or `null` (see `UUID_PATTERN`). */
+export function normalizeUuid(value: unknown): string | null {
+	if (typeof value !== "string") return null;
+	const lower = value.toLowerCase();
+	return UUID_PATTERN.test(lower) ? lower : null;
+}
+
 /** A UUID in either letter case, returned lower-cased (see `UUID_PATTERN`). */
 export function parseUuid(value: unknown, label: string): string {
-	if (!isUuid(value)) throw new WireValueError(label);
-	return value.toLowerCase();
+	const id = normalizeUuid(value);
+	if (id === null) throw new WireValueError(label);
+	return id;
 }
 
 /**
@@ -71,8 +86,8 @@ export function parseClosedRecord(
 }
 
 /**
- * A string of at most `maxLength` UTF-16 code units with at least `minLength` characters that are
- * not white space, and no NUL. Returned unchanged.
+ * A string of at most `maxLength` UTF-16 code units, at least `minLength` of them left once white
+ * space is trimmed from both ends, and no NUL. Returned unchanged.
  */
 export function parseBoundedText(value: unknown, label: string, maxLength: number, minLength = 1): string {
 	if (
@@ -94,10 +109,50 @@ export function parseInteger(value: unknown, label: string, minimum: number, max
 	return value as number;
 }
 
-/** A time the database or another system printed, returned in ISO 8601 UTC with milliseconds. */
-export function parseTimestamp(value: unknown, label: string): string {
+/** A checked time: the text exactly as it arrived, and the same instant as a `Date`. */
+export type WireTimestamp = {
+	/** Unchanged, with every fractional digit (PostgreSQL's microseconds included). Send this back, e.g. as a
+	 * keyset cursor, and compare with it; the database reads it as the same instant. */
+	readonly text: string;
+	/** The same instant to the millisecond, for display and arithmetic. Digits past the millisecond are
+	 * dropped here only. */
+	readonly date: Date;
+};
+
+/** RFC 3339 date and time with an explicit offset; also PostgreSQL's text form (`2026-09-29 10:00:00+00`). */
+const TIMESTAMP_PATTERN =
+	/^(\d{4})-(\d{2})-(\d{2})[Tt ](\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?(?:[Zz]|([+-])(\d{2})(?::(\d{2}))?)$/;
+
+/**
+ * A time the database or another system printed: RFC 3339 / ISO 8601 date and time with an explicit
+ * offset (`Z`, `±hh` or `±hh:mm`), with a `T` or a space between date and time. Anything else is
+ * refused, bare numbers and times without an offset included, so the result never depends on the
+ * host's time zone. Seconds run to 59 (no leap second). Read without `Date.parse`.
+ */
+export function parseTimestamp(value: unknown, label: string): WireTimestamp {
 	if (typeof value !== "string" || value.length > 64) throw new WireValueError(label);
-	const time = Date.parse(value);
-	if (!Number.isFinite(time)) throw new WireValueError(label);
-	return new Date(time).toISOString();
+	const part = TIMESTAMP_PATTERN.exec(value);
+	if (part === null) throw new WireValueError(label);
+	const [year, month, day, hour, minute, second] = part.slice(1, 7).map(Number) as [
+		number,
+		number,
+		number,
+		number,
+		number,
+		number,
+	];
+	const offsetHours = part[9] === undefined ? 0 : Number(part[9]);
+	const offsetMinutes = part[10] === undefined ? 0 : Number(part[10]);
+	if (hour > 23 || minute > 59 || second > 59 || offsetHours > 23 || offsetMinutes > 59) {
+		throw new WireValueError(label);
+	}
+	const date = new Date(0);
+	date.setUTCFullYear(year, month - 1, day);
+	if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) {
+		throw new WireValueError(label);
+	}
+	const milliseconds = Number((part[7] ?? "").padEnd(3, "0").slice(0, 3));
+	const offset = (part[8] === "-" ? -1 : 1) * (offsetHours * 60 + offsetMinutes);
+	date.setUTCHours(hour, minute - offset, second, milliseconds);
+	return { text: value, date };
 }

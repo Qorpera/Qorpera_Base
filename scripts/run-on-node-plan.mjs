@@ -125,9 +125,9 @@ export const STEPS = [
 	},
 	{
 		name: "contracts",
-		why: "packages/contracts (its tests ran in no workflow before)",
+		why: "packages/contracts (a change there runs every step)",
 		paths: [/^packages\/contracts\//],
-		commands: [vitest("contracts")],
+		commands: ["npm test --workspace packages/contracts"],
 	},
 	{
 		name: "cloud-client",

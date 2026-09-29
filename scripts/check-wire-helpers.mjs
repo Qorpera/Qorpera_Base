@@ -4,8 +4,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 /** A ratchet on local copies of wire checks (2026-09-29 stack audit, toolchain finding "helper
  * duplication"). The shared copies live in packages/contracts/src/wire-values.ts: `UUID_PATTERN`,
- * `parseUuid`, `parseRecord`, `parseClosedRecord`, `parseSha256Hex`, `parseBoundedText`,
- * `parseInteger` and `parseTimestamp`. Per package this counts UUID regexes written out by hand and
+ * `isUuid`, `normalizeUuid`, `parseUuid`, `parseRecord`, `parseClosedRecord`, `parseSha256Hex`,
+ * `parseBoundedText`, `parseInteger` and `parseTimestamp`. Per package this counts UUID regexes written out by hand and
  * local `record`/`uuid`/`sha256` helper definitions, and fails when any count rises above the
  * committed baseline, so new copies stop appearing while old ones move to the shared module as
  * their files are touched. After removing copies, lower the baseline with `--update`. */
