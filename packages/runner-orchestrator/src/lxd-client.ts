@@ -3078,8 +3078,10 @@ export class LxdUnixClient
 		// ({"type":"error","error_code":500,"error":"...","metadata":null}). Newer
 		// LXD renders the failed operation itself (status_code 400, err "...").
 		const waited = record(wait.body, "LXD response");
+		// That error envelope is also what a wait that merely timed out writes ("context deadline exceeded"):
+		// only the operation's own end says whether it failed.
 		if (wait.status >= 200 && wait.status < 300 && waited.type === "error")
-			throw operationFailure(waited.error, true);
+			throw operationFailure(waited.error, await this.#endedInFailure(envelope.operation, signal));
 		const operation = record(envelopeMetadata(wait), "LXD operation");
 		if (
 			typeof operation.status_code !== "number" ||
@@ -3095,6 +3097,24 @@ export class LxdUnixClient
 			);
 		}
 		return operation;
+	}
+
+	/** Whether LXD reports the operation ended in Failure or Cancelled. LXD keeps an ended operation for a few
+	 * seconds; anything else (still running, gone, unreadable) is no proof. */
+	async #endedInFailure(operationPath: string, signal?: AbortSignal): Promise<boolean> {
+		try {
+			const checked = AbortSignal.any([...(signal ? [signal] : []), AbortSignal.timeout(5000)]);
+			const result = await this.#request("GET", operationPath, undefined, checked);
+			const envelope = record(result.body, "LXD response");
+			if (result.status !== 200 || envelope.type !== "sync") return false;
+			const operation = record(envelope.metadata, "LXD operation");
+			return (
+				(operation.status_code === 400 && operation.status === "Failure") ||
+				(operation.status_code === 401 && operation.status === "Cancelled")
+			);
+		} catch {
+			return false;
+		}
 	}
 
 	async #request(method: string, path: string, body?: unknown, signal?: AbortSignal): Promise<HttpResult> {
