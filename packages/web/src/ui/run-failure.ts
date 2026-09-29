@@ -6,6 +6,7 @@ import { phrase, t } from "./preferences.ts";
  * not causes) and the job status. One classification feeds both the sentence the
  * member reads and whether Try again is worth offering. */
 export type RunFailureKind =
+	| "computer_hours"
 	| "usage_limit"
 	| "credential"
 	| "dispatch"
@@ -20,6 +21,9 @@ export function classifyRunFailure(lastError: string | undefined, jobStatus: "fa
 	// A refused step carries the provider's fixed code (e.g. "[code=NATIVE_CREDENTIAL_SEALING:TIMEOUT]").
 	// It names Qorpera's own machinery, not a member's account or a time limit, so it
 	// never decides the class: the step stays "bridge", as it was before the code.
+	// The company ran out of computer hours and its hour to finish running work ended. The
+	// only code that decides the class: it is the company's hours, not Qorpera's machinery.
+	if ((lastError ?? "").includes("[code=COMPUTER_HOURS_EXHAUSTED]")) return "computer_hours";
 	const error = (lastError ?? "").replace(/ \[code=[A-Z0-9_:]{1,85}\]/g, "");
 	if (/usage limit|quota|rate.?limit|insufficient|billing/i.test(error)) return "usage_limit";
 	if (/not signed in|sign.?in|unauthori[sz]ed|credential|token (is )?(expired|invalid)/i.test(error))
@@ -39,6 +43,7 @@ export function classifyRunFailure(lastError: string | undefined, jobStatus: "fa
 }
 
 const REASONS: Record<RunFailureKind, string> = {
+	computer_hours: phrase("The company is out of computer hours. New work starts again once hours are added."),
 	usage_limit: phrase("Your model account has reached its usage limit."),
 	credential: phrase("Your model account needs to be connected again."),
 	dispatch: phrase("No computer could be started for this run. The problem is on Qorpera's side."),

@@ -1283,8 +1283,14 @@ export class ConversationView {
 		const codingSessions = [...(conversation.codingSessions ?? [])].sort((a, b) =>
 			a.createdAt.localeCompare(b.createdAt),
 		);
+		// Queued work of a company out of computer hours waits for hours, and says so. Asked only
+		// while something is queued; the answer is part of the key, so the line changes with it.
+		const waitingForHours =
+			items.some((item) => item.kind === "member" && item.pending === "queued") &&
+			this.#company.computerHoursWaiting();
 		const key = JSON.stringify([
 			items,
+			waitingForHours,
 			this.#shownMentionTargets(),
 			// Only what the line shows: the header's poll changes the rest every few seconds.
 			codingSessions.map((coding) => [coding.workerId, coding.harness, coding.title, coding.createdAt]),
@@ -1400,7 +1406,9 @@ export class ConversationView {
 											: t("Failed")
 										: item.pending === "processing"
 											? t("Processing")
-											: t("Queued"),
+											: waitingForHours
+												? t("Waiting for computer hours")
+												: t("Queued"),
 								)
 							: null,
 					),

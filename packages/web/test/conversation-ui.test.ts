@@ -225,6 +225,42 @@ describe("conversation UI boundaries", () => {
 		}
 		expect(f.cloud.rpc).not.toHaveBeenCalled();
 	});
+	it("says a queued message waits for computer hours while the company has none", async () => {
+		const f = setup();
+		const hours = await f.api.getCompanyComputerHours(profileA.profileId);
+		const queued: TranscriptMessage = {
+			kind: "member",
+			id: id(84),
+			sequence: 1,
+			text: "Please look at the plan.",
+			attachmentCount: 0,
+			authorUserId: userA.id,
+			createdAt: timestamp,
+			pending: "queued",
+		};
+		const show = () => {
+			f.company
+				.conversation(session.sessionId)
+				.set({ projection: { items: [queued], hiddenCount: 0, lastSequence: 1 } });
+			f.view.update();
+			return f.view.el.querySelector(".message-caption")?.textContent;
+		};
+		await vi.advanceTimersByTimeAsync(0);
+		expect(show()).toBe("Queued");
+		await vi.advanceTimersByTimeAsync(0);
+		expect(show()).toBe("Queued");
+		// Out of computer hours: read again after a minute, and the message says what it waits for.
+		vi.mocked(f.api.getCompanyComputerHours).mockResolvedValue({ ...hours, waitingForHours: true });
+		await vi.advanceTimersByTimeAsync(60_000);
+		show();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(show()).toBe("Waiting for computer hours");
+		// Asked at most once a minute, not on every render.
+		const asked = vi.mocked(f.api.getCompanyComputerHours).mock.calls.length;
+		show();
+		show();
+		expect(vi.mocked(f.api.getCompanyComputerHours).mock.calls.length).toBe(asked);
+	});
 	it("closes attachment previews and clears private drafts when the account signs out", async () => {
 		const f = fixture(),
 			root = document.createElement("div");

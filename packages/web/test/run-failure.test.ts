@@ -38,6 +38,12 @@ describe("why a run stopped, in the member's words", () => {
 		["Execution deadline expired before runner acceptance", "failed", /took too long/],
 		["You have hit your usage limit. Try again later.", "failed", /usage limit/],
 		["Provider credential is invalid", "failed", /connected again/],
+		["Out of computer hours [code=COMPUTER_HOURS_EXHAUSTED]", "failed", /out of computer hours/],
+		[
+			"Out of computer hours [code=COMPUTER_HOURS_EXHAUSTED]; durable attempt output requires review",
+			"failed",
+			/out of computer hours/,
+		],
 		[undefined, "cancelled", /stopped before it finished/],
 		["something nobody has seen before", "failed", /internal error/],
 	] as const)("%s", (error, status, expected) => {
@@ -61,6 +67,8 @@ describe("whether a stopped run is worth trying again as it is", () => {
 		["Runner model socket request timed out", "failed", true],
 		["You have hit your usage limit. Try again later.", "failed", false],
 		["Provider credential is invalid", "failed", false],
+		// Hours have to be added first: no Try again.
+		["Out of computer hours [code=COMPUTER_HOURS_EXHAUSTED]", "failed", false],
 		["Native provider bridge request failed (422)", "failed", false],
 		["Native provider bridge request failed (422) [code=NATIVE_WAKE_ENVELOPE:TIMEOUT]", "failed", false],
 		["Native provider bridge request failed (422) [code=NATIVE_CREDENTIAL_DOWNLOAD]", "failed", false],
