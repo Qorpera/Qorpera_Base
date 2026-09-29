@@ -33,6 +33,9 @@ const MAX_CHUNKS = 64;
 const MAX_MANIFEST_BYTES = 32 * 1024;
 /** An open intent lasts 15 minutes; a long upload renews it before that. */
 const RENEW_AFTER_MS = 10 * 60 * 1000;
+/** A busy gateway (503: its NAS lanes or its database circuit) is asked twice more, after a short random wait. An
+ * object is content-addressed, so a put asked again under the same intent is the same put. */
+const BUSY_RETRIES = 2;
 
 interface Manifest {
 	readonly schema: "qorpera.cloud-file-manifest/v2";
@@ -45,6 +48,13 @@ interface Manifest {
 
 function sha256(bytes: Uint8Array): string {
 	return createHash("sha256").update(bytes).digest("hex");
+}
+
+/** The gateway answered 503: busy or cut off from its database for a moment. */
+class GatewayBusyError extends CloudRuntimeDiagnosticError {
+	constructor() {
+		super("transport_unavailable", "Company folder bytes unavailable");
+	}
 }
 
 function invalid(): never {
@@ -66,12 +76,13 @@ function record(value: unknown, keys: readonly string[]): Record<string, unknown
 /** The canonical version-2 manifest of a file: keys in this order, no spaces, so the same file, media type and bit
  * always give the same manifest hash, and a retried commit sends the same reference. */
 function manifestOf(bytes: Uint8Array, mediaType: string, executable: boolean): { manifest: Manifest; text: string } {
+	if (bytes.byteLength > MAX_CHUNKS * CHUNK_BYTES)
+		throw new CloudRuntimeDiagnosticError("invalid_arguments", "Company folder file is larger than 256 MiB");
 	const chunks: { sha256: string; bytes: number }[] = [];
 	for (let offset = 0; offset < bytes.byteLength; offset += CHUNK_BYTES) {
 		const chunk = bytes.subarray(offset, Math.min(offset + CHUNK_BYTES, bytes.byteLength));
 		chunks.push({ sha256: sha256(chunk), bytes: chunk.byteLength });
 	}
-	if (chunks.length > MAX_CHUNKS) throw new Error("Company folder file is larger than one manifest holds");
 	const manifest: Manifest = {
 		schema: "qorpera.cloud-file-manifest/v2",
 		fileSha256: sha256(bytes),
@@ -177,10 +188,9 @@ export class HttpCloudCompanyFolderBytes implements CloudCompanyFolderBytes {
 		const intentId = open.intentId;
 		// Every object the intent lists: each distinct chunk and the manifest.
 		const objects = new Map<string, Uint8Array>();
-		for (let offset = 0; offset < bytes.byteLength; offset += CHUNK_BYTES) {
-			const chunk = bytes.subarray(offset, Math.min(offset + CHUNK_BYTES, bytes.byteLength));
-			objects.set(sha256(chunk), chunk);
-		}
+		manifest.chunks.forEach((chunk, index) => {
+			objects.set(chunk.sha256, bytes.subarray(index * CHUNK_BYTES, index * CHUNK_BYTES + chunk.bytes));
+		});
 		objects.set(manifestSha256, manifestBytes);
 		let renewed = this.#now();
 		const putAll = async (hashes: Iterable<string>): Promise<void> => {
@@ -188,7 +198,19 @@ export class HttpCloudCompanyFolderBytes implements CloudCompanyFolderBytes {
 				const object = objects.get(hash);
 				if (!object) invalid();
 				if (this.#now() - renewed >= RENEW_AFTER_MS) {
-					await this.#call("qorpera_folder_renew_upload", { p_intent: intentId }, signal);
+					const renew = record(await this.#call("qorpera_folder_renew_upload", { p_intent: intentId }, signal), [
+						"schema",
+						"intentId",
+						"state",
+						"expiresAt",
+					]);
+					if (
+						renew.schema !== "qorpera.folder-upload-renew/v1" ||
+						renew.intentId !== intentId ||
+						renew.state !== "open" ||
+						typeof renew.expiresAt !== "string"
+					)
+						invalid();
 					renewed = this.#now();
 				}
 				await this.#put(hash, object, intentId, signal);
@@ -255,7 +277,7 @@ export class HttpCloudCompanyFolderBytes implements CloudCompanyFolderBytes {
 	}
 
 	async #put(hash: string, object: Uint8Array, intentId: string, signal: AbortSignal): Promise<void> {
-		const { status, body } = await this.#request(
+		const { status, body } = await this.#requestUnlessBusy(
 			hash,
 			{
 				method: "PUT",
@@ -305,9 +327,9 @@ export class HttpCloudCompanyFolderBytes implements CloudCompanyFolderBytes {
 			input.chunks.length > MAX_CHUNKS
 		)
 			invalid();
-		const parts: Uint8Array[] = [];
-		let total = 0;
-		for (const value of input.chunks as unknown[]) {
+		// Every chunk is checked, and their sizes must add up to the file's, before anything is fetched; the file is then
+		// read into one buffer of its size.
+		const chunks = (input.chunks as unknown[]).map((value) => {
 			const chunk = record(value, ["sha256", "bytes"]);
 			if (
 				typeof chunk.sha256 !== "string" ||
@@ -317,23 +339,57 @@ export class HttpCloudCompanyFolderBytes implements CloudCompanyFolderBytes {
 				(chunk.bytes as number) > CHUNK_BYTES
 			)
 				invalid();
-			const part = await this.#fetchObject(chunk.sha256, chunk.bytes as number, signal);
+			return { sha256: chunk.sha256, bytes: chunk.bytes as number };
+		});
+		if (chunks.reduce((sum, chunk) => sum + chunk.bytes, 0) !== file.bytes) invalid();
+		const bytes = Buffer.allocUnsafe(file.bytes);
+		let offset = 0;
+		for (const chunk of chunks) {
+			const part = await this.#fetchObject(chunk.sha256, chunk.bytes, signal);
 			if (part.byteLength !== chunk.bytes) invalid();
-			parts.push(part);
-			total += part.byteLength;
+			bytes.set(part, offset);
+			offset += part.byteLength;
 		}
-		const bytes = Buffer.concat(parts, total);
-		if (bytes.byteLength !== file.bytes || sha256(bytes) !== file.fileSha256)
+		// The chunks are the manifest's; the manifest's fileSha256 is only its writer's word.
+		if (sha256(bytes) !== file.fileSha256)
 			throw new CloudRuntimeDiagnosticError("invalid_response", "Company folder bytes do not match their entry");
 		return bytes;
 	}
 
 	async #fetchObject(hash: string, maximum: number, signal: AbortSignal): Promise<Uint8Array> {
 		if (!SHA.test(hash)) invalid();
-		const { status, body } = await this.#request(hash, { method: "GET" }, maximum, signal);
+		const { status, body } = await this.#requestUnlessBusy(hash, { method: "GET" }, maximum, signal);
 		if (status !== 200 || sha256(body) !== hash)
 			throw new CloudRuntimeDiagnosticError("invalid_response", "Company folder object failed its check");
 		return body;
+	}
+
+	async #requestUnlessBusy(
+		hash: string,
+		init: RequestInit,
+		maximum: number,
+		signal: AbortSignal,
+	): Promise<{ status: number; body: Uint8Array }> {
+		for (let attempt = 0; ; attempt += 1) {
+			try {
+				return await this.#request(hash, init, maximum, signal);
+			} catch (error) {
+				if (!(error instanceof GatewayBusyError) || attempt >= BUSY_RETRIES) throw error;
+			}
+			await new Promise<void>((resolve, reject) => {
+				const timer = setTimeout(done, 50 + Math.floor(Math.random() * 200));
+				function done(): void {
+					signal.removeEventListener("abort", stop);
+					resolve();
+				}
+				function stop(): void {
+					clearTimeout(timer);
+					reject(new CloudRuntimeDiagnosticError("cancelled", "Cloud tool authority unavailable"));
+				}
+				signal.addEventListener("abort", stop, { once: true });
+				if (signal.aborted) stop();
+			});
+		}
 	}
 
 	#request(
@@ -363,6 +419,7 @@ export class HttpCloudCompanyFolderBytes implements CloudCompanyFolderBytes {
 					if (response.status === 403) throw new CloudCompanyFolderError("unavailable");
 					if (response.status === 423) throw new CloudCompanyFolderError("stopped");
 					if (response.status === 409) throw new CloudCompanyFolderError("contended");
+					if (response.status === 503) throw new GatewayBusyError();
 					throw new CloudRuntimeDiagnosticError("transport_unavailable", "Company folder bytes unavailable");
 				}
 				const declared = response.headers.get("content-length");

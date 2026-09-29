@@ -91,9 +91,9 @@ writer renews it, and a new intent judges again. (Reviewer round 2, L1; F1 may a
 3. **`qorpera_folder_confirm_object(env, actor, intent, sha256, bytes)`**, after the gateway's NAS put: the same
    checks, then marks the row `put`. For an object the catalog lacks, the soft quota (§5), then
    `insert into profile_objects … on conflict do nothing`; then `KEY SHARE` on the row. A row already there with
-   another size is 23505, as today. The transaction is this statement and the trigger. Its `stored` flag (and the
-   gateway's 201 or 200) says whether the company already held the bytes; only trusted code sees it, and the runtime
-   never shows it to the model.
+   another size is 23505, as today. The transaction is this statement and the trigger. Its `stored` flag says whether
+   the catalog already held the object (the gateway's 201 or 200 says the same of the NAS file); only trusted code
+   sees either, and the runtime never shows them to the model.
 4. **`qorpera_folder_seal_upload(env, actor, intent)`**
    - the actor's plain check again (a member who left is refused), and the intent must be this actor's own
      (environment, kind, scope: the run, view or member id). A run's job, runner and assignment ids are not
@@ -194,7 +194,9 @@ that the Storage mirror inserted is still served.
 
 - **Gateway** (`packages/object-gateway`): `/v1/folder-objects/<environmentId>/<sha256>`, on the native token, with
   the run's binding (its actor) and, for a put, `x-qorpera-upload-intent`. Put: authorize, read the body, check the
-  hash, `uploadWithAuthority` (NAS put, confirm, replication). Get: authorize, NAS read, check, re-authorize.
+  hash, `uploadWithAuthority` (NAS put, confirm, replication). Get: authorize, NAS read, check, re-authorize. The
+  native route's token check and binding format are shared; SQL judges the run by the folder actor (run, job, runner
+  and assignment, as commit and read do), not by the provider execution lease the native route checks.
 - **Runtime**: `HttpCloudCompanyFolderBytes`, the production `CloudCompanyFolderBytes` (#548).
   - `put(bytes, mediaType, executable)`: splits into 4 MiB chunks, builds the canonical version-2 manifest, opens the
     intent, puts the chunks and the manifest the catalog lacks, then seals. The same bytes, media type and bit give
@@ -203,8 +205,8 @@ that the Storage mirror inserted is still served.
   - The client's `CloudCompanyFolderBytes.put` gains the executable bit, which the manifest now carries.
   - Open, renew and seal join the Company File control's allow-lists.
 - Nothing constructs either yet; the thin writers do, after C1c-2b. A writer commits right after `put`. If its
-  commit keeps retrying past the sealed intent's hour, it renews the intent, or `put` again re-puts every object it
-  may not yet read.
+  commit keeps retrying past the sealed intent's hour, it calls `put` again, which re-puts every object it may not
+  yet read (the interface has no renew of its own).
 
 **Split.** C1d-1a is the SQL (§2–§7, slot 20260929520000) with tests 761 and 762. C1d-1b is the gateway route and the
 runtime adapter, with no migration.
@@ -234,9 +236,28 @@ runtime adapter, with no migration.
   stop (55000) to 423 and lock conflicts (40001, 40P01, 55P03) to 409; any other 500 stays a dependency failure.
 - Runtime: `packages/runtime/src/cloud-company-folder-bytes.ts`, `HttpCloudCompanyFolderBytes`. A put builds the
   canonical manifest, opens the intent, puts the missing objects, renews the intent when ten minutes have passed, and
-  seals; an object the catalog lost is put once more, then the put fails as `contended`. A get checks the manifest
-  against the reference and each chunk against its hash. A refusal of the folder core's checks (403) is
-  `CloudCompanyFolderError('unavailable')`, a stop (423) `stopped`, a lock conflict (409) `contended`.
+  seals; an object the catalog lost is put once more, then the put fails as `contended`. Renew's answer is checked.
+  A file over 256 MiB is `invalid_arguments` before anything is hashed or sent. A get checks the manifest against the
+  reference, that its chunk sizes add up to the file's before it fetches any, each chunk against its hash, and the
+  whole file against the reference's hash (the manifest's `fileSha256` is only its writer's word); it reads into one
+  buffer of the file's size. A refusal of the folder core's checks (403) is `CloudCompanyFolderError('unavailable')`,
+  a stop (423) `stopped`, a lock conflict (409) `contended`; a busy gateway (503) is asked twice more after a short
+  random wait (an object is content-addressed, so a put asked again is the same put).
+
+**Follow-ups from C1d-1b's review** (for C1d-2 and the thin writers):
+- **Quota before the NAS write.** `_authorize_object_upload` checks the soft quota for an object the catalog lacks, so
+  a company at its limit is refused before the gateway writes. Today confirm refuses after the write, the NAS file
+  stays outside the catalog, and the gateway's journal entry turns `blocked` (it reports degraded), as on the native
+  route; the gateway drops that entry when confirm refuses. The writers get a typed "storage full" failure.
+- **Lock waits inside the gateway's deadline.** Before GC holds objects `FOR UPDATE`, the folder functions the gateway
+  calls set `lock_timeout` below its 5 s deadline (2 s), so a long wait ends as 55P03, which the gateway answers 409,
+  rather than as a deadline 503 that opens its circuit for every company.
+- **The gateway's NAS lanes.** It allows two operations in flight; core §7 raises that with content storage.
+- **Labels.** On the byte path a size clash (23505) reads as `contended` and a refused run kind (0A000) as
+  `transport_unavailable`; the control path reads deadlocks at open, seal and renew as raw errors. The writers align
+  them.
+- The body read and the NAS-then-Storage read are copies of the native route's; share them, and give the gateway
+  package its own test of the route.
 
 **Activation checks** (test 761 §8 runs them; the coordinator may copy them into the activation file):
 - each of the four patched snapshot-v1 bodies, with its `folder-v2` line removed, has its reviewed digest, so the
@@ -276,8 +297,9 @@ runtime adapter, with no migration.
   `unreferenced_since`.
 - GC takes objects `FOR UPDATE` in the same order as open, seal and step 6 (`sha256 collate "C"`), or one object per
   transaction, so it cannot deadlock with a commit. `KEY SHARE` holders can starve a waiting `FOR UPDATE` (a hot
-  object such as the empty file's manifest), so the claim uses `SKIP LOCKED` or `NOWAIT` and retries later. The usage row stays the last lock of any transaction that adds or
-  removes objects: a GC batch locks all its objects before its first delete.
+  object such as the empty file's manifest), so the claim uses `SKIP LOCKED` or `NOWAIT` and retries later. The
+  usage row stays the last lock of any transaction that adds or removes objects: a GC batch locks all its objects
+  before its first delete.
 - G1's "refuse rows marked deleting" at every reference point of C1d-1: open's present objects, seal, commit step 6,
   and folder replication.
 - Expired intents are swept: an intent past `expires_at` plus the grace window, after the G4 root check, with its

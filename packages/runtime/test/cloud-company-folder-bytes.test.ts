@@ -30,9 +30,11 @@ interface Intent {
 	held: Set<string>;
 	put: Set<string>;
 	state: "open" | "sealed";
+	/** On the adapter's clock: 15 minutes after open or renew. */
+	expiresAt: number;
 }
 
-async function fixture() {
+async function fixture(options: { upperCaseBinding?: boolean } = {}) {
 	const f = nativeToolAuthorityFixture();
 	const environmentId = f.authority.identity.environmentId;
 	const companyId = f.authority.identity.companyId;
@@ -57,8 +59,17 @@ async function fixture() {
 		deadlocks: 0,
 		/** How many more times the catalog loses an object put under this hash. */
 		lose: new Map<string, number>(),
+		/** The next confirms' PostgREST 500s, by SQLSTATE, one per confirm. */
+		confirmFailures: [] as string[],
+		/** When set, how many more download authorizations pass before the run's read is revoked. */
+		downloadGrants: undefined as number | undefined,
+		/** When set, the state renew answers with, in place of the intent's. */
+		renewState: undefined as string | undefined,
 	};
 	const puts: string[] = [];
+	/** The folder RPCs the gateway made, in order. */
+	const gatewayCalls: string[] = [];
+	let clock = 0;
 	/** The download rule: the hash is a manifest an entry the run may read references, or one of its chunks. */
 	const readable = (hash: string) =>
 		[...sql.readable].some(
@@ -76,6 +87,7 @@ async function fixture() {
 		if (method === "qorpera_list_profile_objects_for_migration") return Response.json([]);
 		if (["qorpera_authorize_profile_object_replication", "qorpera_confirm_profile_object_replica"].includes(method))
 			return Response.json(true);
+		gatewayCalls.push(method);
 		if (args.p_environment_id !== environmentId || JSON.stringify(args.p_actor) !== actor)
 			return Response.json({ code: "42501" }, { status: 403 });
 		// PostgREST answers the folder core's stop (55000) and its lock conflicts (40P01) with 500.
@@ -86,10 +98,17 @@ async function fixture() {
 		}
 		if (method === "qorpera_folder_authorize_object_upload" || method === "qorpera_folder_confirm_object") {
 			const intent = sql.intents.get(args.p_intent as string);
-			if (!intent || intent.state !== "open" || intent.objects.get(args.p_sha256 as string) !== args.p_bytes)
+			if (
+				!intent ||
+				intent.state !== "open" ||
+				intent.expiresAt <= clock ||
+				intent.objects.get(args.p_sha256 as string) !== args.p_bytes
+			)
 				return Response.json({ code: "42501" }, { status: 403 });
 			if (method === "qorpera_folder_authorize_object_upload")
 				return Response.json({ schema: "qorpera.folder-object-upload/v1", profileId: companyId });
+			const failure = sql.confirmFailures.shift();
+			if (failure) return Response.json({ code: failure, message: "refused" }, { status: 500 });
 			puts.push(args.p_sha256 as string);
 			intent.put.add(args.p_sha256 as string);
 			const losses = sql.lose.get(args.p_sha256 as string) ?? 0;
@@ -105,6 +124,10 @@ async function fixture() {
 		if (method === "qorpera_folder_authorize_object_download") {
 			const hash = args.p_sha256 as string;
 			const bytes = sql.catalog.get(hash);
+			if (sql.downloadGrants !== undefined) {
+				if (sql.downloadGrants < 1) return Response.json({ code: "42501" }, { status: 403 });
+				sql.downloadGrants -= 1;
+			}
 			if (!readable(hash) || bytes === undefined) return Response.json({ code: "42501" }, { status: 403 });
 			return Response.json({ schema: "qorpera.folder-object-download/v1", profileId: companyId, bytes });
 		}
@@ -125,7 +148,15 @@ async function fixture() {
 				const intentId = randomUUID();
 				// Present: what the catalog has and the run may already read; the run puts every other object.
 				const held = new Set([...objects.keys()].filter((hash) => sql.catalog.has(hash) && readable(hash)));
-				sql.intents.set(intentId, { actor, manifest: text, objects, held, put: new Set(), state: "open" });
+				sql.intents.set(intentId, {
+					actor,
+					manifest: text,
+					objects,
+					held,
+					put: new Set(),
+					state: "open",
+					expiresAt: clock + 900_000,
+				});
 				return {
 					schema: "qorpera.folder-upload/v1",
 					intentId,
@@ -135,13 +166,16 @@ async function fixture() {
 				};
 			}
 			const intent = sql.intents.get(args.p_intent as string)!;
-			if (method === "qorpera_folder_renew_upload")
+			if (intent.expiresAt <= clock) throw new Error("The intent lapsed");
+			if (method === "qorpera_folder_renew_upload") {
+				intent.expiresAt = clock + 900_000;
 				return {
 					schema: "qorpera.folder-upload-renew/v1",
 					intentId: args.p_intent,
-					state: intent.state,
-					expiresAt: "later",
+					state: sql.renewState ?? intent.state,
+					expiresAt: new Date(intent.expiresAt).toISOString(),
 				};
+			}
 			const missing = [...intent.objects.keys()]
 				.filter((hash) => !(intent.held.has(hash) || intent.put.has(hash)) || !sql.catalog.has(hash))
 				.sort();
@@ -191,14 +225,23 @@ async function fixture() {
 		await new Promise<void>((resolve) => server.close(() => resolve()));
 		await rm(root, { recursive: true, force: true });
 	});
-	let clock = 0;
 	/** Minutes each gateway request takes, on the adapter's clock. */
 	let requestMinutes = 0;
+	// Upper-case ids are the same run: the gateway and the adapter both send SQL the lower-case actor.
+	const binding = options.upperCaseBinding
+		? {
+				...f.binding,
+				runId: f.binding.runId.toUpperCase(),
+				jobId: f.binding.jobId.toUpperCase(),
+				runnerId: f.binding.runnerId.toUpperCase(),
+				assignmentId: f.binding.assignmentId.toUpperCase(),
+			}
+		: f.binding;
 	const bytes = new HttpCloudCompanyFolderBytes({
 		baseUrl: origin,
 		token,
-		binding: f.binding,
-		identity: f.authority.identity,
+		binding,
+		identity: { ...f.authority.identity, runId: binding.runId, jobId: binding.jobId },
 		control,
 		now: () => clock,
 		fetch: (input, init) => {
@@ -217,6 +260,11 @@ async function fixture() {
 		origin,
 		token,
 		authority,
+		control,
+		store,
+		gatewayCalls,
+		environmentId,
+		actor: JSON.parse(actor) as Record<string, string>,
 		slowRequests(minutes: number) {
 			requestMinutes = minutes;
 		},
@@ -224,7 +272,7 @@ async function fixture() {
 }
 
 it("stages a file's chunks and manifest under an intent, seals it, and reads it back", async () => {
-	const { bytes, sql, calls, puts } = await fixture();
+	const { bytes, sql, calls, puts, gatewayCalls } = await fixture();
 	// Nine MiB: three chunks, the last one short.
 	const content = randomBytes(9 * 1024 * 1024);
 	const reference = await bytes.put(content, "application/octet-stream", false, new AbortController().signal);
@@ -240,6 +288,14 @@ it("stages a file's chunks and manifest under an intent, seals it, and reads it 
 	});
 	expect(puts).toHaveLength(4);
 	expect(calls.map((call) => call.method)).toEqual(["qorpera_folder_open_upload", "qorpera_folder_seal_upload"]);
+	// Each put is authorized, authorized again inside the gateway's journal lane, and confirmed.
+	expect(gatewayCalls).toEqual(
+		Array.from({ length: 4 }, () => [
+			"qorpera_folder_authorize_object_upload",
+			"qorpera_folder_authorize_object_upload",
+			"qorpera_folder_confirm_object",
+		]).flat(),
+	);
 	sql.readable.add(reference.manifestSha256);
 	const read = await bytes.get({ ...reference, executable: false }, new AbortController().signal);
 	expect(Buffer.from(read).equals(content)).toBe(true);
@@ -282,7 +338,7 @@ it("puts an object the catalog lost once more before sealing, and gives up if it
 });
 
 it("renews a long upload's intent before it lapses", async () => {
-	const { bytes, calls, slowRequests } = await fixture();
+	const { bytes, sql, calls, slowRequests } = await fixture();
 	// Four puts (three chunks and the manifest) of six minutes each: the third starts twelve minutes in, past the
 	// ten-minute mark, so the intent is renewed once, before it.
 	slowRequests(6);
@@ -292,6 +348,11 @@ it("renews a long upload's intent before it lapses", async () => {
 		"qorpera_folder_renew_upload",
 		"qorpera_folder_seal_upload",
 	]);
+	// A renew that does not answer for an open intent is not trusted.
+	sql.renewState = "sealed";
+	await expect(
+		bytes.put(randomBytes(9 * 1024 * 1024), "application/octet-stream", false, new AbortController().signal),
+	).rejects.toMatchObject({ category: "invalid_response" });
 });
 
 it("refuses bytes it may not read, and bytes that are not the entry's", async () => {
@@ -352,4 +413,133 @@ it("serves the folder route only on the native credential, with a run binding an
 		).status,
 	).toBe(405);
 	expect(sql.intents.size).toBe(0);
+});
+
+it("writes the canonical manifest text the folder core checks", async () => {
+	const { bytes, calls } = await fixture();
+	const signal = new AbortController().signal;
+	await bytes.put(new Uint8Array(0), "text/plain", false, signal);
+	await bytes.put(Buffer.from("a"), "text/plain", true, signal);
+	expect(
+		calls.filter((call) => call.method === "qorpera_folder_open_upload").map((call) => call.args.p_manifest),
+	).toEqual([
+		`{"schema":"qorpera.cloud-file-manifest/v2","fileSha256":"${sha("")}","bytes":0,"mediaType":"text/plain","executable":false,"chunks":[]}`,
+		`{"schema":"qorpera.cloud-file-manifest/v2","fileSha256":"${sha("a")}","bytes":1,"mediaType":"text/plain","executable":true,"chunks":[{"sha256":"${sha("a")}","bytes":1}]}`,
+	]);
+	// A file over one manifest's 256 MiB is refused before anything is hashed or sent.
+	await expect(
+		bytes.put({ byteLength: 64 * 4 * 1024 * 1024 + 1 } as unknown as Uint8Array, "text/plain", false, signal),
+	).rejects.toMatchObject({ category: "invalid_arguments" });
+	expect(calls).toHaveLength(4);
+});
+
+it("refuses a body that is not the object it names, before the folder core confirms it", async () => {
+	const { origin, token, binding, control, environmentId, actor, gatewayCalls, puts } = await fixture();
+	const text = `{"schema":"qorpera.cloud-file-manifest/v2","fileSha256":"${sha("right")}","bytes":5,"mediaType":"text/plain","executable":false,"chunks":[{"sha256":"${sha("right")}","bytes":5}]}`;
+	const open = (await control.call(
+		"qorpera_folder_open_upload",
+		{ p_environment_id: environmentId, p_actor: actor, p_manifest: text },
+		new AbortController().signal,
+	)) as { intentId: string };
+	// Five bytes under the intent's five-byte object, but not its bytes.
+	const response = await fetch(`${origin}/v1/folder-objects/${environmentId}/${sha("right")}`, {
+		method: "PUT",
+		body: "wrong",
+		headers: {
+			authorization: `Bearer ${token}`,
+			"x-qorpera-native-binding": Buffer.from(JSON.stringify(binding)).toString("base64url"),
+			"x-qorpera-upload-intent": open.intentId,
+			"content-type": "application/octet-stream",
+		},
+	});
+	expect(response.status).toBe(400);
+	expect(gatewayCalls).toEqual(["qorpera_folder_authorize_object_upload"]);
+	expect(puts).toEqual([]);
+});
+
+it("refuses a read whose authority is revoked while the gateway reads it", async () => {
+	const { bytes, sql } = await fixture();
+	const signal = new AbortController().signal;
+	// An empty file is its manifest alone, so the read is one object: authorized, read, authorized again.
+	const reference = await bytes.put(new Uint8Array(0), "text/plain", false, signal);
+	sql.readable.add(reference.manifestSha256);
+	// The first authorization passes; the one after the NAS read does not.
+	sql.downloadGrants = 1;
+	await expect(bytes.get({ ...reference, executable: false }, signal)).rejects.toMatchObject({
+		failure: "unavailable",
+	});
+});
+
+it("reads a stop, a lock conflict and a lock timeout at confirm as the run's, and a statement timeout as an outage", async () => {
+	const { bytes, sql, authority, gatewayCalls } = await fixture();
+	const signal = new AbortController().signal;
+	sql.confirmFailures.push("55000");
+	await expect(bytes.put(Buffer.from("s"), "text/plain", false, signal)).rejects.toMatchObject({ failure: "stopped" });
+	for (const code of ["40001", "40P01", "55P03"]) {
+		sql.confirmFailures.push(code);
+		await expect(bytes.put(Buffer.from(code), "text/plain", false, signal)).rejects.toMatchObject({
+			failure: "contended",
+		});
+	}
+	expect(authority.health().api.status).toBe("healthy");
+	// Any other 500 is the database's: the circuit opens and the gateway answers 503, which the adapter asks again
+	// twice. One statement timeout is ridden out; three are an outage.
+	sql.confirmFailures.push("57014");
+	const before = gatewayCalls.filter((method) => method === "qorpera_folder_confirm_object").length;
+	expect(await bytes.put(Buffer.from("once"), "text/plain", false, signal)).toMatchObject({ fileSha256: sha("once") });
+	expect(gatewayCalls.filter((method) => method === "qorpera_folder_confirm_object").length - before).toBe(3);
+	sql.confirmFailures.push("57014", "57014", "57014");
+	await expect(bytes.put(Buffer.from("thrice"), "text/plain", false, signal)).rejects.toMatchObject({
+		category: "transport_unavailable",
+	});
+	expect(authority.health().api.status).toBe("unavailable");
+});
+
+it("checks the whole file against its reference, not only each chunk against its hash", async () => {
+	const { bytes, sql, store, companyId, gatewayCalls } = await fixture();
+	// A manifest whose chunks are real but whose fileSha256 is not theirs.
+	const text = `{"schema":"qorpera.cloud-file-manifest/v2","fileSha256":"${sha("claims")}","bytes":6,"mediaType":"text/plain","executable":false,"chunks":[{"sha256":"${sha("actual")}","bytes":6}]}`;
+	for (const object of ["actual", text]) {
+		await store.put(companyId, sha(object), Buffer.from(object));
+		sql.catalog.set(sha(object), Buffer.byteLength(object));
+	}
+	// Readable as an entry's manifest and chunk (the fixture finds chunks through staged intents; this one was not).
+	sql.readable.add(sha(text));
+	sql.readable.add(sha("actual"));
+	await expect(
+		bytes.get(
+			{ manifestSha256: sha(text), fileSha256: sha("claims"), bytes: 6, mediaType: "text/plain", executable: false },
+			new AbortController().signal,
+		),
+	).rejects.toThrow("Company folder bytes do not match their entry");
+	// A manifest whose chunk sizes do not add up to its file's is refused before any chunk is fetched.
+	const short = `{"schema":"qorpera.cloud-file-manifest/v2","fileSha256":"${sha("actual")}","bytes":7,"mediaType":"text/plain","executable":false,"chunks":[{"sha256":"${sha("actual")}","bytes":6}]}`;
+	await store.put(companyId, sha(short), Buffer.from(short));
+	sql.catalog.set(sha(short), Buffer.byteLength(short));
+	sql.readable.add(sha(short));
+	gatewayCalls.length = 0;
+	await expect(
+		bytes.get(
+			{
+				manifestSha256: sha(short),
+				fileSha256: sha("actual"),
+				bytes: 7,
+				mediaType: "text/plain",
+				executable: false,
+			},
+			new AbortController().signal,
+		),
+	).rejects.toThrow("Company folder response is invalid");
+	expect(gatewayCalls).toEqual([
+		"qorpera_folder_authorize_object_download",
+		"qorpera_folder_authorize_object_download",
+	]);
+});
+
+it("sends the folder core the lower-case run for a binding with upper-case ids", async () => {
+	const { bytes, sql } = await fixture({ upperCaseBinding: true });
+	const signal = new AbortController().signal;
+	const reference = await bytes.put(Buffer.from("upper"), "text/plain", false, signal);
+	sql.readable.add(reference.manifestSha256);
+	expect(Buffer.from(await bytes.get({ ...reference, executable: false }, signal)).toString()).toBe("upper");
 });
