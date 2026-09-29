@@ -227,7 +227,8 @@ end $$;
 
 -- The folder-v2 run check under every runtime tool call. In order: the binding (host authority, keys, provider); the
 -- stop as a plain read; the run mutex (the budget row FOR UPDATE, before the job, so a second tool call of the run
--- waits here and never queues a KEY SHARE on the job beside a waiting completion); the folder run entry with the
+-- waits here, never beside the first at the job, and a waiting completion or renewal waits for at most one tool call
+-- beyond the one in flight, C1C §5.2); the folder run entry with the
 -- caller's targets and this company's row at rank 0 (the job and fence KEY SHARE, the stop re-read, the run resolve
 -- with its wake authority, ranks 0 to 7); then the lease, the job lease and the run's model, as plain reads after
 -- every wait. Returns the run actor, the resolved actor and the run row.

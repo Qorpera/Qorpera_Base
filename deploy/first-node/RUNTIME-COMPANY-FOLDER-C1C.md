@@ -184,9 +184,14 @@ The run's budget row, `qorpera_execution_run_budgets` (primary key `run_id`, one
   row is dispatched to a folder body or refused (§5.4). An activation check keeps it so (§6).
   `purge_company` locks jobs, then budgets, but it runs only after the stop, which refuses tool calls first.
 - **Why before the job.** A tool call that arrives while completion holds the job takes the mutex, then waits at the
-  job; once completion commits, it finds the run ended and refuses. A second tool call of the run waits at the mutex
-  and never takes the job `KEY SHARE` beside a waiting completion. PostgreSQL grants a new shared locker while an
-  exclusive one waits, so the mutex, not the job lock, keeps completion from starving.
+  job; once completion commits, it finds the run ended and refuses. PostgreSQL grants a new shared locker while an
+  exclusive one waits, so without the mutex overlapping tool calls could hold the job `KEY SHARE` without a gap and
+  starve completion (and renewal). With it, a second tool call of the run waits at the mutex, never beside the first
+  at the job: at most one tool call holds the job at a time. When that call commits, a waiting completion or renewal
+  and the next tool call race for the job row. The waiter usually wins, since it only re-reads the row while the next
+  call first takes the mutex and runs its checks; at worst it waits for that one call, and it meets the same race,
+  with the same head start, at each hand-off. That bounds the wait; strict first-come order would need completion and
+  renewal to take the mutex too, which they do not (test 648 C).
 - A run without its budget row refuses (42501).
 - Folder commits and releases do not take it: disjoint saves of one run stay parallel.
 
