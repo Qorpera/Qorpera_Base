@@ -587,10 +587,12 @@ Coordinator (nothing secret):
 
 ## Plan & usage (web)
 
-- The company card, seen by every member: hours used this month, by kind; from the live switch
-  also by source, and hours left. From the live switch, founders also see each founder's share
-  and a "Buy hours" button (before it, only founders who are enrolled testers see it, in Stripe's
-  test mode).
+- The company card, seen by every member: hours used this month, by kind; from the live switch also
+  by source, and hours left (`hoursLeft` in `qorpera_read_company_computer_hours`, migration
+  `20260929330000`: null before the switch, "complimentary", or hours left with free, plans, packs
+  and owed; `founders` only for a founder reading it). From the live switch, founders also see each
+  founder's share and a "Buy hours" button (before it, only founders who are enrolled testers see
+  it, in Stripe's test mode).
 - Your plan, seen only by you: plan, hours used per company, reset date, "Change plan" and
   "Payments and invoices" (Stripe's billing page).
 - Admins, contributors and viewers see the company's hours without names or cards: "Computer

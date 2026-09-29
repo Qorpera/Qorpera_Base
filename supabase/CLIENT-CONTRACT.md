@@ -507,6 +507,14 @@ wake), so no agent runs and nothing is charged before it.
   `qorpera_enqueue_runner_job` refuse new work with 55000 ("Waiting for
   computer hours: the company has none left").
   A client shows "Not measured yet" while the function is missing (PGRST202).
+  From 20260929330000, `hoursLeft`: null before the live switch (show measured
+  hours only); `{"complimentary": true}` for a company that is never limited;
+  otherwise `leftSeconds` (zero or less when out of hours, below zero by what
+  it owes) with `freeSeconds`, `planSeconds` (the founders' current plans,
+  each shared by every company it pays for), `creditSeconds` and
+  `owedSeconds`. A founder reading it also gets `founders`: each founder's
+  `userId`, and `planSeconds`, `planEndsAt` and `creditSeconds` where they
+  have them (who pays); other members never see who paid.
   From 20260929280000, `qorpera_company_waiting_for_hours(p_profile_id)` →
   boolean says the same as `waitingForHours` without the month's figures,
   for a client that asks with its other periodic reads (any member; anyone

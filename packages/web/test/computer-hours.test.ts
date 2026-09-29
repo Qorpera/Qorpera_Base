@@ -28,6 +28,40 @@ describe("company computer hours", () => {
 		});
 	});
 
+	it("reads the company's hours left from the live switch on, and nothing before it", () => {
+		expect(parseCompanyComputerHours(reply()).hoursLeft).toBeUndefined();
+		expect(parseCompanyComputerHours(reply({ hoursLeft: null })).hoursLeft).toBeUndefined();
+		expect(parseCompanyComputerHours(reply({ hoursLeft: { complimentary: true } })).hoursLeft).toEqual({
+			complimentary: true,
+		});
+		const left = {
+			leftSeconds: -3600,
+			freeSeconds: 0,
+			planSeconds: 0,
+			creditSeconds: 0,
+			owedSeconds: 3600,
+		};
+		expect(parseCompanyComputerHours(reply({ hoursLeft: left })).hoursLeft).toEqual({
+			complimentary: false,
+			...left,
+		});
+		const founders = [
+			{ userId: P, planSeconds: 7200, planEndsAt: "2026-10-28T00:00:00+00:00", creditSeconds: null },
+			{ userId: P.replace("a", "b"), planSeconds: null, planEndsAt: null, creditSeconds: 72_000 },
+		];
+		expect(parseCompanyComputerHours(reply({ hoursLeft: { ...left, founders } })).hoursLeft).toEqual({
+			complimentary: false,
+			...left,
+			founders: [
+				{ userId: P, planSeconds: 7200, planEndsAt: "2026-10-28T00:00:00+00:00" },
+				{ userId: P.replace("a", "b"), creditSeconds: 72_000 },
+			],
+		});
+		expect(() => parseCompanyComputerHours(reply({ hoursLeft: { ...left, freeSeconds: -1 } }))).toThrow(
+			"free hours left",
+		);
+	});
+
 	it("reads whether the company waits for computer hours, and an older reply as not waiting", () => {
 		expect(parseCompanyComputerHours(reply({ waitingForHours: true })).waitingForHours).toBe(true);
 		expect(parseCompanyComputerHours(reply({ waitingForHours: false })).waitingForHours).toBe(false);
