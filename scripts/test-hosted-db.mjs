@@ -1,5 +1,6 @@
-import { spawnSync } from "node:child_process";
-import { readFileSync, readdirSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { closeSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -46,8 +47,8 @@ export function buildContainerName(pid, suffix) {
 	return `qorpera-hosted-db-${pid}-${suffix}`;
 }
 
-/** The PostgreSQL scripts the hosted-db step runs after the SQL tests (`--scripts`), each against its own
- * database in this run's container. */
+/** The PostgreSQL scripts the hosted-db step runs with the SQL tests (`--scripts`), each against its own
+ * database: in this run's PostgreSQL after the SQL tests, or in one of its own (OWN_SERVER_SCRIPTS). */
 export const HOSTED_DB_SCRIPTS = [
 	"scripts/test-runtime-bundle-activation.mjs",
 	"scripts/test-email-draft-e2e.mjs",
@@ -57,6 +58,11 @@ export const HOSTED_DB_SCRIPTS = [
 	"scripts/test-coding-turn-backfill.mjs",
 	"scripts/test-runtime-room-history.mjs",
 ];
+
+/** Scripts that keep a PostgreSQL of their own (they restart the server or alter the cluster-wide postgres
+ * role). The suite starts them first and lets them run beside the SQL tests; a script missing here only
+ * runs later, in turn. */
+const OWN_SERVER_SCRIPTS = new Set(["scripts/test-runtime-node-capacity.mjs", "scripts/test-runtime-office-delete-disposition.mjs"]);
 
 /** Where those scripts start in the migration chain; the one replay leaves a copy at each. A point missing
  * here costs time only: the script copies the nearest earlier snapshot and replays the gap. */
@@ -70,6 +76,30 @@ function scriptStartPoints(names) {
 }
 
 const seconds = (since) => `${((performance.now() - since) / 1000).toFixed(1)} s`;
+
+/** Starts `script` with its output going to a file (nothing to drain while this process blocks on psql);
+ * the promise settles with its exit, output and time once it ends. */
+function startInBackground(script) {
+	const output = mkdtempSync(join(tmpdir(), "qorpera-hosted-db-script-"));
+	const file = join(output, "output.log");
+	const descriptor = openSync(file, "w");
+	const started = performance.now();
+	const child = spawn(process.execPath, [script], { cwd: repositoryRoot, stdio: ["ignore", descriptor, descriptor] });
+	closeSync(descriptor);
+	return new Promise((resolveExit) => {
+		child.on("error", (error) => resolveExit({ code: null, signal: String(error.message), output: "", time: seconds(started) }));
+		child.on("exit", (code, signal) => {
+			const text = readFileSync(file, "utf-8");
+			rmSync(output, { recursive: true, force: true });
+			resolveExit({ code, signal, output: text, time: seconds(started) });
+		});
+	});
+}
+
+function report(failed, script, code, signal, time) {
+	if (code !== 0) failed.push(script);
+	process.stdout.write(`== hosted-db: ${script} ${code === 0 ? "passed" : `FAILED (exit ${code ?? signal})`} in ${time}\n`);
+}
 
 /** Runs the SQL tests in order, each in a fresh session of one psql process, on `database`. Stops at the
  * first failure, as one psql run per test did. */
@@ -95,9 +125,13 @@ async function main() {
 		throw new Error("No hosted database regression tests were found");
 	}
 	const started = performance.now();
-	const cluster = await HostedDbCluster.start();
+	const background = withScripts
+		? HOSTED_DB_SCRIPTS.filter((script) => OWN_SERVER_SCRIPTS.has(script)).map((script) => [script, startInBackground(script)])
+		: [];
 	const failed = [];
+	let cluster;
 	try {
+		cluster = await HostedDbCluster.start();
 		process.stdout.write(`Started ${cluster.container} in ${seconds(started)}\n`);
 		const building = performance.now();
 		const names = migrationNames();
@@ -116,7 +150,7 @@ async function main() {
 		cluster.drop(databaseName);
 
 		if (withScripts)
-			for (const script of HOSTED_DB_SCRIPTS) {
+			for (const script of HOSTED_DB_SCRIPTS.filter((name) => !OWN_SERVER_SCRIPTS.has(name))) {
 				const scriptStarted = performance.now();
 				process.stdout.write(`== hosted-db: ${script}\n`);
 				const result = spawnSync(process.execPath, [script], {
@@ -124,12 +158,15 @@ async function main() {
 					stdio: "inherit",
 					env: { ...process.env, ...cluster.environment() },
 				});
-				const passed = result.status === 0;
-				if (!passed) failed.push(script);
-				process.stdout.write(`== hosted-db: ${script} ${passed ? "passed" : `FAILED (exit ${result.status ?? result.signal})`} in ${seconds(scriptStarted)}\n`);
+				report(failed, script, result.status, result.signal, seconds(scriptStarted));
 			}
 	} finally {
-		cluster.stop();
+		cluster?.stop();
+		for (const [script, exited] of background) {
+			const { code, signal, output, time } = await exited;
+			process.stdout.write(`== hosted-db: ${script} (ran beside the SQL tests)\n${output}`);
+			report(failed, script, code, signal, time);
+		}
 	}
 	process.stdout.write(`== hosted-db: ${failed.length ? `failed: ${failed.join(", ")}` : "all passed"} in ${seconds(started)}\n`);
 	if (failed.length) process.exitCode = 1;
