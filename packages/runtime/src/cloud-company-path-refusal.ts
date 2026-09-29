@@ -71,3 +71,31 @@ export class CloudCompanyFormationRefused extends CloudRuntimeDiagnosticError {
 		this.reason = reason;
 	}
 }
+
+/** A complete PostgREST error from one of the folder core's entry points (`qorpera_folder_read`, `_list`, `_commit`,
+ * `_record_release`), with its SQLSTATE (or PostgREST's own `PGRST1nn`-`PGRST3nn`, for a request nothing ran) and
+ * message. The folder client alone decides what each means (core C3): a
+ * stop, a run that is no longer live, a read the run may no longer see, or a change it retries with the same key. */
+export class CloudCompanyFolderRpcError extends CloudRuntimeDiagnosticError {
+	readonly code: string;
+	readonly #detail: string;
+
+	constructor(code: string, message: string) {
+		super(
+			code.startsWith("22") || code === "25000" || code.startsWith("PGRST1") || code.startsWith("PGRST2")
+				? "invalid_arguments"
+				: code === "42501" || code === "0A000" || code === "55000" || code.startsWith("PGRST3")
+					? "authority_unavailable"
+					: "transport_unavailable",
+			"Company folder authority unavailable",
+		);
+		this.code = code;
+		this.#detail = message.slice(0, 200);
+	}
+
+	/** SQL's message, for the folder client to tell its refusals apart. It is kept off the error's text and out of
+	 * its serialization, so SQL's words reach no model and no log. */
+	get detail(): string {
+		return this.#detail;
+	}
+}
