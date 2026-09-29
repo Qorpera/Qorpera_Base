@@ -267,6 +267,15 @@ begin
 	perform pg_temp.raises(format('select pg_temp.ntlr(%L)', b), '42501');
 	perform pg_temp.raises_like(format('select pg_temp.lease(%L)', b), '42501', 'native execution generation is fenced for recovery');
 	perform pg_temp.fx(format('update public.qorpera_member_compute_identities set recovery_epoch = 0 where id = %L', b ->> 'computeIdentityId'));
+	-- An identity waiting for recovery is fenced before the lease itself is checked.
+	perform pg_temp.fx(format('update public.qorpera_member_compute_identities set status = ''disabled'' where id = %L', b ->> 'computeIdentityId'));
+	perform pg_temp.raises_like(format('select pg_temp.lease(%L)', b), '42501', 'native execution generation is fenced for recovery');
+	perform pg_temp.fx(format('update public.qorpera_member_compute_identities set status = ''active'' where id = %L', b ->> 'computeIdentityId'));
+	-- A runner from another generation of the identity is fenced too.
+	perform pg_temp.fx(format('update public.qorpera_runners set compute_recovery_epoch = 1 where id = %L', b ->> 'runnerId'));
+	perform pg_temp.raises_like(format('select pg_temp.ntlr(%L)', b), '42501', 'native execution generation is fenced for recovery');
+	perform pg_temp.raises_like(format('select pg_temp.lease(%L)', b), '42501', 'native execution generation is fenced for recovery');
+	perform pg_temp.fx(format('update public.qorpera_runners set compute_recovery_epoch = 0 where id = %L', b ->> 'runnerId'));
 	perform pg_temp.fx(format('update public.qorpera_runners set session_expires_at = clock_timestamp() - interval ''1 second'' where id = %L', b ->> 'runnerId'));
 	perform pg_temp.raises(format('select pg_temp.ntlr(%L)', b), '42501');
 	perform pg_temp.fx(format('update public.qorpera_runners set session_expires_at = clock_timestamp() + interval ''1 hour'' where id = %L', b ->> 'runnerId'));
@@ -440,8 +449,9 @@ begin
 		raise exception 'A refused presence subject must be absent'; end if;
 	perform pg_temp.fx(format('update public.qorpera_profile_staff set employment_status = ''active'' where staff_agent_id = %L', c_a));
 	-- A folder actor for another company is refused.
-	perform pg_temp.raises(format('select public.qorpera_folder_presence_routes(%L, %L, true)',
-		jsonb_set(public.qorpera_company_run_actor(c_env, b), '{companyId}', '"64700000-0000-4000-8000-000000000011"'), array['shared/doc.md']), '42501');
+	perform pg_temp.raises_like(format('select public.qorpera_folder_presence_routes(%L, %L, false)',
+		jsonb_set(public.qorpera_company_run_actor(c_env, b), '{companyId}', '"64700000-0000-4000-8000-000000000011"'), array['shared/doc.md']),
+		'42501', 'Company File authority is unavailable');
 	-- A member's shared exports: no company fence, and nothing listed yet.
 	perform pg_temp.path_claims('authenticated', c_member);
 	s := public.qorpera_list_member_file_exports(c_env);
@@ -502,7 +512,7 @@ begin
 		folder_path = case staff_agent_id when %L then ''agents/ada'' else ''agents/bo'' end, folder_path_version = extensions.gen_random_uuid(),
 		folder_commit_id = extensions.gen_random_uuid() where profile_id = %L', c_env, c_a, c_profile));
 	c := public.qorpera_describe_company_run_context(b);
-	if c -> 'folder' <> jsonb_build_object('agent', 'ada', 'coworkers', jsonb_build_object(c_b, 'bo')) then
+	if c -> 'folder' is distinct from jsonb_build_object('agent', 'ada', 'coworkers', jsonb_build_object(c_b, 'bo')) then
 		raise exception 'Folder-v2 run context folders: %', c -> 'folder'; end if;
 end $$;
 
