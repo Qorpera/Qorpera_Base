@@ -627,8 +627,12 @@ listed coworkers' (`qorpera_company_state_run_folder`). It is present only when 
 folder, so every other context and prompt keeps its exact shape for the runtime's closed parser. The
 runtime turns it into the place `cloudAgentFolder` takes (`agents/<handle>`, else `agents/<id>`),
 which memory and skills now both ask, and the prompt shows each agent's `folder`. Such a context
-exists once core C1c lets a `folder-v2` run's actor describe one. Still to come: the vision in full
-(core C3's folder client reads it), and the file's `model` and `effort` reaching runs.
+exists once core C1c lets a `folder-v2` run's actor describe one. Part B, in the same migration:
+`qorpera_prepare_routine_login(binding)` sets up the login the run's requester pays with for
+unattended work (`qorpera_ensure_unattended_sponsor`, which takes the login `FOR UPDATE` and writes
+rows), for the routine writer to call in its own transaction before it commits a routine file,
+whose commit reads that login without a lock. Still to come: the vision in full (core C3's folder
+client reads it), and the file's `model` and `effort` reaching runs.
 
 Until the mount's writes are accepted (F3), these tools become thin writers of these files:
 `hire_agent`, `create_group_chat`, `organize_sidebar`, `manage_todo`, `manage_routine` and
@@ -714,8 +718,8 @@ claims by kind then key (F2). All nine come before paths, objects, admission and
 
    **F2-1b** follows: the follow-ups on C2's queue, the context composer reading the vision and
    `agent.md`, and the agent-folder helper for memory and skills. Part A (migration
-   20260929440000) is the context's folder facts and the helper (§5); part B the routine save's
-   login setup; the thin writers come on core C3's folder client, and the reviewed ones after C2's
+   20260929440000) is the context's folder facts and the helper (§5); part B, in the same
+   migration, the routine save's login setup; the thin writers come on core C3's folder client, and the reviewed ones after C2's
    review recorder.
 3. **F2-2** group chats and sections (migration 20260928249100; for new companies it replaces
    #370's writes and `organize_sidebar`):

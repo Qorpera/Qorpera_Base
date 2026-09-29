@@ -1,5 +1,5 @@
--- Company state files, F2-1b part A: what a folder-v2 run's context says about the company folder (§5 of
--- deploy/first-node/RUNTIME-COMPANY-STATE-FILES.md).
+-- Company state files, F2-1b parts A and B: what a folder-v2 run's context says about the company folder, and the login
+-- setup a routine save needs first (§5 of deploy/first-node/RUNTIME-COMPANY-STATE-FILES.md).
 --
 -- Inert for today's companies: a snapshot-v1 run's context is unchanged, byte for byte. A folder-v2 run's context
 -- (once core C1c lets such a run's actor describe it) gains:
@@ -8,6 +8,11 @@
 --   the company's files) leaves it out, and the run keeps the folders by id;
 -- * the company's name from the vision file's index. The copy on the company row waits for core C2's queue.
 -- The vision itself, read in full with its version recorded, needs core C3's folder client and comes with it.
+--
+-- Part B: qorpera_prepare_routine_login, which the runtime's routine writer calls before it commits a routine file. A
+-- routine version is paid by the saver's own login that pays for unattended work, and the commit reads that without a
+-- lock (20260929310000). Setting such a login up takes the login FOR UPDATE and writes rows, as an agent's routine save
+-- does today (qorpera_ensure_unattended_sponsor), so it happens here, in its own transaction, before the commit.
 
 -- The folder-v2 facts of a run's agent, or null for a snapshot-v1 company: the company's name as its vision file says,
 -- the agent's folder name, and the folder names of the coworkers the context lists (the same 50 active agents, by id).
@@ -59,4 +64,21 @@ begin
 end
 $$;
 
+-- Part B. The login a run's requester pays with for unattended work, set up as an agent's routine save does today: an
+-- existing one that serves them, else their own connected login, consented and bound in their name. Null when they have
+-- none (the routine save then waits for one). Nothing else changes, and a retry finds what the first call set up.
+create function public.qorpera_prepare_routine_login(p_binding jsonb)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare v_run public.qorpera_execution_runs%rowtype; v_login jsonb;
+begin
+	v_run := public.qorpera_native_tool_locked_run(p_binding);
+	perform public.qorpera_assert_wake_work_allowed(v_run.id);
+	if v_run.staff_agent_id is null then raise exception 'Routine authority is unavailable' using errcode = '42501'; end if;
+	select jsonb_build_object('bindingId', sponsor.binding_id, 'version', sponsor.version) into v_login
+	from public.qorpera_ensure_unattended_sponsor(v_run) sponsor;
+	return jsonb_build_object('schema', 'qorpera.routine-login/v1', 'runId', v_run.id, 'login', v_login);
+end $$;
+
 revoke all on function public.qorpera_company_state_run_folder(uuid, uuid) from public, anon, authenticated, service_role;
+revoke all on function public.qorpera_prepare_routine_login(jsonb) from public, anon, authenticated, service_role, qorpera_secret_broker;
+grant execute on function public.qorpera_prepare_routine_login(jsonb) to service_role;
