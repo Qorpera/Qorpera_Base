@@ -5,6 +5,7 @@ import { CompanyController } from "../src/app/company.ts";
 import { ConversationView } from "../src/app/views/conversation.ts";
 import type { TranscriptItem, TranscriptMessage } from "../src/cloud/transcript.ts";
 import type { HostedProfileMember, HostedSessionEvent } from "../src/cloud/types.ts";
+import { conversationTimestampLabel } from "../src/ui/conversation-timestamps.ts";
 import { fmtTime } from "../src/ui/dom.ts";
 import { ReceivedAttachments } from "../src/ui/received-attachments.ts";
 import { event, fixture, id, profileA, session, settle, staff, team, userA, userB } from "./fixtures.ts";
@@ -17,6 +18,8 @@ let dispose: (() => void) | undefined;
 beforeEach(() => {
 	vi.useFakeTimers();
 	vi.setSystemTime("2026-09-05T12:00:00Z");
+	// Days and times in one zone, whatever the machine's: "today" and "yesterday" below are UTC's.
+	localStorage.setItem("qorpera.web.time-zone", "UTC");
 	vi.stubGlobal("matchMedia", () => ({ matches: false, addEventListener() {}, removeEventListener() {} }));
 	// jsdom has no native dialog methods.
 	HTMLDialogElement.prototype.showModal = function () {
@@ -280,7 +283,8 @@ describe("thread redraws keep unchanged messages", () => {
 		expect(now).toHaveLength(2);
 		expect(now[0]).toBe(first[0]);
 		expect(change).toEqual({ added: [now[1], thread.element(later.id)], removed: [], heard: [] });
-		expect(now[1]?.textContent).toBe("Today 12:12 PM");
+		expect(now[1]?.textContent).toBe(conversationTimestampLabel(new Date(at(12))));
+		expect(now[1]?.textContent).toMatch(/^Today /);
 		// A card drawn anew (its question answered) keeps the separator it stood under.
 		const card = question({ createdAt: at(30) });
 		await thread.show([...items, later, card]);
