@@ -328,7 +328,7 @@ SQL only, safe for the running bundle, and nothing changes until an operator dec
 
   This must return no rows before a paused cut.
 
-## A failed start moves the run on (migration `20260929240000`)
+## A failed start moves the run on (migration `20260928249240`)
 
 Found on 2026-09-29 (v148, A1): node 1 reserved a machine for a vault run's attempt, its start failed, and
 every retry asked for the same runner. Node 2's exec host was refused it ("runner client id is already bound

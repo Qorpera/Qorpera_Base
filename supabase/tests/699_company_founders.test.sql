@@ -169,7 +169,7 @@ select pg_temp.refused($q$select public.qorpera_update_profile_member_role('3000
 select public.qorpera_delete_hosted_profile('30000000-0000-4000-8000-000000000910');
 reset role;
 -- Deleting hides the company and stops its work; the deletion finishes once no node holds anything
--- of it (20260929150000). This company has nothing on a node.
+-- of it (20260928249150). This company has nothing on a node.
 select public.qorpera_finish_company_deletion('30000000-0000-4000-8000-000000000910');
 do $$
 begin

@@ -1,5 +1,5 @@
 -- @fixture 300_runtime_wake_bus.test.sql until "-- END WAKE FIXTURE"
--- A run's attempt whose machine failed to start moves on (20260929240000). Production, 2026-09-29: node 1
+-- A run's attempt whose machine failed to start moves on (20260928249240). Production, 2026-09-29: node 1
 -- reserved a machine for a vault run's attempt, the start failed, and every retry asked for the same
 -- runner until the run failed. Now the claim release revokes a reserved, never activated runner whose
 -- machine was released, raises the attempt, and the placement ranks the failed node last.
