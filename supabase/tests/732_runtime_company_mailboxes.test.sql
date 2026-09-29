@@ -186,6 +186,12 @@ select pg_temp.wake_assert(pg_temp.mail(pg_temp.mail_id(4), 'support@mail.exampl
 		'support@mail.example.test', 'outcome', 'limited', 'retryAfterSeconds', 600),
 	'The company''s hourly budget holds for mail');
 update public.qorpera_event_intake_settings set company_hourly_deliveries = 2000;
+-- And its bytes.
+update public.qorpera_event_intake_settings set company_hourly_bytes = greatest(1024, (select sum(bytes)::bigint + 10
+	from public.qorpera_event_intake_usage where profile_id = '30000000-0000-4000-8000-000000000010'));
+select pg_temp.wake_assert(pg_temp.mail(pg_temp.mail_id(11), 'support@mail.example.test') ->> 'outcome' = 'limited',
+	'The company''s hourly bytes hold for mail');
+update public.qorpera_event_intake_settings set company_hourly_bytes = 67108864;
 
 -- A paused mailbox refuses; a company being deleted is unknown; removing frees the address.
 select pg_temp.path_claims('authenticated', '30000000-0000-4000-8000-000000000001');

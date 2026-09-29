@@ -7,8 +7,9 @@
  * and trust results before the bodies) and hands it with all its recipients (To, Cc, Bcc and the envelope) to the
  * database's mail door, qorpera_receive_mail, which stores it once in each live mailbox among them and drops the
  * rest. Answers: 200 when every recipient is settled (stored, a duplicate, unknown or paused; mail to a paused
- * mailbox and mail the provider no longer has are dropped), 401 for a bad or stale signature, 400 for a payload
- * that is not a received-mail event, 405, 413, 429 with Retry-After when a mailbox is over its limits, and 503 when
+ * mailbox and mail the provider no longer has are dropped; other event types are ignored), 401 for a bad or stale
+ * signature, 400 for a payload that is not JSON or a received-mail event without a valid message id, 405, 413,
+ * 429 with Retry-After when a mailbox is over its limits, and 503 when
  * mail is switched off or the provider or database cannot be reached, so the provider retries. A message the
  * database calls malformed is logged and settled: a retry would not change it. */
 
@@ -135,12 +136,15 @@ export async function verifySignature(
 		.some((entry) => entry.startsWith("v1,") && equalStrings(entry.slice(3), expected));
 }
 
-/** A bare address from `name <address>` or `address`, lowercased; null when it is none. */
+/** A bare address from `name <address>` or `address`, lowercased; null when it is none, or holds control
+ * characters or half a surrogate pair (the database could not take it). */
 export function bareAddress(value: unknown): string | null {
 	if (typeof value !== "string") return null;
 	const angle = /<([^<>]*)>\s*$/.exec(value);
 	const address = (angle ? angle[1] : value).trim().toLowerCase();
-	return ADDRESS.test(address) ? address : null;
+	return ADDRESS.test(address) && !/[\u0000-\u001f\u007f]/.test(address) && clean(address) === address
+		? address
+		: null;
 }
 
 function addresses(value: unknown, limit = MAX_RECIPIENTS): string[] {
@@ -279,13 +283,14 @@ export async function handleMailIntake(request: Request, intake: MailIntake): Pr
 	const emailId = data?.email_id;
 	if (!data || typeof emailId !== "string" || !EMAIL_ID.test(emailId))
 		return json({ error: "The webhook is malformed" }, 400);
-	// All of them: the database knows which are mailboxes.
+	// All of them, the envelope first (it is where the message was delivered): the database knows which are
+	// mailboxes.
 	const recipients = [
 		...new Set([
+			...addresses(data.received_for),
+			...addresses(data.bcc),
 			...addresses(data.to),
 			...addresses(data.cc),
-			...addresses(data.bcc),
-			...addresses(data.received_for),
 		]),
 	].slice(0, MAX_RECIPIENTS);
 	if (recipients.length === 0) return json({ stored: 0 }, 200);

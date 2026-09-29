@@ -344,7 +344,9 @@ call; until the domain exists, the build runs against Resend's `<id>.resend.app`
 on the platform's mail domain, and a purpose. An address belongs to one live mailbox across the
 platform. The domain is one setting (`qorpera_mail_settings.domain`): a mailbox keeps only its local
 part, so going live on the real domain is that one change plus its MX record, and every mailbox made on
-the test domain moves with it. Each mailbox is a hook with the proof `mail`, named `mail-<local part>`, owned by the
+the test domain moves with it. Each mailbox is a hook with the proof `mail`, named `mail-<local part>` (with a short digest when the
+local part holds a dot or an underscore, which hook names cannot; hook names beginning `mail-` are
+reserved for mailboxes), owned by the
 platform: it has a random hook address that is never shown, and the public intake answers `unknown`
 for it, so only the mail door fills it. Pausing, resuming and removing are the hook's; removing frees
 the address. Members see the address (`email`) in the hook list. At most 20 mailboxes a company, within
@@ -380,10 +382,11 @@ A connected Gmail read once a minute can become deliveries the same way.
 
 ## Deploy (M2a)
 
-The migration adds tables and functions, and patches three existing ones by exact text: the intake door
+The migration adds tables and functions, and patches four existing ones by exact text: the intake door
 (`qorpera_receive_event`: a mailbox's hook is unknown), the hook descriptor (a mailbox shows `email`,
-never its hook address) and the agents' hook list (no `url` for a mailbox). It rolls: nothing uses
-mailboxes before they exist. After it is live:
+never its hook address), the agents' hook list (no `url` for a mailbox) and hook creation
+(`qorpera_create_event_hook`: names beginning `mail-` are the mailboxes'; production had none when this
+was written). It rolls: nothing uses mailboxes before they exist. After it is live:
 
 1. Deploy the function: `supabase functions deploy mail-intake` (`verify_jwt = false`), with the secret
    `RESEND_WEBHOOK_SECRET` (the webhook's signing secret, `whsec_…`); `RESEND_API_KEY` is already set.

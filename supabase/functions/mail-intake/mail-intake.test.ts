@@ -137,11 +137,12 @@ describe("mail intake", () => {
 		assert.deepEqual(await response.json(), { stored: 1 });
 		assert.deepEqual(f.fetches, [EMAIL_ID]);
 		assert.equal(f.calls.length, 1);
+		// The envelope first, then Bcc, To and Cc.
 		assert.deepEqual(f.calls[0].recipients, [
 			"support@mail.example.test",
-			"sales@mail.example.test",
-			"hidden@mail.example.test",
 			"forwarded@mail.example.test",
+			"hidden@mail.example.test",
+			"sales@mail.example.test",
 		]);
 		const stored = JSON.parse(f.calls[0].message) as Json;
 		// The subject and the trust results come before the bodies, as the text is stored as written.
@@ -158,12 +159,19 @@ describe("mail intake", () => {
 		assert.equal(f.calls[0].message.includes("x-other"), false);
 	});
 
-	it("passes a mailbox on however many other recipients come first", async () => {
+	it("passes a mailbox on however many other recipients come first, and the envelope before 200 visible ones", async () => {
 		const others = Array.from({ length: 30 }, (_, index) => `person${index}@example.org`);
 		const f = fixture();
 		await handleMailIntake(webhook(received({ to: others, cc: ["support@mail.example.test"], bcc: [], received_for: [] })), f.intake);
 		assert.equal(f.calls[0].recipients.length, 31);
 		assert.equal(f.calls[0].recipients.at(-1), "support@mail.example.test");
+		const crowd = Array.from({ length: 250 }, (_, index) => `person${index}@example.org`);
+		await handleMailIntake(
+			webhook(received({ to: crowd, cc: [], bcc: [], received_for: ["hidden@mail.example.test"] })),
+			f.intake,
+		);
+		assert.equal(f.calls[1].recipients.length, 200);
+		assert.equal(f.calls[1].recipients[0], "hidden@mail.example.test");
 	});
 
 	it("maps the answer: the longest wait for limits, 503 when off or failing, and settles a malformed message", async () => {
@@ -239,11 +247,13 @@ describe("mail intake", () => {
 });
 
 describe("mail message", () => {
-	it("reads bare addresses", () => {
+	it("reads bare addresses, and none the database could not hold", () => {
 		assert.equal(bareAddress("Support <Support@Mail.Example.Test>"), "support@mail.example.test");
 		assert.equal(bareAddress(" sales@mail.example.test "), "sales@mail.example.test");
 		assert.equal(bareAddress("nobody"), null);
 		assert.equal(bareAddress(42), null);
+		assert.equal(bareAddress("sup\u0000port@mail.example.test"), null);
+		assert.equal(bareAddress("sup\ud83dport@mail.example.test"), null);
 	});
 
 	it("keeps only text the database can hold", () => {
@@ -273,5 +283,17 @@ describe("mail message", () => {
 		assert.ok(Buffer.byteLength(written) <= MAX_MESSAGE_BYTES);
 		assert.ok(typeof emoji.text === "string" && emoji.text.length > 50_000);
 		assert.equal(clean(emoji.text as string), emoji.text);
+		// A cut that would fall inside an emoji keeps the whole pair out, for fields and bodies alike.
+		for (const lead of ["", "x"]) {
+			const cut = normalizeMessage(EMAIL_ID, {
+				...message,
+				subject: `${lead}${"\ud83d\ude00".repeat(600)}`,
+				text: `${lead}${"\ud83d\ude00".repeat(100_000)}`,
+				html: null,
+			});
+			assert.equal(clean(cut.subject as string), cut.subject, `subject ${lead}`);
+			assert.equal(clean(cut.text as string), cut.text, `text ${lead}`);
+			assert.ok(Buffer.byteLength(JSON.stringify(cut)) <= MAX_MESSAGE_BYTES);
+		}
 	});
 });

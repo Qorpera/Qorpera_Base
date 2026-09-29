@@ -562,7 +562,8 @@ wake), so no agent runs and nothing is charged before it.
   URL plus this path), `maxBodyBytes` (1024–262144, default 65536),
   `perMinute` (1–120, default 60), `createdAt`, `lastReceivedAt` (absent
   until the first delivery). Owners and admins only (42501); 23505 for a
-  name in use, 54000 past 50 live hooks, 22023 for a bad environment, name,
+  name in use, 54000 past 50 live hooks, 22023 for a bad environment, name
+  (names beginning `mail-` belong to mailboxes, from 20260929650000),
   purpose, proof or limit, 0A000 for a `folder-v2` company (its hooks come
   with their connection file).
 - `qorpera_set_event_hook_status(p_hook_id, p_status)` with `active`,
@@ -583,7 +584,8 @@ wake), so no agent runs and nothing is charged before it.
   receiving only, for `snapshot-v1` companies. Company mail is built switched off, and no mailbox can be made
   until operators set the platform's mail domain.
 - `qorpera_create_company_mailbox(p_profile_id, p_environment_id, p_local_part, p_purpose)` → the hook
-  descriptor (`qorpera.event-hook/v1`) of the mailbox's hook: `proof` `mail`, `name` `mail-<local part>`, and
+  descriptor (`qorpera.event-hook/v1`) of the mailbox's hook: `proof` `mail`, `name` `mail-<local part>` (with a short digest suffix when
+  the local part holds a dot or an underscore), and
   `email` (`<local part>@<mail domain>`); never `address` or `path`. The local part is 1–64 lowercase letters,
   digits, dots, hyphens and underscores, with no leading, trailing or doubled dot; RFC 2142 names
   (`postmaster`, `abuse`, …) and `noreply` are reserved (22023). An address belongs to one live mailbox across
