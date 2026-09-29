@@ -1,5 +1,5 @@
 -- @fixture 300_runtime_wake_bus.test.sql until "-- END WAKE FIXTURE"
--- Computer hours, build step 6c part 1 (20260929250000_runtime_computer_hours_zero_state): the sweep
+-- Computer hours, build step 6c part 1 (20260928249250_runtime_computer_hours_zero_state): the sweep
 -- after each meter pass records when a company ran out and clears it once hours arrive. With the zero
 -- rule on, "out of hours" goes once per time at zero, however the company got there (owing or not),
 -- under its own occasion: held while that time lasts, dropped once the company leaves zero; the
