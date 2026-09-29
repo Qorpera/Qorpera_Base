@@ -34,7 +34,7 @@ import { renderInteractionCard } from "../../ui/interaction-card.ts";
 import { matchesKey } from "../../ui/keys.ts";
 import { markdownBubbles } from "../../ui/markdown.ts";
 import { findMentions, type MentionTarget, matchTargets, mentionParts, mentionQuery } from "../../ui/mentions.ts";
-import { presentationDay, presentationLocale, presentationTimeZone, t } from "../../ui/preferences.ts";
+import { presentationDay, presentationLocale, presentationTimeZone, t, timeZoneOption } from "../../ui/preferences.ts";
 import { quietScroll } from "../../ui/quiet-scroll.ts";
 import { ReceivedAttachments } from "../../ui/received-attachments.ts";
 import { runFailureCard, runFailureInterrupted, runFailureReason } from "../../ui/run-failure.ts";
@@ -62,13 +62,77 @@ const CODING_POLL_HIDDEN_MS = 20_000;
 // It does not settle or discard work whose outcome still needs review.
 const dismissedRunNotifications = new WeakMap<CompanyController, Set<string>>();
 
-/** One transcript item as the thread drew it. The element is kept while its key (everything
- * the item shows) is the same, so a new message adds one node and the rest stay as they are. */
+/** One transcript item as the thread drew it. The element is kept while its key (everything the
+ * item shows but its times) and its time key are the same, so a new message adds one node and the
+ * rest stay as they are; a change is made in place where that is safe (#renderMessages). */
 interface DrawnItem {
 	key: string;
+	/** How the item's times read: the zone, and each moment's day against today. */
+	time: string;
 	element: HTMLElement;
-	/** A message's received files: disposed with the element (it may hold an open preview). */
-	attachments?: ReceivedAttachments;
+	/** The session input a member's message stood for while it was on its way (the browser's copy,
+	 * then the cloud's waiting input): the next form of that message takes the element over. */
+	input?: string | undefined;
+	/** A message's parts, so a change redraws only the part that changed. */
+	message?: MessageParts;
+}
+
+interface MessageParts {
+	author?: { text: string; node: HTMLElement };
+	body: { key: string; nodes: HTMLElement[] };
+	/** Received files: disposed with their part (it may hold an open preview). */
+	files?: { key: string; view: ReceivedAttachments };
+	caption?: HTMLElement;
+}
+
+/** Elements that hold a handler of their own or what the member typed or opened. */
+const INTERACTIVE = "button, input, select, textarea, a[href], details, [contenteditable]";
+
+/** An element without controls: nothing in it acts on what it showed when it was drawn. */
+function inert(element: Element): boolean {
+	return !element.matches(INTERACTIVE) && !element.querySelector(INTERACTIVE);
+}
+
+/** The same elements and text nodes in the same places. A figure counts as one node: its
+ * motion draws inside it on its own. */
+function sameShape(a: Node, b: Node): boolean {
+	if (a.nodeName !== b.nodeName) return false;
+	if (a instanceof Element && a.classList.contains("figure")) return true;
+	if (a.childNodes.length !== b.childNodes.length) return false;
+	for (let index = 0; index < a.childNodes.length; index++)
+		if (!sameShape(a.childNodes[index]!, b.childNodes[index]!)) return false;
+	return true;
+}
+
+/** Makes `target` read as `source`, which has its shape (sameShape): text node by text node, so
+ * the live log hears only the words that changed. With `labelsOnly`, only titles and labels of
+ * elements are copied besides text, so a control keeps its state (pressed, open, busy). */
+function copyShape(target: Node, source: Node, labelsOnly: boolean): void {
+	if (target instanceof Text) {
+		if (target.data !== (source as Text).data) target.data = (source as Text).data;
+		return;
+	}
+	if (!(target instanceof Element) || !(source instanceof Element) || target.classList.contains("figure")) return;
+	for (const name of labelsOnly ? ["title", "aria-label"] : target.getAttributeNames())
+		if (!source.hasAttribute(name)) target.removeAttribute(name);
+	for (const name of labelsOnly ? ["title", "aria-label"] : source.getAttributeNames()) {
+		const value = source.getAttribute(name);
+		if (value !== null && target.getAttribute(name) !== value) target.setAttribute(name, value);
+	}
+	for (let index = 0; index < target.childNodes.length; index++)
+		copyShape(target.childNodes[index]!, source.childNodes[index]!, labelsOnly);
+}
+
+/** Puts `children` in `parent` in this order, moving only what is out of place and removing the
+ * rest: a node that stays is never taken out, so a live log does not read it again. */
+function placeChildren(parent: Element, children: readonly Node[]): void {
+	const wanted = new Set(children);
+	for (const child of [...parent.childNodes]) if (!wanted.has(child)) child.remove();
+	let cursor = parent.firstChild;
+	for (const node of children) {
+		if (node !== cursor) parent.insertBefore(node, cursor);
+		cursor = node.nextSibling;
+	}
 }
 
 export { renderAuthorizationCard } from "../../ui/authorization-card.ts";
@@ -174,8 +238,6 @@ export class ConversationView {
 	/** The working figure's row and the empty thread's line, kept while they read the same. */
 	#activityRow: { key: string; element: HTMLElement } | undefined;
 	#emptyRow: HTMLElement | undefined;
-	/** Each coding session's line, kept while what it shows is the same, so a redraw keeps its focus. */
-	readonly #codingLines = new Map<string, { key: string; element: HTMLElement }>();
 	/** A coding session opened as its own thread over this one, from its line or its
 	 * figure in the header; focus returns to the opener when it closes. */
 	#codingThread: { workerId: string; view: CodingSessionThreadView } | undefined;
@@ -183,6 +245,9 @@ export class ConversationView {
 	#timestampRows: { date: Date; node: HTMLElement; separator?: HTMLTimeElement }[] = [];
 	/** The clock (#clock) the day separators were last labelled with. */
 	#timestampClock = "";
+	/** The day each shown moment falls on in #daysZone, so a redraw need not work it out again. */
+	readonly #days = new Map<string, string>();
+	#daysZone = "";
 
 	constructor(
 		company: CompanyController,
@@ -554,11 +619,10 @@ export class ConversationView {
 		this.#panel = undefined;
 		this.#attachments.dispose();
 		this.#sharedDrafts.dispose();
-		for (const drawn of this.#drawn.values()) drawn.attachments?.dispose();
+		for (const drawn of this.#drawn.values()) drawn.message?.files?.view.dispose();
 		this.#drawn.clear();
 		this.#closeCodingSession();
 		clearTimeout(this.#codingPoll);
-		this.#codingLines.clear();
 		for (const unsubscribe of this.#unsubscribe) unsubscribe();
 		this.#company.setOpenSession(undefined);
 	}
@@ -627,12 +691,11 @@ export class ConversationView {
 
 	/** Written messages show skill names as the composer does. Only message text is marked:
 	 * markSkillNames leaves code and links alone, and marked text is not marked twice.
-	 * Only messages drawn now: a kept one was marked with the same names (its key has them). */
-	#markSkills(messages: readonly HTMLElement[]): void {
+	 * Only bubbles drawn now: a kept one was marked with the same names (its key has them). */
+	#markSkills(bubbles: readonly HTMLElement[]): void {
 		const names = this.#skills.names();
 		if (!names.size) return;
-		for (const message of messages)
-			for (const bubble of message.querySelectorAll(":scope > .bubble")) markSkillNames(bubble, names);
+		for (const bubble of bubbles) markSkillNames(bubble, names);
 	}
 
 	/** What every shown time depends on besides the moment itself: the language, the zone
@@ -1230,7 +1293,10 @@ export class ConversationView {
 		}
 	}
 
-	#refreshTimestamps(preserveScroll = true): void {
+	/** The clock, window focus, a language or zone change: every separator reads its day again, and
+	 * travel can add or remove a midnight between two messages. Message nodes stay; the reader's
+	 * place in the thread stays too. (A redraw places and labels separators itself.) */
+	#refreshTimestamps(): void {
 		if (this.#disposed) return;
 		const now = new Date();
 		let previousDate: Date | undefined;
@@ -1239,7 +1305,7 @@ export class ConversationView {
 			previousDate = row.date;
 			return { row, separated };
 		});
-		const regroup = preserveScroll && groups.some(({ row, separated }) => Boolean(row.separator) !== separated);
+		const regroup = groups.some(({ row, separated }) => Boolean(row.separator) !== separated);
 		const scrollTop = this.#messages.scrollTop;
 		const viewportTop = regroup && !this.#stickToBottom ? this.#messages.getBoundingClientRect().top : 0;
 		const anchor =
@@ -1247,39 +1313,42 @@ export class ConversationView {
 				? this.#timestampRows.find(({ node }) => node.getBoundingClientRect().bottom > viewportTop)?.node
 				: undefined;
 		const anchorTop = anchor?.getBoundingClientRect().top ?? 0;
-		// A redraw labels only the separators it adds, unless the day, zone or language
-		// changed since the last labelling; the clock and window focus relabel them all.
-		const clock = this.#clock();
-		const relabel = preserveScroll || clock !== this.#timestampClock;
-		this.#timestampClock = clock;
-		// Reconcile local-day boundaries too: travel can add or remove a midnight
-		// between adjacent messages. Keep the message and attachment nodes intact.
+		this.#timestampClock = this.#clock();
 		for (const { row, separated } of groups) {
 			if (!separated) {
 				row.separator?.remove();
 				row.separator = undefined;
 				continue;
 			}
-			const { date } = row;
-			if (row.separator && !relabel) continue;
 			const added = !row.separator;
-			const time = row.separator ?? h("time", { class: "conversation-timestamp", datetime: date.toISOString() });
-			row.separator = time;
-			const label = conversationTimestampLabel(date, now);
-			const title = conversationTimestampTitle(date);
-			if (time.textContent !== label) time.textContent = label;
-			if (time.title !== title) {
-				time.title = title;
-				time.setAttribute("aria-label", title);
-			}
+			row.separator = this.#labelSeparator(
+				row.separator ?? h("time", { class: "conversation-timestamp" }),
+				row.date,
+				now,
+			);
 			// Labelled before it joins the live log, which then reads it once, whole.
-			if (added) row.node.before(time);
+			if (added) row.node.before(row.separator);
 		}
 		if (regroup) {
 			if (this.#stickToBottom) this.#pinToBottom();
 			else if (anchor) this.#messages.scrollTop += anchor.getBoundingClientRect().top - anchorTop;
 			else this.#messages.scrollTop = scrollTop;
 		}
+	}
+
+	/** A day separator reads its moment ("Today 10:04"), with the full date and time for a pointer
+	 * and a screen reader; only what changed is written. */
+	#labelSeparator(time: HTMLTimeElement, date: Date, now: Date): HTMLTimeElement {
+		const moment = date.toISOString();
+		if (time.getAttribute("datetime") !== moment) time.setAttribute("datetime", moment);
+		const label = conversationTimestampLabel(date, now);
+		const title = conversationTimestampTitle(date);
+		if (time.textContent !== label) time.textContent = label;
+		if (time.title !== title) {
+			time.title = title;
+			time.setAttribute("aria-label", title);
+		}
+		return time;
 	}
 
 	#renderMessages(conversation: ConversationState, agentName: string, agent: HostedStaffAgent | undefined): void {
@@ -1350,6 +1419,8 @@ export class ConversationView {
 			clock,
 			skillNames,
 			items.flatMap((item) => (item.kind === "peer_link" ? [coworker(item.counterpartStaffId)] : [])),
+			// A sent message learns its input id: the element passes on by it (see `handedOver`).
+			conversation.optimistic.map((item) => item.inputId ?? null),
 		]);
 		if (key === this.#renderedKey) return;
 		this.#renderedKey = key;
@@ -1366,23 +1437,143 @@ export class ConversationView {
 				const review = actionReviewCard(authorizationData(item.body));
 				if (review) reviews.set(item.id.toLowerCase(), review);
 			}
-		// Each item keeps its element from the last render while its key, everything the item
-		// shows, is the same: only new and changed items are drawn, so the live log hears only them.
+		const locale = presentationLocale();
+		// Shown times (fmtTime) read by the zone and by their day against today: the time alone
+		// today, with the day this year, with the year before that. Only an item whose reading
+		// changes at midnight has a new time key then; older items keep theirs.
+		const zone = presentationTimeZone();
+		if (zone !== this.#daysZone || this.#days.size > 20_000) {
+			this.#days.clear();
+			this.#daysZone = zone;
+		}
+		const zoneOption = timeZoneOption().timeZone;
+		const today = presentationDay(new Date(), zoneOption);
+		const when = (iso: string | undefined) => {
+			if (!iso) return "";
+			let day = this.#days.get(iso);
+			if (day === undefined) {
+				const date = parseConversationTimestamp(iso);
+				day = date ? presentationDay(date, zoneOption) : "";
+				this.#days.set(iso, day);
+			}
+			return day === today ? "today" : day.slice(0, 4) === today.slice(0, 4) ? "year" : "earlier";
+		};
+		const mentions = JSON.stringify(mentionTargets);
+		// Each item keeps its element from the last render while its key (all it shows but its
+		// times) and its time key are the same. A changed message is brought up to date in place,
+		// part by part; so is a card whose times alone changed, or one without controls (an answer
+		// the transcript confirmed). Only new items, and cards that change otherwise, are drawn
+		// anew: the live log reads each message once, when it first appears.
 		const drawn = new Map<string, DrawnItem>();
-		/** Message elements drawn now; their skill names are marked before they join the log. */
-		const fresh: HTMLElement[] = [];
-		const keep = (id: string, itemKey: string, draw: () => Omit<DrawnItem, "key">): HTMLElement => {
+		/** Entries of the last render taken by this one: none is taken twice. */
+		const taken = new Set<DrawnItem>();
+		/** A card drawn anew → the element it replaces, whose day separator stays with it. */
+		const replaced = new Map<HTMLElement, HTMLElement>();
+		const slotFor = (id: string) => {
 			let slot = id;
 			for (let copy = 1; drawn.has(slot); copy++) slot = `${id}#${copy}`;
+			return slot;
+		};
+		const previousAt = (slot: string) => {
 			const previous = this.#drawn.get(slot);
-			// A card that replaced itself (an answered interaction redraws in place) is drawn anew.
-			if (previous?.key === itemKey && previous.element.parentNode === this.#messages) {
+			// A card that replaced itself (an answered interaction redraws in place) is gone from the log.
+			return previous && !taken.has(previous) && previous.element.parentNode === this.#messages
+				? previous
+				: undefined;
+		};
+		const keep = (id: string, itemKey: string, time: string, draw: () => HTMLElement): HTMLElement => {
+			const slot = slotFor(id);
+			const previous = previousAt(slot);
+			if (previous) taken.add(previous);
+			if (previous?.key === itemKey && previous.time === time) {
 				drawn.set(slot, previous);
 				return previous.element;
 			}
-			const next = { key: itemKey, ...draw() };
-			drawn.set(slot, next);
-			return next.element;
+			const element = draw();
+			if (previous) {
+				const timesOnly = previous.key === itemKey;
+				if ((timesOnly || (inert(previous.element) && inert(element))) && sameShape(previous.element, element)) {
+					// Its controls and what the member typed stay: a times-only change copies text and
+					// labels, never a control's state.
+					copyShape(previous.element, element, timesOnly);
+					previous.key = itemKey;
+					previous.time = time;
+					drawn.set(slot, previous);
+					return previous.element;
+				}
+			}
+			const former = this.#drawn.get(slot)?.element;
+			if (former) replaced.set(element, former);
+			drawn.set(slot, { key: itemKey, time, element });
+			return element;
+		};
+		// A member's message changes form as it is sent: the browser's copy (its client id), the
+		// cloud's waiting input (the input id), the transcript's message (its event, which names the
+		// input). Each form takes over the element of the form before it, by the input id.
+		const present = new Set(items.map((item) => item.id));
+		const optimisticInputs = new Map(conversation.optimistic.map((item) => [item.clientInputId, item.inputId]));
+		let handoffs: Map<string, DrawnItem> | undefined;
+		let eventInputs: Map<string, string> | undefined;
+		const handedOver = (item: TranscriptMessage): DrawnItem | undefined => {
+			if (item.kind !== "member" || optimisticInputs.has(item.id)) return undefined;
+			handoffs ??= new Map(
+				[...this.#drawn].flatMap(([slot, entry]) =>
+					entry.input && !present.has(slot.replace(/#\d+$/, "")) ? [[entry.input, entry] as const] : [],
+				),
+			);
+			if (!handoffs.size) return undefined;
+			eventInputs ??= new Map(
+				conversation.events.flatMap((event) =>
+					event.sessionInputId ? [[event.eventId, event.sessionInputId] as const] : [],
+				),
+			);
+			const entry = handoffs.get(item.pending ? item.id : (eventInputs.get(item.id) ?? ""));
+			return entry && !taken.has(entry) && entry.element.parentNode === this.#messages ? entry : undefined;
+		};
+		const message = (item: TranscriptMessage, author: string, mine: boolean): HTMLElement => {
+			const slot = slotFor(item.id);
+			const mentioned = item.kind === "member" && Boolean(item.text);
+			// A "/name" may be a skill. (An item that arrives without text still draws, as "(empty)".)
+			const skilled = item.text?.includes("/") === true;
+			// The mention targets and skill names go in as they are, once serialized for the render.
+			const itemKey = `${JSON.stringify([item, author, mine, room, locale])}${mentioned ? `\n${mentions}` : ""}${skilled ? `\n${skillNames}` : ""}`;
+			const time = `${zone} ${when(item.createdAt)}`;
+			// The input this form stands for, which the next form finds it by.
+			const input = optimisticInputs.has(item.id)
+				? optimisticInputs.get(item.id)
+				: item.pending
+					? item.id
+					: undefined;
+			const previous = previousAt(slot) ?? handedOver(item);
+			const base = previous?.message ? previous : undefined;
+			if (previous) taken.add(previous);
+			if (base?.key === itemKey && base.time === time) {
+				base.input = input;
+				drawn.set(slot, base);
+				return base.element;
+			}
+			const entry = this.#drawMessage(
+				item,
+				author,
+				mine,
+				room,
+				{
+					body: `${JSON.stringify([item.kind, item.text, Boolean(item.attachmentCount), locale])}${mentioned ? `\n${mentions}` : ""}${skilled ? `\n${skillNames}` : ""}`,
+					files: JSON.stringify([
+						locale,
+						item.attachmentCount,
+						item.attachments?.map((file) => [file.kind, file.name, file.bytes]),
+					]),
+				},
+				base,
+			);
+			entry.key = itemKey;
+			entry.time = time;
+			entry.input = input;
+			const former = this.#drawn.get(slot)?.element;
+			if (!base && former) replaced.set(entry.element, former);
+			drawn.set(slot, entry);
+			return entry.element;
 		};
 		// A card's actions reach the thread's agent as it is when clicked, not as it was drawn.
 		const currentAgent = () =>
@@ -1390,13 +1581,15 @@ export class ConversationView {
 				this.#company.store.get().sessions.find((item) => item.sessionId === this.#sessionId)?.staffAgentId,
 			);
 		const nodes: HTMLElement[] = [];
-		// A node kept from the last render keeps its day separator too; the log reads neither again.
+		// An item kept, patched or drawn anew keeps its day separator; the log reads neither again.
 		const separators = new Map<HTMLElement, HTMLTimeElement>();
 		for (const row of this.#timestampRows) if (row.separator) separators.set(row.node, row.separator);
 		this.#timestampRows = [];
 		const markTime = (date: Date, node: HTMLElement) => {
-			const separator = separators.get(node);
+			const former = replaced.get(node);
+			const separator = separators.get(node) ?? (former ? separators.get(former) : undefined);
 			separators.delete(node);
+			if (former) separators.delete(former);
 			this.#timestampRows.push(separator ? { date, node, separator } : { date, node });
 		};
 		// A coding session stands where the agent started it, before the first
@@ -1407,7 +1600,14 @@ export class ConversationView {
 				const candidate = codingSessions[nextSession]!;
 				if (before !== undefined && candidate.createdAt.localeCompare(before) > 0) break;
 				nextSession += 1;
-				const line = this.#codingLine(candidate);
+				const { before: lead, name, after } = codingSessionLine(candidate.harness);
+				// Kept while its words are the same, so a keyboard user on it keeps focus.
+				const line = keep(
+					`coding ${candidate.workerId}`,
+					JSON.stringify([lead, name, after, candidate.title, locale]),
+					`${zone} ${when(candidate.createdAt)}`,
+					() => this.#drawCodingLine(candidate),
+				);
 				nodes.push(line);
 				const date = parseConversationTimestamp(candidate.createdAt);
 				if (date) markTime(date, line);
@@ -1426,47 +1626,33 @@ export class ConversationView {
 									: t("Agent reply · speaker unavailable")))
 							: agentName
 						: this.#company.memberName(item.authorUserId);
-				const itemKey = JSON.stringify([
-					item,
-					author,
-					mine,
-					room,
-					clock,
-					// A member's names are set apart; a "/name" may be a skill. (An item that
-					// arrives without text still draws, as "(empty)".)
-					item.kind === "member" && item.text ? mentionTargets : null,
-					item.text?.includes("/") ? skillNames : null,
-				]);
-				nodes.push(
-					keep(item.id, itemKey, () => {
-						const message = this.#drawMessage(item, author, mine);
-						fresh.push(message.element);
-						return message;
-					}),
-				);
+				nodes.push(message(item, author, mine));
 			} else if (item.kind === "peer_link") {
 				// A message between this agent and a coworker: one centered line, the coworker's
 				// figure before its name, no text; the transcript is behind it.
 				const own = agent?.id ?? "";
 				nodes.push(
-					keep(item.id, JSON.stringify([item, coworker(item.counterpartStaffId), own, clock]), () => {
-						const counterpart = this.#company.staffById(item.counterpartStaffId);
-						const name = counterpart?.displayName ?? t("a coworker");
-						// A held message was left for the coworker's next turn, so it is a note, not a message it has read.
-						// One sentence around the name; the chip sets the name apart, with the figure
-						// before it, wherever the language puts it.
-						const [verb = "", after = ""] = (
-							item.held
-								? item.direction === "out"
-									? t("Left a note for {name}")
-									: t("Note from {name}")
-								: item.direction === "out"
-									? t("Messaged {name}")
-									: t("Message from {name}")
-						).split("{name}");
-						const label = `${verb}${name}${after}`;
-						return {
-							element: h(
+					keep(
+						item.id,
+						JSON.stringify([item, coworker(item.counterpartStaffId), own, locale]),
+						`${zone} ${when(item.createdAt)}`,
+						() => {
+							const counterpart = this.#company.staffById(item.counterpartStaffId);
+							const name = counterpart?.displayName ?? t("a coworker");
+							// A held message was left for the coworker's next turn, so it is a note, not a message it has read.
+							// One sentence around the name; the chip sets the name apart, with the figure
+							// before it, wherever the language puts it.
+							const [verb = "", after = ""] = (
+								item.held
+									? item.direction === "out"
+										? t("Left a note for {name}")
+										: t("Note from {name}")
+									: item.direction === "out"
+										? t("Messaged {name}")
+										: t("Message from {name}")
+							).split("{name}");
+							const label = `${verb}${name}${after}`;
+							return h(
 								"div",
 								{ class: "peer-link", dataset: { messageId: item.id } },
 								h(
@@ -1488,15 +1674,15 @@ export class ConversationView {
 									h("span", null, name),
 									after.trim() ? h("span", null, after.trim()) : null,
 								),
-							),
-						};
-					}),
+							);
+						},
+					),
 				);
 			} else if (item.kind === "note") {
 				nodes.push(
-					keep(item.id, JSON.stringify([item.text]), () => ({
-						element: h("div", { class: "conversation-note", role: "note" }, item.text),
-					})),
+					keep(item.id, JSON.stringify([item.text]), "", () =>
+						h("div", { class: "conversation-note", role: "note" }, item.text),
+					),
 				);
 			} else if (item.kind === "authorization_request" && reviews.has(item.id.toLowerCase())) {
 				const review = reviews.get(item.id.toLowerCase())!;
@@ -1512,10 +1698,11 @@ export class ConversationView {
 				const answerFailed = item.answerFailed === true && !given;
 				const answers =
 					canWrite && session?.status === "open" && answersActionReview(review, this.#company.userId, role);
-				// The Always allow draft is not part of the key: a kept card keeps the member's editor as it is.
+				// The Always allow draft is not part of the key: a kept card keeps the member's editor as it
+				// is. The card shows no time.
 				nodes.push(
-					keep(item.id, JSON.stringify([item, resolution, answerFailed, answers, members, clock]), () => ({
-						element: renderActionReviewCard(review, resolution, {
+					keep(item.id, JSON.stringify([item, resolution, answerFailed, answers, members, locale]), "", () =>
+						renderActionReviewCard(review, resolution, {
 							answerFailed,
 							draft: this.#reviewDrafts.get(review.reviewId),
 							onDraft: (draft) => this.#reviewDrafts.set(review.reviewId, draft),
@@ -1524,7 +1711,7 @@ export class ConversationView {
 								: undefined,
 							memberName: (userId) => this.#company.memberName(userId),
 						}),
-					})),
+					),
 				);
 			} else if (item.kind === "authorization_decision" && reviews.has(authorizationRequestId(item.body) ?? "")) {
 				// Its approval card already shows this decision; it draws nothing, so it marks no time either.
@@ -1547,16 +1734,20 @@ export class ConversationView {
 					canDecide(item.actorUserId) &&
 					authorizationData(item.body).schema !== ACTION_REVIEW_SCHEMA;
 				nodes.push(
-					keep(item.id, JSON.stringify([item, resolution, actor, decides, clock]), () => ({
-						element: renderAuthorizationCard(
-							item.kind,
-							item.body,
-							item.createdAt,
-							actor,
-							resolution,
-							decides ? (decision) => void this.#answerInteraction(item.id, decision) : undefined,
-						),
-					})),
+					keep(
+						item.id,
+						JSON.stringify([item, resolution, actor, decides, locale]),
+						`${zone} ${when(item.createdAt)}`,
+						() =>
+							renderAuthorizationCard(
+								item.kind,
+								item.body,
+								item.createdAt,
+								actor,
+								resolution,
+								decides ? (decision) => void this.#answerInteraction(item.id, decision) : undefined,
+							),
+					),
 				);
 			} else if (item.kind === "interaction") {
 				const email =
@@ -1568,24 +1759,25 @@ export class ConversationView {
 				const takeOver = Boolean(agent) && item.request.surface === "takeover";
 				const cardKey = JSON.stringify([
 					item.request,
-					answer,
+					// What the card shows of an answer; the input it went out as is not shown.
+					answer && [answer.outcome, answer.answer, answer.answeredBy, answer.answeredAt, answer.pending],
 					answers,
 					item.answerFailed,
 					item.request.expiresAt ? Date.parse(item.request.expiresAt) <= Date.now() : false,
 					agentName,
+					locale,
 					// An email card shows no time or member name, and keeps its editor through the rest.
 					...(email
-						? [presentationLocale()]
+						? []
 						: [
 								item.createdAt,
-								clock,
 								answer?.answeredBy ? this.#company.memberName(answer.answeredBy) : null,
 								takeOver,
 							]),
 				]);
 				nodes.push(
-					keep(item.id, cardKey, () => ({
-						element: renderInteractionCard(
+					keep(item.id, cardKey, email ? "" : `${zone} ${when(item.createdAt)} ${when(answer?.answeredAt)}`, () =>
+						renderInteractionCard(
 							{ ...item, answer },
 							{
 								agentName,
@@ -1620,7 +1812,7 @@ export class ConversationView {
 									: {}),
 							},
 						),
-					})),
+					),
 				);
 			}
 			const date = parseConversationTimestamp(item.createdAt);
@@ -1628,11 +1820,10 @@ export class ConversationView {
 			if (date && node) markTime(date, node);
 		}
 		placeSessions(undefined);
-		// Items gone from the thread, and items drawn anew, let their old elements go.
-		for (const [slot, previous] of this.#drawn) if (drawn.get(slot) !== previous) previous.attachments?.dispose();
+		// Items gone from the thread, and messages whose element passed on, let what they held go.
+		const live = new Set(drawn.values());
+		for (const previous of this.#drawn.values()) if (!live.has(previous)) previous.message?.files?.view.dispose();
 		this.#drawn = drawn;
-		for (const workerId of this.#codingLines.keys())
-			if (!codingSessions.some((session) => session.workerId === workerId)) this.#codingLines.delete(workerId);
 		if (conversation.loading && !items.length) {
 			this.#messagesPlaceholder ??= messagesSkeleton();
 			nodes.push(this.#messagesPlaceholder);
@@ -1652,7 +1843,7 @@ export class ConversationView {
 				agent?.id,
 				agent?.appearance,
 				agent?.templateId,
-				presentationLocale(),
+				locale,
 			]);
 			if (this.#activityRow?.key !== rowKey) {
 				const look = AGENT_LOOK[this.#agentState];
@@ -1675,7 +1866,21 @@ export class ConversationView {
 			}
 			nodes.push(this.#activityRow.element);
 		} else this.#activityRow = undefined;
-		this.#markSkills(fresh);
+		// Day separators: a kept one stays where it is, relabelled only once the day changed; a new
+		// one is labelled now and joins the log just before its message, in the same move.
+		const now = new Date();
+		const relabel = clock !== this.#timestampClock;
+		this.#timestampClock = clock;
+		let previousDate: Date | undefined;
+		for (const row of this.#timestampRows) {
+			const separated = needsConversationTimestamp(row.date, previousDate);
+			previousDate = row.date;
+			if (!separated) row.separator = undefined;
+			else if (!row.separator)
+				row.separator = this.#labelSeparator(h("time", { class: "conversation-timestamp" }), row.date, now);
+			else if (relabel || row.separator.getAttribute("datetime") !== row.date.toISOString())
+				this.#labelSeparator(row.separator, row.date, now);
+		}
 		const rowFocus = document.activeElement?.classList.contains("thread-activity") ?? false;
 		// Read before the redraw: a browser blurs an input as it leaves the page.
 		const active =
@@ -1685,26 +1890,16 @@ export class ConversationView {
 		const reviewInput = active instanceof HTMLInputElement ? active : undefined;
 		const reviewCard = active?.closest<HTMLElement>("[data-review-id]")?.dataset.reviewId;
 		// Nodes already in place stay put: a live log re-reads what is taken out and put back.
-		const desired: HTMLElement[] = [];
+		// (replaceChildren would also drop keyboard focus, selection and an in-progress IME edit.)
 		const separatorOf = new Map<HTMLElement, HTMLTimeElement>();
 		for (const row of this.#timestampRows) if (row.separator) separatorOf.set(row.node, row.separator);
-		for (const node of nodes) {
-			const separator = separatorOf.get(node);
-			if (separator) desired.push(separator);
-			desired.push(node);
-		}
-		const kept = this.#messages.childNodes;
-		if (desired.length !== kept.length || desired.some((node, index) => node !== kept[index])) {
-			// Keep existing editors attached: replaceChildren removes even retained
-			// nodes and loses keyboard focus, selection and an in-progress IME edit.
-			const wanted = new Set<Node>(desired);
-			for (const child of [...this.#messages.childNodes]) if (!wanted.has(child)) child.remove();
-			let cursor = this.#messages.firstChild;
-			for (const node of desired) {
-				if (node !== cursor) this.#messages.insertBefore(node, cursor);
-				cursor = node.nextSibling;
-			}
-		}
+		placeChildren(
+			this.#messages,
+			nodes.flatMap((node) => {
+				const separator = separatorOf.get(node);
+				return separator ? [separator, node] : [node];
+			}),
+		);
 		for (const item of items) if (item.kind === "member" || item.kind === "agent") this.#skills.want(item.text);
 		// A keyboard user reading the row keeps it through a state change or a new message.
 		if (rowFocus) this.#messages.querySelector<HTMLElement>(".thread-activity")?.focus({ preventScroll: true });
@@ -1733,60 +1928,94 @@ export class ConversationView {
 				this.#focusReview = undefined;
 			}
 		}
-		this.#refreshTimestamps(false);
 		this.#pinToBottom();
 	}
 
 	/** A member's or agent's message: its author, its text (an agent's as markdown), its files
-	 * and, while it waits, where it stands. */
-	#drawMessage(item: TranscriptMessage, author: string, mine: boolean): Omit<DrawnItem, "key"> {
-		const attachments = item.attachmentCount
-			? new ReceivedAttachments(item, this.#actions.previewAttachment)
-			: undefined;
-		const bodies =
-			item.kind === "agent"
-				? markdownBubbles(item.text)
-				: item.text || !item.attachmentCount
-					? [h("div", { class: "text" }, ...(item.text ? this.#withMentions(item.text) : [t("(empty)")]))]
-					: [];
-		const element = h(
-			"article",
-			{
-				class: [
-					"message",
-					item.kind === "agent" ? "from-agent" : "from-member",
-					mine && "mine",
-					item.phase === "progress" && "message-progress",
-					item.pending && `pending-${item.pending}`,
-				]
-					.filter(Boolean)
-					.join(" "),
-				"aria-label": `${author} · ${fmtTime(item.createdAt)}`,
-				title: `${author} · ${fmtTime(item.createdAt)}`,
-				dataset: { messageId: item.id },
-			},
-			item.kind === "agent" && this.#isRoom
-				? h("div", { class: "message-author" }, author)
-				: item.kind === "member" && !mine
-					? h("div", { class: "message-author" }, author)
-					: null,
-			...bodies.map((body) => h("div", { class: "bubble" }, body)),
-			attachments?.el,
-			item.pending
-				? h(
-						"div",
-						{ class: "message-caption" },
-						item.pending === "failed"
-							? item.failureReason
-								? t("Failed · {reason}", { reason: item.failureReason })
-								: t("Failed")
-							: item.pending === "processing"
-								? t("Processing")
-								: t("Queued"),
-					)
-				: null,
+	 * and, while it waits, where it stands. Given the entry it was drawn as before (the same
+	 * message, or the form of it before it was sent), that element is brought up to date in
+	 * place, part by part, so the live log hears only a part that changed: "Processing" once it
+	 * is taken, nothing once it is in the transcript. */
+	#drawMessage(
+		item: TranscriptMessage,
+		author: string,
+		mine: boolean,
+		room: boolean,
+		keys: { body: string; files: string },
+		base: DrawnItem | undefined,
+	): DrawnItem {
+		const before = base?.message;
+		const element = base?.element ?? h("article");
+		const className = [
+			"message",
+			item.kind === "agent" ? "from-agent" : "from-member",
+			mine && "mine",
+			item.phase === "progress" && "message-progress",
+			item.pending && `pending-${item.pending}`,
+		]
+			.filter(Boolean)
+			.join(" ");
+		if (element.className !== className) element.className = className;
+		const label = `${author} · ${fmtTime(item.createdAt)}`;
+		if (element.getAttribute("aria-label") !== label) element.setAttribute("aria-label", label);
+		if (element.title !== label) element.title = label;
+		if (element.dataset.messageId !== item.id) element.dataset.messageId = item.id;
+		const shown = (item.kind === "agent" && room) || (item.kind === "member" && !mine);
+		const authorPart = !shown
+			? undefined
+			: before?.author?.text === author
+				? before.author
+				: { text: author, node: h("div", { class: "message-author" }, author) };
+		let body = before?.body;
+		if (body?.key !== keys.body) {
+			const nodes = (
+				item.kind === "agent"
+					? markdownBubbles(item.text)
+					: item.text || !item.attachmentCount
+						? [h("div", { class: "text" }, ...(item.text ? this.#withMentions(item.text) : [t("(empty)")]))]
+						: []
+			).map((part) => h("div", { class: "bubble" }, part));
+			// Marked before they join the log, which then reads them once.
+			this.#markSkills(nodes);
+			body = { key: keys.body, nodes };
+		}
+		let files = before?.files;
+		if (!item.attachmentCount) {
+			files?.view.dispose();
+			files = undefined;
+		} else if (files?.key === keys.files) files.view.follow(item);
+		else {
+			files?.view.dispose();
+			files = { key: keys.files, view: new ReceivedAttachments(item, this.#actions.previewAttachment) };
+		}
+		const captionText =
+			item.pending === "failed"
+				? item.failureReason
+					? t("Failed · {reason}", { reason: item.failureReason })
+					: t("Failed")
+				: item.pending === "processing"
+					? t("Processing")
+					: item.pending
+						? t("Queued")
+						: undefined;
+		let caption = captionText ? before?.caption : undefined;
+		if (caption && caption.textContent !== captionText) caption.textContent = captionText ?? "";
+		else if (captionText && !caption) caption = h("div", { class: "message-caption" }, captionText);
+		placeChildren(
+			element,
+			[authorPart?.node, ...body.nodes, files?.view.el, caption].filter((node): node is HTMLElement =>
+				Boolean(node),
+			),
 		);
-		return attachments ? { element, attachments } : { element };
+		const message: MessageParts = {
+			body,
+			...(authorPart ? { author: authorPart } : {}),
+			...(files ? { files } : {}),
+			...(caption ? { caption } : {}),
+		};
+		if (!base) return { key: "", time: "", element, message };
+		base.message = message;
+		return base;
 	}
 
 	#renderStatus(conversation: ConversationState, canWrite: boolean, session: HostedSession | undefined): void {
@@ -1846,16 +2075,12 @@ export class ConversationView {
 	}
 
 	/** A coding session in the thread: "Started a coding session in (mark) Codex",
-	 * one centered line that opens the session as its own thread. The node is kept
-	 * while its words are the same, so a keyboard user on it keeps focus. */
-	#codingLine(session: CodingSession): HTMLElement {
+	 * one centered line that opens the session as its own thread. */
+	#drawCodingLine(session: CodingSession): HTMLElement {
 		const { before, name, after } = codingSessionLine(session.harness);
 		const label = `${before}${name}${after}`;
 		const time = fmtTime(session.createdAt);
-		const key = JSON.stringify([label, session.title, time]);
-		const cached = this.#codingLines.get(session.workerId);
-		if (cached?.key === key) return cached.element;
-		const element = h(
+		return h(
 			"div",
 			{ class: "peer-link coding-line", dataset: { workerId: session.workerId } },
 			h(
@@ -1875,8 +2100,6 @@ export class ConversationView {
 				after.trim() ? h("span", null, after.trim()) : null,
 			),
 		);
-		this.#codingLines.set(session.workerId, { key, element });
-		return element;
 	}
 
 	/** The sessions still going sit beside the agent in the header, each a figure
