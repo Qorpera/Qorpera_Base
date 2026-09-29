@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { closeSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { closeSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
@@ -78,20 +78,22 @@ function scriptStartPoints(names) {
 const seconds = (since) => `${((performance.now() - since) / 1000).toFixed(1)} s`;
 
 /** Starts `script` with its output going to a file (nothing to drain while this process blocks on psql);
- * the promise settles with its exit, output and time once it ends. */
+ * the promise settles with its exit, output and time once it ends. The exit is seen only when this process
+ * next waits, so the time is taken from the output's last write. */
 function startInBackground(script) {
 	const output = mkdtempSync(join(tmpdir(), "qorpera-hosted-db-script-"));
 	const file = join(output, "output.log");
 	const descriptor = openSync(file, "w");
-	const started = performance.now();
+	const started = Date.now();
 	const child = spawn(process.execPath, [script], { cwd: repositoryRoot, stdio: ["ignore", descriptor, descriptor] });
 	closeSync(descriptor);
 	return new Promise((resolveExit) => {
-		child.on("error", (error) => resolveExit({ code: null, signal: String(error.message), output: "", time: seconds(started) }));
+		child.on("error", (error) => resolveExit({ code: null, signal: String(error.message), output: "", time: "0 s" }));
 		child.on("exit", (code, signal) => {
 			const text = readFileSync(file, "utf-8");
+			const time = `about ${((statSync(file).mtimeMs - started) / 1000).toFixed(1)} s`;
 			rmSync(output, { recursive: true, force: true });
-			resolveExit({ code, signal, output: text, time: seconds(started) });
+			resolveExit({ code, signal, output: text, time });
 		});
 	});
 }
