@@ -1,5 +1,5 @@
 -- @fixture 300_runtime_wake_bus.test.sql until "-- END WAKE FIXTURE"
--- Deleting an account removes only what is the person's own (20260929180000). A delete on auth.users
+-- Deleting an account removes only what is the person's own (20260928249180). A delete on auth.users
 -- never deletes company data; the last founder of a company with others and the only member of a
 -- company are refused; a company being deleted lets its members go; plan records stay. The fixture
 -- company has its creator and only founder (…001), a contributor (…002) and a viewer (…003), with
@@ -193,7 +193,7 @@ select pg_temp.acct_assert(exists (select 1 from public.qorpera_profile_members
 	where profile_id = '72000000-0000-4000-8000-000000000010' and user_id = '72000000-0000-4000-8000-000000000002'),
 	'the last member is still in the company');
 
--- A company being deleted lets its last member go. Company delete (20260929150000) records the request
+-- A company being deleted lets its last member go. Company delete (20260928249150) records the request
 -- in qorpera_company_deletions and answers qorpera_company_deleting; where that table is not in the
 -- database yet, a stand-in function for this test (rolled back) answers for this company. With the
 -- table present the guard must use company delete's own function, so a rename there fails this test.

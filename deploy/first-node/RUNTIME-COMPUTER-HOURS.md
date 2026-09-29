@@ -380,7 +380,7 @@ Live keys come later, with the live switch (build step 7).
 - Admins, contributors and viewers get no billing email. In-app notices that mirror the emails
   come with a later web step.
 
-Migration `20260929160000_runtime_computer_hour_notices` and the Edge Function
+Migration `20260928249160_runtime_computer_hour_notices` and the Edge Function
 `supabase/functions/computer-hour-notices` (logic in `supabase/functions/_shared/computer-hour-notices.ts`):
 
 - `qorpera_computer_hour_notices` is the outbox: one row per recipient and occasion (kind, founder,
@@ -466,7 +466,7 @@ Coordinator (nothing secret):
 
 ## Zero (build step 6; built switched off)
 
-- The check is `qorpera_company_at_zero(p_profile_id, at)` (migration `20260929200000`). It is true
+- The check is `qorpera_company_at_zero(p_profile_id, at)` (migration `20260928249200`). It is true
   only when the rule is switched on (`qorpera_computer_hour_billing.zero_rule_since`, null until the
   live switch), payments are live (dry-run balances never hold work), and
   `qorpera_company_computer_hours_left(p_profile_id)` (step 3) is zero or less. That value is null
@@ -474,7 +474,7 @@ Coordinator (nothing secret):
   period that ended in the last 30 minutes still counts as paying, while no next period is recorded
   and its subscription is `active` or `past_due`. Stripe's renewal invoice can trail the period's
   end by minutes, and the subscription's own dates can move first.
-- Build step 6a (migration `20260929200000`, runs only):
+- Build step 6a (migration `20260928249200`, runs only):
   - wakes stay queued with `blocked_reason = 'Waiting for computer hours'`;
   - the routine listing (`qorpera_list_routine_schedule_heads`) leaves the company's due routines
     out, so the orchestrator does not ask about each one on every pass;
@@ -488,7 +488,7 @@ Coordinator (nothing secret):
     replay, so a retry of work made before zero still answers;
   - a BEFORE INSERT trigger on `qorpera_execution_runs` stops any path that did not check.
 
-- Build step 6c part 1 (migration `20260929250000`, when a company ran out):
+- Build step 6c part 1 (migration `20260928249250`, when a company ran out):
   - `qorpera_computer_hour_zero_state` holds, for each company at zero, when it ran out; the
     finishing window counts its hour from there;
   - a sweep after each meter pass (`qorpera_meter_computer_hours()`, in its transaction and under

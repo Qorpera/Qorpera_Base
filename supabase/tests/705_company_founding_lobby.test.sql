@@ -530,7 +530,7 @@ select pg_temp.refused($$select public.qorpera_open_company_founding('40000000-0
 -- Closing an open table deletes it with its seats.
 select public.qorpera_delete_hosted_profile(current_setting('qorpera_test.table2')::uuid);
 reset role;
--- Closed, the table is gone at once (20260929150000): its invitations are withdrawn, and neither its
+-- Closed, the table is gone at once (20260928249150): its invitations are withdrawn, and neither its
 -- founder nor an invited friend lists, reads or joins it. The rows go once no node holds anything of it.
 do $$ begin
 	if exists(select 1 from public.qorpera_company_founder_seats
