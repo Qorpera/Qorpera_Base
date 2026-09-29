@@ -77,7 +77,7 @@ export function parseArgs(argv) {
 			if (value === undefined) throw new Error(`${flag} needs a value`);
 			if (flag === "--record") options.record = value;
 			else if (flag === "--base") {
-				if (!/^[A-Za-z0-9._/@^~-]+$/.test(value)) throw new Error(`Invalid --base ${value}`);
+				if (!/^[A-Za-z0-9._/@^~][A-Za-z0-9._/@^~-]*$/.test(value)) throw new Error(`Invalid --base ${value}`);
 				options.base = value;
 			}
 			else {
@@ -107,7 +107,7 @@ export function parseArgs(argv) {
 		// npm keeps --flags after the script name for itself unless they follow a literal --.
 		command = base[0] === "npm" && extra.length ? [...base, "--", ...extra] : [...base, ...extra];
 	}
-	const build = options.build ?? suite === "test";
+	const build = options.build ?? (suite === "test" && options.install !== false);
 	const install = options.install ?? (suite !== "hosted-db" || build);
 	if (build && !install) throw new Error("--build needs --install");
 	return { ...options, install, build, suite, command };
@@ -203,7 +203,8 @@ export function pruneScript() {
 
 /** One ssh session: refresh the base copy, take a free runner user under a lock held until the
  * session ends, hand it the run directory, then install and run as that user. The status file
- * carries the runner user and times back to the record. Exit codes 91-93 are harness failures. */
+ * carries the runner user and times back to the record. Exit codes 90 (install or build) and 91-94
+ * (harness: cd, runner user, chown, CPU slot) are recorded as setup-failed. */
 export function runScript({ run, runDir, treeDir, files, copySeconds, install, build, runCommand }) {
 	const status = `${runDir}/.run-on-node-status`;
 	const queue = "/run/lock/qorpera-test-machine-queue";
@@ -228,33 +229,35 @@ export function runScript({ run, runDir, treeDir, files, copySeconds, install, b
 		"set -uo pipefail",
 		// The base copy is only a cache: a busy or failed refresh never fails the run.
 		`flock -w 60 ${treeDir}.lock rsync -a --delete ${runDir}/ ${treeDir}/ || echo "== run-on-node: base copy refresh skipped"`,
-		// Arrival-ordered queue for the CPU slots: a ticket per waiting run (its name sorts by arrival and
-		// ends in this shell's pid), and only the first ticket may take a free slot. Tickets of runs that
-		// died are dropped. The slot lock stays on fd 9 until this session ends.
+		// Arrival-ordered queue for the CPU slots: a ticket per waiting run, its name sorting by arrival.
+		// The run holds a lock on its own ticket (fd 7) while it waits, so a ticket nobody holds belongs
+		// to a run that died, whatever its pid became; it is dropped. Only the first ticket may take a
+		// free slot. The slot lock stays on fd 9 until this session ends.
 		`mkdir -p ${queue}`,
-		`ticket=${queue}/$(date +%s%N)-$$; : >"$ticket"; trap 'rm -f "$ticket"' EXIT`,
+		`ticket=${queue}/$(date +%s%N)-$$; exec 7>"$ticket"; flock -n 7; trap 'rm -f "$ticket"' EXIT`,
 		'slot=""; queued=$(date +%s); shown=""',
 		'while [ -z "$slot" ]; do',
-		`\tfor t in ${queue}/*; do [ -e "$t" ] && ! kill -0 "\${t##*-}" 2>/dev/null && rm -f "$t"; done`,
+		`\tfor t in ${queue}/*; do [ "$t" != "$ticket" ] && [ -e "$t" ] && flock -n "$t" true 2>/dev/null && rm -f "$t"; done`,
+		'\t[ -e "$ticket" ] || { exec 7>"$ticket"; flock -n 7; }',
 		`\tposition=$(ls ${queue} | sort | grep -n -x -F "$(basename "$ticket")" | cut -d: -f1)`,
 		'\tif [ "$position" = 1 ]; then',
 		`\t\tfor candidate in $(seq 1 ${CPU_SLOTS}); do`,
-		'\t\t\texec 9>"/run/lock/qorpera-test-machine-slot$candidate.lock"',
+		'\t\t\t{ exec 9>"/run/lock/qorpera-test-machine-slot$candidate.lock"; } 2>/dev/null || continue',
 		'\t\t\tif flock -n 9; then slot=$candidate; break; fi',
 		"\t\tdone",
 		"\tfi",
 		'\tif [ -z "$slot" ]; then',
-		`\t\t[ "$position" != "$shown" ] && echo "== run-on-node: waiting for a slot (all ${CPU_SLOTS} busy), queue position $position" && shown=$position`,
+		`\t\t[ "$position" != "$shown" ] && echo "== run-on-node: waiting for a slot (${CPU_SLOTS} runs at a time), queue position $position" && shown=$position`,
 		'\t\t[ $(( $(date +%s) - queued )) -ge 7200 ] && { echo "== run-on-node: no slot free for two hours"; exit 94; }',
 		"\t\tsleep 2",
 		"\tfi",
 		"done",
-		'rm -f "$ticket"',
+		'rm -f "$ticket"; exec 7>&-',
 		'queued_s=$(( $(date +%s) - queued ))',
 		'runner=""; waited=0',
 		'while [ -z "$runner" ]; do',
 		`\tfor candidate in ${RUNNERS.join(" ")}; do`,
-		'\t\texec 8>"/run/lock/qorpera-test-machine-$candidate.lock"',
+		'\t\t{ exec 8>"/run/lock/qorpera-test-machine-$candidate.lock"; } 2>/dev/null || continue',
 		'\t\tif flock -n 8; then runner=$candidate; break; fi',
 		"\tdone",
 		'\tif [ -z "$runner" ]; then',
@@ -263,6 +266,9 @@ export function runScript({ run, runDir, treeDir, files, copySeconds, install, b
 		"\t\tsleep 1",
 		"\tfi",
 		"done",
+		// Holding the runner lock proves no live run uses this user: processes a killed run left behind would
+		// still count against its RLIMIT_NPROC and take CPU outside the slots.
+		'sudo -n pkill -KILL -u "$runner" 2>/dev/null; true',
 		`echo "runner=$runner slot=$slot queued_s=$queued_s" >${status}`,
 		`sudo -n chown -R "$runner:$runner" ${runDir} || exit 93`,
 		`echo "== run-on-node: $(hostname) ${run} as $runner in slot $slot of ${CPU_SLOTS} (${files} files, copy ${copySeconds.toFixed(1)} s, queued $queued_s s)"`,
@@ -326,7 +332,8 @@ print(json.dumps({"machine":p.node(),"kernel":p.release(),"os":r(["sh","-c",". /
 /** Paths changed against the merge base with `base`: committed, uncommitted and untracked. */
 export function changedFiles(root, base, untracked) {
 	const mergeBase = git(root, ["merge-base", base, "HEAD"]).toString().trim();
-	const tracked = git(root, ["diff", "--no-ext-diff", "--name-only", "-z", mergeBase])
+	// --no-renames: a move lists its old path too, so the tests of the place it left still run.
+	const tracked = git(root, ["diff", "--no-ext-diff", "--no-renames", "--name-only", "-z", mergeBase])
 		.toString("utf8")
 		.split("\0")
 		.filter(Boolean);
@@ -341,13 +348,14 @@ async function main() {
 	const secrets = secretLooking(untracked);
 	if (secrets.length && !options.allowSecrets)
 		throw new Error(`Untracked files that look like secrets would be copied (use --allow-secrets): ${secrets.join(", ")}`);
+	let changedPlan = null;
 	if (options.suite === "changed") {
 		const { mergeBase, files: changed } = changedFiles(root, options.base, untracked);
 		const plan = planChanged(changed);
 		for (const line of describePlan(plan, `${options.base} ${mergeBase.slice(0, 9)}, ${changed.length} files`)) console.log(line);
-		if (!plan.full && !plan.steps.length) return 0;
-		if (plan.full) options.command = ["npm", "test"];
-		else options.command = ["bash", "-c", planScript(plan.steps)];
+		changedPlan = { base: options.base, mergeBase, files: changed.length, full: plan.full, steps: plan.steps.map((step) => step.name) };
+		if (!plan.steps.length) return 0;
+		options.command = ["bash", "-c", planScript(plan.steps)];
 		options.build = options.build ?? plan.build;
 		if (options.build && !options.install) throw new Error("--build needs --install");
 	}
@@ -453,14 +461,22 @@ async function main() {
 		runner: status.runner ?? null,
 		cpuSlot: status.slot ? Number(status.slot) : null,
 		queuedSeconds: status.queued_s ? Number(status.queued_s) : null,
-		vitestMaxWorkers: VITEST_WORKERS,
+		vitestMaxWorkers: Number(options.env.findLast(([name]) => name === "VITEST_MAX_WORKERS")?.[1] ?? VITEST_WORKERS),
+		...(changedPlan ? { changed: changedPlan } : {}),
 		startedAt: new Date(started).toISOString(),
 		copySeconds: (synced - started) / 1000,
 		prepareSeconds: status.prepare_ms ? Number(status.prepare_ms) / 1000 : null,
 		suiteSeconds: status.suite_ms ? Number(status.suite_ms) / 1000 : null,
 		elapsedSeconds: (finished - started) / 1000,
 		exitCode: code,
-		result: status.installed !== "1" ? "setup-failed" : code === 0 ? "passed" : "failed",
+		result:
+			status.installed === "1"
+				? code === 0
+					? "passed"
+					: "failed"
+				: code === 0 && !status.runner
+					? "unknown"
+					: "setup-failed",
 	};
 	console.log(`== run-on-node record ${JSON.stringify(record)}`);
 	if (options.record) {

@@ -145,9 +145,11 @@ for runner in ${runners//,/ }; do
 	id "$runner" >/dev/null 2>&1 || useradd -m -s /bin/bash "$runner"
 	usermod -aG docker,lxd "$runner"
 done
-printf 'User_Alias TEST_MACHINE_RUNNERS = %s\nTEST_MACHINE_RUNNERS ALL=(ALL) NOPASSWD:ALL\n' "$runners" >/etc/sudoers.d/91-test-machine-runners
-chmod 0440 /etc/sudoers.d/91-test-machine-runners
-visudo -cf /etc/sudoers.d/91-test-machine-runners
+sudoers=$(mktemp)
+printf 'User_Alias TEST_MACHINE_RUNNERS = %s\nTEST_MACHINE_RUNNERS ALL=(ALL) NOPASSWD:ALL\n' "$runners" >"$sudoers"
+visudo -cf "$sudoers"
+install -m 0440 -o root -g root "$sudoers" /etc/sudoers.d/91-test-machine-runners
+rm -f "$sudoers"
 
 log "versions"
 {

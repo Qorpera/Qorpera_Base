@@ -55,6 +55,9 @@ test("options, install default and extra arguments", () => {
 	assert.equal(parseArgs(["--build", "hosted-db"]).install, true);
 	assert.equal(parseArgs(["--no-build", "test"]).build, false);
 	assert.throws(() => parseArgs(["--no-install", "--build", "test"]), /--build needs --install/);
+	assert.deepEqual([parseArgs(["--no-install", "test"]).install, parseArgs(["--no-install", "test"]).build], [false, false]);
+	assert.throws(() => parseArgs(["--base", "--octopus", "changed"]), /Invalid --base/);
+	assert.equal(parseArgs(["--base", "origin/release/runtime-v150", "changed"]).base, "origin/release/runtime-v150");
 	assert.throws(() => parseArgs(["hosted-db", "extra"]), /after --/);
 	assert.throws(() => parseArgs(["--env", "1BAD=x", "hosted-db"]), /Invalid --env/);
 	assert.throws(() => parseArgs(["--bogus", "hosted-db"]), /Unknown option/);
@@ -102,12 +105,19 @@ test("each run takes a free runner user and installs and runs as that user", () 
 test("at most three runs execute at once, in arrival order, with two vitest workers each", () => {
 	assert.deepEqual([CPU_SLOTS, VITEST_WORKERS], [3, 2]);
 	const script = runScript({ run: "R", runDir: "/r", treeDir: "/t", files: 1, copySeconds: 0, install: false, build: false, runCommand: "true" });
-	// The queue ticket sorts by arrival; only the first ticket may take a slot; a dead run's ticket is dropped.
-	assert.match(script, /ticket=\/run\/lock\/qorpera-test-machine-queue\/\$\(date \+%s%N\)-\$\$/);
+	// The queue ticket sorts by arrival and stays locked by its waiting run (fd 7); only the first ticket
+	// may take a slot; a ticket nobody holds belongs to a dead run and is dropped, whatever its pid became.
+	assert.match(script, /ticket=\/run\/lock\/qorpera-test-machine-queue\/\$\(date \+%s%N\)-\$\$; exec 7>"\$ticket"; flock -n 7;/);
 	assert.match(script, /if \[ "\$position" = 1 \]; then/);
-	assert.match(script, /! kill -0 "\$\{t##\*-\}" 2>\/dev\/null && rm -f "\$t"/);
-	assert.match(script, /for candidate in \$\(seq 1 3\); do\n\t\t\texec 9>"\/run\/lock\/qorpera-test-machine-slot\$candidate\.lock"/);
-	assert.match(script, /waiting for a slot \(all 3 busy\), queue position \$position/);
+	assert.match(script, /flock -n "\$t" true 2>\/dev\/null && rm -f "\$t"/);
+	assert.doesNotMatch(script, /kill -0/);
+	// A lock file that cannot be opened skips that candidate instead of reusing the previous descriptor.
+	assert.match(script, /\{ exec 9>"\/run\/lock\/qorpera-test-machine-slot\$candidate\.lock"; \} 2>\/dev\/null \|\| continue/);
+	assert.match(script, /\{ exec 8>"\/run\/lock\/qorpera-test-machine-\$candidate\.lock"; \} 2>\/dev\/null \|\| continue/);
+	// A killed run's leftovers under the runner user are ended once its lock is held.
+	assert.match(script, /sudo -n pkill -KILL -u "\$runner"/);
+	assert.match(script, /for candidate in \$\(seq 1 3\); do/);
+	assert.match(script, /waiting for a slot \(3 runs at a time\), queue position \$position/);
 	// The slot is taken before the runner user, and both stay locked for the session (fds 9 and 8).
 	assert.ok(script.indexOf("qorpera-test-machine-slot") < script.indexOf("qorpera-test-machine-$candidate"));
 	assert.match(script, /export VITEST_MAX_WORKERS=2/);

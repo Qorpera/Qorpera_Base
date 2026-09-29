@@ -47,10 +47,20 @@ node scripts/run-on-node.mjs --dry-run npm:test:scripts
 
 `changed` is the everyday check: it runs what the files changed against `origin/master` (or `--base REF`)
 need, and prints what it chose and why. The steps and the paths that start them are in
-[`scripts/run-on-node-plan.mjs`](../../scripts/run-on-node-plan.mjs); they replace the path filters of the
-switched-off GitHub workflows. Documentation alone runs nothing; shared configuration (`package.json`, the
-lockfile, `tsconfig`, `vitest.base.ts`, `biome.json`, `packages/contracts`, `packages/company`) and any path no
-step covers run the whole `npm test`. Every step runs even when an earlier one fails. The full `test` suite is
+[`scripts/run-on-node-plan.mjs`](../../scripts/run-on-node-plan.mjs). They replace the switched-off GitHub
+workflows and run at least what those ran for the same change:
+
+- documentation alone: nothing;
+- any other change: lint, the root and member-web typechecks, and the repository checks (pinned dependencies,
+  imports, cloud boundaries, connector catalog, runtime bundle);
+- any change that is not web-only: also all runtime and cloud-client tests and all script tests (packaging and
+  installer pins included), as the old release train did;
+- on top, by path: the web client (with its release build), member-web, object-gateway, runner-orchestrator,
+  Supabase functions, node deploy tests, deploy shell syntax, hosted-db with its PostgreSQL scripts;
+- shared configuration (`package.json`, the lockfile, `tsconfig`, `vitest.base.ts`, `biome.json`,
+  `packages/contracts`, `packages/company`) and any path no rule knows: every step.
+
+A moved file counts at both paths. Every step runs even when an earlier one fails. The full `test` suite is
 for release candidates.
 
 The wrapper copies the working tree git sees: tracked and untracked files that are not ignored,
@@ -74,7 +84,7 @@ VITEST_MAX_WORKERS=n` on the command wins). Three runs times two workers matches
 and timing-bound tests failed that pass on a quiet machine. Later runs wait in arrival order and print
 their queue position; the record notes the slot and the time spent queued. Each runner user keeps its own npm cache, so
 `npm ci` takes about 30 s the first time and 5-6 s after that. The run directory is
-deleted afterwards (`--keep` keeps it). At the start of every run, runs older than a day (by the UTC time
+deleted afterwards (`--keep` keeps it; it then belongs to the runner user, so use sudo inside it). At the start of every run, runs older than a day (by the UTC time
 in their name), worktree copies unused for 14 days and hosted-db containers older than 6 hours are removed.
 Untracked files that look like credentials (`.env`, `.env.*`, `*.env`, `.envrc`, `.npmrc`, `.netrc`, `.pgpass`,
 `.git-credentials`, `.aws/credentials`, `*.pem`, `*.key`, `*.p12`, `*.tfvars`, `id_*` without an extension,
@@ -82,7 +92,9 @@ Untracked files that look like credentials (`.env`, `.env.*`, `*.env`, `.envrc`,
 
 The last line is a JSON record: host, OS, kernel, Node, npm, Docker and Git versions, KVM, source
 commit and a digest of exactly the files copied, command, copy, preparation and elapsed time, and the
-result (`passed`, `failed`, or `setup-failed` when `npm ci` or the build failed), and the runner user. This
+result (`passed`, `failed`, `setup-failed` when `npm ci`, the build or the harness failed, or `unknown`
+when the status could not be read back), the runner user, the slot and time queued, and for `changed` the
+plan and its base. This
 is the record contract 24.4 asks for. `--record FILE` also writes it to a file.
 
 Several sessions can use the machine at once. Each run has its own directory and runner user, and the

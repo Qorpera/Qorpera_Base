@@ -1,9 +1,16 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
-import { describePlan, planChanged, planScript } from "./run-on-node-plan.mjs";
+import { describePlan, planChanged, planScript, STEPS } from "./run-on-node-plan.mjs";
 
-const names = (files) => planChanged(files).steps.map((step) => step.name);
+/** Step names as a sorted set: the tests check which steps run; STEPS fixes their order. */
+const names = (files) => planChanged(files).steps.map((step) => step.name).sort();
+const set = (list) => [...list].sort();
+const ALWAYS = ["lint", "typecheck", "checks"];
+const BASELINE = [...ALWAYS, "cloud-client", "runtime", "scripts"];
 
 test("documentation and the switched-off workflows run nothing", () => {
 	const plan = planChanged(["README.md", "deploy/test-machine/README.md", "docs-audit/x.txt", ".github/workflows/web-client.yml"]);
@@ -11,38 +18,61 @@ test("documentation and the switched-off workflows run nothing", () => {
 	assert.match(describePlan(plan, "origin/master").join("\n"), /nothing to run/);
 });
 
-test("a web-only change runs the web checks, nothing else", () => {
+test("a web-only change runs the always-on checks and the web client, including its release build", () => {
 	const plan = planChanged(["packages/web/src/app/rail.tsx", "packages/web/test/rail.test.tsx"]);
-	assert.deepEqual(plan.steps.map((step) => step.name), ["web"]);
+	assert.deepEqual(plan.steps.map((step) => step.name), [...ALWAYS, "web"]);
 	assert.equal(plan.build, true);
-	assert.match(plan.steps[0].commands.join(" "), /typecheck --workspace packages\/web/);
+	const web = plan.steps.find((step) => step.name === "web").commands.join("\n");
+	assert.match(web, /typecheck --workspace packages\/web/);
+	assert.match(web, /QORPERA_WEB_CONFIG_JSON='\{"projectUrl"[^']+' npm run build:release --workspace packages\/web/);
 });
 
-test("SQL changes run the hosted database and its PostgreSQL scripts", () => {
-	assert.deepEqual(names(["supabase/migrations/20260929010000_x.sql", "supabase/tests/700_x.test.sql"]), ["hosted-db"]);
-	const plan = planChanged(["supabase/tests/700_x.test.sql"]);
-	const commands = plan.steps[0].commands.join("\n");
-	assert.match(commands, /npm run test:hosted-db/);
-	assert.match(commands, /scripts\/test-runtime-room-history\.mjs/);
-	assert.equal(plan.build, false);
+test("anything that is not web-only also runs runtime, cloud-client and every script test (the old release train)", () => {
+	// The web client's cloud code and member-web's viewer are read by runtime tests.
+	assert.deepEqual(names(["packages/web/src/cloud/email-drafts.ts"]), set([...BASELINE, "web", "hosted-db"]));
+	assert.deepEqual(names(["packages/member-web/ui/viewer.ts"]), set([...BASELINE, "web", "member-web"]));
+	// A migration reaches runtime tests that read the migrations directory, and the vocabulary script test.
+	assert.deepEqual(names(["supabase/migrations/20260929010000_x.sql"]), set([...BASELINE, "hosted-db"]));
+	// Installer pins: runner-orchestrator sources rebuild packages whose sha256 the deploy scripts pin.
+	assert.deepEqual(names(["packages/runner-orchestrator/src/lxd-provider.ts"]), set([
+		...BASELINE,
+		"runner-orchestrator",
+		"deploy-node",
+	]));
+	assert.deepEqual(names(["packages/runtime/test/cloud-coding-executor.test.ts"]), set(BASELINE));
+	assert.deepEqual(names(["packages/cloud-client/src/node/cloud-object-store.ts"]), set([...BASELINE, "web"]));
+	const scripts = STEPS.find((step) => step.name === "scripts").commands.join(" ");
+	assert.match(scripts, /node --test scripts\/\*\.test\.mjs/);
 });
 
-test("runtime and runner-orchestrator sources run typecheck, their tests and packaging", () => {
-	assert.deepEqual(names(["packages/runtime/src/cloud-coding-executor.ts"]), ["typecheck", "runtime", "packaging"]);
-	assert.deepEqual(names(["packages/runner-orchestrator/test/coding-git.test.ts"]), ["typecheck", "runner-orchestrator"]);
-	assert.deepEqual(names(["packages/runtime/src/cloud-secret-broker.ts"]), ["typecheck", "runtime", "packaging", "hosted-db"]);
+test("deploy, function and SQL-input paths reach the tests that read them", () => {
+	assert.deepEqual(names(["deploy/lxd-company-computer-guest/office-self-update-mask.ts"]), set([
+		...BASELINE,
+		"runner-orchestrator",
+		"deploy-node",
+	]));
+	assert.deepEqual(names(["deploy/node-agent/qorpera-node-launch.py"]), set([...BASELINE, "deploy-node"]));
+	assert.deepEqual(names(["deploy/first-node/install.sh"]), set([...BASELINE, "runner-orchestrator", "deploy-node", "deploy-shell"]));
+	assert.deepEqual(names(["supabase/functions/company-file-verifier/object-loader.ts"]), set([...BASELINE, "web", "functions"]));
+	const functions = STEPS.find((step) => step.name === "functions").commands.join(" ");
+	assert.match(functions, /company-file-verifier\.test\.ts/);
+	assert.match(functions, /runner-orchestrator\/runner-orchestrator\.test\.ts/);
+	assert.ok(names(["scripts/test-runtime-node-capacity-cases.mjs"]).includes("hosted-db"));
+	assert.ok(names(["packages/runner-orchestrator/src/lxd-office-start-control.ts"]).includes("hosted-db"));
+	assert.ok(names(["packages/runtime/test/fixtures/coding-turn-context-backfilled.json"]).includes("hosted-db"));
 });
 
-test("shared configuration and unmapped paths run the whole npm test", () => {
-	for (const file of ["package-lock.json", "packages/runtime/package.json", "packages/contracts/src/index.ts", "vitest.base.ts"]) {
+test("shared configuration and unknown paths run every step", () => {
+	for (const file of ["package-lock.json", "packages/runtime/package.json", "packages/contracts/src/index.ts", "tsconfig.json"]) {
 		const plan = planChanged([file]);
 		assert.equal(plan.full, true, file);
+		assert.deepEqual(plan.steps.map((step) => step.name), STEPS.map((step) => step.name), file);
 		assert.match(plan.reason, /shared configuration/);
 	}
-	const unmapped = planChanged(["new-top-level/tool.ts"]);
-	assert.equal(unmapped.full, true);
-	assert.match(unmapped.reason, /no step covers: new-top-level\/tool\.ts/);
-	assert.match(describePlan(unmapped, "origin/master")[0], /the whole npm test/);
+	const unknown = planChanged(["new-top-level/tool.ts"]);
+	assert.equal(unknown.full, true);
+	assert.match(unknown.reason, /no rule knows: new-top-level\/tool\.ts/);
+	assert.match(describePlan(unknown, "origin/master")[0], /every step/);
 });
 
 test("every step runs, a failing command fails its step, and the exit code says so", () => {
@@ -56,4 +86,19 @@ test("every step runs, a failing command fails its step, and the exit code says 
 	assert.match(result.stdout, /second passed/);
 	assert.match(result.stdout, /failed: first/);
 	assert.equal(spawnSync("bash", ["-c", planScript([{ name: "ok", commands: ["true"] }])]).status, 0);
+});
+
+test("deploy-shell fails when any script, not only the last, has a syntax error", () => {
+	const root = mkdtempSync(join(tmpdir(), "deploy-shell-"));
+	try {
+		mkdirSync(join(root, "deploy/a"), { recursive: true });
+		writeFileSync(join(root, "deploy/a/broken.sh"), "if then fi\n");
+		writeFileSync(join(root, "deploy/z-fine.sh"), "true\n");
+		const step = STEPS.find((candidate) => candidate.name === "deploy-shell");
+		const result = spawnSync("bash", ["-c", planScript([step])], { cwd: root, encoding: "utf8" });
+		assert.equal(result.status, 1, result.stdout);
+		assert.match(result.stdout, /deploy-shell FAILED/);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
 });
