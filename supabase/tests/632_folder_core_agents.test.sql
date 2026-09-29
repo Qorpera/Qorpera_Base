@@ -544,7 +544,7 @@ end $$;
 
 -- The hook's targets at the commit's own ranks go into the commit's passes, never dropped: a member row at rank 1 is
 -- locked with the commit's own (633 H shows the commit waiting for it); a table the commit does not own at its
--- ranks, and a malformed target, are defects (XX000). The hook's current definition (F2's since 20260929020000) comes
+-- ranks, and a malformed target, are defects (XX000). The hook's current definition (F2's since 20260928249020) comes
 -- back at the end of the block.
 do $$
 declare v_saved text := pg_get_functiondef('public.qorpera_folder_structured_targets(uuid,jsonb,jsonb)'::regprocedure);

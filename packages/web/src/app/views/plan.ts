@@ -235,6 +235,13 @@ function companyHoursCard(
 			h("strong", null, used),
 			h("small", null, usage.companyName, " · ", uiText("Measured, not charged yet")),
 			kinds.length ? h("small", { class: "settings-hours-kinds" }, kinds.join(" · ")) : null,
+			value?.waitingForHours
+				? h(
+						"small",
+						{ class: "settings-hours-waiting" },
+						uiText("Out of computer hours. New work waits and starts by itself once hours are added."),
+					)
+				: null,
 			usage.founder === false
 				? h("small", null, uiText("Computer hours are paid by the founders. You are never charged."))
 				: null,

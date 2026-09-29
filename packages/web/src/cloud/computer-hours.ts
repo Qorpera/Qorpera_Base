@@ -23,6 +23,9 @@ export interface CompanyComputerHours {
 	byKind: ComputerHoursByKind;
 	awakeNow: ComputerHoursByKind;
 	meteredUntil: string;
+	/** The company is out of computer hours: new work waits until hours are added (the zero
+	 * rule, migration 20260929200000). False while the rule is off, and from older backends. */
+	waitingForHours: boolean;
 }
 
 const MAX_SECONDS = 1_000_000_000_000;
@@ -50,6 +53,7 @@ export function parseCompanyComputerHours(value: unknown): CompanyComputerHours 
 		byKind: kinds(input.byKind, "computer hours by kind"),
 		awakeNow: kinds(input.awakeNow, "machines awake now"),
 		meteredUntil: timestamp(input.meteredUntil, "computer hours measured until"),
+		waitingForHours: input.waitingForHours === true,
 	};
 }
 
