@@ -881,7 +881,15 @@ it("never refuses a run's operations by count; a forgotten one replays through i
 it("refuses an invalid remembered operation count", async () => {
 	const f = await fixture();
 	// Only lower than the default: a larger count would switch forgetting off in practice.
-	for (const rememberedOperations of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 65_537, Number.MAX_SAFE_INTEGER])
+	for (const rememberedOperations of [
+		0,
+		-1,
+		1.5,
+		Number.NaN,
+		Number.POSITIVE_INFINITY,
+		65_537,
+		Number.MAX_SAFE_INTEGER,
+	])
 		expect(() => new CloudNativeToolOperations(f.run, f.control, { rememberedOperations })).toThrow(
 			"Invalid remembered operation count",
 		);
