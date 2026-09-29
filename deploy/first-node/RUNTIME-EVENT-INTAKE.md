@@ -88,8 +88,8 @@ core's writer (F1 C3), so creating a hook there refuses with 0A000 until then. A
 untouched, so `qorpera_folder_enable` refuses it (55000); its hooks go with it at the reset. Creating a
 hook holds the company's Company File row shared, which `qorpera_folder_enable` locks for update before
 it looks for hooks, so the two cannot pass each other. Creation locks the company row without its
-key, so it never deadlocks with enable or company setup, which reference the company after taking
-the Company File row.
+key, so it never deadlocks with enable, which references the company only through foreign keys after
+taking the Company File row.
 
 **Proof.**
 - `address`: whoever knows the address may post. The address works like a key that only lets

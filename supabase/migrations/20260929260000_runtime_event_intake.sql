@@ -17,9 +17,9 @@
 --
 -- Lock order: the company row without its key, then its Company File row (shared), when creating a
 -- hook; a status change locks the hook row without its key. Neither lock blocks a foreign key's key
--- share, so qorpera_folder_enable and company setup, which take the Company File row first and
--- then insert rows referencing the company, never deadlock with a creation. A receive never waits for the company row:
--- deliveries and usage carry the company id without a foreign key (they go with the company
+-- share, so qorpera_folder_enable, which takes the Company File row first and then inserts rows
+-- referencing the company, never deadlocks with a creation. A receive never waits for the company
+-- row: deliveries and usage carry the company id without a foreign key (they go with the company
 -- through the hook, and usage expires within a day). Its delivery's foreign key shares the hook
 -- row's key, so it waits for the hook only while the hook is deleted. Duplicates of a sender id are
 -- decided by a unique index; the company's hourly usage row is locked, briefly, to count a stored
