@@ -1022,7 +1022,9 @@ argument, shared computer clipboard, or model-visible path. The member learns
 whether capture succeeded; the agent learns only the safe descriptor.
 
 There is no model-facing, runner-facing, desktop-facing, or general service
-`getSecret`, export, reveal, shell, or filesystem operation. The cloud secret
+`getSecret`, export, reveal, shell, or filesystem operation. (Amended
+2026-09-29: the broker also checks deliveries to a company's hooks with their
+signing secrets; see the amendment "events wake agents", item 8.) The cloud secret
 broker is the only component allowed to unwrap a connector credential. It
 does so only after checking the admitted run, current company and member
 authority, agent grant, connector and operation version, exact destination,
@@ -3851,7 +3853,7 @@ owner role. Model use is not billed here: it follows the 2026-09-28 amendment
 ### 2026-09-29 amendment: events wake agents
 
 Founder decisions of 29 September 2026 (Q1 page "Qorpera on Qorpera"). They
-complete section 16.3's listener triggers. Design:
+complete section 16.3's listener triggers and section 11.5's broker. Design:
 `deploy/first-node/RUNTIME-EVENT-INTAKE.md`.
 
 1. **Events are a wake source.** An incoming webhook from any service, and
@@ -3861,27 +3863,48 @@ complete section 16.3's listener triggers. Design:
 2. **A hook is a company connection.** It has one public address, a proof and
    limits. The proof is the address itself, or a signature made with a secret
    the vault holds (Stripe, GitHub, or HMAC-SHA256 for the company's own
-   senders). Agents never see a signing secret; only the broker checks
-   signatures (11.5). Owners, admins and agents manage hooks; an agent's new
-   hook passes the automatic review as a new connection.
-3. **Only verified deliveries wake.** Duplicates are decided after
-   verification, per hook and the sender's own delivery id. Limits per hook
-   (body size, deliveries per minute) and per company (50 hooks) apply.
+   senders). Agents never see a signing secret. Owners, admins and agents
+   manage hooks; an agent's new hook passes the automatic review as a new
+   connection. For `folder-v2` companies a hook is described by its
+   connection file, `connections/<name>.md` (5.6), which the platform writes
+   in the same step as the hook; the database keeps the address, the limits
+   and the delivery receipts as runtime state. Until the core's writer lands,
+   hooks exist only for `snapshot-v1` companies, whose connections are rows.
+3. **Only verified deliveries wake, and the intake is bounded.** A delivery is
+   a duplicate when a verified delivery of the same hook carries the same
+   sender id; without a sender id, when the same body arrived within 10
+   minutes. Duplicates are decided after verification. Limits: per hook, a
+   body of at most 256 KiB and at most 120 deliveries a minute; per company,
+   50 live hooks and an hourly budget of deliveries and bytes that operators
+   set; and a platform switch, built off and turned on at acceptance. A
+   refused request writes nothing.
 4. **One wake per burst.** A listener routine has at most one queued event
    occurrence per trigger. The occurrence takes the waiting deliveries when it
-   is read (at most 20, with at most 64 KiB of bodies shown), and the rest wake
-   it again. Quiet hours, pauses and the pinned sponsor apply as to every
-   routine occurrence.
+   is read (at most 20, with bodies cut to fit the wake's size bound; the agent
+   reads the rest with a tool), and the rest wake it again. Quiet hours,
+   pauses and the pinned sponsor apply as to every routine occurrence.
 5. **Events are outside content** (11.1). An instruction inside an event is
    data. Outside actions an event leads to pass the automatic review.
-6. **Deliveries are runtime state.** The delivery row is a queue entry and a
-   receipt, with its body kept 7 days and the row 30. For `folder-v2`
-   companies, once the core's writer lands, the platform saves each verified
-   event in the company folder under `hooks/<hook>/` in the same change set.
+6. **Deliveries are runtime state; events in the folder are company
+   content.** The delivery row is a queue entry and a receipt: its copy of the
+   body is kept 7 days and the row 30. For `folder-v2` companies, once the
+   core's writer lands, the platform also saves each verified event in the
+   company folder under `hooks/<hook>/`, in the same change set. The platform
+   creates `hooks/` with the first saved event, as it creates `code/` when
+   coding starts (5.6). Those files stay until the company deletes them.
 7. **Today's routines take the trigger too.** Event wakes are added to the
-   routine rows of `snapshot-v1` companies before the clean reset, the one
-   exception to "old paths are frozen". Routine files take the same trigger
-   as `when: event`.
+   routine rows of `snapshot-v1` companies before the clean reset. This is the
+   one exception to building new features only on the folder model (the
+   layout amendment's clean reset). Routine files take the same trigger as
+   `when: event`.
+8. **The broker checks signatures.** Section 11.5 lets the broker unwrap a
+   credential for an admitted run's granted operation. It may also unwrap a
+   hook's signing secret, and only to check deliveries to that hook: the
+   check is bound to the hook, the delivery and the secret's company, needs
+   no run or agent grant, and the secret and its plaintext never leave the
+   broker's memory. The result is only verified, duplicate or refused.
+
+Section 21 gains an event-wake acceptance item when event wakes (W2) land.
 
 ## 20. Enforcement matrix
 

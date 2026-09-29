@@ -529,20 +529,23 @@ wake), so no agent runs and nothing is charged before it.
 
 - Contract: section 19, 2026-09-29 amendment "events wake agents"; design
   `deploy/first-node/RUNTIME-EVENT-INTAKE.md`. Step W1a: address-proven hooks
-  only; nothing wakes agents yet (W2). Settings lists hooks under Company
-  connections (step A3).
+  for `snapshot-v1` companies only; nothing wakes agents yet (W2). The intake
+  is built switched off. Settings lists hooks under Company connections (step
+  A3).
 - `qorpera_create_event_hook(p_profile_id, p_environment_id, p_name,
   p_purpose, p_proof default 'address', p_max_body_bytes default null,
   p_per_minute default null)` → `qorpera.event-hook/v1`: `id`, `companyId`,
   `environmentId`, `name` (`^[a-z][a-z0-9-]{0,63}$`, unique among the
-  company's live hooks), `purpose`, `proof` (`address` in W1a; `stripe`,
-  `github` and `hmac-sha256` refuse with 0A000 until W1b), `status`
-  (`active`), `address` (43 characters), `path`
+  live hooks of the company environment), `purpose` (one line), `proof`
+  (`address` in W1a; `stripe`, `github` and `hmac-sha256` refuse with 0A000
+  until W1b), `status` (`active`), `address` (43 characters), `path`
   (`/functions/v1/event-intake/<address>`: the sender posts to the Supabase
-  URL plus this path), `maxBodyBytes` (default 262144), `perMinute` (default
-  120), `createdAt`, `receivedCount`, `refusedCount`, `lastReceivedAt`.
-  Owners and admins only (42501); 23505 for a name in use, 54000 past 50
-  live hooks, 22023 for a bad name, purpose or limit.
+  URL plus this path), `maxBodyBytes` (1024–262144, default 65536),
+  `perMinute` (1–120, default 60), `createdAt`, `lastReceivedAt` (absent
+  until the first delivery). Owners and admins only (42501); 23505 for a
+  name in use, 54000 past 50 live hooks, 22023 for a bad name, purpose, proof
+  or limit, 0A000 for a `folder-v2` company (its hooks come with their
+  connection file).
 - `qorpera_set_event_hook_status(p_hook_id, p_status)` with `active`,
   `paused` or `removed` → the same descriptor. Removing is final (55000
   afterwards) and frees the name. Owners and admins only.
@@ -630,9 +633,11 @@ machine.
   Stripe's webhook, not with the return.
 - `event-intake` (20260929260000) — the public address of a company's
   hooks: `POST /functions/v1/event-intake/<address>` from the sender, not
-  from clients. Answers 202 (accepted), 200 (duplicate), 404 (no such hook),
-  409 (paused or not ready), 413 (over the hook's size limit or 1 MiB), 429
-  (over the per-minute limit, `Retry-After: 60`) or 503 (retry).
+  from clients. Answers 202 (accepted), 200 (duplicate), 400 (malformed), 404
+  (no such hook), 405 (not POST), 409 (paused or not ready), 413 (over the
+  hook's size limit or 256 KiB), 429 (over the hook's minute or the company's
+  hourly budget, with `Retry-After`), 431 (headers too large) or 503 (switched
+  off, or retry).
 - `profile-invitation-email`, `company-file-verifier`, `artifact-gc-worker`,
   `runner-control`, `runner-broker`, `runner-orchestrator`,
   `computer-hour-notices` (20260929160000, founders' hour emails) — service or

@@ -14,7 +14,7 @@ Founder decisions of 29 September 2026, on the Q1 page "Qorpera on Qorpera"
 Contract: section 16.3 and the 2026-09-29 amendment "events wake agents" (section 19). This file is
 the technical design. The Q1 page is the plain one.
 
-Status: design, and build step W1a in progress. W1a takes migration slot
+Status: design, and build step W1a in review (PR #509). W1a takes migration slot
 `20260929260000_runtime_event_intake`. W1b reserves `20260929260100`.
 
 ## Words
@@ -64,35 +64,57 @@ Table `qorpera_event_hooks`, one row per hook:
 | --- | --- |
 | `id` | uuid |
 | `profile_id`, `environment_id` | the company and its environment |
-| `name` | handle, `^[a-z][a-z0-9-]{0,63}$`, unique among the company's hooks that are not removed |
+| `name` | handle, `^[a-z][a-z0-9-]{0,63}$`, unique among the live hooks of the company environment |
 | `purpose` | one line, 1–512 characters |
 | `proof` | `address`, `stripe`, `github` or `hmac-sha256` |
 | `address` | 43 characters of base64url from 32 random bytes, unique |
 | `status` | `active`, `paused` or `removed` |
-| `max_body_bytes` | 1 KiB to 1 MiB, default 256 KiB |
-| `per_minute` | deliveries accepted per rolling minute, 1–600, default 120 |
-| `created_by_user_id` / `created_by_staff_agent_id` | who made it (exactly one; agents from W2) |
-| counters | `received_count`, `refused_count`, `last_received_at` |
+| `max_body_bytes` | 1 KiB to 256 KiB, default 64 KiB |
+| `per_minute` | deliveries accepted per rolling minute, 1–120, default 60 |
+| `created_by_user_id` / `created_by_staff_agent_id` | who made it: at most one, a member (cleared if the account is deleted) or an agent (from W2) |
 
-A company has at most 50 hooks that are not removed.
+A company has at most 50 live hooks. A hook's last delivery time is read from its deliveries; the
+hook row is never written by a receive.
+
+**Which companies.** In W1a, hooks exist for `snapshot-v1` companies, whose connections are rows.
+For a `folder-v2` company a hook is described by its connection file, `connections/<name>.md`, which
+the platform writes in the same step as the hook (contract amendment, item 2). That waits for the
+core's writer (F1 C3), so creating a hook there refuses with 0A000 until then.
 
 **Proof.**
 - `address`: whoever knows the address may post. The address works like a key that only lets
   someone post events into this hook, and nothing else. The platform shows it to the company's owners
   and admins, and to agents that manage hooks (W2). It is not a vault secret: holding it grants no
   access to any service or company data, and every event is outside content anyway (below). Use it
-  for senders that cannot sign, such as a website form.
+  for senders that cannot sign, such as a website form. Addresses also appear in the platform's
+  request logs, which only operators read.
 - `stripe`, `github`, `hmac-sha256`: the sender signs each delivery with a shared secret. The secret
   is a company vault secret with connector `event_hook` and the hook's name as its secret name,
   captured through the existing vault capture (`qorpera_begin_cloud_secret_capture`). Agents never see
-  it. Until that secret exists the hook refuses deliveries (`not_ready`, HTTP 409). Removing a hook
-  leaves its secret in the vault; a new hook with the same name uses it.
+  it. Until that secret exists, and until W1b ships, the hook refuses deliveries (`not_ready`, HTTP
+  409). Removing a hook leaves its secret in the vault; a new hook with the same name uses it.
 
 **Who manages hooks (W1a).** Owners and admins, through
 `qorpera_create_event_hook`, `qorpera_set_event_hook_status` and `qorpera_list_event_hooks`.
 Contributors and viewers see names, proof and status, not addresses. From W2, an agent creates,
 pauses and removes hooks with `manage_hook`, and creating one passes the automatic review as a new
 connection. The Settings split (step A3) lists hooks under Company connections.
+
+## Limits
+
+The intake is shared by every company, so it is bounded three ways. A request refused by any limit
+writes nothing: no delivery, no counter.
+
+- **Per hook:** a body of at most `max_body_bytes` (at most 256 KiB), and at most `per_minute`
+  deliveries in any rolling 60 seconds (at most 120). The check counts the hook's deliveries of the
+  last minute without locking, so a burst of concurrent requests can pass it by the number in flight.
+- **Per company:** `qorpera_event_intake_usage` counts accepted deliveries and their bytes per clock
+  hour. A delivery is refused when the current and previous hour together would pass the budget in
+  `qorpera_event_intake_settings` (default 2,000 deliveries and 64 MiB). The usage row is the only
+  row a receive locks, briefly, and the public door waits at most 2 seconds for it.
+- **The platform switch:** `qorpera_event_intake_settings.enabled` is built off. While it is off,
+  every delivery is answered 503. Operators turn it on at acceptance, and can turn it off at any time
+  or change the budget, in SQL.
 
 ## Deliveries
 
@@ -104,7 +126,7 @@ Table `qorpera_event_deliveries`:
 | `hook_id`, `profile_id` | the hook and its company |
 | `received_at` | when the intake took it |
 | `status` | `received` (waits for the vault), `verified`, `refused` or `duplicate` |
-| `delivery_key` | the sender's own id once verified: Stripe's `evt_…`, GitHub's `X-GitHub-Delivery`, or `X-Qorpera-Delivery` / `Idempotency-Key`, otherwise the body's SHA-256 |
+| `delivery_key` | the sender's own id once verified: Stripe's `evt_…`, GitHub's `X-GitHub-Delivery`, or `X-Qorpera-Delivery` / `Idempotency-Key`; for a sender without one, `body:<sha256>:<delivery id>` |
 | `event_type` | Stripe's `type`, GitHub's `X-GitHub-Event` (with `.action` when the body has one), `X-Qorpera-Event`, or null |
 | `content_type`, `headers` | the content type, and an allowed list of headers (below), at most 8 KiB |
 | `body`, `body_sha256`, `body_bytes` | the raw body; the body is cleared after 7 days, the rest kept 30 days |
@@ -115,36 +137,41 @@ Table `qorpera_event_deliveries`:
   `x-qorpera-timestamp`, `x-qorpera-delivery`, `x-qorpera-event`, `idempotency-key`, and the Standard
   Webhooks and Svix headers (`webhook-id`, `webhook-timestamp`, `webhook-signature`, `svix-id`,
   `svix-timestamp`, `svix-signature`) for mail providers (M2). Everything else, including
-  `authorization` and cookies, is dropped by the function.
-- **Duplicates.** A verified delivery is unique on `(hook_id, delivery_key)` among verified
-  deliveries of the last 30 days. A later copy is recorded as `duplicate` and answered 200, so the
-  sender stops retrying. Deduplication runs only after verification. Otherwise someone who knows an
-  address could send a fake delivery with a real event's id ahead of it and have the real one dropped.
-- **Rate.** At most `per_minute` deliveries per hook in any rolling 60 seconds are accepted. Extra ones
-  are refused with 429 and counted, and are not stored. The hook row is locked for each receive, so
-  the count is exact and receives on one hook are serialized.
-- **Size.** The function refuses a body over 1 MiB before reading it (`Content-Length`) or while
+  `authorization` and cookies, is dropped by the function. Kept headers over 8000 bytes of JSON are
+  refused (431).
+- **Duplicates.** With a sender id, a verified delivery is unique on `(hook_id, delivery_key)`: the
+  unique index decides, so two concurrent copies cannot both be verified. Without a sender id, the
+  same body within 10 minutes is taken as the sender's retry; after that the same body is a new
+  event (a monitor's second identical alert is real). A duplicate is recorded without its body and
+  answered 200, so the sender stops retrying. Deduplication runs only after verification. Otherwise
+  someone who knows an address could send a fake delivery with a real event's id ahead of it and have
+  the real one dropped.
+- **Size.** The function refuses a body over 256 KiB before reading it (`Content-Length`) or while
   reading it (a stream cap). The database refuses a body over the hook's `max_body_bytes` (413).
-- **Retention.** `qorpera_purge_event_deliveries(limit)` clears bodies after 7 days and deletes rows
-  after 30. The coordinator schedules it (pg_cron, hourly). The event itself stays in the company
-  folder (below).
+- **Retention.** `qorpera_purge_event_deliveries(limit)` refuses deliveries still waiting for the
+  vault after 24 hours, deletes rows after 30 days, clears bodies after 7, and deletes hourly usage
+  older than a day. The coordinator schedules it (pg_cron, hourly). Events saved in the company folder
+  stay there (below).
 
 **Answers.**
 
 | Outcome | HTTP | When |
 | --- | --- | --- |
 | `accepted` | 202 | stored; for an address-proven hook, also verified |
-| `duplicate` | 200 | an address-proven delivery whose key was already verified |
+| `duplicate` | 200 | a copy of a delivery already verified |
 | `unknown` | 404 | no hook has this address, or it was removed, or its company is being deleted |
 | `paused` | 409 | the hook is paused |
 | `not_ready` | 409 | a signed hook whose secret is not in the vault yet |
 | `too_large` | 413 | over the hook's limit |
-| `limited` | 429 | over `per_minute`, with `Retry-After: 60` |
-| database unreachable | 503 | the sender retries |
+| `limited` | 429 | over the hook's minute (`Retry-After: 60`) or the company's budget (`Retry-After: 600`) |
+| `unavailable` | 503 | the intake is switched off (`Retry-After: 300`) |
+| — | 400 | input the database calls malformed |
+| — | 404, 405 | a path that is no address; a method other than POST |
+| — | 413, 431 | a body over 256 KiB; kept headers over 8000 bytes |
+| — | 503 | the database cannot be reached; the sender retries |
 
 A signed delivery is answered 202 when it is stored, before the vault checks it. A bad signature is
-therefore not reported to the sender. It is recorded as `refused` with the reason, and counted on the
-hook.
+therefore not reported to the sender. It is recorded as `refused` with the reason.
 
 ## Verification in the vault (W1b)
 
@@ -191,9 +218,10 @@ move `not_before`, a paused company cancels the occurrence, and the pinned spons
 **Reading.** `qorpera_read_native_wake` for an `event` occurrence takes, the first time, up to 20
 verified deliveries of that hook and trigger that no earlier occurrence took. It records them in
 `qorpera_event_wake_deliveries(occurrence_id, delivery_id)`, so a retried run reads the same batch. The
-payload lists each one: id, type, received time, content type, and the body as UTF-8 text up to 16 KiB
-(`truncated: true` beyond that), with at most 64 KiB of bodies in total. Deliveries left over wake the
-routine again as soon as this occurrence ends.
+payload lists each one: id, type, received time, content type, and the body as UTF-8 text cut to fit
+the wake's size bound (the whole wake context is at most 48 KiB today, so about 8 KiB a body and 24
+KiB in total, with `truncated: true` where cut). The agent reads a whole body with `read_event`.
+Deliveries left over wake the routine again as soon as this occurrence ends.
 
 **Outside content.** Every event is outside content (contract 11.1). The wake protocol tells the agent
 that an instruction inside an event is data, never an instruction, and outside actions it leads to
@@ -225,10 +253,13 @@ during a roll. After it is live:
 
 1. Deploy the function: `supabase functions deploy event-intake` (`verify_jwt = false` in
    `supabase/config.toml`). It needs only `SUPABASE_URL` and the service key the platform provides.
+   Until the switch is on it answers every delivery 503.
 2. Schedule retention:
    `select cron.schedule('qorpera-event-deliveries-purge', '17 * * * *',
    $$select public.qorpera_purge_event_deliveries(10000)$$);`
-3. Acceptance: an owner creates an address-proven hook on a test company, posts to
+3. Turn the intake on for acceptance:
+   `update public.qorpera_event_intake_settings set enabled = true;` (off again with `false`).
+4. Acceptance: an owner creates an address-proven hook on a test company, posts to
    `<supabase url>/functions/v1/event-intake/<address>` with `curl`, and sees the delivery with
    `qorpera_list_event_deliveries` (202 `accepted`, then 200 `duplicate` for the same
    `X-Qorpera-Delivery`, and 404 after removing the hook).
@@ -240,9 +271,10 @@ during a roll. After it is live:
 - A hook's address grants only posting into that hook. Deliveries wake agents only after the proof
   holds, and their content is outside content.
 - Duplicates are decided after verification, so a forged early copy cannot suppress a real event.
-- Limits bound storage per hook: at most `per_minute × max_body_bytes` a minute, and at most 50 hooks
-  per company.
-- A company being deleted stops receiving at once (`unknown`). The purge removes its hooks and
-  deliveries with the company (foreign keys cascade).
+- Limits bound storage: at most `per_minute × max_body_bytes` a minute per hook (30 MiB at the
+  maximums), the company's hourly budget across all its hooks (64 MiB by default), and the platform
+  switch. Refused requests write nothing.
+- A company being deleted stops receiving at once (`unknown`). The company purge removes its hooks,
+  deliveries and usage with the company (foreign keys cascade; test 730 runs the purge).
 - No table is readable by `anon`, `authenticated` or the broker role. Members read through the
   listed functions, and the broker reads only through its two functions (W1b).

@@ -4,39 +4,53 @@
 --
 -- A hook is a company connection that receives events at one public address. The Edge Function
 -- event-intake hands each request to qorpera_receive_event (service_role only). This step creates
--- address-proven hooks only: whoever knows the address may post, and a delivery is verified in the
--- same call. Signed hooks (Stripe, GitHub, HMAC) and their verification in the vault follow in W1b
--- (20260929260100); the table already names their proofs so W1b adds no column. Deliveries are
--- runtime state: a queue entry and a receipt. Nothing wakes yet: event wakes are step W2.
+-- address-proven hooks only, for snapshot-v1 companies: whoever knows the address may post, and a
+-- delivery is verified in the same call. Signed hooks (Stripe, GitHub, HMAC) and their verification
+-- in the vault follow in W1b (20260929260100); hooks of folder-v2 companies come with their
+-- connection file once the folder core's writer lands. Deliveries are runtime state: a queue entry
+-- and a receipt. Nothing wakes yet: event wakes are step W2.
 --
--- Lock order: the hook row, then its deliveries. Receives on one hook are serialized by the hook
--- lock, which makes the per-minute limit and duplicate detection exact.
+-- The intake is built switched off (qorpera_event_intake_settings.enabled) and bounded three ways:
+-- per hook (body size, deliveries a minute), per company (deliveries and bytes in the current and
+-- previous clock hour) and by the switch. A refused request writes nothing.
+--
+-- Lock order: the company row when creating a hook, then the hook row. A receive takes no hook
+-- lock: duplicates of a sender id are decided by a unique index; only the company's hourly usage
+-- row is locked, briefly, to count an accepted delivery.
 
 set local lock_timeout = '3s';
+
+create table public.qorpera_event_intake_settings (
+	singleton boolean primary key default true check (singleton),
+	enabled boolean not null default false,
+	company_hourly_deliveries integer not null default 2000 check (company_hourly_deliveries between 1 and 100000),
+	company_hourly_bytes bigint not null default 67108864 check (company_hourly_bytes between 1024 and 10737418240)
+);
+insert into public.qorpera_event_intake_settings (singleton) values (true);
 
 create table public.qorpera_event_hooks (
 	id uuid primary key default extensions.gen_random_uuid(),
 	profile_id uuid not null references public.qorpera_profiles(id) on delete cascade,
 	environment_id uuid not null references public.qorpera_company_environments(id) on delete cascade,
 	name text not null check (name ~ '^[a-z][a-z0-9-]{0,63}$'),
-	purpose text not null check (char_length(purpose) between 1 and 512 and purpose = btrim(purpose)),
+	purpose text not null check (char_length(purpose) between 1 and 512 and purpose = btrim(purpose)
+		and purpose !~ '[[:cntrl:]]'),
 	proof text not null check (proof in ('address', 'stripe', 'github', 'hmac-sha256')),
 	address text not null unique check (address ~ '^[A-Za-z0-9_-]{43}$'),
 	status text not null default 'active' check (status in ('active', 'paused', 'removed')),
-	max_body_bytes integer not null default 262144 check (max_body_bytes between 1024 and 1048576),
-	per_minute integer not null default 120 check (per_minute between 1 and 600),
+	max_body_bytes integer not null default 65536 check (max_body_bytes between 1024 and 262144),
+	per_minute integer not null default 60 check (per_minute between 1 and 120),
+	-- Who made it: a member, or an agent from W2. Cleared if the member's account is deleted.
 	created_by_user_id uuid references auth.users(id) on delete set null,
 	created_by_staff_agent_id uuid,
 	created_at timestamptz not null default statement_timestamp(),
 	updated_at timestamptz not null default statement_timestamp(),
 	removed_at timestamptz,
-	received_count bigint not null default 0 check (received_count >= 0),
-	refused_count bigint not null default 0 check (refused_count >= 0),
-	last_received_at timestamptz,
 	check ((status = 'removed') = (removed_at is not null)),
-	check (created_by_user_id is null or created_by_staff_agent_id is null)
+	check (num_nonnulls(created_by_user_id, created_by_staff_agent_id) <= 1)
 );
 
+-- Names are unique among a company environment's live hooks.
 create unique index qorpera_event_hooks_live_name
 	on public.qorpera_event_hooks (profile_id, environment_id, name)
 	where status <> 'removed';
@@ -48,6 +62,7 @@ create table public.qorpera_event_deliveries (
 	profile_id uuid not null references public.qorpera_profiles(id) on delete cascade,
 	received_at timestamptz not null default clock_timestamp(),
 	status text not null check (status in ('received', 'verified', 'refused', 'duplicate')),
+	-- The sender's own id; for a sender without one, 'body:<sha256>:<delivery id>' (never repeats).
 	delivery_key text check (delivery_key is null or (char_length(delivery_key) between 1 and 256
 		and delivery_key ~ '^[\x21-\x7e]+$')),
 	event_type text check (event_type is null or (char_length(event_type) between 1 and 128
@@ -55,13 +70,13 @@ create table public.qorpera_event_deliveries (
 	content_type text check (content_type is null or char_length(content_type) between 1 and 256),
 	headers jsonb not null default '{}'::jsonb check (jsonb_typeof(headers) = 'object'
 		and octet_length(headers::text) <= 8192),
-	body bytea check (body is null or octet_length(body) <= 1048576),
-	body_bytes integer not null check (body_bytes between 0 and 1048576),
+	body bytea check (body is null or octet_length(body) <= 262144),
+	body_bytes integer not null check (body_bytes between 0 and 262144),
 	body_sha256 text not null check (body_sha256 ~ '^[0-9a-f]{64}$'),
 	verified_at timestamptz,
 	reason text check (reason is null or char_length(reason) between 1 and 500),
 	check ((status in ('verified', 'duplicate')) = (verified_at is not null)),
-	check (status = 'received' or delivery_key is not null or status = 'refused')
+	check (status in ('received', 'refused') or delivery_key is not null)
 );
 
 -- A verified delivery is unique per hook and sender id while its row lives (30 days).
@@ -69,14 +84,29 @@ create unique index qorpera_event_deliveries_verified_key
 	on public.qorpera_event_deliveries (hook_id, delivery_key)
 	where status = 'verified';
 create index qorpera_event_deliveries_hook_received on public.qorpera_event_deliveries (hook_id, received_at);
+create index qorpera_event_deliveries_company on public.qorpera_event_deliveries (profile_id, received_at);
 create index qorpera_event_deliveries_received_at on public.qorpera_event_deliveries (received_at);
 create index qorpera_event_deliveries_waiting on public.qorpera_event_deliveries (received_at)
 	where status = 'received';
 
+-- Accepted deliveries per company and clock hour, for the company budget.
+create table public.qorpera_event_intake_usage (
+	profile_id uuid not null references public.qorpera_profiles(id) on delete cascade,
+	hour timestamptz not null check (hour = date_trunc('hour', hour)),
+	deliveries integer not null default 0 check (deliveries >= 0),
+	bytes bigint not null default 0 check (bytes >= 0),
+	primary key (profile_id, hour)
+);
+create index qorpera_event_intake_usage_hour on public.qorpera_event_intake_usage (hour);
+
+alter table public.qorpera_event_intake_settings enable row level security;
 alter table public.qorpera_event_hooks enable row level security;
 alter table public.qorpera_event_deliveries enable row level security;
+alter table public.qorpera_event_intake_usage enable row level security;
+revoke all on table public.qorpera_event_intake_settings from public, anon, authenticated, service_role;
 revoke all on table public.qorpera_event_hooks from public, anon, authenticated, service_role;
 revoke all on table public.qorpera_event_deliveries from public, anon, authenticated, service_role;
+revoke all on table public.qorpera_event_intake_usage from public, anon, authenticated, service_role;
 
 -- The headers the intake keeps (design "Deliveries"). Everything else never reaches the database.
 create function public.qorpera_event_kept_headers()
@@ -113,15 +143,15 @@ as $$
 		'maxBodyBytes', p_hook.max_body_bytes,
 		'perMinute', p_hook.per_minute,
 		'createdAt', p_hook.created_at,
-		'receivedCount', p_hook.received_count,
-		'refusedCount', p_hook.refused_count,
-		'lastReceivedAt', p_hook.last_received_at))
+		'lastReceivedAt', (select max(delivery.received_at) from public.qorpera_event_deliveries as delivery
+			where delivery.hook_id = p_hook.id)))
 $$;
 revoke all on function public.qorpera_event_hook_descriptor(public.qorpera_event_hooks, boolean)
 	from public, anon, authenticated, service_role;
 
--- An owner or admin creates a hook. W1a creates address-proven hooks only; W1b opens the signed
--- proofs when the vault can check them.
+-- An owner or admin creates a hook. W1a creates address-proven hooks for snapshot-v1 companies
+-- only; W1b opens the signed proofs when the vault can check them, and folder-v2 companies get
+-- hooks with their connection file.
 create function public.qorpera_create_event_hook(
 	p_profile_id uuid,
 	p_environment_id uuid,
@@ -153,20 +183,34 @@ begin
 		raise exception 'A hook name uses lowercase letters, digits and hyphens, starts with a letter and has at most 64 characters'
 			using errcode = '22023';
 	end if;
-	if p_purpose is null or char_length(btrim(p_purpose)) not between 1 and 512 then
-		raise exception 'A hook needs a purpose of 1 to 512 characters' using errcode = '22023';
+	if p_purpose is null or char_length(btrim(p_purpose)) not between 1 and 512 or p_purpose ~ '[[:cntrl:]]' then
+		raise exception 'A hook needs a purpose of one line, 1 to 512 characters' using errcode = '22023';
 	end if;
-	if p_proof is distinct from 'address' then
+	if p_proof is null or p_proof not in ('address', 'stripe', 'github', 'hmac-sha256') then
+		raise exception 'A hook is proven by its address, or by a Stripe, GitHub or HMAC-SHA256 signature'
+			using errcode = '22023';
+	end if;
+	if p_proof <> 'address' then
 		raise exception 'Only address-proven hooks can be created yet' using errcode = '0A000';
 	end if;
-	if p_max_body_bytes is not null and p_max_body_bytes not between 1024 and 1048576 then
-		raise exception 'A hook body limit is between 1 KiB and 1 MiB' using errcode = '22023';
+	if p_max_body_bytes is not null and p_max_body_bytes not between 1024 and 262144 then
+		raise exception 'A hook body limit is between 1 KiB and 256 KiB' using errcode = '22023';
 	end if;
-	if p_per_minute is not null and p_per_minute not between 1 and 600 then
-		raise exception 'A hook accepts between 1 and 600 deliveries a minute' using errcode = '22023';
+	if p_per_minute is not null and p_per_minute not between 1 and 120 then
+		raise exception 'A hook accepts between 1 and 120 deliveries a minute' using errcode = '22023';
 	end if;
-	-- Serialize hook creation per company so the limit of 50 holds.
+	if exists (
+		select 1 from public.qorpera_company_files as file
+		where file.environment_id = p_environment_id and file.core = 'folder-v2'
+	) then
+		raise exception 'Hooks for folder companies come with their connection file' using errcode = '0A000';
+	end if;
+	-- Serialize hook creation per company so the limit of 50 holds, then check the company again:
+	-- a deletion request may have committed while this call waited.
 	perform 1 from public.qorpera_profiles where id = p_profile_id for update;
+	if public.qorpera_company_deleting(p_profile_id) then
+		raise exception 'Only owners and admins can create hooks' using errcode = '42501';
+	end if;
 	if (select count(*) from public.qorpera_event_hooks as hook
 		where hook.profile_id = p_profile_id and hook.status <> 'removed') >= 50 then
 		raise exception 'A company has at most 50 hooks' using errcode = '54000';
@@ -184,7 +228,7 @@ begin
 	) values (
 		p_profile_id, p_environment_id, p_name, btrim(p_purpose), p_proof,
 		translate(rtrim(encode(extensions.gen_random_bytes(32), 'base64'), '='), '+/', '-_'),
-		coalesce(p_max_body_bytes, 262144), coalesce(p_per_minute, 120), auth.uid()
+		coalesce(p_max_body_bytes, 65536), coalesce(p_per_minute, 60), auth.uid()
 	) returning * into v_hook;
 	return public.qorpera_event_hook_descriptor(v_hook, true);
 end
@@ -297,8 +341,9 @@ revoke all on function public.qorpera_list_event_deliveries(uuid, integer) from 
 grant execute on function public.qorpera_list_event_deliveries(uuid, integer) to authenticated;
 
 -- The intake's one door (Edge Function event-intake, service_role). Returns the outcome the
--- function turns into an HTTP answer: accepted, duplicate, unknown, paused, not_ready, too_large or
--- limited. Malformed input from the function itself raises 22023.
+-- function turns into an HTTP answer: accepted, duplicate, unknown, paused, not_ready, too_large,
+-- limited or unavailable. Malformed input from the function itself raises 22023. Only an accepted
+-- or duplicate delivery writes anything.
 create function public.qorpera_receive_event(
 	p_address text,
 	p_content_type text,
@@ -309,20 +354,26 @@ returns jsonb
 language plpgsql
 security definer
 set search_path = ''
+set lock_timeout = '2s'
 as $$
 declare
+	v_settings public.qorpera_event_intake_settings%rowtype;
 	v_hook public.qorpera_event_hooks%rowtype;
 	v_body bytea;
 	v_body_sha256 text;
 	v_headers jsonb := '{}'::jsonb;
 	v_key text;
 	v_value jsonb;
-	v_delivery_key text;
+	v_sender_key text;
 	v_event_type text;
-	v_delivery_id uuid;
+	v_delivery_id uuid := extensions.gen_random_uuid();
+	v_inserted uuid;
+	v_hour timestamptz := date_trunc('hour', clock_timestamp());
+	v_used_deliveries bigint;
+	v_used_bytes bigint;
 begin
 	if p_headers is null or jsonb_typeof(p_headers) <> 'object' or octet_length(p_headers::text) > 8192
-		or p_body_base64 is null or char_length(p_body_base64) > 1398104
+		or p_body_base64 is null or char_length(p_body_base64) > 349528
 		or (p_content_type is not null and char_length(p_content_type) not between 1 and 256) then
 		raise exception 'The delivery is malformed' using errcode = '22023';
 	end if;
@@ -339,45 +390,52 @@ begin
 	exception when others then
 		raise exception 'The delivery body is not base64' using errcode = '22023';
 	end;
-	if octet_length(v_body) > 1048576 then
-		raise exception 'The delivery body is over 1 MiB' using errcode = '22023';
+	if octet_length(v_body) > 262144 then
+		raise exception 'The delivery body is over 256 KiB' using errcode = '22023';
 	end if;
 
+	select settings.* into v_settings from public.qorpera_event_intake_settings as settings;
+	if not coalesce(v_settings.enabled, false) then
+		return jsonb_build_object('outcome', 'unavailable');
+	end if;
 	if p_address is null or p_address !~ '^[A-Za-z0-9_-]{43}$' then
 		return jsonb_build_object('outcome', 'unknown');
 	end if;
-	select hook.* into v_hook
-	from public.qorpera_event_hooks as hook
-	where hook.address = p_address
-	for update;
-	if not found or v_hook.status = 'removed' or public.qorpera_company_deleting(v_hook.profile_id) then
+	select hook.* into v_hook from public.qorpera_event_hooks as hook where hook.address = p_address;
+	if v_hook.id is null or v_hook.status = 'removed' or public.qorpera_company_deleting(v_hook.profile_id) then
 		return jsonb_build_object('outcome', 'unknown');
 	end if;
 	if v_hook.status = 'paused' then
-		update public.qorpera_event_hooks set refused_count = refused_count + 1 where id = v_hook.id;
 		return jsonb_build_object('outcome', 'paused');
 	end if;
 	if octet_length(v_body) > v_hook.max_body_bytes then
-		update public.qorpera_event_hooks set refused_count = refused_count + 1 where id = v_hook.id;
 		return jsonb_build_object('outcome', 'too_large', 'maxBodyBytes', v_hook.max_body_bytes);
 	end if;
+	-- The hook's minute and the company's two clock hours. Concurrent receives can each pass these
+	-- checks, so a burst may exceed a limit by the number of requests in flight.
 	if (select count(*) from public.qorpera_event_deliveries as recent
 		where recent.hook_id = v_hook.id and recent.received_at > clock_timestamp() - interval '60 seconds')
 		>= v_hook.per_minute then
-		update public.qorpera_event_hooks set refused_count = refused_count + 1 where id = v_hook.id;
 		return jsonb_build_object('outcome', 'limited', 'retryAfterSeconds', 60);
+	end if;
+	select coalesce(sum(usage.deliveries), 0), coalesce(sum(usage.bytes), 0)
+	into v_used_deliveries, v_used_bytes
+	from public.qorpera_event_intake_usage as usage
+	where usage.profile_id = v_hook.profile_id and usage.hour >= v_hour - interval '1 hour';
+	if v_used_deliveries + 1 > v_settings.company_hourly_deliveries
+		or v_used_bytes + octet_length(v_body) > v_settings.company_hourly_bytes then
+		return jsonb_build_object('outcome', 'limited', 'retryAfterSeconds', 600);
 	end if;
 	if v_hook.proof <> 'address' then
 		-- Signed hooks are verified by the vault (W1b); until then they take nothing.
-		update public.qorpera_event_hooks set refused_count = refused_count + 1 where id = v_hook.id;
 		return jsonb_build_object('outcome', 'not_ready');
 	end if;
 
 	v_body_sha256 := encode(extensions.digest(v_body, 'sha256'), 'hex');
-	v_delivery_key := coalesce(v_headers ->> 'x-qorpera-delivery', v_headers ->> 'idempotency-key');
-	if v_delivery_key is null or char_length(v_delivery_key) not between 1 and 256
-		or v_delivery_key !~ '^[\x21-\x7e]+$' then
-		v_delivery_key := 'sha256:' || v_body_sha256;
+	v_sender_key := coalesce(v_headers ->> 'x-qorpera-delivery', v_headers ->> 'idempotency-key');
+	if v_sender_key is not null and (char_length(v_sender_key) not between 1 and 256
+		or v_sender_key !~ '^[\x21-\x7e]+$' or v_sender_key like 'body:%') then
+		v_sender_key := null;
 	end if;
 	v_event_type := v_headers ->> 'x-qorpera-event';
 	if v_event_type is not null and (char_length(v_event_type) not between 1 and 128
@@ -385,37 +443,59 @@ begin
 		v_event_type := null;
 	end if;
 
-	update public.qorpera_event_hooks
-	set received_count = received_count + 1, last_received_at = clock_timestamp()
-	where id = v_hook.id;
-	if exists (
+	if v_sender_key is not null then
+		-- A sender id is unique per hook among verified deliveries (the index decides a race).
+		insert into public.qorpera_event_deliveries (
+			id, hook_id, profile_id, status, delivery_key, event_type, content_type, headers,
+			body, body_bytes, body_sha256, verified_at
+		) values (
+			v_delivery_id, v_hook.id, v_hook.profile_id, 'verified', v_sender_key, v_event_type, p_content_type,
+			v_headers, v_body, octet_length(v_body), v_body_sha256, clock_timestamp()
+		)
+		on conflict (hook_id, delivery_key) where status = 'verified' do nothing
+		returning id into v_inserted;
+	elsif not exists (
+		-- Without a sender id, the same body within 10 minutes is a sender's retry.
 		select 1 from public.qorpera_event_deliveries as earlier
-		where earlier.hook_id = v_hook.id and earlier.status = 'verified' and earlier.delivery_key = v_delivery_key
+		where earlier.hook_id = v_hook.id and earlier.status = 'verified'
+			and earlier.body_sha256 = v_body_sha256 and earlier.delivery_key like 'body:%'
+			and earlier.received_at > clock_timestamp() - interval '10 minutes'
 	) then
 		insert into public.qorpera_event_deliveries (
-			hook_id, profile_id, status, delivery_key, event_type, content_type, headers,
+			id, hook_id, profile_id, status, delivery_key, event_type, content_type, headers,
+			body, body_bytes, body_sha256, verified_at
+		) values (
+			v_delivery_id, v_hook.id, v_hook.profile_id, 'verified',
+			'body:' || v_body_sha256 || ':' || v_delivery_id, v_event_type, p_content_type,
+			v_headers, v_body, octet_length(v_body), v_body_sha256, clock_timestamp()
+		)
+		returning id into v_inserted;
+	end if;
+
+	if v_inserted is null then
+		insert into public.qorpera_event_deliveries (
+			id, hook_id, profile_id, status, delivery_key, event_type, content_type, headers,
 			body, body_bytes, body_sha256, verified_at, reason
 		) values (
-			v_hook.id, v_hook.profile_id, 'duplicate', v_delivery_key, v_event_type, p_content_type, v_headers,
-			null, octet_length(v_body), v_body_sha256, clock_timestamp(), 'An earlier delivery had this key'
-		) returning id into v_delivery_id;
-		return jsonb_build_object('outcome', 'duplicate', 'deliveryId', v_delivery_id);
+			v_delivery_id, v_hook.id, v_hook.profile_id, 'duplicate',
+			coalesce(v_sender_key, 'body:' || v_body_sha256 || ':' || v_delivery_id), v_event_type, p_content_type,
+			v_headers, null, octet_length(v_body), v_body_sha256, clock_timestamp(), 'An earlier delivery had this key'
+		);
 	end if;
-	insert into public.qorpera_event_deliveries (
-		hook_id, profile_id, status, delivery_key, event_type, content_type, headers,
-		body, body_bytes, body_sha256, verified_at
-	) values (
-		v_hook.id, v_hook.profile_id, 'verified', v_delivery_key, v_event_type, p_content_type, v_headers,
-		v_body, octet_length(v_body), v_body_sha256, clock_timestamp()
-	) returning id into v_delivery_id;
-	return jsonb_build_object('outcome', 'accepted', 'deliveryId', v_delivery_id);
+	insert into public.qorpera_event_intake_usage as usage (profile_id, hour, deliveries, bytes)
+	values (v_hook.profile_id, v_hour, 1, case when v_inserted is null then 0 else octet_length(v_body) end)
+	on conflict (profile_id, hour) do update
+	set deliveries = usage.deliveries + 1, bytes = usage.bytes + excluded.bytes;
+	return jsonb_build_object('outcome', case when v_inserted is null then 'duplicate' else 'accepted' end,
+		'deliveryId', v_delivery_id);
 end
 $$;
 revoke all on function public.qorpera_receive_event(text, text, jsonb, text) from public, anon, authenticated, service_role;
 grant execute on function public.qorpera_receive_event(text, text, jsonb, text) to service_role;
 
 -- Retention, scheduled by the coordinator (pg_cron, hourly): a delivery still waiting for the vault
--- after 24 hours is refused, rows are deleted after 30 days, and bodies are cleared after 7.
+-- after 24 hours is refused, rows are deleted after 30 days, bodies are cleared after 7, and hourly
+-- usage is kept for a day.
 create function public.qorpera_purge_event_deliveries(p_limit integer default 1000)
 returns jsonb
 language plpgsql
@@ -459,6 +539,9 @@ begin
 	set body = null
 	from old where delivery.id = old.id;
 	get diagnostics v_cleared = row_count;
+
+	delete from public.qorpera_event_intake_usage as usage
+	where usage.hour < date_trunc('hour', clock_timestamp()) - interval '1 day';
 
 	return jsonb_build_object('expired', v_expired, 'cleared', v_cleared, 'deleted', v_deleted);
 end

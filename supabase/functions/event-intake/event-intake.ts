@@ -2,15 +2,20 @@
  * design deploy/first-node/RUNTIME-EVENT-INTAKE.md).
  *
  * POST /event-intake/<address>: one delivery to one of a company's hooks. The function holds no
- * company secret. It reads the body up to 1 MiB, keeps an allowed list of headers and hands the
+ * company secret. It reads the body up to 256 KiB, keeps an allowed list of headers and hands the
  * delivery to the database's intake door, qorpera_receive_event, which decides the outcome:
- * accepted (202), duplicate (200), unknown (404), paused or not_ready (409), too_large (413) or
- * limited (429). A database failure answers 503, so the sender retries. Signatures of signed hooks
- * are checked later by the company's vault, never here. */
+ * accepted (202), duplicate (200), unknown (404), paused or not_ready (409), too_large (413),
+ * limited (429, with Retry-After) or unavailable (503, the intake is switched off). The function
+ * itself answers 404 for a path that is no address, 405 for a method other than POST, 413 for a
+ * body over 256 KiB, 431 for kept headers over 8000 bytes, 400 for input the database calls
+ * malformed and 503 when the database cannot be reached, so the sender retries. Signatures of
+ * signed hooks are checked later by the company's vault, never here. */
 
-export const MAX_BODY_BYTES = 1024 * 1024;
+export const MAX_BODY_BYTES = 256 * 1024;
 const MAX_HEADER_VALUE = 2048;
-const MAX_HEADERS_JSON = 8192;
+// The database stores headers as jsonb text (at most 8192 bytes), which adds a space after each
+// colon and comma; 8000 bytes of compact JSON always fits.
+const MAX_HEADERS_JSON_BYTES = 8000;
 const ADDRESS = /\/event-intake\/([A-Za-z0-9_-]{43})\/?$/;
 
 /** The headers the intake keeps; the database refuses any other (qorpera_event_kept_headers). */
@@ -110,7 +115,8 @@ const OUTCOMES: Record<string, { status: number; body: Json; headers?: Record<st
 	paused: { status: 409, body: { error: "This hook is paused" } },
 	not_ready: { status: 409, body: { error: "This hook is not ready to receive" } },
 	too_large: { status: 413, body: { error: "The body is over this hook's limit" } },
-	limited: { status: 429, body: { error: "Too many deliveries to this hook" }, headers: { "retry-after": "60" } },
+	limited: { status: 429, body: { error: "Too many deliveries to this hook" } },
+	unavailable: { status: 503, body: { error: "Events are unavailable right now" }, headers: { "retry-after": "300" } },
 };
 
 /** The Edge Function. */
@@ -119,9 +125,10 @@ export async function handleEventIntake(request: Request, store: IntakeStore): P
 	if (!address) return json({ error: "No hook has this address" }, 404);
 	if (request.method !== "POST") return json({ error: "Method not allowed" }, 405, { allow: "POST" });
 	const headers = keptHeaders(request.headers);
-	if (JSON.stringify(headers).length > MAX_HEADERS_JSON) return json({ error: "The headers are too large" }, 431);
+	if (new TextEncoder().encode(JSON.stringify(headers)).length > MAX_HEADERS_JSON_BYTES)
+		return json({ error: "The headers are too large" }, 431);
 	const body = await readBody(request, MAX_BODY_BYTES);
-	if (!body) return json({ error: "The body is over 1 MiB" }, 413);
+	if (!body) return json({ error: "The body is over 256 KiB" }, 413);
 	const contentType = headers["content-type"];
 	let result: Json;
 	try {
@@ -142,5 +149,9 @@ export async function handleEventIntake(request: Request, store: IntakeStore): P
 		console.error(`event-intake: unexpected outcome ${JSON.stringify(result.outcome)}`);
 		return json({ error: "Events are unavailable right now" }, 503);
 	}
-	return json(outcome.body, outcome.status, outcome.headers);
+	const retryAfter =
+		typeof result.retryAfterSeconds === "number" && Number.isInteger(result.retryAfterSeconds)
+			? { "retry-after": String(result.retryAfterSeconds) }
+			: {};
+	return json(outcome.body, outcome.status, { ...outcome.headers, ...retryAfter });
 }

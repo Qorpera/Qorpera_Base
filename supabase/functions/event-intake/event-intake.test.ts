@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 import {
 	base64,
@@ -42,11 +42,17 @@ function post(body: BodyInit | null, headers: Record<string, string> = {}, path 
 
 describe("event intake", () => {
 	it("keeps exactly the headers the database keeps", () => {
-		const migration = readFileSync(
-			new URL("../../migrations/20260929260000_runtime_event_intake.sql", import.meta.url),
-			"utf-8",
-		);
-		const list = /create function public\.qorpera_event_kept_headers\(\)[\s\S]*?select array\[([\s\S]*?)\]/.exec(migration);
+		// The newest migration that defines the database's list.
+		const migrations = new URL("../../migrations/", import.meta.url);
+		const definition = /function public\.qorpera_event_kept_headers\(\)[\s\S]*?select array\[([\s\S]*?)\]/;
+		const latest = readdirSync(migrations)
+			.filter((name) => /^\d{14}_[a-z0-9_]+\.sql$/.test(name))
+			.sort()
+			.map((name) => readFileSync(new URL(name, migrations), "utf-8"))
+			.filter((text) => definition.test(text))
+			.at(-1);
+		assert.ok(latest, "no migration defines the header list");
+		const list = definition.exec(latest);
 		assert.ok(list, "the migration's header list was not found");
 		const sqlHeaders = [...list[1].matchAll(/'([a-z0-9-]+)'/g)].map((match) => match[1]);
 		assert.deepEqual([...KEPT_HEADERS].sort(), sqlHeaders.sort());
@@ -83,13 +89,17 @@ describe("event intake", () => {
 			["not_ready", 409],
 			["too_large", 413],
 			["limited", 429],
+			["unavailable", 503],
 		];
 		for (const [outcome, status] of expected) {
 			const response = await handleEventIntake(post("x"), store({ outcome }).store);
 			assert.equal(response.status, status, outcome);
-			if (outcome === "limited") assert.equal(response.headers.get("retry-after"), "60");
+			if (outcome === "unavailable") assert.equal(response.headers.get("retry-after"), "300");
 			if (outcome === "duplicate") assert.deepEqual(await response.json(), { received: true, duplicate: true });
 		}
+		// The database says how long a limited sender should wait.
+		const limited = await handleEventIntake(post("x"), store({ outcome: "limited", retryAfterSeconds: 600 }).store);
+		assert.equal(limited.headers.get("retry-after"), "600");
 	});
 
 	it("refuses other paths and methods without touching the database", async () => {
@@ -105,7 +115,7 @@ describe("event intake", () => {
 		assert.equal(bare.status, 202);
 	});
 
-	it("refuses a body over 1 MiB before and while reading it", async () => {
+	it("refuses a body over 256 KiB before and while reading it", async () => {
 		const fixture = store();
 		const declared = await handleEventIntake(
 			post("small", { "content-length": String(MAX_BODY_BYTES + 1) }),
@@ -133,11 +143,23 @@ describe("event intake", () => {
 	it("passes binary and empty bodies through unchanged", async () => {
 		const fixture = store();
 		const bytes = new Uint8Array(70_000).map((_, index) => index % 256);
+		assert.ok(bytes.length < MAX_BODY_BYTES);
 		await handleEventIntake(post(bytes), fixture.store);
 		await handleEventIntake(post(null), fixture.store);
 		assert.deepEqual(Buffer.from(fixture.calls[0]?.bodyBase64 ?? "", "base64"), Buffer.from(bytes));
 		assert.equal(fixture.calls[1]?.bodyBase64, "");
 		assert.equal(base64(new Uint8Array([0xff, 0x00, 0x10])), "/wAQ");
+	});
+
+	it("refuses kept headers over 8000 bytes", async () => {
+		const fixture = store();
+		const big = "é".repeat(1000);
+		const response = await handleEventIntake(
+			post("x", { "stripe-signature": big, "svix-signature": big, "webhook-signature": big, "x-hub-signature-256": big }),
+			fixture.store,
+		);
+		assert.equal(response.status, 431);
+		assert.equal(fixture.calls.length, 0);
 	});
 
 	it("drops header values over 2048 characters and long content types", async () => {

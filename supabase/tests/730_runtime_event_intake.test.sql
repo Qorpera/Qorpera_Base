@@ -1,5 +1,5 @@
--- Event intake, step W1a (20260929260000): hooks, the intake door, duplicates, limits, retention
--- and who may do what.
+-- Event intake, step W1a (20260929260000): hooks, the intake door, duplicates, limits, the switch,
+-- retention and who may do what.
 begin;
 
 create function pg_temp.hook_claims(p_role text, p_user uuid default null)
@@ -16,15 +16,19 @@ begin
 	begin execute p_statement;
 	exception when others then
 		if sqlstate = p_code then return; end if;
-		raise exception 'Expected % from %, got %: %', p_code, p_statement, sqlstate, sqlerrm;
+		raise exception 'Expected % from %, got %: %', p_code, left(p_statement, 200), sqlstate, sqlerrm;
 	end;
-	raise exception 'Expected % from %, but it succeeded', p_code, p_statement;
+	raise exception 'Expected % from %, but it succeeded', p_code, left(p_statement, 200);
 end
 $$;
 create function pg_temp.receive(p_address text, p_body text, p_headers jsonb default '{}'::jsonb)
 returns jsonb language sql as $$
 	select public.qorpera_receive_event(p_address, 'application/json', p_headers,
 		encode(convert_to(p_body, 'UTF8'), 'base64'))
+$$;
+create function pg_temp.rows(p_hook uuid)
+returns bigint language sql as $$
+	select count(*) from public.qorpera_event_deliveries where hook_id = p_hook
 $$;
 
 insert into auth.users(id, email) values
@@ -48,13 +52,15 @@ insert into public.qorpera_company_environments(id, profile_id, name, contract_v
 
 -- Privileges: the tables are closed to every client role; each function has exactly its callers.
 do $$
-declare v_role text;
+declare v_role text; v_table text;
 begin
 	foreach v_role in array array['anon', 'authenticated', 'service_role', 'qorpera_secret_broker'] loop
-		if has_table_privilege(v_role, 'public.qorpera_event_hooks', 'SELECT,INSERT,UPDATE,DELETE')
-			or has_table_privilege(v_role, 'public.qorpera_event_deliveries', 'SELECT,INSERT,UPDATE,DELETE') then
-			raise exception 'Event intake tables are exposed to %', v_role;
-		end if;
+		foreach v_table in array array['public.qorpera_event_hooks', 'public.qorpera_event_deliveries',
+			'public.qorpera_event_intake_settings', 'public.qorpera_event_intake_usage'] loop
+			if has_table_privilege(v_role, v_table, 'SELECT,INSERT,UPDATE,DELETE') then
+				raise exception 'Event intake table % is exposed to %', v_table, v_role;
+			end if;
+		end loop;
 		if has_function_privilege(v_role, 'public.qorpera_event_hook_descriptor(public.qorpera_event_hooks,boolean)', 'EXECUTE')
 			or has_function_privilege(v_role, 'public.qorpera_event_kept_headers()', 'EXECUTE') then
 			raise exception 'A private event intake helper is exposed to %', v_role;
@@ -80,8 +86,14 @@ begin
 		or not has_function_privilege('authenticated', 'public.qorpera_list_event_hooks(uuid,uuid)', 'EXECUTE') then
 		raise exception 'An event intake function lost its caller';
 	end if;
+	-- The public door waits at most 2 seconds for a lock.
+	if not exists (select 1 from pg_proc where oid = 'public.qorpera_receive_event(text,text,jsonb,text)'::regprocedure
+		and 'lock_timeout=2s' = any (proconfig)) then
+		raise exception 'The intake door has no lock timeout';
+	end if;
 end
 $$;
+select pg_temp.hook_assert((select not enabled from public.qorpera_event_intake_settings), 'The intake was not built switched off');
 
 -- Only owners and admins create hooks, and only address-proven ones in this step.
 select pg_temp.hook_claims('authenticated', '73000000-0000-4000-8000-000000000003');
@@ -110,11 +122,19 @@ select pg_temp.hook_error($q$select public.qorpera_create_event_hook('73000000-0
 select pg_temp.hook_error($q$select public.qorpera_create_event_hook('73000000-0000-4000-8000-000000000010',
 	'73000000-0000-4000-8000-000000000020', 'forms', '   ')$q$, '22023');
 select pg_temp.hook_error($q$select public.qorpera_create_event_hook('73000000-0000-4000-8000-000000000010',
+	'73000000-0000-4000-8000-000000000020', 'forms', E'Two\nlines')$q$, '22023');
+select pg_temp.hook_error($q$select public.qorpera_create_event_hook('73000000-0000-4000-8000-000000000010',
+	'73000000-0000-4000-8000-000000000020', 'forms', 'Website form', null)$q$, '22023');
+select pg_temp.hook_error($q$select public.qorpera_create_event_hook('73000000-0000-4000-8000-000000000010',
+	'73000000-0000-4000-8000-000000000020', 'forms', 'Website form', 'carrier-pigeon')$q$, '22023');
+select pg_temp.hook_error($q$select public.qorpera_create_event_hook('73000000-0000-4000-8000-000000000010',
 	'73000000-0000-4000-8000-000000000020', 'stripe', 'Payments', 'stripe')$q$, '0A000');
 select pg_temp.hook_error($q$select public.qorpera_create_event_hook('73000000-0000-4000-8000-000000000010',
 	'73000000-0000-4000-8000-000000000020', 'forms', 'Website form', 'address', 512)$q$, '22023');
 select pg_temp.hook_error($q$select public.qorpera_create_event_hook('73000000-0000-4000-8000-000000000010',
-	'73000000-0000-4000-8000-000000000020', 'forms', 'Website form', 'address', null, 601)$q$, '22023');
+	'73000000-0000-4000-8000-000000000020', 'forms', 'Website form', 'address', 262145)$q$, '22023');
+select pg_temp.hook_error($q$select public.qorpera_create_event_hook('73000000-0000-4000-8000-000000000010',
+	'73000000-0000-4000-8000-000000000020', 'forms', 'Website form', 'address', null, 121)$q$, '22023');
 select set_config('qorpera_test.forms', public.qorpera_create_event_hook('73000000-0000-4000-8000-000000000010',
 	'73000000-0000-4000-8000-000000000020', 'forms', ' Website contact form ', 'address', 2048, 3)::text, true);
 select pg_temp.hook_error($q$select public.qorpera_create_event_hook('73000000-0000-4000-8000-000000000010',
@@ -129,7 +149,8 @@ select pg_temp.hook_assert(
 	and current_setting('qorpera_test.forms')::jsonb ->> 'proof' = 'address'
 	and current_setting('qorpera_test.forms')::jsonb ->> 'status' = 'active'
 	and (current_setting('qorpera_test.forms')::jsonb ->> 'maxBodyBytes')::integer = 2048
-	and (current_setting('qorpera_test.forms')::jsonb ->> 'perMinute')::integer = 3,
+	and (current_setting('qorpera_test.forms')::jsonb ->> 'perMinute')::integer = 3
+	and not (current_setting('qorpera_test.forms')::jsonb ? 'lastReceivedAt'),
 	'The created hook descriptor differs');
 select set_config('qorpera_test.address', current_setting('qorpera_test.forms')::jsonb ->> 'address', true);
 select set_config('qorpera_test.hook', current_setting('qorpera_test.forms')::jsonb ->> 'id', true);
@@ -167,13 +188,24 @@ reset role;
 
 select pg_temp.hook_claims('service_role');
 set local role service_role;
--- Malformed input from the function raises; unknown addresses are an outcome.
+-- Malformed input from the function raises, whether or not the intake is on.
 select pg_temp.hook_error(format($q$select public.qorpera_receive_event(%L, null, '{"authorization":"Bearer x"}', '')$q$,
 	current_setting('qorpera_test.address')), '22023');
 select pg_temp.hook_error(format($q$select public.qorpera_receive_event(%L, null, '{"Content-Type":"text/plain"}', '')$q$,
 	current_setting('qorpera_test.address')), '22023');
 select pg_temp.hook_error(format($q$select public.qorpera_receive_event(%L, null, '{}', '***')$q$,
 	current_setting('qorpera_test.address')), '22023');
+select pg_temp.hook_error(format($q$select public.qorpera_receive_event(%L, null, '{}', repeat('A', 349532))$q$,
+	current_setting('qorpera_test.address')), '22023');
+-- Switched off, the intake takes nothing and writes nothing.
+select pg_temp.hook_assert(pg_temp.receive(current_setting('qorpera_test.address'), '{}') ->> 'outcome' = 'unavailable',
+	'The intake took a delivery while switched off');
+reset role;
+select pg_temp.hook_assert(pg_temp.rows(current_setting('qorpera_test.hook')::uuid) = 0, 'A refused delivery was written');
+update public.qorpera_event_intake_settings set enabled = true;
+
+select pg_temp.hook_claims('service_role');
+set local role service_role;
 select pg_temp.hook_assert(pg_temp.receive('not-an-address', '{}') ->> 'outcome' = 'unknown', 'A malformed address was not unknown');
 select pg_temp.hook_assert(pg_temp.receive(repeat('A', 43), '{}') ->> 'outcome' = 'unknown', 'A missing hook was not unknown');
 
@@ -185,7 +217,7 @@ select pg_temp.hook_assert(current_setting('qorpera_test.first')::jsonb ->> 'out
 -- The same sender id again is a duplicate, whatever its body.
 select pg_temp.hook_assert(pg_temp.receive(current_setting('qorpera_test.address'), '{"name":"Ada","message":"Hello again"}',
 	'{"x-qorpera-delivery":"form-1"}') ->> 'outcome' = 'duplicate', 'A repeated sender id was not a duplicate');
--- Without a sender id, the body's hash is the key.
+-- Without a sender id, the same body is a duplicate only within 10 minutes (a sender's retry).
 select pg_temp.hook_assert(pg_temp.receive(current_setting('qorpera_test.address'), 'plain body') ->> 'outcome' = 'accepted',
 	'A delivery without a sender id was not accepted');
 reset role;
@@ -207,30 +239,73 @@ select pg_temp.hook_assert((
 		and delivery_key = 'form-1'),
 	'The duplicate was not recorded without its body');
 select pg_temp.hook_assert((
-	select delivery_key = 'sha256:' || encode(extensions.digest('plain body', 'sha256'), 'hex') and event_type is null
+	select delivery_key = 'body:' || encode(extensions.digest('plain body', 'sha256'), 'hex') || ':' || id and event_type is null
 	from public.qorpera_event_deliveries
-	where hook_id = current_setting('qorpera_test.hook')::uuid and status = 'verified' and delivery_key like 'sha256:%'),
-	'A delivery without a sender id was not keyed by its body');
+	where hook_id = current_setting('qorpera_test.hook')::uuid and status = 'verified' and delivery_key like 'body:%'),
+	'A delivery without a sender id was not keyed by its body and id');
+-- The index, not a prior check, keeps a sender id unique among verified deliveries.
+select pg_temp.hook_error(format($q$insert into public.qorpera_event_deliveries(hook_id, profile_id, status, delivery_key,
+	body_bytes, body_sha256, verified_at) values (%L, '73000000-0000-4000-8000-000000000010', 'verified', 'form-1', 0,
+	repeat('0', 64), clock_timestamp())$q$, current_setting('qorpera_test.hook')), '23505');
+select pg_temp.hook_assert((
+	select sum(deliveries) = 3 and sum(bytes) = octet_length('{"name":"Ada","message":"Hello"}') + octet_length('plain body')
+	from public.qorpera_event_intake_usage where profile_id = '73000000-0000-4000-8000-000000000010'),
+	'The company usage differs');
 
--- Limits: the hook takes 3 a minute and bodies of at most 2 KiB.
+-- Limits write nothing: the hook takes 3 a minute and bodies of at most 2 KiB.
 select pg_temp.hook_claims('service_role');
 set local role service_role;
 select pg_temp.hook_assert(pg_temp.receive(current_setting('qorpera_test.address'), repeat('x', 2049)) ->> 'outcome' = 'too_large',
 	'An oversized body was accepted');
-select pg_temp.hook_assert(pg_temp.receive(current_setting('qorpera_test.address'), 'fourth') ->> 'outcome' = 'limited',
+select pg_temp.hook_assert(pg_temp.receive(current_setting('qorpera_test.address'), 'fourth') = '{"outcome":"limited","retryAfterSeconds":60}'::jsonb,
 	'The per-minute limit did not hold');
 reset role;
+select pg_temp.hook_assert(pg_temp.rows(current_setting('qorpera_test.hook')::uuid) = 3, 'A refused delivery was written');
 update public.qorpera_event_deliveries set received_at = received_at - interval '2 minutes'
 where hook_id = current_setting('qorpera_test.hook')::uuid;
 select pg_temp.hook_claims('service_role');
 set local role service_role;
-select pg_temp.hook_assert(pg_temp.receive(current_setting('qorpera_test.address'), 'after a minute') ->> 'outcome' = 'accepted',
-	'The limit did not roll over');
+select pg_temp.hook_assert(pg_temp.receive(current_setting('qorpera_test.address'), 'plain body') ->> 'outcome' = 'duplicate',
+	'The same body within 10 minutes was not a duplicate');
 reset role;
-select pg_temp.hook_assert((
-	select received_count = 4 and refused_count = 2 and last_received_at is not null
-	from public.qorpera_event_hooks where id = current_setting('qorpera_test.hook')::uuid),
-	'The hook counters differ');
+update public.qorpera_event_deliveries set received_at = received_at - interval '10 minutes'
+where hook_id = current_setting('qorpera_test.hook')::uuid;
+select pg_temp.hook_claims('service_role');
+set local role service_role;
+select pg_temp.hook_assert(pg_temp.receive(current_setting('qorpera_test.address'), 'plain body') ->> 'outcome' = 'accepted',
+	'The same body after 10 minutes was not accepted');
+reset role;
+
+-- The company budget: deliveries and bytes in the current and previous clock hour.
+update public.qorpera_event_intake_settings set company_hourly_deliveries = 6;
+update public.qorpera_event_deliveries set received_at = received_at - interval '2 minutes'
+where hook_id = current_setting('qorpera_test.hook')::uuid;
+select pg_temp.hook_claims('service_role');
+set local role service_role;
+select pg_temp.hook_assert(pg_temp.receive(current_setting('qorpera_test.address'), 'sixth') ->> 'outcome' = 'accepted',
+	'The sixth delivery of the hour was refused');
+select pg_temp.hook_assert(pg_temp.receive(current_setting('qorpera_test.address'), 'seventh') = '{"outcome":"limited","retryAfterSeconds":600}'::jsonb,
+	'The company delivery budget did not hold');
+reset role;
+update public.qorpera_event_intake_settings set company_hourly_deliveries = 2000, company_hourly_bytes = 1024;
+select pg_temp.hook_claims('service_role');
+set local role service_role;
+select pg_temp.hook_assert(pg_temp.receive(current_setting('qorpera_test.address'), repeat('y', 1000)) ->> 'outcome' = 'limited',
+	'The company byte budget did not hold');
+reset role;
+update public.qorpera_event_intake_settings set company_hourly_bytes = 67108864;
+select pg_temp.hook_assert(pg_temp.rows(current_setting('qorpera_test.hook')::uuid) = 6, 'A refused delivery was written');
+
+-- A signed hook takes nothing until the vault can check it (W1b), and writes nothing.
+insert into public.qorpera_event_hooks(id, profile_id, environment_id, name, purpose, proof, address)
+values ('73000000-0000-4000-8000-000000000031', '73000000-0000-4000-8000-000000000010', '73000000-0000-4000-8000-000000000020',
+	'payments', 'Stripe payments', 'stripe', repeat('S', 43));
+select pg_temp.hook_claims('service_role');
+set local role service_role;
+select pg_temp.hook_assert(pg_temp.receive(repeat('S', 43), '{"id":"evt_1"}', '{"stripe-signature":"t=1,v1=00"}') ->> 'outcome' = 'not_ready',
+	'A signed hook took a delivery without the vault');
+reset role;
+select pg_temp.hook_assert(pg_temp.rows('73000000-0000-4000-8000-000000000031') = 0, 'A signed hook wrote a delivery');
 
 -- Paused hooks refuse; resumed ones take deliveries again; removed ones are unknown and free the name.
 select pg_temp.hook_claims('authenticated', '73000000-0000-4000-8000-000000000002');
@@ -246,9 +321,10 @@ select pg_temp.hook_assert(pg_temp.receive(current_setting('qorpera_test.address
 reset role;
 select pg_temp.hook_claims('authenticated', '73000000-0000-4000-8000-000000000002');
 set local role authenticated;
-select pg_temp.hook_assert(public.qorpera_set_event_hook_status(current_setting('qorpera_test.hook')::uuid, 'active') ->> 'status' = 'active',
+select pg_temp.hook_assert(public.qorpera_set_event_hook_status(current_setting('qorpera_test.hook')::uuid, 'active') ->> 'status' = 'active'
+	and public.qorpera_set_event_hook_status(current_setting('qorpera_test.hook')::uuid, 'active') ? 'lastReceivedAt',
 	'The hook did not resume');
-select pg_temp.hook_assert(jsonb_array_length(public.qorpera_list_event_deliveries(current_setting('qorpera_test.hook')::uuid)) = 4
+select pg_temp.hook_assert(jsonb_array_length(public.qorpera_list_event_deliveries(current_setting('qorpera_test.hook')::uuid)) = 6
 	and not (public.qorpera_list_event_deliveries(current_setting('qorpera_test.hook')::uuid) -> 0 ? 'body'),
 	'The delivery list differs');
 select pg_temp.hook_assert(public.qorpera_set_event_hook_status(current_setting('qorpera_test.hook')::uuid, 'removed') ->> 'status' = 'removed',
@@ -257,6 +333,8 @@ select pg_temp.hook_error(format('select public.qorpera_set_event_hook_status(%L
 select set_config('qorpera_test.forms2', public.qorpera_create_event_hook('73000000-0000-4000-8000-000000000010',
 	'73000000-0000-4000-8000-000000000020', 'forms', 'Website contact form, again')::text, true);
 reset role;
+select pg_temp.hook_assert((select max_body_bytes = 65536 and per_minute = 60 from public.qorpera_event_hooks
+	where id = (current_setting('qorpera_test.forms2')::jsonb ->> 'id')::uuid), 'The default limits differ');
 select pg_temp.hook_claims('service_role');
 set local role service_role;
 select pg_temp.hook_assert(pg_temp.receive(current_setting('qorpera_test.address'), 'after removal') ->> 'outcome' = 'unknown',
@@ -280,54 +358,66 @@ select pg_temp.hook_error($q$select public.qorpera_list_event_hooks('73000000-00
 reset role;
 delete from public.qorpera_company_deletions where profile_id = '73000000-0000-4000-8000-000000000010';
 
--- A company has at most 50 live hooks.
+-- A company has at most 50 live hooks (the signed fixture hook counts).
 select pg_temp.hook_claims('authenticated', '73000000-0000-4000-8000-000000000001');
 set local role authenticated;
-select pg_temp.hook_assert(count(*) = 49, 'The numbered hooks were not created')
+select pg_temp.hook_assert(count(*) = 48, 'The numbered hooks were not created')
 from (
 	select public.qorpera_create_event_hook('73000000-0000-4000-8000-000000000010', '73000000-0000-4000-8000-000000000020',
 		'hook-' || number, 'Numbered hook')
-	from generate_series(1, 49) as number
+	from generate_series(1, 48) as number
 ) as created;
 select pg_temp.hook_error($q$select public.qorpera_create_event_hook('73000000-0000-4000-8000-000000000010',
 	'73000000-0000-4000-8000-000000000020', 'one-too-many', 'Over the limit')$q$, '54000');
 reset role;
 
--- Retention: waiting deliveries are refused after 24 hours, bodies cleared after 7 days, rows gone after 30.
+-- Retention: waiting deliveries are refused after 24 hours, rows gone after 30 days, bodies cleared
+-- after 7, hourly usage kept a day.
 insert into public.qorpera_event_deliveries(hook_id, profile_id, received_at, status, body, body_bytes, body_sha256)
-values ((current_setting('qorpera_test.forms2')::jsonb ->> 'id')::uuid, '73000000-0000-4000-8000-000000000010',
+values ('73000000-0000-4000-8000-000000000031', '73000000-0000-4000-8000-000000000010',
 	clock_timestamp() - interval '25 hours', 'received', '\x01'::bytea, 1, repeat('0', 64));
 update public.qorpera_event_deliveries set received_at = clock_timestamp() - interval '8 days'
 where hook_id = (current_setting('qorpera_test.forms2')::jsonb ->> 'id')::uuid and status = 'verified';
 update public.qorpera_event_deliveries set received_at = clock_timestamp() - interval '31 days'
 where hook_id = current_setting('qorpera_test.hook')::uuid;
+insert into public.qorpera_event_intake_usage(profile_id, hour, deliveries, bytes)
+values ('73000000-0000-4000-8000-000000000010', date_trunc('hour', clock_timestamp()) - interval '2 days', 5, 5);
 select pg_temp.hook_claims('service_role');
 set local role service_role;
-select pg_temp.hook_assert(public.qorpera_purge_event_deliveries() = '{"expired":1,"cleared":1,"deleted":4}'::jsonb,
+select pg_temp.hook_assert(public.qorpera_purge_event_deliveries() = '{"expired":1,"cleared":1,"deleted":6}'::jsonb,
 	'The purge counts differ');
 reset role;
 select pg_temp.hook_assert((
 	select status = 'refused' and reason = 'Not verified in time' and body is not null
-	from public.qorpera_event_deliveries
-	where hook_id = (current_setting('qorpera_test.forms2')::jsonb ->> 'id')::uuid and body_bytes = 1),
+	from public.qorpera_event_deliveries where hook_id = '73000000-0000-4000-8000-000000000031'),
 	'A waiting delivery was not refused in time');
 select pg_temp.hook_assert((
 	select body is null and body_sha256 is not null
 	from public.qorpera_event_deliveries
 	where hook_id = (current_setting('qorpera_test.forms2')::jsonb ->> 'id')::uuid and status = 'verified'),
 	'An old body was not cleared');
-select pg_temp.hook_assert(not exists (
-	select 1 from public.qorpera_event_deliveries where hook_id = current_setting('qorpera_test.hook')::uuid),
-	'Old deliveries were not deleted');
+select pg_temp.hook_assert(pg_temp.rows(current_setting('qorpera_test.hook')::uuid) = 0, 'Old deliveries were not deleted');
+select pg_temp.hook_assert(not exists (select 1 from public.qorpera_event_intake_usage
+	where hour < date_trunc('hour', clock_timestamp()) - interval '1 day')
+	and exists (select 1 from public.qorpera_event_intake_usage where profile_id = '73000000-0000-4000-8000-000000000010'),
+	'Hourly usage was not kept for exactly a day');
 
--- The company purge removes hooks and deliveries with the company: every reference cascades.
-select pg_temp.hook_assert((
-	select count(*) = 4 and bool_and(constraint_row.confdeltype = 'c')
-	from pg_catalog.pg_constraint as constraint_row
-	where constraint_row.contype = 'f'
-		and constraint_row.conrelid in ('public.qorpera_event_hooks'::regclass, 'public.qorpera_event_deliveries'::regclass)
-		and constraint_row.confrelid in ('public.qorpera_profiles'::regclass, 'public.qorpera_company_environments'::regclass,
-			'public.qorpera_event_hooks'::regclass)),
-	'A hook or delivery reference does not cascade with its company');
+-- Folder companies get hooks with their connection file, not before.
+select pg_temp.hook_claims('service_role');
+set local role service_role;
+select public.qorpera_folder_enable('73000000-0000-4000-8000-000000000021');
+reset role;
+select pg_temp.hook_claims('authenticated', '73000000-0000-4000-8000-000000000005');
+set local role authenticated;
+select pg_temp.hook_error($q$select public.qorpera_create_event_hook('73000000-0000-4000-8000-000000000011',
+	'73000000-0000-4000-8000-000000000021', 'forms', 'Website form')$q$, '0A000');
+reset role;
+
+-- The company purge removes hooks, deliveries and usage with the company.
+select public.qorpera_purge_company('73000000-0000-4000-8000-000000000010');
+select pg_temp.hook_assert(not exists (select 1 from public.qorpera_event_hooks where profile_id = '73000000-0000-4000-8000-000000000010')
+	and not exists (select 1 from public.qorpera_event_deliveries where profile_id = '73000000-0000-4000-8000-000000000010')
+	and not exists (select 1 from public.qorpera_event_intake_usage where profile_id = '73000000-0000-4000-8000-000000000010'),
+	'Company rows outlived the company purge');
 
 rollback;
