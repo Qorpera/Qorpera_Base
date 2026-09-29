@@ -2,7 +2,7 @@
 -- Company folder core, C1c-2c part 2 under concurrency (deploy/first-node/RUNTIME-COMPANY-FOLDER-C1C.md §5.6, §5.9 test
 -- 12): completion takes the job FOR UPDATE, so it waits out a send and a release in flight, and a tool call that arrives
 -- while completion holds the job waits at the job (behind the run mutex) and then refuses. Completion never takes the
--- company row FOR UPDATE. 648's committed fixture, with more leased human runs of Ada, removed at the end.
+-- company row FOR UPDATE, and takes it before the requester's member row. 648's committed fixture, with more leased human runs of Ada, removed at the end.
 
 -- A leased human run of Ada (run n) in her conversation, with its native rows, an acknowledgement and its native start,
 -- committed. Its binding is in qorpera_test.race_<n>.
@@ -75,6 +75,7 @@ end $$;
 select pg_temp.race_run(1) \g /dev/null
 select pg_temp.race_run(2) \g /dev/null
 select pg_temp.race_run(3) \g /dev/null
+select pg_temp.race_run(4) \g /dev/null
 
 create function pg_temp.sql_send(p_n integer, p_key text, p_phase text) returns text language sql as $$
 	select format('select public.qorpera_send_native_agent_message(%L, %L, %L, %L, %L, %L, %L, ''openai'', ''codex-cli'', %L, %L, %L)::text',
@@ -154,6 +155,28 @@ begin
 	perform dblink_exec('fence_two', 'commit');
 	v_state := pg_temp.outcome('fence_one');
 	if v_state not like '42501 %' then raise exception 'A tool call after completion: %', v_state; end if;
+end $$;
+
+-- D. Completion takes this company's row (rank 0) before the requester's member row. With the company row held FOR
+-- UPDATE elsewhere (as a member removal holds it before the member row), completion waits there holding no member row;
+-- without rank 0 it would hold the member row and then wait for the company row through a foreign key, and a removal of
+-- that member would deadlock with it.
+do $$
+declare v_state text; v jsonb;
+begin
+	select x::jsonb into v from dblink('fence_one', pg_temp.sql_send(4, 'final', 'final')) as t(x text);
+	perform dblink_exec('fence_two', 'begin');
+	perform * from dblink('fence_two', $q$select 1 from public.qorpera_profiles where id = '64800000-0000-4000-8000-000000000010'
+		for update$q$) as t(x integer);
+	perform dblink_send_query('fence_one', pg_temp.sql_complete(4, v ->> 'messageId'));
+	if not pg_temp.waits_for('fence_one', 'fence_two') then raise exception 'Completion must wait for the company row'; end if;
+	if pg_temp.queued_on('fence_one') is distinct from 'public.qorpera_profiles'::regclass then
+		raise exception 'Completion must wait at the company row, not on %', pg_temp.queued_on('fence_one'); end if;
+	perform * from dblink('fence_three', $q$select 1 from public.qorpera_profile_members where profile_id = '64800000-0000-4000-8000-000000000010'
+		and user_id = '64800000-0000-4000-8000-000000000002' for update nowait$q$) as t(x integer);
+	perform dblink_exec('fence_two', 'rollback');
+	v_state := pg_temp.outcome('fence_one');
+	if v_state <> 'ok' then raise exception 'Completion after the company row: %', v_state; end if;
 end $$;
 
 select dblink_disconnect(name) from unnest(array['fence_one','fence_two','fence_three','fence_four']) name;

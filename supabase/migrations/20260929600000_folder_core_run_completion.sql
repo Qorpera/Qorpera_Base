@@ -4,8 +4,9 @@
 -- Changes only folder-v2 behaviour; no real folder-v2 run exists yet (C1C §5.8). Snapshot-v1 keeps every path.
 -- * complete_runner_job_v6's folder-v2 lane replaces C1c-1's refusal. In order: the job FOR UPDATE (the lease ends, so
 --   completion waits out every tool call, save and release holding the job KEY SHARE); the run's run box views FOR
---   UPDATE in id order (job, then view: C1B §4); the fence, this company's row and the ranks through the run entry,
---   with a routine run's routine FOR NO KEY UPDATE; the recheck; receipts matched to the commits that carry them; the
+--   UPDATE in id order (job, then view: C1B §4); the fence, this company's row and the ranks through the run entry (a
+--   routine run's routine stays at the run check's KEY SHARE: completion writes no routine row; the authorization
+--   outcome trigger acts only on materialized and cancelled wakes); the recheck; receipts matched to the commits that carry them; the
 --   provider-session owner; the job update (today's v4, v3 and v2 bookkeeping). The run box views end with the run.
 --   It never reaches complete_runner_job_before_path_runtime and never takes the run mutex (which comes before the job).
 -- * Dispositions from the run's commits: review_pending when a unit waits for review, else published when a commit
@@ -68,7 +69,7 @@ returns jsonb language plpgsql security definer set search_path = '' set lock_ti
 declare
 	v_job public.qorpera_runner_jobs%rowtype; v_run public.qorpera_execution_runs%rowtype;
 	v_existing public.qorpera_execution_run_results%rowtype; v_lease public.qorpera_native_provider_connection_leases%rowtype;
-	v_wake public.qorpera_wake_occurrences%rowtype; v_targets jsonb; v_resolved jsonb; v_receipt jsonb; v_hash text;
+	v_targets jsonb; v_resolved jsonb; v_receipt jsonb; v_hash text;
 	v_started jsonb; v_count integer; v_final uuid; v_transcript_end bigint := 0; v_disposition text := 'unchanged';
 	v_commit uuid; v_applied jsonb; v_completed_inputs integer;
 begin
@@ -110,13 +111,10 @@ begin
 	-- 2. The run's run box views, FOR UPDATE in id order: after the job, before the fence (C1B §4). Closing waits out a
 	-- view's save in flight.
 	perform 1 from public.qorpera_folder_views where kind = 'run_box' and run_id = v_run.id and state = 'open' order by id for update;
-	-- 3. The fence with the stop re-read, this company's row and the ranks, through the run entry; a routine run's
-	-- routine FOR NO KEY UPDATE at rank 5 (merged with the run check's own KEY SHARE on it).
-	select * into v_wake from public.qorpera_wake_occurrences where run_id = v_run.id;
+	-- 3. The fence with the stop re-read, this company's row (rank 0, before the requester's member row: the usage
+	-- observation's foreign key takes it later) and the ranks, through the run entry.
 	v_targets := jsonb_build_array(jsonb_build_object('rank', 0, 'tbl', 'qorpera_profiles', 'key', v_run.profile_id::text,
-		'mode', 'keyshare', 'required', true))
-		|| case when v_wake.wake_kind = 'routine' then jsonb_build_array(jsonb_build_object('rank', 5, 'tbl', 'qorpera_cloud_routines',
-			'key', v_wake.routine_id::text, 'mode', 'nokeyupdate', 'required', true)) else '[]'::jsonb end;
+		'mode', 'keyshare', 'required', true));
 	v_resolved := public.qorpera_folder_run_enter(v_run.environment_id, v_run.profile_id, jsonb_build_object('kind', 'run',
 		'runId', v_run.id, 'jobId', v_job.id, 'runnerId', p_runner_id, 'assignmentId', v_job.client_lease_id), v_targets);
 	-- 4. Rank 10: the run's released reads still hold.

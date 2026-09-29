@@ -472,9 +472,11 @@ after that line stays byte-identical, and its digest is checked at migration tim
   C1c-1's refusal):
   - The result is the path lane's shape (`runtime: company-path-v1`): the runtime does not name the core. A snapshot
     or artifacts refuse (22023), as on the path lane.
-  - Step 3 is `qorpera_folder_run_enter` with rank 0 and, for a routine run, the routine `FOR NO KEY UPDATE` as
-    targets. Completion never takes the run mutex: the mutex comes before the job, and completion holds the job
-    first. A tool call that arrives meanwhile holds the mutex, waits at the job, and refuses once the job is done
+  - Step 3 is `qorpera_folder_run_enter` with rank 0 as a target, so this company's row comes before the requester's
+    member row (the usage observation's foreign key would take it later; 659 D). A routine run's routine stays at the
+    run check's `KEY SHARE`, not `FOR NO KEY UPDATE` as first planned: completion writes no routine row (the
+    authorization outcome trigger acts only on materialized and cancelled wakes). Completion never takes the run
+    mutex: the mutex comes before the job, and completion holds the job first. A tool call that arrives meanwhile holds the mutex, waits at the job, and refuses once the job is done
     (659 C).
   - Step 5: no reserved model request, no executing or ambiguous receipt, no job artifact (55000, as today); every
     completed receipt that requires a revision names, in `folder_commit_id`, a commit of this run whose `receipt_id`

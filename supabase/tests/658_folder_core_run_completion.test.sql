@@ -132,15 +132,15 @@ begin
 		'Governed completion cannot publish a whole Company File or artifacts');
 	v := pg_temp.complete(b);
 	r := pg_temp.outcome(b ->> 'runId');
-	if r.company_disposition <> 'unchanged' or r.folder_commit_id is not null or r.output_snapshot_id is not null
-		or (select status from public.qorpera_runner_jobs where id = (b ->> 'jobId')::uuid) <> 'completed'
+	if r.company_disposition is distinct from 'unchanged' or r.folder_commit_id is not null or r.output_snapshot_id is not null
+		or (select status from public.qorpera_runner_jobs where id = (b ->> 'jobId')::uuid) is distinct from 'completed'
 		or (select result -> 'company_file' from public.qorpera_runner_jobs where id = (b ->> 'jobId')::uuid)
-			<> jsonb_build_object('runtime', 'folder-v2', 'disposition', 'unchanged', 'folder_commit_id', null,
+			is distinct from jsonb_build_object('runtime', 'folder-v2', 'disposition', 'unchanged', 'folder_commit_id', null,
 				'native_binary_sha256', repeat('9', 64), 'applied_receipt_ids', '[]'::jsonb)
 		or exists (select 1 from public.qorpera_session_inputs where execution_run_id = (b ->> 'runId')::uuid and completed_at is null)
 		or exists (select 1 from public.qorpera_native_provider_connection_leases where id = (b ->> 'leaseId')::uuid and status = 'active') then
 		raise exception 'An unchanged completion: % %', to_jsonb(r), v; end if;
-	if pg_temp.complete(b) ->> 'status' <> 'completed' then raise exception 'A replayed completion returns the job'; end if;
+	if pg_temp.complete(b) ->> 'status' is distinct from 'completed' then raise exception 'A replayed completion returns the job'; end if;
 	perform pg_temp.raises_like(format('select pg_temp.complete(%L, %L)', b,
 		jsonb_set(pg_temp.result(b), '{usage,execution_ms}', '51')), '23505', 'Runner completion replay differs from its receipt');
 end $$;
@@ -176,11 +176,11 @@ begin
 		v_view, b ->> 'runId', b ->> 'jobId', b ->> 'runnerId', b ->> 'assignmentId'));
 	perform pg_temp.complete(b);
 	r := pg_temp.outcome(b ->> 'runId');
-	if r.company_disposition <> 'published' or r.folder_commit_id::text <> c2 ->> 'commitId' or r.output_snapshot_id is not null
+	if r.company_disposition is distinct from 'published' or r.folder_commit_id::text is distinct from c2 ->> 'commitId' or r.output_snapshot_id is not null
 		or (select result -> 'company_file' -> 'applied_receipt_ids' from public.qorpera_runner_jobs where id = (b ->> 'jobId')::uuid)
-			<> jsonb_build_array(v_receipt) then
+			is distinct from jsonb_build_array(v_receipt) then
 		raise exception 'A published completion: %', to_jsonb(r); end if;
-	if (select state || ':' || close_reason from public.qorpera_folder_views where id = v_view) <> 'closed:ended' then
+	if (select state || ':' || close_reason from public.qorpera_folder_views where id = v_view) is distinct from 'closed:ended' then
 		raise exception 'The run''s run box view ends with the run'; end if;
 end $$;
 
@@ -197,7 +197,7 @@ begin
 	perform pg_temp.send(b, 'final', 'Asked for review.', 'final');
 	perform pg_temp.complete(b);
 	r := pg_temp.outcome(b ->> 'runId');
-	if r.company_disposition <> 'review_pending' or r.folder_commit_id::text <> c2 ->> 'commitId' then
+	if r.company_disposition is distinct from 'review_pending' or r.folder_commit_id::text is distinct from c2 ->> 'commitId' then
 		raise exception 'A review_pending completion: %', to_jsonb(r); end if;
 end $$;
 
@@ -250,7 +250,7 @@ begin
 	c := public.qorpera_folder_commit('63400000-0000-4000-8000-000000000020', p, 'recover-save-1',
 		jsonb_build_array(jsonb_build_object('op','mkdir','path','recovered')), null, v_carried);
 	perform public.qorpera_terminalize_runner_attempt_before_native_start((b ->> 'jobId')::uuid, 'failed', 'Runner lost', false);
-	if (select status from public.qorpera_run_operation_receipts where id = v_carried) <> 'ambiguous' then
+	if (select status from public.qorpera_run_operation_receipts where id = v_carried) is distinct from 'ambiguous' then
 		raise exception 'An attempt ending with a receipt in flight leaves it ambiguous'; end if;
 	perform pg_temp.path_claims('authenticated', '63400000-0000-4000-8000-000000000001');
 	perform pg_temp.raises_like(format('select public.qorpera_resolve_run_operation_receipt(%L, %L)', v_carried, 'confirmed_not_run'),
@@ -258,8 +258,8 @@ begin
 	perform pg_temp.raises_like(format('select public.qorpera_resolve_run_operation_receipt(%L, %L, %L, %L)', v_carried,
 		'confirmed_completed', '{"ok":true}', extensions.gen_random_uuid()), '22023', 'operation recovery result is invalid');
 	v := public.qorpera_resolve_run_operation_receipt(v_carried, 'confirmed_completed', '{"ok":true}');
-	if v ->> 'status' <> 'completed' or v ->> 'folder_commit_id' <> c ->> 'commitId'
-		or (select folder_commit_id::text from public.qorpera_run_operation_receipts where id = v_carried) <> c ->> 'commitId' then
+	if v ->> 'status' is distinct from 'completed' or v ->> 'folder_commit_id' is distinct from c ->> 'commitId'
+		or (select folder_commit_id::text from public.qorpera_run_operation_receipts where id = v_carried) is distinct from c ->> 'commitId' then
 		raise exception 'A carried receipt is confirmed completed with its commit: %', v; end if;
 	-- A member without authorize access cannot resolve.
 	perform pg_temp.path_claims('authenticated', '63400000-0000-4000-8000-000000000003');
@@ -276,7 +276,7 @@ begin
 	perform pg_temp.raises_like(format('select public.qorpera_resolve_run_operation_receipt(%L, %L, %L)', v_lost, 'confirmed_completed',
 		'{"ok":true}'), '22023', 'operation recovery result is invalid');
 	v := public.qorpera_resolve_run_operation_receipt(v_lost, 'confirmed_not_run');
-	if v ->> 'status' <> 'cancelled' or v ->> 'folder_commit_id' is not null then raise exception 'A lost receipt confirmed not run: %', v; end if;
+	if v ->> 'status' is distinct from 'cancelled' or v ->> 'folder_commit_id' is not null then raise exception 'A lost receipt confirmed not run: %', v; end if;
 	perform pg_temp.path_claims('service_role');
 end $$;
 
@@ -315,8 +315,8 @@ begin
 		raise exception 'A revision receipt that names no commit must not cross the attempt boundary'; end if;
 	perform pg_temp.fx(format('update public.qorpera_run_operation_receipts set folder_commit_id = %L where id = %L', c ->> 'commitId', v_receipt));
 	v := public.qorpera_handoff_run_sponsor((b ->> 'runId')::uuid, 'usage_limit');
-	if v is null or v ->> 'toConnectionId' <> '65800000-0000-4000-8000-0000000000b9'
-		or (select status from public.qorpera_runner_jobs where id = (b ->> 'jobId')::uuid) <> 'queued' then
+	if v is null or v ->> 'toConnectionId' is distinct from '65800000-0000-4000-8000-0000000000b9'
+		or (select status from public.qorpera_runner_jobs where id = (b ->> 'jobId')::uuid) is distinct from 'queued' then
 		raise exception 'A receipt satisfied by a commit crosses the attempt boundary: %', v; end if;
 end $$;
 
