@@ -13,6 +13,9 @@
 
 -- 1. Tables --------------------------------------------------------------------------------------------------------
 
+-- This alters the folder commits table: never queue live readers behind the change (as #502 did for C1b-2 and F2).
+set local lock_timeout = '3s';
+
 create table public.qorpera_folder_views (
 	id uuid primary key default extensions.gen_random_uuid(),
 	environment_id uuid not null references public.qorpera_folder_clocks(environment_id) on delete cascade,
