@@ -5,6 +5,7 @@ import {
 	type GoogleOAuthClient,
 } from "./cloud-connector-google.ts";
 import { CloudConnectorOAuthFlows, parseConnectorReturnOrigins } from "./cloud-connector-oauth.ts";
+import { CloudConnectorTokenRevoker } from "./cloud-connector-token-revocation.ts";
 import type { CloudSecretConnectorAdapter } from "./cloud-secret-broker.ts";
 
 /**
@@ -35,6 +36,8 @@ export interface CloudConnectorService {
 	readonly adapters: readonly CloudSecretConnectorAdapter[];
 	readonly oauth: CloudConnectorOAuthFlows;
 	readonly connectors: readonly string[];
+	/** Cancels disconnected and deleted companies' tokens at the provider (company delete D6). */
+	readonly revoker: CloudConnectorTokenRevoker;
 }
 
 function record(value: unknown, label: string): Record<string, unknown> {
@@ -111,5 +114,9 @@ export function composeCloudConnectorService(
 		adapters: Object.freeze(adapters),
 		oauth,
 		connectors: Object.freeze(connectors),
+		revoker: new CloudConnectorTokenRevoker({
+			...(config.github ? { github: config.github } : {}),
+			fetch: fetchImplementation,
+		}),
 	});
 }

@@ -5,6 +5,7 @@ import {
 	withCloudDeadline,
 } from "@qorpera/cloud-client/cloud-request";
 import { type CloudCodingRepository, type JsonValue, parseCloudCodingRepository } from "@qorpera/contracts";
+import type { ConnectorTokenRevocationAuthority } from "./cloud-connector-token-revocation.ts";
 import type { ModelLoginAuthority, ModelLoginRunBinding } from "./cloud-model-login-vault.ts";
 import type { ModelLoginSignInAuthority } from "./cloud-model-login-vault-sign-in.ts";
 import type { ModelLoginUsageAuthority } from "./cloud-model-login-vault-usage.ts";
@@ -946,7 +947,12 @@ export class SupabaseCloudSecretBrokerAuthority implements CloudSecretBrokerAuth
  * one renewal); it has no table privileges and never holds a Supabase service
  * key. */
 export class PostgresCloudSecretBrokerAuthority
-	implements CloudSecretBrokerAuthority, ModelLoginAuthority, ModelLoginSignInAuthority, ModelLoginUsageAuthority
+	implements
+		CloudSecretBrokerAuthority,
+		ModelLoginAuthority,
+		ModelLoginSignInAuthority,
+		ModelLoginUsageAuthority,
+		ConnectorTokenRevocationAuthority
 {
 	readonly #database: CloudSecretPostgresClient;
 	readonly #brokerAuthorityId: string;
@@ -1100,6 +1106,33 @@ export class PostgresCloudSecretBrokerAuthority
 				release.baseVersion,
 				release.permanent,
 				release.reason,
+			],
+			signal,
+		);
+	}
+
+	/** Company delete D6: this authority's queued connector tokens (20260929500000). */
+	claimConnectorTokenRevocations(limit: number, signal: AbortSignal): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_claim_connector_token_revocations($1::uuid,$2::text,$3::integer) as result",
+			[this.#brokerAuthorityId, this.#brokerCapabilitySha256, limit],
+			signal,
+		);
+	}
+
+	completeConnectorTokenRevocation(
+		answer: Parameters<ConnectorTokenRevocationAuthority["completeConnectorTokenRevocation"]>[0],
+		signal: AbortSignal,
+	): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_complete_connector_token_revocation($1::uuid,$2::text,$3::uuid,$4::bigint,$5::text,$6::text) as result",
+			[
+				this.#brokerAuthorityId,
+				this.#brokerCapabilitySha256,
+				answer.secretId,
+				answer.version,
+				answer.outcome,
+				answer.error,
 			],
 			signal,
 		);
