@@ -257,7 +257,7 @@ records what it waits for.
      public.qorpera_connector_token_revocations group by 1` has no entry left open for long. On each
      unit, connect and then disconnect a throwaway GitHub account: its entry must complete `revoked`
      (a wrong client secret shows as `already_invalid`). Where no member session in that unit's
-     company is at hand, compare the unit's GitHub client credentials with the shared vault's. At the first revoke of a token GitHub no
-     longer knows, confirm it completes as `already_invalid`.
+     company is at hand, compare the unit's GitHub client credentials with the shared vault's. At the
+     first revoke of a token GitHub no longer knows, confirm it completes as `already_invalid`.
   3. After a company with its own broker unit is purged, retire the unit and delete its keyring
      (operator runbook, "Per-company broker units").

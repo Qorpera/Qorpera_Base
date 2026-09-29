@@ -324,6 +324,8 @@ select pg_temp.token_refused($q$select pg_temp.token_complete('30000000-0000-400
 	'30000000-0000-4000-8000-0000000002b3', 9, 'revoked', null)$q$, '42501');
 select pg_temp.token_refused($q$select pg_temp.token_complete('30000000-0000-4000-8000-0000000002a1', repeat('d', 64),
 	'30000000-0000-4000-8000-0000000002b3', 1, 'revoked', null)$q$, '42501');
+select pg_temp.token_refused($q$select pg_temp.token_complete('30000000-0000-4000-8000-0000000002a0', repeat('d', 64),
+	'30000000-0000-4000-8000-0000000002b3', 1, 'revoked', null)$q$, '42501');
 select pg_temp.token_refused($q$select pg_temp.token_complete('30000000-0000-4000-8000-0000000002a0', repeat('c', 64),
 	'30000000-0000-4000-8000-0000000002b3', 1, 'revoked', 'both')$q$, '22023');
 select pg_temp.token_refused($q$select pg_temp.token_complete('30000000-0000-4000-8000-0000000002a0', repeat('c', 64),
