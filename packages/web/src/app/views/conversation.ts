@@ -146,7 +146,15 @@ export class ConversationView {
 	readonly #company: CompanyController;
 	readonly #sessionId: string;
 	readonly #header = h("header", { class: "thread-header" });
-	readonly #messages = h("div", { class: "messages", role: "log", "aria-live": "polite" });
+	/** The thread's scroller: "Show earlier", the older items it read, then the live log. */
+	readonly #messages = h("div", { class: "messages" });
+	/** The live log: the items the thread opened with and everything that comes after. A screen
+	 * reader hears what is added here, so older items never come in here. */
+	readonly #log = h("div", { class: "messages-log", role: "log", "aria-live": "polite" });
+	/** Older items "Show earlier" read, above the live log and outside it: they are history, not news. */
+	readonly #older = h("div", { class: "thread-older" });
+	/** The first sequence of the live log: the oldest item the thread showed first. */
+	#liveFrom: number | undefined;
 	readonly #status = h("div", { class: "thread-status" });
 	readonly #composer: HTMLTextAreaElement;
 	/** "/" in the composer: the conversation's skills, and their names in blue. */
@@ -242,14 +250,11 @@ export class ConversationView {
 	readonly #earlierButton: HTMLButtonElement;
 	readonly #earlierNote = h("p", { class: "thread-earlier-note", role: "status", hidden: true });
 	readonly #earlier: HTMLElement;
-	/** Says how many older messages "Show earlier" brought: the log stays quiet while they come in
-	 * above, so a screen reader hears this one line instead of each message. */
+	/** Says how many older messages "Show earlier" brought, which come in outside the live log. */
 	readonly #earlierStatus = h("p", { class: "visually-hidden", role: "status" });
 	/** "Show earlier" was reading at the last render, and the oldest item then. */
 	#earlierWasLoading = false;
 	#oldestItemId: string | undefined;
-	/** Gives the log its voice back after a quiet insert. */
-	#quietTimer: ReturnType<typeof setTimeout> | undefined;
 	/** A coding session opened as its own thread over this one, from its line or its
 	 * figure in the header; focus returns to the opener when it closes. */
 	#codingThread: { workerId: string; view: CodingSessionThreadView } | undefined;
@@ -563,6 +568,7 @@ export class ConversationView {
 			t("Show earlier messages"),
 		);
 		this.#earlier = h("div", { class: "thread-earlier" }, this.#earlierButton, this.#earlierNote);
+		this.#messages.append(this.#log);
 		this.#refreshFade = quietScroll(this.#messages);
 		this.#messages.addEventListener("scroll", () => {
 			const { scrollTop, scrollHeight, clientHeight } = this.#messages;
@@ -632,7 +638,6 @@ export class ConversationView {
 		this.#disposed = true;
 		this.#lifetime.abort();
 		window.clearInterval(this.#timestampTimer);
-		clearTimeout(this.#quietTimer);
 		this.#sizes?.disconnect();
 		this.#runNotification.remove();
 		this.#details?.dispose();
@@ -1511,9 +1516,7 @@ export class ConversationView {
 		const previousAt = (slot: string) => {
 			const previous = this.#drawn.get(slot);
 			// A card that replaced itself (an answered interaction redraws in place) is gone from the log.
-			return previous && !taken.has(previous) && previous.element.parentNode === this.#messages
-				? previous
-				: undefined;
+			return previous && !taken.has(previous) && this.#inThread(previous.element) ? previous : undefined;
 		};
 		const keep = (id: string, itemKey: string, time: string, draw: () => HTMLElement): HTMLElement => {
 			const slot = slotFor(id);
@@ -1562,7 +1565,7 @@ export class ConversationView {
 				),
 			);
 			const entry = handoffs.get(item.pending ? item.id : (eventInputs.get(item.id) ?? ""));
-			return entry && !taken.has(entry) && entry.element.parentNode === this.#messages ? entry : undefined;
+			return entry && !taken.has(entry) && this.#inThread(entry.element) ? entry : undefined;
 		};
 		const message = (item: TranscriptMessage, author: string, mine: boolean): HTMLElement => {
 			const slot = slotFor(item.id);
@@ -1647,7 +1650,15 @@ export class ConversationView {
 				if (date) markTime(date, line);
 			}
 		};
+		// Items the thread showed first, and all that come after, stand in the live log; older ones
+		// "Show earlier" reads stand above it, outside the log, which announces only what is new.
+		this.#liveFrom ??= conversation.projection.items.find(
+			(item) => !(item.kind === "member" && item.pending),
+		)?.sequence;
+		const liveFrom = this.#liveFrom;
+		let liveStart: number | undefined;
 		for (const item of items) {
+			if (liveStart === undefined && (liveFrom === undefined || item.sequence >= liveFrom)) liveStart = nodes.length;
 			placeSessions(item.createdAt);
 			if (item.kind === "member" || item.kind === "agent") {
 				const mine = item.kind === "member" && item.authorUserId === this.#company.userId;
@@ -1858,6 +1869,7 @@ export class ConversationView {
 			const node = nodes[nodes.length - 1];
 			if (date && node) markTime(date, node);
 		}
+		liveStart ??= nodes.length;
 		placeSessions(undefined);
 		// Items gone from the thread, and messages whose element passed on, let what they held go.
 		const live = new Set(drawn.values());
@@ -1879,7 +1891,6 @@ export class ConversationView {
 				: "";
 			if (this.#earlierNote.textContent !== note) this.#earlierNote.textContent = note;
 			this.#earlierNote.hidden = !note;
-			nodes.unshift(this.#earlier);
 		}
 		if (
 			!conversation.loading &&
@@ -1958,22 +1969,14 @@ export class ConversationView {
 		const anchor = this.#stickToBottom ? undefined : this.#firstInView();
 		const anchorTop = anchor ? anchor.getBoundingClientRect().top - this.#messages.getBoundingClientRect().top : 0;
 		const earlierFocused = this.#earlier.contains(document.activeElement);
-		// "Show earlier" brought its page: the older items come in with the log quiet, and one line
-		// outside it says how many (a log would read each of them out as if it were new).
+		// "Show earlier" brought its page: it comes in above the live log, outside it, and one status
+		// line says how many.
 		const oldest = this.#oldestItemId;
 		const earlierLoaded = this.#earlierWasLoading && !conversation.earlierLoading && !conversation.earlierError;
 		this.#earlierWasLoading = conversation.earlierLoading === true;
 		this.#oldestItemId = conversation.projection.items[0]?.id;
 		const older =
 			earlierLoaded && oldest ? conversation.projection.items.findIndex((item) => item.id === oldest) : -1;
-		if (older > 0) {
-			clearTimeout(this.#quietTimer);
-			this.#messages.setAttribute("aria-live", "off");
-			this.#quietTimer = setTimeout(() => {
-				this.#quietTimer = undefined;
-				this.#messages.setAttribute("aria-live", "polite");
-			}, 500);
-		}
 		if (earlierLoaded)
 			this.#earlierStatus.textContent = [
 				older === 1
@@ -1985,12 +1988,21 @@ export class ConversationView {
 			]
 				.filter(Boolean)
 				.join(" ");
-		placeChildren(
-			this.#messages,
-			nodes.flatMap((node) => {
+		const rows = (part: HTMLElement[]) =>
+			part.flatMap((node) => {
 				const separator = separatorOf.get(node);
 				return separator ? [separator, node] : [node];
-			}),
+			});
+		const olderNodes = nodes.slice(0, liveStart);
+		placeChildren(this.#older, rows(olderNodes));
+		placeChildren(this.#log, rows(nodes.slice(liveStart)));
+		placeChildren(
+			this.#messages,
+			[
+				conversation.hasEarlier && !conversation.loading ? this.#earlier : undefined,
+				olderNodes.length ? this.#older : undefined,
+				this.#log,
+			].filter((node): node is HTMLElement => Boolean(node)),
 		);
 		if (anchor?.isConnected) {
 			const top = anchor.getBoundingClientRect().top - this.#messages.getBoundingClientRect().top;
@@ -2036,14 +2048,14 @@ export class ConversationView {
 	 * stays first when older items come in, nor a day separator, which may move to the new page. */
 	#firstInView(): Element | undefined {
 		const top = this.#messages.getBoundingClientRect().top;
-		for (const child of this.#messages.children)
-			if (
-				child !== this.#earlier &&
-				!child.matches("time.conversation-timestamp") &&
-				child.getBoundingClientRect().bottom > top
-			)
-				return child;
+		for (const child of [...this.#older.children, ...this.#log.children])
+			if (!child.matches("time.conversation-timestamp") && child.getBoundingClientRect().bottom > top) return child;
 		return undefined;
+	}
+
+	/** Whether an item's element still stands in the thread (a card may have replaced itself). */
+	#inThread(element: HTMLElement): boolean {
+		return element.parentNode === this.#log || element.parentNode === this.#older;
 	}
 
 	/** A member's or agent's message: its author, its text (an agent's as markdown), its files

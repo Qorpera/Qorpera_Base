@@ -270,7 +270,8 @@ describe("the thread view with unread history", () => {
 			controller.stop();
 		});
 		const log = thread.el.querySelector<HTMLElement>('[role="log"]')!;
-		return { controller, store, log, thread };
+		const scroller = thread.el.querySelector<HTMLElement>(".messages")!;
+		return { controller, store, log, scroller, thread };
 	}
 	const item = (n: number): TranscriptItem => ({
 		kind: "member",
@@ -282,11 +283,12 @@ describe("the thread view with unread history", () => {
 		createdAt: at(n),
 	});
 
-	it("offers Show earlier first, keeps the messages it has as older ones come in above, and goes at the start", async () => {
-		const { controller, store, log } = view([item(3), item(4)]);
+	it("offers Show earlier above the thread, keeps the messages it has as older ones come in, and goes at the start", async () => {
+		const { controller, store, log, scroller } = view([item(3), item(4)]);
 		const loadEarlier = vi.spyOn(controller, "loadEarlier").mockResolvedValue();
-		const button = log.firstElementChild?.querySelector<HTMLButtonElement>("button");
+		const button = scroller.firstElementChild?.querySelector<HTMLButtonElement>("button");
 		expect(button?.textContent).toBe("Show earlier messages");
+		expect(log.contains(button!)).toBe(false);
 		const kept = [...log.querySelectorAll("[data-message-id]")];
 		button!.focus();
 		button!.click();
@@ -301,98 +303,110 @@ describe("the thread view with unread history", () => {
 			projection: { items: [item(1), item(2), item(3), item(4)], hiddenCount: 0, lastSequence: 4 },
 		});
 		await settle();
-		expect([...log.querySelectorAll<HTMLElement>("[data-message-id]")].map((node) => node.dataset.messageId)).toEqual(
-			[1, 2, 3, 4].map((n) => id(500 + n)),
-		);
-		expect([...log.querySelectorAll("[data-message-id]")].slice(2)).toEqual(kept);
-		expect(log.querySelector("button.thread-earlier-button")).toBeNull();
+		expect(
+			[...scroller.querySelectorAll<HTMLElement>("[data-message-id]")].map((node) => node.dataset.messageId),
+		).toEqual([1, 2, 3, 4].map((n) => id(500 + n)));
+		// The older messages stand above the live log; the log keeps the ones it had.
+		expect([...log.querySelectorAll("[data-message-id]")]).toEqual(kept);
+		expect(scroller.querySelector("button.thread-earlier-button")).toBeNull();
 		// The keyboard stays in the thread.
-		expect(document.activeElement).toBe(log);
+		expect(document.activeElement).toBe(scroller);
 	});
 
-	/** A layout for jsdom (which has none): the log shows 300 px, each of its rows is 100 px tall. */
-	function layout(log: HTMLElement) {
+	/** A layout for jsdom (which has none): the thread shows 300 px, each row (the Show earlier
+	 * block, a separator, a message) is 100 px tall, in the order the page has them. */
+	function layout(scroller: HTMLElement) {
 		let scrollTop = 0;
-		Object.defineProperty(log, "scrollTop", {
+		const rows = () => [
+			...scroller.querySelectorAll(
+				":scope > .thread-earlier, :scope > .thread-older > *, :scope > .messages-log > *",
+			),
+		];
+		Object.defineProperty(scroller, "scrollTop", {
 			configurable: true,
 			get: () => scrollTop,
 			set: (value: number) => {
-				scrollTop = Math.max(0, Math.min(value, log.children.length * 100 - 300));
+				scrollTop = Math.max(0, Math.min(value, rows().length * 100 - 300));
 			},
 		});
-		Object.defineProperty(log, "scrollHeight", { configurable: true, get: () => log.children.length * 100 });
-		Object.defineProperty(log, "clientHeight", { configurable: true, get: () => 300 });
+		Object.defineProperty(scroller, "scrollHeight", { configurable: true, get: () => rows().length * 100 });
+		Object.defineProperty(scroller, "clientHeight", { configurable: true, get: () => 300 });
 		const rect = (top: number, height: number) =>
 			({ top, bottom: top + height, left: 0, right: 800, width: 800, height, x: 0, y: top }) as DOMRect;
 		vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (this: Element) {
-			if (this === log) return rect(0, 300);
-			const row = [...log.children].indexOf(this);
+			if (this === scroller) return rect(0, 300);
+			const row = rows().indexOf(this);
 			return row < 0 ? rect(0, 0) : rect(row * 100 - scrollTop, 100);
 		});
 		return {
 			top: (node: Element) => node.getBoundingClientRect().top,
 			scroll(to: number) {
-				log.scrollTop = to;
-				log.dispatchEvent(new Event("scroll"));
+				scroller.scrollTop = to;
+				scroller.dispatchEvent(new Event("scroll"));
 			},
 		};
 	}
 
 	it("keeps the reader on the message they were reading when older ones come in above", async () => {
 		const items = [3, 4, 5, 6, 7, 8].map(item);
-		const { store, log } = view(items);
-		const screen = layout(log);
+		const { store, scroller } = view(items);
+		const screen = layout(scroller);
 		// Scrolled to the top: "Show earlier" is in view, the first message below it.
 		screen.scroll(0);
-		const reading = log.querySelector<HTMLElement>(`[data-message-id="${id(503)}"]`)!;
+		const reading = scroller.querySelector<HTMLElement>(`[data-message-id="${id(503)}"]`)!;
 		const before = screen.top(reading);
-		expect(screen.top(log.querySelector(".thread-earlier")!)).toBe(0);
+		expect(screen.top(scroller.querySelector(".thread-earlier")!)).toBe(0);
 		store.set({ earlierLoading: true });
 		await settle();
 		store.set({
 			earlierLoading: false,
-			projection: { items: [1, 2, ...[3, 4, 5, 6, 7, 8]].map(item), hiddenCount: 0, lastSequence: 8 },
+			projection: { items: [1, 2, 3, 4, 5, 6, 7, 8].map(item), hiddenCount: 0, lastSequence: 8 },
 		});
 		await settle();
 		// The two older messages came in above; the reader still sees message 3 where it was.
-		expect(log.querySelector(`[data-message-id="${id(501)}"]`)).not.toBeNull();
+		expect(scroller.querySelector(`[data-message-id="${id(501)}"]`)).not.toBeNull();
 		expect(screen.top(reading)).toBe(before);
-		expect(log.scrollTop).toBe(200);
+		expect(scroller.scrollTop).toBe(200);
 	});
 
-	it("brings older messages in quietly and says how many in one line", async () => {
-		const { store, log, thread } = view([item(3), item(4)]);
+	it("brings older messages in outside the live log, says how many in one line, and still announces a new one", async () => {
+		const { store, log, scroller, thread } = view([item(3), item(4)]);
 		store.set({ earlierLoading: true });
 		await settle();
-		const order: string[] = [];
+		const heard: string[] = [];
 		const observer = new MutationObserver((records) => {
 			for (const record of records)
-				if (record.type === "attributes") order.push(`aria-live=${log.getAttribute("aria-live")}`);
-				else
-					for (const node of record.addedNodes)
-						if (node instanceof HTMLElement && node.dataset.messageId) order.push("message");
+				for (const node of record.addedNodes)
+					if (node instanceof HTMLElement && node.dataset.messageId) heard.push(node.textContent ?? "");
 		});
-		observer.observe(log, { attributes: true, attributeFilter: ["aria-live"], childList: true });
+		observer.observe(log, { childList: true, subtree: true });
 		store.set({
 			earlierLoading: false,
 			hasEarlier: false,
 			projection: { items: [item(1), item(2), item(3), item(4)], hiddenCount: 0, lastSequence: 4 },
 		});
 		await settle();
-		observer.disconnect();
-		// The log was quiet before the older messages came in, and one status line speaks instead.
-		expect(order).toEqual(["aria-live=off", "message", "message"]);
+		// The older messages stand above the log, outside it: it hears none of them, and is never muted.
+		expect(heard).toEqual([]);
+		expect(log.getAttribute("aria-live")).toBe("polite");
+		expect(
+			scroller.querySelector(".thread-older")?.contains(scroller.querySelector(`[data-message-id="${id(501)}"]`)),
+		).toBe(true);
 		const status = thread.el.querySelector<HTMLElement>(".visually-hidden[role='status']");
 		expect(log.contains(status)).toBe(false);
 		expect(status?.textContent).toBe("Loaded 2 earlier messages. This is the start of the conversation.");
-		// It speaks again for what comes next.
-		await new Promise((resolve) => setTimeout(resolve, 600));
+		// A new message a moment later goes into the live log, which announces it.
+		await new Promise((resolve) => setTimeout(resolve, 100));
+		store.set({ projection: { items: [1, 2, 3, 4, 5].map(item), hiddenCount: 0, lastSequence: 5 } });
+		await settle();
+		observer.disconnect();
+		expect(heard).toEqual(["Message 5"]);
 		expect(log.getAttribute("aria-live")).toBe("polite");
 	});
 
 	it("says when older messages could not be read", async () => {
-		const { log } = view([item(3)], { earlierError: "Network down" });
-		expect(log.querySelector(".thread-earlier-note")?.textContent).toBe(
+		const { scroller } = view([item(3)], { earlierError: "Network down" });
+		expect(scroller.querySelector(".thread-earlier-note")?.textContent).toBe(
 			"Earlier messages could not be loaded. Network down",
 		);
 	});
