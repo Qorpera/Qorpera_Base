@@ -106,6 +106,9 @@ export interface LxdClient {
 		request: LxdCreateStorageVolumeRequest,
 		signal?: AbortSignal,
 	): Promise<void>;
+	/** Deletes a custom volume; true when it existed. LXD refuses a volume that
+	 * an instance still uses. */
+	deleteStorageVolume(project: string, pool: string, name: string, signal?: AbortSignal): Promise<boolean>;
 	/** Admission bounds submission only. Observation retains the caller's own
 	 * lifetime after LXD accepts the operation. A failed submission is uncertain. */
 	createInstance(
@@ -1634,6 +1637,26 @@ export class LxdUnixClient
 			signal,
 		);
 		await this.#waitForOperation(result, signal);
+	}
+
+	async deleteStorageVolume(project: string, pool: string, name: string, signal?: AbortSignal): Promise<boolean> {
+		if (!INSTANCE_NAME.test(project) || !INSTANCE_NAME.test(pool) || !INSTANCE_NAME.test(name))
+			throw new Error("LXD storage scope is invalid");
+		const result = await this.#request(
+			"DELETE",
+			projectPath(
+				`/1.0/storage-pools/${encodeURIComponent(pool)}/volumes/custom/${encodeURIComponent(name)}`,
+				project,
+			),
+			undefined,
+			signal,
+		);
+		if (result.status === 404) return false;
+		const envelope = record(result.body, "LXD response");
+		if (result.status < 200 || result.status >= 300) throw lxdError(result, "LXD request failed");
+		// A custom volume's delete answers synchronously, with or without metadata.
+		if (envelope.type !== "sync") await this.#waitForOperation(result, signal);
+		return true;
 	}
 
 	async createInstance(
