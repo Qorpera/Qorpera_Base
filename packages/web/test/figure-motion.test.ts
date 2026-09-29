@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { localTime, pose } from "../public/assets/avatars/status-2d-v1/motion.mjs";
-import { type FigureArtwork, type FigureMotion, mountFigureMotion } from "../src/ui/figure-motion.ts";
+import { type FigureArtwork, type FigureMotion, loadFigureMotion, mountFigureMotion } from "../src/ui/figure-motion.ts";
 import { deferred, settle } from "./fixtures.ts";
 
 vi.mock("../public/assets/avatars/status-2d-v1/recorded-motion.mjs", () => ({
@@ -9,6 +9,18 @@ vi.mock("../public/assets/avatars/status-2d-v1/recorded-motion.mjs", () => ({
 	drawRecordedEyes: vi.fn(),
 	drawWorkingStrokes: vi.fn(),
 }));
+// The recorded motion is its own chunk; here it arrives when the first describe says so.
+const motionArrives = vi.hoisted(() => {
+	let arrive = () => {};
+	const promise = new Promise<void>((resolve) => {
+		arrive = resolve;
+	});
+	return { promise, arrive };
+});
+vi.mock("../src/ui/figure-motion-data.ts", async (importOriginal) => {
+	await motionArrives.promise;
+	return importOriginal();
+});
 
 import { loadRecordedMotion } from "../public/assets/avatars/status-2d-v1/recorded-motion.mjs";
 
@@ -118,7 +130,41 @@ function mount(activity: "Idle" | "Working" | "Thinking" = "Idle", identity = "a
 	return host;
 }
 
+describe("before the recorded motion arrives", () => {
+	it("shows the still artwork, then plays from the first frame, under reduced motion too", async () => {
+		const idle = mount("Idle", "late"),
+			still = mount("Working", "late-still");
+		await settle();
+		show([idle, still]);
+		advance(5000);
+		for (const host of [idle, still]) {
+			expect(host.querySelector<HTMLImageElement>(".figure-fallback")!.hidden).toBe(false);
+			expect(host.querySelector("canvas")!.hidden).toBe(true);
+		}
+		expect(frames.size).toBe(0);
+		reduced.matches = true;
+		reduced.dispatchEvent(new Event("change"));
+		motionArrives.arrive();
+		await loadFigureMotion();
+		await settle();
+		// The reduced still is the studio's frame at one second; nothing is scheduled.
+		expect(still.querySelector("canvas")!.dataset.frame).toBe("60");
+		expect(still.querySelector<HTMLImageElement>(".figure-fallback")!.hidden).toBe(true);
+		expect(frames.size).toBe(0);
+		reduced.matches = false;
+		reduced.dispatchEvent(new Event("change"));
+		// The clock did not run while the motion was on its way.
+		expect(idle.querySelector("canvas")!.dataset.frame).toBe("0");
+		advance(1000);
+		expect(idle.querySelector("canvas")!.dataset.frame).toBe("60");
+		expect(still.querySelector("canvas")!.dataset.clip).toBe("Working");
+	});
+});
+
 describe("2D studio playback in the shell", () => {
+	beforeAll(async () => {
+		await loadFigureMotion();
+	});
 	it("keeps writing dots synchronized across views, coloured and static under reduced motion", async () => {
 		const rail = mount("Thinking"),
 			thread = mount("Thinking");

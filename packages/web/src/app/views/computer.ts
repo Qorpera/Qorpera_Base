@@ -3,6 +3,7 @@ import type { WebCompanyComputer } from "../../cloud/computer.ts";
 import type { HostedStaffAgent } from "../../cloud/types.ts";
 import { attachComputerDrag } from "../../ui/computer-drag.ts";
 import { ComputerViewHost } from "../../ui/computer-view-host.ts";
+import { loadComputerViewer } from "../../ui/computer-viewer.ts";
 import { h, replace } from "../../ui/dom.ts";
 import { matchesKey } from "../../ui/keys.ts";
 import { t } from "../../ui/preferences.ts";
@@ -115,6 +116,9 @@ export class ComputerPanel {
 			unavailable(t("Computer access is not available yet."));
 			return;
 		}
+		// Fetch the screen renderer while the machine is found and started, so a
+		// screen that is up never waits for it. Opening the viewer retries a failure.
+		void loadComputerViewer().catch(() => undefined);
 		const wait = (ms: number, until: AbortSignal) =>
 			new Promise<void>((resolve, reject) => {
 				until.throwIfAborted();

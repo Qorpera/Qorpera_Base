@@ -55,6 +55,8 @@ const cleanup: (() => void)[] = [];
 beforeEach(() => {
 	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
 	vi.stubGlobal("matchMedia", () => ({ matches: false, addEventListener() {}, removeEventListener() {} }));
+	// The renderer chunk (noVNC) is not fetched here; openComputerViewer stands in for it.
+	vi.spyOn(viewer, "loadComputerViewer").mockResolvedValue();
 });
 afterEach(() => {
 	for (const close of cleanup.splice(0)) close();
@@ -379,6 +381,22 @@ describe("automatic computer popover", () => {
 		p.el.querySelector<HTMLButtonElement>(".computer-close")!.click();
 		expect(close).toHaveBeenCalledOnce();
 		body.remove();
+	});
+	it("fetches the screen renderer while it finds the machine, and only when there is one", async () => {
+		const load = vi.mocked(viewer.loadComputerViewer);
+		const unavailable = new ComputerPanel(staff);
+		cleanup.push(() => unavailable.dispose());
+		expect(load).not.toHaveBeenCalled();
+		const f = setup(),
+			open = spyViewer();
+		panel(f.computer);
+		// Beside the first read about the machine, not after the screen is up.
+		expect(load).toHaveBeenCalledOnce();
+		expect(open).not.toHaveBeenCalled();
+		await settle();
+		await settle();
+		await settle();
+		expect(open).toHaveBeenCalledOnce();
 	});
 	it("keeps unavailable and missing computers inside the popover without starting a runtime", async () => {
 		const unavailable = new ComputerPanel(staff);

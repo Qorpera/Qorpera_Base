@@ -1,17 +1,7 @@
-import {
-	type Activity,
-	localTime,
-	type MotionPose,
-	pose,
-	timelines,
-} from "../../public/assets/avatars/status-2d-v1/motion.mjs";
-import {
-	drawRecordedEyes,
-	drawWorkingStrokes,
-	type EyeGeometry,
-	loadRecordedMotion,
-} from "../../public/assets/avatars/status-2d-v1/recorded-motion.mjs";
-import { createWorkingSchedule, stepKey, type WorkingSchedule, workingStep } from "./working-sequence.ts";
+import type { Activity, MotionPose } from "../../public/assets/avatars/status-2d-v1/motion.mjs";
+import type { EyeGeometry } from "../../public/assets/avatars/status-2d-v1/recorded-motion.mjs";
+import type * as MotionData from "./figure-motion-data.ts";
+import type { WorkingSchedule } from "./working-sequence.ts";
 
 export type { Activity };
 
@@ -30,6 +20,27 @@ export interface MotionOptions {
 }
 export interface FigureMotion {
 	dispose(): void;
+}
+
+/** The recorded motion, once its chunk has arrived. A figure is `ready` only
+ * after it has, so everything that paints can rely on it. */
+let motion: typeof MotionData | undefined;
+let motionLoading: Promise<typeof MotionData> | undefined;
+
+/** Fetch the recorded motion (its own chunk, about 950 KB before compression)
+ * once, on the first figure; a failed fetch is tried again by the next one. */
+export function loadFigureMotion(): Promise<typeof MotionData> {
+	motionLoading ??= import("./figure-motion-data.ts").then(
+		(loaded) => {
+			motion = loaded;
+			return loaded;
+		},
+		(error: unknown) => {
+			motionLoading = undefined;
+			throw error;
+		},
+	);
+	return motionLoading;
 }
 
 const prepared = new Map<string, Promise<void>>();
@@ -214,6 +225,7 @@ function strokes(ctx: CanvasRenderingContext2D, paths: MotionPose["strokes"], fr
 let eyesCanvas: HTMLCanvasElement | undefined;
 function paint(entry: LiveMotion): void {
 	const { canvas, artwork, activity } = entry;
+	const { drawRecordedEyes, drawWorkingStrokes, localTime, pose, stepKey, timelines, workingStep } = motion!;
 	const reduced = Boolean(media?.matches) || entry.still;
 	const duration = timelines[activity].end - timelines[activity].start;
 	const elapsed = reduced ? (activity === "Working" ? 1 : duration) : entry.clock.elapsed;
@@ -341,7 +353,8 @@ function recolor(entry: LiveMotion): void {
 }
 
 function moving(entry: LiveMotion): boolean {
-	if (entry.still || media?.matches) return false;
+	if (!motion || entry.still || media?.matches) return false;
+	const { timelines } = motion;
 	const duration = timelines[entry.activity].end - timelines[entry.activity].start;
 	return entry.activity === "Working" || entry.activity === "Thinking" || entry.clock.elapsed < duration;
 }
@@ -388,7 +401,6 @@ export function mountFigureMotion(
 	const activity = options.activity ?? "Idle";
 	const clockKey = `${options.identity ?? id + color}:${activity}`;
 	const clock = clocks.get(clockKey) ?? { elapsed: 0, users: 0 };
-	if (activity === "Working" && !clock.schedule) clock.schedule = createWorkingSchedule();
 	clock.users++;
 	clocks.set(clockKey, clock);
 	const entry: LiveMotion = {
@@ -472,14 +484,21 @@ export function mountFigureMotion(
 	}
 	visibility!.observe(host);
 	sizes!.observe(host);
+	// Until the recorded motion and the artwork are both here the figure shows
+	// its still artwork; its clock starts at the first painted frame.
 	void Promise.all([
 		prepare(entry),
-		loadRecordedMotion(activity, base()),
-		// Working borrows the Waiting clip's sideways glance between turns.
-		activity === "Working" ? loadRecordedMotion("Waiting", base()) : undefined,
+		loadFigureMotion().then((loaded) =>
+			Promise.all([
+				loaded.loadRecordedMotion(activity, base()),
+				// Working borrows the Waiting clip's sideways glance between turns.
+				activity === "Working" ? loaded.loadRecordedMotion("Waiting", base()) : undefined,
+			]),
+		),
 	])
 		.then(() => {
 			if (!live.has(entry)) return;
+			if (activity === "Working") clock.schedule ??= motion!.createWorkingSchedule();
 			entry.ready = true;
 			if (entry.visible) paint(entry);
 			schedule();

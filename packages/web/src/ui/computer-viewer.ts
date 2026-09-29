@@ -25,7 +25,25 @@ export interface ComputerViewerOptions {
 	onClosed(): void;
 }
 
-/** The bundled renderer receives an authenticated channel, never a ticket URL. */
+let rendererLoading: Promise<void> | undefined;
+
+/** The renderer and its licensed noVNC (member-web/ui/SOURCE.json; about
+ * 190 KB minified) are their own chunk, fetched when a computer panel opens
+ * rather than with the app. Loading it defines `window.qorperaScreenViewer`.
+ * A failed fetch is tried again by the next call. */
+export function loadComputerViewer(): Promise<void> {
+	rendererLoading ??= import("./screen-viewer.mjs").then(
+		() => undefined,
+		(error: unknown) => {
+			rendererLoading = undefined;
+			throw error;
+		},
+	);
+	return rendererLoading;
+}
+
+/** The bundled renderer receives an authenticated channel, never a ticket URL.
+ * Call loadComputerViewer() first. */
 export function openComputerViewer(options: ComputerViewerOptions): ComputerViewer {
 	const renderer = (
 		window as unknown as { qorperaScreenViewer?: { open(options: ComputerViewerOptions): ComputerViewer } }
