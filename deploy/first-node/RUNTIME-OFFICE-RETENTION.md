@@ -158,19 +158,26 @@ It then empties the workbench (D5b, `lxd-office-workbench-removal.ts`):
   reaches the same export (same server; same, enclosing or enclosed path). An
   export shared with another host cannot be seen here: one export per office is
   a provisioning rule.
-- The walk holds a descriptor per directory and names entries through
-  `/proc/self/fd`, so no path is resolved twice and depth is not limited by
-  path length. Each entry must belong to the workbench account and sit on the
-  root's mount (checked per directory); a symbolic link is removed, never
-  followed; a directory is set to 0700 before it is read.
-- A pass takes what is left of the retirement's 60-second budget (at most 30
-  seconds) and reports `pending`; the next pass continues. When the root lists
-  nothing, the gate and the VM's absence are checked again.
+- The walk holds a descriptor per directory and names each entry through its
+  parent's descriptor (`/proc/self/fd`), as bytes, so depth is not limited by
+  path length and a name that is not UTF-8 goes too; a directory is opened only
+  as the inode it was checked as. Each entry must belong to the workbench
+  account and sit on the root's mount (checked per directory); a symbolic link
+  is removed, never followed; a directory its owner cannot read, write or
+  search is set to 0700 first.
+- A pass, its reads included, ends 30 seconds after it starts or 10 seconds
+  before the retirement's 60-second budget ends, and reports `pending`; the
+  next pass continues. When the root lists nothing, the gate and the VM's
+  absence are checked again.
 - A failure holds the office and logs `OFFICE_WORKBENCH_<reason>` (for example
   `FOREIGN_ENTRY`, `UNACCOUNTED_ENTRY`, `SHARED`, `REMOVAL_EACCES`). The
   lifecycle keeps retrying about every two seconds, asking SQL for the
   retirement each time but never releasing. `find <mount> -xdev ! -uid <uid>`
-  finds a foreign entry; once it is gone the provider carries on.
+  finds a foreign entry. For `UNACCOUNTED_ENTRY`, the accounted names are
+  `.qorpera-adopted-<id>` and `.qorpera-adoption-staging-<id>` for each
+  `adoption-<id>.json` or `adoption-result-<id>.json` in the journal, and the
+  top-level paths of each `inventory-*.json` whose root is this mount. Once
+  what holds it is gone the provider carries on.
 Only then
 `qorpera_retire_runtime_office` releases the allocation and node demand, drops
 the node binding and marks the office `retired`. The worker then writes

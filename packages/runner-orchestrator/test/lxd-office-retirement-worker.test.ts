@@ -90,10 +90,10 @@ async function fixture() {
 	// the directory, or runs out of time (`passes` more passes), or fails, or reports done without
 	// removing (an older build).
 	const removal = { passes: 0, fail: undefined as Error | undefined, skip: false, after: () => {} };
-	const removeWorkbench = vi.fn(async (checked: AbortSignal, passMs: number) => {
+	const removeWorkbench = vi.fn(async (checked: AbortSignal, deadline: number) => {
 		checked.throwIfAborted();
-		expect(passMs).toBeGreaterThan(0);
-		expect(passMs).toBeLessThanOrEqual(30000);
+		expect(deadline - performance.now()).toBeGreaterThan(0);
+		expect(deadline - performance.now()).toBeLessThanOrEqual(30000);
 		if (removal.fail) throw removal.fail;
 		if (removal.passes > 0) {
 			removal.passes -= 1;

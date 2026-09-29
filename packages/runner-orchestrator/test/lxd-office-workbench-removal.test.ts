@@ -40,7 +40,8 @@ vi.mock("node:fs/promises", async (original) => {
 });
 
 const roots: string[] = [],
-	signal = () => new AbortController().signal;
+	signal = () => new AbortController().signal,
+	later = () => performance.now() + 30000;
 const writable = async (path: string): Promise<void> => {
 	if (!(await lstat(path)).isDirectory()) return;
 	await chmod(path, 0o700);
@@ -122,6 +123,8 @@ describe("the workbench is this office's alone", () => {
 		["another instance's disk on it", [disk("/mnt/office-workbench")], own],
 		["another instance's disk under it", [disk("/mnt/office-workbench/.qorpera-adopted-x/workbench")], own],
 		["another instance's disk above it", [disk("/mnt")], own],
+		["another instance's disk above it, written with a slash", [disk("/mnt/")], own],
+		["another instance's disk of the whole file system", [disk("/")], own],
 		[
 			"another mount of the same export",
 			[],
@@ -187,14 +190,14 @@ describe.skipIf(process.platform !== "linux")("emptying a retired office's workb
 		const w = await workbench();
 		// 30 levels of 200-character names: a path longer than PATH_MAX.
 		await deep(join(w.root, "legacy"), 30);
-		await expect(removeLxdOfficeWorkbench(w.scope, names, signal(), 30000)).resolves.toEqual({
+		await expect(removeLxdOfficeWorkbench(w.scope, names, signal(), later())).resolves.toEqual({
 			done: true,
 			removed: 43,
 		});
 		expect(await readdir(w.root)).toEqual([]);
 		expect((await lstat(w.root)).isDirectory()).toBe(true);
 		expect(await readFile(join(w.outside, "keep.txt"), "utf8")).toBe("not the company's");
-		await expect(removeLxdOfficeWorkbench(w.scope, names, signal(), 30000)).resolves.toEqual({
+		await expect(removeLxdOfficeWorkbench(w.scope, names, signal(), later())).resolves.toEqual({
 			done: true,
 			removed: 0,
 		});
@@ -203,20 +206,20 @@ describe.skipIf(process.platform !== "linux")("emptying a retired office's workb
 		const w = await workbench();
 		await expect(removeLxdOfficeWorkbench(w.scope, names, signal(), 0)).resolves.toEqual({ done: false, removed: 0 });
 		expect((await readdir(w.root)).sort()).toEqual([`.qorpera-adopted-${OURS}`, "legacy"]);
-		await expect(removeLxdOfficeWorkbench(w.scope, names, signal(), 30000)).resolves.toMatchObject({ done: true });
+		await expect(removeLxdOfficeWorkbench(w.scope, names, signal(), later())).resolves.toMatchObject({ done: true });
 		expect(await readdir(w.root)).toEqual([]);
 	});
 	it("holds on a top-level entry this office does not account for, before removing anything", async () => {
 		const w = await workbench();
 		await mkdir(join(w.root, `.qorpera-adopted-${THEIRS}`));
-		await expect(removeLxdOfficeWorkbench(w.scope, names, signal(), 30000)).rejects.toThrow(
+		await expect(removeLxdOfficeWorkbench(w.scope, names, signal(), later())).rejects.toThrow(
 			"OFFICE_WORKBENCH_UNACCOUNTED_ENTRY",
 		);
 		expect(await readdir(w.root)).toHaveLength(3);
 	});
 	it("refuses a mount root of another account", async () => {
 		const w = await workbench();
-		await expect(removeLxdOfficeWorkbench({ ...w.scope, uid: uid + 1 }, names, signal(), 30000)).rejects.toThrow(
+		await expect(removeLxdOfficeWorkbench({ ...w.scope, uid: uid + 1 }, names, signal(), later())).rejects.toThrow(
 			"OFFICE_WORKBENCH_ROOT_DIFFERS",
 		);
 		expect(await readdir(w.root)).toHaveLength(2);
@@ -227,7 +230,7 @@ describe.skipIf(process.platform !== "linux")("emptying a retired office's workb
 	])("holds on %s entry and removes nothing beneath it", async (_, override) => {
 		const w = await workbench();
 		changed.set("project", override);
-		await expect(removeLxdOfficeWorkbench(w.scope, names, signal(), 30000)).rejects.toThrow(
+		await expect(removeLxdOfficeWorkbench(w.scope, names, signal(), later())).rejects.toThrow(
 			"OFFICE_WORKBENCH_FOREIGN_ENTRY",
 		);
 		expect(await readdir(join(w.adopted, "workbench", "project", "deep"))).toEqual(["notes.txt"]);
@@ -236,15 +239,35 @@ describe.skipIf(process.platform !== "linux")("emptying a retired office's workb
 	it("names a file system error by a fixed token", async () => {
 		const w = await workbench();
 		await chmod(w.root, 0o500);
-		await expect(removeLxdOfficeWorkbench(w.scope, names, signal(), 30000)).rejects.toThrow(
+		await expect(removeLxdOfficeWorkbench(w.scope, names, signal(), later())).rejects.toThrow(
 			/^OFFICE_WORKBENCH_REMOVAL_EACCES$/,
+		);
+	});
+	it("removes a name that is not UTF-8, and holds on one at the top level", async () => {
+		const w = await workbench();
+		const odd = Buffer.from([0x66, 0xff]);
+		await writeFile(Buffer.concat([Buffer.from(`${w.adopted}/workbench/`), odd]), "cp850");
+		await expect(removeLxdOfficeWorkbench(w.scope, names, signal(), later())).resolves.toEqual({
+			done: true,
+			removed: 13,
+		});
+		await mkdir(join(w.root, "legacy"));
+		await writeFile(Buffer.concat([Buffer.from(`${w.root}/`), odd]), "top");
+		await expect(removeLxdOfficeWorkbench(w.scope, names, signal(), later())).rejects.toThrow(
+			"OFFICE_WORKBENCH_UNACCOUNTED_ENTRY",
+		);
+	});
+	it("holds on a tree deeper than its limit", async () => {
+		const w = await workbench();
+		await expect(removeLxdOfficeWorkbench(w.scope, names, signal(), later(), 3)).rejects.toThrow(
+			"OFFICE_WORKBENCH_TOO_DEEP",
 		);
 	});
 	it("stops when the caller aborts", async () => {
 		const w = await workbench();
 		const controller = new AbortController();
 		controller.abort(new Error("stopped"));
-		await expect(removeLxdOfficeWorkbench(w.scope, names, controller.signal, 30000)).rejects.toThrow("stopped");
+		await expect(removeLxdOfficeWorkbench(w.scope, names, controller.signal, later())).rejects.toThrow("stopped");
 		expect(await readdir(w.root)).toHaveLength(2);
 	});
 });

@@ -63,8 +63,10 @@ export async function lxdOfficeWorkbenchNames(journalRoot: string, root: string)
 	return names;
 }
 
-const beneath = (path: string, root: string): boolean => path === root || path.startsWith(`${root}/`);
-const overlaps = (a: string, b: string): boolean => beneath(a, b) || beneath(b, a);
+/** A path without trailing slashes; `/` encloses every path. */
+const normal = (path: string): string => path.replace(/\/+$/, "") || "/";
+const beneath = (path: string, root: string): boolean => root === "/" || path === root || path.startsWith(`${root}/`);
+const overlaps = (a: string, b: string): boolean => beneath(normal(a), normal(b)) || beneath(normal(b), normal(a));
 
 /**
  * The workbench must be this office's alone. Refused when another LXD instance on this host has a disk at,
@@ -83,7 +85,7 @@ export function assertLxdOfficeWorkbenchExclusive(
 				throw failure("SHARED");
 	const split = scope.source.indexOf(":/");
 	const server = scope.source.slice(0, split),
-		exported = scope.source.slice(split + 1).replace(/\/+$/, "") || "/";
+		exported = scope.source.slice(split + 1);
 	for (const line of mountInfo.trim().split("\n")) {
 		const [prefix, suffix] = line.split(" - ");
 		const mountPoint = prefix?.split(" ")[4]?.replace(/\\040/g, " ");
@@ -93,8 +95,7 @@ export function assertLxdOfficeWorkbenchExclusive(
 		if (at < 0) continue;
 		const sameServer =
 			source.slice(0, at) === server || (superOptions ?? "").split(",").includes(`addr=${scope.serverAddress}`);
-		const path = source.slice(at + 1).replace(/\/+$/, "") || "/";
-		if (sameServer && (path === "/" || exported === "/" || overlaps(path, exported))) throw failure("SHARED");
+		if (sameServer && overlaps(source.slice(at + 1), exported)) throw failure("SHARED");
 	}
 }
 
@@ -120,30 +121,36 @@ async function readFileText(path: string, limit = 65536): Promise<string> {
  * Empty a deleted company's workbench (company delete D5b): the adopted desktop, screens, browser
  * profiles, working files and the sources an adoption left in place, including state an adoption
  * quarantined. The mount root stays. Linux only; the walk holds a descriptor per directory and names
- * entries through `/proc/self/fd`, so no path is resolved twice and depth is no path-length limit.
- * Every entry must be the workbench account's and on the root's mount (checked per directory by mount
- * id); a symbolic link is removed, never followed; a directory is made 0700 before it is read. A
+ * each entry through its parent's descriptor (`/proc/self/fd/<fd>/<name>`, names as bytes, so a name
+ * that is not UTF-8 is removed too), so depth is no path-length limit and a directory is opened only as
+ * the inode it was checked as (inode and device compared). Every entry must be the workbench
+ * account's and on the root's mount (checked per directory by mount id); a symbolic link is removed,
+ * never followed; a directory its owner cannot read, write or search is set to 0700 first. A
  * top-level name this office does not account for holds the removal for an operator. A pass stops at
- * its budget and reports `done: false`; what it removed stays removed.
+ * its deadline (a `performance.now()` time) and reports `done: false`; what it removed stays removed.
  */
 export async function removeLxdOfficeWorkbench(
 	scope: LxdOfficeWorkbenchScope,
 	names: ReadonlySet<string>,
 	signal: AbortSignal,
-	passMs: number,
+	deadline: number,
+	maxDepth = MAX_DEPTH,
 ): Promise<{ done: boolean; removed: number }> {
 	if (process.platform !== "linux") throw failure("LINUX_REQUIRED");
 	signal.throwIfAborted();
-	const deadline = performance.now() + passMs;
 	let removed = 0;
-	const root = await open(scope.root, O_PATH | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+	let root: FileHandle | undefined;
+	const directoryPath = (directory: FileHandle) => `/proc/self/fd/${directory.fd}`;
+	const list = (directory: FileHandle) => readdir(directoryPath(directory), { encoding: "buffer" });
 	try {
+		root = await open(scope.root, O_PATH | constants.O_DIRECTORY | constants.O_NOFOLLOW);
 		const top = await root.stat();
 		if (!top.isDirectory() || top.uid !== scope.uid) throw failure("ROOT_DIFFERS");
 		const rootMount = await mountId(root);
-		const at = (directory: FileHandle, name: string) => `/proc/self/fd/${directory.fd}/${name}`;
+		const at = (directory: FileHandle, name: Buffer) =>
+			Buffer.concat([Buffer.from(`${directoryPath(directory)}/`), name]);
 		// false once the pass is out of time; the entry and its parents stay.
-		const remove = async (parent: FileHandle, name: string, depth: number): Promise<boolean> => {
+		const remove = async (parent: FileHandle, name: Buffer, depth: number): Promise<boolean> => {
 			signal.throwIfAborted();
 			if (performance.now() >= deadline) return false;
 			const path = at(parent, name);
@@ -154,16 +161,15 @@ export async function removeLxdOfficeWorkbench(
 				removed++;
 				return true;
 			}
-			if (depth > MAX_DEPTH) throw failure("TOO_DEEP");
+			if (depth > maxDepth) throw failure("TOO_DEEP");
 			const directory = await open(path, O_PATH | constants.O_DIRECTORY | constants.O_NOFOLLOW);
 			try {
 				const opened = await directory.stat();
 				if (opened.ino !== stat.ino || opened.dev !== stat.dev) throw failure("CHANGED");
 				if ((await mountId(directory)) !== rootMount) throw failure("FOREIGN_ENTRY");
-				// Exactly 0700: a set-id bit would be refused under the unit's RestrictSUIDSGID.
-				if ((opened.mode & 0o7777) !== 0o700) await chmod(`/proc/self/fd/${directory.fd}`, 0o700);
-				for (const child of await readdir(`/proc/self/fd/${directory.fd}`))
-					if (!(await remove(directory, child, depth + 1))) return false;
+				// Exactly 0700: keeping a set-id bit would be refused under the unit's RestrictSUIDSGID.
+				if ((opened.mode & 0o700) !== 0o700) await chmod(directoryPath(directory), 0o700);
+				for (const child of await list(directory)) if (!(await remove(directory, child, depth + 1))) return false;
 			} finally {
 				await directory.close();
 			}
@@ -171,12 +177,19 @@ export async function removeLxdOfficeWorkbench(
 			removed++;
 			return true;
 		};
-		const listing = await readdir(`/proc/self/fd/${root.fd}`);
-		if (listing.some((name) => !names.has(name))) throw failure("UNACCOUNTED_ENTRY");
-		for (const name of listing.sort()) if (!(await remove(root, name, 1))) return { done: false, removed };
-		// Done only when the root, still on the same mount, lists nothing.
-		if ((await mountId(root)) !== rootMount || (await readdir(`/proc/self/fd/${root.fd}`)).length > 0)
-			throw failure("NOT_EMPTY");
+		const listing = await list(root);
+		// A top-level name counts only as the exact bytes of an accounted name.
+		if (listing.some((name) => !names.has(name.toString("utf8")) || !Buffer.from(name.toString("utf8")).equals(name)))
+			throw failure("UNACCOUNTED_ENTRY");
+		for (const name of listing.sort(Buffer.compare))
+			if (!(await remove(root, name, 1))) return { done: false, removed };
+		// Done only when the root lists nothing and the path still leads to the same mount.
+		const again = await open(scope.root, O_PATH | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+		try {
+			if ((await mountId(again)) !== rootMount || (await list(root)).length > 0) throw failure("NOT_EMPTY");
+		} finally {
+			await again.close();
+		}
 		return { done: true, removed };
 	} catch (error) {
 		if (error instanceof Error && error.message.startsWith("OFFICE_WORKBENCH_")) throw error;
@@ -184,20 +197,32 @@ export async function removeLxdOfficeWorkbench(
 		const reason = typeof (error as { code?: unknown })?.code === "string" ? (error as { code: string }).code : "";
 		throw failure(/^E[A-Z]{1,15}$/.test(reason) ? `REMOVAL_${reason}` : "REMOVAL_FAILED", error);
 	} finally {
-		await root.close();
+		await root?.close();
 	}
 }
 
-/** The provider's pass: this office's names, the exclusivity fence, then the removal. */
+/** A step's failure as a fixed token (an abort and a token pass through). */
+async function step<T>(reason: string, signal: AbortSignal, work: () => Promise<T>): Promise<T> {
+	try {
+		return await work();
+	} catch (error) {
+		if (signal.aborted || (error instanceof Error && error.message.startsWith("OFFICE_WORKBENCH_"))) throw error;
+		throw failure(reason, error);
+	}
+}
+
+/** The provider's pass, ending at `deadline` (a `performance.now()` time): this office's names, the
+ * exclusivity fence, then the removal. */
 export async function emptyLxdOfficeWorkbench(
 	scope: LxdOfficeWorkbenchScope,
 	host: LxdHostInventoryClient,
 	signal: AbortSignal,
-	passMs: number,
+	deadline: number,
 ): Promise<{ done: boolean; removed: number }> {
 	if (process.platform !== "linux") throw failure("LINUX_REQUIRED");
-	const names = await lxdOfficeWorkbenchNames(scope.journalRoot, scope.root);
-	const { instances } = await host.inspectHostInventory(signal);
-	assertLxdOfficeWorkbenchExclusive(scope, instances, await readFileText("/proc/self/mountinfo", 1048576));
-	return removeLxdOfficeWorkbench(scope, names, signal, passMs);
+	const names = await step("JOURNAL_UNREADABLE", signal, () => lxdOfficeWorkbenchNames(scope.journalRoot, scope.root));
+	const { instances } = await step("HOST_UNCONFIRMED", signal, () => host.inspectHostInventory(signal));
+	const mountInfo = await step("MOUNT_UNCONFIRMED", signal, () => readFileText("/proc/self/mountinfo", 1048576));
+	assertLxdOfficeWorkbenchExclusive(scope, instances, mountInfo);
+	return removeLxdOfficeWorkbench(scope, names, signal, deadline);
 }

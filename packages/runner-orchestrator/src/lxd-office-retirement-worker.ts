@@ -25,8 +25,8 @@ interface Ports {
 	client?: LxdTrackedClient;
 	kernelLock?: typeof assertOfficeAdoptionKernelLock;
 	hostInventory?: LxdHostInventoryClient;
-	/** One pass of emptying the workbench within its budget. */
-	emptyWorkbench?: (signal: AbortSignal, passMs: number) => Promise<{ done: boolean; removed: number }>;
+	/** One pass of emptying the workbench, ending at `deadline` (a `performance.now()` time). */
+	emptyWorkbench?: (signal: AbortSignal, deadline: number) => Promise<{ done: boolean; removed: number }>;
 }
 export interface LxdOfficeRetirementResult {
 	/** kept: the company lives, the powered-off computer stays. */
@@ -80,7 +80,7 @@ export class LxdOfficeRetirementWorker {
 		const host = ports.hostInventory ?? new LxdUnixClient(this.#policy.host.socketPath);
 		this.#emptyWorkbench =
 			ports.emptyWorkbench ??
-			((signal: AbortSignal, passMs: number) => emptyLxdOfficeWorkbench(scope, host, signal, passMs));
+			((signal: AbortSignal, deadline: number) => emptyLxdOfficeWorkbench(scope, host, signal, deadline));
 	}
 	async reconcileSettled(
 		intentId: string,
@@ -271,10 +271,13 @@ export class LxdOfficeRetirementWorker {
 		if (operation.state !== "succeeded") return { ...result, state: operation.state, deleteCommandId };
 		const { instance } = await physical();
 		if (instance !== undefined) throw new Error("retirement VM present");
-		// With the VM gone nothing of this office writes there. A pass takes what is
-		// left of the run's budget (at most 30 s); a large workbench takes several.
-		const passMs = Math.max(0, Math.min(30000, end - AFTER_WORKBENCH_MS - performance.now()));
-		const workbench = await this.#emptyWorkbench(signal, passMs);
+		// With the VM gone nothing of this office writes there. A pass (its reads
+		// included) ends 30 s from now or 10 s before the run's end, whichever is
+		// first; a large workbench takes several.
+		const workbench = await this.#emptyWorkbench(
+			signal,
+			Math.min(performance.now() + 30000, end - AFTER_WORKBENCH_MS),
+		);
 		if (!workbench.done) return { ...result, state: "pending", deleteCommandId };
 		// The mount may have gone during the pass: the gate checks it again.
 		if ((await physical()).instance !== undefined) throw new Error("retirement VM present");

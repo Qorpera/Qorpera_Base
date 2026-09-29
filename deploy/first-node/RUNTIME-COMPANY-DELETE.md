@@ -56,7 +56,7 @@ Rollback: `select cron.unschedule('qorpera-company-deletions')`. Requests then w
 | Coding NAS workspaces `workers/<company>/` | coding executor (D5) | D5 |
 | Connected-account tokens at Google/GitHub | secret broker, best-effort revoke (D6) | D6 |
 | Model logins (ChatGPT, Claude) | our copies are purged; the member signs out at the provider | by design |
-| Per-company broker units, recovery services, office host config (older companies) | operator runbook | last |
+| Per-company broker units, recovery services, office host config (older companies), office reset archives, the emptied workbench mount and its NAS export | operator runbook | last |
 
 Until a step lands, a company holding that kind of state stays hidden and stopped, and the finisher
 records what it waits for.
@@ -93,7 +93,10 @@ records what it waits for.
   Coordinator's lane for D3b (rolled on node 1 at the v150 cut, qorpera-prod-office-a1 f125fae6 →
   a115c550) and, the same way, for the D5b build at the cut that carries it: the coordinator rolls the
   office provider build at the cut (RUNTIME release roll, as #505). No company deletion had been
-  requested by then (29 Sep), so no office was retired by an older build.
+  requested by 29 Sep. An office retired by the D3b build before the D5b build reaches it keeps its
+  workbench (its marker ends the provider): before the D5b roll, list them with `select * from
+  public.qorpera_runtime_office_retirements where retired_at is not null`, and for each empty its
+  workbench mount by hand as the workbench account, keeping the mount root.
   1. Build `node scripts/package-lxd-office-provider.mjs --out <dir>` from the release commit on node 2;
      its sha256 must match the review. Stage it on the node.
   2. Before the roll, read the provider's last observation (`journalctl -u <unit> -n 5`). Roll on
