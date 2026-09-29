@@ -71,3 +71,17 @@ export class CloudCompanyFormationRefused extends CloudRuntimeDiagnosticError {
 		this.reason = reason;
 	}
 }
+
+/** A complete PostgREST error from one of the folder core's entry points (`qorpera_folder_read`, `_list`, `_commit`,
+ * `_record_release`), with its SQLSTATE and message. The folder client alone decides what each means (core C3): a
+ * stop, a run that is no longer live, a read the run may no longer see, or a change it retries with the same key. */
+export class CloudCompanyFolderRpcError extends CloudRuntimeDiagnosticError {
+	readonly code: string;
+	readonly detail: string;
+
+	constructor(code: string, message: string) {
+		super("authority_unavailable", "Company folder authority unavailable");
+		this.code = code;
+		this.detail = message.slice(0, 200);
+	}
+}

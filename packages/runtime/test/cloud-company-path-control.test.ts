@@ -1,6 +1,7 @@
 import { HttpCloudCompanyPathControl } from "@qorpera/runtime/cloud-company-path-control";
 import { CloudCompanyHeadConflict } from "@qorpera/runtime/cloud-company-path-gateway";
 import {
+	CloudCompanyFolderRpcError,
 	CloudCompanyPathRpcParentMissing,
 	CloudCompanyPathRpcPrecondition,
 	CloudCompanyPathRpcRefusal,
@@ -246,5 +247,66 @@ describe("Company File bounded control transport", () => {
 		expect(String(error)).toBe("Error: Company File authority unavailable");
 		expect(JSON.stringify(error)).not.toMatch(/PRIVATE_PATH|PRIVATE_CREDENTIAL/);
 		expect(transport).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe("the folder core's entry points (core C3)", () => {
+	const FOLDER = [
+		"qorpera_folder_read",
+		"qorpera_folder_list",
+		"qorpera_folder_commit",
+		"qorpera_folder_record_release",
+	] as const;
+
+	it.each(FOLDER)("permits %s over the fixed RPC route", async (method) => {
+		const transport = vi.fn<typeof fetch>(async () => Response.json({ schema: "fixture" }));
+		await expect(fixture(transport).call(method, { p_path: "a" }, new AbortController().signal)).resolves.toEqual({
+			schema: "fixture",
+		});
+		expect(transport).toHaveBeenCalledWith(`https://authority.example/rest/v1/rpc/${method}`, expect.anything());
+	});
+
+	it.each([
+		// The commit's authority check, raised through PostgREST with its own status and code.
+		[409, "QRC01", "Company folder authority changed", "folder_authority_changed"],
+		[500, "55000", "Company execution is paused", null],
+		[403, "42501", "Run is unavailable", null],
+		[403, "42501", "A read is no longer readable", null],
+		[500, "40P01", "deadlock detected", "PRIVATE_PROCESS_DETAIL"],
+		[409, "23505", "duplicate key value violates unique constraint", "PRIVATE_KEY_DETAIL"],
+		[400, "22023", "Change set unit 1 is invalid", null],
+	] as const)("keeps a folder error's code and message (%i %s)", async (status, code, message, details) => {
+		for (const method of FOLDER) {
+			const transport = vi.fn<typeof fetch>(async () =>
+				Response.json({ code, message, details, hint: null }, { status }),
+			);
+			const error = await fixture(transport)
+				.call(method, {}, new AbortController().signal)
+				.catch((error: unknown) => error);
+			expect(error).toBeInstanceOf(CloudCompanyFolderRpcError);
+			expect(error).toMatchObject({ code, detail: message });
+			// The SQL's words stay out of the error's text; only the folder client reads them.
+			expect(String(error)).not.toContain(message);
+		}
+	});
+
+	it("keeps today's mapping for every other RPC, and brands no incomplete folder error", async () => {
+		const denial = { code: "42501", message: "Run is unavailable", details: null, hint: null };
+		const other = await fixture(vi.fn<typeof fetch>(async () => Response.json(denial, { status: 403 })))
+			.call("qorpera_read_company_path_v2", {}, new AbortController().signal)
+			.catch((error: unknown) => error);
+		expect(other).toBeInstanceOf(CloudCompanyPathRpcRefusal);
+		for (const body of [
+			{ code: "55000", message: "Company execution is paused" },
+			{ code: "55000", message: "Company execution is paused", details: null, hint: null, extra: 1 },
+			{ code: 55000, message: "Company execution is paused", details: null, hint: null },
+			{ code: "5500", message: "Company execution is paused", details: null, hint: null },
+		]) {
+			const error = await fixture(vi.fn<typeof fetch>(async () => Response.json(body, { status: 500 })))
+				.call("qorpera_folder_commit", {}, new AbortController().signal)
+				.catch((error: unknown) => error);
+			expect(error).not.toBeInstanceOf(CloudCompanyFolderRpcError);
+			expect(error).toBeInstanceOf(CloudRuntimeDiagnosticError);
+		}
 	});
 });

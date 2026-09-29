@@ -4,12 +4,20 @@ import {
 	type CloudCompanyPathRpc,
 } from "./cloud-company-path-gateway.ts";
 import {
+	CloudCompanyFolderRpcError,
 	CloudCompanyPathRpcParentMissing,
 	CloudCompanyPathRpcPrecondition,
 	CloudCompanyPathRpcRefusal,
 } from "./cloud-company-path-refusal.ts";
 import { cloudToolRequest } from "./cloud-native-tool-authority.ts";
 import { CloudRuntimeDiagnosticError } from "./cloud-runtime-observability.ts";
+
+const FOLDER_RPCS: ReadonlySet<CloudCompanyPathRpc> = new Set([
+	"qorpera_folder_read",
+	"qorpera_folder_list",
+	"qorpera_folder_commit",
+	"qorpera_folder_record_release",
+]);
 
 /** No end-user token, arbitrary URL, redirect, provider credential or retry. */
 export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
@@ -89,6 +97,11 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 			"qorpera_native_machine_start",
 			"qorpera_native_machine_manage",
 			"qorpera_company_machines_available",
+			// The folder core (core C3).
+			"qorpera_folder_read",
+			"qorpera_folder_list",
+			"qorpera_folder_commit",
+			"qorpera_folder_record_release",
 		];
 		if (!permitted.includes(method)) throw new Error("Unknown Company File control operation");
 		const body = JSON.stringify(argumentsValue);
@@ -182,6 +195,14 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 								(value as Record<string, unknown>)[key] === null ||
 								typeof (value as Record<string, unknown>)[key] === "string",
 						);
+					// The folder core's errors keep their SQLSTATE and message: the folder client tells a stop, a
+					// run that ended, a read no longer readable and a retryable change apart (core C3).
+					const folderCode =
+						FOLDER_RPCS.has(method) && value && typeof value === "object" && !Array.isArray(value)
+							? (value as Record<string, unknown>).code
+							: undefined;
+					if (typeof folderCode === "string" && /^[0-9A-Z]{5}$/.test(folderCode) && postgrestError(folderCode))
+						throw new CloudCompanyFolderRpcError(folderCode, (value as { message: string }).message);
 					if (response.status === 403 && postgrestError("42501")) throw new CloudCompanyPathRpcRefusal();
 					if (response.status === 412 && postgrestError("PT412")) throw new CloudCompanyPathRpcPrecondition();
 					if (response.status === 424 && postgrestError("PT424")) throw new CloudCompanyPathRpcParentMissing();
