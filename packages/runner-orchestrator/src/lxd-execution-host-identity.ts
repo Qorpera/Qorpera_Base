@@ -28,9 +28,10 @@ export interface LxdExecutionHost {
  * member's first run after a new login or a recovery here finds their login
  * without an operator. Attaching is additive and idempotent: an identity
  * already attached in exactly that shape is left alone, a device of that name
- * in any other shape is reported as refused and never replaced, and nothing is
- * detached. Each missing identity is its own change, so one volume LXD cannot
- * hot-plug never holds up the others.
+ * in any other shape is reported as refused and never replaced. Only a deleted
+ * company's identity is detached (detach, RUNTIME-COMPANY-DELETE.md D4). Each
+ * missing identity is its own change, so one volume LXD cannot hot-plug never
+ * holds up the others.
  * LXD hot-plugs the device into the running VM (a stopped one gets it at its
  * next start); the host's execution service waits for the mount itself.
  */
@@ -89,6 +90,46 @@ export class LxdExecutionHostIdentities {
 			}
 		}
 		return result;
+	}
+
+	/** Detaches a deleted company's identity: only its device of exactly the
+	 * identity shape, set on the host itself (a profile's is refused like any
+	 * other shape), and only confirmed once a fresh read of the host has it in
+	 * neither its devices nor its expanded devices. LXD hot-unplugs it from the
+	 * running VM. */
+	async detach(computeIdentityId: string, signal: AbortSignal): Promise<"detached" | "absent"> {
+		const { name } = executionHostIdentityDevice(this.volumes, computeIdentityId);
+		let detached = false;
+		for (let attempt = 1; ; attempt++) {
+			try {
+				detached =
+					(await this.#client.updateInstanceDevices(
+						this.host.project,
+						this.host.instance,
+						(instance) => {
+							if (instance.type !== "virtual-machine")
+								throw new ExecutionHostRefusal("Execution host is not a virtual machine");
+							const state = this.#state(instance, computeIdentityId, name);
+							if (state === "refused") throw new ExecutionHostRefusal(`Device ${name} is not this volume`);
+							if (state === "missing") return undefined;
+							// "present" means the host sets it itself, in exactly this shape.
+							const { [name]: _removed, ...devices } = instance.devices;
+							return devices;
+						},
+						signal,
+					)) || detached;
+				break;
+			} catch (error) {
+				signal.throwIfAborted();
+				if (error instanceof ExecutionHostRefusal || attempt >= WRITE_ATTEMPTS) throw error;
+				await delay(250 * attempt, undefined, { signal });
+			}
+		}
+		const instance = await this.#client.getInstance(this.host.project, this.host.instance, signal);
+		if (!instance) throw new Error("Execution host is missing");
+		if (this.#state(instance, computeIdentityId, name) !== "missing")
+			throw new Error(`Device ${name} is still on the execution host`);
+		return detached ? "detached" : "absent";
 	}
 
 	#state(instance: LxdInstanceRecord, id: string, name: string): "missing" | "present" | "refused" {
