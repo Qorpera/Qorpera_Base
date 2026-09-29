@@ -247,7 +247,6 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			// occurrence's typed envelope and kernel-owned reply policy, never a job flag.
 			stage = "wake-envelope";
 			const wake = parseCloudWakeEnvelope(await wakeRequest, context.identity);
-			const machinesAvailable = await machinesRequest;
 			// A coding session's turn is its own composition: three command tools in
 			// the credential-free repository VM and two ways to end the turn.
 			if (wake.kind === "agent" && wake.source.kind === "worker-dispatch" && wake.payload.species === "coding") {
@@ -262,6 +261,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					observability,
 				});
 			}
+			const machinesAvailable = await machinesRequest;
 			const wakeControl: CloudWakeControl = {
 				call: (method, argumentsValue, requestSignal) => this.#paths.call(method, argumentsValue, requestSignal),
 			};
@@ -594,7 +594,9 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 								...(identity.audienceKind === "company"
 									? [
 											...(work.isWorker ? [] : cloudHiringTools(gateway, identity)),
-											...cloudWorkerTools(binding, identity, this.#paths, gateway, wake),
+											...cloudWorkerTools(binding, identity, this.#paths, gateway, wake, {
+												machines: Boolean(this.#machines) && machinesAvailable,
+											}),
 										]
 									: []),
 								...(identity.sessionId && wake.policy.final !== "forbidden" ? [send] : []),

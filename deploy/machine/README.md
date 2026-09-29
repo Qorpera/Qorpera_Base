@@ -83,12 +83,13 @@ The steps below need root on the node and a maintenance window. The coordinator 
    - Restart the executor while it is drained.
    - Run the two printed SQL statements as service role.
    - An executor without a `machines` block makes no machines, but still forwards machine commands to its peers.
-   - Agents see the machine tools only once some executor is enabled (`qorpera_company_machines_available()`, asked at the start of every company run). Until then they are not offered at all, so the SQL statement above is the switch that turns machines on for agents, and disabling every executor turns them off again. Running machines keep their leases either way.
+   - Agents see the machine tools only once some executor is enabled and an enrolled machine provider holds its policy (`qorpera_company_machines_available()`, asked at the start of every company run). Until then they are not offered at all, so the SQL statements above are the switch that turns machines on for agents, and disabling every executor turns them off again. Running machines keep their leases either way.
+   - The switch is global. Every identity host with a coding ingress then offers the tools, and its commands go through that node's own coding executor. So enable the first machine executor only after every coding executor runs `qorpera.coding-executor-service/v7`.
 6. **Roll the observer.** Roll the node observer build that knows `qorpera.lxd-company-machine/v1` before the first machine. An older observer marks the node unavailable when it meets one.
 
 Rollback:
-- `qorpera_configure_machine_executor(owner, sha, false, policy, diskBytes)` stops admission. Running machines keep their leases.
-- Stop and delete the node's machines with the members' action or the agent tool. Their allocations are released only by the executor's proven delete.
+- First stop and delete the node's machines with the agent tools or the members' action, while an executor is still enabled. Disabling the last one also takes the machine tools away from agents, and no client offers the members' action yet. Their allocations are released only by the executor's proven delete.
+- Then `qorpera_configure_machine_executor(owner, sha, false, policy, diskBytes)` stops admission. Machines still running keep their leases.
 - A node gone for good: disable its executor, then run `qorpera_abandon_machine_executor(owner, sha)` as service role once its disks are known to be gone. It releases the node's placements; their machines start fresh elsewhere on the next wake, and deleted ones finish.
 
 ## Acceptance (node 2)

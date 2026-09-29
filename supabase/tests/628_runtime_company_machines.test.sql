@@ -160,6 +160,14 @@ begin
 	perform pg_temp.wake_assert(not public.qorpera_company_machines_available(), 'A disabled executor serves no machines');
 	perform public.qorpera_configure_machine_executor('mx-a',repeat('c',64),true,v_policy,322122547200);
 	perform pg_temp.wake_assert(public.qorpera_company_machines_available(), 'An enabled executor offers the machine tools');
+	-- Its policy must be one an enrolled machine provider holds, as for any start.
+	begin
+		update public.qorpera_machine_executors set policy = jsonb_set(policy, '{providerId}', '"nobody"') where owner = 'mx-a';
+		perform pg_temp.wake_assert(not public.qorpera_company_machines_available(), 'No enrolled provider, no machine tools');
+		raise sqlstate 'P0F99';
+	exception when sqlstate 'P0F99' then null;
+	end;
+	perform pg_temp.wake_assert(public.qorpera_company_machines_available(), 'The sub-block left the executor as it was');
 	perform pg_temp.wake_error($sql$select public.qorpera_configure_machine_executor('mx-a',repeat('d',64),true,null,322122547200)$sql$,'22023');
 	perform pg_temp.wake_error(format($sql$select public.qorpera_configure_machine_executor('mx-a',repeat('d',64),true,%L,322122547200)$sql$,v_policy),'42501');
 end $$;

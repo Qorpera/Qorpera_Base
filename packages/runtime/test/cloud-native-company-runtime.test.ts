@@ -1301,7 +1301,7 @@ it("gives a worker the company's machine tools, without notify (Jonas, 2026-09-2
 
 it("gives a company conversation's run the machine tools with notify, and no waiting", async () => {
 	const f = await fixture("company-runtime", false, undefined, true);
-	await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+	expect(await machineToolNames(f)).toHaveLength(7);
 	const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
 	const tools = evidence.threadParameters.dynamicTools[0].tools as {
 		name: string;
@@ -1318,9 +1318,13 @@ it("gives a company conversation's run the machine tools with notify, and no wai
 async function machineToolNames(f: Awaited<ReturnType<typeof fixture>>): Promise<string[]> {
 	await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
 	const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
-	return (evidence.threadParameters.dynamicTools[0].tools as { name: string }[])
-		.map((tool) => tool.name)
-		.filter((name) => name.startsWith("machine_"));
+	const tools = evidence.threadParameters.dynamicTools[0].tools as { name: string; description: string }[];
+	// Workers are offered for machine work only where the tools are.
+	const machines = tools.some((tool) => tool.name.startsWith("machine_"));
+	expect(tools.find((tool) => tool.name === "manage_worker")?.description.includes("company's machines")).toBe(
+		machines,
+	);
+	return tools.map((tool) => tool.name).filter((name) => name.startsWith("machine_"));
 }
 const machinesAsked = (f: Awaited<ReturnType<typeof fixture>>) =>
 	f.pathCall.mock.calls.filter(([method]) => method === "qorpera_company_machines_available");
