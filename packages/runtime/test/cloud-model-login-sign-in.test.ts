@@ -261,3 +261,130 @@ it("serves sign-ins over the helper socket to the broker only", async () => {
 		new ModelLoginHelperClient({ socketPath: plainSocket, token }).beginSignIn(signIn, signal()),
 	).rejects.toThrow();
 });
+
+it("answers a sign-in only to the client that began it: the shared vault and the company brokers stay apart", async () => {
+	const directory = await temporary("qorpera-sign-in-clients-");
+	const socketPath = join(directory, "helper.sock");
+	const token = randomBytes(32).toString("base64url");
+	const vaultToken = randomBytes(32).toString("base64url");
+	const brokers = binding();
+	const vaults = { ...binding(), companyId: brokers.companyId };
+	const fake: ModelLoginSignInHelper = {
+		beginSignIn: vi.fn(async () => ({ status: "awaiting_member" as const, userCode: "ABCD-12345" })),
+		readSignIn: vi.fn(async () => ({ status: "completed" as const, authJson: '{"tokens":{}}' })),
+		listCompletedSignIns: vi.fn(async () => [
+			{ signInId: brokers.signInId, capabilitySha256: brokers.capabilitySha256 },
+			{ signInId: vaults.signInId, capabilitySha256: vaults.capabilitySha256 },
+		]),
+		finishSignIn: vi.fn(async () => undefined),
+	};
+	expect(
+		() =>
+			new ModelLoginHelperService({
+				socketPath,
+				token,
+				vaultToken: token,
+				renewer: { renew: vi.fn() },
+				signIns: fake,
+			}),
+	).toThrow("Login helper token is invalid");
+	const service = new ModelLoginHelperService({
+		socketPath,
+		token,
+		vaultToken,
+		renewer: { renew: vi.fn() },
+		signIns: fake,
+	});
+	await service.start();
+	closers.push(() => service.close());
+	const broker = new ModelLoginHelperClient({ socketPath, token });
+	const vault = new ModelLoginHelperClient({ socketPath, token: vaultToken });
+	await broker.beginSignIn(brokers, signal());
+	await vault.beginSignIn(vaults, signal());
+	const own = (entry: { signInId: string; companyId: string }) => ({
+		signInId: entry.signInId,
+		companyId: entry.companyId,
+	});
+	// Each sees only its own finished sign-ins, and reads the other's as unknown.
+	await expect(broker.listCompletedSignIns({ companyId: brokers.companyId }, signal())).resolves.toEqual([
+		{ signInId: brokers.signInId, capabilitySha256: brokers.capabilitySha256 },
+	]);
+	await expect(vault.listCompletedSignIns({ companyId: brokers.companyId }, signal())).resolves.toEqual([
+		{ signInId: vaults.signInId, capabilitySha256: vaults.capabilitySha256 },
+	]);
+	await expect(vault.readSignIn(own(brokers), signal())).resolves.toEqual({ status: "unknown" });
+	await expect(broker.readSignIn(own(vaults), signal())).resolves.toMatchObject({ status: "unknown" });
+	expect(fake.readSignIn).not.toHaveBeenCalled();
+	await expect(vault.readSignIn(own(vaults), signal())).resolves.toMatchObject({ status: "completed" });
+	// Nor can one begin or finish the other's.
+	await expect(vault.beginSignIn(brokers, signal())).rejects.toThrow();
+	await expect(broker.finishSignIn(own(vaults), signal())).rejects.toThrow();
+	expect(fake.beginSignIn).toHaveBeenCalledTimes(2);
+	expect(fake.finishSignIn).not.toHaveBeenCalled();
+	await vault.finishSignIn(own(vaults), signal());
+	expect(fake.finishSignIn).toHaveBeenCalledOnce();
+});
+
+it("claims a sign-in for its client before waiting for Codex, and frees the claim when the start fails", async () => {
+	const directory = await temporary("qorpera-sign-in-claim-");
+	const socketPath = join(directory, "helper.sock");
+	const token = randomBytes(32).toString("base64url");
+	const vaultToken = randomBytes(32).toString("base64url");
+	const slow = binding();
+	let release = (): void => undefined;
+	const fake: ModelLoginSignInHelper = {
+		beginSignIn: vi.fn(
+			() =>
+				new Promise<{ status: "preparing" }>((resolveBegin) => {
+					release = () => resolveBegin({ status: "preparing" });
+				}),
+		),
+		readSignIn: vi.fn(async () => ({ status: "completed" as const, authJson: '{"tokens":{}}' })),
+		listCompletedSignIns: vi.fn(async () => []),
+		finishSignIn: vi.fn(async () => undefined),
+	};
+	const service = new ModelLoginHelperService({
+		socketPath,
+		token,
+		vaultToken,
+		renewer: { renew: vi.fn() },
+		signIns: fake,
+	});
+	await service.start();
+	closers.push(() => service.close());
+	const broker = new ModelLoginHelperClient({ socketPath, token });
+	const vault = new ModelLoginHelperClient({ socketPath, token: vaultToken });
+	const beginning = broker.beginSignIn(slow, signal());
+	await vi.waitFor(() => expect(fake.beginSignIn).toHaveBeenCalledOnce());
+	// While the broker's start still waits, the vault cannot read or take it.
+	await expect(vault.readSignIn({ signInId: slow.signInId, companyId: slow.companyId }, signal())).resolves.toEqual({
+		status: "unknown",
+	});
+	await expect(vault.beginSignIn(slow, signal())).rejects.toThrow();
+	release();
+	await expect(beginning).resolves.toEqual({ status: "preparing" });
+	// A start that fails leaves no claim behind: the id is free again.
+	const failed = binding();
+	vi.mocked(fake.beginSignIn).mockRejectedValueOnce(new Error("Sign-in limit reached"));
+	await expect(broker.beginSignIn(failed, signal())).rejects.toThrow();
+	vi.mocked(fake.beginSignIn).mockResolvedValueOnce({ status: "preparing" });
+	await expect(vault.beginSignIn(failed, signal())).resolves.toEqual({ status: "preparing" });
+	// Two overlapping starts of one sign-in by one client: the first fails after the second succeeded, and
+	// the sign-in stays claimed.
+	const overlapping = binding();
+	let failFirst = (): void => undefined;
+	vi.mocked(fake.beginSignIn)
+		.mockImplementationOnce(
+			() =>
+				new Promise((_, rejectBegin) => {
+					failFirst = () => rejectBegin(new Error("Codex did not start"));
+				}),
+		)
+		.mockResolvedValueOnce({ status: "preparing" });
+	const first = broker.beginSignIn(overlapping, signal());
+	await vi.waitFor(() => expect(fake.beginSignIn).toHaveBeenCalledTimes(4));
+	await expect(broker.beginSignIn(overlapping, signal())).resolves.toEqual({ status: "preparing" });
+	failFirst();
+	await expect(first).rejects.toThrow();
+	await expect(vault.beginSignIn(overlapping, signal())).rejects.toThrow();
+});

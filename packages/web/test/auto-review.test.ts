@@ -9,6 +9,7 @@ import {
 	answersActionReview,
 	createWebReviewRules,
 	type HostedReviewRule,
+	parseReviewRules,
 	type WebReviewRules,
 } from "../src/cloud/review-rules.ts";
 import { readableFileName, renderActionReviewCard, renderAuthorizationCard } from "../src/ui/authorization-card.ts";
@@ -390,6 +391,18 @@ describe("the rules client", () => {
 			],
 			["qorpera_archive_review_rule", { p_profile_id: id(10), p_rule_id: id(801) }],
 		]);
+	});
+
+	it("lists a company rule that comes from the company's rules/ folder", () => {
+		const listed = parseReviewRules({
+			schema: "qorpera.review-rules/v1",
+			canManageCompanyRules: true,
+			rules: [
+				{ ...rule(803, "company", "refund a customer"), createdVia: "folder" },
+				rule(804, "member", "send mail"),
+			],
+		});
+		expect(listed.rules.map((item) => item.createdVia)).toEqual(["folder", "settings"]);
 	});
 
 	it("answers an approval card with the member's account", async () => {

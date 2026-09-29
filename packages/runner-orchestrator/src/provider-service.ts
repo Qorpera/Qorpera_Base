@@ -270,6 +270,39 @@ function admissionRefusal(error: unknown): { state: "refused" | "deferred"; reas
 	return { state: candidate.state, reason: candidate.reason };
 }
 
+/** The step a failed request stopped at, as fixed names and codes only (see ProviderStepFailed). */
+function stepFailure(error: unknown): Record<string, string | number> | undefined {
+	if (typeof error !== "object" || error === null) return undefined;
+	const candidate = error as {
+		category?: unknown;
+		stage?: unknown;
+		rpc?: unknown;
+		rpcStatus?: unknown;
+		rpcCode?: unknown;
+	};
+	if (
+		candidate.category !== "provider_step" ||
+		typeof candidate.stage !== "string" ||
+		!/^[a-z][a-z_]{1,39}$/.test(candidate.stage)
+	)
+		return undefined;
+	return {
+		stage: candidate.stage,
+		...(typeof candidate.rpc === "string" && /^qorpera_[a-z0-9_]{1,80}$/.test(candidate.rpc)
+			? { rpc: candidate.rpc }
+			: {}),
+		...(typeof candidate.rpcStatus === "number" &&
+		Number.isSafeInteger(candidate.rpcStatus) &&
+		candidate.rpcStatus >= 100 &&
+		candidate.rpcStatus <= 599
+			? { rpcStatus: candidate.rpcStatus }
+			: {}),
+		...(typeof candidate.rpcCode === "string" && /^(?:[0-9A-Z]{5}|PGRST[0-9X][0-9]{2})$/.test(candidate.rpcCode)
+			? { rpcCode: candidate.rpcCode }
+			: {}),
+	};
+}
+
 export class HttpCloudRunnerProviderService {
 	readonly #backend: CloudRunnerProviderServiceBackend;
 	readonly #token: string;
@@ -418,6 +451,8 @@ export class HttpCloudRunnerProviderService {
 			// The operator journal is telemetry too. Never log a backend exception,
 			// which can contain request bodies, private host paths or credentials.
 			const refusal = admissionRefusal(error);
+			// Which step failed, by its fixed name (and a failed database call's function and code).
+			const step = refusal ? undefined : stepFailure(error);
 			console.error(
 				JSON.stringify({
 					schema: "qorpera.provider-request-error/v1",
@@ -427,6 +462,7 @@ export class HttpCloudRunnerProviderService {
 					errorCategory:
 						error instanceof SyntaxError ? "invalid_arguments" : refusal ? "admission_refused" : "unknown",
 					...(refusal ? { state: refusal.state, reason: refusal.reason } : {}),
+					...step,
 				}),
 			);
 			const status = error instanceof SyntaxError ? 400 : 422;

@@ -87,7 +87,7 @@ export const SETTINGS: Record<string, string> = {
 	"Everything in Basis, plus": "Alt i Basis, plus",
 	"Everything in Standard, plus": "Alt i Standard, plus",
 	"100 GB storage included": "100 GB lagerplads inkluderet",
-	"A worker computer for every agent, 74 hours": "En medarbejder-computer til hver agent over 74 timer",
+	"{hours} computer hours a month": "{hours} computertimer om måneden",
 	"Connect from computer and phone": "Forbind til computer og mobil",
 	"Work in the cloud while your computer is off": "Arbejd i skyen, selvom computeren er slukket",
 	"250 GB storage included": "250 GB lagerplads inkluderet",
@@ -100,7 +100,17 @@ export const SETTINGS: Record<string, string> = {
 	"Plan changes are not open yet.": "Du kan ikke skifte abonnement endnu.",
 	"Every plan starts with a free trial, no card needed. Prices are ex. VAT.":
 		"Alle planer starter med en gratis prøveperiode uden betalingskort. Priserne er ekskl. moms.",
-	"Computer hours": "Computertimer",
+	"Computer hours in your plan": "Computertimer i dit abonnement",
+	"Computer hours this month": "Computertimer denne måned",
+	"Computer hours unavailable": "Computertimer ikke tilgængelige",
+	"Counted once plans open": "Tælles, når abonnementerne åbner",
+	"Measured, not charged yet": "Målt, endnu ikke opkrævet",
+	"Out of computer hours. New work waits and starts by itself once hours are added.":
+		"Ingen computertimer tilbage. Nyt arbejde venter og starter af sig selv, når der er tilføjet timer.",
+	"Company machines": "Virksomhedens maskiner",
+	"Agent runs": "Agentkørsler",
+	"Coding machines": "Kodemaskiner",
+	"Agents' machines": "Agenternes maskiner",
 	"{used} used of {total}": "{used} brugt af {total}",
 	"{used} used": "{used} brugt",
 	"Not measured yet": "Ikke målt endnu",
@@ -127,6 +137,37 @@ export const SETTINGS: Record<string, string> = {
 	"No card on file": "Intet kort tilføjet",
 	Invoices: "Fakturaer",
 	"No invoices yet": "Ingen fakturaer endnu",
+	// Payments through Stripe (app/views/plan.ts, app/plan-payments.ts)
+	"Choose {plan}": "Vælg {plan}",
+	"Switch to {plan}": "Skift til {plan}",
+	Paused: "Sat på pause",
+	"Opening…": "Åbner…",
+	"Prices are ex. VAT. You pay on Stripe's secure page.": "Priserne er ekskl. moms. Du betaler på Stripes sikre side.",
+	"Test mode: nothing is charged.": "Testtilstand: intet bliver opkrævet.",
+	"Renews {date}": "Fornyes {date}",
+	"Ends {date}": "Slutter {date}",
+	"Paid through Stripe": "Betalt via Stripe",
+	"Waiting for the first payment": "Venter på første betaling",
+	"Payment failed. Update your card under Payments and invoices.":
+		"Betalingen mislykkedes. Opdater dit kort under Betalinger og fakturaer.",
+	"Other companies": "Andre virksomheder",
+	"Buy hours": "Køb timer",
+	"For {company}, valid for 12 months. Prices are ex. VAT.":
+		"Til {company}, gælder i 12 måneder. Priserne er ekskl. moms.",
+	"Computer hours are paid by the founders. You are never charged.":
+		"Computertimer betales af stifterne. Du bliver aldrig opkrævet.",
+	"Payments and invoices": "Betalinger og fakturaer",
+	"None scheduled": "Ingen planlagt",
+	"On Stripe's billing page": "På Stripes betalingsside",
+	"Thank you. Your hours are added as soon as Stripe confirms the payment.":
+		"Tak. Dine timer bliver tilføjet, så snart Stripe bekræfter betalingen.",
+	"Payments are unavailable right now. Try again in a moment.":
+		"Betaling er ikke tilgængelig lige nu. Prøv igen om lidt.",
+	"You already have a plan. Change it under Payments and invoices.":
+		"Du har allerede et abonnement. Skift det under Betalinger og fakturaer.",
+	"Only the company's founders can buy computer hours.": "Kun virksomhedens stiftere kan købe computertimer.",
+	"This offer is not available right now.": "Tilbuddet er ikke tilgængeligt lige nu.",
+	"No payments yet.": "Ingen betalinger endnu.",
 
 	// Friends (app/views/friends.ts)
 	"Request sent to {email}.": "Anmodning sendt til {email}.",
@@ -157,7 +198,16 @@ export const SETTINGS: Record<string, string> = {
 	"Company members": "Virksomhedens medlemmer",
 	"Role for {name}": "Rolle for {name}",
 	"{name} is now {role}.": "{name} er nu {role}.",
-	"Started it": "Startede den",
+	Founder: "Stifter",
+	"Step down": "Træd tilbage",
+	"Step down as founder of {company}? You stay as an admin.":
+		"Træd tilbage som stifter af {company}? Du bliver administrator.",
+	"You stepped down as founder.": "Du er trådt tilbage som stifter.",
+	"Make founder": "Gør til stifter",
+	"Make {name} a founder? Founders can only step down or leave on their own.":
+		"Gør {name} til stifter? En stifter kan kun selv træde tilbage eller forlade virksomheden.",
+	"Make someone else a founder before you leave.": "Gør en anden til stifter, før du forlader virksomheden.",
+	"Company setup must finish before you can leave.": "Virksomheden skal være sat op, før du kan forlade den.",
 	Building: "Bygger",
 	"Remove {name} from {company}?": "Fjern {name} fra {company}?",
 	"{name} was removed.": "{name} blev fjernet.",
@@ -181,8 +231,7 @@ export const SETTINGS: Record<string, string> = {
 	"Add a friend": "Tilføj en ven",
 	"Delete company": "Slet virksomhed",
 	"Leave company": "Forlad virksomhed",
-	"Delete {company} for every member? Type the company name to confirm.":
-		"Slet {company} for alle medlemmer? Skriv virksomhedens navn for at bekræfte.",
+	"Delete {company}? Type the company name to confirm.": "Slet {company}? Skriv virksomhedens navn for at bekræfte.",
 	"Leave {company}? You lose access until someone invites you again.":
 		"Forlad {company}? Du mister adgangen, indtil nogen inviterer dig igen.",
 	Leave: "Forlad",

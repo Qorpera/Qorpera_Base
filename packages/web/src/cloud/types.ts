@@ -93,7 +93,18 @@ export interface HostedProfileMember {
 export interface HostedProfileTeam {
 	profileId: string;
 	role: HostedProfileRole;
-	capabilities: { read: true; write: boolean; authorize: boolean; manageMembers: boolean };
+	capabilities: {
+		read: true;
+		write: boolean;
+		authorize: boolean;
+		manageMembers: boolean;
+		/** Founders make founders (2026-09-28). Absent from a cloud before several founders. */
+		manageFounders?: boolean;
+		/** Whether this member may leave: not the last member, and not the last founder while others stay. */
+		leave?: boolean;
+		/** Only the last member deletes the company. */
+		deleteCompany?: boolean;
+	};
 	members: HostedProfileMember[];
 	invitations: HostedProfileInvitation[];
 }

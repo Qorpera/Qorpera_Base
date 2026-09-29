@@ -9,7 +9,7 @@ import { t } from "../../ui/preferences.ts";
 type ConnectionsClient = Pick<WebNativeSubscription, "listConnections" | "revokeConnection" | "createMemberSponsor"> &
 	Partial<Pick<WebNativeSubscription, "onboardingAvailable" | "beginProviderLogin" | "refreshAccountMetadata">>;
 
-type Provider = "openai" | "anthropic";
+export type Provider = "openai" | "anthropic";
 const PROVIDERS: ReadonlyArray<{ id: Provider; label: string; logo: string }> = [
 	{ id: "openai", label: "ChatGPT / Codex", logo: "provider-openai.svg" },
 	{ id: "anthropic", label: "Claude", logo: "provider-claude.svg" },
@@ -48,6 +48,19 @@ export class ProviderSignIns {
 	}
 }
 
+/** Provider sign-ins in progress, per member and company, for the life of the tab: Settings and a
+ * founding table show the same attempt. */
+const SIGN_INS = new Map<string, ProviderSignIns>();
+export function memberProviderSignIns(memberId: string, profileId: string): ProviderSignIns {
+	const key = `${memberId}:${profileId}`;
+	let signIns = SIGN_INS.get(key);
+	if (!signIns) {
+		signIns = new ProviderSignIns();
+		SIGN_INS.set(key, signIns);
+	}
+	return signIns;
+}
+
 const live = (connection: NativeMemberConnection) =>
 	connection.connectionStatus === "active" && connection.authorizationState === "active";
 /** Cards with the same provider and email read the same. */
@@ -63,6 +76,8 @@ export class ConnectionsView {
 	readonly #begin: WebNativeSubscription["beginProviderLogin"] | undefined;
 	readonly #signIns: ProviderSignIns;
 	readonly #attempts: Map<Provider, Attempt>;
+	/** The providers "Add account" offers; every connected account is still listed. */
+	readonly #offered: ReadonlyArray<(typeof PROVIDERS)[number]>;
 	readonly #enabling = new Set<string>();
 	#connections: NativeExecutionConnections | undefined;
 	#loading = true;
@@ -86,8 +101,10 @@ export class ConnectionsView {
 		signal: AbortSignal,
 		signIns = new ProviderSignIns(),
 		begin: WebNativeSubscription["beginProviderLogin"] | undefined = client.beginProviderLogin?.bind(client),
+		offered: readonly Provider[] = PROVIDERS.map((provider) => provider.id),
 	) {
 		this.#client = client;
+		this.#offered = PROVIDERS.filter((provider) => offered.includes(provider.id));
 		this.#signIns = signIns;
 		this.#attempts = signIns.attempts;
 		this.#begin = begin;
@@ -584,7 +601,7 @@ export class ConnectionsView {
 							"div",
 							{ id: "connection-provider-picker", class: "connection-provider-picker", hidden: !this.#adding },
 							h("p", null, t("Choose a model provider")),
-							...PROVIDERS.map((provider) => {
+							...this.#offered.map((provider) => {
 								const choice = button(
 									[
 										h("img", { class: "connection-logo", src: `./assets/${provider.logo}`, alt: "" }),
