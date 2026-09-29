@@ -3,7 +3,7 @@
 -- * qorpera_list_staff_execution_activity is a member RPC (granted to authenticated, 20260922010000), and
 --   test 586 pins that anon cannot execute it. The platform default gave anon EXECUTE anyway. Its body
 --   already refuses a caller who is not a member of the company (42501), so this removes a grant, not a leak.
--- * The three CHECK constraint validators that 20260929570000 left to service_role (which may write the
+-- * The three CHECK constraint validators that 20260928279570 left to service_role (which may write the
 --   constrained tables, and PostgreSQL checks EXECUTE on a CHECK's functions as the writing role) had that
 --   grant from the platform default only. Grant it by name, so it holds if the default changes or a
 --   validator is re-created; test 749 pins it.
