@@ -1,5 +1,5 @@
 -- @fixture 300_runtime_wake_bus.test.sql until "-- END WAKE FIXTURE"
--- Computer hours (20260929300000_runtime_computer_hours_bounded_checks): hours left for many
+-- Computer hours (20260928259300_runtime_computer_hours_bounded_checks): hours left for many
 -- companies in one query, the same as for one; the zero check looks the company up in the zero
 -- state first (running out counts from the next sweep, leaving zero at once); the sweep records and
 -- clears companies from hours left, with the full check only where it can matter.
