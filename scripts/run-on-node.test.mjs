@@ -12,7 +12,6 @@ import {
 	pruneScript,
 	RUNNERS,
 	runScript,
-	VITEST_WORKERS,
 	secretLooking,
 	shellQuote,
 	suiteCommand,
@@ -103,7 +102,7 @@ test("each run takes a free runner user and installs and runs as that user", () 
 });
 
 test("at most three runs execute at once, in arrival order, with two vitest workers each", () => {
-	assert.deepEqual([CPU_SLOTS, VITEST_WORKERS], [3, 2]);
+	assert.equal(CPU_SLOTS, 3);
 	const script = runScript({ run: "R", runDir: "/r", treeDir: "/t", files: 1, copySeconds: 0, install: false, build: false, runCommand: "true" });
 	// The queue ticket sorts by arrival and stays locked by its waiting run (fd 7); only the first ticket
 	// may take a slot; a ticket nobody holds belongs to a dead run and is dropped, whatever its pid became.
@@ -120,7 +119,10 @@ test("at most three runs execute at once, in arrival order, with two vitest work
 	assert.match(script, /waiting for a slot \(3 runs at a time\), queue position \$position/);
 	// The slot is taken before the runner user, and both stay locked for the session (fds 9 and 8).
 	assert.ok(script.indexOf("qorpera-test-machine-slot") < script.indexOf("qorpera-test-machine-$candidate"));
-	assert.match(script, /export VITEST_MAX_WORKERS=2/);
+	// vCPUs / 3 workers per run (2 on 6 vCPUs, 4 on 12), at least 1.
+	assert.match(script, /export VITEST_MAX_WORKERS=\$\(\( \$\(nproc\) \/ 3 > 0 \? \$\(nproc\) \/ 3 : 1 \)\)/);
+	for (const [cpus, workers] of [[6, 2], [12, 4], [2, 1]])
+		assert.equal(spawnSync("bash", ["-c", `echo $(( ${cpus} / 3 > 0 ? ${cpus} / 3 : 1 ))`], { encoding: "utf8" }).stdout.trim(), String(workers));
 	assert.match(parseArgs(["--sudo", "--", "npm", "test"]).command.join(" "), /npm test/);
 });
 

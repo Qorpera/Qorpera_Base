@@ -41,11 +41,11 @@ const HOME = "/home/tester";
  * duration, so per-user kernel limits count that run alone: the coding Git sandbox caps RLIMIT_NPROC
  * at 512 tasks, which every concurrent run under one shared user exhausted together. */
 export const RUNNERS = Array.from({ length: 16 }, (_, i) => `ci${String(i + 1).padStart(2, "0")}`);
-/** At most this many runs execute at once, each with at most VITEST_WORKERS vitest workers: 3 x 2 matches
- * the VM's 6 vCPUs. Measured 2026-09-29: a full npm test is ~881 CPU-seconds; two full runs plus other
- * sessions drove the load to 22 and timing-bound tests failed. Later runs wait in arrival order. */
+/** At most this many runs execute at once, each with (vCPUs / CPU_SLOTS) vitest workers, so the slots
+ * together use the machine's vCPUs: 2 each on 6 vCPUs, 4 each on 12. Measured 2026-09-29: a full npm test
+ * is ~881 CPU-seconds; two full runs plus other sessions drove 6 vCPUs to load 22 and timing-bound tests
+ * failed. Later runs wait in arrival order. */
 export const CPU_SLOTS = 3;
-export const VITEST_WORKERS = 2;
 const SECRET =
 	/(^|\/)(\.env(\.[^/]*)?|\.envrc|\.dev\.vars|\.npmrc|\.netrc|\.pgpass|\.git-credentials|\.aws\/credentials|[^/]*\.(env|pem|p12|pfx|key|tfvars)|id_[^/.]+|credentials[^/]*\.json|service-account[^/]*\.json|[^/]*\.private\.json)$/i;
 
@@ -211,7 +211,8 @@ export function runScript({ run, runDir, treeDir, files, copySeconds, install, b
 	const inner = [
 		`cd ${runDir} || exit 91`,
 		// A --env VITEST_MAX_WORKERS=n on the command still wins: it is set later, on the command itself.
-		`export VITEST_MAX_WORKERS=${VITEST_WORKERS}`,
+		`export VITEST_MAX_WORKERS=$(( $(nproc) / ${CPU_SLOTS} > 0 ? $(nproc) / ${CPU_SLOTS} : 1 ))`,
+		`echo "workers=$VITEST_MAX_WORKERS" >>${status}`,
 		"t0=$(date +%s%N)",
 		install
 			? `npm ci --ignore-scripts --no-audit --no-fund --prefer-offline >.run-on-node-npm-ci.log 2>&1 || { tail -50 .run-on-node-npm-ci.log; echo installed=0 >>${status}; exit 90; }`
@@ -269,7 +270,8 @@ export function runScript({ run, runDir, treeDir, files, copySeconds, install, b
 		// Holding the runner lock proves no live run uses this user: processes a killed run left behind would
 		// still count against its RLIMIT_NPROC and take CPU outside the slots.
 		'sudo -n pkill -KILL -u "$runner" 2>/dev/null; true',
-		`echo "runner=$runner slot=$slot queued_s=$queued_s" >${status}`,
+		// The load at start and uncapped test processes (older clients run as tester) explain a slow run.
+		`echo "runner=$runner slot=$slot queued_s=$queued_s load=$(cut -d' ' -f1 /proc/loadavg) uncapped=$(pgrep -u tester -fc 'vitest|node --test' || true)" >${status}`,
 		`sudo -n chown -R "$runner:$runner" ${runDir} || exit 93`,
 		`echo "== run-on-node: $(hostname) ${run} as $runner in slot $slot of ${CPU_SLOTS} (${files} files, copy ${copySeconds.toFixed(1)} s, queued $queued_s s)"`,
 		`sudo -n -u "$runner" -H bash -c ${shellQuote(inner)}`,
@@ -461,7 +463,9 @@ async function main() {
 		runner: status.runner ?? null,
 		cpuSlot: status.slot ? Number(status.slot) : null,
 		queuedSeconds: status.queued_s ? Number(status.queued_s) : null,
-		vitestMaxWorkers: Number(options.env.findLast(([name]) => name === "VITEST_MAX_WORKERS")?.[1] ?? VITEST_WORKERS),
+		vitestMaxWorkers: Number(options.env.findLast(([name]) => name === "VITEST_MAX_WORKERS")?.[1] ?? status.workers ?? Number.NaN) || null,
+		loadAtStart: status.load ? Number(status.load) : null,
+		uncappedTestProcesses: status.uncapped ? Number(status.uncapped) : null,
 		...(changedPlan ? { changed: changedPlan } : {}),
 		startedAt: new Date(started).toISOString(),
 		copySeconds: (synced - started) / 1000,

@@ -103,7 +103,11 @@ export const STEPS = [
 			"npm run typecheck --workspace packages/web",
 			"npm test --workspace packages/web",
 			`node --test ${FUNCTION_TESTS.slice(0, 4).join(" ")} scripts/web-deployment.test.mjs`,
-			`QORPERA_WEB_CONFIG_JSON='${WEB_RELEASE_CONFIG}' npm run build:release --workspace packages/web`,
+			// The release build measures its source from git and refuses uncommitted changes. The run copy has
+			// no .git, so the step commits it into a throwaway repository for the build and removes it after.
+			// This checks bundling and the release configuration; the snapshot commit is never deployed.
+			"git init -q && git add -A && git -c user.name=run-on-node -c user.email=run-on-node@invalid commit -qm snapshot",
+			`QORPERA_WEB_CONFIG_JSON='${WEB_RELEASE_CONFIG}' npm run build:release --workspace packages/web; built=$?; rm -rf .git; exit $built`,
 		],
 	},
 	{
@@ -148,10 +152,13 @@ export const STEPS = [
 	},
 	{
 		name: "runner-orchestrator",
-		why: "packages/runner-orchestrator and the deploy files its tests import (step2-lxd.yml)",
+		why: "packages/runner-orchestrator and what its tests read: deploy files, runtime and cloud-client sources, runtime fixtures (step2-lxd.yml)",
 		paths: [
 			/^packages\/runner-orchestrator\//,
-			/^deploy\/(first-node|lxd-runner-guest|lxd-company-computer-guest|shared-execution)\//,
+			/^deploy\//,
+			/^packages\/runtime\/src\//,
+			/^packages\/runtime\/test\/fixtures\//,
+			/^packages\/cloud-client\/src\//,
 		],
 		commands: [vitest("runner-orchestrator")],
 	},

@@ -24,7 +24,8 @@ test("a web-only change runs the always-on checks and the web client, including 
 	assert.equal(plan.build, true);
 	const web = plan.steps.find((step) => step.name === "web").commands.join("\n");
 	assert.match(web, /typecheck --workspace packages\/web/);
-	assert.match(web, /QORPERA_WEB_CONFIG_JSON='\{"projectUrl"[^']+' npm run build:release --workspace packages\/web/);
+	assert.match(web, /git init -q && git add -A && .*commit -qm snapshot/);
+	assert.match(web, /QORPERA_WEB_CONFIG_JSON='\{"projectUrl"[^']+' npm run build:release --workspace packages\/web; built=\$\?; rm -rf \.git; exit \$built/);
 });
 
 test("anything that is not web-only also runs runtime, cloud-client and every script test (the old release train)", () => {
@@ -40,7 +41,7 @@ test("anything that is not web-only also runs runtime, cloud-client and every sc
 		"deploy-node",
 	]));
 	assert.deepEqual(names(["packages/runtime/test/cloud-coding-executor.test.ts"]), set(BASELINE));
-	assert.deepEqual(names(["packages/cloud-client/src/node/cloud-object-store.ts"]), set([...BASELINE, "web"]));
+	assert.deepEqual(names(["packages/cloud-client/src/node/cloud-object-store.ts"]), set([...BASELINE, "web", "runner-orchestrator"]));
 	const scripts = STEPS.find((step) => step.name === "scripts").commands.join(" ");
 	assert.match(scripts, /node --test scripts\/\*\.test\.mjs/);
 });
@@ -51,7 +52,16 @@ test("deploy, function and SQL-input paths reach the tests that read them", () =
 		"runner-orchestrator",
 		"deploy-node",
 	]));
-	assert.deepEqual(names(["deploy/node-agent/qorpera-node-launch.py"]), set([...BASELINE, "deploy-node"]));
+	assert.deepEqual(names(["deploy/node-agent/qorpera-node-launch.py"]), set([...BASELINE, "runner-orchestrator", "deploy-node"]));
+	// Files runner-orchestrator tests read outside its package (review round 2).
+	for (const file of [
+		"deploy/coding-worker/qorpera-coding-executor.service",
+		"deploy/cloud-secret-broker/supabase-prod-ca-2021.crt",
+		"packages/runtime/test/fixtures/company-computer-guest.ts",
+		"packages/runtime/src/cloud-identity-recovery-filesystems.ts",
+		"packages/cloud-client/src/node/native-account-refresh.ts",
+	])
+		assert.ok(names([file]).includes("runner-orchestrator"), file);
 	assert.deepEqual(names(["deploy/first-node/install.sh"]), set([...BASELINE, "runner-orchestrator", "deploy-node", "deploy-shell"]));
 	assert.deepEqual(names(["supabase/functions/company-file-verifier/object-loader.ts"]), set([...BASELINE, "web", "functions"]));
 	const functions = STEPS.find((step) => step.name === "functions").commands.join(" ");

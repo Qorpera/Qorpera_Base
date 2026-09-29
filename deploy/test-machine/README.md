@@ -78,8 +78,9 @@ every task of the user on the machine. When all runs shared `tester`, a few para
 past 512 and bubblewrap failed with "Creating new namespace failed: Resource temporarily unavailable".
 When all 16 are busy, a run waits (up to an hour).
 
-At most three runs execute at once, and each runs vitest with `VITEST_MAX_WORKERS=2` (a `--env
-VITEST_MAX_WORKERS=n` on the command wins). Three runs times two workers matches the 6 vCPUs. A full
+At most three runs execute at once, and each runs vitest with `VITEST_MAX_WORKERS` = vCPUs / 3 (2 on
+6 vCPUs, 4 on 12; a `--env VITEST_MAX_WORKERS=n` on the command wins), so the three slots together use the
+machine's vCPUs. The record notes the load and the uncapped test processes (older clients) at start. A full
 `npm test` is about 881 CPU-seconds; on 2026-09-29 two full runs plus other sessions drove the load to 22
 and timing-bound tests failed that pass on a quiet machine. Later runs wait in arrival order and print
 their queue position; the record notes the slot and the time spent queued. Each runner user keeps its own npm cache, so
