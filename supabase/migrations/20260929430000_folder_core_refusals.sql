@@ -29,11 +29,14 @@ returns boolean language sql stable security definer set search_path = '' as $$
 		join public.qorpera_company_files file on file.environment_id = job.environment_id
 		where job.id = p_job_id and file.core = 'folder-v2')
 $$;
+-- The job id is read as the run lookup reads it (any spelling uuid input accepts); anything else names no job.
 create function public.qorpera_binding_is_folder_v2(p_binding jsonb)
-returns boolean language sql stable security definer set search_path = '' as $$
-	select case when coalesce(p_binding ->> 'jobId', '') ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
-		then public.qorpera_job_is_folder_v2((p_binding ->> 'jobId')::uuid) else false end
-$$;
+returns boolean language plpgsql stable security definer set search_path = '' as $$
+begin
+	return public.qorpera_job_is_folder_v2((p_binding ->> 'jobId')::uuid);
+exception when invalid_text_representation then
+	return false;
+end $$;
 revoke all on function public.qorpera_company_is_folder_v2(uuid), public.qorpera_environment_is_folder_v2(uuid),
 	public.qorpera_job_is_folder_v2(uuid), public.qorpera_binding_is_folder_v2(jsonb)
 	from public, anon, authenticated, service_role;

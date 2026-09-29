@@ -155,6 +155,12 @@ begin
 	perform pg_temp.refuses($q$select public.qorpera_rebase_company_proposal('64600000-0000-4000-8000-0000000000d1',
 		extensions.gen_random_uuid(), extensions.gen_random_uuid(), extensions.gen_random_uuid())$q$);
 	perform pg_temp.as_service();
+	perform pg_temp.fx($q$update public.qorpera_company_proposals set profile_id = '64600000-0000-4000-8000-000000000011',
+		environment_id = '64600000-0000-4000-8000-000000000021' where id = '64600000-0000-4000-8000-0000000000d1'$q$);
+	perform pg_temp.as_member('64600000-0000-4000-8000-000000000001');
+	perform pg_temp.not_refused($q$select public.qorpera_rebase_company_proposal('64600000-0000-4000-8000-0000000000d1',
+		extensions.gen_random_uuid(), extensions.gen_random_uuid(), extensions.gen_random_uuid())$q$);
+	perform pg_temp.as_service();
 end $$;
 
 -- The approval and member-command actors, before their company fence.
@@ -227,6 +233,24 @@ begin
 		'64600000-0000-4000-8000-0000000000c2', repeat('a', 64), extensions.gen_random_uuid(), extensions.gen_random_uuid(), repeat('d', 64), 10, 3, 1, 1)$q$);
 	perform pg_temp.not_refused($q$select public.qorpera_runner_broker_authorize_company_file_object('64600000-0000-4000-8000-0000000000c9',
 		repeat('a', 64), '64600000-0000-4000-8000-0000000000c2', repeat('a', 64), repeat('b', 64), 1, 'text/plain')$q$);
+	perform pg_temp.not_refused($q$select public.qorpera_runner_begin_company_revision_graph('64600000-0000-4000-8000-0000000000c9', repeat('a', 64),
+		'64600000-0000-4000-8000-0000000000c2', repeat('a', 64), extensions.gen_random_uuid(), extensions.gen_random_uuid(), extensions.gen_random_uuid(),
+		repeat('d', 64), repeat('d', 64), 1, 1)$q$);
+	perform pg_temp.not_refused($q$select public.qorpera_runner_append_company_revision_graph('64600000-0000-4000-8000-0000000000c9', repeat('a', 64),
+		'64600000-0000-4000-8000-0000000000c2', repeat('a', 64), extensions.gen_random_uuid(), extensions.gen_random_uuid(), '[]')$q$);
+	perform pg_temp.not_refused($q$select public.qorpera_runner_complete_company_revision_graph('64600000-0000-4000-8000-0000000000c9', repeat('a', 64),
+		'64600000-0000-4000-8000-0000000000c2', repeat('a', 64), extensions.gen_random_uuid(), extensions.gen_random_uuid())$q$);
+	perform pg_temp.not_refused($q$select public.qorpera_runner_company_revision_snapshot('64600000-0000-4000-8000-0000000000c9', repeat('a', 64),
+		'64600000-0000-4000-8000-0000000000c2', repeat('a', 64), extensions.gen_random_uuid(), extensions.gen_random_uuid())$q$);
+	perform pg_temp.not_refused($q$select public.qorpera_runner_authorize_company_revision_verification('64600000-0000-4000-8000-0000000000c9',
+		repeat('a', 64), '64600000-0000-4000-8000-0000000000c2', repeat('a', 64), extensions.gen_random_uuid(), extensions.gen_random_uuid(),
+		extensions.gen_random_uuid())$q$);
+	perform pg_temp.not_refused($q$select public.qorpera_runner_finalize_company_revision_verification('64600000-0000-4000-8000-0000000000c9',
+		repeat('a', 64), '64600000-0000-4000-8000-0000000000c2', repeat('a', 64), extensions.gen_random_uuid(), extensions.gen_random_uuid(),
+		extensions.gen_random_uuid())$q$);
+	-- A job id in any spelling uuid input accepts names the job; anything else names none.
+	perform pg_temp.refuses(format('select public.qorpera_confirm_agent_todo_publication(%L, %L)',
+		jsonb_build_object('jobId', '{' || replace(b ->> 'jobId', '-', '') || '}'), '{}'));
 end $$;
 
 -- The snapshot bootstrap: the worker skips a folder-v2 company's job, and finalizing it or seeding a Co-Founder refuses.
@@ -254,14 +278,10 @@ begin
 		extensions.gen_random_uuid(), extensions.gen_random_uuid(), '{}', '{}', false, false, 'queued')$q$);
 	perform pg_temp.not_refused($q$select public.qorpera_finalize_company_bootstrap('64600000-0000-4000-8000-0000000000d5',
 		extensions.gen_random_uuid(), '{}', '{}', '{}', '{}', '{}')$q$);
-	begin
-		if (public.qorpera_claim_company_bootstrap(extensions.gen_random_uuid(), 60) #>> '{job,id}') is distinct from '64600000-0000-4000-8000-0000000000d5'
-			and not exists (select 1 from public.qorpera_company_bootstrap_jobs where id = '64600000-0000-4000-8000-0000000000d5' and state = 'leased') then
-			raise exception 'The worker still claims a snapshot-v1 job' using errcode = 'QTF03'; end if;
-	exception when others then
-		if sqlstate = 'QTF03' then raise; end if;
-		if sqlstate = '0A000' then raise exception 'A snapshot-v1 bootstrap job was refused as folder-v2'; end if;
-	end;
+	set local session_replication_role = replica;
+	if public.qorpera_claim_company_bootstrap(extensions.gen_random_uuid(), 60) ->> 'jobId' is distinct from '64600000-0000-4000-8000-0000000000d5' then
+		raise exception 'The worker still claims a snapshot-v1 job'; end if;
+	set local session_replication_role = origin;
 end $$;
 
 -- The legacy pause, and the old row writers (contract 5.6).

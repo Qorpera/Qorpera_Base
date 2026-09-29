@@ -111,8 +111,8 @@ before any lock. The error is 0A000, "This Company File path does not serve fold
   company is created by one commit (C2).
 - **The legacy pause** refuses: `folder-v2` companies stop through `qorpera_folder_pause`, which drains effects.
 - **Old row writers:** `put_profile_staff`, `delete_profile_staff`, `put_staff_provider_model`,
-  `confirm_agent_todo_publication`. The binding check reads the run's job, and accepts the job id in any letter case,
-  as the run lookup does.
+  `confirm_agent_todo_publication`. The binding check reads the run's job, and reads the job id as the run lookup
+  does (any spelling uuid input accepts).
 - **Left as they are, on purpose:**
   - `upsert_cloud_routine`: F2-6 (#523) decides its `folder-v2` rule. It refuses new routines, but still accepts saves
     of routines that existed as rows before the company became `folder-v2` (test 708);
@@ -121,14 +121,15 @@ before any lock. The error is 0A000, "This Company File path does not serve fold
     outside the authority journal and after the commit's rank-6 and rank-7 locks. The grant is a widening, so the
     authority check does not need a journal row for it. Writing it through the folder's grant path, in the commit
     that creates the agent, belongs to C2 (creation) and C1c-3 (lock order);
-  - `verify_company_path_file` and `_tree`: they register uploaded bytes, and the folder core has no other way to
-    get them until C1d's byte check replaces them;
+  - `verify_company_path_file` and `_tree`: service-role functions that register uploaded bytes; the folder core has
+    no other way to get them until C1d's byte check replaces them. Members have no upload path for `folder-v2` at all
+    until C1d's upload intents;
   - `answer_action_review`'s "Always allow", which F2-4 accepts until C3 writes the rule file;
   - `member_company_file_mode`, which still reports `legacy` for `folder-v2` until the web client's branch (C4);
   - `qorpera_company_uses_path_gateway`: the web's Company File page reads it, so its meaning stays; the object
     paths check the core themselves;
-  - a snapshot bootstrap job left from before a company became `folder-v2` stays queued, and the company stays hidden
-    until C2's creation replaces the old chain.
+  - a snapshot bootstrap job left from before a company became `folder-v2` stays queued (and the company stays hidden
+    if the job set `hidden_until_ready`) until C2's creation replaces the old chain.
 
 **Test 646** calls every guarded function on a `folder-v2` company and expects 0A000, with a snapshot-v1 control
 for each that must not be refused (the Storage policies and the bootstrap claim included). Each guard was removed in
