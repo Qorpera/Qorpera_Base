@@ -212,6 +212,90 @@ function workerWakeFixture(kind: "worker-dispatch" | "worker-completion") {
 	return { identity, wake, silent, continuation };
 }
 
+/** Exactly what qorpera_machine_event_payload / qorpera_machine_event_view build. */
+function machineWakeFixture() {
+	const { identity, wake, continuation } = workerWakeFixture("worker-completion");
+	const eventId = randomUUID(),
+		machineId = randomUUID(),
+		commandId = randomUUID();
+	const machineWake: CloudWakeEnvelope = {
+		...wake,
+		// The key names the wake itself: every drain attempt is its own occurrence.
+		source: { kind: "machine-event", id: eventId, occurrenceKey: `machine-event:${randomUUID()}` },
+		policy: continuation,
+		payload: {
+			schema: "qorpera.machine-event/v1",
+			parentRunId: wake.parentRunId,
+			events: [
+				{
+					machine: "build-a",
+					machineId,
+					kind: "running",
+					at: "2026-09-28T05:53:26.087508+00:00",
+					machineState: "running",
+					command: null,
+					commandId: null,
+					commandState: null,
+					exitCode: null,
+					outputTail: null,
+				},
+				{
+					machine: "build-a",
+					machineId,
+					kind: "command",
+					at: "2026-09-28T05:55:01.100000+00:00",
+					machineState: "running",
+					command: "npm test",
+					commandId,
+					commandState: "failed",
+					exitCode: 2,
+					outputTail: "1 test failed",
+				},
+				{
+					machine: "build-b",
+					machineId: randomUUID(),
+					kind: "stopped",
+					at: "2026-09-28T05:56:00.000000+00:00",
+					machineState: "stopped",
+					command: null,
+					commandId: null,
+					commandState: null,
+					exitCode: null,
+					outputTail: null,
+				},
+			],
+			stillWaiting: 0,
+		},
+	};
+	return { identity, wake: machineWake };
+}
+
+describe("machine event envelopes", () => {
+	it("admits a machine event as an internal continuation in its parent's conversation", () => {
+		const { identity, wake } = machineWakeFixture();
+		const parsed = parseCloudWakeEnvelope(wake, identity);
+		expect(parsed.source.kind).toBe("machine-event");
+		expect(parsed.policy).toMatchObject({ initial: "optional", final: "optional" });
+	});
+	it.each([
+		(wake: CloudWakeEnvelope) => ({ ...wake, actorUserId: randomUUID() }),
+		(wake: CloudWakeEnvelope) => ({ ...wake, parentRunId: null }),
+		(wake: CloudWakeEnvelope) => ({ ...wake, payload: { ...wake.payload, schema: "qorpera.worker-completion/v1" } }),
+		(wake: CloudWakeEnvelope) => ({ ...wake, payload: { ...wake.payload, events: [] } }),
+		(wake: CloudWakeEnvelope) => ({
+			...wake,
+			payload: { ...wake.payload, events: [{ ...(wake.payload.events as object[])[1], kind: "shell" }] },
+		}),
+		(wake: CloudWakeEnvelope) => ({
+			...wake,
+			payload: { ...wake.payload, events: [{ ...(wake.payload.events as object[])[1], extra: true }] },
+		}),
+	])("rejects a machine event that is not exactly what the kernel admits %#", (mutate) => {
+		const { identity, wake } = machineWakeFixture();
+		expect(() => parseCloudWakeEnvelope(mutate(wake), identity)).toThrow();
+	});
+});
+
 describe("worker dispatch and completion envelopes", () => {
 	it("admits a blank worker with a complete dispatch and no public mouth", () => {
 		const { identity, wake } = workerWakeFixture("worker-dispatch");
