@@ -166,6 +166,8 @@ begin
 	insert into public.qorpera_execution_run_budgets(run_id) values (v_run);
 end $$;
 -- A snapshot-v1 company whose run, job, native lease and compute identity match, for the direct lease check's control.
+-- The company itself goes in with triggers on, so it has its Company File row as every real company does.
+set session_replication_role = origin;
 insert into auth.users(id,email) values ('64800000-0000-4000-8000-000000000003','fence-race-snapshot@example.test');
 insert into public.qorpera_profiles(id,name,created_by_user_id)
 values ('64800000-0000-4000-8000-000000000011','Run fence snapshot control','64800000-0000-4000-8000-000000000003');
@@ -173,6 +175,12 @@ insert into public.qorpera_profile_members(profile_id,user_id,email,display_name
 values ('64800000-0000-4000-8000-000000000011','64800000-0000-4000-8000-000000000003','fence-race-snapshot@example.test','Owner','owner');
 insert into public.qorpera_company_environments(id,profile_id,name,contract_version,created_by_user_id)
 values ('64800000-0000-4000-8000-000000000021','64800000-0000-4000-8000-000000000011','Environment',1,'64800000-0000-4000-8000-000000000003');
+do $$
+begin
+	if not exists (select 1 from public.qorpera_company_files where environment_id = '64800000-0000-4000-8000-000000000021'
+		and core is distinct from 'folder-v2') then raise exception 'The control company must be snapshot-v1 with its Company File row'; end if;
+end $$;
+set session_replication_role = replica;
 insert into public.qorpera_member_compute_identities(id, profile_id, ownership_kind, client_identity_id, display_name)
 values ('64800000-0000-4000-8000-0000000000e1', '64800000-0000-4000-8000-000000000011', 'company', extensions.gen_random_uuid(), 'Snapshot identity');
 insert into public.qorpera_runner_jobs(id, profile_id, environment_id, substrate_version_id, client_job_id, required_capability,
