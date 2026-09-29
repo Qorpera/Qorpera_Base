@@ -57,6 +57,18 @@ describe("a company out of computer hours", () => {
 		await f.company.refreshHoursWait();
 		f.view.update();
 		expect(f.shown()).toBe(true);
+		// Read out by screen readers as a status, not an alert.
+		const status = [...f.view.el.querySelectorAll<HTMLElement>("[role=status]")].find((element) =>
+			element.textContent?.includes(NOTICE),
+		);
+		expect(status).toBeDefined();
+		// An archived conversation takes no new work: it says only that it is archived.
+		f.company.store.set({ sessions: [{ ...session, staffAgentId: staff.id, status: "closed" }] });
+		f.view.update();
+		expect(f.shown()).toBe(false);
+		f.company.store.set({ sessions: [{ ...session, staffAgentId: staff.id }] });
+		f.view.update();
+		expect(f.shown()).toBe(true);
 		vi.mocked(f.api.companyWaitingForHours).mockResolvedValue(false);
 		await f.company.refreshHoursWait();
 		f.view.update();

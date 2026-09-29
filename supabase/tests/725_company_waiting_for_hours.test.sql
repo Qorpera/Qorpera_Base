@@ -29,10 +29,11 @@ insert into public.qorpera_computer_hour_usage (profile_id, metered_at, run_seco
 values ('30000000-0000-4000-8000-000000000010', clock_timestamp(), 20000, 20000);
 select pg_temp.wake_assert(not pg_temp.waiting_as('30000000-0000-4000-8000-000000000002'), 'Switched off: not waiting');
 
--- Switched on, at zero: every member, founder or not, sees it.
+-- Switched on, at zero: every member, founder, contributor or viewer, sees it.
 update public.qorpera_computer_hour_billing set zero_rule_since = clock_timestamp() - interval '1 second';
 select pg_temp.wake_assert(pg_temp.waiting_as('30000000-0000-4000-8000-000000000002')
-	and pg_temp.waiting_as('30000000-0000-4000-8000-000000000001'), 'At zero: waiting');
+	and pg_temp.waiting_as('30000000-0000-4000-8000-000000000001')
+	and pg_temp.waiting_as('30000000-0000-4000-8000-000000000003'), 'At zero: waiting');
 
 -- Hours arrive: no longer waiting.
 insert into public.qorpera_computer_hour_sources (kind, profile_id, user_id, granted_seconds, expires_at, dry_run)
