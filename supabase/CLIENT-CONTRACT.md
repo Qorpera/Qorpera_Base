@@ -37,9 +37,40 @@ sign-in, OTP, OAuth providers, and authorization-code exchange
 (`viewer`, `contributor`, `admin`, `owner`) are cloud state read through the
 profile RPCs; RLS is the second read boundary.
 
+Founders (2026-09-28, migration 20260928248100): every member with the role
+`owner` is a founder, and a company may have several. Clients name the role
+"founder".
+- `qorpera_update_profile_member_role`: a founder may make a member `owner`.
+  A founder may step down (change their own role) while another founder
+  remains and no company setup runs for them (42501 otherwise). Nobody else
+  changes a founder. Admins still change contributors and
+  viewers only.
+- `qorpera_remove_profile_member`: founders remove any member except a fellow
+  founder, admins included. Admins remove contributors and viewers.
+- `qorpera_leave_hosted_profile`: anyone leaves, except the last member (who
+  deletes instead), the last founder while others remain, and a founder while
+  company setup runs for them (42501).
+- `qorpera_delete_hosted_profile`: only the last member. Since 20260928249150 it
+  requests the deletion: the company disappears at once (no role for anyone, gone
+  from `qorpera_list_hosted_profiles` and the founding lobby, the member's access
+  state turns `revoked`) and all its work stops. Its rows are removed later, once
+  the servers hold nothing of it (deploy/first-node/RUNTIME-COMPANY-DELETE.md). A
+  second call answers 42501, like any call for a company the caller is not in.
+- Deleting an account (operators only; no client RPC; migration
+  20260928249180) takes the person's memberships as a leave does, with the
+  same refusals, and is also refused for the only member of a company that is
+  not being deleted. It never removes company data: conversations, messages
+  and runs keep naming the person, as they do after a leave. Closing an
+  account instead (a soft delete, an update) triggers none of this; the close
+  must make the same removals and refusals itself.
+- `qorpera_profile_team_info` capabilities add `manage_founders`, `leave` and
+  `delete_company` for the caller; `leave` also tells a founder whether they
+  may step down. A cloud without several founders omits
+  them; a client then falls back to "the owner deletes, others leave".
+
 ## 2. Member-callable RPCs (security-definer, granted to `authenticated`)
 
-164 functions, grouped for navigation. Signatures: see the migration that defines each.
+175 functions, grouped for navigation. Signatures: see the migration that defines each.
 
 
 ### Members, presence, friends, feedback (18)
@@ -233,7 +264,8 @@ profile RPCs; RLS is the second read boundary.
   `canManageCompanyRules` (owner or admin) and `rules`: every active company
   rule plus the caller's own (`id`, `scope` `company|member`, `memberUserId`,
   `when`, `outcome` `ask_first|allow_automatically`, `createdVia`
-  `settings|card|agent`, `createdByUserId`, `createdByStaffAgentId`,
+  `settings|card|agent|folder` (`folder`: a company rule from the company's
+  `rules/` files, folder-v2 companies only), `createdByUserId`, `createdByStaffAgentId`,
   `createdAt`, `updatedAt`). Any member, viewers included. A rule with
   `createdVia: agent` was added by an agent (`createdByStaffAgentId`) when the
   member asked it to: always one of the member's own Ask first rules, which the
@@ -244,9 +276,13 @@ profile RPCs; RLS is the second read boundary.
   sentence, 1-280 characters after trimming. Company rules: owners and admins
   (42501 otherwise); a personal rule belongs to its author only. 54000 when
   the company's rules pass 48 KiB of text or one member's pass 16 KiB (what
-  the reviewer reads for one action). Returns the rule.
+  the reviewer reads for one action). Returns the rule. A folder-v2 company
+  keeps its company rules in `rules/` files: saving a company rule there is
+  refused with 55000; personal rules are unchanged.
 - `qorpera_archive_review_rule(p_profile_id, p_rule_id)`: removes a rule
   (again: no change). Company rules: owners and admins; personal: its author.
+  A rule that comes from a `rules/` file (`createdVia: folder`) is refused with
+  55000: delete the file instead.
 - `qorpera_answer_action_review(p_review_id, p_client_input_id, p_answer,
   p_rule_text?, p_sponsor_binding_id?, p_sponsor_version?)` answers an approval
   card (`authorization_request` whose `entry.data.schema` is
@@ -379,6 +415,59 @@ profile RPCs; RLS is the second read boundary.
 - `qorpera_session_profile_id`
 - `qorpera_update_profile_member_role`
 
+### Founding lobby (20260928248200_company_founding_lobby)
+
+A founding team starts one company together. The table is a company row with
+its members; nothing else exists until Start (no Company File, Co-Founder or
+wake), so no agent runs and nothing is charged before it.
+
+- `qorpera_company_founding_available()` → boolean. False until new companies
+  are created on the company folder; until then the hub keeps
+  `qorpera_create_cloud_company`, and opening or starting a table is refused
+  (`0A000`).
+- `qorpera_open_company_founding(p_client_creation_id, p_company_name)` opens
+  a table with the caller's seat; repeat-safe per creation id. Needs a
+  confirmed email. A creation id that already belongs to a company that is not
+  a table is refused (`23505`).
+- `qorpera_read_company_founding(p_profile_id)` → `qorpera.company-founding/v1`:
+  `companyName`, `vision` (the description draft), `phase` (`open`,
+  `started`), `revision`, `seats` (`userId`, `displayName`, `state` `invited` or
+  `joined`, `role`, `ready`, `modelLoginReady`, `creator`), `waitingFor`, `me`
+  (`state`, `canEdit`, `canManage`, `canStart`) and `start` (`startedAt`,
+  `startedByUserId`, `revision`, `clientStartId`, `companyReady`) once started.
+  Anyone with a seat, invited or joined, may read it; after Start only founders
+  who are still members.
+- `qorpera_list_company_foundings()` → the caller's open tables and
+  invitations, and started tables whose company is not ready yet.
+- `qorpera_update_company_founding(p_profile_id, p_expected_revision,
+  p_company_name, p_vision)`, `qorpera_set_founder_role(p_profile_id,
+  p_expected_revision, p_role)` (at most 300 characters) and
+  `qorpera_set_founder_ready(p_profile_id, p_expected_revision, p_ready)`.
+  A stale revision is `PT412`. Ready needs the caller's own usable ChatGPT
+  account (`55000` otherwise; a missing `p_ready` is `22023`) and holds only
+  for that revision: a change to the name, description, a role or who sits at
+  the table clears every Ready.
+- `qorpera_invite_company_founder(p_profile_id, p_friend_user_id)`: any joined
+  founder invites an accepted friend of their own; at most eight seats
+  (`54000`). `qorpera_respond_company_founding(p_profile_id, p_accept)` (needs
+  a confirmed email): joining makes the caller a contributor until Start;
+  declining returns `{"state":"declined"}`.
+- `qorpera_remove_company_founder(p_profile_id, p_user_id)`: your own seat
+  (returns `{"state":"left"}`), an invitation you sent, or, for the table's
+  creator, any other seat. Invitations a leaving founder sent go with them.
+  The creator, the table's only owner, closes it with
+  `qorpera_delete_hosted_profile`; the web offers that once they sit there
+  alone.
+- `qorpera_start_company_founding(p_profile_id, p_expected_revision,
+  p_client_start_id)` (needs a confirmed email): any joined founder, once every
+  joined founder is Ready with a usable account of their own. One step, repeat-safe: every founder at
+  the table becomes `owner`, unanswered invitations are withdrawn, and the
+  description and roles become the company's first files (`vision/vision.md`
+  and the Co-Founder's first todo). The first run is paid by the caller's own
+  account.
+- While a table is open, members join only through a seat, email invitations
+  are refused and roles do not change; `qorpera_list_hosted_profiles` leaves it
+  out.
 
 ### Mentions (20260928010000_runtime_room_mentions)
 
@@ -397,6 +486,44 @@ profile RPCs; RLS is the second read boundary.
   `latestAt`). `qorpera_mark_member_mentions_seen(p_session_id)` marks the
   caller's mentions in a conversation seen. The author is never told about
   their own post.
+
+### Computer hours (20260928248000_runtime_computer_hours_meter)
+
+- Contract: section 19, 2026-09-28 amendment "computer hours"; design
+  `deploy/first-node/RUNTIME-COMPUTER-HOURS.md`. This step measures only:
+  nothing is charged or stopped.
+- `qorpera_read_company_computer_hours(p_profile_id, p_month date default
+  null)` → `qorpera.company-computer-hours/v1`: `profileId`, `month`
+  (`YYYY-MM`, the calendar month in `timeZone` `Europe/Copenhagen`; default
+  the current one), `usedStandardSeconds` (whole standard seconds; one
+  computer hour = 3600), `byKind` (`companyMachines`, `agentMachines`,
+  `codingMachines`, `runs`, standard seconds rounded per kind, so their sum
+  may differ from the total by a few seconds), `awakeNow` (the same kinds,
+  counted now), `meteredUntil` (the meter counts up to about a minute
+  ago) and, from 20260928249200, `waitingForHours` (true while the zero rule
+  holds the company's new work: show "Waiting for computer hours"). Any
+  member of the company, viewers included; anyone else gets 42501. While
+  the rule holds a company, `qorpera_enqueue_execution_run` and
+  `qorpera_enqueue_runner_job` refuse new work with 55000 ("Waiting for
+  computer hours: the company has none left").
+  A client shows "Not measured yet" while the function is missing (PGRST202).
+
+- 20260928248910_runtime_computer_hours_payments:
+  `qorpera_list_computer_hour_offers()` → `qorpera.computer-hour-offers/v1`:
+  `items` (`itemKey`, `kind` `plan` | `credits`, `name`, `priceMinor` in
+  øre excluding VAT, `currency` `dkk`, `hours`: a plan's hours a month or a
+  pack's hours, `available`: whether it is on sale to this member now; credits
+  still need a founder of the company, and a member who already has a plan
+  changes it on Stripe's billing page, both of which checkout checks). Before live
+  payments only test accounts an operator enrolled see anything available, in
+  Stripe's test mode; a client shows an item that is not available as not for
+  sale. Any signed-in member.
+  `qorpera_read_my_computer_plan()` → `qorpera.my-computer-plan/v1`: `mode`
+  (`dry_run` until live payments), `plan` (null, or `itemKey`, `status`,
+  `periodStart`, `periodEnd`, `cancelAtPeriodEnd`) and `hours` (null until
+  live payments, since members see only measured hours before then; then
+  `grantedSeconds` this period and `companies` (`profileId`, `seconds` this
+  period paid by the plan)). The signed-in member's own plan only.
 
 ## 3. Realtime
 
@@ -459,8 +586,21 @@ machine.
 - `native-provider-login` — a member starts the provider-native login handoff
   (Codex / Claude) that runs in an isolated cloud login VM; the client only
   hands the member the link and shows status.
+- `computer-billing` (20260928248910) — computer hours payments. The web app
+  calls `POST /functions/v1/computer-billing/checkout` with the member's
+  bearer token and `{itemKey, profileId?}` (`profileId` for credits, which
+  only a founder of that company may buy) and gets `{url}` (Stripe Checkout)
+  or `409 {refused: "not_a_founder" | "has_plan" | "item_unavailable"}`;
+  `POST .../portal` returns `{url}` (Stripe's billing page) or
+  `409 {refused: "no_customer"}`. Only origins in `QORPERA_WEB_ORIGINS` may
+  call; every answer from these two routes, errors too, carries the CORS
+  headers. `/webhook` is Stripe's alone. Stripe returns the member to
+  `QORPERA_BILLING_RETURN_URL` (`https://app.qorpera.com/#/account`) with
+  `?checkout=done` or `?checkout=cancelled` after the hash; hours arrive with
+  Stripe's webhook, not with the return.
 - `profile-invitation-email`, `company-file-verifier`, `artifact-gc-worker`,
-  `runner-control`, `runner-broker`, `runner-orchestrator` — service or
+  `runner-control`, `runner-broker`, `runner-orchestrator`,
+  `computer-hour-notices` (20260928249160, founders' hour emails) — service or
   runner authority only. Clients never call them.
 
 ## 6. Stability by Order (what a client may build now)

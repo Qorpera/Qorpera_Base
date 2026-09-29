@@ -73,9 +73,40 @@ export function createCompanyComputerStartSession(options: {
 	operations: CloudNativeToolOperations;
 	descriptor: CompanyComputerStartDescriptor;
 	registry: CompanyComputerStartRegistry;
+	/** Whether this run's native route reaches a computer; every one of the company's when omitted. */
+	reaches?: (companyComputerId: string) => boolean;
 }): { tools: readonly CompanyComputerTool[]; close(): Promise<void> } {
-	const descriptor = parseCompanyComputerStartDescriptor(options.descriptor, options.run);
-	if (!descriptor) throw new Error("OFFICE_START_UNAVAILABLE");
+	const offered = parseCompanyComputerStartDescriptor(options.descriptor, options.run);
+	if (!offered) throw new Error("OFFICE_START_UNAVAILABLE");
+	// The computer to start is the one placement picks when the agent asks, not when the
+	// run began: other agents may have taken its seats since, and placement then adds
+	// another computer. A request key keeps the computer it was first sent for, so a
+	// replay is the same request. With nothing to start now, or a computer this run's
+	// route cannot reach, the request names the computer the run was offered.
+	const targets = new Map<string, CompanyComputerStartDescriptor>();
+	const target = async (operationKey: string, signal: AbortSignal): Promise<CompanyComputerStartDescriptor> => {
+		const known = targets.get(operationKey);
+		if (known) return known;
+		const current = parseCompanyComputerStartDescriptor(
+			await cloudToolRequest(
+				(checked) =>
+					options.registry.call(
+						"qorpera_native_office_start_descriptor",
+						{ p_binding: options.run.binding },
+						checked,
+					),
+				signal,
+			),
+			options.run,
+		);
+		const chosen = current && (options.reaches?.(current.scope.companyComputerId) ?? true) ? current : offered;
+		if (targets.size >= 64) {
+			const oldest = targets.keys().next();
+			if (!oldest.done) targets.delete(oldest.value);
+		}
+		targets.set(operationKey, chosen);
+		return chosen;
+	};
 	const lifetime = new AbortController();
 	const pattern = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,191}$/;
 	const parse = (value: JsonValue): { operationKey: string } => {
@@ -88,8 +119,8 @@ export function createCompanyComputerStartSession(options: {
 		name: "computer_start" satisfies CloudRuntimeToolOperation,
 		source: "runtime",
 		description:
-			`${COMPANY_COMPUTER_TOOL_VERSION}. Request startup of the cloud shared office for this company. ` +
-			"An accepted request can remain pending while the provider prepares the office; it is not permission to use screens, browser or shell. " +
+			`${COMPANY_COMPUTER_TOOL_VERSION}. Request a computer for this agent: starts the company machine that hosts it (one that is off or already starting), or another machine when every computer on the running machines is in use. ` +
+			"An accepted request can remain pending while the machine is prepared or waits for room on the servers; it is not permission to use the computer, browser or shell. " +
 			"Use a stable operationKey for the same request. An uncertain result requires reconciliation, never a new key. " +
 			"The accepted request survives this session ending. After activation and successful completion of this run, an internal agent wake continues pending work with the original request and completed receipts. Finish this run normally; do not poll or create another start request. No member device or provider credentials are used.",
 		inputSchema: {
@@ -105,6 +136,7 @@ export function createCompanyComputerStartSession(options: {
 				throw new Error("COMPUTER_RUN_MISMATCH");
 			const signal = AbortSignal.any([context.signal, options.run.signal, lifetime.signal]);
 			signal.throwIfAborted();
+			const descriptor = await target(args.operationKey, signal);
 			return options.operations.execute({
 				operation: {
 					tool: "computer_start",

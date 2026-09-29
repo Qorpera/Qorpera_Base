@@ -11,6 +11,7 @@
 - Added `cloud-agent-folder`: `cloudAgentFolder(agent)`, the one resolver of an agent's folder in the company folder (contract 5.6), `agents/<staffAgentId>` until agents have named folders with an `agent.md` index.
 - `CloudMemberCompanyAccessDenied`: the member Company File client's refusal (401/403) is now its own error class, with the same message, so a caller can tell a closed folder from an outage.
 - Added `cloud-skill-file`: the one SKILL.md parser and writer (name rule, YAML front matter with `description`, body, line endings kept) shared by the runtime skill tools and the web client.
+- Added `CloudMemberCompanyComputerClient.agentComputer()` (the computer that shows an agent's screen; `undefined` on a backend without it) and the `AGENT_ON_OTHER_COMPUTER` screen refusal.
 - `SupabaseCloudPresenceTransport` takes any client with `channel`/`removeChannel` and just the three presence device calls (`PresenceDevices`), so the web app joins presence without the whole hosted primary.
 
 - `CloudCompanyComputerStart.withdraw(generation, requestId, signal)` takes back the member's own idle wake request (`qorpera_withdraw_runtime_office_wake`). It never cancels the wake or a first start; it lets idle stop the computer one minute after it is up once every requester has withdrawn and nothing used it.
@@ -55,3 +56,6 @@
 - Shared office start, status recovery and exact cancellation APIs for desktop and web. Requests retain caller identity for reconciliation and expose no provider paths, credentials or guest execution. The common intent parser also validates native startup results.
 
 - `company-state-files`: the shared reader and canonical writers for the company folder's structured files (contract 5.6; `deploy/first-node/RUNTIME-COMPANY-STATE-FILES.md`): vision, agent, sections, group chat, connection, rule, routine, todo and worker brief and results. `parseCompanyStateFile` answers null for an ordinary file, the parse, or line-numbered problems, the same for the same bytes; `companyPathKey` classifies on the folder key; `companyStateName` and `freeCompanyStateName` make folder names; instants come back in one canonical form; `setCompanyStateSettings` changes typed settings and keeps every other byte. Nothing calls it yet.
+
+- `companyStateSeedTree` lists a new company's seeded folder (vision, sections, the Co-Founder's `agent.md` with its first job, and the empty `agents/groups/`, `connections/`, `skills/`, `rules/`), with `COMPANY_STATE_SEEDED_PATHS`, `COMPANY_STATE_COFOUNDER_HANDLE` and `COMPANY_STATE_COFOUNDER_INSTRUCTIONS`. The founding table's `vision`, `founders` (a `- name: role` line each under "How we work") and `firstTodo` (at `COMPANY_STATE_FIRST_TODO_PATH`) go in too; it throws rather than seed a file that would not parse.
+- An agent's instructions refuse control characters other than tab and line breaks.

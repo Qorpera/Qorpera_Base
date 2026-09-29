@@ -80,7 +80,8 @@ $$;
 reset role;
 select set_config('request.jwt.claims', '', false);
 
--- The owner cannot leave -- deletion is the owner's exit.
+-- The last founder can neither leave nor delete while a member remains (20260928248100). They
+-- remove the member, and then, as the last member, delete instead of leaving.
 select set_config('request.jwt.claims', '{"sub":"80000000-0000-4000-8000-00000000000a","email":"sep-owner-a@example.test","role":"authenticated","user_metadata":{}}', false);
 set role authenticated;
 
@@ -91,15 +92,32 @@ begin
 		perform public.qorpera_leave_hosted_profile(v_profile);
 	exception when insufficient_privilege then v_ok := true;
 	end;
-	if not v_ok then raise exception 'the owner was allowed to leave'; end if;
+	if not v_ok then raise exception 'the last founder left while a member remained'; end if;
+	v_ok := false;
+	begin
+		perform public.qorpera_delete_hosted_profile(v_profile);
+	exception when insufficient_privilege then v_ok := true;
+	end;
+	if not v_ok then raise exception 'the company was deleted while another member remained'; end if;
 
-	-- And the owner deletes: the profile and its whole graph go.
+	perform public.qorpera_remove_profile_member(v_profile, '80000000-0000-4000-8000-00000000000b');
+	v_ok := false;
+	begin
+		perform public.qorpera_leave_hosted_profile(v_profile);
+	exception when insufficient_privilege then v_ok := true;
+	end;
+	if not v_ok then raise exception 'the last member left instead of deleting'; end if;
+
+	-- The last member deletes: the profile and its whole graph go.
 	perform public.qorpera_delete_hosted_profile(v_profile);
 end
 $$;
 
 reset role;
 select set_config('request.jwt.claims', '', false);
+-- Deleting hides the company and stops its work; the deletion finishes once no node holds anything
+-- of it (20260928249150). This company has nothing on a node.
+select public.qorpera_finish_company_deletion(current_setting('qorpera_test.dl_profile')::uuid);
 
 do $$
 declare v_profile uuid := current_setting('qorpera_test.dl_profile')::uuid; v_seen integer;

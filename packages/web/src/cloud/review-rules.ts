@@ -20,7 +20,7 @@ export interface HostedReviewRule {
 	memberUserId: string | null;
 	when: string;
 	outcome: ReviewRuleOutcome;
-	createdVia: "settings" | "card" | "agent";
+	createdVia: "settings" | "card" | "agent" | "folder";
 	createdAt: string;
 	updatedAt: string;
 }
@@ -64,7 +64,7 @@ export function parseReviewRule(value: unknown): HostedReviewRule {
 	if (
 		(scope !== "company" && scope !== "member") ||
 		(outcome !== "ask_first" && outcome !== "allow_automatically") ||
-		!["settings", "card", "agent"].includes(createdVia)
+		!["settings", "card", "agent", "folder"].includes(createdVia)
 	)
 		throw new Error("Rule is invalid.");
 	return {

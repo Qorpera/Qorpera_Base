@@ -22,7 +22,9 @@ import { RailLayout } from "../ui/rail-layout.ts";
 import { blankSkeleton, pageSkeleton, railSkeleton, threadSkeleton } from "../ui/skeleton.ts";
 import { AuthController } from "./auth.ts";
 import { CompanyController } from "./company.ts";
+import { FoundingController } from "./founding.ts";
 import { MemberPictures } from "./member-pictures.ts";
+import { PlanPayments, takeCheckoutReturn } from "./plan-payments.ts";
 import { currentRoute, navigate, type Route } from "./router.ts";
 import { createConversationStarter } from "./start-conversation.ts";
 import { debounce } from "./state.ts";
@@ -33,6 +35,7 @@ import { ComputerPanels } from "./views/computer.ts";
 import { ConversationView } from "./views/conversation.ts";
 import { ExecutionNotices } from "./views/execution-notices.ts";
 import { FeedbackView } from "./views/feedback.ts";
+import { FoundingView } from "./views/founding.ts";
 import { HubController, renderHub } from "./views/hub.ts";
 import { LiveCompanyFileView } from "./views/live-company-file.ts";
 import { type MeetState, renderMeet } from "./views/meet.ts";
@@ -60,6 +63,15 @@ export function mountApplication(
 ): () => void {
 	const auth = new AuthController(cloud);
 	let hub = new HubController(api);
+	/** The founding table on screen, if any; one at a time, like the company. */
+	let founding: { controller: FoundingController; view: FoundingView } | undefined;
+	function teardownFounding(): void {
+		if (!founding) return;
+		founding.controller.dispose();
+		founding = undefined;
+		// Leaving a table's page: joins, answers and closes made there show on the hub.
+		void hub.refresh();
+	}
 	// Every initials disc on the page shows the person's own picture through this store.
 	const pictures = new MemberPictures(api);
 	setPersonPictures(pictures);
@@ -127,6 +139,8 @@ export function mountApplication(
 	// Taken from the page hash once at startup and on every route change; the
 	// broker appends it after the provider consent (see cloud/connectors.ts).
 	let connectorReturn = takeConnectorReturn();
+	// Stripe's checkout page sends the member back to the account page.
+	let checkoutReturn = takeCheckoutReturn();
 	let accountUserId: string | undefined;
 	let navigationOpen = false;
 	let navigationFocus: "rail" | "toggle" | undefined;
@@ -161,6 +175,7 @@ export function mountApplication(
 	}
 	function onRouteChange(): void {
 		connectorReturn = takeConnectorReturn() ?? connectorReturn;
+		checkoutReturn = takeCheckoutReturn() ?? checkoutReturn;
 		if (liveFile && liveFile.routeHash !== location.hash) {
 			const message = liveFile.leaveMessage();
 			if (message && !window.confirm(message)) {
@@ -194,6 +209,7 @@ export function mountApplication(
 	let teamFeedback: TeamFeedback = {};
 	let accountState: AccountViewState = {};
 	const accountPlan = h("div");
+	let accountPayments: PlanPayments | undefined;
 	let meetState: MeetState = {};
 	let unsubscribeCompany: (() => void) | undefined;
 	let homeReason: string | undefined;
@@ -213,6 +229,9 @@ export function mountApplication(
 	auth.store.subscribe(() => {
 		const userId = auth.userId;
 		if (userId !== accountUserId) {
+			// A return from Stripe belongs to the member who paid, not to whoever signs in next;
+			// the first sign-in of the page (back from Stripe) keeps it.
+			if (accountUserId !== undefined) checkoutReturn = undefined;
 			closeSettings(false);
 			closeFeedback(false);
 			accountUserId = userId;
@@ -220,9 +239,12 @@ export function mountApplication(
 			accountRevision++;
 			routeRevision++;
 			teardownCompany();
+			teardownFounding();
 			hub.dispose();
 			profiles = [];
 			accountState = {};
+			accountPayments?.dispose();
+			accountPayments = undefined;
 			meetState = {};
 			resolvingRoute = undefined;
 			routeError = undefined;
@@ -279,6 +301,12 @@ export function mountApplication(
 	 * text live only in their screens, so those stay until they are left. */
 	function redrawScreens(): void {
 		if (disposed) return;
+		// The founding table's page keeps its text between refreshes; a new language builds it again.
+		if (founding)
+			founding = {
+				controller: founding.controller,
+				view: new FoundingView(founding.controller, founding.view.drafts()),
+			};
 		notices?.dispose();
 		notices = undefined;
 		executionNotices.replaceChildren();
@@ -489,6 +517,12 @@ export function mountApplication(
 		}
 		if (!root!.contains(frame)) replace(root!, frame);
 		const route: Route = currentRoute();
+		// The account page's payments live while it shows: its notices go with it, and a failed
+		// read is tried again on the next visit.
+		if (route.name !== "account" && accountPayments) {
+			accountPayments.dispose();
+			accountPayments = undefined;
+		}
 		frame.classList.toggle(
 			"has-thread",
 			route.name === "company" && (route.section === "chat" || route.section === "new"),
@@ -497,8 +531,32 @@ export function mountApplication(
 			teardownCompany();
 			rail.hidden = true;
 			renderTopbar(topbar, shellContext(authState.user, route), undefined);
+			if (route.name !== "found") teardownFounding();
 			if (route.name === "hub") {
 				renderHub(hub, main);
+			} else if (route.name === "found") {
+				const userId = auth.userId!;
+				if (founding?.controller.profileId !== route.profileId) {
+					teardownFounding();
+					const controller = new FoundingController(api, userId, route.profileId, {
+						currentUserId: () => auth.userId,
+						onSeatChanged: () => void hub.refresh(),
+					});
+					founding = { controller, view: new FoundingView(controller) };
+					let companyListed = false;
+					controller.store.subscribe(() => {
+						if (founding?.controller !== controller) return;
+						// A started table's company joins the hub's list once it is ready.
+						if (!companyListed && controller.store.get().table?.start?.companyReady) {
+							companyListed = true;
+							void hub.refresh();
+						}
+						render();
+					});
+				}
+				// The table's page is kept and updated in place, never rebuilt (typing, focus and scroll).
+				if (!main.contains(founding.view.el)) replace(main, founding.view.el);
+				founding.view.update();
 			} else if (route.name === "account") {
 				const revision = accountRevision;
 				if (!accountState.loading && !accountState.loaded) {
@@ -524,11 +582,33 @@ export function mountApplication(
 				// The standalone account page shows the plan below the general settings.
 				// One panel across renders keeps an opened plan grid open; the general
 				// panel above already shows the account error.
-				renderPlan(accountPlan, accountState, undefined, {}, { showError: false });
+				if (checkoutReturn) {
+					accountPayments?.dispose();
+					accountPayments = undefined;
+				}
+				accountPayments ??= new PlanPayments(api, render, checkoutReturn === "done" ? "done" : undefined);
+				checkoutReturn = undefined;
+				accountPayments.load();
+				const payments = accountPayments;
+				renderPlan(
+					accountPlan,
+					accountState,
+					undefined,
+					{
+						payments: {
+							state: payments.state,
+							checkout: (itemKey) => payments.checkout(itemKey),
+							portal: () => payments.portal(),
+							companyName: (profileId) => profiles.find((item) => item.profileId === profileId)?.profileName,
+						},
+					},
+					{ showError: false },
+				);
 				main.append(accountPlan);
 			}
 			return;
 		}
+		teardownFounding();
 		if (company?.profile.profileId !== route.profileId) {
 			// Opening a company takes a round trip or two. Meanwhile its rail and page stand
 			// as placeholders, never a blank frame or the page it came from.
@@ -1098,7 +1178,9 @@ export function mountApplication(
 		closeFeedback(false);
 		auth.dispose();
 		hub.dispose();
+		teardownFounding();
 		teardownCompany();
+		accountPayments?.dispose();
 		pictures.reset();
 		if (personPictures() === pictures) setPersonPictures(undefined);
 		window.removeEventListener("hashchange", onRouteChange);

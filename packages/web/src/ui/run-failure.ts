@@ -6,6 +6,7 @@ import { phrase, t } from "./preferences.ts";
  * not causes) and the job status. One classification feeds both the sentence the
  * member reads and whether Try again is worth offering. */
 export type RunFailureKind =
+	| "computer_hours"
 	| "usage_limit"
 	| "credential"
 	| "dispatch"
@@ -17,7 +18,10 @@ export type RunFailureKind =
 	| "other";
 
 export function classifyRunFailure(lastError: string | undefined, jobStatus: "failed" | "cancelled"): RunFailureKind {
-	// A refused step carries the provider's fixed code (e.g. "[code=NATIVE_CREDENTIAL_SEALING:TIMEOUT]").
+	// The company ran out of computer hours and its hour to finish running work ended: the one
+	// code that decides the class, since it names the company's hours, not Qorpera's machinery.
+	if ((lastError ?? "").includes("[code=COMPUTER_HOURS_EXHAUSTED]")) return "computer_hours";
+	// Any other refused step carries the provider's fixed code (e.g. "[code=NATIVE_CREDENTIAL_SEALING:TIMEOUT]").
 	// It names Qorpera's own machinery, not a member's account or a time limit, so it
 	// never decides the class: the step stays "bridge", as it was before the code.
 	const error = (lastError ?? "").replace(/ \[code=[A-Z0-9_:]{1,85}\]/g, "");
@@ -39,6 +43,7 @@ export function classifyRunFailure(lastError: string | undefined, jobStatus: "fa
 }
 
 const REASONS: Record<RunFailureKind, string> = {
+	computer_hours: phrase("The company is out of computer hours. New work starts again once hours are added."),
 	usage_limit: phrase("Your model account has reached its usage limit."),
 	credential: phrase("Your model account needs to be connected again."),
 	dispatch: phrase("No computer could be started for this run. The problem is on Qorpera's side."),
@@ -58,8 +63,8 @@ export function runFailureReason(lastError: string | undefined, jobStatus: "fail
 /** Whether the run was interrupted rather than refused: its computer stopped
  * answering, a step got no answer in time, it was stopped for time, cancelled, or
  * never got a computer. Those are worth trying again as they are.
- * A reached usage limit or a disconnected account need the member to act first,
- * so their card offers Dismiss only and says what to do. */
+ * A reached usage limit, a disconnected account or a company out of computer hours
+ * need someone to act first, so their card offers Dismiss only and says what to do. */
 export function runFailureInterrupted(lastError: string | undefined, jobStatus: "failed" | "cancelled"): boolean {
 	const kind = classifyRunFailure(lastError, jobStatus);
 	return (

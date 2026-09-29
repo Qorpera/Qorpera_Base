@@ -15,7 +15,8 @@ begin
  perform pg_temp.path_claims('service_role');
 end $$;
 
--- Consumed after the existing real wake fixture, in one rollback transaction.
+-- Consumed after the existing real wake fixture. Migrations with their own commit end
+-- the fixture's transaction, so each block sets its own claims.
 do $$
 #variable_conflict use_variable
 declare
@@ -25,6 +26,7 @@ declare
  path text; document text; receipt jsonb; replay jsonb; events jsonb; stored_hash text; stored_body jsonb;
  input_id uuid; session_id uuid; run_id uuid; speaker jsonb; event_id uuid;
 begin
+ perform pg_temp.path_claims('service_role');
  select * into strict base from public.qorpera_execution_runs where id=(binding->>'runId')::uuid;
  path:='organization/rooms/'||room::text||'.json';
  document:=jsonb_build_object('schema','qorpera.company-room/v1','roomId',room,'key','history-room',
@@ -87,6 +89,10 @@ begin
  perform pg_temp.wake_assert((select value->'staff_speaker'=speaker from jsonb_array_elements(public.qorpera_read_session_events(session_id)) where value->>'event_id'=event_id::text),
   'Staff rename cannot relabel historical output');
  perform pg_temp.wake_error(format('update public.qorpera_session_event_speakers set display_name=%L where event_id=%L','Forged',event_id),'42501');
+ -- The last founder cannot leave while others remain (20260928248100): a second founder joins first.
+ insert into auth.users(id,email) values ('30000000-0000-4000-8000-0000000000f5','history-cofounder@example.test');
+ insert into public.qorpera_profile_members(profile_id,user_id,email,display_name,role)
+ values (base.profile_id,'30000000-0000-4000-8000-0000000000f5','history-cofounder@example.test','Co-founder','owner');
  delete from public.qorpera_profile_members where profile_id=base.profile_id and user_id='30000000-0000-4000-8000-000000000001';
  perform pg_temp.wake_error(format('select public.qorpera_read_session_events(%L)',session_id),'42501');
 end $$;

@@ -608,10 +608,12 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 				throw new Error("Warm slot bridge credential differs from its record");
 			}
 			// A retry of an attempt whose sandbox already retired finds its runner
-			// row bound to the old activation: the control plane keeps a pending
-			// runner's activation and refuses a second token for an active one.
-			// Fail fast with the reason instead of starting a sandbox that can
-			// never activate (the LXD provider refuses such replays the same way).
+			// row bound to the old activation. The control plane gives a pending
+			// runner no machine was ever reserved for to the new activation
+			// (20260928235000), and refuses one whose machine was reserved or that
+			// is active. Fail fast with the reason instead of starting a sandbox
+			// that can never activate (the LXD provider refuses such replays the
+			// same way).
 			let provisioned: unknown;
 			try {
 				provisioned = await this.#rpc(
@@ -647,11 +649,14 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 				slot,
 				hostPort: this.#config.portBase + slot * 2,
 				inboxPort: this.#config.portBase + slot * 2 + 1,
+				// The machine key names the attempt: the key of a released allocation stays taken, so a later
+				// attempt of the same run on the same slot needs its own.
 				instanceSha256: sha256(
 					JSON.stringify(
 						canonical({
 							host: this.#config.hostId,
 							adapter: this.adapterId,
+							acquisition: acquisitionId,
 							slot,
 							work: digest,
 							runtime: sha256(JSON.stringify(canonical(this.#config.nativeCompanyRuntime))),

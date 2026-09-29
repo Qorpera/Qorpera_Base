@@ -139,7 +139,7 @@ try {
 	assert.equal(nohome.decision, "deferred"); assert.equal(nohome.reason, "NO_IDENTITY_HOME");
 	const loginStill = JSON.parse(sql(`${service} select public.qorpera_runtime_node_placement_decide('${randomUUID()}','login','login-a');`));
 	assert.equal(loginStill.decision, "placed"); assert.equal(loginStill.reason, "ROUTED_NODE_FITS");
-	assert(sql(`select pg_get_functiondef('public.qorpera_reserve_runtime_machine(uuid,text,text,uuid,uuid,uuid,bigint)'::regprocedure);`).includes("p_provider_adapter,v_run.compute_identity_id)"), "run reservation passes the identity");
+	assert(sql(`select pg_get_functiondef('public.qorpera_reserve_runtime_machine(uuid,text,text,uuid,uuid,uuid,bigint)'::regprocedure);`).includes("p_provider_adapter,v_run.compute_identity_id,"), "run reservation passes the identity");
 	// Claim time: a queued job of the homed identity is invisible to an orchestrator on another adapter and claimed by the home one.
 	sql(`${service} select public.qorpera_register_runner_orchestrator('6a000000-0000-4000-8000-000000000001','home orchestrator','lxd',repeat('1',64),3600);
 	 select public.qorpera_register_runner_orchestrator('6a000000-0000-4000-8000-000000000002','away orchestrator','native-b',repeat('2',64),3600);`);
@@ -236,6 +236,13 @@ try {
 	assert.equal(jobLeast.decision, "placed"); assert.equal(jobLeast.reason, "IDENTITY_HOME_LEAST_LOADED");
 	const jobAway = decide("native", "native-a", identity);
 	assert.equal(jobAway.decision, "refused"); assert.equal(jobAway.reason, "NODE_IDENTITY_ELSEWHERE");
+	// A run whose previous attempt failed to start on node B (20260928249240): among the homes, B ranks last.
+	const decideLast = (provider, who, last) => JSON.parse(sql(`${service} select public.qorpera_runtime_node_placement_decide('${randomUUID()}','native','${provider}',${who ? `'${who}'` : "null"}::uuid,${last ? `'${last}'` : "null"}::uuid);`));
+	const homeAfterFailure = decideLast("lxd", identity, nodeB);
+	assert.equal(homeAfterFailure.decision, "placed"); assert.equal(homeAfterFailure.reason, "IDENTITY_HOME_LEAST_LOADED");
+	assert.equal(homeAfterFailure.preferredNodeId, nodeA, "the home where the start failed ranks last");
+	const failedHome = decideLast("native-b", identity, nodeB);
+	assert.equal(failedHome.decision, "refused"); assert.equal(failedHome.reason, "NODE_NOT_PREFERRED");
 	// Stateless Compute step 1, change 3: an identity whose login is in the vault has no home. While
 	// any capsule still needs a node's key it keeps the home rule; once only vault logins are
 	// active, placement is least loaded and any orchestrator may claim its runs.
@@ -306,10 +313,20 @@ try {
 	sql(`${service} ${observe(nodeA, mA)} ${observe(nodeB, mB)}`);
 	const currentInventory = JSON.parse(sql(`${service} select public.qorpera_runtime_node_placement_candidates('native');`));
 	assert.equal(currentInventory.find((c) => c.providerId === "native-a").eligible, true);
+	// A run's previous attempt failed to start on a node (20260928249240): without an identity home that node
+	// ranks after every other eligible node that fits, and is still chosen when it is the only one.
+	const decideAfter = (last) => JSON.parse(sql(`${service} select public.qorpera_runtime_node_placement_decide('${randomUUID()}','native','native-a',null::uuid,${last ? `'${last}'` : "null"}::uuid);`));
+	const usual = decideAfter(null).preferredNodeId;
+	const other = usual === nodeA ? nodeB : nodeA;
+	assert.equal(decideAfter(usual).preferredNodeId, other, "the node where the start failed ranks last");
+	assert.equal(decideAfter(other).preferredNodeId, usual, "a failure elsewhere leaves the usual choice");
+	sql(`update public.qorpera_runtime_node_observations set observed_at=clock_timestamp()-interval '5 minutes' where node_id='${other}';`);
+	assert.equal(decideAfter(usual).preferredNodeId, usual, "the failed node is still chosen when it is the only one that fits");
+	sql(`${service} ${observe(nodeA, mA)} ${observe(nodeB, mB)}`);
 	// Records: one row per allocation, attempts counted, decisions overwritten by the latest.
 	assert.equal(sql(`select attempts||' '||decision from public.qorpera_runtime_node_placements where allocation_id='${alloc1}';`), "2 placed");
 	// The patched reservations carry the chooser call.
-	for (const [fn, call] of [["public.qorpera_reserve_runtime_machine(uuid,text,text,uuid,uuid,uuid,bigint)", "qorpera_runtime_node_placement_decide(p_allocation_id,'native',p_provider_adapter,v_run.compute_identity_id)"], ["public.qorpera_reserve_runtime_login_machine(uuid,text,text,uuid,text)", "qorpera_runtime_node_placement_decide(p_allocation_id,'login',p_provider_adapter,v_identity.id)"], ["public.qorpera_reserve_runtime_account_refresh_machine(uuid,text,text,uuid,text)", "qorpera_runtime_node_placement_decide(p_allocation_id,'login',p_provider_adapter,v_identity.id)"]]) {
+	for (const [fn, call] of [["public.qorpera_reserve_runtime_machine(uuid,text,text,uuid,uuid,uuid,bigint)", "qorpera_runtime_node_placement_decide(p_allocation_id,'native',p_provider_adapter,v_run.compute_identity_id,"], ["public.qorpera_reserve_runtime_login_machine(uuid,text,text,uuid,text)", "qorpera_runtime_node_placement_decide(p_allocation_id,'login',p_provider_adapter,v_identity.id)"], ["public.qorpera_reserve_runtime_account_refresh_machine(uuid,text,text,uuid,text)", "qorpera_runtime_node_placement_decide(p_allocation_id,'login',p_provider_adapter,v_identity.id)"]]) {
 		const def = sql(`select pg_get_functiondef('${fn}'::regprocedure);`);
 		assert(def.includes(call), `${fn} not patched`);
 		assert(def.includes("v_placement jsonb"), `${fn} declare not patched`);
@@ -317,7 +334,7 @@ try {
 	// Non-service callers are refused.
 	const denied = spawnSync("docker", psql, { input: `set request.jwt.claims='{"role":"authenticated"}'; set role authenticated; select public.qorpera_runtime_node_placement_decide('${randomUUID()}','native','native-a');`, encoding: "utf8" });
 	assert.notEqual(denied.status, 0); assert.match(denied.stderr, /authority required|permission denied/);
-	console.log(JSON.stringify({ schema: "qorpera.runtime-node-placement-sql-proof/v1", migrations: migrations.length, twoNodePreference: true, identityHome: true, claimTimeHome: true, loginGateways: true, completedLoginsOnly: true, placementDeferral: true, inventoryReplace: true, refusalRecorded: true, routedReservationAdmitted: true, staleObservationExcluded: true, unboundAdapterUntouched: true, reservationsPatched: true, vaultLoginUnpinned: true, passed: true }));
+	console.log(JSON.stringify({ schema: "qorpera.runtime-node-placement-sql-proof/v1", migrations: migrations.length, twoNodePreference: true, identityHome: true, claimTimeHome: true, loginGateways: true, completedLoginsOnly: true, placementDeferral: true, inventoryReplace: true, refusalRecorded: true, routedReservationAdmitted: true, staleObservationExcluded: true, unboundAdapterUntouched: true, reservationsPatched: true, vaultLoginUnpinned: true, failedNodeLast: true, passed: true }));
 } finally {
 	if (started) spawnSync("docker", ["rm", "-f", container], { timeout: 30_000 });
 }
