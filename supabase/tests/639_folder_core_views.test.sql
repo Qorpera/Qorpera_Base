@@ -410,6 +410,24 @@ begin
 		'company_shared', 'normal');
 	if public.qorpera_folder_parent_reads_allowed(wk) then raise exception 'The completion''s parent check sees the coding reads'; end if;
 	perform pg_temp.raises(format('select pg_temp.vcommit(%L, %L, %L)', cv, 'coding-after-narrow', '[{"op":"mkdir","path":"code/refused"}]'), '42501');
+	-- With the turn over, reopened on the same machine the session carries its reads (still refused); moved to another
+	-- machine it starts clean.
+	perform pg_temp.fx(format('update public.qorpera_runner_jobs set lease_expires_at = clock_timestamp() - interval ''1 second'' where id = %L',
+		t ->> 'jobId'));
+	cv := pg_temp.open('coding_session', jsonb_build_object('workerId', w, 'attachmentToken', tok));
+	perform pg_temp.raises(format('select pg_temp.vcommit(%L, %L, %L)', cv, 'coding-same-machine', '[{"op":"mkdir","path":"code/refused"}]'), '42501');
+	set local session_replication_role = replica;
+	update public.qorpera_coding_machines set removing_at = clock_timestamp(), removed_at = clock_timestamp() where id = cm;
+	cm := extensions.gen_random_uuid();
+	insert into public.qorpera_coding_machines(id, kind, profile_id, environment_id, member_user_id, owner, machine_id_sha256, binding)
+	values (cm, 'member', '63200000-0000-4000-8000-000000000010', '63200000-0000-4000-8000-000000000020',
+		'63200000-0000-4000-8000-000000000002', 'exec-1', repeat('7', 64), '{}');
+	insert into public.qorpera_runtime_machine_allocations(id, profile_id, provider_adapter, instance_sha256, coding_machine_id, reserved_at)
+	values (cm, '63200000-0000-4000-8000-000000000010', 'lxd', repeat('6', 64), cm, clock_timestamp());
+	update public.qorpera_coding_sessions set attached_machine_id = cm where worker_id = w;
+	set local session_replication_role = origin;
+	cv := pg_temp.open('coding_session', jsonb_build_object('workerId', w, 'attachmentToken', tok));
+	perform pg_temp.expect(pg_temp.vcommit(cv, 'coding-new-machine', '[{"op":"mkdir","path":"code/new-machine"}]'), 1, 'saved');
 end $$;
 
 
@@ -443,18 +461,31 @@ declare
 	c_env constant uuid := '63200000-0000-4000-8000-000000000020'; c_screen2 constant uuid := '63900000-0000-4000-8000-0000000000e5';
 	a jsonb := pg_temp.stage('delta'); v jsonb := pg_temp.run('human', '63200000-0000-4000-8000-000000000002');
 	v2 jsonb := pg_temp.agent_b('63200000-0000-4000-8000-000000000002'); v3 jsonb := pg_temp.agent_b('63200000-0000-4000-8000-000000000002');
-	d jsonb; d1 jsonb; d2 jsonb; e jsonb;
+	d jsonb; d1 jsonb; d2 jsonb; e jsonb; gid uuid; rid uuid;
 begin
 	perform pg_temp.expect(pg_temp.commit('{"kind":"platform"}', 'follow-setup', jsonb_build_array(
 		jsonb_build_object('op','mkdir','path','follow'), jsonb_build_object('op','write','path','follow/f.txt','file',a),
 		jsonb_build_object('op','mkdir','path','carry'), jsonb_build_object('op','write','path','carry/k.txt','file',a))), 4, 'saved');
-	-- The holder run reads follow/f.txt itself (a model read); follow/ narrows.
+	-- The holder run reads follow/f.txt and secret/s.txt itself (model reads; secret/ through agent A's grant). The run's
+	-- set is checked under the run's own authority, not the desktop's company-wide one: live and detached, it saves.
+	-- Then follow/ narrows.
 	perform pg_temp.hold(v);
 	d := pg_temp.open('computer_desktop', jsonb_build_object('screenId','63900000-0000-4000-8000-0000000000e4','holderRunId',v ->> 'runId'));
-	e := pg_temp.read('follow/f.txt', v) -> 'entry';
-	perform public.qorpera_folder_record_release(c_env, v, extensions.gen_random_uuid(),
-		jsonb_build_array(jsonb_build_object('path', e ->> 'path', 'version', e ->> 'version', 'authority', e -> 'authority')), repeat('5', 64));
+	perform public.qorpera_folder_record_release(c_env, v, extensions.gen_random_uuid(), (select jsonb_agg(jsonb_build_object('path', x ->> 'path',
+		'version', x ->> 'version', 'authority', x -> 'authority')) from (select pg_temp.read(f, v) -> 'entry' as x
+			from unnest(array['follow/f.txt','secret/s.txt']) f) r), repeat('5', 64));
 	perform pg_temp.expect(pg_temp.vcommit(d, 'follow-before', '[{"op":"mkdir","path":"by-follow"}]'), 1, 'saved');
+	perform pg_temp.hold(null);
+	perform pg_temp.expect(pg_temp.vcommit(d, 'follow-before-detached', '[{"op":"mkdir","path":"by-follow-detached"}]'), 1, 'saved');
+	-- A changed pair is re-resolved under the run's authority too: with agent A's grant on secret/ replaced, the
+	-- detached save still saves.
+	select g.id, g.resource_id into gid, rid from public.qorpera_company_path_grants g
+	join public.qorpera_company_path_resources r on r.id = g.resource_id
+	where r.environment_id = c_env and r.path = 'secret' and g.revoked_at is null and g.principal_id = '63200000-0000-4000-8000-0000000000a1';
+	perform public.qorpera_folder_revoke(c_env, pg_temp.member(1), rid, gid);
+	perform public.qorpera_folder_grant(c_env, pg_temp.member(1), rid, 'staff_agent', '63200000-0000-4000-8000-0000000000a1', array['read','write']);
+	perform pg_temp.expect(pg_temp.vcommit(d, 'follow-regrant-detached', '[{"op":"mkdir","path":"by-follow-regrant"}]'), 1, 'saved');
+	perform pg_temp.hold(v);
 	perform public.qorpera_folder_set_resource(c_env, pg_temp.member(1), 'follow', 'subtree', 'company_shared', 'normal');
 	perform pg_temp.raises(format('select pg_temp.vcommit(%L, %L, %L)', d, 'follow-live', '[{"op":"mkdir","path":"refused"}]'), '42501');
 	perform pg_temp.hold(null);
@@ -482,6 +513,30 @@ begin
 	perform pg_temp.expect(pg_temp.vcommit(d2, 'carry-before', '[{"op":"mkdir","path":"by-carry"}]'), 1, 'saved');
 	perform public.qorpera_folder_set_resource(c_env, pg_temp.member(1), 'carry', 'subtree', 'company_shared', 'normal');
 	perform pg_temp.raises(format('select pg_temp.vcommit(%L, %L, %L)', d2, 'carry-after', '[{"op":"mkdir","path":"refused"}]'), '42501');
+	-- The carry ends with the machine's run: the seat changing hands (a new generation) starts clean, and so does a
+	-- restart (a new activation). A later view within the same run of the machine carries again.
+	perform pg_temp.fx(format('update public.qorpera_runtime_office_screens set generation = generation + 1 where id = %L', c_screen2));
+	d2 := pg_temp.open('computer_desktop', jsonb_build_object('screenId', c_screen2, 'holderRunId', v3 ->> 'runId'));
+	perform pg_temp.expect(pg_temp.vcommit(d2, 'carry-new-seat', '[{"op":"mkdir","path":"by-new-seat"}]'), 1, 'saved');
+	if (pg_temp.read('carry/k.txt', pg_temp.vactor(d2)) ->> 'found')::boolean then
+		raise exception 'A narrowed folder is out of the desktop''s company-wide view'; end if;
+	e := pg_temp.read('shared/a.txt', pg_temp.vactor(d2)) -> 'entry';
+	perform public.qorpera_folder_record_release(c_env, pg_temp.vactor(d2), extensions.gen_random_uuid(),
+		jsonb_build_array(jsonb_build_object('path', e ->> 'path', 'version', e ->> 'version', 'authority', e -> 'authority')), repeat('6', 64));
+	d1 := pg_temp.open('computer_desktop', jsonb_build_object('screenId', c_screen2, 'holderRunId', v3 ->> 'runId'));
+	if not exists (select 1 from public.qorpera_folder_view_reads where view_id = (d1 ->> 'viewId')::uuid) then
+		raise exception 'A view within the same run of the machine carries'; end if;
+	perform pg_temp.fx('update public.qorpera_runtime_office_activations set superseded_at = clock_timestamp()
+		where activation_id = ''63900000-0000-4000-8000-0000000000e3''');
+	perform pg_temp.fx(format('insert into public.qorpera_runtime_office_activations(intent_id, activation_id, office_id, computer_generation,
+		allocation_id, provider_id, provider_policy_sha256, provider_binding_sha256, instance_sha256, image_sha256, bootstrap_sha256, attestation,
+		mappings, state, service_invocation_id, ready_at, activated_at)
+		values (extensions.gen_random_uuid(), %L, %L, 1, %L, extensions.gen_random_uuid(), repeat(''5'', 64), repeat(''6'', 64), repeat(''3'', 64),
+			repeat(''1'', 64), repeat(''2'', 64), ''{}'', ''{}'', ''active'', repeat(''8'', 32), clock_timestamp(), clock_timestamp())',
+		'63900000-0000-4000-8000-0000000000e6', '63900000-0000-4000-8000-0000000000e0', '63900000-0000-4000-8000-0000000000e1'));
+	d2 := pg_temp.open('computer_desktop', jsonb_build_object('screenId', c_screen2, 'holderRunId', v3 ->> 'runId'));
+	if exists (select 1 from public.qorpera_folder_view_reads where view_id = (d2 ->> 'viewId')::uuid) then
+		raise exception 'A restart starts clean'; end if;
 	perform public.qorpera_folder_view_close((d2 ->> 'viewId')::uuid, d2 ->> 'pass');
 end $$;
 

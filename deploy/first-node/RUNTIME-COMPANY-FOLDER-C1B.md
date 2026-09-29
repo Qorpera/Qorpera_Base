@@ -1066,9 +1066,13 @@ by a machine.
     SHARE`, then the predicate re-checked in a new statement, then the
     insert. Open records the view's `activation_id` (desktops and shell
     commands).
-  - **It carries the machine's previous view's read set** (the newest view
-    of the same screen or coding session, open or closed) into the new view:
+  - **It carries the machine's previous view's read set** into the new view:
     its pairs, and its read records merged into one record per resource (§6).
+    The previous view is the newest view of the same screen or coding
+    session, open or closed. It is carried only while the machine runs on: a
+    desktop within one seat assignment and one power-on (the same
+    `screen_generation` and `activation_id`), a coding session while it stays
+    on the same machine.
   - **The caller opens a view in its own transaction, after the holder
     change has committed.** A holder change and an open in one transaction
     deadlock with a save of the old view in flight: the save holds the old
@@ -1123,9 +1127,22 @@ by a machine.
     The executor saves the session's changes before it completes a turn, as
     it flushes its releases, so a turn's reads do not need checking after
     the turn has ended.
-- **Reads follow the machine.** A new view carries its machine's previous
-  view's read set and records (§5). So a program's read survives a holder
-  change, a takeover and a restart, and the next view still rechecks it.
+- **Reads follow the machine while it runs.** A new view carries its
+  machine's previous view's read set and records (§5). So a program's read
+  survives a holder change and a takeover, and the next view still rechecks
+  it.
+  - **The carry ends with the machine's run.** A restart (a new activation),
+    the seat changing agent (a new generation, which closes the desktop) and a
+    coding session moving to another machine all start with an empty set
+    (implementation review r2, finding 1).
+  - **The way out for a blocked machine.** Once a program read a file that
+    has since been narrowed, every save from that machine is refused ("A read
+    is no longer readable") until the machine starts clean. For a desktop
+    that means restarting the computer; for a coding session, archiving it or
+    moving it to another machine. C3 shows members that reason and offers the
+    restart. Without the carry's end, a single narrowing would block a seat
+    for good, even for the next agent on it.
+  - The records carried are bounded by the reads of one run of the machine.
   What is not carried is an earlier holder run's own set: that is checked
   for the life of that run's view. Once another holder's view has opened,
   anything the old run left on the screen is the new holder's to publish,
@@ -1147,6 +1164,10 @@ by a machine.
   The runtime calls it when a run takes in a view's output (C3 wires it).
   This is how "that next run inherits them" (F3, #432) happens: at the
   moment the output reaches a model.
+- **A view release takes the view row `KEY SHARE` before it resolves**, as
+  the commit does. An open superseding the view (`FOR UPDATE`) either
+  finishes first, and the release then refuses, or waits for the release and
+  carries its reads (implementation review r2, finding 2).
 - **Feed pages** carry no receipts and only invalidate (agreed with F3 on
   #444).
 

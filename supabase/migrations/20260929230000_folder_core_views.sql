@@ -398,11 +398,16 @@ begin
 			raise exception 'Folder view needs the company-wide view' using errcode = '42501'; end if;
 	end if;
 
-	-- The machine's previous view, open or not: its read set follows the machine (§6).
-	select id into v_previous from public.qorpera_folder_views
-	where environment_id = p_environment_id and ((p_kind = 'computer_desktop' and screen_id = v_screen.id)
-		or (p_kind = 'coding_session' and worker_id = v_session.worker_id))
-	order by created_at desc, id desc limit 1;
+	-- The machine's previous view, open or not (locked above): its read set follows the machine while the machine runs
+	-- on (§6). A desktop carries it within one seat assignment and one power-on (the same generation and activation); a
+	-- coding session while it stays on the same machine. A restart, a seat changing agent or a move to another machine
+	-- starts clean: that is also the way out for a machine whose programs saw a file that has since been narrowed.
+	select id into v_previous from (select v.* from public.qorpera_folder_views v
+		where v.environment_id = p_environment_id and ((p_kind = 'computer_desktop' and v.screen_id = v_screen.id)
+			or (p_kind = 'coding_session' and v.worker_id = v_session.worker_id))
+		order by v.created_at desc, v.id desc limit 1) newest
+	where (p_kind = 'computer_desktop' and newest.screen_generation = v_screen.generation and newest.activation_id = v_activation)
+		or (p_kind = 'coding_session' and newest.machine_id is not distinct from v_machine);
 	update public.qorpera_folder_views set state = 'closed', closed_at = clock_timestamp(), close_reason = 'superseded'
 	where state = 'open' and ((p_kind = 'computer_desktop' and screen_id = v_screen.id)
 		or (p_kind = 'coding_session' and worker_id = v_session.worker_id));
@@ -655,6 +660,9 @@ begin
 		raise exception 'Folder view is unavailable' using errcode = '42501'; end if;
 	select * into v_existing from public.qorpera_folder_view_releases where view_id = v_view_id and release_id = p_release_id;
 	if not found then
+		-- The view row first, as the commit takes it: an open superseding this view (FOR UPDATE) finishes first and the
+		-- resolve below refuses, or waits for this release and carries its reads.
+		perform 1 from public.qorpera_folder_views where id = v_view_id for key share;
 		v_resolved := public.qorpera_folder_view_resolve(p_environment_id, p_profile_id, p_actor);
 		if v_resolved ->> 'kind' = 'member' then
 			raise exception 'A member-held view records no reads' using errcode = '22023'; end if;
