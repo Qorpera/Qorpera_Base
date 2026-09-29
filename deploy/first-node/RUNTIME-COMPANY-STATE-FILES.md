@@ -675,6 +675,47 @@ of the body, for readers that should not reach the storage server.
 | rules (reviewer) | rule rows | the rule index, with the versions read; personal rules unchanged |
 | connections | vault rows and grants | the same, plus the purpose copy |
 
+**Built (F2-1b, migration 20260929440000):**
+- Part A. `qorpera_company_state_run_folder(env, agent, coworkers)` gives the folder names of a
+  `folder-v2` run's agent and of the coworkers its context lists (null for a `snapshot-v1` company
+  or an agent without a folder). Core C1c-2's `folder-v2` body of `qorpera_describe_company_run_context`
+  (RUNTIME-COMPANY-FOLDER-C1C.md §5.4) adds them as the context's optional `folder`, from the same
+  coworker ids it lists, beside the company name from the vision index. The runtime's closed parser
+  accepts `folder` like `serviceTier`, turns it into the place `cloudAgentFolder` takes
+  (`agents/<handle>`, else `agents/<id>`), which memory and skills now both ask, and the prompt shows
+  each agent's `folder`. Every `snapshot-v1` context and prompt keeps its exact shape. Older parsers
+  refuse `folder`, so a bundle with this parser is active before C1c-2's `folder-v2` context sends
+  one; no `folder-v2` company runs before C1c-3.
+- Part B. `qorpera_prepare_routine_login(binding)` sets up the login the run's requester pays with for
+  unattended work (`qorpera_ensure_unattended_sponsor`, which takes the login `FOR UPDATE` and writes
+  rows), for the routine writer to call in its own transaction before it commits a routine file, whose
+  commit reads that login without a lock. The consent and binding stay if the save is then refused,
+  as the default consent an agent's save records today. It takes the run's job and then the login,
+  as an agent's routine save does, so it can meet a member switching that login off (40P01): the
+  writer retries it.
+- Still to come: the vision in full (read through core C3's folder client), and the file's `model`
+  and `effort` reaching runs.
+
+**What the thin writers need from core C3's folder client** (F1 owns the client; F2 writes the tools
+on it):
+- `read(path)`: kind, version and, for a file, its text; `list(prefix)` with versions. A writer reads
+  the file it changes, and its parse comes from `parseCompanyStateFile` on that text.
+- `commit(operationKey, units, reviewId?)` as the run (the binding's `{kind:'run', runId, jobId,
+  runnerId, assignmentId}`), staging bytes through the object gateway first. Each write unit names
+  the version it read (`expectedVersion`) and carries `structured: [{path, kind, text, parse,
+  parserVersion}]` for every structured file in it, built by the shared parser from the same bytes.
+- Per-unit outcomes, typed: `saved`, `refused` with `problems` (the writer returns them to the model
+  with the line and the fix), `conflict` (re-read and redo under a new operation key),
+  `denied`/`waiting_for_review` (a reviewed change: the writer says it waits), plus the commit's
+  errors as the gateway's typed refusals are today: 55000 (the company is paused), 42501 (the run or
+  the folder is unavailable, or no authority), 22023 (invalid). A 23505 (a parallel change set took
+  a new id) and a 40P01 are retried with the same operation key.
+- The writers: `manage_todo` (a todo file, `writeTodoFile`), `organize_sidebar` (`agents/sections.md`,
+  read and rewrite), `decide_routine` (the run's own routine file: a new `at` or a conclusion,
+  `setCompanyStateSettings`); after C2's review recorder, `hire_agent` (one `new_folder` unit with
+  `agent.md` and the first todo), `create_group_chat` (`group.md`) and `manage_routine` (a routine
+  file, after `qorpera_prepare_routine_login`).
+
 Until the mount's writes are accepted (F3), these tools become thin writers of these files:
 `hire_agent`, `create_group_chat`, `organize_sidebar`, `manage_todo`, `manage_routine` and
 `decide_routine`. They use the canonical writers here, or `setCompanyStateSettings` for a
@@ -758,7 +799,10 @@ claims by kind then key (F2). All nine come before paths, objects, admission and
    - the seed tree for C2's creation commit (`companyStateSeedTree`, §9).
 
    **F2-1b** follows: the follow-ups on C2's queue, the context composer reading the vision and
-   `agent.md`, and the agent-folder helper for memory and skills.
+   `agent.md`, and the agent-folder helper for memory and skills. Part A (migration
+   20260929440000) is the folder names for the context and the helper (§5); part B, in the
+   same migration, the routine save's login setup; the thin writers come on core C3's folder
+   client, and the reviewed ones after C2's review recorder.
 3. **F2-2** group chats and sections (migration 20260928249100; for new companies it replaces
    #370's writes and `organize_sidebar`):
    - the rooms table's folder columns, and the parse shape and database rules of both kinds;

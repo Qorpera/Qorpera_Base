@@ -21,7 +21,11 @@
  * edit someone else made meanwhile is never overwritten unseen (contract 5.2).
  * A skill is guidance: it grants nothing and never replaces a current source. */
 import { createHash } from "node:crypto";
-import { cloudAgentFolder } from "@qorpera/cloud-client/cloud-agent-folder";
+import {
+	CLOUD_AGENT_FOLDER_BY_ID,
+	type CloudAgentFolderPlace,
+	cloudAgentFolder,
+} from "@qorpera/cloud-client/cloud-agent-folder";
 import {
 	CLOUD_SKILL_NAME_MAX_CHARS,
 	type CloudSkillDocument,
@@ -112,11 +116,16 @@ export interface CloudAgentSkillsBlock {
 /** The agent whose own library a run reads and writes, in its company. */
 export type CloudSkillOwner = Pick<CloudNativeToolIdentity, "companyId" | "staffAgentId">;
 
-/** Where a library keeps its skills. */
-export function cloudSkillRoot(scope: CloudSkillScope, owner: CloudSkillOwner): string {
+/** Where a library keeps its skills; an agent's own is in its folder as the company keeps it (place, from
+ * the run's context). */
+export function cloudSkillRoot(
+	scope: CloudSkillScope,
+	owner: CloudSkillOwner,
+	place: CloudAgentFolderPlace = CLOUD_AGENT_FOLDER_BY_ID,
+): string {
 	return scope === "company"
 		? CLOUD_COMPANY_SKILLS_ROOT
-		: `${cloudAgentFolder(owner.companyId, owner.staffAgentId)}/skills`;
+		: `${cloudAgentFolder(owner.companyId, owner.staffAgentId, place)}/skills`;
 }
 
 /** The composed shape when neither library could be read; the run still starts. */
@@ -285,8 +294,9 @@ export async function composeCloudAgentSkills(
 	gateway: CloudSkillGateway,
 	owner: CloudSkillOwner,
 	signal: AbortSignal,
+	place: CloudAgentFolderPlace = CLOUD_AGENT_FOLDER_BY_ID,
 ): Promise<CloudAgentSkillsBlock> {
-	const ownRoot = cloudSkillRoot("agent", owner);
+	const ownRoot = cloudSkillRoot("agent", owner, place);
 	const [ownListing, companyListing] = await Promise.allSettled([
 		listLibrary(gateway, "agent", ownRoot, signal),
 		listLibrary(gateway, "company", CLOUD_COMPANY_SKILLS_ROOT, signal),
@@ -402,9 +412,10 @@ export const CLOUD_UPDATE_SKILL_DESCRIPTION =
 export function cloudSkillTools(
 	gateway: CloudSkillGateway,
 	identity: CloudNativeToolIdentity,
+	place: CloudAgentFolderPlace = CLOUD_AGENT_FOLDER_BY_ID,
 ): readonly CloudNativeTool[] {
 	const expected = Object.freeze({ ...identity });
-	const ownRoot = cloudSkillRoot("agent", expected);
+	const ownRoot = cloudSkillRoot("agent", expected, place);
 	const root = (scope: CloudSkillScope) => (scope === "company" ? CLOUD_COMPANY_SKILLS_ROOT : ownRoot);
 	const assertContext = (context: CloudToolContext) => {
 		if (
