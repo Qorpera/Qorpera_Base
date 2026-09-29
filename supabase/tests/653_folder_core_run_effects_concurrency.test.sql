@@ -11,7 +11,74 @@ insert into public.qorpera_native_execution_launches(run_id, runtime_bundle_id, 
 	reasoning_policy_sha256, tool_catalog_text, context_sha256, context_bytes)
 values ('64800000-0000-4000-8000-0000000000f1', extensions.gen_random_uuid(), repeat('b', 64), repeat('c', 64), 'low', repeat('d', 64), '{}',
 	repeat('e', 64), 1);
+-- A second leased human run of Ada in the same conversation, for two cards at once.
+do $$
+declare
+	v_profile uuid := '64800000-0000-4000-8000-000000000010'; v_env uuid := '64800000-0000-4000-8000-000000000020';
+	v_staff uuid := '64800000-0000-4000-8000-0000000000a1'; v_requester uuid := '64800000-0000-4000-8000-000000000002';
+	v_run uuid := '64800000-0000-4000-8000-0000000001f1'; v_job uuid := '64800000-0000-4000-8000-0000000001f2';
+	v_wake uuid := '64800000-0000-4000-8000-0000000001f3'; v_runner uuid := '64800000-0000-4000-8000-0000000000f4';
+	v_assignment uuid := '64800000-0000-4000-8000-0000000001f5'; v_lease uuid := '64800000-0000-4000-8000-0000000001f6';
+	v_session uuid := '64800000-0000-4000-8000-0000000000f7'; v_input uuid := '64800000-0000-4000-8000-0000000001f8';
+	v_bundle uuid := '64800000-0000-4000-8000-0000000000f9';
+begin
+	insert into public.qorpera_session_inputs(id, session_id, client_input_id, author_user_id, actor_kind, kind,
+		runtime_bundle_id, runtime_bundle_sha256, execution_run_id)
+	values (v_input, v_session, extensions.gen_random_uuid(), v_requester, 'human', 'user_message', v_bundle, repeat('b', 64), v_run);
+	insert into public.qorpera_runner_jobs(id, profile_id, environment_id, substrate_version_id, client_job_id, required_capability,
+		job_type, payload, created_by_user_id, status, runner_id, client_lease_id, lease_token_sha256, lease_expires_at, run_id)
+	values (v_job, v_profile, v_env, extensions.gen_random_uuid(), extensions.gen_random_uuid(), 'agent_turn', 'agent_turn', '{}',
+		v_requester, 'leased', v_runner, v_assignment, repeat('a', 64), clock_timestamp() + interval '1 hour', v_run);
+	insert into public.qorpera_execution_runs(id, profile_id, environment_id, source_kind, source_id, job_id, substrate_version_id,
+		company_snapshot_id, staff_agent_id, staff_version, sponsor_binding_id, sponsor_version, required_capability, job_type,
+		payload_sha256, transcript_start_sequence, created_by_user_id, requested_by_user_id, model_provider, model_id, model_selection,
+		audience_kind, runtime_bundle_id, runtime_bundle_sha256, session_id, input_ids, compute_identity_id)
+	values (v_run, v_profile, v_env, 'session_turn', v_input, v_job, extensions.gen_random_uuid(), extensions.gen_random_uuid(),
+		v_staff, 1, '64800000-0000-4000-8000-0000000000b1', 1, 'agent_turn', 'agent_turn', repeat('c', 64), 0, v_requester, v_requester,
+		'openai', 'gpt-test', 'provider_default', 'company', v_bundle, repeat('b', 64), v_session, array[v_input],
+		'64800000-0000-4000-8000-0000000000d1');
+	insert into public.qorpera_wake_occurrences(id, profile_id, environment_id, trigger_id, occurrence_key, scheduled_for, not_before,
+		wake_kind, source_kind, source_id, run_id, status, staff_agent_id, staff_version, requested_by_user_id, sponsor_binding_id,
+		sponsor_version, session_id, causal_root_id, causal_agent_ids, payload)
+	values (v_wake, v_profile, v_env, 'input', v_wake::text, clock_timestamp(), clock_timestamp(), 'human', 'input', v_input,
+		v_run, 'materialized', v_staff, 1, v_requester, '64800000-0000-4000-8000-0000000000b1', 1, v_session, v_wake, array[v_staff],
+		jsonb_build_object('inputIds', jsonb_build_array(v_input)));
+	insert into public.qorpera_runner_assignments(id, claim_id, job_id, run_id, runner_id, capability_sha256, status, expires_at, accepted_at)
+	values (v_assignment, extensions.gen_random_uuid(), v_job, v_run, v_runner, repeat('e', 64), 'accepted',
+		clock_timestamp() + interval '1 hour', clock_timestamp());
+	insert into public.qorpera_native_provider_connection_leases(id, run_id, job_id, provider_connection_id, provider_connection_version,
+		credential_capsule_id, compute_identity_id, runner_id, assignment_id, lease_token_sha256, expires_at)
+	values (v_lease, v_run, v_job, '64800000-0000-4000-8000-0000000000b3', 1, '64800000-0000-4000-8000-0000000000d2',
+		'64800000-0000-4000-8000-0000000000d1', v_runner, v_assignment, repeat('d', 64), clock_timestamp() + interval '1 hour');
+	insert into public.qorpera_execution_sponsor_reservations(run_id, job_id, profile_id, binding_id, sponsor_version, provider_connection_id,
+		provider_connection_version, period_start, reserved_microusd)
+	values (v_run, v_job, v_profile, '64800000-0000-4000-8000-0000000000b1', 1, '64800000-0000-4000-8000-0000000000b3', 1,
+		date_trunc('month', clock_timestamp()), 1);
+	insert into public.qorpera_runner_model_policies(job_id, profile_id, environment_id, allowed_models, max_calls, max_input_tokens,
+		max_output_tokens, authorized_by_user_id)
+	values (v_job, v_profile, v_env, '["gpt-test"]', 32, 1000, 1000, v_requester);
+	insert into public.qorpera_execution_run_budgets(run_id) values (v_run);
+end $$;
 set session_replication_role = origin;
+select set_config('qorpera_test.binding2', jsonb_build_object('leaseId','64800000-0000-4000-8000-0000000001f6',
+	'runId','64800000-0000-4000-8000-0000000001f1','jobId','64800000-0000-4000-8000-0000000001f2',
+	'runnerId','64800000-0000-4000-8000-0000000000f4','assignmentId','64800000-0000-4000-8000-0000000001f5',
+	'credentialCapsuleId','64800000-0000-4000-8000-0000000000d2','computeIdentityId','64800000-0000-4000-8000-0000000000d1',
+	'provider','openai','nativeHarness','codex-cli','model','gpt-test')::text, false) \g /dev/null
+
+create function pg_temp.sql_review(p_binding text, p_call text) returns text language sql as $$
+	select format('select public.qorpera_record_action_review(%L, %L)::text', current_setting(p_binding),
+		jsonb_build_object('callId', p_call, 'tool', 'send_email', 'effect', 'external', 'argumentSha256', repeat('d', 64),
+			'action', jsonb_build_object('title', 'Send an email', 'target', 'bob@acme.test', 'details', jsonb_build_object('subject', 'Moved')),
+			'decision', 'ask', 'ruleIds', '[]'::jsonb, 'builtIn', 'none', 'reason', 'The reviewer is unsure.', 'proposedRule', null,
+			'reviewerModel', 'gpt-6-luna'))
+$$;
+create function pg_temp.sql_card(p_binding text) returns text language sql as $$
+	select format('select public.qorpera_append_native_interaction_request(%L, %L, %L, %L, %L, %L, %L, ''openai'', ''codex-cli'', %L, %L)::text',
+		b ->> 'leaseId', b ->> 'runId', b ->> 'jobId', b ->> 'runnerId', b ->> 'assignmentId', b ->> 'credentialCapsuleId', b ->> 'computeIdentityId',
+		extensions.gen_random_uuid(), '{"schema":"qorpera.interaction/v1","surface":"question","title":"Which channel?","payload":{"options":[{"label":"#general","value":"general"},{"label":"#finance","value":"finance"}]}}')
+	from (select current_setting(p_binding)::jsonb b) x
+$$;
 
 create function pg_temp.sql_send(p_key text, p_phase text default 'progress') returns text language sql as $$
 	select format('select public.qorpera_send_native_agent_message(%L, %L, %L, %L, %L, %L, %L, ''openai'', ''codex-cli'', %L, %L, %L)::text',
@@ -152,6 +219,98 @@ begin
 	v_state := pg_temp.outcome('fence_one');
 	if v_state <> 'ok' then raise exception 'The send after the conversation: %', v_state; end if;
 end $$;
+
+-- F. The action-review card against legacy posting (the company row FOR UPDATE, then the conversation), in both
+-- orders: the card takes this company's row (rank 0) before the conversation, so no deadlock.
+do $$
+declare v_state text;
+begin
+	perform dblink_exec('fence_two', 'begin');
+	perform * from dblink('fence_two', $q$select 1 from public.qorpera_profiles where id = '64800000-0000-4000-8000-000000000010' for update$q$)
+		as t(x integer);
+	perform dblink_send_query('fence_one', pg_temp.sql_review('qorpera_test.binding', 'race-card-post-1'));
+	if not pg_temp.waits_for('fence_one', 'fence_two') then raise exception 'The card must wait for the posting company row'; end if;
+	if pg_temp.queued_on('fence_one') is distinct from 'public.qorpera_profiles'::regclass then
+		raise exception 'The card must wait at the company row, not on %', pg_temp.queued_on('fence_one'); end if;
+	perform dblink_send_query('fence_two', $q$select 1 from public.qorpera_shared_sessions where id = '64800000-0000-4000-8000-0000000000f7'
+		for update$q$);
+	if not pg_temp.finishes_unblocked('fence_two', 'fence_one') then raise exception 'Posting must take the conversation at once'; end if;
+	v_state := pg_temp.outcome('fence_two');
+	perform dblink_exec('fence_two', 'commit');
+	v_state := pg_temp.outcome('fence_one');
+	if v_state <> 'ok' then raise exception 'The card after posting: %', v_state; end if;
+
+	perform dblink_exec('fence_one', 'begin');
+	perform * from dblink('fence_one', pg_temp.sql_review('qorpera_test.binding', 'race-card-post-2')) as t(x text);
+	perform dblink_send_query('fence_two', $q$select 1 from public.qorpera_profiles where id = '64800000-0000-4000-8000-000000000010' for update$q$);
+	if not pg_temp.waits_for('fence_two', 'fence_one') then raise exception 'Posting must wait for the card in flight'; end if;
+	perform dblink_exec('fence_one', 'commit');
+	v_state := pg_temp.outcome('fence_two');
+	if v_state <> 'ok' then raise exception 'Posting after the card: %', v_state; end if;
+	perform * from dblink('fence_two', $q$select 1 from public.qorpera_shared_sessions where id = '64800000-0000-4000-8000-0000000000f7'
+		for update$q$) as t(x integer);
+	perform dblink_exec('fence_two', 'commit');
+end $$;
+
+-- G. The interaction request against legacy posting, posting first: it waits at the company row, holding no
+-- conversation.
+do $$
+declare v_state text;
+begin
+	perform dblink_exec('fence_two', 'begin');
+	perform * from dblink('fence_two', $q$select 1 from public.qorpera_profiles where id = '64800000-0000-4000-8000-000000000010' for update$q$)
+		as t(x integer);
+	perform dblink_send_query('fence_one', pg_temp.sql_card('qorpera_test.binding'));
+	if not pg_temp.waits_for('fence_one', 'fence_two') then raise exception 'The request must wait for the posting company row'; end if;
+	perform dblink_send_query('fence_two', $q$select 1 from public.qorpera_shared_sessions where id = '64800000-0000-4000-8000-0000000000f7'
+		for update$q$);
+	if not pg_temp.finishes_unblocked('fence_two', 'fence_one') then raise exception 'Posting must take the conversation at once'; end if;
+	v_state := pg_temp.outcome('fence_two');
+	perform dblink_exec('fence_two', 'commit');
+	v_state := pg_temp.outcome('fence_one');
+	if v_state <> 'ok' then raise exception 'The request after posting: %', v_state; end if;
+end $$;
+
+-- H. Two cards of two runs in one conversation (review r1 B1). A card takes the conversation FOR UPDATE before its
+-- review row, whose foreign keys to the conversation would otherwise take it KEY SHARE first: with both cards holding
+-- KEY SHARE and each asking for FOR UPDATE, 40P01. A pause right after each review insert makes the race certain:
+-- the first card pauses holding the conversation, and the second waits at the conversation, not at the pause.
+create function public.qorpera_test_review_pause() returns trigger language plpgsql as $f$
+begin
+	if current_setting('qorpera_test.review_pause', true) = 'on' then
+		perform pg_advisory_lock_shared(652653); perform pg_advisory_unlock_shared(652653); end if;
+	return null;
+end $f$;
+create trigger qorpera_test_review_pause after insert on public.qorpera_action_reviews
+	for each row execute function public.qorpera_test_review_pause();
+select dblink_exec(name, 'set qorpera_test.review_pause = on') from unnest(array['fence_one','fence_two']) name;
+do $$
+declare v_one text; v_two text; v_until timestamptz;
+begin
+	perform pg_advisory_lock(652653);
+	perform dblink_send_query('fence_one', pg_temp.sql_review('qorpera_test.binding', 'race-two-cards-1'));
+	-- The first card pauses after its review insert, holding the conversation.
+	v_until := clock_timestamp() + interval '60 seconds';
+	loop
+		exit when pg_backend_pid() = any (pg_blocking_pids(current_setting('qorpera_test.pid_fence_one')::integer));
+		if clock_timestamp() > v_until then raise exception 'The first card never reached its pause'; end if;
+		perform pg_sleep(0.02);
+	end loop;
+	perform dblink_send_query('fence_two', pg_temp.sql_review('qorpera_test.binding2', 'race-two-cards-2'));
+	if not pg_temp.waits_for('fence_two', 'fence_one') then raise exception 'The second card must wait for the first at the conversation'; end if;
+	if pg_temp.queued_on('fence_two') is distinct from 'public.qorpera_shared_sessions'::regclass then
+		raise exception 'The second card must wait at the conversation, not on %', pg_temp.queued_on('fence_two'); end if;
+	perform pg_advisory_unlock(652653);
+	v_one := pg_temp.outcome('fence_one'); v_two := pg_temp.outcome('fence_two');
+	if v_one <> 'ok' or v_two <> 'ok' then raise exception 'Two cards in one conversation: % / %', v_one, v_two; end if;
+	if (select count(*) from public.qorpera_session_events where session_id = '64800000-0000-4000-8000-0000000000f7'
+		and event_type = 'authorization_request'
+		and event_id in (select id from public.qorpera_action_reviews where call_id in ('race-two-cards-1', 'race-two-cards-2'))) <> 2 then
+		raise exception 'Both cards reach the conversation'; end if;
+end $$;
+select dblink_exec(name, 'reset qorpera_test.review_pause') from unnest(array['fence_one','fence_two']) name;
+drop trigger qorpera_test_review_pause on public.qorpera_action_reviews;
+drop function public.qorpera_test_review_pause();
 
 select dblink_disconnect(name) from unnest(array['fence_one','fence_two','fence_three','fence_four']) name;
 

@@ -256,7 +256,8 @@ end $$;
 -- 6. The run's context view ----------------------------------------------------------------------------------------
 
 -- The legacy view's rules. An output's readId is a release of this run (qorpera_folder_run_releases) and its readSha256
--- that release's output hash, from its read records. The run mutex orders the ordinal and the replay. Office captures
+-- that release's output hash, from its read records. A release that released no reads has no read records and cannot be
+-- cited: the runtime sends readId null for such an output (C3). The run mutex orders the ordinal and the replay. Office captures
 -- do not serve folder-v2 until C1c-3.
 create function public.qorpera_folder_record_context_view(p_environment_id uuid, p_binding jsonb, p_view jsonb)
 returns jsonb language plpgsql security definer set search_path = '' as $$
@@ -298,7 +299,7 @@ begin
 			select r.output_sha256 into v_output_sha from public.qorpera_folder_run_releases rel
 			join public.qorpera_folder_run_read_records r on r.run_id = rel.run_id and r.release_id = rel.release_id
 			where rel.run_id = v_run and rel.environment_id = p_environment_id
-				and rel.release_id = case when coalesce(v_output ->> 'readId', '') ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+				and rel.release_id = case when coalesce(v_output ->> 'readId', '') ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
 					then (v_output ->> 'readId')::uuid end
 			limit 1;
 			if v_output_sha is null or v_output_sha is distinct from v_output ->> 'readSha256'
@@ -400,7 +401,7 @@ declare
 	c_binding constant text := 'jsonb_build_object(''leaseId'', p_lease_id, ''runId'', p_run_id, ''jobId'', p_job_id, ''runnerId'', p_runner_id, '
 		|| '''assignmentId'', p_assignment_id, ''credentialCapsuleId'', p_credential_capsule_id, ''computeIdentityId'', p_compute_identity_id, '
 		|| '''provider'', p_provider, ''nativeHarness'', p_native_harness, ''model'', (select run.model_id from public.qorpera_execution_runs run '
-		|| 'where run.id = p_run_id and run.job_id = p_job_id))';
+		|| 'where run.id = p_run_id))';
 begin
 	perform pg_temp.c1c2b2_replace('public.qorpera_send_native_agent_message(uuid,uuid,uuid,uuid,uuid,uuid,uuid,text,text,text,text,text)',
 		c_job_refused, 'if public.qorpera_job_is_folder_v2(p_job_id) then return public.qorpera_folder_send_agent_message('
@@ -421,7 +422,18 @@ begin
 		|| 'return public.qorpera_folder_record_context_view(p_environment_id, p_binding, p_view); end if;');
 	perform pg_temp.c1c2b2_guard('public.qorpera_add_agent_review_rule(jsonb,jsonb)',
 		'if public.qorpera_binding_is_folder_v2(p_binding) then return public.qorpera_folder_add_agent_review_rule(p_binding, p_request); end if;');
-	-- The action-review card: the recheck and the session before the folder transcript append (C1C §5.6).
+	-- The action-review card (C1C §5.6): the recheck and the conversation FOR UPDATE come before the review row, whose
+	-- foreign keys to the conversation (session_id, card_session_id) would otherwise take it KEY SHARE first: a lock
+	-- upgrade, and 40P01 between two cards of two runs in one conversation (review r1 B1). The folder transcript append
+	-- then writes the card.
+	perform pg_temp.c1c2b2_replace('public.qorpera_record_action_review(jsonb,jsonb)',
+		E'\tv_id := pg_catalog.gen_random_uuid();\n',
+		E'\tif v_card and public.qorpera_environment_is_folder_v2(v_run.environment_id) then\n'
+		|| E'\t\tperform public.qorpera_folder_run_reads_current(v_run.environment_id, v_run.profile_id,\n'
+		|| E'\t\t\tpublic.qorpera_folder_run_reader(v_run.profile_id, v_run.id));\n'
+		|| E'\t\tperform 1 from public.qorpera_shared_sessions where id = v_run.session_id for update;\n'
+		|| E'\tend if;\n'
+		|| E'\tv_id := pg_catalog.gen_random_uuid();\n', 1);
 	perform pg_temp.c1c2b2_replace('public.qorpera_record_action_review(jsonb,jsonb)',
 		E'\t\tselect runner.session_token_sha256 into strict v_session_token from public.qorpera_runners as runner\n'
 		|| E'\t\twhere runner.id = (p_binding ->> ''runnerId'')::uuid;\n'
@@ -431,9 +443,6 @@ begin
 		|| E'\t\t\t(p_binding ->> ''jobId'')::uuid, v_lease_token, (p_binding ->> ''assignmentId'')::uuid, v_review.id,\n'
 		|| E'\t\t\t''authorization_request'', v_body);\n',
 		E'\t\tif public.qorpera_environment_is_folder_v2(v_run.environment_id) then\n'
-		|| E'\t\t\tperform public.qorpera_folder_run_reads_current(v_run.environment_id, v_run.profile_id,\n'
-		|| E'\t\t\t\tpublic.qorpera_folder_run_reader(v_run.profile_id, v_run.id));\n'
-		|| E'\t\t\tperform 1 from public.qorpera_shared_sessions where id = v_run.session_id for update;\n'
 		|| E'\t\t\tperform public.qorpera_folder_append_transcript_event(v_run, (p_binding ->> ''assignmentId'')::uuid, v_review.id,\n'
 		|| E'\t\t\t\t''authorization_request'', v_body);\n'
 		|| E'\t\telse\n'

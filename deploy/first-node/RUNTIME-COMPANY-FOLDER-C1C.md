@@ -364,16 +364,22 @@ after that line stays byte-identical, and its digest is checked at migration tim
   recheck at rank 10. It ignores the path list and never writes `company_run_read_paths`: the run's releases already
   carry its reads.
 - **`record_native_context_view`:** each output's `readId` is a release in `qorpera_folder_run_releases`, and its
-  `readSha256` the read record's `output_sha256`, instead of `company_read_confirmations`. The run mutex orders the
+  `readSha256` the read record's `output_sha256`, instead of `company_read_confirmations`. A release that released no
+  reads has no read record, so it cannot be cited: the runtime (C3) sends `readId: null` for such an output. The run mutex orders the
   ordinal and the replay. The v149 marker stays.
 - **`record_action_review`'s card** (an "ask" in a conversation) is public output: it shows the action's arguments.
   Its folder path runs:
   1. the run mutex, the job, the fence;
   2. rank 0, then the ranks;
-  3. the review row (run-owned);
-  4. the recheck at rank 10;
-  5. the session `FOR UPDATE`;
+  3. the recheck at rank 10;
+  4. the session `FOR UPDATE`;
+  5. the review row (a new run-owned row);
   6. the folder transcript append.
+
+  The session comes before the review row because the row's foreign keys to the conversation (`session_id`,
+  `card_session_id`) take it `KEY SHARE`: a later `FOR UPDATE` would be an upgrade, and two cards of two runs in one
+  conversation deadlocked that way (2b part 2 review r1; test 653 H). An "ask" that raises no card takes no session
+  lock.
 - **`add_agent_review_rule`:** the requester's member row `FOR NO KEY UPDATE` at rank 1 (merged with the run's
   `KEY SHARE`, so no upgrade), plus rank 0 and the recheck. It no longer takes the company row.
 - **Wakes.**
@@ -546,6 +552,9 @@ Needed before any view goes live (C1B §4).
   `answer_action_review`, `save_review_rule` (personal scope), routine firing, coding attach, #419's machine fence
   (`company_machine_fence_briefly`, custody, `admit_executor_machines`), the office paths (which must also serve
   `folder-v2` for C1b-3a's desktop views), member exports and attachments.
+- **Personal review rules.** Today `save_review_rule` (a member's own rule) stays in step with an agent's
+  `add_agent_review_rule` only through the company row. When it moves off the company row, it takes the member's row
+  `FOR NO KEY UPDATE`, as the agent's folder body does (2b part 2).
 - **Activation checks** (core §3, §9), requested in the PR body for the release branch:
   - the snapshot-v1 bodies of every function C1c branches keep their text (a digest of each);
   - the `folder-v2` branch of each dispatcher and its callees takes locks in the design's order, never the company row

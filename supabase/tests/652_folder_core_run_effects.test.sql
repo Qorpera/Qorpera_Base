@@ -51,10 +51,13 @@ begin
 		or md5(pg_temp.without_guard(pg_get_functiondef('public.qorpera_add_agent_review_rule(jsonb,jsonb)'::regprocedure))) <> 'fd95657f89aedcabd4bc7cc400ecdeb4' then
 		raise exception 'A snapshot-v1 body changed'; end if;
 	v_text := replace(pg_get_functiondef('public.qorpera_record_action_review(jsonb,jsonb)'::regprocedure),
+		E'\tif v_card and public.qorpera_environment_is_folder_v2(v_run.environment_id) then\n'
+		|| E'\t\tperform public.qorpera_folder_run_reads_current(v_run.environment_id, v_run.profile_id,\n'
+		|| E'\t\t\tpublic.qorpera_folder_run_reader(v_run.profile_id, v_run.id));\n'
+		|| E'\t\tperform 1 from public.qorpera_shared_sessions where id = v_run.session_id for update;\n'
+		|| E'\tend if;\n', '');
+	v_text := replace(v_text,
 		E'\t\tif public.qorpera_environment_is_folder_v2(v_run.environment_id) then\n'
-		|| E'\t\t\tperform public.qorpera_folder_run_reads_current(v_run.environment_id, v_run.profile_id,\n'
-		|| E'\t\t\t\tpublic.qorpera_folder_run_reader(v_run.profile_id, v_run.id));\n'
-		|| E'\t\t\tperform 1 from public.qorpera_shared_sessions where id = v_run.session_id for update;\n'
 		|| E'\t\t\tperform public.qorpera_folder_append_transcript_event(v_run, (p_binding ->> ''assignmentId'')::uuid, v_review.id,\n'
 		|| E'\t\t\t\t''authorization_request'', v_body);\n'
 		|| E'\t\telse\n', '');
@@ -107,6 +110,15 @@ begin
 				'execution', jsonb_build_object('kind', 'run', 'id', w -> 'binding' ->> 'runId', 'claimantId', w -> 'binding' ->> 'runId',
 					'runnerAssignmentId', w -> 'binding' ->> 'assignmentId'))), w -> 'binding' ->> 'runId'), '42501',
 		'runner transcript parent is unavailable');
+	-- The conversation's agent version pin: a thread already at a later version refuses an older run's append.
+	w := pg_temp.human();
+	perform pg_temp.fx(format('update public.qorpera_shared_sessions set staff_version = 2 where id = (select session_id from '
+		|| 'public.qorpera_execution_runs where id = %L)', w -> 'binding' ->> 'runId'));
+	perform pg_temp.raises_like(format('select pg_temp.send(%L, %L, %L, %L)', w -> 'binding', 'ack-pinned', 'On it.', 'progress'), 'PGRST',
+		'%runner transcript session pins changed%');
+	perform pg_temp.fx(format('update public.qorpera_shared_sessions set staff_version = 1 where id = (select session_id from '
+		|| 'public.qorpera_execution_runs where id = %L)', w -> 'binding' ->> 'runId'));
+	w := jsonb_build_object('actor', b);
 	-- A coworker's wake has no public mouth.
 	w := jsonb_build_object('actor', pg_temp.run('63400000-0000-4000-8000-0000000000a1', 'agent', '63400000-0000-4000-8000-000000000002',
 		'coworker', pg_temp.run('63400000-0000-4000-8000-0000000000a2', 'human', '63400000-0000-4000-8000-000000000002')));
@@ -138,6 +150,8 @@ begin
 	perform pg_temp.raises_like(format('select public.qorpera_record_native_context_view(%L, %L, %L)', c_env, b,
 		jsonb_build_object('schema', 'qorpera.native-context-view/v1', 'requestId', 'req-revoked', 'threadId', 't', 'turnId', null,
 			'purpose', 'turn', 'outputs', '[]'::jsonb)), '42501', 'A read is no longer readable');
+	perform pg_temp.raises_like(format('select public.qorpera_add_agent_review_rule(%L, %L)', b, '{"operationKey":"rule-revoked","when":"Sending money"}'),
+		'42501', 'A read is no longer readable');
 	if pg_temp.events(b ->> 'runId') <> 1 then raise exception 'A refused effect writes nothing'; end if;
 	w := pg_temp.human(); b := w -> 'binding';
 	perform pg_temp.fx(format('insert into public.qorpera_company_deletions(profile_id) values (%L)', '63400000-0000-4000-8000-000000000010'));
@@ -176,10 +190,26 @@ begin
 	if y -> 'body' <> x -> 'body' or y ->> 'sequence' <> x ->> 'sequence' then raise exception 'A card replay: %', y; end if;
 	perform pg_temp.raises_like(format('select pg_temp.card(%L, %L, %L)', b, extensions.gen_random_uuid(), '{"schema":"nope"}'), '22023',
 		'interaction request is invalid');
+	-- A secret card never names a company connection: the company connects it in Settings.
+	perform pg_temp.raises_like(format('select pg_temp.card(%L, %L, %L)', b, extensions.gen_random_uuid(),
+		'{"schema":"qorpera.interaction/v1","surface":"secret","title":"Token","payload":{"name":"gh_token","label":"Token","purpose":"Needed","connectorId":"github"}}'),
+		'22023', 'a secret card cannot name a company connection; the company connects it in Settings');
 	w := jsonb_build_object('actor', pg_temp.run('63400000-0000-4000-8000-0000000000a1', 'agent', '63400000-0000-4000-8000-000000000002',
 		'coworker', pg_temp.run('63400000-0000-4000-8000-0000000000a2', 'human', '63400000-0000-4000-8000-000000000002')));
 	perform pg_temp.raises_like(format('select pg_temp.card(%L, %L)', pg_temp.native(w -> 'actor'), extensions.gen_random_uuid()), '55000',
 		'interaction requests need a conversation');
+	-- A group chat (a room not bound to this run's agent) carries no card.
+	w := pg_temp.human(); b := w -> 'binding';
+	-- The run's conversation is agent A's thread; bound to another agent for this check, it is a group chat for A's run.
+	perform pg_temp.fx($q$insert into public.qorpera_profile_staff(profile_id, staff_agent_id, display_name, role, charter, appearance_color,
+		appearance_shape, employment_status, lifecycle_state, created_at, updated_at, updated_by_user_id) values ('63400000-0000-4000-8000-000000000010',
+		'65200000-0000-4000-8000-0000000000a3', 'Agent C', 'QA', 'Test.', 'green', 'round', 'active', 'active', statement_timestamp(),
+		statement_timestamp(), '63400000-0000-4000-8000-000000000001')$q$);
+	perform pg_temp.fx(format('update public.qorpera_company_rooms set bound_staff_agent_id = %L where session_id = (select session_id from '
+		|| 'public.qorpera_execution_runs where id = %L)', '65200000-0000-4000-8000-0000000000a3', b ->> 'runId'));
+	perform pg_temp.raises_like(format('select pg_temp.card(%L, %L)', b, extensions.gen_random_uuid()), '22023', 'cards are not raised in a group chat');
+	perform pg_temp.fx(format('update public.qorpera_company_rooms set bound_staff_agent_id = %L where session_id = (select session_id from '
+		|| 'public.qorpera_execution_runs where id = %L)', '63400000-0000-4000-8000-0000000000a1', b ->> 'runId'));
 end $$;
 
 -- 6. The action-review card: an ask in the conversation, through the folder append.
@@ -214,7 +244,8 @@ do $$
 declare
 	c_env constant uuid := '63400000-0000-4000-8000-000000000020';
 	w jsonb := pg_temp.human(); p jsonb := w -> 'actor'; b jsonb := w -> 'binding'; v_release uuid := extensions.gen_random_uuid();
-	v_out text := repeat('7', 64); x jsonb; v_view jsonb;
+	v_out text := repeat('7', 64); x jsonb; v_view jsonb; v_other uuid := extensions.gen_random_uuid();
+	v_empty uuid := extensions.gen_random_uuid();
 begin
 	perform pg_temp.fx(format('insert into public.qorpera_native_execution_launches(run_id, runtime_bundle_id, runtime_bundle_sha256, binary_sha256,
 		reasoning_effort, reasoning_policy_sha256, tool_catalog_text, context_sha256, context_bytes) values (%L, %L, %L, %L, ''low'', %L, ''{}'', %L, 1)',
@@ -242,6 +273,22 @@ begin
 	perform pg_temp.raises_like(format('select public.qorpera_record_native_context_view(%L, %L, %L)', c_env, b,
 		jsonb_set(jsonb_set(v_view, '{requestId}', '"req-5"'), '{outputs,0,capture}', '{"assetId":"x"}')), '0A000',
 		'This Company File path does not serve folder-v2 companies');
+	-- The release id in upper case is the same release.
+	if public.qorpera_record_native_context_view(c_env, b, jsonb_set(jsonb_set(v_view, '{requestId}', '"req-6"'), '{outputs,0,readId}',
+		to_jsonb(upper(v_release::text)))) ->> 'ordinal' <> '3' then raise exception 'An upper-case release id'; end if;
+	-- Another run's release, a release that released no reads (the runtime sends readId null for those), and a run
+	-- without its launch provenance, all refuse.
+	w := pg_temp.human();
+	perform public.qorpera_folder_record_release(c_env, w -> 'actor', v_other,
+		(select jsonb_agg(jsonb_build_object('path', e ->> 'path', 'version', e ->> 'version', 'authority', e -> 'authority'))
+			from (select pg_temp.read('view.txt', w -> 'actor') -> 'entry' e) x), v_out);
+	perform pg_temp.raises_like(format('select public.qorpera_record_native_context_view(%L, %L, %L)', c_env, b,
+		jsonb_set(jsonb_set(v_view, '{requestId}', '"req-7"'), '{outputs,0,readId}', to_jsonb(v_other))), '42501', 'Context read provenance differs');
+	perform public.qorpera_folder_record_release(c_env, p, v_empty, '[]'::jsonb, v_out);
+	perform pg_temp.raises_like(format('select public.qorpera_record_native_context_view(%L, %L, %L)', c_env, b,
+		jsonb_set(jsonb_set(v_view, '{requestId}', '"req-8"'), '{outputs,0,readId}', to_jsonb(v_empty))), '42501', 'Context read provenance differs');
+	perform pg_temp.raises_like(format('select public.qorpera_record_native_context_view(%L, %L, %L)', c_env, w -> 'binding',
+		jsonb_set(v_view, '{requestId}', '"req-9"')), '42501', 'Native launch provenance is unavailable');
 end $$;
 
 -- 9. An agent's "Ask first" rule: added once; a replay; the same key for other text; the same text again is the same
@@ -263,6 +310,13 @@ begin
 	if (y ->> 'added')::boolean or y -> 'rule' ->> 'id' <> x -> 'rule' ->> 'id' then raise exception 'The same rule again: %', y; end if;
 	perform pg_temp.raises_like(format('select public.qorpera_add_agent_review_rule(%L, %L)', b, '{"operationKey":"bad key!","when":"x"}'),
 		'22023', 'Rule request is invalid');
+	-- The member's rule budget: a full budget refuses the add, with the member's way out.
+	perform pg_temp.fx(format('insert into public.qorpera_review_rules(id, profile_id, scope, member_user_id, when_text, outcome, created_via, '
+		|| 'created_by_staff_agent_id) select extensions.gen_random_uuid(), %L, ''member'', %L, ''Budget rule '' || n || '' '' || repeat(''x'', 250), '
+		|| '''ask_first'', ''agent'', %L from generate_series(1, 70) n', '63400000-0000-4000-8000-000000000010', '63400000-0000-4000-8000-000000000002',
+		'63400000-0000-4000-8000-0000000000a1'));
+	y := public.qorpera_add_agent_review_rule(b, '{"operationKey":"rule-full","when":"Signing contracts"}');
+	if (y ->> 'added')::boolean or y ->> 'refused' is null then raise exception 'A full rule budget: %', y; end if;
 end $$;
 
 -- 10. Snapshot-v1 controls and privileges.
