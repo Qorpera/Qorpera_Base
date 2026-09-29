@@ -59,6 +59,7 @@ begin
 		'Every source of claimable work wakes the orchestrators');
 	perform pg_temp.wake_assert((select count(*) from pg_catalog.pg_trigger as trigger
 		where trigger.tgfoid = 'public.qorpera_wake_runner_orchestrators_internal()'::regprocedure and not trigger.tgisinternal
+			and trigger.tgrelid <> 'pg_temp.work'::regclass
 			and (trigger.tgtype & 1) = 1 and (trigger.tgtype & 2) = 0) = 9,
 		'The wake-up triggers fire after the change, once per row that passes their WHEN clause');
 
