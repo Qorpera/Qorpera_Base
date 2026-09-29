@@ -29,45 +29,72 @@ stable
 security definer
 set search_path = ''
 as $$
-	-- Materialised once (clock_timestamp() is volatile): every company is read at the same moment.
+	-- One clock read, materialised once (clock_timestamp() is volatile): every company is read at
+	-- the same moment. Each term is one grouped join, so the cost grows with the companies and their
+	-- sources, not with their square.
 	with moment as (
-		select clock_timestamp() as now, public.qorpera_computer_hour_dry_run(clock_timestamp()) as dry_run
+		select clock.now, public.qorpera_computer_hour_dry_run(clock.now) as dry_run
+		from (select clock_timestamp() as now) clock
 	),
 	companies as (
 		select distinct requested.profile_id from unnest(p_profile_ids) as requested(profile_id)
 		where requested.profile_id is not null
 	),
 	founders as (
-		select company.profile_id, founder.user_id
+		select distinct company.profile_id, founder.user_id
 		from companies company
 		cross join lateral public.qorpera_company_founders(company.profile_id) founder
+	),
+	complimentary as (
+		select distinct founder.profile_id
+		from founders founder
+		join public.qorpera_account_entitlements entitlement
+			on entitlement.user_id = founder.user_id and entitlement.plan_key = 'internal'
+	),
+	free as (
+		select free.profile_id, case when free.withdrawn_at is null and free.frozen_at is null
+			then free.granted_seconds - free.drawn_seconds else 0 end as seconds
+		from companies company
+		join public.qorpera_computer_hour_sources free on free.profile_id = company.profile_id and free.kind = 'free'
+		cross join moment
+		where free.dry_run = moment.dry_run
+	),
+	plans as (
+		select founder.profile_id, sum(plan.granted_seconds - plan.drawn_seconds) as seconds
+		from founders founder
+		join public.qorpera_computer_hour_sources plan on plan.user_id = founder.user_id and plan.kind = 'plan_period'
+		cross join moment
+		where plan.dry_run = moment.dry_run and plan.withdrawn_at is null and plan.frozen_at is null
+			and plan.period_start <= moment.now and moment.now < plan.period_end
+		group by founder.profile_id
+	),
+	credits as (
+		select credit.profile_id, sum(credit.granted_seconds - credit.drawn_seconds) as seconds
+		from companies company
+		join public.qorpera_computer_hour_sources credit on credit.profile_id = company.profile_id and credit.kind = 'credit'
+		cross join moment
+		where credit.dry_run = moment.dry_run and credit.withdrawn_at is null and credit.frozen_at is null
+			and credit.expires_at > moment.now
+		group by credit.profile_id
+	),
+	owed as (
+		select owed.profile_id, owed.drawn_seconds - owed.repaid_seconds as seconds
+		from companies company
+		join public.qorpera_computer_hour_sources owed on owed.profile_id = company.profile_id and owed.kind = 'owed'
+		cross join moment
+		where owed.dry_run = moment.dry_run
 	)
 	select company.profile_id,
-		case when exists (
-			select 1 from founders founder
-			join public.qorpera_account_entitlements entitlement
-				on entitlement.user_id = founder.user_id and entitlement.plan_key = 'internal'
-			where founder.profile_id = company.profile_id
-		) then null else
-			-- Free hours not created yet are all still there.
-			coalesce((select case when free.withdrawn_at is null and free.frozen_at is null
-					then free.granted_seconds - free.drawn_seconds else 0 end
-				from public.qorpera_computer_hour_sources free
-				where free.kind = 'free' and free.profile_id = company.profile_id and free.dry_run = moment.dry_run), 5 * 3600)
-			+ coalesce((select sum(plan.granted_seconds - plan.drawn_seconds)
-				from public.qorpera_computer_hour_sources plan
-				where plan.kind = 'plan_period' and plan.dry_run = moment.dry_run
-					and plan.user_id in (select founder.user_id from founders founder where founder.profile_id = company.profile_id)
-					and plan.withdrawn_at is null and plan.frozen_at is null
-					and plan.period_start <= moment.now and moment.now < plan.period_end), 0)
-			+ coalesce((select sum(credit.granted_seconds - credit.drawn_seconds)
-				from public.qorpera_computer_hour_sources credit
-				where credit.kind = 'credit' and credit.profile_id = company.profile_id and credit.dry_run = moment.dry_run
-					and credit.withdrawn_at is null and credit.frozen_at is null and credit.expires_at > moment.now), 0)
-			- coalesce((select owed.drawn_seconds - owed.repaid_seconds from public.qorpera_computer_hour_sources owed
-				where owed.kind = 'owed' and owed.profile_id = company.profile_id and owed.dry_run = moment.dry_run), 0)
-		end
-	from companies company cross join moment
+		case when complimentary.profile_id is not null then null
+		-- Free hours not created yet are all still there.
+		else coalesce(free.seconds, 5 * 3600) + coalesce(plans.seconds, 0) + coalesce(credits.seconds, 0)
+			- coalesce(owed.seconds, 0) end
+	from companies company
+	left join complimentary on complimentary.profile_id = company.profile_id
+	left join free on free.profile_id = company.profile_id
+	left join plans on plans.profile_id = company.profile_id
+	left join credits on credits.profile_id = company.profile_id
+	left join owed on owed.profile_id = company.profile_id
 $$;
 revoke all on function public.qorpera_computer_hour_left_many(uuid[]) from public, anon, authenticated, service_role;
 

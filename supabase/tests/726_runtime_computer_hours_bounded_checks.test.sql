@@ -74,7 +74,10 @@ select pg_temp.wake_assert(pg_temp.left_many() = jsonb_build_object(
 		'72600000-0000-4000-8000-000000000030', 6200, '72600000-0000-4000-8000-000000000040', -2000,
 		'72600000-0000-4000-8000-000000000050', null),
 	'Hours left for many companies at once: ' || pg_temp.left_many()::text);
-select pg_temp.wake_assert(pg_temp.left_one() = pg_temp.left_many(), 'One company at a time gives the same');
+select pg_temp.wake_assert(pg_temp.left_one() = pg_temp.left_many(), 'One company at a time gives the same (one definition)');
+select pg_temp.wake_assert((select count(*) from public.qorpera_computer_hour_left_many(array['72600000-0000-4000-8000-000000000040',
+	'72600000-0000-4000-8000-000000000040', null, '72600000-0000-4000-8000-000000000010']::uuid[])) = 2,
+	'A company named twice is one row, a null none');
 -- Before live payments the dry-run ledger counts, as before.
 update public.qorpera_computer_hour_billing set live_since = null;
 select pg_temp.wake_assert(pg_temp.left_many() ->> '72600000-0000-4000-8000-000000000040' = '18000'
@@ -120,4 +123,16 @@ update public.qorpera_computer_hour_sources set period_end = clock_timestamp() -
 where reference = 'sub_Bounded1:1';
 select pg_temp.wake_assert(public.qorpera_computer_hour_zero_sweep(clock_timestamp()) = '{"cleared": 0, "ranOut": 1}',
 	'No renewal: at zero again');
+-- A recorded company whose founder's period just ended, but the plan was cancelled: no grace, so it
+-- stays recorded (no second "out of hours").
+update public.qorpera_computer_hour_subscriptions set status = 'canceled' where stripe_subscription_id = 'sub_Bounded1';
+update public.qorpera_computer_hour_sources set period_end = clock_timestamp() - interval '5 minutes'
+where reference = 'sub_Bounded1:1';
+select set_config('qorpera_test.notices', (select count(*)::text from public.qorpera_computer_hour_notices
+	where kind = 'out_of_hours' and profile_id = '72600000-0000-4000-8000-000000000030'), true);
+select pg_temp.wake_assert(public.qorpera_computer_hour_zero_sweep(clock_timestamp()) = '{"cleared": 0, "ranOut": 0}',
+	'Cancelled plan: stays recorded');
+select pg_temp.wake_assert((select count(*)::text from public.qorpera_computer_hour_notices
+	where kind = 'out_of_hours' and profile_id = '72600000-0000-4000-8000-000000000030') = current_setting('qorpera_test.notices'),
+	'No second "out of hours"');
 rollback;

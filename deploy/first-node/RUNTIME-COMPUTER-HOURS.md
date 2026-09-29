@@ -466,8 +466,9 @@ Coordinator (nothing secret):
 
 ## Zero (build step 6; built switched off)
 
-- The check is `qorpera_company_at_zero(p_profile_id, at)` (migration `20260928249200`). It is true
-  only when the rule is switched on (`qorpera_computer_hour_billing.zero_rule_since`, null until the
+- The check is `qorpera_company_at_zero(p_profile_id, at)` (migration `20260928249200`; since
+  `20260929300000` it also needs the company recorded in the zero state, see "Bounded cost"). The
+  full check is true only when the rule is switched on (`qorpera_computer_hour_billing.zero_rule_since`, null until the
   live switch), payments are live (dry-run balances never hold work), and
   `qorpera_company_computer_hours_left(p_profile_id)` (step 3) is zero or less. That value is null
   for a complimentary company, which always passes. There is a renewal grace: a founder's plan
@@ -482,8 +483,10 @@ Coordinator (nothing secret):
   come from one query (`qorpera_computer_hour_left_many`, which the one-company
   `qorpera_company_computer_hours_left` uses too). The sweep runs the full check only for a company
   with no hours left (a newly recorded one, or a recorded one near a founder's period end); the
-  routine listing reads the zero state only. Locally, under heavy load, with 3,000 companies (1,000
-  at zero) a quiet sweep took about 0.4 s instead of about 2 s.
+  routine listing reads the zero state only. Locally, under heavy load, with a third of the
+  companies paying by credits, a third by a founder's plan and a third at zero, a quiet sweep took
+  about 0.28 s for 3,000 companies and 0.54 s for 6,000 (it grows in a straight line); the old
+  checks took about 2 s for 3,000.
 - Members read the wait with `qorpera_company_waiting_for_hours(p_profile_id)` (migration
   `20260929280000`), shown above the composer in agent threads and group chats, and with
   `waitingForHours` in the hours read on Plan & usage.
@@ -552,8 +555,12 @@ Coordinator (nothing secret):
     "Waiting for computer hours" on it;
   - at the switch, and after it, watch the sweep: `select swept_at, failed_at, last_error from
     public.qorpera_computer_hour_zero_sweep_status`. With the rule on it is the only sender of
-    "out of hours", and the finishing window acts on its records, so a sweep that keeps failing
-    means neither.
+    "out of hours", the finishing window acts on its records, and (since `20260929300000`) the
+    zero check needs its record: a sweep that keeps failing, or a stopped meter job, means no
+    email, no finishing window and no held work, so a company that runs out keeps starting work
+    and owing;
+  - a company recorded at zero with waiting wakes still pays the full check (about 0.4 ms) each
+    time the wake step visits it.
 - It is checked before a run is created (not at claim or placement: a run waiting there is
   invisible to members) and at each machine kind's own start or wake step. A run created before
   the company ran out is running work. The hook list is agreed with the nodes (S3), machines,

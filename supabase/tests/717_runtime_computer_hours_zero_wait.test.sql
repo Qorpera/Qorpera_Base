@@ -36,7 +36,7 @@ select pg_temp.wake_assert((length(pg_get_functiondef('public.qorpera_list_routi
 	- length(replace(pg_get_functiondef('public.qorpera_list_routine_schedule_heads(uuid,integer)'::regprocedure),
 		'qorpera_computer_hour_zero_state', ''))) / length('qorpera_computer_hour_zero_state') = 2,
 	'The routine listing reads the zero state on both pages');
--- Every function that creates runs, lists or queues routine slots checks for zero; the three that pick
+-- Every function that creates runs or queues routine slots checks for zero (the listing: above); the three that pick
 -- queued work check when picking and again before starting it, and the listing on both pages.
 select pg_temp.wake_assert(count(*) = 9 and bool_and(checks.found = checks.expected),
 	'Checks for zero: ' || string_agg(checks.fn || ' ' || checks.found || '/' || checks.expected, ', '))
