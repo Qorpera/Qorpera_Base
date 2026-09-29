@@ -8,7 +8,7 @@ import {
 	answersActionReview,
 } from "../../cloud/review-rules.ts";
 import { sessionAttachmentProblem } from "../../cloud/session-attachments.ts";
-import type { TranscriptCard, TranscriptItem } from "../../cloud/transcript.ts";
+import type { TranscriptCard, TranscriptItem, TranscriptMessage } from "../../cloud/transcript.ts";
 import type { HostedSession, HostedStaffAgent, JsonValue } from "../../cloud/types.ts";
 import { AGENT_LOOK, activityCaption, syncCaption } from "../../ui/agent-activity.ts";
 import { AttachmentTray, attachmentProblemText } from "../../ui/attachments.ts";
@@ -34,7 +34,7 @@ import { renderInteractionCard } from "../../ui/interaction-card.ts";
 import { matchesKey } from "../../ui/keys.ts";
 import { markdownBubbles } from "../../ui/markdown.ts";
 import { findMentions, type MentionTarget, matchTargets, mentionParts, mentionQuery } from "../../ui/mentions.ts";
-import { presentationLocale, t } from "../../ui/preferences.ts";
+import { presentationDay, presentationLocale, presentationTimeZone, t } from "../../ui/preferences.ts";
 import { quietScroll } from "../../ui/quiet-scroll.ts";
 import { ReceivedAttachments } from "../../ui/received-attachments.ts";
 import { runFailureCard, runFailureInterrupted, runFailureReason } from "../../ui/run-failure.ts";
@@ -61,6 +61,15 @@ const CODING_POLL_HIDDEN_MS = 20_000;
 // Popup dismissal lasts for this company controller, including conversation navigation.
 // It does not settle or discard work whose outcome still needs review.
 const dismissedRunNotifications = new WeakMap<CompanyController, Set<string>>();
+
+/** One transcript item as the thread drew it. The element is kept while its key (everything
+ * the item shows) is the same, so a new message adds one node and the rest stay as they are. */
+interface DrawnItem {
+	key: string;
+	element: HTMLElement;
+	/** A message's received files: disposed with the element (it may hold an open preview). */
+	attachments?: ReceivedAttachments;
+}
 
 export { renderAuthorizationCard } from "../../ui/authorization-card.ts";
 
@@ -156,12 +165,15 @@ export class ConversationView {
 	/** A failed run, shown as one line right above the composer, in the same band as the company notices. */
 	readonly #runNotification = h("div", { class: "thread-run-failure", hidden: true });
 	#runNotificationKey = "";
-	#receivedAttachments: ReceivedAttachments[] = [];
 	/** An approval card's Always allow editor, by review id: kept across re-renders. */
 	readonly #reviewDrafts = new Map<string, ActionReviewDraft>();
 	/** The approval card to give focus after the thread redraws (it was just answered). */
 	#focusReview: string | undefined;
-	readonly #emailCards = new Map<string, { key: string; element: HTMLElement }>();
+	/** Every item of the last render by its id: a redraw keeps the nodes of unchanged items. */
+	#drawn = new Map<string, DrawnItem>();
+	/** The working figure's row and the empty thread's line, kept while they read the same. */
+	#activityRow: { key: string; element: HTMLElement } | undefined;
+	#emptyRow: HTMLElement | undefined;
 	/** Each coding session's line, kept while what it shows is the same, so a redraw keeps its focus. */
 	readonly #codingLines = new Map<string, { key: string; element: HTMLElement }>();
 	/** A coding session opened as its own thread over this one, from its line or its
@@ -169,6 +181,8 @@ export class ConversationView {
 	#codingThread: { workerId: string; view: CodingSessionThreadView } | undefined;
 	readonly #timestampTimer: number;
 	#timestampRows: { date: Date; node: HTMLElement; separator?: HTMLTimeElement }[] = [];
+	/** The clock (#clock) the day separators were last labelled with. */
+	#timestampClock = "";
 
 	constructor(
 		company: CompanyController,
@@ -540,10 +554,10 @@ export class ConversationView {
 		this.#panel = undefined;
 		this.#attachments.dispose();
 		this.#sharedDrafts.dispose();
-		for (const attachments of this.#receivedAttachments) attachments.dispose();
+		for (const drawn of this.#drawn.values()) drawn.attachments?.dispose();
+		this.#drawn.clear();
 		this.#closeCodingSession();
 		clearTimeout(this.#codingPoll);
-		this.#emailCards.clear();
 		this.#codingLines.clear();
 		for (const unsubscribe of this.#unsubscribe) unsubscribe();
 		this.#company.setOpenSession(undefined);
@@ -612,11 +626,19 @@ export class ConversationView {
 	}
 
 	/** Written messages show skill names as the composer does. Only message text is marked:
-	 * markSkillNames leaves code and links alone, and marked text is not marked twice. */
-	#markSkills(): void {
+	 * markSkillNames leaves code and links alone, and marked text is not marked twice.
+	 * Only messages drawn now: a kept one was marked with the same names (its key has them). */
+	#markSkills(messages: readonly HTMLElement[]): void {
 		const names = this.#skills.names();
 		if (!names.size) return;
-		for (const bubble of this.#messages.querySelectorAll(".message .bubble")) markSkillNames(bubble, names);
+		for (const message of messages)
+			for (const bubble of message.querySelectorAll(":scope > .bubble")) markSkillNames(bubble, names);
+	}
+
+	/** What every shown time depends on besides the moment itself: the language, the zone
+	 * and today's date ("10:04" today reads "Sep 28, 10:04" tomorrow). */
+	#clock(): string {
+		return `${presentationLocale()} ${presentationTimeZone()} ${presentationDay(new Date())}`;
 	}
 
 	#setMenu(open: boolean, restoreFocus = true): void {
@@ -1225,6 +1247,11 @@ export class ConversationView {
 				? this.#timestampRows.find(({ node }) => node.getBoundingClientRect().bottom > viewportTop)?.node
 				: undefined;
 		const anchorTop = anchor?.getBoundingClientRect().top ?? 0;
+		// A redraw labels only the separators it adds, unless the day, zone or language
+		// changed since the last labelling; the clock and window focus relabel them all.
+		const clock = this.#clock();
+		const relabel = preserveScroll || clock !== this.#timestampClock;
+		this.#timestampClock = clock;
 		// Reconcile local-day boundaries too: travel can add or remove a midnight
 		// between adjacent messages. Keep the message and attachment nodes intact.
 		for (const { row, separated } of groups) {
@@ -1234,11 +1261,10 @@ export class ConversationView {
 				continue;
 			}
 			const { date } = row;
-			if (!row.separator) {
-				row.separator = h("time", { class: "conversation-timestamp", datetime: date.toISOString() });
-				row.node.before(row.separator);
-			}
-			const time = row.separator;
+			if (row.separator && !relabel) continue;
+			const added = !row.separator;
+			const time = row.separator ?? h("time", { class: "conversation-timestamp", datetime: date.toISOString() });
+			row.separator = time;
 			const label = conversationTimestampLabel(date, now);
 			const title = conversationTimestampTitle(date);
 			if (time.textContent !== label) time.textContent = label;
@@ -1246,6 +1272,8 @@ export class ConversationView {
 				time.title = title;
 				time.setAttribute("aria-label", title);
 			}
+			// Labelled before it joins the live log, which then reads it once, whole.
+			if (added) row.node.before(time);
 		}
 		if (regroup) {
 			if (this.#stickToBottom) this.#pinToBottom();
@@ -1271,9 +1299,11 @@ export class ConversationView {
 			),
 		];
 		const session = this.#company.store.get().sessions.find((item) => item.sessionId === this.#sessionId);
+		const room = this.#isRoom;
 		// Group chats carry no cards; elsewhere the kernel's answerer, per card.
-		const canWrite = this.#company.store.get().team?.capabilities.write === true && !this.#isRoom;
+		const canWrite = this.#company.store.get().team?.capabilities.write === true && !room;
 		const role = this.#company.store.get().team?.role ?? "";
+		const members = this.#company.store.get().team?.members;
 		const canAnswer = (actorUserId: string) =>
 			canWrite && !!session && answersInteraction(session, actorUserId, this.#company.userId);
 		const canDecide = (actorUserId: string) => canAnswer(actorUserId) && ["owner", "admin"].includes(role);
@@ -1283,13 +1313,21 @@ export class ConversationView {
 		const codingSessions = [...(conversation.codingSessions ?? [])].sort((a, b) =>
 			a.createdAt.localeCompare(b.createdAt),
 		);
+		const mentionTargets = this.#shownMentionTargets();
+		const clock = this.#clock();
+		const skillNames = [...this.#skills.names()].sort().join(" ");
+		// A coworker's chip shows its figure and name.
+		const coworker = (staffId: string) => {
+			const staff = this.#company.staffById(staffId);
+			return [staff?.id, staff?.displayName, staff?.appearance, staff?.templateId];
+		};
 		const key = JSON.stringify([
 			items,
-			this.#shownMentionTargets(),
+			mentionTargets,
 			// Only what the line shows: the header's poll changes the rest every few seconds.
 			codingSessions.map((coding) => [coding.workerId, coding.harness, coding.title, coding.createdAt]),
 			agentName,
-			this.#isRoom,
+			room,
 			answerable,
 			items.flatMap((item) =>
 				item.kind === "interaction" && item.request.expiresAt
@@ -1301,7 +1339,7 @@ export class ConversationView {
 			canWrite,
 			conversation.interactionAnswers,
 			conversation.interactionError,
-			this.#company.store.get().team?.members,
+			members,
 			conversation.projection.hiddenCount,
 			conversation.loading,
 			conversation.error,
@@ -1309,11 +1347,12 @@ export class ConversationView {
 			agent?.id,
 			agent?.appearance,
 			agent?.templateId,
+			clock,
+			skillNames,
+			items.flatMap((item) => (item.kind === "peer_link" ? [coworker(item.counterpartStaffId)] : [])),
 		]);
 		if (key === this.#renderedKey) return;
 		this.#renderedKey = key;
-		for (const attachments of this.#receivedAttachments) attachments.dispose();
-		this.#receivedAttachments = [];
 		const decisions = new Map<string, TranscriptCard>();
 		for (const item of items)
 			if (item.kind === "authorization_decision") {
@@ -1327,8 +1366,39 @@ export class ConversationView {
 				const review = actionReviewCard(authorizationData(item.body));
 				if (review) reviews.set(item.id.toLowerCase(), review);
 			}
+		// Each item keeps its element from the last render while its key, everything the item
+		// shows, is the same: only new and changed items are drawn, so the live log hears only them.
+		const drawn = new Map<string, DrawnItem>();
+		/** Message elements drawn now; their skill names are marked before they join the log. */
+		const fresh: HTMLElement[] = [];
+		const keep = (id: string, itemKey: string, draw: () => Omit<DrawnItem, "key">): HTMLElement => {
+			let slot = id;
+			for (let copy = 1; drawn.has(slot); copy++) slot = `${id}#${copy}`;
+			const previous = this.#drawn.get(slot);
+			// A card that replaced itself (an answered interaction redraws in place) is drawn anew.
+			if (previous?.key === itemKey && previous.element.parentNode === this.#messages) {
+				drawn.set(slot, previous);
+				return previous.element;
+			}
+			const next = { key: itemKey, ...draw() };
+			drawn.set(slot, next);
+			return next.element;
+		};
+		// A card's actions reach the thread's agent as it is when clicked, not as it was drawn.
+		const currentAgent = () =>
+			this.#company.staffById(
+				this.#company.store.get().sessions.find((item) => item.sessionId === this.#sessionId)?.staffAgentId,
+			);
 		const nodes: HTMLElement[] = [];
+		// A node kept from the last render keeps its day separator too; the log reads neither again.
+		const separators = new Map<HTMLElement, HTMLTimeElement>();
+		for (const row of this.#timestampRows) if (row.separator) separators.set(row.node, row.separator);
 		this.#timestampRows = [];
+		const markTime = (date: Date, node: HTMLElement) => {
+			const separator = separators.get(node);
+			separators.delete(node);
+			this.#timestampRows.push(separator ? { date, node, separator } : { date, node });
+		};
 		// A coding session stands where the agent started it, before the first
 		// message written after it: one line, like a message to a coworker.
 		let nextSession = 0;
@@ -1340,7 +1410,7 @@ export class ConversationView {
 				const line = this.#codingLine(candidate);
 				nodes.push(line);
 				const date = parseConversationTimestamp(candidate.createdAt);
-				if (date) this.#timestampRows.push({ date, node: line });
+				if (date) markTime(date, line);
 			}
 		};
 		for (const item of items) {
@@ -1349,134 +1419,112 @@ export class ConversationView {
 				const mine = item.kind === "member" && item.authorUserId === this.#company.userId;
 				const author =
 					item.kind === "agent"
-						? this.#isRoom
+						? room
 							? (item.staffSpeaker?.displayName ??
 								(item.staffSpeaker
 									? t("Agent {id}", { id: item.staffSpeaker.staffAgentId })
 									: t("Agent reply · speaker unavailable")))
 							: agentName
 						: this.#company.memberName(item.authorUserId);
-				const attachments = item.attachmentCount
-					? new ReceivedAttachments(item, this.#actions.previewAttachment)
-					: undefined;
-				if (attachments) this.#receivedAttachments.push(attachments);
-				const bodies =
-					item.kind === "agent"
-						? markdownBubbles(item.text)
-						: item.text || !item.attachmentCount
-							? [h("div", { class: "text" }, ...(item.text ? this.#withMentions(item.text) : [t("(empty)")]))]
-							: [];
+				const itemKey = JSON.stringify([
+					item,
+					author,
+					mine,
+					room,
+					clock,
+					// A member's names are set apart; a "/name" may be a skill. (An item that
+					// arrives without text still draws, as "(empty)".)
+					item.kind === "member" && item.text ? mentionTargets : null,
+					item.text?.includes("/") ? skillNames : null,
+				]);
 				nodes.push(
-					h(
-						"article",
-						{
-							class: [
-								"message",
-								item.kind === "agent" ? "from-agent" : "from-member",
-								mine && "mine",
-								item.phase === "progress" && "message-progress",
-								item.pending && `pending-${item.pending}`,
-							]
-								.filter(Boolean)
-								.join(" "),
-							"aria-label": `${author} · ${fmtTime(item.createdAt)}`,
-							title: `${author} · ${fmtTime(item.createdAt)}`,
-							dataset: { messageId: item.id },
-						},
-						item.kind === "agent" && this.#isRoom
-							? h("div", { class: "message-author" }, author)
-							: item.kind === "member" && !mine
-								? h("div", { class: "message-author" }, author)
-								: null,
-						...bodies.map((body) => h("div", { class: "bubble" }, body)),
-						attachments?.el,
-						item.pending
-							? h(
-									"div",
-									{ class: "message-caption" },
-									item.pending === "failed"
-										? item.failureReason
-											? t("Failed · {reason}", { reason: item.failureReason })
-											: t("Failed")
-										: item.pending === "processing"
-											? t("Processing")
-											: t("Queued"),
-								)
-							: null,
-					),
+					keep(item.id, itemKey, () => {
+						const message = this.#drawMessage(item, author, mine);
+						fresh.push(message.element);
+						return message;
+					}),
 				);
 			} else if (item.kind === "peer_link") {
 				// A message between this agent and a coworker: one centered line, the coworker's
 				// figure before its name, no text; the transcript is behind it.
-				const counterpart = this.#company.staffById(item.counterpartStaffId);
-				const name = counterpart?.displayName ?? t("a coworker");
-				// A held message was left for the coworker's next turn, so it is a note, not a message it has read.
-				// One sentence around the name; the chip sets the name apart, with the figure
-				// before it, wherever the language puts it.
-				const [verb = "", after = ""] = (
-					item.held
-						? item.direction === "out"
-							? t("Left a note for {name}")
-							: t("Note from {name}")
-						: item.direction === "out"
-							? t("Messaged {name}")
-							: t("Message from {name}")
-				).split("{name}");
-				const label = `${verb}${name}${after}`;
 				const own = agent?.id ?? "";
 				nodes.push(
-					h(
-						"div",
-						{ class: "peer-link", dataset: { messageId: item.id } },
-						h(
-							"button",
-							{
-								type: "button",
-								class: "peer-chip",
-								title: `${label} · ${fmtTime(item.createdAt)}`,
-								"aria-label": t("{label}. Open the conversation", { label }),
-								onclick: (event: MouseEvent) =>
-									this.#openPair(
-										item.pairSessionId,
-										[item.counterpartStaffId, own],
-										event.currentTarget as HTMLElement,
-									),
-							},
-							verb.trim() ? h("span", null, verb.trim()) : null,
-							agentFigure(counterpart, name, { size: 16 }),
-							h("span", null, name),
-							after.trim() ? h("span", null, after.trim()) : null,
-						),
-					),
+					keep(item.id, JSON.stringify([item, coworker(item.counterpartStaffId), own, clock]), () => {
+						const counterpart = this.#company.staffById(item.counterpartStaffId);
+						const name = counterpart?.displayName ?? t("a coworker");
+						// A held message was left for the coworker's next turn, so it is a note, not a message it has read.
+						// One sentence around the name; the chip sets the name apart, with the figure
+						// before it, wherever the language puts it.
+						const [verb = "", after = ""] = (
+							item.held
+								? item.direction === "out"
+									? t("Left a note for {name}")
+									: t("Note from {name}")
+								: item.direction === "out"
+									? t("Messaged {name}")
+									: t("Message from {name}")
+						).split("{name}");
+						const label = `${verb}${name}${after}`;
+						return {
+							element: h(
+								"div",
+								{ class: "peer-link", dataset: { messageId: item.id } },
+								h(
+									"button",
+									{
+										type: "button",
+										class: "peer-chip",
+										title: `${label} · ${fmtTime(item.createdAt)}`,
+										"aria-label": t("{label}. Open the conversation", { label }),
+										onclick: (event: MouseEvent) =>
+											this.#openPair(
+												item.pairSessionId,
+												[item.counterpartStaffId, own],
+												event.currentTarget as HTMLElement,
+											),
+									},
+									verb.trim() ? h("span", null, verb.trim()) : null,
+									agentFigure(counterpart, name, { size: 16 }),
+									h("span", null, name),
+									after.trim() ? h("span", null, after.trim()) : null,
+								),
+							),
+						};
+					}),
 				);
 			} else if (item.kind === "note") {
-				nodes.push(h("div", { class: "conversation-note", role: "note" }, item.text));
+				nodes.push(
+					keep(item.id, JSON.stringify([item.text]), () => ({
+						element: h("div", { class: "conversation-note", role: "note" }, item.text),
+					})),
+				);
 			} else if (item.kind === "authorization_request" && reviews.has(item.id.toLowerCase())) {
 				const review = reviews.get(item.id.toLowerCase())!;
 				// A decided card needs no editor any more.
 				if (decisions.has(item.id.toLowerCase())) this.#reviewDrafts.delete(review.reviewId);
 				// The decision in the transcript, or an answer on its way (this browser's, or queued).
 				const given = conversation.interactionAnswers?.[item.id.toLowerCase()] ?? item.answer;
+				const resolution =
+					decisions.get(item.id.toLowerCase())?.body ??
+					(given
+						? { decision: given.outcome, answer: given.answer, answeredBy: given.answeredBy ?? null }
+						: undefined);
+				const answerFailed = item.answerFailed === true && !given;
+				const answers =
+					canWrite && session?.status === "open" && answersActionReview(review, this.#company.userId, role);
+				// The Always allow draft is not part of the key: a kept card keeps the member's editor as it is.
 				nodes.push(
-					renderActionReviewCard(
-						review,
-						decisions.get(item.id.toLowerCase())?.body ??
-							(given
-								? { decision: given.outcome, answer: given.answer, answeredBy: given.answeredBy ?? null }
-								: undefined),
-						{
-							answerFailed: item.answerFailed === true && !given,
+					keep(item.id, JSON.stringify([item, resolution, answerFailed, answers, members, clock]), () => ({
+						element: renderActionReviewCard(review, resolution, {
+							answerFailed,
 							draft: this.#reviewDrafts.get(review.reviewId),
 							onDraft: (draft) => this.#reviewDrafts.set(review.reviewId, draft),
-							answer:
-								canWrite &&
-								session?.status === "open" &&
-								answersActionReview(review, this.#company.userId, role)
-									? (answer, ruleText) => void this.#answerActionReview(item.id, answer, ruleText)
-									: undefined,
+							answer: answers
+								? (answer, ruleText) => void this.#answerActionReview(item.id, answer, ruleText)
+								: undefined,
 							memberName: (userId) => this.#company.memberName(userId),
-						},
-					),
+						}),
+					})),
 				);
 			} else if (item.kind === "authorization_decision" && reviews.has(authorizationRequestId(item.body) ?? "")) {
 				// Its approval card already shows this decision; it draws nothing, so it marks no time either.
@@ -1486,24 +1534,29 @@ export class ConversationView {
 					item.kind === "authorization_request"
 						? conversation.interactionAnswers?.[item.id.toLowerCase()]
 						: undefined;
+				const resolution =
+					item.kind === "authorization_request"
+						? (decisions.get(item.id.toLowerCase())?.body ??
+							(optimistic ? { decision: optimistic.outcome, requestEventId: item.id } : undefined))
+						: undefined;
+				const actor = this.#company.memberName(item.actorUserId);
+				// A card of an agent's action the web cannot read is shown read-only: the general
+				// answer refuses those (kernel v130), so it offers no controls.
+				const decides =
+					item.kind === "authorization_request" &&
+					canDecide(item.actorUserId) &&
+					authorizationData(item.body).schema !== ACTION_REVIEW_SCHEMA;
 				nodes.push(
-					renderAuthorizationCard(
-						item.kind,
-						item.body,
-						item.createdAt,
-						this.#company.memberName(item.actorUserId),
-						item.kind === "authorization_request"
-							? (decisions.get(item.id.toLowerCase())?.body ??
-									(optimistic ? { decision: optimistic.outcome, requestEventId: item.id } : undefined))
-							: undefined,
-						// A card of an agent's action the web cannot read is shown read-only: the general
-						// answer refuses those (kernel v130), so it offers no controls.
-						item.kind === "authorization_request" &&
-							canDecide(item.actorUserId) &&
-							authorizationData(item.body).schema !== ACTION_REVIEW_SCHEMA
-							? (decision) => void this.#answerInteraction(item.id, decision)
-							: undefined,
-					),
+					keep(item.id, JSON.stringify([item, resolution, actor, decides, clock]), () => ({
+						element: renderAuthorizationCard(
+							item.kind,
+							item.body,
+							item.createdAt,
+							actor,
+							resolution,
+							decides ? (decision) => void this.#answerInteraction(item.id, decision) : undefined,
+						),
+					})),
 				);
 			} else if (item.kind === "interaction") {
 				const email =
@@ -1511,57 +1564,73 @@ export class ConversationView {
 					item.request.payload.platform === "email" &&
 					item.request.payload.connectorId === "gmail";
 				const answer = item.answer ?? conversation.interactionAnswers?.[item.id.toLowerCase()];
+				const answers = canAnswer(item.actorUserId);
+				const takeOver = Boolean(agent) && item.request.surface === "takeover";
 				const cardKey = JSON.stringify([
 					item.request,
 					answer,
-					canAnswer(item.actorUserId),
+					answers,
 					item.answerFailed,
 					item.request.expiresAt ? Date.parse(item.request.expiresAt) <= Date.now() : false,
+					agentName,
+					// An email card shows no time or member name, and keeps its editor through the rest.
+					...(email
+						? [presentationLocale()]
+						: [
+								item.createdAt,
+								clock,
+								answer?.answeredBy ? this.#company.memberName(answer.answeredBy) : null,
+								takeOver,
+							]),
 				]);
-				const cached = email ? this.#emailCards.get(item.id) : undefined;
-				const element =
-					cached?.key === cardKey
-						? cached.element
-						: renderInteractionCard(
-								{ ...item, answer },
-								{
-									agentName,
-									memberName: (userId) => this.#company.memberName(userId),
-									canAnswer: canAnswer(item.actorUserId),
-									answer: (outcome, answer) => this.#answerInteraction(item.id, outcome, answer),
-									...(email
-										? {
-												emailDraft: this.#company.emailDraftEditor(item.id),
-												loadEmailDraft: () => this.#company.loadEmailDraft(this.#sessionId, item.id),
-											}
-										: {}),
-									...(email && canAnswer(item.actorUserId)
-										? {
-												actEmailDraft: (action: EmailDraftAction, content: EmailDraftContent) =>
-													this.#company.actEmailDraft(this.#sessionId, item.id, action, content),
-											}
-										: {}),
-									...(agent && item.request.surface === "takeover"
-										? { takeOver: () => this.#takeOver(agent) }
-										: {}),
-									...(item.request.surface === "secret" && canAnswer(item.actorUserId)
-										? {
-												provideSecret: (value: string) =>
-													this.#company.provideSecret(this.#sessionId, item.id, item.request, value),
-											}
-										: {}),
-								},
-							);
-				if (email) this.#emailCards.set(item.id, { key: cardKey, element });
-				nodes.push(element);
+				nodes.push(
+					keep(item.id, cardKey, () => ({
+						element: renderInteractionCard(
+							{ ...item, answer },
+							{
+								agentName,
+								memberName: (userId) => this.#company.memberName(userId),
+								canAnswer: answers,
+								answer: (outcome, answer) => this.#answerInteraction(item.id, outcome, answer),
+								...(email
+									? {
+											emailDraft: this.#company.emailDraftEditor(item.id),
+											loadEmailDraft: () => this.#company.loadEmailDraft(this.#sessionId, item.id),
+										}
+									: {}),
+								...(email && answers
+									? {
+											actEmailDraft: (action: EmailDraftAction, content: EmailDraftContent) =>
+												this.#company.actEmailDraft(this.#sessionId, item.id, action, content),
+										}
+									: {}),
+								...(takeOver
+									? {
+											takeOver: () => {
+												const current = currentAgent();
+												if (current) this.#takeOver(current);
+											},
+										}
+									: {}),
+								...(item.request.surface === "secret" && answers
+									? {
+											provideSecret: (value: string) =>
+												this.#company.provideSecret(this.#sessionId, item.id, item.request, value),
+										}
+									: {}),
+							},
+						),
+					})),
+				);
 			}
 			const date = parseConversationTimestamp(item.createdAt);
 			const node = nodes[nodes.length - 1];
-			if (date && node) this.#timestampRows.push({ date, node });
+			if (date && node) markTime(date, node);
 		}
 		placeSessions(undefined);
-		for (const id of this.#emailCards.keys())
-			if (!items.some((item) => item.kind === "interaction" && item.id === id)) this.#emailCards.delete(id);
+		// Items gone from the thread, and items drawn anew, let their old elements go.
+		for (const [slot, previous] of this.#drawn) if (drawn.get(slot) !== previous) previous.attachments?.dispose();
+		this.#drawn = drawn;
 		for (const workerId of this.#codingLines.keys())
 			if (!codingSessions.some((session) => session.workerId === workerId)) this.#codingLines.delete(workerId);
 		if (conversation.loading && !items.length) {
@@ -1569,29 +1638,44 @@ export class ConversationView {
 			nodes.push(this.#messagesPlaceholder);
 		} else this.#messagesPlaceholder = undefined;
 		if (!conversation.loading && !items.length && !codingSessions.length && !conversation.error && !this.#working) {
-			nodes.push(h("div", { class: "empty" }, t("No messages yet.")));
+			const empty = t("No messages yet.");
+			if (this.#emptyRow?.textContent !== empty) this.#emptyRow = h("div", { class: "empty" }, empty);
+			nodes.push(this.#emptyRow);
 		}
 		if (this.#working && !conversation.loading) {
 			// As on the desktop: the figure works or writes, and "Nova is writing"
-			// shows beside it on hover or focus, never as a bubble.
-			const look = AGENT_LOOK[this.#agentState];
-			const { label, caption } = activityCaption(look, agentName);
-			const row = h(
-				"div",
-				{
-					class: "message from-agent thread-activity",
-					role: "status",
-					tabindex: "0",
-					"aria-label": label,
-				},
-				agentFigure(agent, agentName, { size: 40, activity: look.figure }),
-				caption,
-			);
-			// The wave only runs while the caption shows; on showing it starts in step with the rail.
-			row.addEventListener("mouseenter", () => syncCaption(caption));
-			row.addEventListener("focus", () => syncCaption(caption));
-			nodes.push(row);
-		}
+			// shows beside it on hover or focus, never as a bubble. The row is kept while it
+			// reads the same, so its figure's motion runs on through new messages.
+			const rowKey = JSON.stringify([
+				this.#agentState,
+				agentName,
+				agent?.id,
+				agent?.appearance,
+				agent?.templateId,
+				presentationLocale(),
+			]);
+			if (this.#activityRow?.key !== rowKey) {
+				const look = AGENT_LOOK[this.#agentState];
+				const { label, caption } = activityCaption(look, agentName);
+				const row = h(
+					"div",
+					{
+						class: "message from-agent thread-activity",
+						role: "status",
+						tabindex: "0",
+						"aria-label": label,
+					},
+					agentFigure(agent, agentName, { size: 40, activity: look.figure }),
+					caption,
+				);
+				// The wave only runs while the caption shows; on showing it starts in step with the rail.
+				row.addEventListener("mouseenter", () => syncCaption(caption));
+				row.addEventListener("focus", () => syncCaption(caption));
+				this.#activityRow = { key: rowKey, element: row };
+			}
+			nodes.push(this.#activityRow.element);
+		} else this.#activityRow = undefined;
+		this.#markSkills(fresh);
 		const rowFocus = document.activeElement?.classList.contains("thread-activity") ?? false;
 		// Read before the redraw: a browser blurs an input as it leaves the page.
 		const active =
@@ -1601,19 +1685,26 @@ export class ConversationView {
 		const reviewInput = active instanceof HTMLInputElement ? active : undefined;
 		const reviewCard = active?.closest<HTMLElement>("[data-review-id]")?.dataset.reviewId;
 		// Nodes already in place stay put: a live log re-reads what is taken out and put back.
+		const desired: HTMLElement[] = [];
+		const separatorOf = new Map<HTMLElement, HTMLTimeElement>();
+		for (const row of this.#timestampRows) if (row.separator) separatorOf.set(row.node, row.separator);
+		for (const node of nodes) {
+			const separator = separatorOf.get(node);
+			if (separator) desired.push(separator);
+			desired.push(node);
+		}
 		const kept = this.#messages.childNodes;
-		if (nodes.length !== kept.length || nodes.some((node, index) => node !== kept[index])) {
+		if (desired.length !== kept.length || desired.some((node, index) => node !== kept[index])) {
 			// Keep existing editors attached: replaceChildren removes even retained
 			// nodes and loses keyboard focus, selection and an in-progress IME edit.
-			const desired = new Set(nodes);
-			for (const child of [...this.#messages.children]) if (!desired.has(child as HTMLElement)) child.remove();
+			const wanted = new Set<Node>(desired);
+			for (const child of [...this.#messages.childNodes]) if (!wanted.has(child)) child.remove();
 			let cursor = this.#messages.firstChild;
-			for (const node of nodes) {
+			for (const node of desired) {
 				if (node !== cursor) this.#messages.insertBefore(node, cursor);
 				cursor = node.nextSibling;
 			}
 		}
-		this.#markSkills();
 		for (const item of items) if (item.kind === "member" || item.kind === "agent") this.#skills.want(item.text);
 		// A keyboard user reading the row keeps it through a state change or a new message.
 		if (rowFocus) this.#messages.querySelector<HTMLElement>(".thread-activity")?.focus({ preventScroll: true });
@@ -1644,6 +1735,58 @@ export class ConversationView {
 		}
 		this.#refreshTimestamps(false);
 		this.#pinToBottom();
+	}
+
+	/** A member's or agent's message: its author, its text (an agent's as markdown), its files
+	 * and, while it waits, where it stands. */
+	#drawMessage(item: TranscriptMessage, author: string, mine: boolean): Omit<DrawnItem, "key"> {
+		const attachments = item.attachmentCount
+			? new ReceivedAttachments(item, this.#actions.previewAttachment)
+			: undefined;
+		const bodies =
+			item.kind === "agent"
+				? markdownBubbles(item.text)
+				: item.text || !item.attachmentCount
+					? [h("div", { class: "text" }, ...(item.text ? this.#withMentions(item.text) : [t("(empty)")]))]
+					: [];
+		const element = h(
+			"article",
+			{
+				class: [
+					"message",
+					item.kind === "agent" ? "from-agent" : "from-member",
+					mine && "mine",
+					item.phase === "progress" && "message-progress",
+					item.pending && `pending-${item.pending}`,
+				]
+					.filter(Boolean)
+					.join(" "),
+				"aria-label": `${author} · ${fmtTime(item.createdAt)}`,
+				title: `${author} · ${fmtTime(item.createdAt)}`,
+				dataset: { messageId: item.id },
+			},
+			item.kind === "agent" && this.#isRoom
+				? h("div", { class: "message-author" }, author)
+				: item.kind === "member" && !mine
+					? h("div", { class: "message-author" }, author)
+					: null,
+			...bodies.map((body) => h("div", { class: "bubble" }, body)),
+			attachments?.el,
+			item.pending
+				? h(
+						"div",
+						{ class: "message-caption" },
+						item.pending === "failed"
+							? item.failureReason
+								? t("Failed · {reason}", { reason: item.failureReason })
+								: t("Failed")
+							: item.pending === "processing"
+								? t("Processing")
+								: t("Queued"),
+					)
+				: null,
+		);
+		return attachments ? { element, attachments } : { element };
 	}
 
 	#renderStatus(conversation: ConversationState, canWrite: boolean, session: HostedSession | undefined): void {
