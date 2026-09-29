@@ -157,6 +157,30 @@ describe("per-boot credential directories on a recreated root", () => {
 		await expect(assertCompanyComputerResetRootClean(f.activationId, f.command.bootId)).resolves.toBeUndefined();
 		expect(mocks.lstat).toHaveBeenCalledWith(`${predecessor}/credentials`);
 	});
+	it("passes without a boots root", async () => {
+		const f = resetInvocationFixture();
+		mocks.lstat.mockRejectedValue(Object.assign(new Error("absent"), { code: "ENOENT" }));
+		mocks.readdir.mockRejectedValue(Object.assign(new Error("absent"), { code: "ENOENT" }));
+		await expect(assertCompanyComputerResetRootClean(f.activationId, f.command.bootId)).resolves.toBeUndefined();
+		expect(mocks.readdir).toHaveBeenCalledWith(COMPANY_COMPUTER_BOOTS_ROOT);
+	});
+	it("refuses a non-directory boot entry as stale authority and surfaces other lstat errors", async () => {
+		const f = resetInvocationFixture(),
+			predecessor = companyComputerBootDirectory(f.request.request.predecessor.startup.bootId);
+		for (const [code, message] of [
+			["ENOTDIR", "stale root authority present"],
+			["EIO", "unreadable"],
+		] as const) {
+			mocks.readdir.mockImplementation(async (path: string) =>
+				path === COMPANY_COMPUTER_BOOTS_ROOT ? [basename(predecessor)] : [],
+			);
+			mocks.lstat.mockImplementation(async (path: string) => {
+				if (path === `${predecessor}/credentials`) throw Object.assign(new Error("unreadable"), { code });
+				throw Object.assign(new Error("absent"), { code: "ENOENT" });
+			});
+			await expect(assertCompanyComputerResetRootClean(f.activationId, f.command.bootId)).rejects.toThrow(message);
+		}
+	});
 	it("refuses when the boots root cannot be listed", async () => {
 		const f = resetInvocationFixture();
 		mocks.lstat.mockRejectedValue(Object.assign(new Error("absent"), { code: "ENOENT" }));

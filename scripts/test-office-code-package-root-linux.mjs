@@ -176,6 +176,7 @@ try {
 		"observation-mutated",
 		"observation-replay",
 		"observation-expired",
+		"other-boot-credentials-before-observation",
 		"recovery-complete",
 		"recovery-partial",
 		"recovery-no-claim",

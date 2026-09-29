@@ -102,7 +102,8 @@ async function assertNoOtherBootCredentials(currentBootId: string): Promise<void
 			await lstat(`${directory}/credentials`);
 		} catch (error) {
 			if (missing(error)) continue;
-			throw error;
+			// A non-directory boot entry is foreign root state too.
+			if (!(error instanceof Error && "code" in error && error.code === "ENOTDIR")) throw error;
 		}
 		throw new Error("stale root authority present");
 	}

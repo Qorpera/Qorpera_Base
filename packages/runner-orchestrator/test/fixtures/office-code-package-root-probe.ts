@@ -75,7 +75,11 @@ const assertNoOldCredentials = () => {
 	assert.deepEqual(readdirSync(credentials), [], "historical credentials restored");
 	assert.deepEqual(
 		readdirSync(COMPANY_COMPUTER_BOOTS_ROOT),
-		scenario === "current-boot-credentials" ? [basename(currentBoot)] : [],
+		scenario === "current-boot-credentials"
+			? [basename(currentBoot)]
+			: scenario === "other-boot-credentials-before-observation"
+				? [basename(otherBoot)]
+				: [],
 		"boot directories changed",
 	);
 };
@@ -371,6 +375,13 @@ if (scenario !== "compatible-noop")
 const timings: Array<{ purpose: string; mode: string; elapsedMs: number; status: number | null }> = [];
 /** QORPERA_CODE_PACKAGE_DIAGNOSTIC tools append stacks here: their stdio is ignored. */
 const diagnosticLog = "/tmp/qorpera-code-package-diagnostic.log";
+/** With QORPERA_CODE_PACKAGE_DIAGNOSTIC=1 the bootstrap tool logs why it refused:
+ * a credential scenario must fail on the root check itself, nothing earlier. */
+const assertCredentialRefusal = () => {
+	if (!scenario.includes("credentials") || !existsSync(diagnosticLog)) return;
+	assert.match(readFileSync(diagnosticLog, "utf8"), /^Error: stale root authority present\n/);
+	console.log(JSON.stringify({ scenario, refusalReason: "stale root authority present" }));
+};
 const run = (args: string[], purpose = "bootstrap") => {
 	rmSync(diagnosticLog, { force: true });
 	const started = performance.now();
@@ -482,6 +493,7 @@ if (
 		0,
 		"unsafe preflight accepted",
 	);
+	assertCredentialRefusal();
 	await assert.rejects(lstat(`/etc/qorpera-office/code-packages/${plan.provisionId}/installed.json`), {
 		code: "ENOENT",
 	});
@@ -519,6 +531,7 @@ if (
 			);
 		else await writeFile("/opt/qorpera-office/qorpera-company-computer.service", "mutated");
 		assert.notEqual(run(["install", hash(packet), hash(trustBytes), preflightId, probe.nonce, "5000"]).status, 0);
+		assertCredentialRefusal();
 		assert.notEqual(
 			run(["preflight", hash(packet), hash(trustBytes), randomUUID()]).status,
 			0,
@@ -598,6 +611,7 @@ if (
 		const observationMustReject = [
 			"observation-mutated",
 			"observation-expired",
+			"other-boot-credentials-before-observation",
 			"observation-external",
 			"recovery-partial",
 			"recovery-no-claim",
@@ -625,6 +639,7 @@ if (
 				"/tmp/code-package-dependencies.json",
 				encode({ ...dependencies, browserTreeSha256: "0".repeat(64) }),
 			);
+		if (scenario === "other-boot-credentials-before-observation") await bootCredentials(otherBoot, "config.json");
 		if (scenario === "observation-mutated")
 			await writeFile("/opt/qorpera-office/qorpera-company-computer-service.mjs", "post-install mutation");
 		const observationArgs = [

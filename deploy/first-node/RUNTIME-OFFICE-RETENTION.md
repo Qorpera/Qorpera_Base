@@ -95,9 +95,9 @@ evidence readers) treats two things as a historical credential directory:
   copies no boot directory, so a recreated root holds none until reset
   configuration adds the current boot's own.
 
-The code package tool runs the same check before installation, which the
-worker completes before reset configuration; the start, restart, software and
-measurement readers run it after. All of them run in the reset-born boot, so
+The code package tool runs the same check at preflight, install and
+observation, all of which the worker completes before reset configuration; the
+start, restart, software and measurement readers run it after. All of them run in the reset-born boot, so
 the current boot is the same at every step. A root that was reset before keeps
 its credentials only under `boots/`, so this second rule is what refuses it if
 it survives a later reset. The first line of defence stays the restore
@@ -105,13 +105,19 @@ allowlist: `companyComputerResetRestorablePath` excludes every credential path.
 
 Boundary of the current implementation:
 
-- The guest helpers are unit-covered only through the provider lane against a
-  synthetic root; their Linux/systemd behavior on a real recreated root is not
-  yet exercised by a disposable fixture and remains a live acceptance gate.
-- A completed reset successor is a new activation lineage: the later stop,
-  restart, reboot and second-reset evidence readers still expect an original or
-  retained-boot predecessor and have not been extended to a reset-born
-  activation. Lifecycle continuation after a reset is therefore unproven.
+- The guest helpers run on a real Linux root (files, ownership, kernel flock) in
+  `QORPERA_OFFICE_TEST_RESET=1 scripts/test-office-boot-service-restart-control-linux.mjs`:
+  reset configuration, first start, stop and restart. systemd, SQL and the
+  prior reset are synthetic there; behaviour on a real recreated LXD root
+  remains a live acceptance gate.
+- A completed reset successor is a new activation lineage. Its stop, service
+  restart, power-off and a later reset are implemented (aee5f36b5). Reboot is
+  not: the provider's boot configuration worker accepts a reset-born
+  predecessor, but the guest boot configuration helper
+  (`cloud-company-computer-boot-configuration-control.ts`) still reads the
+  original `/etc/qorpera-office/credentials/config.json`, which reset
+  configuration never writes. Configuring a reset-born root after a reboot is
+  therefore unproven and expected to be refused.
 - There is no automatic deletion, host failover, generation change or general
   update mechanism. The plan grants exactly one reset for one retained
   `replace` request; a plan for another predecessor is refused.
