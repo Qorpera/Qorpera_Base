@@ -354,12 +354,13 @@ it("runs every served company's connector token revocations in turn, on the comp
 	// Each company's own authority; the first one's claim waits until the vault closes.
 	const claims = new Map<string, ReturnType<typeof vi.fn>>();
 	let claimed = () => {};
+	let firstPassDone = false;
 	const waiting = new Promise<void>((resolve) => {
 		claimed = resolve;
 	});
 	principal.authority.mockImplementation((companyId: string) => {
 		const claim = vi.fn(async (_limit: number, signal: AbortSignal) => {
-			if (claims.size === 2 && claim.mock.calls.length > 1) {
+			if (firstPassDone) {
 				claimed();
 				await new Promise((resolve) => signal.addEventListener("abort", resolve, { once: true }));
 				signal.throwIfAborted();
@@ -380,6 +381,7 @@ it("runs every served company's connector token revocations in turn, on the comp
 	});
 	await companies.refresh(new AbortController().signal);
 	await companies.revokeTokens();
+	firstPassDone = true;
 	expect([...claims.keys()].sort()).toEqual([one, two].sort());
 	for (const claim of claims.values()) expect(claim).toHaveBeenCalledExactlyOnceWith(20, expect.any(AbortSignal));
 	// A pass in hand sees the close, and no pass runs after it.
