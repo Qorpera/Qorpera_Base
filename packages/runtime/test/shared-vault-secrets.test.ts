@@ -38,41 +38,52 @@ async function freePort(): Promise<number> {
 
 type Serving = { port: number; exited: Promise<number | null>; printed: () => string; stderr: () => string };
 
-/** The three servers of the hand-off test share this one budget for starting. With the ~8 s the test waits
- * otherwise (a 5 s silent connection, a 3 s deadline), a slow start is reported by `listening`, not by the
- * test's 30 s timeout. */
-const READY_BUDGET_MS = 15_000;
+/** Time the servers of one test may spend starting, between them. Only time spent inside `listening` is
+ * charged, never the test's own Python calls or its silent connection, so a machine that is slow all over
+ * does not use it up. */
+type StartBudget = { readonly totalMs: number; leftMs: number };
+
+/** The hand-off test's three servers share 15 s. With the ~15 s the test needs otherwise on a loaded machine
+ * (its Python calls, a 5 s silent connection, a 3 s deadline), a slow start is reported by `listening`, not
+ * by the test's 30 s timeout. */
+const startBudget = (totalMs = 15_000): StartBudget => ({ totalMs, leftMs: totalMs });
 
 /** Waits until the spawned `serve` accepts connections on its port, instead of a fixed pause that a loaded
  * test machine outlasts. The probe closes at once: the server reads nothing from it (or closes a peer it
  * does not serve before reading), so it changes nothing the test then checks. */
-async function listening(server: Serving, readyBy: number): Promise<void> {
+async function listening(server: Serving, budget: StartBudget): Promise<void> {
 	let stopped: { code: number | null } | undefined;
 	void server.exited.then((code) => {
 		stopped = { code };
 	});
-	for (;;) {
-		const connected = await new Promise<boolean>((resolveProbe) => {
-			const probe = connect({ host: "127.0.0.1", port: server.port });
-			probe.once("connect", () => {
-				probe.destroy();
-				resolveProbe(true);
+	const began = Date.now();
+	const deadline = began + budget.leftMs;
+	try {
+		for (;;) {
+			const connected = await new Promise<boolean>((resolveProbe) => {
+				const probe = connect({ host: "127.0.0.1", port: server.port });
+				probe.once("connect", () => {
+					probe.destroy();
+					resolveProbe(true);
+				});
+				probe.once("error", () => {
+					probe.destroy();
+					resolveProbe(false);
+				});
 			});
-			probe.once("error", () => {
-				probe.destroy();
-				resolveProbe(false);
-			});
-		});
-		if (connected) return;
-		if (stopped)
-			throw new Error(
-				`The vault server on ${server.port} stopped before it listened (exit code ${stopped.code}): ${server.stderr().trim().slice(-2_000) || "(no stderr)"}`,
-			);
-		if (Date.now() >= readyBy)
-			throw new Error(
-				`The vault server did not listen on ${server.port} within the test's ${READY_BUDGET_MS} ms start budget`,
-			);
-		await new Promise((resolveWait) => setTimeout(resolveWait, 25));
+			if (connected) return;
+			if (stopped)
+				throw new Error(
+					`The vault server on ${server.port} stopped before it listened (exit code ${stopped.code}): ${server.stderr().trim().slice(-2_000) || "(no stderr)"}`,
+				);
+			if (Date.now() >= deadline)
+				throw new Error(
+					`The vault server did not listen on ${server.port} before the test's start budget (${budget.totalMs} ms for all its servers) ran out`,
+				);
+			await new Promise((resolveWait) => setTimeout(resolveWait, 25));
+		}
+	} finally {
+		budget.leftMs = Math.max(0, budget.leftMs - (Date.now() - began));
 	}
 }
 
@@ -149,7 +160,7 @@ it("hands the standby its files once, on a ticket that never leaves it, checked 
 	const held = (await readFile(join(nodeTwo, "fetch-ticket"), "utf8")).trim();
 	expect(ticket.stdout).not.toContain(held);
 	expect(createHash("sha256").update(held).digest("hex")).toBe(ticketSha256);
-	const readyBy = Date.now() + READY_BUDGET_MS;
+	const budget = startBudget();
 	const serveOnce = async (ticketDigest: string, peer = "127.0.0.1", ttl = 20): Promise<Serving> => {
 		const port = await freePort();
 		const serving = spawn(
@@ -187,7 +198,7 @@ it("hands the standby its files once, on a ticket that never leaves it, checked 
 	// A wrong digest from node 1 (the expected one does not match what arrives): nothing is written, and the
 	// ticket is used up.
 	const first = await serveOnce(ticketSha256);
-	await listening(first, readyBy);
+	await listening(first, budget);
 	const refused = run([
 		"--root",
 		nodeTwo,
@@ -221,7 +232,7 @@ it("hands the standby its files once, on a ticket that never leaves it, checked 
 	const again = JSON.parse(run(["--root", nodeTwo, "ticket"]).stdout) as { ticketSha256: string };
 	expect(again.ticketSha256).not.toBe(unused.ticketSha256);
 	const second = await serveOnce(again.ticketSha256);
-	await listening(second, readyBy);
+	await listening(second, budget);
 	const silent = connect({ host: "127.0.0.1", port: second.port });
 	await new Promise((resolveConnect) => silent.once("connect", resolveConnect));
 	const fetched = run([
@@ -262,7 +273,7 @@ it("hands the standby its files once, on a ticket that never leaves it, checked 
 	const nodeThree = await root();
 	const other = JSON.parse(run(["--root", nodeThree, "ticket"]).stdout) as { ticketSha256: string };
 	const elsewhere = await serveOnce(other.ticketSha256, "127.0.0.2", 3);
-	await listening(elsewhere, readyBy);
+	await listening(elsewhere, budget);
 	const refusedElsewhere = run([
 		"--root",
 		nodeThree,
@@ -303,4 +314,28 @@ it("gives the shared vault its own login helper token, written on the host and n
 	// Never over an existing one.
 	expect(run(["--root", vault, "helper-token", "--helper-root", helperRoot]).status).not.toBe(0);
 	expect((await readFile(join(helperRoot, "vault-token"), "utf8")).trim()).toBe(token);
+});
+
+it("charges the servers' start budget only for time spent waiting for them to listen", async () => {
+	const budget = startBudget(1_000);
+	const never = new Promise<number | null>(() => {});
+	const quiet = { exited: never, printed: () => "", stderr: () => "" };
+	// Time between the waits (the test's own Python calls, its silent connection) is not charged: a machine
+	// that is slow all over must not use the budget up before a server even starts.
+	await new Promise((resolveWait) => setTimeout(resolveWait, 1_100));
+	const port = await freePort();
+	const late = createServer();
+	setTimeout(() => late.listen(port, "127.0.0.1"), 100);
+	try {
+		await listening({ port, ...quiet }, budget);
+	} finally {
+		late.close();
+	}
+	expect(budget.leftMs).toBeGreaterThan(0);
+	expect(budget.leftMs).toBeLessThan(1_000);
+	// Once it is spent, a server that never listens is reported as such.
+	const silentPort = await freePort();
+	await expect(listening({ port: silentPort, ...quiet }, startBudget(100))).rejects.toThrow(
+		`The vault server did not listen on ${silentPort} before the test's start budget (100 ms for all its servers) ran out`,
+	);
 });
