@@ -101,6 +101,16 @@ is the record contract 24.4 asks for. `--record FILE` also writes it to a file.
 Several sessions can use the machine at once. Each run has its own directory and runner user, and the
 hosted-db harness names its containers per process.
 
+### Results on the PR
+
+A named suite (`changed`, `test`, `hosted-db`, `npm:…`, `scripts/….mjs`) run on a clean, pushed commit posts its
+result as the GitHub commit status `qorpera-ci/<suite>` on that commit: `pending` while it runs, then `success`,
+`failure` (a `changed` run names its failed steps) or `error` (the harness failed, not the suite). The PR shows it
+as a check. The statuses API uses no Actions minutes. Uncommitted or untracked changes, a HEAD GitHub does not
+have yet, ad-hoc `-- command` runs and `--no-status` post nothing, and the run says why. A failed post never
+changes the run's exit code. Whether master requires a `qorpera-ci/…` check before merging is a repository
+setting.
+
 Access needs the key `~/.ssh/id_ed25519_qorpera_testvm` and SSH to `company41-node-02`.
 Override the target with `QORPERA_TEST_MACHINE`, `QORPERA_TEST_MACHINE_JUMP` and
 `QORPERA_TEST_MACHINE_KEY`.

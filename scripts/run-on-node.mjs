@@ -5,6 +5,15 @@ import { constants, homedir, hostname, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { describePlan, planChanged, planScript } from "./run-on-node-plan.mjs";
+import {
+	commitPushed,
+	postStatus,
+	repoSlug,
+	statusContext,
+	statusDecision,
+	statusDescription,
+	statusState,
+} from "./run-on-node-status.mjs";
 
 /** Runs one test suite on the operator test machine on node 2 instead of Docker on a
  * developer Mac (contract 24.1). The working tree git would see (tracked plus untracked,
@@ -29,7 +38,11 @@ Options: --install / --no-install   run npm ci --ignore-scripts first (default: 
          --record FILE              also write the run record as JSON to FILE
          --allow-secrets            copy untracked files that look like secrets (.env*, *.pem, keys)
          --base REF                 compare against REF for changed (default: origin/master)
+         --no-status                do not post the result as a GitHub status on the commit
          --dry-run                  print what would run, change nothing
+
+A named suite run on a clean, pushed commit posts its result as the commit status qorpera-ci/<suite>
+(pending while it runs), so the PR shows it as a check. Uncommitted changes or ad-hoc commands post none.
 
 Target (environment): QORPERA_TEST_MACHINE      default tester@10.201.0.2
                       QORPERA_TEST_MACHINE_JUMP default company41-node-02 (empty: connect directly)
@@ -58,6 +71,7 @@ export function parseArgs(argv) {
 		keep: false,
 		record: null,
 		allowSecrets: false,
+		noStatus: false,
 		dryRun: false,
 		base: "origin/master",
 	};
@@ -71,6 +85,7 @@ export function parseArgs(argv) {
 		else if (flag === "--sudo") options.sudo = true;
 		else if (flag === "--keep") options.keep = true;
 		else if (flag === "--allow-secrets") options.allowSecrets = true;
+		else if (flag === "--no-status") options.noStatus = true;
 		else if (flag === "--dry-run") options.dryRun = true;
 		else if (flag === "--env" || flag === "--record" || flag === "--base") {
 			const value = argv[++i];
@@ -351,17 +366,6 @@ async function main() {
 	const secrets = secretLooking(untracked);
 	if (secrets.length && !options.allowSecrets)
 		throw new Error(`Untracked files that look like secrets would be copied (use --allow-secrets): ${secrets.join(", ")}`);
-	let changedPlan = null;
-	if (options.suite === "changed") {
-		const { mergeBase, files: changed } = changedFiles(root, options.base, untracked);
-		const plan = planChanged(changed);
-		for (const line of describePlan(plan, `${options.base} ${mergeBase.slice(0, 9)}, ${changed.length} files`)) console.log(line);
-		changedPlan = { base: options.base, mergeBase, files: changed.length, full: plan.full, steps: plan.steps.map((step) => step.name) };
-		if (!plan.steps.length) return 0;
-		options.command = ["bash", "-c", planScript(plan.steps)];
-		options.build = options.build ?? plan.build;
-		if (options.build && !options.install) throw new Error("--build needs --install");
-	}
 	const source = {
 		head: git(root, ["rev-parse", "HEAD"]).toString().trim(),
 		dirty: git(root, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]).length > 0,
@@ -369,6 +373,21 @@ async function main() {
 		untracked: untracked.length,
 		treeSha256: treeDigest(root, files),
 	};
+	const github = githubStatus(root, options, source);
+	let changedPlan = null;
+	if (options.suite === "changed") {
+		const { mergeBase, files: changed } = changedFiles(root, options.base, untracked);
+		const plan = planChanged(changed);
+		for (const line of describePlan(plan, `${options.base} ${mergeBase.slice(0, 9)}, ${changed.length} files`)) console.log(line);
+		changedPlan = { base: options.base, mergeBase, files: changed.length, full: plan.full, steps: plan.steps.map((step) => step.name) };
+		if (!plan.steps.length) {
+			github.post("success", "nothing to run: documentation only");
+			return 0;
+		}
+		options.command = ["bash", "-c", planScript(plan.steps)];
+		options.build = options.build ?? plan.build;
+		if (options.build && !options.install) throw new Error("--build needs --install");
+	}
 	const tree = createHash("sha256").update(`${hostname()}:${root}`).digest("hex").slice(0, 16);
 	const run = `${new Date().toISOString().replace(/[-:]/g, "").replace(/\..*/, "")}-${process.pid}-${randomBytes(4).toString("hex")}`;
 	const runDir = `${HOME}/runs/${run}`;
@@ -381,7 +400,7 @@ async function main() {
 	if (options.dryRun) {
 		console.log(
 			JSON.stringify(
-				{ target: t.host, via: t.jump || null, runDir, treeDir, install: options.install, runCommand, source },
+				{ target: t.host, via: t.jump || null, runDir, treeDir, install: options.install, runCommand, source, githubStatus: github.plan },
 				null,
 				2,
 			),
@@ -391,6 +410,15 @@ async function main() {
 	if (!existsSync(t.key)) throw new Error(`Missing test machine key ${t.key}`);
 	if (untracked.length) console.error(`== run-on-node: copying ${untracked.length} untracked file(s) too`);
 
+	github.post("pending", "running on node 2 (waits while 3 runs are busy)");
+	try {
+		return await execute();
+	} catch (error) {
+		github.post("error", `harness error: ${String(error.message).slice(0, 110)}`);
+		throw error;
+	}
+
+	async function execute() {
 	const started = Date.now();
 	sshCapture(t, `${pruneScript()}\nmkdir -p ${runDir} ${treeDir}\ntouch ${treeDir}.lock`);
 	const rulesDir = mkdtempSync(join(tmpdir(), "run-on-node-"));
@@ -482,7 +510,9 @@ async function main() {
 				: code === 0 && !status.runner
 					? "unknown"
 					: "setup-failed",
+		...(status.failed_steps ? { failedSteps: status.failed_steps.split(",").filter(Boolean) } : {}),
 	};
+	record.githubStatus = github.post(statusState(record.result), statusDescription(record));
 	console.log(`== run-on-node record ${JSON.stringify(record)}`);
 	if (options.record) {
 		try {
@@ -492,6 +522,34 @@ async function main() {
 		}
 	}
 	return code;
+	}
+}
+
+/** Decides once whether this run's result belongs on the commit, then posts each state change. */
+function githubStatus(root, options, source) {
+	let slug = null;
+	try {
+		slug = repoSlug(git(root, ["remote", "get-url", "origin"]).toString());
+	} catch {
+		// No origin: nothing to post to.
+	}
+	const context = statusContext(options.suite);
+	// A dry run shows what a real run would post, and posts nothing.
+	let decision = statusDecision({ suite: options.suite, dirty: source.dirty, disabled: options.noStatus, slug });
+	if (decision.post && !commitPushed(slug, source.head))
+		decision = { post: false, reason: `HEAD ${source.head.slice(0, 9)} is not on GitHub: push it first` };
+	const plan = { context, sha: source.head, posted: decision.post, reason: decision.reason };
+	if (!decision.post && !options.dryRun && options.suite) console.error(`== run-on-node: no GitHub status (${decision.reason})`);
+	return {
+		plan,
+		post(state, description) {
+			if (!decision.post || options.dryRun) return plan;
+			const posted = postStatus({ slug, sha: source.head, state, context, description });
+			if (!posted.ok) console.error(`run-on-node: could not post the GitHub status: ${posted.error}`);
+			else console.error(`== run-on-node: ${context} ${state} on ${source.head.slice(0, 9)}: ${description}`);
+			return { ...plan, state, description, posted: posted.ok };
+		},
+	};
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
