@@ -79,6 +79,7 @@ test("shared configuration and unknown paths run every step", () => {
 		assert.deepEqual(plan.steps.map((step) => step.name), STEPS.map((step) => step.name), file);
 		assert.match(plan.reason, /shared configuration/);
 	}
+	assert.deepEqual(STEPS.find((step) => step.name === "contracts").commands, ["npm test --workspace packages/contracts"]);
 	const unknown = planChanged(["new-top-level/tool.ts"]);
 	assert.equal(unknown.full, true);
 	assert.match(unknown.reason, /no rule knows: new-top-level\/tool\.ts/);

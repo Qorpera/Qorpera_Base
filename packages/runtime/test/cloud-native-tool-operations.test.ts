@@ -3,6 +3,7 @@ import type { JsonValue } from "@qorpera/contracts";
 import { CloudNativeToolRun } from "@qorpera/runtime/cloud-native-tool-authority";
 import { CloudNativeToolBoundary } from "@qorpera/runtime/cloud-native-tool-boundary";
 import {
+	CLOUD_NATIVE_TOOL_REMEMBERED_OPERATIONS,
 	type CloudNativeToolOperation,
 	type CloudNativeToolOperationControlPlane,
 	CloudNativeToolOperations,
@@ -792,15 +793,20 @@ it("keeps effects and canonical replay independent of diagnostic exporter failur
 it("never refuses a run's operations by count; a forgotten one replays through its receipt", async () => {
 	// Runtime v92: the run used to fail after 65,536 operations. Past that the
 	// oldest are forgotten locally and the kernel receipt stays the authority.
+	// The limit is injected: the same code path at 65,536 took 20-80 s per run.
+	expect(CLOUD_NATIVE_TOOL_REMEMBERED_OPERATIONS).toBe(65_536);
 	const f = await fixture();
 	const receipts = new Map<string, Receipt>();
-	const control: CloudNativeToolOperationControlPlane = {
-		beginToolOperation: async (binding, input) => {
+	// The newest receipt, which the next completion must name.
+	let newest: Receipt | undefined;
+	const control = {
+		beginToolOperation: vi.fn<CloudNativeToolOperationControlPlane["beginToolOperation"]>(async (binding, input) => {
 			let receipt = receipts.get(input.logicalOperationKey);
 			if (receipt && receipt.input.inputSha256 !== input.inputSha256) throw new Error("other work");
 			if (!receipt) {
 				receipt = { input, state: "executing", result: null, outputSnapshotId: null, proposalId: null };
 				receipts.set(input.logicalOperationKey, receipt);
+				newest = receipt;
 			}
 			return {
 				run_id: binding.runId,
@@ -810,30 +816,83 @@ it("never refuses a run's operations by count; a forgotten one replays through i
 				output_snapshot_id: null,
 				proposal_id: null,
 			};
-		},
-		completeToolOperation: async (binding, input) => {
-			const receipt = [...receipts.values()].at(-1)!;
-			expect(receipt.input.receiptId).toBe(input.receiptId);
-			receipt.state = "completed";
-			receipt.result = input.result;
-			return { run_id: binding.runId, receipt_id: input.receiptId, state: "completed", result: input.result };
-		},
+		}),
+		completeToolOperation: vi.fn<CloudNativeToolOperationControlPlane["completeToolOperation"]>(
+			async (binding, input) => {
+				const receipt = newest!;
+				expect(receipt.input.receiptId).toBe(input.receiptId);
+				receipt.state = "completed";
+				receipt.result = input.result;
+				return { run_id: binding.runId, receipt_id: input.receiptId, state: "completed", result: input.result };
+			},
+		),
 	};
-	const operations = new CloudNativeToolOperations(f.run, control);
+	const remembered = 4;
+	const operations = new CloudNativeToolOperations(f.run, control, { rememberedOperations: remembered });
 	const keyed = (index: number) => ({ ...f.operation, logicalOperationKey: `job-document-${index}` });
-	const total = 65_536 + 2;
+	const total = remembered + 2;
 	for (let index = 0; index < total; index++)
 		await expect(f.execute({ operation: keyed(index) }, operations)).resolves.toEqual({
 			kind: "json",
 			value: { changed: true },
 		});
 	expect(f.perform).toHaveBeenCalledTimes(total);
-	// The first operation is no longer remembered locally: its replay reads the
-	// completed receipt and never performs the effect again.
+	expect(control.beginToolOperation).toHaveBeenCalledTimes(total);
+	// The newest operation is still remembered locally: its replay asks no receipt.
+	await expect(f.execute({ operation: keyed(total - 1) }, operations)).resolves.toEqual({
+		kind: "json",
+		value: { changed: true },
+	});
+	expect(control.beginToolOperation).toHaveBeenCalledTimes(total);
+	// Exactly the last `remembered` operations are kept: the oldest of them still
+	// replays locally (a whole-map clear would lose it) ...
+	await expect(f.execute({ operation: keyed(total - remembered) }, operations)).resolves.toEqual({
+		kind: "json",
+		value: { changed: true },
+	});
+	expect(control.beginToolOperation).toHaveBeenCalledTimes(total);
+	// ... and the one just before them is forgotten (keeping one too many would not).
+	await expect(f.execute({ operation: keyed(total - remembered - 1) }, operations)).resolves.toEqual({
+		kind: "json",
+		value: { changed: true },
+	});
+	expect(control.beginToolOperation).toHaveBeenCalledTimes(total + 1);
+	// The first operation is no longer remembered locally either: its replay reads
+	// the completed receipt and never performs the effect again.
 	await expect(f.execute({ operation: keyed(0) }, operations)).resolves.toEqual({
 		kind: "json",
 		value: { changed: true },
 	});
+	expect(control.beginToolOperation).toHaveBeenCalledTimes(total + 2);
 	expect(f.perform).toHaveBeenCalledTimes(total);
 	expect(receipts.size).toBe(total);
-}, 300_000);
+	expect(control.completeToolOperation).toHaveBeenCalledTimes(total);
+	// Without the option the bound is the default: eight operations forget nothing.
+	const defaults = new CloudNativeToolOperations(f.run, control);
+	const unbounded = (index: number) => ({ ...f.operation, logicalOperationKey: `job-default-${index}` });
+	for (let index = 0; index < 8; index++) await f.execute({ operation: unbounded(index) }, defaults);
+	const begun = control.beginToolOperation.mock.calls.length;
+	await expect(f.execute({ operation: unbounded(0) }, defaults)).resolves.toEqual({
+		kind: "json",
+		value: { changed: true },
+	});
+	expect(control.beginToolOperation).toHaveBeenCalledTimes(begun);
+});
+
+it("refuses an invalid remembered operation count", async () => {
+	const f = await fixture();
+	// Only lower than the default: a larger count would switch forgetting off in practice.
+	for (const rememberedOperations of [
+		0,
+		-1,
+		1.5,
+		Number.NaN,
+		Number.POSITIVE_INFINITY,
+		65_537,
+		Number.MAX_SAFE_INTEGER,
+	])
+		expect(() => new CloudNativeToolOperations(f.run, f.control, { rememberedOperations })).toThrow(
+			"Invalid remembered operation count",
+		);
+	expect(() => new CloudNativeToolOperations(f.run, f.control, { rememberedOperations: 65_536 })).not.toThrow();
+});
