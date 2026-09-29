@@ -16,7 +16,10 @@ import {
 	CloudCompanyPathNotText,
 	type CloudCompanyPathRpc,
 } from "@qorpera/runtime/cloud-company-path-gateway";
-import type { CloudCompanyPathPresence } from "@qorpera/runtime/cloud-company-path-presence";
+import {
+	type CloudCompanyPathPresence,
+	CloudNativeCompanyPresence,
+} from "@qorpera/runtime/cloud-company-path-presence";
 import {
 	CloudCompanyPathRpcParentMissing,
 	CloudCompanyPathRpcPrecondition,
@@ -24,6 +27,7 @@ import {
 } from "@qorpera/runtime/cloud-company-path-refusal";
 import { CloudNativeToolBoundary, cloudToolJsonText } from "@qorpera/runtime/cloud-native-tool-boundary";
 import { CloudRuntimeObservability, type CloudRuntimeObservation } from "@qorpera/runtime/cloud-runtime-observability";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { describe, expect, it, vi } from "vitest";
 import { companyFilePostgrest, FakeSqlError } from "./fixtures/company-file-postgrest.ts";
 import { nativeToolAuthorityFixture } from "./fixtures/native-tool-authority-fixture.ts";
@@ -797,7 +801,8 @@ describe("cloud Company File path gateway", () => {
 	});
 	it("registers no presence for a write the check refused for its missing folder", async () => {
 		const observe = vi.fn<CloudCompanyPathPresence["observe"]>();
-		const f = fixture(undefined, { observe, close: async () => {} });
+		const claim = vi.fn<CloudCompanyPathPresence["claim"]>();
+		const f = fixture(undefined, { observe, claim, close: async () => {} });
 		f.overrides.set("qorpera_check_company_path_mutation", async () => {
 			throw new CloudCompanyPathRpcParentMissing();
 		});
@@ -812,6 +817,7 @@ describe("cloud Company File path gateway", () => {
 			content: { text: expect.stringMatching(/^COMPANY_FILE_PARENT_MISSING: /) },
 		});
 		expect(observe).not.toHaveBeenCalled();
+		expect(claim).not.toHaveBeenCalled();
 		expect(f.transport.put).not.toHaveBeenCalled();
 		// Besides the boundary's own authority checks, only the refused check ran.
 		expect(
@@ -971,7 +977,8 @@ describe("cloud Company File path gateway", () => {
 	});
 
 	it("includes scoped presence inside the confirmed read envelope without changing canonical bytes", async () => {
-		const observe = vi.fn<CloudCompanyPathPresence["observe"]>(async (path) => ({
+		const observe = vi.fn<CloudCompanyPathPresence["observe"]>();
+		const claim = vi.fn<CloudCompanyPathPresence["claim"]>((path) => ({
 			schema: "qorpera.company-path-presence-view/v1",
 			state: "available",
 			observedAt: Date.now(),
@@ -990,12 +997,13 @@ describe("cloud Company File path gateway", () => {
 				},
 			],
 		}));
-		const f = fixture(undefined, { observe, close: async () => {} });
+		const f = fixture(undefined, { observe, claim, close: async () => {} });
 		await f.seed("note.md", "Live bytes");
 		const value = await f.gateway.read("note.md", 0, 64, f.signal);
 		expect(value.text).toBe("Live bytes");
 		expect(value.presence).toMatchObject({ state: "available" });
-		expect(observe).toHaveBeenCalledWith("note.md", "object", "reading", expect.any(AbortSignal));
+		expect(claim).toHaveBeenCalledWith("note.md", "object", "reading");
+		expect(observe).not.toHaveBeenCalled();
 		expect(f.confirmations.get(value.readObservationId)).toBe(
 			createHash("sha256")
 				.update(cloudToolJsonText(value, 1024 * 1024))
@@ -1003,19 +1011,55 @@ describe("cloud Company File path gateway", () => {
 		);
 		expect(f.transport.put).not.toHaveBeenCalled();
 	});
-	it("bounds an unavailable presence service while completing the authorized canonical read", async () => {
-		vi.useFakeTimers();
+	it("never waits on presence: reads, lists and writes complete while presence never answers", async () => {
+		// A real presence client whose presence service never answers (only cleanup does).
+		const hung = vi.fn((method: CloudCompanyPathRpc) =>
+			method === "qorpera_native_presence_forget" ? Promise.resolve(null) : new Promise<never>(() => {}),
+		);
+		let presence: CloudNativeCompanyPresence | undefined;
+		const f = fixture(undefined, {
+			observe: (...args) => presence!.observe(...args),
+			claim: (...args) => presence!.claim(...args),
+			close: () => presence!.close(),
+		});
+		const stop = new AbortController();
+		presence = new CloudNativeCompanyPresence({
+			binding: f.binding,
+			identity: f.identity,
+			control: { call: hung },
+			client: { channel: vi.fn(), removeChannel: vi.fn() } as unknown as Pick<
+				SupabaseClient,
+				"channel" | "removeChannel"
+			>,
+			signal: stop.signal,
+		});
 		try {
-			const observe = vi.fn<CloudCompanyPathPresence["observe"]>(() => new Promise(() => {}));
-			const f = fixture(undefined, { observe, close: async () => {} });
 			await f.seed("note.md", "Still available");
-			const pending = f.gateway.read("note.md", 0, 64, f.signal);
-			await vi.waitFor(() => expect(observe).toHaveBeenCalled());
-			await vi.advanceTimersByTimeAsync(2001);
-			await expect(pending).resolves.toMatchObject({ text: "Still available", presence: { state: "unavailable" } });
-			expect(f.confirmations.size).toBe(1);
+			// Real timers: nothing here may depend on a presence deadline passing.
+			const started = performance.now();
+			await expect(f.gateway.read("note.md", 0, 64, f.signal)).resolves.toMatchObject({
+				text: "Still available",
+				presence: { state: "unavailable", paths: [{ path: "note.md", participants: [] }] },
+			});
+			await expect(f.gateway.list("", null, null, 50, f.signal)).resolves.toMatchObject({
+				presence: { state: "unavailable" },
+			});
+			await expect(
+				f.gateway.mutate(
+					"write",
+					{ path: "new.md", operationKey: "presence-hung", expectedVersion: null, text: "x" },
+					f.signal,
+				),
+			).resolves.toMatchObject({ state: "applied" });
+			expect(performance.now() - started).toBeLessThan(1500);
+			expect(f.confirmations.size).toBe(2);
+			// The claims went to the background: its first observation still waits behind the
+			// registration the presence client started, which never answered.
+			await vi.waitFor(() => expect(hung).toHaveBeenCalled());
+			expect(hung.mock.calls.map(([method]) => method)).toEqual(["qorpera_native_presence_register"]);
 		} finally {
-			vi.useRealTimers();
+			stop.abort();
+			await presence.close();
 		}
 	});
 	it("describes folders as homes for a category of files, with a member's or assignment's folder always allowed", () => {
