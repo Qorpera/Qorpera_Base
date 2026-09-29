@@ -122,10 +122,11 @@ begin
 		exception when sqlstate 'QTF01' then null; end;
 	end loop;
 	raise notice 'One-call fence outcomes: %', v_seen;
-	-- Beside parity, the cases whose outcome is certain are pinned, so a vacuous pass shows. (A requester
-	-- who became a viewer still reads, and each remaining case is held to parity alone.)
-	if not v_seen @> array['current answered','claims 42501','lease 42501','grant 42501','expired-grant 42501',
-		'staff 42501','session 42501','path 42501','no-paths 22023','view 22023','replay 23505'] then
+	-- Beside parity, every outcome is pinned, so a vacuous pass shows. A requester who became a viewer
+	-- is still a member and still reads, through the separate calls as through the one call.
+	if v_seen is distinct from array['current answered','claims 42501','binding 42501','lease 42501','assignment 42501',
+		'job 42501','grant 42501','expired-grant 42501','resource 42501','staff 42501','requester answered',
+		'sponsor 42501','session 42501','path 42501','no-paths 22023','view 22023','replay 23505'] then
 		raise exception 'One-call fence refusals changed: %', v_seen; end if;
 end
 $$;
