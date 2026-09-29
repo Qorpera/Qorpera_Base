@@ -1,7 +1,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
-import { connect } from "node:net";
+import { type AddressInfo, connect, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { sharedBrokerCapability } from "@qorpera/runtime/cloud-secret-broker";
@@ -26,18 +26,34 @@ function run(args: string[]): { status: number | null; stdout: string; stderr: s
 	return { status: done.status, stdout: done.stdout, stderr: done.stderr };
 }
 
+/** A port the kernel has just handed out, so no other server (another test's `listen(0)`) is on it when the
+ * vault server binds it a moment later. */
+async function freePort(): Promise<number> {
+	const holder = createServer();
+	await new Promise<void>((resolveListen) => holder.listen(0, "127.0.0.1", resolveListen));
+	const { port } = holder.address() as AddressInfo;
+	await new Promise((resolveClose) => holder.close(resolveClose));
+	return port;
+}
+
+type Serving = { port: number; exited: Promise<number | null>; printed: () => string; stderr: () => string };
+
+/** The three servers of the hand-off test share this one budget for starting. With the ~8 s the test waits
+ * otherwise (a 5 s silent connection, a 3 s deadline), a slow start is reported by `listening`, not by the
+ * test's 30 s timeout. */
+const READY_BUDGET_MS = 15_000;
+
 /** Waits until the spawned `serve` accepts connections on its port, instead of a fixed pause that a loaded
  * test machine outlasts. The probe closes at once: the server reads nothing from it (or closes a peer it
  * does not serve before reading), so it changes nothing the test then checks. */
-async function listening(port: number, exited: Promise<number | null>, boundMs = 15_000): Promise<void> {
-	let stopped = false;
-	void exited.then(() => {
-		stopped = true;
+async function listening(server: Serving, readyBy: number): Promise<void> {
+	let stopped: { code: number | null } | undefined;
+	void server.exited.then((code) => {
+		stopped = { code };
 	});
-	const deadline = Date.now() + boundMs;
 	for (;;) {
 		const connected = await new Promise<boolean>((resolveProbe) => {
-			const probe = connect({ host: "127.0.0.1", port });
+			const probe = connect({ host: "127.0.0.1", port: server.port });
 			probe.once("connect", () => {
 				probe.destroy();
 				resolveProbe(true);
@@ -48,8 +64,14 @@ async function listening(port: number, exited: Promise<number | null>, boundMs =
 			});
 		});
 		if (connected) return;
-		if (stopped) throw new Error(`The vault server on ${port} stopped before it listened`);
-		if (Date.now() >= deadline) throw new Error(`The vault server did not listen on ${port} within ${boundMs} ms`);
+		if (stopped)
+			throw new Error(
+				`The vault server on ${server.port} stopped before it listened (exit code ${stopped.code}): ${server.stderr().trim().slice(-2_000) || "(no stderr)"}`,
+			);
+		if (Date.now() >= readyBy)
+			throw new Error(
+				`The vault server did not listen on ${server.port} within the test's ${READY_BUDGET_MS} ms start budget`,
+			);
 		await new Promise((resolveWait) => setTimeout(resolveWait, 25));
 	}
 }
@@ -127,8 +149,9 @@ it("hands the standby its files once, on a ticket that never leaves it, checked 
 	const held = (await readFile(join(nodeTwo, "fetch-ticket"), "utf8")).trim();
 	expect(ticket.stdout).not.toContain(held);
 	expect(createHash("sha256").update(held).digest("hex")).toBe(ticketSha256);
-	const serveOnce = (ticketDigest: string) => {
-		const port = 40_000 + Math.floor(Math.random() * 20_000);
+	const readyBy = Date.now() + READY_BUDGET_MS;
+	const serveOnce = async (ticketDigest: string, peer = "127.0.0.1", ttl = 20): Promise<Serving> => {
+		const port = await freePort();
 		const serving = spawn(
 			"python3",
 			[
@@ -139,27 +162,32 @@ it("hands the standby its files once, on a ticket that never leaves it, checked 
 				"--bind",
 				"127.0.0.1",
 				"--peer",
-				"127.0.0.1",
+				peer,
 				"--port",
 				String(port),
 				"--ticket-sha256",
 				ticketDigest,
 				"--ttl",
-				"20",
+				String(ttl),
 			],
 			{ stdio: ["ignore", "pipe", "pipe"] },
 		);
 		let printed = "";
+		let stderr = "";
 		serving.stdout.on("data", (chunk: Buffer) => {
 			printed += chunk.toString();
 		});
-		const exited = new Promise<number | null>((resolveExit) => serving.once("exit", resolveExit));
-		return { port, exited, printed: () => printed };
+		serving.stderr.on("data", (chunk: Buffer) => {
+			stderr += chunk.toString();
+		});
+		// "close" comes after both streams have ended, so all of the server's output is read by then.
+		const exited = new Promise<number | null>((resolveExit) => serving.once("close", resolveExit));
+		return { port, exited, printed: () => printed, stderr: () => stderr };
 	};
 	// A wrong digest from node 1 (the expected one does not match what arrives): nothing is written, and the
 	// ticket is used up.
-	const first = serveOnce(ticketSha256);
-	await listening(first.port, first.exited);
+	const first = await serveOnce(ticketSha256);
+	await listening(first, readyBy);
 	const refused = run([
 		"--root",
 		nodeTwo,
@@ -192,8 +220,8 @@ it("hands the standby its files once, on a ticket that never leaves it, checked 
 	// connection came first (it is closed after 5 s, well inside the fetch's own 15 s).
 	const again = JSON.parse(run(["--root", nodeTwo, "ticket"]).stdout) as { ticketSha256: string };
 	expect(again.ticketSha256).not.toBe(unused.ticketSha256);
-	const second = serveOnce(again.ticketSha256);
-	await listening(second.port, second.exited);
+	const second = await serveOnce(again.ticketSha256);
+	await listening(second, readyBy);
 	const silent = connect({ host: "127.0.0.1", port: second.port });
 	await new Promise((resolveConnect) => silent.once("connect", resolveConnect));
 	const fetched = run([
@@ -233,29 +261,8 @@ it("hands the standby its files once, on a ticket that never leaves it, checked 
 	// Another address gets nothing: node 1 closes it before reading, and stops at its deadline.
 	const nodeThree = await root();
 	const other = JSON.parse(run(["--root", nodeThree, "ticket"]).stdout) as { ticketSha256: string };
-	const port = 40_000 + Math.floor(Math.random() * 20_000);
-	const elsewhere = spawn(
-		"python3",
-		[
-			tool,
-			"--root",
-			nodeOne,
-			"serve",
-			"--bind",
-			"127.0.0.1",
-			"--peer",
-			"127.0.0.2",
-			"--port",
-			String(port),
-			"--ticket-sha256",
-			other.ticketSha256,
-			"--ttl",
-			"3",
-		],
-		{ stdio: ["ignore", "pipe", "pipe"] },
-	);
-	const stopped = new Promise<number | null>((resolveExit) => elsewhere.once("exit", resolveExit));
-	await listening(port, stopped);
+	const elsewhere = await serveOnce(other.ticketSha256, "127.0.0.2", 3);
+	await listening(elsewhere, readyBy);
 	const refusedElsewhere = run([
 		"--root",
 		nodeThree,
@@ -263,13 +270,15 @@ it("hands the standby its files once, on a ticket that never leaves it, checked 
 		"--source",
 		"127.0.0.1",
 		"--port",
-		String(port),
+		String(elsewhere.port),
 		"--expect",
 		made.fingerprintsSha256,
 	]);
 	expect(refusedElsewhere.status).not.toBe(0);
 	await expect(stat(join(nodeThree, "principal-secret"))).rejects.toThrow();
-	expect(await stopped).not.toBe(0);
+	expect(await elsewhere.exited).not.toBe(0);
+	// Its own result, so a server that never ran (its port taken, say) cannot pass for one that served nothing.
+	expect(JSON.parse(elsewhere.printed())).toMatchObject({ passed: false, served: false, peer: "127.0.0.2" });
 }, 30_000);
 
 it("gives the shared vault its own login helper token, written on the host and never printed", async () => {
