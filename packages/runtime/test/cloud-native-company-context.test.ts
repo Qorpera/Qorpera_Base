@@ -937,7 +937,10 @@ it("names a folder-v2 company's agent folders, and leaves every other context an
 	expect(prompt).toContain('"folder":"agents/anna-berg"');
 	expect(prompt).toContain('"folder":"agents/ida-lund"');
 	// A coworker without a folder (an agent from before the files) is shown as it is.
-	const unnamed = parseCloudNativeCompanyContext({ ...f.context, folder: { agent: "anna-berg", coworkers: {} } }, f.binding);
+	const unnamed = parseCloudNativeCompanyContext(
+		{ ...f.context, folder: { agent: "anna-berg", coworkers: {} } },
+		f.binding,
+	);
 	expect(composeCloudNativeCompanyPrompt(unnamed)).not.toContain("ida-lund");
 
 	// Closed: exactly the agent and its listed coworkers, with folder names the company folder accepts.
@@ -959,4 +962,3 @@ it("names a folder-v2 company's agent folders, and leaves every other context an
 		),
 	).toThrow("Cloud context does not match its admitted run");
 });
-

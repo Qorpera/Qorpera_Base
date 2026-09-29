@@ -113,10 +113,15 @@ describe("agent memory notebook", () => {
 	it("lives in the agent's named folder in a folder-v2 company", async () => {
 		const f = await fixture({}, { core: "folder-v2", handle: "anna-berg" });
 		try {
-			const logged = await f.boundary.invoke("m1", "qorpera", "update_memory", { action: "write", fact: "Clinics book by phone." });
+			const logged = await f.boundary.invoke("m1", "qorpera", "update_memory", {
+				action: "write",
+				fact: "Clinics book by phone.",
+			});
 			expect(logged.success, JSON.stringify(logged)).toBe(true);
 			expect(f.paths.root).toBe("agents/anna-berg/memory");
-			expect(f.store.files.get("agents/anna-berg/memory/log/2026-09.md")?.text).toBe("- (2026-09-22) Clinics book by phone.\n");
+			expect(f.store.files.get("agents/anna-berg/memory/log/2026-09.md")?.text).toBe(
+				"- (2026-09-22) Clinics book by phone.\n",
+			);
 			const mkdirs = f.store.mutate.mock.calls.filter(([operation]) => operation === "mkdir");
 			expect(mkdirs.map(([, input]) => input.path)).toEqual([
 				"agents",
@@ -822,7 +827,12 @@ describe("composed agent memory", () => {
 
 	it("is an empty notebook for a new agent and an unavailable block when the read lane fails", async () => {
 		const agent = randomUUID();
-		const block = await composeCloudAgentMemory(companyFile().gateway, `agents/${agent}`, NOW, new AbortController().signal);
+		const block = await composeCloudAgentMemory(
+			companyFile().gateway,
+			`agents/${agent}`,
+			NOW,
+			new AbortController().signal,
+		);
 		expect(block).toMatchObject({
 			available: true,
 			profile: { version: null, facts: [] },

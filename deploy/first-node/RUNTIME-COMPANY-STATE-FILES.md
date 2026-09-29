@@ -621,6 +621,15 @@ of the body, for readers that should not reach the storage server.
 | rules (reviewer) | rule rows | the rule index, with the versions read; personal rules unchanged |
 | connections | vault rows and grants | the same, plus the purpose copy |
 
+**Built (F2-1b part A, migration 20260929440000):** the run context of a `folder-v2` company names the
+company as its vision index does and carries an optional `folder`: the agent's folder name and its
+listed coworkers' (`qorpera_company_state_run_folder`). It is present only when the agent has a
+folder, so every other context and prompt keeps its exact shape for the runtime's closed parser. The
+runtime turns it into the place `cloudAgentFolder` takes (`agents/<handle>`, else `agents/<id>`),
+which memory and skills now both ask, and the prompt shows each agent's `folder`. Such a context
+exists once core C1c lets a `folder-v2` run's actor describe one. Still to come: the vision in full
+(core C3's folder client reads it), and the file's `model` and `effort` reaching runs.
+
 Until the mount's writes are accepted (F3), these tools become thin writers of these files:
 `hire_agent`, `create_group_chat`, `organize_sidebar`, `manage_todo`, `manage_routine` and
 `decide_routine`. They use the canonical writers here, or `setCompanyStateSettings` for a
@@ -704,7 +713,10 @@ claims by kind then key (F2). All nine come before paths, objects, admission and
    - the seed tree for C2's creation commit (`companyStateSeedTree`, §9).
 
    **F2-1b** follows: the follow-ups on C2's queue, the context composer reading the vision and
-   `agent.md`, and the agent-folder helper for memory and skills.
+   `agent.md`, and the agent-folder helper for memory and skills. Part A (migration
+   20260929440000) is the context's folder facts and the helper (§5); part B the routine save's
+   login setup; the thin writers come on core C3's folder client, and the reviewed ones after C2's
+   review recorder.
 3. **F2-2** group chats and sections (migration 20260928249100; for new companies it replaces
    #370's writes and `organize_sidebar`):
    - the rooms table's folder columns, and the parse shape and database rules of both kinds;

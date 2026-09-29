@@ -59,3 +59,7 @@
 
 - `companyStateSeedTree` lists a new company's seeded folder (vision, sections, the Co-Founder's `agent.md` with its first job, and the empty `agents/groups/`, `connections/`, `skills/`, `rules/`), with `COMPANY_STATE_SEEDED_PATHS`, `COMPANY_STATE_COFOUNDER_HANDLE` and `COMPANY_STATE_COFOUNDER_INSTRUCTIONS`. The founding table's `vision`, `founders` (a `- name: role` line each under "How we work") and `firstTodo` (at `COMPANY_STATE_FIRST_TODO_PATH`) go in too; it throws rather than seed a file that would not parse.
 - An agent's instructions refuse control characters other than tab and line breaks.
+
+### Changed
+
+- `cloudAgentFolder(companyId, staffAgentId, place?)` takes where the company keeps its agents' folders (`CloudAgentFolderPlace`): `agents/<staffAgentId>` for a snapshot-v1 company (`CLOUD_AGENT_FOLDER_BY_ID`, the default) and `agents/<handle>` for a folder-v2 company, the handle checked against the company folder's naming rule.
