@@ -56,6 +56,38 @@ $$;
 create function pg_temp.last_commit(p_result jsonb) returns public.qorpera_folder_commits language sql as $$
 	select * from public.qorpera_folder_commits where id = (p_result ->> 'commitId')::uuid
 $$;
+-- A coding worker's leased turn: an agent wake from the worker's dispatch, under its steering run p_parent (as in 634).
+create function pg_temp.turn(p_parent jsonb, p_worker uuid) returns jsonb language plpgsql as $$
+declare
+	v_profile uuid := '63200000-0000-4000-8000-000000000010'; v_env uuid := '63200000-0000-4000-8000-000000000020';
+	v_staff uuid := '63200000-0000-4000-8000-0000000000a1'; v_sponsor uuid := '63200000-0000-4000-8000-0000000000b1';
+	v_run uuid := extensions.gen_random_uuid(); v_job uuid := extensions.gen_random_uuid(); v_wake uuid := extensions.gen_random_uuid();
+	v_runner uuid := extensions.gen_random_uuid(); v_assignment uuid := extensions.gen_random_uuid();
+	v_parent public.qorpera_wake_occurrences%rowtype;
+begin
+	select * into v_parent from public.qorpera_wake_occurrences where run_id = (p_parent ->> 'runId')::uuid;
+	set local session_replication_role = replica;
+	insert into public.qorpera_runner_jobs(id, profile_id, environment_id, substrate_version_id, client_job_id, required_capability,
+		job_type, payload, created_by_user_id, status, runner_id, client_lease_id, lease_token_sha256, lease_expires_at, run_id)
+	values (v_job, v_profile, v_env, extensions.gen_random_uuid(), extensions.gen_random_uuid(), 'agent_turn', 'agent_turn', '{}',
+		v_parent.requested_by_user_id, 'leased', v_runner, v_assignment, repeat('a', 64), clock_timestamp() + interval '5 minutes', v_run);
+	insert into public.qorpera_execution_runs(id, profile_id, environment_id, source_kind, source_id, job_id, substrate_version_id,
+		company_snapshot_id, staff_agent_id, staff_version, sponsor_binding_id, sponsor_version, required_capability, job_type,
+		payload_sha256, transcript_start_sequence, created_by_user_id, requested_by_user_id, model_provider, model_id, model_selection,
+		audience_kind, runtime_bundle_id, runtime_bundle_sha256, input_ids)
+	values (v_run, v_profile, v_env, 'wake', v_wake, v_job, extensions.gen_random_uuid(), extensions.gen_random_uuid(),
+		v_staff, 1, v_sponsor, 1, 'agent_turn', 'agent_turn', repeat('c', 64), 0, v_parent.requested_by_user_id,
+		v_parent.requested_by_user_id, 'openai', 'gpt-test', 'provider_default', 'company', '63200000-0000-4000-8000-0000000000b2',
+		repeat('b', 64), '{}'::uuid[]);
+	insert into public.qorpera_wake_occurrences(id, profile_id, environment_id, trigger_id, occurrence_key, scheduled_for, not_before,
+		wake_kind, source_kind, source_id, run_id, status, staff_agent_id, staff_version, requested_by_user_id, sponsor_binding_id,
+		sponsor_version, causal_root_id, causal_agent_ids, causal_hop_count, parent_run_id, payload)
+	values (v_wake, v_profile, v_env, 'worker-dispatch', v_wake::text, clock_timestamp(), clock_timestamp(), 'agent', 'worker-dispatch',
+		p_worker, v_run, 'materialized', v_staff, 1, v_parent.requested_by_user_id, v_sponsor, 1, v_parent.causal_root_id,
+		v_parent.causal_agent_ids, 0, (p_parent ->> 'runId')::uuid, '{}');
+	set local session_replication_role = origin;
+	return jsonb_build_object('kind','run','runId',v_run,'jobId',v_job,'runnerId',v_runner,'assignmentId',v_assignment);
+end $$;
 
 -- Setup: shared/ and a narrower secret/ that agent A holds a grant on, and rules/.
 do $$
@@ -91,6 +123,13 @@ begin
 	perform pg_temp.raises(format('select pg_temp.vcommit(%L, %L, %L)', b, 'box-reclaimed', '[{"op":"mkdir","path":"refused"}]'), '42501');
 	if (public.qorpera_folder_view_renew((b ->> 'viewId')::uuid, b ->> 'pass') ->> 'state') <> 'closed' then
 		raise exception 'A re-claimed lease ends the run box view on renew'; end if;
+	-- A view whose own lease lapsed refuses, and renew closes it as expired.
+	b := pg_temp.open('run_box', '{}', pg_temp.run('human', '63200000-0000-4000-8000-000000000002'));
+	perform pg_temp.fx(format('update public.qorpera_folder_views set lease_until = clock_timestamp() - interval ''1 second'' where id = %L',
+		b ->> 'viewId'));
+	perform pg_temp.raises(format('select pg_temp.vcommit(%L, %L, %L)', b, 'box-expired', '[{"op":"mkdir","path":"refused"}]'), '42501');
+	r := public.qorpera_folder_view_renew((b ->> 'viewId')::uuid, b ->> 'pass');
+	if r ->> 'state' <> 'closed' or r ->> 'reason' <> 'expired' then raise exception 'Renew of a lapsed view: %', r; end if;
 end $$;
 
 
@@ -178,11 +217,27 @@ begin
 		'holderRunId', v ->> 'runId')), '42501');
 end $$;
 
+-- The newest view wins: run A's view, then run B's; when B leaves the screen, A's view does not come back.
+do $$
+declare v jsonb := pg_temp.run('human', '63200000-0000-4000-8000-000000000002'); v2 jsonb := pg_temp.run('human', '63200000-0000-4000-8000-000000000002');
+	d jsonb; d2 jsonb;
+begin
+	perform pg_temp.hold(v);
+	d := pg_temp.open('computer_desktop', jsonb_build_object('screenId','63900000-0000-4000-8000-0000000000e4','holderRunId',v ->> 'runId'));
+	perform pg_temp.hold(v2);
+	d2 := pg_temp.open('computer_desktop', jsonb_build_object('screenId','63900000-0000-4000-8000-0000000000e4','holderRunId',v2 ->> 'runId'));
+	perform pg_temp.hold(null);
+	perform pg_temp.raises(format('select pg_temp.vcommit(%L, %L, %L)', d, 'newest-old', '[{"op":"mkdir","path":"refused"}]'), '42501');
+	perform pg_temp.expect(pg_temp.vcommit(d2, 'newest-new', '[{"op":"mkdir","path":"by-newest"}]'), 1, 'saved');
+	perform public.qorpera_folder_view_close((d2 ->> 'viewId')::uuid, d2 ->> 'pass');
+end $$;
+
 -- A coding session: detached as its agent and owner under the coding rule (code/ yes, agents/ no), never reviewed; an
 -- archive ends it.
 do $$
 declare p jsonb := pg_temp.run('human', '63200000-0000-4000-8000-000000000002'); w uuid := extensions.gen_random_uuid();
 	tok uuid := extensions.gen_random_uuid(); cm uuid := extensions.gen_random_uuid(); cv jsonb; r jsonb; c public.qorpera_folder_commits%rowtype;
+	t jsonb; e jsonb;
 	repo jsonb := '{"host":"github.com","owner":"acme","name":"app","baseBranch":"main"}';
 begin
 	set local session_replication_role = replica;
@@ -210,6 +265,15 @@ begin
 	c := pg_temp.last_commit(r);
 	if c.session_kind <> 'coding' or c.run_id is not null or c.view_kind <> 'coding_session' or c.review_id is not null then
 		raise exception 'Coding view commit: %', to_jsonb(c); end if;
+	-- During a leased turn, the view's reads land in the turn's read set as well as the view's.
+	t := pg_temp.turn(p, w);
+	e := pg_temp.read('shared/a.txt', pg_temp.vactor(cv)) -> 'entry';
+	perform public.qorpera_folder_record_release('63200000-0000-4000-8000-000000000020', pg_temp.vactor(cv), extensions.gen_random_uuid(),
+		jsonb_build_array(jsonb_build_object('path', e ->> 'path', 'version', e ->> 'version', 'authority', e -> 'authority')), repeat('3', 64));
+	if not exists (select 1 from public.qorpera_folder_view_reads where view_id = (cv ->> 'viewId')::uuid)
+		or not exists (select 1 from public.qorpera_folder_run_read_records rec, jsonb_array_elements(rec.reads) x
+			where rec.run_id = (t ->> 'runId')::uuid and x ->> 'path' = 'shared/a.txt') then
+		raise exception 'A coding view''s reads during a turn land in the turn''s read set'; end if;
 	perform pg_temp.fx(format('update public.qorpera_coding_sessions set archived_at = clock_timestamp(), archived_by = ''member'' where worker_id = %L', w));
 	perform pg_temp.raises(format('select pg_temp.vcommit(%L, %L, %L)', cv, 'coding-archived', '[{"op":"mkdir","path":"refused"}]'), '42501');
 end $$;
