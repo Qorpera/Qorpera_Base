@@ -45,10 +45,16 @@ begin
 	if x ->> 'receipt_id' <> r::text or x ->> 'state' <> 'executing' then raise exception 'A begin replay: %', x; end if;
 	perform pg_temp.raises_like(format('select pg_temp.begin(%L, %L, %L, true, %L)', b, extensions.gen_random_uuid(), 'op-one', repeat('c', 64)),
 		'23505', 'logical operation key is already bound to other work');
+	perform pg_temp.raises_like(format('select pg_temp.begin(%L, %L, %L, false)', b, extensions.gen_random_uuid(), 'op-one'),
+		'23505', 'logical operation key is already bound to other work');
+	perform pg_temp.raises_like(format('select public.qorpera_begin_native_tool_operation(%L, %L, %L, %L, %L, true)', b, extensions.gen_random_uuid(),
+		'op-one', repeat('a', 64), repeat('c', 64)), '23505', 'logical operation key is already bound to other work');
 	perform pg_temp.raises_like(format('select pg_temp.begin(%L, %L, %L)', b, extensions.gen_random_uuid(), 'op-two'),
 		'55000', 'run has an unresolved operation');
 	perform pg_temp.raises_like(format('select pg_temp.begin(%L, %L, %L, null)', b, extensions.gen_random_uuid(), 'op-three'),
 		'22023', 'native tool operation is invalid');
+	perform pg_temp.raises_like(format('select pg_temp.begin(%L, %L, %L, true, %L)', b, extensions.gen_random_uuid(), 'op-four', 'not-a-sha'),
+		'42501', 'run operation authority is invalid');
 	-- The run check under it: a stopped company refuses before any receipt.
 	perform pg_temp.fx(format('insert into public.qorpera_company_deletions(profile_id) values (%L)', '63400000-0000-4000-8000-000000000010'));
 	perform pg_temp.raises_like(format('select pg_temp.begin(%L, %L, %L)', b, extensions.gen_random_uuid(), 'op-four'), '55000',
@@ -92,9 +98,24 @@ begin
 	perform pg_temp.raises_like(format('select pg_temp.complete(%L, %L, null)', b, r), '23505', 'run operation completion replay differs');
 	perform pg_temp.raises_like(format('select pg_temp.complete(%L, %L, %L, %L)', b, r, c ->> 'commitId', '{"ok":false}'), '23505',
 		'run operation completion replay differs');
-	-- Completed, the receipt is no longer carried; the run is free for its next operation.
+	-- Completed with its commit, the receipt is still satisfied: a redo that reuses it is a defect (22023).
 	perform pg_temp.raises_like(format('select pg_temp.rcommit(%L, %L, %L, %L)', v, 'receipt-commit-3', '[{"op":"mkdir","path":"receipt-three"}]', r),
-		'42501', 'Run receipt is unavailable');
+		'22023', 'Run receipt is already satisfied by another commit');
+	-- A begin replay returns the completed receipt and its commit.
+	x := pg_temp.begin(b, extensions.gen_random_uuid(), 'op-commit');
+	if x ->> 'state' is distinct from 'completed' or x ->> 'folder_commit_id' is distinct from c ->> 'commitId'
+		or x ->> 'receipt_id' is distinct from r::text then
+		raise exception 'A begin replay after completion: %', x; end if;
+	-- The request digests: without a receipt, today's (the change set and the actor); with one, the receipt joins it.
+	if (select request_sha256 from public.qorpera_folder_operation_keys where environment_id = '63400000-0000-4000-8000-000000000020'
+			and operation_key = 'receipt-commit-1')
+		<> encode(extensions.digest(convert_to(jsonb_build_array(jsonb_build_object('kind', 'run', 'runId', v ->> 'runId'), v_units, null, r)::text,
+			'utf8'), 'sha256'), 'hex') then raise exception 'The digest of a commit with a receipt'; end if;
+	perform pg_temp.expect(pg_temp.commit(pg_temp.member(1), 'receipt-plain-1', '[{"op":"mkdir","path":"receipt-plain"}]'), 1, 'saved');
+	if (select request_sha256 from public.qorpera_folder_operation_keys where environment_id = '63400000-0000-4000-8000-000000000020'
+			and operation_key = 'receipt-plain-1')
+		<> encode(extensions.digest(convert_to(jsonb_build_array(pg_temp.member(1), '[{"op":"mkdir","path":"receipt-plain"}]'::jsonb)::text,
+			'utf8'), 'sha256'), 'hex') then raise exception 'The digest of a commit without a receipt must not change'; end if;
 	if pg_temp.begin(b, extensions.gen_random_uuid(), 'op-next') ->> 'state' <> 'executing' then raise exception 'The next operation'; end if;
 end $$;
 
@@ -141,6 +162,16 @@ begin
 		extensions.gen_random_uuid()), '22023', 'A folder-v2 operation completes with its folder commit');
 	x := public.qorpera_complete_native_tool_operation(b, r, repeat('a', 64), '{"done":true}', null, null);
 	if x ->> 'state' <> 'completed' or x -> 'folder_commit_id' <> 'null'::jsonb then raise exception 'Legacy entry completion: %', x; end if;
+	-- An ambiguous receipt (its attempt ended mid-operation) is neither carried nor completed here: recovery decides it.
+	r := extensions.gen_random_uuid();
+	perform pg_temp.begin(b, r, 'op-ambiguous');
+	perform pg_temp.fx(format('update public.qorpera_run_operation_receipts set status = ''ambiguous'', completed_at = clock_timestamp() where id = %L', r));
+	perform pg_temp.raises_like(format('select pg_temp.rcommit(%L, %L, %L, %L)', v, 'receipt-ambiguous-1', '[{"op":"mkdir","path":"receipt-ambiguous"}]', r),
+		'42501', 'Run receipt is unavailable');
+	perform pg_temp.raises_like(format('select pg_temp.complete(%L, %L, null)', b, r), '55000', 'run operation requires recovery review');
+	-- A completion by another assignment of the run finds no receipt of its own.
+	perform pg_temp.fx(format('update public.qorpera_run_operation_receipts set assignment_id = %L where id = %L', extensions.gen_random_uuid(), r));
+	perform pg_temp.raises_like(format('select pg_temp.complete(%L, %L, null)', b, r), 'PGRST', '%run operation receipt is unavailable%');
 end $$;
 
 -- 6. Session targets (rank 11): the hook may name the sessions its apply step writes, FOR UPDATE only; anything else
@@ -184,6 +215,13 @@ begin
 	perform pg_temp.raises_like(format('select public.qorpera_folder_lock_sessions(%L, %L)', '63400000-0000-4000-8000-000000000020',
 		jsonb_build_array(jsonb_build_object('rank', 11, 'tbl', 'qorpera_shared_sessions', 'key', extensions.gen_random_uuid(), 'mode', 'update',
 			'required', true))), '42501', 'A session this change set relies on is unavailable');
+	-- Another company's session is a defect, never silently skipped.
+	insert into public.qorpera_shared_sessions(id, profile_id, environment_id, title, created_by_user_id, audience_kind)
+	values (extensions.gen_random_uuid(), '64700000-0000-4000-8000-000000000011', '64700000-0000-4000-8000-000000000021', 'Other',
+		'63400000-0000-4000-8000-000000000001', 'company') returning id into v_session;
+	perform pg_temp.raises_like(format('select public.qorpera_folder_lock_sessions(%L, %L)', '63400000-0000-4000-8000-000000000020',
+		jsonb_build_array(jsonb_build_object('rank', 11, 'tbl', 'qorpera_shared_sessions', 'key', v_session, 'mode', 'update'))), 'XX000',
+		'A session target belongs to another company');
 end $$;
 
 -- 7. Snapshot-v1 controls, the replaced signature and privileges.
