@@ -442,23 +442,28 @@ begin
 		raise exception 'Nothing lands in the superseded view'; end if;
 end $$;
 
--- H. An open locks the machine's newest view even when it is already closed: a release that resolved while the view
--- was valid, and is still in flight when renew closes the view, is carried into the next view. The release is held
--- mid-flight on its run's job, which the first connection holds FOR UPDATE.
+-- H. An open locks the machine's newest view even when it is already closed: a release that took the view row while
+-- the view was valid, and is still in flight when renew closes the view, is carried into the next view. The release
+-- is held mid-flight at the view's read set, whose row for the root the first connection holds FOR UPDATE (an
+-- earlier release of shared/ made it).
 select pg_temp.hold(current_setting('qorpera_test.run_one')::jsonb);
 select set_config('qorpera_test.desk2', public.qorpera_folder_view_open('64400000-0000-4000-8000-000000000020', '{"kind":"platform"}',
 	'computer_desktop', jsonb_build_object('screenId','64400000-0000-4000-8000-0000000000e4',
 		'holderRunId', current_setting('qorpera_test.run_one')::jsonb ->> 'runId'))::text, false);
+select public.qorpera_folder_record_release('64400000-0000-4000-8000-000000000020', pg_temp.vactor('desk2'), extensions.gen_random_uuid(),
+	jsonb_build_array(jsonb_build_object('path', e ->> 'path', 'version', e ->> 'version', 'authority', e -> 'authority')), repeat('9', 64))
+from (select public.qorpera_folder_read('64400000-0000-4000-8000-000000000020', pg_temp.vactor('desk2'), 'shared') -> 'entry' as e) x;
 do $$
-declare v_state text; v_new jsonb; e jsonb := public.qorpera_folder_read('64400000-0000-4000-8000-000000000020', pg_temp.vactor('desk2'), 'shared') -> 'entry';
+declare v_state text; v_new jsonb;
+	e jsonb := public.qorpera_folder_read('64400000-0000-4000-8000-000000000020', pg_temp.vactor('desk2'), 'shared/in-flight') -> 'entry';
 begin
 	perform dblink_exec('view_one', 'begin');
-	perform * from dblink('view_one', format('select 1 from public.qorpera_runner_jobs where id = %L for update',
-		current_setting('qorpera_test.run_one')::jsonb ->> 'jobId')) as t(x integer);
+	perform * from dblink('view_one', format('select 1 from public.qorpera_folder_view_reads where view_id = %L for update',
+		current_setting('qorpera_test.desk2')::jsonb ->> 'viewId')) as t(x integer);
 	perform dblink_send_query('view_two', format('select public.qorpera_folder_record_release(%L, %L, %L, %L, %L)',
 		'64400000-0000-4000-8000-000000000020', pg_temp.vactor('desk2'), extensions.gen_random_uuid(),
-		jsonb_build_array(jsonb_build_object('path', e ->> 'path', 'version', e ->> 'version', 'authority', e -> 'authority')), repeat('9', 64)));
-	if not pg_temp.waits_for('view_two', 'view_one') then raise exception 'The release did not stop at its run''s job'; end if;
+		jsonb_build_array(jsonb_build_object('path', e ->> 'path', 'version', e ->> 'version', 'authority', e -> 'authority')), repeat('a', 64)));
+	if not pg_temp.waits_for('view_two', 'view_one') then raise exception 'The release did not stop at the view''s read set'; end if;
 	-- Run two takes the screen; renew closes the old view.
 	perform dblink_exec('view_three', 'set session_replication_role = replica');
 	perform dblink_exec('view_three', pg_temp.sql_hold(current_setting('qorpera_test.run_two')::jsonb));
@@ -475,8 +480,59 @@ begin
 	v_state := pg_temp.outcome('view_two');
 	if v_state <> 'ok' then raise exception 'The release in flight: %', v_state; end if;
 	v_new := pg_temp.result('view_three');
-	if not exists (select 1 from public.qorpera_folder_view_reads where view_id = (v_new ->> 'viewId')::uuid) then
+	if not exists (select 1 from public.qorpera_folder_view_read_records rec, jsonb_array_elements(rec.reads) x
+		where rec.view_id = (v_new ->> 'viewId')::uuid and x ->> 'path' = 'shared/in-flight') then
 		raise exception 'The next view carries the release that was in flight'; end if;
+end $$;
+
+-- I. A release keeps the commit's lock order too (job, then view row): one that resolved detached and finds the holder
+-- back after waiting at the view row refuses as retryable, never files into the run without its job lock.
+select pg_temp.hold(current_setting('qorpera_test.run_one')::jsonb);
+select set_config('qorpera_test.desk3', public.qorpera_folder_view_open('64400000-0000-4000-8000-000000000020', '{"kind":"platform"}',
+	'computer_desktop', jsonb_build_object('screenId','64400000-0000-4000-8000-0000000000e4',
+		'holderRunId', current_setting('qorpera_test.run_one')::jsonb ->> 'runId'))::text, false);
+select pg_temp.fx_release_screen();
+do $$
+declare v_state text; e jsonb := public.qorpera_folder_read('64400000-0000-4000-8000-000000000020', pg_temp.vactor('desk3'), 'shared') -> 'entry';
+begin
+	perform dblink_exec('view_one', 'begin');
+	perform * from dblink('view_one', format('select 1 from public.qorpera_folder_views where id = %L for update',
+		current_setting('qorpera_test.desk3')::jsonb ->> 'viewId')) as t(x integer);
+	perform dblink_send_query('view_two', format('select public.qorpera_folder_record_release(%L, %L, %L, %L, %L)',
+		'64400000-0000-4000-8000-000000000020', pg_temp.vactor('desk3'), extensions.gen_random_uuid(),
+		jsonb_build_array(jsonb_build_object('path', e ->> 'path', 'version', e ->> 'version', 'authority', e -> 'authority')), repeat('b', 64)));
+	if not pg_temp.waits_for('view_two', 'view_one') then raise exception 'The release did not wait at the view row'; end if;
+	perform dblink_exec('view_three', 'set session_replication_role = replica');
+	perform dblink_exec('view_three', pg_temp.sql_hold(current_setting('qorpera_test.run_one')::jsonb));
+	perform dblink_exec('view_three', 'set session_replication_role = origin');
+	perform dblink_exec('view_one', 'rollback');
+	v_state := pg_temp.outcome('view_two');
+	if v_state not like 'PGRST %folder_view_changed%' then
+		raise exception 'A release that finds the holder back must refuse as retryable, got %', v_state; end if;
+end $$;
+
+-- J. So a transaction that ends a run and closes its view (the run's job, then the view row, both FOR UPDATE) never
+-- deadlocks with a release in flight: the release waits at the job, holding no lock on the view.
+select pg_temp.renew('desk3');
+do $$
+declare v_state text; e jsonb := public.qorpera_folder_read('64400000-0000-4000-8000-000000000020', pg_temp.vactor('desk3'), 'shared') -> 'entry';
+begin
+	perform dblink_exec('view_one', 'begin');
+	perform * from dblink('view_one', format('select 1 from public.qorpera_runner_jobs where id = %L for update',
+		current_setting('qorpera_test.run_one')::jsonb ->> 'jobId')) as t(x integer);
+	perform dblink_send_query('view_two', format('select public.qorpera_folder_record_release(%L, %L, %L, %L, %L)',
+		'64400000-0000-4000-8000-000000000020', pg_temp.vactor('desk3'), extensions.gen_random_uuid(),
+		jsonb_build_array(jsonb_build_object('path', e ->> 'path', 'version', e ->> 'version', 'authority', e -> 'authority')), repeat('c', 64)));
+	if not pg_temp.waits_for('view_two', 'view_one') then raise exception 'The release did not wait at the run''s job'; end if;
+	perform dblink_send_query('view_one', format('select 1 from public.qorpera_folder_views where id = %L for update',
+		current_setting('qorpera_test.desk3')::jsonb ->> 'viewId'));
+	if not pg_temp.finishes_unblocked('view_one', 'view_two') then
+		raise exception 'The release holds the view row while it waits for the job'; end if;
+	v_state := pg_temp.outcome('view_one');
+	if v_state <> 'ok' then raise exception 'The view lock beside the release: %', v_state; end if;
+	perform dblink_exec('view_one', 'rollback');
+	v_state := pg_temp.outcome('view_two');
+	if v_state <> 'ok' then raise exception 'The release after the job was free: %', v_state; end if;
 end $$;
 
 select dblink_disconnect(name) from unnest(array['view_one','view_two','view_three']) name;

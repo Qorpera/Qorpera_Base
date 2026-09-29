@@ -407,7 +407,7 @@ begin
 			or (p_kind = 'coding_session' and v.worker_id = v_session.worker_id))
 		order by v.created_at desc, v.id desc limit 1) newest
 	where (p_kind = 'computer_desktop' and newest.screen_generation = v_screen.generation and newest.activation_id = v_activation)
-		or (p_kind = 'coding_session' and newest.machine_id is not distinct from v_machine);
+		or (p_kind = 'coding_session' and newest.machine_id = v_machine);
 	update public.qorpera_folder_views set state = 'closed', closed_at = clock_timestamp(), close_reason = 'superseded'
 	where state = 'open' and ((p_kind = 'computer_desktop' and screen_id = v_screen.id)
 		or (p_kind = 'coding_session' and worker_id = v_session.worker_id));
@@ -652,7 +652,7 @@ create function public.qorpera_folder_record_view_release(p_environment_id uuid,
 returns jsonb language plpgsql security definer set search_path = '' as $$
 declare
 	v_view_id uuid := (p_actor ->> 'viewId')::uuid; v_existing public.qorpera_folder_view_releases%rowtype; v_resolved jsonb;
-	v_run_actor jsonb; v_pairs jsonb; v_result jsonb;
+	v_early jsonb; v_run_actor jsonb; v_late_run jsonb; v_pairs jsonb; v_result jsonb;
 begin
 	-- A replay needs the view's pass too.
 	if not exists (select 1 from public.qorpera_folder_views where id = v_view_id and environment_id = p_environment_id
@@ -660,12 +660,27 @@ begin
 		raise exception 'Folder view is unavailable' using errcode = '42501'; end if;
 	select * into v_existing from public.qorpera_folder_view_releases where view_id = v_view_id and release_id = p_release_id;
 	if not found then
-		-- The view row first, as the commit takes it: an open superseding this view (FOR UPDATE) finishes first and the
-		-- resolve below refuses, or waits for this release and carries its reads.
+		-- The commit's order (§4): a plain resolve; the job of the run the view acts or reads through, KEY SHARE (the
+		-- run check, so the turn's completion waits for releases in flight); the view row KEY SHARE, which an open
+		-- superseding the view (FOR UPDATE) waits for; then the resolve again. An open that got there first makes it
+		-- refuse; a view that now names a run whose job it does not hold refuses as retryable.
+		v_early := public.qorpera_folder_view_resolve(p_environment_id, p_profile_id, p_actor);
+		if v_early ->> 'kind' = 'member' then
+			raise exception 'A member-held view records no reads' using errcode = '22023'; end if;
+		v_run_actor := nullif(coalesce(v_early -> 'view' -> 'runActor', v_early -> 'view' -> 'turnRunActor'), 'null'::jsonb);
+		if v_run_actor is not null then
+			perform public.qorpera_folder_run_enter(p_environment_id, p_profile_id, v_run_actor);
+		end if;
 		perform 1 from public.qorpera_folder_views where id = v_view_id for key share;
 		v_resolved := public.qorpera_folder_view_resolve(p_environment_id, p_profile_id, p_actor);
 		if v_resolved ->> 'kind' = 'member' then
 			raise exception 'A member-held view records no reads' using errcode = '22023'; end if;
+		v_late_run := nullif(coalesce(v_resolved -> 'view' -> 'runActor', v_resolved -> 'view' -> 'turnRunActor'), 'null'::jsonb);
+		if v_late_run is not null and (v_run_actor is null or v_late_run ->> 'jobId' <> v_run_actor ->> 'jobId') then
+			raise sqlstate 'PGRST' using message = jsonb_build_object('code', 'QRC01', 'message', 'Company folder view changed',
+				'details', 'folder_view_changed', 'hint', null)::text, detail = '{"status":409,"headers":{}}';
+		end if;
+		v_run_actor := v_late_run;
 		insert into public.qorpera_folder_view_releases(view_id, release_id, environment_id, content_sha256, result)
 		values (v_view_id, p_release_id, p_environment_id, p_content, '{}'::jsonb) on conflict do nothing;
 		if not found then
@@ -676,12 +691,6 @@ begin
 		if v_existing.content_sha256 <> p_content then
 			raise exception 'Release id was used for other reads' using errcode = '22023'; end if;
 		return v_existing.result || jsonb_build_object('replay', true);
-	end if;
-	v_run_actor := coalesce(v_resolved -> 'view' -> 'runActor', v_resolved -> 'view' -> 'turnRunActor');
-	if v_run_actor is not null and v_run_actor <> 'null'::jsonb then
-		perform public.qorpera_folder_run_enter(p_environment_id, p_profile_id, v_run_actor);
-	else
-		v_run_actor := null;
 	end if;
 	v_pairs := public.qorpera_folder_release_pairs(p_environment_id, p_profile_id, v_resolved, p_reads);
 	perform public.qorpera_folder_view_write_read_set(p_environment_id, v_view_id, v_pairs -> 'upserts', null, null);
