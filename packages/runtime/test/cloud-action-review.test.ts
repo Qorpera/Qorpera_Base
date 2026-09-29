@@ -51,6 +51,8 @@ describe("which calls are reviewed", () => {
 		["computer_desktop", { action: { kind: "desktop", action: "scroll", direction: "up", amount: 2 } }, "read"],
 		["computer_desktop", { action: { kind: "desktop", action: "type", text: "hello" } }, "external"],
 		["computer_screenshot", {}, "read"],
+		["list_hooks", {}, "read"],
+		["read_event", { deliveryId: "73100000-0000-4000-8000-00000000000a" }, "read"],
 		["hire_agent", {}, "delegation"],
 		["create_group_chat", {}, "delegation"],
 		["manage_routine", { action: "list" }, "read"],
@@ -280,6 +282,12 @@ describe("what the card shows for delegation", () => {
 		);
 		expect(schedule({ kind: "file_change", path: "reports/weekly-report.md", timeZone: COPENHAGEN })).toBe(
 			"When “Weekly report” changes",
+		);
+		// An event listener names the event types it takes, never the hook's id.
+		const hookId = "3b2c9e4a-1d7f-4e60-9a2b-5c8d0e1f2a3b";
+		expect(schedule({ kind: "event", hookId, timeZone: COPENHAGEN })).toBe("When a hook receives an event");
+		expect(schedule({ kind: "event", hookId, only: ["invoice.paid", "charge.refunded"], timeZone: COPENHAGEN })).toBe(
+			"When a hook receives “invoice.paid” and “charge.refunded” events",
 		);
 		// Pausing names the routine by its key.
 		expect(
