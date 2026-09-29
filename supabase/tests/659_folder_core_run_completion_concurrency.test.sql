@@ -76,6 +76,17 @@ select pg_temp.race_run(1) \g /dev/null
 select pg_temp.race_run(2) \g /dev/null
 select pg_temp.race_run(3) \g /dev/null
 select pg_temp.race_run(4) \g /dev/null
+select pg_temp.race_run(5) \g /dev/null
+select pg_temp.race_run(6) \g /dev/null
+-- Run 6's run box view, open, with a known pass (committed, so other connections see it).
+set session_replication_role = replica;
+insert into public.qorpera_folder_views(id, environment_id, profile_id, kind, staff_agent_id, member_user_id, worker_access, run_id,
+	job_id, runner_id, client_lease_id, pass_sha256, state, lease_until)
+values ('65900000-0000-4000-8000-0000000007f6', '64800000-0000-4000-8000-000000000020', '64800000-0000-4000-8000-000000000010',
+	'run_box', '64800000-0000-4000-8000-0000000000a1', '64800000-0000-4000-8000-000000000002', 'write',
+	'65900000-0000-4000-8000-000000000106', '65900000-0000-4000-8000-000000000206', '64800000-0000-4000-8000-0000000000f4',
+	'65900000-0000-4000-8000-000000000506', extensions.digest('race-pass', 'sha256'), 'open', clock_timestamp() + interval '10 minutes');
+set session_replication_role = origin;
 
 create function pg_temp.sql_send(p_n integer, p_key text, p_phase text) returns text language sql as $$
 	select format('select public.qorpera_send_native_agent_message(%L, %L, %L, %L, %L, %L, %L, ''openai'', ''codex-cli'', %L, %L, %L)::text',
@@ -158,9 +169,10 @@ begin
 end $$;
 
 -- D. Completion takes this company's row (rank 0) before the requester's member row. With the company row held FOR
--- UPDATE elsewhere (as a member removal holds it before the member row), completion waits there holding no member row;
--- without rank 0 it would hold the member row and then wait for the company row through a foreign key, and a removal of
--- that member would deadlock with it.
+-- UPDATE elsewhere (as legacy member management holds it before the member row), completion waits there holding no
+-- member row; without rank 0 it would hold the member row and then wait for the company row through a foreign key. (This
+-- is about lock order only: removing the run's own requester, or the member whose login pays for the run, ends the run's
+-- job and is C1c-3's case, C1C §5.9 test 15.)
 do $$
 declare v_state text; v jsonb;
 begin
@@ -177,6 +189,47 @@ begin
 	perform dblink_exec('fence_two', 'rollback');
 	v_state := pg_temp.outcome('fence_one');
 	if v_state <> 'ok' then raise exception 'Completion after the company row: %', v_state; end if;
+end $$;
+
+-- E. A second completion call for the same attempt (a runtime retry) that arrives while the first is running waits at the
+-- job (the lane's first lock) and then returns the stored result, as today's lane does; it is never refused as a lease
+-- that went away.
+do $$
+declare v_state text; v jsonb; v_call text;
+begin
+	select x::jsonb into v from dblink('fence_one', pg_temp.sql_send(5, 'final', 'final')) as t(x text);
+	v_call := pg_temp.sql_complete(5, v ->> 'messageId');
+	perform dblink_exec('fence_one', 'begin');
+	perform * from dblink('fence_one', v_call) as t(x text);
+	perform dblink_send_query('fence_two', v_call);
+	if not pg_temp.waits_for('fence_two', 'fence_one') then raise exception 'The retry must wait for the completion in flight'; end if;
+	if pg_temp.queued_on('fence_two') is distinct from 'public.qorpera_runner_jobs'::regclass then
+		raise exception 'The retry must wait at the job, not on %', pg_temp.queued_on('fence_two'); end if;
+	perform dblink_exec('fence_one', 'commit');
+	v_state := pg_temp.outcome('fence_two');
+	if v_state <> 'ok' then raise exception 'A completion retried during the first gets its result: %', v_state; end if;
+end $$;
+
+-- F. A run box view renewal in flight (the view FOR NO KEY UPDATE, no job lock): completion, holding the job, waits at the
+-- view before the fence and the ranks, so it holds no member row while it waits; then it closes the view.
+do $$
+declare v_state text; v jsonb;
+begin
+	select x::jsonb into v from dblink('fence_one', pg_temp.sql_send(6, 'final', 'final')) as t(x text);
+	perform dblink_exec('fence_two', 'begin');
+	perform * from dblink('fence_two', $q$select public.qorpera_folder_view_renew('65900000-0000-4000-8000-0000000007f6', 'race-pass')::text$q$)
+		as t(x text);
+	perform dblink_send_query('fence_one', pg_temp.sql_complete(6, v ->> 'messageId'));
+	if not pg_temp.waits_for('fence_one', 'fence_two') then raise exception 'Completion must wait for the renewal in flight'; end if;
+	if pg_temp.queued_on('fence_one') is distinct from 'public.qorpera_folder_views'::regclass then
+		raise exception 'Completion must wait at the view, not on %', pg_temp.queued_on('fence_one'); end if;
+	perform * from dblink('fence_three', $q$select 1 from public.qorpera_profile_members where profile_id = '64800000-0000-4000-8000-000000000010'
+		and user_id = '64800000-0000-4000-8000-000000000002' for update nowait$q$) as t(x integer);
+	perform dblink_exec('fence_two', 'commit');
+	v_state := pg_temp.outcome('fence_one');
+	if v_state <> 'ok' then raise exception 'Completion after the renewal: %', v_state; end if;
+	if (select state || ':' || close_reason from public.qorpera_folder_views where id = '65900000-0000-4000-8000-0000000007f6')
+		is distinct from 'closed:ended' then raise exception 'Completion closes the run box view'; end if;
 end $$;
 
 select dblink_disconnect(name) from unnest(array['fence_one','fence_two','fence_three','fence_four']) name;

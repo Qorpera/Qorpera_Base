@@ -6,7 +6,8 @@
 --   completion waits out every tool call, save and release holding the job KEY SHARE); the run's run box views FOR
 --   UPDATE in id order (job, then view: C1B §4); the fence, this company's row and the ranks through the run entry (a
 --   routine run's routine stays at the run check's KEY SHARE: completion writes no routine row; the authorization
---   outcome trigger acts only on materialized and cancelled wakes); the recheck; receipts matched to the commits that carry them; the
+--   outcome trigger acts only on materialized and cancelled wakes); the native lease check; the recheck; receipts
+--   matched to the commits that carry them; the
 --   provider-session owner; the job update (today's v4, v3 and v2 bookkeeping). The run box views end with the run.
 --   It never reaches complete_runner_job_before_path_runtime and never takes the run mutex (which comes before the job).
 -- * Dispositions from the run's commits: review_pending when a unit waits for review, else published when a commit
@@ -111,12 +112,17 @@ begin
 	-- 2. The run's run box views, FOR UPDATE in id order: after the job, before the fence (C1B §4). Closing waits out a
 	-- view's save in flight.
 	perform 1 from public.qorpera_folder_views where kind = 'run_box' and run_id = v_run.id and state = 'open' order by id for update;
-	-- 3. The fence with the stop re-read, this company's row (rank 0, before the requester's member row: the usage
-	-- observation's foreign key takes it later) and the ranks, through the run entry.
+	-- 3. The fence with the stop re-read, this company's row (rank 0, before the requester's member row: the
+	-- provider-session inserts, the runner audit row and the job's second update take it later through foreign keys) and
+	-- the ranks, through the run entry.
 	v_targets := jsonb_build_array(jsonb_build_object('rank', 0, 'tbl', 'qorpera_profiles', 'key', v_run.profile_id::text,
 		'mode', 'keyshare', 'required', true));
 	v_resolved := public.qorpera_folder_run_enter(v_run.environment_id, v_run.profile_id, jsonb_build_object('kind', 'run',
 		'runId', v_run.id, 'jobId', v_job.id, 'runnerId', p_runner_id, 'assignmentId', v_job.client_lease_id), v_targets);
+	-- The native lease, its capsule and the login still hold (the plain checks of the folder run check, at the same
+	-- place as a tool call's; the legacy lane refuses a revoked lease the same way).
+	perform public.qorpera_folder_validate_native_lease(v_lease.id, v_run.id, v_job.id, p_runner_id, v_job.client_lease_id,
+		v_lease.credential_capsule_id, v_run.compute_identity_id, v_run.model_provider, 'codex-cli');
 	-- 4. Rank 10: the run's released reads still hold.
 	perform public.qorpera_folder_run_reads_current(v_run.environment_id, v_run.profile_id, v_resolved);
 	select payload into v_started from public.qorpera_execution_run_events where run_id = v_run.id

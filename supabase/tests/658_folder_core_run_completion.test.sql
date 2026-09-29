@@ -5,41 +5,85 @@
 -- the run's run box views and never reads a source substrate. The handoff accepts receipts satisfied by commits;
 -- recovery confirms a receipt with the commit that carries it. Runs are 647's hand-built runs. Races are in 659.
 
--- A human run that has acknowledged, with its native start recorded. Returns the actor and binding.
-create function pg_temp.human() returns jsonb language plpgsql as $$
-declare p jsonb := pg_temp.run('63400000-0000-4000-8000-0000000000a1', 'human', '63400000-0000-4000-8000-000000000002');
-	b jsonb := pg_temp.native(p); v_substrate uuid := extensions.gen_random_uuid();
+-- Repairs to a hand-built run so completion's writes pass their foreign-key checks (rows this transaction built with
+-- them off are checked again when updated): the run names a real substrate and snapshot (another company's, which
+-- today's v2 would refuse as inconsistent; the folder lane never reads them), the run and its inputs a real runtime
+-- bundle, and the assignment's claim exists. Then the native start is recorded.
+create function pg_temp.prepare(b jsonb) returns void language plpgsql as $$
+declare v_substrate uuid := extensions.gen_random_uuid();
 begin
-	-- The job's substrate row belongs to another company: today's v2 would refuse it as inconsistent, the folder lane
-	-- never reads it (a folder-v2 job has no source substrate, core C4).
 	perform pg_temp.fx(format($f$insert into public.qorpera_company_substrate_versions(id, profile_id, environment_id, company_snapshot_id,
 		client_version_id, contract_version, operation_sequence, operation_count, content_sha256, created_by_user_id)
 		values (%L, '64700000-0000-4000-8000-000000000011', '64700000-0000-4000-8000-000000000021', extensions.gen_random_uuid(),
 			extensions.gen_random_uuid(), 1, 0, 0, repeat('f', 64), '63400000-0000-4000-8000-000000000001')$f$, v_substrate));
 	perform pg_temp.fx(format('update public.qorpera_runner_jobs set substrate_version_id = %L where id = %L', v_substrate, b ->> 'jobId'));
-	-- Completion's and the handoff's writes update rows this transaction built with foreign keys off, which are checked
-	-- again then: the run names a real substrate and snapshot (another company's), the run and its inputs a real runtime
-	-- bundle, and the assignment's claim exists.
-	perform pg_temp.fx(format($f$update public.qorpera_execution_runs set runtime_bundle_id = bundle.id, runtime_bundle_sha256 = bundle.sha256
-		from (select id, sha256 from public.qorpera_runtime_bundles order by version desc, id limit 1) bundle
-		where qorpera_execution_runs.id = %L$f$, b ->> 'runId'));
 	perform pg_temp.fx(format('update public.qorpera_execution_runs set substrate_version_id = %L where id = %L', v_substrate, b ->> 'runId'));
 	perform pg_temp.fx(format($f$insert into public.qorpera_company_snapshots(id, profile_id, environment_id, workspace_id, client_snapshot_id,
 		tree_manifest_sha256, tree_manifest_bytes, tree_contract_version, file_count, total_bytes, created_by_user_id)
 		select company_snapshot_id, '64700000-0000-4000-8000-000000000011', '64700000-0000-4000-8000-000000000021',
 			extensions.gen_random_uuid(), extensions.gen_random_uuid(), repeat('f', 64), 1, 1, 0, 0, '63400000-0000-4000-8000-000000000001'
 		from public.qorpera_execution_runs where id = %L$f$, b ->> 'runId'));
+	perform pg_temp.fx(format($f$update public.qorpera_execution_runs set runtime_bundle_id = bundle.id, runtime_bundle_sha256 = bundle.sha256
+		from (select id, sha256 from public.qorpera_runtime_bundles order by version desc, id limit 1) bundle
+		where qorpera_execution_runs.id = %L$f$, b ->> 'runId'));
 	perform pg_temp.fx(format($f$update public.qorpera_session_inputs set runtime_bundle_id = run.runtime_bundle_id,
 		runtime_bundle_sha256 = run.runtime_bundle_sha256 from public.qorpera_execution_runs run
 		where run.id = %L and qorpera_session_inputs.execution_run_id = run.id$f$, b ->> 'runId'));
 	perform pg_temp.fx(format($f$insert into public.qorpera_runner_job_claims(id, orchestrator_id, client_claim_id, job_id, run_id,
 		lease_expires_at, status) select claim_id, extensions.gen_random_uuid(), extensions.gen_random_uuid(), job_id, run_id,
 		clock_timestamp() + interval '1 hour', 'accepted' from public.qorpera_runner_assignments where id = %L$f$, b ->> 'assignmentId'));
-	perform pg_temp.send(b, 'ack', 'On it.', 'progress');
 	perform pg_temp.fx(format($f$insert into public.qorpera_execution_run_events(run_id, event_type, payload)
 		values (%L, 'runner_started', %L)$f$, b ->> 'runId', jsonb_build_object('schema', 'qorpera.native-company-execution-start/v1',
 			'runId', b ->> 'runId', 'jobId', b ->> 'jobId', 'leaseId', b ->> 'leaseId', 'binarySha256', repeat('9', 64))));
+end $$;
+-- A human run that has acknowledged, with its native start recorded. Returns the actor and binding.
+create function pg_temp.human() returns jsonb language plpgsql as $$
+declare p jsonb := pg_temp.run('63400000-0000-4000-8000-0000000000a1', 'human', '63400000-0000-4000-8000-000000000002');
+	b jsonb := pg_temp.native(p);
+begin
+	perform pg_temp.prepare(b);
+	perform pg_temp.send(b, 'ack', 'On it.', 'progress');
 	return jsonb_build_object('actor', p, 'binding', b);
+end $$;
+-- A routine run of agent A (a silent routine: no conversation, no reply owed), with its native start recorded.
+create function pg_temp.routine_run() returns jsonb language plpgsql as $$
+declare
+	v_profile uuid := '63400000-0000-4000-8000-000000000010'; v_env uuid := '63400000-0000-4000-8000-000000000020';
+	v_staff uuid := '63400000-0000-4000-8000-0000000000a1'; v_member uuid := '63400000-0000-4000-8000-000000000002';
+	v_routine uuid := extensions.gen_random_uuid(); v_run uuid := extensions.gen_random_uuid(); v_job uuid := extensions.gen_random_uuid();
+	v_wake uuid := extensions.gen_random_uuid(); v_runner uuid := extensions.gen_random_uuid(); v_assignment uuid := extensions.gen_random_uuid();
+	p jsonb; b jsonb;
+begin
+	set local session_replication_role = replica;
+	insert into public.qorpera_cloud_routines(id, profile_id, environment_id, client_routine_id, current_version, status,
+		created_by_user_id, origin)
+	values (v_routine, v_profile, v_env, extensions.gen_random_uuid(), 1, 'active', v_member, 'member');
+	insert into public.qorpera_cloud_routine_versions(routine_id, version, client_version_id, profile_id, environment_id,
+		staff_agent_id, title, prompt, triggers, effort, sponsor_binding_id, sponsor_version, content_sha256, created_by_user_id)
+	values (v_routine, 1, extensions.gen_random_uuid(), v_profile, v_env, v_staff, 'Quiet check', 'Check the numbers quietly.',
+		'[{"id":"s1","kind":"schedule","intervalMinutes":60,"replyPolicy":"silent"}]', 'medium',
+		'63400000-0000-4000-8000-0000000000b1', 1, repeat('e', 64), v_member);
+	insert into public.qorpera_runner_jobs(id, profile_id, environment_id, substrate_version_id, client_job_id, required_capability,
+		job_type, payload, created_by_user_id, status, runner_id, client_lease_id, lease_token_sha256, lease_expires_at, run_id)
+	values (v_job, v_profile, v_env, extensions.gen_random_uuid(), extensions.gen_random_uuid(), 'agent_turn', 'agent_turn', '{}',
+		v_member, 'leased', v_runner, v_assignment, repeat('a', 64), clock_timestamp() + interval '1 hour', v_run);
+	insert into public.qorpera_execution_runs(id, profile_id, environment_id, source_kind, source_id, job_id, substrate_version_id,
+		company_snapshot_id, staff_agent_id, staff_version, sponsor_binding_id, sponsor_version, required_capability, job_type,
+		payload_sha256, transcript_start_sequence, created_by_user_id, requested_by_user_id, model_provider, model_id, model_selection,
+		audience_kind, runtime_bundle_id, runtime_bundle_sha256, session_id, input_ids)
+	values (v_run, v_profile, v_env, 'wake', v_wake, v_job, extensions.gen_random_uuid(), extensions.gen_random_uuid(),
+		v_staff, 1, '63400000-0000-4000-8000-0000000000b1', 1, 'agent_turn', 'agent_turn', repeat('c', 64), 0, v_member, v_member,
+		'openai', 'gpt-test', 'provider_default', 'company', extensions.gen_random_uuid(), repeat('b', 64), null, '{}');
+	insert into public.qorpera_wake_occurrences(id, profile_id, environment_id, routine_id, routine_version, trigger_id, occurrence_key,
+		scheduled_for, not_before, wake_kind, source_kind, source_id, run_id, status, staff_agent_id, staff_version, requested_by_user_id,
+		sponsor_binding_id, sponsor_version, causal_root_id, causal_agent_ids, causal_hop_count, payload)
+	values (v_wake, v_profile, v_env, v_routine, 1, 's1', v_wake::text, clock_timestamp(), clock_timestamp(), 'routine', 'schedule',
+		v_routine, v_run, 'materialized', v_staff, 1, v_member, '63400000-0000-4000-8000-0000000000b1', 1, v_wake, array[v_staff], 0, '{}');
+	set local session_replication_role = origin;
+	p := jsonb_build_object('kind','run','runId',v_run,'jobId',v_job,'runnerId',v_runner,'assignmentId',v_assignment);
+	b := pg_temp.native(p);
+	perform pg_temp.prepare(b);
+	return jsonb_build_object('actor', p, 'binding', b, 'routine', v_routine);
 end $$;
 create function pg_temp.send(p_binding jsonb, p_key text, p_text text, p_phase text) returns jsonb language sql as $$
 	select public.qorpera_send_native_agent_message((p_binding ->> 'leaseId')::uuid, (p_binding ->> 'runId')::uuid,
@@ -55,7 +99,7 @@ create function pg_temp.result(p_binding jsonb) returns jsonb language sql as $$
 		'backend_result',jsonb_build_object('schema','qorpera.native-harness-result/v2','run_id',p_binding ->> 'runId',
 			'message_count',(select count(*) from public.qorpera_agent_sends where run_id = (p_binding ->> 'runId')::uuid),
 			'final_message_id',(select event_id from public.qorpera_agent_sends where run_id = (p_binding ->> 'runId')::uuid and phase = 'final'),
-			'provider_session_id','folder-completion-fixture'),
+			'provider_session_id','folder-completion-' || (p_binding ->> 'runId')),
 		'usage','{"schema":"qorpera.runner-usage/v1","execution_ms":50,"input_bytes":0,"output_bytes":0,"result_bytes":300,
 			"limits":{"wall_time_ms":1000,"memory_bytes":67108864,"cpu_millis":1000,"max_pids":16,
 				"max_input_bytes":1048576,"max_output_bytes":0,"max_result_bytes":4096}}'::jsonb)
@@ -212,6 +256,12 @@ begin
 	perform pg_temp.fx(format('delete from public.qorpera_execution_run_events where run_id = %L and event_type = %L', b ->> 'runId',
 		'runner_started'));
 	perform pg_temp.raises_like(format('select pg_temp.complete(%L)', b), '55000', 'Native execution has no matching durable admission');
+	-- A revoked native lease refuses completion (the folder run check's plain lease check, as on the legacy lane).
+	perform pg_temp.fx(format($f$update public.qorpera_native_provider_connection_leases set status = 'revoked', released_at = clock_timestamp()
+		where id = %L$f$, b ->> 'leaseId'));
+	perform pg_temp.raises(format('select pg_temp.complete(%L)', b), '42501');
+	perform pg_temp.fx(format($f$update public.qorpera_native_provider_connection_leases set status = 'active', released_at = null
+		where id = %L$f$, b ->> 'leaseId'));
 	perform pg_temp.fx(format($f$insert into public.qorpera_execution_run_events(run_id, event_type, payload)
 		values (%L, 'runner_started', %L)$f$, b ->> 'runId', jsonb_build_object('schema', 'qorpera.native-company-execution-start/v1',
 			'runId', b ->> 'runId', 'jobId', b ->> 'jobId', 'leaseId', b ->> 'leaseId', 'binarySha256', repeat('9', 64))));
@@ -224,6 +274,21 @@ begin
 	perform pg_temp.release(p, extensions.gen_random_uuid(), jsonb_build_array(pg_temp.read('closing/c.txt', p) -> 'entry'));
 	perform public.qorpera_folder_revoke('63400000-0000-4000-8000-000000000020', pg_temp.member(1), v_res, v_grant);
 	perform pg_temp.raises_like(format('select pg_temp.complete(%L)', b), '42501', 'A read is no longer readable');
+end $$;
+
+-- 4c. A routine run completes (a silent routine: no public send): its routine stays at the run check's KEY SHARE, and
+-- nothing in completion writes it.
+do $$
+declare h jsonb := pg_temp.routine_run(); b jsonb := h -> 'binding'; r public.qorpera_execution_run_results;
+	v_before public.qorpera_cloud_routines;
+begin
+	select * into v_before from public.qorpera_cloud_routines where id = (h ->> 'routine')::uuid;
+	perform pg_temp.complete(b);
+	r := pg_temp.outcome(b ->> 'runId');
+	if r.company_disposition is distinct from 'unchanged'
+		or (select status from public.qorpera_runner_jobs where id = (b ->> 'jobId')::uuid) is distinct from 'completed'
+		or (select to_jsonb(x) from public.qorpera_cloud_routines x where id = (h ->> 'routine')::uuid) is distinct from to_jsonb(v_before) then
+		raise exception 'A routine run''s completion: %', to_jsonb(r); end if;
 end $$;
 
 -- 5. The run results check: a folder commit stands in for a snapshot, never beside one, and never for unchanged.
