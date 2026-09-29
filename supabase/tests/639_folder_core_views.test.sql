@@ -169,6 +169,9 @@ begin
 		raise exception 'Run box commit: %', to_jsonb(c); end if;
 	perform pg_temp.raises(format('select pg_temp.vcommit(%L, %L, %L)', b || jsonb_build_object('pass', repeat('A', 43)), 'box-bad-pass',
 		'[{"op":"mkdir","path":"refused"}]'), '42501');
+	-- A read needs the pass (resolve's own check: reads have no earlier one).
+	perform pg_temp.raises(format('select public.qorpera_folder_read(%L, %L, %L)', '63200000-0000-4000-8000-000000000020',
+		pg_temp.vactor(b || jsonb_build_object('pass', repeat('A', 43))), 'shared/a.txt'), '42501');
 	-- A replay needs the pass too; so do renew and close.
 	perform pg_temp.raises(format('select pg_temp.vcommit(%L, %L, %L)', b || jsonb_build_object('pass', repeat('A', 43)), 'box-save-1',
 		'[{"op":"mkdir","path":"by-box"}]'), '42501');
@@ -216,9 +219,6 @@ begin
 	if (public.qorpera_folder_read('63200000-0000-4000-8000-000000000020', pg_temp.vactor(d), 'secret/s.txt') ->> 'found')::boolean
 		or not (public.qorpera_folder_read('63200000-0000-4000-8000-000000000020', pg_temp.vactor(d), 'rules/tone.txt') ->> 'found')::boolean then
 		raise exception 'The company-wide view for reads'; end if;
-	-- A view belongs to its environment: another folder of the same company does not take it.
-	perform pg_temp.raises(format('select public.qorpera_folder_read(%L, %L, %L)', '63200000-0000-4000-8000-000000000021',
-		pg_temp.vactor(d), 'shared/a.txt'), '42501');
 	-- A live-run view carries its run's review: a delete that needs one saves with a record for the run.
 	perform pg_temp.expect(pg_temp.vcommit(d, 'desk-rv-setup', jsonb_build_array(jsonb_build_object('op','write','path','shared/rv.txt','file',a))),
 		1, 'saved');
@@ -239,6 +239,10 @@ begin
 		jsonb_build_object('op','delete','path','shared/d.txt','expectedVersion', pg_temp.read('shared/d.txt') -> 'entry' ->> 'version')));
 	perform pg_temp.expect(r, 1, 'saved'); perform pg_temp.expect(r, 2, 'denied', 'review_required');
 	c := pg_temp.last_commit(r);
+	-- A view belongs to its environment: another folder of the same company does not take it (a detached view, so no
+	-- run's own checks stand in front).
+	perform pg_temp.raises(format('select public.qorpera_folder_read(%L, %L, %L)', '63200000-0000-4000-8000-000000000021',
+		pg_temp.vactor(d), 'shared/a.txt'), '42501');
 	if c.run_id is not null or c.actor_kind <> 'staff_agent' or c.requester_id <> '63200000-0000-4000-8000-000000000002'
 		or c.session_kind <> 'in_house' or c.view_id <> (d ->> 'viewId')::uuid then raise exception 'Detached desktop commit: %', to_jsonb(c); end if;
 	-- While paused, a detached view refuses.
@@ -489,13 +493,18 @@ do $$
 declare
 	c_env constant uuid := '63200000-0000-4000-8000-000000000020'; c_profile constant uuid := '63200000-0000-4000-8000-000000000010';
 	v jsonb := pg_temp.run('human', '63200000-0000-4000-8000-000000000002'); v2 jsonb := pg_temp.run('human', '63200000-0000-4000-8000-000000000002');
-	d jsonb; e jsonb; vb jsonb; ih uuid := extensions.gen_random_uuid();
+	d jsonb; e jsonb; vb jsonb; ih uuid := extensions.gen_random_uuid(); rid uuid := extensions.gen_random_uuid();
 begin
 	perform pg_temp.hold(v);
 	d := pg_temp.open('computer_desktop', jsonb_build_object('screenId','63900000-0000-4000-8000-0000000000e4','holderRunId',v ->> 'runId'));
 	e := public.qorpera_folder_read(c_env, pg_temp.vactor(d), 'shared/a.txt') -> 'entry';
-	perform public.qorpera_folder_record_release(c_env, pg_temp.vactor(d), extensions.gen_random_uuid(),
+	perform public.qorpera_folder_record_release(c_env, pg_temp.vactor(d), rid,
 		jsonb_build_array(jsonb_build_object('path', e ->> 'path', 'version', e ->> 'version', 'authority', e -> 'authority')), repeat('1', 64));
+	-- A replay needs the view's pass.
+	perform pg_temp.raises(format('select public.qorpera_folder_record_release(%L, %L, %L, %L, %L)', c_env,
+		pg_temp.vactor(d) || jsonb_build_object('pass', repeat('A', 43)), rid,
+		jsonb_build_array(jsonb_build_object('path', e ->> 'path', 'version', e ->> 'version', 'authority', e -> 'authority')), repeat('1', 64)),
+		'42501');
 	if not exists (select 1 from public.qorpera_folder_view_reads where view_id = (d ->> 'viewId')::uuid)
 		or not exists (select 1 from public.qorpera_folder_run_reads where run_id = (v ->> 'runId')::uuid) then
 		raise exception 'A live-run view''s release lands in both read sets'; end if;
