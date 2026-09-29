@@ -274,13 +274,15 @@ end $$;
 -- H. Two cards of two runs in one conversation (review r1 B1). A card takes the conversation FOR UPDATE before its
 -- review row, whose foreign keys to the conversation would otherwise take it KEY SHARE first: with both cards holding
 -- KEY SHARE and each asking for FOR UPDATE, 40P01. A pause right after each review insert makes the race certain:
--- the first card pauses holding the conversation, and the second waits at the conversation, not at the pause.
-create function public.qorpera_test_review_pause() returns trigger language plpgsql as $f$
+-- the first card pauses holding the conversation, and the second waits at the conversation, not at the pause. The pause
+-- is committed (the connections must see it): replaced, not created, so a run that stopped before dropping it re-runs.
+create or replace function public.qorpera_test_review_pause() returns trigger language plpgsql as $f$
 begin
 	if current_setting('qorpera_test.review_pause', true) = 'on' then
 		perform pg_advisory_lock_shared(652653); perform pg_advisory_unlock_shared(652653); end if;
 	return null;
 end $f$;
+drop trigger if exists qorpera_test_review_pause on public.qorpera_action_reviews;
 create trigger qorpera_test_review_pause after insert on public.qorpera_action_reviews
 	for each row execute function public.qorpera_test_review_pause();
 select dblink_exec(name, 'set qorpera_test.review_pause = on') from unnest(array['fence_one','fence_two']) name;
