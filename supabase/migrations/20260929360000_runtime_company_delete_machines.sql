@@ -5,10 +5,11 @@
 -- purge, so this follows the machines' one lock order from there: the
 -- company's machines lock, then each machine row, by id. A company being
 -- deleted wakes no run about its machines: the row is handed on with an empty
--- notify list (in memory, so the row is updated once and no foreign key is
--- checked again against its starting run, which is outside that order), and
--- qorpera_set_company_machine_desired writes no stopped event and clears the
--- column. Each node's machine executor then deletes and releases its
+-- notify list, and qorpera_set_company_machine_desired writes no stopped event
+-- and clears the column. Cleared in memory, a placed machine's row is updated
+-- once, so no foreign key is checked again against its starting run (outside
+-- that order); one with nothing on any node is updated again when it is
+-- closed, as every deletion of such a machine is. Each node's machine executor then deletes and releases its
 -- placements; the purge waits for their allocations like any other.
 
 create function pg_temp.machines_company_delete_patch(p_target regprocedure, p_old text, p_new text)
