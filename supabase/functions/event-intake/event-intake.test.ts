@@ -96,6 +96,8 @@ describe("event intake", () => {
 			assert.equal(response.status, status, outcome);
 			if (outcome === "unavailable") assert.equal(response.headers.get("retry-after"), "300");
 			if (outcome === "duplicate") assert.deepEqual(await response.json(), { received: true, duplicate: true });
+			// The database's unknown hook, apart from a path that is not a hook address.
+			if (outcome === "unknown") assert.deepEqual(await response.json(), { error: "No hook has this address" });
 		}
 		// The database says how long a limited sender should wait.
 		const limited = await handleEventIntake(post("x"), store({ outcome: "limited", retryAfterSeconds: 600 }).store);
