@@ -3,11 +3,13 @@ import { spawnSync } from "node:child_process";
 import { generateKeyPairSync, randomUUID, sign } from "node:crypto";
 import { existsSync, lstatSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { chmod, chown, link, lstat, mkdir, open, readFile, rename, symlink, unlink, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { basename, dirname } from "node:path";
 import {
+	COMPANY_COMPUTER_BOOTS_ROOT,
 	COMPANY_COMPUTER_CODE_PACKAGE_ARTIFACTS,
 	COMPANY_COMPUTER_CODE_PACKAGE_CAPABILITIES,
 	COMPANY_COMPUTER_CODE_PACKAGE_RESET_ARTIFACTS,
+	companyComputerBootDirectory,
 	companyComputerResetRestorablePath,
 } from "@qorpera/contracts";
 import { parseRecoveryDirectoryMount } from "../../../runtime/src/cloud-identity-recovery-filesystems.ts";
@@ -48,7 +50,22 @@ for (const [path, file] of f.originFiles) await put(path, file.bytes, file.mode)
 const credentials = "/etc/qorpera-office/credentials";
 await mkdir(credentials, { mode: 0o700 });
 await chmod(credentials, 0o700);
-/** No predecessor credential was restored: still the image's private empty directory. */
+// The same fragment creates the boots root empty. A reset restores no boot
+// directory; this boot's reset configuration adds its own only after install.
+await mkdir(COMPANY_COMPUTER_BOOTS_ROOT, { mode: 0o755 });
+await chmod(COMPANY_COMPUTER_BOOTS_ROOT, 0o755);
+const currentBoot = companyComputerBootDirectory(bootId),
+	otherBoot = companyComputerBootDirectory(f.input.predecessor.startup.bootId);
+assert.notEqual(otherBoot, currentBoot);
+/** A boot directory as that boot's configuration leaves it (0755, credentials 0700). */
+async function bootCredentials(directory: string, file?: string) {
+	await mkdir(`${directory}/credentials`, { recursive: true, mode: 0o700 });
+	await chmod(directory, 0o755);
+	await chmod(`${directory}/credentials`, 0o700);
+	if (file) await put(`${directory}/credentials/${file}`, Buffer.from("predecessor configuration"), 0o400);
+}
+/** No predecessor credential was restored: still the image's private empty
+ * directory, and no boot directory the scenario did not create. */
 const assertNoOldCredentials = () => {
 	const s = lstatSync(credentials);
 	assert.ok(
@@ -56,6 +73,11 @@ const assertNoOldCredentials = () => {
 		"credential directory changed",
 	);
 	assert.deepEqual(readdirSync(credentials), [], "historical credentials restored");
+	assert.deepEqual(
+		readdirSync(COMPANY_COMPUTER_BOOTS_ROOT),
+		scenario === "current-boot-credentials" ? [basename(currentBoot)] : [],
+		"boot directories changed",
+	);
 };
 await mkdir(f.historyDirectory, { recursive: true, mode: 0o700 });
 for (const [path, bytes] of f.archiveFiles) await put(path, bytes, 0o600);
@@ -421,6 +443,11 @@ if (scenario === "bad-stage")
 if (scenario === "old-credentials")
 	await put(`${credentials}/config.json`, Buffer.from("predecessor configuration"), 0o400);
 if (scenario === "open-credentials") await chmod(credentials, 0o755);
+if (scenario === "other-boot-credentials") await bootCredentials(otherBoot, "config.json");
+if (scenario === "other-boot-empty-credentials") await bootCredentials(otherBoot);
+// Only a real ordering fault could create this before install; the rule is
+// still "other boots only", proven against the kernel's own boot ID.
+if (scenario === "current-boot-credentials") await bootCredentials(currentBoot);
 if (scenario === "bad-target-owner")
 	await chown("/opt/qorpera-office/qorpera-company-computer-service.mjs", 1000, 1000);
 const servicePath = "/opt/qorpera-office/qorpera-company-computer-service.mjs";
@@ -439,6 +466,8 @@ if (
 		"bad-stage",
 		"old-credentials",
 		"open-credentials",
+		"other-boot-credentials",
+		"other-boot-empty-credentials",
 		"bad-target-owner",
 		"changed-nas",
 		"changed-history",
@@ -473,12 +502,14 @@ if (
 			"noncode-after-preflight",
 			"external-after-preflight",
 			"credentials-after-preflight",
+			"other-boot-credentials-after-preflight",
 		].includes(scenario)
 	) {
 		if (scenario === "partial-claim")
 			await put(`/etc/qorpera-office/code-packages/${plan.provisionId}/claim.json`, Buffer.from("partial"), 0o400);
 		else if (scenario === "credentials-after-preflight")
 			await put(`${credentials}/config.json`, Buffer.from("predecessor configuration"), 0o400);
+		else if (scenario === "other-boot-credentials-after-preflight") await bootCredentials(otherBoot, "config.json");
 		else if (scenario === "mutated-after-preflight")
 			await writeFile(`${stage}/artifacts/${COMPANY_COMPUTER_CODE_PACKAGE_ARTIFACTS[0]}`, "mutated");
 		else if (scenario === "external-after-preflight")
@@ -497,7 +528,7 @@ if (
 			code: "ENOENT",
 		});
 		// Refused before the claim, so no code file was replaced.
-		if (scenario === "credentials-after-preflight")
+		if (scenario.endsWith("credentials-after-preflight"))
 			await assert.rejects(lstat(`/etc/qorpera-office/code-packages/${plan.provisionId}/claim.json`), {
 				code: "ENOENT",
 			});

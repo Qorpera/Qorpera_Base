@@ -74,14 +74,34 @@ packet carries the exact original preparation document and fresh credentials
 resolved through the existing protected authority path, with only the boot
 attestation rebound; the helper binds them to the restored public receipt and
 the restored predecessor stop history, restores `/etc/qorpera-office/preparation.json`
-as allowlisted public provenance, refuses a root with any historical credential
-directory or start/stop claim, installs the credentials only under the new
-boot's directory and never starts a unit. The start packet is the SQL-prepared
-reset successor itself; the start helper verifies the acknowledged reset
-configuration, claims before `systemctl`, and answers nonce-bound inspections.
-The provider measures the invocation and activates through
+as allowlisted public provenance, refuses a root with a historical credential
+directory (defined below) or start/stop claim, installs the credentials only
+under the new boot's directory and never starts a unit. The start packet is the
+SQL-prepared reset successor itself; the start helper verifies the acknowledged
+reset configuration, claims before `systemctl`, and answers nonce-bound
+inspections. The provider measures the invocation and activates through
 `qorpera_activate_runtime_office_reset_successor` inside one five-second
 window, exactly as the other successor lanes do.
+
+The recreated-root check (`assertCompanyComputerResetRootClean` and the reset
+evidence readers) treats two things as a historical credential directory:
+
+- `/etc/qorpera-office/credentials` in any state except the image's own. The
+  tmpfiles fragment creates it root:root 0700 and empty on every boot; only
+  that exact empty directory is accepted.
+- `/etc/qorpera-office/boots/<boot>/credentials`, in any form and even empty,
+  for every boot except the one the caller has just proven under the
+  preparation lock. The image creates the boots root empty and the restore
+  copies no boot directory, so a recreated root holds none until reset
+  configuration adds the current boot's own.
+
+The code package tool runs the same check before installation, which the
+worker completes before reset configuration; the start, restart, software and
+measurement readers run it after. All of them run in the reset-born boot, so
+the current boot is the same at every step. A root that was reset before keeps
+its credentials only under `boots/`, so this second rule is what refuses it if
+it survives a later reset. The first line of defence stays the restore
+allowlist: `companyComputerResetRestorablePath` excludes every credential path.
 
 Boundary of the current implementation:
 

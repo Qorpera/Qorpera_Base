@@ -3,6 +3,7 @@ import { lstat, readdir } from "node:fs/promises";
 import { isDeepStrictEqual } from "node:util";
 import {
 	COMPANY_COMPUTER_ADOPTION_RECEIPT_PATH,
+	COMPANY_COMPUTER_BOOTS_ROOT,
 	COMPANY_COMPUTER_CONFIGURATION_FILES,
 	COMPANY_COMPUTER_CONFIGURATION_LIMITS,
 	COMPANY_COMPUTER_PREPARATION_MAX_BYTES,
@@ -38,8 +39,10 @@ const encode = (value: unknown) => Buffer.from(`${JSON.stringify(value)}\n`);
 const json = (bytes: Buffer): unknown => JSON.parse(new TextDecoder("utf8", { fatal: true }).decode(bytes));
 const missing = (error: unknown) => error instanceof Error && "code" in error && error.code === "ENOENT";
 
-/** Paths that must be absent on a recreated root: no historical credential
- * directory and no claim of an initial preparation, first start or stop. */
+/** Paths that must be absent on a recreated root: no claim of an initial
+ * preparation, first start or stop, and no legacy credential directory other
+ * than the image's own (see CREDENTIAL_DIRECTORY). Per-boot credential
+ * directories are checked against the current boot (assertNoOtherBootCredentials). */
 export const COMPANY_COMPUTER_RESET_FORBIDDEN_ROOT_PATHS = Object.freeze([
 	"/etc/qorpera-office/credentials",
 	`${root}/claim.json`,
@@ -77,11 +80,41 @@ async function assertResetRootPaths(paths: readonly string[]): Promise<void> {
 		throw new Error("stale root authority present");
 	}
 }
-export async function assertCompanyComputerResetRootClean(activationId: string): Promise<void> {
+/** A boot's credential directory is written only by a configuration in that
+ * boot: the image creates an empty boots root and a reset restores no boot
+ * directory. Reset configuration writes the current boot's directory after the
+ * code package install and before service start, so every reset root check
+ * accepts only that one. Any other boot's credential entry, even an empty
+ * directory, is historical authority. */
+async function assertNoOtherBootCredentials(currentBootId: string): Promise<void> {
+	const current = companyComputerBootDirectory(currentBootId);
+	let boots: string[];
+	try {
+		boots = await readdir(COMPANY_COMPUTER_BOOTS_ROOT);
+	} catch (error) {
+		if (missing(error)) return;
+		throw error;
+	}
+	for (const name of boots) {
+		const directory = `${COMPANY_COMPUTER_BOOTS_ROOT}/${name}`;
+		if (directory === current) continue;
+		try {
+			await lstat(`${directory}/credentials`);
+		} catch (error) {
+			if (missing(error)) continue;
+			throw error;
+		}
+		throw new Error("stale root authority present");
+	}
+}
+/** currentBootId is the boot the caller has just proven with
+ * assertCompanyComputerPreparationLockAndBoot. */
+export async function assertCompanyComputerResetRootClean(activationId: string, currentBootId: string): Promise<void> {
 	await assertResetRootPaths([
 		...COMPANY_COMPUTER_RESET_FORBIDDEN_ROOT_PATHS,
 		`${root}/service-stop-claim-${activationId}.json`,
 	]);
+	await assertNoOtherBootCredentials(currentBootId);
 }
 /** Retained lifecycle callers independently prove the exact current invocation
  * and its stop/successor claims. An acknowledged stop of the immutable origin
@@ -151,14 +184,18 @@ async function readResetMaterial(
 	};
 	if (attestation.bootId !== command.bootId || predecessor.startup.bootId === command.bootId)
 		throw new Error("boot differs");
-	await assertResetRootPaths(
-		retained
-			? COMPANY_COMPUTER_RESET_FORBIDDEN_ROOT_PATHS
-			: [
-					...COMPANY_COMPUTER_RESET_FORBIDDEN_ROOT_PATHS,
-					`${root}/service-stop-claim-${attestation.activationId}.json`,
-				],
-	);
+	const assertRoot = async () => {
+		await assertResetRootPaths(
+			retained
+				? COMPANY_COMPUTER_RESET_FORBIDDEN_ROOT_PATHS
+				: [
+						...COMPANY_COMPUTER_RESET_FORBIDDEN_ROOT_PATHS,
+						`${root}/service-stop-claim-${attestation.activationId}.json`,
+					],
+		);
+		await assertNoOtherBootCredentials(command.bootId);
+	};
+	await assertRoot();
 	const configuredBytes = await retain(
 			`${directory}/${COMPANY_COMPUTER_RESET_CONFIGURATION_COMPLETION}`,
 			16384,
@@ -220,14 +257,7 @@ async function readResetMaterial(
 		const verify = async () => {
 			signal.throwIfAborted();
 			await assertCompanyComputerPreparationLockAndBoot(command);
-			await assertResetRootPaths(
-				retained
-					? COMPANY_COMPUTER_RESET_FORBIDDEN_ROOT_PATHS
-					: [
-							...COMPANY_COMPUTER_RESET_FORBIDDEN_ROOT_PATHS,
-							`${root}/service-stop-claim-${attestation.activationId}.json`,
-						],
-			);
+			await assertRoot();
 			const credentialsRoot = await assertCompanyComputerBootCredentials(command);
 			for (const { path, bytes, mode } of evidence)
 				if (!(await read(path, bytes.length, mode)).equals(bytes)) throw new Error("retained evidence changed");
