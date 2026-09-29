@@ -344,7 +344,7 @@ values ('30000000-0000-4000-8000-000000000161', '30000000-0000-4000-8000-0000000
 	(current_setting('qorpera_test.wake_login')::jsonb ->> 'login_id')::uuid,
 	(current_setting('qorpera_test.wake_identity')::jsonb ->> 'compute_identity_id')::uuid,
 	'lxd-login', repeat('8', 64), clock_timestamp());
--- Only a sign-in placed on a node can have left a volume there (20260929450000, D4).
+-- Only a sign-in placed on a node can have left a volume there (20260928269450, D4).
 savepoint unplaced_identity;
 select pg_temp.wake_assert(pg_temp.finish() ->> 'state' = 'purged', 'A sign-in never placed on a node holds nothing');
 rollback to unplaced_identity;

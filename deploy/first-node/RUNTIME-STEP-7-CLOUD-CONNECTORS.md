@@ -332,7 +332,7 @@ connection belongs to the company:
   `qorpera_unshare_cloud_connector` ("Stop sharing with agents", v87) is
   dropped; `qorpera_grant_cloud_connector` remains only as the idempotent
   repair. A single grant can still be revoked and Disconnect still revokes the
-  connection with all its grants. Since 20260929500000 Disconnect also cancels
+  connection with all its grants. Since 20260928269500 Disconnect also cancels
   the connection's tokens at Google or GitHub (RUNTIME-COMPANY-DELETE.md, D6).
 - Trigger `qorpera_cloud_connector_staff_grants`: a new active hire receives
   the grants of every shared company connection, issued by the hire's author

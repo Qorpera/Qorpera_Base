@@ -1,5 +1,5 @@
 -- @fixture 715_company_delete_after_runs.test.sql until "-- 5. A machine still on a node keeps the deletion waiting"
--- 20260929450000: a deleted company's sign-in (Compute Identity) volumes leave the nodes before the
+-- 20260928269450: a deleted company's sign-in (Compute Identity) volumes leave the nodes before the
 -- purge. The fixture company's deletion is requested. One of its identities signed in on a node and ran
 -- on another; a second (Vault By Default) never had a sign-in machine. Each node's LXD provider is asked
 -- for the identity only once none of the company's machines was released in the last ten minutes; the
