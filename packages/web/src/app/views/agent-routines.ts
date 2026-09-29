@@ -914,7 +914,7 @@ export class AgentRoutines {
 							"p",
 							{ class: "muted" },
 							t(
-								"Connect a model account in Settings → Connections first. A routine runs on a member's own account.",
+								"Connect a model account in Settings → My connections first. A routine runs on a member's own account.",
 							),
 						),
 				status,

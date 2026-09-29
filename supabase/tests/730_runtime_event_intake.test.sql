@@ -349,10 +349,10 @@ values ('73000000-0000-4000-8000-000000000010', date_trunc('hour', clock_timesta
 select pg_temp.hook_claims('service_role');
 set local role service_role;
 set local timezone = 'Asia/Kolkata';
-select set_config('qorpera_test.kolkata', pg_temp.receive(current_setting('qorpera_test.address'), 'kolkata') ->> 'deliveryId', true);
+select set_config('qorpera_test.kolkata', pg_temp.receive(current_setting('qorpera_test.address'), 'kolkata')::text, true);
 set local timezone = 'UTC';
 reset role;
-select pg_temp.hook_assert(current_setting('qorpera_test.kolkata', true) is not null
+select pg_temp.hook_assert(current_setting('qorpera_test.kolkata')::jsonb ->> 'outcome' = 'accepted'
 	and exists (select 1 from public.qorpera_event_intake_usage where profile_id = '73000000-0000-4000-8000-000000000010'
 		and hour = date_trunc('hour', clock_timestamp(), 'UTC') and deliveries = 1),
 	'The usage hour was not the UTC clock hour, or an older hour counted');
@@ -368,7 +368,7 @@ reset role;
 delete from public.qorpera_event_intake_usage
 where profile_id = '73000000-0000-4000-8000-000000000010' and deliveries = 2000;
 delete from public.qorpera_event_deliveries where id in (current_setting('qorpera_test.ordered')::uuid,
-	current_setting('qorpera_test.forged')::uuid, current_setting('qorpera_test.kolkata')::uuid);
+	current_setting('qorpera_test.forged')::uuid, (current_setting('qorpera_test.kolkata')::jsonb ->> 'deliveryId')::uuid);
 
 -- A signed hook takes nothing until the vault can check it (W1b), and writes nothing.
 insert into public.qorpera_event_hooks(id, profile_id, environment_id, name, purpose, proof, address)

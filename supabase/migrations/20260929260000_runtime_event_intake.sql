@@ -15,9 +15,11 @@
 -- headers, in the current and previous UTC clock hour) and by the switch. A refused request
 -- writes nothing.
 --
--- Lock order: the company row, then its Company File row (shared), when creating a hook; a status
--- change locks the hook row without its key. A receive never waits for the company row:
--- deliveries and usage carry the company id without a foreign key (they go with the company
+-- Lock order: the company row without its key, then its Company File row (shared), when creating a
+-- hook; a status change locks the hook row without its key. Neither lock blocks a foreign key's key
+-- share, so qorpera_folder_enable, which takes the Company File row first and then inserts rows
+-- referencing the company, never deadlocks with a creation. A receive never waits for the company
+-- row: deliveries and usage carry the company id without a foreign key (they go with the company
 -- through the hook, and usage expires within a day). Its delivery's foreign key shares the hook
 -- row's key, so it waits for the hook only while the hook is deleted. Duplicates of a sender id are
 -- decided by a unique index; the company's hourly usage row is locked, briefly, to count a stored
@@ -211,8 +213,9 @@ begin
 		raise exception 'A hook accepts between 1 and 120 deliveries a minute' using errcode = '22023';
 	end if;
 	-- Serialize hook creation per company so the limit of 50 holds, then check the company again:
-	-- a deletion request may have committed while this call waited.
-	perform 1 from public.qorpera_profiles where id = p_profile_id for update;
+	-- a deletion request may have committed while this call waited. No key update: it conflicts
+	-- with itself and with the gc fence, not with foreign keys to the company.
+	perform 1 from public.qorpera_profiles where id = p_profile_id for no key update;
 	if public.qorpera_company_deleting(p_profile_id) then
 		raise exception 'Only owners and admins can create hooks' using errcode = '42501';
 	end if;
@@ -519,13 +522,15 @@ set search_path = ''
 as $$
 declare
 	v_limit integer := greatest(1, least(coalesce(p_limit, 1000), 10000));
+	-- Cutoffs as values, so each step is a bounded index range.
+	v_now timestamptz := clock_timestamp();
 	v_expired integer;
 	v_cleared integer;
 	v_deleted integer;
 begin
 	with waiting as (
 		select delivery.id from public.qorpera_event_deliveries as delivery
-		where delivery.status = 'received' and delivery.received_at < clock_timestamp() - interval '24 hours'
+		where delivery.status = 'received' and delivery.received_at < v_now - interval '24 hours'
 		order by delivery.received_at limit v_limit
 		for update skip locked
 	)
@@ -536,7 +541,7 @@ begin
 
 	with old as (
 		select delivery.id from public.qorpera_event_deliveries as delivery
-		where delivery.received_at < clock_timestamp() - interval '30 days'
+		where delivery.received_at < v_now - interval '30 days'
 		order by delivery.received_at limit v_limit
 		for update skip locked
 	)
@@ -547,7 +552,7 @@ begin
 	with old as (
 		select delivery.id from public.qorpera_event_deliveries as delivery
 		where (delivery.body is not null or delivery.headers <> '{}'::jsonb)
-			and delivery.received_at < clock_timestamp() - interval '7 days'
+			and delivery.received_at < v_now - interval '7 days'
 		order by delivery.received_at limit v_limit
 		for update skip locked
 	)
@@ -558,12 +563,12 @@ begin
 
 	delete from public.qorpera_event_hooks as hook
 	where hook.id in (select removed.id from public.qorpera_event_hooks as removed
-		where removed.status = 'removed' and removed.removed_at < clock_timestamp() - interval '30 days'
+		where removed.status = 'removed' and removed.removed_at < v_now - interval '30 days'
 		order by removed.removed_at limit v_limit
 		for update skip locked);
 
 	delete from public.qorpera_event_intake_usage as usage
-	where usage.hour < date_trunc('hour', clock_timestamp(), 'UTC') - interval '1 day';
+	where usage.hour < date_trunc('hour', v_now, 'UTC') - interval '1 day';
 
 	return jsonb_build_object('expired', v_expired, 'cleared', v_cleared, 'deleted', v_deleted);
 end
