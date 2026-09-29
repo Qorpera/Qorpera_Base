@@ -634,6 +634,25 @@ rows), for the routine writer to call in its own transaction before it commits a
 whose commit reads that login without a lock. Still to come: the vision in full (core C3's folder
 client reads it), and the file's `model` and `effort` reaching runs.
 
+**What the thin writers need from core C3's folder client** (F1 owns the client; F2 writes the tools
+on it):
+- `read(path)`: kind, version and, for a file, its text; `list(prefix)` with versions. A writer reads
+  the file it changes, and its parse comes from `parseCompanyStateFile` on that text.
+- `commit(operationKey, units, reviewId?)` as the run (the binding's `{kind:'run', runId, jobId,
+  runnerId, assignmentId}`), staging bytes through the object gateway first. Each write unit names
+  the version it read (`expectedVersion`) and carries `structured: [{path, kind, text, parse,
+  parserVersion}]` for every structured file in it, built by the shared parser from the same bytes.
+- Per-unit outcomes, typed: `saved`, `refused` with `problems` (the writer returns them to the model
+  with the line and the fix), `conflict` (re-read and redo under a new operation key),
+  `denied`/`waiting_for_review` (a reviewed change: the writer says it waits), plus the commit's
+  errors (55000 paused or unavailable, 42501 authority, 22023 invalid) as the gateway's typed
+  refusals are today.
+- The writers: `manage_todo` (a todo file, `writeTodoFile`), `organize_sidebar` (`agents/sections.md`,
+  read and rewrite), `decide_routine` (the run's own routine file: a new `at` or a conclusion,
+  `setCompanyStateSettings`); after C2's review recorder, `hire_agent` (one `new_folder` unit with
+  `agent.md` and the first todo), `create_group_chat` (`group.md`) and `manage_routine` (a routine
+  file, after `qorpera_prepare_routine_login`).
+
 Until the mount's writes are accepted (F3), these tools become thin writers of these files:
 `hire_agent`, `create_group_chat`, `organize_sidebar`, `manage_todo`, `manage_routine` and
 `decide_routine`. They use the canonical writers here, or `setCompanyStateSettings` for a
