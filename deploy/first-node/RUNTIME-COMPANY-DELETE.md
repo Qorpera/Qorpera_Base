@@ -51,11 +51,14 @@ Rollback: `select cron.unschedule('qorpera-company-deletions')`. Requests then w
 | Coding machines | coding executor housekeeping (retiring machine → stop, sleep, delete, release) | works |
 | Agent machines (#419) | executor, once the machine is set `deleted` | #531 adds them to `qorpera_stop_company_work`; until it lands their allocations hold the purge |
 | Company Computers | office provider: power off (works), delete and release (D3), then its NAS workbench (D5b) | D3 live since v150; D5b once its provider build is rolled |
-| Sign-in identity volumes on the exec host, recovery volumes | login gateway / LXD provider (D4) | D4 |
-| Credential capsules and recovery backups in storage | deleted-company storage queue (D5) | D5 |
-| Coding NAS workspaces `workers/<company>/` | coding executor (D5) | D5 |
+| Sign-in identity volumes on the nodes and their exec host devices | LXD provider's login gateway (D4) | D4; live once the LXD provider build is rolled |
+| Run recovery volumes (`user.qorpera.profile_id`), identity volumes from before node demands (8 Sep) | operator runbook: a run's recovery volume only once its journal is archived (a day after it settles; the provider still requires it before) | last |
+| Company File and folder objects (Storage, NAS) | artifact GC worker, deleted-profile phase (catalog rows outlive the purge) | exists; runs once the worker is deployed (not deployed on 29 Sep) |
+| Credential capsules and recovery backups in Storage | artifact GC worker, from `qorpera_company_storage_deletions` (D5a) | D5a; same worker |
+| Recovery backups on the recovery service's NAS and journal | operator runbook (a per-company service) | last |
+| Coding NAS workspaces `workers/<company>/` | coding executor (D5b) | D5b |
 | Connected-account tokens at Google/GitHub | secret broker, best-effort revoke (D6) | D6 |
-| Model logins (ChatGPT, Claude) | our copies are purged; the member signs out at the provider | by design |
+| Model logins (ChatGPT, Claude) | our rows are purged and a node capsule's Storage object goes with D5a; the member signs out at the provider | by design |
 | Per-company broker units, recovery services, office host config (older companies), office reset archives, the emptied workbench mount and its NAS export | operator runbook | last |
 
 Until a step lands, a company holding that kind of state stays hidden and stopped, and the finisher
@@ -136,10 +139,82 @@ records what it waits for.
   6. Rollback: put the `.retired-<sha12>` file back and restart. Not for an office that already has
      `office-retirement-request.json` in its journal: an older build would keep asking for the deleted
      VM (and would retire it without emptying the workbench). Leave that office on the new build.
-- **D4** identity retirement: per (node, identity) rows; the login gateway detaches the device from the
-  exec host, deletes the volume, confirms; the holdings rule then waits only for unconfirmed rows. It
-  also ends identity recoveries requested before the deletion (consent, activation and review do not
-  check the deletion in D1).
-- **D5** storage and NAS queues, written before the purge, consumed by the artifact GC worker and the
-  coding executor.
+- **D4** sign-in identity retirement (migration 20260929450000; `lxd-login-gateway.ts`). A node-held
+  sign-in keeps its key on an LXD volume named after the identity, on its sign-in machine's node and on
+  every node its runs used; on node 2 the volume is also attached to the execution host. The holdings
+  count the company's (node, identity) placements: each identity that had a sign-in machine, on each
+  node where the company had a reserved machine. A company without node sign-ins (Vault By Default, or
+  none) has none and purges as before.
+  Once none of the company's machines was released in the last ten minutes (a parked execution-host
+  slot keeps an identity mounted up to five), each node's LXD provider (its login gateway, at most once
+  a minute) gets the identities from `qorpera_runtime_identity_retirements_due`, and tries each at
+  most once a minute, eight a pass: it skips one with a sign-in machine of its own not yet released,
+  checks the volume is exactly the identity's, detaches the execution-host device of exactly the
+  identity shape, deletes the volume (LXD refuses one still in use), confirms both gone and records it
+  with `qorpera_confirm_runtime_identity_retirement`. While SQL names it, its sweep does not attach it
+  again. A node whose inventory policy has an execution host with identity volumes cannot report
+  `device: none`. The ledger `qorpera_runtime_identity_retirements` outlives the purge, and a replay
+  after a lost reply may report `absent` for what it removed (never the reverse).
+  The node inventory keeps accepting the device from the company's login demands until the purge, which
+  now waits for the detach. No new volume appears while deleting: node reservations refuse a paused
+  company, and the run provider neither needs nor re-creates the identity volume of a stopped or lost
+  run it keeps reconciling (up to a day, also after a restart). Identity recoveries need no node step:
+  the escrowed key reaches a node only through a sign-in machine, refused while deleting; their rows go
+  with the purge and their Storage backups are D5a.
+  Once the migration is live, an open deletion that waited only on sign-ins never placed on a node
+  purges at the next finisher pass.
+  A pair no node can confirm (a node taken out of service, a volume that is not exactly the identity's,
+  a device refused) keeps the deletion waiting; `qorpera_company_deletions.holdings` counts it, and
+  `select * from public.qorpera_company_identity_placements('<company>') as p where not exists (select 1
+  from public.qorpera_runtime_identity_retirements as r where r.node_id = p.node_id and
+  r.compute_identity_id = p.compute_identity_id)` names it. After checking the node by hand (no volume
+  `<prefix><identity>`, and on node 2 no `identity-<identity>` device on the execution host, or the
+  purge takes node 2 out of the inventory), an operator records it as the provider would:
+  `insert into public.qorpera_runtime_identity_retirements (node_id, compute_identity_id, provider_id,
+  volume, device) values ('<node>', '<identity>', '<provider id>', 'absent', 'absent');`
+  Not covered, for the operator runbook: volumes from before node demands existed (8 September), and
+  run recovery volumes. An execution-host rebuild that runs while a device is retired stops with "lost
+  Compute Identity devices": check the volume is gone (retired), then run it again.
+  Rollout: the LXD provider build on every node (node-agent `provider` role) after the release carrying
+  the migration is live. Before that, the due list 404s (logged once a minute) and a company with node
+  sign-ins keeps waiting, as it did.
+- **D5a** Storage (migration 20260929480000). Company File and folder objects need nothing new: their
+  catalog rows have no link to the company, and the worker's deleted-profile phase removes them once
+  the company is gone. Credential capsules (`qorpera-native-compute-capsules/<capsule>.capsule`, named
+  only by the capsule) and the identity recovery prefix (`qorpera-identity-recovery/<company>/`) have
+  no such record: the finisher writes them into `qorpera_company_storage_deletions` right before the
+  purge, in the same step, so a purge never happens without the record. The artifact GC worker claims
+  up to 100 entries a run (`qorpera_claim_company_storage_deletions`, entries that keep failing last),
+  removes each through the Storage API (SQL cannot), empties the recovery prefix in rounds, and
+  completes each (`qorpera_complete_company_storage_deletion`); a failure is recorded and the entry
+  offered again. A name under the recovery prefix that is not a recovery object (or a folder) stops
+  that prefix before anything more is removed; the entry then keeps failing (`last_error`) until an
+  operator looks. A capsule is recorded only when its reference names its own id. A vault sign-in has
+  no Storage object. The worker is not deployed (coordinator, 29 Sep): until it is, nothing of a
+  deleted company's Storage is removed.
+  Not covered, for the operator: companies deleted before this migration by the old direct delete or
+  by the finisher, and capsule objects whose sign-in failed after the upload (no row names them). A
+  one-off sweep removes `<uuid>.capsule` objects older than a day that no capsule row names as
+  `native-capsule/<uuid>` (a sign-in uploads its capsule before its row commits), and recovery folders
+  of companies that no longer exist.
+  Switching the worker on (supabase/ARTIFACT-GC.md "Deployment"; the coordinator bundles it with the
+  other function deploys once Jonas has created the worker key):
+  1. Apply the migrations, including 20260929480000.
+  2. Deploy `supabase/functions/artifact-gc-worker` with JWT verification off (`config.toml`).
+  3. Edge Function secrets: `QORPERA_ARTIFACT_GC_WORKER_KEY` (a new random invocation key, kept only
+     there and in Vault), and for NAS-backed Company File objects `QORPERA_OBJECT_GATEWAY_URL` and
+     `QORPERA_OBJECT_GATEWAY_CONTROL_TOKEN`. `SUPABASE_URL` and the function's Supabase service
+     credential come from the platform (`SUPABASE_SECRET_KEYS`, else `SUPABASE_SERVICE_ROLE_KEY`), or
+     `QORPERA_ARTIFACT_GC_SERVICE_KEY` if set.
+  4. Vault secrets for the schedule: `qorpera_project_url` and `qorpera_artifact_gc_worker_key` (the same
+     invocation key). The schedule posts with pg_net.
+  5. The worker has no dry run: its first run already removes the objects of every deleted company in
+     the catalog and the D5a entries. Check the counts first (ARTIFACT-GC.md "Monitoring and
+     recovery": deleted companies' catalog objects and open D5a entries), run it once by hand, then
+     schedule it every five minutes (`qorpera-artifact-gc-worker`, the `cron.schedule` in
+     ARTIFACT-GC.md).
+- **D5b** NAS: the Company Computer workbench, emptied by the office provider as the last step of its
+  retirement (D3b above; "Office retirement" in RUNTIME-OFFICE-RETENTION.md), and coding workspaces
+  `workers/<company>/` (the coding executor cannot remove them alone: their files belong to session
+  users; not built yet).
 - **D6** upstream token revoke on delete and on Disconnect.

@@ -119,6 +119,14 @@ class FakeLxd implements LxdClient {
 		return this.volume ? structuredClone(this.volume) : undefined;
 	}
 
+	volumeDeletes: string[] = [];
+	async deleteStorageVolume(_project: string, _pool: string, name: string): Promise<boolean> {
+		this.volumeDeletes.push(name);
+		if (this.volume?.name !== name) return false;
+		this.volume = undefined;
+		return true;
+	}
+
 	async createStorageVolume(_project: string, _pool: string, request: LxdCreateStorageVolumeRequest): Promise<void> {
 		this.createVolumeCalls.push(structuredClone(request));
 		this.volume = {
@@ -268,6 +276,13 @@ function fetchBoundary(logins: NativeLoginResponse[], statuses: Array<"pending" 
 		recoveryRequests: [] as Record<string, unknown>[],
 		targetRegistrations: [] as Record<string, unknown>[],
 		repins: [] as Record<string, unknown>[],
+		/** A deleted company's identities this node is to retire (D4), and the confirmations it sent. */
+		retirementsDue: [] as unknown[],
+		retirementsDueAnswer: undefined as unknown,
+		retirements: [] as Record<string, unknown>[],
+		retirementReceipts: new Map<string, Record<string, unknown>>(),
+		receiptPatch: {} as Record<string, unknown>,
+		loseRetirement: 0,
 	};
 	const fetchImplementation = vi.fn<typeof fetch>(async (input, init) => {
 		const originalUrl = String(input);
@@ -403,6 +418,30 @@ function fetchBoundary(logins: NativeLoginResponse[], statuses: Array<"pending" 
 		if (url === "https://recovery.example.test:10000/v1/provider-target") {
 			control.targetRegistrations.push(args);
 			return Response.json({ targetId: args.targetId, computeIdentityId, registrarNodeId: args.registrarNodeId });
+		}
+		if (url.endsWith("qorpera_runtime_identity_retirements_due"))
+			return Response.json(
+				control.retirementsDueAnswer ?? {
+					schema: "qorpera.identity-retirements-due/v1",
+					nodeId: "30000000-0000-4000-8000-000000000010",
+					// As SQL: an identity leaves the list once its retirement is recorded.
+					computeIdentityIds: control.retirementsDue.filter((id) => !control.retirementReceipts.has(String(id))),
+				},
+			);
+		if (url.endsWith("qorpera_confirm_runtime_identity_retirement")) {
+			control.retirements.push(args);
+			// The ledger keeps the first receipt; a replay answers it.
+			const receipt = control.retirementReceipts.get(args.p_compute_identity_id) ?? {
+				schema: "qorpera.identity-retirement/v1",
+				nodeId: "30000000-0000-4000-8000-000000000010",
+				computeIdentityId: args.p_compute_identity_id,
+				volume: args.p_evidence.volume,
+				device: args.p_evidence.device,
+				retiredAt: "2026-09-29T10:00:00.000000+00:00",
+			};
+			control.retirementReceipts.set(args.p_compute_identity_id, receipt);
+			if (control.loseRetirement-- > 0) throw new Error("lost retirement reply");
+			return Response.json({ ...receipt, ...control.receiptPatch });
 		}
 		if (url.endsWith("/healthz")) return Response.json({ ok: true });
 		if (url.endsWith("/login")) {
@@ -1617,5 +1656,287 @@ describe("LXD native login gateway and the node's shared execution host", () => 
 					new LxdExecutionHostIdentities(host, volumes, new FakeExecHost(lxd)),
 				),
 		).toThrow("Execution host must mount this gateway's own identity volumes");
+	});
+
+	describe("a deleted company's identities (RUNTIME-COMPANY-DELETE.md D4)", () => {
+		const deleted = "30000000-0000-4000-8000-0000000000d4";
+		const retireSetup = async (withHost = true) => {
+			const root = await stateRoot(),
+				lxd = new FakeLxd(),
+				boundary = fetchBoundary([]),
+				host = execHost(lxd);
+			lxd.volume = marked(`identity-${deleted}`, deleted);
+			host.fake.devices[`identity-${deleted}`] = identityDevice(deleted);
+			boundary.control.retirementsDue = [deleted];
+			const gateway = new LxdNativeLoginGateway(
+				config(root),
+				lxd,
+				boundary.fetchImplementation,
+				withHost ? host.identities : undefined,
+			);
+			const dueCalls = () =>
+				boundary.requests.filter((request) => request.url.endsWith("qorpera_runtime_identity_retirements_due"));
+			return { root, lxd, boundary, fake: host.fake, gateway, dueCalls };
+		};
+		const evidence = (volume: string, device: string) => ({
+			schema: "qorpera.identity-retirement-evidence/v1",
+			volume,
+			device,
+		});
+		afterEach(() => {
+			vi.useRealTimers();
+		});
+		it("detaches it from the execution host, deletes its volume, confirms, and asks again only a minute later", async () => {
+			const { lxd, boundary, fake, gateway, dueCalls } = await retireSetup();
+			const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
+			try {
+				await gateway.reconcile(new AbortController().signal);
+				expect(fake.devices[`identity-${deleted}`]).toBeUndefined();
+				expect(fake.devices.root).toBeDefined();
+				expect(lxd.volume).toBeUndefined();
+				expect(lxd.volumeDeletes).toEqual([`identity-${deleted}`]);
+				expect(boundary.control.retirements).toEqual([
+					{
+						p_provider_id: "lxd",
+						p_machine_id_sha256: "d".repeat(64),
+						p_compute_identity_id: deleted,
+						p_evidence: evidence("deleted", "detached"),
+					},
+				]);
+				expect(JSON.parse(dueCalls()[0]!.body)).toEqual({
+					p_provider_id: "lxd",
+					p_machine_id_sha256: "d".repeat(64),
+				});
+				await gateway.reconcile(new AbortController().signal);
+				expect(dueCalls()).toHaveLength(1);
+				expect(
+					errors.mock.calls.flat().some((line) => String(line).includes(`retired Compute Identity ${deleted}`)),
+				).toBe(true);
+			} finally {
+				errors.mockRestore();
+			}
+		});
+		it("confirms a node without an execution host, and a volume already gone", async () => {
+			const { lxd, boundary, gateway } = await retireSetup(false);
+			lxd.volume = undefined;
+			const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
+			try {
+				await gateway.reconcile(new AbortController().signal);
+				expect(lxd.volumeDeletes).toEqual([]);
+				expect(boundary.control.retirements.map((call) => call.p_evidence)).toEqual([evidence("absent", "none")]);
+			} finally {
+				errors.mockRestore();
+			}
+		});
+		it("keeps an identity whose sign-in machine here is not released yet", async () => {
+			const root = await stateRoot(),
+				lxd = new FakeLxd(),
+				boundary = awaitingMember(),
+				{ fake, identities } = execHost(lxd);
+			const gateway = new LxdNativeLoginGateway(config(root), lxd, boundary.fetchImplementation, identities);
+			expect((await gateway.handle(loginRequest())).status).toBe(200);
+			boundary.control.retirementsDue = [computeIdentityId];
+			await gateway.reconcile(new AbortController().signal);
+			expect(fake.devices[`identity-${computeIdentityId}`]).toEqual(identityDevice(computeIdentityId));
+			expect(lxd.volume).toBeDefined();
+			expect(boundary.control.retirements).toEqual([]);
+		});
+		it("leaves a volume that is not exactly this identity's, device and all, and confirms nothing", async () => {
+			const { lxd, boundary, fake, gateway } = await retireSetup();
+			lxd.volume = marked(`identity-${deleted}`, deleted, { "user.qorpera.provider_adapter": "other" });
+			const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
+			try {
+				await gateway.reconcile(new AbortController().signal);
+				expect(fake.devices[`identity-${deleted}`]).toEqual(identityDevice(deleted));
+				expect(lxd.volumeDeletes).toEqual([]);
+				expect(boundary.control.retirements).toEqual([]);
+				expect(
+					errors.mock.calls
+						.flat()
+						.some((line) => String(line).includes(`could not retire Compute Identity ${deleted}`)),
+				).toBe(true);
+			} finally {
+				errors.mockRestore();
+			}
+		});
+		it("never attaches a detached identity again while its volume delete fails, and finishes a minute later", async () => {
+			const root = await stateRoot(),
+				lxd = new FakeLxd(),
+				boundary = awaitingMember(),
+				{ fake, identities } = execHost(lxd);
+			vi.useFakeTimers({ toFake: ["Date"] });
+			const gateway = new LxdNativeLoginGateway(
+				{ ...config(root), releasedJournalRetentionMs: Number.MAX_SAFE_INTEGER },
+				lxd,
+				boundary.fetchImplementation,
+				identities,
+			);
+			const device = `identity-${computeIdentityId}`;
+			const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
+			try {
+				// A sign-in placed on this node, then ended: the sweep keeps its volume attached.
+				expect((await gateway.handle(loginRequest())).status).toBe(200);
+				boundary.control.status = "expired";
+				for (let pass = 0; pass < 3; pass++) await gateway.reconcile(new AbortController().signal);
+				expect(lxd.instance).toBeUndefined();
+				delete fake.devices[device];
+				await gateway.reconcile(new AbortController().signal);
+				expect(fake.devices[device]).toEqual(identityDevice(computeIdentityId));
+				// Its company is deleted; LXD refuses the volume delete for now.
+				boundary.control.retirementsDue = [computeIdentityId];
+				const remove = lxd.deleteStorageVolume.bind(lxd);
+				lxd.deleteStorageVolume = async () => {
+					throw new Error("LXD: storage volume is still in use");
+				};
+				vi.setSystemTime(Date.now() + 61_000);
+				await gateway.reconcile(new AbortController().signal);
+				expect(fake.devices[device]).toBeUndefined();
+				expect(lxd.volume).toBeDefined();
+				expect(boundary.control.retirements).toEqual([]);
+				await gateway.reconcile(new AbortController().signal);
+				expect(fake.devices[device]).toBeUndefined();
+				lxd.deleteStorageVolume = remove;
+				vi.setSystemTime(Date.now() + 61_000);
+				await gateway.reconcile(new AbortController().signal);
+				expect(lxd.volume).toBeUndefined();
+				expect(fake.devices[device]).toBeUndefined();
+				expect(boundary.control.retirements.map((call) => call.p_evidence)).toEqual([
+					evidence("deleted", "absent"),
+				]);
+			} finally {
+				errors.mockRestore();
+			}
+		});
+		it("leaves an identity whose confirmation reply was lost: SQL recorded it and no longer names it", async () => {
+			const { lxd, boundary, fake, gateway } = await retireSetup();
+			vi.useFakeTimers({ toFake: ["Date"] });
+			boundary.control.loseRetirement = 1;
+			const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
+			try {
+				await gateway.reconcile(new AbortController().signal);
+				expect(lxd.volume).toBeUndefined();
+				expect(fake.devices[`identity-${deleted}`]).toBeUndefined();
+				vi.setSystemTime(Date.now() + 61_000);
+				await gateway.reconcile(new AbortController().signal);
+				expect(boundary.control.retirements.map((call) => call.p_evidence)).toEqual([
+					evidence("deleted", "detached"),
+				]);
+				expect(fake.devices[`identity-${deleted}`]).toBeUndefined();
+			} finally {
+				errors.mockRestore();
+			}
+		});
+		it("confirms nothing while the device or the volume is still there after its removal", async () => {
+			const kept = await retireSetup();
+			kept.fake.updateInstanceDevices = async () => true;
+			const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
+			try {
+				await kept.gateway.reconcile(new AbortController().signal);
+				expect(kept.lxd.volumeDeletes).toEqual([]);
+				expect(kept.boundary.control.retirements).toEqual([]);
+				const volume = await retireSetup();
+				volume.lxd.deleteStorageVolume = async () => true;
+				await volume.gateway.reconcile(new AbortController().signal);
+				expect(volume.fake.devices[`identity-${deleted}`]).toBeUndefined();
+				expect(volume.boundary.control.retirements).toEqual([]);
+				expect(
+					errors.mock.calls.flat().some((line) => String(line).includes("still has the Compute Identity volume")),
+				).toBe(true);
+			} finally {
+				errors.mockRestore();
+			}
+		});
+		it.each([
+			["another identity", { computeIdentityId: "30000000-0000-4000-8000-0000000000d5" }],
+			["another node", { nodeId: "30000000-0000-4000-8000-000000000011" }],
+			["a volume never removed", { volume: "absent" }],
+			["a device never detached", { device: "absent" }],
+		])("does not take a receipt naming %s as its retirement", async (_label, patch) => {
+			const { boundary, gateway } = await retireSetup();
+			boundary.control.receiptPatch = patch;
+			const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
+			try {
+				await gateway.reconcile(new AbortController().signal);
+				expect(boundary.control.retirements).toHaveLength(1);
+				expect(errors.mock.calls.flat().some((line) => String(line).includes("receipt differs"))).toBe(true);
+				expect(
+					errors.mock.calls.flat().some((line) => String(line).includes(`retired Compute Identity ${deleted}`)),
+				).toBe(false);
+			} finally {
+				errors.mockRestore();
+			}
+		});
+		it("retires at most eight identities a pass, and the rest on the next pass", async () => {
+			const { lxd, boundary, gateway } = await retireSetup(false);
+			lxd.volume = undefined;
+			const ids = Array.from(
+				{ length: 10 },
+				(_, index) => `30000000-0000-4000-8000-0000000001${String(index).padStart(2, "0")}`,
+			);
+			boundary.control.retirementsDue = ids;
+			const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
+			try {
+				await gateway.reconcile(new AbortController().signal);
+				expect(boundary.control.retirements).toHaveLength(8);
+				await gateway.reconcile(new AbortController().signal);
+				expect(boundary.control.retirements.map((call) => call.p_compute_identity_id).sort()).toEqual(ids);
+			} finally {
+				errors.mockRestore();
+			}
+		});
+		it("detaches only an identity device of exactly its shape set on the host itself", async () => {
+			const lxd = new FakeLxd(),
+				{ fake, identities } = execHost(lxd);
+			await expect(identities.detach(deleted, new AbortController().signal)).resolves.toBe("absent");
+			fake.devices[`identity-${deleted}`] = { ...identityDevice(deleted), readonly: "true" };
+			await expect(identities.detach(deleted, new AbortController().signal)).rejects.toThrow("is not this volume");
+			fake.devices[`identity-${deleted}`] = identityDevice(deleted);
+			const instance = fake.instance.bind(fake);
+			// Set by a profile, it is not the gateway's to remove.
+			fake.instance = () => {
+				const current = instance();
+				const { [`identity-${deleted}`]: _own, ...devices } = current.devices;
+				return { ...current, devices };
+			};
+			await expect(identities.detach(deleted, new AbortController().signal)).rejects.toThrow("is not this volume");
+			fake.instance = instance;
+			await expect(identities.detach(deleted, new AbortController().signal)).resolves.toBe("detached");
+			expect(Object.keys(fake.devices)).toEqual(["root"]);
+		});
+		it.each([
+			[
+				"another schema",
+				{ schema: "x", nodeId: "30000000-0000-4000-8000-000000000010", computeIdentityIds: [deleted] },
+			],
+			[
+				"a malformed id",
+				{
+					schema: "qorpera.identity-retirements-due/v1",
+					nodeId: "30000000-0000-4000-8000-000000000010",
+					computeIdentityIds: [deleted, "X"],
+				},
+			],
+			[
+				"an extra key",
+				{
+					schema: "qorpera.identity-retirements-due/v1",
+					nodeId: "30000000-0000-4000-8000-000000000010",
+					computeIdentityIds: [deleted],
+					more: 1,
+				},
+			],
+		])("does nothing on a due answer with %s", async (_label, answer) => {
+			const { lxd, boundary, fake, gateway } = await retireSetup();
+			boundary.control.retirementsDueAnswer = answer;
+			const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
+			try {
+				await gateway.reconcile(new AbortController().signal);
+				expect(fake.devices[`identity-${deleted}`]).toEqual(identityDevice(deleted));
+				expect(lxd.volume).toBeDefined();
+				expect(boundary.control.retirements).toEqual([]);
+			} finally {
+				errors.mockRestore();
+			}
+		});
 	});
 });

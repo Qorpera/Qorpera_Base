@@ -148,6 +148,12 @@ class FakeLxd implements LxdClient {
 		return volume ? structuredClone(volume) : undefined;
 	}
 
+	async deleteStorageVolume(_project: string, _pool: string, name: string): Promise<boolean> {
+		const existed = this.volumes.delete(name) || this.volume?.name === name;
+		if (this.volume?.name === name) this.volume = undefined;
+		return existed;
+	}
+
 	async createStorageVolume(_project: string, _pool: string, request: LxdCreateStorageVolumeRequest): Promise<void> {
 		this.createVolumeCalls.push(structuredClone(request));
 		this.volume = {
@@ -708,6 +714,71 @@ describe("LXD cloud runner provider", () => {
 		);
 	});
 
+	it("settles a stopped journal after a restart once a deleted company's identity volume is retired", async () => {
+		const directory = await root();
+		const settings = governedConfig(join(directory, "state"));
+		const lxd = new FakeLxd();
+		const guest = new FakeGuest();
+		const backend = new LxdCloudRunnerProviderBackend(settings, lxd, guest, fetchProvisioner([]));
+		const runner = await backend.acquire(runId, work(), new AbortController().signal);
+		await backend.deliver(runner, delivery(work()));
+		await backend.stop(runner, "idle");
+		await backend.reconcile();
+		const journal = JSON.parse(await readFile(join(settings.stateRoot, runId, "journal.json"), "utf-8"));
+		expect(journal.physicalState).toBe("stopped");
+		// Company delete D4: the node's login gateway deletes the identity volume.
+		expect(await lxd.deleteStorageVolume(settings.project, settings.storagePool, journal.lxd.identityVolume)).toBe(
+			true,
+		);
+		const volumes = lxd.createVolumeCalls.length;
+		// A provider restart reconciles the retained journal again: it neither fails nor makes the volume again.
+		const restarted = new LxdCloudRunnerProviderBackend(settings, lxd, guest, fetchProvisioner([]));
+		await restarted.reconcile();
+		await restarted.reconcile();
+		expect(lxd.createVolumeCalls).toHaveLength(volumes);
+		expect(
+			await lxd.getStorageVolume(settings.project, settings.storagePool, journal.lxd.identityVolume),
+		).toBeUndefined();
+	});
+	it.each([
+		// A crash between the release call's reply and its journal write.
+		[
+			"a stopping journal whose guest deletion is recorded",
+			{ physicalState: "stopping", deletionConfirmed: true },
+			false,
+		],
+		// A crash after the release was recorded, before the guest's absence was written.
+		["an assigned journal whose capacity release is recorded", { physicalState: "assigned" }, true],
+	] as const)("settles %s after a crash, once its identity volume is retired", async (_label, crashed, released) => {
+		const directory = await root();
+		const settings = governedConfig(join(directory, "state"));
+		const lxd = new FakeLxd();
+		const guest = new FakeGuest();
+		const backend = new LxdCloudRunnerProviderBackend(settings, lxd, guest, fetchProvisioner([]));
+		const runner = await backend.acquire(runId, work(), new AbortController().signal);
+		await backend.deliver(runner, delivery(work()));
+		await backend.stop(runner, "idle");
+		const path = join(settings.stateRoot, runId, "journal.json");
+		const { capacityReleased: _released, ...journal } = JSON.parse(await readFile(path, "utf-8"));
+		await writeFile(
+			path,
+			JSON.stringify({ ...journal, ...crashed, ...(released ? { capacityReleased: true } : {}) }),
+			{
+				mode: 0o600,
+			},
+		);
+		expect(await lxd.deleteStorageVolume(settings.project, settings.storagePool, journal.lxd.identityVolume)).toBe(
+			true,
+		);
+		const restarted = new LxdCloudRunnerProviderBackend(settings, lxd, guest, fetchProvisioner([]));
+		await restarted.reconcile();
+		await restarted.reconcile();
+		// It settles (as a run whose guest is gone) instead of throwing on every pass.
+		expect(JSON.parse(await readFile(path, "utf-8")).physicalState).toBe("lost");
+		expect(
+			await lxd.getStorageVolume(settings.project, settings.storagePool, journal.lxd.identityVolume),
+		).toBeUndefined();
+	});
 	it("stops reconciling a settled journal, archives it a day later and refuses its replay", async () => {
 		// Live cost (23 Sep 2026): node 1 re-read 76 finished run journals, three LXD calls each, on every pass.
 		const f = await acquiredFixture();
