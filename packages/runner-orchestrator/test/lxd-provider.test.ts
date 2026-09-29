@@ -740,7 +740,16 @@ describe("LXD cloud runner provider", () => {
 			await lxd.getStorageVolume(settings.project, settings.storagePool, journal.lxd.identityVolume),
 		).toBeUndefined();
 	});
-	it("settles a stopping journal whose guest deletion was confirmed before a crash, once its volume is retired", async () => {
+	it.each([
+		// A crash between the release call's reply and its journal write.
+		[
+			"a stopping journal whose guest deletion is recorded",
+			{ physicalState: "stopping", deletionConfirmed: true },
+			false,
+		],
+		// A crash after the release was recorded, before the guest's absence was written.
+		["an assigned journal whose capacity release is recorded", { physicalState: "assigned" }, true],
+	] as const)("settles %s after a crash, once its identity volume is retired", async (_label, crashed, released) => {
 		const directory = await root();
 		const settings = governedConfig(join(directory, "state"));
 		const lxd = new FakeLxd();
@@ -750,18 +759,21 @@ describe("LXD cloud runner provider", () => {
 		await backend.deliver(runner, delivery(work()));
 		await backend.stop(runner, "idle");
 		const path = join(settings.stateRoot, runId, "journal.json");
-		const journal = JSON.parse(await readFile(path, "utf-8"));
-		// The crash came after the confirmed deletion and release, before "stopped" was written.
-		await writeFile(path, JSON.stringify({ ...journal, physicalState: "stopping", deletionConfirmed: true }), {
-			mode: 0o600,
-		});
+		const { capacityReleased: _released, ...journal } = JSON.parse(await readFile(path, "utf-8"));
+		await writeFile(
+			path,
+			JSON.stringify({ ...journal, ...crashed, ...(released ? { capacityReleased: true } : {}) }),
+			{
+				mode: 0o600,
+			},
+		);
 		expect(await lxd.deleteStorageVolume(settings.project, settings.storagePool, journal.lxd.identityVolume)).toBe(
 			true,
 		);
 		const restarted = new LxdCloudRunnerProviderBackend(settings, lxd, guest, fetchProvisioner([]));
 		await restarted.reconcile();
 		await restarted.reconcile();
-		// It settles (as a stopping run whose guest is gone) instead of throwing on every pass.
+		// It settles (as a run whose guest is gone) instead of throwing on every pass.
 		expect(JSON.parse(await readFile(path, "utf-8")).physicalState).toBe("lost");
 		expect(
 			await lxd.getStorageVolume(settings.project, settings.storagePool, journal.lxd.identityVolume),

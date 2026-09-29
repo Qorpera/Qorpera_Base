@@ -52,7 +52,7 @@ Rollback: `select cron.unschedule('qorpera-company-deletions')`. Requests then w
 | Agent machines (#419) | executor, once the machine is set `deleted` | #531 adds them to `qorpera_stop_company_work`; until it lands their allocations hold the purge |
 | Company Computers | office provider: power off (works), delete and release (D3) | D3; live once the D3b provider build is installed per office |
 | Sign-in identity volumes on the nodes and their exec host devices | LXD provider's login gateway (D4) | D4; live once the LXD provider build is rolled |
-| Run recovery volumes (`user.qorpera.profile_id`), identity volumes from before node demands (8 Sep) | operator runbook | last |
+| Run recovery volumes (`user.qorpera.profile_id`), identity volumes from before node demands (8 Sep) | operator runbook: a run's recovery volume only once its journal is archived (a day after it settles; the provider still requires it before) | last |
 | Credential capsules and recovery backups in storage | deleted-company storage queue (D5) | D5 |
 | Coding NAS workspaces `workers/<company>/` | coding executor (D5) | D5 |
 | Connected-account tokens at Google/GitHub | secret broker, best-effort revoke (D6) | D6 |
