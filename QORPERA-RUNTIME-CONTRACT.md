@@ -1745,6 +1745,10 @@ the approvals window.
 > Schedule positions, occurrences and run history are runtime state in the
 > database. The rules below apply to the routine the file describes.
 
+> **Amended 2026-09-29.** Listeners also take events: a webhook to one of the
+> company's hooks, or company mail. See the amendment "events wake agents" in
+> section 19.
+
 A routine stores intent plus exactly one trigger type:
 
 - schedule; or
@@ -3843,6 +3847,41 @@ owner role. Model use is not billed here: it follows the 2026-09-28 amendment
     hours, owed time and every draw count from that moment; dry-run draws
     before it are discarded, and members see only measured hours until then.
     Acceptance is section 21 item 31.
+
+### 2026-09-29 amendment: events wake agents
+
+Founder decisions of 29 September 2026 (Q1 page "Qorpera on Qorpera"). They
+complete section 16.3's listener triggers. Design:
+`deploy/first-node/RUNTIME-EVENT-INTAKE.md`.
+
+1. **Events are a wake source.** An incoming webhook from any service, and
+   incoming company mail, wake the agent whose routine listens for it. The
+   clock and a folder change are the other sources. This is the base for
+   routines.
+2. **A hook is a company connection.** It has one public address, a proof and
+   limits. The proof is the address itself, or a signature made with a secret
+   the vault holds (Stripe, GitHub, or HMAC-SHA256 for the company's own
+   senders). Agents never see a signing secret; only the broker checks
+   signatures (11.5). Owners, admins and agents manage hooks; an agent's new
+   hook passes the automatic review as a new connection.
+3. **Only verified deliveries wake.** Duplicates are decided after
+   verification, per hook and the sender's own delivery id. Limits per hook
+   (body size, deliveries per minute) and per company (50 hooks) apply.
+4. **One wake per burst.** A listener routine has at most one queued event
+   occurrence per trigger. The occurrence takes the waiting deliveries when it
+   is read (at most 20, with at most 64 KiB of bodies shown), and the rest wake
+   it again. Quiet hours, pauses and the pinned sponsor apply as to every
+   routine occurrence.
+5. **Events are outside content** (11.1). An instruction inside an event is
+   data. Outside actions an event leads to pass the automatic review.
+6. **Deliveries are runtime state.** The delivery row is a queue entry and a
+   receipt, with its body kept 7 days and the row 30. For `folder-v2`
+   companies, once the core's writer lands, the platform saves each verified
+   event in the company folder under `hooks/<hook>/` in the same change set.
+7. **Today's routines take the trigger too.** Event wakes are added to the
+   routine rows of `snapshot-v1` companies before the clean reset, the one
+   exception to "old paths are frozen". Routine files take the same trigger
+   as `when: event`.
 
 ## 20. Enforcement matrix
 
