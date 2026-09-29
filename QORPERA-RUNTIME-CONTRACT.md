@@ -3919,9 +3919,12 @@ Section 21 gains an event-wake acceptance item when event wakes (W2) land.
 ### 2026-09-29 amendment: one call before a model request
 
 Proposed 29 September 2026 (stack audit, fix 9); pending founder approval. It
-changes how the checks before each model request are carried out, not what
-they check. Section 4's rule that authorization is checked again immediately
-before an effect, and section 9.1's context views, are unchanged.
+changes how the checks before each model request are carried out. Every
+database check still runs, in the same order. The host holds the authority the
+call returns to the rules it applies to its own reads, once per request
+instead of after each read. Section 4's rule that authorization is checked
+again immediately before an effect, and section 9.1's context views, are
+unchanged.
 
 1. **One call, every check.** Before a model request the host used to make
    seven database calls in four rounds, each in its own transaction: the run's
@@ -3929,16 +3932,22 @@ before an effect, and section 9.1's context views, are unchanged.
    `qorpera_fence_native_context` makes the same seven calls, in the same
    order, in one transaction. It calls those functions rather than copying
    them, so each check and lock is exactly theirs. Nothing is released to the
-   model until the call has returned; if any check fails, the view is rolled
-   back with it.
-2. **The read set stays whole.** The database keeps the run's read set, never
-   pruned during a run, and every check still covers the whole set. The host
-   sends each path once, until a check that included it succeeds, instead of
-   its whole list every time.
-3. **The same budget.** The one call gets 3.5 s of the result fence's 4 s. A
-   timeout, like any failure, stops the run with nothing released, as a lapsed
-   fence did before; a view may have been recorded for a request that never
-   left.
+   model until the call has returned. If a check inside the call fails, the
+   whole call is undone, the view included. The host then checks what the call
+   returned (the same run, still in time); if that fails, the run stops with
+   nothing released, and the view stays recorded.
+2. **The read set stays whole.** The database keeps every path sent in a
+   check that succeeded and every path the run reads or lists, one entry per
+   name regardless of letter case, and never removes one during a run. Every
+   check covers all of them. The host sends a path until the database reports
+   it kept under that exact name, instead of its whole list every time. A
+   second spelling of a kept path (other letter case) is never kept under its
+   own name, so it is sent every time, as before.
+3. **The same budget.** The one call may take at most 3.5 s, inside the result
+   fence's 4 s for the whole request. A timeout, like any failure, stops the
+   run with nothing released, as a lapsed fence did before. The database may
+   still finish the call after the host has given up, so a view can be
+   recorded for a request that never left.
 4. **Until the database has the call** the host makes the separate calls, all
    of them.
 
