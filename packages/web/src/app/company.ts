@@ -209,6 +209,12 @@ export interface ConversationState {
 	interactionAnswers?: Record<string, InteractionAnswer>;
 	/** What went wrong with the last card answer, in the member's words. */
 	interactionError?: string;
+	/** Older transcript events exist that this browser has not read: a thread opens at its newest
+	 * events (migration 20260929410000) and "Show earlier" reads further back (loadEarlier). */
+	hasEarlier?: boolean;
+	/** "Show earlier" is reading, or why it could not. */
+	earlierLoading?: boolean;
+	earlierError?: string;
 }
 
 /** Drop optimistic card answers once the projection carries them, or once their
@@ -257,6 +263,46 @@ function newerCodingSessions(
 }
 
 const EVENT_PAGE = 500;
+/** A thread opens with its newest events, read back a page at a time until it shows this many
+ * items (receipts and other hidden events take no place) or reaches its start, at most
+ * TAIL_PAGES pages; "Show earlier" reads the same way. */
+const TAIL_PAGE = 200;
+const TAIL_ITEMS = 150;
+const TAIL_PAGES = 5;
+
+/** A cloud without the newest-first read (before 20260929410000): the thread reads forward. */
+function missingTailRead(error: unknown): boolean {
+	return error instanceof CloudRpcError && (error.missing || error.code === "42883");
+}
+
+/** Reads of one transcript as one list: each event once, oldest first. */
+function mergeEvents(...reads: readonly (readonly HostedSessionEvent[])[]): HostedSessionEvent[] {
+	const bySequence = new Map<number, HostedSessionEvent>();
+	for (const read of reads)
+		for (const event of read) if (!bySequence.has(event.sequence)) bySequence.set(event.sequence, event);
+	return [...bySequence.values()].sort((a, b) => a.sequence - b.sequence);
+}
+
+/** An input a run has taken already stands in the transcript (the run's start writes it) and is
+ * listed until the run ends: one sent before the oldest event read may stand in the part not read
+ * yet. (A queued input has no event yet; it shows as waiting wherever the history begins.) */
+function waitingBefore(pending: readonly PendingSessionInput[], events: readonly HostedSessionEvent[]): boolean {
+	return takenBefore(pending, events).length > 0;
+}
+
+/** The taken inputs whose event is not read and that were sent before the oldest event read. (A
+ * taken input's event carries its send time and the sequence of when the run took it: it is often
+ * already in the newest page.) */
+function takenBefore(
+	pending: readonly PendingSessionInput[],
+	events: readonly HostedSessionEvent[],
+): PendingSessionInput[] {
+	const start = events[0] ? Date.parse(events[0].createdAt) : Number.NaN;
+	const read = new Set(events.flatMap((event) => (event.sessionInputId ? [event.sessionInputId] : [])));
+	return pending.filter(
+		(input) => input.status === "processing" && !read.has(input.inputId) && Date.parse(input.createdAt) < start,
+	);
+}
 
 /** Company-audience staff conversations, as the desktop arbiter selects them. */
 /** The agent's one shared thread: the company-audience session the kernel
@@ -322,6 +368,11 @@ export class CompanyController {
 	#polling = false;
 	readonly #invalidations = new Set<(resource: RealtimeResource) => void>();
 	readonly #conversationLoads = new Map<string, { promise: Promise<void>; repeat: boolean }>();
+	/** The cloud has no newest-first transcript read (before 20260929410000): threads read forward. */
+	#tailMissing = false;
+	/** Taken inputs a thread has read back for once: never again (a run queued for hours stays taken
+	 * without an event, and each load would read further back). */
+	readonly #readBackFor = new Set<string>();
 	/** Per failed run: when its details may be read next (performance.now()), and
 	 * the latest request, so an older answer never replaces a newer one. */
 	readonly #recoveryReads = new Map<string, { due: number; request: number }>();
@@ -536,6 +587,9 @@ export class CompanyController {
 						draft: "",
 						attachments: [],
 						projection: { items: [], hiddenCount: 0, lastSequence: 0 },
+						hasEarlier: false,
+						earlierLoading: false,
+						earlierError: undefined,
 					});
 				this.stop();
 			} else this.store.set({ error: describeError(error) });
@@ -1249,19 +1303,39 @@ export class CompanyController {
 			const known = store.get();
 			const events = [...known.events];
 			const sequences = new Set(events.map((event) => event.sequence));
+			const add = (read: readonly HostedSessionEvent[]) => {
+				for (const event of read)
+					if (!sequences.has(event.sequence)) {
+						sequences.add(event.sequence);
+						events.push(event);
+					}
+			};
+			/** Set when this load read the newest events first; else the thread keeps what it knew. */
+			let hasEarlier: boolean | undefined;
 			// A failed read ends the others at their next page.
 			let failed = false;
-			// The history after what the thread has, page by page, oldest first.
+			const live = () => !this.#stopped && !failed;
 			const readEvents = async (): Promise<boolean> => {
+				// A thread opens at its newest events; "Show earlier" reads further back (loadEarlier).
+				if (!known.events.length && !this.#tailMissing) {
+					try {
+						const read = await this.#readTail(sessionId, [], undefined, live);
+						if (!read) return false;
+						add(read.events);
+						hasEarlier = read.hasEarlier;
+						return true;
+					} catch (error) {
+						if (!missingTailRead(error) || !live()) throw error;
+						// A cloud before 20260929410000 reads the whole history forward, as before.
+						this.#tailMissing = true;
+					}
+				}
+				// The history after what the thread has, page by page, oldest first.
 				let after = known.projection.lastSequence;
 				for (;;) {
 					const page = await this.#api.readSessionEvents(sessionId, after, EVENT_PAGE);
-					if (this.#stopped || failed) return false;
-					for (const event of page)
-						if (!sequences.has(event.sequence)) {
-							sequences.add(event.sequence);
-							events.push(event);
-						}
+					if (!live()) return false;
+					add(page);
 					if (page.length < EVENT_PAGE) return true;
 					const next = page[page.length - 1]?.sequence ?? after;
 					if (next <= after) throw new Error(t("The transcript cursor did not advance."));
@@ -1274,7 +1348,7 @@ export class CompanyController {
 				let position = 0;
 				for (;;) {
 					const page = await this.#api.listSessionInputs(sessionId, position, 100);
-					if (this.#stopped || failed) return undefined;
+					if (!live()) return undefined;
 					pending.push(...page.items);
 					if (!page.hasMore) return pending;
 					if (page.nextAfterPosition <= position || !page.items.length)
@@ -1282,6 +1356,8 @@ export class CompanyController {
 					position = page.nextAfterPosition;
 				}
 			};
+			// "Show earlier" may have read older events meanwhile: both stay.
+			const current = () => (store.get().events === known.events ? events : mergeEvents(store.get().events, events));
 			try {
 				// The history, the waiting inputs and the coding sessions do not depend on one
 				// another: they are read side by side, and the thread draws once, when all landed.
@@ -1295,13 +1371,27 @@ export class CompanyController {
 						.catch(() => undefined),
 				]);
 				if (this.#stopped || !complete || !pending) return;
-				const optimistic = reconcileOptimistic({ optimistic: store.get().optimistic, pending, events });
-				const projection = projectTranscript(events, pending);
+				let merged = current();
+				let earlier = hasEarlier ?? store.get().hasEarlier ?? false;
+				// An input a run took before the oldest event read stands in the transcript before it: read
+				// back until its place is read, so it is not shown again as waiting.
+				const taken = earlier
+					? takenBefore(pending, merged).filter((input) => !this.#readBackFor.has(input.inputId))
+					: [];
+				if (taken.length) {
+					for (const input of taken) this.#readBackFor.add(input.inputId);
+					const read = await this.#readTail(sessionId, merged, taken, () => !this.#stopped);
+					if (!read) return;
+					merged = mergeEvents(store.get().events, read.events);
+					earlier = read.hasEarlier;
+				}
+				const optimistic = reconcileOptimistic({ optimistic: store.get().optimistic, pending, events: merged });
+				const projection = projectTranscript(merged, pending);
 				const codingSessions = listed
 					? newerCodingSessions(listed, store.get().codingSessions)
 					: (store.get().codingSessions ?? []);
 				store.set({
-					events,
+					events: merged,
 					pending,
 					projection,
 					loading: false,
@@ -1310,26 +1400,78 @@ export class CompanyController {
 					optimistic,
 					interactionAnswers: reconcileInteractionAnswers(store.get().interactionAnswers, projection, pending),
 					codingSessions,
+					hasEarlier: earlier,
 				});
 			} catch (error) {
 				failed = true;
 				// The history read before the failure stays, so the next read resumes after it.
+				const merged = current();
 				const read =
 					!this.#stopped && events.length > known.events.length
 						? {
-								events: [...events],
-								projection: projectTranscript(events, store.get().pending),
+								events: merged,
+								projection: projectTranscript(merged, store.get().pending),
 								optimistic: reconcileOptimistic({
 									optimistic: store.get().optimistic,
 									pending: store.get().pending,
-									events,
+									events: merged,
 								}),
+								...(hasEarlier === undefined ? {} : { hasEarlier }),
 							}
 						: {};
 				store.set({ ...read, loading: false, complete: false, error: describeError(error) });
 				return;
 			}
 		} while (request.repeat && !this.#stopped);
+	}
+
+	/** Reads a transcript back from the oldest event in `loaded` (from its end when empty), a page
+	 * at a time, until the thread shows TAIL_ITEMS more items, every input in `pending` has its
+	 * place read, or the start is reached; at most TAIL_PAGES pages. Undefined once `live` fails. */
+	async #readTail(
+		sessionId: string,
+		loaded: readonly HostedSessionEvent[],
+		pending: readonly PendingSessionInput[] | undefined,
+		live: () => boolean,
+	): Promise<{ events: HostedSessionEvent[]; hasEarlier: boolean } | undefined> {
+		let events = [...loaded];
+		const shown = () => projectTranscript(events, []).items.length;
+		const wanted = pending ? 0 : shown() + TAIL_ITEMS;
+		let hasEarlier = true;
+		for (let page = 0; page < TAIL_PAGES && hasEarlier; page++) {
+			const read = await this.#api.readSessionEventsTail(sessionId, events[0]?.sequence, TAIL_PAGE);
+			if (!live()) return undefined;
+			events = mergeEvents(read, events);
+			// Sequences start at 1: a full page that does not reach it may have more before it.
+			hasEarlier = read.length === TAIL_PAGE && (read[0]?.sequence ?? 1) > 1;
+			if (pending ? !waitingBefore(pending, events) : shown() >= wanted) break;
+		}
+		return { events, hasEarlier };
+	}
+
+	/** "Show earlier": reads the transcript back from the oldest event this browser has read. */
+	async loadEarlier(sessionId: string): Promise<void> {
+		const store = this.conversations.get(sessionId);
+		const state = store?.get();
+		if (!store || !state?.hasEarlier || state.earlierLoading || this.#stopped) return;
+		store.set({ earlierLoading: true, earlierError: undefined });
+		try {
+			const read = await this.#readTail(sessionId, state.events, undefined, () => !this.#stopped);
+			if (!read) return;
+			const current = store.get();
+			const events = mergeEvents(read.events, current.events);
+			const projection = projectTranscript(events, current.pending);
+			store.set({
+				events,
+				projection,
+				hasEarlier: read.hasEarlier,
+				earlierLoading: false,
+				optimistic: reconcileOptimistic({ optimistic: current.optimistic, pending: current.pending, events }),
+				interactionAnswers: reconcileInteractionAnswers(current.interactionAnswers, projection, current.pending),
+			});
+		} catch (error) {
+			if (!this.#stopped) store.set({ earlierLoading: false, earlierError: describeError(error) });
+		}
 	}
 
 	// Coding sessions: the thread element follows one session's stream itself; the
