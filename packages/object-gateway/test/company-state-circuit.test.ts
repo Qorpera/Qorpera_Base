@@ -62,7 +62,9 @@ const outages: Array<[string, (signal: AbortSignal) => Promise<Response>]> = [
 	[
 		"connection refused",
 		async () => {
-			throw new TypeError("fetch failed", { cause: Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" }) });
+			throw new TypeError("fetch failed", {
+				cause: Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" }),
+			});
 		},
 	],
 	[
@@ -86,7 +88,8 @@ async function gateway() {
 	};
 	const companyOf = (args: Record<string, unknown>): Company | undefined =>
 		(Object.keys(companies) as Company[]).find(
-			(key) => args.p_profile_id === companies[key].companyId || args.p_environment_id === companies[key].environmentId,
+			(key) =>
+				args.p_profile_id === companies[key].companyId || args.p_environment_id === companies[key].environmentId,
 		);
 	const authority = new SupabaseObjectAuthority({
 		projectUrl: "https://cloud.test",
