@@ -550,18 +550,20 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 												: []),
 											...cloudSidebarTools(binding, identity, this.#paths),
 											...cloudReviewRuleTools(binding, identity, this.#paths),
-											// Machines are the company's: any agent run in a company conversation
-											// may start and use them, and hears about them in that conversation.
-											...(this.#machines && identity.audienceKind === "company"
-												? cloudMachineTools({
-														binding,
-														identity,
-														control: this.#paths,
-														operations,
-														gateway: this.#machines(binding),
-													})
-												: []),
 										]),
+								// Machines are the company's: any agent run in a company conversation may start and
+								// use them and hears about them in that conversation; a worker uses them like its agent
+								// but waits for its own commands in its run (Jonas, 2026-09-28).
+								...(this.#machines && identity.audienceKind === "company"
+									? cloudMachineTools({
+											binding,
+											identity,
+											control: this.#paths,
+											operations,
+											gateway: this.#machines(binding),
+											worker: work.isWorker,
+										})
+									: []),
 								// The notebook is the agent's own: a worker of the same agent recalls it,
 								// and writes to it only when its dispatch allows Company File writes.
 								...cloudMemoryTools(gateway, identity).filter(
