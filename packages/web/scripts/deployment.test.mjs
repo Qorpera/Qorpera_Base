@@ -8,6 +8,9 @@ import { runInNewContext } from "node:vm";
 import { build } from "esbuild";
 import { DEFAULT_CLOUD_CONFIG, parseCloudConfig } from "../src/cloud/deployment-config.ts";
 import { longCachedDirectories, prepareDeployment } from "./deployment.mjs";
+// What the build splits main.js into, and what it preloads and checksums, is
+// checked beside the deployment it ships in (keeps this change inside packages/web).
+import "./bundle.test.mjs";
 
 const headersTemplate = readFileSync(new URL("../public/_headers", import.meta.url), "utf8");
 const config = { ...DEFAULT_CLOUD_CONFIG, officeViewerOrigin: "wss://office.example.invalid:8443" };
