@@ -12,15 +12,8 @@
  *
  * Release candidates still run the full `test` suite before a cut. */
 
-const HOSTED_DB_SCRIPTS = [
-	"scripts/test-runtime-bundle-activation.mjs",
-	"scripts/test-email-draft-e2e.mjs",
-	"scripts/test-runtime-node-capacity.mjs",
-	"scripts/test-runtime-office-delete-disposition.mjs",
-	"scripts/test-runtime-office-current-provider-activation.mjs",
-	"scripts/test-coding-turn-backfill.mjs",
-	"scripts/test-runtime-room-history.mjs",
-];
+import { HOSTED_DB_SCRIPTS } from "./test-hosted-db.mjs";
+
 /** The function tests the old workflows ran (web-client and step2-lxd); the others never ran in CI. */
 const FUNCTION_TESTS = [
 	"supabase/functions/native-provider-login/native-provider-login.test.ts",
@@ -198,11 +191,8 @@ export const STEPS = [
 			/^packages\/web\/src\/cloud\/email-drafts\.ts$/,
 			...HOSTED_DB_SCRIPTS.map(regex),
 		],
-		commands: [
-			"node --test scripts/test-hosted-db.test.mjs",
-			"npm run test:hosted-db",
-			...HOSTED_DB_SCRIPTS.map((script) => `node ${script}`),
-		],
+		// One PostgreSQL and one migration replay for the SQL tests and every script (scripts/test-hosted-db.mjs).
+		commands: ["node --test scripts/test-hosted-db.test.mjs", "node scripts/test-hosted-db.mjs --scripts"],
 	},
 ];
 

@@ -2,15 +2,17 @@
 // and company objects; no physical provider, hosted database or cloud calls.
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { randomBytes, randomUUID } from "node:crypto";
-import { readFileSync, readdirSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { POSTGRES_IMAGE, sortMigrationNames } from "./test-hosted-db.mjs";
+import { hostedDatabase, migrationNames } from "./test-hosted-db-cluster.mjs";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
-const container = `qorpera-node-capacity-${randomBytes(6).toString("hex")}`;
-const psql = ["exec", "-i", container, "psql", "-X", "-qAt", "-U", "postgres", "-d", "capacity", "-v", "ON_ERROR_STOP=1"];
+// The proof restarts the server, so this script has a container of its own with its data on disk.
+const database = await hostedDatabase("capacity", { restartable: true });
+const container = database.container;
+const psql = database.cluster.psqlArgs("capacity", ["-qAt"]);
 function docker(args, input) {
 	const result = spawnSync("docker", args, { input, encoding: "utf8", timeout: 60_000, maxBuffer: 16 * 1024 * 1024 });
 	assert(!result.error && result.status === 0, `${result.stderr}\n${result.stdout?.slice(-4000) ?? ""}\n${result.error ?? ""}`);
@@ -48,20 +50,8 @@ function observe() {
 }
 const reserve = allocation => `select public.qorpera_reserve_runtime_node_machine('${allocation.id}','${allocation.kind}',
 	'${allocation.provider}','${allocation.policy}','${allocation.instance}','${"c".repeat(64)}',${allocation.kind==="native"?3000:2000},2147483648);`;
-let started = false;
 try {
-	docker(["run", "-d", "--rm", "--name", container, "--network", "none", "-e", "POSTGRES_PASSWORD=disposable-capacity", "-e", "POSTGRES_DB=capacity", POSTGRES_IMAGE]);
-	started = true;
-	let ready = 0;
-	for (let attempt = 0; attempt < 60 && ready < 2; attempt++) {
-		const result = spawnSync("docker", ["exec", container, "pg_isready", "-U", "postgres", "-d", "capacity"], { timeout: 2000 });
-		ready = result.status === 0 ? ready + 1 : 0;
-		if (ready < 2) await new Promise(resolve => setTimeout(resolve, 500));
-	}
-	assert.equal(ready, 2);
-	sql(read("supabase/tests/bootstrap.sql"));
-	const migrations = sortMigrationNames(readdirSync(join(root,"supabase/migrations")));
-	for (const name of migrations) sql(read(`supabase/migrations/${name}`));
+	const migrations = migrationNames();
 	sql(read("supabase/tests/fixtures/runtime-node-inventory-observer.sql"));
 	const wake = read("supabase/tests/300_runtime_wake_bus.test.sql").split("-- END WAKE FIXTURE");
 	assert.equal(wake.length, 2);
@@ -221,5 +211,5 @@ try {
 		hardwareObservations:"fixture",physicalProviderEnforced:false,hosted:false}));
 } finally {
 	for(const child of sessions) child.kill("SIGKILL");
-	if(started) docker(["rm","-f","-v",container]);
+	database.close();
 }

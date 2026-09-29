@@ -12,7 +12,8 @@ import { CloudSecretKeyring } from "../../packages/runtime/src/cloud-secret-cryp
 import { EmailDraftClient } from "../../packages/web/src/cloud/email-drafts.ts";
 
 const [container, temporary] = process.argv.slice(2);
-if (!/^qorpera-email-e2e-[0-9]+-[a-f0-9]{8}$/.test(container ?? "")) throw new Error("An owned isolated E2E container is required");
+// Only a disposable container its driver started: its own, or the hosted-db suite's.
+if (!/^qorpera-(email-e2e|hosted-db)-[0-9]+-[a-f0-9]{8}$/.test(container ?? "")) throw new Error("An owned isolated E2E container is required");
 const owner = "15000000-0000-4000-8000-000000000001";
 const session = "15000000-0000-4000-8000-000000000055";
 const interaction = "62000000-0000-4000-8000-000000000003";
