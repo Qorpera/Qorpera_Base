@@ -5,11 +5,13 @@
 -- UPDATE (the gc fence) any more:
 -- * qorpera_folder_company_enter: the prelude of a member's action that has no run: the pause (refused when asked), the
 --   folder fence KEY SHARE with the pause read again, this company's row (rank 0), then the targets at ranks 1 to 7.
--- * Posting in a room (qorpera_post_company_room_message): the enter helper with the poster, the room's agents, the room
---   and both memberships, KEY SHARE; the recipients are read again under those locks (a changed room refuses as a
---   retryable conflict); the conversation FOR UPDATE; the input and mentions; the transcript events (the operation
---   clock) before the wakes; admission; the wakes. Images refuse until C1d gives conversations folder bytes.
--- * A room delivery's retry takes the enter helper in place of the gc fence and admission before its wake.
+-- * Posting in a room (qorpera_post_company_room_message): the enter helper with the poster, the room's agents and both
+--   memberships KEY SHARE, and the room FOR SHARE (a group chat's save meets the post there); the recipients are read
+--   again under those locks (a changed room refuses as a retryable conflict); the conversation FOR UPDATE; the input and
+--   mentions; the transcript events (the operation clock), then admission; the wakes. Images refuse until C1d gives
+--   conversations folder bytes.
+-- * A room delivery's retry takes the enter helper (the room FOR SHARE too) in place of the gc fence and admission before
+--   its wake.
 -- * An email draft takes no company row and no fence: the conversation, the draft, the action, as today.
 -- * A member's own review rule serializes on the member's row FOR NO KEY UPDATE (rank 1), as an agent's "Ask first"
 --   rule does, with the company row KEY SHARE (rank 0) for the rule's foreign key.
@@ -44,7 +46,9 @@ end $$;
 -- The prelude of a member's (or the platform's) action on a folder-v2 company that has no run (core §3 steps 3-4): the
 -- pause read, the folder fence KEY SHARE and the pause read again (when the action must stop with the company: every
 -- wake inserter), this company's row KEY SHARE (rank 0), then the targets at ranks 1 to 7, merged so the stronger mode
--- wins, as the run entry locks them. Runs keep qorpera_folder_run_enter and qorpera_folder_tool_run.
+-- wins, as the run entry locks them. Runs keep qorpera_folder_run_enter and qorpera_folder_tool_run. It checks the targets'
+-- shape, not which tables sit at which rank or that a key names this company: its callers are this migration's own
+-- functions (it is revoked from every role), as with qorpera_folder_run_enter.
 create function public.qorpera_folder_company_enter(p_environment_id uuid, p_profile_id uuid, p_targets jsonb,
 	p_refuse_paused boolean)
 returns void language plpgsql security definer set search_path = '' as $$
@@ -80,7 +84,9 @@ end $$;
 -- Today's rules and result (the room and membership, the prompt, the member's own login, the pause, a replay by client
 -- input id, mentions narrowing the agents who answer, one room wake per answering agent), in core §3's order. A post
 -- names the room and its agents from an unlocked read; after the locks the agents are read again, and a room whose agents
--- changed meanwhile refuses as a retryable conflict (a post that waited behind a change of the room).
+-- changed meanwhile refuses as a retryable conflict (a post that waited behind a change of the room). The room FOR SHARE
+-- holds off a room change after that; an agent archived meanwhile (its staff row, not the room) still refuses the post at
+-- its wake (42501), as C1C §6.2 records.
 create function public.qorpera_folder_post_room_message(p_room_id uuid, p_client_input_id uuid, p_body jsonb,
 	p_sponsor_binding_id uuid, p_sponsor_version bigint)
 returns jsonb language plpgsql security definer set search_path = '' as $$
@@ -125,7 +131,9 @@ begin
 		jsonb_build_array(
 			jsonb_build_object('rank', 1, 'tbl', 'qorpera_profile_members', 'key', v_room.profile_id::text || ':' || v_user::text,
 				'mode', 'keyshare', 'required', true),
-			jsonb_build_object('rank', 4, 'tbl', 'qorpera_company_rooms', 'key', v_room.id::text, 'mode', 'keyshare', 'required', true),
+			-- The room FOR SHARE, as posting took it before (C1C §6.2): a save that changes a group chat takes the room FOR NO
+			-- KEY UPDATE before it writes anything, so it waits here, not at this conversation while holding the clock.
+			jsonb_build_object('rank', 4, 'tbl', 'qorpera_company_rooms', 'key', v_room.id::text, 'mode', 'share', 'required', true),
 			jsonb_build_object('rank', 4, 'tbl', 'qorpera_company_room_members', 'key', v_room.id::text || ':member:' || v_user::text,
 				'mode', 'keyshare', 'required', true))
 		|| coalesce((select jsonb_agg(t) from unnest(v_agents) a(id), lateral (values
@@ -200,8 +208,10 @@ begin
 		'if public.qorpera_company_is_folder_v2((select profile_id from public.qorpera_company_rooms where id = p_room_id)) then '
 		|| 'return public.qorpera_folder_post_room_message(p_room_id, p_client_input_id, p_body, p_sponsor_binding_id, p_sponsor_version); end if;');
 
-	-- A room delivery's retry: the enter helper (the author, the agent, the room and both memberships) in place of the gc
-	-- fence, and admission before its wake. Its job and run locks come first, as today (core §3 step 2).
+	-- A room delivery's retry: the enter helper (the author, the agent, the room FOR SHARE as a post takes it, and both
+	-- memberships) in place of the gc fence, and admission before its wake. Its job and run locks come first, as today (core
+	-- §3 step 2). Its targets are optional: the checks after them refuse a missing member, agent or room, as today, and
+	-- the wake's pin trigger checks both memberships again.
 	perform pg_temp.c1c3a_replace('public.qorpera_retry_room_delivery(uuid,uuid,bigint)',
 		E'\tperform public.qorpera_lock_profile_gc_fence(v_run.profile_id);\n'
 		|| E'\tselect * into v_room from public.qorpera_company_rooms where session_id = v_wake.session_id for share;\n',
@@ -213,7 +223,7 @@ begin
 		|| E'\t\t\t\t''mode'', ''keyshare'', ''required'', false),\n'
 		|| E'\t\t\tjsonb_build_object(''rank'', 2, ''tbl'', ''qorpera_profile_staff'', ''key'', v_run.profile_id::text || '':'' || v_wake.staff_agent_id::text,\n'
 		|| E'\t\t\t\t''mode'', ''keyshare'', ''required'', false),\n'
-		|| E'\t\t\tjsonb_build_object(''rank'', 4, ''tbl'', ''qorpera_company_rooms'', ''key'', v_room.id::text, ''mode'', ''keyshare'', ''required'', false),\n'
+		|| E'\t\t\tjsonb_build_object(''rank'', 4, ''tbl'', ''qorpera_company_rooms'', ''key'', v_room.id::text, ''mode'', ''share'', ''required'', false),\n'
 		|| E'\t\t\tjsonb_build_object(''rank'', 4, ''tbl'', ''qorpera_company_room_members'', ''key'', v_room.id::text || '':member:'' || v_user::text,\n'
 		|| E'\t\t\t\t''mode'', ''keyshare'', ''required'', false),\n'
 		|| E'\t\t\tjsonb_build_object(''rank'', 4, ''tbl'', ''qorpera_company_room_members'',\n'
@@ -245,6 +255,7 @@ begin
 		E'\tif exists (select 1 from public.qorpera_company_files f where f.profile_id = p_profile_id and f.core = ''folder-v2'') then\n'
 		|| E'\t\tperform 1 from public.qorpera_profiles where id = p_profile_id for key share;\n'
 		|| E'\t\tperform 1 from public.qorpera_profile_members where profile_id = p_profile_id and user_id = v_user for no key update;\n'
+		|| E'\t\tif not found then raise exception ''Only members of this company can write rules'' using errcode = ''42501''; end if;\n'
 		|| E'\telse\n'
 		|| E'\tperform 1 from public.qorpera_profiles where id = p_profile_id for update;\n'
 		|| E'\tend if;\n', 1);
@@ -266,10 +277,11 @@ begin
 		'if public.qorpera_company_is_folder_v2((select profile_id from public.qorpera_member_session_attachment_uploads where id = p_upload_id)) then '
 		|| 'raise exception ''Images in conversations do not serve folder-v2 companies yet'' using errcode = ''0A000''; end if;');
 	-- The upload check returns early for any company not on the path gateway, folder-v2 included: an input with images
-	-- on folder-v2 refuses instead.
+	-- on folder-v2 refuses instead, whether inserted or changed (the trigger fires on both). The conversation's company
+	-- is read directly: qorpera_session_profile_id answers null to a caller who cannot read the conversation.
 	perform pg_temp.c1c3a_guard('public.qorpera_require_member_session_attachment_uploads()',
-		'if tg_op = ''INSERT'' and jsonb_typeof(new.body -> ''images'') = ''array'' and jsonb_array_length(new.body -> ''images'') > 0 '
-		|| 'and public.qorpera_company_is_folder_v2(public.qorpera_session_profile_id(new.session_id)) then raise exception '
+		'if jsonb_typeof(new.body -> ''images'') = ''array'' and jsonb_array_length(new.body -> ''images'') > 0 '
+		|| 'and public.qorpera_company_is_folder_v2((select profile_id from public.qorpera_shared_sessions where id = new.session_id)) then raise exception '
 		|| '''Images in conversations do not serve folder-v2 companies yet'' using errcode = ''0A000''; end if;');
 end $$;
 

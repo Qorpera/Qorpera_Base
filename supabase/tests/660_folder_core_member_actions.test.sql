@@ -49,7 +49,7 @@ begin
 	perform pg_temp.guarded('public.qorpera_stage_member_session_attachment(uuid,boolean)',
 		'if public.qorpera_company_is_folder_v2((select profile_id from public.qorpera_member_session_attachment_uploads', '5719b15198298781e258c05dd727cc31');
 	perform pg_temp.guarded('public.qorpera_require_member_session_attachment_uploads()',
-		'if tg_op = ''INSERT'' and jsonb_typeof(new.body -> ''images'') = ''array''', '653ab54d255f9c03b429410380d94053');
+		'if jsonb_typeof(new.body -> ''images'') = ''array'' and jsonb_array_length(new.body -> ''images'') > 0 and', '653ab54d255f9c03b429410380d94053');
 	v_def := pg_get_functiondef('public.qorpera_retry_room_delivery(uuid,uuid,bigint)'::regprocedure);
 	v_def := replace(v_def, substr(v_def, position(E'\tif public.qorpera_company_is_folder_v2(v_run.profile_id) then\n\t\tselect * into v_room' in v_def),
 		position(E'\telse\n\tperform public.qorpera_lock_profile_gc_fence(v_run.profile_id);\n' in v_def)
@@ -68,6 +68,7 @@ begin
 			E'\tif exists (select 1 from public.qorpera_company_files f where f.profile_id = p_profile_id and f.core = ''folder-v2'') then\n'
 			|| E'\t\tperform 1 from public.qorpera_profiles where id = p_profile_id for key share;\n'
 			|| E'\t\tperform 1 from public.qorpera_profile_members where profile_id = p_profile_id and user_id = v_user for no key update;\n'
+			|| E'\t\tif not found then raise exception ''Only members of this company can write rules'' using errcode = ''42501''; end if;\n'
 			|| E'\telse\n'
 			|| E'\tperform 1 from public.qorpera_profiles where id = p_profile_id for update;\n'
 			|| E'\tend if;\n',
@@ -97,7 +98,7 @@ begin
 end $$;
 
 -- 3. Posting in an agent's thread: the input, the transcript events, admission and the agent's room wake; a replay adds
--- nothing; images, a non-member and the pause refuse.
+-- nothing; images, a non-member and the pause refuse; images refuse first, before the pause and the login checks.
 do $$
 declare
 	c_a constant uuid := '63400000-0000-4000-8000-0000000000a1'; v_room uuid := pg_temp.thread_room(c_a);
@@ -120,8 +121,15 @@ begin
 	perform pg_temp.raises_like(format('select pg_temp.post(%L, %L, %L)', v_room, extensions.gen_random_uuid(),
 		pg_temp.prompt('See this') || jsonb_build_object('images', jsonb_build_array(jsonb_build_object('objectSha256', repeat('a', 64),
 			'bytes', 100, 'mediaType', 'image/png')))), '0A000', 'Images in conversations do not serve folder-v2 companies yet');
+	perform pg_temp.raises_like(format('select pg_temp.post(%L, %L, %L, %L)', v_room, extensions.gen_random_uuid(),
+		pg_temp.prompt('See this') || jsonb_build_object('images', jsonb_build_array(jsonb_build_object('objectSha256', repeat('a', 64),
+			'bytes', 100, 'mediaType', 'image/png'))), extensions.gen_random_uuid()), '0A000',
+		'Images in conversations do not serve folder-v2 companies yet');
 	perform pg_temp.fx('insert into public.qorpera_company_execution_pauses(profile_id, paused_by_user_id, reason) values
 		(''63400000-0000-4000-8000-000000000010'', ''63400000-0000-4000-8000-000000000001'', ''test'')');
+	perform pg_temp.raises_like(format('select pg_temp.post(%L, %L, %L)', v_room, extensions.gen_random_uuid(),
+		pg_temp.prompt('See this') || jsonb_build_object('images', jsonb_build_array(jsonb_build_object('objectSha256', repeat('a', 64),
+			'bytes', 100, 'mediaType', 'image/png')))), '0A000', 'Images in conversations do not serve folder-v2 companies yet');
 	perform pg_temp.raises_like(format('select pg_temp.post(%L, %L, %L)', v_room, extensions.gen_random_uuid(), pg_temp.prompt('Hi')),
 		'55000', 'Company execution is paused');
 	perform pg_temp.fx('delete from public.qorpera_company_execution_pauses where profile_id = ''63400000-0000-4000-8000-000000000010''');
@@ -222,7 +230,7 @@ begin
 	perform pg_temp.path_claims('service_role');
 end $$;
 
--- 8. Plain conversations, their attachments and images in any folder-v2 input refuse.
+-- 8. Plain conversations, their attachments and images in any folder-v2 input, inserted or changed, refuse.
 do $$
 declare c_a constant uuid := '63400000-0000-4000-8000-0000000000a1'; v_session uuid;
 	v_upload uuid := extensions.gen_random_uuid();
@@ -252,6 +260,10 @@ begin
 		values (%L, extensions.gen_random_uuid(), 'user_message', '63400000-0000-4000-8000-000000000001', %L)$f$, v_session,
 		pg_temp.prompt('See this') || jsonb_build_object('images', jsonb_build_array(jsonb_build_object('objectSha256', repeat('a', 64),
 			'bytes', 100, 'mediaType', 'image/png')))), '0A000', 'Images in conversations do not serve folder-v2 companies yet');
+	perform pg_temp.raises_like(format($f$update public.qorpera_session_inputs set body = body || %L
+		where session_id = %L and client_input_id = '66000000-0000-4000-8000-0000000000c1'$f$,
+		jsonb_build_object('images', jsonb_build_array(jsonb_build_object('objectSha256', repeat('a', 64), 'bytes', 100,
+			'mediaType', 'image/png'))), v_session), '0A000', 'Images in conversations do not serve folder-v2 companies yet');
 end $$;
 
 -- 9. Privileges: the new functions are postgres-only.

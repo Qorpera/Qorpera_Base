@@ -705,7 +705,11 @@ Decisions:
   founding and company deletion's last-member check. Every effect holds the fence `KEY SHARE`, which that mode does
   not block; stop and resume (`FOR UPDATE`) and other member management wait for it. No new row.
 - **Plain conversations refuse `folder-v2`** (0A000) until C3 and C4 give them `folder-v2` runs: today their inputs
-  would be accepted and never delivered.
+  would be accepted and never delivered. Their creators still run: `qorpera_ensure_staff_session` (web `api.ts`, cloud
+  client `hosted-primary.ts`) and the eight `create_shared_session` functions open `folder-v2` conversations, and
+  `ensure_staff_session` adds a kickoff input that nothing delivers (part 1's session materializer skips `folder-v2`).
+  Nothing is lost, since every later input refuses. C3 and C4 refuse or deliver them. 3b's answers keep the gc fence
+  on `folder-v2` until 3b.
 - Who creates a `folder-v2` office, and who owns the machine-event and worker drains on `folder-v2`, are decided with
   3f and 3j.
 
@@ -715,19 +719,39 @@ Decisions:
   run: the pause (refused when asked), the fence `KEY SHARE` with the pause read again, rank 0, then the targets at
   ranks 1 to 7 as the run entry locks them. The company row is never a target; ranks 8 and 9 are not taken.
 - **Posting** (`qorpera_folder_post_room_message`): the enter helper with the poster (rank 1), the room's agents
-  (rank 2), the room, the poster's membership and the agents' memberships (rank 4), all `KEY SHARE`; the agents read
+  (rank 2), the room `FOR SHARE`, and the poster's and the agents' memberships `KEY SHARE` (rank 4); the agents read
   again under those locks, a changed set refusing as a retryable conflict (QRC01, 661 C); the conversation `FOR
-  UPDATE`; the input and mentions; the transcript events (the operation clock) before admission, which is the last
-  lock before the folder clock; admission only when a wake follows; the wakes. Images refuse until C1d. A group chat
-  with no agent posts without admission.
-- **A room delivery's retry**: its job and run locks first, as today, then the enter helper in place of the gc fence,
-  and admission before its wake.
+  UPDATE`; the input and mentions; the transcript events (the operation clock), then admission, which is the last lock
+  before the folder clock (661 K: a coworker message holds the clock and then wants admission); admission only when a
+  wake follows; the wakes. Images refuse first, before the pause and the login (660 §3), until C1d. A group chat with
+  no agent posts without admission; F2's group files need two agents, so on `folder-v2` that happens only once a
+  chat's agents have left the company (660 §4 uses hand-built rows).
+- **The room `FOR SHARE` is a named exception to core §9** ("`FOR KEY SHARE` for rows referenced"). Snapshot-v1
+  posting took its room `FOR SHARE` too.
+  - A save that changes a group chat (F2's group hook) takes the room `FOR NO KEY UPDATE` at rank 4 and names no
+    conversation. It writes the clock in an earlier unit (another chat's rename, an agent's edit) before it updates this
+    chat's conversation.
+  - With the room only `KEY SHARE`, a post holding the conversation and wanting the clock met such a save holding the
+    clock and wanting the conversation: a deadlock (review r1 B1). A membership change also landed beside a post past
+    its recheck, which then refused at its wake with 42501, not QRC01.
+  - With `FOR SHARE`, the save waits at the room before it writes: a two-chat rename (661 I), an agent or the poster
+    leaving (661 J), and the same for a retry (661 L).
+  - Nothing else conflicts: runs hold group rooms `KEY SHARE`, thread-room writers already took `FOR UPDATE`, and within
+    rank 4 rooms come before members, in key order.
+  - F2 naming the chat's conversation at rank 11 (§5.9, test 10b) would make the exception unnecessary.
+  - Not held off: an agent archived while a post waits (the staff row `FOR NO KEY UPDATE` and its own thread rooms, not
+    the group chat's room). The post then refuses at its wake (42501 "Wake recipient authority is unavailable"), and
+    the member posts again.
+- **A room delivery's retry**: its job and run locks first, as today, then the enter helper in place of the gc fence
+  (the room `FOR SHARE`, as a post takes it; its targets are optional, since the checks after them refuse as today), and
+  admission before its wake.
 - **An email draft** takes neither the company row nor the fence on `folder-v2` (it names the company in no row it
   writes): the conversation, the draft, the action.
 - **A member's own review rule**: the company row `KEY SHARE`, then the member's row `FOR NO KEY UPDATE`, where an agent's
-  rule for that member serializes too (661 E).
+  rule for that member serializes too (661 E); a member removed while the rule waited refuses (42501).
 - **Refusals** (0A000): `append_session_input`, `request_session_turn` and its v2; the conversation attachment uploads;
-  and any `folder-v2` input with images (the upload check returned early for every company off the path gateway).
+  and any `folder-v2` input with images, inserted or changed (the upload check returned early for every company off
+  the path gateway).
 - Not in 3a: `member_manage_company_machine` goes with 3f. `member_office_catalog` takes the gc fence before checking
   membership on either core; that is fixed on its own (it affects live companies).
 

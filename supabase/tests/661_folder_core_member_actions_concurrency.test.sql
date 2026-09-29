@@ -4,7 +4,10 @@
 -- no room, and never waits for a KEY SHARE holder; a room whose agents change while a post waits refuses as a
 -- retryable conflict; two posts in one room queue at the conversation; a member's own rule and an agent's rule for that
 -- member meet at the member's row; an email draft never waits for the company row; a stop waits for a post in flight; a
--- retry never waits for a company-row KEY SHARE holder. 648's committed fixture, removed at the end.
+-- retry never waits for a company-row KEY SHARE holder; a save changing group chats waits for a post at the room (a
+-- rename of two chats, an agent leaving, the poster leaving); a post waits at the operation clock holding no admission;
+-- a save removing a retry's author from a group chat waits for the retry.
+-- 648's committed fixture, removed at the end.
 
 -- Ada's run acknowledges, so its tool calls may work; the company's login pays for unattended work (as 657's does).
 select public.qorpera_send_native_agent_message((b ->> 'leaseId')::uuid, (b ->> 'runId')::uuid, (b ->> 'jobId')::uuid,
@@ -36,7 +39,8 @@ create function pg_temp.room_locked(p_conn text) returns boolean language sql as
 $$;
 
 -- A. A post and a coworker message into the same thread, in both orders: both take the company row and ranks at KEY
--- SHARE, so they meet at the conversation FOR UPDATE, and nothing waits in a circle.
+-- SHARE (the post's room FOR SHARE, which a message's KEY SHARE does not wait for), so they meet at the conversation FOR
+-- UPDATE, and nothing waits in a circle.
 do $$
 declare v_state text;
 begin
@@ -224,6 +228,227 @@ begin
 	v_state := pg_temp.outcome('fence_two');
 	perform dblink_exec('fence_three', 'rollback');
 	if v_state <> 'ok' then raise exception 'The retry beside a KEY SHARE holder: %', v_state; end if;
+end $$;
+
+-- Group chats for I to K (F2's files, committed): G1 and G2 with the Co-Founder and Ada, G3 with Bo too, the owner in each.
+create function pg_temp.group_text(p_id uuid, p_name text, p_agents uuid[], p_people uuid[]) returns text language sql as $$
+	select format(E'---\nid: %s\nname: %s\nagents:\n%speople:\n%s---\nPlan.\n', p_id, p_name,
+		(select string_agg(format(E'  - %s\n', a), '') from unnest(p_agents) a),
+		(select string_agg(format(E'  - %s\n', a), '') from unnest(p_people) a))
+$$;
+create function pg_temp.group_parse(p_id uuid, p_name text, p_agents uuid[], p_people uuid[]) returns jsonb language sql as $$
+	select jsonb_build_object('kind', 'group', 'id', p_id, 'name', p_name, 'subtitle', null, 'agents', to_jsonb(p_agents),
+		'people', to_jsonb(p_people), 'purpose', 'Plan.')
+$$;
+create function pg_temp.new_group(p_handle text, p_id uuid, p_name text, p_agents uuid[], p_people uuid[]) returns jsonb language sql as $$
+	select jsonb_build_object('op', 'new_folder', 'path', 'agents/groups/' || p_handle,
+		'contents', jsonb_build_array(jsonb_build_object('path', 'group.md', 'kind', 'file',
+			'file', pg_temp.stage(pg_temp.group_text(p_id, p_name, p_agents, p_people)))),
+		'structured', jsonb_build_array(pg_temp.entry('agents/groups/' || p_handle || '/group.md', 'group',
+			pg_temp.group_text(p_id, p_name, p_agents, p_people), pg_temp.group_parse(p_id, p_name, p_agents, p_people))))
+$$;
+create function pg_temp.edit_group(p_handle text, p_id uuid, p_name text, p_agents uuid[], p_people uuid[]) returns jsonb language sql as $$
+	select pg_temp.write('agents/groups/' || p_handle || '/group.md', 'group', pg_temp.group_text(p_id, p_name, p_agents, p_people),
+		pg_temp.group_parse(p_id, p_name, p_agents, p_people), pg_temp.version('agents/groups/' || p_handle || '/group.md'))
+$$;
+-- A save's statement, built before a race starts (staging a file takes the company row).
+create function pg_temp.sql_save(p_key text, p_units jsonb) returns text language sql as $$
+	select format('select public.qorpera_folder_commit(%L, %L, %L, %L)::text', '64800000-0000-4000-8000-000000000020',
+		'{"kind":"member","userId":"64800000-0000-4000-8000-000000000001"}', p_key, p_units)
+$$;
+create function pg_temp.sql_group_post(p_room uuid, p_text text) returns text language sql as $$
+	select format('select public.qorpera_post_company_room_message(%L, %L, %L, %L, 1)::text', p_room, extensions.gen_random_uuid(),
+		jsonb_build_object('schema', 'qorpera.session-prompt/v1', 'text', p_text), '64800000-0000-4000-8000-0000000000b1')
+$$;
+create function pg_temp.hold_conversation(p_room uuid) returns void language plpgsql as $$
+begin
+	perform dblink_exec('fence_three', 'begin');
+	perform * from dblink('fence_three', format('select 1 from public.qorpera_shared_sessions where id = %L for update',
+		(select session_id from public.qorpera_company_rooms where id = p_room))) as t(x integer);
+end $$;
+-- Whether a connection waits at a row of a table: it holds or queues for that row's tuple lock while blocked (the
+-- second waiter on a row queues behind the first, not on the holder).
+create function pg_temp.waits_at(p_conn text, p_table regclass) returns boolean language plpgsql as $$
+declare v_pid integer := current_setting('qorpera_test.pid_' || p_conn)::integer; v_until timestamptz := clock_timestamp() + interval '60 seconds';
+begin
+	loop
+		if exists (select 1 from pg_locks where pid = v_pid and locktype = 'tuple' and relation = p_table)
+			and cardinality(pg_blocking_pids(v_pid)) > 0 then return true; end if;
+		exit when clock_timestamp() > v_until;
+		perform pg_sleep(0.02);
+	end loop;
+	return false;
+end $$;
+-- Whether a row is free: a NOWAIT lock on another connection, released at once.
+create function pg_temp.row_free(p_sql text) returns boolean language plpgsql as $$
+begin
+	perform * from dblink('fence_four', p_sql || ' nowait') as t(x integer);
+	return true;
+exception when lock_not_available then return false;
+end $$;
+select pg_temp.expect(pg_temp.commit('{"kind":"member","userId":"64800000-0000-4000-8000-000000000001"}', 'member-actions-hire-0001',
+	jsonb_build_array(pg_temp.hire('bo', '66100000-0000-4000-8000-0000000000b0', 'Bo'))), 1, 'saved') \g /dev/null
+select pg_temp.expect(pg_temp.commit('{"kind":"member","userId":"64800000-0000-4000-8000-000000000001"}', 'member-actions-groups-0001',
+	jsonb_build_array(jsonb_build_object('op', 'mkdir', 'path', 'agents/groups'),
+		pg_temp.new_group('g1', '66100000-0000-4000-8000-0000000000e1', 'G1',
+			array['64800000-0000-4000-8000-0000000000c0', '64800000-0000-4000-8000-0000000000a1']::uuid[],
+			array['64800000-0000-4000-8000-000000000001']::uuid[]),
+		pg_temp.new_group('g2', '66100000-0000-4000-8000-0000000000e2', 'G2',
+			array['64800000-0000-4000-8000-0000000000c0', '64800000-0000-4000-8000-0000000000a1']::uuid[],
+			array['64800000-0000-4000-8000-000000000001']::uuid[]),
+		pg_temp.new_group('g3', '66100000-0000-4000-8000-0000000000e3', 'G3',
+			array['64800000-0000-4000-8000-0000000000c0', '64800000-0000-4000-8000-0000000000a1', '66100000-0000-4000-8000-0000000000b0']::uuid[],
+			array['64800000-0000-4000-8000-000000000001']::uuid[]))), 4, 'saved') \g /dev/null
+
+-- I. A save renaming two group chats and a post in the second (C1C §6.2): the post holds that chat's room FOR SHARE and
+-- waits at its conversation; the save waits at the room before it writes, so it holds no operation clock that the post
+-- will want; both land. (With the room KEY SHARE the save took the clock at G1 and waited for G2's conversation: a
+-- deadlock.)
+select set_config('qorpera_test.rename_two', pg_temp.sql_save('member-actions-rename-0001', jsonb_build_array(
+	pg_temp.edit_group('g1', '66100000-0000-4000-8000-0000000000e1', 'G1 renamed',
+		array['64800000-0000-4000-8000-0000000000c0', '64800000-0000-4000-8000-0000000000a1']::uuid[],
+		array['64800000-0000-4000-8000-000000000001']::uuid[]),
+	pg_temp.edit_group('g2', '66100000-0000-4000-8000-0000000000e2', 'G2 renamed',
+		array['64800000-0000-4000-8000-0000000000c0', '64800000-0000-4000-8000-0000000000a1']::uuid[],
+		array['64800000-0000-4000-8000-000000000001']::uuid[]))), false) \g /dev/null
+do $$
+declare v_post text; v_save text;
+begin
+	perform pg_temp.hold_conversation('66100000-0000-4000-8000-0000000000e2');
+	perform dblink_send_query('fence_two', pg_temp.sql_group_post('66100000-0000-4000-8000-0000000000e2', 'Rename race'));
+	if not pg_temp.waits_for('fence_two', 'fence_three') then raise exception 'I: the post must wait at the conversation'; end if;
+	perform dblink_send_query('fence_one', current_setting('qorpera_test.rename_two'));
+	if not pg_temp.waits_for('fence_one', 'fence_two') then raise exception 'I: the save must wait for the post'; end if;
+	if pg_temp.queued_on('fence_one') is distinct from 'public.qorpera_company_rooms'::regclass then
+		raise exception 'I: the save must wait at the room, not on %', pg_temp.queued_on('fence_one'); end if;
+	if not pg_temp.row_free($q$select 1 from public.qorpera_profile_operation_clocks
+			where profile_id = '64800000-0000-4000-8000-000000000010' for update$q$) then
+		raise exception 'I: the waiting save must hold no operation clock'; end if;
+	perform dblink_exec('fence_three', 'rollback');
+	v_post := pg_temp.outcome('fence_two');
+	v_save := pg_temp.outcome('fence_one');
+	if v_post <> 'ok' or v_save <> 'ok' then raise exception 'I: the post % and the save %', v_post, v_save; end if;
+	if (select name from public.qorpera_company_rooms where id = '66100000-0000-4000-8000-0000000000e2') <> 'G2 renamed'
+		or not exists (select 1 from public.qorpera_session_inputs i join public.qorpera_company_rooms r on r.session_id = i.session_id
+			where r.id = '66100000-0000-4000-8000-0000000000e2' and i.body ->> 'text' = 'Rename race') then
+		raise exception 'I: both must have landed'; end if;
+end $$;
+
+-- J. A save changing a group chat's members while a post waits at its conversation, past its recheck: the save waits
+-- for the post at the room, so the post lands with the members it read, then the save lands. An agent leaving, then the
+-- poster leaving. (With the room KEY SHARE the save landed first and the post refused at its wake with 42501.)
+select set_config('qorpera_test.drop_agent', pg_temp.sql_save('member-actions-drop-agent-0001', jsonb_build_array(
+	pg_temp.edit_group('g3', '66100000-0000-4000-8000-0000000000e3', 'G3',
+		array['64800000-0000-4000-8000-0000000000c0', '66100000-0000-4000-8000-0000000000b0']::uuid[],
+		array['64800000-0000-4000-8000-000000000001']::uuid[]))), false) \g /dev/null
+do $$
+declare v_post text; v_save text; v_wakes integer;
+begin
+	perform pg_temp.hold_conversation('66100000-0000-4000-8000-0000000000e3');
+	perform dblink_send_query('fence_two', pg_temp.sql_group_post('66100000-0000-4000-8000-0000000000e3', 'Agent leaves'));
+	if not pg_temp.waits_for('fence_two', 'fence_three') then raise exception 'J: the post must wait at the conversation'; end if;
+	perform dblink_send_query('fence_one', current_setting('qorpera_test.drop_agent'));
+	if not pg_temp.waits_for('fence_one', 'fence_two') then raise exception 'J: the agent''s removal must wait for the post'; end if;
+	perform dblink_exec('fence_three', 'rollback');
+	v_post := pg_temp.outcome('fence_two');
+	v_save := pg_temp.outcome('fence_one');
+	if v_post <> 'ok' or v_save <> 'ok' then raise exception 'J: the post % and the agent''s removal %', v_post, v_save; end if;
+	select count(*) into v_wakes from public.qorpera_wake_occurrences w join public.qorpera_session_inputs i on i.id = w.source_id
+	where w.wake_kind = 'room' and i.body ->> 'text' = 'Agent leaves';
+	if v_wakes <> 3 or (select status from public.qorpera_company_room_members where room_id = '66100000-0000-4000-8000-0000000000e3'
+			and principal_kind = 'staff_agent' and principal_id = '64800000-0000-4000-8000-0000000000a1') <> 'removed' then
+		raise exception 'J: the post must wake the three agents it read, then Ada leaves (% wakes)', v_wakes; end if;
+end $$;
+select set_config('qorpera_test.drop_poster', pg_temp.sql_save('member-actions-drop-poster-0001', jsonb_build_array(
+	pg_temp.edit_group('g1', '66100000-0000-4000-8000-0000000000e1', 'G1 renamed',
+		array['64800000-0000-4000-8000-0000000000c0', '64800000-0000-4000-8000-0000000000a1']::uuid[],
+		array['64800000-0000-4000-8000-000000000002']::uuid[]))), false) \g /dev/null
+do $$
+declare v_post text; v_save text;
+begin
+	perform pg_temp.hold_conversation('66100000-0000-4000-8000-0000000000e1');
+	perform dblink_send_query('fence_two', pg_temp.sql_group_post('66100000-0000-4000-8000-0000000000e1', 'Poster leaves'));
+	if not pg_temp.waits_for('fence_two', 'fence_three') then raise exception 'J: the post must wait at the conversation'; end if;
+	perform dblink_send_query('fence_one', current_setting('qorpera_test.drop_poster'));
+	if not pg_temp.waits_for('fence_one', 'fence_two') then raise exception 'J: the poster''s removal must wait for the post'; end if;
+	perform dblink_exec('fence_three', 'rollback');
+	v_post := pg_temp.outcome('fence_two');
+	v_save := pg_temp.outcome('fence_one');
+	if v_post <> 'ok' or v_save <> 'ok' then raise exception 'J: the post % and the poster''s removal %', v_post, v_save; end if;
+	if (select status from public.qorpera_company_room_members where room_id = '66100000-0000-4000-8000-0000000000e1'
+			and principal_kind = 'member' and principal_id = '64800000-0000-4000-8000-000000000001') <> 'removed' then
+		raise exception 'J: the poster must leave after the post'; end if;
+end $$;
+
+-- K. The operation clock before admission: a coworker message holds its conversations and waits at the clock; a post
+-- in G2 waits at the clock too, holding no admission; both land once the clock is free. (A post taking admission first
+-- would wait for the clock the message then holds, while the message waits for its admission: a deadlock.)
+do $$
+declare v_post text; v_message text;
+begin
+	perform dblink_exec('fence_three', 'begin');
+	perform * from dblink('fence_three', $q$select 1 from public.qorpera_profile_operation_clocks
+		where profile_id = '64800000-0000-4000-8000-000000000010' for update$q$) as t(x integer);
+	perform dblink_send_query('fence_one', pg_temp.sql_cw('clock-order-1'));
+	if not pg_temp.waits_for('fence_one', 'fence_three')
+		or not pg_temp.waits_at('fence_one', 'public.qorpera_profile_operation_clocks') then
+		raise exception 'K: the message must wait at the clock'; end if;
+	perform dblink_send_query('fence_two', pg_temp.sql_group_post('66100000-0000-4000-8000-0000000000e2', 'Clock order'));
+	if not pg_temp.waits_at('fence_two', 'public.qorpera_profile_operation_clocks') then
+		raise exception 'K: the post must wait at the clock'; end if;
+	if not pg_temp.row_free($q$select 1 from public.qorpera_folder_admissions
+			where profile_id = '64800000-0000-4000-8000-000000000010' for no key update$q$) then
+		raise exception 'K: the post must hold no admission while it waits at the clock'; end if;
+	perform dblink_exec('fence_three', 'rollback');
+	v_message := pg_temp.outcome('fence_one');
+	v_post := pg_temp.outcome('fence_two');
+	if v_message <> 'ok' or v_post <> 'ok' then raise exception 'K: the message % and the post %', v_message, v_post; end if;
+end $$;
+
+-- L. A room delivery's retry in a group chat while a save removes its author from the chat: the retry holds the room FOR
+-- SHARE, as a post does, so the save waits for it; the retry lands with its wake, then the save. The failed run of the
+-- Co-Founder's wake from J's post in G3 (hand-built, committed, as H's).
+set session_replication_role = replica;
+do $$
+declare v_wake public.qorpera_wake_occurrences%rowtype; v_run uuid := '66100000-0000-4000-8000-0000000000f3';
+	v_job uuid := '66100000-0000-4000-8000-0000000000f4';
+begin
+	select w.* into strict v_wake from public.qorpera_wake_occurrences w join public.qorpera_session_inputs i on i.id = w.source_id
+	where w.wake_kind = 'room' and i.body ->> 'text' = 'Agent leaves' and w.staff_agent_id = '64800000-0000-4000-8000-0000000000c0';
+	insert into public.qorpera_runner_jobs(id, profile_id, environment_id, substrate_version_id, client_job_id, required_capability,
+		job_type, payload, created_by_user_id, status, finished_at, run_id)
+	values (v_job, v_wake.profile_id, v_wake.environment_id, extensions.gen_random_uuid(), extensions.gen_random_uuid(), 'agent_turn',
+		'agent_turn', '{}', v_wake.requested_by_user_id, 'failed', clock_timestamp(), v_run);
+	insert into public.qorpera_execution_runs(id, profile_id, environment_id, source_kind, source_id, job_id, substrate_version_id,
+		company_snapshot_id, staff_agent_id, staff_version, sponsor_binding_id, sponsor_version, required_capability, job_type,
+		payload_sha256, transcript_start_sequence, created_by_user_id, requested_by_user_id, model_provider, model_id, model_selection,
+		audience_kind, runtime_bundle_id, runtime_bundle_sha256, session_id, input_ids)
+	values (v_run, v_wake.profile_id, v_wake.environment_id, 'room_delivery', v_wake.id, v_job, extensions.gen_random_uuid(),
+		extensions.gen_random_uuid(), v_wake.staff_agent_id, 1, v_wake.sponsor_binding_id, v_wake.sponsor_version, 'agent_turn',
+		'agent_turn', repeat('c', 64), 0, v_wake.requested_by_user_id, v_wake.requested_by_user_id, 'openai', 'gpt-test',
+		'provider_default', 'company', extensions.gen_random_uuid(), repeat('b', 64), v_wake.session_id, '{}');
+	update public.qorpera_wake_occurrences set run_id = v_run, status = 'materialized' where id = v_wake.id;
+end $$;
+set session_replication_role = origin;
+select set_config('qorpera_test.drop_author', pg_temp.sql_save('member-actions-drop-author-0001', jsonb_build_array(
+	pg_temp.edit_group('g3', '66100000-0000-4000-8000-0000000000e3', 'G3',
+		array['64800000-0000-4000-8000-0000000000c0', '66100000-0000-4000-8000-0000000000b0']::uuid[],
+		array['64800000-0000-4000-8000-000000000002']::uuid[]))), false) \g /dev/null
+do $$
+declare v_retry text; v_save text;
+begin
+	perform pg_temp.hold_conversation('66100000-0000-4000-8000-0000000000e3');
+	perform dblink_send_query('fence_two', $q$select public.qorpera_retry_room_delivery('66100000-0000-4000-8000-0000000000f3',
+		'64800000-0000-4000-8000-0000000000b1', 1)::text$q$);
+	if not pg_temp.waits_for('fence_two', 'fence_three') then raise exception 'L: the retry must wait at the conversation'; end if;
+	perform dblink_send_query('fence_one', current_setting('qorpera_test.drop_author'));
+	if not pg_temp.waits_for('fence_one', 'fence_two') then raise exception 'L: the author''s removal must wait for the retry'; end if;
+	perform dblink_exec('fence_three', 'rollback');
+	v_retry := pg_temp.outcome('fence_two');
+	v_save := pg_temp.outcome('fence_one');
+	if v_retry <> 'ok' or v_save <> 'ok' then raise exception 'L: the retry % and the author''s removal %', v_retry, v_save; end if;
+	if not exists (select 1 from public.qorpera_wake_occurrences where occurrence_key like 'room:66100000-0000-4000-8000-0000000000e3:%:retry:%') then
+		raise exception 'L: the retry''s wake must exist'; end if;
 end $$;
 
 select dblink_disconnect(name) from unnest(array['fence_one','fence_two','fence_three','fence_four']) name;
