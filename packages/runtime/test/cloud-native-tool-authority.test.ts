@@ -235,3 +235,24 @@ it("does not call a transport after pre-cancellation", async () => {
 	await expect(cloudToolRequest(operation, abort.signal)).rejects.toThrow("Cloud tool authority unavailable");
 	expect(operation).not.toHaveBeenCalled();
 });
+
+it("holds another call's authority read to assertActive's checks, before and after it", async () => {
+	const { run, authority, abort } = await admit();
+	// The database lacks the call: nothing changes, and the run stays open.
+	await expect(run.assertActiveWith(async () => undefined, abort.signal)).resolves.toBe(false);
+	expect(run.signal.aborted).toBe(false);
+	// Its answer: accepted like describe's own.
+	const read = vi.fn(async () => structuredClone(authority) as unknown);
+	await expect(run.assertActiveWith(read, abort.signal)).resolves.toBe(true);
+	// Another identity closes the run.
+	await expect(
+		run.assertActiveWith(
+			async () => ({ ...structuredClone(authority), identity: { ...authority.identity, sessionId: null } }),
+			abort.signal,
+		),
+	).rejects.toThrow("Cloud tool authority unavailable");
+	expect(run.signal.aborted).toBe(true);
+	// A closed run sends nothing.
+	await expect(run.assertActiveWith(read, abort.signal)).rejects.toThrow("Cloud tool authority unavailable");
+	expect(read).toHaveBeenCalledOnce();
+});

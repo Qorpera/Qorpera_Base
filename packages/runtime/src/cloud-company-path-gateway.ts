@@ -268,10 +268,12 @@ export class CloudCompanyPathGateway {
 	readonly #identity: CloudNativeToolIdentity;
 	readonly #control: CloudCompanyPathControl;
 	readonly #store: CloudContentAddressedStore;
-	/** Paths that entered this run's model context and that no successful check has sent
-	 * yet. The database keeps every path a check sent in the run's durable read set
-	 * (qorpera_company_run_read_paths, never pruned during a run) and re-verifies that
-	 * whole set on every check, so each path is sent until one check including it succeeds. */
+	/** Paths that entered this run's model context and that the database has not yet reported
+	 * kept under exactly that name. It keeps every path a check sent in the run's durable read
+	 * set (qorpera_company_run_read_paths, never pruned during a run) and re-verifies that whole
+	 * set on every check. The set has one row per path key, which ignores letter case, so a
+	 * second spelling of a kept path is never kept under its own name: it stays here and is sent,
+	 * and checked, on every call, as when the host sent its whole list. */
 	readonly #unconfirmed = new Set<string>();
 	readonly #confirmed = new Set<string>();
 	/** The database has no one-call fence yet (a runtime ahead of 20260929400000). */
@@ -344,16 +346,16 @@ export class CloudCompanyPathGateway {
 	}
 
 	/** Required before every model request, including prewarm and compaction. SQL checks
-	 * the run's whole read set; only paths it has not confirmed yet are sent. */
+	 * the run's whole read set; only paths not reported kept yet are sent. This check reports
+	 * nothing kept, so it confirms nothing: the paths go again until the one-call fence
+	 * reports them kept under exactly that name. */
 	async assertReadableContext(signal: AbortSignal): Promise<void> {
-		const paths = [...this.#unconfirmed];
 		const checked = await this.#call(
 			"qorpera_assert_company_path_reads",
-			{ ...this.#bound(), p_paths: paths },
+			{ ...this.#bound(), p_paths: [...this.#unconfirmed] },
 			signal,
 		);
 		if (checked !== null) throw new Error("Invalid Company File context authorization");
-		this.#confirm(paths);
 	}
 
 	async #readVersion(
@@ -445,7 +447,8 @@ export class CloudCompanyPathGateway {
 	 * rounds: run authority and the run's read set, again, then records this view
 	 * (which checks both itself), then both once more. Returns the run's authority as
 	 * the last check read it, or undefined when the database does not have the call
-	 * yet; the caller then makes the separate calls, all of them.
+	 * yet; the caller then makes the separate calls, all of them. Of the paths sent, it
+	 * confirms only those the call reports kept under exactly that name.
 	 */
 	async fenceContextView(
 		frame: CloudNativeFenceRequest,
@@ -470,11 +473,17 @@ export class CloudCompanyPathGateway {
 			}
 			throw error;
 		}
-		const fenced = closed(value, ["schema", "authority", "receipt"]);
-		if (fenced.schema !== "qorpera.native-context-fence/v1")
+		const fenced = closed(value, ["schema", "authority", "receipt", "kept"]);
+		const sent = new Set(paths);
+		if (
+			fenced.schema !== "qorpera.native-context-fence/v1" ||
+			!Array.isArray(fenced.kept) ||
+			fenced.kept.some((path) => typeof path !== "string" || !sent.has(path))
+		)
 			throw new Error("Native context provenance was not confirmed");
 		this.#assertContextReceipt(fenced.receipt, frame);
-		this.#confirm(paths);
+		// Only the paths the read set holds under exactly that name; another spelling goes again.
+		this.#confirm(fenced.kept as string[]);
 		return fenced.authority;
 	}
 

@@ -1,4 +1,3 @@
-import { performance } from "node:perf_hooks";
 import type { JsonValue } from "@qorpera/contracts";
 import { CloudActionReviewChannel, type CloudActionReviewer } from "./cloud-action-review.ts";
 import { runCloudCodexToolSession } from "./cloud-codex-tool-session.ts";
@@ -139,17 +138,19 @@ export async function runCloudNativeRunToolSession(options: {
 		): Promise<boolean> => {
 			const observation = options.observability?.start("context_authority");
 			try {
-				const started = performance.now();
-				const authority = await cloudToolRequest(
-					(requestSignal) => fence(frame, outputs, requestSignal),
-					signal,
-					CLOUD_NATIVE_FENCE_CALL_TIMEOUT_MS,
-				);
-				if (authority === undefined) {
+				// Through the run's own check: refused before sending once the run is closed or its
+				// authority lapsed, cancelled if the run closes meanwhile, and the authority it read
+				// is held to what assertActive holds its own read to.
+				if (
+					!(await run.assertActiveWith(
+						(requestSignal) => fence(frame, outputs, requestSignal),
+						signal,
+						CLOUD_NATIVE_FENCE_CALL_TIMEOUT_MS,
+					))
+				) {
 					observation?.finish("failed", { errorCategory: "unavailable_tool" });
 					return false;
 				}
-				await run.acceptAuthority(authority, started, signal);
 				observation?.finish("succeeded");
 				return true;
 			} catch (error) {

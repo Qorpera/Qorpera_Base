@@ -373,7 +373,8 @@ async function fixture(
 				);
 				const authority = await control.describeToolAuthority();
 				await pathCall("qorpera_assert_company_path_reads", reads, signal);
-				return { schema: "qorpera.native-context-fence/v1", authority, receipt };
+				// The synthetic read set keeps every sent path under its own name.
+				return { schema: "qorpera.native-context-fence/v1", authority, receipt, kept: args.p_paths };
 			}
 			if (method === "qorpera_record_native_context_view")
 				return {

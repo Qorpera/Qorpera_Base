@@ -9,8 +9,8 @@ export class CloudCompanyPathRpcRefusal extends CloudRuntimeDiagnosticError {
 }
 
 /** A complete PostgREST PGRST202 response: the database has no such function yet
- * (a runtime ahead of its migration). Nothing ran. Only the one-call context fence
- * acts on it, by falling back to the separate calls it replaces. */
+ * (a runtime ahead of its migration). Nothing ran. Branded only for the one-call context
+ * fence, which falls back to the separate calls it replaces. */
 export class CloudCompanyPathRpcMissing extends CloudRuntimeDiagnosticError {
 	constructor() {
 		super("unavailable_tool", "Company File authority unavailable");

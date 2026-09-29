@@ -1033,31 +1033,110 @@ describe("cloud Company File path gateway", () => {
 		);
 		expect(description("company_delete")).not.toContain("COMPANY_FILE_PARENT_MISSING");
 	});
-	it("sends each context path until a check that included it succeeds", async () => {
+	/** The one call as the database answers it: its read set keeps one row per path key (letter
+	 * case aside), and it reports the sent paths it holds under exactly that name. */
+	function keptFence(f: ReturnType<typeof fixture>) {
+		const authority = { schema: CLOUD_NATIVE_TOOL_AUTHORITY_SCHEMA, validForMs: 30_000, identity: f.identity };
+		const kept = new Set<string>();
+		const fence = vi.fn(async (args: Record<string, unknown>) => {
+			const paths = args.p_paths as string[];
+			for (const path of paths)
+				if (![...kept].some((row) => row.toLowerCase() === path.toLowerCase())) kept.add(path);
+			return {
+				schema: "qorpera.native-context-fence/v1",
+				authority,
+				receipt: await f.defaultCall("qorpera_record_native_context_view", args),
+				kept: paths.filter((path) => kept.has(path)),
+			};
+		});
+		f.overrides.set("qorpera_fence_native_context", fence);
+		const frame = (requestId: string): CloudNativeFenceRequest => ({
+			schema: "qorpera.native-result-fence/v1",
+			requestId,
+			threadId: "thread-1",
+			turnId: "turn-1",
+			purpose: "turn",
+			outputs: [],
+		});
+		const sent = () =>
+			f.call.mock.calls
+				.filter(
+					([method]) =>
+						method === "qorpera_assert_company_path_reads" || method === "qorpera_fence_native_context",
+				)
+				.map(([method, args]) => [method === "qorpera_fence_native_context" ? "fence" : "check", args.p_paths]);
+		return { authority, fence, frame, sent };
+	}
+
+	it("sends each context path until the one call reports it kept under that exact name", async () => {
 		const f = fixture();
 		await f.seed("a.md", "A");
 		await f.seed("b.md", "B");
 		await f.seed("c.md", "C");
-		const sent = () =>
-			f.call.mock.calls
-				.filter(([method]) => method === "qorpera_assert_company_path_reads")
-				.map(([, args]) => args.p_paths);
+		const { fence, frame, sent } = keptFence(f);
 		await f.gateway.read("a.md", 0, 64, f.signal);
 		await f.gateway.read("b.md", 0, 64, f.signal);
+		// A separate check reports nothing kept, so it confirms nothing.
 		await f.gateway.assertReadableContext(f.signal);
+		await f.gateway.assertReadableContext(f.signal);
+		await f.gateway.fenceContextView(frame("request-1"), [], f.signal);
 		await f.gateway.read("c.md", 0, 64, f.signal);
-		// A check that fails (or times out) confirmed nothing: its paths go again.
-		f.overrides.set("qorpera_assert_company_path_reads", async () => {
+		await f.gateway.assertReadableContext(f.signal);
+		// A call that fails (or times out) confirmed nothing: its paths go again.
+		f.overrides.set("qorpera_fence_native_context", async () => {
 			throw new Error("PRIVATE_TIMEOUT");
 		});
-		await expect(f.gateway.assertReadableContext(f.signal)).rejects.toThrow();
-		f.overrides.delete("qorpera_assert_company_path_reads");
-		await f.gateway.assertReadableContext(f.signal);
-		await f.gateway.assertReadableContext(f.signal);
-		// A path read again after it was confirmed is not sent again.
+		await expect(f.gateway.fenceContextView(frame("request-2"), [], f.signal)).rejects.toThrow();
+		f.overrides.set("qorpera_fence_native_context", fence);
+		await f.gateway.fenceContextView(frame("request-3"), [], f.signal);
+		await f.gateway.fenceContextView(frame("request-4"), [], f.signal);
+		// A path read again after it was kept is not sent again.
 		await f.gateway.read("a.md", 0, 64, f.signal);
 		await f.gateway.assertReadableContext(f.signal);
-		expect(sent()).toEqual([["a.md", "b.md"], ["c.md"], ["c.md"], [], []]);
+		expect(sent()).toEqual([
+			["check", ["a.md", "b.md"]],
+			["check", ["a.md", "b.md"]],
+			["fence", ["a.md", "b.md"]],
+			["check", ["c.md"]],
+			["fence", ["c.md"]],
+			["fence", ["c.md"]],
+			["fence", []],
+			["check", []],
+		]);
+		// A kept path the host did not send is not an answer to this call.
+		await f.gateway.read("b.md", 0, 64, f.signal);
+		f.overrides.set("qorpera_fence_native_context", async (args) => ({ ...(await fence(args)), kept: ["z.md"] }));
+		await expect(f.gateway.fenceContextView(frame("request-5"), [], f.signal)).rejects.toThrow(
+			"Native context provenance was not confirmed",
+		);
+	});
+
+	it("keeps sending a second spelling of a kept path, as the whole list did (review 551)", async () => {
+		// The model looks up Later.md and later.md: the database keeps one row for the pair, under
+		// Later.md. When the file later appears as Later.md, only a check sent later.md refuses
+		// (a second spelling of an existing file), as it did when the host sent its whole list.
+		const f = fixture();
+		await f.seed("Later.md", "A");
+		await f.seed("later.md", "B");
+		const { frame, sent } = keptFence(f);
+		await f.gateway.read("Later.md", 0, 64, f.signal);
+		await f.gateway.read("later.md", 0, 64, f.signal);
+		await f.gateway.fenceContextView(frame("request-1"), [], f.signal);
+		await f.gateway.fenceContextView(frame("request-2"), [], f.signal);
+		await f.gateway.assertReadableContext(f.signal);
+		f.overrides.set("qorpera_fence_native_context", async (args) => {
+			if ((args.p_paths as string[]).includes("later.md")) throw new CloudCompanyPathRpcRefusal();
+			throw new Error("A second spelling was not sent");
+		});
+		await expect(f.gateway.fenceContextView(frame("request-3"), [], f.signal)).rejects.toBeInstanceOf(
+			CloudCompanyPathRpcRefusal,
+		);
+		expect(sent()).toEqual([
+			["fence", ["Later.md", "later.md"]],
+			["fence", ["later.md"]],
+			["check", ["later.md"]],
+			["fence", ["later.md"]],
+		]);
 	});
 
 	it("fences a model request in one call and falls back only when the database lacks it", async () => {
@@ -1068,6 +1147,7 @@ describe("cloud Company File path gateway", () => {
 			schema: "qorpera.native-context-fence/v1",
 			authority,
 			receipt: await f.defaultCall("qorpera_record_native_context_view", args),
+			kept: args.p_paths,
 		}));
 		f.overrides.set("qorpera_fence_native_context", fence);
 		const frame = (requestId: string): CloudNativeFenceRequest => ({
@@ -1209,13 +1289,11 @@ describe("cloud Company File path gateway", () => {
 		expect(envelope.provenance.companyReadId).toBe(JSON.parse(envelope.content.text).readObservationId);
 		expect(f.confirmations.get(envelope.provenance.companyReadId)).toBe(envelope.content.sha256);
 		await f.gateway.assertReadableContext(f.signal);
-		// The check before release sent the path once; the database keeps it in the run's read
-		// set and re-checks it on every later check, so it is not sent again.
-		const sent = f.call.mock.calls
-			.filter(([method]) => method === "qorpera_assert_company_path_reads")
-			.map(([, args]) => args.p_paths);
-		expect(sent.flat()).toEqual(["note.md"]);
-		expect(sent.at(-1)).toEqual([]);
+		expect(f.call).toHaveBeenLastCalledWith(
+			"qorpera_assert_company_path_reads",
+			expect.objectContaining({ p_paths: ["note.md"] }),
+			expect.any(AbortSignal),
+		);
 	});
 
 	it("downloads only intersecting chunks and resumes without splitting UTF-8", async () => {

@@ -37,13 +37,15 @@ begin
 	return jsonb_build_object('schema','qorpera.native-context-fence/v1','authority',v_authority,'receipt',v_receipt);
 end
 $$;
--- A call's answer (without its generated ids and times), or the SQLSTATE it refused with. Rolled back either way.
+-- A call's answer (without its generated ids and times, and without the one call's "kept", which the
+-- separate calls do not report and which is pinned below), or the SQLSTATE it refused with. Rolled back
+-- either way.
 create function pg_temp.fence_outcome(p_call text) returns text language plpgsql as $$
 declare v_value jsonb;
 begin
 	begin
 		execute p_call into v_value;
-		raise exception using errcode = 'QTF00', message = (v_value #- '{receipt,viewId}' #- '{authority,validForMs}')::text;
+		raise exception using errcode = 'QTF00', message = ((v_value - 'kept') #- '{receipt,viewId}' #- '{authority,validForMs}')::text;
 	exception when sqlstate 'QTF00' then return sqlerrm;
 		when others then return sqlstate;
 	end;
@@ -146,6 +148,8 @@ begin
 		or v_result -> 'receipt' <> v_replay
 		or v_result #> '{authority,identity}' <> public.qorpera_describe_native_tool_authority(v_binding) -> 'identity'
 		or (v_result #>> '{authority,validForMs}')::bigint not between 1 and 30000
+		-- 290's read kept note.md under exactly that name.
+		or v_result -> 'kept' is distinct from '["note.md"]'::jsonb
 		or (select count(*) from public.qorpera_native_context_views where run_id = (v_binding ->> 'runId')::uuid
 			and request_id = 'answer-1') <> 1 then
 		raise exception 'One-call fence answer differs: %', v_result; end if;
@@ -158,15 +162,15 @@ $$;
 -- call, so a path the host leaves out is still checked.
 do $$
 declare v_binding jsonb := current_setting('qorpera_test.path_binding')::jsonb; v_run uuid := (current_setting('qorpera_test.path_binding')::jsonb ->> 'runId')::uuid;
-	v_environment uuid := '29000000-0000-4000-8000-000000000020';
+	v_environment uuid := '29000000-0000-4000-8000-000000000020'; v_result jsonb;
 begin
 	-- note.md entered the set when 290 read it; a path only the host knows (a write) enters with its first call.
 	set local role service_role;
-	perform public.qorpera_fence_native_context(v_environment,v_binding,array['notes/written.md'],pg_temp.fence_view('set-1'));
+	v_result := public.qorpera_fence_native_context(v_environment,v_binding,array['notes/written.md'],pg_temp.fence_view('set-1'));
 	reset role;
 	if (select array_agg(path order by path) from public.qorpera_company_run_read_paths where run_id = v_run)
-		is distinct from array['note.md','notes/written.md'] then
-		raise exception 'The run read set did not keep the sent path'; end if;
+		is distinct from array['note.md','notes/written.md'] or v_result -> 'kept' is distinct from '["notes/written.md"]'::jsonb then
+		raise exception 'The run read set did not keep the sent path: %', v_result -> 'kept'; end if;
 	update public.qorpera_company_path_grants set revoked_at = clock_timestamp() where id = current_setting('qorpera_test.path_grant')::uuid;
 	-- Each path alone, left out by the host, still stops the next model request.
 	for v_path in 0..1 loop
@@ -189,6 +193,38 @@ begin
 	reset role;
 	if exists (select 1 from public.qorpera_native_context_views where run_id = v_run and request_id = 'omitted') then
 		raise exception 'A refused call recorded its view'; end if;
+	raise exception using errcode = 'QTF03';
+exception when sqlstate 'QTF03' then reset role;
+end
+$$;
+
+-- A second spelling (review 551). The run's read set keeps one row per path key, which ignores letter case, so
+-- the call reports kept only the sent paths it holds under exactly that name, and the host sends every other
+-- spelling again on every call, as when it sent its whole list. Here the model looked up Later.md and
+-- later.md while neither existed, and the file then appears as Later.md: the next call is refused because the
+-- host still sends later.md. Had the host stopped sending it, the call would have been answered.
+do $$
+declare v_binding jsonb := current_setting('qorpera_test.path_binding')::jsonb; v_result jsonb; v_outcome text;
+	v_environment uuid := '29000000-0000-4000-8000-000000000020';
+begin
+	perform pg_temp.path_claims('service_role');
+	set local role service_role;
+	v_result := public.qorpera_fence_native_context(v_environment,v_binding,array['Later.md','later.md'],pg_temp.fence_view('alias-1'));
+	if v_result -> 'kept' is distinct from '["Later.md"]'::jsonb then
+		raise exception 'One-call fence reported a second spelling kept: %', v_result -> 'kept'; end if;
+	v_result := public.qorpera_fence_native_context(v_environment,v_binding,array['later.md'],pg_temp.fence_view('alias-2'));
+	if v_result -> 'kept' is distinct from '[]'::jsonb then
+		raise exception 'One-call fence reported a second spelling kept: %', v_result -> 'kept'; end if;
+	perform pg_temp.path_commit(pg_temp.path_plan('create-later','Later.md',pg_temp.path_stage_file('Later.md','Later text')));
+	v_outcome := pg_temp.fence_outcome(format('select public.qorpera_fence_native_context(%L::uuid,%L::jsonb,%L::text[],%L::jsonb)',
+		v_environment, v_binding, array['later.md'], pg_temp.fence_view('alias-3')));
+	if v_outcome is distinct from '42501' then
+		raise exception 'The second spelling, sent again, was not refused: %', v_outcome; end if;
+	-- The same call without it passes: the refusal came from the second spelling alone.
+	v_outcome := pg_temp.fence_outcome(format('select public.qorpera_fence_native_context(%L::uuid,%L::jsonb,%L::text[],%L::jsonb)',
+		v_environment, v_binding, '{}'::text[], pg_temp.fence_view('alias-4')));
+	if v_outcome not like '{%' then raise exception 'The kept spelling alone was refused: %', v_outcome; end if;
+	reset role;
 	raise exception using errcode = 'QTF03';
 exception when sqlstate 'QTF03' then reset role;
 end

@@ -202,6 +202,20 @@ describe("Company File bounded control transport", () => {
 		expect(transport).toHaveBeenCalledOnce();
 	});
 
+	it("brands a missing function only for the one-call fence", async () => {
+		const transport = vi.fn<typeof fetch>(async () =>
+			Response.json(
+				{ code: "PGRST202", message: "Could not find the function", details: null, hint: null },
+				{ status: 404 },
+			),
+		);
+		const error = await fixture(transport)
+			.call("qorpera_assert_company_path_reads", {}, new AbortController().signal)
+			.catch((error: unknown) => error);
+		expect(error instanceof CloudCompanyPathRpcMissing).toBe(false);
+		expect((error as CloudRuntimeDiagnosticError).category).toBe("transport_unavailable");
+	});
+
 	it.each([200, 403])("bounds stalled success and denial bodies (%i) and cancels the reader", async (status) => {
 		vi.useFakeTimers();
 		const cancel = vi.fn();

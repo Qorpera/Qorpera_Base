@@ -284,20 +284,45 @@ export class CloudNativeToolRun {
 	 * another read of the same run, which the database serialises on the job row.
 	 */
 	async assertActive(signal: AbortSignal, timeoutMs?: number): Promise<void> {
+		await this.#check(
+			(requestSignal) => this.#reader.describeToolAuthority(this.binding, requestSignal),
+			signal,
+			timeoutMs,
+		);
+	}
+
+	/**
+	 * assertActive with another cloud call that reads the run's authority in its own
+	 * transaction (the one-call context fence reads it with the same describe function).
+	 * The same checks before the call (not closed, the last authority not lapsed) and after
+	 * it (same identity, not expired, new deadline), in the same order as every other check.
+	 * Returns false, changing nothing, when `read` returns undefined: the database lacks the
+	 * call and nothing ran.
+	 */
+	async assertActiveWith(
+		read: (signal: AbortSignal) => Promise<unknown>,
+		signal: AbortSignal,
+		timeoutMs?: number,
+	): Promise<boolean> {
+		return this.#check(read, signal, timeoutMs, true);
+	}
+
+	async #check(
+		read: (signal: AbortSignal) => Promise<unknown>,
+		signal: AbortSignal,
+		timeoutMs: number | undefined,
+		unavailableIsUndefined = false,
+	): Promise<boolean> {
 		const combined = AbortSignal.any([signal, this.signal]);
+		let applied = false;
 		const check = this.#checking.then(async () => {
 			combined.throwIfAborted();
 			if (this.#identity && performance.now() >= this.#deadline) throw new Error("Cloud tool authority expired");
 			const started = performance.now();
-			this.#apply(
-				await cloudToolRequest(
-					(requestSignal) => this.#reader.describeToolAuthority(this.binding, requestSignal),
-					combined,
-					timeoutMs,
-				),
-				started,
-				combined,
-			);
+			const value = await cloudToolRequest(read, combined, timeoutMs);
+			if (unavailableIsUndefined && value === undefined) return;
+			this.#apply(value, started, combined);
+			applied = true;
 		});
 		this.#checking = check.catch(() => {
 			this.close();
@@ -309,31 +334,7 @@ export class CloudNativeToolRun {
 			// The cause only tells a timed-out check apart in observations.
 			throw new Error("Cloud tool authority unavailable", { cause: error });
 		}
-	}
-
-	/**
-	 * Takes the authority another cloud call read in its own transaction (the one-call
-	 * context fence reads it with the same describe function), with the checks
-	 * assertActive applies to its own read: same identity, not expired, new deadline.
-	 * `started` is when that call was sent.
-	 */
-	async acceptAuthority(value: unknown, started: number, signal: AbortSignal): Promise<void> {
-		const combined = AbortSignal.any([signal, this.signal]);
-		const check = this.#checking.then(() => {
-			combined.throwIfAborted();
-			// The call was sent after the last known authority lapsed: as assertActive, refuse.
-			if (this.#identity && started >= this.#deadline) throw new Error("Cloud tool authority expired");
-			this.#apply(value, started, combined);
-		});
-		this.#checking = check.catch(() => {
-			this.close();
-		});
-		try {
-			await check;
-		} catch (error) {
-			this.close();
-			throw new Error("Cloud tool authority unavailable", { cause: error });
-		}
+		return applied;
 	}
 
 	#apply(value: unknown, started: number, signal: AbortSignal): void {

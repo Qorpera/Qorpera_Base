@@ -187,7 +187,9 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 					if (response.status === 403 && postgrestError("42501")) throw new CloudCompanyPathRpcRefusal();
 					if (response.status === 412 && postgrestError("PT412")) throw new CloudCompanyPathRpcPrecondition();
 					if (response.status === 424 && postgrestError("PT424")) throw new CloudCompanyPathRpcParentMissing();
-					if (response.status === 404 && postgrestError("PGRST202")) throw new CloudCompanyPathRpcMissing();
+					// Only the one-call fence acts on a missing function; every other call keeps its category.
+					if (method === "qorpera_fence_native_context" && response.status === 404 && postgrestError("PGRST202"))
+						throw new CloudCompanyPathRpcMissing();
 					if (
 						response.status === 409 &&
 						value &&
