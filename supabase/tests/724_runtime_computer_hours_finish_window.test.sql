@@ -1,5 +1,5 @@
 -- @fixture 300_runtime_wake_bus.test.sql until "-- END WAKE FIXTURE"
--- Computer hours, build step 6c part 3b (20260929270000_runtime_computer_hours_finish_window): running
+-- Computer hours, build step 6c part 3b (20260928259270_runtime_computer_hours_finish_window): running
 -- work may finish for one hour at zero. Then the orchestrator heartbeat ends the company's leased
 -- jobs (failed, no retry) and fails its queued ones, with "Out of computer hours
 -- [code=COMPUTER_HOURS_EXHAUSTED]"; an in-house worker so ended reports "out of computer hours".

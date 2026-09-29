@@ -13,7 +13,10 @@ export class ReceivedAttachments {
 	readonly #lifetime = new AbortController();
 	readonly #urls = new Set<string>();
 	#preview: SurfaceDialog | undefined;
+	/** The message the files belong to; a preview asks for its bytes by the message's current id. */
+	#message: TranscriptMessage;
 	constructor(message: TranscriptMessage, load?: WorkspaceActions["previewAttachment"]) {
+		this.#message = message;
 		const attachments =
 			message.attachments ??
 			Array.from({ length: message.attachmentCount }, () => ({
@@ -62,7 +65,7 @@ export class ReceivedAttachments {
 						pending = true;
 						try {
 							if (!url) {
-								const blob = await load(message.id, index, this.#lifetime.signal);
+								const blob = await load(this.#message.id, index, this.#lifetime.signal);
 								if (this.#lifetime.signal.aborted) return;
 								if (!blob.size || blob.size > 25 * 1024 * 1024 || !SAFE_IMAGES.has(blob.type)) {
 									status.textContent = t("Preview unavailable");
@@ -117,6 +120,11 @@ export class ReceivedAttachments {
 			);
 			this.el.append(card);
 		});
+	}
+	/** The same files under the message's next id: the browser's copy of a sent message becomes
+	 * the cloud's waiting input and then the transcript's message, and the files stay as shown. */
+	follow(message: TranscriptMessage): void {
+		this.#message = message;
 	}
 	dispose(): void {
 		this.#lifetime.abort();
