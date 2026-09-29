@@ -28,9 +28,29 @@ An agent picks the size (CPUs, memory, disk). Inside, the agent's commands run a
 
 `setup-machine-network.sh` creates the machine network (default `machine-net`, `10.88.0.1/22`). It is a NAT bridge with IPv4 only and an ACL that drops these destinations:
 
-- 0/8, 10/8, 100.64/10, 127/8, 169.254/16, 172.16/12, 192.0.0/24, 192.168/16, 198.18/15, 224/4 and 240/4.
+- 0/8, 10/8, 100.64/10, 127/8, 169.254/16, 172.16/12, 192.0.0/24, 192.168/16, 198.18/15, 224/4 and 240/4;
+- except two addresses, left out of those ranges by exact CIDRs (61 ranges, plus 2 rules for the gateway's ports): the bridge's gateway, where TCP and UDP are open only for DNS (53) and DHCP (67) (ICMP to it is not dropped), and 255.255.255.255, where a DHCP discover goes.
+
+LXD applies drop and reject rules before allow rules, and its baseline DHCP and DNS allowances do not open a hole in them (seen on node 2, `deploy/test-machine/README.md`). An ACL that drops 10/8 or 240/4 whole leaves machines without an address; the script refuses one it finds (replace it: `lxc network unset <network> security.acls && lxc network acl delete <network>-egress`, then run the script again).
 
 Together these cover the NAS and the node LAN, Tailscale, cloud metadata, the other bridges and the node itself. Other outbound traffic is allowed and all inbound is dropped. Each machine's NIC carries MAC and IPv4 filtering and port isolation, so machines on the bridge cannot reach each other. Offices refuse networks with ACLs, so this network is used by machines only.
+
+### Proof on node 2 (2026-09-29)
+
+Run inside node 2's operator test VM with nested LXD 6.9 (`deploy/test-machine/README.md`), so nothing on node 2's own LXD changed. It was the real code at #419's head: `setup-machine-network.sh`, `build-machine-image.sh`, and `prove-machine-node.ts`, which runs the executor's journaled lifecycle, guest helper and commands with an in-memory kernel. A loopback NFSv4 export stood in for the NAS.
+
+| Check | Result |
+| --- | --- |
+| Network | The bridge and 63-rule ACL came up as designed. Machines got their address by DHCP and resolved names through the gateway |
+| Image | Built in 243 s (Ubuntu 26.04, Docker 29, Compose 2.40.3, Node 24.21.0), 1.1 GiB; its own checks passed |
+| Machine | 4 CPUs, 8 GiB, 40 GiB disk, usable 63 s after the first pass |
+| Docker | `hello-world` as root, and a Compose stack (Postgres, healthcheck, `psql`) up and down |
+| Out | HTTPS to github.com works, and a TCP connect to 1.1.1.1:443 succeeds |
+| Dropped (TCP connect times out) | The bridge gateway's SSH, the test VM's own and node 2's SSH, another bridge's DNS, the NAS (22, 2049), cloud metadata, Tailscale |
+| Qorpera | `npm ci` and `npm run test:hosted-db` inside the machine: 471 migrations and 137 tests passed |
+| Delete | A running `sleep 3600` stopped with the machine, which was deleted and released |
+
+Nested KVM also works inside a machine (`/dev/kvm`, `svm` on every CPU). Docker's default AppArmor profile blocks remounting `/sys/fs/cgroup` read-write, so a container that runs systemd needs `--security-opt apparmor=unconfined` (the test machine's note).
 
 ### A coding session's repository
 
@@ -47,6 +67,7 @@ The steps below need root on the node and a maintenance window. The coordinator 
    - `deploy/machine/setup-machine-network.sh machine-net 10.88.0.1/22`
    - Keep the printed network and ACL as evidence.
    - The storage pool is the node's VM pool (ZFS), for example `qorpera-vm`. Machines get their own root disks.
+   - The host must forward the bridge's traffic. Nodes 1 and 2 run no Docker. On a host that does, Docker sets the FORWARD policy to drop, and machines resolve names but reach nothing. Allow the bridge there (`iptables -I DOCKER-USER -i machine-net -j ACCEPT` and `iptables -I DOCKER-USER -o machine-net -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT`, repeated after a reboot). The ACL still applies, because LXD's rules live in their own table.
 3. **Build the image** in a quiet window. The builder VM makes the node "unavailable" until it is deleted.
    `deploy/machine/build-machine-image.sh /task-owned/machine-guest <node-version> <node-sha256> machines machine-net > image-build.json`
    Take the Node.js tarball's sha-256 from nodejs.org's `SHASUMS256.txt`.
