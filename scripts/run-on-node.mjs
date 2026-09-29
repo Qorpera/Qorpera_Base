@@ -4,6 +4,7 @@ import { existsSync, lstatSync, mkdtempSync, readFileSync, readlinkSync, rmSync,
 import { constants, homedir, hostname, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { describePlan, planChanged, planScript } from "./run-on-node-plan.mjs";
 
 /** Runs one test suite on the operator test machine on node 2 instead of Docker on a
  * developer Mac (contract 24.1). The working tree git would see (tracked plus untracked,
@@ -14,7 +15,8 @@ import { pathToFileURL } from "node:url";
 const USAGE = `Usage: node scripts/run-on-node.mjs [options] <suite> [-- args]
        node scripts/run-on-node.mjs [options] -- <command...>
 
-Suites: test                 npm test, the whole repository (builds the shared packages first)
+Suites: changed              what the files changed against --base need (scripts/run-on-node-plan.mjs)
+        test                 npm test, the whole repository (builds the shared packages first)
         hosted-db            npm run test:hosted-db (no npm ci needed)
         npm:<script>         npm run <script>
         scripts/<file>.mjs   node scripts/<file>.mjs
@@ -26,6 +28,7 @@ Options: --install / --no-install   run npm ci --ignore-scripts first (default: 
          --keep                     keep the run directory on the test machine
          --record FILE              also write the run record as JSON to FILE
          --allow-secrets            copy untracked files that look like secrets (.env*, *.pem, keys)
+         --base REF                 compare against REF for changed (default: origin/master)
          --dry-run                  print what would run, change nothing
 
 Target (environment): QORPERA_TEST_MACHINE      default tester@10.201.0.2
@@ -51,6 +54,7 @@ export function parseArgs(argv) {
 		record: null,
 		allowSecrets: false,
 		dryRun: false,
+		base: "origin/master",
 	};
 	let i = 0;
 	for (; i < argv.length && argv[i] !== "--" && argv[i].startsWith("--"); i++) {
@@ -63,10 +67,14 @@ export function parseArgs(argv) {
 		else if (flag === "--keep") options.keep = true;
 		else if (flag === "--allow-secrets") options.allowSecrets = true;
 		else if (flag === "--dry-run") options.dryRun = true;
-		else if (flag === "--env" || flag === "--record") {
+		else if (flag === "--env" || flag === "--record" || flag === "--base") {
 			const value = argv[++i];
 			if (value === undefined) throw new Error(`${flag} needs a value`);
 			if (flag === "--record") options.record = value;
+			else if (flag === "--base") {
+				if (!/^[A-Za-z0-9._/@^~-]+$/.test(value)) throw new Error(`Invalid --base ${value}`);
+				options.base = value;
+			}
 			else {
 				const equals = value.indexOf("=");
 				if (equals < 1 || !NAME.test(value.slice(0, equals))) throw new Error(`Invalid --env ${value}`);
@@ -85,6 +93,11 @@ export function parseArgs(argv) {
 		if (!suite) throw new Error(USAGE);
 		if (rest[1] !== undefined && rest[1] !== "--") throw new Error(`Put suite arguments after --\n\n${USAGE}`);
 		const extra = rest.slice(2);
+		if (suite === "changed") {
+			if (extra.length) throw new Error("changed takes no suite arguments");
+			// The plan, and with it the command and the build, is made from git in main().
+			return { ...options, install: options.install ?? true, build: options.build, suite, command: [] };
+		}
 		const base = suiteCommand(suite);
 		// npm keeps --flags after the script name for itself unless they follow a literal --.
 		command = base[0] === "npm" && extra.length ? [...base, "--", ...extra] : [...base, ...extra];
@@ -279,6 +292,16 @@ def r(c):
  except Exception: return None
 print(json.dumps({"machine":p.node(),"kernel":p.release(),"os":r(["sh","-c",". /etc/os-release; echo $PRETTY_NAME"]),"node":r(["node","--version"]),"npm":r(["npm","--version"]),"docker":r(["docker","version","--format","{{.Server.Version}}"]),"git":r(["git","--version"]),"cpus":r(["nproc"]),"kvm":os.path.exists("/dev/kvm")}))'`;
 
+/** Paths changed against the merge base with `base`: committed, uncommitted and untracked. */
+export function changedFiles(root, base, untracked) {
+	const mergeBase = git(root, ["merge-base", base, "HEAD"]).toString().trim();
+	const tracked = git(root, ["diff", "--no-ext-diff", "--name-only", "-z", mergeBase])
+		.toString("utf8")
+		.split("\0")
+		.filter(Boolean);
+	return { mergeBase, files: [...new Set([...tracked, ...untracked])].sort() };
+}
+
 async function main() {
 	const options = parseArgs(process.argv.slice(2));
 	const root = git(process.cwd(), ["rev-parse", "--show-toplevel"]).toString().trim();
@@ -287,6 +310,16 @@ async function main() {
 	const secrets = secretLooking(untracked);
 	if (secrets.length && !options.allowSecrets)
 		throw new Error(`Untracked files that look like secrets would be copied (use --allow-secrets): ${secrets.join(", ")}`);
+	if (options.suite === "changed") {
+		const { mergeBase, files: changed } = changedFiles(root, options.base, untracked);
+		const plan = planChanged(changed);
+		for (const line of describePlan(plan, `${options.base} ${mergeBase.slice(0, 9)}, ${changed.length} files`)) console.log(line);
+		if (!plan.full && !plan.steps.length) return 0;
+		if (plan.full) options.command = ["npm", "test"];
+		else options.command = ["bash", "-c", planScript(plan.steps)];
+		options.build = options.build ?? plan.build;
+		if (options.build && !options.install) throw new Error("--build needs --install");
+	}
 	const source = {
 		head: git(root, ["rev-parse", "HEAD"]).toString().trim(),
 		dirty: git(root, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]).length > 0,

@@ -37,12 +37,21 @@ does not change the digest.
 ## Running a suite
 
 ```sh
+node scripts/run-on-node.mjs changed
 node scripts/run-on-node.mjs test
 node scripts/run-on-node.mjs hosted-db
 node scripts/run-on-node.mjs --env QORPERA_OFFICE_TEST_IMAGE=node:24-bookworm-slim scripts/test-office-storage-inventory-linux.mjs
 node scripts/run-on-node.mjs --no-install -- docker run --rm hello-world
 node scripts/run-on-node.mjs --dry-run npm:test:scripts
 ```
+
+`changed` is the everyday check: it runs what the files changed against `origin/master` (or `--base REF`)
+need, and prints what it chose and why. The steps and the paths that start them are in
+[`scripts/run-on-node-plan.mjs`](../../scripts/run-on-node-plan.mjs); they replace the path filters of the
+switched-off GitHub workflows. Documentation alone runs nothing; shared configuration (`package.json`, the
+lockfile, `tsconfig`, `vitest.base.ts`, `biome.json`, `packages/contracts`, `packages/company`) and any path no
+step covers run the whole `npm test`. Every step runs even when an earlier one fails. The full `test` suite is
+for release candidates.
 
 The wrapper copies the working tree git sees: tracked and untracked files that are not ignored,
 uncommitted changes included, `node_modules` and `.git` left out. It copies them to a fresh
