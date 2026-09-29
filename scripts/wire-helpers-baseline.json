@@ -1,0 +1,50 @@
+{
+	"cloud-client": {
+		"uuidPatterns": 23,
+		"recordHelpers": 17,
+		"uuidHelpers": 10,
+		"sha256Helpers": 1
+	},
+	"company": {
+		"uuidPatterns": 3,
+		"recordHelpers": 0,
+		"uuidHelpers": 0,
+		"sha256Helpers": 0
+	},
+	"contracts": {
+		"uuidPatterns": 25,
+		"recordHelpers": 23,
+		"uuidHelpers": 5,
+		"sha256Helpers": 0
+	},
+	"member-web": {
+		"uuidPatterns": 1,
+		"recordHelpers": 0,
+		"uuidHelpers": 0,
+		"sha256Helpers": 0
+	},
+	"object-gateway": {
+		"uuidPatterns": 15,
+		"recordHelpers": 4,
+		"uuidHelpers": 1,
+		"sha256Helpers": 0
+	},
+	"runner-orchestrator": {
+		"uuidPatterns": 79,
+		"recordHelpers": 19,
+		"uuidHelpers": 7,
+		"sha256Helpers": 5
+	},
+	"runtime": {
+		"uuidPatterns": 60,
+		"recordHelpers": 31,
+		"uuidHelpers": 12,
+		"sha256Helpers": 3
+	},
+	"web": {
+		"uuidPatterns": 8,
+		"recordHelpers": 7,
+		"uuidHelpers": 3,
+		"sha256Helpers": 0
+	}
+}
