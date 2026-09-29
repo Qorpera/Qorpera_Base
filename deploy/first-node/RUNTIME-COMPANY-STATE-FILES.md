@@ -384,8 +384,9 @@ it; a different answer changes the parser and `qorpera_company_state_routine_tri
   a reopen, reviving an expired routine, more runs, a later end, a handover to another agent. A
   version on another login moves to the saver's. A pause, a conclusion, fewer runs, an earlier
   end or new quiet hours need no login.
-- A member without such a login cannot make those saves. A run whose requester has none pins the
-  run's login, and the routine waits (`needs_model_account`). Unlike an agent's save today, the
+- A member without such a login cannot make those saves, and neither can an agent acting with no
+  run (a coding session, or a desktop whose run ended: C1b-3a's views) for a member without one. A
+  run whose requester has none pins the run's login, and the routine waits (`needs_model_account`). Unlike an agent's save today, the
   commit never sets up a login for unattended work (that takes the login `FOR UPDATE` and writes
   rows after the clock): the runtime's routine writer does it before its commit (F2-1b).
 - The index row's `origin` is who made the first commit: `agent` for a run, else `member`.

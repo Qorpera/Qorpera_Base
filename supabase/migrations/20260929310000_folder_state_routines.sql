@@ -17,8 +17,9 @@
 -- * Who pays (S2: a member's login pays only for work that member started): the saver's own login that pays for
 --   unattended work (qorpera_agent_routine_sponsor's rule, read without its lock on the login), for a new version and for
 --   work a save starts or extends (a resume, a revival, more runs, a later end, a handover). A version on another login
---   moves to the saver's. A member without one cannot make those saves; a run whose requester has none pins the run's,
---   and the routine waits. Unlike an agent's save today, the commit never sets up a login for unattended work (that
+--   moves to the saver's. A member without one cannot make those saves, nor can an agent with no run (a coding
+--   session, a desktop whose run ended) for such a member; a run whose requester has none pins the run's, and the
+--   routine waits. Unlike an agent's save today, the commit never sets up a login for unattended work (that
 --   takes the login FOR UPDATE and writes rows): the runtime's routine writer does that before its commit (F2-1b).
 -- * Status: the file's status is the saver's word when the save changes it (or restores the file). Otherwise a pause,
 --   expiry or suspension the platform recorded stays, until core C2's queue writes it into the file; a save still
@@ -463,9 +464,9 @@ returns boolean language sql stable set search_path = '' as $$
 $$;
 
 -- Who pays from a save on (S2: a member's login pays only for work that member started): the saver's own login that
--- pays, the version's pinned one first. When they have none, paid is false and the routine waits for a login: a run's
--- requester pins the run's login, and a member whose login stopped paying after the save was decided their newest.
--- The platform keeps the version's.
+-- pays, the version's pinned one first. When they have none, paid is false and the routine waits for a login: a run
+-- pins its own login, and anyone else whose login stopped paying after the save was decided (a member, or an agent with
+-- no run) their newest. The platform keeps the version's.
 create function public.qorpera_company_state_routine_saver_pays(p_commit public.qorpera_folder_commits, p_profile_id uuid,
 	p_current public.qorpera_cloud_routine_versions, out binding_id uuid, out version bigint, out user_id uuid, out paid boolean)
 language plpgsql stable security definer set search_path = '' as $$
@@ -481,7 +482,7 @@ begin
 		coalesce(p_current.sponsor_binding_id, p_commit.sponsor_binding_id)) p;
 	paid := binding_id is not null;
 	if paid then return; end if;
-	if p_commit.actor_kind = 'staff_agent' then
+	if p_commit.run_id is not null then
 		binding_id := p_commit.sponsor_binding_id; version := p_commit.sponsor_version;
 	else
 		select s.binding_id, s.version into binding_id, version
@@ -575,8 +576,11 @@ begin
 			|| 'reply), or conclude it with a conclusion';
 	elsif not (v_exists and public.qorpera_company_state_routine_same(v_version, v_owner, p_parse, v_trigger))
 		or public.qorpera_company_state_routine_restarts(v_row, v_prev, p_parse) then
-		if p_actor ->> 'kind' = 'member' and not exists (select 1 from public.qorpera_company_state_routine_payer(p_profile_id,
-				(p_actor ->> 'userId')::uuid, v_version.sponsor_binding_id)) then
+		-- The saver's login pays: a member's, or that of the member an agent acts for. An agent's run can pin its own and
+		-- wait for theirs; an agent with no run (a coding session, a desktop whose run ended: C1b-3a) cannot.
+		if (p_actor ->> 'kind' = 'member' or (p_actor ->> 'kind' = 'staff_agent' and jsonb_typeof(p_actor -> 'runId') is distinct from 'string'))
+			and not exists (select 1 from public.qorpera_company_state_routine_payer(p_profile_id,
+				coalesce(p_actor ->> 'userId', p_actor ->> 'requesterUserId')::uuid, v_version.sponsor_binding_id)) then
 			v_problem := 'a routine runs on the AI login of the member who saves it; connect yours in Settings, then save again';
 		elsif p_actor ->> 'kind' = 'platform' and v_version.routine_id is null then
 			v_problem := 'the platform does not start routines';
@@ -866,7 +870,7 @@ begin
 		end if;
 		-- A routine moves only into an agent's routines folder (its folder may move along), onto a name no routine row of
 		-- that agent from before the files has. Anywhere else is a kind change, which the next check refuses. A handover
-		-- to another agent is a new version: a member's needs the member's own login to pay for it.
+		-- to another agent is a new version: one by a member, or by an agent with no run, needs that member's own login.
 		if v_op = 'move' then
 			for v_carried in select r.id, r.folder_path, r.current_version from public.qorpera_cloud_routines r
 				where r.folder_environment_id = p_environment_id and r.folder_retired_at is null
@@ -894,9 +898,12 @@ begin
 						public.qorpera_company_state_problem('value', null, null,
 							'that agent has another routine called ' || public.qorpera_company_state_todo_key(v_dest)
 								|| '; choose another name'))); end if;
-				if p_actor ->> 'kind' = 'member' and exists (select 1 from public.qorpera_cloud_routine_versions cv
+				if (p_actor ->> 'kind' = 'member'
+						or (p_actor ->> 'kind' = 'staff_agent' and jsonb_typeof(p_actor -> 'runId') is distinct from 'string'))
+					and exists (select 1 from public.qorpera_cloud_routine_versions cv
 						where cv.routine_id = v_carried.id and cv.version = v_carried.current_version and cv.staff_agent_id <> v_dest_owner)
-					and not exists (select 1 from public.qorpera_company_state_routine_payer(v_profile, (p_actor ->> 'userId')::uuid, null)) then
+					and not exists (select 1 from public.qorpera_company_state_routine_payer(v_profile,
+						coalesce(p_actor ->> 'userId', p_actor ->> 'requesterUserId')::uuid, null)) then
 					return jsonb_build_object('ok', false, 'reason', 'structured_rule', 'problems', jsonb_build_array(
 						public.qorpera_company_state_problem('value', null, null,
 							'a routine handed to another agent runs on the AI login of the member who moves it; connect yours in Settings, '

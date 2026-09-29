@@ -749,6 +749,37 @@ begin
 	if x.status is distinct from 'active' or x.pause_reason is not null or v.staff_agent_id is distinct from '70700000-0000-4000-8000-0000000000a2'
 		or v.sponsor_binding_id is distinct from '70800000-0000-4000-8000-0000000000b1' then
 		raise exception 'A paid handover ends the wait: %, %', to_jsonb(x), to_jsonb(v); end if;
+	-- An agent acting with no run (a coding session, or a desktop whose run ended: C1b-3a's views) has no login of its own
+	-- to pin: the member it acts for pays, as a member's save does, and one without a paying login is refused.
+	p := 'agents/otis/routines/digest.md';
+	if (public.qorpera_company_state_routine_rules('70700000-0000-4000-8000-000000000020', '70700000-0000-4000-8000-000000000010',
+			jsonb_build_object('kind','staff_agent','staffAgentId','70700000-0000-4000-8000-0000000000a2',
+				'requesterUserId','70700000-0000-4000-8000-000000000002','audience',jsonb_build_object('kind','company'),
+				'sessionKind','coding','workerAccess','write','runId',null),
+			p, pg_temp.rparse(e9, 'Digest from code', pg_temp.every(120)), false) -> 'problems' -> 0 ->> 'message') is distinct from
+		'a routine runs on the AI login of the member who saves it; connect yours in Settings, then save again' then
+		raise exception 'An agent with no run pays with its member''s login'; end if;
+	-- The same for a handover it makes.
+	if (public.qorpera_folder_structured_decide('70700000-0000-4000-8000-000000000020',
+			jsonb_build_object('kind','staff_agent','staffAgentId','70700000-0000-4000-8000-0000000000a2',
+				'requesterUserId','70700000-0000-4000-8000-000000000002','audience',jsonb_build_object('kind','company'),
+				'sessionKind','coding','workerAccess','write','runId',null),
+			extensions.gen_random_uuid(), 1, pg_temp.move(p, 'agents/nora/routines/digest.md'), p, 'agents/nora/routines/digest.md')
+			-> 'problems' -> 0 ->> 'message') is distinct from
+		'a routine handed to another agent runs on the AI login of the member who moves it; connect yours in Settings, then move it again' then
+		raise exception 'An agent with no run hands over on its member''s login'; end if;
+	-- Should that login stop paying between the check and the save, the save still lands and waits, pinned to the
+	-- member's newest login (the commit row a detached view writes: an agent, no run, no login).
+	perform pg_temp.fx(format($f$insert into public.qorpera_folder_commits(id, environment_id, operation_key, actor_kind, actor_id,
+		requester_kind, requester_id, session_kind, units, view_id, view_kind) values (%L, %L, 'detached-0001', 'staff_agent', %L, 'member',
+		%L, 'coding', '[]', %L, 'coding_session')$f$, '70800000-0000-4000-8000-0000000000f0', '70700000-0000-4000-8000-000000000020',
+		'70700000-0000-4000-8000-0000000000a2', '70700000-0000-4000-8000-000000000002', extensions.gen_random_uuid()));
+	perform public.qorpera_company_state_index_routine('70700000-0000-4000-8000-000000000020', '70700000-0000-4000-8000-000000000010',
+		'70800000-0000-4000-8000-0000000000f0', p, pg_temp.version(p), pg_temp.rparse(e9, 'Digest from code', pg_temp.every(120)));
+	x := pg_temp.rt(e9); v := pg_temp.rv(e9);
+	if x.status is distinct from 'paused' or x.pause_reason is distinct from 'needs_model_account'
+		or v.sponsor_binding_id is distinct from '70800000-0000-4000-8000-0000000000b2' or v.created_by_user_id is distinct from '70700000-0000-4000-8000-000000000002' then
+		raise exception 'A save with no paying login waits: %, %', to_jsonb(x), to_jsonb(v); end if;
 end $$;
 
 -- 10. The member RPC refuses a folder-v2 company's routines, except rows from before -------------------------------------------
