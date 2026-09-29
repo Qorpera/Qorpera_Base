@@ -49,7 +49,7 @@ Rollback: `select cron.unschedule('qorpera-company-deletions')`. Requests then w
 |---|---|---|
 | Run machines (one-run VMs, exec-host sandboxes) | provider reconcile after the run ends | works; a guest that never got its assignment runs on (D2) |
 | Coding machines | coding executor housekeeping (retiring machine → stop, sleep, delete, release) | works |
-| Agent machines (#419) | executor, once the machine is set `deleted` | #419 merged without it: `qorpera_stop_company_work` does not set them `deleted` yet, so their allocations hold the purge |
+| Agent machines (#419) | executor, once the machine is set `deleted` | #531 adds them to `qorpera_stop_company_work`; until it lands their allocations hold the purge |
 | Company Computers | office provider: power off (works), delete and release (D3) | D3; live once the D3b provider build is installed per office |
 | Sign-in identity volumes on the exec host, recovery volumes | login gateway / LXD provider (D4) | D4 |
 | Credential capsules and recovery backups in storage | deleted-company storage queue (D5) | D5 |
@@ -98,9 +98,14 @@ records what it waits for.
      `.retired-<sha12>` (root 0400), `install -m 0444` the new build to `.new`, move it over the live
      file, restart the unit and wait for active. Production is `qorpera-prod-office-a1`
      (`/opt/qorpera-prod-office-a1/qorpera-office-provider.cjs`); the acceptance provider
-     `qorpera-phql-office-a1` only when named. Fleet units (`qorpera-office-fleet.cjs`), where
-     installed, are rolled the same way. The VM keeps running across the restart; confirm the next
-     observation has the state from step 2.
+     `qorpera-phql-office-a1` only when named. Before the roll, find the unit that serves each target
+     office of step 4 (its policy's `companyComputerId`). The VM keeps running across the restart;
+     confirm the next observation has the state from step 2, except for a deleting company's office,
+     which goes to `phase: retirement` (step 4).
+     Fleet units, where installed, run their own bundle (`scripts/package-lxd-office-fleet.mjs`,
+     installed under `/opt/qorpera/office-fleet/<sha>/`, a path named by its sha). Build it too, check
+     its sha, and install it with the fleet installer as an explicit reviewed reinstall; never move new
+     bytes over a sha-named path.
   4. Check: deleting companies with a Company Computer (4168e335 and b116763d on 2026-09-28) show
      `phase: retirement`, then `state: retired`; `qorpera_runtime_office_retirements.retired_at` is set;
      LXD lists no instance for the office; the node's inventory stays ready (no unmanaged instance);
