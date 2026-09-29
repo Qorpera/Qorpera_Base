@@ -122,10 +122,10 @@ begin
 		pg_temp.hire('co-founder', '70600000-0000-4000-8000-0000000000c0', 'Co-Founder', 'co-founder'),
 		jsonb_build_object('op','mkdir','path','rules')));
 	for i in 1..6 loop perform pg_temp.expect(r, i, 'saved'); end loop;
-	-- A rule save takes the company row at rank 2 (its new row's foreign key would take it after the paths).
+	-- A rule save takes the company row at rank 0 (its new row's foreign key would take it after the paths).
 	select coalesce(jsonb_agg(to_jsonb(y)), '[]'::jsonb) into t from public.qorpera_folder_structured_targets('70600000-0000-4000-8000-000000000020', pg_temp.owner(),
 		jsonb_build_array(pg_temp.rule('refunds', '70600000-0000-4000-8000-0000000000f1', 'allow', 'refund a customer under 500 kroner'))) y;
-	if t is distinct from '[{"rank":2,"tbl":"qorpera_profiles","key":"70600000-0000-4000-8000-000000000010","mode":"keyshare"}]' then
+	if t is distinct from '[{"rank":0,"tbl":"qorpera_profiles","key":"70600000-0000-4000-8000-000000000010","mode":"keyshare"}]' then
 		raise exception 'A rule save locks the company row only: %', t; end if;
 	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'rule-0001', jsonb_build_array(
 		pg_temp.rule('refunds', '70600000-0000-4000-8000-0000000000f1', 'allow', 'refund a customer under 500 kroner'))), 1, 'saved');

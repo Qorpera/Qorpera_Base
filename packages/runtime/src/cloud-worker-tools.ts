@@ -179,6 +179,12 @@ export const CLOUD_WORKER_TOOL_DESCRIPTION =
 	"Keep operationKey stable for one intended change; an unconfirmed result needs the same key again, never a new one. " +
 	"A coding session is a worker with species coding: add harness (codex or claude-code) and repository (host github.com, owner, name, baseBranch), and keep access read. It runs for the member who asked, on their own account, works on an isolated machine, and ends each turn in a draft PR or a question for that member. Between turns it stands by on that machine with anything it left running, like an open Claude Code session; the machine sleeps after a quiet period and stops those programs, keeping the files. Only that member can talk to it directly; you steer it with followup, from work that member started. archive closes a coding session you no longer need: its programs stop and it leaves the machine, its files are kept, and a later followup reopens it.";
 
+/** Without company machines (no node serves them yet), the description names none. */
+const CLOUD_WORKER_TOOL_DESCRIPTION_WITHOUT_MACHINES = CLOUD_WORKER_TOOL_DESCRIPTION.replace(
+	", running tests or builds on the company's machines (a worker starts and uses machines like you and waits for its own commands)",
+	"",
+);
+
 export const CLOUD_WORKER_REPORT_TOOL_DESCRIPTION =
 	"Report your result to your parent. This is your only way out: you cannot speak to anyone, and a run that ends without a report counts as failed. Report exactly once, when the definition of done in wake.payload.dispatch is met or when you cannot continue. " +
 	"outcome: succeeded (the definition of done is met), blocked (you need something only your parent can give; say exactly what in needs), failed (it cannot be done; say why). " +
@@ -201,6 +207,8 @@ export function cloudWorkerTools(
 	control: CloudCompanyPathControl,
 	gateway: Gateway,
 	wake: Pick<CloudWakeEnvelope, "kind" | "source">,
+	/** Whether this run's workers can use company machines (only when a node serves them). */
+	options: { machines?: boolean } = {},
 ): readonly CloudNativeTool[] {
 	const admitted = parseCloudNativeToolBinding(binding),
 		expected = Object.freeze({ ...identity });
@@ -458,7 +466,7 @@ export function cloudWorkerTools(
 	const worker: CloudNativeTool = {
 		name: "manage_worker" satisfies CloudRuntimeToolOperation,
 		source: "runtime",
-		description: CLOUD_WORKER_TOOL_DESCRIPTION,
+		description: options.machines ? CLOUD_WORKER_TOOL_DESCRIPTION : CLOUD_WORKER_TOOL_DESCRIPTION_WITHOUT_MACHINES,
 		inputSchema: {
 			type: "object",
 			additionalProperties: false,

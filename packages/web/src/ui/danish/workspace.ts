@@ -209,6 +209,9 @@ export const WORKSPACE: Record<string, string> = {
 	"The machine is private right now. Shared viewing returns when that ends.":
 		"Maskinen er privat lige nu. Delt visning kommer tilbage, når det slutter.",
 	"The computer could not be reached. Try again.": "Computeren kunne ikke nås. Prøv igen.",
+	"The computer screen could not be loaded in this tab. Reload the page to open it.":
+		"Computerskærmen kunne ikke indlæses i denne fane. Genindlæs siden for at åbne den.",
+	"Reload page": "Genindlæs siden",
 	"All computers are in use. An owner or admin can start another machine.":
 		"Alle computere er i brug. En ejer eller administrator kan starte en maskine mere.",
 	"Setting up another machine. This can take a while.": "Sætter en maskine mere op. Det kan tage et stykke tid.",
