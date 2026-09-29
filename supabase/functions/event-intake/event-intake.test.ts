@@ -104,7 +104,9 @@ describe("event intake", () => {
 
 	it("refuses other paths and methods without touching the database", async () => {
 		const fixture = store();
-		assert.equal((await handleEventIntake(post("x", {}, "/short"), fixture.store)).status, 404);
+		const short = await handleEventIntake(post("x", {}, "/short"), fixture.store);
+		assert.equal(short.status, 404);
+		assert.deepEqual(await short.json(), { error: "This is not a hook address" });
 		assert.equal((await handleEventIntake(post("x", {}, `/${ADDRESS}/more`), fixture.store)).status, 404);
 		const get = await handleEventIntake(new Request(`${URL_BASE}/${ADDRESS}`), fixture.store);
 		assert.equal(get.status, 405);

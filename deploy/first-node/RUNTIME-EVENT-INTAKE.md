@@ -273,7 +273,10 @@ anchor with master again (RUNTIME-RELEASE-TRAIN.md). After it is live:
 
 1. Deploy the function: `supabase functions deploy event-intake` (`verify_jwt = false` in
    `supabase/config.toml`). It needs only `SUPABASE_URL` and the service key the platform provides.
-   Until the switch is on it answers every delivery 503.
+   Until the switch is on it answers every delivery to a well-formed address 503 ("Events are
+   unavailable right now"), before looking the address up. A path that is not a 43-character
+   address gets 404 ("This is not a hook address") from the function itself, by its shape alone;
+   an address with no live hook gets 404 ("No hook has this address") once the switch is on.
 2. Schedule retention:
    `select cron.schedule('qorpera-event-deliveries-purge', '*/5 * * * *',
    $$select public.qorpera_purge_event_deliveries(10000)$$);`

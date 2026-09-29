@@ -6,7 +6,8 @@
  * delivery to the database's intake door, qorpera_receive_event, which decides the outcome:
  * accepted (202), duplicate (200), unknown (404), paused or not_ready (409), too_large (413),
  * limited (429, with Retry-After) or unavailable (503, the intake is switched off). The function
- * itself answers 404 for a path that is no address, 405 for a method other than POST, 413 for a
+ * itself answers 404 for a path that is not a hook address (decided by its shape alone, whether or
+ * not the intake is switched on), 405 for a method other than POST, 413 for a
  * body over 256 KiB, 431 for kept headers over 8000 bytes, 400 for input the database calls
  * malformed and 503 when the database cannot be reached, so the sender retries. Signatures of
  * signed hooks are checked later by the company's vault, never here. */
@@ -122,7 +123,7 @@ const OUTCOMES: Record<string, { status: number; body: Json; headers?: Record<st
 /** The Edge Function. */
 export async function handleEventIntake(request: Request, store: IntakeStore): Promise<Response> {
 	const address = ADDRESS.exec(new URL(request.url).pathname)?.[1];
-	if (!address) return json({ error: "No hook has this address" }, 404);
+	if (!address) return json({ error: "This is not a hook address" }, 404);
 	if (request.method !== "POST") return json({ error: "Method not allowed" }, 405, { allow: "POST" });
 	const headers = keptHeaders(request.headers);
 	if (new TextEncoder().encode(JSON.stringify(headers)).length > MAX_HEADERS_JSON_BYTES)
