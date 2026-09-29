@@ -6,6 +6,11 @@ import { fileURLToPath } from "node:url";
 import { Pool } from "pg";
 import type { CloudConnectorOAuthFlows } from "./cloud-connector-oauth.ts";
 import { composeCloudConnectorService, parseCloudConnectorServiceConfig } from "./cloud-connector-service.ts";
+import {
+	CloudConnectorTokenRevocations,
+	CloudConnectorTokenRevocationUpkeep,
+	CloudConnectorTokenRevoker,
+} from "./cloud-connector-token-revocation.ts";
 import { ModelLoginHelperClient } from "./cloud-model-login-helper.ts";
 import { CloudModelLoginUpkeep } from "./cloud-model-login-upkeep.ts";
 import { CloudModelLoginVault } from "./cloud-model-login-vault.ts";
@@ -295,6 +300,7 @@ export async function runCloudSecretBrokerServiceMain(
 				keyring,
 				adapters: [...adapters, ...(connectors?.adapters ?? [])],
 				helper: loginHelper ? new ModelLoginHelperClient(loginHelper) : undefined,
+				revoker: connectors?.revoker ?? new CloudConnectorTokenRevoker(),
 				runtimeToken,
 				port: config.port as number,
 				memberOrigins,
@@ -331,6 +337,15 @@ export async function runCloudSecretBrokerServiceMain(
 		});
 		// The vault's upkeep: it renews idle logins itself (only with the helper).
 		const upkeep = new CloudModelLoginUpkeep({ vault: modelLogins });
+		// Disconnected and deleted connections' tokens, cancelled at the provider once a minute (D6).
+		// Without the connectors credential Google's revoke still works; GitHub's waits for its client.
+		const revocations = new CloudConnectorTokenRevocationUpkeep({
+			revocations: new CloudConnectorTokenRevocations({
+				authority,
+				keyring,
+				revoker: connectors?.revoker ?? new CloudConnectorTokenRevoker(),
+			}),
+		});
 		const service = new HttpCloudSecretBrokerService(broker, runtimeToken, {
 			host: "127.0.0.1",
 			port: config.port as number,
@@ -350,6 +365,7 @@ export async function runCloudSecretBrokerServiceMain(
 			await service.start();
 			signIns?.start();
 			upkeep.start();
+			revocations.start();
 			await new Promise<void>((resolveWait) => {
 				if (stop.signal.aborted) resolveWait();
 				else stop.signal.addEventListener("abort", () => resolveWait(), { once: true });
@@ -359,7 +375,7 @@ export async function runCloudSecretBrokerServiceMain(
 			process.removeListener("SIGTERM", shutdown);
 			// All at once: the server stops taking requests while a renewal in flight finishes, so a
 			// stop stays within the unit's 90 s.
-			await Promise.all([upkeep.close(), signIns?.close(), service.close()]);
+			await Promise.all([upkeep.close(), revocations.close(), signIns?.close(), service.close()]);
 		}
 	} finally {
 		await pool.end();
@@ -374,6 +390,7 @@ async function runSharedVault(options: {
 	keyring: CloudSecretKeyring;
 	adapters: readonly CloudSecretConnectorAdapter[];
 	helper: ModelLoginHelperClient | undefined;
+	revoker: CloudConnectorTokenRevoker;
 	runtimeToken: string;
 	port: number;
 	memberOrigins: readonly string[];
@@ -385,6 +402,7 @@ async function runSharedVault(options: {
 		keyring: options.keyring,
 		adapters: options.adapters,
 		...(options.helper ? { helper: options.helper } : {}),
+		revoker: options.revoker,
 	});
 	const service = new HttpCloudSecretBrokerService(companies, options.runtimeToken, {
 		host: "127.0.0.1",

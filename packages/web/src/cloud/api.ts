@@ -523,6 +523,23 @@ export class CloudApi {
 			.then(parseEvents);
 	}
 
+	/** The newest `limit` events of a transcript, or the newest before `beforeSequence`, oldest
+	 * first as readSessionEvents returns them (migration 20260928279410; a cloud without it
+	 * answers with a missing RPC). Same authorization as the forward read, which it runs. */
+	readSessionEventsTail(
+		sessionId: string,
+		beforeSequence: number | undefined,
+		limit: number,
+	): Promise<HostedSessionEvent[]> {
+		return this.cloud
+			.rpc("qorpera_read_session_events_tail", {
+				p_session_id: requiredUuid(sessionId, "Session id"),
+				p_before_sequence: beforeSequence ?? null,
+				p_limit: limit,
+			})
+			.then(parseEvents);
+	}
+
 	// Coding sessions (Order 9): what the thread element renders. The list finds
 	// the sessions an agent dispatched from a conversation; the read follows one
 	// session's event stream; answer and delegate are the owner's only writes.
