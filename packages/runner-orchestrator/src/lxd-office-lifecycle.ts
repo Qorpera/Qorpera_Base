@@ -4,7 +4,7 @@ import { setTimeout as delay, setImmediate as yieldToEventLoop } from "node:time
 import { isDeepStrictEqual } from "node:util";
 import {
 	parseCompanyComputerBootIntentRequest,
-	type parseCompanyComputerLifecycleRequest,
+	parseCompanyComputerLifecycleRequest,
 	parseCompanyComputerPreparationCommand,
 } from "@qorpera/contracts";
 import { LxdUnixClient } from "./lxd-client.ts";
@@ -55,6 +55,8 @@ import type { LxdOfficeLifecycleRegistry } from "./lxd-office-provider-registry.
 import { readLxdOfficeResetPlan } from "./lxd-office-reset-journal.ts";
 import { LxdOfficeResetWorker } from "./lxd-office-reset-worker.ts";
 import { LxdOfficeResumeWorker } from "./lxd-office-resume-worker.ts";
+import { type LxdOfficeRetirementIdentity, readLxdOfficeRetiredMarker } from "./lxd-office-retirement-control.ts";
+import { LxdOfficeRetirementWorker, OFFICE_RETIREMENT_REQUEST } from "./lxd-office-retirement-worker.ts";
 import { LxdOfficeServiceStopWorker } from "./lxd-office-service-stop-worker.ts";
 import type { LxdOfficeSoftwareLaneOptions } from "./lxd-office-software-lane.ts";
 import { createLxdOfficeInvocationMeasurement } from "./lxd-office-software-transport.ts";
@@ -94,6 +96,7 @@ interface Ports {
 	bootConfigurationWorker?: Pick<LxdOfficeBootConfigurationWorker, "reconcileSettled">;
 	bootActivationWorker?: Pick<LxdOfficeBootActivationWorker, "reconcileSettled">;
 	resetWorker?: Pick<LxdOfficeResetWorker, "reconcileSettled">;
+	retirementWorker?: Pick<LxdOfficeRetirementWorker, "reconcileSettled">;
 	kernelLock?: typeof assertOfficeAdoptionKernelLock;
 	readProtected?: typeof readLxdOfficeProtectedFile;
 	measureInvocation?: LxdOfficeInvocationMeasurement;
@@ -112,7 +115,8 @@ export interface LxdOfficeLifecycleResult {
 		| "powered_off"
 		| "awaiting_configuration"
 		| "awaiting_boot_admission"
-		| "active";
+		| "active"
+		| "retired";
 	phase?:
 		| LxdOfficeLifecyclePhase
 		| "service_stop"
@@ -121,7 +125,8 @@ export interface LxdOfficeLifecycleResult {
 		| "resume"
 		| "boot_configuration"
 		| "boot_activation"
-		| "reset";
+		| "reset"
+		| "retirement";
 	intentId?: string;
 	observationSha256?: string;
 	transitionId?: string;
@@ -132,6 +137,8 @@ export interface LxdOfficeLifecycleResult {
 	reason?: string;
 }
 const pending = new Set<string>();
+/** A living company's powered-off computer is asked about retirement at most once a minute. */
+const RETIREMENT_CHECK_MS = 60000;
 
 /** One enrolled office, serialized under a process-owned kernel lock. Each
  * call runs at most one phase and awaits its actual worker settlement. The
@@ -171,6 +178,9 @@ export class LxdOfficeLifecycle {
 	readonly #bootConfigurationWorker: Pick<LxdOfficeBootConfigurationWorker, "reconcileSettled">;
 	readonly #bootActivationWorker: Pick<LxdOfficeBootActivationWorker, "reconcileSettled">;
 	readonly #resetWorker: Pick<LxdOfficeResetWorker, "reconcileSettled">;
+	readonly #retirementWorker: Pick<LxdOfficeRetirementWorker, "reconcileSettled">;
+	readonly #retirementIdentity: LxdOfficeRetirementIdentity;
+	#retirementCheck: { suffix: string; atMs: number } | undefined;
 	readonly #kernelLock;
 	readonly #readProtected;
 	readonly #gate: Pick<LxdOfficePhysicalGate, "policy" | "check" | "inspect"> &
@@ -296,6 +306,16 @@ export class LxdOfficeLifecycle {
 		// The reset worker composes its guest successor lane on its own client;
 		// only the enrolled software measurement is shared with the other lanes.
 		this.#resetWorker = ports.resetWorker ?? new LxdOfficeResetWorker(gate, registry);
+		this.#retirementWorker = ports.retirementWorker ?? new LxdOfficeRetirementWorker(gate, registry);
+		this.#retirementIdentity = {
+			scope: {
+				companyId: g.companyId,
+				environmentId: g.environmentId,
+				companyComputerId: g.companyComputerId,
+				logicalComputerId: g.logicalComputerId,
+			},
+			computerGeneration: g.computerGeneration,
+		};
 		this.#workers = ports.workers ?? {
 			creation: new LxdOfficeCreationWorker(gate, registry),
 			inventory: new LxdOfficeInventoryWorker(gate, registry, limits),
@@ -324,10 +344,12 @@ export class LxdOfficeLifecycle {
 	}
 	async observeControlOperations(signal: AbortSignal): Promise<void> {
 		await this.#kernelLock(this.#root);
+		if (await readLxdOfficeRetiredMarker(this.#root, this.#retirementIdentity)) return;
 		await observeLxdOfficeControlJournals(this.#root, this.#operationClient, signal);
 	}
 	async observeVmOperations(signal: AbortSignal): Promise<void> {
 		await this.#kernelLock(this.#root);
+		if (await readLxdOfficeRetiredMarker(this.#root, this.#retirementIdentity)) return;
 		await observeLxdOfficeOperationJournals(this.#root, this.#operationClient, signal);
 	}
 	async reconcile(caller: AbortSignal): Promise<LxdOfficeLifecycleResult> {
@@ -360,6 +382,22 @@ export class LxdOfficeLifecycle {
 			pending.delete(this.#root);
 		}
 	}
+	async #retire(
+		intentId: string,
+		request: ReturnType<typeof parseCompanyComputerLifecycleRequest>,
+		signal: AbortSignal,
+	): Promise<LxdOfficeLifecycleResult | undefined> {
+		const result = await this.#retirementWorker.reconcileSettled(intentId, request, signal);
+		signal.throwIfAborted();
+		if (
+			result.intentId !== intentId ||
+			result.transitionId !== request.transitionId ||
+			result.allocationId !== request.startup.allocationId
+		)
+			throw new Error("retirement result differs");
+		if (result.state === "kept") return undefined;
+		return { state: result.state, phase: "retirement", intentId, transitionId: result.transitionId };
+	}
 	async #prepareMeasurement(allocationId: string, signal: AbortSignal) {
 		this.#measurementPrepared = false;
 		this.#preparedPackage?.dispose();
@@ -370,6 +408,28 @@ export class LxdOfficeLifecycle {
 		this.#protectedRecovery = undefined;
 		await this.#kernelLock(this.#root);
 		signal.throwIfAborted();
+		// A retired office makes no call. Once a delete is pinned, only the
+		// retirement runs: the VM may be gone and the company already purged.
+		const retired = await readLxdOfficeRetiredMarker(this.#root, this.#retirementIdentity);
+		if (retired) return { state: "retired", phase: "retirement", transitionId: retired.transitionId };
+		let pin: unknown;
+		try {
+			pin = (await readRecord(join(this.#root, OFFICE_RETIREMENT_REQUEST), 65536)).value;
+		} catch (error) {
+			if (!code(error, "ENOENT")) throw error;
+		}
+		if (pin !== undefined) {
+			const pinned = officeRecord(pin, ["schema", "intentId", "request", "stopCommandId", "deleteCommandId"]);
+			if (pinned.schema !== "qorpera.lxd-office-retirement-request/v1" || typeof pinned.intentId !== "string")
+				throw new Error("retirement request invalid");
+			const result = await this.#retire(
+				pinned.intentId,
+				parseCompanyComputerLifecycleRequest(pinned.request),
+				signal,
+			);
+			if (!result) throw new Error("retirement withdrawn");
+			return result;
+		}
 		const status = await this.#provider.status(signal);
 		if (status.officeState !== "active") {
 			this.#activeIntent = undefined;
@@ -878,6 +938,19 @@ export class LxdOfficeLifecycle {
 						result.allocationId !== status.reservation.allocationId
 					)
 						throw new Error("power-off result differs");
+					// A deleted company's computer is retired once it is off (D3). A
+					// living company's is kept; SQL is asked at most once a minute.
+					if (
+						!resume &&
+						recovery.action === "power_off" &&
+						result.state === "powered_off" &&
+						(this.#retirementCheck?.suffix !== suffix ||
+							performance.now() - this.#retirementCheck.atMs >= RETIREMENT_CHECK_MS)
+					) {
+						this.#retirementCheck = { suffix, atMs: performance.now() };
+						const retirement = await this.#retire(intentId, recovery, signal);
+						if (retirement) return retirement;
+					}
 					if (resume && result.state === "powered_off") {
 						const next = {
 							schema: "qorpera.lxd-office-recovery-boot-stage/v1",
@@ -1133,7 +1206,8 @@ export async function runLxdOfficeLifecycle(
 				void Promise.resolve(onResult(result)).catch(() => {});
 			} catch {}
 		}
-		if (signal.aborted) break;
+		// A retired office has nothing left to reconcile; the service ends.
+		if (signal.aborted || result?.state === "retired") break;
 		if (result?.state === "progressed") await yieldToEventLoop(undefined, { signal }).catch(() => {});
 		else await delay(pollIntervalMs, undefined, { signal }).catch(() => {});
 	}

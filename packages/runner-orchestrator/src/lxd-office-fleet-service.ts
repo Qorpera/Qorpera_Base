@@ -11,6 +11,7 @@ import { LxdOfficePhysicalGate } from "./lxd-office-physical-gate.ts";
 import { readLxdOfficeCredentialFile, readLxdOfficeProtectedFile } from "./lxd-office-physical-host.ts";
 import { lxdOfficePhysicalPolicySha256, officePhysicalPath } from "./lxd-office-physical-policy.ts";
 import { LxdOfficeProviderHttpRegistry } from "./lxd-office-provider-registry.ts";
+import { readLxdOfficeRetiredMarker } from "./lxd-office-retirement-control.ts";
 
 export function parseOfficeFleetServiceConfig(value: unknown) {
 	const r = officeRecord(value, ["schema", "nodeId", "servicePath", "serviceConfigSha256"]);
@@ -39,8 +40,22 @@ export async function runOfficeFleetService(configPath: string, signal: AbortSig
 		throw new Error("OFFICE_FLEET_SERVICE_CHANGED");
 	const service = parseLxdOfficeLifecycleServiceConfig(JSON.parse(bytes.toString("utf8")));
 	const gate = await LxdOfficePhysicalGate.open(service.policyPath, service.provenancePath, signal);
-	const policy = gate.policy;
+	const policy = gate.policy,
+		g = policy.guest;
 	await assertOfficeAdoptionKernelLock(policy.journal.path);
+	// A retired office (its company deleted) has no VM and makes no call; the unit ends.
+	if (
+		await readLxdOfficeRetiredMarker(policy.journal.path, {
+			scope: {
+				companyId: g.companyId,
+				environmentId: g.environmentId,
+				companyComputerId: g.companyComputerId,
+				logicalComputerId: g.logicalComputerId,
+			},
+			computerGeneration: g.computerGeneration,
+		})
+	)
+		return;
 	const credential = await readLxdOfficeCredentialFile(service.registryCredential.path, 4096);
 	let registry: LxdOfficeProviderHttpRegistry;
 	try {
