@@ -1433,7 +1433,8 @@ begin
 end $$;
 
 -- F2's roster targets take the company row at rank 0, which the commit above now accepts and requires (§4). Exactly the
--- four sites of F2-4's definition (20260929190000); anything else is a definition this patch was not written for.
+-- four sites of the current definition (F2-4's, as redefined with the todo branches by F2-5a, 20260929210000, whose
+-- comments still say rank 2); anything else is a definition this patch was not written for.
 do $$
 declare v_definition text := pg_get_functiondef('public.qorpera_folder_structured_targets(uuid,jsonb,jsonb)'::regprocedure);
 begin
