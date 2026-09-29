@@ -31,7 +31,7 @@ begin
 		from public.qorpera_provider_connection_versions where connection_id = v_connection order by version desc limit 1),
 		'Consent is recorded as a new version in the account owner''s name');
 	-- The routine save's payer (the rule qorpera_agent_routine_sponsor reads, without its lock; the run's own login first,
-	-- as a save by the run asks) finds the same login, as does today's routine save.
+	-- as a new routine saved by the run asks) finds the same login, as does today's routine save.
 	perform pg_temp.wake_assert(exists (select 1 from public.qorpera_company_state_routine_payer(v_run.profile_id,
 			v_run.requested_by_user_id, v_run.sponsor_binding_id) p
 		where p.binding_id = (v_prepared -> 'login' ->> 'bindingId')::uuid and p.version = (v_prepared -> 'login' ->> 'version')::bigint)
