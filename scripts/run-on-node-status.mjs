@@ -18,12 +18,16 @@ export function statusContext(suite) {
 	return suite ? `qorpera-ci/${suite}` : null;
 }
 
-/** Whether to post, and why not when not. */
-export function statusDecision({ suite, dirty, disabled, slug }) {
+/** Whether to post, and why not when not. Only a plain run of a named suite speaks for the suite, and
+ * `changed` only against origin/master (a later base can make its plan empty). */
+export function statusDecision({ suite, dirty, disabled, slug, plain = true, base = "origin/master" }) {
 	if (disabled) return { post: false, reason: "--no-status" };
 	if (!suite) return { post: false, reason: "ad-hoc command, not a named suite" };
 	if (!slug) return { post: false, reason: "origin is not a GitHub repository" };
 	if (dirty) return { post: false, reason: "uncommitted or untracked changes: the result is not a commit's" };
+	if (!plain) return { post: false, reason: "suite arguments, --env, --sudo or an install/build override narrow the run" };
+	if (suite === "changed" && base !== "origin/master")
+		return { post: false, reason: `--base ${base}: only a run against origin/master posts qorpera-ci/changed` };
 	return { post: true, reason: null };
 }
 
@@ -41,13 +45,15 @@ export function statusDescription(record) {
 		text = record.changed ? `passed ${where}: ${record.changed.steps.length} steps${who}` : `passed ${where}${who}`;
 	else if (record.result === "failed")
 		text = record.failedSteps?.length ? `failed ${where}: ${record.failedSteps.join(", ")}${who}` : `failed ${where}${who}`;
+	else if (record.result === "install-failed") text = `failed ${where}: npm ci or the build${who}`;
 	else text = `${record.result} ${where}${who}: the harness, not the suite`;
 	return text.length > 140 ? `${text.slice(0, 139)}…` : text;
 }
 
-/** success, failure, or error for a run that never reached a result. */
+/** success; failure for the suite or its install and build (usually the change's fault); error for a run
+ * the harness never brought to a result. */
 export function statusState(result) {
-	return result === "passed" ? "success" : result === "failed" ? "failure" : "error";
+	return result === "passed" ? "success" : result === "failed" || result === "install-failed" ? "failure" : "error";
 }
 
 function gh(args) {
@@ -55,9 +61,12 @@ function gh(args) {
 	return { ok: result.status === 0, error: (result.stderr || result.error?.message || "").trim().slice(-300) };
 }
 
-/** GitHub knows the commit (it was pushed). */
+/** GitHub has the commit: `{ ok: true }`; it does not: `{ ok: false }`; gh itself failed (missing, logged
+ * out, offline): `{ ok: false, error }`. */
 export function commitPushed(slug, sha) {
-	return gh(["api", `repos/${slug}/commits/${sha}`, "--silent"]).ok;
+	const result = gh(["api", `repos/${slug}/commits/${sha}`, "--silent"]);
+	if (result.ok) return { ok: true };
+	return /HTTP 404|HTTP 422|No commit found/i.test(result.error) ? { ok: false } : { ok: false, error: result.error || "gh failed" };
 }
 
 export function postStatus({ slug, sha, state, context, description }) {

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { parseArgs } from "./run-on-node.mjs";
 import { repoSlug, statusContext, statusDecision, statusDescription, statusState } from "./run-on-node-status.mjs";
 
 test("the repository comes from any GitHub remote form", () => {
@@ -24,10 +25,37 @@ test("named suites get a context; ad-hoc commands, dirty trees and --no-status p
 	assert.match(statusDecision({ suite: null, dirty: false, disabled: false, slug }).reason, /ad-hoc/);
 	assert.match(statusDecision({ suite: "test", dirty: false, disabled: true, slug }).reason, /--no-status/);
 	assert.match(statusDecision({ suite: "test", dirty: false, disabled: false, slug: null }).reason, /not a GitHub/);
+	// A narrowed run cannot speak for the suite; changed only against origin/master (an empty plan is no proof).
+	assert.match(statusDecision({ suite: "test", dirty: false, disabled: false, slug, plain: false }).reason, /narrow/);
+	assert.match(statusDecision({ suite: "changed", dirty: false, disabled: false, slug, base: "HEAD" }).reason, /only a run against origin\/master/);
+	assert.equal(statusDecision({ suite: "hosted-db", dirty: false, disabled: false, slug, base: "HEAD" }).post, true);
+});
+
+test("only the plain invocation of a suite is plain", () => {
+	assert.equal(parseArgs(["changed"]).plain, true);
+	assert.equal(parseArgs(["test"]).plain, true);
+	assert.equal(parseArgs(["hosted-db"]).plain, true);
+	for (const argv of [
+		["test", "--", "-t", "one"],
+		["--no-install", "hosted-db"],
+		["--install", "hosted-db"],
+		["--no-build", "test"],
+		["--env", "A=1", "changed"],
+		["--sudo", "scripts/x-linux.mjs"],
+	])
+		assert.equal(parseArgs(argv).plain, false, argv.join(" "));
+	assert.equal(parseArgs(["--", "true"]).plain, false);
 });
 
 test("results map to GitHub states and short descriptions", () => {
-	assert.deepEqual(["passed", "failed", "setup-failed", "unknown"].map(statusState), ["success", "failure", "error", "error"]);
+	assert.deepEqual(["passed", "failed", "install-failed", "setup-failed", "unknown"].map(statusState), [
+		"success",
+		"failure",
+		"failure",
+		"error",
+		"error",
+	]);
+	assert.equal(statusDescription({ result: "install-failed", elapsedSeconds: 30, runner: "ci03" }), "failed on node 2 in 30s: npm ci or the build (ci03)");
 	assert.equal(
 		statusDescription({ result: "passed", elapsedSeconds: 552.4, runner: "ci02", changed: { steps: ["lint", "web"] } }),
 		"passed on node 2 in 9m12s: 2 steps (ci02)",

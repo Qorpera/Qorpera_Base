@@ -105,6 +105,7 @@ export function parseArgs(argv) {
 	const rest = argv.slice(i);
 	let suite = null;
 	let command;
+	let extra = [];
 	if (rest[0] === "--") {
 		command = rest.slice(1);
 		if (command.length === 0) throw new Error(USAGE);
@@ -112,11 +113,11 @@ export function parseArgs(argv) {
 		suite = rest[0];
 		if (!suite) throw new Error(USAGE);
 		if (rest[1] !== undefined && rest[1] !== "--") throw new Error(`Put suite arguments after --\n\n${USAGE}`);
-		const extra = rest.slice(2);
+		extra = rest.slice(2);
 		if (suite === "changed") {
 			if (extra.length) throw new Error("changed takes no suite arguments");
 			// The plan, and with it the command and the build, is made from git in main().
-			return { ...options, install: options.install ?? true, build: options.build, suite, command: [] };
+			return { ...options, install: options.install ?? true, build: options.build, suite, command: [], plain: plain(options, suite, extra) };
 		}
 		const base = suiteCommand(suite);
 		// npm keeps --flags after the script name for itself unless they follow a literal --.
@@ -125,7 +126,20 @@ export function parseArgs(argv) {
 	const build = options.build ?? (suite === "test" && options.install !== false);
 	const install = options.install ?? (suite !== "hosted-db" || build);
 	if (build && !install) throw new Error("--build needs --install");
-	return { ...options, install, build, suite, command };
+	return { ...options, install, build, suite, command, plain: plain(options, suite, extra) };
+}
+
+/** The suite exactly as named: no suite arguments, environment, sudo or install/build override. Only such a
+ * run may speak for the suite on the commit (a narrowed run would claim the whole suite). */
+function plain(options, suite, extra) {
+	return (
+		suite !== null &&
+		!extra.length &&
+		!options.env.length &&
+		!options.sudo &&
+		options.install === undefined &&
+		options.build === undefined
+	);
 }
 
 export function suiteCommand(suite) {
@@ -443,6 +457,13 @@ async function main() {
 	rmSync(rulesDir, { recursive: true, force: true });
 	if (rsync.status !== 0) throw new Error(`Copying the working tree failed (rsync exit ${rsync.status})`);
 	const synced = Date.now();
+	// A shared worktree can change between the check and the copy: then the copy is not the commit.
+	if (
+		github.plan.posted &&
+		(git(root, ["rev-parse", "HEAD"]).toString().trim() !== source.head ||
+			git(root, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]).length > 0)
+	)
+		github.abandon("the working tree changed while it was copied: this run is not the commit's");
 
 	const code = await sshRun(
 		t,
@@ -507,9 +528,11 @@ async function main() {
 				? code === 0
 					? "passed"
 					: "failed"
-				: code === 0 && !status.runner
-					? "unknown"
-					: "setup-failed",
+				: status.installed === "0"
+					? "install-failed"
+					: code === 0 && !status.runner
+						? "unknown"
+						: "setup-failed",
 		...(status.failed_steps ? { failedSteps: status.failed_steps.split(",").filter(Boolean) } : {}),
 	};
 	record.githubStatus = github.post(statusState(record.result), statusDescription(record));
@@ -534,20 +557,56 @@ function githubStatus(root, options, source) {
 		// No origin: nothing to post to.
 	}
 	const context = statusContext(options.suite);
-	// A dry run shows what a real run would post, and posts nothing.
-	let decision = statusDecision({ suite: options.suite, dirty: source.dirty, disabled: options.noStatus, slug });
-	if (decision.post && !commitPushed(slug, source.head))
-		decision = { post: false, reason: `HEAD ${source.head.slice(0, 9)} is not on GitHub: push it first` };
+	let decision = statusDecision({
+		suite: options.suite,
+		dirty: source.dirty,
+		disabled: options.noStatus,
+		slug,
+		plain: options.plain,
+		base: options.base,
+	});
+	if (decision.post) {
+		const pushed = commitPushed(slug, source.head);
+		const onBranch = git(root, ["branch", "-r", "--contains", source.head]).toString().trim().length > 0;
+		if (pushed.error) decision = { post: false, reason: `gh cannot reach GitHub (${pushed.error})` };
+		else if (!pushed.ok || !onBranch) decision = { post: false, reason: `HEAD ${source.head.slice(0, 9)} is on no pushed branch: push it first` };
+	}
 	const plan = { context, sha: source.head, posted: decision.post, reason: decision.reason };
 	if (!decision.post && !options.dryRun && options.suite) console.error(`== run-on-node: no GitHub status (${decision.reason})`);
+	let abandoned = null;
+	let pending = false;
+	const send = (state, description) => {
+		for (let attempt = 0; attempt < 2; attempt++) {
+			const posted = postStatus({ slug, sha: source.head, state, context, description });
+			if (posted.ok) {
+				console.error(`== run-on-node: ${context} ${state} on ${source.head.slice(0, 9)}: ${description}`);
+				return true;
+			}
+			if (attempt) console.error(`run-on-node: could not post the GitHub status: ${posted.error}`);
+		}
+		return false;
+	};
+	// An interrupted client must not leave its commit pending for good.
+	const interrupted = (signal, code) => () => {
+		if (pending) send("error", `interrupted (${signal}) before a result`);
+		process.exit(code);
+	};
 	return {
 		plan,
+		abandon(reason) {
+			abandoned = reason;
+			if (decision.post && !options.dryRun) send("error", reason.slice(0, 140));
+		},
 		post(state, description) {
-			if (!decision.post || options.dryRun) return plan;
-			const posted = postStatus({ slug, sha: source.head, state, context, description });
-			if (!posted.ok) console.error(`run-on-node: could not post the GitHub status: ${posted.error}`);
-			else console.error(`== run-on-node: ${context} ${state} on ${source.head.slice(0, 9)}: ${description}`);
-			return { ...plan, state, description, posted: posted.ok };
+			if (!decision.post || options.dryRun || abandoned) return { ...plan, ...(abandoned ? { posted: false, reason: abandoned } : {}) };
+			const text = options.suite === "changed" ? `${description} vs master` : description;
+			const ok = send(state, text.length > 140 ? `${text.slice(0, 139)}…` : text);
+			if (state === "pending" && ok && !pending) {
+				pending = true;
+				process.once("SIGINT", interrupted("SIGINT", 130));
+				process.once("SIGTERM", interrupted("SIGTERM", 143));
+			} else if (state !== "pending") pending = false;
+			return { ...plan, state, description: text, posted: ok };
 		},
 	};
 }

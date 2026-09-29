@@ -103,13 +103,20 @@ hosted-db harness names its containers per process.
 
 ### Results on the PR
 
-A named suite (`changed`, `test`, `hosted-db`, `npm:…`, `scripts/….mjs`) run on a clean, pushed commit posts its
-result as the GitHub commit status `qorpera-ci/<suite>` on that commit: `pending` while it runs, then `success`,
-`failure` (a `changed` run names its failed steps) or `error` (the harness failed, not the suite). The PR shows it
-as a check. The statuses API uses no Actions minutes. Uncommitted or untracked changes, a HEAD GitHub does not
-have yet, ad-hoc `-- command` runs and `--no-status` post nothing, and the run says why. A failed post never
-changes the run's exit code. Whether master requires a `qorpera-ci/…` check before merging is a repository
-setting.
+A plain run of a named suite (`changed`, `test`, `hosted-db`, `npm:…`, `scripts/….mjs`) on a clean commit that a
+pushed branch contains posts its result as the GitHub commit status `qorpera-ci/<suite>` on that commit:
+`pending` while it runs, then `success`, `failure` (the suite, or its `npm ci` or build; a `changed` run names
+its failed steps) or `error` (the harness never reached a result, or the run was interrupted). The PR shows it
+as a check. The statuses API uses no Actions minutes.
+
+Nothing is posted, and the run says why, for: uncommitted or untracked changes; a commit on no pushed branch;
+ad-hoc `-- command` runs; suite arguments, `--env`, `--sudo` or an install/build override (a narrowed run cannot
+speak for the suite); `changed` with a `--base` other than `origin/master` (a later base can make its plan
+empty); `--no-status`. If the working tree changes while it is copied, the run posts `error` instead of a
+result. A failed post never changes the run's exit code.
+
+The statuses are advisory: the repository's plan has no branch protection, so merging cannot require them,
+and anyone with write access can post a `qorpera-ci/…` state.
 
 Access needs the key `~/.ssh/id_ed25519_qorpera_testvm` and SSH to `company41-node-02`.
 Override the target with `QORPERA_TEST_MACHINE`, `QORPERA_TEST_MACHINE_JUMP` and
