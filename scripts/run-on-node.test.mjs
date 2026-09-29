@@ -121,7 +121,7 @@ test("at most three runs execute at once, in arrival order, with two vitest work
 	assert.ok(script.indexOf("qorpera-test-machine-slot") < script.indexOf("qorpera-test-machine-$candidate"));
 	// vCPUs / 3 workers per run (2 on 6 vCPUs, 4 on 12), at least 1.
 	assert.match(script, /export VITEST_MAX_WORKERS=\$\(\( \$\(nproc\) \/ 3 > 0 \? \$\(nproc\) \/ 3 : 1 \)\)/);
-	for (const [cpus, workers] of [[6, 2], [12, 4], [2, 1]])
+	for (const [cpus, workers] of [[6, 2], [10, 3], [12, 4], [2, 1]])
 		assert.equal(spawnSync("bash", ["-c", `echo $(( ${cpus} / 3 > 0 ? ${cpus} / 3 : 1 ))`], { encoding: "utf8" }).stdout.trim(), String(workers));
 	assert.match(parseArgs(["--sudo", "--", "npm", "test"]).command.join(" "), /npm test/);
 });
