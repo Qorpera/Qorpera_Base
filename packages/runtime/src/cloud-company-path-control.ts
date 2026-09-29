@@ -88,6 +88,7 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 			// Machines agents start (2026-09-28).
 			"qorpera_native_machine_start",
 			"qorpera_native_machine_manage",
+			"qorpera_company_machines_available",
 		];
 		if (!permitted.includes(method)) throw new Error("Unknown Company File control operation");
 		const body = JSON.stringify(argumentsValue);
