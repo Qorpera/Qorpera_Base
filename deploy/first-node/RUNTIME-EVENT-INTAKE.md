@@ -14,8 +14,9 @@ Founder decisions of 29 September 2026, on the Q1 page "Qorpera on Qorpera"
 Contract: section 16.3 and the 2026-09-29 amendment "events wake agents" (section 19). This file is
 the technical design. The Q1 page is the plain one.
 
-Status: W1a shipped in release v150 (PR #509, re-slotted to `20260928259260_runtime_event_intake`);
-W2 in review (PR #519, `20260928269290_runtime_event_wakes`). W1b reserves `20260929260100`.
+Status: W1a is live (v150, `20260928259260_runtime_event_intake`) and W2 is live (v151,
+`20260928269290_runtime_event_wakes`), both accepted; the intake is switched on. M2a in review
+(`20260929650000_runtime_company_mailboxes`). W1b reserves `20260929260100`.
 
 ## Words
 
@@ -35,7 +36,8 @@ W2 in review (PR #519, `20260928269290_runtime_event_wakes`). W1b reserves `2026
 | W1b | Signed hooks: the vault verifies Stripe, GitHub and HMAC signatures | `20260929260100` (reserved) |
 | W2 | Routine trigger on a hook, event wakes, the agent tools `list_hooks` and `read_event` | `20260928269290` |
 | W3 | Agents create, pause and remove hooks (`manage_hook`) | registered when started |
-| M2 | Company mailboxes: the mail provider posts to a platform-owned hook per mailbox | registered when started |
+| M2a | Company mailboxes, receiving: owners create them, the mail provider's webhook fills them, routines wake on mail | `20260929650000` |
+| M2b | Sending as a mailbox (as the agent, with an AI line), and attachments' contents | registered when started |
 
 Each step is a release-train feature PR: no bundle, manifest or activation files, an independent
 exact-head review, and a hand-off to the coordinator.
@@ -327,10 +329,64 @@ After it is live:
 
 ## Mail (M2)
 
-A company mailbox is a platform-owned hook per address. The mail provider posts each inbound message
-to it, signed with Standard Webhooks or Svix headers, and the vault checks them like the other signed
-kinds. A connected Gmail is read by the platform once a minute and becomes deliveries the same way.
-Mail design follows in M2.
+Email waking agents is the top priority after events (29 September), and a company's first address is on
+a mail domain Qorpera owns (decision 7). Mail reuses the event machinery: a mailbox is a hook, a
+received message is a delivery, and routines wake on it through the event trigger (W2).
+
+**Provider.** Resend, which already sends the platform's invitations and hour notices. It receives
+every message sent to a domain whose MX record points to it, parses it, and posts a signed
+`email.received` webhook carrying only metadata; the body, headers and attachments' descriptions come
+from its API (`GET /emails/receiving/{id}`) with the platform's key. The domain and the cost are Jonas's
+call; until the domain exists, the build runs against Resend's `<id>.resend.app` receiving domain.
+
+**Mailboxes (M2a).** An owner or admin creates one with `qorpera_create_company_mailbox`: a local part
+(1–64 lowercase letters, digits, dots, hyphens and underscores; RFC 2142 names and `noreply` reserved)
+on the platform's mail domain, and a purpose. An address belongs to one live mailbox across the
+platform. Each mailbox is a hook with the proof `mail`, named `mail-<local part>`, owned by the
+platform: it has a random hook address that is never shown, and the public intake answers `unknown`
+for it, so only the mail door fills it. Pausing, resuming and removing are the hook's; removing frees
+the address. Members see the address (`email`) in the hook list. At most 20 mailboxes a company, within
+its 50 hooks. `folder-v2` companies get mailboxes with their connection file, as hooks. Mailboxes do not
+wait for N1: when founding gives companies handles, their first mailbox can be made from the handle.
+
+**The mail door.** The Edge Function `mail-intake` checks the webhook's Standard Webhooks signature
+(`svix-*` headers, five minutes' tolerance) with the platform's signing secret, which is an Edge Function
+secret like the Resend key: mailboxes are the platform's, so no company vault is involved. It fetches the
+message and hands it, once per recipient in To, Cc and the envelope, to `qorpera_receive_mail`, which
+finds the live mailbox for the address and stores a verified delivery: event type `mail.received`,
+content type JSON, key `mail:<provider message id>` (a retried webhook is a duplicate and writes
+nothing). The JSON (`qorpera.mail/v1`) has the message id, sender, recipients, reply-to, subject,
+received time, In-Reply-To and References, the SPF, DKIM and DMARC results, the attachments' descriptions,
+and the text and HTML bodies, cut to 256 KiB (HTML first, `truncated`). The hook's minute and the
+company's hourly budget apply as to any delivery. A message for an address with no mailbox is dropped.
+The door answers the provider 200 when every recipient is settled, 429 with `Retry-After` when a
+mailbox is over its limits, and 503 when mail is switched off or something failed, so the provider
+retries.
+
+**Agents.** A routine on a mailbox is an event routine on its hook: `{kind:"event", hookId}`, optionally
+`only: ["mail.received"]`. The wake shows the message (cut to fit the wake), `read_event` reads it
+whole, and `list_hooks` lists mailboxes with their addresses. Mail is outside content: the wake protocol
+says so and names the authentication results.
+
+**Next (M2b).** Sending as a mailbox, as the agent with an AI line, through the same provider; attachments'
+contents into the company's storage (and `mail/<address>/` in the folder once its writer lands); threads.
+A connected Gmail read once a minute can become deliveries the same way.
+
+## Deploy (M2a)
+
+The migration adds tables and functions, and patches three existing ones by exact text: the intake door
+(`qorpera_receive_event`: a mailbox's hook is unknown), the hook descriptor (a mailbox shows `email`,
+never its hook address) and the agents' hook list (no `url` for a mailbox). It rolls: nothing uses
+mailboxes before they exist. After it is live:
+
+1. Deploy the function: `supabase functions deploy mail-intake` (`verify_jwt = false`), with the secret
+   `RESEND_WEBHOOK_SECRET` (the webhook's signing secret, `whsec_…`); `RESEND_API_KEY` is already set.
+2. In Resend: add the receiving domain (or use the `<id>.resend.app` one for acceptance), and a webhook for
+   `email.received` to `<supabase url>/functions/v1/mail-intake`.
+3. Set the domain and switch mail on:
+   `update public.qorpera_mail_settings set domain = '<receiving domain>', enabled = true;`
+4. Acceptance: an owner creates a mailbox on a test company; an agent sets up a routine on its hook; an
+   email sent to the address wakes it, and the run reads the message.
 
 ## Deploy (W1a)
 
