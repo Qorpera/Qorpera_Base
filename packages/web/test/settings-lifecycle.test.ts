@@ -1403,9 +1403,9 @@ describe("settings session lifecycle", () => {
 		expect(sdkRpcs(f)).toEqual([]);
 	});
 	it.each([
-		["my-connections", ".connection-section-heading button"],
-		["company-connections", ".service-card button:not(:disabled)"],
-	])("keeps the focused %s control through an unrelated company refresh", async (tab, selector) => {
+		["my-connections", ".connection-section-heading button", []],
+		["company-connections", ".service-card button:not(:disabled)", ["qorpera_list_cloud_secret_connections"]],
+	])("keeps the focused %s control through an unrelated company refresh", async (tab, selector, rpcs) => {
 		const f = await setup();
 		open(f.root);
 		click(f.root, `#settings-tab-${tab}`);
@@ -1422,6 +1422,8 @@ describe("settings session lifecycle", () => {
 		expect(content.firstElementChild).toBe(panel);
 		expect(content.contains(document.activeElement)).toBe(true);
 		expect((document.activeElement as HTMLElement).dataset.focusKey).toBe(key);
+		// Opened alone, each tab reads only its own list: My connections never reads the services.
+		expect(sdkRpcs(f)).toEqual(rpcs);
 	});
 	it("reads only the member's own accounts on My connections, and only the company's on Company connections", async () => {
 		// Isolate Settings reads from an open conversation's quota polling.
