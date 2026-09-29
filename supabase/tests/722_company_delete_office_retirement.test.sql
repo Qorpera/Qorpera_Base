@@ -91,12 +91,26 @@ reset role;
 select public.qorpera_request_company_deletion('30000000-0000-4000-8000-000000000010', '30000000-0000-4000-8000-000000000001');
 select pg_temp.path_claims('service_role');
 select pg_temp.wake_assert(pg_temp.idle_poll() #>> '{request,action}' = 'power_off', 'A deleted company''s computer powers off');
--- Not yet: the stop is not acknowledged.
+-- Not yet: the stop is not acknowledged (the demand is suspended here so only the stop is missing).
+savepoint unacknowledged;
+update public.qorpera_runtime_node_demands set suspended_at = clock_timestamp() where allocation_id = pg_temp.allocation();
 select pg_temp.refused($q$select public.qorpera_runtime_office_retirement(pg_temp.request())$q$, '55000');
+rollback to unacknowledged;
 select pg_temp.acknowledge_stop();
 -- Not yet: the machine's node demand is still awake (the provider suspends it after its stop).
 select pg_temp.refused($q$select public.qorpera_runtime_office_retirement(pg_temp.request())$q$, '55000');
 update public.qorpera_runtime_node_demands set suspended_at = clock_timestamp() where allocation_id = pg_temp.allocation();
+-- Not while a reset of the machine is open.
+savepoint resetting;
+insert into public.qorpera_runtime_office_resets(reset_id, transition_id, predecessor_activation_id, successor_activation_id, office_id,
+	computer_generation, allocation_id, provider_id, provider_policy_sha256, instance_sha256, root_incarnation_id, plan, plan_sha256,
+	phase, office_revision, privacy_state, privacy_version)
+select extensions.gen_random_uuid(), t.id, t.activation_id, extensions.gen_random_uuid(), t.office_id, t.computer_generation,
+	t.allocation_id, (t.request ->> 'providerId')::uuid, t.request ->> 'providerPolicySha256', t.request #>> '{startup,instanceSha256}',
+	extensions.gen_random_uuid(), '{}', repeat('a', 64), 'fenced', (pg_temp.office()).revision, 'shared', 0
+from public.qorpera_runtime_office_lifecycle_transitions t where t.id = (pg_temp.request() ->> 'transitionId')::uuid;
+select pg_temp.refused($q$select public.qorpera_runtime_office_retirement(pg_temp.request())$q$, '55000');
+rollback to resetting;
 -- Not while a resume was prepared for this power-off.
 savepoint booting;
 insert into public.qorpera_runtime_office_boot_intents(boot_intent_id, activation_id, transition_id, predecessor_activation_id,
@@ -154,6 +168,9 @@ begin
 		and not exists (select 1 from public.qorpera_runtime_office_start_intents
 			where office_id = (pg_temp.office()).id and state <> 'cancelled'),
 		'Retired: the office, its machine and node demand released, its binding and start intent gone');
+	-- The meter closed the stretch at the suspension; releasing the asleep machine adds no row.
+	perform pg_temp.wake_assert((select array_agg(state order by id) from public.qorpera_computer_hour_log
+		where subject_id = v_allocation) = array['awake', 'asleep'], 'The computer-hour meter ended at the suspension');
 	perform pg_temp.wake_assert(public.qorpera_retire_runtime_office(pg_temp.request(), v_evidence) = v_receipt
 		and public.qorpera_runtime_office_retirement(pg_temp.request()) = v_receipt,
 		'A lost reply is answered with the same receipt');

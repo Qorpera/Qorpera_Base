@@ -182,7 +182,7 @@ as $$
 declare
 	v_retirement public.qorpera_runtime_office_retirements%rowtype;
 	v_challenge public.qorpera_runtime_office_retirement_challenges%rowtype;
-	v_now timestamptz := clock_timestamp();
+	v_now timestamptz;
 begin
 	if auth.role() is distinct from 'service_role' then
 		raise exception 'Office provider required' using errcode = '42501';
@@ -207,6 +207,8 @@ begin
 			where office_id = v_retirement.office_id and computer_generation = v_retirement.computer_generation) >= 64 then
 			raise exception 'Office retirement challenges are exhausted' using errcode = '54000';
 		end if;
+		-- After the locks: a wait for the company fence does not shorten the window.
+		v_now := clock_timestamp();
 		insert into public.qorpera_runtime_office_retirement_challenges (id, office_id, computer_generation, issued_at, expires_at)
 		values (p_challenge_id, v_retirement.office_id, v_retirement.computer_generation, v_now, v_now + interval '5 seconds')
 		returning * into v_challenge;
