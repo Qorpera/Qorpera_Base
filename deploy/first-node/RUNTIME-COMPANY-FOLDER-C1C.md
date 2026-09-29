@@ -207,7 +207,7 @@ within 63 characters.
      - the job `KEY SHARE`;
      - the fence `KEY SHARE`, with the stop re-read;
      - **rank 0 always** (this company's row, `KEY SHARE`);
-     - then ranks 1 to 5.
+     - then ranks 1 to 7 (a caller's resources and grants at 6 and 7).
 
      Rank 0 on every tool call orders every caller that inserts a row referencing the company (action reviews,
      presence devices, usage signals), and every session lock that follows, before the members, as core §3 requires.
@@ -218,7 +218,10 @@ within 63 characters.
   5. `qorpera_folder_native_lease_current`: a plain check of the native lease tuple (lease against run, job, runner,
      assignment, capsule and identity), the runner's recovery epoch, lease and assignment expiry, the connection,
      capsule and policy, and sponsor availability, plus the existing plain `qorpera_runner_broker_job`. The save check
-     (C1B §2) leaves the lease and the sponsor out; model-facing tool calls keep them.
+     (C1B §2) leaves the lease and the sponsor out; model-facing tool calls keep them. It is built from the live
+     legacy check with its three `FOR SHARE` removed, so the two cannot drift. One lock stays inside it, as in the
+     legacy check: for a wake run, sponsor availability asks `qorpera_provider_autonomous_authority`, which takes the
+     provider connection `FOR SHARE`. It comes after the company row and the job, the legacy order.
 
   It returns the resolved run actor and the run row. The binding's ids are normalized (`::uuid::text`).
 - **`qorpera_folder_run_enter(env, profile, actor, p_targets jsonb)`**, a four-argument overload with no default, so
@@ -228,7 +231,8 @@ within 63 characters.
   - ranks 6 and 7 are `KEY SHARE` only;
   - the stronger mode wins.
 
-  It locks them in rank order.
+  It locks them in rank order, ranks 0 to 7; vault rows and unique-key claims (8, 9) stay the commit's. The
+  three-argument entry is this one with no caller targets.
 - **`qorpera_company_run_actor(env, p_binding)`**, the new entry point. It takes no locks.
   - snapshot-v1: it returns `qorpera_company_path_actor(...)` unchanged;
   - `folder-v2`, run: `qorpera_folder_run_resolve`, a plain resolve. It returns the legacy field names callers read
@@ -253,10 +257,10 @@ after that line stays byte-identical, and its digest is checked at migration tim
 | --- | --- | --- |
 | `native_tool_locked_run` (its callers include F2-1b's `qorpera_prepare_routine_login`) | `folder_tool_run(binding, '[]')`, returning the run row | 2a |
 | `validate_native_provider_execution_lease` (also called directly by the runtime) | `folder_native_lease_current` plus the stop check | 2a |
-| `run_wake_authorized`, and `wake_authorized` itself (the materializer calls it directly; its agent branch passes vacuously on `folder-v2`) | `folder_wake_authorized` plus the policy kind | 2a |
+| `run_wake_authorized`, and `wake_authorized` itself (the materializer calls it directly; its agent branch passes vacuously on `folder-v2`) | `wake_authorized` dispatches to `folder_wake_authorized`; `run_wake_authorized` keeps its text, calls it with the run's wake and compares the policy kind | 2a |
 | `company_path_assert_context` | by the company's core: `run_reads_current`, never the loop | 2a |
 | the five "unchanged" callers (§3) | a text patch: their actor call becomes `company_run_actor`; `begin_native_company_execution_v2` also takes the run mutex; the digest is of the patched text | 2a |
-| the read-type branches: `describe_company_run_context` (company name from `qorpera_folder_company_index`; session read plain; and F2's folder facts, the coworkers and the facts read in one statement: `|| case when v_folder is null then '{}' else jsonb_build_object('folder', v_folder) end`, with `v_folder := qorpera_company_state_run_folder(env, staff, <the coworker ids the body lists>)`, the same array it puts in `coworkers`, read in the same snapshot, from F2-1b's migration 20260929440000 on #534; the runtime's closed parser checks that every coworker in `folder` is listed, and memory and skills then use `agents/<handle>`), the presence functions (a folder `presence_path_routes` on `qorpera_folder_path_resource` and `folder_actor_allowed`; a refusal is 42501, which `native_presence_subject` reads as "absent"), `native_company_object_actor`, `member_file_export_source` (no gc fence) | their `folder-v2` body | 2a |
+| the read-type branches: `describe_company_run_context` (company name from `qorpera_folder_company_index`; its session check stays `FOR SHARE`, after rank 10's recheck at the sessions rank of §5.7; and F2's folder facts: `|| case when v_folder is null then '{}' else jsonb_build_object('folder', v_folder) end`, with `v_folder := qorpera_company_state_run_folder(env, staff, <the coworker ids the body lists>)`, called by name at run time so snapshot-v1 never needs it. It is given the same ids the body puts in `coworkers` and names no others, so `folder` never names an unlisted coworker even when a roster change lands between the two statements; a coworker whose folder retired in between is left out, as one without a folder is. From F2-1b's migration 20260929440000 on #534; the runtime's closed parser checks that every coworker in `folder` is listed, and memory and skills then use `agents/<handle>`), the presence functions (a folder `presence_path_routes` on `qorpera_folder_path_resource` and `folder_actor_allowed`; a refusal is 42501, which `native_presence_subject` reads as "absent"), `native_company_object_actor`, `member_file_export_source` (no gc fence) | their `folder-v2` body | 2a |
 | `native_office_start`, `_start_descriptor`, `_capture`, `_file_export`, `native_shared_file_export_source`, `self_approve_organization_proposal`, **`native_machine_start`** | refuse 0A000 until C1c-3: after the run check they take the gc fence or a legacy proposal lock. Machine start holds the machine row and then asks for the company row `FOR UPDATE`, the reverse of #419's custody order | 2a |
 | `send_native_agent_message`, `send_runner_agent_message`, `append_native_interaction_request`, `append_runner_transcript_event`, `begin_`/`complete_native_tool_operation`, `begin_`/`complete_run_operation_receipt` | 2a: refuse 0A000. 2b: the folder send, interaction request and receipts; the transcript append and the runner broker's direct receipt calls keep refusing | 2a, 2b |
 | `record_action_review` | 2a: under the mutex; its card path refuses through the transcript append. 2b: the folder card path (§5.6) | 2a, 2b |
