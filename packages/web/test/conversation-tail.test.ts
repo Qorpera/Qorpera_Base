@@ -10,7 +10,7 @@ import { projectTranscript, type TranscriptItem } from "../src/cloud/transcript.
 import type { HostedSessionEvent } from "../src/cloud/types.ts";
 import { deferred, event, fixture, id, pending, profileA, session, settle, staff, team, userA } from "./fixtures.ts";
 
-/* A thread opens at its newest events (migration 20260929410000) and reads older ones a page
+/* A thread opens at its newest events (migration 20260928279410) and reads older ones a page
  * at a time on "Show earlier"; a cloud without that read gets the whole history, as before. */
 
 const cleanup: (() => void)[] = [];
