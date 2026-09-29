@@ -20,7 +20,7 @@ The implementation boundary is concrete:
   behavior even when preparation is disabled, with no successor dispatch.
 - Two paths dispatch `delete` for an office: the governed same-allocation root
   reset described below, and the retirement of a deleted company's computer
-  ("Office retirement" below). It requires an operator-authored
+  ("Office retirement" below). The reset requires an operator-authored
   `qorpera.lxd-office-reset-plan/v1` document beside the lifecycle plan
   (`<planPath>.reset`) that binds the exact retained `replace` request. Native
   job VM retirement in `lxd-provider.ts` belongs to the isolated execution
@@ -106,7 +106,9 @@ Boundary of the current implementation:
 deleted (RUNTIME-COMPANY-DELETE.md, D3; migration
 `20260929320000_runtime_office_retirement.sql`). It runs only after the
 power-off worker's confirmed `powered_off` for a `power_off` transition with no
-resume. SQL answers null while the company lives. For a deleting company SQL
+resume, or after that power-off's completion when the power-off worker cannot
+replay it because the node rebooted since. Until a delete is pinned, SQL is asked
+at most once a minute per process; it answers null while the company lives. For a deleting company SQL
 issues one delete command id; the worker pins it in
 `office-retirement-request.json` (with the power-off request) before anything
 else. The pin binds the power-off completion and its seed, and the journal must
@@ -118,13 +120,17 @@ journaled `delete`. It settles only on a settled delete and an absent VM:
 `qorpera_retire_runtime_office` releases the allocation and node demand, drops
 the node binding and marks the office `retired`. The worker then writes
 `office-retired.json` from SQL's receipt. An unknown or failed delete is held
-under the same command id and never redispatched.
+under the same command id and never redispatched; while held, the worker reads
+only its journal and makes no SQL call.
 
-Once pinned, the lifecycle runs only this worker, before any status call. SQL
-answers the retirement from its ledger even after the company's purge, so a lost
-release reply still reaches the marker. With the marker, the lifecycle, both
-journal observers, the fleet unit and the root host-shutdown, host-resume and
-credential-rotation guards make no call, and the provider service ends.
+Once pinned, the lifecycle runs only this worker, before any status call, and
+the fleet unit starts the lifecycle without its fleet reconcile. SQL answers the
+retirement from its ledger even after the company's purge, so a lost release
+reply still reaches the marker. With the marker, the lifecycle, both journal
+observers, the fleet unit on this host and the root host-shutdown, host-resume
+and credential-rotation guards make no call, and the provider service ends.
+Fleet units of the same office on other candidate hosts have no marker; the
+operator disables them (RUNTIME-COMPANY-DELETE.md, D3 lane).
 
 Retirement keeps no custody: by the founder's decision (28 September 2026) no
 copy of a deleted company's machine is kept. The private

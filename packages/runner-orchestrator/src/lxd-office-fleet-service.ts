@@ -1,10 +1,12 @@
 import { createHash } from "node:crypto";
+import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { LxdUnixClient } from "./lxd-client.ts";
 import { assertOfficeAdoptionKernelLock } from "./lxd-office-adoption-files.ts";
 import { openLxdOfficeCreationIdentity } from "./lxd-office-creation-journal.ts";
 import { reconcileOfficeFleet } from "./lxd-office-fleet.ts";
 import { officeDigest, officeRecord, officeSha } from "./lxd-office-image-provenance.ts";
+import { code, readRecord } from "./lxd-office-journal-files.ts";
 import { LxdOfficeLifecycleJournal } from "./lxd-office-lifecycle-journal.ts";
 import { parseLxdOfficeLifecycleServiceConfig, runLxdOfficeLifecycleService } from "./lxd-office-lifecycle-service.ts";
 import { LxdOfficePhysicalGate } from "./lxd-office-physical-gate.ts";
@@ -12,6 +14,7 @@ import { readLxdOfficeCredentialFile, readLxdOfficeProtectedFile } from "./lxd-o
 import { lxdOfficePhysicalPolicySha256, officePhysicalPath } from "./lxd-office-physical-policy.ts";
 import { LxdOfficeProviderHttpRegistry } from "./lxd-office-provider-registry.ts";
 import { readLxdOfficeRetiredMarker } from "./lxd-office-retirement-control.ts";
+import { OFFICE_RETIREMENT_REQUEST } from "./lxd-office-retirement-worker.ts";
 
 export function parseOfficeFleetServiceConfig(value: unknown) {
 	const r = officeRecord(value, ["schema", "nodeId", "servicePath", "serviceConfigSha256"]);
@@ -56,6 +59,19 @@ export async function runOfficeFleetService(configPath: string, signal: AbortSig
 		})
 	)
 		return;
+	// A pinned retirement continues on this host without the fleet: after the
+	// company's purge only the retirement's own calls still answer.
+	let pinned = true;
+	try {
+		await readRecord(join(policy.journal.path, OFFICE_RETIREMENT_REQUEST), 65536);
+	} catch (error) {
+		if (!code(error, "ENOENT")) throw error;
+		pinned = false;
+	}
+	if (pinned) {
+		if (!stageOnly) await runLxdOfficeLifecycleService(config.servicePath, signal);
+		return;
+	}
 	const credential = await readLxdOfficeCredentialFile(service.registryCredential.path, 4096);
 	let registry: LxdOfficeProviderHttpRegistry;
 	try {

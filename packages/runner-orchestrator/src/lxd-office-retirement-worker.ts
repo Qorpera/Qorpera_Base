@@ -189,8 +189,23 @@ export class LxdOfficeRetirementWorker {
 			checked.throwIfAborted();
 		};
 		const result = { intentId, allocationId, transitionId };
-		const control = new LxdOfficeRetirementControl(recovery, this.#registry);
 		const pin = await optional(OFFICE_RETIREMENT_REQUEST);
+		if (pin !== undefined) {
+			const pinned = officeRecord(pin, ["schema", "intentId", "request", "stopCommandId", "deleteCommandId"]);
+			if (
+				pinned.schema !== "qorpera.lxd-office-retirement-request/v1" ||
+				pinned.intentId !== intentId ||
+				!isDeepStrictEqual(pinned.request, recovery) ||
+				pinned.stopCommandId !== stopCommandId ||
+				typeof pinned.deleteCommandId !== "string"
+			)
+				throw new Error("retirement request differs");
+			// A dispatched delete that has not succeeded is held without asking SQL.
+			const held = await journal.observe(pinned.deleteCommandId, "delete", signal);
+			if (held.state === "pending" || held.state === "unknown" || held.state === "failed")
+				return { ...result, state: held.state, deleteCommandId: pinned.deleteCommandId };
+		}
+		const control = new LxdOfficeRetirementControl(recovery, this.#registry);
 		const answer = await control.retirement(signal);
 		if (!answer) {
 			if (pin !== undefined) throw new Error("retirement withdrawn");

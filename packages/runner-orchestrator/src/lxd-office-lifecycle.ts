@@ -48,7 +48,7 @@ import {
 	officePhysicalPath,
 	parseLxdOfficePhysicalPolicy,
 } from "./lxd-office-physical-policy.ts";
-import { LxdOfficePowerOffWorker } from "./lxd-office-power-off-worker.ts";
+import { type LxdOfficePowerOffResult, LxdOfficePowerOffWorker } from "./lxd-office-power-off-worker.ts";
 import { LxdOfficePreparationWorker } from "./lxd-office-preparation-worker.ts";
 import { LxdOfficeProviderControl } from "./lxd-office-provider-control.ts";
 import type { LxdOfficeLifecycleRegistry } from "./lxd-office-provider-registry.ts";
@@ -137,7 +137,7 @@ export interface LxdOfficeLifecycleResult {
 	reason?: string;
 }
 const pending = new Set<string>();
-/** A living company's powered-off computer is asked about retirement at most once a minute. */
+/** Before a delete is pinned, SQL is asked about retirement at most once a minute per process. */
 const RETIREMENT_CHECK_MS = 60000;
 
 /** One enrolled office, serialized under a process-owned kernel lock. Each
@@ -381,6 +381,13 @@ export class LxdOfficeLifecycle {
 			this.#measurementPrepared = false;
 			pending.delete(this.#root);
 		}
+	}
+	#retirementDue(suffix: string): boolean {
+		const now = performance.now();
+		if (this.#retirementCheck?.suffix === suffix && now - this.#retirementCheck.atMs < RETIREMENT_CHECK_MS)
+			return false;
+		this.#retirementCheck = { suffix, atMs: now };
+		return true;
 	}
 	async #retire(
 		intentId: string,
@@ -930,7 +937,31 @@ export class LxdOfficeLifecycle {
 							if (!code(error, "ENOENT")) throw error;
 						}
 					}
-					const result = await this.#powerOffWorker.reconcileSettled(intentId, recovery, signal);
+					// A deleted company's computer is retired once it is off (D3); a
+					// living company's is kept. Until a delete is pinned, SQL is asked at
+					// most once a minute per process.
+					const retiring = !resume && recovery.action === "power_off";
+					let result: LxdOfficePowerOffResult;
+					try {
+						result = await this.#powerOffWorker.reconcileSettled(intentId, recovery, signal);
+					} catch (error) {
+						// The power-off worker replays only in the host boot it stopped
+						// the VM in. After a node reboot a deleting company's computer is
+						// still retired: the retirement checks the stopped VM itself.
+						let completed = false;
+						try {
+							await lstat(join(this.#root, `power-off-completed-${suffix}.json`));
+							completed = true;
+						} catch (missing) {
+							if (!code(missing, "ENOENT")) throw missing;
+						}
+						const retirement =
+							retiring && completed && this.#retirementDue(suffix)
+								? await this.#retire(intentId, recovery, signal)
+								: undefined;
+						if (!retirement) throw error;
+						return retirement;
+					}
 					signal.throwIfAborted();
 					if (
 						result.intentId !== intentId ||
@@ -938,16 +969,7 @@ export class LxdOfficeLifecycle {
 						result.allocationId !== status.reservation.allocationId
 					)
 						throw new Error("power-off result differs");
-					// A deleted company's computer is retired once it is off (D3). A
-					// living company's is kept; SQL is asked at most once a minute.
-					if (
-						!resume &&
-						recovery.action === "power_off" &&
-						result.state === "powered_off" &&
-						(this.#retirementCheck?.suffix !== suffix ||
-							performance.now() - this.#retirementCheck.atMs >= RETIREMENT_CHECK_MS)
-					) {
-						this.#retirementCheck = { suffix, atMs: performance.now() };
+					if (retiring && result.state === "powered_off" && this.#retirementDue(suffix)) {
 						const retirement = await this.#retire(intentId, recovery, signal);
 						if (retirement) return retirement;
 					}

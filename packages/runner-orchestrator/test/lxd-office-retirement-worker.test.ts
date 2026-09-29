@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { lxdOfficeGuestPlan } from "../src/lxd-office-guest.ts";
 import { publish } from "../src/lxd-office-journal-files.ts";
+import { LxdOfficeOperationJournal } from "../src/lxd-office-operations.ts";
 import { OFFICE_RETIRED_MARKER, readLxdOfficeRetiredMarker } from "../src/lxd-office-retirement-control.ts";
 import { LxdOfficeRetirementWorker, OFFICE_RETIREMENT_REQUEST } from "../src/lxd-office-retirement-worker.ts";
 import { officePowerOffWorkerFixture } from "./fixtures/office-power-off-worker.ts";
@@ -29,6 +30,7 @@ async function fixture() {
 		operationId: null as string | null,
 		expiresInMs: 5000,
 		loseRetireReply: false,
+		onPrepare: () => {},
 		challenges: [] as string[],
 	};
 	const answer = () =>
@@ -51,6 +53,7 @@ async function fixture() {
 		if (method === "qorpera_runtime_office_retirement") return answer();
 		if (method === "qorpera_prepare_runtime_office_retirement") {
 			sql.challenges.push(args.p_challenge_id as string);
+			sql.onPrepare();
 			return {
 				schema: "qorpera.office-retirement-challenge/v1",
 				challengeId: args.p_challenge_id,
@@ -89,7 +92,12 @@ async function fixture() {
 		scope: f.request.startup.scope,
 		computerGeneration: f.request.startup.computerGeneration,
 	};
-	return { ...f, sql, registry, run, methods, record, identity };
+	const cause = (message: string) =>
+		expect.objectContaining({
+			message: "OFFICE_RETIREMENT_UNCONFIRMED",
+			cause: expect.objectContaining({ message }),
+		});
+	return { ...f, name, sql, registry, run, methods, record, identity, cause };
 }
 
 describe("retiring a deleted company's powered-off computer", () => {
@@ -157,9 +165,54 @@ describe("retiring a deleted company's powered-off computer", () => {
 		const f = await fixture();
 		f.state.status = "Running";
 		f.state.statusCode = 103;
-		await expect(f.run()).rejects.toThrow("OFFICE_RETIREMENT_UNCONFIRMED");
+		await expect(f.run()).rejects.toEqual(f.cause("retirement VM not stopped"));
 		expect(f.methods()).toEqual(["qorpera_runtime_office_retirement"]);
 		expect(f.submit).not.toHaveBeenCalled();
+	});
+	it("rechecks the VM inside the window: one started meanwhile is not deleted", async () => {
+		const f = await fixture();
+		f.sql.onPrepare = () => {
+			f.state.status = "Running";
+			f.state.statusCode = 103;
+		};
+		await expect(f.run()).rejects.toEqual(f.cause("retirement VM not stopped"));
+		expect(f.methods()).toEqual(["qorpera_runtime_office_retirement", "qorpera_prepare_runtime_office_retirement"]);
+		expect(f.submit).not.toHaveBeenCalled();
+	});
+	it.each(["succeeded", "unknown"] as const)(
+		"refuses a start journaled after the pinned stop (%s), since a resume began",
+		async (outcome) => {
+			const f = await fixture();
+			f.submit.mockImplementation(async (project, action) => {
+				expect(action).toEqual({ action: "start", name: f.name });
+				if (outcome === "unknown") throw new Error("reply lost");
+				return { project, instanceName: f.name, operationId: id(801) };
+			});
+			const journal = await LxdOfficeOperationJournal.open(
+				f.root,
+				f.activation.request.intentId,
+				f.binding,
+				f.client,
+				true,
+			);
+			await expect(
+				journal.reconcile("e0000000-0000-4000-8000-000000000001", "start", signal()),
+			).resolves.toMatchObject({ state: outcome });
+			f.submit.mockClear();
+			await expect(f.run()).rejects.toEqual(f.cause("retirement lineage differs"));
+			expect(f.methods()).toEqual(["qorpera_runtime_office_retirement"]);
+			expect(f.submit).not.toHaveBeenCalled();
+		},
+	);
+	it("retires a computer powered off before a host reboot", async () => {
+		const f = await fixture();
+		f.check.mockImplementation(async () => ({
+			signal: signal(),
+			validForMs: 5000,
+			hostBootId: "b0000000-0000-4000-8000-00000000abcd",
+		}));
+		await expect(f.run()).resolves.toMatchObject({ state: "retired" });
+		expect(f.submit).toHaveBeenCalledOnce();
 	});
 	it("dispatches nothing when the window expired, and a later pass takes a new one", async () => {
 		const f = await fixture();
@@ -175,7 +228,10 @@ describe("retiring a deleted company's powered-off computer", () => {
 		const unknown = await fixture();
 		unknown.submit.mockRejectedValue(new Error("reply lost"));
 		await expect(unknown.run()).resolves.toMatchObject({ state: "unknown", deleteCommandId });
-		await expect(unknown.run()).resolves.toMatchObject({ state: "unknown" });
+		// Held from the local journal alone: no further SQL call.
+		const calls = unknown.registry.mock.calls.length;
+		await expect(unknown.run()).resolves.toMatchObject({ state: "unknown", deleteCommandId });
+		expect(unknown.registry).toHaveBeenCalledTimes(calls);
 		expect(unknown.submit).toHaveBeenCalledOnce();
 		expect(unknown.methods()).not.toContain("qorpera_retire_runtime_office");
 		const failed = await fixture();

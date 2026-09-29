@@ -76,11 +76,12 @@ records what it waits for.
   start intent. The ledger `qorpera_runtime_office_retirements` has no link to the company, so
   `qorpera_runtime_office_retirement_receipt` still answers after the purge.
   D3b is the provider step (`lxd-office-retirement-worker.ts`, see "Office retirement" in
-  RUNTIME-OFFICE-RETENTION.md). After each confirmed power-off the lifecycle asks SQL (at most once a
-  minute per process for a living company). For a deleting company it pins the delete command id in
-  `office-retirement-request.json`, and from then on runs only the retirement, before any other call.
-  It writes `office-retired.json` from SQL's receipt; with that marker the provider, the fleet unit and
-  the root host guards make no call, and the provider service ends. It needs a new office provider
+  RUNTIME-OFFICE-RETENTION.md). After a confirmed power-off, also one from before a node reboot, the
+  lifecycle asks SQL; until a delete is pinned, at most once a minute per process. For a deleting
+  company it pins the delete command id in `office-retirement-request.json`, and from then on runs only
+  the retirement, before any other call (the fleet unit goes straight to it). It writes
+  `office-retired.json` from SQL's receipt; with that marker the provider, the fleet unit on that host
+  and the root host guards make no call, and the provider service ends. It needs a new office provider
   build, reinstalled per office in the coordinator's lane below. Not covered, and held for an operator: offices whose VM was created but
   never activated, offices mid-reset, and an office whose resume (a wake before the deletion) was under
   way when the deletion came (its boot intent or successor stays; the pause keeps it from finishing).
@@ -88,8 +89,10 @@ records what it waits for.
   1. Package the office provider and the office fleet from the release commit
      (`scripts/package-lxd-office-provider.mjs`, `scripts/package-lxd-office-fleet.mjs`).
   2. For each installed office provider on each node, one at a time: read its last observation
-     (`journalctl -u <unit> -n 5`). Continue only for `active`, `idle` or `power_off`/`powered_off`;
-     wait while it is mid-reset, mid-resume or reports `pending`. Stop the unit (the VM keeps running),
+     (`journalctl -u <unit> -n 5`). Continue for `active`, `idle` or `power_off`/`powered_off`, and for
+     `unconfirmed` with `power-off host changed` (a computer powered off before a node reboot, which the
+     old build cannot replay; the new build retires it if its company is being deleted). Wait while it is
+     mid-reset, mid-resume or reports `pending`. Stop the unit (the VM keeps running),
      install the new build the way the release installs provider builds (root reinstall; the installers
      refuse to overwrite a changed unit or binary without that explicit step), start it, and confirm the
      next observation has the same state as before.
@@ -97,8 +100,10 @@ records what it waits for.
      `phase: retirement`, then `state: retired`; `qorpera_runtime_office_retirements.retired_at` is set;
      LXD lists no instance for the office; the node's inventory stays ready (no unmanaged instance);
      `qorpera_company_deletions.holdings` drops the machine and the finisher purges the company.
-  4. A retired office's unit exits 0 and stays stopped. Disable it; its protected configuration and
-     journal are left for the operator runbook. The workbench NAS directory stays (D5).
+  4. A retired office's unit exits 0 and stays stopped. Disable it, and disable this office's fleet
+     units on the other candidate hosts too: they have no marker and would call SQL for a purged office
+     at their next start. The protected configuration and journal are left for the operator runbook. The
+     workbench NAS directory stays (D5).
   5. Rollback: reinstall the previous build. Not for an office that already has
      `office-retirement-request.json` in its journal: an older build would keep asking for the deleted
      VM. Leave that office on the new build.

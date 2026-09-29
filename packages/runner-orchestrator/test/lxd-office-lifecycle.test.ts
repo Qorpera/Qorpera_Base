@@ -482,16 +482,41 @@ describe("serialized office lifecycle", () => {
 		f.state.idle = { ...f.recovery, action: "power_off" };
 		const idle = () => f.open(undefined, undefined, 300000);
 		await idle().reconcile(signal());
+		const base = performance.now();
+		let elapsed = 0;
+		const now = vi.spyOn(performance, "now").mockImplementation(() => base + elapsed);
 		const lifecycle = idle();
-		for (let n = 0; n < 3; n++)
+		for (let n = 0; n < 3; n++) {
 			await expect(lifecycle.reconcile(signal())).resolves.toMatchObject({
 				state: "powered_off",
 				phase: "power_off",
 			});
-		expect(f.retirementWorker.reconcileSettled).toHaveBeenCalledOnce();
-		await expect(idle().reconcile(signal())).resolves.toMatchObject({ state: "powered_off" });
+			elapsed += 31000;
+		}
+		// Asked at 0 s and 62 s, not at 31 s.
 		expect(f.retirementWorker.reconcileSettled).toHaveBeenCalledTimes(2);
+		now.mockRestore();
+		await expect(idle().reconcile(signal())).resolves.toMatchObject({ state: "powered_off" });
+		expect(f.retirementWorker.reconcileSettled).toHaveBeenCalledTimes(3);
 		expect(f.powerOffWorker.reconcileSettled).toHaveBeenCalledTimes(4);
+	});
+	it("retires a deleted company's computer whose power-off no longer replays after a host reboot", async () => {
+		const f = await fixture();
+		await f.toPhase(7);
+		await f.open().reconcile(signal());
+		f.state.idle = { ...f.recovery, action: "power_off" };
+		const idle = () => f.open(undefined, undefined, 300000);
+		await idle().reconcile(signal());
+		f.powerOffWorker.reconcileSettled.mockRejectedValue(new Error("power-off host changed"));
+		// Without a completed power-off nothing is retired.
+		await expect(idle().reconcile(signal())).rejects.toThrow("OFFICE_LIFECYCLE_UNCONFIRMED");
+		expect(f.retirementWorker.reconcileSettled).not.toHaveBeenCalled();
+		await publish(f.root, `power-off-completed-${allocationId}-${f.recovery.transitionId}.json`, Buffer.from("{}"));
+		// A living company's computer: the power-off error stands.
+		await expect(idle().reconcile(signal())).rejects.toMatchObject({ cause: { message: "power-off host changed" } });
+		expect(f.retirementWorker.reconcileSettled).toHaveBeenCalledOnce();
+		f.retirementWorker.result = "pending";
+		await expect(idle().reconcile(signal())).resolves.toMatchObject({ state: "pending", phase: "retirement" });
 	});
 	it("retained completed protected recovery permits later idle while a fresh operator plan takes precedence", async () => {
 		const f = await fixture();
