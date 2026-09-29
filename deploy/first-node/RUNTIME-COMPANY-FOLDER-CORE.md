@@ -274,7 +274,9 @@ is never upgraded. The steps:
 
 1. **Commit id and operation key.** The commit id is assigned and the
    operation key claimed. A replay stops here and returns the stored outcomes.
-2. **The run.** The job is taken `FOR KEY SHARE`.
+2. **The run.** For an effect that needs its run to itself (a tool call, a send, a receipt; not a commit or a
+   release), the run mutex first: the run's budget row `FOR UPDATE` (C1C §5.2). Then the job is taken
+   `FOR KEY SHARE`.
    - Lease renewal takes `FOR NO KEY UPDATE`, which does not conflict with
      it, so renewal is never starved.
    - Every change that ends a lease (requeue, cancel, handoff, completion,
@@ -383,6 +385,8 @@ is never upgraded. The steps:
    index row written points at its entry's current version. The folder core's
    tables have no deferred constraints or deferred triggers; an activation
    check verifies this for them. So nothing heavy runs at COMMIT.
+   - **Run-owned rows** (receipts, action reviews, context views) come after the ranks, before rank 10's recheck;
+     **sessions** after rank 10, before admission (C1C §5.7).
 10. **Admission.** If the transaction inserts a wake, it takes the company's
     admission row `FOR NO KEY UPDATE` as its last lock before the clock, and
     inserts its wakes after it. That covers:
