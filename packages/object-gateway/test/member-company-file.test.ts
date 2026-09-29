@@ -357,7 +357,10 @@ describe("selected member binary uploads", () => {
 			const chunks = await Promise.all(
 				metadata.manifest.chunks.map((chunk) => service.store.get(companyId, chunk.sha256, chunk.bytes)),
 			);
-			expect(Buffer.concat(chunks)).toEqual(bytes);
+			// Buffer.equals, not toEqual: toEqual walks 4-8 MiB element by element and blocks the event loop
+			// for seconds, longer than the server's keep-alive timeout, so the retry below could be written
+			// onto a connection the server is closing (ECONNRESET).
+			expect(Buffer.concat(chunks).equals(bytes)).toBe(true);
 			expect(service.member).toHaveBeenCalledWith(
 				"qorpera_begin_member_company_file_upload",
 				token,
