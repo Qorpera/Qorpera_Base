@@ -51,7 +51,10 @@ async function fixture() {
 		catalog: new Map<string, number>(),
 		/** Manifests an entry the run may read references. */
 		readable: new Set<string>(),
+		/** The company's work is stopped after the intent opened. */
 		stopped: false,
+		/** How many more of the gateway's folder calls meet a deadlock. */
+		deadlocks: 0,
 		/** How many more times the catalog loses an object put under this hash. */
 		lose: new Map<string, number>(),
 	};
@@ -73,8 +76,14 @@ async function fixture() {
 		if (method === "qorpera_list_profile_objects_for_migration") return Response.json([]);
 		if (["qorpera_authorize_profile_object_replication", "qorpera_confirm_profile_object_replica"].includes(method))
 			return Response.json(true);
-		if (args.p_environment_id !== environmentId || JSON.stringify(args.p_actor) !== actor || sql.stopped)
+		if (args.p_environment_id !== environmentId || JSON.stringify(args.p_actor) !== actor)
 			return Response.json({ code: "42501" }, { status: 403 });
+		// PostgREST answers the folder core's stop (55000) and its lock conflicts (40P01) with 500.
+		if (sql.stopped) return Response.json({ code: "55000", message: "Company execution is paused" }, { status: 500 });
+		if (sql.deadlocks > 0) {
+			sql.deadlocks -= 1;
+			return Response.json({ code: "40P01", message: "deadlock detected" }, { status: 500 });
+		}
 		if (method === "qorpera_folder_authorize_object_upload" || method === "qorpera_folder_confirm_object") {
 			const intent = sql.intents.get(args.p_intent as string);
 			if (!intent || intent.state !== "open" || intent.objects.get(args.p_sha256 as string) !== args.p_bytes)
@@ -207,6 +216,7 @@ async function fixture() {
 		root,
 		origin,
 		token,
+		authority,
 		slowRequests(minutes: number) {
 			requestMinutes = minutes;
 		},
@@ -299,12 +309,23 @@ it("refuses bytes it may not read, and bytes that are not the entry's", async ()
 	await expect(bytes.get({ ...reference, executable: false }, signal)).rejects.toThrow();
 });
 
-it("stops when the folder core refuses the run", async () => {
-	const { bytes, sql } = await fixture();
+it("stops when the company's work stops, without taking the gateway's database out for other companies", async () => {
+	const { bytes, sql, authority } = await fixture();
+	const signal = new AbortController().signal;
+	const reference = await bytes.put(Buffer.from("before"), "text/plain", false, signal);
+	sql.readable.add(reference.manifestSha256);
 	sql.stopped = true;
-	await expect(bytes.put(Buffer.from("x"), "text/plain", false, new AbortController().signal)).rejects.toBeInstanceOf(
-		CloudCompanyFolderError,
-	);
+	await expect(bytes.put(Buffer.from("x"), "text/plain", false, signal)).rejects.toMatchObject({ failure: "stopped" });
+	await expect(bytes.get({ ...reference, executable: false }, signal)).rejects.toMatchObject({ failure: "stopped" });
+	expect(authority.health().api.status).toBe("healthy");
+	// A lock conflict is the run's to retry, not an outage either.
+	sql.stopped = false;
+	sql.deadlocks = 1;
+	await expect(bytes.put(Buffer.from("y"), "text/plain", false, signal)).rejects.toMatchObject({
+		failure: "contended",
+	});
+	expect(authority.health().api.status).toBe("healthy");
+	expect(await bytes.put(Buffer.from("y"), "text/plain", false, signal)).toMatchObject({ fileSha256: sha("y") });
 });
 
 it("serves the folder route only on the native credential, with a run binding and an intent", async () => {

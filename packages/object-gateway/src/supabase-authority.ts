@@ -61,6 +61,25 @@ interface SupabaseObjectAuthorityOptions {
 	now?: () => number;
 }
 
+/** PostgREST answers classes 40 and 55 with 500. From the folder core those are one company's state, not the
+ * database's health: a stopped company (55000) becomes 423 and a lock conflict (40001, 40P01, 55P03) 409, so neither
+ * opens the dependency circuit for every company. Any other 500 stays a dependency failure. */
+async function folderRefusal(response: Response, signal: AbortSignal): Promise<ObjectDependencyError> {
+	let code: unknown;
+	try {
+		code = (
+			JSON.parse(new TextDecoder().decode(await readBoundedObjectResponse(response, 16 * 1024, signal))) as {
+				code?: unknown;
+			}
+		).code;
+	} catch {
+		return new ObjectDependencyError(500);
+	}
+	if (code === "55000") return new ObjectDependencyError(423);
+	if (code === "40001" || code === "40P01" || code === "55P03") return new ObjectDependencyError(409);
+	return new ObjectDependencyError(500);
+}
+
 function record(value: unknown, label: string): Record<string, unknown> {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`Invalid ${label}`);
 	return value as Record<string, unknown>;
@@ -369,6 +388,7 @@ export class SupabaseObjectAuthority
 			{ p_environment_id: environmentId, p_actor: actor, p_intent: intentId, p_sha256: sha256, p_bytes: bytes },
 			undefined,
 			this.#secretKey,
+			true,
 		);
 		const receipt = value as Record<string, unknown> | null;
 		if (
@@ -394,6 +414,7 @@ export class SupabaseObjectAuthority
 			{ p_environment_id: environmentId, p_actor: actor, p_intent: intentId, p_sha256: sha256, p_bytes: bytes },
 			undefined,
 			this.#secretKey,
+			true,
 		)) as Record<string, unknown> | null;
 		if (!value || value.schema !== "qorpera.folder-object/v1" || value.sha256 !== sha256 || value.bytes !== bytes)
 			throw new ObjectDependencyError(403);
@@ -409,6 +430,7 @@ export class SupabaseObjectAuthority
 			{ p_environment_id: environmentId, p_actor: actor, p_sha256: sha256 },
 			undefined,
 			this.#secretKey,
+			true,
 		)) as Record<string, unknown> | null;
 		if (
 			!value ||
@@ -610,6 +632,7 @@ export class SupabaseObjectAuthority
 		body: Record<string, unknown>,
 		bearer: string | undefined,
 		apiKey: string,
+		folder = false,
 	): Promise<unknown> {
 		const headers: Record<string, string> = {
 			...supabaseRequestHeaders(apiKey, bearer),
@@ -623,6 +646,7 @@ export class SupabaseObjectAuthority
 				signal,
 			});
 			if (!response.ok) {
+				if (folder && response.status === 500) throw await folderRefusal(response, signal);
 				void response.body?.cancel().catch(() => undefined);
 				throw new ObjectDependencyError(response.status);
 			}

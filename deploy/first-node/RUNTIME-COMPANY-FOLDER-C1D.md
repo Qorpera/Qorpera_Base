@@ -219,12 +219,14 @@ runtime adapter, with no migration.
   a `folder` authority (`cli.ts` gives it the Supabase authority on the native credential). Each put is authorized by
   `qorpera_folder_authorize_object_upload`, stored through `uploadWithAuthority`, and confirmed by
   `qorpera_folder_confirm_object`; each get by `qorpera_folder_authorize_object_download`, before and after the NAS
-  read. The native route's token and binding checks are shared, not copied.
+  read. The native route's token and binding checks are shared, not copied. PostgREST answers SQLSTATE classes 40
+  and 55 with 500, which would open the gateway's database circuit for every company, so the folder calls map the
+  stop (55000) to 423 and lock conflicts (40001, 40P01, 55P03) to 409; any other 500 stays a dependency failure.
 - Runtime: `packages/runtime/src/cloud-company-folder-bytes.ts`, `HttpCloudCompanyFolderBytes`. A put builds the
   canonical manifest, opens the intent, puts the missing objects, renews the intent when ten minutes have passed, and
   seals; an object the catalog lost is put once more, then the put fails as `contended`. A get checks the manifest
-  against the reference and each chunk against its hash. A refusal of the folder core's checks is
-  `CloudCompanyFolderError('unavailable')`.
+  against the reference and each chunk against its hash. A refusal of the folder core's checks (403) is
+  `CloudCompanyFolderError('unavailable')`, a stop (423) `stopped`, a lock conflict (409) `contended`.
 
 **Activation checks** (test 761 §8 runs them; the coordinator may copy them into the activation file):
 - each of the four patched snapshot-v1 bodies, with its `folder-v2` line removed, has its reviewed digest, so the

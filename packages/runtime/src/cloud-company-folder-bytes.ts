@@ -359,8 +359,10 @@ export class HttpCloudCompanyFolderBytes implements CloudCompanyFolderBytes {
 				if (!response.ok) {
 					void response.body?.cancel().catch(() => undefined);
 					// The gateway answers a refusal of the folder core's checks as 403: the intent, the run or the
-					// read is not (or no longer) this run's.
+					// read is not (or no longer) this run's. 423: the company's work is stopped. 409: a lock conflict.
 					if (response.status === 403) throw new CloudCompanyFolderError("unavailable");
+					if (response.status === 423) throw new CloudCompanyFolderError("stopped");
+					if (response.status === 409) throw new CloudCompanyFolderError("contended");
 					throw new CloudRuntimeDiagnosticError("transport_unavailable", "Company folder bytes unavailable");
 				}
 				const declared = response.headers.get("content-length");
