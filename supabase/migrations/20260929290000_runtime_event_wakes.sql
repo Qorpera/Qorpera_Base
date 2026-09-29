@@ -1,19 +1,21 @@
 -- Event wakes, build step W2a (Q1; founder decisions of 29 September 2026: agents wake on
 -- defined events, the top priority; event wakes also come to today's routine rows before the
--- clean reset; contract section 19, 2026-09-29 amendment "events wake agents", items 1 and 4;
+-- clean reset; contract section 19, 2026-09-29 amendment "events wake agents", items 1, 4, 5 and 7;
 -- design deploy/first-node/RUNTIME-EVENT-INTAKE.md, "Event wakes (W2)").
 --
 -- A routine version may carry one listener trigger on a hook:
 --   {id, kind:'listener', source:'event', hookId, only?:[types], timeZone, replyPolicy?}
--- A cursor per listener records when it became active. The materializer's drain queues at most
--- one event occurrence per routine trigger while verified deliveries wait; the wake reader takes
--- up to 20 of them for the occurrence, once, and shows them as outside content. The rest wake the
--- routine again. Quiet hours, pauses, expiry and the pinned sponsor apply as to every routine
--- occurrence, through the existing insert triggers.
+-- A cursor per listener records when it became active and how far its deliveries are taken. The
+-- materializer's drain queues at most one event occurrence per routine trigger while verified
+-- deliveries of a live hook wait; the wake reader takes up to 20 of them for the occurrence, once,
+-- within the room the rest of the wake leaves, and shows them as outside content. The rest wake the
+-- routine again. A wake that ends without taking its deliveries is tried again after 1, 4, 16 and
+-- 64 minutes; after five tries its first delivery is left behind. Quiet hours, pauses, expiry and
+-- the pinned sponsor apply as to every routine occurrence, through the existing insert triggers.
 --
--- Lock order (drain): the event cursor (skip locked), then the company's wake admission fence and
--- the wake row (the pin trigger's own order). A routine save locks the file cursors, then the event
--- cursors.
+-- Lock order (drain): the event cursor (skip locked), the routine row (nowait), then the company's
+-- wake admission fence (nowait) and the wake row (the pin trigger's own order). A routine save
+-- locks the routine, the file cursors, then the event cursors; the drain never waits for either.
 
 set local lock_timeout = '3s';
 
@@ -38,12 +40,16 @@ begin
 	if v_definition is null or v_definition !~ '^CHECK \(\(source_kind = ANY \(ARRAY\[' then
 		raise exception 'Wake source kinds differ: %', v_definition; end if;
 	select array_agg(match[1] order by ordinality) into v_kinds
-	from regexp_matches(v_definition, '''([a-z-]+)''::text', 'g') with ordinality as found(match, ordinality);
-	if not ('schedule' = any (v_kinds) and 'company-file' = any (v_kinds)) or 'event' = any (v_kinds) then
+	from regexp_matches(v_definition, '''([a-z0-9_-]+)''::text', 'g') with ordinality as found(match, ordinality);
+	-- Every listed kind is read, in the constraint's own form, so the rebuilt one prints alike.
+	if not ('schedule' = any (v_kinds) and 'company-file' = any (v_kinds)) or 'event' = any (v_kinds)
+		or cardinality(v_kinds) <> (length(v_definition) - length(replace(v_definition, '::text', ''))) / length('::text') then
 		raise exception 'Wake source kinds differ: %', v_definition; end if;
 	alter table public.qorpera_wake_occurrences drop constraint qorpera_wake_occurrences_source_kind_check;
 	execute format('alter table public.qorpera_wake_occurrences add constraint qorpera_wake_occurrences_source_kind_check
-		check (source_kind = any (%L::text[]))', v_kinds || array['event']);
+		check (source_kind = any (array[%s]))',
+		(select string_agg(quote_literal(kind), ', ' order by ordinality) from unnest(v_kinds || array['event'])
+			with ordinality as listed(kind, ordinality)));
 end
 $$;
 
@@ -62,6 +68,9 @@ create table public.qorpera_event_listener_cursors (
 	activated_at timestamptz not null default clock_timestamp(),
 	active boolean not null default false,
 	last_scanned_at timestamptz not null default '-infinity',
+	-- Every matching verified delivery verified before this instant is taken or left behind, so the
+	-- waiting query starts here. It trails the clock by a minute, past any receive still committing.
+	taken_before timestamptz not null default '-infinity',
 	primary key (routine_id, routine_version, trigger_id),
 	foreign key (routine_id, routine_version) references public.qorpera_cloud_routine_versions(routine_id, version)
 		on delete cascade
@@ -74,15 +83,24 @@ create table public.qorpera_event_wake_deliveries (
 	routine_id uuid not null,
 	trigger_id text not null,
 	delivery_id uuid not null references public.qorpera_event_deliveries(id) on delete cascade,
+	-- The occurrence that took the delivery, or the last one that failed to before it was left behind.
+	-- Rows go with the company through their occurrence and delivery.
 	occurrence_id uuid not null references public.qorpera_wake_occurrences(id) on delete cascade,
-	-- The company id for indexes; no foreign key, so reading a wake takes no company lock. Rows go
-	-- with the company through their occurrence and delivery.
-	profile_id uuid not null,
 	taken_at timestamptz not null default clock_timestamp(),
 	primary key (routine_id, trigger_id, delivery_id)
 );
 create index qorpera_event_wake_deliveries_occurrence on public.qorpera_event_wake_deliveries (occurrence_id);
 create index qorpera_event_wake_deliveries_delivery on public.qorpera_event_wake_deliveries (delivery_id);
+-- A hook's verified deliveries in the order listeners take them.
+create index qorpera_event_deliveries_hook_verified on public.qorpera_event_deliveries (hook_id, verified_at, id)
+	where status = 'verified';
+-- A routine trigger's latest event wake, which is the only one that can be pending.
+create index qorpera_wake_occurrences_event_latest on public.qorpera_wake_occurrences (routine_id, trigger_id, created_at)
+	where source_kind = 'event';
+
+-- The public origin of the intake, for the full address agents give senders; set at deploy.
+alter table public.qorpera_event_intake_settings add column public_url text
+	check (public_url is null or public_url ~ '^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?$');
 
 alter table public.qorpera_event_listener_cursors enable row level security;
 alter table public.qorpera_event_wake_deliveries enable row level security;
@@ -146,11 +164,14 @@ select pg_temp.event_wake_patch('public.qorpera_sync_company_file_listener()'::r
 
 -- An agent's own routine may listen to any live hook of its company.
 select pg_temp.event_wake_patch('public.qorpera_manage_agent_routine(jsonb,jsonb)'::regprocedure,
-	$old$		if v_trigger ->> 'kind' = 'listener' and not public.qorpera_wake_path_authorized($old$,
-	$new$		if v_trigger ->> 'source' = 'event' and not exists (select 1 from public.qorpera_event_hooks as hook
+	$old$		-- A file listener may only watch what this agent and its requester may read.
+		if v_trigger ->> 'kind' = 'listener' and not public.qorpera_wake_path_authorized($old$,
+	$new$		-- An event listener may only listen to a live hook of this agent's company.
+		if v_trigger ->> 'source' = 'event' and not exists (select 1 from public.qorpera_event_hooks as hook
 			where hook.id = (v_trigger ->> 'hookId')::uuid and hook.profile_id = v_run.profile_id
 				and hook.environment_id = v_run.environment_id and hook.status <> 'removed') then
 			raise exception 'Routine listener hook is unavailable' using errcode = '42501'; end if;
+		-- A file listener may only watch what this agent and its requester may read.
 		if v_trigger ->> 'kind' = 'listener' and v_trigger ->> 'source' = 'company-file' and not public.qorpera_wake_path_authorized($new$);
 
 -- ---------------------------------------------------------------------------
@@ -197,23 +218,23 @@ select pg_temp.event_wake_patch('public.qorpera_runtime_wake_policy_internal(uui
 -- 5. The drain: one event occurrence per routine trigger while deliveries wait
 -- ---------------------------------------------------------------------------
 
--- The verified deliveries a listener has not taken yet, oldest first.
+-- The verified deliveries a listener has not taken yet, in the order it takes them.
 create function public.qorpera_event_listener_waiting(p_cursor public.qorpera_event_listener_cursors, p_only jsonb, p_limit integer)
 returns setof public.qorpera_event_deliveries
 language sql
-stable
 security definer
 set search_path = ''
 as $$
 	select delivery.* from public.qorpera_event_deliveries as delivery
 	where delivery.hook_id = p_cursor.hook_id and delivery.status = 'verified'
+		and delivery.verified_at >= p_cursor.taken_before
 		and delivery.received_at >= p_cursor.activated_at
 		and delivery.received_at > clock_timestamp() - interval '7 days'
 		and (p_only is null or delivery.event_type in (select jsonb_array_elements_text(p_only)))
 		and not exists (select 1 from public.qorpera_event_wake_deliveries as taken
 			where taken.routine_id = p_cursor.routine_id and taken.trigger_id = p_cursor.trigger_id
 				and taken.delivery_id = delivery.id)
-	order by delivery.received_at, delivery.id
+	order by delivery.verified_at, delivery.id
 	limit p_limit
 $$;
 revoke all on function public.qorpera_event_listener_waiting(public.qorpera_event_listener_cursors, jsonb, integer)
@@ -227,8 +248,8 @@ set search_path = ''
 as $$
 declare
 	v_cursor public.qorpera_event_listener_cursors%rowtype; v_version public.qorpera_cloud_routine_versions%rowtype;
-	v_trigger jsonb; v_first public.qorpera_event_deliveries%rowtype; v_prefix text; v_attempt bigint;
-	v_scanned integer := 0; v_admitted integer := 0;
+	v_trigger jsonb; v_first public.qorpera_event_deliveries%rowtype; v_last public.qorpera_wake_occurrences%rowtype;
+	v_prefix text; v_attempts bigint; v_tried_at timestamptz; v_scanned integer := 0; v_admitted integer := 0;
 begin
 	if auth.role() is distinct from 'service_role' or p_limit is null or p_limit not between 1 and 64 then
 		raise exception 'Event wake drain authority or bound is invalid' using errcode = '42501'; end if;
@@ -242,43 +263,57 @@ begin
 		where routine_id = v_cursor.routine_id and routine_version = v_cursor.routine_version
 			and trigger_id = v_cursor.trigger_id;
 		begin
-			if not exists (select 1 from public.qorpera_cloud_routines where id = v_cursor.routine_id
-				and current_version = v_cursor.routine_version and status = 'active')
+			-- A removed hook wakes nothing more; its routine keeps its other state.
+			if not exists (select 1 from public.qorpera_event_hooks where id = v_cursor.hook_id and status <> 'removed')
 				or public.qorpera_company_execution_paused(v_cursor.profile_id) then continue; end if;
-			-- One pending occurrence at a time: queued, or materialized but not yet read by its run.
-			if exists (select 1 from public.qorpera_wake_occurrences as pending
-				left join public.qorpera_execution_runs as pending_run on pending_run.id = pending.run_id
-				left join public.qorpera_runner_jobs as pending_job on pending_job.id = pending_run.job_id
-				where pending.routine_id = v_cursor.routine_id and pending.trigger_id = v_cursor.trigger_id
-					and pending.source_kind = 'event'
-					and (pending.status = 'queued' or (pending.status = 'materialized'
-						and (pending_job.id is null or pending_job.status in ('queued','leased'))
-						and not exists (select 1 from public.qorpera_event_wake_deliveries as taken
-							where taken.occurrence_id = pending.id)))) then continue; end if;
+			-- The routine row before the company fence, never waiting: a routine save takes it first.
+			perform 1 from public.qorpera_cloud_routines where id = v_cursor.routine_id
+				and current_version = v_cursor.routine_version and status = 'active' for update nowait;
+			if not found then continue; end if;
+			-- One pending occurrence at a time. Only the trigger's latest event wake can be pending:
+			-- queued, or materialized with its job not yet running and nothing read.
+			select * into v_last from public.qorpera_wake_occurrences
+			where routine_id = v_cursor.routine_id and trigger_id = v_cursor.trigger_id and source_kind = 'event'
+			order by created_at desc limit 1;
+			if v_last.id is not null and (v_last.status = 'queued' or (v_last.status = 'materialized'
+				and not exists (select 1 from public.qorpera_event_wake_deliveries where occurrence_id = v_last.id)
+				and exists (select 1 from public.qorpera_execution_runs as run
+					join public.qorpera_runner_jobs as job on job.id = run.job_id
+					where run.id = v_last.run_id and job.status in ('queued','leased')))) then continue; end if;
 			select * into strict v_version from public.qorpera_cloud_routine_versions
 			where routine_id = v_cursor.routine_id and version = v_cursor.routine_version;
 			select value into strict v_trigger from jsonb_array_elements(v_version.triggers) as t(value)
 			where value ->> 'id' = v_cursor.trigger_id;
 			select * into v_first from public.qorpera_event_listener_waiting(v_cursor, v_trigger -> 'only', 1);
 			if v_first.id is null then continue; end if;
+			-- Earlier wakes for the same first delivery that ended without taking it: retried after 1,
+			-- 4, 16 and 64 minutes, then the delivery is left behind with the last of them.
+			v_prefix := 'event:' || v_cursor.routine_version::text || ':' || v_cursor.trigger_id || ':' || v_first.id::text;
+			select count(*), max(created_at) into v_attempts, v_tried_at from public.qorpera_wake_occurrences
+			where routine_id = v_cursor.routine_id
+				and occurrence_key = any (array(select v_prefix || ':' || n from generate_series(1, 5) as n));
+			if v_attempts >= 5 then
+				insert into public.qorpera_event_wake_deliveries(routine_id, trigger_id, delivery_id, occurrence_id)
+				select v_cursor.routine_id, v_cursor.trigger_id, v_first.id, id from public.qorpera_wake_occurrences
+				where routine_id = v_cursor.routine_id and occurrence_key = v_prefix || ':5'
+				on conflict do nothing;
+				continue;
+			end if;
+			if v_attempts > 0 and clock_timestamp() < v_tried_at + interval '1 minute' * power(4, v_attempts - 1) then
+				continue; end if;
 			-- A routine that must report needs a public audience, as for file listeners.
 			if coalesce(v_trigger ->> 'replyPolicy','required') not in ('optional','silent')
 				and public.qorpera_wake_public_session(v_version.profile_id, v_cursor.environment_id,
 					v_version.staff_agent_id, v_version.created_by_user_id) is null then continue; end if;
 			perform public.qorpera_serialize_wake_admission(v_cursor.profile_id);
-			-- Deterministic from history: the same first delivery gets a new attempt only after an
-			-- earlier occurrence for it ended without taking it (cancelled at admission, for example).
-			v_prefix := 'event:' || v_cursor.routine_version::text || ':' || v_cursor.trigger_id || ':' || v_first.id::text;
-			select count(*) into v_attempt from public.qorpera_wake_occurrences
-			where routine_id = v_cursor.routine_id and occurrence_key like v_prefix || ':%';
 			insert into public.qorpera_wake_occurrences(id, profile_id, environment_id, routine_id, routine_version,
 				wake_kind, source_kind, trigger_id, occurrence_key, scheduled_for, not_before, payload)
 			values (extensions.gen_random_uuid(), v_version.profile_id, v_cursor.environment_id, v_cursor.routine_id,
-				v_cursor.routine_version, 'routine', 'event', v_cursor.trigger_id, v_prefix || ':' || (v_attempt + 1)::text,
+				v_cursor.routine_version, 'routine', 'event', v_cursor.trigger_id, v_prefix || ':' || (v_attempts + 1)::text,
 				v_first.received_at, clock_timestamp(),
 				jsonb_build_object('hookId', v_cursor.hook_id, 'firstDeliveryId', v_first.id));
 			v_admitted := v_admitted + 1;
-		exception when lock_not_available then continue;
+		exception when lock_not_available or deadlock_detected then continue;
 			when insufficient_privilege or no_data_found or object_not_in_prerequisite_state
 				or check_violation or unique_violation or invalid_parameter_value then
 				-- The agent, the requester or the audience is gone; the cursor is tried again later.
@@ -300,39 +335,78 @@ select pg_temp.event_wake_patch('public.qorpera_materialize_wake_execution_runs(
 -- 6. What the run reads: the batch the occurrence took, as outside content
 -- ---------------------------------------------------------------------------
 
--- A body as the agent first sees it: text up to p_chars characters when it is UTF-8, or base64 of
--- its first p_chars bytes otherwise.
-create function public.qorpera_event_body_view(p_body bytea, p_chars integer)
-returns jsonb
+-- The longest prefix of p_text whose JSON string (quotes and escapes included) fits p_bytes, as a
+-- character count.
+create function public.qorpera_event_json_prefix(p_text text, p_bytes integer)
+returns integer
 language plpgsql
-immutable
+stable
 set search_path = ''
 as $$
-declare v_text text;
+declare v_chars integer := least(char_length(p_text), greatest(p_bytes, 0)); v_size integer;
+begin
+	loop
+		v_size := octet_length(to_jsonb(left(p_text, v_chars))::text);
+		exit when v_size <= p_bytes or v_chars = 0;
+		v_chars := greatest(0, least(v_chars - 1, (v_chars::bigint * p_bytes / v_size)::integer));
+	end loop;
+	return v_chars;
+end
+$$;
+revoke all on function public.qorpera_event_json_prefix(text, integer) from public, anon, authenticated, service_role;
+
+-- A body as the agent first sees it, within p_bytes of JSON: text when it is UTF-8, else base64.
+create function public.qorpera_event_body_view(p_body bytea, p_bytes integer)
+returns jsonb
+language plpgsql
+stable
+set search_path = ''
+as $$
+declare v_text text; v_chars integer; v_raw integer;
 begin
 	if p_body is null then return jsonb_build_object('bodyCleared', true); end if;
-	if p_chars < 1 then return jsonb_build_object('truncated', octet_length(p_body) > 0); end if;
+	if p_bytes < 64 then return jsonb_build_object('truncated', octet_length(p_body) > 0); end if;
 	begin
 		v_text := convert_from(p_body, 'UTF8');
 	exception when others then
-		return jsonb_build_object('encoding', 'base64', 'data', encode(substring(p_body from 1 for p_chars), 'base64'),
-			'truncated', octet_length(p_body) > p_chars);
+		v_raw := (p_bytes - 48) / 4 * 3;
+		return jsonb_build_object('encoding', 'base64',
+			'data', translate(encode(substring(p_body from 1 for v_raw), 'base64'), E'\n', ''),
+			'truncated', octet_length(p_body) > v_raw);
 	end;
-	return jsonb_build_object('encoding', 'utf8', 'text', left(v_text, p_chars),
-		'truncated', char_length(v_text) > p_chars);
+	v_chars := public.qorpera_event_json_prefix(v_text, p_bytes - 48);
+	return jsonb_build_object('encoding', 'utf8', 'text', left(v_text, v_chars), 'truncated', char_length(v_text) > v_chars);
 end
 $$;
 revoke all on function public.qorpera_event_body_view(bytea, integer) from public, anon, authenticated, service_role;
 
-create function public.qorpera_event_wake_payload(p_wake public.qorpera_wake_occurrences)
+-- One event's description in a wake, without its body.
+create function public.qorpera_event_wake_item(p_delivery public.qorpera_event_deliveries)
+returns jsonb
+language sql
+stable
+set search_path = ''
+as $$
+	select jsonb_build_object('deliveryId', p_delivery.id, 'type', p_delivery.event_type,
+		'receivedAt', to_char(p_delivery.received_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
+		'contentType', p_delivery.content_type, 'bytes', p_delivery.body_bytes)
+$$;
+revoke all on function public.qorpera_event_wake_item(public.qorpera_event_deliveries) from public, anon, authenticated, service_role;
+
+-- The occurrence's batch within p_room bytes of JSON: the first read takes up to 20 deliveries (fewer
+-- when their descriptions alone would not fit), a retried run reads the same ones, and bodies share
+-- what room is left, at most 8 KiB each.
+create function public.qorpera_event_wake_payload(p_wake public.qorpera_wake_occurrences, p_room integer)
 returns jsonb
 language plpgsql
 security definer
 set search_path = ''
 as $$
 declare
-	v_cursor public.qorpera_event_listener_cursors%rowtype; v_trigger jsonb; v_hook public.qorpera_event_hooks%rowtype;
-	v_events jsonb := '[]'::jsonb; v_item record; v_room integer := 24576; v_view jsonb; v_more bigint;
+	v_cursor public.qorpera_event_listener_cursors%rowtype; v_trigger jsonb; v_hook jsonb;
+	v_item public.qorpera_event_deliveries%rowtype;
+	v_room integer; v_described integer := 0; v_meta jsonb; v_view jsonb; v_events jsonb := '[]'::jsonb;
+	v_more bigint; v_next timestamptz;
 begin
 	if p_wake.source_kind is distinct from 'event' then return '{}'::jsonb; end if;
 	select * into strict v_cursor from public.qorpera_event_listener_cursors
@@ -341,48 +415,70 @@ begin
 		jsonb_array_elements(version.triggers) as t(value)
 	where version.routine_id = p_wake.routine_id and version.version = p_wake.routine_version
 		and value ->> 'id' = p_wake.trigger_id;
-	select * into strict v_hook from public.qorpera_event_hooks where id = v_cursor.hook_id;
-	-- The first read takes the batch; a retried run reads the same one.
+	select jsonb_build_object('id', hook.id, 'name', hook.name, 'purpose', hook.purpose) into strict v_hook
+	from public.qorpera_event_hooks as hook where hook.id = v_cursor.hook_id;
+	-- The hook, the event list and the count of those waiting.
+	v_room := p_room - octet_length(v_hook::text) - 64;
 	if not exists (select 1 from public.qorpera_event_wake_deliveries where occurrence_id = p_wake.id) then
-		insert into public.qorpera_event_wake_deliveries(routine_id, trigger_id, delivery_id, occurrence_id, profile_id)
-		select p_wake.routine_id, p_wake.trigger_id, waiting.id, p_wake.id, waiting.profile_id
-		from public.qorpera_event_listener_waiting(v_cursor, v_trigger -> 'only', 20) as waiting
-		on conflict do nothing;
+		for v_item in select * from public.qorpera_event_listener_waiting(v_cursor, v_trigger -> 'only', 20) loop
+			v_meta := public.qorpera_event_wake_item(v_item);
+			exit when v_described > 0 and v_described + octet_length(v_meta::text) + 64 > v_room;
+			insert into public.qorpera_event_wake_deliveries(routine_id, trigger_id, delivery_id, occurrence_id)
+			values (p_wake.routine_id, p_wake.trigger_id, v_item.id, p_wake.id) on conflict do nothing;
+			v_described := v_described + octet_length(v_meta::text) + 64;
+		end loop;
+		-- Everything before the first delivery still waiting is taken; a minute behind the clock, so a
+		-- receive still committing is never passed.
+		select verified_at into v_next from public.qorpera_event_listener_waiting(v_cursor, v_trigger -> 'only', 1);
+		update public.qorpera_event_listener_cursors
+		set taken_before = least(coalesce(v_next, 'infinity'), clock_timestamp() - interval '1 minute')
+		where routine_id = v_cursor.routine_id and routine_version = v_cursor.routine_version
+			and trigger_id = v_cursor.trigger_id
+			and taken_before < least(coalesce(v_next, 'infinity'), clock_timestamp() - interval '1 minute')
+			and ctid = (select ctid from public.qorpera_event_listener_cursors
+				where routine_id = v_cursor.routine_id and routine_version = v_cursor.routine_version
+					and trigger_id = v_cursor.trigger_id for update skip locked);
 	end if;
+	select coalesce(sum(octet_length(public.qorpera_event_wake_item(delivery)::text) + 64), 0) into v_described
+	from public.qorpera_event_wake_deliveries as taken
+	join public.qorpera_event_deliveries as delivery on delivery.id = taken.delivery_id
+	where taken.occurrence_id = p_wake.id;
+	v_room := v_room - v_described;
 	for v_item in
 		select delivery.* from public.qorpera_event_wake_deliveries as taken
 		join public.qorpera_event_deliveries as delivery on delivery.id = taken.delivery_id
 		where taken.occurrence_id = p_wake.id
-		order by delivery.received_at, delivery.id
+		order by delivery.verified_at, delivery.id
 	loop
-		-- About 8 KiB of text a body and 24 KiB in all, so the wake stays within its bound.
 		v_view := public.qorpera_event_body_view(v_item.body, least(8192, v_room));
-		v_room := greatest(0, v_room - coalesce(octet_length(v_view ->> 'text'), octet_length(v_view ->> 'data'), 0));
-		v_events := v_events || jsonb_build_array(jsonb_build_object(
-			'deliveryId', v_item.id, 'type', v_item.event_type, 'receivedAt',
-			to_char(v_item.received_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
-			'contentType', v_item.content_type, 'bytes', v_item.body_bytes) || v_view);
+		v_room := v_room - octet_length(v_view::text);
+		v_events := v_events || jsonb_build_array(public.qorpera_event_wake_item(v_item) || v_view);
 	end loop;
 	select count(*) into v_more from (
 		select 1 from public.qorpera_event_listener_waiting(v_cursor, v_trigger -> 'only', 1000)) as rest;
-	return jsonb_build_object('hook', jsonb_build_object('id', v_hook.id, 'name', v_hook.name, 'purpose', v_hook.purpose),
-		'events', v_events, 'more', v_more);
+	return jsonb_build_object('hook', v_hook, 'events', v_events, 'more', v_more);
 end
 $$;
-revoke all on function public.qorpera_event_wake_payload(public.qorpera_wake_occurrences)
+revoke all on function public.qorpera_event_wake_payload(public.qorpera_wake_occurrences, integer)
 	from public, anon, authenticated, service_role;
 
+-- The batch takes the room the rest of the wake leaves, measured both as the kernel bounds the
+-- envelope and as the runtime bounds the payload's JSON, with a margin for the batch's own layout.
 select pg_temp.event_wake_patch('public.qorpera_read_native_wake(jsonb)'::regprocedure,
-	$old$		'routine',v_routine,'payload',v_wake.payload || case when v_wake.source_kind = 'coworker'$old$,
-	$new$		'routine',v_routine,'payload',v_wake.payload || public.qorpera_event_wake_payload(v_wake)
-			|| case when v_wake.source_kind = 'coworker'$new$);
+	$old$	if pg_column_size(v_payload) > 49152 then raise exception 'Wake context exceeds its bound' using errcode = '54000'; end if;$old$,
+	$new$	if v_wake.source_kind = 'event' then
+		v_payload := jsonb_set(v_payload, '{payload}', (v_payload -> 'payload') || public.qorpera_event_wake_payload(v_wake,
+			least(49152 - pg_column_size(v_payload), 49152 - octet_length((v_payload -> 'payload')::text)) - 4096));
+	end if;
+	if pg_column_size(v_payload) > 49152 then raise exception 'Wake context exceeds its bound' using errcode = '54000'; end if;$new$);
 
 -- ---------------------------------------------------------------------------
 -- 7. Agents read a whole event, and list their company's hooks
 -- ---------------------------------------------------------------------------
 
--- read_event: one delivery of the agent's company, in pieces of at most 16,000 characters (UTF-8)
--- or 24 KiB of base64 (anything else). Only verified deliveries are events.
+-- read_event: one verified delivery of the agent's company, in pieces of at most 16,000 characters
+-- and 32 KiB of JSON (UTF-8), or 24 KiB of raw bytes as base64 (anything else); next is the offset
+-- of the following piece, in characters or bytes.
 create function public.qorpera_read_agent_event(p_binding jsonb, p_request jsonb)
 returns jsonb
 language plpgsql
@@ -391,7 +487,7 @@ set search_path = ''
 as $$
 declare
 	v_run public.qorpera_execution_runs%rowtype; v_delivery public.qorpera_event_deliveries%rowtype;
-	v_hook public.qorpera_event_hooks%rowtype; v_offset integer; v_text text; v_piece jsonb;
+	v_hook public.qorpera_event_hooks%rowtype; v_offset integer; v_text text; v_chars integer; v_piece jsonb;
 begin
 	v_run := public.qorpera_native_tool_locked_run(p_binding);
 	if jsonb_typeof(p_request) is distinct from 'object'
@@ -415,14 +511,22 @@ begin
 	else
 		begin
 			v_text := convert_from(v_delivery.body, 'UTF8');
-			v_piece := jsonb_build_object('encoding', 'utf8', 'offset', v_offset,
-				'text', substring(v_text from v_offset + 1 for 16000), 'total', char_length(v_text),
-				'done', v_offset + 16000 >= char_length(v_text));
 		exception when others then
-			v_piece := jsonb_build_object('encoding', 'base64', 'offset', v_offset,
-				'data', encode(substring(v_delivery.body from v_offset + 1 for 24576), 'base64'),
-				'total', octet_length(v_delivery.body), 'done', v_offset + 24576 >= octet_length(v_delivery.body));
+			v_text := null;
 		end;
+		if v_text is not null then
+			v_text := substring(v_text from v_offset + 1);
+			v_chars := public.qorpera_event_json_prefix(left(v_text, 16000), 32768);
+			v_piece := jsonb_build_object('encoding', 'utf8', 'offset', v_offset, 'text', left(v_text, v_chars),
+				'total', v_offset + char_length(v_text), 'done', v_chars >= char_length(v_text))
+				|| case when v_chars < char_length(v_text) then jsonb_build_object('next', v_offset + v_chars) else '{}'::jsonb end;
+		else
+			v_piece := jsonb_build_object('encoding', 'base64', 'offset', v_offset,
+				'data', translate(encode(substring(v_delivery.body from v_offset + 1 for 24576), 'base64'), E'\n', ''),
+				'total', octet_length(v_delivery.body), 'done', v_offset + 24576 >= octet_length(v_delivery.body))
+				|| case when v_offset + 24576 < octet_length(v_delivery.body)
+					then jsonb_build_object('next', v_offset + 24576) else '{}'::jsonb end;
+		end if;
 	end if;
 	return jsonb_build_object('schema', 'qorpera.agent-event/v1', 'runId', v_run.id, 'deliveryId', v_delivery.id,
 		'hook', jsonb_build_object('id', v_hook.id, 'name', v_hook.name), 'type', v_delivery.event_type,
@@ -433,19 +537,27 @@ $$;
 revoke all on function public.qorpera_read_agent_event(jsonb, jsonb) from public, anon, authenticated;
 grant execute on function public.qorpera_read_agent_event(jsonb, jsonb) to service_role;
 
--- The company's live hooks as an agent sees them: with addresses, since agents register them at
--- the services that send.
+-- The company's live hooks as an agent sees them. Addresses, which let anyone post into a hook, only
+-- for a run an owner or admin requested (members see them on the same terms), with the full URL once
+-- operators set the intake's public origin.
 create function public.qorpera_list_agent_event_hooks(p_binding jsonb)
 returns jsonb
 language plpgsql
 security definer
 set search_path = ''
 as $$
-declare v_run public.qorpera_execution_runs%rowtype;
+declare v_run public.qorpera_execution_runs%rowtype; v_addresses boolean; v_url text;
 begin
 	v_run := public.qorpera_native_tool_locked_run(p_binding);
+	v_addresses := exists (select 1 from public.qorpera_profile_members as member
+		where member.profile_id = v_run.profile_id and member.user_id = v_run.requested_by_user_id
+			and member.role::text in ('owner', 'admin'));
+	select settings.public_url into v_url from public.qorpera_event_intake_settings as settings;
 	return jsonb_build_object('schema', 'qorpera.agent-event-hooks/v1', 'runId', v_run.id, 'hooks', coalesce((
-		select jsonb_agg(public.qorpera_event_hook_descriptor(hook, true) order by hook.name)
+		select jsonb_agg(public.qorpera_event_hook_descriptor(hook, v_addresses)
+			|| case when v_addresses and v_url is not null
+				then jsonb_build_object('url', v_url || '/functions/v1/event-intake/' || hook.address) else '{}'::jsonb end
+			order by hook.name)
 		from public.qorpera_event_hooks as hook
 		where hook.profile_id = v_run.profile_id and hook.environment_id = v_run.environment_id
 			and hook.status <> 'removed'), '[]'::jsonb));

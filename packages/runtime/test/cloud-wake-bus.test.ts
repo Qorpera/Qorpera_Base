@@ -1134,10 +1134,43 @@ describe("event wakes", () => {
 		expect(parsed.source.kind).toBe("event");
 		expect(parsed.payload.events).toHaveLength(3);
 	});
+	it("admits 20 events and a payload at its bound, and nothing past it", () => {
+		const event = () => ({
+			deliveryId: randomUUID(),
+			type: null,
+			receivedAt: "2026-09-29T02:00:00.000000Z",
+			contentType: null,
+			bytes: 0,
+		});
+		const twenty = eventWake({ events: Array.from({ length: 20 }, event) });
+		expect(parseCloudWakeEnvelope(twenty.wake, twenty.identity).payload.events).toHaveLength(20);
+		const sized = (extra: number) => {
+			const { wake, identity } = eventWake({
+				events: [{ ...event(), encoding: "utf8", text: "", truncated: true }],
+			});
+			const base = Buffer.byteLength(JSON.stringify(wake.payload));
+			const events = (wake.payload as { events: Record<string, unknown>[] }).events;
+			events[0].text = "a".repeat(49152 - base + extra);
+			return () => parseCloudWakeEnvelope(wake, identity);
+		};
+		expect(sized(0)).not.toThrow();
+		expect(sized(1)).toThrow();
+	});
 	it.each<[string, Record<string, unknown>, Record<string, unknown>?]>([
 		["another hook's events", { hookId: randomUUID() }],
 		["a hook named otherwise", { hook: { id: randomUUID(), name: "forms", purpose: "Website form" } }],
-		["more than 20 events", { events: Array.from({ length: 21 }, () => ({})) }],
+		[
+			"more than 20 events",
+			{
+				events: Array.from({ length: 21 }, () => ({
+					deliveryId: randomUUID(),
+					type: null,
+					receivedAt: "2026-09-29T02:00:00.000000Z",
+					contentType: null,
+					bytes: 0,
+				})),
+			},
+		],
 		["a negative remainder", { more: -1 }],
 		["an unknown key", { note: "hi" }],
 		[

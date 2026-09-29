@@ -410,10 +410,8 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 					!Number.isSafeInteger(event.bytes) ||
 					(event.bytes as number) < 0 ||
 					(event.encoding !== undefined && event.encoding !== "utf8" && event.encoding !== "base64") ||
-					(event.encoding !== undefined &&
-						(typeof body !== "string" ||
-							Buffer.byteLength(body) > 48 * 1024 ||
-							typeof event.truncated !== "boolean")) ||
+					// The payload's own bound (below) bounds each body.
+					(event.encoding !== undefined && (typeof body !== "string" || typeof event.truncated !== "boolean")) ||
 					(event.encoding === "utf8" && event.data !== undefined) ||
 					(event.encoding === "base64" && event.text !== undefined) ||
 					(event.encoding === undefined && (event.text !== undefined || event.data !== undefined)) ||

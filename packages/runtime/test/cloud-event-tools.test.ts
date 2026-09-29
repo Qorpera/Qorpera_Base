@@ -110,4 +110,52 @@ describe("agent event tools", () => {
 			f.run.close();
 		}
 	});
+
+	it("passes a next piece's offset on and refuses one that does not move forward", async () => {
+		const receipt = (next: unknown) => (_method: string, args: Record<string, unknown>, runId: string) => ({
+			schema: "qorpera.agent-event/v1",
+			runId,
+			deliveryId: (args.p_request as { deliveryId: string }).deliveryId,
+			encoding: "utf8",
+			offset: (args.p_request as { offset?: number }).offset ?? 0,
+			text: "x",
+			total: 20000,
+			done: false,
+			next,
+		});
+		const moving = await fixture(receipt(9000));
+		try {
+			const piece = await moving.boundary.invoke("n1", "qorpera", "read_event", {
+				deliveryId: DELIVERY,
+				offset: 10,
+			});
+			expect(piece.success, JSON.stringify(piece)).toBe(true);
+			expect(piece.contentItems[0].text).toContain('\\"next\\":9000');
+		} finally {
+			moving.run.close();
+		}
+		const stuck = await fixture(receipt(10));
+		try {
+			expect(
+				(await stuck.boundary.invoke("n2", "qorpera", "read_event", { deliveryId: DELIVERY, offset: 10 })).success,
+			).toBe(false);
+		} finally {
+			stuck.run.close();
+		}
+	});
+
+	it("refuses to be built for another identity than its binding", async () => {
+		const f = await fixture();
+		try {
+			expect(() =>
+				cloudEventTools(
+					f.binding,
+					{ ...f.run.identity, runId: "73100000-0000-4000-8000-0000000000cc" },
+					{ call: f.call },
+				),
+			).toThrow("Event binding differs");
+		} finally {
+			f.run.close();
+		}
+	});
 });

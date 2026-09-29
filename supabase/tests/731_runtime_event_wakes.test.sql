@@ -2,7 +2,8 @@
 -- Event wakes, step W2a (20260929290000): an agent's routine listens to a hook; verified
 -- deliveries wake it once per burst through the real boundaries (the routine tool, the drain in
 -- the materializer, admission, a runner lease and the wake reader); the run reads a whole event;
--- pauses, filters, removed hooks and company pauses hold.
+-- the batch fits the wake whatever the bodies; failed wakes back off and give up; pauses, filters,
+-- unverified and old deliveries, removed hooks and company pauses hold.
 
 -- Work other tests left committed never becomes a job this test's materializer calls create
 -- beside its own, where the fixture's runner could claim it first.
@@ -142,10 +143,31 @@ begin
 	perform pg_temp.wake_assert(public.qorpera_read_agent_event(current_setting('qorpera_test.event_binding')::jsonb,
 		jsonb_build_object('deliveryId', v_wake #>> '{payload,events,1,deliveryId}', 'offset', 3)) ->> 'text' = 'ame":"Grace"}',
 		'read_event reads from an offset');
+	-- Live hooks of the agent's own company; addresses because an owner requested the run, and the
+	-- full URL once the intake's public origin is set.
+	insert into public.qorpera_event_hooks(id, profile_id, environment_id, name, purpose, proof, address, status, removed_at)
+	values ('30000000-0000-4000-8000-0000000007b3', '30000000-0000-4000-8000-000000000010',
+		'30000000-0000-4000-8000-000000000020', 'gone', 'Removed', 'address', repeat('G', 43), 'removed', clock_timestamp());
+	update public.qorpera_event_intake_settings set public_url = 'https://intake.example.test';
 	perform pg_temp.wake_assert(jsonb_array_length(public.qorpera_list_agent_event_hooks(
 		current_setting('qorpera_test.event_binding')::jsonb) -> 'hooks') = 1
-		and public.qorpera_list_agent_event_hooks(current_setting('qorpera_test.event_binding')::jsonb) #>> '{hooks,0,address}' = repeat('E', 43),
-		'Agents list their own company''s hooks with addresses');
+		and public.qorpera_list_agent_event_hooks(current_setting('qorpera_test.event_binding')::jsonb) #>> '{hooks,0,address}' = repeat('E', 43)
+		and public.qorpera_list_agent_event_hooks(current_setting('qorpera_test.event_binding')::jsonb) #>> '{hooks,0,url}'
+			= 'https://intake.example.test/functions/v1/event-intake/' || repeat('E', 43),
+		'Agents list their own company''s live hooks with addresses');
+	-- A run a contributor requested lists the hooks without addresses (the founder guard set aside).
+	set local session_replication_role = replica;
+	update public.qorpera_profile_members set role = 'contributor'
+	where profile_id = '30000000-0000-4000-8000-000000000010'
+		and user_id = (select requested_by_user_id from public.qorpera_execution_runs
+			where id = current_setting('qorpera_test.event_run')::uuid);
+	perform pg_temp.wake_assert(not (public.qorpera_list_agent_event_hooks(current_setting('qorpera_test.event_binding')::jsonb)
+		-> 'hooks' -> 0 ?| array['address', 'path', 'url']), 'A contributor''s run lists hooks without addresses');
+	update public.qorpera_profile_members set role = 'owner'
+	where profile_id = '30000000-0000-4000-8000-000000000010'
+		and user_id = (select requested_by_user_id from public.qorpera_execution_runs
+			where id = current_setting('qorpera_test.event_run')::uuid);
+	set local session_replication_role = origin;
 end $$;
 select pg_temp.wake_assert(pg_temp.post('{"name":"Elsewhere"}', null, repeat('F', 43)) = 'accepted', 'The other company takes a delivery');
 select pg_temp.wake_error(format($q$select public.qorpera_read_agent_event(current_setting('qorpera_test.event_binding')::jsonb,
@@ -239,9 +261,11 @@ begin
 		'After the company pause the waiting delivery wakes the routine');
 end $$;
 
--- A removed hook cancels its queued wake at admission; the materializer keeps working.
+-- A removed hook cancels its queued wake at admission and wakes nothing more; the materializer
+-- keeps working.
 do $$
 declare v_row public.qorpera_cloud_routines := pg_temp.routine_row('form-reply'); v_occurrence public.qorpera_wake_occurrences;
+	v_count bigint;
 begin
 	update public.qorpera_event_hooks set status = 'removed', removed_at = statement_timestamp()
 	where id = '30000000-0000-4000-8000-0000000007b1';
@@ -250,9 +274,147 @@ begin
 	perform pg_temp.wake_assert(v_occurrence.status = 'cancelled'
 		and v_occurrence.blocked_reason = 'Wake recipient or source authority is unavailable',
 		'A wake from a removed hook is cancelled');
+	select count(*) into v_count from pg_temp.event_wakes(v_row.id);
+	perform public.qorpera_materialize_wake_execution_runs(8);
+	set local session_replication_role = replica;
+	update public.qorpera_wake_occurrences set created_at = created_at - interval '2 hours' where routine_id = v_row.id;
+	set local session_replication_role = origin;
+	perform public.qorpera_materialize_wake_execution_runs(8);
+	perform public.qorpera_materialize_wake_execution_runs(8);
+	perform pg_temp.wake_assert((select count(*) from pg_temp.event_wakes(v_row.id)) = v_count,
+		'A removed hook wakes nothing more');
 	perform pg_temp.wake_error($q$select pg_temp.routine('{"action":"upsert","operationKey":"ev-3","routineKey":"after-removal","title":"t",
 		"intent":"i","trigger":{"kind":"listener","source":"event","hookId":"30000000-0000-4000-8000-0000000007b1",
 		"timeZone":"UTC","replyPolicy":"silent"}}')$q$, '42501');
+end $$;
+
+-- A second hook for what follows, so no earlier listener shares its deliveries.
+insert into public.qorpera_event_hooks(id, profile_id, environment_id, name, purpose, proof, address) values
+	('30000000-0000-4000-8000-0000000007b4', '30000000-0000-4000-8000-000000000010', '30000000-0000-4000-8000-000000000020',
+		'large', 'Large and retried events', 'address', repeat('H', 43));
+
+-- Bodies of any kind fit the wake beside a long intent: multibyte text, control characters that
+-- JSON escapes six bytes each, and plain text. read_event serves the rest in pieces that fit a
+-- tool result.
+do $$
+declare v_row public.qorpera_cloud_routines; v_wake jsonb; v_occurrence public.qorpera_wake_occurrences; v_piece jsonb;
+	v_rest jsonb; v_control text;
+begin
+	perform pg_temp.routine(jsonb_build_object('action','upsert','operationKey','ev-s1','routineKey','sizes',
+		'title','Large events','intent',repeat('Handle large events carefully. ', 1050),
+		'trigger',jsonb_build_object('kind','listener','source','event','hookId','30000000-0000-4000-8000-0000000007b4',
+			'only',jsonb_build_array('size.test'),'timeZone','UTC','replyPolicy','silent')));
+	v_row := pg_temp.routine_row('sizes');
+	perform pg_temp.wake_assert(pg_temp.post(repeat(U&'\+01F600', 9000), 'size.test', repeat('H', 43)) = 'accepted'
+		and pg_temp.post(repeat(chr(1), 9000) || 'end', 'size.test', repeat('H', 43)) = 'accepted'
+		and pg_temp.post(repeat('a', 9000), 'size.test', repeat('H', 43)) = 'accepted', 'Three large deliveries are accepted');
+	perform public.qorpera_materialize_wake_execution_runs(8);
+	-- A wake whose job has not started is still pending, however long ago it was made.
+	set local session_replication_role = replica;
+	update public.qorpera_wake_occurrences set created_at = created_at - interval '2 hours' where routine_id = v_row.id;
+	set local session_replication_role = origin;
+	perform public.qorpera_drain_event_wakes(8);
+	select * into strict v_occurrence from pg_temp.event_wakes(v_row.id);
+	v_wake := pg_temp.event_start(v_occurrence.run_id);
+	perform pg_temp.wake_assert(octet_length((v_wake -> 'payload')::text) <= 49152 and pg_column_size(v_wake) <= 49152
+		and jsonb_array_length(v_wake #> '{payload,events}') = 3
+		and (select bool_and((event ->> 'truncated')::boolean) from jsonb_array_elements(v_wake #> '{payload,events}') as e(event)),
+		'The batch fits the wake, its bodies cut: ' || octet_length((v_wake -> 'payload')::text));
+	v_control := (select id::text from public.qorpera_event_deliveries where hook_id = '30000000-0000-4000-8000-0000000007b4'
+		and body = convert_to(repeat(chr(1), 9000) || 'end', 'UTF8'));
+	v_piece := public.qorpera_read_agent_event(current_setting('qorpera_test.event_binding')::jsonb,
+		jsonb_build_object('deliveryId', v_control));
+	perform pg_temp.wake_assert(octet_length(to_jsonb(v_piece ->> 'text')::text) <= 32768
+		and (v_piece ->> 'done')::boolean = false and (v_piece ->> 'next')::integer between 1 and 9002
+		and (v_piece ->> 'total')::integer = 9003, 'A piece of escaped text fits a tool result: ' || (v_piece - 'text' - 'headers')::text);
+	v_rest := public.qorpera_read_agent_event(current_setting('qorpera_test.event_binding')::jsonb,
+		jsonb_build_object('deliveryId', v_control, 'offset', (v_piece ->> 'next')::integer));
+	perform pg_temp.wake_assert((v_rest ->> 'done')::boolean and not v_rest ? 'next'
+		and (v_piece ->> 'text') || (v_rest ->> 'text') = repeat(chr(1), 9000) || 'end', 'The next piece completes the body');
+	perform pg_temp.event_finish();
+end $$;
+
+-- Only verified deliveries wake and can be read, and none older than 7 days.
+do $$
+declare v_row public.qorpera_cloud_routines; v_wake jsonb; v_occurrence public.qorpera_wake_occurrences;
+begin
+	perform pg_temp.routine('{"action":"upsert","operationKey":"ev-v1","routineKey":"verified-only","title":"Verified only",
+		"intent":"Handle verified events.","trigger":{"kind":"listener","source":"event",
+		"hookId":"30000000-0000-4000-8000-0000000007b4","only":["v.test"],"timeZone":"UTC","replyPolicy":"silent"}}');
+	v_row := pg_temp.routine_row('verified-only');
+	update public.qorpera_event_listener_cursors set activated_at = clock_timestamp() - interval '9 days'
+	where routine_id = v_row.id;
+	insert into public.qorpera_event_deliveries(id, hook_id, profile_id, received_at, status, delivery_key, event_type,
+		body, body_bytes, body_sha256, verified_at) values
+		('30000000-0000-4000-8000-0000000007c1', '30000000-0000-4000-8000-0000000007b4', '30000000-0000-4000-8000-000000000010',
+			clock_timestamp() - interval '8 days', 'verified', 'old-1', 'v.test', '\x7b7d', 2, repeat('0', 64),
+			clock_timestamp() - interval '8 days'),
+		('30000000-0000-4000-8000-0000000007c2', '30000000-0000-4000-8000-0000000007b4', '30000000-0000-4000-8000-000000000010',
+			clock_timestamp(), 'received', null, 'v.test', '\x7b7d', 2, repeat('1', 64), null);
+	perform pg_temp.wake_assert(pg_temp.post('{"v":1}', 'v.test', repeat('H', 43)) = 'accepted' and pg_temp.post('{"v":1}', 'v.test', repeat('H', 43)) = 'duplicate',
+		'A delivery and its duplicate');
+	perform public.qorpera_materialize_wake_execution_runs(8);
+	select * into strict v_occurrence from pg_temp.event_wakes(v_row.id);
+	v_wake := pg_temp.event_start(v_occurrence.run_id);
+	perform pg_temp.wake_assert(jsonb_array_length(v_wake #> '{payload,events}') = 1
+		and v_wake #>> '{payload,events,0,text}' = '{"v":1}' and (v_wake #>> '{payload,more}')::integer = 0,
+		'Only the verified, recent delivery wakes the routine: ' || (v_wake -> 'payload')::text);
+	perform pg_temp.wake_error(format($q$select public.qorpera_read_agent_event(current_setting('qorpera_test.event_binding')::jsonb,
+		'{"deliveryId":"%s"}')$q$, (select id from public.qorpera_event_deliveries
+			where hook_id = '30000000-0000-4000-8000-0000000007b4' and status = 'duplicate' and event_type = 'v.test')), '42501');
+	perform pg_temp.wake_error($q$select public.qorpera_read_agent_event(current_setting('qorpera_test.event_binding')::jsonb,
+		'{"deliveryId":"30000000-0000-4000-8000-0000000007c2"}')$q$, '42501');
+	-- Folder companies take event wakes with routine files, not before.
+	perform pg_temp.wake_assert(not public.qorpera_folder_wake_authorized(v_occurrence), 'The folder core refuses event wakes');
+	perform pg_temp.event_finish();
+end $$;
+
+-- A wake that ends without taking its deliveries is tried again after 1, 4, 16 and 64 minutes; after
+-- five tries the first delivery is left behind and the next one wakes the routine.
+do $$
+declare v_row public.qorpera_cloud_routines; v_try integer; v_first uuid;
+begin
+	perform pg_temp.routine('{"action":"upsert","operationKey":"ev-t1","routineKey":"retry","title":"Retry",
+		"intent":"Handle retried events.","trigger":{"kind":"listener","source":"event",
+		"hookId":"30000000-0000-4000-8000-0000000007b4","only":["retry.test"],"timeZone":"UTC","replyPolicy":"silent"}}');
+	v_row := pg_temp.routine_row('retry');
+	perform pg_temp.wake_assert(pg_temp.post('{"try":1}', 'retry.test', repeat('H', 43)) = 'accepted', 'A delivery to retry');
+	v_first := (select id from public.qorpera_event_deliveries where hook_id = '30000000-0000-4000-8000-0000000007b4'
+		and event_type = 'retry.test');
+	perform public.qorpera_drain_event_wakes(8);
+	for v_try in 1..5 loop
+		perform pg_temp.wake_assert((select count(*) from pg_temp.event_wakes(v_row.id)) = v_try
+			and exists (select 1 from pg_temp.event_wakes(v_row.id) where status = 'queued'
+				and occurrence_key like '%:' || v_first || ':' || v_try),
+			'Try ' || v_try || ' of the first delivery is queued');
+		set local session_replication_role = replica;
+		update public.qorpera_wake_occurrences set created_at = created_at - interval '2 hours' where routine_id = v_row.id;
+		set local session_replication_role = origin;
+		perform public.qorpera_drain_event_wakes(8);
+		perform pg_temp.wake_assert((select count(*) from pg_temp.event_wakes(v_row.id)) = v_try,
+			'A queued try is pending');
+		set local session_replication_role = replica;
+		update public.qorpera_wake_occurrences set created_at = created_at + interval '2 hours' where routine_id = v_row.id;
+		update public.qorpera_wake_occurrences set status = 'cancelled', finished_at = clock_timestamp(),
+			blocked_reason = 'Cancelled by test 731' where routine_id = v_row.id and status = 'queued';
+		set local session_replication_role = origin;
+		perform public.qorpera_drain_event_wakes(8);
+		perform pg_temp.wake_assert((select count(*) from pg_temp.event_wakes(v_row.id)) = v_try,
+			'A failed try is not repeated at once');
+		set local session_replication_role = replica;
+		update public.qorpera_wake_occurrences set created_at = created_at - interval '2 hours' where routine_id = v_row.id;
+		set local session_replication_role = origin;
+		perform public.qorpera_drain_event_wakes(8);
+	end loop;
+	perform pg_temp.wake_assert((select count(*) from pg_temp.event_wakes(v_row.id)) = 5
+		and exists (select 1 from public.qorpera_event_wake_deliveries as taken
+			join public.qorpera_wake_occurrences as wake on wake.id = taken.occurrence_id
+			where taken.routine_id = v_row.id and taken.delivery_id = v_first and wake.occurrence_key like '%:5'),
+		'After five tries the first delivery is left behind');
+	perform pg_temp.wake_assert(pg_temp.post('{"try":2}', 'retry.test', repeat('H', 43)) = 'accepted', 'A later delivery');
+	perform public.qorpera_drain_event_wakes(8);
+	perform pg_temp.wake_assert((select count(*) from pg_temp.event_wakes(v_row.id) where status = 'queued'
+		and occurrence_key like '%:1') = 1, 'The next delivery wakes the routine');
 end $$;
 
 -- Privileges: the new tables are closed; the drain, the reader and the tools belong to service_role.
@@ -263,8 +425,10 @@ begin
 		if has_table_privilege(v_role, 'public.qorpera_event_listener_cursors', 'SELECT,INSERT,UPDATE,DELETE')
 			or has_table_privilege(v_role, 'public.qorpera_event_wake_deliveries', 'SELECT,INSERT,UPDATE,DELETE') then
 			raise exception 'Event wake tables are exposed to %', v_role; end if;
-		if has_function_privilege(v_role, 'public.qorpera_event_wake_payload(public.qorpera_wake_occurrences)', 'EXECUTE')
-			or has_function_privilege(v_role, 'public.qorpera_event_body_view(bytea,integer)', 'EXECUTE') then
+		if has_function_privilege(v_role, 'public.qorpera_event_wake_payload(public.qorpera_wake_occurrences,integer)', 'EXECUTE')
+			or has_function_privilege(v_role, 'public.qorpera_event_body_view(bytea,integer)', 'EXECUTE')
+			or has_function_privilege(v_role, 'public.qorpera_event_json_prefix(text,integer)', 'EXECUTE')
+			or has_function_privilege(v_role, 'public.qorpera_event_wake_item(public.qorpera_event_deliveries)', 'EXECUTE') then
 			raise exception 'A private event wake helper is exposed to %', v_role; end if;
 	end loop;
 	foreach v_role in array array['anon', 'authenticated', 'qorpera_secret_broker'] loop
