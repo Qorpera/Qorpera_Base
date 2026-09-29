@@ -1246,45 +1246,60 @@ export class CompanyController {
 		if (!store) return;
 		do {
 			request.repeat = false;
-			try {
-				let after = store.get().projection.lastSequence;
-				const events = [...store.get().events];
+			const known = store.get();
+			const events = [...known.events];
+			const sequences = new Set(events.map((event) => event.sequence));
+			// A failed read ends the others at their next page.
+			let failed = false;
+			// The history after what the thread has, page by page, oldest first.
+			const readEvents = async (): Promise<boolean> => {
+				let after = known.projection.lastSequence;
 				for (;;) {
 					const page = await this.#api.readSessionEvents(sessionId, after, EVENT_PAGE);
-					if (this.#stopped) return;
+					if (this.#stopped || failed) return false;
 					for (const event of page)
-						if (!events.some((existing) => existing.sequence === event.sequence)) events.push(event);
-					if (page.length < EVENT_PAGE) break;
+						if (!sequences.has(event.sequence)) {
+							sequences.add(event.sequence);
+							events.push(event);
+						}
+					if (page.length < EVENT_PAGE) return true;
 					const next = page[page.length - 1]?.sequence ?? after;
 					if (next <= after) throw new Error(t("The transcript cursor did not advance."));
 					after = next;
-					store.set({ events: [...events], projection: projectTranscript(events, store.get().pending) });
 				}
+			};
+			// Every input still waiting, all pages.
+			const readPending = async (): Promise<PendingSessionInput[] | undefined> => {
 				const pending: PendingSessionInput[] = [];
 				let position = 0;
 				for (;;) {
 					const page = await this.#api.listSessionInputs(sessionId, position, 100);
-					if (this.#stopped) return;
+					if (this.#stopped || failed) return undefined;
 					pending.push(...page.items);
-					if (!page.hasMore) break;
+					if (!page.hasMore) return pending;
 					if (page.nextAfterPosition <= position || !page.items.length)
 						throw new Error(t("The input cursor did not advance."));
 					position = page.nextAfterPosition;
 				}
+			};
+			try {
+				// The history, the waiting inputs and the coding sessions do not depend on one
+				// another: they are read side by side, and the thread draws once, when all landed.
+				const [complete, pending, listed] = await Promise.all([
+					readEvents(),
+					readPending(),
+					// The listing is optional: a cloud without Order 9 answers with a missing
+					// RPC, and a refused or failed listing keeps what the thread already shows.
+					this.#api
+						.listCodingSessions(sessionId)
+						.catch(() => undefined),
+				]);
+				if (this.#stopped || !complete || !pending) return;
 				const optimistic = reconcileOptimistic({ optimistic: store.get().optimistic, pending, events });
 				const projection = projectTranscript(events, pending);
-				// The listing is optional: a cloud without Order 9 answers with a missing
-				// RPC, and a refused or failed listing keeps what the thread already shows.
-				let codingSessions = store.get().codingSessions;
-				try {
-					codingSessions = newerCodingSessions(
-						await this.#api.listCodingSessions(sessionId),
-						store.get().codingSessions,
-					);
-				} catch {
-					codingSessions ??= [];
-				}
-				if (this.#stopped) return;
+				const codingSessions = listed
+					? newerCodingSessions(listed, store.get().codingSessions)
+					: (store.get().codingSessions ?? []);
 				store.set({
 					events,
 					pending,
@@ -1297,7 +1312,21 @@ export class CompanyController {
 					codingSessions,
 				});
 			} catch (error) {
-				store.set({ loading: false, complete: false, error: describeError(error) });
+				failed = true;
+				// The history read before the failure stays, so the next read resumes after it.
+				const read =
+					!this.#stopped && events.length > known.events.length
+						? {
+								events: [...events],
+								projection: projectTranscript(events, store.get().pending),
+								optimistic: reconcileOptimistic({
+									optimistic: store.get().optimistic,
+									pending: store.get().pending,
+									events,
+								}),
+							}
+						: {};
+				store.set({ ...read, loading: false, complete: false, error: describeError(error) });
 				return;
 			}
 		} while (request.repeat && !this.#stopped);
