@@ -38,16 +38,16 @@ Together these cover the NAS and the node LAN, Tailscale, cloud metadata, the ot
 
 ### Proof on node 2 (2026-09-29)
 
-Run inside node 2's operator test VM with nested LXD 6.9 (`deploy/test-machine/README.md`), so nothing on node 2's own LXD changed. It was the real code at #419's head: `setup-machine-network.sh`, `build-machine-image.sh`, and `prove-machine-node.ts`, which runs the executor's journaled lifecycle, guest helper and commands with an in-memory kernel. A loopback NFSv4 export stood in for the NAS.
+Run inside node 2's operator test VM with nested LXD 6.9 (`deploy/test-machine/README.md`), so nothing on node 2's own LXD changed. It ran the real `setup-machine-network.sh`, `build-machine-image.sh` and `prove-machine-node.ts`, which runs the executor's journaled lifecycle, guest helper and commands with an in-memory kernel. A loopback NFSv4 export stood in for the NAS. The image was built by the build script as of f6b25e9d5, before its stdout fix: the record was taken from the end of its output. The fixed `> image-build.json` flow was checked in a container, not on LXD.
 
 | Check | Result |
 | --- | --- |
-| Network | The bridge and 63-rule ACL came up as designed. Machines got their address by DHCP and resolved names through the gateway |
-| Image | Built in 243 s (Ubuntu 26.04, Docker 29, Compose 2.40.3, Node 24.21.0), 1.1 GiB; its own checks passed |
+| Network | The bridge and 63-rule ACL came up as designed. Machines got their address by DHCP and resolved names (the bridge's dnsmasq is their only resolver) |
+| Image | Built in 243 s (Ubuntu 26.04, Docker 29, Compose 2.40.3, Node 24.21.0), 1.1 GiB in `lxc image list`; its own checks passed |
 | Machine | 4 CPUs, 8 GiB, 40 GiB disk, usable 63 s after the first pass |
 | Docker | `hello-world` as root, and a Compose stack (Postgres, healthcheck, `psql`) up and down |
 | Out | HTTPS to github.com works, and a TCP connect to 1.1.1.1:443 succeeds |
-| Dropped (TCP connect times out) | The bridge gateway's SSH, the test VM's own and node 2's SSH, another bridge's DNS, the NAS (22, 2049), cloud metadata, Tailscale |
+| Dropped (TCP connect times out) | The bridge gateway's SSH, the test VM's own and node 2's SSH, another bridge's DNS, the NAS (22, 2049), cloud metadata, Tailscale. A timeout proves a drop only where something would otherwise answer: the first three have listeners, and the test VM's own ACL rejects the rest (a fast refusal), so each timeout here is this ACL's drop. On a bare node, pick targets that answer or refuse from the node |
 | Qorpera | `npm ci` and `npm run test:hosted-db` inside the machine: 471 migrations and 137 tests passed |
 | Delete | A running `sleep 3600` stopped with the machine, which was deleted and released |
 
@@ -68,7 +68,7 @@ The steps below need root on the node and a maintenance window. The coordinator 
    - `deploy/machine/setup-machine-network.sh machine-net 10.88.0.1/22`
    - Keep the printed network and ACL as evidence.
    - The storage pool is the node's VM pool (ZFS), for example `qorpera-vm`. Machines get their own root disks.
-   - The host must forward the bridge's traffic. Nodes 1 and 2 run no Docker. On a host that does, Docker sets the FORWARD policy to drop, and machines resolve names but reach nothing. Allow the bridge there (`iptables -I DOCKER-USER -i machine-net -j ACCEPT` and `iptables -I DOCKER-USER -o machine-net -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT`, repeated after a reboot). The ACL still applies, because LXD's rules live in their own table.
+   - The host must forward the bridge's traffic. Node 2 runs no Docker (checked 2026-09-29). On a host that does, Docker sets the FORWARD policy to drop, and machines resolve names but reach nothing. Allow the bridge there (`iptables -I DOCKER-USER -i machine-net -j ACCEPT` and `iptables -I DOCKER-USER -o machine-net -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT`, repeated after a reboot). The ACL still applies, because LXD's rules live in their own table.
 3. **Build the image** in a quiet window. The builder VM makes the node "unavailable" until it is deleted.
    `deploy/machine/build-machine-image.sh /task-owned/machine-guest <node-version> <node-sha256> machines machine-net > image-build.json`
    Take the Node.js tarball's sha-256 from nodejs.org's `SHASUMS256.txt`.
