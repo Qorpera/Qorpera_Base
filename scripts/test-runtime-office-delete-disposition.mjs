@@ -97,7 +97,9 @@ try {
 	const future = newestBundleActivation(names);
 	assert.ok(future);
 	const migrations = names.filter(name => name !== future);
-	database = await hostedDatabase("office", { skip: [future] });
+	// The reset cases demote postgres to the managed operator shape (no superuser), a cluster-wide change:
+	// this script keeps a PostgreSQL of its own, with fixture_admin as the bootstrap superuser.
+	database = await hostedDatabase("office", { skip: [future], alterablePostgres: true });
 	psql = database.cluster.psqlArgs("office", ["-qAt"]);
 	docker(psql, readFileSync(join(root, "supabase/tests/fixtures/runtime-node-inventory-observer.sql"), "utf8"));
 	const wake = readFileSync(join(root, "supabase/tests/300_runtime_wake_bus.test.sql"), "utf8").split("-- END WAKE FIXTURE");

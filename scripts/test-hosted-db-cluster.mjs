@@ -83,17 +83,21 @@ export class HostedDbCluster {
 	/** @type {string} */ container;
 	/** @type {{ applied: number, database: string }[]} */ snapshots = [];
 	#owned;
+	/** The bootstrap superuser, which creates and drops databases (with its own database, as the image makes it). */
+	#admin;
 
-	constructor(container, snapshots, owned) {
+	constructor(container, snapshots, owned, admin = "postgres") {
 		if (!CONTAINER.test(container)) throw new Error(`Invalid hosted database container ${container}`);
 		this.container = container;
 		this.snapshots = snapshots;
 		this.#owned = owned;
+		this.#admin = checkDatabase(admin);
 	}
 
 	/** Starts a disposable PostgreSQL and copies the migrations and the test bootstrap into it. The data lives
-	 * on tmpfs unless `restartable`: a container restart empties tmpfs. */
-	static async start({ restartable = false } = {}) {
+	 * on tmpfs unless `restartable`: a container restart empties tmpfs. With another `admin`, that role is the
+	 * bootstrap superuser and `postgres` an ordinary superuser, which a test may alter (the managed shape). */
+	static async start({ restartable = false, admin = "postgres" } = {}) {
 		run("docker", ["info", "--format", "{{.ServerVersion}}"]);
 		const container = buildContainerName(process.pid, randomBytes(4).toString("hex"));
 		run("docker", [
@@ -106,12 +110,14 @@ export class HostedDbCluster {
 			container,
 			"--env",
 			`POSTGRES_PASSWORD=${PASSWORD}`,
+			...(admin === "postgres" ? [] : ["--env", `POSTGRES_USER=${checkDatabase(admin)}`]),
 			...(restartable ? [] : ["--tmpfs", "/var/lib/postgresql/data:rw,noexec,nosuid,size=2g"]),
 			POSTGRES_IMAGE,
 		]);
-		const cluster = new HostedDbCluster(container, [], true);
+		const cluster = new HostedDbCluster(container, [], true, admin);
 		try {
 			await cluster.waitForPostgres();
+			if (admin !== "postgres") cluster.admin("create role postgres login superuser;");
 			run("docker", ["exec", container, "mkdir", "-p", IN_CONTAINER]);
 			run("docker", ["cp", MIGRATIONS, `${container}:${IN_CONTAINER}/migrations`]);
 			run("docker", ["cp", join(TESTS, "bootstrap.sql"), `${container}:${IN_CONTAINER}/bootstrap.sql`]);
@@ -144,7 +150,7 @@ export class HostedDbCluster {
 		// in a row means the final server is up.
 		let ready = 0;
 		for (let attempt = 0; attempt < 120 && ready < 2; attempt++) {
-			const probe = spawnSync("docker", ["exec", this.container, "pg_isready", "-h", "127.0.0.1", "-U", "postgres"], {
+			const probe = spawnSync("docker", ["exec", this.container, "pg_isready", "-h", "127.0.0.1", "-U", this.#admin], {
 				encoding: "utf8",
 				timeout: 5000,
 			});
@@ -154,8 +160,8 @@ export class HostedDbCluster {
 		if (ready < 2) throw new Error("Disposable PostgreSQL did not become ready within 30 seconds");
 	}
 
-	/** `docker exec` arguments for psql on `database`; `options` go before the database (e.g. `-qAt`). */
-	psqlArgs(database, options = []) {
+	/** `docker exec` arguments for psql on `database` as `user`; `options` go before the database (e.g. `-qAt`). */
+	psqlArgs(database, options = [], user = "postgres") {
 		return [
 			"exec",
 			"-i",
@@ -164,7 +170,7 @@ export class HostedDbCluster {
 			"-X",
 			...options,
 			"-U",
-			"postgres",
+			checkDatabase(user),
 			"-d",
 			checkDatabase(database),
 			"-v",
@@ -175,6 +181,11 @@ export class HostedDbCluster {
 	/** Runs `sql` on `database` in one psql session and returns its standard output. */
 	psql(database, sql, options = []) {
 		return run("docker", this.psqlArgs(database, options), { input: sql });
+	}
+
+	/** Runs `sql` as the bootstrap superuser on its own database (creating and dropping databases). */
+	admin(sql) {
+		return run("docker", this.psqlArgs(this.#admin, [], this.#admin), { input: sql });
 	}
 
 	/** Runs a psql script (meta-commands included) with the query output discarded. With `progress` its
@@ -201,6 +212,7 @@ export class HostedDbCluster {
 	/** Builds `qorpera_migrated`: the test bootstrap, then every migration. Before each migration named in
 	 * `snapshotBefore` (and before the first, and after the last) it leaves a copy for later databases. */
 	build({ snapshotBefore = [], progress = true } = {}) {
+		if (this.#admin !== "postgres") throw new Error("The shared replay runs where postgres is the bootstrap superuser");
 		const names = migrationNames();
 		if (names.length === 0) throw new Error("No hosted database migrations were found");
 		const points = new Set([0, names.length]);
@@ -237,29 +249,29 @@ export class HostedDbCluster {
 	 * `empty` gives a database without the bootstrap or any migration. */
 	create(name, { before, skip, empty = false } = {}) {
 		checkDatabase(name);
+		this.admin(`drop database if exists ${name} with (force);`);
 		if (empty) {
 			// A database like a fresh cluster's own: no bootstrap, no migrations.
-			this.psql("postgres", `drop database if exists ${name} with (force);`);
-			this.psql("postgres", `create database ${name} template template1;`);
+			this.admin(`create database ${name} template template1;`);
 			return { copied: 0, replayed: 0 };
 		}
 		const names = migrationNames();
 		const { wanted, prefix } = plannedMigrations(names, { before, skip });
 		const snapshot = bestSnapshot(this.snapshots, prefix);
-		this.psql("postgres", `drop database if exists ${name} with (force);`);
 		if (snapshot) {
-			this.psql("postgres", `create database ${name} template ${snapshot.database};`);
+			this.admin(`create database ${name} template ${snapshot.database};`);
 			this.migrate(name, wanted.slice(snapshot.applied));
 			return { copied: snapshot.applied, replayed: wanted.length - snapshot.applied };
 		}
-		this.psql("postgres", `create database ${name};`);
+		// Owned by the bootstrap superuser, as the image's own database is; postgres gets every right on it.
+		this.admin(`create database ${name};${this.#admin === "postgres" ? "" : ` grant all on database ${name} to postgres;`}`);
 		this.script(name, sessionPerFile(name, [`${IN_CONTAINER}/bootstrap.sql`]));
 		this.migrate(name, wanted);
 		return { copied: 0, replayed: wanted.length };
 	}
 
 	drop(name) {
-		this.psql("postgres", `drop database if exists ${checkDatabase(name)} with (force);`);
+		this.admin(`drop database if exists ${checkDatabase(name)} with (force);`);
 	}
 
 	/** Copies files (name to content) into a new directory in the container and returns their paths there. */
@@ -290,11 +302,14 @@ export class HostedDbCluster {
 }
 
 /** For a PostgreSQL script: its own database `name` with the migrations it asks for, in the suite's cluster
- * when it runs under the suite, otherwise in a container of its own. A script that restarts the server
- * (`restartable`) always gets its own container, with its data on disk. `close()` drops or removes it. */
-export async function hostedDatabase(name, { restartable = false, ...options } = {}) {
-	const shared = restartable ? null : HostedDbCluster.attach();
-	const cluster = shared ?? (await HostedDbCluster.start({ restartable }));
+ * when it runs under the suite, otherwise in a container of its own. Two kinds of script always get their
+ * own container, filled by the same one-process replay: one that restarts the server (`restartable`: data
+ * on disk), and one that alters the cluster-wide `postgres` role (`alterablePostgres`: another bootstrap
+ * superuser). `close()` drops the database or removes the container. */
+export async function hostedDatabase(name, { restartable = false, alterablePostgres = false, ...options } = {}) {
+	const shared = restartable || alterablePostgres ? null : HostedDbCluster.attach();
+	const cluster =
+		shared ?? (await HostedDbCluster.start({ restartable, admin: alterablePostgres ? "fixture_admin" : "postgres" }));
 	try {
 		const made = cluster.create(name, options);
 		process.stdout.write(
