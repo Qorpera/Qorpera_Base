@@ -50,3 +50,21 @@ export function debounce<A extends unknown[]>(fn: (...args: A) => void, waitMs: 
 		timer = setTimeout(() => fn(...args), waitMs);
 	};
 }
+
+/** Runs at once, then at most once every `intervalMs`: calls in between run together at the end
+ * of the interval. */
+export function throttle(fn: () => void, intervalMs: number): () => void {
+	let last = Number.NEGATIVE_INFINITY;
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const run = () => {
+		timer = undefined;
+		last = Date.now();
+		fn();
+	};
+	return () => {
+		if (timer) return;
+		const wait = last + intervalMs - Date.now();
+		if (wait <= 0) run();
+		else timer = setTimeout(run, wait);
+	};
+}

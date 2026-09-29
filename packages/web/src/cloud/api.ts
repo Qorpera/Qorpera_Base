@@ -473,14 +473,17 @@ export class CloudApi {
 
 	// Conversations
 
-	listSessions(environmentId: string, signal?: AbortSignal): Promise<HostedSession[]> {
+	/** Every conversation of the environment the member may read, least recently changed first;
+	 * with `since`, only those changed after it (the page's own updated_at, id cursor). */
+	listSessions(environmentId: string, signal?: AbortSignal, since?: PageCursor): Promise<HostedSession[]> {
 		return collectPages((cursor) => {
 			signal?.throwIfAborted();
+			const after = cursor ?? since;
 			return this.cloud
 				.rpc("qorpera_list_shared_sessions_page", {
 					p_environment_id: requiredUuid(environmentId, "Environment id"),
-					p_after_updated_at: cursor?.time ?? null,
-					p_after_id: cursor?.id ?? null,
+					p_after_updated_at: after?.time ?? null,
+					p_after_id: after?.id ?? null,
 					p_limit: 100,
 				})
 				.then(parseSessionPage);
