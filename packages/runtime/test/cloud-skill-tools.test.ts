@@ -132,6 +132,9 @@ async function fixture(initial: Record<string, string> = {}) {
 	);
 	const agent = run.identity.staffAgentId;
 	const own = cloudSkillRoot("agent", run.identity);
+	// In a folder-v2 company an agent's own library is in its named folder.
+	expect(cloudSkillRoot("agent", run.identity, { core: "folder-v2", handle: "anna-berg" })).toBe("agents/anna-berg/skills");
+	expect(cloudSkillRoot("company", run.identity, { core: "folder-v2", handle: "anna-berg" })).toBe(cloudSkillRoot("company", run.identity));
 	const store = companyFile(
 		Object.fromEntries(Object.entries(initial).map(([key, text]) => [key.replace("<own>", own), text])),
 	);

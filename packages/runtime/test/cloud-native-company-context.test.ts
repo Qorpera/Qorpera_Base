@@ -3,6 +3,7 @@ import type { JsonValue } from "@qorpera/contracts";
 import type { CloudCompanyPathControl } from "@qorpera/runtime/cloud-company-path-gateway";
 import {
 	CLOUD_COMPANY_RUNTIME_INSTRUCTIONS,
+	cloudAgentFolderPlace,
 	cloudCompanyContextTool,
 	cloudCompanyRuntimeInstructions,
 	compileCloudNativeCompanyInstructions,
@@ -918,3 +919,44 @@ it("carries the run's service tier outside the shared tool identity", () => {
 		),
 	).toThrow();
 });
+
+it("names a folder-v2 company's agent folders, and leaves every other context and prompt as it is", () => {
+	const f = nativeCompanyContextFixture();
+	const coworker = f.context.coworkers[0].id;
+	const plain = parseCloudNativeCompanyContext(f.context, f.binding);
+	expect(Object.hasOwn(plain, "folder")).toBe(false);
+	expect(cloudAgentFolderPlace(plain)).toEqual({ core: "snapshot-v1" });
+	const plainPrompt = composeCloudNativeCompanyPrompt(plain);
+	expect(plainPrompt).not.toContain('"folder"');
+
+	const folder = { agent: "anna-berg", coworkers: { [coworker]: "ida-lund" } };
+	const context = parseCloudNativeCompanyContext({ ...f.context, folder }, f.binding);
+	expect(context.folder).toEqual(folder);
+	expect(cloudAgentFolderPlace(context)).toEqual({ core: "folder-v2", handle: "anna-berg" });
+	const prompt = composeCloudNativeCompanyPrompt(context);
+	expect(prompt).toContain('"folder":"agents/anna-berg"');
+	expect(prompt).toContain('"folder":"agents/ida-lund"');
+	// A coworker without a folder (an agent from before the files) is shown as it is.
+	const unnamed = parseCloudNativeCompanyContext({ ...f.context, folder: { agent: "anna-berg", coworkers: {} } }, f.binding);
+	expect(composeCloudNativeCompanyPrompt(unnamed)).not.toContain("ida-lund");
+
+	// Closed: exactly the agent and its listed coworkers, with folder names the company folder accepts.
+	for (const bad of [
+		null,
+		{ agent: "anna-berg" },
+		{ agent: "anna-berg", coworkers: {}, core: "folder-v2" },
+		{ agent: "Anna", coworkers: {} },
+		{ agent: "groups", coworkers: {} },
+		{ agent: "anna-berg", coworkers: [] },
+		{ agent: "anna-berg", coworkers: { [coworker]: "Ida Lund" } },
+		{ agent: "anna-berg", coworkers: { [coworker]: 7 } },
+	])
+		expect(() => parseCloudNativeCompanyContext({ ...f.context, folder: bad }, f.binding)).toThrow();
+	expect(() =>
+		parseCloudNativeCompanyContext(
+			{ ...f.context, folder: { agent: "anna-berg", coworkers: { [randomUUID()]: "otto" } } },
+			f.binding,
+		),
+	).toThrow("Cloud context does not match its admitted run");
+});
+

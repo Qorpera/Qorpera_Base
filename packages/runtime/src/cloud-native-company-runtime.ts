@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { cloudAgentFolder } from "@qorpera/cloud-client/cloud-agent-folder";
 import type { CloudContentAddressedStore } from "@qorpera/cloud-client/node/cloud-object-store";
 import type { JsonValue } from "@qorpera/contracts";
 import {
@@ -26,6 +27,7 @@ import { cloudMachineTools } from "./cloud-machine-tools.ts";
 import { cloudMemoryTools, composeCloudAgentMemory, unavailableCloudAgentMemory } from "./cloud-memory-tools.ts";
 import type { CloudNativeCodingDriver } from "./cloud-native-coding-runtime.ts";
 import {
+	cloudAgentFolderPlace,
 	cloudCompanyContextTool,
 	compileCloudNativeCompanyInstructions,
 	composeCloudNativeCompanyPrompt,
@@ -226,6 +228,8 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			);
 			wakeRequest.catch(() => undefined);
 			const context = parseCloudNativeCompanyContext(await contextRequest, binding);
+			// Where the company keeps its agents' folders: by id today, by name in a folder-v2 company.
+			const agentFolders = cloudAgentFolderPlace(context);
 			stage = "bundle-compatibility";
 			assertCloudRuntimeBundle(context.identity, this.#sha256);
 			// This host's policy declares fast mode, so every run admitted under it names its tier.
@@ -285,11 +289,16 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			// degrades to "unavailable" and the run still starts, because neither is a
 			// precondition of company work.
 			const [memory, skills] = await Promise.all([
-				composeCloudAgentMemory(gateway, context.identity.staffAgentId, new Date(), signal).catch((error) => {
+				composeCloudAgentMemory(
+					gateway,
+					cloudAgentFolder(context.identity.companyId, context.identity.staffAgentId, agentFolders),
+					new Date(),
+					signal,
+				).catch((error) => {
 					signal.throwIfAborted();
 					return unavailableCloudAgentMemory(cloudRuntimeErrorCategory(error, signal));
 				}),
-				composeCloudAgentSkills(gateway, context.identity, signal).catch((error) => {
+				composeCloudAgentSkills(gateway, context.identity, signal, agentFolders).catch((error) => {
 					signal.throwIfAborted();
 					return unavailableCloudAgentSkills(cloudRuntimeErrorCategory(error, signal));
 				}),
@@ -566,14 +575,14 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 									: []),
 								// The notebook is the agent's own: a worker of the same agent recalls it,
 								// and writes to it only when its dispatch allows Company File writes.
-								...cloudMemoryTools(gateway, identity).filter(
+								...cloudMemoryTools(gateway, identity, undefined, agentFolders).filter(
 									(tool) =>
 										tool.name === "recall_memory" || work.companyFile({ ...tool, name: "company_write" }),
 								),
 								// Skills the same way: every run reads and searches them. Only a company run saves one
 								// (a member's private conversation never feeds a shared library), and a worker only
 								// when its dispatch allows Company File writes.
-								...cloudSkillTools(gateway, identity).filter(
+								...cloudSkillTools(gateway, identity, agentFolders).filter(
 									(tool) =>
 										tool.name !== "update_skill" ||
 										(identity.audienceKind === "company" &&
