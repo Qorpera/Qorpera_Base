@@ -35,13 +35,14 @@ begin
 end $$;
 
 -- The screen held by a run (its lease), by a member (takeover), or by nobody.
-create function pg_temp.hold(p_run jsonb, p_member uuid default null) returns void language plpgsql as $$
+create function pg_temp.hold(p_run jsonb, p_member uuid default null, p_screen uuid default '63900000-0000-4000-8000-0000000000e4')
+returns void language plpgsql as $$
 begin
 	perform pg_temp.fx(format('update public.qorpera_runtime_office_screens set lease_id = %L, run_id = %L, lease_expires_at = %L,
 		grant_version = %L, native_binding = %L, takeover_user_id = %L, epoch = epoch + 1 where id = %L',
 		case when p_run is not null then extensions.gen_random_uuid() end, p_run ->> 'runId',
 		case when p_run is not null then clock_timestamp() + interval '5 minutes' end, case when p_run is not null then 1 end,
-		case when p_run is not null then '{}' end, p_member, '63900000-0000-4000-8000-0000000000e4'));
+		case when p_run is not null then '{}' end, p_member, p_screen));
 end $$;
 
 create function pg_temp.open(p_kind text, p_anchor jsonb, p_opener jsonb default '{"kind":"platform"}') returns jsonb language sql as $$
@@ -56,6 +57,48 @@ $$;
 create function pg_temp.last_commit(p_result jsonb) returns public.qorpera_folder_commits language sql as $$
 	select * from public.qorpera_folder_commits where id = (p_result ->> 'commitId')::uuid
 $$;
+-- A leased human run of agent B for the requester, in agent B's own company thread (632's builder, for B).
+create function pg_temp.agent_b(p_requester uuid) returns jsonb language plpgsql as $$
+declare
+	v_profile uuid := '63200000-0000-4000-8000-000000000010'; v_env uuid := '63200000-0000-4000-8000-000000000020';
+	v_staff uuid := '63200000-0000-4000-8000-0000000000a2'; v_sponsor uuid := '63200000-0000-4000-8000-0000000000b1';
+	v_bundle uuid := '63200000-0000-4000-8000-0000000000b2';
+	v_run uuid := extensions.gen_random_uuid(); v_job uuid := extensions.gen_random_uuid(); v_wake uuid := extensions.gen_random_uuid();
+	v_runner uuid := extensions.gen_random_uuid(); v_assignment uuid := extensions.gen_random_uuid();
+	v_session uuid; v_input uuid := extensions.gen_random_uuid();
+begin
+	set local session_replication_role = replica;
+	select id into v_session from public.qorpera_shared_sessions where profile_id = v_profile and staff_agent_id = v_staff::text
+		and status = 'open' and audience_kind = 'company';
+	if v_session is null then
+		insert into public.qorpera_shared_sessions(id, profile_id, environment_id, title, created_by_user_id, staff_agent_id, staff_version,
+			audience_kind)
+		values (extensions.gen_random_uuid(), v_profile, v_env, 'Agent thread', p_requester, v_staff::text, 1, 'company')
+		returning id into v_session;
+	end if;
+	insert into public.qorpera_session_inputs(id, session_id, client_input_id, author_user_id, actor_kind, kind,
+		runtime_bundle_id, runtime_bundle_sha256, execution_run_id)
+	values (v_input, v_session, extensions.gen_random_uuid(), p_requester, 'human', 'user_message', v_bundle, repeat('b', 64), v_run);
+	insert into public.qorpera_runner_jobs(id, profile_id, environment_id, substrate_version_id, client_job_id, required_capability,
+		job_type, payload, created_by_user_id, status, runner_id, client_lease_id, lease_token_sha256, lease_expires_at, run_id)
+	values (v_job, v_profile, v_env, extensions.gen_random_uuid(), extensions.gen_random_uuid(), 'agent_turn', 'agent_turn', '{}',
+		p_requester, 'leased', v_runner, v_assignment, repeat('a', 64), clock_timestamp() + interval '5 minutes', v_run);
+	insert into public.qorpera_execution_runs(id, profile_id, environment_id, source_kind, source_id, job_id, substrate_version_id,
+		company_snapshot_id, staff_agent_id, staff_version, sponsor_binding_id, sponsor_version, required_capability, job_type,
+		payload_sha256, transcript_start_sequence, created_by_user_id, requested_by_user_id, model_provider, model_id, model_selection,
+		audience_kind, runtime_bundle_id, runtime_bundle_sha256, session_id, input_ids)
+	values (v_run, v_profile, v_env, 'session_turn', v_input, v_job, extensions.gen_random_uuid(), extensions.gen_random_uuid(),
+		v_staff, 1, v_sponsor, 1, 'agent_turn', 'agent_turn', repeat('c', 64), 0, p_requester, p_requester, 'openai', 'gpt-test',
+		'provider_default', 'company', v_bundle, repeat('b', 64), v_session, array[v_input]);
+	insert into public.qorpera_wake_occurrences(id, profile_id, environment_id, trigger_id, occurrence_key, scheduled_for, not_before,
+		wake_kind, source_kind, source_id, run_id, status, staff_agent_id, staff_version, requested_by_user_id, sponsor_binding_id,
+		sponsor_version, session_id, causal_root_id, causal_agent_ids, payload)
+	values (v_wake, v_profile, v_env, 'input', v_wake::text, clock_timestamp(), clock_timestamp(), 'human', 'input', v_input,
+		v_run, 'materialized', v_staff, 1, p_requester, v_sponsor, 1, v_session, v_wake, array[v_staff],
+		jsonb_build_object('inputIds', jsonb_build_array(v_input)));
+	set local session_replication_role = origin;
+	return jsonb_build_object('kind','run','runId',v_run,'jobId',v_job,'runnerId',v_runner,'assignmentId',v_assignment);
+end $$;
 -- A coding worker's leased turn: an agent wake from the worker's dispatch, under its steering run p_parent (as in 634).
 create function pg_temp.turn(p_parent jsonb, p_worker uuid) returns jsonb language plpgsql as $$
 declare
@@ -102,6 +145,14 @@ begin
 		'company_shared', 'normal') ->> 'resourceId';
 	perform public.qorpera_folder_grant('63200000-0000-4000-8000-000000000020', pg_temp.member(1), v_secret, 'staff_agent',
 		'63200000-0000-4000-8000-0000000000a1', array['read','write']);
+	-- Agent B, and a second folder environment of the same company.
+	insert into public.qorpera_profile_staff(profile_id, staff_agent_id, display_name, role, charter, appearance_color, appearance_shape,
+		employment_status, lifecycle_state, created_at, updated_at, updated_by_user_id)
+	values ('63200000-0000-4000-8000-000000000010', '63200000-0000-4000-8000-0000000000a2', 'Agent B', 'QA', 'Test.', 'blue', 'round',
+		'active', 'active', statement_timestamp(), statement_timestamp(), '63200000-0000-4000-8000-000000000001');
+	insert into public.qorpera_company_environments(id, profile_id, name, contract_version, created_by_user_id)
+	values ('63200000-0000-4000-8000-000000000021', '63200000-0000-4000-8000-000000000010', 'Other', 1, '63200000-0000-4000-8000-000000000001');
+	perform public.qorpera_folder_enable('63200000-0000-4000-8000-000000000021');
 end $$;
 
 
@@ -118,6 +169,15 @@ begin
 		raise exception 'Run box commit: %', to_jsonb(c); end if;
 	perform pg_temp.raises(format('select pg_temp.vcommit(%L, %L, %L)', b || jsonb_build_object('pass', repeat('A', 43)), 'box-bad-pass',
 		'[{"op":"mkdir","path":"refused"}]'), '42501');
+	-- A replay needs the pass too; so do renew and close.
+	perform pg_temp.raises(format('select pg_temp.vcommit(%L, %L, %L)', b || jsonb_build_object('pass', repeat('A', 43)), 'box-save-1',
+		'[{"op":"mkdir","path":"by-box"}]'), '42501');
+	perform pg_temp.raises(format('select public.qorpera_folder_view_renew(%L, %L)', b ->> 'viewId', repeat('A', 43)), '42501');
+	perform pg_temp.raises(format('select public.qorpera_folder_view_close(%L, %L)', b ->> 'viewId', repeat('A', 43)), '42501');
+	-- A malformed view id is refused as invalid.
+	perform pg_temp.raises(format('select public.qorpera_folder_record_release(%L, %L, %L, %L, %L)', '63200000-0000-4000-8000-000000000020',
+		jsonb_build_object('kind','view','viewId','not-a-view','pass',b ->> 'pass'), extensions.gen_random_uuid(), '[]', repeat('0', 64)),
+		'22023');
 	if (public.qorpera_folder_view_renew((b ->> 'viewId')::uuid, b ->> 'pass') ->> 'state') <> 'open' then raise exception 'Renew'; end if;
 	perform pg_temp.fx(format('update public.qorpera_runner_jobs set runner_id = %L where id = %L', v_runner, v ->> 'jobId'));
 	perform pg_temp.raises(format('select pg_temp.vcommit(%L, %L, %L)', b, 'box-reclaimed', '[{"op":"mkdir","path":"refused"}]'), '42501');
@@ -144,7 +204,7 @@ end $$;
 -- saves as the agent and member, and refuses a unit that needs review.
 do $$
 declare v jsonb := pg_temp.run('human', '63200000-0000-4000-8000-000000000002'); d jsonb; r jsonb; c public.qorpera_folder_commits%rowtype;
-	a jsonb := pg_temp.stage('beta'); e jsonb;
+	a jsonb := pg_temp.stage('beta'); e jsonb; u jsonb; g uuid;
 begin
 	perform pg_temp.hold(v);
 	d := pg_temp.open('computer_desktop', jsonb_build_object('screenId','63900000-0000-4000-8000-0000000000e4','holderRunId',v ->> 'runId'));
@@ -156,6 +216,17 @@ begin
 	if (public.qorpera_folder_read('63200000-0000-4000-8000-000000000020', pg_temp.vactor(d), 'secret/s.txt') ->> 'found')::boolean
 		or not (public.qorpera_folder_read('63200000-0000-4000-8000-000000000020', pg_temp.vactor(d), 'rules/tone.txt') ->> 'found')::boolean then
 		raise exception 'The company-wide view for reads'; end if;
+	-- A view belongs to its environment: another folder of the same company does not take it.
+	perform pg_temp.raises(format('select public.qorpera_folder_read(%L, %L, %L)', '63200000-0000-4000-8000-000000000021',
+		pg_temp.vactor(d), 'shared/a.txt'), '42501');
+	-- A live-run view carries its run's review: a delete that needs one saves with a record for the run.
+	perform pg_temp.expect(pg_temp.vcommit(d, 'desk-rv-setup', jsonb_build_array(jsonb_build_object('op','write','path','shared/rv.txt','file',a))),
+		1, 'saved');
+	u := jsonb_build_array(jsonb_build_object('op','delete','path','shared/rv.txt','expectedVersion',pg_temp.read('shared/rv.txt') -> 'entry' ->> 'version'));
+	insert into public.qorpera_folder_reviews(environment_id, run_id, change_set_sha256, units, decision)
+	values ('63200000-0000-4000-8000-000000000020', (v ->> 'runId')::uuid, public.qorpera_folder_change_set_sha256(u), '{1}', 'allow')
+	returning id into g;
+	perform pg_temp.expect(pg_temp.vcommit(d, 'desk-rv-apply', u, g), 1, 'saved');
 	-- A receipt the run itself got for secret/ does not pass through the company-wide view.
 	e := public.qorpera_folder_read('63200000-0000-4000-8000-000000000020', v, 'secret/s.txt') -> 'entry';
 	if e -> 'authority' is null then raise exception 'The run reads secret/ through its grant'; end if;
@@ -203,6 +274,10 @@ begin
 	r := pg_temp.vcommit(m, 'member-desk-1', '[{"op":"mkdir","path":"by-member-desk"},{"op":"mkdir","path":"members/63200000-0000-4000-8000-000000000001/private/x"}]');
 	perform pg_temp.expect(r, 1, 'saved'); perform pg_temp.expect(r, 2, 'denied', 'denied');
 	if (pg_temp.last_commit(r)).actor_kind <> 'member' then raise exception 'A member-held desktop saves as the member'; end if;
+	-- The pause stops agents, not members.
+	perform public.qorpera_folder_pause('63200000-0000-4000-8000-000000000010', '63200000-0000-4000-8000-000000000001', 'test');
+	perform pg_temp.expect(pg_temp.vcommit(m, 'member-desk-paused', '[{"op":"mkdir","path":"by-member-paused"}]'), 1, 'saved');
+	perform public.qorpera_folder_resume('63200000-0000-4000-8000-000000000010');
 	if (select state from public.qorpera_folder_views where id = (d ->> 'viewId')::uuid) <> 'closed' then
 		raise exception 'Opening the member''s view supersedes the run''s'; end if;
 	-- A private sign-in by another member ends the member's view.
@@ -293,10 +368,29 @@ begin
 	perform pg_temp.raises(format('select pg_temp.vcommit(%L, %L, %L)', cv, 'coding-archived', '[{"op":"mkdir","path":"code/refused"}]'), '42501');
 	perform pg_temp.fx(format('update public.qorpera_coding_sessions set archived_at = null, archived_by = null where worker_id = %L', w));
 	cv := pg_temp.open('coding_session', jsonb_build_object('workerId', w, 'attachmentToken', tok));
-	-- During a leased turn, the view's reads land in the turn's read set as well as the view's, so the parent check of the
-	-- worker's completion (a wake whose parent is that turn) sees them: after a narrowing it refuses.
-	perform pg_temp.expect(pg_temp.commit('{"kind":"platform"}', 'coding-read-file', jsonb_build_array(jsonb_build_object('op','mkdir','path','cread'),
-		jsonb_build_object('op','write','path','cread/c.txt','file',pg_temp.stage('gamma')))), 2, 'saved');
+	-- During a leased turn, a save records the turn and rechecks what the turn read: after tread/ narrows it refuses.
+	-- Once the turn has ended (the executor saves before it completes a turn) its reads no longer hold the view back.
+	perform pg_temp.expect(pg_temp.commit('{"kind":"platform"}', 'coding-read-files', jsonb_build_array(jsonb_build_object('op','mkdir','path','cread'),
+		jsonb_build_object('op','write','path','cread/c.txt','file',pg_temp.stage('gamma')), jsonb_build_object('op','mkdir','path','tread'),
+		jsonb_build_object('op','write','path','tread/t.txt','file',pg_temp.stage('gamma')))), 4, 'saved');
+	t := pg_temp.turn(p, w);
+	r := pg_temp.vcommit(cv, 'coding-turn-1', '[{"op":"mkdir","path":"code/turn"}]');
+	perform pg_temp.expect(r, 1, 'saved');
+	if (pg_temp.last_commit(r)).turn_run_id is distinct from (t ->> 'runId')::uuid or (pg_temp.last_commit(r)).run_id is not null then
+		raise exception 'A coding save during a turn records the turn: %', to_jsonb(pg_temp.last_commit(r)); end if;
+	e := pg_temp.read('tread/t.txt', t) -> 'entry';
+	perform public.qorpera_folder_record_release('63200000-0000-4000-8000-000000000020', t, extensions.gen_random_uuid(),
+		jsonb_build_array(jsonb_build_object('path', e ->> 'path', 'version', e ->> 'version', 'authority', e -> 'authority')), repeat('7', 64));
+	perform public.qorpera_folder_set_resource('63200000-0000-4000-8000-000000000020', pg_temp.member(1), 'tread', 'subtree',
+		'company_shared', 'normal');
+	perform pg_temp.raises(format('select pg_temp.vcommit(%L, %L, %L)', cv, 'coding-turn-narrowed', '[{"op":"mkdir","path":"code/refused"}]'), '42501');
+	perform pg_temp.fx(format('update public.qorpera_runner_jobs set lease_expires_at = clock_timestamp() - interval ''1 second'' where id = %L',
+		t ->> 'jobId'));
+	r := pg_temp.vcommit(cv, 'coding-turn-ended', '[{"op":"mkdir","path":"code/between"}]');
+	perform pg_temp.expect(r, 1, 'saved');
+	if (pg_temp.last_commit(r)).turn_run_id is not null then raise exception 'A save between turns records no turn'; end if;
+	-- The view's reads during the next turn land in that turn's read set as well as the view's, so the parent check of
+	-- the worker's completion (a wake whose parent is that turn) sees them: after a narrowing it refuses.
 	t := pg_temp.turn(p, w);
 	e := pg_temp.read('cread/c.txt', pg_temp.vactor(cv)) -> 'entry';
 	perform public.qorpera_folder_record_release('63200000-0000-4000-8000-000000000020', pg_temp.vactor(cv), extensions.gen_random_uuid(),
@@ -315,6 +409,79 @@ begin
 end $$;
 
 
+-- A worker with read access holds the screen: its view writes nothing, live or detached (the view keeps the access).
+do $$
+declare p jsonb := pg_temp.run('human', '63200000-0000-4000-8000-000000000002'); w uuid := extensions.gen_random_uuid(); t jsonb; d jsonb;
+begin
+	set local session_replication_role = replica;
+	insert into public.qorpera_runtime_workers(id, profile_id, environment_id, staff_agent_id, todo_id, worker_key, species, title, access,
+		revival, dispatch, requested_by_user_id, steering_run_id)
+	values (w, '63200000-0000-4000-8000-000000000010', '63200000-0000-4000-8000-000000000020', '63200000-0000-4000-8000-0000000000a1',
+		extensions.gen_random_uuid(), 'w-reader', 'in-house', 'Read', 'read', 'each', '{}', '63200000-0000-4000-8000-000000000002',
+		(p ->> 'runId')::uuid);
+	set local session_replication_role = origin;
+	t := pg_temp.turn(p, w);
+	perform pg_temp.hold(t);
+	d := pg_temp.open('computer_desktop', jsonb_build_object('screenId','63900000-0000-4000-8000-0000000000e4','holderRunId',t ->> 'runId'));
+	if (select worker_access from public.qorpera_folder_views where id = (d ->> 'viewId')::uuid) is distinct from 'read' then
+		raise exception 'Open records the holder''s worker access'; end if;
+	perform pg_temp.expect(pg_temp.vcommit(d, 'reader-live', '[{"op":"mkdir","path":"by-reader-live"}]'), 1, 'denied', 'denied');
+	perform pg_temp.hold(null);
+	perform pg_temp.expect(pg_temp.vcommit(d, 'reader-detached', '[{"op":"mkdir","path":"by-reader-detached"}]'), 1, 'denied', 'denied');
+	perform public.qorpera_folder_view_close((d ->> 'viewId')::uuid, d ->> 'pass');
+end $$;
+
+-- Reads follow the machine (§6). A desktop view rechecks what its holder run read, live or after the run let go of
+-- the screen; a new view carries the previous view's reads. (A coding view's leased turn is in the coding block.) The
+-- carrying is shown on a second screen, so its narrowed read stays out of the first screen's later views.
+do $$
+declare
+	c_env constant uuid := '63200000-0000-4000-8000-000000000020'; c_screen2 constant uuid := '63900000-0000-4000-8000-0000000000e5';
+	a jsonb := pg_temp.stage('delta'); v jsonb := pg_temp.run('human', '63200000-0000-4000-8000-000000000002');
+	v2 jsonb := pg_temp.agent_b('63200000-0000-4000-8000-000000000002'); v3 jsonb := pg_temp.agent_b('63200000-0000-4000-8000-000000000002');
+	d jsonb; d1 jsonb; d2 jsonb; e jsonb;
+begin
+	perform pg_temp.expect(pg_temp.commit('{"kind":"platform"}', 'follow-setup', jsonb_build_array(
+		jsonb_build_object('op','mkdir','path','follow'), jsonb_build_object('op','write','path','follow/f.txt','file',a),
+		jsonb_build_object('op','mkdir','path','carry'), jsonb_build_object('op','write','path','carry/k.txt','file',a))), 4, 'saved');
+	-- The holder run reads follow/f.txt itself (a model read); follow/ narrows.
+	perform pg_temp.hold(v);
+	d := pg_temp.open('computer_desktop', jsonb_build_object('screenId','63900000-0000-4000-8000-0000000000e4','holderRunId',v ->> 'runId'));
+	e := pg_temp.read('follow/f.txt', v) -> 'entry';
+	perform public.qorpera_folder_record_release(c_env, v, extensions.gen_random_uuid(),
+		jsonb_build_array(jsonb_build_object('path', e ->> 'path', 'version', e ->> 'version', 'authority', e -> 'authority')), repeat('5', 64));
+	perform pg_temp.expect(pg_temp.vcommit(d, 'follow-before', '[{"op":"mkdir","path":"by-follow"}]'), 1, 'saved');
+	perform public.qorpera_folder_set_resource(c_env, pg_temp.member(1), 'follow', 'subtree', 'company_shared', 'normal');
+	perform pg_temp.raises(format('select pg_temp.vcommit(%L, %L, %L)', d, 'follow-live', '[{"op":"mkdir","path":"refused"}]'), '42501');
+	perform pg_temp.hold(null);
+	perform pg_temp.raises(format('select pg_temp.vcommit(%L, %L, %L)', d, 'follow-detached', '[{"op":"mkdir","path":"refused"}]'), '42501');
+	perform public.qorpera_folder_view_close((d ->> 'viewId')::uuid, d ->> 'pass');
+
+	-- Agent B's seat. A desktop program reads carry/k.txt through run two's view; run three takes the seat and its view
+	-- opens with that read; after carry/ narrows, the new view refuses.
+	perform pg_temp.fx(format('insert into public.qorpera_runtime_office_screens(id, office_id, ordinal, staff_agent_id, generation, epoch, power)
+		values (%L, %L, 2, %L, 1, 1, %L)', c_screen2, '63900000-0000-4000-8000-0000000000e0', '63200000-0000-4000-8000-0000000000a2', 'open'));
+	perform pg_temp.fx(format('insert into public.qorpera_runtime_office_access(office_id, staff_agent_id, profile_id, version, state, capabilities,
+		configured_by_user_id) values (%L, %L, %L, 1, %L, %L, %L)', '63900000-0000-4000-8000-0000000000e0', '63200000-0000-4000-8000-0000000000a2',
+		'63200000-0000-4000-8000-000000000010', 'active', '["desktop","shell"]', '63200000-0000-4000-8000-000000000001')
+		|| ' on conflict (office_id, staff_agent_id) do update set state = ''active''');
+	perform pg_temp.hold(v2, null, c_screen2);
+	d1 := pg_temp.open('computer_desktop', jsonb_build_object('screenId', c_screen2, 'holderRunId', v2 ->> 'runId'));
+	e := pg_temp.read('carry/k.txt', pg_temp.vactor(d1)) -> 'entry';
+	perform public.qorpera_folder_record_release(c_env, pg_temp.vactor(d1), extensions.gen_random_uuid(),
+		jsonb_build_array(jsonb_build_object('path', e ->> 'path', 'version', e ->> 'version', 'authority', e -> 'authority')), repeat('6', 64));
+	perform pg_temp.hold(v3, null, c_screen2);
+	d2 := pg_temp.open('computer_desktop', jsonb_build_object('screenId', c_screen2, 'holderRunId', v3 ->> 'runId'));
+	if not exists (select 1 from public.qorpera_folder_view_read_records rec, jsonb_array_elements(rec.reads) x
+		where rec.view_id = (d2 ->> 'viewId')::uuid and x ->> 'path' = 'carry/k.txt') then
+		raise exception 'A new view carries the previous view''s read records'; end if;
+	perform pg_temp.expect(pg_temp.vcommit(d2, 'carry-before', '[{"op":"mkdir","path":"by-carry"}]'), 1, 'saved');
+	perform public.qorpera_folder_set_resource(c_env, pg_temp.member(1), 'carry', 'subtree', 'company_shared', 'normal');
+	perform pg_temp.raises(format('select pg_temp.vcommit(%L, %L, %L)', d2, 'carry-after', '[{"op":"mkdir","path":"refused"}]'), '42501');
+	perform public.qorpera_folder_view_close((d2 ->> 'viewId')::uuid, d2 ->> 'pass');
+end $$;
+
+
 -- Reads: a live-run view's release lands in the view's read set and the run's. Another run of the same agent and
 -- member inherits them, records included. After a narrowing, the detached view's save and that run's recheck both
 -- refuse.
@@ -322,7 +489,7 @@ do $$
 declare
 	c_env constant uuid := '63200000-0000-4000-8000-000000000020'; c_profile constant uuid := '63200000-0000-4000-8000-000000000010';
 	v jsonb := pg_temp.run('human', '63200000-0000-4000-8000-000000000002'); v2 jsonb := pg_temp.run('human', '63200000-0000-4000-8000-000000000002');
-	d jsonb; e jsonb;
+	d jsonb; e jsonb; vb jsonb; ih uuid := extensions.gen_random_uuid();
 begin
 	perform pg_temp.hold(v);
 	d := pg_temp.open('computer_desktop', jsonb_build_object('screenId','63900000-0000-4000-8000-0000000000e4','holderRunId',v ->> 'runId'));
@@ -332,7 +499,24 @@ begin
 	if not exists (select 1 from public.qorpera_folder_view_reads where view_id = (d ->> 'viewId')::uuid)
 		or not exists (select 1 from public.qorpera_folder_run_reads where run_id = (v ->> 'runId')::uuid) then
 		raise exception 'A live-run view''s release lands in both read sets'; end if;
-	perform public.qorpera_folder_run_inherit_view_reads(c_env, v2, (d ->> 'viewId')::uuid, extensions.gen_random_uuid());
+	-- A release id the run already used is refused through the view, never half-filed into the run's records.
+	perform public.qorpera_folder_record_release(c_env, v, ih, jsonb_build_array(jsonb_build_object('path', e ->> 'path',
+		'version', e ->> 'version', 'authority', public.qorpera_folder_read(c_env, v, 'shared/a.txt') -> 'entry' -> 'authority')), repeat('2', 64));
+	perform pg_temp.raises(format('select public.qorpera_folder_record_release(%L, %L, %L, %L, %L)', c_env, pg_temp.vactor(d), ih,
+		jsonb_build_array(jsonb_build_object('path', e ->> 'path', 'version', e ->> 'version', 'authority', e -> 'authority')), repeat('1', 64)),
+		'22023');
+	ih := extensions.gen_random_uuid();
+	perform public.qorpera_folder_run_inherit_view_reads(c_env, v2, (d ->> 'viewId')::uuid, ih);
+	-- Inheritance replays per id, and an id is bound to its view.
+	if (public.qorpera_folder_run_inherit_view_reads(c_env, v2, (d ->> 'viewId')::uuid, ih) ->> 'replay')::boolean is not true then
+		raise exception 'Inheritance replays per id'; end if;
+	perform pg_temp.raises(format('select public.qorpera_folder_run_inherit_view_reads(%L, %L, %L, %L)', c_env, v2,
+		(pg_temp.open('run_box', '{}', v2)) ->> 'viewId', ih), '22023');
+	-- Agent B's run of the same member inherits nothing from agent A's view (it can save, so the refusal is the rule's).
+	vb := pg_temp.agent_b('63200000-0000-4000-8000-000000000002');
+	perform pg_temp.expect(pg_temp.commit(vb, 'agent-b-run', '[{"op":"mkdir","path":"by-agent-b"}]'), 1, 'saved');
+	perform pg_temp.raises(format('select public.qorpera_folder_run_inherit_view_reads(%L, %L, %L, %L)', c_env, vb, d ->> 'viewId',
+		extensions.gen_random_uuid()), '42501');
 	if not exists (select 1 from public.qorpera_folder_run_reads where run_id = (v2 ->> 'runId')::uuid)
 		or not exists (select 1 from public.qorpera_folder_run_read_records rec, jsonb_array_elements(rec.reads) x
 			where rec.run_id = (v2 ->> 'runId')::uuid and x ->> 'path' = 'shared/a.txt') then
@@ -346,10 +530,19 @@ begin
 	perform pg_temp.raises(format('select pg_temp.vcommit(%L, %L, %L)', d, 'detached-after-narrow', '[{"op":"mkdir","path":"refused"}]'), '42501');
 	perform pg_temp.raises(format('select public.qorpera_folder_run_reads_current(%L, %L, %L)', c_env, c_profile,
 		public.qorpera_folder_run_resolve(c_env, c_profile, v2) - 'lockTargets' - 'attribution'), '42501');
-	-- A seat whose open view has unsaved changes is in use.
+	-- A seat whose open view has unsaved changes is in use; once the view's lease lapses (its folder service is gone) it
+	-- no longer holds the seat. The seat is idle otherwise (not touched lately), so each answer is the view's.
+	perform pg_temp.fx('update public.qorpera_runtime_office_screens set touched_at = clock_timestamp() - interval ''1 hour''
+		where id = ''63900000-0000-4000-8000-0000000000e4''');
+	if public.qorpera_runtime_office_screen_in_use((select s from public.qorpera_runtime_office_screens s
+		where s.id = '63900000-0000-4000-8000-0000000000e4')) then raise exception 'The idle seat is free'; end if;
 	perform public.qorpera_folder_view_renew((d ->> 'viewId')::uuid, d ->> 'pass', clock_timestamp());
 	if not public.qorpera_runtime_office_screen_in_use((select s from public.qorpera_runtime_office_screens s
 		where s.id = '63900000-0000-4000-8000-0000000000e4')) then raise exception 'Unsaved changes keep a seat in use'; end if;
+	perform pg_temp.fx(format('update public.qorpera_folder_views set lease_until = clock_timestamp() - interval ''1 second'' where id = %L',
+		d ->> 'viewId'));
+	if public.qorpera_runtime_office_screen_in_use((select s from public.qorpera_runtime_office_screens s
+		where s.id = '63900000-0000-4000-8000-0000000000e4')) then raise exception 'A lapsed view does not hold the seat'; end if;
 end $$;
 
 
@@ -368,6 +561,11 @@ begin
 				'keyshare'::text
 		$f$;
 		perform pg_temp.raises(format('select pg_temp.commit(%L, %L, %L)', pg_temp.member(2), 'rank-0-staff', '[{"op":"mkdir","path":"r0"}]'), 'XX000');
+		create or replace function public.qorpera_folder_structured_targets(p_environment_id uuid, p_actor jsonb, p_units jsonb)
+		returns table(rank smallint, tbl text, key text, mode text) language sql stable set search_path = '' as $f$
+			select 0::smallint, 'qorpera_profiles'::text, '63200000-0000-4000-8000-0000000000ff'::text, 'keyshare'::text
+		$f$;
+		perform pg_temp.raises(format('select pg_temp.commit(%L, %L, %L)', pg_temp.member(2), 'rank-0-other', '[{"op":"mkdir","path":"r0"}]'), 'XX000');
 		create or replace function public.qorpera_folder_structured_targets(p_environment_id uuid, p_actor jsonb, p_units jsonb)
 		returns table(rank smallint, tbl text, key text, mode text) language sql stable set search_path = '' as $f$
 			select 0::smallint, 'qorpera_profiles'::text, '63200000-0000-4000-8000-000000000010'::text, 'keyshare'::text

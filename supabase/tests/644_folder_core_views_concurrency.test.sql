@@ -106,6 +106,14 @@ begin
 	set local session_replication_role = origin;
 end $$;
 
+create function pg_temp.fx_release_screen() returns void language plpgsql as $$
+begin
+	set local session_replication_role = replica;
+	update public.qorpera_runtime_office_screens set lease_id = null, run_id = null, lease_expires_at = null, grant_version = null,
+		native_binding = null, takeover_user_id = null, epoch = epoch + 1 where id = '64400000-0000-4000-8000-0000000000e4';
+	set local session_replication_role = origin;
+end $$;
+
 select set_config('qorpera_test.run_one', pg_temp.run()::text, false);
 select set_config('qorpera_test.run_two', pg_temp.run()::text, false);
 select pg_temp.hold(current_setting('qorpera_test.run_one')::jsonb);
@@ -297,6 +305,57 @@ begin
 		raise exception 'An archive in the anchor window must refuse the save, got %', v_state; end if;
 end $$;
 
+select dblink_connect('view_three', 'dbname=' || current_database());
+select dblink_exec('view_three', $q$set request.jwt.claims = '{"role":"service_role"}'$q$);
+select set_config('qorpera_test.pid_view_three', pid::text, false) from dblink('view_three', 'select pg_backend_pid()') as t(pid integer);
+-- E. A desktop save that resolved detached (the holder had let go) and finds the holder back after waiting holds no
+-- lock on the run's job, so it refuses as retryable (folder_view_changed); the retry takes the job and saves as the
+-- run. The save waits at the view row, which the first connection holds FOR UPDATE (as a close or a supersede does).
+select pg_temp.fx_release_screen();
+select pg_temp.renew('desk');
+do $$
+declare v_state text; r jsonb;
+begin
+	perform dblink_exec('view_one', 'begin');
+	perform * from dblink('view_one', format('select 1 from public.qorpera_folder_views where id = %L for update',
+		current_setting('qorpera_test.desk')::jsonb ->> 'viewId')) as t(x integer);
+	perform dblink_send_query('view_two', pg_temp.sql_commit(pg_temp.vactor('desk'), 'holder-back-1', '[{"op":"mkdir","path":"shared/holder-back"}]'));
+	if not pg_temp.waits_for('view_two', 'view_one') then raise exception 'The save did not wait at the view row'; end if;
+	perform dblink_exec('view_three', 'set session_replication_role = replica');
+	perform dblink_exec('view_three', pg_temp.sql_hold(current_setting('qorpera_test.run_one')::jsonb));
+	perform dblink_exec('view_three', 'set session_replication_role = origin');
+	perform dblink_exec('view_one', 'rollback');
+	v_state := pg_temp.outcome('view_two');
+	if v_state not like 'PGRST %folder_view_changed%' then
+		raise exception 'A save that finds the holder back must refuse as retryable, got %', v_state; end if;
+	r := pg_temp.commit(pg_temp.vactor('desk'), 'holder-back-1', '[{"op":"mkdir","path":"shared/holder-back"}]');
+	if r -> 'units' -> 0 ->> 'outcome' <> 'saved' or (select run_id from public.qorpera_folder_commits where id = (r ->> 'commitId')::uuid)
+		<> (current_setting('qorpera_test.run_one')::jsonb ->> 'runId')::uuid then raise exception 'The retry saves as the run: %', r; end if;
+end $$;
+
+-- F. The anchor step after a lock wait sees changes to other rows too: a revocation of the agent's computer access
+-- that commits while the save waits for the screen refuses the save.
+select pg_temp.renew('desk');
+do $$
+declare v_state text;
+begin
+	perform dblink_exec('view_one', 'begin');
+	perform * from dblink('view_one', $q$select 1 from public.qorpera_runtime_office_screens
+		where id = '64400000-0000-4000-8000-0000000000e4' for update$q$) as t(x integer);
+	perform dblink_send_query('view_two', pg_temp.sql_commit(pg_temp.vactor('desk'), 'access-gone-1', '[{"op":"mkdir","path":"shared/access-gone"}]'));
+	if not pg_temp.waits_for('view_two', 'view_one') then raise exception 'The save did not wait at its anchor step'; end if;
+	perform dblink_exec('view_one', 'set local session_replication_role = replica');
+	perform dblink_exec('view_one', $q$update public.qorpera_runtime_office_access set state = 'revoked'
+		where office_id = '64400000-0000-4000-8000-0000000000e0'$q$);
+	perform dblink_exec('view_one', 'commit');
+	v_state := pg_temp.outcome('view_two');
+	if v_state not like '42501 %Folder view has ended%' then
+		raise exception 'An access revocation in the anchor window must refuse the save, got %', v_state; end if;
+end $$;
+set session_replication_role = replica;
+update public.qorpera_runtime_office_access set state = 'active' where office_id = '64400000-0000-4000-8000-0000000000e0';
+set session_replication_role = origin;
+
 -- D. The company row is locked at rank 0, before the member at rank 1, so a hook that names it (F2's roster files) never
 -- deadlocks with #462's order: qorpera_update_profile_member_role (and its siblings) locks the company row FOR UPDATE,
 -- then the member row FOR UPDATE. A third connection holds the member row FOR KEY SHARE, so the role change stops
@@ -312,8 +371,6 @@ returns table(rank smallint, tbl text, key text, mode text) language sql stable 
 $f$;
 select pg_temp.hold(current_setting('qorpera_test.run_one')::jsonb);
 select pg_temp.renew('desk');
-select dblink_connect('view_three', 'dbname=' || current_database());
-select set_config('qorpera_test.pid_view_three', pid::text, false) from dblink('view_three', 'select pg_backend_pid()') as t(pid integer);
 -- The founder's session, for the role changes.
 select dblink_exec('view_one', $q$set request.jwt.claims = '{"role":"authenticated","sub":"64400000-0000-4000-8000-000000000001"}'$q$);
 do $$

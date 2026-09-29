@@ -56,6 +56,9 @@ create unique index qorpera_folder_views_open_coding on public.qorpera_folder_vi
 create unique index qorpera_folder_views_open_run_box on public.qorpera_folder_views(job_id, runner_id, client_lease_id)
 	where state = 'open' and kind = 'run_box';
 create index qorpera_folder_views_node on public.qorpera_folder_views(node_id) where state = 'open';
+-- A machine's views, newest first: open carries the previous one's read set.
+create index qorpera_folder_views_screen_history on public.qorpera_folder_views(screen_id, created_at desc) where screen_id is not null;
+create index qorpera_folder_views_worker_history on public.qorpera_folder_views(worker_id, created_at desc) where worker_id is not null;
 
 -- A view's own read set, read records and release ids: the run's tables (C1b-2 §3), keyed by view.
 create table public.qorpera_folder_view_reads (
@@ -109,6 +112,10 @@ revoke all on public.qorpera_folder_views, public.qorpera_folder_view_reads, pub
 -- Commits by views: the view, and a staff actor without a run when the view is detached (§7).
 alter table public.qorpera_folder_commits add column view_id uuid, add column view_kind text
 	check (view_kind in ('run_box','computer_desktop','computer_shell_command','coding_session','test_machine'));
+-- A coding view's save during a leased turn records that turn, for attribution only; the save acts detached (§6).
+alter table public.qorpera_folder_commits add column turn_run_id uuid;
+alter table public.qorpera_folder_commits add constraint qorpera_folder_commits_turn_run check (
+	turn_run_id is null or (view_kind = 'coding_session' and run_id is null));
 alter table public.qorpera_folder_commits drop constraint qorpera_folder_commits_run_attribution;
 alter table public.qorpera_folder_commits add constraint qorpera_folder_commits_run_attribution check (
 	((actor_kind = 'staff_agent') = (run_id is not null) or (actor_kind = 'staff_agent' and run_id is null and view_id is not null))
@@ -295,7 +302,7 @@ declare
 	v_screen public.qorpera_runtime_office_screens%rowtype; v_office public.qorpera_runtime_offices%rowtype;
 	v_session public.qorpera_coding_sessions%rowtype; v_worker public.qorpera_runtime_workers%rowtype;
 	v_holder_run uuid; v_holder_user uuid; v_member uuid; v_staff uuid; v_access text; v_activation uuid; v_machine uuid;
-	v_node text; v_pass text; v_root public.qorpera_company_path_resources%rowtype;
+	v_node text; v_pass text; v_root public.qorpera_company_path_resources%rowtype; v_previous uuid;
 begin
 	if auth.role() is distinct from 'service_role' then raise exception 'Folder core authority is required' using errcode = '42501'; end if;
 	if current_setting('transaction_isolation') <> 'read committed' then
@@ -327,9 +334,11 @@ begin
 			or (p_anchor ? 'holderRunId') = (p_anchor ? 'holderUserId') then
 			raise exception 'Folder view anchor is invalid' using errcode = '22023'; end if;
 		v_holder_run := (p_anchor ->> 'holderRunId')::uuid; v_holder_user := (p_anchor ->> 'holderUserId')::uuid;
-		-- The screen's older views first, which waits out their last save; then the screen; then the checks, in new
-		-- statements.
-		perform 1 from public.qorpera_folder_views where screen_id = (p_anchor ->> 'screenId')::uuid and state = 'open' for update;
+		-- The screen's older views first (the open one, and the newest, whose read set this view carries), which waits
+		-- out their last save and release; then the screen; then the checks, in new statements.
+		perform 1 from public.qorpera_folder_views where screen_id = (p_anchor ->> 'screenId')::uuid and (state = 'open'
+			or id = (select v.id from public.qorpera_folder_views v where v.screen_id = (p_anchor ->> 'screenId')::uuid
+				order by v.created_at desc, v.id desc limit 1)) for update;
 		perform 1 from public.qorpera_runtime_office_screens where id = (p_anchor ->> 'screenId')::uuid for share;
 		select * into v_screen from public.qorpera_runtime_office_screens where id = (p_anchor ->> 'screenId')::uuid;
 		select * into v_office from public.qorpera_runtime_offices where id = v_screen.office_id;
@@ -358,7 +367,9 @@ begin
 		if coalesce(p_anchor ->> 'workerId', '') !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
 			or coalesce(p_anchor ->> 'attachmentToken', '') !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then
 			raise exception 'Folder view anchor is invalid' using errcode = '22023'; end if;
-		perform 1 from public.qorpera_folder_views where worker_id = (p_anchor ->> 'workerId')::uuid and state = 'open' for update;
+		perform 1 from public.qorpera_folder_views where worker_id = (p_anchor ->> 'workerId')::uuid and (state = 'open'
+			or id = (select v.id from public.qorpera_folder_views v where v.worker_id = (p_anchor ->> 'workerId')::uuid
+				order by v.created_at desc, v.id desc limit 1)) for update;
 		perform 1 from public.qorpera_coding_sessions where worker_id = (p_anchor ->> 'workerId')::uuid for share;
 		select * into v_session from public.qorpera_coding_sessions where worker_id = (p_anchor ->> 'workerId')::uuid;
 		select * into v_worker from public.qorpera_runtime_workers where id = v_session.worker_id;
@@ -384,6 +395,11 @@ begin
 			raise exception 'Folder view needs the company-wide view' using errcode = '42501'; end if;
 	end if;
 
+	-- The machine's previous view, open or not: its read set follows the machine (§6).
+	select id into v_previous from public.qorpera_folder_views
+	where environment_id = p_environment_id and ((p_kind = 'computer_desktop' and screen_id = v_screen.id)
+		or (p_kind = 'coding_session' and worker_id = v_session.worker_id))
+	order by created_at desc, id desc limit 1;
 	update public.qorpera_folder_views set state = 'closed', closed_at = clock_timestamp(), close_reason = 'superseded'
 	where state = 'open' and ((p_kind = 'computer_desktop' and screen_id = v_screen.id)
 		or (p_kind = 'coding_session' and worker_id = v_session.worker_id));
@@ -394,6 +410,18 @@ begin
 		v_screen.id, v_screen.generation, v_activation, v_holder_run, v_holder_user, v_session.worker_id, v_session.attachment_token,
 		v_node, v_machine, extensions.digest(v_pass, 'sha256'), clock_timestamp() + interval '120 seconds')
 	returning * into v_view;
+	-- The programs still hold what they read through the previous view: its pairs and its read records (one record per
+	-- resource, keyed by the new view's id) move to the new view, which rechecks them on every save.
+	if v_previous is not null then
+		insert into public.qorpera_folder_view_reads(view_id, environment_id, resource_id, grant_id, resource_revision, grant_revision)
+		select v_view.id, environment_id, resource_id, grant_id, resource_revision, grant_revision
+		from public.qorpera_folder_view_reads where view_id = v_previous;
+		insert into public.qorpera_folder_view_read_records(view_id, release_id, environment_id, resource_id, reads, output_sha256)
+		select v_view.id, v_view.id, p_environment_id, rec.resource_id,
+			jsonb_agg(distinct x order by x), repeat('0', 64)
+		from public.qorpera_folder_view_read_records rec, jsonb_array_elements(rec.reads) x
+		where rec.view_id = v_previous group by rec.resource_id;
+	end if;
 	return jsonb_build_object('schema','qorpera.folder-view/v1','viewId',v_view.id,'pass',v_pass,'leaseUntil',v_view.lease_until);
 end $$;
 
@@ -592,6 +620,22 @@ begin
 	return v_changed;
 end $$;
 
+-- A run's reading authority from its row, live or not (§6): its agent, requester, audience, session kind and worker
+-- access, as run_resolve gives them. For rechecking the read set of a run whose reads reached a view's machine: a
+-- desktop's holder run after it let go of the screen, a coding session's leased turn.
+create function public.qorpera_folder_run_reader(p_profile_id uuid, p_run_id uuid)
+returns jsonb language plpgsql stable security definer set search_path = '' as $$
+declare v_run public.qorpera_execution_runs%rowtype; v_worker public.qorpera_runtime_workers%rowtype;
+begin
+	select * into v_run from public.qorpera_execution_runs where id = p_run_id and profile_id = p_profile_id;
+	if not found then raise exception 'Run is unavailable' using errcode = '42501'; end if;
+	v_worker := public.qorpera_run_worker(v_run.id);
+	return jsonb_build_object('kind','staff_agent','staffAgentId',v_run.staff_agent_id,'runId',v_run.id,
+		'requesterUserId',v_run.requested_by_user_id,
+		'audience',jsonb_build_object('kind',v_run.audience_kind,'userId',v_run.audience_user_id),
+		'sessionKind',case when v_worker.species = 'coding' then 'coding' else 'in_house' end,'workerAccess',v_worker.access);
+end $$;
+
 -- A view's release (§6): the view's own read set and records always; with a live run (a run box, a desktop's holder
 -- run) or a coding view's leased turn, that run's as well, under the run check (its job KEY SHARE among it, so the
 -- turn's completion waits for releases in flight). A member-held view records no reads.
@@ -602,6 +646,10 @@ declare
 	v_view_id uuid := (p_actor ->> 'viewId')::uuid; v_existing public.qorpera_folder_view_releases%rowtype; v_resolved jsonb;
 	v_run_actor jsonb; v_pairs jsonb; v_result jsonb;
 begin
+	-- A replay needs the view's pass too.
+	if not exists (select 1 from public.qorpera_folder_views where id = v_view_id and environment_id = p_environment_id
+		and pass_sha256 = extensions.digest(p_actor ->> 'pass', 'sha256')) then
+		raise exception 'Folder view is unavailable' using errcode = '42501'; end if;
 	select * into v_existing from public.qorpera_folder_view_releases where view_id = v_view_id and release_id = p_release_id;
 	if not found then
 		v_resolved := public.qorpera_folder_view_resolve(p_environment_id, p_profile_id, p_actor);
@@ -631,12 +679,16 @@ begin
 		jsonb_agg(f order by public.qorpera_folder_key(f ->> 'path')), p_output_sha256
 	from jsonb_array_elements(v_pairs -> 'filed') f group by 4;
 	if v_run_actor is not null then
+		-- The run's records are keyed by release id too: an id the run already used is refused, never half-filed.
+		if exists (select 1 from public.qorpera_folder_run_releases where run_id = (v_run_actor ->> 'runId')::uuid and release_id = p_release_id)
+			or exists (select 1 from public.qorpera_folder_run_read_records
+				where run_id = (v_run_actor ->> 'runId')::uuid and release_id = p_release_id) then
+			raise exception 'Release id was used for other reads' using errcode = '22023'; end if;
 		perform public.qorpera_folder_write_read_set(p_environment_id, (v_run_actor ->> 'runId')::uuid, v_pairs -> 'upserts', null, null);
 		insert into public.qorpera_folder_run_read_records(run_id, release_id, environment_id, resource_id, reads, output_sha256)
 		select (v_run_actor ->> 'runId')::uuid, p_release_id, p_environment_id, (f -> 'authority' ->> 'resourceId')::uuid,
 			jsonb_agg(f order by public.qorpera_folder_key(f ->> 'path')), p_output_sha256
-		from jsonb_array_elements(v_pairs -> 'filed') f group by 4
-		on conflict (run_id, release_id, resource_id) do nothing;
+		from jsonb_array_elements(v_pairs -> 'filed') f group by 4;
 	end if;
 	v_result := jsonb_build_object('schema','qorpera.folder-release/v1','releaseId',p_release_id,
 		'reads',jsonb_array_length(p_reads),'replay',false,'runId',v_run_actor ->> 'runId');
@@ -667,6 +719,10 @@ begin
 		raise exception 'Folder release is invalid' using errcode = '22023'; end if;
 	v_content := encode(extensions.digest(convert_to(jsonb_build_array(p_reads, p_output_sha256)::text, 'utf8'), 'sha256'), 'hex');
 	if p_actor ->> 'kind' = 'view' then
+		if p_actor - array['kind','viewId','pass'] <> '{}'::jsonb
+			or coalesce(p_actor ->> 'viewId', '') !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+			or coalesce(p_actor ->> 'pass', '') !~ '^[A-Za-z0-9_-]{43}$' then
+			raise exception 'Folder actor is invalid' using errcode = '22023'; end if;
 		return public.qorpera_folder_record_view_release(p_environment_id, v_file.profile_id, p_actor, p_release_id, p_reads,
 			p_output_sha256, v_content);
 	end if;
@@ -772,7 +828,7 @@ declare
 	v_parent_row public.qorpera_folder_entries%rowtype;
 	v_outcomes jsonb := '[]'::jsonb; v_saved integer := 0; v_seq bigint; v_version uuid;
 	v_file_json jsonb; v_as_of bigint; v_ancestor text; v_decided_as_of bigint;
-	v_view public.qorpera_folder_views%rowtype; v_view_early jsonb; v_run_actor jsonb; v_view_agent boolean := false;
+	v_view public.qorpera_folder_views%rowtype; v_view_early jsonb; v_run_actor jsonb; v_view_agent boolean := false; v_turn_run uuid;
 	v_ok boolean; v_reason text; v_eff_path text; v_eff_to text;
 	v_locks jsonb := '{}'::jsonb; v_claims text[] := '{}'; v_lock record; v_invalid boolean;
 	c_subtree_bound constant integer := 50000;
@@ -850,7 +906,11 @@ begin
 		else jsonb_build_array(v_digest_actor, p_units, p_review_id) end)::text, 'utf8'), 'sha256'), 'hex');
 
 	-- Step 0. A replay is answered first, even while the company is paused. A key reused for a different change set
-	-- is refused.
+	-- is refused. A view's replay needs its pass.
+	if v_actor_kind = 'view' and not exists (select 1 from public.qorpera_folder_views
+		where id = (p_actor ->> 'viewId')::uuid and environment_id = p_environment_id
+			and pass_sha256 = extensions.digest(coalesce(p_actor ->> 'pass', ''), 'sha256')) then
+		raise exception 'Folder view is unavailable' using errcode = '42501'; end if;
 	select k.request_sha256, c.id, c.seq, c.units into v_existing
 	from public.qorpera_folder_operation_keys k join public.qorpera_folder_commits c on c.id = k.commit_id
 	where k.environment_id = p_environment_id and k.scope_id = v_scope and k.operation_key = p_operation_key;
@@ -940,6 +1000,13 @@ begin
 			end if;
 			v_auth_actor := (v_resolved - 'lockTargets' - 'attribution') || jsonb_build_object('fenceRevision', v_fence_revision);
 			v_hook_actor := v_auth_actor - 'view';
+			-- A view that was detached at the early resolve and now acts through a run holds no job lock for it: the
+			-- holder came back in between. The caller retries, and the retry takes the job first.
+			if v_resolved ->> 'runId' is not null and (v_run_actor is null or v_run_actor ->> 'jobId' <> v_resolved ->> 'jobId') then
+				raise sqlstate 'PGRST' using message = jsonb_build_object('code', 'QRC01', 'message', 'Company folder view changed',
+					'details', 'folder_view_changed', 'hint', null)::text, detail = '{"status":409,"headers":{}}';
+			end if;
+			v_turn_run := nullif(v_resolved -> 'view' -> 'turnRunActor', 'null'::jsonb) ->> 'runId';
 		end if;
 	elsif v_actor_kind = 'member' then
 		v_auth_actor := p_actor; v_hook_actor := p_actor;
@@ -996,7 +1063,7 @@ begin
 		where jsonb_typeof(t) <> 'object' or coalesce(t ->> 'rank', '') !~ '^[0-9]$' or t ->> 'tbl' is null or t ->> 'key' is null
 			or coalesce(t ->> 'mode', '') not in ('keyshare','share','nokeyupdate','update')
 			or (t ->> 'rank' = '0') <> (t ->> 'tbl' = 'qorpera_profiles')
-			or (t ->> 'tbl' = 'qorpera_profiles' and t ->> 'mode' <> 'keyshare')) then
+			or (t ->> 'tbl' = 'qorpera_profiles' and (t ->> 'mode' <> 'keyshare' or t ->> 'key' <> v_file.profile_id::text))) then
 		raise exception 'Folder lock targets are malformed' using errcode = 'XX000'; end if;
 	-- Resources and grants are held KEY SHARE at most: a shared lock on the root would starve authority changes.
 	if exists (select 1 from jsonb_array_elements(v_targets) t where t ->> 'rank' in ('6','7') and t ->> 'mode' <> 'keyshare') then
@@ -1030,6 +1097,15 @@ begin
 		perform public.qorpera_folder_view_reads_current(p_environment_id, v_file.profile_id, v_view.id, v_auth_actor);
 		if v_resolved ->> 'runId' is not null then
 			perform public.qorpera_folder_run_reads_current(p_environment_id, v_file.profile_id, v_auth_actor - 'view');
+		elsif v_view.holder_run_id is not null then
+			-- A detached desktop: what its holder run read may still be on the screen.
+			perform public.qorpera_folder_run_reads_current(p_environment_id, v_file.profile_id,
+				public.qorpera_folder_run_reader(v_file.profile_id, v_view.holder_run_id));
+		elsif v_turn_run is not null then
+			-- A coding view during a leased turn: what the turn read may be in the session's files. The executor saves
+			-- the session's changes before it completes the turn.
+			perform public.qorpera_folder_run_reads_current(p_environment_id, v_file.profile_id,
+				public.qorpera_folder_run_reader(v_file.profile_id, v_turn_run));
 		end if;
 	end if;
 
@@ -1045,7 +1121,7 @@ begin
 	-- The commit row, before any unit is applied (units reference it); outcomes and seq are written at the end.
 	insert into public.qorpera_folder_commits(id, environment_id, operation_key, actor_kind, actor_id, requester_kind, requester_id,
 		run_id, causal_wake_id, audience, session_kind, routine_id, routine_version, sponsor_binding_id, sponsor_version,
-		provider_connection_id, runtime_bundle_id, units, as_of_seq, view_id, view_kind)
+		provider_connection_id, runtime_bundle_id, units, as_of_seq, view_id, view_kind, turn_run_id)
 	values (v_commit_id, p_environment_id, p_operation_key,
 		case when v_actor_kind = 'run' then 'staff_agent' when v_actor_kind = 'view' then v_resolved ->> 'kind' else v_actor_kind end,
 		v_actor_id,
@@ -1056,7 +1132,7 @@ begin
 		v_resolved ->> 'sessionKind', (v_resolved ->> 'routineId')::uuid, (v_resolved ->> 'routineVersion')::bigint,
 		(v_attr ->> 'sponsorBindingId')::uuid, (v_attr ->> 'sponsorVersion')::bigint,
 		(v_attr ->> 'providerConnectionId')::uuid, (v_attr ->> 'runtimeBundleId')::uuid, '[]', v_decided_as_of,
-		v_view.id, v_view.kind);
+		v_view.id, v_view.kind, v_turn_run);
 
 	-- Steps 7-8. Decide each unit from the locked rows, in order, and apply each clean one before the next is
 	-- decided. Failures are outcomes, not exceptions.
@@ -1346,15 +1422,25 @@ begin
 	execute v_definition;
 end $$;
 
--- A seat whose open desktop view has unsaved changes is in use, so take_seat does not recycle it (§9).
+-- A seat whose open desktop view has unsaved changes is in use, so take_seat does not recycle it (§9). A view whose
+-- lease lapsed (its folder service is gone) no longer holds the seat.
 do $$
 declare v_definition text := pg_get_functiondef('public.qorpera_runtime_office_screen_in_use(public.qorpera_runtime_office_screens)'::regprocedure);
 begin
 	v_definition := pg_temp.views_replace(v_definition, $old$select p_screen.lease_id is not null$old$,
 		$new$select exists (select 1 from public.qorpera_folder_views view_row where view_row.screen_id = p_screen.id
-			and view_row.state = 'open' and view_row.unsaved_since is not null)
+			and view_row.state = 'open' and view_row.unsaved_since is not null and view_row.lease_until > clock_timestamp())
 		or p_screen.lease_id is not null$new$, 1, 'screen in use');
 	execute v_definition;
+end $$;
+-- The seat function may have a private owner in production (as #411 found): it must read the views.
+do $$ declare v_owner name; begin
+	select pg_get_userbyid(proowner) into v_owner from pg_proc
+		where oid = 'public.qorpera_runtime_office_screen_in_use(public.qorpera_runtime_office_screens)'::regprocedure;
+	if v_owner in ('anon','authenticated','service_role','qorpera_secret_broker') then
+		raise exception 'Office seat function has an API owner'; end if;
+	if v_owner is distinct from current_user then
+		execute format('grant select on public.qorpera_folder_views to %I', v_owner); end if;
 end $$;
 
 -- 7. Grants --------------------------------------------------------------------------------------------------------
@@ -1366,7 +1452,8 @@ revoke all on function public.qorpera_folder_view_valid(public.qorpera_folder_vi
 	public.qorpera_folder_release_pairs(uuid, uuid, jsonb, jsonb),
 	public.qorpera_folder_view_write_read_set(uuid, uuid, jsonb, jsonb, jsonb),
 	public.qorpera_folder_view_reads_current(uuid, uuid, uuid, jsonb),
-	public.qorpera_folder_record_view_release(uuid, uuid, jsonb, uuid, jsonb, text, text)
+	public.qorpera_folder_record_view_release(uuid, uuid, jsonb, uuid, jsonb, text, text),
+	public.qorpera_folder_run_reader(uuid, uuid)
 	from public, anon, authenticated, service_role;
 revoke all on function public.qorpera_folder_view_open(uuid, jsonb, text, jsonb),
 	public.qorpera_folder_view_renew(uuid, text, timestamptz),
