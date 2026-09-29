@@ -71,7 +71,11 @@ export class FakeLxdSocket {
 	readonly allocations = new Set<string>();
 	nodeCeiling = Number.POSITIVE_INFINITY;
 	readonly rpcCalls: Array<{ name: string; body: Record<string, unknown> }> = [];
+	/** Runner ids whose job the fake control plane reports as ended. */
+	readonly endedRunners = new Set<string>();
+	/** Instances an assignment delivery started for; each answer takes deliveryMs. */
 	readonly deliveries: string[] = [];
+	deliveryMs = 0;
 	#booting = 0;
 	/** Most VMs booting at one time. */
 	peakBooting = 0;
@@ -166,6 +170,8 @@ export class FakeLxdSocket {
 				this.allocations.add(allocation);
 				return Response.json(nodeAdmissionFixture(body));
 			}
+			case "qorpera_runtime_ended_runners":
+				return Response.json((body.p_runner_ids as string[]).filter((id) => this.endedRunners.has(id)));
 			default:
 				this.unexpected.push(`rpc ${name}`);
 				return new Response("{}", { status: 404 });
@@ -195,6 +201,7 @@ export class FakeLxdSocket {
 		}
 		if (url.pathname === "/v1/assignment" && init?.method === "POST") {
 			this.deliveries.push(guest.name);
+			await delay(this.deliveryMs, init.signal);
 			return new Response("{}", { status: 202 });
 		}
 		this.unexpected.push(`guest ${url.pathname}`);

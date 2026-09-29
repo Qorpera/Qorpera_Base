@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -53,6 +53,7 @@ async function fixture(options: { timings?: Partial<FakeLxdTimings>; guestReadyT
 	return {
 		lxd,
 		provider,
+		stateRoot: settings.stateRoot,
 		backend: provider(),
 		journal: async (acquisitionId: string) =>
 			JSON.parse(await readFile(join(settings.stateRoot, acquisitionId, "journal.json"), "utf8")) as Record<
@@ -171,6 +172,37 @@ describe("LXD provider concurrency", () => {
 		await f.backend.reconcile();
 		expect(await f.journal(slow)).toMatchObject({ physicalState: "stopped", capacityReleased: true });
 		expect([...f.lxd.instances.keys()]).toEqual([instance(first)]);
+		expect(f.lxd.unexpected).toEqual([]);
+	});
+
+	it("retires ended runs' guests under their own locks and leaves one a delivery holds", async () => {
+		const f = await fixture();
+		const [held, idle] = runIds as [string, string];
+		const [heldRunner, idleRunner] = await Promise.all(
+			[held, idle].map((runId) => f.backend.acquire(runId, fakeWork(runId), new AbortController().signal)),
+		);
+		// Both guests waited past the grace period for their one assignment, and both jobs ended.
+		for (const runId of [held, idle]) {
+			const path = join(f.stateRoot, runId, "journal.json");
+			const journal = await f.journal(runId);
+			await writeFile(
+				path,
+				JSON.stringify({ ...journal, updatedAt: new Date(Date.now() - 3 * 60_000).toISOString() }),
+				{
+					mode: 0o600,
+				},
+			);
+		}
+		f.lxd.endedRunners.add(heldRunner!.runnerId).add(idleRunner!.runnerId);
+		f.lxd.deliveryMs = 500;
+		const delivering = f.backend.deliver(heldRunner!, delivery(held, heldRunner!));
+		await until(() => f.lxd.deliveries.length === 1);
+		await f.backend.reconcile();
+		expect(await f.journal(idle)).toMatchObject({ physicalState: "stopped", stopReason: "revoked" });
+		expect(await f.journal(held)).toMatchObject({ physicalState: "registered" });
+		await delivering;
+		expect(await f.journal(held)).toMatchObject({ physicalState: "assigned" });
+		expect([...f.lxd.instances.keys()]).toEqual([instance(held)]);
 		expect(f.lxd.unexpected).toEqual([]);
 	});
 

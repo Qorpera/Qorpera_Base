@@ -823,6 +823,10 @@ const JOURNAL_ARCHIVE = "archive";
 const SETTLED_JOURNAL_RETENTION_MS = 24 * 60 * 60_000;
 /** Journals one reconcile pass works on side by side. */
 const RECONCILE_CONCURRENCY = 8;
+/** A guest waiting this long for (or on) its one assignment is asked about at most once per
+ * ENDED_RUNNER_CHECK_MS: whether its run's job has ended (see #retireEndedRunners). */
+const ENDED_RUNNER_GRACE_MS = 2 * 60_000;
+const ENDED_RUNNER_CHECK_MS = 60_000;
 
 /** Serializes work on one key; work on different keys runs side by side. */
 class KeyedLock {
@@ -864,6 +868,7 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 	 * settled, reconcile has nothing left to do for it: it is skipped for the rest of the process and archived
 	 * a day after its last change (23 Sep 2026: node 1 re-read 76 of them, three LXD calls each, every pass). */
 	readonly #settled = new Map<string, number>();
+	#endedRunnersCheckedAt = 0;
 	readonly adapterId: string;
 	readonly #config: LxdCloudRunnerProviderConfig;
 	readonly #lxd: LxdClient;
@@ -921,6 +926,12 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 			}
 		};
 		await Promise.all(Array.from({ length: Math.min(RECONCILE_CONCURRENCY, names.length) }, lane));
+		try {
+			await this.#retireEndedRunners(signal);
+		} catch (error) {
+			if (signal?.aborted) throw error;
+			failures.push(error);
+		}
 		if (failures.length === 1) throw failures[0];
 		if (failures.length > 1) throw new AggregateError(failures, "LXD provider reconcile failed for several journals");
 	}
@@ -1213,6 +1224,87 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 		this.#assertInstanceAuthority(current, instance);
 		await this.#retire(current, instance.status, signal);
 		await this.#writeJournal({ ...current, physicalState: "stopped", stopReason: reason });
+	}
+
+	/** A guest serves one run. When an assignment or its delivery ends with an unknown outcome the
+	 * guest stays up for a replay, but a job that ended (cancelled, failed, or its company deleted,
+	 * 29 Sep 2026) is never replayed: the guest would wait on its inbox forever and keep its machine.
+	 * Once a guest has waited ENDED_RUNNER_GRACE_MS, the control plane is asked whether its job
+	 * ended; if so it is retired like any stopped runner. A database without the check answers 404. */
+	async #retireEndedRunners(signal?: AbortSignal): Promise<void> {
+		if (Date.now() - this.#endedRunnersCheckedAt < ENDED_RUNNER_CHECK_MS) return;
+		const waiting: LxdProviderJournal[] = [];
+		for (const entry of await readdir(this.#config.stateRoot, { withFileTypes: true })) {
+			if (!entry.isDirectory() || !UUID_PATTERN.test(entry.name) || this.#settled.has(entry.name)) continue;
+			// An unreadable journal is the pass's own failure, already reported; it must not stop this check.
+			const current = await this.#readJournal(entry.name).catch(() => undefined);
+			if (
+				current &&
+				(current.physicalState === "registered" || current.physicalState === "assigned") &&
+				Date.now() - Date.parse(current.updatedAt) >= ENDED_RUNNER_GRACE_MS
+			)
+				waiting.push(current);
+		}
+		this.#endedRunnersCheckedAt = Date.now();
+		// The database answers at most 512 ids per call.
+		const asked = waiting.slice(0, 512);
+		if (asked.length === 0) return;
+		const ended = await this.#endedRunners(
+			asked.map((journal) => journal.runner.runnerId),
+			signal,
+		);
+		const failures: unknown[] = [];
+		for (const journal of asked) {
+			// A journal an acquisition, delivery or stop holds is theirs to move; the next check sees it again.
+			if (!ended.has(journal.runner.runnerId) || this.#journals.held(journal.acquisitionId)) continue;
+			try {
+				await this.#journals.run(journal.acquisitionId, async () => {
+					const current = await this.#readJournal(journal.acquisitionId);
+					if (
+						current?.runner.runnerId === journal.runner.runnerId &&
+						(current.physicalState === "registered" || current.physicalState === "assigned")
+					)
+						await this.#stopJournal(current, "revoked", signal);
+				});
+			} catch (error) {
+				if (signal?.aborted) throw error;
+				failures.push(error);
+			}
+		}
+		if (failures.length === 1) throw failures[0];
+		if (failures.length > 1) throw new AggregateError(failures, "Retiring several ended runners failed");
+	}
+
+	async #endedRunners(runnerIds: readonly string[], signal?: AbortSignal): Promise<ReadonlySet<string>> {
+		const response = await this.#fetch(
+			new URL("/rest/v1/rpc/qorpera_runtime_ended_runners", this.#config.supabaseUrl),
+			{
+				method: "POST",
+				redirect: "error",
+				headers: {
+					...supabaseServiceHeaders(this.#config.supabaseServiceKey),
+					"content-type": "application/json",
+				},
+				body: JSON.stringify({ p_runner_ids: runnerIds }),
+				signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000),
+			},
+		);
+		if (response.status === 404) {
+			void response.body?.cancel().catch(() => undefined);
+			return new Set();
+		}
+		if (!response.ok) {
+			throw new ProviderRpcFailed(
+				`Ended runners are unavailable (${response.status})`,
+				"qorpera_runtime_ended_runners",
+				response.status,
+				await providerRpcErrorCode(response),
+			);
+		}
+		const answer: unknown = await response.json();
+		if (!Array.isArray(answer) || answer.some((id) => typeof id !== "string" || !runnerIds.includes(id)))
+			throw new Error("Ended runners answer is invalid");
+		return new Set(answer as string[]);
 	}
 
 	/** A job guest serves exactly one run. Once it is done the guest has no further
