@@ -2,7 +2,8 @@
 -- priority, and a company's first address is on a mail domain Qorpera owns (decision 7); contract section 19,
 -- 2026-09-29 amendment "events wake agents", item 9; design deploy/first-node/RUNTIME-EVENT-INTAKE.md, "Mail (M2)").
 --
--- An owner or admin creates a mailbox, <local part>@<the platform's mail domain>. A mailbox is a platform-owned hook
+-- An owner or admin creates a mailbox, <local part>@<the platform's mail domain>. The domain is one setting: a
+-- mailbox keeps only its local part, so setting the domain moves every mailbox to it. A mailbox is a platform-owned hook
 -- with the proof 'mail': only the mail door fills it, and the public event intake treats its hook address as unknown.
 -- The Edge Function mail-intake verifies the mail provider's signed webhook, fetches the whole message and hands it
 -- to qorpera_receive_mail, which stores it as a verified delivery of type 'mail.received' within the hook's and the
@@ -60,13 +61,12 @@ create table public.qorpera_company_mailboxes (
 	environment_id uuid not null references public.qorpera_company_environments(id) on delete cascade,
 	-- Lowercase letters, digits, dots, hyphens and underscores; no leading, trailing or doubled dot.
 	local_part text not null check (local_part ~ '^[a-z0-9]([a-z0-9._-]{0,62}[a-z0-9])?$' and local_part !~ '\.\.'),
-	domain text not null check (domain = lower(domain) and char_length(domain) <= 200),
 	created_by_user_id uuid references auth.users(id) on delete set null,
 	created_at timestamptz not null default statement_timestamp(),
 	removed_at timestamptz
 );
 -- An address belongs to one live mailbox across the platform; removing a mailbox frees it.
-create unique index qorpera_company_mailboxes_live_address on public.qorpera_company_mailboxes (local_part, domain)
+create unique index qorpera_company_mailboxes_live_address on public.qorpera_company_mailboxes (local_part)
 	where removed_at is null;
 create index qorpera_company_mailboxes_company on public.qorpera_company_mailboxes (profile_id, environment_id);
 alter table public.qorpera_company_mailboxes enable row level security;
@@ -105,8 +105,8 @@ select pg_temp.mailbox_patch('public.qorpera_event_hook_descriptor(public.qorper
 	$new$		'address', case when p_with_address and p_hook.proof <> 'mail' then p_hook.address end,
 		'path', case when p_with_address and p_hook.proof <> 'mail' then '/functions/v1/event-intake/' || p_hook.address end,
 		-- A mailbox's address is public by nature: every member sees it.
-		'email', (select mailbox.local_part || '@' || mailbox.domain from public.qorpera_company_mailboxes as mailbox
-			where mailbox.hook_id = p_hook.id),$new$);
+		'email', (select mailbox.local_part || '@' || settings.domain from public.qorpera_company_mailboxes as mailbox,
+			public.qorpera_mail_settings as settings where mailbox.hook_id = p_hook.id),$new$);
 
 select pg_temp.mailbox_patch('public.qorpera_list_agent_event_hooks(jsonb)'::regprocedure,
 	$old$			|| case when v_addresses and v_url is not null$old$,
@@ -176,7 +176,7 @@ begin
 		raise exception 'A company has at most 50 hooks' using errcode = '54000';
 	end if;
 	if exists (select 1 from public.qorpera_company_mailboxes
-		where local_part = p_local_part and domain = v_domain and removed_at is null) then
+		where local_part = p_local_part and removed_at is null) then
 		raise exception 'This address is taken' using errcode = '23505';
 	end if;
 	v_name := 'mail-' || left(regexp_replace(p_local_part, '[^a-z0-9-]', '-', 'g'), 59);
@@ -192,9 +192,8 @@ begin
 			translate(rtrim(encode(extensions.gen_random_bytes(32), 'base64'), '='), '+/', '-_'),
 			262144, 120, auth.uid()
 		) returning * into v_hook;
-		insert into public.qorpera_company_mailboxes (hook_id, profile_id, environment_id, local_part, domain,
-			created_by_user_id)
-		values (v_hook.id, p_profile_id, p_environment_id, p_local_part, v_domain, auth.uid());
+		insert into public.qorpera_company_mailboxes (hook_id, profile_id, environment_id, local_part, created_by_user_id)
+		values (v_hook.id, p_profile_id, p_environment_id, p_local_part, auth.uid());
 	exception when unique_violation then
 		raise exception 'This address is taken' using errcode = '23505';
 	end;
@@ -250,7 +249,7 @@ begin
 		return jsonb_build_object('outcome', 'unknown');
 	end if;
 	select mailbox.* into v_mailbox from public.qorpera_company_mailboxes as mailbox
-	where mailbox.local_part = v_local and mailbox.domain = v_domain and mailbox.removed_at is null;
+	where mailbox.local_part = v_local and mailbox.removed_at is null;
 	select hook.* into v_hook from public.qorpera_event_hooks as hook where hook.id = v_mailbox.hook_id;
 	if v_hook.id is null or v_hook.status = 'removed' or v_hook.proof <> 'mail'
 		or public.qorpera_company_deleting(v_hook.profile_id) then

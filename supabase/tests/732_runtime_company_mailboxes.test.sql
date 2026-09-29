@@ -184,6 +184,17 @@ select pg_temp.wake_assert(pg_temp.mail('m-4', 'box1@mail.example.test') ->> 'ou
 	and pg_temp.mail('m-4', 'box1@mail.example.test') ->> 'outcome' = 'duplicate',
 	'The hook''s minute holds, and a retry of a stored message stays a duplicate');
 
+-- The domain is one setting: changing it moves every mailbox (go-live is one config change).
+update public.qorpera_mail_settings set domain = 'test-1234.resend.app';
+select pg_temp.wake_assert(pg_temp.mail('m-6', 'box2@test-1234.resend.app') ->> 'outcome' = 'accepted'
+	and pg_temp.mail('m-7', 'box2@mail.example.test') ->> 'outcome' = 'unknown',
+	'Mail to the new domain arrives, and the old domain is unknown');
+select pg_temp.path_claims('authenticated', '30000000-0000-4000-8000-000000000001');
+select pg_temp.wake_assert(exists (select 1 from jsonb_array_elements(public.qorpera_list_event_hooks(
+		'30000000-0000-4000-8000-000000000010', '30000000-0000-4000-8000-000000000020')) as hook(value)
+	where hook.value ->> 'email' = 'box2@test-1234.resend.app'), 'Mailboxes show the new domain');
+select pg_temp.path_claims('service_role');
+
 -- Folder companies get mailboxes with their connection file, not before.
 insert into public.qorpera_profiles(id, name, created_by_user_id)
 values ('30000000-0000-4000-8000-0000000007d0', 'Folder mail company', '30000000-0000-4000-8000-000000000001');

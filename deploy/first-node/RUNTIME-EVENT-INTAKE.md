@@ -342,7 +342,9 @@ call; until the domain exists, the build runs against Resend's `<id>.resend.app`
 **Mailboxes (M2a).** An owner or admin creates one with `qorpera_create_company_mailbox`: a local part
 (1–64 lowercase letters, digits, dots, hyphens and underscores; RFC 2142 names and `noreply` reserved)
 on the platform's mail domain, and a purpose. An address belongs to one live mailbox across the
-platform. Each mailbox is a hook with the proof `mail`, named `mail-<local part>`, owned by the
+platform. The domain is one setting (`qorpera_mail_settings.domain`): a mailbox keeps only its local
+part, so going live on the real domain is that one change plus its MX record, and every mailbox made on
+the test domain moves with it. Each mailbox is a hook with the proof `mail`, named `mail-<local part>`, owned by the
 platform: it has a random hook address that is never shown, and the public intake answers `unknown`
 for it, so only the mail door fills it. Pausing, resuming and removing are the hook's; removing frees
 the address. Members see the address (`email`) in the hook list. At most 20 mailboxes a company, within

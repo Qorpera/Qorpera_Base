@@ -587,7 +587,8 @@ wake), so no agent runs and nothing is charged before it.
   `email` (`<local part>@<mail domain>`); never `address` or `path`. The local part is 1–64 lowercase letters,
   digits, dots, hyphens and underscores, with no leading, trailing or doubled dot; RFC 2142 names
   (`postmaster`, `abuse`, …) and `noreply` are reserved (22023). An address belongs to one live mailbox across
-  the platform (23505 when taken). Owners and admins only (42501); 54000 past 20 mailboxes or 50 hooks;
+  the platform (23505 when taken). The domain is one platform setting: a mailbox keeps only its local part, so
+  `email` always shows the current domain. Owners and admins only (42501); 54000 past 20 mailboxes or 50 hooks;
   0A000 before the mail domain is set, and for a `folder-v2` company.
 - A mailbox is paused, resumed and removed with `qorpera_set_event_hook_status` on its hook; removing frees
   its address. `qorpera_list_event_hooks` lists mailboxes with their `email` for every member, and
