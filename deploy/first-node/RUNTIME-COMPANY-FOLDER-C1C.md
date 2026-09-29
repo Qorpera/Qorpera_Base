@@ -406,7 +406,7 @@ checked by each slice's functional test (647, 652, 656, 658).
     skipped `folder-v2` wakes are never stamped, so they stay at the head of the scan's order and each pass checks
     them again (none exist before C2; C4 gives them their own drain); and the routine expiry sweep, which does not
     skip (below), can still end a pass with its documented 40P01 against a multi-routine folder save.
-  - As built (2c part 1, migration 20260929580000):
+  - As built (2c part 1, migration 20260928279580):
     - `qorpera_folder_admit_wakes(profile)` updates the admission row (its `admitted` count), which takes it `FOR NO KEY
       UPDATE`, and sets the transaction mark `qorpera.folder_wake_admission` to the company id. A company with no
       admission row (not `folder-v2`) refuses (42501).
@@ -501,7 +501,7 @@ checked by each slice's functional test (647, 652, 656, 658).
   - `unchanged` when its commits saved nothing;
   - `review_pending` when a unit waits for review (C2).
 
-  As built (2c part 2, migration 20260929600000, `qorpera_folder_complete_run_job`, v6's first line in place of
+  As built (2c part 2, migration 20260928279600, `qorpera_folder_complete_run_job`, v6's first line in place of
   C1c-1's refusal):
   - The result is the path lane's shape (`runtime: company-path-v1`): the runtime does not name the core. A snapshot
     or artifacts refuse (22023), as on the path lane.
@@ -576,7 +576,7 @@ functions.
     transcript append), so no `folder-v2` path takes the job and then the budget row between 2a and 2b;
   - the stop check in every folder function.
 - **C1c-2b, effects**, in two PRs:
-  - **2b-1** (migration 20260929540000, tests 650 and 651): the folder receipts and the receipt ↔ commit link, the
+  - **2b-1** (migration 20260928279540, tests 650 and 651): the folder receipts and the receipt ↔ commit link, the
     commit's single six-argument signature, and the commit's rank 11 (the sessions the hook names, `FOR UPDATE` in id
     order, after rank 10 and before the paths). F2's hook then names its sessions (agent threads, pair sessions,
     group chats) in its own PR.
@@ -595,10 +595,10 @@ functions.
   `confirmed_completed`. Their `folder-v2` modes: `confirmed_completed` records the commit that carries the receipt,
   and `confirmed_not_run` refuses while a commit carries it):
   in two PRs:
-  - **2c part 1** (migration 20260929580000, tests 656 and 657): the admission helper, the pin trigger's and routine
+  - **2c part 1** (migration 20260928279580, tests 656 and 657): the admission helper, the pin trigger's and routine
     lifecycle's folder modes, `send_coworker_message` and `read_native_wake`, and the legacy loops skipping
     `folder-v2`. C2's creation commit needs this part.
-  - **2c part 2** (migration 20260929600000, tests 658 and 659): `handoff_run_sponsor`, receipt recovery, and the v6
+  - **2c part 2** (migration 20260928279600, tests 658 and 659): `handoff_run_sponsor`, receipt recovery, and the v6
     folder lane with its dispositions. Test 646's v6 case changes from "refused" to "not refused as folder-v2".
 
 Concurrency tests (dblink, with `current_database()`), by slice:
