@@ -355,7 +355,9 @@ after that line stays byte-identical, and its digest is checked at migration tim
     the head of every pass, and snapshot-v1 wakes would stop materializing. They stay legacy-only (C4).
 - **`send_coworker_message`:**
   1. the run mutex, the job, the fence, rank 0;
-  2. ranks 1 and 2 for sender and recipient, rank 3 for the recipient's authority, rank 4 for the thread room;
+  2. ranks 1 and 2 for sender and recipient, rank 3 for the recipient's authority, rank 4 for the thread room
+     (`FOR UPDATE` when the recipient's thread must be created: `ensure_agent_thread_internal` locks the room that
+     way, and the target must not be strengthened later);
   3. the receipt (run-owned);
   4. the recheck, plus the parent read-set check of C1B-2 §4;
   5. the pair lock;
@@ -381,8 +383,8 @@ after that line stays byte-identical, and its digest is checked at migration tim
   It reuses `complete_runner_job_v4`, v3 and v2 and `bind_execution_provider_session`, and never routes to
   `complete_runner_job_before_path_runtime`. The run-results check forbids `published` and `review_pending` without a
   snapshot, so run results gain a nullable `folder_commit_id`. The check then allows `published` and `review_pending`
-  with either a snapshot or a folder commit (the row names no core, so the check cannot branch on it). The
-  `folder-v2` dispositions:
+  with exactly one of a snapshot and a folder commit (the row names no core, so the check cannot branch on it). A run
+  with several commits records its last saving commit (the highest `seq`). The `folder-v2` dispositions:
   - `published` when a commit of the run saved a unit;
   - `unchanged` when its commits saved nothing;
   - `review_pending` when a unit waits for review (C2).
@@ -394,7 +396,7 @@ after that line stays byte-identical, and its digest is checked at migration tim
 In step 4, after rank 9:
 - **run-owned rows** (receipts, action reviews, context views), then **rank 10's recheck**;
 - **sessions**, every one the transaction will write, `FOR UPDATE` in id order;
-- **the operation clock**, at the first session event.
+- **the operation clock**, at the first session write (an insert, a title or status change, or an event).
 
 Admission and the folder clock stay last. The **run mutex** comes after the operation key and before the job (step 2).
 The **provider-session owner** is locked in completion after the recheck.

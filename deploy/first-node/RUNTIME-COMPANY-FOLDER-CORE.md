@@ -318,7 +318,7 @@ is never upgraded. The steps:
 
    After rank 9 (C1C §5.7): run-owned rows (receipts, action reviews, context views); rank 10's recheck of read sets;
    every session the transaction will write, `FOR UPDATE` in id order; and the company's operation clock, which the
-   first session event takes. Admission and the folder clock stay last.
+   first session write takes (an insert, a title or status change, or an event). Admission and the folder clock stay last.
 
    These numbers are the lock ranks, and all nine come before paths (step 5),
    objects (step 6), admission (step 10) and the clock (step 11). The commit
