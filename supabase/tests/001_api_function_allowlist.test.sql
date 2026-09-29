@@ -268,6 +268,7 @@ insert into api_function_allowlist(signature, anon, authenticated, reason) value
 	('public.qorpera_read_my_computer_plan()', false, true, 'member: auth.uid() + membership/ownership'),
 	('public.qorpera_read_node_update(uuid,bigint,text,text)', true, true, 'internal: node capability secret (sha256 match)'),
 	('public.qorpera_read_session_events(uuid,bigint,integer)', false, true, 'member: self-scoped or pure helper'),
+	('public.qorpera_read_session_events_tail(uuid,bigint,integer)', false, true, 'member: CLIENT-CONTRACT; authorizes through qorpera_read_session_events, which returns only what the caller may read'),
 	('public.qorpera_rebase_company_proposal(uuid,uuid,uuid,uuid)', false, true, 'member: auth.uid() + membership/ownership'),
 	('public.qorpera_reconcile_runner_orchestrator(uuid)', true, true, 'internal: via callee materialize_session_turn_requests: auth.role() = service_role; anon only through the platform default, authenticated only through the platform default'),
 	('public.qorpera_reconcile_runner_orchestrator_without_sponsored_turns(uuid)', true, true, 'internal: auth.role() = service_role; anon only through the platform default, authenticated only through the platform default'),
