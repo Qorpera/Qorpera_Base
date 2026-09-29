@@ -36,7 +36,8 @@ try {
  ok('/usr/bin/mount',['-t','ext4','-o','loop','/tmp/office-journal.img',mount]);
  loop=ok('/usr/bin/findmnt',['-n','-o','SOURCE','--target',mount]);assert.match(loop,/^\/dev\/loop\d+$/);
  assert.equal((await readFile('/sys/block/'+loop.slice(5)+'/loop/autoclear','utf8')).trim(),'1');
- await mkdir(root,{mode:0o755});await cp('/fixture/package',root+'/package',{recursive:true});
+ // The packager creates the folder with the host umask: 0775 under Ubuntu's user default 0002.
+ await mkdir(root,{mode:0o755});await cp('/fixture/package',root+'/package',{recursive:true});await chmod(root+'/package',0o755);
  for(const name of await readdir(root+'/package')){await chown(root+'/package/'+name,0,0);await chmod(root+'/package/'+name,0o444);}
  const {policy,envelope}=officePhysicalFixture(process.arch==='arm64'?'aarch64':'x86_64');
  policy.host.machineIdSha256=hash((await readFile('/etc/machine-id','utf8')).trim());policy.host.socketGid=1101;

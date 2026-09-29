@@ -6,10 +6,12 @@
 export const SHARED: Record<string, string> = {
 	General: "Generelt",
 	Company: "Virksomhed",
-	Connections: "Forbindelser",
 	Account: "Konto",
 	Retry: "Prøv igen",
 	"Loading…": "Henter…",
+	// Plan & usage and the thread both say it.
+	"Out of computer hours. New work waits and starts by itself once hours are added.":
+		"Ingen computertimer tilbage. Nyt arbejde venter og starter af sig selv, når der er tilføjet timer.",
 	Appearance: "Udseende",
 	Theme: "Tema",
 	Light: "Lys",

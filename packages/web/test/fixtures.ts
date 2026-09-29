@@ -250,6 +250,7 @@ export function fixture() {
 	vi.spyOn(api, "listMemberMentions").mockRejectedValue(
 		new CloudRpcError("qorpera_list_member_mentions", { message: "missing", code: "PGRST202" }, 404),
 	);
+	vi.spyOn(api, "companyWaitingForHours").mockResolvedValue(false);
 	vi.spyOn(api, "readSessionEvents").mockResolvedValue([]);
 	vi.spyOn(api, "listSessionInputs").mockResolvedValue({ items: [], hasMore: false, nextAfterPosition: 0 });
 	vi.spyOn(api, "listCodingSessions").mockResolvedValue([]);

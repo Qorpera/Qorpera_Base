@@ -20,7 +20,8 @@ function install(stage='--apply',success=true,code){const r=exec('/usr/bin/node'
 const exists=async p=>!!await lstat(p).catch(e=>{if(e.code==='ENOENT')return undefined;throw e;});
 async function snapshot(){const receipt=JSON.parse(await readFile(output+'/installation.json','utf8'));return Promise.all([...receipt.files.map(f=>f.path),output+'/installation.json'].map(async p=>{const s=await lstat(p);return {p,ino:s.ino,mode:s.mode,uid:s.uid,gid:s.gid,sha256:hash(await readFile(p))};}));}
 try {
-	assert.equal(process.platform,'linux');assert.equal(process.geteuid(),0);await mkdir(root,{mode:0o755});await cp('/fixture/package',root+'/package',{recursive:true});
+	// The packager creates the folder with the host umask: 0775 under Ubuntu's user default 0002.
+	assert.equal(process.platform,'linux');assert.equal(process.geteuid(),0);await mkdir(root,{mode:0o755});await cp('/fixture/package',root+'/package',{recursive:true});await chmod(root+'/package',0o755);
 	for(const name of await readdir(root+'/package')){await chown(root+'/package/'+name,0,0);await chmod(root+'/package/'+name,0o444);}
 	const cert=await readFile('/fixture/tls/cert.pem'),certificateSha256=new X509Certificate(cert).fingerprint256.replaceAll(':','').toLowerCase(),socketPath=root+'/lxd.socket';
 	const policy={schema:'qorpera.runtime-node-inventory-policy/v1',nodeId:randomUUID(),host:{machineIdSha256:hash((await readFile('/etc/machine-id','utf8')).trim()),socketPath,socketGid,certificateSha256,serverName:'fixture-node',serverVersion:'6.9',architecture:process.arch==='arm64'?'aarch64':'x86_64'},operatingCpuMillis:1000,operatingMemoryBytes:1024**3,infrastructure:[]};

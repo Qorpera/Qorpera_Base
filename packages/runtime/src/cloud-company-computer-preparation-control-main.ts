@@ -1,7 +1,5 @@
 import { spawn } from "node:child_process";
-import { realpathSync } from "node:fs";
-import { basename, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { runCompanyComputerControlEntry } from "./cloud-company-computer-control-entry.ts";
 import { assertCompanyComputerImageArtifact } from "./cloud-company-computer-linux-host.ts";
 import {
 	controlCompanyComputerPreparation,
@@ -135,22 +133,10 @@ export async function runCompanyComputerPreparationControlMain(args: readonly st
 	}
 }
 
-if (
-	process.argv[1] &&
-	["cloud-company-computer-preparation-control-main.ts", "qorpera-company-computer-preparation-control.mjs"].includes(
-		basename(process.argv[1]),
-	) &&
-	realpathSync(resolve(process.argv[1])) === realpathSync(fileURLToPath(import.meta.url))
-) {
-	if (process.argv.length === 3 && process.argv[2] === "--help")
-		console.log(
-			"Protected office preparation control. Requires the pinned image, existing kernel lock and exact provider command; never activates an office.",
-		);
-	else
-		runCompanyComputerPreparationControlMain(process.argv.slice(2)).catch(() => {
-			console.error(
-				"Office preparation control could not confirm the protected request and current unit completion.",
-			);
-			process.exitCode = 1;
-		});
-}
+runCompanyComputerControlEntry({
+	moduleUrl: import.meta.url,
+	names: ["cloud-company-computer-preparation-control-main.ts", "qorpera-company-computer-preparation-control.mjs"],
+	help: "Protected office preparation control. Requires the pinned image, existing kernel lock and exact provider command; never activates an office.",
+	failure: "Office preparation control could not confirm the protected request and current unit completion.",
+	run: runCompanyComputerPreparationControlMain,
+});
