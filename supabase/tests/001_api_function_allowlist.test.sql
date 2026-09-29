@@ -223,7 +223,7 @@ insert into api_function_allowlist(signature, anon, authenticated, reason) value
 	('public.qorpera_list_session_turn_requests(uuid,integer)', true, true, 'member: self-scoped or pure helper; anon only through the platform default'),
 	('public.qorpera_list_shared_sessions(uuid)', true, true, 'member: self-scoped or pure helper; anon only through the platform default'),
 	('public.qorpera_list_shared_sessions_page(uuid,timestamp with time zone,uuid,integer)', false, true, 'member: self-scoped or pure helper'),
-	('public.qorpera_list_staff_execution_activity(uuid)', true, true, 'member: self-scoped or pure helper; anon only through the platform default'),
+	('public.qorpera_list_staff_execution_activity(uuid)', false, true, 'member: qorpera_can_read_profile; anon revoked (20260929610000)'),
 	('public.qorpera_list_wake_occurrences(uuid,integer)', true, true, 'member: self-scoped or pure helper; anon only through the platform default'),
 	('public.qorpera_manage_company_sidebar(uuid,jsonb)', false, true, 'member: self-scoped or pure helper'),
 	('public.qorpera_mark_member_mentions_seen(uuid)', false, true, 'member: auth.uid() + membership/ownership'),

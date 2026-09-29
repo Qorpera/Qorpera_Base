@@ -19,10 +19,9 @@ end
 $$;
 
 -- 1. Who may execute each function. anon: never. authenticated: only the member RPC
--- qorpera_session_profile_id. service_role: the invitation delivery worker's three functions; the
--- three CHECK constraint validators are not asserted, since the migration leaves service_role as it was
--- (granted by the platform default in production, never granted here).
-create temporary table grants_expected(signature text primary key, authenticated boolean not null, service_role boolean)
+-- qorpera_session_profile_id. service_role: the invitation delivery worker's three functions and the
+-- three CHECK constraint validators (granted by name in 20260929610000).
+create temporary table grants_expected(signature text primary key, authenticated boolean not null, service_role boolean not null)
 on commit drop;
 insert into grants_expected(signature, authenticated, service_role) values
 	('public.qorpera_lock_profile_gc_fence(uuid)', false, false),
@@ -65,9 +64,9 @@ insert into grants_expected(signature, authenticated, service_role) values
 	('public.qorpera_claim_profile_invitation_deliveries(integer, uuid)', false, true),
 	('public.qorpera_complete_profile_invitation_delivery(uuid, uuid, text)', false, true),
 	('public.qorpera_fail_profile_invitation_delivery(uuid, uuid, text, boolean)', false, true),
-	('public.qorpera_provider_quota_policy_valid(jsonb)', false, null),
-	('public.qorpera_runner_capabilities_valid(jsonb)', false, null),
-	('public.qorpera_uuid_array_is_unique(uuid[])', false, null),
+	('public.qorpera_provider_quota_policy_valid(jsonb)', false, true),
+	('public.qorpera_runner_capabilities_valid(jsonb)', false, true),
+	('public.qorpera_uuid_array_is_unique(uuid[])', false, true),
 	('public.qorpera_session_profile_id(uuid)', true, false);
 
 do $$
@@ -82,8 +81,7 @@ begin
 			format('anon can execute %s', v_row.signature));
 		perform pg_temp.grants_assert(has_function_privilege('authenticated', v_function, 'EXECUTE') = v_row.authenticated,
 			format('authenticated execute on %s is not %s', v_row.signature, v_row.authenticated));
-		perform pg_temp.grants_assert(v_row.service_role is null
-			or has_function_privilege('service_role', v_function, 'EXECUTE') = v_row.service_role,
+		perform pg_temp.grants_assert(has_function_privilege('service_role', v_function, 'EXECUTE') = v_row.service_role,
 			format('service_role execute on %s is not %s', v_row.signature, v_row.service_role));
 		-- PUBLIC stays revoked, and the owner keeps EXECUTE: security definer callers run as the owner.
 		perform pg_temp.grants_assert(v_acl is not null
