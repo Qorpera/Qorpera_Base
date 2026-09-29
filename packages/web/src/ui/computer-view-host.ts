@@ -1,5 +1,10 @@
 import type { CompanyComputerMemberView } from "@qorpera/cloud-client/cloud-company-computer-views";
-import { type ComputerViewer, type ComputerViewerOptions, openComputerViewer } from "./computer-viewer.ts";
+import {
+	type ComputerViewer,
+	type ComputerViewerOptions,
+	loadComputerViewer,
+	openComputerViewer,
+} from "./computer-viewer.ts";
 
 /** One presentation lifetime for shared and private views. Closing never
  * submits computer-stop or privacy-finish intent. */
@@ -21,9 +26,15 @@ export class ComputerViewHost {
 		this.#opening = true;
 		const version = ++this.#version;
 		try {
+			const current = () => {
+				this.#signal.throwIfAborted();
+				if (version !== this.#version) throw new Error("Viewer closed.");
+			};
 			await this.#release();
-			this.#signal.throwIfAborted();
-			if (version !== this.#version) throw new Error("Viewer closed.");
+			current();
+			// The renderer arrives on first use; a close while it loads still wins.
+			await loadComputerViewer();
+			current();
 			this.#viewer = openComputerViewer({
 				...options,
 				requestConnection: async (input) => {
