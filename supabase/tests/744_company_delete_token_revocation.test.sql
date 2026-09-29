@@ -93,7 +93,8 @@ values
 -- The deleted company's connections (captured after the request, as a late capture would be):
 --   b1 Gmail of an account the neighbour still has connected (two versions);
 --   b2 Drive of its own account; b3 GitHub; b4 Gmail of the third company's account; b5 Gmail with
---   no account name; b6 a non-connector secret; b7 Gmail of its own account, reconnected once.
+--   no account name; b6 a non-connector secret; b7 Gmail of its own account, reconnected once; b8
+--   GitHub reconnected once.
 select pg_temp.token_secret('30000000-0000-4000-8000-0000000002b1', '30000000-0000-4000-8000-000000000010',
 	'30000000-0000-4000-8000-0000000002a0', '30000000-0000-4000-8000-000000000001', 'gmail', 'primary',
 	'shared@example.test', 2);
@@ -112,6 +113,10 @@ select pg_temp.token_secret('30000000-0000-4000-8000-0000000002b5', '30000000-00
 select pg_temp.token_secret('30000000-0000-4000-8000-0000000002b6', '30000000-0000-4000-8000-000000000010',
 	'30000000-0000-4000-8000-0000000002a0', '30000000-0000-4000-8000-000000000001', 'canary', 'primary',
 	null, 1);
+-- b8: GitHub reconnected once: each version is its own token.
+select pg_temp.token_secret('30000000-0000-4000-8000-0000000002b8', '30000000-0000-4000-8000-000000000010',
+	'30000000-0000-4000-8000-0000000002a0', '30000000-0000-4000-8000-000000000001', 'github', 'second',
+	'octocat', 2);
 -- b7: Gmail reconnected once (two versions) of an account nobody else has.
 select pg_temp.token_secret('30000000-0000-4000-8000-0000000002b7', '30000000-0000-4000-8000-000000000010',
 	'30000000-0000-4000-8000-0000000002a0', '30000000-0000-4000-8000-000000000001', 'gmail', 'third',
@@ -180,9 +185,9 @@ select set_config('qorpera_test.token_waiting', pg_temp.token_finish()::text, tr
 do $$
 declare v_result jsonb := current_setting('qorpera_test.token_waiting')::jsonb;
 begin
-	if v_result ->> 'state' <> 'waiting' or v_result #>> '{holdings,connector_tokens}' <> '8'
+	if v_result ->> 'state' <> 'waiting' or v_result #>> '{holdings,connector_tokens}' <> '10'
 		or (select holdings ->> 'connector_tokens' from public.qorpera_company_deletions
-			where profile_id = '30000000-0000-4000-8000-000000000010') <> '8' then
+			where profile_id = '30000000-0000-4000-8000-000000000010') <> '10' then
 		raise exception 'The finisher did not wait for the queue: %', v_result;
 	end if;
 	if exists (select 1 from public.qorpera_cloud_secrets
@@ -196,7 +201,7 @@ begin
 	end if;
 	if (select count(*) from public.qorpera_connector_token_revocations
 			where profile_id = '30000000-0000-4000-8000-000000000010' and reason = 'company_deleted'
-				and broker_authority_id = '30000000-0000-4000-8000-0000000002a0') <> 8 then
+				and broker_authority_id = '30000000-0000-4000-8000-0000000002a0') <> 10 then
 		raise exception 'The deleted company''s versions were not queued: %', pg_temp.token_rows();
 	end if;
 end
@@ -222,7 +227,8 @@ declare
 begin
 	if pg_temp.token_ids(v_claimed) <> array['30000000-0000-4000-8000-0000000002b2/1',
 			'30000000-0000-4000-8000-0000000002b3/1', '30000000-0000-4000-8000-0000000002b4/1',
-			'30000000-0000-4000-8000-0000000002b7/2'] then
+			'30000000-0000-4000-8000-0000000002b7/2', '30000000-0000-4000-8000-0000000002b8/1',
+			'30000000-0000-4000-8000-0000000002b8/2'] then
 		raise exception 'The broker claimed the wrong entries: %', v_claimed;
 	end if;
 	-- One base64 line each (Postgres itself breaks lines at 76 characters).
@@ -304,6 +310,9 @@ begin
 		'30000000-0000-4000-8000-0000000002c2', 1, 'not_ours', null);
 	perform pg_temp.token_complete('30000000-0000-4000-8000-0000000002a0', repeat('c', 64),
 		'30000000-0000-4000-8000-0000000002b7', 2, 'revoked', null);
+	perform pg_temp.token_complete('30000000-0000-4000-8000-0000000002a0', repeat('c', 64),
+		'30000000-0000-4000-8000-0000000002b8', version, 'revoked', null)
+	from generate_series(1, 2) as version;
 end
 $$;
 select pg_temp.token_refused($q$select pg_temp.token_complete('30000000-0000-4000-8000-0000000002a1', repeat('e', 64),
@@ -360,7 +369,8 @@ where profile_id = '30000000-0000-4000-8000-000000000010';
 select pg_temp.wake_assert(pg_temp.token_finish() ->> 'state' = 'purged', 'The company is purged after the deadline');
 select pg_temp.wake_assert(pg_temp.token_rows() - array['30000000-0000-4000-8000-0000000002c3/1',
 		'30000000-0000-4000-8000-0000000002c4/1', '30000000-0000-4000-8000-0000000002c5/1',
-		'30000000-0000-4000-8000-0000000002b7/1', '30000000-0000-4000-8000-0000000002b7/2'] = jsonb_build_object(
+		'30000000-0000-4000-8000-0000000002b7/1', '30000000-0000-4000-8000-0000000002b7/2',
+		'30000000-0000-4000-8000-0000000002b8/1', '30000000-0000-4000-8000-0000000002b8/2'] = jsonb_build_object(
 		'30000000-0000-4000-8000-0000000002b1/1', jsonb_build_object('reason', 'company_deleted', 'outcome', 'superseded', 'attempts', 0),
 		'30000000-0000-4000-8000-0000000002b1/2', jsonb_build_object('reason', 'company_deleted', 'outcome', 'kept_shared', 'attempts', 0),
 		'30000000-0000-4000-8000-0000000002b2/1', jsonb_build_object('reason', 'company_deleted', 'outcome', 'revoked', 'attempts', 1),

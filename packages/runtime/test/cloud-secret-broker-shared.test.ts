@@ -1,6 +1,5 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { CloudConnectorOAuthFlows } from "@qorpera/runtime/cloud-connector-oauth";
-import { CloudConnectorTokenRevocations } from "@qorpera/runtime/cloud-connector-token-revocation";
 import type { ModelLoginSignInHelper } from "@qorpera/runtime/cloud-model-login-sign-in";
 import { CloudModelLoginUpkeep } from "@qorpera/runtime/cloud-model-login-upkeep";
 import { CloudModelLoginVault, type ModelLoginRenewer } from "@qorpera/runtime/cloud-model-login-vault";
@@ -349,29 +348,50 @@ it("collects a signing-in company's sign-ins every pass and every company's on a
 });
 
 it("runs every served company's connector token revocations in turn, on the company's own authority", async () => {
-	const pass = vi
-		.spyOn(CloudConnectorTokenRevocations.prototype, "pass")
-		.mockResolvedValue({ completed: 0, failed: 0 });
 	const one = randomUUID();
 	const two = randomUUID();
 	const { principal } = principalFixture({ registered: [one, two] });
-	const revoke = vi.fn();
+	// Each company's own authority; the first one's claim waits until the vault closes.
+	const claims = new Map<string, ReturnType<typeof vi.fn>>();
+	let claimed = () => {};
+	const waiting = new Promise<void>((resolve) => {
+		claimed = resolve;
+	});
+	principal.authority.mockImplementation((companyId: string) => {
+		const claim = vi.fn(async (_limit: number, signal: AbortSignal) => {
+			if (claims.size === 2 && claim.mock.calls.length > 1) {
+				claimed();
+				await new Promise((resolve) => signal.addEventListener("abort", resolve, { once: true }));
+				signal.throwIfAborted();
+			}
+			return [];
+		});
+		claims.set(companyId, claim);
+		return {
+			claimConnectorTokenRevocations: claim,
+			completeConnectorTokenRevocation: vi.fn(),
+		} as unknown as PostgresCloudSecretBrokerAuthority;
+	});
 	const companies = new SharedCloudSecretBrokerCompanies({
 		principal,
 		keyring: new CloudSecretKeyring({}, { "vault-root-1": randomBytes(32) }),
 		adapters: [],
-		revoker: { revoke },
+		revoker: { revoke: vi.fn() },
 	});
 	await companies.refresh(new AbortController().signal);
-	expect(principal.authority.mock.calls.map(([company]) => company).sort()).toEqual([one, two].sort());
 	await companies.revokeTokens();
-	expect(pass).toHaveBeenCalledTimes(2);
-	expect(pass.mock.calls.every(([signal]) => signal instanceof AbortSignal && !signal.aborted)).toBe(true);
-	// The loop stops with the vault: a pass in hand sees the close.
+	expect([...claims.keys()].sort()).toEqual([one, two].sort());
+	for (const claim of claims.values()) expect(claim).toHaveBeenCalledExactlyOnceWith(20, expect.any(AbortSignal));
+	// A pass in hand sees the close, and no pass runs after it.
+	vi.spyOn(console, "error").mockImplementation(() => undefined);
+	const running = companies.revokeTokens();
+	await waiting;
 	await companies.close();
-	expect(pass.mock.calls[0]![0].aborted).toBe(true);
+	await running;
+	const first = [...claims.values()].find((claim) => claim.mock.calls.length === 2)!;
+	expect((first.mock.calls[1]![1] as AbortSignal).aborted).toBe(true);
 	await companies.revokeTokens();
-	expect(pass).toHaveBeenCalledTimes(2);
+	expect([...claims.values()].reduce((total, claim) => total + claim.mock.calls.length, 0)).toBe(3);
 });
 
 it("runs every served company's upkeep pass in turn, and its loops until closed", async () => {

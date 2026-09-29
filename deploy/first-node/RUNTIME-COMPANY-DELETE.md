@@ -183,7 +183,10 @@ records what it waits for.
     one OAuth App): `DELETE /applications/{client_id}/token`, which revokes that one token and never
     the user's whole grant; 204 `revoked`; any other answer is checked with GitHub's token check
     (`POST` to the same path), where 404 means `already_invalid` (to confirm at the first real
-    revoke). A typed personal token is `not_ours`.
+    revoke). GitHub may also answer 404 when the client credentials are wrong, so a unit with a wrong
+    GitHub client secret would record live tokens as `already_invalid` (lane step 2 checks it). A typed
+    personal token (`ghp_`, `github_pat_`) is `not_ours`; a `gho_` token of another OAuth app comes out
+    `already_invalid`.
   - Google withdraws the account's whole grant to our client on any revoke. By Jonas's option A
     (29 Sep), an entry whose Google account is still connected (an active Gmail or Drive secret with
     the same account name, in any company not being deleted, this one included) completes as
@@ -202,9 +205,9 @@ records what it waits for.
     - a reconnect of the same Google account whose consent lands between the claim and the revoke
       call (after the ten minutes) loses its new grant; the member connects again;
     - connections disconnected before this migration are not queued (no backfill);
-    - the GitHub revoke uses the current client secret, so rotating it before the queue is done fails
-      those entries; an entry whose broker was retired is never claimed (a deletion abandons it at six
-      hours).
+    - the GitHub revoke uses the unit's current client credentials: a rotated or wrong secret fails
+      those entries or records them `already_invalid`; an entry whose broker was retired is never
+      claimed (a deletion abandons it at six hours).
   Coordinator's lane for D6, at the cut that carries 20260929500000:
   1. Build `node scripts/package-cloud-secret-broker.mjs` from the release commit and roll it, within
      six hours of the cut (before it is fine: without the migration a pass logs one line and does
@@ -215,7 +218,9 @@ records what it waits for.
      `abandoned`.
   2. Check: `journalctl -u <unit>` shows `Connector token revocation: N completed` after a deletion or
      Disconnect with a connected account, and `select outcome, count(*) from
-     public.qorpera_connector_token_revocations group by 1` has no entry left open for long. At the
-     first GitHub revoke of a token GitHub no longer knows, confirm it completes as `already_invalid`.
+     public.qorpera_connector_token_revocations group by 1` has no entry left open for long. On each
+     unit, connect and then disconnect a throwaway GitHub account: its entry must complete `revoked`
+     (a wrong client secret shows as `already_invalid`). At the first revoke of a token GitHub no
+     longer knows, confirm it completes as `already_invalid`.
   3. After a company with its own broker unit is purged, retire the unit and delete its keyring
      (operator runbook, "Per-company broker units").

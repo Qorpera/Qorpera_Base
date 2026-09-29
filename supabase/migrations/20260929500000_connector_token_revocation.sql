@@ -22,8 +22,9 @@
 -- reconnect of the same account is seen as still connected. GitHub revokes one token per version.
 -- Lock order: the finisher holds the company fence (qorpera_lock_profile_gc_fence), then locks the
 -- company's secrets in id order, then their grants. Disconnect locks one secret, its grants, then takes
--- a key-share lock on the company row with its audit row; a Disconnect racing the finisher of a
--- deleting company can deadlock, and Postgres ends one of them (the finisher retries next pass).
+-- a key-share lock on the company row with its audit row; a Disconnect (or a member's removal) racing
+-- the finisher of a deleting company can deadlock, and Postgres ends one of them (the finisher retries
+-- next pass). A broker's completion locks its entry before its authority, as the purge does.
 
 create table public.qorpera_connector_token_revocations (
 	secret_id uuid not null,
@@ -280,6 +281,12 @@ begin
 		or p_outcome not in ('revoked', 'already_invalid', 'not_ours') then
 		raise exception 'token revocation completion is invalid' using errcode = '22023';
 	end if;
+	-- The entry before the authority: the finisher's purge locks entries (abandon) before the
+	-- company's authority, so this order cannot deadlock with it.
+	select revocation.* into v_row
+	from public.qorpera_connector_token_revocations as revocation
+	where revocation.secret_id = p_secret_id and revocation.version = p_version
+	for update;
 	select authority.* into v_authority
 	from public.qorpera_cloud_secret_broker_authorities as authority
 	where authority.id = p_broker_authority_id for share;
@@ -287,12 +294,7 @@ begin
 		or v_authority.capability_sha256 is distinct from p_broker_capability_sha256 then
 		raise exception 'cloud secret broker authority is unavailable' using errcode = '42501';
 	end if;
-	select revocation.* into v_row
-	from public.qorpera_connector_token_revocations as revocation
-	where revocation.secret_id = p_secret_id and revocation.version = p_version
-		and revocation.broker_authority_id = v_authority.id
-	for update;
-	if v_row.secret_id is null then
+	if v_row.secret_id is null or v_row.broker_authority_id <> v_authority.id then
 		raise exception 'token revocation is unknown' using errcode = 'P0002';
 	end if;
 	if p_outcome is not null and v_row.completed_at is null then
