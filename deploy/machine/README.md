@@ -87,6 +87,8 @@ The steps below need root on the node and a maintenance window. The coordinator 
    - The switch is global. Every identity host with a coding ingress then offers the tools, and its commands go through that node's own coding executor. So enable the first machine executor only after every coding executor runs `qorpera.coding-executor-service/v7`.
 6. **Roll the observer.** Roll the node observer build that knows `qorpera.lxd-company-machine/v1` before the first machine. An older observer marks the node unavailable when it meets one.
 
+A deleted company's machines are deleted with it: `qorpera_stop_company_work` (company deletion) sets each one `deleted` under the company's fence and machines lock, clears who would be woken, and each node's executor deletes and releases its placements. The purge waits for their allocations like any other (migration `20260929360000`).
+
 Rollback:
 - First stop and delete the node's machines with the agent tools or the members' action, while an executor is still enabled. Disabling the last one also takes the machine tools away from agents, and no client offers the members' action yet. Their allocations are released only by the executor's proven delete.
 - Then `qorpera_configure_machine_executor(owner, sha, false, policy, diskBytes)` stops admission. Machines still running keep their leases.

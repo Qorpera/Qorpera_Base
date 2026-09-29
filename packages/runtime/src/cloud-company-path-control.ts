@@ -4,12 +4,20 @@ import {
 	type CloudCompanyPathRpc,
 } from "./cloud-company-path-gateway.ts";
 import {
+	CloudCompanyFolderRpcError,
 	CloudCompanyPathRpcParentMissing,
 	CloudCompanyPathRpcPrecondition,
 	CloudCompanyPathRpcRefusal,
 } from "./cloud-company-path-refusal.ts";
 import { cloudToolRequest } from "./cloud-native-tool-authority.ts";
 import { CloudRuntimeDiagnosticError } from "./cloud-runtime-observability.ts";
+
+const FOLDER_RPCS: ReadonlySet<CloudCompanyPathRpc> = new Set([
+	"qorpera_folder_read",
+	"qorpera_folder_list",
+	"qorpera_folder_commit",
+	"qorpera_folder_record_release",
+]);
 
 /** No end-user token, arbitrary URL, redirect, provider credential or retry. */
 export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
@@ -89,6 +97,11 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 			"qorpera_native_machine_start",
 			"qorpera_native_machine_manage",
 			"qorpera_company_machines_available",
+			// The folder core (core C3).
+			"qorpera_folder_read",
+			"qorpera_folder_list",
+			"qorpera_folder_commit",
+			"qorpera_folder_record_release",
 		];
 		if (!permitted.includes(method)) throw new Error("Unknown Company File control operation");
 		const body = JSON.stringify(argumentsValue);
@@ -126,9 +139,22 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 						? 16 * 1024 * 1024
 						: response.ok && method === "qorpera_describe_company_run_context"
 							? 1024 * 1024
-							: response.ok
-								? 256 * 1024
-								: 4096;
+							: // A listing page of 200 entries with 4096-byte paths (each character escaped at worst), and a
+								// change set's outcomes.
+								response.ok && method === "qorpera_folder_list"
+								? 2 * 1024 * 1024
+								: response.ok && method === "qorpera_folder_commit"
+									? 16 * 1024 * 1024
+									: response.ok
+										? 256 * 1024
+										: 4096;
+				// A folder call's 5xx that is not PostgREST's own answer (a proxy's page, a cut body) is a lost answer:
+				// the transaction may have committed, and the folder client retries it with the same key.
+				const unreadable = (message: string): CloudRuntimeDiagnosticError =>
+					new CloudRuntimeDiagnosticError(
+						FOLDER_RPCS.has(method) && response.status >= 500 ? "transport_unavailable" : "invalid_response",
+						message,
+					);
 				const reader = response.body?.getReader();
 				if (!reader)
 					throw new CloudRuntimeDiagnosticError("invalid_response", "Company File authority unavailable");
@@ -149,11 +175,7 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 						});
 						if (chunk.done) break;
 						count += chunk.value.byteLength;
-						if (count > maximum)
-							throw new CloudRuntimeDiagnosticError(
-								"invalid_response",
-								"Company File control response too large",
-							);
+						if (count > maximum) throw unreadable("Company File control response too large");
 						chunks.push(chunk.value);
 					}
 				} finally {
@@ -166,7 +188,7 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 				try {
 					value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks)));
 				} catch {
-					throw new CloudRuntimeDiagnosticError("invalid_response", "Company File authority unavailable");
+					throw unreadable("Company File authority unavailable");
 				}
 				if (!response.ok) {
 					// A complete PostgREST error body with exactly this SQLSTATE.
@@ -182,6 +204,21 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 								(value as Record<string, unknown>)[key] === null ||
 								typeof (value as Record<string, unknown>)[key] === "string",
 						);
+					// The folder core's errors keep their SQLSTATE and message: the folder client tells a stop, a
+					// run that ended, a read no longer readable and a retryable change apart (core C3).
+					const folderCode =
+						FOLDER_RPCS.has(method) && value && typeof value === "object" && !Array.isArray(value)
+							? (value as Record<string, unknown>).code
+							: undefined;
+					// A SQLSTATE, or PostgREST's own answer about the request (PGRST1nn a bad request, 2nn no such
+					// function, 3nn the service key), which nothing ran. Its connection errors (PGRST0nn) stay lost
+					// answers, which the folder client retries.
+					if (
+						typeof folderCode === "string" &&
+						/^(?:[0-9A-Z]{5}|PGRST[1-9][0-9]{2})$/.test(folderCode) &&
+						postgrestError(folderCode)
+					)
+						throw new CloudCompanyFolderRpcError(folderCode, (value as { message: string }).message);
 					if (response.status === 403 && postgrestError("42501")) throw new CloudCompanyPathRpcRefusal();
 					if (response.status === 412 && postgrestError("PT412")) throw new CloudCompanyPathRpcPrecondition();
 					if (response.status === 424 && postgrestError("PT424")) throw new CloudCompanyPathRpcParentMissing();
