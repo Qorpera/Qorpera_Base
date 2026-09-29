@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { CLOUD_AGENT_FOLDER_BY_ID, cloudAgentFolder } from "../src/cloud-agent-folder.ts";
+import { CLOUD_AGENT_FOLDER_BY_ID, cloudAgentFolder, isCloudAgentFolder } from "../src/cloud-agent-folder.ts";
 import { companyStatePath } from "../src/company-state-files.ts";
 
 const company = "11111111-1111-4111-8111-111111111111";
@@ -28,5 +28,23 @@ describe("an agent's folder", () => {
 		expect(cloudAgentFolder(company, agent, { core: "folder-v2", handle: "a".repeat(64) })).toBe(
 			`agents/${"a".repeat(64)}`,
 		);
+	});
+
+	it("tells an agent's folder from other paths", () => {
+		expect(isCloudAgentFolder(cloudAgentFolder(company, agent))).toBe(true);
+		expect(isCloudAgentFolder(cloudAgentFolder(company, agent, { core: "folder-v2", handle: "anna-berg" }))).toBe(
+			true,
+		);
+		for (const path of [
+			"agents",
+			"agents/",
+			"agents/groups",
+			"agents/-a",
+			"agents/a--b",
+			"agents/Anna",
+			"agents/a/b",
+			"work/anna",
+		])
+			expect(isCloudAgentFolder(path)).toBe(false);
 	});
 });

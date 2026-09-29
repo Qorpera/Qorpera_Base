@@ -1,9 +1,11 @@
 -- @fixture 300_runtime_wake_bus.test.sql until "-- END WAKE FIXTURE"
 -- Company state files, F2-1b part B: before the runtime commits a routine file, it sets up the login the run's requester
 -- pays with for unattended work, as an agent's routine save does today (qorpera_ensure_unattended_sponsor), because the
--- commit reads it without a lock (20260929310000).
+-- commit reads it without a lock (qorpera_company_state_routine_payer, #523).
 
--- The run acknowledges before it works (the wake's work gate).
+-- The wake's work gate holds: nothing is set up before the run acknowledges.
+select pg_temp.wake_error($q$select public.qorpera_prepare_routine_login(current_setting('qorpera_test.wake_binding')::jsonb)$q$, '55000',
+	'Wake requires an acknowledgement before work');
 select pg_temp.wake_public_send(current_setting('qorpera_test.wake_binding')::jsonb, 'progress', 'login-ack');
 
 do $$

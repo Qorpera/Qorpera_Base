@@ -32,6 +32,7 @@ import {
 	CLOUD_AGENT_FOLDER_BY_ID,
 	type CloudAgentFolderPlace,
 	cloudAgentFolder,
+	isCloudAgentFolder,
 } from "@qorpera/cloud-client/cloud-agent-folder";
 import type { JsonValue } from "@qorpera/contracts";
 import {
@@ -66,8 +67,6 @@ const DISTINCTIVE_WORD_CHARS = 4;
 const CONFLICT_ATTEMPTS = 3;
 /** Notebook files read at once; a search reads every month, so read them side by side. */
 const READ_CONCURRENCY = 8;
-/** An agent's folder as cloudAgentFolder gives it. */
-const AGENT_FOLDER = /^agents\/[a-z0-9-]{1,64}$/;
 const LINE = /^- \((\d{4}-\d{2}-\d{2})\) (.+)$/;
 const LOG_FILE = /^\d{4}-\d{2}\.md$/;
 const NOTE_TAG = "[note] ";
@@ -122,7 +121,7 @@ export function unavailableCloudAgentMemory(reason: string): CloudAgentMemoryBlo
 
 /** The notebook in an agent's folder (cloudAgentFolder). */
 export function cloudMemoryPaths(agentFolder: string): { root: string; profile: string; log: string } {
-	if (!AGENT_FOLDER.test(agentFolder)) throw new Error("Invalid memory owner");
+	if (!isCloudAgentFolder(agentFolder)) throw new Error("Invalid memory owner");
 	const root = `${agentFolder}/memory`;
 	return { root, profile: `${root}/profile.md`, log: `${root}/log` };
 }

@@ -1,7 +1,7 @@
 /** An agent's folder in the company folder (contract 5.6): `agents/<agent-name>/`, holding its
  * `agent.md`, memory, skills, routines and todos. Every caller that needs an agent's folder asks
- * here (the runtime's memory and skill tools, the web composer's skill list), so they always agree
- * on it.
+ * here (the runtime's memory and skill tools, the web composer's skill list), so they agree on it.
+ * The web composer asks for today's companies; its folder-v2 screens pass the place with core C4.
  *
  * Where it is depends on the company's storage core, which is fixed when the company is created:
  * a snapshot-v1 company (every company today) keeps an agent's folder at `agents/<staffAgentId>`,
@@ -32,4 +32,10 @@ export function cloudAgentFolder(
 	if (place.core !== "folder-v2" || !HANDLE.test(place.handle) || place.handle === "groups")
 		throw new Error("Invalid agent folder name");
 	return `agents/${place.handle}`;
+}
+
+/** Whether a path is an agent's folder as cloudAgentFolder gives it, in either kind of company. */
+export function isCloudAgentFolder(path: string): boolean {
+	const name = path.startsWith("agents/") ? path.slice("agents/".length) : "";
+	return UUID.test(name) || (HANDLE.test(name) && name !== "groups");
 }

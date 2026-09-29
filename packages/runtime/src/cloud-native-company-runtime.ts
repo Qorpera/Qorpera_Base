@@ -289,15 +289,19 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			// degrades to "unavailable" and the run still starts, because neither is a
 			// precondition of company work.
 			const [memory, skills] = await Promise.all([
-				composeCloudAgentMemory(
-					gateway,
-					cloudAgentFolder(context.identity.companyId, context.identity.staffAgentId, agentFolders),
-					new Date(),
-					signal,
-				).catch((error) => {
-					signal.throwIfAborted();
-					return unavailableCloudAgentMemory(cloudRuntimeErrorCategory(error, signal));
-				}),
+				Promise.resolve()
+					.then(() =>
+						composeCloudAgentMemory(
+							gateway,
+							cloudAgentFolder(context.identity.companyId, context.identity.staffAgentId, agentFolders),
+							new Date(),
+							signal,
+						),
+					)
+					.catch((error) => {
+						signal.throwIfAborted();
+						return unavailableCloudAgentMemory(cloudRuntimeErrorCategory(error, signal));
+					}),
 				composeCloudAgentSkills(gateway, context.identity, signal, agentFolders).catch((error) => {
 					signal.throwIfAborted();
 					return unavailableCloudAgentSkills(cloudRuntimeErrorCategory(error, signal));
