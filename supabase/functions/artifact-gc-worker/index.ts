@@ -78,13 +78,18 @@ Deno.serve(async (request) => {
 		"qorpera_claim_company_storage_deletions",
 		{ p_limit: 100 },
 	);
-	let companyStorage = { claimed: 0, completed: 0, failed: 0 };
+	let companyStorage: { claimed: number; completed: number; failed: number; invalid?: true } = {
+		claimed: 0,
+		completed: 0,
+		failed: 0,
+	};
 	if (!storageClaimError) {
 		let entries;
 		try {
 			entries = parseCompanyStorageDeletions(storageClaim);
 		} catch {
 			entries = undefined;
+			companyStorage = { ...companyStorage, invalid: true };
 		}
 		if (entries) companyStorage = await runCompanyStorageDeletions(entries, {
 			list: async (bucket, prefix) => {

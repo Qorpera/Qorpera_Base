@@ -50,8 +50,10 @@ begin
 	from public.qorpera_native_credential_capsules as capsule
 	-- Only a reference that names the capsule's own id (as its reader requires): a row can never
 	-- point the worker at another company's capsule.
+	-- (an id the ledger could not hold is skipped, never raised on: the reader refuses it too).
 	where capsule.profile_id = p_profile_id
 		and capsule.encrypted_capsule_reference = 'native-capsule/' || capsule.id::text
+		and capsule.id::text ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
 	union
 	select 'qorpera-identity-recovery', p_profile_id::text || '/', p_profile_id
 	where exists (select 1 from public.qorpera_identity_recovery_authorities where profile_id = p_profile_id)

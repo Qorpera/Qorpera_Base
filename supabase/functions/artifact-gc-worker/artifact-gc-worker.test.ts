@@ -447,11 +447,20 @@ describe("a deleted company's Storage objects (company delete D5a)", () => {
 		await runCompanyStorageDeletions([capsule], {
 			...noisy.store,
 			remove: async () => {
-				throw new Error(`\u0000${"é".repeat(600)}`);
+				throw new Error(`\u0000${"😀".repeat(600)}`);
 			},
 		});
 		const recorded = noisy.completed[0]?.error ?? "";
+		// 500 code points, as SQL counts them (a UTF-16 cut would split the last pair).
 		assert.equal(Array.from(recorded).length, 500);
-		assert.equal(recorded.includes("\u0000"), false);
+		assert.equal(recorded, "😀".repeat(500));
+		const blank = fakeStorage({});
+		await runCompanyStorageDeletions([capsule], {
+			...blank.store,
+			remove: async () => {
+				throw new Error("\u0000\u0000");
+			},
+		});
+		assert.deepEqual(blank.completed, [{ path: capsule.path, error: "Storage cleanup failed" }]);
 	});
 });

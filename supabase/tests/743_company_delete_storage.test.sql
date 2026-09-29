@@ -110,6 +110,23 @@ begin
 			jsonb_build_object('bucket', 'qorpera-identity-recovery', 'path', '30000000-0000-4000-8000-000000000010/')) then
 		raise exception 'A failed entry was not offered again, or a removed one was';
 	end if;
+	perform public.qorpera_complete_company_storage_deletion('qorpera-identity-recovery',
+		'30000000-0000-4000-8000-000000000010/', 'Storage list failed');
+end
+$$;
+reset role;
+-- An entry that keeps failing comes after a newer one that has not been tried.
+insert into public.qorpera_company_storage_deletions(bucket, object_path, profile_id, requested_at)
+values ('qorpera-native-compute-capsules', '30000000-0000-4000-8000-0000000001a9.capsule',
+	'30000000-0000-4000-8000-000000000011', clock_timestamp() + interval '1 hour');
+select pg_temp.path_claims('service_role');
+set local role service_role;
+do $$
+begin
+	if public.qorpera_claim_company_storage_deletions(1) <> jsonb_build_array(jsonb_build_object(
+			'bucket', 'qorpera-native-compute-capsules', 'path', '30000000-0000-4000-8000-0000000001a9.capsule')) then
+		raise exception 'A failing entry held up a newer one';
+	end if;
 end
 $$;
 reset role;

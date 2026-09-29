@@ -139,8 +139,9 @@ records what it waits for.
   deleted company's Storage is removed.
   Not covered, for the operator: companies deleted before this migration by the old direct delete or
   by the finisher, and capsule objects whose sign-in failed after the upload (no row names them). A
-  one-off sweep removes `<uuid>.capsule` objects that no capsule row names as `native-capsule/<uuid>`,
-  and recovery folders of companies that no longer exist.
+  one-off sweep removes `<uuid>.capsule` objects older than a day that no capsule row names as
+  `native-capsule/<uuid>` (a sign-in uploads its capsule before its row commits), and recovery folders
+  of companies that no longer exist.
   Switching the worker on (supabase/ARTIFACT-GC.md "Deployment"; the coordinator bundles it with the
   other function deploys once Jonas has created the worker key):
   1. Apply the migrations, including 20260929480000.
@@ -154,8 +155,9 @@ records what it waits for.
      invocation key). The schedule posts with pg_net.
   5. The worker has no dry run: its first run already removes the objects of every deleted company in
      the catalog and the D5a entries. Check the counts first (ARTIFACT-GC.md "Monitoring and
-     recovery"), run it once by hand, then schedule it every five minutes (`qorpera-artifact-gc-worker`,
-     the `cron.schedule` in ARTIFACT-GC.md).
+     recovery": deleted companies' catalog objects and open D5a entries), run it once by hand, then
+     schedule it every five minutes (`qorpera-artifact-gc-worker`, the `cron.schedule` in
+     ARTIFACT-GC.md).
 - **D5b** NAS: coding workspaces `workers/<company>/` (the coding executor cannot remove them alone:
   their files belong to session users) and the Company Computer workbench (the office provider).
 - **D6** upstream token revoke on delete and on Disconnect.

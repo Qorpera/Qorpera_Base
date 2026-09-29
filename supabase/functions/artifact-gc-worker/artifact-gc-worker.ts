@@ -320,7 +320,9 @@ export async function runCompanyStorageDeletions(
 			result.failed += 1;
 			try {
 				// At most 500 characters (code points, as SQL counts them), never a NUL.
-				await store.complete(entry, Array.from(cleanupError(error).replaceAll("\u0000", "")).slice(0, 500).join(""));
+				const raw = error instanceof Error ? error.message : String(error);
+				const message = Array.from(raw.replaceAll("\u0000", "")).slice(0, 500).join("").trim();
+				await store.complete(entry, message || "Storage cleanup failed");
 			} catch {
 				// The lease expires server-side; a later invocation offers the entry again.
 			}
