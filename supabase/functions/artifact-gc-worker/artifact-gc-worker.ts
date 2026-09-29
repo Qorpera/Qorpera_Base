@@ -254,3 +254,75 @@ export async function runCompanyObjectGcWorkerJob(
 		return { claimed: job.objects.length, completed: 0, failed: job.objects.length };
 	}
 }
+
+/** A deleted company's Storage object that no catalog row names (company delete D5a): a credential
+ * capsule, or the company's identity recovery prefix. */
+export interface CompanyStorageDeletion {
+	bucket: "qorpera-native-compute-capsules" | "qorpera-identity-recovery";
+	path: string;
+}
+export interface CompanyStorageDeletionStore {
+	/** Up to 100 object names directly under the prefix. */
+	list(bucket: CompanyStorageDeletion["bucket"], prefix: string): Promise<string[]>;
+	remove(bucket: CompanyStorageDeletion["bucket"], paths: string[]): Promise<void>;
+	complete(entry: CompanyStorageDeletion, error?: string): Promise<void>;
+}
+const CAPSULE_PATH = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.capsule$/;
+const RECOVERY_PREFIX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\/$/;
+const RECOVERY_OBJECT = /^[0-9a-f]{64}$/;
+
+export function parseCompanyStorageDeletions(value: unknown): CompanyStorageDeletion[] {
+	if (!Array.isArray(value) || value.length > 100) throw new Error("Company storage cleanup claim is invalid");
+	return value.map((item) => {
+		if (!item || typeof item !== "object" || Array.isArray(item) || Object.keys(item).sort().join() !== "bucket,path")
+			throw new Error("Company storage cleanup claim is invalid");
+		const { bucket, path } = item as Record<string, unknown>;
+		if (
+			typeof path !== "string" ||
+			!(
+				(bucket === "qorpera-native-compute-capsules" && CAPSULE_PATH.test(path)) ||
+				(bucket === "qorpera-identity-recovery" && RECOVERY_PREFIX.test(path))
+			)
+		)
+			throw new Error("Company storage cleanup claim is invalid");
+		return { bucket, path };
+	});
+}
+
+/** Removes each entry and completes it; a failure is recorded on its entry and it is offered again.
+ * A recovery prefix is emptied in rounds of 100 and completed only once it lists nothing; anything
+ * under it but a recovery object is left and reported. */
+export async function runCompanyStorageDeletions(
+	entries: readonly CompanyStorageDeletion[],
+	store: CompanyStorageDeletionStore,
+): Promise<{ claimed: number; completed: number; failed: number }> {
+	const result = { claimed: entries.length, completed: 0, failed: 0 };
+	for (const entry of entries) {
+		try {
+			if (entry.bucket === "qorpera-native-compute-capsules") await store.remove(entry.bucket, [entry.path]);
+			else {
+				for (let round = 0; ; round++) {
+					const names = await store.list(entry.bucket, entry.path);
+					if (!names.length) break;
+					if (names.some((name) => !RECOVERY_OBJECT.test(name)))
+						throw new Error("The recovery prefix holds an unexpected object");
+					if (round >= 10) throw new Error("Recovery objects remain");
+					await store.remove(
+						entry.bucket,
+						names.map((name) => `${entry.path}${name}`),
+					);
+				}
+			}
+			await store.complete(entry);
+			result.completed += 1;
+		} catch (error) {
+			result.failed += 1;
+			try {
+				await store.complete(entry, cleanupError(error).slice(0, 500));
+			} catch {
+				// The lease expires server-side; a later invocation offers the entry again.
+			}
+		}
+	}
+	return result;
+}

@@ -12,6 +12,7 @@ Artifact cleanup is a recoverable, service-owned workflow. Desktop clients can c
 - Completion is refused while a pending plan entry or an acknowledged Storage row still exists. Audit receipts contain counts and state transitions, not object paths.
 - Active deletion cannot be cancelled. If the worker disappears, an owner or admin can cancel only after the lease plus a one-minute stale-request grace has expired, which lifts the profile fence without accepting a late worker acknowledgement.
 - Deleting a profile leaves its immutable object-catalog rows as a durable cleanup queue. Independent deleted-profile leases allow the service worker to reclaim those bytes without restoring the deleted company or weakening the gateway's exact-lease check.
+- A deleted company's credential capsules and identity recovery backups have no catalog row. The company deletion finisher records them in `qorpera_company_storage_deletions` right before the purge (company delete D5a). The worker's last phase claims up to 100 entries, removes a capsule object or empties the company's recovery prefix (recovery objects only; anything else is left and reported), and completes each entry; a failed entry is offered again. The table has no API grants; only the worker's two service-role functions read or change it.
 
 ## Deployment
 
@@ -77,3 +78,12 @@ order by status;
 NAS objects are removed only through the trusted object gateway. Qorpera
 Computers use the lease-scoped runner broker and never receive NAS filesystem
 authority, the gateway control token, or database service credentials.
+
+A deleted company's Storage entries that are still open:
+
+```sql
+select bucket, count(*) filter (where last_error is null) as waiting, count(*) filter (where last_error is not null) as failing
+from public.qorpera_company_storage_deletions
+where removed_at is null
+group by bucket;
+```
