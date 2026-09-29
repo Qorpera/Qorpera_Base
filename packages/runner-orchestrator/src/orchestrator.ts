@@ -264,6 +264,28 @@ export interface CloudRunnerOrchestratorOptions {
 	createCapability?: () => string;
 }
 
+/** Tells the claim loop that claimable work may have appeared. Wake-ups may be lost, late or repeated: the
+ * loop still asks for work every backstop interval, and a wake-up only brings a claim forward. */
+export interface CloudRunnerWakeSource {
+	/** Wake-ups are being delivered right now (for Realtime: the channel is joined). */
+	readonly listening: boolean;
+	/** Calls `listener` on every wake-up and whenever delivery starts or stops; returns the unsubscribe. */
+	subscribe(listener: () => void): () => void;
+}
+
+/** A backstop claim found new work that no wake-up announced; the loop polls at the fast rate for a while. */
+export class CloudRunnerWakeMissed extends Error {
+	constructor() {
+		super("Work was claimed that no wake-up announced; asking for work at the poll interval for ten minutes");
+		this.name = "CloudRunnerWakeMissed";
+	}
+}
+
+/** How long a wake-up may lag the claim that found its work before it counts as missed. */
+const WAKE_GRACE_MS = 2_000;
+/** After a missed wake-up, poll at the fast rate this long. */
+const WAKE_MISSED_MS = 10 * 60_000;
+
 export interface CloudRunnerOrchestratorLoopOptions {
 	/** How often the loop asks for new work. */
 	pollIntervalMs?: number;
@@ -275,6 +297,14 @@ export interface CloudRunnerOrchestratorLoopOptions {
 	 */
 	reconcileIntervalMs?: number;
 	shutdownGraceMs?: number;
+	/** Push wake-ups (none unless given). While the source is listening and the loop has been idle for a
+	 * while, new work is asked for on a wake-up and every `wakeBackstopMs`; otherwise every `pollIntervalMs`. */
+	wake?: CloudRunnerWakeSource;
+	/** The slow poll while wake-ups are delivered: the most a lost wake-up delays a claim (default 5 s). */
+	wakeBackstopMs?: number;
+	/** After a claim that found work or a failed dispatch, how long to keep polling at the fast rate (default
+	 * 30 s): retries and placement deferrals (5 and 15 s) end by time and send no wake-up. */
+	wakeActiveMs?: number;
 	onError?: (error: unknown) => void;
 }
 
@@ -1390,6 +1420,15 @@ export class CloudRunnerOrchestratorRequestError extends Error {
 	}
 }
 
+/** The private Realtime topic the database broadcasts an orchestrator's wake-ups to. It is derived from the
+ * sha256 of the control token, which only the database keeps, so nobody else can name it, and it moves with
+ * every control rotation. The database derives the same name from its stored hash. */
+export function cloudRunnerOrchestratorWakeTopic(controlToken: string): string {
+	const tokenSha256 = createHash("sha256").update(controlToken).digest("hex");
+	const wakeId = createHash("sha256").update(`qorpera.orchestrator-wake/v1:${tokenSha256}`).digest("hex");
+	return `qorpera-orchestrator-wake-${wakeId}`;
+}
+
 export function cloudRunnerAssignmentCapabilitySha256(capability: string): string {
 	if (!TOKEN_PATTERN.test(capability)) throw new Error("Runner assignment capability is invalid");
 	return createHash("sha256").update(capability).digest("hex");
@@ -1637,13 +1676,14 @@ export class CloudRunnerOrchestrator {
 		signal?: AbortSignal,
 		excludedClaimIds: ReadonlySet<string> = new Set(),
 		includeRetained = true,
-	): Promise<readonly CloudRunnerOrchestrationClaim[]> {
+	): Promise<{ claims: readonly CloudRunnerOrchestrationClaim[]; fresh: number }> {
 		const retained = !includeRetained
 			? []
 			: signal
 				? await this.#controlPlane.retainedClaims(this.#orchestratorId, signal)
 				: await this.#controlPlane.retainedClaims(this.#orchestratorId);
 		const claims = retained.filter((claim) => !excludedClaimIds.has(claim.claimId)).slice(0, limit);
+		let fresh = 0;
 		while (claims.length < limit) {
 			const clientClaimId = this.#clientClaimId();
 			const claim = signal
@@ -1651,8 +1691,9 @@ export class CloudRunnerOrchestrator {
 				: await this.#controlPlane.claimNext(this.#orchestratorId, clientClaimId, this.#claimLeaseSeconds);
 			if (!claim) break;
 			claims.push(claim);
+			fresh++;
 		}
-		return claims;
+		return { claims, fresh };
 	}
 
 	async #dispatchClaim(
@@ -1839,7 +1880,9 @@ export class CloudRunnerOrchestrator {
 
 	async runOnce(signal?: AbortSignal): Promise<CloudRunnerOrchestratorResult> {
 		const reconciliationErrors = await this.#reconcileControlPlane(signal);
-		const [claim] = await this.#claimBatch(1, signal);
+		const {
+			claims: [claim],
+		} = await this.#claimBatch(1, signal);
 		const result: CloudRunnerOrchestratorResult = claim
 			? await this.#dispatchClaim(claim, signal)
 			: { status: "idle" };
@@ -1858,6 +1901,20 @@ export class CloudRunnerOrchestrator {
 		const shutdownGraceMs = options.shutdownGraceMs ?? 30_000;
 		if (!Number.isSafeInteger(shutdownGraceMs) || shutdownGraceMs < 10 || shutdownGraceMs > 60_000) {
 			throw new Error("Orchestrator shutdown grace is outside the supported range");
+		}
+		const wake = options.wake;
+		const wakeBackstopMs = options.wakeBackstopMs ?? 5_000;
+		const wakeActiveMs = options.wakeActiveMs ?? 30_000;
+		if (!Number.isSafeInteger(wakeActiveMs) || wakeActiveMs < 0 || wakeActiveMs > 600_000) {
+			throw new Error("Orchestrator wake-up activity window is outside the supported range");
+		}
+		if (
+			!Number.isSafeInteger(wakeBackstopMs) ||
+			wakeBackstopMs < 10 ||
+			wakeBackstopMs > 60_000 ||
+			wakeBackstopMs < pollIntervalMs
+		) {
+			throw new Error("Orchestrator wake-up backstop is outside the supported range");
 		}
 		const inFlight = new Set<Promise<void>>();
 		const inFlightClaimIds = new Set<string>();
@@ -1882,15 +1939,40 @@ export class CloudRunnerOrchestrator {
 		};
 		const reconcileTimer = new PollTimer();
 		const claimTimer = new PollTimer();
+		// With push wake-ups, new work is asked for on a wake-up and every wakeBackstopMs while they are
+		// being delivered, and every pollIntervalMs otherwise, exactly as without them. A lost wake-up is
+		// found by the next backstop claim. See the wake-up state below.
+		const wakes = {
+			/** A wake-up arrived since the last claim batch. */
+			announced: false,
+			/** Poll at pollIntervalMs until this time (performance.now()): after activity or a missed wake-up. */
+			fastUntil: 0,
+			/** The wait before the current claim batch was a backstop wait. */
+			slow: false,
+			/** When the last claim batch a wake-up brought forward started; those stay pollIntervalMs apart. */
+			lastWokenClaimAt: Number.NEGATIVE_INFINITY,
+			/** A backstop claim found new work no wake-up had announced, at this time. Realtime delivers a
+			 * wake-up just after the enqueue commits, so one may still be on its way for WAKE_GRACE_MS. */
+			unannouncedSince: undefined as number | undefined,
+		};
+		const slowPolling = (): boolean => wake?.listening === true && performance.now() >= wakes.fastUntil;
+		const unsubscribe = wake?.subscribe(() => {
+			wakes.announced = true;
+			wakes.unannouncedSince = undefined;
+			claimTimer.wake();
+		});
 		const reconcileLane = (async (): Promise<void> => {
 			while (!signal.aborted) {
 				const pass = ++reconcile.started;
 				let delayMs = reconcileIntervalMs;
 				try {
+					const claimsWereOpen = !reconcile.failed && reconcile.succeeded >= reconcile.required;
 					const reconciliationErrors = await this.#reconcileControlPlane(signal);
 					reconcile.succeeded = pass;
 					reconcile.failed = false;
-					claimTimer.wake();
+					// A pass that opens claims starts them at once. While wake-ups are delivered, a pass does
+					// not otherwise bring the next claim forward: retained claims wait for the backstop claim.
+					if (!claimsWereOpen || !slowPolling()) claimTimer.wake();
 					for (const error of reconciliationErrors) options.onError?.(error);
 				} catch (error) {
 					reconcile.failed = true;
@@ -1904,10 +1986,16 @@ export class CloudRunnerOrchestrator {
 			try {
 				const available = this.#dispatchConcurrency - inFlight.size;
 				if (available > 0 && !reconcile.failed && reconcile.succeeded >= reconcile.required) {
+					// A wake-up that arrives while every slot is busy waits for the next claim (see below).
+					const announced = wakes.announced;
+					wakes.announced = false;
 					const reconciled = reconcile.succeeded;
 					const includeRetained = reconciled > reconcile.retainedRead;
-					const claims = await this.#claimBatch(available, signal, inFlightClaimIds, includeRetained);
+					if (announced) wakes.lastWokenClaimAt = performance.now();
+					const { claims, fresh } = await this.#claimBatch(available, signal, inFlightClaimIds, includeRetained);
 					if (includeRetained) reconcile.retainedRead = Math.max(reconcile.retainedRead, reconciled);
+					if (claims.length > 0) wakes.fastUntil = Math.max(wakes.fastUntil, performance.now() + wakeActiveMs);
+					if (wake && fresh > 0 && wakes.slow && !announced) wakes.unannouncedSince ??= performance.now();
 					for (const claim of claims) {
 						if (inFlightClaimIds.has(claim.claimId)) continue;
 						inFlightClaimIds.add(claim.claimId);
@@ -1916,14 +2004,18 @@ export class CloudRunnerOrchestrator {
 							.then(() => undefined)
 							.catch((error: unknown) => {
 								// A failed dispatch can leave a finished sandbox or a retained claim
-								// behind: reconcile at once, and claim again after that pass.
+								// behind: reconcile at once, and claim again after that pass. A deferred or
+								// retried job sends no wake-up, so poll at the fast rate for a while.
 								reconcile.required = reconcile.started + 1;
 								reconcileTimer.wake();
+								wakes.fastUntil = Math.max(wakes.fastUntil, performance.now() + wakeActiveMs);
 								options.onError?.(error);
 							})
 							.finally(() => {
 								inFlight.delete(dispatch);
 								inFlightClaimIds.delete(claim.claimId);
+								// A slot is free again: work a wake-up announced meanwhile is claimed now.
+								if (wakes.announced) claimTimer.wake();
 							});
 						inFlight.add(dispatch);
 					}
@@ -1931,8 +2023,24 @@ export class CloudRunnerOrchestrator {
 			} catch (error) {
 				options.onError?.(error);
 			}
-			if (!signal.aborted) await claimTimer.wait(pollIntervalMs, signal);
+			if (signal.aborted) break;
+			if (wakes.unannouncedSince !== undefined && performance.now() - wakes.unannouncedSince >= WAKE_GRACE_MS) {
+				// New work arrived that no wake-up announced: they are not arriving (the database side is
+				// missing, or delivery is broken). Poll as without them for a while, and say so once.
+				wakes.unannouncedSince = undefined;
+				wakes.fastUntil = performance.now() + WAKE_MISSED_MS;
+				options.onError?.(new CloudRunnerWakeMissed());
+			}
+			wakes.slow = slowPolling();
+			await claimTimer.wait(wakes.slow ? wakeBackstopMs : pollIntervalMs, signal);
+			// A wake-up brings the next claim forward at once, but claims brought forward stay at least one poll
+			// interval apart however many wake-ups arrive: a flood of them costs at most one more claim per interval.
+			if (wakes.announced) {
+				const gap = pollIntervalMs - (performance.now() - wakes.lastWokenClaimAt);
+				if (gap > 0) await waitForPoll(gap, signal);
+			}
 		}
+		unsubscribe?.();
 		let timer: NodeJS.Timeout | undefined;
 		await Promise.race([
 			Promise.allSettled([...inFlight, reconcileLane]),
@@ -1995,6 +2103,11 @@ export class SupabaseCloudRunnerOrchestratorControlPlane implements CloudRunnerO
 		this.#controlTokenSeconds = controlTokenSeconds;
 		this.#now = options.now ?? Date.now;
 		this.#fetch = fetchImplementation;
+	}
+
+	/** This orchestrator's wake-up topic under its current control token. */
+	wakeTopic(): string {
+		return cloudRunnerOrchestratorWakeTopic(this.#controlToken);
 	}
 
 	async renewControl(signal?: AbortSignal): Promise<void> {

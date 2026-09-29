@@ -77,6 +77,52 @@ describe("runner orchestrator service boundary", () => {
 		});
 	});
 
+	it("keeps push wake-ups off unless they are switched on", () => {
+		const environment = {
+			QORPERA_SUPABASE_URL: "https://project.supabase.co",
+			QORPERA_SUPABASE_PUBLISHABLE_KEY: "publishable-key",
+			QORPERA_RUNNER_ORCHESTRATOR_ID: "11111111-1111-4111-8111-111111111111",
+			QORPERA_RUNNER_ORCHESTRATOR_CONTROL_TOKEN: "c".repeat(43),
+			QORPERA_RUNNER_ORCHESTRATOR_CONTROL_STATE: resolve(".test/orchestrator-control.json"),
+			QORPERA_RUNNER_PROVIDER_URL: "https://provider.example",
+			QORPERA_RUNNER_PROVIDER_ADAPTER: "managed",
+			QORPERA_RUNNER_PROVIDER_TOKEN: "provider-service-token",
+		};
+		expect(cloudRunnerOrchestratorServiceConfigFromEnvironment(environment).wake).toBeUndefined();
+		expect(
+			cloudRunnerOrchestratorServiceConfigFromEnvironment({
+				...environment,
+				QORPERA_RUNNER_ORCHESTRATOR_WAKE: "off",
+			}).wake,
+		).toBeUndefined();
+		expect(
+			cloudRunnerOrchestratorServiceConfigFromEnvironment({
+				...environment,
+				QORPERA_RUNNER_ORCHESTRATOR_WAKE: "realtime",
+			}).wake,
+		).toEqual({ backstopMs: 5000 });
+		expect(
+			cloudRunnerOrchestratorServiceConfigFromEnvironment({
+				...environment,
+				QORPERA_RUNNER_ORCHESTRATOR_WAKE: "realtime",
+				QORPERA_RUNNER_ORCHESTRATOR_WAKE_BACKSTOP_MS: "10000",
+			}).wake,
+		).toEqual({ backstopMs: 10_000 });
+		expect(() =>
+			cloudRunnerOrchestratorServiceConfigFromEnvironment({
+				...environment,
+				QORPERA_RUNNER_ORCHESTRATOR_WAKE: "notify",
+			}),
+		).toThrow("must be off or realtime");
+		expect(() =>
+			cloudRunnerOrchestratorServiceConfigFromEnvironment({
+				...environment,
+				QORPERA_RUNNER_ORCHESTRATOR_WAKE: "realtime",
+				QORPERA_RUNNER_ORCHESTRATOR_WAKE_BACKSTOP_MS: "250",
+			}),
+		).toThrow("outside the supported range");
+	});
+
 	it("permits HTTP only on loopback and rejects non-HTTP loopback schemes", () => {
 		const environment = {
 			QORPERA_SUPABASE_URL: "file://localhost/project",
