@@ -562,7 +562,6 @@ export class ConnectionsView {
 		add.setAttribute("aria-controls", "connection-provider-picker");
 		replace(
 			this.el,
-			h("h1", null, t("Connections")),
 			h(
 				"section",
 				{ class: "settings-group" },

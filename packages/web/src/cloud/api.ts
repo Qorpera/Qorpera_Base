@@ -134,6 +134,14 @@ export class CloudApi {
 		return readCompanyComputerHours(this.cloud, requiredUuid(profileId, "Profile id"));
 	}
 
+	/** Whether the company is out of computer hours, so new work waits until hours are added
+	 * (the zero rule; migration 20260929280000_company_waiting_for_hours). Any member may ask. */
+	companyWaitingForHours(profileId: string): Promise<boolean> {
+		return this.cloud
+			.rpc("qorpera_company_waiting_for_hours", { p_profile_id: requiredUuid(profileId, "Profile id") })
+			.then((value) => value === true);
+	}
+
 	/** The plans and packs of hours this member can buy. */
 	listComputerHourOffers(): Promise<ComputerHourOffer[]> {
 		return listComputerHourOffers(this.cloud);

@@ -65,6 +65,33 @@ Access needs the key `~/.ssh/id_ed25519_qorpera_testvm` and SSH to `company41-no
 Override the target with `QORPERA_TEST_MACHINE`, `QORPERA_TEST_MACHINE_JUMP` and
 `QORPERA_TEST_MACHINE_KEY`.
 
+## The systemd suites
+
+The `scripts/*-systemd.mjs` suites boot systemd as PID 1 in a disposable container and take a
+digest-pinned local image in `QORPERA_OFFICE_SYSTEMD_TEST_IMAGE`: Ubuntu 26.04 with systemd, its Node 22
+package and the executables the office image installer measures. The test machine keeps one as
+`qorpera-systemd-test:local`; look up its ID and pass that. Build it only when the tag is missing
+(about 90 s cold). Every build gets a new ID, even fully cached, and Docker's containerd image store
+here deletes the image a moved tag pointed to, so another session's run that still uses the old ID
+fails with "No such image" (happened 2026-09-28). After a Dockerfile change, build under a new tag
+such as `qorpera-systemd-test:<commit>` and pass that ID.
+
+```sh
+node scripts/run-on-node.mjs --no-install -- docker image inspect --format '{{.Id}}' qorpera-systemd-test:local
+node scripts/run-on-node.mjs --no-install -- sh -c 'docker build -q -t qorpera-systemd-test:local - < scripts/fixtures/systemd-test-image.Dockerfile'
+node scripts/run-on-node.mjs --env QORPERA_OFFICE_SYSTEMD_TEST_IMAGE=sha256:<id> scripts/test-office-image-installation-systemd.mjs
+node scripts/run-on-node.mjs --env QORPERA_OFFICE_SYSTEMD_TEST_IMAGE=sha256:<id> scripts/test-office-service-stop-systemd.mjs -- --restart
+```
+
+The same Dockerfile builds on Docker Desktop. On a Linux Docker host the suites differ from Docker
+Desktop in four ways, all handled in the scripts: the containers run without AppArmor (the trade-off
+is in `scripts/fixtures/systemd-container.mjs`), the fixture sees the host's AppArmor as disabled because
+the container cannot load profiles, staged packages are chowned to root because a copy keeps the
+invoking user's owner, and the observer and office provider fixtures reset their package folder's mode,
+which follows the host umask (Ubuntu's user default is 0002). Without AppArmor, root in these
+containers can change the host kernel's settings: run them here or on a developer's Docker, never on
+a node that hosts companies.
+
 ## Proof (2026-09-28, VM enrolled at node 2 version 23)
 
 | Check | Result |
@@ -74,9 +101,4 @@ Override the target with `QORPERA_TEST_MACHINE`, `QORPERA_TEST_MACHINE_JUMP` and
 | `test-office-storage-inventory-linux.mjs` | Passed. `npm ci` 30 s with a cold cache, suite 1.1 s |
 | Docker | Rootful Docker 29.8.1 runs `hello-world` as `tester` |
 | Nested KVM | `/dev/kvm` present, all 6 vCPUs show `svm`, `kvm_amd` loaded, `KVM_GET_API_VERSION` 12 and `KVM_CREATE_VM` succeed (the check from `deploy/first-node/verify-azure-step2-pilot-kvm.sh`). A 1 vCPU / 1 GiB Ubuntu 26.04 VM inside it answers `lxc exec` 25.8 s after launch; `systemctl is-system-running --wait` returns at 32.3 s |
-
-**Known limit: the `scripts/*-systemd.mjs` suites.** They remount `/sys/fs/cgroup` read-write to boot
-systemd in a container. Docker's default AppArmor profile on Ubuntu refuses that mount ("cgroup is
-write-protected"), so as written they fail here and on any Ubuntu Docker host. They have only run on
-Docker Desktop, which has no AppArmor. The same container with `--security-opt apparmor=unconfined`
-boots systemd in under a second. They also need prepared, digest-pinned local images.
+| `scripts/*-systemd.mjs` | On master 65472c537 the office image suite stopped with "Disposable systemd manager did not start". At f9fc107f9 with images built as above, all six suites pass, plus `QORPERA_OFFICE_FIXTURE_LAYOUT_VERSION=2`, `--later-boot`, `--restart` and `test-runtime-office-start.mjs --boot-successor-systemd`. Suites 10 to 82 s, three runs at a time. At dc327a4ca the office image and observer suites also passed on Docker Desktop (arm64) with the same Dockerfile |

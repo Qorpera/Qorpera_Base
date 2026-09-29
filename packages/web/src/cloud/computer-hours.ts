@@ -24,7 +24,7 @@ export interface CompanyComputerHours {
 	awakeNow: ComputerHoursByKind;
 	meteredUntil: string;
 	/** The company is out of computer hours: new work waits until hours are added (the zero
-	 * rule, migration 20260929200000). False while the rule is off, and from older backends. */
+	 * rule, migration 20260928249200). False while the rule is off, and from older backends. */
 	waitingForHours: boolean;
 }
 
