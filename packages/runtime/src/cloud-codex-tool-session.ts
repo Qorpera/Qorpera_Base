@@ -316,6 +316,36 @@ function verifyConfiguration(
 		throw new Error("Native boundary configuration was not applied");
 }
 
+/** Splits a child's stdout into lines. Each chunk is scanned once, so a long line
+ * arriving over many pipe reads costs linear time: rescanning the whole unfinished
+ * line on every read held the event loop ~650 ms for a 10.7 MiB capture line. */
+export class CodexLineReader {
+	readonly #decoder = new StringDecoder("utf8");
+	#parts: string[] = [];
+	#bytes = 0;
+
+	/** Hands each complete line to `line`, in order. Throws once a line, complete or
+	 * not, exceeds `limit` UTF-8 bytes. */
+	push(chunk: Buffer, limit: number, line: (text: string) => void): void {
+		const text = this.#decoder.write(chunk);
+		let start = 0;
+		for (let end = text.indexOf("\n"); end >= 0; end = text.indexOf("\n", start)) {
+			const tail = text.slice(start, end);
+			if (this.#bytes + Buffer.byteLength(tail) > limit) throw new Error("Native boundary message too large");
+			const complete = this.#parts.length ? this.#parts.join("") + tail : tail;
+			this.#parts = [];
+			this.#bytes = 0;
+			start = end + 1;
+			line(complete);
+		}
+		if (start === text.length) return;
+		const rest = start ? text.slice(start) : text;
+		this.#bytes += Buffer.byteLength(rest);
+		if (this.#bytes > limit) throw new Error("Native boundary message too large");
+		this.#parts.push(rest);
+	}
+}
+
 class CodexBoundaryRpc {
 	readonly #child: ChildProcessWithoutNullStreams;
 	/** Bound once, when the run arrives: a spare process is started before its run exists. */
@@ -335,13 +365,12 @@ class CodexBoundaryRpc {
 	#providerUsageSignal: NativeRuntimeUsageSignal | null = null;
 	readonly #pending = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
 	readonly #requestIds = new Set<string>();
-	readonly #decoder = new StringDecoder("utf8");
+	readonly #lines = new CodexLineReader();
 	readonly completed: Promise<void>;
 	#resolveCompleted: () => void = () => undefined;
 	#rejectCompleted: (error: Error) => void = () => undefined;
 	#failure?: Error;
 	#sequence = 0;
-	#buffer = "";
 	#lastActivityAt = Date.now();
 
 	get lastActivityAt(): number {
@@ -397,24 +426,13 @@ class CodexBoundaryRpc {
 		child.stdout.on("data", (chunk: Buffer) => {
 			try {
 				if (this.#failure || this.#closed) return;
-				this.#buffer += this.#decoder.write(chunk);
-				let end = this.#buffer.indexOf("\n");
-				while (end >= 0) {
-					const line = this.#buffer.slice(0, end);
-					this.#buffer = this.#buffer.slice(end + 1);
-					if (
-						Buffer.byteLength(line) >
-						(this.#boundary?.captureImagesEnabled ? MAX_CAPTURE_MESSAGE_BYTES : MAX_MESSAGE_BYTES)
-					)
-						throw new Error("Native boundary message too large");
-					if (line.trim()) this.#message(object(JSON.parse(line)));
-					end = this.#buffer.indexOf("\n");
-				}
-				if (
-					Buffer.byteLength(this.#buffer) >
-					(this.#boundary?.captureImagesEnabled ? MAX_CAPTURE_MESSAGE_BYTES : MAX_MESSAGE_BYTES)
-				)
-					throw new Error("Native boundary message too large");
+				this.#lines.push(
+					chunk,
+					this.#boundary?.captureImagesEnabled ? MAX_CAPTURE_MESSAGE_BYTES : MAX_MESSAGE_BYTES,
+					(line) => {
+						if (line.trim()) this.#message(object(JSON.parse(line)));
+					},
+				);
 			} catch {
 				this.fail("Invalid native boundary protocol", "invalid_response");
 			}
