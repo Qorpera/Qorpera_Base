@@ -1240,8 +1240,12 @@ by a machine.
   A detached view's save after a narrowing of a file read during the run is
   refused. Inheritance re-checks for the run's agent and copies the records,
   so the run's later recheck catches a narrowing.
-- **Rank 0:** a member's save against `qorpera_remove_profile_member`, and a
-  roster save against a role change (dblink, both orders), never deadlock.
+- **Rank 0:** with a hook that names the company row (as F2's roster files
+  do), a member's save and a view's save never deadlock with
+  `qorpera_update_profile_member_role`, which takes the company row and then
+  the member row, like `qorpera_remove_profile_member` (dblink, both
+  orders). A third connection stops the role change between its two locks,
+  so the test tells rank 0 from rank 2.
 
 ## Not in C1b
 

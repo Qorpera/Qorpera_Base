@@ -237,7 +237,7 @@ end $$;
 do $$
 declare p jsonb := pg_temp.run('human', '63200000-0000-4000-8000-000000000002'); w uuid := extensions.gen_random_uuid();
 	tok uuid := extensions.gen_random_uuid(); cm uuid := extensions.gen_random_uuid(); cv jsonb; r jsonb; c public.qorpera_folder_commits%rowtype;
-	t jsonb; e jsonb;
+	t jsonb; e jsonb; wk public.qorpera_wake_occurrences%rowtype;
 	repo jsonb := '{"host":"github.com","owner":"acme","name":"app","baseBranch":"main"}';
 begin
 	set local session_replication_role = replica;
@@ -265,15 +265,24 @@ begin
 	c := pg_temp.last_commit(r);
 	if c.session_kind <> 'coding' or c.run_id is not null or c.view_kind <> 'coding_session' or c.review_id is not null then
 		raise exception 'Coding view commit: %', to_jsonb(c); end if;
-	-- During a leased turn, the view's reads land in the turn's read set as well as the view's.
+	-- During a leased turn, the view's reads land in the turn's read set as well as the view's, so the parent check of the
+	-- worker's completion (a wake whose parent is that turn) sees them: after a narrowing it refuses.
+	perform pg_temp.expect(pg_temp.commit('{"kind":"platform"}', 'coding-read-file', jsonb_build_array(jsonb_build_object('op','mkdir','path','cread'),
+		jsonb_build_object('op','write','path','cread/c.txt','file',pg_temp.stage('gamma')))), 2, 'saved');
 	t := pg_temp.turn(p, w);
-	e := pg_temp.read('shared/a.txt', pg_temp.vactor(cv)) -> 'entry';
+	e := pg_temp.read('cread/c.txt', pg_temp.vactor(cv)) -> 'entry';
 	perform public.qorpera_folder_record_release('63200000-0000-4000-8000-000000000020', pg_temp.vactor(cv), extensions.gen_random_uuid(),
 		jsonb_build_array(jsonb_build_object('path', e ->> 'path', 'version', e ->> 'version', 'authority', e -> 'authority')), repeat('3', 64));
 	if not exists (select 1 from public.qorpera_folder_view_reads where view_id = (cv ->> 'viewId')::uuid)
 		or not exists (select 1 from public.qorpera_folder_run_read_records rec, jsonb_array_elements(rec.reads) x
-			where rec.run_id = (t ->> 'runId')::uuid and x ->> 'path' = 'shared/a.txt') then
+			where rec.run_id = (t ->> 'runId')::uuid and x ->> 'path' = 'cread/c.txt') then
 		raise exception 'A coding view''s reads during a turn land in the turn''s read set'; end if;
+	select * into wk from public.qorpera_wake_occurrences where run_id = (t ->> 'runId')::uuid;
+	wk.source_kind := 'worker-completion'; wk.trigger_id := 'worker-completion'; wk.parent_run_id := (t ->> 'runId')::uuid;
+	if not public.qorpera_folder_parent_reads_allowed(wk) then raise exception 'The completion''s parent check before a narrowing'; end if;
+	perform public.qorpera_folder_set_resource('63200000-0000-4000-8000-000000000020', pg_temp.member(1), 'cread', 'subtree',
+		'company_shared', 'normal');
+	if public.qorpera_folder_parent_reads_allowed(wk) then raise exception 'The completion''s parent check sees the coding reads'; end if;
 	perform pg_temp.fx(format('update public.qorpera_coding_sessions set archived_at = clock_timestamp(), archived_by = ''member'' where worker_id = %L', w));
 	perform pg_temp.raises(format('select pg_temp.vcommit(%L, %L, %L)', cv, 'coding-archived', '[{"op":"mkdir","path":"refused"}]'), '42501');
 end $$;
