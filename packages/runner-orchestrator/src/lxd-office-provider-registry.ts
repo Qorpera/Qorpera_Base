@@ -100,7 +100,7 @@ const ALLOWED: Record<OfficeProviderHttpMethod, true> = {
 	qorpera_ack_office_software_invocation: true,
 	qorpera_suspend_runtime_node_machine: true,
 	// A deleted company's powered-off computer: retirement, its delete window
-	// and the release (20260929320000).
+	// and the release (20260928259320).
 	qorpera_runtime_office_retirement: true,
 	qorpera_prepare_runtime_office_retirement: true,
 	qorpera_retire_runtime_office: true,
