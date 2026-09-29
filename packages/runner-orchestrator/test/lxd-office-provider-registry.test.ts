@@ -40,6 +40,9 @@ describe("provider-only office HTTP registry", () => {
 		"qorpera_begin_runtime_office_host_reboot",
 		"qorpera_record_runtime_office_host_reboot_resume",
 		"qorpera_suspend_runtime_node_machine",
+		"qorpera_runtime_office_retirement",
+		"qorpera_prepare_runtime_office_retirement",
+		"qorpera_retire_runtime_office",
 	] as const)("uses exact HTTPS RPC %s without following or retrying", async (method) => {
 		const fetcher = vi.fn(async () => response({ schema: "synthetic" }));
 		const client = new LxdOfficeProviderHttpRegistry("https://control.example", key, fetcher);
