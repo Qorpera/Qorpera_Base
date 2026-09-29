@@ -269,6 +269,20 @@ begin
 		(select array_agg(h order by h) from unnest(array[v_file ->> 'manifestSha256', pg_temp.hash('chunk one '), pg_temp.hash('chunk two'),
 			v_exec ->> 'manifestSha256', pg_temp.hash('#!/bin/sh')]) h) then
 		raise exception 'A copied folder references every file''s objects'; end if;
+	-- A move references nothing new; beside a copy, its source counts, since it may carry files into the copy's source.
+	perform pg_temp.expect(pg_temp.commit('{"kind":"platform"}', 'c1d-mv-seed', '[{"op":"mkdir","path":"mv-src"},{"op":"mkdir","path":"mv-dst"}]'),
+		1, 'saved');
+	v_file := pg_temp.stage_v2(pg_temp.member(1), array['moved content']);
+	perform pg_temp.expect(pg_temp.commit(pg_temp.member(1), 'c1d-mv-write', jsonb_build_array(
+		jsonb_build_object('op','write','path','mv-src/m.md','file',v_file))), 1, 'saved');
+	if exists (select from public.qorpera_folder_unit_objects('63400000-0000-4000-8000-000000000020', '63400000-0000-4000-8000-000000000010',
+			'[{"op":"move","from":"mv-src/m.md","to":"mv-dst/m.md"}]')) then
+		raise exception 'A move alone references nothing new'; end if;
+	r := pg_temp.commit(pg_temp.member(1), 'c1d-mv-copy', jsonb_build_array(
+		jsonb_build_object('op','move','from','mv-src/m.md','to','mv-dst/m.md','expectedVersion',
+			pg_temp.read('mv-src/m.md') -> 'entry' ->> 'version'),
+		jsonb_build_object('op','copy','from','mv-dst','to','mv-dst-copy')));
+	perform pg_temp.expect(r, 1, 'saved'); perform pg_temp.expect(r, 2, 'saved');
 end $$;
 
 -- 5. The download check ----------------------------------------------------------------------------------------------
@@ -318,6 +332,36 @@ begin
 	v_seal := pg_temp.seal(b, (v_open ->> 'intentId')::uuid);
 	if v_seal ->> 'state' <> 'incomplete' or v_seal -> 'missing' <> jsonb_build_array(pg_temp.hash('old secret ')) then
 		raise exception 'A chunk the actor neither put nor reads is missing: %', v_seal; end if;
+	-- Nor does knowing the whole manifest: an open intent over its exact text, with only the manifest put, is not
+	-- possession.
+	v_open := pg_temp.open(b, pg_temp.manifest(array['old secret ', 'text']));
+	perform pg_temp.confirm(b, (v_open ->> 'intentId')::uuid, pg_temp.manifest(array['old secret ', 'text']));
+	perform pg_temp.expect(pg_temp.commit(b, 'dl-open-intent', jsonb_build_array(
+		jsonb_build_object('op','write','path','docs/open-intent.md','file',v_old))), 1, 'refused', 'bytes_unverified');
+	-- An own sealed intent is possession while it lasts: expired, it is not.
+	v_new := pg_temp.stage_v2(b, array['b own']);
+	perform pg_temp.fx(format($f$update public.qorpera_folder_upload_intents set expires_at = clock_timestamp() - interval '1 second'
+		where manifest_sha256 = %L and actor_kind = 'run'$f$, v_new ->> 'manifestSha256'));
+	perform pg_temp.expect(pg_temp.commit(b, 'dl-expired', jsonb_build_array(
+		jsonb_build_object('op','write','path','docs/b-own.md','file',v_new))), 1, 'refused', 'bytes_unverified');
+	perform pg_temp.fx(format($f$update public.qorpera_folder_upload_intents set expires_at = clock_timestamp() + interval '1 hour'
+		where manifest_sha256 = %L and actor_kind = 'run'$f$, v_new ->> 'manifestSha256'));
+	perform pg_temp.expect(pg_temp.commit(b, 'dl-sealed', jsonb_build_array(
+		jsonb_build_object('op','write','path','docs/b-own.md','file',v_new))), 1, 'saved');
+	-- The held path: A may read the secret, so a new file sharing its chunk seals without putting that chunk again.
+	v_open := pg_temp.open(a, pg_temp.manifest(array['old secret ', 'extra part']));
+	if v_open -> 'present' <> jsonb_build_array(pg_temp.hash('old secret ')) then
+		raise exception 'What the actor reads is present: %', v_open; end if;
+	perform pg_temp.confirm(a, (v_open ->> 'intentId')::uuid, 'extra part');
+	perform pg_temp.confirm(a, (v_open ->> 'intentId')::uuid, pg_temp.manifest(array['old secret ', 'extra part']));
+	v_seal := pg_temp.seal(a, (v_open ->> 'intentId')::uuid);
+	if v_seal ->> 'state' <> 'sealed' then raise exception 'A held chunk counts at seal: %', v_seal; end if;
+	-- The decision reads only what step 6 locked (C1D §4): a closure object outside the locked set is unverified.
+	if public.qorpera_folder_file_bytes_problem(c_env, '63400000-0000-4000-8000-000000000010', '{"kind":"platform"}', null, v_old,
+			array[v_old ->> 'manifestSha256', pg_temp.hash('old secret '), pg_temp.hash('text')]) is not null
+		or public.qorpera_folder_file_bytes_problem(c_env, '63400000-0000-4000-8000-000000000010', '{"kind":"platform"}', null, v_old,
+			array[v_old ->> 'manifestSha256']) is distinct from 'bytes_unverified' then
+		raise exception 'The decision reads the locked set'; end if;
 
 	-- An old version stays readable to who may read the path now.
 	v_version := (pg_temp.read('secret/s.md', a) -> 'entry' ->> 'version')::uuid;
@@ -412,8 +456,8 @@ begin
 			from public.qorpera_folder_storage_usage u where profile_id = c_profile); end if;
 end $$;
 
--- 8. The lock text (C1D §8): the snapshot-v1 bodies are the reviewed ones but for their folder-v2 line, the folder-v2
--- bodies take no company-wide lock, and step 6 keeps its sorted locks.
+-- 8. The lock text (C1D §8): the snapshot-v1 bodies are the reviewed ones but for their folder-v2 line, which comes
+-- first after "begin", the folder-v2 bodies take no company-wide lock, and step 6 keeps its sorted locks.
 do $$
 declare v_check record; v_definition text;
 begin
@@ -432,7 +476,7 @@ begin
 			'e97bb1724e5235cd41d1f2ed6af295f17765d7ab4e87e8ad98262303714e0059')) c(target, guard, digest)
 	loop
 		v_definition := pg_get_functiondef(v_check.target::regprocedure);
-		if position(E'\t' || v_check.guard || E'\n' in v_definition) = 0
+		if position(E'\nbegin\n\t' || v_check.guard || E'\n' in v_definition) = 0
 			or encode(extensions.digest(replace(v_definition, E'\t' || v_check.guard || E'\n', ''), 'sha256'), 'hex') <> v_check.digest then
 			raise exception 'The snapshot-v1 body of % changed beyond its folder-v2 line', v_check.target; end if;
 	end loop;

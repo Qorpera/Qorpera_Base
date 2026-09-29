@@ -795,3 +795,25 @@ begin
 		and public.qorpera_abandon_machine_executor('mx-b',repeat('d',64)) = 0,
 		'Every placement is given up and every allocation released, once: '||v_given||' of '||cardinality(v_ids));
 end $$;
+
+-- 21. A deleted company's machines are deleted too (20260929360000): under its fence, once, waking no run.
+do $$
+declare v_profile uuid := '30000000-0000-4000-8000-000000000010'; v_open integer; v_events integer; v_result jsonb; v_again jsonb;
+begin
+	select count(*) into v_open from public.qorpera_company_machines
+	where profile_id = v_profile and removed_at is null and desired_state <> 'deleted';
+	select count(*) into v_events from public.qorpera_company_machine_events where profile_id = v_profile and kind = 'stopped';
+	perform pg_temp.wake_assert(v_open >= 1, 'The company still has machines to delete');
+	update public.qorpera_company_machines set notify_run_ids = array[started_by_run_id]
+	where profile_id = v_profile and removed_at is null and desired_state <> 'deleted';
+	perform public.qorpera_lock_profile_gc_fence(v_profile);
+	v_result := public.qorpera_stop_company_work(v_profile);
+	v_again := public.qorpera_stop_company_work(v_profile);
+	perform pg_temp.wake_assert((v_result ->> 'agentMachinesDeleted')::integer = v_open
+		and (v_again ->> 'agentMachinesDeleted')::integer = 0
+		and not exists (select 1 from public.qorpera_company_machines
+			where profile_id = v_profile and removed_at is null and desired_state <> 'deleted')
+		and not exists (select 1 from public.qorpera_company_machines where profile_id = v_profile and cardinality(notify_run_ids) > 0)
+		and (select count(*) from public.qorpera_company_machine_events where profile_id = v_profile and kind = 'stopped') = v_events,
+		'Every machine is deleted, once, and no run is woken about it: '||v_result::text||' then '||v_again::text);
+end $$;

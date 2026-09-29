@@ -481,12 +481,15 @@ end $$;
 
 -- Every object a change set newly references: each written or new file's manifest and each file a copy's source
 -- holds (a copy over the core's subtree bound adds none: step 7 refuses it as too_large), with every object of their
--- proofs' closures (manifest and chunks). Copy sources are found by the key index: the entry itself, then its subtree
--- as a key range ('0' follows '/' in the "C" order of key_text).
+-- proofs' closures (manifest and chunks). With a copy in the change set, each move's source counts too, since an
+-- earlier move may carry files into a later copy's source. Sources are found by the key index: the entry itself, then
+-- its subtree as a key range ('0' follows '/' in the "C" order of key_text).
 create function public.qorpera_folder_unit_objects(p_environment_id uuid, p_profile_id uuid, p_units jsonb)
 returns setof text language sql stable security definer set search_path = '' as $$
 	with copies as materialized (
-		select public.qorpera_folder_key(u ->> 'from') as k from jsonb_array_elements(p_units) u where u ->> 'op' = 'copy'
+		select public.qorpera_folder_key(u ->> 'from') as k from jsonb_array_elements(p_units) u
+		where u ->> 'op' = 'copy'
+			or (u ->> 'op' = 'move' and jsonb_path_exists(p_units, '$[*] ? (@.op == "copy")'))
 	), sources as (
 		select c.k from copies c
 		where (select count(*) from (select 1 from public.qorpera_folder_entries e
