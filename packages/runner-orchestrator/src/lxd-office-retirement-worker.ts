@@ -39,6 +39,13 @@ export interface LxdOfficeRetirementResult {
 /** The retirement's whole budget, and the time kept for its steps after the workbench pass. */
 const RUN_MS = 60000;
 const AFTER_WORKBENCH_MS = 10000;
+const WORKBENCH_PASS_MS = 30000;
+
+/** When a workbench pass started at `now` ends: 30 s later, or 10 s before the retirement's end
+ * (`end`, both `performance.now()` times), whichever is first. */
+export function lxdOfficeWorkbenchPassDeadline(now: number, end: number): number {
+	return Math.min(now + WORKBENCH_PASS_MS, end - AFTER_WORKBENCH_MS);
+}
 /** The delete SQL issued, pinned before it can be dispatched. One per provider. */
 export const OFFICE_RETIREMENT_REQUEST = "office-retirement-request.json";
 const pending = new Set<string>();
@@ -274,10 +281,7 @@ export class LxdOfficeRetirementWorker {
 		// With the VM gone nothing of this office writes there. A pass (its reads
 		// included) ends 30 s from now or 10 s before the run's end, whichever is
 		// first; a large workbench takes several.
-		const workbench = await this.#emptyWorkbench(
-			signal,
-			Math.min(performance.now() + 30000, end - AFTER_WORKBENCH_MS),
-		);
+		const workbench = await this.#emptyWorkbench(signal, lxdOfficeWorkbenchPassDeadline(performance.now(), end));
 		if (!workbench.done) return { ...result, state: "pending", deleteCommandId };
 		// The mount may have gone during the pass: the gate checks it again.
 		if ((await physical()).instance !== undefined) throw new Error("retirement VM present");

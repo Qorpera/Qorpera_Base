@@ -94,9 +94,14 @@ records what it waits for.
   a115c550) and, the same way, for the D5b build at the cut that carries it: the coordinator rolls the
   office provider build at the cut (RUNTIME release roll, as #505). No company deletion had been
   requested by 29 Sep. An office retired by the D3b build before the D5b build reaches it keeps its
-  workbench (its marker ends the provider): before the D5b roll, list them with `select * from
-  public.qorpera_runtime_office_retirements where retired_at is not null`, and for each empty its
-  workbench mount by hand as the workbench account, keeping the mount root.
+  workbench (its marker ends the provider). After the D5b roll, list them with `select office_id,
+  provider_id, retired_at from public.qorpera_runtime_office_retirements where retired_at <
+  '<roll time>'`. For each, find the node and unit whose protected policy names that office
+  (`guest.companyComputerId`) and provider; its `workbench.mountPoint` is the mount. Empty it by hand
+  as the workbench account (`workbench.uid`), keeping the mount root, with the provider's limits:
+  only the names it accounts for ("Office retirement" in RUNTIME-OFFICE-RETENTION.md), nothing that
+  `find <mount> -xdev ! -uid <uid>` lists, and only after checking that no other office's mount or
+  instance reaches the same export.
   1. Build `node scripts/package-lxd-office-provider.mjs --out <dir>` from the release commit on node 2;
      its sha256 must match the review. Stage it on the node.
   2. Before the roll, read the provider's last observation (`journalctl -u <unit> -n 5`). Roll on

@@ -186,7 +186,8 @@ export async function removeLxdOfficeWorkbench(
 		// Done only when the root lists nothing and the path still leads to the same mount.
 		const again = await open(scope.root, O_PATH | constants.O_DIRECTORY | constants.O_NOFOLLOW);
 		try {
-			if ((await mountId(again)) !== rootMount || (await list(root)).length > 0) throw failure("NOT_EMPTY");
+			if ((await mountId(again)) !== rootMount) throw failure("ROOT_CHANGED");
+			if ((await list(root)).length > 0) throw failure("NOT_EMPTY");
 		} finally {
 			await again.close();
 		}

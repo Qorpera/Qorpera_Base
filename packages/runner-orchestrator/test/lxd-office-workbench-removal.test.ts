@@ -256,6 +256,10 @@ describe.skipIf(process.platform !== "linux")("emptying a retired office's workb
 		await expect(removeLxdOfficeWorkbench(w.scope, names, signal(), later())).rejects.toThrow(
 			"OFFICE_WORKBENCH_UNACCOUNTED_ENTRY",
 		);
+		// Also when the accounted names hold the name as it decodes: only the exact bytes count.
+		await expect(
+			removeLxdOfficeWorkbench(w.scope, new Set([...names, "f\ufffd"]), signal(), later()),
+		).rejects.toThrow("OFFICE_WORKBENCH_UNACCOUNTED_ENTRY");
 	});
 	it("holds on a tree deeper than its limit", async () => {
 		const w = await workbench();

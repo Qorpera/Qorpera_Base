@@ -6,7 +6,11 @@ import { lxdOfficeGuestPlan } from "../src/lxd-office-guest.ts";
 import { publish } from "../src/lxd-office-journal-files.ts";
 import { LxdOfficeOperationJournal } from "../src/lxd-office-operations.ts";
 import { OFFICE_RETIRED_MARKER, readLxdOfficeRetiredMarker } from "../src/lxd-office-retirement-control.ts";
-import { LxdOfficeRetirementWorker, OFFICE_RETIREMENT_REQUEST } from "../src/lxd-office-retirement-worker.ts";
+import {
+	LxdOfficeRetirementWorker,
+	lxdOfficeWorkbenchPassDeadline,
+	OFFICE_RETIREMENT_REQUEST,
+} from "../src/lxd-office-retirement-worker.ts";
 import { officePowerOffWorkerFixture } from "./fixtures/office-power-off-worker.ts";
 import { serviceStartId as id } from "./fixtures/office-service-start.ts";
 
@@ -346,6 +350,14 @@ describe("retiring a deleted company's powered-off computer", () => {
 		await rm(f.paths.done);
 		await expect(f.run()).rejects.toThrow("OFFICE_RETIREMENT_UNCONFIRMED");
 		expect(f.registry).not.toHaveBeenCalled();
+	});
+});
+
+describe("a workbench pass's deadline", () => {
+	it("is 30 s after its start, or 10 s before the retirement's end when that is sooner", () => {
+		expect(lxdOfficeWorkbenchPassDeadline(1000, 61000)).toBe(31000);
+		expect(lxdOfficeWorkbenchPassDeadline(30000, 61000)).toBe(51000);
+		expect(lxdOfficeWorkbenchPassDeadline(55000, 61000)).toBe(51000);
 	});
 });
 

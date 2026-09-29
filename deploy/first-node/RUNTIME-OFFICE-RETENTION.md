@@ -165,9 +165,9 @@ It then empties the workbench (D5b, `lxd-office-workbench-removal.ts`):
   account and sit on the root's mount (checked per directory); a symbolic link
   is removed, never followed; a directory its owner cannot read, write or
   search is set to 0700 first.
-- A pass, its reads included, ends 30 seconds after it starts or 10 seconds
-  before the retirement's 60-second budget ends, and reports `pending`; the
-  next pass continues. When the root lists nothing, the gate and the VM's
+- A pass ends 30 seconds after it starts or 10 seconds before the
+  retirement's 60-second budget ends, whichever is first (the time its reads
+  take counts against it), and reports `pending`; the next pass continues. When the root lists nothing, the gate and the VM's
   absence are checked again.
 - A failure holds the office and logs `OFFICE_WORKBENCH_<reason>` (for example
   `FOREIGN_ENTRY`, `UNACCOUNTED_ENTRY`, `SHARED`, `REMOVAL_EACCES`). The
