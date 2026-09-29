@@ -21,6 +21,9 @@
 
 -- 1. Group chats in the rooms index ---------------------------------------------------------------------------------
 
+-- The runtime reads and writes these tables on every turn and request: never queue them behind this change.
+set local lock_timeout = '3s';
+
 -- A folder-v2 group chat's room points at its group.md: the environment, the path as stored, that path's current
 -- version and the commit that wrote it. It has no snapshot source and no bound agent. Deleting the folder retires
 -- the room (folder_retired_at, and archived); a restore brings it back.
