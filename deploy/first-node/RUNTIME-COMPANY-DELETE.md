@@ -143,8 +143,12 @@ records what it waits for.
   Once the migration is live, an open deletion that waited only on sign-ins never placed on a node
   purges at the next finisher pass.
   A pair no node can confirm (a node taken out of service, a volume that is not exactly the identity's,
-  a device refused) keeps the deletion waiting; `qorpera_company_deletions.holdings` shows it. After
-  checking the node by hand, an operator records it as the provider would:
+  a device refused) keeps the deletion waiting; `qorpera_company_deletions.holdings` counts it, and
+  `select * from public.qorpera_company_identity_placements('<company>') as p where not exists (select 1
+  from public.qorpera_runtime_identity_retirements as r where r.node_id = p.node_id and
+  r.compute_identity_id = p.compute_identity_id)` names it. After checking the node by hand (no volume
+  `<prefix><identity>`, and on node 2 no `identity-<identity>` device on the execution host, or the
+  purge takes node 2 out of the inventory), an operator records it as the provider would:
   `insert into public.qorpera_runtime_identity_retirements (node_id, compute_identity_id, provider_id,
   volume, device) values ('<node>', '<identity>', '<provider id>', 'absent', 'absent');`
   Not covered, for the operator runbook: volumes from before node demands existed (8 September), and

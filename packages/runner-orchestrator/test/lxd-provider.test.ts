@@ -740,6 +740,33 @@ describe("LXD cloud runner provider", () => {
 			await lxd.getStorageVolume(settings.project, settings.storagePool, journal.lxd.identityVolume),
 		).toBeUndefined();
 	});
+	it("settles a stopping journal whose guest deletion was confirmed before a crash, once its volume is retired", async () => {
+		const directory = await root();
+		const settings = governedConfig(join(directory, "state"));
+		const lxd = new FakeLxd();
+		const guest = new FakeGuest();
+		const backend = new LxdCloudRunnerProviderBackend(settings, lxd, guest, fetchProvisioner([]));
+		const runner = await backend.acquire(runId, work(), new AbortController().signal);
+		await backend.deliver(runner, delivery(work()));
+		await backend.stop(runner, "idle");
+		const path = join(settings.stateRoot, runId, "journal.json");
+		const journal = JSON.parse(await readFile(path, "utf-8"));
+		// The crash came after the confirmed deletion and release, before "stopped" was written.
+		await writeFile(path, JSON.stringify({ ...journal, physicalState: "stopping", deletionConfirmed: true }), {
+			mode: 0o600,
+		});
+		expect(await lxd.deleteStorageVolume(settings.project, settings.storagePool, journal.lxd.identityVolume)).toBe(
+			true,
+		);
+		const restarted = new LxdCloudRunnerProviderBackend(settings, lxd, guest, fetchProvisioner([]));
+		await restarted.reconcile();
+		await restarted.reconcile();
+		// It settles (as a stopping run whose guest is gone) instead of throwing on every pass.
+		expect(JSON.parse(await readFile(path, "utf-8")).physicalState).toBe("lost");
+		expect(
+			await lxd.getStorageVolume(settings.project, settings.storagePool, journal.lxd.identityVolume),
+		).toBeUndefined();
+	});
 	it("stops reconciling a settled journal, archives it a day later and refuses its replay", async () => {
 		// Live cost (23 Sep 2026): node 1 re-read 76 finished run journals, three LXD calls each, on every pass.
 		const f = await acquiredFixture();

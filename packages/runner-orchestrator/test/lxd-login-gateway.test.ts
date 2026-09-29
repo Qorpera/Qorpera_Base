@@ -1850,6 +1850,7 @@ describe("LXD native login gateway and the node's shared execution host", () => 
 			["another identity", { computeIdentityId: "30000000-0000-4000-8000-0000000000d5" }],
 			["another node", { nodeId: "30000000-0000-4000-8000-000000000011" }],
 			["a volume never removed", { volume: "absent" }],
+			["a device never detached", { device: "absent" }],
 		])("does not take a receipt naming %s as its retirement", async (_label, patch) => {
 			const { boundary, gateway } = await retireSetup();
 			boundary.control.receiptPatch = patch;
@@ -1861,6 +1862,24 @@ describe("LXD native login gateway and the node's shared execution host", () => 
 				expect(
 					errors.mock.calls.flat().some((line) => String(line).includes(`retired Compute Identity ${deleted}`)),
 				).toBe(false);
+			} finally {
+				errors.mockRestore();
+			}
+		});
+		it("retires at most eight identities a pass, and the rest on the next pass", async () => {
+			const { lxd, boundary, gateway } = await retireSetup(false);
+			lxd.volume = undefined;
+			const ids = Array.from(
+				{ length: 10 },
+				(_, index) => `30000000-0000-4000-8000-0000000001${String(index).padStart(2, "0")}`,
+			);
+			boundary.control.retirementsDue = ids;
+			const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
+			try {
+				await gateway.reconcile(new AbortController().signal);
+				expect(boundary.control.retirements).toHaveLength(8);
+				await gateway.reconcile(new AbortController().signal);
+				expect(boundary.control.retirements.map((call) => call.p_compute_identity_id).sort()).toEqual(ids);
 			} finally {
 				errors.mockRestore();
 			}
