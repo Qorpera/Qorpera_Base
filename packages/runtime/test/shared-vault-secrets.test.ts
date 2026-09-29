@@ -26,6 +26,34 @@ function run(args: string[]): { status: number | null; stdout: string; stderr: s
 	return { status: done.status, stdout: done.stdout, stderr: done.stderr };
 }
 
+/** Waits until the spawned `serve` accepts connections on its port, instead of a fixed pause that a loaded
+ * test machine outlasts. The probe closes at once: the server reads nothing from it (or closes a peer it
+ * does not serve before reading), so it changes nothing the test then checks. */
+async function listening(port: number, exited: Promise<number | null>, boundMs = 15_000): Promise<void> {
+	let stopped = false;
+	void exited.then(() => {
+		stopped = true;
+	});
+	const deadline = Date.now() + boundMs;
+	for (;;) {
+		const connected = await new Promise<boolean>((resolveProbe) => {
+			const probe = connect({ host: "127.0.0.1", port });
+			probe.once("connect", () => {
+				probe.destroy();
+				resolveProbe(true);
+			});
+			probe.once("error", () => {
+				probe.destroy();
+				resolveProbe(false);
+			});
+		});
+		if (connected) return;
+		if (stopped) throw new Error(`The vault server on ${port} stopped before it listened`);
+		if (Date.now() >= deadline) throw new Error(`The vault server did not listen on ${port} within ${boundMs} ms`);
+		await new Promise((resolveWait) => setTimeout(resolveWait, 25));
+	}
+}
+
 it("makes both secrets as owner-only files once, and prints only hashes the broker derives the same way", async () => {
 	const vault = await root();
 	const made = run(["--root", vault, "generate", "--key-id", "vault-root-1"]);
@@ -131,7 +159,7 @@ it("hands the standby its files once, on a ticket that never leaves it, checked 
 	// A wrong digest from node 1 (the expected one does not match what arrives): nothing is written, and the
 	// ticket is used up.
 	const first = serveOnce(ticketSha256);
-	await new Promise((resolveWait) => setTimeout(resolveWait, 700));
+	await listening(first.port, first.exited);
 	const refused = run([
 		"--root",
 		nodeTwo,
@@ -165,7 +193,7 @@ it("hands the standby its files once, on a ticket that never leaves it, checked 
 	const again = JSON.parse(run(["--root", nodeTwo, "ticket"]).stdout) as { ticketSha256: string };
 	expect(again.ticketSha256).not.toBe(unused.ticketSha256);
 	const second = serveOnce(again.ticketSha256);
-	await new Promise((resolveWait) => setTimeout(resolveWait, 700));
+	await listening(second.port, second.exited);
 	const silent = connect({ host: "127.0.0.1", port: second.port });
 	await new Promise((resolveConnect) => silent.once("connect", resolveConnect));
 	const fetched = run([
@@ -227,7 +255,7 @@ it("hands the standby its files once, on a ticket that never leaves it, checked 
 		{ stdio: ["ignore", "pipe", "pipe"] },
 	);
 	const stopped = new Promise<number | null>((resolveExit) => elsewhere.once("exit", resolveExit));
-	await new Promise((resolveWait) => setTimeout(resolveWait, 700));
+	await listening(port, stopped);
 	const refusedElsewhere = run([
 		"--root",
 		nodeThree,
