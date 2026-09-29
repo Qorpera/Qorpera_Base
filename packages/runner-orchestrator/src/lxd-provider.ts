@@ -812,6 +812,8 @@ async function present(path: string): Promise<boolean> {
 /** A reserving journal is advanced only by the orchestrator's acquire; after this long without
  * progress the acquisition is retired instead of being re-tried by every reconcile pass. */
 const RESERVING_RETIREMENT_MS = 10 * 60_000;
+/** A lost journal's guest missing this long is gone for good: no LXD create or start outlives it. */
+const LOST_SETTLE_MS = 10 * 60_000;
 /** Settled journals move here, inside the state root, out of every scan. */
 const JOURNAL_ARCHIVE = "archive";
 const SETTLED_JOURNAL_RETENTION_MS = 24 * 60 * 60_000;
@@ -1681,8 +1683,18 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 		if (instance || current.physicalState !== "lost") await this.#ensureRecoveryVolume(current, signal);
 		if (!instance) {
 			// A timed-out create/start may still be pending in LXD. Missing is
-			// deletion proof only after a fully registered or retired guest.
-			if (current.deletionConfirmed || ["registered", "assigned", "stopped"].includes(current.physicalState))
+			// deletion proof only after a fully registered or retired guest, or for a
+			// lost journal that stayed missing past the settle time: its machine never
+			// came (a failed create), and the capacity it reserved is released.
+			const settledLoss =
+				current.physicalState === "lost" &&
+				Boolean(current.capacityRegistered || current.nodeCapacity) &&
+				Date.now() - Date.parse(current.updatedAt) >= LOST_SETTLE_MS;
+			if (
+				current.deletionConfirmed ||
+				["registered", "assigned", "stopped"].includes(current.physicalState) ||
+				settledLoss
+			)
 				await this.#releaseMachine(current, signal);
 			if (current.physicalState !== "stopped" && current.physicalState !== "lost") {
 				await this.#writeJournal({ ...current, physicalState: "lost" });
@@ -1690,6 +1702,18 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 			return;
 		}
 		this.#assertInstanceAuthority(current, instance);
+		if (current.physicalState === "lost") {
+			// A lost run never restarts. A guest that exists for it (a create that
+			// finished after the journal was lost, or one that stopped running) is
+			// removed, and its capacity released.
+			await this.#retire(current, instance.status, signal);
+			await this.#writeJournal({
+				...current,
+				physicalState: "stopped",
+				stopReason: current.stopReason ?? "delivery_failed",
+			});
+			return;
+		}
 		if (current.physicalState === "stopped") {
 			if (instance.status !== "Stopped") throw new Error("Stopped LXD journal names a running guest");
 			// A guest left behind by an earlier provider build is removed on sight.

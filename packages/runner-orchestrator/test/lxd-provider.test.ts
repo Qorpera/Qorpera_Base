@@ -826,6 +826,54 @@ describe("LXD cloud runner provider", () => {
 		});
 	});
 
+	it("releases a lost journal's capacity once its guest stayed missing past the settle time", async () => {
+		// Production (2026-09-29): a start failed before its guest existed; the journal became lost and its
+		// allocation stayed reserved, so the run's attempt could never move on.
+		const f = await acquiredFixture();
+		const journal = JSON.parse(await readFile(f.journalPath, "utf8")) as Record<string, unknown>;
+		f.lxd.instance = undefined;
+		const releases = () =>
+			vi
+				.mocked(f.fetchImplementation)
+				.mock.calls.filter(([url]) => String(url).includes("qorpera_release_runtime_machine"));
+		const backend = new LxdCloudRunnerProviderBackend(config(f.stateRoot), f.lxd, f.guest, f.fetchImplementation);
+		// Just lost: a create may still be pending in LXD, so nothing is released.
+		const lost = (updatedAt: string) =>
+			writeFile(f.journalPath, JSON.stringify({ ...journal, physicalState: "lost", updatedAt }), { mode: 0o600 });
+		await lost(new Date().toISOString());
+		await backend.reconcile();
+		expect(releases()).toHaveLength(0);
+		// Missing past the settle time: released once, and marked.
+		await lost(new Date(Date.now() - 11 * 60_000).toISOString());
+		await backend.reconcile();
+		await backend.reconcile();
+		expect(releases()).toHaveLength(1);
+		expect(JSON.parse(await readFile(f.journalPath, "utf8"))).toMatchObject({
+			physicalState: "lost",
+			capacityReleased: true,
+		});
+	});
+
+	it("removes a guest that exists for a lost journal and releases its capacity", async () => {
+		// A create that finished after its journal was lost: the run never restarts, so its guest goes.
+		const f = await acquiredFixture();
+		const journal = JSON.parse(await readFile(f.journalPath, "utf8")) as Record<string, unknown>;
+		await writeFile(f.journalPath, JSON.stringify({ ...journal, physicalState: "lost" }), { mode: 0o600 });
+		const releases = () =>
+			vi
+				.mocked(f.fetchImplementation)
+				.mock.calls.filter(([url]) => String(url).includes("qorpera_release_runtime_machine"));
+		const backend = new LxdCloudRunnerProviderBackend(config(f.stateRoot), f.lxd, f.guest, f.fetchImplementation);
+		await backend.reconcile();
+		expect(f.lxd.deleteCalls).toHaveLength(1);
+		expect(releases()).toHaveLength(1);
+		expect(JSON.parse(await readFile(f.journalPath, "utf8"))).toMatchObject({
+			physicalState: "stopped",
+			stopReason: "delivery_failed",
+			capacityReleased: true,
+		});
+	});
+
 	it("never reserves capacity again for an allocation whose release is confirmed", async () => {
 		// A crash between the release mark and the terminal state leaves a registered, released journal.
 		const f = await acquiredFixture();
