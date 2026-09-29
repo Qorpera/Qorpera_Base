@@ -220,27 +220,30 @@ select pg_temp.event_wake_patch('public.qorpera_runtime_wake_policy_internal(uui
 
 -- The verified deliveries a listener has not taken yet, in the order it takes them. Planned with
 -- the cursor's values each call (a one-shot plan), so the watermark, the activation and the 7-day
--- window (a delivery is verified once it is received) bound the index range.
+-- window (a delivery is verified once it is received) bound the index range. The bounds are passed
+-- as values: a volatile expression in the query would only filter rows.
 create function public.qorpera_event_listener_waiting(p_cursor public.qorpera_event_listener_cursors, p_only jsonb, p_limit integer)
 returns setof public.qorpera_event_deliveries
 language plpgsql
 security definer
 set search_path = ''
 as $$
+declare v_window timestamptz := clock_timestamp() - interval '7 days';
 begin
 	return query execute $query$
 		select delivery.* from public.qorpera_event_deliveries as delivery
 		where delivery.hook_id = $1 and delivery.status = 'verified'
-			and delivery.verified_at >= greatest($2, $3 - interval '1 second', clock_timestamp() - interval '7 days 1 second')
+			and delivery.verified_at >= $2
 			and delivery.received_at >= $3
-			and delivery.received_at > clock_timestamp() - interval '7 days'
+			and delivery.received_at > $8
 			and ($4::jsonb is null or delivery.event_type in (select jsonb_array_elements_text($4::jsonb)))
 			and not exists (select 1 from public.qorpera_event_wake_deliveries as taken
 				where taken.routine_id = $5 and taken.trigger_id = $6 and taken.delivery_id = delivery.id)
 		order by delivery.verified_at, delivery.id
 		limit $7$query$
-	using p_cursor.hook_id, p_cursor.taken_before, p_cursor.activated_at, p_only, p_cursor.routine_id,
-		p_cursor.trigger_id, p_limit;
+	using p_cursor.hook_id,
+		greatest(p_cursor.taken_before, p_cursor.activated_at - interval '1 second', v_window - interval '1 second'),
+		p_cursor.activated_at, p_only, p_cursor.routine_id, p_cursor.trigger_id, p_limit, v_window;
 end
 $$;
 revoke all on function public.qorpera_event_listener_waiting(public.qorpera_event_listener_cursors, jsonb, integer)

@@ -489,9 +489,6 @@ begin
 	set local session_replication_role = origin;
 	perform public.qorpera_drain_event_wakes(8);
 	perform pg_temp.wake_assert((select count(*) from pg_temp.event_wakes(v_row.id)) = 1, 'A leased, unread wake is pending');
-	-- However little room the rest of a wake leaves, the batch takes its first delivery.
-	perform pg_temp.wake_assert(jsonb_array_length(public.qorpera_event_wake_payload(v_occurrence, 10) -> 'events') = 1,
-		'A batch always takes its first delivery');
 	v_wake := pg_temp.event_start(v_occurrence.run_id, v_binding);
 	perform pg_temp.wake_assert(octet_length((v_wake -> 'payload')::text) <= 49152
 		and v_wake #>> '{payload,events,0,encoding}' = 'base64' and (v_wake #>> '{payload,events,0,truncated}')::boolean
@@ -517,6 +514,10 @@ begin
 	perform public.qorpera_drain_event_wakes(8);
 	perform pg_temp.wake_assert((select count(*) from pg_temp.event_wakes(v_row.id)) = 2,
 		'A wake that read its batch does not hold back the next');
+	-- However little room the rest of a wake leaves, its batch takes the first delivery.
+	select * into strict v_occurrence from pg_temp.event_wakes(v_row.id) where status = 'queued';
+	perform pg_temp.wake_assert(jsonb_array_length(public.qorpera_event_wake_payload(v_occurrence, 10) -> 'events') = 1,
+		'A batch always takes its first delivery');
 	perform pg_temp.event_finish();
 	perform pg_temp.routine('{"action":"pause","operationKey":"ev-b2","routineKey":"binary"}');
 end $$;

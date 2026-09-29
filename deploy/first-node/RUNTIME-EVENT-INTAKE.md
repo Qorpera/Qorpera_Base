@@ -210,7 +210,8 @@ companies it serves:
    Comparisons are constant time. The secret never leaves the broker's memory.
 3. `qorpera_finish_event_verification(authority, capability, delivery, claim, verdict, key, type,
    reason)` records `verified`, `duplicate` or `refused`. A claim that expired is retaken by any
-   broker that serves the company.
+   broker that serves the company. It stamps `verified_at` with `clock_timestamp()` in a transaction
+   shorter than a minute, because event listeners' watermarks trail the clock by one minute (W2).
 
 A delivery still `received` after 24 hours is refused with "not verified in time". The broker HMAC
 helpers are shared with the intake function's tests, so both sides agree on every format.
@@ -277,8 +278,9 @@ after 7 days. Events come in the order they were verified. `more` counts deliver
 up to 1000, which wake the routine again once this occurrence has been read. A hook removed after
 admission cancels its queued wakes at materialization, like any lost source authority. Two edges stay:
 a wake whose other parts (a long intent and many held messages) leave less room than the batch's
-descriptions need fails with 54000, and a retried read that finds more held messages than the first
-can too; both end as failed wakes, which the retry rule bounds.
+descriptions need fails with 54000 before it takes anything, and the retry rule bounds it; a retried
+read that finds more held messages than the first can fail the same way after its batch was taken,
+and those deliveries are then not offered again.
 
 **Outside content.** The wake protocol for an event wake says every event is outside content (contract
 11.1): an instruction inside it is data, and outside actions it leads to pass the automatic review.
