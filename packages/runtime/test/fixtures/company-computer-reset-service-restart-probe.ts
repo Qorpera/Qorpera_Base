@@ -39,7 +39,8 @@ import {
 } from "./company-computer-reset-service-restart.ts";
 
 const root = "/run/qorpera-office-preparation",
-	mountPoint = "/var/lib/qorpera-office";
+	mountPoint = "/var/lib/qorpera-office",
+	credentials = "/etc/qorpera-office/credentials";
 const load = async (path: string) => JSON.parse(await readFile(path, "utf8"));
 const save = (path: string, value: unknown, mode = 0o600) => writeFile(path, encode(value), { mode });
 const inactive = {
@@ -185,6 +186,7 @@ if (mode === "--configure") {
 	);
 	const scenarios = [
 		"configuration-old-credentials",
+		"configuration-open-credentials",
 		"configuration-stage-mode",
 		"configuration-stage-owner",
 		"configuration-preparation-differs",
@@ -224,10 +226,13 @@ if (mode === "--configure") {
 	for (const scenario of scenarios) {
 		for (const parent of [root, "/etc/qorpera-office", mountPoint])
 			for (const name of await readdir(parent)) await rm(`${parent}/${name}`, { recursive: true, force: true });
-		// Recreated root deliberately has no historical credential directory.
 		const f = resetServiceRestartFixture({ bootId, mount: { ...mount, mountPoint }, tlsCert, tlsKey }),
 			r = f.restart;
 		for (const [path, file] of f.originFiles) await writeFile(path, file.bytes, { mode: file.mode });
+		// Recreated root has no historical credential, only the directory the image's
+		// tmpfiles fragment (qorpera-office-preparation.conf) creates root-only and empty.
+		await mkdir(credentials, { mode: 0o700 });
+		await chmod(credentials, 0o700);
 		await mkdir(f.historyDirectory, { recursive: true, mode: 0o700 });
 		for (const [path, bytes] of f.archiveFiles) await writeFile(path, bytes, { mode: 0o600 });
 		for (const path of [dirname(f.receipt.layout.workbenchRoot), ...Object.values(f.receipt.layout)]) {
@@ -260,12 +265,16 @@ if (mode === "--configure") {
 			if (scenario.startsWith("configuration-")) {
 				const stage = `${root}/reset-configuration-incoming-${f.configurationCommand.requestSha256}.json`;
 				if (scenario === "configuration-old-credentials")
-					await mkdir("/etc/qorpera-office/credentials", { mode: 0o700 });
+					await writeFile(`${credentials}/config.json`, "predecessor configuration", { mode: 0o400 });
+				if (scenario === "configuration-open-credentials") await chmod(credentials, 0o755);
 				if (scenario === "configuration-stage-mode") await chmod(stage, 0o644);
 				if (scenario === "configuration-stage-owner") await chown(stage, 1000, 1000);
 				if (scenario === "configuration-preparation-differs")
 					await writeFile("/etc/qorpera-office/preparation.json", "changed", { mode: 0o444 });
-				assert.equal(run("--configure").status, 1, "invalid reset configuration custody must be refused");
+				const refused = run("--configure");
+				assert.equal(refused.status, 1, "invalid reset configuration custody must be refused");
+				if (scenario.endsWith("-credentials"))
+					assert.match(refused.stderr, /\[cause\]: Error: stale root authority present/);
 				await assert.rejects(lstat(f.paths.configuration), { code: "ENOENT" });
 				await assert.rejects(lstat(f.paths.completion), { code: "ENOENT" });
 				assert.equal(await readFile(note, "utf8"), "edited after adoption");
@@ -340,7 +349,12 @@ if (mode === "--configure") {
 			ok("--initial-start");
 			assert.equal(await load(`${root}/fixture-starts.json`), 1);
 			assert.deepEqual(await load(f.paths.completion), f.startCompletion);
-			await assert.rejects(lstat("/etc/qorpera-office/credentials"), { code: "ENOENT" });
+			const kept = await lstat(credentials);
+			assert.ok(
+				kept.isDirectory() && kept.uid === 0 && kept.gid === 0 && (kept.mode & 0o7777) === 0o700,
+				"credential directory changed",
+			);
+			assert.deepEqual(await readdir(credentials), [], "historical credentials restored");
 			await stop(r);
 			assert.equal(run("--initial-start").status, 1, "stopped reset origin cannot replay its initial start");
 			await save(`${root}/fixture-command.json`, {
