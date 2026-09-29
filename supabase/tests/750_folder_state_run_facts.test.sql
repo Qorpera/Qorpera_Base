@@ -1,5 +1,6 @@
 -- @fixture 707_folder_state_todos.test.sql until "-- 1. The company, two agents, and a todo"
--- A row with a folder in the company's other environment (foreign keys and checks as a real row has them).
+-- Gives an agent row a folder in the company's other environment, a snapshot-v1 one (the folder columns set as the
+-- folder check needs; foreign keys off).
 create function pg_temp.fx_other_folder(p_staff uuid) returns void language plpgsql as $$
 begin
 	set local session_replication_role = replica;
@@ -59,8 +60,9 @@ begin
 		raise exception 'A deleted coworker has no folder'; end if;
 
 	-- A snapshot-v1 company, and another environment of this one, give nothing.
-	if public.qorpera_company_state_run_folder('70700000-0000-4000-8000-000000000022', nora, v_all) is not null then
-		raise exception 'Another environment of the company has no folder facts'; end if;
+	if public.qorpera_company_state_run_folder('70700000-0000-4000-8000-000000000022', nora, v_all) is not null
+		or public.qorpera_company_state_run_folder('70700000-0000-4000-8000-000000000022', elsewhere, v_all) is not null then
+		raise exception 'Another environment of the company, a snapshot-v1 one, has no folder facts'; end if;
 	insert into public.qorpera_profiles(id, name, created_by_user_id) values ('75000000-0000-4000-8000-000000000010', 'Snapshot Co', '70700000-0000-4000-8000-000000000001');
 	insert into public.qorpera_company_environments(id, profile_id, name, contract_version, created_by_user_id)
 	values ('75000000-0000-4000-8000-000000000020', '75000000-0000-4000-8000-000000000010', 'Environment', 1, '70700000-0000-4000-8000-000000000001');

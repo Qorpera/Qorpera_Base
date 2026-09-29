@@ -34,8 +34,9 @@ export function cloudAgentFolder(
 	return `agents/${place.handle}`;
 }
 
-/** Whether a path is an agent's folder as cloudAgentFolder gives it, in either kind of company. */
+/** Whether a path is an agent's folder as cloudAgentFolder gives it, in either kind of company (an id is such a name
+ * too). */
 export function isCloudAgentFolder(path: string): boolean {
 	const name = path.startsWith("agents/") ? path.slice("agents/".length) : "";
-	return UUID.test(name) || (HANDLE.test(name) && name !== "groups");
+	return HANDLE.test(name) && name !== "groups";
 }

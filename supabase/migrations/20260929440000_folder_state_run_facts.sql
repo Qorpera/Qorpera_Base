@@ -17,8 +17,9 @@
 -- an agent's save records today, and the next save uses them. It takes the run's job, then the login, as
 -- qorpera_manage_agent_routine does, so it can meet a member switching that login off (40P01): the writer retries it.
 
--- The folder names of a run's agent and of the coworkers its context lists (p_coworkers, the same ids in the same
--- snapshot), or null for a snapshot-v1 company or an agent without a folder. A coworker without a folder is left out.
+-- The folder names of a run's agent and of the coworkers its context lists (p_coworkers: the same ids, so the folders
+-- name no coworker the context does not), or null for a snapshot-v1 company or an agent without a folder. A coworker
+-- without a folder is left out.
 create function public.qorpera_company_state_run_folder(p_environment_id uuid, p_staff_agent_id uuid, p_coworkers uuid[])
 returns jsonb language sql stable security definer set search_path = '' as $$
 	select jsonb_build_object('agent', split_part(s.folder_path, '/', 2),

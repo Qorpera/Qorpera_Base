@@ -626,10 +626,12 @@ of the body, for readers that should not reach the storage server.
   `folder-v2` run's agent and of the coworkers its context lists (null for a `snapshot-v1` company
   or an agent without a folder). Core C1c-2's `folder-v2` body of `qorpera_describe_company_run_context`
   (RUNTIME-COMPANY-FOLDER-C1C.md §5.4) adds them as the context's optional `folder`, from the same
-  coworker ids in the same snapshot, beside the company name from the vision index. The runtime's
-  closed parser accepts `folder` like `serviceTier`, turns it into the place `cloudAgentFolder` takes
+  coworker ids it lists, beside the company name from the vision index. The runtime's closed parser
+  accepts `folder` like `serviceTier`, turns it into the place `cloudAgentFolder` takes
   (`agents/<handle>`, else `agents/<id>`), which memory and skills now both ask, and the prompt shows
-  each agent's `folder`. Every `snapshot-v1` context and prompt keeps its exact shape.
+  each agent's `folder`. Every `snapshot-v1` context and prompt keeps its exact shape. Older parsers
+  refuse `folder`, so a bundle with this parser is active before C1c-2's `folder-v2` context sends
+  one; no `folder-v2` company runs before C1c-3.
 - Part B. `qorpera_prepare_routine_login(binding)` sets up the login the run's requester pays with for
   unattended work (`qorpera_ensure_unattended_sponsor`, which takes the login `FOR UPDATE` and writes
   rows), for the routine writer to call in its own transaction before it commits a routine file, whose
@@ -745,8 +747,8 @@ claims by kind then key (F2). All nine come before paths, objects, admission and
    **F2-1b** follows: the follow-ups on C2's queue, the context composer reading the vision and
    `agent.md`, and the agent-folder helper for memory and skills. Part A (migration
    20260929440000) is the folder names for the context and the helper (§5); part B, in the
-   same migration, the routine save's login setup; the thin writers come on core C3's folder client, and the reviewed ones after C2's
-   review recorder.
+   same migration, the routine save's login setup; the thin writers come on core C3's folder
+   client, and the reviewed ones after C2's review recorder.
 3. **F2-2** group chats and sections (migration 20260928249100; for new companies it replaces
    #370's writes and `organize_sidebar`):
    - the rooms table's folder columns, and the parse shape and database rules of both kinds;
