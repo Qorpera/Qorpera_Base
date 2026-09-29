@@ -26,6 +26,9 @@ interface Intent {
 	actor: string;
 	manifest: string;
 	objects: Map<string, number>;
+	/** Objects the actor could already read at open, and objects it put under this intent. */
+	held: Set<string>;
+	put: Set<string>;
 	state: "open" | "sealed";
 }
 
@@ -53,6 +56,13 @@ async function fixture() {
 		lose: new Map<string, number>(),
 	};
 	const puts: string[] = [];
+	/** The download rule: the hash is a manifest an entry the run may read references, or one of its chunks. */
+	const readable = (hash: string) =>
+		[...sql.readable].some(
+			(manifest) =>
+				manifest === hash ||
+				[...sql.intents.values()].some((intent) => sha(intent.manifest) === manifest && intent.objects.has(hash)),
+		);
 	// The gateway's Supabase: the folder core's per-object checks.
 	const rpc = vi.fn<typeof fetch>(async (url, init) => {
 		const request = new Request(url, init);
@@ -72,6 +82,7 @@ async function fixture() {
 			if (method === "qorpera_folder_authorize_object_upload")
 				return Response.json({ schema: "qorpera.folder-object-upload/v1", profileId: companyId });
 			puts.push(args.p_sha256 as string);
+			intent.put.add(args.p_sha256 as string);
 			const losses = sql.lose.get(args.p_sha256 as string) ?? 0;
 			if (losses > 0) sql.lose.set(args.p_sha256 as string, losses - 1);
 			else sql.catalog.set(args.p_sha256 as string, args.p_bytes as number);
@@ -84,15 +95,8 @@ async function fixture() {
 		}
 		if (method === "qorpera_folder_authorize_object_download") {
 			const hash = args.p_sha256 as string;
-			const readable = [...sql.readable].some(
-				(manifest) =>
-					manifest === hash ||
-					[...sql.intents.values()].some(
-						(intent) => sha(intent.manifest) === manifest && intent.objects.has(hash),
-					),
-			);
 			const bytes = sql.catalog.get(hash);
-			if (!readable || bytes === undefined) return Response.json({ code: "42501" }, { status: 403 });
+			if (!readable(hash) || bytes === undefined) return Response.json({ code: "42501" }, { status: 403 });
 			return Response.json({ schema: "qorpera.folder-object-download/v1", profileId: companyId, bytes });
 		}
 		return Response.json({}, { status: 404 });
@@ -110,24 +114,28 @@ async function fixture() {
 				const objects = new Map(manifest.chunks.map((chunk) => [chunk.sha256, chunk.bytes] as const));
 				objects.set(sha(text), Buffer.byteLength(text));
 				const intentId = randomUUID();
-				sql.intents.set(intentId, { actor, manifest: text, objects, state: "open" });
+				// Present: what the catalog has and the run may already read; the run puts every other object.
+				const held = new Set([...objects.keys()].filter((hash) => sql.catalog.has(hash) && readable(hash)));
+				sql.intents.set(intentId, { actor, manifest: text, objects, held, put: new Set(), state: "open" });
 				return {
 					schema: "qorpera.folder-upload/v1",
 					intentId,
 					manifestSha256: sha(text),
 					expiresAt: new Date(Date.now() + 900_000).toISOString(),
-					present: [...objects.keys()].filter((hash) => sql.catalog.has(hash)).sort(),
+					present: [...held].sort(),
 				};
 			}
 			const intent = sql.intents.get(args.p_intent as string)!;
 			if (method === "qorpera_folder_renew_upload")
 				return {
-					schema: "qorpera.folder-upload/v1",
+					schema: "qorpera.folder-upload-renew/v1",
 					intentId: args.p_intent,
 					state: intent.state,
 					expiresAt: "later",
 				};
-			const missing = [...intent.objects.keys()].filter((hash) => !sql.catalog.has(hash)).sort();
+			const missing = [...intent.objects.keys()]
+				.filter((hash) => !(intent.held.has(hash) || intent.put.has(hash)) || !sql.catalog.has(hash))
+				.sort();
 			if (missing.length)
 				return { schema: "qorpera.folder-seal/v1", state: "incomplete", intentId: args.p_intent, missing };
 			intent.state = "sealed";
@@ -227,18 +235,23 @@ it("stages a file's chunks and manifest under an intent, seals it, and reads it 
 	expect(Buffer.from(read).equals(content)).toBe(true);
 });
 
-it("gives the same reference for the same file, putting only what the catalog lacks", async () => {
-	const { bytes, puts } = await fixture();
+it("gives the same reference for the same file, putting only what the run may not already read", async () => {
+	const { bytes, sql, puts } = await fixture();
 	const signal = new AbortController().signal;
 	const first = await bytes.put(Buffer.from("same text"), "text/markdown", false, signal);
-	const count = puts.length;
+	expect(puts).toHaveLength(2);
+	// Stored but not yet readable (no entry references it): the run proves it has the bytes by putting them again.
 	expect(await bytes.put(Buffer.from("same text"), "text/markdown", false, signal)).toEqual(first);
-	expect(puts).toHaveLength(count);
+	expect(puts).toHaveLength(4);
+	// Once an entry the run may read references it, nothing is put.
+	sql.readable.add(first.manifestSha256);
+	expect(await bytes.put(Buffer.from("same text"), "text/markdown", false, signal)).toEqual(first);
+	expect(puts).toHaveLength(4);
 	// Another bit or media type is another manifest over the same chunk.
 	const executable = await bytes.put(Buffer.from("same text"), "text/markdown", true, signal);
 	expect(executable.manifestSha256).not.toBe(first.manifestSha256);
 	expect(executable.fileSha256).toBe(first.fileSha256);
-	expect(puts).toHaveLength(count + 1);
+	expect(puts).toHaveLength(5);
 	// An empty file is its manifest alone.
 	const empty = await bytes.put(new Uint8Array(0), "text/plain", false, signal);
 	expect(empty).toMatchObject({ bytes: 0, fileSha256: sha("") });
