@@ -396,8 +396,9 @@ The **provider-session owner** is locked in completion after the recheck.
 
 ### 5.9 Split and tests
 
-Three PRs, in order. Each needs C1b-3a (#497) and C1c-1 (#532) on master first. Their migrations sort after
-`20260929430000` and after #419's patches of the wake functions.
+Three PRs, in order. Each needs C1b-3a (#497) and C1c-1 (#532) on master first; C1c-2a also needs F2-1b (#534),
+whose helper the run context calls. Their migrations sort after `20260929440000` and after #419's patches of the wake
+functions.
 - **C1c-2a, the fence, the actor and reads:**
   - `folder_native_lease_current`, the targets overload of `run_enter`, `folder_tool_run` with the run mutex, and the
     dispatch in NTLR, the lease validation, `run_wake_authorized` and `wake_authorized`;
