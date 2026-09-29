@@ -483,21 +483,46 @@ describe("runner start", () => {
 		expect(service.requests[1]).toEqual(service.requests[0]);
 	});
 
-	it.each([400, 501])("accepts alone when the control plane has no start (%s), and keeps doing so", async (status) => {
-		const service = startService((body) => {
-			if (body.action === "start") throw new CloudRunnerControlRequestError(status);
-			if (body.action === "accept") return { ...jobRecord("leased"), job_id: body.jobId };
-			throw new Error("unexpected runner action");
-		});
-		const runner = await activeRunner(service.transport);
-		await expect(runner.startAssignment(assignment, 120)).resolves.toEqual({
-			job: parseCloudRunnerJob(jobRecord("leased")),
-		});
-		const next = { assignmentId: clientRunnerId, jobId: substrateVersionId, capability: assignmentCapability };
-		await expect(runner.startAssignment(next, 120)).resolves.toMatchObject({ job: { jobId: substrateVersionId } });
-		expect(service.requests.map((request) => request.action)).toEqual(["start", "accept", "accept"]);
-		expect(service.requests[1]).toEqual({ action: "accept", runnerId, assignmentId, jobId, assignmentCapability });
-	});
+	it.each([400, 501])(
+		"accepts alone for ten minutes when the control plane has no start (%s), then asks again",
+		async (status) => {
+			vi.useFakeTimers({ toFake: ["Date"] });
+			try {
+				const service = startService((body) => {
+					if (body.action === "start") throw new CloudRunnerControlRequestError(status);
+					if (body.action === "accept") return { ...jobRecord("leased"), job_id: body.jobId };
+					throw new Error("unexpected runner action");
+				});
+				const runner = await activeRunner(service.transport);
+				await expect(runner.startAssignment(assignment, 120)).resolves.toEqual({
+					job: parseCloudRunnerJob(jobRecord("leased")),
+				});
+				const next = (id: string) => ({ assignmentId: id, jobId: id, capability: assignmentCapability });
+				vi.advanceTimersByTime(10 * 60_000 - 1);
+				await expect(runner.startAssignment(next(substrateVersionId), 120)).resolves.toMatchObject({
+					job: { jobId: substrateVersionId },
+				});
+				vi.advanceTimersByTime(1);
+				await runner.startAssignment(next(clientJobId), 120);
+				expect(service.requests.map((request) => request.action)).toEqual([
+					"start",
+					"accept",
+					"accept",
+					"start",
+					"accept",
+				]);
+				expect(service.requests[1]).toEqual({
+					action: "accept",
+					runnerId,
+					assignmentId,
+					jobId,
+					assignmentCapability,
+				});
+			} finally {
+				vi.useRealTimers();
+			}
+		},
+	);
 
 	it.each([401, 409, 423, 503, undefined])(
 		"does not fall back when a start may have run or was refused (%s)",

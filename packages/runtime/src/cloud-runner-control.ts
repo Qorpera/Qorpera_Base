@@ -28,6 +28,9 @@ import {
 import type { JsonValue } from "@qorpera/contracts";
 import { type CloudRunnerBrokerTransport, CloudRunnerJobBroker, type CloudRunnerStart } from "./cloud-runner-broker.ts";
 
+/** How long a runner accepts alone after the control plane showed it has no start action. */
+const START_RETRY_MS = 10 * 60_000;
+
 interface PendingHeartbeat {
 	nextToken: string;
 	renewalId: string;
@@ -298,9 +301,9 @@ export class DisposableCloudRunner {
 	#pendingAssignment?: PendingAssignment;
 	#runner?: CloudRunner;
 	#consumedRepairSha256?: string;
-	/** The control plane refused the start action before doing anything (400: an Edge Function
-	 * without it; 501: a database without it). This process accepts alone from then on. */
-	#startUnavailable = false;
+	/** Until this time the runner accepts alone: the control plane refused the start action
+	 * before doing anything (400: an Edge Function without it; 501: a database without it). */
+	#startUnavailableUntil = 0;
 	readonly #leases = new Map<string, ActiveRunnerLease>();
 	readonly #recoveries = new Map<string, CloudRunnerRecovery>();
 	#persistTail: Promise<void> = Promise.resolve();
@@ -488,18 +491,19 @@ export class DisposableCloudRunner {
 	 * reads the broker description and, with `nativeLeaseSeconds`, the native authority, so the
 	 * job's broker needs no further round trip before execution. `start` is absent when the cloud
 	 * deferred those reads (the broker then makes the separate calls) or does not offer the start
-	 * action at all: a 400 or 501 proves nothing ran, and this runner then accepts alone. */
+	 * action at all: a 400 or 501 proves nothing ran, and this runner then accepts alone for
+	 * START_RETRY_MS before it asks for a start again (a rollout may deploy it meanwhile). */
 	async startAssignment(
 		assignment: CloudRunnerAssignmentAcceptance,
 		nativeLeaseSeconds?: number,
 	): Promise<{ job: CloudRunnerJob; start?: CloudRunnerStart }> {
-		if (!this.#startUnavailable) {
+		if (Date.now() >= this.#startUnavailableUntil) {
 			try {
 				return await this.#accept(assignment, { nativeLeaseSeconds });
 			} catch (error) {
 				const status = cloudRunnerControlRequestStatus(error);
 				if (status !== 400 && status !== 501) throw error;
-				this.#startUnavailable = true;
+				this.#startUnavailableUntil = Date.now() + START_RETRY_MS;
 			}
 		}
 		return this.#accept(assignment);
