@@ -37,7 +37,9 @@
 --
 -- The mode is decided by the transaction's entry point, never by a nested call: PostgREST sets request.path
 -- to the RPC it runs, one RPC per transaction, and qorpera_company_fence_shared() is true only for these
--- names. A reader RPC reached from inside a writer (qorpera_describe_native_tool_authority is called by
+-- names in PostgREST's exact form (/rpc/<name>, or /rest/v1/rpc/<name>). Supabase Storage also sets
+-- request.path, to its own URL with the query string; the pattern is anchored so that no Storage URL (they
+-- start /object, /upload, /bucket, /s3 or /render) can name a reader. A reader RPC reached from inside a writer (qorpera_describe_native_tool_authority is called by
 -- twenty of them) keeps the exclusive fence, so no transaction takes the fence shared and then exclusive,
 -- which would deadlock two such transactions. The readers' whole call graph (functions and the triggers of
 -- the tables they write) takes no other exclusive lock on these three rows; the one it reached,
@@ -84,7 +86,7 @@ language sql
 stable
 set search_path = ''
 as $$
-	select coalesce(substring(coalesce(current_setting('request.path', true), '') from '(?:^|/)rpc/([a-z0-9_]+)$') = any (array[
+	select coalesce(substring(coalesce(current_setting('request.path', true), '') from '^(?:/rest/v1)?/rpc/([a-z0-9_]+)$') = any (array[
 		'qorpera_describe_native_tool_authority',
 		'qorpera_assert_company_path_reads',
 		'qorpera_record_native_context_view',
@@ -102,7 +104,9 @@ as $$
 $$;
 comment on function public.qorpera_company_fence_shared() is
 	'True when this transaction entered through a reader RPC (PostgREST request.path): the company fence and Company File row are then taken FOR SHARE. 20260929380000.';
-revoke all on function public.qorpera_company_fence_shared() from public;
+-- Internal: only SECURITY DEFINER functions owned by the migration role call these. Supabase's default
+-- privileges grant EXECUTE on new functions to the API roles, so revoke from them too, not only from PUBLIC.
+revoke all on function public.qorpera_company_fence_shared() from public, anon, authenticated, service_role;
 
 -- A reader's fence: the profile row, then the wake admission row, FOR SHARE, each waited for 1500 ms at most.
 create function public.qorpera_lock_profile_gc_fence_shared(p_profile_id uuid)
@@ -120,7 +124,7 @@ begin
 	perform 1 from public.qorpera_company_wake_admission_fences where profile_id = p_profile_id for share;
 end
 $$;
-revoke all on function public.qorpera_lock_profile_gc_fence_shared(uuid) from public;
+revoke all on function public.qorpera_lock_profile_gc_fence_shared(uuid) from public, anon, authenticated, service_role;
 
 -- A reader's Company File row, FOR SHARE, waited for 1500 ms at most.
 create function public.qorpera_lock_company_file_shared(p_environment_id uuid)
@@ -134,7 +138,7 @@ begin
 	perform 1 from public.qorpera_company_files where environment_id = p_environment_id for share;
 end
 $$;
-revoke all on function public.qorpera_lock_company_file_shared(uuid) from public;
+revoke all on function public.qorpera_lock_company_file_shared(uuid) from public, anon, authenticated, service_role;
 
 create function pg_temp.company_fence_shared_patch(p_target regprocedure, p_old text, p_new text)
 returns void language plpgsql as $$

@@ -46,7 +46,8 @@ const options = { skipped: new Set(), seconds: 40, agents: 8, writers: 2, pool: 
 		if (flag === "--check") options.check = true;
 		else if (flag === "--skip" && value) options.skipped.add(args[++index]);
 		else if (flag === "--seconds" && value) options.seconds = count(args[++index], flag, 5, 600);
-		else if (flag === "--agents" && value) options.agents = count(args[++index], flag, 1, 32);
+		// The fixture's sponsor admits 32 concurrent runs, and 602's own run holds one of them.
+		else if (flag === "--agents" && value) options.agents = count(args[++index], flag, 1, 31);
 		else if (flag === "--writers" && value) options.writers = count(args[++index], flag, 0, 32);
 		else if (flag === "--pool" && value) options.pool = count(args[++index], flag, 2, 64);
 		else if (flag === "--rtt" && value) options.rtt = count(args[++index], flag, 0, 1000);

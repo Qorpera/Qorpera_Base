@@ -151,6 +151,11 @@ begin
 	perform pg_temp.wake_assert(public.qorpera_company_fence_shared(), 'The read-set check is a reader');
 	foreach v_path in array array['/rpc/qorpera_commit_company_path_mutation', '/rpc/qorpera_begin_native_tool_operation',
 		'/rpc/qorpera_validate_native_provider_execution_lease',
+		-- Supabase Storage sets request.path to its own URL, query string included.
+		'/object/qorpera-profile-objects/30000000-0000-4000-8000-000000000010/abc?x=/rpc/qorpera_read_company_path',
+		'/object/some-bucket/folder/rpc/qorpera_list_company_paths',
+		'/upload/resumable/abc?cb=/rpc/qorpera_describe_native_tool_authority',
+		'/storage/v1/object/rpc/qorpera_read_company_path_v2', 'rpc/qorpera_read_company_path_v2',
 		'/rpc/qorpera_describe_native_tool_authority_x', '/rpc/qorpera_describe_native_tool_authority/', '/qorpera_read_company_path_v2', ''] loop
 		perform set_config('request.path', v_path, true);
 		perform pg_temp.wake_assert(not public.qorpera_company_fence_shared(), 'Not a reader: ' || v_path);
@@ -178,6 +183,19 @@ begin
 	select proconfig into v_config from pg_catalog.pg_proc
 	where oid = 'public.qorpera_validate_native_provider_execution_lease(uuid,uuid,uuid,uuid,uuid,uuid,uuid,text,text)'::regprocedure;
 	perform pg_temp.wake_assert('lock_timeout=25s' = any (v_config), 'The lease validator keeps its own budget: ' || v_config::text);
+end
+$$;
+-- The helpers are internal: no API role may call them. (This database has no default privileges for functions,
+-- 070 pins that; production's Supabase defaults grant EXECUTE to these roles, which the migration revokes.)
+do $$
+declare v_function regprocedure; v_role text;
+begin
+	foreach v_function in array array['public.qorpera_company_fence_shared()'::regprocedure,
+		'public.qorpera_lock_profile_gc_fence_shared(uuid)'::regprocedure, 'public.qorpera_lock_company_file_shared(uuid)'::regprocedure] loop
+		foreach v_role in array array['public', 'anon', 'authenticated', 'service_role'] loop
+			perform pg_temp.wake_assert(not has_function_privilege(v_role, v_function, 'EXECUTE'), v_role || ' cannot call ' || v_function);
+		end loop;
+	end loop;
 end
 $$;
 
