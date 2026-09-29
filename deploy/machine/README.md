@@ -85,6 +85,8 @@ The steps below need root on the node and a maintenance window. The coordinator 
    - An executor without a `machines` block makes no machines, but still forwards machine commands to its peers.
 6. **Roll the observer.** Roll the node observer build that knows `qorpera.lxd-company-machine/v1` before the first machine. An older observer marks the node unavailable when it meets one.
 
+A deleted company's machines are deleted with it: `qorpera_stop_company_work` (company deletion) sets each one `deleted` under the company's fence and machines lock, clears who would be woken, and each node's executor deletes and releases its placements. The purge waits for their allocations like any other (migration `20260929360000`).
+
 Rollback:
 - `qorpera_configure_machine_executor(owner, sha, false, policy, diskBytes)` stops admission. Running machines keep their leases.
 - Stop and delete the node's machines with the members' action or the agent tool. Their allocations are released only by the executor's proven delete.
