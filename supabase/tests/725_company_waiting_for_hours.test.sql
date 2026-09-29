@@ -1,5 +1,5 @@
 -- @fixture 300_runtime_wake_bus.test.sql until "-- END WAKE FIXTURE"
--- Computer hours, build step 6d part 2 (20260929280000_company_waiting_for_hours): any member reads
+-- Computer hours, build step 6d part 2 (20260928259280_company_waiting_for_hours): any member reads
 -- whether the company waits for computer hours; nobody else can.
 
 insert into auth.users(id,email) values ('72500000-0000-4000-8000-000000000009','outsider@example.test');

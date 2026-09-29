@@ -131,7 +131,7 @@ Boundary of the current implementation:
 
 `LxdOfficeRetirementWorker` retires the Company Computer of a company being
 deleted (RUNTIME-COMPANY-DELETE.md, D3; migration
-`20260929320000_runtime_office_retirement.sql`). It runs only after the
+`20260928259320_runtime_office_retirement.sql`). It runs only after the
 power-off worker's confirmed `powered_off` for a `power_off` transition with no
 resume, or after that power-off's completion when its replay fails (for
 example after a node reboot: the power-off worker binds its host boot). The

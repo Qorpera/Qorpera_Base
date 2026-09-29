@@ -1,4 +1,9 @@
 import { createHash } from "node:crypto";
+import {
+	CLOUD_AGENT_FOLDER_BY_ID,
+	type CloudAgentFolderPlace,
+	cloudAgentFolder,
+} from "@qorpera/cloud-client/cloud-agent-folder";
 import type { CompanyPathPresenceView } from "@qorpera/cloud-client/company-path-presence";
 import type { JsonValue } from "@qorpera/contracts";
 import type { CloudCompanyPathControl } from "./cloud-company-path-gateway.ts";
@@ -204,6 +209,30 @@ export interface CloudNativeCompanyContext {
 	/** Named only for runs admitted under a bundle with fast mode. It travels
 	 * here, not in the shared tool identity, which company computers also read. */
 	serviceTier?: CloudRuntimeServiceTier;
+	/** Only for a company whose storage core is folder-v2 (workstream F2), whose agents' folders are
+	 * named: this agent's folder name, and its listed coworkers' by id. Absent for every company today,
+	 * whose agents' folders are their ids. */
+	folder?: CloudCompanyContextFolders;
+}
+
+/** The folder names of a folder-v2 company's agents (agents/<handle>/). */
+export interface CloudCompanyContextFolders {
+	agent: string;
+	coworkers: Readonly<Record<string, string>>;
+}
+
+/** A coworker as the prompt shows it: in a folder-v2 company, with its folder when it has one. */
+function withFolder(
+	coworker: ContextAgent,
+	folders: CloudCompanyContextFolders,
+): ContextAgent | (ContextAgent & { folder: string }) {
+	const handle = folders.coworkers[coworker.id];
+	return handle ? { ...coworker, folder: `agents/${handle}` } : coworker;
+}
+
+/** Where this run's company keeps its agents' folders, for cloudAgentFolder. */
+export function cloudAgentFolderPlace(context: CloudNativeCompanyContext): CloudAgentFolderPlace {
+	return context.folder ? { core: "folder-v2", handle: context.folder.agent } : CLOUD_AGENT_FOLDER_BY_ID;
 }
 
 function closed(value: unknown, keys: readonly string[]): Record<string, unknown> {
@@ -339,10 +368,14 @@ export function parseCloudNativeCompanyContext(
 	value: unknown,
 	binding: CloudNativeToolBinding,
 ): CloudNativeCompanyContext {
-	const tiered = value && typeof value === "object" && !Array.isArray(value) && Object.hasOwn(value, "serviceTier");
-	const { serviceTier, ...untiered } = tiered ? (value as Record<string, unknown>) : { serviceTier: undefined };
+	// Two keys are present only for some runs: serviceTier (fast mode) and folder (a folder-v2 company).
+	const record =
+		value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+	const tiered = record !== null && Object.hasOwn(record, "serviceTier");
+	const foldered = record !== null && Object.hasOwn(record, "folder");
+	const { serviceTier, folder: folderValue, ...always } = record ?? {};
 	if (tiered && !isCloudRuntimeServiceTier(serviceTier)) throw new Error("Invalid cloud company context");
-	const data = closed(tiered ? untiered : value, [
+	const data = closed(record ? always : value, [
 		"schema",
 		"identity",
 		"observedAt",
@@ -433,6 +466,7 @@ export function parseCloudNativeCompanyContext(
 				continuation.content.offset !== 0))
 	)
 		throw new Error("Cloud context does not match its admitted run");
+	const folder = foldered ? contextFolders(folderValue, identity, coworkers) : undefined;
 	return {
 		schema: CLOUD_NATIVE_COMPANY_CONTEXT_SCHEMA,
 		identity,
@@ -454,7 +488,32 @@ export function parseCloudNativeCompanyContext(
 		jobSpecification,
 		continuation,
 		...(tiered ? { serviceTier: serviceTier as CloudRuntimeServiceTier } : {}),
+		...(folder ? { folder } : {}),
 	};
+}
+
+/** A folder-v2 company's folder names: the agent's own, and one for each listed coworker that has a
+ * folder (cloudAgentFolder checks each name). */
+function contextFolders(
+	value: unknown,
+	identity: CloudNativeToolIdentity,
+	coworkers: readonly ContextAgent[],
+): CloudCompanyContextFolders {
+	const data = closed(value, ["agent", "coworkers"]);
+	const named = (handle: unknown, staffAgentId: string): string => {
+		if (typeof handle !== "string") throw new Error("Invalid cloud company context");
+		cloudAgentFolder(identity.companyId, staffAgentId, { core: "folder-v2", handle });
+		return handle;
+	};
+	if (!data.coworkers || typeof data.coworkers !== "object" || Array.isArray(data.coworkers))
+		throw new Error("Invalid cloud company context");
+	const listed = new Set(coworkers.map((coworker) => coworker.id));
+	const coworkerFolders: Record<string, string> = {};
+	for (const [staffAgentId, handle] of Object.entries(data.coworkers)) {
+		if (!listed.has(staffAgentId)) throw new Error("Cloud context does not match its admitted run");
+		coworkerFolders[staffAgentId] = named(handle, staffAgentId);
+	}
+	return { agent: named(data.agent, identity.staffAgentId), coworkers: Object.freeze(coworkerFolders) };
 }
 
 /** The last thing read before acting: how this run must end. A missing required
@@ -517,11 +576,13 @@ export function composeCloudNativeCompanyPrompt(
 		initialAcknowledgementSatisfied: context.initialAcknowledgementSatisfied,
 		beforeWork: acknowledgementRequired ? "acknowledge" : context.continuation ? "read_continuation" : "work",
 	};
+	// A folder-v2 company's agents have named folders; every other prompt is unchanged.
+	const folders = context.folder;
 	const prompt = JSON.stringify({
 		schema: CLOUD_NATIVE_COMPANY_CONTEXT_SCHEMA,
 		identity: {
 			company: context.company,
-			agent: context.agent,
+			agent: folders ? { ...context.agent, folder: `agents/${folders.agent}` } : context.agent,
 			execution: "pure_cloud",
 			companyFile: "live_path_gateway",
 			audience: context.audience,
@@ -562,7 +623,7 @@ export function composeCloudNativeCompanyPrompt(
 		currentInputs: context.currentInputs,
 		history: context.history,
 		historyTruncated: context.historyTruncated,
-		coworkers: context.coworkers,
+		coworkers: folders ? context.coworkers.map((coworker) => withFolder(coworker, folders)) : context.coworkers,
 		coworkersTruncated: context.coworkersTruncated,
 		job: context.job,
 		continuation: context.continuation,
