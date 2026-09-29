@@ -182,6 +182,124 @@ describe("Plan & usage", () => {
 		expect(container.querySelector(".notice")?.textContent).toContain("Entitlement offline");
 	});
 
+	it("shows the company's hours left from the live switch on, by source, and to founders who pays", () => {
+		const hours = {
+			profileId: "00000000-0000-4000-8000-000000000001",
+			month: "2026-10",
+			timeZone: "Europe/Copenhagen",
+			usedSeconds: 36_000,
+			byKind: { companyMachines: 0, agentMachines: 0, codingMachines: 0, runs: 36_000 },
+			awakeNow: { companyMachines: 0, agentMachines: 0, codingMachines: 0, runs: 0 },
+			meteredUntil: "2026-10-02T18:00:00Z",
+			waitingForHours: false,
+		};
+		const anna = "00000000-0000-4000-8000-00000000000a";
+		const bo = "00000000-0000-4000-8000-00000000000b";
+		const names: Record<string, string> = { [anna]: "Anna", [bo]: "Bo" };
+		const usage = {
+			companyName: "Company A",
+			file,
+			loading: false,
+			retry() {},
+			memberName: (userId: string) => names[userId],
+		};
+		const left = {
+			complimentary: false as const,
+			leftSeconds: 90_100,
+			freeSeconds: 100,
+			planSeconds: 18_000,
+			creditSeconds: 72_000,
+			owedSeconds: 0,
+		};
+		const card = () => container.querySelector(".settings-company-hours")!;
+		// A contributor: how many hours are left and from what, never who paid.
+		renderPlan(
+			container,
+			{ loaded: true, entitlement: entitlement("basis") },
+			{ ...usage, founder: false, hours: { value: { ...hours, hoursLeft: left }, loading: false } },
+		);
+		expect(card().textContent).toContain("Company A · 25 h left");
+		expect(card().textContent).not.toContain("Measured, not charged yet");
+		// Under three minutes of free hours would read "0 h": left out.
+		expect(card().querySelector(".settings-hours-sources")?.textContent).toBe("Plans 5 h · Packs 20 h");
+		expect(card().querySelector(".settings-hours-founder")).toBeNull();
+		renderPlan(
+			container,
+			{ loaded: true, entitlement: entitlement("basis") },
+			{
+				...usage,
+				founder: false,
+				hours: {
+					value: { ...hours, hoursLeft: { ...left, freeSeconds: 7200, leftSeconds: 97_200 } },
+					loading: false,
+				},
+			},
+		);
+		expect(card().querySelector(".settings-hours-sources")?.textContent).toBe(
+			"Free hours 2 h · Plans 5 h · Packs 20 h",
+		);
+		// A founder also sees each founder's share.
+		renderPlan(
+			container,
+			{ loaded: true, entitlement: entitlement("basis") },
+			{
+				...usage,
+				founder: true,
+				hours: {
+					value: {
+						...hours,
+						hoursLeft: {
+							...left,
+							founders: [
+								{ userId: anna, creditSeconds: 72_000 },
+								{ userId: bo, planSeconds: 18_000 },
+								{ userId: "00000000-0000-4000-8000-00000000000c" },
+								{ userId: "00000000-0000-4000-8000-00000000000d", creditSeconds: 3600 },
+								{ creditSeconds: 7200 },
+							],
+						},
+					},
+					loading: false,
+				},
+			},
+		);
+		expect([...card().querySelectorAll(".settings-hours-founder")].map((line) => line.textContent)).toEqual([
+			"Anna: packs 20 h",
+			"Bo: plan 5 h",
+			"A founder: packs 1 h",
+			"Former founders: packs 2 h",
+		]);
+		expect(card().querySelector(".settings-hours-shared")?.textContent).toBe(
+			"A founder's plan is shared by every company it pays for.",
+		);
+		// Past zero: nothing left, and what it owes.
+		renderPlan(
+			container,
+			{ loaded: true, entitlement: entitlement("basis") },
+			{
+				...usage,
+				hours: {
+					value: {
+						...hours,
+						waitingForHours: true,
+						hoursLeft: { ...left, leftSeconds: -3600, planSeconds: 0, creditSeconds: 0, owedSeconds: 3600 },
+					},
+					loading: false,
+				},
+			},
+		);
+		expect(card().textContent).toContain("Company A · 0 h left");
+		expect(card().querySelector(".settings-hours-sources")?.textContent).toBe("Owed 1 h");
+		// A complimentary company is never limited.
+		renderPlan(
+			container,
+			{ loaded: true, entitlement: entitlement("basis") },
+			{ ...usage, hours: { value: { ...hours, hoursLeft: { complimentary: true } }, loading: false } },
+		);
+		expect(card().textContent).toContain("Company A · Complimentary: no limit");
+		expect(card().querySelector(".settings-hours-sources")).toBeNull();
+	});
+
 	it("shows the open company's measured computer hours this month and what they were used on", () => {
 		const hours = {
 			profileId: "00000000-0000-4000-8000-000000000001",

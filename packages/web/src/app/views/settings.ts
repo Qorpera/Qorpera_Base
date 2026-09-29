@@ -520,6 +520,8 @@ export class SettingsView {
 						},
 						profileId: company.profile.profileId,
 						founder: this.#planFounder,
+						memberName: (userId) =>
+							company.store.get().team?.members.find((member) => member.userId === userId)?.displayName,
 					}
 				: undefined,
 			{
