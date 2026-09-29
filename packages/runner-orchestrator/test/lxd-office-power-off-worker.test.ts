@@ -64,7 +64,7 @@ describe("serialized VM power-off", () => {
 			),
 		).toBe(true);
 	});
-	it("gives the node slot back after the confirmed stop, and repeats the same suspension on replay", async () => {
+	it("gives the node slot back after the confirmed stop, and a new process repeats the same suspension", async () => {
 		const f = await fixture();
 		await expect(f.run()).resolves.toMatchObject({ state: "powered_off" });
 		const [call] = f.suspensions();
@@ -81,6 +81,56 @@ describe("serialized VM power-off", () => {
 		await expect(f.run()).resolves.toMatchObject({ state: "powered_off" });
 		expect(f.suspensions()).toHaveLength(2);
 		expect(f.suspensions()[1]![1]).toEqual(call![1]);
+		expect(f.submit).toHaveBeenCalledOnce();
+	});
+	// 2026-09-28: the lifecycle replays a stopped computer every pass; each suspend
+	// call locked the node row although the demand was suspended 42 hours earlier.
+	it.each([
+		[
+			"was already suspended",
+			(allocationId: string) => ({
+				state: "suspended",
+				allocationId,
+				nodeId: "36000000-0000-4000-8000-000000000010",
+				suspendedAt: "2026-09-27T01:03:57.405869+00:00",
+			}),
+		],
+		["kept the slot for a resume", () => ({ state: "kept", reason: "RESUME_PENDING" })],
+		["kept no reservation", () => ({ state: "kept", reason: "NOT_RESERVED" })],
+	])("asks SQL once per transition while the same process replays (%s)", async (_, answer) => {
+		const f = await fixture(),
+			worker = f.create(),
+			replay = () => worker.reconcile(f.activation.request.intentId, f.request, signal()),
+			authority = () =>
+				f.registry.mock.calls.filter(([method]) => method === "qorpera_runtime_office_stop_status").length;
+		f.suspension.value = answer(f.binding.allocationId);
+		const result = await replay();
+		expect(result.state).toBe("powered_off");
+		const checked = authority();
+		f.file.mockRejectedValue(new Error("stopped guest has no file API"));
+		for (let n = 0; n < 3; n++) await expect(replay()).resolves.toEqual(result);
+		expect(f.suspensions()).toHaveLength(1);
+		expect(f.submit).toHaveBeenCalledOnce();
+		// Each replay still rechecks the stopped VM and SQL stop authority.
+		expect(authority()).toBe(checked + 3);
+	});
+	it("asks again in the same process until SQL answers, then stops asking", async () => {
+		const f = await fixture(),
+			worker = f.create(),
+			replay = () => worker.reconcile(f.activation.request.intentId, f.request, signal());
+		f.suspension.value = new Error("suspension reply lost");
+		await expect(replay()).rejects.toThrow("OFFICE_POWER_OFF_UNCONFIRMED");
+		f.file.mockRejectedValue(new Error("stopped guest has no file API"));
+		await expect(replay()).rejects.toThrow("OFFICE_POWER_OFF_UNCONFIRMED");
+		f.suspension.value = {
+			state: "suspended",
+			allocationId: f.binding.allocationId,
+			nodeId: "36000000-0000-4000-8000-000000000010",
+			suspendedAt: "2026-09-23T15:00:00Z",
+		};
+		await expect(replay()).resolves.toMatchObject({ state: "powered_off" });
+		await expect(replay()).resolves.toMatchObject({ state: "powered_off" });
+		expect(f.suspensions()).toHaveLength(3);
 		expect(f.submit).toHaveBeenCalledOnce();
 	});
 	it("keeps the slot through a reboot", async () => {
