@@ -50,6 +50,9 @@ const intent = {
 	computerGeneration: 1,
 	state: "requested" as const,
 };
+// The renderer chunk is never really loaded here. Most tests stand in for loadComputerViewer; the
+// one that runs the real loader meets a download that stalls.
+vi.mock("../src/ui/screen-viewer.mjs", () => new Promise<object>(() => {}));
 const START_WRITES = /\/(?:qorpera_request_runtime_office_start|qorpera_cancel_runtime_office_start)$/;
 const cleanup: (() => void)[] = [];
 beforeEach(() => {
@@ -423,6 +426,26 @@ describe("automatic computer popover", () => {
 		expect(offered.map((button) => button.textContent)).toEqual(["Reload page"]);
 		offered[0]!.click();
 		expect(reload).toHaveBeenCalledOnce();
+	});
+	it("ends a renderer download that stalls in the same reload state, asking nothing of the machine", async () => {
+		vi.mocked(viewer.loadComputerViewer).mockRestore();
+		const f = setup({
+			qorpera_runtime_office_start_status: { ...start, officeState: "provisioning" },
+			qorpera_request_runtime_office_start: intent,
+		});
+		const open = spyViewer();
+		const p = await opened(f.computer);
+		// Found the machine; waits for the renderer before starting it.
+		expect(statusLine(p)).toBe("Connecting…");
+		await vi.advanceTimersByTimeAsync(viewer.RENDERER_DEADLINE_MS - 1);
+		await settle();
+		expect(statusLine(p)).toBe("Connecting…");
+		await vi.advanceTimersByTimeAsync(1);
+		await settle();
+		expect(statusLine(p)).toBe("The computer screen could not be loaded in this tab. Reload the page to open it.");
+		expect(action(p.el, "Reload page").hidden).toBe(false);
+		expect(methods(f)).toEqual(["qorpera_member_agent_office", "qorpera_member_office_catalog"]);
+		expect(open).not.toHaveBeenCalled();
 	});
 	it("keeps unavailable and missing computers inside the popover without starting a runtime", async () => {
 		const unavailable = new ComputerPanel(staff);
