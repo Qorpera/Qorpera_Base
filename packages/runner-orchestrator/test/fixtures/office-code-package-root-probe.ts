@@ -51,8 +51,11 @@ await chmod(credentials, 0o700);
 /** No predecessor credential was restored: still the image's private empty directory. */
 const assertNoOldCredentials = () => {
 	const s = lstatSync(credentials);
-	assert.ok(s.isDirectory() && s.uid === 0 && s.gid === 0 && (s.mode & 0o7777) === 0o700);
-	assert.deepEqual(readdirSync(credentials), []);
+	assert.ok(
+		s.isDirectory() && s.uid === 0 && s.gid === 0 && (s.mode & 0o7777) === 0o700,
+		"credential directory changed",
+	);
+	assert.deepEqual(readdirSync(credentials), [], "historical credentials restored");
 };
 await mkdir(f.historyDirectory, { recursive: true, mode: 0o700 });
 for (const [path, bytes] of f.archiveFiles) await put(path, bytes, 0o600);
@@ -468,6 +471,11 @@ if (
 		await assert.rejects(lstat(`/etc/qorpera-office/code-packages/${plan.provisionId}/installed.json`), {
 			code: "ENOENT",
 		});
+		// Refused before the claim, so no code file was replaced.
+		if (scenario === "credentials-after-preflight")
+			await assert.rejects(lstat(`/etc/qorpera-office/code-packages/${plan.provisionId}/claim.json`), {
+				code: "ENOENT",
+			});
 		console.log(JSON.stringify({ scenario, actualRootRefusal: true, noInstalledReceipt: true }));
 	} else if (scenario === "wrong-nonce" || scenario === "expired-probe") {
 		assert.notEqual(

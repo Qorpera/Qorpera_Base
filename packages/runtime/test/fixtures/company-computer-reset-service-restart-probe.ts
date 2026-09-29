@@ -271,7 +271,10 @@ if (mode === "--configure") {
 				if (scenario === "configuration-stage-owner") await chown(stage, 1000, 1000);
 				if (scenario === "configuration-preparation-differs")
 					await writeFile("/etc/qorpera-office/preparation.json", "changed", { mode: 0o444 });
-				assert.equal(run("--configure").status, 1, "invalid reset configuration custody must be refused");
+				const refused = run("--configure");
+				assert.equal(refused.status, 1, "invalid reset configuration custody must be refused");
+				if (scenario.endsWith("-credentials"))
+					assert.match(refused.stderr, /\[cause\]: Error: stale root authority present/);
 				await assert.rejects(lstat(f.paths.configuration), { code: "ENOENT" });
 				await assert.rejects(lstat(f.paths.completion), { code: "ENOENT" });
 				assert.equal(await readFile(note, "utf8"), "edited after adoption");
@@ -347,7 +350,10 @@ if (mode === "--configure") {
 			assert.equal(await load(`${root}/fixture-starts.json`), 1);
 			assert.deepEqual(await load(f.paths.completion), f.startCompletion);
 			const kept = await lstat(credentials);
-			assert.ok(kept.isDirectory() && kept.uid === 0 && kept.gid === 0 && (kept.mode & 0o7777) === 0o700);
+			assert.ok(
+				kept.isDirectory() && kept.uid === 0 && kept.gid === 0 && (kept.mode & 0o7777) === 0o700,
+				"credential directory changed",
+			);
 			assert.deepEqual(await readdir(credentials), [], "historical credentials restored");
 			await stop(r);
 			assert.equal(run("--initial-start").status, 1, "stopped reset origin cannot replay its initial start");
