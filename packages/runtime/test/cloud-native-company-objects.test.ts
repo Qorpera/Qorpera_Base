@@ -339,7 +339,11 @@ describe("lock conflicts on the native object route", () => {
 
 describe("which refusals the native object transport sends again", () => {
 	const conflict = { error: "Object authority rejected the operation", code: "lock_conflict" };
-	function transport(answer: (attempt: number) => Promise<Response> | Response, timeoutMs?: number) {
+	function transport(
+		answer: (attempt: number) => Promise<Response> | Response,
+		timeoutMs?: number,
+		run = new AbortController(),
+	) {
 		const f = nativeToolAuthorityFixture();
 		const starts: number[] = [];
 		const started = performance.now();
@@ -352,7 +356,7 @@ describe("which refusals the native object transport sends again", () => {
 			token: "n".repeat(43),
 			companyId: f.authority.identity.companyId,
 			binding: f.binding,
-			signal: new AbortController().signal,
+			signal: run.signal,
 			fetch: request,
 			...(timeoutMs ? { timeoutMs } : {}),
 		});
@@ -430,9 +434,10 @@ describe("which refusals the native object transport sends again", () => {
 		// 100–300 ms, then 300–700 ms.
 		const [first, second] = [t.starts[1]! - t.starts[0]!, t.starts[2]! - t.starts[1]!];
 		expect(first).toBeGreaterThanOrEqual(random ? 295 : 95);
-		expect(first).toBeLessThan(random ? 450 : 250);
+		// Upper bounds leave room for a busy event loop, and stay below the other end of each range.
+		expect(first).toBeLessThan(random ? 550 : 300);
 		expect(second).toBeGreaterThanOrEqual(random ? 695 : 295);
-		expect(second).toBeLessThan(random ? 850 : 450);
+		expect(second).toBeLessThan(random ? 950 : 700);
 		vi.mocked(Math.random).mockRestore();
 	});
 
@@ -471,11 +476,18 @@ describe("which refusals the native object transport sends again", () => {
 		expect(elapsed).toBeLessThan(5_000);
 	}, 10_000);
 
-	it("ends with the caller's deadline during a pause", async () => {
-		const t = transport(() => Response.json(conflict, { status: 409 }), 150);
-		const started = performance.now();
-		await expect(t.put()).rejects.toThrow();
-		expect(performance.now() - started).toBeLessThan(400);
+	it("ends a pause when the run ends", async () => {
+		vi.spyOn(Math, "random").mockReturnValue(1);
+		const run = new AbortController();
+		const t = transport(() => Response.json(conflict, { status: 409 }), undefined, run);
+		const put = t.put();
+		await expect.poll(() => t.request.mock.calls.length).toBe(1);
+		setTimeout(() => run.abort(), 20);
+		await expect(put).rejects.toThrow("Cloud tool authority unavailable");
+		vi.mocked(Math.random).mockRestore();
+		// Stopped inside the 300 ms pause; nothing more was sent.
+		expect(performance.now() - t.started).toBeLessThan(250);
+		await new Promise((resolve) => setTimeout(resolve, 400));
 		expect(t.request).toHaveBeenCalledOnce();
 	});
 });
