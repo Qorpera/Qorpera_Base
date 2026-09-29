@@ -1,5 +1,5 @@
 -- Company state files, F2-6, under concurrency (deploy/first-node/RUNTIME-COMPANY-STATE-FILES.md §4): a routine save takes
--- the company row FOR KEY SHARE at rank 2 and the routine FOR NO KEY UPDATE at rank 5, before its paths and the clock. The
+-- the company row FOR KEY SHARE at rank 0 and the routine FOR NO KEY UPDATE at rank 5, before its paths and the clock. The
 -- scheduler (qorpera_enqueue_routine_wake) takes the company row FOR UPDATE (the fence), then the routine and its schedule
 -- position, so whichever starts first, the other waits at the company row and nothing waits in a circle. A save that makes
 -- a new version supersedes the slot the scheduler queued and carries it to the new version; a scheduler that finds a

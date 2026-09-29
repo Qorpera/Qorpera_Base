@@ -445,7 +445,7 @@ and its first version; deleting the file retires it (its runs and history stay) 
 key a tombstone, as a todo's; a restore brings it back; a move repoints it, and a move to
 another agent's folder is a version like the last one with the new agent, paid by the mover. The routine row is
 locked at rank 5 `FOR NO KEY UPDATE` (a run of that routine holds it `FOR KEY SHARE`), with the
-company row at rank 2 for the rows' foreign keys. The scheduler takes the company row `FOR
+company row at rank 0 for the rows' foreign keys. The scheduler takes the company row `FOR
 UPDATE` (its fence) before the routine, so it and a save wait for each other at the company row
 (test 709). The member RPC (`qorpera_upsert_cloud_routine`) refuses a `folder-v2` company's
 routines with 55000, except rows from before it became `folder-v2`; the agent tools
@@ -455,8 +455,8 @@ agents write routine files (their file writers come with F2-1b). The name index
 carries several routines (an agent folder's delete or move) locks them in id order while the
 expiry sweep updates ended routines in its own order, so the two can deadlock (40P01; one side
 retries, nothing is wrong). F1's C1b-3a (#497,
-20260929230000) moves the company row to rank 0; F2-6 lands after it and takes the row there too
-(its migration stops if it would put it back at rank 2).
+20260929230000) moved the company row to rank 0, before the members; F2-6 takes it there too (its
+migration stops if that change has not run).
 
 ### `agents/<handle>/todos/<name>.md`
 

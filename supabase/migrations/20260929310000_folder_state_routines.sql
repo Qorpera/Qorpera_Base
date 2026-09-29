@@ -30,7 +30,7 @@
 --   reply, or concluding it.
 -- * Index: deleting the file retires the routine (its runs and history stay) and gives its key a tombstone as a todo's
 --   does; a restore brings it back. The routine row is locked at rank 5 (where a routine run's commit holds it KEY
---   SHARE), with the company row at rank 2 for the rows' foreign keys. The commit never inserts a wake: the tick starts
+--   SHARE), with the company row at rank 0 (20260929230000) for the rows' foreign keys. The commit never inserts a wake: the tick starts
 --   a dynamic routine's next run (qorpera_restore_dynamic_routine_runs), so no admission fence is taken after the clock.
 -- * The member RPC (qorpera_upsert_cloud_routine) refuses a folder-v2 company's routines, except rows from before it
 --   became folder-v2; the agent tools (qorpera_manage_agent_routine, qorpera_decide_agent_routine) refuse any on a
@@ -43,14 +43,14 @@
 --
 -- Builds on F2-5a (20260929210000) and replaces the hook functions with the routine branches added.
 
--- F1's C1b-3a (20260929230000, #497) moves the company row in the hook's targets to rank 0. This migration's targets
--- (section 4) take it at rank 2, so it must not run after that change without being moved to rank 0 too: stop, before
--- anything changes, rather than undo it.
+-- F1's C1b-3a (20260929230000, #497) takes the company row in the hook's targets at rank 0, before the members, and its
+-- commit locks rank 0 first. This migration's targets (section 4) take it there too, so they need that change: stop,
+-- before anything changes, if it has not run.
 do $$
 begin
 	if pg_get_functiondef('public.qorpera_folder_structured_targets(uuid,jsonb,jsonb)'::regprocedure)
-		like '%rank := 0; tbl := ''qorpera_profiles''%' then
-		raise exception 'F2-6 routine targets take the company row at rank 2; move them to rank 0 after 20260929230000'; end if;
+		not like '%rank := 0; tbl := ''qorpera_profiles''%' then
+		raise exception 'F2-6 routine targets take the company row at rank 0, which needs 20260929230000 first'; end if;
 end
 $$;
 
@@ -711,7 +711,7 @@ begin
 			loop
 				rank := 2; tbl := 'qorpera_profile_staff'; key := v_profile::text || ':' || (v_entry -> 'parse' ->> 'id'); mode := 'nokeyupdate';
 				return next;
-				rank := 2; tbl := 'qorpera_profiles'; key := v_profile::text; mode := 'keyshare';
+				rank := 0; tbl := 'qorpera_profiles'; key := v_profile::text; mode := 'keyshare';
 				return next;
 				select s.display_name, s.employment_status, s.folder_retired_at into v_staff from public.qorpera_profile_staff s
 				where s.profile_id = v_profile and s.staff_agent_id = (v_entry -> 'parse' ->> 'id')::uuid;
@@ -728,7 +728,7 @@ begin
 					then v_unit -> 'structured' else '[]'::jsonb end) e
 				where e.value ->> 'kind' in ('group','sections','rule','todo','routine')
 			loop
-				rank := 2; tbl := 'qorpera_profiles'; key := v_profile::text; mode := 'keyshare';
+				rank := 0; tbl := 'qorpera_profiles'; key := v_profile::text; mode := 'keyshare';
 				return next;
 				if v_entry ->> 'kind' = 'group' and coalesce(v_entry -> 'parse' ->> 'id', '') ~ c_uuid then
 					for v_room in select r.id from public.qorpera_company_rooms r
@@ -756,7 +756,7 @@ begin
 				loop
 					rank := 2; tbl := 'qorpera_profile_staff'; key := v_profile::text || ':' || v_staff.staff_agent_id::text; mode := 'nokeyupdate';
 					return next;
-					rank := 2; tbl := 'qorpera_profiles'; key := v_profile::text; mode := 'keyshare';
+					rank := 0; tbl := 'qorpera_profiles'; key := v_profile::text; mode := 'keyshare';
 					return next;
 					if v_op = 'delete' and v_staff.employment_status = 'active' then
 						for v_room in select r.id from public.qorpera_company_rooms r
@@ -771,7 +771,7 @@ begin
 						and (public.qorpera_folder_key(r.folder_path) = v_key
 							or public.qorpera_folder_key(r.folder_path) like public.qorpera_folder_under(v_key))
 				loop
-					rank := 2; tbl := 'qorpera_profiles'; key := v_profile::text; mode := 'keyshare';
+					rank := 0; tbl := 'qorpera_profiles'; key := v_profile::text; mode := 'keyshare';
 					return next;
 					rank := 4; tbl := 'qorpera_company_rooms'; key := v_room::text; mode := 'nokeyupdate';
 					return next;
@@ -781,7 +781,7 @@ begin
 						and (r.folder_path = v_key collate "C"
 							or (r.folder_path > (v_key || '/') collate "C" and r.folder_path < (v_key || '0') collate "C"))
 				loop
-					rank := 2; tbl := 'qorpera_profiles'; key := v_profile::text; mode := 'keyshare';
+					rank := 0; tbl := 'qorpera_profiles'; key := v_profile::text; mode := 'keyshare';
 					return next;
 					rank := 5; tbl := 'qorpera_cloud_routines'; key := v_routine::text; mode := 'nokeyupdate';
 					return next;

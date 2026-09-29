@@ -181,10 +181,10 @@ declare t jsonb; x public.qorpera_cloud_routines; v public.qorpera_cloud_routine
 	e1 constant uuid := '70800000-0000-4000-8000-0000000000e1';
 	u jsonb := pg_temp.routine('agents/nora/routines/inbox.md', pg_temp.rparse('70800000-0000-4000-8000-0000000000e1', 'Inbox', pg_temp.every()));
 begin
-	-- A new routine's save takes the company row only.
+	-- A new routine's save takes the company row only, at rank 0 (20260929230000).
 	select coalesce(jsonb_agg(to_jsonb(y)), '[]'::jsonb) into t
 	from public.qorpera_folder_structured_targets('70700000-0000-4000-8000-000000000020', pg_temp.owner(), jsonb_build_array(u)) y;
-	if t is distinct from '[{"rank":2,"tbl":"qorpera_profiles","key":"70700000-0000-4000-8000-000000000010","mode":"keyshare"}]' then
+	if t is distinct from '[{"rank":0,"tbl":"qorpera_profiles","key":"70700000-0000-4000-8000-000000000010","mode":"keyshare"}]' then
 		raise exception 'A new routine locks the company row only: %', t; end if;
 	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'routine-0001', jsonb_build_array(u)), 1, 'saved');
 	x := pg_temp.rt(e1); v := pg_temp.rv(e1); c := pg_temp.cursor(e1);
@@ -209,13 +209,13 @@ begin
 	select coalesce(jsonb_agg(to_jsonb(y)), '[]'::jsonb) into t
 	from public.qorpera_folder_structured_targets('70700000-0000-4000-8000-000000000020', pg_temp.owner(), jsonb_build_array(
 		pg_temp.routine('agents/nora/routines/inbox.md', pg_temp.rparse(e1, 'Inbox!', pg_temp.every())))) y;
-	if t is distinct from '[{"rank":2,"tbl":"qorpera_profiles","key":"70700000-0000-4000-8000-000000000010","mode":"keyshare"},
+	if t is distinct from '[{"rank":0,"tbl":"qorpera_profiles","key":"70700000-0000-4000-8000-000000000010","mode":"keyshare"},
 			{"rank":5,"tbl":"qorpera_cloud_routines","key":"70800000-0000-4000-8000-0000000000e1","mode":"nokeyupdate"}]' then
 		raise exception 'A routine edit locks its row at rank 5: %', t; end if;
 	select coalesce(jsonb_agg(to_jsonb(y)), '[]'::jsonb) into t
 	from public.qorpera_folder_structured_targets('70700000-0000-4000-8000-000000000020', pg_temp.owner(),
 		jsonb_build_array(pg_temp.move('agents/nora/routines', 'agents/nora/routines-old'))) y;
-	if t is distinct from '[{"rank":2,"tbl":"qorpera_profiles","key":"70700000-0000-4000-8000-000000000010","mode":"keyshare"},
+	if t is distinct from '[{"rank":0,"tbl":"qorpera_profiles","key":"70700000-0000-4000-8000-000000000010","mode":"keyshare"},
 			{"rank":5,"tbl":"qorpera_cloud_routines","key":"70800000-0000-4000-8000-0000000000e1","mode":"nokeyupdate"}]' then
 		raise exception 'A moved folder locks its routines: %', t; end if;
 end $$;
