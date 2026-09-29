@@ -279,7 +279,7 @@ end $$;
 
 -- H. A hook target at rank 1 is locked by the real commit: while another session holds that member row FOR UPDATE,
 -- a member's commit whose hook names the row waits, then saves (review probe r432impl/rank1wait.sql). The hook is
--- replaced for this company only, and its current definition (F2's since 20260929020000) comes back after.
+-- replaced for this company only, and its current definition (F2's since 20260928249020) comes back after.
 select pg_get_functiondef('public.qorpera_folder_structured_targets(uuid,jsonb,jsonb)'::regprocedure) as structured_targets_def \gset
 create or replace function public.qorpera_folder_structured_targets(p_environment_id uuid, p_actor jsonb, p_units jsonb)
 returns table(rank smallint, tbl text, key text, mode text) language sql stable set search_path = '' as $f$

@@ -1,5 +1,5 @@
 -- @fixture 600_runtime_coding_member_machines.test.sql until "-- 1. The turn has ended"
--- 20260929150000: deleting a company archives its coding sessions, switches its coding executors off and
+-- 20260928249150: deleting a company archives its coding sessions, switches its coding executors off and
 -- asks its coding machines to retire. The executor then removes each machine through the existing custody
 -- (stop, sleep, delete, release), and once the last one is released the deletion finishes.
 reset role;

@@ -1,5 +1,5 @@
 -- @fixture 405_runtime_office_browser_idle_lease_reap.test.sql until "create function pg_temp.browser("
--- 20260929150000: a Company Computer of a company being deleted powers off at its provider's next idle
+-- 20260928249150: a Company Computer of a company being deleted powers off at its provider's next idle
 -- check. While the company lives, a held screen keeps it awake, and so does a pause; deleting the company
 -- turns the next check into a power_off request, and the deletion waits for the computer's machine.
 -- The office registration, start and activation below are the SQL policy fixture of

@@ -116,7 +116,7 @@ $$;
 reset role;
 select set_config('request.jwt.claims', '', false);
 -- Deleting hides the company and stops its work; the deletion finishes once no node holds anything
--- of it (20260929150000). This company has nothing on a node.
+-- of it (20260928249150). This company has nothing on a node.
 select public.qorpera_finish_company_deletion(current_setting('qorpera_test.dl_profile')::uuid);
 
 do $$

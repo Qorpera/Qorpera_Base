@@ -236,7 +236,7 @@ try {
 	assert.equal(jobLeast.decision, "placed"); assert.equal(jobLeast.reason, "IDENTITY_HOME_LEAST_LOADED");
 	const jobAway = decide("native", "native-a", identity);
 	assert.equal(jobAway.decision, "refused"); assert.equal(jobAway.reason, "NODE_IDENTITY_ELSEWHERE");
-	// A run whose previous attempt failed to start on node B (20260929240000): among the homes, B ranks last.
+	// A run whose previous attempt failed to start on node B (20260928249240): among the homes, B ranks last.
 	const decideLast = (provider, who, last) => JSON.parse(sql(`${service} select public.qorpera_runtime_node_placement_decide('${randomUUID()}','native','${provider}',${who ? `'${who}'` : "null"}::uuid,${last ? `'${last}'` : "null"}::uuid);`));
 	const homeAfterFailure = decideLast("lxd", identity, nodeB);
 	assert.equal(homeAfterFailure.decision, "placed"); assert.equal(homeAfterFailure.reason, "IDENTITY_HOME_LEAST_LOADED");
@@ -313,7 +313,7 @@ try {
 	sql(`${service} ${observe(nodeA, mA)} ${observe(nodeB, mB)}`);
 	const currentInventory = JSON.parse(sql(`${service} select public.qorpera_runtime_node_placement_candidates('native');`));
 	assert.equal(currentInventory.find((c) => c.providerId === "native-a").eligible, true);
-	// A run's previous attempt failed to start on a node (20260929240000): without an identity home that node
+	// A run's previous attempt failed to start on a node (20260928249240): without an identity home that node
 	// ranks after every other eligible node that fits, and is still chosen when it is the only one.
 	const decideAfter = (last) => JSON.parse(sql(`${service} select public.qorpera_runtime_node_placement_decide('${randomUUID()}','native','native-a',null::uuid,${last ? `'${last}'` : "null"}::uuid);`));
 	const usual = decideAfter(null).preferredNodeId;
