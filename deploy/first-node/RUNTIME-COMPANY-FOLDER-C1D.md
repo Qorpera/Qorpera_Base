@@ -250,9 +250,10 @@ runtime adapter, with no migration.
 **Follow-ups from C1d-1b's review** (for C1d-2 and the thin writers):
 - **Quota before the NAS write, before C1c-3 enables a real `folder-v2` company.** `_authorize_object_upload` checks
   the soft quota for an object the catalog lacks, so a company at its limit is refused before the gateway writes;
-  until then each over-quota put leaves up to 4 MiB on the NAS that C1d-2's catalog-driven GC never collects. Today confirm refuses after the write, the NAS file
-  stays outside the catalog, and the gateway's journal entry turns `blocked` (it reports degraded), as on the native
-  route; the gateway drops that entry when confirm refuses. The writers get a typed "storage full" failure.
+  until then each over-quota put leaves up to 4 MiB on the NAS that C1d-2's catalog-driven GC never collects. Today
+  confirm refuses after the write, the NAS file stays outside the catalog, and the gateway's journal entry turns
+  `blocked` (it reports degraded), as on the native route; the gateway drops that entry when confirm refuses. The
+  writers get a typed "storage full" failure.
 - **Lock waits inside the gateway's deadline.** Before GC holds objects `FOR UPDATE`, the folder functions the gateway
   calls set `lock_timeout` below its 5 s deadline (2 s), so a long wait ends as 55P03, which the gateway answers 409,
   rather than as a deadline 503 that opens its circuit for every company.

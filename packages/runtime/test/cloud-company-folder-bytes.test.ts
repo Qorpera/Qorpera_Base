@@ -551,6 +551,21 @@ it("rides out a busy NAS lane on put and on read, twice at most", async () => {
 	});
 });
 
+it("does not ask again for an object that is on neither the NAS nor Storage", async () => {
+	const { bytes, sql, gatewayCalls } = await fixture();
+	// Catalogued and readable, but its bytes are nowhere: Storage's 404, once.
+	const text = `{"schema":"qorpera.cloud-file-manifest/v2","fileSha256":"${sha("")}","bytes":0,"mediaType":"text/plain","executable":false,"chunks":[]}`;
+	sql.catalog.set(sha(text), Buffer.byteLength(text));
+	sql.readable.add(sha(text));
+	await expect(
+		bytes.get(
+			{ manifestSha256: sha(text), fileSha256: sha(""), bytes: 0, mediaType: "text/plain", executable: false },
+			new AbortController().signal,
+		),
+	).rejects.toMatchObject({ category: "transport_unavailable" });
+	expect(gatewayCalls).toEqual(["qorpera_folder_authorize_object_download"]);
+});
+
 it("checks the whole file against its reference, not only each chunk against its hash", async () => {
 	const { bytes, sql, store, companyId, gatewayCalls } = await fixture();
 	// A manifest whose chunks are real but whose fileSha256 is not theirs.
