@@ -365,8 +365,9 @@ export class SettingsView {
 		else if (this.#company) {
 			const company = this.#company;
 			const memberId = this.#auth.userId!;
-			const signal = AbortSignal.any([this.#companyLifetime.signal, this.#lifetime.signal, company.signal]);
+			const signal = () => AbortSignal.any([this.#companyLifetime.signal, this.#lifetime.signal, company.signal]);
 			if (tab === "my-connections" && !this.#connections) {
+				const lifetime = signal();
 				const signIns = memberProviderSignIns(memberId, company.profile.profileId);
 				// A sign-in belongs to the member, not to this page: it continues while
 				// the page is rebuilt or closed, and stops only if the account changes.
@@ -381,12 +382,12 @@ export class SettingsView {
 					},
 				);
 				this.#connections = new ConnectionsView(
-					createWebNativeSubscription(this.#api.cloud, company.profile.profileId, memberId, signal, () => {
-						signal.throwIfAborted();
+					createWebNativeSubscription(this.#api.cloud, company.profile.profileId, memberId, lifetime, () => {
+						lifetime.throwIfAborted();
 						if (this.#auth.userId !== memberId || this.#company !== company || company.store.get().accessLost)
 							throw new Error("The account or company changed.");
 					}),
-					signal,
+					lifetime,
 					signIns,
 					(input) => signIn.beginProviderLogin(input),
 				);
@@ -407,7 +408,7 @@ export class SettingsView {
 						profileId: company.profile.profileId,
 						environmentId: company.profile.environmentId,
 					}),
-					signal,
+					signal(),
 					{
 						access: {
 							canManage: () => {

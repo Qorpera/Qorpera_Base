@@ -240,7 +240,7 @@ export const SETTINGS: Record<string, string> = {
 	"My connections": "Mine forbindelser",
 	"Company connections": "Virksomhedens forbindelser",
 	"Your own AI subscriptions. They pay for the work you start, including your routines, and they leave with you.":
-		"Dine egne AI-abonnementer. De betaler for det arbejde, du starter, også dine rutiner, og de følger med dig, når du går.",
+		"Dine egne AI-abonnementer. De betaler for det arbejde, du starter, også for dine rutiner, og de følger med dig, når du går.",
 	"The company's own accounts. Every agent can use them, and they stay when someone leaves.":
 		"Virksomhedens egne konti. Alle agenter kan bruge dem, og de bliver, når nogen går.",
 
@@ -286,8 +286,8 @@ export const SETTINGS: Record<string, string> = {
 
 	// Company connections: services (app/views/settings-services.ts, texts from cloud/connectors.ts)
 	Services: "Tjenester",
-	"Only founders and admins connect or disconnect them.":
-		"Kun stiftere og administratorer forbinder eller afbryder dem.",
+	"Only founders and admins can connect or disconnect them.":
+		"Kun stiftere og administratorer kan forbinde eller afbryde dem.",
 	"Read and search the mailbox, send email.": "Læs og søg i postkassen, send e-mail.",
 	"Find, read, create and update documents.": "Find, læs, opret og opdater dokumenter.",
 	"Repositories, issues, pull requests and files.": "Repositories, issues, pull requests og filer.",

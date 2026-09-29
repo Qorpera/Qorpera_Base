@@ -48,7 +48,7 @@ async function setup(f = fixture()) {
 	await draw();
 	return { ...f, root };
 }
-/** The SDK RPCs Settings made, besides General's rules list (its only one until Connections opens). */
+/** The SDK RPCs Settings made, besides General's rules list (its only one until Company connections opens). */
 function sdkRpcs(f: { cloud: Cloud }): string[] {
 	return vi
 		.mocked(f.cloud.rpc)
@@ -1402,21 +1402,27 @@ describe("settings session lifecycle", () => {
 		expect(f.root.querySelector(".settings-overlay")).toBeNull();
 		expect(sdkRpcs(f)).toEqual([]);
 	});
-	it.each(["my-connections", "company-connections"])(
-		"keeps the focused %s control through an unrelated company refresh",
-		async (tab) => {
-			const f = await setup();
-			open(f.root);
-			click(f.root, `#settings-tab-${tab}`);
-			await draw();
-			const control = f.root.querySelector<HTMLElement>("#settings-content")!;
-			control.focus();
-			f.hints.get("qorpera_profile_access_state")!();
-			await draw();
-			expect(control.isConnected).toBe(true);
-			expect(document.activeElement).toBe(control);
-		},
-	);
+	it.each([
+		["my-connections", ".connection-section-heading button"],
+		["company-connections", ".service-card button:not(:disabled)"],
+	])("keeps the focused %s control through an unrelated company refresh", async (tab, selector) => {
+		const f = await setup();
+		open(f.root);
+		click(f.root, `#settings-tab-${tab}`);
+		await draw();
+		const content = f.root.querySelector<HTMLElement>("#settings-content")!;
+		const panel = content.firstElementChild;
+		const control = content.querySelector<HTMLElement>(selector)!;
+		control.focus();
+		const key = control.dataset.focusKey;
+		expect(key).toBeTruthy();
+		f.hints.get("qorpera_profile_access_state")!();
+		await draw();
+		// The page is not rebuilt; a list that redraws itself hands the focus to the same control.
+		expect(content.firstElementChild).toBe(panel);
+		expect(content.contains(document.activeElement)).toBe(true);
+		expect((document.activeElement as HTMLElement).dataset.focusKey).toBe(key);
+	});
 	it("reads only the member's own accounts on My connections, and only the company's on Company connections", async () => {
 		// Isolate Settings reads from an open conversation's quota polling.
 		// The Team route keeps the same company authority without a composer.
@@ -1431,22 +1437,7 @@ describe("settings session lifecycle", () => {
 		vi.stubGlobal("fetch", fetch);
 		const memberReads = () => fetch.mock.calls.filter(([url]) => String(url) === connectionsUrl);
 		open(f.root);
-		click(f.root, "#settings-tab-my-connections");
-		await draw();
 		const content = f.root.querySelector<HTMLElement>("#settings-content")!;
-		expect(content.querySelector("h1")?.textContent).toBe("My connections");
-		expect(content.querySelector(".settings-lead")?.textContent).toBe(
-			"Your own AI subscriptions. They pay for the work you start, including your routines, and they leave with you.",
-		);
-		expect(content.querySelectorAll(".connection-card")).toHaveLength(0);
-		expect(content.querySelector<HTMLButtonElement>(".connection-add")!.disabled).toBe(true);
-		expect(content.querySelector<HTMLElement>(".connection-provider-picker")!.hidden).toBe(true);
-		// The company's services are not on this tab and are not read for it.
-		expect(content.querySelector(".service-card")).toBeNull();
-		await vi.advanceTimersByTimeAsync(60_000);
-		// Model accounts never go through the SDK RPC path.
-		expect(sdkRpcs(f)).toEqual([]);
-		expect(memberReads()).toEqual([[connectionsUrl, expect.objectContaining({ method: "POST" })]]);
 
 		click(f.root, "#settings-tab-company-connections");
 		await draw();
@@ -1458,8 +1449,23 @@ describe("settings session lifecycle", () => {
 		expect(content.querySelectorAll(".service-card")).toHaveLength(3);
 		expect(content.querySelector(".connection-card, .connection-add")).toBeNull();
 		await vi.advanceTimersByTimeAsync(60_000);
-		// The services list is the only read this tab adds; the member's accounts are not read again.
+		// The services list is this tab's only read; the member's own accounts are not read for it.
 		expect(sdkRpcs(f)).toEqual(["qorpera_list_cloud_secret_connections"]);
-		expect(memberReads()).toHaveLength(1);
+		expect(memberReads()).toEqual([]);
+
+		click(f.root, "#settings-tab-my-connections");
+		await draw();
+		expect(content.querySelector("h1")?.textContent).toBe("My connections");
+		expect(content.querySelector(".settings-lead")?.textContent).toBe(
+			"Your own AI subscriptions. They pay for the work you start, including your routines, and they leave with you.",
+		);
+		expect(content.querySelectorAll(".connection-card")).toHaveLength(0);
+		expect(content.querySelector<HTMLButtonElement>(".connection-add")!.disabled).toBe(true);
+		expect(content.querySelector<HTMLElement>(".connection-provider-picker")!.hidden).toBe(true);
+		expect(content.querySelector(".service-card")).toBeNull();
+		await vi.advanceTimersByTimeAsync(60_000);
+		// Model accounts never go through the SDK RPC path, and the services are not read again.
+		expect(sdkRpcs(f)).toEqual(["qorpera_list_cloud_secret_connections"]);
+		expect(memberReads()).toEqual([[connectionsUrl, expect.objectContaining({ method: "POST" })]]);
 	});
 });

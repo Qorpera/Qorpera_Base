@@ -417,7 +417,7 @@ export class ServicesView {
 				h("h2", null, t("Services")),
 				this.#access.canManage()
 					? null
-					: h("small", null, t("Only founders and admins connect or disconnect them.")),
+					: h("small", null, t("Only founders and admins can connect or disconnect them.")),
 			),
 			this.#error ? h("p", { class: "connection-empty service-error", role: "alert" }, this.#error) : "",
 			h("div", { class: "connection-list" }, ...HOSTED_CONNECTORS.map((connector) => this.#card(connector))),

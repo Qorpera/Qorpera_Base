@@ -60,8 +60,8 @@ export const FOUNDING: Record<string, string> = {
 	"You declined the invitation.": "Du takkede nej til invitationen.",
 	"You left the table.": "Du forlod bordet.",
 	"Your friends appear here. Add one below.": "Dine venner vises her. Tilføj en nedenfor.",
-	"Your own account, connected to {name}. It is used only for the work you start there. You can be Ready once it is connected.":
-		"Din egen konto, forbundet til {name}. Den bruges kun til det arbejde, du sætter i gang der. Du kan blive klar, når den er forbundet.",
+	"Your own account, connected to {name}. It pays for the work you start there. You can be Ready once it is connected.":
+		"Din egen konto, forbundet til {name}. Den betaler for det arbejde, du sætter i gang der. Du kan blive klar, når den er forbundet.",
 	"Your role": "Din rolle",
 	"Your table · just you so far": "Dit bord · kun dig indtil videre",
 	"Your table · {count} founders": "Dit bord · {count} stiftere",

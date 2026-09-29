@@ -324,7 +324,7 @@ describe("services", () => {
 		const role = { manage: false };
 		const { client } = setup([gmail], undefined, { ...admin, canManage: () => role.manage });
 		await settle();
-		expect(view?.el.textContent).toContain("Only founders and admins connect or disconnect them.");
+		expect(view?.el.textContent).toContain("Only founders and admins can connect or disconnect them.");
 		for (const item of cards()) expect(buttons(item)).toEqual([]);
 		expect(card(0).textContent).toContain("Connected as anna@example.com by Anna Owner");
 		// A sign-in outcome never shares on a non-admin's behalf.
