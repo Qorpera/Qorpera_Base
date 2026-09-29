@@ -9,14 +9,17 @@
 --   complimentary, a plan renewal is in its grace) is removed, and a company newly at zero is added.
 --   Only a company whose live free hours are used up can be at zero, so only those are looked at.
 --   While the zero rule is off (or in the dry run) the table is kept empty.
--- * A company that reaches zero without owing (hours taken back, credits expiring, a plan ending)
---   is used no further once its work is held, so the usage trigger (build step 5) never tells its
---   founders. The sweep queues "out of hours" for every founder then, under its own occasion
---   (`<company>:zero:<when it ran out>`). A company that owes was told when it started to owe.
--- * While a company is at zero, the usage trigger queues no further "out of hours" (work running
---   out its hour starts owing then, and the founders were already told), and the notices claim
---   keeps a zero notice while that time at zero lasts, drops it once hours arrive, and drops
---   "running low" at zero.
+-- * With the zero rule on, "out of hours" goes once per time at zero: the sweep queues it for every
+--   founder when it adds the company, under its own occasion (`<company>:zero:<when it ran out>`),
+--   whether the company reached zero by owing or without (hours taken back, credits expiring, a
+--   plan ending, which no use follows). The usage trigger (build step 5) then queues no "out of
+--   hours" of its own: a company starting to owe is at zero, or in a founder's renewal grace, when
+--   no email is due. With the rule off, the trigger's once-per-time-of-owing notice is unchanged.
+-- * The notices claim keeps a zero notice while that time at zero lasts (its record is there and
+--   the company is still at zero), drops it once the company leaves zero, and drops "running low"
+--   at zero.
+-- * Each sweep's time, and the last failure, are kept in `qorpera_computer_hour_zero_sweep` for
+--   operators: the finishing window (part 2) acts on this table.
 
 set local lock_timeout = '10s';
 
@@ -28,6 +31,17 @@ create table public.qorpera_computer_hour_zero_state (
 alter table public.qorpera_computer_hour_zero_state enable row level security;
 revoke all on public.qorpera_computer_hour_zero_state from public, anon, authenticated, service_role;
 grant select on public.qorpera_computer_hour_zero_state to service_role;
+
+create table public.qorpera_computer_hour_zero_sweep (
+	id boolean primary key default true check (id),
+	swept_at timestamptz,
+	failed_at timestamptz,
+	last_error text check (last_error is null or char_length(last_error) <= 1000)
+);
+insert into public.qorpera_computer_hour_zero_sweep (id) values (true);
+alter table public.qorpera_computer_hour_zero_sweep enable row level security;
+revoke all on public.qorpera_computer_hour_zero_sweep from public, anon, authenticated, service_role;
+grant select on public.qorpera_computer_hour_zero_sweep to service_role;
 
 -- The occasion of one time at zero, for the notices' one-per-occasion rule.
 create function public.qorpera_computer_hour_zero_occasion(p_profile_id uuid, p_ran_out_at timestamptz)
@@ -48,6 +62,8 @@ returns jsonb
 language plpgsql
 security definer
 set search_path = ''
+-- A company row held elsewhere must not keep the meter lock waiting long.
+set lock_timeout = '2s'
 as $$
 declare
 	v_since timestamptz := (select billing.zero_rule_since from public.qorpera_computer_hour_billing billing);
@@ -81,19 +97,14 @@ begin
 		continue when not public.qorpera_company_at_zero(v_profile, p_at);
 		insert into public.qorpera_computer_hour_zero_state (profile_id, ran_out_at) values (v_profile, p_at);
 		v_ran_out := v_ran_out + 1;
-		if not exists (
-			select 1 from public.qorpera_computer_hour_sources owed
-			where owed.kind = 'owed' and owed.profile_id = v_profile and not owed.dry_run
-				and owed.drawn_seconds > owed.repaid_seconds
-		) then
-			perform public.qorpera_computer_hour_queue_notice('out_of_hours', v_profile,
-				array(select founder.user_id from public.qorpera_company_founders(v_profile) founder),
-				public.qorpera_computer_hour_zero_occasion(v_profile, p_at),
-				jsonb_build_object(
-					'companyName', (select profile.name from public.qorpera_profiles profile where profile.id = v_profile),
-					'leftSeconds', 0, 'month', public.qorpera_computer_hour_notice_month(p_at)),
-				clock_timestamp() + interval '10 minutes');
-		end if;
+		perform public.qorpera_computer_hour_queue_notice('out_of_hours', v_profile,
+			array(select founder.user_id from public.qorpera_company_founders(v_profile) founder),
+			public.qorpera_computer_hour_zero_occasion(v_profile, p_at),
+			jsonb_build_object(
+				'companyName', (select profile.name from public.qorpera_profiles profile where profile.id = v_profile),
+				'leftSeconds', least(coalesce(public.qorpera_company_computer_hours_left(v_profile), 0), 0),
+				'month', public.qorpera_computer_hour_notice_month(p_at)),
+			clock_timestamp() + interval '10 minutes');
 	end loop;
 	return jsonb_build_object('cleared', v_cleared, 'ranOut', v_ran_out);
 end
@@ -101,7 +112,8 @@ $$;
 revoke all on function public.qorpera_computer_hour_zero_sweep(timestamptz) from public, anon, authenticated, service_role;
 
 -- The meter pass pg_cron runs once a minute, now followed by the sweep. A failing sweep never holds
--- metering back: its work is undone and a warning logged, and the next pass tries again.
+-- metering back: its work is undone, the failure kept for operators and a warning logged, and the
+-- next pass tries again.
 create or replace function public.qorpera_meter_computer_hours()
 returns jsonb
 language plpgsql
@@ -112,8 +124,12 @@ declare
 	v_result jsonb := public.qorpera_meter_computer_hours_at(clock_timestamp());
 begin
 	begin
-		perform public.qorpera_computer_hour_zero_sweep(clock_timestamp());
+		if not public.qorpera_computer_hour_zero_sweep(clock_timestamp()) ? 'skipped' then
+			update public.qorpera_computer_hour_zero_sweep set swept_at = clock_timestamp();
+		end if;
 	exception when others then
+		update public.qorpera_computer_hour_zero_sweep
+		set failed_at = clock_timestamp(), last_error = left(sqlerrm || ' (' || sqlstate || ')', 1000);
 		raise warning 'Computer hours zero sweep failed: % (%)', sqlerrm, sqlstate;
 	end;
 	return v_result;
@@ -132,7 +148,7 @@ begin
 end
 $$;
 
--- The usage trigger: no second "out of hours" while the company is at zero.
+-- The usage trigger: with the zero rule on, the sweep tells the founders, once per time at zero.
 do $patch$
 declare v_definition text := pg_get_functiondef('public.qorpera_computer_hour_notice_usage()'::regprocedure);
 begin
@@ -140,9 +156,10 @@ begin
 		perform public.qorpera_computer_hour_queue_notice('out_of_hours', new.profile_id, v_founders,
 			new.profile_id::text || ':' || v_owed.repaid_seconds::text, v_details, v_send_after);
 		return null;$old$, $new$		-- One time of owing is named by what had been repaid when it began; hours arriving move it.
-		-- At zero the founders were already told (when it ran out, or when it started to owe).
+		-- With the zero rule on, the sweep tells the founders once per time at zero (build step 6c).
 		if not exists (
-			select 1 from public.qorpera_computer_hour_zero_state zero where zero.profile_id = new.profile_id
+			select 1 from public.qorpera_computer_hour_billing billing
+			where billing.zero_rule_since is not null and billing.zero_rule_since <= new.metered_at
 		) then
 			perform public.qorpera_computer_hour_queue_notice('out_of_hours', new.profile_id, v_founders,
 				new.profile_id::text || ':' || v_owed.repaid_seconds::text, v_details, v_send_after);
@@ -159,12 +176,21 @@ begin
 	v_definition := pg_temp.zero_state_replace(v_definition, $old$				and notice.occasion = notice.profile_id::text || ':' || owed.repaid_seconds::text
 		);$old$, $new$				and notice.occasion = notice.profile_id::text || ':' || owed.repaid_seconds::text
 		)
-		-- Still the same time at zero: hours arriving end it, and running out again is a new one.
+		-- Still the same time at zero: leaving zero ends it, and running out again is a new one.
 		and not exists (
 			select 1 from public.qorpera_computer_hour_zero_state zero
 			where zero.profile_id = notice.profile_id
 				and notice.occasion = public.qorpera_computer_hour_zero_occasion(zero.profile_id, zero.ran_out_at)
+				and public.qorpera_company_at_zero(zero.profile_id, v_now)
 		);$new$, 'claim out of hours');
+	v_definition := pg_temp.zero_state_replace(v_definition, $old$	set status = 'cancelled', last_error = 'Hours arrived before it was sent', lease_id = null, lease_expires_at = null
+	where (notice.status in ('pending', 'retrying') or (notice.status = 'delivering' and notice.lease_expires_at <= v_now))
+		and notice.kind = 'out_of_hours'$old$, $new$	set status = 'cancelled',
+		last_error = case when notice.occasion like '%:zero:%' then 'The company was no longer out of hours when it was due'
+			else 'Hours arrived before it was sent' end,
+		lease_id = null, lease_expires_at = null
+	where (notice.status in ('pending', 'retrying') or (notice.status = 'delivering' and notice.lease_expires_at <= v_now))
+		and notice.kind = 'out_of_hours'$new$, 'claim out of hours reason');
 	v_definition := pg_temp.zero_state_replace(v_definition, $old$			when owing.id is not null then 'The company ran out before it was sent'$old$,
 		$new$			when owing.id is not null or zero.profile_id is not null then 'The company ran out before it was sent'$new$,
 		'claim running low reason');

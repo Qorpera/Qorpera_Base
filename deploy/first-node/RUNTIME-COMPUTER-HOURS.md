@@ -393,8 +393,10 @@ Migration `20260929160000_runtime_computer_hour_notices` and the Edge Function
     low when a month begins is told again that month. The payers are founders whose current plan
     period has hours left and founders whose credits have hours left. A founder's plan used up by
     another company does not count toward this company's "what pays now".
-  - Out of hours: once per time the company runs out. A time starts when it begins to owe; any
-    hours arriving (even too few to clear the debt) end it, and running out again is a new time.
+  - Out of hours, while the zero rule is off: once per time the company runs out. A time starts
+    when it begins to owe; any hours arriving (even too few to clear the debt) end it, and running
+    out again is a new time. With the zero rule on, the trigger sends none: the zero sweep sends
+    it once per time at zero (see "Zero", build step 6c part 1).
   - Both wait ten minutes before they are sent. The worker drops one (cancelled) if the company
     is no longer low, no longer owes, or owes in a newer time; for instance, a plan renewal
     recorded moments after the meter charged. It also drops "running low" once the company has run
@@ -493,12 +495,21 @@ Coordinator (nothing secret):
     live free hours are used up can be at zero, so only those are looked at. A company being
     deleted is skipped. While the rule is off, or in the dry run, the table is kept empty. A
     failing sweep is undone with a warning and never holds metering back;
-  - a company that reaches zero without owing gets "out of hours" for every founder, ten minutes
-    later, under its own occasion `<company>:zero:<when it ran out, in microseconds>`. The claim
-    keeps it while that time at zero lasts and drops it once hours arrive. A company that owes
-    was told when it started to owe;
-  - while a company is at zero, the usage trigger queues no further "out of hours" (work running
-    out its hour starts owing then), and the claim drops "running low".
+  - with the rule on, "out of hours" goes once per time at zero: when the sweep adds a company, to
+    every founder, ten minutes later, under its own occasion `<company>:zero:<when it ran out, in
+    microseconds>`, whether it got there by owing or not (hours taken back, credits expiring, a
+    plan ending, which no use follows). The usage trigger's own "out of hours" is for the rule
+    off only. The claim keeps the notice while its record is there and the company is still at
+    zero (hours too few to clear a debt keep it), and drops it once the company leaves zero; the
+    claim also drops "running low" at zero;
+  - each sweep's time and the last failure (time and message) are kept in
+    `qorpera_computer_hour_zero_sweep` for operators. The sweep waits at most 2 s for a company
+    row held elsewhere;
+  - known limits: the ran-out time is the sweep's, up to a minute late. A founder's renewal grace
+    takes a company at zero off the list at the period's end, and it is added again, with a new
+    ran-out time and a new email, if no renewal is recorded within the 30 minutes. A renewal
+    recorded more than about 40 minutes late (grace plus the email's ten-minute wait) sends a
+    false "out of hours".
 
   Machines not starting or waking (6b), the finishing window and the renewal-gap handling for
   machines (6c part 2), and the web (6d) follow. Before the live switch:
@@ -506,8 +517,10 @@ Coordinator (nothing secret):
     rule on each check sums the company's hours (about 0.4 ms locally): check each company once,
     and measure with production-sized data;
   - held wakes still take the wake step's slots and locks, as a paused company's do;
-  - the sweep checks each company whose free hours are used up once a minute: measure it with
-    production-sized data;
+  - the sweep checks, once a minute and under the meter lock (which Stripe webhooks also wait
+    on), every company whose free hours are used up, and a company that used its free hours and
+    never paid stays on that list: work out hours left for all of them in one query, or re-check
+    only companies whose inputs changed, and measure with production-sized data;
   - a routine created or retimed at zero gets its first slot only once hours arrive, so 6d shows
     "Waiting for computer hours" on it.
 - It is checked before a run is created (not at claim or placement: a run waiting there is
