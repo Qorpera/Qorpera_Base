@@ -1,4 +1,4 @@
--- 20260929570000: internal functions are not callable over the API.
+-- 20260928279570: internal functions are not callable over the API.
 -- Supabase's default privileges grant EXECUTE on every new public function to anon, authenticated and
 -- service_role. The functions below were revoked from PUBLIC only, so in production the publishable key
 -- could call them. The migration names the roles. This suite pins each function's API roles by exact

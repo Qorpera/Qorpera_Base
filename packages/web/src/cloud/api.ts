@@ -524,7 +524,7 @@ export class CloudApi {
 	}
 
 	/** The newest `limit` events of a transcript, or the newest before `beforeSequence`, oldest
-	 * first as readSessionEvents returns them (migration 20260929410000; a cloud without it
+	 * first as readSessionEvents returns them (migration 20260928279410; a cloud without it
 	 * answers with a missing RPC). Same authorization as the forward read, which it runs. */
 	readSessionEventsTail(
 		sessionId: string,
