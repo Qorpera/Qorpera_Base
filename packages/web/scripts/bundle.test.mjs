@@ -59,7 +59,7 @@ test("the first screen never downloads the figures' motion data or noVNC; main.j
 	);
 });
 
-test("vendor code has its own preloaded chunk, whose name an app-only change keeps", async () => {
+test("vendor code has its own preloaded chunk, and an app-only change renames only main.js", async () => {
 	const { layout } = await built;
 	const vendorChunk = layout.vendor.filter((file) => inputsOf(layout, [file]).some((path) => VENDOR.test(path)));
 	assert.equal(vendorChunk.length, 1);
@@ -70,7 +70,8 @@ test("vendor code has its own preloaded chunk, whose name an app-only change kee
 	const elsewhere = [layout.script, ...layout.preload, ...layout.lazy].filter((file) => !vendorChunk.includes(file));
 	assert.deepEqual(inputsOf(layout, elsewhere).filter((path) => VENDOR.test(path)), []);
 	for (const file of layout.vendor) assert.ok(layout.preload.includes(file), file);
-	// A deploy that changes only app code: main.js is renamed, the vendor chunk is not.
+	// A deploy that changes only app code: main.js is renamed, the vendor chunk is not, and a tab
+	// left open across it still finds the on-demand chunks (Pages serves only the new deployment).
 	const changed = await bundle([
 		{
 			name: "app-change",
@@ -84,6 +85,7 @@ test("vendor code has its own preloaded chunk, whose name an app-only change kee
 	]);
 	assert.notEqual(changed.layout.script, layout.script);
 	assert.deepEqual(changed.layout.vendor, layout.vendor);
+	assert.deepEqual(changed.layout.lazy, layout.lazy);
 });
 
 test("theme.js restores appearance before paint without the dictionary", async () => {
