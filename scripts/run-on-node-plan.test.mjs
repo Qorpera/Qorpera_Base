@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -91,12 +91,19 @@ test("every step runs, a failing command fails its step, and the exit code says 
 		{ name: "first", commands: ["false", "true"] },
 		{ name: "second", commands: ["true"] },
 	]);
-	const result = spawnSync("bash", ["-c", script], { encoding: "utf8" });
-	assert.equal(result.status, 1);
-	assert.match(result.stdout, /first FAILED/);
-	assert.match(result.stdout, /second passed/);
-	assert.match(result.stdout, /failed: first/);
-	assert.equal(spawnSync("bash", ["-c", planScript([{ name: "ok", commands: ["true"] }])]).status, 0);
+	// The script writes the failed step names into .run-on-node-status in its working directory.
+	const cwd = mkdtempSync(join(tmpdir(), "plan-script-"));
+	try {
+		const result = spawnSync("bash", ["-c", script], { cwd, encoding: "utf8" });
+		assert.equal(result.status, 1);
+		assert.match(result.stdout, /first FAILED/);
+		assert.match(result.stdout, /second passed/);
+		assert.match(result.stdout, /failed: first/);
+		assert.equal(readFileSync(join(cwd, ".run-on-node-status"), "utf8"), "failed_steps=first\n");
+		assert.equal(spawnSync("bash", ["-c", planScript([{ name: "ok", commands: ["true"] }])], { cwd }).status, 0);
+	} finally {
+		rmSync(cwd, { recursive: true, force: true });
+	}
 });
 
 test("deploy-shell fails when any script, not only the last, has a syntax error", () => {

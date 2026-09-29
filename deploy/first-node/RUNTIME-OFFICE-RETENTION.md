@@ -11,15 +11,16 @@ Export failures do not block ordinary work or discard queued transitions.
 The implementation boundary is concrete:
 
 - `LxdOfficeLifecycle` composes creation, inventory, adoption, boot,
-  preparation, configuration, activation, service stop/restart, power-off and
-  resume workers. Its VM-operation journal call sites dispatch only `create`,
-  `start` and `stop`.
+  preparation, configuration, activation, service stop/restart, power-off,
+  resume and retirement workers. Outside the reset and the retirement below, its
+  VM-operation journal call sites dispatch only `create`, `start` and `stop`.
 - An explicit `replace` request can revoke admission and stop the service,
   then remains `held`. Without a separate protected reset plan it does not
   proceed to a deletion or replacement worker. The lifecycle test checks this
   behavior even when preparation is disabled, with no successor dispatch.
-- The only path that dispatches `delete` for an office is the governed
-  same-allocation root reset described below. It requires an operator-authored
+- Two paths dispatch `delete` for an office: the governed same-allocation root
+  reset described below, and the retirement of a deleted company's computer
+  ("Office retirement" below). The reset requires an operator-authored
   `qorpera.lxd-office-reset-plan/v1` document beside the lifecycle plan
   (`<planPath>.reset`) that binds the exact retained `replace` request. Native
   job VM retirement in `lxd-provider.ts` belongs to the isolated execution
@@ -118,17 +119,63 @@ Boundary of the current implementation:
   original `/etc/qorpera-office/credentials/config.json`, which reset
   configuration never writes. Configuring a reset-born root after a reboot is
   therefore unproven and expected to be refused.
-- There is no automatic deletion, host failover, generation change or general
+- Apart from the retirement of a deleted company's computer (below), there is
+  no automatic deletion, host failover, generation change or general
   update mechanism. The plan grants exactly one reset for one retained
   `replace` request; a plan for another predecessor is refused.
 - The archive is never deleted by the worker. It is not delivery evidence: the
   outbox records are restored, not exported, and cloud delivery still follows
   the ordinary retention path from the recreated root.
 
+## Office retirement (company deleted)
+
+`LxdOfficeRetirementWorker` retires the Company Computer of a company being
+deleted (RUNTIME-COMPANY-DELETE.md, D3; migration
+`20260929320000_runtime_office_retirement.sql`). It runs only after the
+power-off worker's confirmed `powered_off` for a `power_off` transition with no
+resume, or after that power-off's completion when its replay fails (for
+example after a node reboot: the power-off worker binds its host boot). The
+retirement worker rechecks the completion, the lineage and the stopped VM
+itself. Until a delete is pinned, SQL is asked
+at most once a minute per process; it answers null while the company lives. For a deleting company SQL
+issues one delete command id; the worker pins it in
+`office-retirement-request.json` (with the power-off request) before anything
+else. The pin binds the power-off completion and its seed, and the journal must
+end with that stop, so the delete follows `[create, start, …, stop]` under the
+VM lineage grammar. A durable nonce file records each requested five-second SQL
+window (at most 64). Inside a window the worker rechecks that the VM is
+`Stopped` (status code 102, LXD instance and state), then dispatches the one
+journaled `delete`. It settles only on a settled delete and an absent VM:
+`qorpera_retire_runtime_office` releases the allocation and node demand, drops
+the node binding and marks the office `retired`. The worker then writes
+`office-retired.json` from SQL's receipt. An unknown or failed delete is held
+under the same command id and never redispatched; while held, the worker reads
+only its journal and makes no SQL call.
+
+Once pinned, the lifecycle runs only this worker, before any status call, and
+the fleet unit starts the lifecycle without its fleet reconcile. SQL answers the
+retirement from its ledger even after the company's purge, so a lost release
+reply still reaches the marker. With the marker, the lifecycle, both journal
+observers, the fleet unit on this host and the root host-shutdown, host-resume
+and credential-rotation guards make no call, and the provider service ends.
+Fleet units of the same office on other candidate hosts have no marker; the
+operator disables them (RUNTIME-COMPANY-DELETE.md, D3 lane).
+
+Retirement keeps no custody: by the founder's decision (28 September 2026) no
+copy of a deleted company's machine is kept. The private
+`/var/lib/qorpera-office-events` outbox is lost with the root, including
+undelivered records. The workbench is a host directory and is not touched here
+(deleted-company NAS queue, D5). Not retired, and held for an operator: a
+computer created but never activated, one mid-reset, one whose resume was
+under way at the deletion, and one whose node rebooted between the power-off
+record and its node-demand suspension (SQL keeps answering "not ready" until an
+operator suspends the demand).
+
 ## Destructive maintenance and host loss
 
-Manual deletion of a VM/root disk can destroy undelivered records. Automatic
-office deletion/replacement and host failover are not implemented or accepted.
+Manual deletion of a VM/root disk can destroy undelivered records. Apart from
+the retirement of a deleted company's computer above, automatic office
+deletion/replacement and host failover are not implemented or accepted.
 They must not be enabled by treating the journal's low-level action enum as a
 complete lifecycle workflow. Outside the governed reset above, before
 destructive maintenance retain the private state directory outside the affected

@@ -123,11 +123,14 @@ Computer) hosts up to six computers.
     the saver, never widen the view.
 - A computer's holder changes only as #409 item 1 allows. A computer with a
   running command stays in use, and its desktop is closed before the seat
-  changes hands. A member who takes over while an agent's command runs does
-  not take over that command's saves: they stay the agent's.
+  changes hands. A member's takeover or stop drains the whole computer, so
+  it ends the agent's running commands (#411; amended 2026-09-29). What a
+  command changed before the drain stays the agent's: it publishes at that
+  end boundary, credited to the agent.
 - A view stays open after its owner's run ends while the programs it serves
-  run: a shell command's view until that command and its background
-  processes end, and a desktop's until the computer changes hands or closes.
+  run: a shell command's view until no process is left in the command's own
+  mount namespace, and a desktop's until the computer changes hands or
+  closes.
   - Saves are attributed to the view's agent and to the member of its last
     holder.
   - A unit that needs the automatic review waits for that agent's next turn
@@ -622,14 +625,23 @@ machine's vsock CID:
 - **The desktop's mount** is bound into the desktop session: the file manager,
   applications and the desktop terminal. Its owner is the computer's holder:
   the run holding that screen, or the member while a member has taken it
-  over. A takeover switches the view's holder.
+  over. A takeover ends the run's view once the drain is acknowledged, and
+  the member's view then opens on the same mount (C1b-3).
 - **Each `computer_shell` command's mount** is bound into that command's own
   mount namespace, inside the computer's shell namespace (#411). The network,
   `/tmp` and the process table stay shared. Its owner is the run that started
-  the command, which #411 already records for each step. Later runs on the
-  same computer start commands with mounts of their own. A member's takeover
-  changes none of them. The view closes when the command and the background
-  processes it started have ended.
+  the command, recorded in a per-command row (C1b-3 §8). Later runs on the
+  same computer start commands with mounts of their own. The view closes when
+  no process is left in the command's own mount namespace. That covers
+  background jobs, and programs that leave the command's process group
+  (setsid, daemons) but keep its namespace.
+- **A member's takeover or stop drains the whole computer**: desktop, browser,
+  and the shell with its commands (#411; `drain_pending` is set on every
+  takeover). The drain ends a running command, because a command left
+  running could still type into or read the screen the member now controls.
+  What the command changed before the drain publishes at that end boundary,
+  credited to the agent; the member's own saves start after it (amended
+  2026-09-29).
 
 Each mount's reads are recorded for its owner, and its changes are checked
 against and recorded for its owner. The upload binding, the review and the
