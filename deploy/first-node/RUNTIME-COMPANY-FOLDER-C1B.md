@@ -1244,8 +1244,10 @@ by a machine.
   do), a member's save and a view's save never deadlock with
   `qorpera_update_profile_member_role`, which takes the company row and then
   the member row, like `qorpera_remove_profile_member` (dblink, both
-  orders). A third connection stops the role change between its two locks,
-  so the test tells rank 0 from rank 2.
+  orders). A third connection holds the member row `FOR KEY SHARE`, which
+  stops the role change between its two locks but still lets a save take
+  the member row. So with the company row after the member, the test hits a
+  real deadlock (checked by swapping the two lock calls).
 
 ## Not in C1b
 

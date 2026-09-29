@@ -130,6 +130,13 @@ begin
 	perform pg_temp.raises(format('select pg_temp.vcommit(%L, %L, %L)', b, 'box-expired', '[{"op":"mkdir","path":"refused"}]'), '42501');
 	r := public.qorpera_folder_view_renew((b ->> 'viewId')::uuid, b ->> 'pass');
 	if r ->> 'state' <> 'closed' or r ->> 'reason' <> 'expired' then raise exception 'Renew of a lapsed view: %', r; end if;
+	-- A lease re-claimed by the same runner (a new assignment) ends it as well, on save and on renew.
+	v := pg_temp.run('human', '63200000-0000-4000-8000-000000000002');
+	b := pg_temp.open('run_box', '{}', v);
+	perform pg_temp.fx(format('update public.qorpera_runner_jobs set client_lease_id = %L where id = %L', extensions.gen_random_uuid(), v ->> 'jobId'));
+	perform pg_temp.raises(format('select pg_temp.vcommit(%L, %L, %L)', b, 'box-reassigned', '[{"op":"mkdir","path":"refused"}]'), '42501');
+	r := public.qorpera_folder_view_renew((b ->> 'viewId')::uuid, b ->> 'pass');
+	if r ->> 'state' <> 'closed' or r ->> 'reason' <> 'ended' then raise exception 'Renew after a new assignment: %', r; end if;
 end $$;
 
 
@@ -137,7 +144,7 @@ end $$;
 -- saves as the agent and member, and refuses a unit that needs review.
 do $$
 declare v jsonb := pg_temp.run('human', '63200000-0000-4000-8000-000000000002'); d jsonb; r jsonb; c public.qorpera_folder_commits%rowtype;
-	a jsonb := pg_temp.stage('beta');
+	a jsonb := pg_temp.stage('beta'); e jsonb;
 begin
 	perform pg_temp.hold(v);
 	d := pg_temp.open('computer_desktop', jsonb_build_object('screenId','63900000-0000-4000-8000-0000000000e4','holderRunId',v ->> 'runId'));
@@ -149,6 +156,12 @@ begin
 	if (public.qorpera_folder_read('63200000-0000-4000-8000-000000000020', pg_temp.vactor(d), 'secret/s.txt') ->> 'found')::boolean
 		or not (public.qorpera_folder_read('63200000-0000-4000-8000-000000000020', pg_temp.vactor(d), 'rules/tone.txt') ->> 'found')::boolean then
 		raise exception 'The company-wide view for reads'; end if;
+	-- A receipt the run itself got for secret/ does not pass through the company-wide view.
+	e := public.qorpera_folder_read('63200000-0000-4000-8000-000000000020', v, 'secret/s.txt') -> 'entry';
+	if e -> 'authority' is null then raise exception 'The run reads secret/ through its grant'; end if;
+	perform pg_temp.raises(format('select public.qorpera_folder_record_release(%L, %L, %L, %L, %L)', '63200000-0000-4000-8000-000000000020',
+		pg_temp.vactor(d), extensions.gen_random_uuid(), jsonb_build_array(jsonb_build_object('path', e ->> 'path', 'version', e ->> 'version',
+			'authority', e -> 'authority')), repeat('4', 64)), '42501');
 	-- The run releases the screen: the view is detached.
 	perform pg_temp.hold(null);
 	r := pg_temp.vcommit(d, 'desk-detached-1', jsonb_build_array(jsonb_build_object('op','write','path','shared/e.txt','file',a),
@@ -232,8 +245,8 @@ begin
 	perform public.qorpera_folder_view_close((d2 ->> 'viewId')::uuid, d2 ->> 'pass');
 end $$;
 
--- A coding session: detached as its agent and owner under the coding rule (code/ yes, agents/ no), never reviewed; an
--- archive ends it.
+-- A coding session: detached as its agent and owner under the coding rule (code/ yes, agents/ no), never reviewed; the
+-- attachment's refusal (a disabled executor, a lapsed attachment, an archive) ends it.
 do $$
 declare p jsonb := pg_temp.run('human', '63200000-0000-4000-8000-000000000002'); w uuid := extensions.gen_random_uuid();
 	tok uuid := extensions.gen_random_uuid(); cm uuid := extensions.gen_random_uuid(); cv jsonb; r jsonb; c public.qorpera_folder_commits%rowtype;
@@ -265,6 +278,21 @@ begin
 	c := pg_temp.last_commit(r);
 	if c.session_kind <> 'coding' or c.run_id is not null or c.view_kind <> 'coding_session' or c.review_id is not null then
 		raise exception 'Coding view commit: %', to_jsonb(c); end if;
+	-- The attachment's refusal ends the view: a disabled executor, a lapsed attachment, an archive. (The session is put
+	-- back and a new view opened, only to go on testing.)
+	perform pg_temp.fx(format('update public.qorpera_coding_executors set enabled = false where environment_id = %L',
+		'63200000-0000-4000-8000-000000000020'));
+	perform pg_temp.raises(format('select pg_temp.vcommit(%L, %L, %L)', cv, 'coding-executor-off', '[{"op":"mkdir","path":"code/refused"}]'), '42501');
+	perform pg_temp.fx(format('update public.qorpera_coding_executors set enabled = true where environment_id = %L',
+		'63200000-0000-4000-8000-000000000020'));
+	perform pg_temp.fx(format('update public.qorpera_coding_sessions set attachment_until = clock_timestamp() - interval ''1 second'' where worker_id = %L', w));
+	perform pg_temp.raises(format('select pg_temp.vcommit(%L, %L, %L)', cv, 'coding-lapsed', '[{"op":"mkdir","path":"code/refused"}]'), '42501');
+	perform pg_temp.fx(format('update public.qorpera_coding_sessions set attachment_until = clock_timestamp() + interval ''60 seconds'' where worker_id = %L', w));
+	perform pg_temp.expect(pg_temp.vcommit(cv, 'coding-back', '[{"op":"mkdir","path":"code/back"}]'), 1, 'saved');
+	perform pg_temp.fx(format('update public.qorpera_coding_sessions set archived_at = clock_timestamp(), archived_by = ''member'' where worker_id = %L', w));
+	perform pg_temp.raises(format('select pg_temp.vcommit(%L, %L, %L)', cv, 'coding-archived', '[{"op":"mkdir","path":"code/refused"}]'), '42501');
+	perform pg_temp.fx(format('update public.qorpera_coding_sessions set archived_at = null, archived_by = null where worker_id = %L', w));
+	cv := pg_temp.open('coding_session', jsonb_build_object('workerId', w, 'attachmentToken', tok));
 	-- During a leased turn, the view's reads land in the turn's read set as well as the view's, so the parent check of the
 	-- worker's completion (a wake whose parent is that turn) sees them: after a narrowing it refuses.
 	perform pg_temp.expect(pg_temp.commit('{"kind":"platform"}', 'coding-read-file', jsonb_build_array(jsonb_build_object('op','mkdir','path','cread'),
@@ -283,8 +311,7 @@ begin
 	perform public.qorpera_folder_set_resource('63200000-0000-4000-8000-000000000020', pg_temp.member(1), 'cread', 'subtree',
 		'company_shared', 'normal');
 	if public.qorpera_folder_parent_reads_allowed(wk) then raise exception 'The completion''s parent check sees the coding reads'; end if;
-	perform pg_temp.fx(format('update public.qorpera_coding_sessions set archived_at = clock_timestamp(), archived_by = ''member'' where worker_id = %L', w));
-	perform pg_temp.raises(format('select pg_temp.vcommit(%L, %L, %L)', cv, 'coding-archived', '[{"op":"mkdir","path":"refused"}]'), '42501');
+	perform pg_temp.raises(format('select pg_temp.vcommit(%L, %L, %L)', cv, 'coding-after-narrow', '[{"op":"mkdir","path":"code/refused"}]'), '42501');
 end $$;
 
 

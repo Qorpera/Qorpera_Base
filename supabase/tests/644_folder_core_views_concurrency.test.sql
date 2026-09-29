@@ -299,11 +299,11 @@ end $$;
 
 -- D. The company row is locked at rank 0, before the member at rank 1, so a hook that names it (F2's roster files) never
 -- deadlocks with #462's order: qorpera_update_profile_member_role (and its siblings) locks the company row FOR UPDATE,
--- then the member row FOR UPDATE. A third connection holds the member row, so the role change stops between its two
--- locks; a member's save and a view's save then wait for the company row holding nothing the role change needs. With
--- the company row at rank 2 the save would take the member row first and wait on the third connection instead, then
--- deadlock with the role change. The hook is replaced for this company only, and its current definition (F2's) comes
--- back after.
+-- then the member row FOR UPDATE. A third connection holds the member row FOR KEY SHARE, so the role change stops
+-- between its two locks while a save could still take the member row KEY SHARE beside it. At rank 0 the save waits for
+-- the company row holding nothing the role change needs. With the company row after the member (rank 2), the save would
+-- take the member row, wait for the company row, and the role change would then wait for the save: a deadlock. The hook
+-- is replaced for this company only, and its current definition (F2's) comes back after.
 select pg_get_functiondef('public.qorpera_folder_structured_targets(uuid,jsonb,jsonb)'::regprocedure) as structured_targets_def \gset
 create or replace function public.qorpera_folder_structured_targets(p_environment_id uuid, p_actor jsonb, p_units jsonb)
 returns table(rank smallint, tbl text, key text, mode text) language sql stable set search_path = '' as $f$
@@ -324,19 +324,20 @@ begin
 		v_role := case when v_n = 1 then 'admin' else 'contributor' end;
 		perform dblink_exec('view_three', 'begin');
 		perform * from dblink('view_three', $q$select 1 from public.qorpera_profile_members where profile_id = '64400000-0000-4000-8000-000000000010'
-			and user_id = '64400000-0000-4000-8000-000000000002' for update$q$) as t(x integer);
+			and user_id = '64400000-0000-4000-8000-000000000002' for key share$q$) as t(x integer);
 		perform dblink_send_query('view_one', format('select public.qorpera_update_profile_member_role(%L, %L, %L)',
 			'64400000-0000-4000-8000-000000000010', '64400000-0000-4000-8000-000000000002', v_role));
 		if not pg_temp.waits_for('view_one', 'view_three') then raise exception 'The role change did not stop at the member row'; end if;
 		perform dblink_send_query('view_two', pg_temp.sql_commit(v_actor, 'rank-zero-' || v_n, jsonb_build_array(jsonb_build_object('op','mkdir',
 			'path','shared/rank-zero-' || v_n))));
-		if not pg_temp.waits_for('view_two', 'view_one') then
-			raise exception 'Save % must wait for the company row, before the member row', v_n; end if;
+		if not pg_temp.waits_for('view_two', 'view_one') then raise exception 'Save % did not wait for the company row', v_n; end if;
 		perform dblink_exec('view_three', 'commit');
 		v_state := pg_temp.outcome('view_one');
-		if v_state <> 'ok' then raise exception 'The role change beside save %: %', v_n, v_state; end if;
-		r := pg_temp.result('view_two');
-		if r -> 'units' -> 0 ->> 'outcome' <> 'saved' then raise exception 'Save % after the role change: %', v_n, r; end if;
+		if v_state <> 'ok' then raise exception 'The role change beside save % (a deadlock if the save held the member row): %', v_n, v_state; end if;
+		v_state := pg_temp.outcome('view_two');
+		if v_state <> 'ok' then raise exception 'Save % beside the role change: %', v_n, v_state; end if;
+		if not exists (select 1 from public.qorpera_folder_entries where environment_id = '64400000-0000-4000-8000-000000000020'
+			and key_text = 'shared/rank-zero-' || v_n) then raise exception 'Save % must land', v_n; end if;
 		if (select role::text from public.qorpera_profile_members where profile_id = '64400000-0000-4000-8000-000000000010'
 			and user_id = '64400000-0000-4000-8000-000000000002') <> v_role then raise exception 'The role change % must land', v_n; end if;
 	end loop;
