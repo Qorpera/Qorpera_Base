@@ -165,7 +165,7 @@ describe("conversation timestamp rendering", () => {
 			message(4, dates[3]!),
 		];
 		const f = setup(items);
-		const times = [...f.view.el.querySelectorAll<HTMLTimeElement>(".messages > time")];
+		const times = [...f.view.el.querySelectorAll<HTMLTimeElement>(".messages-log > time")];
 		expect(times.map((time) => new Date(time.dateTime).toISOString())).toEqual([dates[0], dates[2]]);
 		expect(times[1]?.nextElementSibling?.classList.contains("auth-card")).toBe(true);
 		expect(f.view.el.querySelectorAll(".message")).toHaveLength(3);
@@ -180,7 +180,7 @@ describe("conversation timestamp rendering", () => {
 			optimistic: [{ clientInputId: id(201), authorUserId: userA.id, text: "Sending", createdAt }],
 		});
 		f.view.update();
-		const times = f.view.el.querySelectorAll<HTMLTimeElement>(".messages > time");
+		const times = f.view.el.querySelectorAll<HTMLTimeElement>(".messages-log > time");
 		expect(times).toHaveLength(1);
 		expect(new Date(times[0]!.dateTime).toISOString()).toBe(createdAt);
 		expect(times[0]?.nextElementSibling?.getAttribute("data-message-id")).toBe(id(201));
@@ -190,21 +190,21 @@ describe("conversation timestamp rendering", () => {
 	it("refreshes at midnight without replacing message nodes or changing scroll position", () => {
 		vi.setSystemTime(new Date(2026, 8, 20, 23, 59, 30));
 		const f = setup([message(1, new Date(2026, 8, 20, 23, 58).toISOString())]);
-		const time = f.view.el.querySelector<HTMLTimeElement>(".messages > time")!;
+		const time = f.view.el.querySelector<HTMLTimeElement>(".messages-log > time")!;
 		const article = f.view.el.querySelector("article.message");
 		const messages = f.view.el.querySelector<HTMLElement>(".messages")!;
 		messages.scrollTop = 120;
 		expect(time.textContent).toContain("Today");
 		vi.advanceTimersByTime(60_000);
 		expect(time.textContent).toContain("Yesterday");
-		expect(f.view.el.querySelector(".messages > time")).toBe(time);
+		expect(f.view.el.querySelector(".messages-log > time")).toBe(time);
 		expect(f.view.el.querySelector("article.message")).toBe(article);
 		expect(messages.scrollTop).toBe(120);
 	});
 
 	it("refreshes on return to the tab and language changes, then stops on disposal", () => {
 		const f = setup([message(1, new Date(2026, 8, 20, 10).toISOString())]);
-		const time = f.view.el.querySelector<HTMLTimeElement>(".messages > time")!;
+		const time = f.view.el.querySelector<HTMLTimeElement>(".messages-log > time")!;
 		vi.setSystemTime(new Date(2026, 8, 21, 12));
 		window.dispatchEvent(new Event("focus"));
 		expect(time.textContent).toContain("Yesterday");
@@ -243,14 +243,14 @@ describe("conversation timestamp rendering", () => {
 			const originalRows = [...transcript.querySelectorAll(".message, .auth-card")];
 			const attachment = transcript.querySelector(".received-attachments");
 			const firstTime = transcript.querySelector<HTMLTimeElement>("time")!;
-			expect(transcript.querySelectorAll(":scope > time")).toHaveLength(1);
+			expect(transcript.querySelectorAll(".messages-log > time")).toHaveLength(1);
 			expect(firstTime.textContent).toMatch(/Today.*9:59/);
 			for (const zone of ["Europe/Copenhagen", "UTC"]) {
 				vi.stubEnv("TZ", zone);
 				if (trigger === "minute") vi.advanceTimersByTime(60_000);
 				else if (trigger === "focus") window.dispatchEvent(new Event("focus"));
 				else document.dispatchEvent(new Event("visibilitychange"));
-				const times = [...transcript.querySelectorAll<HTMLTimeElement>(":scope > time")];
+				const times = [...transcript.querySelectorAll<HTMLTimeElement>(".messages-log > time")];
 				expect(times).toHaveLength(zone === "UTC" ? 1 : 2);
 				expect(times[0]).toBe(firstTime);
 				expect(times[0]?.textContent).toMatch(zone === "UTC" ? /Today.*9:59/ : /Yesterday.*11:59/);
@@ -277,7 +277,7 @@ describe("conversation timestamp rendering", () => {
 		const transcript = f.view.el.querySelector<HTMLElement>(".messages")!;
 		const rows = [...transcript.querySelectorAll(".message")];
 		const times = () =>
-			[...transcript.querySelectorAll<HTMLTimeElement>(":scope > time")].map((time) => time.textContent);
+			[...transcript.querySelectorAll<HTMLTimeElement>(".messages-log > time")].map((time) => time.textContent);
 		expect(times()).toEqual([expect.stringMatching(/Today.*9:59/)]);
 		expect(setTimeZonePreference("Europe/Copenhagen")).toBe(true);
 		expect(times()).toEqual([expect.stringMatching(/Yesterday.*11:59/), expect.stringMatching(/Today.*12:01/)]);
@@ -302,14 +302,14 @@ describe("conversation timestamp rendering", () => {
 		Object.defineProperties(transcript, {
 			clientHeight: { value: 200 },
 			scrollHeight: {
-				get: () => rows.length * 100 + transcript.querySelectorAll(":scope > time").length * 20,
+				get: () => rows.length * 100 + transcript.querySelectorAll(".messages-log > time").length * 20,
 			},
 		});
 		vi.spyOn(transcript, "getBoundingClientRect").mockImplementation(() => new DOMRect(0, 0, 400, 200));
 		for (const row of rows) {
 			const offset = () => {
 				let top = 0;
-				for (const sibling of transcript.children) {
+				for (const sibling of transcript.querySelector(".messages-log")!.children) {
 					if (sibling === row) break;
 					top += sibling.tagName === "TIME" ? 20 : 100;
 				}
@@ -334,7 +334,7 @@ describe("conversation timestamp rendering", () => {
 		for (const zone of ["Europe/Copenhagen", "UTC"]) {
 			vi.stubEnv("TZ", zone);
 			window.dispatchEvent(new Event("focus"));
-			expect(transcript.querySelectorAll(":scope > time")).toHaveLength(zone === "UTC" ? 1 : 2);
+			expect(transcript.querySelectorAll(".messages-log > time")).toHaveLength(zone === "UTC" ? 1 : 2);
 			if (atBottom) expect(transcript.scrollTop).toBe(transcript.scrollHeight - transcript.clientHeight);
 			else expect(rows[3]!.getBoundingClientRect().top).toBe(anchorTop);
 		}

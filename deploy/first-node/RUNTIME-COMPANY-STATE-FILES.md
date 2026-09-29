@@ -675,7 +675,7 @@ of the body, for readers that should not reach the storage server.
 | rules (reviewer) | rule rows | the rule index, with the versions read; personal rules unchanged |
 | connections | vault rows and grants | the same, plus the purpose copy |
 
-**Built (F2-1b, migration 20260929440000):**
+**Built (F2-1b, migration 20260928269440):**
 - Part A. `qorpera_company_state_run_folder(env, agent, coworkers)` gives the folder names of a
   `folder-v2` run's agent and of the coworkers its context lists (null for a `snapshot-v1` company
   or an agent without a folder). Core C1c-2's `folder-v2` body of `qorpera_describe_company_run_context`
@@ -696,25 +696,54 @@ of the body, for readers that should not reach the storage server.
 - Still to come: the vision in full (read through core C3's folder client), and the file's `model`
   and `effort` reaching runs.
 
-**What the thin writers need from core C3's folder client** (F1 owns the client; F2 writes the tools
-on it):
-- `read(path)`: kind, version and, for a file, its text; `list(prefix)` with versions. A writer reads
-  the file it changes, and its parse comes from `parseCompanyStateFile` on that text.
-- `commit(operationKey, units, reviewId?)` as the run (the binding's `{kind:'run', runId, jobId,
-  runnerId, assignmentId}`), staging bytes through the object gateway first. Each write unit names
-  the version it read (`expectedVersion`) and carries `structured: [{path, kind, text, parse,
-  parserVersion}]` for every structured file in it, built by the shared parser from the same bytes.
-- Per-unit outcomes, typed: `saved`, `refused` with `problems` (the writer returns them to the model
-  with the line and the fix), `conflict` (re-read and redo under a new operation key),
-  `denied`/`waiting_for_review` (a reviewed change: the writer says it waits), plus the commit's
-  errors as the gateway's typed refusals are today: 55000 (the company is paused), 42501 (the run or
-  the folder is unavailable, or no authority), 22023 (invalid). A 23505 (a parallel change set took
-  a new id) and a 40P01 are retried with the same operation key.
-- The writers: `manage_todo` (a todo file, `writeTodoFile`), `organize_sidebar` (`agents/sections.md`,
-  read and rewrite), `decide_routine` (the run's own routine file: a new `at` or a conclusion,
-  `setCompanyStateSettings`); after C2's review recorder, `hire_agent` (one `new_folder` unit with
-  `agent.md` and the first todo), `create_group_chat` (`group.md`) and `manage_routine` (a routine
-  file, after `qorpera_prepare_routine_login`).
+**Core C3's folder client** (`packages/runtime/src/cloud-company-folder-client.ts`). The coordinator moved it
+from F1 to F2 on 2026-09-29, and F1 reviewed its shape on #533. It is the run's client of the folder core's four
+entry points: `read`, `readText`, `list`/`listAll`, `commit` and `release`.
+- **Actor:** `{kind:'run', runId, jobId, runnerId, assignmentId}` from the binding. The client passes no fence and
+  holds no lock between calls. Reads take SQL's plain checks; a commit or a release runs SQL's run check.
+- **Commit:**
+  - each file's bytes are staged through `CloudCompanyFolderBytes`;
+  - every structured file in a write or a new folder carries `structured: [{path, kind, text, parse,
+    parserVersion}]`, or `[{path, kind, problems}]` without the text, built by the shared parser from the same
+    bytes. SQL decides every unit;
+  - the operation key comes from the tool call. A retry with the same key, units and receipt replays the stored
+    outcome, so `CloudCompanyFolderBytes.put` must return the same reference for the same bytes and media type;
+  - `receiptId` carries the tool call's folder receipt once core C1c-2b has it. That receipt is the model-facing
+    gate (lease, sponsor, wake and the wake work gate), bound to the one commit.
+- **Outcomes:** `saved`, `conflict` (re-read, then redo under a new key), `refused` with `problems`, `denied` and
+  `waiting_for_review`, each with SQL's reason.
+- **Retries and errors:**
+  - QRC01 (the authority changed after the commit decided), 40P01, 23505 (the structured hook's "taken by another
+    change set") and 55P03 (a path claim that gave up waiting) are retried with the same key; a release retries
+    QRC01 and 40P01 with the same id;
+  - a lost answer (a timeout or a dropped connection) is retried the same way, since the transaction may have
+    committed and a replay returns its outcome;
+  - `CloudCompanyFolderError` says why a call did not complete: `stopped` (55000), `unavailable` (42501, 0A000),
+    `read_revoked` (the recheck's "no longer readable": the model saw something it may no longer see), `contended`
+    (still changing after four tries; nothing was recorded) and `unknown` (a try lost its answer or was cancelled
+    while it was sent, and none answered after it: the caller retries later with the same key, units and receipt);
+  - 22023, 25000 and PostgREST's answers about the request (`PGRST1nn`-`PGRST3nn`) are defects; its connection errors
+    (`PGRST0nn`) are lost answers. SQL's words stay off the errors.
+- **Open for C1c-2b (F1):** a commit carries at most one folder receipt, and a receipt one commit. A conflict's redo
+  is a second commit, so under a receipt it needs 2b to refuse a used receipt with its own code under the receipt
+  lock (the client must not read it as the hook's retryable 23505), or to leave the receipt unused by a commit that
+  saved nothing. Until that is settled, the conflict rule above is for writers that carry no receipt.
+- **Releases:** one per tool result that shows folder content, before the result leaves the tool. A listing's
+  entries are reads too. The caller keeps the release id and the output hash with its tool call, because a replay
+  with another output is refused. Composition releases once, before the first model request that uses it. A result
+  that shows more than 10,000 entries is released in parts, each with its own id and the same output hash.
+- **Bytes:** `CloudCompanyFolderBytes` is the one place core C1d plugs in (upload intents, and a byte check that
+  never locks the company row). Until then a folder-v2 run moves no bytes: C1c-1 refuses its object upload and
+  download. The client checks what it stages against its own hash, and what it reads against the entry.
+- **Test 760** pins the four entry points' shapes, as the client parses them.
+
+**The thin writers on it** go live after core C1c-2b (folder receipts; a writer that sends also needs 2b's send) and
+C1d (bytes):
+- first, `manage_todo` (a todo file, `writeTodoFile`), `organize_sidebar` (`agents/sections.md`, read and
+  rewrite) and `decide_routine` (the run's own routine file: a new `at` or a conclusion,
+  `setCompanyStateSettings`);
+- after C2's review recorder, `hire_agent` (one `new_folder` unit with `agent.md` and the first todo),
+  `create_group_chat` (`group.md`) and `manage_routine` (a routine file, after `qorpera_prepare_routine_login`).
 
 Until the mount's writes are accepted (F3), these tools become thin writers of these files:
 `hire_agent`, `create_group_chat`, `organize_sidebar`, `manage_todo`, `manage_routine` and
@@ -800,7 +829,7 @@ claims by kind then key (F2). All nine come before paths, objects, admission and
 
    **F2-1b** follows: the follow-ups on C2's queue, the context composer reading the vision and
    `agent.md`, and the agent-folder helper for memory and skills. Part A (migration
-   20260929440000) is the folder names for the context and the helper (§5); part B, in the
+   20260928269440) is the folder names for the context and the helper (§5); part B, in the
    same migration, the routine save's login setup; the thin writers come on core C3's folder
    client, and the reviewed ones after C2's review recorder.
 3. **F2-2** group chats and sections (migration 20260928249100; for new companies it replaces
