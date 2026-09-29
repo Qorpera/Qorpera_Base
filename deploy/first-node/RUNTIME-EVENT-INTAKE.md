@@ -218,13 +218,16 @@ W2a (migration `20260929290000_runtime_event_wakes`, on today's routine rows per
 runtime side ship in one cut.
 
 **The trigger.** A routine version may carry one listener trigger on a hook:
-`{id, kind:'listener', source:'event', hookId, only?: [types], timeZone, replyPolicy?}`. `only` lists
-1–20 distinct event types of printable ASCII without spaces, at most 128 characters each. A delivery
+`{id, kind:'listener', source:'event', hookId, only?: [types], timeZone, replyPolicy?}`. `hookId` is
+the hook's id in lowercase canonical form, so every reader compares it as text. `only` lists 1–20
+distinct event types of printable ASCII without spaces, at most 128 characters each. A delivery
 with no type matches only a trigger without `only`. As with file-change listeners, a listener is the
 version's only trigger, and the hook must be a live hook of the routine's company and environment
 (checked when the version is saved, by the agent's routine tool and by the version's activation). The
 agent's tool compiles `{kind:"event", hookId, only?, timeZone, report?}` to it; `list_hooks` gives
-the ids. In routine files (F2-6) this becomes `when: event`, `source: hooks/<name>` and `only: [...]`.
+the ids. In routine files (F2-6) this becomes `when: event`, `source: hooks/<name>` and `only: [...]`. Member
+clients read the trigger (`CloudRoutineEventTrigger`): the web routine list words it and offers pause
+and resume, and its editor does not edit it.
 
 **Cursors.** Each event listener version gets a row in `qorpera_event_listener_cursors` with the
 instant it became active. A resume or a new current version starts it again from now, as a file
