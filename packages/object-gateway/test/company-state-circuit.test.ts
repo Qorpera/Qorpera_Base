@@ -324,7 +324,8 @@ describe("one company's database state and the shared circuit", () => {
 	] as const)("names nothing else a lock conflict: %s", async (_label, respond) => {
 		const { state, routes: send } = await gateway();
 		state.fail = { company: "a", respond };
-		for (const route of routes) expect(Object.keys(await (await send[route]("a")).json())).toEqual(["error"]);
+		for (const route of routes)
+			expect(Object.keys((await (await send[route]("a")).json()) as object)).toEqual(["error"]);
 	});
 
 	it("does not call a write during the same object's deletion a lock conflict", async () => {
