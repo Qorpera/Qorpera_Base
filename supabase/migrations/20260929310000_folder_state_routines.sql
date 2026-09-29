@@ -1051,7 +1051,7 @@ declare
 	v_op text := p_unit ->> 'op'; v_profile uuid; v_user uuid; v_file record; v_kind text; v_entry jsonb; v_version uuid;
 	v_key text; v_staff record; v_room record; v_connection record; v_new_path text; v_actor jsonb; v_entries jsonb;
 	v_routine record; v_owner uuid; v_next bigint; v_created timestamptz; v_commit public.qorpera_folder_commits%rowtype;
-	v_moved public.qorpera_cloud_routine_versions%rowtype; v_pay record; v_waits boolean;
+	v_moved public.qorpera_cloud_routine_versions%rowtype; v_pay record; v_waits boolean; v_ends_wait boolean;
 begin
 	select profile_id into v_profile from public.qorpera_company_files where environment_id = p_environment_id;
 	select jsonb_build_object('kind', c.actor_kind, 'requesterUserId', c.requester_id) into v_actor
@@ -1200,9 +1200,11 @@ begin
 		end loop;
 		-- Routine files follow their path: a new name is the new key, and a new agent folder the new owner (read after the
 		-- roster rows above were repointed), whose runs the routine then makes: a version like the last one with the new
-		-- agent, paid by the mover's login (S2), at its schedule position; without a paying login it waits for one.
+		-- agent, paid by the mover's login (S2), at its schedule position; without a paying login it waits for one, and with
+		-- one a wait for a login ends, as a file save's new version ends it.
 		select * into v_commit from public.qorpera_folder_commits where id = p_commit_id;
-		for v_routine in select r.id, r.folder_path, r.current_version, r.status from public.qorpera_cloud_routines r
+		for v_routine in select r.id, r.folder_path, r.current_version, r.status, r.pause_reason, r.max_occurrences
+			from public.qorpera_cloud_routines r
 			where r.profile_id = v_profile and r.folder_environment_id = p_environment_id and r.folder_retired_at is null
 				and (r.folder_path = v_key collate "C"
 					or (r.folder_path > (v_key || '/') collate "C" and r.folder_path < (v_key || '0') collate "C"))
@@ -1215,13 +1217,16 @@ begin
 			v_new_path := (select e.path from public.qorpera_folder_entries e where e.environment_id = p_environment_id
 				and e.key_sha256 = extensions.digest(public.qorpera_folder_key(v_new_path), 'sha256'));
 			v_owner := public.qorpera_company_state_routine_owner(p_environment_id, public.qorpera_folder_key(v_new_path));
-			v_next := v_routine.current_version; v_waits := false;
+			v_next := v_routine.current_version; v_waits := false; v_ends_wait := false;
 			select * into v_moved from public.qorpera_cloud_routine_versions cv
 			where cv.routine_id = v_routine.id and cv.version = v_routine.current_version;
 			if v_moved.staff_agent_id is distinct from v_owner then
 				select * into v_pay from public.qorpera_company_state_routine_saver_pays(v_commit, v_profile, v_moved);
 				if v_pay.binding_id is null then raise exception 'A routine version has no login to pin' using errcode = 'XX000'; end if;
 				v_waits := not v_pay.paid and v_routine.status = 'active';
+				v_ends_wait := v_pay.paid and v_routine.status = 'paused' and v_routine.pause_reason = 'needs_model_account'
+					and (v_routine.max_occurrences is null
+						or public.qorpera_routine_occurrence_count(v_routine.id) < v_routine.max_occurrences);
 				v_next := v_routine.current_version + 1;
 				insert into public.qorpera_cloud_routine_versions(routine_id, version, client_version_id, profile_id, environment_id,
 					staff_agent_id, title, prompt, triggers, effort, sponsor_binding_id, sponsor_version, content_sha256, created_by_user_id)
@@ -1235,14 +1240,15 @@ begin
 				select v_routine.id, v_next, t.value ->> 'id', position.last_scheduled_for, position.next_due_at
 				from jsonb_array_elements(v_moved.triggers) t(value)
 				cross join lateral public.qorpera_routine_version_schedule_position(v_routine.id, v_routine.current_version, t.value,
-					v_created, v_routine.status = 'active', v_routine.status = 'active' and not v_waits) position
+					v_created, v_routine.status = 'active', (v_routine.status = 'active' or v_ends_wait) and not v_waits) position
 				where t.value ->> 'kind' = 'schedule';
 			end if;
 			update public.qorpera_cloud_routines set folder_path = v_new_path, folder_path_version = v_version,
 				folder_commit_id = p_commit_id, routine_key = public.qorpera_company_state_todo_key(v_new_path),
 				owner_staff_agent_id = v_owner, current_version = v_next,
-				status = case when v_waits then 'paused' else status end,
-				pause_reason = case when v_waits then 'needs_model_account' else pause_reason end, updated_at = statement_timestamp()
+				status = case when v_waits then 'paused' when v_ends_wait then 'active' else status end,
+				pause_reason = case when v_waits then 'needs_model_account' when v_ends_wait then null else pause_reason end,
+				authorization_failures = case when v_ends_wait then 0 else authorization_failures end, updated_at = statement_timestamp()
 			where id = v_routine.id;
 		end loop;
 		return;

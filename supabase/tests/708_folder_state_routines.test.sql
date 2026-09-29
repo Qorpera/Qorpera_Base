@@ -740,6 +740,15 @@ begin
 		or v.sponsor_binding_id is distinct from '70800000-0000-4000-8000-0000000000b1' or v.created_by_user_id is distinct from '70700000-0000-4000-8000-000000000001'
 		or v.title is distinct from 'Daily digest' then
 		raise exception 'A resume moves to the saver''s paying login: %, %', to_jsonb(x), to_jsonb(v); end if;
+	-- Waiting for a login, as a run's save leaves it: a handover paid by the mover's login ends the wait.
+	perform pg_temp.fx(format('update public.qorpera_cloud_routines set status = %L, pause_reason = %L where id = %L',
+		'paused', 'needs_model_account', e9));
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'waits-0006', jsonb_build_array(
+		pg_temp.move(p, 'agents/otis/routines/digest.md'))), 1, 'saved');
+	x := pg_temp.rt(e9); v := pg_temp.rv(e9);
+	if x.status is distinct from 'active' or x.pause_reason is not null or v.staff_agent_id is distinct from '70700000-0000-4000-8000-0000000000a2'
+		or v.sponsor_binding_id is distinct from '70800000-0000-4000-8000-0000000000b1' then
+		raise exception 'A paid handover ends the wait: %, %', to_jsonb(x), to_jsonb(v); end if;
 end $$;
 
 -- 10. The member RPC refuses a folder-v2 company's routines, except rows from before -------------------------------------------
@@ -763,6 +772,10 @@ begin
 	if v_result ->> 'routine_id' is distinct from '70800000-0000-4000-8000-0000000000e4' then
 		raise exception 'A routine row from before the files is still saved there: %', v_result; end if;
 	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
+	-- The agent tools refuse on a folder-v2 company too (their callers need a native tool lease, so the fence is read here).
+	if position('routines folders; write the routine' in pg_get_functiondef('public.qorpera_manage_agent_routine(jsonb,jsonb)'::regprocedure)) = 0
+		or position('routines folders; write the routine' in pg_get_functiondef('public.qorpera_decide_agent_routine(jsonb,jsonb)'::regprocedure)) = 0 then
+		raise exception 'Both agent routine tools carry the folder-v2 fence'; end if;
 end $$;
 
 rollback;

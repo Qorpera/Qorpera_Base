@@ -406,8 +406,8 @@ it; a different answer changes the parser and `qorpera_company_state_routine_tri
 - The file's status is the saver's word when the save changes it, and when it restores the file.
 - Otherwise a pause, expiry or suspension that the platform recorded stays until core C2's queue
   writes it into the file. The only exceptions: a save revives an expired routine (the sweep
-  expires it again while it has ended), and a new version with a paying login ends a wait for
-  one. A platform commit's pause keeps the recorded reason.
+  expires it again while it has ended), and a new version with a paying login (a save's, or a
+  handover's) ends a wait for one. A platform commit's pause keeps the recorded reason.
 - A routine whose runs are used up has ended (`expired`), as the recorded occurrence at its limit
   leaves it; more runs start it again.
 
