@@ -1,4 +1,4 @@
--- Event intake, step W1a (20260929260000): hooks, the intake door, duplicates, limits, the switch,
+-- Event intake, step W1a (20260928259260): hooks, the intake door, duplicates, limits, the switch,
 -- retention and who may do what.
 begin;
 
