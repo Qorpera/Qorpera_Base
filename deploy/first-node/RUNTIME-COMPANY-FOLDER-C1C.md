@@ -706,7 +706,7 @@ Decisions:
   not block; stop and resume (`FOR UPDATE`) and other member management wait for it. No new row.
 - **Plain conversations refuse `folder-v2`** (0A000) until C3 and C4 give them `folder-v2` runs: today their inputs
   would be accepted and never delivered. Their creators still run: `qorpera_ensure_staff_session` (web `api.ts`, cloud
-  client `hosted-primary.ts`) and the eight `create_shared_session` functions open `folder-v2` conversations, and
+  client `hosted-primary.ts`) and the seven `create_shared_session` functions open `folder-v2` conversations, and
   `ensure_staff_session` adds a kickoff input that nothing delivers (part 1's session materializer skips `folder-v2`).
   Nothing is lost, since every later input refuses. C3 and C4 refuse or deliver them. 3b's answers keep the gc fence
   on `folder-v2` until 3b.
@@ -724,8 +724,8 @@ Decisions:
   UPDATE`; the input and mentions; the transcript events (the operation clock), then admission, which is the last lock
   before the folder clock (661 K: a coworker message holds the clock and then wants admission); admission only when a
   wake follows; the wakes. Images refuse first, before the pause and the login (660 §3), until C1d. A group chat with
-  no agent posts without admission; F2's group files need two agents, so on `folder-v2` that happens only once a
-  chat's agents have left the company (660 §4 uses hand-built rows).
+  no agent posts without admission; F2's group files need two agents, so on `folder-v2` that happens only once none
+  of a chat's agents is active any more, for example all archived (660 §4 uses hand-built rows).
 - **The room `FOR SHARE` is a named exception to core §9** ("`FOR KEY SHARE` for rows referenced"). Snapshot-v1
   posting took its room `FOR SHARE` too.
   - A save that changes a group chat (F2's group hook) takes the room `FOR NO KEY UPDATE` at rank 4 and names no
