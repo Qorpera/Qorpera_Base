@@ -1,5 +1,5 @@
 -- A deleted company's agent machines are deleted too (2026-09-29), as agreed
--- between company deletion (20260928249150) and machines (20260929050000):
+-- between company deletion (20260928249150) and machines (20260928259050):
 -- whichever landed second adds this. qorpera_stop_company_work runs with the
 -- company's fence held, on the request and on every finisher pass until the
 -- purge, so this follows the machines' one lock order from there: the
