@@ -43,11 +43,15 @@ begin
 	values (v_capsule, v_run.profile_id, v_identity, 'company', 'openai', 'codex-cli', 'fixture://not-a-credential', repeat('e', 64),
 		v_run.created_by_user_id) on conflict (id) do nothing;
 	insert into public.qorpera_provider_connection_versions(connection_id, version, authentication_mode, native_harness, billing_source,
-		consent_version, consented_by_user_id, created_by_user_id, credential_capsule_id, max_native_concurrency, quota_policy)
+		consent_version, consented_by_user_id, created_by_user_id, credential_capsule_id, max_native_concurrency, quota_policy, allow_autonomous)
 	values (v_sponsor.provider_connection_id, v_sponsor.provider_connection_version, 'native_subscription', 'codex-cli', 'subscription',
 		'fixture', v_run.created_by_user_id, v_run.created_by_user_id, v_capsule, 8,
-		'{"monthly_microusd":1000000,"reservation_microusd":100000,"max_calls_per_run":32,"max_input_tokens_per_run":2000000,"max_output_tokens_per_run":500000,"max_concurrent_runs":8}')
+		'{"monthly_microusd":1000000,"reservation_microusd":100000,"max_calls_per_run":32,"max_input_tokens_per_run":2000000,"max_output_tokens_per_run":500000,"max_concurrent_runs":8}',
+		true)
 	on conflict (connection_id, version) do nothing;
+	-- The company login pays for unattended work too, so a wake run's sponsor test passes (and takes the connection).
+	update public.qorpera_execution_sponsor_versions set allow_autonomous = true
+	where binding_id = v_run.sponsor_binding_id and version = v_run.sponsor_version;
 	insert into public.qorpera_runners(id, profile_id, client_runner_id, display_name, capabilities, status, activation_token_sha256,
 		activation_expires_at, activated_at, session_token_sha256, session_expires_at, registered_by_user_id, compute_identity_id)
 	values ((p_actor ->> 'runnerId')::uuid, v_run.profile_id, (p_actor ->> 'runnerId')::uuid, 'Run fence runner', '["agent_turn"]',
@@ -166,7 +170,8 @@ begin
 		elsif v.kind = 'describe' then
 			v_text := replace(v_text, E'v_continuation jsonb; v_recorded jsonb; v_folder jsonb;\n', E'v_continuation jsonb; v_recorded jsonb;\n');
 			v_text := replace(v_text, E'\tif public.qorpera_environment_is_folder_v2(v_run.environment_id) then\n'
-				|| E'\t\tselect name into strict v_company_name from public.qorpera_folder_company_index where environment_id = v_run.environment_id;\n'
+				|| E'\t\tselect name into v_company_name from public.qorpera_folder_company_index where environment_id = v_run.environment_id;\n'
+				|| E'\t\tif not found then raise exception ''Company folder is unavailable'' using errcode = ''42501''; end if;\n'
 				|| E'\telse\n'
 				|| E'\t\tselect name into strict v_company_name from public.qorpera_profiles where id = v_run.profile_id;\n'
 				|| E'\tend if;\n',
@@ -365,7 +370,7 @@ declare
 	c_env constant uuid := '63400000-0000-4000-8000-000000000020';
 	c_a constant uuid := '63400000-0000-4000-8000-0000000000a1'; c_b constant uuid := '63400000-0000-4000-8000-0000000000a2';
 	c_member constant uuid := '63400000-0000-4000-8000-000000000002';
-	p jsonb; b jsonb; a jsonb; v jsonb; v_res uuid; v_ga uuid; v_gb uuid;
+	p jsonb; b jsonb; a jsonb; v jsonb; vb jsonb; v_res uuid; v_ga uuid; v_gb uuid;
 begin
 	v_res := public.qorpera_folder_set_resource(c_env, pg_temp.member(1), 'vault', 'subtree', 'company_shared', 'normal') ->> 'resourceId';
 	v_ga := public.qorpera_folder_grant(c_env, pg_temp.member(1), v_res, 'staff_agent', c_a, array['read']) ->> 'grantId';
@@ -384,8 +389,17 @@ begin
 	v_gb := public.qorpera_folder_grant(c_env, pg_temp.member(1), v_res, 'staff_agent', c_b, array['read']) ->> 'grantId';
 	if not public.qorpera_wake_authorized(pg_temp.wake(v)) or not public.qorpera_run_wake_authorized((v ->> 'runId')::uuid) then
 		raise exception 'The coworker wake must be authorized once the recipient may read the parent''s reads'; end if;
+	-- The coworker run's own tool call: a wake run, so the sponsor test asks whether the login pays for unattended work.
+	vb := pg_temp.native(v);
+	if (pg_temp.ntlr(vb)).id::text <> v ->> 'runId' then raise exception 'A wake run''s tool call'; end if;
+	perform pg_temp.fx('update public.qorpera_provider_connection_versions set allow_autonomous = false
+		where connection_id = ''63400000-0000-4000-8000-0000000000b3''');
+	perform pg_temp.raises_like(format('select pg_temp.ntlr(%L)', vb), '42501', 'native provider execution authority is unavailable');
+	perform pg_temp.fx('update public.qorpera_provider_connection_versions set allow_autonomous = true
+		where connection_id = ''63400000-0000-4000-8000-0000000000b3''');
 	perform public.qorpera_folder_revoke(c_env, pg_temp.member(1), v_res, v_gb);
 	if public.qorpera_wake_authorized(pg_temp.wake(v)) then raise exception 'A revoked parent read must refuse the coworker wake'; end if;
+	perform pg_temp.raises_like(format('select pg_temp.ntlr(%L)', vb), '42501', 'Admitted wake authority is unavailable');
 	-- A's read is revoked: the assertion refuses, and so does every reading caller that asserts.
 	perform public.qorpera_folder_revoke(c_env, pg_temp.member(1), v_res, v_ga);
 	perform pg_temp.raises_like(format('select public.qorpera_company_path_assert_context(%L)', a), '42501', 'A read is no longer readable');
@@ -394,6 +408,9 @@ begin
 		'42501', 'A read is no longer readable');
 	-- A folder-v2 actor without the folder run actor, or with another run's, refuses; the legacy loop is never reached.
 	perform pg_temp.raises_like(format('select public.qorpera_company_path_assert_context(%L)', a - 'folder'), '42501',
+		'Company File authority is unavailable');
+	-- The core is looked up from the environment: an actor without its core field is still folder-v2.
+	perform pg_temp.raises_like(format('select public.qorpera_company_path_assert_context(%L)', a - 'core' - 'folder'), '42501',
 		'Company File authority is unavailable');
 	perform pg_temp.raises_like(format('select public.qorpera_company_path_assert_context(%L)',
 		jsonb_set(a, '{folder,resolved,runId}', to_jsonb(extensions.gen_random_uuid()::text))), '42501', 'Company File authority is unavailable');
@@ -418,7 +435,7 @@ do $$
 declare
 	c_env constant uuid := '63400000-0000-4000-8000-000000000020';
 	c_a constant uuid := '63400000-0000-4000-8000-0000000000a1'; c_member constant uuid := '63400000-0000-4000-8000-000000000002';
-	p jsonb; b jsonb; s jsonb; v_res uuid; v_client uuid := extensions.gen_random_uuid();
+	p jsonb; b jsonb; s jsonb; v_res uuid; v_shared uuid; v_token text; v_client uuid := extensions.gen_random_uuid();
 begin
 	v_res := public.qorpera_folder_set_resource(c_env, pg_temp.member(1), 'closed', 'subtree', 'company_shared', 'normal') ->> 'resourceId';
 	p := pg_temp.run(c_a, 'human', c_member);
@@ -435,6 +452,19 @@ begin
 		array['read']);
 	if public.qorpera_company_presence_scope(c_env, b, array['shared/doc.md']) #>> '{paths,0,routes,0,token}' = s #>> '{paths,0,routes,0,token}' then
 		raise exception 'A grant change must change the root token'; end if;
+	-- A narrower resource: its token changes with every access change (its authority revision), and every token changes
+	-- with the membership.
+	v_shared := public.qorpera_folder_set_resource(c_env, pg_temp.member(1), 'shared', 'subtree', 'company_shared', 'normal') ->> 'resourceId';
+	perform public.qorpera_folder_grant(c_env, pg_temp.member(1), v_shared, 'staff_agent', c_a, array['read']);
+	v_token := public.qorpera_company_presence_scope(c_env, b, array['shared/doc.md']) #>> '{paths,0,routes,1,token}';
+	perform public.qorpera_folder_set_resource(c_env, pg_temp.member(1), 'shared', 'exact', 'company_shared', 'normal');
+	if public.qorpera_company_presence_scope(c_env, b, array['shared']) #>> '{paths,0,routes,1,token}' = v_token then
+		raise exception 'An access change on a resource must change its presence token'; end if;
+	v_token := public.qorpera_company_presence_scope(c_env, b, array['shared']) #>> '{paths,0,routes,0,token}';
+	perform pg_temp.fx('update public.qorpera_profile_members set role = ''contributor'' where profile_id = ''63400000-0000-4000-8000-000000000010''
+		and user_id = ''63400000-0000-4000-8000-000000000003''');
+	if public.qorpera_company_presence_scope(c_env, b, array['shared']) #>> '{paths,0,routes,0,token}' = v_token then
+		raise exception 'A membership change must change the presence tokens'; end if;
 	s := public.qorpera_native_presence_register(b, v_client, 'MCowBQYDK2VwAyEA' || repeat('A', 43) || '=');
 	if s ->> 'runId' <> p ->> 'runId' then raise exception 'Presence register: %', s; end if;
 	s := public.qorpera_native_presence_subject(c_env, v_client, array['shared/doc.md']);
@@ -500,6 +530,7 @@ begin
 		encode(extensions.digest(convert_to((v_manifest -> 'modelPolicy')::text, 'utf8'), 'sha256'), 'hex'), p ->> 'runId'));
 	perform pg_temp.fx(format('update public.qorpera_session_inputs set runtime_bundle_id = %L, runtime_bundle_sha256 = %L
 		where execution_run_id = %L', v_bundle.runtime_bundle_id, v_bundle.runtime_bundle_sha256, p ->> 'runId'));
+	perform pg_temp.raises_like(format('select public.qorpera_describe_company_run_context(%L)', b), '42501', 'Company folder is unavailable');
 	perform pg_temp.fx(format('insert into public.qorpera_folder_company_index(environment_id, profile_id, name, vision_path_version,
 		vision_seeded, commit_id) values (%L, %L, %L, %L, true, %L)', c_env, c_profile, 'Nordlys', extensions.gen_random_uuid(),
 		extensions.gen_random_uuid()));

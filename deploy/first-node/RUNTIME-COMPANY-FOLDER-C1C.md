@@ -223,6 +223,14 @@ within 63 characters.
      legacy check: for a wake run, sponsor availability asks `qorpera_provider_autonomous_authority`, which takes the
      provider connection `FOR SHARE`. It comes after the company row and the job, the legacy order.
 
+     One caller makes that lock stronger: F2-1b's `qorpera_prepare_routine_login` runs the run check and may then
+     take the requester's login `FOR UPDATE` in `qorpera_ensure_unattended_sponsor`. When that login is the wake
+     run's own sponsor connection, the transaction goes from `FOR SHARE` to `FOR UPDATE` on one row. Legacy had the
+     same upgrade, but its gc fence made two such calls in one company take turns. On `folder-v2` two routine runs
+     setting up the same login can meet with 40P01, which F2's writer retries. This is the only such upgrade the
+     C1c-2a sweep found (every run-check caller, depth 4, with #534 applied). F2-1b owns it; C1c-3's activation check
+     lists it as a known exception until it is removed.
+
   It returns the resolved run actor and the run row. The binding's ids are normalized (`::uuid::text`).
 - **`qorpera_folder_run_enter(env, profile, actor, p_targets jsonb)`**, a four-argument overload with no default, so
   the three-argument calls stay unambiguous. It merges the caller's targets into the run's own, validated as C1b-3a's
@@ -233,7 +241,9 @@ within 63 characters.
 
   It locks them in rank order, ranks 0 to 7; vault rows and unique-key claims (8, 9) stay the commit's. The
   three-argument entry is this one with no caller targets.
-- **`qorpera_company_run_actor(env, p_binding)`**, the new entry point. It takes no locks.
+- **`qorpera_company_run_actor(env, p_binding)`**, the new entry point. It takes none of the run check's locks. For
+  a wake run, its lease check still takes the provider connection `FOR SHARE` (step 5's one lock), a single shared
+  lock with nothing held before it.
   - snapshot-v1: it returns `qorpera_company_path_actor(...)` unchanged;
   - `folder-v2`, run: `qorpera_folder_run_resolve`, a plain resolve. It returns the legacy field names callers read
     (`companyId`, `environmentId`, `userId`, `staffAgentId`, `runId`, `jobId`, `assignmentId`, `audience`,
@@ -447,8 +457,8 @@ functions.
 
 Concurrency tests (dblink, with `current_database()`), by slice:
 - **C1c-2a:**
-  1. Two tool calls of one run: the second waits at the mutex, and nothing deadlocks. Concurrent context views get
-     ordinals 1 and 2.
+  1. Two tool calls of one run: the second waits at the mutex, and nothing deadlocks. (The context views' ordinals
+     move to C1c-2b, test 7b: in 2a, `record_native_context_view` refuses `folder-v2` before it writes.)
   2. Renewal waits only for the one tool call in flight.
   3. Stop: the drain waits for a tool call in flight, and a call that waited behind it refuses. A deletion row with no
      pause row also refuses a tool call.
@@ -459,6 +469,7 @@ Concurrency tests (dblink, with `current_database()`), by slice:
      a digest of each snapshot-v1 body.
 - **C1c-2b:**
   7. Concurrent receipt begins leave one `executing` receipt.
+  7b. Concurrent context views of one run get ordinals 1 and 2.
   8. A send, an ask card and a coworker send against legacy posting or `answer_interaction` on the same session, both
      orders: no deadlock. Removing rank 0 gives 40P01.
   9. `add_agent_review_rule` twice with the same text leaves one row. Against a role change, no deadlock.
@@ -517,3 +528,6 @@ Needed before any view goes live (C1B §4).
   turns, and C1b-3a's coding views with a live turn, refuse on `folder-v2` until C1c-2.
 - Runner-broker model requests do no Company File recheck at all today.
 - No real run can exist on `folder-v2` yet: C1c's branches are tested on hand-made rows, as C1b's were.
+- The `folder-v2` run check sets no `lock_timeout`. The legacy direct lease check runs with 25 s, and legacy NTLR's
+  gc fence wait happened inside it. The folder path's waits (the mutex, the job, the fence, rank 0 behind a legacy
+  company-row holder until C1c-3) have none. C1e's load test watches them against core §9's result fence.

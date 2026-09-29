@@ -6,7 +6,8 @@
 --   qorpera_folder_tool_run: the run mutex (the run's budget row, before the job), then the folder run entry with the
 --   company row KEY SHARE, and plain lease checks. No job FOR UPDATE, no gc fence, no NOWAIT (§5.1-§5.3).
 -- * The lease check and the wake check the runtime also calls directly dispatch to their folder-v2 bodies (§5.4).
--- * qorpera_company_run_actor is the new actor entry point. It takes no locks; the legacy actor keeps refusing
+-- * qorpera_company_run_actor is the new actor entry point. It takes none of the run check's locks (for a wake run,
+--   the lease check's sponsor test still takes the provider connection FOR SHARE); the legacy actor keeps refusing
 --   folder-v2 (§2). Its callers that read are switched to it; the context assertion decides by the company's core.
 -- * The office, the organization self-approval and machine start refuse folder-v2 until C1c-3; the legacy sends,
 --   receipts, the interaction request and the transcript append refuse it until C1c-2b gives them folder bodies, so no
@@ -251,9 +252,10 @@ begin
 	return jsonb_build_object('actor', v_actor, 'resolved', v_resolved, 'run', to_jsonb(v_run));
 end $$;
 
--- 6. The actor entry point, with no locks (C1C §2, §5.3) ---------------------------------------------------------
+-- 6. The actor entry point, without the run check's locks (C1C §2, §5.3) -----------------------------------------
 
--- snapshot-v1: the legacy actor, unchanged. folder-v2, a run: the plain folder resolve and the plain lease checks; the
+-- snapshot-v1: the legacy actor, unchanged. folder-v2, a run: the plain folder resolve and the plain lease checks (whose
+-- only lock, for a wake run, is the provider connection FOR SHARE of the sponsor test, as in the run check); the
 -- callers that lock run the run check first (every caller with a binding but presence). folder-v2, a member: a plain
 -- membership read. Both return the legacy field names callers read, plus core and the folder actor.
 create function public.qorpera_company_run_actor(p_environment_id uuid, p_binding jsonb)
@@ -295,7 +297,9 @@ begin
 end $$;
 
 -- Presence routes for folder-v2 (C1C §5.4): the legacy token shape (prefix, resource, its version, the membership
--- fingerprint and the live grants), with the folder resolver deciding what the actor reads. A refusal is 42501, which
+-- fingerprint and the live grants), with the folder resolver deciding what the actor reads. A retained token must not
+-- identify new activity after access narrows: legacy gives the resource a new version on every change, the folder core
+-- bumps its authority revision instead, so the token hashes that too. A refusal is 42501, which
 -- qorpera_native_presence_subject reads as absent.
 create function public.qorpera_folder_presence_routes(p_actor jsonb, p_paths text[], p_require_target boolean)
 returns jsonb language plpgsql security definer set search_path = '' as $$
@@ -326,7 +330,8 @@ begin
 				from public.qorpera_company_path_grants g where g.resource_id = v_resource.id and g.resource_version = v_resource.version
 					and g.revoked_at is null and (g.expires_at is null or g.expires_at > clock_timestamp());
 				v_routes := v_routes || jsonb_build_array(jsonb_build_object('path', v_prefix, 'token', encode(
-					extensions.hmac(convert_to(jsonb_build_array(v_prefix, v_resource.id, v_resource.version, v_members, v_grants)::text, 'utf8'),
+					extensions.hmac(convert_to(jsonb_build_array(v_prefix, v_resource.id, v_resource.version,
+						v_resource.authority_revision, v_members, v_grants)::text, 'utf8'),
 						v_secret, 'sha256'), 'hex')));
 			end if;
 		end loop;
@@ -403,7 +408,8 @@ begin
 	perform pg_temp.c1c2_replace(p.oid::regprocedure,
 		E'\tselect name into strict v_company_name from public.qorpera_profiles where id = v_run.profile_id;\n',
 		E'\tif public.qorpera_environment_is_folder_v2(v_run.environment_id) then\n'
-		|| E'\t\tselect name into strict v_company_name from public.qorpera_folder_company_index where environment_id = v_run.environment_id;\n'
+		|| E'\t\tselect name into v_company_name from public.qorpera_folder_company_index where environment_id = v_run.environment_id;\n'
+		|| E'\t\tif not found then raise exception ''Company folder is unavailable'' using errcode = ''42501''; end if;\n'
 		|| E'\telse\n'
 		|| E'\t\tselect name into strict v_company_name from public.qorpera_profiles where id = v_run.profile_id;\n'
 		|| E'\tend if;\n', 1)

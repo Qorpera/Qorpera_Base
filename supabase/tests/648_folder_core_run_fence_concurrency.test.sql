@@ -165,6 +165,36 @@ begin
 	values (v_job, v_profile, v_env, '["gpt-test"]', 32, 1000, 1000, v_requester);
 	insert into public.qorpera_execution_run_budgets(run_id) values (v_run);
 end $$;
+-- A snapshot-v1 company whose run, job, native lease and compute identity match, for the direct lease check's control.
+insert into auth.users(id,email) values ('64800000-0000-4000-8000-000000000003','fence-race-snapshot@example.test');
+insert into public.qorpera_profiles(id,name,created_by_user_id)
+values ('64800000-0000-4000-8000-000000000011','Run fence snapshot control','64800000-0000-4000-8000-000000000003');
+insert into public.qorpera_profile_members(profile_id,user_id,email,display_name,role)
+values ('64800000-0000-4000-8000-000000000011','64800000-0000-4000-8000-000000000003','fence-race-snapshot@example.test','Owner','owner');
+insert into public.qorpera_company_environments(id,profile_id,name,contract_version,created_by_user_id)
+values ('64800000-0000-4000-8000-000000000021','64800000-0000-4000-8000-000000000011','Environment',1,'64800000-0000-4000-8000-000000000003');
+insert into public.qorpera_member_compute_identities(id, profile_id, ownership_kind, client_identity_id, display_name)
+values ('64800000-0000-4000-8000-0000000000e1', '64800000-0000-4000-8000-000000000011', 'company', extensions.gen_random_uuid(), 'Snapshot identity');
+insert into public.qorpera_runner_jobs(id, profile_id, environment_id, substrate_version_id, client_job_id, required_capability,
+	job_type, payload, created_by_user_id, status, runner_id, client_lease_id, lease_token_sha256, lease_expires_at, run_id)
+values ('64800000-0000-4000-8000-0000000000e2', '64800000-0000-4000-8000-000000000011', '64800000-0000-4000-8000-000000000021',
+	extensions.gen_random_uuid(), extensions.gen_random_uuid(), 'agent_turn', 'agent_turn', '{}', '64800000-0000-4000-8000-000000000003',
+	'leased', '64800000-0000-4000-8000-0000000000e4', '64800000-0000-4000-8000-0000000000e5', repeat('a', 64),
+	clock_timestamp() + interval '1 hour', '64800000-0000-4000-8000-0000000000e3');
+insert into public.qorpera_execution_runs(id, profile_id, environment_id, source_kind, source_id, job_id, substrate_version_id,
+	company_snapshot_id, staff_agent_id, staff_version, sponsor_binding_id, sponsor_version, required_capability, job_type,
+	payload_sha256, transcript_start_sequence, created_by_user_id, requested_by_user_id, model_provider, model_id, model_selection,
+	audience_kind, runtime_bundle_id, runtime_bundle_sha256, input_ids, compute_identity_id)
+values ('64800000-0000-4000-8000-0000000000e3', '64800000-0000-4000-8000-000000000011', '64800000-0000-4000-8000-000000000021',
+	'wake', extensions.gen_random_uuid(), '64800000-0000-4000-8000-0000000000e2', extensions.gen_random_uuid(), extensions.gen_random_uuid(),
+	extensions.gen_random_uuid(), 1, extensions.gen_random_uuid(), 1, 'agent_turn', 'agent_turn', repeat('c', 64), 0,
+	'64800000-0000-4000-8000-000000000003', '64800000-0000-4000-8000-000000000003', 'openai', 'gpt-test', 'provider_default', 'company',
+	extensions.gen_random_uuid(), repeat('b', 64), '{}', '64800000-0000-4000-8000-0000000000e1');
+insert into public.qorpera_native_provider_connection_leases(id, run_id, job_id, provider_connection_id, provider_connection_version,
+	credential_capsule_id, compute_identity_id, runner_id, assignment_id, lease_token_sha256, expires_at)
+values ('64800000-0000-4000-8000-0000000000e6', '64800000-0000-4000-8000-0000000000e3', '64800000-0000-4000-8000-0000000000e2',
+	extensions.gen_random_uuid(), 1, '64800000-0000-4000-8000-0000000000e7', '64800000-0000-4000-8000-0000000000e1',
+	'64800000-0000-4000-8000-0000000000e4', '64800000-0000-4000-8000-0000000000e5', repeat('d', 64), clock_timestamp() + interval '1 hour');
 set session_replication_role = origin;
 select set_config('qorpera_test.binding', jsonb_build_object('leaseId','64800000-0000-4000-8000-0000000000f6',
 	'runId','64800000-0000-4000-8000-0000000000f1','jobId','64800000-0000-4000-8000-0000000000f2',
@@ -383,6 +413,26 @@ begin
 	perform dblink_send_query('fence_two', $q$select 1 from public.qorpera_profiles where id = '64800000-0000-4000-8000-000000000010'
 		for update$q$);
 	if not pg_temp.waits_for('fence_two', 'fence_one') then raise exception 'A tool call must hold this company''s row'; end if;
+	-- The job and the fence are held KEY SHARE, not more: a FOR NO KEY UPDATE of either does not wait.
+	perform dblink_send_query('fence_four', $q$select 1 from public.qorpera_runner_jobs where id = '64800000-0000-4000-8000-0000000000f2'
+		for no key update$q$);
+	if not pg_temp.finishes_unblocked('fence_four', 'fence_one') then raise exception 'The job must be held KEY SHARE only'; end if;
+	v_state := pg_temp.outcome('fence_four');
+	perform dblink_send_query('fence_four', $q$select 1 from public.qorpera_folder_fences where profile_id = '64800000-0000-4000-8000-000000000010'
+		for no key update$q$);
+	if not pg_temp.finishes_unblocked('fence_four', 'fence_one') then raise exception 'The fence must be held KEY SHARE only'; end if;
+	v_state := pg_temp.outcome('fence_four');
+	-- The actor entry point and presence take none of the run check's locks: they pass a tool call holding the mutex.
+	perform dblink_send_query('fence_four', format('select public.qorpera_company_run_actor(%L, %L)::text',
+		'64800000-0000-4000-8000-000000000020', current_setting('qorpera_test.binding')));
+	if not pg_temp.finishes_unblocked('fence_four', 'fence_one') then raise exception 'The actor entry point must not wait for a tool call'; end if;
+	v_state := pg_temp.outcome('fence_four');
+	if v_state <> 'ok' then raise exception 'The actor entry point beside a tool call: %', v_state; end if;
+	perform dblink_send_query('fence_four', format('select public.qorpera_company_presence_scope(%L, %L, %L)::text',
+		'64800000-0000-4000-8000-000000000020', current_setting('qorpera_test.binding'), array['vision/vision.md']));
+	if not pg_temp.finishes_unblocked('fence_four', 'fence_one') then raise exception 'Presence must not wait for a tool call'; end if;
+	v_state := pg_temp.outcome('fence_four');
+	if v_state <> 'ok' then raise exception 'Presence beside a tool call: %', v_state; end if;
 	perform dblink_send_query('fence_three', $q$select 1 from public.qorpera_company_path_resources
 		where environment_id = '64800000-0000-4000-8000-000000000020' and path = '' for update$q$);
 	if not pg_temp.waits_for('fence_three', 'fence_one') then raise exception 'A caller''s rank 6 target must be held'; end if;
@@ -408,27 +458,70 @@ begin
 	if v_state <> 'ok' then raise exception 'The resource after the tool call: %', v_state; end if;
 end $$;
 
+-- G. This company's row comes before the members (rank 0 before rank 1): a tool call waiting for the company row holds no
+-- member lock, so member removal (company row, then member) cannot deadlock with it.
+do $$
+declare v_state text;
+begin
+	perform dblink_exec('fence_two', 'begin');
+	perform * from dblink('fence_two', $q$select 1 from public.qorpera_profiles where id = '64800000-0000-4000-8000-000000000010'
+		for update$q$) as t(x integer);
+	perform dblink_send_query('fence_one', pg_temp.sql_tool());
+	if not pg_temp.waits_for('fence_one', 'fence_two') then raise exception 'A tool call must wait for a company-row holder'; end if;
+	if pg_temp.queued_on('fence_one') is distinct from 'public.qorpera_profiles'::regclass then
+		raise exception 'The tool call must queue on the company row, not on %', pg_temp.queued_on('fence_one'); end if;
+	perform dblink_send_query('fence_three', $q$select 1 from public.qorpera_profile_members
+		where profile_id = '64800000-0000-4000-8000-000000000010' and user_id = '64800000-0000-4000-8000-000000000002' for update$q$);
+	if not pg_temp.finishes_unblocked('fence_three', 'fence_one') then
+		raise exception 'A tool call waiting for the company row must hold no member lock'; end if;
+	v_state := pg_temp.outcome('fence_three');
+	perform dblink_exec('fence_two', 'rollback');
+	v_state := pg_temp.outcome('fence_one');
+	if v_state <> 'ok' then raise exception 'The tool call after the company row: %', v_state; end if;
+end $$;
+
+-- H. Snapshot-v1 control for the direct lease check: its legacy body takes the company row FOR UPDATE (the gc fence), so
+-- it waits for a holder of a snapshot-v1 company's row; the folder body never would.
+do $$
+declare v_state text;
+begin
+	perform dblink_exec('fence_two', 'begin');
+	perform * from dblink('fence_two', $q$select 1 from public.qorpera_profiles where id = '64800000-0000-4000-8000-000000000011'
+		for update$q$) as t(x integer);
+	perform dblink_send_query('fence_one', format('select public.qorpera_validate_native_provider_execution_lease(%L, %L, %L, %L, %L, %L, %L, %L, %L)::text',
+		'64800000-0000-4000-8000-0000000000e6', '64800000-0000-4000-8000-0000000000e3', '64800000-0000-4000-8000-0000000000e2',
+		'64800000-0000-4000-8000-0000000000e4', '64800000-0000-4000-8000-0000000000e5', '64800000-0000-4000-8000-0000000000e7',
+		'64800000-0000-4000-8000-0000000000e1', 'openai', 'codex-cli'));
+	if not pg_temp.waits_for('fence_one', 'fence_two') then
+		raise exception 'The snapshot-v1 lease check must take its company row (the legacy body)'; end if;
+	perform dblink_exec('fence_two', 'rollback');
+	v_state := pg_temp.outcome('fence_one');
+	-- The fixture has no runner row, so the legacy body then refuses the runner's generation.
+	if v_state not like '42501 %' then raise exception 'The snapshot-v1 lease check after the company row: %', v_state; end if;
+end $$;
+
 select dblink_disconnect(name) from unnest(array['fence_one','fence_two','fence_three','fence_four']) name;
 
 -- Remove the fixture: every row of the company, its environment, its runs, jobs, sessions, rooms and login.
 set session_replication_role = replica;
 do $$
 declare
-	v_profile uuid := '64800000-0000-4000-8000-000000000010'; v_env uuid := '64800000-0000-4000-8000-000000000020';
+	v_profiles uuid[] := array['64800000-0000-4000-8000-000000000010', '64800000-0000-4000-8000-000000000011']::uuid[];
+	v_envs uuid[] := array['64800000-0000-4000-8000-000000000020', '64800000-0000-4000-8000-000000000021']::uuid[];
 	v_runs uuid[]; v_jobs uuid[]; v_sessions uuid[]; v_rooms uuid[]; v_table record;
 begin
-	select array_agg(id) into v_runs from public.qorpera_execution_runs where profile_id = v_profile;
-	select array_agg(id) into v_jobs from public.qorpera_runner_jobs where profile_id = v_profile;
-	select array_agg(id) into v_sessions from public.qorpera_shared_sessions where profile_id = v_profile;
-	select array_agg(id) into v_rooms from public.qorpera_company_rooms where profile_id = v_profile;
+	select array_agg(id) into v_runs from public.qorpera_execution_runs where profile_id = any (v_profiles);
+	select array_agg(id) into v_jobs from public.qorpera_runner_jobs where profile_id = any (v_profiles);
+	select array_agg(id) into v_sessions from public.qorpera_shared_sessions where profile_id = any (v_profiles);
+	select array_agg(id) into v_rooms from public.qorpera_company_rooms where profile_id = any (v_profiles);
 	delete from public.qorpera_company_path_grants where resource_id in
-		(select id from public.qorpera_company_path_resources where environment_id = v_env);
+		(select id from public.qorpera_company_path_resources where environment_id = any (v_envs));
 	for v_table in select c.table_name, c.column_name from information_schema.columns c
 		join information_schema.tables t on t.table_schema = c.table_schema and t.table_name = c.table_name and t.table_type = 'BASE TABLE'
 		where c.table_schema = 'public' and c.column_name in ('profile_id','environment_id','run_id','job_id','session_id','room_id')
 			and c.data_type = 'uuid' loop
 		execute format('delete from public.%I where %I = any ($1)', v_table.table_name, v_table.column_name)
-		using case v_table.column_name when 'profile_id' then array[v_profile] when 'environment_id' then array[v_env]
+		using case v_table.column_name when 'profile_id' then v_profiles when 'environment_id' then v_envs
 			when 'run_id' then v_runs when 'job_id' then v_jobs when 'session_id' then v_sessions else v_rooms end;
 	end loop;
 	delete from public.qorpera_provider_connection_versions where connection_id = '64800000-0000-4000-8000-0000000000b3';
@@ -436,14 +529,17 @@ begin
 	delete from public.qorpera_shared_sessions where id = any (v_sessions);
 	delete from public.qorpera_runner_jobs where id = any (v_jobs);
 	delete from public.qorpera_execution_runs where id = any (v_runs);
-	delete from public.qorpera_profiles where id = v_profile;
+	delete from public.qorpera_profiles where id = any (v_profiles);
 end $$;
 set session_replication_role = origin;
 delete from storage.objects where bucket_id = 'qorpera-profile-objects' and name like '64800000-0000-4000-8000-000000000010/%';
-delete from auth.users where id in ('64800000-0000-4000-8000-000000000001','64800000-0000-4000-8000-000000000002');
+delete from auth.users where id in ('64800000-0000-4000-8000-000000000001','64800000-0000-4000-8000-000000000002',
+	'64800000-0000-4000-8000-000000000003');
 do $$
 begin
-	if exists (select 1 from public.qorpera_company_files where environment_id = '64800000-0000-4000-8000-000000000020')
+	if exists (select 1 from public.qorpera_company_files where environment_id in ('64800000-0000-4000-8000-000000000020',
+			'64800000-0000-4000-8000-000000000021'))
+		or exists (select 1 from public.qorpera_profiles where id = '64800000-0000-4000-8000-000000000011')
 		or exists (select 1 from public.qorpera_execution_runs where profile_id = '64800000-0000-4000-8000-000000000010')
 		or exists (select 1 from public.qorpera_folder_entries where environment_id = '64800000-0000-4000-8000-000000000020')
 		or exists (select 1 from public.qorpera_profile_staff where profile_id = '64800000-0000-4000-8000-000000000010')
