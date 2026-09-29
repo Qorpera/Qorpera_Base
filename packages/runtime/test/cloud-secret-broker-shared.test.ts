@@ -363,6 +363,7 @@ it("runs every served company's connector token revocations in turn, on the comp
 		revoker: { revoke },
 	});
 	await companies.refresh(new AbortController().signal);
+	expect(principal.authority.mock.calls.map(([company]) => company).sort()).toEqual([one, two].sort());
 	await companies.revokeTokens();
 	expect(pass).toHaveBeenCalledTimes(2);
 	expect(pass.mock.calls.every(([signal]) => signal instanceof AbortSignal && !signal.aborted)).toBe(true);

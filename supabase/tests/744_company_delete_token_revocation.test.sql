@@ -3,7 +3,8 @@
 -- is deleted. Every version of a Gmail, Drive or GitHub secret that goes active→revoked is queued; the
 -- finisher revokes a deleting company's connector secrets, waits for its queue (at most six hours) and
 -- marks what is still open abandoned before the purge. A Google account still connected in a living
--- company is not revoked at Google (option A). The ledger outlives the purge.
+-- company is not revoked at Google (option A), nor is an older version of a Google secret; a
+-- disconnected Google entry waits ten minutes. The ledger outlives the purge.
 reset role;
 create function pg_temp.token_refused(p_sql text, p_state text) returns void language plpgsql as $$
 begin
@@ -92,7 +93,7 @@ values
 -- The deleted company's connections (captured after the request, as a late capture would be):
 --   b1 Gmail of an account the neighbour still has connected (two versions);
 --   b2 Drive of its own account; b3 GitHub; b4 Gmail of the third company's account; b5 Gmail with
---   no account name; b6 a non-connector secret.
+--   no account name; b6 a non-connector secret; b7 Gmail of its own account, reconnected once.
 select pg_temp.token_secret('30000000-0000-4000-8000-0000000002b1', '30000000-0000-4000-8000-000000000010',
 	'30000000-0000-4000-8000-0000000002a0', '30000000-0000-4000-8000-000000000001', 'gmail', 'primary',
 	'shared@example.test', 2);
@@ -111,13 +112,33 @@ select pg_temp.token_secret('30000000-0000-4000-8000-0000000002b5', '30000000-00
 select pg_temp.token_secret('30000000-0000-4000-8000-0000000002b6', '30000000-0000-4000-8000-000000000010',
 	'30000000-0000-4000-8000-0000000002a0', '30000000-0000-4000-8000-000000000001', 'canary', 'primary',
 	null, 1);
--- The neighbour: the same Google account (another case), and a GitHub connection it disconnects.
+-- b7: Gmail reconnected once (two versions) of an account nobody else has.
+select pg_temp.token_secret('30000000-0000-4000-8000-0000000002b7', '30000000-0000-4000-8000-000000000010',
+	'30000000-0000-4000-8000-0000000002a0', '30000000-0000-4000-8000-000000000001', 'gmail', 'third',
+	'solo2@example.test', 2);
+-- The neighbour: the same Google account (another case), a GitHub connection it disconnects, a Gmail
+-- (c3) and a Drive of the account its Gmail c1 still has (c4), both disconnected, and a member's own
+-- GitHub connection (c5) that goes with the member.
 select pg_temp.token_secret('30000000-0000-4000-8000-0000000002c1', current_setting('qorpera_test.delete_neighbour')::uuid,
 	'30000000-0000-4000-8000-0000000002a1', '30000000-0000-4000-8000-000000000005', 'gmail', 'primary',
 	'Shared@Example.test', 1);
 select pg_temp.token_secret('30000000-0000-4000-8000-0000000002c2', current_setting('qorpera_test.delete_neighbour')::uuid,
 	'30000000-0000-4000-8000-0000000002a1', '30000000-0000-4000-8000-000000000005', 'github', 'primary',
 	'octocat', 1);
+select pg_temp.token_secret('30000000-0000-4000-8000-0000000002c3', current_setting('qorpera_test.delete_neighbour')::uuid,
+	'30000000-0000-4000-8000-0000000002a1', '30000000-0000-4000-8000-000000000005', 'gmail', 'second',
+	'neighbour@example.test', 1);
+select pg_temp.token_secret('30000000-0000-4000-8000-0000000002c4', current_setting('qorpera_test.delete_neighbour')::uuid,
+	'30000000-0000-4000-8000-0000000002a1', '30000000-0000-4000-8000-000000000005', 'google_drive', 'primary',
+	'shared@example.test', 1);
+insert into auth.users(id, email) values ('30000000-0000-4000-8000-000000000007', 'token-member@example.test');
+insert into public.qorpera_profile_members(profile_id, user_id, email, display_name, role)
+values (current_setting('qorpera_test.delete_neighbour')::uuid, '30000000-0000-4000-8000-000000000007',
+	'token-member@example.test', 'Token member', 'contributor');
+select pg_temp.token_secret('30000000-0000-4000-8000-0000000002c5', current_setting('qorpera_test.delete_neighbour')::uuid,
+	'30000000-0000-4000-8000-0000000002a1', '30000000-0000-4000-8000-000000000007', 'github', 'mine', 'octo-member', 1);
+update public.qorpera_cloud_secrets set owner_kind = 'member', owner_user_id = '30000000-0000-4000-8000-000000000007'
+where id = '30000000-0000-4000-8000-0000000002c5';
 -- The third company: the account of b4, then its deletion.
 select pg_temp.token_secret('30000000-0000-4000-8000-0000000002d1', current_setting('qorpera_test.token_third')::uuid,
 	'30000000-0000-4000-8000-0000000002a2', '30000000-0000-4000-8000-000000000006', 'gmail', 'primary',
@@ -131,12 +152,20 @@ select pg_temp.wake_assert(pg_temp.token_rows() = '{}', 'Nothing is queued befor
 -- 1. Disconnect in a living company queues each version of that connection only.
 select pg_temp.path_claims('authenticated', '30000000-0000-4000-8000-000000000005');
 set local role authenticated;
-select public.qorpera_revoke_cloud_secret(current_setting('qorpera_test.delete_neighbour')::uuid,
-	'30000000-0000-4000-8000-0000000002c2');
+select public.qorpera_revoke_cloud_secret(current_setting('qorpera_test.delete_neighbour')::uuid, secret)
+from unnest(array['30000000-0000-4000-8000-0000000002c2', '30000000-0000-4000-8000-0000000002c3',
+	'30000000-0000-4000-8000-0000000002c4']::uuid[]) as secret;
 reset role;
-select pg_temp.wake_assert(pg_temp.token_rows() = '{"30000000-0000-4000-8000-0000000002c2/1":
-		{"reason": "disconnected", "outcome": null, "attempts": 0}}'::jsonb,
-	'Disconnect queues its connection');
+-- A member's removal revokes the member's own connection, which is queued the same way.
+delete from public.qorpera_profile_members
+where profile_id = current_setting('qorpera_test.delete_neighbour')::uuid
+	and user_id = '30000000-0000-4000-8000-000000000007';
+select pg_temp.wake_assert(pg_temp.token_rows() = '{
+		"30000000-0000-4000-8000-0000000002c2/1": {"reason": "disconnected", "outcome": null, "attempts": 0},
+		"30000000-0000-4000-8000-0000000002c3/1": {"reason": "disconnected", "outcome": null, "attempts": 0},
+		"30000000-0000-4000-8000-0000000002c4/1": {"reason": "disconnected", "outcome": null, "attempts": 0},
+		"30000000-0000-4000-8000-0000000002c5/1": {"reason": "disconnected", "outcome": null, "attempts": 0}}'::jsonb,
+	'Disconnect and a member''s removal queue their connections');
 
 -- 2. The finisher revokes the deleted company's connector secrets and their grants, and waits for them.
 insert into public.qorpera_cloud_secret_operation_grants(profile_id, environment_id, secret_id, staff_agent_id,
@@ -151,9 +180,9 @@ select set_config('qorpera_test.token_waiting', pg_temp.token_finish()::text, tr
 do $$
 declare v_result jsonb := current_setting('qorpera_test.token_waiting')::jsonb;
 begin
-	if v_result ->> 'state' <> 'waiting' or v_result #>> '{holdings,connector_tokens}' <> '6'
+	if v_result ->> 'state' <> 'waiting' or v_result #>> '{holdings,connector_tokens}' <> '8'
 		or (select holdings ->> 'connector_tokens' from public.qorpera_company_deletions
-			where profile_id = '30000000-0000-4000-8000-000000000010') <> '6' then
+			where profile_id = '30000000-0000-4000-8000-000000000010') <> '8' then
 		raise exception 'The finisher did not wait for the queue: %', v_result;
 	end if;
 	if exists (select 1 from public.qorpera_cloud_secrets
@@ -167,14 +196,15 @@ begin
 	end if;
 	if (select count(*) from public.qorpera_connector_token_revocations
 			where profile_id = '30000000-0000-4000-8000-000000000010' and reason = 'company_deleted'
-				and broker_authority_id = '30000000-0000-4000-8000-0000000002a0') <> 6 then
+				and broker_authority_id = '30000000-0000-4000-8000-0000000002a0') <> 8 then
 		raise exception 'The deleted company''s versions were not queued: %', pg_temp.token_rows();
 	end if;
 end
 $$;
 
 -- 3. The broker claims: the neighbour's still connected account (any case) and the unnamed one are
--- kept; the third company's account does not count, since that company is being deleted too.
+-- kept; the third company's account does not count, since that company is being deleted too; a Google
+-- secret's older version is superseded by its current one.
 select pg_temp.token_refused($q$select public.qorpera_claim_connector_token_revocations(
 	'30000000-0000-4000-8000-0000000002a0', repeat('c', 64), 5)$q$, '42501');
 select pg_temp.token_refused($q$select pg_temp.token_claim('30000000-0000-4000-8000-0000000002a0', repeat('d', 64), 5)$q$,
@@ -191,8 +221,15 @@ declare
 	v_github jsonb;
 begin
 	if pg_temp.token_ids(v_claimed) <> array['30000000-0000-4000-8000-0000000002b2/1',
-			'30000000-0000-4000-8000-0000000002b3/1', '30000000-0000-4000-8000-0000000002b4/1'] then
+			'30000000-0000-4000-8000-0000000002b3/1', '30000000-0000-4000-8000-0000000002b4/1',
+			'30000000-0000-4000-8000-0000000002b7/2'] then
 		raise exception 'The broker claimed the wrong entries: %', v_claimed;
+	end if;
+	-- One base64 line each (Postgres itself breaks lines at 76 characters).
+	if exists (select 1 from jsonb_array_elements(v_claimed) as item
+			where item ->> 'encryptedEnvelopeBase64' ~ '[\r\n]'
+				or length(item ->> 'encryptedEnvelopeBase64') <= 76) then
+		raise exception 'A claimed envelope is not one base64 line';
 	end if;
 	select item into v_github from jsonb_array_elements(v_claimed) as item
 	where item ->> 'secretId' = '30000000-0000-4000-8000-0000000002b3';
@@ -209,16 +246,38 @@ begin
 		raise exception 'A claimed entry differs: %', v_github;
 	end if;
 	if (select jsonb_object_agg(secret_id::text || '/' || version, outcome) from public.qorpera_connector_token_revocations
-			where secret_id in ('30000000-0000-4000-8000-0000000002b1', '30000000-0000-4000-8000-0000000002b5'))
-		<> '{"30000000-0000-4000-8000-0000000002b1/1": "kept_shared", "30000000-0000-4000-8000-0000000002b1/2": "kept_shared",
-			"30000000-0000-4000-8000-0000000002b5/1": "kept_shared"}'::jsonb then
-		raise exception 'A still connected or unnamed Google account was not kept: %', pg_temp.token_rows();
+			where secret_id in ('30000000-0000-4000-8000-0000000002b1', '30000000-0000-4000-8000-0000000002b5',
+				'30000000-0000-4000-8000-0000000002b7') and outcome is not null)
+		<> '{"30000000-0000-4000-8000-0000000002b1/1": "superseded", "30000000-0000-4000-8000-0000000002b1/2": "kept_shared",
+			"30000000-0000-4000-8000-0000000002b5/1": "kept_shared", "30000000-0000-4000-8000-0000000002b7/1": "superseded"}'::jsonb then
+		raise exception 'A still connected, unnamed or older Google version was not kept: %', pg_temp.token_rows();
 	end if;
-	-- Leased: nothing more now; the neighbour's broker sees only its own entry.
+	-- Leased: nothing more now; the neighbour's broker sees only its own GitHub entries (its Google ones
+	-- wait ten minutes after the Disconnect).
 	if pg_temp.token_claim('30000000-0000-4000-8000-0000000002a0', repeat('c', 64), 20) <> '[]'
 		or pg_temp.token_ids(pg_temp.token_claim('30000000-0000-4000-8000-0000000002a1', repeat('e', 64), 20))
-			<> array['30000000-0000-4000-8000-0000000002c2/1'] then
-		raise exception 'A leased or another broker''s entry was claimed';
+			<> array['30000000-0000-4000-8000-0000000002c2/1', '30000000-0000-4000-8000-0000000002c5/1'] then
+		raise exception 'A leased, waiting or another broker''s entry was claimed';
+	end if;
+end
+$$;
+-- Ten minutes after the Disconnect: the neighbour's Drive is kept (its Gmail has the same account), its
+-- other Gmail is claimed.
+update public.qorpera_connector_token_revocations set requested_at = requested_at - interval '11 minutes'
+where secret_id in ('30000000-0000-4000-8000-0000000002c3', '30000000-0000-4000-8000-0000000002c4');
+do $$
+begin
+	if pg_temp.token_ids(pg_temp.token_claim('30000000-0000-4000-8000-0000000002a1', repeat('e', 64), 20))
+			<> array['30000000-0000-4000-8000-0000000002c3/1'] then
+		raise exception 'A disconnected Google entry was not due after ten minutes';
+	end if;
+end
+$$;
+do $$
+begin
+	if (select outcome from public.qorpera_connector_token_revocations
+			where secret_id = '30000000-0000-4000-8000-0000000002c4') <> 'kept_shared' then
+		raise exception 'A Drive of an account the same company still has on Gmail was not kept';
 	end if;
 end
 $$;
@@ -243,6 +302,8 @@ begin
 		'30000000-0000-4000-8000-0000000002b3', 1, null, '  GitHub answered 502  ');
 	perform pg_temp.token_complete('30000000-0000-4000-8000-0000000002a1', repeat('e', 64),
 		'30000000-0000-4000-8000-0000000002c2', 1, 'not_ours', null);
+	perform pg_temp.token_complete('30000000-0000-4000-8000-0000000002a0', repeat('c', 64),
+		'30000000-0000-4000-8000-0000000002b7', 2, 'revoked', null);
 end
 $$;
 select pg_temp.token_refused($q$select pg_temp.token_complete('30000000-0000-4000-8000-0000000002a1', repeat('e', 64),
@@ -279,15 +340,28 @@ select pg_temp.wake_assert(current_setting('qorpera_test.token_gone') = '[]'
 	'An entry whose version is gone completes as envelope_gone');
 rollback to envelope_gone;
 
--- 6. Six hours after the request the finisher stops waiting: the open entry is abandoned right before
--- the purge, and the ledger outlives the company.
+-- 6. The six hours run from the later of the request and the entry: either alone keeps it waiting.
+savepoint request_old;
+update public.qorpera_company_deletions set requested_at = requested_at - interval '7 hours'
+where profile_id = '30000000-0000-4000-8000-000000000010';
+select pg_temp.wake_assert(pg_temp.token_finish() ->> 'state' = 'waiting', 'An entry queued lately still waits');
+rollback to request_old;
+savepoint entry_old;
+update public.qorpera_connector_token_revocations set requested_at = requested_at - interval '7 hours'
+where profile_id = '30000000-0000-4000-8000-000000000010';
+select pg_temp.wake_assert(pg_temp.token_finish() ->> 'state' = 'waiting', 'A deletion requested lately still waits');
+rollback to entry_old;
+-- Six hours after both, the finisher stops waiting: the open entry is abandoned right before the purge,
+-- and the ledger outlives the company.
 update public.qorpera_company_deletions set requested_at = requested_at - interval '7 hours'
 where profile_id = '30000000-0000-4000-8000-000000000010';
 update public.qorpera_connector_token_revocations set requested_at = requested_at - interval '7 hours'
 where profile_id = '30000000-0000-4000-8000-000000000010';
 select pg_temp.wake_assert(pg_temp.token_finish() ->> 'state' = 'purged', 'The company is purged after the deadline');
-select pg_temp.wake_assert(pg_temp.token_rows() = jsonb_build_object(
-		'30000000-0000-4000-8000-0000000002b1/1', jsonb_build_object('reason', 'company_deleted', 'outcome', 'kept_shared', 'attempts', 0),
+select pg_temp.wake_assert(pg_temp.token_rows() - array['30000000-0000-4000-8000-0000000002c3/1',
+		'30000000-0000-4000-8000-0000000002c4/1', '30000000-0000-4000-8000-0000000002c5/1',
+		'30000000-0000-4000-8000-0000000002b7/1', '30000000-0000-4000-8000-0000000002b7/2'] = jsonb_build_object(
+		'30000000-0000-4000-8000-0000000002b1/1', jsonb_build_object('reason', 'company_deleted', 'outcome', 'superseded', 'attempts', 0),
 		'30000000-0000-4000-8000-0000000002b1/2', jsonb_build_object('reason', 'company_deleted', 'outcome', 'kept_shared', 'attempts', 0),
 		'30000000-0000-4000-8000-0000000002b2/1', jsonb_build_object('reason', 'company_deleted', 'outcome', 'revoked', 'attempts', 1),
 		'30000000-0000-4000-8000-0000000002b3/1', jsonb_build_object('reason', 'company_deleted', 'outcome', 'abandoned', 'attempts', 1),

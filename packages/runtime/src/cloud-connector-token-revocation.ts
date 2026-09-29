@@ -16,9 +16,10 @@ import type { CloudSecretKeyring } from "./cloud-secret-crypto.ts";
  * - Google: `POST oauth2.googleapis.com/revoke` with the refresh token in the form body (never in the
  *   URL, so it stays out of logs); 200 revoked, 400 `invalid_token` already invalid.
  * - GitHub (one OAuth App): `DELETE api.github.com/applications/{client_id}/token` with the app's basic
- *   auth; 204 revoked, 404 already invalid. It revokes that one token, never the user's whole grant
- *   (`/grant` would disconnect the user's GitHub in every company). A typed personal token is not ours
- *   to revoke.
+ *   auth; 204 revoked. Any other answer is checked with `POST …/token` (the documented token check):
+ *   404 there means the token is already invalid. It revokes that one token, never the user's whole
+ *   grant (`/grant` would disconnect the user's GitHub in every company). A typed personal token is not
+ *   ours to revoke.
  *
  * Nothing here logs or records a token or a provider's answer text: errors are fixed phrases.
  */
@@ -70,6 +71,9 @@ function parseClaims(value: unknown): Claim[] {
 	if (!Array.isArray(value) || value.length > CLAIM_LIMIT) throw new Error("Token revocation claim is invalid");
 	return value.map((item) => {
 		const input = item as Record<string, unknown>;
+		// One base64 line; a line-broken encoding (Postgres breaks at 76 characters) is joined.
+		const base64 =
+			typeof input?.encryptedEnvelopeBase64 === "string" ? input.encryptedEnvelopeBase64.replace(/\r?\n/g, "") : "";
 		if (
 			!input ||
 			typeof input !== "object" ||
@@ -85,9 +89,8 @@ function parseClaims(value: unknown): Claim[] {
 			!KEY_ID.test(input.keyId) ||
 			typeof input.connectorId !== "string" ||
 			!CONNECTORS.has(input.connectorId) ||
-			typeof input.encryptedEnvelopeBase64 !== "string" ||
-			input.encryptedEnvelopeBase64.length > 180_000 ||
-			!BASE64.test(input.encryptedEnvelopeBase64) ||
+			base64.length > 180_000 ||
+			!BASE64.test(base64) ||
 			typeof input.envelopeSha256 !== "string" ||
 			!SHA.test(input.envelopeSha256)
 		)
@@ -99,7 +102,7 @@ function parseClaims(value: unknown): Claim[] {
 			version: input.secretVersion as number,
 			keyId: input.keyId,
 			connectorId: input.connectorId as Claim["connectorId"],
-			encryptedEnvelopeBase64: input.encryptedEnvelopeBase64,
+			encryptedEnvelopeBase64: base64,
 			envelopeSha256: input.envelopeSha256,
 		};
 	});
@@ -145,10 +148,9 @@ export class CloudConnectorTokenRevoker {
 		if (!GITHUB_APP_TOKEN.test(token)) return "not_ours";
 		const client = this.#github;
 		if (!client) throw new ConnectorTokenRevocationError("the GitHub client is not configured");
-		const response = await this.#request("GitHub", {
+		const request = {
 			origin: "https://api.github.com",
 			path: `/applications/${encodeURIComponent(client.clientId)}/token`,
-			method: "DELETE",
 			headers: {
 				authorization: `Basic ${Buffer.from(`${client.clientId}:${client.clientSecret}`).toString("base64")}`,
 				accept: "application/vnd.github+json",
@@ -157,10 +159,13 @@ export class CloudConnectorTokenRevoker {
 				"user-agent": "qorpera-cloud-connector",
 			},
 			body: JSON.stringify({ access_token: token }),
-			signal,
-		});
+		};
+		const response = await this.#request("GitHub", { ...request, method: "DELETE", signal });
 		if (response.status === 204) return "revoked";
-		if (response.status === 404) return "already_invalid";
+		// Whether GitHub answers 404 or 422 for a token it no longer knows is not documented for the
+		// delete: its token check is (404 for an invalid token).
+		const check = await this.#request("GitHub", { ...request, method: "POST", signal });
+		if (check.status === 404) return "already_invalid";
 		throw new ConnectorTokenRevocationError(`GitHub answered ${response.status}`);
 	}
 
@@ -199,7 +204,8 @@ export class CloudConnectorTokenRevocations {
 		this.#revoker = options.revoker;
 	}
 
-	/** Up to three claims of twenty; stops early when a claim comes back short or the pass is closed. */
+	/** Up to three claims of twenty; stops when a claim brings nothing or the pass is closed. An entry
+	 * claimed but not reached before a close is offered again when its lease ends. */
 	async pass(signal: AbortSignal): Promise<{ completed: number; failed: number }> {
 		let completed = 0,
 			failed = 0;
@@ -211,6 +217,7 @@ export class CloudConnectorTokenRevocations {
 				),
 			);
 			for (const claim of claims) {
+				if (signal.aborted) break;
 				const answer = await this.#revoke(claim, signal);
 				if (answer.outcome) completed += 1;
 				else failed += 1;
@@ -220,7 +227,8 @@ export class CloudConnectorTokenRevocations {
 					AbortSignal.timeout(DATABASE_DEADLINE_MS),
 				);
 			}
-			if (claims.length < CLAIM_LIMIT) break;
+			// SQL completes kept and superseded entries itself: a short claim may still leave some due.
+			if (claims.length === 0) break;
 		}
 		return { completed, failed };
 	}

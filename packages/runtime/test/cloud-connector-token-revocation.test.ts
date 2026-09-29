@@ -66,7 +66,15 @@ describe("the provider revoke calls", () => {
 		await expect(revoker.revoke("gmail", fields, signal())).rejects.toThrow(/^Google could not be reached$/);
 	});
 	it("revokes exactly one GitHub OAuth App token with the app's credentials", async () => {
-		const github = provider({ status: 204 }, { status: 404 }, { status: 422 });
+		const github = provider(
+			{ status: 204 },
+			{ status: 422 },
+			{ status: 404 },
+			{ status: 404 },
+			{ status: 404 },
+			{ status: 422 },
+			{ status: 200 },
+		);
 		const revoker = new CloudConnectorTokenRevoker({ fetch: github.fetch, github: client });
 		const fields = { access_token: GITHUB_TOKEN };
 		await expect(revoker.revoke("github", fields, signal())).resolves.toBe("revoked");
@@ -79,8 +87,20 @@ describe("the provider revoke calls", () => {
 			}),
 			body: JSON.stringify({ access_token: GITHUB_TOKEN }),
 		});
+		// Any other answer is checked with GitHub's token check: 404 there means already invalid.
+		await expect(revoker.revoke("github", fields, signal())).resolves.toBe("already_invalid");
 		await expect(revoker.revoke("github", fields, signal())).resolves.toBe("already_invalid");
 		await expect(revoker.revoke("github", fields, signal())).rejects.toThrow(/^GitHub answered 422$/);
+		expect(github.requests.map(({ method }) => method)).toEqual([
+			"DELETE",
+			"DELETE",
+			"POST",
+			"DELETE",
+			"POST",
+			"DELETE",
+			"POST",
+		]);
+		expect(github.requests[2]).toEqual({ ...github.requests[1], method: "POST" });
 		expect(github.requests.every((request) => !request.url.includes("/grant"))).toBe(true);
 	});
 	it("leaves a typed personal token alone and needs the GitHub client for an app token", async () => {
@@ -158,8 +178,8 @@ describe("a broker's revocation queue", () => {
 			{ secretId: secret(4), version: 1, outcome: null, error: "Google answered 500" },
 		]);
 		expect(JSON.stringify(q.authority.completeConnectorTokenRevocation.mock.calls)).not.toMatch(/gho_|1\/\/0/);
-		// A short claim ends the pass.
-		expect(q.authority.claimConnectorTokenRevocations).toHaveBeenCalledOnce();
+		// An empty claim ends the pass.
+		expect(q.authority.claimConnectorTokenRevocations).toHaveBeenCalledTimes(2);
 	});
 	it("records a changed envelope or one that does not open, without calling the provider", async () => {
 		const q = queue([
@@ -182,7 +202,42 @@ describe("a broker's revocation queue", () => {
 		]);
 		expect(calls.requests).toEqual([]);
 	});
-	it("claims again while claims come back full, at most three times a pass", async () => {
+	it("reads an envelope the way Postgres encodes it, in 76-character lines", async () => {
+		const q = queue([{ connectorId: "gmail", fields: { refresh_token: GOOGLE_TOKEN } }]);
+		const claim = q.claims[0]!;
+		claim.encryptedEnvelopeBase64 = claim.encryptedEnvelopeBase64.replace(/(.{76})/g, "$1\n");
+		expect(claim.encryptedEnvelopeBase64).toContain("\n");
+		// The keyring wipes the fields after use: the token is read inside the call.
+		const seen: string[] = [];
+		const revoke = vi.fn(async (_connectorId: string, fields: Readonly<Record<string, string>>) => {
+			seen.push(fields.refresh_token!);
+			return "revoked" as const;
+		});
+		await expect(
+			new CloudConnectorTokenRevocations({ authority: q.authority, keyring: q.keyring, revoker: { revoke } }).pass(
+				signal(),
+			),
+		).resolves.toEqual({ completed: 1, failed: 0 });
+		expect(seen).toEqual([GOOGLE_TOKEN]);
+	});
+	it("stops at a close, leaving the rest for their leases to end", async () => {
+		const q = queue(
+			Array.from({ length: 3 }, () => ({ connectorId: "gmail" as const, fields: { refresh_token: GOOGLE_TOKEN } })),
+		);
+		const closing = new AbortController();
+		const revoke = vi.fn(async () => {
+			closing.abort();
+			return "revoked" as const;
+		});
+		await expect(
+			new CloudConnectorTokenRevocations({ authority: q.authority, keyring: q.keyring, revoker: { revoke } }).pass(
+				closing.signal,
+			),
+		).resolves.toEqual({ completed: 1, failed: 0 });
+		expect(q.authority.completeConnectorTokenRevocation).toHaveBeenCalledOnce();
+		expect(q.authority.claimConnectorTokenRevocations).toHaveBeenCalledOnce();
+	});
+	it("claims again until a claim brings nothing, at most three times a pass", async () => {
 		const revoke = vi.fn(async () => "revoked" as const);
 		const claims = queue(
 			Array.from({ length: 20 }, () => ({ connectorId: "gmail" as const, fields: { refresh_token: GOOGLE_TOKEN } })),
@@ -196,6 +251,14 @@ describe("a broker's revocation queue", () => {
 			}).pass(signal()),
 		).resolves.toEqual({ completed: 60, failed: 0 });
 		expect(claims.authority.claimConnectorTokenRevocations).toHaveBeenCalledTimes(3);
+		// A short claim (SQL completed the rest itself) is followed by one more.
+		const short = queue([{ connectorId: "gmail", fields: { refresh_token: GOOGLE_TOKEN } }]);
+		await new CloudConnectorTokenRevocations({
+			authority: short.authority,
+			keyring: short.keyring,
+			revoker: { revoke },
+		}).pass(signal());
+		expect(short.authority.claimConnectorTokenRevocations).toHaveBeenCalledTimes(2);
 	});
 	it("refuses a claim answer of the wrong shape before opening anything", async () => {
 		const q = queue([{ connectorId: "gmail", fields: { refresh_token: GOOGLE_TOKEN } }]);

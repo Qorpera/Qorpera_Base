@@ -15,9 +15,15 @@
 -- Google withdraws the account's whole grant to our one OAuth client on any revoke. Founder's option A
 -- (29 Sep): while the same Google account is still connected (active Gmail or Drive, any company not
 -- being deleted, this one included), the Google revoke is skipped (`kept_shared`); our copy is still
--- revoked. An entry whose secret has no account name is skipped the same way. GitHub revokes one token.
--- Lock order: the finisher holds the company fence (qorpera_lock_profile_gc_fence) before the secret
--- rows; Disconnect and the broker calls take no fence.
+-- revoked. An entry whose secret has no account name is skipped the same way. Only a Google secret's
+-- current version is revoked: its account name is the only one known, and revoking it withdraws the
+-- grant of every older token of that account; an older version (which may be another account's, after
+-- a reconnect) completes as `superseded`. A disconnected Google entry waits ten minutes, so a quick
+-- reconnect of the same account is seen as still connected. GitHub revokes one token per version.
+-- Lock order: the finisher holds the company fence (qorpera_lock_profile_gc_fence), then locks the
+-- company's secrets in id order, then their grants. Disconnect locks one secret, its grants, then takes
+-- a key-share lock on the company row with its audit row; a Disconnect racing the finisher of a
+-- deleting company can deadlock, and Postgres ends one of them (the finisher retries next pass).
 
 create table public.qorpera_connector_token_revocations (
 	secret_id uuid not null,
@@ -32,8 +38,8 @@ create table public.qorpera_connector_token_revocations (
 	lease_until timestamptz,
 	attempts integer not null default 0 check (attempts >= 0),
 	last_error text check (last_error is null or char_length(last_error) between 1 and 500),
-	outcome text check (outcome in ('revoked', 'already_invalid', 'not_ours', 'kept_shared', 'envelope_gone',
-		'abandoned')),
+	outcome text check (outcome in ('revoked', 'already_invalid', 'not_ours', 'kept_shared', 'superseded',
+		'envelope_gone', 'abandoned')),
 	completed_at timestamptz,
 	primary key (secret_id, version),
 	check ((outcome is null) = (completed_at is null))
@@ -95,16 +101,24 @@ as $$
 declare
 	v_count integer;
 begin
-	update public.qorpera_cloud_secret_operation_grants as grant_row
-	set status = 'revoked', revoked_at = statement_timestamp()
-	from public.qorpera_cloud_secrets as secret
-	where secret.profile_id = p_profile_id and secret.status = 'active'
-		and secret.connector_id in ('gmail', 'google_drive', 'github')
-		and grant_row.secret_id = secret.id and grant_row.status = 'active';
-	update public.qorpera_cloud_secrets
-	set status = 'revoked', revoked_at = statement_timestamp(), updated_at = statement_timestamp()
-	where profile_id = p_profile_id and status = 'active' and connector_id in ('gmail', 'google_drive', 'github');
-	get diagnostics v_count = row_count;
+	-- Secrets first, in id order, then their grants: the order Disconnect uses for one secret.
+	perform 1 from public.qorpera_cloud_secrets
+	where profile_id = p_profile_id and status = 'active' and connector_id in ('gmail', 'google_drive', 'github')
+	order by id
+	for update;
+	with revoked as (
+		update public.qorpera_cloud_secrets
+		set status = 'revoked', revoked_at = statement_timestamp(), updated_at = statement_timestamp()
+		where profile_id = p_profile_id and status = 'active' and connector_id in ('gmail', 'google_drive', 'github')
+		returning id
+	), grants as (
+		update public.qorpera_cloud_secret_operation_grants as grant_row
+		set status = 'revoked', revoked_at = statement_timestamp()
+		from revoked
+		where grant_row.secret_id = revoked.id and grant_row.status = 'active'
+		returning grant_row.id
+	)
+	select count(*) into v_count from revoked;
 	return v_count;
 end
 $$;
@@ -116,7 +130,6 @@ revoke all on function public.qorpera_revoke_company_connector_secrets(uuid)
 create function public.qorpera_company_token_revocations_open(p_profile_id uuid)
 returns bigint
 language sql
-stable
 security definer
 set search_path = ''
 as $$
@@ -150,8 +163,9 @@ revoke all on function public.qorpera_abandon_company_token_revocations(uuid)
 	from public, anon, authenticated, service_role, qorpera_secret_broker;
 
 -- A broker's due entries, leased for five minutes: those that keep failing come last. An entry whose
--- version is gone, and a Google entry whose account is still connected (option A), completes here
--- without reaching the broker.
+-- version is gone, an older version of a Google secret and a Google entry whose account is still
+-- connected (option A) complete here without reaching the broker. A disconnected Google entry is due
+-- ten minutes after the Disconnect.
 create function public.qorpera_claim_connector_token_revocations(
 	p_broker_authority_id uuid,
 	p_broker_capability_sha256 text,
@@ -184,19 +198,23 @@ begin
 	for v_row in
 		select revocation.secret_id, revocation.version, revocation.profile_id, revocation.environment_id,
 			revocation.connector_id, version.key_id, version.encrypted_envelope, version.envelope_sha256,
-			secret.account_label
+			secret.account_label, secret.current_version
 		from public.qorpera_connector_token_revocations as revocation
 		left join public.qorpera_cloud_secret_versions as version
 			on version.secret_id = revocation.secret_id and version.version = revocation.version
 		left join public.qorpera_cloud_secrets as secret on secret.id = revocation.secret_id
 		where revocation.broker_authority_id = v_authority.id and revocation.completed_at is null
 			and (revocation.lease_until is null or revocation.lease_until <= clock_timestamp())
+			and not (revocation.connector_id in ('gmail', 'google_drive') and revocation.reason = 'disconnected'
+				and revocation.requested_at > clock_timestamp() - interval '10 minutes')
 		order by revocation.attempts, revocation.requested_at, revocation.secret_id, revocation.version
 		limit p_limit
 		for update of revocation skip locked
 	loop
 		v_outcome := case
 			when v_row.encrypted_envelope is null then 'envelope_gone'
+			when v_row.connector_id in ('gmail', 'google_drive') and v_row.version <> v_row.current_version
+				then 'superseded'
 			when v_row.connector_id in ('gmail', 'google_drive') and (v_row.account_label is null or exists (
 				select 1 from public.qorpera_cloud_secrets as other
 				where other.status = 'active' and other.connector_id in ('gmail', 'google_drive')
@@ -221,7 +239,8 @@ begin
 			'companyId', v_row.profile_id, 'environmentId', v_row.environment_id,
 			'secretId', v_row.secret_id, 'secretVersion', v_row.version, 'keyId', v_row.key_id,
 			'connectorId', v_row.connector_id,
-			'encryptedEnvelopeBase64', encode(v_row.encrypted_envelope, 'base64'),
+			-- Postgres breaks base64 lines at 76 characters; the claim carries one line.
+			'encryptedEnvelopeBase64', translate(encode(v_row.encrypted_envelope, 'base64'), E'\n', ''),
 			'envelopeSha256', v_row.envelope_sha256
 		));
 	end loop;
