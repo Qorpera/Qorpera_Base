@@ -3,8 +3,8 @@
 -- meets a coworker message at the conversation, in both orders; a post waits for a company-row holder at rank 0 holding
 -- no room, and never waits for a KEY SHARE holder; a room whose agents change while a post waits refuses as a
 -- retryable conflict; two posts in one room queue at the conversation; a member's own rule and an agent's rule for that
--- member meet at the member's row; an email draft never waits for the company row. 648's committed fixture, removed at
--- the end.
+-- member meet at the member's row; an email draft never waits for the company row; a stop waits for a post in flight; a
+-- retry never waits for a company-row KEY SHARE holder. 648's committed fixture, removed at the end.
 
 -- Ada's run acknowledges, so its tool calls may work; the company's login pays for unattended work (as 657's does).
 select public.qorpera_send_native_agent_message((b ->> 'leaseId')::uuid, (b ->> 'runId')::uuid, (b ->> 'jobId')::uuid,
@@ -120,6 +120,12 @@ begin
 	perform dblink_exec('fence_three', $q$set request.jwt.claims = '{"role":"authenticated","sub":"64800000-0000-4000-8000-000000000001"}'$q$);
 	perform dblink_send_query('fence_three', pg_temp.sql_post('second-of-two'));
 	if not pg_temp.waits_for('fence_three', 'fence_two') then raise exception 'The second post must wait for the first'; end if;
+	-- It waits at the conversation before its first write (no input row yet), so it never holds the conversation KEY SHARE
+	-- through the input's foreign key and then asks for it FOR UPDATE.
+	if pg_temp.queued_on('fence_three') is distinct from 'public.qorpera_shared_sessions'::regclass
+		or exists (select 1 from pg_locks where pid = current_setting('qorpera_test.pid_fence_three')::integer
+			and relation = 'public.qorpera_session_inputs'::regclass and mode = 'RowExclusiveLock') then
+		raise exception 'The second post waits at the conversation before writing'; end if;
 	perform dblink_exec('fence_two', 'commit');
 	v_state := pg_temp.outcome('fence_three');
 	perform dblink_exec('fence_three', $q$set request.jwt.claims = '{"role":"service_role"}'$q$);
@@ -162,6 +168,62 @@ begin
 	v_state := pg_temp.outcome('fence_two');
 	perform dblink_exec('fence_three', 'rollback');
 	if v_state not like '22023 %' then raise exception 'The email draft reaches its own checks: %', v_state; end if;
+end $$;
+
+-- G. A post in flight holds the folder fence KEY SHARE: a stop's second phase (the fence FOR UPDATE) waits for it.
+do $$
+declare v_state text;
+begin
+	perform dblink_exec('fence_two', 'begin');
+	perform * from dblink('fence_two', pg_temp.sql_post('before-stop')) as t(x text);
+	perform dblink_exec('fence_three', 'begin');
+	perform dblink_send_query('fence_three', $q$select 1 from public.qorpera_folder_fences where profile_id = '64800000-0000-4000-8000-000000000010'
+		for update$q$);
+	if not pg_temp.waits_for('fence_three', 'fence_two') then raise exception 'The stop must wait for the post in flight'; end if;
+	if pg_temp.queued_on('fence_three') is distinct from 'public.qorpera_folder_fences'::regclass then
+		raise exception 'The stop must wait at the fence, not on %', pg_temp.queued_on('fence_three'); end if;
+	perform dblink_exec('fence_two', 'commit');
+	v_state := pg_temp.outcome('fence_three');
+	perform dblink_exec('fence_three', 'rollback');
+	if v_state <> 'ok' then raise exception 'The stop after the post: %', v_state; end if;
+end $$;
+
+-- H. A room delivery's retry takes no company row FOR UPDATE: beside a company-row KEY SHARE holder it does not wait.
+-- The run of one of the posts' wakes failed (hand-built, committed).
+set session_replication_role = replica;
+do $$
+declare v_wake public.qorpera_wake_occurrences%rowtype; v_run uuid := '66100000-0000-4000-8000-0000000000f1';
+	v_job uuid := '66100000-0000-4000-8000-0000000000f2';
+begin
+	select * into strict v_wake from public.qorpera_wake_occurrences where wake_kind = 'room'
+		and session_id = current_setting('qorpera_test.cf_thread')::uuid order by created_at limit 1;
+	insert into public.qorpera_runner_jobs(id, profile_id, environment_id, substrate_version_id, client_job_id, required_capability,
+		job_type, payload, created_by_user_id, status, finished_at, run_id)
+	values (v_job, v_wake.profile_id, v_wake.environment_id, extensions.gen_random_uuid(), extensions.gen_random_uuid(), 'agent_turn',
+		'agent_turn', '{}', v_wake.requested_by_user_id, 'failed', clock_timestamp(), v_run);
+	insert into public.qorpera_execution_runs(id, profile_id, environment_id, source_kind, source_id, job_id, substrate_version_id,
+		company_snapshot_id, staff_agent_id, staff_version, sponsor_binding_id, sponsor_version, required_capability, job_type,
+		payload_sha256, transcript_start_sequence, created_by_user_id, requested_by_user_id, model_provider, model_id, model_selection,
+		audience_kind, runtime_bundle_id, runtime_bundle_sha256, session_id, input_ids)
+	values (v_run, v_wake.profile_id, v_wake.environment_id, 'room_delivery', v_wake.id, v_job, extensions.gen_random_uuid(),
+		extensions.gen_random_uuid(), v_wake.staff_agent_id, 1, v_wake.sponsor_binding_id, v_wake.sponsor_version, 'agent_turn',
+		'agent_turn', repeat('c', 64), 0, v_wake.requested_by_user_id, v_wake.requested_by_user_id, 'openai', 'gpt-test',
+		'provider_default', 'company', extensions.gen_random_uuid(), repeat('b', 64), v_wake.session_id, '{}');
+	update public.qorpera_wake_occurrences set run_id = v_run, status = 'materialized' where id = v_wake.id;
+end $$;
+set session_replication_role = origin;
+do $$
+declare v_state text;
+begin
+	perform dblink_exec('fence_three', 'begin');
+	perform * from dblink('fence_three', $q$select 1 from public.qorpera_profiles where id = '64800000-0000-4000-8000-000000000010'
+		for key share$q$) as t(x integer);
+	perform dblink_send_query('fence_two', $q$select public.qorpera_retry_room_delivery('66100000-0000-4000-8000-0000000000f1',
+		'64800000-0000-4000-8000-0000000000b1', 1)::text$q$);
+	if not pg_temp.finishes_unblocked('fence_two', 'fence_three') then raise exception 'The retry must not wait for a KEY SHARE holder'; end if;
+	v_state := pg_temp.outcome('fence_two');
+	perform dblink_exec('fence_three', 'rollback');
+	if v_state <> 'ok' then raise exception 'The retry beside a KEY SHARE holder: %', v_state; end if;
 end $$;
 
 select dblink_disconnect(name) from unnest(array['fence_one','fence_two','fence_three','fence_four']) name;
