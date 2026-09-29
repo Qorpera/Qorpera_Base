@@ -1,5 +1,6 @@
 import type { CloudApi } from "../../cloud/api.ts";
-import { describeError } from "../../cloud/client.ts";
+import { CloudRpcError, describeError } from "../../cloud/client.ts";
+import type { CompanyComputerHours } from "../../cloud/computer-hours.ts";
 import { createWebConnectors } from "../../cloud/connectors.ts";
 import { createWebMachines } from "../../cloud/machines.ts";
 import { createWebNativeSubscription } from "../../cloud/native-subscription.ts";
@@ -10,13 +11,14 @@ import { button, h, icon, notice, replace } from "../../ui/dom.ts";
 import { phrase, t, uiText } from "../../ui/preferences.ts";
 import type { AuthController } from "../auth.ts";
 import { CompanyController } from "../company.ts";
+import { PlanPayments } from "../plan-payments.ts";
 import { currentRoute } from "../router.ts";
 import { type AccountViewState, renderAccount } from "./account.ts";
 import { renderAppearance } from "./appearance.ts";
 import { FriendsController, renderFriends } from "./friends.ts";
 import type { HubController } from "./hub.ts";
 import { renderPlan } from "./plan.ts";
-import { ConnectionsView, ProviderSignIns } from "./settings-connections.ts";
+import { ConnectionsView, memberProviderSignIns } from "./settings-connections.ts";
 import { MachinesView } from "./settings-machines.ts";
 import { RulesView } from "./settings-rules.ts";
 import { ServicesView } from "./settings-services.ts";
@@ -76,8 +78,11 @@ const TABS = [
 ] as const;
 export type SettingsTab = (typeof TABS)[number]["id"];
 
-/** Provider sign-ins in progress, per member and company, for the life of the tab. */
-const SIGN_INS = new Map<string, ProviderSignIns>();
+/** Founders (owners) pay a company's computer hours; undefined until the member's role is known. */
+function founderOf(company: CompanyController): boolean | undefined {
+	const role = company.store.get().team?.role;
+	return role === undefined ? undefined : role === "owner";
+}
 
 /** A settings session owns its async work; the conversation stays mounted below it. */
 export class SettingsView {
@@ -127,6 +132,14 @@ export class SettingsView {
 	#file: HostedCompanyFile | undefined;
 	#fileLoading = false;
 	#fileError: string | undefined;
+	#hours: CompanyComputerHours | undefined;
+	#hoursLoading = false;
+	#hoursMissing = false;
+	/** Set once a lookup failed: the hours are not asked again until the company changes. */
+	#hoursFailed = false;
+	/** Offers, the member's own plan, and Stripe's pages; loaded when Plan & usage first shows. */
+	readonly #payments: PlanPayments;
+	#planFounder: boolean | undefined;
 
 	constructor(
 		api: CloudApi,
@@ -145,6 +158,9 @@ export class SettingsView {
 		this.#close = close;
 		this.#companyRemoved = companyRemoved;
 		this.#borrowedCompany = company;
+		this.#payments = new PlanPayments(api, () => {
+			if (!this.#lifetime.signal.aborted && this.#panels.has("plan")) this.#plan();
+		});
 		const route = currentRoute();
 		this.#overCompany = Boolean(company) || route.name === "company";
 		const search = this.#search;
@@ -301,6 +317,7 @@ export class SettingsView {
 		this.#services?.dispose();
 		this.#rules?.dispose();
 		this.#friends.dispose();
+		this.#payments.dispose();
 		if (this.#ownsCompany) this.#company?.stop();
 		this.el.remove();
 	}
@@ -359,12 +376,7 @@ export class SettingsView {
 					const company = this.#company;
 					const memberId = this.#auth.userId!;
 					const signal = AbortSignal.any([this.#companyLifetime.signal, this.#lifetime.signal, company.signal]);
-					const key = `${memberId}:${company.profile.profileId}`;
-					let signIns = SIGN_INS.get(key);
-					if (!signIns) {
-						signIns = new ProviderSignIns();
-						SIGN_INS.set(key, signIns);
-					}
+					const signIns = memberProviderSignIns(memberId, company.profile.profileId);
 					// A sign-in belongs to the member, not to this page: it continues while
 					// the page is rebuilt or closed, and stops only if the account changes.
 					const auth = this.#auth;
@@ -460,7 +472,7 @@ export class SettingsView {
 		}
 	}
 
-	/** The plan is the account's; the usage shown is the open company's storage. */
+	/** The plan is the account's; the usage shown is the open company's computer hours and storage. */
 	#plan(): void {
 		if (this.#lifetime.signal.aborted) return;
 		let panel = this.#panels.get("plan");
@@ -471,6 +483,17 @@ export class SettingsView {
 		const company = this.#company;
 		if (this.#tab === "plan" && company && !this.#file && !this.#fileLoading && !this.#fileError)
 			void this.#loadFile();
+		if (this.#tab === "plan") this.#payments.load();
+		this.#planFounder = company ? founderOf(company) : undefined;
+		if (
+			this.#tab === "plan" &&
+			company &&
+			!this.#hours &&
+			!this.#hoursLoading &&
+			!this.#hoursMissing &&
+			!this.#hoursFailed
+		)
+			void this.#loadHours();
 		renderPlan(
 			panel,
 			this.#account,
@@ -481,8 +504,24 @@ export class SettingsView {
 						loading: this.#fileLoading,
 						error: this.#fileError,
 						retry: () => void this.#loadFile(true),
+						hours: {
+							value: this.#hours,
+							loading: this.#hoursLoading || (!this.#hours && !this.#hoursMissing && !this.#hoursFailed),
+							missing: this.#hoursMissing,
+							failed: this.#hoursFailed,
+						},
+						profileId: company.profile.profileId,
+						founder: this.#planFounder,
 					}
 				: undefined,
+			{
+				payments: {
+					state: this.#payments.state,
+					checkout: (itemKey, profileId) => this.#payments.checkout(itemKey, profileId),
+					portal: () => this.#payments.portal(),
+					companyName: (profileId) => this.#profiles.find((item) => item.profileId === profileId)?.profileName,
+				},
+			},
 		);
 	}
 
@@ -521,6 +560,10 @@ export class SettingsView {
 		this.#file = undefined;
 		this.#fileLoading = false;
 		this.#fileError = undefined;
+		this.#hours = undefined;
+		this.#hoursLoading = false;
+		this.#hoursMissing = false;
+		this.#hoursFailed = false;
 		for (const tab of ["company", "connections", "machines"] as const) this.#panels.delete(tab);
 		if (company) {
 			this.#unsubscribe = company.store.subscribe(() => {
@@ -531,6 +574,8 @@ export class SettingsView {
 				this.#services?.update();
 				this.#rules?.update();
 				this.#drawCompany();
+				// "Buy hours" is for founders: the plan tab follows the member's role once the team loads.
+				if (this.#panels.has("plan") && founderOf(company) !== this.#planFounder) this.#plan();
 			});
 			if (owned) void company.start();
 		}
@@ -634,6 +679,28 @@ export class SettingsView {
 				},
 			},
 		);
+	}
+
+	/** This month's computer hours of the open company. A cloud without the meter shows "Not measured yet". */
+	async #loadHours(): Promise<void> {
+		const company = this.#company;
+		if (!company || this.#hoursLoading) return;
+		const signal = this.#companyLifetime.signal;
+		this.#hoursLoading = true;
+		try {
+			const hours = await this.#api.getCompanyComputerHours(company.profile.profileId);
+			if (signal.aborted || this.#lifetime.signal.aborted) return;
+			this.#hours = hours;
+		} catch (error) {
+			if (signal.aborted || this.#lifetime.signal.aborted) return;
+			if (error instanceof CloudRpcError && error.missing) this.#hoursMissing = true;
+			else this.#hoursFailed = true;
+		} finally {
+			if (!signal.aborted && !this.#lifetime.signal.aborted) {
+				this.#hoursLoading = false;
+				if (this.#panels.has("plan")) this.#plan();
+			}
+		}
 	}
 
 	/** `redraw` (a retry) repaints at once so the Retry button disables while the load runs. */

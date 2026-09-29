@@ -50,6 +50,8 @@ export class LxdOfficePowerOffWorker {
 	readonly #registry: LxdOfficeStopRegistry;
 	readonly #client: LxdOfficeServiceStartClient;
 	readonly #kernelLock;
+	/** `${allocationId}-${transitionId}` whose node suspension SQL has answered. */
+	#suspended: string | undefined;
 	constructor(
 		gate: Pick<LxdOfficePhysicalGate, "policy" | "check">,
 		registry: LxdOfficeStopRegistry,
@@ -491,9 +493,15 @@ export class LxdOfficePowerOffWorker {
 			hostBootId: seed.hostBootId,
 		});
 		// An explicit power-off gives the node slot back until resume re-admits it.
-		// A reboot resumes at once and keeps its slot. Replays repeat the same receipt.
-		if (recovery.action === "power_off")
+		// A reboot resumes at once and keeps its slot. Every confirmed answer
+		// (suspended, already suspended, kept NOT_RESERVED, or kept RESUME_PENDING)
+		// is final for this transition: the lifecycle replays a stopped computer
+		// every pass, and each call locks the node row (2026-09-28: 16 calls a
+		// minute for 42 hours). A new process asks once more.
+		if (recovery.action === "power_off" && this.#suspended !== suffix) {
 			await suspendLxdOfficeNodeMachine(this.#policy, binding, transitionId, registry, checked);
+			this.#suspended = suffix;
+		}
 		return { ...result, state: "powered_off" };
 	}
 }

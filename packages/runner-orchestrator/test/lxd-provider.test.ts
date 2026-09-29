@@ -1022,6 +1022,64 @@ describe("LXD cloud runner provider", () => {
 		});
 		expect(lxd.createCalls).toHaveLength(0);
 	});
+	it("names the step, and a failed database call's function, status and code, when acquire fails", async () => {
+		const stateRoot = join(await root(), "state");
+		const lxd = new FakeLxd();
+		const base = fetchProvisioner([]);
+		const fetcher: typeof fetch = async (input, init) => {
+			if (String(input).includes("qorpera_reserve_runtime_machine"))
+				return Response.json({ code: "42501", message: "PRIVATE detail" }, { status: 403 });
+			return base(input, init);
+		};
+		const backend = new LxdCloudRunnerProviderBackend(config(stateRoot), lxd, new FakeGuest(), fetcher);
+		const failure = await backend
+			.acquire(runId, work(), new AbortController().signal)
+			.catch((error: unknown) => error);
+		expect(failure).toMatchObject({
+			name: "ProviderStepFailed",
+			category: "provider_step",
+			stage: "reserve",
+			rpc: "qorpera_reserve_runtime_machine",
+			rpcStatus: 403,
+			rpcCode: "42501",
+			message: "Runner provisioning failed (403)",
+		});
+		expect(lxd.createCalls).toHaveLength(0);
+
+		// A failure that is no database call names only its step; a body without a code names none.
+		const other = join(await root(), "state");
+		const unreadable: typeof fetch = async (input, init) => {
+			if (String(input).includes("qorpera_compute_identity_login_in_vault"))
+				return new Response("<html>gateway</html>", { status: 502 });
+			return base(input, init);
+		};
+		const custody = await new LxdCloudRunnerProviderBackend(
+			governedConfig(other),
+			new FakeLxd(),
+			new FakeGuest(),
+			unreadable,
+		)
+			.acquire(runId, work(), new AbortController().signal)
+			.catch((error: unknown) => error);
+		expect(custody).toMatchObject({
+			category: "provider_step",
+			stage: "login_custody",
+			rpc: "qorpera_compute_identity_login_in_vault",
+			rpcStatus: 502,
+			rpcCode: undefined,
+		});
+		const lxdFailure = new FakeLxd();
+		vi.spyOn(lxdFailure, "createInstance").mockRejectedValue(new Error("PRIVATE /var/lib host path"));
+		const created = await new LxdCloudRunnerProviderBackend(
+			config(join(await root(), "state")),
+			lxdFailure,
+			new FakeGuest(),
+			fetchProvisioner([]),
+		)
+			.acquire(runId, work(), new AbortController().signal)
+			.catch((error: unknown) => error);
+		expect(created).toMatchObject({ category: "provider_step", stage: "create", rpc: undefined });
+	});
 	it.each(["NODE_CAPACITY_EXHAUSTED", "NODE_OBSERVATION_UNAVAILABLE", "NODE_DISABLED"])(
 		"reports a node refusal %s as a typed admission refusal",
 		async (reason) => {

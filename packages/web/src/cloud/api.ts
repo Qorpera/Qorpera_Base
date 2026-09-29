@@ -6,6 +6,16 @@ import {
 	parseCodingSessionRead,
 	parseCodingSessions,
 } from "./coding-session.ts";
+import { CompanyFoundingApi, type FoundingTableEntry } from "./company-founding.ts";
+import {
+	type ComputerHourOffer,
+	listComputerHourOffers,
+	type MyComputerPlan,
+	openComputerBillingPortal,
+	readMyComputerPlan,
+	startComputerCheckout,
+} from "./computer-billing.ts";
+import { type CompanyComputerHours, readCompanyComputerHours } from "./computer-hours.ts";
 import {
 	isMemberPictureName,
 	MEMBER_PICTURE_BUCKET,
@@ -119,6 +129,31 @@ export class CloudApi {
 		return this.cloud.rpc("qorpera_get_account_entitlement").then(parseAccountEntitlement);
 	}
 
+	/** The company's computer hours this month, measured (not charged yet). */
+	getCompanyComputerHours(profileId: string): Promise<CompanyComputerHours> {
+		return readCompanyComputerHours(this.cloud, requiredUuid(profileId, "Profile id"));
+	}
+
+	/** The plans and packs of hours this member can buy. */
+	listComputerHourOffers(): Promise<ComputerHourOffer[]> {
+		return listComputerHourOffers(this.cloud);
+	}
+
+	/** The member's own plan: its period, its hours and what each company used of them. */
+	getMyComputerPlan(): Promise<MyComputerPlan> {
+		return readMyComputerPlan(this.cloud);
+	}
+
+	/** Stripe's checkout page for a plan, or for a pack of hours for a company (founders only). */
+	startComputerCheckout(itemKey: string, profileId?: string): Promise<string> {
+		return startComputerCheckout(this.cloud, itemKey, profileId ? requiredUuid(profileId, "Profile id") : undefined);
+	}
+
+	/** Stripe's billing page for the member's cards, invoices and plan. */
+	openComputerBillingPortal(): Promise<string> {
+		return openComputerBillingPortal(this.cloud);
+	}
+
 	listIncomingInvitations(): Promise<HostedIncomingProfileInvitation[]> {
 		return this.cloud.rpc("qorpera_list_profile_invitations").then(parseIncomingInvitations);
 	}
@@ -133,6 +168,16 @@ export class CloudApi {
 		await this.cloud.rpc("qorpera_decline_profile_invitation", {
 			p_invitation_id: requiredUuid(invitationId, "Invitation id"),
 		});
+	}
+
+	// Founding tables: the hub's two reads. A table's own calls are in company-founding.ts.
+
+	companyFoundingAvailable(): Promise<boolean> {
+		return new CompanyFoundingApi(this.cloud).available();
+	}
+
+	listCompanyFoundings(): Promise<FoundingTableEntry[]> {
+		return new CompanyFoundingApi(this.cloud).list();
 	}
 
 	// Friends. Company invitations only reach accounts you are already friends

@@ -19,6 +19,40 @@ export interface MemberCompanyComputerCatalog {
 	staff: { staffAgentId: string; name: string }[];
 	nextAfter: string | null;
 }
+/** Where an agent's screen is, or would go (migration 20260928237200). */
+export type MemberAgentComputerPlacement =
+	| "screen"
+	| "room"
+	| "starting"
+	| "stopped"
+	| "unstarted"
+	| "new"
+	/** The agent's computer access was revoked on every computer of the company. */
+	| "denied"
+	| "none";
+export interface MemberAgentComputer {
+	canManage: boolean;
+	/** The company's computers that are not retired. */
+	computers: number;
+	placement: MemberAgentComputerPlacement;
+	/** Null when no computer can take the agent now (every one full and only an owner or admin may add one, or none at all). */
+	computer: {
+		scope: CompanyComputerScope;
+		number: number;
+		/** Why a started computer is not up yet: its host is being prepared, or the servers have no room. */
+		waiting: "setup" | "room" | null;
+	} | null;
+}
+const PLACEMENTS: readonly MemberAgentComputerPlacement[] = [
+	"screen",
+	"room",
+	"starting",
+	"stopped",
+	"unstarted",
+	"new",
+	"denied",
+	"none",
+];
 function record(value: unknown, keys: string): Record<string, unknown> {
 	if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).sort().join() !== keys)
 		throw new Error("Invalid Company Computer response");
@@ -68,6 +102,7 @@ export class CloudMemberCompanyComputerClient {
 		method: string,
 		args: Record<string, unknown>,
 		signal: AbortSignal,
+		options: { missing?: true } = {},
 	): Promise<{ data: unknown; error: null }> {
 		return withCloudDeadline(
 			async (deadline) => {
@@ -88,6 +123,20 @@ export class CloudMemberCompanyComputerClient {
 					body: JSON.stringify(args),
 				};
 				const response = await this.#fetch(`${this.#origin}/rest/v1/rpc/${method}`, request);
+				if (options.missing && response.status === 404) {
+					// A backend that predates this function (PostgREST: no such function): the caller falls back.
+					const body = new TextDecoder("utf-8", { fatal: true }).decode(
+						await readBoundedCloudResponse(response, 64 * 1024, deadline),
+					);
+					let code: unknown;
+					try {
+						code = (JSON.parse(body) as { code?: unknown } | null)?.code;
+					} catch {
+						code = undefined;
+					}
+					if (code !== "PGRST202") throw new Error("Company Computer access is unavailable");
+					return { data: undefined, error: null };
+				}
 				if (response.status !== 200) {
 					void response.body?.cancel().catch(() => undefined);
 					throw new Error("Company Computer access is unavailable");
@@ -149,6 +198,51 @@ export class CloudMemberCompanyComputerClient {
 			scope,
 			staff,
 			nextAfter: value.nextAfter as string | null,
+		};
+	}
+	/** The computer that shows this agent's screen: where it is, or where it would go.
+	 * `undefined` when the backend predates several computers per company; then
+	 * the catalog's one computer is the agent's. */
+	async agentComputer(staffAgentId: string, signal: AbortSignal): Promise<MemberAgentComputer | undefined> {
+		if (!COMPANY_COMPUTER_UUID.test(staffAgentId)) throw new Error("Invalid Company Computer agent");
+		const { data } = await this.#rpc(
+			"qorpera_member_agent_office",
+			{ p_environment_id: this.#options.environmentId, p_staff_agent_id: staffAgentId },
+			signal,
+			{ missing: true },
+		);
+		if (data === undefined) return undefined;
+		const value = record(data, "canManage,companyId,computer,computers,environmentId,placement,staffAgentId");
+		if (
+			value.companyId !== this.#options.companyId ||
+			value.environmentId !== this.#options.environmentId ||
+			value.staffAgentId !== staffAgentId ||
+			typeof value.canManage !== "boolean" ||
+			!Number.isSafeInteger(value.computers) ||
+			(value.computers as number) < 0 ||
+			!PLACEMENTS.includes(value.placement as MemberAgentComputerPlacement)
+		)
+			throw new Error("Invalid Company Computer placement");
+		let computer: MemberAgentComputer["computer"] = null;
+		if (value.computer !== null) {
+			const row = record(value.computer, "number,scope,waiting");
+			if (
+				!Number.isSafeInteger(row.number) ||
+				(row.number as number) < 1 ||
+				(row.waiting !== null && row.waiting !== "setup" && row.waiting !== "room")
+			)
+				throw new Error("Invalid Company Computer placement");
+			computer = {
+				scope: this.#scope(row.scope as CompanyComputerScope),
+				number: row.number as number,
+				waiting: row.waiting as "setup" | "room" | null,
+			};
+		}
+		return {
+			canManage: value.canManage,
+			computers: value.computers as number,
+			placement: value.placement as MemberAgentComputerPlacement,
+			computer,
 		};
 	}
 	start(scope: CompanyComputerScope): CloudCompanyComputerStart {

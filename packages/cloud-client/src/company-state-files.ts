@@ -922,6 +922,8 @@ function agent(split: Split, fields: Fields, problems: Problems): AgentFile | nu
 	const model = fields.choice("model", false, AGENT_MODELS);
 	const effort = fields.choice("effort", false, COMPANY_STATE_EFFORTS);
 	const instructions = body(split, problems, "the agent's instructions", true, 32768);
+	if (instructions !== null && /[\u0001-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(instructions))
+		problems.add("body", split.bodyLine, null, "the agent's instructions hold a control character; remove it");
 	fields.close("an agent");
 	if (problems.list.length || !id || !name || !role || !agentKind || !status || instructions === null) return null;
 	return { kind: "agent", id, name, role, agentKind, status, colour, figure, model, effort, instructions };
@@ -1618,4 +1620,152 @@ export function setCompanyStateSettings(text: string, changes: Readonly<Record<s
 	}
 	for (const [key, value] of encoded) if (value !== null) out.push(`${key}: ${value}${ending}`);
 	return mark + [...out, ...lines.slice(close)].join("\n");
+}
+
+// ---------------------------------------------------------------------------------------------
+// The seeded tree (contract 5.6): what a new company's folder holds when it is created.
+
+/** The Co-Founder's folder name. It can be renamed later, never deleted. */
+export const COMPANY_STATE_COFOUNDER_HANDLE = "co-founder";
+
+/** Seeded paths that cannot be deleted or moved (contract 5.6, "Approval"). The Co-Founder's folder
+ * and its `agent.md` are protected by the Co-Founder rules instead, since they may be renamed. */
+export const COMPANY_STATE_SEEDED_PATHS = Object.freeze([
+	"vision",
+	"vision/vision.md",
+	"agents",
+	"agents/sections.md",
+	"agents/groups",
+	"connections",
+	"skills",
+	"rules",
+] as const);
+
+/** The Co-Founder's instructions when a company is created: a thin job, not the platform's brain
+ * (contract 9.3). Its first job is the vision. */
+export const COMPANY_STATE_COFOUNDER_INSTRUCTIONS = `You are the Co-Founder. You hold the company-level work: the vision, who does what, resourcing, and the relationship with the founders.
+
+## Your first job
+Fill in vision/vision.md with the founders: what the company builds, for whom, why, and how it works. Keep the company's name as its first line. Keep the vision current as the company changes; every agent reads it at every run.
+
+## How you work
+- Bring the founders the decisions, blockers and real risks, each with the position you recommend.
+- Hire agents when the work needs them, and keep agents/sections.md tidy so the team is easy to find.
+- Hand bounded work to agents, group chats and workers, and keep the founders informed without copying every message.
+- Work by changing the company's files. Make no commitments outside the company without the member responsible.`;
+
+export interface CompanyStateSeedEntry {
+	readonly path: string;
+	readonly kind: "folder" | "file";
+	/** A file's text; every seeded file parses with {@link parseCompanyStateFile}. */
+	readonly text?: string;
+}
+
+/** A founder at the founding table: their display name and the role they wrote (may be empty). */
+export interface CompanyStateSeedFounder {
+	readonly displayName: string;
+	readonly role: string;
+}
+
+export interface CompanyStateSeedOptions {
+	readonly companyName: string;
+	readonly cofounderId: string;
+	/** The founders' own vision text, placed after the name and before the seeded headings. */
+	readonly vision?: string;
+	/** The founding team, in join order: listed under "How we work" as "- name: role". */
+	readonly founders?: readonly CompanyStateSeedFounder[];
+	/** The Co-Founder's first task (decision 2): a todo file in its own folder. */
+	readonly firstTodo?: { readonly id: string; readonly requestedBy: string | null };
+}
+
+/** The Co-Founder's first todo when the founding table starts the company. */
+export const COMPANY_STATE_FIRST_TODO_PATH = `agents/${COMPANY_STATE_COFOUNDER_HANDLE}/todos/start-with-the-founders.md`;
+
+/** The vision a new company starts with: the name, the founders' text, then the four headings, with the founders
+ * and their roles under "How we work". */
+function seedVision(options: CompanyStateSeedOptions): string {
+	const team = (options.founders ?? [])
+		.map((founder) => {
+			const name = readable(founder.displayName);
+			const role = readable(founder.role);
+			return name ? `- ${name}${role ? `: ${role}` : ""}` : "";
+		})
+		.filter(Boolean);
+	return writeVisionFile(
+		options.companyName,
+		[
+			(options.vision ?? "").trim(),
+			"## What we build",
+			"## For whom",
+			"## Why",
+			["## How we work", ...team].join("\n"),
+		]
+			.filter(Boolean)
+			.join("\n\n"),
+	);
+}
+
+/** The folders and files a new company starts with, parents before children. The creation commit writes them in
+ * one change set, as the platform. Throws when a file would not parse, e.g. a founders' vision past the size limit,
+ * so the caller never sends a creation commit the database refuses. */
+export function companyStateSeedTree(options: CompanyStateSeedOptions): CompanyStateSeedEntry[] {
+	const tree = seedEntries(options);
+	for (const entry of tree) {
+		if (entry.kind !== "file") continue;
+		const parsed = parseCompanyStateFile(entry.path, entry.text ?? "");
+		if (parsed && !parsed.ok)
+			throw new RangeError(`The seeded ${entry.path} would be refused: ${parsed.problems[0]?.message ?? "invalid"}`);
+	}
+	return tree;
+}
+
+function seedEntries(options: CompanyStateSeedOptions): CompanyStateSeedEntry[] {
+	const cofounder = `agents/${COMPANY_STATE_COFOUNDER_HANDLE}`;
+	return [
+		{ path: "vision", kind: "folder" },
+		{ path: "vision/vision.md", kind: "file", text: seedVision(options) },
+		{ path: "agents", kind: "folder" },
+		{ path: "agents/sections.md", kind: "file", text: writeSectionsFile({ sections: [] }) },
+		{ path: cofounder, kind: "folder" },
+		{
+			path: `${cofounder}/agent.md`,
+			kind: "file",
+			text: writeAgentFile({
+				id: options.cofounderId,
+				name: "Co-Founder",
+				role: "Co-Founder",
+				agentKind: "co-founder",
+				status: "active",
+				colour: "blue",
+				figure: "crown",
+				model: null,
+				effort: null,
+				instructions: COMPANY_STATE_COFOUNDER_INSTRUCTIONS,
+			}),
+		},
+		{ path: `${cofounder}/memory`, kind: "folder" },
+		{ path: `${cofounder}/skills`, kind: "folder" },
+		{ path: `${cofounder}/routines`, kind: "folder" },
+		{ path: `${cofounder}/todos`, kind: "folder" },
+		...(options.firstTodo
+			? [
+					{
+						path: COMPANY_STATE_FIRST_TODO_PATH,
+						kind: "file" as const,
+						text: writeTodoFile({
+							id: options.firstTodo.id,
+							title: "Start with the founders",
+							status: "open",
+							requestedBy: options.firstTodo.requestedBy,
+							detail:
+								"Meet the founders in your thread. Shape vision/vision.md with them: what the company builds, for whom, why, and how it works.\n\nDone when every founder has agreed their part of the vision.",
+						}),
+					},
+				]
+			: []),
+		{ path: "agents/groups", kind: "folder" },
+		{ path: "connections", kind: "folder" },
+		{ path: "skills", kind: "folder" },
+		{ path: "rules", kind: "folder" },
+	];
 }

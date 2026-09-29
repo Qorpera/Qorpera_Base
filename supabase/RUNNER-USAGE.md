@@ -15,7 +15,7 @@ The sandbox emits `qorpera.runner-usage/v1` inside its bounded completion result
 
 One job can have only one observation. Replaying the same completion returns the existing job and observation; changing any observed value fails. Failed, cancelled, requeued, and expired jobs do not create successful-execution observations.
 
-Both runner-resource and provider-model observations are append-only even to service-role application paths. Update and delete triggers reject mutation, and restrictive profile, environment, job, and model-request references prevent parent deletion from cascade-deleting usage history. Product deletion must therefore use a later retention/redaction process that preserves the financial fact instead of deleting these rows implicitly.
+Both runner-resource and provider-model observations are append-only even to service-role application paths. Update and delete triggers reject mutation. Since 20260928248920 they have no foreign keys to the company, its environments, jobs, runners or model requests: they keep those ids as plain values, like the computer-hour records. Deleting a company (`qorpera_purge_company`) removes its jobs, runners and requests and leaves these facts in place for bookkeeping.
 
 ## Billing boundary
 

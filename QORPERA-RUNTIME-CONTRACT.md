@@ -739,13 +739,19 @@ subscriptions, which self-limit.
 > operator pause.**
 >
 > What remains:
-> - crash detection (job, connection and session leases) and retry limits
+> - crash detection (job, connection, session and coding attachment leases) and retry limits
 >   (8 dispatch failures; 8 attempts for a pristine retry or a sponsor
 >   handoff);
-> - one machine per run, one coding machine per member and environment
+> - one run box per run (the machines an agent starts are not counted:
+>   2026-09-28 amendment "compute for agents", item 4), one coding machine
+>   per member and environment
 >   (carrying any number of that member's sessions; amended 2026-09-24), and
 >   account concurrency (64 per subscription);
-> - a queued run that no computer starts within a day of being queued fails;
+> - a queued run that no runner starts within a day of being queued fails
+>   (this applies to runner jobs, not to computer or machine requests);
+> - machines an agent starts are bounded only by the room on the nodes; there
+>   is no count of machines per company or agent (2026-09-28 amendment
+>   "compute for agents", item 4);
 > - input validation and per-call size bounds (message, argument, result,
 >   batch, catalog text up to 1 MiB);
 > - 50,000 Company File entries per company (the tree's storage bound). The
@@ -1074,6 +1080,21 @@ control-plane lifecycle operations under the kernel-owned spend ceilings.
 Order 4's acceptance is provable on one machine; additional machines are
 capacity work after it.
 
+> **Amended 2026-09-28** ("compute for agents", section 19). In newer text a
+> *computer* is one agent's screen and a *machine* is a virtual machine; this
+> section's "Company Computer" is a company machine, which hosts its
+> configured number of computers (six is the target). Machines run on any of
+> our own nodes with room, and their files are the company folder. Each
+> machine has its own scratch: this section's workbench is not shared between
+> machines and never holds company work. An additional machine is no longer
+> optional: once every run can reach any machine of its company, company
+> machines work in the company folder and a new machine is set up
+> automatically on a node with room, it starts when every computer on the
+> company's machines is taken and no stopped or starting machine can give one.
+> Computers are seats that free up. A computer's shell, terminal and desktop
+> have their own network to the internet, and commands have no fixed time
+> limit.
+
 One computer-use task holds one lease per screen. Concurrent shell and service
 work uses explicit resource leases and provenance. Every screen action is
 attributed to the agent, run, and authorizing principal.
@@ -1159,11 +1180,18 @@ Worker species have separate lifecycle contracts:
   member's coding machine (amended 2026-09-24: one machine per member and
   environment carries all that member's sessions; asleep when idle, it holds
   no node capacity, and it is removed later, its allocation released only on a
-  proven delete).
+  proven delete; amended 2026-09-28, "compute for agents", item 3: a session
+  stands by on its member's machine between turns until it is archived, its
+  attachment ends or the machine sleeps, and the machine is removed once it
+  is asleep and none of its member's sessions is open).
   Follow-up MUST address the same worker and branch; it may run on a later
   machine of the same member. If the coding
   provider lacks a completion callback, Qorpera uses an explicit durable
   listener; it MUST NOT pretend the in-house revival bus will fire.
+- **Machines are not a worker species** (2026-09-28 amendment "compute for
+  agents", item 4): a machine has no model. Any agent or worker of the company
+  may drive one from company conversations, under the conditions of that
+  item.
 - **Media worker:** receives immutable media assets and returns asset
   identities. Video or other unsupported media is not silently interpreted by
   the main model.
@@ -1219,6 +1247,35 @@ Explicit restrictions, expiry and revocation MUST survive reactivation and
 root resource version changes. Protected paths, private scopes, and narrower
 responsibility- or project-scoped resources keep their own rules; the default
 never overrides them.
+
+Amended 2026-09-28: several founders. A company has one or more founders
+(members with the role `owner`); "the company owner" above means its first
+founder: the creator while a founder, otherwise the founder who joined first.
+Any founder may make another member a founder; a founder steps down or leaves
+only on their own; nobody removes or changes a fellow founder. The last
+founder cannot step down, and cannot leave while other members remain. While
+company setup runs for a founder, that founder neither leaves nor steps down.
+Only the last member may delete the company; everyone else leaves. Founders remove other
+members; admins keep managing contributors and viewers. The founder list is
+one stable, ordered set per company, which computer-hours billing pools
+across. Membership rows are member data and stay in the database (5.6).
+
+Amended 2026-09-28: deleting an account. Deleting a member's account removes
+only what is theirs: their memberships (as if they left), their own settings,
+drafts, notifications, picture, friends, devices, unanswered invitations they
+sent and their founding-table seats. It MUST NOT remove company data: the
+company, its environment and folder, conversations and the messages in them,
+runs and every other company record stay, also when the account created them.
+Plan and usage records stay as well (section 19, "computer hours", item 9). An
+account deletion is refused while the account is the last founder of a company
+with other members, a founder whose company setup is still running, or the
+only member of a company whose deletion has not been requested; that member
+deletes the company first. The creator of a company stays refused at least
+until the company is gone. Company records keep naming former members, so an
+account is closed (its sign-in record stays as an empty shell that cannot sign
+in) rather than erased. Closing is an update that no database link or guard
+acts on: closing an account MUST make these removals, and the founder and
+only-member refusals, itself.
 
 Automatic hiring MUST verify that the creator can delegate the child's entire
 default: current, nonexpiring read/write authority on every live shared root
@@ -1956,12 +2013,12 @@ Company File, rather than chat or a machine disk, is what that brain operates.
 | 1 | Loop plus mouth | Model input and cloud tools work over an exact Company File read view; only send is visible; provider thinking and final assistant text never render; completion links a live operation, proposal, or explicit no-change result. |
 | 2 | Inbound fences, outbound effect check, and cloud secret custody | A fake instruction inside a tool or Company File result is ignored; an unauthorized, stale, protected, or ambiguous write is blocked independently; and a canary credential survives capture, use, rotation, revocation, response reflection, restart, and encrypted recovery without entering any model-visible or company-visible surface. |
 | 3 | Wake bus | One agent enters through all five wake kinds; each applies its silence rule; a routine finishes with no send; an authorized Company File event wakes once, and an agent's own write never wakes itself (amended v95: no multi-agent cycle fence). |
-| 4 | Shared office VM | Persistent cloud workbench, live Company File mount, shell, browser with sticky granted sessions, one company machine (additional machines are later capacity work), and several agent desktops work with every member device offline; resetting the VM leaves company state intact. |
+| 4 | Shared office VM | Persistent cloud workbench, live Company File mount, shell, browser with sticky granted sessions, one company machine (more machines per company: item 1 of the 2026-09-28 amendment "compute for agents", accepted as Order 4 capacity work), and several agent desktops work with every member device offline; resetting the VM leaves company state intact. |
 | 5 | Workers and todos | Parent remains interruptible; blank child receives a complete dispatch; durable completion reaches the parent; todos and accepted worker outputs become Company File state and survive restart. |
 | 6 | Agent memory (amended 2026-09-22, company first 2026-09-24) | An agent's profile, monthly log, and notes are its own Company File objects in the Grok Bot layout; `update_memory` write/forget and `recall_memory` work through the versioned mutation gateway with notebook-wide dedupe, forget of every copy, a search of every month, and stale-version retry; every turn composes the whole profile and the recent log slice through the trusted read lane; a worker of the same agent recalls but writes only with write access; notebooks are company-owned and there is no member memory; a Grok Bot export imports unchanged. |
 | 7 | Connectors | Install, authenticate out of band, call through scoped RPC, and apply the connector-to-browser escalation path. |
 | 8 | Scheduler and listeners | Company File intent plus one compiled trigger wakes the same agent; deterministic deduplication, timezone, expiry, quiet policy, auth suspension, and projection consistency pass. Dynamic routines (2026-09-25 amendment in 16.3): one next run per version, and each run sets the next run or concludes the routine. |
-| 9 | Isolated coding VMs and PRs | Worker, repository workspace, branch, follow-up identity, publication, and completion listener retain continuity; every turn is recorded once (what started it, its submission bound to its own sequence, its outcome) and the next turn reads the session's own earlier turns, including the exact question and choices a reply answers (amended 2026-09-25); a member's sessions share one coding machine that holds no node capacity while asleep and is removed later, its allocation released only on a proven delete (amended 2026-09-24). |
+| 9 | Isolated coding VMs and PRs | Worker, repository workspace, branch, follow-up identity, publication, and completion listener retain continuity; every turn is recorded once (what started it, its submission bound to its own sequence, its outcome) and the next turn reads the session's own earlier turns, including the exact question and choices a reply answers (amended 2026-09-25); a member's sessions share one coding machine and stand by on it between turns until archived; it holds no node capacity while asleep and is removed once it is asleep and none of its member's sessions is open (amended 2026-09-28, "compute for agents", item 3), its allocation released only on a proven delete (amended 2026-09-24). |
 | 10 | Constitution and hire overlays | Compile a short constitution over the proven loop; add a name and job spec last, without creating a second brain. |
 | Post-build (deferred) | Azure backup/overflow compute | After Orders 0–10 are built, separately approve and prove the optional capacity integration and its placement, failover, isolation, recovery, release, and usage records before enabling it for users. This is not a gate on the preceding orders or initial launch. |
 
@@ -2049,8 +2106,9 @@ records MUST preserve placement changes so historical usage remains attributable
 to the actual compute source. Azure-specific integration and accounting are
 deferred together to the post-build enablement gate below.
 
-Basic usage accounting MUST count running computer-hours once per computer,
-regardless of the number of agents or members sharing it. Screen lifetimes are
+Basic usage accounting MUST count running computer-hours once per machine,
+regardless of the number of computers, agents or members sharing it (2026-09-28
+amendment "computer hours", item 1). Screen lifetimes are
 separate screen-hours; suspended time is separate from running time. Retain
 screen transitions so later time-weighted average/median/maximum concurrency
 reports can be derived for explicit observation windows. Those richer reports
@@ -2209,8 +2267,11 @@ does not reorder the implementation order.
   machine. Reads use the mount; Company File writes pass through the live
   mutation gateway (12.1). Node-local disk holds only machine roots, the
   runtime, images and journals. Usage and capacity records live in the
-  backend (Order 4 records), not on nodes. Installing custom applications on
-  an agent's machine is out of scope for this amendment.
+  backend (Order 4 records), not on nodes. An agent may install any software
+  inside a machine started under item 4 of the 2026-09-28 amendment "compute
+  for agents". Company machines and coding machines keep their reviewed images:
+  agents install user-level tools in a machine's scratch, and system images
+  change only by release.
 - **Order.** The chooser, the address fix and the sizing policies are Order 4
   capacity work executed now on the isolated test nodes; the one-machine
   acceptance already achieved stands. Acceptance: two members' starts land on
@@ -2953,10 +3014,40 @@ section 12.2 and the 2026-09-16 storage rule. Design:
      review of a networked shell do not apply to them.
    - Branches still leave the company only as pull requests (5.1).
 
+### 2026-09-28 amendment: how machines reach the company folder
+
+Founder decisions of 28 September 2026. They complete the amendment above
+("every machine works in the company folder"). Design: the section "Decided on
+28 September 2026" of `deploy/first-node/RUNTIME-COMPANY-FOLDER.md`.
+
+Words used here: a *company machine* is the virtual machine that section 12
+calls the Company Computer, and a *computer* is one of its screens. The
+*folder service* is the trusted program that serves the folder to machines.
+
+1. **A folder program in each machine.** Each machine shows the folder
+   through a program of its own. That program reaches the folder service of
+   the node the machine runs on, over a private link that is not the
+   machine's network. Every node runs the same folder service, so a machine
+   sees the folder the same way on any node.
+   - No machine mounts the NAS directly.
+   - Nothing inside a machine decides what it may see or save. The folder
+     service checks every listing, read and save, and the mutation gateway
+     checks every save again.
+2. **Company machines show only the part of the folder shared with every
+   agent.** A company machine's computers are not walls between agents
+   (section 12).
+   - A folder shared with only some agents is worked on from the agent's own
+     run box.
+   - Each computer's saves are attributed to whoever made them: the agent
+     whose command or turn it was, or a member who took the computer over.
+3. **A crash loses only what was not yet published.** When a machine or a
+   node dies, the changes it had not yet published are lost and reported.
+   Nothing a company owns is kept on a node or a machine disk to rescue them.
+
 ### 2026-09-27 amendment: the company folder layout
 
 Founder decisions of 27 September 2026 (evening). They complete section 5 and
-the amendment above ("every machine works in the company folder"), and are
+the 2026-09-27 amendment "every machine works in the company folder", and are
 written into 5.6.
 
 A review of master at bundle v137 found three problems:
@@ -2974,8 +3065,8 @@ A review of master at bundle v137 found three problems:
 2. **Machines project onto the folder.** No machine holds the company folder
    or a copy of it. The agent's run box, Company Computers and coding
    machines each project onto the one folder on the NAS. This restates items
-   1 and 3 of the amendment above: a machine "mounts" the folder only in this
-   sense.
+   1 and 3 of the 2026-09-27 amendment "every machine works in the company
+   folder": a machine "mounts" the folder only in this sense.
 3. **`vision/` is seeded.** The Co-Founder's first responsibility is to fill
    it. Every agent reads `vision/vision.md` at every run. "Vision" replaces
    "goals" and "direction" throughout this contract. A decision map may come
@@ -3204,6 +3295,555 @@ which makes nodes symmetric for every member. Design:
    volumes, home rules, sign-in and refresh machines and login recovery are
    retired once every active login has run from the vault for a week.
 
+### 2026-09-28 amendment: compute for agents
+
+Founder decisions of 28 September 2026, after the compute audit. They amend
+section 5.6, section 7.4, section 12, section 13.1, section 19 (its Order
+rows, observability line and deferred Azure overflow), section 20, section
+21, section 23, section 24.1, the 2026-09-01 amendment
+placement, the 2026-09-16 amendment "multi-node capacity and Company Computer
+sizing", the 2026-09-17 amendments "the company browser and the Company
+Computer as a given" and "kept company state and credential rotation", and the
+2026-09-27 amendments "every machine works in the company folder" and "the
+company folder layout". Where older text conflicts with this amendment, this
+amendment governs; the conflicts known today are listed at the end. How
+machines reach the company folder is the amendment above, "how machines reach
+the company folder".
+
+**Words.**
+- A *computer* is what an agent opens and works in: one desktop screen with
+  its shell, terminal and the company browser.
+- A *machine* is a virtual machine. A company machine hosts its configured
+  number of computers (six is the target). A coding machine carries a
+  member's coding sessions. Agents also start machines of their own for
+  tests, builds and long jobs (item 4).
+- In text older than this amendment, "Company Computer", "company computer",
+  "computer" where it means the virtual machine, "office" and "office VM" mean
+  the company machine, and "screen" means the computer. "Runtime-hosting
+  machine" means a node. "Node machine" (2026-09-22) means a node's execution
+  host. A "member execution machine" is a virtual machine that ran a member's
+  session; the 2026-09-16 amendment's "member machines" are these. "Member
+  machine" in 12.2, section 20 and section 21 item 16 means a member's own
+  device. "Run machine" means the run box. Older text keeps its
+  words until it is rewritten.
+
+**Company machines, coding machines and agents' machines.** These rules
+follow two founder decisions: the company folder (5.6, 27 September) and
+stateless compute (28 September). They do not cover run boxes, execution
+hosts, login machines, the proposal-review guest or one-run runner machines.
+- **Our own nodes, any node.** Machines run only on Qorpera's own nodes. There
+  are no outside, rented or Azure machines for now (founder, 28 September);
+  the Azure overflow text in section 19 and section 23 is not a current plan.
+  A machine starts on any node with room, and placement picks the node by
+  free capacity. Nodes hold nothing a company owns, so losing a node loses
+  capacity, running programs and changes not yet published ("how machines
+  reach the company folder", item 3), not company files. A company's machines need
+  not share a node.
+- **The files are the company folder.** A machine's files are the company
+  folder, projected from the storage server (5.6). A machine keeps no copy of
+  company files, and company work never lives in a machine's own storage.
+- **Scratch only.** What a machine keeps of its own is scratch: its system,
+  the tools installed on it and their settings, caches, browser profiles
+  (history, tabs and the browser's working state) and temporary files. Each
+  machine has its own scratch; no scratch or workbench is shared between
+  machines. Scratch can be rebuilt, and losing it loses no company files. A
+  tool installed on one machine is not on the others.
+- **Credentials.** Tool settings hold no credentials. A sign-in that a tool
+  needs is a connection through the vault (11.5), never a login typed into a
+  shell or terminal. The company's browser sign-ins are secrets: the kept
+  copy is in the vault (5.6), never in scratch or in the company folder. A
+  running browser holds its working copy of those sign-ins in the agent's
+  browser profile, out of reach of the shell and terminal (item 2); that copy
+  is never company state.
+- **Member logins.** A member's model login is the member's own secret, used
+  only for work that member started or owns (4.3, 11.5). Where it lives
+  follows the 2026-09-28 amendment "model logins live in the vault", which
+  also says when that rule is enforced (its item 6); a login not yet moved
+  keeps the identity-home rule until it is.
+- **Gaps, not rules.** Where today's build ties a machine to one node or works
+  through copies, that is a gap to close. At the time of this amendment:
+  - the production company machine runs on one node, with its disk and
+    workbench tied to it;
+  - a coding machine stays on the node it was created on, with its own
+    storage;
+  - company machines do not mount the company folder yet: files reach it
+    through transfers, and a coding session's repository lives in its own
+    NAS folders until the code moves into the company folder (2026-09-27
+    amendment "every machine works in the company folder", item 9);
+  - an agent's machine may attach a coding session's repository read-only;
+    it is then placed on that session's node, and agents copy the code onto
+    the machine's own disk, until the code is in the company folder;
+  - the browser sign-in store lives beside the profiles on the workbench and
+    in a machine generation's company root (2026-09-17 amendments "the
+    company browser" and "kept company state");
+  - an agent waiting for a machine is not woken when a computer frees on
+    another machine; it takes one only if it runs again first.
+
+1. **More than one company machine per company.** Section 12's additional
+   machine is no longer optional, and it is accepted as Order 4 capacity work.
+   - A company environment holds one or more company machines, numbered from
+     1 in creation order; a number is never reused. Each machine has its own
+     generation, allocation, provider, idle cycle, computers and browser
+     profiles, and its own scratch, journal, ports and credentials (its own
+     TLS certificate and key, guest registry credential and objects token).
+   - A seat is free when no computer is in use on it and no other agent holds
+     it. A machine is full when its computers in use and the seats agents hold
+     fill it.
+   - An agent that needs a computer gets one in this order: its own open
+     computer, or a seat it holds on a running machine; a free computer on a
+     running company machine; a seat it holds on a machine that is not up
+     yet; a free seat on a machine that is starting, waking, back from a host
+     reboot, added but not started, or asleep; a new machine for the same
+     company environment. An owner or admin who opens an agent's computer
+     follows the same order. An agent holds a computer on one company machine
+     at a time; a seat it holds elsewhere lapses while it has a computer in
+     use.
+   - **No waiting for a seat** (founder, 28 September: "if a machine is full,
+     the agent always should start a new one, not wait"). An agent never
+     waits for a seat on a full machine; it goes on down the order, and a new
+     machine starts when no machine has a free seat. A burst of demand starts
+     as many machines as it needs.
+     - An agent waiting for a machine holds a seat on it while it waits and,
+       once woken, until its woken run ends. Seats on one machine go first
+       come; when starts in flight ask for more seats than a machine has, the
+       latest are placed again when they run.
+     - It is woken when that machine is up. If it runs again before then and
+       a computer is free on a running machine, it takes that one, and its
+       hold lapses.
+     - One start request stays on the machine it named when the agent called
+       it, from authorization to its end, while that machine can still be
+       started.
+     - A sleeping or waking machine whose node cannot take it now is passed
+       over when another node has room for a new machine. When no node has
+       room, it is woken and waits for room.
+     - A machine in maintenance for an update or reset, or whose start was
+       cancelled, is passed over; it is used again once it is back.
+     - When no node has set up a started machine for 30 minutes, the agents
+       waiting for it stop holding its seats, so a broken setup does not add
+       machine after machine. The 30 minutes may be tuned without a new
+       founder decision.
+   - A new machine is set up automatically on any node with room, with no
+     operator step. It uses the same image, bootstrap and number of computers
+     as the company's newest machine, and is set up from the node's own
+     settings, which are the same on every node, never by copying another
+     machine's node-specific setup. Operators see every machine waiting for a
+     node, and why (no node has set it up yet, or no room).
+   - A computer is a seat. Besides being in use, a seat can be held by an
+     agent waiting for its machine, or woken and still running ("No waiting
+     for a seat" above). It is in use only while it has a live lease or a
+     live viewer, is being taken over or drained, still has resources the
+     agent started there that have not drained, has a command running in its
+     shell, or was opened less than about two minutes ago. A desktop left open
+     with none of these does not keep the seat. The two-minute window may be
+     tuned without a new founder decision.
+   - Before a seat changes hands, its desktop and shell are closed. Unsaved
+     application state on it is lost, and the agent and any viewer are told
+     what was closed.
+   - Having used a computer once does not keep it. Computer access is
+     company-wide: an agent refused on one machine is refused on all, and a
+     new machine keeps every refusal.
+   - There is no count of machines per company. When no node has room, the
+     request waits, and the agent and members see why. How long a request may
+     wait, and in which order machines waiting for room get it, are not
+     decided yet (founder, 28 September). 7.4's rule that a queued run fails after a
+     day applies to runner jobs, not to these requests.
+   - Each machine powers off by its own idle rule. Only use of that machine
+     keeps it awake: its computers in use, its viewers, requests and runs
+     waiting for it, and runs of agents placed on it.
+   - A run reaches the machine its computer is on. A company's machines are
+     one trust domain for transport; tool authority still comes from the run,
+     its descriptor and effect-time grants. A run that cannot reach its
+     machine continues without computer tools; it does not fail.
+   - Several machines per company are turned on only once every run can reach
+     any machine of its company, company machines work in the company folder,
+     and a new machine is set up automatically on a node with room. Until
+     then a company runs one machine, so an agent never loses sight of its
+     files by moving to another machine.
+   - Acceptance (Order 4): a seventh agent gets a computer on a
+     second machine of the same company, set up and started with no operator
+     step; a seat another agent left idle changes hands after its desktop is
+     closed; each machine powers off on its own;
+     a burst of more agents than one machine seats starts enough machines at
+     once, and none waits on a full machine; a sleeping machine on a full
+     node is passed over for a new machine on a node with room.
+2. **Computers have internet, and their shell runs as long as the work
+   needs.** The first build gave the shell no network, stopped every command
+   after 15 seconds, and failed a command whose output passed 16 KiB. Those
+   were build choices, not contract rules, and they go.
+   - Each computer's shell, terminal and desktop have a real network of their
+     own, with outbound internet on any port and protocol, not only through
+     the browser. A firewall on the machine blocks every private and special
+     address range (the NAS, the nodes, the office network, the control plane
+     and cloud metadata), the machine itself and the other computers. This
+     separates work; it is not a security boundary between agents (section
+     12). The browser keeps its own separate path.
+   - A command has no fixed time limit. A call returns after a short wait
+     while the command keeps running, and a later call reads it, writes to it
+     or stops it (7.3). That wait is not a limit on the command.
+   - All of an agent's commands on its computer share one shell per computer:
+     its own localhost, temporary files and processes.
+   - A command runs until it ends, an agent or a member stops it, its computer
+     closes, its authority ends (4.3), the operator pauses the company, or the
+     machine powers off. When the machine nears its memory or process limit,
+     the shell holding the most is stopped first, and its commands say why;
+     that protects the machine and is not a limit on the work.
+   - The last 1 MiB of each command's output is kept, and one reply shows at
+     most 16 KiB. These are storage-safety bounds, not limits on the work;
+     they never stop a command.
+   - A long-running command's changes are also published while it runs, so
+     other agents see them and a crash loses little. When and how is folder
+     design, not a founder decision (`RUNTIME-COMPANY-FOLDER.md` publishes at
+     each read of a command's output).
+   - A command started under a computer's lease may outlive the lease. The
+     lease covers starting it, typing into it and stopping it, and each step
+     is attributed to its run (section 12, "explicit resource leases").
+   - A running command keeps its machine awake and its computer in use.
+   - Browser profiles, sign-ins and credentials stay out of reach of the shell
+     and the terminal (11.4, 11.5).
+   - Because the shell has network, starting a command and typing into one
+     are outside effects and keep the automatic review (2026-09-25 amendment,
+     item 2). Reading output, listing and stopping commands are not reviewed.
+   - Company data read on a computer can leave through this network, as it
+     already can from coding machines and agents' machines. Every read is
+     still recorded, and every write still passes the gateway.
+   - The run box does not change: item 7 of the 2026-09-27 amendment "every
+     machine works in the company folder" (no internet in the run box's
+     shell) stands.
+   - Acceptance (Order 4): a command runs for an hour with internet, including
+     a non-HTTP connection, while the NAS, the node, cloud metadata and the
+     other computers stay unreachable; a later turn reads its output; the
+     machine stays awake meanwhile.
+3. **Coding sessions stand by between turns.** A coding session behaves like
+   a session on a member's own laptop: the end of a turn is not the end of
+   the session. The first build detached the session at the end of every turn
+   and stopped commands after 30 minutes. Those were build choices, not
+   contract rules, and they go.
+   - The end of a turn does not detach a session. Its guest user, folders and
+     the programs its commands started stay on the member's coding machine
+     until the session is archived, its attachment ends or the machine
+     sleeps.
+   - The attachment is the session's own authority, separate from any turn.
+     The machine's executor renews it while the session is not archived, its
+     owner is a member, its repository grant stands and the executor is
+     enabled (4.3). The session's programs stop within about a minute after
+     the executor loses it, and an expired attachment is never renewed: the
+     next turn attaches again and stops whatever the old attachment left.
+     That is crash detection, not a limit.
+   - A command starts only in its own turn; reading and stopping reach the
+     session's commands of any turn. A command has no time, memory, processor
+     or task limit of its own, though an agent may set a deadline. A member's
+     sessions share the machine by equal weights, and the machine keeps a
+     memory reserve for its own control.
+   - A coding machine sleeps after 10 minutes with no turn and no command
+     using the processor. A program that only waits, such as a dev server,
+     does not keep it awake; company machines count any running command
+     (item 2). Sleep powers the machine off: the session's files stay,
+     programs stop, and the next turn is told what stopped. A machine that
+     wakes may start on another node; only its scratch is rebuilt.
+   - Archiving a session stops its programs and detaches it from the machine.
+     Its files stay, and a new turn reopens it. The session's owner or the
+     agent can archive it.
+   - A session is quiet while it has no turn and no command using the
+     processor. After 1, 3 and 7 quiet days, the agent that started the
+     session is asked once each, in the conversation that started the
+     session, whether it may be archived; it archives it or leaves it. A
+     session archived or reopened meanwhile is not asked. After 30 quiet days
+     (a per-environment setting), the platform archives it.
+   - A coding machine is removed once it is asleep and none of its member's
+     sessions in the environment is open.
+   - Coding machines are built without containers; heavier tests run on the
+     machines of item 4.
+   - Acceptance (Order 9): turn 2 reads a command started in turn 1; the
+     machine sleeps after 10 idle minutes and the next turn says what
+     stopped; the agent is asked about archiving after a quiet day; archiving
+     stops the session's programs, and a new message reopens it.
+4. **Agents start machines.** An agent may start machines: whole virtual
+   machines on the company's own nodes, for tests, builds and long jobs.
+   - The agent chooses the size and whether the machine is for a task or
+     always on. Inside, commands run as root and Docker works, on one reviewed
+     base image. An agent may install any software inside a machine,
+     including system packages and containers, because the whole machine
+     belongs to one company job.
+   - A command has no deadline unless the agent sets one. It keeps running
+     after the agent's turn and stops when the machine stops. A command
+     started with notification wakes the agent with a continuation in the
+     conversation of the run that started it (8.1), and a machine that had
+     to wait for room does the same for the runs that asked for it, through a
+     durable event, never through model polling.
+   - A machine holds no credentials. It reaches the internet but no private
+     network, the NAS, the nodes or the control plane, and nothing reaches it
+     from outside.
+   - A machine belongs to the company. Every member sees it, with its purpose,
+     size, state and commands, and may stop, wake or delete it. Any agent of
+     the company may use any running machine of the company when needed
+     (founder, 28 September), from company conversations (not member-private
+     ones, 4.3); a command is attributed to the agent that ran it. Deleting a
+     machine is an internal action, with no approval card.
+   - A worker may start and use machines like its agent. It waits for its
+     commands within its own run, and nothing wakes it later: a worker whose
+     machine must wait for room reports back to its agent.
+   - Machines are placed and admitted on the shared node ledger like every
+     other machine, on any node with room. When no node has room, the machine
+     waits until a node has room (item 1: wait length and order not decided
+     yet), and the agent and members see why; a machine larger than any node
+     is refused at once. Machines are bounded only by the room on the nodes;
+     there is no count of machines per company or agent (7.4).
+   - A machine keeps no company state. Its disk is scratch. A sleeping machine
+     holds no processors or memory; its disk may be given up for another
+     machine, and a machine that wakes where there is no room starts fresh on
+     another node. In this cut, results come back as command output the agent
+     reads; once the company folder is mounted, results belong in the
+     company's files.
+   - A task machine sleeps after an idle hour and is removed after 30 days
+     asleep; both are per-node settings. An always-on machine is stopped or
+     removed only by an agent or a member.
+   - In this cut a machine has no company folder and holds no credentials, and
+     its commands are not reviewed (founder, 28 September), like a coding
+     session's commands. This is an exception to item 2 and to item 7 of the
+     2026-09-27 amendment "every machine works in the company folder".
+   - Once the company folder is mounted on machines (/company), a machine
+     shows the company-wide view, as a company machine does: the paths under
+     the root company-shared resource, and rules/ read-only. The folder is
+     mounted only when the starting agent's authority covers that view.
+     Narrower folders are never mounted on a machine; they are worked on from
+     the agent's own run box. Any agent of the company whose authority covers
+     that view may run commands there; an agent whose default grant was
+     revoked or held back may not. A command's changes are published when it
+     ends (and while it runs, item 2) and attributed to the agent
+     that ran it; changes made with no command running are attributed to the
+     starting agent. Because company files can then leave through the
+     machine's network, these commands pass the automatic review as outside
+     effects (item 2), a worker's under its agent's rules.
+   - A machine is not a worker species: it has no model (13.1). Work that
+     section 12 says "runs in an isolated worker" may run on a machine.
+   - Machines on our nodes are the default place for runtime unit, regression
+     and Docker-based component tests (24.1).
+   - Acceptance (with Order 9): an agent starts a machine of its chosen size,
+     runs `docker compose` and a Qorpera test suite there and is woken when it
+     ends; another agent of the company reads that command's output; a worker
+     runs a command on the machine and waits for it; the machine sleeps after
+     an idle hour and holds no processors or memory.
+
+**What this replaces.** In-place edits are marked "(changed in place)".
+- Section 5.6: "The company owns them", said of secrets, does not cover a
+  member's model login, which is the member's own (4.3, 11.5). "Machines keep
+  only their system, applications and caches" reads with the wider scratch
+  list above (tool settings, browser profiles, temporary files).
+- Section 7.4: crash detection names coding attachment leases (changed in
+  place); "one machine per run" means one run box per run, and the machines
+  an agent starts are not counted (changed in place); machines join the
+  things bounded only by node room (changed in place). The one-day failure of
+  a queued run applies to runner jobs, not to computer or machine requests.
+- Section 12: "MAY start an additional machine" becomes item 1's rule;
+  "attached to the same shared NAS workbench" is replaced by the scratch and
+  company-folder rules; "under the kernel-owned spend ceilings" is replaced by
+  7.4 (no ceilings); "Order 4's acceptance is provable on one machine;
+  additional machines are capacity work after it" is replaced by item 1's
+  acceptance. The section 12 note is changed in place.
+- Section 13.1: the coding worker's "removed later" is replaced by item 3,
+  and machines are listed as not a worker species (both changed in place).
+- Section 19: the Order 4 row (more machines per company as Order 4 capacity
+  work) and the Order 9 row (sessions stand by) are changed in place; the
+  Order 4 row's "persistent cloud workbench" reads as per-machine scratch. The observability line
+  "admission follows its bounded queue" reads with item 1's undecided wait.
+- Section 20: the rows naming the "NAS workbench" and the coding "VM" read
+  with the scratch rule and item 3.
+- Section 21 launch item 14: "the same worker, VM, repository, and branch"
+  reads "the same worker, repository and branch, on the member's current
+  coding machine".
+- Section 23 and the deferred Azure overflow in section 19: not a current
+  plan (see "Our own nodes").
+- Section 24.1: machines become the default place for runtime and
+  Docker-based tests (changed in place).
+- The 2026-09-01 amendment placement: additional Company Computers are no
+  longer "capacity work after Order 4's one-machine acceptance" (item 1).
+- The 2026-09-16 amendment: "Company Computers mount the shared NAS
+  workbench" is replaced by the scratch rule; the line on installing custom
+  applications is replaced (changed in place, item 4); the acceptance line "a
+  start with all nodes full is refused with reasons" is replaced by item 1's
+  wait.
+- The 2026-09-17 amendments: the browser sign-in store beside the profiles on
+  the workbench, and company-owned sign-ins in a machine's company root, move
+  to the vault (5.6). Until then they are a gap.
+- The 2026-09-27 amendment "every machine works in the company folder", item
+  4: a command's changes are also published while it runs (item 2).
+- The 2026-09-27 amendment "the company folder layout", its "Computers"
+  paragraph: "The machine keeps only its system, applications and caches"
+  reads with the wider scratch list above.
+
+### 2026-09-28 amendment: computer hours
+
+Founder decisions of 28 September 2026: those recorded when draft PR #326 was
+closed, and the eight choices on the "Computer Hours" page, approved as
+recommended. They define the billing of machine time, which section 22 left to
+a separate launch responsibility, and they amend 7.4, section 12, section 19
+("Minimum operational observability"), section 20, section 21, section 22 and
+the 2026-09-28 amendment "compute for agents". Words as in that amendment: a
+*computer* is one agent's screen and a *machine* is a virtual machine. A *run
+box* is where one run executes: a slot on a shared execution host (the
+2026-09-22 amendment) or a machine of its own. A *founder* is a member with the
+owner role. Model use is not billed here: it follows the 2026-09-28 amendment
+"the member who started the work pays" (section 17). Design:
+`deploy/first-node/RUNTIME-COMPUTER-HOURS.md`.
+
+1. **What is billed.** Qorpera bills machine time, named *computer hours*.
+   One computer hour is one hour of an awake standard machine of 4 vCPU and
+   8 GiB. A machine counts by the larger of its reserved processors and its
+   reserved memory, each divided by the standard: a company machine of 8 vCPU
+   and 16 GiB counts two hours per hour, a machine of 2 vCPU and 4 GiB half an
+   hour. A machine counts once, however many computers, agents or members use
+   it. A stopped or sleeping machine counts nothing, also while it keeps its
+   disk.
+2. **What counts.**
+   - Company machines, agents' machines (item 4 of "compute for agents") and
+     coding machines (including the retiring per-session coding machines),
+     while awake, at their reserved size.
+   - Run boxes: every run, review runs included, from its runner's acceptance
+     to the end of that attempt, at the standard size, whether it runs in a
+     slot of a shared execution host or in a machine of its own. A run costs
+     the same wherever it is placed. A retry is a new attempt; the wait
+     between attempts counts nothing. A coding turn's model run is a run like
+     any other; the turn's commands count through the coding machine.
+   - Nothing else: sign-in machines (they serve one member's model login),
+     shared execution hosts themselves, build machines, warm spares and every
+     other platform machine count nothing.
+3. **Measured from central records.** Machine time MUST come from records the
+   database keeps by its own clock: the machine allocation ledger, an
+   append-only power log written at every wake, sleep and release, and the
+   start and end of each run's runner assignment. No node keeps billing state,
+   billing keys or billing journals, and what a machine costs never depends on
+   the node it runs on.
+   - The node inventory observations are a check on the power log. A report
+     that shows a machine stopped, failed or gone pauses its charge, and so
+     does a node that publishes no report for five minutes. A later report
+     that shows the machine running resumes the charge. A report never starts
+     a charge for a machine the power log shows asleep or released.
+   - Time is counted to the second, with no minimum per start. Each company's
+     running total of standard seconds is rounded up to whole seconds once, so
+     counting more often never adds to a bill.
+   - The operator query of computer history estimates running hours from
+     observations; billing uses only this meter.
+4. **Who pays, in order.** Each second of machine time is paid from the first
+   source that has hours left:
+   1. the company's five free computer hours, once per company and first for
+      every company, whether or not a founder already pays;
+   2. its founders' plans, shared evenly between the founders who still have
+      hours in their current plan period. A plan's hours serve every company
+      in which its holder is a founder, and they end with the plan period;
+   3. the company's purchased credits, oldest first, each lasting twelve
+      months from its purchase.
+
+   The billing records say which source paid for each second. A founder who
+   leaves, steps down or is removed stops paying for the company at that
+   moment; what their plan already paid stays paid.
+
+   Complimentary companies carry over the operator's existing internal
+   accounts and are not a new founder decision: while any founder of a
+   company has the internal account entitlement (`qorpera_account_entitlements`,
+   plan `internal`), its machine time is measured and recorded as paid by a
+   complimentary source naming the first such founder in the founder list,
+   instead of the order above; its free hours stay unused. It is never
+   charged and never waits for hours.
+5. **Members who are not founders are never billed.** Admins, contributors
+   and viewers are never billed personally for machine time: neither their
+   plan nor their card pays for a company's machines. Their work uses the
+   company's hours like anyone else's. They see how many hours the company has
+   left, not who paid.
+6. **No payment to found a company.** Founding a company, up to and including
+   the start of its first work, never asks for a payment or a card.
+7. **At zero.** A company's hours left are what its sources hold minus what
+   it owes. While it has none:
+   - No machine of the company starts or wakes (a run created before the
+     company ran out gets or keeps its run box), no run of the company is
+     created, and agents' requests for machines wait. A new coding turn,
+     whether a run or the session's owner starts it, waits like other new
+     work, with the same stated reason. The work waits before a
+     run is created, with a stated reason that its agents and members see,
+     and starts by itself, in the order it arrived, once the company has hours
+     left again. Waiting for hours never fails work by age: 7.4's one-day
+     failure of a queued run does not apply to it. A run created before the
+     company ran out is running work.
+   - Work already running may finish for at most one hour. Then its runs end
+     as failed with the stated reason "out of computer hours", shown in their
+     conversations and never retried by themselves, and its machines are
+     stopped with their disks kept, always-on machines included. A coding turn
+     cut off then ends failed with the same reason, and its machine's running
+     commands end as when it sleeps. A worker whose run is ended reports "out
+     of computer hours" to its parent. Nothing else changes: no routine is
+     paused and no worker is cancelled; their next work waits for hours like
+     any other.
+   - Time used while the company has no hours is owed. Owed time is paid in
+     the order of item 4 from the next hours that arrive (free hours, then
+     founders' plans evenly, then credits). Owed time of a deleted company is
+     written off.
+   - Besides the room on the nodes, waiting for hours is the only limit on
+     machine time. There is still no cap on a run's length or tools (7.4)
+     while the company has hours.
+8. **Payments.** Founder plans are monthly subscriptions, and company credits
+   are one-off purchases made by a founder. Both are paid on the payment
+   provider's own checkout page; Qorpera never receives or stores card data.
+   - A new plan and new credits add hours only once paid. Returning from the
+     checkout page adds nothing.
+   - A plan's renewal is the one exception: its hours for the new period
+     arrive when the period starts, before its invoice is paid. If that
+     payment finally fails, the period's unused hours are withdrawn and its
+     used hours are forgiven; nobody else pays for them.
+   - An upgrade adds the new plan's extra hours for the rest of the period,
+     in proportion to the time left, once the upgrade's charge is paid. A
+     downgrade applies from the next period.
+   - A refund removes the unused hours of its purchase. A dispute freezes only
+     that purchase, never the company.
+   - Prices exclude VAT. The catalog (plans, hours, credit price and packs)
+     is data, not contract. At ratification: Basis 185 kr a month with 74
+     hours, Standard 630 kr with 286 hours, credits 3.50 kr an hour in packs
+     of 20, 100 and 500 hours. The Dedicated plan is not sold until always-on
+     machines are priced.
+9. **Records.** Plan, usage and billing records are Qorpera's own records.
+   They live in the database (5.6), never in the company folder, and agents
+   cannot write them. They carry no cascading link to the company or to a
+   member's account, and they are kept for bookkeeping after a company or an
+   account is deleted.
+10. **Email.** The payment provider sends receipts and invoices to the member
+    who paid. Qorpera sends hour notices only to founders. "Hours running
+    low" and "out of hours" go to the founders whose plans pay, the founders
+    who bought the credits in use, or every founder while the company uses
+    its free hours; "out of hours" also goes to every founder. A monthly
+    summary goes to each founder whose plan was used, listing each company's
+    use. Admins, contributors and viewers get no billing email.
+11. **What this replaces.**
+    - 7.4: "a company starts as many computers as the nodes have room for" and
+      "machines an agent starts are bounded only by the room on the nodes"
+      read with item 7: they also wait while the company has no hours. The
+      one-day failure of a queued run does not apply to work waiting for
+      hours, and a run may also end "out of computer hours" (item 7). "The
+      machines an agent starts are not counted" there means they are not
+      limited in number; they do count for computer hours (item 2).
+    - Section 12, its note on additional machines, and "compute for agents"
+      items 1 and 4: a machine that could start or wake also waits while the
+      company has no hours; at zero an always-on machine is stopped after the
+      hour like any other.
+    - Section 19, "Minimum operational observability": "count running
+      computer-hours once per computer" reads "once per machine", measured as
+      in item 1 (changed in place).
+    - Section 20: the row "Computer hours come from central records" (added).
+    - Section 21: its opening paragraph now names items 1–31 and item 32
+      (changed in place); in item 27, "computer-hours" is machine time and
+      "computer" the machine (changed in place); item 31 is added, and the
+      deferred Azure gate becomes item 32.
+    - Section 22: billing of machine time is defined here. Operating the
+      payment provider account and tax registration remain launch
+      responsibilities (changed in place).
+    - Draft PR #326's per-member allowance pools, host keys, host journals and
+      payment gate on founding are not part of this contract.
+12. **Order.** Measure first, charge later, each step shippable alone: the
+    measured hours shown to members; the billing records with their sources
+    and order as a dry run; payments in the provider's test mode; hour
+    notices and the zero rule of item 7, both built switched off. Live
+    payments, hour notices and the zero rule are switched on together. Free
+    hours, owed time and every draw count from that moment; dry-run draws
+    before it are discarded, and members see only measured hours until then.
+    Acceptance is section 21 item 31.
+
 ## 20. Enforcement matrix
 
 > **Note, 2026-09-27.** Rows naming responsibility objects, ceilings, a schema
@@ -3243,6 +3883,7 @@ which makes nodes symmetric for every member. Design:
 | Basic diagnostics stay attributable | Runtime boundaries, canonical records, node monitoring and operator queries | Investigate recorded outcomes; do not invent missing measurements. |
 | Capacity and enabled overflow reflect allocations | Scheduler inventory, reservations, provider state and placement records; Azure extension is post-build | Do not treat idle allocated resources as free or equate computers with users. |
 | Usage preserves lifecycle meaning | Computer/screen lifecycle owners and basic usage accounting | Distinguish running, suspended, allocated and actively used resources. |
+| Computer hours come from central records | Machine allocation ledger, power log, run records, hour meter, billing records and the payment webhook; no node state | Machines cost the company hours: use one when the work needs it and let it sleep when done. |
 
 ## 21. Launch acceptance
 
@@ -3252,8 +3893,8 @@ which makes nodes symmetric for every member. Design:
 > vision the Co-Founder writes.
 
 The runtime launch gate passes only when a deployed environment proves the
-mandatory items 1–30 without manual database repair or a hidden desktop
-executor. Item 31 is a separate post-build enablement gate and is not required
+mandatory items 1–31 without manual database repair or a hidden desktop
+executor. Item 32 is a separate post-build enablement gate and is not required
 while Azure backup/overflow remains disabled.
 
 1. One always-on cloud Company File remains readable and mutable through its
@@ -3338,7 +3979,8 @@ while Azure backup/overflow remains disabled.
     Missing diagnostics and stale node observations are visible.
 27. Computer/screen lifecycle records distinguish viewer closure, computer
     shutdown and resource release; basic computer-hours do not multiply when
-    several agents or users share the computer. Missing intervals remain unknown.
+    several agents or users share the machine (2026-09-28 amendment "computer
+    hours"). Missing intervals remain unknown.
 28. The operational view shows local allocations, pending starts, unavailable
     resources, waiting demand and remaining admissible whole-computer capacity.
     Concurrent starts cannot consume the same slot, and a stopped or failed
@@ -3354,7 +3996,18 @@ while Azure backup/overflow remains disabled.
     stop operation pauses the company, and the founder is notified from the
     control plane. (Amended 2026-09-24, see 7.4: only the operator stop
     remains; since bundle v92 there is no machine limit either.)
-31. **Deferred post-build enablement gate, not a launch prerequisite:** before
+31. Computer hours (2026-09-28 amendment "computer hours"), proven on a
+    company with no founder on an internal account: a company's machine time
+    is counted once per machine at its size and matches the central records,
+    and a machine that stops, sleeps or crashes stops counting. A new company
+    starts without a payment and uses its five free hours first. Founders'
+    plans pay before the company's credits, shared evenly between the founders
+    with hours left, and the plan or card of a member who is not a founder is
+    never used. A new plan or new credits add hours only once paid. At zero no
+    machine starts or wakes and new work waits with its reason; running work
+    ends within one hour, and waiting work starts by itself once the company
+    has hours left again.
+32. **Deferred post-build enablement gate, not a launch prerequisite:** before
     Azure backup/overflow is enabled, demand beyond local capacity is attributable
     to Azure placements and rented allocation intervals. The view distinguishes
     computers, companies, associated users and observed active users, retains
@@ -3374,8 +4027,10 @@ company and durable cloud coworkers that work over it with a real mouth, real wa
 path authority, real tools, a shared office, governed memory, routines, and
 workers.
 
-Product quality, provider policy, operational reliability, billing, support,
-and security-response readiness remain separate launch responsibilities. This
+Product quality, provider policy, operational reliability, operating the
+payment provider account, tax registration, support, and security-response
+readiness remain separate launch responsibilities. Billing of machine time is
+defined by the 2026-09-28 amendment "computer hours" (section 19). This
 contract defines the agent-runtime bar; it does not waive those gates.
 
 ## 23. Failure model
@@ -3418,6 +4073,11 @@ default execution environment, using available nodes or isolated test
 allocations on them. This includes runtime unit/regression suites, packaging
 checks and system integration tests. Release verification of the runtime MUST
 run there; a developer workstation is not the reference runtime platform.
+Machines on our nodes (2026-09-28 amendment "compute for agents", item 4) are
+the default place for runtime unit, regression and Docker-based component
+tests. Tests that need real LXD
+virtual machines run on a machine with nested virtualization or on an
+exclusively reserved node allocation (24.3).
 
 Quick local checks MAY supplement node execution. Web development and
 frontend-only tests MAY run locally. Fixing macOS-specific test portability is

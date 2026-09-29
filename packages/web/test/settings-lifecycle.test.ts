@@ -927,17 +927,53 @@ describe("settings session lifecycle", () => {
 		expect(f.api.getCompanyFile).toHaveBeenCalledTimes(1);
 		loading.resolve({ ...file, storageUsedBytes: 2_000_000 });
 		await draw();
-		expect(content().querySelector(".settings-usage:not(.settings-hours) strong")?.textContent).toMatch(
-			/^1\.9 MiB used of /,
+		expect(content().querySelector(".settings-storage strong")?.textContent).toMatch(/^1\.9 MiB used of /);
+		expect(content().querySelector(".settings-storage small:not(.settings-eyebrow)")?.textContent).toBe(
+			profileA.profileName,
 		);
-		expect(
-			content().querySelector(".settings-usage:not(.settings-hours) small:not(.settings-eyebrow)")?.textContent,
-		).toBe(profileA.profileName);
-		expect(content().querySelector(".settings-usage:not(.settings-hours) progress")).not.toBeNull();
+		expect(content().querySelector(".settings-storage progress")).not.toBeNull();
+		// The company's measured computer hours sit beside its storage.
+		expect(f.api.getCompanyComputerHours).toHaveBeenCalledWith(profileA.profileId);
+		expect(content().querySelector(".settings-company-hours strong")?.textContent).toBe("2 h used");
+		expect(content().querySelector(".settings-company-hours .settings-hours-kinds")?.textContent).toBe(
+			"Company machines 1 h · Agent runs 1 h",
+		);
 		// The Company tab reuses what the Plan tab loaded.
 		click(f.root, "#settings-tab-company");
 		await draw();
 		expect(f.api.getCompanyFile).toHaveBeenCalledTimes(1);
+	});
+	it("says computer hours are not measured yet while the cloud has no meter", async () => {
+		const f = await setup();
+		vi.mocked(f.api.getCompanyComputerHours).mockRejectedValueOnce(
+			new CloudRpcError("qorpera_read_company_computer_hours", { code: "PGRST202", message: "Could not find" }, 404),
+		);
+		open(f.root);
+		click(f.root, "#settings-tab-plan");
+		await draw();
+		const card = f.root.querySelector("#settings-content .settings-company-hours")!;
+		expect(card.querySelector("strong")?.textContent).toBe("Not measured yet");
+		expect(card.textContent).not.toContain("Could not find");
+		// It is not asked again on every redraw.
+		click(f.root, "#settings-tab-company");
+		click(f.root, "#settings-tab-plan");
+		await draw();
+		expect(f.api.getCompanyComputerHours).toHaveBeenCalledTimes(1);
+	});
+	it("asks for a company's computer hours once when the lookup fails, whatever the error says", async () => {
+		const f = await setup();
+		// A gateway error can arrive with an empty message.
+		vi.mocked(f.api.getCompanyComputerHours).mockRejectedValue(new Error(""));
+		open(f.root);
+		click(f.root, "#settings-tab-plan");
+		await draw();
+		await draw();
+		const card = f.root.querySelector("#settings-content .settings-company-hours")!;
+		expect(card.querySelector("strong")?.textContent).toBe("Computer hours unavailable");
+		click(f.root, "#settings-tab-company");
+		click(f.root, "#settings-tab-plan");
+		await draw();
+		expect(f.api.getCompanyComputerHours).toHaveBeenCalledTimes(1);
 	});
 	it("asks to open a company for usage and retries a failed storage lookup", async () => {
 		const fixtureState = fixture();
@@ -956,7 +992,7 @@ describe("settings session lifecycle", () => {
 		await draw();
 		expect(f.api.getCompanyFile).toHaveBeenCalledTimes(2);
 		expect(content().textContent).not.toContain("Storage information unavailable");
-		expect(content().querySelector(".settings-usage:not(.settings-hours) progress")).not.toBeNull();
+		expect(content().querySelector(".settings-storage progress")).not.toBeNull();
 		click(f.root, ".settings-close");
 		location.hash = "#/";
 		await draw();
@@ -964,7 +1000,7 @@ describe("settings session lifecycle", () => {
 		click(f.root, "#settings-tab-plan");
 		await draw();
 		expect(content().textContent).toContain("Open a company to see its storage.");
-		expect(content().querySelector(".settings-usage:not(.settings-hours)")).toBeNull();
+		expect(content().querySelector(".settings-storage")).toBeNull();
 	});
 	it("shows the open company's rules in General, and asks to open a company when none is open", async () => {
 		const fixtureState = fixture();
@@ -1076,6 +1112,83 @@ describe("settings session lifecycle", () => {
 		);
 		expect(sdkRpcs(f)).toEqual([]);
 	});
+	it("shows founders what they may do with their own membership", async () => {
+		history.replaceState(null, "", "/#/");
+		const member = (userId: string, role: "owner" | "admin" | "contributor") => ({
+			userId,
+			email: `${role}@example.test`,
+			displayName: role === "owner" ? "Founder" : "Member",
+			role,
+			joinedAt: timestamp,
+		});
+		const exitFor = async (capabilities: Partial<typeof team.capabilities>, members: ReturnType<typeof member>[]) => {
+			const fixtureState = fixture();
+			vi.mocked(fixtureState.api.getTeam).mockResolvedValue({
+				...team,
+				capabilities: { ...team.capabilities, ...capabilities },
+				members,
+			});
+			const f = await setup(fixtureState);
+			open(f.root);
+			click(f.root, "#settings-tab-company");
+			await draw();
+			const exit = f.root.querySelector<HTMLButtonElement>(".company-exit")!;
+			const stepDown = [...f.root.querySelectorAll("button")].find((button) => button.textContent === "Step down");
+			const roles = [...f.root.querySelectorAll<HTMLOptionElement>(".company-person select option")].map(
+				(option) => option.value,
+			);
+			const next = exit.nextElementSibling;
+			const hint = next?.classList.contains("notice") ? next.textContent : null;
+			const result = {
+				text: exit.textContent,
+				disabled: exit.disabled,
+				hint,
+				stepDown: stepDown !== undefined,
+				roles,
+			};
+			dispose?.();
+			document.body.replaceChildren();
+			return result;
+		};
+		// The last founder while a member remains: no delete, and leaving waits for another founder.
+		expect(
+			await exitFor({ manageFounders: true, leave: false, deleteCompany: false }, [
+				member(userA.id, "owner"),
+				member(userB.id, "contributor"),
+			]),
+		).toEqual({
+			text: "Leave company",
+			disabled: true,
+			hint: "Make someone else a founder before you leave.",
+			stepDown: false,
+			roles: ["viewer", "contributor", "admin", "owner"],
+		});
+		// With a co-founder, a founder may leave or step down.
+		expect(
+			await exitFor({ manageFounders: true, leave: true, deleteCompany: false }, [
+				member(userA.id, "owner"),
+				member(userB.id, "owner"),
+			]),
+		).toEqual({ text: "Leave company", disabled: false, hint: null, stepDown: true, roles: [] });
+		// While company setup runs for this founder, neither, even with a co-founder.
+		expect(
+			await exitFor({ manageFounders: true, leave: false, deleteCompany: false }, [
+				member(userA.id, "owner"),
+				member(userB.id, "owner"),
+			]),
+		).toEqual({
+			text: "Leave company",
+			disabled: true,
+			hint: "Company setup must finish before you can leave.",
+			stepDown: false,
+			roles: [],
+		});
+		// The last member deletes.
+		expect(
+			await exitFor({ manageFounders: true, leave: false, deleteCompany: true }, [member(userA.id, "owner")]),
+		).toEqual({ text: "Delete company", disabled: false, hint: null, stepDown: false, roles: [] });
+	});
+
 	it.each(["delete", "leave"])("closes settings and refreshes the hub after %s", async (action) => {
 		history.replaceState(null, "", "/#/");
 		const fixtureState = fixture();

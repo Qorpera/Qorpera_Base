@@ -214,6 +214,9 @@ export function fixture() {
 	vi.spyOn(api, "listProfiles").mockResolvedValue([profileA]);
 	vi.spyOn(api, "listIncomingInvitations").mockResolvedValue([]);
 	vi.spyOn(api, "listFriends").mockResolvedValue([]);
+	// A cloud that still creates companies at once: no founding tables.
+	vi.spyOn(api, "companyFoundingAvailable").mockResolvedValue(false);
+	vi.spyOn(api, "listCompanyFoundings").mockResolvedValue([]);
 	vi.spyOn(api, "findAccountByEmail").mockResolvedValue(null);
 	vi.spyOn(api, "listMemberPictures").mockResolvedValue([]);
 	vi.spyOn(api, "getAccountEntitlement").mockResolvedValue({
@@ -255,6 +258,16 @@ export function fixture() {
 	vi.spyOn(api, "delegateCodingSession").mockRejectedValue(new Error("No coding session in this fixture"));
 	vi.spyOn(api, "archiveCodingSession").mockRejectedValue(new Error("No coding session in this fixture"));
 	vi.spyOn(api, "getCompanyFile").mockResolvedValue(file);
+	vi.spyOn(api, "getCompanyComputerHours").mockResolvedValue({
+		profileId: file.profileId,
+		month: "2026-09",
+		timeZone: "Europe/Copenhagen",
+		usedSeconds: 7_200,
+		byKind: { companyMachines: 3_600, agentMachines: 0, codingMachines: 0, runs: 3_600 },
+		awakeNow: { companyMachines: 0, agentMachines: 0, codingMachines: 0, runs: 0 },
+		meteredUntil: "2026-09-28T18:00:00Z",
+		waitingForHours: false,
+	});
 	vi.spyOn(api, "listWorkspaces").mockResolvedValue([]);
 	vi.spyOn(api, "listSnapshots").mockResolvedValue([snapshot]);
 	vi.spyOn(api, "usesPathGateway").mockResolvedValue(false);

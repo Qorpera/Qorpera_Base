@@ -179,6 +179,8 @@
 .settings-plan > .btn { align-self: center; }
 /* Plans: the three cards qorpera.com sells, opened under the current plan. */
 .settings-plan-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-top: 12px; }
+/* An author `display` beats the browser's [hidden] rule; the account page is outside Settings' own reset. */
+.settings-plan-grid[hidden], .settings-hours-packs[hidden] { display: none; }
 .settings-plan-offer { display: flex; flex-direction: column; gap: 6px; min-width: 0; padding: 16px; border: 1px solid #e3e3e0; border-radius: 13px; background: #fff; }
 .settings-plan-offer-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px; }
 .settings-content .settings-plan-offer h3 { margin: 0; font-size: 13px; font-weight: 600; }
@@ -193,6 +195,9 @@
 .settings-content .settings-plan-offer > .btn:disabled { opacity: .55; cursor: default; }
 .settings-usage + .settings-usage { margin-top: 10px; }
 .settings-period { align-self: end; font-size: 11px; color: #797975; white-space: nowrap; }
+/* Packs of hours a founder can buy for the company, under its hours this month. */
+.settings-hours-packs { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 8px; }
+.settings-hours-packs > small { flex-basis: 100%; }
 /* Billing: one card of label/value rows; actions wait for the billing work. */
 .settings-billing { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0; padding: 4px 13px; }
 .billing-row { display: grid; grid-template-columns: 130px minmax(0, 1fr) auto; align-items: center; gap: 12px; min-height: 42px; padding: 6px 0; font-size: 12.5px; }

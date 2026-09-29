@@ -42,6 +42,7 @@ begin
 	if v_functions is distinct from array[
 		'qorpera_authorize_cloud_secret_operation(uuid,text,jsonb,uuid,text,text,uuid,text,text,bigint,text,text)',
 		'qorpera_authorize_coding_repository_credential(uuid,text,uuid,uuid,text,jsonb)',
+		'qorpera_broker_principal_companies(uuid,text)',
 		'qorpera_claim_email_draft_action(uuid,text,uuid,text)',
 		'qorpera_commit_model_login_renewal(uuid,text,uuid,uuid,bigint,text,text,text,timestamp with time zone,timestamp with time zone)',
 		'qorpera_complete_cloud_secret_capture(uuid,text,uuid,text,text,text)',
@@ -54,8 +55,13 @@ begin
 		'qorpera_finish_email_draft_action(uuid,text,uuid,text,jsonb)',
 		'qorpera_issue_model_login(uuid,text,jsonb,bigint,boolean)',
 		'qorpera_model_login_broker_company(uuid,text)',
+		'qorpera_model_logins_without_account(uuid,text)',
+		'qorpera_record_model_login_account(uuid,text,uuid,text)',
 		'qorpera_record_model_login_account_metadata(uuid,text,uuid,text,uuid,uuid,bigint,text,jsonb,text)',
-		'qorpera_release_model_login_renewal(uuid,text,uuid,uuid,bigint,boolean,text)'
+		'qorpera_register_company_with_broker_principal(uuid,text,uuid,text)',
+		'qorpera_release_model_login_renewal(uuid,text,uuid,uuid,bigint,boolean,text)',
+		'qorpera_switch_off_replaced_node_logins(uuid,text)',
+		'qorpera_take_idle_model_login_renewal(uuid,text)'
 	]::text[] then
 		raise exception 'Broker inherited a function outside its fixed custody calls';
 	end if;
