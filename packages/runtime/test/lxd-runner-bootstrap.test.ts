@@ -838,6 +838,19 @@ describe("governed native guest for a vault login", () => {
 		expect(started).toHaveLength(4);
 	});
 
+	it("starts when systemd mounts the plain identity folder onto itself, as the bootstrap unit's ReadWritePaths= does", async () => {
+		const paths = await vaultCompanyFixture();
+		// In the unit's namespace the folder on the root filesystem (device 8:1) is its own mount point.
+		await writeFile(
+			paths.mountInfo,
+			`${await readFile(paths.mountInfo, "utf-8")}\n44 1 8:1 ${paths.identityVolume.replaceAll(" ", "\\040")} ${paths.identityVolume.replaceAll(" ", "\\040")} rw - ext4 root rw\n`,
+		);
+		const started: string[] = [];
+		await startCompanyFixture(paths, started);
+		expect(started).toEqual(["qorpera-native-company-host.service", "qorpera-company-runner.service"]);
+		expect(await readFile(paths.identityMasterKey, "utf-8")).toBe("");
+	});
+
 	it("refuses a mounted identity volume or identity material in a vault login guest", async () => {
 		const mounted = await vaultCompanyFixture();
 		await writeFile(

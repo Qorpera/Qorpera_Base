@@ -109,6 +109,7 @@
 
 ### Fixed
 
+- Fixed a vault login guest refusing to start on a node ("A vault login guest must not mount an identity volume"): the bootstrap unit's own `ReadWritePaths=` makes systemd mount the plain identity folder onto itself, which the check took for a volume. The check now refuses only a mount of another device than the root filesystem.
 - Fixed runs whose login is in the vault failing every dispatch when the first provider to acquire them was then refused by the node chooser: that provider's pending runner stayed bound to it, and the preferred node's provider was refused the attempt's runner (23505). Provisioning now gives a pending runner no machine was ever reserved for to the provider acquiring the attempt now, with that provider's activation, and records a registration receipt; a runner with a reservation, active or revoked stays as it is. Migration `20260928235000`.
 - A native run saves its credential capsule back only when it changed the login, and only while the store still holds the login the run started from (compared by credential content, read again once on failure); otherwise it keeps the newer stored login, logs that this run's copy was not saved, and does not keep that root warm. Every run used to reseal and upload at the end, so with several runs on one login an older copy could undo a renewal and force a new sign-in. A warm root starts from the stored login's digest, so a renewal made in the kept root between runs is saved by the next run. The check and the upload are two requests, not one atomic write.
 
