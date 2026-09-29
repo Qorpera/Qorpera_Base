@@ -19,6 +19,17 @@ export class ObjectStatementTimeout extends ObjectDependencyError {
 	}
 }
 
+/** A serialization failure, deadlock or lock timeout (40001, 40P01, 55P03) on an RPC whose callers must keep
+ * seeing an unavailable dependency (503): the replication reconciler blocks an object on any other refusal, and a
+ * profile read drops its member's read leases on one. The database answered about one company's rows, so the
+ * circuit stays as it is (`ObjectDependency.run`). */
+export class ObjectLockConflict extends ObjectDependencyError {
+	constructor() {
+		super(503);
+		this.name = "ObjectLockConflict";
+	}
+}
+
 /** PostgREST answers SQLSTATE classes 40 and 55, and 57014, with HTTP 500. From an RPC that acts for one company,
  * those describe that company's state, not the database's health, so they must not open the dependency circuit
  * for every company:
@@ -31,6 +42,15 @@ export class ObjectStatementTimeout extends ObjectDependencyError {
 export function companyStateFailure(code: unknown): ObjectDependencyError {
 	if (code === "55000") return new ObjectDependencyError(423);
 	if (code === "40001" || code === "40P01" || code === "55P03") return new ObjectDependencyError(409);
+	if (code === "57014") return new ObjectStatementTimeout();
+	return new ObjectDependencyError(500);
+}
+
+/** The same codes for an RPC whose callers treat anything but "unavailable" as final (see `ObjectLockConflict`):
+ * a lock conflict is `ObjectLockConflict` and a statement timeout `ObjectStatementTimeout`, both 503 to the caller.
+ * Any other 500 stays a dependency failure, 55000 included. */
+export function unavailableStateFailure(code: unknown): ObjectDependencyError {
+	if (code === "40001" || code === "40P01" || code === "55P03") return new ObjectLockConflict();
 	if (code === "57014") return new ObjectStatementTimeout();
 	return new ObjectDependencyError(500);
 }
@@ -177,6 +197,8 @@ export class ObjectDependency {
 			const failure = error instanceof ObjectDependencyError ? error : new ObjectDependencyError(503);
 			controller.abort(failure);
 			if (caller?.aborted && !expired) throw failure;
+			// A lock conflict is about one company's rows, and the database answered it.
+			if (failure instanceof ObjectLockConflict) throw failure;
 			// Another call succeeded while this statement ran: the database is serving, and one company's slow
 			// statement leaves the circuit as it is. With no success meanwhile, it counts like any 5xx.
 			if (failure instanceof ObjectStatementTimeout && this.#successes !== successes) throw failure;

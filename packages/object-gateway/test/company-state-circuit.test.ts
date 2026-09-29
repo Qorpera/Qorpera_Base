@@ -4,7 +4,12 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { ObjectDependency, ObjectDependencyError, ObjectStatementTimeout } from "../src/dependency.ts";
+import {
+	ObjectDependency,
+	ObjectDependencyError,
+	ObjectLockConflict,
+	ObjectStatementTimeout,
+} from "../src/dependency.ts";
 import { ObjectGatewayJournal } from "../src/journal.ts";
 import { SupabaseMemberCompanyAuthority } from "../src/member-company-authority.ts";
 import { FileSystemObjectStore } from "../src/object-store.ts";
@@ -86,6 +91,7 @@ async function gateway() {
 		// A failure for one company's RPCs; every other call is answered normally.
 		fail: undefined as undefined | { company: Company; respond: (signal: AbortSignal) => Promise<Response> },
 		rpcCalls: [] as Array<{ name: string; company: Company | undefined }>,
+		replicas: new Map<string, Uint8Array>(),
 	};
 	const companyOf = (args: Record<string, unknown>): Company | undefined =>
 		(Object.keys(companies) as Company[]).find(
@@ -101,7 +107,17 @@ async function gateway() {
 		now: () => 1_800_000_000_000,
 		fetch: async (input, init) => {
 			const request = new Request(input, init);
-			const name = new URL(request.url).pathname.split("/").at(-1)!;
+			const pathname = new URL(request.url).pathname;
+			if (pathname.startsWith("/storage/v1/object/")) {
+				const key = pathname.split("/").slice(-2).join("/");
+				if (request.method === "POST") {
+					state.replicas.set(key, new Uint8Array(await request.arrayBuffer()));
+					return Response.json({});
+				}
+				const replica = state.replicas.get(key);
+				return replica ? new Response(Uint8Array.from(replica)) : Response.json({}, { status: 404 });
+			}
+			const name = pathname.split("/").at(-1)!;
 			const args = (await request.json()) as Record<string, unknown>;
 			const company = companyOf(args);
 			state.rpcCalls.push({ name, company });
@@ -109,6 +125,9 @@ async function gateway() {
 			if (name === "qorpera_authorize_native_company_object_download")
 				return Response.json({ backend: "nas-object-gateway", bytes: bytes.length });
 			if (name.includes("native_company_object")) return Response.json(true);
+			if (["qorpera_authorize_profile_object_replication", "qorpera_confirm_profile_object_replica"].includes(name))
+				return Response.json(true);
+			if (name === "qorpera_list_profile_objects_for_migration") return Response.json([]);
 			if (name === "qorpera_authorize_member_company_path_object")
 				return Response.json({
 					schema: "qorpera.member-company-object/v2",
@@ -166,7 +185,7 @@ async function gateway() {
 				},
 			}),
 	};
-	return { authority, state, routes };
+	return { authority, replication, state, routes };
 }
 
 type Route = "native read" | "native write" | "member read";
@@ -249,11 +268,35 @@ describe("one company's database state and the shared circuit", () => {
 		expect(state.rpcCalls.length).toBe(before);
 	});
 
-	it("keeps profile and replication RPCs' 500s dependency failures", async () => {
-		// The replication reconciler blocks an object on any non-5xx refusal, so a lock conflict there must stay
-		// transient; these RPCs are not one company's object route.
+	it.each(["55P03", "40P01", "40001"])(
+		"a %s on one company's replication neither blocks its object nor refuses another company",
+		async (code) => {
+			// The reconciler blocks an object for good on any refusal that is not "unavailable", so a lock conflict
+			// on these RPCs stays a 503 to the reconciler, and it leaves the shared circuit closed.
+			const { authority, replication, state, routes } = await gateway();
+			for (const company of ["a", "b"] as const) expect((await routes["native write"](company)).status).toBe(200);
+			state.fail = { company: "a", respond: async () => postgrest(code) };
+			const failure = await authority
+				.authorizeReplication(companies.a.companyId, sha256, bytes.length)
+				.catch((error: unknown) => error);
+			expect(failure).toBeInstanceOf(ObjectLockConflict);
+			expect(failure).toMatchObject({ status: 503, unavailable: true });
+			await replication.reconcile();
+			expect(await replication.status()).toMatchObject({ pending: 1, blocked: 0 });
+			expect([...state.replicas.keys()]).toEqual([`${companies.b.companyId}/${sha256}`]);
+			expect(authority.health().api.status).toBe("healthy");
+			expect(served(await routes["native read"]("b"))).toBe(true);
+			// Once A's rows are free, the same object replicates.
+			state.fail = undefined;
+			await replication.reconcile();
+			expect(await replication.status()).toMatchObject({ pending: 0, blocked: 0 });
+			expect(state.replicas.size).toBe(2);
+		},
+	);
+
+	it("keeps other 500s on profile and replication RPCs dependency failures", async () => {
 		const { authority, state } = await gateway();
-		state.fail = { company: "a", respond: async () => postgrest("40P01") };
+		state.fail = { company: "a", respond: async () => postgrest("55000") };
 		const failure = await authority
 			.authorizeReplication(companies.a.companyId, sha256, bytes.length)
 			.catch((error: unknown) => error);
