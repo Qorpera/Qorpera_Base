@@ -30,20 +30,25 @@ begin
 	return public.qorpera_folder_seal_upload('63500000-0000-4000-8000-000000000020', p_actor, (v_open ->> 'intentId')::uuid) -> 'file';
 end $$;
 
-select set_config('qorpera_test.bytes_file', pg_temp.stage_v2(pg_temp.member(2), array['race chunk one ', 'race chunk two'])::text, false);
+-- Staged by the run that commits them (it possesses them, C1D §3).
+select set_config('qorpera_test.bytes_file', pg_temp.stage_v2(pg_temp.actor('run_one'), array['race chunk one ', 'race chunk two'])::text, false);
+select set_config('qorpera_test.folder_file', pg_temp.stage_v2(pg_temp.actor('run_one'), array['new folder chunk'])::text, false);
 
--- A. Step 6: a commit holds the manifest and every chunk of each file it writes or copies KEY SHARE until it ends, so
--- a lock that would remove one (C1d-2's GC mark) waits for it.
+-- A. Step 6: a commit holds the manifest and every chunk of each file it writes, puts in a new folder or copies KEY
+-- SHARE until it ends, so a lock that would remove one (C1d-2's GC mark) waits for it.
 do $$
 declare
-	v jsonb := pg_temp.actor('run_one'); v_file jsonb := current_setting('qorpera_test.bytes_file')::jsonb; v_sha text;
+	v jsonb := pg_temp.actor('run_one'); v_file jsonb := current_setting('qorpera_test.bytes_file')::jsonb;
+	v_folder jsonb := current_setting('qorpera_test.folder_file')::jsonb; v_sha text;
 begin
 	foreach v_sha in array array[v_file ->> 'manifestSha256', pg_temp.hash('race chunk one '), pg_temp.hash('race chunk two'),
-		pg_temp.hash('alpha')] loop
+		pg_temp.hash('alpha'), v_folder ->> 'manifestSha256', pg_temp.hash('new folder chunk')] loop
 		perform dblink_exec('auth_one', 'begin');
 		perform * from dblink('auth_one', pg_temp.sql_commit(v, 'bytes-hold-1', jsonb_build_array(
 			jsonb_build_object('op','write','path','shared/bytes.txt','file',v_file),
-			jsonb_build_object('op','copy','from','shared/a.txt','to','shared/a-copy.txt')))) as t(r jsonb);
+			jsonb_build_object('op','copy','from','shared/a.txt','to','shared/a-copy.txt'),
+			jsonb_build_object('op','new_folder','path','shared/nf','contents',jsonb_build_array(
+				jsonb_build_object('path','f.txt','kind','file','file',v_folder)))))) as t(r jsonb);
 		perform dblink_send_query('auth_two', format('select 1 from public.qorpera_profile_objects where profile_id = %L and sha256 = %L for update',
 			'63500000-0000-4000-8000-000000000010', v_sha));
 		if not pg_temp.waits_for('auth_two', 'auth_one') then raise exception 'Step 6 holds object %', v_sha; end if;
@@ -57,10 +62,21 @@ select pg_temp.commit(pg_temp.actor('run_one'), 'bytes-publish-1', jsonb_build_a
 	'path','shared/pub.txt','file',current_setting('qorpera_test.bytes_file')::jsonb)));
 select set_config('qorpera_test.open_b', public.qorpera_folder_open_upload('63500000-0000-4000-8000-000000000020',
 	pg_temp.actor('run_one'), pg_temp.manifest(array['unblocked 2']))::text, false);
+-- For C: content no earlier run stored (the catalog outlives this test, as after 635).
+select set_config('qorpera_test.twice', 'twice ' || extensions.gen_random_uuid(), false);
 select set_config('qorpera_test.open_c1', public.qorpera_folder_open_upload('63500000-0000-4000-8000-000000000020',
-	pg_temp.member(1), pg_temp.manifest(array['twice']))::text, false);
+	pg_temp.member(1), pg_temp.manifest(array[current_setting('qorpera_test.twice')]))::text, false);
 select set_config('qorpera_test.open_c2', public.qorpera_folder_open_upload('63500000-0000-4000-8000-000000000020',
-	pg_temp.member(2), pg_temp.manifest(array['twice']))::text, false);
+	pg_temp.member(2), pg_temp.manifest(array[current_setting('qorpera_test.twice')]))::text, false);
+-- For D: an intent listing an object already stored (whose confirm takes it KEY SHARE; a new row is invisible to others
+-- until it commits anyway), and one every object of which is put, ready to seal.
+select set_config('qorpera_test.open_d1', public.qorpera_folder_open_upload('63500000-0000-4000-8000-000000000020',
+	pg_temp.member(1), pg_temp.manifest(array['race chunk one ']))::text, false);
+select set_config('qorpera_test.open_d2', public.qorpera_folder_open_upload('63500000-0000-4000-8000-000000000020',
+	pg_temp.actor('run_one'), pg_temp.manifest(array['held by seal']))::text, false);
+select public.qorpera_folder_confirm_object('63500000-0000-4000-8000-000000000020', pg_temp.actor('run_one'),
+	(current_setting('qorpera_test.open_d2')::jsonb ->> 'intentId')::uuid, pg_temp.hash(x), octet_length(convert_to(x, 'utf8')))
+from unnest(array['held by seal', pg_temp.manifest(array['held by seal'])]) x;
 
 -- B. Staging and downloads take no company-wide lock: they finish while another transaction holds the company row and
 -- company_files for an update, the fence FOR UPDATE, and the run's job FOR UPDATE. (They only reference the company
@@ -90,7 +106,15 @@ begin
 		pg_temp.sql_confirm(v, (v_open ->> 'intentId')::uuid, 'unblocked 2'),
 		pg_temp.sql_confirm(v, (v_open ->> 'intentId')::uuid, pg_temp.manifest(array['unblocked 2'])),
 		format('select public.qorpera_folder_seal_upload(%L, %L, %L)', '63500000-0000-4000-8000-000000000020', v::text, v_open ->> 'intentId'),
-		format('select public.qorpera_folder_renew_upload(%L, %L, %L)', '63500000-0000-4000-8000-000000000020', v::text, v_open ->> 'intentId')] loop
+		format('select public.qorpera_folder_renew_upload(%L, %L, %L)', '63500000-0000-4000-8000-000000000020', v::text, v_open ->> 'intentId'),
+		-- Replication of a folder-v2 object takes no fence either.
+		format('select public.qorpera_authorize_profile_object_replication(%L, %L, 14)', '63500000-0000-4000-8000-000000000010',
+			pg_temp.hash('race chunk two')),
+		format('select public.qorpera_confirm_profile_object_replica(%L, %L, 14)', '63500000-0000-4000-8000-000000000010',
+			pg_temp.hash('race chunk two')),
+		format($q$insert into storage.objects(bucket_id, name, metadata, user_metadata) values ('qorpera-profile-objects', %L,
+			'{"size":14}', '{"qorpera_nas_replica":true,"qorpera_nas_replica_bytes":"14"}')$q$,
+			'63500000-0000-4000-8000-000000000010/' || pg_temp.hash('race chunk two'))] loop
 		perform dblink_send_query('auth_two', v_call);
 		if not pg_temp.finishes_unblocked('auth_two', 'auth_one') then raise exception 'It waited on the company: %', v_call; end if;
 		if pg_temp.outcome('auth_two') <> 'ok' then raise exception 'Unblocked staging refused: %', v_call; end if;
@@ -102,14 +126,14 @@ end $$;
 -- counted once.
 do $$
 declare
-	v_manifest text := pg_temp.manifest(array['twice']); v_one uuid; v_two uuid; r jsonb; v_objects bigint;
+	v_twice text := current_setting('qorpera_test.twice'); v_one uuid; v_two uuid; r jsonb; v_objects bigint;
 begin
 	v_one := (current_setting('qorpera_test.open_c1')::jsonb ->> 'intentId')::uuid;
 	v_two := (current_setting('qorpera_test.open_c2')::jsonb ->> 'intentId')::uuid;
 	v_objects := (select objects from public.qorpera_folder_storage_usage where profile_id = '63500000-0000-4000-8000-000000000010');
 	perform dblink_exec('auth_one', 'begin');
-	perform * from dblink('auth_one', pg_temp.sql_confirm(pg_temp.member(1), v_one, 'twice')) as t(r jsonb);
-	perform dblink_send_query('auth_two', pg_temp.sql_confirm(pg_temp.member(2), v_two, 'twice'));
+	perform * from dblink('auth_one', pg_temp.sql_confirm(pg_temp.member(1), v_one, v_twice)) as t(r jsonb);
+	perform dblink_send_query('auth_two', pg_temp.sql_confirm(pg_temp.member(2), v_two, v_twice));
 	if not pg_temp.waits_for('auth_two', 'auth_one') then raise exception 'The second upload waits for the first''s row'; end if;
 	perform dblink_exec('auth_one', 'commit');
 	r := pg_temp.result('auth_two');
@@ -118,15 +142,91 @@ begin
 		raise exception 'One hash, stored and counted once: %', r; end if;
 end $$;
 
+-- D. Staging's own references lock too (G1): open's present objects, a confirmed object and seal's objects are held
+-- KEY SHARE until their transaction ends.
+do $$
+declare
+	v_d1 uuid := (current_setting('qorpera_test.open_d1')::jsonb ->> 'intentId')::uuid;
+	v_d2 uuid := (current_setting('qorpera_test.open_d2')::jsonb ->> 'intentId')::uuid;
+	v_call text; v_sha text;
+begin
+	for v_call, v_sha in select * from (values
+		(format('select public.qorpera_folder_open_upload(%L, %L, %L)', '63500000-0000-4000-8000-000000000020', '{"kind":"platform"}',
+			pg_temp.manifest(array['race chunk one '])), pg_temp.hash('race chunk one ')),
+		(pg_temp.sql_confirm(pg_temp.member(1), v_d1, 'race chunk one '), pg_temp.hash('race chunk one ')),
+		(format('select public.qorpera_folder_seal_upload(%L, %L, %L)', '63500000-0000-4000-8000-000000000020',
+			pg_temp.actor('run_one')::text, v_d2), pg_temp.hash('held by seal'))) c(call, sha)
+	loop
+		perform dblink_exec('auth_one', 'begin');
+		perform * from dblink('auth_one', v_call) as t(r jsonb);
+		perform dblink_send_query('auth_two', format('select 1 from public.qorpera_profile_objects where profile_id = %L and sha256 = %L for update',
+			'63500000-0000-4000-8000-000000000010', v_sha));
+		if not pg_temp.waits_for('auth_two', 'auth_one') then raise exception 'It holds its object: %', v_call; end if;
+		perform dblink_exec('auth_one', 'rollback');
+		perform pg_temp.outcome('auth_two');
+	end loop;
+end $$;
+
+-- E. Replication waits for a company being purged (the purge holds the company row FOR UPDATE), so it never copies an
+-- object of a company that is going.
+do $$
+begin
+	perform dblink_exec('auth_one', 'begin');
+	perform * from dblink('auth_one', $q$select 1 from public.qorpera_profiles where id = '63500000-0000-4000-8000-000000000010' for update$q$)
+		as t(r integer);
+	perform dblink_send_query('auth_two', format('select public.qorpera_authorize_profile_object_replication(%L, %L, 14)',
+		'63500000-0000-4000-8000-000000000010', pg_temp.hash('race chunk two')));
+	if not pg_temp.waits_for('auth_two', 'auth_one') then raise exception 'Replication waits for the purge'; end if;
+	perform dblink_exec('auth_one', 'rollback');
+	if pg_temp.outcome('auth_two') <> 'ok' then raise exception 'Replication goes on once the company stays'; end if;
+end $$;
+
+-- F. Races with nothing to wait for: a commit of a file whose seal is still in flight finds no proof and refuses it,
+-- without waiting; an open during a stop that has not committed goes ahead, and the next put after the stop refuses.
+do $$
+declare
+	v jsonb := pg_temp.actor('run_one'); r jsonb; v_manifest text := pg_temp.manifest(array['held by seal']); v_open jsonb;
+begin
+	perform dblink_exec('auth_one', 'begin');
+	perform * from dblink('auth_one', format('select public.qorpera_folder_seal_upload(%L, %L, %L)', '63500000-0000-4000-8000-000000000020',
+		v::text, current_setting('qorpera_test.open_d2')::jsonb ->> 'intentId')) as t(r jsonb);
+	perform dblink_send_query('auth_two', pg_temp.sql_commit(v, 'bytes-race-seal', jsonb_build_array(jsonb_build_object('op','write',
+		'path','shared/sealing.txt','file',jsonb_build_object('manifestSha256', pg_temp.hash(v_manifest),
+			'fileSha256', pg_temp.hash('held by seal'), 'bytes', 12, 'mediaType', 'text/plain', 'executable', false)))));
+	if not pg_temp.finishes_unblocked('auth_two', 'auth_one') then raise exception 'A commit waited for a seal'; end if;
+	r := pg_temp.result('auth_two');
+	if r -> 'units' -> 0 ->> 'reason' is distinct from 'bytes_unverified' then raise exception 'No proof yet: %', r; end if;
+	perform dblink_exec('auth_one', 'rollback');
+
+	perform dblink_exec('auth_one', 'begin');
+	perform dblink_exec('auth_one', $q$insert into public.qorpera_company_execution_pauses(profile_id, reason, paused_by_user_id)
+		values ('63500000-0000-4000-8000-000000000010', 'race', '63500000-0000-4000-8000-000000000001')$q$);
+	perform dblink_send_query('auth_two', format('select public.qorpera_folder_open_upload(%L, %L, %L)',
+		'63500000-0000-4000-8000-000000000020', pg_temp.member(1)::text, pg_temp.manifest(array['during stop'])));
+	if not pg_temp.finishes_unblocked('auth_two', 'auth_one') then raise exception 'An open waited for a stop'; end if;
+	v_open := pg_temp.result('auth_two');
+	perform dblink_exec('auth_one', 'commit');
+	begin
+		perform public.qorpera_folder_authorize_object_upload('63500000-0000-4000-8000-000000000020', pg_temp.member(1),
+			(v_open ->> 'intentId')::uuid, pg_temp.hash('during stop'), 11);
+		raise exception 'The put after the stop is refused';
+	exception when object_not_in_prerequisite_state then null;
+	end;
+	delete from public.qorpera_company_execution_pauses where profile_id = '63500000-0000-4000-8000-000000000010';
+end $$;
+
 select dblink_disconnect(name) from unnest(array['auth_one','auth_two','auth_three']) name;
 
 -- The committed fixture leaves the shared suite database.
 set session_replication_role = replica;
+-- (Foreign-key cascades do not run under replica: each table of C1d is cleared by name. The catalog and 635's Storage
+-- rows stay, as after 635, so the fixture can run again; the replica row B wrote goes.)
 delete from public.qorpera_folder_file_chunks where profile_id = '63500000-0000-4000-8000-000000000010';
+delete from public.qorpera_folder_upload_intent_objects where profile_id = '63500000-0000-4000-8000-000000000010';
 delete from public.qorpera_folder_upload_intents where profile_id = '63500000-0000-4000-8000-000000000010';
 delete from public.qorpera_folder_storage_usage where profile_id = '63500000-0000-4000-8000-000000000010';
-delete from public.qorpera_verified_company_file_objects where profile_id = '63500000-0000-4000-8000-000000000010';
-delete from public.qorpera_profile_objects where profile_id = '63500000-0000-4000-8000-000000000010';
+delete from storage.objects where bucket_id = 'qorpera-profile-objects'
+	and name = '63500000-0000-4000-8000-000000000010/' || encode(extensions.digest('race chunk two', 'sha256'), 'hex');
 delete from public.qorpera_folder_authority_changes where environment_id = '63500000-0000-4000-8000-000000000020';
 delete from public.qorpera_folder_run_reads where environment_id = '63500000-0000-4000-8000-000000000020';
 delete from public.qorpera_folder_run_read_records where environment_id = '63500000-0000-4000-8000-000000000020';
@@ -152,6 +252,8 @@ do $$
 begin
 	if exists (select 1 from public.qorpera_company_files where environment_id = '63500000-0000-4000-8000-000000000020')
 		or exists (select 1 from public.qorpera_folder_upload_intents where profile_id = '63500000-0000-4000-8000-000000000010')
-		or exists (select 1 from public.qorpera_profile_objects where profile_id = '63500000-0000-4000-8000-000000000010') then
+		or exists (select 1 from public.qorpera_folder_upload_intent_objects where profile_id = '63500000-0000-4000-8000-000000000010')
+		or exists (select 1 from public.qorpera_folder_file_chunks where profile_id = '63500000-0000-4000-8000-000000000010')
+		or exists (select 1 from public.qorpera_folder_storage_usage where profile_id = '63500000-0000-4000-8000-000000000010') then
 		raise exception 'The race fixture must be removed'; end if;
 end $$;
