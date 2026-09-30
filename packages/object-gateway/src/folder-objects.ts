@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { boundedObjectOperation, ObjectDependencyError } from "./dependency.ts";
-import { assertNativeToken, nativeBinding } from "./native-objects.ts";
+import { assertNativeToken, nativeBinding, UUID } from "./native-objects.ts";
 import type { FileSystemObjectStore } from "./object-store.ts";
 import type { ObjectGatewayReplication } from "./replication.ts";
 
@@ -41,7 +41,6 @@ export interface FolderObjectAuthority {
 	readLegacyObject(companyId: string, sha256: string): Promise<Uint8Array>;
 }
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const MAX_BYTES = 8 * 1024 * 1024;
 
 /**

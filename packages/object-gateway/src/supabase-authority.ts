@@ -396,7 +396,7 @@ export class SupabaseObjectAuthority
 			typeof receipt !== "object" ||
 			receipt.schema !== "qorpera.folder-object-upload/v1" ||
 			typeof receipt.profileId !== "string" ||
-			!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(receipt.profileId)
+			!UUID_PATTERN.test(receipt.profileId)
 		)
 			throw new ObjectDependencyError(403);
 		return { profileId: receipt.profileId };
@@ -436,7 +436,7 @@ export class SupabaseObjectAuthority
 			!value ||
 			value.schema !== "qorpera.folder-object-download/v1" ||
 			typeof value.profileId !== "string" ||
-			!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(value.profileId) ||
+			!UUID_PATTERN.test(value.profileId) ||
 			!Number.isSafeInteger(value.bytes) ||
 			(value.bytes as number) < 0 ||
 			(value.bytes as number) > 8 * 1024 * 1024

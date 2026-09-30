@@ -1,5 +1,5 @@
-import { createHash } from "node:crypto";
 import type { CloudFileReference } from "@qorpera/cloud-client/node/cloud-object-store";
+import { isUuid, parseClosedRecord, SHA256_HEX_PATTERN } from "@qorpera/contracts";
 import {
 	type CloudCompanyFolderBytes,
 	CloudCompanyFolderError,
@@ -7,6 +7,7 @@ import {
 	type CloudCompanyFolderRunActor,
 	cloudCompanyFolderFailure,
 	cloudCompanyFolderRunActor,
+	sha256,
 } from "./cloud-company-folder-client.ts";
 import type { CloudCompanyPathControl, CloudCompanyPathRpc } from "./cloud-company-path-gateway.ts";
 import {
@@ -25,8 +26,6 @@ import { CloudRuntimeDiagnosticError } from "./cloud-runtime-observability.ts";
  * staging publishes nothing: the commit does. Nothing constructs it until the thin writers do.
  */
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-const SHA = /^[0-9a-f]{64}$/;
 /** A chunk and the manifest's bound (C1D §2): 64 chunks of 4 MiB. */
 const CHUNK_BYTES = 4 * 1024 * 1024;
 const MAX_CHUNKS = 64;
@@ -47,10 +46,6 @@ interface Manifest {
 	readonly chunks: readonly { readonly sha256: string; readonly bytes: number }[];
 }
 
-function sha256(bytes: Uint8Array): string {
-	return createHash("sha256").update(bytes).digest("hex");
-}
-
 /** The gateway answered 503: busy or cut off from its database for a moment. */
 class GatewayBusyError extends CloudRuntimeDiagnosticError {
 	constructor() {
@@ -62,16 +57,13 @@ function invalid(): never {
 	throw new CloudRuntimeDiagnosticError("invalid_response", "Company folder response is invalid");
 }
 
-function record(value: unknown, keys: readonly string[]): Record<string, unknown> {
-	if (
-		!value ||
-		typeof value !== "object" ||
-		Array.isArray(value) ||
-		Object.keys(value).length !== keys.length ||
-		keys.some((key) => !Object.hasOwn(value, key))
-	)
+/** An answer with exactly these fields (the shared closed-record check), or an invalid response. */
+function answer(value: unknown, keys: readonly string[]): Record<string, unknown> {
+	try {
+		return parseClosedRecord(value, "Company folder answer", keys);
+	} catch {
 		invalid();
-	return value as Record<string, unknown>;
+	}
 }
 
 /** The canonical version-2 manifest of a file: keys in this order, no spaces, so the same file, media type and bit
@@ -126,7 +118,7 @@ export class HttpCloudCompanyFolderBytes implements CloudCompanyFolderBytes {
 			url.hash ||
 			url.pathname !== "/" ||
 			!/^[A-Za-z0-9_-]{43}$/.test(options.token) ||
-			!UUID.test(options.identity.environmentId) ||
+			!isUuid(options.identity.environmentId) ||
 			binding.runId !== options.identity.runId ||
 			binding.jobId !== options.identity.jobId
 		)
@@ -169,7 +161,7 @@ export class HttpCloudCompanyFolderBytes implements CloudCompanyFolderBytes {
 		const { manifest, text } = manifestOf(bytes, mediaType, executable);
 		const manifestBytes = new TextEncoder().encode(text);
 		const manifestSha256 = sha256(manifestBytes);
-		const open = record(await this.#call("qorpera_folder_open_upload", { p_manifest: text }, signal), [
+		const open = answer(await this.#call("qorpera_folder_open_upload", { p_manifest: text }, signal), [
 			"schema",
 			"intentId",
 			"manifestSha256",
@@ -179,11 +171,11 @@ export class HttpCloudCompanyFolderBytes implements CloudCompanyFolderBytes {
 		if (
 			open.schema !== "qorpera.folder-upload/v1" ||
 			typeof open.intentId !== "string" ||
-			!UUID.test(open.intentId) ||
+			!isUuid(open.intentId) ||
 			open.manifestSha256 !== manifestSha256 ||
 			typeof open.expiresAt !== "string" ||
 			!Array.isArray(open.present) ||
-			open.present.some((hash) => typeof hash !== "string" || !SHA.test(hash))
+			open.present.some((hash) => typeof hash !== "string" || !SHA256_HEX_PATTERN.test(hash))
 		)
 			invalid();
 		const intentId = open.intentId;
@@ -199,7 +191,7 @@ export class HttpCloudCompanyFolderBytes implements CloudCompanyFolderBytes {
 				const object = objects.get(hash);
 				if (!object) invalid();
 				if (this.#now() - renewed >= RENEW_AFTER_MS) {
-					const renew = record(await this.#call("qorpera_folder_renew_upload", { p_intent: intentId }, signal), [
+					const renew = answer(await this.#call("qorpera_folder_renew_upload", { p_intent: intentId }, signal), [
 						"schema",
 						"intentId",
 						"state",
@@ -250,19 +242,19 @@ export class HttpCloudCompanyFolderBytes implements CloudCompanyFolderBytes {
 		const value = await this.#call("qorpera_folder_seal_upload", { p_intent: intentId }, signal);
 		const state = (value as { state?: unknown } | null)?.state;
 		if (state === "incomplete") {
-			const input = record(value, ["schema", "state", "intentId", "missing"]);
+			const input = answer(value, ["schema", "state", "intentId", "missing"]);
 			if (
 				input.schema !== "qorpera.folder-seal/v1" ||
 				input.intentId !== intentId ||
 				!Array.isArray(input.missing) ||
 				input.missing.length < 1 ||
-				input.missing.some((hash) => typeof hash !== "string" || !SHA.test(hash))
+				input.missing.some((hash) => typeof hash !== "string" || !SHA256_HEX_PATTERN.test(hash))
 			)
 				invalid();
 			return { state: "incomplete", missing: input.missing as string[] };
 		}
-		const input = record(value, ["schema", "state", "intentId", "file"]);
-		const file = record(input.file, ["manifestSha256", "fileSha256", "bytes", "mediaType", "executable"]);
+		const input = answer(value, ["schema", "state", "intentId", "file"]);
+		const file = answer(input.file, ["manifestSha256", "fileSha256", "bytes", "mediaType", "executable"]);
 		if (
 			input.schema !== "qorpera.folder-seal/v1" ||
 			input.state !== "sealed" ||
@@ -298,7 +290,7 @@ export class HttpCloudCompanyFolderBytes implements CloudCompanyFolderBytes {
 		} catch {
 			invalid();
 		}
-		const input = record(receipt, ["status", "sha256", "bytes", "replication"]);
+		const input = answer(receipt, ["status", "sha256", "bytes", "replication"]);
 		if (
 			input.sha256 !== hash ||
 			input.bytes !== object.byteLength ||
@@ -317,7 +309,7 @@ export class HttpCloudCompanyFolderBytes implements CloudCompanyFolderBytes {
 		} catch {
 			invalid();
 		}
-		const input = record(manifest, ["schema", "fileSha256", "bytes", "mediaType", "executable", "chunks"]);
+		const input = answer(manifest, ["schema", "fileSha256", "bytes", "mediaType", "executable", "chunks"]);
 		if (
 			input.schema !== "qorpera.cloud-file-manifest/v2" ||
 			input.fileSha256 !== file.fileSha256 ||
@@ -331,10 +323,10 @@ export class HttpCloudCompanyFolderBytes implements CloudCompanyFolderBytes {
 		// Every chunk is checked, and their sizes must add up to the file's, before anything is fetched; the file is then
 		// read into one buffer of its size.
 		const chunks = (input.chunks as unknown[]).map((value) => {
-			const chunk = record(value, ["sha256", "bytes"]);
+			const chunk = answer(value, ["sha256", "bytes"]);
 			if (
 				typeof chunk.sha256 !== "string" ||
-				!SHA.test(chunk.sha256) ||
+				!SHA256_HEX_PATTERN.test(chunk.sha256) ||
 				!Number.isSafeInteger(chunk.bytes) ||
 				(chunk.bytes as number) < 1 ||
 				(chunk.bytes as number) > CHUNK_BYTES
@@ -358,7 +350,7 @@ export class HttpCloudCompanyFolderBytes implements CloudCompanyFolderBytes {
 	}
 
 	async #fetchObject(hash: string, maximum: number, signal: AbortSignal): Promise<Uint8Array> {
-		if (!SHA.test(hash)) invalid();
+		if (!SHA256_HEX_PATTERN.test(hash)) invalid();
 		const { status, body } = await this.#requestUnlessBusy(hash, { method: "GET" }, maximum, signal);
 		if (status !== 200 || sha256(body) !== hash)
 			throw new CloudRuntimeDiagnosticError("invalid_response", "Company folder object failed its check");
