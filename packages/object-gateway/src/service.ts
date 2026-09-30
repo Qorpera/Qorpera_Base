@@ -1,6 +1,7 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, RequestListener, ServerResponse } from "node:http";
 import { boundedObjectOperation, ObjectDependencyError, type ObjectDependencyHealth } from "./dependency.ts";
+import { serveFolderObject } from "./folder-objects.ts";
 import type { MemberCompanyAuthority } from "./member-company-authority.ts";
 import { serveMemberCompanyFile } from "./member-company-file.ts";
 import { type MemberCompanyObjectAuthority, serveMemberCompanyObject } from "./member-company-objects.ts";
@@ -286,6 +287,17 @@ export function createObjectGatewayHandler(options: ObjectGatewayServiceOptions)
 				) {
 					if (!options.memberObjects) throw new HttpError(404, "Not found");
 					await serveMemberCompanyObject(request, response, options.memberObjects, options.store, observation);
+					return;
+				}
+				if (request.url?.startsWith("/v1/folder-objects/")) {
+					if (!options.nativeObjects?.folder || !options.replication) throw new HttpError(404, "Not found");
+					await serveFolderObject(
+						request,
+						response,
+						{ token: options.nativeObjects.token, authority: options.nativeObjects.folder },
+						options.store,
+						options.replication,
+					);
 					return;
 				}
 				if (request.url?.startsWith("/v1/native-company-objects/")) {
