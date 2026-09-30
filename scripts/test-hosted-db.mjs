@@ -1,15 +1,16 @@
-import { spawnSync } from "node:child_process";
-import { randomBytes } from "node:crypto";
-import { readFileSync, readdirSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { closeSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { performance } from "node:perf_hooks";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { HostedDbCluster, migrationNames, newestBundleActivation, sessionPerFile } from "./test-hosted-db-cluster.mjs";
 
 export const POSTGRES_IMAGE =
 	"docker.io/library/postgres:17.6-alpine3.22@sha256:ef257d85f76e48da1c64832459b59fcaba1a4dac97bf5d7450c77753542eee94";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const databaseName = "qorpera_test";
-const databasePassword = "qorpera-test-only";
 
 export function sortMigrationNames(names) {
 	const migrations = names.filter((name) => /^\d{14}_[a-z0-9_]+\.sql$/.test(name)).sort();
@@ -46,128 +47,131 @@ export function buildContainerName(pid, suffix) {
 	return `qorpera-hosted-db-${pid}-${suffix}`;
 }
 
-function run(command, args, options = {}) {
-	const result = spawnSync(command, args, {
-		cwd: repositoryRoot,
-		encoding: "utf-8",
-		maxBuffer: 16 * 1024 * 1024,
-		...options,
+/** The PostgreSQL scripts the hosted-db step runs with the SQL tests (`--scripts`), each against its own
+ * database: in this run's PostgreSQL after the SQL tests, or in one of its own (OWN_SERVER_SCRIPTS). */
+export const HOSTED_DB_SCRIPTS = [
+	"scripts/test-runtime-bundle-activation.mjs",
+	"scripts/test-email-draft-e2e.mjs",
+	"scripts/test-runtime-node-capacity.mjs",
+	"scripts/test-runtime-office-delete-disposition.mjs",
+	"scripts/test-runtime-office-current-provider-activation.mjs",
+	"scripts/test-coding-turn-backfill.mjs",
+	"scripts/test-runtime-room-history.mjs",
+];
+
+/** Scripts that keep a PostgreSQL of their own (they restart the server or alter the cluster-wide postgres
+ * role). The suite starts them first and lets them run beside the SQL tests; a script missing here only
+ * runs later, in turn. */
+const OWN_SERVER_SCRIPTS = new Set(["scripts/test-runtime-node-capacity.mjs", "scripts/test-runtime-office-delete-disposition.mjs"]);
+
+/** Where those scripts start in the migration chain; the one replay leaves a copy at each. A point missing
+ * here costs time only: the script copies the nearest earlier snapshot and replays the gap. */
+function scriptStartPoints(names) {
+	return [
+		"20260913000400_runtime_room_history.sql", // test-runtime-room-history
+		"20260925113000_runtime_coding_turn_continuity.sql", // test-coding-turn-backfill
+		"20260926034000_runtime_bundle_activation_v128.sql", // test-runtime-bundle-activation
+		newestBundleActivation(names), // test-runtime-office-delete-disposition holds it back
+	].filter((name) => names.includes(name));
+}
+
+const seconds = (since) => `${((performance.now() - since) / 1000).toFixed(1)} s`;
+
+/** Starts `script` with its output going to a file (nothing to drain while this process blocks on psql);
+ * the promise settles with its exit, output and time once it ends. The exit is seen only when this process
+ * next waits, so the time is taken from the output's last write. */
+function startInBackground(script) {
+	const output = mkdtempSync(join(tmpdir(), "qorpera-hosted-db-script-"));
+	const file = join(output, "output.log");
+	const descriptor = openSync(file, "w");
+	const started = Date.now();
+	const child = spawn(process.execPath, [script], { cwd: repositoryRoot, stdio: ["ignore", descriptor, descriptor] });
+	closeSync(descriptor);
+	return new Promise((resolveExit) => {
+		child.on("error", (error) => resolveExit({ code: null, signal: String(error.message), output: "", time: "0 s" }));
+		child.on("exit", (code, signal) => {
+			const text = readFileSync(file, "utf-8");
+			const time = `about ${((statSync(file).mtimeMs - started) / 1000).toFixed(1)} s`;
+			rmSync(output, { recursive: true, force: true });
+			resolveExit({ code, signal, output: text, time });
+		});
 	});
-	if (result.error) {
-		throw result.error;
-	}
-	if (result.status !== 0) {
-		const detail = [result.stdout, result.stderr].filter(Boolean).join("\n").trim();
-		throw new Error(`${command} ${args.join(" ")} failed${detail ? `:\n${detail}` : ""}`);
-	}
-	return result.stdout.trim();
 }
 
-function runPsql(containerName, sql) {
-	return run(
-		"docker",
-		[
-			"exec",
-			"--interactive",
-			containerName,
-			"psql",
-			"--username",
-			"postgres",
-			"--dbname",
-			databaseName,
-			"--no-psqlrc",
-			"--set",
-			"ON_ERROR_STOP=1",
-		],
-		{ input: sql },
+function report(failed, script, code, signal, time) {
+	if (code !== 0) failed.push(script);
+	process.stdout.write(`== hosted-db: ${script} ${code === 0 ? "passed" : `FAILED (exit ${code ?? signal})`} in ${time}\n`);
+}
+
+/** Runs the SQL tests in order, each in a fresh session of one psql process, on `database`. Stops at the
+ * first failure, as one psql run per test did. */
+function runSqlTests(cluster, database, tests) {
+	const testsRoot = join(repositoryRoot, "supabase", "tests");
+	const files = cluster.copyIn(
+		Object.fromEntries(tests.map((test) => [test, expandTestFixture(test, (name) => readFileSync(join(testsRoot, name), "utf-8"))])),
 	);
-}
-
-async function waitForPostgres(containerName) {
-	let consecutiveReadyChecks = 0;
-	for (let attempt = 0; attempt < 60; attempt += 1) {
-		const result = spawnSync(
-			"docker",
-			[
-				"exec",
-				containerName,
-				"pg_isready",
-				"--username",
-				"postgres",
-				"--dbname",
-				databaseName,
-			],
-			{ cwd: repositoryRoot, encoding: "utf-8" },
-		);
-		if (result.status === 0) {
-			consecutiveReadyChecks += 1;
-			if (consecutiveReadyChecks === 2) {
-				return;
-			}
-		} else {
-			consecutiveReadyChecks = 0;
-		}
-		await new Promise((resolveDelay) => setTimeout(resolveDelay, 500));
-	}
-	throw new Error("Disposable PostgreSQL did not become ready within 30 seconds");
+	cluster.script(database, tests.map((test) => `\\echo Running ${test}\n${sessionPerFile(database, [files[test]])}`).join(""), {
+		progress: true,
+	});
 }
 
 async function main() {
-	run("docker", ["info", "--format", "{{.ServerVersion}}"]);
-	const containerName = buildContainerName(process.pid, randomBytes(4).toString("hex"));
-	let started = false;
+	const args = process.argv.slice(2);
+	if (args.some((arg) => arg !== "--scripts")) throw new Error("Usage: node scripts/test-hosted-db.mjs [--scripts]");
+	const withScripts = args.includes("--scripts");
+	const testsRoot = join(repositoryRoot, "supabase", "tests");
+	const tests = readdirSync(testsRoot)
+		.filter((name) => name.endsWith(".test.sql"))
+		.sort();
+	if (tests.length === 0) {
+		throw new Error("No hosted database regression tests were found");
+	}
+	const started = performance.now();
+	const background = withScripts
+		? HOSTED_DB_SCRIPTS.filter((script) => OWN_SERVER_SCRIPTS.has(script)).map((script) => [script, startInBackground(script)])
+		: [];
+	const failed = [];
+	let cluster;
 	try {
-		run("docker", [
-			"run",
-			"--detach",
-			"--rm",
-			"--name",
-			containerName,
-			"--env",
-			`POSTGRES_PASSWORD=${databasePassword}`,
-			"--env",
-			`POSTGRES_DB=${databaseName}`,
-			"--tmpfs",
-			"/var/lib/postgresql/data:rw,noexec,nosuid,size=1g",
-			POSTGRES_IMAGE,
-		]);
-		started = true;
-		await waitForPostgres(containerName);
+		cluster = await HostedDbCluster.start();
+		process.stdout.write(`Started ${cluster.container} in ${seconds(started)}\n`);
+		const building = performance.now();
+		const names = migrationNames();
+		const migrations = cluster.build({ snapshotBefore: withScripts ? scriptStartPoints(names) : [] });
+		process.stdout.write(`Applied the test bootstrap and ${migrations} migrations in ${seconds(building)}\n`);
 
-		const bootstrapPath = join(repositoryRoot, "supabase", "tests", "bootstrap.sql");
-		process.stdout.write("Applying disposable Supabase fixture\n");
-		runPsql(containerName, readFileSync(bootstrapPath, "utf-8"));
+		const testing = performance.now();
+		cluster.create(databaseName);
+		try {
+			runSqlTests(cluster, databaseName, tests);
+			process.stdout.write(`Hosted database checks passed (${migrations} migrations, ${tests.length} tests) in ${seconds(testing)}\n`);
+		} catch (error) {
+			process.stdout.write(`${error.message}\n`);
+			failed.push("SQL tests");
+		}
+		cluster.drop(databaseName);
 
-		const migrationsRoot = join(repositoryRoot, "supabase", "migrations");
-		const migrations = sortMigrationNames(readdirSync(migrationsRoot));
-		if (migrations.length === 0) {
-			throw new Error("No hosted database migrations were found");
-		}
-		for (const migration of migrations) {
-			process.stdout.write(`Applying ${migration}\n`);
-			runPsql(containerName, readFileSync(join(migrationsRoot, migration), "utf-8"));
-		}
-
-		const testsRoot = join(repositoryRoot, "supabase", "tests");
-		const tests = readdirSync(testsRoot)
-			.filter((name) => name.endsWith(".test.sql"))
-			.sort();
-		if (tests.length === 0) {
-			throw new Error("No hosted database regression tests were found");
-		}
-		for (const test of tests) {
-			process.stdout.write(`Running ${test}\n`);
-			runPsql(containerName, expandTestFixture(test, (name) => readFileSync(join(testsRoot, name), "utf-8")));
-		}
-		process.stdout.write(`Hosted database checks passed (${migrations.length} migrations, ${tests.length} tests)\n`);
+		if (withScripts)
+			for (const script of HOSTED_DB_SCRIPTS.filter((name) => !OWN_SERVER_SCRIPTS.has(name))) {
+				const scriptStarted = performance.now();
+				process.stdout.write(`== hosted-db: ${script}\n`);
+				const result = spawnSync(process.execPath, [script], {
+					cwd: repositoryRoot,
+					stdio: "inherit",
+					env: { ...process.env, ...cluster.environment() },
+				});
+				report(failed, script, result.status, result.signal, seconds(scriptStarted));
+			}
 	} finally {
-		if (started) {
-			spawnSync("docker", ["rm", "--force", containerName], {
-				cwd: repositoryRoot,
-				encoding: "utf-8",
-			});
+		cluster?.stop();
+		for (const [script, exited] of background) {
+			const { code, signal, output, time } = await exited;
+			process.stdout.write(`== hosted-db: ${script} (ran beside the SQL tests)\n${output}`);
+			report(failed, script, code, signal, time);
 		}
 	}
+	process.stdout.write(`== hosted-db: ${failed.length ? `failed: ${failed.join(", ")}` : "all passed"} in ${seconds(started)}\n`);
+	if (failed.length) process.exitCode = 1;
 }
 
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {

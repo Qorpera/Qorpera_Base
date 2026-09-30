@@ -1,5 +1,5 @@
 -- @fixture 371_runtime_finite_routine_last_run.test.sql until "-- A one-time routine: its only occurrence"
--- Event wakes, step W2a (20260929290000): an agent's routine listens to a hook; verified
+-- Event wakes, step W2a (20260928269290): an agent's routine listens to a hook; verified
 -- deliveries wake it once per burst through the real boundaries (the routine tool, the drain in
 -- the materializer, admission, a runner lease and the wake reader); the run reads a whole event;
 -- the batch fits the wake whatever the bodies; failed wakes back off and give up; pauses, filters,

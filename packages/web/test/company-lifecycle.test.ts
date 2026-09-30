@@ -721,6 +721,8 @@ describe("conversation lifecycle regressions", () => {
 		vi.mocked(api.readSessionEvents).mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
 		const load = controller.loadConversation(session.sessionId);
 		const reload = controller.loadConversation(session.sessionId);
+		// This cloud has no newest-first read: the first load reads forward once it has said so.
+		await settle();
 		expect(api.readSessionEvents).toHaveBeenCalledTimes(1);
 		first.resolve([event(1)]);
 		await settle();
@@ -762,7 +764,8 @@ describe("conversation lifecycle regressions", () => {
 		const drawn: number[] = [];
 		store.subscribe((state) => drawn.push(state.projection.items.length));
 		const load = controller.loadConversation(session.sessionId);
-		// None of the three waits for another.
+		// None of the three waits for another (the forward read once the newest-first read is known missing).
+		await settle();
 		expect(api.readSessionEvents).toHaveBeenCalledTimes(1);
 		expect(api.listSessionInputs).toHaveBeenCalledTimes(1);
 		expect(api.listCodingSessions).toHaveBeenCalledTimes(1);
@@ -807,6 +810,8 @@ describe("conversation lifecycle regressions", () => {
 		vi.mocked(api.listSessionInputs).mockReturnValueOnce(inputs.promise);
 		const store = controller.conversation(session.sessionId, false);
 		const load = controller.loadConversation(session.sessionId);
+		// Both reads are on their way when the membership goes.
+		await settle();
 		vi.mocked(api.getTeam).mockRejectedValue(new CloudRpcError("team", { code: "42501", message: "revoked" }, 403));
 		await controller.refreshTeam();
 		// Both would ask for another page.

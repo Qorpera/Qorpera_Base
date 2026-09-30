@@ -270,7 +270,8 @@ export interface CloudRunnerOrchestratorLoopOptions {
 	/**
 	 * How often it renews control, runs the occurrence reconcilers, reconciles
 	 * expired claims and the provider, and re-reads its retained claims. These
-	 * are several round trips; asking for new work does not wait for them.
+	 * are several round trips in a lane of their own; asking for new work does
+	 * not wait for them, only for the latest pass to have succeeded.
 	 */
 	reconcileIntervalMs?: number;
 	shutdownGraceMs?: number;
@@ -1319,6 +1320,35 @@ export class CloudRoutineScheduleReconciler implements CloudRunnerOccurrenceReco
 	}
 }
 
+/** A poll wait that an event can end early. A wake while no wait runs ends the next one at once. */
+class PollTimer {
+	#wake?: () => void;
+	#woken = false;
+
+	wait(delayMs: number, signal: AbortSignal): Promise<void> {
+		if (this.#woken || signal.aborted) {
+			this.#woken = false;
+			return Promise.resolve();
+		}
+		return new Promise((resolveWait) => {
+			const done = (): void => {
+				clearTimeout(timer);
+				signal.removeEventListener("abort", done);
+				this.#wake = undefined;
+				resolveWait();
+			};
+			const timer = setTimeout(done, delayMs);
+			signal.addEventListener("abort", done, { once: true });
+			this.#wake = done;
+		});
+	}
+
+	wake(): void {
+		if (this.#wake) this.#wake();
+		else this.#woken = true;
+	}
+}
+
 function waitForPoll(delayMs: number, signal: AbortSignal): Promise<void> {
 	if (signal.aborted) return Promise.resolve();
 	return new Promise((resolveWait) => {
@@ -1831,28 +1861,53 @@ export class CloudRunnerOrchestrator {
 		}
 		const inFlight = new Set<Promise<void>>();
 		const inFlightClaimIds = new Set<string>();
-		let nextReconcileAt = 0;
-		// Set by a failed dispatch: reconcile on the next poll rather than after the interval.
-		let reconcileNow = false;
-		// Retained claims are re-read after each successful reconcile, as soon as the
-		// loop has capacity for them, and keep that priority until the read succeeds.
-		let retainedDue = false;
+		// Reconcile runs in its own lane: renewing control, the occurrence reconcilers, expired claims and
+		// the provider's reconcile, then again every reconcileIntervalMs. Asking for new work never waits
+		// for a pass (a provider's pass can wait on a machine it is starting). New work is asked for only
+		// while the latest finished pass succeeded: a failed pass is reported, retried after one poll
+		// interval and holds claims until one succeeds.
+		const reconcile = {
+			/** Passes started, numbered from 1. */
+			started: 0,
+			/** The latest pass that succeeded. */
+			succeeded: 0,
+			/** The latest finished pass failed. */
+			failed: false,
+			/** Claims wait for a successful pass numbered at least this: the first one, and after a failed
+			 * dispatch, which can leave a finished sandbox or a retained claim behind, the next to start. */
+			required: 1,
+			/** Retained claims are re-read after each successful pass, as soon as the loop has capacity
+			 * for them, and keep that priority until the read succeeds. */
+			retainedRead: 0,
+		};
+		const reconcileTimer = new PollTimer();
+		const claimTimer = new PollTimer();
+		const reconcileLane = (async (): Promise<void> => {
+			while (!signal.aborted) {
+				const pass = ++reconcile.started;
+				let delayMs = reconcileIntervalMs;
+				try {
+					const reconciliationErrors = await this.#reconcileControlPlane(signal);
+					reconcile.succeeded = pass;
+					reconcile.failed = false;
+					claimTimer.wake();
+					for (const error of reconciliationErrors) options.onError?.(error);
+				} catch (error) {
+					reconcile.failed = true;
+					delayMs = pollIntervalMs;
+					options.onError?.(error);
+				}
+				await reconcileTimer.wait(delayMs, signal);
+			}
+		})();
 		while (!signal.aborted) {
 			try {
-				// A failed reconcile still blocks claims and is retried on the next poll;
-				// only a successful one waits for its interval.
-				if (reconcileNow || performance.now() >= nextReconcileAt) {
-					reconcileNow = false;
-					nextReconcileAt = 0;
-					const reconciliationErrors = await this.#reconcileControlPlane(signal);
-					nextReconcileAt = performance.now() + reconcileIntervalMs;
-					retainedDue = true;
-					for (const error of reconciliationErrors) options.onError?.(error);
-				}
 				const available = this.#dispatchConcurrency - inFlight.size;
-				if (available > 0) {
-					const claims = await this.#claimBatch(available, signal, inFlightClaimIds, retainedDue);
-					retainedDue = false;
+				if (available > 0 && !reconcile.failed && reconcile.succeeded >= reconcile.required) {
+					const reconciled = reconcile.succeeded;
+					const includeRetained = reconciled > reconcile.retainedRead;
+					const claims = await this.#claimBatch(available, signal, inFlightClaimIds, includeRetained);
+					if (includeRetained) reconcile.retainedRead = Math.max(reconcile.retainedRead, reconciled);
 					for (const claim of claims) {
 						if (inFlightClaimIds.has(claim.claimId)) continue;
 						inFlightClaimIds.add(claim.claimId);
@@ -1861,8 +1916,9 @@ export class CloudRunnerOrchestrator {
 							.then(() => undefined)
 							.catch((error: unknown) => {
 								// A failed dispatch can leave a finished sandbox or a retained claim
-								// behind: reconcile on the next poll rather than after the interval.
-								reconcileNow = true;
+								// behind: reconcile at once, and claim again after that pass.
+								reconcile.required = reconcile.started + 1;
+								reconcileTimer.wake();
 								options.onError?.(error);
 							})
 							.finally(() => {
@@ -1875,18 +1931,16 @@ export class CloudRunnerOrchestrator {
 			} catch (error) {
 				options.onError?.(error);
 			}
-			if (!signal.aborted) await waitForPoll(pollIntervalMs, signal);
+			if (!signal.aborted) await claimTimer.wait(pollIntervalMs, signal);
 		}
-		if (inFlight.size > 0) {
-			let timer: NodeJS.Timeout | undefined;
-			await Promise.race([
-				Promise.allSettled([...inFlight]),
-				new Promise<void>((resolveWait) => {
-					timer = setTimeout(resolveWait, shutdownGraceMs);
-				}),
-			]);
-			if (timer) clearTimeout(timer);
-		}
+		let timer: NodeJS.Timeout | undefined;
+		await Promise.race([
+			Promise.allSettled([...inFlight, reconcileLane]),
+			new Promise<void>((resolveWait) => {
+				timer = setTimeout(resolveWait, shutdownGraceMs);
+			}),
+		]);
+		if (timer) clearTimeout(timer);
 	}
 }
 

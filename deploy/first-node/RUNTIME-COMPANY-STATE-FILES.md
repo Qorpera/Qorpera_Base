@@ -675,7 +675,7 @@ of the body, for readers that should not reach the storage server.
 | rules (reviewer) | rule rows | the rule index, with the versions read; personal rules unchanged |
 | connections | vault rows and grants | the same, plus the purpose copy |
 
-**Built (F2-1b, migration 20260929440000):**
+**Built (F2-1b, migration 20260928269440):**
 - Part A. `qorpera_company_state_run_folder(env, agent, coworkers)` gives the folder names of a
   `folder-v2` run's agent and of the coworkers its context lists (null for a `snapshot-v1` company
   or an agent without a folder). Core C1c-2's `folder-v2` body of `qorpera_describe_company_run_context`
@@ -829,7 +829,7 @@ claims by kind then key (F2). All nine come before paths, objects, admission and
 
    **F2-1b** follows: the follow-ups on C2's queue, the context composer reading the vision and
    `agent.md`, and the agent-folder helper for memory and skills. Part A (migration
-   20260929440000) is the folder names for the context and the helper (§5); part B, in the
+   20260928269440) is the folder names for the context and the helper (§5); part B, in the
    same migration, the routine save's login setup; the thin writers come on core C3's folder
    client, and the reviewed ones after C2's review recorder.
 3. **F2-2** group chats and sections (migration 20260928249100; for new companies it replaces

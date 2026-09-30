@@ -1111,7 +1111,7 @@ export class PostgresCloudSecretBrokerAuthority
 		);
 	}
 
-	/** Company delete D6: this authority's queued connector tokens (20260929500000). */
+	/** Company delete D6: this authority's queued connector tokens (20260928269500). */
 	claimConnectorTokenRevocations(limit: number, signal: AbortSignal): Promise<unknown> {
 		return this.#rpc(
 			"select public.qorpera_claim_connector_token_revocations($1::uuid,$2::text,$3::integer) as result",

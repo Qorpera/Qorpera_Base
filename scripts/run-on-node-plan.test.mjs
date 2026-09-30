@@ -67,6 +67,8 @@ test("deploy, function and SQL-input paths reach the tests that read them", () =
 	const functions = STEPS.find((step) => step.name === "functions").commands.join(" ");
 	assert.match(functions, /company-file-verifier\.test\.ts/);
 	assert.match(functions, /runner-orchestrator\/runner-orchestrator\.test\.ts/);
+	assert.match(functions, /event-intake\/event-intake\.test\.ts/);
+	assert.match(functions, /mail-intake\/mail-intake\.test\.ts/);
 	assert.ok(names(["scripts/test-runtime-node-capacity-cases.mjs"]).includes("hosted-db"));
 	assert.ok(names(["packages/runner-orchestrator/src/lxd-office-start-control.ts"]).includes("hosted-db"));
 	assert.ok(names(["packages/runtime/test/fixtures/coding-turn-context-backfilled.json"]).includes("hosted-db"));
@@ -79,6 +81,7 @@ test("shared configuration and unknown paths run every step", () => {
 		assert.deepEqual(plan.steps.map((step) => step.name), STEPS.map((step) => step.name), file);
 		assert.match(plan.reason, /shared configuration/);
 	}
+	assert.deepEqual(STEPS.find((step) => step.name === "contracts").commands, ["npm test --workspace packages/contracts"]);
 	const unknown = planChanged(["new-top-level/tool.ts"]);
 	assert.equal(unknown.full, true);
 	assert.match(unknown.reason, /no rule knows: new-top-level\/tool\.ts/);

@@ -108,8 +108,9 @@ function setup(
 	};
 	const element = (itemId: string) => log.querySelector<HTMLElement>(`[data-message-id="${itemId}"]`);
 	const card = (itemId: string) => log.querySelector<HTMLElement>(`[data-interaction-id="${itemId}"]`);
+	// The whole thread, in order: a message older than the first one shown stands above the live log.
 	const order = () =>
-		[...log.querySelectorAll<HTMLElement>("[data-message-id]")].map((node) => node.dataset.messageId);
+		[...view.el.querySelectorAll<HTMLElement>(".messages [data-message-id]")].map((node) => node.dataset.messageId);
 	/** What the live log gains and loses while `change` runs: `added` and `removed` are its own
 	 * children (messages, cards, separators); `heard` is the text of anything added deeper. */
 	const mutations = async (change: () => Promise<void>) => {
