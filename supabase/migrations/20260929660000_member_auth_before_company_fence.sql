@@ -5,12 +5,13 @@
 -- hold another company's fence for the length of the call, and by repeating the call make that company's writers,
 -- wakes, runs and cleanup wait.
 --
--- Each now reads the caller's membership first, without a lock, and refuses a caller outside the company before the
--- fence with the error such a caller gets today, so a refusal tells no more than before. Where a computer's scope was
--- checked before membership, that check comes first here too. Everything after the fence stays as it was: the locked
--- membership checks still refuse a member removed while the call waited for the fence, and a member takes the fence as
--- before. Two refusals change, both to the one a caller outside the company already gets: posting to a room that does
--- not exist (was the fence's 'profile is unavailable') and reading recovery for a company that does not exist (same).
+-- Each now reads the caller's membership first, without a lock, and refuses before the fence a caller the function
+-- would refuse for membership (outside the company, or without the role or room membership it asks), with the error
+-- such a caller gets today, so a refusal tells no more than before. Where a computer's scope was checked before
+-- membership, such a caller gets that check first here too. A member passes as before: everything after the fence is
+-- unchanged, and the locked membership checks still refuse a member removed while the call waited for the fence.
+-- Two refusals change, both to the one a caller outside the company already gets: posting to a room that does not
+-- exist (was the fence's 'profile is unavailable') and reading recovery for a company that does not exist (same).
 --
 -- Exact-text patches: each fails unless its function takes the fence once, on the line given.
 
@@ -57,19 +58,22 @@ $check$);
 
 -- A computer's start: its status (members), a start or wake (a caller outside the company got the refusal of the
 -- branch the computer's state picks), a cancellation (owners and admins, while it starts), and withdrawing a wake,
--- which asks no membership: someone outside the company with no wake request on this computer has nothing to withdraw.
+-- which asks no membership: someone outside the company with no wake request of their own on this computer's current
+-- cycle has nothing to withdraw. Only a caller refused here meets the scope checks before the fence; a member's call
+-- runs them under the fence, as before.
 select pg_temp.member_auth_first_patch('public.qorpera_runtime_office_start_status(jsonb)',
 	$fence$	perform public.qorpera_lock_profile_gc_fence(v_office.profile_id);$fence$,
-	$check$	if p_scope is distinct from public.qorpera_runtime_office_scope(v_office) then
-		raise exception 'Office start scope differs' using errcode='42501'; end if;
-	if not exists(select 1 from public.qorpera_profile_members where profile_id=v_office.profile_id and user_id=auth.uid()) then
-		raise exception 'Office start status requires membership' using errcode='42501'; end if;
+	$check$	if not exists(select 1 from public.qorpera_profile_members where profile_id=v_office.profile_id and user_id=auth.uid()) then
+		if p_scope is distinct from public.qorpera_runtime_office_scope(v_office) then
+			raise exception 'Office start scope differs' using errcode='42501'; end if;
+		raise exception 'Office start status requires membership' using errcode='42501';
+	end if;
 $check$);
 select pg_temp.member_auth_first_patch('public.qorpera_request_runtime_office_start(jsonb,bigint,uuid)',
 	$fence$	perform public.qorpera_lock_profile_gc_fence(o.profile_id);$fence$,
-	$check$	if p_scope is distinct from public.qorpera_runtime_office_scope(o) or o.generation is distinct from p_computer_generation then
-		raise exception 'Office start scope differs' using errcode='42501'; end if;
-	if not exists(select 1 from public.qorpera_profile_members where profile_id=o.profile_id and user_id=auth.uid()) then
+	$check$	if not exists(select 1 from public.qorpera_profile_members where profile_id=o.profile_id and user_id=auth.uid()) then
+		if p_scope is distinct from public.qorpera_runtime_office_scope(o) or o.generation is distinct from p_computer_generation then
+			raise exception 'Office start scope differs' using errcode='42501'; end if;
 		if public.qorpera_runtime_office_idle_pending(o) or o.state='active' then
 			raise exception 'Office wake unavailable' using errcode='42501'; end if;
 		raise exception 'Office start requires founder authority' using errcode='42501';
@@ -77,22 +81,25 @@ select pg_temp.member_auth_first_patch('public.qorpera_request_runtime_office_st
 $check$);
 select pg_temp.member_auth_first_patch('public.qorpera_cancel_runtime_office_start(jsonb,bigint,uuid)',
 	$fence$	perform public.qorpera_lock_profile_gc_fence(v_office.profile_id);$fence$,
-	$check$	if p_scope is distinct from public.qorpera_runtime_office_scope(v_office) or v_office.generation<>p_computer_generation
-		or v_office.state not in ('provisioning','recovering') then
-		raise exception 'Office start cancellation differs' using errcode='42501'; end if;
-	if not exists(select 1 from public.qorpera_profile_members where profile_id=v_office.profile_id and user_id=auth.uid()
+	$check$	if not exists(select 1 from public.qorpera_profile_members where profile_id=v_office.profile_id and user_id=auth.uid()
 		and role in ('owner','admin')) then
-		raise exception 'Office start cancellation requires founder authority' using errcode='42501'; end if;
+		if p_scope is distinct from public.qorpera_runtime_office_scope(v_office) or v_office.generation<>p_computer_generation
+			or v_office.state not in ('provisioning','recovering') then
+			raise exception 'Office start cancellation differs' using errcode='42501'; end if;
+		raise exception 'Office start cancellation requires founder authority' using errcode='42501';
+	end if;
 $check$);
 select pg_temp.member_auth_first_patch('public.qorpera_withdraw_runtime_office_wake(jsonb,bigint,uuid)',
 	$fence$	perform public.qorpera_lock_profile_gc_fence(o.profile_id);$fence$,
-	$check$	if p_scope is distinct from public.qorpera_runtime_office_scope(o) or o.generation is distinct from p_computer_generation then
-		raise exception 'Office start scope differs' using errcode='42501'; end if;
-	if not exists(select 1 from public.qorpera_profile_members where profile_id=o.profile_id and user_id=auth.uid())
+	$check$	if not exists(select 1 from public.qorpera_profile_members where profile_id=o.profile_id and user_id=auth.uid())
 		and not exists(select 1 from public.qorpera_runtime_office_wake_requests r
 			join public.qorpera_runtime_office_idle_cycles c on c.transition_id=r.transition_id
-			where c.office_id=o.id and r.user_id=auth.uid()) then
-		return '{"state":"unavailable"}'::jsonb; end if;
+			where c.office_id=o.id and c.computer_generation=o.generation and c.superseded_at is null
+				and r.user_id=auth.uid() and r.request_id=p_request_id) then
+		if p_scope is distinct from public.qorpera_runtime_office_scope(o) or o.generation is distinct from p_computer_generation then
+			raise exception 'Office start scope differs' using errcode='42501'; end if;
+		return '{"state":"unavailable"}'::jsonb;
+	end if;
 $check$);
 
 -- Recovering a compute identity: requesting it (owners), cancelling it (owners and the identity's member), the member's

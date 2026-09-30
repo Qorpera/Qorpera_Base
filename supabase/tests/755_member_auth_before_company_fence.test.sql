@@ -5,7 +5,8 @@
 -- could hold another company's fence for the length of a call. Here a second connection holds the company's
 -- profile row FOR KEY SHARE, which the fence waits for. Someone outside the company calls each function and is
 -- refused at once, with the error such a caller got before; a member calls it too and still waits for the fence.
--- On the previous function text every outsider's call below waited. The office catalog then answers its member,
+-- On the previous function text every outsider's call for an id that exists waited. A member's scope checks still
+-- run under the fence, and the office catalog then answers its member,
 -- and a member removed while their call waits for the fence is still refused: the locked check after the fence
 -- stays. Row locks show only across connections, so the fixture is committed here and removed at the end, as in
 -- 602; the test refuses to run beside other connections to this database.
@@ -225,8 +226,9 @@ select pg_temp.fence_waits('30000000-0000-4000-8000-000000000001',
 	format('select public.qorpera_set_runtime_office_access(%L, %L, 999, true)', (pg_temp.fence_office()).id,
 		'30000000-0000-4000-8000-000000000030'), 'The owner setting an agent''s access');
 
--- 3. A computer's start. The scope is still checked first: a scope that is not the computer's gets the refusal it
---    got before. A start or wake gets the refusal of the branch the computer's state picks.
+-- 3. A computer's start. For someone outside the company the scope is still checked first: a scope that is not the
+--    computer's gets the refusal it got before. A start or wake gets the refusal of the branch the computer's state
+--    picks. A member's call checks the scope under the fence, as before.
 select pg_temp.fence_refused('75500000-0000-4000-8000-000000000001',
 	format('select public.qorpera_runtime_office_start_status(%L::jsonb)', current_setting('qorpera_test.office_scope')),
 	'Office start status requires membership', 'Another company''s start status');
@@ -237,12 +239,20 @@ select pg_temp.fence_refused('75500000-0000-4000-8000-000000000001',
 select pg_temp.fence_waits('30000000-0000-4000-8000-000000000003',
 	format('select public.qorpera_runtime_office_start_status(%L::jsonb)', current_setting('qorpera_test.office_scope')),
 	'The viewer''s start status');
+select pg_temp.wake_assert(pg_temp.fence_waits('30000000-0000-4000-8000-000000000003',
+	format('select public.qorpera_runtime_office_start_status(%L::jsonb)',
+		current_setting('qorpera_test.office_scope')::jsonb || '{"logicalComputerId":"75500000-0000-4000-8000-000000000098"}'),
+	'The viewer''s start status for a scope that is not the computer''s') ->> 'error' = 'Office start scope differs',
+	'The viewer learns the scope differs after the fence, as before');
 select pg_temp.fence_refused('75500000-0000-4000-8000-000000000001', pg_temp.fence_start('qorpera_request_runtime_office_start'),
 	'Office wake unavailable', 'Waking another company''s running computer');
 select pg_temp.fence_waits('30000000-0000-4000-8000-000000000002', pg_temp.fence_start('qorpera_request_runtime_office_start'),
 	'The contributor waking the computer');
 select pg_temp.fence_refused('75500000-0000-4000-8000-000000000001', pg_temp.fence_start('qorpera_cancel_runtime_office_start'),
 	'Office start cancellation differs', 'Cancelling the start of another company''s running computer');
+select pg_temp.wake_assert(pg_temp.fence_waits('30000000-0000-4000-8000-000000000001',
+	pg_temp.fence_start('qorpera_cancel_runtime_office_start'), 'The owner cancelling the start of the running computer')
+	->> 'error' = 'Office start cancellation differs', 'The owner learns the computer is not starting after the fence, as before');
 select pg_temp.fence_state('provisioning');
 select pg_temp.fence_refused('75500000-0000-4000-8000-000000000001', pg_temp.fence_start('qorpera_request_runtime_office_start'),
 	'Office start requires founder authority', 'Starting another company''s computer');
@@ -255,8 +265,8 @@ select pg_temp.fence_refused('30000000-0000-4000-8000-000000000002', pg_temp.fen
 select pg_temp.fence_waits('30000000-0000-4000-8000-000000000001', pg_temp.fence_start('qorpera_cancel_runtime_office_start'),
 	'The owner cancelling the start');
 select pg_temp.fence_state('active');
--- Withdrawing a wake asks no membership: someone outside the company with no wake request there has nothing to
--- withdraw, as before, and now without the fence.
+-- Withdrawing a wake asks no membership: someone outside the company with no wake request of their own on the
+-- computer's current cycle has nothing to withdraw, as before, and now without the fence.
 do $$
 declare v_outcome jsonb := pg_temp.fence_call('75500000-0000-4000-8000-000000000001',
 	pg_temp.fence_start('qorpera_withdraw_runtime_office_wake'));
@@ -271,6 +281,27 @@ select pg_temp.fence_refused('75500000-0000-4000-8000-000000000001',
 select pg_temp.wake_assert(pg_temp.fence_waits('30000000-0000-4000-8000-000000000003',
 	pg_temp.fence_start('qorpera_withdraw_runtime_office_wake'), 'The viewer withdrawing a wake') -> 'result'
 	= '{"state":"unavailable"}'::jsonb, 'The viewer has no wake to withdraw either');
+-- Someone who asked for a wake while a member (fixture rows: the computer's current idle cycle and their request)
+-- still withdraws it, under the fence; another request id of theirs finds nothing, without the fence.
+do $$
+begin
+	perform set_config('session_replication_role', 'replica', true);
+	insert into public.qorpera_runtime_office_idle_cycles(transition_id,office_id,computer_generation,request)
+	values ('75500000-0000-4000-8000-000000000050',(pg_temp.fence_office()).id,(pg_temp.fence_office()).generation,'{}');
+	insert into public.qorpera_runtime_office_wake_requests(transition_id,user_id,request_id)
+	values ('75500000-0000-4000-8000-000000000050','75500000-0000-4000-8000-000000000001','75500000-0000-4000-8000-000000000040');
+end $$;
+do $$
+declare v_outcome jsonb := pg_temp.fence_call('75500000-0000-4000-8000-000000000001',
+	replace(pg_temp.fence_start('qorpera_withdraw_runtime_office_wake'), '75500000-0000-4000-8000-000000000040',
+		'75500000-0000-4000-8000-000000000041'));
+begin
+	perform pg_temp.wake_assert(v_outcome ->> 'waited' = 'false' and v_outcome -> 'result' = '{"state":"unavailable"}'::jsonb,
+		'A former member''s other request id finds nothing, without waiting for the fence: ' || v_outcome::text);
+end $$;
+select pg_temp.wake_assert(pg_temp.fence_waits('75500000-0000-4000-8000-000000000001',
+	pg_temp.fence_start('qorpera_withdraw_runtime_office_wake'), 'A former member withdrawing their own wake') -> 'result'
+	= '{"state":"withdrawn"}'::jsonb, 'A former member withdraws their own wake');
 
 -- 4. Recovering a compute identity.
 select pg_temp.fence_refused('75500000-0000-4000-8000-000000000001',
