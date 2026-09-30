@@ -115,7 +115,8 @@ export interface CloudCompanyFolderPage {
  * `get` returns against the entry. `put` must return the same reference for the same bytes and media type: a retried
  * commit sends the same units, and SQL refuses an operation key reused for a different change set (22023). */
 export interface CloudCompanyFolderBytes {
-	put(bytes: Uint8Array, mediaType: string, signal: AbortSignal): Promise<CloudFileReference>;
+	/** Stages one file; its version-2 manifest carries the media type and the executable bit (C1D §2). */
+	put(bytes: Uint8Array, mediaType: string, executable: boolean, signal: AbortSignal): Promise<CloudFileReference>;
 	get(file: CloudCompanyFolderFile, signal: AbortSignal): Promise<Uint8Array>;
 }
 
@@ -231,7 +232,8 @@ export class CloudCompanyFolderError extends CloudRuntimeDiagnosticError {
 	}
 }
 
-function failure(error: unknown): unknown {
+/** What a folder call's error means to its caller (see {@link CloudCompanyFolderFailure}); other errors unchanged. */
+export function cloudCompanyFolderFailure(error: unknown): unknown {
 	if (!(error instanceof CloudCompanyFolderRpcError)) return error;
 	if (error.code === "55000") return new CloudCompanyFolderError("stopped");
 	if (error.code === "42501")
@@ -267,7 +269,8 @@ function uuid(value: unknown): string {
 	return value;
 }
 
-function sha256(bytes: Uint8Array): string {
+/** A byte string's SHA-256, as lower-case hex. */
+export function sha256(bytes: Uint8Array): string {
 	return createHash("sha256").update(bytes).digest("hex");
 }
 
@@ -369,6 +372,17 @@ function unitResult(value: unknown, index: number, sent: CloudCompanyFolderUnit)
 
 function mediaTypeFor(path: string): string {
 	return path.toLowerCase().endsWith(".md") ? "text/markdown" : "text/plain";
+}
+
+/** A run as the folder core's actor, with its ids in the lower case SQL checks. */
+export function cloudCompanyFolderRunActor(binding: CloudNativeToolBinding): CloudCompanyFolderRunActor {
+	return Object.freeze({
+		kind: "run",
+		runId: binding.runId.toLowerCase(),
+		jobId: binding.jobId.toLowerCase(),
+		runnerId: binding.runnerId.toLowerCase(),
+		assignmentId: binding.assignmentId.toLowerCase(),
+	});
 }
 
 /** The entry to release for a read: its path, version and receipt, with the content hash of a file. */
@@ -505,14 +519,7 @@ export class CloudCompanyFolderClient {
 		this.#identity = Object.freeze({ ...options.identity });
 		this.#control = options.control;
 		this.#bytes = options.bytes;
-		// The run actor's ids as SQL checks them: lower case.
-		this.#actor = Object.freeze({
-			kind: "run",
-			runId: this.#binding.runId.toLowerCase(),
-			jobId: this.#binding.jobId.toLowerCase(),
-			runnerId: this.#binding.runnerId.toLowerCase(),
-			assignmentId: this.#binding.assignmentId.toLowerCase(),
-		});
+		this.#actor = cloudCompanyFolderRunActor(this.#binding);
 	}
 
 	/** The actor every call sends. */
@@ -536,7 +543,7 @@ export class CloudCompanyFolderClient {
 		try {
 			return await this.#call(method, args, signal);
 		} catch (error) {
-			throw failure(error);
+			throw cloudCompanyFolderFailure(error);
 		}
 	}
 
@@ -566,7 +573,7 @@ export class CloudCompanyFolderClient {
 					!(error instanceof CloudCompanyFolderRpcError) &&
 					(error.category === "timeout" || error.category === "transport_unavailable");
 				if (!lost && !(error instanceof CloudCompanyFolderRpcError && retryable.has(error.code)))
-					throw failure(error);
+					throw cloudCompanyFolderFailure(error);
 				uncertain ||= lost;
 				if (attempt === ATTEMPTS) throw new CloudCompanyFolderError(uncertain ? "unknown" : "contended");
 				// A cancel during the pause ends the next try before it is sent, as a cancel (cloudToolRequest).
@@ -678,16 +685,18 @@ export class CloudCompanyFolderClient {
 		}
 	}
 
-	/** Stages one file's bytes once per commit and returns its reference, checked against the bytes. */
+	/** Stages one file's bytes once per commit (per content, media type and bit) and returns its reference, checked
+	 * against the bytes. */
 	async #stage(
 		file: PlannedFile,
 		staged: Map<string, CloudFileReference>,
 		signal: AbortSignal,
 	): Promise<CloudCompanyFolderFile> {
 		const hash = sha256(file.bytes);
-		let reference = staged.get(`${hash}:${file.mediaType}`);
+		const key = `${hash}:${file.mediaType}:${file.executable}`;
+		let reference = staged.get(key);
 		if (!reference) {
-			reference = await this.#bytes.put(file.bytes, file.mediaType, signal);
+			reference = await this.#bytes.put(file.bytes, file.mediaType, file.executable, signal);
 			if (
 				!SHA.test(reference.manifestSha256) ||
 				reference.fileSha256 !== hash ||
@@ -695,7 +704,7 @@ export class CloudCompanyFolderClient {
 				reference.mediaType !== file.mediaType
 			)
 				throw new CloudRuntimeDiagnosticError("invalid_response", "Company folder bytes were stored differently");
-			staged.set(`${hash}:${file.mediaType}`, reference);
+			staged.set(key, reference);
 		}
 		return {
 			manifestSha256: reference.manifestSha256,
