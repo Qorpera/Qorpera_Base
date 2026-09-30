@@ -16,7 +16,7 @@ the technical design. The Q1 page is the plain one.
 
 Status: W1a is live (v150, `20260928259260_runtime_event_intake`) and W2 is live (v151,
 `20260928269290_runtime_event_wakes`), both accepted; the intake is switched on. M2a in review
-(`20260929650000_runtime_company_mailboxes`). W1b reserves `20260929260100`.
+(`20260928299650_runtime_company_mailboxes`). W1b reserves `20260929260100`.
 
 ## Words
 
@@ -36,7 +36,7 @@ Status: W1a is live (v150, `20260928259260_runtime_event_intake`) and W2 is live
 | W1b | Signed hooks: the vault verifies Stripe, GitHub and HMAC signatures | `20260929260100` (reserved) |
 | W2 | Routine trigger on a hook, event wakes, the agent tools `list_hooks` and `read_event` | `20260928269290` |
 | W3 | Agents create, pause and remove hooks (`manage_hook`) | registered when started |
-| M2a | Company mailboxes, receiving: owners create them, the mail provider's webhook fills them, routines wake on mail | `20260929650000` |
+| M2a | Company mailboxes, receiving: owners create them, the mail provider's webhook fills them, routines wake on mail | `20260928299650` |
 | M2b | Sending as a mailbox (as the agent, with an AI line), and attachments' contents | registered when started |
 
 Each step is a release-train feature PR: no bundle, manifest or activation files, an independent
