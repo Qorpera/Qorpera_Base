@@ -211,13 +211,25 @@ it("answers busy past its limit and a failed renewer as a renewal to try again",
 	const held = new Promise<void>((resolveHeld) => {
 		release = resolveHeld;
 	});
+	// The second renewal is sent once the first holds the helper's only slot, not after a guessed pause.
+	let entered!: () => void;
+	const holding = new Promise<void>((resolveHolding) => {
+		entered = resolveHolding;
+	});
 	const h = await helper(async () => {
+		entered();
 		await held;
 		throw new Error("codex crashed");
 	}, 1);
 	const client = new ModelLoginHelperClient({ socketPath: h.socketPath, token: h.token });
 	const first = client.renew(LOGIN, new AbortController().signal);
-	await new Promise((resolveWait) => setTimeout(resolveWait, 100));
+	// If the first renewal never reaches the renewer, say so instead of waiting for the test's timeout.
+	await Promise.race([
+		holding,
+		first.then((answer) => {
+			throw new Error(`The first renewal answered ${JSON.stringify(answer)} before it held the slot`);
+		}),
+	]);
 	await expect(client.renew(LOGIN, new AbortController().signal)).resolves.toEqual({
 		outcome: "transient",
 		reason: "helper_busy",

@@ -1,7 +1,8 @@
 -- Company state files, F2-2, under concurrency (deploy/first-node/RUNTIME-COMPANY-STATE-FILES.md §4): a save that
--- renames a group chat takes the company row FOR KEY SHARE before the chat's room (FOR NO KEY UPDATE), as posting
--- takes the company row (qorpera_lock_profile_gc_fence) before the room and the operation clock; posting is played by
--- its first locks, in its order. Either may start first. The fixture is committed so other connections see it, and
+-- renames a group chat takes the company row FOR KEY SHARE before the chat's room (FOR NO KEY UPDATE), as snapshot-v1
+-- posting takes the company row (qorpera_lock_profile_gc_fence) before the room and the operation clock; posting is
+-- played by its first locks, in its order. Either may start first. On folder-v2 (C1c-3a) posting takes the company row
+-- KEY SHARE and its room FOR SHARE, where the save waits for it (661 I and J). The fixture is committed so other connections see it, and
 -- removed at the end. Waits are detected with pg_blocking_pids, never by wall-clock time.
 
 insert into auth.users(id,email) values
