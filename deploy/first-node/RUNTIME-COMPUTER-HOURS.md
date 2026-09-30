@@ -530,6 +530,13 @@ Coordinator (nothing secret):
     recorded more than about 40 minutes late (grace plus the email's ten-minute wait) sends a
     false "out of hours".
 
+- Build step 6b part 1 (migration `20260929700000`, the node refusal): `qorpera_reserve_runtime_node_machine`
+  refuses a new reservation or the wake of a sleeping machine of a company at zero with
+  `COMPUTER_HOURS_EXHAUSTED`, for Company Computers, coding machines and agents' machines, after
+  `NODE_DISABLED` (which wins) with the same demand condition; a machine already awake passes. Run and
+  sign-in machines are never refused. The runner orchestrator's node admission and the coding
+  executor (which waits it out) know the reason. Callers that reserve inside a subtransaction lose the
+  stored refusal, so members' views ask `qorpera_company_at_zero` themselves (6b's later parts).
 - Build step 6c part 3b (migration `20260928259270`, the finishing window for runs): one hour
   after a company ran out, while it is still at zero (`qorpera_computer_hour_finish_window_over`,
   which checks at zero again, so a record up to one sweep old never ends work):
