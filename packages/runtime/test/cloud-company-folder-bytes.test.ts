@@ -1,4 +1,5 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
@@ -87,6 +88,8 @@ async function fixture(options: { upperCaseBinding?: boolean; productionCircuit?
 		confirmFailures: [] as string[],
 		/** When set, how many more download authorizations pass before the run's read is revoked. */
 		downloadGrants: undefined as number | undefined,
+		/** The company's storage allowance has no room: authorizing a new object is refused (23514, a 400). */
+		full: false,
 		/** When set, fields renew answers with in place of its own. */
 		renewAnswer: undefined as Record<string, unknown> | undefined,
 	};
@@ -131,8 +134,11 @@ async function fixture(options: { upperCaseBinding?: boolean; productionCircuit?
 				intent.objects.get(args.p_sha256 as string) !== args.p_bytes
 			)
 				return Response.json({ code: "42501" }, { status: 403 });
-			if (method === "qorpera_folder_authorize_object_upload")
+			if (method === "qorpera_folder_authorize_object_upload") {
+				if (sql.full && !sql.catalog.has(args.p_sha256 as string))
+					return Response.json({ code: "23514", message: "company storage allowance exceeded" }, { status: 400 });
 				return Response.json({ schema: "qorpera.folder-object-upload/v1", profileId: companyId });
+			}
 			const failure = sql.confirmFailures.shift();
 			if (failure) return Response.json({ code: failure, message: "refused" }, { status: 500 });
 			puts.push(args.p_sha256 as string);
@@ -613,4 +619,22 @@ it("sends the folder core the lower-case run for a binding with upper-case ids",
 	const reference = await bytes.put(Buffer.from("upper"), "text/plain", false, signal);
 	sql.readable.add(reference.manifestSha256);
 	expect(Buffer.from(await bytes.get({ ...reference, executable: false }, signal)).toString()).toBe("upper");
+});
+
+it("reports a full company before any byte is written", async () => {
+	const { bytes, sql, root, companyId, gatewayCalls, authority } = await fixture();
+	const signal = new AbortController().signal;
+	const stored = await bytes.put(Buffer.from("stored before"), "text/plain", false, signal);
+	sql.readable.add(stored.manifestSha256);
+	sql.full = true;
+	gatewayCalls.length = 0;
+	await expect(bytes.put(Buffer.from("no room"), "text/plain", false, signal)).rejects.toMatchObject({
+		failure: "full",
+		category: "budget_exhausted",
+	});
+	expect(gatewayCalls).toEqual(["qorpera_folder_authorize_object_upload"]);
+	expect(existsSync(join(root, "objects", companyId, sha("no room")))).toBe(false);
+	expect(authority.health().api.status).toBe("healthy");
+	// Bytes the company already holds cost nothing more.
+	expect(await bytes.put(Buffer.from("stored before"), "text/plain", false, signal)).toEqual(stored);
 });

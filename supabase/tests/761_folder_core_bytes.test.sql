@@ -393,8 +393,9 @@ end $$;
 do $$
 declare
 	c_profile constant uuid := '63400000-0000-4000-8000-000000000010';
+	c_env constant uuid := '63400000-0000-4000-8000-000000000020';
 	v_before public.qorpera_folder_storage_usage := pg_temp.usage(); v_files bigint;
-	v_open jsonb;
+	v_open jsonb; v_limit bigint;
 begin
 	select storage_used_bytes into v_files from public.qorpera_company_files where environment_id = '63400000-0000-4000-8000-000000000020';
 	-- The catalog trigger counts folder-v2 bytes in the usage row, never in company_files.
@@ -407,15 +408,24 @@ begin
 	if (pg_temp.usage()).bytes <> v_before.bytes or (pg_temp.usage()).objects <> v_before.objects then
 		raise exception 'A removed object leaves usage'; end if;
 
-	-- The quota is read plainly: a new object past the limit is refused, at confirm and at the Storage trigger; one
-	-- already stored is not counted again.
-	update public.qorpera_company_files set storage_limit_bytes = (pg_temp.usage()).bytes where profile_id = c_profile;
+	-- The quota is read plainly and checked before the NAS write (20260929710000): the gateway's authorization of a new
+	-- object past the limit is refused, and so is the Storage trigger's insert; one already stored is not counted again.
+	v_limit := (pg_temp.usage()).bytes;
+	update public.qorpera_company_files set storage_limit_bytes = v_limit where profile_id = c_profile;
 	v_open := pg_temp.open(pg_temp.member(1), pg_temp.manifest(array['x']));
-	perform pg_temp.raises(format('select pg_temp.confirm(%L, %L, %L)', pg_temp.member(1), v_open ->> 'intentId', 'x'), '23514');
+	perform pg_temp.raises(format('select public.qorpera_folder_authorize_object_upload(%L, %L, %L, %L, 1)', c_env, pg_temp.member(1),
+		v_open ->> 'intentId', pg_temp.hash('x')), '23514');
 	perform pg_temp.raises(format($f$insert into storage.objects(bucket_id, name, metadata) values ('qorpera-profile-objects', %L, '{"size":1}')$f$,
 		c_profile || '/' || repeat('2', 64)), '23514');
-	-- An object already stored costs nothing more, at the confirm and at the Storage trigger.
+	-- A confirm follows a write the gateway authorized before the limit was reached: it keeps the object, past the
+	-- limit (the quota is soft), rather than strand its bytes on the NAS outside the catalog.
+	perform pg_temp.confirm(pg_temp.member(1), (v_open ->> 'intentId')::uuid, 'x');
+	if (pg_temp.usage()).bytes <> v_limit + 1
+		or not exists (select 1 from public.qorpera_profile_objects where profile_id = c_profile and sha256 = pg_temp.hash('x')) then
+		raise exception 'A confirm keeps what was written: %', to_jsonb(pg_temp.usage()); end if;
+	-- An object already stored costs nothing more, at the authorization, the confirm and the Storage trigger.
 	v_open := pg_temp.open(pg_temp.member(1), pg_temp.manifest(array['text']));
+	perform public.qorpera_folder_authorize_object_upload(c_env, pg_temp.member(1), (v_open ->> 'intentId')::uuid, pg_temp.hash('text'), 4);
 	perform pg_temp.confirm(pg_temp.member(1), (v_open ->> 'intentId')::uuid, 'text');
 	if not public.qorpera_folder_storage_quota('qorpera-profile-objects', c_profile || '/' || pg_temp.hash('text'), '{"size":4}') then
 		raise exception 'The Storage trigger decides for folder-v2'; end if;
