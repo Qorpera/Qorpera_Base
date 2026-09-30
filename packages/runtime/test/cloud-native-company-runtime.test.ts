@@ -608,20 +608,23 @@ async function fixture(
 }
 
 it("composes run-bound path presence into fenced model context and closes it with the native execution", async () => {
-	const observe = vi.fn<CloudCompanyPathPresence["observe"]>(async (path) => ({
+	const observe = vi.fn<CloudCompanyPathPresence["observe"]>();
+	const claim = vi.fn<CloudCompanyPathPresence["claim"]>((path) => ({
 		schema: "qorpera.company-path-presence-view/v1",
 		state: "available",
 		observedAt: Date.now(),
 		paths: [{ path, participants: [] }],
 	}));
 	const close = vi.fn(async () => {});
-	const presence = vi.fn<CloudCompanyPathPresenceFactory>(() => ({ observe, close }));
+	const presence = vi.fn<CloudCompanyPathPresenceFactory>(() => ({ observe, claim, close }));
 	const f = await fixture("company-runtime", false, presence);
 	const result = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
 	expect(result.delivery.messageCount).toBe(2);
 	expect(presence).toHaveBeenCalledOnce();
 	expect(presence.mock.calls[0][0]).toEqual(f.binding);
-	expect(observe).toHaveBeenCalled();
+	// Company File tools claim without waiting; only a file-event wake observes at startup.
+	expect(claim).toHaveBeenCalledWith("note.md", "object", "reading");
+	expect(observe).not.toHaveBeenCalled();
 	expect(close).toHaveBeenCalledOnce();
 	const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
 	expect(JSON.stringify(evidence.fenced.outputs)).toContain("qorpera.company-path-presence-view/v1");
@@ -660,7 +663,8 @@ it.each(["available", "unavailable"])(
 			};
 		});
 		const close = vi.fn(async () => {});
-		const f = await fixture("company-silent", false, () => ({ observe, close }));
+		const claim = vi.fn<CloudCompanyPathPresence["claim"]>();
+		const f = await fixture("company-silent", false, () => ({ observe, claim, close }));
 		const eventId = randomUUID();
 		Object.assign(f.wake, {
 			source: { kind: "company-file", id: eventId, occurrenceKey: `event:${eventId}` },
