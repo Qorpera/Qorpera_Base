@@ -6,6 +6,7 @@ import {
 	readBoundedObjectResponse,
 	unavailableStateFailure,
 } from "./dependency.ts";
+import type { FolderObjectAuthority, FolderRunActor } from "./folder-objects.ts";
 import type {
 	AuthorizedMemberCompanyObject,
 	MemberCompanyObjectAuthority,
@@ -86,7 +87,7 @@ function deletionAuthorization(value: unknown): ObjectDeletionAuthorization {
 }
 
 export class SupabaseObjectAuthority
-	implements ObjectGatewayAuthority, NativeCompanyObjectAuthority, MemberCompanyObjectAuthority
+	implements ObjectGatewayAuthority, NativeCompanyObjectAuthority, FolderObjectAuthority, MemberCompanyObjectAuthority
 {
 	readonly #projectUrl: string;
 	readonly #publishableKey: string;
@@ -365,6 +366,75 @@ export class SupabaseObjectAuthority
 				true,
 			),
 		);
+	}
+
+	async authorizeFolderUpload(
+		environmentId: string,
+		actor: FolderRunActor,
+		intentId: string,
+		sha256: string,
+		bytes: number,
+	): Promise<{ profileId: string }> {
+		const value = await this.#rpc(
+			"qorpera_folder_authorize_object_upload",
+			{ p_environment_id: environmentId, p_actor: actor, p_intent: intentId, p_sha256: sha256, p_bytes: bytes },
+			undefined,
+			this.#secretKey,
+			true,
+		);
+		const receipt = value as Record<string, unknown> | null;
+		if (
+			!receipt ||
+			typeof receipt !== "object" ||
+			receipt.schema !== "qorpera.folder-object-upload/v1" ||
+			typeof receipt.profileId !== "string" ||
+			!UUID_PATTERN.test(receipt.profileId)
+		)
+			throw new ObjectDependencyError(403);
+		return { profileId: receipt.profileId };
+	}
+
+	async confirmFolderObject(
+		environmentId: string,
+		actor: FolderRunActor,
+		intentId: string,
+		sha256: string,
+		bytes: number,
+	): Promise<void> {
+		const value = (await this.#rpc(
+			"qorpera_folder_confirm_object",
+			{ p_environment_id: environmentId, p_actor: actor, p_intent: intentId, p_sha256: sha256, p_bytes: bytes },
+			undefined,
+			this.#secretKey,
+			true,
+		)) as Record<string, unknown> | null;
+		if (!value || value.schema !== "qorpera.folder-object/v1" || value.sha256 !== sha256 || value.bytes !== bytes)
+			throw new ObjectDependencyError(403);
+	}
+
+	async authorizeFolderDownload(
+		environmentId: string,
+		actor: FolderRunActor,
+		sha256: string,
+	): Promise<{ profileId: string; bytes: number }> {
+		const value = (await this.#rpc(
+			"qorpera_folder_authorize_object_download",
+			{ p_environment_id: environmentId, p_actor: actor, p_sha256: sha256 },
+			undefined,
+			this.#secretKey,
+			true,
+		)) as Record<string, unknown> | null;
+		if (
+			!value ||
+			value.schema !== "qorpera.folder-object-download/v1" ||
+			typeof value.profileId !== "string" ||
+			!UUID_PATTERN.test(value.profileId) ||
+			!Number.isSafeInteger(value.bytes) ||
+			(value.bytes as number) < 0 ||
+			(value.bytes as number) > 8 * 1024 * 1024
+		)
+			throw new ObjectDependencyError(403);
+		return { profileId: value.profileId, bytes: value.bytes as number };
 	}
 
 	async authorizeDelete(
