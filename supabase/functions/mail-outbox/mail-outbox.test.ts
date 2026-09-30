@@ -110,7 +110,11 @@ describe("mail outbox", () => {
 		const { sent, sender } = recording();
 		const reply = job(2, {
 			cc: ["boss@acme.test"],
-			headers: { "In-Reply-To": "<m30@example.org>", References: "<m1@example.org> <m30@example.org>" },
+			headers: {
+				"In-Reply-To": "<m30@example.org>",
+				References: "<m1@example.org> <m30@example.org>",
+				"Auto-Submitted": "auto-replied",
+			},
 		});
 		const f = outbox([job(1), reply, job(3)], sender);
 		const response = await f.handle(post());
@@ -130,6 +134,7 @@ describe("mail outbox", () => {
 		assert.deepEqual(sent[1][0].headers, {
 			"In-Reply-To": "<m30@example.org>",
 			References: "<m1@example.org> <m30@example.org>",
+			"Auto-Submitted": "auto-replied",
 		});
 		assert.deepEqual(f.sleeps, [PACE_MS, PACE_MS]);
 		assert.deepEqual(f.calls.complete, [

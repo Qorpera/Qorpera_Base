@@ -32,7 +32,8 @@ export const CLOUD_SEND_MAIL_TOOL_DESCRIPTION =
 	"Send an email from one of your company's mailboxes, as yourself: from is the mailbox's email address as list_hooks shows it, and recipients see your name and your company's. " +
 	"Plain text only, to at most 10 addresses in to and cc together; the platform adds a closing line saying an AI agent wrote and sent it. " +
 	"To answer an email that arrived, set inReplyTo to its deliveryId: the reply joins that email's thread. Address it yourself (the email's replyTo, else its from) and write the subject (usually Re: and the original subject). " +
-	"Every email is reviewed before it is sent, like any action outside the company, and goes out within about a minute; replies arrive at the mailbox like any email. " +
+	"An email marked automated (an auto-reply, a mailing list or bulk mail) is never answered, and your company's own mailboxes are never recipients: reach coworkers with send_coworker_message. " +
+	"Every email is reviewed before it is sent, like any action outside the company, and goes out within about a minute, within the company's hourly and daily limits on recipients; replies arrive at the mailbox like any email. " +
 	"The result is the queued email, with mailId; the same call made again is the same email.";
 
 /** The cloud derives the company from the run; the model names only the event. */

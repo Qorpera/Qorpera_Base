@@ -364,7 +364,9 @@ address on it and stores the message once in every live mailbox among them, as a
 event type `mail.received`, content type JSON and key `mail:<provider message id>` (a retried webhook is
 a duplicate and writes nothing). The text is stored as written, so its size is what the function
 measured and its keys keep their order: subject, sender, recipients, reply-to, received time, message id,
-In-Reply-To and References, the SPF, DKIM and DMARC results, the attachments' descriptions, then the text
+In-Reply-To and References, whether it was sent automatically (M2b: the Auto-Submitted, Precedence and List-Id
+headers, and `automated`, true for an Auto-Submitted other than `no`, a bulk, list, junk or auto-reply Precedence,
+or a mailing list), the SPF, DKIM and DMARC results, the attachments' descriptions, then the text
 and HTML bodies, cut to 256 KiB (HTML first, `truncated`). Text the database cannot hold (NUL, half a
 surrogate pair) is cleaned first, and the recipient lists are bounded. The hook's minute and the company's
 hourly budget apply as to any delivery. Mail for an address with no live mailbox, for a paused mailbox, or
@@ -387,29 +389,39 @@ paused nor being deleted, no final answer yet). The service-role `qorpera_send_a
 again, finds the mailbox (live, of the run's company and environment, not paused) and queues the email in
 `qorpera_company_mail_outbox`, keyed by the run and the tool call, so the same call again is the same email:
 
-- From the agent, as recipients read it: the name `<agent> at <company>` (quotes, brackets and line breaks
-  removed) at the mailbox's address.
-- The AI line: the text ends with the signature separator and `Written and sent by <agent>, an AI agent working
-  for <company>.` The database adds it; no agent can leave it out.
+- From the agent, as recipients read it: the name `<agent> at <company>` (quotes, brackets, line breaks and
+  invisible format characters such as bidi controls removed) at the mailbox's address.
+- The AI line: the text's last paragraph is `Written and sent by <agent>, an AI agent working for <company>.` The
+  database adds it; no agent can leave it out. It is not placed after a signature separator, which clients dim.
 - A reply to a received email of the company (`mail.received`, verified) carries that email's thread:
-  `In-Reply-To` its message id, and `References` the ids before it with it last (at most 2,000 characters). An
-  email whose text was cleared (after 7 days), or without a usable message id, is answered outside its thread.
+  `In-Reply-To` its message id, and `References` the thread's first id and its newest ids that fit one header line
+  (980 characters, RFC 5322 3.6.4). An email whose text was cleared (after 7 days), or without a usable message
+  id, is answered outside its thread.
+- Mail loops: an email the mail door marked `automated` (an auto-reply, a mailing list, bulk mail) is never
+  answered (42501); every reply carries `Auto-Submitted: auto-replied` (RFC 3834), so other responders, another
+  company's agents included, leave it unanswered; and a company never emails its own mailboxes (42501), whose
+  routines would answer it. Another company's mailbox is a recipient like any other.
 - Limits: sending has its own switch (`qorpera_mail_settings.sending`, built off; `enabled` must be on too), and
-  a company sends at most `company_hourly_sends` (30) emails an hour and `company_daily_sends` (200) a day,
-  counted under one lock per company; past them the tool says when room returns. Every company sends from the
-  platform's domain, so one company's spam would hurt all of them: these are the guard until reputation tracking.
+  a company emails at most `company_hourly_recipients` (60) recipients an hour and `company_daily_recipients`
+  (300) a day, each address of an email counting once, under one lock per company. Email cancelled before any
+  attempt does not count; email attempted counts, since it may have gone out. Past a limit the tool says, to the
+  second, when this email can go; an email with more recipients than a limit allows never fits. Every company
+  sends from the platform's domain, so one company's spam would hurt all of them: these are the guard until
+  reputation tracking.
 
 The Edge Function `mail-outbox`, called each minute by pg_cron + pg_net with a Supabase secret key (like the hour
 notices), claims up to 10 emails with `qorpera_claim_company_mail` under a five-minute lease and sends each
 through Resend's `POST /emails` with the platform's key, which no node, guest or agent holds, 0.6 seconds apart:
-from the mailbox's current address (a domain change moves queued email too), plain text, and the thread headers.
-The idempotency key is `company-mail/<email id>`, so a send repeated after a lost answer or an expired lease is
-the same email. A timeout, rate limit or server error is retried after 1, 2, 4 ... minutes, at most eight
-attempts; any other refusal fails the email (`qorpera_complete_company_mail`, `qorpera_fail_company_mail`). The
-claim cancels email from a removed or paused mailbox or of a company being deleted, fails email not sent within
-a day, and clears texts seven days after they settle, keeping the receipt. Switched off, it claims nothing and
-queued email waits (up to that day). Agents learn an email was queued, not that it arrived; bounces and
-complaints, and a sent-mail view, follow.
+plain text and the headers above, from the mailbox's address as it was at the email's first attempt (a domain
+change moves email not yet attempted; one already attempted repeats its address). The idempotency key is
+`company-mail/<email id>`, so a send repeated after a lost answer or an expired lease is the same email. A
+timeout, rate limit or server error is retried after 1, 2, 4 ... minutes, at most eight attempts; any other
+refusal fails the email (`qorpera_complete_company_mail`, `qorpera_fail_company_mail`). The claim cancels email
+from a removed or paused mailbox or of a company being deleted, fails email not sent within a day, and clears
+texts seven days after they settle, keeping the receipt; an email already attempted says it may have gone out.
+Switched off, the claim sends nothing and queued email waits; the first claim after sending is switched on again
+fails what waited more than a day. Texts are cleared only by the claim, so unscheduling the worker stops that too.
+Agents learn an email was queued, not that it arrived; bounces and complaints, and a sent-mail view, follow.
 
 **Next (M2c).** Attachments' contents into the company's storage (and `mail/<address>/` in the folder once its
 writer lands, with sent mail beside the received); threads as files. A connected Gmail read once a minute can
@@ -436,12 +448,13 @@ was written). It rolls: nothing uses mailboxes before they exist. After it is li
 
 The migration adds a table and functions, three setting columns, and patches one existing function by exact text
 (the observation list names `send_mail`). It rolls with a bundle carrying this runtime: an older runtime has no
-`send_mail`, and nothing sends while sending is off. After it is live:
+`send_mail`, and nothing sends while sending is off. The mail door (`mail-intake`) is redeployed too: it now marks
+mail sent automatically. After it is live:
 
 1. In Resend (Jonas): verify the mail domain for sending (its SPF and DKIM records), the same domain mailboxes
    receive on. Until then Resend refuses the platform's `from`, and the outbox fails those emails.
-2. Deploy the function: `supabase functions deploy mail-outbox` (`verify_jwt = false`); `RESEND_API_KEY` is
-   already set.
+2. Deploy the functions: `supabase functions deploy mail-outbox` (`verify_jwt = false`) and
+   `supabase functions deploy mail-intake`; `RESEND_API_KEY` is already set.
 3. Schedule it every minute, with the project URL and a Supabase secret key from Vault as for the hour notices
    (`RUNTIME-COMPUTER-HOURS.md`, "Email"; a key made for this worker, e.g. `qorpera_mail_outbox_key`, keeps its
    rotation separate):
@@ -453,7 +466,9 @@ The migration adds a table and functions, three setting columns, and patches one
    			|| '/functions/v1/mail-outbox',
    		headers := jsonb_build_object('content-type', 'application/json',
    			'apikey', (select decrypted_secret from vault.decrypted_secrets where name = 'qorpera_mail_outbox_key')),
-   		body := '{}'::jsonb)
+   		body := '{}'::jsonb,
+   		-- A paced batch takes up to about 110 seconds; pg_net's default is 5.
+   		timeout_milliseconds := 120000)
    $$);
    ```
 
@@ -461,10 +476,13 @@ The migration adds a table and functions, three setting columns, and patches one
    are M2a's).
 5. Watch by count: `select status, count(*) from public.qorpera_company_mail_outbox group by 1 order by 1`.
 6. Acceptance: a routine on a mailbox wakes on an email from an outside address and answers it with `send_mail`
-   and `inReplyTo`; the answer arrives from `<agent> at <company>` at the mailbox's address, ends with the AI line
-   and sits in the sender's thread; the sender's reply wakes the routine again.
-7. Off again: `update public.qorpera_mail_settings set sending = false;` (queued email waits a day, then fails),
-   or `select cron.unschedule('qorpera-mail-outbox')`.
+   and `inReplyTo`; the answer arrives from `<agent> at <company>` at the mailbox's address, ends with the AI line,
+   sits in the sender's thread and carries `Auto-Submitted: auto-replied`, with `References` unfolded or folded
+   correctly; the sender's reply wakes the routine again; an out-of-office answer to it arrives `automated` and is
+   not answered.
+7. Off again: `update public.qorpera_mail_settings set sending = false;` (queued email waits, and fails if it
+   waited a day once sending is back), or `select cron.unschedule('qorpera-mail-outbox')`, which also stops the
+   seven-day clearing of sent texts.
 
 ## Deploy (W1a)
 

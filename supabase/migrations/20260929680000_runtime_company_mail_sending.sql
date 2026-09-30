@@ -8,10 +8,15 @@
 -- received email, that email's thread headers. The Edge Function mail-outbox, called each minute by pg_cron + pg_net
 -- with a Supabase secret key, claims a batch with a lease and sends it through the mail provider (Resend) with the
 -- platform's key, which no node or agent holds. Sending has its own switch, off, and a company's hourly and daily
--- limits, since every company sends from the platform's domain.
+-- limits on recipients, since every company sends from the platform's domain.
+--
+-- Mail loops: a reply to an email sent automatically (an auto-reply, a mailing list, bulk mail: the mail door marks it
+-- automated) is refused, a reply carries Auto-Submitted: auto-replied (RFC 3834) so other responders leave it alone,
+-- and a company never emails its own mailboxes.
 --
 -- Lock order: a send takes the run (the tool binding locks the runner job, then the run), then a transaction lock
--- per company for its limits, and only reads mailboxes and hooks. Claims lock outbox rows only.
+-- per company for its limits, then its insert's key-share locks on the company, environment and mailbox rows, as
+-- other agent tools do. Claims lock outbox rows only.
 
 set local lock_timeout = '3s';
 
@@ -30,8 +35,9 @@ $$;
 -- ---------------------------------------------------------------------------
 alter table public.qorpera_mail_settings
 	add column sending boolean not null default false,
-	add column company_hourly_sends integer not null default 30 check (company_hourly_sends between 0 and 10000),
-	add column company_daily_sends integer not null default 200 check (company_daily_sends between 0 and 100000);
+	-- Recipients, not emails: an email to ten addresses counts ten.
+	add column company_hourly_recipients integer not null default 60 check (company_hourly_recipients between 0 and 10000),
+	add column company_daily_recipients integer not null default 300 check (company_daily_recipients between 0 and 100000);
 
 -- ---------------------------------------------------------------------------
 -- 2. The outbox
@@ -46,7 +52,10 @@ create table public.qorpera_company_mail_outbox (
 	call_id text not null check (char_length(call_id) between 1 and 200),
 	staff_agent_id uuid not null,
 	-- Fixed when queued: "<agent> at <company>", and the whole text as sent, with the AI line.
-	from_name text not null check (char_length(from_name) between 1 and 160 and from_name !~ '["\\<>[:cntrl:]]'),
+	from_name text not null check (char_length(from_name) between 1 and 160
+		and from_name !~ '["\\<>[:cntrl:]\u200B-\u200F\u202A-\u202E\u2060-\u2069\uFEFF]'),
+	-- The mailbox's address, fixed at the first attempt: every attempt sends the same email under one idempotency key.
+	from_address text check (from_address is null or (char_length(from_address) <= 320 and from_address !~ '[\s"<>]')),
 	recipients_to text[] not null check (cardinality(recipients_to) between 1 and 10),
 	recipients_cc text[] not null default '{}' check (cardinality(recipients_cc) <= 9),
 	subject text not null check (char_length(subject) between 1 and 200 and subject !~ '[[:cntrl:]]'),
@@ -54,9 +63,9 @@ create table public.qorpera_company_mail_outbox (
 	body text check (body is null or char_length(body) <= 20500),
 	-- A reply: the received email it answers and that email's thread.
 	in_reply_to_delivery_id uuid,
-	in_reply_to text check (in_reply_to is null or (char_length(in_reply_to) <= 998 and in_reply_to !~ '[[:cntrl:]]')),
+	in_reply_to text check (in_reply_to is null or (char_length(in_reply_to) <= 980 and in_reply_to !~ '[[:cntrl:]]')),
 	thread_references text check (thread_references is null
-		or (char_length(thread_references) <= 2000 and thread_references !~ '[[:cntrl:]]')),
+		or (char_length(thread_references) <= 980 and thread_references !~ '[[:cntrl:]]')),
 	status text not null default 'pending'
 		check (status in ('pending', 'retrying', 'delivering', 'sent', 'failed', 'cancelled')),
 	attempt_count integer not null default 0 check (attempt_count >= 0),
@@ -77,15 +86,16 @@ create index qorpera_company_mail_outbox_kept on public.qorpera_company_mail_out
 alter table public.qorpera_company_mail_outbox enable row level security;
 revoke all on table public.qorpera_company_mail_outbox from public, anon, authenticated, service_role;
 
--- A name as a mail header may carry it: no quotes, brackets, backslashes or control characters, one line.
+-- A name as a mail header may carry it: no quotes, brackets, backslashes, control characters or invisible format
+-- characters (bidi controls turn a name around), one line.
 create function public.qorpera_mail_display_name(p_name text, p_fallback text)
 returns text
 language sql
 immutable
 set search_path = ''
 as $$
-	select coalesce(nullif(left(btrim(regexp_replace(regexp_replace(coalesce(p_name, ''), '["\\<>[:cntrl:]]', ' ', 'g'),
-		'\s+', ' ', 'g')), 64), ''), p_fallback)
+	select coalesce(nullif(left(btrim(regexp_replace(regexp_replace(coalesce(p_name, ''),
+		'["\\<>[:cntrl:]\u200B-\u200F\u202A-\u202E\u2060-\u2069\uFEFF]', ' ', 'g'), '\s+', ' ', 'g')), 64), ''), p_fallback)
 $$;
 revoke all on function public.qorpera_mail_display_name(text, text) from public, anon, authenticated, service_role;
 
@@ -136,8 +146,10 @@ declare
 	v_message jsonb;
 	v_in_reply_to text;
 	v_references text;
+	v_ids text[];
 	v_threaded boolean := false;
 	v_now timestamptz := clock_timestamp();
+	v_recipients integer;
 	v_hour bigint;
 	v_day bigint;
 	v_next timestamptz;
@@ -182,7 +194,8 @@ begin
 		select lower(btrim(item.value #>> '{}')) as address, min(item.n) as first
 		from jsonb_array_elements(coalesce(p_request -> 'cc', '[]')) with ordinality as item(value, n) group by 1) as listed
 	where not address = any (v_to);
-	if cardinality(v_to) + cardinality(v_cc) > 10 then
+	v_recipients := cardinality(v_to) + cardinality(v_cc);
+	if v_recipients > 10 then
 		raise exception 'Mail request is invalid' using errcode = '22023'; end if;
 	select settings.* into v_settings from public.qorpera_mail_settings as settings;
 	if not coalesce(v_settings.enabled and v_settings.sending, false) or v_settings.domain is null then
@@ -202,6 +215,12 @@ begin
 	select * into strict v_hook from public.qorpera_event_hooks where id = v_mailbox.hook_id;
 	if v_hook.status <> 'active' then
 		raise exception 'The mailbox is paused; a member resumes it' using errcode = '0A000'; end if;
+	-- A company's own mailboxes wake its own routines: email to them would talk to itself, and could loop.
+	if exists (select 1 from public.qorpera_company_mailboxes as mailbox
+		where mailbox.profile_id = v_run.profile_id and mailbox.removed_at is null
+			and mailbox.local_part || '@' || v_settings.domain = any (v_to || v_cc)) then
+		raise exception 'Email to your own company''s mailboxes is refused; reach coworkers with send_coworker_message'
+			using errcode = '42501'; end if;
 	-- A reply joins the thread of a received email of this company; one whose text was cleared goes out unthreaded.
 	if p_request ? 'inReplyTo' then
 		select * into v_delivery from public.qorpera_event_deliveries where id = (p_request ->> 'inReplyTo')::uuid;
@@ -216,48 +235,77 @@ begin
 			exception when others then
 				v_message := null;
 			end;
+			-- Answering an auto-reply, a mailing list or bulk mail is how mail loops start.
+			if v_message -> 'automated' = 'true'::jsonb then
+				raise exception 'That email was sent automatically (an auto-reply, a mailing list or bulk mail); it is not answered'
+					using errcode = '42501'; end if;
 			v_in_reply_to := nullif(btrim(v_message ->> 'messageId'), '');
-			if v_in_reply_to is not null and v_in_reply_to !~ '[[:cntrl:]]' and char_length(v_in_reply_to) <= 996 then
+			if v_in_reply_to is not null and v_in_reply_to !~ '[[:cntrl:]]' and char_length(v_in_reply_to) <= 978 then
 				if v_in_reply_to !~ '^<.*>$' then v_in_reply_to := '<' || v_in_reply_to || '>'; end if;
-				-- The thread so far, newest last, kept to its last ids that fit.
+				-- The thread's ids, oldest first, then the email answered. References keeps the first and the newest that
+				-- fit one header line (RFC 5322 3.6.4).
 				v_references := btrim(regexp_replace(coalesce(v_message ->> 'references', ''), '\s+', ' ', 'g'));
-				if v_references ~ '[[:cntrl:]]' then v_references := ''; end if;
-				v_references := btrim(v_references || ' ' || v_in_reply_to);
-				while char_length(v_references) > 2000 and position(' ' in v_references) > 0 loop
-					v_references := substring(v_references from position(' ' in v_references) + 1);
+				v_ids := case when v_references ~ '[[:cntrl:]]' then '{}'::text[]
+					else array_remove(regexp_split_to_array(v_references, ' '), '') end || v_in_reply_to;
+				v_references := v_in_reply_to;
+				for i in reverse cardinality(v_ids) - 1 .. 2 loop
+					exit when char_length(v_ids[1]) + char_length(v_ids[i]) + char_length(v_references) + 2 > 980;
+					v_references := v_ids[i] || ' ' || v_references;
 				end loop;
-				if char_length(v_references) > 2000 then v_references := v_in_reply_to; end if;
+				if cardinality(v_ids) > 1 and char_length(v_ids[1]) + char_length(v_references) + 1 <= 980 then
+					v_references := v_ids[1] || ' ' || v_references; end if;
 				v_threaded := true;
 			else
 				v_in_reply_to := null;
 			end if;
 		end if;
 	end if;
-	-- The company's limits, counted under one lock per company. Cancelled email never went out.
+	-- The company's limits on recipients, counted under one lock per company. Email cancelled before any attempt never
+	-- went out; any other may have.
 	perform pg_advisory_xact_lock(hashtextextended('qorpera-company-mail:' || v_run.profile_id::text, 0));
-	select count(*) filter (where created_at > v_now - interval '1 hour'), count(*) into v_hour, v_day
+	if v_recipients > least(v_settings.company_hourly_recipients, v_settings.company_daily_recipients) then
+		raise exception 'The company''s email limits allow % recipients an hour and % a day, fewer than this email has',
+			v_settings.company_hourly_recipients, v_settings.company_daily_recipients using errcode = '54000'; end if;
+	select coalesce(sum(cardinality(recipients_to) + cardinality(recipients_cc))
+			filter (where created_at > v_now - interval '1 hour'), 0),
+		coalesce(sum(cardinality(recipients_to) + cardinality(recipients_cc)), 0)
+	into v_hour, v_day
 	from public.qorpera_company_mail_outbox
-	where profile_id = v_run.profile_id and created_at > v_now - interval '1 day' and status <> 'cancelled';
-	if v_hour >= v_settings.company_hourly_sends or v_day >= v_settings.company_daily_sends then
-		-- Room returns when the window no longer holds a full limit: the limit's newest email leaves it.
+	where profile_id = v_run.profile_id and created_at > v_now - interval '1 day'
+		and (status <> 'cancelled' or attempt_count > 0);
+	if v_hour + v_recipients > v_settings.company_hourly_recipients
+		or v_day + v_recipients > v_settings.company_daily_recipients then
+		-- Room returns when enough of the window's oldest email has left it: the newest email that must go first.
 		select greatest(
-			case when v_hour >= v_settings.company_hourly_sends then (select created_at + interval '1 hour'
-				from public.qorpera_company_mail_outbox where profile_id = v_run.profile_id and status <> 'cancelled'
-				order by created_at desc offset greatest(v_settings.company_hourly_sends - 1, 0) limit 1) end,
-			case when v_day >= v_settings.company_daily_sends then (select created_at + interval '1 day'
-				from public.qorpera_company_mail_outbox where profile_id = v_run.profile_id and status <> 'cancelled'
-				order by created_at desc offset greatest(v_settings.company_daily_sends - 1, 0) limit 1) end,
+			case when v_hour + v_recipients > v_settings.company_hourly_recipients then (
+				select sent.created_at + interval '1 hour' from (
+					select created_at, id, sum(cardinality(recipients_to) + cardinality(recipients_cc))
+						over (order by created_at desc, id desc) as newer
+					from public.qorpera_company_mail_outbox where profile_id = v_run.profile_id
+						and created_at > v_now - interval '1 hour' and (status <> 'cancelled' or attempt_count > 0)) as sent
+				where sent.newer > v_settings.company_hourly_recipients - v_recipients
+				order by sent.created_at desc, sent.id desc limit 1) end,
+			case when v_day + v_recipients > v_settings.company_daily_recipients then (
+				select sent.created_at + interval '1 day' from (
+					select created_at, id, sum(cardinality(recipients_to) + cardinality(recipients_cc))
+						over (order by created_at desc, id desc) as newer
+					from public.qorpera_company_mail_outbox where profile_id = v_run.profile_id
+						and created_at > v_now - interval '1 day' and (status <> 'cancelled' or attempt_count > 0)) as sent
+				where sent.newer > v_settings.company_daily_recipients - v_recipients
+				order by sent.created_at desc, sent.id desc limit 1) end,
 			v_now) into v_next;
-		raise exception 'The company has sent the % emails an hour and % a day its limits allow; try again after %',
-			v_settings.company_hourly_sends, v_settings.company_daily_sends,
-			to_char(v_next at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI"Z"') using errcode = '54000';
+		raise exception 'The company has emailed the % recipients an hour and % a day its limits allow; this email can go after %',
+			v_settings.company_hourly_recipients, v_settings.company_daily_recipients,
+			-- To the second, rounded up.
+			to_char(date_trunc('second', v_next + interval '999999 microseconds') at time zone 'UTC',
+				'YYYY-MM-DD"T"HH24:MI:SS"Z"') using errcode = '54000';
 	end if;
 	v_agent := public.qorpera_mail_display_name((select staff.display_name from public.qorpera_profile_staff as staff
 		where staff.profile_id = v_run.profile_id and staff.staff_agent_id = v_run.staff_agent_id), 'Agent');
 	v_company := public.qorpera_mail_display_name((select profile.name from public.qorpera_profiles as profile
 		where profile.id = v_run.profile_id), 'the company');
-	-- The AI line, after the usual signature separator, on every email.
-	v_text := rtrim(p_request ->> 'text', E' \t\r\n') || E'\n\n-- \n'
+	-- The AI line, its own last paragraph on every email (not after a signature separator, which clients dim).
+	v_text := rtrim(p_request ->> 'text', E' \t\r\n') || E'\n\n'
 		|| format('Written and sent by %s, an AI agent working for %s.', v_agent, v_company);
 	insert into public.qorpera_company_mail_outbox (profile_id, environment_id, mailbox_id, run_id, call_id,
 		staff_agent_id, from_name, recipients_to, recipients_cc, subject, body, in_reply_to_delivery_id, in_reply_to,
@@ -296,24 +344,28 @@ begin
 		where body is not null and status in ('sent', 'failed', 'cancelled') and settled_at < v_now - interval '7 days'
 		order by settled_at limit 500);
 	select settings.* into v_settings from public.qorpera_mail_settings as settings;
-	-- Switched off, nothing is sent: queued email waits, for a day at most (below).
+	-- Switched off, nothing is sent: queued email waits, and the first claim after sending is switched on again fails
+	-- what waited more than a day (below).
 	if not coalesce(v_settings.enabled and v_settings.sending, false) or v_settings.domain is null then
 		return '[]'::jsonb;
 	end if;
-	-- Open: waiting, or leased by a worker that did not finish in time.
+	-- Open: waiting, or leased by a worker that did not finish in time. An email already attempted may have gone out
+	-- (a lost answer, a timeout), and says so.
 	update public.qorpera_company_mail_outbox as mail
 	set status = 'cancelled', settled_at = v_now, lease_id = null, lease_expires_at = null,
 		last_error = case when public.qorpera_company_deleting(mail.profile_id) then 'The company is being deleted'
 			when mailbox.removed_at is not null then 'The mailbox was removed'
 			else 'The mailbox was paused' end
+			|| case when mail.attempt_count > 0 then '; an earlier attempt may have gone out' else '' end
 	from public.qorpera_company_mailboxes as mailbox, public.qorpera_event_hooks as hook
 	where mailbox.id = mail.mailbox_id and hook.id = mailbox.hook_id
 		and (mail.status in ('pending', 'retrying') or (mail.status = 'delivering' and mail.lease_expires_at <= v_now))
 		and (mailbox.removed_at is not null or hook.status <> 'active' or public.qorpera_company_deleting(mail.profile_id));
 	update public.qorpera_company_mail_outbox as mail
 	set status = 'failed', settled_at = v_now, lease_id = null, lease_expires_at = null,
-		last_error = case when mail.attempt_count >= 8 then coalesce(mail.last_error, 'Gave up after eight attempts')
+		last_error = left(case when mail.attempt_count >= 8 then coalesce(mail.last_error, 'Gave up after eight attempts')
 			else 'Not sent within a day' end
+			|| case when mail.attempt_count > 0 then '; an earlier attempt may have gone out' else '' end, 1000)
 	where (mail.status in ('pending', 'retrying') or (mail.status = 'delivering' and mail.lease_expires_at <= v_now))
 		and (mail.created_at <= v_now - interval '1 day'
 			or (mail.status = 'delivering' and mail.attempt_count >= 8));
@@ -329,21 +381,25 @@ begin
 	), claimed as (
 		update public.qorpera_company_mail_outbox as mail
 		set status = 'delivering', attempt_count = mail.attempt_count + 1, lease_id = p_lease_id,
-			lease_expires_at = v_now + interval '5 minutes'
+			lease_expires_at = v_now + interval '5 minutes',
+			-- The current domain at the first attempt; later attempts repeat it (a domain change moves unsent email).
+			from_address = coalesce(mail.from_address, (select mailbox.local_part || '@' || v_settings.domain
+				from public.qorpera_company_mailboxes as mailbox where mailbox.id = mail.mailbox_id))
 		from candidates
 		where mail.id = candidates.id
 		returning mail.*
 	)
 	select coalesce(jsonb_agg(jsonb_build_object(
 		'mailId', claimed.id, 'leaseId', claimed.lease_id, 'attemptCount', claimed.attempt_count,
-		'from', '"' || claimed.from_name || '" <' || mailbox.local_part || '@' || v_settings.domain || '>',
+		'from', '"' || claimed.from_name || '" <' || claimed.from_address || '>',
 		'to', to_jsonb(claimed.recipients_to), 'cc', to_jsonb(claimed.recipients_cc),
 		'subject', claimed.subject, 'text', claimed.body,
+		-- A reply is an automatic response (RFC 3834): other responders leave it unanswered.
 		'headers', jsonb_strip_nulls(jsonb_build_object('In-Reply-To', claimed.in_reply_to,
-			'References', claimed.thread_references))
+			'References', claimed.thread_references,
+			'Auto-Submitted', case when claimed.in_reply_to_delivery_id is not null then 'auto-replied' end))
 	) order by claimed.created_at), '[]'::jsonb) into v_result
-	from claimed
-	join public.qorpera_company_mailboxes as mailbox on mailbox.id = claimed.mailbox_id;
+	from claimed;
 	return v_result;
 end
 $$;

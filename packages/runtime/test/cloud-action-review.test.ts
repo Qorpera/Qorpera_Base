@@ -167,6 +167,15 @@ describe("what the card shows", () => {
 				text: "Hi",
 			}).details,
 		).toEqual({ from: "support@mail.example.test", subject: "Hello", text: "Hi" });
+		const many = Array.from({ length: 10 }, (_, i) => `recipient-number-${i}-${"x".repeat(40)}@acme.test`);
+		const target = describeCloudAction(tool("send_mail"), {
+			from: "support@mail.example.test",
+			to: many,
+			subject: "Hello",
+			text: "Hi",
+		}).target;
+		expect(target?.endsWith("[...]")).toBe(true);
+		expect(Buffer.byteLength(target ?? "")).toBeLessThanOrEqual(500);
 	});
 
 	it("shows the text a Drive file gets, and names the file by its id only when nothing else names it", () => {

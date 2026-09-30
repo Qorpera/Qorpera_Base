@@ -256,6 +256,35 @@ describe("mail message", () => {
 		assert.equal(bareAddress("sup\ud83dport@mail.example.test"), null);
 	});
 
+	it("marks mail sent automatically, whatever the case of its header names", () => {
+		const plain = normalizeMessage(EMAIL_ID, message);
+		assert.equal(plain.automated, false);
+		assert.equal(plain.autoSubmitted, null);
+		for (const [headers, expected] of [
+			[{ "Auto-Submitted": "auto-replied; owner-email=\"x@example.org\"" }, true],
+			[{ "auto-submitted": "auto-generated" }, true],
+			[{ "auto-submitted": "No" }, false],
+			[{ Precedence: "bulk" }, true],
+			[{ precedence: "list" }, true],
+			[{ precedence: "first-class" }, false],
+			[{ "List-Id": "<announce.example.org>" }, true],
+		] as const) {
+			const normalized = normalizeMessage(EMAIL_ID, { ...message, headers });
+			assert.equal(normalized.automated, expected, JSON.stringify(headers));
+		}
+		const replied = normalizeMessage(EMAIL_ID, { ...message, headers: { "Auto-Submitted": "auto-replied" } });
+		assert.equal(replied.autoSubmitted, "auto-replied");
+		assert.deepEqual(Object.keys(replied).slice(8, 15), [
+			"messageId",
+			"inReplyTo",
+			"references",
+			"autoSubmitted",
+			"precedence",
+			"listId",
+			"automated",
+		]);
+	});
+
 	it("keeps only text the database can hold", () => {
 		assert.equal(clean("a\u0000b"), "ab");
 		assert.equal(clean("x\ud83dy"), "x�y");

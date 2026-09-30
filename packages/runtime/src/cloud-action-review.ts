@@ -458,7 +458,8 @@ export function describeCloudAction(
 		title = "Send an email";
 		const addresses = (value: JsonValue | undefined) =>
 			Array.isArray(value) ? value.filter((item): item is string => typeof item === "string").join(", ") : "";
-		target = addresses(args.to) || null;
+		// Cut with a mark, so a card never drops a recipient silently.
+		target = bounded(addresses(args.to), 500) || null;
 		add("from", args.from);
 		add("cc", addresses(args.cc));
 		add("subject", args.subject);

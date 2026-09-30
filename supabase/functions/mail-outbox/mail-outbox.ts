@@ -4,7 +4,8 @@
  * POST /mail-outbox, called each minute by pg_cron + pg_net with a Supabase secret key, which the function checks
  * itself. It claims a batch of the email agents queued (qorpera_claim_company_mail, under a five-minute lease) and
  * sends each through the mail provider (Resend) with the platform's key, which no node or agent holds: from the
- * agent at the mailbox's address, plain text with the AI line the database added, and a reply's thread headers.
+ * agent at the mailbox's address, plain text with the AI line the database added, and a reply's thread headers and
+ * Auto-Submitted: auto-replied.
  * Each email's provider idempotency key is its id, so a send repeated after a lost answer or an expired lease is
  * the same email. A sent email is completed; a failure the provider may get past (a timeout, a rate limit, a server
  * error) is retried after 1, 2, 4 ... minutes, and any other fails the email. Sends are paced, since the provider
@@ -106,7 +107,8 @@ export function parseMailClaim(value: unknown): {
 			typeof headers !== "object" ||
 			Array.isArray(headers) ||
 			Object.entries(headers).some(
-				([name, content]) => !["In-Reply-To", "References"].includes(name) || typeof content !== "string",
+				([name, content]) =>
+					!["In-Reply-To", "References", "Auto-Submitted"].includes(name) || typeof content !== "string",
 			)
 		) {
 			rejected.push({ mailId: job.mailId, leaseId: job.leaseId, message: "The queued email could not be read" });

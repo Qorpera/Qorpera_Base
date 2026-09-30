@@ -1,9 +1,10 @@
 -- @fixture 732_runtime_company_mailboxes.test.sql until "-- The company's hourly budget holds for mail."
 -- Company mail, sending: step M2b (20260929680000): an agent run queues an email from a live mailbox of its company,
 -- as the agent ("<agent> at <company>"), in plain text with the AI line, and a reply joins the received email's
--- thread; sending has its own switch and the company's limits; the worker's door claims a batch with a lease, sends
--- from the mailbox's current address and completes or fails each; mail from a removed or paused mailbox, of a company
--- being deleted, or waiting a day is not sent; texts are cleared seven days after they settle.
+-- thread, but an email sent automatically is never answered and a company never emails its own mailboxes; sending has
+-- its own switch and the company's limits on recipients; the worker's door claims a batch with a lease, sends from the
+-- mailbox's address at the first attempt and completes or fails each; mail from a removed or paused mailbox, of a
+-- company being deleted, or waiting a day is not sent; texts are cleared seven days after they settle.
 
 -- A send by the fixture's live agent run (company 010, agent "Agent"), which acknowledged its wake.
 create function pg_temp.send(p_call text, p_request jsonb) returns jsonb language sql as $$
@@ -49,7 +50,7 @@ begin
 		if not has_function_privilege('service_role', v_function, 'EXECUTE') then
 			raise exception '% lost its caller', v_function; end if;
 	end loop;
-	if (select sending or company_hourly_sends <> 30 or company_daily_sends <> 200 from public.qorpera_mail_settings) then
+	if (select sending or company_hourly_recipients <> 60 or company_daily_recipients <> 300 from public.qorpera_mail_settings) then
 		raise exception 'Sending was not built switched off with its limits'; end if;
 end
 $$;
@@ -95,6 +96,12 @@ select pg_temp.path_claims('service_role');
 select pg_temp.send_error('from-' || n, pg_temp.request(address), '42501')
 from unnest(array['sales@mail.example.test', 'support@elsewhere.example', 'support@sub.mail.example.test',
 	'support@mail.example.test@mail.example.test', 'theirs@mail.example.test', 'theirs']) with ordinality as item(address, n);
+-- Never to the company's own mailboxes: their routines would answer their own company. Another company's is mail.
+select pg_temp.send_error('own-' || n, request, '42501')
+from unnest(array[
+	pg_temp.request(p_extra => '{"to":["Support@Mail.Example.Test"]}'),
+	pg_temp.request(p_extra => '{"cc":["a.b@mail.example.test"]}')
+]) with ordinality as item(request, n);
 
 -- An email, as the agent, with the AI line; addresses once each, lowercased, and none in both to and cc.
 select set_config('qorpera_test.sent', pg_temp.send('call-1', jsonb_build_object('from', 'Support@Mail.Example.Test',
@@ -107,7 +114,7 @@ select pg_temp.wake_assert(current_setting('qorpera_test.sent')::jsonb - 'mailId
 		'to', jsonb_build_array('customer@example.org', 'second@example.org'), 'cc', jsonb_build_array('boss@example.org'),
 		'subject', 'Your order'),
 	'The receipt names the email as queued: ' || current_setting('qorpera_test.sent'));
-select pg_temp.wake_assert(mail.body = E'Hello,\n\nYour order ships today.\n\n-- \n'
+select pg_temp.wake_assert(mail.body = E'Hello,\n\nYour order ships today.\n\n'
 		|| 'Written and sent by Agent, an AI agent working for Path gateway fixture.'
 		and mail.status = 'pending' and mail.staff_agent_id = '30000000-0000-4000-8000-000000000030'
 		and mail.profile_id = '30000000-0000-4000-8000-000000000010' and mail.in_reply_to is null
@@ -117,14 +124,14 @@ from pg_temp.outbox(current_setting('qorpera_test.sent')::jsonb) as mail;
 -- The same call again is the same email, whatever it asks now.
 select pg_temp.wake_assert(pg_temp.send('call-1', pg_temp.request()) ->> 'mailId' = current_setting('qorpera_test.sent')::jsonb ->> 'mailId'
 	and (select count(*) = 1 from public.qorpera_company_mail_outbox), 'A repeated call queues nothing more');
--- The agent's and company's names as a header can carry them.
-update public.qorpera_profile_staff set display_name = E'Ada "the"\n<Bot>\\'
+-- The agent's and company's names as a header can carry them: no quotes, brackets, line breaks or bidi controls.
+update public.qorpera_profile_staff set display_name = E'Ada "the"\n<Bot>\\\u202Etob'
 where profile_id = '30000000-0000-4000-8000-000000000010' and staff_agent_id = '30000000-0000-4000-8000-000000000030';
 select set_config('qorpera_test.named', pg_temp.send('call-2', pg_temp.request('support'))::text, true);
-select pg_temp.wake_assert(current_setting('qorpera_test.named')::jsonb ->> 'fromName' = 'Ada the Bot at Path gateway fixture'
+select pg_temp.wake_assert(current_setting('qorpera_test.named')::jsonb ->> 'fromName' = 'Ada the Bot tob at Path gateway fixture'
 	and (pg_temp.outbox(current_setting('qorpera_test.named')::jsonb)).body
-		like E'%\n-- \nWritten and sent by Ada the Bot, an AI agent working for Path gateway fixture.',
-	'Names lose quotes, brackets and line breaks: ' || current_setting('qorpera_test.named'));
+		like E'%.\n\nWritten and sent by Ada the Bot tob, an AI agent working for Path gateway fixture.',
+	'Names lose quotes, brackets, line breaks and bidi controls: ' || current_setting('qorpera_test.named'));
 
 -- A reply joins the received email's thread: its message id, and the references before it.
 select set_config('qorpera_test.question', pg_temp.received(30, 'support@mail.example.test', jsonb_build_object(
@@ -150,6 +157,19 @@ from unnest(array[
 	pg_temp.send('call-6', pg_temp.request(p_extra => jsonb_build_object('inReplyTo',
 		pg_temp.received(33, 'support@mail.example.test', '{}'))))
 ]) as receipt;
+-- References keeps the thread's first id and its newest that fit one header line.
+select set_config('qorpera_test.long_thread', pg_temp.send('call-8', pg_temp.request(p_extra => jsonb_build_object('inReplyTo',
+	pg_temp.received(36, 'support@mail.example.test', jsonb_build_object('messageId', '<m36@example.org>',
+		'references', '<root@example.org> ' || (select string_agg(format('<ref-%s-%s@example.org>', lpad(n::text, 2, '0'),
+			repeat('x', 20)), ' ' order by n) from generate_series(0, 59) as n))))))::text, true);
+select pg_temp.wake_assert(thread_references like '<root@example.org> <ref-%' and thread_references like '% <ref-59-%> <m36@example.org>'
+		and thread_references not like '%<ref-00-%' and char_length(thread_references) <= 980
+		and char_length(thread_references) > 900,
+	'The thread keeps its root and its newest ids: ' || thread_references)
+from pg_temp.outbox(current_setting('qorpera_test.long_thread')::jsonb);
+-- An email sent automatically (an auto-reply, a list, bulk mail) is never answered: that is how mail loops start.
+select pg_temp.send_error('automated', pg_temp.request(p_extra => jsonb_build_object('inReplyTo',
+	pg_temp.received(35, 'support@mail.example.test', '{"messageId":"<m35@example.org>","automated":true}'))), '42501');
 -- An email whose text was cleared is still answered, outside its thread.
 update public.qorpera_event_deliveries set body = null where id = current_setting('qorpera_test.question')::uuid;
 select pg_temp.wake_assert(not (pg_temp.send('call-7', pg_temp.request(p_extra => jsonb_build_object('inReplyTo',
@@ -179,28 +199,49 @@ delete from public.qorpera_company_deletions where profile_id = '30000000-0000-4
 select pg_temp.wake_error(format('select public.qorpera_send_agent_mail(%L::jsonb, %L, %L::jsonb)',
 	current_setting('qorpera_test.event_binding'), 'finished', pg_temp.request()), '42501');
 
--- The company's limits: an hour's and a day's, with the time room returns.
-update public.qorpera_mail_settings set company_hourly_sends = (select count(*) from public.qorpera_company_mail_outbox
-	where profile_id = '30000000-0000-4000-8000-000000000010');
+-- The company's limits count recipients, an hour's and a day's, and say to the second when room returns. Email to
+-- another company's mailbox is mail like any other.
+select pg_temp.wake_assert(pg_temp.send('to-theirs', pg_temp.request(p_extra => '{"to":["theirs@mail.example.test"]}'))
+	->> 'status' = 'queued', 'Another company''s mailbox is a recipient like any other');
+update public.qorpera_company_mail_outbox set created_at = clock_timestamp() - interval '2 hours'
+where profile_id = '30000000-0000-4000-8000-000000000010';
+select pg_temp.send('limit-a', pg_temp.request());
+select pg_temp.send('limit-b', pg_temp.request(p_extra => '{"to":["x@example.org","y@example.org"]}'));
+update public.qorpera_company_mail_outbox set created_at = clock_timestamp() - interval '50 minutes' where call_id = 'limit-a';
+update public.qorpera_company_mail_outbox set created_at = clock_timestamp() - interval '10 minutes' where call_id = 'limit-b';
+update public.qorpera_mail_settings set company_hourly_recipients = 3;
 do $$
+declare v_after text := (select to_char(date_trunc('second', created_at + interval '1 hour' + interval '999999 microseconds')
+	at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') from public.qorpera_company_mail_outbox where call_id = 'limit-a');
 begin
 	perform pg_temp.send('limited-hour', pg_temp.request());
 	raise exception 'The hourly limit let an email through';
 exception when program_limit_exceeded then
-	if sqlerrm not like 'The company has sent the % emails an hour and 200 a day its limits allow; try again after %Z' then
-		raise; end if;
+	-- Three recipients in the hour: room for one more returns when limit-a (one) leaves; limit-b (two) may stay.
+	if sqlerrm <> 'The company has emailed the 3 recipients an hour and 300 a day its limits allow; this email can go after '
+		|| v_after then raise exception 'Unexpected limit: %', sqlerrm; end if;
 end
 $$;
-update public.qorpera_mail_settings set company_hourly_sends = 30, company_daily_sends = 1;
-select pg_temp.send_error('limited-day', pg_temp.request(), '54000');
--- Cancelled email never went out and does not count.
-update public.qorpera_mail_settings set company_daily_sends = (select count(*) + 1 from public.qorpera_company_mail_outbox
-	where profile_id = '30000000-0000-4000-8000-000000000010');
+update public.qorpera_mail_settings set company_hourly_recipients = 4;
+select pg_temp.wake_assert(pg_temp.send('fits-hour', pg_temp.request()) ->> 'status' = 'queued', 'The fourth recipient fits');
+-- An email with more recipients than a limit allows, a limit of zero included, never fits.
+update public.qorpera_mail_settings set company_hourly_recipients = 60, company_daily_recipients = 1;
+select pg_temp.wake_error(format('select pg_temp.send(%L, %L::jsonb)', 'too-many',
+	pg_temp.request(p_extra => '{"to":["x@example.org","y@example.org"]}')), '54000',
+	'The company''s email limits allow 60 recipients an hour and 1 a day, fewer than this email has');
+update public.qorpera_mail_settings set company_daily_recipients = 0;
+select pg_temp.send_error('closed', pg_temp.request(), '54000');
+-- A day's limit; email cancelled before any attempt does not count, email attempted does (it may have gone out).
+update public.qorpera_mail_settings set company_daily_recipients = (select sum(cardinality(recipients_to)
+	+ cardinality(recipients_cc)) + 1 from public.qorpera_company_mail_outbox where profile_id = '30000000-0000-4000-8000-000000000010');
 select pg_temp.send('to-cancel', pg_temp.request());
-update public.qorpera_company_mail_outbox set status = 'cancelled', settled_at = clock_timestamp() where call_id = 'to-cancel';
+update public.qorpera_company_mail_outbox set status = 'cancelled', settled_at = clock_timestamp(), attempt_count = 1
+where call_id = 'to-cancel';
+select pg_temp.send_error('limited-day', pg_temp.request(), '54000');
+update public.qorpera_company_mail_outbox set attempt_count = 0 where call_id = 'to-cancel';
 select pg_temp.wake_assert(pg_temp.send('after-cancel', pg_temp.request()) ->> 'status' = 'queued',
-	'A cancelled email frees its place');
-update public.qorpera_mail_settings set company_daily_sends = 200;
+	'An email cancelled before any attempt frees its place');
+update public.qorpera_mail_settings set company_daily_recipients = 300;
 
 -- The worker's door. Switched off, it claims nothing and queued email waits.
 update public.qorpera_mail_settings set sending = false;
@@ -240,15 +281,20 @@ select pg_temp.wake_assert(jsonb_array_length(current_setting('qorpera_test.clai
 select pg_temp.wake_assert(job - 'leaseId' = jsonb_build_object('mailId', current_setting('qorpera_test.sent')::jsonb ->> 'mailId',
 		'attemptCount', 1, 'from', '"Agent at Path gateway fixture" <support@test-1234.resend.app>',
 		'to', jsonb_build_array('customer@example.org', 'second@example.org'), 'cc', jsonb_build_array('boss@example.org'),
-		'subject', 'Your order', 'text', E'Hello,\n\nYour order ships today.\n\n-- \n'
+		'subject', 'Your order', 'text', E'Hello,\n\nYour order ships today.\n\n'
 			|| 'Written and sent by Agent, an AI agent working for Path gateway fixture.', 'headers', '{}'::jsonb),
 	'A job is the email as the provider takes it: ' || job::text)
 from jsonb_array_elements(current_setting('qorpera_test.claim')::jsonb) as item(job)
 where job ->> 'mailId' = current_setting('qorpera_test.sent')::jsonb ->> 'mailId';
 select pg_temp.wake_assert(job -> 'headers' = jsonb_build_object('In-Reply-To', '<m30@example.org>',
-		'References', '<m1@example.org> <m2@example.org> <m30@example.org>'), 'A reply carries its thread headers: ' || job::text)
+		'References', '<m1@example.org> <m2@example.org> <m30@example.org>', 'Auto-Submitted', 'auto-replied'),
+	'A reply carries its thread headers and says it is an automatic response: ' || job::text)
 from jsonb_array_elements(current_setting('qorpera_test.claim')::jsonb) as item(job)
 where job ->> 'mailId' = current_setting('qorpera_test.reply')::jsonb ->> 'mailId';
+select pg_temp.wake_assert(job -> 'headers' = '{"Auto-Submitted":"auto-replied"}'::jsonb,
+	'An unthreaded reply is still an automatic response: ' || job::text)
+from jsonb_array_elements(current_setting('qorpera_test.claim')::jsonb) as item(job)
+where job ->> 'mailId' = (select id::text from public.qorpera_company_mail_outbox where call_id = 'call-7');
 -- Leased email is not claimed again.
 select pg_temp.wake_assert(public.qorpera_claim_company_mail(50, '73300000-0000-4000-8000-000000000002') = '[]'::jsonb,
 	'Leased email is not claimed twice');
@@ -280,13 +326,17 @@ where call_id in ('call-5', 'call-6');
 update public.qorpera_company_mail_outbox set attempt_count = 8, last_error = 'Resend returned HTTP 500'
 where call_id = 'call-6';
 update public.qorpera_company_mail_outbox set next_attempt_at = clock_timestamp() where call_id = 'call-3';
+-- The domain moves again: an email already attempted repeats its first address, under the same idempotency key.
+update public.qorpera_mail_settings set domain = 'moved.example.test';
 select set_config('qorpera_test.claim', public.qorpera_claim_company_mail(50, '73300000-0000-4000-8000-000000000003')::text, true);
+select pg_temp.wake_assert(job ->> 'from' like '% <support@test-1234.resend.app>', 'A retry keeps its first address: ' || job::text)
+from jsonb_array_elements(current_setting('qorpera_test.claim')::jsonb) as item(job);
 select pg_temp.wake_assert((select array_agg(job ->> 'mailId' order by job ->> 'mailId')
 		from jsonb_array_elements(current_setting('qorpera_test.claim')::jsonb) as item(job))
 	= (select array_agg(id::text order by id::text) from public.qorpera_company_mail_outbox where call_id in ('call-3', 'call-5'))
 	and (select attempt_count = 2 and status = 'delivering' from public.qorpera_company_mail_outbox where call_id = 'call-5')
-	and (select status = 'failed' and last_error = 'Resend returned HTTP 500' from public.qorpera_company_mail_outbox
-		where call_id = 'call-6'),
+	and (select status = 'failed' and last_error = 'Resend returned HTTP 500; an earlier attempt may have gone out'
+		from public.qorpera_company_mail_outbox where call_id = 'call-6'),
 	'An expired lease is claimed again, and the eighth attempt was the last: ' || current_setting('qorpera_test.claim'));
 -- A company being deleted sends nothing more.
 select public.qorpera_fail_company_mail(id, '73300000-0000-4000-8000-000000000003', 'Resend returned HTTP 429', true)
@@ -296,8 +346,9 @@ insert into public.qorpera_company_deletions(profile_id, requested_by_user_id)
 values ('30000000-0000-4000-8000-000000000010', '30000000-0000-4000-8000-000000000001');
 select pg_temp.wake_assert(public.qorpera_claim_company_mail(50, '73300000-0000-4000-8000-000000000004') = '[]'::jsonb,
 	'A company being deleted sends nothing more');
-select pg_temp.wake_assert(status = 'cancelled' and last_error = 'The company is being deleted',
-	'Its queued email is cancelled: ' || status)
+select pg_temp.wake_assert(status = 'cancelled'
+		and last_error = 'The company is being deleted; an earlier attempt may have gone out',
+	'Its queued email is cancelled, and an attempted one says it may have gone out: ' || last_error)
 from public.qorpera_company_mail_outbox where call_id = 'call-5';
 delete from public.qorpera_company_deletions where profile_id = '30000000-0000-4000-8000-000000000010';
 

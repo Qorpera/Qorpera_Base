@@ -598,8 +598,9 @@ wake), so no agent runs and nothing is charged before it.
 - Sending (20260929680000_runtime_company_mail_sending, step M2b): agents send from a mailbox with the runtime
   tool `send_mail`; there is no client surface yet. Sent email is queued in `qorpera_company_mail_outbox` (closed
   to every API role) and sent by the `mail-outbox` Edge Function. Sending has its own switch in
-  `qorpera_mail_settings` (`sending`, built off) and the company limits `company_hourly_sends` (30) and
-  `company_daily_sends` (200).
+  `qorpera_mail_settings` (`sending`, built off) and the company limits on recipients `company_hourly_recipients`
+  (60) and `company_daily_recipients` (300). Received mail (`mail.received`) now also carries `autoSubmitted`,
+  `precedence`, `listId` and `automated`; agents never answer automated mail.
 
 ## 3. Realtime
 
