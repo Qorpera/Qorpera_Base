@@ -7,6 +7,7 @@ import {
 	cloudToolRequest,
 	parseCloudNativeToolBinding,
 } from "./cloud-native-tool-authority.ts";
+import { CloudRuntimeDiagnosticError } from "./cloud-runtime-observability.ts";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const MAX_BYTES = 8 * 1024 * 1024;
@@ -21,9 +22,11 @@ const LOCK_CONFLICT_PAUSES_MS: ReadonlyArray<readonly [number, number]> = [
 	[100, 300],
 	[300, 700],
 ];
-/** A retry starts only when its pause ends at least this long before the call's budget runs out. */
+/** A retry starts only when its pause and an attempt as long as the last one, and never shorter than this, end
+ * inside the budget. */
 const LOCK_CONFLICT_ATTEMPT_MS = 500;
-/** The tool call's own budget (`cloudToolRequest`'s default). Retries fit inside it and never add to it. */
+/** The tool call's own budget (`cloudToolRequest`'s default). Retries fit inside it and never add to it: a retry
+ * that still runs longer than expected is cut when the budget ends. */
 const LOCK_CONFLICT_BUDGET_MS = 5_000;
 const LOCK_CONFLICT_BODY_BYTES = 1024;
 const LOCK_CONFLICT_BODY_MS = 250;
@@ -130,29 +133,48 @@ export class HttpNativeCompanyObjectTransport implements CloudObjectTransport {
 		return cloudToolRequest(
 			async (signal) => {
 				for (let retry = 0; ; retry++) {
-					const response = await this.#fetch(`${this.#origin}/v1/native-company-objects/${path}`, {
-						...init,
-						redirect: "error",
-						signal,
-						headers: {
-							...init.headers,
-							authorization: `Bearer ${this.#token}`,
-							"x-qorpera-native-binding": this.#binding,
-						},
-					});
-					if (!response.ok) {
+					const attemptStarted = performance.now();
+					// A retry must end inside the budget: its own deadline is what the budget has left. The first
+					// attempt keeps the transport's deadline, as before.
+					const deadline =
+						retry === 0
+							? undefined
+							: AbortSignal.timeout(Math.max(1, Math.floor(budget - (attemptStarted - started))));
+					const attempt = deadline ? AbortSignal.any([signal, deadline]) : signal;
+					let refused = 0;
+					try {
+						const response = await this.#fetch(`${this.#origin}/v1/native-company-objects/${path}`, {
+							...init,
+							redirect: "error",
+							signal: attempt,
+							headers: {
+								...init.headers,
+								authorization: `Bearer ${this.#token}`,
+								"x-qorpera-native-binding": this.#binding,
+							},
+						});
+						if (response.ok) return await this.#read(response, maximum, attempt);
+						refused = response.status;
 						const range = LOCK_CONFLICT_PAUSES_MS[retry];
 						if (!range) void response.body?.cancel().catch(() => undefined);
-						else if (await this.#lockConflict(response, signal)) {
+						else if (await this.#lockConflict(response, attempt)) {
 							const wait = Math.round(range[0] + Math.random() * (range[1] - range[0]));
-							if (performance.now() - started + wait + LOCK_CONFLICT_ATTEMPT_MS <= budget) {
+							const now = performance.now();
+							// The next attempt is expected to take as long as this one did: a lock timeout answers
+							// only after the database's whole lock wait (2 s).
+							const expected = Math.max(LOCK_CONFLICT_ATTEMPT_MS, now - attemptStarted);
+							if (now - started + wait + expected <= budget) {
 								await pause(wait, undefined, { signal });
 								continue;
 							}
 						}
-						throw new Error(`Native object authority unavailable (${response.status})`);
+					} catch (error) {
+						// A retry cut at the budget ends like the deadline it stands in for: its outcome is unknown.
+						if (deadline?.aborted && !signal.aborted)
+							throw new CloudRuntimeDiagnosticError("timeout", "Cloud tool authority unavailable");
+						throw error;
 					}
-					return this.#read(response, maximum, signal);
+					throw new Error(`Native object authority unavailable (${refused})`);
 				}
 			},
 			this.#signal,

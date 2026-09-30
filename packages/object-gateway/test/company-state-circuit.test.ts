@@ -214,10 +214,11 @@ describe("one company's database state and the shared circuit", () => {
 		state.fail = { company: "a", respond: async () => postgrest(code) };
 		const refused = await routes[route]("a");
 		expect(refused.status).toBe(status);
-		// A lock conflict says so, so the native object transport may send the same request again; a stop does not.
+		// A lock conflict on the native object route says so: the native object transport may send the same request
+		// again. A stop does not, and neither does a member route, whose earlier steps may have committed.
 		expect(await refused.json()).toEqual({
 			error: "Object authority rejected the operation",
-			...(status === 409 ? { code: "lock_conflict" } : {}),
+			...(status === 409 && route !== "member read" ? { code: "lock_conflict" } : {}),
 		});
 		expect(authority.health().api.status).toBe("healthy");
 		// Within the cooldown, another company's request reaches the database and is served.
@@ -303,12 +304,14 @@ describe("one company's database state and the shared circuit", () => {
 		},
 	);
 
-	it.each(["55P03", "40P01", "40001"])("names a %s on a profile read as a lock conflict in its 503", async (code) => {
-		const { profileRead, state } = await gateway();
+	it.each(["55P03", "40P01", "40001"])("keeps a %s on a profile read a plain 503", async (code) => {
+		// The lock conflict stays circuit-neutral (ObjectLockConflict), but only the native object route names it.
+		const { authority, profileRead, state } = await gateway();
 		state.fail = { company: "a", respond: async () => postgrest(code) };
 		const refused = await profileRead("a");
 		expect(refused.status).toBe(503);
-		expect(await refused.json()).toEqual({ error: "Object dependency is unavailable", code: "lock_conflict" });
+		expect(await refused.json()).toEqual({ error: "Object dependency is unavailable" });
+		expect(authority.health().api.status).not.toBe("unavailable");
 	});
 
 	it.each([

@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { performance } from "node:perf_hooks";
 import { HttpNativeCompanyObjectTransport } from "@qorpera/runtime/cloud-native-company-objects";
+import { CloudRuntimeDiagnosticError } from "@qorpera/runtime/cloud-runtime-observability";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ObjectGatewayJournal } from "../../object-gateway/src/journal.ts";
 import { FileSystemObjectStore } from "../../object-gateway/src/object-store.ts";
@@ -459,22 +460,59 @@ describe("which refusals the native object transport sends again", () => {
 		for (const start of t.starts) expect(start).toBeLessThanOrEqual(1_500 - 500);
 	});
 
-	it("counts the 5 s tool budget even when its own deadline is longer", async () => {
-		vi.spyOn(Math, "random").mockReturnValue(1);
-		// Conflicts answer after 2 s, a writer's lock wait (#550); the transport's own deadline is 8 s.
-		const t = transport(
-			() =>
-				new Promise<Response>((resolve) =>
-					setTimeout(() => resolve(Response.json(conflict, { status: 409 })), 2_000),
-				),
-		);
-		await expect(t.put()).rejects.toThrow("(409)");
+	it.each([0, 1])(
+		"keeps every attempt inside the 5 s tool budget when conflicts take 2 s (pauses at random %s)",
+		async (random) => {
+			vi.spyOn(Math, "random").mockReturnValue(random);
+			// Conflicts answer after 2 s, a writer's whole lock wait (#550, #573); the transport's own deadline is 8 s.
+			// The fake ignores aborts, so each attempt ends exactly when it answers.
+			const answers: number[] = [];
+			const t = transport(
+				() =>
+					new Promise<Response>((resolve) =>
+						setTimeout(() => {
+							answers.push(performance.now() - t.started);
+							resolve(Response.json(conflict, { status: 409 }));
+						}, 2_000),
+					),
+			);
+			await expect(t.put()).rejects.toThrow("(409)");
+			vi.mocked(Math.random).mockRestore();
+			const elapsed = performance.now() - t.started;
+			// Attempt 2 answers at ~4.1-4.3 s. A third, expected to take 2 s like the last one, cannot end by 5 s,
+			// so it is not sent: with the shortest pauses it used to start at ~4.4 s and answer at ~6.4 s.
+			expect(t.request).toHaveBeenCalledTimes(2);
+			expect(answers).toHaveLength(2);
+			expect(elapsed).toBeLessThan(5_000);
+			for (const answered of answers) expect(answered).toBeLessThan(5_000);
+		},
+		15_000,
+	);
+
+	it("cuts a retry that runs longer than expected when the 5 s budget ends", async () => {
+		vi.spyOn(Math, "random").mockReturnValue(0);
+		const signals: AbortSignal[] = [];
+		// The first conflict answers at once; the retry then waits on a lock that never frees.
+		const t = transport((attempt) => {
+			if (attempt === 1) return Response.json(conflict, { status: 409 });
+			return new Promise<Response>((_resolve, reject) => {
+				const signal = t.request.mock.calls[1]![1]!.signal!;
+				signals.push(signal);
+				signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+			});
+		});
+		const failure = await t.put().catch((error: unknown) => error);
 		vi.mocked(Math.random).mockRestore();
 		const elapsed = performance.now() - t.started;
-		// Attempt 2 starts at ~2.3 s and answers at ~4.3 s; a third would start past 4.5 s.
+		// Cut by the budget, not the transport's own 8 s deadline, and reported as a timeout: its outcome is unknown.
+		expect(failure).toBeInstanceOf(CloudRuntimeDiagnosticError);
+		expect(failure).toMatchObject({ category: "timeout", message: "Cloud tool authority unavailable" });
+		expect(elapsed).toBeGreaterThanOrEqual(4_900);
+		expect(elapsed).toBeLessThan(5_500);
+		expect(signals).toHaveLength(1);
+		expect(signals[0]!.aborted).toBe(true);
 		expect(t.request).toHaveBeenCalledTimes(2);
-		expect(elapsed).toBeLessThan(5_000);
-	}, 10_000);
+	}, 15_000);
 
 	it("ends a pause when the run ends", async () => {
 		vi.spyOn(Math, "random").mockReturnValue(1);
