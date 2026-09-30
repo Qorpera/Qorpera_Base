@@ -12,7 +12,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-
 
 export const CLOUD_LIST_HOOKS_TOOL_DESCRIPTION =
 	"List your company's hooks: where other services send events, such as a website form, a payment provider or a monitoring alert. " +
-	"Each hook has an id, a name, what it is for, its proof (address: anyone with the address may post; stripe, github, hmac-sha256: the sender signs), its status and when it last received something. " +
+	"Each hook has an id, a name, what it is for, its proof (address: anyone with the address may post; stripe, github, hmac-sha256: the sender signs; mail: a company mailbox, which receives email at its email address), its status and when it last received something. " +
 	"When an owner or admin started this run, each hook also has its address and path, and url, the full address a sending service posts to, once the platform has one; never share an address outside the company. " +
 	"A routine wakes on a hook's events with manage_routine and the trigger kind event, using the hook's id.";
 

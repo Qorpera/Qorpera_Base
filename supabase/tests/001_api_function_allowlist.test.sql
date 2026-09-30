@@ -117,6 +117,7 @@ insert into api_function_allowlist(signature, anon, authenticated, reason) value
 	('public.qorpera_create_artifact_index(uuid,uuid,uuid[])', true, true, 'member: auth.uid() + membership/ownership; anon only through the platform default'),
 	('public.qorpera_create_artifact_retention_hold(uuid,uuid,text,timestamp with time zone)', true, true, 'member: auth.uid() + membership/ownership; anon only through the platform default'),
 	('public.qorpera_create_cloud_company(uuid,text,integer)', false, true, 'member: auth.uid() + membership/ownership'),
+	('public.qorpera_create_company_mailbox(uuid,uuid,text,text)', false, true, 'member: auth.uid() + owner/admin of the company'),
 	('public.qorpera_create_event_hook(uuid,uuid,text,text,text,integer,integer)', false, true, 'member: auth.uid() + membership/ownership'),
 	('public.qorpera_create_execution_sponsor_binding(uuid,uuid,text,uuid,bigint,boolean)', true, true, 'member: auth.uid() + membership/ownership; anon only through the platform default'),
 	('public.qorpera_create_hosted_profile(text,text,integer)', true, true, 'member: auth.uid() + membership/ownership; anon only through the platform default'),
