@@ -755,6 +755,50 @@ Decisions:
 - Not in 3a: `member_manage_company_machine` goes with 3f. `member_office_catalog` takes the gc fence before checking
   membership on either core; that is fixed on its own (it affects live companies).
 
+### 6.4 C1c-3c as built (migration 20260929690000, tests 664 and 665)
+
+- `qorpera_folder_member_change_enter(company, member, mode)`: the prelude of a member change, in core §3's order.
+  Modes are `remove` (removing a member, or leaving), `role` and `join`. It takes locks only; the callers keep their
+  checks and messages.
+  1. **Removal only:** the jobs its connection revoke will end (queued or leased, paid by a connection the member owns
+     in this company), `FOR UPDATE` in id order. They come before the fence: a run of the member's holds its job and
+     then asks for the member row (665 A).
+  2. The folder fence `FOR NO KEY UPDATE` (§6.1's decision). Effects hold it `KEY SHARE`, which this mode does not
+     block. Member changes and joins wait for each other, and stop and resume wait for them (665 B, E).
+  3. The company row `KEY SHARE` (rank 0). A join stops here; its own statements then take the invitation, the new
+     member row and, in the thread trigger, the rooms and their conversations, in that order.
+  4. **Removal only:** an open founding table's row `FOR NO KEY UPDATE`, which `founding_member_left` updates (before
+     the members, as the founding lobby orders it).
+  5. Rank 1 in key order: the member `FOR UPDATE`, and when the member is a founder, the other founders `KEY SHARE`
+     (the guard's reads). The member's role is read under the fence, so the founders cannot change meanwhile.
+  6. Rank 4: every agent thread room `FOR UPDATE` in id order. The thread trigger rewrites them and their room members.
+     A post or an answer holding a room `FOR SHARE` makes the change wait there, before it writes (665 C).
+  7. **Removal only**, rank 5: the member's compute identities, then its connections, `FOR NO KEY UPDATE` in id order.
+  8. Rank 8: the member's pending capture tickets, the grants it issued (and, for a removal, the grants on its own
+     secrets), then its own secrets, `FOR NO KEY UPDATE` in id order.
+  9. Rank 11: the conversations the change writes, `FOR UPDATE` in id order: the agent threads and, for a removal, the
+     member's open private conversations.
+  The delete or update that follows fires the triggers in name order: vault rows, the founding row, the threads,
+  access state, private conversations, compute identities, connections and, through the connection cascade, the jobs.
+  Each finds its rows already held, in the same or a stronger mode.
+- **Removing a member, leaving and a role change** take the prelude in place of the company row `FOR UPDATE`. A role
+  change takes the member row `FOR UPDATE` too, which the function then takes again: a stronger mode later would wait
+  for a run's `KEY SHARE` on it while that run waited at a room the change holds.
+- **The founder guard** takes the company row `KEY SHARE` on `folder-v2`, for its "being deleted" check. The fence
+  serializes the departures it compares: two founders leaving at once meet there, and the second sees no founder left
+  (665 B). Its marker text is unchanged. A member change never waits for a company-row `KEY SHARE` holder (665 D).
+- **Joining by invitation** takes the fence and the company row before the invitation row. Deletion's stop removes
+  invitations, so a join that took the invitation first would meet it in a cycle.
+- **Views are not closed.** A removed member's view refuses at its next use: resolving it checks membership, and its
+  commit takes the member row at rank 1.
+- Not in 3c:
+  - `delete_hosted_profile` still takes the company row `FOR UPDATE` (through `request_company_deletion`'s gc fence);
+    3g owns deletion. A join serializes with it at rank 0 meanwhile.
+  - A job queued for the member's connection after the prelude's read, and account deletion's cascade, still reach
+    the connection trigger's job lock late; 3d gives the triggers `NOWAIT` modes that refuse retryably.
+  - The founding lobby's own functions (`lock_company_founding`, `remove_company_founder`, `respond_company_founding`)
+    go with 3d.
+
 ## 7. Traps for C1c-2 and C1c-3
 
 - `decide_agent_routine` catches `manage_agent_routine`'s 55000 by its message; keep that refusal as it is.
