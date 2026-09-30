@@ -562,7 +562,8 @@ wake), so no agent runs and nothing is charged before it.
   URL plus this path), `maxBodyBytes` (1024–262144, default 65536),
   `perMinute` (1–120, default 60), `createdAt`, `lastReceivedAt` (absent
   until the first delivery). Owners and admins only (42501); 23505 for a
-  name in use, 54000 past 50 live hooks, 22023 for a bad environment, name,
+  name in use, 54000 past 50 live hooks, 22023 for a bad environment, name
+  (names beginning `mail-` belong to mailboxes, from 20260928299650),
   purpose, proof or limit, 0A000 for a `folder-v2` company (its hooks come
   with their connection file).
 - `qorpera_set_event_hook_status(p_hook_id, p_status)` with `active`,
@@ -576,6 +577,24 @@ wake), so no agent runs and nothing is charged before it.
   `verified`, `refused`, `duplicate`), `deliveryKey`, `eventType`,
   `contentType`, `bodyBytes`, `bodySha256`, `verifiedAt`, `reason`. No
   bodies. Owners and admins only.
+
+### Company mailboxes (20260928299650_runtime_company_mailboxes)
+
+- Contract: section 19, item 9; design `deploy/first-node/RUNTIME-EVENT-INTAKE.md`, "Mail (M2)". Step M2a:
+  receiving only, for `snapshot-v1` companies. Company mail is built switched off, and no mailbox can be made
+  until operators set the platform's mail domain.
+- `qorpera_create_company_mailbox(p_profile_id, p_environment_id, p_local_part, p_purpose)` → the hook
+  descriptor (`qorpera.event-hook/v1`) of the mailbox's hook: `proof` `mail`, `name` `mail-<local part>` (with a short digest suffix when
+  the local part holds a dot or an underscore), and
+  `email` (`<local part>@<mail domain>`); never `address` or `path`. The local part is 1–64 lowercase letters,
+  digits, dots, hyphens and underscores, with no leading, trailing or doubled dot; RFC 2142 names
+  (`postmaster`, `abuse`, …) and `noreply` are reserved (22023). An address belongs to one live mailbox across
+  the platform (23505 when taken). The domain is one platform setting: a mailbox keeps only its local part, so
+  `email` always shows the current domain. Owners and admins only (42501); 54000 past 20 mailboxes or 50 hooks;
+  0A000 before the mail domain is set, and for a `folder-v2` company.
+- A mailbox is paused, resumed and removed with `qorpera_set_event_hook_status` on its hook; removing frees
+  its address. `qorpera_list_event_hooks` lists mailboxes with their `email` for every member, and
+  `qorpera_list_event_deliveries` their received messages (`eventType` `mail.received`).
 
 ## 3. Realtime
 
@@ -657,6 +676,14 @@ machine.
   (paused or not ready), 413 (over the hook's size limit or 256 KiB), 429
   (over the hook's minute or the company's hourly budget, with `Retry-After`),
   431 (headers too large) or 503 (switched off, or retry).
+- `mail-intake` (20260928299650) — the mail provider's (Resend's) webhook for
+  received email, not for clients: `POST /functions/v1/mail-intake`, signed
+  with the platform's signing secret (Standard Webhooks). Answers 200 (every
+  recipient settled, other event types ignored, or a message the database
+  refuses as malformed, which is logged), 400 (a payload that is not JSON, or
+  an `email.received` without a valid message id), 401 (bad or stale
+  signature), 405, 413 (over 64 KiB), 429 (a mailbox over its limits, with
+  `Retry-After`) or 503 (mail switched off, or retry).
 - `profile-invitation-email`, `company-file-verifier`, `artifact-gc-worker`,
   `runner-control`, `runner-broker`, `runner-orchestrator`,
   `computer-hour-notices` (20260928249160, founders' hour emails) — service or
