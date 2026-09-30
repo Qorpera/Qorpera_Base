@@ -563,7 +563,7 @@ wake), so no agent runs and nothing is charged before it.
   `perMinute` (1–120, default 60), `createdAt`, `lastReceivedAt` (absent
   until the first delivery). Owners and admins only (42501); 23505 for a
   name in use, 54000 past 50 live hooks, 22023 for a bad environment, name
-  (names beginning `mail-` belong to mailboxes, from 20260929650000),
+  (names beginning `mail-` belong to mailboxes, from 20260928299650),
   purpose, proof or limit, 0A000 for a `folder-v2` company (its hooks come
   with their connection file).
 - `qorpera_set_event_hook_status(p_hook_id, p_status)` with `active`,
@@ -578,7 +578,7 @@ wake), so no agent runs and nothing is charged before it.
   `contentType`, `bodyBytes`, `bodySha256`, `verifiedAt`, `reason`. No
   bodies. Owners and admins only.
 
-### Company mailboxes (20260929650000_runtime_company_mailboxes)
+### Company mailboxes (20260928299650_runtime_company_mailboxes)
 
 - Contract: section 19, item 9; design `deploy/first-node/RUNTIME-EVENT-INTAKE.md`, "Mail (M2)". Step M2a:
   receiving only, for `snapshot-v1` companies. Company mail is built switched off, and no mailbox can be made
@@ -681,7 +681,7 @@ machine.
   (paused or not ready), 413 (over the hook's size limit or 256 KiB), 429
   (over the hook's minute or the company's hourly budget, with `Retry-After`),
   431 (headers too large) or 503 (switched off, or retry).
-- `mail-intake` (20260929650000) — the mail provider's (Resend's) webhook for
+- `mail-intake` (20260928299650) — the mail provider's (Resend's) webhook for
   received email, not for clients: `POST /functions/v1/mail-intake`, signed
   with the platform's signing secret (Standard Webhooks). Answers 200 (every
   recipient settled, other event types ignored, or a message the database
