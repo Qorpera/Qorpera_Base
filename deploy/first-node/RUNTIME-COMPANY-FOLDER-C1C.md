@@ -713,7 +713,7 @@ Decisions:
 - Who creates a `folder-v2` office, and who owns the machine-event and worker drains on `folder-v2`, are decided with
   3f and 3j.
 
-### 6.2 C1c-3a as built (migration 20260929620000, tests 660 and 661)
+### 6.2 C1c-3a as built (migration 20260928289620, tests 660 and 661)
 
 - `qorpera_folder_company_enter(env, profile, targets, refuse_paused)`: the prelude of a member's action without a
   run: the pause (refused when asked), the fence `KEY SHARE` with the pause read again, rank 0, then the targets at

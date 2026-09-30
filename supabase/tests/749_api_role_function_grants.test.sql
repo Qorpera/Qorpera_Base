@@ -20,7 +20,7 @@ $$;
 
 -- 1. Who may execute each function. anon: never. authenticated: only the member RPC
 -- qorpera_session_profile_id. service_role: the invitation delivery worker's three functions and the
--- three CHECK constraint validators (granted by name in 20260929610000).
+-- three CHECK constraint validators (granted by name in 20260928289610).
 create temporary table grants_expected(signature text primary key, authenticated boolean not null, service_role boolean not null)
 on commit drop;
 insert into grants_expected(signature, authenticated, service_role) values
