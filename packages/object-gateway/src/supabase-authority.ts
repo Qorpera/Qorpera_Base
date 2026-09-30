@@ -1,4 +1,5 @@
 import { ObjectDependency, ObjectDependencyError, readBoundedObjectResponse } from "./dependency.ts";
+import type { FolderObjectAuthority, FolderRunActor } from "./folder-objects.ts";
 import type {
 	AuthorizedMemberCompanyObject,
 	MemberCompanyObjectAuthority,
@@ -60,6 +61,25 @@ interface SupabaseObjectAuthorityOptions {
 	now?: () => number;
 }
 
+/** PostgREST answers classes 40 and 55 with 500. From the folder core those are one company's state, not the
+ * database's health: a stopped company (55000) becomes 423 and a lock conflict (40001, 40P01, 55P03) 409, so neither
+ * opens the dependency circuit for every company. Any other 500 stays a dependency failure. */
+async function folderRefusal(response: Response, signal: AbortSignal): Promise<ObjectDependencyError> {
+	let code: unknown;
+	try {
+		code = (
+			JSON.parse(new TextDecoder().decode(await readBoundedObjectResponse(response, 16 * 1024, signal))) as {
+				code?: unknown;
+			}
+		).code;
+	} catch {
+		return new ObjectDependencyError(500);
+	}
+	if (code === "55000") return new ObjectDependencyError(423);
+	if (code === "40001" || code === "40P01" || code === "55P03") return new ObjectDependencyError(409);
+	return new ObjectDependencyError(500);
+}
+
 function record(value: unknown, label: string): Record<string, unknown> {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`Invalid ${label}`);
 	return value as Record<string, unknown>;
@@ -79,7 +99,7 @@ function deletionAuthorization(value: unknown): ObjectDeletionAuthorization {
 }
 
 export class SupabaseObjectAuthority
-	implements ObjectGatewayAuthority, NativeCompanyObjectAuthority, MemberCompanyObjectAuthority
+	implements ObjectGatewayAuthority, NativeCompanyObjectAuthority, FolderObjectAuthority, MemberCompanyObjectAuthority
 {
 	readonly #projectUrl: string;
 	readonly #publishableKey: string;
@@ -356,6 +376,75 @@ export class SupabaseObjectAuthority
 		);
 	}
 
+	async authorizeFolderUpload(
+		environmentId: string,
+		actor: FolderRunActor,
+		intentId: string,
+		sha256: string,
+		bytes: number,
+	): Promise<{ profileId: string }> {
+		const value = await this.#rpc(
+			"qorpera_folder_authorize_object_upload",
+			{ p_environment_id: environmentId, p_actor: actor, p_intent: intentId, p_sha256: sha256, p_bytes: bytes },
+			undefined,
+			this.#secretKey,
+			true,
+		);
+		const receipt = value as Record<string, unknown> | null;
+		if (
+			!receipt ||
+			typeof receipt !== "object" ||
+			receipt.schema !== "qorpera.folder-object-upload/v1" ||
+			typeof receipt.profileId !== "string" ||
+			!UUID_PATTERN.test(receipt.profileId)
+		)
+			throw new ObjectDependencyError(403);
+		return { profileId: receipt.profileId };
+	}
+
+	async confirmFolderObject(
+		environmentId: string,
+		actor: FolderRunActor,
+		intentId: string,
+		sha256: string,
+		bytes: number,
+	): Promise<void> {
+		const value = (await this.#rpc(
+			"qorpera_folder_confirm_object",
+			{ p_environment_id: environmentId, p_actor: actor, p_intent: intentId, p_sha256: sha256, p_bytes: bytes },
+			undefined,
+			this.#secretKey,
+			true,
+		)) as Record<string, unknown> | null;
+		if (!value || value.schema !== "qorpera.folder-object/v1" || value.sha256 !== sha256 || value.bytes !== bytes)
+			throw new ObjectDependencyError(403);
+	}
+
+	async authorizeFolderDownload(
+		environmentId: string,
+		actor: FolderRunActor,
+		sha256: string,
+	): Promise<{ profileId: string; bytes: number }> {
+		const value = (await this.#rpc(
+			"qorpera_folder_authorize_object_download",
+			{ p_environment_id: environmentId, p_actor: actor, p_sha256: sha256 },
+			undefined,
+			this.#secretKey,
+			true,
+		)) as Record<string, unknown> | null;
+		if (
+			!value ||
+			value.schema !== "qorpera.folder-object-download/v1" ||
+			typeof value.profileId !== "string" ||
+			!UUID_PATTERN.test(value.profileId) ||
+			!Number.isSafeInteger(value.bytes) ||
+			(value.bytes as number) < 0 ||
+			(value.bytes as number) > 8 * 1024 * 1024
+		)
+			throw new ObjectDependencyError(403);
+		return { profileId: value.profileId, bytes: value.bytes as number };
+	}
+
 	async authorizeDelete(
 		profileId: string,
 		sha256: string,
@@ -543,6 +632,7 @@ export class SupabaseObjectAuthority
 		body: Record<string, unknown>,
 		bearer: string | undefined,
 		apiKey: string,
+		folder = false,
 	): Promise<unknown> {
 		const headers: Record<string, string> = {
 			...supabaseRequestHeaders(apiKey, bearer),
@@ -556,6 +646,7 @@ export class SupabaseObjectAuthority
 				signal,
 			});
 			if (!response.ok) {
+				if (folder && response.status === 500) throw await folderRefusal(response, signal);
 				void response.body?.cancel().catch(() => undefined);
 				throw new ObjectDependencyError(response.status);
 			}

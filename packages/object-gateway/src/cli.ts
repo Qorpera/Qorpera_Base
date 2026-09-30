@@ -62,7 +62,13 @@ const handler = createObjectGatewayHandler({
 	memberClientOrigins: JSON.parse(process.env.QORPERA_MEMBER_CLIENT_ORIGINS ?? "[]"),
 	...(process.env.QORPERA_MEMBER_COMPANY_FILES === "1" ? { memberFiles: memberAuthority } : {}),
 	...(process.env.QORPERA_OBJECT_GATEWAY_NATIVE_TOKEN
-		? { nativeObjects: { token: required(process.env, "QORPERA_OBJECT_GATEWAY_NATIVE_TOKEN"), authority } }
+		? {
+				nativeObjects: {
+					token: required(process.env, "QORPERA_OBJECT_GATEWAY_NATIVE_TOKEN"),
+					authority,
+					folder: authority,
+				},
+			}
 		: {}),
 	...(readLeases
 		? { readLeases, revocationToken: required(process.env, "QORPERA_OBJECT_GATEWAY_REVOCATION_TOKEN") }

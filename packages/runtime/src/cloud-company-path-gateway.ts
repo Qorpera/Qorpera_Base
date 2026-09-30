@@ -123,6 +123,10 @@ export type CloudCompanyPathRpc =
 	| "qorpera_folder_list"
 	| "qorpera_folder_commit"
 	| "qorpera_folder_record_release"
+	// Staging a folder-v2 file's bytes (core C1d).
+	| "qorpera_folder_open_upload"
+	| "qorpera_folder_seal_upload"
+	| "qorpera_folder_renew_upload"
 	// Event wakes (W2): the company's hooks and one event's body.
 	| "qorpera_list_agent_event_hooks"
 	| "qorpera_read_agent_event"
