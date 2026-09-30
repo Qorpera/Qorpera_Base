@@ -30,8 +30,7 @@ end
 $check$;
 alter table public.qorpera_runtime_node_demands add constraint qorpera_runtime_node_demands_last_refusal_check
 	check (last_refusal in ('NODE_DISABLED', 'NODE_OBSERVATION_UNAVAILABLE', 'NODE_HARDWARE_CHANGED',
-		'NODE_CAPACITY_EXHAUSTED', 'COMPUTER_HOURS_EXHAUSTED')) not valid;
-alter table public.qorpera_runtime_node_demands validate constraint qorpera_runtime_node_demands_last_refusal_check;
+		'NODE_CAPACITY_EXHAUSTED', 'COMPUTER_HOURS_EXHAUSTED'));
 
 do $admission$
 declare
