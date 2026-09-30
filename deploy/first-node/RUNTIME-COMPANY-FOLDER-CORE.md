@@ -309,9 +309,10 @@ is never upgraded. The steps:
    0. the company's profile row, `FOR KEY SHARE` (never stronger, and only this company's), in every
       save whose hook writes a roster row (C1b-3a; it was the head of rank 2 in F2-1). A roster write ends in a company
       operation: the operation clock, then a foreign key to `qorpera_profiles`. The thread trigger's
-      session update is another one. Until C1c, posting takes the profile row `FOR UPDATE` (gc fence)
+      session update is another one. On snapshot-v1, posting takes the profile row `FOR UPDATE` (gc fence)
       before the room and the clock, so the save takes the profile row first too (F2-1, #461; test
-      701). It comes before the members because #462's leave, remove and role change lock the
+      701). On `folder-v2` (C1c-3a), posting takes the profile row `KEY SHARE` and its room `FOR SHARE`,
+      so a save that changes a group chat meets it at the room instead (C1C §6.2). It comes before the members because #462's leave, remove and role change lock the
       profile row and then the member (C1B "C1b-3: views" §4). The commit refuses
       `qorpera_profiles` at any other rank;
    1. members;
@@ -864,7 +865,7 @@ GC is the largest correctness risk of the design, so it gets its own tests:
 | Folder fence row | not present (the wake-admission fence, `FOR UPDATE`) | effects, wake admission and the post-commit worker `FOR KEY SHARE`; stop and resume `FOR UPDATE`; reads and GC never |
 | Admission row | not present | every wake-inserting or wake-admitting transaction `FOR NO KEY UPDATE`, last before the clock; multi-company loops one company per transaction |
 | Job row | `FOR UPDATE`, which also serializes a run's own reads | commits and effects `FOR KEY SHARE`; renewal `FOR NO KEY UPDATE`; lease-ending changes `FOR UPDATE`; reads never |
-| Members, staff, rooms, index rows, resources, grants, vault rows, unique claims | various, unordered | once, in the order of §3 step 4: `FOR NO KEY UPDATE` for rows rewritten, `FOR KEY SHARE` for rows referenced |
+| Members, staff, rooms, index rows, resources, grants, vault rows, unique claims | various, unordered | once, in the order of §3 step 4: `FOR NO KEY UPDATE` for rows rewritten, `FOR KEY SHARE` for rows referenced. One exception: a member's post and a room delivery's retry take their room `FOR SHARE` (C1C §6.2) |
 | Entry rows | the one path, after the head | targets and sources, plus every ancestor `FOR KEY SHARE`, in one ancestors-first order; absent rows claimed in order; a subtree unit locks only its root; no update changes a key |
 | Clock | none | last, from the increment to the end of the commit |
 

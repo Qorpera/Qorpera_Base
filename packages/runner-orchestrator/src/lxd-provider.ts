@@ -821,11 +821,49 @@ const RESERVING_RETIREMENT_MS = 10 * 60_000;
 /** Settled journals move here, inside the state root, out of every scan. */
 const JOURNAL_ARCHIVE = "archive";
 const SETTLED_JOURNAL_RETENTION_MS = 24 * 60 * 60_000;
+/** Journals one reconcile pass works on side by side. */
+const RECONCILE_CONCURRENCY = 8;
 /** A guest waiting this long for (or on) its one assignment is asked about at most once per
  * ENDED_RUNNER_CHECK_MS: whether its run's job has ended (see #retireEndedRunners). */
 const ENDED_RUNNER_GRACE_MS = 2 * 60_000;
 const ENDED_RUNNER_CHECK_MS = 60_000;
 
+/** Serializes work on one key; work on different keys runs side by side. */
+class KeyedLock {
+	readonly #tails = new Map<string, Promise<void>>();
+
+	/** Runs `action` once every earlier holder of `key` has finished. */
+	async run<T>(key: string, action: () => Promise<T>): Promise<T> {
+		const previous = this.#tails.get(key);
+		let release = (): void => undefined;
+		const current = new Promise<void>((resolveWait) => {
+			release = resolveWait;
+		});
+		this.#tails.set(key, current);
+		if (previous) await previous;
+		try {
+			return await action();
+		} finally {
+			if (this.#tails.get(key) === current) this.#tails.delete(key);
+			release();
+		}
+	}
+
+	/** Whether `key` is held or awaited right now. */
+	held(key: string): boolean {
+		return this.#tails.has(key);
+	}
+}
+
+/** One journal per acquisition, each under its own lock: acquisitions, deliveries, stops and reconcile
+ * passes on different journals run side by side, so one VM's boot (about 17 s, up to the readiness
+ * timeout) never holds up another run's start, delivery or retirement. Nothing process-wide needs a
+ * lock. The provider keeps no slot count: what bounds concurrent starts is the node ceiling, which the
+ * database admits for each allocation under the node row's lock (qorpera_reserve_runtime_node_machine)
+ * right before every create and start. The capacity inventory check before a new start only reads
+ * journals, each written by one atomic rename. Lock waits are not abortable, as the old process-wide
+ * lock's were not: a caller that gave up still gets its turn once the journal is free and stops at its
+ * first call that takes its signal (a stop has by then marked its guest for retirement, as it asked). */
 export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderServiceBackend {
 	readonly #registeredCapacity = new Set<string>();
 	readonly #releasedCapacity = new Set<string>();
@@ -840,7 +878,10 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 	readonly #lxd: LxdClient;
 	readonly #guest: LxdGuestTransport;
 	readonly #fetch: ServiceHttpFetch;
-	#serial: Promise<void> = Promise.resolve();
+	/** Per acquisition id; every read-modify-write of a journal and its guest holds it. */
+	readonly #journals = new KeyedLock();
+	/** Per Compute Identity volume, which runs of one identity share: held while it is looked up or created. */
+	readonly #identityVolumes = new KeyedLock();
 
 	constructor(
 		config: LxdCloudRunnerProviderConfig,
@@ -860,50 +901,67 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 		this.#fetch = fetchImplementation;
 	}
 
-	/** Every journal is reconciled on every pass until it is settled (see #settled). One journal that cannot make
-	 * progress (for example a reserving acquisition the node ceiling refuses
-	 * while another guest still holds the slot) must not stop the retirement of
-	 * finished guests behind it, or the slot is never released and the provider
-	 * livelocks. Failures are still reported after the pass; an abort stops it. */
+	/** Every journal is reconciled on every pass until it is settled (see #settled), up to
+	 * RECONCILE_CONCURRENCY at a time, each under its own lock. A journal that an acquisition, delivery
+	 * or stop holds is theirs to move. It is looked at again at the end of the pass once they have let
+	 * it go (an acquisition its caller just cancelled marks its guest for retirement and lets go within
+	 * moments), and otherwise, as for a boot in progress, on the next pass. One journal that cannot make
+	 * progress (for example a reserving acquisition the node ceiling refuses while another guest still
+	 * holds the slot, or an unreadable one) must not stop the retirement of finished guests beside it,
+	 * or the slot is never released and the provider livelocks. Failures are still reported after the
+	 * pass; an abort stops it. */
 	async reconcile(signal?: AbortSignal): Promise<void> {
-		await this.#exclusive(async () => {
-			await mkdir(this.#config.stateRoot, { recursive: true, mode: 0o700 });
-			await chmod(this.#config.stateRoot, 0o700);
-			const failures: unknown[] = [];
-			for (const entry of await readdir(this.#config.stateRoot, { withFileTypes: true })) {
-				if (!entry.isDirectory() || !UUID_PATTERN.test(entry.name)) continue;
-				if (!this.#settled.has(entry.name)) {
-					const current = await this.#readJournal(entry.name);
-					if (!current) continue;
+		await mkdir(this.#config.stateRoot, { recursive: true, mode: 0o700 });
+		await chmod(this.#config.stateRoot, 0o700);
+		const names = (await readdir(this.#config.stateRoot, { withFileTypes: true }))
+			.filter((entry) => entry.isDirectory() && UUID_PATTERN.test(entry.name))
+			.map((entry) => entry.name);
+		const failures: unknown[] = [];
+		const busy: string[] = [];
+		const reconcileAll = async (acquisitionIds: readonly string[]): Promise<void> => {
+			let next = 0;
+			const lane = async (): Promise<void> => {
+				while (next < acquisitionIds.length) {
+					signal?.throwIfAborted();
+					const acquisitionId = acquisitionIds[next++]!;
+					if (this.#journals.held(acquisitionId)) {
+						busy.push(acquisitionId);
+						continue;
+					}
 					try {
-						await this.#reconcileJournal(current, signal);
-						const settledAt = await this.#settledAt(entry.name, signal);
-						if (settledAt !== undefined) this.#settled.set(entry.name, settledAt);
+						await this.#journals.run(acquisitionId, () => this.#reconcileEntry(acquisitionId, signal));
 					} catch (error) {
 						if (signal?.aborted) throw error;
 						failures.push(error);
-						continue;
 					}
 				}
-				const settledAt = this.#settled.get(entry.name);
-				if (settledAt === undefined || Date.now() - settledAt < SETTLED_JOURNAL_RETENTION_MS) continue;
-				try {
-					await this.#archive(entry.name);
-				} catch (error) {
-					if (signal?.aborted) throw error;
-					failures.push(error);
-				}
-			}
-			try {
-				await this.#retireEndedRunners(signal);
-			} catch (error) {
-				if (signal?.aborted) throw error;
-				failures.push(error);
-			}
-			if (failures.length === 1) throw failures[0];
-			if (failures.length > 1)
-				throw new AggregateError(failures, "LXD provider reconcile failed for several journals");
-		});
+			};
+			await Promise.all(Array.from({ length: Math.min(RECONCILE_CONCURRENCY, acquisitionIds.length) }, lane));
+		};
+		await reconcileAll(names);
+		await reconcileAll(busy.splice(0).filter((acquisitionId) => !this.#journals.held(acquisitionId)));
+		try {
+			await this.#retireEndedRunners(signal);
+		} catch (error) {
+			if (signal?.aborted) throw error;
+			failures.push(error);
+		}
+		if (failures.length === 1) throw failures[0];
+		if (failures.length > 1) throw new AggregateError(failures, "LXD provider reconcile failed for several journals");
+	}
+
+	/** One journal's share of a reconcile pass; the caller holds its lock. */
+	async #reconcileEntry(acquisitionId: string, signal?: AbortSignal): Promise<void> {
+		if (!this.#settled.has(acquisitionId)) {
+			const current = await this.#readJournal(acquisitionId);
+			if (!current) return;
+			await this.#reconcileJournal(current, signal);
+			const settledAt = await this.#settledAt(acquisitionId, signal);
+			if (settledAt !== undefined) this.#settled.set(acquisitionId, settledAt);
+		}
+		const settledAt = this.#settled.get(acquisitionId);
+		if (settledAt !== undefined && Date.now() - settledAt >= SETTLED_JOURNAL_RETENTION_MS)
+			await this.#archive(acquisitionId);
 	}
 
 	async acquire(runId: string, work: CloudRunnerWork, signal: AbortSignal): Promise<CloudRunnerInstance> {
@@ -916,28 +974,29 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 		}
 	}
 
-	#acquire(
+	async #acquire(
 		runId: string,
 		work: CloudRunnerWork,
 		signal: AbortSignal,
 		step: AcquireStep,
 	): Promise<CloudRunnerInstance> {
-		return this.#exclusive(async () => {
-			await this.#assertCapacityInventory(signal);
-			step.stage = "work";
-			ensureStep2Work(work, this.#config.nativeCompanyRuntime !== undefined);
-			if (
-				this.#config.nativeCompanyRuntime &&
-				(work.sponsor.authenticationMode !== "native_subscription" ||
-					work.sponsor.provider !== "openai" ||
-					work.sponsor.nativeHarness !== "codex-cli")
-			) {
-				throw new Error("Governed native runtime requires the pinned Codex subscription harness");
-			}
-			if (runId !== work.runId) throw new Error("Provider acquisition must use the immutable run id");
-			const acquisitionId = this.#config.nativeCompanyRuntime
-				? runAttemptAcquisitionId(work.runId, work.attempt)
-				: runId;
+		await this.#assertCapacityInventory(signal);
+		step.stage = "work";
+		ensureStep2Work(work, this.#config.nativeCompanyRuntime !== undefined);
+		if (
+			this.#config.nativeCompanyRuntime &&
+			(work.sponsor.authenticationMode !== "native_subscription" ||
+				work.sponsor.provider !== "openai" ||
+				work.sponsor.nativeHarness !== "codex-cli")
+		) {
+			throw new Error("Governed native runtime requires the pinned Codex subscription harness");
+		}
+		if (runId !== work.runId) throw new Error("Provider acquisition must use the immutable run id");
+		const acquisitionId = this.#config.nativeCompanyRuntime
+			? runAttemptAcquisitionId(work.runId, work.attempt)
+			: runId;
+		// Held through the boot: only a replay, delivery, stop or reconcile of this same acquisition waits.
+		return this.#journals.run(acquisitionId, async () => {
 			const digest = workSha256(work);
 			let current = await this.#readJournal(acquisitionId);
 			if (!current && (await present(join(this.#config.stateRoot, JOURNAL_ARCHIVE, acquisitionId))))
@@ -951,23 +1010,37 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 				await mkdir(this.#config.stateRoot, { recursive: true, mode: 0o700 });
 				for (const entry of await readdir(this.#config.stateRoot, { withFileTypes: true })) {
 					if (!entry.isDirectory() || !UUID_PATTERN.test(entry.name) || entry.name === acquisitionId) continue;
-					let prior = await this.#readJournal(entry.name);
+					const prior = await this.#readJournal(entry.name);
 					if (!prior || (prior.runId ?? prior.acquisitionId) !== work.runId) continue;
 					if ((prior.attempt ?? 1) >= work.attempt) throw new Error("LXD provider refuses an older run attempt");
 					for (;;) {
 						retirementSignal.throwIfAborted();
-						await this.#reconcileJournal(prior, retirementSignal);
-						const retired = await this.#readJournal(entry.name);
-						if (!retired) throw new Error("LXD prior run attempt lost its journal");
-						const instance = await this.#lxd.getInstance(prior.lxd.project, prior.instanceName, retirementSignal);
+						// Each look holds the prior attempt's own lock, never across the wait between looks.
+						const retired = await this.#journals.run(entry.name, async () => {
+							const latest = await this.#readJournal(entry.name);
+							// A settled journal moves to the archive: its guest is gone and its capacity released.
+							if (!latest && (await present(join(this.#config.stateRoot, JOURNAL_ARCHIVE, entry.name))))
+								return undefined;
+							if (!latest) throw new Error("LXD prior run attempt lost its journal");
+							await this.#reconcileJournal(latest, retirementSignal);
+							const journal = await this.#readJournal(entry.name);
+							if (!journal) throw new Error("LXD prior run attempt lost its journal");
+							const instance = await this.#lxd.getInstance(
+								journal.lxd.project,
+								journal.instanceName,
+								retirementSignal,
+							);
+							return { journal, instance };
+						});
 						retirementSignal.throwIfAborted();
-						if (["stopped", "lost"].includes(retired.physicalState) && !instance) break;
-						if (!instance || !["registered", "assigned"].includes(retired.physicalState)) {
+						if (!retired) break;
+						const { journal, instance } = retired;
+						if (["stopped", "lost"].includes(journal.physicalState) && !instance) break;
+						if (!instance || !["registered", "assigned"].includes(journal.physicalState)) {
 							throw new Error("LXD prior run attempt has not retired its guest");
 						}
 						// Reconciliation validates physical and retained-volume authority on
 						// every poll. Never stop a still-running prior attempt here.
-						prior = retired;
 						await delay(250, undefined, { signal: retirementSignal });
 					}
 				}
@@ -1083,11 +1156,11 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 		delivery: CloudRunnerAssignmentDelivery,
 		signal?: AbortSignal,
 	): Promise<void> {
-		await this.#exclusive(async () => {
-			validateCloudRunnerWork(delivery.work);
-			const acquisitionId = this.#config.nativeCompanyRuntime
-				? runAttemptAcquisitionId(delivery.work.runId, delivery.work.attempt)
-				: delivery.work.runId;
+		validateCloudRunnerWork(delivery.work);
+		const acquisitionId = this.#config.nativeCompanyRuntime
+			? runAttemptAcquisitionId(delivery.work.runId, delivery.work.attempt)
+			: delivery.work.runId;
+		await this.#journals.run(acquisitionId, async () => {
 			const current = await this.#readJournal(acquisitionId);
 			if (
 				!current ||
@@ -1131,12 +1204,16 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 		reason: "delivery_failed" | "idle" | "revoked",
 		signal?: AbortSignal,
 	): Promise<void> {
-		await this.#exclusive(async () => {
-			const current = await this.#findJournalByRunner(runner.runnerId);
-			if (current) await this.#stopJournal(current, reason, signal);
+		const found = await this.#findJournalByRunner(runner.runnerId);
+		if (!found) return;
+		await this.#journals.run(found.acquisitionId, async () => {
+			// Read again under the lock: an acquisition, delivery or reconcile pass may have moved it meanwhile.
+			const current = await this.#readJournal(found.acquisitionId);
+			if (current?.runner.runnerId === runner.runnerId) await this.#stopJournal(current, reason, signal);
 		});
 	}
 
+	/** The caller holds the journal's lock. */
 	async #stopJournal(
 		current: LxdProviderJournal,
 		reason: "delivery_failed" | "idle" | "revoked",
@@ -1173,7 +1250,8 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 		const waiting: LxdProviderJournal[] = [];
 		for (const entry of await readdir(this.#config.stateRoot, { withFileTypes: true })) {
 			if (!entry.isDirectory() || !UUID_PATTERN.test(entry.name) || this.#settled.has(entry.name)) continue;
-			const current = await this.#readJournal(entry.name);
+			// An unreadable journal is the pass's own failure, already reported; it must not stop this check.
+			const current = await this.#readJournal(entry.name).catch(() => undefined);
 			if (
 				current &&
 				(current.physicalState === "registered" || current.physicalState === "assigned") &&
@@ -1191,9 +1269,17 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 		);
 		const failures: unknown[] = [];
 		for (const journal of asked) {
-			if (!ended.has(journal.runner.runnerId)) continue;
+			// A journal an acquisition, delivery or stop holds is theirs to move; the next check sees it again.
+			if (!ended.has(journal.runner.runnerId) || this.#journals.held(journal.acquisitionId)) continue;
 			try {
-				await this.#stopJournal(journal, "revoked", signal);
+				await this.#journals.run(journal.acquisitionId, async () => {
+					const current = await this.#readJournal(journal.acquisitionId);
+					if (
+						current?.runner.runnerId === journal.runner.runnerId &&
+						(current.physicalState === "registered" || current.physicalState === "assigned")
+					)
+						await this.#stopJournal(current, "revoked", signal);
+				});
 			} catch (error) {
 				if (signal?.aborted) throw error;
 				failures.push(error);
@@ -1848,47 +1934,51 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 		else if (!current.nodeCapacity) await this.#reserveNodeMachine(current, signal);
 	}
 
+	/** Runs of one Compute Identity share its volume: two of them starting together must not both create it. */
 	async #ensureIdentityVolume(
 		journal: LxdProviderJournal,
 		computeIdentityId: string,
 		signal?: AbortSignal,
 	): Promise<void> {
-		let volume = await this.#lxd.getStorageVolume(
-			journal.lxd.project,
-			journal.lxd.storagePool,
-			journal.lxd.identityVolume,
-			signal,
-		);
-		if (!volume) {
-			if (journal.lxd.companyRuntime && journal.physicalState !== "creating") {
-				throw new Error("Governed native identity volume is missing; recovery requires operator reconciliation");
-			}
-			await this.#lxd.createStorageVolume(
-				journal.lxd.project,
-				journal.lxd.storagePool,
-				{
-					name: journal.lxd.identityVolume,
-					type: "custom",
-					content_type: "filesystem",
-					description: `Qorpera Compute Identity ${computeIdentityId}`,
-					config: {
-						size: journal.lxd.identityVolumeSize,
-						"user.qorpera.schema": IDENTITY_VOLUME_SCHEMA,
-						"user.qorpera.compute_identity_id": computeIdentityId,
-						"user.qorpera.provider_adapter": this.adapterId,
-					},
-				},
-				signal,
-			);
-			volume = await this.#lxd.getStorageVolume(
+		const key = `${journal.lxd.project}/${journal.lxd.storagePool}/${journal.lxd.identityVolume}`;
+		await this.#identityVolumes.run(key, async () => {
+			let volume = await this.#lxd.getStorageVolume(
 				journal.lxd.project,
 				journal.lxd.storagePool,
 				journal.lxd.identityVolume,
 				signal,
 			);
-		}
-		if (!volume) throw new Error("LXD did not persist the Compute Identity volume");
-		this.#assertIdentityVolumeAuthority(journal, computeIdentityId, volume);
+			if (!volume) {
+				if (journal.lxd.companyRuntime && journal.physicalState !== "creating") {
+					throw new Error("Governed native identity volume is missing; recovery requires operator reconciliation");
+				}
+				await this.#lxd.createStorageVolume(
+					journal.lxd.project,
+					journal.lxd.storagePool,
+					{
+						name: journal.lxd.identityVolume,
+						type: "custom",
+						content_type: "filesystem",
+						description: `Qorpera Compute Identity ${computeIdentityId}`,
+						config: {
+							size: journal.lxd.identityVolumeSize,
+							"user.qorpera.schema": IDENTITY_VOLUME_SCHEMA,
+							"user.qorpera.compute_identity_id": computeIdentityId,
+							"user.qorpera.provider_adapter": this.adapterId,
+						},
+					},
+					signal,
+				);
+				volume = await this.#lxd.getStorageVolume(
+					journal.lxd.project,
+					journal.lxd.storagePool,
+					journal.lxd.identityVolume,
+					signal,
+				);
+			}
+			if (!volume) throw new Error("LXD did not persist the Compute Identity volume");
+			this.#assertIdentityVolumeAuthority(journal, computeIdentityId, volume);
+		});
 	}
 
 	async #ensureRecoveryVolume(journal: LxdProviderJournal, signal?: AbortSignal): Promise<void> {
@@ -2104,6 +2194,10 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 		return `qorpera-${acquisitionId.replaceAll("-", "")}`;
 	}
 
+	/** Before a new start, every journal whose guest may still exist must have its machine allocation and
+	 * node demand on record. It only reads, so it holds no lock: a journal written meanwhile is either a
+	 * new one, still reserving (both are reserved before any guest is created), or one moving towards
+	 * registered or deleted. */
 	async #assertCapacityInventory(signal: AbortSignal): Promise<void> {
 		await mkdir(this.#config.stateRoot, { recursive: true, mode: 0o700 });
 		for (const entry of await readdir(this.#config.stateRoot, { withFileTypes: true })) {
@@ -2305,19 +2399,5 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 			);
 		}
 		return response.json() as Promise<unknown>;
-	}
-
-	async #exclusive<T>(action: () => Promise<T>): Promise<T> {
-		const previous = this.#serial;
-		let release = (): void => undefined;
-		this.#serial = new Promise<void>((resolveWait) => {
-			release = resolveWait;
-		});
-		await previous;
-		try {
-			return await action();
-		} finally {
-			release();
-		}
 	}
 }

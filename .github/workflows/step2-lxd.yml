@@ -121,6 +121,7 @@ jobs:
           test/lxd-image-provenance.test.ts
           test/lxd-login-gateway.test.ts
           test/lxd-provider.test.ts
+          test/lxd-provider-concurrency.test.ts
           test/lxd-company-runtime.test.ts
           test/runtime-node-inventory.test.ts
           test/shared-execution-backend.test.ts

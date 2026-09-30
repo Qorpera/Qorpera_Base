@@ -24,7 +24,7 @@ import {
 	companyFormationWriteRefusal,
 	isCompanyFormationPath,
 } from "./cloud-company-formation.ts";
-import { type CloudCompanyPathPresence, observeCloudCompanyPathPresence } from "./cloud-company-path-presence.ts";
+import { type CloudCompanyPathPresence, claimCloudCompanyPathPresence } from "./cloud-company-path-presence.ts";
 import {
 	CloudCompanyFormationRefused,
 	CloudCompanyPathParentMissing,
@@ -325,13 +325,14 @@ export class CloudCompanyPathGateway {
 		this.#reads.add(path);
 	}
 
-	async #presence(
+	/** Publishes the claim in the background and reports the latest observation already
+	 * held. Canonical reads and writes never wait on presence. */
+	#presence(
 		path: string,
 		extent: CompanyPathExtent,
 		activity: CompanyPathActivity,
-		signal: AbortSignal,
-	): Promise<{ presence?: CompanyPathPresenceView }> {
-		const presence = await observeCloudCompanyPathPresence(this.#presenceHandle, path, extent, activity, signal);
+	): { presence?: CompanyPathPresenceView } {
+		const presence = claimCloudCompanyPathPresence(this.#presenceHandle, path, extent, activity);
 		return presence ? { presence } : {};
 	}
 
@@ -495,12 +496,7 @@ export class CloudCompanyPathGateway {
 		this.#remember(path);
 		if (first.entry?.kind !== "file") {
 			const value = {
-				...(await this.#presence(
-					path,
-					first.entry?.kind === "directory" ? "subtree" : "object",
-					"reading",
-					signal,
-				)),
+				...this.#presence(path, first.entry?.kind === "directory" ? "subtree" : "object", "reading"),
 				path,
 				version: first.version,
 				kind: first.entry?.kind ?? "absent",
@@ -517,7 +513,7 @@ export class CloudCompanyPathGateway {
 		const value = {
 			path,
 			version: first.version,
-			...(await this.#presence(path, "object", "reading", signal)),
+			...this.#presence(path, "object", "reading"),
 			snapshotId: first.snapshotId,
 			readObservationId: first.readObservationId,
 			kind: "file",
@@ -779,7 +775,7 @@ export class CloudCompanyPathGateway {
 		await this.assertReadableContext(signal);
 		const value = {
 			snapshotId: page.snapshotId as string,
-			...(await this.#presence(path, "subtree", "reading", signal)),
+			...this.#presence(path, "subtree", "reading"),
 			readObservationId: version(page.readObservationId)!,
 			items,
 			hasMore: page.hasMore,
@@ -963,7 +959,7 @@ export class CloudCompanyPathGateway {
 				if (refusal) throw new CloudCompanyFormationRefused(refusal);
 			}
 		}
-		await this.#presence(path, operation === "mkdir" ? "subtree" : "object", "writing", signal);
+		this.#presence(path, operation === "mkdir" ? "subtree" : "object", "writing");
 		if (next?.kind === "file" && bytes && manifest) {
 			for (const chunk of chunks)
 				await cloudToolRequest(

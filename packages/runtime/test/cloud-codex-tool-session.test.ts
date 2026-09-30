@@ -11,6 +11,7 @@ import {
 } from "@qorpera/runtime/cloud-action-review";
 import {
 	CLOUD_CODEX_BOUNDARY_CONFIG,
+	CodexLineReader,
 	disposeCloudCodexSpares,
 	prefetchCloudCodexArtifact,
 	prepareCloudCodexSpare,
@@ -319,6 +320,47 @@ it.each(["invalid-json", "oversized", "missing-result"])(
 		await expect(run(mode).result).rejects.toThrow("Invalid native boundary protocol");
 	},
 );
+
+it("reads a message near the wire limit that arrives over many pipe reads", async () => {
+	await expect(run("large-line").result).resolves.toEqual({
+		providerSessionId: "thread_fixture",
+		toolCalls: 0,
+		codexVersion: "0.155.1",
+		fencedRequests: 1,
+	});
+});
+
+describe("Codex stdout lines", () => {
+	const limit = 12 * 1024 * 1024;
+	const feed = (reader: CodexLineReader, bytes: Buffer, size: number, lines: string[]) => {
+		for (let offset = 0; offset < bytes.length; offset += size)
+			reader.push(bytes.subarray(offset, offset + size), limit, (line) => lines.push(line));
+	};
+	it("joins a 10.7 MiB line from 64 KiB reads, split inside multi-byte characters", () => {
+		const large = JSON.stringify({ method: "capture", data: `${"\u20ac".repeat(200_000)}${"x".repeat(10_700_000)}` });
+		expect(Buffer.byteLength(large)).toBeGreaterThan(10.7 * 1024 * 1024);
+		const reader = new CodexLineReader();
+		const lines: string[] = [];
+		feed(reader, Buffer.from(`${large}\n{"next":1}\n\n{"partial"`), 64 * 1024, lines);
+		expect(lines).toHaveLength(3);
+		expect(lines[0] === large).toBe(true);
+		expect(lines.slice(1)).toEqual(['{"next":1}', ""]);
+		reader.push(Buffer.from(':true}\n{"a"'), limit, (line) => lines.push(line));
+		expect(lines.at(-1)).toBe('{"partial":true}');
+	});
+	it("refuses a line over the limit, finished or not", () => {
+		const lines: string[] = [];
+		const reader = new CodexLineReader();
+		reader.push(Buffer.from("x".repeat(10)), 10, (line) => lines.push(line));
+		expect(() => reader.push(Buffer.from("x"), 10, (line) => lines.push(line))).toThrow("too large");
+		const complete = new CodexLineReader();
+		complete.push(Buffer.from(`${"x".repeat(10)}\n`), 10, (line) => lines.push(line));
+		expect(() => complete.push(Buffer.from(`${"x".repeat(6)}\u20ac\n`), 8, (line) => lines.push(line))).toThrow(
+			"too large",
+		);
+		expect(lines).toEqual(["x".repeat(10)]);
+	});
+});
 
 it("rejects a different provider binary version before starting a thread", async () => {
 	await expect(run("wrong-version").result).rejects.toThrow("Unsupported Codex boundary version");
