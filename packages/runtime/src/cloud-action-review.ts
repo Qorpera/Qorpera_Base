@@ -224,6 +224,8 @@ export function cloudActionEffect(
 		case "company_delete":
 			return "destructive";
 		case "computer_shell":
+		// An email from a company mailbox leaves the company (M2b).
+		case "send_mail":
 			return "external";
 		case "computer_browser":
 			return ["snapshot", "list_tabs", "select_tab"].includes(action.action as string) ? "read" : "external";
@@ -452,6 +454,16 @@ export function describeCloudAction(
 	} else if (tool.name === "computer_shell") {
 		title = "Run a command on the computer";
 		quote("command", action.command, 2000);
+	} else if (tool.name === "send_mail") {
+		title = "Send an email";
+		const addresses = (value: JsonValue | undefined) =>
+			Array.isArray(value) ? value.filter((item): item is string => typeof item === "string").join(", ") : "";
+		target = addresses(args.to) || null;
+		add("from", args.from);
+		add("cc", addresses(args.cc));
+		add("subject", args.subject);
+		quote("text", args.text, CONTENT_BYTES);
+		if (typeof args.inReplyTo === "string") add("thread", "A reply to an email the company received");
 	} else if (tool.name === "company_delete") {
 		title = "Delete from the Company File";
 		target = text(args.path) || null;
