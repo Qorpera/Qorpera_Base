@@ -1,3 +1,4 @@
+import { parseRecord } from "@qorpera/contracts";
 import { NodeWebSocket } from "./node-websocket.ts";
 import type { CloudRunnerWakeSource } from "./orchestrator.ts";
 
@@ -25,10 +26,6 @@ interface PhoenixMessage {
 	event?: unknown;
 	payload?: unknown;
 	ref?: unknown;
-}
-
-function record(value: unknown): Record<string, unknown> | undefined {
-	return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
 }
 
 /** Wake-ups for one orchestrator over Supabase Realtime: the database broadcasts to the orchestrator's
@@ -196,11 +193,15 @@ export class RealtimeOrchestratorWake implements CloudRunnerWakeSource {
 	#message(text: string): void {
 		let message: PhoenixMessage;
 		try {
-			message = record(JSON.parse(text)) ?? {};
+			// A message that is not a JSON object names no topic this client listens on.
+			message = parseRecord(JSON.parse(text), "Realtime message");
 		} catch {
 			return;
 		}
-		const payload = record(message.payload);
+		const payload =
+			message.payload !== null && typeof message.payload === "object" && !Array.isArray(message.payload)
+				? (message.payload as Record<string, unknown>)
+				: undefined;
 		if (message.event === "phx_reply") {
 			if (message.topic === "phoenix" && message.ref === this.#heartbeatRef) {
 				this.#heartbeatRef = undefined;
