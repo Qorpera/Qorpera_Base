@@ -50,7 +50,7 @@ const OPERATION_SCHEMA = "qorpera.cloud-tool-operation/v2";
 const RESULT_SCHEMA = "qorpera.cloud-tool-operation-result/v1";
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 /** Operations remembered for in-process replay; the oldest are forgotten, never refused. */
-const REMEMBERED_OPERATIONS = 65_536;
+export const CLOUD_NATIVE_TOOL_REMEMBERED_OPERATIONS = 65_536;
 
 /** Exact bytes used by receipt admission and independently checked effect gateways. */
 export function cloudNativeToolOperationEnvelope(
@@ -133,11 +133,22 @@ export class CloudNativeToolOperations {
 		string,
 		{ digest: string; result: Promise<ConfirmedOperationResult>; receipt: { id: string | null } }
 	>();
+	readonly #remembered: number;
 	#pending: Promise<void> = Promise.resolve();
 
-	constructor(run: CloudNativeToolRun, control: CloudNativeToolOperationControlPlane) {
+	/** `rememberedOperations` exists for tests, which cannot afford 65,536 real operations; it can only
+	 * lower the bound, never switch forgetting off. */
+	constructor(
+		run: CloudNativeToolRun,
+		control: CloudNativeToolOperationControlPlane,
+		options: { rememberedOperations?: number } = {},
+	) {
+		const remembered = options.rememberedOperations ?? CLOUD_NATIVE_TOOL_REMEMBERED_OPERATIONS;
+		if (!Number.isSafeInteger(remembered) || remembered < 1 || remembered > CLOUD_NATIVE_TOOL_REMEMBERED_OPERATIONS)
+			throw new Error("Invalid remembered operation count");
 		this.#run = run;
 		this.#control = control;
+		this.#remembered = remembered;
 	}
 
 	async execute(options: {
@@ -191,7 +202,7 @@ export class CloudNativeToolOperations {
 		if (previous && previous.digest !== digest) throw new Error("Cloud tool operation key is bound to other work");
 		// Remembered for a replay within this run; the kernel receipt stays the idempotency
 		// authority, so a forgotten key replays through it. Oldest first, never a refusal.
-		if (!previous && this.#operations.size >= REMEMBERED_OPERATIONS) {
+		if (!previous && this.#operations.size >= this.#remembered) {
 			const oldest = this.#operations.keys().next().value;
 			if (oldest !== undefined) this.#operations.delete(oldest);
 		}

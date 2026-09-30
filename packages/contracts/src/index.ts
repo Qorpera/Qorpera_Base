@@ -76,3 +76,4 @@ export * from "./company-computer-service-stop.ts";
 export * from "./company-computer-service-successor.ts";
 export * from "./company-computer-stop-acknowledgement.ts";
 export * from "./company-computer-stop-history.ts";
+export * from "./wire-values.ts";
