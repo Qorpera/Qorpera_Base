@@ -98,6 +98,33 @@ it("uses the existing receipt contract without exposing runner or session tokens
 	expect(String(request.mock.calls.map((entry) => entry[1]?.body))).not.toMatch(/lease_token|session_token/);
 });
 
+it("completes a folder writer's receipt with its commit through the folder core's completion", async () => {
+	const { binding } = nativeToolAuthorityFixture();
+	const request = vi.fn<typeof fetch>(async () => Response.json({}));
+	const control = new SupabaseNativeProviderControlPlane(
+		"https://cloud.example.test",
+		"SYNTHETIC_SERVICE_KEY",
+		request,
+	);
+	const receiptId = randomUUID();
+	const folderCommitId = randomUUID();
+	await control.completeFolderToolOperation(
+		binding,
+		{ receiptId, inputSha256: "b".repeat(64), result: { saved: true }, folderCommitId },
+		new AbortController().signal,
+	);
+	expect(String(request.mock.calls[0][0])).toBe(
+		"https://cloud.example.test/rest/v1/rpc/qorpera_folder_complete_run_receipt",
+	);
+	expect(JSON.parse(String(request.mock.calls[0][1]?.body))).toEqual({
+		p_binding: binding,
+		p_receipt_id: receiptId,
+		p_input_sha256: "b".repeat(64),
+		p_result: { saved: true },
+		p_folder_commit_id: folderCommitId,
+	});
+});
+
 it.each([403, 500, 503])("does not read or echo a stalled %s error body", async (status) => {
 	const { binding } = nativeToolAuthorityFixture();
 	const cancel = vi.fn();

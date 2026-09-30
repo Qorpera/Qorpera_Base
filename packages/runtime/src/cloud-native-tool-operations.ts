@@ -84,6 +84,21 @@ export interface CloudNativeToolOperationControlPlane {
 		input: CompleteCloudRunnerOperationInput,
 		signal: AbortSignal,
 	): Promise<unknown>;
+	/** A folder-v2 writer's completion, naming the folder commit that carried its receipt
+	 * (`qorpera_folder_complete_run_receipt`, core C1c-2b): the legacy completion names no commit. Only the company
+	 * runtime's control plane has it; an operation whose effect returns a folder commit needs it. */
+	completeFolderToolOperation?(
+		binding: CloudNativeToolBinding,
+		input: CompleteFolderToolOperationInput,
+		signal: AbortSignal,
+	): Promise<unknown>;
+}
+
+export interface CompleteFolderToolOperationInput {
+	receiptId: string;
+	inputSha256: string;
+	result: JsonValue;
+	folderCommitId: string;
 }
 
 export interface CloudNativeToolOperation {
@@ -101,6 +116,8 @@ export interface CloudNativeToolOperationOutput {
 	content: CloudToolContent;
 	outputSnapshotId?: string;
 	proposalId?: string;
+	/** The folder commit that carried this operation's receipt (a folder-v2 writer), whatever its units' outcomes. */
+	folderCommitId?: string;
 }
 
 interface ConfirmedOperationResult {
@@ -250,18 +267,26 @@ export class CloudNativeToolOperations {
 					!UUID.test(begun.receipt_id) ||
 					Object.keys(begun).some(
 						(key) =>
-							!["run_id", "receipt_id", "state", "result", "output_snapshot_id", "proposal_id"].includes(key),
+							![
+								"run_id",
+								"receipt_id",
+								"state",
+								"result",
+								"output_snapshot_id",
+								"proposal_id",
+								"folder_commit_id",
+							].includes(key),
 					)
 				)
 					throw new Error("Cloud tool receipt names another run");
 				if (begun.state === "completed") {
+					const revisions = [begun.output_snapshot_id, begun.proposal_id, begun.folder_commit_id].filter(
+						(value) => value != null,
+					);
 					if (
-						(begun.output_snapshot_id != null &&
-							(typeof begun.output_snapshot_id !== "string" || !UUID.test(begun.output_snapshot_id))) ||
-						(begun.proposal_id != null &&
-							(typeof begun.proposal_id !== "string" || !UUID.test(begun.proposal_id))) ||
-						(begun.output_snapshot_id != null && begun.proposal_id != null) ||
-						(operation.requiresCompanyRevision && !begun.output_snapshot_id && !begun.proposal_id)
+						revisions.some((value) => typeof value !== "string" || !UUID.test(value)) ||
+						revisions.length > 1 ||
+						(operation.requiresCompanyRevision && revisions.length === 0)
 					)
 						throw new Error("Cloud tool receipt revision differs");
 					const stored = record(begun.result);
@@ -290,7 +315,8 @@ export class CloudNativeToolOperations {
 					["executing", "ambiguous", "cancelled"].includes(begun.state as string) &&
 					begun.result == null &&
 					begun.output_snapshot_id == null &&
-					begun.proposal_id == null
+					begun.proposal_id == null &&
+					begun.folder_commit_id == null
 				) {
 					// Retain a validated fence even when it forbids another effect. Never use a broker payload ID.
 					receipt.id = begun.receipt_id;
@@ -301,7 +327,8 @@ export class CloudNativeToolOperations {
 					begun.receipt_id !== receiptId ||
 					begun.result != null ||
 					begun.output_snapshot_id != null ||
-					begun.proposal_id != null
+					begun.proposal_id != null ||
+					begun.folder_commit_id != null
 				)
 					throw new Error("Cloud tool operation requires recovery review");
 				await this.#run.assertActive(signal);
@@ -322,45 +349,59 @@ export class CloudNativeToolOperations {
 				// An effect may have happened even if this or completion fails. Its executing receipt remains a fence.
 				signal.throwIfAborted();
 				const content = record(output.content);
+				const revisions = [output.outputSnapshotId, output.proposalId, output.folderCommitId].filter(
+					(value) => value !== undefined,
+				);
 				if (
 					Object.keys(content).sort().join() !== "kind,value" ||
 					(content.kind !== "text" && content.kind !== "json") ||
 					(content.kind === "text" && typeof content.value !== "string") ||
-					(output.outputSnapshotId !== undefined &&
-						(typeof output.outputSnapshotId !== "string" || !UUID.test(output.outputSnapshotId))) ||
-					(output.proposalId !== undefined &&
-						(typeof output.proposalId !== "string" || !UUID.test(output.proposalId))) ||
-					(output.outputSnapshotId !== undefined && output.proposalId !== undefined) ||
-					(operation.requiresCompanyRevision && !output.outputSnapshotId && !output.proposalId)
+					revisions.some((value) => typeof value !== "string" || !UUID.test(value)) ||
+					revisions.length > 1 ||
+					(operation.requiresCompanyRevision && revisions.length === 0) ||
+					(output.folderCommitId !== undefined && !this.#control.completeFolderToolOperation)
 				)
 					throw new Error("Invalid cloud tool operation output");
 				const storedResult = JSON.parse(
 					cloudToolJsonText({ schema: RESULT_SCHEMA, inputSha256: digest, content }, 48 * 1024),
 				) as JsonValue;
-				const { outputSnapshotId, proposalId } = output;
+				const { outputSnapshotId, proposalId, folderCommitId } = output;
 				await this.#run.assertActive(signal);
 				const completed = record(
 					await cloudToolRequest(
 						(requestSignal) =>
-							this.#control.completeToolOperation(
-								this.#run.binding,
-								{
-									receiptId,
-									inputSha256: digest,
-									result: storedResult,
-									...(outputSnapshotId ? { outputSnapshotId } : {}),
-									...(proposalId ? { proposalId } : {}),
-								},
-								requestSignal,
-							),
+							folderCommitId !== undefined && this.#control.completeFolderToolOperation
+								? this.#control.completeFolderToolOperation(
+										this.#run.binding,
+										{ receiptId, inputSha256: digest, result: storedResult, folderCommitId },
+										requestSignal,
+									)
+								: this.#control.completeToolOperation(
+										this.#run.binding,
+										{
+											receiptId,
+											inputSha256: digest,
+											result: storedResult,
+											...(outputSnapshotId ? { outputSnapshotId } : {}),
+											...(proposalId ? { proposalId } : {}),
+										},
+										requestSignal,
+									),
 						signal,
 					),
 				);
+				// A folder-v2 completion also names its commit (null for a receipt that needed none).
+				const keys = Object.keys(completed).sort().join();
 				if (
 					completed.run_id !== this.#run.identity.runId ||
 					completed.receipt_id !== receiptId ||
 					completed.state !== "completed" ||
-					Object.keys(completed).sort().join() !== "receipt_id,result,run_id,state" ||
+					(keys !== "receipt_id,result,run_id,state" &&
+						!(
+							keys === "folder_commit_id,receipt_id,result,run_id,state" &&
+							completed.folder_commit_id === (folderCommitId ?? null)
+						)) ||
+					(folderCommitId !== undefined && completed.folder_commit_id !== folderCommitId) ||
 					cloudToolJsonText(completed.result) !== cloudToolJsonText(storedResult)
 				)
 					throw new Error("Cloud tool completion was not confirmed");

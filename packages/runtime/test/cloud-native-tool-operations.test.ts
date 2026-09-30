@@ -24,6 +24,8 @@ interface Receipt {
 	result: JsonValue | null;
 	outputSnapshotId: string | null;
 	proposalId: string | null;
+	/** Set for a folder-v2 receipt, whose answers always name the commit (null before completion). */
+	folderCommitId?: string | null;
 }
 const runs: CloudNativeToolRun[] = [];
 const observations: CloudRuntimeObservability[] = [];
@@ -80,6 +82,7 @@ async function fixture() {
 				result: receipt.result,
 				output_snapshot_id: receipt.outputSnapshotId,
 				proposal_id: receipt.proposalId,
+				...(receipt.folderCommitId !== undefined ? { folder_commit_id: receipt.folderCommitId } : {}),
 			});
 		}),
 		completeToolOperation: vi.fn<CloudNativeToolOperationControlPlane["completeToolOperation"]>(
@@ -99,6 +102,23 @@ async function fixture() {
 				});
 			},
 		),
+		completeFolderToolOperation: vi.fn<
+			NonNullable<CloudNativeToolOperationControlPlane["completeFolderToolOperation"]>
+		>(async (binding, input) => {
+			const receipt = [...ledger.values()].find((entry) => entry.input.receiptId === input.receiptId);
+			if (!receipt || receipt.input.inputSha256 !== input.inputSha256 || receipt.state !== "executing")
+				throw new Error("invalid completion");
+			receipt.state = "completed";
+			receipt.result = structuredClone(input.result);
+			receipt.folderCommitId = input.folderCommitId;
+			return structuredClone({
+				run_id: binding.runId,
+				receipt_id: input.receiptId,
+				state: "completed",
+				result: input.result,
+				folder_commit_id: input.folderCommitId,
+			});
+		}),
 	};
 	const operations = new CloudNativeToolOperations(run, control);
 	const operation: CloudNativeToolOperation = {
@@ -894,4 +914,59 @@ it("refuses an invalid remembered operation count", async () => {
 			"Invalid remembered operation count",
 		);
 	expect(() => new CloudNativeToolOperations(f.run, f.control, { rememberedOperations: 65_536 })).not.toThrow();
+});
+
+it("completes a folder writer's receipt with its commit, and replays it from the receipt", async () => {
+	const f = await fixture();
+	const folderCommitId = randomUUID();
+	f.perform.mockResolvedValueOnce({ content: { kind: "json", value: { saved: true } }, folderCommitId });
+	const operation = { ...f.operation, requiresCompanyRevision: true };
+	await expect(f.execute({ operation })).resolves.toEqual({ kind: "json", value: { saved: true } });
+	expect(f.control.completeToolOperation).not.toHaveBeenCalled();
+	expect(f.control.completeFolderToolOperation.mock.calls[0][1]).toMatchObject({ folderCommitId });
+	// A new process replays the stored result from the receipt, which names the commit.
+	await expect(f.execute({ operation }, new CloudNativeToolOperations(f.run, f.control))).resolves.toEqual({
+		kind: "json",
+		value: { saved: true },
+	});
+	expect(f.perform).toHaveBeenCalledTimes(1);
+	// A receipt naming two revisions is not trusted.
+	[...f.ledger.values()][0].outputSnapshotId = randomUUID();
+	await expect(f.execute({ operation }, new CloudNativeToolOperations(f.run, f.control))).rejects.toThrow(
+		"outcome unconfirmed",
+	);
+});
+
+it("refuses a folder commit it cannot complete, or a completion naming another commit", async () => {
+	const f = await fixture();
+	const { completeFolderToolOperation: _, ...legacy } = f.control;
+	f.perform.mockResolvedValue({ content: { kind: "text", value: "saved" }, folderCommitId: randomUUID() });
+	await expect(
+		f.execute(
+			{ operation: { ...f.operation, logicalOperationKey: "no-folder" } },
+			new CloudNativeToolOperations(f.run, legacy),
+		),
+	).rejects.toThrow("outcome unconfirmed");
+	expect(f.control.completeToolOperation).not.toHaveBeenCalled();
+	const complete = f.control.completeFolderToolOperation.getMockImplementation();
+	if (!complete) throw new Error("Missing test implementation");
+	f.control.completeFolderToolOperation.mockImplementationOnce(async (...args) => ({
+		...((await complete(...args)) as object),
+		folder_commit_id: randomUUID(),
+	}));
+	await expect(f.execute({ operation: { ...f.operation, logicalOperationKey: "other-commit" } })).rejects.toThrow(
+		"outcome unconfirmed",
+	);
+});
+
+it("accepts a folder-v2 completion that needed no commit", async () => {
+	const f = await fixture();
+	const complete = f.control.completeToolOperation.getMockImplementation();
+	if (!complete) throw new Error("Missing test implementation");
+	// SQL's folder completion always names the commit, null when the receipt needed none.
+	f.control.completeToolOperation.mockImplementationOnce(async (...args) => ({
+		...((await complete(...args)) as object),
+		folder_commit_id: null,
+	}));
+	await expect(f.execute()).resolves.toEqual({ kind: "json", value: { changed: true } });
 });
