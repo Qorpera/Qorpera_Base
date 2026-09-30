@@ -26,8 +26,8 @@ export class ObjectStatementTimeout extends ObjectDependencyError {
  * - 40001, 40P01 and 55P03, a serialization failure, deadlock or lock timeout: 409. The transaction rolled back,
  *   so nothing was committed and the caller may retry.
  * - 57014, a statement timeout: `ObjectStatementTimeout`.
- * Any other 500, including one without a readable code, stays a dependency failure. The same codes as the folder
- * core's RPCs (#560). */
+ * Any other 500, including one without a readable code, stays a dependency failure. The folder core's byte RPCs
+ * (#560) are read the same way. */
 export function companyStateFailure(code: unknown): ObjectDependencyError {
 	if (code === "55000") return new ObjectDependencyError(423);
 	if (code === "40001" || code === "40P01" || code === "55P03") return new ObjectDependencyError(409);
