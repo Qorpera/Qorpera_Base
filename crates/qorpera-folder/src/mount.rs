@@ -105,7 +105,11 @@ impl Shared {
 			let entries = fetched.map_err(|f| f.errno())?;
 			let entries = entries.into_iter().filter(|e| valid_name(&e.name)).collect();
 			let keep = self.feed_up.load(Ordering::SeqCst);
-			return Ok(self.tree.lock().unwrap().install(dir, entries, started, keep, hold));
+			let (children, kept) = self.tree.lock().unwrap().install(dir, entries, started, keep, hold);
+			if debug() {
+				eprintln!("qorpera-folder: listed {path:?}: {} entries, kept {kept}", children.len());
+			}
+			return Ok((children, kept));
 		}
 	}
 
@@ -132,6 +136,12 @@ impl Shared {
 		self.handles.lock().unwrap().insert(fh, h);
 		FileHandle(fh)
 	}
+}
+
+/// QORPERA_FOLDER_DEBUG=1 logs every listing fetched and every change applied.
+fn debug() -> bool {
+	static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+	*ON.get_or_init(|| std::env::var("QORPERA_FOLDER_DEBUG").as_deref() == Ok("1"))
 }
 
 fn file_type(kind: EntryKind) -> FileType {
@@ -211,12 +221,10 @@ impl Filesystem for FolderFs {
 		entries.push((ino.0, FileType::Directory, ".".to_string()));
 		entries.push((parent, FileType::Directory, "..".to_string()));
 		entries.extend(children.into_iter().map(|c| (c.ino, file_type(c.attr.kind), c.name)));
-		let flags = if self.s.ttl(kept).is_zero() {
-			FopenFlags::empty()
-		} else {
-			FopenFlags::FOPEN_CACHE_DIR | FopenFlags::FOPEN_KEEP_CACHE
-		};
-		reply.opened(self.s.handle(Handle::Dir(entries)), flags);
+		// No kernel listing cache (FOPEN_CACHE_DIR): the kernel keeps it while the folder's time is unchanged, and a
+		// folder's time does not change when a file inside it does. The listing is in this program's memory anyway.
+		let _ = kept;
+		reply.opened(self.s.handle(Handle::Dir(entries)), FopenFlags::empty());
 	}
 
 	fn readdir(&self, _req: &Request, _ino: INodeNo, fh: FileHandle, offset: u64, mut reply: ReplyDirectory) {
@@ -348,6 +356,9 @@ fn follow(s: Arc<Shared>, notifier: Notifier, mut feed: crate::link::Feed, stop:
 				let paths: Vec<&str> = change.paths.iter().map(String::as_str).filter(|p| valid_path(p)).collect();
 				s.tree.lock().unwrap().invalidate(paths)
 			};
+			if debug() {
+				eprintln!("qorpera-folder: change {} resync {} paths {:?}: {inval:?}", change.seq, change.resync, change.paths);
+			}
 			tell_kernel(&notifier, inval);
 			if feed.ack(change.seq).is_err() {
 				break;
