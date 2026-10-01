@@ -1012,19 +1012,21 @@ describe("reviewed change sets (C2 R1)", () => {
 		expect(calls[1]!.args.p_review_id).toBe(reviewId);
 	});
 
-	it("asks again after a lost answer with the same request, and nothing else", async () => {
+	it("asks again after a lost answer or a deadlock with the same request, and nothing else", async () => {
 		let tries = 0;
 		const reviewId = randomUUID();
 		const { client, calls } = fixture(() => {
 			if (++tries === 1) throw new CloudRuntimeDiagnosticError("timeout", "Cloud tool authority unavailable");
+			if (tries === 2) throw sqlError("40P01", "deadlock detected");
 			// A card's allow names the member who gave it.
 			return { ...recorded(2, reviewId), approvedBy: randomUUID() };
 		});
 		const staged = await client.stage(units, signal());
 		await expect(client.recordReview(approval(), staged, signal())).resolves.toBe(reviewId);
-		expect(calls).toHaveLength(2);
+		expect(calls).toHaveLength(3);
 		expect(calls[1]!.args).toEqual(calls[0]!.args);
-		for (const thrown of [sqlError("40P01", "deadlock detected"), sqlError("23505", "already used")]) {
+		expect(calls[2]!.args).toEqual(calls[0]!.args);
+		for (const thrown of [sqlError("23505", "already used"), sqlError("22023", "Folder review request is invalid")]) {
 			const refused = fixture(() => {
 				throw thrown;
 			});

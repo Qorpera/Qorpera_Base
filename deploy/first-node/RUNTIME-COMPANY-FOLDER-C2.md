@@ -18,8 +18,9 @@ F1 handed the recorder to F2 on 2026-10-01 (registry, "C2's review recorder goes
   the review row has no session foreign key;
 - the split into R1 (allow and deny, enough for W4) and R2 (cards, answers, parked proposals).
 
-R1 differs from that split in one way, for F1 to confirm: it writes no `deny` rows (§2, *Allow, deny and the card's
-member*).
+R1 differs from that split in two ways, for F1 to confirm (§2, *Allow, deny and the card's member*):
+- it writes no `deny` rows;
+- it writes a card's allow as an ask already answered `allow`, at insert time, so the commit names the member.
 
 Everything here runs only for `folder-v2` companies.
 
@@ -33,7 +34,7 @@ The automatic review (v130, RUNTIME-AUTO-REVIEW.md) runs before every acting too
 - `qorpera_begin_action_review`, `qorpera_record_action_review` and `qorpera_await_action_review` take the run check
   through `qorpera_native_tool_locked_run`, which on `folder-v2` is `qorpera_folder_tool_run` (20260928279470).
 - `qorpera_record_action_review` is the kernel's layering, in SQL (20260926130000:339; delegation fix
-  20260926210000:78-100):
+  20260926210000:78-100; last patched for `folder-v2` in 20260928279560):
   - an action the reviewer finds not asked for never runs on an allow;
   - an Ask first rule wins over an allow;
   - a built-in check (money, terms, deletion, access) asks unless a company Allow rule covers it; for delegation those
@@ -129,8 +130,9 @@ the commit runs rank 10. The record by itself changes nothing in the company.
   its run, and refuses (42501).
 - `qorpera_begin_action_review` in another run takes the same row `FOR UPDATE` after its own run entry, and needs
   nothing the recorder holds.
-- A member's or another run's commit does not wait for a recorder: the folder clock is only ever updated
-  (`FOR NO KEY UPDATE`), which is compatible with `KEY SHARE`.
+- A member's or another run's commit does not wait for a recorder at the clock: the folder clock is only ever updated
+  (`FOR NO KEY UPDATE`), which is compatible with `KEY SHARE`. Like any tool call, a recorder still holds its run entry,
+  so a commit that takes the run's wake room `FOR UPDATE` (a rename of the agent, for example) waits for it.
 - Two recorders of one run never overlap: the run mutex orders them, and the second replays.
 - No new company-wide lock, no new table or column, no cap of our own, no 40001 (test 361).
 
@@ -143,22 +145,28 @@ the commit runs rank 10. The record by itself changes nothing in the company.
 - **Staging is split from the commit.** `CloudCompanyFolderClient.stage(units)` stages the bytes and returns an opaque
   change set holding the units exactly as the commit sends them. `recordReview({ actionReviewId, tool, argumentSha256 },
   staged)` calls the recorder through its own call path: it sends `p_binding` (the client holds it), not the actor.
-  `commitStaged(key, staged, { reviewId, receiptId })` commits the same units. `commit(key, units)` is unchanged: it
-  stages, then commits. TypeScript never computes the digest: both RPCs send the same JSON, and SQL hashes its
-  canonical text.
+  `commitStaged(key, staged, { reviewId, receiptId })` commits the same units (each unit carries its own
+  `expectedVersion`). `commit(key, units)` is unchanged: it stages, then commits. TypeScript never computes the digest:
+  both RPCs send the same JSON, and SQL hashes its canonical text.
 - The RPC joins `CloudCompanyPathRpc`, both control lists (`FOLDER_RPCS`, so SQL codes come through, and `permitted`)
-  and the pinned test. Only a lost answer is retried; 23505 and 42501 are answers.
+  and the pinned test. A lost answer and a deadlock (40P01) are asked again with the same request, which replays; 23505
+  and 42501 are answers. The client reports a 42501 as `unavailable`, as for a run that ended; a writer that needs to
+  tell them apart reads the error's detail.
 - **A writer with delegation units** (W4; §5):
   1. checks `completesFolderCommits`, pre-reads and refuses what can never be saved, outside the receipt (as W1–W3).
      Each such check must still pass once the call's own change is saved: a hire's "handle taken" check accepts the
      agent its own call created;
   2. without an `actionReviewId`, refuses: "This change needs the automatic review, which did not run";
-  3. under its receipt (`requiresCompanyRevision`): stages, records the review, then `commitStaged` with `reviewId`,
-     `receiptId` and `expectedVersion`, and releases what it shows.
+  3. under its receipt (`requiresCompanyRevision`): stages, records the review, then `commitStaged` with `reviewId` and
+     `receiptId`, and releases what it shows. It passes its own tool name: the tool context carries none.
 - **Why inside the receipt.** A completed call replays its stored result from the receipt before anything is staged or
-  recorded. A call that runs again after a crash, before its commit, records again: it must build the same units, so W4
-  derives every generated id from the run and the call (as `releaseIdFor` does), and the recorder then replays. Any
-  error after the receipt begins is an unknown outcome, as for the commit; there are no refusals there.
+  recorded. A call does not record twice: a receipt that began without completing refuses a second run of the call
+  (recovery review, `cloud-native-tool-operations.ts`), and in one process the call's cached promise is reused. The
+  recorder runs again only through the client's own retry, with the same units, and replays. W4 still derives every
+  generated id from the run and the call (as `releaseIdFor` does), so units never depend on when they were built.
+- Any error after the receipt begins is an unknown outcome, as for the commit, and the begun receipt holds the run's
+  other operations until it is resolved (20260928279540). So a writer refuses everything it can before the receipt.
+  Staging, recording, the commit and the release share the tool call's one time limit.
 - Staging is not a change to the company. Bytes staged for a call that never commits count against storage until
   their intents expire and are swept (C1d-2a); a full company can refuse at staging, as for any write.
 - A conflict ends the call. A redo is a new call with a new review, so a member who approved a card may be asked again.
@@ -208,12 +216,16 @@ SQL test **770**, races (dblink, on 648's committed fixture, as 653):
 - another run's `begin` holding the approval row: the recorder waits at that row, then records;
 - a recorder holding it: the other run's `begin` waits, then finishes;
 - a member's commit beside a recorder in flight does not wait;
-- a first answer in flight: the recorder waits, then refuses (answered, not used by this run);
-- two recorders of one run: the second waits at the run mutex, then replays.
+- the real answer (`qorpera_answer_action_review`): a first answer in flight holds the row and the recorder waits there,
+  then refuses (answered, not used by this run); a retried answer and the recorder take turns at the row in both
+  orders, and the recorder replays; a first answer to another card of the run, which wakes the agent, does not wait
+  for a recorder;
+- two recorders of one fresh approval of one run: the second waits at the run mutex, then replays.
 
-Mutants of the recorder: 23 of 25 killed. The two that survive are equivalent: the agent filter (an approval row
-always names its run's agent) and a denied answer among the accepted ones (a used approval is always an allow, by the
-check constraint).
+Mutants of the recorder: 23 of 25 killed in my set, and the review's own set (round 2) agrees. The survivors are
+equivalent: the agent filter (an approval row always names its run's agent), a denied answer among the accepted ones
+(a used approval is always an allow, by the check constraint) and the run clause of the replay check (only this run can
+reach a record of an approval it used). A read of the record before the run entry is killed by 770's race E.
 
 Runtime:
 - The gate returns the review id on each approving path, none from a malformed answer, and none on a read or an

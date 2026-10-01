@@ -226,7 +226,8 @@ begin
 		|| (select id from public.qorpera_action_reviews where call_id = 'call-twice-2')::text)::uuid), 1, 'saved');
 end $$;
 
--- 4. The request: exactly its two keys, a review id, and 1 to 1000 units (the commit's own bound).
+-- 4. The request: exactly its four keys, a review id, a tool name, an argument digest, and 1 to 1000 units (the commit's
+-- own bound).
 do $$
 declare x jsonb := pg_temp.agent_run(); b jsonb := x -> 'binding'; v_action uuid := pg_temp.action(b, 'call-bounds');
 	v_unit jsonb := jsonb_build_object('op', 'mkdir', 'path', 'rr-bounds'); v_request jsonb;
@@ -243,6 +244,7 @@ begin
 		v_call || jsonb_build_object('actionReviewId', 42, 'units', jsonb_build_array(v_unit)),
 		(v_call - 'tool') || jsonb_build_object('units', jsonb_build_array(v_unit)),
 		v_call || jsonb_build_object('tool', 7, 'units', jsonb_build_array(v_unit)),
+		v_call || jsonb_build_object('tool', 'Hire agent', 'units', jsonb_build_array(v_unit)),
 		v_call || jsonb_build_object('argumentSha256', upper(md5('a') || md5('a')), 'units', jsonb_build_array(v_unit)),
 		(v_call - 'argumentSha256') || jsonb_build_object('units', jsonb_build_array(v_unit)),
 		'[]'::jsonb] loop

@@ -53,8 +53,9 @@ const ATTEMPTS = 4;
  * and a path claim that gave up waiting (55P03). A release retries the first two with the same id. */
 const COMMIT_RETRY = new Set(["QRC01", "40P01", "23505", "55P03"]);
 const RELEASE_RETRY = new Set(["QRC01", "40P01"]);
-/** A review recording is retried only when its answer was lost: a replay of the same change set returns the record. */
-const RECORD_RETRY = new Set<string>();
+/** A review recording is retried when its answer was lost or it met a deadlock: a replay of the same change set returns
+ * the record. 23505 (the approval stands for another change set) and 42501 are answers. */
+const RECORD_RETRY = new Set(["40P01"]);
 /** The recheck's refusals in commit and release: the model saw something it may no longer see. */
 const READ_REVOKED = new Set(["A read is no longer readable", "A released read is no longer readable"]);
 

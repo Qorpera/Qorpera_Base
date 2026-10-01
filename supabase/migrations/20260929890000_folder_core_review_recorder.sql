@@ -21,7 +21,7 @@ declare v_tool jsonb; v_run public.qorpera_execution_runs%rowtype; v_action publ
 begin
 	if jsonb_typeof(p_request) is distinct from 'object' or not (p_request ?& v_keys) or p_request - v_keys <> '{}'::jsonb
 		or coalesce(p_request ->> 'actionReviewId', '') !~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
-		or jsonb_typeof(p_request -> 'tool') is distinct from 'string'
+		or coalesce(p_request ->> 'tool', '') !~ '^[a-z][a-z0-9_]{0,63}$' or jsonb_typeof(p_request -> 'tool') is distinct from 'string'
 		or coalesce(p_request ->> 'argumentSha256', '') !~ '^[0-9a-f]{64}$'
 		or jsonb_typeof(p_request -> 'units') is distinct from 'array'
 		or jsonb_array_length(p_request -> 'units') not between 1 and 1000 then

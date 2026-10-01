@@ -3,8 +3,9 @@
 -- recorder against the other takers of the approval row. Another run's begin (FOR UPDATE on the action review, as an
 -- answer takes it) and a recorder (FOR SHARE) wait for each other, one at a time, in both orders, and both finish; a
 -- member's commit does not wait for a recorder in flight (its KEY SHARE on the folder clock row is compatible with the
--- commit's update); a recorder behind a first answer finds the card not yet used and refuses; two recorders of one run
--- queue on the run mutex and the second replays. 648's committed fixture, removed at the end.
+-- commit's update); the real answer and the recorder take turns at the approval row in both orders, a recorder behind a
+-- first answer finds the card not yet used and refuses, and an answer to another card runs beside a recorder; two
+-- recorders of one run queue on the run mutex and the second replays. 648's committed fixture, removed at the end.
 
 set session_replication_role = replica;
 -- A second leased human run of Ada in the same conversation, for a second tool call of the same agent.
@@ -94,7 +95,7 @@ create function pg_temp.sql_begin() returns text language sql as $$
 		jsonb_build_object('tool', 'hire_agent', 'argumentSha256', md5('race-recorder-card') || md5('race-recorder-card')))
 $$;
 
-select set_config('qorpera_test.a3', pg_temp.review('race-recorder-card-2', 'ask')::text, false) \g /dev/null
+select set_config('qorpera_test.a4', pg_temp.review('race-recorder-allow-2', 'allow')::text, false) \g /dev/null
 
 -- A. A begin in flight on the approval: the recorder waits at that row (holding no conversation), then records.
 do $$
@@ -145,21 +146,91 @@ begin
 		raise exception 'C: the member''s commit: %', v_state; end if;
 end $$;
 
--- D. A first answer in flight (its write of the card's row, uncommitted): the recorder waits for it, then finds the
+-- D. The real answer (qorpera_answer_action_review, by the member on fence_three) against the recorder, on cards raised
+-- by hand in Ada's thread for the owner. The company's login pays for the wake an answer may start.
+set session_replication_role = replica;
+update public.qorpera_provider_connection_versions set allow_autonomous = true where connection_id = '64800000-0000-4000-8000-0000000000b3';
+update public.qorpera_execution_sponsor_versions set allow_autonomous = true where binding_id = '64800000-0000-4000-8000-0000000000b1';
+insert into public.qorpera_action_reviews(id, profile_id, run_id, call_id, staff_agent_id, session_id, requester_user_id, tool_name, effect,
+	argument_sha256, action, decision, built_in, reason, reviewer_model, approver_scope, approver_user_id, card_session_id)
+select ('77000000-0000-4000-8000-0000000000c' || n)::uuid, '64800000-0000-4000-8000-000000000010', '64800000-0000-4000-8000-0000000000f1',
+	'race-card-' || n, '64800000-0000-4000-8000-0000000000a1', room.session_id, '64800000-0000-4000-8000-000000000001', 'hire_agent',
+	'delegation', repeat(n::text, 64), '{"title":"Hire"}', 'ask', 'none', 'The reviewer is unsure.', 'gpt-6-luna', 'member',
+	'64800000-0000-4000-8000-000000000001', room.session_id
+from generate_series(1, 2) n, public.qorpera_company_rooms room
+where room.profile_id = '64800000-0000-4000-8000-000000000010' and room.bound_staff_agent_id = '64800000-0000-4000-8000-0000000000a1';
+set session_replication_role = origin;
+select dblink_exec('fence_three', $q$set request.jwt.claims = '{"role":"authenticated","sub":"64800000-0000-4000-8000-000000000001"}'$q$);
+create function pg_temp.sql_card_record(p_n integer) returns text language sql as $$
+	select format('select public.qorpera_folder_record_review(%L, %L)::text', current_setting('qorpera_test.binding'),
+		jsonb_build_object('actionReviewId', '77000000-0000-4000-8000-0000000000c' || p_n, 'tool', 'hire_agent',
+			'argumentSha256', repeat(p_n::text, 64), 'units', jsonb_build_array(jsonb_build_object('op', 'mkdir', 'path', 'race-real-' || p_n))))
+$$;
+create function pg_temp.sql_answer(p_n integer) returns text language sql as $$
+	select format('select public.qorpera_answer_action_review(%L, %L, %L, null, %L, 1)::text', '77000000-0000-4000-8000-0000000000c' || p_n,
+		'77000000-0000-4000-8000-0000000000e' || p_n, 'allow_once', '64800000-0000-4000-8000-0000000000b1')
+$$;
+
+-- D1. A first answer in flight, holding every lock it takes: the recorder waits at the approval row only, then finds the
 -- card answered but not used by this run, and refuses.
 do $$
 declare v_state text;
 begin
-	perform dblink_exec('fence_one', 'begin');
-	perform dblink_exec('fence_one', format('update public.qorpera_action_reviews set answer = %L, answered_by_user_id = %L,
-		answered_at = clock_timestamp() where id = %L', 'allow_once', '64800000-0000-4000-8000-000000000002',
-		current_setting('qorpera_test.a3')));
-	perform dblink_send_query('fence_two', pg_temp.sql_record(current_setting('qorpera_test.a3')::uuid, 'race-card-2'));
-	if not pg_temp.waits_for('fence_two', 'fence_one') then raise exception 'D: the recorder must wait for the answer'; end if;
-	perform dblink_exec('fence_one', 'commit');
-	v_state := pg_temp.outcome('fence_two');
+	perform dblink_exec('fence_three', 'begin');
+	perform * from dblink('fence_three', pg_temp.sql_answer(1)) as t(r text);
+	perform dblink_send_query('fence_one', pg_temp.sql_card_record(1));
+	if not pg_temp.waits_for('fence_one', 'fence_three') then raise exception 'D1: the recorder must wait for the answer'; end if;
+	if pg_temp.queued_on('fence_one') is distinct from 'public.qorpera_action_reviews'::regclass then
+		raise exception 'D1: the recorder must wait at the approval, not on %', pg_temp.queued_on('fence_one'); end if;
+	perform dblink_exec('fence_three', 'commit');
+	v_state := pg_temp.outcome('fence_one');
 	if v_state not like '42501 This change has no approval in this run%' then
-		raise exception 'D: an answered card this run has not used: %', v_state; end if;
+		raise exception 'D1: an answered card this run has not used: %', v_state; end if;
+end $$;
+-- The run's holding call uses the card.
+do $$
+begin
+	if public.qorpera_await_action_review(current_setting('qorpera_test.binding')::jsonb, '77000000-0000-4000-8000-0000000000c1', false)
+		->> 'state' <> 'approved' then raise exception 'D: the holding call uses the answered card'; end if;
+end $$;
+
+-- D2. The recorder holding the row: a retried answer (the same client input) waits at it, then returns its receipt.
+do $$
+declare v_state text;
+begin
+	perform dblink_exec('fence_one', 'begin');
+	perform * from dblink('fence_one', pg_temp.sql_card_record(1)) as t(r text);
+	perform dblink_send_query('fence_three', pg_temp.sql_answer(1));
+	if not pg_temp.waits_for('fence_three', 'fence_one') then raise exception 'D2: the retried answer must wait for the recorder'; end if;
+	perform dblink_exec('fence_one', 'commit');
+	v_state := pg_temp.outcome('fence_three');
+	if v_state <> 'ok' then raise exception 'D2: the retried answer after the recorder: %', v_state; end if;
+end $$;
+
+-- D3. A retried answer holding the row: the recorder waits, then replays its record.
+do $$
+declare v_state text;
+begin
+	perform dblink_exec('fence_three', 'begin');
+	perform * from dblink('fence_three', pg_temp.sql_answer(1)) as t(r text);
+	perform dblink_send_query('fence_one', pg_temp.sql_card_record(1));
+	if not pg_temp.waits_for('fence_one', 'fence_three') then raise exception 'D3: the recorder must wait for the retried answer'; end if;
+	perform dblink_exec('fence_three', 'commit');
+	v_state := pg_temp.outcome('fence_one');
+	if v_state <> 'ok' then raise exception 'D3: the recorder after the retried answer: %', v_state; end if;
+end $$;
+
+-- D4. A first answer to another card of the run, which wakes the agent, runs beside a recorder holding the run entry.
+do $$
+declare v_state text;
+begin
+	perform dblink_exec('fence_one', 'begin');
+	perform * from dblink('fence_one', pg_temp.sql_card_record(1)) as t(r text);
+	perform dblink_send_query('fence_three', pg_temp.sql_answer(2));
+	if not pg_temp.finishes_unblocked('fence_three', 'fence_one') then raise exception 'D4: the answer must not wait for the recorder'; end if;
+	v_state := pg_temp.outcome('fence_three');
+	perform dblink_exec('fence_one', 'commit');
+	if v_state <> 'ok' then raise exception 'D4: the answer beside the recorder: %', v_state; end if;
 end $$;
 
 -- E. Two recorders of one run: the second waits at the run mutex, then replays the first's record.
@@ -167,15 +238,15 @@ do $$
 declare v_one text; v_two text;
 begin
 	perform dblink_exec('fence_one', 'begin');
-	select r into v_one from dblink('fence_one', pg_temp.sql_record(current_setting('qorpera_test.a1')::uuid, 'race-allow')) as t(r text);
-	perform dblink_send_query('fence_two', pg_temp.sql_record(current_setting('qorpera_test.a1')::uuid, 'race-allow'));
+	select r into v_one from dblink('fence_one', pg_temp.sql_record(current_setting('qorpera_test.a4')::uuid, 'race-allow-2')) as t(r text);
+	perform dblink_send_query('fence_two', pg_temp.sql_record(current_setting('qorpera_test.a4')::uuid, 'race-allow-2'));
 	if not pg_temp.waits_for('fence_two', 'fence_one') then raise exception 'E: the second recorder must wait for the first'; end if;
 	if pg_temp.queued_on('fence_two') is distinct from 'public.qorpera_execution_run_budgets'::regclass then
 		raise exception 'E: the second recorder must wait at the run mutex, not on %', pg_temp.queued_on('fence_two'); end if;
 	perform dblink_exec('fence_one', 'commit');
 	select r into v_two from dblink_get_result('fence_two') as t(r text);
 	perform * from dblink_get_result('fence_two') as t(r text);
-	if v_two is distinct from v_one then raise exception 'E: the second recorder replays the first: % / %', v_one, v_two; end if;
+	if v_two is distinct from v_one or v_one is null then raise exception 'E: the second recorder replays the first: % / %', v_one, v_two; end if;
 end $$;
 
 select dblink_disconnect(name) from unnest(array['fence_one','fence_two','fence_three','fence_four']) name;
