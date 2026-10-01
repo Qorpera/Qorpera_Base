@@ -35,7 +35,7 @@ end $$;
 do $$
 declare v_def text;
 begin
-	-- 20260929660000 checks the poster's membership before the fence.
+	-- 20260928329660 checks the poster's membership before the fence.
 	perform pg_temp.guarded('public.qorpera_post_company_room_message(uuid,uuid,jsonb,uuid,bigint)',
 		'if public.qorpera_company_is_folder_v2((select profile_id from public.qorpera_company_rooms where id = p_room_id)) then',
 		'a28eecac3437a71e1a73dedc20f40c80');

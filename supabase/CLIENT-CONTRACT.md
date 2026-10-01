@@ -136,7 +136,7 @@ Founders (2026-09-28, migration 20260928248100): every member with the role
 
 ### Credentials, provider connections, identity recovery (15)
 
-- `qorpera_begin_chatgpt_plan_sign_in` (20260929830000, switched off): begins a
+- `qorpera_begin_chatgpt_plan_sign_in` (20260928329830, switched off): begins a
   ChatGPT plan sign-in ("Continue with ChatGPT") for the caller's own member
   compute identity, the same as `qorpera_begin_native_provider_login` for
   OpenAI/Codex with the sign-in marked as a plan sign-in. Refused with 55000
