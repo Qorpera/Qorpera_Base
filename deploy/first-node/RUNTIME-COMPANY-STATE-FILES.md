@@ -895,60 +895,90 @@ C1d (bytes):
   and the requester as members; another member refused; an archived coworker refused; a lone agent refused by the
   file's own rule).
 
-**Plan (W4c): `manage_routine` and `decide_routine`'s rewrite** (design; built after its review). Both write the
-run agent's own routine files, `agents/<handle>/routines/<routineKey>.md`, as W4a and W4b do: the file is checked
+**Plan (W4c): `manage_routine` and `decide_routine`'s rewrite** (design, round 2; built after its review). Both write
+the run agent's own routine files, `agents/<handle>/routines/<routineKey>.md`, as W4a and W4b do: the file is checked
 with the arguments, before the automatic review; every other refusal comes before the receipt; under the receipt the
-change set is staged, its review recorded (`manage_routine`, `decide_routine`) and committed with it.
+change set is staged, its review recorded (`manage_routine`, `decide_routine`) and committed with it. No
+restricted-creator rule applies (contract 14.1 is a hire's only); the old listener checks come back when event and
+file-change routines move to files.
 
-*`manage_routine` (W4c-1).*
-- `routineKey` is the file's name: lowercase letters, digits and single hyphens, at most 64 characters (the legacy
-  key allows dots and underscores and 96 characters; on `folder-v2` such a key is refused with the rule).
-- `list` reads the routine index, as `manage_todo`'s list reads the todo index (W1): a new plain read
-  `qorpera_folder_agent_routines(environment, actor, request)` returns the run agent's file routines (key, title,
-  status, the platform's pause reason, the next run, the trigger, the version), each only if the run may read its
-  file, paged as today. Only the index knows the pause reason (a missing model account, failures, an end) and the
-  next run.
-- `upsert` writes the whole file with `writeRoutineFile`, mapped from today's arguments: `every` → `when: every`
-  (`minutes`, `starts`), `weekly` → `when: weekly` (`days`, `time`, `timezone`, `starts`), `dynamic` → `when: once`
-  (`at`: `firstRunAt`, else a still-future `at` of the file, else now), `expiresAt` → `ends`, `maxOccurrences` →
-  `runs`, `quietHours` → `quiet` and `quiet_timezone`, `report` → `reply`, `effort` (absent: the file's, else the
-  default). `status: active` (a save revives a paused or concluded routine, as today's "save it again"). A new file
-  gets an id from the run and the operation key; an existing one keeps its id. A missing `routines` folder is made in
-  the same change set. `file_change` (core C4) and `event` (not in the parser yet: F2-6's follow-up below) are
-  refused with the arguments.
-- `pause` and `resume` set `status` (`setCompanyStateSettings`). `resume` of a file that already says `active` is
-  refused: "it is active in its file; if the platform paused it, save it again with upsert".
-- `conclude` sets `status: concluded` and the `conclusion` (one line, at most 2000 bytes).
+*The index and its read (W4c-1, SQL).* The platform records some pauses in the index only, until C2's follow-up queue
+writes them into the file: an authorization-failure suspension, a member's Stop, a wait for a model account. The file
+then still says `active`. So:
+- **A save that changes nothing is a resume.** F2-6's index writer (`qorpera_company_state_index_routine`) gains one
+  rule: a save of an unchanged file (the same parse) that says `active` over a pause the platform recorded (the row
+  paused while the file said `active`) ends that pause, and pays like a resume
+  (`qorpera_company_state_routine_restarts`: the saver's paying login; without one the routine keeps waiting for a
+  login). An edit still leaves the platform's pause in place, as today.
+- **A read of the run agent's routines**, `qorpera_folder_agent_routines(environment, actor, request)`, as W1's todo
+  read: a plain read of the index for the run agent's file routines, each only if the run may read its file, with the
+  key, title, instructions, trigger, `ends`, `runs`, quiet hours, effort, reply, the status in the file and the
+  status in the index with the platform's pause reason, the next run and the runs used. Routines from before the
+  company's folder (they still hold their names) are not listed. `routineKey` reads one. It joins the client's RPC
+  lists and the pinned test.
+
+*`manage_routine` (W4c-1, runtime).*
+- `routineKey` is the file's name: lowercase letters, digits and single hyphens, at most 64 characters (refused with
+  the rule otherwise; the legacy key allowed dots, underscores and 96 characters).
+- `list` shows the read's routines, as many as fit the result (W1's rule), and says when there are more; `routineKey`
+  shows one in full.
+- `upsert` writes the whole file with `writeRoutineFile`, as today's upsert replaces the whole routine (the list shows
+  every field to restate): `every` → `when: every` (`minutes`, `starts`); `weekly` → `when: weekly` (`days`, by
+  default Monday to Friday, `time`, `timezone`, `starts`); `dynamic` → `when: once` (`at`: `firstRunAt`, else a still
+  future `at` of the file, else now; `timezone` required); `expiresAt` → `ends` (in the future, as today);
+  `maxOccurrences` → `runs` (not for `dynamic`); `quietHours` → `quiet` and its time zone (`every` has none, so the
+  quiet hours carry their own); `report` → `reply` (absent: `optional`); `effort` (absent: the file's, else medium).
+  `status: active`: a save revives a paused, concluded or expired routine (an expired one ends again while its end
+  has passed, so an `ends` in the past is refused). A new file gets an id from the run and the operation key; an
+  existing one keeps its id. A missing `routines` folder is made in the same change set. `file_change` (core C4) and
+  `event` (F2-6b below) are refused with the arguments.
+- `pause`: `status: paused`. Refused before the review when the file already says `paused` ("already paused") or
+  `concluded` ("concluded; save it again to restart it").
+- `resume`: a file that says `paused` becomes `active`; a file that says `active` while the index shows the platform's
+  pause is saved unchanged (the resume rule above). Refused before the review when the routine is active in both
+  ("already running"), concluded ("save it again to restart it") or ended ("it ended; save it again with a later
+  end"), as today.
+- `conclude`: `status: concluded` with the `conclusion` (one line, at most 2000 bytes). Refused when already
+  concluded.
 - `remove` deletes the file (a `delete` unit with the version read): the routine retires and its name is free again
   (today's remove kept the key taken). Reviewed as a deletion; the call's approval covers it.
-- The run's own routine (the wake's routine id, matched by the file's id, as W3): `pause` and `remove` are refused
-  ("conclude it instead"), and while its decision is owed every action but `list` is refused ("use
-  decide_routine"), as SQL refuses them.
-- Login: before the receipt, `upsert` and `resume` (the saves that start or extend work) call
-  `qorpera_prepare_routine_login` (new to the client's RPC lists). It is idempotent and records the requester's
-  consent even if the save is then refused, as today's tool does. With no login the result says the routine waits
-  until the member connects a model account.
-- Result: `qorpera.agent-routine-receipt/v2` with the outcome, the reason and problems, the routine (key, id, title,
-  status in the file, path) and what to do next; a folder-v2 description replaces "No member approval is needed".
+- The run's own routine (the wake's routine id, matched by the file's id, as W3), refused before the review: `pause`
+  and `remove` in its own run, dynamic or fixed ("conclude it instead": a fixed routine's pause would stop the run
+  itself; SQL refuses it for a dynamic one); and while a dynamic routine's decision is owed, every action but `list`
+  and `conclude` ("use decide_routine"), as today and contract 16.3.
+- Login, last before the receipt: `upsert` and `resume` (the saves that start or extend work) call
+  `qorpera_prepare_routine_login` (new to the client's RPC lists; a deadlock is asked again, as STATE-FILES §5
+  says). Its refusals (the wake's acknowledgement, a paused company, a final reply already sent) come back as
+  `REFUSED` with SQL's words. Unlike today's tool, the consent it records stays if the save is then refused; it is the
+  requester's standing consent, and the same call records it again.
+- After the commit, the result reads the routine back from the index: the outcome, the reason and problems, and the
+  routine as it now runs (status, the platform's pause reason, the next run). A routine waiting for a model account
+  says so, and the model tells the member (folder-v2 queues no member notice until C2).
+- A folder-v2 description replaces "No member approval is needed". The approval card keeps reading today's compiled
+  arguments.
 
 *`decide_routine`'s rewrite (W4c-2).*
 - A decision whose `title` or `intent` differs from the file is no longer refused: with the review's approval it
-  writes the new title and instructions with the decision (`writeRoutineFile` from the file's parse), stages, records
-  the review (`decide_routine`) and commits. The gate never raises a card for `decide_routine`, so only a reviewer's
-  allow reaches it; an ask is refused there and the run decides without the rewrite, as today.
-- Without an approval (the review did not run) the rewrite is refused before the receipt, as today.
-- `denied` with `review_required` stays "settled" only for a decision without a rewrite (F2-6's class: nothing owed
-  any more). After a recorded review it is a defect, reported as not saved, with the instruction to decide again
-  without the rewrite.
+  writes the new title and instructions with the decision (`writeRoutineFile` from the file's parse, which keeps
+  every other key), stages, records the review (`decide_routine`) and commits. The gate never raises a card for
+  `decide_routine`, so only a reviewer's allow reaches it; an ask is refused there and the run decides without the
+  rewrite, as today.
+- Settled before the receipt when the routine's end has passed (nothing is owed: a rewrite would revive it), as today.
+- Without an approval the rewrite is refused before the receipt, as today.
+- `denied` with `review_required` stays "settled" only for a decision without a rewrite (F2-6's class: nothing owed any
+  more). After a recorded review it is reported as not saved, with the instruction to decide again without the
+  rewrite. The folder-v2 description stops saying the title and instructions cannot change.
 
-*Follow-up (F2-6b, F2's):* `when: event` in the parser and SQL's parse shape, and the folder-v2 wake gate's event
-refusal lifted (EVENT-INTAKE: "whichever of W2 and F2-6 lands second"; neither did). `manage_routine`'s `event`
-trigger then maps to it.
+*Follow-up (F2-6b, F2's):* `when: event` in the parser and SQL's parse shape, the folder-v2 wake gate's event refusal
+lifted and the folder wake read's event batch (EVENT-INTAKE: "whichever of W2 and F2-6 lands second"; neither did).
+Event routines need hooks on folder-v2 and runs from folder wakes (C1c-3, C4) before they work end to end.
 
-*Tests.* Runtime: the writer per action on the writer fixture (which learns routine files as delegation, the routine
-index read and the login preparation), the folder description and wiring, `decide_routine`'s rewrite. SQL: the index
-read (authority per file, paging) and a run's routine save and dynamic rewrite on the recorder (a routine-run fixture
-with a native binding, from 708's `routine_run` and 647's `native`).
+*Tests.* SQL: the resume rule (an unchanged save ends a failure suspension, a Stop, and a login wait only with a paying
+login; an edit does not), the read (authority per file, one key, pre-folder rows left out), a run's routine save,
+pause, resume, conclude and removal on the recorder, and a dynamic rewrite (a routine-run fixture with a native
+binding, from 708's `routine_run` and 647's `native`). Runtime: each action and refusal on the writer fixture (which
+learns routine files as delegation, the routine read and the login preparation), the folder description and wiring,
+the own-routine refusals, and `decide_routine`'s rewrite.
 
 Until the mount's writes are accepted (F3), these tools become thin writers of these files:
 `hire_agent`, `create_group_chat`, `organize_sidebar`, `manage_todo`, `manage_routine` and
