@@ -419,6 +419,8 @@ describe("a ChatGPT plan's first-routine card (shown only to a member with a pla
 			{ connections: [plan({ allowAutonomous: true })] },
 			{ routines: [routine({ runsForUserId: id(98) })] },
 			{ routines: [routine({ status: "active", pauseReason: undefined })] },
+			// Paused by its agent, not waiting for an account.
+			{ routines: [routine({ pauseReason: "agent" })] },
 			{
 				routines: [
 					routine({
@@ -490,8 +492,68 @@ describe("a ChatGPT plan's first-routine card (shown only to a member with a pla
 		expect(f.client.acknowledgeNotification).toHaveBeenCalledWith(id(77), expect.any(AbortSignal));
 		await vi.advanceTimersByTimeAsync(30_000);
 		expect(f.view.el.hidden).toBe(false);
-		action("dismiss-plan").click();
+		f.view.el
+			.querySelector(".company-notice")!
+			.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
 		expect(f.view.el.hidden).toBe(true);
+	});
+	it("tells a member who does not save routines whom to ask about several", async () => {
+		const evening = routine({ routineId: id(62), title: "Evening note" });
+		for (const [agents, said] of [
+			[[id(60), id(60)], "Ask the agent to set those routines up again."],
+			[[id(60), id(63)], "Ask the agents to set those routines up again."],
+		] as const) {
+			const f = planSetup({
+				manage: false,
+				routines: [routine({ staffAgentId: agents[0] }), { ...evening, staffAgentId: agents[1] } as WebRoutine],
+			});
+			await settle();
+			action("turn-on-plan").click();
+			await settle();
+			expect(text(f.view)).toBe(`Your ChatGPT plan now works while you're away. ${said}`);
+			action("dismiss-plan").click();
+			f.view.dispose();
+		}
+	});
+	it("starts the newest turned-on version, and a routine set up while the card stood", async () => {
+		const f = planSetup();
+		await settle();
+		f.offer.native.setWorkWhileAway.mockImplementationOnce(async () => {
+			f.offer.native.listConnections.mockResolvedValue({
+				connections: [
+					plan(),
+					plan({ connectionVersion: 3, allowAutonomous: true }),
+					plan({ connectionVersion: 4, allowAutonomous: true }),
+				],
+			});
+		});
+		// The same agent's notice stays open, so a second routine comes with no notice of its own.
+		f.setRoutines([routine(), routine({ routineId: id(62), title: "Evening note" })]);
+		action("turn-on-plan").click();
+		await settle();
+		expect(
+			(f.offer.routines.setEnabled.mock.calls as unknown as [WebRoutine, WebMemberConnection][]).map(
+				([entry, account]) => [entry.routineId, account.connectionVersion],
+			),
+		).toEqual([
+			[id(61), 4],
+			[id(62), 4],
+		]);
+	});
+	it("comes back after a failed read, and a failed plan read hides only the card", async () => {
+		const f = planSetup({ notices: [waitingNotice(), item(70)] });
+		f.offer.native.chatGptPlanAvailable.mockRejectedValueOnce(new Error("offline"));
+		await settle();
+		// The other notice still shows.
+		expect(text(f.view)).toBe(FULL);
+		await vi.advanceTimersByTimeAsync(30_000);
+		expect(text(f.view)).toContain("Morning brief can run while you're away.");
+		f.client.listNotifications.mockRejectedValueOnce(new Error("offline"));
+		await vi.advanceTimersByTimeAsync(30_000);
+		expect(f.view.el.hidden).toBe(true);
+		await vi.advanceTimersByTimeAsync(30_000);
+		expect(text(f.view)).toContain("Morning brief can run while you're away.");
+		expect(f.offer.native.recordRoutineOffer).toHaveBeenCalledOnce();
 	});
 	it("Not now leaves the routine waiting and never asks again in this window", async () => {
 		const f = planSetup({ notices: [waitingNotice(77)] });
@@ -520,11 +582,28 @@ describe("a ChatGPT plan's first-routine card (shown only to a member with a pla
 		expect(f.view.el.textContent).toContain(
 			"“Work while you're away” is on, but the routine could not be started. Try again.",
 		);
+		f.setRoutines([routine(), routine({ routineId: id(62), title: "Evening note" })]);
+		f.offer.routines.setEnabled.mockRejectedValueOnce(new Error("refused"));
+		action("turn-on-plan").click();
+		await settle();
+		expect(f.view.el.textContent).toContain(
+			"“Work while you're away” is on, but the routine could not be started. Try again.",
+		);
 		action("turn-on-plan").click();
 		await settle();
 		expect(f.offer.native.setWorkWhileAway).toHaveBeenCalledTimes(2);
-		expect(f.offer.routines.setEnabled).toHaveBeenCalledTimes(2);
+		expect(f.offer.routines.setEnabled).toHaveBeenCalledTimes(4);
 		expect(f.view.el.hidden).toBe(true);
+	});
+	it("says routines when several could not be started", async () => {
+		const f = planSetup({ routines: [routine(), routine({ routineId: id(62), title: "Evening note" })] });
+		await settle();
+		f.offer.routines.setEnabled.mockRejectedValueOnce(new Error("refused"));
+		action("turn-on-plan").click();
+		await settle();
+		expect(f.view.el.textContent).toContain(
+			"“Work while you're away” is on, but the routines could not be started. Try again.",
+		);
 	});
 	it("records the showing only once the card is on a page the member can see", async () => {
 		const f = planSetup({ mounted: false });
@@ -533,6 +612,22 @@ describe("a ChatGPT plan's first-routine card (shown only to a member with a pla
 		document.body.append(f.view.el);
 		f.client.listNotifications.mockResolvedValue([waitingNotice(79)]);
 		await vi.advanceTimersByTimeAsync(30_000);
+		expect(f.offer.native.recordRoutineOffer).toHaveBeenCalledOnce();
+	});
+	it("records nothing for a card read while the page went out of sight", async () => {
+		let visibility: DocumentVisibilityState = "visible";
+		vi.spyOn(document, "visibilityState", "get").mockImplementation(() => visibility);
+		const f = planSetup();
+		const routines = deferred<WebRoutine[]>();
+		f.offer.routines.list.mockImplementationOnce(() => routines.promise);
+		await settle();
+		visibility = "hidden";
+		routines.resolve([routine()]);
+		await settle();
+		expect(f.offer.native.recordRoutineOffer).not.toHaveBeenCalled();
+		visibility = "visible";
+		document.dispatchEvent(new Event("visibilitychange"));
+		await settle();
 		expect(f.offer.native.recordRoutineOffer).toHaveBeenCalledOnce();
 	});
 	it("names only the action that is busy", async () => {

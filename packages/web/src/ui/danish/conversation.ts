@@ -186,8 +186,12 @@ export const CONVERSATION: Record<string, string> = {
 		"Dit ChatGPT-abonnement arbejder nu, mens du er væk. Bed agenten om at sætte {title} op igen.",
 	"Your ChatGPT plan now works while you're away. Ask the agents to set those routines up again.":
 		"Dit ChatGPT-abonnement arbejder nu, mens du er væk. Bed agenterne om at sætte rutinerne op igen.",
+	"Your ChatGPT plan now works while you're away. Ask the agent to set those routines up again.":
+		"Dit ChatGPT-abonnement arbejder nu, mens du er væk. Bed agenten om at sætte rutinerne op igen.",
 	"“Work while you're away” is on, but the routine could not be started. Try again.":
 		"“Arbejd, mens du er væk” er slået til, men rutinen kunne ikke startes. Prøv igen.",
+	"“Work while you're away” is on, but the routines could not be started. Try again.":
+		"“Arbejd, mens du er væk” er slået til, men rutinerne kunne ikke startes. Prøv igen.",
 	"Turn on": "Slå til",
 	"Turning on…": "Slår til…",
 	"Not now": "Ikke nu",

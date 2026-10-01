@@ -220,6 +220,54 @@ describe("agent routines section", () => {
 		expect(f.view.el.textContent).not.toContain("Other");
 		expect(f.view.el.textContent).not.toContain("Gone");
 	});
+	it("keeps why a routine is paused and whom it runs for, from the list's own answer", async () => {
+		const row = {
+			routine_id: "10000000-0000-4000-8000-000000000020",
+			client_routine_id: "10000000-0000-4000-8000-000000000021",
+			version: 1,
+			status: "paused",
+			staff_agent_id: staff.id,
+			title: "Morning brief",
+			prompt: "Brief me.",
+			triggers: [{ id: "agent", kind: "schedule", intervalMinutes: 60, replyPolicy: "silent" }],
+			effort: "medium",
+			sponsor_binding_id: "10000000-0000-4000-8000-000000000004",
+			sponsor_version: 1,
+			logical_computer_id: null,
+			required_capability: "agent_turn",
+			job_type: "agent_turn",
+			publication_mode: "automatic",
+			review_policy_key: null,
+			reviewer_staff_ids: [],
+			created_at: "2026-09-17T06:00:00.000Z",
+			updated_at: "2026-09-17T06:05:00.000Z",
+		};
+		const member = "10000000-0000-4000-8000-000000000022";
+		const rpc = vi.fn(async (name: string) => {
+			if (name !== "qorpera_list_cloud_routines") throw new Error(`Unexpected call ${name}`);
+			return [
+				{ ...row, pause_reason: "needs_model_account", runs_for_user_id: member },
+				{
+					...row,
+					routine_id: "10000000-0000-4000-8000-000000000023",
+					pause_reason: "Needs an account!",
+					runs_for_user_id: "someone",
+				},
+				{ ...row, routine_id: "10000000-0000-4000-8000-000000000024" },
+			];
+		});
+		const listed = await createWebRoutines(
+			{ rpc } as unknown as Cloud,
+			profileA,
+			new AbortController().signal,
+			() => {},
+		).list();
+		expect(listed.map((item) => [item.routineId, item.pauseReason, item.runsForUserId])).toEqual([
+			[row.routine_id, "needs_model_account", member],
+			["10000000-0000-4000-8000-000000000023", undefined, undefined],
+			["10000000-0000-4000-8000-000000000024", undefined, undefined],
+		]);
+	});
 	it("reads an ended routine and shows it as ended, next to the others", async () => {
 		// One expired routine (a finished finite watch) used to make the whole list unreadable.
 		const row = {
