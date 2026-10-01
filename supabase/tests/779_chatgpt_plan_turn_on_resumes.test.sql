@@ -660,7 +660,8 @@ end $$;
 delete from public.qorpera_company_deletions where profile_id = '16000000-0000-4000-8000-000000000010';
 update public.qorpera_cloud_routines set status = 'retired', pause_reason = null where id = pg_temp.r779_id(24);
 
--- 14. An agent pauses one of two waiting routines (its fence, then the routine) while the member presses Turn on. The
+-- 14. One of two waiting routines stops waiting for the plan while the member presses Turn on (here its reason is set
+--     to the agent's own pause under the agent's fence, standing for any change that takes it out of the wait). The
 --     switch found both before it locked anything; it reads each again under its lock, and starts only the other.
 select pg_temp.r779_routine(25, '16000000-0000-4000-8000-000000000001', 'paused', 'needs_model_account',
 	'{"id":"agent","kind":"schedule","intervalMinutes":60}', pg_temp.r779_id(90));

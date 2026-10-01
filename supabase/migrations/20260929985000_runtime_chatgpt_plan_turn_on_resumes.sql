@@ -98,6 +98,7 @@ declare
 	v_routine public.qorpera_cloud_routines%rowtype; v_current public.qorpera_cloud_routine_versions%rowtype;
 	v_sponsor public.qorpera_execution_sponsor_versions%rowtype;
 	v_connection_version bigint; v_hex text; v_client uuid; v_binding uuid; v_at timestamptz; v_sha text;
+	v_state text; v_message text; v_detail text;
 begin
 	-- A wait for any one lock ends after 2 s (the function's lock_timeout, below), and a deadlock PostgreSQL breaks on
 	-- this side ends the call too (the header's one cycle); both answer a plain "busy" the web shows (55P03, a retry
@@ -200,6 +201,9 @@ begin
 		end loop;
 		return v_result || jsonb_build_object('resumed_routines', to_jsonb(v_resumed));
 	exception when lock_not_available or deadlock_detected then
+		-- The member sees busy; the database log keeps which it was (a lock wait or a broken deadlock, and with whom).
+		get stacked diagnostics v_state = returned_sqlstate, v_message = message_text, v_detail = pg_exception_detail;
+		raise log 'qorpera_set_chatgpt_plan_work_while_away busy: % %: %', v_state, v_message, coalesce(v_detail, '');
 		raise exception 'Busy right now. Try again in a moment.' using errcode = '55P03';
 	end;
 end
