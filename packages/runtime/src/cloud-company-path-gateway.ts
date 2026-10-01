@@ -72,7 +72,7 @@ export type CloudCompanyPathRpc =
 	| "qorpera_manage_agent_worker"
 	| "qorpera_report_worker_result"
 	| "qorpera_describe_agent_open_work"
-	| "qorpera_record_runtime_observation"
+	| "qorpera_record_runtime_observation_batch"
 	| "qorpera_record_provider_usage_signal"
 	| "qorpera_begin_native_company_execution_v2"
 	| "qorpera_describe_company_run_context"
@@ -127,6 +127,8 @@ export type CloudCompanyPathRpc =
 	| "qorpera_folder_open_upload"
 	| "qorpera_folder_seal_upload"
 	| "qorpera_folder_renew_upload"
+	// A folder-v2 run's own todos from the todo index (thin writers W1).
+	| "qorpera_folder_agent_todos"
 	// Event wakes (W2): the company's hooks and one event's body.
 	| "qorpera_list_agent_event_hooks"
 	| "qorpera_read_agent_event"

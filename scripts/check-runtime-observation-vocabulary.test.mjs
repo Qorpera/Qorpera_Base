@@ -21,6 +21,8 @@ const SIGNATURE = new RegExp(`'(?:public\\.)?${NAME}\\s*\\(\\s*uuid\\s*,\\s*json
 const QUOTED_SIGNATURE = /'(?:[a-z_][a-z0-9_]*\.)?[a-z_][a-z0-9_]*\s*\([^()']*\)'/gi;
 /** Anything that can create or rewrite a function. */
 const CHANGES_CODE = /\bpg_temp\.|\bcreate\s+(?:or\s+replace\s+)?function\b|\bexecute\b/i;
+/** The header of a statement that creates a function, with its name. */
+const CREATES_FUNCTION = /^\s*create\s+(?:or\s+replace\s+)?function\s+(?:public\.)?([a-z_][a-z0-9_]*)\s*\(/i;
 const DOLLAR_TAG = /\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$/y;
 const PATCH_PAIR = /\$old\$([\s\S]*?)\$old\$\s*,\s*\$new\$([\s\S]*?)\$new\$/g;
 
@@ -117,8 +119,14 @@ function effectiveDefinition(migrations) {
 			}
 			const pairs = SIGNATURE.test(statement) ? [...statement.matchAll(PATCH_PAIR)] : [];
 			if (!pairs.length) {
+				// Another function may call this one (the batch writer does, row by row); its body
+				// still may not create or rewrite code.
+				const other = CREATES_FUNCTION.exec(statement);
 				assert.doesNotMatch(
-					statement.replace(/\b(?:grant|revoke)\s+execute\b/gi, ""),
+					(other && other[1].toLowerCase() !== NAME ? statement.slice(other[0].length) : statement).replace(
+						/\b(?:grant|revoke)\s+execute\b/gi,
+						"",
+					),
 					CHANGES_CODE,
 					`unrecognised change to ${NAME} in ${name}`,
 				);
@@ -175,6 +183,24 @@ test("a later migration the check cannot see past fails it", async (t) => {
 	$new$'manage_routine','report_work'$new$);`;
 		assert.throws(() => assertVocabulary(withLater(patch)), {
 			message: /^operations in \S+( \+ \S+)* \+ 20991231000000_later\.sql(\n|$)/,
+		});
+	});
+
+	await t.test("another function that calls it is not a change to it", () => {
+		const caller = `create or replace function public.${NAME}_batch(p_run_id uuid, p_observations jsonb)
+returns jsonb language plpgsql as $$ begin return public.${NAME}(p_run_id, p_observations -> 0); end $$;`;
+		assert.doesNotThrow(() => assertVocabulary(withLater(caller)));
+	});
+
+	await t.test("another function whose body rewrites it is refused", () => {
+		const rewrite = `create function public.${NAME}_rewrite() returns void language plpgsql as $$
+declare v_definition text;
+begin
+	select pg_get_functiondef(p.oid) into v_definition from pg_proc p where p.proname = '${NAME}';
+	execute replace(v_definition, '''decide_routine'',', '');
+end $$;`;
+		assert.throws(() => assertVocabulary(withLater(rewrite)), {
+			message: /^unrecognised change to qorpera_record_runtime_observation in 20991231000000_later\.sql(\n|$)/,
 		});
 	});
 

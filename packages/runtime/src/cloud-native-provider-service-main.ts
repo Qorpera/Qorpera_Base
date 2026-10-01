@@ -17,6 +17,7 @@ import {
 	parseCompanyComputerNativeRoute,
 } from "./cloud-company-computer-native-client.ts";
 import { HttpCloudCompanyComputerRegistry } from "./cloud-company-computer-registry-http.ts";
+import { HttpCloudCompanyFolderBytes } from "./cloud-company-folder-bytes.ts";
 import { HttpCloudCompanyPathControl } from "./cloud-company-path-control.ts";
 import { CloudNativeCompanyPresence } from "./cloud-company-path-presence.ts";
 import { recoveryBase64, recoveryDigest, recoveryRecord } from "./cloud-identity-recovery-crypto.ts";
@@ -411,6 +412,15 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 						}),
 					}
 				: {}),
+			// A folder-v2 run's file bytes: the object gateway's folder route, on the same native credential.
+			folderBytes: (binding, identity) =>
+				new HttpCloudCompanyFolderBytes({
+					baseUrl: runtimeConfiguration.objectGatewayUrl,
+					token: objectToken,
+					binding,
+					identity,
+					control: pathControl,
+				}),
 			objectStore: (companyId, binding, signal) =>
 				new CloudContentAddressedStore(
 					new HttpNativeCompanyObjectTransport({

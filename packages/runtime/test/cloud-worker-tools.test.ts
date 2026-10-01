@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { CloudCompanyPathControl, CloudCompanyPathGateway } from "@qorpera/runtime/cloud-company-path-gateway";
+import type { CloudFolderTodos } from "@qorpera/runtime/cloud-folder-todos";
 import { CloudNativeToolRun } from "@qorpera/runtime/cloud-native-tool-authority";
 import { CloudNativeToolBoundary } from "@qorpera/runtime/cloud-native-tool-boundary";
 import {
@@ -610,5 +611,54 @@ describe("agent todo and worker tools", () => {
 			),
 		).toEqual(["company_read", "company_list"]);
 		expect(writer.companyFile(tool("company_write")) && parent.companyFile(tool("company_delete"))).toBe(true);
+	});
+});
+
+describe("a folder-v2 agent's todos", () => {
+	it("saves through the folder writer and says the todos are files", async () => {
+		const { binding, authority } = nativeToolAuthorityFixture();
+		const identity = authority.identity;
+		const call = vi.fn<CloudCompanyPathControl["call"]>(async () => ({}));
+		const change = vi.fn(async () => ({ kind: "text" as const, value: '{"saved":true}' }));
+		const list = vi.fn(async () => ({ kind: "text" as const, value: '{"todos":[]}' }));
+		const gateway = { read: vi.fn(), mutate: vi.fn() } as unknown as Pick<CloudCompanyPathGateway, "read" | "mutate">;
+		const tools = cloudWorkerTools(binding, identity, { call }, gateway, parentWake, {
+			folderTodos: { change, list } as unknown as CloudFolderTodos,
+		});
+		const todo = tools.find((tool) => tool.name === "manage_todo");
+		if (!todo) throw new Error("Missing todo tool");
+		expect(todo.description).toContain("Each todo is a file in your folder");
+		expect(todo.description).not.toContain("also a document in the shared Company File");
+		expect(todo.description).not.toContain("latest 4 workers");
+		const context = {
+			companyId: identity.companyId,
+			runId: identity.runId,
+			callId: randomUUID(),
+			argumentSha256: "a".repeat(64),
+			signal: new AbortController().signal,
+			identity,
+		};
+		const request = todo.parseArguments({
+			action: "upsert",
+			operationKey: "todo-1",
+			todoKey: "call-the-bank",
+			title: "Call the bank",
+		});
+		await expect(todo.execute(request, context)).resolves.toEqual({ kind: "text", value: '{"saved":true}' });
+		expect(change).toHaveBeenCalledWith(
+			{
+				action: "upsert",
+				operationKey: "todo-1",
+				todoKey: "call-the-bank",
+				title: "Call the bank",
+				detail: "",
+				state: "open",
+			},
+			context,
+		);
+		const listing = todo.parseArguments({ action: "list", includeClosed: true });
+		await expect(todo.execute(listing, context)).resolves.toEqual({ kind: "text", value: '{"todos":[]}' });
+		expect(list).toHaveBeenCalledWith({ action: "list", includeClosed: true }, context, expect.any(Function));
+		expect(call).not.toHaveBeenCalled();
 	});
 });
