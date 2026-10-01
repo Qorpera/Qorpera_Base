@@ -784,14 +784,17 @@ export function mountApplication(
 				noticeAccess,
 			);
 			const plan =
-				native.setWorkWhileAway && native.recordRoutineOffer
+				native.setWorkWhileAway && native.recordRoutineOffer && native.chatGptPlanAvailable
 					? {
 							native: {
 								listConnections: native.listConnections,
 								setWorkWhileAway: native.setWorkWhileAway,
 								recordRoutineOffer: native.recordRoutineOffer,
+								chatGptPlanAvailable: native.chatGptPlanAvailable,
 							},
 							routines: createWebRoutines(cloud, controller.profile, controller.signal, noticeAccess),
+							memberId: controller.userId,
+							canManage: () => controller.store.get().team?.capabilities.authorize === true,
 						}
 					: undefined;
 			notices = new ExecutionNotices(client, controller.signal, () => main.focus({ preventScroll: true }), plan);

@@ -128,7 +128,7 @@ begin
 	for v in select * from (values
 		('qorpera_native_tool_locked_run(jsonb)', 'guard', '05ff6cf43bcb0108234f8d4bafff592f'),
 		('qorpera_validate_native_provider_execution_lease(uuid,uuid,uuid,uuid,uuid,uuid,uuid,text,text)', 'guard', '9695f5dc4c068fd8e7a69a38ea3e01c4'),
-		-- Re-pinned for Sign in with ChatGPT (20260929950000): a ChatGPT plan never pays for a file-change or
+		-- Re-pinned for Sign in with ChatGPT (20260928359950): a ChatGPT plan never pays for a file-change or
 		-- event wake, nor for work that follows from one; the snapshot-v1 text is otherwise unchanged.
 		('qorpera_wake_authorized(qorpera_wake_occurrences)', 'guard', '025e118587495df4f03ef7634a9eadab'),
 		('qorpera_company_path_assert_context(jsonb)', 'guard', '885499e6425c36e3d55ac3976c1459c6'),

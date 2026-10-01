@@ -542,7 +542,7 @@ describe("ChatGPT plan logins (switched off until a company has one)", () => {
 		});
 		await expect(f.client.recordRoutineOffer!(id(94))).rejects.toThrow("Invalid cloud response");
 	});
-	it("turns work while away on (consent, then the consented version bound) and off (consent only)", async () => {
+	it("turns work while away on and off through the member's own switch, binding each new version", async () => {
 		const f = setup();
 		const rpc = vi
 			.spyOn(f.cloud, "rpc")
@@ -552,10 +552,10 @@ describe("ChatGPT plan logins (switched off until a company has one)", () => {
 			.mockResolvedValueOnce(Response.json({ binding_id: id(92), version: 2 }))
 			.mockResolvedValueOnce(Response.json({ binding_id: id(93), version: 1 }));
 		await f.client.setWorkWhileAway!(id(94), true);
-		expect(rpc).toHaveBeenNthCalledWith(1, "qorpera_consent_provider_connection_autonomous", {
+		expect(rpc).toHaveBeenNthCalledWith(1, "qorpera_set_chatgpt_plan_work_while_away", {
 			p_profile_id: profileA.profileId,
 			p_connection_id: id(94),
-			p_allow_autonomous: true,
+			p_on: true,
 		});
 		expect(JSON.parse(f.fetch.mock.calls[0]![1]!.body as string)).toMatchObject({
 			p_provider_connection_id: id(94),
@@ -563,10 +563,10 @@ describe("ChatGPT plan logins (switched off until a company has one)", () => {
 			p_allow_autonomous: true,
 		});
 		await f.client.setWorkWhileAway!(id(94), false);
-		expect(rpc).toHaveBeenNthCalledWith(2, "qorpera_consent_provider_connection_autonomous", {
+		expect(rpc).toHaveBeenNthCalledWith(2, "qorpera_set_chatgpt_plan_work_while_away", {
 			p_profile_id: profileA.profileId,
 			p_connection_id: id(94),
-			p_allow_autonomous: false,
+			p_on: false,
 		});
 		// Turned off, the new version is bound at once for the member's own messages.
 		expect(JSON.parse(f.fetch.mock.calls[1]![1]!.body as string)).toMatchObject({

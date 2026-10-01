@@ -1221,7 +1221,8 @@ describe("routines on a ChatGPT plan (shown only when the member has one)", () =
 			"qorpera_upsert_cloud_routine",
 		]);
 	});
-	it("pauses or resumes on an account that can pay: past a plan for a file routine, and says so with only a plan", async () => {
+	it("pauses or resumes on the routine's own payer first, falling back only to an account that can pay", async () => {
+		// A Codex login comes before a plan for a file routine.
 		const both = mount([fileRoutine()], true, [plan(true), account]);
 		await settle();
 		click(both.view.el, "Morning brief");
@@ -1229,15 +1230,63 @@ describe("routines on a ChatGPT plan (shown only when the member has one)", () =
 		expect(both.routines.setEnabled).toHaveBeenCalledWith(expect.anything(), account, false, expect.any(String));
 		both.stop.abort();
 		document.body.replaceChildren();
+		// With only a plan that is not turned on, the routine's own payer still pauses it.
 		const only = mount([routine()], true, [plan(false)]);
 		await settle();
 		click(only.view.el, "Morning brief");
 		await settle();
-		expect(only.routines.setEnabled).not.toHaveBeenCalled();
-		expect(only.view.el.querySelector(".surface-status")?.textContent).toBe(
+		expect(only.routines.setEnabled).toHaveBeenCalledWith(expect.anything(), undefined, false, expect.any(String));
+		expect(only.view.el.querySelector(".surface-status")).toBeNull();
+		only.stop.abort();
+		document.body.replaceChildren();
+		// When the routine's own payer cannot, it says what to do.
+		const refused = mount([routine()], true, [plan(false)]);
+		refused.routines.setEnabled.mockRejectedValueOnce(new Error("not your payer"));
+		await settle();
+		click(refused.view.el, "Morning brief");
+		await settle();
+		expect(refused.view.el.querySelector(".surface-status")?.textContent).toBe(
 			"Turn on “Work while you're away” for this ChatGPT plan in Settings first.",
 		);
-		only.stop.abort();
+		refused.stop.abort();
+		document.body.replaceChildren();
+		const file = mount([fileRoutine()], true, [plan(true)]);
+		file.routines.setEnabled.mockRejectedValueOnce(new Error("not your payer"));
+		await settle();
+		click(file.view.el, "Morning brief");
+		await settle();
+		expect(file.view.el.querySelector(".surface-status")?.textContent).toBe(
+			"A ChatGPT plan can't pay for routines that start on a file change or a webhook.",
+		);
+		file.stop.abort();
+	});
+	it("keeps a file routine off a plan when it is saved directly, and its note says so as the trigger changes", async () => {
+		const f = fallbackRoutines();
+		await expect(
+			f.routines.save(
+				{
+					clientRoutineId: "10000000-0000-4000-8000-000000000009",
+					staffAgentId: staff.id,
+					title: "Invoices",
+					prompt: "File them.",
+					trigger: fileRoutine().triggers[0]!,
+					effort: "low",
+					enabled: true,
+				},
+				plan(true),
+				crypto.randomUUID(),
+			),
+		).rejects.toThrow("can't pay for routines that start on a file change");
+		expect(f.calls).toEqual([]);
+		const view = mountPlan([], [plan(true)]);
+		await draft(view.view);
+		const when = view.view.el.querySelector<HTMLSelectElement>('[aria-label="When it runs"]')!;
+		when.value = "file";
+		when.dispatchEvent(new Event("change"));
+		expect(view.view.el.textContent).toContain(
+			"A ChatGPT plan can't pay for routines that start on a file change or a webhook. Choose another account.",
+		);
+		view.stop.abort();
 	});
 	it("offers a Codex login first and a plan without work while away last; a Codex login is consented as before", async () => {
 		const f = mountPlan([], [plan(false), account]);

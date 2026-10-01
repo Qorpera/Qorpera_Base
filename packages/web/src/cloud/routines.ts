@@ -1,4 +1,3 @@
-import type { NativeMemberConnection } from "@qorpera/cloud-client/cloud-native-subscription-control";
 import {
 	type CloudRoutine,
 	CloudRoutineClient,
@@ -8,11 +7,11 @@ import {
 } from "@qorpera/cloud-client/cloud-routines";
 import type { Cloud } from "./client.ts";
 import { planLogin, type WebMemberConnection } from "./native-subscription.ts";
+import { UUID_PATTERN } from "./parse.ts";
+import type { HostedProfile } from "./types.ts";
 
 /** A ChatGPT plan never pays for a file-change or webhook routine (the kernel refuses it too). */
 const LISTENER_ON_PLAN = "A ChatGPT plan can't pay for routines that start on a file change or a webhook.";
-
-import type { HostedProfile } from "./types.ts";
 
 export interface WebRoutineDraft {
 	/** Stable identity; the view keeps one per draft so a retry is the same routine. */
@@ -29,14 +28,18 @@ export interface WebRoutineDraft {
 /** Routines run while no member is present, so each one names the member
  * model account that pays for it, and that member consents to unattended use
  * of the account when they save. */
+/** A routine with what the web reads beside the SDK's fields (migration 20260929970000): why a paused
+ * routine waits, and the member its current version runs for. */
+export type WebRoutine = CloudRoutine & { pauseReason?: string; runsForUserId?: string };
+
 export interface WebRoutines {
-	list(): Promise<CloudRoutine[]>;
+	list(): Promise<WebRoutine[]>;
 	runs(): Promise<CloudRoutineOccurrence[]>;
-	save(draft: WebRoutineDraft, account: NativeMemberConnection, saveId: string): Promise<void>;
+	save(draft: WebRoutineDraft, account: WebMemberConnection, saveId: string): Promise<void>;
 	/** Pause or resume without changing anything else. */
 	setEnabled(
 		routine: CloudRoutine,
-		account: NativeMemberConnection | undefined,
+		account: WebMemberConnection | undefined,
 		enabled: boolean,
 		saveId: string,
 	): Promise<void>;
@@ -78,14 +81,14 @@ export function createWebRoutines(
 		return value;
 	};
 	const client = new CloudRoutineClient((name, args) => rpc(name, args));
-	const sponsor = async (account: NativeMemberConnection) => {
+	const sponsor = async (account: WebMemberConnection) => {
 		if (account.connectionStatus !== "active" || account.authorizationState !== "active")
 			throw new Error("This model account needs to be signed in again.");
 		let version: number;
-		if (planLogin(account as WebMemberConnection)) {
+		if (planLogin(account)) {
 			// A ChatGPT plan works while its member is away only once they turned that on in Settings;
 			// saving a routine never turns it on for them.
-			if ((account as WebMemberConnection).allowAutonomous !== true)
+			if (account.allowAutonomous !== true)
 				throw new Error("Turn on “Work while you're away” for this ChatGPT plan in Settings first.");
 			version = account.connectionVersion;
 		} else {
@@ -118,11 +121,34 @@ export function createWebRoutines(
 		return { sponsorBindingId: bound.binding_id, sponsorVersion: bound.version as number };
 	};
 	return {
-		list: () => client.list(profile.environmentId, signal),
+		list: async () => {
+			// The SDK reads the fields it knows; these two come from the same answer.
+			let answer: unknown;
+			const listed = await new CloudRoutineClient(async (name, args) => {
+				const value = await rpc(name, args);
+				if (name === "qorpera_list_cloud_routines") answer = value;
+				return value;
+			}).list(profile.environmentId, signal);
+			const rows = Array.isArray(answer) ? (answer as unknown[]) : [];
+			return listed.map((routine): WebRoutine => {
+				const row = rows.find(
+					(item): item is Record<string, unknown> =>
+						Boolean(item) &&
+						typeof item === "object" &&
+						(item as Record<string, unknown>).routine_id === routine.routineId,
+				);
+				const reason = row?.pause_reason;
+				const member = row?.runs_for_user_id;
+				return {
+					...routine,
+					...(typeof reason === "string" && /^[a-z_]{1,64}$/.test(reason) ? { pauseReason: reason } : {}),
+					...(typeof member === "string" && UUID_PATTERN.test(member) ? { runsForUserId: member } : {}),
+				};
+			});
+		},
 		runs: () => client.occurrences(profile.environmentId, signal, 200),
 		async save(draft, account, saveId) {
-			if (draft.trigger.kind === "listener" && planLogin(account as WebMemberConnection))
-				throw new Error(LISTENER_ON_PLAN);
+			if (draft.trigger.kind === "listener" && planLogin(account)) throw new Error(LISTENER_ON_PLAN);
 			const authority = await sponsor(account);
 			await client.save(
 				{
@@ -162,7 +188,7 @@ export function createWebRoutines(
 				await write({ sponsorBindingId: routine.sponsorBindingId, sponsorVersion: routine.sponsorVersion });
 			} catch (error) {
 				if (!account) throw error;
-				if (planLogin(account as WebMemberConnection) && routine.triggers.some((item) => item.kind === "listener"))
+				if (planLogin(account) && routine.triggers.some((item) => item.kind === "listener"))
 					throw new Error(LISTENER_ON_PLAN);
 				await write(await sponsor(account));
 			}
