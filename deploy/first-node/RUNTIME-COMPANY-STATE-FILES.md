@@ -806,9 +806,9 @@ C1d (bytes):
   then the unlisted as Unassigned (`unassignedTruncated` when the context's coworker list was cut). The Co-Founder is
   left out when it is the run's own agent; the context does not say which coworker is. Each result releases the read
   of the file it shows.
-- Differences from today: a section name is matched as written after trimming (the request's spaces are collapsed, as
-  today, but the file's are not), sections have no count cap beyond the file's 64 KiB, and an open group chat can be
-  placed as well as an agent (§2).
+- A section reference ignores case and runs of spaces, as today. Differences from today: sections have no count cap
+  beyond the file's 64 KiB (a change past it is refused before any effect), and an open group chat can be placed as
+  well as an agent (§2).
 
 **Built (W3): `decide_routine`** (`packages/runtime/src/cloud-folder-routine-decision.ts`).
 - The run woken by its dynamic routine's `once` occurrence writes the decision into the routine's own file,

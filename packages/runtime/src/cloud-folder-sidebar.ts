@@ -52,7 +52,8 @@ function releaseIdFor(runId: string, callId: string): string {
 	return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-${((Number.parseInt(hex[16] ?? "0", 16) & 3) | 8).toString(16)}${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
 }
 
-const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
+/** A section reference finds a name ignoring case and runs of spaces, as today. */
+const same = (a: string, b: string) => a.replace(/\s+/g, " ").toLowerCase() === b.replace(/\s+/g, " ").toLowerCase();
 /** The sections as the parser compares them: names in order, each with its ids in order. */
 const shape = (sections: readonly { name: string; members: readonly { id: string }[] }[]) =>
 	JSON.stringify(sections.map((section) => [section.name, section.members.map((member) => member.id)]));
@@ -147,10 +148,12 @@ export class CloudFolderSidebar {
 			return { kind: "text", value: shown };
 		}
 		const text = render(preamble, sections);
-		// What is written must read back as the sections intended (a name the heading rule cannot carry is refused).
+		// What is written must read back as the sections intended (a file grown past its size, for one).
 		const check = parseCompanyStateFile(PATH, text);
 		if (!check?.ok || check.file.kind !== "sections" || shape(check.file.sections) !== shape(sections))
-			throw new CloudToolRefusal("That section name cannot be written in the sections file; choose another name");
+			throw new CloudToolRefusal(
+				"The sections file cannot take this change (it would not read back as intended); tell the member",
+			);
 		return this.#operations.execute({
 			operation: {
 				tool: "organize_sidebar",

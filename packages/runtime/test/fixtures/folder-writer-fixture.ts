@@ -128,6 +128,9 @@ export async function folderWriterFixture(
 						return { ...base, outcome: "saved", version: randomUUID() };
 					}
 					if (!folders.has(parent)) return { ...base, outcome: "refused", reason: "parent_missing" };
+					const current = files.get(path);
+					if (unit.expectedVersion === undefined ? current : current?.version !== unit.expectedVersion)
+						return { ...base, outcome: "conflict", reason: current ? "version_changed" : "missing" };
 					// The structured hook: a parse with problems is refused with them (nulls stripped, as the commit does).
 					const structured = (unit.structured as { problems?: Record<string, unknown>[] }[] | undefined)?.[0];
 					if (structured?.problems)
@@ -144,9 +147,6 @@ export async function folderWriterFixture(
 						new TextDecoder().decode(bytesBySha.get((unit.file as CloudCompanyFolderFile).fileSha256)),
 					);
 					if (hooked) return { ...base, ...hooked };
-					const current = files.get(path);
-					if (unit.expectedVersion === undefined ? current : current?.version !== unit.expectedVersion)
-						return { ...base, outcome: "conflict", reason: current ? "version_changed" : "missing" };
 					const version = randomUUID();
 					files.set(path, { version, file: unit.file as CloudCompanyFolderFile, updatedAt: now() });
 					return { ...base, outcome: "saved", version };
@@ -171,7 +171,7 @@ export async function folderWriterFixture(
 					cursor?: string;
 				};
 				const search = request.search?.trim().toLowerCase();
-				const rows = [...files.entries()]
+				const all = [...files.entries()]
 					.filter(([path]) => path.startsWith(`${TODOS}/`) && /^[^/]+\.md$/.test(path.slice(TODOS.length + 1)))
 					.map(([path, stored]) => {
 						const parsed = parseCompanyStateFile(
@@ -183,7 +183,12 @@ export async function folderWriterFixture(
 						if (!rowIds.has(path)) rowIds.set(path, randomUUID());
 						return { path, stored, todo, id: rowIds.get(path) as string, key: path.slice(TODOS.length + 1, -3) };
 					})
-					.reverse()
+					.reverse();
+				// As the real function, the cursor is looked up among all the agent's rows, not only those that match.
+				const at = request.cursor ? all.findIndex((row) => row.id === request.cursor) : -1;
+				if (request.cursor && at < 0) throw new Error("Todo cursor is unavailable; list again without it");
+				const rows = all
+					.filter((_row, index) => index > at)
 					.filter(
 						({ todo, key }) =>
 							(request.state
@@ -191,12 +196,8 @@ export async function folderWriterFixture(
 								: request.includeClosed || todo.status === "open" || todo.status === "blocked") &&
 							(!search || todo.title.toLowerCase().includes(search) || key.includes(search)),
 					);
-				// As the real function: a cursor must be one of the rows listed.
-				const at = request.cursor ? rows.findIndex((row) => row.id === request.cursor) : -1;
-				if (request.cursor && at < 0) throw new Error("Todo cursor is unavailable; list again without it");
-				const start = at + 1;
-				const page = rows.slice(start, start + 32);
-				const more = rows.length - start - page.length;
+				const page = rows.slice(0, 32);
+				const more = rows.length - page.length;
 				return {
 					schema: "qorpera.folder-agent-todos/v1",
 					todos: page.map(({ path, stored, todo, id, key }) => ({

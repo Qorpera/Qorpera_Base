@@ -320,3 +320,25 @@ it("releases what it shows: the save under its receipt, anything else under the 
 	expect((f.releases.at(-1) as { p_release_id: string }).p_release_id).toBe(id);
 	expect(f.releases).toHaveLength(3);
 });
+
+it("finds a section ignoring runs of spaces, releases a no-op or refusal it shows, and refuses a file grown too big", async () => {
+	const f = await fixture(SEEDED.replace("## Sales", "## Customer support"));
+	const callId = randomUUID();
+	const same = await f.raw({ action: "move_agent", agentId: NORA, section: "research" }, callId);
+	expect(JSON.parse(same)).toMatchObject({ changed: false, note: "Already so: nothing changed" });
+	expect(f.releases.at(-1)).toMatchObject({ p_reads: [{ path: PATH }], p_output_sha256: sha(same) });
+	const taken = await f.raw({ action: "rename_section", section: "Customer   support", name: "RESEARCH" });
+	expect(JSON.parse(taken)).toMatchObject({ refused: "That name is taken by another section" });
+	expect(f.releases.at(-1)).toMatchObject({ p_output_sha256: sha(taken) });
+	await expect(f.call({ action: "move_agent", agentId: PIA, section: "customer  SUPPORT" })).resolves.toMatchObject({
+		changed: true,
+		sections: [{ name: "Research" }, { name: "Customer support", agents: [{ id: PIA }] }],
+	});
+	expect(f.commits).toHaveLength(1);
+	// A change the file cannot take (here, past its size) is refused before any receipt.
+	const full = await fixture(`# Sections\n\n${"n".repeat(65_460)}\n\n## Research\n- ${NORA}\n`);
+	await expect(full.call({ action: "create_section", name: "A section with a long name" })).rejects.toThrow(
+		"cannot take this change",
+	);
+	expect(full.ledger.size).toBe(0);
+});
