@@ -647,6 +647,16 @@ describe("a ChatGPT plan's first-routine card (shown only to a member with a pla
 			"“Work while you're away” is on, but the routine could not be started. Try again.",
 		);
 		f.view.dispose();
+		// An owner: the web saved the first, and the second's save failed.
+		f = planSetup({ routines: [routine(), routine({ routineId: id(62), title: "Evening note" })] });
+		await settle();
+		f.offer.routines.setEnabled.mockImplementationOnce(async () => {}).mockRejectedValueOnce(new Error("refused"));
+		action("turn-on-plan").click();
+		await settle();
+		expect(f.view.el.textContent).toContain(
+			"“Work while you're away” is on, but the routine could not be started. Try again.",
+		);
+		f.view.dispose();
 		// An owner whose plan does not read as on after the switch: nothing is saved.
 		f = planSetup();
 		await settle();

@@ -208,8 +208,9 @@ export class ExecutionNotices {
 			}
 			this.#answered.add(id);
 			// Turning the plan on starts the member's routines that waited only for it (20260929985000). Read again
-			// what still waits: one the kernel left because it was busy at that moment, one set up while the card
-			// stood, or every one on a kernel without that step. The card never says a routine started that did not.
+			// what still waits: one the kernel left (busy at that moment, or one it does not start, such as one whose
+			// payer changed), or every one on a kernel without that step. The card never says a routine started that
+			// did not.
 			still = (await plan.routines.list()).filter((entry) => waitsForPlan(entry, plan.memberId));
 			if (still.length && plan.canManage()) {
 				const account = (await plan.native.listConnections(signal)).connections
