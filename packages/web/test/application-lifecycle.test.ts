@@ -816,6 +816,123 @@ describe("account and route ownership", () => {
 	});
 });
 
+describe("Continue with ChatGPT: the return from OpenAI", () => {
+	const chat = `#/c/${profileA.profileId}/chat/${session.sessionId}`;
+	const confirmation = "d".repeat(43);
+	const status = () => document.querySelector(".connection-plan")?.textContent;
+	const settingsOpen = () => document.querySelector(".settings-overlay") !== null;
+	/** A sign-in this tab started on `chat`, a Co-Founder home that redirects to its conversation,
+	 * and a vault that takes 3 s to confirm. */
+	function returned(memberId = userA.id, returnRoute = chat) {
+		const signals: AbortSignal[] = [];
+		const confirm = vi.fn(
+			(_input: string | URL | Request, init?: RequestInit) =>
+				new Promise<Response>((resolve, reject) => {
+					if (init?.signal) signals.push(init.signal);
+					init?.signal?.addEventListener("abort", () => reject(init.signal!.reason), { once: true });
+					setTimeout(() => resolve(Response.json({ status: "completed", login_id: id(105) })), 3000);
+				}),
+		);
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+				if (String(input) === "https://login.fixture.invalid/chatgpt-plan-confirm") return confirm(input, init);
+				throw new Error("No cloud transport in this UI fixture");
+			}),
+		);
+		sessionStorage.setItem(
+			"qorpera.chatgpt-plan-sign-in.v1",
+			JSON.stringify({
+				companyId: profileA.profileId,
+				memberId,
+				loginId: id(105),
+				clientConnectionId: id(103),
+				capability: "c".repeat(43),
+				expiresAt: new Date(Date.now() + 900_000).toISOString(),
+				startedAt: Date.now(),
+				returnRoute,
+			}),
+		);
+		// The callback's return page is the site's root, with the outcome after it.
+		const f = mounted(`#?chatgpt_plan=confirm&confirmation=${confirmation}`);
+		vi.mocked(f.api.getOrganization).mockResolvedValue({
+			schema: "qorpera.company-organization/v1",
+			profileId: profileA.profileId,
+			cofounder: { staffAgentId: staff.id, formationId: id(30), memberSessionId: session.sessionId },
+			formation: {
+				formationId: id(30),
+				state: "operating",
+				status: "active",
+				revision: 1,
+				projectionStatus: "ready",
+				sourcePath: "company/formation.json",
+			},
+			responsibilities: [],
+			projects: [],
+		});
+		return { ...f, confirm, signals };
+	}
+
+	it("goes back to the page the sign-in began on and finishes it in My connections", async () => {
+		const { confirm, signals } = returned();
+		await draw();
+		await draw();
+		expect(location.hash).toBe(chat);
+		expect(sessionStorage.getItem("qorpera.chatgpt-plan-sign-in.v1")).toBeNull();
+		expect(settingsOpen()).toBe(true);
+		expect(document.querySelector("#settings-tab-my-connections")?.getAttribute("aria-selected")).toBe("true");
+		expect(status()).toBe("Finishing your ChatGPT sign-in…");
+		await vi.advanceTimersByTimeAsync(3500);
+		await draw();
+		expect(confirm).toHaveBeenCalledOnce();
+		expect(signals.map((signal) => signal.aborted)).toEqual([false]);
+		expect(status()).toBe("Your ChatGPT plan is connected.");
+	});
+
+	it("finishes it while Settings is closed, and My connections shows the outcome when it opens", async () => {
+		const { confirm, signals } = returned();
+		await draw();
+		await draw();
+		expect(settingsOpen()).toBe(true);
+		document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+		await draw();
+		expect(settingsOpen()).toBe(false);
+		await vi.advanceTimersByTimeAsync(3500);
+		await draw();
+		expect(signals.map((signal) => signal.aborted)).toEqual([false]);
+		document.querySelector<HTMLButtonElement>(".account-trigger")!.click();
+		document.querySelector<HTMLButtonElement>('[data-account-action="settings"]')!.click();
+		await draw();
+		document.querySelector<HTMLButtonElement>("#settings-tab-my-connections")!.click();
+		await draw();
+		expect(status()).toBe("Your ChatGPT plan is connected.");
+		expect(confirm).toHaveBeenCalledOnce();
+	});
+
+	it("from the company list, goes to the company and opens My connections once home has moved on", async () => {
+		const { signals } = returned(userA.id, `#/c/${profileA.profileId}`);
+		await draw();
+		await draw();
+		expect(location.hash).toBe(chat);
+		expect(settingsOpen()).toBe(true);
+		expect(document.querySelector("#settings-tab-my-connections")?.getAttribute("aria-selected")).toBe("true");
+		await vi.advanceTimersByTimeAsync(3500);
+		await draw();
+		expect(signals.map((signal) => signal.aborted)).toEqual([false]);
+		expect(status()).toBe("Your ChatGPT plan is connected.");
+	});
+
+	it("never finishes a sign-in another account started in this tab", async () => {
+		const { confirm } = returned(userB.id);
+		await draw();
+		await draw();
+		await vi.advanceTimersByTimeAsync(3500);
+		expect(confirm).not.toHaveBeenCalled();
+		expect(sessionStorage.getItem("qorpera.chatgpt-plan-sign-in.v1")).toBeNull();
+		expect(settingsOpen()).toBe(false);
+	});
+});
+
 describe("a ChatGPT plan's first-routine card in the app", () => {
 	const notice = {
 		schema: "qorpera.member-notification/v1",

@@ -1,5 +1,6 @@
 import type { User } from "@supabase/supabase-js";
 import { CloudApi } from "../cloud/api.ts";
+import { forgetChatGptPlanSignIn, takeChatGptPlanReturn } from "../cloud/chatgpt-plan-sign-in.ts";
 import { type Cloud, describeError } from "../cloud/client.ts";
 import { createWebCompanyAgents } from "../cloud/company-agents.ts";
 import { WebCompanyFiles } from "../cloud/company-files.ts";
@@ -42,6 +43,7 @@ import { type MeetState, renderMeet } from "./views/meet.ts";
 import { NewConversationView } from "./views/new-conversation.ts";
 import { renderPlan } from "./views/plan.ts";
 import { type SettingsTab, SettingsView } from "./views/settings.ts";
+import { finishPlanSignIn, memberPlanSignIn } from "./views/settings-connections.ts";
 import { noteConnectorReturn } from "./views/settings-services.ts";
 import { renderRail, renderTopbar, type ShellContext } from "./views/shell.ts";
 import { renderSignIn } from "./views/signin.ts";
@@ -139,6 +141,8 @@ export function mountApplication(
 	// Taken from the page hash once at startup and on every route change; the
 	// broker appends it after the provider consent (see cloud/connectors.ts).
 	let connectorReturn = takeConnectorReturn();
+	// "Continue with ChatGPT": OpenAI's callback sends the member back with a one-time confirmation.
+	let planReturn = takeChatGptPlanReturn();
 	// Stripe's checkout page sends the member back to the account page.
 	let checkoutReturn = takeCheckoutReturn();
 	let accountUserId: string | undefined;
@@ -175,6 +179,7 @@ export function mountApplication(
 	}
 	function onRouteChange(): void {
 		connectorReturn = takeConnectorReturn() ?? connectorReturn;
+		planReturn = takeChatGptPlanReturn() ?? planReturn;
 		checkoutReturn = takeCheckoutReturn() ?? checkoutReturn;
 		if (liveFile && liveFile.routeHash !== location.hash) {
 			const message = liveFile.leaveMessage();
@@ -187,6 +192,7 @@ export function mountApplication(
 		}
 		closeSettings(false);
 		closeFeedback(false);
+		settingsAfterHome = undefined;
 		routeRevision++;
 		resolvingRoute = undefined;
 		routeError = undefined;
@@ -213,6 +219,9 @@ export function mountApplication(
 	let meetState: MeetState = {};
 	let unsubscribeCompany: (() => void) | undefined;
 	let homeReason: string | undefined;
+	/** A Settings tab to open once the company home has resolved: home moves on to the Co-Founder's
+	 * conversation, and that route change would close Settings opened before it. */
+	let settingsAfterHome: SettingsTab | undefined;
 
 	const render = debounce(() => void draw(), 10);
 
@@ -232,6 +241,11 @@ export function mountApplication(
 			// A return from Stripe belongs to the member who paid, not to whoever signs in next;
 			// the first sign-in of the page (back from Stripe) keeps it.
 			if (accountUserId !== undefined) checkoutReturn = undefined;
+			// So does a ChatGPT plan sign-in: it is finished only for the member who started it.
+			if (accountUserId !== undefined && planReturn) {
+				planReturn = undefined;
+				forgetChatGptPlanSignIn();
+			}
 			closeSettings(false);
 			closeFeedback(false);
 			accountUserId = userId;
@@ -324,6 +338,7 @@ export function mountApplication(
 	}
 
 	function teardownCompany(): void {
+		settingsAfterHome = undefined;
 		notices?.dispose();
 		notices = undefined;
 		executionNotices.replaceChildren();
@@ -412,6 +427,32 @@ export function mountApplication(
 					)(sessionId, clientInputId, text, signal, files, executionSponsor, roomTarget),
 			);
 			company = controller;
+			if (planReturn && planReturn.signIn.companyId === controller.profile.profileId) {
+				const outcome = planReturn;
+				planReturn = undefined;
+				if (outcome.signIn.memberId !== userId) forgetChatGptPlanSignIn();
+				else {
+					// A ChatGPT plan sign-in for this company. Its confirm belongs to the member, not to a
+					// page: it finishes while Settings closes or the route changes, stopping only if the
+					// account changes, and My connections shows the outcome.
+					const plan = createWebNativeSubscription(
+						cloud,
+						profile.profileId,
+						userId,
+						new AbortController().signal,
+						() => {
+							if (auth.userId !== userId) throw new Error("The account changed.");
+						},
+					);
+					void finishPlanSignIn(memberPlanSignIn(userId, profile.profileId), plan, outcome);
+					queueMicrotask(() => {
+						if (disposed || company !== controller) return;
+						const route = currentRoute();
+						if (route.name === "company" && route.section === "home") settingsAfterHome = "my-connections";
+						else openSettings("my-connections");
+					});
+				}
+			}
 			if (connectorReturn) {
 				// A provider sign-in (Step 7 connector) sent the member back to this
 				// company: show the outcome where the connection was started.
@@ -445,6 +486,8 @@ export function mountApplication(
 		try {
 			const result = await controller.openCofounderConversation();
 			if (!current() || company !== controller) return;
+			const tab = settingsAfterHome;
+			settingsAfterHome = undefined;
 			if (result.sessionId)
 				navigate(
 					{ name: "company", profileId: controller.profile.profileId, section: "chat", id: result.sessionId },
@@ -454,6 +497,7 @@ export function mountApplication(
 				homeReason = result.reason;
 				render();
 			}
+			if (tab) openSettings(tab);
 		} finally {
 			if (resolvingRoute === revision) resolvingRoute = undefined;
 		}

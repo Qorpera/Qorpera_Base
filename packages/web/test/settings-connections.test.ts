@@ -4,12 +4,19 @@ import type {
 	NativeMemberConnection,
 } from "@qorpera/cloud-client/cloud-native-subscription-control";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ConnectionsView, ProviderSignIns } from "../src/app/views/settings-connections.ts";
-import type {
-	WebExecutionConnections,
-	WebMemberConnection,
-	WebNativeProviderLogin,
-	WebNativeSubscription,
+import {
+	ConnectionsView,
+	finishPlanSignIn,
+	memberPlanSignIn,
+	PlanSignIn,
+	ProviderSignIns,
+} from "../src/app/views/settings-connections.ts";
+import {
+	ChatGptPlanSignInError,
+	type WebExecutionConnections,
+	type WebMemberConnection,
+	type WebNativeProviderLogin,
+	type WebNativeSubscription,
 } from "../src/cloud/native-subscription.ts";
 import { fmtTime } from "../src/ui/dom.ts";
 import { setLanguagePreference } from "../src/ui/preferences.ts";
@@ -1291,5 +1298,192 @@ describe("a ChatGPT plan login (shown only when the member has one)", () => {
 	it("shows no switch for a plan that needs a new sign-in", async () => {
 		await planSetup({ ...plan, authorizationState: "reauthentication_required" });
 		expect(lever()).toBeNull();
+	});
+});
+
+describe("Continue with ChatGPT (offered only while the company may use plan logins)", () => {
+	const url = "https://auth.openai.com/oauth/authorize?state=fixture";
+	const route = `#/c/${id(10)}/chat/${id(11)}`;
+	const signIn = {
+		companyId: id(10),
+		memberId: userA.id,
+		loginId: id(105),
+		clientConnectionId: id(103),
+		capability: "c".repeat(43),
+		expiresAt: timestamp,
+		startedAt: Date.now(),
+	};
+	const kept = () => sessionStorage.getItem("qorpera.chatgpt-plan-sign-in.v1");
+	async function signInSetup(
+		available: boolean,
+		{
+			plan = new PlanSignIn(),
+			offered,
+			items = [connected],
+		}: { plan?: PlanSignIn | null; offered?: ("openai" | "anthropic")[]; items?: WebMemberConnection[] } = {},
+	) {
+		const client = {
+			listConnections: vi.fn(async () => observed(...items)),
+			revokeConnection: vi.fn(async () => ({ connectionId: id(81), status: "revoked" as const })),
+			createMemberSponsor: vi.fn(async () => ({ bindingId: id(82), version: 1 })),
+			onboardingAvailable: true,
+			beginProviderLogin: vi.fn(),
+			chatGptPlanAvailable: vi.fn(async () => available),
+			beginChatGptPlanSignIn: vi.fn(async () => ({ url, signIn })),
+		};
+		const navigate = vi.fn();
+		view = new ConnectionsView(
+			client,
+			new AbortController().signal,
+			undefined,
+			undefined,
+			offered,
+			navigate,
+			plan ?? undefined,
+		);
+		document.body.append(view.el);
+		await settle();
+		return { client, navigate };
+	}
+	const choice = () =>
+		[...view.el.querySelectorAll<HTMLButtonElement>(".connection-provider-picker button")].find(
+			(item) => item.textContent === "Continue with ChatGPT",
+		);
+	const status = () => view.el.querySelector(".connection-plan")?.textContent;
+	async function openAdd() {
+		view.el.querySelector<HTMLButtonElement>(".connection-add")!.click();
+		await settle();
+	}
+	afterEach(() => {
+		sessionStorage.clear();
+		history.replaceState(null, "", "/#/");
+	});
+	it("is not offered while the company may not use plan logins", async () => {
+		const { client } = await signInSetup(false);
+		expect(client.chatGptPlanAvailable).not.toHaveBeenCalled();
+		await openAdd();
+		expect(client.chatGptPlanAvailable).toHaveBeenCalledOnce();
+		expect(view.el.querySelector(".connection-provider-picker")?.textContent).toContain(OPENAI);
+		expect(choice()).toBeUndefined();
+	});
+	it("is offered only where its return is finished: never on a page without the member's plan sign-in", async () => {
+		for (const setup of [{ plan: null }, { offered: ["anthropic" as const] }]) {
+			const { client } = await signInSetup(true, setup);
+			await openAdd();
+			expect(client.chatGptPlanAvailable).not.toHaveBeenCalled();
+			expect(choice()).toBeUndefined();
+			view.dispose();
+		}
+	});
+	it("is not offered beside a signed-in ChatGPT plan", async () => {
+		const plan: WebMemberConnection = { ...connected, loginKind: "chatgpt_plan", allowAutonomous: false };
+		await signInSetup(true, { items: [plan] });
+		await openAdd();
+		expect(choice()).toBeUndefined();
+		view.dispose();
+		await signInSetup(true, { items: [{ ...plan, authorizationState: "reauthentication_required" }] });
+		await openAdd();
+		expect(choice()).toBeTruthy();
+	});
+	it("starts the sign-in, keeps it with the page it began on, and sends the browser to OpenAI", async () => {
+		history.replaceState(null, "", `/${route}`);
+		const { client, navigate } = await signInSetup(true);
+		await openAdd();
+		const begin = deferred<{ url: string; signIn: typeof signIn }>();
+		client.beginChatGptPlanSignIn.mockReturnValueOnce(begin.promise);
+		choice()!.click();
+		await settle();
+		// One sign-in at a time.
+		expect(status()).toBe("Opening ChatGPT…");
+		await openAdd();
+		expect(choice()!.disabled).toBe(true);
+		choice()!.click();
+		begin.resolve({ url, signIn });
+		await settle();
+		expect(client.beginChatGptPlanSignIn).toHaveBeenCalledOnce();
+		expect(JSON.parse(kept()!)).toEqual({ ...signIn, returnRoute: route });
+		expect(navigate).toHaveBeenCalledExactlyOnceWith(url);
+	});
+	it("does not go to OpenAI when this tab cannot keep the sign-in", async () => {
+		const { navigate } = await signInSetup(true);
+		vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+			throw new DOMException("full", "QuotaExceededError");
+		});
+		await openAdd();
+		choice()!.click();
+		await settle();
+		expect(navigate).not.toHaveBeenCalled();
+		expect(status()).toBe("The ChatGPT sign-in could not be started. Try again.");
+	});
+	it("can start again after the browser comes back from OpenAI's page through its page cache", async () => {
+		await signInSetup(true);
+		await openAdd();
+		choice()!.click();
+		await settle();
+		expect(status()).toBe("Opening ChatGPT…");
+		window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true }));
+		expect(status()).toBeUndefined();
+		await openAdd();
+		expect(choice()!.disabled).toBe(false);
+	});
+	it("says why a sign-in could not start", async () => {
+		const { client, navigate } = await signInSetup(true);
+		client.beginChatGptPlanSignIn.mockRejectedValueOnce(new ChatGptPlanSignInError("other_plan"));
+		await openAdd();
+		choice()!.click();
+		await settle();
+		expect(status()).toBe("Disconnect your other ChatGPT plan first.");
+		expect(navigate).not.toHaveBeenCalled();
+		expect(kept()).toBeNull();
+	});
+	it("drops the capability before the confirm, shows it finishing, then the outcome once, and reads the accounts again", async () => {
+		sessionStorage.setItem("qorpera.chatgpt-plan-sign-in.v1", JSON.stringify({ ...signIn, returnRoute: route }));
+		const plan = new PlanSignIn();
+		const { client } = await signInSetup(true, { plan });
+		const confirm = deferred<void>();
+		const finish = vi.fn(() => confirm.promise);
+		const outcome = {
+			outcome: "confirm" as const,
+			confirmation: "d".repeat(43),
+			signIn: { ...signIn, returnRoute: route },
+		};
+		const finishing = finishPlanSignIn(plan, { finishChatGptPlanSignIn: finish }, outcome);
+		expect(kept()).toBeNull();
+		expect(finish).toHaveBeenCalledExactlyOnceWith(outcome);
+		await settle();
+		expect(status()).toBe("Finishing your ChatGPT sign-in…");
+		await openAdd();
+		expect(choice()!.disabled).toBe(true);
+		// A second return while one finishes is dropped.
+		await finishPlanSignIn(plan, { finishChatGptPlanSignIn: finish }, outcome);
+		expect(finish).toHaveBeenCalledOnce();
+		const reads = client.listConnections.mock.calls.length;
+		confirm.resolve();
+		await finishing;
+		await settle();
+		expect(status()).toBe("Your ChatGPT plan is connected.");
+		expect(client.listConnections).toHaveBeenCalledTimes(reads + 1);
+		expect(plan.result).toBeUndefined();
+	});
+	it("keeps the outcome for a later page when none was open, and shows it there once", async () => {
+		const plan = memberPlanSignIn(userA.id, id(10));
+		await finishPlanSignIn(
+			plan,
+			{
+				finishChatGptPlanSignIn: async () => {
+					throw new ChatGptPlanSignInError("declined");
+				},
+			},
+			{ outcome: "failed", reason: "declined", signIn: { ...signIn, returnRoute: route } },
+		);
+		// Another company's page does not take it.
+		await signInSetup(true, { plan: memberPlanSignIn(userA.id, id(12)) });
+		expect(status()).toBeUndefined();
+		view.dispose();
+		await signInSetup(true, { plan: memberPlanSignIn(userA.id, id(10)) });
+		expect(status()).toBe("The ChatGPT sign-in was cancelled.");
+		view.dispose();
+		await signInSetup(true, { plan: memberPlanSignIn(userA.id, id(10)) });
+		expect(status()).toBeUndefined();
 	});
 });
