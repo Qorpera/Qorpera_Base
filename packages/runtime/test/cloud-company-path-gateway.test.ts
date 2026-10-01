@@ -1797,8 +1797,8 @@ describe("a Company File tool over the native object route's lock conflicts", ()
 		const rows: CloudRuntimeObservation[] = [];
 		const observability = new CloudRuntimeObservability({
 			assignmentId: null,
-			publish: async (row) => {
-				rows.push(row);
+			publish: async (batch) => {
+				rows.push(...batch);
 			},
 		});
 		return { rows, observability };
