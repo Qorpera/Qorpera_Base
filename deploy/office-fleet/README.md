@@ -42,7 +42,11 @@ On each host, prepare the existing office installation inputs:
   inspection reads physical metadata and publishes only local journals and a
   registry offer. It does not create a VM or write the workbench. Only the
   selected host enters the existing reviewed adoption process; the losing
-  host never becomes a second writer.
+  host never becomes a second writer. The NFS export is this office's alone:
+  never the same, an enclosing or an enclosed export of another office's
+  workbench, on any host. A deleted company's retirement empties it
+  (RUNTIME-OFFICE-RETENTION.md, "Office retirement"); it refuses a sharing
+  it can see on its own host, but not one on another host.
 - Root-protected physical policy, image provenance and existing
   `qorpera.lxd-office-provider-service/v1` lifecycle service document, including
   exact registry credential path/length/digest, inventory limits and adoption

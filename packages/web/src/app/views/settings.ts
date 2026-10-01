@@ -2,6 +2,7 @@ import type { CloudApi } from "../../cloud/api.ts";
 import { CloudRpcError, describeError } from "../../cloud/client.ts";
 import type { CompanyComputerHours } from "../../cloud/computer-hours.ts";
 import { createWebConnectors } from "../../cloud/connectors.ts";
+import { createWebMachines } from "../../cloud/machines.ts";
 import { createWebNativeSubscription } from "../../cloud/native-subscription.ts";
 import { createWebReviewRules } from "../../cloud/review-rules.ts";
 import type { HostedCompanyFile, HostedProfile } from "../../cloud/types.ts";
@@ -17,7 +18,8 @@ import { renderAppearance } from "./appearance.ts";
 import { FriendsController, renderFriends } from "./friends.ts";
 import type { HubController } from "./hub.ts";
 import { renderPlan } from "./plan.ts";
-import { ConnectionsView, memberProviderSignIns } from "./settings-connections.ts";
+import { ConnectionsView, memberPlanSignIn, memberProviderSignIns } from "./settings-connections.ts";
+import { MachinesView } from "./settings-machines.ts";
 import { RulesView } from "./settings-rules.ts";
 import { ServicesView } from "./settings-services.ts";
 import { storageSummary } from "./storage-summary.ts";
@@ -60,14 +62,33 @@ const TABS = [
 			"plan billing subscription usage storage trial upgrade price payment card invoices computer hours basis standard dedicated abonnement forbrug betaling lager lagerplads prøveperiode opgrader pris kort fakturaer computertimer dedikeret",
 	},
 	{
-		id: "connections",
-		label: phrase("Connections"),
+		id: "machines",
+		label: phrase("Machines"),
+		icon: "machine",
+		keywords:
+			"machines virtual machines vm servers compute docker tests builds jobs agents stop delete maskiner virtuelle maskiner servere beregning test byg job agenter stop slet",
+	},
+	{
+		id: "my-connections",
+		label: phrase("My connections"),
+		icon: "key",
+		keywords:
+			"model accounts providers subscriptions sign in openai chatgpt codex anthropic claude usage mine forbindelser modelkonti udbydere abonnementer log ind forbrug",
+	},
+	{
+		id: "company-connections",
+		label: phrase("Company connections"),
 		icon: "connections",
 		keywords:
-			"providers subscriptions openai codex anthropic claude secrets forbindelser udbydere modelkonti konti tjenester gmail google drive github hemmeligheder",
+			"services accounts gmail google drive github token secrets agents virksomhedens forbindelser tjenester konti hemmeligheder agenter",
 	},
 ] as const;
 export type SettingsTab = (typeof TABS)[number]["id"];
+
+/** A connections tab: its title, the rule that sorts a connection into it, then its lists. */
+function connectionsPage(title: string, rule: string, ...content: HTMLElement[]): HTMLElement {
+	return h("div", null, h("h1", null, title), h("p", { class: "settings-lead" }, rule), ...content);
+}
 
 /** Founders (owners) pay a company's computer hours; undefined until the member's role is known. */
 function founderOf(company: CompanyController): boolean | undefined {
@@ -106,6 +127,7 @@ export class SettingsView {
 	#unsubscribe: (() => void) | undefined;
 	#companyLifetime = new AbortController();
 	#connections: ConnectionsView | undefined;
+	#machines: MachinesView | undefined;
 	#services: ServicesView | undefined;
 	#rules: RulesView | undefined;
 	/** General: the account's settings, then the rules of the company Settings show. */
@@ -303,6 +325,7 @@ export class SettingsView {
 		this.#companyLifetime.abort();
 		this.#unsubscribe?.();
 		this.#connections?.dispose();
+		this.#machines?.dispose();
 		this.#services?.dispose();
 		this.#rules?.dispose();
 		this.#friends.dispose();
@@ -351,56 +374,83 @@ export class SettingsView {
 		else if (tab === "friends") this.#drawFriends();
 		else if (tab === "company") this.#drawCompany();
 		else if (this.#company) {
-			if (tab === "connections") {
-				if (!this.#connections) {
-					const company = this.#company;
-					const memberId = this.#auth.userId!;
-					const signal = AbortSignal.any([this.#companyLifetime.signal, this.#lifetime.signal, company.signal]);
-					const signIns = memberProviderSignIns(memberId, company.profile.profileId);
-					// A sign-in belongs to the member, not to this page: it continues while
-					// the page is rebuilt or closed, and stops only if the account changes.
-					const auth = this.#auth;
-					const signIn = createWebNativeSubscription(
-						this.#api.cloud,
-						company.profile.profileId,
-						memberId,
-						new AbortController().signal,
-						() => {
-							if (auth.userId !== memberId) throw new Error("The account changed.");
-						},
+			const company = this.#company;
+			const memberId = this.#auth.userId!;
+			const signal = () => AbortSignal.any([this.#companyLifetime.signal, this.#lifetime.signal, company.signal]);
+			if (tab === "machines") {
+				if (!this.#machines) {
+					this.#machines = new MachinesView(
+						createWebMachines(this.#api.cloud, company.profile.profileId),
+						signal(),
 					);
-					this.#connections = new ConnectionsView(
-						createWebNativeSubscription(this.#api.cloud, company.profile.profileId, memberId, signal, () => {
-							signal.throwIfAborted();
-							if (this.#auth.userId !== memberId || this.#company !== company || company.store.get().accessLost)
-								throw new Error("The account or company changed.");
-						}),
-						signal,
-						signIns,
-						(input) => signIn.beginProviderLogin(input),
-					);
-					// Step 7 connectors sit under the model accounts on the same page.
-					// Company first: owners and admins manage them, everyone sees them.
-					this.#services = new ServicesView(
-						createWebConnectors(this.#api.cloud, {
-							profileId: company.profile.profileId,
-							environmentId: company.profile.environmentId,
-						}),
-						signal,
-						{
-							access: {
-								canManage: () => {
-									const role = company.store.get().team?.role;
-									return role === "owner" || role === "admin";
-								},
-								memberName: (userId) =>
-									company.store.get().team?.members.find((member) => member.userId === userId)?.displayName ||
-									undefined,
+					this.#panels.set(tab, h("div", null, this.#machines.el));
+				} else this.#machines.shown();
+			} else if (tab === "my-connections" && !this.#connections) {
+				const lifetime = signal();
+				const signIns = memberProviderSignIns(memberId, company.profile.profileId);
+				// A sign-in belongs to the member, not to this page: it continues while
+				// the page is rebuilt or closed, and stops only if the account changes.
+				const auth = this.#auth;
+				const signIn = createWebNativeSubscription(
+					this.#api.cloud,
+					company.profile.profileId,
+					memberId,
+					new AbortController().signal,
+					() => {
+						if (auth.userId !== memberId) throw new Error("The account changed.");
+					},
+				);
+				this.#connections = new ConnectionsView(
+					createWebNativeSubscription(this.#api.cloud, company.profile.profileId, memberId, lifetime, () => {
+						lifetime.throwIfAborted();
+						if (this.#auth.userId !== memberId || this.#company !== company || company.store.get().accessLost)
+							throw new Error("The account or company changed.");
+					}),
+					lifetime,
+					signIns,
+					(input) => signIn.beginProviderLogin(input),
+					undefined,
+					undefined,
+					memberPlanSignIn(memberId, company.profile.profileId),
+				);
+				this.#panels.set(
+					tab,
+					connectionsPage(
+						t("My connections"),
+						t(
+							"Your own AI subscriptions. They pay for the work you start, including your routines, and they leave with you.",
+						),
+						this.#connections.el,
+					),
+				);
+			} else if (tab === "company-connections" && !this.#services) {
+				// Step 7 connectors. Company first: owners and admins manage them, everyone sees them.
+				this.#services = new ServicesView(
+					createWebConnectors(this.#api.cloud, {
+						profileId: company.profile.profileId,
+						environmentId: company.profile.environmentId,
+					}),
+					signal(),
+					{
+						access: {
+							canManage: () => {
+								const role = company.store.get().team?.role;
+								return role === "owner" || role === "admin";
 							},
+							memberName: (userId) =>
+								company.store.get().team?.members.find((member) => member.userId === userId)?.displayName ||
+								undefined,
 						},
-					);
-					this.#panels.set(tab, h("div", null, this.#connections.el, this.#services.el));
-				}
+					},
+				);
+				this.#panels.set(
+					tab,
+					connectionsPage(
+						t("Company connections"),
+						t("The company's own accounts. Every agent can use them, and they stay when someone leaves."),
+						this.#services.el,
+					),
+				);
 			}
 		}
 		const panel =
@@ -492,6 +542,8 @@ export class SettingsView {
 						},
 						profileId: company.profile.profileId,
 						founder: this.#planFounder,
+						memberName: (userId) =>
+							company.store.get().team?.members.find((member) => member.userId === userId)?.displayName,
 					}
 				: undefined,
 			{
@@ -527,6 +579,8 @@ export class SettingsView {
 		this.#unsubscribe?.();
 		this.#connections?.dispose();
 		this.#connections = undefined;
+		this.#machines?.dispose();
+		this.#machines = undefined;
 		this.#services?.dispose();
 		this.#services = undefined;
 		this.#rules?.dispose();
@@ -542,7 +596,8 @@ export class SettingsView {
 		this.#hoursLoading = false;
 		this.#hoursMissing = false;
 		this.#hoursFailed = false;
-		for (const tab of ["company", "connections"] as const) this.#panels.delete(tab);
+		for (const tab of ["company", "my-connections", "company-connections", "machines"] as const)
+			this.#panels.delete(tab);
 		if (company) {
 			this.#unsubscribe = company.store.subscribe(() => {
 				if (company.store.get().accessLost) {

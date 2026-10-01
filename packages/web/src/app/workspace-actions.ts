@@ -1,5 +1,6 @@
 import type { WebCompanyComputer } from "../cloud/computer.ts";
 import type { GroupChatDetails, GroupChatDraft } from "../cloud/group-details.ts";
+import type { HostedMachine } from "../cloud/machines.ts";
 import type { WebNativeSubscription } from "../cloud/native-subscription.ts";
 import type { WebRoutines } from "../cloud/routines.ts";
 import type { WebSessionModel } from "../cloud/session-model.ts";
@@ -54,4 +55,8 @@ export interface WorkspaceActions {
 	createAgent?: (profileId: string, draft: AgentCreation, signal: AbortSignal) => Promise<string>;
 	/** Removes the agent for good: its document leaves the Company File. */
 	deleteAgent?: (agent: HostedStaffAgent, signal: AbortSignal) => Promise<void>;
+	/** The machines agents started from a conversation (its thread card). */
+	sessionMachines?: (sessionId: string) => Promise<HostedMachine[]>;
+	/** Opens Settings → Machines. */
+	openMachines?: () => void;
 }

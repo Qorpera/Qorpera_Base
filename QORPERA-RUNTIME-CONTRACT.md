@@ -741,7 +741,7 @@ subscriptions, which self-limit.
 > What remains:
 > - crash detection (job, connection, session and coding attachment leases) and retry limits
 >   (8 dispatch failures; 8 attempts for a pristine retry or a sponsor
->   handoff);
+>   handoff; no new handoffs since 2026-10-01, section 17);
 > - one run box per run (the machines an agent starts are not counted:
 >   2026-09-28 amendment "compute for agents", item 4), one coding machine
 >   per member and environment
@@ -759,8 +759,8 @@ subscriptions, which self-limit.
 >   40 sidebar sections) went in bundle v95;
 > - no stall detection: a run whose harness hangs without crashing keeps its
 >   machine until Stop, as in Codex CLI and Claude Code;
-> - a continuation (a worker report, a computer start, a sponsor handoff)
->   carries the newest results and sends of the earlier run that fit, and
+> - a continuation (a worker report, a computer start, a sponsor handoff
+>   made before 2026-10-01) carries the newest results and sends of the earlier run that fit, and
 >   counts the rest;
 > - the API-key sandbox runner (not company work) keeps its per-job totals:
 >   64 MiB transcript, 100 output artifacts and 64 MiB of output.
@@ -1022,7 +1022,9 @@ argument, shared computer clipboard, or model-visible path. The member learns
 whether capture succeeded; the agent learns only the safe descriptor.
 
 There is no model-facing, runner-facing, desktop-facing, or general service
-`getSecret`, export, reveal, shell, or filesystem operation. The cloud secret
+`getSecret`, export, reveal, shell, or filesystem operation. (Amended
+2026-09-29: the broker also checks deliveries to a company's hooks with their
+signing secrets; see the amendment "events wake agents", item 8.) The cloud secret
 broker is the only component allowed to unwrap a connector credential. It
 does so only after checking the admitted run, current company and member
 authority, agent grant, connector and operation version, exact destination,
@@ -1745,6 +1747,10 @@ the approvals window.
 > Schedule positions, occurrences and run history are runtime state in the
 > database. The rules below apply to the routine the file describes.
 
+> **Amended 2026-09-29.** Listeners also take events: a webhook to one of the
+> company's hooks, or company mail. See the amendment "events wake agents" in
+> section 19.
+
 A routine stores intent plus exactly one trigger type:
 
 - schedule; or
@@ -1956,7 +1962,7 @@ coding sessions, and routines an agent sets up for them. The kernel already
 carries that member as the run's requester; the payer for follow-up work is
 the requester's own login with room left (the parent run's first), else a
 company account whose kind can run, else the requester's own used-up login
-(whose run then meets the usage-limit handoff), else nothing, and the work
+(whose run then stops at the limit, 2026-10-01 amendment), else nothing, and the work
 does not start. Claude logins never pay for agent work. An agent's standing
 execution authority names a company account only; it never pays with a
 member's login. A coding session runs for the member who asked, on their
@@ -1967,13 +1973,51 @@ requester; a company sponsor serves any member. Unattended use stays granted
 by default (2026-09-19/20 amendment, item 2) and covers only the owner's own
 work. A company account is a company-owned account added by an owner or
 admin; it pays only once its kind of account can run. The company OpenAI API
-account, and its use by the usage-limit handoff and for work no member
-started, follow in a later change. When a member signs in again, the control
+account, and whether it may take over at a usage limit and pay for work no
+member started, follow in a later change. When a member signs in again, the control
 plane may move the bindings that pay with their old login to their new one,
 as a new version of each binding with the same owner and kind; routine wakes
 and coding turns then take the binding's newest same-owner version that can
 pay, so a routine or coding session keeps working after the member's old
 ChatGPT login is switched off. Claude logins are never moved.
+
+2026-10-01 amendment: a usage limit stops the run (founder decision, Sign in
+with ChatGPT choice 3). When the login paying for a run reaches its usage
+limit, that run fails and the member is told; it never moves to another login.
+OpenAI's terms for ChatGPT plan use forbid rotating accounts to get round
+usage limits, and the founder applied the same rule to Codex logins. The run's
+recovery read names the usage limit (a signal on the login the run is on now),
+and the thread says that the work stopped, that it did not move to another
+account, and that it can run again once the limit resets. The control plane
+no longer makes a sponsor handoff (migration 20260928349910): the paragraphs
+above that describe one, and the old text of acceptance 29, are superseded for
+every login. A rate limit or a provider outage is still not a usage limit: it
+neither stops the work as one nor shows the usage-limit message. Choosing the
+payer for new work is unchanged by this amendment: a member's next turn and
+follow-up work still take a login with room left first, which can be the
+member's other login, and routines and coding turns follow the handoff
+versions made before this change (no new ones are made). Whether new work
+must also stay on the exhausted login is a separate decision.
+
+2026-10-01 amendment: ChatGPT plan logins (founder decisions, Sign in with
+ChatGPT; built switched off, migrations 20260928329830 and 20260928359950). A
+member's ChatGPT Plus or Pro plan pays only for work that member starts, and
+no other member's activity triggers calls on it (OpenAI's terms for plan use).
+So a plan login: works while its member is away only after the member turned
+that on themselves (the kernel never consents it for them); never pays for a
+listener, since a file change or an event (a webhook, mail) is anyone's
+activity, neither when the routine is saved nor when it wakes, nor for any
+work that follows from a listener run; is never swapped at its usage limit,
+which stops the work (a conversation it pays for keeps it, and follow-up work
+of a run it pays for keeps it); pays for follow-up work only of runs it pays
+for, so it never takes over a conversation or follow-up work that another
+payer started (a listener run's, or a login's at its limit), and a coding
+worker takes the member's other login first and the plan only when the asking
+run is paid by it; is one per member and company, since plans are never pooled
+or rotated; is retried, for a failed run or a change's review, only by the
+member whose plan pays; and is not used while its company is being deleted. A
+run in progress is never handed to another login (the amendment above, #601).
+Codex logins are unchanged by this amendment.
 
 ## 18. Short constitution
 
@@ -2210,8 +2254,9 @@ NOT represent missing cloud machinery as working autonomy.
 
 - Order 1 owns the typed usage-limit signal from provider adapters and the
   member notification (section 17).
-- Order 3 owns automatic sponsor handoff — the recorded continuation of an
+- Order 3 owned automatic sponsor handoff — the recorded continuation of an
   affected run on the next eligible connection (section 17, acceptance 29).
+  Since 2026-10-01 a usage limit stops the run instead (section 17).
 - Order 4 owns presence over the live Company File mount (5.2, 9.1),
   extending the lossy, membership-authorized presence channel already defined
   in `supabase/SESSIONS.md` to agents.
@@ -2793,7 +2838,7 @@ model-requested read, and at completion; authorized Company File event wakes
 with causal fencing; durable coworker delivery; rooms as canonical
 organization objects with group conversations and member-post fan-out; the
 wake-rate ceiling and the founder stop; automatic sponsor handoff on a usage
-limit; member consent for autonomous work; and the default agent read grant
+limit (replaced on 2026-10-01 by stopping the run, section 17); member consent for autonomous work; and the default agent read grant
 ratified 2026-09-02. Disposable-database acceptance passes nineteen cases.
 Deployed acceptance with clients closed on the production node remains the
 gate before Order 3 is closed. See
@@ -3844,6 +3889,130 @@ owner role. Model use is not billed here: it follows the 2026-09-28 amendment
     before it are discarded, and members see only measured hours until then.
     Acceptance is section 21 item 31.
 
+### 2026-09-29 amendment: events wake agents
+
+Founder decisions of 29 September 2026 (Q1 page "Qorpera on Qorpera"). They
+complete section 16.3's listener triggers and section 11.5's broker. Design:
+`deploy/first-node/RUNTIME-EVENT-INTAKE.md`.
+
+1. **Events are a wake source.** An incoming webhook from any service, and
+   incoming company mail, wake the agent whose routine listens for it. The
+   clock and a folder change are the other sources. This is the base for
+   routines.
+2. **A hook is a company connection.** It has one public address, a proof and
+   limits. The proof is the address itself, or a signature made with a secret
+   the vault holds (Stripe, GitHub, or HMAC-SHA256 for the company's own
+   senders). Agents never see a signing secret. A hook holds no account, so
+   5.6's rule that connecting an account is a member action through the vault
+   applies only to its signing secret: a member captures it. Owners, admins
+   and agents create and remove hooks; an agent's new hook passes the
+   automatic review as a new connection. For `folder-v2` companies a hook is
+   described by its connection file, `connections/hook-<name>.md` (5.6), which
+   the platform writes in the same step as the hook; the prefix keeps hook
+   names apart from account connections. The database keeps the address, the
+   limits and the delivery receipts as runtime state. Until the core's writer
+   lands, hooks exist only for `snapshot-v1` companies, whose connections are
+   rows.
+3. **Only verified deliveries wake, and the intake is bounded.** A delivery is
+   a duplicate when a verified delivery of the same hook carries the same
+   sender id; without a sender id, when the same body arrived within 10
+   minutes (best effort: two identical bodies at the same instant may both
+   pass). Duplicates are decided after verification. Limits: per hook, a body
+   of at most 256 KiB and at most 120 deliveries a minute; per company, 50
+   live hooks and an hourly budget of stored deliveries and bytes (bodies and
+   headers) that operators set; and a platform switch, built off and turned on
+   at acceptance. A refused request writes nothing, and a receive never
+   waits for the company row; it waits for its hook only while the hook is
+   deleted.
+4. **One wake per burst.** A listener routine has at most one queued event
+   occurrence per trigger. The occurrence takes the waiting deliveries when it
+   is read (at most 20, with bodies cut to fit the wake's size bound; the agent
+   reads the rest with a tool), and the rest wake it again. Quiet hours,
+   pauses and the pinned sponsor apply as to every routine occurrence.
+5. **Events are outside content** (11.1). An instruction inside an event is
+   data. Outside actions an event leads to pass the automatic review.
+6. **Deliveries are runtime state; events in the folder are company
+   content.** The delivery row is a queue entry and a receipt: its copy of the
+   body and headers is kept 7 days and the row 30. For `folder-v2` companies,
+   once the core's writer lands, the platform also saves each verified event
+   in the company folder under `hooks/<hook>/`, in the same change set. The
+   platform creates `hooks/` with the first saved event, as it creates `code/`
+   when coding starts (5.6), and only the platform adds or changes files
+   under it; agents and members read them, and owners and admins may delete
+   them. Otherwise they stay until the company is deleted.
+7. **Today's routines take the trigger too.** Event wakes are added to the
+   routine rows of `snapshot-v1` companies before the clean reset, and hooks
+   exist for those companies (item 2), although new company state otherwise
+   goes to the folder model. Both go with those companies at the reset.
+   Routine files take the same trigger as `when: event`.
+8. **The broker checks signatures.** Section 11.5 lets the broker unwrap a
+   credential for an admitted run's granted operation. It may also unwrap a
+   hook's signing secret, and only to check deliveries to that hook: the
+   check is bound to the hook, the delivery and the secret's company, uses
+   the secret's current version, refuses a revoked secret, needs no run or
+   agent grant, and the secret and its plaintext never leave the broker's
+   memory. The result is only verified, duplicate or refused.
+9. **Mail is an event source (M2).** A company mailbox is an address on the
+   platform's mail domain (decision 7), made by an owner or admin, and a
+   platform-owned hook with the proof `mail`: only the platform's mail door
+   fills it, after checking the mail provider's signed webhook with the
+   platform's signing secret, and the public intake never takes a delivery
+   for it. Each received message is a verified delivery of type
+   `mail.received`, bounded like any delivery, and wakes routines through
+   the event trigger (item 4). Its sender and content are outside content
+   (item 5); the provider's SPF, DKIM and DMARC results travel with it. An
+   agent sends from a live mailbox of its company as itself (M2b): plain
+   text from "<agent> at <company>" at the mailbox's address, always ending
+   with a line saying an AI agent wrote and sent it. Every email passes the
+   automatic review as an outside action first, and only the platform's
+   sender, which alone holds the provider key, sends it. A reply to a
+   received email joins its thread and says it is an automatic response; an
+   email sent automatically is never answered, and a company never emails
+   its own mailboxes. No email goes out as if from Qorpera: a sender name or
+   mailbox that reads as Qorpera is refused (founder decision, 1 October
+   2026). Sending has its own platform switch, built off, and each company
+   an hourly and a daily limit on recipients that operators set.
+
+Section 21, item 33, is the event-wake acceptance item.
+
+### 2026-09-29 amendment: one call before a model request
+
+Proposed 29 September 2026 (stack audit, fix 9); pending founder approval. It
+changes how the checks before each model request are carried out. Every
+database check still runs, and the seven around the context view keep their
+order. In a run with screenshots, the screenshot check now comes just before
+them instead of after the first two. The host checks the authority the call
+returns (the same run, still in time) once per request, instead of after each
+of its three reads. Section 4's rule that authorization is checked again
+immediately before an effect, and section 9.1's context views, are unchanged.
+
+1. **One call, every check.** Before a model request the host used to make
+   seven database calls for these checks, in four rounds, each in its own
+   transaction: the run's authority and its read set (twice), the context
+   view, then both once more. `qorpera_fence_native_context` makes the same
+   seven calls, in the same order, in one transaction. It calls those
+   functions rather than copying them, so each check and lock is exactly
+   theirs. Nothing is released to the model until the call has returned. If a
+   check inside the call fails, the whole call is undone, the view included.
+   The host then checks what the call returned (the same run, still in time);
+   if that fails, the run stops with nothing released, and the view stays
+   recorded.
+2. **The read set stays whole.** The database keeps every path sent in a
+   check that succeeded and every path the run reads or lists, and never
+   removes one during a run. It keeps one entry per name, where names that
+   differ only in letter case or in how a letter is written count as one.
+   Every check covers all of them. The host sends a path until the database
+   reports it kept under that exact name, instead of its whole list every
+   time. A second spelling of a kept path (for example in other letter case)
+   is never kept under its own name, so it is sent every time, as before.
+3. **The same budget.** The one call may take at most 3.5 s, inside the result
+   fence's 4 s for the whole request. A timeout, like any failure, stops the
+   run with nothing released, as a lapsed fence did before. The database may
+   still finish the call after the host has given up, so a view can be
+   recorded for a request that never left.
+4. **Until the database has the call** the host makes the separate calls, all
+   of them.
+
 ## 20. Enforcement matrix
 
 > **Note, 2026-09-27.** Rows naming responsibility objects, ceilings, a schema
@@ -3872,7 +4041,7 @@ owner role. Model use is not billed here: it follows the 2026-09-28 amendment
 | Responsibilities are operating state, not chats | Responsibility schema, measure registry, accountable-agent assignment, ACL projections | Own the outcome and its measures; turn exceptions into verified work. |
 | Responsibility views remain derived | Company File sources, measure projections, provenance, and rebuild service | Reason from exact sources and report material changes. |
 | The Company File is one live document | Live mount, presence service, object versions | See who is working where; re-read on a stale version; never copy the company. |
-| Sponsor routing is recorded | Routing policy, usage-limit signal, sponsor handoff | Continue on the next eligible connection; never another member's credential. |
+| Sponsor routing is recorded | Routing policy, usage-limit signal, the run failing at a usage limit (2026-10-01) | Never use another member's credential. |
 | Projects remain bounded and distinct from rooms | Project registry, team membership, todos, outcome, and room lifecycle | Coordinate in the room; finish in durable company state. |
 | Routine policy is real | Scheduler and listener services | Author sensible schedules and intent. |
 | Dismissal is not consent | Interaction state machine | Treat dismissal as skip or decline. |
@@ -3893,7 +4062,7 @@ owner role. Model use is not billed here: it follows the 2026-09-28 amendment
 > vision the Co-Founder writes.
 
 The runtime launch gate passes only when a deployed environment proves the
-mandatory items 1–31 without manual database repair or a hidden desktop
+mandatory items 1–31 and 33 without manual database repair or a hidden desktop
 executor. Item 32 is a separate post-build enablement gate and is not required
 while Azure backup/overflow remains disabled.
 
@@ -3986,11 +4155,11 @@ while Azure backup/overflow remains disabled.
     Concurrent starts cannot consume the same slot, and a stopped or failed
     computer does not release a reservation until its resources are confirmed free.
 29. When a sponsoring connection reaches its usage limit, the member is
-    notified, and an affected run continues on the next eligible connection
-    of the same principal (or a policy-permitted company account) through a
-    recorded sponsor handoff with full provenance. No other member's
-    credential is ever used, and a transient rate limit or provider outage
-    does not trigger a handoff.
+    notified, the affected run fails without moving to another login, its
+    recovery read names the usage limit, and the thread says the work stopped
+    (2026-10-01 amendment, section 17). A rate limit or a provider outage is not
+    a usage limit and does not show the usage-limit message. No other member's
+    credential is ever used.
 30. A company's ceilings hold without agent cooperation: a deliberately
     runaway loop is stopped at its wake-rate or spend ceiling, the founder
     stop operation pauses the company, and the founder is notified from the
@@ -4012,6 +4181,12 @@ while Azure backup/overflow remains disabled.
     to Azure placements and rented allocation intervals. The view distinguishes
     computers, companies, associated users and observed active users, retains
     local/Azure placement history, and exposes failed or unavailable overflow.
+33. Events wake agents (2026-09-29 amendment "events wake agents", section
+    19): posts from a website form to an address-proven hook wake a routine
+    listening to it once per burst, and the run reads every event, a large one
+    through read_event. An instruction inside an event gains no authority (the
+    event case of item 10). A duplicate or unverified delivery wakes nothing,
+    and a removed hook wakes nothing more.
 
 Passing unit tests against a local provider, describing the behavior in an
 instruction file, or leaving a desktop open to execute work does not pass this

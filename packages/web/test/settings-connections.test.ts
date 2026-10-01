@@ -4,8 +4,21 @@ import type {
 	NativeMemberConnection,
 } from "@qorpera/cloud-client/cloud-native-subscription-control";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ConnectionsView, ProviderSignIns } from "../src/app/views/settings-connections.ts";
-import type { WebNativeProviderLogin, WebNativeSubscription } from "../src/cloud/native-subscription.ts";
+import {
+	ConnectionsView,
+	finishPlanSignIn,
+	memberPlanSignIn,
+	PlanSignIn,
+	ProviderSignIns,
+} from "../src/app/views/settings-connections.ts";
+import {
+	ChatGptPlanSignInError,
+	PlanSwitchBusyError,
+	type WebExecutionConnections,
+	type WebMemberConnection,
+	type WebNativeProviderLogin,
+	type WebNativeSubscription,
+} from "../src/cloud/native-subscription.ts";
 import { fmtTime } from "../src/ui/dom.ts";
 import { setLanguagePreference } from "../src/ui/preferences.ts";
 import { deferred, id, settle, timestamp, userA } from "./fixtures.ts";
@@ -1193,5 +1206,292 @@ describe("member model account settings", () => {
 		expect(listConnections.mock.calls[0]![0]!.aborted).toBe(true);
 		expect(createMemberSponsor).not.toHaveBeenCalled();
 		expect(revokeConnection).not.toHaveBeenCalled();
+	});
+});
+
+describe("a ChatGPT plan login (shown only when the member has one)", () => {
+	const plan: WebMemberConnection = {
+		...connected,
+		connectionId: id(85),
+		clientConnectionId: id(185),
+		loginKind: "chatgpt_plan",
+		allowAutonomous: false,
+	};
+	async function planSetup(...items: WebMemberConnection[]) {
+		let current = observed(...items) as WebExecutionConnections;
+		const client = {
+			listConnections: vi.fn(async () => structuredClone(current)),
+			revokeConnection: vi.fn(async () => ({ connectionId: id(85), status: "revoked" as const })),
+			createMemberSponsor: vi.fn(async () => ({ bindingId: id(86), version: 1 })),
+			setWorkWhileAway: vi.fn(async () => {}),
+		};
+		view = new ConnectionsView(client, new AbortController().signal);
+		document.body.append(view.el);
+		await settle();
+		const set = (next: WebMemberConnection[]) => {
+			current = observed(...next) as WebExecutionConnections;
+		};
+		return { client, set };
+	}
+	const lever = () => view.el.querySelector<HTMLButtonElement>('.connection-away [role="switch"]');
+	it("leaves a Codex login as it was: its label, no switch, consented as before", async () => {
+		const { client } = await planSetup({ ...connected, loginKind: "codex", allowAutonomous: true });
+		expect(card(OPENAI)).toBeTruthy();
+		expect(lever()).toBeNull();
+		expect(client.createMemberSponsor).toHaveBeenCalledExactlyOnceWith(
+			{ providerConnectionId: id(81), providerConnectionVersion: 2, allowAutonomous: false },
+			expect.any(AbortSignal),
+		);
+	});
+	it("names the plan, binds it for the member's messages only, and leaves work while away to the member", async () => {
+		const { client, set } = await planSetup(plan);
+		expect(card("ChatGPT plan")).toBeTruthy();
+		expect(client.createMemberSponsor).toHaveBeenCalledExactlyOnceWith(
+			{ providerConnectionId: id(85), providerConnectionVersion: 2, allowAutonomous: false, planLogin: true },
+			expect.any(AbortSignal),
+		);
+		expect(lever()!.getAttribute("aria-checked")).toBe("false");
+		expect(client.setWorkWhileAway).not.toHaveBeenCalled();
+		set([{ ...plan, allowAutonomous: true, sponsorBindingId: id(86), sponsorVersion: 1 }]);
+		lever()!.click();
+		await settle();
+		expect(client.setWorkWhileAway).toHaveBeenCalledExactlyOnceWith(id(85), true, expect.any(AbortSignal));
+		expect(lever()!.getAttribute("aria-checked")).toBe("true");
+		lever()!.click();
+		await settle();
+		expect(client.setWorkWhileAway).toHaveBeenLastCalledWith(id(85), false, expect.any(AbortSignal));
+	});
+	it("says when the switch could not move, after reading back where it stands", async () => {
+		const { client } = await planSetup(plan);
+		const reads = client.listConnections.mock.calls.length;
+		client.setWorkWhileAway.mockRejectedValueOnce(new Error("offline"));
+		lever()!.click();
+		await settle();
+		// Part of a failed change may have landed: the cloud's state is read back first.
+		expect(client.listConnections.mock.calls.length).toBe(reads + 1);
+		expect(view.el.textContent).toContain("“Work while you're away” could not be changed. Try again.");
+		expect(lever()!.getAttribute("aria-checked")).toBe("false");
+		// A busy switch says so, in plain words, also after reading back where it stands.
+		client.setWorkWhileAway.mockRejectedValueOnce(new PlanSwitchBusyError());
+		lever()!.click();
+		await settle();
+		expect(client.listConnections.mock.calls.length).toBe(reads + 2);
+		expect(view.el.textContent).toContain("Busy right now. Try again in a moment.");
+		expect(view.el.textContent).not.toContain("could not be changed");
+	});
+	it("stays busy until the change is read back, so a second press sends nothing", async () => {
+		const { client, set } = await planSetup(plan);
+		const change = deferred<void>();
+		client.setWorkWhileAway.mockImplementationOnce(() => change.promise);
+		lever()!.click();
+		await settle();
+		expect(lever()!.getAttribute("aria-busy")).toBe("true");
+		expect(lever()!.getAttribute("aria-disabled")).toBe("true");
+		const read = deferred<WebExecutionConnections>();
+		client.listConnections.mockImplementationOnce(() => read.promise);
+		set([{ ...plan, allowAutonomous: true }]);
+		change.resolve();
+		await settle();
+		// Changed, but not read back yet: still busy, and a press does nothing.
+		expect(lever()!.getAttribute("aria-busy")).toBe("true");
+		lever()!.click();
+		await settle();
+		expect(client.setWorkWhileAway).toHaveBeenCalledTimes(1);
+		const turnedOn: WebMemberConnection = { ...plan, allowAutonomous: true };
+		read.resolve(observed(turnedOn) as WebExecutionConnections);
+		await settle();
+		expect(lever()!.getAttribute("aria-checked")).toBe("true");
+		expect(lever()!.hasAttribute("aria-busy")).toBe(false);
+	});
+	it("shows no switch for a plan that needs a new sign-in", async () => {
+		await planSetup({ ...plan, authorizationState: "reauthentication_required" });
+		expect(lever()).toBeNull();
+	});
+});
+
+describe("Continue with ChatGPT (offered only while the company may use plan logins)", () => {
+	const url = "https://auth.openai.com/oauth/authorize?state=fixture";
+	const route = `#/c/${id(10)}/chat/${id(11)}`;
+	const signIn = {
+		companyId: id(10),
+		memberId: userA.id,
+		loginId: id(105),
+		clientConnectionId: id(103),
+		capability: "c".repeat(43),
+		expiresAt: timestamp,
+		startedAt: Date.now(),
+	};
+	const kept = () => sessionStorage.getItem("qorpera.chatgpt-plan-sign-in.v1");
+	async function signInSetup(
+		available: boolean,
+		{
+			plan = new PlanSignIn(),
+			offered,
+			items = [connected],
+		}: { plan?: PlanSignIn | null; offered?: ("openai" | "anthropic")[]; items?: WebMemberConnection[] } = {},
+	) {
+		const client = {
+			listConnections: vi.fn(async () => observed(...items)),
+			revokeConnection: vi.fn(async () => ({ connectionId: id(81), status: "revoked" as const })),
+			createMemberSponsor: vi.fn(async () => ({ bindingId: id(82), version: 1 })),
+			onboardingAvailable: true,
+			beginProviderLogin: vi.fn(),
+			chatGptPlanAvailable: vi.fn(async () => available),
+			beginChatGptPlanSignIn: vi.fn(async () => ({ url, signIn })),
+		};
+		const navigate = vi.fn();
+		view = new ConnectionsView(
+			client,
+			new AbortController().signal,
+			undefined,
+			undefined,
+			offered,
+			navigate,
+			plan ?? undefined,
+		);
+		document.body.append(view.el);
+		await settle();
+		return { client, navigate };
+	}
+	const choice = () =>
+		[...view.el.querySelectorAll<HTMLButtonElement>(".connection-provider-picker button")].find(
+			(item) => item.textContent === "Continue with ChatGPT",
+		);
+	const status = () => view.el.querySelector(".connection-plan")?.textContent;
+	async function openAdd() {
+		view.el.querySelector<HTMLButtonElement>(".connection-add")!.click();
+		await settle();
+	}
+	afterEach(() => {
+		sessionStorage.clear();
+		history.replaceState(null, "", "/#/");
+	});
+	it("is not offered while the company may not use plan logins", async () => {
+		const { client } = await signInSetup(false);
+		expect(client.chatGptPlanAvailable).not.toHaveBeenCalled();
+		await openAdd();
+		expect(client.chatGptPlanAvailable).toHaveBeenCalledOnce();
+		expect(view.el.querySelector(".connection-provider-picker")?.textContent).toContain(OPENAI);
+		expect(choice()).toBeUndefined();
+	});
+	it("is offered only where its return is finished: never on a page without the member's plan sign-in", async () => {
+		for (const setup of [{ plan: null }, { offered: ["anthropic" as const] }]) {
+			const { client } = await signInSetup(true, setup);
+			await openAdd();
+			expect(client.chatGptPlanAvailable).not.toHaveBeenCalled();
+			expect(choice()).toBeUndefined();
+			view.dispose();
+		}
+	});
+	it("is not offered beside a signed-in ChatGPT plan", async () => {
+		const plan: WebMemberConnection = { ...connected, loginKind: "chatgpt_plan", allowAutonomous: false };
+		await signInSetup(true, { items: [plan] });
+		await openAdd();
+		expect(choice()).toBeUndefined();
+		view.dispose();
+		await signInSetup(true, { items: [{ ...plan, authorizationState: "reauthentication_required" }] });
+		await openAdd();
+		expect(choice()).toBeTruthy();
+	});
+	it("starts the sign-in, keeps it with the page it began on, and sends the browser to OpenAI", async () => {
+		history.replaceState(null, "", `/${route}`);
+		const { client, navigate } = await signInSetup(true);
+		await openAdd();
+		const begin = deferred<{ url: string; signIn: typeof signIn }>();
+		client.beginChatGptPlanSignIn.mockReturnValueOnce(begin.promise);
+		choice()!.click();
+		await settle();
+		// One sign-in at a time.
+		expect(status()).toBe("Opening ChatGPT…");
+		await openAdd();
+		expect(choice()!.disabled).toBe(true);
+		choice()!.click();
+		begin.resolve({ url, signIn });
+		await settle();
+		expect(client.beginChatGptPlanSignIn).toHaveBeenCalledOnce();
+		expect(JSON.parse(kept()!)).toEqual({ ...signIn, returnRoute: route });
+		expect(navigate).toHaveBeenCalledExactlyOnceWith(url);
+	});
+	it("does not go to OpenAI when this tab cannot keep the sign-in", async () => {
+		const { navigate } = await signInSetup(true);
+		vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+			throw new DOMException("full", "QuotaExceededError");
+		});
+		await openAdd();
+		choice()!.click();
+		await settle();
+		expect(navigate).not.toHaveBeenCalled();
+		expect(status()).toBe("The ChatGPT sign-in could not be started. Try again.");
+	});
+	it("can start again after the browser comes back from OpenAI's page through its page cache", async () => {
+		await signInSetup(true);
+		await openAdd();
+		choice()!.click();
+		await settle();
+		expect(status()).toBe("Opening ChatGPT…");
+		window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true }));
+		expect(status()).toBeUndefined();
+		await openAdd();
+		expect(choice()!.disabled).toBe(false);
+	});
+	it("says why a sign-in could not start", async () => {
+		const { client, navigate } = await signInSetup(true);
+		client.beginChatGptPlanSignIn.mockRejectedValueOnce(new ChatGptPlanSignInError("other_plan"));
+		await openAdd();
+		choice()!.click();
+		await settle();
+		expect(status()).toBe("Disconnect your other ChatGPT plan first.");
+		expect(navigate).not.toHaveBeenCalled();
+		expect(kept()).toBeNull();
+	});
+	it("drops the capability before the confirm, shows it finishing, then the outcome once, and reads the accounts again", async () => {
+		sessionStorage.setItem("qorpera.chatgpt-plan-sign-in.v1", JSON.stringify({ ...signIn, returnRoute: route }));
+		const plan = new PlanSignIn();
+		const { client } = await signInSetup(true, { plan });
+		const confirm = deferred<void>();
+		const finish = vi.fn(() => confirm.promise);
+		const outcome = {
+			outcome: "confirm" as const,
+			confirmation: "d".repeat(43),
+			signIn: { ...signIn, returnRoute: route },
+		};
+		const finishing = finishPlanSignIn(plan, { finishChatGptPlanSignIn: finish }, outcome);
+		expect(kept()).toBeNull();
+		expect(finish).toHaveBeenCalledExactlyOnceWith(outcome);
+		await settle();
+		expect(status()).toBe("Finishing your ChatGPT sign-in…");
+		await openAdd();
+		expect(choice()!.disabled).toBe(true);
+		// A second return while one finishes is dropped.
+		await finishPlanSignIn(plan, { finishChatGptPlanSignIn: finish }, outcome);
+		expect(finish).toHaveBeenCalledOnce();
+		const reads = client.listConnections.mock.calls.length;
+		confirm.resolve();
+		await finishing;
+		await settle();
+		expect(status()).toBe("Your ChatGPT plan is connected.");
+		expect(client.listConnections).toHaveBeenCalledTimes(reads + 1);
+		expect(plan.result).toBeUndefined();
+	});
+	it("keeps the outcome for a later page when none was open, and shows it there once", async () => {
+		const plan = memberPlanSignIn(userA.id, id(10));
+		await finishPlanSignIn(
+			plan,
+			{
+				finishChatGptPlanSignIn: async () => {
+					throw new ChatGptPlanSignInError("declined");
+				},
+			},
+			{ outcome: "failed", reason: "declined", signIn: { ...signIn, returnRoute: route } },
+		);
+		// Another company's page does not take it.
+		await signInSetup(true, { plan: memberPlanSignIn(userA.id, id(12)) });
+		expect(status()).toBeUndefined();
+		view.dispose();
+		await signInSetup(true, { plan: memberPlanSignIn(userA.id, id(10)) });
+		expect(status()).toBe("The ChatGPT sign-in was cancelled.");
+		view.dispose();
+		await signInSetup(true, { plan: memberPlanSignIn(userA.id, id(10)) });
+		expect(status()).toBeUndefined();
 	});
 });

@@ -162,20 +162,10 @@ $$;
 reset role;
 select set_config('request.jwt.claims', '', false);
 
--- Posture invariant. Every internal function in this schema is protected only
--- by "revoke from public", which holds exactly as long as the database has no
--- default privileges handing execute to the client roles. Stock Supabase does
--- ship such defaults, so this pins the assumption in CI; the same check is
--- worth running against production, where CI cannot see it.
-do $$
-declare v_bad integer;
-begin
-	select count(*) into v_bad
-	from pg_default_acl as acl
-	where acl.defaclobjtype = 'f'
-		and array_to_string(acl.defaclacl, ',') ~ '(^|,)(anon|authenticated)=';
-	if v_bad > 0 then
-		raise exception 'default privileges grant function execute to client roles (% entries)', v_bad;
-	end if;
-end
-$$;
+-- Posture. This file used to assert that the database has no default privileges
+-- handing EXECUTE to the client roles, the assumption that "revoke from public"
+-- protects an internal function. Production does have them (Supabase's platform
+-- defaults), and the SQL suite now mirrors them (platform-function-defaults.sql),
+-- so that assumption is gone. 001_api_function_allowlist.test.sql pins every
+-- SECURITY DEFINER function the client roles can execute, and the revokes above
+-- name the roles.

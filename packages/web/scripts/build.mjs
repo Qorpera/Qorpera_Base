@@ -1,14 +1,14 @@
-// Build the web client into dist/: one bundled ES module, one stylesheet and
-// the static shell with its assets. `--serve` keeps esbuild's dev server up
-// with rebuild-on-request; no framework, no plugin chain.
+// Build the web client into dist/: the split ES module bundle (main.js and its
+// chunks, scripts/bundle.mjs), one stylesheet, the head script and the static
+// shell with its assets. `--serve` keeps esbuild's dev server up with
+// rebuild-on-request; no framework, no plugin chain.
 import { cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as esbuild from "esbuild";
-import { assertMemberWebInputs } from "../../../scripts/check-headless-packages.mjs";
+import { bundleLayout, bundleOptions, rewriteIndex } from "./bundle.mjs";
 import { prepareDeployment } from "./deployment.mjs";
-import { designPxPlugin, readUiScale } from "./design-px.mjs";
 import { webSourceProvenance } from "./provenance.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -43,50 +43,7 @@ for (const page of deployment.notFoundPages) {
 cpSync(join(viewerRoot, "vendor/NOVNC_LICENSE.txt"), join(dist, "assets/NOVNC_LICENSE.txt"));
 
 const version = JSON.parse(readFileSync(join(root, "package.json"), "utf8")).version;
-const boundary = { name: "member-authority-boundary", setup(build) {
-	build.onEnd(result => {
-		if (!result.metafile) return;
-		// Stylesheets contain copied art/font URLs; executable outputs must be self-contained.
-		assertMemberWebInputs({ ...result.metafile, outputs: Object.fromEntries(Object.entries(result.metafile.outputs).filter(([path]) => path.endsWith(".js"))) });
-	});
-} };
-// The head script that sets the theme before the first paint. It runs as a
-// classic script beside the vendored avatar scripts, so it is its own IIFE.
-const themeOptions = {
-	entryPoints: [{ in: join(root, "src/theme.ts"), out: "theme" }],
-	bundle: true,
-	format: "iife",
-	platform: "browser",
-	target: ["es2022"],
-	outdir: dist,
-	entryNames: serve ? "[name]" : "build/[name]-[hash]",
-	metafile: true,
-	plugins: [boundary],
-	minify: !serve,
-	logLevel: "info",
-};
-const options = {
-	entryPoints: [{ in: join(root, "src/entry.mjs"), out: "main" }, { in: join(root, "src/styles/app.css"), out: "app" }],
-	bundle: true,
-	format: "esm",
-	platform: "browser",
-	target: ["es2022"],
-	outdir: dist,
-	// Production bundles carry a content hash so a browser can never keep a
-	// stale main.js across deploys; the HTML is rewritten to point at them.
-	entryNames: serve ? "[name]" : "build/[name]-[hash]",
-	metafile: true,
-	// Stylesheets are written in design pixels and drawn at tokens.css's --ui-scale (scripts/design-px.mjs).
-	plugins: [boundary, designPxPlugin(readUiScale(join(root, "src/styles/tokens.css")))],
-	// Lower the size gates emitted by design-px for browsers without CSS nesting.
-	supported: { nesting: false },
-	sourcemap: true,
-	// Fonts and art are copied into dist/assets above; leave their URLs untouched.
-	external: ["*.woff2", "*.png", "*.svg"],
-	minify: !serve,
-	logLevel: "info",
-	define: deployment.define,
-};
+const { app: options, theme: themeOptions } = bundleOptions({ root, outdir: dist, serve, define: deployment.define });
 
 if (serve) {
 	await (await esbuild.context(themeOptions)).watch();
@@ -103,22 +60,15 @@ if (serve) {
 		outputs: { ...result.metafile.outputs, ...themeResult.metafile.outputs },
 	};
 	writeFileSync(join(dist, "build-manifest.json"), `${JSON.stringify(metafile, null, 2)}\n`);
-	const outputs = Object.keys(metafile.outputs).map((file) => file.slice(file.indexOf("dist/") + 5));
-	const script = outputs.find((file) => /^build\/main-[A-Z0-9]+\.js$/.test(file));
-	const style = outputs.find((file) => /^build\/app-[A-Z0-9]+\.css$/.test(file));
-	const theme = outputs.find((file) => /^build\/theme-[A-Z0-9]+\.js$/.test(file));
-	if (!script || !style || !theme) throw new Error("Hashed bundle names were not produced");
-	const html = readFileSync(join(dist, "index.html"), "utf8")
-		.replace('src="./theme.js"', `src="./${theme}"`)
-		.replace('href="./app.css"', `href="./${style}"`)
-		.replace('src="./main.js"', `src="./${script}"`);
-	writeFileSync(join(dist, "index.html"), html);
-	const files = ["index.html", "_headers", ...deployment.notFoundPages, theme, script, style];
+	const layout = bundleLayout(metafile, { root, outdir: dist });
+	writeFileSync(join(dist, "index.html"), rewriteIndex(readFileSync(join(dist, "index.html"), "utf8"), layout));
+	// Every script and stylesheet, chunks included: a deploy check can tell each file this build made.
+	const files = ["index.html", "_headers", ...deployment.notFoundPages, ...layout.files];
 	writeFileSync(join(dist, "web-deployment.json"), `${JSON.stringify({
 		...deployment.manifest,
 		...provenance,
 		version,
 		files: Object.fromEntries(files.map(file => [file, createHash("sha256").update(readFileSync(join(dist, file))).digest("hex")])),
 	}, null, 2)}\n`);
-	console.log(`index.html -> ${theme}, ${script}, ${style}`);
+	console.log(`index.html -> ${layout.theme}, ${layout.script} (preloads ${layout.preload.join(", ")}), ${layout.style}; on demand: ${layout.lazy.join(", ")}`);
 }

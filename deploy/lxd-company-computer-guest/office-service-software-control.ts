@@ -1,8 +1,7 @@
 import { createHash } from "node:crypto";
-import { constants, realpathSync } from "node:fs";
+import { constants } from "node:fs";
 import { lstat, open } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { dirname } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { readBoundedCloudResponse, supabaseServiceHeaders } from "../../packages/cloud-client/src/cloud-request.ts";
 import {
@@ -22,6 +21,7 @@ import {
 } from "../../packages/runner-orchestrator/src/lxd-office-service-software-files.ts";
 import { verifyLxdOfficeServiceSoftware } from "../../packages/runner-orchestrator/src/lxd-office-service-software.ts";
 import { readCompanyComputerBootServiceStartEvidence } from "../../packages/runtime/src/cloud-company-computer-boot-service-start-evidence.ts";
+import { runCompanyComputerControlEntry } from "../../packages/runtime/src/cloud-company-computer-control-entry.ts";
 import { assertCompanyComputerImageArtifact } from "../../packages/runtime/src/cloud-company-computer-linux-host.ts";
 import {
 	assertCompanyComputerPreparationLockAndBoot,
@@ -361,14 +361,10 @@ export async function runOfficeSoftwareControl(args: readonly string[]): Promise
 	const input = parseOfficeSoftwareControlArgs(args);
 	await runPinnedOfficeSoftwareTool("install", args, input, import.meta.url, (signal) => lockedInstall(input, signal));
 }
-if (process.argv[1] && realpathSync(resolve(process.argv[1])) === realpathSync(fileURLToPath(import.meta.url))) {
-	if (process.argv.length === 3 && process.argv[2] === "--help")
-		console.log(
-			"Pinned temporary root software installation control. Requires independent provider capability, exact stopped history and continuous preparation flock. Masks the image's apt self-update units first. Does not start or activate a service.",
-		);
-	else
-		runOfficeSoftwareControl(process.argv.slice(2)).catch(() => {
-			console.error("OFFICE_SOFTWARE_CONTROL_UNCONFIRMED");
-			process.exitCode = 1;
-		});
-}
+runCompanyComputerControlEntry({
+	moduleUrl: import.meta.url,
+	names: ["office-service-software-control.ts", "software-control.mjs"],
+	help: "Pinned temporary root software installation control. Requires independent provider capability, exact stopped history and continuous preparation flock. Masks the image's apt self-update units first. Does not start or activate a service.",
+	failure: "OFFICE_SOFTWARE_CONTROL_UNCONFIRMED",
+	run: runOfficeSoftwareControl,
+});

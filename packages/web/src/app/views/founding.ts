@@ -658,7 +658,7 @@ export class FoundingView {
 		this.#opened.connect = open;
 		if (!open) return;
 		this.#connectText.textContent = t(
-			"Your own account, connected to {name}. It is used only for the work you start there. You can be Ready once it is connected.",
+			"Your own account, connected to {name}. It pays for the work you start there. You can be Ready once it is connected.",
 			{ name: table.companyName },
 		);
 		const panel = this.#founding.connections().el;

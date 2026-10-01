@@ -159,7 +159,7 @@ function type(view: ConversationView, text: string): void {
 function buttonNamed(view: ConversationView, label: string): HTMLButtonElement | undefined {
 	return [...view.el.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent === label);
 }
-const CONNECT_HINT = "Connect a model account in Settings → Connections to send messages.";
+const CONNECT_HINT = "Connect a model account in Settings → My connections to send messages.";
 
 describe("room startup usage refresh", () => {
 	it("selects a known eligible account and sends while the optional usage probe remains pending", async () => {

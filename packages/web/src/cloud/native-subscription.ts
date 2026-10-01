@@ -2,6 +2,7 @@ import {
 	type CreateMemberSponsorInput,
 	type NativeExecutionConnections,
 	type NativeMemberConnection,
+	type NativeProviderLoginAuthorization,
 	NativeSubscriptionControlPlane,
 	type RequestSponsoredSessionTurnInput,
 	type RevokeNativeProviderConnectionInput,
@@ -17,6 +18,7 @@ import {
 	parseNativeAccountRefreshResult,
 } from "@qorpera/cloud-client/native-account-refresh";
 import { HttpNativeProviderIdentityBridge } from "@qorpera/cloud-client/native-provider-login";
+import type { ChatGptPlanReturn, ChatGptPlanSignIn } from "./chatgpt-plan-sign-in.ts";
 import { type Cloud, CloudRpcError } from "./client.ts";
 import { parseCloudConfig } from "./deployment-config.ts";
 import { UUID_PATTERN } from "./parse.ts";
@@ -38,10 +40,24 @@ export interface WebNativeProviderLogin {
 	expiresAt: string;
 }
 
+/** A member's connection with what the web reads beside the SDK's fields (migration
+ * 20260929970000): the login's kind (absent for a node login), whether its member turned
+ * on work while away for this version, and when the member's first-routine card was shown. */
+export type WebMemberConnection = NativeMemberConnection & {
+	loginKind?: "codex" | "chatgpt_plan";
+	allowAutonomous?: boolean;
+	routineOfferShownAt?: string;
+};
+export interface WebExecutionConnections extends NativeExecutionConnections {
+	connections: readonly WebMemberConnection[];
+}
+/** A ChatGPT plan login: its member alone turns on work while away (Sign in with ChatGPT). */
+export const planLogin = (connection: WebMemberConnection): boolean => connection.loginKind === "chatgpt_plan";
+
 export interface WebNativeSubscription {
 	readonly onboardingAvailable: boolean;
 	beginProviderLogin(input: WebNativeProviderLoginInput, signal?: AbortSignal): Promise<WebNativeProviderLogin>;
-	listConnections(signal?: AbortSignal): Promise<NativeExecutionConnections>;
+	listConnections(signal?: AbortSignal): Promise<WebExecutionConnections>;
 	/** Resolves once account usage is current. `force` asks for a new observation
 	 * even inside the window of a completed attempt: the member pressed Refresh. */
 	refreshAccountMetadata?(signal?: AbortSignal, force?: boolean): Promise<void>;
@@ -49,9 +65,22 @@ export interface WebNativeSubscription {
 	listSessionTurnProvenance(sessionId: string, signal?: AbortSignal): Promise<readonly SessionTurnProvenance[]>;
 	requestSessionTurn(input: RequestSponsoredSessionTurnInput, signal?: AbortSignal): Promise<SessionTurnRequestResult>;
 	createMemberSponsor(
-		input: Omit<CreateMemberSponsorInput, "profileId">,
+		input: Omit<CreateMemberSponsorInput, "profileId"> & { planLogin?: boolean },
 		signal?: AbortSignal,
 	): Promise<{ bindingId: string; version: number }>;
+	/** The member's own choice for their ChatGPT plan: work while they are away, or not. */
+	setWorkWhileAway?(connectionId: string, on: boolean, signal?: AbortSignal): Promise<void>;
+	/** Records that the member was shown the first-routine card (once per member and company). */
+	recordRoutineOffer?(connectionId: string, signal?: AbortSignal): Promise<string>;
+	/** Whether the company may use ChatGPT plan logins now (both switches on). */
+	chatGptPlanAvailable?(signal?: AbortSignal): Promise<boolean>;
+	/** Begins "Continue with ChatGPT": OpenAI's address to send the browser to, and what this tab keeps. */
+	beginChatGptPlanSignIn?(
+		displayName: string,
+		signal?: AbortSignal,
+	): Promise<{ url: string; signIn: Omit<ChatGptPlanSignIn, "returnRoute"> }>;
+	/** Finishes it with the callback's one-time confirmation id. */
+	finishChatGptPlanSignIn?(outcome: ChatGptPlanReturn, signal?: AbortSignal): Promise<void>;
 	revokeConnection(
 		input: Omit<RevokeNativeProviderConnectionInput, "profileId">,
 		signal?: AbortSignal,
@@ -72,6 +101,51 @@ function usageStale(account: NativeMemberConnection, now: number, held: boolean)
 		if (!(observedAt > now - 60_000) || observedAt > now + 30_000) return true;
 	}
 	return usage.windows.some((window) => window.resetAt !== undefined && Date.parse(window.resetAt) <= now);
+}
+
+/** Why a ChatGPT plan sign-in did not start or finish: the switches are off, the member has a
+ * usable plan already, or the callback's reason (state_unknown, expired, declined, provider_error,
+ * busy). */
+export class ChatGptPlanSignInError extends Error {
+	readonly reason: string;
+	constructor(reason: string) {
+		super("ChatGPT plan sign-in did not go through.");
+		this.reason = reason;
+	}
+}
+const CONFIRM_DEADLINE_MS = 45_000;
+
+/** The plan's switch waited too long for a lock, or lost a deadlock (55P03, 20260929985000): nothing changed,
+ * and the member can press it again. */
+export class PlanSwitchBusyError extends Error {
+	constructor() {
+		super("The ChatGPT plan switch is busy.");
+	}
+}
+
+/** The plan fields of one connection version, from the list's own answer; anything malformed
+ * reads as absent (a Codex or node login). */
+function withPlanFields(connection: NativeMemberConnection, answer: unknown): WebMemberConnection {
+	const entries =
+		answer && typeof answer === "object" && Array.isArray((answer as { connections?: unknown }).connections)
+			? ((answer as { connections: unknown[] }).connections as unknown[])
+			: [];
+	const entry = entries.find(
+		(item): item is Record<string, unknown> =>
+			Boolean(item) &&
+			typeof item === "object" &&
+			(item as Record<string, unknown>).connection_id === connection.connectionId &&
+			(item as Record<string, unknown>).connection_version === connection.connectionVersion,
+	);
+	if (!entry) return connection;
+	const kind = entry.login_kind;
+	const shown = entry.routine_offer_shown_at;
+	return {
+		...connection,
+		...(kind === "codex" || kind === "chatgpt_plan" ? { loginKind: kind } : {}),
+		...(typeof entry.allow_autonomous === "boolean" ? { allowAutonomous: entry.allow_autonomous } : {}),
+		...(typeof shown === "string" && Number.isFinite(Date.parse(shown)) ? { routineOfferShownAt: shown } : {}),
+	};
 }
 
 /** The SDK owns admission and provenance contracts. This host only supplies
@@ -176,6 +250,35 @@ export function createWebNativeSubscription(
 	};
 	const client = (signal?: AbortSignal, sessionId?: string) =>
 		new NativeSubscriptionControlPlane({ rpc: (method, args) => rpc(method, args, signal, sessionId) });
+	/** A Codex login's consent, or (`plan`) a ChatGPT plan's through its member's own switch, which the
+	 * kernel requires for a plan (20260929980000). */
+	const consent = async (connectionId: string, allow: boolean, plan = false): Promise<number> => {
+		const value = (
+			plan
+				? await cloud
+						.rpc("qorpera_set_chatgpt_plan_work_while_away", {
+							p_profile_id: profileId,
+							p_connection_id: connectionId,
+							p_on: allow,
+						})
+						.catch((error: unknown) => {
+							if (error instanceof CloudRpcError && error.code === "55P03") throw new PlanSwitchBusyError();
+							throw error;
+						})
+				: await cloud.rpc("qorpera_consent_provider_connection_autonomous", {
+						p_profile_id: profileId,
+						p_connection_id: connectionId,
+						p_allow_autonomous: allow,
+					})
+		) as { connection_id?: unknown; version?: unknown; allow_autonomous?: unknown } | null;
+		if (
+			value?.connection_id !== connectionId ||
+			value.allow_autonomous !== allow ||
+			!Number.isSafeInteger(value.version)
+		)
+			throw new Error("Invalid cloud response");
+		return value.version as number;
+	};
 	let pendingMetadataRefresh: Promise<void> | undefined;
 	let metadataAdmission:
 		| { clientRequestId: string; capability: string; expiresAt: number; completed: boolean }
@@ -331,7 +434,18 @@ export function createWebNativeSubscription(
 					);
 				});
 		},
-		listConnections: (signal) => client(signal).listConnections(profileId),
+		listConnections: async (signal) => {
+			// The SDK reads the fields it knows; the plan fields come from the same answer.
+			let answer: unknown;
+			const listed = await new NativeSubscriptionControlPlane({
+				rpc: async (method, args) => {
+					const value = await rpc(method, args, signal);
+					if (method === "qorpera_list_member_native_execution_connections") answer = value;
+					return value;
+				},
+			}).listConnections(profileId);
+			return { ...listed, connections: listed.connections.map((connection) => withPlanFields(connection, answer)) };
+		},
 		refreshAccountMetadata: async (signal, force = false) => {
 			const checked = AbortSignal.any([companySignal, ...(signal ? [signal] : [])]);
 			checked.throwIfAborted();
@@ -518,26 +632,203 @@ export function createWebNativeSubscription(
 		requestSessionTurn: (input, signal) => client(signal, input.sessionId).requestSessionTurn(input),
 		// Unattended use is the default (founder decision 2026-09-20), not a setting: binding an account
 		// records its owner's consent first and binds the consented version, so routines, coworker wakes
-		// and first runs can use the account while nobody is online.
-		createMemberSponsor: async (input, signal) => {
+		// and first runs can use the account while nobody is online. A ChatGPT plan is the exception
+		// (founder decision 2026-10-01): it is bound for the member's own messages only, and works while
+		// they are away once they turn that on themselves.
+		createMemberSponsor: async ({ planLogin: plan, ...input }, signal) => {
 			signal?.throwIfAborted();
-			const consent = (await cloud.rpc("qorpera_consent_provider_connection_autonomous", {
-				p_profile_id: profileId,
-				p_connection_id: input.providerConnectionId,
-				p_allow_autonomous: true,
-			})) as { connection_id?: unknown; version?: unknown; allow_autonomous?: unknown } | null;
-			if (
-				consent?.connection_id !== input.providerConnectionId ||
-				consent.allow_autonomous !== true ||
-				!Number.isSafeInteger(consent.version)
-			)
-				throw new Error("Invalid cloud response");
+			if (plan) return client(signal).createMemberSponsor({ ...input, allowAutonomous: false, profileId });
+			const version = await consent(input.providerConnectionId, true);
 			return client(signal).createMemberSponsor({
 				...input,
-				providerConnectionVersion: consent.version as number,
+				providerConnectionVersion: version,
 				allowAutonomous: true,
 				profileId,
 			});
+		},
+		setWorkWhileAway: async (connectionId, on, signal) => {
+			signal?.throwIfAborted();
+			const version = await consent(connectionId, on, true);
+			// The new version is bound at once: turned on, for work while away; turned off, for the
+			// member's own messages only (they never wait for a later read).
+			await client(signal).createMemberSponsor({
+				providerConnectionId: connectionId,
+				providerConnectionVersion: version,
+				allowAutonomous: on,
+				profileId,
+			});
+		},
+		chatGptPlanAvailable: async (signal) => {
+			signal?.throwIfAborted();
+			try {
+				return (await cloud.rpc("qorpera_chatgpt_plan_available", { p_profile_id: profileId })) === true;
+			} catch (error) {
+				// A deployment without plan logins has no such function: they are off.
+				if (error instanceof CloudRpcError && error.missing) return false;
+				throw error;
+			}
+		},
+		recordRoutineOffer: async (connectionId, signal) => {
+			signal?.throwIfAborted();
+			const value = (await cloud.rpc("qorpera_record_chatgpt_plan_routine_offer", {
+				p_profile_id: profileId,
+				p_connection_id: connectionId,
+			})) as { connection_id?: unknown; shown_at?: unknown } | null;
+			if (
+				value?.connection_id !== connectionId ||
+				typeof value.shown_at !== "string" ||
+				!Number.isFinite(Date.parse(value.shown_at))
+			)
+				throw new Error("Invalid cloud response");
+			return value.shown_at;
+		},
+		beginChatGptPlanSignIn: (displayName, signal) =>
+			withCloudDeadline(
+				async (deadline) => {
+					const check = () => {
+						deadline.throwIfAborted();
+						current();
+					};
+					check();
+					if (!loginBase) throw new Error("Native provider login is not configured.");
+					const control = client(deadline);
+					const existing = await control.listConnections(profileId);
+					check();
+					const identity =
+						existing.computeIdentity ??
+						(await control.createMemberComputeIdentity({
+							profileId,
+							clientIdentityId: crypto.randomUUID(),
+							displayName,
+							policy: { credentialExport: false, operatorBlindnessClaimed: false },
+						}));
+					check();
+					if (
+						identity.ownerUserId !== memberId ||
+						identity.ownershipKind !== "member" ||
+						identity.status !== "active"
+					)
+						throw new Error("Native provider login identity does not match this member.");
+					const capability = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32))))
+						.replaceAll("+", "-")
+						.replaceAll("/", "_")
+						.replace(/=+$/, "");
+					const digest = new Uint8Array(
+						await crypto.subtle.digest("SHA-256", new TextEncoder().encode(capability)),
+					);
+					const clientLoginId = crypto.randomUUID();
+					const clientConnectionId = crypto.randomUUID();
+					let begun: Record<string, unknown> | null;
+					try {
+						begun = (await cloud.rpc("qorpera_begin_chatgpt_plan_sign_in", {
+							p_profile_id: profileId,
+							p_client_login_id: clientLoginId,
+							p_client_connection_id: clientConnectionId,
+							p_compute_identity_id: identity.computeIdentityId,
+							p_capability_sha256: Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join(""),
+						})) as Record<string, unknown> | null;
+					} catch (error) {
+						if (error instanceof CloudRpcError && error.code === "55000")
+							throw new ChatGptPlanSignInError(
+								/other ChatGPT plan/.test(error.message) ? "other_plan" : "unavailable",
+							);
+						throw error;
+					}
+					check();
+					if (
+						typeof begun?.login_id !== "string" ||
+						!UUID_PATTERN.test(begun.login_id) ||
+						begun.compute_identity_id !== identity.computeIdentityId ||
+						begun.compute_identity_owner_user_id !== memberId ||
+						begun.model_login_kind !== "chatgpt_plan" ||
+						typeof begun.expires_at !== "string" ||
+						!Number.isFinite(Date.parse(begun.expires_at))
+					)
+						throw new Error("ChatGPT plan sign-in authority does not match this request.");
+					const authorization: NativeProviderLoginAuthorization = {
+						loginId: begun.login_id,
+						clientLoginId,
+						clientConnectionId,
+						computeIdentityId: identity.computeIdentityId,
+						computeIdentityOwnershipKind: "member",
+						computeIdentityOwnerUserId: memberId,
+						provider: "openai",
+						nativeHarness: "codex-cli",
+						capability,
+						expiresAt: begun.expires_at,
+					};
+					const endpoint = new URL("login", loginBase).href;
+					// The vault answers OpenAI's address for the capability alone; no member token goes there.
+					const prompt = await new HttpNativeProviderIdentityBridge(
+						loginBase,
+						async (url, init) => {
+							check();
+							if (String(url) !== endpoint || init?.method !== "POST")
+								throw new Error("Unexpected native login destination.");
+							return fetch(endpoint, { ...init, credentials: "omit", cache: "no-store", redirect: "error" });
+						},
+						{ signal: deadline },
+					).beginLogin(authorization);
+					check();
+					const url = prompt.status === "awaiting_member" ? prompt.interactionUrl : undefined;
+					if (!url || new URL(url).origin !== "https://auth.openai.com")
+						throw new Error("ChatGPT sign-in did not answer with OpenAI's address.");
+					return {
+						url,
+						signIn: {
+							companyId: profileId,
+							memberId,
+							loginId: begun.login_id,
+							clientConnectionId,
+							capability,
+							expiresAt: begun.expires_at,
+							startedAt: Date.now(),
+						},
+					};
+				},
+				120000,
+				AbortSignal.any([companySignal, ...(signal ? [signal] : [])]),
+			),
+		finishChatGptPlanSignIn: async (outcome, signal) => {
+			const signIn = outcome.signIn;
+			if (outcome.outcome !== "confirm") throw new ChatGptPlanSignInError(outcome.reason ?? "provider_error");
+			if (!loginBase || !outcome.confirmation || signIn.companyId !== profileId)
+				throw new Error("This sign-in cannot be finished here.");
+			const checked = AbortSignal.any([
+				AbortSignal.timeout(CONFIRM_DEADLINE_MS),
+				companySignal,
+				...(signal ? [signal] : []),
+			]);
+			// The capability is the bearer; the confirmation id works once.
+			const response = await fetch(new URL("chatgpt-plan-confirm", loginBase).href, {
+				method: "POST",
+				headers: { authorization: `Bearer ${signIn.capability}`, "content-type": "application/json" },
+				body: JSON.stringify({
+					schema: "qorpera.chatgpt-plan-confirm/v1",
+					login_id: signIn.loginId,
+					confirmation: outcome.confirmation,
+				}),
+				signal: checked,
+				credentials: "omit",
+				cache: "no-store",
+				redirect: "error",
+			});
+			let value: Record<string, unknown> = {};
+			try {
+				const read: unknown = JSON.parse(
+					new TextDecoder().decode(await readBoundedCloudResponse(response, 64 * 1024, checked)),
+				);
+				if (read && typeof read === "object") value = read as Record<string, unknown>;
+			} catch {
+				// An unreadable answer is a failed confirm.
+			}
+			current();
+			if (response.status === 200 && value.status === "completed" && value.login_id === signIn.loginId) return;
+			throw new ChatGptPlanSignInError(
+				value.schema === "qorpera.chatgpt-plan-confirm-failed/v1" && typeof value.reason === "string"
+					? value.reason
+					: "provider_error",
+			);
 		},
 		revokeConnection: (input, signal) => client(signal).revokeConnection({ ...input, profileId }),
 	};

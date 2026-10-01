@@ -1,7 +1,8 @@
 -- Company state files, F2-2, under concurrency (deploy/first-node/RUNTIME-COMPANY-STATE-FILES.md §4): a save that
--- renames a group chat takes the company row FOR KEY SHARE before the chat's room (FOR NO KEY UPDATE), as posting
--- takes the company row (qorpera_lock_profile_gc_fence) before the room and the operation clock; posting is played by
--- its first locks, in its order. Either may start first. The fixture is committed so other connections see it, and
+-- renames a group chat takes the company row FOR KEY SHARE before the chat's room (FOR NO KEY UPDATE), as snapshot-v1
+-- posting takes the company row (qorpera_lock_profile_gc_fence) before the room and the operation clock; posting is
+-- played by its first locks, in its order. Either may start first. On folder-v2 (C1c-3a) posting takes the company row
+-- KEY SHARE and its room FOR SHARE, where the save waits for it (661 I and J). The fixture is committed so other connections see it, and
 -- removed at the end. Waits are detected with pg_blocking_pids, never by wall-clock time.
 
 insert into auth.users(id,email) values
@@ -16,24 +17,63 @@ insert into public.qorpera_company_environments(id,profile_id,name,contract_vers
 	('70300000-0000-4000-8000-000000000020','70300000-0000-4000-8000-000000000010','Environment',1,'70300000-0000-4000-8000-000000000001');
 select set_config('request.jwt.claims', '{"role":"service_role"}', false) \g /dev/null
 select public.qorpera_folder_enable('70300000-0000-4000-8000-000000000020') \g /dev/null
--- Verified bytes for a text, as the object gateway leaves them.
-create function pg_temp.stage(p_text text, p_profile uuid default '70300000-0000-4000-8000-000000000010')
-returns jsonb language plpgsql security definer as $$
-declare v_hash text := encode(extensions.digest(convert_to(p_text,'utf8'),'sha256'),'hex'); v_manifest text; v_manifest_hash text;
+-- Verified version-2 bytes for a text, as the object gateway leaves them: the platform stages them.
+create function pg_temp.manifest_v2(p_text text) returns text language sql immutable as $$
+	select format('{"schema":"qorpera.cloud-file-manifest/v2","fileSha256":"%s","bytes":%s,"mediaType":"text/markdown","executable":false,"chunks":[%s]}',
+		encode(extensions.digest(convert_to(p_text, 'utf8'), 'sha256'), 'hex'), octet_length(convert_to(p_text, 'utf8')),
+		case when p_text = '' then '' else format('{"sha256":"%s","bytes":%s}', encode(extensions.digest(convert_to(p_text, 'utf8'), 'sha256'), 'hex'),
+			octet_length(convert_to(p_text, 'utf8'))) end)
+$$;
+-- Opens an intent for a manifest as the actor, confirms each object the open did not report present (the manifest's
+-- chunks and the manifest itself, by hash and size, as the gateway does once it has stored them), and seals it.
+create function pg_temp.seal_v2(p_env uuid, p_actor jsonb, p_manifest text) returns jsonb language plpgsql as $$
+declare v_open jsonb := public.qorpera_folder_open_upload(p_env, p_actor, p_manifest); v_object jsonb;
 begin
-	insert into storage.objects(bucket_id,name,metadata)
-	values ('qorpera-profile-objects',p_profile::text || '/' || v_hash,
-		jsonb_build_object('size',octet_length(p_text))) on conflict do nothing;
-	v_manifest := jsonb_build_object('schema','qorpera.cloud-file-manifest/v1','fileSha256',v_hash,
-		'bytes',octet_length(p_text),'mediaType','application/octet-stream','chunks',case when p_text = '' then '[]'::jsonb
-		else jsonb_build_array(jsonb_build_object('sha256',v_hash,'bytes',octet_length(p_text))) end)::text;
-	v_manifest_hash := encode(extensions.digest(convert_to(v_manifest,'utf8'),'sha256'),'hex');
-	insert into storage.objects(bucket_id,name,metadata)
-	values ('qorpera-profile-objects',p_profile::text || '/' || v_manifest_hash,
-		jsonb_build_object('size',octet_length(v_manifest))) on conflict do nothing;
-	perform public.qorpera_verify_company_path_file(p_profile,v_manifest);
-	return jsonb_build_object('manifestSha256',v_manifest_hash,'fileSha256',v_hash,'bytes',octet_length(p_text),
-		'mediaType','text/markdown','executable',false);
+	for v_object in select c from jsonb_array_elements(p_manifest::jsonb -> 'chunks') c
+		union all select jsonb_build_object('sha256', encode(extensions.digest(convert_to(p_manifest, 'utf8'), 'sha256'), 'hex'),
+			'bytes', octet_length(convert_to(p_manifest, 'utf8'))) loop
+		if not (v_open -> 'present') ? (v_object ->> 'sha256') then
+			perform public.qorpera_folder_confirm_object(p_env, p_actor, (v_open ->> 'intentId')::uuid, v_object ->> 'sha256',
+				(v_object ->> 'bytes')::bigint);
+		end if;
+	end loop;
+	return public.qorpera_folder_seal_upload(p_env, p_actor, (v_open ->> 'intentId')::uuid);
+end $$;
+-- The platform stages the text in each folder-v2 environment of the company (an intent is one environment's).
+create function pg_temp.stage(p_text text, p_profile uuid default '70300000-0000-4000-8000-000000000010') returns jsonb language plpgsql as $$
+declare v_env uuid; v_seal jsonb;
+begin
+	for v_env in select environment_id from public.qorpera_company_files where profile_id = p_profile and core = 'folder-v2'
+		order by environment_id loop
+		v_seal := pg_temp.seal_v2(v_env, '{"kind":"platform"}', pg_temp.manifest_v2(p_text));
+		if v_seal ->> 'state' is distinct from 'sealed' then raise exception 'Fixture staging: %', v_seal; end if;
+	end loop;
+	if v_seal is null then raise exception 'Fixture staging: the company has no folder-v2 environment'; end if;
+	return v_seal -> 'file';
+end $$;
+-- A version-2 file is held to possession (C1D §3): before an actor other than the platform commits units, it stages
+-- each of their files itself, as its own upload would. An actor that may not stage (42501) or a stopped company (55000)
+-- is left to the commit's own refusal; any other error is a fixture defect and surfaces.
+create function pg_temp.possess(p_env uuid, p_actor jsonb, p_units jsonb) returns void language plpgsql as $$
+declare v_manifest text;
+begin
+	if p_actor ->> 'kind' is not distinct from 'platform' or jsonb_typeof(p_units) is distinct from 'array' then return; end if;
+	for v_manifest in select distinct i.manifest_text from jsonb_array_elements(p_units) u
+		cross join lateral (select u -> 'file' as f union all select c -> 'file' from jsonb_array_elements(
+			case when jsonb_typeof(u -> 'contents') = 'array' then u -> 'contents' else '[]'::jsonb end) c) refs
+		join public.qorpera_folder_upload_intents i on i.environment_id = p_env and i.manifest_sha256 = refs.f ->> 'manifestSha256'
+		where refs.f is not null loop
+		begin
+			perform pg_temp.seal_v2(p_env, p_actor, v_manifest);
+		exception when insufficient_privilege or object_not_in_prerequisite_state then null;
+		end;
+	end loop;
+end $$;
+-- A commit's SQL for another connection, as its actor, after taking possession of the actor's files in this one.
+create function pg_temp.sql_commit(p_env text, p_actor text, p_key text, p_units text) returns text language plpgsql as $$
+begin
+	perform pg_temp.possess(p_env::uuid, p_actor::jsonb, p_units::jsonb);
+	return format('select public.qorpera_folder_commit(%L, %L, %L, %L)', p_env, p_actor, p_key, p_units);
 end $$;
 
 -- A structured entry as the TS parser sends it.
@@ -69,9 +109,11 @@ create function pg_temp.vision(p_name text) returns jsonb language sql as $$
 		(select version from public.qorpera_folder_entries where environment_id = '70300000-0000-4000-8000-000000000020'
 			and key_text = 'vision/vision.md'))
 $$;
-create function pg_temp.commit(p_actor jsonb, p_key text, p_units jsonb) returns jsonb language sql as $$
-	select public.qorpera_folder_commit('70300000-0000-4000-8000-000000000020', p_actor, p_key, p_units)
-$$;
+create function pg_temp.commit(p_actor jsonb, p_key text, p_units jsonb) returns jsonb language plpgsql as $$
+begin
+	perform pg_temp.possess('70300000-0000-4000-8000-000000000020', p_actor, p_units);
+	return public.qorpera_folder_commit('70300000-0000-4000-8000-000000000020', p_actor, p_key, p_units);
+end $$;
 create function pg_temp.owner() returns jsonb language sql as $$
 	select '{"kind":"member","userId":"70300000-0000-4000-8000-000000000001"}'::jsonb
 $$;
@@ -131,7 +173,7 @@ select pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'race-group-0001', jsonb_b
 	pg_temp.new_group('launch', '70300000-0000-4000-8000-0000000000b1', 'Launch', array['70300000-0000-4000-8000-0000000000a1','70300000-0000-4000-8000-0000000000a2']::uuid[], array['70300000-0000-4000-8000-000000000001']::uuid[]))), 1, 'saved') \g /dev/null
 select set_config('qorpera_test.state_room', '70300000-0000-4000-8000-0000000000b1', false) \g /dev/null
 -- The rename, staged now: staging an object inside the save's own transaction would lock the company row itself.
-select set_config('qorpera_test.state_rename', format('select public.qorpera_folder_commit(%L, %L, %L, %L)', '70300000-0000-4000-8000-000000000020',
+select set_config('qorpera_test.state_rename', pg_temp.sql_commit('70300000-0000-4000-8000-000000000020',
 	pg_temp.owner()::text, 'race-rename-0001', jsonb_build_array(pg_temp.edit_group('launch',
 		pg_temp.group_parse('70300000-0000-4000-8000-0000000000b1', 'Launch team', array['70300000-0000-4000-8000-0000000000a1','70300000-0000-4000-8000-0000000000a2']::uuid[], array['70300000-0000-4000-8000-000000000001']::uuid[])))::text), false) \g /dev/null
 
@@ -177,7 +219,7 @@ end $$;
 
 -- C. The other order: the save holds the chat's room (it waits on a path another connection holds) and a post
 -- starts. The post waits for the save at the company row, before the room, and both finish.
-select set_config('qorpera_test.state_rename_back', format('select public.qorpera_folder_commit(%L, %L, %L, %L)', '70300000-0000-4000-8000-000000000020',
+select set_config('qorpera_test.state_rename_back', pg_temp.sql_commit('70300000-0000-4000-8000-000000000020',
 	pg_temp.owner()::text, 'race-rename-0002', jsonb_build_array(pg_temp.edit_group('launch',
 		pg_temp.group_parse('70300000-0000-4000-8000-0000000000b1', 'Launch', array['70300000-0000-4000-8000-0000000000a1','70300000-0000-4000-8000-0000000000a2']::uuid[], array['70300000-0000-4000-8000-000000000001']::uuid[])))::text), false) \g /dev/null
 do $$
@@ -224,7 +266,9 @@ delete from public.qorpera_company_rooms where profile_id = '70300000-0000-4000-
 delete from public.qorpera_shared_sessions where profile_id = '70300000-0000-4000-8000-000000000010';
 delete from public.qorpera_profile_staff where profile_id = '70300000-0000-4000-8000-000000000010';
 set session_replication_role = origin;
--- With triggers on, so the object mirror (qorpera_profile_objects) goes too.
+-- With triggers on: version-2 objects are catalog rows of the object gateway (no Storage mirror), so they go by
+-- hand, with their proofs and chunk rows; any Storage object takes its mirror row with it.
+delete from public.qorpera_profile_objects where profile_id = '70300000-0000-4000-8000-000000000010';
 delete from storage.objects where bucket_id = 'qorpera-profile-objects' and name like '70300000-0000-4000-8000-000000000010/%';
 delete from public.qorpera_profiles where id = '70300000-0000-4000-8000-000000000010';
 delete from auth.users where id in ('70300000-0000-4000-8000-000000000001','70300000-0000-4000-8000-000000000002');
@@ -233,6 +277,8 @@ begin
 	if exists (select 1 from public.qorpera_company_files where environment_id = '70300000-0000-4000-8000-000000000020')
 		or exists (select 1 from public.qorpera_profile_staff where profile_id = '70300000-0000-4000-8000-000000000010')
 		or exists (select 1 from storage.objects where name like '70300000-0000-4000-8000-000000000010/%')
-		or exists (select 1 from public.qorpera_profile_objects where profile_id = '70300000-0000-4000-8000-000000000010') then
+		or exists (select 1 from public.qorpera_profile_objects where profile_id = '70300000-0000-4000-8000-000000000010')
+		or exists (select 1 from public.qorpera_folder_upload_intents where profile_id = '70300000-0000-4000-8000-000000000010')
+		or exists (select 1 from public.qorpera_verified_company_file_objects where profile_id = '70300000-0000-4000-8000-000000000010') then
 		raise exception 'The race fixture must be removed'; end if;
 end $$;

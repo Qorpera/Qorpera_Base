@@ -11,12 +11,13 @@ credentials and no product role. Agents' test machines (#419) are a separate pro
 | --- | --- |
 | VM | `qorpera-testvm-node02` in LXD project `testmachines` |
 | Size | 6 vCPU, 16 GiB RAM, 150 GiB root disk on pool `qorpera-vm`. Sized for PR #326's physical acceptance (6+ CPUs, 16 GiB, KVM). Setup records whether `/dev/kvm` is present |
-| Image | Ubuntu 26.04 server, then Docker Engine (rootful), Node 24.21.0 (pinned checksum), Git, build tools, Python, LXD 6.9 rev 40424 for nested tests. The pinned PostgreSQL image of `scripts/test-hosted-db.mjs` and `node:24-bookworm-slim` are pre-pulled. Stopped containers, dangling images and build cache older than a week are pruned weekly |
+| Image | Ubuntu 26.04 server, then [`guest-setup.sh`](guest-setup.sh): Docker Engine (rootful), Node 24.21.0 (pinned checksum), Git, build tools, Python, bubblewrap, LXD 6.9 rev 40424 for nested tests. The pinned PostgreSQL image of `scripts/test-hosted-db.mjs`, `node:24-bookworm-slim` and `node:22-bookworm-slim` (the runtime office probes, as in CI) are pre-pulled. Stopped containers, dangling images and build cache older than a week are pruned weekly |
 | Self-update | `apt-daily*` and `unattended-upgrades` are masked, as for coding images (`deploy/coding-worker/COMMAND-GUEST.md`), and every snap is held |
 | Network | Bridge `testmach0` (10.201.0.1/24, NAT, no IPv6), VM at 10.201.0.2 with MAC/IP filtering and port isolation |
 | Egress | ACL `testmach-egress`: the internet only. Rejected: 10/8 except the bridge's own /24, 172.16/12, 192.168/16 (LAN and NAS), 100.64/10 (Tailscale), 169.254/16, 127/8, 0/8, 192.0.0/24, 198.18/15, 224/4 and all IPv6. The node itself (the gateway) is rejected on every TCP and UDP port except DNS and DHCP; ICMP to it is not blocked. LXD applies reject rules before allow rules, so the rejects are written to leave the needed holes rather than relying on allow rules |
 | Ingress | Only SSH from the node (10.201.0.1). Developer sessions jump through the node's normal SSH login |
 | Login | User `tester` (docker and passwordless sudo inside the VM), key only. Root login and passwords are off |
+| Runner users | `ci01` to `ci16`, same rights as `tester`. Each run takes a free one for its whole duration (below) |
 
 ## Node accounting
 
@@ -36,18 +37,55 @@ does not change the digest.
 ## Running a suite
 
 ```sh
+node scripts/run-on-node.mjs changed
+node scripts/run-on-node.mjs test
 node scripts/run-on-node.mjs hosted-db
 node scripts/run-on-node.mjs --env QORPERA_OFFICE_TEST_IMAGE=node:24-bookworm-slim scripts/test-office-storage-inventory-linux.mjs
 node scripts/run-on-node.mjs --no-install -- docker run --rm hello-world
 node scripts/run-on-node.mjs --dry-run npm:test:scripts
 ```
 
+`changed` is the everyday check: it runs what the files changed against `origin/master` (or `--base REF`)
+need, and prints what it chose and why. The steps and the paths that start them are in
+[`scripts/run-on-node-plan.mjs`](../../scripts/run-on-node-plan.mjs). They replace the switched-off GitHub
+workflows and run at least what those ran for the same change:
+
+- documentation alone: nothing;
+- any other change: lint, the root and member-web typechecks, and the repository checks (pinned dependencies,
+  imports, cloud boundaries, connector catalog, runtime bundle);
+- any change that is not web-only: also all runtime and cloud-client tests and all script tests (packaging and
+  installer pins included), as the old release train did;
+- on top, by path: the web client (with its release build), member-web, object-gateway, runner-orchestrator,
+  Supabase functions, node deploy tests, deploy shell syntax, hosted-db with its PostgreSQL scripts;
+- shared configuration (`package.json`, the lockfile, `tsconfig`, `vitest.base.ts`, `biome.json`,
+  `packages/contracts`, `packages/company`) and any path no rule knows: every step.
+
+A moved file counts at both paths. Every step runs even when an earlier one fails. The full `test` suite is
+for release candidates.
+
 The wrapper copies the working tree git sees: tracked and untracked files that are not ignored,
 uncommitted changes included, `node_modules` and `.git` left out. It copies them to a fresh
 directory on the VM, and only changed files cross the network (rsync `--copy-dest` against a
 per-worktree copy). It runs `npm ci --ignore-scripts` there (skipped for `hosted-db`, which needs
-no packages), streams the output, and exits with the suite's exit code. The run directory is
-deleted afterwards (`--keep` keeps it). At the start of every run, runs older than a day (by the UTC time
+no packages), streams the output, and exits with the suite's exit code. The `test` suite is the whole
+repository's `npm test`; it first runs `npm run build:web-sdk`, because the script tests import the built
+`@qorpera/contracts` (`--build` does the same for any suite).
+
+Each run takes one of the runner users `ci01` to `ci16`, under a lock held until the run ends, and hands
+it the run directory; install and suite run as that user. Kernel limits per user then count one run
+only. This matters: the coding Git sandbox runs under `prlimit --nproc=512`, and RLIMIT_NPROC counts
+every task of the user on the machine. When all runs shared `tester`, a few parallel sessions pushed it
+past 512 and bubblewrap failed with "Creating new namespace failed: Resource temporarily unavailable".
+When all 16 are busy, a run waits (up to an hour).
+
+At most three runs execute at once, and each runs vitest with `VITEST_MAX_WORKERS` = vCPUs / 3 (2 on
+6 vCPUs, 4 on 12; a `--env VITEST_MAX_WORKERS=n` on the command wins), so the three slots together use the
+machine's vCPUs. The record notes the load and the uncapped test processes (older clients) at start. A full
+`npm test` is about 881 CPU-seconds; on 2026-09-29 two full runs plus other sessions drove the load to 22
+and timing-bound tests failed that pass on a quiet machine. Later runs wait in arrival order and print
+their queue position; the record notes the slot and the time spent queued. Each runner user keeps its own npm cache, so
+`npm ci` takes about 30 s the first time and 5-6 s after that. The run directory is
+deleted afterwards (`--keep` keeps it; it then belongs to the runner user, so use sudo inside it). At the start of every run, runs older than a day (by the UTC time
 in their name), worktree copies unused for 14 days and hosted-db containers older than 6 hours are removed.
 Untracked files that look like credentials (`.env`, `.env.*`, `*.env`, `.envrc`, `.npmrc`, `.netrc`, `.pgpass`,
 `.git-credentials`, `.aws/credentials`, `*.pem`, `*.key`, `*.p12`, `*.tfvars`, `id_*` without an extension,
@@ -55,15 +93,62 @@ Untracked files that look like credentials (`.env`, `.env.*`, `*.env`, `.envrc`,
 
 The last line is a JSON record: host, OS, kernel, Node, npm, Docker and Git versions, KVM, source
 commit and a digest of exactly the files copied, command, copy, preparation and elapsed time, and the
-result (`passed`, `failed`, or `setup-failed` when `npm ci` failed). This
+result (`passed`, `failed`, `setup-failed` when `npm ci`, the build or the harness failed, or `unknown`
+when the status could not be read back), the runner user, the slot and time queued, and for `changed` the
+plan and its base. This
 is the record contract 24.4 asks for. `--record FILE` also writes it to a file.
 
-Several sessions can run at once. Each run has its own directory, and the hosted-db harness
-names its containers per process.
+Several sessions can use the machine at once. Each run has its own directory and runner user, and the
+hosted-db harness names its containers per process.
+
+### Results on the PR
+
+A plain run of a named suite (`changed`, `test`, `hosted-db`, `npm:…`, `scripts/….mjs`) on a clean commit that a
+pushed branch contains posts its result as the GitHub commit status `qorpera-ci/<suite>` on that commit:
+`pending` while it runs, then `success`, `failure` (the suite, or its `npm ci` or build; a `changed` run names
+its failed steps) or `error` (the harness never reached a result, or the run was interrupted). The PR shows it
+as a check. The statuses API uses no Actions minutes.
+
+Nothing is posted, and the run says why, for: uncommitted or untracked changes; a commit on no pushed branch;
+ad-hoc `-- command` runs; suite arguments, `--env`, `--sudo` or an install/build override (a narrowed run cannot
+speak for the suite); `changed` with a `--base` other than `origin/master` (a later base can make its plan
+empty), or on a commit master already contains (nothing changed: run `test` instead); a target set through
+`QORPERA_TEST_MACHINE*`; `--no-status`. If the working tree changes while it is copied, the run posts `error` instead of a
+result. A failed post never changes the run's exit code.
+
+The statuses are advisory: the repository's plan has no branch protection, so merging cannot require them,
+and anyone with write access can post a `qorpera-ci/…` state.
 
 Access needs the key `~/.ssh/id_ed25519_qorpera_testvm` and SSH to `company41-node-02`.
 Override the target with `QORPERA_TEST_MACHINE`, `QORPERA_TEST_MACHINE_JUMP` and
 `QORPERA_TEST_MACHINE_KEY`.
+
+## The systemd suites
+
+The `scripts/*-systemd.mjs` suites boot systemd as PID 1 in a disposable container and take a
+digest-pinned local image in `QORPERA_OFFICE_SYSTEMD_TEST_IMAGE`: Ubuntu 26.04 with systemd, its Node 22
+package and the executables the office image installer measures. The test machine keeps one as
+`qorpera-systemd-test:local`; look up its ID and pass that. Build it only when the tag is missing
+(about 90 s cold). Every build gets a new ID, even fully cached, and Docker's containerd image store
+here deletes the image a moved tag pointed to, so another session's run that still uses the old ID
+fails with "No such image" (happened 2026-09-28). After a Dockerfile change, build under a new tag
+such as `qorpera-systemd-test:<commit>` and pass that ID.
+
+```sh
+node scripts/run-on-node.mjs --no-install -- docker image inspect --format '{{.Id}}' qorpera-systemd-test:local
+node scripts/run-on-node.mjs --no-install -- sh -c 'docker build -q -t qorpera-systemd-test:local - < scripts/fixtures/systemd-test-image.Dockerfile'
+node scripts/run-on-node.mjs --env QORPERA_OFFICE_SYSTEMD_TEST_IMAGE=sha256:<id> scripts/test-office-image-installation-systemd.mjs
+node scripts/run-on-node.mjs --env QORPERA_OFFICE_SYSTEMD_TEST_IMAGE=sha256:<id> scripts/test-office-service-stop-systemd.mjs -- --restart
+```
+
+The same Dockerfile builds on Docker Desktop. On a Linux Docker host the suites differ from Docker
+Desktop in four ways, all handled in the scripts: the containers run without AppArmor (the trade-off
+is in `scripts/fixtures/systemd-container.mjs`), the fixture sees the host's AppArmor as disabled because
+the container cannot load profiles, staged packages are chowned to root because a copy keeps the
+invoking user's owner, and the observer and office provider fixtures reset their package folder's mode,
+which follows the host umask (Ubuntu's user default is 0002). Without AppArmor, root in these
+containers can change the host kernel's settings: run them here or on a developer's Docker, never on
+a node that hosts companies.
 
 ## Proof (2026-09-28, VM enrolled at node 2 version 23)
 
@@ -74,9 +159,4 @@ Override the target with `QORPERA_TEST_MACHINE`, `QORPERA_TEST_MACHINE_JUMP` and
 | `test-office-storage-inventory-linux.mjs` | Passed. `npm ci` 30 s with a cold cache, suite 1.1 s |
 | Docker | Rootful Docker 29.8.1 runs `hello-world` as `tester` |
 | Nested KVM | `/dev/kvm` present, all 6 vCPUs show `svm`, `kvm_amd` loaded, `KVM_GET_API_VERSION` 12 and `KVM_CREATE_VM` succeed (the check from `deploy/first-node/verify-azure-step2-pilot-kvm.sh`). A 1 vCPU / 1 GiB Ubuntu 26.04 VM inside it answers `lxc exec` 25.8 s after launch; `systemctl is-system-running --wait` returns at 32.3 s |
-
-**Known limit: the `scripts/*-systemd.mjs` suites.** They remount `/sys/fs/cgroup` read-write to boot
-systemd in a container. Docker's default AppArmor profile on Ubuntu refuses that mount ("cgroup is
-write-protected"), so as written they fail here and on any Ubuntu Docker host. They have only run on
-Docker Desktop, which has no AppArmor. The same container with `--security-opt apparmor=unconfined`
-boots systemd in under a second. They also need prepared, digest-pinned local images.
+| `scripts/*-systemd.mjs` | On master 65472c537 the office image suite stopped with "Disposable systemd manager did not start". At f9fc107f9 with images built as above, all six suites pass, plus `QORPERA_OFFICE_FIXTURE_LAYOUT_VERSION=2`, `--later-boot`, `--restart` and `test-runtime-office-start.mjs --boot-successor-systemd`. Suites 10 to 82 s, three runs at a time. At dc327a4ca the office image and observer suites also passed on Docker Desktop (arm64) with the same Dockerfile |

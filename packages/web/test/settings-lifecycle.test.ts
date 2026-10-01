@@ -48,12 +48,13 @@ async function setup(f = fixture()) {
 	await draw();
 	return { ...f, root };
 }
-/** The SDK RPCs Settings made, besides General's rules list (its only one until Connections opens). */
+/** The SDK RPCs Settings made, besides General's rules list (its only one until Company connections opens) and
+ * an open conversation's read of its machines for the header (Settings never reads that one). */
 function sdkRpcs(f: { cloud: Cloud }): string[] {
 	return vi
 		.mocked(f.cloud.rpc)
 		.mock.calls.map(([name]) => name)
-		.filter((name) => name !== "qorpera_list_review_rules");
+		.filter((name) => name !== "qorpera_list_review_rules" && name !== "qorpera_list_session_machines");
 }
 function click(root: Element, selector: string) {
 	root.querySelector<HTMLButtonElement>(selector)!.click();
@@ -337,7 +338,7 @@ describe("settings session lifecycle", () => {
 		open(f.root);
 		expect(f.root.querySelector<HTMLElement>(".settings-back")!.hidden).toBe(true);
 	});
-	it("opens all six tabs over the same conversation and restores the profile button", async () => {
+	it("opens all seven tabs over the same conversation and restores the profile button", async () => {
 		const f = await setup(),
 			composer = f.root.querySelector<HTMLTextAreaElement>("textarea")!;
 		composer.value = "Keep my conversation draft";
@@ -350,7 +351,9 @@ describe("settings session lifecycle", () => {
 			"Company",
 			"Friends",
 			"Plan & usage",
-			"Connections",
+			"Machines",
+			"My connections",
+			"Company connections",
 		]);
 		for (const tab of f.root.querySelectorAll('[role="tab"]')) expect(tab.querySelector("svg.icon")).not.toBeNull();
 		// Rules live on General, under the account's settings, for the chosen company.
@@ -437,6 +440,47 @@ describe("settings session lifecycle", () => {
 		const shown = [...f.root.querySelectorAll<HTMLElement>('[role="tab"]')].filter((tab) => !tab.hidden);
 		expect(shown.map((tab) => tab.id)).toEqual(["settings-tab-company", "settings-tab-friends"]);
 		expect(f.root.querySelector("#settings-tab-company")?.getAttribute("aria-selected")).toBe("true");
+	});
+	it("finds the member's own logins and the company's services on their own tabs", async () => {
+		const f = await setup();
+		open(f.root);
+		await draw();
+		const search = f.root.querySelector<HTMLInputElement>(".settings-nav input")!;
+		const shown = (words: string) => {
+			search.value = words;
+			search.dispatchEvent(new Event("input"));
+			return [...f.root.querySelectorAll<HTMLElement>('[role="tab"]')]
+				.filter((tab) => !tab.hidden)
+				.map((tab) => tab.id);
+		};
+		expect(shown("connections")).toEqual(["settings-tab-my-connections", "settings-tab-company-connections"]);
+		// The Danish word finds both too: the labels are English, so the keywords carry it.
+		expect(shown("forbindelser")).toEqual(["settings-tab-my-connections", "settings-tab-company-connections"]);
+		expect(shown("chatgpt")).toEqual(["settings-tab-my-connections"]);
+		expect(shown("claude")).toEqual(["settings-tab-my-connections"]);
+		expect(shown("github")).toEqual(["settings-tab-company-connections"]);
+		expect(shown("gmail")).toEqual(["settings-tab-company-connections"]);
+	});
+	it("brings a service sign-in back to Company connections", async () => {
+		sessionStorage.setItem(
+			"qorpera.connector-sign-in.v1",
+			JSON.stringify({
+				ticketId: id(61),
+				connectorId: "github",
+				companyId: profileA.profileId,
+				serviceOrigin: "https://broker.fixture.invalid",
+				browserProof: "a".repeat(43),
+				startedAt: Date.now(),
+			}),
+		);
+		history.replaceState(null, "", `/#/c/${profileA.profileId}?connector=github&connection=failed&reason=declined`);
+		const f = await setup();
+		await draw();
+		expect(f.root.querySelector("#settings-tab-company-connections")?.getAttribute("aria-selected")).toBe("true");
+		expect(f.root.querySelector("#settings-content h1")?.textContent).toBe("Company connections");
+		expect(f.root.querySelector('#settings-content .service-card[data-connector="github"]')?.textContent).toContain(
+			"GitHub was not connected. The sign-in was cancelled before access was granted.",
+		);
 	});
 	it("accepts a company invitation from the Friends tab and opens that company", async () => {
 		const fixtureState = fixture();
@@ -1360,19 +1404,30 @@ describe("settings session lifecycle", () => {
 		expect(f.root.querySelector(".settings-overlay")).toBeNull();
 		expect(sdkRpcs(f)).toEqual([]);
 	});
-	it.each(["connections"])("keeps the focused %s control through an unrelated company refresh", async (tab) => {
+	it.each([
+		["my-connections", ".connection-section-heading button", []],
+		["company-connections", ".service-card button:not(:disabled)", ["qorpera_list_cloud_secret_connections"]],
+	])("keeps the focused %s control through an unrelated company refresh", async (tab, selector, rpcs) => {
 		const f = await setup();
 		open(f.root);
 		click(f.root, `#settings-tab-${tab}`);
 		await draw();
-		const control = f.root.querySelector<HTMLElement>("#settings-content")!;
+		const content = f.root.querySelector<HTMLElement>("#settings-content")!;
+		const panel = content.firstElementChild;
+		const control = content.querySelector<HTMLElement>(selector)!;
 		control.focus();
+		const key = control.dataset.focusKey;
+		expect(key).toBeTruthy();
 		f.hints.get("qorpera_profile_access_state")!();
 		await draw();
-		expect(control.isConnected).toBe(true);
-		expect(document.activeElement).toBe(control);
+		// The page is not rebuilt; a list that redraws itself hands the focus to the same control.
+		expect(content.firstElementChild).toBe(panel);
+		expect(content.contains(document.activeElement)).toBe(true);
+		expect((document.activeElement as HTMLElement).dataset.focusKey).toBe(key);
+		// Opened alone, each tab reads only its own list: My connections never reads the services.
+		expect(sdkRpcs(f)).toEqual(rpcs);
 	});
-	it("only reads member account state on Connections", async () => {
+	it("reads only the member's own accounts on My connections, and only the company's on Company connections", async () => {
 		// Isolate Settings reads from an open conversation's quota polling.
 		// The Team route keeps the same company authority without a composer.
 		history.replaceState(null, "", `/#/c/${profileA.profileId}/team`);
@@ -1384,20 +1439,37 @@ describe("settings session lifecycle", () => {
 			throw new Error("Unexpected request in the settings read-only fixture");
 		});
 		vi.stubGlobal("fetch", fetch);
+		const memberReads = () => fetch.mock.calls.filter(([url]) => String(url) === connectionsUrl);
 		open(f.root);
-		click(f.root, "#settings-tab-connections");
+		const content = f.root.querySelector<HTMLElement>("#settings-content")!;
+
+		click(f.root, "#settings-tab-company-connections");
 		await draw();
-		const cards = [...f.root.querySelectorAll<HTMLElement>("#settings-content .connection-card")];
-		expect(cards).toHaveLength(0);
-		expect(f.root.querySelector<HTMLButtonElement>("#settings-content .connection-add")!.disabled).toBe(true);
-		expect(f.root.querySelector<HTMLElement>("#settings-content .connection-provider-picker")!.hidden).toBe(true);
+		expect(content.querySelector("h1")?.textContent).toBe("Company connections");
+		expect(content.querySelector(".settings-lead")?.textContent).toBe(
+			"The company's own accounts. Every agent can use them, and they stay when someone leaves.",
+		);
 		// The Services section lists the Step 7 connectors with their own Connect buttons.
-		expect(f.root.querySelectorAll("#settings-content .service-card")).toHaveLength(3);
+		expect(content.querySelectorAll(".service-card")).toHaveLength(3);
+		expect(content.querySelector(".connection-card, .connection-add")).toBeNull();
 		await vi.advanceTimersByTimeAsync(60_000);
-		// Model accounts never go through the SDK RPC path; the services list is the only RPC.
+		// The services list is this tab's only read; the member's own accounts are not read for it.
 		expect(sdkRpcs(f)).toEqual(["qorpera_list_cloud_secret_connections"]);
-		expect(fetch.mock.calls.filter(([url]) => String(url) === connectionsUrl)).toEqual([
-			[connectionsUrl, expect.objectContaining({ method: "POST" })],
-		]);
+		expect(memberReads()).toEqual([]);
+
+		click(f.root, "#settings-tab-my-connections");
+		await draw();
+		expect(content.querySelector("h1")?.textContent).toBe("My connections");
+		expect(content.querySelector(".settings-lead")?.textContent).toBe(
+			"Your own AI subscriptions. They pay for the work you start, including your routines, and they leave with you.",
+		);
+		expect(content.querySelectorAll(".connection-card")).toHaveLength(0);
+		expect(content.querySelector<HTMLButtonElement>(".connection-add")!.disabled).toBe(true);
+		expect(content.querySelector<HTMLElement>(".connection-provider-picker")!.hidden).toBe(true);
+		expect(content.querySelector(".service-card")).toBeNull();
+		await vi.advanceTimersByTimeAsync(60_000);
+		// Model accounts never go through the SDK RPC path, and the services are not read again.
+		expect(sdkRpcs(f)).toEqual(["qorpera_list_cloud_secret_connections"]);
+		expect(memberReads()).toEqual([[connectionsUrl, expect.objectContaining({ method: "POST" })]]);
 	});
 });

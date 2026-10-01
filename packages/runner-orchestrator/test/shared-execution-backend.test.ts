@@ -142,6 +142,8 @@ interface Fixture {
 	provisioned: number;
 	activations: Map<string, string>;
 	clock: { now: number };
+	/** Runner ids the control plane reports as ended; undefined: a database without the check. */
+	endedRunners?: string[];
 }
 
 async function fixture(
@@ -250,6 +252,10 @@ async function fixture(
 			const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
 			state.rpc.push({ name, body });
 			if (name === "qorpera_compute_identity_login_in_vault") return Response.json(state.loginInVault);
+			if (name === "qorpera_runtime_ended_runners")
+				return state.endedRunners === undefined
+					? Response.json({ code: "PGRST202" }, { status: 404 })
+					: Response.json((body.p_runner_ids as string[]).filter((id) => state.endedRunners?.includes(id)));
 			if (name === "qorpera_provision_execution_runner") {
 				// The control plane binds the client runner id to its first activation
 				// secret: a second, different secret for the same id is refused.
@@ -771,6 +777,41 @@ describe("shared execution provider backend", () => {
 		});
 		expect(f.rpc.filter((call) => call.name === "qorpera_release_runtime_machine")).toHaveLength(1);
 		expect(await liveJournalNames(f)).toEqual([]);
+	});
+
+	it("retires a sandbox whose runner still waits two minutes after its job ended", async () => {
+		// 29 Sep 2026 (company deletion): an unknown assign or delivery keeps the runner up for a
+		// replay, but an ended job is never replayed; the runner waited on its inbox forever.
+		const f = await fixture();
+		const signal = new AbortController().signal;
+		await f.backend.acquire(runId, work(), signal);
+		f.endedRunners = [];
+		const asked = () => f.rpc.filter((call) => call.name === "qorpera_runtime_ended_runners");
+		await f.backend.reconcile(signal);
+		expect(asked()).toHaveLength(0);
+		// Waiting two minutes, its job going on: asked, and the sandbox stays; asked again only a minute later.
+		f.clock.now += 2 * 60_000 + 1_000;
+		await f.backend.reconcile(signal);
+		await f.backend.reconcile(signal);
+		expect(asked().map((call) => call.body)).toEqual([{ p_runner_ids: [runnerId] }]);
+		expect(await journal(f)).toMatchObject({ physicalState: "registered" });
+		// Its job ended: the next check retires the sandbox and releases its allocation.
+		f.endedRunners = [runnerId];
+		f.clock.now += 60_000;
+		await f.backend.reconcile(signal);
+		expect(await journal(f)).toMatchObject({ physicalState: "stopped" });
+		expect(f.units.log).toContain("stop qorpera-shared-runner@0.service");
+		expect(f.rpc.filter((call) => call.name === "qorpera_release_runtime_machine")).toHaveLength(1);
+	});
+
+	it("keeps waiting sandboxes when the database has no ended-runner check yet", async () => {
+		const f = await fixture();
+		const signal = new AbortController().signal;
+		await f.backend.acquire(runId, work(), signal);
+		f.clock.now += 10 * 60_000;
+		await f.backend.reconcile(signal);
+		expect(f.rpc.filter((call) => call.name === "qorpera_runtime_ended_runners")).toHaveLength(1);
+		expect(await journal(f)).toMatchObject({ physicalState: "registered" });
 	});
 
 	it("gives a sandbox up as lost after repeated unconfirmed releases, keeping the reason in the archive", async () => {

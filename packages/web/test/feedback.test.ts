@@ -46,6 +46,13 @@ async function open() {
 		submit: dialog.querySelector<HTMLButtonElement>('[type="submit"]')!,
 	};
 }
+/** The SDK RPCs feedback made; an open conversation's read of its machines for the header is not one. */
+function feedbackRpcs(f: { cloud: { rpc: unknown } }): string[] {
+	return vi
+		.mocked(f.cloud.rpc as (name: string) => unknown)
+		.mock.calls.map(([name]) => name)
+		.filter((name) => name !== "qorpera_list_session_machines");
+}
 function fill(details: HTMLTextAreaElement, value = "The sidebar is clearer."): void {
 	details.value = value;
 	details.dispatchEvent(new Event("input"));
@@ -65,12 +72,12 @@ describe("profile feedback", () => {
 		f.root.querySelector<HTMLButtonElement>('[data-account-action="settings"]')!.click();
 		expect(f.root.querySelector(".settings-feedback")).toBeNull();
 		expect(f.root.querySelector(".settings-dialog")?.textContent).not.toContain("Share feedback");
-		// General's only RPC is the chosen company's rules list.
+		// General's only RPC is the chosen company's rules list (an open conversation reads its machines).
 		expect(
 			vi
 				.mocked(f.cloud.rpc)
 				.mock.calls.map(([name]) => name)
-				.filter((name) => name !== "qorpera_list_review_rules"),
+				.filter((name) => name !== "qorpera_list_review_rules" && name !== "qorpera_list_session_machines"),
 		).toEqual([]);
 	});
 	it("requires details, permits deselecting a category, and submits through the account feedback RPC only", async () => {
@@ -79,7 +86,7 @@ describe("profile feedback", () => {
 		fill(f.details, "   ");
 		expect(f.submit.disabled).toBe(true);
 		f.form.dispatchEvent(new Event("submit", { cancelable: true }));
-		expect(f.cloud.rpc).not.toHaveBeenCalled();
+		expect(feedbackRpcs(f)).toEqual([]);
 		const bug = f.dialog.querySelector<HTMLButtonElement>(".feedback-category")!;
 		bug.click();
 		expect(bug.getAttribute("aria-pressed")).toBe("true");
@@ -89,7 +96,8 @@ describe("profile feedback", () => {
 		vi.mocked(f.cloud.rpc).mockResolvedValue(undefined);
 		f.submit.click();
 		await settle();
-		expect(f.cloud.rpc).toHaveBeenCalledExactlyOnceWith("qorpera_submit_product_feedback", {
+		expect(feedbackRpcs(f)).toEqual(["qorpera_submit_product_feedback"]);
+		expect(f.cloud.rpc).toHaveBeenCalledWith("qorpera_submit_product_feedback", {
 			p_client_feedback_id: expect.any(String),
 			p_category: "other",
 			p_details: "A useful detail.",

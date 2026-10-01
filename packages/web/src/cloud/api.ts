@@ -134,6 +134,14 @@ export class CloudApi {
 		return readCompanyComputerHours(this.cloud, requiredUuid(profileId, "Profile id"));
 	}
 
+	/** Whether the company is out of computer hours, so new work waits until hours are added
+	 * (the zero rule; migration 20260928259280_company_waiting_for_hours). Any member may ask. */
+	companyWaitingForHours(profileId: string): Promise<boolean> {
+		return this.cloud
+			.rpc("qorpera_company_waiting_for_hours", { p_profile_id: requiredUuid(profileId, "Profile id") })
+			.then((value) => value === true);
+	}
+
 	/** The plans and packs of hours this member can buy. */
 	listComputerHourOffers(): Promise<ComputerHourOffer[]> {
 		return listComputerHourOffers(this.cloud);
@@ -465,14 +473,17 @@ export class CloudApi {
 
 	// Conversations
 
-	listSessions(environmentId: string, signal?: AbortSignal): Promise<HostedSession[]> {
+	/** Every conversation of the environment the member may read, least recently changed first;
+	 * with `since`, only those changed after it (the page's own updated_at, id cursor). */
+	listSessions(environmentId: string, signal?: AbortSignal, since?: PageCursor): Promise<HostedSession[]> {
 		return collectPages((cursor) => {
 			signal?.throwIfAborted();
+			const after = cursor ?? since;
 			return this.cloud
 				.rpc("qorpera_list_shared_sessions_page", {
 					p_environment_id: requiredUuid(environmentId, "Environment id"),
-					p_after_updated_at: cursor?.time ?? null,
-					p_after_id: cursor?.id ?? null,
+					p_after_updated_at: after?.time ?? null,
+					p_after_id: after?.id ?? null,
 					p_limit: 100,
 				})
 				.then(parseSessionPage);
@@ -510,6 +521,23 @@ export class CloudApi {
 			.rpc("qorpera_read_session_events", {
 				p_session_id: requiredUuid(sessionId, "Session id"),
 				p_after_sequence: afterSequence,
+				p_limit: limit,
+			})
+			.then(parseEvents);
+	}
+
+	/** The newest `limit` events of a transcript, or the newest before `beforeSequence`, oldest
+	 * first as readSessionEvents returns them (migration 20260928279410; a cloud without it
+	 * answers with a missing RPC). Same authorization as the forward read, which it runs. */
+	readSessionEventsTail(
+		sessionId: string,
+		beforeSequence: number | undefined,
+		limit: number,
+	): Promise<HostedSessionEvent[]> {
+		return this.cloud
+			.rpc("qorpera_read_session_events_tail", {
+				p_session_id: requiredUuid(sessionId, "Session id"),
+				p_before_sequence: beforeSequence ?? null,
 				p_limit: limit,
 			})
 			.then(parseEvents);
