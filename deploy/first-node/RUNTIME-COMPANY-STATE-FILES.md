@@ -788,7 +788,7 @@ of the body, for readers that should not reach the storage server.
   - So `targets` returns the company row at rank 0 (`keyshare`; C1b-3a moved it from the head of rank 2) with every
     roster row, and the room at rank 4 (`update`) for a rename, archive or retire, all before the
     paths. Test 701 races a rename and an instructions edit against posting.
-  - Since C1c-3c (migration 20260929690000, which patches `targets` in place): for an agent with no thread room yet
+  - Since C1c-3c (migration 20260928399690, which patches `targets` in place): for an agent with no thread room yet
     (a new agent, or one saved archived and now activated), `targets` also returns every member row at rank 1
     (`keyshare`). The room it creates copies the roster without a lock, so a member's removal or demotion (the member
     row `FOR UPDATE`) must run before or after that copy. A later rewrite of `targets` must keep this branch (test 665
@@ -1025,7 +1025,7 @@ C1d (bytes):
   that cannot be saved: the files the shared parser refuses (its problems), a first assignment over 4000 bytes (a
   todo's body; the schema counts characters), and an operation key reused in this run with other arguments.
 - Refused before the receipt (`REFUSED: …`): a call without the automatic review's approval (`actionReviewId`).
-- **Contract 14.1, the restricted hire** (migration 20260929940000): an agent that cannot delegate the new agent's
+- **Contract 14.1, the restricted hire** (migration 20260928399940): an agent that cannot delegate the new agent's
   default access (a current, nonexpiring read and write grant on every live shared root, the legacy hire's predicate,
   `qorpera_folder_agent_delegates_default`) hires only on an owner's or admin's answer. The review's layering asks the
   owners and admins on a card for its `hire_agent` call, whatever the reviewer found (a deny stays a deny; a denied
@@ -1176,7 +1176,7 @@ binding, from 708's `routine_run` and 647's `native`). Runtime: each action and 
 learns routine files as delegation, the routine read and the login preparation), the folder description and wiring,
 the own-routine refusals, and `decide_routine`'s rewrite.
 
-**Built (W4c-1): `manage_routine`** (`packages/runtime/src/cloud-folder-routines.ts`; migration 20260929990000), as
+**Built (W4c-1): `manage_routine`** (`packages/runtime/src/cloud-folder-routines.ts`; migration 20260928399960), as
 planned, with these choices made while building:
 - SQL: `qorpera_company_state_routine_resumes` and the four-argument `qorpera_company_state_routine_restarts`, patched
   into the rules and the index writer by exact anchors. `qorpera_folder_agent_routines` returns
