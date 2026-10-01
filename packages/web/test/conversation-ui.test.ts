@@ -1070,9 +1070,22 @@ describe("conversation UI boundaries", () => {
 		f.company.store.set({ activity: [run], recoveries: { [run.runId]: details("You have hit your usage limit.") } });
 		await settle();
 		expect(card()?.querySelector(".run-failure-reason")?.textContent).toBe(
-			"Your model account has reached its usage limit.",
+			"The model account paying for this work reached its usage limit, so the work stopped. It does not move to another account. It can run again once the limit resets.",
 		);
 		expect([...(card()?.querySelectorAll("button") ?? [])].map((item) => item.textContent)).toEqual(["Dismiss"]);
+		// A real usage limit: the bridge's refusal names only a spent budget; the cloud's usage-limit signal decides.
+		const bridge = "Native provider bridge request failed (422) [code=NATIVE_CODEX_TURN_COMPLETION:BUDGET_EXHAUSTED]";
+		f.company.store.set({ activity: [run], recoveries: { [run.runId]: { ...details(bridge), usageLimit: true } } });
+		await settle();
+		expect(card()?.querySelector(".run-failure-reason")?.textContent).toBe(
+			"The model account paying for this work reached its usage limit, so the work stopped. It does not move to another account. It can run again once the limit resets.",
+		);
+		expect([...(card()?.querySelectorAll("button") ?? [])].map((item) => item.textContent)).toEqual(["Dismiss"]);
+		f.company.store.set({ activity: [run], recoveries: { [run.runId]: details(bridge) } });
+		await settle();
+		expect(card()?.querySelector(".run-failure-reason")?.textContent).toBe(
+			"The run started, but one of its steps was refused. The problem is on Qorpera's side.",
+		);
 		f.company.store.set({
 			activity: [run],
 			recoveries: { [run.runId]: details("Runner lease expired before durable completion") },

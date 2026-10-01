@@ -17,15 +17,24 @@ export type RunFailureKind =
 	| "cancelled"
 	| "other";
 
-export function classifyRunFailure(lastError: string | undefined, jobStatus: "failed" | "cancelled"): RunFailureKind {
+export function classifyRunFailure(
+	lastError: string | undefined,
+	jobStatus: "failed" | "cancelled",
+	usageLimit?: boolean,
+): RunFailureKind {
 	// The company ran out of computer hours and its hour to finish running work ended: the one
 	// code that decides the class, since it names the company's hours, not Qorpera's machinery.
 	if ((lastError ?? "").includes("[code=COMPUTER_HOURS_EXHAUSTED]")) return "computer_hours";
+	// The cloud recorded a usage-limit signal for this run: the bridge's refusal it was saved with names only
+	// a spent budget, which a full context window shares. When the cloud says (true or false), it decides;
+	// only an older cloud, which says nothing, leaves it to the error text below.
+	if (usageLimit === true) return "usage_limit";
 	// Any other refused step carries the provider's fixed code (e.g. "[code=NATIVE_CREDENTIAL_SEALING:TIMEOUT]").
 	// It names Qorpera's own machinery, not a member's account or a time limit, so it
 	// never decides the class: the step stays "bridge", as it was before the code.
 	const error = (lastError ?? "").replace(/ \[code=[A-Z0-9_:]{1,85}\]/g, "");
-	if (/usage limit|quota|rate.?limit|insufficient|billing/i.test(error)) return "usage_limit";
+	// A rate limit is not a usage limit: it passes by itself (contract 17).
+	if (usageLimit === undefined && /usage limit|quota/i.test(error)) return "usage_limit";
 	if (/not signed in|sign.?in|unauthori[sz]ed|credential|token (is )?(expired|invalid)/i.test(error))
 		return "credential";
 	if (/dispatch failed|provider request failed|no computer could start/i.test(error)) return "dispatch";
@@ -44,7 +53,10 @@ export function classifyRunFailure(lastError: string | undefined, jobStatus: "fa
 
 const REASONS: Record<RunFailureKind, string> = {
 	computer_hours: phrase("The company is out of computer hours. New work starts again once hours are added."),
-	usage_limit: phrase("Your model account has reached its usage limit."),
+	// A usage limit stops the work: it never moves to another account (founder decision 2026-10-01).
+	usage_limit: phrase(
+		"The model account paying for this work reached its usage limit, so the work stopped. It does not move to another account. It can run again once the limit resets.",
+	),
 	credential: phrase("Your model account needs to be connected again."),
 	dispatch: phrase("No computer could be started for this run. The problem is on Qorpera's side."),
 	lost: phrase("The computer running this run stopped answering. The problem is on Qorpera's side."),
@@ -56,8 +68,12 @@ const REASONS: Record<RunFailureKind, string> = {
 };
 
 /** Why a run stopped, in the member's words. */
-export function runFailureReason(lastError: string | undefined, jobStatus: "failed" | "cancelled"): string {
-	return t(REASONS[classifyRunFailure(lastError, jobStatus)]);
+export function runFailureReason(
+	lastError: string | undefined,
+	jobStatus: "failed" | "cancelled",
+	usageLimit?: boolean,
+): string {
+	return t(REASONS[classifyRunFailure(lastError, jobStatus, usageLimit)]);
 }
 
 /** Whether the run was interrupted rather than refused: its computer stopped
@@ -65,8 +81,12 @@ export function runFailureReason(lastError: string | undefined, jobStatus: "fail
  * never got a computer. Those are worth trying again as they are.
  * A reached usage limit, a disconnected account or a company out of computer hours
  * need someone to act first, so their card offers Dismiss only and says what to do. */
-export function runFailureInterrupted(lastError: string | undefined, jobStatus: "failed" | "cancelled"): boolean {
-	const kind = classifyRunFailure(lastError, jobStatus);
+export function runFailureInterrupted(
+	lastError: string | undefined,
+	jobStatus: "failed" | "cancelled",
+	usageLimit?: boolean,
+): boolean {
+	const kind = classifyRunFailure(lastError, jobStatus, usageLimit);
 	return (
 		kind === "lost" || kind === "step_timeout" || kind === "timeout" || kind === "dispatch" || kind === "cancelled"
 	);
