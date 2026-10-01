@@ -102,6 +102,49 @@ envelope is capped at 8 KiB, with original byte count, hash and truncation.
 This can exceed 1,000 tokens and requires manual payload-budget review; it
 cannot exceed the upstream 10,000-token item ceiling under a byte-level bound.
 
+## Usage-limit codes (Sign in with ChatGPT)
+
+A ChatGPT plan's usage limit arrives as OpenAI's code
+`subscription_sharing_usage_limit_exceeded`: mid-stream as a `response.failed`
+event, or before the stream as an HTTP 429. Codex 0.155.1 maps only
+`insufficient_quota` (and a few spend-limit codes at 429) to its quota error:
+- mid-stream, it retried the request five times (about six seconds) and then
+  failed as `other`, so the host read a generic failure;
+- at a 429, it failed after one request as `responseTooManyFailedAttempts`; the
+  host already reads that as the usage limit on a plan run, but its category was
+  `provider_failed`.
+
+The patch adds that code to both places in `codex-api`:
+`sse/responses.rs`' `is_quota_exceeded_error` and `api_bridge.rs`' 429 code
+list. Both give `ApiError::QuotaExceeded` / `CodexErr::QuotaExceeded`, which is
+not retried and which the app-server reports as `codexErrorInfo:
+usageLimitExceeded` (`willRetry: false`). The host reads that as a usage limit
+(`budget_exhausted`, `usage_limit`): the run stops and is not moved to another
+login. Only a response carrying this exact code takes the new path; every other
+code, `insufficient_quota` included, is handled as before, so Codex logins are
+unchanged. Not covered: Codex 0.155.1 ignores a top-level `error` stream event,
+so a limit sent that way would still be retried. OpenAI documents the code for
+Sign in with ChatGPT; its live response shape cannot be checked before OpenAI
+approves the partner track, so the proof uses a synthetic provider.
+
+Proof for a build carrying this change:
+
+```sh
+# Rust: the two qorpera_* tests next to upstream's quota tests.
+cd /absolute/path/to/patched-checkout/codex-rs
+cargo test -p codex-api qorpera_
+# The host: a real native process against a synthetic provider that ends the
+# turn at the plan's limit, mid-stream and as a 429.
+cd /absolute/path/to/qorpera
+QORPERA_CODEX_FENCE_BINARY=/absolute/native/codex node node_modules/vitest/dist/cli.js \
+  --root packages/runtime --run test/patched-codex-boundary.test.ts
+```
+
+Every boundary case must still pass. Each of the two new cases must make one
+model request and fail at `codex-turn-completion` with `budget_exhausted` and
+`usage_limit`. Against the current pin, the mid-stream case makes six requests
+and fails without a usage signal, and the 429 case fails as `provider_failed`.
+
 ## Verification and rollout boundary
 
 Six native tests cover governed versus ordinary tool selection, exact-body
