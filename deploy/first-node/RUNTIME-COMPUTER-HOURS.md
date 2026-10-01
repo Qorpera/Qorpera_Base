@@ -636,7 +636,7 @@ Coordinator (nothing secret):
     by 6a, and keeps that machine awake (its time owed) and its session "running" until hours are
     added. The same happens with the switch on in the seconds between a company running out and
     the sweep recording it, if begin falls in them. A held run is not ended by the finishing window
-    (there is no job yet). Hence step 2b as soon as the executor allows. And when a deferred
+    (there is no job yet). Hence step 2b in the same minute as step 2. And when a deferred
     turn's 15-second retry meets the machine's sleep at the hour, the sleep may be refused once as
     "in use"; the next pass sleeps it.
 - Build step 6c part 3b (migration `20260928259270`, the finishing window for runs): one hour
@@ -729,9 +729,9 @@ Before the switch (all of these hold):
   the reason instead of waiting. The coding executor rollout (K1) was done on 2026-10-01: both
   nodes run `9fef1f70` with config v7 and coding image `ffae8371`, proven on a real session. So
   coding's own switch (6b part 4) can follow the zero rule in the same minute (step 2b). Part 1
-  alone is not
-  enough: the later 6b parts are required too: Company Computers (part 2, built; the web deployed
-  first), agents' machines (part 3, built) and coding (part 4, built, with its own switch).
+  alone is not enough: the later 6b parts are required too: Company Computers (part 2, built; the
+  web deployed first), agents' machines (part 3, built) and coding (part 4, built, with its own
+  switch).
 - Members see their hours left, by source, on Plan & usage from the switch on
   (contract items 5 and 12; "Plan & usage (web)" below): `hoursLeft` in the member hours read
   and the company card (migration `20260928259330`) are live first.
@@ -781,9 +781,13 @@ At the agreed minute, in this order:
    recorded by the next sweep.
 
    2b. In the same minute, the coordinator switches coding on. Its precondition holds since K1
-   (2026-10-01): both coding nodes run executor `9fef1f70`, whose `coding-executor.ts` defers a
-   turn whose begin answers `{"state":"refused","reason":"COMPUTER_HOURS_EXHAUSTED"}`. Check
-   first that no node was rolled back to `036e3617`:
+   (2026-10-01): every coding node runs executor `9fef1f70` (or a later build with 6b part 4),
+   whose `coding-executor.ts` defers a turn whose begin answers
+   `{"state":"refused","reason":"COMPUTER_HOURS_EXHAUSTED"}`. First check each node with
+   `systemctl show -p ExecStart --value qorpera-coding-executor`: it must name
+   `/opt/qorpera-coding-executor/9fef1f70…/` (or the later build), never `036e3617…`; otherwise
+   skip 2b. Then run `outputs/k1-coding-v7-v156/coding-switch.sql`, which sets the switch only when
+   the zero rule is on and prints the values before and after. It does the same as:
 
    ```sql
    update public.qorpera_computer_hour_billing set coding_zero_rule_since = clock_timestamp();
@@ -823,7 +827,7 @@ Rollback:
 
 - Stop holding work: `update public.qorpera_computer_hour_billing set zero_rule_since = null`
   (coding follows, since its switch needs the zero rule too). To go back to holding coding only at
-  the run's wake step (step 2b's "until then"):
+  the run's wake step (step 2b's "Without this step"):
   `update public.qorpera_computer_hour_billing set coding_zero_rule_since = null`.
   Held work is released at once (routines with the next sweep), and the next sweep empties the
   zero state. Companies at zero run again and owe what they use; "out of hours" is again sent by
