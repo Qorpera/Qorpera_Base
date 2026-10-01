@@ -73,7 +73,7 @@ declare
 begin
 	r := pg_temp.w1_list(ada);
 	if r ->> 'schema' <> 'qorpera.folder-agent-todos/v1' or (r ->> 'moreTodos')::int <> 0 or r -> 'nextCursor' <> 'null'::jsonb
-		or (select jsonb_agg(t ->> 'todoKey') from jsonb_array_elements(r -> 'todos') t) <> '["send-the-offer","call-the-bank"]'
+		or (select jsonb_agg(t ->> 'todoKey') from jsonb_array_elements(r -> 'todos') t) is distinct from '["send-the-offer","call-the-bank"]'
 		or r -> 'todos' -> 0 ->> 'state' <> 'blocked' or r -> 'todos' -> 0 ->> 'title' <> 'Send the offer'
 		or r -> 'todos' -> 0 ->> 'path' <> 'agents/ada/todos/send-the-offer.md'
 		or (r -> 'todos' -> 0 ->> 'version')::uuid is distinct from pg_temp.w1_version('agents/ada/todos/send-the-offer.md')
@@ -83,13 +83,13 @@ begin
 		raise exception 'The open page: %', r; end if;
 	-- Closed ones on request, by state, and by search in a title or a key, in any case.
 	if (select jsonb_agg(t ->> 'todoKey') from jsonb_array_elements(pg_temp.w1_list(ada, '{"includeClosed":true}') -> 'todos') t)
-			<> '["book-the-room","send-the-offer","call-the-bank"]'
+			is distinct from '["book-the-room","send-the-offer","call-the-bank"]'
 		or (select jsonb_agg(t ->> 'todoKey') from jsonb_array_elements(pg_temp.w1_list(ada, '{"state":"done"}') -> 'todos') t)
-			<> '["book-the-room"]'
+			is distinct from '["book-the-room"]'
 		or (select jsonb_agg(t ->> 'todoKey') from jsonb_array_elements(pg_temp.w1_list(ada, '{"search":"BANK"}') -> 'todos') t)
-			<> '["call-the-bank"]'
+			is distinct from '["call-the-bank"]'
 		or (select jsonb_agg(t ->> 'todoKey') from jsonb_array_elements(pg_temp.w1_list(ada, '{"search":"offer"}') -> 'todos') t)
-			<> '["send-the-offer"]' then
+			is distinct from '["send-the-offer"]' then
 		raise exception 'Filters'; end if;
 end $$;
 
@@ -114,7 +114,7 @@ begin
 		raise exception 'The next page: %', s; end if;
 	-- A search matches a key the title does not have.
 	if (select jsonb_agg(t ->> 'todoKey') from jsonb_array_elements(pg_temp.w1_list(ada, '{"search":"item-3"}') -> 'todos') t)
-			<> '["item-33","item-32","item-31","item-30","item-3"]' then
+			is distinct from '["item-33","item-32","item-31","item-30","item-3"]' then
 		raise exception 'A search by key'; end if;
 	-- Deleting a file retires its row (a tombstone key): it is listed no more, closed or not.
 	perform pg_temp.expect(pg_temp.commit(pg_temp.member(1), 'w1-todo-delete', jsonb_build_array(jsonb_build_object('op','delete',
