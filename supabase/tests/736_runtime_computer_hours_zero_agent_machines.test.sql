@@ -89,7 +89,7 @@ begin
 			where id = '30000000-0000-4000-8000-0000000007a1')
 		and (public.qorpera_company_machine_view(pg_temp.machine('build-a')) ->> 'commandsRunning')::int = 0
 		and exists (select 1 from public.qorpera_company_machine_events where kind = 'command'
-			and machine_id = (pg_temp.machine('build-a')).id),
+			and command_id = '30000000-0000-4000-8000-0000000007a1'),
 		'Its open command ends as lost, and the run that asked is told when it may run again');
 	perform pg_temp.wake_assert(public.qorpera_company_machine_view(pg_temp.machine('big')) ->> 'state' = 'waiting'
 		and public.qorpera_company_machine_view(pg_temp.machine('big')) ->> 'waitingFor' = 'COMPUTER_HOURS_EXHAUSTED'
