@@ -177,7 +177,10 @@ function pass(target, label) {
 }
 
 async function verifyDatabase(database, target) {
-	const fairAdmission = sql(database, "select strpos(pg_get_functiondef('public.qorpera_drain_company_file_wakes(integer)'::regprocedure),'exception when lock_not_available')>0;") === "t";
+	// Fair admission lives in the drain's body, which Order 8 (2026-09-19) moved behind a lifecycle wrapper.
+	const fairAdmission = sql(database, `select coalesce(bool_or(strpos(pg_get_functiondef(p.oid),'exception when lock_not_available')>0),false)
+ from pg_proc p join pg_namespace n on n.oid=p.pronamespace where n.nspname='public'
+ and p.proname in ('qorpera_drain_company_file_wakes','qorpera_drain_company_file_wakes_before_lifecycle');`) === "t";
 	target.status = "running";
 	const recovery = `${database}_recovery`;
 	console.log(`Verifying component contracts, concurrency and recovery against ${database}`);
