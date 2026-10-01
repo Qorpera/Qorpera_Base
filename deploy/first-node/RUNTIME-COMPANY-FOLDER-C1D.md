@@ -299,8 +299,9 @@ runtime adapter, with no migration.
 
 ## 9. C1d-2, garbage collection
 
-Core §8 sets the rules (G1–G4) and the six race tests. This section is the design that meets them. The inventory of
-today's GC behind it is in `~/work/qorpera-folder-core-tools/reports/c1d2-gc-inventory.md` (2026-10-01).
+Core §8 sets the rules (G1–G4) and the six race tests. This section is the design that meets them; review round 1
+(#605) shaped it. The inventory of today's GC behind it is in `~/work/qorpera-folder-core-tools/reports/
+c1d2-gc-inventory.md` (2026-10-01).
 
 ### 9.1 What there is to collect today
 
@@ -308,48 +309,77 @@ today's GC behind it is in `~/work/qorpera-folder-core-tools/reports/c1d2-gc-inv
   both C2. So a committed file's manifest is always rooted, and so are its chunks.
 - **What can lose every root today:** objects staged under an upload intent that was never committed (abandoned or
   refused uploads, the losing side of a conflict). Their intent expires, and nothing else names them.
-- **Later roots and their ends come with C2:** proposals and review cards, conflict copies on receipts, retention
-  holds, erasure. C2 adds them to the one root check (§9.3), and erasure records when its objects lost their roots
-  (§9.4).
-- **Today's company GC never claims a folder-v2 company's objects** (the patch at 20260928120000:224-237). That stays.
-  Folder GC is its own lane, and it takes no company fence.
+- **Objects with no intent history are kept** (a leak, not a loss): objects a company held before it was enabled, and
+  anything a future non-folder writer adds. They get no GC row (§9.4).
+- **Later roots come with C2:** proposals and review cards, conflict copies on receipts, retention holds, erasure. C2
+  adds them to the one root check (§9.3) under the rules of §9.4.
+- **Today's company GC never claims a folder-v2 company's objects** (the patch at 20260928120000:221-234; artifact GC
+  at :236-251 retains everything for folder-v2, and a folder-v2 company is enabled untouched, so it has no artifacts).
+  That stays. Folder GC is its own lane, and it takes no company fence.
+- **Order of landing:** #573, then #594 (the 2 s budget; digest guards are taken after it), then C1d-2a, then C1d-2b.
 
 ### 9.2 The GC state: one side table
 
 - `qorpera_folder_object_gc(profile_id, sha256, unreferenced_since, lease_id, lease_expires_at)`. The key is
-  `(profile_id, sha256)`, and an FK to the catalog row cascades on delete. Only folder-v2 objects get a row.
+  `(profile_id, sha256)`. An FK to the catalog row cascades on delete, and an FK to `qorpera_profiles` cascades the
+  purge (test 715 §7 then needs no exception); its check takes KEY SHARE on the profile row, which core §9 allows, and
+  so waits at most the 2 s budget behind a fence or a purge. Only folder-v2 objects get a row.
 - **A row with a live lease is the `deleting` mark** (G2, G3). A mark whose lease expired counts as no mark: no
-  reference refuses it, and GC can't finish with it (§9.6).
+  reference refuses it, and GC can't finish with it (§9.8).
 - **Why a side table, and not columns on `qorpera_profile_objects`:** the catalog is shared with snapshot-v1 and is
   hot. A side table leaves it and its triggers alone. GC state is operational, not company data.
+- **Which companies:** only a profile whose every environment is folder-v2 and that isn't being deleted
+  (`qorpera_company_deletions`). A profile with a snapshot-v1 environment beside a folder-v2 one is never swept or
+  claimed: its snapshot-v1 roots are invisible here, as today's GC skips the whole profile. The deleted-company GC
+  collects a purged company's objects, and folder GC never claims a company being deleted, so the two lanes never
+  meet.
 
-### 9.3 The roots: one function
+### 9.3 The roots: one function, per company
 
-`qorpera_folder_object_rooted(profile, environment, sha256)` says whether anything still names the object. It is
-used by the claim, the finish and the sweep, and C2 extends it. An object is rooted when it is:
-- the manifest or file hash of a live entry or of any path version of the company's environment (indexes exist on
-  both manifests);
-- an object of a live upload intent (`open` or `sealed`, `expires_at` in the future); or
-- a chunk of a rooted manifest (`qorpera_folder_file_chunks`, read from the chunk side).
+`qorpera_folder_object_rooted(profile, sha256)` says whether anything still names the object. It is used by the
+sweep, the claim and the finish, and C2 extends it. It looks at **every** folder-v2 environment of the profile (a
+company may have several: test 761 enables a second). An object is rooted when it is:
+- the manifest of a live entry or of any path version in any of those environments (indexed by
+  `(environment_id, manifest_sha256)`);
+- an object of an upload intent still in the table whose `expires_at` is after `now() - grace`. So an expired intent
+  the sweep hasn't reached yet still protects its objects for the whole grace window (G4 holds even when the sweep
+  falls behind); or
+- a chunk of a rooted manifest, through `qorpera_folder_file_chunks`, read from the chunk side.
+
+The chunk index must be complete for every proof version. Today only seal writes it, for version 2, while version-1
+proofs are still accepted until C5 and the folder fixtures stage version 1. So C1d-2a adds a folder-v2 line to
+`qorpera_verify_company_path_file` that writes the chunk rows of a version-1 proof, and backfills them for existing
+folder-v2 proofs. The file-hash check is then not needed. Manifests of manifests (core §7) will need a recursive step
+here; that comes with them.
+
+**The catalog of a folder-v2 company holds only folder objects.** Every other feature that stores bytes refuses
+folder-v2 before it writes: native and office uploads (the C1c-1 guard, 20260928259430:79-80), session attachments
+(the path-gateway check), the member whole-tree lane and bootstrap. Any feature that later stores bytes for a
+folder-v2 company (C3 and C4: chat images, screenshots, mail attachments, checkpoints) must add its root here first.
+C1d-2a pins this with a test that no table outside the folder core references a folder-v2 profile's catalog rows. A
+23503 at finish (a RESTRICT reference) is answered `restore`.
 
 ### 9.4 When an object lost its roots (G4)
 
 - **Today only intents end, and they end by time.** So `unreferenced_since` is the latest expiry of the intents that
   listed the object.
-- **The intent sweep records it** (§9.5). It looks at each object of each intent it removes. If nothing else roots
-  the object, it upserts the side row with `unreferenced_since = greatest(existing, intent.expires_at)`.
+- **The intent sweep records it** (§9.5). For each object of an intent it removes that nothing else roots, it upserts
+  the side row with `unreferenced_since = greatest(existing, intent.expires_at)`.
+- **The general rule, for C2 too:** every root that ends upserts side rows, with `greatest(existing, end)`, for its
+  manifests and their chunk closures that nothing else roots. Erasure's end is `now()`.
 - **Reuse moves the clock forward without a write in any hot path.** A later intent naming the object roots it while
-  it lives; when that intent is swept, `greatest` moves the time to its expiry.
-- **Erasure (C2) sets `now()`** for the objects it un-roots.
+  it lives and through grace (§9.3); when that intent is swept, `greatest` moves the time to its expiry.
 - **The grace window is 24 hours from that time**, as for today's GC, but measured from the last reference, not from
-  `created_at`.
+  `created_at`. The finish checks it again.
+- Abandoned uploads count toward the soft quota until collected, about 26 hours (C4's usage view can say so).
 
 ### 9.5 Step 1: sweep expired intents
 
-- `qorpera_folder_sweep_upload_intents(limit)` takes intents past `expires_at` plus 1 hour, oldest first, and skips
-  any another transaction holds (`for update skip locked`).
-- For each one it records §9.4 for its objects that nothing else roots, then deletes the intent (its object rows
-  cascade).
+- `qorpera_folder_sweep_upload_intents(limit)` takes intents past `expires_at` plus 1 hour, oldest first, through a
+  new index on `expires_at`. It skips any another transaction holds (`for update skip locked`).
+- **One intent per subtransaction**, so a lock timeout on one (the 2 s budget) aborts only that one.
+- For each intent it records §9.4 for its objects that nothing else roots (the root check leaving out the intent
+  being swept), then deletes the intent (its object rows cascade).
 - **What it frees:** objects confirmed under an intent that was never sealed or committed have catalog rows, so they
   become candidates.
 - **What it doesn't free:** bytes put to the NAS whose confirm never ran have no catalog row. Those are §9.9.
@@ -358,102 +388,143 @@ used by the claim, the finish and the sweep, and C2 extends it. An object is roo
 
 - `qorpera_folder_claim_object_gc(limit, lease)` takes side rows past grace, with no mark or an expired one.
 - **Locks:**
-  - each object's catalog row `FOR UPDATE SKIP LOCKED`, in `(profile_id, sha256 collate "C")` order;
-  - so a busy object is skipped for now, and readers holding KEY SHARE never starve it (C1d §9 note);
+  - each object's catalog row **and its side row** `FOR UPDATE SKIP LOCKED` (`for update of o, s`), in
+    `(profile_id, sha256 collate "C")` order;
+  - so a busy object is skipped for now, readers holding KEY SHARE never starve it, two workers never claim the same
+    object, and the claim can't deadlock with the sweep, which takes the side row only through its upsert;
   - no profile row, fence, `company_files`, job or run.
 - **The re-check** runs in its own statement after the lock: `qorpera_folder_object_rooted`. A rooted object loses
   its side row; it is in use again.
-- **The mark:** the rest get the lease (`lease_id`, `lease_expires_at = now() + 10 minutes`), committed before any
-  unlink.
+- **The mark** is `update … set lease_id, lease_expires_at = clock_timestamp() + 10 minutes where the lease is free
+  … returning`, committed before any unlink.
 - **It returns** `{profile_id, sha256, bytes, backend, lease_id}` for each marked object.
 - The batch is small, so the transaction that holds the rows is short. References that meet a held row wait at most
-  their 2 s budget (20260929780000) and come back `contended`.
+  their 2 s budget (#594) and come back `contended`.
 
 ### 9.7 References refuse a marked object (G1)
 
-Every place that takes a new reference already holds the object's catalog row KEY SHARE. Each now also reads the side
-row, and a live mark refuses:
+The places that take a new reference with a lock hold the object's catalog row KEY SHARE. Each reads the side row
+**in a new statement after the KEY SHARE is granted**: a check inside the locking statement reads that statement's
+snapshot, taken before the claim committed (probe A of review round 1), and would miss the mark. A live mark refuses:
 
 | Place | Today | With a live mark |
 | --- | --- | --- |
-| `open_upload`, present objects | KEY SHARE | 40001 "being collected; retry", so the runtime reads `contended` and puts again later |
-| `confirm_object` | insert, then KEY SHARE | 40001, the same |
+| `open_upload`, present objects | KEY SHARE | 40001 "being collected; retry", so the runtime reads `contended` |
+| `confirm_object` | insert, then KEY SHARE | 40001; a row that vanished between the two is 40001 too, not 23505 |
 | `seal_upload` | KEY SHARE on its objects | 40001 |
 | commit step 6 | KEY SHARE on every object | the unit is refused `bytes_unverified`, as for a missing object |
-| `authorize_object_upload` | plain reads | 40001 before the NAS write (the gateway's 409), so no bytes land over a quarantine |
-| `authorize_replication` | NO KEY UPDATE | 40001, a lock conflict: with #573 the gateway keeps the object pending (503, never `blocked`), and once GC has finished, nothing is left to replicate |
-| `authorize_object_download` | plain reads | answered as missing |
+| `authorize_replication` (and the Storage replica-insert guard that calls it) | NO KEY UPDATE | 40001: a lock conflict; with #573 the gateway keeps the object pending (503, never `blocked`). A wait on the claim's lock ends as 55P03 under the budget |
 
-- Since the claim marks under `FOR UPDATE`, a reference either holds KEY SHARE first (the claim skips the object) or
-  comes after the mark is committed (and sees it).
-- **Once GC has finished**, the catalog row is gone, and a new upload of the hash is an ordinary absent object. It
-  is staged and put again.
+Two places take no lock, and are safe by roots, not by the mark:
+- **`authorize_object_upload`** (plain reads) answers 40001 for a live mark, but can pass just before the mark
+  commits, and its put can land after the quarantine rename. That is harmless: the upload's intent was committed by
+  `open` before any put, so it is a root, and the finish answers `restore`.
+- **`authorize_object_download`** answers a marked object as missing. A non-platform download is allowed only for an
+  object an entry or path version roots, and those are never collected.
+
+Since the claim marks under `FOR UPDATE`, a locking reference either holds KEY SHARE first (the claim skips the
+object) or is granted it after the mark is committed (and sees it in its next statement). Once GC has finished, the
+catalog row is gone, and a new upload of the hash is an ordinary absent object, staged and put again.
+
+**Amendment to core G3, for F1's sign-off.** G3 says `put` asks the catalog first and an upload of a marked hash
+waits. Here, `store.put` is unchanged and the upload is refused (40001, `contended`) instead of waiting. This holds
+because every route that writes into a folder-v2 company's NAS path refuses folder-v2 before its put (the list in
+§9.3), and replication puts bytes back from Storage only after `authorize_replication`, which sees the mark. C1d-2a
+tests that each such route refuses folder-v2. A refused writer redoes its call; the collision needs an object
+unreferenced for a day being uploaded again within the minutes GC holds it.
 
 ### 9.8 Step 3: unlink through quarantine (G2, G3)
 
 The worker calls a new gateway lane, `DELETE /v1/folder-gc/<profileId>/<sha256>`, with the control token and the
-lease. The gateway:
+lease. For one object, the lane and the recovery scan run under the same per-object lock (`journal.exclusive` on the
+object's key), so they never race. The gateway:
 
 1. **Begin.** `qorpera_folder_gc_unlink_begin(profile, sha, lease)` checks that the mark is live and its lease is
-   this one, and extends the lease once.
+   this one, and sets `lease_expires_at = greatest(lease_expires_at, clock_timestamp() + 10 minutes)` (a repeat begin
+   is the same).
 2. **Quarantine.** Rename the NAS file to `<root>/.quarantine/<profileId>/<sha256>.<leaseId>` and fsync both
    directories. A file that isn't there skips this step.
-3. **Finish.** `qorpera_folder_gc_unlink_finish(profile, sha, lease)` locks the catalog row `FOR UPDATE` (under the
-   2 s budget; a timeout is retried later) and checks that the lease is still this one and not expired. Then, in a new
-   statement, it re-checks the roots:
-   - **rooted:** clear the side row and answer `restore`;
+3. **Remove the Storage replica, while the mark is live.** No new replica can be written meanwhile (the replica guard
+   refuses a marked object). Removing it after the finish could delete a fresh upload's only replica, since
+   `writeReplica` treats "already there" as success.
+4. **Finish.** `qorpera_folder_gc_unlink_finish(profile, sha, lease)` locks the catalog row and the side row
+   `FOR UPDATE` (under the 2 s budget). It checks, with `clock_timestamp()` after the wait, that the lease is still
+   this one and live, and that `unreferenced_since` is still past grace. Then, in a new statement, it re-checks the
+   roots:
+   - **rooted, or a 23503 on delete:** clear the side row's mark and answer `restore`;
    - **otherwise:** delete the catalog row and answer `removed`. Proofs, the chunk index and the side row cascade,
      and the usage row is the last lock, through the catalog trigger.
-4. **Then:**
-   - `restore`: rename the file back.
-   - `removed`: delete the Storage replica, then unlink the quarantine file.
-   - A lease that is no longer current: rename back, and report a stale lease.
+5. **Then:**
+   - `removed`: unlink the quarantine file, and drop any folder journal entry for the key.
+   - `restore`: rename the file back (fsync both directories), and write a `replicate` journal entry so the reconcile
+     copies the replica again.
+   - A stale lease or any finish error: ask the state (below) instead of renaming back unconditionally.
 
-- **The quarantine directory is this lane's journal.** No replication-journal entry is written, so no `deleted`
-  tombstone builds up against the journal's 10,000-record limit.
-- **On start, and on each reconcile**, the gateway asks `qorpera_folder_gc_quarantine_state(profile, sha)` about each
-  quarantined file:
-  - a catalog row is there: rename it back;
-  - no row: remove the Storage replica, then unlink.
-- **G3 without a snapshot-v1 change.** Folder GC touches only folder-v2 companies' paths, `<root>/<profileId>/...`.
-  So the folder route's authorize (§9.7), not a new catalog check in the shared `store.put`, keeps a put off a
-  marked hash. Snapshot-v1 routes and their GC are unchanged.
+`qorpera_folder_gc_quarantine_state(profile, sha, lease)` answers one of:
+- `live`: the lease is current, so a lane is in flight; leave the file;
+- `restore`: a catalog row exists; rename back and replicate again;
+- `remove`: no row; unlink, and remove any replica.
 
-### 9.9 Bytes without a catalog row
+The gateway asks it on start, on each reconcile for each quarantined file, and on the lane's error paths. **The
+quarantine directory is this lane's journal.** No `deleted` tombstone is written, so nothing builds up against the
+journal's 10,000-record limit.
+
+**G3 without a snapshot-v1 change.** Folder GC touches only folder-v2 companies' paths, `<root>/<profileId>/...`,
+and §9.7's amendment keeps a put off a marked hash. Snapshot-v1 routes and their GC are unchanged.
+
+### 9.9 Bytes without a catalog row (C1d-2c)
 
 - **What they are:** a NAS put whose confirm never ran. Its journal entry then ends `blocked`, because folder
   replication refuses a missing row.
-- **The fix, kept for C1d-2c, after the lane above:** the gateway's reconcile drops a `blocked` folder entry whose
-  object has had no catalog row for the grace window, removes its NAS file and Storage replica, and so stops
-  reporting degraded for it.
-- **A deleted company's leftover NAS directory** stays with the deleted-company sweep of §9's earlier note: the
-  deleted-profile GC removes what the catalog lists, and a sweep of `<root>/<companyId>/` removes the rest once the
-  company is gone.
+- **The fix, after the lane above:** the reconcile, inside `journal.exclusive(key)`, re-checks the catalog. When the
+  object has had no row for the grace window, it removes its NAS file and Storage replica and drops the entry, so the
+  gateway stops reporting degraded for it. The lock and the re-check keep it off an upload between its put and its
+  confirm.
+- **Pending entries of collected objects** (`unconfirmed`, `replicate`, `blocked` for a key the lane removed) are
+  dropped the same way.
+- **A deleted company's leftovers:** the deleted-profile GC removes what the catalog lists. A sweep of
+  `<root>/<companyId>/` and `<root>/.quarantine/<companyId>/` removes the rest once the company is gone. The
+  deleted-company lane's `deleted` tombstones for folder-v2 objects are dropped there too.
 
 ### 9.10 The worker
 
-- The `artifact-gc-worker` Edge Function gets a folder phase after the company phase:
-  1. sweep (100);
-  2. claim (100, a new lease);
-  3. call the gateway lane per object, in order;
-  4. release the lease on any error, so the marks expire.
+- The `artifact-gc-worker` Edge Function gets a folder phase with its **own try/catch**, independent of the other
+  phases' early returns:
+  1. sweep (a small batch);
+  2. claim (a small batch, a new lease);
+  3. call the gateway lane per object, in order, stopping for this run when the gateway answers its NAS lanes are
+     busy (503), so GC never crowds out live traffic;
+  4. on any error, leave the marks to expire.
 - The worker isn't deployed yet (RUNTIME-COMPANY-DELETE.md). Deploying it stays the coordinator's step.
 - No folder-v2 company exists before C1c-3, so the phase is inert until then.
 
 ### 9.11 Split and tests
 
 - **C1d-2a, SQL.** One migration:
-  - the side table;
-  - `qorpera_folder_object_rooted`, the sweep, the claim, unlink begin and finish, and quarantine state;
-  - the G1 refusals of §9.7, patched into the live functions with digest guards;
+  - the side table and the `expires_at` index;
+  - `qorpera_folder_object_rooted`, the sweep, the claim, unlink begin and finish, and the quarantine state;
+  - chunk rows for version-1 proofs of folder-v2 companies, and their backfill;
+  - the G1 refusals of §9.7, patched into the live functions with digest guards (taken after #594);
   - the 2 s lock budget on every new function.
-  - Tests: the sweep and §9.4; the claim's re-check, skip-locked and lease expiry; each refusal of §9.7; finish
-    (removed, restore, stale lease); the lock text (no fence, no `company_files`, no job); and core §8's six races
-    with dblink (a read racing GC, an upload racing GC, the reuse of an old chunk, a re-check that finds a root, a
-    restore of an old version; erasure waits for C2).
+  - Tests:
+    - the sweep and §9.4, including a sweep that falls behind;
+    - the claim's re-check, skip-locked, two claims at once, and lease expiry;
+    - each refusal of §9.7, with the one-statement check as a negative test;
+    - finish: removed, restore, a stale lease, grace moved, 23503;
+    - the two-environment company of 761: a file committed in one environment, its hash in an abandoned intent of
+      the other, is never collected;
+    - a committed version-1 file whose chunk an abandoned version-2 intent listed is never collected;
+    - a mixed snapshot-v1 and folder-v2 profile, and a company being deleted, are never claimed;
+    - no table outside the folder core references a folder-v2 profile's catalog rows, and each non-folder writer
+      refuses folder-v2;
+    - the lock text (no fence, no `company_files`, no job);
+    - core §8's races with dblink: a read racing GC, an upload racing GC, the reuse of an old chunk, a re-check that
+      finds a root, a restore of an old version. Erasure waits for C2.
 - **C1d-2b, gateway and worker:**
-  - the `/v1/folder-gc` lane with quarantine and recovery;
-  - the folder route's 409 on a marked hash;
-  - the worker's folder phase;
-  - TS tests: crash between each step, restore, a stale lease, Storage replica removal, and recovery on start.
-- **C1d-2c:** the bytes without a catalog row (§9.9).
+  - the `/v1/folder-gc` lane with quarantine, replica removal under the mark, and the three-answer recovery;
+  - the folder phase of the worker;
+  - TS tests: a crash between each step, restore with re-replication, a stale lease, a put racing the rename, the
+    scan against a live lane, two lanes on one object, a re-upload while the replica is removed, and the replication
+    worker putting bytes back during quarantine.
+- **C1d-2c:** the bytes without a catalog row, pending entries of collected objects, and the deleted company's
+  leftovers (§9.9).
