@@ -94,6 +94,10 @@ export const CONVERSATION: Record<string, string> = {
 	Review: "Gennemgå",
 	"Trying again…": "Prøver igen…",
 	Dismiss: "Skjul",
+	"ChatGPT · Usage limit reached. Review your plan or this app's limit in ChatGPT settings.":
+		"ChatGPT · Forbrugsgrænsen er nået. Gennemse dit abonnement eller denne apps grænse i ChatGPT-indstillingerne.",
+	"Manage usage": "Administrer forbrug",
+	"The workspace is kept; a follow-up continues it.": "Arbejdsområdet er gemt; en opfølgning fortsætter den.",
 	"The model account paying for this work reached its usage limit, so the work stopped. It does not move to another account. It can run again once the limit resets.":
 		"Modelkontoen, der betaler for dette arbejde, har nået sin forbrugsgrænse, så arbejdet er stoppet. Det flyttes ikke til en anden konto. Det kan køre igen, når grænsen er nulstillet.",
 	"Your model account needs to be connected again.": "Din modelkonto skal forbindes igen.",

@@ -38,7 +38,7 @@ import { matchesKey } from "./keys.ts";
 import { markdownBubbles } from "./markdown.ts";
 import { t } from "./preferences.ts";
 import { quietScroll } from "./quiet-scroll.ts";
-import { codingFailureReason } from "./run-failure.ts";
+import { codingFailureReason, manageUsageLink } from "./run-failure.ts";
 import { uiScale } from "./scale.ts";
 
 export const HARNESS_NAMES: Record<CodingHarness, string> = { codex: "Codex", "claude-code": "Claude Code" };
@@ -206,6 +206,10 @@ function text(value: JsonValue, ...keys: string[]): string | undefined {
 		if (typeof found === "string" && found.trim()) return found;
 	}
 	return undefined;
+}
+
+function flag(value: JsonValue, key: string): boolean {
+	return typeof value === "object" && value !== null && !Array.isArray(value) && value[key] === true;
 }
 
 function options(value: JsonValue): string[] {
@@ -865,15 +869,25 @@ export class CodingSessionElement {
 					);
 					break;
 				}
-				case "failed":
+				case "failed": {
+					// A turn the kernel says stopped at a usage limit (20260929993000); the owner's own plan gets
+					// OpenAI's words and "Manage usage".
+					const limit = {
+						usageLimit: flag(event.body, "usageLimit"),
+						paidByChatgptPlan: flag(event.body, "paidByChatgptPlan"),
+						mine: this.#options.viewerOwns(this.#session),
+					};
 					note(
 						h(
 							"div",
 							{ class: "conversation-note coding-note coding-row-error", role: "note" },
-							codingFailureReason(text(event.body, "reason", "summary")),
+							codingFailureReason(text(event.body, "reason", "summary"), limit),
+							limit.usageLimit && limit.paidByChatgptPlan && limit.mine ? " " : null,
+							limit.usageLimit && limit.paidByChatgptPlan && limit.mine ? manageUsageLink() : null,
 						),
 					);
 					break;
+				}
 				default:
 					break;
 			}

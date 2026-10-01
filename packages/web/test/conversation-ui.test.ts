@@ -1081,6 +1081,34 @@ describe("conversation UI boundaries", () => {
 			"The model account paying for this work reached its usage limit, so the work stopped. It does not move to another account. It can run again once the limit resets.",
 		);
 		expect([...(card()?.querySelectorAll("button") ?? [])].map((item) => item.textContent)).toEqual(["Dismiss"]);
+		// The member's own ChatGPT plan reached its limit: OpenAI's words and "Manage usage" (20260929993000).
+		const plan = { ...details(bridge), usageLimit: true, paidByChatgptPlan: true };
+		f.company.store.set({
+			activity: [run],
+			recoveries: { [run.runId]: { ...plan, requestedByUserId: f.company.userId.toLowerCase() } },
+		});
+		await settle();
+		expect(card()?.querySelector(".run-failure-reason")?.textContent).toBe(
+			"ChatGPT · Usage limit reached. Review your plan or this app's limit in ChatGPT settings.",
+		);
+		const manage = card()?.querySelector<HTMLAnchorElement>('[data-action="manage-usage"]');
+		expect([manage?.textContent, manage?.href, manage?.target, manage?.rel]).toEqual([
+			"Manage usage",
+			"https://chatgpt.com/settings/usage",
+			"_blank",
+			"noopener noreferrer",
+		]);
+		expect([...(card()?.querySelectorAll("button") ?? [])].map((item) => item.textContent)).toEqual(["Dismiss"]);
+		// Another member's plan: the plain sentence, no link to someone else's settings.
+		f.company.store.set({
+			activity: [run],
+			recoveries: { [run.runId]: { ...plan, requestedByUserId: "11111111-1111-4111-8111-999999999999" } },
+		});
+		await settle();
+		expect(card()?.querySelector(".run-failure-reason")?.textContent).toBe(
+			"The model account paying for this work reached its usage limit, so the work stopped. It does not move to another account. It can run again once the limit resets.",
+		);
+		expect(card()?.querySelector('[data-action="manage-usage"]')).toBeNull();
 		f.company.store.set({ activity: [run], recoveries: { [run.runId]: details(bridge) } });
 		await settle();
 		expect(card()?.querySelector(".run-failure-reason")?.textContent).toBe(
