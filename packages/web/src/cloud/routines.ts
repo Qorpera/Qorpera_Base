@@ -8,6 +8,10 @@ import {
 } from "@qorpera/cloud-client/cloud-routines";
 import type { Cloud } from "./client.ts";
 import { planLogin, type WebMemberConnection } from "./native-subscription.ts";
+
+/** A ChatGPT plan never pays for a file-change or webhook routine (the kernel refuses it too). */
+const LISTENER_ON_PLAN = "A ChatGPT plan can't pay for routines that start on a file change or a webhook.";
+
 import type { HostedProfile } from "./types.ts";
 
 export interface WebRoutineDraft {
@@ -82,7 +86,7 @@ export function createWebRoutines(
 			// A ChatGPT plan works while its member is away only once they turned that on in Settings;
 			// saving a routine never turns it on for them.
 			if ((account as WebMemberConnection).allowAutonomous !== true)
-				throw new Error("Turn on work while you're away for this ChatGPT plan in Settings first.");
+				throw new Error("Turn on “Work while you're away” for this ChatGPT plan in Settings first.");
 			version = account.connectionVersion;
 		} else {
 			const consent = record(
@@ -117,6 +121,8 @@ export function createWebRoutines(
 		list: () => client.list(profile.environmentId, signal),
 		runs: () => client.occurrences(profile.environmentId, signal, 200),
 		async save(draft, account, saveId) {
+			if (draft.trigger.kind === "listener" && planLogin(account as WebMemberConnection))
+				throw new Error(LISTENER_ON_PLAN);
 			const authority = await sponsor(account);
 			await client.save(
 				{
@@ -156,6 +162,8 @@ export function createWebRoutines(
 				await write({ sponsorBindingId: routine.sponsorBindingId, sponsorVersion: routine.sponsorVersion });
 			} catch (error) {
 				if (!account) throw error;
+				if (planLogin(account as WebMemberConnection) && routine.triggers.some((item) => item.kind === "listener"))
+					throw new Error(LISTENER_ON_PLAN);
 				await write(await sponsor(account));
 			}
 		},

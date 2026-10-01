@@ -272,9 +272,10 @@ export const SETTINGS: Record<string, string> = {
 	"The ChatGPT sign-in could not be started. Try again.": "ChatGPT-login kunne ikke startes. Prøv igen.",
 	"ChatGPT plan": "ChatGPT-abonnement",
 	"Work while you're away": "Arbejd, mens du er væk",
-	"Your agents may use this plan for routines while you're away. Webhook and file routines never use it.":
-		"Dine agenter må bruge abonnementet til rutiner, mens du er væk. Rutiner, der starter på en webhook eller en fil, bruger det aldrig.",
-	"Work while you're away could not be changed. Try again.": "Arbejd, mens du er væk kunne ikke ændres. Prøv igen.",
+	"Your agents may use this plan for routines while you're away. Routines that start on a webhook or a file change never use it.":
+		"Dine agenter må bruge abonnementet til rutiner, mens du er væk. Rutiner, der starter på en webhook eller en filændring, bruger det aldrig.",
+	"“Work while you're away” could not be changed. Try again.":
+		"“Arbejd, mens du er væk” kunne ikke ændres. Prøv igen.",
 	"{minutes}m": "{minutes} min",
 	"{hours}h {minutes}m": "{hours} t {minutes} min",
 	"{days}d {hours}h": "{days} d {hours} t",

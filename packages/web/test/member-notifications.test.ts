@@ -181,6 +181,7 @@ describe("company notices member read", () => {
 			{ ...routineNotice("routine_needs_model_account", 100), subject: null },
 			{ ...routineNotice("routine_needs_model_account", 100), subject: { routineId: id(71), title: "x" } },
 			{ ...routineNotice("routine_suspended", 101), profile_id: id(99) },
+			{ ...routineNotice("routine_suspended", 101), schema: "qorpera.member-notification/v2" },
 		]) {
 			f = setup();
 			f.fetch.mockResolvedValueOnce(Response.json([bad, full]));

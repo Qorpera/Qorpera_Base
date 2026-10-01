@@ -152,7 +152,7 @@ export class ExecutionNotices {
 			}
 			this.#offer = undefined;
 		} catch {
-			if (!signal.aborted) this.#offerError = t("Work while you're away could not be turned on. Try again.");
+			if (!signal.aborted) this.#offerError = t("“Work while you're away” could not be turned on. Try again.");
 		} finally {
 			if (!signal.aborted) {
 				this.#acking = false;
@@ -299,7 +299,7 @@ export class ExecutionNotices {
 						? t("{count} routines can run while you're away.", { count: offer.items.length })
 						: t("{title} can run while you're away.", { title: first.subject.title }),
 					" ",
-					t("Turn on work while you're away so your ChatGPT plan can run it."),
+					t("Turn on “Work while you're away” so your ChatGPT plan can run it."),
 					this.#offerError ? " " : null,
 					this.#offerError ? h("span", { role: "alert" }, this.#offerError) : null,
 				),

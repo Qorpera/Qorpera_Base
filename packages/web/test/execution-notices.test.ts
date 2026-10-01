@@ -384,7 +384,7 @@ describe("a ChatGPT plan's first-routine card (shown only to a member with a pla
 		await settle();
 		expect(f.view.el.hidden).toBe(false);
 		expect(f.view.el.querySelector(".company-notice p")?.textContent).toBe(
-			"Morning brief can run while you're away. Turn on work while you're away so your ChatGPT plan can run it.",
+			"Morning brief can run while you're away. Turn on “Work while you're away” so your ChatGPT plan can run it.",
 		);
 		expect(f.plan.native.recordRoutineOffer).toHaveBeenCalledExactlyOnceWith(id(85), expect.any(AbortSignal));
 		// The card stands in this window after the showing is recorded.
@@ -419,7 +419,7 @@ describe("a ChatGPT plan's first-routine card (shown only to a member with a pla
 		f.plan.native.setWorkWhileAway.mockRejectedValueOnce(new Error("offline"));
 		action("turn-on-plan").click();
 		await settle();
-		expect(f.view.el.textContent).toContain("Work while you're away could not be turned on. Try again.");
+		expect(f.view.el.textContent).toContain("“Work while you're away” could not be turned on. Try again.");
 		expect(f.client.acknowledgeNotification).not.toHaveBeenCalled();
 		expect(action("turn-on-plan")).toBeTruthy();
 	});

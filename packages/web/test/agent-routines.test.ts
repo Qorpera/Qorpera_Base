@@ -1102,10 +1102,14 @@ describe("routines on a ChatGPT plan (shown only when the member has one)", () =
 		const picker = f.view.el.querySelector<HTMLSelectElement>('[aria-label="Model account"]')!;
 		expect(picker.selectedOptions[0]!.textContent).toBe("ChatGPT plan · member@example.invalid");
 		expect(f.view.el.textContent).toContain(
-			"Turn on work while you're away for this ChatGPT plan in Settings first.",
+			"Turn on “Work while you're away” for this ChatGPT plan in Settings first.",
 		);
 		click(f.view.el, "Save routine");
 		await settle();
+		// The editor's own refusal, on its status line (the note says the same).
+		expect([...f.view.el.querySelectorAll("p.surface-status")].map((item) => item.textContent)).toContain(
+			"Turn on “Work while you're away” for this ChatGPT plan in Settings first.",
+		);
 		expect(f.calls).toEqual([]);
 		f.stop.abort();
 	});
@@ -1156,6 +1160,84 @@ describe("routines on a ChatGPT plan (shown only when the member has one)", () =
 		);
 		expect(f.calls).toEqual([]);
 		f.stop.abort();
+	});
+	/** The cloud over the real routines client, with the first routine write refused (the routine's
+	 * own payer is not the member's), so the switch falls back to an account. */
+	function fallbackRoutines() {
+		const calls: string[] = [];
+		let upserts = 0;
+		const cloud = {
+			rpc: vi.fn(async (name: string, args: Record<string, unknown> = {}) => {
+				calls.push(name);
+				if (name === "qorpera_consent_provider_connection_autonomous")
+					return { connection_id: args.p_connection_id, allow_autonomous: true, version: 9 };
+				if (name === "qorpera_create_member_execution_sponsor")
+					return { binding_id: "10000000-0000-4000-8000-000000000005", version: 1 };
+				if (name !== "qorpera_upsert_cloud_routine") throw new Error(`Unexpected call ${name}`);
+				upserts += 1;
+				if (upserts === 1) throw new Error("not your payer");
+				return {
+					routine_id: "10000000-0000-4000-8000-000000000002",
+					client_routine_id: args.p_client_routine_id,
+					version: 2,
+					status: "active",
+				};
+			}),
+		} as unknown as Cloud;
+		return { calls, routines: createWebRoutines(cloud, profileA, new AbortController().signal, () => {}) };
+	}
+	const fileRoutine = () =>
+		routine({
+			triggers: [
+				parseCloudRoutineTrigger({
+					id: "agent",
+					kind: "listener",
+					source: "company-file",
+					path: "finance/invoices",
+					match: "subtree",
+					timeZone: "Europe/Copenhagen",
+					replyPolicy: "optional",
+				}),
+			],
+		});
+	it("never consents a plan on the switch's fallback, and never binds one for a file routine", async () => {
+		let f = fallbackRoutines();
+		await expect(f.routines.setEnabled(routine(), plan(false), true, crypto.randomUUID())).rejects.toThrow(
+			"Turn on “Work while you're away”",
+		);
+		expect(f.calls).toEqual(["qorpera_upsert_cloud_routine"]);
+		f = fallbackRoutines();
+		await expect(f.routines.setEnabled(fileRoutine(), plan(true), true, crypto.randomUUID())).rejects.toThrow(
+			"can't pay for routines that start on a file change",
+		);
+		expect(f.calls).toEqual(["qorpera_upsert_cloud_routine"]);
+		// A Codex login falls back as before: consent, bind, save.
+		f = fallbackRoutines();
+		await f.routines.setEnabled(routine(), account, true, crypto.randomUUID());
+		expect(f.calls).toEqual([
+			"qorpera_upsert_cloud_routine",
+			"qorpera_consent_provider_connection_autonomous",
+			"qorpera_create_member_execution_sponsor",
+			"qorpera_upsert_cloud_routine",
+		]);
+	});
+	it("pauses or resumes on an account that can pay: past a plan for a file routine, and says so with only a plan", async () => {
+		const both = mount([fileRoutine()], true, [plan(true), account]);
+		await settle();
+		click(both.view.el, "Morning brief");
+		await settle();
+		expect(both.routines.setEnabled).toHaveBeenCalledWith(expect.anything(), account, false, expect.any(String));
+		both.stop.abort();
+		document.body.replaceChildren();
+		const only = mount([routine()], true, [plan(false)]);
+		await settle();
+		click(only.view.el, "Morning brief");
+		await settle();
+		expect(only.routines.setEnabled).not.toHaveBeenCalled();
+		expect(only.view.el.querySelector(".surface-status")?.textContent).toBe(
+			"Turn on “Work while you're away” for this ChatGPT plan in Settings first.",
+		);
+		only.stop.abort();
 	});
 	it("offers a Codex login first and a plan without work while away last; a Codex login is consented as before", async () => {
 		const f = mountPlan([], [plan(false), account]);
