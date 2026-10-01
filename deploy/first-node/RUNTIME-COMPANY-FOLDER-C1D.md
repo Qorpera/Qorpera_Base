@@ -581,7 +581,7 @@ and §9.7's amendment keeps a put off a marked hash. Snapshot-v1 routes and thei
 - **C5 early (§9.3 steps 2 and 3):** the fixtures move to the version-2 helper (F1: 630–665; F2: its own), then
   `qorpera_verify_company_path_file` refuses folder-v2. Before C1d-2b's worker phase is switched on.
 
-**Built (C1d-2a, migration 20260929860000, tests 766 and 767).**
+**Built (C1d-2a, migration 20260928349860, tests 766 and 767).**
 - `qorpera_folder_object_gc` and the `expires_at` index; the helpers `qorpera_folder_gc_company`,
   `qorpera_folder_object_marked`, `qorpera_folder_object_rooted(profile, sha256, except_intent)` and
   `qorpera_folder_object_collecting` (the QRC01 409 refusal every patched place calls).

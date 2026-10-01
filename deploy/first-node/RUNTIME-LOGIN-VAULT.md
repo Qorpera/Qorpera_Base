@@ -628,7 +628,7 @@ https://claude.ai/artifact/UWehPVysVzAmWcwvkuU6on.
 - **Before the platform switch goes on:** the vault runs this slice, the credential and the routing
   above are in place, the callback Edge Function is deployed with OpenAI's registered address, every
   provider host runs slice 4, a usage limit stops the run instead of moving it to another login (#601,
-  migration `20260929910000`, live), the plan rules (#614, slice 1b) are live, and company deletion ends plan
+  migration `20260928349910`, live), the plan rules (#614, slice 1b) are live, and company deletion ends plan
   logins at OpenAI (a follow-up; today the purge removes the rows before the revocation pass can see
   them).
 - **First real sign-in (one company, the founder's own plan).** The fake OpenAI in the tests cannot prove
