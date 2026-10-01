@@ -516,8 +516,24 @@ https://claude.ai/artifact/UWehPVysVzAmWcwvkuU6on.
   and a rotating 30-day refresh token. The envelope's one field is `chatgpt_plan_login`. The vault is
   the only renewer, under the same renewal lock as a Codex login, and renews with OpenAI's token
   endpoint itself (no helper, no Codex). A run gets the access token alone
-  (`{schema, loginKind: "chatgpt_plan", version, accessExpiresAt, accessToken}`); until the run side
-  ships (slice 4), a host refuses a plan login.
+  (`{schema, loginKind: "chatgpt_plan", version, accessExpiresAt, accessToken}`).
+- **Runs (slice 4).** The run's host writes that token to `<run root>/chatgpt-plan/access-token` (mode
+  0600 in a 0700 directory, the host's own user; never a refresh token) and rewrites it in one step
+  whenever the vault hands it a newer one (the same once-a-minute check as for a Codex login). The run's
+  Codex home stays empty. Codex uses a provider of its own, `qorpera_chatgpt_plan`: OpenAI's API
+  (`https://api.openai.com/v1`, Responses) with the token as the bearer, read by Codex's token command
+  (`/bin/cat` on the file, run again each minute and after a refused request), at standard speed (Fast
+  mode is a Codex login's). The sandbox binds the token directory read-only, and the run reaches
+  `api.openai.com` alone (not `chatgpt.com` or `auth.openai.com`: the vault renews). The agent's tools
+  never reach the host's run root, and Codex's own shell is off. A 429 on a plan run is the plan's usage
+  limit (OpenAI's only 429 for plan use), which stops the work; Codex 0.155.1 reports it as a 429 it gave
+  up on. OpenAI takes the host id (`ext_agent_host_id`) at sign-in only, not on each request, so runs
+  send none. Coding turns run the same way.
+  - Fallback: `QORPERA_CHATGPT_PLAN_AUTH=environment` in the provider host's environment (default
+    `command`). The run's Codex then gets the token in its environment at start (OpenAI's documented
+    path; through bwrap's own environment, readable by the host's user alone, never an argument). Each
+    run starts its own Codex, so the next run picks up a renewed token; a run that outlives its token
+    fails at OpenAI's refusal.
 - **Sign-in.** The web client begins a plan sign-in (`qorpera_begin_chatgpt_plan_sign_in`) and polls
   `/login` as for any vault sign-in. The vault answers with OpenAI's authorization address:
   Authorization Code with PKCE, the plan scopes, the resource `https://api.openai.com/v1`, the state
@@ -592,9 +608,9 @@ https://claude.ai/artifact/UWehPVysVzAmWcwvkuU6on.
   `select public.qorpera_set_chatgpt_plan_company('<company>', true);` (service role; only for a company
   whose sign-ins go to its vault). Both start off.
 - **Before the platform switch goes on:** the vault runs this slice, the credential and the routing
-  above are in place, the callback Edge Function is deployed with OpenAI's registered address, the run
-  side (slice 4) is live, and company deletion ends plan logins at OpenAI (a follow-up; today the purge
-  removes the rows before the revocation pass can see them).
+  above are in place, the callback Edge Function is deployed with OpenAI's registered address, every
+  provider host runs slice 4, and company deletion ends plan logins at OpenAI (a follow-up; today the
+  purge removes the rows before the revocation pass can see them).
 - **First real sign-in (one company, the founder's own plan).** The fake OpenAI in the tests cannot prove
   what only OpenAI's endpoint answers. With one company switched on, sign in once and renew once, and
   check from the vault's journal and the login's row (never its envelope):
@@ -608,7 +624,13 @@ https://claude.ai/artifact/UWehPVysVzAmWcwvkuU6on.
   - `renew_not_before` on the row lies within the hour after the renewal (OpenAI's `earliest_refresh_at`
     read in the right unit; the vault drops a value outside the pass);
   - two members of one company never connect the same ChatGPT account unnoticed:
-    `provider_account_reference` holds `openai-subject:<sha256 of OpenAI's subject>`.
+    `provider_account_reference` holds `openai-subject:<sha256 of OpenAI's subject>`;
+  - one run on the plan completes: OpenAI accepts the token as the bearer on `/v1/responses` with no other
+    header, and Codex's start (its model list) works with it;
+  - the usage limit: when the plan's limit is reached, the run's card says so. If it says the run was
+    stopped by a provider step instead, Codex did not recognise OpenAI's code (a limit reached mid-answer
+    arrives as `subscription_sharing_usage_limit_exceeded` in the stream, which Codex 0.155.1 retries
+    and then reports as a lost stream): the follow-up is a pinned Codex that names it a usage limit.
 
 ## Failure cases
 
