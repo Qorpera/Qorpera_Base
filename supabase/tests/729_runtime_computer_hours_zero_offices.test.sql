@@ -53,6 +53,10 @@ begin
 end
 $$;
 
+-- The pause is lifted: a paused company's computer takes no wake request at all.
+reset role;
+delete from public.qorpera_company_execution_pauses where profile_id = '30000000-0000-4000-8000-000000000010';
+
 -- 4. A member asks for it at zero: the wake is kept, not handed to the provider, and the computer
 -- says it waits for hours.
 select pg_temp.path_claims('authenticated', '30000000-0000-4000-8000-000000000001');
