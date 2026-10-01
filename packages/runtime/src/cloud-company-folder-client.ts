@@ -53,6 +53,42 @@ const ATTEMPTS = 4;
  * and a path claim that gave up waiting (55P03). A release retries the first two with the same id. */
 const COMMIT_RETRY = new Set(["QRC01", "40P01", "23505", "55P03"]);
 const RELEASE_RETRY = new Set(["QRC01", "40P01"]);
+/** A review recording is retried when its answer was lost or it met a deadlock: a replay of the same change set returns
+ * the record. 23505 (the approval stands for another change set) and 42501 are answers. */
+const RECORD_RETRY = new Set(["40P01"]);
+/** The run effects called with exactly the arguments given (the run's binding), not as the folder actor. */
+const RUN_EFFECTS: ReadonlySet<CloudCompanyPathRpc> = new Set([
+	"qorpera_folder_record_review",
+	"qorpera_prepare_routine_login",
+]);
+/** The wake's refusals of work (`qorpera_assert_wake_work_allowed`), by SQL's message. */
+const WAKE_REFUSALS: ReadonlyMap<string, "acknowledgement" | "final" | "paused"> = new Map([
+	["Wake requires an acknowledgement before work", "acknowledgement"],
+	["Wake public output is already final", "final"],
+	["Company execution is paused", "paused"],
+]);
+const ROUTINE_STATUSES = ["active", "paused", "concluded", "expired", "retired"] as const;
+const ROUTINE_KEYS = [
+	"routineKey",
+	"routineId",
+	"version",
+	"status",
+	"pauseReason",
+	"title",
+	"trigger",
+	"effort",
+	"expiresAt",
+	"maxOccurrences",
+	"quietHours",
+	"occurrences",
+	"nextRunAt",
+	"conclusion",
+	"concludedAt",
+	"path",
+	"folderVersion",
+	"cursor",
+	"file",
+] as const;
 /** The recheck's refusals in commit and release: the model saw something it may no longer see. */
 const READ_REVOKED = new Set(["A read is no longer readable", "A released read is no longer readable"]);
 
@@ -115,6 +151,35 @@ export interface CloudCompanyFolderTodoPage {
 	readonly moreTodos: number;
 	readonly nextCursor: string | null;
 }
+
+/** A routine as the routine index lists it (`agentRoutines`, thin writers W4c): how it runs now (the index's status
+ * and the platform's pause reason, the next run, the runs used) and what its file says (`file`, the file's parse; on
+ * a page its instructions are cut to 200 characters). */
+export interface CloudCompanyFolderRoutine {
+	readonly routineKey: string;
+	readonly routineId: string;
+	readonly status: "active" | "paused" | "concluded" | "expired" | "retired";
+	readonly pauseReason: string | null;
+	readonly nextRunAt: string | null;
+	readonly occurrences: number;
+	readonly path: string;
+	readonly folderVersion: string;
+	readonly file: Readonly<Record<string, unknown>> | null;
+	readonly instructionsTruncated?: true;
+	readonly cursor: string;
+}
+
+export interface CloudCompanyFolderRoutinePage {
+	readonly routines: readonly CloudCompanyFolderRoutine[];
+	/** How many more there are after this page; `nextCursor` (the last routine's cursor) continues it. */
+	readonly moreRoutines: number;
+	readonly nextCursor: string | null;
+}
+
+/** The login that pays a run's routine (`prepareRoutineLogin`), or why the run's wake may do no work now. */
+export type CloudCompanyFolderRoutineLogin =
+	| { readonly login: { readonly bindingId: string; readonly version: number } | null }
+	| { readonly refused: "acknowledgement" | "final" | "paused" };
 
 export interface CloudCompanyFolderReadResult {
 	/** The folder's clock when the read was answered. */
@@ -189,6 +254,21 @@ export interface CloudCompanyFolderUnitResult {
 	/** A structured file's problems, as the shared parser words them. */
 	readonly problems: readonly CompanyStateProblem[];
 }
+
+/** A change set whose bytes are staged: the units exactly as the review recorder and the commit receive them, so both
+ * hash the same text (RUNTIME-COMPANY-FOLDER-C2.md, R1). Only this client makes one. */
+export interface CloudCompanyFolderStagedChangeSet {
+	readonly unitCount: number;
+}
+
+const STAGED = new WeakMap<
+	CloudCompanyFolderStagedChangeSet,
+	{
+		readonly client: CloudCompanyFolderClient;
+		readonly units: readonly CloudCompanyFolderUnit[];
+		readonly sent: unknown[];
+	}
+>();
 
 export interface CloudCompanyFolderCommitResult {
 	readonly commitId: string;
@@ -267,6 +347,16 @@ export function cloudCompanyFolderFailure(error: unknown): unknown {
 	if (error.code === "55P03") return new CloudCompanyFolderError("contended");
 	if (error.code === "0A000") return new CloudCompanyFolderError("unavailable");
 	return error;
+}
+
+/** A commit's own arguments, checked before anything is staged or sent. */
+function checkCommit(operationKey: string, options: { reviewId?: string; receiptId?: string }): void {
+	if (!OPERATION_KEY.test(operationKey)) throw new Error("Invalid Company folder operation key");
+	if (
+		(options.reviewId !== undefined && !UUID.test(options.reviewId)) ||
+		(options.receiptId !== undefined && !UUID.test(options.receiptId))
+	)
+		throw new Error("Invalid Company folder review or receipt");
 }
 
 function invalid(): never {
@@ -553,16 +643,13 @@ export class CloudCompanyFolderClient {
 		return this.#actor;
 	}
 
+	/** A folder call as the run's actor, or, for a run effect (the review recorder, the routine login), with exactly the
+	 * arguments given. */
 	#call(method: CloudCompanyPathRpc, args: Record<string, unknown>, signal: AbortSignal): Promise<unknown> {
-		return cloudToolRequest(
-			(requestSignal) =>
-				this.#control.call(
-					method,
-					{ p_environment_id: this.#identity.environmentId, p_actor: this.#actor, ...args },
-					requestSignal,
-				),
-			signal,
-		);
+		const sent = RUN_EFFECTS.has(method)
+			? args
+			: { p_environment_id: this.#identity.environmentId, p_actor: this.#actor, ...args };
+		return cloudToolRequest((requestSignal) => this.#control.call(method, sent, requestSignal), signal);
 	}
 
 	async #once(method: CloudCompanyPathRpc, args: Record<string, unknown>, signal: AbortSignal): Promise<unknown> {
@@ -574,12 +661,14 @@ export class CloudCompanyFolderClient {
 	}
 
 	/** One commit or release, tried again with the same key or id while SQL says so, or while the answer was lost (a
-	 * timeout or a dropped connection: the transaction may have committed, and a replay returns its outcome). */
+	 * timeout or a dropped connection: the transaction may have committed, and a replay returns its outcome). An error
+	 * `kept` names is thrown as SQL gave it, for the caller to read. */
 	async #retried(
 		method: CloudCompanyPathRpc,
 		args: Record<string, unknown>,
 		retryable: ReadonlySet<string>,
 		signal: AbortSignal,
+		kept?: (error: CloudCompanyFolderRpcError) => boolean,
 	): Promise<unknown> {
 		let uncertain = false;
 		for (let attempt = 1; ; attempt++) {
@@ -598,6 +687,7 @@ export class CloudCompanyFolderClient {
 					error instanceof CloudRuntimeDiagnosticError &&
 					!(error instanceof CloudCompanyFolderRpcError) &&
 					(error.category === "timeout" || error.category === "transport_unavailable");
+				if (error instanceof CloudCompanyFolderRpcError && kept?.(error)) throw error;
 				if (!lost && !(error instanceof CloudCompanyFolderRpcError && retryable.has(error.code)))
 					throw cloudCompanyFolderFailure(error);
 				uncertain ||= lost;
@@ -671,6 +761,88 @@ export class CloudCompanyFolderClient {
 		if (moreTodos > 0 !== (nextCursor !== null) || (nextCursor !== null && nextCursor !== todos.at(-1)?.cursor))
 			invalid();
 		return { todos, moreTodos, nextCursor };
+	}
+
+	/** A page of the run agent's own file routines from the routine index, which the commit updates with the files (thin
+	 * writers W4c, `qorpera_folder_agent_routines`, 20260929990000): newest first, 32 at most, each with its cursor, or
+	 * the one routine `routineKey` names, whole. */
+	async agentRoutines(
+		request: { routineKey?: string; cursor?: string },
+		signal: AbortSignal,
+	): Promise<CloudCompanyFolderRoutinePage> {
+		const input = record(await this.#once("qorpera_folder_agent_routines", { p_request: request }, signal), [
+			"schema",
+			"routines",
+			"moreRoutines",
+			"nextCursor",
+		]);
+		if (
+			input.schema !== "qorpera.folder-agent-routines/v1" ||
+			!Array.isArray(input.routines) ||
+			input.routines.length > 32 ||
+			(request.routineKey !== undefined && input.routines.length > 1)
+		)
+			invalid();
+		const routines = input.routines.map((value) => {
+			const routine = record(value, ROUTINE_KEYS, ["instructionsTruncated"]);
+			if (
+				typeof routine.routineKey !== "string" ||
+				(request.routineKey !== undefined && routine.routineKey !== request.routineKey) ||
+				!ROUTINE_STATUSES.includes(routine.status as (typeof ROUTINE_STATUSES)[number]) ||
+				(routine.pauseReason !== null && typeof routine.pauseReason !== "string") ||
+				(routine.nextRunAt !== null && typeof routine.nextRunAt !== "string") ||
+				typeof routine.path !== "string" ||
+				(routine.file !== null &&
+					(!routine.file || typeof routine.file !== "object" || Array.isArray(routine.file))) ||
+				(routine.instructionsTruncated !== undefined && routine.instructionsTruncated !== true) ||
+				routine.cursor !== routine.routineId
+			)
+				invalid();
+			return {
+				routineKey: routine.routineKey,
+				routineId: uuid(routine.routineId),
+				status: routine.status as CloudCompanyFolderRoutine["status"],
+				pauseReason: routine.pauseReason as string | null,
+				nextRunAt: routine.nextRunAt as string | null,
+				occurrences: counter(routine.occurrences),
+				path: routine.path,
+				folderVersion: uuid(routine.folderVersion),
+				file: routine.file as Readonly<Record<string, unknown>> | null,
+				...(routine.instructionsTruncated ? { instructionsTruncated: true as const } : {}),
+				cursor: uuid(routine.cursor),
+			};
+		});
+		const moreRoutines = counter(input.moreRoutines);
+		const nextCursor = input.nextCursor === null ? null : uuid(input.nextCursor);
+		if (moreRoutines > 0 !== (nextCursor !== null) || (nextCursor !== null && nextCursor !== routines.at(-1)?.cursor))
+			invalid();
+		return { routines, moreRoutines, nextCursor };
+	}
+
+	/** The login that pays this run's routine save (`qorpera_prepare_routine_login`, a run effect): the requester's
+	 * login for unattended work, now pinned for routines, or null when none pays. Called last before a save that starts
+	 * or extends work; the consent it records is the requester's standing consent, so a later refusal leaves it. A
+	 * deadlock is asked again. The wake's refusals of work come back as `refused`. */
+	async prepareRoutineLogin(signal: AbortSignal): Promise<CloudCompanyFolderRoutineLogin> {
+		let value: unknown;
+		try {
+			value = await this.#retried(
+				"qorpera_prepare_routine_login",
+				{ p_binding: this.#binding },
+				RECORD_RETRY,
+				signal,
+				(error) => error.code === "55000" && WAKE_REFUSALS.has(error.detail),
+			);
+		} catch (error) {
+			const refused = error instanceof CloudCompanyFolderRpcError ? WAKE_REFUSALS.get(error.detail) : undefined;
+			if (refused) return { refused };
+			throw error;
+		}
+		const input = record(value, ["schema", "runId", "login"]);
+		if (input.schema !== "qorpera.routine-login/v1" || input.runId !== this.#binding.runId) invalid();
+		if (input.login === null) return { login: null };
+		const login = record(input.login, ["bindingId", "version"]);
+		return { login: { bindingId: uuid(login.bindingId), version: counter(login.version) } };
 	}
 
 	/** A file's text, checked against its entry, or null when nothing is at the path. A folder, a file larger than
@@ -790,9 +962,8 @@ export class CloudCompanyFolderClient {
 		};
 	}
 
-	/** Commits one change set as the run (core §3). Every unit is checked before any bytes are staged. Each file is
-	 * staged once; every structured file in a write or a new folder carries its parse from the shared parser, made
-	 * from the same bytes, or its problems, and SQL decides each unit (RUNTIME-COMPANY-STATE-FILES.md §8).
+	/** Commits one change set as the run (core §3): it stages the units (see `stage`), then commits them as
+	 * `commitStaged` does. SQL decides each unit.
 	 *
 	 * The operation key comes from the caller's tool call. A retry with the same key, the same units and the same
 	 * receipt replays the stored outcome; this call already retries a lost answer, and reports `unknown` when a try
@@ -804,36 +975,19 @@ export class CloudCompanyFolderClient {
 		options: { reviewId?: string; receiptId?: string },
 		signal: AbortSignal,
 	): Promise<CloudCompanyFolderCommitResult> {
-		if (!OPERATION_KEY.test(operationKey)) throw new Error("Invalid Company folder operation key");
-		if (units.length < 1 || units.length > MAX_UNITS) throw new Error("Invalid Company folder change set");
-		if (
-			(options.reviewId !== undefined && !UUID.test(options.reviewId)) ||
-			(options.receiptId !== undefined && !UUID.test(options.receiptId))
-		)
-			throw new Error("Invalid Company folder review or receipt");
-		const plans = units.map(plan);
-		const staged = new Map<string, CloudFileReference>();
-		const sent: Record<string, unknown>[] = [];
-		for (const unit of plans) {
-			if (unit.op === "write") {
-				const file = await this.#stage(unit.file, staged, signal);
-				const entry = structured(unit.file.path, unit.file.bytes);
-				sent.push({ ...unit.sql, file, ...(entry ? { structured: [entry] } : {}) });
-			} else if (unit.op === "new_folder") {
-				const contents: Record<string, unknown>[] = [];
-				const entries: Record<string, unknown>[] = [];
-				for (const item of unit.contents) {
-					if (!("file" in item)) {
-						contents.push({ path: item.path, kind: "folder" });
-						continue;
-					}
-					contents.push({ path: item.path, kind: "file", file: await this.#stage(item.file, staged, signal) });
-					const entry = structured(item.file.path, item.file.bytes);
-					if (entry) entries.push(entry);
-				}
-				sent.push({ ...unit.sql, contents, ...(entries.length ? { structured: entries } : {}) });
-			} else sent.push(unit.sql);
-		}
+		checkCommit(operationKey, options);
+		return this.commitStaged(operationKey, await this.stage(units, signal), options, signal);
+	}
+
+	/** Commits a change set `stage` returned, which a review may have been recorded for (`recordReview`). */
+	async commitStaged(
+		operationKey: string,
+		changeSet: CloudCompanyFolderStagedChangeSet,
+		options: { reviewId?: string; receiptId?: string },
+		signal: AbortSignal,
+	): Promise<CloudCompanyFolderCommitResult> {
+		checkCommit(operationKey, options);
+		const { units, sent } = this.#staged(changeSet);
 		const input = record(
 			await this.#retried(
 				"qorpera_folder_commit",
@@ -859,6 +1013,96 @@ export class CloudCompanyFolderClient {
 		const seq = input.seq === null ? null : counter(input.seq);
 		if ((seq === null) !== results.every((unit) => unit.outcome !== "saved")) invalid();
 		return { commitId: uuid(input.commitId), seq, replay: input.replay, units: results };
+	}
+
+	/** Stages a change set's bytes for one commit (core §3): every unit is checked before any bytes are staged, each
+	 * file is staged once, and every structured file in a write or a new folder carries its parse from the shared
+	 * parser, made from the same bytes, or its problems (RUNTIME-COMPANY-STATE-FILES.md §8). A writer whose change
+	 * needs a review stages first, records the review of exactly these units, then commits them. */
+	async stage(
+		units: readonly CloudCompanyFolderUnit[],
+		signal: AbortSignal,
+	): Promise<CloudCompanyFolderStagedChangeSet> {
+		if (!Array.isArray(units) || units.length < 1 || units.length > MAX_UNITS)
+			throw new Error("Invalid Company folder change set");
+		const plans = units.map(plan);
+		const staged = new Map<string, CloudFileReference>();
+		const sent: Record<string, unknown>[] = [];
+		for (const unit of plans) {
+			if (unit.op === "write") {
+				const file = await this.#stage(unit.file, staged, signal);
+				const entry = structured(unit.file.path, unit.file.bytes);
+				sent.push({ ...unit.sql, file, ...(entry ? { structured: [entry] } : {}) });
+			} else if (unit.op === "new_folder") {
+				const contents: Record<string, unknown>[] = [];
+				const entries: Record<string, unknown>[] = [];
+				for (const item of unit.contents) {
+					if (!("file" in item)) {
+						contents.push({ path: item.path, kind: "folder" });
+						continue;
+					}
+					contents.push({ path: item.path, kind: "file", file: await this.#stage(item.file, staged, signal) });
+					const entry = structured(item.file.path, item.file.bytes);
+					if (entry) entries.push(entry);
+				}
+				sent.push({ ...unit.sql, contents, ...(entries.length ? { structured: entries } : {}) });
+			} else sent.push(unit.sql);
+		}
+		const changeSet: CloudCompanyFolderStagedChangeSet = Object.freeze({ unitCount: units.length });
+		STAGED.set(changeSet, { client: this, units: [...units], sent });
+		return changeSet;
+	}
+
+	#staged(changeSet: CloudCompanyFolderStagedChangeSet): {
+		units: readonly CloudCompanyFolderUnit[];
+		sent: unknown[];
+	} {
+		const staged = STAGED.get(changeSet);
+		if (staged?.client !== this) throw new Error("Company folder change set was not staged by this client");
+		return staged;
+	}
+
+	/** Records the automatic review's approval of this call as the review of exactly this staged change set (C2 R1,
+	 * `qorpera_folder_record_review`), and returns the id the commit sends. The approval is the tool context's
+	 * `actionReviewId`, of the call named by its tool and `argumentSha256`. SQL accepts only an approval this run may act
+	 * on, and one approval stands for one change set: a replay of the same units returns the same record, so a lost
+	 * answer is asked again. A writer records inside its receipt, so a completed call replays from it first. */
+	async recordReview(
+		approval: { readonly actionReviewId: string; readonly tool: string; readonly argumentSha256: string },
+		changeSet: CloudCompanyFolderStagedChangeSet,
+		signal: AbortSignal,
+	): Promise<string> {
+		if (
+			!UUID.test(approval.actionReviewId) ||
+			!/^[a-z][a-z0-9_]{0,63}$/.test(approval.tool) ||
+			!SHA.test(approval.argumentSha256)
+		)
+			throw new Error("Invalid action review");
+		const { sent } = this.#staged(changeSet);
+		const input = record(
+			await this.#retried(
+				"qorpera_folder_record_review",
+				{
+					p_binding: this.#binding,
+					p_request: {
+						actionReviewId: approval.actionReviewId,
+						tool: approval.tool,
+						argumentSha256: approval.argumentSha256,
+						units: sent,
+					},
+				},
+				RECORD_RETRY,
+				signal,
+			),
+			["schema", "reviewId", "approvedBy", "units"],
+		);
+		if (
+			input.schema !== "qorpera.folder-review/v1" ||
+			input.units !== sent.length ||
+			(input.approvedBy !== null && (typeof input.approvedBy !== "string" || !UUID.test(input.approvedBy)))
+		)
+			invalid();
+		return uuid(input.reviewId);
 	}
 
 	/** Records the reads a tool result shows the model, before the result leaves the tool (C1B §C1b-2 3; one release

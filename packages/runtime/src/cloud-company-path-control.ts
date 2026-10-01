@@ -22,6 +22,9 @@ const FOLDER_RPCS: ReadonlySet<CloudCompanyPathRpc> = new Set([
 	"qorpera_folder_seal_upload",
 	"qorpera_folder_renew_upload",
 	"qorpera_folder_agent_todos",
+	"qorpera_folder_record_review",
+	"qorpera_folder_agent_routines",
+	"qorpera_prepare_routine_login",
 ]);
 
 /** No end-user token, arbitrary URL, redirect, provider credential or retry. */
@@ -114,6 +117,11 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 			"qorpera_folder_renew_upload",
 			// A folder-v2 run's own todos from the todo index (thin writers W1).
 			"qorpera_folder_agent_todos",
+			// An approved call's review of the change set it commits (C2 R1).
+			"qorpera_folder_record_review",
+			// A folder-v2 run's own routines, and the login a routine save pins (thin writers W4c).
+			"qorpera_folder_agent_routines",
+			"qorpera_prepare_routine_login",
 			// Event wakes (W2).
 			"qorpera_list_agent_event_hooks",
 			"qorpera_read_agent_event",
@@ -162,9 +170,13 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 								? 2 * 1024 * 1024
 								: response.ok && method === "qorpera_folder_commit"
 									? 16 * 1024 * 1024
-									: response.ok
-										? 256 * 1024
-										: 4096;
+									: // One routine whole (32 KiB of instructions, each character escaped at worst), or a
+										// page of 32 with theirs cut.
+										response.ok && method === "qorpera_folder_agent_routines"
+										? 1024 * 1024
+										: response.ok
+											? 256 * 1024
+											: 4096;
 				// A folder call's 5xx that is not PostgREST's own answer (a proxy's page, a cut body) is a lost answer:
 				// the transaction may have committed, and the folder client retries it with the same key.
 				const unreadable = (message: string): CloudRuntimeDiagnosticError =>
