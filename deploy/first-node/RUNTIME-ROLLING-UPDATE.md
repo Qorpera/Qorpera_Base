@@ -205,12 +205,16 @@ Never run `qorpera_configure_runtime_node` on a node switched off fully during a
    - Wait until `qorpera_runtime_node_drain_status(A)` shows `readyForNodeRelease`. Runs usually end
      within a minute; long ones take up to 14 minutes. Waiting is fine: node B serves meanwhile.
      Computers, coding machines and agent machines on A carry on.
-   - Clear A's parked warm hosts, as today's cut script does before the fast host rebuild.
+   - Parked warm hosts on A's fast host need no separate step: the rebuild ends them
+     (`EXEC_CLEAR_PARKED=1`, step 5).
 5. **Update node A.** A still takes no runs.
    - `agent apply <R+1>`. A is quiet, so no role needs `--defer`.
    - If A was switched off fully (step 4), roll the office provider and coding executor. Machines
      already running there keep running and take new guest software at their next start.
-   - Rebuild the fast host **without** `EXEC_RUNTIME_BUNDLE_SHA256`: N+1 is not registered yet.
+   - Rebuild the fast host (if A has one) with `EXEC_CLEAR_PARKED=1 EXEC_START_ORCHESTRATOR=1` and
+     **without** `EXEC_RUNTIME_BUNDLE_SHA256`: N+1 is not registered yet. The script stops the host's
+     orchestrator, ends parked hosts, refuses while a run is in flight there, and starts the
+     orchestrator again once the host is healthy (it claims nothing while A takes no runs).
      The rebuild's re-registration clears any older declaration and keeps the host's dispatch role
      (change 3).
    - Re-enrol A's inventory digest if the policy still pins the fast host's image (with the fast
@@ -284,7 +288,8 @@ Never run `qorpera_configure_runtime_node` on a node switched off fully during a
      then an N+1 host claims it and it fails with `bundle-compatibility`, as it would in a paused
      cut. The member sees the failed run and sends again.
    - Update B as in step 5, except that N+1 is registered now: rebuild B's fast host with
-     `EXEC_RUNTIME_BUNDLE_SHA256=<N+1>` (the script declares it as its last step).
+     `EXEC_CLEAR_PARKED=1 EXEC_START_ORCHESTRATOR=1 EXEC_RUNTIME_BUNDLE_SHA256=<N+1>` (the script declares
+     the bundle as its last step, before it starts the orchestrator).
    - Declare B as N+1 (`qorpera_declare_runtime_node_bundle('<B>', '<N+1 sha>')`). `agent apply` does
      not clear B's N declaration from step 3; only a re-registration does.
    - Gate: the query of step 6.3 for B returns no rows, and N's `declaredBy` in the roll status is
@@ -334,7 +339,7 @@ node scripts/runtime-roll.mjs packets --ref <release commit> \
 | `10-migration-*` | 2, one per release migration, gated on N and not yet recorded |
 | `20-declare-b` | 3 |
 | `30-runs-off-a`, `31-drain-a` | 4 (wait until `readyForNodeRelease`) |
-| (node release, fast host) | 5, by hand or the coordinator's node tooling |
+| (node release, fast host) | 5 and 8: `agent apply`, then `rebuild-exec-host.sh` with `EXEC_CLEAR_PARKED=1 EXEC_START_ORCHESTRATOR=1` (and the bundle on node B) |
 | `40-switch` | 6, as one transaction (6.0 gates, activation, history record, declaration, 6.3 gate, return) |
 | `50-check-n` | 7 |
 | `60-runs-off-b`, `61-drain-b` | 8, emptying |
