@@ -147,8 +147,8 @@ Founders (2026-09-28, migration 20260928248100): every member with the role
 - `qorpera_begin_native_provider_login`
 - `qorpera_chatgpt_plan_available(profile)`: whether the caller's company may
   use ChatGPT plan logins now (show "Continue with ChatGPT" only when true).
-  False while the company is being deleted (20260929913000).
-- ChatGPT plan rules (20260929913000, switched off with plan logins):
+  False while the company is being deleted (20260929950000).
+- ChatGPT plan rules (20260929950000, switched off with plan logins):
   - work while away on a plan login needs the member's own
     `qorpera_consent_provider_connection_autonomous`; the kernel never consents a
     plan login for them, and a client must not either (no automatic consent on

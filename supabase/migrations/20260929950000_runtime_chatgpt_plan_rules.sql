@@ -22,7 +22,7 @@
 -- Codex logins are unchanged by this migration, but for one tie: a review's retry prefers the review's
 -- own payer among logins with room.
 --
--- Each function is patched by exact text, once (the marker 20260929913000 skips a replay); a source that differs
+-- Each function is patched by exact text, once (the marker 20260929950000 skips a replay); a source that differs
 -- stops the migration. Locks: one per-member advisory lock while a plan sign-in completes (no company-wide
 -- lock); the helpers read a login's kind by its capsule (unique index).
 
@@ -147,15 +147,15 @@ returns boolean language sql stable security definer set search_path = '' as $$
 	select coalesce((select settings.enabled from public.qorpera_chatgpt_plan_settings as settings), false)
 		and exists (select 1 from public.qorpera_chatgpt_plan_companies as company where company.profile_id = p_profile_id)
 		and public.qorpera_model_login_sign_in_url(p_profile_id) is not null
-		-- Sign in with ChatGPT, 20260929913000: not while the company is being deleted.
+		-- Sign in with ChatGPT, 20260929950000: not while the company is being deleted.
 		and not public.qorpera_company_deleting(p_profile_id)
 $$;
 
-create function pg_temp.qorpera_plan_rules_20260929913000_patch(p_target regprocedure, p_pairs text[])
+create function pg_temp.qorpera_plan_rules_20260929950000_patch(p_target regprocedure, p_pairs text[])
 returns void language plpgsql as $patch$
 declare v_definition text := pg_get_functiondef(p_target); v_count integer;
 begin
-	if position('20260929913000' in v_definition) > 0 then return; end if;
+	if position('20260929950000' in v_definition) > 0 then return; end if;
 	for v_index in 1 .. array_length(p_pairs, 1) / 2 loop
 		v_count := (length(v_definition) - length(replace(v_definition, p_pairs[2 * v_index - 1], '')))
 			/ length(p_pairs[2 * v_index - 1]);
@@ -163,52 +163,52 @@ begin
 			raise exception '% source differs (anchor % matches % times)', p_target, v_index, v_count; end if;
 		v_definition := replace(v_definition, p_pairs[2 * v_index - 1], p_pairs[2 * v_index]);
 	end loop;
-	if position('20260929913000' in v_definition) = 0 then raise exception '% patch has no marker', p_target; end if;
+	if position('20260929950000' in v_definition) = 0 then raise exception '% patch has no marker', p_target; end if;
 	execute v_definition;
 end
 $patch$;
 
-select pg_temp.qorpera_plan_rules_20260929913000_patch('public.qorpera_ensure_unattended_sponsor(public.qorpera_execution_runs)'::regprocedure, array[
+select pg_temp.qorpera_plan_rules_20260929950000_patch('public.qorpera_ensure_unattended_sponsor(public.qorpera_execution_runs)'::regprocedure, array[
 	$a0$		and not exists (select 1 from public.qorpera_provider_connection_versions harness
 			where harness.connection_id = connection.id and harness.native_harness = 'claude-code')
 $a0$,
 	$r0$		and not exists (select 1 from public.qorpera_provider_connection_versions harness
 			where harness.connection_id = connection.id and harness.native_harness = 'claude-code')
 		-- A member's ChatGPT plan works while they are away only once they turned that on themselves: it is
-		-- never consented for them here (Sign in with ChatGPT, 20260929913000).
+		-- never consented for them here (Sign in with ChatGPT, 20260929950000).
 		and not public.qorpera_connection_plan_awaits_consent(connection.id)
 $r0$]);
 
-select pg_temp.qorpera_plan_rules_20260929913000_patch('public.qorpera_activate_company_file_listener()'::regprocedure, array[
+select pg_temp.qorpera_plan_rules_20260929950000_patch('public.qorpera_activate_company_file_listener()'::regprocedure, array[
 	$a0$	if jsonb_array_length(new.triggers) <> 1 then
 		raise exception 'A listener cannot also be a schedule' using errcode = '22023'; end if;
 $a0$,
 	$r0$	if jsonb_array_length(new.triggers) <> 1 then
 		raise exception 'A listener cannot also be a schedule' using errcode = '22023'; end if;
 	-- A ChatGPT plan pays only for work its member starts: never for a file change or an event anyone may
-	-- cause (Sign in with ChatGPT, 20260929913000).
+	-- cause (Sign in with ChatGPT, 20260929950000).
 	if public.qorpera_sponsor_version_is_chatgpt_plan(new.sponsor_binding_id, new.sponsor_version) then
 		raise exception 'A ChatGPT plan cannot pay for a listener' using errcode = '42501'; end if;
 $r0$]);
 
-select pg_temp.qorpera_plan_rules_20260929913000_patch('public.qorpera_wake_authorized(public.qorpera_wake_occurrences)'::regprocedure, array[
+select pg_temp.qorpera_plan_rules_20260929950000_patch('public.qorpera_wake_authorized(public.qorpera_wake_occurrences)'::regprocedure, array[
 	$a0$	if public.qorpera_environment_is_folder_v2(p_wake.environment_id) then return public.qorpera_folder_wake_authorized(p_wake); end if;
 $a0$,
 	$r0$	if public.qorpera_environment_is_folder_v2(p_wake.environment_id) then return public.qorpera_folder_wake_authorized(p_wake); end if;
 	-- A ChatGPT plan never pays for a file change or an event anyone may cause, nor for any work that follows
 	-- from one (a coworker message, a worker), also after a routine's login moved to a plan login (Sign in
-	-- with ChatGPT, 20260929913000; a folder company takes neither wake at all).
+	-- with ChatGPT, 20260929950000; a folder company takes neither wake at all).
 	if public.qorpera_sponsor_version_is_chatgpt_plan(p_wake.sponsor_binding_id, p_wake.sponsor_version)
 		and (public.qorpera_listener_source(p_wake.source_kind)
 			or public.qorpera_run_follows_listener(p_wake.parent_run_id)) then
 		return false; end if;
 $r0$]);
 
-select pg_temp.qorpera_plan_rules_20260929913000_patch('public.qorpera_starter_sponsor(uuid,uuid,uuid,uuid)'::regprocedure, array[
+select pg_temp.qorpera_plan_rules_20260929950000_patch('public.qorpera_starter_sponsor(uuid,uuid,uuid,uuid)'::regprocedure, array[
 	$a0$			public.qorpera_native_account_remaining(connection.id, version.version) as remaining, sponsor.created_at
 $a0$,
 	$r0$			public.qorpera_native_account_remaining(connection.id, version.version) as remaining, sponsor.created_at,
-			-- Sign in with ChatGPT (20260929913000): the ChatGPT plan that pays for the run stays the payer of its
+			-- Sign in with ChatGPT (20260929950000): the ChatGPT plan that pays for the run stays the payer of its
 			-- follow-up work, also at its usage limit (never swapped for another login or the company account), and a
 			-- plan pays for follow-up work only of runs it pays for: never of work another payer started, such as
 			-- a listener's run or a login at its limit. New work (no run to follow) may start on it.
@@ -228,7 +228,7 @@ $a2$,
 	$r2$		from own where own.remaining = 0 and not own.kept_plan and not own.plan_blocked
 $r2$]);
 
-select pg_temp.qorpera_plan_rules_20260929913000_patch('public.qorpera_select_member_session_account(uuid,uuid)'::regprocedure, array[
+select pg_temp.qorpera_plan_rules_20260929950000_patch('public.qorpera_select_member_session_account(uuid,uuid)'::regprocedure, array[
 	$a0$    v_handed_off uuid;
 $a0$,
 	$r0$    v_handed_off uuid; v_saved_at_limit boolean;
@@ -236,7 +236,7 @@ $r0$,
 	$a1$    select * into v_choice from public.qorpera_eligible_member_accounts(p_profile_id,v_user) candidate
         order by (candidate.connection_id = v_handed_off) desc nulls last,
 $a1$,
-	$r1$    -- Sign in with ChatGPT (20260929913000): a conversation the member's ChatGPT plan pays for keeps it, also at
+	$r1$    -- Sign in with ChatGPT (20260929950000): a conversation the member's ChatGPT plan pays for keeps it, also at
     -- its usage limit, which then stops the work there; and a plan never takes over a conversation whose
     -- login reached its limit.
     if v_saved.connection_id is not null and public.qorpera_connection_is_chatgpt_plan(v_saved.connection_id)
@@ -251,54 +251,54 @@ $a1$,
         order by (candidate.connection_id = v_handed_off) desc nulls last,
 $r1$]);
 
-select pg_temp.qorpera_plan_rules_20260929913000_patch('public.qorpera_resolve_failed_execution_run(uuid,text)'::regprocedure, array[
+select pg_temp.qorpera_plan_rules_20260929950000_patch('public.qorpera_resolve_failed_execution_run(uuid,text)'::regprocedure, array[
 	$a0$		or (p_action = 'retry' and v_run.source_kind <> 'session_turn')
 $a0$,
 	$r0$		or (p_action = 'retry' and v_run.source_kind <> 'session_turn')
-		-- Only the member whose ChatGPT plan pays for a run tries it again (Sign in with ChatGPT, 20260929913000).
+		-- Only the member whose ChatGPT plan pays for a run tries it again (Sign in with ChatGPT, 20260929950000).
 		or (p_action = 'retry' and auth.uid() is distinct from v_run.requested_by_user_id
 			and public.qorpera_sponsor_version_is_chatgpt_plan(v_run.sponsor_binding_id, v_run.sponsor_version))
 $r0$]);
 
-select pg_temp.qorpera_plan_rules_20260929913000_patch('public.qorpera_retry_company_proposal_review(uuid)'::regprocedure, array[
+select pg_temp.qorpera_plan_rules_20260929950000_patch('public.qorpera_retry_company_proposal_review(uuid)'::regprocedure, array[
 	$a0$	from public.qorpera_starter_sponsor(v_review.profile_id, v_proposal.created_by_user_id,
 		v_review.reviewer_staff_agent_id, null) as payer;
 $a0$,
 	$r0$	from public.qorpera_starter_sponsor(v_review.profile_id, v_proposal.created_by_user_id,
-		-- A retry follows the review's own payer (20260929913000): a review the author's ChatGPT plan paid for stays
+		-- A retry follows the review's own payer (20260929950000): a review the author's ChatGPT plan paid for stays
 		-- on it, and a plan never takes over a review another login paid for.
 		v_review.reviewer_staff_agent_id, v_review.reviewer_sponsor_binding_id) as payer;
 $r0$,
 	$a1$	if v_authority.staff_agent_id is null or not exists (
 $a1$,
 	$r1$	-- Only the member who started the change retries its review on their own ChatGPT plan (Sign in with
-	-- ChatGPT, 20260929913000).
+	-- ChatGPT, 20260929950000).
 	if auth.uid() is distinct from v_proposal.created_by_user_id
 		and public.qorpera_sponsor_version_is_chatgpt_plan(v_authority.sponsor_binding_id, v_authority.sponsor_version) then
 		raise exception 'only the member whose ChatGPT plan pays may retry this review' using errcode = '42501'; end if;
 	if v_authority.staff_agent_id is null or not exists (
 $r1$]);
 
-select pg_temp.qorpera_plan_rules_20260929913000_patch('public.qorpera_begin_chatgpt_plan_sign_in(uuid,uuid,uuid,uuid,text,integer)'::regprocedure, array[
+select pg_temp.qorpera_plan_rules_20260929950000_patch('public.qorpera_begin_chatgpt_plan_sign_in(uuid,uuid,uuid,uuid,text,integer)'::regprocedure, array[
 	$a0$	if not public.qorpera_chatgpt_plan_allowed(p_profile_id) then
 		raise exception 'ChatGPT plan sign-in is switched off' using errcode = '55000';
 $a0$,
 	$r0$	if not public.qorpera_chatgpt_plan_allowed(p_profile_id) then
 		raise exception 'ChatGPT plan sign-in is switched off' using errcode = '55000';
 	end if;
-	-- One ChatGPT plan per member in a company (20260929913000): a second account is never connected beside a
+	-- One ChatGPT plan per member in a company (20260929950000): a second account is never connected beside a
 	-- usable one, so plans are never pooled or rotated. Signing in again after a plan login lapsed stays possible.
 	if public.qorpera_member_other_plan_connection(p_profile_id, v_user_id, p_client_connection_id) then
 		raise exception 'Disconnect your other ChatGPT plan first' using errcode = '55000';
 $r0$]);
 
-select pg_temp.qorpera_plan_rules_20260929913000_patch('public.qorpera_complete_model_login_sign_in_kind(uuid,text,uuid,text,uuid,text,text,text,timestamp with time zone,timestamp with time zone,text,text,text,timestamp with time zone)'::regprocedure, array[
+select pg_temp.qorpera_plan_rules_20260929950000_patch('public.qorpera_complete_model_login_sign_in_kind(uuid,text,uuid,text,uuid,text,text,text,timestamp with time zone,timestamp with time zone,text,text,text,timestamp with time zone)'::regprocedure, array[
 	$a0$		raise exception 'provider connection identity is already bound' using errcode = '23505';
 	end if;
 $a0$,
 	$r0$		raise exception 'provider connection identity is already bound' using errcode = '23505';
 	end if;
-	-- One ChatGPT plan per member in a company (20260929913000): checked again here, where it counts.
+	-- One ChatGPT plan per member in a company (20260929950000): checked again here, where it counts.
 	if p_login_kind = 'chatgpt_plan' then
 		-- One completion per member and company at a time, so two cannot both find no other plan.
 		perform pg_advisory_xact_lock(hashtextextended('qorpera-chatgpt-plan:' || v_session.profile_id::text
@@ -311,27 +311,27 @@ $a0$,
 	end if;
 $r0$]);
 
-select pg_temp.qorpera_plan_rules_20260929913000_patch('public.qorpera_coding_owner_sponsor(uuid,uuid,text)'::regprocedure, array[
+select pg_temp.qorpera_plan_rules_20260929950000_patch('public.qorpera_coding_owner_sponsor(uuid,uuid,text)'::regprocedure, array[
 	$a0$	order by connection.created_at desc limit 1;
 $a0$,
-	$r0$	-- A login other than a ChatGPT plan first (20260929913000): a plan pays for coding only of work started on it.
+	$r0$	-- A login other than a ChatGPT plan first (20260929950000): a plan pays for coding only of work started on it.
 	order by public.qorpera_connection_is_chatgpt_plan(connection.id), connection.created_at desc limit 1;
 $r0$,
 	$a1$		v_client := encode(extensions.digest(convert_to('qorpera-coding-owner:' || v_connection.id::text || ':' || v_version.version::text, 'utf8'), 'sha256'), 'hex')::text;
 		v_client := (left(v_client, 8) || '-' || substr(v_client, 9, 4) || '-4' || substr(v_client, 14, 3) || '-8' || substr(v_client, 18, 3) || '-' || substr(v_client, 21, 12))::uuid;
 $a1$,
-	$r1$		-- The digest's hex never fit the uuid variable, so this path failed (22P02) since 20260922230000 (20260929913000).
+	$r1$		-- The digest's hex never fit the uuid variable, so this path failed (22P02) since 20260922230000 (20260929950000).
 		select (left(digest.hex, 8) || '-' || substr(digest.hex, 9, 4) || '-4' || substr(digest.hex, 14, 3) || '-8'
 			|| substr(digest.hex, 18, 3) || '-' || substr(digest.hex, 21, 12))::uuid into v_client
 		from (select encode(extensions.digest(convert_to('qorpera-coding-owner:' || v_connection.id::text || ':'
 			|| v_version.version::text, 'utf8'), 'sha256'), 'hex') as hex) as digest;
 $r1$]);
 
-select pg_temp.qorpera_plan_rules_20260929913000_patch('public.qorpera_manage_agent_worker(jsonb,jsonb)'::regprocedure, array[
+select pg_temp.qorpera_plan_rules_20260929950000_patch('public.qorpera_manage_agent_worker(jsonb,jsonb)'::regprocedure, array[
 	$a0$			from public.qorpera_coding_owner_sponsor(v_run.profile_id, v_owner, p_request ->> 'harness') sponsor;
 $a0$,
 	$r0$			from public.qorpera_coding_owner_sponsor(v_run.profile_id, v_owner, p_request ->> 'harness') sponsor;
-			-- A member's ChatGPT plan pays for coding only when the asking run is paid by that plan (20260929913000).
+			-- A member's ChatGPT plan pays for coding only when the asking run is paid by that plan (20260929950000).
 			if public.qorpera_sponsor_version_is_chatgpt_plan(v_sponsor_binding, v_sponsor_version)
 				and public.qorpera_sponsor_binding_connection(v_sponsor_binding)
 					is distinct from public.qorpera_sponsor_binding_connection(v_run.sponsor_binding_id) then

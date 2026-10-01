@@ -377,7 +377,7 @@ select pg_temp.plan764_expect(pg_temp.plan764_try(format('select public.qorpera_
 select pg_temp.plan764_expect(current_setting('qorpera_test.plan764_last'),'null','a listed company with no pending plan sign-in');
 reset role;
 -- Nor with an expired one. (A second plan sign-in begins only once the member's plan login lapsed: one usable
--- plan per member, 20260929913000.)
+-- plan per member, 20260929950000.)
 update public.qorpera_model_logins set status = 'needs_sign_in' where id = '76400000-0000-4000-8000-000000000150';
 select set_config('request.jwt.claims',
 	'{"sub":"16000000-0000-4000-8000-000000000001","role":"authenticated"}',false);
