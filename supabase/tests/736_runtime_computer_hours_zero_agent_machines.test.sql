@@ -4,7 +4,8 @@
 --     an asleep one, on its own node with its disk. Neither takes a place in line.
 --   * Within the hour after the company ran out, machines keep running.
 --   * Once the hour is over every machine sleeps, the always-on one too, still wanted running: its
---     room is given back, its disk kept, its open commands end, and no run is woken for it.
+--     room is given back, its disk kept, its open commands end as lost, and no run is told it stopped.
+--   * No stopped machine's disk is given up for a machine of a company at zero.
 --   * Once hours are added the admit line wakes it on its own node, before the next sweep.
 -- At this point of 628: build-a (task) runs on mx-a, big (always-on) holds its room and is starting,
 -- and wait waits in line, unplaced, for room.
@@ -32,6 +33,7 @@ select pg_temp.wake_assert(public.qorpera_computer_hour_zero_sweep(clock_timesta
 
 do $$
 declare v_view jsonb := public.qorpera_company_machine_view(pg_temp.machine('wait')); v_small jsonb;
+	v_build uuid := (pg_temp.placement('build-a')).id;
 begin
 	perform pg_temp.wake_assert(v_view ->> 'state' = 'waiting' and v_view ->> 'waitingFor' = 'COMPUTER_HOURS_EXHAUSTED'
 		and v_view -> 'queuePosition' = 'null', 'At zero wait waits for hours, with no place in line: ' || v_view::text);
@@ -42,11 +44,26 @@ begin
 		and pg_temp.placement('small') is null, 'No new machine at zero: ' || v_small::text);
 	perform pg_temp.wake_assert(public.qorpera_admit_executor_machines('mx-a', repeat('c', 64)) = '[]'::jsonb
 		and pg_temp.placement('small') is null, 'The admit line starts nothing at zero');
+	-- No stopped machine's disk is given up for a machine of a company at zero: build-a, stopped by its agent,
+	-- sleeps with 40 GiB; a new 200 GiB machine would need it (160 GiB free). Rolled back afterwards.
+	begin
+		perform public.qorpera_native_machine_manage(pg_temp.binding(), '{"action":"stop","machine":"build-a"}');
+		perform pg_temp.custody('build-a', 'stop');
+		perform pg_temp.suspend('build-a');
+		perform pg_temp.start('m-zero-deep', '{"name":"deep","purpose":"Needs disk","cpus":1,"memoryGiB":2,"diskGiB":200,"lifetime":"task"}');
+		perform public.qorpera_admit_executor_machines('mx-a', repeat('c', 64));
+		perform pg_temp.wake_assert((select retired_at is null from public.qorpera_company_machine_placements where id = v_build),
+			'No disk is given up for a machine of a company at zero');
+		raise sqlstate 'P0T01';
+	exception when sqlstate 'P0T01' then null;
+	end;
 	-- Within the hour running machines keep running.
 	perform pg_temp.wake_assert(pg_temp.custody('big', 'stop') ->> 'reason' = 'MACHINE_IN_USE'
 		and not (pg_temp.listed('mx-a', repeat('c', 64), 'big') ->> 'sleepDue')::boolean
 		and not (pg_temp.listed('mx-a', repeat('c', 64), 'build-a') ->> 'sleepDue')::boolean
 		and pg_temp.custody('build-a', 'run') ->> 'intent' = 'run', 'Within the hour machines keep running');
+	-- Running work: a command whose end its run asked to hear about.
+	perform pg_temp.run('30000000-0000-4000-8000-0000000007a1', 'zero-notify', repeat('b', 64), 'build-a', './long-job.sh', true);
 end
 $$;
 
@@ -66,9 +83,14 @@ begin
 	perform pg_temp.wake_assert(v_stop ->> 'state' = 'suspended' and (pg_temp.placement('big')).id = v_big,
 		'It gives its room back and keeps its placement and disk: ' || v_stop::text);
 	perform pg_temp.wake_assert(pg_temp.custody('build-a', 'stop') ->> 'intent' = 'stop'
-		and pg_temp.suspend('build-a') ->> 'state' = 'suspended' and (pg_temp.placement('build-a')).id = v_build
-		and (public.qorpera_company_machine_view(pg_temp.machine('build-a')) ->> 'commandsRunning')::int = 0,
-		'The task machine sleeps too, and its open commands end');
+		and pg_temp.suspend('build-a') ->> 'state' = 'suspended' and (pg_temp.placement('build-a')).id = v_build,
+		'The task machine sleeps too, though a command runs on it');
+	perform pg_temp.wake_assert((select state = 'lost' and ended_at is not null from public.qorpera_company_machine_commands
+			where id = '30000000-0000-4000-8000-0000000007a1')
+		and (public.qorpera_company_machine_view(pg_temp.machine('build-a')) ->> 'commandsRunning')::int = 0
+		and exists (select 1 from public.qorpera_company_machine_events where kind = 'command'
+			and machine_id = (pg_temp.machine('build-a')).id),
+		'Its open command ends as lost, and the run that asked is told when it may run again');
 	perform pg_temp.wake_assert(public.qorpera_company_machine_view(pg_temp.machine('big')) ->> 'state' = 'waiting'
 		and public.qorpera_company_machine_view(pg_temp.machine('big')) ->> 'waitingFor' = 'COMPUTER_HOURS_EXHAUSTED'
 		and not exists (select 1 from public.qorpera_company_machine_events where kind = 'stopped'),

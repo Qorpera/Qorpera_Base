@@ -582,19 +582,32 @@ Coordinator (nothing secret):
     as it skips a paused one: its machines take no place among those a pass looks at, and no other
     machine's disk is given up for one of them;
   - an agent's start or wake (`qorpera_admit_company_machine`) answers `COMPUTER_HOURS_EXHAUSTED` for
-    an asleep machine at zero without trying to move it, so it keeps its node and disk. A new machine
-    is still offered to the nodes, which refuse it (part 1), and is still told when no node could
-    ever hold it. Either way the machine waits, as when no node has room;
+    an asleep machine at zero without trying to move it (part 1's refusal already kept its node and
+    disk; this saves the attempt and its node locks). A new machine is still offered to the nodes,
+    which refuse it (part 1), and is still told when no node could ever hold it. Either way the
+    machine waits, as when no node has room;
   - the machine view says `waitingFor: COMPUTER_HOURS_EXHAUSTED` for a waiting machine of a company
     at zero, with no place in line, and places in line count no machine of a company at zero. The
     `machine_start` text says a machine waits for hours, and sleeps an hour after the company ran
     out;
   - once the finishing window is over every machine of the company, always-on ones too, sleeps: the
-    executor's list says `sleepDue`, the stop custody allows it and the suspension gives the room
-    back. The machine stays wanted running and keeps its disk (a machine wanted running is never
-    a disk the give-up pass takes), so the admit line wakes it on its own node once hours are
-    added. Its open commands end as lost, as when it sleeps; the runs that used them were ended by
-    the finishing window. No run is told it stopped. The executor needs no change.
+    executor's list says `sleepDue`, the stop custody allows it (open commands notwithstanding) and
+    the suspension gives the room back. The machine stays wanted running and keeps its disk (a
+    machine wanted running is never a disk the give-up pass takes), so the admit line wakes it once
+    hours are added. Its open commands end as lost, as when it is stopped; the runs that used them
+    were ended by the finishing window. No run is told the machine stopped. The executor needs no
+    change;
+  - known limits:
+    - once hours are added, an asleep machine wakes on its own node when that node has room;
+      otherwise it may start fresh, with an empty disk, on another node, as any asleep machine does
+      (the tool text says so). Always-on machines never slept before, so they meet this rule for the
+      first time: their room is given back at the hour and may be taken meanwhile;
+    - a command started with `notify` still reports its end (as lost) to its run. That wake waits
+      for hours like any other, so the run's conversation continues once hours are added;
+    - every machine still running at the hour wakes again once hours are added, a task machine
+      that was nearly idle too, and runs on the new hours until its idle delay (default one hour)
+      puts it to sleep. The alternative, letting an idle task machine be stopped for good, would
+      open its disk to the give-up and removal passes, against "disks kept".
 - Build step 6c part 3b (migration `20260928259270`, the finishing window for runs): one hour
   after a company ran out, while it is still at zero (`qorpera_computer_hour_finish_window_over`,
   which checks at zero again, so a record up to one sweep old never ends work):

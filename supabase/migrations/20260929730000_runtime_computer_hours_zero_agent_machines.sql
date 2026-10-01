@@ -8,7 +8,7 @@
 --    queries, as it skips a paused one: its machines take no place among the 64 a pass looks at,
 --    and no other machine's disk is given up for one of them.
 -- 2. `qorpera_admit_company_machine` (an agent's start or wake) answers COMPUTER_HOURS_EXHAUSTED for an
---    asleep machine at zero without trying to move it, so it keeps its node and disk. A new machine
+--    asleep machine at zero without trying to move it (part 1 already refuses every node). A new machine
 --    is still offered to the nodes, which refuse it (6b part 1), and is still told when no node could
 --    ever hold it. The machine waits, as when no node has room.
 -- 3. `qorpera_company_machine_view` says waitingFor COMPUTER_HOURS_EXHAUSTED for a waiting machine of a
@@ -16,8 +16,9 @@
 -- 4. Once the finishing window is over (`qorpera_computer_hour_finish_window_over`), every machine of
 --    the company, always-on ones included, sleeps: the executor's list says sleepDue, the stop custody
 --    allows it, and the suspension gives the room back. The machine stays wanted running and keeps
---    its disk, so the admit line wakes it on its own node once hours are added. Its open commands end
---    as lost, as when it sleeps; the runs that used them were ended by the finishing window.
+--    its disk, so the admit line wakes it once hours are added (on its own node when that node has
+--    room). Its open commands end as lost, as when it is stopped; the runs that used them were ended
+--    by the finishing window.
 --
 -- While the rule is off `qorpera_company_at_zero` and the finishing window are false and nothing
 -- changes. The executor needs no change: it already stops a machine whose entry says sleepDue.
