@@ -610,6 +610,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 																			identity,
 																			handle: folder.handle,
 																			routineKey: wake.routine.routineKey,
+																			routineId: wake.routine.id,
 																		}),
 																	}
 																: {}),
