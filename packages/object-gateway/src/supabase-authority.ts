@@ -68,6 +68,17 @@ interface SupabaseObjectAuthorityOptions {
 	now?: () => number;
 }
 
+/** PostgREST answers classes 40 and 55 with 500, and a check violation with 400. From the folder core those are one
+ * company's state, not the database's health: a stopped company (55000) becomes 423, a lock conflict (40001, 40P01,
+ * 55P03) 409, so neither opens the dependency circuit for every company, and the company's storage allowance
+ * (23514, checked before the NAS write) 413, so the writer can say the storage is full. A statement timeout (57014)
+ * follows `companyStateFailure`'s rule. Any other answer keeps its status: another 500 stays a dependency failure. */
+function folderStateFailure(code: unknown, status: number): ObjectDependencyError {
+	if (code === "23514") return new ObjectDependencyError(413);
+	const failure = companyStateFailure(code);
+	return failure.status === 500 ? new ObjectDependencyError(status) : failure;
+}
+
 function record(value: unknown, label: string): Record<string, unknown> {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`Invalid ${label}`);
 	return value as Record<string, unknown>;
@@ -380,7 +391,7 @@ export class SupabaseObjectAuthority
 			{ p_environment_id: environmentId, p_actor: actor, p_intent: intentId, p_sha256: sha256, p_bytes: bytes },
 			undefined,
 			this.#secretKey,
-			true,
+			"folder",
 		);
 		const receipt = value as Record<string, unknown> | null;
 		if (
@@ -406,7 +417,7 @@ export class SupabaseObjectAuthority
 			{ p_environment_id: environmentId, p_actor: actor, p_intent: intentId, p_sha256: sha256, p_bytes: bytes },
 			undefined,
 			this.#secretKey,
-			true,
+			"folder",
 		)) as Record<string, unknown> | null;
 		if (!value || value.schema !== "qorpera.folder-object/v1" || value.sha256 !== sha256 || value.bytes !== bytes)
 			throw new ObjectDependencyError(403);
@@ -422,7 +433,7 @@ export class SupabaseObjectAuthority
 			{ p_environment_id: environmentId, p_actor: actor, p_sha256: sha256 },
 			undefined,
 			this.#secretKey,
-			true,
+			"folder",
 		)) as Record<string, unknown> | null;
 		if (
 			!value ||
@@ -619,16 +630,17 @@ export class SupabaseObjectAuthority
 		});
 	}
 
-	/** `companyState`: the RPC acts for one company, so its 500s are read with `companyStateFailure` (409, 423).
-	 * Profile, replication, deletion and migration RPCs must stay "unavailable" to their callers (the replication
-	 * reconciler blocks an object on any other refusal, and a profile read drops its member's read leases on one),
-	 * so theirs are read with `unavailableStateFailure`: a lock conflict is still 503 but leaves the circuit alone. */
+	/** `companyState`: the RPC acts for one company, so its 500s are read with `companyStateFailure` (409, 423);
+	 * `"folder"`, a folder core byte RPC, also reads its 400s, with `folderStateFailure` (and 413). Profile,
+	 * replication, deletion and migration RPCs must stay "unavailable" to their callers (the replication reconciler
+	 * blocks an object on any other refusal, and a profile read drops its member's read leases on one), so theirs
+	 * are read with `unavailableStateFailure`: a lock conflict is still 503 but leaves the circuit alone. */
 	async #rpc(
 		name: string,
 		body: Record<string, unknown>,
 		bearer: string | undefined,
 		apiKey: string,
-		companyState = false,
+		companyState: boolean | "folder" = false,
 	): Promise<unknown> {
 		const headers: Record<string, string> = {
 			...supabaseRequestHeaders(apiKey, bearer),
@@ -642,6 +654,8 @@ export class SupabaseObjectAuthority
 				signal,
 			});
 			if (!response.ok) {
+				if (companyState === "folder" && (response.status === 500 || response.status === 400))
+					throw folderStateFailure(await postgrestErrorCode(response, signal), response.status);
 				if (response.status === 500)
 					throw (companyState ? companyStateFailure : unavailableStateFailure)(
 						await postgrestErrorCode(response, signal),

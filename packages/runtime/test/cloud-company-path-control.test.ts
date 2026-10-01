@@ -49,7 +49,7 @@ describe("Company File bounded control transport", () => {
 	});
 
 	it.each([
-		"qorpera_record_runtime_observation",
+		"qorpera_record_runtime_observation_batch",
 		"qorpera_begin_native_company_execution_v2",
 		"qorpera_describe_company_run_context",
 		"qorpera_read_company_run_context",
@@ -259,6 +259,7 @@ describe("the folder core's entry points (core C3)", () => {
 		"qorpera_folder_open_upload",
 		"qorpera_folder_seal_upload",
 		"qorpera_folder_renew_upload",
+		"qorpera_folder_agent_todos",
 	] as const;
 
 	it.each(FOLDER)("permits %s over the fixed RPC route", async (method) => {

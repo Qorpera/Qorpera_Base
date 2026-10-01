@@ -306,6 +306,64 @@ describe("one company's database state and the shared circuit", () => {
 	});
 });
 
+describe("folder core byte RPCs", () => {
+	// #560's folder RPCs read one company's state like any company RPC, and #582 adds the storage allowance: a
+	// check violation (23514, a 400 from PostgREST) is 413. None of these opens the circuit for another company.
+	const actor = {
+		kind: "run" as const,
+		runId: "40000000-0000-4000-8000-000000000102",
+		jobId: "40000000-0000-4000-8000-000000000103",
+		runnerId: "40000000-0000-4000-8000-000000000104",
+		assignmentId: "40000000-0000-4000-8000-000000000105",
+	};
+	const intent = "40000000-0000-4000-8000-000000000401";
+	function folderAuthority(fail: (signal: AbortSignal) => Promise<Response>) {
+		const calls: Company[] = [];
+		const authority = new SupabaseObjectAuthority({
+			projectUrl: "https://cloud.test",
+			publishableKey: "sb_publishable_fixture",
+			secretKey: "sb_secret_fixture",
+			requestTimeoutMs: 1_000,
+			now: () => 1_800_000_000_000,
+			fetch: async (_input, init) => {
+				const args = JSON.parse(String(init?.body)) as Record<string, unknown>;
+				const company = args.p_environment_id === companies.a.environmentId ? "a" : "b";
+				calls.push(company);
+				if (company === "a") return fail(init!.signal!);
+				return Response.json({ schema: "qorpera.folder-object/v1", sha256, bytes: bytes.length });
+			},
+		});
+		const confirm = (company: Company) =>
+			authority.confirmFolderObject(companies[company].environmentId, actor, intent, sha256, bytes.length);
+		return { authority, calls, confirm };
+	}
+
+	it.each([
+		[
+			"a full company (400 23514)",
+			async () => Response.json({ code: "23514", message: "full" }, { status: 400 }),
+			413,
+		],
+		["another 400", async () => Response.json({ code: "22023", message: "invalid" }, { status: 400 }), 400],
+		["a stop (55000)", async () => postgrest("55000"), 423],
+		["a lock conflict (55P03)", async () => postgrest("55P03"), 409],
+	] as const)("answers %s with %s and serves another company next", async (_label, fail, status) => {
+		const { authority, calls, confirm } = folderAuthority(fail);
+		await expect(confirm("a")).rejects.toMatchObject({ status, unavailable: false });
+		expect(authority.health().api.status).toBe("healthy");
+		await expect(confirm("b")).resolves.toBeUndefined();
+		expect(calls).toEqual(["a", "b"]);
+	});
+
+	it("keeps another 500 a dependency failure that opens the circuit", async () => {
+		const { authority, calls, confirm } = folderAuthority(async () => postgrest("XX000"));
+		await expect(confirm("a")).rejects.toMatchObject({ status: 500, unavailable: true });
+		expect(authority.health().api.status).toBe("unavailable");
+		await expect(confirm("b")).rejects.toMatchObject({ status: 503 });
+		expect(calls).toEqual(["a"]);
+	});
+});
+
 describe("member Company File authority", () => {
 	function memberAuthority(respond: (args: Record<string, unknown>, signal: AbortSignal) => Promise<Response>) {
 		const calls: Array<Record<string, unknown>> = [];
