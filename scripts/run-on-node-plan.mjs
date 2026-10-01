@@ -75,13 +75,14 @@ export const STEPS = [
 	},
 	{
 		name: "checks",
-		why: "pinned dependencies, imports, cloud boundaries, wire helper copies, connector catalog, runtime bundle",
+		why: "pinned dependencies, imports, cloud boundaries, wire helper copies, migration custom settings, connector catalog, runtime bundle",
 		paths: ANY,
 		commands: [
 			"npm run check:pinned-deps",
 			"npm run check:ts-imports",
 			"npm run check:cloud-boundaries",
 			"npm run check:wire-helpers",
+			"npm run check:migration-settings",
 			"npm run check:connector-catalog",
 			"npm run check:runtime-bundle:release-train",
 		],
