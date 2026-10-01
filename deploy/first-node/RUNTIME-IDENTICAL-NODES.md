@@ -387,7 +387,8 @@ whole roll: a sleeping computer could not wake on that node, a coding turn of a 
 there waited, and a sleeping agent machine moved to another node and lost its scratch disk.
 
 - **The runs switch.** `qorpera_set_runtime_node_runs(node, runs, expected version, reason)` sets
-  `qorpera_runtime_nodes.runs_enabled`, with the same checks and lock order as the full switch and a record
+  `qorpera_runtime_nodes.runs_enabled`, with the full switch's checks (except the signed-updater refusal,
+  which guards `enabled` only) and lock order, and a record
   in `qorpera_runtime_node_serving_changes` (`scope = 'runs'`). It is not part of the node's policy, so a new
   policy version keeps it. With runs off:
   - the node's orchestrators claim nothing new (they still replay claims they hold);
@@ -412,15 +413,24 @@ there waited, and a sleeping agent machine moved to another node and lost its sc
   declared for another bundle is no candidate for a run (`qorpera_runtime_adapter_takes_bundle`; such a
   candidate is marked `"eligible": false, "otherBundle": true` in the placement record). The run reservation
   passes the run's bundle to a six-argument chooser; the five- and four-argument forms pass none and decide
-  as before. The claim turn (runs with dispatch roles) already left such fast hosts out.
+  as before. A claimant that is itself marked so is refused (`NODE_NOT_PREFERRED`: it waits, no attempt is
+  counted). "Live" means the orchestrator's `active` status, not a fresh heartbeat (the claim needs none
+  either); a roll declares every orchestrator of a node, so no stale undeclared row is left to take a
+  bundle. The claim turn (runs with dispatch roles) already left such fast hosts out.
 - **`qorpera_declare_runtime_node_bundle(node, sha)`** declares every orchestrator of one node for a
-  registered bundle, or clears them with null, in id order. It refuses when an orchestrator of the node also
-  maps to another node (55000).
+  registered bundle, or clears them with null, in id order. It refuses an unregistered bundle, and an
+  orchestrator of the node that also maps to another node (55000).
 - **Locks.** The runs switch takes the node's advisory lock and row, as the full switch does. Nothing else
   takes a new lock. The migration adds a column to `qorpera_runtime_nodes` under `lock_timeout = '5s'`.
 
 ### Rollout (coordinator)
 
 Safe for the running bundle: no RPC an N component calls changes shape (drain status only gains fields),
-and every runs switch starts on. Feature PR, no bundle slot. Guard for the next activation (ABSENT live
-first): `to_regprocedure('public.qorpera_set_runtime_node_runs(uuid,boolean,bigint,text)') is not null`.
+and every runs switch starts on. Feature PR, no bundle slot. Apply at a quiet moment: the column add waits
+for its table lock for at most 5 s (`lock_timeout`), and claims and placement queue behind it meanwhile; on
+55P03 retry. Guards for the next activation (ABSENT live first), one body marker per patched function:
+`node.enabled and node.runs_enabled` in `qorpera_runtime_orchestrator_nodes(text)`; `or n.runs_enabled)` in
+`qorpera_runtime_node_placement_candidates(text)`; `p_provider_kind in ('native','login')))` in
+`qorpera_reserve_runtime_node_machine(...)`; `qorpera_runtime_adapter_takes_bundle` in
+`qorpera_runtime_node_placement_decide(uuid,text,text,uuid,uuid,text)`; `v_run.runtime_bundle_sha256);` in
+`qorpera_reserve_runtime_machine(...)`. The same markers are in `RUNTIME-ROLLING-UPDATE.md` step 2.

@@ -14,13 +14,16 @@ and ends on one bundle.
 | Identical nodes change 4 (`20260928182000`) | Orchestrator bundle declarations and `qorpera_runtime_bundle_roll_status` |
 | Logins in the vault change 3 (`20260928180600`) | Member runs of a vault login are pinned to no node |
 | Rolling step 1 (`20260929996000`) | The runs switch and `readyForNodeRelease` (machines stay admitted while a node empties), placement by bundle declaration (needed while dispatch roles are unset), and `qorpera_declare_runtime_node_bundle` |
+| Rolling steps 2 and 3 | The roll packets with the one-transaction switch and a pause that needs no quiet runtime (`scripts/runtime-roll.mjs`), a node release whose `order` is `schema-first` or `either`, and a fast host rebuild gated on its node's drain instead of a pause |
 
 Until these are live, cuts keep today's paused procedure.
 
 Two things make a roll slower for some work, but pause nobody:
-- **Logins still on a node disk.** Their runs are pinned to that node. They wait while it takes no runs,
-  and their new-bundle runs wait from the switch (step 6) until that node is updated (step 8). The
-  preflight query in step 1 lists them. Moving them into the vault removes the wait.
+- **Logins still on a node disk.** Their runs are pinned to their home node. That node must be node B
+  (updated second): their runs then wait only from the switch (step 6) until B is updated (step 8). If a
+  node-disk login's home were A, its N runs created while A empties could never run: A returns as N+1 and
+  B is not their home; after step 9 they would fail. The preflight query in step 1 lists each login with
+  its home nodes; pick A so that no home is A. Moving them into the vault removes the wait.
 - **One fast host.** While the node with the only fast host is emptied and updated, member runs start on
   the other node's fresh-VM path (about 17 s slower), as they do today when the fast host is full.
 
@@ -84,14 +87,14 @@ An orchestrator can be declared only for a registered bundle, and the activation
 registers N+1 and makes it active in one step. So node A cannot be declared N+1 before the
 activation. Returning A undeclared would be worse: its N+1 hosts would take N runs and refuse them.
 A therefore takes no runs from step 4 until right after the activation (step 6). The activation, A's
-declaration and A's return run in one transaction, so new messages wait only for its commit; work already
-running is not touched.
+declaration and A's return run in one transaction: a message sent before its commit still binds to N and
+runs on B, and one sent after it binds to N+1 and runs on A. Work already running is not touched.
 
 ## Procedure (coordinator)
 
-Node A is the node that is emptier: fewer runs, and not the only fast host during a busy hour. With
-today's layout that is node 1. Node 2 first would strand the N work of node-disk logins created while
-node 2 empties: node 1 cannot take it (their home is node 2), and node 2 returns on N+1. N is the running
+Node A is the node that is emptier (fewer runs, and not the only fast host during a busy hour) and that is
+**no home of a node-disk login** (see Prerequisites). With today's layout that is node 1: both node-disk
+logins live on node 2. N is the running
 bundle and N+1 the new one; R+1 is the node release that carries N+1. The
 observer, provider and fast host steps are the same ones today's cut runs, one node at a time.
 Run the SQL as `postgres` with service-role claims (`request.jwt.claims` with role
@@ -102,11 +105,13 @@ A roll uses the **runs switch** (`qorpera_set_runtime_node_runs`): the node take
 and its computers, coding machines and agent machines carry on. A new policy version keeps the runs
 switch. Use the full switch (`qorpera_set_runtime_node_serving`) only when the release also changes the
 office provider or the coding executor on that node, or the host restarts; then wait for `readyForUpdate`
-instead of `readyForNodeRelease`. Never run `qorpera_configure_runtime_node` on a node switched off fully
-during a roll: its policy sets `enabled` again, which returns the node before it is declared.
+instead of `readyForNodeRelease`, and turn both switches back on when the node returns (steps 6.4 and 8).
+Never run `qorpera_configure_runtime_node` on a node switched off fully during a roll: its policy sets
+`enabled` again, which returns the node before it is declared.
 
 1. **Preflight** (read-only):
-   - both nodes are `serving` and `ready`;
+   - both nodes are `serving`, `runsServing` (a runs switch left off by an aborted roll is not in the
+     node's policy and survives a new policy version) and `ready`;
    - release R+1 is staged on both nodes (`agent stage`);
    - the release's migrations, the activation and the reverse activation (see "If something goes
      wrong") were rehearsed on a copy of the production schema;
@@ -138,9 +143,12 @@ during a roll: its policy sets `enabled` again, which returns the node before it
    into the vault first:
 
    ```sql
-   select distinct c.compute_identity_id from public.qorpera_native_credential_capsules c
+   select distinct c.compute_identity_id, public.qorpera_runtime_login_identity_homes(c.compute_identity_id) homes
+   from public.qorpera_native_credential_capsules c
    where c.status = 'active' and not public.qorpera_compute_identity_login_in_vault(c.compute_identity_id);
    ```
+
+   No `homes` may contain A.
 
    Then save the **ids** of N's pending inputs as the baseline. Counts can hide a live input behind a
    dead one.
@@ -169,7 +177,17 @@ during a roll: its policy sets `enabled` again, which returns the node before it
      ('qorpera_runtime_claim_turn(p_orchestrator_id, job, run)',
        pg_get_functiondef('public.qorpera_claim_runner_job_for_orchestrator(uuid,uuid,integer)'::regprocedure)),
      ('orchestrator.runtime_bundle_sha256 = p_run.runtime_bundle_sha256',
-       pg_get_functiondef('public.qorpera_runtime_run_placement(public.qorpera_runner_jobs,public.qorpera_execution_runs)'::regprocedure))
+       pg_get_functiondef('public.qorpera_runtime_run_placement(public.qorpera_runner_jobs,public.qorpera_execution_runs)'::regprocedure)),
+     ('node.enabled and node.runs_enabled',
+       pg_get_functiondef('public.qorpera_runtime_orchestrator_nodes(text)'::regprocedure)),
+     ('or n.runs_enabled)',
+       pg_get_functiondef('public.qorpera_runtime_node_placement_candidates(text)'::regprocedure)),
+     ('p_provider_kind in (''native'',''login'')))',
+       pg_get_functiondef('public.qorpera_reserve_runtime_node_machine(uuid,text,text,text,text,text,bigint,bigint)'::regprocedure)),
+     ('qorpera_runtime_adapter_takes_bundle',
+       pg_get_functiondef('public.qorpera_runtime_node_placement_decide(uuid,text,text,uuid,uuid,text)'::regprocedure)),
+     ('v_run.runtime_bundle_sha256);',
+       pg_get_functiondef('public.qorpera_reserve_runtime_machine(uuid,text,text,uuid,uuid,uuid,bigint)'::regprocedure))
    ) g(marker, def);
    ```
 
@@ -181,15 +199,17 @@ during a roll: its policy sets `enabled` again, which returns the node before it
    select public.qorpera_declare_runtime_node_bundle('<B>', '<N sha>');
    ```
 4. **Empty node A of runs.**
-   - `qorpera_set_runtime_node_runs(A, false, <version>, 'roll vN+1')`.
+   - `qorpera_set_runtime_node_runs(A, false, <version>, 'roll vN+1')`. If the release also changes A's
+     office provider or coding executor, switch A off fully instead (`qorpera_set_runtime_node_serving`)
+     and wait for `readyForUpdate`.
    - Wait until `qorpera_runtime_node_drain_status(A)` shows `readyForNodeRelease`. Runs usually end
      within a minute; long ones take up to 14 minutes. Waiting is fine: node B serves meanwhile.
      Computers, coding machines and agent machines on A carry on.
    - Clear A's parked warm hosts, as today's cut script does before the fast host rebuild.
 5. **Update node A.** A still takes no runs.
    - `agent apply <R+1>`. A is quiet, so no role needs `--defer`.
-   - Roll the office provider and coding executor if the release changes them. Machines already
-     running there keep running and take new guest software at their next start.
+   - If A was switched off fully (step 4), roll the office provider and coding executor. Machines
+     already running there keep running and take new guest software at their next start.
    - Rebuild the fast host **without** `EXEC_RUNTIME_BUNDLE_SHA256`: N+1 is not registered yet.
      The rebuild's re-registration clears any older declaration and keeps the host's dispatch role
      (change 3).
@@ -243,7 +263,8 @@ during a roll: its policy sets `enabled` again, which returns the node before it
 
       It must return no rows. (The `undeclared` list ignores heartbeats, so a rebuilt host whose
       orchestrator was never declared still shows there.)
-   4. Return A: `qorpera_set_runtime_node_runs(A, true, …)`. It takes the waiting N+1 runs.
+   4. Return A: `qorpera_set_runtime_node_runs(A, true, …)`, and `qorpera_set_runtime_node_serving(A, true, …)`
+      if step 4 switched A off fully. It takes the waiting N+1 runs.
    5. Renew packaged offices' packages for N+1, as today's cut does.
 
    Check that one new run completes on A.
@@ -268,13 +289,14 @@ during a roll: its policy sets `enabled` again, which returns the node before it
      not clear B's N declaration from step 3; only a re-registration does.
    - Gate: the query of step 6.3 for B returns no rows, and N's `declaredBy` in the roll status is
      empty.
-   - Return B: `qorpera_set_runtime_node_runs(B, true, …)`.
+   - Return B: `qorpera_set_runtime_node_runs(B, true, …)`, and `qorpera_set_runtime_node_serving(B, true, …)`
+     if B was switched off fully.
 9. **Finish.**
    - Clear every declaration: `qorpera_declare_runtime_node_bundle(<node>, null)` for both nodes.
    - Check `qorpera_runtime_bundle_roll_status()`: no bundle other than N+1 has queued or running
      runs, every pending input of another bundle is in the baseline, and `undeclaredLive` holds the
      live orchestrators of both nodes.
-   - Check that both nodes serve.
+   - Check that both nodes are `serving` and `runsServing`.
    - Run acceptance, then `agent gc`.
 
 ## Packets (rolling step 2)
@@ -323,9 +345,8 @@ during the roll.
   (`agent rollback`, and rebuild the fast host from N), declare A's orchestrators as N (N is
   registered), and return A. Clear the declarations once both nodes run N. The switch never
   happened, and B served throughout.
-- **A does not come back after the activation** (a declaration or the return fails). New messages
-  wait for A; B keeps serving N and cannot take N+1 work. Fix the step and return A. If that cannot
-  be done within minutes, roll back as below.
+- **The switch transaction fails** (a gate, the activation, a declaration or the return). Nothing
+  changed: N stays active, A takes no runs, and B serves N. Fix the cause and run step 6 again.
 - **N+1 misbehaves after the switch.** There is no rolling way back once N+1 is active. The node
   agent's rollback after an activation runs under a pause. So:
   1. Pause as today's cut does.
@@ -349,7 +370,7 @@ during the roll.
 
 - No pause. For the roll (about 10–20 minutes) the fast capacity is one node's; while the node with the
   only fast host is updated, runs start on the other node's fresh-VM path (about 17 s slower).
-- New messages sent during the switch transaction (step 6) wait for its commit.
+- A message sent while the switch transaction runs binds to N and runs on node B; nothing waits for it.
 - A conversation that was warm on the node being emptied starts cold once.
 - Computers, coding machines and agent machines are not touched: they wake, start and run as usual
   (the runs switch, rolling step 1). Sign-ins already routed to the node being emptied wait until it

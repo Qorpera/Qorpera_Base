@@ -8,7 +8,8 @@
 -- (20260928180700) stopped everything for the whole roll: a sleeping computer could not wake there, a coding
 -- turn of a member whose machine is there waited, and a sleeping agent machine moved to another node.
 --
--- 1. The runs switch: qorpera_runtime_nodes.runs_enabled and qorpera_set_runtime_node_runs. A node with runs
+-- 1. The runs switch: qorpera_runtime_nodes.runs_enabled and qorpera_set_runtime_node_runs (the full switch's
+--    checks, except the signed-updater refusal, which guards `enabled` only). A node with runs
 --    off takes no new run or sign-in: run and sign-in candidates leave it out, the ledger refuses a new
 --    native or login reservation there (NODE_DISABLED, as the full switch does), and its orchestrators claim
 --    nothing new. Machines (office, coding, machine) are admitted as before. Work already running, and
@@ -21,9 +22,11 @@
 -- 3. Placement follows bundle declarations. With dispatch roles unset the node chooser places a run, and it
 --    did not look at the declarations of 20260928182000. During a roll it could prefer the node still
 --    declared for the old bundle, whose orchestrators cannot claim the new bundle's runs, and refuse the node
---    that can (NODE_NOT_PREFERRED) until the old node emptied. A provider whose live orchestrators are all
---    declared for another bundle is no candidate for a run now: the run reservation passes the run's bundle
---    to a six-argument chooser; the five- and four-argument forms pass none and decide as before.
+--    that can (NODE_NOT_PREFERRED) until the old node emptied. A provider whose active orchestrators are all
+--    declared for another bundle is no candidate for a run now, and such a claimant is refused (it waits): the
+--    run reservation passes the run's bundle to a six-argument chooser; the five- and four-argument forms pass
+--    none and decide as before. "Active" is the orchestrator's status, not a fresh heartbeat (the claim needs
+--    none either): a roll declares every orchestrator of a node, so no stale undeclared row stays behind.
 -- 4. qorpera_declare_runtime_node_bundle declares every orchestrator of one node at once.
 --
 -- Patched by anchor: qorpera_runtime_orchestrator_nodes, qorpera_runtime_node_placement_candidates,
@@ -167,6 +170,16 @@ begin
 		|| E'\t\t\telse e.c || ''{"eligible":false,"otherBundle":true}''::jsonb end order by e.ord),''[]''::jsonb)\n'
 		|| E'\t\tinto v_candidates from jsonb_array_elements(v_candidates) with ordinality as e(c,ord);\n'
 		|| E'\tend if;\n');
+	if (length(v_definition) - length(replace(v_definition,
+			E'\tv_node:=(v_self->>''nodeId'')::uuid; v_preferred_node:=(v_preferred->>''nodeId'')::uuid;\n', '')))
+		/ length(E'\tv_node:=(v_self->>''nodeId'')::uuid; v_preferred_node:=(v_preferred->>''nodeId'')::uuid;\n') <> 1 then
+		raise exception 'Runs switch source differs: node chooser record';
+	end if;
+	-- The claimant itself runs another bundle (its declaration changed after the claim): it never takes the run.
+	v_definition := replace(v_definition, E'\tv_node:=(v_self->>''nodeId'')::uuid; v_preferred_node:=(v_preferred->>''nodeId'')::uuid;\n',
+		E'\tif coalesce((v_self->>''otherBundle'')::boolean,false) and v_decision<>''refused'' then\n'
+		|| E'\t\tv_decision:=''refused''; v_reason:=''NODE_NOT_PREFERRED''; end if;\n'
+		|| E'\tv_node:=(v_self->>''nodeId'')::uuid; v_preferred_node:=(v_preferred->>''nodeId'')::uuid;\n');
 	execute v_definition;
 end $$;
 revoke all on function public.qorpera_runtime_node_placement_decide(uuid,text,text,uuid,uuid,text) from public, anon, authenticated;
@@ -201,6 +214,10 @@ begin
 	end if;
 	if not exists (select 1 from public.qorpera_runtime_nodes where id = p_node_id) then
 		raise exception 'Node is not configured' using errcode = '42501';
+	end if;
+	if p_runtime_bundle_sha256 is not null and not exists (select 1 from public.qorpera_runtime_bundles bundle
+		where bundle.bundle_key = 'qorpera.cloud-runtime' and bundle.sha256 = p_runtime_bundle_sha256) then
+		raise exception 'Runtime bundle is not registered' using errcode = '42501';
 	end if;
 	-- An orchestrator whose adapter also maps to another node would declare that node too.
 	if exists (select 1 from public.qorpera_runner_orchestrators orchestrator
