@@ -1,5 +1,5 @@
 -- @fixture 732_runtime_company_mailboxes.test.sql until "-- The company's hourly budget holds for mail."
--- Company mail, sending: step M2b (20260929680000): an agent run queues an email from a live mailbox of its company,
+-- Company mail, sending: step M2b (20260929740000): an agent run queues an email from a live mailbox of its company,
 -- as the agent ("<agent> at <company>"), in plain text with the AI line, and a reply joins the received email's
 -- thread, but an email sent automatically is never answered and a company never emails its own mailboxes; sending has
 -- its own switch and the company's limits on recipients; the worker's door claims a batch with a lease, sends from the

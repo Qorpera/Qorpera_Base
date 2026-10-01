@@ -1,5 +1,5 @@
 -- @fixture 385_runtime_workers_todos.test.sql until "-- 4b. A worker's access is kernel authority"
--- Company mail, sending (M2b, 20260929680000): a background worker has no mouth, so it sends no email; its parent,
+-- Company mail, sending (M2b, 20260929740000): a background worker has no mouth, so it sends no email; its parent,
 -- a company agent, does.
 
 update public.qorpera_mail_settings set domain = 'mail.example.test', enabled = true, sending = true;

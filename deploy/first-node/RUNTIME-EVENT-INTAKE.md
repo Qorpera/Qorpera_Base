@@ -17,7 +17,7 @@ the technical design. The Q1 page is the plain one.
 Status: W1a is live (v150, `20260928259260_runtime_event_intake`) and W2 is live (v151,
 `20260928269290_runtime_event_wakes`), both accepted; the intake is switched on. M2a is merged
 (`20260928299650_runtime_company_mailboxes`, release v154), with mail switched off until the domain exists.
-M2b in review (`20260929680000_runtime_company_mail_sending`). W1b takes a fresh slot when it starts.
+M2b in review (`20260929740000_runtime_company_mail_sending`). W1b takes a fresh slot when it starts.
 
 ## Words
 
@@ -38,7 +38,7 @@ M2b in review (`20260929680000_runtime_company_mail_sending`). W1b takes a fresh
 | W2 | Routine trigger on a hook, event wakes, the agent tools `list_hooks` and `read_event` | `20260928269290` |
 | W3 | Agents create, pause and remove hooks (`manage_hook`) | registered when started |
 | M2a | Company mailboxes, receiving: owners create them, the mail provider's webhook fills them, routines wake on mail | `20260928299650` |
-| M2b | Sending as a mailbox, as the agent with an AI line: `send_mail`, the outbox and its sender | `20260929680000` |
+| M2b | Sending as a mailbox, as the agent with an AI line: `send_mail`, the outbox and its sender | `20260929740000` |
 | M2c | Attachments' contents, threads and sent mail in the folder | registered when started |
 
 Each step is a release-train feature PR: no bundle, manifest or activation files, an independent

@@ -595,7 +595,7 @@ wake), so no agent runs and nothing is charged before it.
 - A mailbox is paused, resumed and removed with `qorpera_set_event_hook_status` on its hook; removing frees
   its address. `qorpera_list_event_hooks` lists mailboxes with their `email` for every member, and
   `qorpera_list_event_deliveries` their received messages (`eventType` `mail.received`).
-- Sending (20260929680000_runtime_company_mail_sending, step M2b): agents send from a mailbox with the runtime
+- Sending (20260929740000_runtime_company_mail_sending, step M2b): agents send from a mailbox with the runtime
   tool `send_mail`; there is no client surface yet. Sent email is queued in `qorpera_company_mail_outbox` (closed
   to every API role) and sent by the `mail-outbox` Edge Function. Sending has its own switch in
   `qorpera_mail_settings` (`sending`, built off) and the company limits on recipients `company_hourly_recipients`
@@ -693,7 +693,7 @@ machine.
 - `profile-invitation-email`, `company-file-verifier`, `artifact-gc-worker`,
   `runner-control`, `runner-broker`, `runner-orchestrator`,
   `computer-hour-notices` (20260928249160, founders' hour emails),
-  `mail-outbox` (20260929680000, email agents send from company mailboxes) —
+  `mail-outbox` (20260929740000, email agents send from company mailboxes) —
   service or runner authority only. Clients never call them.
 
 ## 6. Stability by Order (what a client may build now)
