@@ -1,5 +1,5 @@
 -- @fixture 764_chatgpt_plan_login.test.sql until "-- A plan login is never listed for the account record the node switch-off reads; the Codex login is."
--- Sign in with ChatGPT, slice 5a (20260929920000): what the web client reads to keep a member's ChatGPT plan
+-- Sign in with ChatGPT, slice 5a (20260929970000): what the web client reads to keep a member's ChatGPT plan
 -- login apart from a Codex login. Test 764's fixture leaves the member with a plan login and a Codex vault
 -- login in the company, and the node login of test 016's fixture.
 reset role;

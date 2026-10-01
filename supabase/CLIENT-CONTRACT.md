@@ -614,7 +614,7 @@ wake), so no agent runs and nothing is charged before it.
   (22023) any local part that reads as Qorpera (case, separators, accents, full width and look-alike letters or
   digits folded), and no email goes out when the agent's or the company's name or the mailbox reads as Qorpera.
 
-### ChatGPT plan reads (20260929920000_runtime_chatgpt_plan_member_reads)
+### ChatGPT plan reads (20260929970000_runtime_chatgpt_plan_member_reads)
 
 Built switched off with plan logins. Show none of it while plan logins are switched off for the company
 (`qorpera_chatgpt_plan_available` is false) or the member has no plan login.

@@ -73,11 +73,11 @@ $$;
 revoke all on function public.qorpera_record_chatgpt_plan_routine_offer(uuid, uuid) from public, anon, service_role;
 grant execute on function public.qorpera_record_chatgpt_plan_routine_offer(uuid, uuid) to authenticated;
 
-create function pg_temp.qorpera_plan_reads_20260929920000_patch(p_target regprocedure, p_pairs text[])
+create function pg_temp.qorpera_plan_reads_20260929970000_patch(p_target regprocedure, p_pairs text[])
 returns void language plpgsql as $patch$
 declare v_definition text := pg_get_functiondef(p_target); v_count integer;
 begin
-	if position('20260929920000' in v_definition) > 0 then return; end if;
+	if position('20260929970000' in v_definition) > 0 then return; end if;
 	for v_index in 1 .. array_length(p_pairs, 1) / 2 loop
 		v_count := (length(v_definition) - length(replace(v_definition, p_pairs[2 * v_index - 1], '')))
 			/ length(p_pairs[2 * v_index - 1]);
@@ -89,11 +89,11 @@ begin
 end
 $patch$;
 
-select pg_temp.qorpera_plan_reads_20260929920000_patch('public.qorpera_list_member_native_execution_connections(uuid)'::regprocedure, array[
+select pg_temp.qorpera_plan_reads_20260929970000_patch('public.qorpera_list_member_native_execution_connections(uuid)'::regprocedure, array[
 	$a0$				'billing_source', version.billing_source,
 $a0$,
 	$r0$				'billing_source', version.billing_source,
-				-- Sign in with ChatGPT (20260929920000): the login's kind (null for a node login), whether its member
+				-- Sign in with ChatGPT (20260929970000): the login's kind (null for a node login), whether its member
 				-- turned on work while away for this version, and when the member's first-routine card was shown.
 				'login_kind', (select login.login_kind from public.qorpera_model_logins as login
 					where login.credential_capsule_id = version.credential_capsule_id),
@@ -102,11 +102,11 @@ $a0$,
 					connection.owner_user_id),
 $r0$]);
 
-select pg_temp.qorpera_plan_reads_20260929920000_patch('public.qorpera_list_cloud_routines(uuid)'::regprocedure, array[
+select pg_temp.qorpera_plan_reads_20260929970000_patch('public.qorpera_list_cloud_routines(uuid)'::regprocedure, array[
 	$a0$			'status', routine.status,
 $a0$,
 	$r0$			'status', routine.status,
-			-- Why a paused routine waits, and the member its current version runs for (20260929920000).
+			-- Why a paused routine waits, and the member its current version runs for (20260929970000).
 			'pause_reason', routine.pause_reason,
 			'runs_for_user_id', version.created_by_user_id,
 $r0$]);
