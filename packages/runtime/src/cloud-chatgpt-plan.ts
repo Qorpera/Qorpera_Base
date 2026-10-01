@@ -250,10 +250,10 @@ class IdTokenRefused extends Error {}
  * token: a renewal keeps its stored ID token. */
 class SigningKeyUnknown extends Error {}
 
-/** A token answer OpenAI gave (200) that this vault cannot use, with a fixed label safe to log. */
 /** OpenAI's discovery document answered, but not as this vault needs it (status, issuer, an endpoint). */
 class DiscoveryUnusable extends Error {}
 
+/** A token answer OpenAI gave (200) that this vault cannot use, with a fixed label safe to log. */
 class TokenAnswerUnusable extends Error {
 	readonly label: "answer unreadable" | "plan scope not granted" | "answer unusable";
 	constructor(label: TokenAnswerUnusable["label"]) {
