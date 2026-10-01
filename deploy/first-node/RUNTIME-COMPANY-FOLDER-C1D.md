@@ -331,8 +331,9 @@ c1d2-gc-inventory.md` (2026-10-01).
 - **Which companies:** only a profile whose every environment is folder-v2 and that isn't being deleted
   (`qorpera_company_deletions`). A profile with a snapshot-v1 environment beside a folder-v2 one is never swept or
   claimed: its snapshot-v1 roots are invisible here, as today's GC skips the whole profile. The deleted-company GC
-  collects a purged company's objects, and folder GC never claims a company being deleted, so the two lanes never
-  meet.
+  collects a purged company's objects, and folder GC never claims a company being deleted. A lane already in flight
+  when a deletion starts is answered `remove` by the quarantine state (§9.8), so it doesn't restore bytes the
+  deleted-company GC is about to collect.
 
 ### 9.3 The roots: one function, per company
 
@@ -349,7 +350,9 @@ company may have several: test 761 enables a second). An object is rooted when i
 The chunk index must be complete for every proof version. Today only seal writes it, for version 2, while version-1
 proofs are still accepted until C5 and the folder fixtures stage version 1. So C1d-2a adds a folder-v2 line to
 `qorpera_verify_company_path_file` that writes the chunk rows of a version-1 proof, and backfills them for existing
-folder-v2 proofs. The file-hash check is then not needed. Manifests of manifests (core §7) will need a recursive step
+folder-v2 proofs. The rows are written by an `after insert` trigger on `qorpera_verified_company_file_objects` whose
+first line returns unless the profile is folder-v2: so they follow the proof itself, take no fence, and stay out of
+the snapshot-v1 body of `qorpera_verify_company_path_file`. The file-hash check is then not needed. Manifests of manifests (core §7) will need a recursive step
 here; that comes with them.
 
 **The catalog of a folder-v2 company holds only folder objects.** Every other feature that stores bytes refuses
@@ -378,15 +381,18 @@ C1d-2a pins this with a test that no table outside the folder core references a 
 - `qorpera_folder_sweep_upload_intents(limit)` takes intents past `expires_at` plus 1 hour, oldest first, through a
   new index on `expires_at`. It skips any another transaction holds (`for update skip locked`).
 - **One intent per subtransaction**, so a lock timeout on one (the 2 s budget) aborts only that one.
-- For each intent it records §9.4 for its objects that nothing else roots (the root check leaving out the intent
-  being swept), then deletes the intent (its object rows cascade).
+- For each intent it records §9.4 for its objects that have a catalog row and that nothing else roots (the root
+  check leaving out the intent being swept), then deletes the intent (its object rows cascade).
 - **What it frees:** objects confirmed under an intent that was never sealed or committed have catalog rows, so they
   become candidates.
 - **What it doesn't free:** bytes put to the NAS whose confirm never ran have no catalog row. Those are §9.9.
 
 ### 9.6 Step 2: claim and mark (G2)
 
-- `qorpera_folder_claim_object_gc(limit, lease)` takes side rows past grace, with no mark or an expired one.
+- `qorpera_folder_claim_object_gc(limit, lease)` takes side rows past grace, with no mark or an expired one, whose
+  catalog row is NAS-backed (`backend = 'nas-object-gateway'`). A Storage-backed row is kept (a leak, not a loss):
+  deleting its Storage file would make the mirror trigger delete the catalog row (20260821009000:44-79), skipping the
+  final re-check.
 - **Locks:**
   - each object's catalog row **and its side row** `FOR UPDATE SKIP LOCKED` (`for update of o, s`), in
     `(profile_id, sha256 collate "C")` order;
@@ -413,7 +419,8 @@ snapshot, taken before the claim committed (probe A of review round 1), and woul
 | `confirm_object` | insert, then KEY SHARE | 40001; a row that vanished between the two is 40001 too, not 23505 |
 | `seal_upload` | KEY SHARE on its objects | 40001 |
 | commit step 6 | KEY SHARE on every object | the unit is refused `bytes_unverified`, as for a missing object |
-| `authorize_replication` (and the Storage replica-insert guard that calls it) | NO KEY UPDATE | 40001: a lock conflict; with #573 the gateway keeps the object pending (503, never `blocked`). A wait on the claim's lock ends as 55P03 under the budget |
+| `authorize_replication` | NO KEY UPDATE | 40001: a lock conflict; with #573 the gateway keeps the object pending (503, never `blocked`). A wait on the claim's lock ends as 55P03 under the budget |
+| the Storage replica-insert guard (it calls `authorize_replication`) | the same | the same refusal, which reaches the gateway as Storage's own 400 or 500, not through #573's mapping. It is rare (a replication of an object unreferenced for a day, within the minutes GC holds it), and the lane's journal write cleans up after it |
 
 Two places take no lock, and are safe by roots, not by the mark:
 - **`authorize_object_upload`** (plain reads) answers 40001 for a live mark, but can pass just before the mark
@@ -444,26 +451,36 @@ object's key), so they never race. The gateway:
    is the same).
 2. **Quarantine.** Rename the NAS file to `<root>/.quarantine/<profileId>/<sha256>.<leaseId>` and fsync both
    directories. A file that isn't there skips this step.
-3. **Remove the Storage replica, while the mark is live.** No new replica can be written meanwhile (the replica guard
+3. **Remove the Storage replica, while the mark is live, only if step 2 moved a NAS file into quarantine.** Then the
+   quarantined file is a copy the finish can restore from. No new replica can be written meanwhile (the replica guard
    refuses a marked object). Removing it after the finish could delete a fresh upload's only replica, since
-   `writeReplica` treats "already there" as success.
+   `writeReplica` treats "already there" as success. **If there was no NAS file**, the Storage replica is the only
+   copy: it stays until the finish answers `removed`, and is removed then.
 4. **Finish.** `qorpera_folder_gc_unlink_finish(profile, sha, lease)` locks the catalog row and the side row
    `FOR UPDATE` (under the 2 s budget). It checks, with `clock_timestamp()` after the wait, that the lease is still
    this one and live, and that `unreferenced_since` is still past grace. Then, in a new statement, it re-checks the
    roots:
-   - **rooted, or a 23503 on delete:** clear the side row's mark and answer `restore`;
+   - **rooted:** clear the side row's mark and answer `restore`;
+   - **a 23503 on delete** (a reference from outside the folder core, which §9.3's invariant forbids): delete the side
+     row, so the object is never claimed again, report the broken invariant, and answer `restore`;
    - **otherwise:** delete the catalog row and answer `removed`. Proofs, the chunk index and the side row cascade,
      and the usage row is the last lock, through the catalog trigger.
 5. **Then:**
-   - `removed`: unlink the quarantine file, and drop any folder journal entry for the key.
+   - `removed`: unlink the quarantine file (or, with no NAS file, remove the Storage replica now), and drop any folder
+     journal entry for the key, leaving the deleted-company lane's own entries alone.
    - `restore`: rename the file back (fsync both directories), and write a `replicate` journal entry so the reconcile
-     copies the replica again.
-   - A stale lease or any finish error: ask the state (below) instead of renaming back unconditionally.
+     copies the replica again (until it does, within about 15 s, the object has no Storage copy).
+   - A stale lease or any finish error: ask the state (below) instead of renaming back unconditionally. On the lane's
+     own error, `qorpera_folder_gc_unlink_abandon(profile, sha, lease)` clears the mark at once, so the file is
+     restored now rather than when the lease expires.
+   - The lane holds the per-object lock throughout, so it calls the journal's unlocked operations, never replication
+     code that takes the same lock.
 
 `qorpera_folder_gc_quarantine_state(profile, sha, lease)` answers one of:
 - `live`: the lease is current, so a lane is in flight; leave the file;
-- `restore`: a catalog row exists; rename back and replicate again;
-- `remove`: no row; unlink, and remove any replica.
+- `restore`: a catalog row exists and the company is not being deleted; rename back and replicate again;
+- `remove`: no row, or the company is being deleted (the deleted-company GC will collect the row); unlink, and remove
+  any replica.
 
 The gateway asks it on start, on each reconcile for each quarantined file, and on the lane's error paths. **The
 quarantine directory is this lane's journal.** No `deleted` tombstone is written, so nothing builds up against the
@@ -503,14 +520,15 @@ and §9.7's amendment keeps a put off a marked hash. Snapshot-v1 routes and thei
 - **C1d-2a, SQL.** One migration:
   - the side table and the `expires_at` index;
   - `qorpera_folder_object_rooted`, the sweep, the claim, unlink begin and finish, and the quarantine state;
-  - chunk rows for version-1 proofs of folder-v2 companies, and their backfill;
+  - chunk rows for version-1 proofs of folder-v2 companies (the proof trigger), and their backfill;
   - the G1 refusals of §9.7, patched into the live functions with digest guards (taken after #594);
   - the 2 s lock budget on every new function.
   - Tests:
     - the sweep and §9.4, including a sweep that falls behind;
     - the claim's re-check, skip-locked, two claims at once, and lease expiry;
     - each refusal of §9.7, with the one-statement check as a negative test;
-    - finish: removed, restore, a stale lease, grace moved, 23503;
+    - finish: removed, restore, a stale lease, grace moved, 23503 (the side row deleted), abandon;
+    - the claim skips a Storage-backed row;
     - the two-environment company of 761: a file committed in one environment, its hash in an abandoned intent of
       the other, is never collected;
     - a committed version-1 file whose chunk an abandoned version-2 intent listed is never collected;
@@ -524,7 +542,8 @@ and §9.7's amendment keeps a put off a marked hash. Snapshot-v1 routes and thei
   - the `/v1/folder-gc` lane with quarantine, replica removal under the mark, and the three-answer recovery;
   - the folder phase of the worker;
   - TS tests: a crash between each step, restore with re-replication, a stale lease, a put racing the rename, the
-    scan against a live lane, two lanes on one object, a re-upload while the replica is removed, and the replication
-    worker putting bytes back during quarantine.
+    scan against a live lane, two lanes on one object, a re-upload while the replica is removed, the replication
+    worker putting bytes back during quarantine, no NAS file (the replica kept until `removed`), a company deletion
+    starting mid-lane, and abandon on a lane error.
 - **C1d-2c:** the bytes without a catalog row, pending entries of collected objects, and the deleted company's
   leftovers (§9.9).
