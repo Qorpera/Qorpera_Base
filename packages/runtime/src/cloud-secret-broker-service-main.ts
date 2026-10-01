@@ -250,7 +250,13 @@ export async function runCloudSecretBrokerServiceMain(
 	// operator adds once OpenAI approves Qorpera. Without it no plan sign-in starts, and plan logins are
 	// neither renewed nor ended here.
 	const chatGptPlanText = await readOptionalCredential(directory, "qorpera-cloud-secret-chatgpt-plan");
-	const chatGptPlanClient = chatGptPlanText === undefined ? undefined : parseChatGptPlanClient(chatGptPlanText);
+	let chatGptPlanClient: ReturnType<typeof parseChatGptPlanClient> | undefined;
+	try {
+		chatGptPlanClient = chatGptPlanText === undefined ? undefined : parseChatGptPlanClient(chatGptPlanText);
+	} catch {
+		// A broken plan registration must not stop every company's vault: plans stay off, and the operator sees it.
+		console.error("Cloud secret broker: the ChatGPT plan credential is invalid; ChatGPT plan sign-ins stay off.");
+	}
 	const chatGptPlan = chatGptPlanClient ? new ChatGptPlanOAuth({ client: chatGptPlanClient }) : undefined;
 	if (chatGptPlan) console.error("Cloud secret broker serves ChatGPT plan sign-ins.");
 	const secrets = [

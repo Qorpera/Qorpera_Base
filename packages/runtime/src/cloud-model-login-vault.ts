@@ -690,11 +690,11 @@ export class CloudModelLoginVault {
 			return undefined;
 		}
 		const renewed = result.login;
-		if (
-			renewed.subject !== current.subject ||
-			Date.parse(renewed.accessExpiresAt) <= Date.parse(current.accessExpiresAt)
-		) {
-			await this.#release(issue, renewal, false, "renewal_invalid");
+		// OpenAI already spent the old refresh token: a pass the database would refuse (not later than the one
+		// it holds) cannot be saved, so the login asks for a new sign-in and the new token is ended.
+		if (Date.parse(renewed.accessExpiresAt) <= Date.parse(current.accessExpiresAt)) {
+			await plan.revoke(renewed.refreshToken, AbortSignal.timeout(SAVE_DEADLINE_MS)).catch(() => undefined);
+			await this.#release(issue, renewal, true, "renewal_invalid");
 			return undefined;
 		}
 		const next = renewal.baseVersion + 1;
