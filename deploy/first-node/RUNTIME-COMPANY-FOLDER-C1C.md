@@ -756,7 +756,7 @@ Decisions:
 - Not in 3a: `member_manage_company_machine` goes with 3f. `member_office_catalog` takes the gc fence before checking
   membership on either core; that is fixed on its own (it affects live companies).
 
-### 6.3 C1c-3b as built (migration 20260929670000, tests 662 and 663)
+### 6.3 C1c-3b as built (migration 20260928319670, tests 662 and 663)
 
 - `qorpera_folder_enter_agent_thread(session, member)`: the prelude of a member's answer in an agent's thread. It reads
   the thread room without a lock, then calls the enter helper with the member (rank 1), the agent (rank 2), the room

@@ -1,5 +1,5 @@
 -- @fixture 300_runtime_wake_bus.test.sql until "-- END WAKE FIXTURE"
--- 20260929550000: while the operator switch is on, the database broadcasts a wake-up to every active
+-- 20260928319550: while the operator switch is on, the database broadcasts a wake-up to every active
 -- orchestrator's private Realtime topic, once per transaction, when claimable work may have appeared. The
 -- orchestrator receives it as anon, on the topic it joined only.
 reset role;

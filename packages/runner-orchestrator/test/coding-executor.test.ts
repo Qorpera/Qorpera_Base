@@ -537,7 +537,7 @@ describe("the coding executor over a session turn", () => {
 
 	it("a turn whose company ran out of computer hours before it began waits in the queue", async () => {
 		const w = world();
-		// Computer hours (20260929760000): begin answers a refusal instead of beginning.
+		// Computer hours (20260928319760): begin answers a refusal instead of beginning.
 		const control: CodingExecutorControl = {
 			call: (method, args, signal) =>
 				method === "qorpera_begin_coding_turn"
