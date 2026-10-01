@@ -39,7 +39,7 @@ insert into public.qorpera_computer_hour_usage (profile_id, metered_at, run_seco
 values ('30000000-0000-4000-8000-000000000010', clock_timestamp(), 20000, 20000);
 update public.qorpera_computer_hour_billing set zero_rule_since = clock_timestamp() - interval '1 second';
 select pg_temp.wake_assert(public.qorpera_computer_hour_zero_sweep(clock_timestamp()) ->> 'ranOut' = '1', 'At zero');
--- Coding machines are held with coding's own switch (20260929760000): while it is off, a new coding
+-- Coding machines are held with coding's own switch (20260928319760): while it is off, a new coding
 -- machine still starts at zero.
 savepoint coding_off;
 set local role service_role;
