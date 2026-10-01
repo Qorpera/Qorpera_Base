@@ -499,8 +499,8 @@ describe("Playwright/X11/shell adapters (test doubles, never the member machine)
 				"\n",
 			),
 		);
-		// The member finishes typing while the snapshot is taken.
-		f.page.evaluate.mockResolvedValueOnce(["hunter2"]).mockResolvedValueOnce(["hunter2-typed"]);
+		// The member starts typing while the snapshot is taken.
+		f.page.evaluate.mockResolvedValueOnce([]).mockResolvedValueOnce(["hunter2-typed"]);
 		const result = await f.perform({ kind: "browser", action: "snapshot" });
 		expect(result).toMatchObject({
 			kind: "json",

@@ -121,6 +121,12 @@ describe("company computer private fields", () => {
 		);
 	});
 
+	it("hides a value the page shows in quotes, as Playwright escapes it", () => {
+		expect(redactCompanyComputerSnapshot('- paragraph: "Saved we\\"ird\\\\pa: ss"', ['we"ird\\pa: ss'])).toBe(
+			'- paragraph: "Saved [hidden]"',
+		);
+	});
+
 	it("never finds a value again across the marker", () => {
 		expect(redactCompanyComputerSnapshot('- textbox "Code": hidden', ["hidden"])).toBe('- textbox "Code": [hidden]');
 		expect(redactCompanyComputerSnapshot("- paragraph: [hidden]x", ["[hidden]x"])).toBe("- paragraph: [hidden]");
