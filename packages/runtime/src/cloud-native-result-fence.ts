@@ -16,7 +16,8 @@ const MAX_FRAME_BYTES = CLOUD_NATIVE_FENCE_FRAME_BYTES;
 // A run is not capped by its number of model requests or their total size
 // (founder, 2026-09-24); replayed request ids are tracked in a rolling window.
 const TRACKED_REQUESTS = 16_384;
-const DEADLINE_MS = 4_000;
+/** From a request's connection to its reply: the checks before release and the reply. */
+export const CLOUD_NATIVE_RESULT_FENCE_DEADLINE_MS = 4_000;
 const ID = /^[A-Za-z0-9_:.-]{1,160}$/;
 
 export interface CloudNativeFenceRequest {
@@ -103,6 +104,10 @@ export async function startCloudNativeResultFence(options: {
 		outputs: readonly CloudNativeFencedResult[],
 		signal: AbortSignal,
 	) => Promise<void>;
+	/** True when recordContextView checks run authority and the read set in the same call that
+	 * records the view: the boundary then leaves its own first check to that call. Asked per
+	 * request, because a spare process is bound to its run later. */
+	recordChecksAuthority?: () => boolean;
 	onFailure: () => void;
 	signal: AbortSignal;
 }): Promise<{ path: string; close: () => Promise<void> }> {
@@ -128,7 +133,7 @@ export async function startCloudNativeResultFence(options: {
 			return;
 		}
 		sockets.add(socket);
-		const timer = setTimeout(fail, DEADLINE_MS);
+		const timer = setTimeout(fail, CLOUD_NATIVE_RESULT_FENCE_DEADLINE_MS);
 		let headerBytes = 0;
 		const header = Buffer.alloc(4);
 		let frame: Buffer | undefined;
@@ -163,7 +168,17 @@ export async function startCloudNativeResultFence(options: {
 				if (requestIds.size > TRACKED_REQUESTS) requestIds.delete(requestIds.values().next().value as string);
 				options.assertSession(request);
 				const review = options.releaseReviewOutputs?.(request);
-				void (review ? Promise.resolve(review) : options.boundary.fenceNativeResults(request.outputs))
+				// Nothing below reaches the socket before recordContextView has returned, so when that
+				// call checks authority itself the boundary need not check first.
+				const checkedByRecord =
+					!review && !!options.recordContextView && options.recordChecksAuthority?.() === true;
+				void (
+					review
+						? Promise.resolve(review)
+						: options.boundary.fenceNativeResults(request.outputs, {
+								authority: checkedByRecord ? "with-record" : "here",
+							})
+				)
 					.then(async (outputs) => {
 						if (stopped || socket.destroyed || options.signal.aborted) return;
 						options.assertSession(request);

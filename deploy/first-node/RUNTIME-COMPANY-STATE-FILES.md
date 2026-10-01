@@ -827,9 +827,14 @@ C1d (bytes):
 - A `folder-v2` run on a node without folder bytes keeps the legacy tool, which refuses `folder-v2`: such a dynamic
   routine run cannot decide, and its final message is refused. Nodes serve folder bytes before any company is
   `folder-v2` (C1c-3).
-- Known limit: the routine is found by its path. If a member renames its file (or the agent's folder) while the run
-  works, the decision is still owed but the file is gone, so the tool answers settled; the kernel then refuses the
-  run's final message. A follow-up finds the routine by its id.
+- The routine is the one the run was woken for: the file at its key must carry its id (F2-6 keys the routine row by
+  the file's id). When it is missing there, or another routine took the name, the agent's routines folder is listed
+  and the file carrying the id is found (files that don't read as routines are passed over). Only when no file holds
+  this routine is it settled. The wake is not read again: that read also claims the run's held coworker messages.
+  The receipt's target stays the woken path, so a retry after a second rename is the same call. A settled answer
+  that shows the routine as read releases that read. Known limit: a rename of the agent's own folder mid-run is not
+  followed (the run context names the folder once); the decision is then answered settled while the kernel may still
+  owe it.
 
 Until the mount's writes are accepted (F3), these tools become thin writers of these files:
 `hire_agent`, `create_group_chat`, `organize_sidebar`, `manage_todo`, `manage_routine` and
