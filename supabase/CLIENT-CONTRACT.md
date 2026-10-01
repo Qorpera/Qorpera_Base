@@ -152,11 +152,21 @@ Founders (2026-09-28, migration 20260928248100): every member with the role
   - work while away on a plan login needs the member's own choice: turn it on
     with `qorpera_set_chatgpt_plan_work_while_away(profile, connection, on)`
     (20260929980000), from Settings' "Work while you're away" switch or the
-    first-routine card's Turn on. It answers for the caller's own plan login in
-    that company only (42501 "ChatGPT plan login is unavailable" for anything
-    else, alike whether or not the connection is a plan), and its answer is the
-    consent call's: `{connection_id, version, allow_autonomous, changed, ...}`,
-    with the version to bind. The kernel never consents a plan login for them:
+    first-routine card's Turn on. It answers for the caller's own active plan
+    login in that company only (42501 "ChatGPT plan login is unavailable" for
+    anything else, alike whether or not the connection is a plan, and for a
+    revoked one), and its answer is the consent call's:
+    `{connection_id, version, allow_autonomous, changed, ...}`, with the version
+    to bind, plus `resumed_routines` (20260929985000). Turning the plan on also
+    starts the agents' routines that wait only for it: paused with
+    `needs_model_account`, running for the caller (`runs_for_user_id`) and paid
+    by this same plan, with no listener, not a routine file, not past its end,
+    and not in a company being deleted. Each moves to the plan's unattended
+    binding and resumes; its content, schedule and agent stay as they were.
+    `resumed_routines` lists their ids (`[]` when none, and always when turning
+    off). A routine that another call holds at that moment stays waiting, so
+    re-read the routine list instead of assuming the card's routine started.
+    The kernel never consents a plan login for them:
     `qorpera_consent_provider_connection_autonomous` refuses to turn a plan on
     (55000 "Turn on work while you're away for this ChatGPT plan in Settings"),
     and an agent's routine save leaves a plan that is off as it is, also while
@@ -665,7 +675,10 @@ Built switched off with plan logins. Show none of it while plan logins are switc
   caller's own active one in that company, 22023 "Not a ChatGPT plan login" for any other login.
 - `qorpera_list_cloud_routines`: each routine also has `pause_reason` (for example `needs_model_account`, a
   routine that waits for a payer) and `runs_for_user_id` (the member its current version runs for: that
-  version's creator).
+  version's creator). When its current version is a resume (20260929985000), `resume_reason` is
+  `plan_turned_on`, `resumed_by_user_id` the member who turned on work while away and `resumed_at` when; all
+  three are null for any other version, so a later save clears them. Show it as "Resumed when <member> turned on
+  work while away".
 
 ## 3. Realtime
 
