@@ -84,14 +84,20 @@ it("saves a group chat as one new folder with group.md, recording its review", a
 	expect(f.operationControl.completeFolderToolOperation).toHaveBeenCalledTimes(1);
 });
 
-it("leaves the member out when asked, and makes agents/groups when the company has none", async () => {
-	const f = await fixture();
+it("leaves the member out when asked, and binds the receipt to the chat and the request", async () => {
+	const f = await fixture({ folders: ["agents/groups"] });
+	const execute = vi.spyOn(CloudNativeToolOperations.prototype, "execute");
 	const result = parse(await f.chats().create({ ...CHAT, includeRequestingMember: false }, f.context));
 	expect(result.outcome).toBe("saved");
-	expect(f.commits[0]?.units.map((unit) => [unit.op, unit.path])).toEqual([
-		["mkdir", "agents/groups"],
-		["new_folder", "agents/groups/launch-week"],
-	]);
+	expect(execute.mock.calls[0]?.[0].operation).toEqual({
+		tool: "create_group_chat",
+		toolVersion: "folder-v2/1",
+		logicalOperationKey: "group:chat-1",
+		arguments: { name: CHAT.name, purpose: CHAT.purpose, coworkerIds: COWORKERS, includeRequestingMember: false },
+		target: { chatId: result.chat.id },
+		requiresCompanyRevision: true,
+	});
+	execute.mockRestore();
 	const group = parseCompanyStateFile(
 		"agents/groups/launch-week/group.md",
 		f.text("agents/groups/launch-week/group.md") ?? "",
@@ -99,13 +105,23 @@ it("leaves the member out when asked, and makes agents/groups when the company h
 	expect(group?.ok && group.file.kind === "group" && group.file.people).toEqual([]);
 });
 
-it("numbers the handle past the names taken, and replays a finished call from its receipt", async () => {
+it("numbers the handle past the chats there, and replays a finished call from its receipt", async () => {
 	const f = await fixture({ folders: ["agents/groups", "agents/groups/launch-week"] });
 	const first = parse(await f.chats().create(CHAT, f.context));
 	expect(first.chat.folder).toBe("agents/groups/launch-week-2");
+	// Only the chats under agents/groups count: "groups" is reserved under agents/, not here.
+	const groups = parse(
+		await f
+			.chats()
+			.create(
+				{ ...CHAT, operationKey: "chat-2", name: "Groups" },
+				{ ...f.context, callId: "call-2", actionReviewId: "5b0c2d3e-3333-4333-8333-333333333333" },
+			),
+	);
+	expect(groups.chat.folder).toBe("agents/groups/groups");
 	expect(parse(await f.chats().create(CHAT, f.context))).toEqual(first);
-	expect(f.commits).toHaveLength(1);
-	expect(f.recordings).toHaveLength(1);
+	expect(f.commits).toHaveLength(2);
+	expect(f.recordings).toHaveLength(2);
 });
 
 it("checks the file before the review, and refuses a call without the review's approval", async () => {

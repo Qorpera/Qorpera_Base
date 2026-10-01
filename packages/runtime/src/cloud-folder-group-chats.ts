@@ -1,9 +1,4 @@
-import {
-	COMPANY_STATE_RESERVED_AGENT_NAMES,
-	freeCompanyStateName,
-	parseCompanyStateFile,
-	writeGroupFile,
-} from "@qorpera/cloud-client/company-state-files";
+import { freeCompanyStateName, parseCompanyStateFile, writeGroupFile } from "@qorpera/cloud-client/company-state-files";
 import type { CloudCompanyFolderClient, CloudCompanyFolderUnit } from "./cloud-company-folder-client.ts";
 import { hashedId, invalidMessage } from "./cloud-folder-hiring.ts";
 import type { CloudNativeToolIdentity } from "./cloud-native-tool-authority.ts";
@@ -98,25 +93,23 @@ export class CloudFolderGroupChats {
 		const runId = this.#identity.runId;
 		const chatId = hashedId("qorpera.folder-group/v1", runId, request.operationKey);
 		const text = this.#text(request, chatId);
-		// The handle: the name as a folder name, numbered past the names taken (§1 "Names").
-		const units: CloudCompanyFolderUnit[] = [];
-		const listing = (await this.#folder.read(GROUPS, signal)).entry
-			? await this.#folder.listAll(GROUPS, { maxEntries: MAX_GROUPS }, signal)
-			: null;
-		// The folder core never invents a parent folder.
-		if (!listing) units.push({ op: "mkdir", path: GROUPS });
-		const taken = new Set<string>(COMPANY_STATE_RESERVED_AGENT_NAMES);
-		for (const entry of listing?.entries ?? []) taken.add((entry.path.split("/").at(-1) ?? "").toLowerCase());
+		// The handle: the name as a folder name, numbered past the chats there (§1 "Names"). agents/groups is seeded and
+		// can be neither deleted nor moved, so it is always there.
+		const listing = await this.#folder.listAll(GROUPS, { maxEntries: MAX_GROUPS }, signal);
+		const taken = new Set<string>();
+		for (const entry of listing.entries) taken.add((entry.path.split("/").at(-1) ?? "").toLowerCase());
 		const handle = freeCompanyStateName(request.name, "group", taken);
 		const root = `${GROUPS}/${handle}`;
 		const problems = this.#problems(`${root}/group.md`, text);
 		if (problems.length)
 			throw new CloudToolRefusal(invalidMessage(problems, "This group chat cannot be saved as the company's files"));
-		units.push({
-			op: "new_folder",
-			path: root,
-			contents: [{ path: "group.md", kind: "file", content: { text, mediaType: "text/markdown" } }],
-		});
+		const units: CloudCompanyFolderUnit[] = [
+			{
+				op: "new_folder",
+				path: root,
+				contents: [{ path: "group.md", kind: "file", content: { text, mediaType: "text/markdown" } }],
+			},
+		];
 		return this.#operations.execute({
 			operation: {
 				tool: "create_group_chat",
@@ -146,7 +139,7 @@ export class CloudFolderGroupChats {
 					{ reviewId, receiptId },
 					performSignal,
 				);
-				const saved = committed.units.at(-1);
+				const saved = committed.units[0];
 				if (!saved) throw new Error("Company folder commit answered no unit");
 				const output = cloudToolJsonText({
 					schema: "qorpera.group-chat-receipt/v2",

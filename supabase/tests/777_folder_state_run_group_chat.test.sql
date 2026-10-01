@@ -2,13 +2,15 @@
 -- Company state files, thin writers W4b (deploy/first-node/RUNTIME-COMPANY-STATE-FILES.md §5; RUNTIME-COMPANY-FOLDER-C2.md
 -- §5): a run's group chat, as create_group_chat saves it. One new folder agents/groups/<handle> with group.md, staged by
 -- the run and saved with the review recorded for exactly that change set. The commit opens the chat's room and
--- conversation, with its agents and the run's requester as members. Without the review nothing is saved, and a run's
--- chat may add only the member its run works for. Runs are 647's hand-built runs, on 769's helpers.
+-- conversation, with its agents and the run's requester as members. Without the review nothing is saved, a run's
+-- chat may add only the member its run works for, and only active agents. Runs are 647's hand-built runs, on 769's helpers.
 
 create function pg_temp.group_text(p_id uuid, p_agents uuid[], p_people uuid[]) returns text language sql as $$
-	select format(E'---\nid: %s\nname: Launch\nagents:\n%speople:\n%s---\nPlan the launch.\n', p_id,
+	-- As writeGroupFile writes it: an empty list is "[]".
+	select format(E'---\nid: %s\nname: Launch\nagents:\n%s%s---\nPlan the launch.\n', p_id,
 		(select string_agg(format(E'  - %s\n', a), '') from unnest(p_agents) a),
-		coalesce((select string_agg(format(E'  - %s\n', a), '') from unnest(p_people) a), ''))
+		case when coalesce(cardinality(p_people), 0) = 0 then E'people: []\n'
+			else E'people:\n' || (select string_agg(format(E'  - %s\n', a), '') from unnest(p_people) a) end)
 $$;
 create function pg_temp.group_parse(p_id uuid, p_agents uuid[], p_people uuid[]) returns jsonb language sql as $$
 	select jsonb_build_object('kind','group','id',p_id,'name','Launch','subtitle',null,'agents',to_jsonb(p_agents),
@@ -54,11 +56,20 @@ begin
 	u := pg_temp.chat(p, 'launch-other', '77700000-0000-4000-8000-0000000000c2', array[c_a, c_b], array[c_other]);
 	r := pg_temp.record(b, pg_temp.action(b, 'call-chat-2', 'allow', 'delegation', 'create_group_chat'), u);
 	perform pg_temp.expect(pg_temp.commit(p, 'run-chat-0002', u, (r ->> 'reviewId')::uuid), 1, 'refused', 'structured_rule');
-	-- 4. Without the member, and with one agent too few: the file's own rule.
+	-- 4. An agent the chat adds must be active: an archived coworker is refused (restored after).
+	perform pg_temp.fx(format('update public.qorpera_profile_staff set employment_status = %L where profile_id = %L and staff_agent_id = %L',
+		'archived', '63400000-0000-4000-8000-000000000010', c_b));
+	u := pg_temp.chat(p, 'launch-archived', '77700000-0000-4000-8000-0000000000c4', array[c_a, c_b], array[c_member]);
+	r := pg_temp.record(b, pg_temp.action(b, 'call-chat-4', 'allow', 'delegation', 'create_group_chat'), u);
+	perform pg_temp.expect(pg_temp.commit(p, 'run-chat-0004', u, (r ->> 'reviewId')::uuid), 1, 'refused', 'structured_rule');
+	perform pg_temp.fx(format('update public.qorpera_profile_staff set employment_status = %L where profile_id = %L and staff_agent_id = %L',
+		'active', '63400000-0000-4000-8000-000000000010', c_b));
+	-- 5. Without the member, and with one agent too few: the file's own rule.
 	u := pg_temp.chat(p, 'launch-alone', '77700000-0000-4000-8000-0000000000c3', array[c_a], null);
 	r := pg_temp.record(b, pg_temp.action(b, 'call-chat-3', 'allow', 'delegation', 'create_group_chat'), u);
 	perform pg_temp.expect(pg_temp.commit(p, 'run-chat-0003', u, (r ->> 'reviewId')::uuid), 1, 'refused', 'structured_invalid');
-	if exists (select 1 from public.qorpera_company_rooms where id in ('77700000-0000-4000-8000-0000000000c2', '77700000-0000-4000-8000-0000000000c3')) then
+	if exists (select 1 from public.qorpera_company_rooms where id in ('77700000-0000-4000-8000-0000000000c2', '77700000-0000-4000-8000-0000000000c3',
+			'77700000-0000-4000-8000-0000000000c4')) then
 		raise exception 'A refused chat opens nothing'; end if;
 end $$;
 
