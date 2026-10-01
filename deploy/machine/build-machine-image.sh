@@ -16,9 +16,11 @@
 # the builder marker. The observer counts it against that space, so the node
 # stays ready while it builds; anywhere else it would be an unregistered
 # instance that makes the node unavailable (RUNTIME-HOST-INVENTORY.md). It
-# needs 4 CPUs and 8 GiB of the space, so build when the space is empty. The
-# image is then copied to the image store the machines project uses. The
-# script deletes the builder on every exit path.
+# needs 4 CPUs and 8 GiB of the space, so build when the space is empty. A
+# build space that shares the default project's images (node 2's does) publishes
+# straight into the store the machines project uses; one with its own store
+# has the image exported and imported there. The script deletes the builder on
+# every exit path.
 set -euo pipefail
 PACKAGE=${1:?guest package directory}
 NODE_VERSION=${2:?Node.js version, for example 24.9.0}
@@ -45,14 +47,15 @@ for artifact in json.loads((root / "manifest.json").read_text())["artifacts"]:
 PY
 
 STAMP=$(date -u +%Y%m%d%H%M%S)
-BUILDER="qorpera-machine-build-$STAMP"
+BUILDER="qorpera-machine-build-$STAMP-$$"
 ALIAS="qorpera-machine-$STAMP"
 lx() { lxc --project "$PROJECT" "$@"; }
 # A project without its own images uses the default project's store.
 store() { if [[ $(lxc project get "$1" features.images) == true ]]; then echo "$1"; else echo default; fi; }
-[[ $PROJECT != "$MACHINES" ]] || { echo "the builder must not run among machines: give the node's build space" >&2; exit 1; }
+[[ $PROJECT != "$MACHINES" && $PROJECT != default ]] || { echo "the builder must run in the node's build space, not in $PROJECT" >&2; exit 1; }
 lxc project show "$MACHINES" >/dev/null || { echo "no project $MACHINES: create it first (README)" >&2; exit 1; }
-[[ -z $(lx list -f csv -c n) ]] || { echo "the build space $PROJECT is in use: build when it is empty" >&2; exit 1; }
+IN_SPACE=$(lx list -f csv -c n)
+[[ -z $IN_SPACE ]] || { echo "the build space $PROJECT is in use: build when it is empty" >&2; exit 1; }
 EXPORT=
 cleanup() {
 	lx delete --force "$BUILDER" >/dev/null 2>&1 || true
@@ -113,12 +116,14 @@ lx stop "$BUILDER"
 lx publish "$BUILDER" --alias "$ALIAS" description="Qorpera company machine $STAMP (Ubuntu 26.04, Docker, Node $NODE_VERSION)"
 FINGERPRINT=$(lx image info "$ALIAS" | awk '/^Fingerprint:/ {print $2}')
 [[ $FINGERPRINT =~ ^[0-9a-f]{64}$ ]] || { echo "no image fingerprint" >&2; exit 1; }
-# Machines are made from the store their project uses; the build space keeps no copy. Export and import keep the
-# fingerprint (copying between projects would need LXD to listen on the network).
+echo "published $FINGERPRINT (delete it by hand if this build fails from here)" >&2
+# Machines are made from the store their project uses. A build space with its own store keeps no copy: export and
+# import keep the fingerprint (copying between projects would need LXD to listen on the network).
 if [[ $(store "$PROJECT") != "$(store "$MACHINES")" ]]; then
 	EXPORT=$(mktemp -d)
 	lx image export "$FINGERPRINT" "$EXPORT/image" >/dev/null
 	# One file (a published image) or two (metadata and image.root).
+	shopt -s nullglob
 	PARTS=("$EXPORT"/*)
 	if [[ -f $EXPORT/image.root ]]; then
 		(( ${#PARTS[@]} == 2 )) || { echo "unexpected export: ${PARTS[*]}" >&2; exit 1; }
@@ -129,7 +134,7 @@ if [[ $(store "$PROJECT") != "$(store "$MACHINES")" ]]; then
 	fi
 	lxc --project "$MACHINES" image import "${PARTS[@]}" --alias "$ALIAS" >/dev/null
 	rm -rf -- "$EXPORT"; EXPORT=
-	lx image delete "$FINGERPRINT"
+	lx image delete "$FINGERPRINT" || echo "the build space still holds $FINGERPRINT: delete it by hand" >&2
 fi
 [[ $(lxc --project "$MACHINES" image info "$FINGERPRINT" | awk '/^Fingerprint:/ {print $2}') == "$FINGERPRINT" ]] ||
 	{ echo "the image is not in the store of project $MACHINES" >&2; exit 1; }

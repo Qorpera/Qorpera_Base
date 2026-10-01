@@ -73,7 +73,8 @@ The steps below need root on the node and a maintenance window. The coordinator 
    `deploy/machine/build-machine-image.sh /task-owned/machine-guest <node-version> <node-sha256> qorpera-build qorpera0 qorpera-vm machines > image-build.json`
    - The builder is a build machine there (no profiles, its own 10 GiB root, the smallest machine disk, the isolation NIC, `boot.autostart=false`, `user.qorpera.image_builder=true`), so the node stays `ready` while it builds. It takes 4 CPUs and 8 GiB of the space, and the script refuses while the space holds anything else, such as a runtime image build.
    - Anywhere else the builder is an unregistered instance and the node turns unavailable until it is deleted. The script refuses the machines project.
-   - The image ends up in the store the `machines` project uses (the default project's, since `machines` has no images of its own), exported and imported with the same fingerprint. The build space keeps no copy.
+   - The image ends up in the store the `machines` project uses (the default project's, since `machines` has no images of its own). A build space that shares that store, as node 2's does (`features.images=false`, deploy/first-node/NODE-BUILDER-COEXISTENCE.md), publishes straight into it. One with its own store has the image exported and imported with the same fingerprint, and keeps no copy.
+   - The builder joins the build space's network, not `machine-net`, to fetch packages and Node.js. It holds no credential and is deleted when the build ends.
    - The builder NIC's IPv6 filtering needs the `br_netfilter` module, which nodes load at bootstrap (`deploy/first-node/bootstrap-lxd-host.sh`).
    - Take the Node.js tarball's sha-256 from nodejs.org's `SHASUMS256.txt`.
 4. **Compute the policy.**

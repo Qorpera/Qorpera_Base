@@ -901,8 +901,12 @@ describe("image build space (identical nodes, 2026-09-28)", () => {
 		g.inventory.instances.push(builder("image-build", "1", "5GiB"));
 		expect(reconcileRuntimeNodeInventory(g.inventory, g.context).entries[4].reason).toBe("BUILD_SPACE_EXCEEDED");
 	});
-	it("accepts the company machine image's builder exactly as build-machine-image.sh makes it", () => {
-		// As nested LXD 6.9 reported it, the same while stopped and running (node 2's test machine, 2026-10-02).
+	it.each<[string, number]>([
+		["Stopped", 102],
+		["Running", 103],
+	])("accepts the company machine image's builder as LXD reported it, %s", (status, statusCode) => {
+		// The record nested LXD 6.9 gave for build-machine-image.sh's builder (node 2's test machine, 2026-10-02):
+		// one shape from creation to deletion, stopped and running.
 		const f = withSpace(),
 			config = {
 				"boot.autostart": "false",
@@ -946,8 +950,8 @@ describe("image build space (identical nodes, 2026-09-28)", () => {
 			devices,
 			expandedDevices: devices,
 			profiles: [],
-			status: "Running",
-			statusCode: 103,
+			status,
+			statusCode,
 		});
 		f.context.policy = f.policy = {
 			...f.policy,
