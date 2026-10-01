@@ -565,9 +565,9 @@ The photo, and a note with the time node 2 was back up.
 | `reason` | with `returned` and `declined` | one line, 1–500 bytes: why it went back, or why the person can't |
 | `secret` | no | one line, 1–100 bytes: the label of the one secret the person enters ("Code from the SMS") |
 | `secret_state` | with `secret` | `asked` or `saved`; the value goes to the vault and never into the folder |
-| `computer` | no | the computer the person takes over to do the step (A1) |
+| `computer` | no | the Company Computer the person takes over (its id); the platform opens the asking agent's current screen on it (A1) |
 | `connection` | no | the `id` of the `connections/` file the step is for (A1) |
-| `step` | no | the kind of step a website demands of a person (A1): `captcha`, `phone_code`, `id_check`, `payment`, `create_account` |
+| `step` | no | the kind of step a website demands of a person (A1): `sign_in`, `captcha`, `phone_code`, `id_check`, `payment`, `create_account`, `other` |
 | body | yes | up to 32 KiB trimmed: `## Why`, `## Steps`, `## Done looks like` |
 
 - **Steps:** the parse lists the `- [ ]` and `- [x]` lines under `## Steps` (to the next `## `
