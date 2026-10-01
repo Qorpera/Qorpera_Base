@@ -24,8 +24,8 @@ create function pg_temp.manifest_v2(p_text text) returns text language sql immut
 		case when p_text = '' then '' else format('{"sha256":"%s","bytes":%s}', encode(extensions.digest(convert_to(p_text, 'utf8'), 'sha256'), 'hex'),
 			octet_length(convert_to(p_text, 'utf8'))) end)
 $$;
--- Opens an intent for a manifest as the actor, confirms the objects it does not have yet (the manifest's chunks and the
--- manifest itself, by hash and size), and seals it.
+-- Opens an intent for a manifest as the actor, confirms each object the open did not report present (the manifest's
+-- chunks and the manifest itself, by hash and size, as the gateway does once it has stored them), and seals it.
 create function pg_temp.seal_v2(p_env uuid, p_actor jsonb, p_manifest text) returns jsonb language plpgsql as $$
 declare v_open jsonb := public.qorpera_folder_open_upload(p_env, p_actor, p_manifest); v_object jsonb;
 begin
@@ -52,7 +52,8 @@ begin
 	return v_seal -> 'file';
 end $$;
 -- A version-2 file is held to possession (C1D §3): before an actor other than the platform commits units, it stages
--- each of their files itself, as its own upload would. An actor that may not stage is left to the commit's refusal.
+-- each of their files itself, as its own upload would. An actor that may not stage (42501) or a stopped company (55000)
+-- is left to the commit's own refusal; any other error is a fixture defect and surfaces.
 create function pg_temp.possess(p_env uuid, p_actor jsonb, p_units jsonb) returns void language plpgsql as $$
 declare v_manifest text;
 begin
@@ -64,16 +65,9 @@ begin
 		where refs.f is not null loop
 		begin
 			perform pg_temp.seal_v2(p_env, p_actor, v_manifest);
-		exception when others then null;
+		exception when insufficient_privilege or object_not_in_prerequisite_state then null;
 		end;
 	end loop;
-end $$;
--- A commit in any environment, as its actor: takes possession of the actor's files first.
-create function pg_temp.commit_in(p_env uuid, p_actor jsonb, p_key text, p_units jsonb, p_review uuid default null)
-returns jsonb language plpgsql as $$
-begin
-	perform pg_temp.possess(p_env, p_actor, p_units);
-	return public.qorpera_folder_commit(p_env, p_actor, p_key, p_units, p_review);
 end $$;
 
 -- A structured entry as the TS parser sends it.
