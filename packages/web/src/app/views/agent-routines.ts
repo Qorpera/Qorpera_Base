@@ -11,7 +11,7 @@ import {
 	parseCloudRoutineTrigger,
 } from "@qorpera/cloud-client/cloud-routines";
 import { planLogin, type WebMemberConnection } from "../../cloud/native-subscription.ts";
-import type { WebRoutines } from "../../cloud/routines.ts";
+import type { WebRoutine, WebRoutines } from "../../cloud/routines.ts";
 import type { HostedStaffAgent } from "../../cloud/types.ts";
 import { dialogPageHeader } from "../../ui/dialog.ts";
 import { button, fmtTime, h, icon, replace } from "../../ui/dom.ts";
@@ -27,6 +27,8 @@ export interface AgentRoutineAccess {
 	accounts: (signal: AbortSignal) => Promise<NativeExecutionConnections>;
 	/** Owners and admins create, change, pause and resume routines. */
 	canManage: () => boolean;
+	/** A member's name, for a routine that started again when they turned on work while away. */
+	memberName?: (userId: string) => string | undefined;
 }
 
 /** Routine access for the signed-in member, or none when the page was not given the routine calls. */
@@ -41,6 +43,7 @@ export function routineAccessFor(
 		routines,
 		accounts: (signal) => accounts.listConnections(signal),
 		canManage: () => company.store.get().team?.capabilities.authorize === true,
+		memberName: (userId) => company.store.get().team?.members.find((member) => member.userId === userId)?.displayName,
 	};
 }
 
@@ -205,7 +208,7 @@ export class AgentRoutines {
 	readonly #access: AgentRoutineAccess | undefined;
 	readonly #signal: AbortSignal;
 	readonly #back: (() => void) | undefined;
-	#routines: CloudRoutine[] = [];
+	#routines: WebRoutine[] = [];
 	#runs: CloudRoutineOccurrence[] = [];
 	#accounts: WebMemberConnection[] = [];
 	#busy = false;
@@ -327,7 +330,7 @@ export class AgentRoutines {
 	}
 	/** One routine as a card: its name, when it runs and a switch that pauses it.
 	 * Opened, the instruction reads beside the facts and Edit appears by the switch. */
-	#card(routine: CloudRoutine, manage: boolean): HTMLElement {
+	#card(routine: WebRoutine, manage: boolean): HTMLElement {
 		const id = routine.routineId;
 		const open = this.#open === id;
 		const last = this.#runs.find((run) => run.routineId === id);
@@ -443,6 +446,20 @@ export class AgentRoutines {
 								? fact(t("Next run"), fmtTime(routine.nextRunAt))
 								: null,
 							concluded ? fact(t("Done"), concluded) : null,
+							// Started again by the platform when its member turned on work while away for the
+							// ChatGPT plan that pays (20260929985000), while that version is current.
+							routine.status === "active" && routine.resumeReason === "plan_turned_on" && routine.resumedAt
+								? fact(
+										t("Resumed"),
+										t("When {name} turned on “Work while you're away”", {
+											name:
+												(routine.resumedByUserId && this.#access?.memberName?.(routine.resumedByUserId)) ||
+												t("a member"),
+										}),
+										" · ",
+										fmtTime(routine.resumedAt),
+									)
+								: null,
 							fact(t("Last run"), last ? runLabel(last) : t("Has not run yet")),
 						),
 					),
