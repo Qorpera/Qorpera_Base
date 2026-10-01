@@ -58,6 +58,10 @@ export function fakeOpenAi(options: FakeOpenAiOptions = {}) {
 		/** The earliest renewal as sent, overriding `earliestRefreshIn` (to test units and bounds). */
 		earliestRefreshAt: undefined as undefined | number | string,
 		keysStatus: 200,
+		/** A refresh answer carries no new refresh token, and the old one stays live (RFC 6749 6). */
+		omitRefreshTokenOnRefresh: false,
+		/** Access tokens carry no `scope` claim. */
+		omitScopeClaim: false,
 	};
 	const signers = new Map<string, { key: KeyObject; alg: "RS256" | "ES256" }>([
 		["key-1", { key: privateKey, alg: "RS256" }],
@@ -74,12 +78,17 @@ export function fakeOpenAi(options: FakeOpenAiOptions = {}) {
 		return `${signed}.${signature.toString("base64url")}`;
 	};
 
-	/** Publishes another signing key: an EC P-256 key, or an RSA key whose published alg differs. */
-	const addKey = (kid: string, kind: "ec" | "rsa-mislabelled") => {
-		if (kind === "ec") {
-			const pair = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+	/** Publishes another signing key: an EC P-256 or P-384 key, an RSA key whose published alg differs, or
+	 * an RSA key of 1024 bits. */
+	const addKey = (kid: string, kind: "ec" | "ec-p384" | "rsa-mislabelled" | "rsa-1024") => {
+		if (kind === "ec" || kind === "ec-p384") {
+			const pair = generateKeyPairSync("ec", { namedCurve: kind === "ec" ? "prime256v1" : "secp384r1" });
 			jwks.push({ ...pair.publicKey.export({ format: "jwk" }), kid, use: "sig", alg: "ES256" });
 			signers.set(kid, { key: pair.privateKey, alg: "ES256" });
+		} else if (kind === "rsa-1024") {
+			const pair = generateKeyPairSync("rsa", { modulusLength: 1024 });
+			jwks.push({ ...pair.publicKey.export({ format: "jwk" }), kid, use: "sig", alg: "RS256" });
+			signers.set(kid, { key: pair.privateKey, alg: "RS256" });
 		} else {
 			const pair = generateKeyPairSync("rsa", { modulusLength: 2048 });
 			jwks.push({ ...pair.publicKey.export({ format: "jwk" }), kid, use: "sig", alg: "ES256" });
@@ -95,21 +104,22 @@ export function fakeOpenAi(options: FakeOpenAiOptions = {}) {
 					.filter((scope) => scope !== "chatgpt.tokens.use.direct")
 					.join(" ")
 			: grant.scope;
+		const keepRefresh = refresh_ && behaviour.omitRefreshTokenOnRefresh;
 		const refresh = `rt_${randomBytes(24).toString("base64url")}`;
-		refreshTokens.set(refresh, grant);
+		if (!keepRefresh) refreshTokens.set(refresh, grant);
 		return {
 			access_token: jwt({
 				sub: grant.subject,
 				aud: "https://api.openai.com/v1",
 				client_id: clientId,
-				scope,
+				...(behaviour.omitScopeClaim ? {} : { scope }),
 				iss: ISSUER,
 				iat: issued,
 				nbf: issued,
 				exp: issued + behaviour.accessLifeSeconds,
 				jti: randomBytes(8).toString("hex"),
 			}),
-			refresh_token: refresh,
+			...(keepRefresh ? {} : { refresh_token: refresh }),
 			...(idToken
 				? {
 						id_token: jwt({
@@ -215,8 +225,10 @@ export function fakeOpenAi(options: FakeOpenAiOptions = {}) {
 			if (spent.has(refresh)) return json(400, { error: "refresh_token_reused" });
 			const grant = refreshTokens.get(refresh);
 			if (!grant) return json(400, { error: "invalid_grant" });
-			refreshTokens.delete(refresh);
-			spent.add(refresh);
+			if (!behaviour.omitRefreshTokenOnRefresh) {
+				refreshTokens.delete(refresh);
+				spent.add(refresh);
+			}
 			return json(200, tokensFor(grant, false, true));
 		}
 		return json(400, { error: "unsupported_grant_type" });
@@ -251,7 +263,8 @@ export function fakeOpenAi(options: FakeOpenAiOptions = {}) {
 			},
 			false,
 		);
-		return tokens;
+		// Not a refresh answer: it always carries a refresh token and its scope.
+		return { ...tokens, refresh_token: tokens.refresh_token as string, scope: tokens.scope as string };
 	};
 
 	return {
