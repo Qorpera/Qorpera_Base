@@ -218,7 +218,7 @@ records what it waits for.
   retirement (D3b above; "Office retirement" in RUNTIME-OFFICE-RETENTION.md), and coding workspaces
   `workers/<company>/` (the coding executor cannot remove them alone: their files belong to session
   users; not built yet).
-- **ChatGPT plan logins** (Sign in with ChatGPT slice 1c, migration 20260929916000; built switched off with
+- **ChatGPT plan logins** (Sign in with ChatGPT slice 1c, migration 20260929960000; built switched off with
   the login kind). Each finisher pass revokes the connections of the company's members' plan logins, as for
   a member who left. A connection that still pays a queued or leased job waits for a later pass: the stop
   skipped that job because a run host holds it (job before fence), and revoking now would wait for the job
@@ -230,7 +230,7 @@ records what it waits for.
   - The purging pass counts such logins in the database log: search the Postgres logs for
     `ChatGPT plan login(s) not ended at OpenAI before the purge` (the line names the company). The member can
     also remove Qorpera's access in their ChatGPT settings.
-  - A plan sign-in can complete for a company being deleted until slice 1b (#614, migration 20260929913000)
+  - A plan sign-in can complete for a company being deleted until slice 1b (#614, migration 20260929950000)
     is live; the next pass revokes it again. The platform switch waits for #614 (RUNTIME-LOGIN-VAULT.md).
 - **D6** upstream token revoke on Disconnect and on delete (migration 20260928269500;
   `cloud-connector-token-revocation.ts`). Until now Disconnect only marked the secret revoked, and a

@@ -81,7 +81,7 @@ $a0$,
 		$r0$			perform public.qorpera_revoke_company_connector_secrets(p_profile_id);
 			v_holdings := v_holdings || jsonb_build_object('connector_tokens',
 				public.qorpera_company_token_revocations_open(p_profile_id));
-			-- Members' ChatGPT plan logins end at OpenAI before the purge (Sign in with ChatGPT, 20260929916000): their
+			-- Members' ChatGPT plan logins end at OpenAI before the purge (Sign in with ChatGPT, 20260929960000): their
 			-- connections are revoked, and the vault's upkeep ends each login, as for a member who left.
 			perform public.qorpera_revoke_company_chatgpt_plan_logins(p_profile_id);
 			v_holdings := v_holdings || jsonb_build_object('chatgpt_plan_logins',
@@ -99,7 +99,7 @@ $a2$,
 $r2$];
 	v_count integer;
 begin
-	if position('20260929916000' in v_definition) > 0 then return; end if;
+	if position('20260929960000' in v_definition) > 0 then return; end if;
 	for v_index in 1 .. array_length(v_pairs, 1) / 2 loop
 		v_count := (length(v_definition) - length(replace(v_definition, v_pairs[2 * v_index - 1], '')))
 			/ length(v_pairs[2 * v_index - 1]);

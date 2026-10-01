@@ -629,7 +629,7 @@ https://claude.ai/artifact/UWehPVysVzAmWcwvkuU6on.
   above are in place, the callback Edge Function is deployed with OpenAI's registered address, every
   provider host runs slice 4, a usage limit stops the run instead of moving it to another login (#601,
   migration `20260928349910`, live), the plan rules (#614, slice 1b) are live, and company deletion ends plan
-  logins at OpenAI (slice 1c, migration `20260929916000`; see RUNTIME-COMPANY-DELETE.md; it relies on #614,
+  logins at OpenAI (slice 1c, migration `20260929960000`; see RUNTIME-COMPANY-DELETE.md; it relies on #614,
   which keeps a plan sign-in from completing for a company being deleted).
 - **First real sign-in (one company, the founder's own plan).** The fake OpenAI in the tests cannot prove
   what only OpenAI's endpoint answers. With one company switched on, sign in once and renew once, and
