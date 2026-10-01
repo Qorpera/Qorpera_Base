@@ -11,20 +11,20 @@
     ],
     "fastMode": "thread"
   },
-  "nativeBinarySha256": "a7531592e69dbbeeda6c11f279547e5d48328eb54beec98ac6511f67f18194df",
+  "nativeBinarySha256": "faec1ee9f91e942869af6b8e4c15acfd92c9a6cb94bce35a70772fa38ce7071e",
   "components": {
     "kernel": "cb3ce3d91759c05311dc3b2bc212f5e5729be1fbf21e894210a5c9a26d3746e8",
     "constitution": "8641ce64101c52ec5f11f49fe42e70d7300548ecb30314bd59de91714c146d3d",
     "toolCatalog": "ab18ee39a27f1c4d8be90e07f08314e7f2833221d7b0b569007840deff808fc8",
     "wakeAndSilence": "1c715fff041f078b568f134de5906affd43479f83126fd44298a19cd7203b55c",
     "contextComposer": "dad18e7df8c012879bdbcfb9f95e2d7690a6b17ded02959ef35c672892a25298",
-    "providerBootstrap": "f342c16d962f393db6e4f205ed4e5c7d8a73fa0c3f2605de7c42c255cdc15a39",
-    "authorization": "f3963c750d15aa25ea2b5ff32a44ab069f43dbd69052481b62659160f036f5fe",
+    "providerBootstrap": "7bd8c4f5dd5027b6642e383cf20032d8ca2471e6b0e29f52b85989858731bf0c",
+    "authorization": "e7887e99a38e43f28dc47b1016fdc14d7d935e8e13b3a8f0f435dfa8cb202eba",
     "inboundSafety": "bd73e412e81a1858724ba44e543d8ee0ebac981245a335bd5b375655d718ee00",
     "outboundSafety": "f36329805249357b95d05de41af984b3cdd8c5c61b6cd66b0789ab333adf6998",
     "interactionSurfaces": "28983f832341b14eda7e3ffe45cb805d161d59f0f412ccbba094c34df99672b4",
     "workerLifecycle": "52b90311867633ef34d3e988eb13574681bd657a11e1e829d3b3ab894fb21cc9",
-    "memoryAndSkills": "38c00bfde4a0b80158f28f4b8e287120f7df6f166b6fbdfb4b4b0fb5e05867a0"
+    "memoryAndSkills": "d48b7bbb29137caa610da3d195f366cfe4d3714176836d3f04d6e836b0cbb3da"
   },
   "implementation": {
     "deploy/coding-worker/command-authority.ts": "5d3bd8e12e268f776f2a38ecec9c757331815acc9219ba2568538f6f67cc5454",
@@ -41,9 +41,9 @@
     "deploy/coding-worker/qorpera-coding.slice": "d053896f46aa3dc1d2d9a400a3ba26ebc1e1e68b16c6411c28f8eac227f14539",
     "deploy/coding-worker/repository-credentials.ts": "2b0165633dc3ed48c5524eba0421d98f163e2cd24a514345d1ea6cd48ce12847",
     "deploy/ephemeral-runner/image/run-job": "e479e861b75ffe1d25090c7e7914c6f59b6d77819619e9b882c2c993e2dcfe4e",
-    "deploy/first-node/native-codex/0001-cloud-result-fence.patch": "c2fb89c5b522024967bd258fd7862c500c7906f3e60251e7fc730753d70178e6",
-    "deploy/first-node/native-codex/linux-x64-artifact.json": "36b2cca5d6c550768c3fe275e2ec476785e2523444950236db6abff619c3b439",
-    "deploy/first-node/native-codex/source.json": "7e186f42652f5e527868159ce171695611fcbce5909ce41489c6882c6cca1077",
+    "deploy/first-node/native-codex/0001-cloud-result-fence.patch": "e7cc4f238d860b95d4b6e8b0d4f5f6e8a72298ca4d1b50445638363dd4cca974",
+    "deploy/first-node/native-codex/linux-x64-artifact.json": "ca95898ff1c2078379b90eb2e2689ddfb521a717062c555897abe78f714f0de8",
+    "deploy/first-node/native-codex/source.json": "b697a170a73ea4750b1f68811b1077d43c74b5be263cff52b85778ddf9ae6629",
     "deploy/lxd-company-computer-guest/backdrops/qorpera-screen-bloom-00.png": "dce0249f03ddf3d81ea5c3e754e75f32e3765a2b87287679d05f9cc3419bd30d",
     "deploy/lxd-company-computer-guest/backdrops/qorpera-screen-bloom-01.png": "dce0249f03ddf3d81ea5c3e754e75f32e3765a2b87287679d05f9cc3419bd30d",
     "deploy/lxd-company-computer-guest/backdrops/qorpera-screen-bloom-02.png": "dce0249f03ddf3d81ea5c3e754e75f32e3765a2b87287679d05f9cc3419bd30d",
@@ -474,7 +474,7 @@
     "packages/runtime/src/cloud-agent-mouth.ts": "763d7af63d35a5ff62d0c58743e07ff43455a5fbf38fa141ef7e2794bc233a61",
     "packages/runtime/src/cloud-chatgpt-plan-sign-in.ts": "e0362c3bc6fe19e98f6aa1aafe6d2f4c0460ffa7833b8e78b0a24e2fe5c0e2da",
     "packages/runtime/src/cloud-chatgpt-plan.ts": "b8ccff33ea3f5bad1cdcd0f30df5f1431f54dd4c676c46934805940144423803",
-    "packages/runtime/src/cloud-codex-tool-session.ts": "2400e20740e09e5db94a705888924d90ab6faf519527ab6f435a73d5d72c35e0",
+    "packages/runtime/src/cloud-codex-tool-session.ts": "acd5c918f31642e903ed10b99e451086f6fd9813bf94d7901d36aef2940487de",
     "packages/runtime/src/cloud-coding-command-guest.ts": "5ef28c86d39a02b0b0b768aa690195e0a5022236f10bfaf6f0d7aceeeff22974",
     "packages/runtime/src/cloud-coding-command-http.ts": "be85d3e7383cfc2787a51d16c3bf6ba60d131a22465519b19e8bc2c58ab88eb5",
     "packages/runtime/src/cloud-coding-command-log.ts": "68c3eb5d90696477fb1fe05f9d9f3c5d82b45d4eee0a3cc16b3f2f6f4e65d22f",
@@ -681,7 +681,7 @@
     "packages/runtime/src/native-provider-account.ts": "9dbb6d065639253c5584876adbeb70f2803de29575ae7de7d1e0f0bbe0442b2b",
     "packages/runtime/src/native-provider-usage.ts": "935086f12167064ae71e90b44af1cbfe28b0d64a59ec2ba685157f45d320297c",
     "packages/runtime/src/systemd-credential.ts": "1d3eb8038a369c58418cbd8248aecf457662cbb3430cc84847235c2222a82478",
-    "scripts/generate-cloud-runtime-bundle.mjs": "207ebeb4bab3e715ab8fc1c3a0e28693fbee0faed78a5665a2027070e6f551a4",
+    "scripts/generate-cloud-runtime-bundle.mjs": "d9328334156beea95d0bacb45aa4eebdb9359a1e1e5b641750876c0dca8fa580",
     "scripts/native-company-artifact.mjs": "e394bc799104f188769de07cd3be14e6c732a1a672113ea45d349a29d8e0ca63",
     "scripts/package-coding-executor.mjs": "292c557c75728d08e2fd2574c75cc07634f36bca629981709373f62af90a9272",
     "scripts/package-coding-guest.mjs": "04b1d63699aef4f05a5b800b06adff366e1607b1eaac53da8694d1e7e5d84ad3",
@@ -1268,6 +1268,7 @@
     "supabase/migrations/20260928369985_runtime_chatgpt_plan_turn_on_resumes.sql": "0b31493c5e9771dd91a3bfcf178d6e6583a873e7f14e802e04bfd2c8a0ff10c5",
     "supabase/migrations/20260928369990_runtime_bundle_activation_v161.sql": "15cde799496105c3dc2b9b2d00f8843f0f08fe0c899e043b00ac79bbbd33a8d6",
     "supabase/migrations/20260928379920_runtime_coding_payer_consented_first.sql": "2e12ca88db12d0d99c4f129e0386acff26a082db86f8350f7a5a88c66f334f37",
-    "supabase/migrations/20260928379930_runtime_usage_limit_payer.sql": "cd008cf299892343e47d0629bba6418421f5be6b90dfe9c8831acd7dbfac4808"
+    "supabase/migrations/20260928379930_runtime_usage_limit_payer.sql": "cd008cf299892343e47d0629bba6418421f5be6b90dfe9c8831acd7dbfac4808",
+    "supabase/migrations/20260928379990_runtime_bundle_activation_v162.sql": "2ae9112059b649f171cfae9ba5138ea50ccc4cf344b3696dda2a8c3de7301d7b"
   }
 }

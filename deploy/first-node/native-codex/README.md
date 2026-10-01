@@ -142,7 +142,7 @@ QORPERA_CODEX_FENCE_BINARY=/absolute/native/codex node node_modules/vitest/dist/
 
 Every boundary case must still pass. Each of the two new cases must make one
 model request and fail at `codex-turn-completion` with `budget_exhausted` and
-`usage_limit`. Against the current pin, the mid-stream case makes six requests
+`usage_limit`. Against the previous pin (a7531592…), the mid-stream case makes six requests
 and fails without a usage signal, and the 429 case fails as `provider_failed`.
 
 ## Verification and rollout boundary
