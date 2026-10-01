@@ -37,7 +37,9 @@ reset role;
 update public.qorpera_computer_hour_billing set live_since = clock_timestamp() - interval '1 second';
 insert into public.qorpera_computer_hour_usage (profile_id, metered_at, run_seconds, standard_seconds)
 values ('30000000-0000-4000-8000-000000000010', clock_timestamp(), 20000, 20000);
-update public.qorpera_computer_hour_billing set zero_rule_since = clock_timestamp() - interval '1 second';
+-- Coding machines are held with coding's own switch (20260929760000), on here too.
+update public.qorpera_computer_hour_billing set zero_rule_since = clock_timestamp() - interval '1 second',
+	coding_zero_rule_since = clock_timestamp() - interval '1 second';
 select pg_temp.wake_assert(public.qorpera_computer_hour_zero_sweep(clock_timestamp()) ->> 'ranOut' = '1', 'At zero');
 
 -- 2. A machine already awake keeps its reservation: running work finishes its hour. A run's machine
