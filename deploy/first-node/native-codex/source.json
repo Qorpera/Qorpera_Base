@@ -13,7 +13,7 @@
     "qorpera.native-capture-images/v1",
     "qorpera.native-message-composition/v1"
   ],
-  "patchSha256": "0adbab39f22dfcfff9eb74ec76df1f787adbb2935016b53331521bdfc798830c",
+  "patchSha256": "e7cc4f238d860b95d4b6e8b0d4f5f6e8a72298ca4d1b50445638363dd4cca974",
   "cargoLock": {
     "upstreamSha256": "81eb29f6276d5b3d1b39f1588a26059dadfbba717952247efeb8a575f271f569",
     "normalizedSha256": "df88a71b82843c6f092610fb07589f7a40032ddc25f50718354546ca541eb9b7",

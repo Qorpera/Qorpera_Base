@@ -128,14 +128,14 @@ index d6c77f12e..f622b4c15 100644
              user_agent,
              codex_home,
 diff --git a/codex-rs/codex-api/src/api_bridge.rs b/codex-rs/codex-api/src/api_bridge.rs
-index 6b79b4754..2209505a4 100644
+index 6b79b4754..5bd9705be 100644
 --- a/codex-rs/codex-api/src/api_bridge.rs
 +++ b/codex-rs/codex-api/src/api_bridge.rs
 @@ -168,6 +168,8 @@ pub fn map_api_error(err: ApiError) -> CodexErr {
                                          | "organization_spend_limit_exceeded"
                                          | "project_spend_limit_exceeded"
                                          | "organization_usage_limit_exceeded"
-+                                        // Qorpera: a ChatGPT plan's usage limit (Sign in with ChatGPT).
++                                        // Qorpera: a ChatGPT plan's usage limit.
 +                                        | "subscription_sharing_usage_limit_exceeded"
                                  )
                              )
@@ -173,7 +173,7 @@ index 51fb5a28b..43df0bbf7 100644
  fn map_api_error_maps_usage_limit_limit_name_header() {
      let mut headers = HeaderMap::new();
 diff --git a/codex-rs/codex-api/src/sse/responses.rs b/codex-rs/codex-api/src/sse/responses.rs
-index e4f5f04d6..cbec1c22b 100644
+index e4f5f04d6..db696620a 100644
 --- a/codex-rs/codex-api/src/sse/responses.rs
 +++ b/codex-rs/codex-api/src/sse/responses.rs
 @@ -713,7 +713,11 @@ fn is_context_window_error(error: &Error) -> bool {
@@ -183,13 +183,13 @@ index e4f5f04d6..cbec1c22b 100644
 -    error.code.as_deref() == Some("insufficient_quota")
 +    matches!(
 +        error.code.as_deref(),
-+        // Qorpera: a ChatGPT plan's usage limit (Sign in with ChatGPT) can end a response mid-stream.
++        // Qorpera: a ChatGPT plan's usage limit, which can end a response mid-stream.
 +        Some("insufficient_quota" | "subscription_sharing_usage_limit_exceeded")
 +    )
  }
  
  fn is_usage_not_included(error: &Error) -> bool {
-@@ -1194,6 +1198,19 @@ mod tests {
+@@ -1194,6 +1198,20 @@ mod tests {
          assert_matches!(events[0], Err(ApiError::QuotaExceeded));
      }
  
@@ -203,6 +203,7 @@ index e4f5f04d6..cbec1c22b 100644
 +        let events = collect_events(&[sse1.as_bytes(), sse2.as_bytes()]).await;
 +
 +        assert_eq!(events.len(), 2);
++        assert_matches!(events[0], Ok(ResponseEvent::Created { .. }));
 +        assert_matches!(events[1], Err(ApiError::QuotaExceeded));
 +    }
 +

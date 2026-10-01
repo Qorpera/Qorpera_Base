@@ -43,11 +43,15 @@ describe.skipIf(!binary)("pinned downstream native artifact (requires QORPERA_CO
 		"reads a ChatGPT plan's usage limit (%s) as a usage limit",
 		async (mode) => {
 			if (!binary) throw new Error("Missing pinned downstream native artifact");
-			const proof = await runNativeCodexUsageLimitProbe(binary, mode);
-			expect(proof).toMatchObject({ mode, category: "budget_exhausted", usageSignal: "usage_limit" });
-			expect(proof.requests).toBeGreaterThanOrEqual(1);
+			expect(await runNativeCodexUsageLimitProbe(binary, mode)).toEqual({
+				mode,
+				requests: 1,
+				stage: "codex-turn-completion",
+				category: "budget_exhausted",
+				usageSignal: "usage_limit",
+			});
 		},
-		60_000,
+		30_000,
 	);
 
 	it("runs the standalone acceptance entrypoint against the same artifact", async () => {

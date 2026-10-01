@@ -9,8 +9,9 @@ import { nativeRuntimeFailureMetadata } from "@qorpera/runtime/cloud-native-fail
 import { CloudNativeToolBoundary } from "@qorpera/runtime/cloud-native-tool-boundary";
 import { nativeCodexFixtureCommand } from "./native-codex-fixture-command.ts";
 
-/** OpenAI's code for a ChatGPT plan's usage limit (Sign in with ChatGPT). Undocumented upstream in Codex 0.155.1,
- * which retried it as a lost stream or a 429; the pinned patch reads it as a usage limit. */
+/** OpenAI's code for a ChatGPT plan's usage limit (Sign in with ChatGPT). Codex 0.155.1 did not know it: mid-stream
+ * it retried the request five times and failed as `other`; at a 429 it failed once as `responseTooManyFailedAttempts`.
+ * The pinned patch reads both as its quota error, which the app-server reports as `usageLimitExceeded`. */
 const PLAN_USAGE_LIMIT = "subscription_sharing_usage_limit_exceeded";
 
 /** Real native process, synthetic provider, no account credential or external request. The provider ends the
@@ -26,13 +27,29 @@ export async function runNativeCodexUsageLimitProbe(binary: string, mode: "mid_s
 		runId: randomUUID(),
 		signal: abort.signal,
 		assertActive: async (signal) => signal.throwIfAborted(),
-		tools: [],
+		// Codex refuses a thread whose tool group is empty, so one tool is registered; the turn never calls it.
+		tools: [
+			{
+				name: "read_document",
+				source: "company_file",
+				description: "Synthetic read only.",
+				inputSchema: { type: "object", properties: {}, additionalProperties: false },
+				parseArguments: () => ({}),
+				async execute() {
+					throw new Error("The usage-limit probe never calls a tool");
+				},
+			},
+		],
 	});
 	const provider = createServer((request, response) => {
 		void (async () => {
 			assert.equal(request.method, "POST");
 			assert.equal(request.url, "/v1/responses");
-			for await (const chunk of request) assert(chunk.length < 2 * 1024 * 1024);
+			let bytes = 0;
+			for await (const chunk of request) {
+				bytes += chunk.length;
+				assert(bytes < 2 * 1024 * 1024);
+			}
 			requests++;
 			const error = { code: PLAN_USAGE_LIMIT, message: "You have reached your ChatGPT plan's usage limit." };
 			if (mode === "http_429") {
@@ -78,7 +95,7 @@ export async function runNativeCodexUsageLimitProbe(binary: string, mode: "mid_s
 			model: "offline-probe",
 			prompt: "Synthetic usage-limit acceptance.",
 			signal: abort.signal,
-			timeoutMs: 15_000,
+			timeoutMs: 20_000,
 		}).then(
 			() => undefined,
 			(error: unknown) => error,
@@ -86,8 +103,14 @@ export async function runNativeCodexUsageLimitProbe(binary: string, mode: "mid_s
 		if (fixtureFailure) throw fixtureFailure;
 		assert(failure instanceof Error, "The turn must fail at the usage limit");
 		const metadata = nativeRuntimeFailureMetadata(failure);
-		// Codex's own request retries to the same login are its concern; how many it made is reported, not judged.
-		return { mode, requests, category: metadata?.category, usageSignal: metadata?.usageSignal };
+		// With the patch, neither path is retried: a 429 never is, and the quota error is not retryable. One request.
+		return {
+			mode,
+			requests,
+			stage: metadata?.stage,
+			category: metadata?.category,
+			usageSignal: metadata?.usageSignal,
+		};
 	} finally {
 		abort.abort();
 		provider.closeAllConnections();

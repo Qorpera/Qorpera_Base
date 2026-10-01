@@ -107,21 +107,25 @@ cannot exceed the upstream 10,000-token item ceiling under a byte-level bound.
 A ChatGPT plan's usage limit arrives as OpenAI's code
 `subscription_sharing_usage_limit_exceeded`: mid-stream as a `response.failed`
 event, or before the stream as an HTTP 429. Codex 0.155.1 maps only
-`insufficient_quota` (and a few spend-limit codes at 429) to its quota error,
-so a plan's limit was retried and surfaced as a lost stream
-(`responseStreamDisconnected`) or a 429 after retries
-(`responseTooManyFailedAttempts`). The host never reads error text, so the run
-did not read as a usage limit.
+`insufficient_quota` (and a few spend-limit codes at 429) to its quota error:
+- mid-stream, it retried the request five times (about six seconds) and then
+  failed as `other`, so the host read a generic failure;
+- at a 429, it failed after one request as `responseTooManyFailedAttempts`; the
+  host already reads that as the usage limit on a plan run, but its category was
+  `provider_failed`.
 
 The patch adds that code to both places in `codex-api`:
 `sse/responses.rs`' `is_quota_exceeded_error` and `api_bridge.rs`' 429 code
-list. Both give `ApiError::QuotaExceeded` / `CodexErr::QuotaExceeded`, which the
-app-server reports as `codexErrorInfo: usageLimitExceeded`. The host already
-reads that as a usage limit (`cloud-native-failure.ts`): the run stops and is
-not moved to another login. Codex logins never receive this code, so their
-usage-limit handling is unchanged. OpenAI documents the code for Sign in with
-ChatGPT; its live response shape cannot be checked before OpenAI approves the
-partner track, so the proof uses a synthetic provider.
+list. Both give `ApiError::QuotaExceeded` / `CodexErr::QuotaExceeded`, which is
+not retried and which the app-server reports as `codexErrorInfo:
+usageLimitExceeded` (`willRetry: false`). The host reads that as a usage limit
+(`budget_exhausted`, `usage_limit`): the run stops and is not moved to another
+login. Only a response carrying this exact code takes the new path; every other
+code, `insufficient_quota` included, is handled as before, so Codex logins are
+unchanged. Not covered: Codex 0.155.1 ignores a top-level `error` stream event,
+so a limit sent that way would still be retried. OpenAI documents the code for
+Sign in with ChatGPT; its live response shape cannot be checked before OpenAI
+approves the partner track, so the proof uses a synthetic provider.
 
 Proof for a build carrying this change:
 
@@ -136,9 +140,10 @@ QORPERA_CODEX_FENCE_BINARY=/absolute/native/codex node node_modules/vitest/dist/
   --root packages/runtime --run test/patched-codex-boundary.test.ts
 ```
 
-Every boundary case must still pass. The two new cases must report
-`category: budget_exhausted` and `usageSignal: usage_limit`; the proof records
-how many requests Codex made before stopping.
+Every boundary case must still pass. Each of the two new cases must make one
+model request and fail at `codex-turn-completion` with `budget_exhausted` and
+`usage_limit`. Against the current pin, the mid-stream case makes six requests
+and fails without a usage signal, and the 429 case fails as `provider_failed`.
 
 ## Verification and rollout boundary
 
