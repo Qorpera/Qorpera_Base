@@ -827,6 +827,9 @@ C1d (bytes):
 - A `folder-v2` run on a node without folder bytes keeps the legacy tool, which refuses `folder-v2`: such a dynamic
   routine run cannot decide, and its final message is refused. Nodes serve folder bytes before any company is
   `folder-v2` (C1c-3).
+- Known limit: the routine is found by its path. If a member renames its file (or the agent's folder) while the run
+  works, the decision is still owed but the file is gone, so the tool answers settled; the kernel then refuses the
+  run's final message. A follow-up finds the routine by its id.
 
 Until the mount's writes are accepted (F3), these tools become thin writers of these files:
 `hire_agent`, `create_group_chat`, `organize_sidebar`, `manage_todo`, `manage_routine` and

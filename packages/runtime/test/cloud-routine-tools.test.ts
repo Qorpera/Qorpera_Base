@@ -654,6 +654,7 @@ describe("a folder-v2 dynamic routine's decision", () => {
 		expect(tool.description).toContain("cannot change its title or instructions yet: leave intent and title out");
 		expect(tool.description).toContain("a refused one is decided again under a new operationKey");
 		expect(tool.description).not.toContain("intent, when the work changed");
+		expect(tool.description).toContain("state refused carries the reason: choose again or conclude.");
 		expect(
 			cloudRoutineDecisionTool(binding, run.identity, { call }, { decisionOwed: () => true, decided }).description,
 		).toContain("intent, when the work changed");

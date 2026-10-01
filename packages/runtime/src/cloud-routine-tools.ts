@@ -210,10 +210,15 @@ export const CLOUD_ROUTINE_DECISION_DESCRIPTION =
 const CLOUD_ROUTINE_DECISION_DESCRIPTION_FOLDER = CLOUD_ROUTINE_DECISION_DESCRIPTION.replace(
 	"intent, when the work changed, is the complete new instruction for your future self: what to check, what you learned, when to speak; without it the next run keeps this run's intent. title, effort (low, medium, high) and report (optional, required, silent) likewise change only when given. ",
 	"In this company the routine is a file, and its own run cannot change its title or instructions yet: leave intent and title out, and tell the member if the work needs new instructions. effort (low, medium, high) and report (optional, required, silent) change only when given. ",
-).replace(
-	"Keep operationKey stable for one decision; an unconfirmed result needs the same key and arguments again.",
-	"Keep operationKey stable for one decision; an unconfirmed result needs the same key and arguments again, while a refused one is decided again under a new operationKey.",
-);
+)
+	.replace(
+		"state refused carries the reason, such as a next run after the routine's end date: choose again or conclude. ",
+		"state refused carries the reason: choose again or conclude. ",
+	)
+	.replace(
+		"Keep operationKey stable for one decision; an unconfirmed result needs the same key and arguments again.",
+		"Keep operationKey stable for one decision; an unconfirmed result needs the same key and arguments again, while a refused one is decided again under a new operationKey.",
+	);
 
 /** The cloud derives the agent, requester and model account from the run. The
  * model chooses only what to do, when, and how long.
