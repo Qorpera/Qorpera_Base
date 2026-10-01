@@ -55,7 +55,7 @@ function fixture(options: { renewal?: boolean; unchanged?: boolean; idle?: boole
 		idToken: null,
 		accessToken: tokens.access_token,
 		refreshToken: tokens.refresh_token,
-		scopes: String(tokens.scope).split(" "),
+		scopes: tokens.scope.split(" "),
 		accessIssuedAt: new Date(now - 40 * 60_000).toISOString(),
 		accessExpiresAt: new Date(now + 20 * 60_000).toISOString(),
 		renewNotBefore: null,

@@ -5,6 +5,7 @@ import type { CloudNativeCaptureImages } from "./cloud-native-capture-images.ts"
 import type { NativeIsolationConfiguration } from "./cloud-native-isolation.ts";
 import type { CloudNativeFenceRequest } from "./cloud-native-result-fence.ts";
 import {
+	CLOUD_NATIVE_FENCE_CALL_TIMEOUT_MS,
 	CLOUD_PAIRED_REQUEST_TIMEOUT_MS,
 	type CloudNativeToolAuthorityReader,
 	type CloudNativeToolBinding,
@@ -35,6 +36,16 @@ export interface CloudNativeRunToolAdapters {
 		outputs: readonly CloudNativeFencedResult[],
 		signal: AbortSignal,
 	) => Promise<void>;
+	/**
+	 * One database call that makes every check before a model request and records the
+	 * view (qorpera_fence_native_context): returns the run's authority as that call read
+	 * it, or undefined when the database does not have the call yet.
+	 */
+	fenceContextView?: (
+		frame: CloudNativeFenceRequest,
+		outputs: readonly CloudNativeFencedResult[],
+		signal: AbortSignal,
+	) => Promise<unknown>;
 	/** Release exact resource leases after generation and tool admission have stopped. */
 	close?: (signal: AbortSignal) => Promise<void>;
 }
@@ -117,6 +128,40 @@ export async function runCloudNativeRunToolSession(options: {
 				throw new Error("Cloud context authority unavailable");
 			}
 		};
+		let fenceUnavailable = false;
+		/** One round trip before a model request: false when the database lacks the call. */
+		const fenceContext = async (
+			fence: NonNullable<CloudNativeRunToolAdapters["fenceContextView"]>,
+			frame: CloudNativeFenceRequest,
+			outputs: readonly CloudNativeFencedResult[],
+			signal: AbortSignal,
+		): Promise<boolean> => {
+			const observation = options.observability?.start("context_authority");
+			try {
+				// Through the run's own check: refused before sending once the run is closed or its
+				// authority lapsed, cancelled if the run closes meanwhile, and the authority it read
+				// is held to what assertActive holds its own read to.
+				if (
+					!(await run.assertActiveWith(
+						(requestSignal) => fence(frame, outputs, requestSignal),
+						signal,
+						CLOUD_NATIVE_FENCE_CALL_TIMEOUT_MS,
+					))
+				) {
+					observation?.finish("failed", { errorCategory: "unavailable_tool" });
+					return false;
+				}
+				observation?.finish("succeeded");
+				return true;
+			} catch (error) {
+				// A timeout may follow a committed view; nothing was released either way, and the run stops.
+				observation?.finish("denied", {
+					errorCategory: signal.aborted ? cloudRuntimeErrorCategory(error, signal) : "authority_unavailable",
+				});
+				run.close();
+				throw new Error("Cloud context authority unavailable");
+			}
+		};
 		await assertActive(run.signal);
 		const reviewer = options.actionReview ? new CloudActionReviewChannel() : undefined;
 		boundary = new CloudNativeToolBoundary({
@@ -154,7 +199,18 @@ export async function runCloudNativeRunToolSession(options: {
 				);
 				await assertActive(signal);
 			},
+			// With the one-call fence the result fence does not check before this step: the call below
+			// makes that check itself, before anything is released.
+			...(activeAdapters.fenceContextView ? { recordChecksAuthority: true } : {}),
 			recordContextView: async (frame, outputs, signal) => {
+				if (activeAdapters.fenceContextView) {
+					if (!fenceUnavailable && (await fenceContext(activeAdapters.fenceContextView, frame, outputs, signal)))
+						return;
+					fenceUnavailable = true;
+					// The database has no one-call fence yet: the separate calls, all of them, starting
+					// with the check the result fence left to this step (it still does, every request).
+					await assertActive(signal);
+				}
 				await assertActive(signal);
 				await cloudToolRequest(
 					(requestSignal) => activeAdapters.recordContextView(frame, outputs, requestSignal),

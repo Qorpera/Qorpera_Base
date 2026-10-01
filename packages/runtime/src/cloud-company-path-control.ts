@@ -5,11 +5,12 @@ import {
 } from "./cloud-company-path-gateway.ts";
 import {
 	CloudCompanyFolderRpcError,
+	CloudCompanyPathRpcMissing,
 	CloudCompanyPathRpcParentMissing,
 	CloudCompanyPathRpcPrecondition,
 	CloudCompanyPathRpcRefusal,
 } from "./cloud-company-path-refusal.ts";
-import { cloudToolRequest } from "./cloud-native-tool-authority.ts";
+import { CLOUD_NATIVE_FENCE_CALL_TIMEOUT_MS, cloudToolRequest } from "./cloud-native-tool-authority.ts";
 import { CloudRuntimeDiagnosticError } from "./cloud-runtime-observability.ts";
 
 const FOLDER_RPCS: ReadonlySet<CloudCompanyPathRpc> = new Set([
@@ -71,6 +72,7 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 			"qorpera_list_company_paths",
 			"qorpera_confirm_company_path_read",
 			"qorpera_record_native_context_view",
+			"qorpera_fence_native_context",
 			"qorpera_assert_company_path_reads",
 			"qorpera_check_company_path_mutation",
 			"qorpera_verify_company_path_file",
@@ -237,6 +239,9 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 					if (response.status === 403 && postgrestError("42501")) throw new CloudCompanyPathRpcRefusal();
 					if (response.status === 412 && postgrestError("PT412")) throw new CloudCompanyPathRpcPrecondition();
 					if (response.status === 424 && postgrestError("PT424")) throw new CloudCompanyPathRpcParentMissing();
+					// Only the one-call fence acts on a missing function; every other call keeps its category.
+					if (method === "qorpera_fence_native_context" && response.status === 404 && postgrestError("PGRST202"))
+						throw new CloudCompanyPathRpcMissing();
 					if (
 						response.status === 409 &&
 						value &&
@@ -260,7 +265,8 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 				return value;
 			},
 			signal,
-			3000,
+			// The one-call fence carries what four calls did before a model request, within the same 4 s budget.
+			method === "qorpera_fence_native_context" ? CLOUD_NATIVE_FENCE_CALL_TIMEOUT_MS : 3000,
 		);
 	}
 }

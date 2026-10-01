@@ -246,12 +246,52 @@ export function chatGptPlanCodeChallenge(codeVerifier: string): string {
  * that cannot be fetched is not this: it says nothing about the token. */
 class IdTokenRefused extends Error {}
 
-/** What may be logged about a failed OpenAI request: the HTTP status and OpenAI's error code, never a
- * token, code or secret. */
+/** A key id OpenAI's key set does not hold (yet). Like a fetch that failed, it says nothing about the
+ * token: a renewal keeps its stored ID token. */
+class SigningKeyUnknown extends Error {}
+
+/** A token answer OpenAI gave (200) that this vault cannot use, with a fixed label safe to log. */
+/** OpenAI's discovery document answered, but not as this vault needs it (status, issuer, an endpoint). */
+class DiscoveryUnusable extends Error {}
+
+class TokenAnswerUnusable extends Error {
+	readonly label: "answer unreadable" | "plan scope not granted" | "answer unusable";
+	constructor(label: TokenAnswerUnusable["label"]) {
+		super(`ChatGPT plan token answer: ${label}`);
+		this.label = label;
+	}
+}
+
+/** What may be logged about a failed OpenAI request: the HTTP status and OpenAI's error code, or a fixed
+ * label for an answer this vault refused, never a token, code or secret. */
 export function chatGptPlanFailure(error: unknown): string {
 	if (error instanceof TokenRefused) return `token endpoint ${error.status}${error.code ? ` ${error.code}` : ""}`;
 	if (error instanceof IdTokenRefused) return "ID token refused";
-	return "OpenAI unreachable or its answer unreadable";
+	if (error instanceof SigningKeyUnknown) return "signing key unknown";
+	if (error instanceof TokenAnswerUnusable) return `token ${error.label}`;
+	if (error instanceof DiscoveryUnusable) return "discovery unusable";
+	return "OpenAI unreachable";
+}
+
+/** A shared request's promise, given up by this caller alone when its own signal ends. The shared promise
+ * itself never goes unhandled: a fetch nobody waits for any more fails quietly. */
+function abortable<T>(value: Promise<T>, signal: AbortSignal): Promise<T> {
+	value.catch(() => undefined);
+	if (signal.aborted) return Promise.reject(signal.reason);
+	return new Promise<T>((resolveValue, reject) => {
+		const onAbort = (): void => reject(signal.reason);
+		signal.addEventListener("abort", onAbort, { once: true });
+		value.then(
+			(result) => {
+				signal.removeEventListener("abort", onAbort);
+				resolveValue(result);
+			},
+			(error: unknown) => {
+				signal.removeEventListener("abort", onAbort);
+				reject(error);
+			},
+		);
+	});
 }
 
 /** A token endpoint answer OpenAI refused, with its machine-readable code when it gave one. */
@@ -306,11 +346,15 @@ export class ChatGptPlanOAuth {
 	}
 
 	/** Exchanges the code the member's callback brought for a login: the ID token's signature, issuer,
-	 * audience, expiry and nonce checked, and the plan scope granted. */
+	 * audience, expiry and nonce checked, and the plan scope granted. OpenAI's endpoints and keys are
+	 * loaded before the one-time code is spent; a login OpenAI issued but this vault refuses is ended at
+	 * OpenAI at once, never left live there. */
 	async exchange(
 		input: { code: string; codeVerifier: string; nonce: string; hostId: string },
 		signal: AbortSignal,
 	): Promise<ChatGptPlanLogin> {
+		await this.#discover(signal);
+		if (this.#keys.size === 0) await this.#loadKeys(signal);
 		const answer = await this.#tokenRequest(
 			{
 				grant_type: "authorization_code",
@@ -322,9 +366,31 @@ export class ChatGptPlanOAuth {
 			},
 			signal,
 		);
-		const idToken = token(answer.id_token, "ChatGPT plan ID token");
-		const identity = await this.verifyIdToken(idToken, input.nonce, signal);
-		return this.#login(answer, { subject: identity.subject, email: identity.email, hostId: input.hostId, idToken });
+		try {
+			let idToken: string;
+			try {
+				idToken = token(answer.id_token, "ChatGPT plan ID token");
+			} catch {
+				throw new TokenAnswerUnusable("answer unusable");
+			}
+			const identity = await this.verifyIdToken(idToken, input.nonce, signal);
+			return this.#login(answer, {
+				subject: identity.subject,
+				email: identity.email,
+				hostId: input.hostId,
+				idToken,
+			});
+		} catch (error) {
+			this.#endIssued(answer);
+			throw error;
+		}
+	}
+
+	/** Ends a refresh token OpenAI issued in an answer this vault will not keep. Nothing waits on it: the
+	 * caller's answer does not depend on OpenAI's. */
+	#endIssued(answer: Record<string, unknown>): void {
+		if (typeof answer.refresh_token === "string" && answer.refresh_token.length > 0)
+			void this.revoke(answer.refresh_token, AbortSignal.timeout(REQUEST_DEADLINE_MS)).catch(() => undefined);
 	}
 
 	/** One renewal: the refresh token is spent and replaced. The renewed login keeps its owner.
@@ -353,6 +419,8 @@ export class ChatGptPlanOAuth {
 				signal,
 			);
 		} catch (error) {
+			// A 200 this vault cannot read: OpenAI spent the token, and its replacement is unreadable.
+			if (error instanceof TokenAnswerUnusable) return { outcome: "refused", reason: "renewal_invalid" };
 			if (error instanceof TokenRefused) {
 				if (error.code !== null && REFUSED_REFRESH.has(error.code))
 					return { outcome: "refused", reason: "refresh_refused" };
@@ -362,9 +430,10 @@ export class ChatGptPlanOAuth {
 			}
 			return { outcome: "transient", reason: "provider_unreachable" };
 		}
+		// Ends whichever refresh token is live after this answer: the new one, or the old one when OpenAI sent
+		// none (it then stays valid, RFC 6749 6).
 		const spent = (reason: string): ChatGptPlanRenewal => {
-			if (typeof answer.refresh_token === "string" && answer.refresh_token.length > 0)
-				void this.revoke(answer.refresh_token, AbortSignal.timeout(REQUEST_DEADLINE_MS)).catch(() => undefined);
+			this.#endIssued(answer.refresh_token === undefined ? { refresh_token: login.refreshToken } : answer);
 			return { outcome: "refused", reason };
 		};
 		let idToken = login.idToken;
@@ -385,11 +454,15 @@ export class ChatGptPlanOAuth {
 		try {
 			return {
 				outcome: "renewed",
-				login: this.#login(answer, { subject: login.subject, email, hostId: login.hostId, idToken }, login.scopes),
+				login: this.#login(
+					answer,
+					{ subject: login.subject, email, hostId: login.hostId, idToken },
+					{ scopes: login.scopes, refreshToken: login.refreshToken },
+				),
 			};
 		} catch (error) {
 			// The plan permission can be withdrawn in ChatGPT's settings: such a login serves nobody.
-			if (error instanceof Error && error.message === "ChatGPT plan use was not granted")
+			if (error instanceof TokenAnswerUnusable && error.label === "plan scope not granted")
 				return spent("plan_withdrawn");
 			return spent("renewal_invalid");
 		}
@@ -482,29 +555,40 @@ export class ChatGptPlanOAuth {
 	}
 
 	/** A login from a token answer. The granted scopes are the answer's; an answer that leaves them out
-	 * (a refresh may: RFC 6749 6) keeps the access token's own, else the login's earlier ones. */
+	 * (a refresh may: RFC 6749 6) keeps the access token's own, else the login's earlier ones. A refresh
+	 * answer without a new refresh token (also allowed by RFC 6749 6) keeps the one the login had. */
 	#login(
 		answer: Record<string, unknown>,
 		owner: { subject: string; email: string | null; hostId: string; idToken: string | null },
-		earlierScopes?: readonly string[],
+		earlier?: { readonly scopes: readonly string[]; readonly refreshToken: string },
 	): ChatGptPlanLogin {
-		const accessToken = token(answer.access_token, "ChatGPT plan access token");
-		const refreshToken = token(answer.refresh_token, "ChatGPT plan refresh token");
+		let accessToken: string;
+		let refreshToken: string;
+		let claims: Record<string, unknown>;
+		try {
+			accessToken = token(answer.access_token, "ChatGPT plan access token");
+			refreshToken =
+				answer.refresh_token === undefined && earlier
+					? earlier.refreshToken
+					: token(answer.refresh_token, "ChatGPT plan refresh token");
+			claims = accessClaims(accessToken);
+		} catch {
+			throw new TokenAnswerUnusable("answer unusable");
+		}
 		if (answer.token_type !== undefined && String(answer.token_type).toLowerCase() !== "bearer")
-			throw new Error("ChatGPT plan token type is invalid");
-		const claims = accessClaims(accessToken);
+			throw new TokenAnswerUnusable("answer unusable");
 		const listed = (value: unknown) => (typeof value === "string" ? value.split(" ").filter(Boolean) : undefined);
-		const scopes = listed(answer.scope) ?? listed(claims.scope) ?? [...(earlierScopes ?? [])];
-		if (!scopes.includes(CHATGPT_PLAN_SCOPE)) throw new Error("ChatGPT plan use was not granted");
-		if (claims.sub !== undefined && claims.sub !== owner.subject)
-			throw new Error("ChatGPT plan access token owner differs");
+		const scopes = listed(answer.scope) ?? listed(claims.scope) ?? [...(earlier?.scopes ?? [])];
+		if (!scopes.includes(CHATGPT_PLAN_SCOPE)) throw new TokenAnswerUnusable("plan scope not granted");
+		// An access token for another account or another client is not this login's.
+		if (claims.sub !== undefined && claims.sub !== owner.subject) throw new TokenAnswerUnusable("answer unusable");
 		if (claims.client_id !== undefined && claims.client_id !== this.#client.clientId)
-			throw new Error("ChatGPT plan access token client differs");
+			throw new TokenAnswerUnusable("answer unusable");
 		const now = this.#now();
 		const expiresIn = seconds(answer.expires_in);
 		const expiresAt =
 			seconds(claims.exp) !== undefined ? (claims.exp as number) * 1000 : expiresIn ? now + expiresIn * 1000 : 0;
-		if (expiresAt <= now) throw new Error("ChatGPT plan access token has ended");
+		if (expiresAt <= now) throw new TokenAnswerUnusable("answer unusable");
 		const issuedAt =
 			seconds(claims.iat) !== undefined && (claims.iat as number) * 1000 < expiresAt
 				? (claims.iat as number) * 1000
@@ -551,43 +635,48 @@ export class ChatGptPlanOAuth {
 		try {
 			parsed = jsonRecord(parseJsonResponse(response));
 		} catch {
-			if (response.status === 200) throw new Error("ChatGPT plan token answer is invalid");
+			if (response.status === 200) throw new TokenAnswerUnusable("answer unreadable");
 		}
 		if (response.status !== 200 || parsed.error !== undefined)
 			throw new TokenRefused(response.status, jsonString(parsed.error, 128));
 		return parsed;
 	}
 
-	/** OpenAI's endpoints from its discovery document, kept an hour; each one on the issuer's origin. */
+	/** OpenAI's endpoints from its discovery document, kept an hour; each one on the issuer's origin. One
+	 * fetch serves every caller under its own deadline: a caller whose time ends gives up alone. */
 	#discover(signal: AbortSignal): Promise<Endpoints> {
 		const known = this.#endpoints;
-		if (known && this.#now() - known.at < DISCOVERY_TTL_MS) return known.value;
+		if (known && this.#now() - known.at < DISCOVERY_TTL_MS) return abortable(known.value, signal);
 		const value = (async (): Promise<Endpoints> => {
 			const response = await connectorRequest({
 				fetch: this.#fetch,
 				origin: CHATGPT_PLAN_ISSUER,
 				path: DISCOVERY_PATH,
 				headers: {},
-				signal,
+				signal: AbortSignal.timeout(REQUEST_DEADLINE_MS),
 				maximumBytes: 64 * 1024,
 				deadlineMs: REQUEST_DEADLINE_MS,
 			});
-			if (response.status !== 200) throw new Error("ChatGPT plan discovery is unavailable");
-			const document = jsonRecord(parseJsonResponse(response));
-			if (document.issuer !== CHATGPT_PLAN_ISSUER) throw new Error("ChatGPT plan issuer differs");
-			return Object.freeze({
-				authorization: issuerEndpoint(document.authorization_endpoint, "ChatGPT plan authorization endpoint"),
-				token: issuerEndpoint(document.token_endpoint, "ChatGPT plan token endpoint"),
-				revocation: issuerEndpoint(document.revocation_endpoint, "ChatGPT plan revocation endpoint"),
-				keys: issuerEndpoint(document.jwks_uri, "ChatGPT plan keys"),
-			});
+			if (response.status !== 200) throw new DiscoveryUnusable("ChatGPT plan discovery is unavailable");
+			try {
+				const document = jsonRecord(parseJsonResponse(response));
+				if (document.issuer !== CHATGPT_PLAN_ISSUER) throw new Error("ChatGPT plan issuer differs");
+				return Object.freeze({
+					authorization: issuerEndpoint(document.authorization_endpoint, "ChatGPT plan authorization endpoint"),
+					token: issuerEndpoint(document.token_endpoint, "ChatGPT plan token endpoint"),
+					revocation: issuerEndpoint(document.revocation_endpoint, "ChatGPT plan revocation endpoint"),
+					keys: issuerEndpoint(document.jwks_uri, "ChatGPT plan keys"),
+				});
+			} catch {
+				throw new DiscoveryUnusable("ChatGPT plan discovery is invalid");
+			}
 		})();
 		this.#endpoints = { at: this.#now(), value };
 		// A failed discovery is not kept: the next call asks again.
 		value.catch(() => {
 			if (this.#endpoints?.value === value) this.#endpoints = undefined;
 		});
-		return value;
+		return abortable(value, signal);
 	}
 
 	/** OpenAI's signing key by id. An unknown id waits for a fetch already running, else starts one at most
@@ -595,24 +684,26 @@ export class ChatGptPlanOAuth {
 	async #key(keyId: string, signal: AbortSignal): Promise<{ key: KeyObject; alg: string | undefined }> {
 		let known = this.#keys.get(keyId);
 		if (known) return known;
-		if (this.#keysLoading) await this.#keysLoading;
+		if (this.#keysLoading) await abortable(this.#keysLoading, signal);
 		else if (this.#now() - this.#keysAt >= KEYS_REFETCH_MS) await this.#loadKeys(signal);
 		known = this.#keys.get(keyId);
-		if (!known) throw new Error("ChatGPT plan signing key is unknown");
+		if (!known) throw new SigningKeyUnknown("ChatGPT plan signing key is unknown");
 		return known;
 	}
 
-	/** Fetches OpenAI's key set once for every caller waiting on it. */
+	/** Fetches OpenAI's key set once for every caller waiting on it, under its own deadline: a caller
+	 * whose time ends gives up alone, and the fetch goes on for the others. */
 	#loadKeys(signal: AbortSignal): Promise<void> {
 		this.#keysLoading ??= (async () => {
 			this.#keysAt = this.#now();
-			const endpoints = await this.#discover(signal);
+			const deadline = AbortSignal.timeout(REQUEST_DEADLINE_MS);
+			const endpoints = await this.#discover(deadline);
 			const response = await connectorRequest({
 				fetch: this.#fetch,
 				origin: endpoints.keys.origin,
 				path: endpoints.keys.pathname,
 				headers: {},
-				signal,
+				signal: deadline,
 				maximumBytes: 256 * 1024,
 				deadlineMs: REQUEST_DEADLINE_MS,
 			});
@@ -637,6 +728,6 @@ export class ChatGptPlanOAuth {
 		})().finally(() => {
 			this.#keysLoading = undefined;
 		});
-		return this.#keysLoading;
+		return abortable(this.#keysLoading, signal);
 	}
 }

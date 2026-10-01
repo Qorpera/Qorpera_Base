@@ -192,6 +192,9 @@ export function parseCloudNativeToolAuthority(
 
 /** Two cloud reads sent together that the database serialises on the run's job row. */
 export const CLOUD_PAIRED_REQUEST_TIMEOUT_MS = 10_000;
+/** The one call before each model request (qorpera_fence_native_context) gets most of the
+ * native result fence's 4 s budget; the rest covers the host's own steps and the reply. */
+export const CLOUD_NATIVE_FENCE_CALL_TIMEOUT_MS = 3_500;
 
 /** Bounded, cancellation-aware wait, including transports which ignore AbortSignal. */
 export function cloudToolRequest<T>(
@@ -281,37 +284,45 @@ export class CloudNativeToolRun {
 	 * another read of the same run, which the database serialises on the job row.
 	 */
 	async assertActive(signal: AbortSignal, timeoutMs?: number): Promise<void> {
+		await this.#check(
+			(requestSignal) => this.#reader.describeToolAuthority(this.binding, requestSignal),
+			signal,
+			timeoutMs,
+		);
+	}
+
+	/**
+	 * assertActive with another cloud call that reads the run's authority in its own
+	 * transaction (the one-call context fence reads it with the same describe function).
+	 * The same checks before the call (not closed, the last authority not lapsed) and after
+	 * it (same identity, not expired, new deadline), in the same order as every other check.
+	 * Returns false, changing nothing, when `read` returns undefined: the database lacks the
+	 * call and nothing ran.
+	 */
+	async assertActiveWith(
+		read: (signal: AbortSignal) => Promise<unknown>,
+		signal: AbortSignal,
+		timeoutMs?: number,
+	): Promise<boolean> {
+		return this.#check(read, signal, timeoutMs, true);
+	}
+
+	async #check(
+		read: (signal: AbortSignal) => Promise<unknown>,
+		signal: AbortSignal,
+		timeoutMs: number | undefined,
+		unavailableIsUndefined = false,
+	): Promise<boolean> {
 		const combined = AbortSignal.any([signal, this.signal]);
+		let applied = false;
 		const check = this.#checking.then(async () => {
 			combined.throwIfAborted();
 			if (this.#identity && performance.now() >= this.#deadline) throw new Error("Cloud tool authority expired");
 			const started = performance.now();
-			const authority = parseCloudNativeToolAuthority(
-				await cloudToolRequest(
-					(requestSignal) => this.#reader.describeToolAuthority(this.binding, requestSignal),
-					combined,
-					timeoutMs,
-				),
-				this.binding,
-			);
-			combined.throwIfAborted();
-			const identityText = JSON.stringify(authority.identity);
-			const deadline = started + authority.validForMs;
-			if ((this.#identityText && this.#identityText !== identityText) || deadline <= performance.now()) {
-				throw new Error("Cloud tool authority changed or expired");
-			}
-			this.#identity = authority.identity;
-			this.#identityText = identityText;
-			this.#deadline = deadline;
-			clearTimeout(this.#watchdog);
-			clearTimeout(this.#refresh);
-			this.#watchdog = setTimeout(() => this.close(), Math.max(1, deadline - performance.now()));
-			this.#refresh = setTimeout(
-				() => {
-					void this.assertActive(this.signal).catch(() => undefined);
-				},
-				Math.min(REFRESH_MS, Math.max(1, (deadline - performance.now()) / 2)),
-			);
+			const value = await cloudToolRequest(read, combined, timeoutMs);
+			if (unavailableIsUndefined && value === undefined) return;
+			this.#apply(value, started, combined);
+			applied = true;
 		});
 		this.#checking = check.catch(() => {
 			this.close();
@@ -323,6 +334,29 @@ export class CloudNativeToolRun {
 			// The cause only tells a timed-out check apart in observations.
 			throw new Error("Cloud tool authority unavailable", { cause: error });
 		}
+		return applied;
+	}
+
+	#apply(value: unknown, started: number, signal: AbortSignal): void {
+		const authority = parseCloudNativeToolAuthority(value, this.binding);
+		signal.throwIfAborted();
+		const identityText = JSON.stringify(authority.identity);
+		const deadline = started + authority.validForMs;
+		if ((this.#identityText && this.#identityText !== identityText) || deadline <= performance.now()) {
+			throw new Error("Cloud tool authority changed or expired");
+		}
+		this.#identity = authority.identity;
+		this.#identityText = identityText;
+		this.#deadline = deadline;
+		clearTimeout(this.#watchdog);
+		clearTimeout(this.#refresh);
+		this.#watchdog = setTimeout(() => this.close(), Math.max(1, deadline - performance.now()));
+		this.#refresh = setTimeout(
+			() => {
+				void this.assertActive(this.signal).catch(() => undefined);
+			},
+			Math.min(REFRESH_MS, Math.max(1, (deadline - performance.now()) / 2)),
+		);
 	}
 
 	close(): void {

@@ -2,7 +2,7 @@ import { timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { readBoundedCloudResponse, withCloudDeadline } from "@qorpera/cloud-client/cloud-request";
 import type { JsonValue } from "@qorpera/contracts";
-import { ChatGptPlanSignInError } from "./cloud-chatgpt-plan-sign-in.ts";
+import { CHATGPT_PLAN_CONFIRM_ROUTE_MS, ChatGptPlanSignInError } from "./cloud-chatgpt-plan-sign-in.ts";
 import {
 	CloudConnectorOAuthError,
 	type CloudConnectorOAuthFlows,
@@ -776,7 +776,7 @@ export class HttpCloudSecretBrokerService {
 								capability: authorization.slice("Bearer ".length),
 								body: await readRequest(request),
 							},
-							AbortSignal.timeout(40_000),
+							AbortSignal.timeout(CHATGPT_PLAN_CONFIRM_ROUTE_MS),
 						)),
 					};
 				} catch (error) {
