@@ -147,6 +147,22 @@ Founders (2026-09-28, migration 20260928248100): every member with the role
 - `qorpera_begin_native_provider_login`
 - `qorpera_chatgpt_plan_available(profile)`: whether the caller's company may
   use ChatGPT plan logins now (show "Continue with ChatGPT" only when true).
+  False while the company is being deleted (20260929880000).
+- ChatGPT plan rules (20260929880000, switched off with plan logins):
+  - work while away on a plan login needs the member's own
+    `qorpera_consent_provider_connection_autonomous`; the kernel never consents a
+    plan login for them, and a client must not either (no automatic consent on
+    a plan login: ask, for example when an agent creates the member's first
+    routine);
+  - a plan never pays for a listener routine (a file change or an event): a save
+    with one is refused with 42501 "A ChatGPT plan cannot pay for a listener";
+  - a plan at its usage limit stays the account of the conversations it pays for
+    (`qorpera_select_member_session_account` keeps it; sending then stops at the
+    limit), while a new conversation starts on a login with room;
+  - only the member whose plan pays retries a failed run on it
+    (`qorpera_resolve_failed_execution_run` 'retry': 55000 for anyone else;
+    acknowledging stays open) or a change's review on it
+    (`qorpera_retry_company_proposal_review`: 42501 for anyone else).
 - `qorpera_grant_cloud_connector` — Step 7 (bundle v87): grants every
   operation of one company-owned connection (Gmail, Google Drive, GitHub) to
   all active agents (`p_staff_agent_ids` null, marks the connection shared so
