@@ -24,7 +24,7 @@ import {
 	companyFormationWriteRefusal,
 	isCompanyFormationPath,
 } from "./cloud-company-formation.ts";
-import { type CloudCompanyPathPresence, observeCloudCompanyPathPresence } from "./cloud-company-path-presence.ts";
+import { type CloudCompanyPathPresence, claimCloudCompanyPathPresence } from "./cloud-company-path-presence.ts";
 import {
 	CloudCompanyFormationRefused,
 	CloudCompanyPathParentMissing,
@@ -72,7 +72,7 @@ export type CloudCompanyPathRpc =
 	| "qorpera_manage_agent_worker"
 	| "qorpera_report_worker_result"
 	| "qorpera_describe_agent_open_work"
-	| "qorpera_record_runtime_observation"
+	| "qorpera_record_runtime_observation_batch"
 	| "qorpera_record_provider_usage_signal"
 	| "qorpera_begin_native_company_execution_v2"
 	| "qorpera_describe_company_run_context"
@@ -113,7 +113,27 @@ export type CloudCompanyPathRpc =
 	| "qorpera_begin_action_review"
 	| "qorpera_record_action_review"
 	| "qorpera_await_action_review"
-	| "qorpera_add_agent_review_rule";
+	| "qorpera_add_agent_review_rule"
+	// Machines agents start (2026-09-28).
+	| "qorpera_native_machine_start"
+	| "qorpera_native_machine_manage"
+	| "qorpera_company_machines_available"
+	// The folder core for folder-v2 companies (core C3): reads, listings, change sets and releases.
+	| "qorpera_folder_read"
+	| "qorpera_folder_list"
+	| "qorpera_folder_commit"
+	| "qorpera_folder_record_release"
+	// Staging a folder-v2 file's bytes (core C1d).
+	| "qorpera_folder_open_upload"
+	| "qorpera_folder_seal_upload"
+	| "qorpera_folder_renew_upload"
+	// A folder-v2 run's own todos from the todo index (thin writers W1).
+	| "qorpera_folder_agent_todos"
+	// Event wakes (W2): the company's hooks and one event's body.
+	| "qorpera_list_agent_event_hooks"
+	| "qorpera_read_agent_event"
+	// Company mail (M2b): an agent's email from a mailbox, queued for the platform's sender.
+	| "qorpera_send_agent_mail";
 
 /** Service-only transport. Never exposed as an arbitrary RPC tool. */
 export interface CloudCompanyPathControl {
@@ -313,13 +333,14 @@ export class CloudCompanyPathGateway {
 		this.#reads.add(path);
 	}
 
-	async #presence(
+	/** Publishes the claim in the background and reports the latest observation already
+	 * held. Canonical reads and writes never wait on presence. */
+	#presence(
 		path: string,
 		extent: CompanyPathExtent,
 		activity: CompanyPathActivity,
-		signal: AbortSignal,
-	): Promise<{ presence?: CompanyPathPresenceView }> {
-		const presence = await observeCloudCompanyPathPresence(this.#presenceHandle, path, extent, activity, signal);
+	): { presence?: CompanyPathPresenceView } {
+		const presence = claimCloudCompanyPathPresence(this.#presenceHandle, path, extent, activity);
 		return presence ? { presence } : {};
 	}
 
@@ -483,12 +504,7 @@ export class CloudCompanyPathGateway {
 		this.#remember(path);
 		if (first.entry?.kind !== "file") {
 			const value = {
-				...(await this.#presence(
-					path,
-					first.entry?.kind === "directory" ? "subtree" : "object",
-					"reading",
-					signal,
-				)),
+				...this.#presence(path, first.entry?.kind === "directory" ? "subtree" : "object", "reading"),
 				path,
 				version: first.version,
 				kind: first.entry?.kind ?? "absent",
@@ -505,7 +521,7 @@ export class CloudCompanyPathGateway {
 		const value = {
 			path,
 			version: first.version,
-			...(await this.#presence(path, "object", "reading", signal)),
+			...this.#presence(path, "object", "reading"),
 			snapshotId: first.snapshotId,
 			readObservationId: first.readObservationId,
 			kind: "file",
@@ -767,7 +783,7 @@ export class CloudCompanyPathGateway {
 		await this.assertReadableContext(signal);
 		const value = {
 			snapshotId: page.snapshotId as string,
-			...(await this.#presence(path, "subtree", "reading", signal)),
+			...this.#presence(path, "subtree", "reading"),
 			readObservationId: version(page.readObservationId)!,
 			items,
 			hasMore: page.hasMore,
@@ -951,7 +967,7 @@ export class CloudCompanyPathGateway {
 				if (refusal) throw new CloudCompanyFormationRefused(refusal);
 			}
 		}
-		await this.#presence(path, operation === "mkdir" ? "subtree" : "object", "writing", signal);
+		this.#presence(path, operation === "mkdir" ? "subtree" : "object", "writing");
 		if (next?.kind === "file" && bytes && manifest) {
 			for (const chunk of chunks)
 				await cloudToolRequest(

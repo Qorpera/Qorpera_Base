@@ -121,6 +121,7 @@ jobs:
           test/lxd-image-provenance.test.ts
           test/lxd-login-gateway.test.ts
           test/lxd-provider.test.ts
+          test/lxd-provider-concurrency.test.ts
           test/lxd-company-runtime.test.ts
           test/runtime-node-inventory.test.ts
           test/shared-execution-backend.test.ts
@@ -144,6 +145,8 @@ jobs:
           test/lxd-office-image-self-update.test.ts
           test/office-self-update-mask.test.ts
           test/office-service-software-control.test.ts
+          test/lxd-office-fleet.test.ts
+          test/lxd-office-node-base.test.ts
 
       - name: Test coding session runtime contracts
         working-directory: packages/runtime

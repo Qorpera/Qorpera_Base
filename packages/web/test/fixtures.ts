@@ -250,7 +250,12 @@ export function fixture() {
 	vi.spyOn(api, "listMemberMentions").mockRejectedValue(
 		new CloudRpcError("qorpera_list_member_mentions", { message: "missing", code: "PGRST202" }, 404),
 	);
+	vi.spyOn(api, "companyWaitingForHours").mockResolvedValue(false);
 	vi.spyOn(api, "readSessionEvents").mockResolvedValue([]);
+	// A cloud before the newest-first read (20260928279410): threads read their history forward.
+	vi.spyOn(api, "readSessionEventsTail").mockRejectedValue(
+		new CloudRpcError("qorpera_read_session_events_tail", { message: "missing", code: "PGRST202" }, 404),
+	);
 	vi.spyOn(api, "listSessionInputs").mockResolvedValue({ items: [], hasMore: false, nextAfterPosition: 0 });
 	vi.spyOn(api, "listCodingSessions").mockResolvedValue([]);
 	vi.spyOn(api, "readCodingSession").mockRejectedValue(new Error("No coding session in this fixture"));
@@ -266,6 +271,7 @@ export function fixture() {
 		byKind: { companyMachines: 3_600, agentMachines: 0, codingMachines: 0, runs: 3_600 },
 		awakeNow: { companyMachines: 0, agentMachines: 0, codingMachines: 0, runs: 0 },
 		meteredUntil: "2026-09-28T18:00:00Z",
+		waitingForHours: false,
 	});
 	vi.spyOn(api, "listWorkspaces").mockResolvedValue([]);
 	vi.spyOn(api, "listSnapshots").mockResolvedValue([snapshot]);

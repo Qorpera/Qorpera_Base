@@ -396,8 +396,9 @@ Node 1:
    fallback today (the acceptance company) gets its own line first.
    Regex keys hold `{}`, so each stays quoted (Step 7 doc); nginx tries exact keys first and regex keys in
    order.
-   - `?company=` maps (`$qorpera_capture_broker` for captures, email drafts and connector sign-in start and
-     confirm; `$qorpera_operations_broker` for `/v1/operations` and `/v1/repository-credentials`;
+   - `?company=` maps (`$qorpera_capture_broker` for captures and connector sign-in start and confirm;
+     `$qorpera_email_draft_broker` for email drafts (node 1 routes them with a map of their own);
+     `$qorpera_operations_broker` for `/v1/operations` and `/v1/repository-credentials`;
      `$qorpera_model_login_run_broker` for runs' `/v1/model-logins`):
      `"~(^|&)company=[0-9a-fA-F-]{36}(&|$)" 127.0.0.1:18660;`. Keep any `""` line that routes requests
      without `company=` where they go today.
@@ -473,12 +474,15 @@ Node 2 (warm standby), between node 1's steps 6 and 8:
       /opt/qorpera-secret-broker/shared-vault-secrets.py serve --bind 100.75.4.70 --peer 100.80.160.64
       --port 39579 --ticket-sha256 <ticketSha256> --ttl 120`.
       It reads the files as root, then serves as nobody: it closes any other address before reading a
-      byte, gives a connection 5 s to ask, answers once, and stops (or stops after 120 s). Its one output
-      line (in the unit's journal) repeats `fingerprintsSha256`.
+      byte, gives a connection 5 s to ask, answers once, and stops (or stops after 120 s). It writes two
+      lines to the unit's journal: `shared-vault-secrets: serving once on 100.75.4.70:39579` once the port
+      is bound (start step 3 after it; an earlier fetch finds nothing and uses up the ticket), then, when
+      it stops, one that repeats `fingerprintsSha256`.
    3. node 2: `shared-vault-secrets.py fetch --source 100.75.4.70 --port 39579 --expect <node 1's
       fingerprintsSha256>`. The ticket is used up either way. It checks what arrived against node 1's
       digest before writing anything and answers `"match": "match"`; a mismatch or any failure leaves
-      nothing written (start again from 1).
+      nothing written (start again from 1, after `systemctl stop qorpera-shared-vault-handover` on node 1
+      if that unit still runs: it holds the port and the unit name for up to 120 s).
 3. The same `config.json` as node 1's (same principal, same port). After node 1's step 9:
    `systemctl daemon-reload`, `systemctl enable --now qorpera-shared-vault` (enabled, so the standby comes
    back after a reboot). Check the unit is active and logs no `Shared vault:` failure line after its first
@@ -493,7 +497,8 @@ Node 2 (warm standby), between node 1's steps 6 and 8:
    here. To rebuild node 1, run the hand-over the other way (ticket on node 1, serve on node 2).
 5. The two secrets live on node 1 and node 2 only. Losing both nodes loses them: every vault company's
    stored secrets, connector connections and model logins can then no longer be opened, and members sign
-   in and reconnect again. A copy beyond the two nodes is the founder's choice (pending).
+   in and reconnect again. By founder decision (29 September 2026) there is no third copy: "if the key is
+   lost on both vaults, it's lost".
 
 ## Failure cases
 

@@ -116,14 +116,16 @@ environment.
   Stopped computers already give their node CPU and memory back
   (`20260923060000`, bundle v82).
 - `qorpera_runtime_office_setup_queue()` (service role) lists computers that
-  need a host: started ones waiting for `setup` or `room`, and added ones not
+  need a host: started ones waiting for `setup`, `room` or `hours` (computer
+  hours, `20260928309720`: the company is out of hours), and added ones not
   started yet (`unstarted`), with the image, bootstrap and screen count each
   needs. It names no node: which node runs a computer is the fleet placement's
   decision (Stateless Compute, 28 September: any node with room).
 - `qorpera_member_agent_office(environment, agent)` tells the web which
   computer shows an agent's screen, its number, how many computers the company
   has, and why a started computer is not up yet (`setup`: no prepared host has
-  offered it; `room`: prepared hosts have no room). An owner or admin opening an
+  offered it; `room`: prepared hosts have no room; `hours`: the company is out of
+  computer hours, which also holds a sleeping computer's wake). An owner or admin opening an
   agent's computer when every one is full adds the next one, as an agent can.
 
 **Switch.** `qorpera_runtime_office_scale_out` (one row, off by default) keeps

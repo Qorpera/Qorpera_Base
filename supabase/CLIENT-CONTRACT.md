@@ -50,9 +50,14 @@ Founders (2026-09-28, migration 20260928248100): every member with the role
 - `qorpera_leave_hosted_profile`: anyone leaves, except the last member (who
   deletes instead), the last founder while others remain, and a founder while
   company setup runs for them (42501).
-- `qorpera_delete_hosted_profile`: only the last member.
+- `qorpera_delete_hosted_profile`: only the last member. Since 20260928249150 it
+  requests the deletion: the company disappears at once (no role for anyone, gone
+  from `qorpera_list_hosted_profiles` and the founding lobby, the member's access
+  state turns `revoked`) and all its work stops. Its rows are removed later, once
+  the servers hold nothing of it (deploy/first-node/RUNTIME-COMPANY-DELETE.md). A
+  second call answers 42501, like any call for a company the caller is not in.
 - Deleting an account (operators only; no client RPC; migration
-  20260929180000) takes the person's memberships as a leave does, with the
+  20260928249180) takes the person's memberships as a leave does, with the
   same refusals, and is also refused for the only member of a company that is
   not being deleted. It never removes company data: conversations, messages
   and runs keep naming the person, as they do after a leave. Closing an
@@ -123,13 +128,25 @@ Founders (2026-09-28, migration 20260928248100): every member with the role
 ### Routines (2)
 
 - `qorpera_list_cloud_routines`
-- `qorpera_upsert_cloud_routine`
+- `qorpera_upsert_cloud_routine`: a folder-v2 company keeps its routines in
+  `agents/<handle>/routines/` files: saving a new routine, or one that comes
+  from a file, is refused with 55000; a routine saved before the company became
+  folder-v2 is saved as before.
 
 
-### Credentials, provider connections, identity recovery (13)
+### Credentials, provider connections, identity recovery (15)
 
+- `qorpera_begin_chatgpt_plan_sign_in` (20260929830000, switched off): begins a
+  ChatGPT plan sign-in ("Continue with ChatGPT") for the caller's own member
+  compute identity, the same as `qorpera_begin_native_provider_login` for
+  OpenAI/Codex with the sign-in marked as a plan sign-in. Refused with 55000
+  while plan logins are switched off for the company, and with 22023 for any
+  identity that is not the caller's own member identity. The answer is the
+  ordinary begin's plus `model_login_kind: "chatgpt_plan"`.
 - `qorpera_begin_cloud_secret_capture`
 - `qorpera_begin_native_provider_login`
+- `qorpera_chatgpt_plan_available(profile)`: whether the caller's company may
+  use ChatGPT plan logins now (show "Continue with ChatGPT" only when true).
 - `qorpera_grant_cloud_connector` — Step 7 (bundle v87): grants every
   operation of one company-owned connection (Gmail, Google Drive, GitHub) to
   all active agents (`p_staff_agent_ids` null, marks the connection shared so
@@ -259,7 +276,8 @@ Founders (2026-09-28, migration 20260928248100): every member with the role
   `canManageCompanyRules` (owner or admin) and `rules`: every active company
   rule plus the caller's own (`id`, `scope` `company|member`, `memberUserId`,
   `when`, `outcome` `ask_first|allow_automatically`, `createdVia`
-  `settings|card|agent`, `createdByUserId`, `createdByStaffAgentId`,
+  `settings|card|agent|folder` (`folder`: a company rule from the company's
+  `rules/` files, folder-v2 companies only), `createdByUserId`, `createdByStaffAgentId`,
   `createdAt`, `updatedAt`). Any member, viewers included. A rule with
   `createdVia: agent` was added by an agent (`createdByStaffAgentId`) when the
   member asked it to: always one of the member's own Ask first rules, which the
@@ -270,9 +288,13 @@ Founders (2026-09-28, migration 20260928248100): every member with the role
   sentence, 1-280 characters after trimming. Company rules: owners and admins
   (42501 otherwise); a personal rule belongs to its author only. 54000 when
   the company's rules pass 48 KiB of text or one member's pass 16 KiB (what
-  the reviewer reads for one action). Returns the rule.
+  the reviewer reads for one action). Returns the rule. A folder-v2 company
+  keeps its company rules in `rules/` files: saving a company rule there is
+  refused with 55000; personal rules are unchanged.
 - `qorpera_archive_review_rule(p_profile_id, p_rule_id)`: removes a rule
   (again: no change). Company rules: owners and admins; personal: its author.
+  A rule that comes from a `rules/` file (`createdVia: folder`) is refused with
+  55000: delete the file instead.
 - `qorpera_answer_action_review(p_review_id, p_client_input_id, p_answer,
   p_rule_text?, p_sponsor_binding_id?, p_sponsor_version?)` answers an approval
   card (`authorization_request` whose `entry.data.schema` is
@@ -334,6 +356,7 @@ Founders (2026-09-28, migration 20260928248100): every member with the role
 - `qorpera_list_wake_occurrences`
 - `qorpera_quarantine_session_turn`
 - `qorpera_read_session_events`
+- `qorpera_read_session_events_tail(p_session_id, p_before_sequence, p_limit)` — the newest events below a sequence (the newest overall when null), oldest first, in the shape of `qorpera_read_session_events`, which it runs for its authorization and page check (20260928279410); a thread opens with it and "Show earlier" pages back
 - `qorpera_renew_session_turn_v2`
 - `qorpera_renew_wake`
 - `qorpera_request_session_turn_v2`
@@ -489,9 +512,29 @@ wake), so no agent runs and nothing is charged before it.
   computer hour = 3600), `byKind` (`companyMachines`, `agentMachines`,
   `codingMachines`, `runs`, standard seconds rounded per kind, so their sum
   may differ from the total by a few seconds), `awakeNow` (the same kinds,
-  counted now) and `meteredUntil` (the meter counts up to about a minute
-  ago). Any member of the company, viewers included; anyone else gets 42501.
+  counted now), `meteredUntil` (the meter counts up to about a minute
+  ago) and, from 20260928249200, `waitingForHours` (true while the zero rule
+  holds the company's new work: show "Waiting for computer hours"). Any
+  member of the company, viewers included; anyone else gets 42501. While
+  the rule holds a company, `qorpera_enqueue_execution_run` and
+  `qorpera_enqueue_runner_job` refuse new work with 55000 ("Waiting for
+  computer hours: the company has none left").
   A client shows "Not measured yet" while the function is missing (PGRST202).
+  From 20260928259330, `hoursLeft`: null before the live switch (show measured
+  hours only); `{"complimentary": true}` for a company that is never limited;
+  otherwise `leftSeconds` (zero or less when out of hours, below zero by what
+  it owes) with `freeSeconds`, `planSeconds` (the founders' current plans,
+  each shared by every company it pays for), `creditSeconds` and
+  `owedSeconds`. A founder reading it also gets `founders`: each founder's
+  `userId`, with `planSeconds` and `creditSeconds` where they have them (who
+  pays), and, with `userId` null, the packs of members who are no longer
+  founders; other members never see who paid. `hoursLeft` is always now,
+  whatever month is read.
+  From 20260928259280, `qorpera_company_waiting_for_hours(p_profile_id)` →
+  boolean says the same as `waitingForHours` without the month's figures,
+  for a client that asks with its other periodic reads (any member; anyone
+  else gets 42501). A client treats a missing function (PGRST202) as not
+  waiting and stops asking.
 
 - 20260928248910_runtime_computer_hours_payments:
   `qorpera_list_computer_hour_offers()` → `qorpera.computer-hour-offers/v1`:
@@ -509,6 +552,67 @@ wake), so no agent runs and nothing is charged before it.
   live payments, since members see only measured hours before then; then
   `grantedSeconds` this period and `companies` (`profileId`, `seconds` this
   period paid by the plan)). The signed-in member's own plan only.
+
+### Event hooks (20260928259260_runtime_event_intake)
+
+- Contract: section 19, 2026-09-29 amendment "events wake agents"; design
+  `deploy/first-node/RUNTIME-EVENT-INTAKE.md`. Step W1a: address-proven hooks
+  for `snapshot-v1` companies only; nothing wakes agents yet (W2). The intake
+  is built switched off. Settings lists hooks under Company connections (step
+  A3).
+- `qorpera_create_event_hook(p_profile_id, p_environment_id, p_name,
+  p_purpose, p_proof default 'address', p_max_body_bytes default null,
+  p_per_minute default null)` → `qorpera.event-hook/v1`: `id`, `companyId`,
+  `environmentId`, `name` (`^[a-z][a-z0-9-]{0,63}$`, unique among the
+  live hooks of the company environment), `purpose` (one line), `proof`
+  (`address` in W1a; `stripe`, `github` and `hmac-sha256` refuse with 0A000
+  until W1b), `status` (`active`), `address` (43 characters), `path`
+  (`/functions/v1/event-intake/<address>`: the sender posts to the Supabase
+  URL plus this path), `maxBodyBytes` (1024–262144, default 65536),
+  `perMinute` (1–120, default 60), `createdAt`, `lastReceivedAt` (absent
+  until the first delivery). Owners and admins only (42501); 23505 for a
+  name in use, 54000 past 50 live hooks, 22023 for a bad environment, name
+  (names beginning `mail-` belong to mailboxes, from 20260928299650),
+  purpose, proof or limit, 0A000 for a `folder-v2` company (its hooks come
+  with their connection file).
+- `qorpera_set_event_hook_status(p_hook_id, p_status)` with `active`,
+  `paused` or `removed` → the same descriptor. Removing is final (55000
+  afterwards) and frees the name. Owners and admins only.
+- `qorpera_list_event_hooks(p_profile_id, p_environment_id)` → an array of
+  descriptors of live hooks, by name. Any member; `address` and `path` only
+  for owners and admins.
+- `qorpera_list_event_deliveries(p_hook_id, p_limit default 50)` → the
+  newest deliveries (at most 200): `id`, `receivedAt`, `status` (`received`,
+  `verified`, `refused`, `duplicate`), `deliveryKey`, `eventType`,
+  `contentType`, `bodyBytes`, `bodySha256`, `verifiedAt`, `reason`. No
+  bodies. Owners and admins only.
+
+### Company mailboxes (20260928299650_runtime_company_mailboxes)
+
+- Contract: section 19, item 9; design `deploy/first-node/RUNTIME-EVENT-INTAKE.md`, "Mail (M2)". Step M2a:
+  receiving only, for `snapshot-v1` companies. Company mail is built switched off, and no mailbox can be made
+  until operators set the platform's mail domain.
+- `qorpera_create_company_mailbox(p_profile_id, p_environment_id, p_local_part, p_purpose)` → the hook
+  descriptor (`qorpera.event-hook/v1`) of the mailbox's hook: `proof` `mail`, `name` `mail-<local part>` (with a short digest suffix when
+  the local part holds a dot or an underscore), and
+  `email` (`<local part>@<mail domain>`); never `address` or `path`. The local part is 1–64 lowercase letters,
+  digits, dots, hyphens and underscores, with no leading, trailing or doubled dot; RFC 2142 names
+  (`postmaster`, `abuse`, …) and `noreply` are reserved (22023). An address belongs to one live mailbox across
+  the platform (23505 when taken). The domain is one platform setting: a mailbox keeps only its local part, so
+  `email` always shows the current domain. Owners and admins only (42501); 54000 past 20 mailboxes or 50 hooks;
+  0A000 before the mail domain is set, and for a `folder-v2` company.
+- A mailbox is paused, resumed and removed with `qorpera_set_event_hook_status` on its hook; removing frees
+  its address. `qorpera_list_event_hooks` lists mailboxes with their `email` for every member, and
+  `qorpera_list_event_deliveries` their received messages (`eventType` `mail.received`).
+- Sending (20260928309740_runtime_company_mail_sending, step M2b): agents send from a mailbox with the runtime
+  tool `send_mail`; there is no client surface yet. Sent email is queued in `qorpera_company_mail_outbox` (closed
+  to every API role) and sent by the `mail-outbox` Edge Function. Sending has its own switch in
+  `qorpera_mail_settings` (`sending`, built off) and the company limits on recipients `company_hourly_recipients`
+  (60) and `company_daily_recipients` (300). Received mail (`mail.received`) now also carries `autoSubmitted`,
+  `precedence`, `listId` and `automated`; agents never answer automated mail.
+- Sender names (20260928319810_runtime_company_mail_sender_names): `qorpera_create_company_mailbox` also reserves
+  (22023) any local part that reads as Qorpera (case, separators, accents, full width and look-alike letters or
+  digits folded), and no email goes out when the agent's or the company's name or the mailbox reads as Qorpera.
 
 ## 3. Realtime
 
@@ -547,6 +651,14 @@ wake), so no agent runs and nothing is charged before it.
   any active member of the room edits an existing draft. Access is the room post
   rule: an active member of an active room. Drafts never send, wake or sponsor
   anything; the owner sends with `qorpera_post_company_room_message` as before.
+- `qorpera-orchestrator-wake-{64 hex}` — **node only, not for clients**
+  (migration `20260928319550_runtime_orchestrator_wake`). A runner orchestrator's
+  wake-up: while `qorpera_orchestrator_wake_settings.enabled` is on, the database
+  broadcasts event `wake`, payload `{"schema":"qorpera.orchestrator-wake/v1"}`
+  and nothing else, when claimable work may have appeared. Private channel read
+  by `anon` (the orchestrator joins with the publishable key) on that topic only.
+  The name derives from the control token's sha256, which only the database
+  keeps; nobody publishes but the database.
 
 ## 4. Object gateway (HTTP, `packages/object-gateway`)
 
@@ -583,10 +695,26 @@ machine.
   `QORPERA_BILLING_RETURN_URL` (`https://app.qorpera.com/#/account`) with
   `?checkout=done` or `?checkout=cancelled` after the hash; hours arrive with
   Stripe's webhook, not with the return.
+- `event-intake` (20260928259260) — the public address of a company's
+  hooks: `POST /functions/v1/event-intake/<address>` from the sender, not
+  from clients. Answers 202 (accepted), 200 (duplicate), 400 (malformed), 404
+  (not a hook address, by its shape, or no such hook), 405 (not POST), 409
+  (paused or not ready), 413 (over the hook's size limit or 256 KiB), 429
+  (over the hook's minute or the company's hourly budget, with `Retry-After`),
+  431 (headers too large) or 503 (switched off, or retry).
+- `mail-intake` (20260928299650) — the mail provider's (Resend's) webhook for
+  received email, not for clients: `POST /functions/v1/mail-intake`, signed
+  with the platform's signing secret (Standard Webhooks). Answers 200 (every
+  recipient settled, other event types ignored, or a message the database
+  refuses as malformed, which is logged), 400 (a payload that is not JSON, or
+  an `email.received` without a valid message id), 401 (bad or stale
+  signature), 405, 413 (over 64 KiB), 429 (a mailbox over its limits, with
+  `Retry-After`) or 503 (mail switched off, or retry).
 - `profile-invitation-email`, `company-file-verifier`, `artifact-gc-worker`,
   `runner-control`, `runner-broker`, `runner-orchestrator`,
-  `computer-hour-notices` (20260929160000, founders' hour emails) — service or
-  runner authority only. Clients never call them.
+  `computer-hour-notices` (20260928249160, founders' hour emails),
+  `mail-outbox` (20260928309740, email agents send from company mailboxes) —
+  service or runner authority only. Clients never call them.
 
 ## 6. Stability by Order (what a client may build now)
 
@@ -740,7 +868,7 @@ does locally that the contract forbids.
 | `profile:migrate-local` | desktop-only transitional (qorpera_promote_local_profile) — no web equivalent by design |
 | `room:archive` | qorpera_close_shared_session |
 | `room:create` | rooms: Order 3 fan-out; today shared sessions (qorpera_create_shared_session_v4) |
-| `room:open` | qorpera_read_session_events + Realtime |
+| `room:open` | qorpera_read_session_events_tail (the newest page; older pages on "Show earlier") + qorpera_read_session_events (new events) + Realtime |
 | `room:restore` | review |
 | `room:send` | qorpera_append_session_input |
 | `room:update` | review |

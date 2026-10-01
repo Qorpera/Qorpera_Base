@@ -3,7 +3,12 @@ import { createServer, type IncomingHttpHeaders, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { type LxdCreateInstanceRequest, type LxdCreateStorageVolumeRequest, LxdUnixClient } from "../src/lxd-client.ts";
+import {
+	type LxdCreateInstanceRequest,
+	type LxdCreateStorageVolumeRequest,
+	LxdOperationFailed,
+	LxdUnixClient,
+} from "../src/lxd-client.ts";
 import { HttpLxdGuestTransport } from "../src/lxd-provider.ts";
 
 const roots: string[] = [];
@@ -558,10 +563,39 @@ describe("LXD Unix client", () => {
 		expect(requests[0]).toMatchObject({ method: "POST", body: volumeRequest });
 	});
 
+	it("deletes a custom volume: true when it existed, false when LXD had none, and throws when LXD refuses", async () => {
+		const path =
+			"/1.0/storage-pools/qorpera-vm/volumes/custom/identity-20000000-0000-4000-8000-000000000011?project=qorpera-runners";
+		let answer: { status?: number; body: unknown } = {
+			body: { type: "sync", status: "Success", status_code: 200, metadata: null },
+		};
+		const requests: string[] = [];
+		const socket = await unixServer((method, url) => {
+			requests.push(`${method} ${url}`);
+			if (method === "DELETE" && url === path) return answer;
+			throw new Error(`unexpected request ${method} ${url}`);
+		});
+		const client = new LxdUnixClient(socket, 30);
+		const name = "identity-20000000-0000-4000-8000-000000000011";
+		await expect(client.deleteStorageVolume("qorpera-runners", "qorpera-vm", name)).resolves.toBe(true);
+		answer = { status: 404, body: { type: "error", error_code: 404, error: "Storage volume not found" } };
+		await expect(client.deleteStorageVolume("qorpera-runners", "qorpera-vm", name)).resolves.toBe(false);
+		answer = { status: 400, body: { type: "error", error_code: 400, error: "The storage volume is still in use" } };
+		await expect(client.deleteStorageVolume("qorpera-runners", "qorpera-vm", name)).rejects.toThrow();
+		await expect(client.deleteStorageVolume("qorpera-runners", "qorpera-vm", "../other")).rejects.toThrow(
+			"LXD storage scope is invalid",
+		);
+		expect(requests).toEqual([`DELETE ${path}`, `DELETE ${path}`, `DELETE ${path}`]);
+	});
+
 	describe("an exec operation that fails", () => {
 		const name = "qorpera-20000000000040008000000000000001";
 		const agentOffline = "LXD VM agent is not currently running";
-		async function exec(wait: { status?: number; body: unknown }, post?: { status?: number; body: unknown }) {
+		async function exec(
+			wait: { status?: number; body: unknown },
+			post?: { status?: number; body: unknown },
+			ended?: { status?: number; body: unknown },
+		) {
 			const socket = await unixServer((method, url) => {
 				if (method === "POST" && url.includes("/exec?project="))
 					return (
@@ -577,6 +611,8 @@ describe("LXD Unix client", () => {
 						}
 					);
 				if (method === "GET" && url === "/1.0/operations/operation-3/wait?timeout=30") return wait;
+				if (method === "GET" && url === "/1.0/operations/operation-3")
+					return ended ?? { status: 404, body: { type: "error", error_code: 404, error: "not found" } };
 				throw new Error(`unexpected request ${method} ${url}`);
 			});
 			return new LxdUnixClient(socket, 30).execInstance("coding", name, ["/usr/bin/systemctl", "is-active", "x"]);
@@ -639,6 +675,36 @@ describe("LXD Unix client", () => {
 			],
 		])("keeps %s a plain failure", async (_case, wait, expected) => {
 			await expect(exec(wait)).rejects.toThrow(expected);
+		});
+		it("marks only an ended failure as definite, never a wait that returned it still running", async () => {
+			// A provider releases a failed create's capacity only on proof that no guest will appear.
+			await expect(exec(failedOperation("Command not found"))).rejects.toBeInstanceOf(LxdOperationFailed);
+			// LXD 5.21-6.x writes the same error envelope for a failed operation and for a wait that timed
+			// out: the operation's own end decides.
+			const operationIs = (status: string, statusCode: number) => ({
+				body: {
+					type: "sync",
+					status: "Success",
+					status_code: 200,
+					metadata: { status, status_code: statusCode, err: "" },
+				},
+			});
+			await expect(
+				exec(errorEnvelope("Instance is not running"), undefined, operationIs("Failure", 400)),
+			).rejects.toBeInstanceOf(LxdOperationFailed);
+			for (const ended of [operationIs("Running", 103), undefined]) {
+				const timedOut = await exec(errorEnvelope("context deadline exceeded"), undefined, ended).catch(
+					(error: unknown) => error,
+				);
+				expect(timedOut).toBeInstanceOf(Error);
+				expect(timedOut).not.toBeInstanceOf(LxdOperationFailed);
+			}
+			const running = failedOperation("");
+			running.body.metadata.status = "Running";
+			running.body.metadata.status_code = 103;
+			const pending = await exec(running).catch((error: unknown) => error);
+			expect(pending).toBeInstanceOf(Error);
+			expect(pending).not.toBeInstanceOf(LxdOperationFailed);
 		});
 		it("still separates a command that ran and exited non-zero", async () => {
 			const ran = {

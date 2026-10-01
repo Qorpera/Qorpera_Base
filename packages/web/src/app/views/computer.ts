@@ -1,8 +1,10 @@
 import type { CompanyComputerScope } from "@qorpera/cloud-client/cloud-company-computer-contract";
+import type { CompanyComputerWait } from "@qorpera/cloud-client/cloud-member-company-computer";
 import type { WebCompanyComputer } from "../../cloud/computer.ts";
 import type { HostedStaffAgent } from "../../cloud/types.ts";
 import { attachComputerDrag } from "../../ui/computer-drag.ts";
 import { ComputerViewHost } from "../../ui/computer-view-host.ts";
+import { ComputerViewerUnavailable, loadComputerViewer, reloadPage } from "../../ui/computer-viewer.ts";
 import { h, replace } from "../../ui/dom.ts";
 import { matchesKey } from "../../ui/keys.ts";
 import { t } from "../../ui/preferences.ts";
@@ -24,7 +26,9 @@ export class ComputerPanel {
 	readonly #status = h("p", { role: "status" }, t("Connecting…"));
 	readonly #spinner = h("span", { class: "computer-loading-spinner", "aria-hidden": "true" });
 	readonly #retry = h("button", { type: "button", class: "computer-retry", hidden: true }, t("Try again"));
-	readonly #loading = h("div", { class: "computer-loading" }, this.#spinner, this.#status, this.#retry);
+	/** Offered instead of Try again when this page cannot load the screen renderer. */
+	readonly #reload = h("button", { type: "button", class: "computer-retry", hidden: true }, t("Reload page"));
+	readonly #loading = h("div", { class: "computer-loading" }, this.#spinner, this.#status, this.#retry, this.#reload);
 	readonly #body = h("div", { class: "computer-panel-body" }, this.#loading);
 	/** The preview's own way out, top right; the entered frame has its compress button instead. */
 	readonly #closeButton = h("button", {
@@ -115,6 +119,9 @@ export class ComputerPanel {
 			unavailable(t("Computer access is not available yet."));
 			return;
 		}
+		// Fetch the screen renderer beside the first read, so a screen that is up
+		// never waits for it. Its failure is handled where openOn waits for it.
+		void loadComputerViewer().catch(() => undefined);
 		const wait = (ms: number, until: AbortSignal) =>
 			new Promise<void>((resolve, reject) => {
 				until.throwIfAborted();
@@ -175,14 +182,16 @@ export class ComputerPanel {
 				waiting: placed.computer.waiting,
 			};
 		};
-		const waitingLine = (waiting: "setup" | "room" | null | undefined, number: number) =>
-			waiting === "setup"
-				? number > 1
-					? t("Setting up another machine. This can take a while.")
-					: t("Setting up the machine. This can take a while.")
-				: waiting === "room"
-					? t("Waiting for room on our servers. It starts as soon as there is room.")
-					: undefined;
+		const waitingLine = (waiting: CompanyComputerWait | null | undefined, number: number) =>
+			waiting === "hours"
+				? t("Out of computer hours. The machine starts by itself once hours are added.")
+				: waiting === "setup"
+					? number > 1
+						? t("Setting up another machine. This can take a while.")
+						: t("Setting up the machine. This can take a while.")
+					: waiting === "room"
+						? t("Waiting for room on our servers. It starts as soon as there is room.")
+						: undefined;
 		/** While a computer starts: why it is not up yet, or that the agent now has
 		 * room on another computer (then the panel moves there). */
 		const recheck = async (scope: CompanyComputerScope, number: number, until: AbortSignal) => {
@@ -211,6 +220,10 @@ export class ComputerPanel {
 			scope: CompanyComputerScope,
 			canManage: boolean,
 		): Promise<"moved" | undefined> => {
+			// A page that cannot show the screen asks nothing to start, wake or open:
+			// a renderer that failed to load stays failed until the page is reloaded.
+			await loadComputerViewer();
+			signal.throwIfAborted();
 			this.#number = located.computers > 1 ? located.number : undefined;
 			this.#title = this.#titleText();
 			this.#applyTitle();
@@ -266,9 +279,10 @@ export class ComputerPanel {
 							});
 							until.throwIfAborted();
 						}
-						// A new computer can wait for its server first; say so instead of "starting" for minutes.
+						// A new computer can wait for its server first, and a new or sleeping one for computer
+						// hours; say so instead of "starting" for minutes.
 						const reason =
-							start.officeState !== "provisioning"
+							start.officeState !== "provisioning" && !idle
 								? undefined
 								: pass === 0
 									? waitingLine(located.waiting, located.number)
@@ -397,8 +411,12 @@ export class ComputerPanel {
 					this.#status.textContent = t("Connecting…");
 					await wait(1000, signal);
 				}
-			} catch {
-				if (!signal.aborted) {
+			} catch (error) {
+				if (signal.aborted) return;
+				if (error instanceof ComputerViewerUnavailable) {
+					unavailable(t("The computer screen could not be loaded in this tab. Reload the page to open it."));
+					this.#reload.hidden = false;
+				} else {
 					unavailable(t("The computer could not be reached. Try again."));
 					this.#retry.hidden = false;
 				}
@@ -407,6 +425,7 @@ export class ComputerPanel {
 			}
 		};
 		this.#retry.addEventListener("click", () => void run());
+		this.#reload.addEventListener("click", () => reloadPage(), { signal });
 		void run();
 	}
 

@@ -418,7 +418,7 @@ export function mountApplication(
 				noteConnectorReturn(connectorReturn);
 				connectorReturn = undefined;
 				queueMicrotask(() => {
-					if (!disposed && company === controller) openSettings("connections");
+					if (!disposed && company === controller) openSettings("company-connections");
 				});
 			}
 			computer = new WebCompanyComputer(cloud, profile, userId, controller.signal, () => {

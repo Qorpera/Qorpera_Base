@@ -267,6 +267,12 @@ describe("services", () => {
 		expect(buttons(githubCard).map((button) => button.textContent)).toEqual(["Disconnect"]);
 	});
 
+	it("says the company's services could not be read when the list fails", async () => {
+		setup([], undefined, admin, (mock) => vi.mocked(mock.list).mockRejectedValue(new Error("offline")));
+		await settle();
+		expect(view?.el.querySelector(".service-error")?.textContent).toBe("The company's services could not be read.");
+	});
+
 	it("explains a declined sign-in and does not touch grants", async () => {
 		startedHere("gmail");
 		history.replaceState(null, "", "#/?connector=gmail&connection=failed&reason=declined");
@@ -318,7 +324,7 @@ describe("services", () => {
 		const role = { manage: false };
 		const { client } = setup([gmail], undefined, { ...admin, canManage: () => role.manage });
 		await settle();
-		expect(view?.el.textContent).toContain("Connected for the company by an owner or admin");
+		expect(view?.el.textContent).toContain("Only founders and admins can connect or disconnect them.");
 		for (const item of cards()) expect(buttons(item)).toEqual([]);
 		expect(card(0).textContent).toContain("Connected as anna@example.com by Anna Owner");
 		// A sign-in outcome never shares on a non-admin's behalf.
@@ -327,6 +333,7 @@ describe("services", () => {
 		role.manage = true;
 		view?.update();
 		expect(buttons(card(0)).map((button) => button.textContent)).toEqual(["Disconnect"]);
+		expect(view?.el.textContent).not.toContain("Only founders and admins");
 	});
 
 	it("never shows a member's own secret as the company's connection", async () => {

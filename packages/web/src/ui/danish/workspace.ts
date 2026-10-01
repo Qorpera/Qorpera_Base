@@ -48,8 +48,8 @@ export const WORKSPACE: Record<string, string> = {
 		"Du har ikke tilladelse til at sende beskeder i denne virksomhed.",
 	"Choose active agents from this company before sending.": "Vælg aktive agenter fra denne virksomhed, før du sender.",
 	"Enter a message of no more than 64 KiB.": "Skriv en besked på højst 64 KiB.",
-	"Connect a model account in Settings → Connections to send messages.":
-		"Forbind en modelkonto i Indstillinger → Forbindelser for at sende beskeder.",
+	"Connect a model account in Settings → My connections to send messages.":
+		"Forbind en modelkonto i Indstillinger → Mine forbindelser for at sende beskeder.",
 	"Group chat review changed kind.": "Gennemgangen af gruppechatten skiftede type.",
 	"The group chat could not be created. Your message is still here.":
 		"Gruppechatten kunne ikke oprettes. Din besked er her stadig.",
@@ -209,12 +209,17 @@ export const WORKSPACE: Record<string, string> = {
 	"The machine is private right now. Shared viewing returns when that ends.":
 		"Maskinen er privat lige nu. Delt visning kommer tilbage, når det slutter.",
 	"The computer could not be reached. Try again.": "Computeren kunne ikke nås. Prøv igen.",
+	"The computer screen could not be loaded in this tab. Reload the page to open it.":
+		"Computerskærmen kunne ikke indlæses i denne fane. Genindlæs siden for at åbne den.",
+	"Reload page": "Genindlæs siden",
 	"All computers are in use. An owner or admin can start another machine.":
 		"Alle computere er i brug. En ejer eller administrator kan starte en maskine mere.",
 	"Setting up another machine. This can take a while.": "Sætter en maskine mere op. Det kan tage et stykke tid.",
 	"Setting up the machine. This can take a while.": "Sætter maskinen op. Det kan tage et stykke tid.",
 	"Waiting for room on our servers. It starts as soon as there is room.":
 		"Venter på plads på vores servere. Den starter, så snart der er plads.",
+	"Out of computer hours. The machine starts by itself once hours are added.":
+		"Ingen computertimer tilbage. Maskinen starter af sig selv, når der er tilføjet timer.",
 
 	// app/views/feedback.ts
 	"+ Bug": "+ Fejl",

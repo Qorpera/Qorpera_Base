@@ -1,5 +1,5 @@
 import type { ComputerHourOffer } from "../../cloud/computer-billing.ts";
-import type { CompanyComputerHours } from "../../cloud/computer-hours.ts";
+import type { CompanyComputerHours, CompanyHoursLeft } from "../../cloud/computer-hours.ts";
 import type { HostedCompanyFile } from "../../cloud/types.ts";
 import { button, fmtBytes, h, notice, replace } from "../../ui/dom.ts";
 import { phrase, presentationLocale, t, uiText } from "../../ui/preferences.ts";
@@ -137,6 +137,8 @@ export interface PlanUsage {
 	profileId?: string;
 	/** Founders pay the company's hours; undefined while the member's role is unknown. */
 	founder?: boolean;
+	/** A member's name, for founders' shares of what pays; undefined for one this page does not know. */
+	memberName?: (userId: string) => string | undefined;
 }
 
 /** Payments on Plan & usage: what can be bought, the member's plan, and the two Stripe pages. */
@@ -160,6 +162,51 @@ function packText(offer: ComputerHourOffer): string {
 	return `${hoursText(offer.hours)} · ${priceKr(offer.priceMinor / 100)}`;
 }
 
+/** What the company's hours left come from, "Free hours 2 h · Packs 20 h"; with what it owes.
+ * Under three minutes would read "0 h": left out, as on the kinds line. */
+function sourcesText(left: Extract<CompanyHoursLeft, { complimentary: false }>): string {
+	const parts = [
+		left.freeSeconds >= 180 ? t("Free hours {hours}", { hours: hoursText(left.freeSeconds / 3600) }) : null,
+		left.planSeconds >= 180 ? t("Plans {hours}", { hours: hoursText(left.planSeconds / 3600) }) : null,
+		left.creditSeconds >= 180 ? t("Packs {hours}", { hours: hoursText(left.creditSeconds / 3600) }) : null,
+		left.owedSeconds >= 180 ? t("Owed {hours}", { hours: hoursText(left.owedSeconds / 3600) }) : null,
+	];
+	return parts.filter((part) => part !== null).join(" · ");
+}
+
+/** For a founder: each founder's plan and packs that pay for the company, packs from former
+ * founders on one line, and that a plan is shared by every company it pays for. */
+function foundersLines(left: Extract<CompanyHoursLeft, { complimentary: false }>, usage: PlanUsage): HTMLElement[] {
+	const payers = (left.founders ?? []).filter(
+		(founder) => founder.planSeconds !== undefined || founder.creditSeconds !== undefined,
+	);
+	const lines = payers.map((founder) => {
+		const parts = [
+			founder.planSeconds === undefined ? null : t("plan {hours}", { hours: hoursText(founder.planSeconds / 3600) }),
+			founder.creditSeconds === undefined
+				? null
+				: t("packs {hours}", { hours: hoursText(founder.creditSeconds / 3600) }),
+		].filter((part) => part !== null);
+		return h(
+			"small",
+			{ class: "settings-hours-founder" },
+			t("{name}: {parts}", {
+				name: founder.userId ? (usage.memberName?.(founder.userId) ?? t("A founder")) : t("Former founders"),
+				parts: parts.join(" · "),
+			}),
+		);
+	});
+	if (payers.some((founder) => founder.planSeconds !== undefined))
+		lines.push(
+			h(
+				"small",
+				{ class: "settings-hours-shared" },
+				uiText("A founder's plan is shared by every company it pays for."),
+			),
+		);
+	return lines;
+}
+
 /** The company's hours card: this month's use, what it was used on, and (for
  * founders, once payments are open) packs of hours to buy for the company. */
 function companyHoursCard(
@@ -170,6 +217,7 @@ function companyHoursCard(
 	const state = usage.hours;
 	if (!state) return null;
 	const value = state.value;
+	const left = value?.hoursLeft;
 	const used = value
 		? uiText("{used} used", { used: hoursText(value.usedSeconds / 3600) })
 		: state.loading
@@ -233,8 +281,30 @@ function companyHoursCard(
 			{ class: "settings-copy" },
 			h("small", { class: "settings-eyebrow" }, uiText("Computer hours this month")),
 			h("strong", null, used),
-			h("small", null, usage.companyName, " · ", uiText("Measured, not charged yet")),
+			h(
+				"small",
+				null,
+				usage.companyName,
+				" · ",
+				// From the live switch on the cloud says what is left; before it, members see measured hours only.
+				!left
+					? uiText("Measured, not charged yet")
+					: left.complimentary
+						? uiText("Complimentary: no limit")
+						: uiText("{left} left", { left: hoursText(Math.max(left.leftSeconds, 0) / 3600) }),
+			),
+			left && !left.complimentary && sourcesText(left)
+				? h("small", { class: "settings-hours-sources" }, sourcesText(left))
+				: null,
+			...(left && !left.complimentary ? foundersLines(left, usage) : []),
 			kinds.length ? h("small", { class: "settings-hours-kinds" }, kinds.join(" · ")) : null,
+			value?.waitingForHours
+				? h(
+						"small",
+						{ class: "settings-hours-waiting" },
+						uiText("Out of computer hours. New work waits and starts by itself once hours are added."),
+					)
+				: null,
 			usage.founder === false
 				? h("small", null, uiText("Computer hours are paid by the founders. You are never charged."))
 				: null,

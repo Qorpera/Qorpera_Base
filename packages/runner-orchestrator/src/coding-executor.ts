@@ -485,6 +485,18 @@ export class CloudCodingExecutor {
 					await setTimeout(pause, undefined, { signal: active });
 				}
 			}
+			if (begun.state === "refused" && begun.reason === "COMPUTER_HOURS_EXHAUSTED") {
+				// The company ran out of computer hours after the machine step: nothing began. The session
+				// waits in the queue; an attached one stays with the keeper.
+				end();
+				try {
+					await call("qorpera_defer_coding_session", { ...args, p_reason: begun.reason });
+				} catch (deferError) {
+					this.#reported("defer", deferError);
+					return "recovery-required";
+				}
+				return "deferred";
+			}
 			if (begun.workerId !== claimed.workerId || begun.sequence !== claimed.sequence)
 				throw new Error("Coding turn admission unconfirmed");
 			for (;;) {

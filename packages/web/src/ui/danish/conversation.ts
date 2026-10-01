@@ -66,6 +66,12 @@ export const CONVERSATION: Record<string, string> = {
 	"{label}. Open the conversation": "{label}. Åbn samtalen",
 	"Loading conversation": "Henter samtale",
 	"No messages yet.": "Ingen beskeder endnu.",
+	"Show earlier messages": "Vis tidligere beskeder",
+	"Loading earlier messages…": "Henter tidligere beskeder…",
+	"Earlier messages could not be loaded. {reason}": "Tidligere beskeder kunne ikke hentes. {reason}",
+	"Loaded 1 earlier message.": "Hentede 1 tidligere besked.",
+	"Loaded {count} earlier messages.": "Hentede {count} tidligere beskeder.",
+	"This is the start of the conversation.": "Dette er starten på samtalen.",
 	"This conversation is archived.": "Denne samtale er arkiveret.",
 	"You can read this conversation. Contributors and above can write.":
 		"Du kan læse denne samtale. Bidragydere og derover kan skrive.",
@@ -101,6 +107,8 @@ export const CONVERSATION: Record<string, string> = {
 		"Kørslen startede, men et af dens trin blev afvist. Fejlen ligger hos Qorpera.",
 	"The run was stopped before it finished.": "Kørslen blev stoppet, før den var færdig.",
 	"The run stopped because of an internal error.": "Kørslen stoppede på grund af en intern fejl.",
+	"The company is out of computer hours. New work starts again once hours are added.":
+		"Virksomheden har ikke flere computertimer. Nyt arbejde starter igen, når der er tilføjet timer.",
 
 	// The model menu (app/views/composer-models.ts)
 	Model: "Model",

@@ -2,7 +2,7 @@
  * passes it to t() / uiText(). One file per area of the app; a key lives in
  * one file only (test/translations.test.ts checks). Wording follows
  * qorpera.com. */
-/** Settings: General, Plan & usage, Friends, Company, Connections. */
+/** Settings: General, Plan & usage, Friends, Company, My connections, Company connections. */
 export const SETTINGS: Record<string, string> = {
 	// Settings dialog (app/views/settings.ts)
 	"Search settings": "Søg i indstillinger",
@@ -105,6 +105,19 @@ export const SETTINGS: Record<string, string> = {
 	"Computer hours unavailable": "Computertimer ikke tilgængelige",
 	"Counted once plans open": "Tælles, når abonnementerne åbner",
 	"Measured, not charged yet": "Målt, endnu ikke opkrævet",
+	"Complimentary: no limit": "Gratis adgang: ingen grænse",
+	"{left} left": "{left} tilbage",
+	"Free hours {hours}": "Gratis timer {hours}",
+	"Plans {hours}": "Abonnementer {hours}",
+	"Packs {hours}": "Timepakker {hours}",
+	"Owed {hours}": "Udestående {hours}",
+	"plan {hours}": "abonnement {hours}",
+	"packs {hours}": "timepakker {hours}",
+	"{name}: {parts}": "{name}: {parts}",
+	"A founder": "En stifter",
+	"Former founders": "Tidligere stiftere",
+	"A founder's plan is shared by every company it pays for.":
+		"En stifters abonnement deles af alle de virksomheder, det betaler for.",
 	"Company machines": "Virksomhedens maskiner",
 	"Agent runs": "Agentkørsler",
 	"Coding machines": "Kodemaskiner",
@@ -236,7 +249,15 @@ export const SETTINGS: Record<string, string> = {
 
 	// Company execution (app/views/company-execution.ts)
 
-	// Connections: model accounts (app/views/settings-connections.ts)
+	// My connections and Company connections (app/views/settings.ts)
+	"My connections": "Mine forbindelser",
+	"Company connections": "Virksomhedens forbindelser",
+	"Your own AI subscriptions. They pay for the work you start, including your routines, and they leave with you.":
+		"Dine egne AI-abonnementer. De betaler for det arbejde, du starter, også for dine rutiner, og de følger med dig, når du går.",
+	"The company's own accounts. Every agent can use them, and they stay when someone leaves.":
+		"Virksomhedens egne konti. Alle agenter kan bruge dem, og de bliver, når nogen går.",
+
+	// My connections: model accounts (app/views/settings-connections.ts)
 	"{minutes}m": "{minutes} min",
 	"{hours}h {minutes}m": "{hours} t {minutes} min",
 	"{days}d {hours}h": "{days} d {hours} t",
@@ -276,12 +297,10 @@ export const SETTINGS: Record<string, string> = {
 	"Open {provider} sign-in": "Åbn login hos {provider}",
 	"This page updates by itself when you are done.": "Siden opdaterer sig selv, når du er færdig.",
 
-	// Connections: services (app/views/settings-services.ts, texts from cloud/connectors.ts)
+	// Company connections: services (app/views/settings-services.ts, texts from cloud/connectors.ts)
 	Services: "Tjenester",
-	"Connected for the company; its agents use them through the company's secret broker.":
-		"Forbundet for virksomheden; agenterne bruger dem via virksomhedens boks til hemmeligheder.",
-	"Connected for the company by an owner or admin; its agents use them through the company's secret broker.":
-		"Forbundet for virksomheden af en ejer eller administrator; agenterne bruger dem via virksomhedens boks til hemmeligheder.",
+	"Only founders and admins can connect or disconnect them.":
+		"Kun stiftere og administratorer kan forbinde eller afbryde dem.",
 	"Read and search the mailbox, send email.": "Læs og søg i postkassen, send e-mail.",
 	"Find, read, create and update documents.": "Find, læs, opret og opdater dokumenter.",
 	"Repositories, issues, pull requests and files.": "Repositories, issues, pull requests og filer.",
@@ -316,7 +335,7 @@ export const SETTINGS: Record<string, string> = {
 		"Login blev afsluttet i en anden browser. Start det igen her.",
 	"The account is connected, but the company's agents could not get it yet. Disconnect it and connect it again.":
 		"Kontoen er forbundet, men virksomhedens agenter kunne ikke få adgang til den endnu. Afbryd den, og forbind den igen.",
-	"Your connected services could not be read.": "Dine forbundne tjenester kunne ikke hentes.",
+	"The company's services could not be read.": "Virksomhedens tjenester kunne ikke hentes.",
 	"The sign-in could not be started. Try again.": "Login kunne ikke startes. Prøv igen.",
 	"The token could not be saved. Try again.": "Tokenet kunne ikke gemmes. Prøv igen.",
 	"The service could not be disconnected. Try again.": "Tjenesten kunne ikke afbrydes. Prøv igen.",

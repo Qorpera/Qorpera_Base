@@ -1,5 +1,5 @@
 /* Computer hour notices (build step 5; contract section 19, 2026-09-28 amendment "computer hours",
- * item 10). The database queues them (migration 20260929160000_runtime_computer_hour_notices) and
+ * item 10). The database queues them (migration 20260928249160_runtime_computer_hour_notices) and
  * the computer-hour-notices Edge Function sends each one through Resend, like invitations
  * (supabase/INVITATION-EMAIL.md). Only founders receive them. */
 
@@ -248,7 +248,7 @@ export function buildComputerHourEmail(job: ComputerHourNoticeJob, appUrlBase: s
 		footer = `You get this email as a founder of ${companyName}. Admins, contributors and viewers are never charged.`;
 		title = `${companyName} is out of computer hours`;
 		paragraphs = [
-			`${companyName} has used all its computer hours.`,
+			`${companyName} has no computer hours left.`,
 			"Machines do not start and new work waits until hours arrive. Work already running may finish within the hour. A plan or a pack of hours adds hours, and what was used past zero is paid from them first.",
 		];
 	}

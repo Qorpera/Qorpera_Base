@@ -14,6 +14,10 @@
 
 -- 1. Revisions and the authority journal -------------------------------------------------------------------------
 
+-- The path gateway reads the shared resources and grants tables on every file operation: never queue it behind this
+-- change (added before release, #502).
+set local lock_timeout = '3s';
+
 alter table public.qorpera_company_path_resources add column authority_revision bigint not null default 1
 	check (authority_revision >= 1);
 alter table public.qorpera_company_path_grants add column revision bigint not null default 1 check (revision >= 1);

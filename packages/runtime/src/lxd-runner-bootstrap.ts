@@ -859,8 +859,11 @@ async function verifyCompanyGuest(
 	const identities = mounts.filter((mount) => mount.path === paths.identityVolume);
 	const recoveries = mounts.filter((mount) => mount.path === paths.runnerHomeDirectory);
 	if (company.loginCustody === "vault") {
-		// The vault keeps the login: no node volume may carry identity material into this guest.
-		if (identities.length !== 0) throw new Error("A vault login guest must not mount an identity volume");
+		// The vault keeps the login: no node volume may carry identity material into this guest. This
+		// unit's own ReadWritePaths= makes systemd mount the plain identity folder onto itself, so the
+		// root filesystem shows up at the path; any other device there is a volume.
+		if (roots.length === 1 && identities.some((mount) => mount.device !== roots[0]?.device))
+			throw new Error("A vault login guest must not mount an identity volume");
 		if (
 			roots.length !== 1 ||
 			recoveries.length !== 1 ||

@@ -8,7 +8,7 @@ The worker retains recovery intent before SQL revocation, then one stop request 
 
 A `held` observation with `phase: "service_stop"` and `acknowledgedAtMs` reports the historical acknowledgement for `replace`. Physical replacement and capacity release remain unimplemented. Recovery uses retained activation and installed public metadata; it does not inspect mutable workbench copies or credential secrets. Local `node scripts/test-runtime-office-start.mjs --stop-worker` acceptance joins the actual supervisor, worker, Unix HTTP transport and disposable PostgreSQL; physical guest/systemd measurements in that fixture are synthetic.
 
-For `power_off` or the shutdown stage of `reboot`, acknowledged service shutdown advances into a separate VM shutdown phase. `LxdOfficePowerOffWorker` retains boot/activation/stop history before guest access disappears, rechecks current SQL stop authority, and submits one non-forced LXD stop through the existing durable VM journal. Known operations recover through observation; unknown submissions remain unresolved and never retry. A `powered_off` observation with `phase: "power_off"` requires the exact retained VM to be stopped in both instance and state observations. The root disk, attached workbench and charged allocation remain intact, with SQL admission in maintenance. A new external boot cannot reuse the old shutdown command. Retain the protected recovery plan and forward stage. `--power-off-worker` covers this provider/SQL/Unix HTTP flow with synthetic VM power measurements, including lost operation polling, database restart and refusal of a missing forward stage.
+For `power_off` or the shutdown stage of `reboot`, acknowledged service shutdown advances into a separate VM shutdown phase. `LxdOfficePowerOffWorker` retains boot/activation/stop history before guest access disappears, rechecks current SQL stop authority, and submits one non-forced LXD stop through the existing durable VM journal. Known operations recover through observation; unknown submissions remain unresolved and never retry. A `powered_off` observation with `phase: "power_off"` requires the exact retained VM to be stopped in both instance and state observations. The root disk, attached workbench and company allocation remain intact, with SQL admission in maintenance. After the confirmed stop of an explicit `power_off` (never the shutdown stage of `reboot`), the worker calls `qorpera_suspend_runtime_node_machine` before reporting `powered_off`: the node demand stays placed but no longer counts, so the slot is free until resume re-admits it through the ordinary node reservation. While the demand is suspended every call returns the same receipt. A demand that still counts is kept (`RESUME_PENDING`) once a boot intent for this power-off or any later lifecycle transition exists, which includes every call after resume re-admitted it. A new external boot cannot reuse the old shutdown command. Retain the protected recovery plan and forward stage. `--power-off-worker` covers this provider/SQL/Unix HTTP flow with synthetic VM power measurements, including lost operation polling, database restart and refusal of a missing forward stage, and checks that the node then counts no computer and offers the free slot to placement while the suspended demand stays on its node; `--resume-worker` and `--vm-cycles` check that resume re-admits it and that the same suspension is then kept.
 
 For explicit VM resume, retain `${planPath}.resume` as the root-protected envelope `{ "schema": "qorpera.lxd-office-resume-plan/v1", "request": <CompanyComputerBootIntentRequest> }`, bound to the same predecessor recovery request. Populate its stop-history digest from the verified v2 (original boot) or v3 (later boot) power-off request and its power-off digest from the exact completion bytes. Prior v1 shutdown journals cannot manufacture this proof. Before shutdown, every protected root-history blob is read and hashed; the original manifest bytes are retained separately. The supervisor records a forward boot stage after confirmed VM shutdown, then `LxdOfficeResumeWorker` prepares/checks current SQL intent authority and starts once through the complete retained create/start/stop sequence. Accepted operations recover; unknown submissions never retry. The observed kernel boot must be distinct and the root archive must still match. The result is `awaiting_configuration`, with original credentials and adoption evidence preserved. Missing or changed forward stages, plans, metadata or boot observations fail closed. `--resume-worker` joins the supervisor, workers, real PostgreSQL and Unix HTTP with synthetic VM boots/archives, clears the synthetic `/run` inbox, and proves lost intent/poll/database recovery while retaining one allocation.
 
@@ -205,11 +205,28 @@ Member Compute Identity.
 `QORPERA_RUNNER_ORCHESTRATOR_POLL_MS` optionally controls how often the service
 asks for new work (default 250 ms). `QORPERA_RUNNER_ORCHESTRATOR_RECONCILE_MS`
 controls how often it renews control, runs the occurrence reconcilers, reconciles
-expired claims and the provider, and re-reads its retained claims (default 2 s);
-a failed reconcile blocks claims and is retried on the next poll.
+expired claims and the provider, and re-reads its retained claims (default 2 s).
+Reconcile runs beside the claim loop, so asking for new work never waits for a
+pass; a failed reconcile blocks claims and is retried after one poll interval,
+and a failed dispatch brings the next pass forward and holds claims until it
+has succeeded.
 `QORPERA_RUNNER_ORCHESTRATOR_CONCURRENCY` controls the
 bounded concurrent dispatcher (default 8, maximum 64). The service deliberately
 has no desktop fallback.
+
+`QORPERA_RUNNER_ORCHESTRATOR_WAKE=realtime` (off unless set) switches on push
+wake-ups. The service joins its private Supabase Realtime topic with the
+publishable key it already holds. The topic name is derived from the sha256 of
+its control token, which only the database keeps, and only the database
+publishes to it. While the channel is joined and the loop has been idle for
+30 s, it asks for work on a wake-up and every
+`QORPERA_RUNNER_ORCHESTRATOR_WAKE_BACKSTOP_MS` (default 5 s) instead of every
+poll interval. Wake-ups that bring a claim forward stay at least one poll
+interval apart. While the channel is not joined, the loop polls as without
+wake-ups. A backstop claim that finds work no wake-up announced makes it poll
+that way for ten minutes and is reported. The database side (migration
+`20260928319550`) broadcasts only while `qorpera_orchestrator_wake_settings.enabled`
+is on; switch it on before the nodes.
 
 The bootstrap orchestrator token is used only when the control-state file does
 not exist. The service persists a pending replacement before rotation, sends

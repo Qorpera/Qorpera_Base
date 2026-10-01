@@ -187,6 +187,10 @@ export function cloudActionEffect(
 		case "read_skill":
 		case "search_skills":
 		case "computer_screenshot":
+		case "machine_read":
+		case "machine_list":
+		case "list_hooks":
+		case "read_event":
 			return "read";
 		case "company_write":
 		case "company_mkdir":
@@ -209,10 +213,19 @@ export function cloudActionEffect(
 		case "coding_cancel_command":
 		case "coding_ask":
 		case "coding_finish":
+		// A company machine is the company's own scratch compute, isolated like a
+		// coding VM: starting, using, stopping and deleting it stays inside.
+		case "machine_start":
+		case "machine_run":
+		case "machine_cancel":
+		case "machine_stop":
+		case "machine_delete":
 			return "internal";
 		case "company_delete":
 			return "destructive";
 		case "computer_shell":
+		// An email from a company mailbox leaves the company (M2b).
+		case "send_mail":
 			return "external";
 		case "computer_browser":
 			return ["snapshot", "list_tabs", "select_tab"].includes(action.action as string) ? "read" : "external";
@@ -332,6 +345,11 @@ function routineSchedule(args: Record<string, JsonValue>, fallbackZone: string):
 	const timeZone = knownZone(trigger.timeZone) ?? fallbackZone;
 	let words: string;
 	if (trigger.kind === "once") words = "The agent picks each next run";
+	else if (trigger.kind === "listener" && trigger.source === "event")
+		words =
+			Array.isArray(trigger.only) && trigger.only.length > 0
+				? `When a hook receives ${list(trigger.only.filter((type): type is string => typeof type === "string").map((type) => `“${type}”`))} events`
+				: "When a hook receives an event";
 	else if (trigger.kind === "listener" && typeof trigger.path === "string")
 		words =
 			trigger.match === "subtree"
@@ -436,6 +454,17 @@ export function describeCloudAction(
 	} else if (tool.name === "computer_shell") {
 		title = "Run a command on the computer";
 		quote("command", action.command, 2000);
+	} else if (tool.name === "send_mail") {
+		title = "Send an email";
+		const addresses = (value: JsonValue | undefined) =>
+			Array.isArray(value) ? value.filter((item): item is string => typeof item === "string").join(", ") : "";
+		// Cut with a mark, so a card never drops a recipient silently.
+		target = bounded(addresses(args.to), 500) || null;
+		add("from", args.from);
+		add("cc", addresses(args.cc));
+		add("subject", args.subject);
+		quote("text", args.text, CONTENT_BYTES);
+		if (typeof args.inReplyTo === "string") add("thread", "A reply to an email the company received");
 	} else if (tool.name === "company_delete") {
 		title = "Delete from the Company File";
 		target = text(args.path) || null;

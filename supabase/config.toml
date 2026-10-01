@@ -49,3 +49,18 @@ verify_jwt = false
 # carries Stripe's signature instead of a JWT.
 [functions.computer-billing]
 verify_jwt = false
+
+# Event intake: public. A hook's address is its route; signed hooks carry the sender's signature,
+# which the vault checks. There is no JWT to check.
+[functions.event-intake]
+verify_jwt = false
+
+# Mail intake: public, for the mail provider's webhook (Resend), which it checks with the platform's signing
+# secret (Standard Webhooks). There is no JWT to check.
+[functions.mail-intake]
+verify_jwt = false
+
+# Mail outbox: called each minute by pg_cron with a Supabase secret key, which it checks itself (like the hour
+# notices); it sends company mail with the platform's Resend key.
+[functions.mail-outbox]
+verify_jwt = false

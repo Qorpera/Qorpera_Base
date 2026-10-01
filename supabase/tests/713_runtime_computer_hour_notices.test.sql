@@ -1,5 +1,5 @@
 -- @fixture 300_runtime_wake_bus.test.sql until "-- END WAKE FIXTURE"
--- Computer hours, build step 5 (20260929160000_runtime_computer_hour_notices): hour notices to
+-- Computer hours, build step 5 (20260928249160_runtime_computer_hour_notices): hour notices to
 -- founders as an email outbox. Nothing before the live switch; "running low" once a month to the
 -- payers (or every founder on free hours); "out of hours" once per time the company runs out, to
 -- every founder; both sent ten minutes later unless hours arrived; a summary per used plan period;
@@ -206,9 +206,14 @@ select pg_temp.wake_assert(pg_temp.notice('running_low', '71300000-0000-4000-800
 select pg_temp.wake_assert(pg_temp.notice('running_low', '71300000-0000-4000-8000-000000000050',
 	'71300000-0000-4000-8000-000000000008') = 'cancelled:The company no longer pays for its hours',
 	'Complimentary now: dropped');
-select pg_temp.wake_assert(pg_temp.notice('running_low', '71300000-0000-4000-8000-000000000020',
-	'71300000-0000-4000-8000-000000000002') = 'failed:The recipient is no longer a founder of the company',
-	'A former founder gets no running-low email');
+-- One notice per calendar month the use fell in: the use two hours back (step 6) can be in the
+-- month before, when the test runs just after a month begins in Danish time.
+select pg_temp.wake_assert((select count(*) between 1 and 2
+		and bool_and(status = 'failed' and last_error = 'The recipient is no longer a founder of the company')
+	from public.qorpera_computer_hour_notices where kind = 'running_low'
+		and profile_id = '71300000-0000-4000-8000-000000000020' and user_id = '71300000-0000-4000-8000-000000000002'),
+	'A former founder gets no running-low email: ' || coalesce(pg_temp.notice('running_low',
+		'71300000-0000-4000-8000-000000000020', '71300000-0000-4000-8000-000000000002'), 'none'));
 select pg_temp.wake_assert((select status || ':' || last_error from public.qorpera_computer_hour_notices
 	where occasion = 'tried-8-times') = 'failed:Gave up after eight attempts', 'Eight attempts, then no more');
 select pg_temp.wake_assert((select string_agg(status || ':' || last_error, ',' order by occasion)

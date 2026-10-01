@@ -8,6 +8,7 @@ import type { LxdOfficeIdleRegistry } from "./lxd-office-idle-policy.ts";
 import type { LxdOfficeLifecycleControlRegistry } from "./lxd-office-lifecycle-control.ts";
 import type { LxdOfficeProviderRegistry } from "./lxd-office-provider-control.ts";
 import type { LxdOfficeResetRegistry, LxdOfficeResetSuccessorRegistry } from "./lxd-office-reset-control.ts";
+import type { LxdOfficeRetirementRegistry } from "./lxd-office-retirement-control.ts";
 import type { LxdOfficeSoftwareRegistry } from "./lxd-office-software-control.ts";
 import type { LxdOfficeSoftwareInvocationRegistry } from "./lxd-office-software-invocation-control.ts";
 import type { LxdOfficeStartRegistry } from "./lxd-office-start-control.ts";
@@ -28,6 +29,7 @@ export type LxdOfficeProviderMethod =
 	| Parameters<LxdOfficeActivationRegistry["call"]>[0]
 	| Parameters<LxdOfficeResetRegistry["call"]>[0]
 	| Parameters<LxdOfficeResetSuccessorRegistry["call"]>[0]
+	| Parameters<LxdOfficeRetirementRegistry["call"]>[0]
 	| Parameters<LxdOfficeSoftwareRegistry["call"]>[0]
 	| Parameters<LxdOfficeSoftwareInvocationRegistry["call"]>[0];
 export interface LxdOfficeLifecycleRegistry {
@@ -97,6 +99,11 @@ const ALLOWED: Record<OfficeProviderHttpMethod, true> = {
 	qorpera_check_office_software_invocation: true,
 	qorpera_ack_office_software_invocation: true,
 	qorpera_suspend_runtime_node_machine: true,
+	// A deleted company's powered-off computer: retirement, its delete window
+	// and the release (20260928259320).
+	qorpera_runtime_office_retirement: true,
+	qorpera_prepare_runtime_office_retirement: true,
+	qorpera_retire_runtime_office: true,
 };
 const METHODS = new Set(Object.keys(ALLOWED) as OfficeProviderHttpMethod[]);
 const LIMIT = 65536;

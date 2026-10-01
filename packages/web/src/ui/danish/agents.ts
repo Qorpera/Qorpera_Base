@@ -37,6 +37,8 @@ export const AGENTS: Record<string, string> = {
 	"every day": "hver dag",
 	"When {path} or anything under it changes": "Når {path} eller noget i den ændres",
 	"When {path} changes": "Når {path} ændres",
+	"When a hook receives an event": "Når en hook modtager en hændelse",
+	"When a hook receives {types}": "Når en hook modtager {types}",
 	"{days} at {time} ({zone})": "{days} kl. {time} ({zone})",
 	"Every day at {time}": "Hver dag kl. {time}",
 	"Weekdays at {time}": "Hverdage kl. {time}",
@@ -109,8 +111,8 @@ export const AGENTS: Record<string, string> = {
 	"Effort: {effort}": "Indsats: {effort}",
 	"Saving lets {name} use this account for this routine while you are away. Pause the routine to stop it.":
 		"Når du gemmer, kan {name} bruge kontoen til rutinen, mens du er væk. Sæt rutinen på pause for at stoppe den.",
-	"Connect a model account in Settings → Connections first. A routine runs on a member's own account.":
-		"Forbind først en modelkonto i Indstillinger → Forbindelser. En rutine kører på et medlems egen konto.",
+	"Connect a model account in Settings → My connections first. A routine runs on a member's own account.":
+		"Forbind først en modelkonto i Indstillinger → Mine forbindelser. En rutine kører på et medlems egen konto.",
 
 	// Group details (app/views/group-details.ts, group-edits.ts, app/update-group.ts)
 	Participants: "Deltagere",
@@ -167,6 +169,8 @@ export const AGENTS: Record<string, string> = {
 	"Needs {name} · paused {duration}": "Venter på {name} · på pause i {duration}",
 	"Needs {name} · paused now": "Venter på {name} · på pause nu",
 	"Answer sent · waiting for the session": "Svar sendt · venter på sessionen",
+	"Waiting for computer hours": "Venter på computertimer",
+	"Answer sent · waiting for computer hours": "Svar sendt · venter på computertimer",
 	"Opening the pull request": "Åbner pull requesten",
 	"Draft PR ready · session kept for follow-ups": "PR-kladde klar · sessionen gemmes til opfølgning",
 	"Finished · session kept for follow-ups": "Færdig · sessionen gemmes til opfølgning",
@@ -212,6 +216,8 @@ export const AGENTS: Record<string, string> = {
 	"Draft PR opened": "PR-kladde åbnet",
 	"The computer running this session stopped answering. The workspace is kept; a follow-up starts it again.":
 		"Computeren, der kørte sessionen, holdt op med at svare. Arbejdsområdet er gemt; en opfølgning starter den igen.",
+	"The company ran out of computer hours. The workspace is kept; a follow-up continues once hours are added.":
+		"Virksomheden løb tør for computertimer. Arbejdsområdet er gemt; en opfølgning fortsætter, når der er tilføjet timer.",
 	"Failed: {reason}": "Mislykkedes: {reason}",
 	"{count} file": "{count} fil",
 	"{count} files": "{count} filer",

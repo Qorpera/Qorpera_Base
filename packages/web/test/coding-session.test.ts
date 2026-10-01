@@ -123,6 +123,17 @@ describe("the captions the kernel state produces", () => {
 			tone: "working",
 		});
 		expect(codingSessionStatus(codingSession({ phase: "queued" }), owner, NOW).text).toBe("Waiting for a computer");
+		// A turn waiting for its company's computer hours says so (20260928319760).
+		expect(
+			codingSessionStatus(codingSession({ phase: "queued", lastStep: "Waiting for computer hours" }), owner, NOW),
+		).toEqual({ text: "Waiting for computer hours", tone: "idle" });
+		expect(
+			codingSessionStatus(
+				codingSession({ phase: "input_ready", lastStep: "Waiting for computer hours" }),
+				owner,
+				NOW,
+			),
+		).toEqual({ text: "Answer sent · waiting for computer hours", tone: "idle" });
 		expect(codingSessionStatus(codingSession({ phase: "awaiting_input" }), owner, NOW)).toEqual({
 			text: "Needs you · your answer is recorded in this thread",
 			tone: "attention",
@@ -845,6 +856,26 @@ describe("the element in the thread", () => {
 		]);
 		// The working step stays the harness's.
 		expect(element.el.querySelector(".coding-steps")?.textContent).toContain("Prepared the repository at abc1234");
+	});
+
+	it("says a turn cut off for computer hours in plain words, never with its code", async () => {
+		const { element } = mount(codingSession({ phase: "failed", workerState: "failed" }), {
+			events: [
+				event(
+					1,
+					"failed",
+					{
+						summary: "The coding turn did not finish: Out of computer hours [code=COMPUTER_HOURS_EXHAUSTED]",
+					},
+					"executor",
+				),
+			],
+		});
+		await settle();
+		const notes = [...element.el.querySelectorAll(".coding-note")].map((note) => note.textContent);
+		expect(notes).toEqual([
+			"The company ran out of computer hours. The workspace is kept; a follow-up continues once hours are added.",
+		]);
 	});
 
 	it("keeps a draft when the session is left and opened again", async () => {

@@ -62,7 +62,13 @@ afterEach(async () => {
 	await rm(root, { recursive: true, force: true });
 });
 
-async function fixture(mode = "company-runtime", httpPathControl = false, presence?: CloudCompanyPathPresenceFactory) {
+async function fixture(
+	mode = "company-runtime",
+	httpPathControl = false,
+	presence?: CloudCompanyPathPresenceFactory,
+	machines = false,
+	folderBytes = false,
+) {
 	const f = nativeCompanyContextFixture();
 	if (mode === "company-silent" || mode === "company-worker") {
 		f.context = { ...f.context, identity: { ...f.context.identity, sessionId: null } };
@@ -254,20 +260,38 @@ async function fixture(mode = "company-runtime", httpPathControl = false, presen
 	};
 	const decisions: Record<string, unknown>[] = [];
 	const reviewedTools: string[] = [];
+	/** The kernel's answer to whether any node can serve machines (an Error: the call fails). */
+	let machinesAnswer: unknown = true;
+	const folderReads: string[] = [];
 	const pathCall = vi.fn<CloudCompanyPathControl["call"]>(async (method, args) => {
-		if (method === "qorpera_record_runtime_observation") {
+		if (method === "qorpera_company_machines_available") {
+			if (machinesAnswer instanceof Error) throw machinesAnswer;
+			return machinesAnswer;
+		}
+		if (method === "qorpera_record_runtime_observation_batch") {
 			expect(args.p_run_id).toBe(f.binding.runId);
-			const observation = parseCloudRuntimeObservation(args.p_observation);
-			expect(observation.assignmentId).toBe(f.binding.assignmentId);
-			observations.push(observation);
+			const batch = (args.p_observations as unknown[]).map((row) => parseCloudRuntimeObservation(row));
+			expect(batch.length).toBeGreaterThan(0);
+			expect(batch.length).toBeLessThanOrEqual(50);
+			for (const observation of batch) expect(observation.assignmentId).toBe(f.binding.assignmentId);
+			observations.push(...batch);
 			return {
-				schema: "qorpera.runtime-observation-receipt/v1",
+				schema: "qorpera.runtime-observation-batch-receipt/v1",
 				runId: f.binding.runId,
-				attemptId: observation.attemptId,
-				phase: observation.phase,
-				ingestedAt: new Date().toISOString(),
-				replayed: false,
+				receipts: batch.map((observation) => ({
+					schema: "qorpera.runtime-observation-receipt/v1",
+					runId: f.binding.runId,
+					attemptId: observation.attemptId,
+					phase: observation.phase,
+					ingestedAt: new Date().toISOString(),
+					replayed: false,
+				})),
 			};
+		}
+		// A folder-v2 run's folder reads: this suite seeds no files (the folder core takes the run actor, not the binding).
+		if (method === "qorpera_folder_read") {
+			folderReads.push(args.p_path as string);
+			return { schema: "qorpera.folder-read/v1", asOfSeq: 1, found: false, entry: null };
 		}
 		expect(args.p_binding).toEqual(f.binding);
 		if (method === "qorpera_begin_native_company_execution_v2") {
@@ -398,6 +422,11 @@ async function fixture(mode = "company-runtime", httpPathControl = false, presen
 				};
 			},
 		),
+		completeFolderToolOperation: vi.fn<
+			NonNullable<CloudNativeToolOperationControlPlane["completeFolderToolOperation"]>
+		>(async () => {
+			throw new Error("No folder writes expected");
+		}),
 		sendMessage: vi.fn<NativeProviderControlPlane["sendMessage"]>(async (request, input) => {
 			const receipt = deliveries.get(input.idempotencyKey) ?? {
 				schema: "qorpera.agent-send/v1",
@@ -528,6 +557,35 @@ async function fixture(mode = "company-runtime", httpPathControl = false, presen
 		timeoutMs: 10_000,
 		...(secretBroker ? { secretBroker } : {}),
 		...(mode === "company-office" ? { computerSession: officeSession } : {}),
+		// Folder bytes only build the folder client here; this suite never saves a file.
+		...(folderBytes
+			? {
+					folderBytes: () => ({
+						put: async () => {
+							throw new Error("No folder bytes in this suite");
+						},
+						get: async () => {
+							throw new Error("No folder bytes in this suite");
+						},
+					}),
+				}
+			: {}),
+		// A machines gateway only offers the tools here; this suite never runs a command.
+		...(machines
+			? {
+					machines: () => ({
+						start: async () => {
+							throw new Error("No machine command in this suite");
+						},
+						read: async () => {
+							throw new Error("No machine command in this suite");
+						},
+						cancel: async () => {
+							throw new Error("No machine command in this suite");
+						},
+					}),
+				}
+			: {}),
 	});
 	const identityRoot = join(root, "identity");
 	await mkdir(join(identityRoot, "codex"), { recursive: true, mode: 0o700 });
@@ -559,7 +617,11 @@ async function fixture(mode = "company-runtime", httpPathControl = false, presen
 		runtime,
 		control,
 		pathCall,
+		machinesAnswer: (value: unknown) => {
+			machinesAnswer = value;
+		},
 		decisions,
+		folderReads,
 		reviewedTools,
 		store,
 		deliveries,
@@ -578,20 +640,23 @@ async function fixture(mode = "company-runtime", httpPathControl = false, presen
 }
 
 it("composes run-bound path presence into fenced model context and closes it with the native execution", async () => {
-	const observe = vi.fn<CloudCompanyPathPresence["observe"]>(async (path) => ({
+	const observe = vi.fn<CloudCompanyPathPresence["observe"]>();
+	const claim = vi.fn<CloudCompanyPathPresence["claim"]>((path) => ({
 		schema: "qorpera.company-path-presence-view/v1",
 		state: "available",
 		observedAt: Date.now(),
 		paths: [{ path, participants: [] }],
 	}));
 	const close = vi.fn(async () => {});
-	const presence = vi.fn<CloudCompanyPathPresenceFactory>(() => ({ observe, close }));
+	const presence = vi.fn<CloudCompanyPathPresenceFactory>(() => ({ observe, claim, close }));
 	const f = await fixture("company-runtime", false, presence);
 	const result = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
 	expect(result.delivery.messageCount).toBe(2);
 	expect(presence).toHaveBeenCalledOnce();
 	expect(presence.mock.calls[0][0]).toEqual(f.binding);
-	expect(observe).toHaveBeenCalled();
+	// Company File tools claim without waiting; only a file-event wake observes at startup.
+	expect(claim).toHaveBeenCalledWith("note.md", "object", "reading");
+	expect(observe).not.toHaveBeenCalled();
 	expect(close).toHaveBeenCalledOnce();
 	const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
 	expect(JSON.stringify(evidence.fenced.outputs)).toContain("qorpera.company-path-presence-view/v1");
@@ -630,7 +695,8 @@ it.each(["available", "unavailable"])(
 			};
 		});
 		const close = vi.fn(async () => {});
-		const f = await fixture("company-silent", false, () => ({ observe, close }));
+		const claim = vi.fn<CloudCompanyPathPresence["claim"]>();
+		const f = await fixture("company-silent", false, () => ({ observe, claim, close }));
 		const eventId = randomUUID();
 		Object.assign(f.wake, {
 			source: { kind: "company-file", id: eventId, occurrenceKey: `event:${eventId}` },
@@ -766,6 +832,9 @@ it.each([
 				"manage_worker",
 				"organize_sidebar",
 				"add_review_rule",
+				"list_hooks",
+				"read_event",
+				"send_mail",
 				"read_context",
 				"read_skill",
 				"recall_memory",
@@ -1046,6 +1115,24 @@ it("has a dynamic routine run decide its next run before its final message", asy
 	expect(fixedEvidence.threadParameters.developerInstructions).not.toContain("# This routine is dynamic");
 });
 
+it("has a folder-v2 dynamic routine run decide through its routine file, settled when the file is gone", async () => {
+	const f = await fixture("company-dynamic", false, undefined, false, true);
+	f.context.folder = { agent: "nora", coworkers: {} };
+	const result = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+	expect(result.delivery).toEqual({ messageCount: 2, finalMessageId: f.deliveries.get("final")?.messageId });
+	// The decision went to the routine's file, not the kernel's legacy decision: no file there, so nothing is owed.
+	expect(f.decisions).toEqual([]);
+	expect(f.folderReads).toContain(`agents/nora/routines/${f.wake.routine?.routineKey}.md`);
+	const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
+	const tools = evidence.threadParameters.dynamicTools[0].tools as { name: string; description: string }[];
+	expect(tools.find((tool) => tool.name === "decide_routine")?.description).toContain(
+		"cannot change its title or instructions yet",
+	);
+	expect(
+		evidence.fenced.outputs.some((output: { output: string }) => output.output.includes('\\"state\\":\\"settled\\"')),
+	).toBe(true);
+});
+
 it("raises one typed card for the member, appended before the final sentence, and ends the turn", async () => {
 	const f = await fixture("company-cards");
 	const result = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
@@ -1235,6 +1322,115 @@ it("runs a background worker blank: reading tools and its report, no mouth, no c
 	// A read-only worker follows skills but writes none, so it gets no guidance on keeping them.
 	expect(evidence.threadParameters.developerInstructions).not.toContain("# Skills");
 	expect(evidence.threadParameters.developerInstructions).not.toContain("# This wake: a message from a coworker");
+});
+
+it("gives a worker the company's machine tools, without notify (Jonas, 2026-09-28)", async () => {
+	const f = await fixture("company-worker", false, undefined, true);
+	await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+	const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
+	const tools = evidence.threadParameters.dynamicTools[0].tools as {
+		name: string;
+		inputSchema: { properties: object };
+	}[];
+	expect(
+		tools
+			.map((tool) => tool.name)
+			.filter((name) => name.startsWith("machine_"))
+			.sort(),
+	).toEqual([
+		"machine_cancel",
+		"machine_delete",
+		"machine_list",
+		"machine_read",
+		"machine_run",
+		"machine_start",
+		"machine_stop",
+	]);
+	expect(tools.find((tool) => tool.name === "machine_run")?.inputSchema.properties).not.toHaveProperty("notify");
+	// It waits inside the call instead.
+	expect(tools.find((tool) => tool.name === "machine_start")?.inputSchema.properties).toHaveProperty("waitSeconds");
+	expect(tools.find((tool) => tool.name === "machine_read")?.inputSchema.properties).toHaveProperty("waitSeconds");
+	// Still no mouth, coworkers or delegation.
+	expect(tools.map((tool) => tool.name)).not.toContain("send_message");
+	expect(tools.map((tool) => tool.name)).not.toContain("manage_worker");
+	expect(tools.map((tool) => tool.name)).not.toContain("send_coworker_message");
+});
+
+it("gives a company conversation's run the machine tools with notify, and no waiting", async () => {
+	const f = await fixture("company-runtime", false, undefined, true);
+	expect(await machineToolNames(f)).toHaveLength(7);
+	const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
+	const tools = evidence.threadParameters.dynamicTools[0].tools as {
+		name: string;
+		inputSchema: { properties: object };
+	}[];
+	expect(tools.filter((tool) => tool.name.startsWith("machine_"))).toHaveLength(7);
+	expect(tools.find((tool) => tool.name === "machine_run")?.inputSchema.properties).toHaveProperty("notify");
+	expect(tools.find((tool) => tool.name === "machine_start")?.inputSchema.properties).not.toHaveProperty(
+		"waitSeconds",
+	);
+	expect(tools.find((tool) => tool.name === "machine_read")?.inputSchema.properties).not.toHaveProperty("waitSeconds");
+});
+
+it.each([
+	["a snapshot-v1 run", false, true, false],
+	["a folder-v2 run on a node without folder bytes", true, false, false],
+	["a folder-v2 run", true, true, true],
+] as const)(
+	"gives manage_todo and organize_sidebar the state files' writers only for %s",
+	async (_name, folder, bytes, files) => {
+		const f = await fixture("company-runtime", false, undefined, false, bytes);
+		if (folder) f.context.folder = { agent: "nora", coworkers: {} };
+		await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+		const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
+		const tools = evidence.threadParameters.dynamicTools[0].tools as { name: string; description: string }[];
+		const todo = tools.find((tool) => tool.name === "manage_todo")?.description ?? "";
+		expect(todo.includes("Each todo is a file in your folder")).toBe(files);
+		expect(todo.includes("Each todo is also a document in the shared Company File")).toBe(!files);
+		const sidebar = tools.find((tool) => tool.name === "organize_sidebar")?.description ?? "";
+		expect(sidebar.includes("the sections live in the file agents/sections.md")).toBe(files);
+		expect(sidebar.includes("by its id or name")).toBe(!files);
+	},
+);
+
+async function machineToolNames(f: Awaited<ReturnType<typeof fixture>>): Promise<string[]> {
+	await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+	const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
+	const tools = evidence.threadParameters.dynamicTools[0].tools as { name: string; description: string }[];
+	// Workers are offered for machine work only where the tools are.
+	const machines = tools.some((tool) => tool.name.startsWith("machine_"));
+	expect(tools.find((tool) => tool.name === "manage_worker")?.description.includes("company's machines")).toBe(
+		machines,
+	);
+	return tools.map((tool) => tool.name).filter((name) => name.startsWith("machine_"));
+}
+const machinesAsked = (f: Awaited<ReturnType<typeof fixture>>) =>
+	f.pathCall.mock.calls.filter(([method]) => method === "qorpera_company_machines_available");
+
+it("offers no machine tools until a node can serve them (no machine executor enabled)", async () => {
+	const f = await fixture("company-runtime", false, undefined, true);
+	f.machinesAnswer(false);
+	expect(await machineToolNames(f)).toEqual([]);
+	expect(machinesAsked(f)).toHaveLength(1);
+	expect(machinesAsked(f)[0][1]).toEqual({});
+});
+
+it("keeps the machine tools away when the kernel cannot say, and still starts the run", async () => {
+	const f = await fixture("company-runtime", false, undefined, true);
+	f.machinesAnswer(new Error("function does not exist"));
+	expect(await machineToolNames(f)).toEqual([]);
+});
+
+it("offers the machine tools only on a clear yes", async () => {
+	const f = await fixture("company-runtime", false, undefined, true);
+	f.machinesAnswer("true");
+	expect(await machineToolNames(f)).toEqual([]);
+});
+
+it("never asks about machines on a node without the machines gateway", async () => {
+	const f = await fixture("company-runtime");
+	expect(await machineToolNames(f)).toEqual([]);
+	expect(machinesAsked(f)).toHaveLength(0);
 });
 
 it("starts the run without the open-work count when the kernel cannot give it", async () => {
@@ -1554,7 +1750,7 @@ it.each(["failed", "stalled", "malformed-receipt", "wrong-run-receipt"])(
 		const f = await fixture();
 		const original = f.pathCall.getMockImplementation()!;
 		f.pathCall.mockImplementation(async (method, args, signal) => {
-			if (method === "qorpera_record_runtime_observation") {
+			if (method === "qorpera_record_runtime_observation_batch") {
 				if (mode === "stalled") return new Promise<never>(() => undefined);
 				if (mode === "malformed-receipt") return null;
 				if (mode === "wrong-run-receipt")
@@ -1563,11 +1759,13 @@ it.each(["failed", "stalled", "malformed-receipt", "wrong-run-receipt"])(
 			}
 			return original(method, args, signal);
 		});
+		const started = Date.now();
 		const result = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
 		expect(result.delivery).toEqual({ messageCount: 2, finalMessageId: f.deliveries.get("final")?.messageId });
-		expect(f.pathCall.mock.calls.filter(([method]) => method === "qorpera_record_runtime_observation")).toHaveLength(
-			1,
-		);
+		// The export is tried again with backoff, one call at a time, and the close bounds it.
+		const exports = f.pathCall.mock.calls.filter(([method]) => method === "qorpera_record_runtime_observation_batch");
+		expect(exports.length).toBeGreaterThanOrEqual(1);
+		expect(exports.length).toBeLessThanOrEqual(Math.ceil((Date.now() - started) / 150) + 2);
 		expect(
 			f.pathCall.mock.calls.filter(([method]) => method === "qorpera_begin_native_company_execution_v2"),
 		).toHaveLength(1);

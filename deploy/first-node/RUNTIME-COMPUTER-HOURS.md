@@ -380,7 +380,7 @@ Live keys come later, with the live switch (build step 7).
 - Admins, contributors and viewers get no billing email. In-app notices that mirror the emails
   come with a later web step.
 
-Migration `20260929160000_runtime_computer_hour_notices` and the Edge Function
+Migration `20260928249160_runtime_computer_hour_notices` and the Edge Function
 `supabase/functions/computer-hour-notices` (logic in `supabase/functions/_shared/computer-hour-notices.ts`):
 
 - `qorpera_computer_hour_notices` is the outbox: one row per recipient and occasion (kind, founder,
@@ -393,19 +393,22 @@ Migration `20260929160000_runtime_computer_hour_notices` and the Edge Function
     low when a month begins is told again that month. The payers are founders whose current plan
     period has hours left and founders whose credits have hours left. A founder's plan used up by
     another company does not count toward this company's "what pays now".
-  - Out of hours: once per time the company runs out. A time starts when it begins to owe; any
-    hours arriving (even too few to clear the debt) end it, and running out again is a new time.
+  - Out of hours, while the zero rule is off: once per time the company runs out. A time starts
+    when it begins to owe; any hours arriving (even too few to clear the debt) end it, and running
+    out again is a new time. With the zero rule on, the trigger sends none: the zero sweep sends
+    it once per time at zero (see "Zero", build step 6c part 1).
   - Both wait ten minutes before they are sent. The worker drops one (cancelled) if the company
     is no longer low, no longer owes, or owes in a newer time; for instance, a plan renewal
     recorded moments after the meter charged. It also drops "running low" once the company has run
     out ("out of hours" says it), or once the company is complimentary. A dropped "running low"
     frees its month, so running low again is told. A recipient who is no longer a founder is
     marked failed.
-  - Known limit: a renewal recorded more than ten minutes late (a delayed Stripe webhook) still
-    sends "out of hours" for the gap.
+  - Known limit, while the zero rule is off: a renewal recorded more than ten minutes late (a
+    delayed Stripe webhook) still sends "out of hours" for the gap. With the rule on, the renewal
+    grace covers the first 30 minutes (see "Zero").
   - Reaching zero without owing (hours taken back, credits expiring, a plan ending) queues nothing,
-    since no use follows once the zero rule holds work back. Build step 6 sends "out of hours"
-    when it first holds a company's work back.
+    since no use follows once the zero rule holds work back. Build step 6c part 1 sends "out of
+    hours" when the company is first recorded at zero, under its own occasion (see "Zero").
 - Summaries are queued by the worker's claim for plan periods that ended ten minutes ago or more
   (so the last meter pass has committed) and within seven days, one per founder and period (its
   `sub_…:start` reference). Each lists the company's draws and repayments across the period and its
@@ -463,9 +466,212 @@ Coordinator (nothing secret):
 
 ## Zero (build step 6; built switched off)
 
-- The check is `qorpera_company_computer_hours_left(p_profile_id)` (step 3): more than zero, or
-  null for a complimentary company.
-- A complimentary company always passes.
+- The check is `qorpera_company_at_zero(p_profile_id, at)` (migration `20260928249200`; since
+  `20260928259300` it also needs the company recorded in the zero state, see "Bounded cost"). The
+  full check is true only when the rule is switched on (`qorpera_computer_hour_billing.zero_rule_since`, null until the
+  live switch), payments are live (dry-run balances never hold work), and
+  `qorpera_company_computer_hours_left(p_profile_id)` (step 3) is zero or less. That value is null
+  for a complimentary company, which always passes. There is a renewal grace: a founder's plan
+  period that ended in the last 30 minutes still counts as paying, while no next period is recorded
+  and its subscription is `active` or `past_due`. Stripe's renewal invoice can trail the period's
+  end by minutes, and the subscription's own dates can move first.
+- Bounded cost (migration `20260928259300`): `qorpera_company_at_zero` first looks the company up in
+  the zero state the sweep keeps (6c part 1). A company not recorded there is not at zero, at the
+  cost of one key lookup; the full check (`qorpera_company_at_zero_now`, as above) runs only for a
+  recorded company, so leaving zero counts at once and running out counts from the next sweep, up
+  to a minute later (the meter charges use once a minute anyway). Hours left for many companies
+  come from one query (`qorpera_computer_hour_left_many`: the same terms as the one-company
+  `qorpera_company_computer_hours_left`, which stays as it is, being quicker for one company; test
+  726 keeps the two equal, and a change to either changes both). The sweep runs the full check only
+  for a company with no hours left (a newly recorded one, or a recorded one near a founder's period
+  end); the routine listing reads the zero state only. Locally, under heavy load, with a third of
+  the companies paying by credits, a third by a founder's plan and a third at zero, hours left for
+  all of them took 0.06 s for 3,000 companies and 0.14 s for 6,000, and a quiet sweep 0.11 s and
+  0.22 s (it grows in a straight line, each term an index lookup for its company); the old checks
+  took about 2 s for 3,000. One company's hours left cost the same as before.
+- Members read the wait with `qorpera_company_waiting_for_hours(p_profile_id)` (migration
+  `20260928259280`), shown above the composer in agent threads and group chats, and with
+  `waitingForHours` in the hours read on Plan & usage.
+- Build step 6a (migration `20260928249200`, runs only):
+  - wakes stay queued with `blocked_reason = 'Waiting for computer hours'`;
+  - the routine listing (`qorpera_list_routine_schedule_heads`) leaves the company's due routines
+    out, so the orchestrator does not ask about each one on every pass;
+  - a routine's slot asked for anyway is deferred, as while the company is paused: no wake is
+    queued and the cursor stays, so the slot is offered again once hours arrive, and waiting work
+    does not pile up;
+  - member messages, turn requests and proposal reviews are not picked (checked again after the
+    admission lock) and stay queued;
+  - members see the wait through `waitingForHours` in `qorpera_read_company_computer_hours`;
+  - the two direct enqueue calls (legacy clients) are refused (55000) after their idempotent
+    replay, so a retry of work made before zero still answers;
+  - a BEFORE INSERT trigger on `qorpera_execution_runs` stops any path that did not check.
+
+- Build step 6c part 1 (migration `20260928249250`, when a company ran out):
+  - `qorpera_computer_hour_zero_state` holds, for each company at zero, when it ran out; the
+    finishing window counts its hour from there;
+  - a sweep after each meter pass (`qorpera_meter_computer_hours()`, in its transaction and under
+    its lock) removes a company no longer at zero and adds one newly at zero. Only a company whose
+    live free hours are used up can be at zero, so only those are looked at. A company being
+    deleted is skipped. While the rule is off, or in the dry run, the table is kept empty. A
+    failing sweep is undone with a warning and never holds metering back;
+  - with the rule on, "out of hours" goes once per time at zero: when the sweep adds a company, to
+    every founder, ten minutes later, under its own occasion `<company>:zero:<when it ran out, in
+    microseconds>`, whether it got there by owing or not (hours taken back, credits expiring, a
+    plan ending, which no use follows). The usage trigger's own "out of hours" is for the rule
+    off only. The claim keeps the notice while its record is there and the company is still at
+    zero (hours too few to clear a debt keep it), and drops it once the company leaves zero; the
+    claim also drops "running low" at zero;
+  - each sweep's time and the last failure (time and message) are kept in
+    `qorpera_computer_hour_zero_sweep_status` for operators. The sweep waits at most 2 s for a company
+    row held elsewhere;
+  - known limits: the ran-out time is the sweep's, up to a minute late. A founder's renewal grace
+    takes a company at zero off the list at the period's end, and it is added again, with a new
+    ran-out time and a new email, if no renewal is recorded within the 30 minutes. A renewal
+    recorded more than about 40 minutes late (grace plus the email's ten-minute wait) sends a
+    false "out of hours".
+
+- Build step 6b part 1 (migration `20260928309700`, the node refusal): `qorpera_reserve_runtime_node_machine`
+  refuses a new reservation or the wake of a sleeping machine of a company at zero with
+  `COMPUTER_HOURS_EXHAUSTED`, for Company Computers, coding machines and agents' machines, after
+  `NODE_DISABLED` (which wins) with the same demand condition; a machine already awake passes. Run and
+  sign-in machines are never refused. The runner orchestrator's node admission and the coding
+  executor (which waits it out) know the reason. Callers that reserve inside a subtransaction lose the
+  stored refusal, so members' views ask `qorpera_company_at_zero` themselves (6b's later parts).
+  Since part 4, coding machines are refused only with coding's own switch on. Then a coding turn
+  whose run began before zero but whose member machine is asleep waits too (its machine's step
+  refuses, and the executor defers it), until hours arrive or the finishing window ends the run:
+  the run box is the running work, the coding machine is not.
+- Build step 6b part 2 (migration `20260928309720`, Company Computers):
+  - a sleeping computer's wake is kept at zero (a member or agent may still ask) but the idle check
+    (`qorpera_reconcile_runtime_office_idle`) hands it to the provider only once the company has hours
+    again, so the provider does not retry a refused resume every few seconds for as long as the
+    company stays at zero. A wake once handed over stays so (`qorpera_runtime_office_idle_cycles.wake_reported_at`;
+    wakes asked for before the migration count as handed over): the provider may have begun the
+    resume, which then waits at the node refusal;
+  - once the finishing window is over, the idle check powers the computer off at once, whatever
+    keeps it awake (screens, viewers, waiting work, a pause), as for a company being deleted. Its
+    disk is kept, and it wakes as usual once hours are added;
+  - `qorpera_runtime_office_start_wait` says `hours` for a sleeping computer, or a started one no host
+    has taken yet, of a company at zero (before `room`), so the agent's panel says "Out of computer
+    hours. The machine starts by itself once hours are added.", operators see it in the setup
+    queue, and it never counts as stuck. The web learns the value in the same change (an older web
+    client refuses it), so the web is deployed before the rule is switched on. The agent's
+    `computer_start` text says a start may wait for computer hours;
+  - the office fleet (`qorpera_place_runtime_office_fleet`) places no computer of a company at
+    zero, and returns before it locks or tries any node. Adding a computer at zero is allowed: it
+    waits for hours like the others;
+  - known limits, all while the company is at zero:
+    - a wake handed to the provider just before the company ran out is not taken back (that is
+      unsafe once the resume may have begun): the provider retries it every few seconds, refused
+      by the node, until hours are added. Members see the hours line meanwhile;
+    - the power-off after the hour needs the provider's idle policy: a provider with preparation
+      switched off, or a computer whose operator recovery plan is unfinished, stays on until that
+      is done, as for a company being deleted;
+    - once hours are added, a held wake starts the computer even if nobody wants it any more; it
+      then powers off by the idle rule (after 1 minute when every member closed the panel);
+    - a held wake counts toward its node's room in the scale-out wake estimate
+      (`qorpera_runtime_office_can_wake`), as any requested wake does;
+    - a computer that waited for hours longer than 30 minutes counts as stuck (`setup`) as soon as
+      hours are added, until a host offers it;
+    - the panel computes the hours line for a sleeping computer's wake as well as for a new one, so
+      it now asks which computer shows the agent every 12 s during any wake. With scale-out on, that
+      check can move the panel to another computer with room, or let an owner add one, as opening
+      the panel does.
+- Build step 6b part 3 (migration `20260928319730`, agents' machines, the machines an agent starts
+  with `machine_start`, `20260928259050`):
+  - the admit line (`qorpera_admit_executor_machines`) skips a company at zero in both of its queries,
+    as it skips a paused one: its machines take no place among those a pass looks at, and no other
+    machine's disk is given up for one of them;
+  - an agent's start or wake (`qorpera_admit_company_machine`) answers `COMPUTER_HOURS_EXHAUSTED` for
+    an asleep machine at zero without trying to move it (part 1's refusal already kept its node and
+    disk; this saves the attempt and its node locks). A new machine is still offered to the nodes,
+    which refuse it (part 1), and is still told when no node could ever hold it. Either way the
+    machine waits, as when no node has room;
+  - the machine view says `waitingFor: COMPUTER_HOURS_EXHAUSTED` for a waiting machine of a company
+    at zero, with no place in line, and places in line count no machine of a company at zero. The
+    `machine_start` text says a machine waits for hours, and sleeps an hour after the company ran
+    out;
+  - once the finishing window is over every machine of the company, always-on ones too, sleeps: the
+    executor's list says `sleepDue`, the stop custody allows it (open commands notwithstanding) and
+    the suspension gives the room back. The machine stays wanted running and keeps its disk (a
+    machine wanted running is never a disk the give-up pass takes), so the admit line wakes it once
+    hours are added. Its open commands end as lost, as when it is stopped; the runs that used them
+    were ended by the finishing window. No run is told the machine stopped. The executor needs no
+    change;
+  - known limits:
+    - once hours are added, an asleep machine wakes on its own node when that node has room;
+      otherwise it may start fresh, with an empty disk, on another node, as any asleep machine does
+      (the tool text says so). Always-on machines never slept before, so they meet this rule for the
+      first time: their room is given back at the hour and may be taken meanwhile;
+    - a command started with `notify` still reports its end (as lost) to its run. That wake waits
+      for hours like any other, so the run's conversation continues once hours are added;
+    - every machine still running at the hour wakes again once hours are added, a task machine
+      that was nearly idle too, and runs on the new hours until its idle delay (default one hour)
+      puts it to sleep. The alternative, letting an idle task machine be stopped for good, would
+      open its disk to the give-up and removal passes, against "disks kept".
+- Build step 6b part 4 (migration `20260928319760`, coding), behind coding's own switch,
+  `qorpera_computer_hour_billing.coding_zero_rule_since` (null until switched on). A coding executor
+  that does not know `COMPUTER_HOURS_EXHAUSTED` fails a turn on it, and production's executor was
+  still v6 on 2026-10-01, so coding is switched on only once an executor with this change runs on
+  every coding node ("Going live", step 2b). While it is off, part 1's node refusal no longer covers
+  coding machines. With it on:
+  - the node refusal covers coding machines again;
+  - `qorpera_authorize_coding_machine_run` (the machine step every turn passes before begin) refuses
+    a turn not yet begun with `COMPUTER_HOURS_EXHAUSTED`, even on an awake machine, and the executor
+    defers the session to the queue (part 1 made the reason waitable). A turn already running
+    finishes its hour;
+  - `qorpera_begin_coding_turn` answers `{"state":"refused","reason":"COMPUTER_HOURS_EXHAUSTED"}`
+    instead of beginning, for a company that reached zero after the machine step. Nothing is
+    written, and the executor ends the turn and defers the session; an attached session stays with
+    the keeper;
+  - `qorpera_defer_coding_session` says "Waiting for computer hours" for that reason, with one step
+    in the thread per wait (a new reason posts its own step), and the web's status line says
+    "Waiting for computer hours" (or "Answer sent · waiting for computer hours");
+  - at the hour, the turn's run is ended by the finishing window (6c part 3b), the executor ends the
+    turn failed with "Out of computer hours", and `qorpera_list_coding_machines` then puts the
+    member's machine to sleep as soon as no turn holds it, busy commands notwithstanding. Their
+    commands end as when it sleeps;
+  - known limits: while coding's switch is off and the zero rule on, the node does not refuse
+    coding machines, so a coding turn begun at zero starts or wakes its machine, has its run held
+    by 6a, and keeps that machine awake (its time owed) and its session "running" until hours are
+    added. The same happens with the switch on in the seconds between a company running out and
+    the sweep recording it, if begin falls in them. A held run is not ended by the finishing window
+    (there is no job yet). Hence step 2b as soon as the executor allows. And when a deferred
+    turn's 15-second retry meets the machine's sleep at the hour, the sleep may be refused once as
+    "in use"; the next pass sleeps it.
+- Build step 6c part 3b (migration `20260928259270`, the finishing window for runs): one hour
+  after a company ran out, while it is still at zero (`qorpera_computer_hour_finish_window_over`,
+  which checks at zero again, so a record up to one sweep old never ends work):
+  - the orchestrator heartbeat (`qorpera_reconcile_runner_orchestrator_without_sponsored_turns`)
+    ends the company's leased jobs through `qorpera_terminalize_runner_attempt(job, 'failed',
+    'Out of computer hours [code=COMPUTER_HOURS_EXHAUSTED]', false)`, after its deadline, sponsor
+    and computer checks, and fails its queued jobs with the same reason, beside its other
+    queued-job failures. No retry; no routine is paused and no worker cancelled;
+  - an in-house worker so ended reports reason `out_of_computer_hours` ("The background work was
+    stopped because the company is out of computer hours.") to its parent, from
+    `qorpera_drain_worker_wakes`;
+  - a job picked for a reason that no longer holds when it is ended (hours arrived meanwhile) is
+    left alone while its lease is live, instead of ending as "lease expired";
+  - "one hour" is an hour after the ran-out time, which is the sweep's (up to a minute late),
+    until the next heartbeat or claim; the heartbeat also runs at the start of every claim, and
+    checks each leased or queued job's company with one key lookup in the zero state (the at-zero
+    check only for a company past its hour).
+
+  Machines not starting or waking, and stopping after the hour (6b), the renewal-gap handling for
+  machines, and the web (6d) follow. Before the live switch:
+  - held wakes still take the wake step's slots and locks, as a paused company's do;
+  - measure the sweep (once a minute, under the meter lock, which Stripe webhooks also wait on)
+    and the orchestrator reconcile with production-sized data;
+  - a routine created or retimed at zero gets its first slot only once hours arrive, so 6d shows
+    "Waiting for computer hours" on it;
+  - at the switch, and after it, watch the sweep: `select swept_at, failed_at, last_error from
+    public.qorpera_computer_hour_zero_sweep_status`. With the rule on it is the only sender of
+    "out of hours", the finishing window acts on its records, and (since `20260928259300`) the
+    zero check needs its record: a sweep that keeps failing, or a stopped meter job, means no
+    email, no finishing window and no held work, so a company that runs out keeps starting work
+    and owing;
+  - a company recorded at zero with waiting wakes still pays the full check (about 0.4 ms) each
+    time the wake step visits it.
 - It is checked before a run is created (not at claim or placement: a run waiting there is
   invisible to members) and at each machine kind's own start or wake step. A run created before
   the company ran out is running work. The hook list is agreed with the nodes (S3), machines,
@@ -498,21 +704,164 @@ Coordinator (nothing secret):
 - When it first holds a company's work back, it queues "out of hours" for every founder in step
   5's outbox, if none is open for that time. This covers a company reaching zero without owing:
   hours taken back, credits expiring, or a plan ending. No use follows then, so step 5's trigger
-  never sees it. It needs its own occasion, and step 5's claim rule, which drops an "out of hours"
-  unless the company still owes in the same time, must learn to keep it.
+  never sees it. Built in 6c part 1 (above).
 - A plan renewal is recorded when Stripe's renewal invoice arrives, which can trail the period's
-  end by minutes. The check must not hold work back in that gap: for instance, it can treat a
-  founder's active subscription whose recorded period just ended as still paying for a short
-  grace window.
+  end by minutes. The check must not hold work back in that gap. For runs, 6a's renewal grace does
+  this (see above); machines get the same grace, since 6b's checks use the same
+  `qorpera_company_at_zero`.
 - It ships switched off, in its own release, with a 30-minute database watch after the cut. It is
   switched on together with live payments and hour notices.
 
+## Going live (build step 7)
+
+One switch turns on real payments, the hour emails and the zero rule together. Nothing before it
+charges a card for real hours or holds work back. Secrets never pass through a session: Jonas
+creates and stores every key himself; the coordinator writes only what is not secret.
+
+Before the switch (all of these hold):
+
+- Every part of the zero rule is live, switched off: 6a (#503), the zero state and "out of hours"
+  (#508), the finishing window for runs (#514), members seeing the wait (#515, #516), the bounded
+  checks (#520), and 6b (machines not starting, waking or staying up at zero). 6b part 1, the node
+  refusal, is built; its reason must be known on both nodes before it can be returned, by every
+  program that holds the node admission (`runtime-node-admission.ts`: the LXD provider host, the
+  office provider and the office fleet) and by the coding executor host. An older one throws on
+  the reason instead of waiting. On 2026-10-01 production's coding executor is still the old
+  `036e3617` (v6): the executor v7 rollout has not been done. So coding waits for that rollout,
+  and 6b part 4 (coding) gives the coding machines their own switch: office and agent machines can
+  be switched on first, coding once the new executor is installed. Part 1 alone is not
+  enough: the later 6b parts are required too: Company Computers (part 2, built; the web deployed
+  first), agents' machines (part 3, built) and coding (part 4, built, with its own switch).
+- Members see their hours left, by source, on Plan & usage from the switch on
+  (contract items 5 and 12; "Plan & usage (web)" below): `hoursLeft` in the member hours read
+  and the company card (migration `20260928259330`) are live first.
+- The meter job runs every minute (`qorpera-computer-hour-meter`), and
+  `select swept_at, failed_at, last_error from public.qorpera_computer_hour_zero_sweep_status`
+  shows a recent `swept_at` and no fresh failure.
+- The notice worker is scheduled ("Turning the notices on").
+- Test mode was accepted end to end with an enrolled tester (contract section 21, item 31): a plan,
+  a pack, an upgrade, a refund, a failed payment, Stripe's receipts and invoices, and the Plan &
+  usage page. Qorpera's own hour emails come only from live charges, so they are accepted after
+  the switch.
+- The reviews' "Before the live switch" list under "Zero" is settled, and the orchestrator
+  reconcile and the sweep were measured on production-sized data.
+
+In advance (nothing secret):
+
+- Jonas, in Stripe's live mode: repeat test-mode steps 2 to 6 (tax, the five prices, the customer
+  portal, failed payments, the webhook endpoint with the same address and events), and send the
+  five live `price_...` ids to the coordinator.
+- The coordinator writes them into `qorpera_computer_hour_catalog.stripe_price_live`, by
+  `item_key` (harmless before the switch: live checkout stays closed until `live_since`).
+
+At the agreed minute, in this order:
+
+1. Jonas sets both function secrets in one command, from a file so the live key stays out of the
+   shell's history: a file with the lines `QORPERA_STRIPE_SECRET_KEY=sk_live_...` and
+   `QORPERA_STRIPE_WEBHOOK_SECRET=whsec_...` (the live endpoint's secret), then
+   `supabase secrets set --env-file <file>`, then deleting the file. He also replaces
+   `QORPERA_STRIPE_PORTAL_CONFIGURATION` with the live portal configuration's id, or unsets it, if
+   it was set in test mode. One command, because a live webhook secret with the test key drops live
+   events for good. From here until step 2 nobody can
+   buy (checkout answers "unavailable"), and test purchases stop working, as intended.
+2. The coordinator switches payments and the zero rule on together, with one time for both:
+
+   ```sql
+   update public.qorpera_computer_hour_billing
+   set live_since = now.at, zero_rule_since = now.at
+   from (select clock_timestamp() as at) now;
+   ```
+
+   Never the other way round: with the test key still in place and `live_since` set, the zero rule
+   would hold work while nothing can be bought.
+
+   From then, use is charged live (every company starts with its five free hours; dry-run
+   balances stay as they were and never count). Plans can be bought by every signed-in account,
+   packs by a company's founders. The hour emails are queued, and a company that runs out is
+   recorded by the next sweep.
+
+   2b. The coordinator switches coding on as soon as a coding executor built from a release with
+   build step 6b part 4 runs on every coding node (its `coding-executor.ts` defers a turn whose
+   begin answers `{"state":"refused","reason":"COMPUTER_HOURS_EXHAUSTED"}`; production's was still
+   v6 on 2026-10-01). Best: install it before step 2, so this follows in the same minute:
+
+   ```sql
+   update public.qorpera_computer_hour_billing set coding_zero_rule_since = clock_timestamp();
+   ```
+
+   Never before: an older executor fails a coding turn on the reason instead of waiting. Until
+   then a company at zero still has its coding turns held, but only at the run's wake step: the
+   turn shows as running, its machine starts or stays awake, and that machine's time is owed until
+   hours are added (part 4's known limits).
+3. Within the first 30 minutes, a real purchase proves the live webhook: a pack for a company
+   other than step 5's test company (or refunded before step 5, which also proves a live refund),
+   refunded afterwards in Stripe: Stripe's dashboard shows the delivery answered 2xx, and
+   `select type, outcome from public.qorpera_computer_hour_stripe_events where livemode order by
+   received_at desc limit 5` shows it applied. A wrong webhook secret is answered 400 before
+   anything is recorded, so only the dashboard shows it.
+4. Watch for 30 minutes, then daily for the first week:
+   - `select swept_at, failed_at, last_error from public.qorpera_computer_hour_zero_sweep_status`;
+   - `select count(*) from public.qorpera_computer_hour_zero_state` (companies at zero);
+   - `select kind, status, count(*) from public.qorpera_computer_hour_notices group by 1, 2`;
+   - webhook events left for review: `select type, count(*) from
+     public.qorpera_computer_hour_stripe_events where outcome = 'needs_review' and livemode group by 1`;
+   - the meter's lag: `select clock_timestamp() - metered_until from public.qorpera_computer_hour_meter`
+     (about a minute).
+5. Acceptance on a test company with no founder on an internal account (one such founder makes
+   the company complimentary): after its first live use has created its free hours, withdraw them
+   (`update public.qorpera_computer_hour_sources set withdrawn_at = clock_timestamp() where kind =
+   'free' and profile_id = '<test company>' and not dry_run`). Within a minute it is recorded at
+   zero: a new message waits with the notice above the composer, Plan & usage says it is out of
+   hours, its founders get "out of hours" ten minutes later, and a machine does not start or wake.
+   An hour on, work that was still running ends with "out of computer hours" (start work that runs
+   longer than an hour to see it) and its awake machines stop. Buying a pack (a real charge,
+   refunded afterwards) releases the waiting work by itself.
+6. Afterwards, Jonas switches off the sandbox webhook endpoint in Stripe, then cancels the testers'
+   test subscriptions.
+
+Rollback:
+
+- Stop holding work: `update public.qorpera_computer_hour_billing set zero_rule_since = null`
+  (coding follows, since its switch needs the zero rule too). To go back to holding coding only at
+  the run's wake step (step 2b's "until then"):
+  `update public.qorpera_computer_hour_billing set coding_zero_rule_since = null`.
+  Held work is released at once (routines with the next sweep), and the next sweep empties the
+  zero state. Companies at zero run again and owe what they use; "out of hours" is again sent by
+  the usage trigger, once per time of owing.
+- Stop the hour emails: `select cron.unschedule('qorpera-computer-hour-notices')`.
+- Stop selling is not a clean undo once real money has moved, so it is for emergencies only.
+  While `live_since` is null every Stripe event is recorded as dry run, even with the live key:
+  a refund or dispute of a live purchase goes to review and takes no hours back, a live renewal
+  whose payment finally fails is not withdrawn, and a checkout page opened before the stop can
+  still be paid (a pack for an hour, a plan for a day), for dry-run hours. So, in this order:
+  1. The coordinator runs `update public.qorpera_computer_hour_billing set live_since = null,
+     zero_rule_since = null`. New checkouts close at once and balances go back to the dry run;
+     live purchases already made stay in the ledger and count again when live mode is next on.
+  2. Jonas expires the checkout sessions still open (the coordinator lists them:
+     `select stripe_session_id from public.qorpera_computer_hour_checkouts where livemode and
+     completed_at is null and created_at > clock_timestamp() - interval '1 day'`; only packs set
+     `completed_at`, so paid plan sessions show up too and are skipped in Stripe), pauses the
+     live subscriptions, and keeps the live keys in place (so Stripe's events are still verified).
+  3. When live mode is on again, the coordinator resends from Stripe's dashboard the live events
+     left for review while it was off (refunds and disputes), so they are applied; an event
+     already handled is not run again. A live plan whose final payment failed while it was off
+     was recorded without taking its hours back (its event is a live one from that window with
+     the detail "renewal withdrawn: 0"): the coordinator withdraws that period by hand
+     (`update public.qorpera_computer_hour_sources set withdrawn_at = clock_timestamp() where
+     reference = '<sub_…>:<period start in Unix seconds>' and not dry_run`). A pack or plan paid
+     while it was off is only dry-run hours (pausing, in step 2, prevents renewals); Jonas refunds
+     any. Stripe keeps events for a limited time (about 30 days), so a long stop may leave some
+     that can no longer be resent: those are then handled by hand from Stripe's dashboard.
+
 ## Plan & usage (web)
 
-- The company card, seen by every member: hours used this month, by kind; from the live switch
-  also by source, and hours left. From the live switch, founders also see each founder's share
-  and a "Buy hours" button (before it, only founders who are enrolled testers see it, in Stripe's
-  test mode).
+- The company card, seen by every member: hours used this month, by kind; from the live switch also
+  by source, and hours left (`hoursLeft` in `qorpera_read_company_computer_hours`, migration
+  `20260928259330`: null before the switch, "complimentary", or hours left with free, plans, packs
+  and owed; `founders` only for a founder reading it: each founder's plan and packs, without the
+  plan's dates, and former founders' packs on one line). From the live switch, founders also see
+  each founder's share and a "Buy hours" button (before it, only founders who are enrolled testers
+  see it, in Stripe's test mode).
 - Your plan, seen only by you: plan, hours used per company, reset date, "Change plan" and
   "Payments and invoices" (Stripe's billing page).
 - Admins, contributors and viewers see the company's hours without names or cards: "Computer
@@ -533,7 +882,7 @@ exact-head review, and a hand-off to the coordinator (message, PR comment, regis
 5. Email, switched off. In-app notices that mirror the emails follow in a web PR.
 6. Zero: the check, the waiting state, the finishing window, switched off. Its own release.
 7. Live: Jonas sets the live Stripe keys; the coordinator switches payments, hour notices and the
-   zero rule on together.
+   zero rule on together ("Going live").
 
 ## Not repeated from #326
 

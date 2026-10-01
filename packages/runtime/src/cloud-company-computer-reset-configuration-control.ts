@@ -94,7 +94,7 @@ export async function controlCompanyComputerResetConfiguration(
 		if (receiptSha256 !== input.adoptionReceiptSha256) throw new Error("original receipt differs");
 		if (!(await read(COMPANY_COMPUTER_ADOPTION_RECEIPT_PATH, 16384, 0o444)).equals(receiptBytes))
 			throw new Error("restored receipt differs");
-		await assertCompanyComputerResetRootClean(input.activationId);
+		await assertCompanyComputerResetRootClean(input.activationId, command.bootId);
 		// The original preparation document is allowlisted public provenance. It
 		// is restored once from the provider's retained bytes; a different
 		// surviving copy is never replaced.
@@ -141,7 +141,7 @@ export async function controlCompanyComputerResetConfiguration(
 		const verify = async () => {
 			signal.throwIfAborted();
 			await assertCompanyComputerPreparationLockAndBoot(command);
-			await assertCompanyComputerResetRootClean(input.activationId);
+			await assertCompanyComputerResetRootClean(input.activationId, command.bootId);
 			const state = await manager.inspect(signal);
 			if (
 				!isDeepStrictEqual(state.preparation, inactive) ||

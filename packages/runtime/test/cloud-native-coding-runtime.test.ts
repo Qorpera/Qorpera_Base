@@ -240,8 +240,8 @@ describe("the coding composition of a native turn", () => {
 				const rows: CloudRuntimeObservation[] = [];
 				const observability = new CloudRuntimeObservability({
 					assignmentId: f.binding.assignmentId,
-					publish: async (row) => {
-						rows.push(structuredClone(row));
+					publish: async (batch) => {
+						rows.push(...structuredClone(batch));
 					},
 				});
 				const span = observability.start("coding_finish");
@@ -431,8 +431,8 @@ describe("the coding composition of a native turn", () => {
 				);
 				const observability = new CloudRuntimeObservability({
 					assignmentId: f.binding.assignmentId,
-					publish: async (row) => {
-						rows.push(structuredClone(row));
+					publish: async (batch) => {
+						rows.push(...structuredClone(batch));
 					},
 				});
 				const span = observability.start("coding_finish");

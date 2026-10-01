@@ -1022,7 +1022,9 @@ argument, shared computer clipboard, or model-visible path. The member learns
 whether capture succeeded; the agent learns only the safe descriptor.
 
 There is no model-facing, runner-facing, desktop-facing, or general service
-`getSecret`, export, reveal, shell, or filesystem operation. The cloud secret
+`getSecret`, export, reveal, shell, or filesystem operation. (Amended
+2026-09-29: the broker also checks deliveries to a company's hooks with their
+signing secrets; see the amendment "events wake agents", item 8.) The cloud secret
 broker is the only component allowed to unwrap a connector credential. It
 does so only after checking the admitted run, current company and member
 authority, agent grant, connector and operation version, exact destination,
@@ -1744,6 +1746,10 @@ the approvals window.
 > or a folder to watch) is in its front matter, and what to do is in its body.
 > Schedule positions, occurrences and run history are runtime state in the
 > database. The rules below apply to the routine the file describes.
+
+> **Amended 2026-09-29.** Listeners also take events: a webhook to one of the
+> company's hooks, or company mail. See the amendment "events wake agents" in
+> section 19.
 
 A routine stores intent plus exactly one trigger type:
 
@@ -3844,6 +3850,92 @@ owner role. Model use is not billed here: it follows the 2026-09-28 amendment
     before it are discarded, and members see only measured hours until then.
     Acceptance is section 21 item 31.
 
+### 2026-09-29 amendment: events wake agents
+
+Founder decisions of 29 September 2026 (Q1 page "Qorpera on Qorpera"). They
+complete section 16.3's listener triggers and section 11.5's broker. Design:
+`deploy/first-node/RUNTIME-EVENT-INTAKE.md`.
+
+1. **Events are a wake source.** An incoming webhook from any service, and
+   incoming company mail, wake the agent whose routine listens for it. The
+   clock and a folder change are the other sources. This is the base for
+   routines.
+2. **A hook is a company connection.** It has one public address, a proof and
+   limits. The proof is the address itself, or a signature made with a secret
+   the vault holds (Stripe, GitHub, or HMAC-SHA256 for the company's own
+   senders). Agents never see a signing secret. A hook holds no account, so
+   5.6's rule that connecting an account is a member action through the vault
+   applies only to its signing secret: a member captures it. Owners, admins
+   and agents create and remove hooks; an agent's new hook passes the
+   automatic review as a new connection. For `folder-v2` companies a hook is
+   described by its connection file, `connections/hook-<name>.md` (5.6), which
+   the platform writes in the same step as the hook; the prefix keeps hook
+   names apart from account connections. The database keeps the address, the
+   limits and the delivery receipts as runtime state. Until the core's writer
+   lands, hooks exist only for `snapshot-v1` companies, whose connections are
+   rows.
+3. **Only verified deliveries wake, and the intake is bounded.** A delivery is
+   a duplicate when a verified delivery of the same hook carries the same
+   sender id; without a sender id, when the same body arrived within 10
+   minutes (best effort: two identical bodies at the same instant may both
+   pass). Duplicates are decided after verification. Limits: per hook, a body
+   of at most 256 KiB and at most 120 deliveries a minute; per company, 50
+   live hooks and an hourly budget of stored deliveries and bytes (bodies and
+   headers) that operators set; and a platform switch, built off and turned on
+   at acceptance. A refused request writes nothing, and a receive never
+   waits for the company row; it waits for its hook only while the hook is
+   deleted.
+4. **One wake per burst.** A listener routine has at most one queued event
+   occurrence per trigger. The occurrence takes the waiting deliveries when it
+   is read (at most 20, with bodies cut to fit the wake's size bound; the agent
+   reads the rest with a tool), and the rest wake it again. Quiet hours,
+   pauses and the pinned sponsor apply as to every routine occurrence.
+5. **Events are outside content** (11.1). An instruction inside an event is
+   data. Outside actions an event leads to pass the automatic review.
+6. **Deliveries are runtime state; events in the folder are company
+   content.** The delivery row is a queue entry and a receipt: its copy of the
+   body and headers is kept 7 days and the row 30. For `folder-v2` companies,
+   once the core's writer lands, the platform also saves each verified event
+   in the company folder under `hooks/<hook>/`, in the same change set. The
+   platform creates `hooks/` with the first saved event, as it creates `code/`
+   when coding starts (5.6), and only the platform adds or changes files
+   under it; agents and members read them, and owners and admins may delete
+   them. Otherwise they stay until the company is deleted.
+7. **Today's routines take the trigger too.** Event wakes are added to the
+   routine rows of `snapshot-v1` companies before the clean reset, and hooks
+   exist for those companies (item 2), although new company state otherwise
+   goes to the folder model. Both go with those companies at the reset.
+   Routine files take the same trigger as `when: event`.
+8. **The broker checks signatures.** Section 11.5 lets the broker unwrap a
+   credential for an admitted run's granted operation. It may also unwrap a
+   hook's signing secret, and only to check deliveries to that hook: the
+   check is bound to the hook, the delivery and the secret's company, uses
+   the secret's current version, refuses a revoked secret, needs no run or
+   agent grant, and the secret and its plaintext never leave the broker's
+   memory. The result is only verified, duplicate or refused.
+9. **Mail is an event source (M2).** A company mailbox is an address on the
+   platform's mail domain (decision 7), made by an owner or admin, and a
+   platform-owned hook with the proof `mail`: only the platform's mail door
+   fills it, after checking the mail provider's signed webhook with the
+   platform's signing secret, and the public intake never takes a delivery
+   for it. Each received message is a verified delivery of type
+   `mail.received`, bounded like any delivery, and wakes routines through
+   the event trigger (item 4). Its sender and content are outside content
+   (item 5); the provider's SPF, DKIM and DMARC results travel with it. An
+   agent sends from a live mailbox of its company as itself (M2b): plain
+   text from "<agent> at <company>" at the mailbox's address, always ending
+   with a line saying an AI agent wrote and sent it. Every email passes the
+   automatic review as an outside action first, and only the platform's
+   sender, which alone holds the provider key, sends it. A reply to a
+   received email joins its thread and says it is an automatic response; an
+   email sent automatically is never answered, and a company never emails
+   its own mailboxes. No email goes out as if from Qorpera: a sender name or
+   mailbox that reads as Qorpera is refused (founder decision, 1 October
+   2026). Sending has its own platform switch, built off, and each company
+   an hourly and a daily limit on recipients that operators set.
+
+Section 21, item 33, is the event-wake acceptance item.
+
 ## 20. Enforcement matrix
 
 > **Note, 2026-09-27.** Rows naming responsibility objects, ceilings, a schema
@@ -3893,7 +3985,7 @@ owner role. Model use is not billed here: it follows the 2026-09-28 amendment
 > vision the Co-Founder writes.
 
 The runtime launch gate passes only when a deployed environment proves the
-mandatory items 1–31 without manual database repair or a hidden desktop
+mandatory items 1–31 and 33 without manual database repair or a hidden desktop
 executor. Item 32 is a separate post-build enablement gate and is not required
 while Azure backup/overflow remains disabled.
 
@@ -4012,6 +4104,12 @@ while Azure backup/overflow remains disabled.
     to Azure placements and rented allocation intervals. The view distinguishes
     computers, companies, associated users and observed active users, retains
     local/Azure placement history, and exposes failed or unavailable overflow.
+33. Events wake agents (2026-09-29 amendment "events wake agents", section
+    19): posts from a website form to an address-proven hook wake a routine
+    listening to it once per burst, and the run reads every event, a large one
+    through read_event. An instruction inside an event gains no authority (the
+    event case of item 10). A duplicate or unverified delivery wakes nothing,
+    and a removed hook wakes nothing more.
 
 Passing unit tests against a local provider, describing the behavior in an
 instruction file, or leaving a desktop open to execute work does not pass this

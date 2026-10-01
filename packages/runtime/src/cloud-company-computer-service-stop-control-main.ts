@@ -1,7 +1,5 @@
-import { realpathSync } from "node:fs";
-import { basename, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import { parseCompanyComputerPreparationCommand } from "@qorpera/contracts";
+import { runCompanyComputerControlEntry } from "./cloud-company-computer-control-entry.ts";
 import { lockedCompanyComputerControlChild } from "./cloud-company-computer-preparation-control-main.ts";
 import { controlCompanyComputerServiceStop } from "./cloud-company-computer-service-stop-control.ts";
 import { createCompanyComputerServiceStopSystemdManager } from "./cloud-company-computer-service-stop-systemd.ts";
@@ -47,23 +45,10 @@ export async function runCompanyComputerServiceStopControlMain(args: readonly st
 		process.removeListener("SIGTERM", shutdown);
 	}
 }
-if (
-	process.argv[1] &&
-	[
-		"cloud-company-computer-service-stop-control-main.ts",
-		"qorpera-company-computer-service-stop-control.mjs",
-	].includes(basename(process.argv[1])) &&
-	realpathSync(resolve(process.argv[1])) === realpathSync(fileURLToPath(import.meta.url))
-) {
-	if (process.argv.length === 3 && process.argv[2] === "--help")
-		console.log(
-			"Protected office stop and fresh inspection. Requires retained admission revocation and a kernel lock; never restarts, reboots or releases a machine.",
-		);
-	else
-		runCompanyComputerServiceStopControlMain(process.argv.slice(2)).catch(() => {
-			console.error(
-				"Office service stop could not confirm the retained request and complete process-group cleanup.",
-			);
-			process.exitCode = 1;
-		});
-}
+runCompanyComputerControlEntry({
+	moduleUrl: import.meta.url,
+	names: ["cloud-company-computer-service-stop-control-main.ts", "qorpera-company-computer-service-stop-control.mjs"],
+	help: "Protected office stop and fresh inspection. Requires retained admission revocation and a kernel lock; never restarts, reboots or releases a machine.",
+	failure: "Office service stop could not confirm the retained request and complete process-group cleanup.",
+	run: runCompanyComputerServiceStopControlMain,
+});

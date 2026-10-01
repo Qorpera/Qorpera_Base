@@ -9,8 +9,8 @@
  * - note: short-lived facts; stored as tagged log lines that fade out of the
  *   composed slice after NOTE_FADE_DAYS and are not part of a portable export.
  *
- * On disk (Company File): agents/<staffAgentId>/memory/profile.md and
- * agents/<staffAgentId>/memory/log/YYYY-MM.md, one fact per line as
+ * On disk (Company File): <agent folder>/memory/profile.md and
+ * <agent folder>/memory/log/YYYY-MM.md, one fact per line as
  * "- (YYYY-MM-DD) <fact>", a note as "- (YYYY-MM-DD) [note] <fact>". The files
  * are ordinary versioned Company File objects: writes and forgets go through the
  * governed mutation gateway with the exact expected version (no silent
@@ -24,8 +24,16 @@
  * Company first: a notebook is company state, owned by the company like the
  * rest of the agent's folder. There is no per-member memory; what an agent
  * learns about a member is a fact in its own notebook. The tools only ever
- * address the executing agent's own notebook. */
+ * address the executing agent's own notebook. The agent's folder is
+ * cloudAgentFolder's: agents/<staffAgentId> today, agents/<handle> in a folder-v2
+ * company. */
 import { createHash } from "node:crypto";
+import {
+	CLOUD_AGENT_FOLDER_BY_ID,
+	type CloudAgentFolderPlace,
+	cloudAgentFolder,
+	isCloudAgentFolder,
+} from "@qorpera/cloud-client/cloud-agent-folder";
 import type { JsonValue } from "@qorpera/contracts";
 import {
 	CloudCompanyHeadConflict,
@@ -59,7 +67,6 @@ const DISTINCTIVE_WORD_CHARS = 4;
 const CONFLICT_ATTEMPTS = 3;
 /** Notebook files read at once; a search reads every month, so read them side by side. */
 const READ_CONCURRENCY = 8;
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const LINE = /^- \((\d{4}-\d{2}-\d{2})\) (.+)$/;
 const LOG_FILE = /^\d{4}-\d{2}\.md$/;
 const NOTE_TAG = "[note] ";
@@ -112,14 +119,15 @@ export function unavailableCloudAgentMemory(reason: string): CloudAgentMemoryBlo
 	};
 }
 
-export function cloudMemoryPaths(staffAgentId: string): { root: string; profile: string; log: string } {
-	if (!UUID.test(staffAgentId)) throw new Error("Invalid memory owner");
-	const root = `agents/${staffAgentId}/memory`;
+/** The notebook in an agent's folder (cloudAgentFolder). */
+export function cloudMemoryPaths(agentFolder: string): { root: string; profile: string; log: string } {
+	if (!isCloudAgentFolder(agentFolder)) throw new Error("Invalid memory owner");
+	const root = `${agentFolder}/memory`;
 	return { root, profile: `${root}/profile.md`, log: `${root}/log` };
 }
 
-export function cloudMemoryLogPath(staffAgentId: string, at: Date): string {
-	return `${cloudMemoryPaths(staffAgentId).log}/${at.toISOString().slice(0, 7)}.md`;
+export function cloudMemoryLogPath(agentFolder: string, at: Date): string {
+	return `${cloudMemoryPaths(agentFolder).log}/${at.toISOString().slice(0, 7)}.md`;
 }
 
 function isoDate(at: Date): string {
@@ -279,11 +287,11 @@ function budget<T>(items: T[], size: (item: T) => number, maxBytes: number, maxC
  * and spends no read budget. */
 export async function composeCloudAgentMemory(
 	gateway: CloudMemoryGateway,
-	staffAgentId: string,
+	agentFolder: string,
 	at: Date,
 	signal: AbortSignal,
 ): Promise<CloudAgentMemoryBlock> {
-	const paths = cloudMemoryPaths(staffAgentId);
+	const paths = cloudMemoryPaths(agentFolder);
 	const block: CloudAgentMemoryBlock = {
 		schema: CLOUD_MEMORY_SCHEMA,
 		trust: "own_notebook_not_authority",
@@ -294,9 +302,7 @@ export async function composeCloudAgentMemory(
 	};
 	const months: string[] = [];
 	for (let back = 0; back < COMPOSED_LOG_MONTHS; back++) {
-		months.push(
-			cloudMemoryLogPath(staffAgentId, new Date(Date.UTC(at.getUTCFullYear(), at.getUTCMonth() - back, 1))),
-		);
+		months.push(cloudMemoryLogPath(agentFolder, new Date(Date.UTC(at.getUTCFullYear(), at.getUTCMonth() - back, 1))));
 	}
 	// The files are independent: read them together, compose them in the same order.
 	const reads = [paths.profile, ...months].map((path) => readFile(gateway, path, signal));
@@ -407,14 +413,17 @@ export async function ensureCloudCompanyFolders(
 	return null;
 }
 
-/** The cloud derives the owner from the run: a notebook is always the executing agent's own. */
+/** The cloud derives the owner from the run: a notebook is always the executing agent's own, in
+ * its folder as the company keeps it (place, from the run's context). */
 export function cloudMemoryTools(
 	gateway: CloudMemoryGateway,
 	identity: CloudNativeToolIdentity,
 	now: () => Date = () => new Date(),
+	place: CloudAgentFolderPlace = CLOUD_AGENT_FOLDER_BY_ID,
 ): readonly CloudNativeTool[] {
 	const expected = Object.freeze({ ...identity });
-	const paths = cloudMemoryPaths(expected.staffAgentId);
+	const agentFolder = cloudAgentFolder(expected.companyId, expected.staffAgentId, place);
+	const paths = cloudMemoryPaths(agentFolder);
 	const assertContext = (context: CloudToolContext) => {
 		if (
 			context.runId !== expected.runId ||
@@ -480,7 +489,7 @@ export function cloudMemoryTools(
 			});
 			if (request.action === "write") {
 				const tier = request.tier ?? "log";
-				const path = tier === "profile" ? paths.profile : cloudMemoryLogPath(expected.staffAgentId, at);
+				const path = tier === "profile" ? paths.profile : cloudMemoryLogPath(agentFolder, at);
 				const line = renderLine(request.fact, tier, at);
 				const key = factIdentity(request.fact);
 				const written = await retryingCloudCompanyChange(async () => {

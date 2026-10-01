@@ -55,6 +55,10 @@ const UNIT_PREFIX_PATTERN = /^[a-z][a-z0-9-]{0,48}@$/;
 const ACCOUNT_PREFIX_PATTERN = /^[a-z][a-z0-9-]{0,24}$/;
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 const RESERVING_RETIREMENT_MS = 10 * 60_000;
+/** A sandbox waiting this long for (or on) its one assignment is asked about at most once per
+ * ENDED_RUNNER_CHECK_MS: whether its run's job has ended (see #retireEndedRunners). */
+const ENDED_RUNNER_GRACE_MS = 2 * 60_000;
+const ENDED_RUNNER_CHECK_MS = 60_000;
 const MAX_JOURNAL_BYTES = 64 * 1024;
 const WARM_SCHEMA = "qorpera.shared-execution-warm-slot/v1";
 /** After this many failed retirements a sandbox is recorded as lost and its
@@ -466,6 +470,7 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 	#swept = false;
 	/** Acquisitions whose retirement is in flight; a second retire of the same one is a no-op. */
 	readonly #retiring = new Set<string>();
+	#endedRunnersCheckedAt = 0;
 	#serial: Promise<void> = Promise.resolve();
 
 	constructor(config: SharedExecutionProviderConfig, dependencies: SharedExecutionProviderDependencies = {}) {
@@ -517,6 +522,12 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 		}
 		try {
 			await this.#expireWarmSlots(signal);
+		} catch (error) {
+			if (signal?.aborted) throw error;
+			failures.push(error);
+		}
+		try {
+			await this.#retireEndedRunners(live, active, signal);
 		} catch (error) {
 			if (signal?.aborted) throw error;
 			failures.push(error);
@@ -649,11 +660,14 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 				slot,
 				hostPort: this.#config.portBase + slot * 2,
 				inboxPort: this.#config.portBase + slot * 2 + 1,
+				// The machine key names the attempt: the key of a released allocation stays taken, so a later
+				// attempt of the same run on the same slot needs its own.
 				instanceSha256: sha256(
 					JSON.stringify(
 						canonical({
 							host: this.#config.hostId,
 							adapter: this.adapterId,
+							acquisition: acquisitionId,
 							slot,
 							work: digest,
 							runtime: sha256(JSON.stringify(canonical(this.#config.nativeCompanyRuntime))),
@@ -1526,6 +1540,62 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 			}
 			await writeFile(path, `${JSON.stringify({ ...owed, capacityReleased: true }, null, 2)}\n`, { mode: 0o600 });
 		}
+	}
+
+	/** One runner serves one run, and a sandbox whose assignment or delivery ended with an unknown
+	 * outcome stays up for a replay. A job that ended (cancelled, failed, or its company deleted,
+	 * 29 Sep 2026) is never replayed, so its runner unit would wait on its inbox forever and keep
+	 * the slot and the allocation. Once a runner has waited ENDED_RUNNER_GRACE_MS the control plane
+	 * is asked whether its job ended; if so the sandbox retires. A database without the check
+	 * answers 404. */
+	async #retireEndedRunners(
+		live: readonly SharedExecutionJournal[],
+		active: ReadonlySet<string>,
+		signal?: AbortSignal,
+	): Promise<void> {
+		if (this.#now() - this.#endedRunnersCheckedAt < ENDED_RUNNER_CHECK_MS) return;
+		const waiting = live.filter(
+			(journal) =>
+				(journal.physicalState === "registered" || journal.physicalState === "assigned") &&
+				active.has(this.#unit("runner", journal.slot)) &&
+				this.#now() - Date.parse(journal.updatedAt) >= ENDED_RUNNER_GRACE_MS,
+		);
+		this.#endedRunnersCheckedAt = this.#now();
+		if (waiting.length === 0) return;
+		const runnerIds = waiting.map((journal) => journal.runner.runnerId);
+		const response = await this.#fetch(
+			new URL("/rest/v1/rpc/qorpera_runtime_ended_runners", this.#config.supabaseUrl),
+			{
+				method: "POST",
+				redirect: "error",
+				headers: { ...supabaseServiceHeaders(this.#config.supabaseServiceKey), "content-type": "application/json" },
+				body: JSON.stringify({ p_runner_ids: runnerIds }),
+				signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000),
+			},
+		);
+		if (response.status === 404) {
+			void response.body?.cancel().catch(() => undefined);
+			return;
+		}
+		if (!response.ok) {
+			void response.body?.cancel().catch(() => undefined);
+			throw new Error(`Ended runners are unavailable (${response.status})`);
+		}
+		const answer: unknown = await response.json();
+		if (!Array.isArray(answer) || answer.some((id) => typeof id !== "string" || !runnerIds.includes(id)))
+			throw new Error("Ended runners answer is invalid");
+		const failures: unknown[] = [];
+		for (const journal of waiting) {
+			if (!answer.includes(journal.runner.runnerId)) continue;
+			try {
+				await this.#retire(journal.acquisitionId, "revoked", signal);
+			} catch (error) {
+				if (signal?.aborted) throw error;
+				failures.push(error);
+			}
+		}
+		if (failures.length === 1) throw failures[0];
+		if (failures.length > 1) throw new AggregateError(failures, "Retiring several ended runners failed");
 	}
 
 	async #rpc(name: string, body: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
