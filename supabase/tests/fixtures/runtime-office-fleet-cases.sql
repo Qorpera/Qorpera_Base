@@ -88,7 +88,7 @@ set local role service_role;
 select pg_temp.wake_assert(pg_temp.office_fleet_place()->>'state'='unplaced','Stale inventory cannot place');
 rollback to fleet_staged;
 
--- Computer hours (20260929720000): a computer of a company at zero is not placed though a node has
+-- Computer hours (20260928309720): a computer of a company at zero is not placed though a node has
 -- room, and nothing is reserved; once hours are added it is placed as before.
 update public.qorpera_computer_hour_billing set live_since=clock_timestamp()-interval '1 second';
 insert into public.qorpera_computer_hour_usage(profile_id,metered_at,run_seconds,standard_seconds)

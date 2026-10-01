@@ -1,5 +1,5 @@
 -- @fixture 640_runtime_node_serving_switch.test.sql until "select pg_temp.wake_assert(pg_temp.sw_reserve(1) ->> 'state' = 'reserved','A coding machine is reserved on node C');"
--- Computer hours, build step 6b part 1 (20260929700000_runtime_computer_hours_node_refusal): at zero
+-- Computer hours, build step 6b part 1 (20260928309700_runtime_computer_hours_node_refusal): at zero
 -- no Company Computer, coding machine or agent's machine starts or wakes. The node reserve refuses a
 -- new reservation or a wake with COMPUTER_HOURS_EXHAUSTED and keeps it on the demand; a machine
 -- already awake passes; an emptying node says NODE_DISABLED first; run and sign-in machines are never
