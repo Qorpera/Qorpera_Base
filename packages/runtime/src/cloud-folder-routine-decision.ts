@@ -250,8 +250,9 @@ export class CloudFolderRoutineDecision {
 															: `Not saved (${written.reason ?? written.outcome}): ${AGAIN}`,
 								};
 				const output = cloudToolJsonText(value);
-				// A settled answer shows the routine as read: release that read with it.
-				if (value.state === "settled")
+				// A settled answer shows the routine as read, and a saved one after a rename shows the name the file was
+				// found under: release that read with it.
+				if (value.state === "settled" || routineKey !== this.#routineKey)
 					await this.#folder.release(
 						receiptId,
 						[

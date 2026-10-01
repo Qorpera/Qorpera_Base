@@ -193,6 +193,9 @@ it("answers settled when the routine already moved on, as today", async () => {
 		f.decide({ action: "next", operationKey: "decide-1", at: "2026-10-03T07:30:00Z" }),
 	).resolves.toMatchObject({ decided: true, result: { state: "settled" } });
 	expect(f.operationControl.completeFolderToolOperation).toHaveBeenCalledTimes(1);
+	// It shows the routine as read: that read is released under the receipt.
+	expect(f.releases).toHaveLength(1);
+	expect(f.releases[0]).toMatchObject({ p_reads: [{ path: PATH }] });
 });
 
 it("says refused with the reason and a new operationKey otherwise, and replays a finished call from its receipt", async () => {
@@ -282,6 +285,9 @@ it("finds its routine after a member renamed the file mid-run, by the routine's 
 	expect(f.commits[0]?.units[0]).toMatchObject({ path: moved });
 	expect(f.text(moved)).toBe(writeRoutineFile({ ...BASE, trigger: { when: "once", at: "2026-10-03T07:30:00Z" } }));
 	expect(f.listed).toHaveBeenCalled();
+	// The receipt shows the name the file was found under: that read is released with it.
+	expect(f.releases).toHaveLength(1);
+	expect(f.releases[0]).toMatchObject({ p_release_id: result.receiptId, p_reads: [{ path: moved }] });
 	// Renamed again before the same call is retried: it is the same call, answered from its receipt.
 	const stored = f.files.get(moved);
 	if (!stored) throw new Error("Missing fixture file");
@@ -313,4 +319,16 @@ it("releases the read a settled answer shows", async () => {
 	expect(result).toMatchObject({ state: "settled", routine: { status: "paused", path: PATH } });
 	expect(f.releases).toHaveLength(1);
 	expect(f.releases[0]).toMatchObject({ p_reads: [{ path: PATH }] });
+});
+
+it("pages through the routines folder until it finds the file", async () => {
+	const moved = "agents/nora/routines/market-watch.md";
+	const f = await fixture(null, undefined, { [moved]: ROUTINE });
+	// A first page that holds no routine and names more to come.
+	f.listed.mockResolvedValueOnce({ asOfSeq: 1, entries: [], next: "agents/nora/routines/a.md" });
+	await expect(
+		f.decide({ action: "next", operationKey: "decide-1", at: "2026-10-03T07:30:00Z" }),
+	).resolves.toMatchObject({ decided: true, result: { routine: { path: moved } } });
+	expect(f.listed).toHaveBeenCalledTimes(2);
+	expect(f.listed.mock.calls[1]?.[1]).toEqual({ after: "agents/nora/routines/a.md" });
 });
