@@ -127,6 +127,8 @@ export type CloudCompanyPathRpc =
 	| "qorpera_folder_open_upload"
 	| "qorpera_folder_seal_upload"
 	| "qorpera_folder_renew_upload"
+	// A folder-v2 run's own todos from the todo index (thin writers W1).
+	| "qorpera_folder_agent_todos"
 	// Event wakes (W2): the company's hooks and one event's body.
 	| "qorpera_list_agent_event_hooks"
 	| "qorpera_read_agent_event"

@@ -67,6 +67,7 @@ async function fixture(
 	httpPathControl = false,
 	presence?: CloudCompanyPathPresenceFactory,
 	machines = false,
+	folderBytes = false,
 ) {
 	const f = nativeCompanyContextFixture();
 	if (mode === "company-silent" || mode === "company-worker") {
@@ -544,6 +545,19 @@ async function fixture(
 		timeoutMs: 10_000,
 		...(secretBroker ? { secretBroker } : {}),
 		...(mode === "company-office" ? { computerSession: officeSession } : {}),
+		// Folder bytes only build the folder client here; this suite never saves a file.
+		...(folderBytes
+			? {
+					folderBytes: () => ({
+						put: async () => {
+							throw new Error("No folder bytes in this suite");
+						},
+						get: async () => {
+							throw new Error("No folder bytes in this suite");
+						},
+					}),
+				}
+			: {}),
 		// A machines gateway only offers the tools here; this suite never runs a command.
 		...(machines
 			? {
@@ -1325,6 +1339,21 @@ it("gives a company conversation's run the machine tools with notify, and no wai
 		"waitSeconds",
 	);
 	expect(tools.find((tool) => tool.name === "machine_read")?.inputSchema.properties).not.toHaveProperty("waitSeconds");
+});
+
+it.each([
+	["a snapshot-v1 run", false, true, false],
+	["a folder-v2 run on a node without folder bytes", true, false, false],
+	["a folder-v2 run", true, true, true],
+] as const)("gives manage_todo the todo files' writer only for %s", async (_name, folder, bytes, files) => {
+	const f = await fixture("company-runtime", false, undefined, false, bytes);
+	if (folder) f.context.folder = { agent: "nora", coworkers: {} };
+	await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+	const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
+	const tools = evidence.threadParameters.dynamicTools[0].tools as { name: string; description: string }[];
+	const todo = tools.find((tool) => tool.name === "manage_todo")?.description ?? "";
+	expect(todo.includes("Each todo is a file in your folder")).toBe(files);
+	expect(todo.includes("Each todo is also a document in the shared Company File")).toBe(!files);
 });
 
 async function machineToolNames(f: Awaited<ReturnType<typeof fixture>>): Promise<string[]> {

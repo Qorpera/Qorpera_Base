@@ -15,6 +15,7 @@ import {
 	prepareCloudCodexSpare,
 } from "./cloud-codex-tool-session.ts";
 import type { CloudCompanyComputerSessionFactory } from "./cloud-company-computer-control.ts";
+import { type CloudCompanyFolderBytes, CloudCompanyFolderClient } from "./cloud-company-folder-client.ts";
 import { type CloudCompanyPathControl, CloudCompanyPathGateway } from "./cloud-company-path-gateway.ts";
 import {
 	type CloudCompanyPathPresence,
@@ -22,6 +23,7 @@ import {
 	observeCloudCompanyPathPresence,
 } from "./cloud-company-path-presence.ts";
 import { cloudEventTools } from "./cloud-event-tools.ts";
+import { CloudFolderTodos } from "./cloud-folder-todos.ts";
 import { cloudHiringTools } from "./cloud-hiring-tools.ts";
 import type { CloudMachineCommandGateway } from "./cloud-machine-command-http.ts";
 import { cloudMachineTools } from "./cloud-machine-tools.ts";
@@ -47,6 +49,7 @@ import {
 	CLOUD_PAIRED_REQUEST_TIMEOUT_MS,
 	type CloudNativeToolAuthorityReader,
 	type CloudNativeToolBinding,
+	type CloudNativeToolIdentity,
 	cloudToolRequest,
 	parseCloudNativeToolBinding,
 } from "./cloud-native-tool-authority.ts";
@@ -117,6 +120,9 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 	readonly #computerSession: CloudCompanyComputerSessionFactory | undefined;
 	readonly #coding: CloudNativeCodingDriver | undefined;
 	readonly #machines: ((binding: CloudNativeToolBinding) => CloudMachineCommandGateway) | undefined;
+	readonly #folderBytes:
+		| ((binding: CloudNativeToolBinding, identity: CloudNativeToolIdentity) => CloudCompanyFolderBytes)
+		| undefined;
 
 	constructor(options: {
 		presence?: CloudCompanyPathPresenceFactory;
@@ -140,6 +146,9 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		/** Company machines' command gateway (the coding executor's ingress, 2026-09-28).
 		 * Without it no run is offered the machine tools. */
 		machines?: (binding: CloudNativeToolBinding) => CloudMachineCommandGateway;
+		/** A folder-v2 run's file bytes (core C1d: the object gateway's folder route). Without it a folder-v2 run
+		 * keeps the legacy state tools, which refuse. */
+		folderBytes?: (binding: CloudNativeToolBinding, identity: CloudNativeToolIdentity) => CloudCompanyFolderBytes;
 	}) {
 		this.#control = options.controlPlane;
 		this.#presenceFactory = options.presence;
@@ -155,6 +164,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		this.#computerSession = options.computerSession;
 		this.#coding = options.coding;
 		this.#machines = options.machines;
+		this.#folderBytes = options.folderBytes;
 	}
 
 	/** The effort and tier of the last successful run per identity root: a spare starts with them. */
@@ -292,6 +302,20 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				control: this.#paths,
 				store: this.#store(context.identity.companyId, binding, signal),
 			});
+			// A folder-v2 run (its context names the agent's folder) writes its state files through the folder core
+			// (core C3's thin writers, RUNTIME-COMPANY-STATE-FILES.md §5).
+			const folder =
+				context.folder && this.#folderBytes
+					? {
+							client: new CloudCompanyFolderClient({
+								binding,
+								identity: context.identity,
+								control: this.#paths,
+								bytes: this.#folderBytes(binding, context.identity),
+							}),
+							handle: context.folder.agent,
+						}
+					: undefined;
 			// How much open work the agent has (counts only), where it keeps todos and workers:
 			// a company run that is not itself a worker. Asked alongside the notebook; like
 			// memory, it never blocks the run.
@@ -613,6 +637,16 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 											...(work.isWorker ? [] : cloudHiringTools(gateway, identity)),
 											...cloudWorkerTools(binding, identity, this.#paths, gateway, wake, {
 												machines: Boolean(this.#machines) && machinesAvailable,
+												...(folder
+													? {
+															folderTodos: new CloudFolderTodos({
+																folder: folder.client,
+																operations,
+																identity,
+																handle: folder.handle,
+															}),
+														}
+													: {}),
 											}),
 										]
 									: []),
