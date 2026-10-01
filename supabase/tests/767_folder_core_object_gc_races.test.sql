@@ -60,7 +60,7 @@ begin
 	if not pg_temp.waits_for('auth_two', 'auth_one') then raise exception 'The open waits on the claim'; end if;
 	perform dblink_exec('auth_one', 'commit');
 	v_state := pg_temp.outcome('auth_two');
-	if v_state not like '40001 %' then raise exception 'The open sees the mark committed while it waited: %', v_state; end if;
+	if v_state not like '55P03 %' then raise exception 'The open sees the mark committed while it waited: %', v_state; end if;
 end $$;
 -- (Other sessions see only what is committed: the first claim's marks on the file are cleared here, on their own.)
 update public.qorpera_folder_object_gc set lease_id = null, lease_expires_at = null

@@ -305,12 +305,12 @@ begin
 		E'\t\torder by o.sha256 collate "C" for key share of o) p;\n',
 		E'\t\torder by o.sha256 collate "C" for key share of o) p;\n'
 		|| E'\tif exists (select 1 from jsonb_array_elements_text(v_present) s where public.qorpera_folder_object_marked(v_profile, s)) then\n'
-		|| E'\t\traise exception ''Company folder object is being collected; retry'' using errcode = ''40001''; end if;\n');
+		|| E'\t\traise exception ''Company folder object is being collected; retry'' using errcode = ''55P03''; end if;\n');
 	-- confirm: a row that vanished between the insert and the lock, or one GC holds.
 	perform pg_temp.c1d2_replace('public.qorpera_folder_confirm_object(uuid,jsonb,uuid,text,bigint)',
 		E'\tif v_bytes is distinct from p_bytes then\n',
 		E'\tif v_bytes is null or public.qorpera_folder_object_marked(v_intent.profile_id, p_sha256) then\n'
-		|| E'\t\traise exception ''Company folder object is being collected; retry'' using errcode = ''40001''; end if;\n'
+		|| E'\t\traise exception ''Company folder object is being collected; retry'' using errcode = ''55P03''; end if;\n'
 		|| E'\tif v_bytes is distinct from p_bytes then\n');
 	-- seal: any of the intent's objects GC holds.
 	perform pg_temp.c1d2_replace('public.qorpera_folder_seal_upload(uuid,jsonb,uuid)',
@@ -318,19 +318,19 @@ begin
 		E'\twhere o.profile_id = v_intent.profile_id order by o.sha256 collate "C" for key share of o;\n'
 		|| E'\tif exists (select 1 from public.qorpera_folder_upload_intent_objects i where i.intent_id = v_intent.id\n'
 		|| E'\t\tand public.qorpera_folder_object_marked(v_intent.profile_id, i.sha256)) then\n'
-		|| E'\t\traise exception ''Company folder object is being collected; retry'' using errcode = ''40001''; end if;\n');
+		|| E'\t\traise exception ''Company folder object is being collected; retry'' using errcode = ''55P03''; end if;\n');
 	-- authorize upload, before the NAS write (plain reads; safe by the intent's root, C1D §9.7).
 	perform pg_temp.c1d2_replace('public.qorpera_folder_authorize_object_upload(uuid,jsonb,uuid,text,bigint)',
 		E'\tif not exists (select 1 from public.qorpera_profile_objects where profile_id = v_intent.profile_id and sha256 = p_sha256) then\n',
 		E'\tif public.qorpera_folder_object_marked(v_intent.profile_id, p_sha256) then\n'
-		|| E'\t\traise exception ''Company folder object is being collected; retry'' using errcode = ''40001''; end if;\n'
+		|| E'\t\traise exception ''Company folder object is being collected; retry'' using errcode = ''55P03''; end if;\n'
 		|| E'\tif not exists (select 1 from public.qorpera_profile_objects where profile_id = v_intent.profile_id and sha256 = p_sha256) then\n');
 	-- replication, after its NO KEY UPDATE (and the Storage replica-insert guard, which calls it).
 	perform pg_temp.c1d2_replace('public.qorpera_folder_authorize_replication(uuid,text,bigint)',
 		E'\tif not found then raise exception ''replication object is unavailable'' using errcode = ''42501''; end if;\n',
 		E'\tif not found then raise exception ''replication object is unavailable'' using errcode = ''42501''; end if;\n'
 		|| E'\tif public.qorpera_folder_object_marked(p_profile_id, p_sha256) then\n'
-		|| E'\t\traise exception ''Company folder object is being collected; retry'' using errcode = ''40001''; end if;\n');
+		|| E'\t\traise exception ''Company folder object is being collected; retry'' using errcode = ''55P03''; end if;\n');
 	-- download: a marked object is answered as missing (safe by roots: only an entry or path version makes it readable).
 	perform pg_temp.c1d2_replace('public.qorpera_folder_authorize_object_download(uuid,jsonb,text)',
 		E'\tif v_bytes is null then raise exception ''Object is unavailable'' using errcode = ''42501''; end if;\n',

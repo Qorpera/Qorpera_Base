@@ -173,15 +173,15 @@ begin
 	perform pg_temp.confirm(a, v_seal, pg_temp.manifest(array['gc marked', 'gc third']));
 	perform pg_temp.mark(v_x, v_lease);
 	-- open: a present object GC holds (the platform's present objects are all stored ones).
-	perform pg_temp.raises(format('select pg_temp.open(%L, %L)', '{"kind":"platform"}', pg_temp.manifest(array['gc marked'])), '40001');
+	perform pg_temp.raises(format('select pg_temp.open(%L, %L)', '{"kind":"platform"}', pg_temp.manifest(array['gc marked'])), '55P03');
 	-- authorize and confirm the put; seal.
 	perform pg_temp.raises(format($q$select public.qorpera_folder_authorize_object_upload('63400000-0000-4000-8000-000000000020',
-		%L, %L, %L, 9)$q$, a, v_seal, v_x), '40001');
-	perform pg_temp.raises(format('select pg_temp.confirm(%L, %L, %L)', a, v_seal, 'gc marked'), '40001');
-	perform pg_temp.raises(format('select pg_temp.seal(%L, %L)', a, v_seal), '40001');
+		%L, %L, %L, 9)$q$, a, v_seal, v_x), '55P03');
+	perform pg_temp.raises(format('select pg_temp.confirm(%L, %L, %L)', a, v_seal, 'gc marked'), '55P03');
+	perform pg_temp.raises(format('select pg_temp.seal(%L, %L)', a, v_seal), '55P03');
 	-- replication, and the download (answered as missing, even for the platform).
 	perform pg_temp.raises(format($q$select public.qorpera_folder_authorize_replication('63400000-0000-4000-8000-000000000010', %L, 9)$q$, v_x),
-		'40001');
+		'55P03');
 	perform pg_temp.raises(format('select pg_temp.download(%L, %L)', '{"kind":"platform"}', v_x), '42501');
 	-- commit step 6: a unit referencing it is refused as for a missing object.
 	perform pg_temp.expect(pg_temp.commit(a, 'gc-marked-write', jsonb_build_array(
