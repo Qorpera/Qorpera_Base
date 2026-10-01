@@ -17,6 +17,9 @@ const FOLDER_RPCS: ReadonlySet<CloudCompanyPathRpc> = new Set([
 	"qorpera_folder_list",
 	"qorpera_folder_commit",
 	"qorpera_folder_record_release",
+	"qorpera_folder_open_upload",
+	"qorpera_folder_seal_upload",
+	"qorpera_folder_renew_upload",
 ]);
 
 /** No end-user token, arbitrary URL, redirect, provider credential or retry. */
@@ -102,9 +105,15 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 			"qorpera_folder_list",
 			"qorpera_folder_commit",
 			"qorpera_folder_record_release",
+			// Staging a folder-v2 file's bytes (core C1d).
+			"qorpera_folder_open_upload",
+			"qorpera_folder_seal_upload",
+			"qorpera_folder_renew_upload",
 			// Event wakes (W2).
 			"qorpera_list_agent_event_hooks",
 			"qorpera_read_agent_event",
+			// Company mail (M2b).
+			"qorpera_send_agent_mail",
 		];
 		if (!permitted.includes(method)) throw new Error("Unknown Company File control operation");
 		const body = JSON.stringify(argumentsValue);
