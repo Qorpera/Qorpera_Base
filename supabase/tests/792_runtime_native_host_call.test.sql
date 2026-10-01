@@ -293,9 +293,15 @@ create procedure public.qorpera_g2t_proc(p_run_id uuid) language sql security de
 	as $f$ select 1 $f$;
 create function public.qorpera_g2t_bare(p_value integer default 1) returns integer language sql security definer
 	set search_path = '' as $f$ select p_value $f$;
+create function public.qorpera_g2t_slow(p_run_id uuid) returns jsonb language plpgsql security definer
+	set search_path = '' as $f$
+begin
+	perform pg_sleep(1.2);
+	return jsonb_build_object('statement_timeout', current_setting('statement_timeout'), 'lock_timeout', current_setting('lock_timeout'));
+end $f$;
 insert into public.qorpera_native_host_calls(name, scope)
 select 'qorpera_g2t_' || kind, 'run' from unnest(array['echo', 'text', 'flag', 'nothing', 'void', 'raise', 'rows', 'row',
-	'out', 'many', 'proc']) as kind
+	'out', 'many', 'proc', 'slow']) as kind
 union all select 'qorpera_g2t_bare', 'none';
 
 -- What PostgREST answers for a scalar call (it runs on the function's RPC path), and what it answers for the same
@@ -392,5 +398,20 @@ begin
 			'qorpera_g2t_' || v_code, jsonb_build_object('p_run_id', v_run)), 'refused', 'the shape ' || v_code);
 	end loop;
 end $$;
+
+-- 7. Budgets: PostgREST (12 and later; production runs 14.5) applies a called function's statement_timeout and
+--    lock_timeout to its request, so a call through the entry point gets the service caller's 8 s (authenticator's),
+--    not the publishable key's 3 s. Here the caller's own budget is 1 s, the entry point's settings are applied as
+--    PostgREST applies them, and a call of 1.2 s completes and sees 8 s for both. Without the settings the statement
+--    would be cancelled after 1 s (57014), which no handler here catches.
+set local statement_timeout = '1s';
+set local lock_timeout = '1s';
+select set_config(split_part(setting, '=', 1), substr(setting, strpos(setting, '=') + 1), true)
+from pg_proc as p, unnest(p.proconfig) as setting
+where p.oid = 'public.qorpera_native_host_call(uuid,text,text,jsonb)'::regprocedure and setting ~ '^(statement|lock)_timeout=';
+select pg_temp.g2_expect(pg_temp.g2_own('qorpera_g2t_slow', jsonb_build_object('p_run_id', pg_temp.g2_run())),
+	'ok:{"lock_timeout": "8s", "statement_timeout": "8s"}', 'a call past the caller''s own budget');
+set local statement_timeout = 0;
+set local lock_timeout = 0;
 
 rollback;
