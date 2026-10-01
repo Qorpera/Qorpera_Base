@@ -1,5 +1,5 @@
 -- @fixture 718_company_delete_office_power_off.test.sql until "-- The company lives: its held screen keeps the computer awake, and so does a pause without any screen."
--- Computer hours, build step 6b part 2 (20260929720000): Company Computers at zero.
+-- Computer hours, build step 6b part 2 (20260928309720): Company Computers at zero.
 --   * Within the hour after the company ran out, a held screen keeps its computer awake; once the
 --     finishing window is over the computer powers off at once, held screen notwithstanding.
 --   * A sleeping computer's wake is kept but not handed to the provider while the company is at

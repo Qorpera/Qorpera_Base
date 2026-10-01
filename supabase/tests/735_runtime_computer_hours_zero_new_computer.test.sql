@@ -1,5 +1,5 @@
 -- @fixture 627_runtime_company_computer_seats.test.sql until "select pg_temp.wake_assert(public.qorpera_runtime_office_start_wait(pg_temp.office(2))='setup','no host offers computer 2 yet');"
--- Computer hours, build step 6b part 2 (20260929720000): a started computer that no host has taken
+-- Computer hours, build step 6b part 2 (20260928309720): a started computer that no host has taken
 -- yet waits for computer hours while the company is at zero. The agent's panel says so, operators
 -- see it in the setup queue, it is never counted as stuck, and the fleet does not try to place it.
 -- Switched off, or once hours are added (before the next sweep), it waits for its host as before.

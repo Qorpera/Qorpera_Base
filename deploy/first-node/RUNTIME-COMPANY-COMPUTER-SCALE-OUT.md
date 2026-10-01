@@ -117,7 +117,7 @@ environment.
   (`20260923060000`, bundle v82).
 - `qorpera_runtime_office_setup_queue()` (service role) lists computers that
   need a host: started ones waiting for `setup`, `room` or `hours` (computer
-  hours, `20260929720000`: the company is out of hours), and added ones not
+  hours, `20260928309720`: the company is out of hours), and added ones not
   started yet (`unstarted`), with the image, bootstrap and screen count each
   needs. It names no node: which node runs a computer is the fleet placement's
   decision (Stateless Compute, 28 September: any node with room).

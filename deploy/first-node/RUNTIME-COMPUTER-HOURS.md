@@ -530,17 +530,18 @@ Coordinator (nothing secret):
     recorded more than about 40 minutes late (grace plus the email's ten-minute wait) sends a
     false "out of hours".
 
-- Build step 6b part 1 (migration `20260929700000`, the node refusal): `qorpera_reserve_runtime_node_machine`
+- Build step 6b part 1 (migration `20260928309700`, the node refusal): `qorpera_reserve_runtime_node_machine`
   refuses a new reservation or the wake of a sleeping machine of a company at zero with
   `COMPUTER_HOURS_EXHAUSTED`, for Company Computers, coding machines and agents' machines, after
   `NODE_DISABLED` (which wins) with the same demand condition; a machine already awake passes. Run and
   sign-in machines are never refused. The runner orchestrator's node admission and the coding
   executor (which waits it out) know the reason. Callers that reserve inside a subtransaction lose the
   stored refusal, so members' views ask `qorpera_company_at_zero` themselves (6b's later parts).
-  A coding turn whose run began before zero but whose member machine is asleep waits too (its
-  machine's step refuses, and the executor defers it), until hours arrive or the finishing window
-  ends the run: the run box is the running work, the coding machine is not.
-- Build step 6b part 2 (migration `20260929720000`, Company Computers):
+  Since part 4, coding machines are refused only with coding's own switch on. Then a coding turn
+  whose run began before zero but whose member machine is asleep waits too (its machine's step
+  refuses, and the executor defers it), until hours arrive or the finishing window ends the run:
+  the run box is the running work, the coding machine is not.
+- Build step 6b part 2 (migration `20260928309720`, Company Computers):
   - a sleeping computer's wake is kept at zero (a member or agent may still ask) but the idle check
     (`qorpera_reconcile_runtime_office_idle`) hands it to the provider only once the company has hours
     again, so the provider does not retry a refused resume every few seconds for as long as the
@@ -608,6 +609,36 @@ Coordinator (nothing secret):
       that was nearly idle too, and runs on the new hours until its idle delay (default one hour)
       puts it to sleep. The alternative, letting an idle task machine be stopped for good, would
       open its disk to the give-up and removal passes, against "disks kept".
+- Build step 6b part 4 (migration `20260929760000`, coding), behind coding's own switch,
+  `qorpera_computer_hour_billing.coding_zero_rule_since` (null until switched on). A coding executor
+  that does not know `COMPUTER_HOURS_EXHAUSTED` fails a turn on it, and production's executor was
+  still v6 on 2026-10-01, so coding is switched on only once an executor with this change runs on
+  every coding node ("Going live", step 2b). While it is off, part 1's node refusal no longer covers
+  coding machines. With it on:
+  - the node refusal covers coding machines again;
+  - `qorpera_authorize_coding_machine_run` (the machine step every turn passes before begin) refuses
+    a turn not yet begun with `COMPUTER_HOURS_EXHAUSTED`, even on an awake machine, and the executor
+    defers the session to the queue (part 1 made the reason waitable). A turn already running
+    finishes its hour;
+  - `qorpera_begin_coding_turn` answers `{"state":"refused","reason":"COMPUTER_HOURS_EXHAUSTED"}`
+    instead of beginning, for a company that reached zero after the machine step. Nothing is
+    written, and the executor ends the turn and defers the session; an attached session stays with
+    the keeper;
+  - `qorpera_defer_coding_session` says "Waiting for computer hours" for that reason, with one step
+    in the thread per wait (a new reason posts its own step), and the web's status line says
+    "Waiting for computer hours" (or "Answer sent · waiting for computer hours");
+  - at the hour, the turn's run is ended by the finishing window (6c part 3b), the executor ends the
+    turn failed with "Out of computer hours", and `qorpera_list_coding_machines` then puts the
+    member's machine to sleep as soon as no turn holds it, busy commands notwithstanding. Their
+    commands end as when it sleeps;
+  - known limits: while coding's switch is off and the zero rule on, the node does not refuse
+    coding machines, so a coding turn begun at zero starts or wakes its machine, has its run held
+    by 6a, and keeps that machine awake (its time owed) and its session "running" until hours are
+    added. The same happens with the switch on in the seconds between a company running out and
+    the sweep recording it, if begin falls in them. A held run is not ended by the finishing window
+    (there is no job yet). Hence step 2b as soon as the executor allows. And when a deferred
+    turn's 15-second retry meets the machine's sleep at the hour, the sleep may be refused once as
+    "in use"; the next pass sleeps it.
 - Build step 6c part 3b (migration `20260928259270`, the finishing window for runs): one hour
   after a company ran out, while it is still at zero (`qorpera_computer_hour_finish_window_over`,
   which checks at zero again, so a record up to one sweep old never ends work):
@@ -700,7 +731,7 @@ Before the switch (all of these hold):
   and 6b part 4 (coding) gives the coding machines their own switch: office and agent machines can
   be switched on first, coding once the new executor is installed. Part 1 alone is not
   enough: the later 6b parts are required too: Company Computers (part 2, built; the web deployed
-  first), agents' machines (part 3, built) and coding (stop after the hour, and the wait at begin).
+  first), agents' machines (part 3, built) and coding (part 4, built, with its own switch).
 - Members see their hours left, by source, on Plan & usage from the switch on
   (contract items 5 and 12; "Plan & usage (web)" below): `hoursLeft` in the member hours read
   and the company card (migration `20260928259330`) are live first.
@@ -748,6 +779,20 @@ At the agreed minute, in this order:
    balances stay as they were and never count). Plans can be bought by every signed-in account,
    packs by a company's founders. The hour emails are queued, and a company that runs out is
    recorded by the next sweep.
+
+   2b. The coordinator switches coding on as soon as a coding executor built from a release with
+   build step 6b part 4 runs on every coding node (its `coding-executor.ts` defers a turn whose
+   begin answers `{"state":"refused","reason":"COMPUTER_HOURS_EXHAUSTED"}`; production's was still
+   v6 on 2026-10-01). Best: install it before step 2, so this follows in the same minute:
+
+   ```sql
+   update public.qorpera_computer_hour_billing set coding_zero_rule_since = clock_timestamp();
+   ```
+
+   Never before: an older executor fails a coding turn on the reason instead of waiting. Until
+   then a company at zero still has its coding turns held, but only at the run's wake step: the
+   turn shows as running, its machine starts or stays awake, and that machine's time is owed until
+   hours are added (part 4's known limits).
 3. Within the first 30 minutes, a real purchase proves the live webhook: a pack for a company
    other than step 5's test company (or refunded before step 5, which also proves a live refund),
    refunded afterwards in Stripe: Stripe's dashboard shows the delivery answered 2xx, and
@@ -776,7 +821,10 @@ At the agreed minute, in this order:
 
 Rollback:
 
-- Stop holding work: `update public.qorpera_computer_hour_billing set zero_rule_since = null`.
+- Stop holding work: `update public.qorpera_computer_hour_billing set zero_rule_since = null`
+  (coding follows, since its switch needs the zero rule too). To go back to holding coding only at
+  the run's wake step (step 2b's "until then"):
+  `update public.qorpera_computer_hour_billing set coding_zero_rule_since = null`.
   Held work is released at once (routines with the next sweep), and the next sweep empties the
   zero state. Companies at zero run again and owe what they use; "out of hours" is again sent by
   the usage trigger, once per time of owing.
