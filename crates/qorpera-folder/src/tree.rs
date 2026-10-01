@@ -10,7 +10,7 @@
 //! - `changes` counts invalidations. A listing fetched while one happened is passed on but not kept.
 
 use crate::proto::{join, split, Entry, EntryKind};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 pub const ROOT: u64 = 1;
 
@@ -160,13 +160,21 @@ impl Tree {
 		children.sort_by(|a, b| a.name.cmp(&b.name));
 		children.dedup_by(|a, b| a.name == b.name);
 		if keep {
-			self.drop_listing(dir);
 			for c in &children {
 				if let Some(n) = self.nodes.get_mut(&c.ino) {
 					n.listed = true;
 				}
 			}
-			self.dirs.insert(dir, children.clone());
+			// The old listing's names that are gone now are no longer held by it.
+			if let Some(old) = self.dirs.insert(dir, children.clone()) {
+				let kept: HashSet<u64> = children.iter().map(|c| c.ino).collect();
+				for c in old.into_iter().filter(|c| !kept.contains(&c.ino)) {
+					if let Some(n) = self.nodes.get_mut(&c.ino) {
+						n.listed = false;
+					}
+					self.prune(c.ino);
+				}
+			}
 		} else {
 			// Nodes made for this answer alone go when nothing holds them.
 			for c in &children {
@@ -305,10 +313,12 @@ mod tests {
 		assert_eq!(t.path(b), Some("b.md"));
 		assert_eq!(t.attr(b).unwrap().size, 3);
 		assert_eq!(t.listing(ROOT).unwrap().len(), 2);
-		// A refetch keeps the inode of a path it already had.
+		// A refetch keeps the inode of a path it already had, and lets go of a name that is gone.
+		let a = ino_of(&kids, "a");
 		let (again, _) = t.install(ROOT, vec![file("b.md", 4, 2)], t.changes(), true, None);
 		assert_eq!(ino_of(&again, "b.md"), b);
 		assert_eq!(t.attr(b).unwrap().version, 2);
+		assert!(!t.knows(a));
 	}
 
 	#[test]
