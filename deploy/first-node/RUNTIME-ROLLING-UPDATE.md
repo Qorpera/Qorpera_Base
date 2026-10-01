@@ -277,6 +277,46 @@ during a roll: its policy sets `enabled` again, which returns the node before it
    - Check that both nodes serve.
    - Run acceptance, then `agent gc`.
 
+## Packets (rolling step 2)
+
+`scripts/runtime-roll.mjs` writes every SQL step of the procedure as one packet directory for the
+coordinator's packet runner. Nothing in it connects to a database.
+
+```sh
+node scripts/runtime-roll.mjs packets --ref <release commit> \
+  --activation <NNN>_runtime_bundle_activation_vN1.sql --migration <file> [--migration <file> …] \
+  --from-version N --from-sha <N sha> --to-version N+1 --to-sha <N+1 sha> \
+  --node-a <node 1 id> --node-b <node 2 id> --reason 'roll vN+1' --out <new directory>
+```
+
+- Every file is exactly one outer transaction, and its sha256 is in `packet.json` with the order. A
+  mutation packet is dry-run first, then committed.
+- `dryRunOnly` lists the check packets (`00-check`, `31-drain-a`, `50-check-n`, `61-drain-b`). They read
+  operator functions that a read-only role cannot run, so the runner runs them as a dry run and never
+  commits them.
+- `emergencyOnly` lists the paused way back (`90-pause-now`, `91-reverse`, `92-resume`). `90-pause-now`
+  has no quiet gate: it pauses every company that has an owner or admin and is not on folder-v2, under that
+  founder, and names the companies it could not pause.
+- `node scripts/runtime-roll.mjs compare <00-check result> <50-check-n result>` lists N inputs that became
+  pending after the check (live N work, step 7). It exits 1 when there are any.
+
+| Packet | Procedure step |
+|---|---|
+| `00-check` | 1, the preflight. It also lists the node-disk logins and records N's pending inputs |
+| `10-migration-*` | 2, one per release migration, gated on N and not yet recorded |
+| `20-declare-b` | 3 |
+| `30-runs-off-a`, `31-drain-a` | 4 (wait until `readyForNodeRelease`) |
+| (node release, fast host) | 5, by hand or the coordinator's node tooling |
+| `40-switch` | 6, as one transaction (6.0 gates, activation, history record, declaration, 6.3 gate, return) |
+| `50-check-n` | 7 |
+| `60-runs-off-b`, `61-drain-b` | 8, emptying |
+| `70-return-b` | 8, declaration, gate and return after node B's update |
+| `80-finish` | 9. It refuses while N work is queued or running |
+
+`scripts/test-runtime-roll.mjs` (part of the hosted-db step) rehearses a whole roll with these packets on two
+fixture nodes, from the active bundle to a fixture bundle, and the emergency way back. No company is paused
+during the roll.
+
 ## If something goes wrong
 
 - **Node A fails its checks in step 5** (before the activation). A stays empty. Roll it back
