@@ -17,7 +17,7 @@ import { CompanyComputerBrowserNetworkPausedError } from "./cloud-company-comput
 import { assertCompanyComputerGuestLayout, type CompanyComputerGuestLayout } from "./cloud-company-computer-layout.ts";
 import { CompanyComputerActionFailedError, companyComputerActionCheck } from "./cloud-company-computer-leases.ts";
 import {
-	COMPANY_COMPUTER_PRIVATE_FIELD_SELECTOR,
+	companyComputerPrivateFieldMasks,
 	readCompanyComputerPrivateValues,
 	redactCompanyComputerSnapshot,
 } from "./cloud-company-computer-private-fields.ts";
@@ -360,7 +360,9 @@ export class CompanyComputerGuestAutomation {
 	async #assertNoPrivateValueShown(): Promise<void> {
 		for (const page of this.#browser?.context.pages() ?? []) {
 			if (page.isClosed()) continue;
-			const values = await this.#pageCall(() => readCompanyComputerPrivateValues(page, { shownOnly: true }));
+			const values = await this.#pageCall(() =>
+				readCompanyComputerPrivateValues(page, { shownOnly: true, allFrames: true }),
+			);
 			if (values.length > 0) throw new CompanyComputerActionFailedError(new Error("PRIVATE_FIELD_ON_SCREEN"));
 		}
 	}
@@ -497,7 +499,7 @@ export class CompanyComputerGuestAutomation {
 						page.screenshot({
 							type: "png",
 							timeout: 5_000,
-							mask: [page.locator(COMPANY_COMPUTER_PRIVATE_FIELD_SELECTOR)],
+							mask: companyComputerPrivateFieldMasks(page),
 						}),
 					),
 					lease,

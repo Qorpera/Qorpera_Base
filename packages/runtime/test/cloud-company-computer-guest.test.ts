@@ -363,6 +363,8 @@ function fakePage() {
 		screenshot: vi.fn(async () => captureBytes()),
 		// The values of the page's private boxes (password, code, card).
 		evaluate: vi.fn(async (): Promise<string[]> => []),
+		// One frame: the page's own document.
+		frames: vi.fn((): unknown[] => [page]),
 	};
 	return { locator, page };
 }
@@ -513,13 +515,20 @@ describe("Playwright/X11/shell adapters (test doubles, never the member machine)
 		expect(JSON.stringify(result)).not.toContain("hunter2");
 		expect(f.page.evaluate).toHaveBeenCalledTimes(2);
 
+		// The member sends the form while the snapshot is taken: only the first read saw the value.
+		f.locator.ariaSnapshot.mockResolvedValueOnce('- textbox "Password": hunter2-typed');
+		f.page.evaluate.mockResolvedValueOnce(["hunter2-typed"]).mockResolvedValueOnce([]);
+		await expect(f.perform({ kind: "browser", action: "snapshot" })).resolves.toMatchObject({
+			value: { snapshot: '- textbox "Password": [hidden]' },
+		});
+
 		// A page whose private value cannot be read gives no snapshot at all.
 		f.locator.ariaSnapshot.mockResolvedValueOnce('- textbox "Password": hunter2-typed');
 		f.page.evaluate.mockRejectedValueOnce(new Error("Execution context was destroyed"));
 		await expect(f.perform({ kind: "browser", action: "snapshot" })).rejects.toThrow(
 			"Execution context was destroyed",
 		);
-		expect(f.locator.ariaSnapshot).toHaveBeenCalledTimes(1);
+		expect(f.locator.ariaSnapshot).toHaveBeenCalledTimes(2);
 	});
 
 	it("fails an action as its own when an authority check between its steps gets no answer, and stops nothing", async () => {
@@ -1175,6 +1184,8 @@ describe("Playwright/X11/shell adapters (test doubles, never the member machine)
 			expect.objectContaining({ type: "png", mask: [fixture.locator] }),
 		);
 		expect(fixture.page.locator).toHaveBeenCalledWith(COMPANY_COMPUTER_PRIVATE_FIELD_SELECTOR);
+		// Every frame is masked: card boxes often sit in iframes.
+		expect(fixture.page.frames).toHaveBeenCalledOnce();
 		fixture.screenshots.publish = vi.fn(async (bytes: Uint8Array) => ({
 			assetId: computerId(50),
 			sha256: "0".repeat(64),
@@ -1212,6 +1223,8 @@ describe("Playwright/X11/shell adapters (test doubles, never the member machine)
 			expect.any(Function),
 			expect.objectContaining({ shownOnly: true }),
 		);
+		// Every frame is read: a card box in an iframe is on the screen too.
+		expect(fixture.page.frames).toHaveBeenCalled();
 		await expect(desktop()).resolves.toMatchObject({ kind: "json", value: { surface: "desktop" } });
 		expect(fixture.screenshots.publish).toHaveBeenCalledOnce();
 	});
