@@ -1999,6 +1999,26 @@ member's other login, and routines and coding turns follow the handoff
 versions made before this change (no new ones are made). Whether new work
 must also stay on the exhausted login is a separate decision.
 
+2026-10-01 amendment: ChatGPT plan logins (founder decisions, Sign in with
+ChatGPT; built switched off, migrations 20260928329830 and 20260929950000). A
+member's ChatGPT Plus or Pro plan pays only for work that member starts, and
+no other member's activity triggers calls on it (OpenAI's terms for plan use).
+So a plan login: works while its member is away only after the member turned
+that on themselves (the kernel never consents it for them); never pays for a
+listener, since a file change or an event (a webhook, mail) is anyone's
+activity, neither when the routine is saved nor when it wakes, nor for any
+work that follows from a listener run; is never swapped at its usage limit,
+which stops the work (a conversation it pays for keeps it, and follow-up work
+of a run it pays for keeps it); pays for follow-up work only of runs it pays
+for, so it never takes over a conversation or follow-up work that another
+payer started (a listener run's, or a login's at its limit), and a coding
+worker takes the member's other login first and the plan only when the asking
+run is paid by it; is one per member and company, since plans are never pooled
+or rotated; is retried, for a failed run or a change's review, only by the
+member whose plan pays; and is not used while its company is being deleted. A
+run in progress is never handed to another login (the amendment above, #601).
+Codex logins are unchanged by this amendment.
+
 ## 18. Short constitution
 
 The cached constitution is written after the kernel behavior it describes has
