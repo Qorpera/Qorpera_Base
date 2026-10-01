@@ -878,6 +878,21 @@ C1d (bytes):
   also on a retry, its own allow and an earlier member's answer are refused by the recorder, and an owner's answer
   saves it with that owner as approver). 652's pin of the layering's snapshot-v1 text strips the `folder-v2` lines.
 
+**Built (W4b): `create_group_chat`** (`packages/runtime/src/cloud-folder-group-chats.ts`), as W4a.
+- One `new_folder` unit `agents/groups/<handle>` with `group.md` (`writeGroupFile`): the name, no subtitle (the app
+  shows "Group chat"), the purpose as the body, `agents` the run's own agent and the coworkers named, `people` the
+  run's requester unless `includeRequestingMember` is false (an agent's change may add only that member; SQL refuses
+  any other). A company without `agents/groups` gets it made first, in the same change set.
+- The handle is the name as a folder name, numbered past the chats under `agents/groups/`; the chat's id comes from
+  the run and the operation key (`qorpera.folder-group/v1`) and is the receipt's target. The commit opens the room
+  (`chat-<id>`) and its conversation with those members.
+- Checked with the arguments, before the review: the file the parser refuses, and a reused operation key. Refused
+  before the receipt: a call without the review's approval. Under the receipt: stage, record the review
+  (`create_group_chat`), commit. Saved: tell the member the chat's name; a conflict, a refusal or a waiting chat
+  says what to do. Contract 14.1's restricted rule is a hire's only.
+- SQL test 777: a run's chat round trip on the recorder (denied without its review; saved with the room, its agents
+  and the requester as members; another member refused; a lone agent refused by the file's own rule).
+
 Until the mount's writes are accepted (F3), these tools become thin writers of these files:
 `hire_agent`, `create_group_chat`, `organize_sidebar`, `manage_todo`, `manage_routine` and
 `decide_routine`. They use the canonical writers here, or `setCompanyStateSettings` for a

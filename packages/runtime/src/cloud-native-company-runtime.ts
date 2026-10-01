@@ -24,6 +24,7 @@ import {
 	observeCloudCompanyPathPresence,
 } from "./cloud-company-path-presence.ts";
 import { cloudEventTools } from "./cloud-event-tools.ts";
+import { CloudFolderGroupChats } from "./cloud-folder-group-chats.ts";
 import { CloudFolderHiring } from "./cloud-folder-hiring.ts";
 import { CloudFolderRoutineDecision } from "./cloud-folder-routine-decision.ts";
 import { CloudFolderSidebar } from "./cloud-folder-sidebar.ts";
@@ -689,6 +690,11 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 														folder
 															? {
 																	folderHiring: new CloudFolderHiring({
+																		folder: folder.client,
+																		operations,
+																		identity,
+																	}),
+																	folderGroupChats: new CloudFolderGroupChats({
 																		folder: folder.client,
 																		operations,
 																		identity,
