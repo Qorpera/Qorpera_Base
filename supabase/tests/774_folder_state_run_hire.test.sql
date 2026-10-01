@@ -163,7 +163,8 @@ end $$;
 
 -- 5. Contract 14.1: an agent that cannot delegate the new agent's default access (here a finite grant on the shared
 -- root) does not hire on its own. The layering asks the owners and admins on a card whatever the reviewer found, with
--- no Always allow and its own reason, also when a denied hire is retried; the recorder refuses that agent's own allow
+-- no Always allow, saying why it asks and keeping the reviewer's reason unless it simply allowed, also when a denied
+-- hire is retried; the recorder refuses that agent's own allow
 -- and a member's answer given before the restriction, and records an owner's answer. Other agents' hires and this
 -- agent's other delegations are unchanged.
 do $$

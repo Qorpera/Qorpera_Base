@@ -178,7 +178,7 @@ the commit runs rank 10. The record by itself changes nothing in the company.
   first todo), `create_group_chat` (`group.md`) and `manage_routine` (a routine file, after
   `qorpera_prepare_routine_login`). STATE-FILES §5 has their formats and reads. The commit round trip with a real hire
   (F2's agent hook) is tested in W4's PR. W4a (20260929940000) adds contract 14.1's restricted hire to the layering and
-  to the recorder: an agent that cannot delegate the new agent's default access hires only on a member's answer.
+  to the recorder: an agent that cannot delegate the new agent's default access hires only on an owner's or admin's answer.
 - **`decide_routine`'s rewrite.** Today W3 refuses a decision that changes the title or the instructions on
   `folder-v2` ("needs a member's review", `cloud-folder-routine-decision.ts:165-171`), and reads a `denied` /
   `review_required` result as settled (:232-234). The gate already reviews such a call as delegation, and never raises a

@@ -31,8 +31,8 @@ import type { CloudNativeToolOperations } from "./cloud-native-tool-operations.t
  * The handle comes from a listing taken before the receipt and may differ on a rebuilt call; the receipt's target is
  * the agent's id, so a call that already completed replays its stored result.
  *
- * Contract 14.1 (20260929940000): an agent that cannot delegate the new agent's default access hires only on a
- * member's answer to the review's card; the kernel's layering asks for it and the recorder checks again.
+ * Contract 14.1 (20260929940000): an agent that cannot delegate the new agent's default access hires only on an
+ * owner's or admin's answer to the review's card; the kernel's layering asks for it and the recorder checks again.
  */
 
 const TOOL_VERSION = "folder-v2/1";
