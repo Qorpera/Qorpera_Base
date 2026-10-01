@@ -745,6 +745,33 @@ C1d (bytes):
 - after C2's review recorder, `hire_agent` (one `new_folder` unit with `agent.md` and the first todo),
   `create_group_chat` (`group.md`) and `manage_routine` (a routine file, after `qorpera_prepare_routine_login`).
 
+**How a thin writer saves** (W0, #583; W1):
+- The runtime gives a run whose context names its agent's folder (`folder`) a `CloudCompanyFolderClient` over the
+  object gateway's folder route (`HttpCloudCompanyFolderBytes`, on the native credential). A `folder-v2` agent without
+  an indexed folder gets no `folder`, keeps the legacy tools, and they refuse.
+- A writer first checks that its run can complete a folder receipt (`completesFolderCommits`), then reads the file
+  and refuses what can never be saved. Every such check still passes once the call's own change is saved, so a replay
+  of the call reaches its receipt and returns the stored result.
+- It then saves under one receipt per tool call (`requiresCompanyRevision`), whose digest binds the model's request,
+  not the version read. The commit carries `receiptId` and the `expectedVersion` read. Whatever the units' outcomes,
+  the commit satisfies the receipt, which is completed with it (`qorpera_folder_complete_run_receipt`).
+- A `conflict` (the file changed since it was read) comes back to the model, which calls again under a new operation
+  key; a redo inside the tool would need a second receipt whose digest depends on a re-read.
+- A result that shows content read from a file releases those reads with it, one release per tool call.
+
+**Built (W1): `manage_todo`** (`packages/runtime/src/cloud-folder-todos.ts`).
+- The todo is `agents/<handle>/todos/<todoKey>.md`; the todoKey is the file name (`^[a-z0-9]+(?:-[a-z0-9]+)*$`, at most
+  64 bytes), and a wider key is refused with that rule.
+- `upsert` writes the whole file (`writeTodoFile`), keeping an existing todo's id and requester; a new todo's
+  requester is the run's, and the todos folder is made first when missing. A closed todo is not opened again.
+- `done` and `cancel` change only `status` (`setCompanyStateSettings`), and show the todo as read, released with the
+  result.
+- `list` reads the files: the folder's listing, newest first, then each file until a page fits one result (open and
+  blocked by default; `state`, `includeClosed` and `search` as before; `todoKey` shows one todo's whole detail). The
+  cursor is the version of the last todo shown, and `moreTodos` counts the files after it. A list shows no workers:
+  `manage_worker` refuses `folder-v2` until F2-5b.
+- Open with F1: whether `list` may read the todo index instead (one read, no release).
+
 Until the mount's writes are accepted (F3), these tools become thin writers of these files:
 `hire_agent`, `create_group_chat`, `organize_sidebar`, `manage_todo`, `manage_routine` and
 `decide_routine`. They use the canonical writers here, or `setCompanyStateSettings` for a
