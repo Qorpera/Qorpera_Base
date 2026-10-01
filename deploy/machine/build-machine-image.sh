@@ -1,7 +1,8 @@
 #!/bin/bash
 # Build the reviewed company machine image on an LXD node (run as root).
 #
-#   build-machine-image.sh <guest-package-dir> <node-version> <node-linux-x64-tar.xz-sha256> [project] [network]
+#   build-machine-image.sh <guest-package-dir> <node-version> <node-linux-x64-tar.xz-sha256> \
+#     <build-project> <build-network> <storage-pool> [machines-project]
 #
 # One image for every machine: Ubuntu 26.04 with rootful Docker Engine and
 # Compose, Node, Python 3, Git and build tools, the machine guest helper and
@@ -9,17 +10,23 @@
 # units masked. An agent that has a Dockerfile builds and runs it inside its
 # machine; images are not made from Dockerfiles.
 #
-# The builder is an ordinary VM in the machines project. Until it is deleted
-# it is an unregistered instance, so the node's observer reports the node
-# unavailable (RUNTIME-HOST-INVENTORY.md): build in a quiet window, or on a
-# node that serves nobody at that moment. The script deletes the builder on
-# every exit path.
+# The builder runs in the node's declared image build space (the observer
+# policy's buildSpace: its project and its only network) as a build machine:
+# no profiles, its own root disk, the isolation NIC, never autostarting, and
+# the builder marker. The observer counts it against that space, so the node
+# stays ready while it builds; anywhere else it would be an unregistered
+# instance that makes the node unavailable (RUNTIME-HOST-INVENTORY.md). It
+# needs 4 CPUs and 8 GiB of the space, so build when the space is empty. The
+# image is then copied to the image store the machines project uses. The
+# script deletes the builder on every exit path.
 set -euo pipefail
 PACKAGE=${1:?guest package directory}
 NODE_VERSION=${2:?Node.js version, for example 24.9.0}
 NODE_SHA256=${3:?sha-256 of node-vNODE_VERSION-linux-x64.tar.xz from nodejs.org SHASUMS256.txt}
-PROJECT=${4:-machines}
-NETWORK=${5:-machine-net}
+PROJECT=${4:?the build space project, for example qorpera-build}
+NETWORK=${5:?the build space network, for example qorpera0}
+POOL=${6:?the storage pool for the builder root, for example qorpera-vm}
+MACHINES=${7:-machines}
 [[ $(id -u) -eq 0 ]] || { echo "run as root" >&2; exit 1; }
 # Only the build record goes to stdout (> image-build.json); the builder's own output goes to stderr.
 exec 3>&1 1>&2
@@ -41,10 +48,25 @@ STAMP=$(date -u +%Y%m%d%H%M%S)
 BUILDER="qorpera-machine-build-$STAMP"
 ALIAS="qorpera-machine-$STAMP"
 lx() { lxc --project "$PROJECT" "$@"; }
-cleanup() { lx delete --force "$BUILDER" >/dev/null 2>&1 || true; }
+# A project without its own images uses the default project's store.
+store() { if [[ $(lxc project get "$1" features.images) == true ]]; then echo "$1"; else echo default; fi; }
+[[ $PROJECT != "$MACHINES" ]] || { echo "the builder must not run among machines: give the node's build space" >&2; exit 1; }
+lxc project show "$MACHINES" >/dev/null || { echo "no project $MACHINES: create it first (README)" >&2; exit 1; }
+[[ -z $(lx list -f csv -c n) ]] || { echo "the build space $PROJECT is in use: build when it is empty" >&2; exit 1; }
+EXPORT=
+cleanup() {
+	lx delete --force "$BUILDER" >/dev/null 2>&1 || true
+	[[ -z $EXPORT ]] || rm -rf -- "$EXPORT"
+}
 trap cleanup EXIT
 
-lx launch ubuntu:26.04 "$BUILDER" --vm -c limits.cpu=4 -c limits.memory=8GiB -c boot.mode=uefi-secureboot -n "$NETWORK"
+# Made whole in one request, so the observer never sees a half-made builder. Its root is 10 GiB, the smallest machine
+# disk: a machine's root can never be smaller than its image.
+lx init ubuntu:26.04 "$BUILDER" --vm --no-profiles --storage "$POOL" -d root,size=10GiB -n "$NETWORK" \
+	-d eth0,security.mac_filtering=true -d eth0,security.ipv4_filtering=true -d eth0,security.ipv6_filtering=true \
+	-d eth0,security.port_isolation=true -c limits.cpu=4 -c limits.memory=8GiB -c boot.mode=uefi-secureboot \
+	-c boot.autostart=false -c user.qorpera.image_builder=true -c user.qorpera.purpose=machine-image
+lx start "$BUILDER"
 for _ in $(seq 1 90); do lx exec "$BUILDER" -- true >/dev/null 2>&1 && break; sleep 2; done
 lx exec "$BUILDER" -- cloud-init status --wait >/dev/null
 lx exec "$BUILDER" -- env NODE_VERSION="$NODE_VERSION" NODE_SHA256="$NODE_SHA256" bash -euo pipefail -c '
@@ -91,6 +113,26 @@ lx stop "$BUILDER"
 lx publish "$BUILDER" --alias "$ALIAS" description="Qorpera company machine $STAMP (Ubuntu 26.04, Docker, Node $NODE_VERSION)"
 FINGERPRINT=$(lx image info "$ALIAS" | awk '/^Fingerprint:/ {print $2}')
 [[ $FINGERPRINT =~ ^[0-9a-f]{64}$ ]] || { echo "no image fingerprint" >&2; exit 1; }
+# Machines are made from the store their project uses; the build space keeps no copy. Export and import keep the
+# fingerprint (copying between projects would need LXD to listen on the network).
+if [[ $(store "$PROJECT") != "$(store "$MACHINES")" ]]; then
+	EXPORT=$(mktemp -d)
+	lx image export "$FINGERPRINT" "$EXPORT/image" >/dev/null
+	# One file (a published image) or two (metadata and image.root).
+	PARTS=("$EXPORT"/*)
+	if [[ -f $EXPORT/image.root ]]; then
+		(( ${#PARTS[@]} == 2 )) || { echo "unexpected export: ${PARTS[*]}" >&2; exit 1; }
+		for part in "${PARTS[@]}"; do [[ $part == "$EXPORT/image.root" ]] || META=$part; done
+		PARTS=("$META" "$EXPORT/image.root")
+	else
+		(( ${#PARTS[@]} == 1 )) || { echo "unexpected export: ${PARTS[*]}" >&2; exit 1; }
+	fi
+	lxc --project "$MACHINES" image import "${PARTS[@]}" --alias "$ALIAS" >/dev/null
+	rm -rf -- "$EXPORT"; EXPORT=
+	lx image delete "$FINGERPRINT"
+fi
+[[ $(lxc --project "$MACHINES" image info "$FINGERPRINT" | awk '/^Fingerprint:/ {print $2}') == "$FINGERPRINT" ]] ||
+	{ echo "the image is not in the store of project $MACHINES" >&2; exit 1; }
 # The bootstrap digest pins exactly what was installed: this script and the guest package.
 BOOTSTRAP=$(cat "$0" "$PACKAGE/manifest.json" | sha256sum | cut -d' ' -f1)
 jq -n --arg imageFingerprint "$FINGERPRINT" --arg bootstrapSha256 "$BOOTSTRAP" --arg alias "$ALIAS" \

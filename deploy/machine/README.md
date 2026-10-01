@@ -69,9 +69,13 @@ The steps below need root on the node and a maintenance window. The coordinator 
    - Keep the printed network and ACL as evidence.
    - The storage pool is the node's VM pool (ZFS), for example `qorpera-vm`. Machines get their own root disks.
    - The host must forward the bridge's traffic. Node 2 runs no Docker (checked 2026-09-29). On a host that does, Docker sets the FORWARD policy to drop, and machines resolve names but reach nothing. Allow the bridge there (`iptables -I DOCKER-USER -i machine-net -j ACCEPT` and `iptables -I DOCKER-USER -o machine-net -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT`, repeated after a reboot). The ACL still applies, because LXD's rules live in their own table.
-3. **Build the image** in a quiet window. The builder VM makes the node "unavailable" until it is deleted.
-   `deploy/machine/build-machine-image.sh /task-owned/machine-guest <node-version> <node-sha256> machines machine-net > image-build.json`
-   Take the Node.js tarball's sha-256 from nodejs.org's `SHASUMS256.txt`.
+3. **Build the image** in the node's image build space: the project and network of the observer policy's `buildSpace` (on node 2, `qorpera-build` and `qorpera0`).
+   `deploy/machine/build-machine-image.sh /task-owned/machine-guest <node-version> <node-sha256> qorpera-build qorpera0 qorpera-vm machines > image-build.json`
+   - The builder is a build machine there (no profiles, its own 10 GiB root, the smallest machine disk, the isolation NIC, `boot.autostart=false`, `user.qorpera.image_builder=true`), so the node stays `ready` while it builds. It takes 4 CPUs and 8 GiB of the space, and the script refuses while the space holds anything else, such as a runtime image build.
+   - Anywhere else the builder is an unregistered instance and the node turns unavailable until it is deleted. The script refuses the machines project.
+   - The image ends up in the store the `machines` project uses (the default project's, since `machines` has no images of its own), exported and imported with the same fingerprint. The build space keeps no copy.
+   - The builder NIC's IPv6 filtering needs the `br_netfilter` module, which nodes load at bootstrap (`deploy/first-node/bootstrap-lxd-host.sh`).
+   - Take the Node.js tarball's sha-256 from nodejs.org's `SHASUMS256.txt`.
 4. **Compute the policy.**
    `node scripts/machine-provider-policy.mjs image-build.json <executor owner> <node id> <machine-id sha256> <coding providerId> <max cpus> <max memory GiB> <machine disk GiB> machines <pool> machine-net`
    - The provider id must be the coding executor's `vmPolicy.providerId`, because command routing reuses the coding peers.
