@@ -101,8 +101,11 @@ describe.skipIf(!program)("folder program against the folder service", () => {
 			],
 			{ stdio: ["ignore", "pipe", "pipe"] },
 		);
-		child.stdout!.on("data", (d: Buffer) => (output += d.toString()));
-		child.stderr!.on("data", (d: Buffer) => (output += d.toString()));
+		const collect = (d: Buffer): void => {
+			output += d.toString();
+		};
+		child.stdout!.on("data", collect);
+		child.stderr!.on("data", collect);
 		const exited = new Promise<number | null>((resolve) => child.on("exit", (code) => resolve(code)));
 		cleanup.push(async () => {
 			if (child.exitCode === null) child.kill("SIGKILL");

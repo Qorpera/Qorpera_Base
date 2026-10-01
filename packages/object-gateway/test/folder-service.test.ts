@@ -20,7 +20,7 @@ import {
 import { createFolderServer } from "../src/folder-service/server.ts";
 import { FolderService } from "../src/folder-service/service.ts";
 import { type TreeEntry, ViewTree } from "../src/folder-service/view-tree.ts";
-import { CID, ENV, FakeCore, folder, grants, PASS, PROFILE, sha256, storeFile } from "./folder-service-fixtures.ts";
+import { CID, ENV, FakeCore, folder, grants, hashOf, PASS, PROFILE, storeFile } from "./folder-service-fixtures.ts";
 
 const cleanup: (() => Promise<void> | void)[] = [];
 
@@ -184,6 +184,16 @@ describe("folder core answers", () => {
 			next: null,
 		});
 		expect(page.entries[0]).toEqual({ path: "a", kind: "folder", version: 1 });
+		// Every entry is checked in full, not only the first.
+		const fileWithoutContent = { path: "b.md", kind: "file", version: 1 };
+		expect(() =>
+			parseListPage({
+				schema: "qorpera.folder-list/v1",
+				asOfSeq: 1,
+				entries: [page.entries[0], fileWithoutContent],
+				next: null,
+			}),
+		).toThrow("file entry");
 		expect(() => parseListPage({ schema: "qorpera.folder-list/v2", asOfSeq: 1, entries: [], next: null })).toThrow();
 		const feed = parseFeedPage({
 			schema: "qorpera.folder-feed/v1",
@@ -289,7 +299,7 @@ describe("objects on the storage server", () => {
 		// A tampered chunk is never served.
 		const fresh = await tempdir();
 		const other = await storeFile(fresh, "g.txt", "abcdefgh", 1);
-		const firstChunk = sha256("abcd");
+		const firstChunk = hashOf("abcd");
 		await writeFile(join(fresh, PROFILE, firstChunk), "abcX");
 		const t2 = new ViewTree();
 		t2.put(other);
@@ -301,7 +311,7 @@ describe("objects on the storage server", () => {
 	it("refuses links and manifests that do not match their entry", async () => {
 		const root = await tempdir();
 		const entry = await storeFile(root, "f.txt", "abcdefgh", 1);
-		const chunk = sha256("abcd");
+		const chunk = hashOf("abcd");
 		await rm(join(root, PROFILE, chunk));
 		await writeFile(join(root, "elsewhere"), "abcd");
 		await symlink(join(root, "elsewhere"), join(root, PROFILE, chunk));
@@ -319,7 +329,7 @@ describe("objects on the storage server", () => {
 			executable: false,
 			chunks: [
 				{ sha256: chunk, bytes: 4 },
-				{ sha256: sha256("efgh"), bytes: 4 },
+				{ sha256: hashOf("efgh"), bytes: 4 },
 			],
 		});
 		expect(() => parseManifest(Buffer.from(manifest), wrong)).toThrow("does not match");

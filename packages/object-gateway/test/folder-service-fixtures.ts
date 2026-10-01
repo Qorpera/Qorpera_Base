@@ -23,7 +23,7 @@ export const MACHINE: MachineRef = {
 };
 export const CID = 42;
 export const PASS = "operator-pass-0123456789-abcdefghijklmnopq";
-export const sha256 = (bytes: Uint8Array | string): string => createHash("sha256").update(bytes).digest("hex");
+export const hashOf = (bytes: Uint8Array | string): string => createHash("sha256").update(bytes).digest("hex");
 /** Stores a file's bytes the way the gateway does (a v2 manifest and its chunks) and returns its core entry. */
 export async function storeFile(
 	root: string,
@@ -38,26 +38,26 @@ export async function storeFile(
 	await mkdir(join(root, PROFILE), { recursive: true });
 	for (let offset = 0; offset < bytes.byteLength; offset += chunkBytes) {
 		const chunk = bytes.subarray(offset, offset + chunkBytes);
-		chunks.push({ sha256: sha256(chunk), bytes: chunk.byteLength });
-		await writeFile(join(root, PROFILE, sha256(chunk)), chunk);
+		chunks.push({ sha256: hashOf(chunk), bytes: chunk.byteLength });
+		await writeFile(join(root, PROFILE, hashOf(chunk)), chunk);
 	}
 	const mediaType = options.mediaType ?? "text/plain";
 	const executable = options.executable ?? false;
 	const manifest = JSON.stringify({
 		schema: "qorpera.cloud-file-manifest/v2",
-		fileSha256: sha256(bytes),
+		fileSha256: hashOf(bytes),
 		bytes: bytes.byteLength,
 		mediaType,
 		executable,
 		chunks,
 	});
-	await writeFile(join(root, PROFILE, sha256(manifest)), manifest);
+	await writeFile(join(root, PROFILE, hashOf(manifest)), manifest);
 	return {
 		path,
 		kind: "file",
 		version,
-		manifestSha256: sha256(manifest),
-		fileSha256: sha256(bytes),
+		manifestSha256: hashOf(manifest),
+		fileSha256: hashOf(bytes),
 		bytes: bytes.byteLength,
 		mediaType,
 		executable,
@@ -164,7 +164,7 @@ export function grants(): MountGrants {
 				environmentId: ENV,
 				actor: { kind: "member", userId: MEMBER },
 				machine: MACHINE,
-				passSha256: sha256(PASS),
+				passSha256: hashOf(PASS),
 			},
 		]),
 		new FakeMachines(),

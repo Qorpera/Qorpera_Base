@@ -4,6 +4,8 @@
  * A frame is a u32 big-endian length (of the type byte plus the payload), one type byte, then the payload. Control
  * messages carry JSON; a read reply carries the bytes as they are. */
 
+import { isUuid } from "@qorpera/contracts";
+
 export const PROTOCOL = 1;
 export const MAX_PAYLOAD = 2 * 1024 * 1024;
 export const MAX_READ = 1024 * 1024;
@@ -122,8 +124,6 @@ export interface ReadRequest {
 	readonly length: number;
 }
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-
 /** A folder path: "" for the root, otherwise names joined by '/', none of them empty, "." or "..", none longer than
  * 255 bytes or holding a NUL. At most 4096 bytes in all. */
 export function validPath(path: string): boolean {
@@ -177,7 +177,7 @@ export function parseHello(payload: Buffer): Hello {
 	const value = object(payload);
 	exactKeys(value, ["protocol", "environmentId", "viewId", "pass", "role"]);
 	if (value.protocol !== PROTOCOL) throw new ProtocolError(ErrorCode.viewRefused, "Unsupported folder protocol");
-	if (typeof value.environmentId !== "string" || !UUID.test(value.environmentId))
+	if (typeof value.environmentId !== "string" || !isUuid(value.environmentId))
 		throw new ProtocolError(ErrorCode.viewRefused, "Bad environment id");
 	const printable = (v: unknown): v is string =>
 		typeof v === "string" && v.length > 0 && v.length <= 256 && /^[\x21-\x7e]+$/.test(v);

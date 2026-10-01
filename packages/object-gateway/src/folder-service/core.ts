@@ -1,3 +1,4 @@
+import { isUuid, parseRecord, SHA256_HEX_PATTERN } from "@qorpera/contracts";
 import {
 	ObjectDependency,
 	ObjectDependencyError,
@@ -93,17 +94,18 @@ export class CoreAnswerError extends ObjectDependencyError {
 	}
 }
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-const SHA256 = /^[0-9a-f]{64}$/;
 const OPS = new Set(["write", "mkdir", "delete", "move_out", "move_in", "copy"]);
 
 function invalidAnswer(what: string): never {
 	throw new CoreAnswerError(what);
 }
 
-function record(value: unknown, what: string): Record<string, unknown> {
-	if (!value || typeof value !== "object" || Array.isArray(value)) invalidAnswer(what);
-	return value as Record<string, unknown>;
+function answerRecord(value: unknown, what: string): Record<string, unknown> {
+	try {
+		return parseRecord(value, what);
+	} catch {
+		invalidAnswer(what);
+	}
 }
 
 function seqOf(value: unknown, what: string): number {
@@ -114,7 +116,7 @@ function seqOf(value: unknown, what: string): number {
 /** An entry or a feed change, checked field by field; unknown fields (receipts, seq, priorVersion) are dropped. A
  * removal on the feed names no content. */
 function entryOf(value: unknown, removal = false): CoreEntry {
-	const e = record(value, "entry");
+	const e = answerRecord(value, "entry");
 	if (typeof e.path !== "string" || e.path === "" || (e.kind !== "file" && e.kind !== "folder"))
 		invalidAnswer("entry");
 	const out: {
@@ -129,11 +131,11 @@ function entryOf(value: unknown, removal = false): CoreEntry {
 		updatedAt?: string;
 	} = { path: e.path, kind: e.kind, version: seqOf(e.version ?? 0, "entry version") };
 	if (e.manifestSha256 !== undefined) {
-		if (typeof e.manifestSha256 !== "string" || !SHA256.test(e.manifestSha256)) invalidAnswer("manifest");
+		if (typeof e.manifestSha256 !== "string" || !SHA256_HEX_PATTERN.test(e.manifestSha256)) invalidAnswer("manifest");
 		out.manifestSha256 = e.manifestSha256;
 	}
 	if (e.fileSha256 !== undefined) {
-		if (typeof e.fileSha256 !== "string" || !SHA256.test(e.fileSha256)) invalidAnswer("file hash");
+		if (typeof e.fileSha256 !== "string" || !SHA256_HEX_PATTERN.test(e.fileSha256)) invalidAnswer("file hash");
 		out.fileSha256 = e.fileSha256;
 	}
 	if (e.bytes !== undefined) out.bytes = seqOf(e.bytes, "bytes");
@@ -155,28 +157,28 @@ function entryOf(value: unknown, removal = false): CoreEntry {
 }
 
 export function parseListPage(value: unknown): ListPage {
-	const page = record(value, "list");
+	const page = answerRecord(value, "list");
 	if (page.schema !== "qorpera.folder-list/v1" || !Array.isArray(page.entries)) invalidAnswer("list");
 	if (page.next !== null && page.next !== undefined && typeof page.next !== "string") invalidAnswer("list next");
 	return {
 		asOfSeq: seqOf(page.asOfSeq, "asOfSeq"),
-		entries: page.entries.map(entryOf),
+		entries: page.entries.map((entry) => entryOf(entry)),
 		next: typeof page.next === "string" ? page.next : null,
 	};
 }
 
 export function parseFeedPage(value: unknown): FeedPage {
-	const page = record(value, "feed");
+	const page = answerRecord(value, "feed");
 	if (page.schema !== "qorpera.folder-feed/v1" || !Array.isArray(page.events) || typeof page.more !== "boolean")
 		invalidAnswer("feed");
-	const next = record(page.next, "feed next");
+	const next = answerRecord(page.next, "feed next");
 	let cursor: FeedCursor | null = null;
 	if (next.cursor !== null && next.cursor !== undefined) {
-		const c = record(next.cursor, "feed cursor");
+		const c = answerRecord(next.cursor, "feed cursor");
 		cursor = { unitNo: seqOf(c.unitNo, "cursor unit"), version: seqOf(c.version, "cursor version") };
 	}
 	const events: FeedEvent[] = page.events.map((value) => {
-		const event = record(value, "feed event");
+		const event = answerRecord(value, "feed event");
 		const seq = seqOf(event.seq, "event seq");
 		if (event.kind === "authority") return { seq, kind: "authority" };
 		if (event.kind !== "change_set" || !Array.isArray(event.changes)) invalidAnswer("event kind");
@@ -184,7 +186,7 @@ export function parseFeedPage(value: unknown): FeedPage {
 			seq,
 			kind: "change_set",
 			changes: event.changes.map((c) => {
-				const change = record(c, "change");
+				const change = answerRecord(c, "change");
 				if (typeof change.op !== "string" || !OPS.has(change.op)) invalidAnswer("op");
 				const removal = change.op === "delete" || change.op === "move_out";
 				const entry = entryOf(
@@ -285,20 +287,20 @@ export class SupabaseFolderCore implements FolderCore {
 	async clocks(environmentIds: readonly string[], signal?: AbortSignal): Promise<Map<string, number>> {
 		const out = new Map<string, number>();
 		if (environmentIds.length === 0) return out;
-		if (environmentIds.some((id) => !UUID.test(id))) throw new Error("Folder clock request is invalid");
+		if (environmentIds.some((id) => !isUuid(id))) throw new Error("Folder clock request is invalid");
 		const query = `select=environment_id,last_seq&environment_id=in.(${environmentIds.join(",")})`;
 		const rows = await this.#request(`/rest/v1/qorpera_folder_clocks?${query}`, { method: "GET" }, signal);
 		if (!Array.isArray(rows)) invalidAnswer("clocks");
 		for (const row of rows) {
-			const r = record(row, "clock");
-			if (typeof r.environment_id !== "string" || !UUID.test(r.environment_id)) invalidAnswer("clock id");
+			const r = answerRecord(row, "clock");
+			if (typeof r.environment_id !== "string" || !isUuid(r.environment_id)) invalidAnswer("clock id");
 			out.set(r.environment_id, seqOf(r.last_seq, "clock seq"));
 		}
 		return out;
 	}
 
 	async objectProfile(environmentId: string, actor: FolderActor, sha256: string, signal?: AbortSignal) {
-		const answer = record(
+		const answer = answerRecord(
 			await this.#rpc(
 				"qorpera_folder_authorize_object_download",
 				{ p_environment_id: environmentId, p_actor: actorJson(actor), p_sha256: sha256 },
@@ -309,7 +311,7 @@ export class SupabaseFolderCore implements FolderCore {
 		if (
 			answer.schema !== "qorpera.folder-object-download/v1" ||
 			typeof answer.profileId !== "string" ||
-			!UUID.test(answer.profileId)
+			!isUuid(answer.profileId)
 		)
 			invalidAnswer("download check");
 		return answer.profileId;

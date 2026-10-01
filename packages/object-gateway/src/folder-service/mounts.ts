@@ -1,4 +1,5 @@
 import { createHash, timingSafeEqual } from "node:crypto";
+import { isUuid, SHA256_HEX_PATTERN } from "@qorpera/contracts";
 import type { FolderActor } from "./core.ts";
 import { type MachineCheck, type MachineRef, parseMachineRef } from "./machines.ts";
 import { ErrorCode, type Hello, ProtocolError } from "./protocol.ts";
@@ -21,7 +22,6 @@ export interface Grant {
 }
 
 const ID = /^[a-z0-9][a-z0-9-]{0,62}$/;
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 /** The `mounts` list of the service's configuration. */
 export function parseOperatorMounts(value: unknown): OperatorMount[] {
@@ -36,19 +36,14 @@ export function parseOperatorMounts(value: unknown): OperatorMount[] {
 		if (typeof m.id !== "string" || !ID.test(m.id) || seen.has(m.id))
 			throw new Error("Mount ids must be unique slugs");
 		seen.add(m.id);
-		if (typeof m.environmentId !== "string" || !UUID.test(m.environmentId)) throw new Error("Bad mount environment");
+		if (typeof m.environmentId !== "string" || !isUuid(m.environmentId)) throw new Error("Bad mount environment");
 		const a = m.actor as Record<string, unknown>;
 		let actor: OperatorMount["actor"];
 		if (a?.kind === "platform" && Object.keys(a).length === 1) actor = { kind: "platform" };
-		else if (
-			a?.kind === "member" &&
-			Object.keys(a).length === 2 &&
-			typeof a.userId === "string" &&
-			UUID.test(a.userId)
-		)
+		else if (a?.kind === "member" && Object.keys(a).length === 2 && typeof a.userId === "string" && isUuid(a.userId))
 			actor = { kind: "member", userId: a.userId };
 		else throw new Error("A mount's actor is {kind: platform} or {kind: member, userId}");
-		if (typeof m.passSha256 !== "string" || !/^[0-9a-f]{64}$/.test(m.passSha256))
+		if (typeof m.passSha256 !== "string" || !SHA256_HEX_PATTERN.test(m.passSha256))
 			throw new Error("passSha256 must be 64 hex characters");
 		return {
 			id: m.id,

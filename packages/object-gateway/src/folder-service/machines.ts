@@ -1,4 +1,5 @@
 import { request } from "node:http";
+import { isUuid } from "@qorpera/contracts";
 
 /** A machine on this node, as LXD names it: its project, its name, and `volatile.uuid` (its physical id, which a
  * rebuild or a recreated instance changes). */
@@ -14,7 +15,6 @@ export interface MachineCheck {
 }
 
 const NAME = /^[a-z0-9][a-z0-9-]{0,62}$/;
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 export function parseMachineRef(value: unknown): MachineRef {
 	const m = value as Record<string, unknown>;
@@ -27,7 +27,7 @@ export function parseMachineRef(value: unknown): MachineRef {
 		typeof m.name !== "string" ||
 		!NAME.test(m.name) ||
 		typeof m.physicalId !== "string" ||
-		!UUID.test(m.physicalId)
+		!isUuid(m.physicalId)
 	)
 		throw new Error("Machine reference must be {project, name, physicalId}");
 	return { project: m.project, name: m.name, physicalId: m.physicalId };

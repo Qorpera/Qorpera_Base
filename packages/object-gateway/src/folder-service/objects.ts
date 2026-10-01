@@ -2,10 +2,9 @@ import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import { open } from "node:fs/promises";
 import { resolve, sep } from "node:path";
+import { isUuid, SHA256_HEX_PATTERN } from "@qorpera/contracts";
 import type { TreeEntry } from "./view-tree.ts";
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-const SHA256 = /^[0-9a-f]{64}$/;
 const CHUNK_BYTES = 4 * 1024 * 1024;
 const MAX_CHUNKS = 64;
 const MAX_MANIFEST_BYTES = 32 * 1024;
@@ -39,7 +38,7 @@ interface Manifest {
 	readonly chunks: readonly Chunk[];
 }
 
-function sha256(bytes: Uint8Array): string {
+function digest(bytes: Uint8Array): string {
 	return createHash("sha256").update(bytes).digest("hex");
 }
 
@@ -81,7 +80,7 @@ export function parseManifest(text: Uint8Array, entry: TreeEntry): Manifest {
 			typeof c !== "object" ||
 			Object.keys(c).length !== 2 ||
 			typeof c.sha256 !== "string" ||
-			!SHA256.test(c.sha256) ||
+			!SHA256_HEX_PATTERN.test(c.sha256) ||
 			!Number.isSafeInteger(c.bytes) ||
 			(c.bytes as number) < 1 ||
 			(c.bytes as number) > CHUNK_BYTES ||
@@ -204,7 +203,8 @@ export class NasObjects {
 	}
 
 	async #load(profileId: string, hash: string, maximum: number, exact: number | undefined): Promise<Buffer> {
-		if (!UUID.test(profileId) || !SHA256.test(hash)) throw new ObjectIntegrityError("Object identity is invalid");
+		if (!isUuid(profileId) || !SHA256_HEX_PATTERN.test(hash))
+			throw new ObjectIntegrityError("Object identity is invalid");
 		const path = resolve(this.#root, profileId, hash);
 		if (!path.startsWith(`${this.#root}${sep}`)) throw new ObjectIntegrityError("Object path escapes the share");
 		let handle: Awaited<ReturnType<typeof open>>;
@@ -228,7 +228,7 @@ export class NasObjects {
 				if (bytesRead === 0) break;
 				read += bytesRead;
 			}
-			if (read !== bytes.byteLength || sha256(bytes) !== hash)
+			if (read !== bytes.byteLength || digest(bytes) !== hash)
 				throw new ObjectIntegrityError("Object failed its hash check");
 			this.#cache.set(`${profileId}/${hash}`, bytes);
 			return bytes;
