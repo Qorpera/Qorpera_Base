@@ -823,6 +823,12 @@ describe("the element in the thread", () => {
 				// Only the kernel says a session was archived.
 				event(5, "step", { text: "Archived the old branch", archived: true }, "harness"),
 				event(
+					7,
+					"step",
+					{ text: "Quiet for 3 days; asked the agent whether it can be archived", quietDays: 3 },
+					"kernel",
+				),
+				event(
 					6,
 					"step",
 					{
@@ -846,6 +852,7 @@ describe("the element in the thread", () => {
 			"Mark archived the session",
 			"Reopened",
 			"The session lost its machine · 35 commands stopped",
+			"Quiet for 3 days · asked Mark whether it can be archived",
 		]);
 		// The working step stays the harness's.
 		expect(element.el.querySelector(".coding-steps")?.textContent).toContain("Prepared the repository at abc1234");

@@ -20,6 +20,7 @@ const FUNCTION_TESTS = [
 	"supabase/functions/member-company-gateway/member-company-gateway.test.ts",
 	"supabase/functions/computer-billing/computer-billing.test.ts",
 	"supabase/functions/_shared/computer-hour-notices.test.ts",
+	"supabase/functions/chatgpt-plan-callback/chatgpt-plan-callback.test.ts",
 	"supabase/functions/company-file-verifier/object-loader.test.ts",
 	"supabase/functions/company-file-verifier/company-file-verifier.test.ts",
 	"supabase/functions/runner-orchestrator/runner-orchestrator.test.ts",
