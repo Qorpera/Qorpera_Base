@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { parseCompanyStateFile } from "@qorpera/cloud-client/company-state-files";
 import { type CloudFolderHire, CloudFolderHiring } from "@qorpera/runtime/cloud-folder-hiring";
 import {
@@ -34,6 +34,11 @@ const HIRE: CloudFolderHire = {
 	figure: "acorn",
 };
 const parse = (content: { value: unknown }) => JSON.parse(String(content.value));
+/** The writer's ids: a namespace, the run and the operation key, formatted as a version-4 UUID. */
+const hashedId = (namespace: string, runId: string, key: string) => {
+	const hex = createHash("sha256").update(`${namespace}:${runId}:${key}`).digest("hex");
+	return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-${((Number.parseInt(hex[16] ?? "0", 16) & 3) | 8).toString(16)}${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
+};
 async function refuses(call: Promise<unknown>, reason: string) {
 	const error = await call.then(
 		() => null,
@@ -54,6 +59,8 @@ it("saves a hire as one new folder with agent.md, its folders and the first assi
 	});
 	expect(result.next).toContain("has not started yet");
 	expect(result.next).toContain(`send_coworker_message (recipientStaffId ${result.agent.id})`);
+	expect(result.next).toContain("If that message cannot be sent, tell the member that Ada Lind has not started.");
+	expect(result.agent.id).toBe(hashedId("qorpera.folder-hire/v1", f.identity.runId, "hire-1"));
 	// One unit; the review is this call's approval, recorded for exactly the units the commit carries.
 	expect(f.commits).toHaveLength(1);
 	const [commit] = f.commits;
@@ -92,6 +99,7 @@ it("saves a hire as one new folder with agent.md, its folders and the first assi
 	);
 	expect(todo?.ok && todo.file).toMatchObject({
 		kind: "todo",
+		id: hashedId("qorpera.folder-hire-todo/v1", f.identity.runId, "hire-1"),
 		title: "Reconcile September",
 		status: "open",
 		requestedBy: f.identity.requesterUserId,
@@ -235,6 +243,9 @@ it("is the hire tool's folder-v2 path: its description, a 4000-byte assignment, 
 		new CloudToolArgumentRefusal("firstAssignment holds at most 4000 bytes in this company: shorten it"),
 	);
 	expect(() => tool?.parseArguments({ ...args, name: "Ada\tLind" })).toThrow(CloudToolArgumentRefusal);
+	expect(() =>
+		tool?.parseArguments({ ...args, operationKey: "hire-4000", firstAssignment: "Å".repeat(2000) }),
+	).not.toThrow();
 	expect(() =>
 		legacy?.parseArguments({ ...args, operationKey: "hire-9", firstAssignment: "x".repeat(4001) }),
 	).not.toThrow();

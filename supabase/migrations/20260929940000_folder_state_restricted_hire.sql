@@ -40,30 +40,41 @@ begin
 	execute replace(v_definition, p_old, p_new);
 end $$;
 
--- The layering: after the rules and the built-in checks, before a denied call's retry and the approver's scope.
+-- The layering: after the rules, the built-in checks and a denied call's retry (which asks again), before the
+-- approver's scope, so a restricted hire's card is always the owners' and admins'.
 select pg_temp.w4a_restricted_hire_replace('public.qorpera_record_action_review(jsonb,jsonb)'::regprocedure,
 	$old$	v_retry boolean; v_company_before boolean;$old$,
 	$new$	v_retry boolean; v_company_before boolean; v_restricted boolean := false;$new$);
 select pg_temp.w4a_restricted_hire_replace('public.qorpera_record_action_review(jsonb,jsonb)'::regprocedure,
-	$old$	-- The same call denied earlier in this conversation, tried again after a member wrote$old$,
-	$new$	-- On a folder-v2 company, a hire by an agent that cannot delegate the new agent's default Company File access
+	$old$	if v_retry then v_decision := 'ask'; end if;
+$old$,
+	$new$	if v_retry then v_decision := 'ask'; end if;
+	-- On a folder-v2 company, a hire by an agent that cannot delegate the new agent's default Company File access
 	-- waits for a member (contract 14.1): it asks the owners and admins, as an access check no rule lifts.
 	if p_review ->> 'tool' = 'hire_agent' and v_decision <> 'deny'
 		and public.qorpera_environment_is_folder_v2(v_run.environment_id)
 		and not public.qorpera_folder_agent_delegates_default(v_run.profile_id, v_run.staff_agent_id) then
 		v_restricted := true; v_decision := 'ask'; v_built_in := 'access_change';
 	end if;
-	-- The same call denied earlier in this conversation, tried again after a member wrote$new$);
+$new$);
+-- The card says why it asks, not the reviewer's own verdict.
+select pg_temp.w4a_restricted_hire_replace('public.qorpera_record_action_review(jsonb,jsonb)'::regprocedure,
+	$old$v_built_in, left(btrim(p_review ->> 'reason'), 500),$old$,
+	$new$v_built_in, case when v_restricted
+			then 'This agent''s own Company File access is limited, so an owner or admin approves the agents it hires.'
+			else left(btrim(p_review ->> 'reason'), 500) end,$new$);
 select pg_temp.w4a_restricted_hire_replace('public.qorpera_record_action_review(jsonb,jsonb)'::regprocedure,
 	$old$	v_always := v_decision = 'ask' and v_built_in in$old$,
 	$new$	v_always := v_decision = 'ask' and not v_restricted and v_built_in in$new$);
 
--- The recorder: again before the save ("both at policy approval and before publication"), only a member's answer.
+-- The recorder: again before the save ("both at policy approval and before publication"), only an owner's or admin's
+-- answer on such a card (an answer given while the agent could still delegate does not carry over).
 select pg_temp.w4a_restricted_hire_replace('public.qorpera_folder_record_review(jsonb,jsonb)'::regprocedure,
 	$old$	-- A card's allow keeps the member who gave it,$old$,
 	$new$	-- A hire by an agent that cannot delegate the new agent's default access stands only on a member's answer
 	-- (contract 14.1), checked again now.
-	if v_action.tool_name = 'hire_agent' and v_action.answer is null
+	if v_action.tool_name = 'hire_agent'
+		and (v_action.answer is null or v_action.approver_scope is distinct from 'owners_admins')
 		and not public.qorpera_folder_agent_delegates_default(v_run.profile_id, v_run.staff_agent_id) then
 		raise exception 'This hire needs a member''s approval: the hiring agent cannot give the new agent its default access'
 			using errcode = '42501'; end if;

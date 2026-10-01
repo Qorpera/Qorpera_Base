@@ -4,7 +4,8 @@
 -- first assignment as a todo, staged by the run and saved with the review recorded for exactly that change set. The
 -- commit indexes the agent (its roster row and thread) and the todo as the new agent's, asked for by the run's
 -- requester. Without the review, or with a review of other units, nothing is saved. The agent rules still hold for a
--- reviewed hire. Contract 14.1: an agent that cannot delegate the default access hires only on a member's answer.
+-- reviewed hire. Contract 14.1: an agent that cannot delegate the default access hires only on an owner's or admin's
+-- answer; the predicate case by case.
 -- Runs are 647's hand-built runs, on 769's helpers.
 
 -- A structured entry as the runtime sends it.
@@ -110,22 +111,74 @@ begin
 	if pg_temp.present('agents/chief') or pg_temp.present('agents/vera-again') then raise exception 'A refused hire saves nothing'; end if;
 end $$;
 
--- 4. Contract 14.1: an agent that cannot delegate the new agent's default access (here a finite grant on the shared
--- root) does not hire on its own. The layering asks the owners and admins on a card whatever the reviewer found, with
--- no Always allow; the recorder refuses that agent's own allow and records a member's answer. Other agents' hires and
--- this agent's other delegations are unchanged.
+-- 4. The predicate, case by case (the legacy hire's, as a boolean): agent B holds the default grant; each change below
+-- takes it away, and its undoing gives it back.
 do $$
 declare
-	c_b constant uuid := '63400000-0000-4000-8000-0000000000a2'; c_member constant uuid := '63400000-0000-4000-8000-000000000002';
-	x jsonb := pg_temp.agent_run(c_b); b jsonb := x -> 'binding'; p jsonb := x -> 'actor'; u jsonb; r jsonb; v_action uuid; v_chat uuid;
-	a public.qorpera_action_reviews%rowtype; y jsonb;
+	c_profile constant uuid := '63400000-0000-4000-8000-000000000010'; c_b constant uuid := '63400000-0000-4000-8000-0000000000a2';
+	v_grant uuid := (pg_temp.agent_grant((pg_temp.root()).id, '63400000-0000-4000-8000-0000000000a2')).id;
+	v_staff text := format('profile_id = %L and staff_agent_id = %L', '63400000-0000-4000-8000-000000000010',
+		'63400000-0000-4000-8000-0000000000a2');
+	v_case text[];
+	-- The root's columns a copy may set (not its id, environment or generated key).
+	v_columns text := (select string_agg(quote_ident(column_name), ', ' order by ordinal_position) from information_schema.columns
+		where table_schema = 'public' and table_name = 'qorpera_company_path_resources' and is_generated = 'NEVER'
+			and column_name not in ('id', 'environment_id'));
 begin
-	if not public.qorpera_folder_agent_delegates_default('63400000-0000-4000-8000-000000000010', c_b) then
-		raise exception 'The fixture agent holds the default grant'; end if;
+	if not public.qorpera_folder_agent_delegates_default(c_profile, c_b) then raise exception 'The fixture agent delegates'; end if;
+	foreach v_case slice 1 in array array[
+		array[format('update public.qorpera_company_path_grants set revoked_at = clock_timestamp() where id = %L', v_grant),
+			format('update public.qorpera_company_path_grants set revoked_at = null where id = %L', v_grant)],
+		array[format('update public.qorpera_company_path_grants set permissions = array[%L] where id = %L', 'read', v_grant),
+			format('update public.qorpera_company_path_grants set permissions = array[%L, %L] where id = %L', 'read', 'write', v_grant)],
+		array[format('update public.qorpera_company_path_grants set expires_at = clock_timestamp() + interval %L where id = %L', '1 day', v_grant),
+			format('update public.qorpera_company_path_grants set expires_at = null where id = %L', v_grant)],
+		-- A grant for another version of the root.
+		array[format('update public.qorpera_company_path_grants set resource_version = %L where id = %L', extensions.gen_random_uuid(), v_grant),
+			format('update public.qorpera_company_path_grants set resource_version = %L where id = %L',
+				(select resource_version from public.qorpera_company_path_grants where id = v_grant), v_grant)],
+		array[format('update public.qorpera_company_path_grants set principal_id = %L where id = %L', '63400000-0000-4000-8000-0000000000a1', v_grant),
+			format('update public.qorpera_company_path_grants set principal_id = %L where id = %L', c_b, v_grant)],
+		array[format('update public.qorpera_profile_staff set employment_status = %L where %s', 'archived', v_staff),
+			format('update public.qorpera_profile_staff set employment_status = %L where %s', 'active', v_staff)],
+		-- A second environment's live shared root without B's grant; revoked, it no longer counts.
+		array[format('insert into public.qorpera_company_environments(id, profile_id, name, contract_version, created_by_user_id) '
+				|| 'values (%L, %L, %L, 1, %L); insert into public.qorpera_company_path_resources(id, environment_id, %s) '
+				|| 'select %L, %L, %s from public.qorpera_company_path_resources where id = %L',
+				'77400000-0000-4000-8000-000000000021', c_profile, 'Second', '63400000-0000-4000-8000-000000000001', v_columns,
+				'77400000-0000-4000-8000-000000000031', '77400000-0000-4000-8000-000000000021', v_columns, (pg_temp.root()).id),
+			format('update public.qorpera_company_path_resources set revoked_at = clock_timestamp() where id = %L',
+				'77400000-0000-4000-8000-000000000031')]] loop
+		perform pg_temp.fx(v_case[1]);
+		if public.qorpera_folder_agent_delegates_default(c_profile, c_b) then raise exception 'Delegates after: %', v_case[1]; end if;
+		perform pg_temp.fx(v_case[2]);
+		if not public.qorpera_folder_agent_delegates_default(c_profile, c_b) then raise exception 'Does not delegate after: %', v_case[2]; end if;
+	end loop;
+end $$;
+
+-- 5. Contract 14.1: an agent that cannot delegate the new agent's default access (here a finite grant on the shared
+-- root) does not hire on its own. The layering asks the owners and admins on a card whatever the reviewer found, with
+-- no Always allow and its own reason, also when a denied hire is retried; the recorder refuses that agent's own allow
+-- and a member's answer given before the restriction, and records an owner's answer. Other agents' hires and this
+-- agent's other delegations are unchanged.
+do $$
+declare
+	c_b constant uuid := '63400000-0000-4000-8000-0000000000a2'; c_owner constant uuid := '63400000-0000-4000-8000-000000000001';
+	x jsonb := pg_temp.agent_run('63400000-0000-4000-8000-0000000000a2'); b jsonb := x -> 'binding'; p jsonb := x -> 'actor';
+	u jsonb; r jsonb; v_action uuid; v_chat uuid; v_early uuid; a public.qorpera_action_reviews%rowtype; y jsonb;
+begin
+	-- Before the restriction: a card on the reviewer's own doubt, answered by the member and used by the run.
+	v_early := pg_temp.action(b, 'call-early', 'ask');
+	if (select approver_scope from public.qorpera_action_reviews where id = v_early) <> 'member' then
+		raise exception 'An unrestricted hire''s doubt is the member''s card'; end if;
+	perform pg_temp.answer(v_early);
+	perform public.qorpera_await_action_review(b, v_early, false);
 	perform pg_temp.fx(format('update public.qorpera_company_path_grants set expires_at = clock_timestamp() + interval %L where id = %L',
 		'1 day', (pg_temp.agent_grant((pg_temp.root()).id, c_b)).id));
-	if public.qorpera_folder_agent_delegates_default('63400000-0000-4000-8000-000000000010', c_b) then
-		raise exception 'A finite root grant cannot delegate the default'; end if;
+	-- That answer no longer carries the hire.
+	perform pg_temp.raises_like(format('select pg_temp.record(%L, %L, %L)', b, v_early,
+		pg_temp.hire(p, 'vera-early', '77400000-0000-4000-8000-0000000000a7', '77400000-0000-4000-8000-0000000000d7', 'Vera E')),
+		'42501', 'This hire needs a member''s approval%');
 	-- The reviewer allowed it (and even proposed a rule); the kernel asks the owners and admins, with no Always allow.
 	v_action := (public.qorpera_record_action_review(b, jsonb_build_object('callId', 'call-restricted-1', 'tool', 'hire_agent',
 		'effect', 'delegation', 'argumentSha256', md5('call-restricted-1') || md5('call-restricted-1'),
@@ -134,15 +187,20 @@ begin
 		'reviewerModel', 'gpt-6-luna')) ->> 'reviewId')::uuid;
 	select * into a from public.qorpera_action_reviews where id = v_action;
 	if a.decision <> 'ask' or a.approver_scope <> 'owners_admins' or a.built_in <> 'access_change' or a.proposed_rule is not null
-		or a.card_session_id is null then
+		or a.card_session_id is null or a.reason not like 'This agent''s own Company File access is limited%' then
 		raise exception 'A restricted hire asks the owners and admins on a card: %', to_jsonb(a); end if;
-	-- A deny stays a deny; another delegation of this agent keeps the reviewer's allow. (Each call alone: an if's
-	-- conditions have no evaluation order.)
-	if (public.qorpera_record_action_review(b, jsonb_build_object('callId', 'call-restricted-2', 'tool', 'hire_agent',
-			'effect', 'delegation', 'argumentSha256', md5('call-restricted-2') || md5('call-restricted-2'), 'action', '{}'::jsonb,
+	-- A deny stays a deny; a denied hire tried again asks the owners and admins too, never the member alone.
+	if (public.qorpera_record_action_review(b, jsonb_build_object('callId', 'call-retry-1', 'tool', 'hire_agent',
+			'effect', 'delegation', 'argumentSha256', md5('call-retry') || md5('call-retry'), 'action', '{}'::jsonb,
 			'decision', 'deny', 'ruleIds', '[]'::jsonb, 'builtIn', 'none', 'reason', 'No.', 'proposedRule', null,
 			'reviewerModel', 'gpt-6-luna')) ->> 'decision') <> 'deny' then
 		raise exception 'A restricted hire''s deny stays a deny'; end if;
+	y := public.qorpera_record_action_review(b, jsonb_build_object('callId', 'call-retry-2', 'tool', 'hire_agent',
+		'effect', 'delegation', 'argumentSha256', md5('call-retry') || md5('call-retry'), 'action', '{}'::jsonb,
+		'decision', 'deny', 'ruleIds', '[]'::jsonb, 'builtIn', 'none', 'reason', 'Still no.', 'proposedRule', null,
+		'reviewerModel', 'gpt-6-luna'));
+	if y ->> 'decision' <> 'ask' or y ->> 'approverScope' <> 'owners_admins' then
+		raise exception 'A retried restricted hire asks the owners and admins: %', y; end if;
 	v_chat := pg_temp.action(b, 'call-restricted-chat', 'allow', 'delegation', 'create_group_chat');
 	if (select decision from public.qorpera_action_reviews where id = v_chat) <> 'allow' then
 		raise exception 'Only a restricted agent''s hire asks'; end if;
@@ -152,21 +210,23 @@ begin
 	perform pg_temp.fx(format('update public.qorpera_action_reviews set decision = %L, approver_scope = null, approver_user_id = null, card_session_id = null where id = %L',
 		'allow', v_action));
 	perform pg_temp.raises_like(format('select pg_temp.record(%L, %L, %L)', b, v_action, u), '42501', 'This hire needs a member''s approval%');
-	-- A member's answer, used by the run: recorded with the member, and the hire saves with them as its approver.
+	-- An owner's answer, used by the run: recorded with the owner, and the hire saves with them as its approver.
 	v_action := (public.qorpera_record_action_review(b, jsonb_build_object('callId', 'call-restricted-3', 'tool', 'hire_agent',
 		'effect', 'delegation', 'argumentSha256', md5('call-restricted-3') || md5('call-restricted-3'), 'action', '{}'::jsonb,
 		'decision', 'allow', 'ruleIds', '[]'::jsonb, 'builtIn', 'none', 'reason', 'Fine.', 'proposedRule', null,
 		'reviewerModel', 'gpt-6-luna')) ->> 'reviewId')::uuid;
-	perform pg_temp.answer(v_action);
+	perform pg_temp.fx(format('update public.qorpera_action_reviews set answer = %L, answered_by_user_id = %L, answered_at = clock_timestamp() where id = %L',
+		'allow_once', c_owner, v_action));
 	if public.qorpera_await_action_review(b, v_action, false) ->> 'state' <> 'approved' then raise exception 'The holding call uses the answer'; end if;
 	r := pg_temp.record(b, v_action, u);
 	y := pg_temp.commit(p, 'run-hire-0006', u, (r ->> 'reviewId')::uuid);
 	perform pg_temp.expect(y, 1, 'saved');
-	if (select approver_user_id from public.qorpera_folder_commits where id = (y ->> 'commitId')::uuid) is distinct from c_member then
-		raise exception 'A restricted hire saves with its member as approver'; end if;
+	if (select approver_user_id from public.qorpera_folder_commits where id = (y ->> 'commitId')::uuid) is distinct from c_owner then
+		raise exception 'A restricted hire saves with its owner as approver'; end if;
 	-- Agent A, unrestricted, keeps the reviewer's allow for a hire.
 	x := pg_temp.agent_run();
-	if (select decision from public.qorpera_action_reviews where id = pg_temp.action(x -> 'binding', 'call-unrestricted')) <> 'allow' then
+	v_action := pg_temp.action(x -> 'binding', 'call-unrestricted');
+	if (select decision from public.qorpera_action_reviews where id = v_action) <> 'allow' then
 		raise exception 'An unrestricted agent''s hire keeps the allow'; end if;
 end $$;
 

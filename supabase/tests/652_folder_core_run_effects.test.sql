@@ -73,6 +73,9 @@ begin
 		|| E'\t\tv_restricted := true; v_decision := ''ask''; v_built_in := ''access_change'';\n'
 		|| E'\tend if;\n', '');
 	v_text := replace(v_text, E'v_decision = ''ask'' and not v_restricted and v_built_in in', E'v_decision = ''ask'' and v_built_in in');
+	v_text := replace(v_text, E'v_built_in, case when v_restricted\n'
+		|| E'\t\t\tthen ''This agent''''s own Company File access is limited, so an owner or admin approves the agents it hires.''\n'
+		|| E'\t\t\telse left(btrim(p_review ->> ''reason''), 500) end,', E'v_built_in, left(btrim(p_review ->> ''reason''), 500),');
 	if md5(v_text) <> 'a9f30463bc0fcbba9f9a403449f5271d' then raise exception 'The action review''s snapshot-v1 text changed'; end if;
 end $$;
 
