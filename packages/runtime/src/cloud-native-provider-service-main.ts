@@ -117,6 +117,10 @@ async function credentialOrEnvironment(
 	return (await systemdCredential(environment, credentialName)) ?? required(environment, environmentName);
 }
 
+/** How a ChatGPT plan run gets its token unless a host says otherwise (see nativeCompanyRuntimeConfiguration):
+ * switching to the fallback is this one line and a runtime release. */
+export const CHATGPT_PLAN_AUTH_DEFAULT: CloudChatGptPlanAuth = "command";
+
 /** Explicit deployment selection. Unknown or partially configured modes fail
  * closed; they cannot silently fall back to the legacy native tool surface. */
 export function nativeCompanyRuntimeConfiguration(environment: NodeJS.ProcessEnv):
@@ -146,8 +150,10 @@ export function nativeCompanyRuntimeConfiguration(environment: NodeJS.ProcessEnv
 	)
 		throw new Error("Invalid native cloud runtime configuration");
 	// How a run on a member's ChatGPT plan gets the plan's token: Codex's token command by default, or the
-	// token in the process environment (OpenAI's documented path) as the fallback.
-	const chatGptPlanAuth = environment.QORPERA_CHATGPT_PLAN_AUTH ?? "command";
+	// token in the process environment (OpenAI's documented path) as the fallback. The orchestrators do not
+	// pass this setting to the hosts they start, so the supported switch is CHATGPT_PLAN_AUTH_DEFAULT in a
+	// runtime release; the setting serves a host started by hand.
+	const chatGptPlanAuth = environment.QORPERA_CHATGPT_PLAN_AUTH ?? CHATGPT_PLAN_AUTH_DEFAULT;
 	if (chatGptPlanAuth !== "command" && chatGptPlanAuth !== "environment")
 		throw new Error("QORPERA_CHATGPT_PLAN_AUTH is invalid");
 	return {

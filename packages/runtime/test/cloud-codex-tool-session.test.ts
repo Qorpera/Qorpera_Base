@@ -419,18 +419,36 @@ describe("a run on a member's ChatGPT plan (Sign in with ChatGPT)", () => {
 	it("refuses a root holding both kinds of login, or a token file others could read", async () => {
 		const both = await planRoot();
 		await writeFile(join(both, "codex", "auth.json"), "{}", { mode: 0o600 });
-		await expect(run("response-first", { identityRoot: both }).result).rejects.toThrow();
+		await expect(run("response-first", { identityRoot: both }).result).rejects.toThrow(
+			"Native boundary requires one login per identity",
+		);
 		await rm(both, { recursive: true, force: true });
 		const open = await planRoot("plan-access-1", 0o644);
-		await expect(run("response-first", { identityRoot: open }).result).rejects.toThrow();
+		await expect(run("response-first", { identityRoot: open }).result).rejects.toThrow(
+			"Invalid ChatGPT plan identity",
+		);
 	});
 
-	it("refuses a plan run whose provider Codex did not apply, and a Codex login's run that names another provider", async () => {
+	it("refuses a plan run whose provider Codex did not apply, and a Codex login's run on the plan provider", async () => {
 		const identityRoot = await planRoot();
 		await expect(run("plan-provider-dropped", { identityRoot }).result).rejects.toThrow(
 			"configuration was not applied",
 		);
-		await expect(run("foreign-provider").result).rejects.toThrow("configuration was not applied");
+		await expect(run("plan-provider-on-codex").result).rejects.toThrow("configuration was not applied");
+		// A Codex login's run keeps any other provider its command sets (the real-Codex probes use one).
+		await expect(run("test-provider").result).resolves.toMatchObject({ providerSessionId: "thread_fixture" });
+	});
+
+	it("starts no warm spare for a plan run in the environment fallback, whose process keeps its first token", async () => {
+		const identityRoot = await planRoot();
+		const evidence = join(root, "spare-evidence.json");
+		const command = [process.execPath, rpcFixture, "response-first", evidence] as const;
+		prepareCloudCodexSpare({ command, binarySha256, identityRoot, chatGptPlanAuth: "environment" }, 60_000);
+		prepareCloudCodexSpare({ command, binarySha256, identityRoot }, 60_000);
+		// Only the command mode's spare starts.
+		await vi.waitFor(async () => expect(await readFile(`${evidence}.handshakes`, "utf8")).toMatch(/^\d+\n$/));
+		expect((await readFile(`${evidence}.starts`, "utf8")).trim().split("\n")).toHaveLength(1);
+		await disposeCloudCodexSpares(identityRoot);
 	});
 
 	it("takes a plan run's 429 for the plan's usage limit, which stops the work", async () => {

@@ -529,11 +529,13 @@ https://claude.ai/artifact/UWehPVysVzAmWcwvkuU6on.
   limit (OpenAI's only 429 for plan use), which stops the work; Codex 0.155.1 reports it as a 429 it gave
   up on. OpenAI takes the host id (`ext_agent_host_id`) at sign-in only, not on each request, so runs
   send none. Coding turns run the same way.
-  - Fallback: `QORPERA_CHATGPT_PLAN_AUTH=environment` in the provider host's environment (default
-    `command`). The run's Codex then gets the token in its environment at start (OpenAI's documented
-    path; through bwrap's own environment, readable by the host's user alone, never an argument). Each
-    run starts its own Codex, so the next run picks up a renewed token; a run that outlives its token
-    fails at OpenAI's refusal.
+  - Fallback: the token in the run's Codex environment at start instead (OpenAI's documented path;
+    through bwrap's own environment, readable by the host's user alone, never an argument). Each run
+    then starts its own Codex (no warm spare for a plan run), so the next run picks up a renewed token;
+    a run that outlives its token fails at OpenAI's refusal. The orchestrators do not pass a setting for
+    it to the provider hosts they start, so the supported switch is `CHATGPT_PLAN_AUTH_DEFAULT` in
+    `cloud-native-provider-service-main.ts` (`"command"` to `"environment"`) and a runtime release.
+    `QORPERA_CHATGPT_PLAN_AUTH` (`command` or `environment`) serves a host started by hand.
 - **Sign-in.** The web client begins a plan sign-in (`qorpera_begin_chatgpt_plan_sign_in`) and polls
   `/login` as for any vault sign-in. The vault answers with OpenAI's authorization address:
   Authorization Code with PKCE, the plan scopes, the resource `https://api.openai.com/v1`, the state
@@ -609,8 +611,10 @@ https://claude.ai/artifact/UWehPVysVzAmWcwvkuU6on.
   whose sign-ins go to its vault). Both start off.
 - **Before the platform switch goes on:** the vault runs this slice, the credential and the routing
   above are in place, the callback Edge Function is deployed with OpenAI's registered address, every
-  provider host runs slice 4, and company deletion ends plan logins at OpenAI (a follow-up; today the
-  purge removes the rows before the revocation pass can see them).
+  provider host runs slice 4, a usage limit stops the run instead of moving it to another login (#601,
+  migration `20260929840000`, live), the plan rules (slice 1b) are live, and company deletion ends plan
+  logins at OpenAI (a follow-up; today the purge removes the rows before the revocation pass can see
+  them).
 - **First real sign-in (one company, the founder's own plan).** The fake OpenAI in the tests cannot prove
   what only OpenAI's endpoint answers. With one company switched on, sign in once and renew once, and
   check from the vault's journal and the login's row (never its envelope):
@@ -627,6 +631,8 @@ https://claude.ai/artifact/UWehPVysVzAmWcwvkuU6on.
     `provider_account_reference` holds `openai-subject:<sha256 of OpenAI's subject>`;
   - one run on the plan completes: OpenAI accepts the token as the bearer on `/v1/responses` with no other
     header, and Codex's start (its model list) works with it;
+  - a run that lasts past a renewal keeps working: the token the host renamed into the bound directory
+    is the one Codex's next token command reads;
   - the usage limit: when the plan's limit is reached, the run's card says so. If it says the run was
     stopped by a provider step instead, Codex did not recognise OpenAI's code (a limit reached mid-answer
     arrives as `subscription_sharing_usage_limit_exceeded` in the stream, which Codex 0.155.1 retries

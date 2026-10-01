@@ -1,7 +1,7 @@
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import type { BigIntStats, Dirent, Stats } from "node:fs";
-import { createReadStream } from "node:fs";
+import { createReadStream, existsSync } from "node:fs";
 import { lstat, mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
@@ -359,12 +359,11 @@ function nativeErrorCategory(value: unknown): CloudRuntimeErrorCategory | undefi
 	return keys[0] === "responseTooManyFailedAttempts" ? "provider_failed" : "transport_unavailable";
 }
 
-/** The provider a plan run must use, exactly as configured; a Codex login's run must not use it. */
+/** The provider a plan run must use, exactly as configured; a Codex login's run must not use it. (A Codex
+ * login's run keeps whatever provider its command sets otherwise: the real-Codex acceptance probes wrap
+ * Codex with a test provider of their own.) */
 function verifyChatGptPlanProvider(config: Record<string, unknown>, plan: CloudCodexChatGptPlan | undefined): boolean {
-	if (!plan)
-		return (
-			config.model_provider === undefined || config.model_provider === null || config.model_provider === "openai"
-		);
+	if (!plan) return config.model_provider !== CHATGPT_PLAN_PROVIDER;
 	if (config.model_provider !== CHATGPT_PLAN_PROVIDER) return false;
 	const provider = object(object(config.model_providers)[CHATGPT_PLAN_PROVIDER]);
 	if (
@@ -1608,6 +1607,14 @@ export function prepareCloudCodexSpare(
 		...(inputs.isolation ? { isolation: inputs.isolation } : {}),
 		...(inputs.chatGptPlanAuth ? { chatGptPlanAuth: inputs.chatGptPlanAuth } : {}),
 	};
+	// In the environment fallback a process keeps the plan token it started with, so a spare could run the
+	// next run on an older token than the vault has issued since: a plan run there starts its own process.
+	if (
+		inputs.chatGptPlanAuth === "environment" &&
+		inputs.identityRoot &&
+		existsSync(join(inputs.identityRoot, CHATGPT_PLAN_DIRECTORY))
+	)
+		return;
 	const key = cloudCodexProcessKey(processInputs);
 	discardSpare(key);
 	const starting = new AbortController();

@@ -59,49 +59,30 @@ async function privateDirectory(path: string): Promise<void> {
 		throw new Error("Unsafe native isolation working directory");
 }
 
-/** No fallback: unsupported kernels, permissions, namespace failures or helper
- * failures never start the native binary outside containment. The caller's
- * private scratch root contains only these five newly created directories.
- * Identity is an auth-only directory; neither its parent nor host home is bound.
- */
-export async function launchIsolatedNativeProcess(options: {
+/** The hosts a native process may reach: OpenAI's API alone for a ChatGPT plan run, the Codex login's
+ * hosts otherwise. */
+export function nativeIsolationEgressHosts(chatGptPlan: NativeChatGptPlanAccess | undefined): readonly string[] {
+	return chatGptPlan ? NATIVE_CHATGPT_PLAN_EGRESS_HOSTS : NATIVE_CODEX_EGRESS_HOSTS;
+}
+
+/** What the namespace of one native process sees: bwrap's arguments and the environment bwrap starts with.
+ * No file system checks (the launcher makes them first), so a run's shape can be checked anywhere. */
+export function nativeIsolationInvocation(options: {
 	configuration: NativeIsolationConfiguration;
 	command: string;
 	args: readonly string[];
 	scratchRoot: string;
 	codexHome: string;
+	relayPath: string;
 	fenceSocket?: string;
 	chatGptPlan?: NativeChatGptPlanAccess;
-	signal: AbortSignal;
-}): Promise<{ child: ChildProcessWithoutNullStreams; close(): Promise<void> }> {
-	if (process.platform !== "linux" || !process.getuid?.())
-		throw new Error("Native containment requires unprivileged Linux");
-	options.signal.throwIfAborted();
+}): { args: string[]; environment: Record<string, string> } {
 	const plan = options.chatGptPlan;
 	const planDirectory = plan && "directory" in plan ? plan.directory : undefined;
 	const planToken = plan && "accessToken" in plan ? plan.accessToken : undefined;
 	if (planToken !== undefined && !/^[\x21-\x7e]{1,16384}$/.test(planToken))
 		throw new Error("Invalid ChatGPT plan access token");
-	// The token command (`cat`) runs from the read-only /usr inside the namespace.
-	for (const file of [
-		"/usr/bin/bwrap",
-		"/usr/bin/node",
-		...(planDirectory ? ["/usr/bin/cat"] : []),
-		options.configuration.entryPoint,
-		options.command,
-	])
-		await rootOwnedFile(file);
-	await privateDirectory(options.scratchRoot);
-	await privateDirectory(options.codexHome);
-	if (planDirectory) await privateDirectory(planDirectory);
 	const directories = ["workspace", "home", "config", "data", "cache"].map((name) => join(options.scratchRoot, name));
-	for (const directory of directories) await privateDirectory(directory);
-	const relay = await startNativeCodexEgress({
-		root: options.scratchRoot,
-		signal: options.signal,
-		hosts: plan ? NATIVE_CHATGPT_PLAN_EGRESS_HOSTS : NATIVE_CODEX_EGRESS_HOSTS,
-	});
-	let child: ChildProcessWithoutNullStreams | undefined;
 	const args = [
 		"--unshare-user",
 		"--unshare-pid",
@@ -115,8 +96,8 @@ export async function launchIsolatedNativeProcess(options: {
 		"--new-session",
 		"--cap-drop",
 		"ALL",
-		// The fallback's token reaches the namespace only through bwrap's own environment (set below,
-		// readable by this user alone), never through an argument; everything else is cleared.
+		// The fallback's token reaches the namespace only through bwrap's own environment (below, readable by
+		// this user alone), never through an argument; nothing else is in that environment to keep.
 		...(planToken === undefined ? ["--clearenv"] : []),
 		"--ro-bind",
 		"/usr",
@@ -155,12 +136,89 @@ export async function launchIsolatedNativeProcess(options: {
 		options.codexHome,
 		options.codexHome,
 		"--ro-bind",
-		relay.path,
-		relay.path,
+		options.relayPath,
+		options.relayPath,
 		// Read-only, as a directory: the host swaps the token file inside it, and the token command sees
 		// each newer token.
 		...(planDirectory ? ["--ro-bind", planDirectory, planDirectory] : []),
+		...(options.fenceSocket ? ["--ro-bind", options.fenceSocket, options.fenceSocket] : []),
 	];
+	const environment = {
+		HOME: join(options.scratchRoot, "home"),
+		CODEX_HOME: options.codexHome,
+		XDG_CONFIG_HOME: join(options.scratchRoot, "config"),
+		XDG_DATA_HOME: join(options.scratchRoot, "data"),
+		XDG_CACHE_HOME: join(options.scratchRoot, "cache"),
+		PATH: "/usr/bin:/bin",
+		LANG: "C.UTF-8",
+		TZ: "UTC",
+		NO_COLOR: "1",
+		...(options.fenceSocket ? { QORPERA_NATIVE_RESULT_FENCE_SOCKET: options.fenceSocket } : {}),
+	};
+	for (const [name, value] of Object.entries(environment)) args.push("--setenv", name, value);
+	args.push(
+		"--chdir",
+		join(options.scratchRoot, "workspace"),
+		"--remount-ro",
+		"/",
+		"--",
+		"/usr/bin/node",
+		"/qorpera/native-entry.mjs",
+		options.relayPath,
+		options.command,
+		...options.args,
+	);
+	return {
+		args,
+		// Without --clearenv bwrap passes this on; the variables set above replace PATH and LANG.
+		environment: {
+			PATH: "/usr/bin:/bin",
+			LANG: "C.UTF-8",
+			...(planToken === undefined ? {} : { [CHATGPT_PLAN_TOKEN_ENVIRONMENT]: planToken }),
+		},
+	};
+}
+
+/** No fallback: unsupported kernels, permissions, namespace failures or helper
+ * failures never start the native binary outside containment. The caller's
+ * private scratch root contains only these five newly created directories.
+ * Identity is an auth-only directory; neither its parent nor host home is bound.
+ */
+export async function launchIsolatedNativeProcess(options: {
+	configuration: NativeIsolationConfiguration;
+	command: string;
+	args: readonly string[];
+	scratchRoot: string;
+	codexHome: string;
+	fenceSocket?: string;
+	chatGptPlan?: NativeChatGptPlanAccess;
+	signal: AbortSignal;
+}): Promise<{ child: ChildProcessWithoutNullStreams; close(): Promise<void> }> {
+	if (process.platform !== "linux" || !process.getuid?.())
+		throw new Error("Native containment requires unprivileged Linux");
+	options.signal.throwIfAborted();
+	const plan = options.chatGptPlan;
+	const planDirectory = plan && "directory" in plan ? plan.directory : undefined;
+	// The token command (`cat`) runs from the read-only /usr inside the namespace.
+	for (const file of [
+		"/usr/bin/bwrap",
+		"/usr/bin/node",
+		...(planDirectory ? ["/usr/bin/cat"] : []),
+		options.configuration.entryPoint,
+		options.command,
+	])
+		await rootOwnedFile(file);
+	await privateDirectory(options.scratchRoot);
+	await privateDirectory(options.codexHome);
+	if (planDirectory) await privateDirectory(planDirectory);
+	for (const name of ["workspace", "home", "config", "data", "cache"])
+		await privateDirectory(join(options.scratchRoot, name));
+	const relay = await startNativeCodexEgress({
+		root: options.scratchRoot,
+		signal: options.signal,
+		hosts: nativeIsolationEgressHosts(plan),
+	});
+	let child: ChildProcessWithoutNullStreams | undefined;
 	try {
 		if (options.fenceSocket) {
 			const metadata = await lstat(options.fenceSocket);
@@ -171,42 +229,12 @@ export async function launchIsolatedNativeProcess(options: {
 				(metadata.mode & 0o077) !== 0
 			)
 				throw new Error("Unsafe native result-fence socket");
-			args.push("--ro-bind", options.fenceSocket, options.fenceSocket);
 		}
-		const environment = {
-			HOME: join(options.scratchRoot, "home"),
-			CODEX_HOME: options.codexHome,
-			XDG_CONFIG_HOME: join(options.scratchRoot, "config"),
-			XDG_DATA_HOME: join(options.scratchRoot, "data"),
-			XDG_CACHE_HOME: join(options.scratchRoot, "cache"),
-			PATH: "/usr/bin:/bin",
-			LANG: "C.UTF-8",
-			TZ: "UTC",
-			NO_COLOR: "1",
-			...(options.fenceSocket ? { QORPERA_NATIVE_RESULT_FENCE_SOCKET: options.fenceSocket } : {}),
-		};
-		for (const [name, value] of Object.entries(environment)) args.push("--setenv", name, value);
-		args.push(
-			"--chdir",
-			join(options.scratchRoot, "workspace"),
-			"--remount-ro",
-			"/",
-			"--",
-			"/usr/bin/node",
-			"/qorpera/native-entry.mjs",
-			relay.path,
-			options.command,
-			...options.args,
-		);
+		const invocation = nativeIsolationInvocation({ ...options, relayPath: relay.path });
 		options.signal.throwIfAborted();
-		child = spawn("/usr/bin/bwrap", args, {
+		child = spawn("/usr/bin/bwrap", invocation.args, {
 			cwd: options.scratchRoot,
-			// Without --clearenv bwrap passes this environment on; the variables set above replace PATH and LANG.
-			env: {
-				PATH: "/usr/bin:/bin",
-				LANG: "C.UTF-8",
-				...(planToken === undefined ? {} : { [CHATGPT_PLAN_TOKEN_ENVIRONMENT]: planToken }),
-			},
+			env: invocation.environment,
 			stdio: ["pipe", "pipe", "pipe"],
 			detached: true,
 		});

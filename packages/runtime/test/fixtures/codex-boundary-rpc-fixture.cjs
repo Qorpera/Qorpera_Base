@@ -169,7 +169,8 @@ async function handle(message) {
 		if (mode === "fast-mode-off") configuration.features.fast_mode = false;
 		if (mode === "tier-dropped") delete configuration.service_tier;
 		if (mode === "plan-provider-dropped") delete configuration.model_provider;
-		if (mode === "foreign-provider") configuration.model_provider = "uncontrolled";
+		if (mode === "plan-provider-on-codex") configuration.model_provider = "qorpera_chatgpt_plan";
+		if (mode === "test-provider") configuration.model_provider = "fixture_provider";
 		write({ id: message.id, result: { config: configuration } });
 	} else if (message.method === "skills/list") {
 		write({ id: message.id, result: { data: [{ skills: mode === "extra-skills" ? [{ name: "PRIVATE_UNCONTROLLED_SKILL" }] : [], errors: [] }] } });
