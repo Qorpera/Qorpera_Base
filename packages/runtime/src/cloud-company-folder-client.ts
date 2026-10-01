@@ -914,27 +914,45 @@ export class CloudCompanyFolderClient {
 		return staged;
 	}
 
-	/** Records the automatic review's approval of this call (`actionReviewId`, from the tool context) as the review
-	 * of exactly this staged change set (C2 R1, `qorpera_folder_record_review`), and returns the id the commit sends.
-	 * SQL accepts only an approval this run may act on, and one approval stands for one change set: a replay of the
-	 * same units returns the same record, so a lost answer is asked again. */
+	/** Records the automatic review's approval of this call as the review of exactly this staged change set (C2 R1,
+	 * `qorpera_folder_record_review`), and returns the id the commit sends. The approval is the tool context's
+	 * `actionReviewId`, of the call named by its tool and `argumentSha256`. SQL accepts only an approval this run may act
+	 * on, and one approval stands for one change set: a replay of the same units returns the same record, so a lost
+	 * answer is asked again. A writer records inside its receipt, so a completed call replays from it first. */
 	async recordReview(
-		actionReviewId: string,
+		approval: { readonly actionReviewId: string; readonly tool: string; readonly argumentSha256: string },
 		changeSet: CloudCompanyFolderStagedChangeSet,
 		signal: AbortSignal,
 	): Promise<string> {
-		if (!UUID.test(actionReviewId)) throw new Error("Invalid action review");
+		if (
+			!UUID.test(approval.actionReviewId) ||
+			!/^[a-z][a-z0-9_]{0,63}$/.test(approval.tool) ||
+			!SHA.test(approval.argumentSha256)
+		)
+			throw new Error("Invalid action review");
 		const { sent } = this.#staged(changeSet);
 		const input = record(
 			await this.#retried(
 				"qorpera_folder_record_review",
-				{ p_binding: this.#binding, p_request: { actionReviewId, units: sent } },
+				{
+					p_binding: this.#binding,
+					p_request: {
+						actionReviewId: approval.actionReviewId,
+						tool: approval.tool,
+						argumentSha256: approval.argumentSha256,
+						units: sent,
+					},
+				},
 				RECORD_RETRY,
 				signal,
 			),
-			["schema", "reviewId", "decision", "units"],
+			["schema", "reviewId", "approvedBy", "units"],
 		);
-		if (input.schema !== "qorpera.folder-review/v1" || input.decision !== "allow" || input.units !== sent.length)
+		if (
+			input.schema !== "qorpera.folder-review/v1" ||
+			input.units !== sent.length ||
+			(input.approvedBy !== null && (typeof input.approvedBy !== "string" || !UUID.test(input.approvedBy)))
+		)
 			invalid();
 		return uuid(input.reviewId);
 	}

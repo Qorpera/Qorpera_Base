@@ -18,14 +18,18 @@ F1 handed the recorder to F2 on 2026-10-01 (registry, "C2's review recorder goes
   the review row has no session foreign key;
 - the split into R1 (allow and deny, enough for W4) and R2 (cards, answers, parked proposals).
 
+R1 differs from that split in one way, for F1 to confirm: it writes no `deny` rows (§2, *Allow, deny and the card's
+member*).
+
 Everything here runs only for `folder-v2` companies.
 
 ## 1. What already works
 
 The automatic review (v130, RUNTIME-AUTO-REVIEW.md) runs before every acting tool call, `folder-v2` runs included:
-- The tool boundary asks `CloudActionReviewGate` before `execute` (`cloud-native-tool-boundary.ts`). The gate classes
-  the call by tool name (`cloudActionEffect`): `hire_agent` and `create_group_chat` are delegation, `manage_routine` is
-  delegation except `list`, and `decide_routine` is delegation when it carries `intent` or `title`.
+- The tool boundary asks `CloudActionReviewGate` before `execute` (`cloud-native-tool-boundary.ts:602-623`). The gate
+  classifies the call by tool name (`cloudActionEffect`): `hire_agent` and `create_group_chat` are delegation,
+  `manage_routine` is delegation except `list`, `decide_routine` is delegation when it carries `intent` or `title`, and
+  `company_delete` is destructive.
 - `qorpera_begin_action_review`, `qorpera_record_action_review` and `qorpera_await_action_review` take the run check
   through `qorpera_native_tool_locked_run`, which on `folder-v2` is `qorpera_folder_tool_run` (20260928279470).
 - `qorpera_record_action_review` is the kernel's layering, in SQL (20260926130000:339; delegation fix
@@ -35,12 +39,13 @@ The automatic review (v130, RUNTIME-AUTO-REVIEW.md) runs before every acting too
   - a built-in check (money, terms, deletion, access) asks unless a company Allow rule covers it; for delegation those
     checks never apply, so only an Ask first rule or the reviewer's own doubt asks;
   - a call denied earlier in the conversation asks again only after a member writes there.
-- The rules are `qorpera_review_rules_for`: every company rule, which on `folder-v2` is the index of `rules/*.md`
-  (F2-4, 20260928249190), plus the member's own rules. With no rule and no doubt, the call is allowed.
-- An ask raises a card where the member it waits for can see it, and the call holds on it, then parks. The answer
-  (`qorpera_answer_action_review`, on `folder-v2` behind the member prelude since 20260928319670) wakes the agent,
-  whose repeated call is approved once (`consumed_run_id`). An ask where no card can be raised is refused
-  (`APPROVAL_UNAVAILABLE_HERE`): "an ask becomes a deny where no card can be raised".
+- The rules are `qorpera_review_rules_for`: the company's rules and the member's own. On `folder-v2` the company's are
+  the index of `rules/*.md` (F2-4, 20260928249190), plus the rows a card's Always allow saved, until C3. With no rule and
+  no doubt, the call is allowed.
+- An ask raises a card where the member it waits for can see it (`v_card`, 20260926130000:439), and the call holds on
+  it, then parks. The answer (`qorpera_answer_action_review`, on `folder-v2` behind the member prelude since
+  20260928319670) wakes the agent, whose repeated call is approved once (`consumed_run_id`). An ask where no card can be
+  raised is refused (`APPROVAL_UNAVAILABLE_HERE`): "an ask becomes a deny where no card can be raised".
 - A denial stands for its run and its conversation (`qorpera_begin_action_review`).
 
 So the verdict on a W4 call is already the kernel's, layered in SQL with the `rules/` index, allow by default. What is
@@ -50,132 +55,180 @@ missing is the link from that verdict to the change set the call commits.
 
 ```
 qorpera_folder_record_review(p_binding jsonb, p_request jsonb) returns jsonb
-p_request = { "actionReviewId": uuid, "units": [ ...the units exactly as the commit will send them... ] }
+p_request = { "actionReviewId": uuid, "tool": text, "argumentSha256": hex64,
+              "units": [ ...the units exactly as the commit will send them... ] }
 ```
 
 A run effect. Granted to `service_role` only and reached through the Company File control list, as
 `qorpera_folder_agent_todos` is. In order:
 
-1. **The run entry:** `qorpera_folder_tool_run(p_binding, '[]')`. That is the binding, the stop, the run mutex, and
-   `qorpera_folder_run_enter` with the company row at rank 0, `KEY SHARE`. A company that is not `folder-v2`, a
-   stopped run or a paused company is refused there.
-2. **The request:** exactly the two keys. `units` is an array of 1 to 1000 items, the commit's own bound; anything
-   else is 22023. The recorder does not parse the units: the commit decides every unit, and the digest binds them.
+1. **The request,** before any lock: exactly the four keys, a UUID, a tool name, a lower-case SHA-256, and 1 to 1000
+   units (the commit's own bound). Anything else is 22023. The recorder does not parse the units: the commit decides
+   every unit, and the digest binds them.
+2. **The run entry:** `qorpera_folder_tool_run(p_binding, '[]')`. That is the binding, the stop, the run mutex, and
+   `qorpera_folder_run_enter` with the company row at rank 0, `KEY SHARE`. A company that is not `folder-v2`, a stopped
+   run or a paused company is refused there, replays included (the commit answers replays even then; a writer's
+   replay comes from its receipt, §4).
 3. **The approval:** the action review row by id, for this company and this run's agent, `FOR SHARE`. It must be an
-   approval this run may act on:
-   - the run's own allow: `run_id` is this run and `decision = 'allow'`;
-   - or an answered card used by this run: `answer` is `allow_once` or `always_allow` and `consumed_run_id` is this
-     run.
+   approval of this call that this run may act on:
+   - its tool and argument digest are the request's, and the tool is one that writes folder change sets:
+     `hire_agent`, `create_group_chat`, `manage_routine`, `decide_routine` or `company_delete`;
+   - its effect is `delegation` or `destructive`, so an approved email never stands for folder units;
+   - it is the run's own allow (`run_id` is this run and `decision = 'allow'`), or a card's allow this run used
+     (`answer` is `allow_once` or `always_allow` and `consumed_run_id` is this run).
 
-   Its effect must be `delegation` or `destructive`, so an approved email can never stand for folder units. Anything
-   else is 42501, "This change has no approval in this run".
+   Anything else is 42501, "This change has no approval in this run".
 4. **The record:** the id is `md5('qorpera.folder-review:' || action review id)::uuid`, so one approval stands for one
    change set:
-   - a row with that id and the same digest: a replay, returned as it is;
+   - a row with that id, this run and the same digest: a replay, returned as it is;
    - a row with that id and another digest: 23505, "This approval was already used for another change";
    - else insert `(id, environment_id = the run's, run_id = this run, change_set_sha256 =
-     qorpera_folder_change_set_sha256(units), units = 1..n, decision = 'allow')`.
-5. **The answer:** `{ schema: 'qorpera.folder-review/v1', reviewId, decision: 'allow', units: n }`.
+     qorpera_folder_change_set_sha256(units), units = 1..n)` with the decision below.
+5. **The answer:** `{ schema: 'qorpera.folder-review/v1', reviewId, approvedBy, units: n }`.
 
 The review covers every unit of the change set. The commit only consults it for units whose class is not plain, so
-covering the plain ones changes nothing.
+covering the plain ones changes nothing. Two approvals of the same change set are two records; either serves.
 
 **Why no second layering.** The layering in SQL is `qorpera_record_action_review`, which has already run for this call.
 A second pass over the same verdict could only repeat it. The recorder adds what the call's review cannot know: which
-change set the approved call commits.
+change set the approved call commits. This rests on one trust assumption, as all of v130 does: the runtime builds the
+change set only from the reviewed call's arguments and its own reads, and labels effects truthfully. SQL narrows what a
+wiring slip could do: the approval must be of this call (tool and argument digest) and of a folder-writing tool.
 
-**Why only `allow`.** A call the review denied, or one still waiting, never reaches `execute`, so no writer asks for a
-record. A change set without a record is denied by the commit (`review_required`), which is the deny. Rows with
-`ask` and `deny`, and answers on folder reviews, come with R2.
+**Allow, deny and the card's member.**
+- The run's own allow is recorded as `allow`.
+- A card's allow is recorded as an answered ask: `decision = 'ask'`, `answer = 'allow'`, with the action review's
+  `answered_by_user_id` and `answered_at`. The commit then records that member as the change's approver (C1B §5). This
+  copies the answer when the row is made; it is not R2's answer path, so F1's 7b rule for answers is untouched. If the
+  member has since been deleted (`on delete set null`), the record is a plain `allow`.
+- No `deny` rows. A call the review denied, or one still waiting, never reaches `execute`, so no writer asks for a
+  record. A change set without a record is denied by the commit (`review_required`), which is the deny. Rows with
+  `deny`, open asks and answers given on folder reviews come with R2.
+
+**Left out on purpose.** The recorder runs neither the wake gate nor the rank 10 recheck, which
+`qorpera_folder_add_agent_review_rule` runs: the writer records inside its receipt, whose begin runs the wake gate, and
+the commit runs rank 10. The record by itself changes nothing in the company.
 
 ## 3. Locks
 
 | Order | Lock | Taken by |
 | --- | --- | --- |
-| run entry | binding, stop (plain read), run mutex (budget row `FOR UPDATE`), job and fence `KEY SHARE`, rank 0 company `KEY SHARE`, the run resolve's ranks | `qorpera_folder_tool_run` |
-| run-owned rows (after rank 9) | the action review, `FOR SHARE` | the recorder |
+| run entry | binding, stop (plain read), run mutex (budget row `FOR UPDATE`), job and fence `KEY SHARE`, rank 0 company `KEY SHARE`, the run resolve's ranks (all `KEY SHARE`) | `qorpera_folder_tool_run` |
+| after the run entry | the approval row (the action review; it may belong to the run that raised the card), `FOR SHARE` | the recorder |
 | last | the folder clock row, `KEY SHARE`, through the new row's foreign key | the insert |
 
 - The commit later takes the new row `FOR SHARE` at 7b, as C1B §6 says. A row that is not yet committed is invisible to
   it, and the writer commits only after the recorder answers.
+- A used approval cannot change (it is consumed once, and an answer can be reset only while unused), so `FOR SHARE` is
+  caution, not needed for correctness. It makes an answer in flight and the recorder's read take turns.
 - The answer to a card (`qorpera_answer_action_review`) takes the member prelude, the conversation, then the action
   review `FOR UPDATE`, then the events, admission and the clock. So an answer and a recorder of the same approval wait
-  for each other on that row, one at a time. They never deadlock: the recorder never locks a conversation, rank 0
-  `KEY SHARE` is compatible on both sides, and the answer takes the clock only after the row. The check constraint
-  `consumed_at is null or answer in ('allow_once','always_allow')` means an approval used by this run cannot turn into
-  a denial afterwards.
-- A member's or another run's commit does not wait for a recorder: the recorder's `KEY SHARE` on the clock row is
-  compatible with the commit's update of it.
-- `qorpera_begin_action_review` in another run takes the same action review `FOR UPDATE` and waits at most for one
-  recorder. It holds no lock the recorder needs.
-- Two recorders of one run never overlap: the run mutex orders them.
+  for each other on that row, one at a time, never in a cycle: before the row, the recorder's locks are compatible
+  with the prelude and it takes no conversation; after it, the recorder takes only the clock `KEY SHARE`, which the
+  answer does not hold before the row. A recorder behind a first answer then finds the card answered but not used by
+  its run, and refuses (42501).
+- `qorpera_begin_action_review` in another run takes the same row `FOR UPDATE` after its own run entry, and needs
+  nothing the recorder holds.
+- A member's or another run's commit does not wait for a recorder: the folder clock is only ever updated
+  (`FOR NO KEY UPDATE`), which is compatible with `KEY SHARE`.
+- Two recorders of one run never overlap: the run mutex orders them, and the second replays.
 - No new company-wide lock, no new table or column, no cap of our own, no 40001 (test 361).
 
 ## 4. The runtime
 
 - **The gate passes its approval on.** `CloudActionGateResult` becomes `{ run: true; reviewId?: string }`. The id is
-  set on each approving path: the recorded allow, a card approved while the call held on it, and a parked approval
-  repeated (`begin` returns `approved`). The boundary puts it in the tool context as `actionReviewId`.
+  set on each approving path: the recorded allow (`cloud-action-review.ts`, record), a card approved while the call held
+  on it (await), and a parked approval repeated (`begin` returns `approved`). The gate passes on only an id that is a
+  UUID. The boundary puts it in the tool context as `actionReviewId`, beside the call's `argumentSha256`.
 - **Staging is split from the commit.** `CloudCompanyFolderClient.stage(units)` stages the bytes and returns an opaque
-  change set holding the units exactly as the commit sends them. `recordReview(actionReviewId, staged)` calls the
-  recorder, and `commitStaged(key, staged, { reviewId, receiptId })` commits the same units. `commit(key, units)` is
-  unchanged: it stages, then commits. TypeScript never computes the digest: both RPCs send the same JSON, and SQL
-  hashes its canonical text.
-- The gate passes on only an id that is a UUID. A call without one still runs, but cannot save a reviewed folder
-  change.
+  change set holding the units exactly as the commit sends them. `recordReview({ actionReviewId, tool, argumentSha256 },
+  staged)` calls the recorder through its own call path: it sends `p_binding` (the client holds it), not the actor.
+  `commitStaged(key, staged, { reviewId, receiptId })` commits the same units. `commit(key, units)` is unchanged: it
+  stages, then commits. TypeScript never computes the digest: both RPCs send the same JSON, and SQL hashes its
+  canonical text.
+- The RPC joins `CloudCompanyPathRpc`, both control lists (`FOLDER_RPCS`, so SQL codes come through, and `permitted`)
+  and the pinned test. Only a lost answer is retried; 23505 and 42501 are answers.
 - **A writer with delegation units** (W4; §5):
-  1. checks `completesFolderCommits`, pre-reads and refuses what can never be saved (as W1–W3);
+  1. checks `completesFolderCommits`, pre-reads and refuses what can never be saved, outside the receipt (as W1–W3).
+     Each such check must still pass once the call's own change is saved: a hire's "handle taken" check accepts the
+     agent its own call created;
   2. without an `actionReviewId`, refuses: "This change needs the automatic review, which did not run";
-  3. stages, then records the review. Any failure here is a `CloudToolRefusal`: nothing in the company changed, and a
-     record no commit uses is inert;
-  4. saves under its receipt with `reviewId`, `receiptId` and `expectedVersion`, and releases what it shows.
-- A retry of the commit sends the same staged units and review id. A lost recorder answer is retried with the same
-  request and replays.
-- The RPC joins `CloudCompanyPathRpc` and the control list, and the list's pinned test.
+  3. under its receipt (`requiresCompanyRevision`): stages, records the review, then `commitStaged` with `reviewId`,
+     `receiptId` and `expectedVersion`, and releases what it shows.
+- **Why inside the receipt.** A completed call replays its stored result from the receipt before anything is staged or
+  recorded. A call that runs again after a crash, before its commit, records again: it must build the same units, so W4
+  derives every generated id from the run and the call (as `releaseIdFor` does), and the recorder then replays. Any
+  error after the receipt begins is an unknown outcome, as for the commit; there are no refusals there.
+- Staging is not a change to the company. Bytes staged for a call that never commits count against storage until
+  their intents expire and are swept (C1d-2a); a full company can refuse at staging, as for any write.
+- A conflict ends the call. A redo is a new call with a new review, so a member who approved a card may be asked again.
 
 ## 5. What uses it
 
 - **W4** (one structured file type per PR, after R1): `hire_agent` (one `new_folder` unit with `agent.md` and the
   first todo), `create_group_chat` (`group.md`) and `manage_routine` (a routine file, after
-  `qorpera_prepare_routine_login`). STATE-FILES §5 has their formats and reads.
+  `qorpera_prepare_routine_login`). STATE-FILES §5 has their formats and reads. The commit round trip with a real hire
+  (F2's agent hook) is tested in W4's PR.
 - **`decide_routine`'s rewrite.** Today W3 refuses a decision that changes the title or the instructions on
-  `folder-v2` ("needs a member's review"). The gate already reviews such a call as delegation, and never raises a card
-  for it, so an ask is refused. With R1, an allowed rewrite records its approval and saves. This lands with W4's
-  routine PR.
-- **The Company File tools** (`company_write`, `company_delete`), once they write through the folder core. A
-  `company_delete` is reviewed as destructive and can use the recorder the same way. A `company_write` onto a
-  delegation path is not reviewed by tool name, so it stays denied until R2. The model is told to use the tool made for
-  the change.
+  `folder-v2` ("needs a member's review", `cloud-folder-routine-decision.ts:165-171`), and reads a `denied` /
+  `review_required` result as settled (:232-234). The gate already reviews such a call as delegation, and never raises a
+  card for it, so an ask is refused. With R1, an allowed rewrite records its approval and saves; when a review was
+  recorded, `review_required` becomes a defect, not "settled". This lands with W4's routine PR.
+- **`company_delete`**, once it writes through the folder core: reviewed as destructive, it uses the recorder the same
+  way. A `company_write` onto a delegation path is not reviewed by tool name, so it stays denied until R2. The model is
+  told to use the tool made for the change.
+- **Not reviewed here:** workers have no hiring or routine tools, and their asks are refused (no cards); coding
+  sessions are never reviewed; a view never carries an R1 review id (R2). A `folder-v2` run always has a requester.
+- **An approval stands as given.** As in v130, a card's answer stays valid when the call repeats in a later run, even
+  if the member's role changed meanwhile. The commit still checks the run's own authority.
 
 ## 6. Tests
 
-SQL test **769** (migration **20260929890000**), on 647's hand-built runs with their native rows (as 652), with
-files staged on the version-2 path (766's `pg_temp.stage`):
-- **Approvals.** The run's own allow records. An answered card used by this run records. Each of these is refused
-  (42501): a card used by another run, an unanswered ask, a denial, an answered denial, another run's allow, another
-  agent's review, another company's review, and an approved `external` action.
-- **One change set per approval.** The same digest replays the same row. Another digest is 23505.
-- **Bounds.** 0 or 1,001 units, a non-array, and an extra key are 22023.
-- **The commit.** A hire (`new_folder` with `agent.md`) saves with the recorded review. Without one it is denied
-  (`review_required`). With units changed after recording, or with another run's review, it is denied
-  (`review_required`). A review row whose decision is `deny` still gives `review_denied`, as 632 checks today.
-- **The run entry.** A `snapshot-v1` company's run, a paused company and a company being deleted are refused.
-- **Races: test 770** (dblink, on 648's committed fixture, as 653). A recorder waits for an answer in flight on the same
-  approval, and an answer waits for a recorder in flight; both orders finish without a deadlock. A member's commit does
-  not wait for a recorder in flight.
-- **Grants.** `anon` and `authenticated` cannot execute the recorder; `service_role` can.
+SQL test **769** (migration **20260929890000**), on 647's hand-built runs with their native rows (as 652), with files
+staged on the version-2 path by the test's own helper (open, confirm, seal):
+- **Approvals.** The run's own allow records, and its commit saves the deletion. A card's allow used by this run
+  records, through the holding call's wait and through a woken run's begin, with its member as the commit's approver; a
+  card whose member was deleted records a plain allow. Each of these is refused (42501): a card answered but not yet
+  used by this run, a card used by another run, an unanswered ask, a denial, an answered denial, another run's allow,
+  another agent's review, another company's row, an approved `external` action, a delegation by a tool that writes no
+  folder change sets (`manage_worker`), another tool's name, another argument digest, and an unknown id. A
+  `company_delete` approval records and saves.
+- **One change set per approval.** The same digest replays the same row; another digest is 23505. Two approvals of one
+  change set are two records, and either serves.
+- **The commit.** Without a record the deletion is denied (`review_required`); with units changed after recording, or
+  with another run's record, it is denied (`review_required`); with the record it saves and names it.
+- **Bounds.** 0 or 1,001 units, a non-array, a missing or extra key, a bad id, tool or digest are 22023, even while the
+  company is paused (the request is checked before the run entry).
+- **The run entry.** A `snapshot-v1` company's run, a paused company and a company being deleted are refused, and the
+  body checks the request, enters the run check, shares the approval and inserts, in that order.
+- **Grants.** `anon` and `authenticated` cannot execute the recorder; `service_role` can. Security definer, empty
+  search path.
+
+SQL test **770**, races (dblink, on 648's committed fixture, as 653):
+- another run's `begin` holding the approval row: the recorder waits at that row, then records;
+- a recorder holding it: the other run's `begin` waits, then finishes;
+- a member's commit beside a recorder in flight does not wait;
+- a first answer in flight: the recorder waits, then refuses (answered, not used by this run);
+- two recorders of one run: the second waits at the run mutex, then replays.
+
+Mutants of the recorder: 23 of 25 killed. The two that survive are equivalent: the agent filter (an approval row
+always names its run's agent) and a denied answer among the accepted ones (a used approval is always an allow, by the
+check constraint).
 
 Runtime:
-- The gate returns the review id on each approving path, and none on a read or an internal call.
-- The boundary passes `actionReviewId` to `execute`.
-- The folder client: `stage`, `recordReview` and `commit` send the same units; a refused recording is a
-  `CloudToolRefusal`.
+- The gate returns the review id on each approving path, none from a malformed answer, and none on a read or an
+  internal call.
+- The boundary passes `actionReviewId` to `execute`, and none when the review passed no id.
+- The folder client: `stage` stages once; `recordReview` and `commitStaged` send the same units; the recorder's request
+  is the binding and the call's approval, nothing of the actor; a lost answer is asked again with the same request;
+  23505, 40P01 and 42501 are not retried; a malformed answer is refused; only a change set this client staged is
+  recorded or committed.
 - The control list's pinned test.
 
 ## 7. Release
 
-- Feature PR, no bundle files. The guard for the cut: `to_regprocedure('public.qorpera_folder_record_review(jsonb,jsonb)')`
-  is absent live before it.
+- Feature PR, no bundle files. The cut's activation guard requires
+  `to_regprocedure('public.qorpera_folder_record_review(jsonb,jsonb)')`. Before the cut, confirm it is absent live.
 - The SQL and the runtime ship in one cut. The runtime calls the recorder only from a writer, and none does before W4,
   so the change is inert until then.
 

@@ -3,7 +3,8 @@
 -- approved action review (its own allow, or a card's allow it used) is recorded as the folder review of one change set,
 -- bound to the commit's own digest, and the commit then saves the run's deletion units. Everything else is refused: an
 -- approval of another run, agent or company, a denial, an open ask, an approved external action, and a second change
--- set. The request's bounds, the run entry and the grants. Runs are 647's hand-built runs with their native rows;
+-- set, an approval of another call or of a tool that writes no folder change sets. A card's member is the commit's
+-- approver. The request's bounds, the run entry and the grants. Runs are 647's hand-built runs with their native rows;
 -- files are staged on the version-2 path. Races are in 770.
 
 -- The version-2 stage helper (as 766): open, confirm what is missing, seal. A version-2 file is held to possession, so
@@ -43,16 +44,21 @@ begin
 end $$;
 -- The kernel's record of one acting call (qorpera_record_action_review): its id. 'ask' with no rule is the member's
 -- card in the agent's thread.
-create function pg_temp.action(p_binding jsonb, p_call text, p_decision text default 'allow', p_effect text default 'delegation')
-returns uuid language sql as $$
-	select (public.qorpera_record_action_review(p_binding, jsonb_build_object('callId', p_call, 'tool', 'hire_agent',
+create function pg_temp.action(p_binding jsonb, p_call text, p_decision text default 'allow', p_effect text default 'delegation',
+	p_tool text default 'hire_agent') returns uuid language sql as $$
+	select (public.qorpera_record_action_review(p_binding, jsonb_build_object('callId', p_call, 'tool', p_tool,
 		'effect', p_effect, 'argumentSha256', md5(p_call) || md5(p_call),
 		'action', jsonb_build_object('title', 'Hire an agent', 'target', 'nora', 'details', '{}'::jsonb),
 		'decision', p_decision, 'ruleIds', '[]'::jsonb, 'builtIn', 'none', 'reason', 'Fixture verdict.', 'proposedRule', null,
 		'reviewerModel', 'gpt-6-luna')) ->> 'reviewId')::uuid
 $$;
-create function pg_temp.record(p_binding jsonb, p_action uuid, p_units jsonb) returns jsonb language sql as $$
-	select public.qorpera_folder_record_review(p_binding, jsonb_build_object('actionReviewId', p_action, 'units', p_units))
+-- The recorder, for the call the approval is of (its tool and argument digest), unless told otherwise.
+create function pg_temp.record(p_binding jsonb, p_action uuid, p_units jsonb, p_call jsonb default '{}') returns jsonb language sql as $$
+	select public.qorpera_folder_record_review(p_binding, jsonb_build_object('actionReviewId', p_action,
+		'tool', coalesce(p_call ->> 'tool', (select tool_name from public.qorpera_action_reviews where id = p_action), 'hire_agent'),
+		'argumentSha256', coalesce(p_call ->> 'argumentSha256', (select argument_sha256 from public.qorpera_action_reviews where id = p_action),
+			repeat('0', 64)),
+		'units', p_units))
 $$;
 -- A member answers a card (Allow once unless told otherwise), as the answer leaves the row.
 create function pg_temp.answer(p_action uuid, p_answer text default 'allow_once') returns void language sql as $$
@@ -89,10 +95,10 @@ begin
 	r := pg_temp.record(b, v_action, u);
 	select * into v_row from public.qorpera_folder_reviews where id = (r ->> 'reviewId')::uuid;
 	if r <> jsonb_build_object('schema', 'qorpera.folder-review/v1', 'reviewId', md5('qorpera.folder-review:' || v_action::text)::uuid,
-			'decision', 'allow', 'units', 2)
+			'approvedBy', null, 'units', 2)
 		or v_row.environment_id <> '63400000-0000-4000-8000-000000000020' or v_row.run_id::text <> p ->> 'runId'
 		or v_row.change_set_sha256 <> public.qorpera_folder_change_set_sha256(u) or v_row.units <> '{1,2}'
-		or v_row.decision <> 'allow' or v_row.answer is not null then
+		or v_row.decision <> 'allow' or v_row.answer is not null or v_row.answered_by_user_id is not null then
 		raise exception 'The recorded review: % %', r, to_jsonb(v_row); end if;
 	-- A replay of the same change set returns the same record; another change set is refused.
 	if pg_temp.record(b, v_action, u) <> r then raise exception 'A replay returns the same record'; end if;
@@ -134,9 +140,15 @@ begin
 	w := public.qorpera_await_action_review(b, v_action, false);
 	if w ->> 'state' <> 'approved' then raise exception 'The holding call is approved: %', w; end if;
 	r := pg_temp.record(b, v_action, u);
+	if r ->> 'approvedBy' <> '63400000-0000-4000-8000-000000000002' or (select to_jsonb(f) - 'id' - 'environment_id' - 'run_id'
+			- 'change_set_sha256' - 'units' - 'created_at' from public.qorpera_folder_reviews f where id = (r ->> 'reviewId')::uuid)
+		<> jsonb_build_object('decision', 'ask', 'answer', 'allow', 'answered_by_user_id', '63400000-0000-4000-8000-000000000002',
+			'answered_at', (select answered_at from public.qorpera_action_reviews where id = v_action)) then
+		raise exception 'A card''s allow is recorded as its answer, with its member: %', r; end if;
 	perform pg_temp.expect(pg_temp.commit(x -> 'actor', 'recorder-card', u, (r ->> 'reviewId')::uuid), 1, 'saved');
-	if (select approver_user_id from public.qorpera_folder_commits where review_id = (r ->> 'reviewId')::uuid) is not null then
-		raise exception 'The card''s approver is on the action review, not on a folder answer'; end if;
+	if (select approver_user_id from public.qorpera_folder_commits where review_id = (r ->> 'reviewId')::uuid)
+		is distinct from '63400000-0000-4000-8000-000000000002' then
+		raise exception 'The commit records the member who approved the card'; end if;
 
 	-- A parked card answered later: the woken run's begin uses it, so that run records it and the first cannot.
 	v_action := pg_temp.action(b, 'call-ask-2', 'ask');
@@ -150,6 +162,17 @@ begin
 	perform pg_temp.raises_like(format('select pg_temp.record(%L, %L, %L)', b, v_action, u), '42501', 'This change has no approval in this run');
 	r := pg_temp.record(y -> 'binding', v_action, u);
 	perform pg_temp.expect(pg_temp.commit(y -> 'actor', 'recorder-woken', u, (r ->> 'reviewId')::uuid), 1, 'saved');
+
+	-- A card whose answering member was since deleted (on delete set null) is recorded as a plain allow.
+	v_action := pg_temp.action(b, 'call-ask-3', 'ask');
+	perform pg_temp.answer(v_action);
+	perform public.qorpera_await_action_review(b, v_action, false);
+	perform pg_temp.fx(format('update public.qorpera_action_reviews set answered_by_user_id = null where id = %L', v_action));
+	u := jsonb_build_array(pg_temp.deletes('rr7.txt'));
+	r := pg_temp.record(b, v_action, u);
+	if r ->> 'approvedBy' is not null or (select decision from public.qorpera_folder_reviews where id = (r ->> 'reviewId')::uuid) <> 'allow' then
+		raise exception 'A card without its member is a plain allow: %', r; end if;
+	perform pg_temp.expect(pg_temp.commit(x -> 'actor', 'recorder-no-member', u, (r ->> 'reviewId')::uuid), 1, 'saved');
 end $$;
 
 -- 3. What is never an approval here: a denial, an answered denial, another run's allow, another agent's, another
@@ -176,34 +199,63 @@ begin
 	perform pg_temp.fx(format('update public.qorpera_action_reviews set profile_id = %L where id = %L',
 		'64700000-0000-4000-8000-000000000011', v_action));
 	perform pg_temp.raises_like(format('select pg_temp.record(%L, %L, %L)', b, v_action, u), '42501', c_refused);
-	-- An approved email never stands for folder units; a destructive action does.
+	-- An approved email never stands for folder units, nor does a delegation by a tool that writes none.
 	perform pg_temp.raises_like(format('select pg_temp.record(%L, %L, %L)', b, pg_temp.action(b, 'call-external', 'allow', 'external'), u),
 		'42501', c_refused);
+	perform pg_temp.raises_like(format('select pg_temp.record(%L, %L, %L)', b,
+		pg_temp.action(b, 'call-worker', 'allow', 'delegation', 'manage_worker'), u), '42501', c_refused);
+	-- The approval is of one call: another tool's name or another argument digest is refused.
+	v_action := pg_temp.action(b, 'call-exact');
+	perform pg_temp.raises_like(format('select pg_temp.record(%L, %L, %L, %L)', b, v_action, u, '{"tool":"create_group_chat"}'),
+		'42501', c_refused);
+	perform pg_temp.raises_like(format('select pg_temp.record(%L, %L, %L, %L)', b, v_action, u,
+		jsonb_build_object('argumentSha256', repeat('a', 64))), '42501', c_refused);
+	-- A deletion (company_delete, destructive) records and saves.
 	perform pg_temp.expect(pg_temp.commit(x -> 'actor', 'recorder-destructive', u,
-		(pg_temp.record(b, pg_temp.action(b, 'call-destructive', 'allow', 'destructive'), u) ->> 'reviewId')::uuid), 1, 'saved');
+		(pg_temp.record(b, pg_temp.action(b, 'call-destructive', 'allow', 'destructive', 'company_delete'), u) ->> 'reviewId')::uuid), 1, 'saved');
 	perform pg_temp.raises_like(format('select pg_temp.record(%L, %L, %L)', b, extensions.gen_random_uuid(), u), '42501', c_refused);
 	if exists (select 1 from public.qorpera_folder_reviews where change_set_sha256 = public.qorpera_folder_change_set_sha256(u)
 			and run_id::text <> x -> 'actor' ->> 'runId') then
 		raise exception 'A refused recording writes nothing'; end if;
+	-- Two approvals of one change set are two records, and either serves the commit.
+	u := jsonb_build_array(pg_temp.deletes('rr8.txt'));
+	if (pg_temp.record(b, pg_temp.action(b, 'call-twice-1'), u) ->> 'reviewId')
+		= (pg_temp.record(b, pg_temp.action(b, 'call-twice-2'), u) ->> 'reviewId') then
+		raise exception 'Each approval has its own record'; end if;
+	perform pg_temp.expect(pg_temp.commit(x -> 'actor', 'recorder-twice', u, md5('qorpera.folder-review:'
+		|| (select id from public.qorpera_action_reviews where call_id = 'call-twice-2')::text)::uuid), 1, 'saved');
 end $$;
 
 -- 4. The request: exactly its two keys, a review id, and 1 to 1000 units (the commit's own bound).
 do $$
 declare x jsonb := pg_temp.agent_run(); b jsonb := x -> 'binding'; v_action uuid := pg_temp.action(b, 'call-bounds');
 	v_unit jsonb := jsonb_build_object('op', 'mkdir', 'path', 'rr-bounds'); v_request jsonb;
+	v_call jsonb := jsonb_build_object('actionReviewId', v_action, 'tool', 'hire_agent',
+		'argumentSha256', md5('call-bounds') || md5('call-bounds'));
 begin
 	foreach v_request in array array[
-		jsonb_build_object('actionReviewId', v_action, 'units', '[]'::jsonb),
-		jsonb_build_object('actionReviewId', v_action, 'units', (select jsonb_agg(v_unit) from generate_series(1, 1001))),
-		jsonb_build_object('actionReviewId', v_action, 'units', v_unit),
-		jsonb_build_object('actionReviewId', v_action),
-		jsonb_build_object('actionReviewId', v_action, 'units', jsonb_build_array(v_unit), 'decision', 'allow'),
-		jsonb_build_object('actionReviewId', 'not-a-uuid', 'units', jsonb_build_array(v_unit)),
-		jsonb_build_object('actionReviewId', 42, 'units', jsonb_build_array(v_unit)),
+		v_call || jsonb_build_object('units', '[]'::jsonb),
+		v_call || jsonb_build_object('units', (select jsonb_agg(v_unit) from generate_series(1, 1001))),
+		v_call || jsonb_build_object('units', v_unit),
+		v_call,
+		v_call || jsonb_build_object('units', jsonb_build_array(v_unit), 'decision', 'allow'),
+		v_call || jsonb_build_object('actionReviewId', 'not-a-uuid', 'units', jsonb_build_array(v_unit)),
+		v_call || jsonb_build_object('actionReviewId', 42, 'units', jsonb_build_array(v_unit)),
+		(v_call - 'tool') || jsonb_build_object('units', jsonb_build_array(v_unit)),
+		v_call || jsonb_build_object('tool', 7, 'units', jsonb_build_array(v_unit)),
+		v_call || jsonb_build_object('argumentSha256', upper(md5('a') || md5('a')), 'units', jsonb_build_array(v_unit)),
+		(v_call - 'argumentSha256') || jsonb_build_object('units', jsonb_build_array(v_unit)),
 		'[]'::jsonb] loop
 		perform pg_temp.raises_like(format('select public.qorpera_folder_record_review(%L, %L)', b, v_request), '22023',
 			'Folder review request is invalid');
 	end loop;
+	-- The request is checked before the run entry: a malformed one is refused as such even while the company is paused.
+	perform pg_temp.fx(format('insert into public.qorpera_company_execution_pauses(profile_id, paused_by_user_id, reason) values (%L, %L, %L)',
+		'63400000-0000-4000-8000-000000000010', '63400000-0000-4000-8000-000000000001', 'test'));
+	perform pg_temp.raises_like(format('select public.qorpera_folder_record_review(%L, %L)', b, v_call), '22023',
+		'Folder review request is invalid');
+	perform pg_temp.fx(format('delete from public.qorpera_company_execution_pauses where profile_id = %L',
+		'63400000-0000-4000-8000-000000000010'));
 	if (pg_temp.record(b, v_action, (select jsonb_agg(v_unit) from generate_series(1, 1000))) ->> 'units')::integer <> 1000 then
 		raise exception 'A change set of 1000 units is recorded'; end if;
 end $$;
@@ -229,8 +281,8 @@ begin
 	end loop;
 	-- The body enters through the run check, before any read of the approval.
 	if pg_get_functiondef('public.qorpera_folder_record_review(jsonb,jsonb)'::regprocedure)
-			not like '%v_tool := public.qorpera_folder_tool_run(p_binding, ''[]''::jsonb);%from public.qorpera_action_reviews%for share;%insert into public.qorpera_folder_reviews%' then
-		raise exception 'The recorder enters through the run check, then shares the approval, then inserts'; end if;
+			not like '%Folder review request is invalid%v_tool := public.qorpera_folder_tool_run(p_binding, ''[]''::jsonb);%from public.qorpera_action_reviews%for share;%insert into public.qorpera_folder_reviews%' then
+		raise exception 'The recorder checks the request, enters through the run check, shares the approval, then inserts'; end if;
 end $$;
 
 -- 6. Grants: only the runtime's role, through the Company File control list.
