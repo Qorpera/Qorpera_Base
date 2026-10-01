@@ -21,6 +21,15 @@ async function fixture() {
 }
 
 const PATH = "agents/nora/todos/call-the-bank.md";
+/** The tool's own refusal before any effect, which the boundary shows the model as REFUSED: <reason>. */
+async function refuses(call: Promise<unknown>, reason: string) {
+	const error = await call.then(
+		() => null,
+		(thrown: unknown) => thrown,
+	);
+	expect(error).toBeInstanceOf(CloudToolRefusal);
+	expect((error as Error).message).toContain(reason);
+}
 const parse = (content: { value: unknown }) => JSON.parse(String(content.value));
 
 it("writes a new todo as its file, under the call's receipt, making the todos folder first", async () => {
@@ -149,10 +158,12 @@ it("binds a call's whole request to its receipt: the same operationKey with othe
 it("refuses a todo file that does not read as a todo, to change it or to show it", async () => {
 	const f = await fixture();
 	f.seed(PATH, "---\ntitle: no id\n---\n");
-	await expect(
+	await refuses(
 		f.todos().change({ action: "done", operationKey: "todo-1", todoKey: "call-the-bank" }, f.context),
-	).rejects.toThrow("does not read as a todo");
-	await expect(f.todos().list({ todoKey: "call-the-bank" }, f.context, () => true)).rejects.toThrow(
+		"does not read as a todo",
+	);
+	await refuses(
+		f.todos().list({ todoKey: "call-the-bank" }, f.context, () => true),
 		"does not read as a todo",
 	);
 	expect(f.ledger.size).toBe(0);
@@ -163,24 +174,24 @@ it("refuses what can never be saved, before any receipt", async () => {
 	const f = await fixture();
 	const todos = f.todos();
 	for (const todoKey of ["call.the.bank", "Call-the-bank", "call_the_bank", "a".repeat(65)])
-		await expect(
+		await refuses(
 			todos.change({ action: "upsert", operationKey: "k", todoKey, title: "x", state: "open" }, f.context),
-		).rejects.toThrow("a todoKey is the todo's file name");
-	// Each is the tool's own refusal before any effect, which the boundary shows the model (REFUSED: ...).
-	await expect(
+			"a todoKey is the todo's file name",
+		);
+	await refuses(
 		todos.change({ action: "done", operationKey: "k", todoKey: "nothing-here" }, f.context),
-	).rejects.toBeInstanceOf(CloudToolRefusal);
-	await expect(
-		todos.change({ action: "done", operationKey: "k", todoKey: "nothing-here" }, f.context),
-	).rejects.toThrow("You have no todo with that todoKey");
+		"You have no todo with that todoKey",
+	);
 	await todos.change({ action: "upsert", operationKey: "todo-1", todoKey: "call-the-bank", title: "x" }, f.context);
 	await todos.change({ action: "cancel", operationKey: "todo-2", todoKey: "call-the-bank" }, f.context);
-	await expect(
+	await refuses(
 		todos.change({ action: "upsert", operationKey: "todo-3", todoKey: "call-the-bank", title: "again" }, f.context),
-	).rejects.toThrow("a closed todo is not opened again");
-	await expect(
+		"a closed todo is not opened again",
+	);
+	await refuses(
 		todos.change({ action: "done", operationKey: "todo-4", todoKey: "call-the-bank" }, f.context),
-	).rejects.toThrow("already closed the other way");
+		"already closed the other way",
+	);
 	expect(f.ledger.size).toBe(2);
 });
 
