@@ -18,7 +18,7 @@ Status: W1a is live (v150, `20260928259260_runtime_event_intake`) and W2 is live
 `20260928269290_runtime_event_wakes`), both accepted; the intake is switched on. M2a is merged
 (`20260928299650_runtime_company_mailboxes`, release v154), with mail switched off until the domain exists.
 M2b is merged (`20260928309740_runtime_company_mail_sending`, release v155), with sending switched off; the founder's
-sender-name rule is in review (`20260929810000_runtime_company_mail_sender_names`). W1b takes a fresh slot when it
+sender-name rule is in review (`20260928319810_runtime_company_mail_sender_names`). W1b takes a fresh slot when it
 starts.
 
 ## Words
@@ -41,7 +41,7 @@ starts.
 | W3 | Agents create, pause and remove hooks (`manage_hook`) | registered when started |
 | M2a | Company mailboxes, receiving: owners create them, the mail provider's webhook fills them, routines wake on mail | `20260928299650` |
 | M2b | Sending as a mailbox, as the agent with an AI line: `send_mail`, the outbox and its sender | `20260928309740` |
-| M2b+ | Founder decisions of 1 October: no sender that reads as Qorpera | `20260929810000` |
+| M2b+ | Founder decisions of 1 October: no sender that reads as Qorpera | `20260928319810` |
 | M2c | Attachments' contents, threads and sent mail in the folder | registered when started |
 
 Each step is a release-train feature PR: no bundle, manifest or activation files, an independent
@@ -396,7 +396,7 @@ again, finds the mailbox (live, of the run's company and environment, not paused
   invisible format characters such as bidi controls removed) at the mailbox's address.
 - The AI line: the text's last paragraph is `Written and sent by <agent>, an AI agent working for <company>.` The
   database adds it; no agent can leave it out. It is not placed after a signature separator, which clients dim.
-- Never as if from Qorpera (founder decision, 1 October 2026; `20260929810000`): a send is refused (42501) when the
+- Never as if from Qorpera (founder decision, 1 October 2026; `20260928319810`): a send is refused (42501) when the
   agent's name, the company's name or the mailbox's local part reads as Qorpera however it is spelled (case,
   separators, accents, full width, look-alike Cyrillic or Greek letters and digits), and no mailbox is created
   with such a name (22023). Names are not refused where they are set; the check guards the From line.

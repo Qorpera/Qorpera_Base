@@ -1,5 +1,5 @@
 -- @fixture 733_runtime_company_mail_sending.test.sql until "-- Requests: closed shapes"
--- Company mail, sender names (20260929810000; founder decision of 1 October 2026): email never looks like it comes
+-- Company mail, sender names (20260928319810; founder decision of 1 October 2026): email never looks like it comes
 -- from Qorpera. A send is refused when the agent's name, the company's name or the mailbox's local part reads as
 -- Qorpera, however it is spelled, and no mailbox is created with such a name. Other names send as before.
 
