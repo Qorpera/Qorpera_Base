@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { parseCompanyStateFile } from "@qorpera/cloud-client/company-state-files";
 import type { CloudFileReference } from "@qorpera/cloud-client/node/cloud-object-store";
 import type { JsonValue } from "@qorpera/contracts";
 import {
@@ -39,6 +40,7 @@ async function fixture() {
 	const receipt = { resourceId: randomUUID(), resourceRevision: 1, grantId: randomUUID(), grantRevision: 1 };
 	const bytesBySha = new Map<string, Uint8Array>();
 	const files = new Map<string, Stored>();
+	const rowIds = new Map<string, string>();
 	const folders = new Set<string>(["agents", "agents/nora"]);
 	const commits: { key: string; receiptId: unknown; units: Record<string, unknown>[] }[] = [];
 	const releases: Record<string, unknown>[] = [];
@@ -115,6 +117,58 @@ async function fixture() {
 					seq: any ? seq : null,
 					replay: false,
 					units: results,
+				};
+			}
+			// The todo index as the commit keeps it: one row per todo file, in the order the files were made.
+			if (method === "qorpera_folder_agent_todos") {
+				const request = args.p_request as {
+					includeClosed?: boolean;
+					state?: string;
+					search?: string;
+					cursor?: string;
+				};
+				const rows = [...files.entries()]
+					.filter(([path]) => /^agents\/nora\/todos\/[^/]+\.md$/.test(path))
+					.map(([path, stored]) => {
+						const parsed = parseCompanyStateFile(
+							path,
+							new TextDecoder().decode(bytesBySha.get(stored.file.fileSha256)),
+						);
+						const todo = parsed?.ok && parsed.file.kind === "todo" ? parsed.file : null;
+						if (!todo) throw new Error("Fixture todo does not parse");
+						if (!rowIds.has(path)) rowIds.set(path, randomUUID());
+						return { path, stored, todo, id: rowIds.get(path) as string };
+					})
+					.reverse()
+					.filter(({ path, todo }) => {
+						const key = path.slice("agents/nora/todos/".length, -3);
+						return (
+							(request.state
+								? todo.status === request.state
+								: request.includeClosed || todo.status === "open" || todo.status === "blocked") &&
+							(!request.search ||
+								todo.title.toLowerCase().includes(request.search.toLowerCase()) ||
+								key.includes(request.search.toLowerCase()))
+						);
+					});
+				const start = request.cursor ? rows.findIndex((row) => row.id === request.cursor) + 1 : 0;
+				const page = rows.slice(start, start + 32);
+				const more = rows.length - start - page.length;
+				return {
+					schema: "qorpera.folder-agent-todos/v1",
+					todos: page.map(({ path, stored, todo, id }) => ({
+						todoKey: path.slice("agents/nora/todos/".length, -3),
+						title: todo.title,
+						state: todo.status,
+						detail: todo.detail.slice(0, 200),
+						...(todo.detail.length > 200 ? { detailTruncated: true } : {}),
+						path,
+						version: stored.version,
+						updatedAt: stored.updatedAt,
+						cursor: id,
+					})),
+					moreTodos: more,
+					nextCursor: more > 0 ? (page.at(-1)?.id ?? null) : null,
 				};
 			}
 			if (method === "qorpera_folder_list") {
@@ -346,7 +400,7 @@ it("refuses before reading or writing when this run cannot complete a folder wri
 	expect(f.ledger.size).toBe(0);
 });
 
-it("lists the todos from their files, newest first, open by default, and releases what it shows", async () => {
+it("lists the todos from the index, newest first, and reads one todo's whole content from its file", async () => {
 	const f = await fixture();
 	const todos = f.todos();
 	for (const [key, title] of [
@@ -361,39 +415,43 @@ it("lists the todos from their files, newest first, open by default, and release
 	await todos.change({ action: "done", operationKey: "done-1", todoKey: "send-the-offer" }, f.context);
 	const releases = f.releases.length;
 	const fits = () => true;
-	const listed = parse(await todos.list({}, { ...f.context, callId: "list-1" }, fits));
+	const listed = parse(await todos.list({}, f.context, fits));
 	expect(listed).toMatchObject({
 		schema: "qorpera.agent-todos/v1",
 		runId: f.identity.runId,
 		moreTodos: 0,
 		nextCursor: null,
 		todos: [
-			{ todoKey: "book-the-room", title: "Book the room", state: "open" },
+			{ todoKey: "book-the-room", title: "Book the room", state: "open", detailTruncated: true },
 			{ todoKey: "call-the-bank", title: "Call the bank", state: "open" },
 		],
 	});
-	expect(listed.todos[0].detail).toHaveLength(281);
-	expect(f.releases).toHaveLength(releases + 1);
-	expect((f.releases.at(-1) as { p_reads: unknown[] }).p_reads).toHaveLength(2);
-	// Closed ones on request, a search, one todo's whole detail.
+	expect(listed.todos[0].detail).toHaveLength(200);
+	expect(listed.todos[0]).not.toHaveProperty("cursor");
+	// An index page is no folder read: nothing to release.
+	expect(f.releases).toHaveLength(releases);
 	expect(parse(await todos.list({ state: "done" }, f.context, fits)).todos).toMatchObject([
 		{ todoKey: "send-the-offer" },
 	]);
 	expect(parse(await todos.list({ includeClosed: true, search: "BANK" }, f.context, fits)).todos).toMatchObject([
 		{ todoKey: "call-the-bank" },
 	]);
-	expect(parse(await todos.list({ todoKey: "call-the-bank" }, f.context, fits)).todos[0].detail).toBe("x".repeat(400));
-	// A page that fits one todo continues from its version.
+	// One todo's whole content comes from its file, released with the result.
+	const one = parse(await todos.list({ todoKey: "call-the-bank" }, { ...f.context, callId: "one" }, fits));
+	expect(one.todos).toMatchObject([{ todoKey: "call-the-bank", detail: "x".repeat(400), state: "open" }]);
+	expect(f.releases).toHaveLength(releases + 1);
+	expect((f.releases.at(-1) as { p_reads: { path: string }[] }).p_reads).toMatchObject([
+		{ path: "agents/nora/todos/call-the-bank.md" },
+	]);
+	expect(parse(await todos.list({ todoKey: "nothing-here" }, f.context, fits))).toMatchObject({ todos: [] });
+	// A page that fits one todo continues from the index's cursor.
 	const first = parse(await todos.list({}, f.context, (text) => text.split('"todoKey"').length <= 2));
-	// The closed todo changed last and sorts first, so one file is left after this page.
 	expect(first).toMatchObject({ todos: [{ todoKey: "book-the-room" }], moreTodos: 1 });
-	expect(first.nextCursor).toBe(first.todos[0].version);
 	const second = parse(await todos.list({ cursor: first.nextCursor }, f.context, fits));
-	expect(second.todos).toMatchObject([{ todoKey: "call-the-bank" }]);
-	await expect(todos.list({ cursor: randomUUID() }, f.context, fits)).rejects.toThrow("list again without it");
+	expect(second).toMatchObject({ todos: [{ todoKey: "call-the-bank" }], moreTodos: 0, nextCursor: null });
 });
 
-it("lists nothing for an agent without a todos folder", async () => {
+it("lists nothing for an agent without todos, and releases nothing", async () => {
 	const f = await fixture();
 	expect(parse(await f.todos().list({}, f.context, () => true))).toMatchObject({
 		todos: [],

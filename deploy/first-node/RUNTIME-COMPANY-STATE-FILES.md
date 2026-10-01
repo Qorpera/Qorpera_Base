@@ -766,11 +766,15 @@ C1d (bytes):
   requester is the run's, and the todos folder is made first when missing. A closed todo is not opened again.
 - `done` and `cancel` change only `status` (`setCompanyStateSettings`), and show the todo as read, released with the
   result.
-- `list` reads the files: the folder's listing, newest first, then each file until a page fits one result (open and
-  blocked by default; `state`, `includeClosed` and `search` as before; `todoKey` shows one todo's whole detail). The
-  cursor is the version of the last todo shown, and `moreTodos` counts the files after it. A list shows no workers:
-  `manage_worker` refuses `folder-v2` until F2-5b.
-- Open with F1: whether `list` may read the todo index instead (one read, no release).
+- `list` reads the todo index (`qorpera_folder_agent_todos`, migration `20260929770000`, test 763), which the commit
+  updates in the same transaction as the files: one plain read, paged as today's list (32 a page, newest first, open
+  and blocked by default, `state`, `includeClosed` and `search` as before, the cursor of the last todo shown). A page
+  shows the start of each detail, as today, and is no folder read, so nothing is released. `todoKey` reads that one
+  todo's file and shows its whole detail, released with the result. A list shows no workers: `manage_worker` refuses
+  `folder-v2` until F2-5b.
+- The read takes the run's plain read check (no lock; a paused company refuses it), a company run that is not a
+  worker, and read authority on the agent's todos folder. A deleted todo file is not listed.
+- The index over the files is the coordinator's ruling of 2026-10-01; F1 may overrule it in a follow-up.
 
 Until the mount's writes are accepted (F3), these tools become thin writers of these files:
 `hire_agent`, `create_group_chat`, `organize_sidebar`, `manage_todo`, `manage_routine` and

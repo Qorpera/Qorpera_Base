@@ -10,7 +10,6 @@ import {
 import {
 	type CloudCompanyFolderClient,
 	type CloudCompanyFolderFileEntry,
-	type CloudCompanyFolderRelease,
 	type CloudCompanyFolderUnit,
 	sha256,
 } from "./cloud-company-folder-client.ts";
@@ -40,19 +39,12 @@ const TODO_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const TODO_NAME_BYTES = 64;
 const TOOL_VERSION = "folder-v2/1";
 
-/** At most this many todos a page, as the kernel's pages had. */
-const PAGE_TODOS = 32;
-/** A listed todo shows the start of its detail; naming its todoKey shows all of it. */
-const DETAIL_PREVIEW = 280;
-/** More todo files than this in one agent's folder is not a listing this tool reads. */
-const MAX_TODO_FILES = 10_000;
-
 export interface CloudFolderTodoListing {
 	readonly includeClosed?: boolean;
 	readonly todoKey?: string;
 	readonly state?: TodoFile["status"];
 	readonly search?: string;
-	/** The version of the last todo an earlier page showed. */
+	/** The cursor of the last todo an earlier page showed (its nextCursor). */
 	readonly cursor?: string;
 }
 
@@ -108,10 +100,10 @@ export class CloudFolderTodos {
 	}
 
 	/**
-	 * The agent's todos from their files, newest first, as many as fit one result (`fits`). Each shown todo's read is
-	 * released with the result. Open and blocked by default; `state` or `includeClosed` widen it; `search` matches a
-	 * title or a key in any case; `todoKey` shows one todo's whole detail. A page continues after the todo whose version
-	 * is the cursor; `moreTodos` counts the files after the last one shown, so a last page may come back empty.
+	 * The agent's todos, newest first, as many as fit one result (`fits`). A page comes from the todo index, which the
+	 * folder core's commit updates with the files (one read; the coordinator's ruling of 2026-10-01): open and blocked
+	 * by default, `state` or `includeClosed` widen it, `search` matches a title or a key in any case, and `cursor`
+	 * continues after a page. `todoKey` shows one todo's whole content, read from its file and released with the result.
 	 */
 	async list(
 		request: CloudFolderTodoListing,
@@ -119,92 +111,69 @@ export class CloudFolderTodos {
 		fits: (text: string) => boolean,
 	): Promise<CloudToolContent> {
 		const signal = context.signal;
-		type Shown = Record<string, unknown> & { read: CloudCompanyFolderRelease; position: number };
-		const shownOf = (
-			entry: CloudCompanyFolderFileEntry,
-			todoKey: string,
-			todo: TodoFile,
-			whole: boolean,
-			position: number,
-		): Shown => ({
-			todoKey,
-			title: todo.title,
-			state: todo.status,
-			detail:
-				whole || todo.detail.length <= DETAIL_PREVIEW ? todo.detail : `${todo.detail.slice(0, DETAIL_PREVIEW)}…`,
-			path: entry.path,
-			version: entry.version,
-			updatedAt: entry.updatedAt,
-			read: {
-				path: entry.path,
-				version: entry.version,
-				authority: entry.authority,
-				fileSha256: entry.file.fileSha256,
-			},
-			position,
-		});
-		const todoOf = (path: string, text: string) => {
-			const parsed = parseCompanyStateFile(path, text);
-			return parsed?.ok && parsed.file.kind === "todo" ? parsed.file : null;
-		};
-		let items: Shown[] = [];
-		let files = 0;
+		const frame = { schema: "qorpera.agent-todos/v1", runId: this.#identity.runId };
 		if (request.todoKey !== undefined) {
 			const path = this.path(request.todoKey);
 			const found = await this.#folder.readText(path, COMPANY_STATE_FILE_MAX_BYTES, signal);
-			const todo = found ? todoOf(path, found.text) : null;
-			if (found && todo) items = [shownOf(found.entry, request.todoKey, todo, true, 0)];
-			files = items.length;
-		} else if ((await this.#folder.read(this.#todos, signal)).entry) {
-			const listed = (await this.#folder.listAll(this.#todos, { maxEntries: MAX_TODO_FILES }, signal)).entries
-				.filter(
-					(entry): entry is CloudCompanyFolderFileEntry => entry.kind === "file" && entry.path.endsWith(".md"),
-				)
-				.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || a.path.localeCompare(b.path));
-			files = listed.length;
-			let start = 0;
-			if (request.cursor !== undefined) {
-				start = listed.findIndex((entry) => entry.version === request.cursor) + 1;
-				if (start === 0)
-					throw new CloudToolArgumentRefusal("That cursor is no longer a todo's version; list again without it");
-			}
-			const search = request.search?.toLowerCase();
-			for (let position = start; position < listed.length && items.length < PAGE_TODOS; position++) {
-				const entry = listed[position];
-				if (!entry) continue;
-				const todoKey = entry.path.slice(this.#todos.length + 1, -3);
-				const found = await this.#folder.readText(entry.path, COMPANY_STATE_FILE_MAX_BYTES, signal);
-				const todo = found ? todoOf(entry.path, found.text) : null;
-				if (!found || !todo) continue;
-				if (request.state ? todo.status !== request.state : !request.includeClosed && closed(todo.status)) continue;
-				if (search && !todo.title.toLowerCase().includes(search) && !todoKey.includes(search)) continue;
-				items.push(shownOf(found.entry, todoKey, todo, false, position));
-			}
+			const parsed = found ? parseCompanyStateFile(path, found.text) : null;
+			const todo = parsed?.ok && parsed.file.kind === "todo" ? parsed.file : null;
+			const output = cloudToolJsonText({
+				...frame,
+				todos:
+					found && todo
+						? [
+								{
+									todoKey: request.todoKey,
+									title: todo.title,
+									state: todo.status,
+									detail: todo.detail,
+									path: found.entry.path,
+									version: found.entry.version,
+									updatedAt: found.entry.updatedAt,
+								},
+							]
+						: [],
+				moreTodos: 0,
+				nextCursor: null,
+			});
+			if (found && todo)
+				await this.#folder.release(
+					releaseIdFor(this.#identity.runId, context.callId),
+					[
+						{
+							path: found.entry.path,
+							version: found.entry.version,
+							authority: found.entry.authority,
+							fileSha256: found.entry.file.fileSha256,
+						},
+					],
+					sha256(new TextEncoder().encode(output)),
+					signal,
+				);
+			return { kind: "text", value: output };
 		}
+		const page = await this.#folder.agentTodos(
+			{
+				...(request.includeClosed ? { includeClosed: true } : {}),
+				...(request.state ? { state: request.state } : {}),
+				...(request.search ? { search: request.search } : {}),
+				...(request.cursor ? { cursor: request.cursor } : {}),
+			},
+			signal,
+		);
 		const render = (count: number) => {
-			const shown = items.slice(0, count);
-			const last = shown.at(-1);
-			const more = request.todoKey !== undefined || !last ? 0 : files - (last.position + 1);
+			const left = page.moreTodos + page.todos.length - count;
 			return cloudToolJsonText({
-				schema: "qorpera.agent-todos/v1",
-				runId: this.#identity.runId,
-				todos: shown.map(({ read: _read, position: _position, ...item }) => item),
-				moreTodos: more,
-				nextCursor: more > 0 && last ? last.version : null,
+				...frame,
+				todos: page.todos.slice(0, count).map(({ cursor: _cursor, ...todo }) => todo),
+				moreTodos: left,
+				nextCursor: left === 0 ? null : (page.todos[count - 1]?.cursor ?? null),
 			});
 		};
 		// Grown from one todo, so a wide page is never rendered whole.
-		let count = Math.min(items.length, 1);
-		while (count < items.length && fits(render(count + 1))) count++;
-		const output = render(count);
-		if (count > 0)
-			await this.#folder.release(
-				releaseIdFor(this.#identity.runId, context.callId),
-				items.slice(0, count).map((item) => item.read),
-				sha256(new TextEncoder().encode(output)),
-				signal,
-			);
-		return { kind: "text", value: output };
+		let count = Math.min(page.todos.length, 1);
+		while (count < page.todos.length && fits(render(count + 1))) count++;
+		return { kind: "text", value: render(count) };
 	}
 
 	async change(request: CloudFolderTodoChange, context: CloudToolContext): Promise<CloudToolContent> {
