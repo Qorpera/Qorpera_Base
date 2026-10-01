@@ -443,6 +443,9 @@ describe("which refusals the native object transport sends again", () => {
 	});
 
 	it("never starts a retry that its budget cannot hold, and never outlasts the budget", async () => {
+		// The shortest pauses (100 ms, then 300 ms) leave room for a busy test machine: the second attempt is still
+		// sent with up to 300 ms of timer lag on the first.
+		vi.spyOn(Math, "random").mockReturnValue(0);
 		// Each conflict answers after 400 ms, as a lock wait would; the budget here is 1.5 s.
 		const t = transport(
 			() =>
@@ -452,6 +455,7 @@ describe("which refusals the native object transport sends again", () => {
 			1_500,
 		);
 		await expect(t.put()).rejects.toThrow("(409)");
+		vi.mocked(Math.random).mockRestore();
 		const elapsed = performance.now() - t.started;
 		// The second attempt's answer came after ~0.9 s; a third would start after its 300 ms pause with less than
 		// 500 ms of the budget left, so it is not sent.
