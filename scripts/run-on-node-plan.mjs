@@ -222,6 +222,8 @@ export const STEPS = [
 			/^packages\/runtime\/test\/fixtures\/(coding-turn-|wake-policies\.json$)/,
 			/^packages\/runner-orchestrator\/src\/lxd-office-[a-z-]+-control\.ts$/,
 			/^packages\/web\/src\/cloud\/email-drafts\.ts$/,
+			// The folder service's parsers and tree, checked against the folder core's own answers.
+			/^packages\/object-gateway\/src\/folder-service\/(core|view-tree)\.ts$/,
 			/^scripts\/test-runtime-wake-envelope\.mjs$/,
 			...HOSTED_DB_SCRIPTS.map(regex),
 		],

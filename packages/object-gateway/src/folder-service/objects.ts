@@ -237,30 +237,36 @@ export class NasObjects {
 		}
 	}
 
-	/** Runs an object read when one of the parallel slots is free, under a deadline. A read past its deadline keeps
-	 * its slot until the share answers, so a hung share cannot pile up reads. */
+	/** Runs an object read when one of the parallel slots is free. The deadline counts from the request, waiting
+	 * included; a read past it keeps its slot until the share answers, so a hung share cannot pile up reads, and a
+	 * read whose caller gave up while it waited never starts. */
 	async #turn<T>(operation: () => Promise<T>): Promise<T> {
-		// A finished read hands its slot straight to the next waiting one.
-		if (this.#running >= this.#parallel) await new Promise<void>((go) => this.#waiting.push(go));
-		else this.#running++;
-		const work = Promise.resolve().then(operation);
-		void work.then(
-			() => this.#done(),
-			() => this.#done(),
-		);
+		let expired = false;
 		let timer: ReturnType<typeof setTimeout> | undefined;
+		const deadline = new Promise<never>((_, reject) => {
+			timer = setTimeout(() => {
+				expired = true;
+				reject(new ObjectUnavailableError("The storage server did not answer"));
+			}, this.#timeoutMs);
+		});
+		const work = (async (): Promise<T> => {
+			// A finished read hands its slot straight to the next waiting one.
+			if (this.#running >= this.#parallel) await new Promise<void>((go) => this.#waiting.push(go));
+			else this.#running++;
+			try {
+				if (expired) throw new ObjectUnavailableError("The storage server did not answer");
+				return await operation();
+			} finally {
+				this.#done();
+			}
+		})();
 		try {
-			return await Promise.race([
-				work,
-				new Promise<never>((_, reject) => {
-					timer = setTimeout(
-						() => reject(new ObjectUnavailableError("The storage server did not answer")),
-						this.#timeoutMs,
-					);
-				}),
-			]);
+			return await Promise.race([work, deadline]);
 		} finally {
 			clearTimeout(timer);
+			// The losing side's rejection is handled here, not left unhandled.
+			void work.catch(() => undefined);
+			void deadline.catch(() => undefined);
 		}
 	}
 

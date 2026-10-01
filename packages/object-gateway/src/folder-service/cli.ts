@@ -2,7 +2,6 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { SupabaseFolderCore } from "./core.ts";
-import { LxdMachines } from "./machines.ts";
 import { MountGrants, parseOperatorMounts } from "./mounts.ts";
 import { NasObjects } from "./objects.ts";
 import { createFolderServer } from "./server.ts";
@@ -21,21 +20,20 @@ function credential(name: string): string {
 interface Config {
 	readonly supabaseUrl: string;
 	readonly storageRoot: string;
-	readonly lxdSocket?: string;
 	readonly cacheMiB?: number;
 	readonly mounts: unknown;
 }
 
 function config(): Config {
 	const value = JSON.parse(credential("qorpera-folder-config")) as Record<string, unknown>;
-	const known = ["supabaseUrl", "storageRoot", "lxdSocket", "cacheMiB", "mounts"];
+	const known = ["supabaseUrl", "storageRoot", "cacheMiB", "mounts"];
 	for (const key of Object.keys(value)) if (!known.includes(key)) throw new Error(`Unknown configuration key ${key}`);
 	if (typeof value.supabaseUrl !== "string" || typeof value.storageRoot !== "string")
 		throw new Error("supabaseUrl and storageRoot are required");
-	if (value.lxdSocket !== undefined && typeof value.lxdSocket !== "string")
-		throw new Error("lxdSocket must be a path");
-	if (value.cacheMiB !== undefined && (!Number.isSafeInteger(value.cacheMiB) || (value.cacheMiB as number) < 16))
-		throw new Error("cacheMiB must be a whole number of at least 16");
+	// The unit's MemoryMax is 3G: the cache plus trees, connections and Node itself must fit.
+	const cache = value.cacheMiB;
+	if (cache !== undefined && (typeof cache !== "number" || !Number.isSafeInteger(cache) || cache < 16 || cache > 2048))
+		throw new Error("cacheMiB must be a whole number from 16 to 2048");
 	return value as unknown as Config;
 }
 
@@ -49,7 +47,7 @@ const service = new FolderService({
 		secretKey: credential("qorpera-supabase-service-key"),
 	}),
 	objects: new NasObjects({ root: settings.storageRoot, cacheBytes: (settings.cacheMiB ?? 1024) * 1024 * 1024 }),
-	grants: new MountGrants(parseOperatorMounts(settings.mounts), new LxdMachines(settings.lxdSocket)),
+	grants: new MountGrants(parseOperatorMounts(settings.mounts)),
 	log,
 });
 const server = createFolderServer(service, log);

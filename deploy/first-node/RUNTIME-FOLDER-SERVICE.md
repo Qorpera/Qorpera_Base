@@ -13,13 +13,16 @@ see it yet; step 2 (the run box) is the first user.
 | Part | Source | Runs | Holds |
 | --- | --- | --- | --- |
 | Folder program, `mount` | `crates/qorpera-folder` (Rust, `fuser` 0.18) | inside a machine, root | the view's id and pass; listings and attributes in memory; the kernel's page cache |
-| Folder program, `bridge` | the same binary | node host, `qorpera-folder-bridge` | nothing |
+| Folder program, `bridge` | the same binary | node host, `qorpera-folder-bridge` (+ LXD's socket group) | nothing |
 | Folder service | `packages/object-gateway/src/folder-service` (Node) | node host, `qorpera-folder` | the service credential; each view's tree, chunks and manifests in memory |
 
-The bridge exists because Node has no `AF_VSOCK`. It listens on vsock port 5250, takes the peer's CID from the
-kernel (LXD assigns it; a machine cannot choose it), sends it as the first frame on the service's Unix socket, then
-passes bytes through untouched. Only the bridge's account can open that socket (systemd socket, 0660, group
-`qorpera-folder-bridge`).
+The bridge exists because Node has no `AF_VSOCK`. It listens on vsock port 5250 and takes the peer's CID from the
+kernel (LXD assigns it; a machine cannot choose it). For each connection it asks LXD, on its local socket, which
+running machine has that CID now (one fixed read request, nothing cached: a machine may get another CID when it
+starts again). It sends both as the first frame on the service's Unix socket, then passes bytes through untouched.
+LXD's socket group is root-equivalent; the bridge holds it and reads nothing a machine sends, while the service,
+which parses machine input, holds the database credential and never talks to LXD. Only the bridge's account can open
+the service's socket (systemd socket, 0660, group `qorpera-folder-bridge`).
 
 Nothing is written anywhere. A restart of either side refetches. A node's crash loses nothing that was saved (step
 1 saves nothing).
@@ -32,10 +35,10 @@ TypeScript: `packages/object-gateway/src/folder-service/protocol.ts`.
 
 | Type | Direction | Payload |
 | --- | --- | --- |
-| `B` | bridge → service, first and only once | `{cid}` |
+| `B` | bridge → service, first and only once | `{cid, lookup: "found" \| "none" \| "unavailable", machine?: {project, name, physicalId}}` |
 | `H` | machine → service, first from the machine | `{protocol: 1, environmentId, viewId, pass, role: "io" or "feed"}` |
 | `h` | service → machine | `{protocol, viewId, asOfSeq, readOnly: true}` |
-| `L` / `l` | io | `{path, after?}` / `{entries: [{name, kind, size, mtimeMs, executable, version}], next?}`, 1,000 per page, names in UTF-8 byte order |
+| `L` / `l` | io | `{path, after?}` / `{entries: [{name, kind, size, mtimeMs, executable, version}], next}` (`next` null on the last page), 1,000 per page, names in UTF-8 byte order; a name over 255 bytes is never listed |
 | `R` / `d` | io | `{path, version, offset, length ≤ 1 MiB}` / the bytes |
 | `c` | feed, service → machine | `{seq, resync, paths}`; no paths is a heartbeat (every 15 s) |
 | `a` | feed, machine → service | `{seq}` |
@@ -45,9 +48,18 @@ Error codes and what a program on the machine sees: `NOT_FOUND` ENOENT, `NOT_A_F
 `STALE` ESTALE, `DENIED` EACCES, `BAD_REQUEST` EINVAL, `UNAVAILABLE` EIO. `VIEW_CLOSED` and `VIEW_REFUSED` unmount
 the folder; the program exits 3 and its unit does not restart it.
 
-A read names the version the machine was shown. The service serves exactly that version: the current one, or one
-replaced on the feed within the last 60 s (so a file opened before a change reads to its end). Later it is
-`STALE`. An access change forgets replaced versions at once.
+`version` is the core's version id of the path (a uuid), opaque to the machine. A read names the version the machine
+was shown, and the service serves exactly that version: the current one, or one of the last 16 replaced on the
+feed, so a file opened before a change reads its own version to the end. Replaced versions go when their path
+leaves the view, and all at once on an access change; a read of one then is `STALE`.
+
+On the machine, an inode is one version of a file. A newer version gets a new inode; the old one is detached (no
+longer reachable by name, its attributes frozen) and stays readable by whoever opened it. So the kernel never mixes
+pages of two versions in one file.
+
+Memory per connection is bounded in the service: until the hello is accepted frames are at most 4 KiB, one request
+is handled at a time with the socket paused, the next waits until the machine has read the last answer, and a feed
+connection whose machine leaves 4 MiB unread is ended (the machine reconnects and drops its caches).
 
 ## Who may connect
 
@@ -58,11 +70,13 @@ environment, the actor (`{kind: "member", userId}` or `{kind: "platform"}`), the
 
 - the pass hashes to the configured value (compared in constant time);
 - the environment matches;
-- LXD, asked on every connection, says the named instance is Running, its `volatile.vsock_id` is the peer's CID,
-  and its `volatile.uuid` is the configured one. Nothing is cached: a restarted machine may get another CID.
+- the bridge found the configured machine behind the connection: LXD says it is Running, has the peer's CID as its
+  `volatile.vsock_id`, and has the configured `volatile.uuid` (a rebuilt or recreated instance has another).
 
-Every refusal is the same `VIEW_REFUSED`. The pass is made inside the machine and never leaves it; the node keeps
-only its hash.
+Every refusal is the same `VIEW_REFUSED`. When LXD could not be asked or answered badly, the answer is `UNAVAILABLE`
+instead, so the machine tries again rather than taking it as its view's end. A request connection refused after the
+view was accepted ends the mount (it never stays mounted and failing). The pass is made inside the machine and never
+leaves it; the node keeps only its hash.
 
 On the execution host the mount is root's alone: no `allow_other`, under `/srv/qorpera-folder` (0700 root). The slot
 units cannot open vsock at all (`RestrictAddressFamilies` without `AF_VSOCK`).
@@ -77,12 +91,18 @@ but that the actor may not list itself is shown anyway, so the paths are reachab
 Bytes come from the storage server's share (`/srv/qorpera/canonical/<profileId>/<sha256>`), never through the
 gateway's byte routes. The service reads the manifest the core named, checks its hash and that it matches the entry
 (v2; v1 for fixtures), then reads each chunk it needs, opened with `O_NOFOLLOW`, checked for size and hash before it
-is used or kept. Chunks and manifests are kept in a least-recently-used memory cache (1 GiB by default). Sixteen
-reads run at once, each with a 30 s deadline. Committed objects are never collected (C1d-2a roots every path
-version), so a reader holds no lease.
+is used or kept. Chunks and manifests are kept in a least-recently-used memory cache (1 GiB by default, at most 2 GiB
+within the unit's 3 GiB). Sixteen reads run at once; each has a 30 s deadline counted from the request, waiting
+included. Committed objects are never collected (C1d-2a roots every path version), so a reader holds no lease.
 
-The company's storage profile is not in list, read or feed answers. The service learns it once per company through
-`qorpera_folder_authorize_object_download` on the first file read (P2 below proposes a direct way).
+The company's storage profile is not in list, read or feed answers. The service learns it once per company and
+process through `qorpera_folder_authorize_object_download` on the first file read (P2 below proposes a direct way).
+That check refuses a company being deleted, but only at that first read: a company that enters deletion later is
+still served until P1 lands.
+
+The core client speaks HTTPS through `node:https`, never `fetch`: under the unit's `node --jitless` (kept for
+`MemoryDenyWriteExecute`) `fetch` has no WebAssembly and fails. The service is bundled as CommonJS for the same
+reason (the ESM facade of `node:http` loads its WebSocket export).
 
 The folder program fetches a folder's listing when the kernel first asks for one of its names, keeps it, and
 answers from it until the feed says the folder changed. Inode numbers are never reused while it runs. The kernel
@@ -95,9 +115,12 @@ adding a file does not change it.
 - The service reads `qorpera_folder_clocks` (service_role select, C1f) every 500 ms for the companies with live
   views. When a clock moved, each view reads the feed from its position and pushes the changed paths.
 - An access change on the feed (`{seq, kind: "authority"}`), or a position the core no longer serves, lists the
-  view again; the difference is pushed. More than 5,000 changed paths are sent as a resync.
-- Grant expiry, member removal and agent archive are on no feed. Each view is listed again every 10 minutes, and
-  a denial (42501) closes the view on every connection.
+  view again; the difference is pushed. Until that listing is done the old tree serves: a path an access change
+  took away goes when the new tree replaces it, a few seconds for tens of thousands of paths (P3 would narrow it to
+  the changed resource). More than 5,000 changed paths, or a message too large for one frame, are sent as a resync.
+- Grant expiry, member removal and agent archive are on no feed. Each view is listed again every 10 minutes (the
+  due check runs when the work starts, so a long listing is not repeated), and a denial (42501) closes the view on
+  every connection.
 - The folder program treats 45 s without a frame as a dead link. While its feed is down it caches nothing and gives
   the kernel nothing to keep, so it never shows an older version than the node's. When the feed is back it drops
   everything once and carries on.
@@ -114,8 +137,17 @@ adding a file does not change it.
   shown in under a second, a folder taken away disappearing, SIGTERM unmounting.
 
 The service's own tests (`packages/object-gateway/test/folder-service.test.ts`) cover the protocol checks, the tree,
-the share reader (tampered chunks, links, mismatched manifests) and the service over its socket (refusals, a second
-bridge frame, paging, stale versions, access changes, closing).
+the share reader (tampered chunks, links, mismatched manifests) and the service over its socket (refusals by pass,
+machine and LXD, oversized frames before the hello, a second bridge frame, paging, replaced versions, access
+changes, closing, a machine that does not read its answers, changes too large for one frame).
+
+`scripts/test-folder-service-core-shapes.mjs` (in the hosted-db step) runs the real folder-core functions on the feed
+test's history (636) and parses their answers with the service's parsers: listings (platform, member, paged), the
+feed (from nothing and mid-change-set with a cursor) and a resync. The tree built from the feed alone, and the
+listing caught up by the feed, both equal a fresh listing.
+
+`scripts/package-folder-service.test.mjs` runs the packaged service and the core client's transport under `node
+--jitless`.
 
 Containers stand in for neither LXD nor vsock: the first live run on node 2 is the proof of those (step 0 measured
 the link, 27 µs round trips).

@@ -6,7 +6,7 @@ mod support;
 
 use qorpera_folder::link::{Link, View};
 use qorpera_folder::mount::{self, Options, Stop};
-use std::io::ErrorKind;
+use std::io::{ErrorKind, Read};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -89,12 +89,30 @@ fn mounts_reads_follows_changes_and_unmounts_when_the_view_closes() {
 	assert_eq!(std::fs::read_to_string(&plan).unwrap(), "the plan, version one");
 	assert_eq!(node.reads(), reads, "the second read went to the node");
 
+	// A file open before a change keeps reading its own version, and a new reader sees only the new one,
+	// even with the same size: two versions never share cached pages.
+	node.put("docs/same.md", &"a".repeat(64 * 1024), false);
+	let same = company.join("docs/same.md");
+	let mut held = std::fs::File::open(&same).unwrap();
+	let mut first = vec![0u8; 4096];
+	held.read_exact(&mut first).unwrap();
+	assert!(first.iter().all(|&b| b == b'a'));
+	node.put("docs/same.md", &"b".repeat(64 * 1024), false);
+	assert!(eventually(Duration::from_secs(2), || std::fs::read(&same).ok().is_some_and(|v| v.iter().all(|&b| b == b'b'))));
+	let mut rest = Vec::new();
+	held.read_to_end(&mut rest).unwrap();
+	assert_eq!(rest.len(), 64 * 1024 - 4096);
+	assert!(rest.iter().all(|&b| b == b'a'), "the open file read the newer version");
+	let fresh = std::fs::read(&same).unwrap();
+	assert!(fresh.iter().all(|&b| b == b'b'), "a new reader saw the older version's pages");
+	drop(held);
+
 	// A change on the node shows at once, cached pages included.
 	node.put("docs/plan.md", "the plan, version two, longer", false);
 	assert!(eventually(Duration::from_secs(2), || std::fs::read_to_string(&plan).ok().as_deref()
 		== Some("the plan, version two, longer")));
 	node.put("docs/new.md", "new", false);
-	assert!(eventually(Duration::from_secs(2), || names(&company.join("docs")) == ["new.md", "plan.md"]));
+	assert!(eventually(Duration::from_secs(2), || names(&company.join("docs")) == ["new.md", "plan.md", "same.md"]));
 	node.remove("readme.md");
 	assert!(eventually(Duration::from_secs(2), || {
 		std::fs::metadata(company.join("readme.md")).err().map(|e| e.kind()) == Some(ErrorKind::NotFound)

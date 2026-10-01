@@ -12,7 +12,7 @@ import { NasObjects } from "../src/folder-service/objects.ts";
 import { encodeJson, Kind } from "../src/folder-service/protocol.ts";
 import { createFolderServer } from "../src/folder-service/server.ts";
 import { FolderService } from "../src/folder-service/service.ts";
-import { CID, ENV, FakeCore, folder, grants, PASS, storeFile } from "./folder-service-fixtures.ts";
+import { BRIDGE, ENV, FakeCore, folder, grants, PASS, storeFile } from "./folder-service-fixtures.ts";
 
 const program = process.env.QORPERA_FOLDER_MOUNT_BIN;
 const cleanup: (() => Promise<void> | void)[] = [];
@@ -68,7 +68,7 @@ describe.skipIf(!program)("folder program against the folder service", () => {
 		const bridgeSocket = join(dir, "bridge.sock");
 		const bridge = createServer((machine) => {
 			const upstream = connect(serviceSocket, () => {
-				upstream.write(encodeJson(Kind.bridge, { cid: CID }));
+				upstream.write(encodeJson(Kind.bridge, BRIDGE));
 				machine.pipe(upstream);
 				upstream.pipe(machine);
 			});

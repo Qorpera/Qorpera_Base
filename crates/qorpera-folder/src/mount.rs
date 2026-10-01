@@ -45,7 +45,7 @@ pub enum Stop {
 
 enum Handle {
 	Dir(Vec<(u64, FileType, String)>),
-	File { path: String, version: u64, size: u64 },
+	File { path: String, version: String, size: u64 },
 }
 
 struct Shared {
@@ -126,8 +126,9 @@ impl Shared {
 		let (children, kept) = self.children(parent, None)?;
 		match children.into_iter().find(|c| c.name == name) {
 			Some(c) if c.ino == ino => Ok((c.attr, kept)),
-			// The path now names something else (removed and made again): this inode is gone.
-			_ => Err(libc::ENOENT),
+			// A newer version got its own inode and this one keeps its version (detached); a path that is gone
+			// is gone.
+			_ => self.tree.lock().unwrap().attr(ino).map(|a| (a, kept)).ok_or(libc::ENOENT),
 		}
 	}
 
@@ -212,7 +213,7 @@ impl Filesystem for FolderFs {
 	}
 
 	fn opendir(&self, _req: &Request, ino: INodeNo, _flags: OpenFlags, reply: ReplyOpen) {
-		let (children, kept) = match self.s.children(ino.0, None) {
+		let (children, _) = match self.s.children(ino.0, None) {
 			Ok(r) => r,
 			Err(e) => return reply.error(Errno::from_i32(e)),
 		};
@@ -223,7 +224,6 @@ impl Filesystem for FolderFs {
 		entries.extend(children.into_iter().map(|c| (c.ino, file_type(c.attr.kind), c.name)));
 		// No kernel listing cache (FOPEN_CACHE_DIR): the kernel keeps it while the folder's time is unchanged, and a
 		// folder's time does not change when a file inside it does. The listing is in this program's memory anyway.
-		let _ = kept;
 		reply.opened(self.s.handle(Handle::Dir(entries)), FopenFlags::empty());
 	}
 
@@ -257,7 +257,8 @@ impl Filesystem for FolderFs {
 		let Some(path) = self.s.tree.lock().unwrap().path(ino.0).map(str::to_string) else {
 			return reply.error(Errno::ENOENT);
 		};
-		// Keep cached pages across opens while the feed is up: it drops them when the file changes.
+		// Keep cached pages across opens while the feed is up. They are this version's only: a newer version is
+		// another inode (tree.rs).
 		let flags = if self.s.ttl(kept).is_zero() { FopenFlags::empty() } else { FopenFlags::FOPEN_KEEP_CACHE };
 		reply.opened(self.s.handle(Handle::File { path, version: attr.version, size: attr.size }), flags);
 	}
@@ -274,14 +275,14 @@ impl Filesystem for FolderFs {
 		reply: ReplyData,
 	) {
 		let (path, version, file_size) = match self.s.handles.lock().unwrap().get(&fh.0) {
-			Some(Handle::File { path, version, size }) => (path.clone(), *version, *size),
+			Some(Handle::File { path, version, size }) => (path.clone(), version.clone(), *size),
 			_ => return reply.error(Errno::EBADF),
 		};
 		if offset >= file_size {
 			return reply.data(&[]);
 		}
 		let len = (file_size - offset).min(size.min(MAX_READ) as u64) as u32;
-		match self.s.link.read(&path, version, offset, len) {
+		match self.s.link.read(&path, &version, offset, len) {
 			Ok(data) => reply.data(&data),
 			Err(f) => {
 				if matches!(&f, Fail::Remote(e) if e.code == code::STALE) {
@@ -469,6 +470,14 @@ pub fn run(link: Link, options: Options) -> Result<Stop, Failed> {
 		let stop = stop_tx.clone();
 		std::thread::spawn(move || {
 			let _ = stop.send(Stop::Ended(session.run()));
+		});
+	}
+	{
+		// A request connection refused after the view was accepted (the view closed meanwhile) ends the mount,
+		// rather than leaving it mounted and failing every call.
+		let stop = stop_tx.clone();
+		shared.link.when_closed(move || {
+			let _ = stop.send(Stop::ViewClosed);
 		});
 	}
 	{

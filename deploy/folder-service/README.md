@@ -7,11 +7,11 @@ install reference. Every node and machine step is the coordinator's, at a cut.
 
 | File | Where it runs | What it is |
 | --- | --- | --- |
-| `qorpera-folder-service.mjs` | node host, `qorpera-folder` | The folder service (from `packages/object-gateway/src/folder-service/`). Holds the service credential. |
+| `qorpera-folder-service.cjs` | node host, `qorpera-folder` | The folder service (from `packages/object-gateway/src/folder-service/`). Holds the service credential; never talks to LXD. |
 | `qorpera-folder` | node host (`bridge`), machine (`mount`) | The folder program (from `crates/qorpera-folder/`), built by `scripts/build-folder-program.mjs`. |
 | `qorpera-folder-service.socket` | node host | `/run/qorpera-folder/service.sock`, 0660, group `qorpera-folder-bridge`: only the bridge connects. |
 | `qorpera-folder-service.service` | node host | The service, started by its socket. |
-| `qorpera-folder-bridge.service` | node host, `qorpera-folder-bridge` | vsock port 5250 to the socket. No credential. |
+| `qorpera-folder-bridge.service` | node host, `qorpera-folder-bridge` (+ group `lxd`) | vsock port 5250 to the socket, naming each machine as LXD sees it. No credential. |
 | `qorpera-folder-mount@.service` | machine | One read-only mount per instance: `/srv/qorpera-folder/<id>` from `/etc/qorpera-folder/mounts/<id>.json`. |
 | `install-folder-service.sh`, `install-folder-mount-guest.sh` | node host, machine | Verify the package, install, enable nothing. |
 
@@ -38,7 +38,6 @@ Then, as root, without echoing anything secret:
 {
 	"supabaseUrl": "https://<project>.supabase.co",
 	"storageRoot": "/srv/qorpera/canonical",
-	"lxdSocket": "/var/snap/lxd/common/lxd/unix.socket",
 	"cacheMiB": 1024,
 	"mounts": [
 		{

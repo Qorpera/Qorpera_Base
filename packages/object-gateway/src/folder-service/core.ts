@@ -1,11 +1,7 @@
 import { isUuid, parseRecord, SHA256_HEX_PATTERN } from "@qorpera/contracts";
-import {
-	ObjectDependency,
-	ObjectDependencyError,
-	postgrestErrorCode,
-	readBoundedObjectResponse,
-} from "../dependency.ts";
+import { ObjectDependency, ObjectDependencyError } from "../dependency.ts";
 import { supabaseRequestHeaders } from "../supabase-headers.ts";
+import { nodeRequest, type Transport } from "./https-request.ts";
 
 /** Who a mount reads as. A step 1 operator mount reads as a member or the platform; a machine view (step 2 on) as
  * the core's view actor, whose pass the folder service holds. */
@@ -18,7 +14,8 @@ export type FolderActor =
 export interface CoreEntry {
 	readonly path: string;
 	readonly kind: "file" | "folder";
-	readonly version: number;
+	/** The core's version id of the path (a uuid). */
+	readonly version: string;
 	readonly manifestSha256?: string;
 	readonly fileSha256?: string;
 	readonly bytes?: number;
@@ -44,14 +41,15 @@ export type FeedEvent =
 
 export interface FeedCursor {
 	readonly unitNo: number;
-	readonly version: number;
+	readonly version: string;
 }
 
 export interface FeedPage {
 	readonly asOfSeq: number;
 	readonly resync: boolean;
 	readonly events: readonly FeedEvent[];
-	readonly next: { readonly afterSeq: number; readonly cursor: FeedCursor | null };
+	/** Where to continue; null on a resync answer. */
+	readonly next: { readonly afterSeq: number; readonly cursor: FeedCursor | null } | null;
 	readonly more: boolean;
 }
 
@@ -108,6 +106,12 @@ function answerRecord(value: unknown, what: string): Record<string, unknown> {
 	}
 }
 
+/** A version id, as the core makes them (`gen_random_uuid()`). */
+function versionOf(value: unknown): string {
+	if (typeof value !== "string" || !isUuid(value)) invalidAnswer("version");
+	return value;
+}
+
 function seqOf(value: unknown, what: string): number {
 	if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) invalidAnswer(what);
 	return value;
@@ -122,14 +126,14 @@ function entryOf(value: unknown, removal = false): CoreEntry {
 	const out: {
 		path: string;
 		kind: "file" | "folder";
-		version: number;
+		version: string;
 		manifestSha256?: string;
 		fileSha256?: string;
 		bytes?: number;
 		mediaType?: string;
 		executable?: boolean;
 		updatedAt?: string;
-	} = { path: e.path, kind: e.kind, version: seqOf(e.version ?? 0, "entry version") };
+	} = { path: e.path, kind: e.kind, version: versionOf(e.version) };
 	if (e.manifestSha256 !== undefined) {
 		if (typeof e.manifestSha256 !== "string" || !SHA256_HEX_PATTERN.test(e.manifestSha256)) invalidAnswer("manifest");
 		out.manifestSha256 = e.manifestSha256;
@@ -171,11 +175,16 @@ export function parseFeedPage(value: unknown): FeedPage {
 	const page = answerRecord(value, "feed");
 	if (page.schema !== "qorpera.folder-feed/v1" || !Array.isArray(page.events) || typeof page.more !== "boolean")
 		invalidAnswer("feed");
-	const next = answerRecord(page.next, "feed next");
-	let cursor: FeedCursor | null = null;
-	if (next.cursor !== null && next.cursor !== undefined) {
-		const c = answerRecord(next.cursor, "feed cursor");
-		cursor = { unitNo: seqOf(c.unitNo, "cursor unit"), version: seqOf(c.version, "cursor version") };
+	const resync = page.resync === true;
+	let next: FeedPage["next"] = null;
+	if (!resync) {
+		const n = answerRecord(page.next, "feed next");
+		let cursor: FeedCursor | null = null;
+		if (n.cursor !== null && n.cursor !== undefined) {
+			const c = answerRecord(n.cursor, "feed cursor");
+			cursor = { unitNo: seqOf(c.unitNo, "cursor unit"), version: versionOf(c.version) };
+		}
+		next = { afterSeq: seqOf(n.afterSeq, "next afterSeq"), cursor };
 	}
 	const events: FeedEvent[] = page.events.map((value) => {
 		const event = answerRecord(value, "feed event");
@@ -190,7 +199,7 @@ export function parseFeedPage(value: unknown): FeedPage {
 				if (typeof change.op !== "string" || !OPS.has(change.op)) invalidAnswer("op");
 				const removal = change.op === "delete" || change.op === "move_out";
 				const entry = entryOf(
-					removal ? { path: change.path, kind: change.kind, version: change.version ?? 0 } : c,
+					removal ? { path: change.path, kind: change.kind, version: change.version } : c,
 					removal,
 				);
 				return { ...entry, op: change.op as FeedChange["op"] };
@@ -199,9 +208,9 @@ export function parseFeedPage(value: unknown): FeedPage {
 	});
 	return {
 		asOfSeq: seqOf(page.asOfSeq, "asOfSeq"),
-		resync: page.resync === true,
+		resync,
 		events,
-		next: { afterSeq: seqOf(next.afterSeq, "next afterSeq"), cursor },
+		next,
 		more: page.more,
 	};
 }
@@ -220,7 +229,7 @@ function actorJson(actor: FolderActor): Record<string, string> {
 interface SupabaseFolderCoreOptions {
 	readonly projectUrl: string;
 	readonly secretKey: string;
-	readonly fetch?: typeof fetch;
+	readonly transport?: Transport;
 	readonly requestTimeoutMs?: number;
 }
 
@@ -229,7 +238,7 @@ interface SupabaseFolderCoreOptions {
 export class SupabaseFolderCore implements FolderCore {
 	readonly #url: string;
 	readonly #key: string;
-	readonly #fetch: typeof fetch;
+	readonly #transport: Transport;
 	readonly #api: ObjectDependency;
 
 	constructor(options: SupabaseFolderCoreOptions) {
@@ -240,8 +249,7 @@ export class SupabaseFolderCore implements FolderCore {
 			throw new Error("Folder core credential is invalid");
 		this.#url = url.origin;
 		this.#key = options.secretKey;
-		const transport = options.fetch ?? fetch;
-		this.#fetch = (input, init) => transport(input, { ...init, redirect: "error" });
+		this.#transport = options.transport ?? nodeRequest;
 		this.#api = new ObjectDependency(options.requestTimeoutMs ?? 15_000, 2_000);
 	}
 
@@ -321,26 +329,34 @@ export class SupabaseFolderCore implements FolderCore {
 		return this.#request(`/rest/v1/rpc/${name}`, { method: "POST", body: JSON.stringify(args) }, signal);
 	}
 
-	async #request(path: string, init: { method: string; body?: string }, caller?: AbortSignal): Promise<unknown> {
+	async #request(
+		path: string,
+		init: { method: "GET" | "POST"; body?: string },
+		caller?: AbortSignal,
+	): Promise<unknown> {
 		return this.#api.run(async (signal) => {
-			const response = await this.#fetch(`${this.#url}${path}`, {
-				...init,
-				headers: { ...supabaseRequestHeaders(this.#key), "content-type": "application/json" },
-				signal: caller ? AbortSignal.any([signal, caller]) : signal,
-			});
-			if (!response.ok) {
-				const code = await postgrestErrorCode(response, signal);
+			const response = await this.#transport(
+				new URL(`${this.#url}${path}`),
+				{ ...init, headers: { ...supabaseRequestHeaders(this.#key), "content-type": "application/json" } },
+				8 * 1024 * 1024,
+				caller ? AbortSignal.any([signal, caller]) : signal,
+			);
+			let value: unknown;
+			try {
+				value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(response.body));
+			} catch {
+				value = undefined;
+			}
+			if (response.status < 200 || response.status > 299) {
+				// PostgREST's error code: the core's refusals are one company's state, not the database's health.
+				const code = value && typeof value === "object" && "code" in value ? value.code : undefined;
 				if (code === "42501") throw new CoreRefusal("denied");
 				if (code === "55000") throw new CoreRefusal("stopped");
 				if (code === "22023" || code === "0A000" || code === "P0002") throw new CoreRefusal("invalid");
-				throw new ObjectDependencyError(response.status >= 500 ? 503 : response.status);
+				throw new ObjectDependencyError(response.status >= 500 || response.status === 0 ? 503 : response.status);
 			}
-			const body = await readBoundedObjectResponse(response, 8 * 1024 * 1024, signal);
-			try {
-				return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(body)) as unknown;
-			} catch {
-				invalidAnswer("JSON");
-			}
+			if (value === undefined) invalidAnswer("JSON");
+			return value;
 		}, caller);
 	}
 }

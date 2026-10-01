@@ -4,6 +4,9 @@
 //!
 //! Rules:
 //! - An inode number is never reused while the program runs, so the generation is always 0.
+//! - A file's inode stands for one version of it. A newer version gets a new inode; the old one is
+//!   detached: no longer reachable by name, its attributes frozen, still readable by whoever opened it.
+//!   So the kernel never caches pages of two versions under one inode.
 //! - A node stays while the kernel holds a lookup on it or a cached listing names it.
 //! - A change to a path drops that path's attributes and its parent's listing. The kernel is then told
 //!   to forget the name and the cached pages (`Inval`).
@@ -14,21 +17,30 @@ use std::collections::{HashMap, HashSet};
 
 pub const ROOT: u64 = 1;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Attr {
 	pub kind: EntryKind,
 	pub size: u64,
 	pub mtime_ms: i64,
 	pub executable: bool,
-	pub version: u64,
+	/// The core's version of the path (an opaque id).
+	pub version: String,
 }
 
 impl Attr {
 	fn of(e: &Entry) -> Attr {
-		Attr { kind: e.kind, size: e.size, mtime_ms: e.mtime_ms, executable: e.executable, version: e.version }
+		Attr { kind: e.kind, size: e.size, mtime_ms: e.mtime_ms, executable: e.executable, version: e.version.clone() }
 	}
 	pub fn root() -> Attr {
-		Attr { kind: EntryKind::Folder, size: 0, mtime_ms: 0, executable: false, version: 0 }
+		Attr { kind: EntryKind::Folder, size: 0, mtime_ms: 0, executable: false, version: String::new() }
+	}
+	/// Whether `next` is another version of the file (or not the same kind of thing at all).
+	fn replaced_by(&self, next: &Attr) -> bool {
+		match (self.kind, next.kind) {
+			(EntryKind::Folder, EntryKind::Folder) => false,
+			(EntryKind::File, EntryKind::File) => self.version != next.version,
+			_ => true,
+		}
 	}
 }
 
@@ -36,12 +48,16 @@ impl Attr {
 struct Node {
 	path: String,
 	parent: u64,
-	/// None: not known to be current (never fetched, or changed since).
+	/// Current attributes; None when a change made them unknown.
 	attr: Option<Attr>,
+	/// The attributes last seen, to tell a new version of a file from the same one.
+	seen: Attr,
 	/// Lookups the kernel holds (it gives them back with forget).
 	lookups: u64,
 	/// Named in its parent's cached listing.
 	listed: bool,
+	/// Replaced by a newer version: unreachable by name, attributes frozen.
+	detached: bool,
 }
 
 /// One entry of a listing as the kernel gets it.
@@ -55,7 +71,7 @@ pub struct Child {
 /// What the kernel must drop after a change.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Inval {
-	/// The inode's attributes and cached pages (for a folder: its cached listing).
+	/// The inode's attributes and cached pages.
 	Inode(u64),
 	/// The name under a folder.
 	Entry(u64, String),
@@ -79,7 +95,18 @@ impl Default for Tree {
 impl Tree {
 	pub fn new() -> Tree {
 		let mut nodes = HashMap::new();
-		nodes.insert(ROOT, Node { path: String::new(), parent: ROOT, attr: Some(Attr::root()), lookups: 1, listed: false });
+		nodes.insert(
+			ROOT,
+			Node {
+				path: String::new(),
+				parent: ROOT,
+				attr: Some(Attr::root()),
+				seen: Attr::root(),
+				lookups: 1,
+				listed: false,
+				detached: false,
+			},
+		);
 		let mut by_path = HashMap::new();
 		by_path.insert(String::new(), ROOT);
 		Tree { nodes, by_path, dirs: HashMap::new(), next_ino: ROOT + 1, changes: 0 }
@@ -97,9 +124,9 @@ impl Tree {
 		self.nodes.get(&ino).map(|n| n.parent)
 	}
 
-	/// The attributes if they are known to be current.
+	/// The attributes if they are known to be current (or frozen, for a detached version).
 	pub fn attr(&self, ino: u64) -> Option<Attr> {
-		self.nodes.get(&ino).and_then(|n| n.attr)
+		self.nodes.get(&ino).and_then(|n| n.attr.clone())
 	}
 
 	#[cfg(test)]
@@ -112,7 +139,7 @@ impl Tree {
 		self.dirs.get(&dir).map(|l| l.as_slice())
 	}
 
-	/// How many paths are remembered (for statfs).
+	/// How many inodes are remembered (for statfs).
 	pub fn known(&self) -> usize {
 		self.nodes.len()
 	}
@@ -129,7 +156,7 @@ impl Tree {
 		keep: bool,
 		hold: Option<&str>,
 	) -> (Vec<Child>, bool) {
-		let Some(dir_path) = self.nodes.get(&dir).map(|n| n.path.clone()) else {
+		let Some(dir_path) = self.nodes.get(&dir).filter(|n| !n.detached).map(|n| n.path.clone()) else {
 			return (Vec::new(), false);
 		};
 		let current = started == self.changes;
@@ -138,19 +165,35 @@ impl Tree {
 		for e in entries {
 			let path = join(&dir_path, &e.name);
 			let attr = Attr::of(&e);
-			let ino = match self.by_path.get(&path) {
-				Some(&ino) => ino,
-				None => {
+			let existing = self.by_path.get(&path).copied();
+			let ino = match existing {
+				Some(ino) if !self.nodes[&ino].seen.replaced_by(&attr) => ino,
+				_ => {
+					if let Some(old) = existing {
+						self.detach(old);
+					}
 					let ino = self.next_ino;
 					self.next_ino += 1;
-					self.nodes.insert(ino, Node { path: path.clone(), parent: dir, attr: None, lookups: 0, listed: false });
+					self.nodes.insert(
+						ino,
+						Node {
+							path: path.clone(),
+							parent: dir,
+							attr: None,
+							seen: attr.clone(),
+							lookups: 0,
+							listed: false,
+							detached: false,
+						},
+					);
 					self.by_path.insert(path, ino);
 					ino
 				}
 			};
 			let node = self.nodes.get_mut(&ino).expect("node of a known path");
 			if current {
-				node.attr = Some(attr);
+				node.attr = Some(attr.clone());
+				node.seen = attr.clone();
 			}
 			if hold == Some(e.name.as_str()) {
 				node.lookups += 1;
@@ -238,7 +281,8 @@ impl Tree {
 		out
 	}
 
-	/// Forget every listing and attribute. Inode numbers the kernel holds stay valid.
+	/// Forget every listing and current attribute. Inode numbers the kernel holds stay valid; detached
+	/// versions keep their frozen attributes.
 	pub fn resync(&mut self) -> Vec<Inval> {
 		self.changes += 1;
 		let dirs: Vec<u64> = self.dirs.keys().copied().collect();
@@ -251,11 +295,36 @@ impl Tree {
 				out.push(Inval::Inode(ROOT));
 				continue;
 			}
+			if node.detached {
+				continue;
+			}
 			node.attr = None;
 			out.push(Inval::Inode(ino));
 			out.push(Inval::Entry(node.parent, split(&node.path).1.to_string()));
 		}
 		out
+	}
+
+	/// A newer version of the node's path arrived: the node keeps its version for whoever holds it.
+	fn detach(&mut self, ino: u64) {
+		let Some(n) = self.nodes.get_mut(&ino) else { return };
+		n.detached = true;
+		n.attr = Some(n.seen.clone());
+		let (path, parent) = (n.path.clone(), n.parent);
+		if self.by_path.get(&path) == Some(&ino) {
+			self.by_path.remove(&path);
+		}
+		// A cached listing must not hand out the old inode for the name.
+		if self.dirs.get(&parent).is_some_and(|l| l.iter().any(|c| c.ino == ino)) {
+			self.drop_listing(parent);
+		}
+		if self.dirs.contains_key(&ino) {
+			self.drop_listing(ino);
+		}
+		if let Some(n) = self.nodes.get_mut(&ino) {
+			n.listed = false;
+		}
+		self.prune(ino);
 	}
 
 	fn drop_listing(&mut self, dir: u64) {
@@ -293,11 +362,11 @@ impl Tree {
 mod tests {
 	use super::*;
 
-	fn file(name: &str, size: u64, version: u64) -> Entry {
-		Entry { name: name.into(), kind: EntryKind::File, size, mtime_ms: 1, executable: false, version }
+	fn file(name: &str, size: u64, version: &str) -> Entry {
+		Entry { name: name.into(), kind: EntryKind::File, size, mtime_ms: 1, executable: false, version: version.into() }
 	}
 	fn folder(name: &str) -> Entry {
-		Entry { name: name.into(), kind: EntryKind::Folder, size: 0, mtime_ms: 1, executable: false, version: 0 }
+		Entry { name: name.into(), kind: EntryKind::Folder, size: 0, mtime_ms: 1, executable: false, version: "f".into() }
 	}
 	fn ino_of(children: &[Child], name: &str) -> u64 {
 		children.iter().find(|c| c.name == name).unwrap().ino
@@ -306,19 +375,50 @@ mod tests {
 	#[test]
 	fn listing_gives_stable_inodes_sorted() {
 		let mut t = Tree::new();
-		let (kids, kept) = t.install(ROOT, vec![file("b.md", 3, 1), folder("a")], t.changes(), true, None);
+		let (kids, kept) = t.install(ROOT, vec![file("b.md", 3, "v1"), folder("a")], t.changes(), true, None);
 		assert!(kept);
 		assert_eq!(kids.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["a", "b.md"]);
 		let b = ino_of(&kids, "b.md");
+		let a = ino_of(&kids, "a");
 		assert_eq!(t.path(b), Some("b.md"));
 		assert_eq!(t.attr(b).unwrap().size, 3);
 		assert_eq!(t.listing(ROOT).unwrap().len(), 2);
-		// A refetch keeps the inode of a path it already had, and lets go of a name that is gone.
-		let a = ino_of(&kids, "a");
-		let (again, _) = t.install(ROOT, vec![file("b.md", 4, 2)], t.changes(), true, None);
+		// A refetch keeps the inode of an unchanged path, and lets go of a name that is gone.
+		let (again, _) = t.install(ROOT, vec![file("b.md", 3, "v1")], t.changes(), true, None);
 		assert_eq!(ino_of(&again, "b.md"), b);
-		assert_eq!(t.attr(b).unwrap().version, 2);
 		assert!(!t.knows(a));
+	}
+
+	#[test]
+	fn a_new_version_of_a_file_gets_a_new_inode_and_the_old_one_stays_for_its_holders() {
+		let mut t = Tree::new();
+		let (kids, _) = t.install(ROOT, vec![file("f", 3, "v1"), folder("d")], t.changes(), true, None);
+		let v1 = ino_of(&kids, "f");
+		let d = ino_of(&kids, "d");
+		t.hold(v1);
+		t.hold(d);
+		t.invalidate(["f", "d"]);
+		let (kids, _) =
+			t.install(ROOT, vec![file("f", 9, "v2"), Entry { version: "g".into(), ..folder("d") }], t.changes(), true, None);
+		let v2 = ino_of(&kids, "f");
+		assert_ne!(v2, v1, "a new version is a new inode");
+		assert_eq!(ino_of(&kids, "d"), d, "a folder keeps its inode");
+		assert_eq!(t.attr(v1).unwrap().version, "v1", "the old inode keeps its version's attributes");
+		assert_eq!(t.attr(v1).unwrap().size, 3);
+		assert_eq!(t.attr(v2).unwrap().size, 9);
+		// A change on the path no longer touches the old inode.
+		let inval = t.invalidate(["f"]);
+		assert!(inval.contains(&Inval::Inode(v2)) && !inval.contains(&Inval::Inode(v1)));
+		assert_eq!(t.attr(v1).unwrap().version, "v1");
+		assert!(t.resync().iter().all(|i| *i != Inval::Inode(v1)));
+		assert!(t.attr(v1).is_some(), "a resync keeps a detached version's attributes");
+		// It goes when the kernel lets go.
+		t.forget(v1, 1);
+		assert!(!t.knows(v1));
+		// An unheld old inode goes at once.
+		let (kids, _) = t.install(ROOT, vec![file("f", 9, "v3")], t.changes(), true, None);
+		assert!(!t.knows(v2));
+		assert_ne!(ino_of(&kids, "f"), v2);
 	}
 
 	#[test]
@@ -327,7 +427,7 @@ mod tests {
 		let (root, _) = t.install(ROOT, vec![folder("docs")], t.changes(), true, None);
 		let docs = ino_of(&root, "docs");
 		t.hold(docs);
-		let (kids, _) = t.install(docs, vec![file("a.md", 1, 1), file("b.md", 1, 1)], t.changes(), true, None);
+		let (kids, _) = t.install(docs, vec![file("a.md", 1, "1"), file("b.md", 1, "1")], t.changes(), true, None);
 		let a = ino_of(&kids, "a.md");
 		t.hold(a);
 		let inval = t.invalidate(["docs/a.md"]);
@@ -336,7 +436,7 @@ mod tests {
 		assert!(t.listing(docs).is_none(), "the folder's listing must be refetched");
 		assert!(t.listing(ROOT).is_some(), "other listings stay");
 		// b.md was only named by the dropped listing, so it went with it.
-		assert!(t.by_path.get("docs/b.md").is_none());
+		assert!(!t.by_path.contains_key("docs/b.md"));
 		// a.md is held by the kernel, so its inode stays.
 		assert_eq!(t.path(a), Some("docs/a.md"));
 	}
@@ -344,7 +444,7 @@ mod tests {
 	#[test]
 	fn an_added_path_drops_the_parent_listing_only() {
 		let mut t = Tree::new();
-		t.install(ROOT, vec![file("x", 1, 1)], t.changes(), true, None);
+		t.install(ROOT, vec![file("x", 1, "1")], t.changes(), true, None);
 		let inval = t.invalidate(["new.md"]);
 		assert_eq!(inval, vec![Inval::Entry(ROOT, "new.md".into()), Inval::Inode(ROOT)]);
 		assert!(t.listing(ROOT).is_none());
@@ -355,12 +455,12 @@ mod tests {
 		let mut t = Tree::new();
 		let started = t.changes();
 		t.invalidate(["elsewhere.md"]);
-		let (kids, kept) = t.install(ROOT, vec![file("x", 1, 1)], started, true, None);
+		let (kids, kept) = t.install(ROOT, vec![file("x", 1, "1")], started, true, None);
 		assert!(!kept);
 		assert_eq!(kids.len(), 1);
 		assert!(t.listing(ROOT).is_none());
 		// The node made only for that answer is gone again, unless the kernel looked it up.
-		assert!(t.by_path.get("x").is_none());
+		assert!(!t.by_path.contains_key("x"));
 	}
 
 	#[test]
@@ -368,14 +468,14 @@ mod tests {
 		let mut t = Tree::new();
 		let started = t.changes();
 		t.invalidate(["elsewhere"]);
-		let (kids, kept) = t.install(ROOT, vec![file("x", 1, 1), file("y", 1, 1)], started, true, Some("x"));
+		let (kids, kept) = t.install(ROOT, vec![file("x", 1, "1"), file("y", 1, "1")], started, true, Some("x"));
 		assert!(!kept);
 		let x = ino_of(&kids, "x");
 		assert!(t.knows(x), "the kernel is about to hold it");
 		assert!(!t.knows(ino_of(&kids, "y")));
 		assert_eq!(t.attr(x), None, "attributes fetched across a change are not trusted");
 		// A cached listing holds the entry the kernel looks up.
-		let (kids, kept) = t.install(ROOT, vec![file("x", 1, 1)], t.changes(), true, Some("x"));
+		let (kids, kept) = t.install(ROOT, vec![file("x", 1, "1")], t.changes(), true, Some("x"));
 		assert!(kept);
 		assert_eq!(ino_of(&kids, "x"), x);
 		assert_eq!(t.lookups(x), 2);
@@ -385,7 +485,7 @@ mod tests {
 	#[test]
 	fn not_keeping_is_respected() {
 		let mut t = Tree::new();
-		let (_, kept) = t.install(ROOT, vec![file("x", 1, 1)], t.changes(), false, None);
+		let (_, kept) = t.install(ROOT, vec![file("x", 1, "1")], t.changes(), false, None);
 		assert!(!kept);
 		assert!(t.listing(ROOT).is_none());
 	}
@@ -393,7 +493,7 @@ mod tests {
 	#[test]
 	fn forget_removes_unlisted_nodes() {
 		let mut t = Tree::new();
-		let (kids, _) = t.install(ROOT, vec![file("x", 1, 1)], t.changes(), true, None);
+		let (kids, _) = t.install(ROOT, vec![file("x", 1, "1")], t.changes(), true, None);
 		let x = ino_of(&kids, "x");
 		t.hold(x);
 		t.hold(x);
@@ -411,21 +511,21 @@ mod tests {
 	#[test]
 	fn a_new_inode_after_a_path_is_pruned() {
 		let mut t = Tree::new();
-		let (kids, _) = t.install(ROOT, vec![file("x", 1, 1)], t.changes(), true, None);
+		let (kids, _) = t.install(ROOT, vec![file("x", 1, "1")], t.changes(), true, None);
 		let old = ino_of(&kids, "x");
 		t.invalidate(["x"]);
-		let (kids, _) = t.install(ROOT, vec![file("x", 2, 2)], t.changes(), true, None);
+		let (kids, _) = t.install(ROOT, vec![file("x", 1, "1")], t.changes(), true, None);
 		assert_ne!(ino_of(&kids, "x"), old, "inode numbers are never reused");
 	}
 
 	#[test]
 	fn resync_drops_everything_but_keeps_held_inodes() {
 		let mut t = Tree::new();
-		let (root, _) = t.install(ROOT, vec![folder("d"), file("f", 1, 1)], t.changes(), true, None);
+		let (root, _) = t.install(ROOT, vec![folder("d"), file("f", 1, "1")], t.changes(), true, None);
 		let d = ino_of(&root, "d");
 		let f = ino_of(&root, "f");
 		t.hold(d);
-		t.install(d, vec![file("g", 1, 1)], t.changes(), true, None);
+		t.install(d, vec![file("g", 1, "1")], t.changes(), true, None);
 		let inval = t.resync();
 		assert!(t.listing(ROOT).is_none() && t.listing(d).is_none());
 		assert!(t.knows(d) && !t.knows(f));
@@ -443,16 +543,16 @@ mod tests {
 		let (root, _) = t.install(ROOT, vec![folder("d")], t.changes(), true, None);
 		let d = ino_of(&root, "d");
 		t.hold(d);
-		t.install(d, vec![file("g", 1, 1)], t.changes(), true, None);
+		t.install(d, vec![file("g", 1, "1")], t.changes(), true, None);
 		t.invalidate(["d"]);
 		assert!(t.listing(d).is_none());
-		assert!(t.by_path.get("d/g").is_none());
+		assert!(!t.by_path.contains_key("d/g"));
 	}
 
 	#[test]
 	fn duplicate_names_in_one_listing_collapse() {
 		let mut t = Tree::new();
-		let (kids, _) = t.install(ROOT, vec![file("x", 1, 1), file("x", 1, 1)], t.changes(), true, None);
+		let (kids, _) = t.install(ROOT, vec![file("x", 1, "1"), file("x", 1, "1")], t.changes(), true, None);
 		assert_eq!(kids.len(), 1);
 	}
 }

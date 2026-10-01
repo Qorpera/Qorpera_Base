@@ -40,10 +40,34 @@ pub struct HelloOk {
 	pub read_only: bool,
 }
 
-/// The first frame from the bridge on the node: the peer's CID as the node's kernel reported it.
-#[derive(Serialize, Deserialize, Debug, Clone)]
+/// The first frame from the bridge on the node: the peer's CID as the node's kernel reported it, and the
+/// machine LXD says has that CID now.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct Bridge {
 	pub cid: u32,
+	pub lookup: Lookup,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub machine: Option<Machine>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Lookup {
+	/// A running machine has this CID (`machine` names it).
+	Found,
+	/// No running machine has it.
+	None,
+	/// LXD could not be asked or answered badly; the service answers UNAVAILABLE, not a refusal.
+	Unavailable,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct Machine {
+	pub project: String,
+	pub name: String,
+	/// The instance's `volatile.uuid`.
+	pub physical_id: String,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -75,9 +99,9 @@ pub struct Entry {
 	pub mtime_ms: i64,
 	#[serde(default)]
 	pub executable: bool,
-	/// The path's current version (folders: 0 when the core keeps none).
+	/// The path's current version: the core's id for it, opaque here.
 	#[serde(default)]
-	pub version: u64,
+	pub version: String,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -94,7 +118,7 @@ pub struct Listing {
 pub struct ReadRequest {
 	pub path: String,
 	/// The version the machine was shown; the node serves exactly that version or refuses.
-	pub version: u64,
+	pub version: String,
 	pub offset: u64,
 	pub length: u32,
 }
@@ -221,13 +245,25 @@ mod tests {
 		let list = ListRequest { path: "a".into(), after: None };
 		assert_eq!(serde_json::to_string(&list).unwrap(), r#"{"path":"a"}"#);
 		let listing: Listing = serde_json::from_str(
-			r#"{"entries":[{"name":"x","kind":"file","size":3,"mtimeMs":5,"executable":true,"version":2,"extra":1},{"name":"d","kind":"folder"}],"next":"x"}"#,
+			r#"{"entries":[{"name":"x","kind":"file","size":3,"mtimeMs":5,"executable":true,"version":"0b6c7f2e-8d3a-4c1e-9f00-1a2b3c4d5e6f","extra":1},{"name":"d","kind":"folder"}],"next":"x"}"#,
 		)
 		.unwrap();
 		assert_eq!(listing.entries[0].size, 3);
+		assert_eq!(listing.entries[0].version, "0b6c7f2e-8d3a-4c1e-9f00-1a2b3c4d5e6f");
 		assert!(listing.entries[0].executable);
 		assert_eq!(listing.entries[1].kind, EntryKind::Folder);
 		assert_eq!(listing.next.as_deref(), Some("x"));
+		let bridge = Bridge {
+			cid: 7,
+			lookup: Lookup::Found,
+			machine: Some(Machine { project: "p".into(), name: "n".into(), physical_id: "u".into() }),
+		};
+		assert_eq!(
+			serde_json::to_string(&bridge).unwrap(),
+			r#"{"cid":7,"lookup":"found","machine":{"project":"p","name":"n","physicalId":"u"}}"#
+		);
+		let none = Bridge { cid: 7, lookup: Lookup::Unavailable, machine: None };
+		assert_eq!(serde_json::to_string(&none).unwrap(), r#"{"cid":7,"lookup":"unavailable"}"#);
 		let change: Change = serde_json::from_str(r#"{"seq":9}"#).unwrap();
 		assert_eq!((change.seq, change.resync, change.paths.len()), (9, false, 0));
 	}

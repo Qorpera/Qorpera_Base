@@ -8,6 +8,9 @@ import { isUuid } from "@qorpera/contracts";
 
 export const PROTOCOL = 1;
 export const MAX_PAYLOAD = 2 * 1024 * 1024;
+/** Before a machine's hello is accepted, frames (the bridge's and the hello) are small: an unfinished large frame
+ * would otherwise hold memory for any machine on the node, with no pass. */
+export const HELLO_MAX_PAYLOAD = 4 * 1024;
 export const MAX_READ = 1024 * 1024;
 /** Entries per listing page. */
 export const LIST_PAGE = 1000;
@@ -75,6 +78,12 @@ export function encodeJson(kind: number, value: unknown): Buffer {
 /** Splits a byte stream into frames. A bad length is a protocol error: the connection is then closed. */
 export class FrameReader {
 	#buffer: Buffer = Buffer.alloc(0);
+	/** The largest payload accepted now. */
+	limit: number;
+
+	constructor(limit = MAX_PAYLOAD) {
+		this.limit = limit;
+	}
 
 	push(data: Buffer): Frame[] {
 		this.#buffer = this.#buffer.byteLength === 0 ? data : Buffer.concat([this.#buffer, data]);
@@ -82,8 +91,7 @@ export class FrameReader {
 		for (;;) {
 			if (this.#buffer.byteLength < 5) break;
 			const length = this.#buffer.readUInt32BE(0);
-			if (length === 0 || length - 1 > MAX_PAYLOAD)
-				throw new ProtocolError(ErrorCode.badRequest, "Bad frame length");
+			if (length === 0 || length - 1 > this.limit) throw new ProtocolError(ErrorCode.badRequest, "Bad frame length");
 			if (this.#buffer.byteLength < 4 + length) break;
 			frames.push({ kind: this.#buffer[4]!, payload: this.#buffer.subarray(5, 4 + length) });
 			this.#buffer = this.#buffer.subarray(4 + length);
@@ -109,7 +117,8 @@ export interface WireEntry {
 	readonly size: number;
 	readonly mtimeMs: number;
 	readonly executable: boolean;
-	readonly version: number;
+	/** The core's version id of the path (a uuid), opaque to the machine. */
+	readonly version: string;
 }
 
 export interface ListRequest {
@@ -119,7 +128,7 @@ export interface ListRequest {
 
 export interface ReadRequest {
 	readonly path: string;
-	readonly version: number;
+	readonly version: string;
 	readonly offset: number;
 	readonly length: number;
 }
@@ -165,12 +174,31 @@ function count(value: unknown, max: number): number {
 	return value;
 }
 
-export function parseBridge(payload: Buffer): number {
+/** What the bridge says about the calling machine: its CID, and the instance LXD says has it now. */
+export interface BridgeInfo {
+	readonly cid: number;
+	readonly lookup: "found" | "none" | "unavailable";
+	readonly machine?: { readonly project: string; readonly name: string; readonly physicalId: string };
+}
+
+export function parseBridge(payload: Buffer): BridgeInfo {
 	const value = object(payload);
-	exactKeys(value, ["cid"]);
+	exactKeys(value, ["cid", "lookup"], ["machine"]);
 	const cid = count(value.cid, 0xffff_ffff);
 	if (cid < 3) throw new ProtocolError(ErrorCode.badRequest, "Bad CID");
-	return cid;
+	if (value.lookup !== "found" && value.lookup !== "none" && value.lookup !== "unavailable")
+		throw new ProtocolError(ErrorCode.badRequest, "Bad lookup");
+	if (value.lookup !== "found") {
+		if (value.machine !== undefined) throw new ProtocolError(ErrorCode.badRequest, "A machine without a lookup");
+		return { cid, lookup: value.lookup };
+	}
+	const m = value.machine as Record<string, unknown> | undefined;
+	if (!m || typeof m !== "object") throw new ProtocolError(ErrorCode.badRequest, "A lookup without a machine");
+	exactKeys(m, ["project", "name", "physicalId"]);
+	const text = (v: unknown): v is string => typeof v === "string" && v.length > 0 && v.length <= 128;
+	if (!text(m.project) || !text(m.name) || !text(m.physicalId))
+		throw new ProtocolError(ErrorCode.badRequest, "Bad machine");
+	return { cid, lookup: "found", machine: { project: m.project, name: m.name, physicalId: m.physicalId } };
 }
 
 export function parseHello(payload: Buffer): Hello {
@@ -208,9 +236,11 @@ export function parseRead(payload: Buffer): ReadRequest {
 	exactKeys(value, ["path", "version", "offset", "length"]);
 	if (typeof value.path !== "string" || value.path === "" || !validPath(value.path))
 		throw new ProtocolError(ErrorCode.badRequest, "Bad path");
+	if (typeof value.version !== "string" || !/^[0-9a-f-]{1,64}$/.test(value.version))
+		throw new ProtocolError(ErrorCode.badRequest, "Bad version");
 	return {
 		path: value.path,
-		version: count(value.version, Number.MAX_SAFE_INTEGER),
+		version: value.version,
 		offset: count(value.offset, Number.MAX_SAFE_INTEGER),
 		length: count(value.length, MAX_READ),
 	};

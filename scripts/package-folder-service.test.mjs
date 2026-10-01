@@ -1,11 +1,14 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { createServer } from "node:http";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
+import { build } from "esbuild";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
@@ -41,7 +44,7 @@ test("packages the folder service, the folder program, the units and the install
 		assert.deepEqual(
 			manifest.artifacts.map((a) => a.file),
 			[
-				"qorpera-folder-service.mjs",
+				"qorpera-folder-service.cjs",
 				"qorpera-folder",
 				"qorpera-folder-service.socket",
 				"qorpera-folder-service.service",
@@ -58,10 +61,10 @@ test("packages the folder service, the folder program, the units and the install
 			assert.equal(sha256(bytes), artifact.sha256, artifact.file);
 		}
 		assert.equal((await stat(join(destination, "qorpera-folder"))).mode & 0o777, 0o755);
-		const checked = spawnSync(process.execPath, ["--check", join(destination, "qorpera-folder-service.mjs")], { encoding: "utf8" });
+		const checked = spawnSync(process.execPath, ["--check", join(destination, "qorpera-folder-service.cjs")], { encoding: "utf8" });
 		assert.equal(checked.status, 0, checked.stderr);
-		// Outside systemd it refuses to start, without a stack trace of company code.
-		const unconfigured = spawnSync(process.execPath, [join(destination, "qorpera-folder-service.mjs")], {
+		// Outside systemd it refuses to start. It loads under the unit's --jitless (no WebAssembly) to get there.
+		const unconfigured = spawnSync(process.execPath, ["--jitless", join(destination, "qorpera-folder-service.cjs")], {
 			encoding: "utf8",
 			env: { PATH: process.env.PATH },
 		});
@@ -90,10 +93,14 @@ test("packages the folder service, the folder program, the units and the install
 		for (const line of ["ProtectSystem=strict", "NoNewPrivileges=yes", "LimitCORE=0", "CapabilityBoundingSet=", "MemoryDenyWriteExecute=yes"])
 			assert.match(service, new RegExp(`^${line}$`, "m"));
 		assert.match(service, /^RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6$/m);
+		assert.match(service, /^ExecStart=\/usr\/bin\/node --jitless \/opt\/qorpera-folder-service\/qorpera-folder-service\.cjs$/m);
+		assert.ok(!/SupplementaryGroups/.test(service), "the service never holds LXD's group");
+		assert.match(service, /^StartLimitIntervalSec=0$/m);
 		assert.match(service, /^LoadCredential=qorpera-supabase-service-key:\/etc\/qorpera-folder-service\/supabase-key$/m);
 		assert.match(service, /^RequiresMountsFor=\/srv\/qorpera\/canonical$/m);
 		const bridge = await readFile(join(destination, "qorpera-folder-bridge.service"), "utf8");
 		assert.match(bridge, /^RestrictAddressFamilies=AF_UNIX AF_VSOCK$/m);
+		assert.match(bridge, /^SupplementaryGroups=lxd$/m);
 		assert.ok(!/LoadCredential/.test(bridge), "the bridge holds no credential");
 		const socket = await readFile(join(destination, "qorpera-folder-service.socket"), "utf8");
 		assert.match(socket, /^SocketMode=0660$/m);
@@ -110,6 +117,56 @@ test("packages the folder service, the folder program, the units and the install
 		assert.notEqual(packageInto(destination, program).status, 0);
 		assert.equal(await readFile(join(destination, "manifest.json"), "utf8"), encoded);
 	} finally {
+		await rm(temporary, { recursive: true, force: true });
+	}
+});
+
+test("the core client's transport works under --jitless, where fetch does not", async () => {
+	const temporary = await mkdtemp(join(tmpdir(), "qorpera-folder-jitless-test-"));
+	const server = createServer((request, response) => {
+		let body = "";
+		request.on("data", (chunk) => (body += chunk));
+		request.on("end", () => {
+			response.setHeader("content-type", "application/json");
+			response.end(JSON.stringify({ method: request.method, body, apikey: request.headers.apikey }));
+		});
+	});
+	try {
+		await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+		const entry = join(temporary, "entry.ts");
+		const transport = join(repositoryRoot, "packages/object-gateway/src/folder-service/https-request.ts");
+		await writeFile(
+			entry,
+			`import { nodeRequest } from ${JSON.stringify(transport)};
+void (async () => {
+	const answer = await nodeRequest(new URL(process.argv[2]!), { method: "POST", headers: { apikey: "k" }, body: "{}" }, 1024, new AbortController().signal);
+	process.stdout.write(answer.status + " " + answer.body.toString());
+})();
+`,
+		);
+		await build({
+			entryPoints: [entry],
+			outfile: join(temporary, "entry.cjs"),
+			bundle: true,
+			platform: "node",
+			format: "cjs",
+			target: "node22.19",
+			logLevel: "silent",
+		});
+		const url = `http://127.0.0.1:${server.address().port}/rest/v1/rpc/x`;
+		// Asynchronous children: they call this process's server.
+		const run = await promisify(execFile)(process.execPath, ["--jitless", join(temporary, "entry.cjs"), url], {
+			timeout: 20_000,
+		});
+		assert.equal(run.stdout, '200 {"method":"POST","body":"{}","apikey":"k"}');
+		const fetched = await promisify(execFile)(
+			process.execPath,
+			["--jitless", "-e", `fetch(${JSON.stringify(url)}).then(() => console.log("ok"), () => console.log("failed"))`],
+			{ timeout: 20_000 },
+		);
+		assert.equal(fetched.stdout.trim(), "failed", "fetch works under --jitless now; the transport could go back to it");
+	} finally {
+		server.close();
 		await rm(temporary, { recursive: true, force: true });
 	}
 });

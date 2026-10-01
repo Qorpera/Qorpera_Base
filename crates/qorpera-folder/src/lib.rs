@@ -5,6 +5,7 @@
 pub mod bridge;
 pub mod frame;
 pub mod link;
+pub mod lxd;
 pub mod mount;
 pub mod proto;
 pub mod transport;

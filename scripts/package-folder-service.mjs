@@ -19,10 +19,11 @@ await build({
 	absWorkingDir: root,
 	entryPoints: { "qorpera-folder-service": "packages/object-gateway/src/folder-service/cli.ts" },
 	outdir: output,
-	outExtension: { ".js": ".mjs" },
+	outExtension: { ".js": ".cjs" },
 	bundle: true,
 	platform: "node",
-	format: "esm",
+	// CommonJS: under --jitless the ESM facade of node:http evaluates its WebSocket export, which needs WebAssembly.
+	format: "cjs",
 	target: "node22.19",
 	legalComments: "none",
 	logLevel: "silent",
@@ -45,7 +46,7 @@ const deployed = [
 for (const file of deployed) await copyFile(join(root, "deploy/folder-service", file), join(output, file));
 for (const file of ["install-folder-service.sh", "install-folder-mount-guest.sh"]) await chmod(join(output, file), 0o755);
 const artifacts = [];
-for (const file of ["qorpera-folder-service.mjs", "qorpera-folder", ...deployed]) {
+for (const file of ["qorpera-folder-service.cjs", "qorpera-folder", ...deployed]) {
 	const bytes = await readFile(join(output, file));
 	artifacts.push({ file, bytes: bytes.byteLength, sha256: createHash("sha256").update(bytes).digest("hex") });
 }

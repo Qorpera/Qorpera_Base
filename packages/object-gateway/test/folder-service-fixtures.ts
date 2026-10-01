@@ -10,8 +10,9 @@ import {
 	type FolderActor,
 	type FolderCore,
 } from "../src/folder-service/core.ts";
-import type { MachineCheck, MachineRef } from "../src/folder-service/machines.ts";
+import type { MachineRef } from "../src/folder-service/machines.ts";
 import { MountGrants, parseOperatorMounts } from "../src/folder-service/mounts.ts";
+import type { BridgeInfo } from "../src/folder-service/protocol.ts";
 
 export const ENV = "11111111-2222-4333-8444-555555555555";
 export const PROFILE = "9ec79fc8-a1a7-4eb6-a764-4bc704d4103f";
@@ -22,6 +23,10 @@ export const MACHINE: MachineRef = {
 	physicalId: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
 };
 export const CID = 42;
+/** What the bridge says for the configured machine. */
+export const BRIDGE: BridgeInfo = { cid: CID, lookup: "found", machine: MACHINE };
+/** The core's version ids are uuids; tests number them. */
+export const v = (n: number): string => `00000000-0000-4000-8000-${n.toString(16).padStart(12, "0")}`;
 export const PASS = "operator-pass-0123456789-abcdefghijklmnopq";
 export const hashOf = (bytes: Uint8Array | string): string => createHash("sha256").update(bytes).digest("hex");
 /** Stores a file's bytes the way the gateway does (a v2 manifest and its chunks) and returns its core entry. */
@@ -55,7 +60,7 @@ export async function storeFile(
 	return {
 		path,
 		kind: "file",
-		version,
+		version: v(version),
 		manifestSha256: hashOf(manifest),
 		fileSha256: hashOf(bytes),
 		bytes: bytes.byteLength,
@@ -66,7 +71,7 @@ export async function storeFile(
 }
 
 export function folder(path: string, version = 1): CoreEntry {
-	return { path, kind: "folder", version, updatedAt: "2026-10-01T12:00:00.000Z" };
+	return { path, kind: "folder", version: v(version), updatedAt: "2026-10-01T12:00:00.000Z" };
 }
 
 /** The folder core, in memory: one company, a journal of change sets and access changes, and a visibility rule for
@@ -150,12 +155,6 @@ export class FakeCore implements FolderCore {
 	}
 }
 
-export class FakeMachines implements MachineCheck {
-	async matches(cid: number, machine: MachineRef): Promise<boolean> {
-		return cid === CID && machine.name === MACHINE.name;
-	}
-}
-
 export function grants(): MountGrants {
 	return new MountGrants(
 		parseOperatorMounts([
@@ -167,6 +166,5 @@ export function grants(): MountGrants {
 				passSha256: hashOf(PASS),
 			},
 		]),
-		new FakeMachines(),
 	);
 }

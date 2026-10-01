@@ -22,6 +22,8 @@ struct Node {
 #[derive(Default)]
 struct State {
 	entries: BTreeMap<String, Node>,
+	/// Replaced versions: (path, version) to content.
+	old: std::collections::HashMap<(String, String), Vec<u8>>,
 	seq: u64,
 	feeds: Vec<Stream>,
 	reads: usize,
@@ -79,6 +81,9 @@ impl FakeNode {
 				changed.push(p.to_string());
 			}
 			p = parent(p);
+		}
+		if let Some(n) = s.entries.get(path).cloned() {
+			s.old.insert((path.to_string(), format!("v{}", n.version)), n.content);
 		}
 		let version = s.entries.get(path).map_or(1, |n| n.version + 1);
 		s.entries.insert(path.to_string(), Node { folder: false, version, content: content.as_bytes().to_vec(), executable });
@@ -172,7 +177,7 @@ fn serve(mut s: Stream, state: Arc<Mutex<State>>) {
 							size: n.content.len() as u64,
 							mtime_ms: 1_700_000_000_000,
 							executable: n.executable,
-							version: n.version,
+							version: format!("v{}", n.version),
 						})
 						.collect();
 					send_json(&mut s, kind::LISTING, &Listing { entries, next: None })
@@ -182,13 +187,24 @@ fn serve(mut s: Stream, state: Arc<Mutex<State>>) {
 				let req: ReadRequest = serde_json::from_slice(&body).unwrap();
 				st.reads += 1;
 				match st.entries.get(&req.path) {
-					Some(n) if !n.folder && n.version == req.version => {
+					Some(n) if !n.folder && format!("v{}", n.version) == req.version => {
 						let start = (req.offset as usize).min(n.content.len());
 						let end = (start + req.length as usize).min(n.content.len());
 						let data = n.content[start..end].to_vec();
 						write_frame(&mut s, kind::DATA, &data)
 					}
-					Some(n) if !n.folder => error(&mut s, code::STALE),
+					Some(n) if !n.folder => {
+						// The previous version stays readable, as the node's superseded versions do.
+						match st.old.get(&(req.path.clone(), req.version.clone())) {
+							Some(content) => {
+								let start = (req.offset as usize).min(content.len());
+								let end = (start + req.length as usize).min(content.len());
+								let data = content[start..end].to_vec();
+								write_frame(&mut s, kind::DATA, &data)
+							}
+							None => error(&mut s, code::STALE),
+						}
+					}
 					_ => error(&mut s, code::NOT_FOUND),
 				}
 			}

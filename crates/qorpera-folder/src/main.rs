@@ -1,7 +1,7 @@
 //! qorpera-folder: the company folder inside a Qorpera machine, and the node's vsock bridge to the
 //! folder service. See README.md and deploy/first-node/RUNTIME-FOLDER-SERVICE.md.
 
-use qorpera_folder::{bridge, link, mount, proto};
+use qorpera_folder::{bridge, link, lxd, mount, proto};
 use std::os::unix::fs::MetadataExt;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -9,7 +9,7 @@ use std::time::Duration;
 
 const USAGE: &str = "Usage:
   qorpera-folder mount --view-file <file> --mountpoint <dir> [--connect vsock:2:5250] [--threads 16] [--ttl-seconds 3600] [--allow-other yes]
-  qorpera-folder bridge --service unix:<socket> [--listen vsock:any:5250] [--per-machine 512]
+  qorpera-folder bridge --service unix:<socket> [--listen vsock:any:5250] [--per-machine 512] [--lxd-socket <path>]
   qorpera-folder version
 
 mount: shows the view named in <file> (JSON {\"environmentId\", \"viewId\", \"pass\"}; a regular file owned by this
@@ -148,14 +148,15 @@ fn read_view(path: &str) -> Result<link::View, String> {
 }
 
 fn bridge(args: &[String]) -> Result<ExitCode, Usage> {
-	let o = options(args, &["listen", "service", "per-machine"])?;
+	let o = options(args, &["listen", "service", "per-machine", "lxd-socket"])?;
 	let service = o.get("service").ok_or_else(|| Usage("--service is required".into()))?;
 	if !service.starts_with("unix:") {
 		return Err(Usage("--service must be unix:<socket>".into()));
 	}
 	let listen = o.get("listen").cloned().unwrap_or_else(|| format!("vsock:any:{}", proto::VSOCK_PORT));
 	let per_machine: usize = number(&o, "per-machine", bridge::PER_MACHINE)?;
-	match bridge::run(&listen, service, per_machine.max(1)) {
+	let lxd_socket = o.get("lxd-socket").cloned().unwrap_or_else(|| lxd::SOCKET.to_string());
+	match bridge::run(&listen, service, per_machine.max(1), &lxd_socket) {
 		Ok(()) => Ok(ExitCode::SUCCESS),
 		Err(e) => {
 			eprintln!("qorpera-folder bridge: {e}");

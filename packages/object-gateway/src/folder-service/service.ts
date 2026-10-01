@@ -1,7 +1,16 @@
 import { CoreRefusal, type FeedCursor, type FolderActor, type FolderCore } from "./core.ts";
 import type { Grant, MountGrants } from "./mounts.ts";
 import { type NasObjects, ObjectIntegrityError } from "./objects.ts";
-import { ErrorCode, type Hello, LIST_PAGE, ProtocolError, type ReadRequest, type WireEntry } from "./protocol.ts";
+import {
+	type BridgeInfo,
+	ErrorCode,
+	type Hello,
+	LIST_PAGE,
+	MAX_PAYLOAD,
+	ProtocolError,
+	type ReadRequest,
+	type WireEntry,
+} from "./protocol.ts";
 import { type TreeEntry, ViewTree } from "./view-tree.ts";
 
 /** What a machine's feed connection is sent. */
@@ -25,16 +34,18 @@ export interface FolderServiceOptions {
 	readonly pollMs?: number;
 	/** How often each view is listed again in full: grant expiry is on no feed (proposal P4 in the design note). */
 	readonly reloadMs?: number;
-	/** How long a superseded version stays readable through an open file. */
-	readonly supersededMs?: number;
 	/** How long a view with no connection is kept before its tree is dropped. */
 	readonly idleMs?: number;
 	readonly now?: () => number;
 	readonly log?: (line: string) => void;
 }
 
-/** More changed paths than this in one push: the machine is told to drop everything instead. */
+/** More changed paths than this in one push, or a message too large for one frame: the machine is told to drop
+ * everything instead. */
 const RESYNC_OVER = 5_000;
+/** Replaced versions of one path kept readable for files opened before (an engineering bound on memory: a file
+ * opened that many versions ago reads ESTALE). They go when the path leaves the view. */
+const SUPERSEDED_PER_PATH = 16;
 /** The machine's folder program treats 45 s without a frame as a dead link. */
 const HEARTBEAT_MS = 15_000;
 
@@ -55,8 +66,8 @@ class View {
 	idleSince: number | undefined;
 	loadedAt = 0;
 	closed: string | undefined;
-	/** Versions replaced on the feed, readable for a while by files opened before. */
-	readonly superseded = new Map<string, { entry: TreeEntry; until: number }>();
+	/** Versions replaced on the feed, still readable by files opened before; newest last. */
+	readonly superseded = new Map<string, TreeEntry[]>();
 
 	constructor(grant: Grant) {
 		this.key = grant.key;
@@ -82,7 +93,6 @@ export class FolderService {
 	readonly #grants: MountGrants;
 	readonly #pollMs: number;
 	readonly #reloadMs: number;
-	readonly #supersededMs: number;
 	readonly #idleMs: number;
 	readonly #now: () => number;
 	readonly #log: (line: string) => void;
@@ -98,7 +108,6 @@ export class FolderService {
 		this.#grants = options.grants;
 		this.#pollMs = options.pollMs ?? 500;
 		this.#reloadMs = options.reloadMs ?? 10 * 60_000;
-		this.#supersededMs = options.supersededMs ?? 60_000;
 		this.#idleMs = options.idleMs ?? 60_000;
 		this.#now = options.now ?? Date.now;
 		this.#log = options.log ?? ((line) => process.stderr.write(`${line}\n`));
@@ -117,8 +126,8 @@ export class FolderService {
 	}
 
 	/** Checks a machine's hello and opens (or joins) its view. The first connection of a view lists its tree. */
-	async open(hello: Hello, cid: number): Promise<ViewHandle> {
-		const grant = await this.#grants.admit(hello, cid);
+	async open(hello: Hello, bridge: BridgeInfo): Promise<ViewHandle> {
+		const grant = this.#grants.admit(hello, bridge);
 		let view = this.#views.get(grant.key);
 		if (!view || view.closed) {
 			view = new View(grant);
@@ -163,10 +172,8 @@ export class FolderService {
 		this.#polling = true;
 		try {
 			const now = this.#now();
-			for (const [key, view] of this.#views) {
+			for (const [key, view] of this.#views)
 				if (view.idleSince !== undefined && now - view.idleSince >= this.#idleMs) this.#views.delete(key);
-				for (const [path, old] of view.superseded) if (old.until <= now) view.superseded.delete(path);
-			}
 			const live = [...this.#views.values()].filter((v) => v.tree && !v.closed);
 			if (live.length === 0) return;
 			let clocks: Map<string, number>;
@@ -178,8 +185,8 @@ export class FolderService {
 			}
 			for (const view of live) {
 				const last = clocks.get(view.environmentId);
-				if (now - view.loadedAt >= this.#reloadMs) this.#queue(view, () => this.#reload(view, "scheduled"));
-				else if (last !== undefined && last > view.seq) this.#queue(view, () => this.#advance(view));
+				if (now - view.loadedAt >= this.#reloadMs || (last !== undefined && last > view.seq))
+					this.#queue(view, () => this.#catchUp(view));
 			}
 		} finally {
 			this.#polling = false;
@@ -191,6 +198,13 @@ export class FolderService {
 		for (const view of this.#views.values())
 			if (view.tree && !view.closed)
 				for (const sink of view.sinks) sink.change({ seq: view.seq, resync: false, paths: [] });
+	}
+
+	/** A full listing when one is due (decided now, not when queued, so a long one is not run twice), otherwise the
+	 * feed. */
+	async #catchUp(view: View): Promise<void> {
+		if (this.#now() - view.loadedAt >= this.#reloadMs) return this.#reload(view, "scheduled");
+		return this.#advance(view);
 	}
 
 	/** Waits for the queued work of every view (tests). */
@@ -277,18 +291,18 @@ export class FolderService {
 		const changed: string[] = [];
 		for (;;) {
 			const page = await this.#core.feed(view.environmentId, view.actor, view.seq, view.cursor);
-			if (page.resync) return this.#reload(view, "the feed asked for it", changed);
+			if (page.resync || !page.next) return this.#reload(view, "the feed asked for it", changed);
 			for (const event of page.events) {
 				if (event.kind === "authority") return this.#reload(view, "access changed", changed);
 				for (const change of event.changes) {
 					const before = tree.get(change.path);
 					changed.push(...tree.apply(change));
-					const after = tree.get(change.path);
-					if (before?.kind === "file" && before.version !== after?.version)
-						view.superseded.set(`${change.path}\0${before.version}`, {
-							entry: before,
-							until: this.#now() + this.#supersededMs,
-						});
+					if (before?.kind === "file" && before.version !== tree.get(change.path)?.version) {
+						const older = view.superseded.get(change.path) ?? [];
+						older.push(before);
+						if (older.length > SUPERSEDED_PER_PATH) older.shift();
+						view.superseded.set(change.path, older);
+					}
 				}
 			}
 			view.seq = page.next.afterSeq;
@@ -298,11 +312,13 @@ export class FolderService {
 		this.#push(view, changed);
 	}
 
-	/** Lists the view again and tells its machines what differs. Superseded versions are forgotten: access may have
-	 * narrowed. */
+	/** Lists the view again and tells its machines what differs. Until it is done the old tree serves: a path an
+	 * access change took away goes when the new tree replaces it. Its replaced versions go at once, and those of every
+	 * path the new tree no longer holds go at the end. */
 	async #reload(view: View, why: string, alreadyChanged: readonly string[] = []): Promise<void> {
 		const before = view.tree;
 		if (!before || view.closed) return;
+		if (why === "access changed") view.superseded.clear();
 		const { tree, seq } = await this.#listAll(view);
 		// Catch the new tree up to the end of the feed before it replaces the old one. An access change (or a
 		// position the core no longer serves) meanwhile makes the next round list again.
@@ -310,7 +326,7 @@ export class FolderService {
 		let again = false;
 		for (;;) {
 			const page = await this.#core.feed(view.environmentId, view.actor, position.afterSeq, position.cursor);
-			if (page.resync) {
+			if (page.resync || !page.next) {
 				again = true;
 				break;
 			}
@@ -325,7 +341,7 @@ export class FolderService {
 		view.seq = position.afterSeq;
 		view.cursor = position.cursor;
 		view.loadedAt = again ? 0 : this.#now();
-		view.superseded.clear();
+		for (const path of view.superseded.keys()) if (!tree.get(path)) view.superseded.delete(path);
 		const changed = [...alreadyChanged, ...ViewTree.diff(before, tree)];
 		this.#log(`folder-service: ${view.key} listed again (${why}): ${tree.size} paths, ${changed.length} changed`);
 		this.#push(view, changed);
@@ -334,11 +350,19 @@ export class FolderService {
 	#push(view: View, changed: readonly string[]): void {
 		if (changed.length === 0) return;
 		const paths = [...new Set(changed)];
-		const message: ChangeMessage =
-			paths.length > RESYNC_OVER
-				? { seq: view.seq, resync: true, paths: [] }
-				: { seq: view.seq, resync: false, paths };
-		for (const sink of view.sinks) sink.change(message);
+		let message: ChangeMessage = { seq: view.seq, resync: false, paths };
+		if (paths.length > RESYNC_OVER || Buffer.byteLength(JSON.stringify(message)) > MAX_PAYLOAD - 1024)
+			message = { seq: view.seq, resync: true, paths: [] };
+		for (const sink of view.sinks) {
+			try {
+				sink.change(message);
+			} catch (error) {
+				// One machine's broken connection never keeps the others from hearing.
+				view.sinks.delete(sink);
+				this.#log(`folder-service: ${view.key}: a feed connection failed: ${(error as Error).message}`);
+				sink.closed(ErrorCode.unavailable, "The feed connection failed");
+			}
+		}
 	}
 
 	#tree(view: View): ViewTree {
@@ -358,7 +382,7 @@ export class FolderService {
 		const current = this.#tree(view).get(request.path);
 		let entry: TreeEntry | undefined;
 		if (current?.version === request.version) entry = current;
-		else entry = view.superseded.get(`${request.path}\0${request.version}`)?.entry;
+		else entry = view.superseded.get(request.path)?.find((old) => old.version === request.version);
 		if (!entry) {
 			if (!current) throw new ProtocolError(ErrorCode.notFound, "No such file");
 			if (current.kind === "folder") throw new ProtocolError(ErrorCode.notAFile, "Not a file");
@@ -372,7 +396,7 @@ export class FolderService {
 			if (error instanceof ProtocolError) throw error;
 			if (error instanceof CoreRefusal) throw new ProtocolError(ErrorCode.denied, "The core refused the read");
 			if (error instanceof ObjectIntegrityError)
-				this.#log(`folder-service: ${view.key}: ${request.path} v${entry.version}: ${error.message}`);
+				this.#log(`folder-service: ${view.key}: ${request.path} version ${entry.version}: ${error.message}`);
 			throw new ProtocolError(ErrorCode.unavailable, "The file's bytes could not be read now");
 		}
 	}

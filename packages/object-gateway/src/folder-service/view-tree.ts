@@ -6,7 +6,8 @@ import type { WireEntry } from "./protocol.ts";
 export interface TreeEntry {
 	readonly path: string;
 	readonly kind: "file" | "folder";
-	readonly version: number;
+	/** The core's version id (a uuid); "" for a folder shown only because it holds readable paths. */
+	readonly version: string;
 	readonly manifestSha256?: string;
 	readonly fileSha256?: string;
 	readonly bytes: number;
@@ -24,7 +25,7 @@ export type ChildrenResult =
 const ROOT: TreeEntry = {
 	path: "",
 	kind: "folder",
-	version: 0,
+	version: "",
 	bytes: 0,
 	executable: false,
 	mtimeMs: 0,
@@ -108,7 +109,8 @@ export class ViewTree {
 		if (folder.kind !== "folder") return "not_a_folder";
 		let names = this.#sorted.get(path);
 		if (!names) {
-			names = [...(this.#children.get(path) ?? [])].sort(byteOrder);
+			// A name over 255 bytes cannot be shown on Linux, and could not be paged after (`after` is a name).
+			names = [...(this.#children.get(path) ?? [])].filter((n) => Buffer.byteLength(n) <= 255).sort(byteOrder);
 			this.#sorted.set(path, names);
 		}
 		let start = 0;

@@ -17,6 +17,10 @@ if [[ ${EUID} -ne 0 ]]; then
 	echo "Run this script as root." >&2
 	exit 1
 fi
+if systemctl list-units --state=active --plain --no-legend 'qorpera-folder-mount@*' | grep -q .; then
+	echo "A folder mount is running; stop it before installing." >&2
+	exit 1
+fi
 sha() { sha256sum "$1" | awk '{ print $1 }'; }
 python3 - "${PACKAGE}" <<'PY'
 import hashlib, json, os, sys

@@ -6,8 +6,8 @@
 set -euo pipefail
 
 EXPECTED_SOCKET_UNIT_SHA256="dbf2b45f55312a1bd94cf19b89d0ea6f33e367d4a996ade854f13fb5d453bbd9"
-EXPECTED_SERVICE_UNIT_SHA256="3c79680b0c9b1d204909ea8091408d9dcb349db9d61ecbe17d050fc3c6d9b2bb"
-EXPECTED_BRIDGE_UNIT_SHA256="6ab230f7857640564f354d4a3307d764893cedaff2e383d9a5dacea4ae85ac88"
+EXPECTED_SERVICE_UNIT_SHA256="6cc3353b10afdb45b7fe5db249a5272a611bd4b9bcde843d7a000048430ac14d"
+EXPECTED_BRIDGE_UNIT_SHA256="829e7e53e5d91e6412babf16efd6c8167236bb6986c23e08fc28073fa2db77f8"
 PACKAGE=$(cd "$(dirname "$0")" && pwd)
 INSTALL_ROOT="/opt/qorpera-folder-service"
 CONFIG_ROOT="/etc/qorpera-folder-service"
@@ -60,14 +60,14 @@ if ! /usr/bin/node -e 'const [a,b]=process.versions.node.split(".").map(Number);
 	echo "Node.js ${node_version} is too old: 22.19.0 or newer is needed." >&2
 	exit 1
 fi
-/usr/bin/node --check "${PACKAGE}/qorpera-folder-service.mjs"
+/usr/bin/node --check "${PACKAGE}/qorpera-folder-service.cjs"
 "${PACKAGE}/qorpera-folder" version
 
 for account in qorpera-folder qorpera-folder-bridge; do
 	id -u "${account}" >/dev/null 2>&1 || useradd --system --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin "${account}"
 done
 install -d -o root -g root -m 0755 "${INSTALL_ROOT}"
-install -o root -g root -m 0444 "${PACKAGE}/qorpera-folder-service.mjs" "${INSTALL_ROOT}/qorpera-folder-service.mjs"
+install -o root -g root -m 0444 "${PACKAGE}/qorpera-folder-service.cjs" "${INSTALL_ROOT}/qorpera-folder-service.cjs"
 install -o root -g root -m 0555 "${PACKAGE}/qorpera-folder" "${INSTALL_ROOT}/qorpera-folder"
 install -o root -g root -m 0444 "${PACKAGE}/README.md" "${INSTALL_ROOT}/README.md"
 install -d -o root -g root -m 0700 "${CONFIG_ROOT}"
@@ -76,4 +76,4 @@ for unit in qorpera-folder-service.socket qorpera-folder-service.service qorpera
 done
 systemd-analyze verify /etc/systemd/system/qorpera-folder-service.socket /etc/systemd/system/qorpera-folder-service.service /etc/systemd/system/qorpera-folder-bridge.service
 systemctl daemon-reload
-echo "installed: folder service $(sha "${INSTALL_ROOT}/qorpera-folder-service.mjs"), folder program $(sha "${INSTALL_ROOT}/qorpera-folder"); units disabled"
+echo "installed: folder service $(sha "${INSTALL_ROOT}/qorpera-folder-service.cjs"), folder program $(sha "${INSTALL_ROOT}/qorpera-folder"); units disabled"

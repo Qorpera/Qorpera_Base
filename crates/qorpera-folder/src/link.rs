@@ -72,11 +72,37 @@ pub struct Link {
 	max: usize,
 	/// Set once the node says the view is closed; every later call fails at once.
 	closed: AtomicBool,
+	/// Called once when the view closes, so the mount can end instead of failing every call.
+	on_closed: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 
 impl Link {
 	pub fn new(addr: String, view: View, max: usize) -> Link {
-		Link { addr, view, free: Mutex::new(Vec::new()), ready: Condvar::new(), open: Mutex::new(0), max: max.max(1), closed: AtomicBool::new(false) }
+		Link {
+			addr,
+			view,
+			free: Mutex::new(Vec::new()),
+			ready: Condvar::new(),
+			open: Mutex::new(0),
+			max: max.max(1),
+			closed: AtomicBool::new(false),
+			on_closed: Mutex::new(None),
+		}
+	}
+
+	/// `f` runs once, on whichever thread first learns that the view closed.
+	pub fn when_closed(&self, f: impl FnOnce() + Send + 'static) {
+		*self.on_closed.lock().unwrap() = Some(Box::new(f));
+		if self.closed() {
+			self.fire_closed();
+		}
+	}
+
+	fn fire_closed(&self) {
+		let f = self.on_closed.lock().unwrap().take();
+		if let Some(f) = f {
+			f();
+		}
 	}
 
 	pub fn closed(&self) -> bool {
@@ -126,8 +152,8 @@ impl Link {
 		}
 	}
 
-	pub fn read(&self, path: &str, version: u64, offset: u64, length: u32) -> Result<Vec<u8>, Fail> {
-		let req = ReadRequest { path: path.to_string(), version, offset, length: length.min(MAX_READ) };
+	pub fn read(&self, path: &str, version: &str, offset: u64, length: u32) -> Result<Vec<u8>, Fail> {
+		let req = ReadRequest { path: path.to_string(), version: version.to_string(), offset, length: length.min(MAX_READ) };
 		let data = self.call(kind::READ, &json(&req), kind::DATA)?;
 		if data.len() > req.length as usize {
 			return Err(Fail::Link(io::Error::other("the node sent more than was asked for")));
@@ -170,8 +196,11 @@ impl Link {
 	fn note(&self, f: &Fail) {
 		if f.view_closed() {
 			self.closed.store(true, Ordering::SeqCst);
-			let _free = self.free.lock().unwrap();
-			self.ready.notify_all();
+			{
+				let _free = self.free.lock().unwrap();
+				self.ready.notify_all();
+			}
+			self.fire_closed();
 		}
 	}
 
@@ -269,11 +298,11 @@ mod tests {
 	use std::sync::Arc;
 
 	fn entry(name: &str) -> Entry {
-		Entry { name: name.into(), kind: EntryKind::File, size: 3, mtime_ms: 0, executable: false, version: 1 }
+		Entry { name: name.into(), kind: EntryKind::File, size: 3, mtime_ms: 0, executable: false, version: "v1".into() }
 	}
 
 	/// A node stand-in on a Unix socket: checks the hello, pages a listing two entries at a time, serves
-	/// reads of "a" at version 1, and drops every connection after `drop_after` requests.
+	/// reads of "a" at version v1, and drops every connection after `drop_after` requests.
 	fn fake_node(dir: &std::path::Path, drop_after: usize, hellos: Arc<AtomicUsize>) -> String {
 		let path = dir.join("node.sock");
 		let listener = UnixListener::bind(&path).unwrap();
@@ -307,7 +336,7 @@ mod tests {
 							}
 							kind::READ => {
 								let req: ReadRequest = serde_json::from_slice(&body).unwrap();
-								if req.path == "a" && req.version == 1 {
+								if req.path == "a" && req.version == "v1" {
 									let data = &b"abc"[req.offset as usize..];
 									write_frame(&mut s, kind::DATA, &data[..data.len().min(req.length as usize)]).unwrap();
 								} else {
@@ -346,8 +375,8 @@ mod tests {
 		let link = Link::new(addr, view("right"), 4);
 		let names: Vec<String> = link.list("").unwrap().into_iter().map(|e| e.name).collect();
 		assert_eq!(names, ["a", "b", "c", "d", "e"]);
-		assert_eq!(link.read("a", 1, 1, 10).unwrap(), b"bc");
-		match link.read("a", 2, 0, 3) {
+		assert_eq!(link.read("a", "v1", 1, 10).unwrap(), b"bc");
+		match link.read("a", "v2", 0, 3) {
 			Err(Fail::Remote(e)) => assert_eq!(e.errno(), libc::ESTALE),
 			other => panic!("{other:?}"),
 		}
@@ -362,9 +391,9 @@ mod tests {
 		// Every connection answers one request, then closes.
 		let addr = fake_node(&dir, 1, hellos.clone());
 		let link = Link::new(addr, view("right"), 1);
-		assert_eq!(link.read("a", 1, 0, 3).unwrap(), b"abc");
+		assert_eq!(link.read("a", "v1", 0, 3).unwrap(), b"abc");
 		// The pooled connection is closed now: the next request goes out again on a new one.
-		assert_eq!(link.read("a", 1, 0, 3).unwrap(), b"abc");
+		assert_eq!(link.read("a", "v1", 0, 3).unwrap(), b"abc");
 		assert_eq!(hellos.load(Ordering::SeqCst), 2);
 		std::fs::remove_dir_all(dir).unwrap();
 	}
@@ -374,11 +403,18 @@ mod tests {
 		let dir = tempdir();
 		let addr = fake_node(&dir, 100, Arc::new(AtomicUsize::new(0)));
 		let link = Link::new(addr, view("wrong"), 2);
+		let told = Arc::new(AtomicUsize::new(0));
+		let counter = told.clone();
+		link.when_closed(move || {
+			counter.fetch_add(1, Ordering::SeqCst);
+		});
 		let err = link.list("").unwrap_err();
 		assert!(err.view_closed(), "{err}");
 		assert!(link.closed());
+		assert_eq!(told.load(Ordering::SeqCst), 1, "the mount hears of it once");
 		// Later calls fail at once, without connecting.
-		assert!(link.read("a", 1, 0, 1).unwrap_err().view_closed());
+		assert!(link.read("a", "v1", 0, 1).unwrap_err().view_closed());
+		assert_eq!(told.load(Ordering::SeqCst), 1);
 		std::fs::remove_dir_all(dir).unwrap();
 	}
 

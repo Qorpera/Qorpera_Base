@@ -83,8 +83,12 @@ test("deploy, function and SQL-input paths reach the tests that read them", () =
 		"packages/runtime/src/cloud-native-company-context.ts",
 		"packages/runtime/src/cloud-wake-bus.ts",
 		"packages/runtime/test/fixtures/wake-policies.json",
+		"scripts/test-folder-service-core-shapes.mjs",
+		"packages/object-gateway/src/folder-service/core.ts",
+		"packages/object-gateway/src/folder-service/view-tree.ts",
 	])
 		assert.ok(names([file]).includes("hosted-db"), file);
+	assert.ok(!names(["packages/object-gateway/src/folder-service/server.ts"]).includes("hosted-db"));
 	assert.ok(!names(["packages/runtime/test/fixtures/company-computer-guest.ts"]).includes("hosted-db"));
 	assert.equal(STEPS.find((step) => step.name === "hosted-db").build, true);
 });
