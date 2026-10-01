@@ -147,8 +147,8 @@ Founders (2026-09-28, migration 20260928248100): every member with the role
 - `qorpera_begin_native_provider_login`
 - `qorpera_chatgpt_plan_available(profile)`: whether the caller's company may
   use ChatGPT plan logins now (show "Continue with ChatGPT" only when true).
-  False while the company is being deleted (20260929880000).
-- ChatGPT plan rules (20260929880000, switched off with plan logins):
+  False while the company is being deleted (20260929913000).
+- ChatGPT plan rules (20260929913000, switched off with plan logins):
   - work while away on a plan login needs the member's own
     `qorpera_consent_provider_connection_autonomous`; the kernel never consents a
     plan login for them, and a client must not either (no automatic consent on
@@ -158,7 +158,12 @@ Founders (2026-09-28, migration 20260928248100): every member with the role
     with one is refused with 42501 "A ChatGPT plan cannot pay for a listener";
   - a plan at its usage limit stays the account of the conversations it pays for
     (`qorpera_select_member_session_account` keeps it; sending then stops at the
-    limit), while a new conversation starts on a login with room;
+    limit), while a new conversation starts on a login with room; a conversation
+    whose login reached its limit never moves to a plan;
+  - one usable plan per member and company:
+    `qorpera_begin_chatgpt_plan_sign_in` refuses a second one with 55000
+    "Disconnect your other ChatGPT plan first" (signing in again after the plan
+    login lapsed works);
   - only the member whose plan pays retries a failed run on it
     (`qorpera_resolve_failed_execution_run` 'retry': 55000 for anyone else;
     acknowledging stays open) or a change's review on it

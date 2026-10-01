@@ -351,10 +351,13 @@ reset session authorization;
 update public.qorpera_native_account_refresh_requests set status = 'cancelled'
 where compute_identity_id = (current_setting('qorpera_test.native_identity')::jsonb ->> 'compute_identity_id')::uuid
 	and status = 'pending';
+-- (One clock reading for both times: two clock_timestamp() defaults may differ by a microsecond, which
+-- breaks the table's five-minute check.)
 insert into public.qorpera_native_account_refresh_requests(id,profile_id,client_request_id,compute_identity_id,
-	requested_by_user_id,capability_sha256,compute_recovery_epoch)
+	requested_by_user_id,capability_sha256,compute_recovery_epoch,created_at,expires_at)
 select '76400000-0000-4000-8000-000000000180',identity.profile_id,'76400000-0000-4000-8000-000000000181',identity.id,
-	identity.owner_user_id,encode(sha256('refresh-one'::bytea),'hex'),identity.recovery_epoch
+	identity.owner_user_id,encode(sha256('refresh-one'::bytea),'hex'),identity.recovery_epoch,
+	statement_timestamp(),statement_timestamp() + interval '5 minutes'
 from public.qorpera_member_compute_identities identity
 where identity.id = (current_setting('qorpera_test.native_identity')::jsonb ->> 'compute_identity_id')::uuid;
 set local session authorization qorpera_secret_broker;
@@ -373,7 +376,9 @@ select pg_temp.plan764_expect(pg_temp.plan764_try(format('select public.qorpera_
 	'16000000-0000-4000-8000-000000000010.' || repeat('A',43))),'ok','the callback address');
 select pg_temp.plan764_expect(current_setting('qorpera_test.plan764_last'),'null','a listed company with no pending plan sign-in');
 reset role;
--- Nor with an expired one.
+-- Nor with an expired one. (A second plan sign-in begins only once the member's plan login lapsed: one usable
+-- plan per member, 20260929913000.)
+update public.qorpera_model_logins set status = 'needs_sign_in' where id = '76400000-0000-4000-8000-000000000150';
 select set_config('request.jwt.claims',
 	'{"sub":"16000000-0000-4000-8000-000000000001","role":"authenticated"}',false);
 set role authenticated;
@@ -382,6 +387,7 @@ select pg_temp.plan764_expect(pg_temp.plan764_try(format('select public.qorpera_
 	current_setting('qorpera_test.native_identity')::jsonb ->> 'compute_identity_id',encode(sha256('plan-four'::bytea),'hex'))),
 	'ok','a later plan sign-in');
 reset role;
+update public.qorpera_model_logins set status = 'active' where id = '76400000-0000-4000-8000-000000000150';
 update public.qorpera_native_provider_login_sessions
 set created_at = clock_timestamp() - interval '20 minutes', expires_at = clock_timestamp() - interval '1 minute'
 where id = (pg_temp.plan764_last() ->> 'login_id')::uuid;

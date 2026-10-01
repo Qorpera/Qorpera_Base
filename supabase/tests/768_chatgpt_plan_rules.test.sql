@@ -1,5 +1,5 @@
 -- @fixture 764_chatgpt_plan_login.test.sql until "-- A plan login is never listed for the account record the node switch-off reads; the Codex login is."
--- Sign in with ChatGPT, slice 1b (20260929880000): the rules a member's ChatGPT plan login keeps. Test 764's
+-- Sign in with ChatGPT, slice 1b (20260929913000): the rules a member's ChatGPT plan login keeps. Test 764's
 -- fixture leaves the member with a completed plan login (not consented for work while they are away) and a
 -- Codex vault login, next to test 160's capsule login that pays for the fixture's run.
 reset role;
@@ -115,6 +115,8 @@ end $$;
 update public.qorpera_provider_connections set status = 'active' where id = pg_temp.r768('capsule');
 select set_config('qorpera_test.r768_capsule_version', (select max(version)::text
 	from public.qorpera_provider_connection_versions where connection_id = pg_temp.r768('capsule')), false);
+select set_config('qorpera_test.r768_plan_version', (select max(version)::text
+	from public.qorpera_provider_connection_versions where connection_id = pg_temp.r768('plan')), false);
 select set_config('request.jwt.claims',
 	'{"sub":"16000000-0000-4000-8000-000000000001","role":"authenticated"}',false);
 set role authenticated;
@@ -128,6 +130,13 @@ select pg_temp.plan764_expect(pg_temp.plan764_try(format(
 	'ok', 'an autonomous payer on the capsule login');
 select set_config('qorpera_test.r768', (current_setting('qorpera_test.r768')::jsonb
 	|| jsonb_build_object('capsuleBinding', current_setting('qorpera_test.plan764_last')::jsonb ->> 'binding_id'))::text, false);
+select pg_temp.plan764_expect(pg_temp.plan764_try(format(
+	'select public.qorpera_create_member_execution_sponsor(%L,%L,%L,%s,false)::text',
+	'16000000-0000-4000-8000-000000000010', '76800000-0000-4000-8000-000000000012', pg_temp.r768('plan'),
+	current_setting('qorpera_test.r768_plan_version')::bigint)),
+	'ok', 'a conversation payer on the plan');
+select set_config('qorpera_test.r768', (current_setting('qorpera_test.r768')::jsonb
+	|| jsonb_build_object('planChatBinding', current_setting('qorpera_test.plan764_last')::jsonb ->> 'binding_id'))::text, false);
 reset role;
 -- An event routine on the capsule login is fine. Its wake passes there; the same wake moved onto the plan
 -- (a routine's login can move later) is refused.
@@ -166,6 +175,64 @@ begin
 	-- (The newer version goes again for the checks below.)
 	delete from public.qorpera_execution_sponsor_versions where binding_id = pg_temp.r768('capsuleBinding') and version = 2;
 end $$;
+-- Nor does a plan pay for any work that follows from a listener run (a coworker message, a worker). The
+-- fixture's run stands in for the listener run: a coworker's wake it causes, paid by the plan, passes while its
+-- own wake was a member's input, and is refused once that wake was an event's or a file change's.
+do $$
+declare v_wake public.qorpera_wake_occurrences%rowtype; v_id uuid := extensions.gen_random_uuid();
+	v_run uuid := (current_setting('qorpera_test.plan764_binding')::jsonb ->> 'runId')::uuid;
+	v_ancestry jsonb;
+begin
+	select * into strict v_wake from public.qorpera_wake_occurrences where run_id = v_run;
+	v_wake := jsonb_populate_record(v_wake, jsonb_build_object('id', v_id, 'run_id', null, 'parent_run_id', v_run,
+		'wake_kind', 'agent', 'source_kind', 'coworker', 'source_id', extensions.gen_random_uuid(), 'session_id', null,
+		'staff_agent_id', '16000000-0000-4000-8000-000000000031', 'causal_hop_count', 1, 'trigger_id', 'coworker',
+		'occurrence_key', 'coworker:' || v_id, 'payload', '{}'::jsonb, 'sponsor_binding_id', pg_temp.r768('planBinding'),
+		'sponsor_version', (current_setting('qorpera_test.r768')::jsonb ->> 'planVersion')::bigint));
+	v_ancestry := public.qorpera_coworker_wake_ancestry(v_wake);
+	v_wake := jsonb_populate_record(v_wake, jsonb_build_object('causal_root_id', v_ancestry ->> 'rootId',
+		'causal_agent_ids', v_ancestry -> 'agentIds'));
+	if not public.qorpera_wake_authorized(v_wake) then
+		raise exception 'a coworker''s wake following a member''s own input is refused on their plan'; end if;
+	perform set_config('qorpera_test.r768_followup', to_jsonb(v_wake)::text, false);
+end $$;
+create function pg_temp.r768_parent_source(p_source text) returns void language plpgsql as $$
+begin
+	-- One row's source changes for this check alone (triggers skipped; the transaction rolls back).
+	set local session_replication_role = replica;
+	update public.qorpera_wake_occurrences set source_kind = p_source
+	where run_id = (current_setting('qorpera_test.plan764_binding')::jsonb ->> 'runId')::uuid;
+	set local session_replication_role = origin;
+end $$;
+-- Which runs follow from a listener: a run woken by an event or a file change, and any run after it (the
+-- wake above, refused below). (A session run's wake marked as a listener's no longer passes its own checks,
+-- so the walk itself is checked here.)
+do $$
+declare v_source text; v_run uuid := (current_setting('qorpera_test.plan764_binding')::jsonb ->> 'runId')::uuid;
+begin
+	if public.qorpera_run_follows_listener(v_run) then raise exception 'a member''s input counts as a listener'; end if;
+	foreach v_source in array array['event', 'company-file'] loop
+		perform pg_temp.r768_parent_source(v_source);
+		if not public.qorpera_run_follows_listener(v_run) then
+			raise exception 'a run woken by a % does not follow a listener', v_source; end if;
+	end loop;
+	perform pg_temp.r768_parent_source('input');
+end $$;
+-- The walk goes up the whole chain: a chain longer than it walks (here, a run whose wake names itself as its
+-- parent) counts as following a listener.
+do $$
+declare v_run uuid := (current_setting('qorpera_test.plan764_binding')::jsonb ->> 'runId')::uuid;
+begin
+	set local session_replication_role = replica;
+	update public.qorpera_wake_occurrences set parent_run_id = v_run where run_id = v_run;
+	set local session_replication_role = origin;
+	if public.qorpera_wake_authorized(jsonb_populate_record(null::public.qorpera_wake_occurrences,
+		current_setting('qorpera_test.r768_followup')::jsonb)) then
+		raise exception 'a plan paid for work at the end of a chain too long to walk'; end if;
+	set local session_replication_role = replica;
+	update public.qorpera_wake_occurrences set parent_run_id = null where run_id = v_run;
+	set local session_replication_role = origin;
+end $$;
 insert into public.qorpera_native_provider_account_metadata(connection_id, connection_version, provider_account_usage)
 select pg_temp.r768('plan'), max(version), jsonb_build_object('observedAt', statement_timestamp() - interval '1 second',
 	'windows', jsonb_build_array(jsonb_build_object('id', 'primary', 'label', '5 hours', 'usedPercent', 100)))
@@ -176,21 +243,26 @@ begin
 	if public.qorpera_native_account_remaining(pg_temp.r768('plan'),
 		(select max(version) from public.qorpera_provider_connection_versions where connection_id = pg_temp.r768('plan'))) <> 0 then
 		raise exception 'the plan is not at its limit'; end if;
-	-- Follow-up work of a run the plan pays for stays on the plan; the limit stops it there.
+	-- Follow-up work of a run the plan pays for stays on the plan; the limit stops it there. That holds also
+	-- when the run's binding is one without work-while-away consent (a conversation's), since the plan is the
+	-- same connection.
 	select binding_id into v_choice from public.qorpera_starter_sponsor('16000000-0000-4000-8000-000000000010',
 		'16000000-0000-4000-8000-000000000001', '16000000-0000-4000-8000-000000000030', pg_temp.r768('planBinding'));
 	if v_choice is distinct from pg_temp.r768('planBinding') then
 		raise exception 'follow-up work moved off the plan at its limit: %', v_choice; end if;
+	select binding_id into v_choice from public.qorpera_starter_sponsor('16000000-0000-4000-8000-000000000010',
+		'16000000-0000-4000-8000-000000000001', '16000000-0000-4000-8000-000000000030', pg_temp.r768('planChatBinding'));
+	if v_choice is distinct from pg_temp.r768('planBinding') then
+		raise exception 'follow-up work of a conversation on the plan moved off it: %', v_choice; end if;
 	-- New work not tied to the plan starts on the login with room.
 	select binding_id into v_choice from public.qorpera_starter_sponsor('16000000-0000-4000-8000-000000000010',
 		'16000000-0000-4000-8000-000000000001', '16000000-0000-4000-8000-000000000030', null);
 	if v_choice is distinct from pg_temp.r768('capsuleBinding') then
 		raise exception 'new work did not start on the login with room: %', v_choice; end if;
-	-- The plan stays eligible for the conversations it pays for; a new one starts on the login with room.
-	if not exists (select 1 from public.qorpera_eligible_member_accounts('16000000-0000-4000-8000-000000000010',
-		'16000000-0000-4000-8000-000000000001') as account
-		where account.connection_id = pg_temp.r768('plan') and account.remaining = 0) then
-		raise exception 'the plan at its limit left its conversations'; end if;
+	-- At its limit the plan is not taken for new work (a first run, a founding), as before.
+	if exists (select 1 from public.qorpera_eligible_member_accounts('16000000-0000-4000-8000-000000000010',
+		'16000000-0000-4000-8000-000000000001') as account where account.connection_id = pg_temp.r768('plan')) then
+		raise exception 'the plan at its limit is offered for new work'; end if;
 	if (public.qorpera_member_first_run_sponsor('16000000-0000-4000-8000-000000000010',
 		'16000000-0000-4000-8000-000000000001') ->> 'sponsorBindingId')::uuid
 		in (select binding_id from public.qorpera_execution_sponsor_versions where provider_connection_id = pg_temp.r768('plan')) then
@@ -217,17 +289,68 @@ select pg_temp.plan764_expect(pg_temp.plan764_try(
 select pg_temp.plan764_expect(current_setting('qorpera_test.plan764_last'), pg_temp.r768('plan')::text,
 	'a conversation on the plan keeps it at its limit');
 reset role;
--- A Codex login at its limit still leaves the list (unchanged).
+-- The other way round: the plan has room and the Codex login reaches its limit. Work never moves onto the
+-- plan because of that: its conversation keeps no account, and its follow-up work stays on it.
+delete from public.qorpera_native_provider_account_metadata where connection_id = pg_temp.r768('plan');
 insert into public.qorpera_native_provider_account_metadata(connection_id, connection_version, provider_account_usage)
 select pg_temp.r768('capsule'), max(version), jsonb_build_object('observedAt', statement_timestamp() - interval '1 second',
 	'windows', jsonb_build_array(jsonb_build_object('id', 'primary', 'label', '5 hours', 'usedPercent', 100)))
 from public.qorpera_provider_connection_versions where connection_id = pg_temp.r768('capsule');
+update public.qorpera_member_session_accounts set connection_id = pg_temp.r768('capsule'),
+	sponsor_binding_id = pg_temp.r768('capsuleBinding')
+where session_id = '16000000-0000-4000-8000-000000000040' and user_id = '16000000-0000-4000-8000-000000000001';
+set role authenticated;
+select pg_temp.plan764_expect(pg_temp.plan764_try(
+	'select public.qorpera_select_member_session_account(''16000000-0000-4000-8000-000000000010'',''16000000-0000-4000-8000-000000000040'')::text'),
+	'ok', 'the conversation''s account');
+select pg_temp.plan764_expect(current_setting('qorpera_test.plan764_last'), 'null',
+	'a conversation whose Codex login reached its limit does not move to the plan');
+reset role;
 do $$
+declare v_choice uuid;
 begin
 	if exists (select 1 from public.qorpera_eligible_member_accounts('16000000-0000-4000-8000-000000000010',
 		'16000000-0000-4000-8000-000000000001') as account where account.connection_id = pg_temp.r768('capsule')) then
 		raise exception 'a Codex login at its limit stayed eligible'; end if;
+	select binding_id into v_choice from public.qorpera_starter_sponsor('16000000-0000-4000-8000-000000000010',
+		'16000000-0000-4000-8000-000000000001', '16000000-0000-4000-8000-000000000030', pg_temp.r768('capsuleBinding'));
+	if v_choice is distinct from pg_temp.r768('capsuleBinding') then
+		raise exception 'follow-up work of a Codex run at its limit moved to: %', v_choice; end if;
+	-- New work, tied to no login, may start on the plan with room.
+	select binding_id into v_choice from public.qorpera_starter_sponsor('16000000-0000-4000-8000-000000000010',
+		'16000000-0000-4000-8000-000000000001', '16000000-0000-4000-8000-000000000030', null);
+	if v_choice is distinct from pg_temp.r768('planBinding') then
+		raise exception 'new work did not start on the plan with room: %', v_choice; end if;
 end $$;
+-- Both at their limit, the plan's payer the newer one: follow-up work of a conversation on the Codex login
+-- stays on that login and never moves to the plan.
+insert into public.qorpera_native_provider_account_metadata(connection_id, connection_version, provider_account_usage)
+select pg_temp.r768('plan'), max(version), jsonb_build_object('observedAt', statement_timestamp() - interval '1 second',
+	'windows', jsonb_build_array(jsonb_build_object('id', 'primary', 'label', '5 hours', 'usedPercent', 100)))
+from public.qorpera_provider_connection_versions where connection_id = pg_temp.r768('plan');
+set local session_replication_role = replica;
+update public.qorpera_execution_sponsor_versions set created_at = clock_timestamp() + interval '1 minute'
+where binding_id = pg_temp.r768('planBinding');
+set local session_replication_role = origin;
+set role authenticated;
+select pg_temp.plan764_expect(pg_temp.plan764_try(format(
+	'select public.qorpera_create_member_execution_sponsor(%L,%L,%L,%s,false)::text',
+	'16000000-0000-4000-8000-000000000010', '76800000-0000-4000-8000-000000000013', pg_temp.r768('capsule'),
+	current_setting('qorpera_test.r768_capsule_version')::bigint + 1)),
+	'ok', 'a conversation payer on the capsule login');
+select set_config('qorpera_test.r768', (current_setting('qorpera_test.r768')::jsonb
+	|| jsonb_build_object('capsuleChatBinding', current_setting('qorpera_test.plan764_last')::jsonb ->> 'binding_id'))::text, false);
+reset role;
+do $$
+declare v_choice uuid;
+begin
+	select binding_id into v_choice from public.qorpera_starter_sponsor('16000000-0000-4000-8000-000000000010',
+		'16000000-0000-4000-8000-000000000001', '16000000-0000-4000-8000-000000000030', pg_temp.r768('capsuleChatBinding'));
+	if v_choice is distinct from pg_temp.r768('capsuleBinding') then
+		raise exception 'follow-up work of a Codex conversation at its limit moved to: %', v_choice; end if;
+end $$;
+-- Back to the plan at its limit and the capsule login with room, for the retries below.
+delete from public.qorpera_native_provider_account_metadata where connection_id = pg_temp.r768('capsule');
 
 -- 5. Only the member whose plan pays tries a failed run again: the fixture's run, failed on the plan.
 update public.qorpera_execution_runs set sponsor_binding_id = pg_temp.r768('planBinding'),
@@ -256,7 +379,8 @@ select pg_temp.plan764_expect(pg_temp.plan764_try(format(
 reset role;
 
 -- 6. Only the member who started a change retries its review on their plan. The member's plan is their only
--- login now; their change's review failed; an admin who is not its author may not retry it on that plan.
+-- login while the change is submitted; its review fails; an admin who is not its author may not retry it on
+-- that plan. The capsule login is back with room when the author retries: the review stays on the plan.
 update public.qorpera_provider_connections set status = 'revoked' where id = pg_temp.r768('capsule');
 update public.qorpera_profile_members set role = 'admin'
 where profile_id = '16000000-0000-4000-8000-000000000010' and user_id = '16000000-0000-4000-8000-000000000002';
@@ -279,6 +403,7 @@ begin
 	perform set_config('qorpera_test.r768_review', (select id::text from public.qorpera_company_proposal_review_assignments
 		where proposal_id = '76800000-0000-4000-8000-000000000021'), false);
 end $$;
+update public.qorpera_provider_connections set status = 'active' where id = pg_temp.r768('capsule');
 select set_config('request.jwt.claims',
 	'{"sub":"16000000-0000-4000-8000-000000000002","role":"authenticated"}',false);
 set role authenticated;
@@ -292,8 +417,43 @@ set role authenticated;
 select pg_temp.plan764_expect(pg_temp.plan764_try(format('select public.qorpera_retry_company_proposal_review(%L)::text',
 	current_setting('qorpera_test.r768_review'))), 'ok', 'the author retries the review on their own plan');
 reset role;
+do $$
+begin
+	if not exists (select 1 from public.qorpera_company_proposal_review_assignments as review
+		where review.id = current_setting('qorpera_test.r768_review')::uuid and review.status = 'queued'
+			and review.reviewer_sponsor_binding_id = pg_temp.r768('planBinding')) then
+		raise exception 'the retried review moved off the author''s plan: %', (select to_jsonb(review)
+			from public.qorpera_company_proposal_review_assignments as review
+			where review.id = current_setting('qorpera_test.r768_review')::uuid); end if;
+end $$;
 
--- 7. Plan use stops for a company being deleted.
+-- 7. One usable plan per member: no second ChatGPT account is connected beside the member's plan login,
+-- neither when its sign-in begins nor when it completes (the first login lapsed in between, then came back).
+select set_config('request.jwt.claims',
+	'{"sub":"16000000-0000-4000-8000-000000000001","role":"authenticated"}',false);
+set role authenticated;
+select pg_temp.plan764_expect(pg_temp.plan764_try(format('select public.qorpera_begin_chatgpt_plan_sign_in(%L,%L,%L,%L,%L)::text',
+	'16000000-0000-4000-8000-000000000010','76800000-0000-4000-8000-000000000031','76800000-0000-4000-8000-000000000032',
+	current_setting('qorpera_test.native_identity')::jsonb ->> 'compute_identity_id',encode(sha256('plan-768'::bytea),'hex'))),
+	'55000:Disconnect your other ChatGPT plan first','a second plan beside a usable one');
+reset role;
+update public.qorpera_model_logins set status = 'needs_sign_in' where id = '76400000-0000-4000-8000-000000000150';
+set role authenticated;
+select pg_temp.plan764_expect(pg_temp.plan764_try(format('select public.qorpera_begin_chatgpt_plan_sign_in(%L,%L,%L,%L,%L)::text',
+	'16000000-0000-4000-8000-000000000010','76800000-0000-4000-8000-000000000031','76800000-0000-4000-8000-000000000032',
+	current_setting('qorpera_test.native_identity')::jsonb ->> 'compute_identity_id',encode(sha256('plan-768'::bytea),'hex'))),
+	'ok','a second plan once the first lapsed');
+select set_config('qorpera_test.r768_second', pg_temp.plan764_last() ->> 'login_id', false);
+reset role;
+update public.qorpera_model_logins set status = 'active' where id = '76400000-0000-4000-8000-000000000150';
+set local session authorization qorpera_secret_broker;
+select pg_temp.plan764_expect(pg_temp.plan764_complete('qorpera_complete_chatgpt_plan_sign_in',
+	current_setting('qorpera_test.r768_second'),'plan-768','76800000-0000-4000-8000-000000000033','plan-768-envelope'::bytea,
+	clock_timestamp() + interval '20 minutes'),'55000:Disconnect your other ChatGPT plan first',
+	'completing a second plan once the first came back');
+reset session authorization;
+
+-- 8. Plan use stops for a company being deleted.
 select set_config('request.jwt.claims',
 	'{"sub":"16000000-0000-4000-8000-000000000001","role":"authenticated"}',false);
 set role authenticated;

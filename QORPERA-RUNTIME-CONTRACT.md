@@ -1982,18 +1982,22 @@ pay, so a routine or coding session keeps working after the member's old
 ChatGPT login is switched off. Claude logins are never moved.
 
 2026-10-01 amendment: ChatGPT plan logins (founder decisions, Sign in with
-ChatGPT; built switched off, migrations 20260928329830 and 20260929880000). A
+ChatGPT; built switched off, migrations 20260928329830 and 20260929913000). A
 member's ChatGPT Plus or Pro plan pays only for work that member starts, and
 no other member's activity triggers calls on it (OpenAI's terms for plan use).
 So a plan login: works while its member is away only after the member turned
 that on themselves (the kernel never consents it for them); never pays for a
 listener, since a file change or an event (a webhook, mail) is anyone's
-activity, neither when the routine is saved nor when it wakes; is never
-swapped at its usage limit, which stops the work (a conversation it pays for
-keeps it, follow-up work of a run it pays for keeps it, and no run in progress
-moves to another login); is retried, for a failed run or a change's review,
-only by the member whose plan pays; and is not used while its company is being
-deleted. Codex logins are unchanged by this amendment.
+activity, neither when the routine is saved nor when it wakes, nor for any
+work that follows from a listener run; is never swapped at its usage limit,
+which stops the work (a conversation it pays for keeps it, and follow-up work
+of a run it pays for keeps it), and never takes over a conversation or
+follow-up work from another login at its limit; is one per member and company,
+since plans are never pooled or rotated; is retried, for a failed run or a
+change's review, only by the member whose plan pays; and is not used while its
+company is being deleted. A run in progress is not handed to another login
+once migration 20260929910000 lands, which plan logins need before they switch
+on. Codex logins are unchanged by this amendment.
 
 ## 18. Short constitution
 
