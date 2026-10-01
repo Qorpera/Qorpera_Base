@@ -262,7 +262,21 @@ async function fixture() {
 		const stored = files.get(path);
 		return stored ? new TextDecoder().decode(bytesBySha.get(stored.file.fileSha256)) : null;
 	};
-	return { identity, files, folders, commits, releases, ledger, operationControl, todos, run, context, text };
+	// A file as another writer left it.
+	const seed = (path: string, body: string) => {
+		const data = new TextEncoder().encode(body);
+		bytesBySha.set(sha(data), data);
+		const file = {
+			manifestSha256: sha(`manifest:${sha(data)}`),
+			fileSha256: sha(data),
+			bytes: data.byteLength,
+			mediaType: "text/markdown",
+			executable: false,
+		};
+		files.set(path, { version: randomUUID(), file, updatedAt: now() });
+		folders.add(path.split("/").slice(0, -1).join("/"));
+	};
+	return { identity, files, folders, commits, releases, ledger, operationControl, todos, run, context, text, seed };
 }
 
 const PATH = "agents/nora/todos/call-the-bank.md";
@@ -343,6 +357,67 @@ it("updates a todo keeping its id and requester, closes it, and replays a finish
 	expect(f.commits).toHaveLength(3);
 });
 
+it("keeps a todo's requester, changes only its status, and releases the read its result shows", async () => {
+	const f = await fixture();
+	const requester = randomUUID();
+	// Written by someone else: keys in another order, and a comment the settings writer keeps.
+	const original = `---\ntitle: Call the bank\n# asked on the phone\nid: ${randomUUID()}\nstatus: open\nrequested_by: ${requester}\n---\nAsk about the loan.\n`;
+	f.seed(PATH, original);
+	const read = f.files.get(PATH)?.version;
+	const content = await f
+		.todos()
+		.change({ action: "done", operationKey: "todo-1", todoKey: "call-the-bank" }, f.context);
+	const done = parse(content);
+	expect(f.text(PATH)).toBe(original.replace("status: open", "status: done"));
+	expect(f.releases).toHaveLength(1);
+	expect(f.releases).toMatchObject([
+		{
+			p_release_id: done.receiptId,
+			p_reads: [expect.objectContaining({ path: PATH, version: read })],
+			p_output_sha256: sha(String(content.value)),
+		},
+	]);
+	// An upsert keeps whoever asked, not the run's requester.
+	f.seed("agents/nora/todos/send-the-offer.md", original.replace("Call the bank", "Send the offer"));
+	await f
+		.todos()
+		.change(
+			{ action: "upsert", operationKey: "todo-2", todoKey: "send-the-offer", title: "Send it", state: "blocked" },
+			f.context,
+		);
+	expect(f.text("agents/nora/todos/send-the-offer.md")).toContain(`requested_by: ${requester}`);
+	expect(f.text("agents/nora/todos/send-the-offer.md")).not.toContain(String(f.identity.requesterUserId));
+});
+
+it("binds a call's whole request to its receipt: the same operationKey with other content is refused", async () => {
+	const f = await fixture();
+	const todos = f.todos();
+	const upsert = { action: "upsert", operationKey: "todo-1", todoKey: "call-the-bank", title: "Call" } as const;
+	await todos.change({ ...upsert, detail: "Ask about the loan." }, f.context);
+	await expect(todos.change({ ...upsert, detail: "Ask about the rate." }, f.context)).rejects.toThrow();
+	await expect(
+		todos.change({ ...upsert, detail: "Ask about the loan.", state: "blocked" }, f.context),
+	).rejects.toThrow();
+	await expect(
+		todos.change({ ...upsert, title: "Call them", detail: "Ask about the loan." }, f.context),
+	).rejects.toThrow();
+	expect(f.commits).toHaveLength(1);
+	expect(f.text(PATH)).toContain("Ask about the loan.");
+});
+
+it("refuses a todo file that does not read as a todo, to change it or to show it", async () => {
+	const f = await fixture();
+	f.seed(PATH, "---\ntitle: no id\n---\n");
+	await expect(
+		f.todos().change({ action: "done", operationKey: "todo-1", todoKey: "call-the-bank" }, f.context),
+	).rejects.toThrow("does not read as a todo");
+	await expect(f.todos().list({ todoKey: "call-the-bank" }, f.context, () => true)).rejects.toThrow(
+		"does not read as a todo",
+	);
+	expect(f.ledger.size).toBe(0);
+	expect(f.releases).toHaveLength(0);
+});
+
 it("refuses what can never be saved, before any receipt", async () => {
 	const f = await fixture();
 	const todos = f.todos();
@@ -385,7 +460,27 @@ it("answers a conflict when the file changed after it was read, and the receipt 
 	commit.mockRestore();
 	expect(result).toMatchObject({ outcome: "conflict", reason: "version_changed", todo: { state: "open" } });
 	expect(result.next).toContain("new operationKey");
-	expect(f.operationControl.completeFolderToolOperation).toHaveBeenCalledTimes(2);
+	// The result shows the state and version read: that read is released with it, for an upsert too.
+	expect(f.releases.at(-1)).toMatchObject({ p_release_id: result.receiptId });
+	const again = vi.spyOn(CloudCompanyFolderClient.prototype, "commit").mockImplementationOnce(async function (
+		this: CloudCompanyFolderClient,
+		...args
+	) {
+		stored.version = randomUUID();
+		return original.apply(this, args);
+	});
+	const read = stored.version;
+	const upsert = parse(
+		await todos.change(
+			{ action: "upsert", operationKey: "todo-3", todoKey: "call-the-bank", title: "y", state: "blocked" },
+			f.context,
+		),
+	);
+	again.mockRestore();
+	expect(upsert).toMatchObject({ outcome: "conflict", todo: { state: "open", version: read } });
+	expect(f.releases).toHaveLength(2);
+	expect(f.releases.at(-1)).toMatchObject({ p_release_id: upsert.receiptId, p_reads: [{ version: read }] });
+	expect(f.operationControl.completeFolderToolOperation).toHaveBeenCalledTimes(3);
 });
 
 it("refuses before reading or writing when this run cannot complete a folder write", async () => {

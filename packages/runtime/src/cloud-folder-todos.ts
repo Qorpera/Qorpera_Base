@@ -48,9 +48,10 @@ export interface CloudFolderTodoListing {
 	readonly cursor?: string;
 }
 
-/** One release id per tool call: a replay of the same call releases the same reads under it. */
-function releaseIdFor(runId: string, callId: string): string {
-	const hex = createHash("sha256").update(`qorpera.todo-release/v1:${runId}:${callId}`).digest("hex");
+/** One release id per tool call and output: a replay of the same call showing the same read releases it under the
+ * same id, and one that shows something else gets its own. */
+function releaseIdFor(runId: string, callId: string, outputSha256: string): string {
+	const hex = createHash("sha256").update(`qorpera.todo-release/v1:${runId}:${callId}:${outputSha256}`).digest("hex");
 	return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-${((Number.parseInt(hex[16] ?? "0", 16) & 3) | 8).toString(16)}${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
 }
 
@@ -68,6 +69,8 @@ interface CurrentTodo {
 	readonly text: string;
 	readonly todo: TodoFile;
 }
+
+const UNREADABLE_TODO = "That todo's file does not read as a todo; correct it with the file tools first";
 
 const closed = (status: TodoFile["status"]) => status === "done" || status === "cancelled";
 
@@ -117,6 +120,7 @@ export class CloudFolderTodos {
 			const found = await this.#folder.readText(path, COMPANY_STATE_FILE_MAX_BYTES, signal);
 			const parsed = found ? parseCompanyStateFile(path, found.text) : null;
 			const todo = parsed?.ok && parsed.file.kind === "todo" ? parsed.file : null;
+			if (found && !todo) throw new CloudToolArgumentRefusal(UNREADABLE_TODO);
 			const output = cloudToolJsonText({
 				...frame,
 				todos:
@@ -136,9 +140,10 @@ export class CloudFolderTodos {
 				moreTodos: 0,
 				nextCursor: null,
 			});
-			if (found && todo)
+			if (found && todo) {
+				const outputSha256 = sha256(new TextEncoder().encode(output));
 				await this.#folder.release(
-					releaseIdFor(this.#identity.runId, context.callId),
+					releaseIdFor(this.#identity.runId, context.callId, outputSha256),
 					[
 						{
 							path: found.entry.path,
@@ -147,9 +152,10 @@ export class CloudFolderTodos {
 							fileSha256: found.entry.file.fileSha256,
 						},
 					],
-					sha256(new TextEncoder().encode(output)),
+					outputSha256,
 					signal,
 				);
+			}
 			return { kind: "text", value: output };
 		}
 		const page = await this.#folder.agentTodos(
@@ -185,10 +191,7 @@ export class CloudFolderTodos {
 		let current: CurrentTodo | null = null;
 		if (found) {
 			const parsed = parseCompanyStateFile(path, found.text);
-			if (!parsed?.ok || parsed.file.kind !== "todo")
-				throw new CloudToolArgumentRefusal(
-					"That todo's file does not read as a todo; correct it with the file tools first",
-				);
+			if (!parsed?.ok || parsed.file.kind !== "todo") throw new CloudToolArgumentRefusal(UNREADABLE_TODO);
 			current = { entry: found.entry, text: found.text, todo: parsed.file };
 		}
 		let text: string;
@@ -274,8 +277,9 @@ export class CloudFolderTodos {
 						version: written.outcome === "saved" ? written.version : (current?.entry.version ?? null),
 					},
 				});
-				// done and cancel show the todo as read: release that read with this result.
-				if (current && request.action !== "upsert")
+				// done and cancel show the todo as read, and so does an upsert that was not saved (its state and
+				// version): release that read with this result.
+				if (current && (request.action !== "upsert" || written.outcome !== "saved"))
 					await this.#folder.release(
 						receiptId,
 						[

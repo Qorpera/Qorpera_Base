@@ -757,7 +757,14 @@ C1d (bytes):
   the commit satisfies the receipt, which is completed with it (`qorpera_folder_complete_run_receipt`).
 - A `conflict` (the file changed since it was read) comes back to the model, which calls again under a new operation
   key; a redo inside the tool would need a second receipt whose digest depends on a re-read.
-- A result that shows content read from a file releases those reads with it, one release per tool call.
+- A result that shows content read from a file releases those reads with it, one release per tool call. A writer
+  releases inside its effect, before the receipt completes: a release that fails after a saved commit leaves W0's
+  fence (the call is not completed, and the run's later operations wait), which keeps a shown read from going
+  unreleased.
+- Known limit: the checks before the receipt read the file as it is now. If the file changed after a call's change
+  was saved (closed, or deleted), a replay of that call is refused before it reaches its receipt, instead of getting
+  the stored result. The change is still saved exactly once; only the replay's answer is wrong. A later fix can look
+  up the completed receipt for that operation key first.
 
 **Built (W1): `manage_todo`** (`packages/runtime/src/cloud-folder-todos.ts`).
 - The todo is `agents/<handle>/todos/<todoKey>.md`; the todoKey is the file name (`^[a-z0-9]+(?:-[a-z0-9]+)*$`, at most
@@ -765,7 +772,8 @@ C1d (bytes):
 - `upsert` writes the whole file (`writeTodoFile`), keeping an existing todo's id and requester; a new todo's
   requester is the run's, and the todos folder is made first when missing. A closed todo is not opened again.
 - `done` and `cancel` change only `status` (`setCompanyStateSettings`), and show the todo as read, released with the
-  result.
+  result. An `upsert` that is not saved shows the state and version read, and releases that read too. A todo file
+  that does not parse is refused, for a change and for `todoKey`.
 - `list` reads the todo index (`qorpera_folder_agent_todos`, migration `20260929770000`, test 763), which the commit
   updates in the same transaction as the files: one plain read, paged as today's list (32 a page, newest first, open
   and blocked by default, `state`, `includeClosed` and `search` as before, the cursor of the last todo shown). A page
