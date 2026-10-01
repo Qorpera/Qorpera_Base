@@ -364,6 +364,8 @@ describe("ChatGPT plan logins (switched off until a company has one)", () => {
 					row(82, { login_kind: "codex", allow_autonomous: true, routine_offer_shown_at: null }),
 					row(83, {}),
 					row(84, { login_kind: "something", allow_autonomous: "yes", routine_offer_shown_at: "soon" }),
+					// Another version of 81: each version reads its own consent.
+					row(81, { connection_version: 3, login_kind: "chatgpt_plan", allow_autonomous: true }),
 				],
 			}),
 		);
@@ -381,6 +383,7 @@ describe("ChatGPT plan logins (switched off until a company has one)", () => {
 			// A node login, and fields the web cannot read, read as absent.
 			{ loginKind: undefined, allowAutonomous: undefined, routineOfferShownAt: undefined },
 			{ loginKind: undefined, allowAutonomous: undefined, routineOfferShownAt: undefined },
+			{ loginKind: "chatgpt_plan", allowAutonomous: true, routineOfferShownAt: undefined },
 		]);
 		expect(listed.connections[0]).toMatchObject({ connectionId: id(81), sponsorBindingId: id(281) });
 	});
@@ -423,7 +426,9 @@ describe("ChatGPT plan logins (switched off until a company has one)", () => {
 			.spyOn(f.cloud, "rpc")
 			.mockResolvedValueOnce({ connection_id: id(94), version: 3, allow_autonomous: true, changed: true })
 			.mockResolvedValueOnce({ connection_id: id(94), version: 4, allow_autonomous: false, changed: true });
-		f.fetch.mockResolvedValueOnce(Response.json({ binding_id: id(92), version: 2 }));
+		f.fetch
+			.mockResolvedValueOnce(Response.json({ binding_id: id(92), version: 2 }))
+			.mockResolvedValueOnce(Response.json({ binding_id: id(93), version: 1 }));
 		await f.client.setWorkWhileAway!(id(94), true);
 		expect(rpc).toHaveBeenNthCalledWith(1, "qorpera_consent_provider_connection_autonomous", {
 			p_profile_id: profileA.profileId,
@@ -441,7 +446,12 @@ describe("ChatGPT plan logins (switched off until a company has one)", () => {
 			p_connection_id: id(94),
 			p_allow_autonomous: false,
 		});
-		expect(f.fetch).toHaveBeenCalledTimes(1);
+		// Turned off, the new version is bound at once for the member's own messages.
+		expect(JSON.parse(f.fetch.mock.calls[1]![1]!.body as string)).toMatchObject({
+			p_provider_connection_id: id(94),
+			p_provider_connection_version: 4,
+			p_allow_autonomous: false,
+		});
 		// An answer for another connection or the other choice is refused.
 		rpc.mockResolvedValueOnce({ connection_id: id(94), version: 5, allow_autonomous: true });
 		await expect(f.client.setWorkWhileAway!(id(94), false)).rejects.toThrow("Invalid cloud response");

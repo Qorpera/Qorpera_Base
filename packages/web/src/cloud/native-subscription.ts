@@ -603,15 +603,14 @@ export function createWebNativeSubscription(
 		setWorkWhileAway: async (connectionId, on, signal) => {
 			signal?.throwIfAborted();
 			const version = await consent(connectionId, on);
-			// Turned on, the consented version is bound for work while away; turned off, the newer
-			// version stops that, and the member's messages are bound again on the next read.
-			if (on)
-				await client(signal).createMemberSponsor({
-					providerConnectionId: connectionId,
-					providerConnectionVersion: version,
-					allowAutonomous: true,
-					profileId,
-				});
+			// The new version is bound at once: turned on, for work while away; turned off, for the
+			// member's own messages only (they never wait for a later read).
+			await client(signal).createMemberSponsor({
+				providerConnectionId: connectionId,
+				providerConnectionVersion: version,
+				allowAutonomous: on,
+				profileId,
+			});
 		},
 		recordRoutineOffer: async (connectionId, signal) => {
 			signal?.throwIfAborted();

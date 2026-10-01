@@ -354,24 +354,24 @@ export class ConnectionsView {
 		this.#working = connection.connectionId;
 		this.#error = undefined;
 		this.#draw();
-		let changed = false;
+		let failed = false;
 		try {
 			await this.#client.setWorkWhileAway(
 				connection.connectionId,
 				connection.allowAutonomous !== true,
 				this.#lifetime.signal,
 			);
-			changed = true;
 		} catch {
-			if (!this.#lifetime.signal.aborted) this.#error = t("Work while you're away could not be changed. Try again.");
-		} finally {
-			this.#working = undefined;
-			if (!this.#lifetime.signal.aborted) {
-				this.#draw();
-				// A read clears the line, so only a change is read back.
-				if (changed) void this.#refresh();
-			}
+			failed = true;
 		}
+		if (this.#lifetime.signal.aborted) return;
+		// The switch stays busy until the cloud's state is read back: part of a failed change may
+		// have landed, and a second press must not repeat the first.
+		await this.#refresh();
+		if (this.#lifetime.signal.aborted) return;
+		this.#working = undefined;
+		if (failed) this.#error = t("“Work while you're away” could not be changed. Try again.");
+		this.#draw();
 	}
 	/** A ChatGPT plan's switch: off until its member turns it on. */
 	#away(connection: WebMemberConnection): HTMLElement | null {
@@ -399,7 +399,7 @@ export class ConnectionsView {
 					"small",
 					null,
 					t(
-						"Your agents may use this plan for routines while you're away. Webhook and file routines never use it.",
+						"Your agents may use this plan for routines while you're away. Routines that start on a webhook or a file change never use it.",
 					),
 				),
 			),
