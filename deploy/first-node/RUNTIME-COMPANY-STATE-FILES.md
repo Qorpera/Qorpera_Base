@@ -781,7 +781,9 @@ C1d (bytes):
   todo's file and shows its whole detail, released with the result. A list shows no workers: `manage_worker` refuses
   `folder-v2` until F2-5b.
 - The read takes the run's plain read check (no lock; a paused company refuses it), a company run that is not a
-  worker, and read authority on the agent's todos folder. A deleted todo file is not listed.
+  worker, and read authority on the agent's todos folder. Each todo is listed only if the run may read its file (the
+  core judges a file by its most specific resource, so one todo can be narrowed on its own); the count and the cursor
+  follow the same rule. A deleted todo file is not listed.
 - The index over the files is the coordinator's ruling of 2026-10-01; F1 may overrule it in a follow-up.
 
 Until the mount's writes are accepted (F3), these tools become thin writers of these files:

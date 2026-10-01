@@ -10,7 +10,9 @@
 
 -- A folder-v2 run's own todos, as an index page: the run's plain check (qorpera_folder_read_actor: no job, run mutex or
 -- fence lock; a paused company's run is refused, as for any folder read), a company run that is not a worker, and its
--- read authority on its todos folder. Files that were deleted (retired rows, keyed by a tombstone) are not listed.
+-- read authority on its todos folder. Each todo is listed only if the run may read its file: the folder core judges a
+-- file by its most specific resource, so one todo can be narrowed on its own, and the page then leaves it out as the
+-- core's read and listing do. Files that were deleted (retired rows, keyed by a tombstone) are not listed.
 create function public.qorpera_folder_agent_todos(p_environment_id uuid, p_actor jsonb, p_request jsonb)
 returns jsonb language plpgsql stable security definer set search_path = '' as $$
 declare
@@ -50,7 +52,8 @@ begin
 		select * into v_after from public.qorpera_runtime_agent_todos todo
 		where todo.id = (p_request ->> 'cursor')::uuid and todo.profile_id = v_profile
 			and todo.environment_id = p_environment_id and todo.staff_agent_id = v_staff
-			and todo.folder_path is not null and todo.folder_retired_at is null;
+			and todo.folder_path is not null and todo.folder_retired_at is null
+			and public.qorpera_folder_actor_allowed(p_environment_id, v_profile, v_auth, todo.folder_path, 'read');
 		if not found then raise exception 'Todo cursor is unavailable; list again without it' using errcode = '22023'; end if;
 	end if;
 	-- Only the keyset is kept for counting; whole rows are read for the page alone.
@@ -59,7 +62,8 @@ begin
 		where todo.profile_id = v_profile and todo.environment_id = p_environment_id and todo.staff_agent_id = v_staff
 			and todo.folder_path is not null and todo.folder_retired_at is null and todo.state = any(v_states)
 			and (v_search is null or strpos(lower(todo.title), v_search) > 0 or strpos(todo.todo_key, v_search) > 0)
-			and (v_after.id is null or (todo.created_at, todo.id) < (v_after.created_at, v_after.id))),
+			and (v_after.id is null or (todo.created_at, todo.id) < (v_after.created_at, v_after.id))
+			and public.qorpera_folder_actor_allowed(p_environment_id, v_profile, v_auth, todo.folder_path, 'read')),
 	page as (select * from matching order by created_at desc, id desc limit 32)
 	select coalesce(jsonb_agg(jsonb_build_object('todoKey', todo.todo_key, 'title', todo.title, 'state', todo.state,
 				'detail', left(todo.detail, 200), 'path', todo.folder_path, 'version', todo.folder_path_version,
