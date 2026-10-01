@@ -1,9 +1,11 @@
 import type { CloudCompanyPathControl } from "./cloud-company-path-gateway.ts";
 import type { CloudFolderRoutineDecision, CloudFolderRoutineDecisionRequest } from "./cloud-folder-routine-decision.ts";
-import type {
-	CloudFolderRoutineChange,
-	CloudFolderRoutineListing,
-	CloudFolderRoutines,
+import {
+	CLOUD_FOLDER_ROUTINE_NAME,
+	CLOUD_FOLDER_ROUTINE_NAME_BYTES,
+	type CloudFolderRoutineChange,
+	type CloudFolderRoutineListing,
+	type CloudFolderRoutines,
 } from "./cloud-folder-routines.ts";
 import {
 	type CloudNativeToolBinding,
@@ -302,6 +304,16 @@ export function cloudRoutineTools(
 	const reportSchema = { type: "string", enum: [...REPLY] };
 	const zoneSchema = { type: "string", minLength: 1, maxLength: 64 };
 	const timeSchema = { type: "string", pattern: LOCAL_TIME.source };
+	// A folder-v2 change binds its operation key to its request: reusing the key with other arguments is refused with
+	// the arguments, before the automatic review, as hire_agent and create_group_chat do.
+	const bound = new Map<string, string>();
+	const refuseRebinding = (request: Record<string, unknown>) => {
+		const previous = bound.get(request.operationKey as string);
+		if (previous !== undefined && previous !== JSON.stringify(request))
+			throw new CloudToolArgumentRefusal(
+				"operationKey is already used in this run for a different routine change, which may already have been made: list your routines before changing them again, and repeat this operationKey only with identical arguments",
+			);
+	};
 	const tool: CloudNativeTool = {
 		name: "manage_routine" satisfies CloudRuntimeToolOperation,
 		source: "runtime",
@@ -313,7 +325,14 @@ export function cloudRoutineTools(
 			properties: {
 				action: { type: "string", enum: [...ACTIONS] },
 				operationKey: { type: "string", pattern: OPERATION_KEY.source },
-				routineKey: { type: "string", pattern: ROUTINE_KEY.source },
+				// A folder-v2 routine's key is its file's name.
+				routineKey: folderRoutines
+					? {
+							type: "string",
+							pattern: CLOUD_FOLDER_ROUTINE_NAME.source,
+							maxLength: CLOUD_FOLDER_ROUTINE_NAME_BYTES,
+						}
+					: { type: "string", pattern: ROUTINE_KEY.source },
 				title: { type: "string", minLength: 1, maxLength: 160 },
 				intent: { type: "string", minLength: 1, maxLength: 32768 },
 				summary: { type: "string", minLength: 1, maxLength: 2000 },
@@ -360,36 +379,41 @@ export function cloudRoutineTools(
 								report: reportSchema,
 							},
 						},
-						{
-							type: "object",
-							additionalProperties: false,
-							required: ["kind", "path", "timeZone"],
-							properties: {
-								kind: { const: "file_change" },
-								path: { type: "string", minLength: 1, maxLength: 1024 },
-								match: { type: "string", enum: ["exact", "subtree"] },
-								timeZone: zoneSchema,
-								report: reportSchema,
-							},
-						},
-						{
-							type: "object",
-							additionalProperties: false,
-							required: ["kind", "hookId", "timeZone"],
-							properties: {
-								kind: { const: "event" },
-								hookId: { type: "string", pattern: UUID.source },
-								only: {
-									type: "array",
-									minItems: 1,
-									maxItems: 20,
-									uniqueItems: true,
-									items: { type: "string", pattern: EVENT_TYPE.source },
-								},
-								timeZone: zoneSchema,
-								report: reportSchema,
-							},
-						},
+						// Routines that react to files or events are not available on folder-v2 yet.
+						...(folderRoutines
+							? []
+							: [
+									{
+										type: "object",
+										additionalProperties: false,
+										required: ["kind", "path", "timeZone"],
+										properties: {
+											kind: { const: "file_change" },
+											path: { type: "string", minLength: 1, maxLength: 1024 },
+											match: { type: "string", enum: ["exact", "subtree"] },
+											timeZone: zoneSchema,
+											report: reportSchema,
+										},
+									},
+									{
+										type: "object",
+										additionalProperties: false,
+										required: ["kind", "hookId", "timeZone"],
+										properties: {
+											kind: { const: "event" },
+											hookId: { type: "string", pattern: UUID.source },
+											only: {
+												type: "array",
+												minItems: 1,
+												maxItems: 20,
+												uniqueItems: true,
+												items: { type: "string", pattern: EVENT_TYPE.source },
+											},
+											timeZone: zoneSchema,
+											report: reportSchema,
+										},
+									},
+								]),
 					],
 				},
 				expiresAt: { type: "string", format: "date-time" },
@@ -451,6 +475,7 @@ export function cloudRoutineTools(
 					routineKey: c.routineKey,
 					summary: text(c.summary, 2000),
 				};
+				if (folderRoutines) refuseRebinding(request);
 				folderRoutines?.check(request as CloudFolderRoutineChange);
 				return request as never;
 			}
@@ -497,6 +522,7 @@ export function cloudRoutineTools(
 			}
 			if (!upsert) {
 				const request = { action, operationKey: a.operationKey, routineKey: a.routineKey };
+				if (folderRoutines) refuseRebinding(request);
 				folderRoutines?.check(request as CloudFolderRoutineChange);
 				return request as never;
 			}
@@ -549,6 +575,7 @@ export function cloudRoutineTools(
 				request.quietHours = { start, end, timeZone: timeZone(quiet.timeZone) };
 			}
 			// The file's own checks, before the automatic review, so a card is never raised for a save that cannot be.
+			if (folderRoutines) refuseRebinding(request);
 			folderRoutines?.check(request as unknown as CloudFolderRoutineChange);
 			return request as never;
 		},
@@ -560,6 +587,9 @@ export function cloudRoutineTools(
 			if (folderRoutines) {
 				if (request.action === "list")
 					return folderRoutines.list(request as unknown as CloudFolderRoutineListing, context, fitsOneResult);
+				refuseRebinding(request);
+				if (!bound.has(request.operationKey as string))
+					bound.set(request.operationKey as string, JSON.stringify(request));
 				const changed = await folderRoutines.change(request as unknown as CloudFolderRoutineChange, context);
 				// Concluding its own routine here is a decision too.
 				if (ownDynamicRoutine && changed.concluded && request.routineKey === ownDynamicRoutine.routineKey)

@@ -47,14 +47,36 @@ import type { CloudNativeToolOperations } from "./cloud-native-tool-operations.t
 
 const TOOL_VERSION = "folder-v2/1";
 /** A routine's file name is its key (§1 "Names"). */
-const ROUTINE_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
-const ROUTINE_NAME_BYTES = 64;
+export const CLOUD_FOLDER_ROUTINE_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+export const CLOUD_FOLDER_ROUTINE_NAME_BYTES = 64;
 const PLACEHOLDER_ID = "00000000-0000-4000-8000-000000000000";
 /** The pauses the platform records in the index only, until C2's queue writes them into files. */
 const PLATFORM_PAUSES = new Set(["member", "authorization_failed", "needs_model_account"]);
 const UNREADABLE = "That routine's file does not read as a routine; correct it with the file tools first";
 const MISSING = "You have no routine with that routineKey: list your routines to see their keys";
 const INVALID = "This routine cannot be saved as the company's files";
+/** An upsert restates the whole routine, so a cut view is never its source. */
+const CUT =
+	"Some instructions are cut here: read the routine's file (company_read at its path) before restating them in an upsert.";
+/** A routine file to check a conclusion against before the review. */
+const PLACEHOLDER_FILE = writeRoutineFile({
+	id: "00000000-0000-4000-8000-000000000000",
+	title: "Routine",
+	status: "active",
+	trigger: { when: "every", minutes: 60, starts: null },
+	timezone: null,
+	ends: null,
+	runs: null,
+	quiet: null,
+	effort: "medium",
+	reply: "optional",
+	conclusion: null,
+	instructions: "Routine.",
+});
+
+/** A file concluded with the summary: the file's conclusion is one line, so line breaks and tabs become spaces. */
+const concludedFile = (text: string, summary: string) =>
+	setCompanyStateSettings(text, { status: "concluded", conclusion: summary.replace(/\s+/g, " ").trim() });
 
 type Reply = RoutineFile["reply"];
 
@@ -216,7 +238,10 @@ export class CloudFolderRoutines {
 
 	/** The path of a routine, or a refusal the model can act on. */
 	path(routineKey: string): string {
-		if (!ROUTINE_NAME.test(routineKey) || Buffer.byteLength(routineKey) > ROUTINE_NAME_BYTES)
+		if (
+			!CLOUD_FOLDER_ROUTINE_NAME.test(routineKey) ||
+			Buffer.byteLength(routineKey) > CLOUD_FOLDER_ROUTINE_NAME_BYTES
+		)
 			throw new CloudToolArgumentRefusal(
 				"In this company a routineKey is the routine's file name: lowercase letters, digits and single hyphens, at most 64 characters",
 			);
@@ -227,6 +252,11 @@ export class CloudFolderRoutines {
 	 * placeholder id; the real one cannot add a problem. */
 	check(request: CloudFolderRoutineChange): void {
 		const path = this.path(request.routineKey);
+		if (request.action === "conclude") {
+			const { problems } = parsed(path, concludedFile(PLACEHOLDER_FILE, request.summary));
+			if (problems.length) throw new CloudToolArgumentRefusal(invalidMessage(problems, INVALID));
+			return;
+		}
 		if (request.action !== "upsert") return;
 		// A saved routine whose end has passed ends again at once.
 		if (request.expiresAt !== undefined && Date.parse(request.expiresAt) <= Date.now())
@@ -253,19 +283,44 @@ export class CloudFolderRoutines {
 					: {},
 			context.signal,
 		);
+		const routines = page.routines.map(shown);
 		const render = (count: number) => {
 			const left = page.moreRoutines + page.routines.length - count;
+			const listed = routines.slice(0, count);
 			return cloudToolJsonText({
 				schema: "qorpera.agent-routines/v2",
 				runId: this.#identity.runId,
-				routines: page.routines.slice(0, count).map(shown),
+				routines: listed,
 				moreRoutines: left,
 				nextCursor: left === 0 ? null : (page.routines[count - 1]?.cursor ?? null),
+				...(listed.some((routine) => routine.instructionsTruncated) ? { next: CUT } : {}),
 			});
 		};
 		// Grown from one routine, so a wide page is never rendered whole.
 		let count = Math.min(page.routines.length, 1);
 		while (count < page.routines.length && fits(render(count + 1))) count++;
+		// One routine that does not fit one result (its instructions hold up to 32 KiB): its instructions are cut, at a
+		// character, to fit, and marked.
+		const first = routines[0];
+		const whole = typeof first?.file?.instructions === "string" ? Array.from(first.file.instructions) : null;
+		if (first?.file && whole && !fits(render(count))) {
+			const cut = (length: number) => {
+				routines[0] = {
+					...first,
+					file: { ...first.file, instructions: whole.slice(0, length).join("") },
+					instructionsTruncated: true,
+				};
+			};
+			let low = 0;
+			let high = whole.length;
+			while (low < high) {
+				const middle = Math.ceil((low + high) / 2);
+				cut(middle);
+				if (fits(render(count))) low = middle;
+				else high = middle - 1;
+			}
+			cut(low);
+		}
 		return { kind: "text", value: render(count) };
 	}
 
@@ -357,11 +412,7 @@ export class CloudFolderRoutines {
 				text = status === "paused" ? setCompanyStateSettings(current.text, { status: "active" }) : current.text;
 			} else if (request.action === "conclude") {
 				if (status === "concluded") return unchanged("Nothing to change: the routine is already concluded.", true);
-				// The file's conclusion is one line: line breaks and tabs in the summary become spaces.
-				text = setCompanyStateSettings(current.text, {
-					status: "concluded",
-					conclusion: request.summary.replace(/\s+/g, " ").trim(),
-				});
+				text = concludedFile(current.text, request.summary);
 			} else {
 				if (own)
 					throw new CloudToolRefusal(
@@ -369,23 +420,6 @@ export class CloudFolderRoutines {
 					);
 				text = "";
 			}
-		}
-		// The login that pays, last before the receipt: for the saves that start or extend work.
-		if (request.action === "upsert" || request.action === "resume") {
-			const prepared = await this.#folder.prepareRoutineLogin(signal);
-			if ("refused" in prepared)
-				throw new CloudToolRefusal(
-					prepared.refused === "acknowledgement"
-						? "This conversation needs your first reply before any work: answer the member, then call again"
-						: prepared.refused === "final"
-							? "This run already sent its final reply, so it starts no more work"
-							: "The company's work is paused, so nothing can be saved now",
-				);
-			// A resume changes nothing while no login pays: the routine would wait for one all the same.
-			if (request.action === "resume" && prepared.login === null)
-				return unchanged(
-					"Nothing was changed: no model account of the member you work for allows unattended runs yet, so the routine stays as it is. Tell the member it is a one-time account setting, then resume it again.",
-				);
 		}
 		const actionReviewId = context.actionReviewId;
 		if (!actionReviewId)
@@ -406,6 +440,24 @@ export class CloudFolderRoutines {
 						...(current ? { expectedVersion: current.entry.version } : {}),
 					},
 		);
+		// The login that pays, last before the receipt: for the saves that start or extend work. The consent it records is
+		// the requester's standing consent, so it stays if the save is then refused.
+		if (request.action === "upsert" || request.action === "resume") {
+			const prepared = await this.#folder.prepareRoutineLogin(signal);
+			if ("refused" in prepared)
+				throw new CloudToolRefusal(
+					prepared.refused === "acknowledgement"
+						? "This conversation needs your first reply before any work: answer the member, then call again"
+						: prepared.refused === "final"
+							? "This run already sent its final reply, so it starts no more work"
+							: "The company's work is paused, so nothing can be saved now",
+				);
+			// A resume changes nothing while no login pays: the routine would wait for one all the same.
+			if (request.action === "resume" && prepared.login === null)
+				return unchanged(
+					"Nothing was changed: no model account of the member you work for allows unattended runs yet, so the routine stays as it is. Tell the member it is a one-time account setting, then resume it again.",
+				);
+		}
 		const content = await this.#operations.execute({
 			operation: {
 				tool: "manage_routine",
@@ -434,13 +486,6 @@ export class CloudFolderRoutines {
 				const written = committed.units.at(-1);
 				if (!written) throw new Error("Company folder commit answered no unit");
 				const saved = written.outcome === "saved";
-				// How it runs now, best effort: a failed read never turns a saved change into an error.
-				let now: CloudCompanyFolderRoutine | null | undefined = null;
-				if (saved && request.action !== "remove")
-					now = await this.#folder
-						.agentRoutines({ routineKey }, performSignal)
-						.then((page) => page.routines[0] ?? null)
-						.catch(() => undefined);
 				const output = cloudToolJsonText({
 					schema: "qorpera.agent-routine-receipt/v2",
 					runId: this.#identity.runId,
@@ -449,20 +494,22 @@ export class CloudFolderRoutines {
 					outcome: written.outcome,
 					...(written.reason ? { reason: written.reason } : {}),
 					...(written.problems.length ? { problems: written.problems } : {}),
-					routine: now ? shown(now) : { routineKey, path, ...(saved ? { version: written.version } : {}) },
+					// A removed file's version is its deletion's, which shows the model nothing.
+					routine: {
+						routineKey,
+						path,
+						...(saved && request.action !== "remove" ? { version: written.version } : {}),
+					},
 					next: saved
 						? request.action === "remove"
 							? "The routine is removed, and its name is free again."
-							: now === undefined
-								? "Saved. List it (manage_routine list with this routineKey) to see how it runs now."
-								: ((now && waiting(now)) ??
-									(request.action === "upsert"
-										? "Saved: tell the member what you set up or changed."
-										: request.action === "conclude"
-											? "Concluded: it stays listed as concluded, and saving it again restarts it."
-											: request.action === "pause"
-												? "Paused: it does not run until it is resumed."
-												: "Switched back on."))
+							: request.action === "upsert"
+								? "Saved: tell the member what you set up or changed."
+								: request.action === "conclude"
+									? "Concluded: it stays listed as concluded, and saving it again restarts it."
+									: request.action === "pause"
+										? "Paused: it does not run until it is resumed."
+										: "Switched back on."
 						: written.outcome === "conflict"
 							? "The routine's file changed since it was read: list it and call again with a new operationKey."
 							: written.outcome === "waiting_for_review"
@@ -474,7 +521,27 @@ export class CloudFolderRoutines {
 			signal,
 			...(context.observation ? { observation: context.observation } : {}),
 		});
-		const value = JSON.parse(content.kind === "text" ? content.value : "{}") as { outcome?: unknown };
-		return { content, concluded: request.action === "conclude" && value.outcome === "saved" };
+		const value = JSON.parse(content.kind === "text" ? content.value : "{}") as Record<string, unknown>;
+		const concluded = request.action === "conclude" && value.outcome === "saved";
+		if (value.outcome !== "saved" || request.action === "remove") return { content, concluded };
+		// How it runs now, read back after the receipt, best effort: a failed read never turns a saved change into an error.
+		const now = await this.#folder
+			.agentRoutines({ routineKey }, signal)
+			.then((page) => page.routines[0] ?? null)
+			.catch(() => undefined);
+		return {
+			content: {
+				kind: "text",
+				value: cloudToolJsonText({
+					...value,
+					...(now ? { routine: shown(now) } : {}),
+					next:
+						now === undefined
+							? "Saved. List it (manage_routine list with this routineKey) to see how it runs now."
+							: ((now && waiting(now)) ?? value.next),
+				}),
+			},
+			concluded,
+		};
 	}
 }

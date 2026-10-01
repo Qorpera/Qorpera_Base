@@ -3,10 +3,10 @@
 -- RUNTIME-COMPANY-FOLDER-C2.md §5): a run's routine files, as manage_routine saves them. Each change set is saved with
 -- the automatic review's approval of the call, recorded for exactly that change set: a new routine, a pause, a resume,
 -- a conclusion and a removal; an unchanged save over the platform's pause resumes the routine. A new routine and a
--- removal are not saved without the review. A dynamic routine's run cannot pause it (SQL leaves a fixed routine's
--- own run to the runtime, which refuses it before the receipt), and rewrites
--- its title and instructions with its decision, as decide_routine saves it, only with the review (W4c-2). Runs are
--- 708's routine runs, with 647's native rows so the runtime's binding stands.
+-- removal are not saved without the review. A dynamic routine's run cannot pause it, even with the review (SQL leaves
+-- a fixed routine's own run to the runtime, which refuses it before the receipt), and rewrites its title and
+-- instructions with its decision, as decide_routine saves it, only with the review (W4c-2). Runs are 708's routine
+-- runs, with 647's native rows so the runtime's binding stands.
 
 -- The native rows a hand-built run needs before the runtime can call a tool with it: the company's compute identity
 -- and saved login (connection b3, version 1, a native subscription), the run's runner, accepted assignment, native
@@ -141,8 +141,8 @@ begin
 		pg_temp.rparse('78100000-0000-4000-8000-0000000000e4', 'Digest again', pg_temp.every(60))))), 1, 'saved');
 end $$;
 
--- 7. A dynamic routine's run cannot pause it, and rewrites its title and instructions with its decision
--- (decide_routine, W4c-2).
+-- 7. A dynamic routine's run cannot pause it, even with the review, and rewrites its title and instructions with its
+-- decision (decide_routine, W4c-2).
 do $$
 declare a jsonb; b jsonb; d jsonb; u jsonb; v public.qorpera_cloud_routine_versions;
 	e2 constant uuid := '78100000-0000-4000-8000-0000000000e2'; e5 constant uuid := '78100000-0000-4000-8000-0000000000e5';
