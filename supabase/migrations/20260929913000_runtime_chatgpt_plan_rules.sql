@@ -10,17 +10,21 @@
 -- 2. It never pays for a listener: a file change or an event (webhooks, mail) is anyone's activity. Refused
 --    when the routine is saved, and when it wakes, also for every wake that follows from a listener run (a
 --    coworker message, a worker), and after a routine's login moved to a plan.
--- 3. It is never swapped at its usage limit, and never takes over from another login at its limit: a
---    conversation it pays for keeps it, follow-up work of a run it pays for keeps it, and neither moves to
---    a plan when another login reached its limit. A member connects one plan per company (no pooling or
---    rotating). A run in progress is never handed to another login since 20260929910000 (#601); the
---    handoff function itself stays as it is (test 658 pins it).
+-- 3. It is never swapped at its usage limit, and it pays for follow-up work only of runs it pays for: a
+--    conversation it pays for keeps it, follow-up work of a run it pays for keeps it (qorpera_starter_sponsor,
+--    and so a review's seed, a coworker's or a worker's wake, a retried review), and no work another payer
+--    started moves to a plan: not a listener run's, not a login's at its limit. A coding worker takes the
+--    member's other login before a plan, and a plan only when the asking run is paid by it. A member
+--    connects one plan per company (no pooling or rotating). A run in progress is never handed to another
+--    login since #601; the handoff function itself stays as it is (test 658 pins it).
 -- 4. Only the member whose plan pays retries a failed run on it, or a change's review.
 -- 5. Plan use stops for a company being deleted (qorpera_chatgpt_plan_allowed).
--- Codex logins are unchanged by this migration.
+-- Codex logins are unchanged by this migration, but for one tie: a review's retry prefers the review's
+-- own payer among logins with room.
 --
 -- Each function is patched by exact text, once (the marker 20260929913000 skips a replay); a source that differs
--- stops the migration. Locks: none added; the helpers read a login's kind by its capsule (unique index).
+-- stops the migration. Locks: one per-member advisory lock while a plan sign-in completes (no company-wide
+-- lock); the helpers read a login's kind by its capsule (unique index).
 
 set local lock_timeout = '3s';
 
@@ -68,26 +72,29 @@ returns boolean language sql stable security definer set search_path = '' as $$
 			where version.connection_id = p_connection_id)) = 0, false)
 $$;
 
--- Whether a binding pays with a login, other than a ChatGPT plan, that reached its usage limit.
-create or replace function public.qorpera_sponsor_binding_at_limit(p_binding_id uuid)
-returns boolean language sql stable security definer set search_path = '' as $$
-	select coalesce((select not public.qorpera_connection_is_chatgpt_plan(connection.id)
-		and public.qorpera_connection_at_limit(connection.id)
-		from (select public.qorpera_sponsor_binding_connection(p_binding_id) as id) as connection
-		where connection.id is not null), false)
-$$;
-
--- Whether a member's ChatGPT plan connection can still pay: active, signed in, the member's own.
+-- Whether a member's ChatGPT plan connection can still pay: what qorpera_eligible_member_accounts asks of an
+-- account (the member's own active connection, identity and capsule, the member's role, the provider policy),
+-- with its plan login signed in, at any usage.
 create or replace function public.qorpera_member_plan_connection_usable(p_profile_id uuid, p_user_id uuid,
 	p_connection_id uuid)
 returns boolean language sql stable security definer set search_path = '' as $$
 	select exists (select 1 from public.qorpera_provider_connections as connection
 		join public.qorpera_provider_connection_versions as version on version.connection_id = connection.id
+			and version.authentication_mode = 'native_subscription' and version.authorization_state = 'active'
+			and version.native_harness = 'codex-cli'
+			and not exists (select 1 from public.qorpera_provider_connection_versions as newer
+				where newer.connection_id = version.connection_id and newer.version > version.version)
+		join public.qorpera_native_credential_capsules as capsule on capsule.id = version.credential_capsule_id
+			and capsule.status = 'active' and capsule.ownership_kind = 'member' and capsule.owner_user_id = p_user_id
+		join public.qorpera_member_compute_identities as identity on identity.id = capsule.compute_identity_id
+			and identity.profile_id = p_profile_id and identity.status = 'active' and identity.recovery_pending_id is null
+		join public.qorpera_model_logins as login on login.credential_capsule_id = capsule.id
+			and login.login_kind = 'chatgpt_plan' and login.status = 'active'
 		where connection.id = p_connection_id and connection.profile_id = p_profile_id
 			and connection.owner_user_id = p_user_id and connection.status = 'active'
-			and version.authorization_state = 'active'
-			and version.version = (select max(newest.version) from public.qorpera_provider_connection_versions as newest
-				where newest.connection_id = connection.id))
+			and public.qorpera_provider_execution_enabled(connection.provider, 'native_subscription', version.native_harness)
+			and exists (select 1 from public.qorpera_profile_members as member where member.profile_id = p_profile_id
+				and member.user_id = p_user_id and member.role in ('owner', 'admin', 'contributor')))
 $$;
 
 -- Whether a member already holds a usable ChatGPT plan login on another connection in this company. A plan
@@ -129,7 +136,6 @@ $$;
 
 revoke all on function public.qorpera_sponsor_binding_connection(uuid) from public, anon, authenticated, service_role;
 revoke all on function public.qorpera_connection_at_limit(uuid) from public, anon, authenticated, service_role;
-revoke all on function public.qorpera_sponsor_binding_at_limit(uuid) from public, anon, authenticated, service_role;
 revoke all on function public.qorpera_member_plan_connection_usable(uuid, uuid, uuid) from public, anon, authenticated, service_role;
 revoke all on function public.qorpera_member_other_plan_connection(uuid, uuid, uuid) from public, anon, authenticated, service_role;
 revoke all on function public.qorpera_run_follows_listener(uuid) from public, anon, authenticated, service_role;
@@ -203,16 +209,19 @@ select pg_temp.qorpera_plan_rules_20260929913000_patch('public.qorpera_starter_s
 $a0$,
 	$r0$			public.qorpera_native_account_remaining(connection.id, version.version) as remaining, sponsor.created_at,
 			-- Sign in with ChatGPT (20260929913000): the ChatGPT plan that pays for the run stays the payer of its
-			-- follow-up work at its usage limit (never swapped for another login or the company account), and a
-			-- plan never takes over from another login that reached its limit.
+			-- follow-up work, also at its usage limit (never swapped for another login or the company account), and a
+			-- plan pays for follow-up work only of runs it pays for: never of work another payer started, such as
+			-- a listener's run or a login at its limit. New work (no run to follow) may start on it.
 			coalesce(public.qorpera_connection_is_chatgpt_plan(connection.id)
 				and connection.id = public.qorpera_sponsor_binding_connection(p_prefer_binding_id), false) as kept_plan,
-			public.qorpera_connection_is_chatgpt_plan(connection.id)
-				and public.qorpera_sponsor_binding_at_limit(p_prefer_binding_id) as plan_blocked
+			public.qorpera_connection_is_chatgpt_plan(connection.id) and p_prefer_binding_id is not null
+				and connection.id is distinct from public.qorpera_sponsor_binding_connection(p_prefer_binding_id) as plan_blocked
 $r0$,
-	$a1$		from own where own.remaining <> 0
+	$a1$		select own.binding_id, own.version, 1 as rank, own.preferred, own.remaining, own.created_at
+		from own where own.remaining <> 0
 $a1$,
-	$r1$		from own where (own.remaining <> 0 or own.kept_plan) and not own.plan_blocked
+	$r1$		select own.binding_id, own.version, 1 as rank, (own.preferred or own.kept_plan) as preferred, own.remaining, own.created_at
+		from own where (own.remaining <> 0 or own.kept_plan) and not own.plan_blocked
 $r1$,
 	$a2$		from own where own.remaining = 0
 $a2$,
@@ -256,10 +265,9 @@ select pg_temp.qorpera_plan_rules_20260929913000_patch('public.qorpera_retry_com
 		v_review.reviewer_staff_agent_id, null) as payer;
 $a0$,
 	$r0$	from public.qorpera_starter_sponsor(v_review.profile_id, v_proposal.created_by_user_id,
-		-- A review the author's ChatGPT plan paid for stays on it (20260929913000).
-		v_review.reviewer_staff_agent_id, case when public.qorpera_sponsor_version_is_chatgpt_plan(
-			v_review.reviewer_sponsor_binding_id, v_review.reviewer_sponsor_version)
-			then v_review.reviewer_sponsor_binding_id end) as payer;
+		-- A retry follows the review's own payer (20260929913000): a review the author's ChatGPT plan paid for stays
+		-- on it, and a plan never takes over a review another login paid for.
+		v_review.reviewer_staff_agent_id, v_review.reviewer_sponsor_binding_id) as payer;
 $r0$,
 	$a1$	if v_authority.staff_agent_id is null or not exists (
 $a1$,
@@ -291,9 +299,42 @@ $a0$,
 	$r0$		raise exception 'provider connection identity is already bound' using errcode = '23505';
 	end if;
 	-- One ChatGPT plan per member in a company (20260929913000): checked again here, where it counts.
+	if p_login_kind = 'chatgpt_plan' then
+		-- One completion per member and company at a time, so two cannot both find no other plan.
+		perform pg_advisory_xact_lock(hashtextextended('qorpera-chatgpt-plan:' || v_session.profile_id::text
+			|| ':' || v_identity.owner_user_id::text, 0));
+	end if;
 	if p_login_kind = 'chatgpt_plan'
 		and public.qorpera_member_other_plan_connection(v_session.profile_id, v_identity.owner_user_id,
 			v_connection.client_connection_id) then
 		raise exception 'Disconnect your other ChatGPT plan first' using errcode = '55000';
 	end if;
+$r0$]);
+
+select pg_temp.qorpera_plan_rules_20260929913000_patch('public.qorpera_coding_owner_sponsor(uuid,uuid,text)'::regprocedure, array[
+	$a0$	order by connection.created_at desc limit 1;
+$a0$,
+	$r0$	-- A login other than a ChatGPT plan first (20260929913000): a plan pays for coding only of work started on it.
+	order by public.qorpera_connection_is_chatgpt_plan(connection.id), connection.created_at desc limit 1;
+$r0$,
+	$a1$		v_client := encode(extensions.digest(convert_to('qorpera-coding-owner:' || v_connection.id::text || ':' || v_version.version::text, 'utf8'), 'sha256'), 'hex')::text;
+		v_client := (left(v_client, 8) || '-' || substr(v_client, 9, 4) || '-4' || substr(v_client, 14, 3) || '-8' || substr(v_client, 18, 3) || '-' || substr(v_client, 21, 12))::uuid;
+$a1$,
+	$r1$		-- The digest's hex never fit the uuid variable, so this path failed (22P02) since 20260922230000 (20260929913000).
+		select (left(digest.hex, 8) || '-' || substr(digest.hex, 9, 4) || '-4' || substr(digest.hex, 14, 3) || '-8'
+			|| substr(digest.hex, 18, 3) || '-' || substr(digest.hex, 21, 12))::uuid into v_client
+		from (select encode(extensions.digest(convert_to('qorpera-coding-owner:' || v_connection.id::text || ':'
+			|| v_version.version::text, 'utf8'), 'sha256'), 'hex') as hex) as digest;
+$r1$]);
+
+select pg_temp.qorpera_plan_rules_20260929913000_patch('public.qorpera_manage_agent_worker(jsonb,jsonb)'::regprocedure, array[
+	$a0$			from public.qorpera_coding_owner_sponsor(v_run.profile_id, v_owner, p_request ->> 'harness') sponsor;
+$a0$,
+	$r0$			from public.qorpera_coding_owner_sponsor(v_run.profile_id, v_owner, p_request ->> 'harness') sponsor;
+			-- A member's ChatGPT plan pays for coding only when the asking run is paid by that plan (20260929913000).
+			if public.qorpera_sponsor_version_is_chatgpt_plan(v_sponsor_binding, v_sponsor_version)
+				and public.qorpera_sponsor_binding_connection(v_sponsor_binding)
+					is distinct from public.qorpera_sponsor_binding_connection(v_run.sponsor_binding_id) then
+				raise exception 'Coding for this work needs a Codex login: a ChatGPT plan pays only for work started on it'
+					using errcode = '55000'; end if;
 $r0$]);

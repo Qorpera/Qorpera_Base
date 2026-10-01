@@ -159,7 +159,10 @@ Founders (2026-09-28, migration 20260928248100): every member with the role
   - a plan at its usage limit stays the account of the conversations it pays for
     (`qorpera_select_member_session_account` keeps it; sending then stops at the
     limit), while a new conversation starts on a login with room; a conversation
-    whose login reached its limit never moves to a plan;
+    whose login reached its limit never moves to a plan; a plan pays for
+    follow-up work only of runs it pays for, so a coding worker asked for by a
+    run another login pays for is refused at dispatch with 55000 when the plan
+    is the member's only Codex login;
   - one usable plan per member and company:
     `qorpera_begin_chatgpt_plan_sign_in` refuses a second one with 55000
     "Disconnect your other ChatGPT plan first" (signing in again after the plan

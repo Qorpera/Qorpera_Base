@@ -2009,13 +2009,15 @@ listener, since a file change or an event (a webhook, mail) is anyone's
 activity, neither when the routine is saved nor when it wakes, nor for any
 work that follows from a listener run; is never swapped at its usage limit,
 which stops the work (a conversation it pays for keeps it, and follow-up work
-of a run it pays for keeps it), and never takes over a conversation or
-follow-up work from another login at its limit; is one per member and company,
-since plans are never pooled or rotated; is retried, for a failed run or a
-change's review, only by the member whose plan pays; and is not used while its
-company is being deleted. A run in progress is never handed to another login
-(the amendment above, migration 20260929910000). Codex logins are unchanged by
-this amendment.
+of a run it pays for keeps it); pays for follow-up work only of runs it pays
+for, so it never takes over a conversation or follow-up work that another
+payer started (a listener run's, or a login's at its limit), and a coding
+worker takes the member's other login first and the plan only when the asking
+run is paid by it; is one per member and company, since plans are never pooled
+or rotated; is retried, for a failed run or a change's review, only by the
+member whose plan pays; and is not used while its company is being deleted. A
+run in progress is never handed to another login (the amendment above, #601).
+Codex logins are unchanged by this amendment.
 
 ## 18. Short constitution
 
