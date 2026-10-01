@@ -28,6 +28,7 @@ import { type CloudCompanyPathPresence, claimCloudCompanyPathPresence } from "./
 import {
 	CloudCompanyFormationRefused,
 	CloudCompanyPathParentMissing,
+	CloudCompanyPathRpcMissing,
 	CloudCompanyPathRpcParentMissing,
 	CloudCompanyPathRpcPrecondition,
 	CloudCompanyPathRpcRefusal,
@@ -72,7 +73,7 @@ export type CloudCompanyPathRpc =
 	| "qorpera_manage_agent_worker"
 	| "qorpera_report_worker_result"
 	| "qorpera_describe_agent_open_work"
-	| "qorpera_record_runtime_observation"
+	| "qorpera_record_runtime_observation_batch"
 	| "qorpera_record_provider_usage_signal"
 	| "qorpera_begin_native_company_execution_v2"
 	| "qorpera_describe_company_run_context"
@@ -87,6 +88,7 @@ export type CloudCompanyPathRpc =
 	| "qorpera_list_company_paths"
 	| "qorpera_confirm_company_path_read"
 	| "qorpera_record_native_context_view"
+	| "qorpera_fence_native_context"
 	| "qorpera_assert_company_path_reads"
 	| "qorpera_check_company_path_mutation"
 	| "qorpera_verify_company_path_file"
@@ -127,6 +129,8 @@ export type CloudCompanyPathRpc =
 	| "qorpera_folder_open_upload"
 	| "qorpera_folder_seal_upload"
 	| "qorpera_folder_renew_upload"
+	// A folder-v2 run's own todos from the todo index (thin writers W1).
+	| "qorpera_folder_agent_todos"
 	// Event wakes (W2): the company's hooks and one event's body.
 	| "qorpera_list_agent_event_hooks"
 	| "qorpera_read_agent_event"
@@ -280,7 +284,16 @@ export class CloudCompanyPathGateway {
 	readonly #identity: CloudNativeToolIdentity;
 	readonly #control: CloudCompanyPathControl;
 	readonly #store: CloudContentAddressedStore;
-	readonly #reads = new Set<string>();
+	/** Paths that entered this run's model context and that the database has not yet reported
+	 * kept under exactly that name. It keeps every path a check sent in the run's durable read
+	 * set (qorpera_company_run_read_paths, never pruned during a run) and re-verifies that whole
+	 * set on every check. The set has one row per path key, which ignores letter case, so a
+	 * second spelling of a kept path is never kept under its own name: it stays here and is sent,
+	 * and checked, on every call, as when the host sent its whole list. */
+	readonly #unconfirmed = new Set<string>();
+	readonly #confirmed = new Set<string>();
+	/** The database has no one-call fence yet (a runtime ahead of 20260929400000). */
+	#fenceUnavailable = false;
 
 	constructor(options: {
 		presence?: CloudCompanyPathPresence;
@@ -328,7 +341,14 @@ export class CloudCompanyPathGateway {
 	}
 
 	#remember(path: string): void {
-		this.#reads.add(path);
+		if (!this.#confirmed.has(path)) this.#unconfirmed.add(path);
+	}
+
+	#confirm(paths: readonly string[]): void {
+		for (const path of paths) {
+			this.#unconfirmed.delete(path);
+			this.#confirmed.add(path);
+		}
 	}
 
 	/** Publishes the claim in the background and reports the latest observation already
@@ -342,11 +362,14 @@ export class CloudCompanyPathGateway {
 		return presence ? { presence } : {};
 	}
 
-	/** Required before every model request, including prewarm and compaction. */
+	/** Required before every model request, including prewarm and compaction. SQL checks
+	 * the run's whole read set; only paths not reported kept yet are sent. This check reports
+	 * nothing kept, so it confirms nothing: the paths go again until the one-call fence
+	 * reports them kept under exactly that name. */
 	async assertReadableContext(signal: AbortSignal): Promise<void> {
 		const checked = await this.#call(
 			"qorpera_assert_company_path_reads",
-			{ ...this.#bound(), p_paths: [...this.#reads] },
+			{ ...this.#bound(), p_paths: [...this.#unconfirmed] },
 			signal,
 		);
 		if (checked !== null) throw new Error("Invalid Company File context authorization");
@@ -425,7 +448,64 @@ export class CloudCompanyPathGateway {
 		outputs: readonly CloudNativeFencedResult[],
 		signal: AbortSignal,
 	): Promise<void> {
-		const view = {
+		this.#assertContextReceipt(
+			await this.#call(
+				"qorpera_record_native_context_view",
+				{ ...this.#bound(), p_view: this.#contextView(frame, outputs) },
+				signal,
+			),
+			frame,
+		);
+	}
+
+	/**
+	 * The one database call before a model request (qorpera_fence_native_context,
+	 * 20260929400000). In one transaction it makes every check the host made in four
+	 * rounds: run authority and the run's read set, again, then records this view
+	 * (which checks both itself), then both once more. Returns the run's authority as
+	 * the last check read it, or undefined when the database does not have the call
+	 * yet; the caller then makes the separate calls, all of them. Of the paths sent, it
+	 * confirms only those the call reports kept under exactly that name.
+	 */
+	async fenceContextView(
+		frame: CloudNativeFenceRequest,
+		outputs: readonly CloudNativeFencedResult[],
+		signal: AbortSignal,
+	): Promise<unknown> {
+		if (this.#fenceUnavailable) return undefined;
+		const view = this.#contextView(frame, outputs);
+		const paths = [...this.#unconfirmed];
+		let value: unknown;
+		try {
+			value = await this.#call(
+				"qorpera_fence_native_context",
+				{ ...this.#bound(), p_paths: paths, p_view: view },
+				signal,
+			);
+		} catch (error) {
+			// Nothing ran: PostgREST found no such function.
+			if (error instanceof CloudCompanyPathRpcMissing && !signal.aborted) {
+				this.#fenceUnavailable = true;
+				return undefined;
+			}
+			throw error;
+		}
+		const fenced = closed(value, ["schema", "authority", "receipt", "kept"]);
+		const sent = new Set(paths);
+		if (
+			fenced.schema !== "qorpera.native-context-fence/v1" ||
+			!Array.isArray(fenced.kept) ||
+			fenced.kept.some((path) => typeof path !== "string" || !sent.has(path))
+		)
+			throw new Error("Native context provenance was not confirmed");
+		this.#assertContextReceipt(fenced.receipt, frame);
+		// Only the paths the read set holds under exactly that name; another spelling goes again.
+		this.#confirm(fenced.kept as string[]);
+		return fenced.authority;
+	}
+
+	#contextView(frame: CloudNativeFenceRequest, outputs: readonly CloudNativeFencedResult[]): Record<string, unknown> {
+		return {
 			schema: "qorpera.native-context-view/v1",
 			requestId: frame.requestId,
 			threadId: frame.threadId,
@@ -474,10 +554,10 @@ export class CloudCompanyPathGateway {
 				};
 			}),
 		};
-		const receipt = closed(
-			await this.#call("qorpera_record_native_context_view", { ...this.#bound(), p_view: view }, signal),
-			["schema", "viewId", "requestId", "sha256", "ordinal"],
-		);
+	}
+
+	#assertContextReceipt(value: unknown, frame: CloudNativeFenceRequest): void {
+		const receipt = closed(value, ["schema", "viewId", "requestId", "sha256", "ordinal"]);
 		if (
 			receipt.schema !== "qorpera.native-context-view-receipt/v1" ||
 			receipt.requestId !== frame.requestId ||

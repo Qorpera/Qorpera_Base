@@ -134,10 +134,19 @@ Founders (2026-09-28, migration 20260928248100): every member with the role
   folder-v2 is saved as before.
 
 
-### Credentials, provider connections, identity recovery (13)
+### Credentials, provider connections, identity recovery (15)
 
+- `qorpera_begin_chatgpt_plan_sign_in` (20260928329830, switched off): begins a
+  ChatGPT plan sign-in ("Continue with ChatGPT") for the caller's own member
+  compute identity, the same as `qorpera_begin_native_provider_login` for
+  OpenAI/Codex with the sign-in marked as a plan sign-in. Refused with 55000
+  while plan logins are switched off for the company, and with 22023 for any
+  identity that is not the caller's own member identity. The answer is the
+  ordinary begin's plus `model_login_kind: "chatgpt_plan"`.
 - `qorpera_begin_cloud_secret_capture`
 - `qorpera_begin_native_provider_login`
+- `qorpera_chatgpt_plan_available(profile)`: whether the caller's company may
+  use ChatGPT plan logins now (show "Continue with ChatGPT" only when true).
 - `qorpera_grant_cloud_connector` — Step 7 (bundle v87): grants every
   operation of one company-owned connection (Gmail, Google Drive, GitHub) to
   all active agents (`p_staff_agent_ids` null, marks the connection shared so
@@ -601,7 +610,7 @@ wake), so no agent runs and nothing is charged before it.
   `qorpera_mail_settings` (`sending`, built off) and the company limits on recipients `company_hourly_recipients`
   (60) and `company_daily_recipients` (300). Received mail (`mail.received`) now also carries `autoSubmitted`,
   `precedence`, `listId` and `automated`; agents never answer automated mail.
-- Sender names (20260929810000_runtime_company_mail_sender_names): `qorpera_create_company_mailbox` also reserves
+- Sender names (20260928319810_runtime_company_mail_sender_names): `qorpera_create_company_mailbox` also reserves
   (22023) any local part that reads as Qorpera (case, separators, accents, full width and look-alike letters or
   digits folded), and no email goes out when the agent's or the company's name or the mailbox reads as Qorpera.
 
@@ -642,6 +651,14 @@ wake), so no agent runs and nothing is charged before it.
   any active member of the room edits an existing draft. Access is the room post
   rule: an active member of an active room. Drafts never send, wake or sponsor
   anything; the owner sends with `qorpera_post_company_room_message` as before.
+- `qorpera-orchestrator-wake-{64 hex}` — **node only, not for clients**
+  (migration `20260928319550_runtime_orchestrator_wake`). A runner orchestrator's
+  wake-up: while `qorpera_orchestrator_wake_settings.enabled` is on, the database
+  broadcasts event `wake`, payload `{"schema":"qorpera.orchestrator-wake/v1"}`
+  and nothing else, when claimable work may have appeared. Private channel read
+  by `anon` (the orchestrator joins with the publishable key) on that topic only.
+  The name derives from the control token's sha256, which only the database
+  keeps; nobody publishes but the database.
 
 ## 4. Object gateway (HTTP, `packages/object-gateway`)
 

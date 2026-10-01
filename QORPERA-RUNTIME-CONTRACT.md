@@ -741,7 +741,7 @@ subscriptions, which self-limit.
 > What remains:
 > - crash detection (job, connection, session and coding attachment leases) and retry limits
 >   (8 dispatch failures; 8 attempts for a pristine retry or a sponsor
->   handoff);
+>   handoff; no new handoffs since 2026-10-01, section 17);
 > - one run box per run (the machines an agent starts are not counted:
 >   2026-09-28 amendment "compute for agents", item 4), one coding machine
 >   per member and environment
@@ -759,8 +759,8 @@ subscriptions, which self-limit.
 >   40 sidebar sections) went in bundle v95;
 > - no stall detection: a run whose harness hangs without crashing keeps its
 >   machine until Stop, as in Codex CLI and Claude Code;
-> - a continuation (a worker report, a computer start, a sponsor handoff)
->   carries the newest results and sends of the earlier run that fit, and
+> - a continuation (a worker report, a computer start, a sponsor handoff
+>   made before 2026-10-01) carries the newest results and sends of the earlier run that fit, and
 >   counts the rest;
 > - the API-key sandbox runner (not company work) keeps its per-job totals:
 >   64 MiB transcript, 100 output artifacts and 64 MiB of output.
@@ -1962,7 +1962,7 @@ coding sessions, and routines an agent sets up for them. The kernel already
 carries that member as the run's requester; the payer for follow-up work is
 the requester's own login with room left (the parent run's first), else a
 company account whose kind can run, else the requester's own used-up login
-(whose run then meets the usage-limit handoff), else nothing, and the work
+(whose run then stops at the limit, 2026-10-01 amendment), else nothing, and the work
 does not start. Claude logins never pay for agent work. An agent's standing
 execution authority names a company account only; it never pays with a
 member's login. A coding session runs for the member who asked, on their
@@ -1973,13 +1973,31 @@ requester; a company sponsor serves any member. Unattended use stays granted
 by default (2026-09-19/20 amendment, item 2) and covers only the owner's own
 work. A company account is a company-owned account added by an owner or
 admin; it pays only once its kind of account can run. The company OpenAI API
-account, and its use by the usage-limit handoff and for work no member
-started, follow in a later change. When a member signs in again, the control
+account, and whether it may take over at a usage limit and pay for work no
+member started, follow in a later change. When a member signs in again, the control
 plane may move the bindings that pay with their old login to their new one,
 as a new version of each binding with the same owner and kind; routine wakes
 and coding turns then take the binding's newest same-owner version that can
 pay, so a routine or coding session keeps working after the member's old
 ChatGPT login is switched off. Claude logins are never moved.
+
+2026-10-01 amendment: a usage limit stops the run (founder decision, Sign in
+with ChatGPT choice 3). When the login paying for a run reaches its usage
+limit, that run fails and the member is told; it never moves to another login.
+OpenAI's terms for ChatGPT plan use forbid rotating accounts to get round
+usage limits, and the founder applied the same rule to Codex logins. The run's
+recovery read names the usage limit (a signal on the login the run is on now),
+and the thread says that the work stopped, that it did not move to another
+account, and that it can run again once the limit resets. The control plane
+no longer makes a sponsor handoff (migration 20260929910000): the paragraphs
+above that describe one, and the old text of acceptance 29, are superseded for
+every login. A rate limit or a provider outage is still not a usage limit: it
+neither stops the work as one nor shows the usage-limit message. Choosing the
+payer for new work is unchanged by this amendment: a member's next turn and
+follow-up work still take a login with room left first, which can be the
+member's other login, and routines and coding turns follow the handoff
+versions made before this change (no new ones are made). Whether new work
+must also stay on the exhausted login is a separate decision.
 
 ## 18. Short constitution
 
@@ -2216,8 +2234,9 @@ NOT represent missing cloud machinery as working autonomy.
 
 - Order 1 owns the typed usage-limit signal from provider adapters and the
   member notification (section 17).
-- Order 3 owns automatic sponsor handoff — the recorded continuation of an
+- Order 3 owned automatic sponsor handoff — the recorded continuation of an
   affected run on the next eligible connection (section 17, acceptance 29).
+  Since 2026-10-01 a usage limit stops the run instead (section 17).
 - Order 4 owns presence over the live Company File mount (5.2, 9.1),
   extending the lossy, membership-authorized presence channel already defined
   in `supabase/SESSIONS.md` to agents.
@@ -2799,7 +2818,7 @@ model-requested read, and at completion; authorized Company File event wakes
 with causal fencing; durable coworker delivery; rooms as canonical
 organization objects with group conversations and member-post fan-out; the
 wake-rate ceiling and the founder stop; automatic sponsor handoff on a usage
-limit; member consent for autonomous work; and the default agent read grant
+limit (replaced on 2026-10-01 by stopping the run, section 17); member consent for autonomous work; and the default agent read grant
 ratified 2026-09-02. Disposable-database acceptance passes nineteen cases.
 Deployed acceptance with clients closed on the production node remains the
 gate before Order 3 is closed. See
@@ -3936,6 +3955,44 @@ complete section 16.3's listener triggers and section 11.5's broker. Design:
 
 Section 21, item 33, is the event-wake acceptance item.
 
+### 2026-09-29 amendment: one call before a model request
+
+Proposed 29 September 2026 (stack audit, fix 9); pending founder approval. It
+changes how the checks before each model request are carried out. Every
+database check still runs, and the seven around the context view keep their
+order. In a run with screenshots, the screenshot check now comes just before
+them instead of after the first two. The host checks the authority the call
+returns (the same run, still in time) once per request, instead of after each
+of its three reads. Section 4's rule that authorization is checked again
+immediately before an effect, and section 9.1's context views, are unchanged.
+
+1. **One call, every check.** Before a model request the host used to make
+   seven database calls for these checks, in four rounds, each in its own
+   transaction: the run's authority and its read set (twice), the context
+   view, then both once more. `qorpera_fence_native_context` makes the same
+   seven calls, in the same order, in one transaction. It calls those
+   functions rather than copying them, so each check and lock is exactly
+   theirs. Nothing is released to the model until the call has returned. If a
+   check inside the call fails, the whole call is undone, the view included.
+   The host then checks what the call returned (the same run, still in time);
+   if that fails, the run stops with nothing released, and the view stays
+   recorded.
+2. **The read set stays whole.** The database keeps every path sent in a
+   check that succeeded and every path the run reads or lists, and never
+   removes one during a run. It keeps one entry per name, where names that
+   differ only in letter case or in how a letter is written count as one.
+   Every check covers all of them. The host sends a path until the database
+   reports it kept under that exact name, instead of its whole list every
+   time. A second spelling of a kept path (for example in other letter case)
+   is never kept under its own name, so it is sent every time, as before.
+3. **The same budget.** The one call may take at most 3.5 s, inside the result
+   fence's 4 s for the whole request. A timeout, like any failure, stops the
+   run with nothing released, as a lapsed fence did before. The database may
+   still finish the call after the host has given up, so a view can be
+   recorded for a request that never left.
+4. **Until the database has the call** the host makes the separate calls, all
+   of them.
+
 ## 20. Enforcement matrix
 
 > **Note, 2026-09-27.** Rows naming responsibility objects, ceilings, a schema
@@ -3964,7 +4021,7 @@ Section 21, item 33, is the event-wake acceptance item.
 | Responsibilities are operating state, not chats | Responsibility schema, measure registry, accountable-agent assignment, ACL projections | Own the outcome and its measures; turn exceptions into verified work. |
 | Responsibility views remain derived | Company File sources, measure projections, provenance, and rebuild service | Reason from exact sources and report material changes. |
 | The Company File is one live document | Live mount, presence service, object versions | See who is working where; re-read on a stale version; never copy the company. |
-| Sponsor routing is recorded | Routing policy, usage-limit signal, sponsor handoff | Continue on the next eligible connection; never another member's credential. |
+| Sponsor routing is recorded | Routing policy, usage-limit signal, the run failing at a usage limit (2026-10-01) | Never use another member's credential. |
 | Projects remain bounded and distinct from rooms | Project registry, team membership, todos, outcome, and room lifecycle | Coordinate in the room; finish in durable company state. |
 | Routine policy is real | Scheduler and listener services | Author sensible schedules and intent. |
 | Dismissal is not consent | Interaction state machine | Treat dismissal as skip or decline. |
@@ -4078,11 +4135,11 @@ while Azure backup/overflow remains disabled.
     Concurrent starts cannot consume the same slot, and a stopped or failed
     computer does not release a reservation until its resources are confirmed free.
 29. When a sponsoring connection reaches its usage limit, the member is
-    notified, and an affected run continues on the next eligible connection
-    of the same principal (or a policy-permitted company account) through a
-    recorded sponsor handoff with full provenance. No other member's
-    credential is ever used, and a transient rate limit or provider outage
-    does not trigger a handoff.
+    notified, the affected run fails without moving to another login, its
+    recovery read names the usage limit, and the thread says the work stopped
+    (2026-10-01 amendment, section 17). A rate limit or a provider outage is not
+    a usage limit and does not show the usage-limit message. No other member's
+    credential is ever used.
 30. A company's ceilings hold without agent cooperation: a deliberately
     runaway loop is stopped at its wake-rate or spend ceiling, the founder
     stop operation pauses the company, and the founder is notified from the

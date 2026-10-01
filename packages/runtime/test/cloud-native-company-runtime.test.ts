@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { CompanyComputerScreenLease } from "@qorpera/cloud-client/cloud-company-computer-contract";
+import { writeRoutineFile } from "@qorpera/cloud-client/company-state-files";
 import { CloudContentAddressedStore, type CloudObjectTransport } from "@qorpera/cloud-client/node/cloud-object-store";
 import type { CloudAgentSendReceipt } from "@qorpera/runtime/cloud-agent-mouth";
 import {
@@ -41,7 +42,7 @@ import {
 } from "@qorpera/runtime/cloud-runtime-observability";
 import type { CloudSecretOperationClient } from "@qorpera/runtime/cloud-secret-tools";
 import { CLOUD_ASK_MEMBER_PAYLOAD_SCHEMA } from "@qorpera/runtime/cloud-thread-interactions";
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, type Mock, vi } from "vitest";
 import { nativeCompanyContextFixture } from "./fixtures/native-company-context-fixture.ts";
 
 const rpcFixture = fileURLToPath(new URL("./fixtures/codex-boundary-rpc-fixture.cjs", import.meta.url));
@@ -68,6 +69,7 @@ async function fixture(
 	httpPathControl = false,
 	presence?: CloudCompanyPathPresenceFactory,
 	machines = false,
+	folderBytes = false,
 ) {
 	const f = nativeCompanyContextFixture();
 	if (mode === "company-silent" || mode === "company-worker") {
@@ -262,128 +264,203 @@ async function fixture(
 	const reviewedTools: string[] = [];
 	/** The kernel's answer to whether any node can serve machines (an Error: the call fails). */
 	let machinesAnswer: unknown = true;
-	const pathCall = vi.fn<CloudCompanyPathControl["call"]>(async (method, args) => {
-		if (method === "qorpera_company_machines_available") {
-			if (machinesAnswer instanceof Error) throw machinesAnswer;
-			return machinesAnswer;
-		}
-		if (method === "qorpera_record_runtime_observation") {
-			expect(args.p_run_id).toBe(f.binding.runId);
-			const observation = parseCloudRuntimeObservation(args.p_observation);
-			expect(observation.assignmentId).toBe(f.binding.assignmentId);
-			observations.push(observation);
-			return {
-				schema: "qorpera.runtime-observation-receipt/v1",
-				runId: f.binding.runId,
-				attemptId: observation.attemptId,
-				phase: observation.phase,
-				ingestedAt: new Date().toISOString(),
-				replayed: false,
-			};
-		}
-		expect(args.p_binding).toEqual(f.binding);
-		if (method === "qorpera_begin_native_company_execution_v2") {
-			if (nativeStarted) throw new Error("Earlier native execution requires reconciliation");
-			nativeStarted = true;
-			return {
-				schema: "qorpera.native-company-execution-start/v1",
-				runId: f.binding.runId,
-				jobId: f.binding.jobId,
-				leaseId: f.binding.leaseId,
-				binarySha256: args.p_binary_sha256,
-				runtimeBundleSha256: args.p_runtime_bundle_sha256,
-				reasoningPolicySha256: args.p_reasoning_policy_sha256,
-				reasoningEffort: "low",
-				toolCatalogSha256: createHash("sha256")
-					.update(args.p_tool_catalog_text as string)
-					.digest("hex"),
-				contextSha256: args.p_context_sha256,
-				contextBytes: args.p_context_bytes,
-			};
-		}
-		if (method === "qorpera_describe_company_run_context") return structuredClone(f.context);
-		// Auto-review (v130): these fixtures approve every acting call up front; the review
-		// step itself is covered in cloud-action-review.test.ts and cloud-codex-tool-session.test.ts.
-		if (method === "qorpera_begin_action_review") {
-			expect(args.p_call).toEqual({
-				tool: expect.any(String),
-				argumentSha256: expect.stringMatching(/^[0-9a-f]{64}$/),
-			});
-			reviewedTools.push((args.p_call as { tool: string }).tool);
-			return { schema: "qorpera.action-review-begin/v1", state: "approved", reviewId: randomUUID() };
-		}
-		if (method === "qorpera_read_native_wake") return structuredClone(mode === "company-worker" ? workerWake : wake);
-		if (method === "qorpera_decide_agent_routine") {
-			decisions.push(args.p_request as Record<string, unknown>);
-			return {
-				schema: "qorpera.agent-routine-receipt/v1",
-				runId: f.binding.runId,
-				receiptId: randomUUID(),
-				action: "upsert",
-				routine: { routineKey: "invoice-watch", status: "active", version: 2, nextRunAt: "2026-09-02T10:00:00Z" },
-			};
-		}
-		if (method === "qorpera_describe_agent_open_work") {
-			if (mode === "company-worker") throw new Error("A worker keeps no todos");
-			return {
-				schema: "qorpera.agent-open-work/v1",
-				runId: f.binding.runId,
-				todos: { open: 40, blocked: 2 },
-				workers: { active: 5, blocked: 1 },
-			};
-		}
-		if (method === "qorpera_list_native_connector_tools") {
-			return mode === "company-secret" ? [structuredClone(connectorDescriptor)] : [];
-		}
-		if (method === "qorpera_assert_native_connector_operation") {
-			expect(args).toMatchObject({
-				p_grant_id: connectorGrantId,
-				p_connector_id: "linear",
-				p_operation_id: "issue_create",
-				p_operation_version: 1,
-				p_adapter_sha256: "b".repeat(64),
-				p_destination_origin: "https://api.linear.app",
-			});
-			return null;
-		}
-		if (method === "qorpera_assert_company_path_reads") return null;
-		if (method === "qorpera_confirm_company_path_read")
-			return {
-				schema: "qorpera.company-read-confirmation/v1",
-				readId: args.p_read_id,
-				resultSha256: args.p_result_sha256,
-			};
-		if (method === "qorpera_record_native_context_view")
-			return {
-				schema: "qorpera.native-context-view-receipt/v1",
-				viewId: randomUUID(),
-				requestId: (args.p_view as Record<string, unknown>).requestId,
-				sha256: "b".repeat(64),
-				ordinal: 1,
-			};
-		// Trusted context assembly reads the agent's notebook: an empty one here.
-		if (method === "qorpera_read_company_path")
-			return {
-				path: args.p_path,
-				version: null,
-				entry: null,
-				manifestBytes: null,
-				companyId: f.context.identity.companyId,
-			};
-		if (method === "qorpera_list_company_paths")
-			return { snapshotId: randomUUID(), items: [], hasMore: false, nextAfter: null };
-		if (method === "qorpera_read_company_path_v2")
-			return {
-				path: "note.md",
-				snapshotId: randomUUID(),
-				readObservationId: randomUUID(),
-				version: fileVersion,
-				entry: { kind: "file", path: "note.md", executable: false, file },
-				companyId: f.context.identity.companyId,
-				manifestBytes: objects.get(`${f.context.identity.companyId}/${file.manifestSha256}`)?.length,
-			};
-		throw new Error("Unexpected synthetic RPC");
-	});
+	const folderReads: string[] = [];
+	const folderReleases: Record<string, unknown>[] = [];
+	const folderFiles = new Map<string, string>();
+	const folderSha = (text: string) => createHash("sha256").update(text).digest("hex");
+	const folderEntry = (path: string) => {
+		const text = folderFiles.get(path);
+		if (text === undefined) return null;
+		return {
+			path,
+			kind: "file",
+			version: randomUUID(),
+			seq: 1,
+			updatedAt: "2026-10-01T00:00:00+00:00",
+			manifestSha256: folderSha(`manifest:${text}`),
+			fileSha256: folderSha(text),
+			bytes: Buffer.byteLength(text),
+			mediaType: "text/markdown",
+			executable: false,
+			authority: { resourceId: randomUUID(), resourceRevision: 1, grantId: randomUUID(), grantRevision: 1 },
+		};
+	};
+	const pathCall: Mock<CloudCompanyPathControl["call"]> = vi.fn<CloudCompanyPathControl["call"]>(
+		async (method, args, signal) => {
+			if (method === "qorpera_company_machines_available") {
+				if (machinesAnswer instanceof Error) throw machinesAnswer;
+				return machinesAnswer;
+			}
+			if (method === "qorpera_record_runtime_observation_batch") {
+				expect(args.p_run_id).toBe(f.binding.runId);
+				const batch = (args.p_observations as unknown[]).map((row) => parseCloudRuntimeObservation(row));
+				expect(batch.length).toBeGreaterThan(0);
+				expect(batch.length).toBeLessThanOrEqual(50);
+				for (const observation of batch) expect(observation.assignmentId).toBe(f.binding.assignmentId);
+				observations.push(...batch);
+				return {
+					schema: "qorpera.runtime-observation-batch-receipt/v1",
+					runId: f.binding.runId,
+					receipts: batch.map((observation) => ({
+						schema: "qorpera.runtime-observation-receipt/v1",
+						runId: f.binding.runId,
+						attemptId: observation.attemptId,
+						phase: observation.phase,
+						ingestedAt: new Date().toISOString(),
+						replayed: false,
+					})),
+				};
+			}
+			// A folder-v2 run's folder: only the files a test seeds (the folder core takes the run actor, not the binding).
+			if (method === "qorpera_folder_read") {
+				folderReads.push(args.p_path as string);
+				const entry = folderEntry(args.p_path as string);
+				return { schema: "qorpera.folder-read/v1", asOfSeq: 1, found: entry !== null, entry };
+			}
+			if (method === "qorpera_folder_list") {
+				const parent = `${args.p_parent as string}/`;
+				const entries = [...folderFiles.keys()]
+					.filter((path) => path.startsWith(parent) && !path.slice(parent.length).includes("/"))
+					.sort()
+					.map(folderEntry);
+				return { schema: "qorpera.folder-list/v1", asOfSeq: 1, entries, next: null };
+			}
+			if (method === "qorpera_folder_record_release") {
+				folderReleases.push(args);
+				return {
+					schema: "qorpera.folder-release/v1",
+					releaseId: args.p_release_id,
+					reads: (args.p_reads as unknown[]).length,
+					replay: false,
+				};
+			}
+			expect(args.p_binding).toEqual(f.binding);
+			if (method === "qorpera_begin_native_company_execution_v2") {
+				if (nativeStarted) throw new Error("Earlier native execution requires reconciliation");
+				nativeStarted = true;
+				return {
+					schema: "qorpera.native-company-execution-start/v1",
+					runId: f.binding.runId,
+					jobId: f.binding.jobId,
+					leaseId: f.binding.leaseId,
+					binarySha256: args.p_binary_sha256,
+					runtimeBundleSha256: args.p_runtime_bundle_sha256,
+					reasoningPolicySha256: args.p_reasoning_policy_sha256,
+					reasoningEffort: "low",
+					toolCatalogSha256: createHash("sha256")
+						.update(args.p_tool_catalog_text as string)
+						.digest("hex"),
+					contextSha256: args.p_context_sha256,
+					contextBytes: args.p_context_bytes,
+				};
+			}
+			if (method === "qorpera_describe_company_run_context") return structuredClone(f.context);
+			// Auto-review (v130): these fixtures approve every acting call up front; the review
+			// step itself is covered in cloud-action-review.test.ts and cloud-codex-tool-session.test.ts.
+			if (method === "qorpera_begin_action_review") {
+				expect(args.p_call).toEqual({
+					tool: expect.any(String),
+					argumentSha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+				});
+				reviewedTools.push((args.p_call as { tool: string }).tool);
+				return { schema: "qorpera.action-review-begin/v1", state: "approved", reviewId: randomUUID() };
+			}
+			if (method === "qorpera_read_native_wake")
+				return structuredClone(mode === "company-worker" ? workerWake : wake);
+			if (method === "qorpera_decide_agent_routine") {
+				decisions.push(args.p_request as Record<string, unknown>);
+				return {
+					schema: "qorpera.agent-routine-receipt/v1",
+					runId: f.binding.runId,
+					receiptId: randomUUID(),
+					action: "upsert",
+					routine: {
+						routineKey: "invoice-watch",
+						status: "active",
+						version: 2,
+						nextRunAt: "2026-09-02T10:00:00Z",
+					},
+				};
+			}
+			if (method === "qorpera_describe_agent_open_work") {
+				if (mode === "company-worker") throw new Error("A worker keeps no todos");
+				return {
+					schema: "qorpera.agent-open-work/v1",
+					runId: f.binding.runId,
+					todos: { open: 40, blocked: 2 },
+					workers: { active: 5, blocked: 1 },
+				};
+			}
+			if (method === "qorpera_list_native_connector_tools") {
+				return mode === "company-secret" ? [structuredClone(connectorDescriptor)] : [];
+			}
+			if (method === "qorpera_assert_native_connector_operation") {
+				expect(args).toMatchObject({
+					p_grant_id: connectorGrantId,
+					p_connector_id: "linear",
+					p_operation_id: "issue_create",
+					p_operation_version: 1,
+					p_adapter_sha256: "b".repeat(64),
+					p_destination_origin: "https://api.linear.app",
+				});
+				return null;
+			}
+			if (method === "qorpera_assert_company_path_reads") return null;
+			if (method === "qorpera_confirm_company_path_read")
+				return {
+					schema: "qorpera.company-read-confirmation/v1",
+					readId: args.p_read_id,
+					resultSha256: args.p_result_sha256,
+				};
+			if (method === "qorpera_fence_native_context") {
+				// What the one SQL call makes, in its order, through the same synthetic handlers.
+				const reads = { p_environment_id: args.p_environment_id, p_binding: args.p_binding, p_paths: args.p_paths };
+				await control.describeToolAuthority();
+				await pathCall("qorpera_assert_company_path_reads", reads, signal);
+				await control.describeToolAuthority();
+				await pathCall("qorpera_assert_company_path_reads", reads, signal);
+				const receipt = await pathCall(
+					"qorpera_record_native_context_view",
+					{ p_environment_id: args.p_environment_id, p_binding: args.p_binding, p_view: args.p_view },
+					signal,
+				);
+				const authority = await control.describeToolAuthority();
+				await pathCall("qorpera_assert_company_path_reads", reads, signal);
+				// The synthetic read set keeps every sent path under its own name.
+				return { schema: "qorpera.native-context-fence/v1", authority, receipt, kept: args.p_paths };
+			}
+			if (method === "qorpera_record_native_context_view")
+				return {
+					schema: "qorpera.native-context-view-receipt/v1",
+					viewId: randomUUID(),
+					requestId: (args.p_view as Record<string, unknown>).requestId,
+					sha256: "b".repeat(64),
+					ordinal: 1,
+				};
+			// Trusted context assembly reads the agent's notebook: an empty one here.
+			if (method === "qorpera_read_company_path")
+				return {
+					path: args.p_path,
+					version: null,
+					entry: null,
+					manifestBytes: null,
+					companyId: f.context.identity.companyId,
+				};
+			if (method === "qorpera_list_company_paths")
+				return { snapshotId: randomUUID(), items: [], hasMore: false, nextAfter: null };
+			if (method === "qorpera_read_company_path_v2")
+				return {
+					path: "note.md",
+					snapshotId: randomUUID(),
+					readObservationId: randomUUID(),
+					version: fileVersion,
+					entry: { kind: "file", path: "note.md", executable: false, file },
+					companyId: f.context.identity.companyId,
+					manifestBytes: objects.get(`${f.context.identity.companyId}/${file.manifestSha256}`)?.length,
+				};
+			throw new Error("Unexpected synthetic RPC");
+		},
+	);
 	const deliveries = new Map<string, CloudAgentSendReceipt>();
 	const cards = new Map<string, { sessionId: string; interactionId: string; sequence: number }>();
 	const control = {
@@ -545,6 +622,21 @@ async function fixture(
 		timeoutMs: 10_000,
 		...(secretBroker ? { secretBroker } : {}),
 		...(mode === "company-office" ? { computerSession: officeSession } : {}),
+		// Folder bytes read the files a test seeds; this suite never saves a file.
+		...(folderBytes
+			? {
+					folderBytes: () => ({
+						put: async () => {
+							throw new Error("No folder bytes in this suite");
+						},
+						get: async (file: { fileSha256: string }) => {
+							const text = [...folderFiles.values()].find((value) => folderSha(value) === file.fileSha256);
+							if (text === undefined) throw new Error("No such folder bytes in this suite");
+							return new TextEncoder().encode(text);
+						},
+					}),
+				}
+			: {}),
 		// A machines gateway only offers the tools here; this suite never runs a command.
 		...(machines
 			? {
@@ -596,6 +688,9 @@ async function fixture(
 			machinesAnswer = value;
 		},
 		decisions,
+		folderReads,
+		folderFiles,
+		folderReleases,
 		reviewedTools,
 		store,
 		deliveries,
@@ -1089,6 +1184,64 @@ it("has a dynamic routine run decide its next run before its final message", asy
 	expect(fixedEvidence.threadParameters.developerInstructions).not.toContain("# This routine is dynamic");
 });
 
+it("has a folder-v2 dynamic routine run decide through its routine file, settled when the file is gone", async () => {
+	const f = await fixture("company-dynamic", false, undefined, false, true);
+	f.context.folder = { agent: "nora", coworkers: {} };
+	const result = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+	expect(result.delivery).toEqual({ messageCount: 2, finalMessageId: f.deliveries.get("final")?.messageId });
+	// The decision went to the routine's file, not the kernel's legacy decision: no file there, so nothing is owed.
+	expect(f.decisions).toEqual([]);
+	expect(f.folderReads).toContain(`agents/nora/routines/${f.wake.routine?.routineKey}.md`);
+	// Not found at its key: its folder is listed for the file carrying its id (the wake is read once: a second read
+	// would claim held messages).
+	expect(f.pathCall.mock.calls.filter(([method]) => method === "qorpera_folder_list")).toHaveLength(1);
+	expect(f.pathCall.mock.calls.filter(([method]) => method === "qorpera_read_native_wake")).toHaveLength(1);
+	const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
+	const tools = evidence.threadParameters.dynamicTools[0].tools as { name: string; description: string }[];
+	expect(tools.find((tool) => tool.name === "decide_routine")?.description).toContain(
+		"cannot change its title or instructions yet",
+	);
+	expect(
+		evidence.fenced.outputs.some((output: { output: string }) => output.output.includes('\\"state\\":\\"settled\\"')),
+	).toBe(true);
+});
+
+it("has a folder-v2 dynamic routine run find its file by the woken routine's id", async () => {
+	const f = await fixture("company-dynamic", false, undefined, false, true);
+	f.context.folder = { agent: "nora", coworkers: {} };
+	const routine = f.wake.routine;
+	if (!routine?.routineKey) throw new Error("The dynamic fixture names its routine");
+	// The routine was paused by a member while this run worked: its own file says so, and nothing is owed.
+	f.folderFiles.set(
+		`agents/nora/routines/${routine.routineKey}.md`,
+		writeRoutineFile({
+			id: routine.id,
+			title: "Invoice follow-up",
+			status: "paused",
+			trigger: { when: "once", at: "2026-09-02T10:00:00Z" },
+			timezone: "Europe/Copenhagen",
+			ends: null,
+			runs: null,
+			quiet: null,
+			effort: "medium",
+			reply: "optional",
+			conclusion: null,
+			instructions: "Look again at noon.",
+		}),
+	);
+	const result = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+	expect(result.delivery).toEqual({ messageCount: 2, finalMessageId: f.deliveries.get("final")?.messageId });
+	const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
+	expect(
+		evidence.fenced.outputs.some(
+			(output: { output: string }) =>
+				output.output.includes('\\"state\\":\\"settled\\"') && output.output.includes('\\"status\\":\\"paused\\"'),
+		),
+	).toBe(true);
+	expect(f.folderReleases).toHaveLength(1);
+	expect(f.pathCall.mock.calls.some(([method]) => method === "qorpera_folder_list")).toBe(false);
+});
+
 it("raises one typed card for the member, appended before the final sentence, and ends the turn", async () => {
 	const f = await fixture("company-cards");
 	const result = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
@@ -1327,6 +1480,27 @@ it("gives a company conversation's run the machine tools with notify, and no wai
 	);
 	expect(tools.find((tool) => tool.name === "machine_read")?.inputSchema.properties).not.toHaveProperty("waitSeconds");
 });
+
+it.each([
+	["a snapshot-v1 run", false, true, false],
+	["a folder-v2 run on a node without folder bytes", true, false, false],
+	["a folder-v2 run", true, true, true],
+] as const)(
+	"gives manage_todo and organize_sidebar the state files' writers only for %s",
+	async (_name, folder, bytes, files) => {
+		const f = await fixture("company-runtime", false, undefined, false, bytes);
+		if (folder) f.context.folder = { agent: "nora", coworkers: {} };
+		await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+		const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
+		const tools = evidence.threadParameters.dynamicTools[0].tools as { name: string; description: string }[];
+		const todo = tools.find((tool) => tool.name === "manage_todo")?.description ?? "";
+		expect(todo.includes("Each todo is a file in your folder")).toBe(files);
+		expect(todo.includes("Each todo is also a document in the shared Company File")).toBe(!files);
+		const sidebar = tools.find((tool) => tool.name === "organize_sidebar")?.description ?? "";
+		expect(sidebar.includes("the sections live in the file agents/sections.md")).toBe(files);
+		expect(sidebar.includes("by its id or name")).toBe(!files);
+	},
+);
 
 async function machineToolNames(f: Awaited<ReturnType<typeof fixture>>): Promise<string[]> {
 	await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
@@ -1746,7 +1920,7 @@ it.each(["failed", "stalled", "malformed-receipt", "wrong-run-receipt"])(
 		const f = await fixture();
 		const original = f.pathCall.getMockImplementation()!;
 		f.pathCall.mockImplementation(async (method, args, signal) => {
-			if (method === "qorpera_record_runtime_observation") {
+			if (method === "qorpera_record_runtime_observation_batch") {
 				if (mode === "stalled") return new Promise<never>(() => undefined);
 				if (mode === "malformed-receipt") return null;
 				if (mode === "wrong-run-receipt")
@@ -1755,11 +1929,13 @@ it.each(["failed", "stalled", "malformed-receipt", "wrong-run-receipt"])(
 			}
 			return original(method, args, signal);
 		});
+		const started = Date.now();
 		const result = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
 		expect(result.delivery).toEqual({ messageCount: 2, finalMessageId: f.deliveries.get("final")?.messageId });
-		expect(f.pathCall.mock.calls.filter(([method]) => method === "qorpera_record_runtime_observation")).toHaveLength(
-			1,
-		);
+		// The export is tried again with backoff, one call at a time, and the close bounds it.
+		const exports = f.pathCall.mock.calls.filter(([method]) => method === "qorpera_record_runtime_observation_batch");
+		expect(exports.length).toBeGreaterThanOrEqual(1);
+		expect(exports.length).toBeLessThanOrEqual(Math.ceil((Date.now() - started) / 150) + 2);
 		expect(
 			f.pathCall.mock.calls.filter(([method]) => method === "qorpera_begin_native_company_execution_v2"),
 		).toHaveLength(1);

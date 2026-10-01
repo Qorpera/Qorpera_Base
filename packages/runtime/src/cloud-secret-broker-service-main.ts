@@ -4,6 +4,8 @@ import { open } from "node:fs/promises";
 import { basename, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Pool } from "pg";
+import { ChatGptPlanOAuth, parseChatGptPlanClient } from "./cloud-chatgpt-plan.ts";
+import { ChatGptPlanSignIns } from "./cloud-chatgpt-plan-sign-in.ts";
 import type { CloudConnectorOAuthFlows } from "./cloud-connector-oauth.ts";
 import { composeCloudConnectorService, parseCloudConnectorServiceConfig } from "./cloud-connector-service.ts";
 import {
@@ -244,9 +246,27 @@ export async function runCloudSecretBrokerServiceMain(
 	// and token. Without it the vault hands logins out as stored and never renews them.
 	const loginHelperText = await readOptionalCredential(directory, "qorpera-cloud-secret-login-helper");
 	const loginHelper = loginHelperText === undefined ? undefined : parseLoginHelper(loginHelperText);
-	const secrets = [database.password, brokerCapability, runtimeToken, codingExecutorToken, loginHelper?.token].filter(
-		(value): value is string => value !== undefined,
-	);
+	// Sign in with ChatGPT (built switched off): Qorpera's client registration with OpenAI, which the
+	// operator adds once OpenAI approves Qorpera. Without it no plan sign-in starts, and plan logins are
+	// neither renewed nor ended here.
+	const chatGptPlanText = await readOptionalCredential(directory, "qorpera-cloud-secret-chatgpt-plan");
+	let chatGptPlanClient: ReturnType<typeof parseChatGptPlanClient> | undefined;
+	try {
+		chatGptPlanClient = chatGptPlanText === undefined ? undefined : parseChatGptPlanClient(chatGptPlanText);
+	} catch {
+		// A broken plan registration must not stop every company's vault: plans stay off, and the operator sees it.
+		console.error("Cloud secret broker: the ChatGPT plan credential is invalid; ChatGPT plan sign-ins stay off.");
+	}
+	const chatGptPlan = chatGptPlanClient ? new ChatGptPlanOAuth({ client: chatGptPlanClient }) : undefined;
+	if (chatGptPlan) console.error("Cloud secret broker serves ChatGPT plan sign-ins.");
+	const secrets = [
+		database.password,
+		brokerCapability,
+		runtimeToken,
+		codingExecutorToken,
+		loginHelper?.token,
+		chatGptPlanClient?.clientSecret ?? undefined,
+	].filter((value): value is string => value !== undefined);
 	if (
 		(shared ? !TOKEN.test(brokerCapability) : !CAPABILITY.test(brokerCapability)) ||
 		!TOKEN.test(runtimeToken) ||
@@ -300,6 +320,7 @@ export async function runCloudSecretBrokerServiceMain(
 				keyring,
 				adapters: [...adapters, ...(connectors?.adapters ?? [])],
 				helper: loginHelper ? new ModelLoginHelperClient(loginHelper) : undefined,
+				chatGptPlan,
 				revoker: connectors?.revoker ?? new CloudConnectorTokenRevoker(),
 				runtimeToken,
 				port: config.port as number,
@@ -325,8 +346,16 @@ export async function runCloudSecretBrokerServiceMain(
 			adapters: [...adapters, ...(connectors?.adapters ?? [])],
 		});
 		const helper = loginHelper ? new ModelLoginHelperClient(loginHelper) : undefined;
-		// Members' sign-ins to the vault: the broker collects finished ones in the background.
-		const signIns = helper ? new CloudModelLoginSignIns({ authority, keyring, helper }) : undefined;
+		// Members' sign-ins to the vault: the broker collects finished Codex ones in the background.
+		const signIns =
+			helper || chatGptPlan
+				? new CloudModelLoginSignIns({
+						authority,
+						keyring,
+						...(helper ? { helper } : {}),
+						...(chatGptPlan ? { plan: new ChatGptPlanSignIns({ oauth: chatGptPlan, authority, keyring }) } : {}),
+					})
+				: undefined;
 		// Model logins in the vault (Stateless Compute step 1). The helper renews and runs a
 		// member's sign-in; without it a login is handed out as stored, nothing renews it, and
 		// the sign-in route answers 404.
@@ -334,8 +363,10 @@ export async function runCloudSecretBrokerServiceMain(
 			authority,
 			keyring,
 			...(helper ? { renewer: helper } : {}),
+			...(chatGptPlan ? { chatGptPlan } : {}),
 		});
-		// The vault's upkeep: it renews idle logins itself (only with the helper).
+		// The vault's upkeep: it renews idle logins itself (Codex logins only with the helper, plan logins
+		// only with the plan client) and ends unused plan logins at OpenAI.
 		const upkeep = new CloudModelLoginUpkeep({ vault: modelLogins });
 		// Disconnected and deleted connections' tokens, cancelled at the provider once a minute (D6).
 		// Without the connectors credential Google's revoke still works; GitHub's waits for its client.
@@ -390,6 +421,7 @@ async function runSharedVault(options: {
 	keyring: CloudSecretKeyring;
 	adapters: readonly CloudSecretConnectorAdapter[];
 	helper: ModelLoginHelperClient | undefined;
+	chatGptPlan: ChatGptPlanOAuth | undefined;
 	revoker: CloudConnectorTokenRevoker;
 	runtimeToken: string;
 	port: number;
@@ -402,6 +434,7 @@ async function runSharedVault(options: {
 		keyring: options.keyring,
 		adapters: options.adapters,
 		...(options.helper ? { helper: options.helper } : {}),
+		...(options.chatGptPlan ? { chatGptPlan: options.chatGptPlan } : {}),
 		revoker: options.revoker,
 	});
 	const service = new HttpCloudSecretBrokerService(companies, options.runtimeToken, {

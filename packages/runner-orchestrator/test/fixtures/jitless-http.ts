@@ -5,8 +5,11 @@ import { Request as NodeHttpRequest } from "@whatwg-node/node-fetch";
 import { LxdUnixClient } from "../../src/lxd-client.ts";
 import { HttpLxdNativeLoginGateway, LxdNativeLoginGateway } from "../../src/lxd-login-gateway.ts";
 import { nodeHttpFetch } from "../../src/node-http-fetch.ts";
+import { cloudRunnerOrchestratorWakeTopic } from "../../src/orchestrator.ts";
+import { RealtimeOrchestratorWake } from "../../src/orchestrator-wake.ts";
 import type { CloudRunnerProviderServiceBackend } from "../../src/provider-service.ts";
 import { WebCloudRunnerProviderService } from "../../src/provider-web.ts";
+import { FakeRealtime } from "../helpers/realtime-fake.ts";
 
 async function main(): Promise<void> {
 	const certificate = await readFile(process.argv[2]!, "utf8");
@@ -75,6 +78,30 @@ async function main(): Promise<void> {
 		const denied = await web.handle(new NodeHttpRequest("http://localhost/provider", { method: "POST", body: "{}" }));
 		assert.equal(denied.status, 401);
 		assert.deepEqual(await denied.json(), { error: "Unauthorized" });
+		// Push wake-ups ride a WebSocket that must not need Node's (Undici, WASM) WebSocket.
+		const realtime = new FakeRealtime();
+		await realtime.start();
+		const topic = cloudRunnerOrchestratorWakeTopic("c".repeat(43));
+		const wake = new RealtimeOrchestratorWake({
+			supabaseUrl: realtime.url,
+			publishableKey: "sb_publishable_synthetic",
+			topic: () => topic,
+		});
+		let wakeUps = 0;
+		wake.subscribe(() => wakeUps++);
+		wake.start();
+		try {
+			for (let attempt = 0; attempt < 200 && !wake.listening; attempt++)
+				await new Promise((resolve) => setTimeout(resolve, 10));
+			assert.equal(wake.listening, true);
+			assert.equal(realtime.wake(topic), 1);
+			for (let attempt = 0; attempt < 200 && wakeUps < 2; attempt++)
+				await new Promise((resolve) => setTimeout(resolve, 10));
+			assert.equal(wakeUps, 2);
+		} finally {
+			wake.stop();
+			await realtime.close();
+		}
 		// Undici's asynchronous WASM initialization can reject after a request completes.
 		await new Promise((resolve) => setTimeout(resolve, 100));
 		console.log("JITLESS_HTTP_BOUNDARIES_PASSED");

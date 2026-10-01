@@ -963,6 +963,11 @@ describe("human and publisher transport separation", () => {
 		[409, "PT409", true, 409],
 		[409, "23505", false, 409],
 		[500, "40001", false, 409],
+		[500, "40P01", false, 409],
+		[500, "55P03", false, 409],
+		[500, "55000", false, 423],
+		[500, "57014", false, 503],
+		[500, "XX000", false, 500],
 		[409, "QRC01", false, 409],
 		[412, "PT412", false, 412],
 	] as const)("classifies %s/%s without retrying uncertainty", async (status, code, rebuild, expectedStatus) => {

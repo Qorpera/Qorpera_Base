@@ -145,8 +145,8 @@ function observedBoundary(fixture: Awaited<ReturnType<typeof setup>>) {
 	const rows: CloudRuntimeObservation[] = [];
 	const observability = new CloudRuntimeObservability({
 		assignmentId: fixture.binding.assignmentId,
-		publish: async (row) => {
-			rows.push(structuredClone(row));
+		publish: async (batch) => {
+			rows.push(...structuredClone(batch));
 		},
 	});
 	observations.push(observability);

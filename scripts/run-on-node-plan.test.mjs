@@ -33,7 +33,7 @@ test("anything that is not web-only also runs runtime, cloud-client and every sc
 	assert.deepEqual(names(["packages/web/src/cloud/email-drafts.ts"]), set([...BASELINE, "web", "hosted-db"]));
 	assert.deepEqual(names(["packages/member-web/ui/viewer.ts"]), set([...BASELINE, "web", "member-web"]));
 	// A migration reaches runtime tests that read the migrations directory, and the vocabulary script test.
-	assert.deepEqual(names(["supabase/migrations/20260929010000_x.sql"]), set([...BASELINE, "hosted-db"]));
+	assert.deepEqual(names(["supabase/migrations/20260929010000_x.sql"]), set([...BASELINE, "hosted-db", "company-fence-load"]));
 	// Installer pins: runner-orchestrator sources rebuild packages whose sha256 the deploy scripts pin.
 	assert.deepEqual(names(["packages/runner-orchestrator/src/lxd-provider.ts"]), set([
 		...BASELINE,
@@ -74,6 +74,20 @@ test("deploy, function and SQL-input paths reach the tests that read them", () =
 	assert.ok(names(["scripts/test-runtime-node-capacity-cases.mjs"]).includes("hosted-db"));
 	assert.ok(names(["packages/runner-orchestrator/src/lxd-office-start-control.ts"]).includes("hosted-db"));
 	assert.ok(names(["packages/runtime/test/fixtures/coding-turn-context-backfilled.json"]).includes("hosted-db"));
+});
+
+test("a migration, the load harness or its fixture's tests put one company's fence under load", () => {
+	for (const file of [
+		"supabase/migrations/20260928339380_company_fence_shared_readers.sql",
+		"scripts/load-company-fence-pool.mjs",
+		"scripts/load-company-fence-pool.sql",
+		"supabase/tests/602_runtime_coding_lock_order.test.sql",
+	])
+		assert.ok(names([file]).includes("company-fence-load"), file);
+	assert.ok(!names(["supabase/tests/745_company_fence_shared_readers.test.sql"]).includes("company-fence-load"));
+	assert.ok(!names(["packages/runtime/src/cloud-company-path-control.ts"]).includes("company-fence-load"));
+	const load = STEPS.find((step) => step.name === "company-fence-load").commands.join(" ");
+	assert.equal(load, "node scripts/load-company-fence-pool.mjs --check");
 });
 
 test("shared configuration and unknown paths run every step", () => {

@@ -38,6 +38,7 @@ import { matchesKey } from "./keys.ts";
 import { markdownBubbles } from "./markdown.ts";
 import { t } from "./preferences.ts";
 import { quietScroll } from "./quiet-scroll.ts";
+import { codingFailureReason } from "./run-failure.ts";
 import { uiScale } from "./scale.ts";
 
 export const HARNESS_NAMES: Record<CodingHarness, string> = { codex: "Codex", "claude-code": "Claude Code" };
@@ -864,28 +865,15 @@ export class CodingSessionElement {
 					);
 					break;
 				}
-				case "failed": {
-					const reason = text(event.body, "reason", "summary");
+				case "failed":
 					note(
 						h(
 							"div",
 							{ class: "conversation-note coding-note coding-row-error", role: "note" },
-							reason === "executor-lease-expired"
-								? t(
-										"The computer running this session stopped answering. The workspace is kept; a follow-up starts it again.",
-									)
-								: reason?.includes("[code=COMPUTER_HOURS_EXHAUSTED]")
-									? // Cut off an hour after the company ran out of computer hours (20260928259270).
-										t(
-											"The company ran out of computer hours. The workspace is kept; a follow-up continues once hours are added.",
-										)
-									: reason
-										? t("Failed: {reason}", { reason })
-										: t("Failed"),
+							codingFailureReason(text(event.body, "reason", "summary")),
 						),
 					);
 					break;
-				}
 				default:
 					break;
 			}
@@ -946,6 +934,14 @@ export class CodingSessionElement {
 				: t("{owner} archived the session", { owner: names.owner });
 		}
 		if (event.actor === "kernel" && body.reopened === true) return t("Reopened");
+		// The kernel asked the agent whether a quiet session can be archived.
+		if (event.actor === "kernel" && typeof body.quietDays === "number" && body.quietDays >= 1)
+			return body.quietDays === 1
+				? t("Quiet for a day · asked {agent} whether it can be archived", { agent: names.agent })
+				: t("Quiet for {days} days · asked {agent} whether it can be archived", {
+						days: Math.floor(body.quietDays),
+						agent: names.agent,
+					});
 		if (event.actor !== "executor" || !Array.isArray(body.stopped)) return undefined;
 		// At most 32 are named; the rest are counted.
 		const count =

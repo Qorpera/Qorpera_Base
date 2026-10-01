@@ -183,6 +183,83 @@ it("writes a newer pass into a warm root the vault renewed meanwhile", async () 
 	await f.host.releaseWarm();
 });
 
+function planLogin(version: number, token: string | null): ModelLoginIssue {
+	return {
+		schema: "qorpera.model-login/v1",
+		loginKind: "chatgpt_plan",
+		version,
+		accessExpiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+		accessToken: token,
+	};
+}
+
+async function planToken(root: string): Promise<string> {
+	return readFile(join(root, "chatgpt-plan", "access-token"), "utf8");
+}
+
+it("runs a ChatGPT plan login from the plan's access token alone, kept fresh in a private file", async () => {
+	let version = 1;
+	const seen: string[] = [];
+	const f = await fixture({
+		issue: async ({ knownVersion }) => planLogin(version, knownVersion === version ? null : `plan-${version}`),
+		harness: async (root) => {
+			seen.push(await planToken(root));
+			expect((await stat(join(root, "chatgpt-plan", "access-token"))).mode & 0o777).toBe(0o600);
+			expect((await stat(join(root, "chatgpt-plan"))).mode & 0o777).toBe(0o700);
+			// No Codex login file: the plan's token is not one.
+			expect(await readdir(join(root, "codex")).catch(() => [])).toEqual([]);
+			// The vault renews while the run goes on; the host swaps the token in place.
+			version = 2;
+			await vi.waitFor(async () => expect(await planToken(root)).toBe("plan-2"), { timeout: 2000 });
+			seen.push(await planToken(root));
+			expect(await readdir(join(root, "chatgpt-plan"))).toEqual(["access-token"]);
+		},
+	});
+	await f.host.execute(request());
+	expect(seen).toEqual(["plan-1", "plan-2"]);
+	expect(f.capsules.get).not.toHaveBeenCalled();
+	expect(f.capsules.put).not.toHaveBeenCalled();
+	expect(await readdir(f.temporaryRoot)).toEqual([]);
+});
+
+it("never writes a copy of another kind than the run started with", async () => {
+	let calls = 0;
+	const f = await fixture({
+		issue: async () => {
+			calls += 1;
+			return calls === 1 ? planLogin(1, "plan-1") : login(2, "codex-pass");
+		},
+		harness: async (root) => {
+			await vi.waitFor(() => expect(calls).toBeGreaterThan(2), { timeout: 2000 });
+			expect(await planToken(root)).toBe("plan-1");
+			expect(await readdir(join(root, "codex")).catch(() => [])).toEqual([]);
+		},
+	});
+	await f.host.execute(request());
+});
+
+it("keeps a warm plan root with its token, and reuses it while the version holds", async () => {
+	const f = await fixture({
+		issue: async ({ knownVersion }) => planLogin(1, knownVersion === 1 ? null : "plan-1"),
+		warmIdleMs: 60_000,
+	});
+	await f.host.execute(request());
+	await f.host.execute(request());
+	expect(f.seenRoots[1]).toBe(f.seenRoots[0]);
+	expect(f.issue.mock.calls[1]?.[0].knownVersion).toBe(1);
+	expect(await planToken(f.seenRoots[0] as string)).toBe("plan-1");
+	await f.host.releaseWarm();
+	expect(await readdir(f.temporaryRoot)).toEqual([]);
+});
+
+it("refuses an access token that is not one line of visible characters", async () => {
+	const harness = vi.fn(async () => undefined);
+	const f = await fixture({ issue: async () => planLogin(1, "plan pass\n"), harness });
+	await expect(f.host.execute(request())).rejects.toThrow("credential-opening");
+	expect(harness).not.toHaveBeenCalled();
+	expect(await readdir(f.temporaryRoot)).toEqual([]);
+});
+
 it("fails a vault run without the vault or when the vault refuses, and keeps no root", async () => {
 	const refused = await fixture({
 		issue: async () => {

@@ -1,3 +1,5 @@
+import type { ChatGptPlanOAuth } from "./cloud-chatgpt-plan.ts";
+import { ChatGptPlanSignIns } from "./cloud-chatgpt-plan-sign-in.ts";
 import {
 	CloudConnectorTokenRevocations,
 	CloudConnectorTokenRevoker,
@@ -81,6 +83,7 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 	readonly #keyring: CloudSecretKeyring;
 	readonly #adapters: readonly CloudSecretConnectorAdapter[];
 	readonly #helper: (ModelLoginSignInHelper & ModelLoginRenewer) | undefined;
+	readonly #chatGptPlan: ChatGptPlanOAuth | undefined;
 	readonly #revoker: Pick<CloudConnectorTokenRevoker, "revoke">;
 	readonly #refreshEveryMs: number;
 	readonly #collectEveryMs: number;
@@ -105,6 +108,9 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 		adapters: readonly CloudSecretConnectorAdapter[];
 		/** The login helper on this host: renewals and members' sign-ins. Absent, nothing renews or signs in. */
 		helper?: ModelLoginSignInHelper & ModelLoginRenewer;
+		/** OpenAI's side of ChatGPT plan logins (built switched off). Absent, no plan sign-in starts and no
+		 * plan login is renewed or ended. */
+		chatGptPlan?: ChatGptPlanOAuth;
 		/** Cancels queued connector tokens at Google and GitHub; by default without a GitHub client. */
 		revoker?: Pick<CloudConnectorTokenRevoker, "revoke">;
 		refreshEveryMs?: number;
@@ -118,6 +124,7 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 		this.#keyring = options.keyring;
 		this.#adapters = options.adapters;
 		this.#helper = options.helper;
+		this.#chatGptPlan = options.chatGptPlan;
 		this.#revoker = options.revoker ?? new CloudConnectorTokenRevoker();
 		this.#refreshEveryMs = options.refreshEveryMs ?? 10_000;
 		this.#collectEveryMs = options.collectEveryMs ?? 2000;
@@ -217,10 +224,12 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 	#serve(entry: { companyId: string; authorityId: string; keyId: string }): Served {
 		const authority = this.#principal.authority(entry.companyId, entry.authorityId);
 		const helper = this.#helper;
+		const plan = this.#chatGptPlan;
 		const modelLogins = new CloudModelLoginVault({
 			authority,
 			keyring: this.#keyring,
 			...(helper ? { renewer: helper } : {}),
+			...(plan ? { chatGptPlan: plan } : {}),
 		});
 		return {
 			authorityId: entry.authorityId,
@@ -229,9 +238,17 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 				companyId: entry.companyId,
 				broker: new CloudSecretBroker({ authority, keyring: this.#keyring, adapters: this.#adapters }),
 				modelLogins,
-				modelLoginSignIns: helper
-					? new CloudModelLoginSignIns({ authority, keyring: this.#keyring, helper })
-					: undefined,
+				modelLoginSignIns:
+					helper || plan
+						? new CloudModelLoginSignIns({
+								authority,
+								keyring: this.#keyring,
+								...(helper ? { helper } : {}),
+								...(plan
+									? { plan: new ChatGptPlanSignIns({ oauth: plan, authority, keyring: this.#keyring }) }
+									: {}),
+							})
+						: undefined,
 				modelLoginUsage: new CloudModelLoginUsage({ authority, keyring: this.#keyring }),
 			},
 			// Its timer never runs: the shared upkeep loop runs each company's pass in turn.

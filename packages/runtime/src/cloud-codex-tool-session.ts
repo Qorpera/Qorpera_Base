@@ -1,8 +1,8 @@
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import type { BigIntStats, Dirent } from "node:fs";
-import { createReadStream } from "node:fs";
-import { lstat, mkdir, mkdtemp, readdir, realpath, rm, writeFile } from "node:fs/promises";
+import type { BigIntStats, Dirent, Stats } from "node:fs";
+import { createReadStream, existsSync } from "node:fs";
+import { lstat, mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
@@ -20,7 +20,14 @@ import {
 	nativeRuntimeUsageSignal,
 	tagNativeRuntimeFailure,
 } from "./cloud-native-failure.ts";
-import { launchIsolatedNativeProcess, type NativeIsolationConfiguration } from "./cloud-native-isolation.ts";
+import {
+	CHATGPT_PLAN_DIRECTORY,
+	CHATGPT_PLAN_TOKEN_ENVIRONMENT,
+	CHATGPT_PLAN_TOKEN_FILE,
+	launchIsolatedNativeProcess,
+	type NativeChatGptPlanAccess,
+	type NativeIsolationConfiguration,
+} from "./cloud-native-isolation.ts";
 import {
 	CLOUD_NATIVE_RESULT_FENCE_SCHEMA,
 	type CloudNativeFenceRequest,
@@ -185,15 +192,85 @@ function codexServiceTier(tier: CloudRuntimeServiceTier): "fast" | "default" {
 	return tier === "fast" ? "fast" : "default";
 }
 
+/** The Codex model provider a plan run uses: OpenAI's API with the plan's token as the bearer. */
+export const CHATGPT_PLAN_PROVIDER = "qorpera_chatgpt_plan";
+const CHATGPT_PLAN_BASE_URL = "https://api.openai.com/v1";
+/** The token command, from the read-only /usr inside the namespace. Codex runs it again once a minute and
+ * after a refused request, so a token the host replaced is used within a minute. */
+const CHATGPT_PLAN_TOKEN_COMMAND = "/bin/cat";
+const CHATGPT_PLAN_TOKEN_REFRESH_MS = 60_000;
+const CHATGPT_PLAN_TOKEN_TIMEOUT_MS = 5_000;
+
+/**
+ * How a plan run's Codex gets the plan's token:
+ * - `command` (the default): Codex's provider token command reads the host's token file, so a token the
+ *   vault renews mid-run is used without a restart.
+ * - `environment` (OpenAI's documented path, kept as a fallback): the token goes in the process's
+ *   environment at start. Each run starts its own process, so the next run picks up a newer token; a run
+ *   that outlives its token fails at OpenAI's refusal.
+ */
+export type CloudChatGptPlanAuth = "command" | "environment";
+
+/** How one Codex process reaches a member's ChatGPT plan, once its identity root says it is a plan run. */
+type CloudCodexChatGptPlan = { readonly tokenPath: string } | { readonly environment: true };
+
+function chatGptPlanProviderConfig(plan: CloudCodexChatGptPlan): readonly string[] {
+	const provider = `name="ChatGPT plan",base_url="${CHATGPT_PLAN_BASE_URL}",wire_api="responses",supports_websockets=false`;
+	if ("environment" in plan)
+		return [
+			`model_provider="${CHATGPT_PLAN_PROVIDER}"`,
+			`model_providers.${CHATGPT_PLAN_PROVIDER}={${provider},env_key="${CHATGPT_PLAN_TOKEN_ENVIRONMENT}"}`,
+		];
+	if (!/^\/[A-Za-z0-9._/-]{1,400}$/.test(plan.tokenPath)) throw new Error("Invalid ChatGPT plan token path");
+	return [
+		`model_provider="${CHATGPT_PLAN_PROVIDER}"`,
+		`model_providers.${CHATGPT_PLAN_PROVIDER}={${provider},auth={command="${CHATGPT_PLAN_TOKEN_COMMAND}",args=["${plan.tokenPath}"],timeout_ms=${CHATGPT_PLAN_TOKEN_TIMEOUT_MS},refresh_interval_ms=${CHATGPT_PLAN_TOKEN_REFRESH_MS}}}`,
+	];
+}
+
 export function cloudCodexBoundaryConfig(
 	effort: CloudRuntimeReasoningEffort,
 	serviceTier: CloudRuntimeServiceTier = "standard",
+	plan?: CloudCodexChatGptPlan,
 ): readonly string[] {
 	return Object.freeze([
 		`model_reasoning_effort="${effort}"`,
-		`service_tier="${codexServiceTier(serviceTier)}"`,
+		// Fast mode is a Codex login's feature; a plan run always asks for standard routing.
+		`service_tier="${codexServiceTier(plan ? "standard" : serviceTier)}"`,
+		...(plan ? chatGptPlanProviderConfig(plan) : []),
 		...CLOUD_CODEX_BOUNDARY_FIXED_CONFIG,
 	]);
+}
+
+/**
+ * Whether an identity root is a ChatGPT plan run's: its host wrote the plan's access token in a private
+ * directory there. Anything else that looks like it is refused, so a root is plainly one kind or the other.
+ */
+async function chatGptPlanDirectory(identityRoot: string | undefined): Promise<string | undefined> {
+	if (!identityRoot) return undefined;
+	const directory = join(identityRoot, CHATGPT_PLAN_DIRECTORY);
+	let metadata: Stats;
+	try {
+		metadata = await lstat(directory);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+		throw error;
+	}
+	const token = metadata.isDirectory()
+		? await lstat(join(directory, CHATGPT_PLAN_TOKEN_FILE)).catch(() => undefined)
+		: undefined;
+	if (
+		!metadata.isDirectory() ||
+		metadata.uid !== process.getuid?.() ||
+		(metadata.mode & 0o077) !== 0 ||
+		!token?.isFile() ||
+		token.uid !== process.getuid?.() ||
+		(token.mode & 0o077) !== 0 ||
+		token.size < 1 ||
+		token.size > 16_384
+	)
+		throw new Error("Invalid ChatGPT plan identity");
+	return directory;
 }
 
 export const CLOUD_CODEX_BOUNDARY_FIXED_CONFIG: readonly string[] = Object.freeze([
@@ -282,12 +359,36 @@ function nativeErrorCategory(value: unknown): CloudRuntimeErrorCategory | undefi
 	return keys[0] === "responseTooManyFailedAttempts" ? "provider_failed" : "transport_unavailable";
 }
 
+/** The provider a plan run must use, exactly as configured; a Codex login's run must not use it. (A Codex
+ * login's run keeps whatever provider its command sets otherwise: the real-Codex acceptance probes wrap
+ * Codex with a test provider of their own.) */
+function verifyChatGptPlanProvider(config: Record<string, unknown>, plan: CloudCodexChatGptPlan | undefined): boolean {
+	if (!plan) return config.model_provider !== CHATGPT_PLAN_PROVIDER;
+	if (config.model_provider !== CHATGPT_PLAN_PROVIDER) return false;
+	const provider = object(object(config.model_providers)[CHATGPT_PLAN_PROVIDER]);
+	if (
+		provider.base_url !== CHATGPT_PLAN_BASE_URL ||
+		provider.wire_api !== "responses" ||
+		provider.requires_openai_auth === true
+	)
+		return false;
+	if ("environment" in plan) return provider.env_key === CHATGPT_PLAN_TOKEN_ENVIRONMENT && provider.auth == null;
+	const auth = object(provider.auth);
+	return (
+		provider.env_key == null &&
+		auth.command === CHATGPT_PLAN_TOKEN_COMMAND &&
+		auth.refresh_interval_ms === CHATGPT_PLAN_TOKEN_REFRESH_MS
+	);
+}
+
 function verifyConfiguration(
 	value: unknown,
 	effort: CloudRuntimeReasoningEffort,
 	serviceTier: CloudRuntimeServiceTier,
+	plan?: CloudCodexChatGptPlan,
 ): void {
 	const config = object(object(value).config);
+	if (!verifyChatGptPlanProvider(config, plan)) throw new Error("Native boundary configuration was not applied");
 	const features = object(config.features);
 	const skills = object(config.skills);
 	const orchestrator = object(config.orchestrator);
@@ -300,7 +401,7 @@ function verifyConfiguration(
 		config.sandbox_mode !== "read-only" ||
 		config.web_search !== "disabled" ||
 		config.model_reasoning_effort !== effort ||
-		config.service_tier !== codexServiceTier(serviceTier) ||
+		config.service_tier !== codexServiceTier(plan ? "standard" : serviceTier) ||
 		features.fast_mode !== true ||
 		config.project_doc_max_bytes !== 0 ||
 		config.tool_output_token_limit !== 65536 ||
@@ -465,8 +566,15 @@ class CodexBoundaryRpc {
 	get failureCategory(): CloudRuntimeErrorCategory {
 		return this.#failureCategory;
 	}
+	/** A run on a member's ChatGPT plan. OpenAI answers 429 to a plan request only at the plan's usage
+	 * limit (`subscription_sharing_usage_limit_exceeded`; a pinned Codex reports it as a 429 it gave up on),
+	 * so for such a run that is the usage limit, which stops the work (2026-10-01), never a rate limit. */
+	chatGptPlan = false;
+
 	get usageSignal(): NativeRuntimeUsageSignal | null {
-		return this.#providerUsageSignal;
+		return this.chatGptPlan && this.#providerUsageSignal === "rate_limited"
+			? "usage_limit"
+			: this.#providerUsageSignal;
 	}
 	assertCompleted(): void {
 		if (this.#failure) throw this.#failure;
@@ -1149,6 +1257,8 @@ interface CloudCodexProcessInputs {
 	serviceTier: CloudRuntimeServiceTier;
 	identityRoot?: string;
 	isolation?: NativeIsolationConfiguration;
+	/** How a plan run's Codex gets the plan's token (the host's setting; unused for a Codex login). */
+	chatGptPlanAuth?: CloudChatGptPlanAuth;
 }
 
 /** What the result fence reaches once a run is bound to the process. */
@@ -1159,6 +1269,8 @@ interface CloudCodexRunBinding {
 		outputs: readonly CloudNativeFencedResult[],
 		signal: AbortSignal,
 	) => Promise<void>;
+	/** recordContextView makes the run authority and read-set check itself, before release. */
+	recordChecksAuthority?: boolean;
 }
 
 /** A started, handshaken Codex app-server that no run has used: no thread, no provider request. */
@@ -1184,6 +1296,7 @@ function cloudCodexProcessKey(inputs: CloudCodexProcessInputs): string {
 				cloudCodexBoundaryConfig(inputs.effort, inputs.serviceTier),
 				inputs.identityRoot ?? null,
 				inputs.isolation ?? null,
+				inputs.chatGptPlanAuth ?? "command",
 			]),
 		)
 		.digest("hex");
@@ -1256,6 +1369,26 @@ async function startCloudCodexProcess(
 			if (entry.name !== "auth.json" || !entry.isFile())
 				throw new Error("Native boundary requires an auth-only identity");
 		}
+		// A plan run's Codex home stays empty: the plan's token is not a Codex login.
+		const planDirectory = await chatGptPlanDirectory(inputs.identityRoot);
+		if (planDirectory && (await readdir(codexHome)).length !== 0)
+			throw new Error("Native boundary requires one login per identity");
+		const planToken =
+			planDirectory && inputs.chatGptPlanAuth === "environment"
+				? (await readFile(join(planDirectory, CHATGPT_PLAN_TOKEN_FILE), "utf8")).trim()
+				: undefined;
+		const plan: CloudCodexChatGptPlan | undefined = planDirectory
+			? planToken === undefined
+				? { tokenPath: join(planDirectory, CHATGPT_PLAN_TOKEN_FILE) }
+				: { environment: true }
+			: undefined;
+		const planAccess: NativeChatGptPlanAccess | undefined = planDirectory
+			? planToken === undefined
+				? { directory: planDirectory }
+				: { accessToken: planToken }
+			: undefined;
+		if (planToken !== undefined && !/^[\x21-\x7e]{1,16384}$/.test(planToken))
+			throw new Error("Invalid ChatGPT plan access token");
 		const workspace = join(root, "workspace");
 		const home = join(root, "home");
 		await Promise.all(
@@ -1270,11 +1403,12 @@ async function startCloudCodexProcess(
 			// A request before the run is bound finds no thread and fails the fence.
 			boundary: {
 				close: () => binding.boundary?.close(),
-				fenceNativeResults: (outputs) =>
+				fenceNativeResults: (outputs, fence) =>
 					binding.boundary
-						? binding.boundary.fenceNativeResults(outputs)
+						? binding.boundary.fenceNativeResults(outputs, fence)
 						: Promise.reject(new Error("Native result boundary is not bound")),
 			},
+			recordChecksAuthority: () => binding.recordContextView !== undefined && binding.recordChecksAuthority === true,
 			assertSession: (request) => {
 				if (!rpc?.bound) throw new Error("Native result boundary not initialized");
 				rpc.assertModelRequest(request);
@@ -1297,7 +1431,7 @@ async function startCloudCodexProcess(
 			"--strict-config",
 			"--listen",
 			"stdio://",
-			...cloudCodexBoundaryConfig(inputs.effort, inputs.serviceTier).flatMap((config) => ["-c", config]),
+			...cloudCodexBoundaryConfig(inputs.effort, inputs.serviceTier, plan).flatMap((config) => ["-c", config]),
 		];
 		progress.stage = "codex-process-start";
 		if (inputs.isolation) {
@@ -1308,6 +1442,7 @@ async function startCloudCodexProcess(
 				scratchRoot: root,
 				codexHome,
 				fenceSocket: fence.path,
+				...(planAccess ? { chatGptPlan: planAccess } : {}),
 				signal: lifetime.signal,
 			});
 			child = isolated.child;
@@ -1323,11 +1458,13 @@ async function startCloudCodexProcess(
 					PATH: process.env.PATH ?? "/usr/bin:/bin",
 					NO_COLOR: "1",
 					QORPERA_NATIVE_RESULT_FENCE_SOCKET: fence.path,
+					...(planToken === undefined ? {} : { [CHATGPT_PLAN_TOKEN_ENVIRONMENT]: planToken }),
 				},
 				stdio: ["pipe", "pipe", "pipe"],
 				detached: true,
 			});
 		rpc = new CodexBoundaryRpc(child);
+		rpc.chatGptPlan = plan !== undefined;
 		const handshake = rpc;
 		if (state.fenceFailed) handshake.fail("Native result boundary unavailable", "authority_unavailable");
 		if (signal.aborted) stop();
@@ -1355,6 +1492,7 @@ async function startCloudCodexProcess(
 			await handshake.request("config/read", { includeLayers: false, cwd: workspace }),
 			inputs.effort,
 			inputs.serviceTier,
+			plan,
 		);
 		progress.stage = "codex-skills";
 		const skills = object(await handshake.request("skills/list", { cwds: [workspace], forceReload: true }));
@@ -1452,6 +1590,7 @@ export function prepareCloudCodexSpare(
 		serviceTier?: CloudRuntimeServiceTier;
 		identityRoot?: string;
 		isolation?: NativeIsolationConfiguration;
+		chatGptPlanAuth?: CloudChatGptPlanAuth;
 	},
 	idleMs: number,
 ): void {
@@ -1466,7 +1605,16 @@ export function prepareCloudCodexSpare(
 		serviceTier,
 		...(inputs.identityRoot ? { identityRoot: inputs.identityRoot } : {}),
 		...(inputs.isolation ? { isolation: inputs.isolation } : {}),
+		...(inputs.chatGptPlanAuth ? { chatGptPlanAuth: inputs.chatGptPlanAuth } : {}),
 	};
+	// In the environment fallback a process keeps the plan token it started with, so a spare could run the
+	// next run on an older token than the vault has issued since: a plan run there starts its own process.
+	if (
+		inputs.chatGptPlanAuth === "environment" &&
+		inputs.identityRoot &&
+		existsSync(join(inputs.identityRoot, CHATGPT_PLAN_DIRECTORY))
+	)
+		return;
 	const key = cloudCodexProcessKey(processInputs);
 	discardSpare(key);
 	const starting = new AbortController();
@@ -1560,6 +1708,8 @@ export async function runCloudCodexToolSession(options: {
 	identityRoot?: string;
 	/** Required by the production company-path entrypoint; omitted only by synthetic/native component probes. */
 	isolation?: NativeIsolationConfiguration;
+	/** How a ChatGPT plan run's Codex gets the plan's token; `command` unless the host chose the fallback. */
+	chatGptPlanAuth?: CloudChatGptPlanAuth;
 	/**
 	 * Warm conversations: the identity root was kept from an earlier run on this host. Without
 	 * a spare to take, the files earlier Codex processes left beside the credential are removed
@@ -1577,6 +1727,9 @@ export async function runCloudCodexToolSession(options: {
 		outputs: readonly CloudNativeFencedResult[],
 		signal: AbortSignal,
 	) => Promise<void>;
+	/** recordContextView checks run authority and the read set itself, in the same step
+	 * as recording and before release, so the result fence does not check first. */
+	recordChecksAuthority?: boolean;
 	signal: AbortSignal;
 	timeoutMs?: number;
 	idleTimeoutMs?: number;
@@ -1616,6 +1769,7 @@ export async function runCloudCodexToolSession(options: {
 		serviceTier,
 		...(options.identityRoot ? { identityRoot: options.identityRoot } : {}),
 		...(options.isolation ? { isolation: options.isolation } : {}),
+		...(options.chatGptPlanAuth ? { chatGptPlanAuth: options.chatGptPlanAuth } : {}),
 	};
 	const progress: { stage: NativeRuntimeFailureStage } = { stage: "codex-artifact" };
 	let started: CloudCodexProcess;
@@ -1645,7 +1799,10 @@ export async function runCloudCodexToolSession(options: {
 		// now the fence refused every request and no thread could start.
 		rpc.bind(options.boundary, options.observability);
 		started.binding.boundary = options.boundary;
-		if (options.recordContextView) started.binding.recordContextView = options.recordContextView;
+		if (options.recordContextView) {
+			started.binding.recordContextView = options.recordContextView;
+			started.binding.recordChecksAuthority = options.recordChecksAuthority === true;
+		}
 		if (
 			options.boundary.captureImagesEnabled &&
 			!started.userAgent.split(" ").includes(CLOUD_NATIVE_CAPTURE_IMAGES_CAPABILITY)

@@ -123,7 +123,7 @@ describe("the captions the kernel state produces", () => {
 			tone: "working",
 		});
 		expect(codingSessionStatus(codingSession({ phase: "queued" }), owner, NOW).text).toBe("Waiting for a computer");
-		// A turn waiting for its company's computer hours says so (20260929760000).
+		// A turn waiting for its company's computer hours says so (20260928319760).
 		expect(
 			codingSessionStatus(codingSession({ phase: "queued", lastStep: "Waiting for computer hours" }), owner, NOW),
 		).toEqual({ text: "Waiting for computer hours", tone: "idle" });
@@ -823,6 +823,12 @@ describe("the element in the thread", () => {
 				// Only the kernel says a session was archived.
 				event(5, "step", { text: "Archived the old branch", archived: true }, "harness"),
 				event(
+					7,
+					"step",
+					{ text: "Quiet for 3 days; asked the agent whether it can be archived", quietDays: 3 },
+					"kernel",
+				),
+				event(
 					6,
 					"step",
 					{
@@ -846,6 +852,7 @@ describe("the element in the thread", () => {
 			"Mark archived the session",
 			"Reopened",
 			"The session lost its machine · 35 commands stopped",
+			"Quiet for 3 days · asked Mark whether it can be archived",
 		]);
 		// The working step stays the harness's.
 		expect(element.el.querySelector(".coding-steps")?.textContent).toContain("Prepared the repository at abc1234");
@@ -868,6 +875,36 @@ describe("the element in the thread", () => {
 		const notes = [...element.el.querySelectorAll(".coding-note")].map((note) => note.textContent);
 		expect(notes).toEqual([
 			"The company ran out of computer hours. The workspace is kept; a follow-up continues once hours are added.",
+		]);
+	});
+
+	it("says a turn that ended without saving its work in plain words, never with the runner's text", async () => {
+		const { element } = mount(codingSession({ phase: "failed", workerState: "failed" }), {
+			events: [
+				event(
+					1,
+					"failed",
+					{
+						summary:
+							"The coding turn did not finish: Native provider bridge request failed (422) [code=CODING_TURN_ENDED_WITHOUT_SUBMISSION]; durable attempt output requires review",
+					},
+					"executor",
+				),
+				event(
+					2,
+					"failed",
+					{ summary: "The coding turn did not finish: something nobody has seen before" },
+					"executor",
+				),
+				event(3, "failed", { reason: "executor-lease-expired" }, "kernel"),
+			],
+		});
+		await settle();
+		const notes = [...element.el.querySelectorAll(".coding-note")].map((note) => note.textContent);
+		expect(notes).toEqual([
+			"The session's last turn ended without saving its work or asking a question. The workspace is kept; a follow-up continues it.",
+			"The session stopped because of an internal error. The workspace is kept; a follow-up continues it.",
+			"The computer running this session stopped answering. The workspace is kept; a follow-up starts it again.",
 		]);
 	});
 
