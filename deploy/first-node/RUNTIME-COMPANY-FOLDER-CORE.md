@@ -816,16 +816,21 @@ An object is retained while it is referenced by any of:
   unlink runs under the object row lock and checks that its lease token is
   still current, so a GC that outlived its lease never unlinks.
 - **G3. A deleting object is never "already there".** GC holds a lease with an
-  expiry on each object it deletes. An upload of a hash marked deleting waits
-  until GC finishes or its lease expires, then writes the bytes again. A
-  recovery step clears the marks of expired leases. `put`
-  asks the catalog first, unlike today's `object-store.ts:60`. The unlink goes
-  through a quarantine rename and a final re-check. If the re-check finds a
-  root, GC clears the mark and restores the bytes from quarantine; otherwise
-  it removes them. There is no unconditional `remove` as at `:110-113`. The
-  object gateway is shared, so this catalog check on `put` is the one
-  behaviour change that `snapshot-v1` companies see. It changes no outcome for
-  them.
+  expiry on each object it deletes. A new reference to a hash marked
+  deleting, an upload's included, is refused: as a conflict (the runtime's
+  QRC01 409 envelope; never 40001) by staging and replication, as missing by
+  a download, and as `bytes_unverified` by a commit. The writer redoes its
+  call once GC has finished or the lease has expired; an expired lease is no
+  mark. `put` itself is unchanged: every route that writes into a `folder-v2`
+  company's NAS path refuses `folder-v2` before its put, and the folder byte
+  path checks the mark after the catalog row's lock where it takes one (the
+  upload's authorization reads plainly, and its committed intent is a root)
+  (amended 2026-10-01, F1 and F2, #605;
+  C1d-2a's per-route tests are the evidence, and 3m checks it). The unlink
+  goes through a quarantine rename and a final re-check. If the re-check
+  finds a root, GC clears the mark and restores the bytes from quarantine;
+  otherwise it removes them. There is no unconditional `remove` as at
+  `:110-113`. `snapshot-v1` companies see no change.
 - **G4. Grace is measured from the last reference.** Each object keeps
   `unreferenced_since`, set when its last root ends and cleared on reuse. GC
   considers only objects past a grace window measured from that time, not

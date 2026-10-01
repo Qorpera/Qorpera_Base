@@ -215,6 +215,38 @@ begin
 	delete from public.qorpera_company_execution_pauses where profile_id = '63500000-0000-4000-8000-000000000010';
 end $$;
 
+-- G. A byte function's lock wait ends at its own function-level budget (20260928339780; 761 §8b pins it at 2 s) as
+-- 55P03, which the gateway answers 409, even in a session that would wait without limit: an open waits for a catalog
+-- row another transaction holds FOR UPDATE (as C1d-2's GC will), and replication for a company row a purge holds. A
+-- lock_not_available can only come from a wait, so the outcome alone shows it; the bound is for the test only.
+do $$
+declare v jsonb := pg_temp.actor('run_one'); v_case record; v_until timestamptz; v_busy boolean; v_state text;
+begin
+	for v_case in select * from (values
+		(format('select 1 from public.qorpera_profile_objects where profile_id = %L and sha256 = %L for update',
+			'63500000-0000-4000-8000-000000000010', pg_temp.hash('race chunk one ')),
+		 format('select public.qorpera_folder_open_upload(%L, %L, %L)', '63500000-0000-4000-8000-000000000020', v::text,
+			pg_temp.manifest(array['race chunk one ', 'budget chunk']))),
+		($q$select 1 from public.qorpera_profiles where id = '63500000-0000-4000-8000-000000000010' for update$q$,
+		 format('select public.qorpera_authorize_profile_object_replication(%L, %L, 14)',
+			'63500000-0000-4000-8000-000000000010', pg_temp.hash('race chunk two')))) c(hold, call)
+	loop
+		perform dblink_exec('auth_one', 'begin');
+		perform * from dblink('auth_one', v_case.hold) as t(r integer);
+		perform dblink_exec('auth_two', 'set lock_timeout = 0');
+		perform dblink_send_query('auth_two', v_case.call);
+		-- Without a budget the call would wait as long as the holder.
+		v_until := clock_timestamp() + interval '30 seconds';
+		while dblink_is_busy('auth_two') = 1 and clock_timestamp() < v_until loop perform pg_sleep(0.05); end loop;
+		v_busy := dblink_is_busy('auth_two') = 1;
+		perform dblink_exec('auth_one', 'rollback');
+		v_state := pg_temp.outcome('auth_two');
+		perform dblink_exec('auth_two', 'reset lock_timeout');
+		if v_busy or v_state not like '55P03 %' then
+			raise exception 'The call gives up at its lock budget: % (%)', v_state, v_case.call; end if;
+	end loop;
+end $$;
+
 select dblink_disconnect(name) from unnest(array['auth_one','auth_two','auth_three']) name;
 
 -- The committed fixture leaves the shared suite database.

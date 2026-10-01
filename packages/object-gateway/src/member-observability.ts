@@ -291,7 +291,7 @@ export class MemberCompanyObservations {
 										? "not_found"
 										: status === 412
 											? "stale_version"
-											: status === 409
+											: status === 409 || status === 423
 												? "conflict"
 												: status === 400 || status === 405 || status === 413
 													? "invalid_request"
