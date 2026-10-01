@@ -373,7 +373,13 @@ describe("a ChatGPT plan's first-routine card (shown only to a member with a pla
 				setWorkWhileAway: vi.fn(async () => {
 					listed = [...listed, { ...listed[0]!, connectionVersion: 3, allowAutonomous: true }];
 				}),
-				recordRoutineOffer: vi.fn(async () => timestamp),
+				recordRoutineOffer: vi.fn(async (connectionId: string) => {
+					// As the cloud does: the list now carries the showing.
+					listed = listed.map((item) =>
+						item.connectionId === connectionId ? { ...item, routineOfferShownAt: timestamp } : item,
+					);
+					return timestamp;
+				}),
 				chatGptPlanAvailable: vi.fn(async () => options.available ?? true),
 			},
 			routines: {
@@ -554,6 +560,42 @@ describe("a ChatGPT plan's first-routine card (shown only to a member with a pla
 		await vi.advanceTimersByTimeAsync(30_000);
 		expect(text(f.view)).toContain("Morning brief can run while you're away.");
 		expect(f.offer.native.recordRoutineOffer).toHaveBeenCalledOnce();
+	});
+	it("says nothing more once the kernel started the routine (20260929985000), and writes nothing", async () => {
+		for (const manage of [true, false]) {
+			const f = planSetup({ manage });
+			await settle();
+			f.offer.native.setWorkWhileAway.mockImplementationOnce(async () => {
+				f.setRoutines([routine({ status: "active", pauseReason: undefined })]);
+			});
+			const reads = f.offer.native.listConnections.mock.calls.length;
+			action("turn-on-plan").click();
+			await settle();
+			expect(f.offer.routines.setEnabled).not.toHaveBeenCalled();
+			expect(f.offer.native.listConnections).toHaveBeenCalledTimes(reads);
+			expect(f.client.acknowledgeNotification).toHaveBeenCalledWith(id(77), expect.any(AbortSignal));
+			expect(f.view.el.hidden).toBe(true);
+			f.view.dispose();
+		}
+	});
+	it("tells a member who does not save routines only about a routine that still waits", async () => {
+		const f = planSetup({
+			manage: false,
+			routines: [routine(), routine({ routineId: id(62), title: "Evening note" })],
+		});
+		await settle();
+		f.offer.native.setWorkWhileAway.mockImplementationOnce(async () => {
+			// The kernel started one; the other was busy at that moment.
+			f.setRoutines([
+				routine({ status: "active", pauseReason: undefined }),
+				routine({ routineId: id(62), title: "Evening note" }),
+			]);
+		});
+		action("turn-on-plan").click();
+		await settle();
+		expect(text(f.view)).toBe(
+			"Your ChatGPT plan now works while you're away. Ask the agent to set Evening note up again.",
+		);
 	});
 	it("Not now leaves the routine waiting and never asks again in this window", async () => {
 		const f = planSetup({ notices: [waitingNotice(77)] });

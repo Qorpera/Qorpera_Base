@@ -204,22 +204,24 @@ export class ExecutionNotices {
 				this.#turnedOn.add(id);
 			}
 			this.#answered.add(id);
-			if (plan.canManage()) {
+			// Turning the plan on starts the member's routines that waited only for it (20260929985000). Read again
+			// what still waits: a routine busy at that moment, one set up while the card stood, or a kernel without
+			// that step. The card never says a routine started that did not.
+			const waiting = (await plan.routines.list()).filter((entry) => waitsForPlan(entry, plan.memberId));
+			if (waiting.length && plan.canManage()) {
 				const account = (await plan.native.listConnections(signal)).connections
 					.filter((item) => item.connectionId === id && item.allowAutonomous === true)
 					.sort((a, b) => b.connectionVersion - a.connectionVersion)[0];
 				if (!account) throw new Error("The plan did not turn on");
-				// Each routine that waits now, read again: one the agent paused, concluded or removed stays as it
-				// is, and one set up while the card stood starts too.
-				for (const routine of (await plan.routines.list()).filter((entry) => waitsForPlan(entry, plan.memberId)))
-					await plan.routines.setEnabled(routine, account, true, crypto.randomUUID());
-			} else
+				// One the agent paused, concluded or removed meanwhile is not in the list read above.
+				for (const routine of waiting) await plan.routines.setEnabled(routine, account, true, crypto.randomUUID());
+			} else if (waiting.length)
 				this.#offerDone =
-					offer.routines.length === 1
+					waiting.length === 1
 						? t("Your ChatGPT plan now works while you're away. Ask the agent to set {title} up again.", {
-								title: offer.routines[0]!.title,
+								title: waiting[0]!.title,
 							})
-						: new Set(offer.routines.map((routine) => routine.staffAgentId)).size > 1
+						: new Set(waiting.map((routine) => routine.staffAgentId)).size > 1
 							? t(
 									"Your ChatGPT plan now works while you're away. Ask the agents to set those routines up again.",
 								)

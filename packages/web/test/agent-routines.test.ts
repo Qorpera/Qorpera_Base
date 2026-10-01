@@ -12,7 +12,8 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentRoutines } from "../src/app/views/agent-routines.ts";
 import type { Cloud } from "../src/cloud/client.ts";
-import { createWebRoutines, type WebRoutines } from "../src/cloud/routines.ts";
+import { createWebRoutines, type WebRoutine, type WebRoutines } from "../src/cloud/routines.ts";
+import { fmtTime } from "../src/ui/dom.ts";
 import { profileA, settle, staff } from "./fixtures.ts";
 
 const account = {
@@ -220,6 +221,47 @@ describe("agent routines section", () => {
 		expect(f.view.el.textContent).not.toContain("Other");
 		expect(f.view.el.textContent).not.toContain("Gone");
 	});
+	it("says when a routine started again because its member turned on work while away", async () => {
+		const resumed = {
+			...routine({ status: "active" }),
+			resumeReason: "plan_turned_on",
+			resumedAt: "2026-10-01T10:00:00.000Z",
+			resumedByUserId: "10000000-0000-4000-8000-000000000031",
+		} as WebRoutine;
+		for (const [items, name, said] of [
+			[[resumed], () => "Anna", "When Anna turned on “Work while you're away”"],
+			[[resumed], () => undefined, "When a member turned on “Work while you're away”"],
+			[[{ ...resumed, status: "paused" } as WebRoutine], () => "Anna", undefined],
+			[[routine({ status: "active" })], () => "Anna", undefined],
+		] as const) {
+			const stop = new AbortController();
+			const view = new AgentRoutines(
+				() => staff,
+				{
+					routines: {
+						list: vi.fn(async () => [...items]),
+						runs: vi.fn(async (): Promise<CloudRoutineOccurrence[]> => []),
+						save: vi.fn(async () => {}),
+						setEnabled: vi.fn(async () => {}),
+					},
+					accounts: async () => ({ connections: [account] }),
+					canManage: () => true,
+					memberName: name,
+				},
+				stop.signal,
+			);
+			document.body.append(view.el);
+			await settle();
+			const fact = [...view.el.querySelectorAll(".routine-card-fact")].find(
+				(item) => item.querySelector("dt")?.textContent === "Resumed",
+			);
+			if (said)
+				expect(fact?.querySelector("dd")?.textContent).toBe(`${said} · ${fmtTime("2026-10-01T10:00:00.000Z")}`);
+			else expect(fact).toBeUndefined();
+			stop.abort();
+			view.el.remove();
+		}
+	});
 	it("keeps why a routine is paused and whom it runs for, from the list's own answer", async () => {
 		const row = {
 			routine_id: "10000000-0000-4000-8000-000000000020",
@@ -249,6 +291,23 @@ describe("agent routines section", () => {
 				{ ...row, pause_reason: "needs_model_account", runs_for_user_id: member },
 				{
 					...row,
+					routine_id: "10000000-0000-4000-8000-000000000025",
+					status: "active",
+					runs_for_user_id: member,
+					resume_reason: "plan_turned_on",
+					resumed_at: "2026-10-01T10:00:00.000Z",
+					resumed_by_user_id: member,
+				},
+				{
+					...row,
+					routine_id: "10000000-0000-4000-8000-000000000026",
+					status: "active",
+					resume_reason: "plan_turned_on",
+					resumed_at: "soon",
+					resumed_by_user_id: member,
+				},
+				{
+					...row,
 					routine_id: "10000000-0000-4000-8000-000000000023",
 					pause_reason: "Needs an account!",
 					runs_for_user_id: "someone",
@@ -262,7 +321,25 @@ describe("agent routines section", () => {
 			new AbortController().signal,
 			() => {},
 		).list();
-		expect(listed.map((item) => [item.routineId, item.pauseReason, item.runsForUserId])).toEqual([
+		expect(listed.find((item) => item.routineId === "10000000-0000-4000-8000-000000000025")).toMatchObject({
+			resumeReason: "plan_turned_on",
+			resumedAt: "2026-10-01T10:00:00.000Z",
+			resumedByUserId: member,
+		});
+		// A resume with a field it cannot read is not shown at all.
+		expect(
+			listed.find((item) => item.routineId === "10000000-0000-4000-8000-000000000026")?.resumeReason,
+		).toBeUndefined();
+		expect(
+			listed
+				.filter(
+					(item) =>
+						!["10000000-0000-4000-8000-000000000025", "10000000-0000-4000-8000-000000000026"].includes(
+							item.routineId,
+						),
+				)
+				.map((item) => [item.routineId, item.pauseReason, item.runsForUserId]),
+		).toEqual([
 			[row.routine_id, "needs_model_account", member],
 			["10000000-0000-4000-8000-000000000023", undefined, undefined],
 			["10000000-0000-4000-8000-000000000024", undefined, undefined],

@@ -30,7 +30,15 @@ export interface WebRoutineDraft {
  * of the account when they save. */
 /** A routine with what the web reads beside the SDK's fields (migration 20260929970000): why a paused
  * routine waits, and the member its current version runs for. */
-export type WebRoutine = CloudRoutine & { pauseReason?: string; runsForUserId?: string };
+export type WebRoutine = CloudRoutine & {
+	pauseReason?: string;
+	runsForUserId?: string;
+	/** The current version is a resume (20260929985000): `plan_turned_on` when its member turned on work while
+	 * away for the ChatGPT plan that pays. */
+	resumeReason?: string;
+	resumedAt?: string;
+	resumedByUserId?: string;
+};
 
 export interface WebRoutines {
 	list(): Promise<WebRoutine[]>;
@@ -139,10 +147,21 @@ export function createWebRoutines(
 				);
 				const reason = row?.pause_reason;
 				const member = row?.runs_for_user_id;
+				const resumed = row?.resume_reason;
+				const resumedAt = row?.resumed_at;
+				const resumedBy = row?.resumed_by_user_id;
 				return {
 					...routine,
 					...(typeof reason === "string" && /^[a-z_]{1,64}$/.test(reason) ? { pauseReason: reason } : {}),
 					...(typeof member === "string" && UUID_PATTERN.test(member) ? { runsForUserId: member } : {}),
+					...(typeof resumed === "string" &&
+					/^[a-z_]{1,64}$/.test(resumed) &&
+					typeof resumedAt === "string" &&
+					Number.isFinite(Date.parse(resumedAt)) &&
+					typeof resumedBy === "string" &&
+					UUID_PATTERN.test(resumedBy)
+						? { resumeReason: resumed, resumedAt, resumedByUserId: resumedBy }
+						: {}),
 				};
 			});
 		},
