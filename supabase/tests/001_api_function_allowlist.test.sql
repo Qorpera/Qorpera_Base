@@ -244,6 +244,7 @@ insert into api_function_allowlist(signature, anon, authenticated, reason) value
 	('public.qorpera_member_picture_objects()', false, true, 'member: auth.uid() + membership/ownership'),
 	('public.qorpera_member_pictures(uuid[])', false, true, 'member: auth.uid() + membership/ownership'),
 	('public.qorpera_member_role(uuid)', true, true, 'member: auth.uid() + membership/ownership; anon only through the platform default'),
+	('public.qorpera_native_host_call(uuid,text,text,jsonb)', true, false, 'native host (G2): the runner job''s lease token is checked first, with no lock; only listed calls in that run''s scope'),
 	('public.qorpera_native_run_model_authority(uuid,uuid,text,uuid,text)', true, true, 'internal: runner broker: service_role or secret-broker session + runner session token + job lease token; anon only through the platform default, authenticated only through the platform default'),
 	('public.qorpera_open_company_founding(uuid,text)', false, true, 'member: auth.uid() + membership/ownership'),
 	('public.qorpera_open_runtime_office_screen(jsonb,uuid)', false, true, 'member: auth.uid() + membership/ownership'),
