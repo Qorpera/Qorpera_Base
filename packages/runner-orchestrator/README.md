@@ -214,6 +214,20 @@ has succeeded.
 bounded concurrent dispatcher (default 8, maximum 64). The service deliberately
 has no desktop fallback.
 
+`QORPERA_RUNNER_ORCHESTRATOR_WAKE=realtime` (off unless set) switches on push
+wake-ups. The service joins its private Supabase Realtime topic with the
+publishable key it already holds. The topic name is derived from the sha256 of
+its control token, which only the database keeps, and only the database
+publishes to it. While the channel is joined and the loop has been idle for
+30 s, it asks for work on a wake-up and every
+`QORPERA_RUNNER_ORCHESTRATOR_WAKE_BACKSTOP_MS` (default 5 s) instead of every
+poll interval. Wake-ups that bring a claim forward stay at least one poll
+interval apart. While the channel is not joined, the loop polls as without
+wake-ups. A backstop claim that finds work no wake-up announced makes it poll
+that way for ten minutes and is reported. The database side (migration
+`20260928319550`) broadcasts only while `qorpera_orchestrator_wake_settings.enabled`
+is on; switch it on before the nodes.
+
 The bootstrap orchestrator token is used only when the control-state file does
 not exist. The service persists a pending replacement before rotation, sends
 only its SHA-256 hash to the control plane, and can replay a lost rotation

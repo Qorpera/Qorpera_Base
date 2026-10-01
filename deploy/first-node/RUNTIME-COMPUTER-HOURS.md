@@ -577,7 +577,7 @@ Coordinator (nothing secret):
       it now asks which computer shows the agent every 12 s during any wake. With scale-out on, that
       check can move the panel to another computer with room, or let an owner add one, as opening
       the panel does.
-- Build step 6b part 3 (migration `20260929730000`, agents' machines, the machines an agent starts
+- Build step 6b part 3 (migration `20260928319730`, agents' machines, the machines an agent starts
   with `machine_start`, `20260928259050`):
   - the admit line (`qorpera_admit_executor_machines`) skips a company at zero in both of its queries,
     as it skips a paused one: its machines take no place among those a pass looks at, and no other
@@ -609,7 +609,7 @@ Coordinator (nothing secret):
       that was nearly idle too, and runs on the new hours until its idle delay (default one hour)
       puts it to sleep. The alternative, letting an idle task machine be stopped for good, would
       open its disk to the give-up and removal passes, against "disks kept".
-- Build step 6b part 4 (migration `20260929760000`, coding), behind coding's own switch,
+- Build step 6b part 4 (migration `20260928319760`, coding), behind coding's own switch,
   `qorpera_computer_hour_billing.coding_zero_rule_since` (null until switched on). A coding executor
   that does not know `COMPUTER_HOURS_EXHAUSTED` fails a turn on it, and production's executor was
   still v6 on 2026-10-01, so coding is switched on only once an executor with this change runs on

@@ -72,7 +72,7 @@ export type CloudCompanyPathRpc =
 	| "qorpera_manage_agent_worker"
 	| "qorpera_report_worker_result"
 	| "qorpera_describe_agent_open_work"
-	| "qorpera_record_runtime_observation"
+	| "qorpera_record_runtime_observation_batch"
 	| "qorpera_record_provider_usage_signal"
 	| "qorpera_begin_native_company_execution_v2"
 	| "qorpera_describe_company_run_context"

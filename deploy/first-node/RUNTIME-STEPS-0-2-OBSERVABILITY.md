@@ -63,6 +63,8 @@ Direct observation-table/sequence access is also revoked from API roles.
 | `qorpera_get_runtime_operational_run(run_id, limit)` | Linked canonical run/job/admission/assignment/compute/bundle and bounded diagnostic, receipt, revision, read, proposal and public-send sections. |
 | `qorpera_get_company_operational_commands(company_id, limit)` | Canonical human command status, actor/resource/version and exact applied-revision linkage without copying the command or file. |
 | `qorpera_purge_runtime_observations(limit)` | Bounded deletion of eligible optional diagnostics only; never authority, receipts, reads, revisions or public sends. |
+| `qorpera_record_runtime_observation_batch(run_id, observations)` | Migration `20260928319370`. Up to 50 events of one run in one call, each recorded, replayed or refused by the single-row function exactly as one call would be; one receipt or refusal (`22023`, `42501`, `23505`) per event, in order. The runtime sends only this; the single-row function stays for older runners. |
+| `qorpera_run_runtime_observation_retention()` | Migration `20260928319370`. The purge's rows only, 200 at a time, at most 25 batches and about two seconds a call, one call at a time. Run by pg_cron; service-only by hand. |
 
 Query and purge limits are 1–200, default 200. Sections identify truncation.
 Authorized operator tooling can invoke, for example, the existing RPC transport
@@ -87,16 +89,33 @@ null, not a guessed host name or capacity identity.
 
 ## Retention, failure and incomplete evidence
 
-- Cloud events are append-only. A service-only purge makes events eligible
-  after 30 days of **server ingestion time**, and only for terminal jobs. The
-  limit bounds each deletion batch; `moreEligible` signals further work. This
-  is an explicit operator maintenance action, not an installed purge schedule.
-  Active-job observations and canonical records are not pruned by it.
-- The native exporter has one outstanding publisher, at most 256 queued
-  records, a bounded request deadline and final drain. Failure, malformed or
-  mismatched acknowledgement, or a stalled request opens its private circuit.
-  It drops diagnostics without retrying the tool, changing authorization or
-  treating an uncertain effect as completed. There is no local spool/fallback.
+- Cloud events are append-only. Events become eligible for deletion after 30
+  days of **server ingestion time**, and only for terminal jobs. Since
+  `20260928319370` pg_cron runs `qorpera_run_runtime_observation_retention()`
+  every five minutes (job `qorpera-runtime-observations-retention`, up to 5,000
+  events a call), so the table keeps about 30 days. The migration schedules it
+  when pg_cron is installed; on a database without pg_cron, enable it and run
+  `select public.qorpera_schedule_runtime_observation_retention();` (it
+  replaces the job by name, so running it again is safe). Rollback:
+  `select cron.unschedule('qorpera-runtime-observations-retention');`, as the
+  role that owns the job (the one that applied the migration or ran the
+  helper). Running the helper again may re-activate a job an operator paused
+  with `cron.alter_job`. Check after each cut that the job exists:
+  `select jobname, schedule, command, active from cron.job where jobname =
+  'qorpera-runtime-observations-retention';`. The service-only purge remains
+  for manual use (`moreEligible` signals further
+  work). Active-job observations and canonical records are never pruned.
+- The native exporter gathers events for up to a second (at once for the live
+  writing phase, or when 50 wait) and sends up to 50 in one call, in order, one
+  call at a time, with at most 256 events queued. A failed, malformed,
+  mismatched or timed-out call is tried again with backoff (about 0.25, 0.5 and
+  1 s); a batch that fails four times is dropped, and the next one goes after
+  about 2 s. The batch function waits at most 1 s for a lock, so a retry never
+  waits for its own abandoned first attempt (PostgREST keeps running it) while
+  holding a pooled connection. Closing a run flushes for at most one second,
+  after its public reply. It never retries the tool, changes
+  authorization or treats an uncertain effect as completed. There is no local
+  spool/fallback.
 - SQL views explicitly identify absent diagnostics, missing start/finish or
   parent, clock-order conflicts, sender clock skew and truncated sections.
   Optional delivery is not claimed as a complete execution ledger. No failure

@@ -776,7 +776,7 @@ C1d (bytes):
 - `done` and `cancel` change only `status` (`setCompanyStateSettings`), and show the todo as read, released with the
   result. An `upsert` that is not saved shows the state and version read, and releases that read too. A todo file
   that does not parse is refused, for a change and for `todoKey`.
-- `list` reads the todo index (`qorpera_folder_agent_todos`, migration `20260929770000`, test 763), which the commit
+- `list` reads the todo index (`qorpera_folder_agent_todos`, migration `20260928319770`, test 763), which the commit
   updates in the same transaction as the files: one plain read, paged as today's list (32 a page, newest first, open
   and blocked by default, `state`, `includeClosed` and `search` as before, the cursor of the last todo shown). A page
   shows the start of each detail, as today, and is no folder read, so nothing is released. `todoKey` reads that one

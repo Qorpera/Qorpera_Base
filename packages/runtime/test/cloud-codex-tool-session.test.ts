@@ -95,9 +95,11 @@ function observationCollector() {
 	const rows: CloudRuntimeObservation[] = [];
 	const observability = new CloudRuntimeObservability({
 		assignmentId: randomUUID(),
-		publish: async (row) => {
-			rows.push(row);
+		publish: async (batch) => {
+			rows.push(...batch);
 		},
+		// These tests watch rows as they happen, not how they are gathered into calls.
+		batchDelayMs: 0,
 	});
 	return { rows, observability };
 }

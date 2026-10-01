@@ -285,21 +285,29 @@ where execution_scope ->> 'agentPairKey' = public.qorpera_agent_pair_key('648000
 set session_replication_role = origin;
 do $$
 declare v_two text; v_four text; c_cf constant uuid := '64800000-0000-4000-8000-0000000000c0';
-	c_ada constant uuid := '64800000-0000-4000-8000-0000000000a1'; v_pair uuid; v_try integer := 0;
+	c_ada constant uuid := '64800000-0000-4000-8000-0000000000a1'; c_pair constant uuid := '00000000-0000-4000-8000-000000000657';
 	v_ada_thread uuid; v_cf_thread uuid := current_setting('qorpera_test.cf_thread')::uuid;
 begin
 	select session_id into v_ada_thread from public.qorpera_company_rooms where id = current_setting('qorpera_test.ada_room')::uuid;
-	-- The first message's pair conversation, created and rolled back until its id sorts below both threads'.
-	loop
-		v_try := v_try + 1;
-		perform dblink_exec('fence_three', 'begin');
-		select x::uuid into v_pair from dblink('fence_three', format($q$select public.qorpera_agent_pair_session_internal(%L, %L, %L, %L, %L)::text$q$,
-			'64800000-0000-4000-8000-000000000010', '64800000-0000-4000-8000-000000000020', c_ada, c_cf,
-			'64800000-0000-4000-8000-000000000002')) as t(x text);
-		exit when v_pair::text < v_ada_thread::text and v_pair::text < v_cf_thread::text;
-		perform dblink_exec('fence_three', 'rollback');
-		if v_try > 200 then raise exception 'No pair id below both threads'; end if;
-	end loop;
+	-- The first message's pair conversation, being created: what qorpera_agent_pair_session_internal does (the pair's
+	-- advisory lock, then the conversation), with a fixed id that sorts below both threads' random ones. A drawn id
+	-- needed many tries when a thread's id sorted low.
+	if not (c_pair::text < v_ada_thread::text and c_pair::text < v_cf_thread::text) then
+		raise exception 'The pair conversation''s id must sort below both threads'''; end if;
+	perform dblink_exec('fence_three', 'begin');
+	perform * from dblink('fence_three', format($q$select pg_advisory_xact_lock(hashtext('qorpera_agent_pair:' || %L || ':'
+		|| public.qorpera_agent_pair_key(%L, %L)))::text$q$, '64800000-0000-4000-8000-000000000010', c_ada, c_cf)) as t(x text);
+	perform dblink_exec('fence_three', format($q$insert into public.qorpera_shared_sessions(id, profile_id, environment_id, title,
+		staff_agent_id, created_by_user_id, audience_kind, audience_user_id, execution_scope)
+		select %L, '64800000-0000-4000-8000-000000000010', '64800000-0000-4000-8000-000000000020',
+			least(a.display_name, b.display_name) || ' & ' || greatest(a.display_name, b.display_name), null,
+			'64800000-0000-4000-8000-000000000002', 'company', null,
+			jsonb_build_object('agentPair', jsonb_build_array(least(%L, %L), greatest(%L, %L)),
+				'agentPairKey', public.qorpera_agent_pair_key(%L, %L))
+		from public.qorpera_profile_staff a, public.qorpera_profile_staff b
+		where a.profile_id = '64800000-0000-4000-8000-000000000010' and a.staff_agent_id = %L
+			and b.profile_id = '64800000-0000-4000-8000-000000000010' and b.staff_agent_id = %L$q$,
+		c_pair, c_ada::text, c_cf::text, c_ada::text, c_cf::text, c_ada, c_cf, c_ada, c_cf));
 	-- Both threads held elsewhere (a send in flight).
 	perform dblink_exec('fence_two', 'begin');
 	perform * from dblink('fence_two', format('select 1 from public.qorpera_shared_sessions where id in (%L, %L) order by id for update',
@@ -315,6 +323,10 @@ begin
 	perform dblink_exec('fence_two', 'rollback');
 	v_two := pg_temp.outcome('fence_one'); v_four := pg_temp.outcome('fence_four');
 	if v_two <> 'ok' or v_four <> 'ok' then raise exception 'Two messages around a new pair conversation: % / %', v_two, v_four; end if;
+	-- The hand-made conversation is the one the function finds (a change of its shape would make this case test another).
+	if public.qorpera_agent_pair_session_internal('64800000-0000-4000-8000-000000000010', '64800000-0000-4000-8000-000000000020', c_ada,
+			c_cf, '64800000-0000-4000-8000-000000000002') <> c_pair then
+		raise exception 'The pair conversation must be the hand-made one'; end if;
 end $$;
 
 -- D. C2's creation shape: rank 0 and admission held, a wake insert never meets 55P03. A save rewriting Ada's agent.md
