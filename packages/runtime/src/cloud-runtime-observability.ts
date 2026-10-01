@@ -244,6 +244,11 @@ export function parseCloudRuntimeObservation(value: unknown): CloudRuntimeObserv
 	return { ...row } as unknown as CloudRuntimeObservation;
 }
 
+/** Rows per export call. The SQL batch function (20260929370000) accepts 1 to 50. */
+export const CLOUD_RUNTIME_OBSERVATION_BATCH_ROWS = 50;
+/** SQLSTATEs the single-row function refuses a row with: invalid, unavailable reference, changed replay. */
+const REFUSAL_CODES = ["22023", "42501", "23505"];
+
 /** An HTTP success alone does not confirm optional diagnostic ingestion. */
 export function assertCloudRuntimeObservationReceipt(
 	value: unknown,
@@ -274,6 +279,42 @@ export function assertCloudRuntimeObservationReceipt(
 		throw new CloudRuntimeDiagnosticError("invalid_response", "Runtime observation acknowledgement unavailable");
 }
 
+/** Each slot is that row's exact receipt or the database's refusal of that row alone.
+ * Returns how many rows were refused. */
+export function assertCloudRuntimeObservationBatchReceipt(
+	value: unknown,
+	runId: string,
+	observations: readonly CloudRuntimeObservation[],
+): number {
+	const row = value as Record<string, unknown>;
+	if (
+		!value ||
+		typeof value !== "object" ||
+		Array.isArray(value) ||
+		Object.keys(value).sort().join() !== "receipts,runId,schema" ||
+		row.schema !== "qorpera.runtime-observation-batch-receipt/v1" ||
+		row.runId !== runId ||
+		!Array.isArray(row.receipts) ||
+		row.receipts.length !== observations.length
+	)
+		throw new CloudRuntimeDiagnosticError("invalid_response", "Runtime observation acknowledgement unavailable");
+	let refused = 0;
+	for (const [index, receipt] of (row.receipts as unknown[]).entries()) {
+		const refusal = receipt as Record<string, unknown>;
+		if (
+			refusal &&
+			typeof refusal === "object" &&
+			!Array.isArray(refusal) &&
+			Object.keys(refusal).sort().join() === "code,schema" &&
+			refusal.schema === "qorpera.runtime-observation-refusal/v1" &&
+			REFUSAL_CODES.includes(refusal.code as string)
+		)
+			refused++;
+		else assertCloudRuntimeObservationReceipt(receipt, runId, observations[index]);
+	}
+	return refused;
+}
+
 /** Names an invocation by the registered tool, never by the model-supplied name. */
 export function cloudRuntimeToolOperation(
 	tool: { readonly name: string; readonly source: string } | undefined,
@@ -299,15 +340,30 @@ export interface CloudRuntimeObservationSpan {
 	finish(outcome: CloudRuntimeOutcome, details?: CloudRuntimeObservationDetails): void;
 }
 
+/** Sends one batch of up to CLOUD_RUNTIME_OBSERVATION_BATCH_ROWS rows, in order. Resolves
+ * once the database answered for every row: with how many rows it refused (a count), or
+ * with anything else when it refused none. Rejects when the batch should be tried again. */
 export type CloudRuntimeObservationPublisher = (
-	observation: CloudRuntimeObservation,
+	observations: readonly CloudRuntimeObservation[],
 	signal: AbortSignal,
 ) => Promise<unknown>;
 
+/** Rows waiting or in flight; beyond this new rows are dropped (and counted). */
+const QUEUE_ROWS = 256;
+/** Attempts per batch. A batch that fails them all is dropped, so it never holds up the rest. */
+const BATCH_ATTEMPTS = 4;
+const RETRY_BASE_MS = 250;
+const RETRY_MAX_MS = 2000;
+/** Rows behind a live, member-visible phase (writing, 20260920011000) go at once, with what gathered. */
+const LIVE_OPERATIONS: readonly CloudRuntimeOperation[] = ["message_composition"];
+
 /** Optional cloud diagnostics, never an authority/receipt or a prerequisite to work.
- * One bounded exporter, a bounded queue and a circuit that stops on a stalled
- * exporter prevent an outage from accumulating promises or delaying tool calls.
- * No automatic retry: canonical effects and diagnostic delivery are independent.
+ * Rows gather for up to a second (until 50 wait, or at once for a live writing
+ * phase), then one export call at a time sends up to 50 queued rows in order. A failed or timed-out
+ * call is tried again with backoff (the database acknowledges an exact replay instead of
+ * recording it twice), and a batch that fails every attempt is dropped. A bounded queue
+ * drops rows beyond it, and close() flushes for a bounded time, so an outage never
+ * accumulates promises, delays tool calls or changes a product result.
  */
 export class CloudRuntimeObservability {
 	readonly #assignmentId: string | null;
@@ -315,11 +371,17 @@ export class CloudRuntimeObservability {
 	readonly #clock: () => number;
 	readonly #monotonic: () => number;
 	readonly #timeoutMs: number;
+	readonly #flushMs: number;
+	readonly #batchDelayMs: number;
 	readonly #queue: CloudRuntimeObservation[] = [];
 	readonly #stop = new AbortController();
-	#pumping = false;
+	#draining: Promise<void> | undefined;
+	/** Ends the current gathering wait early: a full batch is waiting, or close() flushes. */
+	#gathered: (() => void) | undefined;
+	#closing: Promise<void> | undefined;
 	#closed = false;
-	#failed = false;
+	/** The last export call failed; cleared by the next success. */
+	#unavailable = false;
 	#dropped = 0;
 	#sent = 0;
 
@@ -328,18 +390,26 @@ export class CloudRuntimeObservability {
 		publish: CloudRuntimeObservationPublisher;
 		clock?: () => number;
 		monotonicClock?: () => number;
+		/** One export call's deadline. */
 		timeoutMs?: number;
+		/** How long close() keeps exporting what is queued. */
+		flushMs?: number;
+		/** How long rows gather before a call that is not full; 0 sends at once. */
+		batchDelayMs?: number;
 	}) {
 		this.#assignmentId = options.assignmentId;
 		this.#publish = options.publish;
 		this.#clock = options.clock ?? Date.now;
 		this.#monotonic = options.monotonicClock ?? (() => performance.now());
-		this.#timeoutMs = options.timeoutMs ?? 750;
+		this.#timeoutMs = options.timeoutMs ?? 2000;
+		this.#flushMs = options.flushMs ?? 1000;
+		this.#batchDelayMs = options.batchDelayMs ?? 1000;
 		if (
 			(options.assignmentId !== null && !UUID.test(options.assignmentId)) ||
-			!Number.isInteger(this.#timeoutMs) ||
-			this.#timeoutMs < 1 ||
-			this.#timeoutMs > 1000
+			[this.#timeoutMs, this.#flushMs].some((value) => !Number.isInteger(value) || value < 1 || value > 10_000) ||
+			!Number.isInteger(this.#batchDelayMs) ||
+			this.#batchDelayMs < 0 ||
+			this.#batchDelayMs > 10_000
 		)
 			throw new Error("Invalid runtime observation configuration");
 	}
@@ -348,8 +418,8 @@ export class CloudRuntimeObservability {
 		return {
 			sent: this.#sent,
 			dropped: this.#dropped,
-			pending: this.#queue.length + Number(this.#pumping),
-			status: this.#failed ? "unavailable" : this.#closed ? "closed" : "active",
+			pending: this.#queue.length,
+			status: this.#unavailable ? "unavailable" : this.#closed ? "closed" : "active",
 		};
 	}
 
@@ -455,7 +525,7 @@ export class CloudRuntimeObservability {
 	}
 
 	#emit(row: CloudRuntimeObservation): void {
-		if (this.#closed || this.#failed || this.#queue.length >= 256) {
+		if (this.#closed || this.#queue.length >= QUEUE_ROWS) {
 			this.#dropped++;
 			return;
 		}
@@ -465,47 +535,124 @@ export class CloudRuntimeObservability {
 			this.#dropped++;
 			return;
 		}
-		if (!this.#pumping) void this.#drain();
+		if (this.#queue.length >= CLOUD_RUNTIME_OBSERVATION_BATCH_ROWS || LIVE_OPERATIONS.includes(row.operation))
+			this.#gathered?.();
+		this.#pump();
 	}
 
+	#pump(): void {
+		if (this.#draining || this.#stop.signal.aborted) return;
+		this.#draining = this.#drain()
+			.catch(() => undefined)
+			.finally(() => {
+				this.#draining = undefined;
+				// A row queued while the last drain was returning still gets its own.
+				if (this.#queue.length) this.#pump();
+			});
+	}
+
+	/** Rows stay queued until acknowledged, so a retry resends them in the same order. */
 	async #drain(): Promise<void> {
-		this.#pumping = true;
-		try {
-			while (!this.#closed && !this.#failed && this.#queue.length) {
-				const row = this.#queue.shift()!;
-				const deadline = new AbortController();
-				const signal = AbortSignal.any([this.#stop.signal, deadline.signal]);
-				let timer: ReturnType<typeof setTimeout> | undefined;
-				const aborted = new Promise<never>((_, reject) => {
-					const stop = () => reject(new Error("Runtime observation export stopped"));
-					signal.addEventListener("abort", stop, { once: true });
-					timer = setTimeout(() => deadline.abort(), this.#timeoutMs);
-					timer.unref?.();
-				});
-				try {
-					await Promise.race([Promise.resolve().then(() => this.#publish(row, signal)), aborted]);
-					this.#sent++;
-				} catch {
-					this.#failed = true;
-					this.#dropped += 1 + this.#queue.length;
-					this.#queue.length = 0;
-				} finally {
-					clearTimeout(timer);
-					deadline.abort();
-				}
+		let attempts = 0;
+		while (this.#queue.length && !this.#stop.signal.aborted) {
+			if (attempts === 0) await this.#gather();
+			const batch = this.#queue.slice(0, CLOUD_RUNTIME_OBSERVATION_BATCH_ROWS);
+			const refused = await this.#send(batch);
+			if (refused !== null) {
+				this.#queue.splice(0, batch.length);
+				this.#sent += batch.length - refused;
+				this.#dropped += refused;
+				this.#unavailable = false;
+				attempts = 0;
+				continue;
 			}
-		} finally {
-			this.#pumping = false;
+			this.#unavailable = true;
+			if (++attempts >= BATCH_ATTEMPTS) {
+				this.#queue.splice(0, batch.length);
+				this.#dropped += batch.length;
+			}
+			await this.#backoff(Math.min(RETRY_MAX_MS, RETRY_BASE_MS * 2 ** (attempts - 1)));
+			if (attempts >= BATCH_ATTEMPTS) attempts = 0;
 		}
 	}
 
-	/** A bounded final drain; diagnostic failure cannot change the product result. */
-	async close(): Promise<void> {
-		const end = performance.now() + 250;
-		while (this.#pumping && performance.now() < end) await new Promise<void>((resolve) => setTimeout(resolve, 5));
-		this.#closed = true;
-		this.#dropped += this.#queue.length;
-		this.#queue.length = 0;
-		this.#stop.abort();
+	/** Rows the database refused, or null when the batch should be tried again. */
+	async #send(batch: readonly CloudRuntimeObservation[]): Promise<number | null> {
+		const deadline = new AbortController();
+		const signal = AbortSignal.any([this.#stop.signal, deadline.signal]);
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const aborted = new Promise<never>((_, reject) => {
+			const stop = () => reject(new Error("Runtime observation export stopped"));
+			signal.addEventListener("abort", stop, { once: true });
+			timer = setTimeout(() => deadline.abort(), this.#timeoutMs);
+			timer.unref?.();
+		});
+		try {
+			const refused = await Promise.race([Promise.resolve().then(() => this.#publish(batch, signal)), aborted]);
+			return typeof refused === "number" && Number.isSafeInteger(refused) && refused >= 0
+				? Math.min(refused, batch.length)
+				: 0;
+		} catch {
+			return null;
+		} finally {
+			clearTimeout(timer);
+			deadline.abort();
+		}
+	}
+
+	/** Lets rows gather for `batchDelayMs`, unless a full batch or a live row waits, or close() flushes. */
+	#gather(): Promise<void> {
+		if (
+			this.#closed ||
+			!this.#batchDelayMs ||
+			this.#queue.length >= CLOUD_RUNTIME_OBSERVATION_BATCH_ROWS ||
+			this.#queue.some((row) => LIVE_OPERATIONS.includes(row.operation))
+		)
+			return Promise.resolve();
+		return new Promise<void>((resolve) => {
+			const done = (): void => {
+				clearTimeout(timer);
+				this.#gathered = undefined;
+				resolve();
+			};
+			const timer = setTimeout(done, this.#batchDelayMs);
+			timer.unref?.();
+			this.#gathered = done;
+		});
+	}
+
+	/** Waits about `ms` (jittered so runs spread out), or until the exporter stops. */
+	#backoff(ms: number): Promise<void> {
+		return new Promise<void>((resolve) => {
+			const done = (): void => {
+				clearTimeout(timer);
+				this.#stop.signal.removeEventListener("abort", done);
+				resolve();
+			};
+			const timer = setTimeout(done, Math.round(ms * (0.75 + Math.random() / 2)));
+			timer.unref?.();
+			this.#stop.signal.addEventListener("abort", done, { once: true });
+			if (this.#stop.signal.aborted) done();
+		});
+	}
+
+	/** Accepts no more rows and keeps exporting the queued ones for at most `flushMs`;
+	 * whatever is still unsent then is dropped. Diagnostic failure cannot change the
+	 * product result. */
+	close(): Promise<void> {
+		this.#closing ??= (async () => {
+			this.#closed = true;
+			this.#gathered?.();
+			const deadline = setTimeout(() => this.#stop.abort(), this.#flushMs);
+			try {
+				while (this.#draining) await this.#draining;
+			} finally {
+				clearTimeout(deadline);
+				this.#stop.abort();
+				this.#dropped += this.#queue.length;
+				this.#queue.length = 0;
+			}
+		})();
+		return this.#closing;
 	}
 }

@@ -186,8 +186,8 @@ it("does not start native execution or build tools without cloud admission", asy
 	const rows: CloudRuntimeObservation[] = [];
 	const observability = new CloudRuntimeObservability({
 		assignmentId: f.binding.assignmentId,
-		publish: async (row) => {
-			rows.push(row);
+		publish: async (batch) => {
+			rows.push(...batch);
 		},
 	});
 	f.control.describeToolAuthority.mockRejectedValueOnce(new Error("PRIVATE_AUTHORITY_FAILURE"));

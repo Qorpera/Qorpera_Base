@@ -745,6 +745,49 @@ C1d (bytes):
 - after C2's review recorder, `hire_agent` (one `new_folder` unit with `agent.md` and the first todo),
   `create_group_chat` (`group.md`) and `manage_routine` (a routine file, after `qorpera_prepare_routine_login`).
 
+**How a thin writer saves** (W0, #583; W1):
+- The runtime gives a run whose context names its agent's folder (`folder`) a `CloudCompanyFolderClient` over the
+  object gateway's folder route (`HttpCloudCompanyFolderBytes`, on the native credential). A `folder-v2` agent without
+  an indexed folder gets no `folder`, keeps the legacy tools, and they refuse.
+- A writer first checks that its run can complete a folder receipt (`completesFolderCommits`), then reads the file
+  and refuses what can never be saved. Every such check still passes once the call's own change is saved, so a replay
+  of the call reaches its receipt and returns the stored result.
+- Such a refusal is a `CloudToolRefusal`, which the tool boundary shows the model as `REFUSED: <reason>`: nothing
+  started and no key is bound. Any other error inside a tool stays an unknown outcome, since an effect may have begun.
+- It then saves under one receipt per tool call (`requiresCompanyRevision`), whose digest binds the model's request,
+  not the version read. The commit carries `receiptId` and the `expectedVersion` read. Whatever the units' outcomes,
+  the commit satisfies the receipt, which is completed with it (`qorpera_folder_complete_run_receipt`).
+- A `conflict` (the file changed since it was read) comes back to the model, which calls again under a new operation
+  key; a redo inside the tool would need a second receipt whose digest depends on a re-read.
+- A result that shows content read from a file releases those reads with it, one release per tool call. A writer
+  releases inside its effect, before the receipt completes: a release that fails after a saved commit leaves W0's
+  fence (the call is not completed, and the run's later operations wait), which keeps a shown read from going
+  unreleased.
+- Known limit: the checks before the receipt read the file as it is now. If the file changed after a call's change
+  was saved (closed, or deleted), a replay of that call is refused before it reaches its receipt, instead of getting
+  the stored result. The change is still saved exactly once; only the replay's answer is wrong. A later fix can look
+  up the completed receipt for that operation key first.
+
+**Built (W1): `manage_todo`** (`packages/runtime/src/cloud-folder-todos.ts`).
+- The todo is `agents/<handle>/todos/<todoKey>.md`; the todoKey is the file name (`^[a-z0-9]+(?:-[a-z0-9]+)*$`, at most
+  64 bytes), and a wider key is refused with that rule.
+- `upsert` writes the whole file (`writeTodoFile`), keeping an existing todo's id and requester; a new todo's
+  requester is the run's, and the todos folder is made first when missing. A closed todo is not opened again.
+- `done` and `cancel` change only `status` (`setCompanyStateSettings`), and show the todo as read, released with the
+  result. An `upsert` that is not saved shows the state and version read, and releases that read too. A todo file
+  that does not parse is refused, for a change and for `todoKey`.
+- `list` reads the todo index (`qorpera_folder_agent_todos`, migration `20260929770000`, test 763), which the commit
+  updates in the same transaction as the files: one plain read, paged as today's list (32 a page, newest first, open
+  and blocked by default, `state`, `includeClosed` and `search` as before, the cursor of the last todo shown). A page
+  shows the start of each detail, as today, and is no folder read, so nothing is released. `todoKey` reads that one
+  todo's file and shows its whole detail, released with the result. A list shows no workers: `manage_worker` refuses
+  `folder-v2` until F2-5b.
+- The read takes the run's plain read check (no lock; a paused company refuses it), a company run that is not a
+  worker, and read authority on the agent's todos folder. Each todo is listed only if the run may read its file (the
+  core judges a file by its most specific resource, so one todo can be narrowed on its own); the count and the cursor
+  follow the same rule. A deleted todo file is not listed.
+- The index over the files is the coordinator's ruling of 2026-10-01; F1 may overrule it in a follow-up.
+
 Until the mount's writes are accepted (F3), these tools become thin writers of these files:
 `hire_agent`, `create_group_chat`, `organize_sidebar`, `manage_todo`, `manage_routine` and
 `decide_routine`. They use the canonical writers here, or `setCompanyStateSettings` for a

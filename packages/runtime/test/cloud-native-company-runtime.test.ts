@@ -67,6 +67,7 @@ async function fixture(
 	httpPathControl = false,
 	presence?: CloudCompanyPathPresenceFactory,
 	machines = false,
+	folderBytes = false,
 ) {
 	const f = nativeCompanyContextFixture();
 	if (mode === "company-silent" || mode === "company-worker") {
@@ -267,18 +268,24 @@ async function fixture(
 				if (machinesAnswer instanceof Error) throw machinesAnswer;
 				return machinesAnswer;
 			}
-			if (method === "qorpera_record_runtime_observation") {
+			if (method === "qorpera_record_runtime_observation_batch") {
 				expect(args.p_run_id).toBe(f.binding.runId);
-				const observation = parseCloudRuntimeObservation(args.p_observation);
-				expect(observation.assignmentId).toBe(f.binding.assignmentId);
-				observations.push(observation);
+				const batch = (args.p_observations as unknown[]).map((row) => parseCloudRuntimeObservation(row));
+				expect(batch.length).toBeGreaterThan(0);
+				expect(batch.length).toBeLessThanOrEqual(50);
+				for (const observation of batch) expect(observation.assignmentId).toBe(f.binding.assignmentId);
+				observations.push(...batch);
 				return {
-					schema: "qorpera.runtime-observation-receipt/v1",
+					schema: "qorpera.runtime-observation-batch-receipt/v1",
 					runId: f.binding.runId,
-					attemptId: observation.attemptId,
-					phase: observation.phase,
-					ingestedAt: new Date().toISOString(),
-					replayed: false,
+					receipts: batch.map((observation) => ({
+						schema: "qorpera.runtime-observation-receipt/v1",
+						runId: f.binding.runId,
+						attemptId: observation.attemptId,
+						phase: observation.phase,
+						ingestedAt: new Date().toISOString(),
+						replayed: false,
+					})),
 				};
 			}
 			expect(args.p_binding).toEqual(f.binding);
@@ -569,6 +576,19 @@ async function fixture(
 		timeoutMs: 10_000,
 		...(secretBroker ? { secretBroker } : {}),
 		...(mode === "company-office" ? { computerSession: officeSession } : {}),
+		// Folder bytes only build the folder client here; this suite never saves a file.
+		...(folderBytes
+			? {
+					folderBytes: () => ({
+						put: async () => {
+							throw new Error("No folder bytes in this suite");
+						},
+						get: async () => {
+							throw new Error("No folder bytes in this suite");
+						},
+					}),
+				}
+			: {}),
 		// A machines gateway only offers the tools here; this suite never runs a command.
 		...(machines
 			? {
@@ -1352,6 +1372,21 @@ it("gives a company conversation's run the machine tools with notify, and no wai
 	expect(tools.find((tool) => tool.name === "machine_read")?.inputSchema.properties).not.toHaveProperty("waitSeconds");
 });
 
+it.each([
+	["a snapshot-v1 run", false, true, false],
+	["a folder-v2 run on a node without folder bytes", true, false, false],
+	["a folder-v2 run", true, true, true],
+] as const)("gives manage_todo the todo files' writer only for %s", async (_name, folder, bytes, files) => {
+	const f = await fixture("company-runtime", false, undefined, false, bytes);
+	if (folder) f.context.folder = { agent: "nora", coworkers: {} };
+	await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+	const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
+	const tools = evidence.threadParameters.dynamicTools[0].tools as { name: string; description: string }[];
+	const todo = tools.find((tool) => tool.name === "manage_todo")?.description ?? "";
+	expect(todo.includes("Each todo is a file in your folder")).toBe(files);
+	expect(todo.includes("Each todo is also a document in the shared Company File")).toBe(!files);
+});
+
 async function machineToolNames(f: Awaited<ReturnType<typeof fixture>>): Promise<string[]> {
 	await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
 	const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
@@ -1709,7 +1744,7 @@ it.each(["failed", "stalled", "malformed-receipt", "wrong-run-receipt"])(
 		const f = await fixture();
 		const original = f.pathCall.getMockImplementation()!;
 		f.pathCall.mockImplementation(async (method, args, signal) => {
-			if (method === "qorpera_record_runtime_observation") {
+			if (method === "qorpera_record_runtime_observation_batch") {
 				if (mode === "stalled") return new Promise<never>(() => undefined);
 				if (mode === "malformed-receipt") return null;
 				if (mode === "wrong-run-receipt")
@@ -1718,11 +1753,13 @@ it.each(["failed", "stalled", "malformed-receipt", "wrong-run-receipt"])(
 			}
 			return original(method, args, signal);
 		});
+		const started = Date.now();
 		const result = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
 		expect(result.delivery).toEqual({ messageCount: 2, finalMessageId: f.deliveries.get("final")?.messageId });
-		expect(f.pathCall.mock.calls.filter(([method]) => method === "qorpera_record_runtime_observation")).toHaveLength(
-			1,
-		);
+		// The export is tried again with backoff, one call at a time, and the close bounds it.
+		const exports = f.pathCall.mock.calls.filter(([method]) => method === "qorpera_record_runtime_observation_batch");
+		expect(exports.length).toBeGreaterThanOrEqual(1);
+		expect(exports.length).toBeLessThanOrEqual(Math.ceil((Date.now() - started) / 150) + 2);
 		expect(
 			f.pathCall.mock.calls.filter(([method]) => method === "qorpera_begin_native_company_execution_v2"),
 		).toHaveLength(1);
