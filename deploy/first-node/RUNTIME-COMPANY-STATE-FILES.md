@@ -745,6 +745,97 @@ C1d (bytes):
 - after C2's review recorder, `hire_agent` (one `new_folder` unit with `agent.md` and the first todo),
   `create_group_chat` (`group.md`) and `manage_routine` (a routine file, after `qorpera_prepare_routine_login`).
 
+**How a thin writer saves** (W0, #583; W1):
+- The runtime gives a run whose context names its agent's folder (`folder`) a `CloudCompanyFolderClient` over the
+  object gateway's folder route (`HttpCloudCompanyFolderBytes`, on the native credential). A `folder-v2` agent without
+  an indexed folder gets no `folder`, keeps the legacy tools, and they refuse.
+- A writer first checks that its run can complete a folder receipt (`completesFolderCommits`), then reads the file
+  and refuses what can never be saved. Every such check still passes once the call's own change is saved, so a replay
+  of the call reaches its receipt and returns the stored result.
+- Such a refusal is a `CloudToolRefusal`, which the tool boundary shows the model as `REFUSED: <reason>`: nothing
+  started and no key is bound. Any other error inside a tool stays an unknown outcome, since an effect may have begun.
+- It then saves under one receipt per tool call (`requiresCompanyRevision`), whose digest binds the model's request,
+  not the version read. The commit carries `receiptId` and the `expectedVersion` read. Whatever the units' outcomes,
+  the commit satisfies the receipt, which is completed with it (`qorpera_folder_complete_run_receipt`).
+- A `conflict` (the file changed since it was read) comes back to the model, which calls again under a new operation
+  key; a redo inside the tool would need a second receipt whose digest depends on a re-read.
+- A result that shows content read from a file releases those reads with it, one release per tool call. A writer
+  releases inside its effect, before the receipt completes: a release that fails after a saved commit leaves W0's
+  fence (the call is not completed, and the run's later operations wait), which keeps a shown read from going
+  unreleased.
+- Known limit: the checks before the receipt read the file as it is now. If the file changed after a call's change
+  was saved (closed, or deleted), a replay of that call is refused before it reaches its receipt, instead of getting
+  the stored result. The change is still saved exactly once; only the replay's answer is wrong. A later fix can look
+  up the completed receipt for that operation key first.
+
+**Built (W1): `manage_todo`** (`packages/runtime/src/cloud-folder-todos.ts`).
+- The todo is `agents/<handle>/todos/<todoKey>.md`; the todoKey is the file name (`^[a-z0-9]+(?:-[a-z0-9]+)*$`, at most
+  64 bytes), and a wider key is refused with that rule.
+- `upsert` writes the whole file (`writeTodoFile`), keeping an existing todo's id and requester; a new todo's
+  requester is the run's, and the todos folder is made first when missing. A closed todo is not opened again.
+- `done` and `cancel` change only `status` (`setCompanyStateSettings`), and show the todo as read, released with the
+  result. An `upsert` that is not saved shows the state and version read, and releases that read too. A todo file
+  that does not parse is refused, for a change and for `todoKey`.
+- `list` reads the todo index (`qorpera_folder_agent_todos`, migration `20260928319770`, test 763), which the commit
+  updates in the same transaction as the files: one plain read, paged as today's list (32 a page, newest first, open
+  and blocked by default, `state`, `includeClosed` and `search` as before, the cursor of the last todo shown). A page
+  shows the start of each detail, as today, and is no folder read, so nothing is released. `todoKey` reads that one
+  todo's file and shows its whole detail, released with the result. A list shows no workers: `manage_worker` refuses
+  `folder-v2` until F2-5b.
+- The read takes the run's plain read check (no lock; a paused company refuses it), a company run that is not a
+  worker, and read authority on the agent's todos folder. Each todo is listed only if the run may read its file (the
+  core judges a file by its most specific resource, so one todo can be narrowed on its own); the count and the cursor
+  follow the same rule. A deleted todo file is not listed.
+- The index over the files is the coordinator's ruling of 2026-10-01; F1 may overrule it in a follow-up.
+
+**Built (W2): `organize_sidebar`** (`packages/runtime/src/cloud-folder-sidebar.ts`).
+- It reads and rewrites `agents/sections.md`. A section is named by its name, ignoring case; the file has no section
+  ids. Lines before the first section (the company's own notes) are kept as they are; the sections are written back in
+  the seeded form, each line an id and the words after it only for reading (a line keeps its words, indented or not;
+  an agent placed for the first time gets its name). A name ending in `#` takes the parser's closing ` #`, and what is
+  written must read back as the sections intended, or the call is refused before any effect.
+- As today it is idempotent by content: a change already in the sections (their names in order, each with its ids in
+  order) saves nothing and says so, however the file is laid out. `create_section` of an existing name is that
+  section, a retried rename finds the new name, deleting a section leaves its agents Unassigned and deleting one
+  already gone changes nothing, `move_agent` into the agent's own section changes nothing, and `move_agent` with
+  `section: null` takes an agent out of every section.
+- A change saves under a receipt keyed by the tool call (the tool has no operation key), with the version read; a
+  `conflict` or a refusal by F2-2's hook (the Co-Founder, worded as today; an id that is not an agent or an open group
+  chat) comes back as `refused`, with nothing changed, showing the sections as read.
+- `list` and every result show the sections with names from the run context (the agent and its listed coworkers),
+  then the unlisted as Unassigned (`unassignedTruncated` when the context's coworker list was cut). The Co-Founder is
+  left out when it is the run's own agent; the context does not say which coworker is. Each result releases the read
+  of the file it shows.
+- A section reference ignores case and runs of spaces, as today. Differences from today: sections have no count cap
+  beyond the file's 64 KiB (a change past it is refused before any effect), and an open group chat can be placed as
+  well as an agent (§2).
+
+**Built (W3): `decide_routine`** (`packages/runtime/src/cloud-folder-routine-decision.ts`).
+- The run woken by its dynamic routine's `once` occurrence writes the decision into the routine's own file,
+  `agents/<handle>/routines/<routineKey>.md`. `next` sets a new `at` (canonical, and, if asked, `effort` and `reply`)
+  with `setCompanyStateSettings`; `conclude` sets `status: concluded` and the `conclusion`, its line breaks and tabs
+  made spaces (the file's conclusion is one line).
+- Refused before the receipt, binding no key (`REFUSED: …`): a title or instructions that differ from the file's
+  (delegation, which the folder core cannot record until C2; equal ones change nothing), and a next run at or after
+  the routine's `ends` ("The routine ends at …. Choose an earlier time or conclude it.", as today). The folder-v2
+  description says the run leaves intent and title out, and that a refused decision is redone under a new key.
+- Settled, as today, when the routine already moved on: its file is gone, it is no longer active, or it is no longer
+  a `once` routine; and when the commit calls a plain decision delegation (`denied`, `review_required`), which by
+  F2-6's review class means nothing is owed any more. A settled answer makes the decision.
+- The save goes under the tool call's receipt with the version read. A saved decision is made (the run owes nothing
+  more). A conflict or another refusal leaves it owed, and its reason says to decide again with a new operationKey.
+- A `folder-v2` run on a node without folder bytes keeps the legacy tool, which refuses `folder-v2`: such a dynamic
+  routine run cannot decide, and its final message is refused. Nodes serve folder bytes before any company is
+  `folder-v2` (C1c-3).
+- The routine is the one the run was woken for: the file at its key must carry its id (F2-6 keys the routine row by
+  the file's id). When it is missing there, or another routine took the name, the agent's routines folder is listed
+  and the file carrying the id is found (files that don't read as routines are passed over). Only when no file holds
+  this routine is it settled. The wake is not read again: that read also claims the run's held coworker messages.
+  The receipt's target stays the woken path, so a retry after a second rename is the same call. A settled answer
+  that shows the routine as read releases that read. Known limit: a rename of the agent's own folder mid-run is not
+  followed (the run context names the folder once); the decision is then answered settled while the kernel may still
+  owe it.
+
 Until the mount's writes are accepted (F3), these tools become thin writers of these files:
 `hire_agent`, `create_group_chat`, `organize_sidebar`, `manage_todo`, `manage_routine` and
 `decide_routine`. They use the canonical writers here, or `setCompanyStateSettings` for a

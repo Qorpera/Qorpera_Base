@@ -3919,12 +3919,60 @@ complete section 16.3's listener triggers and section 11.5's broker. Design:
    fills it, after checking the mail provider's signed webhook with the
    platform's signing secret, and the public intake never takes a delivery
    for it. Each received message is a verified delivery of type
-   `mail.received`, bounded like any delivery, and wakes routines through the
-   event trigger (item 4). Its sender and content are outside content
-   (item 5); the provider's SPF, DKIM and DMARC results travel with it.
-   Sending as a mailbox follows (M2b).
+   `mail.received`, bounded like any delivery, and wakes routines through
+   the event trigger (item 4). Its sender and content are outside content
+   (item 5); the provider's SPF, DKIM and DMARC results travel with it. An
+   agent sends from a live mailbox of its company as itself (M2b): plain
+   text from "<agent> at <company>" at the mailbox's address, always ending
+   with a line saying an AI agent wrote and sent it. Every email passes the
+   automatic review as an outside action first, and only the platform's
+   sender, which alone holds the provider key, sends it. A reply to a
+   received email joins its thread and says it is an automatic response; an
+   email sent automatically is never answered, and a company never emails
+   its own mailboxes. No email goes out as if from Qorpera: a sender name or
+   mailbox that reads as Qorpera is refused (founder decision, 1 October
+   2026). Sending has its own platform switch, built off, and each company
+   an hourly and a daily limit on recipients that operators set.
 
 Section 21, item 33, is the event-wake acceptance item.
+
+### 2026-09-29 amendment: one call before a model request
+
+Proposed 29 September 2026 (stack audit, fix 9); pending founder approval. It
+changes how the checks before each model request are carried out. Every
+database check still runs, and the seven around the context view keep their
+order. In a run with screenshots, the screenshot check now comes just before
+them instead of after the first two. The host checks the authority the call
+returns (the same run, still in time) once per request, instead of after each
+of its three reads. Section 4's rule that authorization is checked again
+immediately before an effect, and section 9.1's context views, are unchanged.
+
+1. **One call, every check.** Before a model request the host used to make
+   seven database calls for these checks, in four rounds, each in its own
+   transaction: the run's authority and its read set (twice), the context
+   view, then both once more. `qorpera_fence_native_context` makes the same
+   seven calls, in the same order, in one transaction. It calls those
+   functions rather than copying them, so each check and lock is exactly
+   theirs. Nothing is released to the model until the call has returned. If a
+   check inside the call fails, the whole call is undone, the view included.
+   The host then checks what the call returned (the same run, still in time);
+   if that fails, the run stops with nothing released, and the view stays
+   recorded.
+2. **The read set stays whole.** The database keeps every path sent in a
+   check that succeeded and every path the run reads or lists, and never
+   removes one during a run. It keeps one entry per name, where names that
+   differ only in letter case or in how a letter is written count as one.
+   Every check covers all of them. The host sends a path until the database
+   reports it kept under that exact name, instead of its whole list every
+   time. A second spelling of a kept path (for example in other letter case)
+   is never kept under its own name, so it is sent every time, as before.
+3. **The same budget.** The one call may take at most 3.5 s, inside the result
+   fence's 4 s for the whole request. A timeout, like any failure, stops the
+   run with nothing released, as a lapsed fence did before. The database may
+   still finish the call after the host has given up, so a view can be
+   recorded for a request that never left.
+4. **Until the database has the call** the host makes the separate calls, all
+   of them.
 
 ## 20. Enforcement matrix
 

@@ -8,6 +8,15 @@ export class CloudCompanyPathRpcRefusal extends CloudRuntimeDiagnosticError {
 	}
 }
 
+/** A complete PostgREST PGRST202 response: the database has no such function yet
+ * (a runtime ahead of its migration). Nothing ran. Branded only for the one-call context
+ * fence, which falls back to the separate calls it replaces. */
+export class CloudCompanyPathRpcMissing extends CloudRuntimeDiagnosticError {
+	constructor() {
+		super("unavailable_tool", "Company File authority unavailable");
+	}
+}
+
 /** Only the Company File gateway promotes a transaction refusal at its initial
  * admission, before it stages objects, registers presence or attempts a commit.
  * Never infer this brand from an HTTP status, diagnostic category or raw text. */

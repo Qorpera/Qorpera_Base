@@ -25,6 +25,7 @@ const FUNCTION_TESTS = [
 	"supabase/functions/runner-orchestrator/runner-orchestrator.test.ts",
 	"supabase/functions/event-intake/event-intake.test.ts",
 	"supabase/functions/mail-intake/mail-intake.test.ts",
+	"supabase/functions/mail-outbox/mail-outbox.test.ts",
 ];
 const WEB_RELEASE_CONFIG = JSON.stringify({
 	projectUrl: "https://project.example.invalid",

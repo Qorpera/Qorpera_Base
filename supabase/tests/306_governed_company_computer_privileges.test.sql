@@ -33,7 +33,9 @@ begin
 	-- login and saving or giving back one renewal; a member's sign-in to the vault adds reading
 	-- and completing that sign-in, and the vault's usage reads add reading, recording and
 	-- completing an account refresh. Company delete D6 adds claiming and completing the broker's
-	-- queued connector token revocations.
+	-- queued connector token revocations. ChatGPT plan logins (20260928329830) add the v2 sign-in
+	-- read, completing a plan sign-in, saving a plan renewal, and taking and finishing a plan login's
+	-- revocation.
 	select array_agg(function.oid::regprocedure::text order by function.oid::regprocedure::text collate "C") into v_functions
 	from pg_proc as function
 	join pg_namespace as namespace on namespace.oid = function.pronamespace
@@ -46,7 +48,9 @@ begin
 		'qorpera_broker_principal_companies(uuid,text)',
 		'qorpera_claim_connector_token_revocations(uuid,text,integer)',
 		'qorpera_claim_email_draft_action(uuid,text,uuid,text)',
+		'qorpera_commit_chatgpt_plan_renewal(uuid,text,uuid,uuid,bigint,text,text,text,timestamp with time zone,timestamp with time zone,timestamp with time zone)',
 		'qorpera_commit_model_login_renewal(uuid,text,uuid,uuid,bigint,text,text,text,timestamp with time zone,timestamp with time zone)',
+		'qorpera_complete_chatgpt_plan_sign_in(uuid,text,uuid,text,uuid,text,text,text,timestamp with time zone,timestamp with time zone,text,text,timestamp with time zone)',
 		'qorpera_complete_cloud_secret_capture(uuid,text,uuid,text,text,text)',
 		'qorpera_complete_cloud_secret_capture(uuid,text,uuid,text,text,text,text)',
 		'qorpera_complete_connector_token_revocation(uuid,text,uuid,bigint,text,text)',
@@ -55,6 +59,8 @@ begin
 		'qorpera_describe_cloud_secret_capture(uuid,text,uuid,text)',
 		'qorpera_describe_model_login_account_refresh(uuid,text,uuid,text)',
 		'qorpera_describe_model_login_sign_in(uuid,text,uuid,text)',
+		'qorpera_describe_model_login_sign_in_v2(uuid,text,uuid,text)',
+		'qorpera_finish_chatgpt_plan_revocation(uuid,text,uuid,uuid,bigint)',
 		'qorpera_finish_email_draft_action(uuid,text,uuid,text,jsonb)',
 		'qorpera_issue_model_login(uuid,text,jsonb,bigint,boolean)',
 		'qorpera_model_login_broker_company(uuid,text)',
@@ -64,6 +70,7 @@ begin
 		'qorpera_register_company_with_broker_principal(uuid,text,uuid,text)',
 		'qorpera_release_model_login_renewal(uuid,text,uuid,uuid,bigint,boolean,text)',
 		'qorpera_switch_off_replaced_node_logins(uuid,text)',
+		'qorpera_take_chatgpt_plan_revocation(uuid,text)',
 		'qorpera_take_idle_model_login_renewal(uuid,text)'
 	]::text[] then
 		raise exception 'Broker inherited a function outside its fixed custody calls';

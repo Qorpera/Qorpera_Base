@@ -96,6 +96,26 @@ export type CloudCompanyFolderEntry =
 
 export type CloudCompanyFolderFileEntry = Extract<CloudCompanyFolderEntry, { kind: "file" }>;
 
+/** A todo as the todo index lists it (`agentTodos`): the start of its detail, and its file. */
+export interface CloudCompanyFolderTodo {
+	readonly todoKey: string;
+	readonly title: string;
+	readonly state: "open" | "blocked" | "done" | "cancelled";
+	readonly detail: string;
+	readonly detailTruncated?: true;
+	readonly path: string;
+	readonly version: string;
+	readonly updatedAt: string;
+	readonly cursor: string;
+}
+
+export interface CloudCompanyFolderTodoPage {
+	readonly todos: readonly CloudCompanyFolderTodo[];
+	/** How many more match after this page; `nextCursor` (the last todo's cursor) continues it. */
+	readonly moreTodos: number;
+	readonly nextCursor: string | null;
+}
+
 export interface CloudCompanyFolderReadResult {
 	/** The folder's clock when the read was answered. */
 	readonly asOfSeq: number;
@@ -115,7 +135,8 @@ export interface CloudCompanyFolderPage {
  * `get` returns against the entry. `put` must return the same reference for the same bytes and media type: a retried
  * commit sends the same units, and SQL refuses an operation key reused for a different change set (22023). */
 export interface CloudCompanyFolderBytes {
-	put(bytes: Uint8Array, mediaType: string, signal: AbortSignal): Promise<CloudFileReference>;
+	/** Stages one file; its version-2 manifest carries the media type and the executable bit (C1D §2). */
+	put(bytes: Uint8Array, mediaType: string, executable: boolean, signal: AbortSignal): Promise<CloudFileReference>;
 	get(file: CloudCompanyFolderFile, signal: AbortSignal): Promise<Uint8Array>;
 }
 
@@ -199,13 +220,15 @@ export interface CloudCompanyFolderReleaseResult {
  * - `read_revoked`: something the model saw may no longer be seen (the recheck's 42501); the change or release was
  *   not recorded, and the caller reports it as denied;
  * - `contended`: the folder kept changing under a retried commit or release; nothing was recorded;
+ * - `full`: the company's storage allowance has no room for new bytes (checked before they are written); nothing was
+ *   stored;
  * - `unknown`: a try of a commit or release timed out, lost its connection or was cancelled while it was sent, and
  *   no later try gave an answer, so it may have been recorded. The caller retries with the same operation key (or
  *   release id), the same units and the same receipt, whose replay returns the stored outcome.
  * Other SQL errors (22023, 25000) and PostgREST's answers about the request (`PGRST1nn`-`PGRST3nn`) are defects and
  * stay a `CloudCompanyFolderRpcError`.
  */
-export type CloudCompanyFolderFailure = "stopped" | "unavailable" | "read_revoked" | "contended" | "unknown";
+export type CloudCompanyFolderFailure = "stopped" | "unavailable" | "read_revoked" | "contended" | "full" | "unknown";
 
 export class CloudCompanyFolderError extends CloudRuntimeDiagnosticError {
 	readonly failure: CloudCompanyFolderFailure;
@@ -216,7 +239,9 @@ export class CloudCompanyFolderError extends CloudRuntimeDiagnosticError {
 				? "stale_version"
 				: failure === "unknown"
 					? "transport_unavailable"
-					: "authority_unavailable",
+					: failure === "full"
+						? "budget_exhausted"
+						: "authority_unavailable",
 			failure === "stopped"
 				? "Company work is stopped"
 				: failure === "read_revoked"
@@ -225,13 +250,16 @@ export class CloudCompanyFolderError extends CloudRuntimeDiagnosticError {
 						? "Company folder kept changing"
 						: failure === "unknown"
 							? "Company folder outcome is unknown"
-							: "Company folder is unavailable",
+							: failure === "full"
+								? "Company storage is full"
+								: "Company folder is unavailable",
 		);
 		this.failure = failure;
 	}
 }
 
-function failure(error: unknown): unknown {
+/** What a folder call's error means to its caller (see {@link CloudCompanyFolderFailure}); other errors unchanged. */
+export function cloudCompanyFolderFailure(error: unknown): unknown {
 	if (!(error instanceof CloudCompanyFolderRpcError)) return error;
 	if (error.code === "55000") return new CloudCompanyFolderError("stopped");
 	if (error.code === "42501")
@@ -267,7 +295,8 @@ function uuid(value: unknown): string {
 	return value;
 }
 
-function sha256(bytes: Uint8Array): string {
+/** A byte string's SHA-256, as lower-case hex. */
+export function sha256(bytes: Uint8Array): string {
 	return createHash("sha256").update(bytes).digest("hex");
 }
 
@@ -369,6 +398,17 @@ function unitResult(value: unknown, index: number, sent: CloudCompanyFolderUnit)
 
 function mediaTypeFor(path: string): string {
 	return path.toLowerCase().endsWith(".md") ? "text/markdown" : "text/plain";
+}
+
+/** A run as the folder core's actor, with its ids in the lower case SQL checks. */
+export function cloudCompanyFolderRunActor(binding: CloudNativeToolBinding): CloudCompanyFolderRunActor {
+	return Object.freeze({
+		kind: "run",
+		runId: binding.runId.toLowerCase(),
+		jobId: binding.jobId.toLowerCase(),
+		runnerId: binding.runnerId.toLowerCase(),
+		assignmentId: binding.assignmentId.toLowerCase(),
+	});
 }
 
 /** The entry to release for a read: its path, version and receipt, with the content hash of a file. */
@@ -505,14 +545,7 @@ export class CloudCompanyFolderClient {
 		this.#identity = Object.freeze({ ...options.identity });
 		this.#control = options.control;
 		this.#bytes = options.bytes;
-		// The run actor's ids as SQL checks them: lower case.
-		this.#actor = Object.freeze({
-			kind: "run",
-			runId: this.#binding.runId.toLowerCase(),
-			jobId: this.#binding.jobId.toLowerCase(),
-			runnerId: this.#binding.runnerId.toLowerCase(),
-			assignmentId: this.#binding.assignmentId.toLowerCase(),
-		});
+		this.#actor = cloudCompanyFolderRunActor(this.#binding);
 	}
 
 	/** The actor every call sends. */
@@ -536,7 +569,7 @@ export class CloudCompanyFolderClient {
 		try {
 			return await this.#call(method, args, signal);
 		} catch (error) {
-			throw failure(error);
+			throw cloudCompanyFolderFailure(error);
 		}
 	}
 
@@ -566,7 +599,7 @@ export class CloudCompanyFolderClient {
 					!(error instanceof CloudCompanyFolderRpcError) &&
 					(error.category === "timeout" || error.category === "transport_unavailable");
 				if (!lost && !(error instanceof CloudCompanyFolderRpcError && retryable.has(error.code)))
-					throw failure(error);
+					throw cloudCompanyFolderFailure(error);
 				uncertain ||= lost;
 				if (attempt === ATTEMPTS) throw new CloudCompanyFolderError(uncertain ? "unknown" : "contended");
 				// A cancel during the pause ends the next try before it is sent, as a cancel (cloudToolRequest).
@@ -589,6 +622,55 @@ export class CloudCompanyFolderClient {
 			return { asOfSeq: counter(input.asOfSeq), entry: null };
 		}
 		return { asOfSeq: counter(input.asOfSeq), entry: entry(input.entry) };
+	}
+
+	/** A page of the run agent's own todos from the todo index, which the commit updates with the files (thin writers
+	 * W1, `qorpera_folder_agent_todos`, 20260929770000): newest first, 32 at most, each with its cursor. */
+	async agentTodos(
+		request: { includeClosed?: boolean; state?: string; search?: string; cursor?: string },
+		signal: AbortSignal,
+	): Promise<CloudCompanyFolderTodoPage> {
+		const input = record(await this.#once("qorpera_folder_agent_todos", { p_request: request }, signal), [
+			"schema",
+			"todos",
+			"moreTodos",
+			"nextCursor",
+		]);
+		if (input.schema !== "qorpera.folder-agent-todos/v1" || !Array.isArray(input.todos) || input.todos.length > 32)
+			invalid();
+		const todos = input.todos.map((value) => {
+			const todo = record(
+				value,
+				["todoKey", "title", "state", "detail", "path", "version", "updatedAt", "cursor"],
+				["detailTruncated"],
+			);
+			if (
+				typeof todo.todoKey !== "string" ||
+				typeof todo.title !== "string" ||
+				!["open", "blocked", "done", "cancelled"].includes(todo.state as string) ||
+				typeof todo.detail !== "string" ||
+				typeof todo.path !== "string" ||
+				typeof todo.updatedAt !== "string" ||
+				(todo.detailTruncated !== undefined && todo.detailTruncated !== true)
+			)
+				invalid();
+			return {
+				todoKey: todo.todoKey,
+				title: todo.title,
+				state: todo.state as CloudCompanyFolderTodo["state"],
+				detail: todo.detail,
+				...(todo.detailTruncated ? { detailTruncated: true as const } : {}),
+				path: todo.path,
+				version: uuid(todo.version),
+				updatedAt: todo.updatedAt,
+				cursor: uuid(todo.cursor),
+			};
+		});
+		const moreTodos = counter(input.moreTodos);
+		const nextCursor = input.nextCursor === null ? null : uuid(input.nextCursor);
+		if (moreTodos > 0 !== (nextCursor !== null) || (nextCursor !== null && nextCursor !== todos.at(-1)?.cursor))
+			invalid();
+		return { todos, moreTodos, nextCursor };
 	}
 
 	/** A file's text, checked against its entry, or null when nothing is at the path. A folder, a file larger than
@@ -678,16 +760,18 @@ export class CloudCompanyFolderClient {
 		}
 	}
 
-	/** Stages one file's bytes once per commit and returns its reference, checked against the bytes. */
+	/** Stages one file's bytes once per commit (per content, media type and bit) and returns its reference, checked
+	 * against the bytes. */
 	async #stage(
 		file: PlannedFile,
 		staged: Map<string, CloudFileReference>,
 		signal: AbortSignal,
 	): Promise<CloudCompanyFolderFile> {
 		const hash = sha256(file.bytes);
-		let reference = staged.get(`${hash}:${file.mediaType}`);
+		const key = `${hash}:${file.mediaType}:${file.executable}`;
+		let reference = staged.get(key);
 		if (!reference) {
-			reference = await this.#bytes.put(file.bytes, file.mediaType, signal);
+			reference = await this.#bytes.put(file.bytes, file.mediaType, file.executable, signal);
 			if (
 				!SHA.test(reference.manifestSha256) ||
 				reference.fileSha256 !== hash ||
@@ -695,7 +779,7 @@ export class CloudCompanyFolderClient {
 				reference.mediaType !== file.mediaType
 			)
 				throw new CloudRuntimeDiagnosticError("invalid_response", "Company folder bytes were stored differently");
-			staged.set(`${hash}:${file.mediaType}`, reference);
+			staged.set(key, reference);
 		}
 		return {
 			manifestSha256: reference.manifestSha256,

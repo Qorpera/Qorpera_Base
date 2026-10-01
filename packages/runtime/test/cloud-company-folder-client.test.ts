@@ -294,6 +294,66 @@ describe("reads and listings", () => {
 		);
 		await expect(partial.client.list("", { limit: 2 }, signal())).resolves.toMatchObject({ next: "b" });
 	});
+
+	it("pages the run's own todos from the todo index, closed", async () => {
+		const todo = (todoKey: string, extra: Record<string, unknown> = {}) => ({
+			todoKey,
+			title: `Todo ${todoKey}`,
+			state: "open",
+			detail: "Call first.",
+			path: `agents/nora/todos/${todoKey}.md`,
+			version: randomUUID(),
+			updatedAt: "2026-10-01T10:00:00Z",
+			cursor: randomUUID(),
+			...extra,
+		});
+		const todos = [todo("b", { detailTruncated: true }), todo("a")];
+		const answers: unknown[] = [];
+		const { client, calls } = fixture(() => answers.shift());
+		answers.push({ schema: "qorpera.folder-agent-todos/v1", todos, moreTodos: 3, nextCursor: todos[1]?.cursor });
+		await expect(client.agentTodos({ state: "open", search: "call" }, signal())).resolves.toEqual({
+			todos,
+			moreTodos: 3,
+			nextCursor: todos[1]?.cursor,
+		});
+		expect(calls).toMatchObject([
+			{ method: "qorpera_folder_agent_todos", args: { p_request: { state: "open", search: "call" } } },
+		]);
+		for (const answer of [
+			// The cursor continues from the page's last todo, and only when more follow.
+			{ schema: "qorpera.folder-agent-todos/v1", todos, moreTodos: 3, nextCursor: todos[0]?.cursor },
+			{ schema: "qorpera.folder-agent-todos/v1", todos, moreTodos: 0, nextCursor: todos[1]?.cursor },
+			{ schema: "qorpera.folder-agent-todos/v1", todos, moreTodos: 3, nextCursor: null },
+			{
+				schema: "qorpera.folder-agent-todos/v1",
+				todos: Array.from({ length: 33 }, (_, i) => todo(`t${i}`)),
+				moreTodos: 0,
+				nextCursor: null,
+			},
+			{
+				schema: "qorpera.folder-agent-todos/v1",
+				todos: [todo("a", { state: "waiting" })],
+				moreTodos: 0,
+				nextCursor: null,
+			},
+			{
+				schema: "qorpera.folder-agent-todos/v1",
+				todos: [todo("a", { detailTruncated: false })],
+				moreTodos: 0,
+				nextCursor: null,
+			},
+			{
+				schema: "qorpera.folder-agent-todos/v1",
+				todos: [todo("a", { owner: "x" })],
+				moreTodos: 0,
+				nextCursor: null,
+			},
+			{ schema: "qorpera.folder-list/v1", todos: [], moreTodos: 0, nextCursor: null },
+		]) {
+			answers.push(answer);
+			await expect(client.agentTodos({}, signal())).rejects.toThrow("Company folder response is invalid");
+		}
+	});
 });
 
 describe("commits", () => {
@@ -602,10 +662,10 @@ describe("commits", () => {
 			{},
 			signal(),
 		);
-		expect(vi.mocked(bytes.put).mock.calls.map(([, mediaType]) => mediaType)).toEqual([
-			"text/plain",
-			"text/markdown",
-			"application/octet-stream",
+		expect(vi.mocked(bytes.put).mock.calls.map(([, mediaType, executable]) => [mediaType, executable])).toEqual([
+			["text/plain", false],
+			["text/markdown", false],
+			["application/octet-stream", true],
 		]);
 		const files = (calls[0]!.args.p_units as { file: CloudCompanyFolderFile }[]).map((unit) => unit.file);
 		expect(files.map((file) => [file.mediaType, file.executable])).toEqual([

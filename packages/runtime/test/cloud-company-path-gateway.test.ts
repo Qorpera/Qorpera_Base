@@ -21,10 +21,13 @@ import {
 	CloudNativeCompanyPresence,
 } from "@qorpera/runtime/cloud-company-path-presence";
 import {
+	CloudCompanyPathRpcMissing,
 	CloudCompanyPathRpcParentMissing,
 	CloudCompanyPathRpcPrecondition,
 	CloudCompanyPathRpcRefusal,
 } from "@qorpera/runtime/cloud-company-path-refusal";
+import type { CloudNativeFenceRequest } from "@qorpera/runtime/cloud-native-result-fence";
+import { CLOUD_NATIVE_TOOL_AUTHORITY_SCHEMA } from "@qorpera/runtime/cloud-native-tool-authority";
 import { CloudNativeToolBoundary, cloudToolJsonText } from "@qorpera/runtime/cloud-native-tool-boundary";
 import { CloudRuntimeObservability, type CloudRuntimeObservation } from "@qorpera/runtime/cloud-runtime-observability";
 import type { SupabaseClient } from "@supabase/supabase-js";
@@ -423,8 +426,8 @@ describe("cloud Company File path gateway", () => {
 			const rows: CloudRuntimeObservation[] = [];
 			const observability = new CloudRuntimeObservability({
 				assignmentId: null,
-				publish: async (row) => {
-					rows.push(row);
+				publish: async (batch) => {
+					rows.push(...batch);
 				},
 			});
 			const boundary = new CloudNativeToolBoundary({
@@ -587,8 +590,8 @@ describe("cloud Company File path gateway", () => {
 		const rows: CloudRuntimeObservation[] = [];
 		const observability = new CloudRuntimeObservability({
 			assignmentId: null,
-			publish: async (row) => {
-				rows.push(row);
+			publish: async (batch) => {
+				rows.push(...batch);
 			},
 		});
 		const boundary = formationBoundary(db, observability);
@@ -1074,6 +1077,174 @@ describe("cloud Company File path gateway", () => {
 		);
 		expect(description("company_delete")).not.toContain("COMPANY_FILE_PARENT_MISSING");
 	});
+	/** The one call as the database answers it: its read set keeps one row per path key (letter
+	 * case aside), and it reports the sent paths it holds under exactly that name. */
+	function keptFence(f: ReturnType<typeof fixture>) {
+		const authority = { schema: CLOUD_NATIVE_TOOL_AUTHORITY_SCHEMA, validForMs: 30_000, identity: f.identity };
+		const kept = new Set<string>();
+		const fence = vi.fn(async (args: Record<string, unknown>) => {
+			const paths = args.p_paths as string[];
+			for (const path of paths)
+				if (![...kept].some((row) => row.toLowerCase() === path.toLowerCase())) kept.add(path);
+			return {
+				schema: "qorpera.native-context-fence/v1",
+				authority,
+				receipt: await f.defaultCall("qorpera_record_native_context_view", args),
+				kept: paths.filter((path) => kept.has(path)),
+			};
+		});
+		f.overrides.set("qorpera_fence_native_context", fence);
+		const frame = (requestId: string): CloudNativeFenceRequest => ({
+			schema: "qorpera.native-result-fence/v1",
+			requestId,
+			threadId: "thread-1",
+			turnId: "turn-1",
+			purpose: "turn",
+			outputs: [],
+		});
+		const sent = () =>
+			f.call.mock.calls
+				.filter(
+					([method]) =>
+						method === "qorpera_assert_company_path_reads" || method === "qorpera_fence_native_context",
+				)
+				.map(([method, args]) => [method === "qorpera_fence_native_context" ? "fence" : "check", args.p_paths]);
+		return { authority, fence, frame, sent };
+	}
+
+	it("sends each context path until the one call reports it kept under that exact name", async () => {
+		const f = fixture();
+		await f.seed("a.md", "A");
+		await f.seed("b.md", "B");
+		await f.seed("c.md", "C");
+		const { fence, frame, sent } = keptFence(f);
+		await f.gateway.read("a.md", 0, 64, f.signal);
+		await f.gateway.read("b.md", 0, 64, f.signal);
+		// A separate check reports nothing kept, so it confirms nothing.
+		await f.gateway.assertReadableContext(f.signal);
+		await f.gateway.assertReadableContext(f.signal);
+		await f.gateway.fenceContextView(frame("request-1"), [], f.signal);
+		await f.gateway.read("c.md", 0, 64, f.signal);
+		await f.gateway.assertReadableContext(f.signal);
+		// A call that fails (or times out) confirmed nothing: its paths go again.
+		f.overrides.set("qorpera_fence_native_context", async () => {
+			throw new Error("PRIVATE_TIMEOUT");
+		});
+		await expect(f.gateway.fenceContextView(frame("request-2"), [], f.signal)).rejects.toThrow();
+		f.overrides.set("qorpera_fence_native_context", fence);
+		await f.gateway.fenceContextView(frame("request-3"), [], f.signal);
+		await f.gateway.fenceContextView(frame("request-4"), [], f.signal);
+		// A path read again after it was kept is not sent again.
+		await f.gateway.read("a.md", 0, 64, f.signal);
+		await f.gateway.assertReadableContext(f.signal);
+		expect(sent()).toEqual([
+			["check", ["a.md", "b.md"]],
+			["check", ["a.md", "b.md"]],
+			["fence", ["a.md", "b.md"]],
+			["check", ["c.md"]],
+			["fence", ["c.md"]],
+			["fence", ["c.md"]],
+			["fence", []],
+			["check", []],
+		]);
+		// A kept path the host did not send is not an answer to this call.
+		await f.gateway.read("b.md", 0, 64, f.signal);
+		f.overrides.set("qorpera_fence_native_context", async (args) => ({ ...(await fence(args)), kept: ["z.md"] }));
+		await expect(f.gateway.fenceContextView(frame("request-5"), [], f.signal)).rejects.toThrow(
+			"Native context provenance was not confirmed",
+		);
+	});
+
+	it("keeps sending a second spelling of a kept path, as the whole list did (review 551)", async () => {
+		// The model looks up Later.md and later.md: the database keeps one row for the pair, under
+		// Later.md. When the file later appears as Later.md, only a check sent later.md refuses
+		// (a second spelling of an existing file), as it did when the host sent its whole list.
+		const f = fixture();
+		await f.seed("Later.md", "A");
+		await f.seed("later.md", "B");
+		const { frame, sent } = keptFence(f);
+		await f.gateway.read("Later.md", 0, 64, f.signal);
+		await f.gateway.read("later.md", 0, 64, f.signal);
+		await f.gateway.fenceContextView(frame("request-1"), [], f.signal);
+		await f.gateway.fenceContextView(frame("request-2"), [], f.signal);
+		await f.gateway.assertReadableContext(f.signal);
+		f.overrides.set("qorpera_fence_native_context", async (args) => {
+			if ((args.p_paths as string[]).includes("later.md")) throw new CloudCompanyPathRpcRefusal();
+			throw new Error("A second spelling was not sent");
+		});
+		await expect(f.gateway.fenceContextView(frame("request-3"), [], f.signal)).rejects.toBeInstanceOf(
+			CloudCompanyPathRpcRefusal,
+		);
+		expect(sent()).toEqual([
+			["fence", ["Later.md", "later.md"]],
+			["fence", ["later.md"]],
+			["check", ["later.md"]],
+			["fence", ["later.md"]],
+		]);
+	});
+
+	it("fences a model request in one call and falls back only when the database lacks it", async () => {
+		const f = fixture();
+		await f.seed("a.md", "A");
+		const authority = { schema: CLOUD_NATIVE_TOOL_AUTHORITY_SCHEMA, validForMs: 30_000, identity: f.identity };
+		const fence = vi.fn(async (args: Record<string, unknown>) => ({
+			schema: "qorpera.native-context-fence/v1",
+			authority,
+			receipt: await f.defaultCall("qorpera_record_native_context_view", args),
+			kept: args.p_paths,
+		}));
+		f.overrides.set("qorpera_fence_native_context", fence);
+		const frame = (requestId: string): CloudNativeFenceRequest => ({
+			schema: "qorpera.native-result-fence/v1",
+			requestId,
+			threadId: "thread-1",
+			turnId: "turn-1",
+			purpose: "turn",
+			outputs: [],
+		});
+		await f.gateway.read("a.md", 0, 64, f.signal);
+		await expect(f.gateway.fenceContextView(frame("request-1"), [], f.signal)).resolves.toEqual(authority);
+		await expect(f.gateway.fenceContextView(frame("request-2"), [], f.signal)).resolves.toEqual(authority);
+		expect(
+			fence.mock.calls.map(([args]) => [args.p_paths, (args.p_view as { requestId: string }).requestId]),
+		).toEqual([
+			[["a.md"], "request-1"],
+			[[], "request-2"],
+		]);
+		expect(fence.mock.calls[0][0]).toMatchObject({
+			p_binding: f.binding,
+			p_environment_id: f.identity.environmentId,
+		});
+		// A receipt for another request is not a recorded view: its paths stay unconfirmed.
+		await f.gateway.read("b.md", 0, 64, f.signal).catch(() => undefined);
+		f.overrides.set("qorpera_fence_native_context", async (args) => ({
+			...(await fence(args)),
+			receipt: await f.defaultCall("qorpera_record_native_context_view", {
+				...args,
+				p_view: { ...(args.p_view as Record<string, unknown>), requestId: "another-request" },
+			}),
+		}));
+		await expect(f.gateway.fenceContextView(frame("request-3"), [], f.signal)).rejects.toThrow(
+			"Native context provenance was not confirmed",
+		);
+		expect(fence.mock.calls.at(-1)?.[0].p_paths).toEqual(["b.md"]);
+		// Without the function (PostgREST PGRST202) nothing ran: undefined, and it is not asked again.
+		const missing = vi.fn(async () => {
+			throw new CloudCompanyPathRpcMissing();
+		});
+		f.overrides.set("qorpera_fence_native_context", missing);
+		await expect(f.gateway.fenceContextView(frame("request-4"), [], f.signal)).resolves.toBeUndefined();
+		await expect(f.gateway.fenceContextView(frame("request-5"), [], f.signal)).resolves.toBeUndefined();
+		expect(missing).toHaveBeenCalledOnce();
+		// The separate calls still check the path the failed fence did not confirm.
+		await f.gateway.assertReadableContext(f.signal);
+		expect(f.call.mock.calls.at(-1)).toEqual([
+			"qorpera_assert_company_path_reads",
+			expect.objectContaining({ p_paths: ["b.md"] }),
+			expect.any(AbortSignal),
+		]);
+	});
+
 	it("exposes only closed path operations with cloud-derived identity", async () => {
 		const f = fixture();
 		expect(f.gateway.tools().map((tool) => tool.name)).toEqual([
@@ -1487,8 +1658,8 @@ describe("cloud Company File path gateway", () => {
 			const rows: CloudRuntimeObservation[] = [];
 			const observability = new CloudRuntimeObservability({
 				assignmentId: null,
-				publish: async (row) => {
-					rows.push(row);
+				publish: async (batch) => {
+					rows.push(...batch);
 				},
 			});
 			const f = fixture(observability);
