@@ -68,6 +68,10 @@ export interface WebNativeSubscription {
 	): Promise<{ bindingId: string; version: number }>;
 	/** The member's own choice for their ChatGPT plan: work while they are away, or not. */
 	setWorkWhileAway?(connectionId: string, on: boolean, signal?: AbortSignal): Promise<void>;
+	/** Records that the member was shown the first-routine card (once per member and company). */
+	recordRoutineOffer?(connectionId: string, signal?: AbortSignal): Promise<string>;
+	/** Whether the company may use ChatGPT plan logins now (both switches on). */
+	chatGptPlanAvailable?(signal?: AbortSignal): Promise<boolean>;
 	revokeConnection(
 		input: Omit<RevokeNativeProviderConnectionInput, "profileId">,
 		signal?: AbortSignal,
@@ -217,12 +221,22 @@ export function createWebNativeSubscription(
 	};
 	const client = (signal?: AbortSignal, sessionId?: string) =>
 		new NativeSubscriptionControlPlane({ rpc: (method, args) => rpc(method, args, signal, sessionId) });
-	const consent = async (connectionId: string, allow: boolean): Promise<number> => {
-		const value = (await cloud.rpc("qorpera_consent_provider_connection_autonomous", {
-			p_profile_id: profileId,
-			p_connection_id: connectionId,
-			p_allow_autonomous: allow,
-		})) as { connection_id?: unknown; version?: unknown; allow_autonomous?: unknown } | null;
+	/** A Codex login's consent, or (`plan`) a ChatGPT plan's through its member's own switch, which the
+	 * kernel requires for a plan (20260929980000). */
+	const consent = async (connectionId: string, allow: boolean, plan = false): Promise<number> => {
+		const value = (
+			plan
+				? await cloud.rpc("qorpera_set_chatgpt_plan_work_while_away", {
+						p_profile_id: profileId,
+						p_connection_id: connectionId,
+						p_on: allow,
+					})
+				: await cloud.rpc("qorpera_consent_provider_connection_autonomous", {
+						p_profile_id: profileId,
+						p_connection_id: connectionId,
+						p_allow_autonomous: allow,
+					})
+		) as { connection_id?: unknown; version?: unknown; allow_autonomous?: unknown } | null;
 		if (
 			value?.connection_id !== connectionId ||
 			value.allow_autonomous !== allow ||
@@ -600,7 +614,7 @@ export function createWebNativeSubscription(
 		},
 		setWorkWhileAway: async (connectionId, on, signal) => {
 			signal?.throwIfAborted();
-			const version = await consent(connectionId, on);
+			const version = await consent(connectionId, on, true);
 			// The new version is bound at once: turned on, for work while away; turned off, for the
 			// member's own messages only (they never wait for a later read).
 			await client(signal).createMemberSponsor({
@@ -609,6 +623,30 @@ export function createWebNativeSubscription(
 				allowAutonomous: on,
 				profileId,
 			});
+		},
+		chatGptPlanAvailable: async (signal) => {
+			signal?.throwIfAborted();
+			try {
+				return (await cloud.rpc("qorpera_chatgpt_plan_available", { p_profile_id: profileId })) === true;
+			} catch (error) {
+				// A deployment without plan logins has no such function: they are off.
+				if (error instanceof CloudRpcError && error.missing) return false;
+				throw error;
+			}
+		},
+		recordRoutineOffer: async (connectionId, signal) => {
+			signal?.throwIfAborted();
+			const value = (await cloud.rpc("qorpera_record_chatgpt_plan_routine_offer", {
+				p_profile_id: profileId,
+				p_connection_id: connectionId,
+			})) as { connection_id?: unknown; shown_at?: unknown } | null;
+			if (
+				value?.connection_id !== connectionId ||
+				typeof value.shown_at !== "string" ||
+				!Number.isFinite(Date.parse(value.shown_at))
+			)
+				throw new Error("Invalid cloud response");
+			return value.shown_at;
 		},
 		revokeConnection: (input, signal) => client(signal).revokeConnection({ ...input, profileId }),
 	};

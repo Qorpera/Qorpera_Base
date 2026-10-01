@@ -176,6 +176,27 @@ export const CONVERSATION: Record<string, string> = {
 
 	// Company notices above the composer (app/views/execution-notices.ts)
 	"Company updates": "Virksomhedsopdateringer",
+	"{title} can run while you're away.": "{title} kan køre, mens du er væk.",
+	"{count} routines can run while you're away.": "{count} rutiner kan køre, mens du er væk.",
+	"Turn on “Work while you're away” so your ChatGPT plan can run it.":
+		"Slå “Arbejd, mens du er væk” til, så dit ChatGPT-abonnement kan køre den.",
+	"Turn on “Work while you're away” so your ChatGPT plan can run them.":
+		"Slå “Arbejd, mens du er væk” til, så dit ChatGPT-abonnement kan køre dem.",
+	"Your ChatGPT plan now works while you're away. Ask the agent to set {title} up again.":
+		"Dit ChatGPT-abonnement arbejder nu, mens du er væk. Bed agenten om at sætte {title} op igen.",
+	"Your ChatGPT plan now works while you're away. Ask the agents to set those routines up again.":
+		"Dit ChatGPT-abonnement arbejder nu, mens du er væk. Bed agenterne om at sætte rutinerne op igen.",
+	"Your ChatGPT plan now works while you're away. Ask the agent to set those routines up again.":
+		"Dit ChatGPT-abonnement arbejder nu, mens du er væk. Bed agenten om at sætte rutinerne op igen.",
+	"“Work while you're away” is on, but the routine could not be started. Try again.":
+		"“Arbejd, mens du er væk” er slået til, men rutinen kunne ikke startes. Prøv igen.",
+	"“Work while you're away” is on, but the routines could not be started. Try again.":
+		"“Arbejd, mens du er væk” er slået til, men rutinerne kunne ikke startes. Prøv igen.",
+	"Turn on": "Slå til",
+	"Turning on…": "Slår til…",
+	"Not now": "Ikke nu",
+	"“Work while you're away” could not be turned on. Try again.":
+		"“Arbejd, mens du er væk” kunne ikke slås til. Prøv igen.",
 	"All {count} company computers are in use. Close one to open another.":
 		"Alle {count} virksomhedscomputere er i brug. Luk én for at åbne en ny.",
 
