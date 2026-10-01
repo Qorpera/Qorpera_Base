@@ -396,6 +396,34 @@ it("runs every served company's connector token revocations in turn, on the comp
 	expect([...claims.values()].reduce((total, claim) => total + claim.mock.calls.length, 0)).toBe(3);
 });
 
+it("checks every served company's signed deliveries in turn, on the company's own authority", async () => {
+	const one = randomUUID();
+	const two = randomUUID();
+	const { principal } = principalFixture({ registered: [one, two] });
+	const claims = new Map<string, ReturnType<typeof vi.fn>>();
+	principal.authority.mockImplementation((companyId: string) => {
+		const claim = vi.fn(async () => []);
+		claims.set(companyId, claim);
+		return {
+			claimEventVerifications: claim,
+			finishEventVerification: vi.fn(),
+		} as unknown as PostgresCloudSecretBrokerAuthority;
+	});
+	const companies = new SharedCloudSecretBrokerCompanies({
+		principal,
+		keyring: new CloudSecretKeyring({}, { "vault-root-1": randomBytes(32) }),
+		adapters: [],
+		revoker: { revoke: vi.fn() },
+	});
+	await companies.refresh(new AbortController().signal);
+	await companies.verifyEvents();
+	expect([...claims.keys()].sort()).toEqual([one, two].sort());
+	for (const claim of claims.values()) expect(claim).toHaveBeenCalledExactlyOnceWith(16, expect.any(AbortSignal));
+	await companies.close();
+	await companies.verifyEvents();
+	expect([...claims.values()].reduce((total, claim) => total + claim.mock.calls.length, 0)).toBe(2);
+});
+
 it("runs every served company's upkeep pass in turn, and its loops until closed", async () => {
 	const pass = vi.spyOn(CloudModelLoginUpkeep.prototype, "pass").mockResolvedValue(undefined);
 	const { principal } = principalFixture({ registered: [randomUUID(), randomUUID()] });

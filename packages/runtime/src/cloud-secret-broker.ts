@@ -6,6 +6,7 @@ import {
 } from "@qorpera/cloud-client/cloud-request";
 import { type CloudCodingRepository, type JsonValue, parseCloudCodingRepository } from "@qorpera/contracts";
 import type { ConnectorTokenRevocationAuthority } from "./cloud-connector-token-revocation.ts";
+import type { EventVerificationAuthority } from "./cloud-event-verification.ts";
 import type { ModelLoginAuthority, ModelLoginRunBinding } from "./cloud-model-login-vault.ts";
 import type { ModelLoginSignInAuthority } from "./cloud-model-login-vault-sign-in.ts";
 import type { ModelLoginUsageAuthority } from "./cloud-model-login-vault-usage.ts";
@@ -952,7 +953,8 @@ export class PostgresCloudSecretBrokerAuthority
 		ModelLoginAuthority,
 		ModelLoginSignInAuthority,
 		ModelLoginUsageAuthority,
-		ConnectorTokenRevocationAuthority
+		ConnectorTokenRevocationAuthority,
+		EventVerificationAuthority
 {
 	readonly #database: CloudSecretPostgresClient;
 	readonly #brokerAuthorityId: string;
@@ -1116,6 +1118,35 @@ export class PostgresCloudSecretBrokerAuthority
 		return this.#rpc(
 			"select public.qorpera_claim_connector_token_revocations($1::uuid,$2::text,$3::integer) as result",
 			[this.#brokerAuthorityId, this.#brokerCapabilitySha256, limit],
+			signal,
+		);
+	}
+
+	/** Signed hooks W1b: the company's deliveries waiting for a signature check (20260929998000). */
+	claimEventVerifications(limit: number, signal: AbortSignal): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_claim_event_verifications($1::uuid,$2::text,$3::integer) as result",
+			[this.#brokerAuthorityId, this.#brokerCapabilitySha256, limit],
+			signal,
+		);
+	}
+
+	finishEventVerification(
+		answer: Parameters<EventVerificationAuthority["finishEventVerification"]>[0],
+		signal: AbortSignal,
+	): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_finish_event_verification($1::uuid,$2::text,$3::uuid,$4::uuid,$5::text,$6::text,$7::text,$8::text) as result",
+			[
+				this.#brokerAuthorityId,
+				this.#brokerCapabilitySha256,
+				answer.deliveryId,
+				answer.claim,
+				answer.verdict,
+				answer.key,
+				answer.type,
+				answer.reason,
+			],
 			signal,
 		);
 	}
