@@ -1975,7 +1975,7 @@ it("reaches the first model request of a simple turn in a pinned number of seria
 	const waves = cloudWaves();
 	const pathCall = f.pathCall.getMockImplementation()!;
 	f.pathCall.mockImplementation(async (method, args, signal) =>
-		method === "qorpera_record_runtime_observation"
+		method === "qorpera_record_runtime_observation_batch"
 			? pathCall(method, args, signal)
 			: waves.track(method, () => pathCall(method, args, signal)),
 	);
@@ -2018,7 +2018,10 @@ it("reaches the first model request of a simple turn in a pinned number of seria
 	expect(wave("qorpera_list_native_connector_tools")).toBe(4);
 	expect(wave("qorpera_read_company_path")).toBe(4);
 	expect(wave("qorpera_describe_agent_open_work")).toBe(4);
-	// Run admission, then the first request's fence; the model request goes out after the
-	// assert that follows this record. 13 before the connector catalog joined the context reads.
-	expect(wave("qorpera_record_native_context_view")).toBe(12);
+	// Run admission, one context check, then the first request's fence in one call
+	// (qorpera_fence_native_context, 20260929400000): its two checks, this record and the check
+	// after it, once four serial round trips (waves 10 to 13), share one. 12 before that fence,
+	// 13 before the connector catalog joined the context reads.
+	expect(wave("qorpera_fence_native_context")).toBe(wave("qorpera_record_native_context_view"));
+	expect(wave("qorpera_record_native_context_view")).toBe(10);
 });
