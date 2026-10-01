@@ -86,11 +86,13 @@ writer renews it, and a new intent judges again. (Reviewer round 2, L1; F1 may a
      others: `{schema: 'qorpera.folder-upload/v1', intentId, manifestSha256, expiresAt, present: [sha256…]}`.
 2. **`qorpera_folder_authorize_object_upload(env, actor, intent, sha256, bytes)`**, per chunk, from the gateway:
    plain reads of the intent (this environment, this actor's kind and scope, `open`, unexpired) and of its object row
-   for `(sha256, bytes)`. Returns the company (`profileId`); the gateway derives the NAS path. No run check per chunk
-   (core §7).
+   for `(sha256, bytes)`, and for an object the catalog lacks the soft quota (§5; 23514), so a company at its limit
+   is refused before the gateway writes (20260928309710). Returns the company (`profileId`); the gateway derives the
+   NAS path. No run check per chunk (core §7).
 3. **`qorpera_folder_confirm_object(env, actor, intent, sha256, bytes)`**, after the gateway's NAS put: the same
-   checks, then marks the row `put`. For an object the catalog lacks, the soft quota (§5), then
-   `insert into profile_objects … on conflict do nothing`; then `KEY SHARE` on the row. A row already there with
+   intent checks, then marks the row `put`, then `insert into profile_objects … on conflict do nothing`; then
+   `KEY SHARE` on the row. It checks no quota: the authorization before the write let this object in, and refusing
+   it now would strand its bytes on the NAS outside the catalog (20260928309710). A row already there with
    another size is 23505, as today. The transaction is this statement and the trigger. Its `stored` flag is true when
    this confirm added the object to the catalog (the gateway's 201 or 200 says the same of the NAS file); only
    trusted code sees either, and the runtime never shows them to the model.
@@ -148,8 +150,9 @@ once.
 - **`enforce_company_storage_quota`** (on `storage.objects`): for a `folder-v2` company it reads the usage and the
   limit plainly, takes neither the fence nor `company_files`, and checks only objects the catalog lacks.
 - **The quota is soft** for `folder-v2`: uploads in flight at once can pass the limit by what they carry, as F2-3's
-  48 KiB budget can. `confirm_object` checks the same way before its insert. An object already stored never counts
-  again, so a company at its limit can still stage a file from bytes it has.
+  48 KiB budget can. The gateway's authorization checks it before the NAS write, for an object the catalog lacks;
+  the confirm after the write never refuses for it (20260928309710). An object already stored never counts again,
+  so a company at its limit can still stage a file from bytes it has.
 - GC (C1d-2) decrements the row through the same trigger.
 - `qorpera_company_file_json` still reports `company_files.storage_used_bytes`, which stops moving for `folder-v2`.
   C4's clients read the usage row instead.
@@ -241,19 +244,19 @@ runtime adapter, with no migration.
   reference, that its chunk sizes add up to the file's before it fetches any, each chunk against its hash, and the
   whole file against the reference's hash (the manifest's `fileSha256` is only its writer's word); it reads into one
   buffer of the file's size. A refusal of the folder core's checks (403) is `CloudCompanyFolderError('unavailable')`,
-  a stop (423) `stopped`, a lock conflict (409) `contended`; a busy gateway (503) is asked twice more after a short
+  a stop (423) `stopped`, a lock conflict (409) `contended`, a full storage allowance (413, the gateway's answer to
+  23514) `full`; a busy gateway (503) is asked twice more after a short
   random wait (an object is content-addressed, so a put asked again is the same put). That is for the NAS lanes: a
   database 500 opens the gateway's circuit for 5 s, so those tries fail fast without reaching the database. The folder
   route answers a busy NAS lane with no Storage copy yet (replication pending, right after staging) as the lane's
   503, not Storage's miss, so a read-back right after staging is asked again.
 
 **Follow-ups from C1d-1b's review** (for C1d-2 and the thin writers):
-- **Quota before the NAS write, before C1c-3 enables a real `folder-v2` company.** `_authorize_object_upload` checks
-  the soft quota for an object the catalog lacks, so a company at its limit is refused before the gateway writes;
-  until then each over-quota put leaves up to 4 MiB on the NAS that C1d-2's catalog-driven GC never collects. Today
-  confirm refuses after the write, the NAS file stays outside the catalog, and the gateway's journal entry turns
-  `blocked` (it reports degraded), as on the native route; the gateway drops that entry when confirm refuses. The
-  writers get a typed "storage full" failure.
+- **Quota before the NAS write: done** (20260928309710). `_authorize_object_upload` checks the soft quota for an
+  object the catalog lacks, so a company at its limit is refused before the gateway writes, and the confirm no longer
+  refuses for it. The gateway answers 23514 as 413, which the adapter reads as `full`. Still open: a stop at confirm
+  (after the write) leaves the NAS file outside the catalog and the gateway's journal entry `blocked` (it reports
+  degraded), as on the native route; the gateway should drop that entry when confirm refuses.
 - **Lock waits inside the gateway's deadline.** Before GC holds objects `FOR UPDATE`, the folder functions the gateway
   calls set `lock_timeout` below its 5 s deadline (2 s), so a long wait ends as 55P03, which the gateway answers 409,
   rather than as a deadline 503 that opens its circuit for every company.

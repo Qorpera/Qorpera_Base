@@ -53,6 +53,12 @@ describe("which calls are reviewed", () => {
 		["computer_screenshot", {}, "read"],
 		["list_hooks", {}, "read"],
 		["read_event", { deliveryId: "73100000-0000-4000-8000-00000000000a" }, "read"],
+		// An email from a company mailbox leaves the company (M2b).
+		[
+			"send_mail",
+			{ from: "support@mail.example.test", to: ["bob@acme.test"], subject: "Hi", text: "Hi" },
+			"external",
+		],
 		["hire_agent", {}, "delegation"],
 		["create_group_chat", {}, "delegation"],
 		["manage_routine", { action: "list" }, "read"],
@@ -130,6 +136,46 @@ describe("what the card shows", () => {
 			target: "bob@acme.test",
 			details: { subject: "Meeting moved", body: "Hi\nBob,\n\nsee you  at 10." },
 		});
+	});
+
+	it("shows a mailbox email's recipients, sender, subject and text, and says when it is a reply", () => {
+		expect(
+			describeCloudAction(tool("send_mail"), {
+				from: "support@mail.example.test",
+				to: ["bob@acme.test", "eve@acme.test"],
+				cc: ["boss@acme.test"],
+				subject: "Your refund",
+				text: "Hi Bob,\n\n\nIt is on its way.",
+				inReplyTo: "73300000-0000-4000-8000-00000000000a",
+			}),
+		).toEqual({
+			title: "Send an email",
+			target: "bob@acme.test, eve@acme.test",
+			details: {
+				from: "support@mail.example.test",
+				cc: "boss@acme.test",
+				subject: "Your refund",
+				text: "Hi Bob,\n\nIt is on its way.",
+				thread: "A reply to an email the company received",
+			},
+		});
+		expect(
+			describeCloudAction(tool("send_mail"), {
+				from: "support@mail.example.test",
+				to: ["bob@acme.test"],
+				subject: "Hello",
+				text: "Hi",
+			}).details,
+		).toEqual({ from: "support@mail.example.test", subject: "Hello", text: "Hi" });
+		const many = Array.from({ length: 10 }, (_, i) => `recipient-number-${i}-${"x".repeat(40)}@acme.test`);
+		const target = describeCloudAction(tool("send_mail"), {
+			from: "support@mail.example.test",
+			to: many,
+			subject: "Hello",
+			text: "Hi",
+		}).target;
+		expect(target?.endsWith("[...]")).toBe(true);
+		expect(Buffer.byteLength(target ?? "")).toBeLessThanOrEqual(500);
 	});
 
 	it("shows the text a Drive file gets, and names the file by its id only when nothing else names it", () => {

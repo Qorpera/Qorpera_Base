@@ -39,10 +39,14 @@ export interface MemberAgentComputer {
 	computer: {
 		scope: CompanyComputerScope;
 		number: number;
-		/** Why a started computer is not up yet: its host is being prepared, or the servers have no room. */
-		waiting: "setup" | "room" | null;
+		/** Why a started computer is not up yet: its host is being prepared, the servers have no room, or
+		 * the company is out of computer hours (a sleeping computer then waits too). */
+		waiting: CompanyComputerWait | null;
 	} | null;
 }
+/** Why a started computer is not up yet (migration 20260928237200; 'hours' since 20260929720000). */
+export type CompanyComputerWait = "setup" | "room" | "hours";
+const WAITS: readonly CompanyComputerWait[] = ["setup", "room", "hours"];
 const PLACEMENTS: readonly MemberAgentComputerPlacement[] = [
 	"screen",
 	"room",
@@ -229,13 +233,13 @@ export class CloudMemberCompanyComputerClient {
 			if (
 				!Number.isSafeInteger(row.number) ||
 				(row.number as number) < 1 ||
-				(row.waiting !== null && row.waiting !== "setup" && row.waiting !== "room")
+				(row.waiting !== null && !WAITS.includes(row.waiting as CompanyComputerWait))
 			)
 				throw new Error("Invalid Company Computer placement");
 			computer = {
 				scope: this.#scope(row.scope as CompanyComputerScope),
 				number: row.number as number,
-				waiting: row.waiting as "setup" | "room" | null,
+				waiting: row.waiting as CompanyComputerWait | null,
 			};
 		}
 		return {
