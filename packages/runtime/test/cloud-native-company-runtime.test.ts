@@ -267,18 +267,24 @@ async function fixture(
 			if (machinesAnswer instanceof Error) throw machinesAnswer;
 			return machinesAnswer;
 		}
-		if (method === "qorpera_record_runtime_observation") {
+		if (method === "qorpera_record_runtime_observation_batch") {
 			expect(args.p_run_id).toBe(f.binding.runId);
-			const observation = parseCloudRuntimeObservation(args.p_observation);
-			expect(observation.assignmentId).toBe(f.binding.assignmentId);
-			observations.push(observation);
+			const batch = (args.p_observations as unknown[]).map((row) => parseCloudRuntimeObservation(row));
+			expect(batch.length).toBeGreaterThan(0);
+			expect(batch.length).toBeLessThanOrEqual(50);
+			for (const observation of batch) expect(observation.assignmentId).toBe(f.binding.assignmentId);
+			observations.push(...batch);
 			return {
-				schema: "qorpera.runtime-observation-receipt/v1",
+				schema: "qorpera.runtime-observation-batch-receipt/v1",
 				runId: f.binding.runId,
-				attemptId: observation.attemptId,
-				phase: observation.phase,
-				ingestedAt: new Date().toISOString(),
-				replayed: false,
+				receipts: batch.map((observation) => ({
+					schema: "qorpera.runtime-observation-receipt/v1",
+					runId: f.binding.runId,
+					attemptId: observation.attemptId,
+					phase: observation.phase,
+					ingestedAt: new Date().toISOString(),
+					replayed: false,
+				})),
 			};
 		}
 		expect(args.p_binding).toEqual(f.binding);
@@ -1713,7 +1719,7 @@ it.each(["failed", "stalled", "malformed-receipt", "wrong-run-receipt"])(
 		const f = await fixture();
 		const original = f.pathCall.getMockImplementation()!;
 		f.pathCall.mockImplementation(async (method, args, signal) => {
-			if (method === "qorpera_record_runtime_observation") {
+			if (method === "qorpera_record_runtime_observation_batch") {
 				if (mode === "stalled") return new Promise<never>(() => undefined);
 				if (mode === "malformed-receipt") return null;
 				if (mode === "wrong-run-receipt")
@@ -1722,11 +1728,13 @@ it.each(["failed", "stalled", "malformed-receipt", "wrong-run-receipt"])(
 			}
 			return original(method, args, signal);
 		});
+		const started = Date.now();
 		const result = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
 		expect(result.delivery).toEqual({ messageCount: 2, finalMessageId: f.deliveries.get("final")?.messageId });
-		expect(f.pathCall.mock.calls.filter(([method]) => method === "qorpera_record_runtime_observation")).toHaveLength(
-			1,
-		);
+		// The export is tried again with backoff, one call at a time, and the close bounds it.
+		const exports = f.pathCall.mock.calls.filter(([method]) => method === "qorpera_record_runtime_observation_batch");
+		expect(exports.length).toBeGreaterThanOrEqual(1);
+		expect(exports.length).toBeLessThanOrEqual(Math.ceil((Date.now() - started) / 150) + 2);
 		expect(
 			f.pathCall.mock.calls.filter(([method]) => method === "qorpera_begin_native_company_execution_v2"),
 		).toHaveLength(1);
