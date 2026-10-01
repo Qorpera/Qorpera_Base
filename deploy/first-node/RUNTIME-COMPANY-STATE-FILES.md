@@ -806,9 +806,9 @@ C1d (bytes):
   then the unlisted as Unassigned (`unassignedTruncated` when the context's coworker list was cut). The Co-Founder is
   left out when it is the run's own agent; the context does not say which coworker is. Each result releases the read
   of the file it shows.
-- Differences from today: a section name is matched as written after trimming (the request's spaces are collapsed, as
-  today, but the file's are not), sections have no count cap beyond the file's 64 KiB, and an open group chat can be
-  placed as well as an agent (§2).
+- A section reference ignores case and runs of spaces, as today. Differences from today: sections have no count cap
+  beyond the file's 64 KiB (a change past it is refused before any effect), and an open group chat can be placed as
+  well as an agent (§2).
 
 Until the mount's writes are accepted (F3), these tools become thin writers of these files:
 `hire_agent`, `create_group_chat`, `organize_sidebar`, `manage_todo`, `manage_routine` and
