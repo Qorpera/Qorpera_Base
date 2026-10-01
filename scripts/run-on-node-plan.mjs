@@ -27,6 +27,7 @@ const FUNCTION_TESTS = [
 	"supabase/functions/event-intake/event-intake.test.ts",
 	"supabase/functions/mail-intake/mail-intake.test.ts",
 	"supabase/functions/mail-outbox/mail-outbox.test.ts",
+	"supabase/functions/runner-control/runner-control.test.ts",
 ];
 const WEB_RELEASE_CONFIG = JSON.stringify({
 	projectUrl: "https://project.example.invalid",
@@ -198,11 +199,16 @@ export const STEPS = [
 			/^scripts\/test-runtime-[a-z-]+-cases\.mjs$/,
 			/^scripts\/fixtures\/(coding-turn-pre-continuity|email-draft-e2e)/,
 			/^packages\/runtime\/src\/cloud-(secret|connector)-/,
-			/^packages\/runtime\/test\/fixtures\/coding-turn-/,
+			// The production review and wake bus scripts check SQL output with these parsers.
+			/^packages\/runtime\/src\/cloud-(native-company-context|native-tool-authority|wake-bus)\.ts$/,
+			/^packages\/runtime\/test\/fixtures\/(coding-turn-|wake-policies\.json$)/,
 			/^packages\/runner-orchestrator\/src\/lxd-office-[a-z-]+-control\.ts$/,
 			/^packages\/web\/src\/cloud\/email-drafts\.ts$/,
+			/^scripts\/test-runtime-wake-envelope\.mjs$/,
 			...HOSTED_DB_SCRIPTS.map(regex),
 		],
+		// Those two import the runtime's TypeScript, which imports built packages.
+		build: true,
 		// One PostgreSQL and one migration replay for the SQL tests and every script (scripts/test-hosted-db.mjs).
 		commands: ["node --test scripts/test-hosted-db.test.mjs", "node scripts/test-hosted-db.mjs --scripts"],
 	},
