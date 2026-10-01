@@ -154,6 +154,11 @@ begin
 		perform pg_temp.fx(v_case[2]);
 		if not public.qorpera_folder_agent_delegates_default(c_profile, c_b) then raise exception 'Does not delegate after: %', v_case[2]; end if;
 	end loop;
+	-- Only the shared roots count: a narrower shared resource without B's grant does not.
+	perform pg_temp.fx(format('insert into public.qorpera_company_path_resources(id, environment_id, %s) select %L, environment_id, %s '
+		|| 'from public.qorpera_company_path_resources where id = %L', v_columns, '77400000-0000-4000-8000-000000000032',
+		replace(v_columns, 'path,', quote_literal('teams') || ','), (pg_temp.root()).id));
+	if not public.qorpera_folder_agent_delegates_default(c_profile, c_b) then raise exception 'Only the shared roots count'; end if;
 end $$;
 
 -- 5. Contract 14.1: an agent that cannot delegate the new agent's default access (here a finite grant on the shared
@@ -199,11 +204,19 @@ begin
 		'effect', 'delegation', 'argumentSha256', md5('call-retry') || md5('call-retry'), 'action', '{}'::jsonb,
 		'decision', 'deny', 'ruleIds', '[]'::jsonb, 'builtIn', 'none', 'reason', 'Still no.', 'proposedRule', null,
 		'reviewerModel', 'gpt-6-luna'));
-	if y ->> 'decision' <> 'ask' or y ->> 'approverScope' <> 'owners_admins' then
-		raise exception 'A retried restricted hire asks the owners and admins: %', y; end if;
+	if y ->> 'decision' <> 'ask' or y ->> 'approverScope' <> 'owners_admins' or y ->> 'reason' not like '% The review: Still no.' then
+		raise exception 'A retried restricted hire asks the owners and admins, with the reviewer''s reason: %', y; end if;
+	-- The reviewer's finding that it was not asked for stays the built-in check.
+	if (public.qorpera_record_action_review(b, jsonb_build_object('callId', 'call-unasked', 'tool', 'hire_agent',
+			'effect', 'delegation', 'argumentSha256', md5('call-unasked') || md5('call-unasked'), 'action', '{}'::jsonb,
+			'decision', 'ask', 'ruleIds', '[]'::jsonb, 'builtIn', 'not_requested', 'reason', 'Nobody asked for a hire.',
+			'proposedRule', null, 'reviewerModel', 'gpt-6-luna')) ->> 'builtIn') <> 'not_requested' then
+		raise exception 'A restricted hire keeps a not-asked-for finding'; end if;
 	v_chat := pg_temp.action(b, 'call-restricted-chat', 'allow', 'delegation', 'create_group_chat');
 	if (select decision from public.qorpera_action_reviews where id = v_chat) <> 'allow' then
 		raise exception 'Only a restricted agent''s hire asks'; end if;
+	-- And the recorder takes that agent's own allow for anything but a hire.
+	perform pg_temp.record(b, v_chat, jsonb_build_array(jsonb_build_object('op', 'mkdir', 'path', 'rr-restricted-chat')));
 	u := pg_temp.hire(p, 'vera-restricted', '77400000-0000-4000-8000-0000000000a6', '77400000-0000-4000-8000-0000000000d6', 'Vera R');
 	perform pg_temp.raises_like(format('select pg_temp.record(%L, %L, %L)', b, v_action, u), '42501', 'This change has no approval in this run');
 	-- Its own allow (written as if the layering had let it through) is refused by the recorder, checked again.

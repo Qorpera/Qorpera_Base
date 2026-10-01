@@ -70,11 +70,15 @@ begin
 		|| E'\tif p_review ->> ''tool'' = ''hire_agent'' and v_decision <> ''deny''\n'
 		|| E'\t\tand public.qorpera_environment_is_folder_v2(v_run.environment_id)\n'
 		|| E'\t\tand not public.qorpera_folder_agent_delegates_default(v_run.profile_id, v_run.staff_agent_id) then\n'
-		|| E'\t\tv_restricted := true; v_decision := ''ask''; v_built_in := ''access_change'';\n'
+		|| E'\t\t-- A finding that the hire was not asked for stays on the record (it is the owners'' and admins'' too).\n'
+		|| E'\t\tv_restricted := true; v_decision := ''ask'';\n'
+		|| E'\t\tv_built_in := case when v_built_in = ''not_requested'' then v_built_in else ''access_change'' end;\n'
 		|| E'\tend if;\n', '');
 	v_text := replace(v_text, E'v_decision = ''ask'' and not v_restricted and v_built_in in', E'v_decision = ''ask'' and v_built_in in');
 	v_text := replace(v_text, E'v_built_in, case when v_restricted\n'
-		|| E'\t\t\tthen ''This agent''''s own Company File access is limited, so an owner or admin approves the agents it hires.''\n'
+		|| E'\t\t\tthen left(''This agent''''s own Company File access is limited, so an owner or admin approves the agents it hires.''\n'
+		|| E'\t\t\t\t|| case when p_review ->> ''decision'' = ''allow'' and not v_retry then ''''\n'
+		|| E'\t\t\t\t\telse '' The review: '' || btrim(p_review ->> ''reason'') end, 500)\n'
 		|| E'\t\t\telse left(btrim(p_review ->> ''reason''), 500) end,', E'v_built_in, left(btrim(p_review ->> ''reason''), 500),');
 	if md5(v_text) <> 'a9f30463bc0fcbba9f9a403449f5271d' then raise exception 'The action review''s snapshot-v1 text changed'; end if;
 end $$;

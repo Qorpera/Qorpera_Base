@@ -8,7 +8,7 @@
 -- and the roster triggers give the new agent the default grants. So, for folder-v2 runs:
 -- * the automatic review's layering asks for such a hire, whatever the reviewer found (unless it denied it). The
 --   owners and admins answer it on a card, and no rule lifts it;
--- * the review recorder checks again before the save, and records such a hire only from a member's answer.
+-- * the review recorder checks again before the save, and records such a hire only from an owner's or admin's answer.
 -- Inert until a folder-v2 run has folder bytes. Snapshot-v1 hires are unchanged.
 
 -- The legacy predicate as a plain read: an active agent holding, at each live shared root of the company, a current
@@ -54,25 +54,30 @@ $old$,
 	if p_review ->> 'tool' = 'hire_agent' and v_decision <> 'deny'
 		and public.qorpera_environment_is_folder_v2(v_run.environment_id)
 		and not public.qorpera_folder_agent_delegates_default(v_run.profile_id, v_run.staff_agent_id) then
-		v_restricted := true; v_decision := 'ask'; v_built_in := 'access_change';
+		-- A finding that the hire was not asked for stays on the record (it is the owners' and admins' too).
+		v_restricted := true; v_decision := 'ask';
+		v_built_in := case when v_built_in = 'not_requested' then v_built_in else 'access_change' end;
 	end if;
 $new$);
--- The card says why it asks, not the reviewer's own verdict.
+-- The card says why it asks, and keeps the reviewer's own reason unless the reviewer simply allowed it.
 select pg_temp.w4a_restricted_hire_replace('public.qorpera_record_action_review(jsonb,jsonb)'::regprocedure,
 	$old$v_built_in, left(btrim(p_review ->> 'reason'), 500),$old$,
 	$new$v_built_in, case when v_restricted
-			then 'This agent''s own Company File access is limited, so an owner or admin approves the agents it hires.'
+			then left('This agent''s own Company File access is limited, so an owner or admin approves the agents it hires.'
+				|| case when p_review ->> 'decision' = 'allow' and not v_retry then ''
+					else ' The review: ' || btrim(p_review ->> 'reason') end, 500)
 			else left(btrim(p_review ->> 'reason'), 500) end,$new$);
 select pg_temp.w4a_restricted_hire_replace('public.qorpera_record_action_review(jsonb,jsonb)'::regprocedure,
 	$old$	v_always := v_decision = 'ask' and v_built_in in$old$,
 	$new$	v_always := v_decision = 'ask' and not v_restricted and v_built_in in$new$);
 
 -- The recorder: again before the save ("both at policy approval and before publication"), only an owner's or admin's
--- answer on such a card (an answer given while the agent could still delegate does not carry over).
+-- answer (an owners-and-admins card). A member's answer on a card of their own, given while the agent could still
+-- delegate, does not carry over; an owner's or admin's does.
 select pg_temp.w4a_restricted_hire_replace('public.qorpera_folder_record_review(jsonb,jsonb)'::regprocedure,
 	$old$	-- A card's allow keeps the member who gave it,$old$,
-	$new$	-- A hire by an agent that cannot delegate the new agent's default access stands only on a member's answer
-	-- (contract 14.1), checked again now.
+	$new$	-- A hire by an agent that cannot delegate the new agent's default access stands only on an owner's or admin's
+	-- answer (contract 14.1), checked again now.
 	if v_action.tool_name = 'hire_agent'
 		and (v_action.answer is null or v_action.approver_scope is distinct from 'owners_admins')
 		and not public.qorpera_folder_agent_delegates_default(v_run.profile_id, v_run.staff_agent_id) then

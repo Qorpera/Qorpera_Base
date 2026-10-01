@@ -854,10 +854,12 @@ C1d (bytes):
   default access (a current, nonexpiring read and write grant on every live shared root, the legacy hire's predicate,
   `qorpera_folder_agent_delegates_default`) hires only on an owner's or admin's answer. The review's layering asks the
   owners and admins on a card for its `hire_agent` call, whatever the reviewer found (a deny stays a deny; a denied
-  hire retried asks them too), as an access check no rule lifts, with no Always allow and with its own reason on the
-  card. The recorder checks again before the save and records such a hire only from an answered owners-and-admins
-  card: a member's answer given while the agent could still delegate does not carry over. Where no card can be raised
-  (a group chat, a worker) the hire is refused, as any ask there. The recheck runs in the recorder's transaction; a
+  hire retried asks them too), as an access check no rule lifts, with no Always allow. The card says why it asks and
+  keeps the reviewer's own reason unless the reviewer simply allowed it; a not-asked-for finding stays the built-in
+  check. The recorder checks again before the save and records such a hire only from an answered owners-and-admins
+  card: a member's answer on a card of their own, given while the agent could still delegate, does not carry over (an
+  owner's or admin's does). Where no owners-and-admins card can be raised (a group chat, a worker, a member's private
+  conversation) the hire is refused, as any ask there. The recheck runs in the recorder's transaction; a
   restriction between it and the commit (milliseconds) is like a restriction just after the hire.
 - Under the receipt: stage, record the review of exactly these units (`recordReview` with the tool and the call's
   argument digest), commit them with the review. Saved: the agent exists and is indexed with its thread; the commit
@@ -874,8 +876,7 @@ C1d (bytes):
   the predicate case by case (a revoked, read-only, finite, other-version or other-agent grant, an archived agent, a
   second environment's root and its revocation); the restricted hire asks the owners and admins with no Always allow,
   also on a retry, its own allow and an earlier member's answer are refused by the recorder, and an owner's answer
-  saves it with that owner as approver). 15 of 15 mutants of the new SQL are killed. 652's pin of the layering's
-  snapshot-v1 text strips the `folder-v2` lines.
+  saves it with that owner as approver). 652's pin of the layering's snapshot-v1 text strips the `folder-v2` lines.
 
 Until the mount's writes are accepted (F3), these tools become thin writers of these files:
 `hire_agent`, `create_group_chat`, `organize_sidebar`, `manage_todo`, `manage_routine` and
