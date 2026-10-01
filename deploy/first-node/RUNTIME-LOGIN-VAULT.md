@@ -601,7 +601,7 @@ https://claude.ai/artifact/UWehPVysVzAmWcwvkuU6on.
   - the code exchange succeeds: our Basic encoding and redirect address are accepted (a failure logs
     `ChatGPT plan sign-in: the code exchange failed (<reason>)`, where the reason is OpenAI's status and
     error code, or one of `token answer unreadable`, `token plan scope not granted`, `token answer
-    unusable`, `ID token refused`, `signing key unknown`, `OpenAI unreachable`);
+    unusable`, `ID token refused`, `signing key unknown`, `discovery unusable`, `OpenAI unreachable`);
   - discovery lists `revocation_endpoint`, and disconnecting a test login ends it at OpenAI;
   - a renewal succeeds and its answer keeps the plan scope, whether or not it repeats `scope` or sends
     an `id_token`; the renewed login keeps its owner (the access token's `sub` equals the ID token's);
