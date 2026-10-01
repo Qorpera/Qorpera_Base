@@ -938,25 +938,48 @@ it("completes a folder writer's receipt with its commit, and replays it from the
 });
 
 it("refuses a folder commit it cannot complete, or a completion naming another commit", async () => {
-	const f = await fixture();
-	const { completeFolderToolOperation: _, ...legacy } = f.control;
-	f.perform.mockResolvedValue({ content: { kind: "text", value: "saved" }, folderCommitId: randomUUID() });
+	// Each case on its own ledger: a refused case leaves its receipt executing, which would refuse the next at begin.
+	const legacyCase = await fixture();
+	const { completeFolderToolOperation: _, ...legacy } = legacyCase.control;
+	legacyCase.perform.mockResolvedValueOnce({
+		content: { kind: "text", value: "saved" },
+		folderCommitId: randomUUID(),
+	});
 	await expect(
-		f.execute(
-			{ operation: { ...f.operation, logicalOperationKey: "no-folder" } },
-			new CloudNativeToolOperations(f.run, legacy),
+		legacyCase.execute(
+			{ operation: { ...legacyCase.operation, requiresCompanyRevision: true } },
+			new CloudNativeToolOperations(legacyCase.run, legacy),
 		),
 	).rejects.toThrow("outcome unconfirmed");
-	expect(f.control.completeToolOperation).not.toHaveBeenCalled();
-	const complete = f.control.completeFolderToolOperation.getMockImplementation();
+	expect(legacyCase.perform).toHaveBeenCalledTimes(1);
+	expect(legacyCase.control.completeToolOperation).not.toHaveBeenCalled();
+	const otherCase = await fixture();
+	otherCase.perform.mockResolvedValueOnce({ content: { kind: "text", value: "saved" }, folderCommitId: randomUUID() });
+	const complete = otherCase.control.completeFolderToolOperation.getMockImplementation();
 	if (!complete) throw new Error("Missing test implementation");
-	f.control.completeFolderToolOperation.mockImplementationOnce(async (...args) => ({
+	otherCase.control.completeFolderToolOperation.mockImplementationOnce(async (...args) => ({
 		...((await complete(...args)) as object),
 		folder_commit_id: randomUUID(),
 	}));
-	await expect(f.execute({ operation: { ...f.operation, logicalOperationKey: "other-commit" } })).rejects.toThrow(
-		"outcome unconfirmed",
-	);
+	await expect(
+		otherCase.execute({ operation: { ...otherCase.operation, requiresCompanyRevision: true } }),
+	).rejects.toThrow("outcome unconfirmed");
+	expect(otherCase.control.completeFolderToolOperation).toHaveBeenCalledTimes(1);
+	// A folder completion that names no commit at all is not the commit's either.
+	const silentCase = await fixture();
+	silentCase.perform.mockResolvedValueOnce({
+		content: { kind: "text", value: "saved" },
+		folderCommitId: randomUUID(),
+	});
+	const silent = silentCase.control.completeFolderToolOperation.getMockImplementation();
+	if (!silent) throw new Error("Missing test implementation");
+	silentCase.control.completeFolderToolOperation.mockImplementationOnce(async (...args) => {
+		const { folder_commit_id: _commit, ...rest } = (await silent(...args)) as Record<string, unknown>;
+		return rest;
+	});
+	await expect(
+		silentCase.execute({ operation: { ...silentCase.operation, requiresCompanyRevision: true } }),
+	).rejects.toThrow("outcome unconfirmed");
 });
 
 it("accepts a folder-v2 completion that needed no commit", async () => {
@@ -972,24 +995,27 @@ it("accepts a folder-v2 completion that needed no commit", async () => {
 });
 
 it("refuses a folder commit beside another revision, or on an operation that declared none", async () => {
-	const f = await fixture();
-	expect(f.operations.completesFolderCommits).toBe(true);
-	f.perform.mockResolvedValueOnce({
+	const two = await fixture();
+	expect(two.operations.completesFolderCommits).toBe(true);
+	two.perform.mockResolvedValueOnce({
 		content: { kind: "text", value: "saved" },
 		outputSnapshotId: randomUUID(),
 		folderCommitId: randomUUID(),
 	});
-	await expect(
-		f.execute({ operation: { ...f.operation, logicalOperationKey: "two", requiresCompanyRevision: true } }),
-	).rejects.toThrow("outcome unconfirmed");
-	f.perform.mockResolvedValueOnce({ content: { kind: "text", value: "saved" }, folderCommitId: randomUUID() });
-	await expect(f.execute({ operation: { ...f.operation, logicalOperationKey: "none" } })).rejects.toThrow(
+	await expect(two.execute({ operation: { ...two.operation, requiresCompanyRevision: true } })).rejects.toThrow(
 		"outcome unconfirmed",
 	);
-	expect(f.control.completeFolderToolOperation).not.toHaveBeenCalled();
-	expect(f.control.completeToolOperation).not.toHaveBeenCalled();
-	const { completeFolderToolOperation: _, ...legacy } = f.control;
-	expect(new CloudNativeToolOperations(f.run, legacy).completesFolderCommits).toBe(false);
+	expect(two.perform).toHaveBeenCalledTimes(1);
+	const none = await fixture();
+	none.perform.mockResolvedValueOnce({ content: { kind: "text", value: "saved" }, folderCommitId: randomUUID() });
+	await expect(none.execute()).rejects.toThrow("outcome unconfirmed");
+	expect(none.perform).toHaveBeenCalledTimes(1);
+	for (const f of [two, none]) {
+		expect(f.control.completeFolderToolOperation).not.toHaveBeenCalled();
+		expect(f.control.completeToolOperation).not.toHaveBeenCalled();
+	}
+	const { completeFolderToolOperation: _, ...legacy } = none.control;
+	expect(new CloudNativeToolOperations(none.run, legacy).completesFolderCommits).toBe(false);
 });
 
 it("sends and compares a folder commit's id in the lower case SQL echoes", async () => {

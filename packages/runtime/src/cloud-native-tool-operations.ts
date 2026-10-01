@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { type JsonValue, normalizeUuid } from "@qorpera/contracts";
+import { type JsonValue, parseUuid } from "@qorpera/contracts";
 import {
 	type CloudNativeToolBinding,
 	type CloudNativeToolIdentity,
@@ -375,7 +375,7 @@ export class CloudNativeToolOperations {
 				const { outputSnapshotId, proposalId } = output;
 				// SQL echoes the commit id in lower case; send and compare it that way.
 				const folderCommitId =
-					output.folderCommitId === undefined ? undefined : (normalizeUuid(output.folderCommitId) ?? undefined);
+					output.folderCommitId === undefined ? undefined : parseUuid(output.folderCommitId, "Folder commit id");
 				await this.#run.assertActive(signal);
 				const completed = record(
 					await cloudToolRequest(
