@@ -1,31 +1,36 @@
--- Authorization before the row lock, the rest (20260929750000 did eight functions). Each function below locked the
+-- Authorization before the row lock, the rest (20260928319750 did eight functions). Each function below locked the
 -- row its arguments name and only then checked the caller: a runner job (its model policy), a proposal review
 -- assignment, an artifact retention hold, an operation receipt (resolving, completing and staging objects for it), a
 -- run operation receipt (resolving it, on either Company File core), an object reachability graph (appending to and
 -- completing it, by a member or by a runner), an event hook, an execution sponsor binding, a logical computer, a
--- provider connection, a cloud secret (granting it to agents, and rotating it), a member's Company File edit command
--- and a shared session (a turn in a member's private conversation). A caller who knew or guessed the ids could queue
--- for that row and, by repeating the call, make the company's own writers wait. For the runner job, the review, the
--- hold, the run receipt, both graph lanes, the binding, the computer and the connection the publishable key was
--- enough: anon can call those functions through the platform default.
+-- provider connection, a cloud secret (granting it to agents or to one operation, rotating it and revoking it), a
+-- member's Company File edit command and a shared session (a turn in a member's private conversation). A caller who
+-- knew or guessed the ids could queue for that row and, by repeating the call, make the company's own writers wait.
+-- For the runner job, the review, the hold, the run receipt, both graph lanes, the binding, the computer and the
+-- connection the publishable key was enough: anon can call those functions through the platform default.
 --
 -- Each now reads the row without a lock and refuses before the lock a caller its locked check would refuse, with the
 -- same error, so a refusal tells no more than before: an id nobody has gets the error it got (the 409 for a runner's
--- unknown graph; "query returned no rows" for an unknown secret). The plain check is the locked check's own test of
--- the caller, without the row's status, which may change while a call waits. A caller who passes takes the lock as
--- before, and everything after it is unchanged: the locked checks still refuse a member who lost the role while the
--- call waited. The checks already before the lock keep their place, first (folder-v2 refusals and dispatch, the
--- secret capture's scope, the Company File actor).
+-- unknown graph; "query returned no rows" for an unknown secret in the grant and the rotation). The plain check is
+-- the locked check's own test of the caller, without the row's status, which may change while a call waits. A caller
+-- who passes takes the lock as before, and everything after it is unchanged: where the locked check reads the
+-- caller's role under the lock, it still refuses a member who lost the role while the call waited (the secret
+-- functions read the role before the lock, as before). The checks already before the lock keep their place, first
+-- (folder-v2 refusals and dispatch, the caller's membership in the secret functions, the secret capture's scope, the
+-- Company File actor, 20260928319750's role check in the turn request).
 --
--- Two plain checks are new rather than earlier copies:
--- * A runner's graph page and graph completion call qorpera_runner_broker_job before the graph lock. It is the check
---   qorpera_runner_company_revision_snapshot makes first under that lock (through qorpera_runner_broker_locked_job),
---   lock-free, with the same errors; only the graph's existence (its 409) comes before it, as before.
+-- Three plain checks are not copies of the locked check:
+-- * A runner's graph page and graph completion: the runner check that qorpera_runner_broker_job makes first, under the
+--   graph lock (through qorpera_runner_company_revision_snapshot and qorpera_runner_broker_locked_job): the service
+--   role or the secret broker, well-formed tokens, a live runner session. Lease and sponsor checks stay under the lock.
+--   Only for a graph that exists, so a graph nobody has still gets its 409 at the lock.
+-- * A provider connection's owner revoking it: the clause counts only when true, as 20260929790000 makes it in the
+--   locked check. Without that migration the locked check let anyone signed in revoke a company-owned connection (no
+--   owner, so the clause was NULL); this check refuses them before the lock either way.
 -- * A turn in a member's private conversation: qorpera_request_session_turn_v2 checked the company role, and the
 --   conversation's audience only when qorpera_append_session_input appended the turn's input, after the request's
 --   other checks. A member of the company outside the conversation is now refused before the lock, with the error
---   that append gives ('session write access is required'), and so before the request's other checks. Callers
---   without the company role are untouched here (20260929750000 refuses them before the lock).
+--   that append gives ('session write access is required'), and so before the request's other checks.
 --
 -- Exact-text patches, all in one statement: each fails unless its function locks its row once, with the text given.
 
@@ -148,22 +153,30 @@ $check$),
 		raise exception 'object reachability requires graph-creator access' using errcode = '42501';
 	end if;
 $check$),
--- A runner's Company File revision graph: the runner holding the job's lease, checked as the snapshot check under
--- the lock checks it first. A graph nobody has still gets its 409 at the lock.
+-- A runner's Company File revision graph: the service role or the secret broker with a live runner session, as the
+-- runner check under the lock asks first. A graph nobody has still gets its 409 at the lock.
 ('public.qorpera_runner_append_company_revision_graph(uuid,text,uuid,text,uuid,uuid,jsonb)',
 	$lock$	select graph.* into v_graph from public.qorpera_object_reachability_graphs as graph
 	where graph.id = p_graph_id and graph.root_kind = 'company_snapshot' for update;$lock$,
 	$check$	if exists (select 1 from public.qorpera_object_reachability_graphs as graph
-		where graph.id = p_graph_id and graph.root_kind = 'company_snapshot') then
-		perform public.qorpera_runner_broker_job(p_runner_id, p_session_token_sha256, p_job_id, p_lease_token_sha256);
+		where graph.id = p_graph_id and graph.root_kind = 'company_snapshot')
+		and (auth.role() <> 'service_role' and session_user <> 'qorpera_secret_broker'
+			or p_session_token_sha256 !~ '^[0-9a-f]{64}$'
+			or p_lease_token_sha256 !~ '^[0-9a-f]{64}$'
+			or not public.qorpera_runner_session_valid(p_runner_id, p_session_token_sha256)) then
+		raise exception 'runner broker authorization is invalid' using errcode = '42501';
 	end if;
 $check$),
 ('public.qorpera_runner_complete_company_revision_graph(uuid,text,uuid,text,uuid,uuid)',
 	$lock$	select graph.* into v_graph from public.qorpera_object_reachability_graphs as graph
 	where graph.id = p_graph_id and graph.root_kind = 'company_snapshot' for update;$lock$,
 	$check$	if exists (select 1 from public.qorpera_object_reachability_graphs as graph
-		where graph.id = p_graph_id and graph.root_kind = 'company_snapshot') then
-		perform public.qorpera_runner_broker_job(p_runner_id, p_session_token_sha256, p_job_id, p_lease_token_sha256);
+		where graph.id = p_graph_id and graph.root_kind = 'company_snapshot')
+		and (auth.role() <> 'service_role' and session_user <> 'qorpera_secret_broker'
+			or p_session_token_sha256 !~ '^[0-9a-f]{64}$'
+			or p_lease_token_sha256 !~ '^[0-9a-f]{64}$'
+			or not public.qorpera_runner_session_valid(p_runner_id, p_session_token_sha256)) then
+		raise exception 'runner broker authorization is invalid' using errcode = '42501';
 	end if;
 $check$),
 -- Pausing, resuming and removing an event hook: the company's owners and admins.
@@ -190,14 +203,15 @@ $check$),
 		raise exception 'logical computer lifecycle requires authorize access' using errcode = '42501';
 	end if;
 $check$),
--- A provider connection's status: the named company's owners and admins, or its owner revoking it.
+-- A provider connection's status: the named company's owners and admins, or its owner revoking it (only when it has
+-- one: see the header).
 ('public.qorpera_set_provider_connection_status(uuid,uuid,text)',
 	$lock$	select connection.* into v_connection from public.qorpera_provider_connections as connection
 	where connection.id = p_connection_id and connection.profile_id = p_profile_id for update;$lock$,
 	$check$	if auth.uid() is null or not (
 		public.qorpera_can_authorize_profile(p_profile_id)
-		or ((select connection.owner_user_id from public.qorpera_provider_connections as connection
-			where connection.id = p_connection_id and connection.profile_id = p_profile_id) = auth.uid() and p_status = 'revoked')
+		or coalesce((select connection.owner_user_id from public.qorpera_provider_connections as connection
+			where connection.id = p_connection_id and connection.profile_id = p_profile_id) = auth.uid() and p_status = 'revoked', false)
 	) then
 		raise exception 'provider connection lifecycle requires authorize access' using errcode = '42501';
 	end if;
@@ -231,6 +245,28 @@ $check$),
 			raise exception 'secret rotation authority is unavailable' using errcode = '42501';
 		end if;
 $check$),
+-- Revoking a cloud secret and granting it to one agent operation: an owner or admin for the company's, its owner for
+-- a member's (the caller's membership was read first, for share).
+('public.qorpera_revoke_cloud_secret(uuid,uuid)',
+	$lock$	select secret.* into v_secret from public.qorpera_cloud_secrets secret
+	where secret.id = p_secret_id and secret.profile_id = p_profile_id for update;$lock$,
+	$check$	if not exists (select 1 from public.qorpera_cloud_secrets as secret
+		where secret.id = p_secret_id and secret.profile_id = p_profile_id
+			and ((secret.owner_kind = 'company' and v_role not in ('owner','admin'))
+				or (secret.owner_kind = 'member' and secret.owner_user_id is distinct from v_user_id)) is not true) then
+		raise exception 'secret revocation is unavailable' using errcode = '42501'; end if;
+$check$),
+('public.qorpera_grant_cloud_secret_operation(uuid,uuid,uuid,uuid,text,text,bigint,timestamp with time zone)',
+	$lock$	select secret.* into v_secret from public.qorpera_cloud_secrets secret
+	where secret.id = p_secret_id and secret.profile_id = p_profile_id
+		and secret.environment_id = p_environment_id for update;$lock$,
+	$check$	if not exists (select 1 from public.qorpera_cloud_secrets as secret
+		where secret.id = p_secret_id and secret.profile_id = p_profile_id and secret.environment_id = p_environment_id
+			and ((secret.owner_kind = 'company' and v_role not in ('owner','admin'))
+				or (secret.owner_kind = 'member' and secret.owner_user_id is distinct from v_user_id)
+				or (p_expires_at is not null and p_expires_at <= clock_timestamp())) is not true) then
+		raise exception 'secret grant authority is unavailable' using errcode = '42501'; end if;
+$check$),
 -- Reviewing a member's Company File edit: the member who made it, with its plan. The Company File actor (membership,
 -- then the company's fence) stays first; the command was already read without a lock for it.
 ('public.qorpera_review_member_company_path_command(uuid,text,text)',
@@ -239,15 +275,14 @@ $check$),
 		or p_decision is null or p_decision not in ('approve','reject','skip') then
 		raise exception 'Company File edit review is unavailable' using errcode = '42501'; end if;
 $check$),
--- A turn in a member's private conversation: its member. Only callers with the company role reach this check.
+-- A turn in a member's private conversation: its member. Only callers with the company role reach this check (after
+-- 20260928319750's): for them it refuses exactly the member_private conversations of others.
 ('public.qorpera_request_session_turn_v2(uuid,uuid,uuid,jsonb,text,uuid,bigint,uuid,uuid,uuid,text,text,text,text,text,uuid[])',
 	$lock$	select session.* into v_session
 	from public.qorpera_shared_sessions as session
 	where session.id = p_session_id
 	for update;$lock$,
-	$check$	if v_user_id is not null and public.qorpera_can_write_profile(
-		(select session.profile_id from public.qorpera_shared_sessions as session where session.id = p_session_id))
-		and not public.qorpera_can_write_session(p_session_id) then
+	$check$	if not public.qorpera_can_write_session(p_session_id) then
 		raise exception 'session write access is required' using errcode = '42501';
 	end if;
 $check$)
