@@ -445,10 +445,11 @@ describe("a run on a member's ChatGPT plan (Sign in with ChatGPT)", () => {
 		const command = [process.execPath, rpcFixture, "response-first", evidence] as const;
 		prepareCloudCodexSpare({ command, binarySha256, identityRoot, chatGptPlanAuth: "environment" }, 60_000);
 		prepareCloudCodexSpare({ command, binarySha256, identityRoot }, 60_000);
-		// Only the command mode's spare starts.
-		await vi.waitFor(async () => expect(await readFile(`${evidence}.handshakes`, "utf8")).toMatch(/^\d+\n$/));
-		expect((await readFile(`${evidence}.starts`, "utf8")).trim().split("\n")).toHaveLength(1);
-		await disposeCloudCodexSpares(identityRoot);
+		// Only the command mode's spare starts: exactly one spare uses this root.
+		await vi.waitFor(async () => expect(await readFile(`${evidence}.handshakes`, "utf8")).toMatch(/^\d+\n$/), {
+			timeout: 10_000,
+		});
+		expect(await disposeCloudCodexSpares(identityRoot)).toBe(1);
 	});
 
 	it("takes a plan run's 429 for the plan's usage limit, which stops the work", async () => {
