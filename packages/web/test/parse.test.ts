@@ -47,6 +47,23 @@ describe("parsers", () => {
 		expect(recovery({}, { usage_limit: true }).usageLimit).toBe(true);
 		expect(recovery({}, { usage_limit: false }).usageLimit).toBe(false);
 		expect(recovery({})).not.toHaveProperty("usageLimit");
+		// Whether a ChatGPT plan pays (20260929993000), and whom the run is for; absent or odd reads as absent.
+		expect(recovery({}, { paid_by_chatgpt_plan: true }).paidByChatgptPlan).toBe(true);
+		expect(recovery({}, { paid_by_chatgpt_plan: "yes" })).not.toHaveProperty("paidByChatgptPlan");
+		expect(
+			parseRunRecovery({
+				run: { run_id: S1, source_kind: "session_turn", requested_by_user_id: U.toUpperCase() },
+				job: { status: "failed" },
+				operations: [],
+			}).requestedByUserId,
+		).toBe(U);
+		expect(
+			parseRunRecovery({
+				run: { run_id: S1, source_kind: "session_turn", requested_by_user_id: "someone" },
+				job: { status: "failed" },
+				operations: [],
+			}),
+		).not.toHaveProperty("requestedByUserId");
 	});
 
 	it("accepts only a resolution of the run and action that were asked for", () => {

@@ -67,6 +67,25 @@ const REASONS: Record<RunFailureKind, string> = {
 	other: phrase("The run stopped because of an internal error."),
 };
 
+/** Where OpenAI sends a member to manage their ChatGPT plan's usage (Sign in with ChatGPT UI guidelines). */
+export const MANAGE_USAGE_URL = "https://chatgpt.com/settings/usage";
+
+/** A member's own ChatGPT plan reached its usage limit: OpenAI's words, with ChatGPT named. */
+export function planUsageLimitReason(): string {
+	return t("ChatGPT · Usage limit reached. Review your plan or this app's limit in ChatGPT settings.");
+}
+
+/** "Manage usage": opens the member's ChatGPT usage settings in a new tab. */
+export function manageUsageLink(): HTMLElement {
+	const link = h(
+		"a",
+		{ class: "btn btn-small", href: MANAGE_USAGE_URL, target: "_blank", rel: "noopener noreferrer" },
+		t("Manage usage"),
+	);
+	link.dataset.action = "manage-usage";
+	return link;
+}
+
 /** Why a run stopped, in the member's words. */
 export function runFailureReason(
 	lastError: string | undefined,
@@ -111,11 +130,24 @@ const CODING_REASONS: Record<RunFailureKind | "no_submission", string> = {
 	other: phrase("The session stopped because of an internal error. The workspace is kept; a follow-up continues it."),
 };
 
+/** What the kernel tells about a coding turn that stopped at its login's usage limit (20260929993000). */
+export interface CodingUsageLimit {
+	usageLimit?: boolean;
+	paidByChatgptPlan?: boolean;
+	/** The member reading it owns the session, so the plan is theirs. */
+	mine?: boolean;
+}
+
 /** Why a coding session's turn failed, in the member's words, and that its
  * workspace is kept. The reason is the kernel's "executor-lease-expired" or the
  * executor's summary, which carries the run's last error and its fixed code;
- * both name machinery, so neither is ever shown as it is. */
-export function codingFailureReason(reason: string | undefined): string {
+ * both name machinery, so neither is ever shown as it is. A turn the kernel says
+ * stopped at a usage limit is told as one, in OpenAI's words for the owner's plan. */
+export function codingFailureReason(reason: string | undefined, limit: CodingUsageLimit = {}): string {
+	if (limit.usageLimit === true)
+		return limit.paidByChatgptPlan === true && limit.mine === true
+			? `${planUsageLimitReason()} ${t("The workspace is kept; a follow-up continues it.")}`
+			: t(CODING_REASONS.usage_limit);
 	if (reason === "executor-lease-expired") return t(CODING_REASONS.lost);
 	if (reason === CODING_TURN_ENDED || reason?.includes("[code=CODING_TURN_ENDED_WITHOUT_SUBMISSION]"))
 		return t(CODING_REASONS.no_submission);
