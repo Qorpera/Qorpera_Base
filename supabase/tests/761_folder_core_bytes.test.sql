@@ -516,8 +516,8 @@ begin
 end $$;
 
 -- 8b. Each byte function a gateway or a run calls waits at most 2 s for any one lock (20260929780000), inside the
--- gateway's 5 s, so a long wait ends as 55P03 (409) and never opens its circuit; the rest of each function's settings
--- stay as they were. The wait itself is in 762 G.
+-- gateway's 5 s and the runtime's 3 s, so a long wait ends as 55P03 (409, `contended`) and never opens the gateway's
+-- circuit; the rest of each function's settings stay as they were. A redefinition must repeat it. The waits are in 762 G.
 do $$
 declare v_fn regprocedure;
 begin
@@ -526,7 +526,8 @@ begin
 		'public.qorpera_folder_renew_upload(uuid,jsonb,uuid)',
 		'public.qorpera_folder_authorize_object_upload(uuid,jsonb,uuid,text,bigint)',
 		'public.qorpera_folder_confirm_object(uuid,jsonb,uuid,text,bigint)',
-		'public.qorpera_folder_authorize_object_download(uuid,jsonb,text)']::regprocedure[] loop
+		'public.qorpera_folder_authorize_object_download(uuid,jsonb,text)',
+		'public.qorpera_folder_authorize_replication(uuid,text,bigint)']::regprocedure[] loop
 		if (select array(select c from unnest(proconfig) c order by c) from pg_proc where oid = v_fn)
 				is distinct from array['lock_timeout=2s', 'search_path=""'] then
 			raise exception 'The lock budget of %: %', v_fn, (select proconfig from pg_proc where oid = v_fn); end if;

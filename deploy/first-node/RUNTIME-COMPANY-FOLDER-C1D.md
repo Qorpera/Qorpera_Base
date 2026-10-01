@@ -254,14 +254,23 @@ runtime adapter, with no migration.
 **Follow-ups from C1d-1b's review** (for C1d-2 and the thin writers):
 - **Quota before the NAS write: done** (20260928309710). `_authorize_object_upload` checks the soft quota for an
   object the catalog lacks, so a company at its limit is refused before the gateway writes, and the confirm no longer
-  refuses for it. The gateway answers 23514 as 413, which the adapter reads as `full`. Still open: a stop at confirm
-  (after the write) leaves the NAS file outside the catalog and the gateway's journal entry `blocked` (it reports
-  degraded), as on the native route; the gateway should drop that entry when confirm refuses.
-- **Lock waits inside the gateway's deadline: done** (20260929780000). The six byte functions (open, seal, renew,
-  authorize, confirm and the download check) set `lock_timeout = '2s'`, below the gateway's 5 s deadline and the
-  PostgREST role's 8 s, so a long wait ends as 55P03, which the gateway answers 409 (the runtime: `contended`), rather
-  than as a deadline 503 that opens its circuit for every company. The 409 mapping depends on this budget. It bounds
-  each lock wait, not their sum (test 762 G shows one wait end at it; 761 §8b pins the setting).
+  refuses for it. The gateway answers 23514 as 413, which the adapter reads as `full`. Still open: a stop or a lock
+  timeout at confirm (423 or 409, after the write) leaves the NAS file outside the catalog and the gateway's journal
+  entry `blocked` (it reports degraded), as on the native route; the gateway should drop that entry when confirm
+  refuses.
+- **Lock waits inside the deadlines: done** (20260929780000). The seven byte functions set `lock_timeout = '2s'`,
+  below the PostgREST role's 8 s:
+  - authorize, confirm and the download check, which the gateway calls with a 5 s deadline: a long wait ends as 55P03,
+    which the gateway answers 409, rather than as a deadline 503 that opens its circuit for every company;
+  - open, seal and renew, which the runtime calls through the Company File control with a 3 s deadline: a wait ends
+    as 55P03, read as `contended` (two waits in one call can still reach the runtime's own timeout);
+  - `qorpera_folder_authorize_replication`, which the gateway's replication reaches for a folder-v2 company: its
+    55P03 becomes 409 only with the folder refusal mapping on the replication call (#573); until then a 500, as a long
+    wait there already was.
+
+  The 409 mapping depends on this budget. It bounds each lock wait, not their sum (762 G shows waits end at it; 761
+  §8b pins the setting). A later `create or replace` of any of the seven must repeat `set lock_timeout = '2s'`, and
+  changes `pg_get_functiondef`, so a digest guard must be taken after this migration.
 - **The gateway's NAS lanes.** It allows two operations in flight; core §7 raises that with content storage. The
   native route's read still answers Storage's miss when its NAS lane is busy; give it the folder route's 503.
 - **Labels.** On the byte path a size clash (23505) reads as `contended` and a refused run kind (0A000) as
