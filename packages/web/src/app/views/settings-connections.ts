@@ -6,6 +6,7 @@ import {
 } from "../../cloud/chatgpt-plan-sign-in.ts";
 import {
 	ChatGptPlanSignInError,
+	PlanSwitchBusyError,
 	planLogin,
 	type WebExecutionConnections,
 	type WebMemberConnection,
@@ -515,15 +516,15 @@ export class ConnectionsView {
 		this.#working = connection.connectionId;
 		this.#error = undefined;
 		this.#draw();
-		let failed = false;
+		let failed: unknown;
 		try {
 			await this.#client.setWorkWhileAway(
 				connection.connectionId,
 				connection.allowAutonomous !== true,
 				this.#lifetime.signal,
 			);
-		} catch {
-			failed = true;
+		} catch (error) {
+			failed = error ?? true;
 		}
 		if (this.#lifetime.signal.aborted) return;
 		// The switch stays busy until the cloud's state is read back: part of a failed change may
@@ -531,7 +532,11 @@ export class ConnectionsView {
 		await this.#refresh();
 		if (this.#lifetime.signal.aborted) return;
 		this.#working = undefined;
-		if (failed) this.#error = t("“Work while you're away” could not be changed. Try again.");
+		if (failed)
+			this.#error =
+				failed instanceof PlanSwitchBusyError
+					? t("Busy right now. Try again in a moment.")
+					: t("“Work while you're away” could not be changed. Try again.");
 		this.#draw();
 	}
 	/** A ChatGPT plan's switch: off until its member turns it on. */

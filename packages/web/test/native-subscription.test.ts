@@ -1,7 +1,11 @@
 import type { RequestSponsoredSessionTurnInput } from "@qorpera/cloud-client/cloud-native-subscription-control";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CloudRpcError } from "../src/cloud/client.ts";
-import { createWebNativeSubscription, type WebNativeProviderLoginInput } from "../src/cloud/native-subscription.ts";
+import {
+	createWebNativeSubscription,
+	PlanSwitchBusyError,
+	type WebNativeProviderLoginInput,
+} from "../src/cloud/native-subscription.ts";
 import { deferred, fixture, id, profileA, session, settle, timestamp, userA, userB } from "./fixtures.ts";
 
 afterEach(() => {
@@ -633,6 +637,21 @@ describe("ChatGPT plan logins (switched off until a company has one)", () => {
 		// An answer for another connection or the other choice is refused.
 		rpc.mockResolvedValueOnce({ connection_id: id(94), version: 5, allow_autonomous: true });
 		await expect(f.client.setWorkWhileAway!(id(94), false)).rejects.toThrow("Invalid cloud response");
+		// A switch that waited too long for a lock (55P03) reads as busy, and binds nothing; other errors stay.
+		const binds = f.fetch.mock.calls.length;
+		rpc.mockRejectedValueOnce(
+			new CloudRpcError(
+				"qorpera_set_chatgpt_plan_work_while_away",
+				{ message: "Busy right now. Try again in a moment.", code: "55P03" },
+				500,
+			),
+		);
+		await expect(f.client.setWorkWhileAway!(id(94), true)).rejects.toBeInstanceOf(PlanSwitchBusyError);
+		rpc.mockRejectedValueOnce(
+			new CloudRpcError("qorpera_set_chatgpt_plan_work_while_away", { message: "denied", code: "42501" }, 403),
+		);
+		await expect(f.client.setWorkWhileAway!(id(94), true)).rejects.not.toBeInstanceOf(PlanSwitchBusyError);
+		expect(f.fetch.mock.calls.length).toBe(binds);
 	});
 });
 

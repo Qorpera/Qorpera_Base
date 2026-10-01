@@ -1,5 +1,10 @@
 import type { MemberNotification, WebMemberNotifications } from "../../cloud/member-notifications.ts";
-import { planLogin, type WebMemberConnection, type WebNativeSubscription } from "../../cloud/native-subscription.ts";
+import {
+	PlanSwitchBusyError,
+	planLogin,
+	type WebMemberConnection,
+	type WebNativeSubscription,
+} from "../../cloud/native-subscription.ts";
 import type { WebRoutine, WebRoutines } from "../../cloud/routines.ts";
 import { button, h } from "../../ui/dom.ts";
 import { matchesKey } from "../../ui/keys.ts";
@@ -240,11 +245,13 @@ export class ExecutionNotices {
 				this.#hidden.add(item.notificationId);
 			}
 			if (!this.#offerDone) this.#offer = undefined;
-		} catch {
+		} catch (error) {
 			if (!signal.aborted)
 				// Only what is known: the switch failed, the routines could not be read again, or these could not start.
 				this.#offerError = !this.#turnedOn.has(id)
-					? t("“Work while you're away” could not be turned on. Try again.")
+					? error instanceof PlanSwitchBusyError
+						? t("Busy right now. Try again in a moment.")
+						: t("“Work while you're away” could not be turned on. Try again.")
 					: !still
 						? t("“Work while you're away” is on, but your routines could not be checked. Try again.")
 						: still.length - started > 1

@@ -172,6 +172,7 @@ export const SETTINGS: Record<string, string> = {
 	"On Stripe's billing page": "På Stripes betalingsside",
 	"Thank you. Your hours are added as soon as Stripe confirms the payment.":
 		"Tak. Dine timer bliver tilføjet, så snart Stripe bekræfter betalingen.",
+	"Busy right now. Try again in a moment.": "Der er travlt lige nu. Prøv igen om lidt.",
 	"Payments are unavailable right now. Try again in a moment.":
 		"Betaling er ikke tilgængelig lige nu. Prøv igen om lidt.",
 	"You already have a plan. Change it under Payments and invoices.":
