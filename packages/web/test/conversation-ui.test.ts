@@ -1081,7 +1081,7 @@ describe("conversation UI boundaries", () => {
 			"The model account paying for this work reached its usage limit, so the work stopped. It does not move to another account. It can run again once the limit resets.",
 		);
 		expect([...(card()?.querySelectorAll("button") ?? [])].map((item) => item.textContent)).toEqual(["Dismiss"]);
-		// The member's own ChatGPT plan reached its limit: OpenAI's words and "Manage usage" (20260929993000).
+		// The member's own ChatGPT plan reached its limit: OpenAI's words and "Manage usage" (20260928379930).
 		const plan = { ...details(bridge), usageLimit: true, paidByChatgptPlan: true };
 		f.company.store.set({
 			activity: [run],

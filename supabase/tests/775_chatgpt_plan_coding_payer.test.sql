@@ -1,7 +1,7 @@
 -- @fixture 395_runtime_coding_sessions.test.sql until "-- 2. The executor claims the session, prepares, admits the turn under the owner's sponsor, and the"
 -- Sign in with ChatGPT, slice 1b (20260928359950): a member's ChatGPT plan pays for coding only when the asking
 -- run is paid by that plan, and a coding worker takes the member's other login before a plan; switch-on gate 1
--- (20260929992000): a login that may work while its member is away comes before one that may not. Test 395's
+-- (20260928379920): a login that may work while its member is away comes before one that may not. Test 395's
 -- fixture: the member's connection pays for the agent's run; the company has a coding executor and the agent a
 -- repository grant. A connection is a plan login's when its capsule is a plan login's (rows written directly
 -- for these checks).
@@ -66,7 +66,7 @@ select pg_temp.plan775(current_setting('qorpera_test.c775')::uuid, '77500000-000
 select pg_temp.wake_error($q$select pg_temp.dispatch775('plan-other')$q$, '55000',
 	'Coding for this work needs a Codex login: a ChatGPT plan pays only for work started on it');
 
--- Switch-on gate 1 (20260929992000): a login that may work while its member is away comes first.
+-- Switch-on gate 1 (20260928379920): a login that may work while its member is away comes first.
 -- A new version of the login, as a consent change makes one (versions are never changed in place); written
 -- directly, since the copied login's capsule is the fixture's.
 create function pg_temp.away775(p_connection uuid, p_allow boolean, p_state text default 'active',

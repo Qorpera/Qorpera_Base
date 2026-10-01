@@ -1,5 +1,5 @@
 -- @fixture 395_runtime_coding_sessions.test.sql until "-- 3. The session asks the owner something: the worker blocks, the parent is woken with the question,"
--- Sign in with ChatGPT, switch-on gate 2a (20260929993000): a run's recovery says whether a ChatGPT plan pays for it
+-- Sign in with ChatGPT, switch-on gate 2a (20260928379930): a run's recovery says whether a ChatGPT plan pays for it
 -- (paid_by_chatgpt_plan), and a coding turn that stopped at its login's usage limit says so in its failed event
 -- (usageLimit, paidByChatgptPlan). Test 395's fixture: the coding session 'fix-send' is leased, and its turn's run
 -- (the worker's occurrence) is paid by the owner's own login.
