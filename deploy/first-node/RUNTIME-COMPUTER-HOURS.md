@@ -537,9 +537,10 @@ Coordinator (nothing secret):
   sign-in machines are never refused. The runner orchestrator's node admission and the coding
   executor (which waits it out) know the reason. Callers that reserve inside a subtransaction lose the
   stored refusal, so members' views ask `qorpera_company_at_zero` themselves (6b's later parts).
-  A coding turn whose run began before zero but whose member machine is asleep waits too (its
-  machine's step refuses, and the executor defers it), until hours arrive or the finishing window
-  ends the run: the run box is the running work, the coding machine is not.
+  Since part 4, coding machines are refused only with coding's own switch on. Then a coding turn
+  whose run began before zero but whose member machine is asleep waits too (its machine's step
+  refuses, and the executor defers it), until hours arrive or the finishing window ends the run:
+  the run box is the running work, the coding machine is not.
 - Build step 6b part 2 (migration `20260929720000`, Company Computers):
   - a sleeping computer's wake is kept at zero (a member or agent may still ask) but the idle check
     (`qorpera_reconcile_runtime_office_idle`) hands it to the provider only once the company has hours
@@ -635,7 +636,9 @@ Coordinator (nothing secret):
     by 6a, and keeps that machine awake (its time owed) and its session "running" until hours are
     added. The same happens with the switch on in the seconds between a company running out and
     the sweep recording it, if begin falls in them. A held run is not ended by the finishing window
-    (there is no job yet). Hence step 2b as soon as the executor allows.
+    (there is no job yet). Hence step 2b as soon as the executor allows. And when a deferred
+    turn's 15-second retry meets the machine's sleep at the hour, the sleep may be refused once as
+    "in use"; the next pass sleeps it.
 - Build step 6c part 3b (migration `20260928259270`, the finishing window for runs): one hour
   after a company ran out, while it is still at zero (`qorpera_computer_hour_finish_window_over`,
   which checks at zero again, so a record up to one sweep old never ends work):

@@ -20,7 +20,8 @@
 -- 5. `qorpera_list_coding_machines` puts a member's coding machine to sleep once the finishing window
 --    is over and no turn holds it (the turn's run was ended by the finishing window), busy commands
 --    notwithstanding.
--- While either switch is off nothing changes.
+-- While the zero rule is off nothing changes. While only coding's switch is off, coding is as it was
+-- before part 1: its machines are not refused, and 6a still holds a coding turn's run.
 
 set local lock_timeout = '3s';
 
