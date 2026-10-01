@@ -151,11 +151,16 @@ Founders (2026-09-28, migration 20260928248100): every member with the role
 - ChatGPT plan rules (20260928359950, switched off with plan logins):
   - work while away on a plan login needs the member's own choice: turn it on
     with `qorpera_set_chatgpt_plan_work_while_away(profile, connection, on)`
-    (20260929980000; the caller's own plan login only, 42501 otherwise). The
-    kernel never consents a plan login for them, and
+    (20260929980000), from Settings' "Work while you're away" switch or the
+    first-routine card's Turn on. It answers for the caller's own plan login in
+    that company only (42501 "ChatGPT plan login is unavailable" for anything
+    else, alike whether or not the connection is a plan), and its answer is the
+    consent call's: `{connection_id, version, allow_autonomous, changed, ...}`,
+    with the version to bind. The kernel never consents a plan login for them:
     `qorpera_consent_provider_connection_autonomous` refuses to turn a plan on
-    (55000 "Turn on work while you're away for this ChatGPT plan in Settings");
-    turning a plan off works through either call;
+    (55000 "Turn on work while you're away for this ChatGPT plan in Settings"),
+    and an agent's routine save leaves a plan that is off as it is, also while
+    the member is turning it off. Turning a plan off works through either call;
   - a plan never pays for a listener routine (a file change or an event): a save
     with one is refused with 42501 "A ChatGPT plan cannot pay for a listener";
   - a plan at its usage limit stays the account of the conversations it pays for

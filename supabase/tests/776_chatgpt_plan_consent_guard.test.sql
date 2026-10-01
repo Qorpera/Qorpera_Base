@@ -45,15 +45,28 @@ select pg_temp.plan764_expect(pg_temp.r776_call('16000000-0000-4000-8000-0000000
 	'qorpera_consent_provider_connection_autonomous', pg_temp.r776('codex'), true), 'ok', 'the consent call on a Codex login');
 reset role;
 select pg_temp.plan764_expect(pg_temp.r776_allow(pg_temp.r776('codex')), 'true', 'the Codex login is on');
+-- The member's choice counts only for the connection it names.
+select set_config('qorpera.chatgpt_plan_member_choice', pg_temp.r776('codex')::text, true);
+select pg_temp.plan764_expect(pg_temp.r776_call('16000000-0000-4000-8000-000000000001',
+	'qorpera_consent_provider_connection_autonomous', pg_temp.r776('plan'), true),
+	'55000:Turn on work while you''re away for this ChatGPT plan in Settings', 'a choice made for another connection');
+reset role;
+select set_config('qorpera.chatgpt_plan_member_choice', '', true);
+select pg_temp.plan764_expect(pg_temp.r776_allow(pg_temp.r776('plan')), 'false', 'the plan stays off');
 
--- 2. The switch is for the member's own ChatGPT plan only.
+-- 2. The switch is for the member's own ChatGPT plan only. Anything else reads the same, so it never tells
+--    whether someone else's connection is a plan.
 select pg_temp.plan764_expect(pg_temp.r776_call('16000000-0000-4000-8000-000000000001',
 	'qorpera_set_chatgpt_plan_work_while_away', pg_temp.r776('codex'), true),
 	'42501:ChatGPT plan login is unavailable', 'the switch on a Codex login');
 reset role;
 select pg_temp.plan764_expect(pg_temp.r776_call('16000000-0000-4000-8000-000000000002',
 	'qorpera_set_chatgpt_plan_work_while_away', pg_temp.r776('plan'), true),
-	'42501:autonomous consent requires the connection owner', 'another member''s switch');
+	'42501:ChatGPT plan login is unavailable', 'another member''s plan');
+reset role;
+select pg_temp.plan764_expect(pg_temp.r776_call('16000000-0000-4000-8000-000000000002',
+	'qorpera_set_chatgpt_plan_work_while_away', '76400000-0000-4000-8000-000000000999', true),
+	'42501:ChatGPT plan login is unavailable', 'a connection that does not exist');
 reset role;
 select pg_temp.plan764_expect(pg_temp.r776_allow(pg_temp.r776('plan')), 'false', 'the plan stays off');
 
