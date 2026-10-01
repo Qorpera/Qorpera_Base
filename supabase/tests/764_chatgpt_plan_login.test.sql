@@ -1,5 +1,5 @@
 -- @fixture 160_native_subscription_compute_identity.test.sql until "-- Exercise the Step 2 authority/receipt RPCs using this real admitted native run."
--- Sign in with ChatGPT, slice 1a (20260929830000): a member's ChatGPT plan login is a second kind of
+-- Sign in with ChatGPT, slice 1a (20260928329830): a member's ChatGPT plan login is a second kind of
 -- vault login, built switched off. It is begun, read, completed, handed to a run and renewed only while
 -- the platform switch is on and its company is on the list (and its sign-ins go to the vault); it is
 -- always a member's own; the vault in service keeps reading Codex sign-ins with exactly its v1 answer;
