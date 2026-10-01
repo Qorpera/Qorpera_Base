@@ -917,5 +917,125 @@ describe("Continue with ChatGPT: the return from OpenAI", () => {
 		expect(confirm).not.toHaveBeenCalled();
 		expect(sessionStorage.getItem("qorpera.chatgpt-plan-sign-in.v1")).toBeNull();
 		expect(settingsOpen()).toBe(false);
+
+describe("a ChatGPT plan's first-routine card in the app", () => {
+	const notice = {
+		schema: "qorpera.member-notification/v1",
+		notification_id: id(100),
+		profile_id: profileA.profileId,
+		kind: "routine_needs_model_account",
+		created_at: userA.created_at,
+		acknowledged_at: null,
+		subject: { staffAgentId: staff.id, routineId: id(61), title: "Morning brief" },
+	};
+	const planRow = (version: number, on: boolean) => ({
+		connection_id: id(85),
+		client_connection_id: id(185),
+		connection_version: version,
+		provider: "openai",
+		native_harness: "codex-cli",
+		authorization_state: "active",
+		max_native_concurrency: 1,
+		billing_source: "subscription",
+		consent_version: "1",
+		consented_at: userA.created_at,
+		connection_status: "active",
+		sponsor_binding_id: id(86),
+		sponsor_version: 1,
+		policy: { implementation_status: "supported", enablement_status: "enabled", policy_version: 1 },
+		login_kind: "chatgpt_plan",
+		allow_autonomous: on,
+		routine_offer_shown_at: null,
+	});
+	const routineRow = {
+		routine_id: id(61),
+		client_routine_id: id(161),
+		version: 1,
+		status: "paused",
+		pause_reason: "needs_model_account",
+		runs_for_user_id: userA.id,
+		staff_agent_id: staff.id,
+		title: "Morning brief",
+		prompt: "Brief me.",
+		triggers: [{ id: "agent", kind: "schedule", intervalMinutes: 60, replyPolicy: "silent" }],
+		effort: "medium",
+		sponsor_binding_id: id(87),
+		sponsor_version: 1,
+		logical_computer_id: null,
+		required_capability: "agent_turn",
+		job_type: "agent_turn",
+		publication_mode: "automatic",
+		review_policy_key: null,
+		reviewer_staff_ids: [],
+		created_at: userA.created_at,
+		updated_at: userA.created_at,
+	};
+	/** The member's own waiting routine, a plan that is not turned on, plans on, on a conversation page. */
+	function planApp(capabilities = team.capabilities) {
+		let connections = [planRow(2, false)];
+		const calls: string[] = [];
+		const answer = async (method: string, args: Record<string, unknown>): Promise<unknown> => {
+			calls.push(method);
+			if (method === "qorpera_list_member_notifications") return [notice];
+			if (method === "qorpera_acknowledge_member_notification")
+				return { ...notice, acknowledged_at: userA.created_at };
+			if (method === "qorpera_chatgpt_plan_available") return true;
+			if (method === "qorpera_list_member_native_execution_connections")
+				return { compute_identity: null, connections };
+			if (method === "qorpera_list_cloud_routines") return [routineRow];
+			if (method === "qorpera_record_chatgpt_plan_routine_offer")
+				return { connection_id: args.p_connection_id, shown_at: userA.created_at };
+			if (method === "qorpera_set_chatgpt_plan_work_while_away") {
+				connections = [...connections, planRow(3, true)];
+				return { connection_id: args.p_connection_id, version: 3, allow_autonomous: true };
+			}
+			if (method === "qorpera_create_member_execution_sponsor") return { binding_id: id(88), version: 1 };
+			if (method === "qorpera_upsert_cloud_routine")
+				return { ...routineRow, version: 2, status: "active", pause_reason: null };
+			throw new Error(`Unexpected fixture RPC: ${method}`);
+		};
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (input: string | URL | Request, init?: RequestInit) =>
+				Response.json(
+					await answer(
+						String(input).split("/").at(-1)!,
+						init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : {},
+					),
+				),
+			),
+		);
+		const f = mounted(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
+		vi.mocked(f.cloud.rpc).mockImplementation((method: string, args?: Record<string, unknown>) =>
+			answer(method, args ?? {}),
+		);
+		vi.mocked(f.api.listSessions).mockResolvedValue([{ ...session, staffAgentId: staff.id }]);
+		vi.mocked(f.api.getTeam).mockResolvedValue({ ...team, capabilities });
+		return { ...f, calls };
+	}
+	const card = () => document.querySelector(".company-notices .company-notice p")?.textContent;
+
+	it("asks the signed-in member about their own routine, and an owner's Turn on starts it", async () => {
+		const f = planApp();
+		await vi.waitFor(() => expect(card()).toContain("Morning brief can run while you're away."), { timeout: 3000 });
+		expect(f.calls).toContain("qorpera_record_chatgpt_plan_routine_offer");
+		document.querySelector<HTMLButtonElement>('[data-action="turn-on-plan"]')!.click();
+		await vi.waitFor(() => expect(f.calls).toContain("qorpera_upsert_cloud_routine"), { timeout: 3000 });
+		expect(f.calls).toContain("qorpera_set_chatgpt_plan_work_while_away");
+		expect(f.calls).not.toContain("qorpera_consent_provider_connection_autonomous");
+	});
+
+	it("turns the plan on for a member who does not save routines, and says to ask the agent", async () => {
+		const f = planApp({ ...team.capabilities, authorize: false });
+		await vi.waitFor(() => expect(card()).toContain("Morning brief can run while you're away."), { timeout: 3000 });
+		document.querySelector<HTMLButtonElement>('[data-action="turn-on-plan"]')!.click();
+		await vi.waitFor(
+			() =>
+				expect(card()).toBe(
+					"Your ChatGPT plan now works while you're away. Ask the agent to set Morning brief up again.",
+				),
+			{ timeout: 3000 },
+		);
+		expect(f.calls).not.toContain("qorpera_upsert_cloud_routine");
 	});
 });

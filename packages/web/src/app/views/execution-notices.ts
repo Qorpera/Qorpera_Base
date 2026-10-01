@@ -139,17 +139,20 @@ export class ExecutionNotices {
 			const items = await this.#client.listNotifications(signal);
 			if (signal.aborted) return;
 			this.#items = told(items);
-			// The plan card has its own reads; a failed one hides only the card.
+			// The plan card has its own reads; a failed one hides only the card, and the next poll reads again.
 			if (!this.#offerDone)
 				this.#offer = await this.#readOffer(items, signal).catch((error: unknown) => {
 					if (signal.aborted) throw error;
+					this.#offerChecked = "";
 					return undefined;
 				});
 		} catch {
 			if (signal.aborted) return;
-			// Nothing stale is shown, and nothing can be dismissed, until a read succeeds.
+			// Nothing stale is shown, and nothing can be dismissed, until a read succeeds. A card shown
+			// before comes back then: its plan is still offered in this window.
 			this.#items = [];
 			this.#offer = undefined;
+			this.#offerChecked = "";
 		} finally {
 			if (this.#request === request) this.#request = undefined;
 			if (!signal.aborted) this.#draw();
@@ -206,20 +209,23 @@ export class ExecutionNotices {
 					.filter((item) => item.connectionId === id && item.allowAutonomous === true)
 					.sort((a, b) => b.connectionVersion - a.connectionVersion)[0];
 				if (!account) throw new Error("The plan did not turn on");
-				const current = await plan.routines.list();
-				for (const waiting of offer.routines) {
-					const routine = current.find((entry) => entry.routineId === waiting.routineId);
-					// Only a routine that still waits: one the agent paused, concluded or removed stays as it is.
-					if (routine && waitsForPlan(routine, plan.memberId))
-						await plan.routines.setEnabled(routine, account, true, crypto.randomUUID());
-				}
+				// Each routine that waits now, read again: one the agent paused, concluded or removed stays as it
+				// is, and one set up while the card stood starts too.
+				for (const routine of (await plan.routines.list()).filter((entry) => waitsForPlan(entry, plan.memberId)))
+					await plan.routines.setEnabled(routine, account, true, crypto.randomUUID());
 			} else
 				this.#offerDone =
-					offer.routines.length > 1
-						? t("Your ChatGPT plan now works while you're away. Ask the agents to set those routines up again.")
-						: t("Your ChatGPT plan now works while you're away. Ask the agent to set {title} up again.", {
+					offer.routines.length === 1
+						? t("Your ChatGPT plan now works while you're away. Ask the agent to set {title} up again.", {
 								title: offer.routines[0]!.title,
-							});
+							})
+						: new Set(offer.routines.map((routine) => routine.staffAgentId)).size > 1
+							? t(
+									"Your ChatGPT plan now works while you're away. Ask the agents to set those routines up again.",
+								)
+							: t(
+									"Your ChatGPT plan now works while you're away. Ask the agent to set those routines up again.",
+								);
 			for (const item of offer.notices) {
 				await this.#client.acknowledgeNotification(item.notificationId, signal).catch(() => undefined);
 				this.#hidden.add(item.notificationId);
@@ -227,9 +233,11 @@ export class ExecutionNotices {
 			if (!this.#offerDone) this.#offer = undefined;
 		} catch {
 			if (!signal.aborted)
-				this.#offerError = this.#turnedOn.has(id)
-					? t("“Work while you're away” is on, but the routine could not be started. Try again.")
-					: t("“Work while you're away” could not be turned on. Try again.");
+				this.#offerError = !this.#turnedOn.has(id)
+					? t("“Work while you're away” could not be turned on. Try again.")
+					: offer.routines.length > 1
+						? t("“Work while you're away” is on, but the routines could not be started. Try again.")
+						: t("“Work while you're away” is on, but the routine could not be started. Try again.");
 		} finally {
 			this.#offerBusy = undefined;
 			if (!signal.aborted) this.#draw();
