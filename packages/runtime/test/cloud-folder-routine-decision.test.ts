@@ -40,7 +40,8 @@ async function fixture(
 	hook?: (path: string, text: string) => FolderWriterHookAnswer | null,
 	files: Record<string, string> = text === null ? {} : { [PATH]: text },
 ) {
-	const f = await folderWriterFixture({ files }, hook ? { hook } : {});
+	// The woken routine's own decision is plain, as SQL's review class.
+	const f = await folderWriterFixture({ files }, { decisionRoutineId: BASE.id, ...(hook ? { hook } : {}) });
 	runs.push(f.run);
 	// The routines folder is listed only when the file at the woken key is not this routine.
 	const listed = vi.spyOn(CloudCompanyFolderClient.prototype, "list");

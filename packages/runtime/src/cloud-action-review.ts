@@ -508,6 +508,12 @@ export function describeCloudAction(
 		// Pausing, resuming, removing or ending one names it by its key alone.
 		const key = text(args.routineKey);
 		target = text(args.title) || text(args.name) || (key ? readable(key) : null);
+		// A resume also undoes a member's Stop or a suspension the member may not remember.
+		if (args.action === "resume")
+			add(
+				"effect",
+				"Switches the routine back on, also after a member stopped it or its model account stopped working",
+			);
 		add("schedule", routineSchedule(args, timeZone));
 		quote("intent", args.intent, CONTENT_BYTES);
 	} else if (tool.name === "decide_routine") {

@@ -1486,7 +1486,7 @@ it.each([
 	["a folder-v2 run on a node without folder bytes", true, false, false],
 	["a folder-v2 run", true, true, true],
 ] as const)(
-	"gives manage_todo, organize_sidebar, hire_agent and create_group_chat the state files' writers only for %s",
+	"gives manage_todo, organize_sidebar, hire_agent, create_group_chat and manage_routine the state files' writers only for %s",
 	async (_name, folder, bytes, files) => {
 		const f = await fixture("company-runtime", false, undefined, false, bytes);
 		if (folder) f.context.folder = { agent: "nora", coworkers: {} };
@@ -1505,6 +1505,9 @@ it.each([
 		const chat = tools.find((tool) => tool.name === "create_group_chat")?.description ?? "";
 		expect(chat.includes("agents/groups/<name>/group.md")).toBe(files);
 		expect(chat.includes("No member approval is needed")).toBe(!files);
+		const routine = tools.find((tool) => tool.name === "manage_routine")?.description ?? "";
+		expect(routine.includes("routines/<routineKey>.md")).toBe(files);
+		expect(routine.includes("No member approval is needed")).toBe(!files);
 	},
 );
 
