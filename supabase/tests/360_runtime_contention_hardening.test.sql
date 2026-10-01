@@ -62,7 +62,7 @@ reset statement_timeout;
 -- function, even when the session value is shorter.
 create table public.lock_budget_probe_360 (id integer primary key);
 insert into public.lock_budget_probe_360 values (1);
-select dblink_connect('contention_locker', 'dbname=qorpera_test');
+select dblink_connect('contention_locker', 'dbname=' || current_database());
 select dblink_exec('contention_locker', 'begin');
 select * from dblink('contention_locker', 'select id from public.lock_budget_probe_360 where id = 1 for update') as locked(id integer);
 create function pg_temp.wait_under_function_lock_budget_shared()
@@ -266,7 +266,7 @@ $$;
 
 -- The chosen profile is still fenced: a claim waits behind a held profile
 -- row until it is released, then leases that profile.
-select dblink_connect('contention_worker', 'dbname=qorpera_test');
+select dblink_connect('contention_worker', 'dbname=' || current_database());
 select dblink_exec('contention_locker', 'begin');
 select * from dblink('contention_locker', format(
 	$$select id from public.qorpera_profiles where id = %L for update$$,
