@@ -1486,7 +1486,7 @@ it.each([
 	["a folder-v2 run on a node without folder bytes", true, false, false],
 	["a folder-v2 run", true, true, true],
 ] as const)(
-	"gives manage_todo and organize_sidebar the state files' writers only for %s",
+	"gives manage_todo, organize_sidebar and hire_agent the state files' writers only for %s",
 	async (_name, folder, bytes, files) => {
 		const f = await fixture("company-runtime", false, undefined, false, bytes);
 		if (folder) f.context.folder = { agent: "nora", coworkers: {} };
@@ -1499,6 +1499,9 @@ it.each([
 		const sidebar = tools.find((tool) => tool.name === "organize_sidebar")?.description ?? "";
 		expect(sidebar.includes("the sections live in the file agents/sections.md")).toBe(files);
 		expect(sidebar.includes("by its id or name")).toBe(!files);
+		const hire = tools.find((tool) => tool.name === "hire_agent")?.description ?? "";
+		expect(hire.includes("saved as the agent's own folder")).toBe(files);
+		expect(hire.includes("under organization/agents")).toBe(!files);
 	},
 );
 

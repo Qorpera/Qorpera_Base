@@ -841,6 +841,48 @@ C1d (bytes):
   followed (the run context names the folder once); the decision is then answered settled while the kernel may still
   owe it.
 
+**Built (W4a): `hire_agent`** (`packages/runtime/src/cloud-folder-hiring.ts`), on C2's review recorder
+(RUNTIME-COMPANY-FOLDER-C2.md, R1).
+- One `new_folder` unit `agents/<handle>`: `agent.md` (`writeAgentFile`: kind `agent`, status `active`, the figure,
+  `jobDescription` as the instructions), the folders `memory`, `skills`, `routines` and `todos` (as the Co-Founder's
+  seeded folder), and `todos/first-assignment.md`: the first assignment as an open todo, asked for by the run's
+  requester, titled with the assignment's first line (one line, at most 200 bytes).
+- The handle is the name as a folder name, numbered past the names taken under `agents/` and the reserved ones
+  (`freeCompanyStateName`), from a listing taken before the receipt. The agent's and the todo's ids come from the run
+  and the operation key (the legacy hire's id format, in a namespace of their own). A rebuilt call may pick another
+  handle; what makes it harmless is the receipt, whose target is the agent's id, so a completed call replays.
+- Checked with the arguments, before the automatic review (`INVALID_ARGUMENTS: …`), so no card is raised for a hire
+  that cannot be saved: the files the shared parser refuses (its problems), a first assignment over 4000 bytes (a
+  todo's body; the schema counts characters), and an operation key reused in this run with other arguments.
+- Refused before the receipt (`REFUSED: …`): a call without the automatic review's approval (`actionReviewId`).
+- **Contract 14.1, the restricted hire** (migration 20260929940000): an agent that cannot delegate the new agent's
+  default access (a current, nonexpiring read and write grant on every live shared root, the legacy hire's predicate,
+  `qorpera_folder_agent_delegates_default`) hires only on an owner's or admin's answer. The review's layering asks the
+  owners and admins on a card for its `hire_agent` call, whatever the reviewer found (a deny stays a deny; a denied
+  hire retried asks them too), as an access check no rule lifts, with no Always allow. The card says why it asks and
+  keeps the reviewer's own reason unless the reviewer simply allowed it; a not-asked-for finding stays the built-in
+  check. The recorder checks again before the save and records such a hire only from an answered owners-and-admins
+  card: a member's answer on a card of their own, given while the agent could still delegate, does not carry over (an
+  owner's or admin's does). Where no owners-and-admins card can be raised (a group chat, a worker, a member's private
+  conversation) the hire is refused, as any ask there. The recheck runs in the recorder's transaction; a
+  restriction between it and the commit (milliseconds) is like a restriction just after the hire.
+- Under the receipt: stage, record the review of exactly these units (`recordReview` with the tool and the call's
+  argument digest), commit them with the review. Saved: the agent exists and is indexed with its thread; the commit
+  names the review. A conflict (the folder was taken meanwhile) or a refusal says to call again with a new key.
+- **The new agent does not start by itself** (open with F1): no first run is queued for a `folder-v2` hire yet. The
+  result tells the model to wake it with `send_coworker_message` to the agent's id, asking it to start on its first
+  todo, and to tell the member (and, if that send fails, that the agent has not started). A hire that waits for a
+  member's review says not to hire again.
+- A `folder-v2` run on a node without folder bytes keeps the legacy tool, which refuses `folder-v2`, as for W1–W3.
+- Known: the Co-Founder's hire overlay still says agent descriptions live under `organization/agents`; its
+  `folder-v2` wording comes with F2-1b's context work.
+- SQL test 774: a run's hire round trip on the recorder (denied without its review or with a review of other units;
+  saved and indexed with it; a taken folder is a conflict; the agent rules still refuse a Co-Founder or a taken id;
+  the predicate case by case (a revoked, read-only, finite, other-version or other-agent grant, an archived agent, a
+  second environment's root and its revocation); the restricted hire asks the owners and admins with no Always allow,
+  also on a retry, its own allow and an earlier member's answer are refused by the recorder, and an owner's answer
+  saves it with that owner as approver). 652's pin of the layering's snapshot-v1 text strips the `folder-v2` lines.
+
 Until the mount's writes are accepted (F3), these tools become thin writers of these files:
 `hire_agent`, `create_group_chat`, `organize_sidebar`, `manage_todo`, `manage_routine` and
 `decide_routine`. They use the canonical writers here, or `setCompanyStateSettings` for a

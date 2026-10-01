@@ -8,6 +8,7 @@ import {
 	type CloudCompanyFolderFile,
 } from "@qorpera/runtime/cloud-company-folder-client";
 import type { CloudCompanyPathControl } from "@qorpera/runtime/cloud-company-path-gateway";
+import { CloudCompanyFolderRpcError } from "@qorpera/runtime/cloud-company-path-refusal";
 import { CloudNativeToolRun } from "@qorpera/runtime/cloud-native-tool-authority";
 import type { CloudToolContext } from "@qorpera/runtime/cloud-native-tool-boundary";
 import {
@@ -21,6 +22,10 @@ import { nativeToolAuthorityFixture } from "./native-tool-authority-fixture.ts";
 /** The folder core and the receipt ledger, simulated at the wire with the shapes the folder client and the tool
  * operations parse (tests 760 and 650 pin them against the real SQL). The caller closes `run`. */
 export const sha = (bytes: Uint8Array | string) => createHash("sha256").update(bytes).digest("hex");
+const uuidFrom = (text: string) => {
+	const hex = sha(text);
+	return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-8${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
+};
 
 interface Stored {
 	version: string;
@@ -39,10 +44,16 @@ export interface FolderWriterHookAnswer {
 }
 
 /** A fake folder core and receipt ledger for a folder writer's tests, with seeded files and folders. A write whose
- * parse has problems is refused as `structured_invalid`, as the real hook does; `hook` may refuse any other write. */
+ * parse has problems is refused as `structured_invalid`, as the real hook does; `hook` may refuse any other write. A
+ * new folder with an `agent.md` is delegation (C1B §6): the commit saves it only with a review recorded
+ * (`qorpera_folder_record_review`, C2 R1) for exactly its change set, and `recorder` may answer the recording instead.
+ * A commit is not replayed by its operation key (SQL's step 0); the receipt ledger replays a completed call. */
 export async function folderWriterFixture(
 	seed: { files?: Record<string, string>; folders?: string[] } = {},
-	options: { hook?: (path: string, text: string) => FolderWriterHookAnswer | null } = {},
+	options: {
+		hook?: (path: string, text: string) => FolderWriterHookAnswer | null;
+		recorder?: (request: Record<string, unknown>) => Record<string, unknown> | null;
+	} = {},
 ) {
 	const { binding, authority } = nativeToolAuthorityFixture();
 	const identity = authority.identity;
@@ -51,7 +62,10 @@ export async function folderWriterFixture(
 	const files = new Map<string, Stored>();
 	const rowIds = new Map<string, string>();
 	const folders = new Set<string>(["agents", "agents/nora", ...(seed.folders ?? [])]);
-	const commits: { key: string; receiptId: unknown; units: Record<string, unknown>[] }[] = [];
+	const commits: { key: string; receiptId: unknown; reviewId: unknown; units: Record<string, unknown>[] }[] = [];
+	// Recorded reviews: id → the change set's JSON, as the commit receives it.
+	const reviews = new Map<string, string>();
+	const recordings: Record<string, unknown>[] = [];
 	const releases: Record<string, unknown>[] = [];
 	let seq = 1;
 	let tick = 0;
@@ -116,13 +130,73 @@ export async function folderWriterFixture(
 				const found = entry(args.p_path as string);
 				return { schema: "qorpera.folder-read/v1", asOfSeq: seq, found: found !== null, entry: found };
 			}
+			if (method === "qorpera_folder_record_review") {
+				const request = args.p_request as Record<string, unknown>;
+				recordings.push(structuredClone(args));
+				const answer = options.recorder?.(request);
+				if (answer) return answer;
+				const reviewId = uuidFrom(`review:${request.actionReviewId as string}`);
+				const units = JSON.stringify(request.units);
+				if (reviews.has(reviewId) && reviews.get(reviewId) !== units)
+					throw new CloudCompanyFolderRpcError("23505", "This approval was already used for another change");
+				reviews.set(reviewId, units);
+				return {
+					schema: "qorpera.folder-review/v1",
+					reviewId,
+					approvedBy: null,
+					units: (request.units as unknown[]).length,
+				};
+			}
 			if (method === "qorpera_folder_commit") {
 				const units = args.p_units as Record<string, unknown>[];
-				commits.push({ key: args.p_operation_key as string, receiptId: args.p_receipt_id, units });
+				commits.push({
+					key: args.p_operation_key as string,
+					receiptId: args.p_receipt_id,
+					reviewId: args.p_review_id,
+					units,
+				});
 				const results = units.map((unit, index) => {
 					const path = unit.path as string;
 					const parent = path.split("/").slice(0, -1).join("/");
 					const base = { unit: index + 1, op: unit.op, path };
+					if (unit.op === "new_folder") {
+						const taken = (candidate: string) => candidate === path || candidate.startsWith(`${path}/`);
+						if ([...files.keys(), ...folders].some(taken))
+							return { ...base, outcome: "conflict", reason: "exists" };
+						if (!folders.has(parent)) return { ...base, outcome: "refused", reason: "parent_missing" };
+						// As SQL: the unit's own shape, then the hook decides each file, then the review is consulted.
+						const contents = unit.contents as { path: string; kind?: string; file?: CloudCompanyFolderFile }[];
+						const inner = new Set(contents.filter((item) => !item.file).map((item) => item.path));
+						if (
+							contents.some(
+								(item) => item.path.includes("/") && !inner.has(item.path.split("/").slice(0, -1).join("/")),
+							)
+						)
+							return { ...base, outcome: "refused", reason: "invalid" };
+						const entries = (unit.structured as { problems?: Record<string, unknown>[] }[] | undefined) ?? [];
+						const invalid = entries.find((item) => item.problems);
+						if (invalid?.problems)
+							return { ...base, outcome: "refused", reason: "structured_invalid", problems: invalid.problems };
+						for (const item of contents) {
+							if (!item.file) continue;
+							const hooked = options.hook?.(
+								`${path}/${item.path}`,
+								new TextDecoder().decode(bytesBySha.get(item.file.fileSha256)),
+							);
+							if (hooked) return { ...base, ...hooked };
+						}
+						if (
+							contents.some((item) => item.path === "agent.md") &&
+							(typeof args.p_review_id !== "string" || reviews.get(args.p_review_id) !== JSON.stringify(units))
+						)
+							return { ...base, outcome: "denied", reason: "review_required" };
+						folders.add(path);
+						for (const item of contents)
+							if (item.file)
+								files.set(`${path}/${item.path}`, { version: randomUUID(), file: item.file, updatedAt: now() });
+							else folders.add(`${path}/${item.path}`);
+						return { ...base, outcome: "saved", version: randomUUID() };
+					}
 					if (unit.op === "mkdir") {
 						folders.add(path);
 						return { ...base, outcome: "saved", version: randomUUID() };
@@ -300,6 +374,7 @@ export async function folderWriterFixture(
 		argumentSha256: "a".repeat(64),
 		signal: abort.signal,
 		identity,
+		actionReviewId: randomUUID(),
 	};
 	const text = (path: string) => {
 		const stored = files.get(path);
@@ -311,6 +386,8 @@ export async function folderWriterFixture(
 		files,
 		folders,
 		commits,
+		recordings,
+		reviews,
 		releases,
 		ledger,
 		operationControl,
