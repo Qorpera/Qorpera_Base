@@ -112,6 +112,10 @@ begin
 		or exists (select 1 from jsonb_array_elements(r -> 'todos') a join jsonb_array_elements(s -> 'todos') b
 			on a ->> 'todoKey' = b ->> 'todoKey') then
 		raise exception 'The next page: %', s; end if;
+	-- A search matches a key the title does not have.
+	if (select jsonb_agg(t ->> 'todoKey') from jsonb_array_elements(pg_temp.w1_list(ada, '{"search":"item-3"}') -> 'todos') t)
+			<> '["item-33","item-32","item-31","item-30","item-3"]' then
+		raise exception 'A search by key'; end if;
 	-- Deleting a file retires its row (a tombstone key): it is listed no more, closed or not.
 	perform pg_temp.expect(pg_temp.commit(pg_temp.member(1), 'w1-todo-delete', jsonb_build_array(jsonb_build_object('op','delete',
 		'path','agents/ada/todos/call-the-bank.md','expectedVersion',pg_temp.w1_version('agents/ada/todos/call-the-bank.md')))), 1, 'saved');
@@ -163,6 +167,22 @@ begin
 		values ('63400000-0000-4000-8000-000000000010', 'test', '63400000-0000-4000-8000-000000000001')$f$);
 	perform pg_temp.raises(format('select pg_temp.w1_list(%L)', ada), '55000');
 	delete from public.qorpera_company_execution_pauses where profile_id = '63400000-0000-4000-8000-000000000010';
+	-- One todo file narrowed to another agent: the folder core hides it from this run, and so does the page, its count
+	-- and its cursor.
+	v_res := public.qorpera_folder_set_resource('63400000-0000-4000-8000-000000000020', pg_temp.member(1),
+		'agents/ada/todos/send-the-offer.md', 'exact', 'company_shared', 'normal') ->> 'resourceId';
+	perform public.qorpera_folder_grant('63400000-0000-4000-8000-000000000020', pg_temp.member(1), v_res, 'staff_agent',
+		'63400000-0000-4000-8000-0000000000e2', array['read']);
+	if (public.qorpera_folder_read('63400000-0000-4000-8000-000000000020', ada, 'agents/ada/todos/send-the-offer.md')
+			->> 'found')::boolean then
+		raise exception 'The core hides the narrowed file'; end if;
+	if jsonb_array_length(pg_temp.w1_list(ada, '{"search":"offer"}') -> 'todos') <> 0
+		or (pg_temp.w1_list(ada, '{"state":"blocked"}') ->> 'moreTodos')::int <> 0
+		or jsonb_array_length(pg_temp.w1_list(ada, '{"state":"blocked"}') -> 'todos') <> 0
+		or jsonb_array_length(pg_temp.w1_list(ada, '{"state":"done"}') -> 'todos') <> 1 then
+		raise exception 'A todo the run may not read is not listed'; end if;
+	perform pg_temp.raises(format('select pg_temp.w1_list(%L, %L)', ada, jsonb_build_object('cursor',
+		(select id from public.qorpera_runtime_agent_todos where folder_path = 'agents/ada/todos/send-the-offer.md'))), '22023');
 	-- Its todos folder narrowed to another agent: the agent no longer reads it.
 	v_res := public.qorpera_folder_set_resource('63400000-0000-4000-8000-000000000020', pg_temp.member(1), 'agents/ada/todos',
 		'subtree', 'company_shared', 'normal') ->> 'resourceId';
