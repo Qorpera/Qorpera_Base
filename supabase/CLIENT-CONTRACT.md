@@ -136,12 +136,13 @@ Founders (2026-09-28, migration 20260928248100): every member with the role
 
 ### Credentials, provider connections, identity recovery (15)
 
-- `qorpera_begin_chatgpt_plan_sign_in` (20260929800000, switched off): begins a
+- `qorpera_begin_chatgpt_plan_sign_in` (20260929830000, switched off): begins a
   ChatGPT plan sign-in ("Continue with ChatGPT") for the caller's own member
   compute identity, the same as `qorpera_begin_native_provider_login` for
   OpenAI/Codex with the sign-in marked as a plan sign-in. Refused with 55000
   while plan logins are switched off for the company, and with 22023 for any
-  identity that is not the caller's own member identity.
+  identity that is not the caller's own member identity. The answer is the
+  ordinary begin's plus `model_login_kind: "chatgpt_plan"`.
 - `qorpera_begin_cloud_secret_capture`
 - `qorpera_begin_native_provider_login`
 - `qorpera_chatgpt_plan_available(profile)`: whether the caller's company may
@@ -603,12 +604,15 @@ wake), so no agent runs and nothing is charged before it.
 - A mailbox is paused, resumed and removed with `qorpera_set_event_hook_status` on its hook; removing frees
   its address. `qorpera_list_event_hooks` lists mailboxes with their `email` for every member, and
   `qorpera_list_event_deliveries` their received messages (`eventType` `mail.received`).
-- Sending (20260929740000_runtime_company_mail_sending, step M2b): agents send from a mailbox with the runtime
+- Sending (20260928309740_runtime_company_mail_sending, step M2b): agents send from a mailbox with the runtime
   tool `send_mail`; there is no client surface yet. Sent email is queued in `qorpera_company_mail_outbox` (closed
   to every API role) and sent by the `mail-outbox` Edge Function. Sending has its own switch in
   `qorpera_mail_settings` (`sending`, built off) and the company limits on recipients `company_hourly_recipients`
   (60) and `company_daily_recipients` (300). Received mail (`mail.received`) now also carries `autoSubmitted`,
   `precedence`, `listId` and `automated`; agents never answer automated mail.
+- Sender names (20260929810000_runtime_company_mail_sender_names): `qorpera_create_company_mailbox` also reserves
+  (22023) any local part that reads as Qorpera (case, separators, accents, full width and look-alike letters or
+  digits folded), and no email goes out when the agent's or the company's name or the mailbox reads as Qorpera.
 
 ## 3. Realtime
 
@@ -701,7 +705,7 @@ machine.
 - `profile-invitation-email`, `company-file-verifier`, `artifact-gc-worker`,
   `runner-control`, `runner-broker`, `runner-orchestrator`,
   `computer-hour-notices` (20260928249160, founders' hour emails),
-  `mail-outbox` (20260929740000, email agents send from company mailboxes) —
+  `mail-outbox` (20260928309740, email agents send from company mailboxes) —
   service or runner authority only. Clients never call them.
 
 ## 6. Stability by Order (what a client may build now)

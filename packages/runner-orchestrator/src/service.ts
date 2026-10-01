@@ -3,6 +3,7 @@ import { FileRunnerOrchestratorControlTokenStore } from "./control-token-store.t
 import type { ServiceHttpFetch } from "./http-transport.ts";
 import { nodeHttpFetch } from "./node-http-fetch.ts";
 import { CloudRunnerOrchestrator, SupabaseCloudRunnerOrchestratorControlPlane } from "./orchestrator.ts";
+import { RealtimeOrchestratorWake, type RealtimeOrchestratorWakeState } from "./orchestrator-wake.ts";
 import { HttpCloudRunnerProviderAdapter } from "./provider-http.ts";
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -22,6 +23,8 @@ export interface CloudRunnerOrchestratorServiceConfig {
 	/** Control renewal, reconcilers and retained claims; defaults to 2 s. */
 	reconcileIntervalMs?: number;
 	dispatchConcurrency: number;
+	/** Push wake-ups over Supabase Realtime (off unless configured): the slow poll that backs them up. */
+	wake?: { backstopMs: number };
 }
 
 export interface CloudRunnerOrchestratorServiceOptions {
@@ -83,6 +86,20 @@ export function cloudRunnerOrchestratorServiceConfigFromEnvironment(
 	if (!Number.isSafeInteger(dispatchConcurrency) || dispatchConcurrency < 1 || dispatchConcurrency > 64) {
 		throw new Error("QORPERA_RUNNER_ORCHESTRATOR_CONCURRENCY is outside the supported range");
 	}
+	const wakeMode = environment.QORPERA_RUNNER_ORCHESTRATOR_WAKE?.trim() || "off";
+	if (wakeMode !== "off" && wakeMode !== "realtime") {
+		throw new Error("QORPERA_RUNNER_ORCHESTRATOR_WAKE must be off or realtime");
+	}
+	const wakeBackstopMs = Number(environment.QORPERA_RUNNER_ORCHESTRATOR_WAKE_BACKSTOP_MS?.trim() || "5000");
+	if (
+		wakeMode === "realtime" &&
+		(!Number.isSafeInteger(wakeBackstopMs) ||
+			wakeBackstopMs < 1000 ||
+			wakeBackstopMs > 60_000 ||
+			wakeBackstopMs < pollIntervalMs)
+	) {
+		throw new Error("QORPERA_RUNNER_ORCHESTRATOR_WAKE_BACKSTOP_MS is outside the supported range");
+	}
 	return {
 		supabaseUrl: serviceUrl(requiredEnvironmentValue(environment, "QORPERA_SUPABASE_URL"), "QORPERA_SUPABASE_URL"),
 		supabasePublishableKey: requiredEnvironmentValue(environment, "QORPERA_SUPABASE_PUBLISHABLE_KEY"),
@@ -98,6 +115,18 @@ export function cloudRunnerOrchestratorServiceConfigFromEnvironment(
 		pollIntervalMs,
 		reconcileIntervalMs,
 		dispatchConcurrency,
+		...(wakeMode === "realtime" ? { wake: { backstopMs: wakeBackstopMs } } : {}),
+	};
+}
+
+/** Logs a wake-up channel's state when it changes (a refused join retries every 30 s; it is logged once). */
+function wakeStateLogger(): (state: RealtimeOrchestratorWakeState, reason?: string) => void {
+	let last: string | undefined;
+	return (state, reason) => {
+		const line = JSON.stringify({ schema: "qorpera.orchestrator-wake/v1", state, ...(reason ? { reason } : {}) });
+		if (line === last) return;
+		last = line;
+		console.error(line);
 	};
 }
 
@@ -105,6 +134,7 @@ export async function runCloudRunnerOrchestratorService(options: CloudRunnerOrch
 	const transport = options.fetchImplementation ?? nodeHttpFetch;
 	const controlTokenStore = new FileRunnerOrchestratorControlTokenStore(options.config.orchestratorControlStatePath);
 	const controlTokens = await controlTokenStore.load(options.config.orchestratorControlToken);
+	let wake: RealtimeOrchestratorWake | undefined;
 	const controlPlane = new SupabaseCloudRunnerOrchestratorControlPlane(
 		options.config.supabaseUrl,
 		options.config.supabasePublishableKey,
@@ -114,6 +144,8 @@ export async function runCloudRunnerOrchestratorService(options: CloudRunnerOrch
 		{
 			...(controlTokens.pending ? { pendingControlToken: controlTokens.pending } : {}),
 			persistControlTokens: (state) => controlTokenStore.save(state),
+			// Every start rotates the control token on its first reconcile pass: follow it to its new topic.
+			onControlRotated: () => wake?.refresh(),
 		},
 	);
 	const providerAdapter = new HttpCloudRunnerProviderAdapter(
@@ -128,11 +160,25 @@ export async function runCloudRunnerOrchestratorService(options: CloudRunnerOrch
 		providerAdapter,
 		dispatchConcurrency: options.config.dispatchConcurrency,
 	});
-	await orchestrator.run(options.signal, {
-		pollIntervalMs: options.config.pollIntervalMs,
-		...(options.config.reconcileIntervalMs !== undefined
-			? { reconcileIntervalMs: options.config.reconcileIntervalMs }
-			: {}),
-		...(options.onError ? { onError: options.onError } : {}),
-	});
+	wake = options.config.wake
+		? new RealtimeOrchestratorWake({
+				supabaseUrl: options.config.supabaseUrl,
+				publishableKey: options.config.supabasePublishableKey,
+				topic: () => controlPlane.wakeTopic(),
+				onState: wakeStateLogger(),
+			})
+		: undefined;
+	wake?.start();
+	try {
+		await orchestrator.run(options.signal, {
+			pollIntervalMs: options.config.pollIntervalMs,
+			...(options.config.reconcileIntervalMs !== undefined
+				? { reconcileIntervalMs: options.config.reconcileIntervalMs }
+				: {}),
+			...(wake && options.config.wake ? { wake, wakeBackstopMs: options.config.wake.backstopMs } : {}),
+			...(options.onError ? { onError: options.onError } : {}),
+		});
+	} finally {
+		wake?.stop();
+	}
 }

@@ -17,7 +17,9 @@ the technical design. The Q1 page is the plain one.
 Status: W1a is live (v150, `20260928259260_runtime_event_intake`) and W2 is live (v151,
 `20260928269290_runtime_event_wakes`), both accepted; the intake is switched on. M2a is merged
 (`20260928299650_runtime_company_mailboxes`, release v154), with mail switched off until the domain exists.
-M2b in review (`20260929740000_runtime_company_mail_sending`). W1b takes a fresh slot when it starts.
+M2b is merged (`20260928309740_runtime_company_mail_sending`, release v155), with sending switched off; the founder's
+sender-name rule is in review (`20260929810000_runtime_company_mail_sender_names`). W1b takes a fresh slot when it
+starts.
 
 ## Words
 
@@ -38,7 +40,8 @@ M2b in review (`20260929740000_runtime_company_mail_sending`). W1b takes a fresh
 | W2 | Routine trigger on a hook, event wakes, the agent tools `list_hooks` and `read_event` | `20260928269290` |
 | W3 | Agents create, pause and remove hooks (`manage_hook`) | registered when started |
 | M2a | Company mailboxes, receiving: owners create them, the mail provider's webhook fills them, routines wake on mail | `20260928299650` |
-| M2b | Sending as a mailbox, as the agent with an AI line: `send_mail`, the outbox and its sender | `20260929740000` |
+| M2b | Sending as a mailbox, as the agent with an AI line: `send_mail`, the outbox and its sender | `20260928309740` |
+| M2b+ | Founder decisions of 1 October: no sender that reads as Qorpera | `20260929810000` |
 | M2c | Attachments' contents, threads and sent mail in the folder | registered when started |
 
 Each step is a release-train feature PR: no bundle, manifest or activation files, an independent
@@ -393,6 +396,10 @@ again, finds the mailbox (live, of the run's company and environment, not paused
   invisible format characters such as bidi controls removed) at the mailbox's address.
 - The AI line: the text's last paragraph is `Written and sent by <agent>, an AI agent working for <company>.` The
   database adds it; no agent can leave it out. It is not placed after a signature separator, which clients dim.
+- Never as if from Qorpera (founder decision, 1 October 2026; `20260929810000`): a send is refused (42501) when the
+  agent's name, the company's name or the mailbox's local part reads as Qorpera however it is spelled (case,
+  separators, accents, full width, look-alike Cyrillic or Greek letters and digits), and no mailbox is created
+  with such a name (22023). Names are not refused where they are set; the check guards the From line.
 - A reply to a received email of the company (`mail.received`, verified) carries that email's thread:
   `In-Reply-To` its message id, and `References` the thread's first id and its newest ids that fit one header line
   (980 characters, RFC 5322 3.6.4). An email whose text was cleared (after 7 days), or without a usable message
@@ -422,6 +429,10 @@ texts seven days after they settle, keeping the receipt; an email already attemp
 Switched off, the claim sends nothing and queued email waits; the first claim after sending is switched on again
 fails what waited more than a day. Texts are cleared only by the claim, so unscheduling the worker stops that too.
 Agents learn an email was queued, not that it arrived; bounces and complaints, and a sent-mail view, follow.
+
+**Founder decisions (1 October 2026).** The AI line stays as written, as its own last paragraph on every email.
+`Auto-Submitted` goes only on automatic replies, the loop guard, and never on new emails, so help desks do not drop
+them. No email looks like it comes from Qorpera (above).
 
 **Next (M2c).** Attachments' contents into the company's storage (and `mail/<address>/` in the folder once its
 writer lands, with sent mail beside the received); threads as files. A connected Gmail read once a minute can
