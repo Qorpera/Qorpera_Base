@@ -456,6 +456,13 @@ export function parseRunRecovery(value: unknown): HostedRunRecovery {
 		...(recovery.proposal_id ? { proposalId: uuid(recovery.proposal_id, "recovery proposal id") } : {}),
 		// Absent before 20260929910000: then only the error text can tell.
 		...(typeof recovery.usage_limit === "boolean" ? { usageLimit: recovery.usage_limit } : {}),
+		// Absent before 20260929993000: then a plan's limit reads as any account's.
+		...(typeof recovery.paid_by_chatgpt_plan === "boolean"
+			? { paidByChatgptPlan: recovery.paid_by_chatgpt_plan }
+			: {}),
+		...(typeof run.requested_by_user_id === "string" && UUID_PATTERN.test(run.requested_by_user_id)
+			? { requestedByUserId: run.requested_by_user_id.toLowerCase() }
+			: {}),
 		unsettledOperations: operations.filter(
 			(operation) => operation.status === "executing" || operation.status === "ambiguous",
 		).length,

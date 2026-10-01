@@ -122,6 +122,7 @@ begin
 	values ('70700000-0000-4000-8000-000000000020', (p_actor ->> 'runId')::uuid, public.qorpera_folder_change_set_sha256(p_units),
 		array(select generate_series(1, jsonb_array_length(p_units))), 'allow')
 	returning id into v_review;
+	perform pg_temp.possess('70700000-0000-4000-8000-000000000020', p_actor, p_units);
 	return public.qorpera_folder_commit('70700000-0000-4000-8000-000000000020', p_actor, p_key, p_units, v_review);
 end $$;
 create function pg_temp.del(p_path text) returns jsonb language sql as $$

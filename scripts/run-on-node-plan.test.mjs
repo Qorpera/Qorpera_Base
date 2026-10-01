@@ -70,9 +70,23 @@ test("deploy, function and SQL-input paths reach the tests that read them", () =
 	assert.match(functions, /event-intake\/event-intake\.test\.ts/);
 	assert.match(functions, /mail-intake\/mail-intake\.test\.ts/);
 	assert.match(functions, /mail-outbox\/mail-outbox\.test\.ts/);
+	assert.match(functions, /runner-control\/runner-control\.test\.ts/);
 	assert.ok(names(["scripts/test-runtime-node-capacity-cases.mjs"]).includes("hosted-db"));
 	assert.ok(names(["packages/runner-orchestrator/src/lxd-office-start-control.ts"]).includes("hosted-db"));
 	assert.ok(names(["packages/runtime/test/fixtures/coding-turn-context-backfilled.json"]).includes("hosted-db"));
+	// The production review and wake bus scripts: their SQL, themselves, and the parsers and fixtures they read.
+	for (const file of [
+		"supabase/acceptance/runtime_session_stop_authority.sql",
+		"scripts/test-runtime-production-review.mjs",
+		"scripts/test-runtime-wake-bus.mjs",
+		"scripts/test-runtime-wake-envelope.mjs",
+		"packages/runtime/src/cloud-native-company-context.ts",
+		"packages/runtime/src/cloud-wake-bus.ts",
+		"packages/runtime/test/fixtures/wake-policies.json",
+	])
+		assert.ok(names([file]).includes("hosted-db"), file);
+	assert.ok(!names(["packages/runtime/test/fixtures/company-computer-guest.ts"]).includes("hosted-db"));
+	assert.equal(STEPS.find((step) => step.name === "hosted-db").build, true);
 });
 
 test("a migration, the load harness or its fixture's tests put one company's fence under load", () => {

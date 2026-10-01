@@ -567,8 +567,9 @@ class CodexBoundaryRpc {
 		return this.#failureCategory;
 	}
 	/** A run on a member's ChatGPT plan. OpenAI answers 429 to a plan request only at the plan's usage
-	 * limit (`subscription_sharing_usage_limit_exceeded`; a pinned Codex reports it as a 429 it gave up on),
-	 * so for such a run that is the usage limit, which stops the work (2026-10-01), never a rate limit. */
+	 * limit (`subscription_sharing_usage_limit_exceeded`), so for such a run that is the usage limit, which
+	 * stops the work (2026-10-01), never a rate limit. A Codex pinned with the usage-limit codes reports that
+	 * code itself as `usageLimitExceeded`; an older pin reported a 429 it gave up on, which this still reads. */
 	chatGptPlan = false;
 
 	get usageSignal(): NativeRuntimeUsageSignal | null {

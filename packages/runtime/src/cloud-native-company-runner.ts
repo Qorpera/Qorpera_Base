@@ -1,4 +1,3 @@
-import { isDeepStrictEqual } from "node:util";
 import { withCloudDeadline } from "@qorpera/cloud-client/cloud-request";
 import {
 	CLOUD_RUNNER_NO_WALL_TIME_MS,
@@ -27,16 +26,19 @@ export function isWakeRunJob(job: Pick<CloudRunnerJob, "payload">): boolean {
 
 /** Executes over cloud-composed context and path effects, never a runner-owned
  * Company File tree. Completion/session binding happen atomically in the cloud.
+ *
+ * `authority` is the lease the runner has just acquired: acquisition runs every check a
+ * renewal runs and sets the same expiry (now plus the same lease length), so the run starts
+ * on it without renewing it first. The worker's maintenance loop renews it from then on.
  */
 export async function executeNativeCompanyRunnerJob(options: {
 	job: CloudRunnerJob;
 	authority: CloudRunnerNativeAuthority;
-	refreshAuthority: () => Promise<CloudRunnerNativeAuthority>;
 	bridge: NativeProviderComputerBridge;
 	limits?: Partial<CloudRunnerSandboxLimits>;
 	signal: AbortSignal;
 }): Promise<CloudRunnerExecutionResult> {
-	const { job, bridge, signal } = options;
+	const { job, authority, bridge, signal } = options;
 	const limits = resolveCloudRunnerSandboxLimits(options.limits);
 	signal.throwIfAborted();
 	if (
@@ -46,23 +48,18 @@ export async function executeNativeCompanyRunnerJob(options: {
 		!job.assignmentId ||
 		job.jobType !== "agent_turn" ||
 		job.requiredCapability !== "agent_turn" ||
-		job.runId !== options.authority.runId ||
-		job.assignmentId !== options.authority.assignmentId ||
-		job.runnerId !== options.authority.runnerId ||
-		options.authority.provider !== "openai" ||
-		options.authority.nativeHarness !== "codex-cli" ||
-		options.authority.authenticationMode !== "native_subscription" ||
+		job.runId !== authority.runId ||
+		job.assignmentId !== authority.assignmentId ||
+		job.runnerId !== authority.runnerId ||
+		authority.provider !== "openai" ||
+		authority.nativeHarness !== "codex-cli" ||
+		authority.authenticationMode !== "native_subscription" ||
 		!["virtual_machine", "microvm", "rootless_container"].includes(bridge.executionGuarantees.boundary)
 	) {
 		throw new Error("Governed native company execution is unavailable; no fallback is permitted");
 	}
-	const authority = await withCloudDeadline(() => options.refreshAuthority(), 30_000, signal);
-	if (
-		!isDeepStrictEqual({ ...authority, expiresAt: undefined }, { ...options.authority, expiresAt: undefined }) ||
-		!Number.isFinite(Date.parse(authority.expiresAt)) ||
-		Date.parse(authority.expiresAt) <= Date.now()
-	) {
-		throw new Error("Native company authority refresh returned another execution");
+	if (!Number.isFinite(Date.parse(authority.expiresAt)) || Date.parse(authority.expiresAt) <= Date.now()) {
+		throw new Error("Native company authority has expired");
 	}
 	const started = performance.now();
 	const processHandle = await withCloudDeadline(

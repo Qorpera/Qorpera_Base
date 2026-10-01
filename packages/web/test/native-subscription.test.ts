@@ -1,6 +1,11 @@
 import type { RequestSponsoredSessionTurnInput } from "@qorpera/cloud-client/cloud-native-subscription-control";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createWebNativeSubscription, type WebNativeProviderLoginInput } from "../src/cloud/native-subscription.ts";
+import { CloudRpcError } from "../src/cloud/client.ts";
+import {
+	createWebNativeSubscription,
+	PlanSwitchBusyError,
+	type WebNativeProviderLoginInput,
+} from "../src/cloud/native-subscription.ts";
 import { deferred, fixture, id, profileA, session, settle, timestamp, userA, userB } from "./fixtures.ts";
 
 afterEach(() => {
@@ -335,6 +340,326 @@ function loginSetup(existing = true) {
 	});
 	return { ...f, input, responses };
 }
+
+describe("Continue with ChatGPT (offered only while the company may use plan logins)", () => {
+	const authorize = "https://auth.openai.com/oauth/authorize?state=fixture";
+	function planSetup() {
+		const f = loginSetup();
+		const rpc = vi.spyOn(f.cloud, "rpc").mockImplementation(async (name: string) => {
+			if (name === "qorpera_begin_chatgpt_plan_sign_in")
+				return { ...f.responses.authorization, model_login_kind: "chatgpt_plan", status: "pending" };
+			throw new Error(`Unexpected ${name}`);
+		});
+		f.responses.prompt.interaction_url = authorize;
+		(f.responses.prompt as Record<string, unknown>).user_code = null;
+		return { ...f, rpc };
+	}
+	it("asks the company's switches, and reads a deployment without them as off", async () => {
+		const f = setup();
+		const rpc = vi
+			.spyOn(f.cloud, "rpc")
+			.mockResolvedValueOnce(true)
+			.mockResolvedValueOnce(false)
+			.mockRejectedValueOnce(
+				new CloudRpcError("qorpera_chatgpt_plan_available", { message: "missing", code: "PGRST202" }, 404),
+			);
+		expect(await f.client.chatGptPlanAvailable!()).toBe(true);
+		expect(rpc).toHaveBeenCalledWith("qorpera_chatgpt_plan_available", { p_profile_id: profileA.profileId });
+		expect(await f.client.chatGptPlanAvailable!()).toBe(false);
+		expect(await f.client.chatGptPlanAvailable!()).toBe(false);
+	});
+	it("begins a plan sign-in for the member's own identity and answers OpenAI's address with what this tab keeps", async () => {
+		const f = planSetup();
+		const { url, signIn } = await f.client.beginChatGptPlanSignIn!("My model account");
+		expect(url).toBe(authorize);
+		const begin = f.rpc.mock.calls.find(([name]) => name === "qorpera_begin_chatgpt_plan_sign_in")![1] as Record<
+			string,
+			unknown
+		>;
+		expect(begin).toMatchObject({ p_profile_id: profileA.profileId, p_compute_identity_id: id(104) });
+		const [loginUrl, request] = f.fetch.mock.calls.find(([address]) => String(address).endsWith("/login"))!;
+		expect(loginUrl).toBe("https://fixture.invalid/functions/v1/native-provider-login/login");
+		// The capability is the only credential: no member token, no apikey, no cookies.
+		expect([...new Headers(request!.headers).keys()].sort()).toEqual(["accept", "authorization", "content-type"]);
+		expect(request).toMatchObject({ method: "POST", credentials: "omit", redirect: "error" });
+		const body = JSON.parse(request!.body as string);
+		expect(body).toMatchObject({ login_id: id(105), client_connection_id: begin.p_client_connection_id });
+		expect(new Headers(request!.headers).get("authorization")).toBe(`Bearer ${body.login_capability}`);
+		const digest = new Uint8Array(
+			await crypto.subtle.digest("SHA-256", new TextEncoder().encode(body.login_capability)),
+		);
+		expect(begin.p_capability_sha256).toBe(Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join(""));
+		expect(signIn).toMatchObject({
+			companyId: profileA.profileId,
+			memberId: userA.id,
+			loginId: id(105),
+			clientConnectionId: begin.p_client_connection_id,
+			capability: body.login_capability,
+			expiresAt: f.responses.authorization.expires_at,
+		});
+	});
+	it("refuses a begin answer that is not this member's plan sign-in, before going to the vault", async () => {
+		for (const wrong of [
+			{ model_login_kind: "codex" },
+			{ compute_identity_owner_user_id: userB.id },
+			{ compute_identity_id: id(9) },
+			{ login_id: "not-a-uuid" },
+			{ expires_at: "soon" },
+		]) {
+			const f = planSetup();
+			f.rpc.mockResolvedValueOnce({
+				...f.responses.authorization,
+				model_login_kind: "chatgpt_plan",
+				status: "pending",
+				...wrong,
+			});
+			await expect(f.client.beginChatGptPlanSignIn!("My model account")).rejects.toThrow("authority does not match");
+			expect(f.fetch.mock.calls.some(([address]) => String(address).endsWith("/login"))).toBe(false);
+		}
+	});
+	it("refuses an address that is not OpenAI's, and says why a begin was refused", async () => {
+		let f = planSetup();
+		f.responses.prompt.interaction_url = "https://example.com/authorize";
+		await expect(f.client.beginChatGptPlanSignIn!("My model account")).rejects.toThrow("OpenAI's address");
+		for (const [message, reason] of [
+			["Disconnect your other ChatGPT plan first", "other_plan"],
+			["ChatGPT plan sign-in is switched off", "unavailable"],
+		] as const) {
+			f = planSetup();
+			f.rpc.mockRejectedValueOnce(
+				new CloudRpcError("qorpera_begin_chatgpt_plan_sign_in", { message, code: "55000" }, 400),
+			);
+			await expect(f.client.beginChatGptPlanSignIn!("My model account")).rejects.toMatchObject({ reason });
+		}
+	});
+	const signIn = {
+		companyId: profileA.profileId,
+		memberId: userA.id,
+		loginId: id(105),
+		clientConnectionId: id(103),
+		capability: "c".repeat(43),
+		expiresAt: timestamp,
+		startedAt: Date.now(),
+		returnRoute: `#/c/${profileA.profileId}`,
+	};
+	it("confirms with the tab's capability and the one-time confirmation id, and says why a confirm failed", async () => {
+		const f = setup("https://fixture.invalid/functions/v1/native-provider-login/");
+		const confirmation = "d".repeat(43);
+		f.fetch.mockResolvedValueOnce(
+			Response.json({ schema: "qorpera.native-provider-login-result/v1", login_id: id(105), status: "completed" }),
+		);
+		await f.client.finishChatGptPlanSignIn!({ outcome: "confirm", confirmation, signIn });
+		const [url, request] = f.fetch.mock.calls[0]!;
+		expect(url).toBe("https://fixture.invalid/functions/v1/native-provider-login/chatgpt-plan-confirm");
+		expect(request).toMatchObject({ method: "POST", credentials: "omit", redirect: "error" });
+		// Only the two headers the Edge function allows: no apikey, no member token.
+		expect([...new Headers(request!.headers).keys()].sort()).toEqual(["authorization", "content-type"]);
+		expect(new Headers(request!.headers).get("authorization")).toBe(`Bearer ${"c".repeat(43)}`);
+		expect(JSON.parse(request!.body as string)).toEqual({
+			schema: "qorpera.chatgpt-plan-confirm/v1",
+			login_id: id(105),
+			confirmation,
+		});
+		f.fetch.mockResolvedValueOnce(
+			Response.json({ schema: "qorpera.chatgpt-plan-confirm-failed/v1", reason: "expired" }, { status: 403 }),
+		);
+		await expect(
+			f.client.finishChatGptPlanSignIn!({ outcome: "confirm", confirmation, signIn }),
+		).rejects.toMatchObject({
+			reason: "expired",
+		});
+		f.fetch.mockResolvedValueOnce(Response.json({ error: "Native provider login is unavailable" }, { status: 503 }));
+		await expect(
+			f.client.finishChatGptPlanSignIn!({ outcome: "confirm", confirmation, signIn }),
+		).rejects.toMatchObject({
+			reason: "provider_error",
+		});
+		await expect(
+			f.client.finishChatGptPlanSignIn!({ outcome: "failed", reason: "declined", signIn }),
+		).rejects.toMatchObject({ reason: "declined" });
+		await expect(
+			f.client.finishChatGptPlanSignIn!({
+				outcome: "confirm",
+				confirmation,
+				signIn: { ...signIn, companyId: id(9) },
+			}),
+		).rejects.toThrow("cannot be finished here");
+		expect(f.fetch).toHaveBeenCalledTimes(3);
+	});
+	it("counts only a completed answer for this sign-in, and a reason only from the failed answer", async () => {
+		const f = setup("https://fixture.invalid/functions/v1/native-provider-login/");
+		const confirmation = "d".repeat(43);
+		for (const [answer, status] of [
+			[{ login_id: id(9), status: "completed" }, 200],
+			[{ login_id: id(105) }, 200],
+			[{ login_id: id(105), status: "completed" }, 202],
+			[{ reason: "expired" }, 403],
+		] as const) {
+			f.fetch.mockResolvedValueOnce(Response.json(answer, { status }));
+			await expect(
+				f.client.finishChatGptPlanSignIn!({ outcome: "confirm", confirmation, signIn }),
+			).rejects.toMatchObject({ reason: "provider_error" });
+		}
+	});
+	it("gives up on a confirm after 45 seconds", async () => {
+		const f = setup("https://fixture.invalid/functions/v1/native-provider-login/");
+		const deadline = new AbortController();
+		const timeout = vi.spyOn(AbortSignal, "timeout").mockReturnValue(deadline.signal);
+		f.fetch.mockImplementationOnce(
+			(_url, init) =>
+				new Promise<Response>((_resolve, reject) =>
+					init!.signal!.addEventListener("abort", () => reject(init!.signal!.reason), { once: true }),
+				),
+		);
+		const finishing = f.client.finishChatGptPlanSignIn!({ outcome: "confirm", confirmation: "d".repeat(43), signIn });
+		expect(timeout).toHaveBeenCalledExactlyOnceWith(45_000);
+		deadline.abort(new DOMException("The confirm took too long.", "TimeoutError"));
+		await expect(finishing).rejects.toThrow("took too long");
+	});
+});
+
+describe("ChatGPT plan logins (switched off until a company has one)", () => {
+	const row = (n: number, extra: Record<string, unknown>) => ({
+		connection_id: id(n),
+		client_connection_id: id(100 + n),
+		connection_version: 2,
+		provider: "openai",
+		native_harness: "codex-cli",
+		authorization_state: "active",
+		max_native_concurrency: 1,
+		billing_source: "personal_subscription",
+		consent_version: "1",
+		consented_at: timestamp,
+		connection_status: "active",
+		sponsor_binding_id: id(200 + n),
+		sponsor_version: 1,
+		policy: { implementation_status: "supported", enablement_status: "enabled", policy_version: 1 },
+		...extra,
+	});
+	it("reads each login's kind, consent and card from the same answer, in one request", async () => {
+		const f = setup();
+		f.fetch.mockResolvedValueOnce(
+			Response.json({
+				compute_identity: null,
+				connections: [
+					row(81, { login_kind: "chatgpt_plan", allow_autonomous: false, routine_offer_shown_at: timestamp }),
+					row(82, { login_kind: "codex", allow_autonomous: true, routine_offer_shown_at: null }),
+					row(83, {}),
+					row(84, { login_kind: "something", allow_autonomous: "yes", routine_offer_shown_at: "soon" }),
+					// Another version of 81: each version reads its own consent.
+					row(81, { connection_version: 3, login_kind: "chatgpt_plan", allow_autonomous: true }),
+				],
+			}),
+		);
+		const listed = await f.client.listConnections();
+		expect(f.fetch).toHaveBeenCalledTimes(1);
+		expect(
+			listed.connections.map(({ loginKind, allowAutonomous, routineOfferShownAt }) => ({
+				loginKind,
+				allowAutonomous,
+				routineOfferShownAt,
+			})),
+		).toEqual([
+			{ loginKind: "chatgpt_plan", allowAutonomous: false, routineOfferShownAt: timestamp },
+			{ loginKind: "codex", allowAutonomous: true, routineOfferShownAt: undefined },
+			// A node login, and fields the web cannot read, read as absent.
+			{ loginKind: undefined, allowAutonomous: undefined, routineOfferShownAt: undefined },
+			{ loginKind: undefined, allowAutonomous: undefined, routineOfferShownAt: undefined },
+			{ loginKind: "chatgpt_plan", allowAutonomous: true, routineOfferShownAt: undefined },
+		]);
+		expect(listed.connections[0]).toMatchObject({ connectionId: id(81), sponsorBindingId: id(281) });
+	});
+	it("binds a plan for the member's own messages without consenting it", async () => {
+		const f = setup();
+		const rpc = vi.spyOn(f.cloud, "rpc");
+		f.fetch.mockResolvedValueOnce(Response.json({ binding_id: id(92), version: 1 }));
+		expect(
+			await f.client.createMemberSponsor({
+				providerConnectionId: id(94),
+				providerConnectionVersion: 2,
+				allowAutonomous: false,
+				planLogin: true,
+			}),
+		).toEqual({ bindingId: id(92), version: 1 });
+		expect(rpc).not.toHaveBeenCalled();
+		expect(JSON.parse(f.fetch.mock.calls[0]![1]!.body as string)).toMatchObject({
+			p_profile_id: profileA.profileId,
+			p_provider_connection_id: id(94),
+			p_provider_connection_version: 2,
+			p_allow_autonomous: false,
+		});
+	});
+	it("records the first-routine card once and returns the first showing", async () => {
+		const f = setup();
+		const rpc = vi
+			.spyOn(f.cloud, "rpc")
+			.mockResolvedValueOnce({ connection_id: id(94), shown_at: timestamp })
+			.mockResolvedValueOnce({ connection_id: id(95), shown_at: timestamp });
+		expect(await f.client.recordRoutineOffer!(id(94))).toBe(timestamp);
+		expect(rpc).toHaveBeenCalledWith("qorpera_record_chatgpt_plan_routine_offer", {
+			p_profile_id: profileA.profileId,
+			p_connection_id: id(94),
+		});
+		await expect(f.client.recordRoutineOffer!(id(94))).rejects.toThrow("Invalid cloud response");
+	});
+	it("turns work while away on and off through the member's own switch, binding each new version", async () => {
+		const f = setup();
+		const rpc = vi
+			.spyOn(f.cloud, "rpc")
+			.mockResolvedValueOnce({ connection_id: id(94), version: 3, allow_autonomous: true, changed: true })
+			.mockResolvedValueOnce({ connection_id: id(94), version: 4, allow_autonomous: false, changed: true });
+		f.fetch
+			.mockResolvedValueOnce(Response.json({ binding_id: id(92), version: 2 }))
+			.mockResolvedValueOnce(Response.json({ binding_id: id(93), version: 1 }));
+		await f.client.setWorkWhileAway!(id(94), true);
+		expect(rpc).toHaveBeenNthCalledWith(1, "qorpera_set_chatgpt_plan_work_while_away", {
+			p_profile_id: profileA.profileId,
+			p_connection_id: id(94),
+			p_on: true,
+		});
+		expect(JSON.parse(f.fetch.mock.calls[0]![1]!.body as string)).toMatchObject({
+			p_provider_connection_id: id(94),
+			p_provider_connection_version: 3,
+			p_allow_autonomous: true,
+		});
+		await f.client.setWorkWhileAway!(id(94), false);
+		expect(rpc).toHaveBeenNthCalledWith(2, "qorpera_set_chatgpt_plan_work_while_away", {
+			p_profile_id: profileA.profileId,
+			p_connection_id: id(94),
+			p_on: false,
+		});
+		// Turned off, the new version is bound at once for the member's own messages.
+		expect(JSON.parse(f.fetch.mock.calls[1]![1]!.body as string)).toMatchObject({
+			p_provider_connection_id: id(94),
+			p_provider_connection_version: 4,
+			p_allow_autonomous: false,
+		});
+		// An answer for another connection or the other choice is refused.
+		rpc.mockResolvedValueOnce({ connection_id: id(94), version: 5, allow_autonomous: true });
+		await expect(f.client.setWorkWhileAway!(id(94), false)).rejects.toThrow("Invalid cloud response");
+		// A switch that waited too long for a lock (55P03) reads as busy, and binds nothing; other errors stay.
+		const binds = f.fetch.mock.calls.length;
+		rpc.mockRejectedValueOnce(
+			new CloudRpcError(
+				"qorpera_set_chatgpt_plan_work_while_away",
+				{ message: "Busy right now. Try again in a moment.", code: "55P03" },
+				500,
+			),
+		);
+		await expect(f.client.setWorkWhileAway!(id(94), true)).rejects.toBeInstanceOf(PlanSwitchBusyError);
+		for (const [code, status] of [
+			["42501", 403],
+			// The consent's own refusal also arrives as a 500: only 55P03 is busy.
+			["55000", 500],
+		] as const) {
+			rpc.mockRejectedValueOnce(
+				new CloudRpcError("qorpera_set_chatgpt_plan_work_while_away", { message: "refused", code }, status),
+			);
+			await expect(f.client.setWorkWhileAway!(id(94), true)).rejects.not.toBeInstanceOf(PlanSwitchBusyError);
+		}
+		expect(f.fetch.mock.calls.length).toBe(binds);
+	});
+});
 
 describe("native provider onboarding browser adapter", () => {
 	it("is unavailable without an explicitly configured gateway and performs no cloud mutation", async () => {
