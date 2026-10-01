@@ -40,7 +40,7 @@ begin
 		'a2855619c55a2b7b84a3f6f436eefab2');
 	perform pg_temp.guarded('public.qorpera_append_session_input(uuid,uuid,text,jsonb)',
 		'if public.qorpera_company_is_folder_v2(public.qorpera_session_profile_id(p_session_id)) then raise exception', '5cefad1d5b1b3cb674b0da8c7188e78a');
-	-- 20260929750000 checks the caller's role before the session row lock in both turn requests.
+	-- 20260928319750 checks the caller's role before the session row lock in both turn requests.
 	perform pg_temp.guarded('public.qorpera_request_session_turn(uuid,uuid,uuid,jsonb,text,uuid,bigint,uuid,uuid,uuid,text,text,text,text,text,uuid[])',
 		'if public.qorpera_company_is_folder_v2(public.qorpera_session_profile_id(p_session_id)) then raise exception', '3d34c736990ae3981be314a2f91f0865');
 	perform pg_temp.guarded('public.qorpera_request_session_turn_v2(uuid,uuid,uuid,jsonb,text,uuid,bigint,uuid,uuid,uuid,text,text,text,text,text,uuid[])',
