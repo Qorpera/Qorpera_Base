@@ -41,7 +41,7 @@ import {
 } from "@qorpera/runtime/cloud-runtime-observability";
 import type { CloudSecretOperationClient } from "@qorpera/runtime/cloud-secret-tools";
 import { CLOUD_ASK_MEMBER_PAYLOAD_SCHEMA } from "@qorpera/runtime/cloud-thread-interactions";
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, type Mock, vi } from "vitest";
 import { nativeCompanyContextFixture } from "./fixtures/native-company-context-fixture.ts";
 
 const rpcFixture = fileURLToPath(new URL("./fixtures/codex-boundary-rpc-fixture.cjs", import.meta.url));
@@ -284,157 +284,182 @@ async function fixture(
 			authority: { resourceId: randomUUID(), resourceRevision: 1, grantId: randomUUID(), grantRevision: 1 },
 		};
 	};
-	const pathCall = vi.fn<CloudCompanyPathControl["call"]>(async (method, args) => {
-		if (method === "qorpera_company_machines_available") {
-			if (machinesAnswer instanceof Error) throw machinesAnswer;
-			return machinesAnswer;
-		}
-		if (method === "qorpera_record_runtime_observation_batch") {
-			expect(args.p_run_id).toBe(f.binding.runId);
-			const batch = (args.p_observations as unknown[]).map((row) => parseCloudRuntimeObservation(row));
-			expect(batch.length).toBeGreaterThan(0);
-			expect(batch.length).toBeLessThanOrEqual(50);
-			for (const observation of batch) expect(observation.assignmentId).toBe(f.binding.assignmentId);
-			observations.push(...batch);
-			return {
-				schema: "qorpera.runtime-observation-batch-receipt/v1",
-				runId: f.binding.runId,
-				receipts: batch.map((observation) => ({
-					schema: "qorpera.runtime-observation-receipt/v1",
+	const pathCall: Mock<CloudCompanyPathControl["call"]> = vi.fn<CloudCompanyPathControl["call"]>(
+		async (method, args, signal) => {
+			if (method === "qorpera_company_machines_available") {
+				if (machinesAnswer instanceof Error) throw machinesAnswer;
+				return machinesAnswer;
+			}
+			if (method === "qorpera_record_runtime_observation_batch") {
+				expect(args.p_run_id).toBe(f.binding.runId);
+				const batch = (args.p_observations as unknown[]).map((row) => parseCloudRuntimeObservation(row));
+				expect(batch.length).toBeGreaterThan(0);
+				expect(batch.length).toBeLessThanOrEqual(50);
+				for (const observation of batch) expect(observation.assignmentId).toBe(f.binding.assignmentId);
+				observations.push(...batch);
+				return {
+					schema: "qorpera.runtime-observation-batch-receipt/v1",
 					runId: f.binding.runId,
-					attemptId: observation.attemptId,
-					phase: observation.phase,
-					ingestedAt: new Date().toISOString(),
-					replayed: false,
-				})),
-			};
-		}
-		// A folder-v2 run's folder: only the files a test seeds (the folder core takes the run actor, not the binding).
-		if (method === "qorpera_folder_read") {
-			folderReads.push(args.p_path as string);
-			const entry = folderEntry(args.p_path as string);
-			return { schema: "qorpera.folder-read/v1", asOfSeq: 1, found: entry !== null, entry };
-		}
-		if (method === "qorpera_folder_list") {
-			const parent = `${args.p_parent as string}/`;
-			const entries = [...folderFiles.keys()]
-				.filter((path) => path.startsWith(parent) && !path.slice(parent.length).includes("/"))
-				.sort()
-				.map(folderEntry);
-			return { schema: "qorpera.folder-list/v1", asOfSeq: 1, entries, next: null };
-		}
-		if (method === "qorpera_folder_record_release") {
-			folderReleases.push(args);
-			return {
-				schema: "qorpera.folder-release/v1",
-				releaseId: args.p_release_id,
-				reads: (args.p_reads as unknown[]).length,
-				replay: false,
-			};
-		}
-		expect(args.p_binding).toEqual(f.binding);
-		if (method === "qorpera_begin_native_company_execution_v2") {
-			if (nativeStarted) throw new Error("Earlier native execution requires reconciliation");
-			nativeStarted = true;
-			return {
-				schema: "qorpera.native-company-execution-start/v1",
-				runId: f.binding.runId,
-				jobId: f.binding.jobId,
-				leaseId: f.binding.leaseId,
-				binarySha256: args.p_binary_sha256,
-				runtimeBundleSha256: args.p_runtime_bundle_sha256,
-				reasoningPolicySha256: args.p_reasoning_policy_sha256,
-				reasoningEffort: "low",
-				toolCatalogSha256: createHash("sha256")
-					.update(args.p_tool_catalog_text as string)
-					.digest("hex"),
-				contextSha256: args.p_context_sha256,
-				contextBytes: args.p_context_bytes,
-			};
-		}
-		if (method === "qorpera_describe_company_run_context") return structuredClone(f.context);
-		// Auto-review (v130): these fixtures approve every acting call up front; the review
-		// step itself is covered in cloud-action-review.test.ts and cloud-codex-tool-session.test.ts.
-		if (method === "qorpera_begin_action_review") {
-			expect(args.p_call).toEqual({
-				tool: expect.any(String),
-				argumentSha256: expect.stringMatching(/^[0-9a-f]{64}$/),
-			});
-			reviewedTools.push((args.p_call as { tool: string }).tool);
-			return { schema: "qorpera.action-review-begin/v1", state: "approved", reviewId: randomUUID() };
-		}
-		if (method === "qorpera_read_native_wake") return structuredClone(mode === "company-worker" ? workerWake : wake);
-		if (method === "qorpera_decide_agent_routine") {
-			decisions.push(args.p_request as Record<string, unknown>);
-			return {
-				schema: "qorpera.agent-routine-receipt/v1",
-				runId: f.binding.runId,
-				receiptId: randomUUID(),
-				action: "upsert",
-				routine: { routineKey: "invoice-watch", status: "active", version: 2, nextRunAt: "2026-09-02T10:00:00Z" },
-			};
-		}
-		if (method === "qorpera_describe_agent_open_work") {
-			if (mode === "company-worker") throw new Error("A worker keeps no todos");
-			return {
-				schema: "qorpera.agent-open-work/v1",
-				runId: f.binding.runId,
-				todos: { open: 40, blocked: 2 },
-				workers: { active: 5, blocked: 1 },
-			};
-		}
-		if (method === "qorpera_list_native_connector_tools") {
-			return mode === "company-secret" ? [structuredClone(connectorDescriptor)] : [];
-		}
-		if (method === "qorpera_assert_native_connector_operation") {
-			expect(args).toMatchObject({
-				p_grant_id: connectorGrantId,
-				p_connector_id: "linear",
-				p_operation_id: "issue_create",
-				p_operation_version: 1,
-				p_adapter_sha256: "b".repeat(64),
-				p_destination_origin: "https://api.linear.app",
-			});
-			return null;
-		}
-		if (method === "qorpera_assert_company_path_reads") return null;
-		if (method === "qorpera_confirm_company_path_read")
-			return {
-				schema: "qorpera.company-read-confirmation/v1",
-				readId: args.p_read_id,
-				resultSha256: args.p_result_sha256,
-			};
-		if (method === "qorpera_record_native_context_view")
-			return {
-				schema: "qorpera.native-context-view-receipt/v1",
-				viewId: randomUUID(),
-				requestId: (args.p_view as Record<string, unknown>).requestId,
-				sha256: "b".repeat(64),
-				ordinal: 1,
-			};
-		// Trusted context assembly reads the agent's notebook: an empty one here.
-		if (method === "qorpera_read_company_path")
-			return {
-				path: args.p_path,
-				version: null,
-				entry: null,
-				manifestBytes: null,
-				companyId: f.context.identity.companyId,
-			};
-		if (method === "qorpera_list_company_paths")
-			return { snapshotId: randomUUID(), items: [], hasMore: false, nextAfter: null };
-		if (method === "qorpera_read_company_path_v2")
-			return {
-				path: "note.md",
-				snapshotId: randomUUID(),
-				readObservationId: randomUUID(),
-				version: fileVersion,
-				entry: { kind: "file", path: "note.md", executable: false, file },
-				companyId: f.context.identity.companyId,
-				manifestBytes: objects.get(`${f.context.identity.companyId}/${file.manifestSha256}`)?.length,
-			};
-		throw new Error("Unexpected synthetic RPC");
-	});
+					receipts: batch.map((observation) => ({
+						schema: "qorpera.runtime-observation-receipt/v1",
+						runId: f.binding.runId,
+						attemptId: observation.attemptId,
+						phase: observation.phase,
+						ingestedAt: new Date().toISOString(),
+						replayed: false,
+					})),
+				};
+			}
+			// A folder-v2 run's folder: only the files a test seeds (the folder core takes the run actor, not the binding).
+			if (method === "qorpera_folder_read") {
+				folderReads.push(args.p_path as string);
+				const entry = folderEntry(args.p_path as string);
+				return { schema: "qorpera.folder-read/v1", asOfSeq: 1, found: entry !== null, entry };
+			}
+			if (method === "qorpera_folder_list") {
+				const parent = `${args.p_parent as string}/`;
+				const entries = [...folderFiles.keys()]
+					.filter((path) => path.startsWith(parent) && !path.slice(parent.length).includes("/"))
+					.sort()
+					.map(folderEntry);
+				return { schema: "qorpera.folder-list/v1", asOfSeq: 1, entries, next: null };
+			}
+			if (method === "qorpera_folder_record_release") {
+				folderReleases.push(args);
+				return {
+					schema: "qorpera.folder-release/v1",
+					releaseId: args.p_release_id,
+					reads: (args.p_reads as unknown[]).length,
+					replay: false,
+				};
+			}
+			expect(args.p_binding).toEqual(f.binding);
+			if (method === "qorpera_begin_native_company_execution_v2") {
+				if (nativeStarted) throw new Error("Earlier native execution requires reconciliation");
+				nativeStarted = true;
+				return {
+					schema: "qorpera.native-company-execution-start/v1",
+					runId: f.binding.runId,
+					jobId: f.binding.jobId,
+					leaseId: f.binding.leaseId,
+					binarySha256: args.p_binary_sha256,
+					runtimeBundleSha256: args.p_runtime_bundle_sha256,
+					reasoningPolicySha256: args.p_reasoning_policy_sha256,
+					reasoningEffort: "low",
+					toolCatalogSha256: createHash("sha256")
+						.update(args.p_tool_catalog_text as string)
+						.digest("hex"),
+					contextSha256: args.p_context_sha256,
+					contextBytes: args.p_context_bytes,
+				};
+			}
+			if (method === "qorpera_describe_company_run_context") return structuredClone(f.context);
+			// Auto-review (v130): these fixtures approve every acting call up front; the review
+			// step itself is covered in cloud-action-review.test.ts and cloud-codex-tool-session.test.ts.
+			if (method === "qorpera_begin_action_review") {
+				expect(args.p_call).toEqual({
+					tool: expect.any(String),
+					argumentSha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+				});
+				reviewedTools.push((args.p_call as { tool: string }).tool);
+				return { schema: "qorpera.action-review-begin/v1", state: "approved", reviewId: randomUUID() };
+			}
+			if (method === "qorpera_read_native_wake")
+				return structuredClone(mode === "company-worker" ? workerWake : wake);
+			if (method === "qorpera_decide_agent_routine") {
+				decisions.push(args.p_request as Record<string, unknown>);
+				return {
+					schema: "qorpera.agent-routine-receipt/v1",
+					runId: f.binding.runId,
+					receiptId: randomUUID(),
+					action: "upsert",
+					routine: {
+						routineKey: "invoice-watch",
+						status: "active",
+						version: 2,
+						nextRunAt: "2026-09-02T10:00:00Z",
+					},
+				};
+			}
+			if (method === "qorpera_describe_agent_open_work") {
+				if (mode === "company-worker") throw new Error("A worker keeps no todos");
+				return {
+					schema: "qorpera.agent-open-work/v1",
+					runId: f.binding.runId,
+					todos: { open: 40, blocked: 2 },
+					workers: { active: 5, blocked: 1 },
+				};
+			}
+			if (method === "qorpera_list_native_connector_tools") {
+				return mode === "company-secret" ? [structuredClone(connectorDescriptor)] : [];
+			}
+			if (method === "qorpera_assert_native_connector_operation") {
+				expect(args).toMatchObject({
+					p_grant_id: connectorGrantId,
+					p_connector_id: "linear",
+					p_operation_id: "issue_create",
+					p_operation_version: 1,
+					p_adapter_sha256: "b".repeat(64),
+					p_destination_origin: "https://api.linear.app",
+				});
+				return null;
+			}
+			if (method === "qorpera_assert_company_path_reads") return null;
+			if (method === "qorpera_confirm_company_path_read")
+				return {
+					schema: "qorpera.company-read-confirmation/v1",
+					readId: args.p_read_id,
+					resultSha256: args.p_result_sha256,
+				};
+			if (method === "qorpera_fence_native_context") {
+				// What the one SQL call makes, in its order, through the same synthetic handlers.
+				const reads = { p_environment_id: args.p_environment_id, p_binding: args.p_binding, p_paths: args.p_paths };
+				await control.describeToolAuthority();
+				await pathCall("qorpera_assert_company_path_reads", reads, signal);
+				await control.describeToolAuthority();
+				await pathCall("qorpera_assert_company_path_reads", reads, signal);
+				const receipt = await pathCall(
+					"qorpera_record_native_context_view",
+					{ p_environment_id: args.p_environment_id, p_binding: args.p_binding, p_view: args.p_view },
+					signal,
+				);
+				const authority = await control.describeToolAuthority();
+				await pathCall("qorpera_assert_company_path_reads", reads, signal);
+				// The synthetic read set keeps every sent path under its own name.
+				return { schema: "qorpera.native-context-fence/v1", authority, receipt, kept: args.p_paths };
+			}
+			if (method === "qorpera_record_native_context_view")
+				return {
+					schema: "qorpera.native-context-view-receipt/v1",
+					viewId: randomUUID(),
+					requestId: (args.p_view as Record<string, unknown>).requestId,
+					sha256: "b".repeat(64),
+					ordinal: 1,
+				};
+			// Trusted context assembly reads the agent's notebook: an empty one here.
+			if (method === "qorpera_read_company_path")
+				return {
+					path: args.p_path,
+					version: null,
+					entry: null,
+					manifestBytes: null,
+					companyId: f.context.identity.companyId,
+				};
+			if (method === "qorpera_list_company_paths")
+				return { snapshotId: randomUUID(), items: [], hasMore: false, nextAfter: null };
+			if (method === "qorpera_read_company_path_v2")
+				return {
+					path: "note.md",
+					snapshotId: randomUUID(),
+					readObservationId: randomUUID(),
+					version: fileVersion,
+					entry: { kind: "file", path: "note.md", executable: false, file },
+					companyId: f.context.identity.companyId,
+					manifestBytes: objects.get(`${f.context.identity.companyId}/${file.manifestSha256}`)?.length,
+				};
+			throw new Error("Unexpected synthetic RPC");
+		},
+	);
 	const deliveries = new Map<string, CloudAgentSendReceipt>();
 	const cards = new Map<string, { sessionId: string; interactionId: string; sequence: number }>();
 	const control = {
