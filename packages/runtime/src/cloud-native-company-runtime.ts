@@ -24,6 +24,7 @@ import {
 	observeCloudCompanyPathPresence,
 } from "./cloud-company-path-presence.ts";
 import { cloudEventTools } from "./cloud-event-tools.ts";
+import { CloudFolderHiring } from "./cloud-folder-hiring.ts";
 import { CloudFolderRoutineDecision } from "./cloud-folder-routine-decision.ts";
 import { CloudFolderSidebar } from "./cloud-folder-sidebar.ts";
 import { CloudFolderTodos } from "./cloud-folder-todos.ts";
@@ -679,7 +680,22 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 								),
 								...(identity.audienceKind === "company"
 									? [
-											...(work.isWorker ? [] : cloudHiringTools(gateway, identity)),
+											...(work.isWorker
+												? []
+												: cloudHiringTools(
+														gateway,
+														identity,
+														undefined,
+														folder
+															? {
+																	folderHiring: new CloudFolderHiring({
+																		folder: folder.client,
+																		operations,
+																		identity,
+																	}),
+																}
+															: {},
+													)),
 											...cloudWorkerTools(binding, identity, this.#paths, gateway, wake, {
 												machines: Boolean(this.#machines) && machinesAvailable,
 												...(folder

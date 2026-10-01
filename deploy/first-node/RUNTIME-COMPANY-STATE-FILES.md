@@ -836,6 +836,26 @@ C1d (bytes):
   followed (the run context names the folder once); the decision is then answered settled while the kernel may still
   owe it.
 
+**Built (W4a): `hire_agent`** (`packages/runtime/src/cloud-folder-hiring.ts`), on C2's review recorder
+(RUNTIME-COMPANY-FOLDER-C2.md, R1).
+- One `new_folder` unit `agents/<handle>`: `agent.md` (`writeAgentFile`: kind `agent`, status `active`, the figure,
+  `jobDescription` as the instructions), the folders `memory`, `skills`, `routines` and `todos` (as the Co-Founder's
+  seeded folder), and `todos/first-assignment.md`: the first assignment as an open todo, asked for by the run's
+  requester, titled with the assignment's first line (one line, at most 200 bytes).
+- The handle is the name as a folder name, numbered past the names taken under `agents/` and the reserved ones
+  (`freeCompanyStateName`). The agent's and the todo's ids come from the run and the operation key (the legacy hire's
+  `agentIdFor`), so a call built again sends the same files; the receipt's target is the agent's id.
+- Refused before the receipt (`REFUSED: …`): files the shared parser refuses (its problems), and a call without the
+  automatic review's approval (`actionReviewId`). On `folder-v2` the first assignment holds at most 4000 bytes (a
+  todo's body), in the schema and the parser.
+- Under the receipt: stage, record the review of exactly these units (`recordReview` with the tool and the call's
+  argument digest), commit them with the review. Saved: the agent exists and is indexed with its thread; the commit
+  names the review. A conflict (the folder was taken meanwhile) or a refusal says to call again with a new key.
+- **The new agent does not start by itself** (open with F1): no first run is queued for a `folder-v2` hire yet. The
+  result and the description tell the model to send it a coworker message and to tell the member.
+- SQL test 774: a run's hire round trip on the recorder (denied without its review or with a review of other units;
+  saved and indexed with it; a taken folder is a conflict; the agent rules still refuse a Co-Founder or a taken id).
+
 Until the mount's writes are accepted (F3), these tools become thin writers of these files:
 `hire_agent`, `create_group_chat`, `organize_sidebar`, `manage_todo`, `manage_routine` and
 `decide_routine`. They use the canonical writers here, or `setCompanyStateSettings` for a
