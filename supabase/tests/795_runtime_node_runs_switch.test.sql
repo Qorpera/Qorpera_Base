@@ -280,6 +280,17 @@ reset role;
 select pg_temp.wake_assert((select decision = 'placed' and reason = 'LEAST_LOADED' and node_id = '79500000-0000-4000-8000-00000000000a'
 	from public.qorpera_runtime_node_placements where allocation_id = '79500000-0000-4000-8000-0000000000c1'),
 	'The placement record says node A: ' || (select to_jsonb(p) - 'candidates' from public.qorpera_runtime_node_placements p where allocation_id = '79500000-0000-4000-8000-0000000000c1')::text);
+-- A run whose bundle no serving orchestrator takes waits: nobody claims it, and no attempt or failure is counted.
+savepoint nobody_takes;
+set local role service_role;
+select public.qorpera_set_runtime_node_runs('79500000-0000-4000-8000-00000000000a',false,1,'roll to v164');
+select pg_temp.wake_assert(pg_temp.rs_claim('30000000-0000-4000-8000-000000000092') = 'null'::jsonb
+	and pg_temp.rs_claim('79500000-0000-4000-8000-0000000000b1') = 'null'::jsonb,
+	'Node A takes no runs and node B runs another bundle: nobody claims');
+reset role;
+select pg_temp.wake_assert((select status = 'queued' and attempt_count = 0 and dispatch_failure_count = 0 from public.qorpera_runner_jobs
+	where run_id = current_setting('qorpera_test.rs_run2')::uuid),'The run waits with nothing counted');
+rollback to savepoint nobody_takes;
 -- The adapter rule: undeclared or same bundle takes it; all declared for another does not; none at all does.
 select pg_temp.wake_assert(public.qorpera_runtime_adapter_takes_bundle('process',current_setting('qorpera_test.rs_bundle'))
 	and not public.qorpera_runtime_adapter_takes_bundle('native-b',current_setting('qorpera_test.rs_bundle'))
