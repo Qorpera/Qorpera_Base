@@ -4013,6 +4013,41 @@ immediately before an effect, and section 9.1's context views, are unchanged.
 4. **Until the database has the call** the host makes the separate calls, all
    of them.
 
+### 2026-10-02 amendment: work for people
+
+Proposed 2 October 2026 (thin writers H1); pending founder approval. It writes
+into 5.6 the founder's decisions 4 and 5 of 29 September 2026 (Q1 page "Qorpera
+on Qorpera", section 5). Formats:
+`deploy/first-node/RUNTIME-COMPANY-STATE-FILES.md` §2.
+
+1. **Physical work is a file.** Work only a person can do (signing, paying,
+   posting letters, fitting hardware, a step a website demands of a person) is
+   a human task: `human-tasks/<task>.md`, with instructions a stranger could
+   follow, a checklist, a due date and the proof that counts as done. What the
+   person sends back lands beside it in `human-tasks/<task>/`. The task names
+   its person (a member, or a contact) and the agent that asked. It is the
+   last step of the escalation order (16.1).
+2. **Outside people are contacts, never accounts.** `contacts/<contact>.md`
+   holds one person or firm the company deals with: name, organization, how to
+   reach them and what they may be asked to do. A contact reaches a task only
+   through a link to that one task. A contact asking to be forgotten is erased
+   with the folder core's erasure, old versions included.
+3. **No secret or delivery state in the folder.** A code a person enters goes
+   to the vault; a task link's token and an email's delivery are runtime state
+   (5.6's list of what the database holds).
+4. **5.6's tree gains:**
+
+   ```
+   human-tasks/
+     <task>.md                work an agent hands to a member or a contact
+     <task>/                  what the person sends back: proof/ and note.md
+   contacts/
+     <contact>.md             one file per outside person or firm
+   ```
+
+   The platform seeds both folders when a company is created, once the
+   folder core keeps their index (H2).
+
 ## 20. Enforcement matrix
 
 > **Note, 2026-09-27.** Rows naming responsibility objects, ceilings, a schema
