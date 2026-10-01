@@ -821,6 +821,7 @@ it.each([
 				"add_review_rule",
 				"list_hooks",
 				"read_event",
+				"send_mail",
 				"read_context",
 				"read_skill",
 				"recall_memory",
