@@ -90,6 +90,8 @@ async function fixture(options: { upperCaseBinding?: boolean; productionCircuit?
 		downloadGrants: undefined as number | undefined,
 		/** The company's storage allowance has no room: authorizing a new object is refused (23514, a 400). */
 		full: false,
+		/** The next authorization's 400: another SQLSTATE's body, or one that is not JSON. */
+		badRequest: undefined as string | undefined,
 		/** When set, fields renew answers with in place of its own. */
 		renewAnswer: undefined as Record<string, unknown> | undefined,
 	};
@@ -137,6 +139,11 @@ async function fixture(options: { upperCaseBinding?: boolean; productionCircuit?
 			if (method === "qorpera_folder_authorize_object_upload") {
 				if (sql.full && !sql.catalog.has(args.p_sha256 as string))
 					return Response.json({ code: "23514", message: "company storage allowance exceeded" }, { status: 400 });
+				if (sql.badRequest !== undefined) {
+					const body = sql.badRequest;
+					sql.badRequest = undefined;
+					return new Response(body, { status: 400 });
+				}
 				return Response.json({ schema: "qorpera.folder-object-upload/v1", profileId: companyId });
 			}
 			const failure = sql.confirmFailures.shift();
@@ -637,4 +644,18 @@ it("reports a full company before any byte is written", async () => {
 	expect(authority.health().api.status).toBe("healthy");
 	// Bytes the company already holds cost nothing more.
 	expect(await bytes.put(Buffer.from("stored before"), "text/plain", false, signal)).toEqual(stored);
+});
+
+it("keeps any other refusal's 400, which never opens the gateway's circuit", async () => {
+	const { bytes, sql, authority } = await fixture();
+	const signal = new AbortController().signal;
+	for (const body of [JSON.stringify({ code: "22023", message: "invalid" }), "not json"]) {
+		sql.badRequest = body;
+		await expect(bytes.put(Buffer.from(`refused ${body.length}`), "text/plain", false, signal)).rejects.toMatchObject(
+			{
+				category: "transport_unavailable",
+			},
+		);
+		expect(authority.health().api.status).toBe("healthy");
+	}
 });

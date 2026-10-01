@@ -120,6 +120,15 @@ begin
 		pg_temp.hash('two')), '42501');
 	perform pg_temp.raises(format('select public.qorpera_folder_authorize_object_upload(%L, %L, %L, %L, 3)', c_env,
 		pg_temp.member(1), v_intent, pg_temp.hash('two')), '42501');
+	-- Its confirm checks the same itself (it no longer calls the authorization, 20260929710000): an unlisted object, or
+	-- a listed one at another size, is refused and nothing is catalogued.
+	perform pg_temp.raises(format('select public.qorpera_folder_confirm_object(%L, %L, %L, %L, 3)', c_env, a, v_intent,
+		pg_temp.hash('other')), '42501');
+	perform pg_temp.raises(format('select public.qorpera_folder_confirm_object(%L, %L, %L, %L, 4)', c_env, a, v_intent,
+		pg_temp.hash('two')), '42501');
+	if exists (select 1 from public.qorpera_profile_objects where profile_id = '63400000-0000-4000-8000-000000000010'
+		and sha256 in (pg_temp.hash('other'), pg_temp.hash('two'))) then
+		raise exception 'A refused confirm catalogues nothing'; end if;
 
 	-- Sealing before every object is there says what is missing, and changes nothing.
 	v_seal := pg_temp.seal(a, v_intent);
