@@ -120,7 +120,7 @@ begin
 		pg_temp.hash('two')), '42501');
 	perform pg_temp.raises(format('select public.qorpera_folder_authorize_object_upload(%L, %L, %L, %L, 3)', c_env,
 		pg_temp.member(1), v_intent, pg_temp.hash('two')), '42501');
-	-- Its confirm checks the same itself (it no longer calls the authorization, 20260929710000): an unlisted object, or
+	-- Its confirm checks the same itself (it no longer calls the authorization, 20260928309710): an unlisted object, or
 	-- a listed one at another size, is refused and nothing is catalogued.
 	perform pg_temp.raises(format('select public.qorpera_folder_confirm_object(%L, %L, %L, %L, 3)', c_env, a, v_intent,
 		pg_temp.hash('other')), '42501');
@@ -417,7 +417,7 @@ begin
 	if (pg_temp.usage()).bytes <> v_before.bytes or (pg_temp.usage()).objects <> v_before.objects then
 		raise exception 'A removed object leaves usage'; end if;
 
-	-- The quota is read plainly and checked before the NAS write (20260929710000): the gateway's authorization of a new
+	-- The quota is read plainly and checked before the NAS write (20260928309710): the gateway's authorization of a new
 	-- object past the limit is refused, and so is the Storage trigger's insert; one already stored is not counted again.
 	v_limit := (pg_temp.usage()).bytes;
 	update public.qorpera_company_files set storage_limit_bytes = v_limit where profile_id = c_profile;
