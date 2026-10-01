@@ -946,6 +946,14 @@ export class CodingSessionElement {
 				: t("{owner} archived the session", { owner: names.owner });
 		}
 		if (event.actor === "kernel" && body.reopened === true) return t("Reopened");
+		// The kernel asked the agent whether a quiet session can be archived.
+		if (event.actor === "kernel" && typeof body.quietDays === "number" && body.quietDays >= 1)
+			return body.quietDays === 1
+				? t("Quiet for a day · asked {agent} whether it can be archived", { agent: names.agent })
+				: t("Quiet for {days} days · asked {agent} whether it can be archived", {
+						days: Math.floor(body.quietDays),
+						agent: names.agent,
+					});
 		if (event.actor !== "executor" || !Array.isArray(body.stopped)) return undefined;
 		// At most 32 are named; the rest are counted.
 		const count =

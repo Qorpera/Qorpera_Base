@@ -9,6 +9,7 @@ import {
 	CloudModelLoginVault,
 	MODEL_LOGIN_FIELD,
 	type ModelLoginAuthority,
+	type ModelLoginCodexIssue,
 	type ModelLoginRenewer,
 } from "@qorpera/runtime/cloud-model-login-vault";
 import { CloudSecretKeyring, withCloudSecretFields } from "@qorpera/runtime/cloud-secret-crypto";
@@ -291,6 +292,9 @@ it("renews end to end: vault, helper socket, official Codex, next version sealed
 		listModelLoginsWithoutAccount: vi.fn(),
 		recordModelLoginAccount: vi.fn(),
 		switchOffReplacedNodeLogins: vi.fn(),
+		commitChatGptPlanRenewal: vi.fn(),
+		takeChatGptPlanRevocation: vi.fn(),
+		finishChatGptPlanRevocation: vi.fn(),
 	};
 	const { renewer: codex } = await renewer("renew-jwt");
 	const h = await helper((authJson, signal) => codex.renew(authJson, signal));
@@ -299,7 +303,10 @@ it("renews end to end: vault, helper socket, official Codex, next version sealed
 		keyring,
 		renewer: new ModelLoginHelperClient({ socketPath: h.socketPath, token: h.token }),
 	});
-	const login = await vault.issue({ binding: run, knownVersion: 7 }, new AbortController().signal);
+	const login = (await vault.issue(
+		{ binding: run, knownVersion: 7 },
+		new AbortController().signal,
+	)) as ModelLoginCodexIssue;
 	expect(login.version).toBe(8);
 	expect(login.authJson).not.toContain("rt-renewed-by-codex");
 	expect(JSON.parse(login.authJson as string).tokens.refresh_token).toBe("");

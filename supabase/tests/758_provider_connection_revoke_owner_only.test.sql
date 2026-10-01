@@ -1,5 +1,5 @@
 -- @fixture 300_runtime_wake_bus.test.sql until "-- END WAKE FIXTURE"
--- 20260929790000: only a connection's owner revokes it without the company's authorize role. A company-owned
+-- 20260928339790: only a connection's owner revokes it without the company's authorize role. A company-owned
 -- provider connection has no owner, and the owner's clause in qorpera_set_provider_connection_status was NULL for
 -- it, so anyone signed in who knew the ids revoked the company's connection. Here the path company's owner
 -- registers a company connection and the contributor a personal one. Someone outside the company, the viewer and

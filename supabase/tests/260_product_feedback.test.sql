@@ -65,9 +65,9 @@ create temporary table qorpera_test_feedback_concurrent_results (
 	feedback_id uuid not null
 );
 
-select dblink_connect('feedback_locker', 'dbname=qorpera_test');
-select dblink_connect('feedback_first', 'dbname=qorpera_test');
-select dblink_connect('feedback_second', 'dbname=qorpera_test');
+select dblink_connect('feedback_locker', 'dbname=' || current_database());
+select dblink_connect('feedback_first', 'dbname=' || current_database());
+select dblink_connect('feedback_second', 'dbname=' || current_database());
 select dblink_exec('feedback_locker', 'begin');
 select * from dblink(
 	'feedback_locker',

@@ -1,6 +1,6 @@
 import type { JsonValue } from "@qorpera/contracts";
 import { CloudActionReviewChannel, type CloudActionReviewer } from "./cloud-action-review.ts";
-import { runCloudCodexToolSession } from "./cloud-codex-tool-session.ts";
+import { type CloudChatGptPlanAuth, runCloudCodexToolSession } from "./cloud-codex-tool-session.ts";
 import type { CloudNativeCaptureImages } from "./cloud-native-capture-images.ts";
 import type { NativeIsolationConfiguration } from "./cloud-native-isolation.ts";
 import type { CloudNativeFenceRequest } from "./cloud-native-result-fence.ts";
@@ -76,6 +76,8 @@ export async function runCloudNativeRunToolSession(options: {
 	/** Warm conversations: the identity root was kept from an earlier run on this host. */
 	reusedIdentityRoot?: boolean;
 	isolation?: NativeIsolationConfiguration;
+	/** How a ChatGPT plan run's Codex gets the plan's token (the host's setting). */
+	chatGptPlanAuth?: CloudChatGptPlanAuth;
 	signal: AbortSignal;
 	timeoutMs?: number;
 	observability?: CloudRuntimeObservability;
@@ -188,6 +190,7 @@ export async function runCloudNativeRunToolSession(options: {
 			identityRoot: options.identityRoot,
 			...(options.reusedIdentityRoot ? { reusedIdentityRoot: true } : {}),
 			isolation: options.isolation,
+			...(options.chatGptPlanAuth ? { chatGptPlanAuth: options.chatGptPlanAuth } : {}),
 			signal: run.signal,
 			timeoutMs: options.timeoutMs,
 			...(reviewer ? { reviewer } : {}),

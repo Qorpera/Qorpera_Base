@@ -1,5 +1,5 @@
 -- @fixture 608_company_file_writer_fence.test.sql until "-- 4. A rebase takes the fence"
--- 20260929820000: the rest of 756's change. Twenty-two functions locked the row their arguments name before they
+-- 20260928339820: the rest of 756's change. Twenty-two functions locked the row their arguments name before they
 -- checked the caller, so a caller they refuse could queue for that row: a runner job's model policy, a proposal review
 -- retry, a retention hold's release, an operation receipt's resolution, completion and staged objects, a run
 -- operation receipt's resolution (both Company File cores), a reachability graph's entries and completion (by a
@@ -479,7 +479,7 @@ select pg_temp.wake_assert(pg_temp.own_served(pg_temp.own_row('qorpera_event_hoo
 --    the contributor and an id nobody has are refused; the owner keeps each active. The contributor cannot disable the
 --    owner's connection, nor revoke it, nor a connection nobody has, but revokes their own. The company's connection
 --    has no owner: someone outside the company, the viewer and the contributor are refused revoking it (the locked
---    check let them through until 20260929790000); an admin waits for it and revokes it.
+--    check let them through until 20260928339790); an admin waits for it and revokes it.
 do $$
 declare v_case record;
 begin
@@ -627,7 +627,7 @@ select pg_temp.own_served(pg_temp.own_row('qorpera_shared_sessions', '30000000-0
 
 -- 12. The locked checks stay: an admin removed from the company while their call waits for the row is refused. The
 --     admin began the uploading graph and claimed the second receipt. For the company's connection the locked check
---     is 20260929790000's (before it, the admin's revocation landed).
+--     is 20260928339790's (before it, the admin's revocation landed).
 select pg_temp.own_removed(pg_temp.own_row('qorpera_runner_jobs', current_setting('qorpera_test.own_job')), pg_temp.own_policy(),
 	'runner model policy requires authorization access', 'The model policy');
 select pg_temp.own_removed(pg_temp.own_row('qorpera_company_proposal_review_assignments', '75700000-0000-4000-8000-000000000014'),

@@ -6,6 +6,9 @@ import { join } from "node:path";
 // Native subscription traffic only. Company tools, storage and control-plane
 // requests execute in the trusted host, never through this relay.
 export const NATIVE_CODEX_EGRESS_HOSTS = Object.freeze(["chatgpt.com", "auth.openai.com"]);
+/** A run on a member's ChatGPT plan (Sign in with ChatGPT) reaches OpenAI's API alone: the vault, not the
+ * run, renews the plan's tokens, and the run never uses the Codex login's ChatGPT backend. */
+export const NATIVE_CHATGPT_PLAN_EGRESS_HOSTS = Object.freeze(["api.openai.com"]);
 const MAX_HELLO_BYTES = 65_536;
 const MAX_CONNECTIONS = 8;
 const MAX_ATTEMPTS = 128;
@@ -127,7 +130,12 @@ export async function startNativeCodexEgress(options: {
 	root: string;
 	signal: AbortSignal;
 	transport?: NativeEgressTransport;
+	/** The hosts this run may reach; the Codex login's hosts unless the run is on a ChatGPT plan. */
+	hosts?: readonly string[];
 }): Promise<{ path: string; close(): Promise<void> }> {
+	const hosts = options.hosts ?? NATIVE_CODEX_EGRESS_HOSTS;
+	if (hosts !== NATIVE_CODEX_EGRESS_HOSTS && hosts !== NATIVE_CHATGPT_PLAN_EGRESS_HOSTS)
+		throw new Error("Unsupported native egress hosts");
 	const metadata = await lstat(options.root);
 	if (
 		!metadata.isDirectory() ||
@@ -192,7 +200,7 @@ export async function startNativeCodexEgress(options: {
 				const header = buffered.subarray(0, end).toString("latin1");
 				const lines = header.split("\r\n");
 				const target = /^CONNECT ([a-z0-9.-]+):443 HTTP\/1\.[01]$/.exec(lines.shift() ?? "")?.[1];
-				if (!target || !NATIVE_CODEX_EGRESS_HOSTS.includes(target)) throw new Error("Native egress target denied");
+				if (!target || !hosts.includes(target)) throw new Error("Native egress target denied");
 				const names = new Set<string>();
 				for (const line of lines) {
 					const entry = /^([A-Za-z-]+):[ \t]*([\x20-\x7e]*)$/.exec(line);
