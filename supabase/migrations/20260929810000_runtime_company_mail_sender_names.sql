@@ -6,9 +6,17 @@
 -- name, the company's name or the mailbox's local part reads as Qorpera, and a mailbox can no longer be created with
 -- such a local part. Names are not refused where they are set: the check guards the From line, where it matters.
 -- Decisions 1 (the AI line as written, its own last paragraph on every email) and 2 (Auto-Submitted only on automatic
--- replies) are what 20260929740000 already does.
+-- replies) are what 20260928309740 already does.
 
 set local lock_timeout = '3s';
+
+-- normalize() takes text apart only in a UTF8 database; anywhere else every send would fail.
+do $$
+begin
+	if current_setting('server_encoding') <> 'UTF8' then
+		raise exception 'Mail sender names need a UTF8 database, not %', current_setting('server_encoding'); end if;
+end
+$$;
 
 create function pg_temp.sender_names_patch(p_target regprocedure, p_old text, p_new text)
 returns void language plpgsql as $$
@@ -21,8 +29,9 @@ end
 $$;
 
 -- Whether a name reads as Qorpera: compatibility forms and accents taken apart (NFKD), look-alike Cyrillic and Greek
--- letters and digits mapped to the Latin letters they imitate, and everything but letters dropped, so "Q0RPERA",
--- "Qor-pera", "Qörpera", a full-width "Ｑｏｒｐｅｒａ" and one with a Cyrillic o all count.
+-- letters (capitals listed too, so it does not depend on how the database's locale folds case), small capitals,
+-- digits and "@" mapped to the Latin letters they imitate, and everything but letters dropped, so "Q0RPERA",
+-- "Qor-pera", "Qörpera", a full-width "Ｑｏｒｐｅｒａ", "QОRPERA" with a Cyrillic О and "qᴏʀᴘᴇʀᴀ" all count.
 create function public.qorpera_mail_name_reads_as_qorpera(p_name text)
 returns boolean
 language sql
@@ -30,7 +39,8 @@ immutable
 set search_path = ''
 as $$
 	select regexp_replace(translate(lower(normalize(coalesce(p_name, ''), NFKD)),
-		'аеорсхуіοραε0134', 'aeopcxyiopaeolea'), '[^a-z]', '', 'g') like '%qorpera%'
+		'аеорсхуіԛАЕОРСХУІԚοραεΟΡΑΕᴏʀᴘᴇᴀ01349@',
+		'aeopcxyiqaeopcxyiqopaeopaeorpeaoleaqa'), '[^a-z]', '', 'g') like '%qorpera%'
 $$;
 revoke all on function public.qorpera_mail_name_reads_as_qorpera(text) from public, anon, authenticated, service_role;
 

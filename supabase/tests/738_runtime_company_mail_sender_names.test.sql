@@ -18,10 +18,16 @@ $$;
 select pg_temp.wake_assert(public.qorpera_mail_name_reads_as_qorpera(name) = expected,
 	format('%s reads as Qorpera: %s', name, not expected))
 from (values ('Qorpera', true), ('QORPERA Billing', true), ('Support at qorpera', true), ('Q0rpera', true),
-	('Qor-pera', true), ('Q o r p e r a', true), (E'Qоrpera', true), (E'Qörpera', true),
-	(E'Ｑｏｒｐｅｒａ', true), (E'Qor​pera', true), ('qorp3ra', true),
+	('Qor-pera', true), ('Q o r p e r a', true), (E'Q\u043Erpera', true), (E'Q\u00F6rpera', true),
+	(E'\uFF31\uFF4F\uFF52\uFF50\uFF45\uFF52\uFF41', true), (E'Qor\u200Bpera', true), ('qorp3ra', true),
+	(E'Q\u041ERPERA', true), (E'Q\u039FR\u03A1\u0395R\u0391', true), (E'\u051Borpera', true),
+	(E'q\u1D0F\u0280\u1D18\u1D07\u0280\u1D00', true), ('9orpera', true), ('Qorper@', true),
 	('Corpera', false), ('Qorp', false), ('Northwind', false), ('Path gateway fixture', false), ('', false),
 	(null, false)) as name_case(name, expected);
+-- Whatever the collation folds: capitals of look-alike letters are listed, not left to lower().
+select pg_temp.wake_assert(public.qorpera_mail_name_reads_as_qorpera(name collate "C"),
+	format('%s reads as Qorpera in the C collation', name))
+from unnest(array[E'Q\u041ER\u0420\u0415R\u0410', E'Q\u039FR\u03A1\u0395R\u0391', E'\u051AORPERA']) as name;
 
 -- Mailbox names that read as Qorpera are reserved.
 select pg_temp.path_claims('authenticated', '30000000-0000-4000-8000-000000000001');
@@ -41,7 +47,7 @@ update public.qorpera_profiles set name = 'Q0RPERA Billing' where id = '30000000
 select pg_temp.wake_error(format('select pg_temp.send(%L, %L::jsonb)', 'company-name', pg_temp.request()), '42501',
 	'Email that would look like it comes from Qorpera is refused; a member renames the company, the agent or the mailbox');
 update public.qorpera_profiles set name = 'Path gateway fixture' where id = '30000000-0000-4000-8000-000000000010';
-update public.qorpera_profile_staff set display_name = E'Qor​pera support'
+update public.qorpera_profile_staff set display_name = E'Qor\u200Bpera support'
 where profile_id = '30000000-0000-4000-8000-000000000010' and staff_agent_id = '30000000-0000-4000-8000-000000000030';
 select pg_temp.send_error('agent-name', pg_temp.request(), '42501');
 update public.qorpera_profile_staff set display_name = 'Agent'
