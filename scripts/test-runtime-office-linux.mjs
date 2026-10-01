@@ -10,7 +10,12 @@ import { createOfficeCombinedControl } from "./test-runtime-office-combined-cont
 // Explicit local Linux proof. No provider APIs, production paths or host home
 // mounts. Set QORPERA_OFFICE_TEST_IMAGE to an already prepared test image.
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+// Mounted read-only at /opt/probe, where the container's root (no capabilities)
+// and its uid 1000 read it: on a real Linux host (not Docker Desktop) the
+// runner's umask and mkdtemp's 0700 would lock them out.
+process.umask(0o022);
 const root = await mkdtemp(join(tmpdir(), "qorpera-office-linux-"));
+await chmod(root, 0o755);
 const rebuild = process.argv.slice(2).includes("--combined-rebuild");
 const combined = rebuild || process.argv.slice(2).includes("--combined");
 const guest = combined || process.argv.slice(2).includes("--guest");
