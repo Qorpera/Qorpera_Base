@@ -70,7 +70,9 @@ try {
 	const pinned = /if v_functions is distinct from array\[([\s\S]*?)\]::text\[\]/.exec(privileges);
 	assert(pinned, "306 no longer pins the broker's custody calls");
 	const brokerSurface = [...pinned[1].matchAll(/'([^']+)'/g)].map((match) => match[1]);
-	assert(brokerSurface.length > 0 && brokerSurface.every((signature) => /^qorpera_[a-z0-9_]+\([a-z0-9_, ]*\)$/.test(signature)));
+	// Signatures only (any argument types, no quote), so the list cannot leave its SQL literal.
+	assert(brokerSurface.length > 0 && brokerSurface.every((signature) => /^qorpera_[a-z0-9_]+\([^()']*\)$/.test(signature)),
+		"306's broker list must hold function signatures");
 	const component = readFileSync(join(root, "supabase/tests/300_runtime_wake_bus.test.sql"), "utf8");
 	assert.equal(component.split("-- END WAKE FIXTURE").length, 2);
 	const fixture = `select set_config('qorpera_test.broker_surface','${JSON.stringify(brokerSurface)}',false);\n`
