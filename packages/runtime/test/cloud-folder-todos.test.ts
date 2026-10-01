@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { CloudCompanyFolderClient } from "@qorpera/runtime/cloud-company-folder-client";
 import { CloudFolderTodos } from "@qorpera/runtime/cloud-folder-todos";
 import type { CloudNativeToolRun } from "@qorpera/runtime/cloud-native-tool-authority";
+import { CloudToolRefusal } from "@qorpera/runtime/cloud-native-tool-boundary";
 import { CloudNativeToolOperations } from "@qorpera/runtime/cloud-native-tool-operations";
 import { afterEach, expect, it, vi } from "vitest";
 import { folderWriterFixture, sha } from "./fixtures/folder-writer-fixture.ts";
@@ -165,6 +166,10 @@ it("refuses what can never be saved, before any receipt", async () => {
 		await expect(
 			todos.change({ action: "upsert", operationKey: "k", todoKey, title: "x", state: "open" }, f.context),
 		).rejects.toThrow("a todoKey is the todo's file name");
+	// Each is the tool's own refusal before any effect, which the boundary shows the model (REFUSED: ...).
+	await expect(
+		todos.change({ action: "done", operationKey: "k", todoKey: "nothing-here" }, f.context),
+	).rejects.toBeInstanceOf(CloudToolRefusal);
 	await expect(
 		todos.change({ action: "done", operationKey: "k", todoKey: "nothing-here" }, f.context),
 	).rejects.toThrow("You have no todo with that todoKey");
@@ -271,6 +276,15 @@ it("lists the todos from the index, newest first, and reads one todo's whole con
 	expect(parse(await todos.list({ includeClosed: true, search: "BANK" }, f.context, fits)).todos).toMatchObject([
 		{ todoKey: "call-the-bank" },
 	]);
+	expect(
+		parse(await todos.list({ includeClosed: true }, f.context, fits)).todos.map(
+			(todo: { todoKey: string }) => todo.todoKey,
+		),
+	).toEqual(["book-the-room", "send-the-offer", "call-the-bank"]);
+	// A key the title does not have.
+	expect(parse(await todos.list({ search: "the-room" }, f.context, fits)).todos).toMatchObject([
+		{ todoKey: "book-the-room" },
+	]);
 	// One todo's whole content comes from its file, released with the result.
 	const one = parse(await todos.list({ todoKey: "call-the-bank" }, { ...f.context, callId: "one" }, fits));
 	expect(one.todos).toMatchObject([{ todoKey: "call-the-bank", detail: "x".repeat(400), state: "open" }]);
@@ -279,6 +293,16 @@ it("lists the todos from the index, newest first, and reads one todo's whole con
 		{ path: "agents/nora/todos/call-the-bank.md" },
 	]);
 	expect(parse(await todos.list({ todoKey: "nothing-here" }, f.context, fits))).toMatchObject({ todos: [] });
+	// The same call showing the same read releases it under the same id; showing something else, under its own.
+	const releaseId = (f.releases.at(-1) as { p_release_id: string }).p_release_id;
+	await todos.list({ todoKey: "call-the-bank" }, { ...f.context, callId: "one" }, fits);
+	expect((f.releases.at(-1) as { p_release_id: string }).p_release_id).toBe(releaseId);
+	await todos.change(
+		{ action: "upsert", operationKey: "upsert-again", todoKey: "call-the-bank", title: "Call the bank", detail: "y" },
+		f.context,
+	);
+	await todos.list({ todoKey: "call-the-bank" }, { ...f.context, callId: "one" }, fits);
+	expect((f.releases.at(-1) as { p_release_id: string }).p_release_id).not.toBe(releaseId);
 	// A page that fits one todo continues from the index's cursor.
 	const first = parse(await todos.list({}, f.context, (text) => text.split('"todoKey"').length <= 2));
 	expect(first).toMatchObject({ todos: [{ todoKey: "book-the-room" }], moreTodos: 1 });

@@ -15,9 +15,9 @@ import {
 } from "./cloud-company-folder-client.ts";
 import type { CloudNativeToolIdentity } from "./cloud-native-tool-authority.ts";
 import {
-	CloudToolArgumentRefusal,
 	type CloudToolContent,
 	type CloudToolContext,
+	CloudToolRefusal,
 	cloudToolJsonText,
 } from "./cloud-native-tool-boundary.ts";
 import type { CloudNativeToolOperations } from "./cloud-native-tool-operations.ts";
@@ -96,7 +96,7 @@ export class CloudFolderTodos {
 	/** The path of a todo, or a refusal the model can act on. */
 	path(todoKey: string): string {
 		if (!TODO_NAME.test(todoKey) || Buffer.byteLength(todoKey) > TODO_NAME_BYTES)
-			throw new CloudToolArgumentRefusal(
+			throw new CloudToolRefusal(
 				"In this company a todoKey is the todo's file name: lowercase letters, digits and single hyphens, at most 64 characters",
 			);
 		return `${this.#todos}/${todoKey}.md`;
@@ -120,7 +120,7 @@ export class CloudFolderTodos {
 			const found = await this.#folder.readText(path, COMPANY_STATE_FILE_MAX_BYTES, signal);
 			const parsed = found ? parseCompanyStateFile(path, found.text) : null;
 			const todo = parsed?.ok && parsed.file.kind === "todo" ? parsed.file : null;
-			if (found && !todo) throw new CloudToolArgumentRefusal(UNREADABLE_TODO);
+			if (found && !todo) throw new CloudToolRefusal(UNREADABLE_TODO);
 			const output = cloudToolJsonText({
 				...frame,
 				todos:
@@ -191,14 +191,14 @@ export class CloudFolderTodos {
 		let current: CurrentTodo | null = null;
 		if (found) {
 			const parsed = parseCompanyStateFile(path, found.text);
-			if (!parsed?.ok || parsed.file.kind !== "todo") throw new CloudToolArgumentRefusal(UNREADABLE_TODO);
+			if (!parsed?.ok || parsed.file.kind !== "todo") throw new CloudToolRefusal(UNREADABLE_TODO);
 			current = { entry: found.entry, text: found.text, todo: parsed.file };
 		}
 		let text: string;
 		let todo: Omit<TodoFile, "kind" | "id" | "requestedBy">;
 		if (request.action === "upsert") {
 			if (current && closed(current.todo.status))
-				throw new CloudToolArgumentRefusal(
+				throw new CloudToolRefusal(
 					"That todo is closed, and a closed todo is not opened again: upsert it under a new todoKey",
 				);
 			todo = { title: request.title ?? "", status: request.state ?? "open", detail: request.detail ?? "" };
@@ -209,10 +209,10 @@ export class CloudFolderTodos {
 				...todo,
 			});
 		} else {
-			if (!current) throw new CloudToolArgumentRefusal("You have no todo with that todoKey");
+			if (!current) throw new CloudToolRefusal("You have no todo with that todoKey");
 			const status = request.action === "done" ? "done" : "cancelled";
 			if (closed(current.todo.status) && current.todo.status !== status)
-				throw new CloudToolArgumentRefusal("That todo is already closed the other way");
+				throw new CloudToolRefusal("That todo is already closed the other way");
 			todo = { title: current.todo.title, status, detail: current.todo.detail };
 			text = setCompanyStateSettings(current.text, { status });
 		}
