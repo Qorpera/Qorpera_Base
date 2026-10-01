@@ -7,10 +7,13 @@
 //
 //   node scripts/runtime-roll.mjs packets --ref <release commit> --activation <file> [--migration <file> ...]
 //     --from-version <N> --from-sha <sha> --to-version <N+1> --to-sha <sha> --node-a <uuid> --node-b <uuid>
-//     --reason <text> --out <new directory> [--repo <checkout>]
+//     --reason <text> --out <new directory> [--repo <checkout>] [--empty runs|full]
 //   node scripts/runtime-roll.mjs compare <check result.json> <later check result.json>
 //
-// Packets, in order (node A is emptied and updated first, then node B):
+// --empty full switches each node off fully while it empties (a release that also changes its office
+// provider or coding executor); the default stops only runs and sign-ins. A node returns with both on.
+// Packets, in order (node A is emptied and updated first, then node B; node A must be no home of a
+// node-disk login, which 00-check enforces):
 //   00-check          dry-run only: preflight; prints the gates, the node-disk logins and N's pending inputs
 //   10-migration-*    one per release migration, gated on N being active; no pause
 //   20-declare-b      node B's orchestrators declared N
@@ -155,9 +158,20 @@ const MARKERS = `select not exists (select 1 from (values
 		('qorpera_runtime_claim_turn(p_orchestrator_id, job, run)', 'public.qorpera_claim_runner_job_for_orchestrator(uuid,uuid,integer)'),
 		('orchestrator.runtime_bundle_sha256 = p_run.runtime_bundle_sha256', 'public.qorpera_runtime_run_placement(public.qorpera_runner_jobs,public.qorpera_execution_runs)'),
 		('node.enabled and node.runs_enabled', 'public.qorpera_runtime_orchestrator_nodes(text)'),
+		('or n.runs_enabled)', 'public.qorpera_runtime_node_placement_candidates(text)'),
+		('p_provider_kind in (''native'',''login'')))', 'public.qorpera_reserve_runtime_node_machine(uuid,text,text,text,text,text,bigint,bigint)'),
 		('qorpera_runtime_adapter_takes_bundle', 'public.qorpera_runtime_node_placement_decide(uuid,text,text,uuid,uuid,text)'),
 		('v_run.runtime_bundle_sha256);', 'public.qorpera_reserve_runtime_machine(uuid,text,text,uuid,uuid,uuid,bigint)')
 	) m(marker, fn) where to_regprocedure(m.fn) is null or position(m.marker in pg_get_functiondef(to_regprocedure(m.fn))) = 0)`;
+// The logins still on a node disk, with their home nodes: their runs can run only there.
+const NODE_DISK_LOGINS = `select coalesce(jsonb_agg(jsonb_build_object('computeIdentityId', l.id, 'homes', l.homes) order by l.id), '[]'::jsonb)
+	from (select distinct c.compute_identity_id id, public.qorpera_runtime_login_identity_homes(c.compute_identity_id) homes
+		from public.qorpera_native_credential_capsules c
+		where c.status = 'active' and not public.qorpera_compute_identity_login_in_vault(c.compute_identity_id)) l`;
+const NO_LOGIN_HOME = (node) =>
+	`not exists (select 1 from public.qorpera_native_credential_capsules c where c.status = 'active'
+		and not public.qorpera_compute_identity_login_in_vault(c.compute_identity_id)
+		and ${literal(node)}::uuid = any(public.qorpera_runtime_login_identity_homes(c.compute_identity_id)))`;
 const N_PENDING = (sha) =>
 	`select coalesce(jsonb_agg(jsonb_build_object('id', i.id, 'sessionId', i.session_id, 'createdAt', i.created_at) order by i.created_at, i.id), '[]'::jsonb)
 	from public.qorpera_session_inputs i where i.completed_at is null and i.failed_at is null and i.execution_run_id is null
@@ -186,7 +200,9 @@ const RECORDED = (name) => [
 
 /** Every packet of one roll, by file name. */
 export function rollPackets(options) {
-	const { activation, migrations = [], from, to, nodeA, nodeB, reason } = options;
+	const { activation, migrations = [], from, to, nodeA, nodeB, reason, empty = "runs" } = options;
+	if (empty !== "runs" && empty !== "full") throw new Error("--empty is runs or full");
+	const ready = empty === "full" ? "readyForUpdate" : "readyForNodeRelease";
 	if (!UUID.test(nodeA) || !UUID.test(nodeB) || nodeA === nodeB) throw new Error("Two different node ids are required");
 	if (!SHA.test(from.sha) || !SHA.test(to.sha) || from.sha === to.sha) throw new Error("Two different bundle digests are required");
 	if (!Number.isSafeInteger(from.version) || to.version !== from.version + 1) throw new Error("The new bundle is the next version");
@@ -219,6 +235,7 @@ export function rollPackets(options) {
 		[`not exists (select 1 from public.qorpera_node_update_targets where resumed_version is null)`, "A signed node update is unfinished"],
 		[`not exists (select 1 from public.qorpera_runner_orchestrators where status <> 'revoked' and runtime_bundle_sha256 is not null)`, "An orchestrator declares a bundle"],
 		[MARKERS, "A guard the roll relies on is missing"],
+		[NO_LOGIN_HOME(nodeA), "Node A is the home of a node-disk login: empty the other node first"],
 	];
 	const check = (title, rows) => packet([SERVICE, `select jsonb_build_object(${rows.join(", ")}) as ${title};`]);
 	files["00-check.sql"] = check("roll_check", [
@@ -226,7 +243,7 @@ export function rollPackets(options) {
 		`'failures', (select coalesce(jsonb_agg(f.message), '[]'::jsonb) from (values ${hard.map(([condition, message]) => `(coalesce((${condition}), false), ${literal(message)})`).join(", ")}) f(ok, message) where not f.ok)`,
 		`'nodes', ${nodes}`,
 		`'rollStatus', public.qorpera_runtime_bundle_roll_status()`,
-		`'nodeDiskLogins', (select coalesce(jsonb_agg(distinct c.compute_identity_id), '[]'::jsonb) from public.qorpera_native_credential_capsules c where c.status = 'active' and not public.qorpera_compute_identity_login_in_vault(c.compute_identity_id))`,
+		`'nodeDiskLogins', (${NODE_DISK_LOGINS})`,
 		`'pendingInputs', (${N_PENDING(from.sha)})`,
 	]);
 	for (const migration of migrations) {
@@ -246,9 +263,15 @@ export function rollPackets(options) {
 		`select public.qorpera_declare_runtime_node_bundle(${literal(nodeB)}::uuid, ${literal(from.sha)}) as roll_declare;`,
 		gate("roll_after", [[declared(nodeB, from.sha), "Node B is not declared for the running bundle"]]),
 	]);
+	const version = (node) => `(select version from public.qorpera_runtime_nodes where id = ${literal(node)}::uuid)`;
 	const runs = (node, on) =>
-		`select public.qorpera_set_runtime_node_runs(${literal(node)}::uuid, ${on}, (select version from public.qorpera_runtime_nodes where id = ${literal(node)}::uuid), ${literal(reason)}) as roll_runs;`;
-	files["30-runs-off-a.sql"] = packet([SERVICE, runs(nodeA, false)]);
+		`select public.qorpera_set_runtime_node_runs(${literal(node)}::uuid, ${on}, ${version(node)}, ${literal(reason)}) as roll_runs;`;
+	const serving = (node, on) =>
+		`select public.qorpera_set_runtime_node_serving(${literal(node)}::uuid, ${on}, ${version(node)}, ${literal(reason)}) as roll_serving;`;
+	// Emptying: the runs switch, or the full switch too. Returning: both switches on, whichever was used.
+	const off = (node) => (empty === "full" ? [runs(node, false), serving(node, false)] : [runs(node, false)]);
+	const back = (node) => [serving(node, true), runs(node, true)];
+	files["30-runs-off-a.sql"] = packet([SERVICE, ...off(nodeA)]);
 	const drain = (node) =>
 		check("roll_drain", [`'status', public.qorpera_runtime_node_drain_status(${literal(node)}::uuid)`, `'rollStatus', public.qorpera_runtime_bundle_roll_status()`]);
 	files["31-drain-a.sql"] = drain(nodeA);
@@ -268,7 +291,7 @@ export function rollPackets(options) {
 			[MARKERS, "A guard the roll relies on is missing"],
 			[declared(nodeB, from.sha), "Node B is not declared for the running bundle"],
 			[undeclaredOnlyOn(nodeA), "An undeclared orchestrator outside node A could take the new bundle on old code"],
-			[`(select enabled and not runs_enabled from public.qorpera_runtime_nodes where id = ${literal(nodeA)}::uuid)`, "Node A must have runs off"],
+			[`not ${RUNS_ON(nodeA)}`, "Node A must have runs off"],
 			live(nodeA),
 			[NODE_READY(nodeA), "Node A is not observed ready"],
 		]),
@@ -280,7 +303,7 @@ export function rollPackets(options) {
 			[declared(nodeA, to.sha), "Node A is not declared for the new bundle"],
 			[`not exists (select 1 from public.qorpera_runner_orchestrators where status <> 'revoked' and runtime_bundle_sha256 is null)`, "An orchestrator is undeclared"],
 		]),
-		runs(nodeA, true),
+		...back(nodeA),
 		`select public.qorpera_runtime_bundle_roll_status() as roll_switched;`,
 	]);
 	files["50-check-n.sql"] = check("roll_check_n", [
@@ -291,14 +314,14 @@ export function rollPackets(options) {
 	files["60-runs-off-b.sql"] = packet([
 		SERVICE,
 		gate("roll_gate", [[ACTIVE_IS(to.version, to.sha), `Runtime ${to.version} is not the active bundle`], [RUNS_ON(nodeA), "Node A must serve runs first"]]),
-		runs(nodeB, false),
+		...off(nodeB),
 	]);
 	files["61-drain-b.sql"] = drain(nodeB);
 	files["70-return-b.sql"] = packet([
 		SERVICE,
 		gate("roll_gate", [
 			[ACTIVE_IS(to.version, to.sha), `Runtime ${to.version} is not the active bundle`],
-			[`(public.qorpera_runtime_node_drain_status(${literal(nodeB)}::uuid) ->> 'readyForNodeRelease')::boolean`, "Node B is not emptied of runs"],
+			[`(public.qorpera_runtime_node_drain_status(${literal(nodeB)}::uuid) ->> ${literal(ready)})::boolean`, "Node B is not emptied of runs"],
 			live(nodeB),
 			[NODE_READY(nodeB), "Node B is not observed ready"],
 		]),
@@ -307,7 +330,7 @@ export function rollPackets(options) {
 			[declared(nodeB, to.sha), "Node B is not declared for the new bundle"],
 			[`not exists (select 1 from public.qorpera_runner_orchestrators where status <> 'revoked' and runtime_bundle_sha256 = ${literal(from.sha)})`, "An orchestrator still declares the old bundle"],
 		]),
-		runs(nodeB, true),
+		...back(nodeB),
 	]);
 	files["80-finish.sql"] = packet([
 		SERVICE,
@@ -398,6 +421,7 @@ export function writeRoll(out, options) {
 		to: options.to,
 		nodes: { a: options.nodeA, b: options.nodeB },
 		reason: options.reason,
+		empty: options.empty ?? "runs",
 		source: options.source ?? null,
 		order: Object.keys(files),
 		dryRunOnly: DRY_RUN_ONLY,
@@ -459,6 +483,7 @@ async function main(argv) {
 		nodeA: o["node-a"],
 		nodeB: o["node-b"],
 		reason: o.reason,
+		empty: o.empty ?? "runs",
 		source: { commit },
 	});
 	process.stdout.write(`${JSON.stringify({ out: resolve(o.out), order: manifest.order }, null, 2)}\n`);

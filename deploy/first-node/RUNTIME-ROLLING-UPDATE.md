@@ -308,8 +308,14 @@ coordinator's packet runner. Nothing in it connects to a database.
 node scripts/runtime-roll.mjs packets --ref <release commit> \
   --activation <NNN>_runtime_bundle_activation_vN1.sql --migration <file> [--migration <file> …] \
   --from-version N --from-sha <N sha> --to-version N+1 --to-sha <N+1 sha> \
-  --node-a <node 1 id> --node-b <node 2 id> --reason 'roll vN+1' --out <new directory>
+  --node-a <node 1 id> --node-b <node 2 id> --reason 'roll vN+1' --out <new directory> [--empty full]
 ```
+
+- `--empty full` switches each node off fully while it empties, for a release that also changes its office
+  provider or coding executor; the drain gates then wait for `readyForUpdate`. The default stops only runs
+  and sign-ins. Either way a node returns with both switches on.
+- `00-check` refuses a node A that is the home of a node-disk login, and lists those logins with their
+  homes. It checks every guard marker of step 2.
 
 - Every file is exactly one outer transaction, and its sha256 is in `packet.json` with the order. A
   mutation packet is dry-run first, then committed.
@@ -336,8 +342,8 @@ node scripts/runtime-roll.mjs packets --ref <release commit> \
 | `80-finish` | 9. It refuses while N work is queued or running |
 
 `scripts/test-runtime-roll.mjs` (part of the hosted-db step) rehearses a whole roll with these packets on two
-fixture nodes, from the active bundle to a fixture bundle, and the emergency way back. No company is paused
-during the roll.
+fixture nodes, from the active bundle to a fixture bundle, and the emergency way back, once with each
+`--empty`. No company is paused during the roll.
 
 ## If something goes wrong
 

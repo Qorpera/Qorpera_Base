@@ -14,9 +14,9 @@ import { hostedDatabase } from "./test-hosted-db-cluster.mjs";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const localPort = process.env.QORPERA_ROLL_LOCAL_PORT;
-const database = localPort ? `roll_${randomBytes(4).toString("hex")}` : "roll";
+let database;
 let hosted = null;
-let psqlArgs = ["-X", "-qAt", "-h", "localhost", "-p", localPort, "-U", "postgres", "-d", database, "-v", "ON_ERROR_STOP=1"];
+let psqlArgs;
 function run(command, args, input) {
 	return spawnSync(command, args, { input, encoding: "utf8", timeout: 180_000, maxBuffer: 64 * 1024 * 1024 });
 }
@@ -90,126 +90,136 @@ const finish = (run) =>
 const paused = () => Number(sql("select count(*) from public.qorpera_company_execution_pauses;"));
 const active = () => sql("select b.version || ' ' || b.sha256 from public.qorpera_active_runtime_bundle a join public.qorpera_runtime_bundles b on b.id = a.runtime_bundle_id where a.singleton;").split(" ");
 
-let started = false;
-try {
-	if (localPort) {
-		const created = run("psql", ["-X", "-q", "-h", "localhost", "-p", localPort, "-U", "postgres", "-d", "postgres", "-c", `create database ${database} template qorpera_tpl`]);
-		assert.equal(created.status, 0, created.stderr);
-		started = true;
-	} else {
-		hosted = await hostedDatabase(database);
-		psqlArgs = hosted.cluster.psqlArgs(database, ["-qAt"]);
+/** One whole roll on a fresh database: `empty` is the packets' --empty (runs only, or the full switch). */
+async function rehearse(empty) {
+	let started = false;
+	database = localPort ? `roll_${randomBytes(4).toString("hex")}` : `roll_${empty}`;
+	psqlArgs = ["-X", "-qAt", "-h", "localhost", "-p", localPort, "-U", "postgres", "-d", database, "-v", "ON_ERROR_STOP=1"];
+	hosted = null;
+	try {
+		if (localPort) {
+			const created = run("psql", ["-X", "-q", "-h", "localhost", "-p", localPort, "-U", "postgres", "-d", "postgres", "-c", `create database ${database} template qorpera_tpl`]);
+			assert.equal(created.status, 0, created.stderr);
+			started = true;
+		} else {
+			hosted = await hostedDatabase(database);
+			psqlArgs = hosted.cluster.psqlArgs(database, ["-qAt"]);
+		}
+		sql("create schema if not exists supabase_migrations; create table if not exists supabase_migrations.schema_migrations(version text primary key, statements text[], name text);");
+		sql(read("supabase/tests/fixtures/runtime-node-inventory-observer.sql"));
+		const wake = read("supabase/tests/300_runtime_wake_bus.test.sql").split("-- END WAKE FIXTURE");
+		assert.equal(wake.length, 2);
+		sql(`${wake[0]}\ncommit;`);
+		// Two nodes: node A runs the fixture orchestrator's adapter, node B a fast host.
+		sql(`${service} set role service_role;
+			select public.qorpera_configure_runtime_node(${literal(policy(nodeA, "node-a", "a".repeat(64)))},0);
+			select public.qorpera_configure_runtime_node(${literal(policy(nodeB, "node-b", "b".repeat(64)))},0);
+			select public.qorpera_enroll_runtime_node_provider('${nodeA}','${"a".repeat(64)}','native','process',repeat('1',64),4000,8589934592);
+			select public.qorpera_enroll_runtime_node_provider('${nodeB}','${"b".repeat(64)}','native','native-b',repeat('2',64),4000,8589934592);
+			select public.qorpera_register_runner_orchestrator('${orchestratorB}','Node B fast host','native-b',repeat('4',64),3600);`);
+		observeBoth();
+		heartbeat();
+
+		// N is the active bundle; N+1 is a fixture bundle with an activation shaped like the generator's.
+		const [fromVersion, fromSha] = active();
+		const from = { version: Number(fromVersion), sha: fromSha };
+		// N's manifest, marked; a bundle's digest is the digest of its manifest (as PostgreSQL prints the jsonb).
+		const manifest = sql(`select (b.manifest || '{"rollFixture":true}'::jsonb)::text from public.qorpera_active_runtime_bundle a
+			join public.qorpera_runtime_bundles b on b.id = a.runtime_bundle_id where a.singleton;`).replaceAll("'", "''");
+		const toSha = sql(`select encode(extensions.digest(convert_to(('${manifest}'::jsonb)::text,'utf8'),'sha256'),'hex');`);
+		const to = { version: from.version + 1, sha: toSha };
+		const activation = {
+			name: "20260929999990_runtime_bundle_activation_roll_fixture.sql",
+			text: `-- Fixture activation (scripts/test-runtime-roll.mjs).
+	do $$ begin
+		perform 1 from public.qorpera_active_runtime_bundle where singleton for update;
+		if not exists (select 1 from public.qorpera_active_runtime_bundle a join public.qorpera_runtime_bundles b on b.id=a.runtime_bundle_id and b.sha256=a.runtime_bundle_sha256
+			where a.singleton and b.bundle_key='qorpera.cloud-runtime' and b.version=${from.version} and b.sha256='${from.sha}')
+		then raise exception 'Activation requires exact active runtime v${from.version}' using errcode='55000'; end if;
+	insert into public.qorpera_runtime_bundles(bundle_key,version,manifest,sha256)
+	values ('qorpera.cloud-runtime',${to.version},'${manifest}','${to.sha}');
+	update public.qorpera_active_runtime_bundle set runtime_bundle_id = bundle.id, runtime_bundle_sha256 = bundle.sha256, activated_at = statement_timestamp()
+	from public.qorpera_runtime_bundles bundle where singleton and bundle.bundle_key = 'qorpera.cloud-runtime' and bundle.version = ${to.version};
+	end $$;
+	`,
+		};
+		const migration = { name: "20260929999000_roll_fixture_probe.sql", text: "begin;\ncreate table public.qorpera_roll_fixture_probe(id integer);\ncommit;\n" };
+		const reason = "roll rehearsal";
+		const packets = rollPackets({ activation, migrations: [migration], from, to, nodeA, nodeB, reason, empty });
+		const ready = empty === "full" ? "readyForUpdate" : "readyForNodeRelease";
+		const p = (name) => packets[name];
+		const commit = (name) => {
+			dryRun(p(name));
+			return sql(p(name));
+		};
+
+		// 00: the preflight passes and records N's pending inputs; dry-run only packets never commit anything.
+		const check = lastJson(dryRun(p("00-check.sql")));
+		assert.equal(check.ok, true, JSON.stringify(check.failures));
+		for (const name of DRY_RUN_ONLY) assert(p(name), name);
+
+		// A queued N run before the roll; node B's fast host will take it.
+		const runN = newRun();
+		// 10, 20: the release migration and node B declared N.
+		commit(`10-migration-${migration.name}`);
+		assert.equal(sql("select count(*) from supabase_migrations.schema_migrations where version = '20260929999000';"), "1");
+		assert.match(fails(p(`10-migration-${migration.name}`)), /already recorded/);
+		commit("20-declare-b.sql");
+		// 30: node A takes no runs; its orchestrator claims nothing, node B's takes the N run.
+		commit("30-runs-off-a.sql");
+		assert.equal(claim(orchestratorA), null, "node A claims nothing while its runs are off");
+		assert.equal(claim(orchestratorB).work.run_id, runN, "node B takes the N run");
+		// The fixture's own run on node A ends; node A is then empty of runs.
+		finish(sql(`select run_id from public.qorpera_runner_job_claims where orchestrator_id = '${orchestratorA}' order by created_at, id limit 1;`));
+		assert.equal(lastJson(dryRun(p("31-drain-a.sql"))).status[ready], true);
+		// 40: the switch refuses while node A's orchestrator looks dead, then switches in one transaction.
+		sql(`update public.qorpera_runner_orchestrators set last_heartbeat_at = clock_timestamp() - interval '5 minutes' where id = '${orchestratorA}';`);
+		assert.match(fails(p("40-switch.sql")), /not running/);
+		assert.deepEqual(active(), [String(from.version), from.sha], "a refused switch changes nothing");
+		heartbeat();
+		observeBoth();
+		commit("40-switch.sql");
+		assert.deepEqual(active(), [String(to.version), to.sha]);
+		assert.equal(paused(), 0, "no company was paused");
+		// N+1 work goes to node A only; node B still runs N.
+		const runNext = newRun();
+		assert.equal(sql(`select runtime_bundle_sha256 from public.qorpera_execution_runs where id = '${runNext}';`), to.sha);
+		assert.equal(claim(orchestratorB), null, "node B (declared N) takes no N+1 run");
+		assert.equal(claim(orchestratorA).work.run_id, runNext, "node A takes the N+1 run");
+		const checkN = lastJson(dryRun(p("50-check-n.sql")));
+		assert(checkN.rollStatus.bundles.some((b) => b.sha256 === from.sha && b.runningRuns + b.queuedRuns >= 1), JSON.stringify(checkN.rollStatus));
+		// 60–70: the N run ends on node B, node B empties, returns declared N+1.
+		assert.match(fails(p("70-return-b.sql")), /not emptied of runs/);
+		finish(runN);
+		commit("60-runs-off-b.sql");
+		assert.equal(lastJson(dryRun(p("61-drain-b.sql"))).status[ready], true);
+		heartbeat();
+		observeBoth();
+		commit("70-return-b.sql");
+		assert.equal(sql(`select count(*) from public.qorpera_runner_orchestrators where runtime_bundle_sha256 = '${to.sha}';`), "2");
+		// 80: declarations cleared, both nodes serve runs.
+		finish(runNext);
+		commit("80-finish.sql");
+		assert.equal(sql("select count(*) from public.qorpera_runner_orchestrators where runtime_bundle_sha256 is not null;"), "0");
+		assert.equal(sql(`select bool_and(enabled and runs_enabled) from public.qorpera_runtime_nodes where id in ('${nodeA}','${nodeB}');`), "t");
+		assert.equal(paused(), 0, "the whole roll paused no company");
+
+		// Emergency: the reverse refuses before every company is paused; pause-now needs no quiet runtime.
+		newRun();
+		assert.match(fails(p("91-reverse.sql")), /paused first/);
+		commit("90-pause-now.sql");
+		assert(paused() >= 1, "every company is paused");
+		commit("91-reverse.sql");
+		assert.deepEqual(active(), [String(from.version), from.sha], "the active bundle is N again");
+		commit("92-resume.sql");
+		assert.equal(paused(), 0, "the companies resume");
+		console.log(JSON.stringify({ schema: "qorpera.runtime-roll-rehearsal/v1", empty, from: from.version, to: to.version, packets: Object.keys(packets).length, paused: 0, passed: true }));
+	} finally {
+		if (started)
+			run("psql", ["-X", "-q", "-h", "localhost", "-p", localPort, "-U", "postgres", "-d", "postgres", "-c", `drop database if exists ${database} with (force)`]);
+		hosted?.close();
 	}
-	sql("create schema if not exists supabase_migrations; create table if not exists supabase_migrations.schema_migrations(version text primary key, statements text[], name text);");
-	sql(read("supabase/tests/fixtures/runtime-node-inventory-observer.sql"));
-	const wake = read("supabase/tests/300_runtime_wake_bus.test.sql").split("-- END WAKE FIXTURE");
-	assert.equal(wake.length, 2);
-	sql(`${wake[0]}\ncommit;`);
-	// Two nodes: node A runs the fixture orchestrator's adapter, node B a fast host.
-	sql(`${service} set role service_role;
-		select public.qorpera_configure_runtime_node(${literal(policy(nodeA, "node-a", "a".repeat(64)))},0);
-		select public.qorpera_configure_runtime_node(${literal(policy(nodeB, "node-b", "b".repeat(64)))},0);
-		select public.qorpera_enroll_runtime_node_provider('${nodeA}','${"a".repeat(64)}','native','process',repeat('1',64),4000,8589934592);
-		select public.qorpera_enroll_runtime_node_provider('${nodeB}','${"b".repeat(64)}','native','native-b',repeat('2',64),4000,8589934592);
-		select public.qorpera_register_runner_orchestrator('${orchestratorB}','Node B fast host','native-b',repeat('4',64),3600);`);
-	observeBoth();
-	heartbeat();
-
-	// N is the active bundle; N+1 is a fixture bundle with an activation shaped like the generator's.
-	const [fromVersion, fromSha] = active();
-	const from = { version: Number(fromVersion), sha: fromSha };
-	// N's manifest, marked; a bundle's digest is the digest of its manifest (as PostgreSQL prints the jsonb).
-	const manifest = sql(`select (b.manifest || '{"rollFixture":true}'::jsonb)::text from public.qorpera_active_runtime_bundle a
-		join public.qorpera_runtime_bundles b on b.id = a.runtime_bundle_id where a.singleton;`).replaceAll("'", "''");
-	const toSha = sql(`select encode(extensions.digest(convert_to(('${manifest}'::jsonb)::text,'utf8'),'sha256'),'hex');`);
-	const to = { version: from.version + 1, sha: toSha };
-	const activation = {
-		name: "20260929999990_runtime_bundle_activation_roll_fixture.sql",
-		text: `-- Fixture activation (scripts/test-runtime-roll.mjs).
-do $$ begin
-	perform 1 from public.qorpera_active_runtime_bundle where singleton for update;
-	if not exists (select 1 from public.qorpera_active_runtime_bundle a join public.qorpera_runtime_bundles b on b.id=a.runtime_bundle_id and b.sha256=a.runtime_bundle_sha256
-		where a.singleton and b.bundle_key='qorpera.cloud-runtime' and b.version=${from.version} and b.sha256='${from.sha}')
-	then raise exception 'Activation requires exact active runtime v${from.version}' using errcode='55000'; end if;
-insert into public.qorpera_runtime_bundles(bundle_key,version,manifest,sha256)
-values ('qorpera.cloud-runtime',${to.version},'${manifest}','${to.sha}');
-update public.qorpera_active_runtime_bundle set runtime_bundle_id = bundle.id, runtime_bundle_sha256 = bundle.sha256, activated_at = statement_timestamp()
-from public.qorpera_runtime_bundles bundle where singleton and bundle.bundle_key = 'qorpera.cloud-runtime' and bundle.version = ${to.version};
-end $$;
-`,
-	};
-	const migration = { name: "20260929999000_roll_fixture_probe.sql", text: "begin;\ncreate table public.qorpera_roll_fixture_probe(id integer);\ncommit;\n" };
-	const reason = "roll rehearsal";
-	const packets = rollPackets({ activation, migrations: [migration], from, to, nodeA, nodeB, reason });
-	const p = (name) => packets[name];
-	const commit = (name) => {
-		dryRun(p(name));
-		return sql(p(name));
-	};
-
-	// 00: the preflight passes and records N's pending inputs; dry-run only packets never commit anything.
-	const check = lastJson(dryRun(p("00-check.sql")));
-	assert.equal(check.ok, true, JSON.stringify(check.failures));
-	for (const name of DRY_RUN_ONLY) assert(p(name), name);
-
-	// A queued N run before the roll; node B's fast host will take it.
-	const runN = newRun();
-	// 10, 20: the release migration and node B declared N.
-	commit(`10-migration-${migration.name}`);
-	assert.equal(sql("select count(*) from supabase_migrations.schema_migrations where version = '20260929999000';"), "1");
-	assert.match(fails(p(`10-migration-${migration.name}`)), /already recorded/);
-	commit("20-declare-b.sql");
-	// 30: node A takes no runs; its orchestrator claims nothing, node B's takes the N run.
-	commit("30-runs-off-a.sql");
-	assert.equal(claim(orchestratorA), null, "node A claims nothing while its runs are off");
-	assert.equal(claim(orchestratorB).work.run_id, runN, "node B takes the N run");
-	// The fixture's own run on node A ends; node A is then empty of runs.
-	finish(sql(`select run_id from public.qorpera_runner_job_claims where orchestrator_id = '${orchestratorA}' order by created_at, id limit 1;`));
-	assert.equal(lastJson(dryRun(p("31-drain-a.sql"))).status.readyForNodeRelease, true);
-	// 40: the switch refuses while node A's orchestrator looks dead, then switches in one transaction.
-	sql(`update public.qorpera_runner_orchestrators set last_heartbeat_at = clock_timestamp() - interval '5 minutes' where id = '${orchestratorA}';`);
-	assert.match(fails(p("40-switch.sql")), /not running/);
-	assert.deepEqual(active(), [String(from.version), from.sha], "a refused switch changes nothing");
-	heartbeat();
-	observeBoth();
-	commit("40-switch.sql");
-	assert.deepEqual(active(), [String(to.version), to.sha]);
-	assert.equal(paused(), 0, "no company was paused");
-	// N+1 work goes to node A only; node B still runs N.
-	const runNext = newRun();
-	assert.equal(sql(`select runtime_bundle_sha256 from public.qorpera_execution_runs where id = '${runNext}';`), to.sha);
-	assert.equal(claim(orchestratorB), null, "node B (declared N) takes no N+1 run");
-	assert.equal(claim(orchestratorA).work.run_id, runNext, "node A takes the N+1 run");
-	const checkN = lastJson(dryRun(p("50-check-n.sql")));
-	assert(checkN.rollStatus.bundles.some((b) => b.sha256 === from.sha && b.runningRuns + b.queuedRuns >= 1), JSON.stringify(checkN.rollStatus));
-	// 60–70: the N run ends on node B, node B empties, returns declared N+1.
-	assert.match(fails(p("70-return-b.sql")), /not emptied of runs/);
-	finish(runN);
-	commit("60-runs-off-b.sql");
-	assert.equal(lastJson(dryRun(p("61-drain-b.sql"))).status.readyForNodeRelease, true);
-	heartbeat();
-	observeBoth();
-	commit("70-return-b.sql");
-	assert.equal(sql(`select count(*) from public.qorpera_runner_orchestrators where runtime_bundle_sha256 = '${to.sha}';`), "2");
-	// 80: declarations cleared, both nodes serve runs.
-	finish(runNext);
-	commit("80-finish.sql");
-	assert.equal(sql("select count(*) from public.qorpera_runner_orchestrators where runtime_bundle_sha256 is not null;"), "0");
-	assert.equal(sql(`select bool_and(enabled and runs_enabled) from public.qorpera_runtime_nodes where id in ('${nodeA}','${nodeB}');`), "t");
-	assert.equal(paused(), 0, "the whole roll paused no company");
-
-	// Emergency: the reverse refuses before every company is paused; pause-now needs no quiet runtime.
-	newRun();
-	assert.match(fails(p("91-reverse.sql")), /paused first/);
-	commit("90-pause-now.sql");
-	assert(paused() >= 1, "every company is paused");
-	commit("91-reverse.sql");
-	assert.deepEqual(active(), [String(from.version), from.sha], "the active bundle is N again");
-	commit("92-resume.sql");
-	assert.equal(paused(), 0, "the companies resume");
-	console.log(JSON.stringify({ schema: "qorpera.runtime-roll-rehearsal/v1", from: from.version, to: to.version, packets: Object.keys(packets).length, paused: 0, passed: true }));
-} finally {
-	if (started)
-		run("psql", ["-X", "-q", "-h", "localhost", "-p", localPort, "-U", "postgres", "-d", "postgres", "-c", `drop database if exists ${database} with (force)`]);
-	hosted?.close();
 }
+
+await rehearse("runs");
+await rehearse("full");

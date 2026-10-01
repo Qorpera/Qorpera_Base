@@ -85,6 +85,30 @@ test("the switch runs the activation verbatim between its gates, then declares a
 	assert.ok(!switchText.includes("Runtime is not quiet"), "the switch needs no quiet runtime");
 });
 
+test("the preflight refuses a node A that is a node-disk login's home, and checks every guard marker", () => {
+	const check = rollPackets(options())["00-check.sql"];
+	assert.ok(check.includes("Node A is the home of a node-disk login"));
+	assert.ok(check.includes(`'${nodeA}'::uuid = any(public.qorpera_runtime_login_identity_homes(c.compute_identity_id))`));
+	for (const marker of ["node.enabled and node.runs_enabled", "or n.runs_enabled)", "p_provider_kind in (''native'',''login'')))", "qorpera_runtime_adapter_takes_bundle", "v_run.runtime_bundle_sha256);"])
+		assert.ok(check.includes(marker), marker);
+});
+
+test("--empty full switches a node off fully and returns it with both switches", () => {
+	const runsOnly = rollPackets(options());
+	assert.ok(!runsOnly["30-runs-off-a.sql"].includes("qorpera_set_runtime_node_serving"));
+	assert.ok(runsOnly["70-return-b.sql"].includes("'readyForNodeRelease'"));
+	const full = rollPackets(options({ empty: "full" }));
+	assert.ok(full["30-runs-off-a.sql"].includes(`qorpera_set_runtime_node_serving('${nodeA}'::uuid, false`));
+	assert.ok(full["60-runs-off-b.sql"].includes(`qorpera_set_runtime_node_serving('${nodeB}'::uuid, false`));
+	assert.ok(full["70-return-b.sql"].includes("'readyForUpdate'"));
+	for (const [name, node] of [["40-switch.sql", nodeA], ["70-return-b.sql", nodeB]])
+		for (const packets of [runsOnly, full]) {
+			assert.ok(packets[name].includes(`qorpera_set_runtime_node_serving('${node}'::uuid, true`), name);
+			assert.ok(packets[name].includes(`qorpera_set_runtime_node_runs('${node}'::uuid, true`), name);
+		}
+	assert.throws(() => rollPackets(options({ empty: "half" })), /runs or full/);
+});
+
 test("each release migration is gated on N and recorded with its own text", () => {
 	const text = rollPackets(options())[`10-migration-${migration.name}`];
 	assert.ok(text.includes("Runtime 164 is not the active bundle"));
