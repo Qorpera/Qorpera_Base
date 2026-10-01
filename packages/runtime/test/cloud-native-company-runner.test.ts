@@ -66,7 +66,6 @@ function fixture() {
 		authority,
 		bridge,
 		signal: new AbortController().signal,
-		refreshAuthority: vi.fn(async () => authority),
 	};
 	return { options, binding, receipt, terminate, start, startCompany };
 }
@@ -113,7 +112,6 @@ it("accepts a silent private completion for a wake run and leaves reply obligati
 	const completed = await executeNativeCompanyRunnerJob({
 		job: wakeJob,
 		authority,
-		refreshAuthority: async () => authority,
 		bridge,
 		signal: new AbortController().signal,
 	});
@@ -133,7 +131,6 @@ it("accepts a silent private completion for a wake run and leaves reply obligati
 		executeNativeCompanyRunnerJob({
 			job,
 			authority,
-			refreshAuthority: async () => authority,
 			bridge,
 			signal: new AbortController().signal,
 		}),
@@ -146,15 +143,33 @@ it("does not downgrade when the bridge has no governed execution endpoint", asyn
 		executeNativeCompanyRunnerJob({ ...f.options, bridge: { ...f.options.bridge, startCompany: undefined } }),
 	).rejects.toThrow("no fallback");
 	expect(f.start).not.toHaveBeenCalled();
-	expect(f.options.refreshAuthority).not.toHaveBeenCalled();
 });
 
-it.each(["leaseId", "runId", "credentialCapsuleId", "computeIdentityId", "assignmentId"] as const)(
-	"rejects an authority refresh that substitutes %s",
+it("starts on the authority the runner just acquired, without renewing it first", async () => {
+	// Acquisition runs every check a renewal runs and sets the same expiry; the worker's
+	// maintenance loop renews the lease from then on. This call has no way to renew it.
+	const f = fixture();
+	await executeNativeCompanyRunnerJob(f.options);
+	expect(f.startCompany).toHaveBeenCalledOnce();
+	expect(f.startCompany.mock.calls[0]).toEqual([f.options.authority, { jobId: f.binding.jobId, attemptCount: 1 }]);
+});
+
+it.each(["expired", "unreadable"] as const)("refuses an %s authority before starting the bridge", async (kind) => {
+	const f = fixture();
+	const expiresAt = kind === "expired" ? new Date(Date.now() - 1).toISOString() : "not a time";
+	await expect(
+		executeNativeCompanyRunnerJob({ ...f.options, authority: { ...f.options.authority, expiresAt } }),
+	).rejects.toThrow("Native company authority has expired");
+	expect(f.startCompany).not.toHaveBeenCalled();
+});
+
+it.each(["runId", "assignmentId", "runnerId"] as const)(
+	"refuses an authority whose %s is not the leased job's",
 	async (key) => {
 		const f = fixture();
-		f.options.refreshAuthority.mockResolvedValue({ ...f.options.authority, [key]: randomUUID() });
-		await expect(executeNativeCompanyRunnerJob(f.options)).rejects.toThrow("another execution");
+		await expect(
+			executeNativeCompanyRunnerJob({ ...f.options, authority: { ...f.options.authority, [key]: randomUUID() } }),
+		).rejects.toThrow("no fallback");
 		expect(f.startCompany).not.toHaveBeenCalled();
 	},
 );

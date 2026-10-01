@@ -109,8 +109,15 @@ create function pg_temp.review_completed_handoff()
 returns jsonb language plpgsql as $$
 declare v_first jsonb := current_setting('qorpera_test.wake_binding')::jsonb; v_second jsonb;
  v_plan jsonb; v_result jsonb; v_context jsonb; v_continuation jsonb; v_receipt jsonb; v_page jsonb; v_coworker jsonb;
+ v_handoff jsonb;
 begin
- perform pg_temp.handoff_connection();
+ v_handoff := pg_temp.handoff_connection();
+ -- A coworker's run is paid by the member who started the chain (20260928230000): the login the run
+ -- moves to must allow agent work for the coworker message to replay there, as in review two.
+ perform pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
+ perform public.qorpera_consent_provider_connection_autonomous('30000000-0000-4000-8000-000000000010',
+  (v_handoff->>'connection_id')::uuid,true);
+ perform pg_temp.path_claims('service_role');
  perform pg_temp.handoff_begin(v_first,repeat('c',64));
  perform pg_temp.wake_public_send(v_first,'progress');
  v_plan := pg_temp.path_plan('completed-before-quota','before-quota.md',pg_temp.path_stage_file('before-quota.md','Completed once'));
@@ -120,7 +127,7 @@ begin
  select to_jsonb(receipt) into strict v_receipt from public.qorpera_run_operation_receipts receipt
  where id=(v_result->>'receiptId')::uuid;
  perform public.qorpera_record_provider_usage_signal(v_first,'usage_limit',clock_timestamp()+interval '2 hours');
- -- The failure report no longer hands off (20260929910000): call the handoff function directly.
+ -- The failure report no longer hands off (20260928349910): call the handoff function directly.
  perform public.qorpera_handoff_run_sponsor((v_first->>'runId')::uuid,'Native harness failed (provider allowance unavailable)');
  perform pg_temp.wake_assert((select status='queued' from public.qorpera_runner_jobs
   where id=(v_first->>'jobId')::uuid),'Confirmed work allows continuation');
@@ -171,7 +178,7 @@ begin
   update public.qorpera_run_operation_receipts set status='ambiguous',completed_at=clock_timestamp() where id=v_id;
  end if;
  perform public.qorpera_record_provider_usage_signal(v_binding,'usage_limit',clock_timestamp()+interval '2 hours');
- -- The failure report no longer hands off (20260929910000): ask the handoff function itself, whose receipt
+ -- The failure report no longer hands off (20260928349910): ask the handoff function itself, whose receipt
  -- fence this case proves, then report the failure.
  perform public.qorpera_handoff_run_sponsor((v_binding->>'runId')::uuid,'Native harness failed (provider allowance unavailable)');
  perform pg_temp.wake_assert(not exists(select 1 from public.qorpera_execution_sponsor_handoffs

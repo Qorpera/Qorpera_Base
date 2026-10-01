@@ -57,12 +57,18 @@ export const HOSTED_DB_SCRIPTS = [
 	"scripts/test-runtime-office-current-provider-activation.mjs",
 	"scripts/test-coding-turn-backfill.mjs",
 	"scripts/test-runtime-room-history.mjs",
+	"scripts/test-runtime-production-review.mjs",
+	"scripts/test-runtime-wake-bus.mjs",
 ];
 
 /** Scripts that keep a PostgreSQL of their own (they restart the server or alter the cluster-wide postgres
  * role). The suite starts them first and lets them run beside the SQL tests; a script missing here only
  * runs later, in turn. */
-const OWN_SERVER_SCRIPTS = new Set(["scripts/test-runtime-node-capacity.mjs", "scripts/test-runtime-office-delete-disposition.mjs"]);
+const OWN_SERVER_SCRIPTS = new Set([
+	"scripts/test-runtime-node-capacity.mjs",
+	"scripts/test-runtime-office-delete-disposition.mjs",
+	"scripts/test-runtime-wake-bus.mjs",
+]);
 
 /** Where those scripts start in the migration chain; the one replay leaves a copy at each. A point missing
  * here costs time only: the script copies the nearest earlier snapshot and replays the gap. */
