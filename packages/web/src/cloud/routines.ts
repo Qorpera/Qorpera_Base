@@ -1,4 +1,3 @@
-import type { NativeMemberConnection } from "@qorpera/cloud-client/cloud-native-subscription-control";
 import {
 	type CloudRoutine,
 	CloudRoutineClient,
@@ -7,7 +6,11 @@ import {
 	type CloudRoutineTrigger,
 } from "@qorpera/cloud-client/cloud-routines";
 import type { Cloud } from "./client.ts";
+import { planLogin, type WebMemberConnection } from "./native-subscription.ts";
 import type { HostedProfile } from "./types.ts";
+
+/** A ChatGPT plan never pays for a file-change or webhook routine (the kernel refuses it too). */
+const LISTENER_ON_PLAN = "A ChatGPT plan can't pay for routines that start on a file change or a webhook.";
 
 export interface WebRoutineDraft {
 	/** Stable identity; the view keeps one per draft so a retry is the same routine. */
@@ -27,11 +30,11 @@ export interface WebRoutineDraft {
 export interface WebRoutines {
 	list(): Promise<CloudRoutine[]>;
 	runs(): Promise<CloudRoutineOccurrence[]>;
-	save(draft: WebRoutineDraft, account: NativeMemberConnection, saveId: string): Promise<void>;
+	save(draft: WebRoutineDraft, account: WebMemberConnection, saveId: string): Promise<void>;
 	/** Pause or resume without changing anything else. */
 	setEnabled(
 		routine: CloudRoutine,
-		account: NativeMemberConnection | undefined,
+		account: WebMemberConnection | undefined,
 		enabled: boolean,
 		saveId: string,
 	): Promise<void>;
@@ -73,23 +76,32 @@ export function createWebRoutines(
 		return value;
 	};
 	const client = new CloudRoutineClient((name, args) => rpc(name, args));
-	const sponsor = async (account: NativeMemberConnection) => {
+	const sponsor = async (account: WebMemberConnection) => {
 		if (account.connectionStatus !== "active" || account.authorizationState !== "active")
 			throw new Error("This model account needs to be signed in again.");
-		const consent = record(
-			await rpc("qorpera_consent_provider_connection_autonomous", {
-				p_profile_id: profile.profileId,
-				p_connection_id: account.connectionId,
-				p_allow_autonomous: true,
-			}),
-		);
-		if (
-			consent.connection_id !== account.connectionId ||
-			consent.allow_autonomous !== true ||
-			!Number.isSafeInteger(consent.version)
-		)
-			throw new Error("Invalid cloud response");
-		const version = consent.version as number;
+		let version: number;
+		if (planLogin(account)) {
+			// A ChatGPT plan works while its member is away only once they turned that on in Settings;
+			// saving a routine never turns it on for them.
+			if (account.allowAutonomous !== true)
+				throw new Error("Turn on “Work while you're away” for this ChatGPT plan in Settings first.");
+			version = account.connectionVersion;
+		} else {
+			const consent = record(
+				await rpc("qorpera_consent_provider_connection_autonomous", {
+					p_profile_id: profile.profileId,
+					p_connection_id: account.connectionId,
+					p_allow_autonomous: true,
+				}),
+			);
+			if (
+				consent.connection_id !== account.connectionId ||
+				consent.allow_autonomous !== true ||
+				!Number.isSafeInteger(consent.version)
+			)
+				throw new Error("Invalid cloud response");
+			version = consent.version as number;
+		}
 		const bound = record(
 			await rpc("qorpera_create_member_execution_sponsor", {
 				p_profile_id: profile.profileId,
@@ -107,6 +119,7 @@ export function createWebRoutines(
 		list: () => client.list(profile.environmentId, signal),
 		runs: () => client.occurrences(profile.environmentId, signal, 200),
 		async save(draft, account, saveId) {
+			if (draft.trigger.kind === "listener" && planLogin(account)) throw new Error(LISTENER_ON_PLAN);
 			const authority = await sponsor(account);
 			await client.save(
 				{
@@ -146,6 +159,8 @@ export function createWebRoutines(
 				await write({ sponsorBindingId: routine.sponsorBindingId, sponsorVersion: routine.sponsorVersion });
 			} catch (error) {
 				if (!account) throw error;
+				if (planLogin(account) && routine.triggers.some((item) => item.kind === "listener"))
+					throw new Error(LISTENER_ON_PLAN);
 				await write(await sponsor(account));
 			}
 		},

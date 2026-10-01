@@ -1,7 +1,4 @@
-import type {
-	NativeExecutionConnections,
-	NativeMemberConnection,
-} from "@qorpera/cloud-client/cloud-native-subscription-control";
+import type { NativeExecutionConnections } from "@qorpera/cloud-client/cloud-native-subscription-control";
 import {
 	CLOUD_ROUTINE_WEEKDAYS,
 	type CloudRoutine,
@@ -13,6 +10,7 @@ import {
 	describeCloudRoutineTrigger,
 	parseCloudRoutineTrigger,
 } from "@qorpera/cloud-client/cloud-routines";
+import { planLogin, type WebMemberConnection } from "../../cloud/native-subscription.ts";
 import type { WebRoutines } from "../../cloud/routines.ts";
 import type { HostedStaffAgent } from "../../cloud/types.ts";
 import { dialogPageHeader } from "../../ui/dialog.ts";
@@ -62,8 +60,8 @@ function editorShape(routine: CloudRoutine): Shape | undefined {
 
 /** The cloud lists one row per connection version; the picker offers each account
  * once, at its newest version (a consent raises the version, not the account). */
-function latestVersions(accounts: readonly NativeMemberConnection[]): NativeMemberConnection[] {
-	const newest = new Map<string, NativeMemberConnection>();
+function latestVersions(accounts: readonly WebMemberConnection[]): WebMemberConnection[] {
+	const newest = new Map<string, WebMemberConnection>();
 	for (const account of accounts) {
 		const current = newest.get(account.connectionId);
 		if (!current || current.connectionVersion < account.connectionVersion) newest.set(account.connectionId, account);
@@ -71,9 +69,10 @@ function latestVersions(accounts: readonly NativeMemberConnection[]): NativeMemb
 	return [...newest.values()];
 }
 
-function accountLabel(account: NativeMemberConnection): string {
-	const name =
-		account.provider === "openai" || account.provider === "openai-codex"
+function accountLabel(account: WebMemberConnection): string {
+	const name = planLogin(account)
+		? t("ChatGPT plan")
+		: account.provider === "openai" || account.provider === "openai-codex"
 			? "ChatGPT"
 			: account.provider === "anthropic"
 				? "Claude"
@@ -85,7 +84,7 @@ function accountLabel(account: NativeMemberConnection): string {
 /** Option labels for the account picker. The same account connected more than once
  * (each sign-in adds a connection) would read identically, so repeats are numbered in
  * list order: "ChatGPT · name@example.com", "… (2)", "… (3)". */
-function accountLabels(accounts: readonly NativeMemberConnection[]): string[] {
+function accountLabels(accounts: readonly WebMemberConnection[]): string[] {
 	const seen = new Map<string, number>();
 	return accounts.map((account) => {
 		const label = accountLabel(account);
@@ -208,7 +207,7 @@ export class AgentRoutines {
 	readonly #back: (() => void) | undefined;
 	#routines: CloudRoutine[] = [];
 	#runs: CloudRoutineOccurrence[] = [];
-	#accounts: NativeMemberConnection[] = [];
+	#accounts: WebMemberConnection[] = [];
 	#busy = false;
 	#editing = false;
 	/** Until the first read answers, an empty list means "not known yet". */
@@ -575,11 +574,15 @@ export class AgentRoutines {
 		try {
 			const result = await this.#access!.accounts(this.#signal);
 			if (this.#signal.aborted) return false;
-			this.#accounts = latestVersions(
+			// A ChatGPT plan its member has not turned on for work while away comes last: a routine
+			// cannot run on it (Codex accounts keep their order).
+			const waits = (item: WebMemberConnection) => planLogin(item) && item.allowAutonomous !== true;
+			const accounts = latestVersions(
 				result.connections.filter(
 					(item) => item.connectionStatus === "active" && item.authorizationState === "active",
 				),
 			);
+			this.#accounts = [...accounts.filter((item) => !waits(item)), ...accounts.filter(waits)];
 			return true;
 		} catch {
 			if (!this.#signal.aborted) {
@@ -604,16 +607,27 @@ export class AgentRoutines {
 		this.#message = "";
 		this.#setControls();
 		let failure = "";
+		const listening = routine.triggers.some((item) => item.kind === "listener");
 		try {
-			if (await this.#loadAccounts())
-				await this.#access.routines.setEnabled(routine, this.#accounts[0], enabled, crypto.randomUUID());
-			else failure = this.#message;
+			if (await this.#loadAccounts()) {
+				// The routine's own payer is tried first. The account it falls back to must be able to pay
+				// for it: a ChatGPT plan only once its member turned on work while away, and never for a
+				// file-change or webhook routine.
+				const payer = this.#accounts.find(
+					(item) => !planLogin(item) || (item.allowAutonomous === true && !listening),
+				);
+				await this.#access.routines.setEnabled(routine, payer, enabled, crypto.randomUUID());
+			} else failure = this.#message;
 		} catch {
-			failure = this.#accounts.length
-				? t("The routine could not be changed. Try again.")
-				: t(
+			failure = !this.#accounts.length
+				? t(
 						"Connect a model account in Settings first; a routine runs on the account of the member who last saved it.",
-					);
+					)
+				: !this.#accounts.some((item) => !planLogin(item) || (item.allowAutonomous === true && !listening))
+					? listening
+						? t("A ChatGPT plan can't pay for routines that start on a file change or a webhook.")
+						: t("Turn on “Work while you're away” for this ChatGPT plan in Settings first.")
+					: t("The routine could not be changed. Try again.");
 		} finally {
 			this.#busy = false;
 			this.#moving = undefined;
@@ -732,7 +746,36 @@ export class AgentRoutines {
 			...accountLabels(this.#accounts).map((label, index) =>
 				h("option", { value: this.#accounts[index]!.connectionId }, label),
 			),
-		);
+		) as HTMLSelectElement;
+		// What saving means for the chosen account: a ChatGPT plan works while its member is away only
+		// once they turned that on in Settings; saving turns it on for no account but a Codex login.
+		const accountNote = h("small");
+		const describeAccount = () => {
+			const chosen = this.#accounts.find((item) => item.connectionId === account.value);
+			// A file-change or webhook routine never runs on a plan.
+			const listening = when.value === "file";
+			accountNote.textContent =
+				!chosen || !planLogin(chosen)
+					? t(
+							"Saving lets {name} use this account for this routine while you are away. Pause the routine to stop it.",
+							{ name: this.#agent().displayName },
+						)
+					: listening
+						? t(
+								"A ChatGPT plan can't pay for routines that start on a file change or a webhook. Choose another account.",
+							)
+						: chosen.allowAutonomous === true
+							? t(
+									"{name} uses your ChatGPT plan for this routine while you are away. Pause the routine to stop it.",
+									{
+										name: this.#agent().displayName,
+									},
+								)
+							: t("Turn on “Work while you're away” for this ChatGPT plan in Settings first.");
+		};
+		account.addEventListener("change", describeAccount);
+		when.addEventListener("change", describeAccount);
+		describeAccount();
 		const intervalFields = h("div", { class: "routine-inline" }, t("Every"), every, unit);
 		const weeklyFields = h(
 			"div",
@@ -848,6 +891,18 @@ export class AgentRoutines {
 				status.textContent = t("Connect a model account in Settings first.");
 				return;
 			}
+			if (planLogin(chosenAccount)) {
+				if (built.kind === "listener") {
+					status.textContent = t(
+						"A ChatGPT plan can't pay for routines that start on a file change or a webhook. Choose another account.",
+					);
+					return;
+				}
+				if (chosenAccount.allowAutonomous !== true) {
+					status.textContent = t("Turn on “Work while you're away” for this ChatGPT plan in Settings first.");
+					return;
+				}
+			}
 			this.#busy = true;
 			save.disabled = cancel.disabled = true;
 			status.textContent = t("Saving…");
@@ -896,20 +951,7 @@ export class AgentRoutines {
 				h("label", null, t("Reply"), reply),
 				h("div", { class: "muted" }, t("Effort: {effort}", { effort: effortName(effort) })),
 				this.#accounts.length
-					? h(
-							"label",
-							null,
-							t("Runs on"),
-							account,
-							h(
-								"small",
-								null,
-								t(
-									"Saving lets {name} use this account for this routine while you are away. Pause the routine to stop it.",
-									{ name: this.#agent().displayName },
-								),
-							),
-						)
+					? h("label", null, t("Runs on"), account, accountNote)
 					: h(
 							"p",
 							{ class: "muted" },

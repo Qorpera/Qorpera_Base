@@ -336,6 +336,115 @@ function loginSetup(existing = true) {
 	return { ...f, input, responses };
 }
 
+describe("ChatGPT plan logins (switched off until a company has one)", () => {
+	const row = (n: number, extra: Record<string, unknown>) => ({
+		connection_id: id(n),
+		client_connection_id: id(100 + n),
+		connection_version: 2,
+		provider: "openai",
+		native_harness: "codex-cli",
+		authorization_state: "active",
+		max_native_concurrency: 1,
+		billing_source: "personal_subscription",
+		consent_version: "1",
+		consented_at: timestamp,
+		connection_status: "active",
+		sponsor_binding_id: id(200 + n),
+		sponsor_version: 1,
+		policy: { implementation_status: "supported", enablement_status: "enabled", policy_version: 1 },
+		...extra,
+	});
+	it("reads each login's kind, consent and card from the same answer, in one request", async () => {
+		const f = setup();
+		f.fetch.mockResolvedValueOnce(
+			Response.json({
+				compute_identity: null,
+				connections: [
+					row(81, { login_kind: "chatgpt_plan", allow_autonomous: false, routine_offer_shown_at: timestamp }),
+					row(82, { login_kind: "codex", allow_autonomous: true, routine_offer_shown_at: null }),
+					row(83, {}),
+					row(84, { login_kind: "something", allow_autonomous: "yes", routine_offer_shown_at: "soon" }),
+					// Another version of 81: each version reads its own consent.
+					row(81, { connection_version: 3, login_kind: "chatgpt_plan", allow_autonomous: true }),
+				],
+			}),
+		);
+		const listed = await f.client.listConnections();
+		expect(f.fetch).toHaveBeenCalledTimes(1);
+		expect(
+			listed.connections.map(({ loginKind, allowAutonomous, routineOfferShownAt }) => ({
+				loginKind,
+				allowAutonomous,
+				routineOfferShownAt,
+			})),
+		).toEqual([
+			{ loginKind: "chatgpt_plan", allowAutonomous: false, routineOfferShownAt: timestamp },
+			{ loginKind: "codex", allowAutonomous: true, routineOfferShownAt: undefined },
+			// A node login, and fields the web cannot read, read as absent.
+			{ loginKind: undefined, allowAutonomous: undefined, routineOfferShownAt: undefined },
+			{ loginKind: undefined, allowAutonomous: undefined, routineOfferShownAt: undefined },
+			{ loginKind: "chatgpt_plan", allowAutonomous: true, routineOfferShownAt: undefined },
+		]);
+		expect(listed.connections[0]).toMatchObject({ connectionId: id(81), sponsorBindingId: id(281) });
+	});
+	it("binds a plan for the member's own messages without consenting it", async () => {
+		const f = setup();
+		const rpc = vi.spyOn(f.cloud, "rpc");
+		f.fetch.mockResolvedValueOnce(Response.json({ binding_id: id(92), version: 1 }));
+		expect(
+			await f.client.createMemberSponsor({
+				providerConnectionId: id(94),
+				providerConnectionVersion: 2,
+				allowAutonomous: false,
+				planLogin: true,
+			}),
+		).toEqual({ bindingId: id(92), version: 1 });
+		expect(rpc).not.toHaveBeenCalled();
+		expect(JSON.parse(f.fetch.mock.calls[0]![1]!.body as string)).toMatchObject({
+			p_profile_id: profileA.profileId,
+			p_provider_connection_id: id(94),
+			p_provider_connection_version: 2,
+			p_allow_autonomous: false,
+		});
+	});
+	it("turns work while away on (consent, then the consented version bound) and off (consent only)", async () => {
+		const f = setup();
+		const rpc = vi
+			.spyOn(f.cloud, "rpc")
+			.mockResolvedValueOnce({ connection_id: id(94), version: 3, allow_autonomous: true, changed: true })
+			.mockResolvedValueOnce({ connection_id: id(94), version: 4, allow_autonomous: false, changed: true });
+		f.fetch
+			.mockResolvedValueOnce(Response.json({ binding_id: id(92), version: 2 }))
+			.mockResolvedValueOnce(Response.json({ binding_id: id(93), version: 1 }));
+		await f.client.setWorkWhileAway!(id(94), true);
+		expect(rpc).toHaveBeenNthCalledWith(1, "qorpera_consent_provider_connection_autonomous", {
+			p_profile_id: profileA.profileId,
+			p_connection_id: id(94),
+			p_allow_autonomous: true,
+		});
+		expect(JSON.parse(f.fetch.mock.calls[0]![1]!.body as string)).toMatchObject({
+			p_provider_connection_id: id(94),
+			p_provider_connection_version: 3,
+			p_allow_autonomous: true,
+		});
+		await f.client.setWorkWhileAway!(id(94), false);
+		expect(rpc).toHaveBeenNthCalledWith(2, "qorpera_consent_provider_connection_autonomous", {
+			p_profile_id: profileA.profileId,
+			p_connection_id: id(94),
+			p_allow_autonomous: false,
+		});
+		// Turned off, the new version is bound at once for the member's own messages.
+		expect(JSON.parse(f.fetch.mock.calls[1]![1]!.body as string)).toMatchObject({
+			p_provider_connection_id: id(94),
+			p_provider_connection_version: 4,
+			p_allow_autonomous: false,
+		});
+		// An answer for another connection or the other choice is refused.
+		rpc.mockResolvedValueOnce({ connection_id: id(94), version: 5, allow_autonomous: true });
+		await expect(f.client.setWorkWhileAway!(id(94), false)).rejects.toThrow("Invalid cloud response");
+	});
+});
+
 describe("native provider onboarding browser adapter", () => {
 	it("is unavailable without an explicitly configured gateway and performs no cloud mutation", async () => {
 		const f = setup();
