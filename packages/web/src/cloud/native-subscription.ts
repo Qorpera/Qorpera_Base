@@ -78,7 +78,7 @@ export interface WebNativeSubscription {
 	beginChatGptPlanSignIn?(
 		displayName: string,
 		signal?: AbortSignal,
-	): Promise<{ url: string; signIn: ChatGptPlanSignIn }>;
+	): Promise<{ url: string; signIn: Omit<ChatGptPlanSignIn, "returnRoute"> }>;
 	/** Finishes it with the callback's one-time confirmation id. */
 	finishChatGptPlanSignIn?(outcome: ChatGptPlanReturn, signal?: AbortSignal): Promise<void>;
 	revokeConnection(
@@ -764,6 +764,7 @@ export function createWebNativeSubscription(
 						url,
 						signIn: {
 							companyId: profileId,
+							memberId,
 							loginId: begun.login_id,
 							clientConnectionId,
 							capability,

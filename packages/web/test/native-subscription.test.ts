@@ -375,6 +375,9 @@ describe("Continue with ChatGPT (offered only while the company may use plan log
 		expect(begin).toMatchObject({ p_profile_id: profileA.profileId, p_compute_identity_id: id(104) });
 		const [loginUrl, request] = f.fetch.mock.calls.find(([address]) => String(address).endsWith("/login"))!;
 		expect(loginUrl).toBe("https://fixture.invalid/functions/v1/native-provider-login/login");
+		// The capability is the only credential: no member token, no apikey, no cookies.
+		expect([...new Headers(request!.headers).keys()].sort()).toEqual(["accept", "authorization", "content-type"]);
+		expect(request).toMatchObject({ method: "POST", credentials: "omit", redirect: "error" });
 		const body = JSON.parse(request!.body as string);
 		expect(body).toMatchObject({ login_id: id(105), client_connection_id: begin.p_client_connection_id });
 		expect(new Headers(request!.headers).get("authorization")).toBe(`Bearer ${body.login_capability}`);
@@ -384,11 +387,31 @@ describe("Continue with ChatGPT (offered only while the company may use plan log
 		expect(begin.p_capability_sha256).toBe(Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join(""));
 		expect(signIn).toMatchObject({
 			companyId: profileA.profileId,
+			memberId: userA.id,
 			loginId: id(105),
 			clientConnectionId: begin.p_client_connection_id,
 			capability: body.login_capability,
 			expiresAt: f.responses.authorization.expires_at,
 		});
+	});
+	it("refuses a begin answer that is not this member's plan sign-in, before going to the vault", async () => {
+		for (const wrong of [
+			{ model_login_kind: "codex" },
+			{ compute_identity_owner_user_id: userB.id },
+			{ compute_identity_id: id(9) },
+			{ login_id: "not-a-uuid" },
+			{ expires_at: "soon" },
+		]) {
+			const f = planSetup();
+			f.rpc.mockResolvedValueOnce({
+				...f.responses.authorization,
+				model_login_kind: "chatgpt_plan",
+				status: "pending",
+				...wrong,
+			});
+			await expect(f.client.beginChatGptPlanSignIn!("My model account")).rejects.toThrow("authority does not match");
+			expect(f.fetch.mock.calls.some(([address]) => String(address).endsWith("/login"))).toBe(false);
+		}
 	});
 	it("refuses an address that is not OpenAI's, and says why a begin was refused", async () => {
 		let f = planSetup();
@@ -405,16 +428,18 @@ describe("Continue with ChatGPT (offered only while the company may use plan log
 			await expect(f.client.beginChatGptPlanSignIn!("My model account")).rejects.toMatchObject({ reason });
 		}
 	});
+	const signIn = {
+		companyId: profileA.profileId,
+		memberId: userA.id,
+		loginId: id(105),
+		clientConnectionId: id(103),
+		capability: "c".repeat(43),
+		expiresAt: timestamp,
+		startedAt: Date.now(),
+		returnRoute: `#/c/${profileA.profileId}`,
+	};
 	it("confirms with the tab's capability and the one-time confirmation id, and says why a confirm failed", async () => {
 		const f = setup("https://fixture.invalid/functions/v1/native-provider-login/");
-		const signIn = {
-			companyId: profileA.profileId,
-			loginId: id(105),
-			clientConnectionId: id(103),
-			capability: "c".repeat(43),
-			expiresAt: timestamp,
-			startedAt: Date.now(),
-		};
 		const confirmation = "d".repeat(43);
 		f.fetch.mockResolvedValueOnce(
 			Response.json({ schema: "qorpera.native-provider-login-result/v1", login_id: id(105), status: "completed" }),
@@ -423,8 +448,9 @@ describe("Continue with ChatGPT (offered only while the company may use plan log
 		const [url, request] = f.fetch.mock.calls[0]!;
 		expect(url).toBe("https://fixture.invalid/functions/v1/native-provider-login/chatgpt-plan-confirm");
 		expect(request).toMatchObject({ method: "POST", credentials: "omit", redirect: "error" });
+		// Only the two headers the Edge function allows: no apikey, no member token.
+		expect([...new Headers(request!.headers).keys()].sort()).toEqual(["authorization", "content-type"]);
 		expect(new Headers(request!.headers).get("authorization")).toBe(`Bearer ${"c".repeat(43)}`);
-		expect(new Headers(request!.headers).has("apikey")).toBe(false);
 		expect(JSON.parse(request!.body as string)).toEqual({
 			schema: "qorpera.chatgpt-plan-confirm/v1",
 			login_id: id(105),
@@ -455,6 +481,36 @@ describe("Continue with ChatGPT (offered only while the company may use plan log
 			}),
 		).rejects.toThrow("cannot be finished here");
 		expect(f.fetch).toHaveBeenCalledTimes(3);
+	});
+	it("counts only a completed answer for this sign-in, and a reason only from the failed answer", async () => {
+		const f = setup("https://fixture.invalid/functions/v1/native-provider-login/");
+		const confirmation = "d".repeat(43);
+		for (const [answer, status] of [
+			[{ login_id: id(9), status: "completed" }, 200],
+			[{ login_id: id(105) }, 200],
+			[{ login_id: id(105), status: "completed" }, 202],
+			[{ reason: "expired" }, 403],
+		] as const) {
+			f.fetch.mockResolvedValueOnce(Response.json(answer, { status }));
+			await expect(
+				f.client.finishChatGptPlanSignIn!({ outcome: "confirm", confirmation, signIn }),
+			).rejects.toMatchObject({ reason: "provider_error" });
+		}
+	});
+	it("gives up on a confirm after 45 seconds", async () => {
+		const f = setup("https://fixture.invalid/functions/v1/native-provider-login/");
+		const deadline = new AbortController();
+		const timeout = vi.spyOn(AbortSignal, "timeout").mockReturnValue(deadline.signal);
+		f.fetch.mockImplementationOnce(
+			(_url, init) =>
+				new Promise<Response>((_resolve, reject) =>
+					init!.signal!.addEventListener("abort", () => reject(init!.signal!.reason), { once: true }),
+				),
+		);
+		const finishing = f.client.finishChatGptPlanSignIn!({ outcome: "confirm", confirmation: "d".repeat(43), signIn });
+		expect(timeout).toHaveBeenCalledExactlyOnceWith(45_000);
+		deadline.abort(new DOMException("The confirm took too long.", "TimeoutError"));
+		await expect(finishing).rejects.toThrow("took too long");
 	});
 });
 

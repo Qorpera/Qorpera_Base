@@ -5,12 +5,16 @@ import { UUID_PATTERN } from "./parse.ts";
  * company's vault in the confirm request; OpenAI's callback never carries it. */
 export interface ChatGptPlanSignIn {
 	companyId: string;
+	/** The member who started it; another account signed in on this tab never finishes it. */
+	memberId: string;
 	/** The server's sign-in id (the begin's `login_id`). */
 	loginId: string;
 	clientConnectionId: string;
 	capability: string;
 	expiresAt: string;
 	startedAt: number;
+	/** The company page the sign-in began on, where the return goes back to. */
+	returnRoute: string;
 }
 
 /** What the callback appended to the return page's hash: a one-time confirmation id, or why
@@ -27,11 +31,23 @@ const SIGN_IN_KEY = "qorpera.chatgpt-plan-sign-in.v1";
 const SIGN_IN_TTL_MS = 15 * 60_000;
 const TOKEN = /^[A-Za-z0-9_-]{43}$/;
 
-export function keepChatGptPlanSignIn(signIn: ChatGptPlanSignIn): void {
+/** A route of this company's pages, or its home: the return never goes to another company or
+ * carries a query of its own. */
+function companyRoute(route: string, companyId: string): string {
+	return route.startsWith(`#/c/${companyId}`) && /^#\/c\/[0-9a-f-]{36}(?:\/[A-Za-z0-9._~-]+)*$/i.test(route)
+		? route
+		: `#/c/${companyId}`;
+}
+
+/** Keeps the sign-in with the page it began on (`route`). False when this tab cannot keep it:
+ * then the return could not be finished, so the member is not sent to OpenAI. */
+export function keepChatGptPlanSignIn(signIn: Omit<ChatGptPlanSignIn, "returnRoute">, route: string): boolean {
 	try {
-		sessionStorage.setItem(SIGN_IN_KEY, JSON.stringify(signIn));
+		const kept: ChatGptPlanSignIn = { ...signIn, returnRoute: companyRoute(route, signIn.companyId) };
+		sessionStorage.setItem(SIGN_IN_KEY, JSON.stringify(kept));
+		return sessionStorage.getItem(SIGN_IN_KEY) !== null;
 	} catch {
-		// Without storage the return cannot be finished here; the member signs in again.
+		return false;
 	}
 }
 
@@ -51,6 +67,8 @@ function readSignIn(): ChatGptPlanSignIn | undefined {
 		if (
 			typeof value.companyId !== "string" ||
 			!UUID_PATTERN.test(value.companyId) ||
+			typeof value.memberId !== "string" ||
+			!UUID_PATTERN.test(value.memberId) ||
 			typeof value.loginId !== "string" ||
 			!UUID_PATTERN.test(value.loginId) ||
 			typeof value.clientConnectionId !== "string" ||
@@ -60,7 +78,9 @@ function readSignIn(): ChatGptPlanSignIn | undefined {
 			typeof value.expiresAt !== "string" ||
 			!Number.isFinite(Date.parse(value.expiresAt)) ||
 			typeof value.startedAt !== "number" ||
-			!Number.isFinite(value.startedAt)
+			!Number.isFinite(value.startedAt) ||
+			typeof value.returnRoute !== "string" ||
+			companyRoute(value.returnRoute, value.companyId) !== value.returnRoute
 		)
 			return undefined;
 		return value as unknown as ChatGptPlanSignIn;
@@ -71,23 +91,31 @@ function readSignIn(): ChatGptPlanSignIn | undefined {
 
 /** Reads and strips the outcome the callback appended to the page hash
  * (`#?chatgpt_plan=confirm&confirmation=…` or `…=failed&reason=…`). It counts only for a sign-in
- * this tab started; a crafted link without one is stripped and does nothing. The page then goes
- * to the sign-in's company, where Settings finishes it. */
+ * this tab started; a crafted link without one is stripped and does nothing. The page goes back
+ * to where the sign-in began, and the application finishes it there. A return after 15 minutes
+ * reads as too slow. Without an outcome, a sign-in kept too long is dropped. */
 export function takeChatGptPlanReturn(): ChatGptPlanReturn | undefined {
 	const hash = location.hash;
 	const at = hash.indexOf("?");
-	if (at < 0) return undefined;
-	const params = new URLSearchParams(hash.slice(at + 1));
+	const params = new URLSearchParams(at < 0 ? "" : hash.slice(at + 1));
 	const outcome = params.get("chatgpt_plan");
-	if (outcome !== "confirm" && outcome !== "failed") return undefined;
-	const route = hash.slice(0, at);
 	const signIn = readSignIn();
-	if (!signIn || Date.now() - signIn.startedAt > SIGN_IN_TTL_MS) {
+	const late = signIn !== undefined && Date.now() - signIn.startedAt > SIGN_IN_TTL_MS;
+	if (outcome !== "confirm" && outcome !== "failed") {
+		if (late) forgetChatGptPlanSignIn();
+		return undefined;
+	}
+	const route = hash.slice(0, at);
+	if (!signIn) {
 		forgetChatGptPlanSignIn();
 		history.replaceState(null, "", route.length > 1 ? route : "#/");
 		return undefined;
 	}
-	history.replaceState(null, "", route.startsWith("#/c/") ? route : `#/c/${signIn.companyId}`);
+	history.replaceState(null, "", route.startsWith(`#/c/${signIn.companyId}`) ? route : signIn.returnRoute);
+	if (late) {
+		forgetChatGptPlanSignIn();
+		return { outcome: "failed", reason: "expired", signIn };
+	}
 	const confirmation = params.get("confirmation") ?? "";
 	if (outcome === "confirm" && !TOKEN.test(confirmation)) {
 		forgetChatGptPlanSignIn();

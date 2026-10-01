@@ -1,6 +1,6 @@
 import type { User } from "@supabase/supabase-js";
 import { CloudApi } from "../cloud/api.ts";
-import { takeChatGptPlanReturn } from "../cloud/chatgpt-plan-sign-in.ts";
+import { forgetChatGptPlanSignIn, takeChatGptPlanReturn } from "../cloud/chatgpt-plan-sign-in.ts";
 import { type Cloud, describeError } from "../cloud/client.ts";
 import { createWebCompanyAgents } from "../cloud/company-agents.ts";
 import { WebCompanyFiles } from "../cloud/company-files.ts";
@@ -43,7 +43,7 @@ import { type MeetState, renderMeet } from "./views/meet.ts";
 import { NewConversationView } from "./views/new-conversation.ts";
 import { renderPlan } from "./views/plan.ts";
 import { type SettingsTab, SettingsView } from "./views/settings.ts";
-import { notePlanReturn } from "./views/settings-connections.ts";
+import { finishPlanSignIn, memberPlanSignIn } from "./views/settings-connections.ts";
 import { noteConnectorReturn } from "./views/settings-services.ts";
 import { renderRail, renderTopbar, type ShellContext } from "./views/shell.ts";
 import { renderSignIn } from "./views/signin.ts";
@@ -237,6 +237,11 @@ export function mountApplication(
 			// A return from Stripe belongs to the member who paid, not to whoever signs in next;
 			// the first sign-in of the page (back from Stripe) keeps it.
 			if (accountUserId !== undefined) checkoutReturn = undefined;
+			// So does a ChatGPT plan sign-in: it is finished only for the member who started it.
+			if (accountUserId !== undefined && planReturn) {
+				planReturn = undefined;
+				forgetChatGptPlanSignIn();
+			}
 			closeSettings(false);
 			closeFeedback(false);
 			accountUserId = userId;
@@ -418,12 +423,27 @@ export function mountApplication(
 			);
 			company = controller;
 			if (planReturn && planReturn.signIn.companyId === controller.profile.profileId) {
-				// A ChatGPT plan sign-in for this company: finish it where model accounts are listed.
-				notePlanReturn(planReturn);
+				const outcome = planReturn;
 				planReturn = undefined;
-				queueMicrotask(() => {
-					if (!disposed && company === controller) openSettings("my-connections");
-				});
+				if (outcome.signIn.memberId !== userId) forgetChatGptPlanSignIn();
+				else {
+					// A ChatGPT plan sign-in for this company. Its confirm belongs to the member, not to a
+					// page: it finishes while Settings closes or the route changes, stopping only if the
+					// account changes, and My connections shows the outcome.
+					const plan = createWebNativeSubscription(
+						cloud,
+						profile.profileId,
+						userId,
+						new AbortController().signal,
+						() => {
+							if (auth.userId !== userId) throw new Error("The account changed.");
+						},
+					);
+					void finishPlanSignIn(memberPlanSignIn(userId, profile.profileId), plan, outcome);
+					queueMicrotask(() => {
+						if (!disposed && company === controller) openSettings("my-connections");
+					});
+				}
 			}
 			if (connectorReturn) {
 				// A provider sign-in (Step 7 connector) sent the member back to this
