@@ -614,6 +614,24 @@ wake), so no agent runs and nothing is charged before it.
   (22023) any local part that reads as Qorpera (case, separators, accents, full width and look-alike letters or
   digits folded), and no email goes out when the agent's or the company's name or the mailbox reads as Qorpera.
 
+### ChatGPT plan reads (20260929920000_runtime_chatgpt_plan_member_reads)
+
+Built switched off with plan logins. Show none of it while `qorpera_chatgpt_plan_available` is false and the
+member has no plan login.
+
+- `qorpera_list_member_native_execution_connections`: each connection also has `login_kind` (`codex` or
+  `chatgpt_plan`; null for a node login), `allow_autonomous` (whether its member turned on work while away for
+  this version) and `routine_offer_shown_at` (when the first-routine card was shown for a plan login; null until
+  then). Label a `chatgpt_plan` connection "ChatGPT plan". Never consent a plan login on the member's behalf:
+  `qorpera_consent_provider_connection_autonomous` runs only from the member's own "Work while you're away"
+  choice. Codex logins keep today's behaviour.
+- `qorpera_record_chatgpt_plan_routine_offer(profile, connection)`: records that the first-routine card was shown
+  for the caller's own plan login (members only). Shown once per plan login: a repeat answers the first showing
+  (`{connection_id, shown_at}`), and "Not now" never brings the card back. 42501 for a connection that is not the
+  caller's own in that company, 22023 "Not a ChatGPT plan login" for any other login.
+- `qorpera_list_cloud_routines`: each routine also has `pause_reason` (for example `needs_model_account`, a
+  routine that waits for a payer) and `created_by_user_id` (the member it runs for).
+
 ## 3. Realtime
 
 - `qorpera-profile-{profileId}` — durable-lane invalidation hints for a profile

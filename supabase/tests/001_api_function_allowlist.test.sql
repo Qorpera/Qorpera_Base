@@ -275,6 +275,7 @@ insert into api_function_allowlist(signature, anon, authenticated, reason) value
 	('public.qorpera_rebase_company_proposal(uuid,uuid,uuid,uuid)', false, true, 'member: auth.uid() + membership/ownership'),
 	('public.qorpera_reconcile_runner_orchestrator(uuid)', true, true, 'internal: via callee materialize_session_turn_requests: auth.role() = service_role; anon only through the platform default, authenticated only through the platform default'),
 	('public.qorpera_reconcile_runner_orchestrator_without_sponsored_turns(uuid)', true, true, 'internal: auth.role() = service_role; anon only through the platform default, authenticated only through the platform default'),
+	('public.qorpera_record_chatgpt_plan_routine_offer(uuid,uuid)', false, true, 'member: auth.uid() owns the plan connection and is a member; records once that the first-routine card was shown'),
 	('public.qorpera_record_node_update_phase(uuid,bigint,text,text,text,text)', true, true, 'internal: node capability secret (sha256 match)'),
 	('public.qorpera_register_artifact(uuid,uuid,uuid,text,text,text,text,bigint,text)', true, false, 'internal: auth.uid() + membership/ownership; anon only through the platform default'),
 	('public.qorpera_register_artifact_v2(uuid,uuid,uuid,text,text,text,text,text,bigint,text)', true, true, 'member: auth.uid() + membership/ownership; anon only through the platform default'),
