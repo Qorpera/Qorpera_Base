@@ -647,10 +647,16 @@ describe("ChatGPT plan logins (switched off until a company has one)", () => {
 			),
 		);
 		await expect(f.client.setWorkWhileAway!(id(94), true)).rejects.toBeInstanceOf(PlanSwitchBusyError);
-		rpc.mockRejectedValueOnce(
-			new CloudRpcError("qorpera_set_chatgpt_plan_work_while_away", { message: "denied", code: "42501" }, 403),
-		);
-		await expect(f.client.setWorkWhileAway!(id(94), true)).rejects.not.toBeInstanceOf(PlanSwitchBusyError);
+		for (const [code, status] of [
+			["42501", 403],
+			// The consent's own refusal also arrives as a 500: only 55P03 is busy.
+			["55000", 500],
+		] as const) {
+			rpc.mockRejectedValueOnce(
+				new CloudRpcError("qorpera_set_chatgpt_plan_work_while_away", { message: "refused", code }, status),
+			);
+			await expect(f.client.setWorkWhileAway!(id(94), true)).rejects.not.toBeInstanceOf(PlanSwitchBusyError);
+		}
 		expect(f.fetch.mock.calls.length).toBe(binds);
 	});
 });

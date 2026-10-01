@@ -1271,10 +1271,11 @@ describe("a ChatGPT plan login (shown only when the member has one)", () => {
 		expect(client.listConnections.mock.calls.length).toBe(reads + 1);
 		expect(view.el.textContent).toContain("“Work while you're away” could not be changed. Try again.");
 		expect(lever()!.getAttribute("aria-checked")).toBe("false");
-		// A busy switch says so, in plain words.
+		// A busy switch says so, in plain words, also after reading back where it stands.
 		client.setWorkWhileAway.mockRejectedValueOnce(new PlanSwitchBusyError());
 		lever()!.click();
 		await settle();
+		expect(client.listConnections.mock.calls.length).toBe(reads + 2);
 		expect(view.el.textContent).toContain("Busy right now. Try again in a moment.");
 		expect(view.el.textContent).not.toContain("could not be changed");
 	});

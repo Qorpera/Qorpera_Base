@@ -516,7 +516,8 @@ export class ConnectionsView {
 		this.#working = connection.connectionId;
 		this.#error = undefined;
 		this.#draw();
-		let failed: unknown;
+		let failed = false;
+		let busy = false;
 		try {
 			await this.#client.setWorkWhileAway(
 				connection.connectionId,
@@ -524,7 +525,8 @@ export class ConnectionsView {
 				this.#lifetime.signal,
 			);
 		} catch (error) {
-			failed = error ?? true;
+			failed = true;
+			busy = error instanceof PlanSwitchBusyError;
 		}
 		if (this.#lifetime.signal.aborted) return;
 		// The switch stays busy until the cloud's state is read back: part of a failed change may
@@ -533,10 +535,9 @@ export class ConnectionsView {
 		if (this.#lifetime.signal.aborted) return;
 		this.#working = undefined;
 		if (failed)
-			this.#error =
-				failed instanceof PlanSwitchBusyError
-					? t("Busy right now. Try again in a moment.")
-					: t("“Work while you're away” could not be changed. Try again.");
+			this.#error = busy
+				? t("Busy right now. Try again in a moment.")
+				: t("“Work while you're away” could not be changed. Try again.");
 		this.#draw();
 	}
 	/** A ChatGPT plan's switch: off until its member turns it on. */
