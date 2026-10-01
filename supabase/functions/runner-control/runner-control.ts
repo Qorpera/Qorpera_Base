@@ -19,6 +19,15 @@ export type RunnerControlRequest =
 			jobId: string;
 			assignmentCapability: string;
 	  }
+	| {
+			/** Accept, describe and (when asked) native authority in one transaction. */
+			action: "start";
+			runnerId: string;
+			assignmentId: string;
+			jobId: string;
+			assignmentCapability: string;
+			nativeLeaseSeconds?: number;
+	  }
 	| { action: "renew"; runnerId: string; jobId: string; leaseToken: string }
 	| {
 			action: "complete";
@@ -47,6 +56,8 @@ export function runnerControlRpcName(action: RunnerControlRequest["action"]): st
 			return "qorpera_heartbeat_runner";
 		case "accept":
 			return "qorpera_accept_runner_assignment";
+		case "start":
+			return "qorpera_start_runner_assignment";
 		case "renew":
 			return "qorpera_renew_runner_job";
 		case "complete":
@@ -65,6 +76,12 @@ export function runnerControlRpcStatus(error: { code?: string }): number {
 	if (error.code === "23505") return 409;
 	if (error.code === "55000") return 423;
 	return 503;
+}
+
+/** A start that a database without qorpera_start_runner_assignment refused before running
+ * anything (PostgREST PGRST202) answers 501, so the runner makes the separate calls instead. */
+export function runnerStartRpcStatus(error: { code?: string }): number {
+	return error.code === "PGRST202" ? 501 : runnerControlRpcStatus(error);
 }
 
 function record(value: unknown, label: string): Record<string, unknown> {
@@ -135,6 +152,25 @@ export function parseRunnerControlRequest(value: unknown): RunnerControlRequest 
 				jobId: uuid(input.jobId, "runner job id"),
 				assignmentCapability: token(input.assignmentCapability, "runner assignment capability"),
 			};
+		case "start": {
+			const nativeLeaseSeconds = input.nativeLeaseSeconds;
+			if (
+				nativeLeaseSeconds !== undefined &&
+				(!Number.isSafeInteger(nativeLeaseSeconds) ||
+					(nativeLeaseSeconds as number) < 30 ||
+					(nativeLeaseSeconds as number) > 900)
+			) {
+				throw new Error("Invalid native authority lease seconds");
+			}
+			return {
+				action,
+				runnerId,
+				assignmentId: uuid(input.assignmentId, "runner assignment id"),
+				jobId: uuid(input.jobId, "runner job id"),
+				assignmentCapability: token(input.assignmentCapability, "runner assignment capability"),
+				...(nativeLeaseSeconds === undefined ? {} : { nativeLeaseSeconds: nativeLeaseSeconds as number }),
+			};
+		}
 		case "renew":
 			return {
 				action,

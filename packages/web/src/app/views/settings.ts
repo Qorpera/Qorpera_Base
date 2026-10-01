@@ -17,7 +17,7 @@ import { renderAppearance } from "./appearance.ts";
 import { FriendsController, renderFriends } from "./friends.ts";
 import type { HubController } from "./hub.ts";
 import { renderPlan } from "./plan.ts";
-import { ConnectionsView, memberProviderSignIns } from "./settings-connections.ts";
+import { ConnectionsView, memberPlanSignIn, memberProviderSignIns } from "./settings-connections.ts";
 import { RulesView } from "./settings-rules.ts";
 import { ServicesView } from "./settings-services.ts";
 import { storageSummary } from "./storage-summary.ts";
@@ -390,6 +390,9 @@ export class SettingsView {
 					lifetime,
 					signIns,
 					(input) => signIn.beginProviderLogin(input),
+					undefined,
+					undefined,
+					memberPlanSignIn(memberId, company.profile.profileId),
 				);
 				this.#panels.set(
 					tab,

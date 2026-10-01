@@ -20,6 +20,7 @@ import type {
 } from "@qorpera/runtime/cloud-company-path-presence";
 import { compileCloudNativeCompanyInstructions } from "@qorpera/runtime/cloud-native-company-context";
 import { CloudNativeCompanyRuntime } from "@qorpera/runtime/cloud-native-company-runtime";
+import { nativeRuntimeFailureMetadata } from "@qorpera/runtime/cloud-native-failure";
 import { HttpNativeProviderComputerBridge } from "@qorpera/runtime/cloud-native-provider";
 import {
 	type NativeCompanyExecutionRequest,
@@ -1583,6 +1584,67 @@ it("asks for the run's context and its wake together, and reports a context fail
 	);
 });
 
+it("asks for the connector catalog alongside the notebook", async () => {
+	const f = await fixture("company-secret");
+	const original = f.pathCall.getMockImplementation()!;
+	let cataloguing = false;
+	let overlapped = false;
+	f.pathCall.mockImplementation(async (method, args, signal) => {
+		if (method === "qorpera_list_native_connector_tools") {
+			cataloguing = true;
+			await new Promise((resolve) => setTimeout(resolve, 20));
+			cataloguing = false;
+		}
+		if (method === "qorpera_read_company_path" && cataloguing) overlapped = true;
+		return original(method, args, signal);
+	});
+	await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+	expect(overlapped).toBe(true);
+});
+
+// A catalog failure fails the run at the connector stage, before Codex starts, even when
+// something that now runs beside it fails as well; otherwise that failure keeps its stage.
+it.each([
+	[true, false, "Connector catalog unavailable", "connector-tools"],
+	[true, true, "Connector catalog unavailable", "connector-tools"],
+	[false, true, "Presence is unavailable", "prompt-composition"],
+] as const)(
+	"with a failing connector catalog (%s) and presence (%s), fails with %s at %s",
+	async (catalogFails, presenceFails, message, stage) => {
+		const f = await fixture("company-secret", false, () => {
+			if (presenceFails) throw new Error("Presence is unavailable");
+			return {
+				observe: async () => ({ state: "unavailable" }) as never,
+				// As the real claim answers before it holds any observation: at once, unavailable.
+				claim: (path) => ({
+					schema: "qorpera.company-path-presence-view/v1",
+					state: "unavailable",
+					observedAt: Date.now(),
+					paths: [{ path, participants: [] }],
+				}),
+				close: async () => {},
+			};
+		});
+		const original = f.pathCall.getMockImplementation()!;
+		f.pathCall.mockImplementation(async (method, args, signal) => {
+			if (method === "qorpera_list_native_connector_tools" && catalogFails) {
+				await new Promise((resolve) => setTimeout(resolve, 20));
+				throw new Error("Connector catalog unavailable");
+			}
+			return original(method, args, signal);
+		});
+		const error = await f.runtime
+			.execute(f.request, f.identityRoot, new AbortController().signal)
+			.catch((caught: unknown) => caught);
+		expect(error).toBeInstanceOf(Error);
+		expect((error as Error).message).toBe(message);
+		expect(nativeRuntimeFailureMetadata(error)?.stage).toBe(stage);
+		expect(f.pathCall.mock.calls.some(([method]) => method === "qorpera_begin_native_company_execution_v2")).toBe(
+			false,
+		);
+	},
+);
+
 it("does not fall back to local context or another harness when cloud context is unavailable", async () => {
 	const f = await fixture();
 	const original = f.pathCall.getMockImplementation()!;
@@ -1881,3 +1943,85 @@ it.each(["failed", "stalled", "malformed-receipt", "wrong-run-receipt"])(
 		expect(JSON.stringify(result)).not.toContain("PRIVATE_EXPORT_DIAGNOSTIC");
 	},
 );
+
+/** Serial cloud round trips ("waves"): a call that starts while another is in flight shares its wave. */
+function cloudWaves() {
+	let inFlight = 0;
+	let waves = 0;
+	const log: string[] = [];
+	return {
+		log,
+		get waves() {
+			return waves;
+		},
+		async track<T>(call: string, perform: () => Promise<T>): Promise<T> {
+			if (inFlight++ === 0) waves++;
+			log.push(`${waves} ${call}`);
+			try {
+				// Each call spends a round trip in flight, so calls asked for together overlap.
+				await new Promise((resolve) => setTimeout(resolve, 20));
+				return await perform();
+			} finally {
+				inFlight--;
+			}
+		},
+	};
+}
+
+it("reaches the first model request of a simple turn in a pinned number of serial cloud round trips", async () => {
+	// Telemetry is exported in the background and is not counted. Everything else the host and
+	// the runtime ask the cloud for before Codex's first model request is.
+	const f = await fixture("company-secret");
+	const waves = cloudWaves();
+	const pathCall = f.pathCall.getMockImplementation()!;
+	f.pathCall.mockImplementation(async (method, args, signal) =>
+		method === "qorpera_record_runtime_observation_batch"
+			? pathCall(method, args, signal)
+			: waves.track(method, () => pathCall(method, args, signal)),
+	);
+	const describeToolAuthority = f.control.describeToolAuthority.getMockImplementation()!;
+	f.control.describeToolAuthority.mockImplementation(() =>
+		waves.track("describeToolAuthority", describeToolAuthority),
+	);
+	const masterKey = randomBytes(32).toString("base64url");
+	const capsule = await sealNativeCredentialCapsule(f.identityRoot, masterKey, f.binding.credentialCapsuleId);
+	const host = new NativeProviderHost({
+		masterKey,
+		computeIdentityId: f.binding.computeIdentityId,
+		temporaryRoot: root,
+		controlPlane: {
+			validateExecution: () => waves.track("validateExecution", async () => {}),
+			sendMessage: f.control.sendMessage,
+			describeLogin: async () => {
+				throw new Error("No login expected");
+			},
+			completeLogin: async () => {},
+		},
+		capsules: { get: () => waves.track("credential", async () => capsule), put: async () => {} },
+		cloudRuntime: f.runtime,
+		harness: {
+			beginLogin: async () => {
+				throw new Error("No login expected");
+			},
+			execute: async () => {
+				throw new Error("No legacy route allowed");
+			},
+		},
+	});
+	await host.execute(f.request);
+	const wave = (call: string) => Number(waves.log.find((entry) => entry.endsWith(` ${call}`))?.split(" ")[0]);
+	// Host admission: its own authority check, then the credential (a separate trust boundary).
+	expect([wave("validateExecution"), wave("credential")]).toEqual([1, 2]);
+	// Context: the run's context and wake together, then the connector catalog together with
+	// the notebook, skill and open-work reads.
+	expect(wave("qorpera_read_native_wake")).toBe(wave("qorpera_describe_company_run_context"));
+	expect(wave("qorpera_list_native_connector_tools")).toBe(4);
+	expect(wave("qorpera_read_company_path")).toBe(4);
+	expect(wave("qorpera_describe_agent_open_work")).toBe(4);
+	// Run admission, one context check, then the first request's fence in one call
+	// (qorpera_fence_native_context, 20260929400000): its two checks, this record and the check
+	// after it, once four serial round trips (waves 10 to 13), share one. 12 before that fence,
+	// 13 before the connector catalog joined the context reads.
+	expect(wave("qorpera_fence_native_context")).toBe(wave("qorpera_record_native_context_view"));
+	expect(wave("qorpera_record_native_context_view")).toBe(10);
+});

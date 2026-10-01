@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
 import { runNativeCodexFenceFailureProbe } from "./fixtures/native-codex-fence-failure-probe.ts";
+import { runNativeCodexUsageLimitProbe } from "./fixtures/native-codex-usage-limit-probe.ts";
 import { runOfficialCodexBoundaryProbe } from "./fixtures/official-codex-boundary-probe.ts";
 
 // A source-built artifact is an explicit acceptance prerequisite, not an npm dependency or a paid model.
@@ -31,6 +32,23 @@ describe.skipIf(!binary)("pinned downstream native artifact (requires QORPERA_CO
 				retryDeduplicated: true,
 				privateOutputExcluded: true,
 				allNativeResultsFenced: true,
+			});
+		},
+		30_000,
+	);
+
+	// A ChatGPT plan's usage limit (Sign in with ChatGPT): OpenAI's code, mid-stream or as a 429, reaches the host as
+	// Codex's usageLimitExceeded, so the run stops at the limit instead of reading as a lost stream or a rate limit.
+	it.each(["mid_stream", "http_429"] as const)(
+		"reads a ChatGPT plan's usage limit (%s) as a usage limit",
+		async (mode) => {
+			if (!binary) throw new Error("Missing pinned downstream native artifact");
+			expect(await runNativeCodexUsageLimitProbe(binary, mode)).toEqual({
+				mode,
+				requests: 1,
+				stage: "codex-turn-completion",
+				category: "budget_exhausted",
+				usageSignal: "usage_limit",
 			});
 		},
 		30_000,

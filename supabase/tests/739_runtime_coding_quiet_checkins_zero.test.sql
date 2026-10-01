@@ -1,5 +1,5 @@
 -- @fixture 655_runtime_coding_quiet_checkins.test.sql until "-- 1. A day without a turn: the agent is asked once, in the shape of a report it already reads."
--- Quiet coding check-ins and computer hours (20260929870000): a company at zero is not asked. Its
+-- Quiet coding check-ins and computer hours (20260928349870): a company at zero is not asked. Its
 -- mark stays unasked and the thread says nothing; once hours are added (before the next sweep),
 -- the next scan asks the latest mark reached, with the right day count. Archiving the session withdraws
 -- a question about it that no run has taken yet.

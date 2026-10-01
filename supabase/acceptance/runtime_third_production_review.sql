@@ -69,29 +69,29 @@ end $$;
 select pg_temp.wake_acceptance_case('restricted_broker_authorizes_'||kind,
  format('select pg_temp.review3_broker(%L)',kind))
 from unnest(array['human','first-run','routine','agent','room']) kind;
+-- An agent has no standing authority of its own any more: the member who started its chain pays
+-- (20260928230000), so that member withdrawing agent work is what fences it.
 select pg_temp.wake_acceptance_case('restricted_broker_fences_'||kind||'_'||denial,
  format('select pg_temp.review3_broker(%L,%L)',kind,denial))
-from (values('routine','standing_authority'),('agent','standing_authority'),
+from (values('routine','standing_authority'),('agent','consent'),
  ('routine','consent'),('human','founder_stop'),('human','final')) denial_cases(kind,denial);
 
-select pg_temp.wake_acceptance_case('wake_policy_helper_is_private_and_broker_surface_stays_three',$q$
+select pg_temp.wake_acceptance_case('wake_policy_helper_is_private_and_broker_surface_stays_fixed',$q$
 do $$ declare v_role text; begin
  foreach v_role in array array['anon','authenticated','service_role','qorpera_secret_broker'] loop
   perform pg_temp.wake_assert(not has_function_privilege(v_role,'public.qorpera_runtime_wake_policy_internal(uuid)','execute'),
    'Policy helper is not directly callable by an API role');
  end loop;
- -- Exact signatures (as 306): capture description, both capture completions
- -- (Step 7 label), operation authorization, and the coding repository
- -- credential (bundle v88).
+ -- Exact signatures. The broker's custody calls are pinned once, in
+ -- 306_governed_company_computer_privileges.test.sql; the script passes that list in.
+ perform pg_temp.wake_assert(jsonb_array_length(current_setting('qorpera_test.broker_surface',true)::jsonb)>0,
+  'The broker surface pinned by 306 was passed in');
  perform pg_temp.wake_assert((select array_agg(p.oid::regprocedure::text order by p.oid::regprocedure::text collate "C")
   from pg_proc p join pg_namespace n on n.oid=p.pronamespace
   where n.nspname='public' and p.proname like 'qorpera_%'
-  and has_function_privilege('qorpera_secret_broker',p.oid,'execute')) is not distinct from array[
-  'qorpera_authorize_cloud_secret_operation(uuid,text,jsonb,uuid,text,text,uuid,text,text,bigint,text,text)',
-  'qorpera_authorize_coding_repository_credential(uuid,text,uuid,uuid,text,jsonb)',
-  'qorpera_complete_cloud_secret_capture(uuid,text,uuid,text,text,text)',
-  'qorpera_complete_cloud_secret_capture(uuid,text,uuid,text,text,text,text)',
-  'qorpera_describe_cloud_secret_capture(uuid,text,uuid,text)']::text[],'Broker still has exactly its fixed custody RPCs');
+  and has_function_privilege('qorpera_secret_broker',p.oid,'execute')) is not distinct from
+  (select array_agg(value order by value collate "C") from jsonb_array_elements_text(current_setting('qorpera_test.broker_surface')::jsonb)),
+  'Broker still has exactly its fixed custody RPCs');
  perform pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
  perform pg_temp.wake_error(format('select public.qorpera_runtime_wake_policy(%L)',
   current_setting('qorpera_test.wake_binding')::jsonb->>'runId'),'42501','Wake policy authority is required');

@@ -1,14 +1,17 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { POSTGRES_IMAGE, sortMigrationNames } from "./test-hosted-db.mjs";
+import { POSTGRES_IMAGE } from "./test-hosted-db.mjs";
+import { hostedDatabase, migrationNames } from "./test-hosted-db-cluster.mjs";
 
-// Disposable local verification. --integration also runs the real completion
-// and effect entrypoints, without replacing shared enforcement helpers. It is
-// intentionally nonzero until those main-owned integration gates pass.
+// Disposable local verification. The wake bus migrations upgrade a database
+// from the migrations before them; the component, concurrency and recovery
+// checks then run on the whole migration chain, as 300_runtime_wake_bus.test.sql
+// is kept for the current schema. --integration also runs the real completion
+// and effect entrypoints (supabase/acceptance/runtime_wake_bus.sql) on it.
 // No external database URL, provider or desktop executor is accepted.
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 let integration = false;
@@ -28,15 +31,15 @@ const report = {
 	databaseCloneStrategy: "FILE_COPY",
 	sequenceSnapshots: [],
 	baselineUpgrade: { status: "not-run", checks: [] },
-	component: { status: "not-run", checks: [] },
-	databaseIntegration: { status: "not-run", appliedMigrations: [], regressions: { status: "not-run", checks: [] }, cases: [] },
+	component: { status: "not-run", appliedMigrations: [], checks: [] },
+	databaseIntegration: { status: "not-run", cases: [] },
 	providerInvoked: false,
 	deployedAcceptance: false,
 	remainingExternalGates: ["cloud-room-membership-and-fanout", "native-hire-and-recovery-producers",
 		"human-owned-autonomous-consent", "full-runtime-bundle", "native-host-tool-and-context-wiring", "deployed-cloud-acceptance"],
 };
-const container = `qorpera-wake-test-${process.pid}-${randomBytes(4).toString("hex")}`;
-const volume = `${container}-data`;
+// A PostgreSQL of its own with its data on disk: the recovery checks restart the server.
+let hosted;
 const migrationName = "20260828020000_runtime_wake_bus.sql";
 const migration = readFileSync(join(root, "supabase/migrations", migrationName), "utf8");
 const policyMigrationName = "20260828020500_runtime_wake_policy_admission.sql";
@@ -80,18 +83,15 @@ function docker(args, input) {
 	if (result.error || result.status !== 0) throw new Error(result.stderr || result.error?.message || result.stdout);
 	return result.stdout.trim();
 }
-function psqlArgs(database) {
-	return ["exec", "-i", container, "psql", "-X", "-qAt", "-v", "ON_ERROR_STOP=1", "-U", "postgres", "-d", database];
+function psqlArgs(name) {
+	return hosted.cluster.psqlArgs(name, ["-qAt"]);
 }
 function sql(database, query) {
 	return docker(psqlArgs(database), query);
 }
-async function ready() {
-	for (let attempt = 0; attempt < 60; attempt++) {
-		if (spawnSync("docker", ["exec", container, "pg_isready", "-h", "127.0.0.1", "-U", "postgres", "-d", "wake_baseline"], { stdio: "ignore" }).status === 0) return;
-		await new Promise((resolveDelay) => setTimeout(resolveDelay, 500));
-	}
-	throw new Error("Disposable PostgreSQL did not start");
+async function restart() {
+	docker(["restart", hosted.container]);
+	await hosted.cluster.waitForPostgres();
 }
 function concurrentSql(database, query) {
 	return new Promise((resolveResult, reject) => {
@@ -149,11 +149,11 @@ async function barrierTransaction(database, query, whileOpen, finish = "interrup
 		await finished;
 	}
 }
-function clone(database, template) {
+function clone(name, template) {
 	// Avoid PostgreSQL 17 WAL_LOG template cloning losing copied sequence state
 	// on restart. FILE_COPY affects fixture creation only; no sequence is reset.
 	// https://www.postgresql.org/message-id/CAEVT6c9mOHUR9N4UPryq%3Dj997Az00SFO3zjgD5-a4R500tDCkA%40mail.gmail.com
-	docker(["exec", container, "createdb", "-U", "postgres", "--strategy=FILE_COPY", "--template", template, database]);
+	docker(["exec", hosted.container, "createdb", "-U", "postgres", "--strategy=FILE_COPY", "--template", template, name]);
 }
 const sequenceDiagnosticQuery = `select jsonb_build_object(
  'database',current_database(),'postmasterStart',pg_postmaster_start_time(),
@@ -177,7 +177,10 @@ function pass(target, label) {
 }
 
 async function verifyDatabase(database, target) {
-	const fairAdmission = sql(database, "select strpos(pg_get_functiondef('public.qorpera_drain_company_file_wakes(integer)'::regprocedure),'exception when lock_not_available')>0;") === "t";
+	// Fair admission lives in the drain's body, which Order 8 (2026-09-19) moved behind a lifecycle wrapper.
+	const fairAdmission = sql(database, `select coalesce(bool_or(strpos(pg_get_functiondef(p.oid),'exception when lock_not_available')>0),false)
+ from pg_proc p join pg_namespace n on n.oid=p.pronamespace where n.nspname='public'
+ and p.proname in ('qorpera_drain_company_file_wakes','qorpera_drain_company_file_wakes_before_lifecycle');`) === "t";
 	target.status = "running";
 	const recovery = `${database}_recovery`;
 	console.log(`Verifying component contracts, concurrency and recovery against ${database}`);
@@ -446,8 +449,7 @@ commit;`);
 
 	// Restart the database process and use fresh consumer connections. The
 	// task-owned volume is deleted in finally; no persistent infra is created.
-	docker(["restart", container]);
-	await ready();
+	await restart();
 	sequenceDiagnostic(recovery, "recovery-after-first-restart");
 	const occurrenceBefore = sql(recovery, "select id from public.qorpera_wake_occurrences where wake_kind='agent';");
 	const replay = JSON.parse(sql(recovery, service + `select public.qorpera_send_coworker_message(${humanBinding},'${bob}','restart-message','Durable message');`).split("\n").at(-1));
@@ -474,8 +476,7 @@ select public.qorpera_begin_native_company_execution(current_setting('qorpera_te
 select current_setting('qorpera_test.recovery_binding');
 commit;`).split("\n").at(-1));
 	sequenceDiagnostic(recovery, "native-start-committed-before-second-restart");
-	docker(["restart", container]);
-	await ready();
+	await restart();
 	sequenceDiagnostic(recovery, "native-start-after-second-restart");
 	sql(recovery, service + helpers + `
 select public.qorpera_terminalize_runner_attempt('${admitted.jobId}','failed','Disposable worker-loss fixture',true);
@@ -495,20 +496,11 @@ end $$;`);
 	target.status = "passed";
 }
 
-let started = false;
-let volumeCreated = false;
 try {
 	report.baselineUpgrade.status = "running";
-	docker(["volume", "create", volume]);
-	volumeCreated = true;
-	docker(["run", "--detach", "--name", container, "--network", "none", "--env", "POSTGRES_PASSWORD=wake-test-only",
-		"--env", "POSTGRES_DB=wake_baseline", "--mount", `type=volume,source=${volume},target=/var/lib/postgresql/data`, POSTGRES_IMAGE]);
-	started = true;
-	await ready();
-	sql("wake_baseline", readFileSync(join(root, "supabase/tests/bootstrap.sql"), "utf8"));
-	const before = sortMigrationNames(readdirSync(join(root, "supabase/migrations"))).filter((name) => name < migrationName);
-	for (const name of before) sql("wake_baseline", readFileSync(join(root, "supabase/migrations", name), "utf8"));
-	console.log(`Applied ${before.length} baseline migrations to isolated PostgreSQL`);
+	hosted = await hostedDatabase("wake_baseline", { restartable: true, before: migrationName });
+	const names = migrationNames();
+	console.log(`Applied ${names.filter((name) => name < migrationName).length} baseline migrations to isolated PostgreSQL`);
 
 	clone("wake_upgrade", "wake_baseline");
 	sql("wake_upgrade", fixture + `
@@ -595,33 +587,26 @@ end $$;`);
 	pass(report.baselineUpgrade, "old required/omitted no-audience admissions cancel before compute under the forward correction");
 	report.baselineUpgrade.status = "passed";
 
+	// The wake bus migrations and every one after them, each in its own session as the hosted-db suite applies them.
 	clone("wake_component", "wake_baseline");
-	sql("wake_component", `begin;\n${migration}\n${policyMigration}\ncommit;`);
+	const chain = names.filter((name) => name >= migrationName);
+	hosted.cluster.migrate("wake_component", chain);
+	for (const name of chain) {
+		const source = readFileSync(join(root, "supabase/migrations", name));
+		report.component.appliedMigrations.push({ name, sha256: createHash("sha256").update(source).digest("hex") });
+	}
 	await verifyDatabase("wake_component", report.component);
 
 	if (integration) {
 		report.databaseIntegration.status = "running";
 		clone("wake_integration", "wake_component");
-		const after = sortMigrationNames(readdirSync(join(root, "supabase/migrations"))).filter((name) => name > policyMigrationName);
-		for (const name of after) {
-			const source = readFileSync(join(root, "supabase/migrations", name), "utf8");
-			sql("wake_integration", source);
-			report.databaseIntegration.appliedMigrations.push({ name, sha256: createHash("sha256").update(source).digest("hex") });
-		}
-		try {
-			await verifyDatabase("wake_integration", report.databaseIntegration.regressions);
-		} catch (error) {
-			report.databaseIntegration.regressions.status = "failed";
-			report.databaseIntegration.regressions.error = error instanceof Error ? error.message : String(error);
-			console.error(report.databaseIntegration.regressions.error);
-		}
 		const acceptance = readFileSync(join(root, "supabase/acceptance/runtime_wake_bus.sql"), "utf8");
 		const results = JSON.parse(sql("wake_integration", fixture + acceptance).split("\n").at(-1));
 		assert.equal(results.schema, "qorpera.wake-integration-acceptance/v1");
 		assert(results.cases.length > 0 && new Set(results.cases.map((test) => test.name)).size === results.cases.length);
 		report.databaseIntegration.cases = results.cases;
 		for (const test of results.cases) console.log(`${test.passed ? "PASS" : "FAIL"} integration: ${test.name}${test.error ? ` (${test.sqlstate}: ${test.error})` : ""}`);
-		report.databaseIntegration.status = report.databaseIntegration.regressions.status === "passed" && results.cases.every((test) => test.passed) ? "passed" : "failed";
+		report.databaseIntegration.status = results.cases.every((test) => test.passed) ? "passed" : "failed";
 		if (report.databaseIntegration.status === "failed") process.exitCode = 1;
 	} else console.log("NOT RUN database integration acceptance (requires --integration)");
 } catch (error) {
@@ -632,13 +617,7 @@ end $$;`);
 	console.error(report.error);
 	process.exitCode = 1;
 } finally {
-	for (const args of [started && ["rm", "--force", container], volumeCreated && ["volume", "rm", volume]].filter(Boolean)) {
-		try { docker(args); } catch (error) {
-			report.cleanupError = error instanceof Error ? error.message : String(error);
-			console.error(report.cleanupError);
-			process.exitCode = 1;
-		}
-	}
+	hosted?.close();
 	report.completedAt = new Date().toISOString();
 	if (reportPath) writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`);
 }

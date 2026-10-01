@@ -5,6 +5,7 @@ import {
 	parseRunnerControlRequest,
 	runnerControlRpcName,
 	runnerControlRpcStatus,
+	runnerStartRpcStatus,
 } from "./runner-control.ts";
 
 const runnerId = "a8450f9d-c912-43ea-81f6-62c7247d752a";
@@ -117,5 +118,49 @@ describe("runner control boundary", () => {
 				result: { output: "x".repeat(70 * 1024) },
 			}),
 		);
+	});
+
+	it("parses a start as an acceptance plus an optional native authority lease", () => {
+		assert.equal(runnerControlRpcName("start"), "qorpera_start_runner_assignment");
+		assert.deepEqual(
+			parseRunnerControlRequest({ action: "start", runnerId, assignmentId, jobId, assignmentCapability: token }),
+			{ action: "start", runnerId, assignmentId, jobId, assignmentCapability: token },
+		);
+		assert.deepEqual(
+			parseRunnerControlRequest({
+				action: "start",
+				runnerId,
+				assignmentId,
+				jobId,
+				assignmentCapability: token,
+				nativeLeaseSeconds: 120,
+			}),
+			{ action: "start", runnerId, assignmentId, jobId, assignmentCapability: token, nativeLeaseSeconds: 120 },
+		);
+		// The same bounds the broker's native authority action applies.
+		for (const nativeLeaseSeconds of [29, 901, 120.5, "120", null]) {
+			assert.throws(() =>
+				parseRunnerControlRequest({
+					action: "start",
+					runnerId,
+					assignmentId,
+					jobId,
+					assignmentCapability: token,
+					nativeLeaseSeconds,
+				}),
+			);
+		}
+		assert.throws(() =>
+			parseRunnerControlRequest({ action: "start", runnerId, assignmentId, jobId, assignmentCapability: "short" }),
+		);
+	});
+
+	it("maps start refusals like acceptance, and a database without the start function to 501", () => {
+		assert.equal(runnerStartRpcStatus({ code: "PGRST202" }), 501);
+		for (const code of ["42501", "40001", "23505", "55000", "QRC01", undefined]) {
+			assert.equal(runnerStartRpcStatus({ code }), runnerControlRpcStatus({ code }));
+		}
+		// Only the start action treats a missing function as "use the separate calls".
+		assert.equal(runnerControlRpcStatus({ code: "PGRST202" }), 503);
 	});
 });

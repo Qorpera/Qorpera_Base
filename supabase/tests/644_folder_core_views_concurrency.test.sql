@@ -357,12 +357,13 @@ update public.qorpera_runtime_office_access set state = 'active' where office_id
 set session_replication_role = origin;
 
 -- D. The company row is locked at rank 0, before the member at rank 1, so a hook that names it (F2's roster files) never
--- deadlocks with #462's order: qorpera_update_profile_member_role (and its siblings) locks the company row FOR UPDATE,
--- then the member row FOR UPDATE. A third connection holds the member row FOR KEY SHARE, so the role change stops
--- between its two locks while a save could still take the member row KEY SHARE beside it. At rank 0 the save waits for
--- the company row holding nothing the role change needs. With the company row after the member (rank 2), the save would
--- take the member row, wait for the company row, and the role change would then wait for the save: a deadlock. The hook
--- is replaced for this company only, and its current definition (F2's) comes back after.
+-- deadlocks with a role change. Before C1c-3c the role change locked the company row FOR UPDATE, then the member row
+-- (#462's order), and a save at rank 0 waited for it holding nothing it needed. Since C1c-3c a role change on folder-v2
+-- takes the fence FOR NO KEY UPDATE and the company row KEY SHARE only, then the member row FOR UPDATE: a save never
+-- waits for it at all, and the two meet only at the member row. A third connection holds the member row FOR KEY SHARE,
+-- so the role change stops there; a save goes on beside it (its KEY SHARE does not queue behind a waiting FOR UPDATE)
+-- and lands, then the role change. The hook is replaced for this company only, and its current definition (F2's) comes
+-- back after.
 select pg_get_functiondef('public.qorpera_folder_structured_targets(uuid,jsonb,jsonb)'::regprocedure) as structured_targets_def \gset
 create or replace function public.qorpera_folder_structured_targets(p_environment_id uuid, p_actor jsonb, p_units jsonb)
 returns table(rank smallint, tbl text, key text, mode text) language sql stable set search_path = '' as $f$
@@ -387,7 +388,7 @@ begin
 		if not pg_temp.waits_for('view_one', 'view_three') then raise exception 'The role change did not stop at the member row'; end if;
 		perform dblink_send_query('view_two', pg_temp.sql_commit(v_actor, 'rank-zero-' || v_n, jsonb_build_array(jsonb_build_object('op','mkdir',
 			'path','shared/rank-zero-' || v_n))));
-		if not pg_temp.waits_for('view_two', 'view_one') then raise exception 'Save % did not wait for the company row', v_n; end if;
+		if not pg_temp.finishes_unblocked('view_two', 'view_one') then raise exception 'Save % must not wait for the role change', v_n; end if;
 		perform dblink_exec('view_three', 'commit');
 		v_state := pg_temp.outcome('view_one');
 		if v_state <> 'ok' then raise exception 'The role change beside save % (a deadlock if the save held the member row): %', v_n, v_state; end if;
@@ -399,8 +400,8 @@ begin
 			and user_id = '64400000-0000-4000-8000-000000000002') <> v_role then raise exception 'The role change % must land', v_n; end if;
 	end loop;
 
-	-- The other order: a save in flight holds the company row KEY SHARE and the member row; the role change waits at
-	-- the company row and goes on once the save commits.
+	-- The other order: a save in flight holds the company row KEY SHARE and the member row KEY SHARE; the role change
+	-- waits at the member row and goes on once the save commits.
 	perform dblink_exec('view_two', 'begin');
 	select t.r into r from dblink('view_two', pg_temp.sql_commit('{"kind":"member","userId":"64400000-0000-4000-8000-000000000002"}',
 		'rank-zero-first', '[{"op":"mkdir","path":"shared/rank-zero-first"}]')) as t(r jsonb);
