@@ -691,6 +691,8 @@ export function cloudRoutineDecisionTool(
 				request.effort = n.effort;
 			}
 			if (n.report !== undefined) request.report = reply(n.report);
+			// A folder-v2 rewrite's file is checked now, before the automatic review.
+			options.folderDecision?.check(request as unknown as CloudFolderRoutineDecisionRequest);
 			return request as never;
 		},
 		async execute(value, context) {

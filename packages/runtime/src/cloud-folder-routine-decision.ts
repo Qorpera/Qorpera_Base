@@ -13,8 +13,10 @@ import {
 	type CloudCompanyFolderFileEntry,
 	sha256,
 } from "./cloud-company-folder-client.ts";
+import { invalidMessage } from "./cloud-folder-hiring.ts";
 import type { CloudNativeToolIdentity } from "./cloud-native-tool-authority.ts";
 import {
+	CloudToolArgumentRefusal,
 	type CloudToolContent,
 	type CloudToolContext,
 	CloudToolRefusal,
@@ -33,13 +35,16 @@ import type { CloudNativeToolOperations } from "./cloud-native-tool-operations.t
  * exactly that change set (C2 R1; thin writers W4c-2). The gate never raises a card for `decide_routine`, so only a
  * reviewer's allow reaches a rewrite.
  *
- * The file is read first, outside the receipt, and what can never be saved is refused there, binding no key: a rewrite
- * without the review's approval, a conclusion with a new title or instructions, or a next run at or after the
- * routine's end. A routine that already moved on (its file gone, no longer active, no longer a dynamic routine's
+ * A new title or instructions are checked as a routine file with the arguments, before the review (`check`). The file
+ * is read first, outside the receipt, and what can never be saved is refused there, binding no key: a rewritten file
+ * that does not parse, a rewrite without the review's approval, a conclusion with a new title or instructions, or a
+ * next run at or after the routine's end. A routine that already moved on (its file gone, no longer active, no longer a dynamic routine's
  * `once`, or past its end) is settled, as today: nothing is owed. The receipt binds the model's request, and the commit
  * carries the version read, so a file changed in between is a conflict the model decides again under a new operation
  * key. A plain decision the folder core calls delegation is one nothing is owed for any more (F2-6's review class), so
- * it is settled too; a reviewed rewrite the core still refuses is not saved, and the run decides again without it.
+ * it is settled too. After a recorded review the core does not answer so; if it ever did, the rewrite is reported as not
+ * saved, and the run decides again without it. A routine that expired while active is kept from revival by the past-end
+ * settle alone (a paused routine's run cannot decide at all).
  *
  * The routine is the one this run was woken for: the file at its key must carry its id (the routine row is keyed by
  * the file's id). A member may rename the file while the run works; then the agent's routines folder is listed and the
@@ -78,6 +83,30 @@ interface Located {
 	readonly routine: RoutineFile;
 }
 
+const INVALID = "This decision cannot be saved as the routine's file";
+/** A dynamic routine to check a new title or instructions against before the review. */
+const PLACEHOLDER: Omit<RoutineFile, "kind"> = {
+	id: "00000000-0000-4000-8000-000000000000",
+	title: "Routine",
+	status: "active",
+	trigger: { when: "once", at: "2030-01-01T00:00:00Z" },
+	timezone: "Europe/Copenhagen",
+	ends: null,
+	runs: null,
+	quiet: null,
+	effort: "medium",
+	reply: "optional",
+	conclusion: null,
+	instructions: "Routine.",
+};
+
+/** The parser's problems with a routine file's text. */
+function problemsOf(path: string, text: string): readonly { message: string }[] {
+	const parsed = parseCompanyStateFile(path, text);
+	if (!parsed) return [{ message: `${path} is not a company state file` }];
+	return parsed.ok ? [] : parsed.problems;
+}
+
 export class CloudFolderRoutineDecision {
 	readonly #folder: CloudCompanyFolderClient;
 	readonly #operations: CloudNativeToolOperations;
@@ -102,6 +131,21 @@ export class CloudFolderRoutineDecision {
 		this.#routineKey = options.routineKey;
 		this.#routineId = options.routineId;
 		this.#routines = `agents/${options.handle}/routines`;
+	}
+
+	/** A new title or instructions, checked with the arguments before the automatic review: the routine file they make
+	 * over a placeholder dynamic routine must read as one (a title is one line, without tabs or other controls). */
+	check(request: CloudFolderRoutineDecisionRequest): void {
+		if (request.action !== "next" || (request.title === undefined && request.intent === undefined)) return;
+		const problems = problemsOf(
+			`${this.#routines}/routine.md`,
+			writeRoutineFile({
+				...PLACEHOLDER,
+				title: request.title ?? PLACEHOLDER.title,
+				instructions: request.intent?.trim() ?? PLACEHOLDER.instructions,
+			}),
+		);
+		if (problems.length) throw new CloudToolArgumentRefusal(invalidMessage(problems, INVALID));
 	}
 
 	/** This run's routine file: at its key, or, after a rename, the file in the routines folder that carries its id.
@@ -205,6 +249,9 @@ export class CloudFolderRoutineDecision {
 					effort: (request.effort as RoutineFile["effort"] | undefined) ?? routine.effort,
 					reply: request.report ?? routine.reply,
 				});
+				// Checked again with the file it rewrites, before any receipt.
+				const problems = problemsOf(path, text);
+				if (problems.length) throw new CloudToolRefusal(invalidMessage(problems, INVALID));
 			} else {
 				const changes: Record<string, CompanyStateSetting> = { at };
 				if (request.effort !== undefined) changes.effort = request.effort;

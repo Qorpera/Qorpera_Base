@@ -606,6 +606,7 @@ describe("a folder-v2 dynamic routine's decision", () => {
 			{ content: { kind: "text" as const, value: '{"saved":true}' }, decided: true },
 		];
 		const decide = vi.fn(async () => answers.shift() ?? answers[0]!);
+		const check = vi.fn();
 		const tool = cloudRoutineDecisionTool(
 			binding,
 			identity,
@@ -613,7 +614,7 @@ describe("a folder-v2 dynamic routine's decision", () => {
 			{
 				decisionOwed: () => true,
 				decided,
-				folderDecision: { decide } as unknown as CloudFolderRoutineDecision,
+				folderDecision: { decide, check } as unknown as CloudFolderRoutineDecision,
 			},
 		);
 		const context = {
@@ -625,6 +626,8 @@ describe("a folder-v2 dynamic routine's decision", () => {
 			identity,
 		};
 		const request = tool.parseArguments({ action: "next", operationKey: "decide-1", at: "2026-10-03T07:30:00Z" });
+		// The file's own check runs with the arguments, before the automatic review.
+		expect(check).toHaveBeenCalledWith(request);
 		await expect(tool.execute(request, context)).resolves.toEqual({ kind: "text", value: '{"state":"refused"}' });
 		expect(decided).not.toHaveBeenCalled();
 		await expect(tool.execute(request, context)).resolves.toEqual({ kind: "text", value: '{"saved":true}' });
@@ -649,7 +652,11 @@ describe("a folder-v2 dynamic routine's decision", () => {
 			binding,
 			run.identity,
 			{ call },
-			{ decisionOwed: () => true, decided, folderDecision: { decide } as unknown as CloudFolderRoutineDecision },
+			{
+				decisionOwed: () => true,
+				decided,
+				folderDecision: { decide, check: () => {} } as unknown as CloudFolderRoutineDecision,
+			},
 		);
 		expect(tool.description).toContain(
 			"In this company the routine is a file, and a new intent or title goes through the automatic review; if it is not approved, decide again without them.",
