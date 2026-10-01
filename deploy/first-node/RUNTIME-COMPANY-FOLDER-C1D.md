@@ -257,9 +257,11 @@ runtime adapter, with no migration.
   refuses for it. The gateway answers 23514 as 413, which the adapter reads as `full`. Still open: a stop at confirm
   (after the write) leaves the NAS file outside the catalog and the gateway's journal entry `blocked` (it reports
   degraded), as on the native route; the gateway should drop that entry when confirm refuses.
-- **Lock waits inside the gateway's deadline.** Before GC holds objects `FOR UPDATE`, the folder functions the gateway
-  calls set `lock_timeout` below its 5 s deadline (2 s), so a long wait ends as 55P03, which the gateway answers 409,
-  rather than as a deadline 503 that opens its circuit for every company.
+- **Lock waits inside the gateway's deadline: done** (20260929780000). The six byte functions (open, seal, renew,
+  authorize, confirm and the download check) set `lock_timeout = '2s'`, below the gateway's 5 s deadline and the
+  PostgREST role's 8 s, so a long wait ends as 55P03, which the gateway answers 409 (the runtime: `contended`), rather
+  than as a deadline 503 that opens its circuit for every company. The 409 mapping depends on this budget. It bounds
+  each lock wait, not their sum (test 762 G shows one wait end at it; 761 §8b pins the setting).
 - **The gateway's NAS lanes.** It allows two operations in flight; core §7 raises that with content storage. The
   native route's read still answers Storage's miss when its NAS lane is busy; give it the folder route's 503.
 - **Labels.** On the byte path a size clash (23505) reads as `contended` and a refused run kind (0A000) as

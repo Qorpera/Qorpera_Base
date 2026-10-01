@@ -515,6 +515,24 @@ begin
 		raise exception 'Step 6 locks the objects in one hash order'; end if;
 end $$;
 
+-- 8b. Each byte function a gateway or a run calls waits at most 2 s for any one lock (20260929780000), inside the
+-- gateway's 5 s, so a long wait ends as 55P03 (409) and never opens its circuit; the rest of each function's settings
+-- stay as they were. The wait itself is in 762 G.
+do $$
+declare v_fn regprocedure;
+begin
+	foreach v_fn in array array[
+		'public.qorpera_folder_open_upload(uuid,jsonb,text)', 'public.qorpera_folder_seal_upload(uuid,jsonb,uuid)',
+		'public.qorpera_folder_renew_upload(uuid,jsonb,uuid)',
+		'public.qorpera_folder_authorize_object_upload(uuid,jsonb,uuid,text,bigint)',
+		'public.qorpera_folder_confirm_object(uuid,jsonb,uuid,text,bigint)',
+		'public.qorpera_folder_authorize_object_download(uuid,jsonb,text)']::regprocedure[] loop
+		if (select array(select c from unnest(proconfig) c order by c) from pg_proc where oid = v_fn)
+				is distinct from array['lock_timeout=2s', 'search_path=""'] then
+			raise exception 'The lock budget of %: %', v_fn, (select proconfig from pg_proc where oid = v_fn); end if;
+	end loop;
+end $$;
+
 -- 9. Only the service role stages and downloads.
 set local role authenticated;
 do $$

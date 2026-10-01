@@ -215,6 +215,29 @@ begin
 	delete from public.qorpera_company_execution_pauses where profile_id = '63500000-0000-4000-8000-000000000010';
 end $$;
 
+-- G. A byte function's lock wait ends at its own budget (2 s, 20260929780000) as 55P03, which the gateway answers 409,
+-- even in a session that would wait without limit: an open waits for a catalog row another transaction holds FOR
+-- UPDATE (as C1d-2's GC will) and gives up instead of outliving the gateway's 5 s.
+do $$
+declare v jsonb := pg_temp.actor('run_one'); v_until timestamptz; v_busy boolean; v_state text;
+begin
+	perform dblink_exec('auth_one', 'begin');
+	perform * from dblink('auth_one', format('select 1 from public.qorpera_profile_objects where profile_id = %L and sha256 = %L for update',
+		'63500000-0000-4000-8000-000000000010', pg_temp.hash('race chunk one '))) as t(r integer);
+	perform dblink_exec('auth_two', 'set lock_timeout = 0');
+	perform dblink_send_query('auth_two', format('select public.qorpera_folder_open_upload(%L, %L, %L)',
+		'63500000-0000-4000-8000-000000000020', v::text, pg_temp.manifest(array['race chunk one ', 'budget chunk'])));
+	if not pg_temp.waits_for('auth_two', 'auth_one') then raise exception 'The open waits for the held object'; end if;
+	-- A bound for the test only: without the budget the open would wait as long as the holder.
+	v_until := clock_timestamp() + interval '30 seconds';
+	while dblink_is_busy('auth_two') = 1 and clock_timestamp() < v_until loop perform pg_sleep(0.05); end loop;
+	v_busy := dblink_is_busy('auth_two') = 1;
+	perform dblink_exec('auth_one', 'rollback');
+	v_state := pg_temp.outcome('auth_two');
+	perform dblink_exec('auth_two', 'reset lock_timeout');
+	if v_busy or v_state not like '55P03 %' then raise exception 'The open gives up at its lock budget: %', v_state; end if;
+end $$;
+
 select dblink_disconnect(name) from unnest(array['auth_one','auth_two','auth_three']) name;
 
 -- The committed fixture leaves the shared suite database.
