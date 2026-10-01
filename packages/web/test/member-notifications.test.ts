@@ -167,6 +167,7 @@ describe("company notices member read", () => {
 		for (const bad of [
 			{ ...routineNotice("routine_needs_model_account", 100), profile_id: id(99) },
 			{ ...routineNotice("routine_needs_model_account", 100), subject: null },
+			{ ...routineNotice("routine_suspended", 101), schema: "qorpera.member-notification/v2" },
 		]) {
 			f = setup();
 			f.fetch.mockResolvedValueOnce(Response.json([bad, full]));

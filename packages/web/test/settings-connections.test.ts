@@ -1253,13 +1253,40 @@ describe("a ChatGPT plan login (shown only when the member has one)", () => {
 		await settle();
 		expect(client.setWorkWhileAway).toHaveBeenLastCalledWith(id(85), false, expect.any(AbortSignal));
 	});
-	it("says when the switch could not move, and keeps it where it was", async () => {
+	it("says when the switch could not move, after reading back where it stands", async () => {
 		const { client } = await planSetup(plan);
+		const reads = client.listConnections.mock.calls.length;
 		client.setWorkWhileAway.mockRejectedValueOnce(new Error("offline"));
 		lever()!.click();
 		await settle();
-		expect(view.el.textContent).toContain("Work while you're away could not be changed. Try again.");
+		// Part of a failed change may have landed: the cloud's state is read back first.
+		expect(client.listConnections.mock.calls.length).toBe(reads + 1);
+		expect(view.el.textContent).toContain("“Work while you're away” could not be changed. Try again.");
 		expect(lever()!.getAttribute("aria-checked")).toBe("false");
+	});
+	it("stays busy until the change is read back, so a second press sends nothing", async () => {
+		const { client, set } = await planSetup(plan);
+		const change = deferred<void>();
+		client.setWorkWhileAway.mockImplementationOnce(() => change.promise);
+		lever()!.click();
+		await settle();
+		expect(lever()!.getAttribute("aria-busy")).toBe("true");
+		expect(lever()!.getAttribute("aria-disabled")).toBe("true");
+		const read = deferred<WebExecutionConnections>();
+		client.listConnections.mockImplementationOnce(() => read.promise);
+		set([{ ...plan, allowAutonomous: true }]);
+		change.resolve();
+		await settle();
+		// Changed, but not read back yet: still busy, and a press does nothing.
+		expect(lever()!.getAttribute("aria-busy")).toBe("true");
+		lever()!.click();
+		await settle();
+		expect(client.setWorkWhileAway).toHaveBeenCalledTimes(1);
+		const turnedOn: WebMemberConnection = { ...plan, allowAutonomous: true };
+		read.resolve(observed(turnedOn) as WebExecutionConnections);
+		await settle();
+		expect(lever()!.getAttribute("aria-checked")).toBe("true");
+		expect(lever()!.hasAttribute("aria-busy")).toBe(false);
 	});
 	it("shows no switch for a plan that needs a new sign-in", async () => {
 		await planSetup({ ...plan, authorizationState: "reauthentication_required" });
