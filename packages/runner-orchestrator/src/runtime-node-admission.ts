@@ -23,6 +23,9 @@ export const NODE_CAPACITY_REFUSALS = [
 	"NODE_OBSERVATION_UNAVAILABLE",
 	"NODE_HARDWARE_CHANGED",
 	"NODE_CAPACITY_EXHAUSTED",
+	// The company is out of computer hours: no Company Computer, coding machine or agent's machine
+	// starts or wakes until hours are added (migration 20260929700000; never a run or sign-in machine).
+	"COMPUTER_HOURS_EXHAUSTED",
 ] as const;
 export type RuntimeNodeCapacityRefusal = (typeof NODE_CAPACITY_REFUSALS)[number];
 export type RuntimeNodeAdmission =

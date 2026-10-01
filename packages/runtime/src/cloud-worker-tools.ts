@@ -1,4 +1,5 @@
 import type { CloudCompanyPathControl, CloudCompanyPathGateway } from "./cloud-company-path-gateway.ts";
+import type { CloudFolderTodoChange, CloudFolderTodoListing, CloudFolderTodos } from "./cloud-folder-todos.ts";
 import {
 	type CloudNativeToolBinding,
 	type CloudNativeToolIdentity,
@@ -179,6 +180,15 @@ export const CLOUD_WORKER_TOOL_DESCRIPTION =
 	"Keep operationKey stable for one intended change; an unconfirmed result needs the same key again, never a new one. " +
 	"A coding session is a worker with species coding: add harness (codex or claude-code) and repository (host github.com, owner, name, baseBranch), and keep access read. It runs for the member who asked, on their own account, works on an isolated machine, and ends each turn in a draft PR or a question for that member. Between turns it stands by on that machine with anything it left running, like an open Claude Code session; the machine sleeps after a quiet period and stops those programs, keeping the files. Only that member can talk to it directly; you steer it with followup, from work that member started. archive closes a coding session you no longer need: its programs stop and it leaves the machine, its files are kept, and a later followup reopens it.";
 
+/** A folder-v2 agent's todos are files in its own folder, named by their keys (thin writers, W1). */
+const CLOUD_TODO_TOOL_DESCRIPTION_FOLDER = CLOUD_TODO_TOOL_DESCRIPTION.replace(
+	"Each todo is also a document in the shared Company File at the path in the result.",
+	"Each todo is a file in your folder, at the path in the result, and its todoKey is the file's name: lowercase letters, digits and single hyphens, at most 64 characters. A save can come back as a conflict when the file changed since it was read: call again with a new operationKey.",
+).replace(
+	" and its latest 4 workers (moreWorkers counts the others; manage_worker status with that todoKey lists them all)",
+	"",
+);
+
 /** Without company machines (no node serves them yet), the description names none. */
 const CLOUD_WORKER_TOOL_DESCRIPTION_WITHOUT_MACHINES = CLOUD_WORKER_TOOL_DESCRIPTION.replace(
 	", running tests or builds on the company's machines (a worker starts and uses machines like you and waits for its own commands)",
@@ -207,8 +217,9 @@ export function cloudWorkerTools(
 	control: CloudCompanyPathControl,
 	gateway: Gateway,
 	wake: Pick<CloudWakeEnvelope, "kind" | "source">,
-	/** Whether this run's workers can use company machines (only when a node serves them). */
-	options: { machines?: boolean } = {},
+	/** Whether this run's workers can use company machines (only when a node serves them); and, for a folder-v2
+	 * run, its todos as files. */
+	options: { machines?: boolean; folderTodos?: CloudFolderTodos } = {},
 ): readonly CloudNativeTool[] {
 	const admitted = parseCloudNativeToolBinding(binding),
 		expected = Object.freeze({ ...identity });
@@ -372,10 +383,11 @@ export function cloudWorkerTools(
 		return [report];
 	}
 
+	const folderTodos = options.folderTodos;
 	const todo: CloudNativeTool = {
 		name: "manage_todo" satisfies CloudRuntimeToolOperation,
 		source: "runtime",
-		description: CLOUD_TODO_TOOL_DESCRIPTION,
+		description: folderTodos ? CLOUD_TODO_TOOL_DESCRIPTION_FOLDER : CLOUD_TODO_TOOL_DESCRIPTION,
 		inputSchema: {
 			type: "object",
 			additionalProperties: false,
@@ -434,6 +446,11 @@ export function cloudWorkerTools(
 		async execute(value, context) {
 			assertContext(context);
 			const request = value as Record<string, unknown>;
+			// A folder-v2 agent's todos are files; the folder core decides each save.
+			if (folderTodos)
+				return request.action === "list"
+					? folderTodos.list(request as unknown as CloudFolderTodoListing, context, fitsOneResult)
+					: folderTodos.change(request as unknown as CloudFolderTodoChange, context);
 			const result = await call("qorpera_manage_agent_todo", request, context.signal);
 			if (request.action !== "list") {
 				if (

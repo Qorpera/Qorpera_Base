@@ -417,6 +417,9 @@ export class HttpCloudCompanyFolderBytes implements CloudCompanyFolderBytes {
 					if (response.status === 403) throw new CloudCompanyFolderError("unavailable");
 					if (response.status === 423) throw new CloudCompanyFolderError("stopped");
 					if (response.status === 409) throw new CloudCompanyFolderError("contended");
+					// 413: the company's storage allowance has no room for this new object (the gateway's own body bound is
+					// 8 MiB, which no object this adapter puts reaches).
+					if (response.status === 413) throw new CloudCompanyFolderError("full");
 					if (response.status === 503) throw new GatewayBusyError();
 					throw new CloudRuntimeDiagnosticError("transport_unavailable", "Company folder bytes unavailable");
 				}
