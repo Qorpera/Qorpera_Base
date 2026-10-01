@@ -233,12 +233,46 @@ begin
 	if v_state not like 'PGRST %QRC01%' then raise exception 'The replication sees the mark committed while it waited: %', v_state; end if;
 end $$;
 
+-- R10 (review round 2). The sweep skips an intent it cannot lock within its budget, and sweeps the rest.
+do $$
+declare v jsonb := pg_temp.actor('run_one'); v_held jsonb; v_free jsonb;
+begin
+	-- Two left intents, an hour and more past their expiry; the first names an object whose GC row another session holds.
+	v_held := public.qorpera_folder_open_upload('63500000-0000-4000-8000-000000000020', v, pg_temp.manifest(array['gc sweep held']));
+	perform public.qorpera_folder_confirm_object('63500000-0000-4000-8000-000000000020', v, (v_held ->> 'intentId')::uuid,
+		pg_temp.hash('gc sweep held'), octet_length('gc sweep held'));
+	v_free := public.qorpera_folder_open_upload('63500000-0000-4000-8000-000000000020', v, pg_temp.manifest(array['gc sweep free']));
+	perform public.qorpera_folder_confirm_object('63500000-0000-4000-8000-000000000020', v, (v_free ->> 'intentId')::uuid,
+		pg_temp.hash('gc sweep free'), octet_length('gc sweep free'));
+	update public.qorpera_folder_upload_intents set expires_at = clock_timestamp() - interval '3 hours' where id = (v_held ->> 'intentId')::uuid;
+	update public.qorpera_folder_upload_intents set expires_at = clock_timestamp() - interval '2 hours' where id = (v_free ->> 'intentId')::uuid;
+	insert into public.qorpera_folder_object_gc(profile_id, sha256, unreferenced_since)
+	values ('63500000-0000-4000-8000-000000000010', pg_temp.hash('gc sweep held'), clock_timestamp() - interval '4 hours');
+	perform set_config('qorpera_test.sweep_held', v_held ->> 'intentId', false);
+	perform set_config('qorpera_test.sweep_free', v_free ->> 'intentId', false);
+end $$;
+do $$
+declare v_res integer;
+begin
+	perform dblink_exec('auth_one', 'begin');
+	perform * from dblink('auth_one', format($q$select 1 from public.qorpera_folder_object_gc where profile_id = %L and sha256 = %L
+		for update$q$, '63500000-0000-4000-8000-000000000010', pg_temp.hash('gc sweep held'))) as t(r integer);
+	select t.r into v_res from dblink('auth_two', 'select public.qorpera_folder_sweep_upload_intents(100)') as t(r integer);
+	perform dblink_exec('auth_one', 'rollback');
+	if v_res <> 1 or not exists (select 1 from public.qorpera_folder_upload_intents where id = current_setting('qorpera_test.sweep_held')::uuid)
+		or exists (select 1 from public.qorpera_folder_upload_intents where id = current_setting('qorpera_test.sweep_free')::uuid)
+		or not exists (select 1 from public.qorpera_folder_object_gc where profile_id = '63500000-0000-4000-8000-000000000010'
+			and sha256 = pg_temp.hash('gc sweep free')) then
+		raise exception 'The sweep skips the intent it cannot lock and sweeps the other: %', v_res; end if;
+end $$;
+
 select dblink_disconnect(name) from unnest(array['auth_one','auth_two','auth_three']) name;
 
 -- The committed fixture leaves the shared suite database, as 762's does.
 set session_replication_role = replica;
 -- (Foreign-key cascades do not run under replica: each table is cleared by name. The catalog and 635's Storage rows
--- stay, as after 635, so the fixture can run again.)
+-- stay, as after 635, so the fixture can run again: this test leaves about a dozen catalog rows of the deleted fixture
+-- company, as 762 does, and nothing after it reads them.)
 delete from public.qorpera_folder_object_gc where profile_id = '63500000-0000-4000-8000-000000000010';
 delete from public.qorpera_folder_file_chunks where profile_id = '63500000-0000-4000-8000-000000000010';
 delete from public.qorpera_folder_upload_intent_objects where profile_id = '63500000-0000-4000-8000-000000000010';
