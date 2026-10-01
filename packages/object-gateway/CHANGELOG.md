@@ -21,6 +21,7 @@
 
 ### Fixed
 
+- One company's database state no longer refuses every company. PostgREST answers SQLSTATE classes 40 and 55, and 57014, with HTTP 500, which the database circuit counted as an outage for its cooldown (~5 s). The native and member object RPCs and the member Company File RPCs now read PostgREST's error code, with the folder core's codes (#560): a stop (55000) is 423, a serialization failure, deadlock or lock timeout (40001, 40P01, 55P03) 409. A statement timeout (57014) is 503 and opens the circuit only when no other call succeeded while it ran. Other 500s, 502/503/504, refused connections and the gateway's own deadline still open it. Profile, replication and deletion RPCs keep every 500 a dependency failure. The folder core's byte RPCs (#560) now use the same reading, so their statement timeout follows the same rule; their storage allowance (23514) stays 413 (#582), and their other 400s stay 400.
 - Return non-retryable HTTP 412 for stale Company File versions, context, policy and review preconditions, preserving authorization and receipt replay without managed API transaction-retry stalls.
 - Resolve authoritative manifest byte counts before Company File bootstrap reads, preserving exact-size and hash validation across NAS reads and Storage fallback.
 - Authenticate configured JWT service credentials on gateway publication, object authority, and Storage requests without replacing member identity or treating opaque API keys as bearer tokens.

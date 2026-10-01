@@ -1,4 +1,10 @@
-import { ObjectDependency, ObjectDependencyError, readBoundedObjectResponse } from "./dependency.ts";
+import {
+	companyStateFailure,
+	ObjectDependency,
+	ObjectDependencyError,
+	postgrestErrorCode,
+	readBoundedObjectResponse,
+} from "./dependency.ts";
 import type { FolderObjectAuthority, FolderRunActor } from "./folder-objects.ts";
 import type {
 	AuthorizedMemberCompanyObject,
@@ -64,23 +70,12 @@ interface SupabaseObjectAuthorityOptions {
 /** PostgREST answers classes 40 and 55 with 500, and a check violation with 400. From the folder core those are one
  * company's state, not the database's health: a stopped company (55000) becomes 423, a lock conflict (40001, 40P01,
  * 55P03) 409, so neither opens the dependency circuit for every company, and the company's storage allowance
- * (23514, checked before the NAS write) 413, so the writer can say the storage is full. Any other answer keeps its
- * status: another 500 stays a dependency failure. */
-async function folderRefusal(response: Response, signal: AbortSignal): Promise<ObjectDependencyError> {
-	let code: unknown;
-	try {
-		code = (
-			JSON.parse(new TextDecoder().decode(await readBoundedObjectResponse(response, 16 * 1024, signal))) as {
-				code?: unknown;
-			}
-		).code;
-	} catch {
-		return new ObjectDependencyError(response.status);
-	}
-	if (code === "55000") return new ObjectDependencyError(423);
-	if (code === "40001" || code === "40P01" || code === "55P03") return new ObjectDependencyError(409);
+ * (23514, checked before the NAS write) 413, so the writer can say the storage is full. A statement timeout (57014)
+ * follows `companyStateFailure`'s rule. Any other answer keeps its status: another 500 stays a dependency failure. */
+function folderStateFailure(code: unknown, status: number): ObjectDependencyError {
 	if (code === "23514") return new ObjectDependencyError(413);
-	return new ObjectDependencyError(response.status);
+	const failure = companyStateFailure(code);
+	return failure.status === 500 ? new ObjectDependencyError(status) : failure;
 }
 
 function record(value: unknown, label: string): Record<string, unknown> {
@@ -246,6 +241,7 @@ export class SupabaseObjectAuthority
 				},
 				userToken,
 				this.#publishableKey,
+				true,
 			),
 			"member Company File authority",
 		);
@@ -333,6 +329,7 @@ export class SupabaseObjectAuthority
 				},
 				undefined,
 				this.#secretKey,
+				true,
 			)) !== true
 		)
 			throw new ObjectDependencyError(403);
@@ -355,6 +352,7 @@ export class SupabaseObjectAuthority
 				},
 				undefined,
 				this.#secretKey,
+				true,
 			)) !== true
 		)
 			throw new ObjectDependencyError(403);
@@ -375,6 +373,7 @@ export class SupabaseObjectAuthority
 				},
 				undefined,
 				this.#secretKey,
+				true,
 			),
 		);
 	}
@@ -391,7 +390,7 @@ export class SupabaseObjectAuthority
 			{ p_environment_id: environmentId, p_actor: actor, p_intent: intentId, p_sha256: sha256, p_bytes: bytes },
 			undefined,
 			this.#secretKey,
-			true,
+			"folder",
 		);
 		const receipt = value as Record<string, unknown> | null;
 		if (
@@ -417,7 +416,7 @@ export class SupabaseObjectAuthority
 			{ p_environment_id: environmentId, p_actor: actor, p_intent: intentId, p_sha256: sha256, p_bytes: bytes },
 			undefined,
 			this.#secretKey,
-			true,
+			"folder",
 		)) as Record<string, unknown> | null;
 		if (!value || value.schema !== "qorpera.folder-object/v1" || value.sha256 !== sha256 || value.bytes !== bytes)
 			throw new ObjectDependencyError(403);
@@ -433,7 +432,7 @@ export class SupabaseObjectAuthority
 			{ p_environment_id: environmentId, p_actor: actor, p_sha256: sha256 },
 			undefined,
 			this.#secretKey,
-			true,
+			"folder",
 		)) as Record<string, unknown> | null;
 		if (
 			!value ||
@@ -630,12 +629,16 @@ export class SupabaseObjectAuthority
 		});
 	}
 
+	/** `companyState`: the RPC acts for one company, so its 500s are read with `companyStateFailure`; `"folder"`, a
+	 * folder core byte RPC, also reads its 400s, with `folderStateFailure`. Profile, replication, deletion and
+	 * migration RPCs keep every 500 a dependency failure: the replication reconciler blocks an object on a non-5xx
+	 * refusal, and a profile read drops its member's read leases on one. */
 	async #rpc(
 		name: string,
 		body: Record<string, unknown>,
 		bearer: string | undefined,
 		apiKey: string,
-		folder = false,
+		companyState: boolean | "folder" = false,
 	): Promise<unknown> {
 		const headers: Record<string, string> = {
 			...supabaseRequestHeaders(apiKey, bearer),
@@ -649,8 +652,10 @@ export class SupabaseObjectAuthority
 				signal,
 			});
 			if (!response.ok) {
-				if (folder && (response.status === 500 || response.status === 400))
-					throw await folderRefusal(response, signal);
+				if (companyState === "folder" && (response.status === 500 || response.status === 400))
+					throw folderStateFailure(await postgrestErrorCode(response, signal), response.status);
+				if (companyState && response.status === 500)
+					throw companyStateFailure(await postgrestErrorCode(response, signal));
 				void response.body?.cancel().catch(() => undefined);
 				throw new ObjectDependencyError(response.status);
 			}
