@@ -454,6 +454,8 @@ export function parseRunRecovery(value: unknown): HostedRunRecovery {
 		jobStatus: oneOf(job.status, ["failed", "cancelled"], "recovery job status"),
 		...(lastError ? { lastError } : {}),
 		...(recovery.proposal_id ? { proposalId: uuid(recovery.proposal_id, "recovery proposal id") } : {}),
+		// Absent before 20260929910000: then only the error text can tell.
+		...(typeof recovery.usage_limit === "boolean" ? { usageLimit: recovery.usage_limit } : {}),
 		unsettledOperations: operations.filter(
 			(operation) => operation.status === "executing" || operation.status === "ambiguous",
 		).length,
