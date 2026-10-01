@@ -609,8 +609,8 @@ https://claude.ai/artifact/UWehPVysVzAmWcwvkuU6on.
   whose sign-ins go to its vault). Both start off.
 - **Before the platform switch goes on:** the vault runs this slice, the credential and the routing
   above are in place, the callback Edge Function is deployed with OpenAI's registered address, the run
-  side (slice 4) is live, and company deletion ends plan logins at OpenAI (a follow-up; today the purge
-  removes the rows before the revocation pass can see them).
+  side (slice 4) is live, and company deletion ends plan logins at OpenAI (slice 1c, migration
+  20260929900000; see RUNTIME-COMPANY-DELETE.md).
 - **First real sign-in (one company, the founder's own plan).** The fake OpenAI in the tests cannot prove
   what only OpenAI's endpoint answers. With one company switched on, sign in once and renew once, and
   check from the vault's journal and the login's row (never its envelope):

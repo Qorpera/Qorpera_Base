@@ -218,6 +218,13 @@ records what it waits for.
   retirement (D3b above; "Office retirement" in RUNTIME-OFFICE-RETENTION.md), and coding workspaces
   `workers/<company>/` (the coding executor cannot remove them alone: their files belong to session
   users; not built yet).
+- **ChatGPT plan logins** (Sign in with ChatGPT slice 1c, migration 20260929900000; built switched off with
+  the login kind). Each finisher pass revokes the connections of the company's members' plan logins, as for
+  a member who left. The vault's upkeep then ends each login at OpenAI and marks it revoked
+  (`qorpera_take_chatgpt_plan_revocation`, `qorpera_finish_chatgpt_plan_revocation`; the company's broker
+  authority stays active until the purge). The finisher counts the open plan logins as
+  `holdings.chatgpt_plan_logins` and waits for them, at most six hours after the deletion request; a login
+  still open then is deleted with the company, and its refresh token lapses at OpenAI within 30 days.
 - **D6** upstream token revoke on Disconnect and on delete (migration 20260928269500;
   `cloud-connector-token-revocation.ts`). Until now Disconnect only marked the secret revoked, and a
   deleted company's tokens stayed live at Google and GitHub (GitHub's never expire).
