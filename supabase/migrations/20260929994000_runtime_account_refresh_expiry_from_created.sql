@@ -7,12 +7,13 @@
 -- 2026-10-01. Production's only inserter, qorpera_begin_native_account_refresh, passes one clock reading for both
 -- columns, so no member's refresh was refused.
 --
--- Now expires_at has no default of its own: a row inserted without one expires five minutes after its created_at
--- (given, or its default). An expires_at given explicitly is kept and checked as before. Nothing else changes.
+-- Now expires_at has no default of its own: a row inserted without one, or with a null one, expires five minutes after
+-- its created_at (given, or its default). An expires_at given explicitly is kept and checked as before.
+--
+-- Locks: the trigger takes the table's SHARE ROW EXCLUSIVE lock and dropping the default its ACCESS EXCLUSIVE lock,
+-- each briefly. The trigger comes first, so no moment has neither.
 
 set local lock_timeout = '3s';
-
-alter table public.qorpera_native_account_refresh_requests alter column expires_at drop default;
 
 create function public.qorpera_account_refresh_expiry_from_created()
 returns trigger language plpgsql set search_path = '' as $$
@@ -26,3 +27,5 @@ revoke all on function public.qorpera_account_refresh_expiry_from_created() from
 create trigger qorpera_account_refresh_expiry_from_created before insert
 	on public.qorpera_native_account_refresh_requests
 	for each row execute function public.qorpera_account_refresh_expiry_from_created();
+
+alter table public.qorpera_native_account_refresh_requests alter column expires_at drop default;

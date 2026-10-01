@@ -25,13 +25,23 @@ begin
 	return v_row;
 end $$;
 
--- 1. The trigger is the table's alone: no API role may call it.
+-- 1. The trigger is the table's alone: no API role may call it, it runs with the inserter's rights and an empty
+--    search_path, and it fires before each inserted row only (an update keeps the pin trigger's immutability check).
 do $$
 begin
 	if has_function_privilege('anon', 'public.qorpera_account_refresh_expiry_from_created()', 'execute')
 		or has_function_privilege('authenticated', 'public.qorpera_account_refresh_expiry_from_created()', 'execute')
 		or has_function_privilege('service_role', 'public.qorpera_account_refresh_expiry_from_created()', 'execute') then
 		raise exception 'an API role may call qorpera_account_refresh_expiry_from_created'; end if;
+	if (select p.prosecdef or not coalesce('search_path=""' = any(p.proconfig), false) from pg_proc as p
+		where p.oid = 'public.qorpera_account_refresh_expiry_from_created()'::regprocedure) then
+		raise exception 'qorpera_account_refresh_expiry_from_created is security definer or lacks its empty search_path'; end if;
+	-- tgtype 7: for each row (1), before (2), on insert (4) alone; enabled ('O').
+	if (select array_agg(format('%s:%s:%s', t.tgname, t.tgtype, t.tgenabled)) from pg_trigger as t
+		where t.tgrelid = 'public.qorpera_native_account_refresh_requests'::regclass
+			and t.tgfoid = 'public.qorpera_account_refresh_expiry_from_created()'::regprocedure)
+		is distinct from array['qorpera_account_refresh_expiry_from_created:7:O'] then
+		raise exception 'The expiry trigger is not one enabled before-insert row trigger'; end if;
 end $$;
 
 -- 2. The member's own refresh (the only production inserter) still expires five minutes after it was created.
@@ -55,7 +65,7 @@ end $$;
 do $$
 declare v_row public.qorpera_native_account_refresh_requests := pg_temp.refresh783('pending');
 begin
-	if v_row.compute_recovery_epoch is null or v_row.expires_at <> v_row.created_at + interval '5 minutes' then
+	if v_row.status <> 'pending' or v_row.expires_at <> v_row.created_at + interval '5 minutes' then
 		raise exception 'A defaulted pending refresh expires at % after its creation', v_row.expires_at - v_row.created_at; end if;
 	update public.qorpera_native_account_refresh_requests set status = 'cancelled' where id = v_row.id;
 end $$;
@@ -77,7 +87,8 @@ begin
 	if v_wrong <> 0 then raise exception '% defaulted refreshes do not expire five minutes after creation', v_wrong; end if;
 end $$;
 
--- 5. A row given only its created_at expires five minutes after that created_at, not after the clock.
+-- 5. A row given only its created_at expires five minutes after that created_at, not after the clock; so does one
+--    given a null expires_at.
 do $$
 declare
 	v_created timestamptz := clock_timestamp() - interval '90 seconds';
@@ -85,6 +96,15 @@ declare
 begin
 	if v_row.created_at <> v_created or v_row.expires_at <> v_created + interval '5 minutes' then
 		raise exception 'A refresh created at % expires at %', v_row.created_at, v_row.expires_at; end if;
+	insert into public.qorpera_native_account_refresh_requests(profile_id, client_request_id, compute_identity_id,
+		requested_by_user_id, capability_sha256, compute_recovery_epoch, status, created_at, expires_at)
+	select identity.profile_id, extensions.gen_random_uuid(), identity.id, identity.owner_user_id,
+		encode(sha256('refresh-783'::bytea), 'hex'), identity.recovery_epoch, 'cancelled', v_created, null
+	from public.qorpera_member_compute_identities as identity
+	where identity.id = (current_setting('qorpera_test.display_identity')::jsonb ->> 'compute_identity_id')::uuid
+	returning * into strict v_row;
+	if v_row.expires_at <> v_created + interval '5 minutes' then
+		raise exception 'A refresh given a null expiry expires at %', v_row.expires_at; end if;
 end $$;
 
 -- 6. An expires_at given explicitly is kept, and the check still holds: at most five minutes, after created_at.
