@@ -33,7 +33,7 @@ begin
 	-- login and saving or giving back one renewal; a member's sign-in to the vault adds reading
 	-- and completing that sign-in, and the vault's usage reads add reading, recording and
 	-- completing an account refresh. Company delete D6 adds claiming and completing the broker's
-	-- queued connector token revocations. ChatGPT plan logins (20260929800000) add the v2 sign-in
+	-- queued connector token revocations. ChatGPT plan logins (20260929830000) add the v2 sign-in
 	-- read, completing a plan sign-in, saving a plan renewal, and taking and finishing a plan login's
 	-- revocation.
 	select array_agg(function.oid::regprocedure::text order by function.oid::regprocedure::text collate "C") into v_functions

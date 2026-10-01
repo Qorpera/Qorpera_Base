@@ -19,8 +19,13 @@
 --   * renewal timing for plan logins: a run renews a plan login past half its pass, as for Codex; idle
 --     upkeep renews a plan login only once its tokens are 7 days old, to keep the refresh token alive,
 --     never every half hour; neither renews before OpenAI's earliest renewal time.
---   * ending a plan login at OpenAI once nothing uses it (the member disconnected or left): the vault
---     takes it under its renewal lock, revokes the refresh token, and marks the login revoked.
+--   * ending a plan login at OpenAI once everything that used it is revoked (the member disconnected or
+--     left): the vault takes it under its renewal lock, revokes the refresh token, and marks the login
+--     revoked. A disabled connection keeps its login: it can be turned back on. A deleted company's
+--     logins are deleted with it and are not ended here (the delete's own queue must end them before
+--     the platform switch goes on; see the activation guard in the PR);
+--   * a pending plan sign-in never completes as a node Codex login (if its company goes back to node
+--     sign-ins), and the node switch-off's account record is written for Codex logins only.
 -- Plan logins are left out of the usage read (ChatGPT's usage page is not for plan tokens) and of the
 -- account record the node switch-off reads. While both switches are off nothing here changes behaviour.
 -- Locks: rows only (the sign-in row, the login row, a host row); no company-wide lock.
@@ -165,7 +170,8 @@ grant execute on function public.qorpera_begin_chatgpt_plan_sign_in(uuid, uuid, 
 	to authenticated;
 
 -- Where OpenAI's callback goes: the callback (an Edge Function on a fixed address) names the company by
--- the state's prefix, `<company id>.<43 random characters>`, and forwards the code to that company's
+-- the state's prefix, `<company id>.<43 random characters>` (the id in lower case, as the vault writes
+-- it from the database), and forwards the code to that company's
 -- vault, which holds the rest of the sign-in. Null for anything else: a malformed state, a company that
 -- may not use plan logins, or one with no pending plan sign-in.
 create function public.qorpera_chatgpt_plan_callback_target(p_state text)
@@ -861,6 +867,33 @@ begin
 		execute replace(v_definition, v_anchor, v_anchor || E'\t\t\t\tand vault.login_kind = ''codex''\n');
 	end if;
 
+	-- The account record itself: a Codex login's only.
+	v_target := 'public.qorpera_record_model_login_account(uuid,text,uuid,text)'::regprocedure;
+	v_definition := pg_get_functiondef(v_target);
+	if position('login_kind' in v_definition) = 0 then
+		v_anchor := 'where id = p_login_id and broker_authority_id = v_authority.id and account_identity is null;';
+		v_count := (length(v_definition) - length(replace(v_definition, v_anchor, ''))) / length(v_anchor);
+		if v_count <> 1 then raise exception 'Vault account record source differs (% matches)', v_count; end if;
+		execute replace(v_definition, v_anchor,
+			'where id = p_login_id and broker_authority_id = v_authority.id and account_identity is null'
+				|| ' and login_kind = ''codex'';');
+	end if;
+
+	-- A node completes Codex sign-ins only: a plan sign-in whose company went back to node sign-ins is
+	-- never sealed as a node Codex login.
+	v_target := 'public.qorpera_complete_native_provider_login(uuid,text,uuid,text,text,text,text,text,jsonb,text)'::regprocedure;
+	v_definition := pg_get_functiondef(v_target);
+	if position('model_login_kind' in v_definition) = 0 then
+		v_anchor := E'\t\tor v_login.status <> ''pending'' or v_login.expires_at <= statement_timestamp() then\n'
+			|| E'\t\traise exception ''native provider login is unavailable''';
+		v_count := (length(v_definition) - length(replace(v_definition, v_anchor, ''))) / length(v_anchor);
+		if v_count <> 1 then raise exception 'Node sign-in completion source differs (% matches)', v_count; end if;
+		execute replace(v_definition, v_anchor,
+			E'\t\tor v_login.status <> ''pending'' or v_login.expires_at <= statement_timestamp()\n'
+				|| E'\t\tor v_login.model_login_kind <> ''codex'' then\n'
+				|| E'\t\traise exception ''native provider login is unavailable''');
+	end if;
+
 	v_target := 'public.qorpera_model_logins_without_account(uuid,text)'::regprocedure;
 	v_definition := pg_get_functiondef(v_target);
 	if position('login_kind' in v_definition) = 0 then
@@ -874,11 +907,13 @@ $$;
 
 -- Ending a plan login at OpenAI. OpenAI asks an app to end the renewable session when a member signs
 -- out, and is not told when a member disconnects in Qorpera. So each pass the vault takes one plan login
--- that nothing uses any longer (its pointer capsule is no longer active, or no active version of an
--- active connection uses it: the member disconnected, left, or the company was deleted), asks OpenAI to
--- end it, and marks it revoked. It holds the login's renewal lock meanwhile, so no renewal races the
--- revocation; a login another renewal holds waits for the next pass. Revocation runs whatever the
--- switches say: it only ends a member's session.
+-- that nothing can use again: its pointer capsule, every connection version that points at it, or those
+-- versions' connections are revoked (the member disconnected or left). A disabled capsule, version or
+-- connection keeps the login, since an owner can turn it back on. A deleted company's logins are deleted
+-- with it and never reach this pass. The vault asks OpenAI to end the login and marks it revoked. It holds
+-- the login's renewal lock meanwhile, so no renewal races the revocation; a login another renewal holds
+-- waits for the next pass, and a revocation that failed waits until its lock lapses (5 minutes).
+-- Revocation runs whatever the switches say: it only ends a member's session.
 create function public.qorpera_take_chatgpt_plan_revocation(
 	p_broker_authority_id uuid,
 	p_broker_capability_sha256 text
@@ -903,10 +938,10 @@ begin
 				select 1 from public.qorpera_native_credential_capsules as capsule
 				join public.qorpera_provider_connection_versions as version on version.credential_capsule_id = capsule.id
 				join public.qorpera_provider_connections as connection on connection.id = version.connection_id
-				where capsule.id = login.credential_capsule_id and capsule.status = 'active'
+				where capsule.id = login.credential_capsule_id and capsule.status <> 'revoked'
 					and capsule.encrypted_capsule_reference = 'model-login/' || login.id::text
-					and version.authorization_state = 'active'
-					and connection.status = 'active' and connection.profile_id = login.profile_id
+					and version.authorization_state <> 'revoked'
+					and connection.status <> 'revoked' and connection.profile_id = login.profile_id
 			)
 		order by login.updated_at, login.id
 		limit 4

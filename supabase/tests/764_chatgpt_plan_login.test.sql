@@ -1,5 +1,5 @@
 -- @fixture 160_native_subscription_compute_identity.test.sql until "-- Exercise the Step 2 authority/receipt RPCs using this real admitted native run."
--- Sign in with ChatGPT, slice 1a (20260929800000): a member's ChatGPT plan login is a second kind of
+-- Sign in with ChatGPT, slice 1a (20260929830000): a member's ChatGPT plan login is a second kind of
 -- vault login, built switched off. It is begun, read, completed, handed to a run and renewed only while
 -- the platform switch is on and its company is on the list (and its sign-ins go to the vault); it is
 -- always a member's own; the vault in service keeps reading Codex sign-ins with exactly its v1 answer;
@@ -106,7 +106,7 @@ begin
 		raise exception 'The platform switch is not built off'; end if;
 end $$;
 
--- Switched off: no member sees the button and no plan sign-in begins, even for a listed company.
+-- Switched off: no member sees the button and no plan sign-in begins (the company is not listed yet).
 select set_config('request.jwt.claims',
 	'{"sub":"16000000-0000-4000-8000-000000000001","role":"authenticated"}',false);
 set role authenticated;
@@ -139,6 +139,10 @@ set role authenticated;
 select pg_temp.plan764_expect(pg_temp.plan764_try(
 	'select public.qorpera_chatgpt_plan_available(''16000000-0000-4000-8000-000000000010'')::text'),'ok','availability');
 select pg_temp.plan764_expect(current_setting('qorpera_test.plan764_last'),'false','listed, but the platform switch is off');
+select pg_temp.plan764_expect(pg_temp.plan764_try(format('select public.qorpera_begin_chatgpt_plan_sign_in(%L,%L,%L,%L,%L)::text',
+	'16000000-0000-4000-8000-000000000010','76400000-0000-4000-8000-000000000101','76400000-0000-4000-8000-000000000102',
+	current_setting('qorpera_test.native_identity')::jsonb ->> 'compute_identity_id',encode(sha256('plan-one'::bytea),'hex'))),
+	'55000:ChatGPT plan sign-in is switched off','a begin for a listed company while the platform switch is off');
 reset role;
 
 -- The platform switch on: the member sees the button and begins for their own identity only.
@@ -177,7 +181,7 @@ select pg_temp.plan764_expect(pg_temp.plan764_try(format('select public.qorpera_
 	current_setting('qorpera_test.native_identity')::jsonb ->> 'compute_identity_id',encode(sha256('codex-two'::bytea),'hex'))),
 	'23505:native provider login id is already bound to other authority','a Codex sign-in''s ids');
 reset role;
--- Another member cannot begin one for this member's identity.
+-- Someone who is not this identity's member cannot begin one for it.
 select set_config('request.jwt.claims',
 	'{"sub":"76400000-0000-4000-8000-000000000099","role":"authenticated"}',false);
 set role authenticated;
@@ -269,8 +273,8 @@ select pg_temp.plan764_expect(pg_temp.plan764_complete('qorpera_complete_chatgpt
 	current_setting('qorpera_test.plan764_codex'),'codex-two','76400000-0000-4000-8000-000000000250','codex-envelope'::bytea),
 	'42501:model login sign-in is unavailable','the plan completion refuses a Codex sign-in');
 select pg_temp.plan764_expect(pg_temp.plan764_complete('qorpera_complete_model_login_sign_in',
-	current_setting('qorpera_test.plan764_codex'),'codex-two','76400000-0000-4000-8000-000000000250','codex-envelope'::bytea,
-	clock_timestamp()),'ok','the Codex completion completes a Codex sign-in');
+	current_setting('qorpera_test.plan764_codex'),'codex-two','76400000-0000-4000-8000-000000000250','codex-envelope'::bytea),
+	'ok','the Codex completion completes a Codex sign-in');
 reset session authorization;
 -- While switched off a plan sign-in cannot complete; switched on it can.
 update public.qorpera_chatgpt_plan_settings set enabled = false;
@@ -278,7 +282,22 @@ set local session authorization qorpera_secret_broker;
 select pg_temp.plan764_expect(pg_temp.plan764_complete('qorpera_complete_chatgpt_plan_sign_in',
 	current_setting('qorpera_test.plan764_login'),'plan-one','76400000-0000-4000-8000-000000000150','plan-envelope'::bytea,
 	clock_timestamp() + interval '20 minutes'),'55000:model login sign-in is unavailable','a plan completion while switched off');
+select pg_temp.plan764_expect(pg_temp.plan764_try(format('select public.qorpera_describe_model_login_sign_in_v2(%L,%L,%L,%L)::text',
+	'76400000-0000-4000-8000-000000000040',repeat('c',64),current_setting('qorpera_test.plan764_login'),
+	encode(sha256('plan-one'::bytea),'hex'))),'42501:model login sign-in is unavailable','v2 never reads a plan sign-in while switched off');
 reset session authorization;
+-- A node completes Codex sign-ins only: a pending plan sign-in never becomes a node Codex login.
+select set_config('request.jwt.claims',
+	'{"sub":"00000000-0000-4000-8000-000000000000","role":"service_role"}',false);
+set role service_role;
+select pg_temp.plan764_expect(pg_temp.plan764_try(format(
+	'select public.qorpera_complete_native_provider_login(%L::uuid,%L,%L::uuid,%L,%L,%L,%L,%L,%L::jsonb,%L)::text',
+	current_setting('qorpera_test.plan764_login'),encode(sha256('plan-one'::bytea),'hex'),'76400000-0000-4000-8000-000000000170',
+	'native-capsule/76400000-0000-4000-8000-000000000170',repeat('a',64),'account-subject','personal_subscription',
+	'qorpera-native-subscription-v1',jsonb_build_object('monthly_microusd',1,'reservation_microusd',1,'max_calls_per_run',128,
+		'max_input_tokens_per_run',100000000,'max_output_tokens_per_run',100000000,'max_concurrent_runs',1)::text,
+	'member@example.test')),'55000:native provider login is unavailable','a node never completes a plan sign-in');
+reset role;
 update public.qorpera_chatgpt_plan_settings set enabled = true;
 set local session authorization qorpera_secret_broker;
 select pg_temp.plan764_expect(pg_temp.plan764_complete('qorpera_complete_chatgpt_plan_sign_in',
@@ -318,7 +337,42 @@ select pg_temp.plan764_expect(pg_temp.plan764_try(format('select public.qorpera_
 select pg_temp.plan764_expect((select string_agg(login ->> 'loginId', ',' order by login ->> 'loginId')
 	from jsonb_array_elements(pg_temp.plan764_last() -> 'logins') as login),
 	'76400000-0000-4000-8000-000000000250','only the Codex login is listed for its account');
+select pg_temp.plan764_expect(pg_temp.plan764_try(format('select public.qorpera_record_model_login_account(%L,%L,%L,%L)::text',
+	'76400000-0000-4000-8000-000000000040',repeat('c',64),'76400000-0000-4000-8000-000000000150',repeat('d',64))),
+	'42501:model login is unavailable to this broker','no account is recorded for a plan login');
+select pg_temp.plan764_expect(pg_temp.plan764_try(format(
+	'select public.qorpera_commit_chatgpt_plan_renewal(%L::uuid,%L,%L::uuid,%L::uuid,1,%L,%L,%L,%L::timestamptz,%L::timestamptz,null)::text',
+	'76400000-0000-4000-8000-000000000040',repeat('c',64),'76400000-0000-4000-8000-000000000250','76400000-0000-4000-8000-0000000000ef',
+	'company-kek-1',encode('plan-shaped'::bytea,'base64'),encode(sha256('plan-shaped'::bytea),'hex'),
+	clock_timestamp(),clock_timestamp() + interval '1 hour')),
+	'22023:model login renewal is for another kind of login','a plan commit on a Codex login');
 reset session authorization;
+-- The usage read: a pending account refresh of the member's identity reads its Codex vault login only.
+update public.qorpera_native_account_refresh_requests set status = 'cancelled'
+where compute_identity_id = (current_setting('qorpera_test.native_identity')::jsonb ->> 'compute_identity_id')::uuid
+	and status = 'pending';
+insert into public.qorpera_native_account_refresh_requests(id,profile_id,client_request_id,compute_identity_id,
+	requested_by_user_id,capability_sha256,compute_recovery_epoch)
+select '76400000-0000-4000-8000-000000000180',identity.profile_id,'76400000-0000-4000-8000-000000000181',identity.id,
+	identity.owner_user_id,encode(sha256('refresh-one'::bytea),'hex'),identity.recovery_epoch
+from public.qorpera_member_compute_identities identity
+where identity.id = (current_setting('qorpera_test.native_identity')::jsonb ->> 'compute_identity_id')::uuid;
+set local session authorization qorpera_secret_broker;
+select pg_temp.plan764_expect(pg_temp.plan764_try(format('select public.qorpera_describe_model_login_account_refresh(%L,%L,%L,%L)::text',
+	'76400000-0000-4000-8000-000000000040',repeat('c',64),'76400000-0000-4000-8000-000000000180',encode(sha256('refresh-one'::bytea),'hex'))),
+	'ok','the vault reads the account refresh');
+select pg_temp.plan764_expect((select string_agg(login ->> 'loginId', ',' order by login ->> 'loginId')
+	from jsonb_array_elements(pg_temp.plan764_last() -> 'logins') as login),
+	'76400000-0000-4000-8000-000000000250','the usage read leaves the plan login out');
+reset session authorization;
+-- The callback's address needs a pending plan sign-in: after the completion there is none.
+select set_config('request.jwt.claims',
+	'{"sub":"00000000-0000-4000-8000-000000000000","role":"service_role"}',false);
+set role service_role;
+select pg_temp.plan764_expect(pg_temp.plan764_try(format('select public.qorpera_chatgpt_plan_callback_target(%L)',
+	'16000000-0000-4000-8000-000000000010.' || repeat('A',43))),'ok','the callback address');
+select pg_temp.plan764_expect(current_setting('qorpera_test.plan764_last'),'null','a listed company with no pending plan sign-in');
+reset role;
 
 -- The renewal rule.
 do $$
@@ -410,25 +464,11 @@ begin
 		raise exception 'the plan renewal was not saved with its next earliest time'; end if;
 end $$;
 
--- Idle upkeep: a young plan login is left alone, a week-old one is renewed while switched on only, and
--- a Codex login is renewed as before.
-update public.qorpera_model_logins set access_issued_at = clock_timestamp() - interval '8 days',
-	access_expires_at = clock_timestamp() - interval '8 days' + interval '1 hour', renew_not_before = null
-where id = '76400000-0000-4000-8000-000000000150';
+-- Idle upkeep: a plan login whose pass lapsed but whose tokens are young waits for a run; a week-old one is
+-- renewed while switched on only; a Codex login is renewed as before, switched off or on.
 update public.qorpera_model_logins set access_issued_at = clock_timestamp() - interval '2 hours',
 	access_expires_at = clock_timestamp() - interval '1 hour', renew_not_before = null
-where id = '76400000-0000-4000-8000-000000000050';
-update public.qorpera_model_logins set access_issued_at = clock_timestamp() - interval '10 days',
-	access_expires_at = clock_timestamp() + interval '1 day'
-where id = '76400000-0000-4000-8000-000000000250';
-set local session authorization qorpera_secret_broker;
-select pg_temp.plan764_expect(pg_temp.plan764_try(format('select public.qorpera_take_idle_model_login_renewal(%L,%L)::text',
-	'76400000-0000-4000-8000-000000000040',repeat('c',64))),'ok','idle upkeep while switched off');
-select pg_temp.plan764_expect(pg_temp.plan764_last() ->> 'loginId' || '/' || (pg_temp.plan764_last() ->> 'loginKind'),
-	'76400000-0000-4000-8000-000000000250/codex','switched off, upkeep renews the Codex login only');
-reset session authorization;
-update public.qorpera_model_logins set renewal_token = null, renewal_until = null
-where id = '76400000-0000-4000-8000-000000000250';
+where id = '76400000-0000-4000-8000-000000000150';
 update public.qorpera_model_logins set access_issued_at = clock_timestamp() - interval '1 hour',
 	access_expires_at = clock_timestamp() + interval '10 days'
 where id = '76400000-0000-4000-8000-000000000250';
@@ -436,21 +476,66 @@ update public.qorpera_chatgpt_plan_settings set enabled = true;
 set local session authorization qorpera_secret_broker;
 select pg_temp.plan764_expect(pg_temp.plan764_try(format('select public.qorpera_take_idle_model_login_renewal(%L,%L)::text',
 	'76400000-0000-4000-8000-000000000040',repeat('c',64))),'ok','idle upkeep');
-select pg_temp.plan764_expect(pg_temp.plan764_last() ->> 'loginId' || '/' || (pg_temp.plan764_last() ->> 'loginKind'),
-	'76400000-0000-4000-8000-000000000150/chatgpt_plan','upkeep renews the week-old plan login');
-select pg_temp.plan764_expect(pg_temp.plan764_try(format('select public.qorpera_take_idle_model_login_renewal(%L,%L)::text',
-	'76400000-0000-4000-8000-000000000040',repeat('c',64))),'ok','idle upkeep again');
 select pg_temp.plan764_expect((pg_temp.plan764_last() -> 'renewal')::text,'null',
-	'nothing else is due: the renewing plan login, a young Codex login, a plan login off the vault''s pointer');
+	'a plan login with a lapsed pass and young tokens waits for a run');
+reset session authorization;
+update public.qorpera_model_logins set access_issued_at = clock_timestamp() - interval '8 days',
+	access_expires_at = clock_timestamp() - interval '8 days' + interval '1 hour'
+where id = '76400000-0000-4000-8000-000000000150';
+update public.qorpera_model_logins set access_issued_at = clock_timestamp() - interval '10 days',
+	access_expires_at = clock_timestamp() + interval '1 day'
+where id = '76400000-0000-4000-8000-000000000250';
+update public.qorpera_chatgpt_plan_settings set enabled = false;
+set local session authorization qorpera_secret_broker;
+select pg_temp.plan764_expect(pg_temp.plan764_try(format('select public.qorpera_take_idle_model_login_renewal(%L,%L)::text',
+	'76400000-0000-4000-8000-000000000040',repeat('c',64))),'ok','idle upkeep while switched off');
+select pg_temp.plan764_expect(pg_temp.plan764_last() ->> 'loginId' || '/' || (pg_temp.plan764_last() ->> 'loginKind'),
+	'76400000-0000-4000-8000-000000000250/codex','switched off, upkeep renews the Codex login only');
+reset session authorization;
+update public.qorpera_model_logins set renewal_token = null, renewal_until = null,
+	access_issued_at = clock_timestamp() - interval '1 hour', access_expires_at = clock_timestamp() + interval '10 days'
+where id = '76400000-0000-4000-8000-000000000250';
+set local session authorization qorpera_secret_broker;
+select pg_temp.plan764_expect(pg_temp.plan764_try(format('select public.qorpera_take_idle_model_login_renewal(%L,%L)::text',
+	'76400000-0000-4000-8000-000000000040',repeat('c',64))),'ok','idle upkeep while switched off');
+select pg_temp.plan764_expect((pg_temp.plan764_last() -> 'renewal')::text,'null','switched off, the week-old plan login is left');
+reset session authorization;
+update public.qorpera_chatgpt_plan_settings set enabled = true;
+set local session authorization qorpera_secret_broker;
+select pg_temp.plan764_expect(pg_temp.plan764_try(format('select public.qorpera_take_idle_model_login_renewal(%L,%L)::text',
+	'76400000-0000-4000-8000-000000000040',repeat('c',64))),'ok','idle upkeep');
+select pg_temp.plan764_expect(pg_temp.plan764_last() ->> 'loginId' || '/' || (pg_temp.plan764_last() ->> 'loginKind'),
+	'76400000-0000-4000-8000-000000000150/chatgpt_plan','switched on, upkeep renews the week-old plan login');
 reset session authorization;
 
--- Ending a plan login nothing uses: the member disconnected. A login another renewal holds waits; the
--- vault then takes it under the lock, OpenAI ends it, and only the lock's holder marks it revoked.
+-- Ending a plan login nothing can use again. A login in use, or whose connection is only disabled (an
+-- owner can turn it back on), is never taken. Once the member disconnected, a login another renewal holds
+-- waits; the vault then takes it under the lock, OpenAI ends it, and only the lock's holder marks it
+-- revoked. (The run's plan login, 050, sits on a capsule that is not the vault's pointer: it is set aside.)
 update public.qorpera_model_logins set status = 'revoked' where id = '76400000-0000-4000-8000-000000000050';
-update public.qorpera_provider_connections set status = 'revoked'
-where id = (select version.connection_id from public.qorpera_provider_connection_versions version
+select set_config('qorpera_test.plan764_connection', (select version.connection_id::text
+	from public.qorpera_provider_connection_versions version
 	join public.qorpera_model_logins login on login.credential_capsule_id = version.credential_capsule_id
-	where login.id = '76400000-0000-4000-8000-000000000150' limit 1);
+	where login.id = '76400000-0000-4000-8000-000000000150' limit 1), false);
+update public.qorpera_model_logins set renewal_token = null, renewal_until = null
+where id = '76400000-0000-4000-8000-000000000150';
+set local session authorization qorpera_secret_broker;
+select pg_temp.plan764_expect(pg_temp.plan764_try(format('select public.qorpera_take_chatgpt_plan_revocation(%L,%L)::text',
+	'76400000-0000-4000-8000-000000000040',repeat('c',64))),'ok','a revocation pass');
+select pg_temp.plan764_expect((pg_temp.plan764_last() -> 'revocation')::text,'null','a plan login in use is never ended');
+reset session authorization;
+update public.qorpera_provider_connections set status = 'disabled'
+where id = current_setting('qorpera_test.plan764_connection')::uuid;
+set local session authorization qorpera_secret_broker;
+select pg_temp.plan764_expect(pg_temp.plan764_try(format('select public.qorpera_take_chatgpt_plan_revocation(%L,%L)::text',
+	'76400000-0000-4000-8000-000000000040',repeat('c',64))),'ok','a revocation pass');
+select pg_temp.plan764_expect((pg_temp.plan764_last() -> 'revocation')::text,'null','a disabled connection keeps its plan login');
+reset session authorization;
+update public.qorpera_provider_connections set status = 'revoked'
+where id = current_setting('qorpera_test.plan764_connection')::uuid;
+update public.qorpera_model_logins set renewal_token = extensions.gen_random_uuid(),
+	renewal_until = clock_timestamp() + interval '5 minutes'
+where id = '76400000-0000-4000-8000-000000000150';
 set local session authorization qorpera_secret_broker;
 select pg_temp.plan764_expect(pg_temp.plan764_try(format('select public.qorpera_take_chatgpt_plan_revocation(%L,%L)::text',
 	'76400000-0000-4000-8000-000000000040',repeat('c',64))),'ok','a revocation pass');
