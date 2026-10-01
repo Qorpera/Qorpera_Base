@@ -412,7 +412,7 @@ Founders (2026-09-28, migration 20260928248100): every member with the role
 ### Coding sessions (4) — Order 9, part 1 (PR #211)
 
 - `qorpera_list_coding_sessions(p_session_id)` — the coding sessions the agent dispatched from this conversation, each as `qorpera.coding-session/v1` plus `isOwner`; the thread renders each one as a centered system element (the "sandwich": a start line, a collapsible body, a status line) from this view and the session's own events, never from the agent's prose
-- `qorpera_read_coding_session(p_worker_id, p_after_event, p_limit)` — the session view plus its event stream (`phase`, `step`, `text`, `needs_input`, `input`, `delegated`, `published`, `finished`, `failed`), cursor on the event id
+- `qorpera_read_coding_session(p_worker_id, p_after_event, p_limit)` — the session view plus its event stream (`phase`, `step`, `text`, `needs_input`, `input`, `delegated`, `published`, `finished`, `failed`), cursor on the event id. A `failed` event of a turn that stopped at its login's usage limit carries `usageLimit: true` and `paidByChatgptPlan` (whether a member's ChatGPT plan paid; 20260929993000): tell it as a usage limit, never as a refusal
 - `qorpera_answer_coding_session(p_worker_id, p_text, p_client_request_id)` — owner only; idempotent on the client request id; refused while the session is working
 - `qorpera_delegate_coding_session(p_worker_id, p_client_request_id)` — owner only; "let the agent decide" a question the session asked
 
@@ -428,7 +428,7 @@ Founders (2026-09-28, migration 20260928248100): every member with the role
 - `qorpera_describe_governed_company_computer`
 - `qorpera_enqueue_execution_run`
 - `qorpera_enqueue_runner_job`
-- `qorpera_get_execution_run_recovery`
+- `qorpera_get_execution_run_recovery` — with `usage_limit` (the run's login reached its usage limit) and `paid_by_chatgpt_plan` (a member's ChatGPT plan pays for the run; tell its limit in OpenAI's words with "Manage usage", to the member whose plan it is: `run.requested_by_user_id`, whom a plan-paid run always serves; 20260929993000)
 - `qorpera_list_compute_identities`
 - `qorpera_list_execution_run_recoveries`
 - `qorpera_list_runner_audit`
