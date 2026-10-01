@@ -1351,16 +1351,22 @@ it.each([
 	["a snapshot-v1 run", false, true, false],
 	["a folder-v2 run on a node without folder bytes", true, false, false],
 	["a folder-v2 run", true, true, true],
-] as const)("gives manage_todo the todo files' writer only for %s", async (_name, folder, bytes, files) => {
-	const f = await fixture("company-runtime", false, undefined, false, bytes);
-	if (folder) f.context.folder = { agent: "nora", coworkers: {} };
-	await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
-	const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
-	const tools = evidence.threadParameters.dynamicTools[0].tools as { name: string; description: string }[];
-	const todo = tools.find((tool) => tool.name === "manage_todo")?.description ?? "";
-	expect(todo.includes("Each todo is a file in your folder")).toBe(files);
-	expect(todo.includes("Each todo is also a document in the shared Company File")).toBe(!files);
-});
+] as const)(
+	"gives manage_todo and organize_sidebar the state files' writers only for %s",
+	async (_name, folder, bytes, files) => {
+		const f = await fixture("company-runtime", false, undefined, false, bytes);
+		if (folder) f.context.folder = { agent: "nora", coworkers: {} };
+		await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+		const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
+		const tools = evidence.threadParameters.dynamicTools[0].tools as { name: string; description: string }[];
+		const todo = tools.find((tool) => tool.name === "manage_todo")?.description ?? "";
+		expect(todo.includes("Each todo is a file in your folder")).toBe(files);
+		expect(todo.includes("Each todo is also a document in the shared Company File")).toBe(!files);
+		const sidebar = tools.find((tool) => tool.name === "organize_sidebar")?.description ?? "";
+		expect(sidebar.includes("the sections live in the file agents/sections.md")).toBe(files);
+		expect(sidebar.includes("by its id or name")).toBe(!files);
+	},
+);
 
 async function machineToolNames(f: Awaited<ReturnType<typeof fixture>>): Promise<string[]> {
 	await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
