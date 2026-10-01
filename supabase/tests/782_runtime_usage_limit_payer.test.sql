@@ -55,6 +55,15 @@ begin
 	set local session_replication_role = origin;
 	perform pg_temp.wake_assert(public.qorpera_coding_turn_usage_limit(v_occurrence) = '{}'::jsonb,
 		'A limit of another sponsor version is not this run''s');
+	-- A rate limit on the run is no usage limit.
+	insert into public.qorpera_provider_connection_usage_signals(profile_id, run_id, job_id, sponsor_binding_id, sponsor_version,
+		provider_connection_id, provider_connection_version, provider, signal_kind, source)
+	select v_run.profile_id, v_run.id, v_run.job_id, v_run.sponsor_binding_id, v_run.sponsor_version,
+		sponsor.provider_connection_id, sponsor.provider_connection_version, 'openai', 'rate_limited', 'native_adapter'
+	from public.qorpera_execution_sponsor_versions as sponsor
+	where sponsor.binding_id = v_run.sponsor_binding_id and sponsor.version = v_run.sponsor_version;
+	perform pg_temp.wake_assert(public.qorpera_coding_turn_usage_limit(v_occurrence) = '{}'::jsonb,
+		'A rate limit is not a usage limit');
 	insert into public.qorpera_provider_connection_usage_signals(profile_id, run_id, job_id, sponsor_binding_id, sponsor_version,
 		provider_connection_id, provider_connection_version, provider, signal_kind, source)
 	select v_run.profile_id, v_run.id, v_run.job_id, v_run.sponsor_binding_id, v_run.sponsor_version,
@@ -96,6 +105,15 @@ do $$
 declare v_worker public.qorpera_runtime_workers := pg_temp.worker_row('fix-send'); v_session public.qorpera_coding_sessions := pg_temp.session_row('fix-send');
 	v_body jsonb;
 begin
+	-- A turn that asks a question tells no limit, even when its run has one (undone, so the turn can still fail).
+	begin
+		perform public.qorpera_complete_coding_turn(v_worker.id, v_session.lease_token, 'blocked', 'Which branch?', 'Which branch?');
+		select event.body into strict v_body from public.qorpera_coding_session_events as event
+		where event.worker_id = v_worker.id and event.kind = 'needs_input';
+		perform pg_temp.wake_assert(not (v_body ? 'usageLimit'), 'A turn that asks tells no limit');
+		raise exception 'undo' using errcode = 'Q7820';
+	exception when sqlstate 'Q7820' then null;
+	end;
 	perform public.qorpera_complete_coding_turn(v_worker.id, v_session.lease_token, 'failed',
 		'The coding turn did not finish: Native provider bridge request failed (422) [code=NATIVE_CODEX_TURN_COMPLETION:BUDGET_EXHAUSTED]');
 	select event.body into strict v_body from public.qorpera_coding_session_events as event

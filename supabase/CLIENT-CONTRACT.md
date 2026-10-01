@@ -428,7 +428,7 @@ Founders (2026-09-28, migration 20260928248100): every member with the role
 - `qorpera_describe_governed_company_computer`
 - `qorpera_enqueue_execution_run`
 - `qorpera_enqueue_runner_job`
-- `qorpera_get_execution_run_recovery` — with `usage_limit` (the run's login reached its usage limit) and `paid_by_chatgpt_plan` (a member's ChatGPT plan pays for the run; tell its limit in OpenAI's words with "Manage usage", to the member whose plan it is; 20260929993000)
+- `qorpera_get_execution_run_recovery` — with `usage_limit` (the run's login reached its usage limit) and `paid_by_chatgpt_plan` (a member's ChatGPT plan pays for the run; tell its limit in OpenAI's words with "Manage usage", to the member whose plan it is: `run.requested_by_user_id`, whom a plan-paid run always serves; 20260929993000)
 - `qorpera_list_compute_identities`
 - `qorpera_list_execution_run_recoveries`
 - `qorpera_list_runner_audit`
