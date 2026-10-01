@@ -87,12 +87,12 @@ writer renews it, and a new intent judges again. (Reviewer round 2, L1; F1 may a
 2. **`qorpera_folder_authorize_object_upload(env, actor, intent, sha256, bytes)`**, per chunk, from the gateway:
    plain reads of the intent (this environment, this actor's kind and scope, `open`, unexpired) and of its object row
    for `(sha256, bytes)`, and for an object the catalog lacks the soft quota (§5; 23514), so a company at its limit
-   is refused before the gateway writes (20260929710000). Returns the company (`profileId`); the gateway derives the
+   is refused before the gateway writes (20260928309710). Returns the company (`profileId`); the gateway derives the
    NAS path. No run check per chunk (core §7).
 3. **`qorpera_folder_confirm_object(env, actor, intent, sha256, bytes)`**, after the gateway's NAS put: the same
    intent checks, then marks the row `put`, then `insert into profile_objects … on conflict do nothing`; then
    `KEY SHARE` on the row. It checks no quota: the authorization before the write let this object in, and refusing
-   it now would strand its bytes on the NAS outside the catalog (20260929710000). A row already there with
+   it now would strand its bytes on the NAS outside the catalog (20260928309710). A row already there with
    another size is 23505, as today. The transaction is this statement and the trigger. Its `stored` flag is true when
    this confirm added the object to the catalog (the gateway's 201 or 200 says the same of the NAS file); only
    trusted code sees either, and the runtime never shows them to the model.
@@ -151,7 +151,7 @@ once.
   limit plainly, takes neither the fence nor `company_files`, and checks only objects the catalog lacks.
 - **The quota is soft** for `folder-v2`: uploads in flight at once can pass the limit by what they carry, as F2-3's
   48 KiB budget can. The gateway's authorization checks it before the NAS write, for an object the catalog lacks;
-  the confirm after the write never refuses for it (20260929710000). An object already stored never counts again,
+  the confirm after the write never refuses for it (20260928309710). An object already stored never counts again,
   so a company at its limit can still stage a file from bytes it has.
 - GC (C1d-2) decrements the row through the same trigger.
 - `qorpera_company_file_json` still reports `company_files.storage_used_bytes`, which stops moving for `folder-v2`.
@@ -252,7 +252,7 @@ runtime adapter, with no migration.
   503, not Storage's miss, so a read-back right after staging is asked again.
 
 **Follow-ups from C1d-1b's review** (for C1d-2 and the thin writers):
-- **Quota before the NAS write: done** (20260929710000). `_authorize_object_upload` checks the soft quota for an
+- **Quota before the NAS write: done** (20260928309710). `_authorize_object_upload` checks the soft quota for an
   object the catalog lacks, so a company at its limit is refused before the gateway writes, and the confirm no longer
   refuses for it. The gateway answers 23514 as 413, which the adapter reads as `full`. Still open: a stop at confirm
   (after the write) leaves the NAS file outside the catalog and the gateway's journal entry `blocked` (it reports
