@@ -793,7 +793,7 @@ Decisions:
 - Not in 3b: `prepare_email_draft_action` takes the draft `FOR UPDATE` and inserts an action row whose only foreign key
   names the draft, so it takes no company row at all.
 
-### 6.4 C1c-3c as built (migration 20260929690000, tests 664 and 665)
+### 6.4 C1c-3c as built (migration 20260928399690, tests 664 and 665)
 
 - `qorpera_folder_member_change_enter(company, member, mode)`: the prelude of a member change, in core §3's order.
   Modes are `remove` (removing a member, or leaving), `role` and `join`. It takes locks only; the callers keep their

@@ -62,7 +62,7 @@ begin
 		|| E'\t\t\t\t''authorization_request'', v_body);\n'
 		|| E'\t\telse\n', '');
 	v_text := replace(v_text, E'\t\t\t''authorization_request'', v_body);\n\t\tend if;\n', E'\t\t\t''authorization_request'', v_body);\n');
-	-- W4a (20260929940000): a folder-v2 run's restricted hire asks the owners and admins.
+	-- W4a (20260928399940): a folder-v2 run's restricted hire asks the owners and admins.
 	v_text := replace(v_text, E'; v_restricted boolean := false;\n', E';\n');
 	v_text := replace(v_text,
 		E'\t-- On a folder-v2 company, a hire by an agent that cannot delegate the new agent''s default Company File access\n'
