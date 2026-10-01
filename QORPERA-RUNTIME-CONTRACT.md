@@ -1989,7 +1989,7 @@ usage limits, and the founder applied the same rule to Codex logins. The run's
 recovery read names the usage limit (a signal on the login the run is on now),
 and the thread says that the work stopped, that it did not move to another
 account, and that it can run again once the limit resets. The control plane
-no longer makes a sponsor handoff (migration 20260929840000): the paragraphs
+no longer makes a sponsor handoff (migration 20260929910000): the paragraphs
 above that describe one, and the old text of acceptance 29, are superseded for
 every login. A rate limit or a provider outage is still not a usage limit: it
 neither stops the work as one nor shows the usage-limit message. Choosing the

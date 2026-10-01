@@ -29,7 +29,7 @@ declare
 	v_anchor text;
 	v_count integer;
 begin
-	if position('20260929840000' in v_definition) = 0 then
+	if position('20260929910000' in v_definition) = 0 then
 		v_anchor := E'\t-- Contract 17: a usage limit on the sponsoring connection continues the run\n'
 			|| E'\t-- on the next eligible connection of the same principal instead of failing it.\n'
 			|| E'\tif v_job.run_id is not null then\n'
@@ -37,7 +37,7 @@ begin
 		v_count := (length(v_definition) - length(replace(v_definition, v_anchor, ''))) / length(v_anchor);
 		if v_count <> 1 then raise exception 'Runner failure report source differs (% matches)', v_count; end if;
 		execute replace(v_definition, v_anchor,
-			E'\t-- A usage limit stops the work (founder decision 2026-10-01, 20260929840000): a run never moves to\n'
+			E'\t-- A usage limit stops the work (founder decision 2026-10-01, 20260929910000): a run never moves to\n'
 				|| E'\t-- another login of the same member, so the handoff is no longer asked and the run fails below.\n'
 				|| E'\tif v_job.run_id is not null then\n'
 				|| E'\t\tv_handoff := null;\n');
@@ -57,7 +57,7 @@ begin
 		v_count := (length(v_definition) - length(replace(v_definition, v_anchor, ''))) / length(v_anchor);
 		if v_count <> 1 then raise exception 'Run recovery source differs (% matches)', v_count; end if;
 		execute replace(v_definition, v_anchor,
-			E'\t\t-- The login paying for this run reached its usage limit during it (20260929840000).\n'
+			E'\t\t-- The login paying for this run reached its usage limit during it (20260929910000).\n'
 				|| E'\t\t''usage_limit'', exists (select 1 from public.qorpera_provider_connection_usage_signals as signal\n'
 				|| E'\t\t\twhere signal.run_id = v_run.id and signal.sponsor_version = v_run.sponsor_version\n'
 				|| E'\t\t\t\tand signal.signal_kind = ''usage_limit''),\n'

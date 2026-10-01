@@ -263,7 +263,7 @@ describe("Company File bounded control transport", () => {
 		expect(transport).not.toHaveBeenCalled();
 	});
 
-	// A lock wait that ran out of its budget (20260929380000): PostgREST returns SQLSTATE 55P03 as HTTP 500.
+	// A lock wait that ran out of its budget (20260928339380): PostgREST returns SQLSTATE 55P03 as HTTP 500.
 	it.each([
 		"qorpera_describe_company_run_context",
 		"qorpera_assert_company_path_reads",

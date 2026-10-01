@@ -40,6 +40,11 @@ verify_jwt = false
 [functions.native-provider-login]
 verify_jwt = false
 
+# Sign in with ChatGPT's callback: OpenAI sends the member's browser here with a code and state, never a
+# JWT. It forwards both to the company's vault and returns the browser to the web app (built switched off).
+[functions.chatgpt-plan-callback]
+verify_jwt = false
+
 # The member gateway preserves the JWT for authoritative checks at the object
 # gateway. OPTIONS carries no JWT; no service-role authority is added.
 [functions.member-company-gateway]

@@ -1,5 +1,5 @@
 -- @fixture 602_runtime_coding_lock_order.test.sql until "-- 1. The owner answers"
--- Object gateway RPCs wait at most 2 s for a lock (20260929630000_object_rpc_lock_budget). The gateway gives each
+-- Object gateway RPCs wait at most 2 s for a lock (20260928339630_object_rpc_lock_budget). The gateway gives each
 -- call 5 s and, when one runs out, refuses every company for its cooldown; so one company's held fence must end its
 -- own calls first, with lock_not_available (55P03), which the gateway answers as that company's conflict. A third
 -- connection holds company A's profile fence (602's path gateway company) while one call runs to its end:
@@ -8,7 +8,7 @@
 -- - the same replication call entered any other way (Supabase Storage's replica insert guard, a direct SQL caller)
 --   keeps its own budget;
 -- - a native object call first takes the fence inside the lease validator (lock_timeout 25s): it ends at 2 s once
---   the fence honours qorpera.company_fence_wait (20260929380000), and keeps the validator's budget before that.
+--   the fence honours qorpera.company_fence_wait (20260928339380), and keeps the validator's budget before that.
 -- The calling connection's own budgets stand in for the role's 8 s: lock_timeout 3500ms, statement_timeout 4500ms.
 
 -- Company B, with one stored object each for A and B (fixture bytes only, as in 270 and 608).

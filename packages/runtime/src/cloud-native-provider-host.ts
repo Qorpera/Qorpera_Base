@@ -1638,6 +1638,9 @@ export class NativeProviderHost {
 				};
 				const kept = warm?.vaultVersion;
 				const login = await modelLogins.issue({ binding, knownVersion: kept ?? null }, executionAbort.signal);
+				// A ChatGPT plan login runs Codex with the plan's access token instead of a login file; this
+				// host runs Codex logins only (Sign in with ChatGPT is built switched off).
+				if ("loginKind" in login) throw new Error("Native login is a ChatGPT plan login this host does not run");
 				if (warm && kept === undefined) {
 					root = undefined;
 					await this.#wipeRoot(warm.root);
@@ -1663,7 +1666,7 @@ export class NativeProviderHost {
 							// A copy comes back whenever the vault opened the login for this call: a newer
 							// version, or the same version after a renewal attempt (a pass it renewed but
 							// could not save keeps the old number). Writing it again is harmless.
-							if (next.authJson !== null) {
+							if ("authJson" in next && next.authJson !== null) {
 								await writeModelLogin(runRoot, next.authJson);
 								vaultVersion = next.version;
 							}
