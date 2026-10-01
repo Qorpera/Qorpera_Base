@@ -53,7 +53,7 @@ create table public.qorpera_company_mail_outbox (
 	staff_agent_id uuid not null,
 	-- Fixed when queued: "<agent> at <company>", and the whole text as sent, with the AI line.
 	from_name text not null check (char_length(from_name) between 1 and 160
-		and from_name !~ '["\\<>[:cntrl:]\u200B-\u200F\u202A-\u202E\u2060-\u2069\uFEFF]'),
+		and from_name !~ '["\\<>[:cntrl:]\u00AD\u061C\u180E\u200B-\u200F\u2028-\u202E\u2060-\u2069\uFEFF]'),
 	-- The mailbox's address, fixed at the first attempt: every attempt sends the same email under one idempotency key.
 	from_address text check (from_address is null or (char_length(from_address) <= 320 and from_address !~ '[\s"<>]')),
 	recipients_to text[] not null check (cardinality(recipients_to) between 1 and 10),
@@ -86,8 +86,8 @@ create index qorpera_company_mail_outbox_kept on public.qorpera_company_mail_out
 alter table public.qorpera_company_mail_outbox enable row level security;
 revoke all on table public.qorpera_company_mail_outbox from public, anon, authenticated, service_role;
 
--- A name as a mail header may carry it: no quotes, brackets, backslashes, control characters or invisible format
--- characters (bidi controls turn a name around), one line.
+-- A name as a mail header may carry it: no quotes, brackets, backslashes, control characters, line separators or
+-- invisible format characters (bidi controls turn a name around), one line.
 create function public.qorpera_mail_display_name(p_name text, p_fallback text)
 returns text
 language sql
@@ -95,7 +95,7 @@ immutable
 set search_path = ''
 as $$
 	select coalesce(nullif(left(btrim(regexp_replace(regexp_replace(coalesce(p_name, ''),
-		'["\\<>[:cntrl:]\u200B-\u200F\u202A-\u202E\u2060-\u2069\uFEFF]', ' ', 'g'), '\s+', ' ', 'g')), 64), ''), p_fallback)
+		'["\\<>[:cntrl:]\u00AD\u061C\u180E\u200B-\u200F\u2028-\u202E\u2060-\u2069\uFEFF]', ' ', 'g'), '\s+', ' ', 'g')), 64), ''), p_fallback)
 $$;
 revoke all on function public.qorpera_mail_display_name(text, text) from public, anon, authenticated, service_role;
 
@@ -108,8 +108,10 @@ set search_path = ''
 as $$
 	select jsonb_build_object('schema', 'qorpera.agent-mail/v1', 'runId', p_mail.run_id, 'mailId', p_mail.id,
 		'status', case when p_mail.status in ('pending', 'retrying', 'delivering') then 'queued' else p_mail.status end,
-		'from', (select mailbox.local_part || '@' || settings.domain from public.qorpera_company_mailboxes as mailbox,
-			public.qorpera_mail_settings as settings where mailbox.id = p_mail.mailbox_id),
+		-- The address it went from once attempted, else the mailbox's current one.
+		'from', coalesce(p_mail.from_address, (select mailbox.local_part || '@' || settings.domain
+			from public.qorpera_company_mailboxes as mailbox, public.qorpera_mail_settings as settings
+			where mailbox.id = p_mail.mailbox_id)),
 		'fromName', p_mail.from_name, 'to', to_jsonb(p_mail.recipients_to), 'cc', to_jsonb(p_mail.recipients_cc),
 		'subject', p_mail.subject)
 		|| case when p_mail.in_reply_to_delivery_id is null then '{}'::jsonb
@@ -147,6 +149,7 @@ declare
 	v_in_reply_to text;
 	v_references text;
 	v_ids text[];
+	v_root text;
 	v_threaded boolean := false;
 	v_now timestamptz := clock_timestamp();
 	v_recipients integer;
@@ -248,12 +251,14 @@ begin
 				v_ids := case when v_references ~ '[[:cntrl:]]' then '{}'::text[]
 					else array_remove(regexp_split_to_array(v_references, ' '), '') end || v_in_reply_to;
 				v_references := v_in_reply_to;
+				-- The root keeps its place when it fits beside the email answered; the newest ids fill the rest.
+				v_root := case when cardinality(v_ids) > 1 and char_length(v_ids[1]) + char_length(v_in_reply_to) + 1 <= 980
+					then v_ids[1] end;
 				for i in reverse cardinality(v_ids) - 1 .. 2 loop
-					exit when char_length(v_ids[1]) + char_length(v_ids[i]) + char_length(v_references) + 2 > 980;
+					exit when coalesce(char_length(v_root) + 1, 0) + char_length(v_ids[i]) + char_length(v_references) + 1 > 980;
 					v_references := v_ids[i] || ' ' || v_references;
 				end loop;
-				if cardinality(v_ids) > 1 and char_length(v_ids[1]) + char_length(v_references) + 1 <= 980 then
-					v_references := v_ids[1] || ' ' || v_references; end if;
+				if v_root is not null then v_references := v_root || ' ' || v_references; end if;
 				v_threaded := true;
 			else
 				v_in_reply_to := null;

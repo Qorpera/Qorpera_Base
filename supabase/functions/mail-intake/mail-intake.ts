@@ -191,14 +191,17 @@ function htmlBody(value: unknown): string | null {
 
 const bytes = (value: unknown) => new TextEncoder().encode(JSON.stringify(value)).length;
 
-/** Sent automatically: an Auto-Submitted other than "no" (RFC 3834), a bulk, list, junk or auto-reply Precedence, or
- * a mailing list. Agents never answer it: answering an auto-reply is how mail loops start. */
+/** Sent automatically: an Auto-Submitted other than "no" (RFC 3834), a bulk, list, junk or auto-reply Precedence
+ * (or X-Precedence), an older responder's X-Autoreply or X-Autorespond, or a mailing list. Agents never answer it:
+ * answering an auto-reply is how mail loops start. */
 function automated(header: (name: string) => string | null): boolean {
 	const submitted = header("auto-submitted")?.split(";")[0].trim().toLowerCase();
-	const precedence = header("precedence")?.trim().toLowerCase() ?? "";
+	const precedence = (header("precedence") ?? header("x-precedence"))?.trim().toLowerCase() ?? "";
 	return (
 		(!!submitted && submitted !== "no") ||
 		["bulk", "junk", "list", "auto_reply"].includes(precedence) ||
+		!!header("x-autoreply")?.trim() ||
+		!!header("x-autorespond")?.trim() ||
 		!!header("list-id")?.trim()
 	);
 }

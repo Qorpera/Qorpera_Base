@@ -268,6 +268,9 @@ describe("mail message", () => {
 			[{ precedence: "list" }, true],
 			[{ precedence: "first-class" }, false],
 			[{ "List-Id": "<announce.example.org>" }, true],
+			[{ "X-Autoreply": "yes" }, true],
+			[{ "x-autorespond": "Out of office" }, true],
+			[{ "X-Precedence": "auto_reply" }, true],
 		] as const) {
 			const normalized = normalizeMessage(EMAIL_ID, { ...message, headers });
 			assert.equal(normalized.automated, expected, JSON.stringify(headers));

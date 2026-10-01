@@ -125,12 +125,12 @@ from pg_temp.outbox(current_setting('qorpera_test.sent')::jsonb) as mail;
 select pg_temp.wake_assert(pg_temp.send('call-1', pg_temp.request()) ->> 'mailId' = current_setting('qorpera_test.sent')::jsonb ->> 'mailId'
 	and (select count(*) = 1 from public.qorpera_company_mail_outbox), 'A repeated call queues nothing more');
 -- The agent's and company's names as a header can carry them: no quotes, brackets, line breaks or bidi controls.
-update public.qorpera_profile_staff set display_name = E'Ada "the"\n<Bot>\\\u202Etob'
+update public.qorpera_profile_staff set display_name = E'Ada "the"\n<Bot>\\\u202Etob\u2028\u061Cx\u00AD'
 where profile_id = '30000000-0000-4000-8000-000000000010' and staff_agent_id = '30000000-0000-4000-8000-000000000030';
 select set_config('qorpera_test.named', pg_temp.send('call-2', pg_temp.request('support'))::text, true);
-select pg_temp.wake_assert(current_setting('qorpera_test.named')::jsonb ->> 'fromName' = 'Ada the Bot tob at Path gateway fixture'
+select pg_temp.wake_assert(current_setting('qorpera_test.named')::jsonb ->> 'fromName' = 'Ada the Bot tob x at Path gateway fixture'
 	and (pg_temp.outbox(current_setting('qorpera_test.named')::jsonb)).body
-		like E'%.\n\nWritten and sent by Ada the Bot tob, an AI agent working for Path gateway fixture.',
+		like E'%.\n\nWritten and sent by Ada the Bot tob x, an AI agent working for Path gateway fixture.',
 	'Names lose quotes, brackets, line breaks and bidi controls: ' || current_setting('qorpera_test.named'));
 
 -- A reply joins the received email's thread: its message id, and the references before it.
@@ -167,6 +167,12 @@ select pg_temp.wake_assert(thread_references like '<root@example.org> <ref-%' an
 		and char_length(thread_references) > 900,
 	'The thread keeps its root and its newest ids: ' || thread_references)
 from pg_temp.outbox(current_setting('qorpera_test.long_thread')::jsonb);
+-- A root too long to keep beside the email answered gives its place to the newest ids.
+select pg_temp.wake_assert(thread_references = '<n1@example.org> <n2@example.org> <m37@example.org>',
+	'A long root is dropped, the newest ids stay: ' || thread_references)
+from pg_temp.outbox(pg_temp.send('call-9', pg_temp.request(p_extra => jsonb_build_object('inReplyTo',
+	pg_temp.received(37, 'support@mail.example.test', jsonb_build_object('messageId', '<m37@example.org>',
+		'references', '<' || repeat('r', 1500) || '@example.org> <n1@example.org> <n2@example.org>'))))));
 -- An email sent automatically (an auto-reply, a list, bulk mail) is never answered: that is how mail loops start.
 select pg_temp.send_error('automated', pg_temp.request(p_extra => jsonb_build_object('inReplyTo',
 	pg_temp.received(35, 'support@mail.example.test', '{"messageId":"<m35@example.org>","automated":true}'))), '42501');
@@ -331,6 +337,8 @@ update public.qorpera_mail_settings set domain = 'moved.example.test';
 select set_config('qorpera_test.claim', public.qorpera_claim_company_mail(50, '73300000-0000-4000-8000-000000000003')::text, true);
 select pg_temp.wake_assert(job ->> 'from' like '% <support@test-1234.resend.app>', 'A retry keeps its first address: ' || job::text)
 from jsonb_array_elements(current_setting('qorpera_test.claim')::jsonb) as item(job);
+select pg_temp.wake_assert(pg_temp.send('call-5', '{}') ->> 'from' = 'support@test-1234.resend.app',
+	'The receipt names the address it went from');
 select pg_temp.wake_assert((select array_agg(job ->> 'mailId' order by job ->> 'mailId')
 		from jsonb_array_elements(current_setting('qorpera_test.claim')::jsonb) as item(job))
 	= (select array_agg(id::text order by id::text) from public.qorpera_company_mail_outbox where call_id in ('call-3', 'call-5'))
