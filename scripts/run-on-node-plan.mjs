@@ -36,6 +36,10 @@ const WEB_RELEASE_CONFIG = JSON.stringify({
 	officeViewerOrigin: "wss://viewer.example.invalid:8443",
 	nativeProviderLoginUrl: "https://project.example.invalid/functions/v1/native-provider-login/",
 });
+/** The Rust image the folder program's tests run in: the test machine has no Rust of its own. 1.95.0 is the
+ * patched Codex builder's toolchain (deploy/first-node/native-codex/source.json). */
+export const RUST_IMAGE =
+	"rust:1.95.0-slim-bookworm@sha256:d7482085ff5b415f84dba5647ae71606650bdef00db7aeb69f4b3d170c3e4082";
 const vitest = (workspace, args = "") => `(cd packages/${workspace} && node ../../node_modules/vitest/dist/cli.js --run${args})`;
 const regex = (path) => new RegExp(`^${path.replaceAll(".", "\\.")}$`);
 
@@ -169,6 +173,15 @@ export const STEPS = [
 		commands: [vitest("runner-orchestrator")],
 	},
 	{
+		name: "folder-program",
+		why: "crates/qorpera-folder: unit tests, then the FUSE tests (root and /dev/fuse in the container; vsock is proven live)",
+		paths: [/^crates\/qorpera-folder\//],
+		// Build output stays in the container; crates are cached in a named volume between runs.
+		commands: [
+			`docker run --rm --device /dev/fuse --cap-add SYS_ADMIN --security-opt apparmor=unconfined -e QORPERA_FOLDER_FUSE_TESTS=1 -e CARGO_TARGET_DIR=/tmp/target -v qorpera-cargo-registry:/usr/local/cargo/registry -v "$PWD/crates/qorpera-folder:/src:ro" -w /src ${RUST_IMAGE} cargo test --locked`,
+		],
+	},
+	{
 		name: "functions",
 		why: "Supabase functions (web-client.yml, step2-lxd.yml)",
 		paths: [/^supabase\/functions\//],
@@ -271,7 +284,9 @@ export function planChanged(files) {
 
 /** Top-level areas the rules cover (their files may start only the baseline, like a runtime test). */
 function knownRoot(file) {
-	return /^(packages\/(runtime|cloud-client|object-gateway|runner-orchestrator)\/|scripts\/|deploy\/|supabase\/)/.test(file);
+	return /^(packages\/(runtime|cloud-client|object-gateway|runner-orchestrator)\/|crates\/qorpera-folder\/|scripts\/|deploy\/|supabase\/)/.test(
+		file,
+	);
 }
 
 function sample(files) {

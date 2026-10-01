@@ -7,7 +7,8 @@
 	"main": "./dist/index.js",
 	"types": "./dist/index.d.ts",
 	"bin": {
-		"qorpera-object-gateway": "./dist/cli.js"
+		"qorpera-object-gateway": "./dist/cli.js",
+		"qorpera-folder-service": "./dist/folder-service/cli.js"
 	},
 	"exports": {
 		".": {

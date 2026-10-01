@@ -1,0 +1,344 @@
+import {
+	ObjectDependency,
+	ObjectDependencyError,
+	postgrestErrorCode,
+	readBoundedObjectResponse,
+} from "../dependency.ts";
+import { supabaseRequestHeaders } from "../supabase-headers.ts";
+
+/** Who a mount reads as. A step 1 operator mount reads as a member or the platform; a machine view (step 2 on) as
+ * the core's view actor, whose pass the folder service holds. */
+export type FolderActor =
+	| { readonly kind: "member"; readonly userId: string }
+	| { readonly kind: "platform" }
+	| { readonly kind: "view"; readonly viewId: string; readonly pass: string };
+
+/** An entry as `qorpera_folder_entry_json` gives it (20260928120000). */
+export interface CoreEntry {
+	readonly path: string;
+	readonly kind: "file" | "folder";
+	readonly version: number;
+	readonly manifestSha256?: string;
+	readonly fileSha256?: string;
+	readonly bytes?: number;
+	readonly mediaType?: string;
+	readonly executable?: boolean;
+	readonly updatedAt?: string;
+}
+
+export interface ListPage {
+	readonly asOfSeq: number;
+	readonly entries: readonly CoreEntry[];
+	readonly next: string | null;
+}
+
+/** One change of a change set on the feed (20260928237000). */
+export interface FeedChange extends CoreEntry {
+	readonly op: "write" | "mkdir" | "delete" | "move_out" | "move_in" | "copy";
+}
+
+export type FeedEvent =
+	| { readonly seq: number; readonly kind: "authority" }
+	| { readonly seq: number; readonly kind: "change_set"; readonly changes: readonly FeedChange[] };
+
+export interface FeedCursor {
+	readonly unitNo: number;
+	readonly version: number;
+}
+
+export interface FeedPage {
+	readonly asOfSeq: number;
+	readonly resync: boolean;
+	readonly events: readonly FeedEvent[];
+	readonly next: { readonly afterSeq: number; readonly cursor: FeedCursor | null };
+	readonly more: boolean;
+}
+
+export interface FolderCore {
+	/** One page of the actor's whole tree, in the core's key order, after the path `after`. */
+	list(environmentId: string, actor: FolderActor, after: string | null, signal?: AbortSignal): Promise<ListPage>;
+	feed(
+		environmentId: string,
+		actor: FolderActor,
+		afterSeq: number,
+		cursor: FeedCursor | null,
+		signal?: AbortSignal,
+	): Promise<FeedPage>;
+	/** The change number of each company folder named (missing ones are left out). */
+	clocks(environmentIds: readonly string[], signal?: AbortSignal): Promise<Map<string, number>>;
+	/** The company's storage profile, through the core's download check of one object the actor may read. The check
+	 * also refuses a company being deleted, for every actor. */
+	objectProfile(environmentId: string, actor: FolderActor, sha256: string, signal?: AbortSignal): Promise<string>;
+}
+
+/** The core refused: `denied` (42501, the actor may not read this any more), `stopped` (55000, the company is paused
+ * or being deleted), `invalid` (the request or the company does not fit: 22023, 0A000, P0002). The database
+ * answered, so the dependency circuit stays closed. */
+export class CoreRefusal extends ObjectDependencyError {
+	readonly reason: "denied" | "stopped" | "invalid";
+	constructor(reason: "denied" | "stopped" | "invalid") {
+		super(reason === "denied" ? 403 : reason === "stopped" ? 423 : 400);
+		this.name = "CoreRefusal";
+		this.message = `Folder core refused: ${reason}`;
+		this.reason = reason;
+	}
+}
+
+/** The core's answer did not have the shape this service knows. Counted as an unavailable dependency. */
+export class CoreAnswerError extends ObjectDependencyError {
+	constructor(what: string) {
+		super(503);
+		this.name = "CoreAnswerError";
+		this.message = `Folder core answer is invalid: ${what}`;
+	}
+}
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const SHA256 = /^[0-9a-f]{64}$/;
+const OPS = new Set(["write", "mkdir", "delete", "move_out", "move_in", "copy"]);
+
+function invalidAnswer(what: string): never {
+	throw new CoreAnswerError(what);
+}
+
+function record(value: unknown, what: string): Record<string, unknown> {
+	if (!value || typeof value !== "object" || Array.isArray(value)) invalidAnswer(what);
+	return value as Record<string, unknown>;
+}
+
+function seqOf(value: unknown, what: string): number {
+	if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) invalidAnswer(what);
+	return value;
+}
+
+/** An entry or a feed change, checked field by field; unknown fields (receipts, seq, priorVersion) are dropped. A
+ * removal on the feed names no content. */
+function entryOf(value: unknown, removal = false): CoreEntry {
+	const e = record(value, "entry");
+	if (typeof e.path !== "string" || e.path === "" || (e.kind !== "file" && e.kind !== "folder"))
+		invalidAnswer("entry");
+	const out: {
+		path: string;
+		kind: "file" | "folder";
+		version: number;
+		manifestSha256?: string;
+		fileSha256?: string;
+		bytes?: number;
+		mediaType?: string;
+		executable?: boolean;
+		updatedAt?: string;
+	} = { path: e.path, kind: e.kind, version: seqOf(e.version ?? 0, "entry version") };
+	if (e.manifestSha256 !== undefined) {
+		if (typeof e.manifestSha256 !== "string" || !SHA256.test(e.manifestSha256)) invalidAnswer("manifest");
+		out.manifestSha256 = e.manifestSha256;
+	}
+	if (e.fileSha256 !== undefined) {
+		if (typeof e.fileSha256 !== "string" || !SHA256.test(e.fileSha256)) invalidAnswer("file hash");
+		out.fileSha256 = e.fileSha256;
+	}
+	if (e.bytes !== undefined) out.bytes = seqOf(e.bytes, "bytes");
+	if (e.mediaType !== undefined) {
+		if (typeof e.mediaType !== "string") invalidAnswer("media type");
+		out.mediaType = e.mediaType;
+	}
+	if (e.executable !== undefined) {
+		if (typeof e.executable !== "boolean") invalidAnswer("executable");
+		out.executable = e.executable;
+	}
+	if (e.updatedAt !== undefined) {
+		if (typeof e.updatedAt !== "string" || Number.isNaN(Date.parse(e.updatedAt))) invalidAnswer("time");
+		out.updatedAt = e.updatedAt;
+	}
+	if (!removal && out.kind === "file" && (out.manifestSha256 === undefined || out.bytes === undefined))
+		invalidAnswer("file entry");
+	return out;
+}
+
+export function parseListPage(value: unknown): ListPage {
+	const page = record(value, "list");
+	if (page.schema !== "qorpera.folder-list/v1" || !Array.isArray(page.entries)) invalidAnswer("list");
+	if (page.next !== null && page.next !== undefined && typeof page.next !== "string") invalidAnswer("list next");
+	return {
+		asOfSeq: seqOf(page.asOfSeq, "asOfSeq"),
+		entries: page.entries.map(entryOf),
+		next: typeof page.next === "string" ? page.next : null,
+	};
+}
+
+export function parseFeedPage(value: unknown): FeedPage {
+	const page = record(value, "feed");
+	if (page.schema !== "qorpera.folder-feed/v1" || !Array.isArray(page.events) || typeof page.more !== "boolean")
+		invalidAnswer("feed");
+	const next = record(page.next, "feed next");
+	let cursor: FeedCursor | null = null;
+	if (next.cursor !== null && next.cursor !== undefined) {
+		const c = record(next.cursor, "feed cursor");
+		cursor = { unitNo: seqOf(c.unitNo, "cursor unit"), version: seqOf(c.version, "cursor version") };
+	}
+	const events: FeedEvent[] = page.events.map((value) => {
+		const event = record(value, "feed event");
+		const seq = seqOf(event.seq, "event seq");
+		if (event.kind === "authority") return { seq, kind: "authority" };
+		if (event.kind !== "change_set" || !Array.isArray(event.changes)) invalidAnswer("event kind");
+		return {
+			seq,
+			kind: "change_set",
+			changes: event.changes.map((c) => {
+				const change = record(c, "change");
+				if (typeof change.op !== "string" || !OPS.has(change.op)) invalidAnswer("op");
+				const removal = change.op === "delete" || change.op === "move_out";
+				const entry = entryOf(
+					removal ? { path: change.path, kind: change.kind, version: change.version ?? 0 } : c,
+					removal,
+				);
+				return { ...entry, op: change.op as FeedChange["op"] };
+			}),
+		};
+	});
+	return {
+		asOfSeq: seqOf(page.asOfSeq, "asOfSeq"),
+		resync: page.resync === true,
+		events,
+		next: { afterSeq: seqOf(next.afterSeq, "next afterSeq"), cursor },
+		more: page.more,
+	};
+}
+
+function actorJson(actor: FolderActor): Record<string, string> {
+	switch (actor.kind) {
+		case "member":
+			return { kind: "member", userId: actor.userId };
+		case "platform":
+			return { kind: "platform" };
+		case "view":
+			return { kind: "view", viewId: actor.viewId, pass: actor.pass };
+	}
+}
+
+interface SupabaseFolderCoreOptions {
+	readonly projectUrl: string;
+	readonly secretKey: string;
+	readonly fetch?: typeof fetch;
+	readonly requestTimeoutMs?: number;
+}
+
+/** The folder core over PostgREST, with the service credential. Reads only: list, feed, the clock, and the
+ * download check for the storage profile. */
+export class SupabaseFolderCore implements FolderCore {
+	readonly #url: string;
+	readonly #key: string;
+	readonly #fetch: typeof fetch;
+	readonly #api: ObjectDependency;
+
+	constructor(options: SupabaseFolderCoreOptions) {
+		const url = new URL(options.projectUrl);
+		if (url.protocol !== "https:" || url.pathname !== "/" || url.search || url.hash || url.username)
+			throw new Error("Folder core requires an exact HTTPS origin");
+		if (!options.secretKey || options.secretKey.length > 8192 || /[\0\r\n]/.test(options.secretKey))
+			throw new Error("Folder core credential is invalid");
+		this.#url = url.origin;
+		this.#key = options.secretKey;
+		const transport = options.fetch ?? fetch;
+		this.#fetch = (input, init) => transport(input, { ...init, redirect: "error" });
+		this.#api = new ObjectDependency(options.requestTimeoutMs ?? 15_000, 2_000);
+	}
+
+	async list(environmentId: string, actor: FolderActor, after: string | null, signal?: AbortSignal) {
+		return parseListPage(
+			await this.#rpc(
+				"qorpera_folder_list",
+				{
+					p_environment_id: environmentId,
+					p_actor: actorJson(actor),
+					p_parent: "",
+					p_after: after,
+					p_limit: 1000,
+					p_recursive: true,
+				},
+				signal,
+			),
+		);
+	}
+
+	async feed(
+		environmentId: string,
+		actor: FolderActor,
+		afterSeq: number,
+		cursor: FeedCursor | null,
+		signal?: AbortSignal,
+	) {
+		return parseFeedPage(
+			await this.#rpc(
+				"qorpera_folder_feed",
+				{
+					p_environment_id: environmentId,
+					p_actor: actorJson(actor),
+					p_after_seq: afterSeq,
+					p_limit: 1000,
+					p_cursor: cursor,
+				},
+				signal,
+			),
+		);
+	}
+
+	async clocks(environmentIds: readonly string[], signal?: AbortSignal): Promise<Map<string, number>> {
+		const out = new Map<string, number>();
+		if (environmentIds.length === 0) return out;
+		if (environmentIds.some((id) => !UUID.test(id))) throw new Error("Folder clock request is invalid");
+		const query = `select=environment_id,last_seq&environment_id=in.(${environmentIds.join(",")})`;
+		const rows = await this.#request(`/rest/v1/qorpera_folder_clocks?${query}`, { method: "GET" }, signal);
+		if (!Array.isArray(rows)) invalidAnswer("clocks");
+		for (const row of rows) {
+			const r = record(row, "clock");
+			if (typeof r.environment_id !== "string" || !UUID.test(r.environment_id)) invalidAnswer("clock id");
+			out.set(r.environment_id, seqOf(r.last_seq, "clock seq"));
+		}
+		return out;
+	}
+
+	async objectProfile(environmentId: string, actor: FolderActor, sha256: string, signal?: AbortSignal) {
+		const answer = record(
+			await this.#rpc(
+				"qorpera_folder_authorize_object_download",
+				{ p_environment_id: environmentId, p_actor: actorJson(actor), p_sha256: sha256 },
+				signal,
+			),
+			"download check",
+		);
+		if (
+			answer.schema !== "qorpera.folder-object-download/v1" ||
+			typeof answer.profileId !== "string" ||
+			!UUID.test(answer.profileId)
+		)
+			invalidAnswer("download check");
+		return answer.profileId;
+	}
+
+	async #rpc(name: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
+		return this.#request(`/rest/v1/rpc/${name}`, { method: "POST", body: JSON.stringify(args) }, signal);
+	}
+
+	async #request(path: string, init: { method: string; body?: string }, caller?: AbortSignal): Promise<unknown> {
+		return this.#api.run(async (signal) => {
+			const response = await this.#fetch(`${this.#url}${path}`, {
+				...init,
+				headers: { ...supabaseRequestHeaders(this.#key), "content-type": "application/json" },
+				signal: caller ? AbortSignal.any([signal, caller]) : signal,
+			});
+			if (!response.ok) {
+				const code = await postgrestErrorCode(response, signal);
+				if (code === "42501") throw new CoreRefusal("denied");
+				if (code === "55000") throw new CoreRefusal("stopped");
+				if (code === "22023" || code === "0A000" || code === "P0002") throw new CoreRefusal("invalid");
+				throw new ObjectDependencyError(response.status >= 500 ? 503 : response.status);
+			}
+			const body = await readBoundedObjectResponse(response, 8 * 1024 * 1024, signal);
+			try {
+				return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(body)) as unknown;
+			} catch {
+				invalidAnswer("JSON");
+			}
+		}, caller);
+	}
+}

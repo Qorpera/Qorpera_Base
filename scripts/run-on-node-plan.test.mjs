@@ -103,6 +103,16 @@ test("a migration, the load harness or its fixture's tests put one company's fen
 	assert.equal(load, "node scripts/load-company-fence-pool.mjs --check");
 });
 
+test("the folder program runs its own step in the pinned Rust image", () => {
+	const plan = planChanged(["crates/qorpera-folder/src/mount.rs", "crates/qorpera-folder/Cargo.lock"]);
+	assert.equal(plan.full, false);
+	assert.ok(names(["crates/qorpera-folder/src/mount.rs"]).includes("folder-program"));
+	assert.ok(!names(["packages/object-gateway/src/cli.ts"]).includes("folder-program"));
+	const command = STEPS.find((step) => step.name === "folder-program").commands.join(" ");
+	assert.match(command, /rust:1\.95\.0-slim-bookworm@sha256:[0-9a-f]{64} cargo test --locked$/);
+	assert.match(command, /--device \/dev\/fuse/);
+});
+
 test("shared configuration and unknown paths run every step", () => {
 	for (const file of ["package-lock.json", "packages/runtime/package.json", "packages/contracts/src/index.ts", "tsconfig.json"]) {
 		const plan = planChanged([file]);
