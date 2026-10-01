@@ -171,10 +171,15 @@ begin
   update public.qorpera_run_operation_receipts set status='ambiguous',completed_at=clock_timestamp() where id=v_id;
  end if;
  perform public.qorpera_record_provider_usage_signal(v_binding,'usage_limit',clock_timestamp()+interval '2 hours');
+ -- The failure report no longer hands off (20260929840000): ask the handoff function itself, whose receipt
+ -- fence this case proves, then report the failure.
+ perform public.qorpera_handoff_run_sponsor((v_binding->>'runId')::uuid,'Native harness failed (provider allowance unavailable)');
+ perform pg_temp.wake_assert(not exists(select 1 from public.qorpera_execution_sponsor_handoffs
+  where run_id=(v_binding->>'runId')::uuid),'Uncertain effect still blocks continuation');
  perform public.qorpera_fail_runner_job((v_binding->>'runnerId')::uuid,repeat('2',64),
   (v_binding->>'jobId')::uuid,repeat('3',64),'Native harness failed (provider allowance unavailable)',false);
  perform pg_temp.wake_assert(not exists(select 1 from public.qorpera_execution_sponsor_handoffs
-  where run_id=(v_binding->>'runId')::uuid),'Uncertain effect still blocks continuation');
+  where run_id=(v_binding->>'runId')::uuid),'The failure report never hands off');
 end $$;
 select pg_temp.wake_acceptance_case('executing_receipt_still_fences_handoff',$test$select pg_temp.review_unresolved_handoff(false);$test$);
 select pg_temp.wake_acceptance_case('ambiguous_receipt_still_fences_handoff',$test$select pg_temp.review_unresolved_handoff(true);$test$);

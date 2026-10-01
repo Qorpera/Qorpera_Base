@@ -1074,7 +1074,7 @@ describe("conversation UI boundaries", () => {
 		);
 		expect([...(card()?.querySelectorAll("button") ?? [])].map((item) => item.textContent)).toEqual(["Dismiss"]);
 		// A real usage limit: the bridge's refusal names only a spent budget; the cloud's usage-limit signal decides.
-		const bridge = "Native provider bridge request failed (422) [code=NATIVE_PROVIDER_REQUEST:BUDGET_EXHAUSTED]";
+		const bridge = "Native provider bridge request failed (422) [code=NATIVE_CODEX_TURN_COMPLETION:BUDGET_EXHAUSTED]";
 		f.company.store.set({ activity: [run], recoveries: { [run.runId]: { ...details(bridge), usageLimit: true } } });
 		await settle();
 		expect(card()?.querySelector(".run-failure-reason")?.textContent).toBe(

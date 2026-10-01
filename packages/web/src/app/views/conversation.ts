@@ -2402,7 +2402,7 @@ export class ConversationView {
 		const reason = proposalId
 			? t("Its changes wait for your decision.")
 			: recovery
-				? runFailureReason(recovery.lastError, recovery.jobStatus, recovery.usageLimit === true)
+				? runFailureReason(recovery.lastError, recovery.jobStatus, recovery.usageLimit)
 				: undefined;
 		const retryState = runId ? company.runRetries?.[runId] : undefined;
 		// Try again is for an interrupted run; a refused one says what the member must do first.
@@ -2411,7 +2411,7 @@ export class ConversationView {
 			!review &&
 			this.#company.canRetryFailedRun(failed) &&
 			recovery !== undefined &&
-			runFailureInterrupted(recovery.lastError, recovery.jobStatus, recovery.usageLimit === true);
+			runFailureInterrupted(recovery.lastError, recovery.jobStatus, recovery.usageLimit);
 		const key = JSON.stringify([
 			runId,
 			hidden,

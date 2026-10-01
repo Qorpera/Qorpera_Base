@@ -741,7 +741,7 @@ subscriptions, which self-limit.
 > What remains:
 > - crash detection (job, connection, session and coding attachment leases) and retry limits
 >   (8 dispatch failures; 8 attempts for a pristine retry or a sponsor
->   handoff);
+>   handoff; no new handoffs since 2026-10-01, section 17);
 > - one run box per run (the machines an agent starts are not counted:
 >   2026-09-28 amendment "compute for agents", item 4), one coding machine
 >   per member and environment
@@ -759,8 +759,8 @@ subscriptions, which self-limit.
 >   40 sidebar sections) went in bundle v95;
 > - no stall detection: a run whose harness hangs without crashing keeps its
 >   machine until Stop, as in Codex CLI and Claude Code;
-> - a continuation (a worker report, a computer start, a sponsor handoff)
->   carries the newest results and sends of the earlier run that fit, and
+> - a continuation (a worker report, a computer start, a sponsor handoff
+>   made before 2026-10-01) carries the newest results and sends of the earlier run that fit, and
 >   counts the rest;
 > - the API-key sandbox runner (not company work) keeps its per-job totals:
 >   64 MiB transcript, 100 output artifacts and 64 MiB of output.
@@ -1986,15 +1986,18 @@ with ChatGPT choice 3). When the login paying for a run reaches its usage
 limit, that run fails and the member is told; it never moves to another login.
 OpenAI's terms for ChatGPT plan use forbid rotating accounts to get round
 usage limits, and the founder applied the same rule to Codex logins. The run's
-recovery read names the usage limit, and the thread says that the work
-stopped, that it did not move to another account, and that it can run again
-once the limit resets. The control plane no longer makes a sponsor handoff
-(migration 20260929840000): the paragraphs above that describe one, and
-acceptance 29, are superseded for every login. Choosing the payer for new work
-is unchanged by this amendment: a member's next turn, follow-up work and
-routines still take a login with room left first, which can be the member's
-other login; whether that choice must also stay on the exhausted login is a
-separate decision.
+recovery read names the usage limit (a signal on the login the run is on now),
+and the thread says that the work stopped, that it did not move to another
+account, and that it can run again once the limit resets. The control plane
+no longer makes a sponsor handoff (migration 20260929840000): the paragraphs
+above that describe one, and the old text of acceptance 29, are superseded for
+every login. A rate limit or a provider outage is still not a usage limit: it
+neither stops the work as one nor shows the usage-limit message. Choosing the
+payer for new work is unchanged by this amendment: a member's next turn and
+follow-up work still take a login with room left first, which can be the
+member's other login, and routines and coding turns follow the handoff
+versions made before this change (no new ones are made). Whether new work
+must also stay on the exhausted login is a separate decision.
 
 ## 18. Short constitution
 
@@ -3980,7 +3983,7 @@ Section 21, item 33, is the event-wake acceptance item.
 | Responsibilities are operating state, not chats | Responsibility schema, measure registry, accountable-agent assignment, ACL projections | Own the outcome and its measures; turn exceptions into verified work. |
 | Responsibility views remain derived | Company File sources, measure projections, provenance, and rebuild service | Reason from exact sources and report material changes. |
 | The Company File is one live document | Live mount, presence service, object versions | See who is working where; re-read on a stale version; never copy the company. |
-| Sponsor routing is recorded | Routing policy, usage-limit signal, the run failing at a usage limit (2026-10-01) | Never use another member's credential; do not try to continue work a usage limit stopped. |
+| Sponsor routing is recorded | Routing policy, usage-limit signal, the run failing at a usage limit (2026-10-01) | Never use another member's credential. |
 | Projects remain bounded and distinct from rooms | Project registry, team membership, todos, outcome, and room lifecycle | Coordinate in the room; finish in durable company state. |
 | Routine policy is real | Scheduler and listener services | Author sensible schedules and intent. |
 | Dismissal is not consent | Interaction state machine | Treat dismissal as skip or decline. |
@@ -4096,8 +4099,9 @@ while Azure backup/overflow remains disabled.
 29. When a sponsoring connection reaches its usage limit, the member is
     notified, the affected run fails without moving to another login, its
     recovery read names the usage limit, and the thread says the work stopped
-    (2026-10-01 amendment, section 17). No other member's credential is ever
-    used.
+    (2026-10-01 amendment, section 17). A rate limit or a provider outage is not
+    a usage limit and does not show the usage-limit message. No other member's
+    credential is ever used.
 30. A company's ceilings hold without agent cooperation: a deliberately
     runaway loop is stopped at its wake-rate or spend ceiling, the founder
     stop operation pauses the company, and the founder is notified from the

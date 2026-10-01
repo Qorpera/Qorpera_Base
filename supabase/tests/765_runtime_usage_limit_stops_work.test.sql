@@ -41,7 +41,7 @@ set local role service_role;
 select public.qorpera_record_provider_usage_signal(current_setting('qorpera_test.wake_binding')::jsonb,'usage_limit');
 select public.qorpera_fail_runner_job((current_setting('qorpera_test.wake_binding')::jsonb ->> 'runnerId')::uuid,
 	repeat('2',64),(current_setting('qorpera_test.wake_binding')::jsonb ->> 'jobId')::uuid,repeat('3',64),
-	'Native provider bridge request failed (422) [code=NATIVE_PROVIDER_REQUEST:BUDGET_EXHAUSTED]',false);
+	'Native provider bridge request failed (422) [code=NATIVE_CODEX_TURN_COMPLETION:BUDGET_EXHAUSTED]',false);
 reset role;
 do $$
 declare v_binding jsonb := current_setting('qorpera_test.wake_binding')::jsonb;
@@ -75,6 +75,22 @@ begin
 		raise exception 'The recovery read does not say the usage limit stopped the run'; end if;
 end $$;
 reset role;
+-- A signal on another sponsor version of the run says nothing about how it ended: a run an earlier handoff
+-- moved to another login keeps its first login's signal. (Foreign keys are skipped for this one row move;
+-- the transaction rolls back.)
+set local session_replication_role = replica;
+update public.qorpera_provider_connection_usage_signals set sponsor_version = sponsor_version + 1
+where run_id = (current_setting('qorpera_test.wake_binding')::jsonb ->> 'runId')::uuid;
+set local session_replication_role = origin;
+set local role authenticated;
+do $$
+begin
+	if (public.qorpera_get_execution_run_recovery((current_setting('qorpera_test.wake_binding')::jsonb ->> 'runId')::uuid)
+		->> 'usage_limit')::boolean is not false then
+		raise exception 'The recovery read names a usage limit from another login of the run'; end if;
+end $$;
+reset role;
+-- Without a usage-limit signal the read says false.
 delete from public.qorpera_provider_connection_usage_signals
 where run_id = (current_setting('qorpera_test.wake_binding')::jsonb ->> 'runId')::uuid;
 set local role authenticated;

@@ -603,6 +603,9 @@ begin
 	perform pg_temp.handoff_competing_assignment(v_busy,true);
 	perform public.qorpera_begin_native_company_execution(v_binding,repeat('7',64));
 	perform public.qorpera_record_provider_usage_signal(v_binding,'usage_limit',clock_timestamp() + interval '2 hours');
+	-- The failure report no longer hands off (20260929840000): ask the handoff function itself, whose capacity
+	-- rule this case proves, then report the failure.
+	perform public.qorpera_handoff_run_sponsor((v_binding ->> 'runId')::uuid,'Native harness failed (provider allowance unavailable)');
 	perform public.qorpera_fail_runner_job((v_binding ->> 'runnerId')::uuid,repeat('2',64),(v_binding ->> 'jobId')::uuid,
 		repeat('3',64),'Native harness failed (provider allowance unavailable)',false);
 	perform pg_temp.wake_assert((select sponsor_version = v_version from public.qorpera_execution_runs
@@ -644,6 +647,9 @@ begin
 	perform pg_temp.handoff_connection();
 	perform public.qorpera_begin_native_company_execution(v_binding,repeat('7',64));
 	perform public.qorpera_record_provider_usage_signal(v_binding,p_kind,null);
+	-- The failure report no longer hands off (20260929840000): ask the handoff function itself, which must
+	-- refuse a run that only met a rate limit or an outage, then report the failure.
+	perform public.qorpera_handoff_run_sponsor((v_binding ->> 'runId')::uuid,'Native harness failed (' || p_kind || ')');
 	perform public.qorpera_fail_runner_job((v_binding ->> 'runnerId')::uuid,repeat('2',64),(v_binding ->> 'jobId')::uuid,
 		repeat('3',64),'Native harness failed (' || p_kind || ')',false);
 	perform pg_temp.wake_assert((select sponsor_version = v_version from public.qorpera_execution_runs

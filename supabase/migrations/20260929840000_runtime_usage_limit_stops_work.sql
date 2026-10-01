@@ -15,8 +15,10 @@
 -- The thread says why the work stopped. A native run's failure is saved as the provider bridge's refusal
 -- (`... [code=...:BUDGET_EXHAUSTED]`), which also covers a full context window or folder, so the web cannot
 -- tell a usage limit from it. The run's recovery read now answers `usage_limit`: true when a usage-limit
--- signal was recorded for this run (qorpera_record_provider_usage_signal), and the web shows the usage-limit
--- message on that. A partial index on the signals' run keeps that read to the run's own signals.
+-- signal was recorded for this run on the login it runs on now (qorpera_record_provider_usage_signal), and
+-- the web shows the usage-limit message on that. A run an earlier handoff moved to another login keeps the
+-- signal of its first login, which says nothing about how it ended. The signals' unique key (run, sponsor
+-- version, kind) serves the read.
 
 set local lock_timeout = '3s';
 
@@ -43,9 +45,6 @@ begin
 end
 $$;
 
-create index if not exists qorpera_provider_connection_usage_signals_run_limit
-	on public.qorpera_provider_connection_usage_signals(run_id) where signal_kind = 'usage_limit';
-
 do $$
 declare
 	v_target regprocedure := 'public.qorpera_get_execution_run_recovery(uuid)'::regprocedure;
@@ -60,7 +59,8 @@ begin
 		execute replace(v_definition, v_anchor,
 			E'\t\t-- The login paying for this run reached its usage limit during it (20260929840000).\n'
 				|| E'\t\t''usage_limit'', exists (select 1 from public.qorpera_provider_connection_usage_signals as signal\n'
-				|| E'\t\t\twhere signal.run_id = v_run.id and signal.signal_kind = ''usage_limit''),\n'
+				|| E'\t\t\twhere signal.run_id = v_run.id and signal.sponsor_version = v_run.sponsor_version\n'
+				|| E'\t\t\t\tand signal.signal_kind = ''usage_limit''),\n'
 				|| v_anchor);
 	end if;
 end
