@@ -25,6 +25,7 @@ import {
 	PersistentCompanyComputerBrowser,
 } from "@qorpera/runtime/cloud-company-computer-guest";
 import { CompanyComputerScreenActionGate } from "@qorpera/runtime/cloud-company-computer-leases";
+import { COMPANY_COMPUTER_PRIVATE_FIELD_SELECTOR } from "@qorpera/runtime/cloud-company-computer-private-fields";
 import { CompanyComputerRegistryUnansweredError } from "@qorpera/runtime/cloud-company-computer-registry-http";
 import type { CompanyComputerAction } from "@qorpera/runtime/cloud-company-computer-tools";
 import type { BrowserContext, Page } from "playwright-core";
@@ -360,6 +361,8 @@ function fakePage() {
 		getByRole: vi.fn(() => locator),
 		keyboard: { press: vi.fn(async () => undefined) },
 		screenshot: vi.fn(async () => captureBytes()),
+		// The values of the page's private boxes (password, code, card).
+		evaluate: vi.fn(async (): Promise<string[]> => []),
 	};
 	return { locator, page };
 }
@@ -487,6 +490,36 @@ describe("Playwright/X11/shell adapters (test doubles, never the member machine)
 		expect(f.locator.fill).not.toHaveBeenCalled();
 		expect(f.context.close).not.toHaveBeenCalled();
 		expect(f.effects.finish).toHaveBeenCalledTimes(3);
+	});
+
+	it("hides from a snapshot what a member typed into a password box, read before and after the snapshot", async () => {
+		const f = automationFixture();
+		f.locator.ariaSnapshot.mockResolvedValueOnce(
+			['- textbox "Email": jonas@example.com', '- textbox "Password": hunter2-typed', '- button "Sign in"'].join(
+				"\n",
+			),
+		);
+		// The member finishes typing while the snapshot is taken.
+		f.page.evaluate.mockResolvedValueOnce(["hunter2"]).mockResolvedValueOnce(["hunter2-typed"]);
+		const result = await f.perform({ kind: "browser", action: "snapshot" });
+		expect(result).toMatchObject({
+			kind: "json",
+			value: {
+				snapshot: ['- textbox "Email": [hidden]', '- textbox "Password": [hidden]', '- button "Sign in"'].join(
+					"\n",
+				),
+			},
+		});
+		expect(JSON.stringify(result)).not.toContain("hunter2");
+		expect(f.page.evaluate).toHaveBeenCalledTimes(2);
+
+		// A page whose private value cannot be read gives no snapshot at all.
+		f.locator.ariaSnapshot.mockResolvedValueOnce('- textbox "Password": hunter2-typed');
+		f.page.evaluate.mockRejectedValueOnce(new Error("Execution context was destroyed"));
+		await expect(f.perform({ kind: "browser", action: "snapshot" })).rejects.toThrow(
+			"Execution context was destroyed",
+		);
+		expect(f.locator.ariaSnapshot).toHaveBeenCalledTimes(1);
 	});
 
 	it("fails an action as its own when an authority check between its steps gets no answer, and stops nothing", async () => {
@@ -1141,6 +1174,7 @@ describe("Playwright/X11/shell adapters (test doubles, never the member machine)
 		expect(fixture.page.screenshot).toHaveBeenCalledWith(
 			expect.objectContaining({ type: "png", mask: [fixture.locator] }),
 		);
+		expect(fixture.page.locator).toHaveBeenCalledWith(COMPANY_COMPUTER_PRIVATE_FIELD_SELECTOR);
 		fixture.screenshots.publish = vi.fn(async (bytes: Uint8Array) => ({
 			assetId: computerId(50),
 			sha256: "0".repeat(64),

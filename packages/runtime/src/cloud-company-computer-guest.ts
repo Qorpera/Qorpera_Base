@@ -16,6 +16,11 @@ import type { BrowserContext, Page } from "playwright-core";
 import { CompanyComputerBrowserNetworkPausedError } from "./cloud-company-computer-browser-control.ts";
 import { assertCompanyComputerGuestLayout, type CompanyComputerGuestLayout } from "./cloud-company-computer-layout.ts";
 import { CompanyComputerActionFailedError, companyComputerActionCheck } from "./cloud-company-computer-leases.ts";
+import {
+	COMPANY_COMPUTER_PRIVATE_FIELD_SELECTOR,
+	readCompanyComputerPrivateValues,
+	redactCompanyComputerSnapshot,
+} from "./cloud-company-computer-private-fields.ts";
 import { companyComputerAuthorityUnanswered } from "./cloud-company-computer-registry-http.ts";
 import { companyComputerScreenDisplay } from "./cloud-company-computer-screens.ts";
 import { type CompanyComputerAction, parseCompanyComputerAction } from "./cloud-company-computer-tools.ts";
@@ -484,7 +489,7 @@ export class CompanyComputerGuestAutomation {
 						page.screenshot({
 							type: "png",
 							timeout: 5_000,
-							mask: [page.locator('input[type="password"],input[autocomplete="one-time-code"]')],
+							mask: [page.locator(COMPANY_COMPUTER_PRIVATE_FIELD_SELECTOR)],
 						}),
 					),
 					lease,
@@ -525,7 +530,13 @@ export class CompanyComputerGuestAutomation {
 			await companyComputerActionCheck(this.#browser.assertActive(signal));
 			signal.throwIfAborted();
 			if (action.action === "snapshot") {
-				const snapshot = await this.#pageCall(() => page.locator("body").ariaSnapshot({ timeout: 5_000 }));
+				// The aria snapshot copies every box's value; read the private ones on both sides of it.
+				const before = await this.#pageCall(() => readCompanyComputerPrivateValues(page));
+				const aria = await this.#pageCall(() => page.locator("body").ariaSnapshot({ timeout: 5_000 }));
+				const after = await this.#pageCall(() => readCompanyComputerPrivateValues(page));
+				const snapshot = await this.#pageCall(async () =>
+					redactCompanyComputerSnapshot(aria, [...before, ...after]),
+				);
 				const title = await this.#pageCall(() => page.title());
 				await companyComputerActionCheck(this.#browser.assertActive(signal));
 				signal.throwIfAborted();
