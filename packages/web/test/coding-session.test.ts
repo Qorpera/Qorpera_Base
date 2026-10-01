@@ -878,6 +878,79 @@ describe("the element in the thread", () => {
 		]);
 	});
 
+	it("says a turn that stopped at its login's usage limit, in OpenAI's words for the owner's own plan", async () => {
+		const failed = (id: number, extra: Record<string, unknown>) =>
+			event(
+				id,
+				"failed",
+				{
+					summary:
+						"The coding turn did not finish: Native provider bridge request failed (422) [code=NATIVE_CODEX_TURN_COMPLETION:BUDGET_EXHAUSTED]",
+					...extra,
+				},
+				"executor",
+			);
+		const events = [
+			failed(1, { usageLimit: true, paidByChatgptPlan: true }),
+			failed(2, { usageLimit: true, paidByChatgptPlan: false }),
+			failed(3, {}),
+		];
+		for (const [viewer, first] of [
+			[
+				"owner",
+				"ChatGPT · Usage limit reached. Review your plan or this app's limit in ChatGPT settings. The workspace is kept; a follow-up continues it. Manage usage",
+			],
+			[
+				"other",
+				"The model account paying for this session reached its usage limit. The workspace is kept; a follow-up continues it once the limit resets.",
+			],
+		] as const) {
+			const { element } = mount(codingSession({ phase: "failed", workerState: "failed" }), { events, viewer });
+			await settle();
+			const notes = [...element.el.querySelectorAll(".coding-note")].map((note) => note.textContent);
+			expect(notes).toEqual([
+				first,
+				"The model account paying for this session reached its usage limit. The workspace is kept; a follow-up continues it once the limit resets.",
+				// Without the kernel's word, a spent budget is not taken for a usage limit.
+				"Something on Qorpera's side refused one of the session's steps. The workspace is kept; a follow-up continues it.",
+			]);
+			expect(element.el.querySelector<HTMLAnchorElement>('[data-action="manage-usage"]')?.href ?? null).toBe(
+				viewer === "owner" ? "https://chatgpt.com/settings/usage" : null,
+			);
+			element.dispose?.();
+		}
+	});
+
+	it("says a turn that ended without saving its work in plain words, never with the runner's text", async () => {
+		const { element } = mount(codingSession({ phase: "failed", workerState: "failed" }), {
+			events: [
+				event(
+					1,
+					"failed",
+					{
+						summary:
+							"The coding turn did not finish: Native provider bridge request failed (422) [code=CODING_TURN_ENDED_WITHOUT_SUBMISSION]; durable attempt output requires review",
+					},
+					"executor",
+				),
+				event(
+					2,
+					"failed",
+					{ summary: "The coding turn did not finish: something nobody has seen before" },
+					"executor",
+				),
+				event(3, "failed", { reason: "executor-lease-expired" }, "kernel"),
+			],
+		});
+		await settle();
+		const notes = [...element.el.querySelectorAll(".coding-note")].map((note) => note.textContent);
+		expect(notes).toEqual([
+			"The session's last turn ended without saving its work or asking a question. The workspace is kept; a follow-up continues it.",
+			"The session stopped because of an internal error. The workspace is kept; a follow-up continues it.",
+			"The computer running this session stopped answering. The workspace is kept; a follow-up starts it again.",
+		]);
+	});
+
 	it("keeps a draft when the session is left and opened again", async () => {
 		const first = mount(codingSession({ phase: "completed", workerState: "succeeded" }));
 		await settle();

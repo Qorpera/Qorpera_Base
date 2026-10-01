@@ -294,26 +294,20 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			const wakeControl: CloudWakeControl = {
 				call: (method, argumentsValue, requestSignal) => this.#paths.call(method, argumentsValue, requestSignal),
 			};
-			stage = "connector-tools";
-			const connectorDescriptors = this.#secretBroker
-				? await describeCloudSecretTools(this.#paths, binding, signal)
-				: [];
+			// The connector catalog is a read that needs only the binding: it is asked for
+			// alongside the context reads below instead of before them. Its failure is still
+			// reported first and as its own stage, as when it was read alone.
+			const connectorRequest = this.#secretBroker
+				? describeCloudSecretTools(this.#paths, binding, signal)
+				: Promise.resolve([]);
+			connectorRequest.catch(() => undefined);
+			const connectorTools = async () => {
+				stage = "connector-tools";
+				const descriptors = await connectorRequest;
+				stage = "prompt-composition";
+				return descriptors;
+			};
 			stage = "prompt-composition";
-			presence = this.#presenceFactory?.(binding, context.identity, signal);
-			// Only a typed, cloud-authorized file event selects an initial path.
-			// Other paths become relevant through live file tools; do not guess them
-			// from untrusted message text or enumerate the whole company.
-			const initialPresence =
-				wake.kind === "routine" && wake.source.kind === "company-file" && typeof wake.payload.path === "string"
-					? await observeCloudCompanyPathPresence(presence, wake.payload.path, "object", "reading", signal)
-					: undefined;
-			const gateway = new CloudCompanyPathGateway({
-				presence,
-				binding,
-				identity: context.identity,
-				control: this.#paths,
-				store: this.#store(context.identity.companyId, binding, signal),
-			});
 			// A folder-v2 run (its context names the agent's folder) writes its state files through the folder core
 			// (core C3's thin writers, RUNTIME-COMPANY-STATE-FILES.md §5).
 			const folder =
@@ -328,37 +322,59 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 							handle: context.folder.agent,
 						}
 					: undefined;
-			// How much open work the agent has (counts only), where it keeps todos and workers:
-			// a company run that is not itself a worker. Asked alongside the notebook; like
-			// memory, it never blocks the run.
-			const openWorkRequest =
-				context.identity.audienceKind === "company" && !cloudWorkerToolFilter(wake).isWorker
-					? describeCloudAgentOpenWork(binding, this.#paths, signal).catch(() => undefined)
-					: Promise.resolve(undefined);
-			// The agent's own notebook (contract 15.1) and its skill catalog (15.2) are
-			// composed side by side through the trusted read lane; an unreadable one
-			// degrades to "unavailable" and the run still starts, because neither is a
-			// precondition of company work.
-			const [memory, skills] = await Promise.all([
-				Promise.resolve()
-					.then(() =>
-						composeCloudAgentMemory(
-							gateway,
-							cloudAgentFolder(context.identity.companyId, context.identity.staffAgentId, agentFolders),
-							new Date(),
-							signal,
-						),
-					)
-					.catch((error) => {
+			const composeContext = async () => {
+				presence = this.#presenceFactory?.(binding, context.identity, signal);
+				// Only a typed, cloud-authorized file event selects an initial path.
+				// Other paths become relevant through live file tools; do not guess them
+				// from untrusted message text or enumerate the whole company.
+				const initialPresence =
+					wake.kind === "routine" && wake.source.kind === "company-file" && typeof wake.payload.path === "string"
+						? await observeCloudCompanyPathPresence(presence, wake.payload.path, "object", "reading", signal)
+						: undefined;
+				const gateway = new CloudCompanyPathGateway({
+					presence,
+					binding,
+					identity: context.identity,
+					control: this.#paths,
+					store: this.#store(context.identity.companyId, binding, signal),
+				});
+				// How much open work the agent has (counts only), where it keeps todos and workers:
+				// a company run that is not itself a worker. Asked alongside the notebook; like
+				// memory, it never blocks the run.
+				const openWorkRequest =
+					context.identity.audienceKind === "company" && !cloudWorkerToolFilter(wake).isWorker
+						? describeCloudAgentOpenWork(binding, this.#paths, signal).catch(() => undefined)
+						: Promise.resolve(undefined);
+				// The agent's own notebook (contract 15.1) and its skill catalog (15.2) are
+				// composed side by side through the trusted read lane; an unreadable one
+				// degrades to "unavailable" and the run still starts, because neither is a
+				// precondition of company work.
+				const [memory, skills] = await Promise.all([
+					Promise.resolve()
+						.then(() =>
+							composeCloudAgentMemory(
+								gateway,
+								cloudAgentFolder(context.identity.companyId, context.identity.staffAgentId, agentFolders),
+								new Date(),
+								signal,
+							),
+						)
+						.catch((error) => {
+							signal.throwIfAborted();
+							return unavailableCloudAgentMemory(cloudRuntimeErrorCategory(error, signal));
+						}),
+					composeCloudAgentSkills(gateway, context.identity, signal, agentFolders).catch((error) => {
 						signal.throwIfAborted();
-						return unavailableCloudAgentMemory(cloudRuntimeErrorCategory(error, signal));
+						return unavailableCloudAgentSkills(cloudRuntimeErrorCategory(error, signal));
 					}),
-				composeCloudAgentSkills(gateway, context.identity, signal, agentFolders).catch((error) => {
-					signal.throwIfAborted();
-					return unavailableCloudAgentSkills(cloudRuntimeErrorCategory(error, signal));
-				}),
-			]);
-			const openWork = await openWorkRequest;
+				]);
+				return { initialPresence, gateway, memory, skills, openWork: await openWorkRequest };
+			};
+			const { initialPresence, gateway, memory, skills, openWork } = await composeContext().catch(async (error) => {
+				await connectorTools();
+				throw error;
+			});
+			const connectorDescriptors = await connectorTools();
 			signal.throwIfAborted();
 			const prompt = composeCloudNativeCompanyPrompt(context, wake, initialPresence, memory, openWork, skills);
 			composition.finish("succeeded", { outputBytes: Buffer.byteLength(prompt) });

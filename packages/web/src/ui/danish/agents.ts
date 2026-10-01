@@ -57,6 +57,8 @@ export const AGENTS: Record<string, string> = {
 	"Routines could not be read. Refresh to try again.": "Rutinerne kunne ikke hentes. Opdater for at prøve igen.",
 	"New routine": "Ny rutine",
 	"Has not run yet": "Har ikke kørt endnu",
+	Resumed: "Genoptaget",
+	"When {name} turned on “Work while you're away”": "Da {name} slog “Arbejd, mens du er væk” til",
 	Ended: "Afsluttet",
 	Done: "Færdig",
 	"Runs until {name} decides it is done": "Kører, indtil {name} beslutter, at den er færdig",
@@ -102,6 +104,14 @@ export const AGENTS: Record<string, string> = {
 	"Enter a Company File path such as finance/invoices.": "Skriv en sti i Virksomhedsfilen som finance/invoices.",
 	"Give the routine a name and say what to do.": "Giv rutinen et navn, og skriv, hvad den skal gøre.",
 	"Connect a model account in Settings first.": "Forbind først en modelkonto i Indstillinger.",
+	"A ChatGPT plan can't pay for routines that start on a file change or a webhook.":
+		"Et ChatGPT-abonnement kan ikke betale for rutiner, der starter på en filændring eller en webhook.",
+	"A ChatGPT plan can't pay for routines that start on a file change or a webhook. Choose another account.":
+		"Et ChatGPT-abonnement kan ikke betale for rutiner, der starter på en filændring eller en webhook. Vælg en anden konto.",
+	"Turn on “Work while you're away” for this ChatGPT plan in Settings first.":
+		"Slå først “Arbejd, mens du er væk” til for ChatGPT-abonnementet i Indstillinger.",
+	"{name} uses your ChatGPT plan for this routine while you are away. Pause the routine to stop it.":
+		"{name} bruger dit ChatGPT-abonnement til rutinen, mens du er væk. Sæt rutinen på pause for at stoppe den.",
 	"The routine could not be saved. Your draft is still here.": "Rutinen kunne ikke gemmes. Din kladde er her stadig.",
 	"Edit routine": "Rediger rutine",
 	"Back to routines": "Tilbage til rutiner",
@@ -218,7 +228,24 @@ export const AGENTS: Record<string, string> = {
 		"Computeren, der kørte sessionen, holdt op med at svare. Arbejdsområdet er gemt; en opfølgning starter den igen.",
 	"The company ran out of computer hours. The workspace is kept; a follow-up continues once hours are added.":
 		"Virksomheden løb tør for computertimer. Arbejdsområdet er gemt; en opfølgning fortsætter, når der er tilføjet timer.",
-	"Failed: {reason}": "Mislykkedes: {reason}",
+	"The session's last turn ended without saving its work or asking a question. The workspace is kept; a follow-up continues it.":
+		"Sessionens sidste tur sluttede uden at gemme sit arbejde eller stille et spørgsmål. Arbejdsområdet er gemt; en opfølgning fortsætter den.",
+	"The model account paying for this session reached its usage limit. The workspace is kept; a follow-up continues it once the limit resets.":
+		"Modelkontoen, der betaler for sessionen, har nået sin forbrugsgrænse. Arbejdsområdet er gemt; en opfølgning fortsætter den, når grænsen er nulstillet.",
+	"The model account needs to be connected again. The workspace is kept; a follow-up continues it once the account is connected.":
+		"Modelkontoen skal forbindes igen. Arbejdsområdet er gemt; en opfølgning fortsætter den, når kontoen er forbundet.",
+	"No computer could be started for the session. The workspace is kept; a follow-up tries again.":
+		"Der kunne ikke startes en computer til sessionen. Arbejdsområdet er gemt; en opfølgning prøver igen.",
+	"One of the session's steps got no answer in time. The workspace is kept; a follow-up continues it.":
+		"Et af sessionens trin fik ikke svar i tide. Arbejdsområdet er gemt; en opfølgning fortsætter den.",
+	"The session took too long and was stopped. The workspace is kept; a follow-up continues it.":
+		"Sessionen tog for lang tid og blev stoppet. Arbejdsområdet er gemt; en opfølgning fortsætter den.",
+	"Something on Qorpera's side refused one of the session's steps. The workspace is kept; a follow-up continues it.":
+		"Noget hos Qorpera afviste et af sessionens trin. Arbejdsområdet er gemt; en opfølgning fortsætter den.",
+	"The session was stopped before it finished. The workspace is kept; a follow-up continues it.":
+		"Sessionen blev stoppet, før den var færdig. Arbejdsområdet er gemt; en opfølgning fortsætter den.",
+	"The session stopped because of an internal error. The workspace is kept; a follow-up continues it.":
+		"Sessionen stoppede på grund af en intern fejl. Arbejdsområdet er gemt; en opfølgning fortsætter den.",
 	"{count} file": "{count} fil",
 	"{count} files": "{count} filer",
 	"{count} artifact": "{count} artefakt",

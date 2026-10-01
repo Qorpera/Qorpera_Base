@@ -618,6 +618,11 @@ of the body, for readers that should not reach the storage server.
   - So `targets` returns the company row at rank 0 (`keyshare`; C1b-3a moved it from the head of rank 2) with every
     roster row, and the room at rank 4 (`update`) for a rename, archive or retire, all before the
     paths. Test 701 races a rename and an instructions edit against posting.
+  - Since C1c-3c (migration 20260929690000, which patches `targets` in place): for an agent with no thread room yet
+    (a new agent, or one saved archived and now activated), `targets` also returns every member row at rank 1
+    (`keyshare`). The room it creates copies the roster without a lock, so a member's removal or demotion (the member
+    row `FOR UPDATE`) must run before or after that copy. A later rewrite of `targets` must keep this branch (test 665
+    F).
   - A `group.md` write takes the company row the same way: a new chat's room and conversation,
     and a conversation's title or status, are company operations too. A `sections.md` write takes
     it too: its rows reference the company row by foreign key, and one order keeps it simple. An existing

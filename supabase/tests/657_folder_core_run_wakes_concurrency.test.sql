@@ -420,8 +420,9 @@ begin
 	if v_state <> 'ok' then raise exception 'The schedule advance: %', v_state; end if;
 end $$;
 
--- E. Removing another member while a run messages, in both orders: removal takes the company row FOR UPDATE, the message
--- this company's row KEY SHARE (rank 0) before anything else of the company, so they meet there.
+-- E. Removing another member while a run messages, in both orders. Since C1c-3c a removal on folder-v2 takes the company
+-- row KEY SHARE only and every agent thread room FOR UPDATE (rank 4), the message those rooms KEY SHARE, so they meet
+-- at a thread room.
 do $$
 declare v_state text; c_cf constant uuid := '64800000-0000-4000-8000-0000000000c0';
 	c_remove constant text := $q$select public.qorpera_remove_profile_member('64800000-0000-4000-8000-000000000010',
@@ -432,8 +433,8 @@ begin
 	perform * from dblink('fence_one', pg_temp.sql_cw('qorpera_test.binding', c_cf, 'remove-1')) as t(x text);
 	perform dblink_send_query('fence_two', c_remove);
 	if not pg_temp.waits_for('fence_two', 'fence_one') then raise exception 'The removal must wait for the message in flight'; end if;
-	if pg_temp.queued_on('fence_two') is distinct from 'public.qorpera_profiles'::regclass then
-		raise exception 'The removal must wait at the company row, not on %', pg_temp.queued_on('fence_two'); end if;
+	if pg_temp.queued_on('fence_two') is distinct from 'public.qorpera_company_rooms'::regclass then
+		raise exception 'The removal must wait at a thread room, not on %', pg_temp.queued_on('fence_two'); end if;
 	perform dblink_exec('fence_one', 'commit');
 	v_state := pg_temp.outcome('fence_two');
 	if v_state <> 'ok' then raise exception 'The removal after the message: %', v_state; end if;
@@ -448,8 +449,8 @@ begin
 		'65700000-0000-4000-8000-000000000004')::text$q$) as t(x text);
 	perform dblink_send_query('fence_one', pg_temp.sql_cw('qorpera_test.binding', c_cf, 'remove-2'));
 	if not pg_temp.waits_for('fence_one', 'fence_two') then raise exception 'The message must wait for the removal in flight'; end if;
-	if pg_temp.queued_on('fence_one') is distinct from 'public.qorpera_profiles'::regclass then
-		raise exception 'The message must wait at the company row, not on %', pg_temp.queued_on('fence_one'); end if;
+	if pg_temp.queued_on('fence_one') is distinct from 'public.qorpera_company_rooms'::regclass then
+		raise exception 'The message must wait at a thread room, not on %', pg_temp.queued_on('fence_one'); end if;
 	perform dblink_exec('fence_two', 'commit');
 	v_state := pg_temp.outcome('fence_one');
 	if v_state <> 'ok' then raise exception 'The message after the removal: %', v_state; end if;
