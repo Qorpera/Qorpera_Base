@@ -1,12 +1,30 @@
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { lstat, realpath } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
-import { startNativeCodexEgress } from "./cloud-native-egress.ts";
+import {
+	NATIVE_CHATGPT_PLAN_EGRESS_HOSTS,
+	NATIVE_CODEX_EGRESS_HOSTS,
+	startNativeCodexEgress,
+} from "./cloud-native-egress.ts";
 
 export interface NativeIsolationConfiguration {
 	/** Root-owned entrypoint installed from the verified guest manifest. */
 	entryPoint: string;
 }
+
+/** A run on a member's ChatGPT plan (Sign in with ChatGPT) finds the plan's access token, which its host
+ * keeps fresh from the vault, at `<identity root>/chatgpt-plan/access-token`. Never a refresh token. */
+export const CHATGPT_PLAN_DIRECTORY = "chatgpt-plan";
+export const CHATGPT_PLAN_TOKEN_FILE = "access-token";
+
+/** The environment variable that carries a ChatGPT plan's access token in the fallback mode. */
+export const CHATGPT_PLAN_TOKEN_ENVIRONMENT = "QORPERA_CHATGPT_PLAN_ACCESS_TOKEN";
+
+/** A run on a member's ChatGPT plan (Sign in with ChatGPT). Either the host's private directory holding
+ * the plan's access token, bound read-only at the same path for the provider's token command, or (the
+ * fallback) the token itself, given to the process's environment and never to an argument. Either way the
+ * run reaches OpenAI's API alone. */
+export type NativeChatGptPlanAccess = { readonly directory: string } | { readonly accessToken: string };
 
 async function rootOwnedFile(path: string): Promise<void> {
 	if (!isAbsolute(path) || path !== resolve(path) || (await realpath(path)) !== path)
@@ -53,18 +71,36 @@ export async function launchIsolatedNativeProcess(options: {
 	scratchRoot: string;
 	codexHome: string;
 	fenceSocket?: string;
+	chatGptPlan?: NativeChatGptPlanAccess;
 	signal: AbortSignal;
 }): Promise<{ child: ChildProcessWithoutNullStreams; close(): Promise<void> }> {
 	if (process.platform !== "linux" || !process.getuid?.())
 		throw new Error("Native containment requires unprivileged Linux");
 	options.signal.throwIfAborted();
-	for (const file of ["/usr/bin/bwrap", "/usr/bin/node", options.configuration.entryPoint, options.command])
+	const plan = options.chatGptPlan;
+	const planDirectory = plan && "directory" in plan ? plan.directory : undefined;
+	const planToken = plan && "accessToken" in plan ? plan.accessToken : undefined;
+	if (planToken !== undefined && !/^[\x21-\x7e]{1,16384}$/.test(planToken))
+		throw new Error("Invalid ChatGPT plan access token");
+	// The token command (`cat`) runs from the read-only /usr inside the namespace.
+	for (const file of [
+		"/usr/bin/bwrap",
+		"/usr/bin/node",
+		...(planDirectory ? ["/usr/bin/cat"] : []),
+		options.configuration.entryPoint,
+		options.command,
+	])
 		await rootOwnedFile(file);
 	await privateDirectory(options.scratchRoot);
 	await privateDirectory(options.codexHome);
+	if (planDirectory) await privateDirectory(planDirectory);
 	const directories = ["workspace", "home", "config", "data", "cache"].map((name) => join(options.scratchRoot, name));
 	for (const directory of directories) await privateDirectory(directory);
-	const relay = await startNativeCodexEgress({ root: options.scratchRoot, signal: options.signal });
+	const relay = await startNativeCodexEgress({
+		root: options.scratchRoot,
+		signal: options.signal,
+		hosts: plan ? NATIVE_CHATGPT_PLAN_EGRESS_HOSTS : NATIVE_CODEX_EGRESS_HOSTS,
+	});
 	let child: ChildProcessWithoutNullStreams | undefined;
 	const args = [
 		"--unshare-user",
@@ -79,7 +115,9 @@ export async function launchIsolatedNativeProcess(options: {
 		"--new-session",
 		"--cap-drop",
 		"ALL",
-		"--clearenv",
+		// The fallback's token reaches the namespace only through bwrap's own environment (set below,
+		// readable by this user alone), never through an argument; everything else is cleared.
+		...(planToken === undefined ? ["--clearenv"] : []),
 		"--ro-bind",
 		"/usr",
 		"/usr",
@@ -119,6 +157,9 @@ export async function launchIsolatedNativeProcess(options: {
 		"--ro-bind",
 		relay.path,
 		relay.path,
+		// Read-only, as a directory: the host swaps the token file inside it, and the token command sees
+		// each newer token.
+		...(planDirectory ? ["--ro-bind", planDirectory, planDirectory] : []),
 	];
 	try {
 		if (options.fenceSocket) {
@@ -160,7 +201,12 @@ export async function launchIsolatedNativeProcess(options: {
 		options.signal.throwIfAborted();
 		child = spawn("/usr/bin/bwrap", args, {
 			cwd: options.scratchRoot,
-			env: { PATH: "/usr/bin:/bin", LANG: "C.UTF-8" },
+			// Without --clearenv bwrap passes this environment on; the variables set above replace PATH and LANG.
+			env: {
+				PATH: "/usr/bin:/bin",
+				LANG: "C.UTF-8",
+				...(planToken === undefined ? {} : { [CHATGPT_PLAN_TOKEN_ENVIRONMENT]: planToken }),
+			},
 			stdio: ["pipe", "pipe", "pipe"],
 			detached: true,
 		});

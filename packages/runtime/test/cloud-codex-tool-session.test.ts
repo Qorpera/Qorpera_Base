@@ -54,6 +54,7 @@ function run(
 		signal?: AbortSignal;
 		binarySha256?: string;
 		isolation?: nativeIsolation.NativeIsolationConfiguration;
+		chatGptPlanAuth?: "command" | "environment";
 		beforeModelStart?: (signal: AbortSignal) => Promise<void>;
 		observability?: CloudRuntimeObservability;
 		tools?: CloudNativeTool[];
@@ -380,6 +381,66 @@ it.each([
 
 it("rejects provider skills outside the controlled result boundary", async () => {
 	await expect(run("extra-skills").result).rejects.toThrow("Native boundary requires an empty provider skill catalog");
+});
+
+/** An identity root as a run host writes it for a ChatGPT plan login: the plan's access token alone. */
+async function planRoot(token = "plan-access-1", mode = 0o600): Promise<string> {
+	const identity = join(root, "plan-identity");
+	await mkdir(join(identity, "codex"), { recursive: true, mode: 0o700 });
+	await mkdir(join(identity, "chatgpt-plan"), { mode: 0o700 });
+	await writeFile(join(identity, "chatgpt-plan", "access-token"), token, { mode });
+	return identity;
+}
+
+describe("a run on a member's ChatGPT plan (Sign in with ChatGPT)", () => {
+	it("calls OpenAI's API with the plan's token from the token command, at standard speed, with an empty Codex home", async () => {
+		const identityRoot = await planRoot();
+		const { result, evidence } = run("response-first", { identityRoot, serviceTier: "fast" });
+		await expect(result).resolves.toMatchObject({ providerSessionId: "thread_fixture" });
+		expect(JSON.parse(await readFile(`${evidence}.plan`, "utf8"))).toEqual({
+			provider: "qorpera_chatgpt_plan",
+			baseUrl: "https://api.openai.com/v1",
+			serviceTier: "default",
+			token: "plan-access-1",
+			codexHomeEntries: [],
+		});
+	});
+
+	it("gives the token in the environment instead in the fallback mode", async () => {
+		const identityRoot = await planRoot("plan-access-env");
+		const { result, evidence } = run("response-first", { identityRoot, chatGptPlanAuth: "environment" });
+		await expect(result).resolves.toMatchObject({ providerSessionId: "thread_fixture" });
+		expect(JSON.parse(await readFile(`${evidence}.plan`, "utf8"))).toMatchObject({
+			provider: "qorpera_chatgpt_plan",
+			token: "plan-access-env",
+		});
+	});
+
+	it("refuses a root holding both kinds of login, or a token file others could read", async () => {
+		const both = await planRoot();
+		await writeFile(join(both, "codex", "auth.json"), "{}", { mode: 0o600 });
+		await expect(run("response-first", { identityRoot: both }).result).rejects.toThrow();
+		await rm(both, { recursive: true, force: true });
+		const open = await planRoot("plan-access-1", 0o644);
+		await expect(run("response-first", { identityRoot: open }).result).rejects.toThrow();
+	});
+
+	it("refuses a plan run whose provider Codex did not apply, and a Codex login's run that names another provider", async () => {
+		const identityRoot = await planRoot();
+		await expect(run("plan-provider-dropped", { identityRoot }).result).rejects.toThrow(
+			"configuration was not applied",
+		);
+		await expect(run("foreign-provider").result).rejects.toThrow("configuration was not applied");
+	});
+
+	it("takes a plan run's 429 for the plan's usage limit, which stops the work", async () => {
+		const identityRoot = await planRoot();
+		const error = await run("terminal-rate-error", { identityRoot }).result.catch((failure: unknown) => failure);
+		expect(nativeProviderUsageSignal(error)).toBe("usage_limit");
+		// A Codex login's 429 stays a rate limit.
+		const codex = await run("terminal-rate-error").result.catch((failure: unknown) => failure);
+		expect(nativeProviderUsageSignal(codex)).toBe("rate_limited");
+	});
 });
 
 it("does not return success while a tool call is pending", async () => {

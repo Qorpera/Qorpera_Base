@@ -10,6 +10,7 @@ import {
 } from "@qorpera/cloud-client/cloud-request";
 import { CloudContentAddressedStore } from "@qorpera/cloud-client/node/cloud-object-store";
 import { createClient } from "@supabase/supabase-js";
+import type { CloudChatGptPlanAuth } from "./cloud-codex-tool-session.ts";
 import { createHttpCloudCodingCommandGateway, parseCloudCodingCommandUrl } from "./cloud-coding-command-http.ts";
 import { HttpCloudCodingControl } from "./cloud-coding-control.ts";
 import {
@@ -124,6 +125,7 @@ export function nativeCompanyRuntimeConfiguration(environment: NodeJS.ProcessEnv
 			binarySha256: string;
 			objectGatewayUrl: string;
 			isolation: NativeIsolationConfiguration;
+			chatGptPlanAuth: CloudChatGptPlanAuth;
 	  }
 	| undefined {
 	if (environment.QORPERA_NATIVE_RUNTIME === undefined) return undefined;
@@ -143,11 +145,17 @@ export function nativeCompanyRuntimeConfiguration(environment: NodeJS.ProcessEnv
 		url.pathname !== "/"
 	)
 		throw new Error("Invalid native cloud runtime configuration");
+	// How a run on a member's ChatGPT plan gets the plan's token: Codex's token command by default, or the
+	// token in the process environment (OpenAI's documented path) as the fallback.
+	const chatGptPlanAuth = environment.QORPERA_CHATGPT_PLAN_AUTH ?? "command";
+	if (chatGptPlanAuth !== "command" && chatGptPlanAuth !== "environment")
+		throw new Error("QORPERA_CHATGPT_PLAN_AUTH is invalid");
 	return {
 		command: [command],
 		binarySha256,
 		objectGatewayUrl: url.origin,
 		isolation: { entryPoint: "/opt/qorpera-runner/qorpera-native-isolation-child.mjs" },
+		chatGptPlanAuth,
 	};
 }
 
@@ -367,6 +375,7 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 						command: runtimeConfiguration.command,
 						binarySha256: runtimeConfiguration.binarySha256,
 						isolation: runtimeConfiguration.isolation,
+						chatGptPlanAuth: runtimeConfiguration.chatGptPlanAuth,
 					})
 				: undefined;
 		cloudRuntime = new CloudNativeCompanyRuntime({
@@ -387,6 +396,7 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 			command: runtimeConfiguration.command,
 			binarySha256: runtimeConfiguration.binarySha256,
 			isolation: runtimeConfiguration.isolation,
+			chatGptPlanAuth: runtimeConfiguration.chatGptPlanAuth,
 			...(coding ? { coding } : {}),
 			// Company machines ride the same executor ingress and transport credential.
 			...(codingConfiguration && codingToken
