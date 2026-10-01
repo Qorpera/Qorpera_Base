@@ -205,8 +205,11 @@ Member Compute Identity.
 `QORPERA_RUNNER_ORCHESTRATOR_POLL_MS` optionally controls how often the service
 asks for new work (default 250 ms). `QORPERA_RUNNER_ORCHESTRATOR_RECONCILE_MS`
 controls how often it renews control, runs the occurrence reconcilers, reconciles
-expired claims and the provider, and re-reads its retained claims (default 2 s);
-a failed reconcile blocks claims and is retried on the next poll.
+expired claims and the provider, and re-reads its retained claims (default 2 s).
+Reconcile runs beside the claim loop, so asking for new work never waits for a
+pass; a failed reconcile blocks claims and is retried after one poll interval,
+and a failed dispatch brings the next pass forward and holds claims until it
+has succeeded.
 `QORPERA_RUNNER_ORCHESTRATOR_CONCURRENCY` controls the
 bounded concurrent dispatcher (default 8, maximum 64). The service deliberately
 has no desktop fallback.

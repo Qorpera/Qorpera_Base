@@ -12,6 +12,7 @@ import {
 import { type GroupChatDetails, listGroupChatDetails, readGroupChatDetails } from "../cloud/group-details.ts";
 import type { InteractionAnswer, InteractionOutcome, InteractionRequest } from "../cloud/interactions.ts";
 import { buildCompanyHierarchy, type CompanyHierarchy, type HostedCompanyOrganization } from "../cloud/organization.ts";
+import type { PageCursor } from "../cloud/pagination.ts";
 import { UUID_PATTERN } from "../cloud/parse.ts";
 import type { CloudPresenceHandle, PresenceMember } from "../cloud/presence.ts";
 import {
@@ -47,7 +48,7 @@ import { isGroupChat } from "../ui/group-chat.ts";
 import type { MentionTarget } from "../ui/mentions.ts";
 import { t } from "../ui/preferences.ts";
 import { RoomDrafts } from "./room-drafts.ts";
-import { debounce, Store } from "./state.ts";
+import { debounce, Store, throttle } from "./state.ts";
 
 /* One controller per open company. It holds the canonical projections the
  * views render (team, staff, sessions, organization, activity) and re-reads
@@ -263,6 +264,40 @@ function newerCodingSessions(
 }
 
 const EVENT_PAGE = 500;
+/** A sessions hint reads only the conversations changed since the newest one read, reaching this
+ * far back for a change that committed after a later one; the whole list is read again at this
+ * age (a heartbeat, or the next hint), which is also the recovery for anything a delta missed. */
+const SESSIONS_OVERLAP_MS = 60_000;
+const SESSIONS_FULL_MS = 5 * 60_000;
+const NO_ID = "00000000-0000-0000-0000-000000000000";
+/** A hint on the open conversation reads its new events at once, and its waiting inputs and coding
+ * sessions again at most this often (a send, and the clock, read them anyway). */
+const OPEN_FULL_MS = 10_000;
+/** The work watch skips a read of the open conversation a hint made this recently. */
+const WATCH_SKIP_MS = 1_500;
+
+/** The page cursor after the newest of these conversations (as the listing orders them). */
+function newestSession(sessions: readonly HostedSession[], after?: PageCursor): PageCursor | undefined {
+	let newest = after;
+	for (const session of sessions)
+		if (
+			!newest ||
+			session.updatedAt > newest.time ||
+			(session.updatedAt === newest.time && session.sessionId > newest.id)
+		)
+			newest = { time: session.updatedAt, id: session.sessionId };
+	return newest;
+}
+
+/** Conversations read again replace their older copies; the list keeps the listing's order. */
+function mergeSessions(current: readonly HostedSession[], changed: readonly HostedSession[]): HostedSession[] {
+	const byId = new Map(current.map((session) => [session.sessionId, session]));
+	for (const session of changed) byId.set(session.sessionId, session);
+	return [...byId.values()].sort((a, b) =>
+		a.updatedAt === b.updatedAt ? a.sessionId.localeCompare(b.sessionId) : a.updatedAt < b.updatedAt ? -1 : 1,
+	);
+}
+
 /** A thread opens with its newest events, read back a page at a time until it shows this many
  * items (receipts and other hidden events take no place) or reaches its start, at most
  * TAIL_PAGES pages; "Show earlier" reads the same way. */
@@ -281,6 +316,19 @@ function mergeEvents(...reads: readonly (readonly HostedSessionEvent[])[]): Host
 	for (const read of reads)
 		for (const event of read) if (!bySequence.has(event.sequence)) bySequence.set(event.sequence, event);
 	return [...bySequence.values()].sort((a, b) => a.sequence - b.sequence);
+}
+
+/** Whether older events exist before two reads of one transcript taken together. Each read's
+ * `hasEarlier` speaks for its own oldest event, so the read that reached further back decides (a
+ * Show-earlier page and a read-back can land in either order); at the same start, one that saw
+ * the start decides. */
+function earlierOf(
+	a: { events: readonly HostedSessionEvent[]; hasEarlier?: boolean },
+	b: { events: readonly HostedSessionEvent[]; hasEarlier?: boolean },
+): boolean {
+	const start = (read: typeof a) => read.events[0]?.sequence ?? Number.POSITIVE_INFINITY;
+	if (start(a) !== start(b)) return (start(a) < start(b) ? a.hasEarlier : b.hasEarlier) ?? false;
+	return (a.hasEarlier ?? false) && (b.hasEarlier ?? false);
 }
 
 /** An input a run has taken already stands in the transcript (the run's start writes it) and is
@@ -367,7 +415,23 @@ export class CompanyController {
 	readonly #versions = { team: 0, staff: 0, sessions: 0, groups: 0, organization: 0, activity: 0, sidebar: 0 };
 	#polling = false;
 	readonly #invalidations = new Set<(resource: RealtimeResource) => void>();
-	readonly #conversationLoads = new Map<string, { promise: Promise<void>; repeat: boolean }>();
+	readonly #conversationLoads = new Map<string, { promise: Promise<void>; repeat: boolean; full: boolean }>();
+	/** The newest conversation read (updated_at, id): a sessions hint reads only what changed since. */
+	#sessionsCursor: PageCursor | undefined;
+	/** When the conversations were last read whole (Date.now()), and that read while on its way. */
+	#sessionsReadAt = 0;
+	#sessionsFullRead: Promise<void> | undefined;
+	/** A read of the changed conversations is on its way; another is wanted once it lands. */
+	#changedRead: Promise<void> | undefined;
+	#changedAgain = false;
+	/** When each conversation was last read (Date.now()), at all and in full. */
+	readonly #conversationReadAt = new Map<string, { any: number; full: number }>();
+	/** Whole reads of the conversations that landed: a delta that started before one drops its copies. */
+	#sessionsWholeReads = 0;
+	/** The open conversation's next full read, when a hint read only its events. */
+	#openFullTimer: ReturnType<typeof setTimeout> | undefined;
+	/** Realtime was connected once: a return to connected catches up on what it may have missed. */
+	#connectedBefore = false;
 	/** The cloud has no newest-first transcript read (before 20260928279410): threads read forward. */
 	#tailMissing = false;
 	/** Taken inputs a thread has read back for once: never again (a run queued for hours stays taken
@@ -432,7 +496,11 @@ export class CompanyController {
 			this.profile.profileId,
 			(resource) => this.#onHint(resource),
 			(phase, error) => {
-				if (!this.#stopped) this.store.set({ realtime: phase, realtimeError: error });
+				if (this.#stopped) return;
+				const back = phase === "connected" && this.#connectedBefore && this.store.get().realtime !== "connected";
+				if (phase === "connected") this.#connectedBefore = true;
+				this.store.set({ realtime: phase, realtimeError: error });
+				if (back) this.#catchUp();
 			},
 		);
 		await this.refreshAll();
@@ -454,6 +522,7 @@ export class CompanyController {
 		this.#presence = undefined;
 		if (this.#poll) clearInterval(this.#poll);
 		clearTimeout(this.#watching);
+		clearTimeout(this.#openFullTimer);
 		this.#invalidations.clear();
 		// Deliver a final access-loss update before dropping observers.
 		queueMicrotask(() => {
@@ -609,17 +678,97 @@ export class CompanyController {
 		}
 	}
 
+	/** Reads every conversation the member may read. */
 	async refreshSessions(): Promise<void> {
 		if (this.#stopped) return;
 		const version = ++this.#versions.sessions;
+		const started = Date.now();
+		const read = (async () => {
+			try {
+				const sessions = await this.#api.listSessions(this.profile.environmentId, this.signal);
+				if (this.#stopped || version !== this.#versions.sessions) return;
+				this.#sessionsCursor = newestSession(sessions);
+				this.#sessionsReadAt = started;
+				this.#sessionsWholeReads += 1;
+				this.store.set({ sessions, sessionsError: undefined });
+				if (!this.store.get().loading) await this.refreshGroups();
+			} catch (error) {
+				if (this.#stopped || version !== this.#versions.sessions) return;
+				this.store.set({ sessionsError: describeError(error) });
+			}
+		})();
+		this.#sessionsFullRead = read;
+		await read;
+		if (this.#sessionsFullRead === read) this.#sessionsFullRead = undefined;
+	}
+
+	/** A sessions hint: reads what changed, then reads again only what it touched. The open
+	 * conversation is read again when it changed, the mentions when a room changed; a whole read
+	 * (no cursor yet, or an old one) counts as everything changed, as every hint did before. */
+	async #sessionsChanged(): Promise<void> {
+		if (this.#stopped) return;
+		if (this.#changedRead) {
+			this.#changedAgain = true;
+			return this.#changedRead;
+		}
+		const read = (async () => {
+			do {
+				this.#changedAgain = false;
+				const changed = await this.#readChangedSessions();
+				if (this.#stopped) return;
+				const open = this.#openSessionId;
+				if (open && (!changed || changed.some((session) => session.sessionId === open)))
+					this.#refreshOpenConversation();
+				if (!changed || changed.some((session) => typeof session.executionScope?.roomId === "string"))
+					this.#refreshMentionsSoon();
+			} while (this.#changedAgain && !this.#stopped);
+		})();
+		this.#changedRead = read;
 		try {
-			const sessions = await this.#api.listSessions(this.profile.environmentId, this.signal);
-			if (this.#stopped || version !== this.#versions.sessions) return;
-			this.store.set({ sessions, sessionsError: undefined });
-			if (!this.store.get().loading) await this.refreshGroups();
+			await read;
+		} finally {
+			this.#changedRead = undefined;
+		}
+	}
+
+	/** The conversations changed since the newest one read (updated_at cursor, reaching back
+	 * SESSIONS_OVERLAP_MS), merged into the list; the whole list without a cursor or when its last
+	 * whole read is old (undefined: all may have changed). A read on its way is waited for first. */
+	async #readChangedSessions(): Promise<HostedSession[] | undefined> {
+		if (this.#sessionsFullRead) await this.#sessionsFullRead;
+		const cursor = this.#sessionsCursor;
+		if (!cursor || Date.now() - this.#sessionsReadAt > SESSIONS_FULL_MS) {
+			await this.refreshSessions();
+			return undefined;
+		}
+		const since = Date.parse(cursor.time) - SESSIONS_OVERLAP_MS;
+		const wholeReads = this.#sessionsWholeReads;
+		try {
+			const read = await this.#api.listSessions(
+				this.profile.environmentId,
+				this.signal,
+				Number.isFinite(since) ? { time: new Date(since).toISOString(), id: NO_ID } : undefined,
+			);
+			if (this.#stopped) return [];
+			// A whole read on its way, or one that landed meanwhile, is newer than this one's copies.
+			if (this.#sessionsFullRead || wholeReads !== this.#sessionsWholeReads) return undefined;
+			const known = new Map(this.store.get().sessions.map((session) => [session.sessionId, session]));
+			const changed = read.filter((session) => known.get(session.sessionId)?.updatedAt !== session.updatedAt);
+			this.#sessionsCursor = newestSession(read, this.#sessionsCursor);
+			if (changed.length)
+				this.store.set((state) => ({ sessions: mergeSessions(state.sessions, changed), sessionsError: undefined }));
+			else if (this.store.get().sessionsError) this.store.set({ sessionsError: undefined });
+			// A room's conversation changed (or appeared): its details are read again, as a whole read does.
+			if (
+				!this.store.get().loading &&
+				changed.some((session) => !session.staffAgentId && typeof session.executionScope?.roomId === "string")
+			)
+				await this.refreshGroups();
+			return changed;
 		} catch (error) {
-			if (this.#stopped || version !== this.#versions.sessions) return;
-			this.store.set({ sessionsError: describeError(error) });
+			if (!this.#stopped) this.store.set({ sessionsError: describeError(error) });
+			// Unknown, not unchanged: what the hint would have read is read anyway.
+			return undefined;
 		}
 	}
 
@@ -1280,14 +1429,21 @@ export class CompanyController {
 		this.#presence.setOpenThread(open);
 	}
 
-	loadConversation(sessionId: string): Promise<void> {
+	/** Reads a conversation's new events, its waiting inputs and its coding sessions; with
+	 * `eventsOnly`, only its new events (a thread that has read its history before). Full or not,
+	 * a thread with events reads forward from the newest one it has: one that opened at its newest
+	 * events keeps that window and only "Show earlier" reads further back, so hints, the trailing
+	 * full read, the watch and a catch-up after Realtime returns never read from the start. */
+	loadConversation(sessionId: string, options: { eventsOnly?: boolean } = {}): Promise<void> {
 		if (this.#stopped) return Promise.resolve();
+		const full = !options.eventsOnly;
 		const existing = this.#conversationLoads.get(sessionId);
 		if (existing) {
 			existing.repeat = true;
+			existing.full ||= full;
 			return existing.promise;
 		}
-		const request = { repeat: false, promise: Promise.resolve() };
+		const request = { repeat: false, full, promise: Promise.resolve() };
 		this.#conversationLoads.set(sessionId, request);
 		request.promise = this.#loadConversation(sessionId, request).finally(() =>
 			this.#conversationLoads.delete(sessionId),
@@ -1295,12 +1451,15 @@ export class CompanyController {
 		return request.promise;
 	}
 
-	async #loadConversation(sessionId: string, request: { repeat: boolean }): Promise<void> {
+	async #loadConversation(sessionId: string, request: { repeat: boolean; full: boolean }): Promise<void> {
 		const store = this.conversations.get(sessionId);
 		if (!store) return;
 		do {
 			request.repeat = false;
 			const known = store.get();
+			// A conversation read for the first time is read in full.
+			const full = request.full || !known.complete;
+			request.full = false;
 			const events = [...known.events];
 			const sequences = new Set(events.map((event) => event.sequence));
 			const add = (read: readonly HostedSessionEvent[]) => {
@@ -1361,15 +1520,15 @@ export class CompanyController {
 			try {
 				// The history, the waiting inputs and the coding sessions do not depend on one
 				// another: they are read side by side, and the thread draws once, when all landed.
-				const [complete, pending, listed] = await Promise.all([
+				const [complete, read, listed] = await Promise.all([
 					readEvents(),
-					readPending(),
+					// New events only: the waiting inputs and coding sessions stay as last read.
+					full ? readPending() : Promise.resolve(undefined),
 					// The listing is optional: a cloud without Order 9 answers with a missing
 					// RPC, and a refused or failed listing keeps what the thread already shows.
-					this.#api
-						.listCodingSessions(sessionId)
-						.catch(() => undefined),
+					full ? this.#api.listCodingSessions(sessionId).catch(() => undefined) : Promise.resolve(undefined),
 				]);
+				const pending = full ? read : store.get().pending;
 				if (this.#stopped || !complete || !pending) return;
 				let merged = current();
 				let earlier = hasEarlier ?? store.get().hasEarlier ?? false;
@@ -1382,14 +1541,20 @@ export class CompanyController {
 					for (const input of taken) this.#readBackFor.add(input.inputId);
 					const read = await this.#readTail(sessionId, merged, taken, () => !this.#stopped);
 					if (!read) return;
+					// "Show earlier" may have landed meanwhile, and reached further back.
 					merged = mergeEvents(store.get().events, read.events);
-					earlier = read.hasEarlier;
+					earlier = earlierOf(read, store.get());
 				}
 				const optimistic = reconcileOptimistic({ optimistic: store.get().optimistic, pending, events: merged });
 				const projection = projectTranscript(merged, pending);
 				const codingSessions = listed
 					? newerCodingSessions(listed, store.get().codingSessions)
 					: (store.get().codingSessions ?? []);
+				const now = Date.now();
+				this.#conversationReadAt.set(sessionId, {
+					any: now,
+					full: full ? now : (this.#conversationReadAt.get(sessionId)?.full ?? 0),
+				});
 				store.set({
 					events: merged,
 					pending,
@@ -1458,13 +1623,15 @@ export class CompanyController {
 		try {
 			const read = await this.#readTail(sessionId, state.events, undefined, () => !this.#stopped);
 			if (!read) return;
+			// A read of new events that landed meanwhile keeps them; a read-back that went further
+			// back meanwhile keeps its start.
 			const current = store.get();
 			const events = mergeEvents(read.events, current.events);
 			const projection = projectTranscript(events, current.pending);
 			store.set({
 				events,
 				projection,
-				hasEarlier: read.hasEarlier,
+				hasEarlier: earlierOf(read, current),
 				earlierLoading: false,
 				optimistic: reconcileOptimistic({ optimistic: current.optimistic, pending: current.pending, events }),
 				interactionAnswers: reconcileInteractionAnswers(current.interactionAnswers, projection, current.pending),
@@ -2000,6 +2167,18 @@ export class CompanyController {
 			}
 			// Re-arm first: a refresh that still sees work extends the watch.
 			this.#watchWork(0);
+			// With live hints, a change to the open conversation reads it in full and the agents'
+			// activity (#onHint); the watch then reads only new events, which arrive faster than
+			// the hints settle. Without them it reads everything, as the recovery path.
+			if (this.store.get().realtime === "connected") {
+				const open = this.#openSessionId;
+				if (open && Date.now() - (this.#conversationReadAt.get(open)?.any ?? 0) >= WATCH_SKIP_MS)
+					void this.loadConversation(open, { eventsOnly: true });
+				// Activity also changes without a hint (a lease, a run that fails to start), and reading
+				// it is what keeps the watch going while an agent works: on the hints' 3 s bound.
+				this.#refreshActivitySoon();
+				return;
+			}
 			if (this.#openSessionId) void this.loadConversation(this.#openSessionId);
 			void this.refreshActivity();
 		}, wait);
@@ -2008,20 +2187,49 @@ export class CompanyController {
 	/** Hints about one change arrive together (a move, then another member's echo). */
 	readonly #refreshSidebarSoon = debounce(() => void this.refreshSidebar(), 250);
 
-	readonly #refreshMentionsSoon = debounce(() => void this.refreshMentions(), 400);
+	/** A room's new messages may name the member: the badges are read again, at most every few
+	 * seconds while a room is busy. */
+	readonly #refreshMentionsSoon = throttle(() => void this.refreshMentions(), 5_000);
 
 	readonly #refreshOpenConversation = debounce(() => {
-		if (this.#openSessionId) void this.loadConversation(this.#openSessionId);
-		void this.refreshActivity();
+		const open = this.#openSessionId;
+		if (!open) return;
+		const due = (this.#conversationReadAt.get(open)?.full ?? 0) + OPEN_FULL_MS - Date.now();
+		void this.loadConversation(open, { eventsOnly: due > 0 });
+		// Its waiting inputs and coding sessions are read within OPEN_FULL_MS of the hint, also
+		// when no later hint comes; a full read meanwhile (a send, the clock) makes this one moot.
+		if (due > 0 && !this.#openFullTimer)
+			this.#openFullTimer = setTimeout(() => {
+				this.#openFullTimer = undefined;
+				if (this.#stopped || this.#openSessionId !== open) return;
+				if (Date.now() - (this.#conversationReadAt.get(open)?.full ?? 0) >= OPEN_FULL_MS)
+					void this.loadConversation(open);
+			}, due);
 	}, 400);
+
+	/** Realtime is back after an error: what changed while hints could not arrive is read once. */
+	#catchUp(): void {
+		if (this.#stopped || this.store.get().loading) return;
+		void this.#sessionsChanged();
+		void this.refreshActivity();
+		void this.refreshMentions();
+		if (this.#openSessionId) void this.loadConversation(this.#openSessionId);
+	}
+
+	/** A burst of transcript events is one hint's worth of reads. */
+	readonly #sessionsChangedSoon = debounce(() => void this.#sessionsChanged(), 250);
+
+	/** The agents' activity moves with their events: read at most every few seconds while they write. */
+	readonly #refreshActivitySoon = throttle(() => void this.refreshActivity(), 3_000);
 
 	#onHint(resource: RealtimeResource): void {
 		if (this.#stopped) return;
 		for (const listener of this.#invalidations) listener(resource);
 		if (resource === "sessions") {
-			void this.refreshSessions();
-			this.#refreshOpenConversation();
-			this.#refreshMentionsSoon();
+			// Every transcript event touches its conversation: read what changed, and the agents'
+			// activity, which moves with it.
+			this.#sessionsChangedSoon();
+			this.#refreshActivitySoon();
 		} else if (resource === "staff") {
 			void this.refreshStaff();
 			void this.refreshOrganization();
@@ -2051,7 +2259,8 @@ export class CompanyController {
 					for (const listener of this.#invalidations) {
 						listener("sessions");
 					}
-			}
+			} else if (Date.now() - this.#sessionsReadAt > SESSIONS_FULL_MS)
+				await (this.#sessionsFullRead ?? this.refreshSessions());
 			// Proposal comments/rejections do not all touch the Company File head.
 			// Refresh this surface even with a healthy Realtime channel.
 			if (!this.#stopped) for (const listener of this.#invalidations) listener("company-file");

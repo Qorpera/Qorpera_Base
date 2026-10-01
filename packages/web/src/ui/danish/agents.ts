@@ -169,6 +169,8 @@ export const AGENTS: Record<string, string> = {
 	"Needs {name} · paused {duration}": "Venter på {name} · på pause i {duration}",
 	"Needs {name} · paused now": "Venter på {name} · på pause nu",
 	"Answer sent · waiting for the session": "Svar sendt · venter på sessionen",
+	"Waiting for computer hours": "Venter på computertimer",
+	"Answer sent · waiting for computer hours": "Svar sendt · venter på computertimer",
 	"Opening the pull request": "Åbner pull requesten",
 	"Draft PR ready · session kept for follow-ups": "PR-kladde klar · sessionen gemmes til opfølgning",
 	"Finished · session kept for follow-ups": "Færdig · sessionen gemmes til opfølgning",

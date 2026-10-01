@@ -14,8 +14,12 @@ Founder decisions of 29 September 2026, on the Q1 page "Qorpera on Qorpera"
 Contract: section 16.3 and the 2026-09-29 amendment "events wake agents" (section 19). This file is
 the technical design. The Q1 page is the plain one.
 
-Status: W1a shipped in release v150 (PR #509, re-slotted to `20260928259260_runtime_event_intake`);
-W2 in review (PR #519, `20260928269290_runtime_event_wakes`). W1b reserves `20260929260100`.
+Status: W1a is live (v150, `20260928259260_runtime_event_intake`) and W2 is live (v151,
+`20260928269290_runtime_event_wakes`), both accepted; the intake is switched on. M2a is merged
+(`20260928299650_runtime_company_mailboxes`, release v154), with mail switched off until the domain exists.
+M2b is merged (`20260928309740_runtime_company_mail_sending`, release v155), with sending switched off; the founder's
+sender-name rule is in review (`20260929810000_runtime_company_mail_sender_names`). W1b takes a fresh slot when it
+starts.
 
 ## Words
 
@@ -32,10 +36,13 @@ W2 in review (PR #519, `20260928269290_runtime_event_wakes`). W1b reserves `2026
 | Step | What | Slot |
 | --- | --- | --- |
 | W1a | Hooks, deliveries, the public intake function, address-proven hooks end to end, member RPCs | `20260928259260` |
-| W1b | Signed hooks: the vault verifies Stripe, GitHub and HMAC signatures | `20260929260100` (reserved) |
+| W1b | Signed hooks: the vault verifies Stripe, GitHub and HMAC signatures | registered when started |
 | W2 | Routine trigger on a hook, event wakes, the agent tools `list_hooks` and `read_event` | `20260928269290` |
 | W3 | Agents create, pause and remove hooks (`manage_hook`) | registered when started |
-| M2 | Company mailboxes: the mail provider posts to a platform-owned hook per mailbox | registered when started |
+| M2a | Company mailboxes, receiving: owners create them, the mail provider's webhook fills them, routines wake on mail | `20260928299650` |
+| M2b | Sending as a mailbox, as the agent with an AI line: `send_mail`, the outbox and its sender | `20260928309740` |
+| M2b+ | Founder decisions of 1 October: no sender that reads as Qorpera | `20260929810000` |
+| M2c | Attachments' contents, threads and sent mail in the folder | registered when started |
 
 Each step is a release-train feature PR: no bundle, manifest or activation files, an independent
 exact-head review, and a hand-off to the coordinator.
@@ -327,10 +334,166 @@ After it is live:
 
 ## Mail (M2)
 
-A company mailbox is a platform-owned hook per address. The mail provider posts each inbound message
-to it, signed with Standard Webhooks or Svix headers, and the vault checks them like the other signed
-kinds. A connected Gmail is read by the platform once a minute and becomes deliveries the same way.
-Mail design follows in M2.
+Email waking agents is the top priority after events (29 September), and a company's first address is on
+a mail domain Qorpera owns (decision 7). Mail reuses the event machinery: a mailbox is a hook, a
+received message is a delivery, and routines wake on it through the event trigger (W2).
+
+**Provider.** Resend, which already sends the platform's invitations and hour notices. It receives
+every message sent to a domain whose MX record points to it, parses it, and posts a signed
+`email.received` webhook carrying only metadata; the body, headers and attachments' descriptions come
+from its API (`GET /emails/receiving/{id}`) with the platform's key. The domain and the cost are Jonas's
+call; until the domain exists, the build runs against Resend's `<id>.resend.app` receiving domain.
+
+**Mailboxes (M2a).** An owner or admin creates one with `qorpera_create_company_mailbox`: a local part
+(1–64 lowercase letters, digits, dots, hyphens and underscores; RFC 2142 names and `noreply` reserved)
+on the platform's mail domain, and a purpose. An address belongs to one live mailbox across the
+platform. The domain is one setting (`qorpera_mail_settings.domain`): a mailbox keeps only its local
+part, so going live on the real domain is that one change plus its MX record, and every mailbox made on
+the test domain moves with it. Each mailbox is a hook with the proof `mail`, named `mail-<local part>` (with a short digest when the
+local part holds a dot or an underscore, which hook names cannot; hook names beginning `mail-` are
+reserved for mailboxes), owned by the
+platform: it has a random hook address that is never shown, and the public intake answers `unknown`
+for it, so only the mail door fills it. Pausing, resuming and removing are the hook's; removing frees
+the address. Members see the address (`email`) in the hook list. At most 20 mailboxes a company, within
+its 50 hooks. `folder-v2` companies get mailboxes with their connection file, as hooks. Mailboxes do not
+wait for N1: when founding gives companies handles, their first mailbox can be made from the handle.
+
+**The mail door.** The Edge Function `mail-intake` checks the webhook's Standard Webhooks signature
+(`svix-*` headers, five minutes' tolerance) with the platform's signing secret, which is an Edge Function
+secret like the Resend key: mailboxes are the platform's, so no company vault is involved. It fetches the
+message, writes it as JSON text (`qorpera.mail/v1`) and hands it in one call, with every recipient in To,
+Cc, Bcc and the envelope, to `qorpera_receive_mail`. The database knows the domain: it looks up each
+address on it and stores the message once in every live mailbox among them, as a verified delivery of
+event type `mail.received`, content type JSON and key `mail:<provider message id>` (a retried webhook is
+a duplicate and writes nothing). The text is stored as written, so its size is what the function
+measured and its keys keep their order: subject, sender, recipients, reply-to, received time, message id,
+In-Reply-To and References, whether it was sent automatically (M2b: the Auto-Submitted, Precedence and List-Id
+headers, and `automated`, true for an Auto-Submitted other than `no`, a bulk, list, junk or auto-reply Precedence,
+or a mailing list), the SPF, DKIM and DMARC results, the attachments' descriptions, then the text
+and HTML bodies, cut to 256 KiB (HTML first, `truncated`). Text the database cannot hold (NUL, half a
+surrogate pair) is cleaned first, and the recipient lists are bounded. The hook's minute and the company's
+hourly budget apply as to any delivery. Mail for an address with no live mailbox, for a paused mailbox, or
+that the provider no longer has is dropped. The door answers the provider 200 when every recipient is
+settled, 429 with the longest `Retry-After` when a mailbox is over its limits, and 503 when mail is
+switched off or something failed, so the provider retries; a message the database calls malformed is
+logged and settled with 200, since a retry would send the same message.
+
+**Agents.** A routine on a mailbox is an event routine on its hook: `{kind:"event", hookId}`, optionally
+`only: ["mail.received"]`. The wake shows the message (cut to fit the wake), `read_event` reads it
+whole, and `list_hooks` lists mailboxes with their addresses. Mail is outside content: the wake protocol
+says so and names the authentication results.
+
+**Sending (M2b).** An agent sends from a live mailbox of its company with the tool `send_mail`: `from` (the
+mailbox's address as `list_hooks` shows it), `to` and `cc` (plain addresses, at most 10 together), a one-line
+`subject`, plain `text` of at most 20,000 characters, and optionally `inReplyTo`, the deliveryId of a received
+email it answers. Every email is an outside action to the automatic review, which sees the recipients, sender,
+subject and text; workers have no `send_mail`, and the wake must allow work (acknowledged, the company neither
+paused nor being deleted, no final answer yet). The service-role `qorpera_send_agent_mail` checks the request
+again, finds the mailbox (live, of the run's company and environment, not paused) and queues the email in
+`qorpera_company_mail_outbox`, keyed by the run and the tool call, so the same call again is the same email:
+
+- From the agent, as recipients read it: the name `<agent> at <company>` (quotes, brackets, line breaks and
+  invisible format characters such as bidi controls removed) at the mailbox's address.
+- The AI line: the text's last paragraph is `Written and sent by <agent>, an AI agent working for <company>.` The
+  database adds it; no agent can leave it out. It is not placed after a signature separator, which clients dim.
+- Never as if from Qorpera (founder decision, 1 October 2026; `20260929810000`): a send is refused (42501) when the
+  agent's name, the company's name or the mailbox's local part reads as Qorpera however it is spelled (case,
+  separators, accents, full width, look-alike Cyrillic or Greek letters and digits), and no mailbox is created
+  with such a name (22023). Names are not refused where they are set; the check guards the From line.
+- A reply to a received email of the company (`mail.received`, verified) carries that email's thread:
+  `In-Reply-To` its message id, and `References` the thread's first id and its newest ids that fit one header line
+  (980 characters, RFC 5322 3.6.4). An email whose text was cleared (after 7 days), or without a usable message
+  id, is answered outside its thread.
+- Mail loops: an email the mail door marked `automated` (an auto-reply, a mailing list, bulk mail) is never
+  answered (42501); every reply carries `Auto-Submitted: auto-replied` (RFC 3834), so other responders, another
+  company's agents included, leave it unanswered; and a company never emails its own mailboxes (42501), whose
+  routines would answer it. Another company's mailbox is a recipient like any other.
+- Limits: sending has its own switch (`qorpera_mail_settings.sending`, built off; `enabled` must be on too), and
+  a company emails at most `company_hourly_recipients` (60) recipients an hour and `company_daily_recipients`
+  (300) a day, each address of an email counting once, under one lock per company. Email cancelled before any
+  attempt does not count; email attempted counts, since it may have gone out. Past a limit the tool says, to the
+  second, when this email can go; an email with more recipients than a limit allows never fits. Every company
+  sends from the platform's domain, so one company's spam would hurt all of them: these are the guard until
+  reputation tracking.
+
+The Edge Function `mail-outbox`, called each minute by pg_cron + pg_net with a Supabase secret key (like the hour
+notices), claims up to 10 emails with `qorpera_claim_company_mail` under a five-minute lease and sends each
+through Resend's `POST /emails` with the platform's key, which no node, guest or agent holds, 0.6 seconds apart:
+plain text and the headers above, from the mailbox's address as it was at the email's first attempt (a domain
+change moves email not yet attempted; one already attempted repeats its address). The idempotency key is
+`company-mail/<email id>`, so a send repeated after a lost answer or an expired lease is the same email. A
+timeout, rate limit or server error is retried after 1, 2, 4 ... minutes, at most eight attempts; any other
+refusal fails the email (`qorpera_complete_company_mail`, `qorpera_fail_company_mail`). The claim cancels email
+from a removed or paused mailbox or of a company being deleted, fails email not sent within a day, and clears
+texts seven days after they settle, keeping the receipt; an email already attempted says it may have gone out.
+Switched off, the claim sends nothing and queued email waits; the first claim after sending is switched on again
+fails what waited more than a day. Texts are cleared only by the claim, so unscheduling the worker stops that too.
+Agents learn an email was queued, not that it arrived; bounces and complaints, and a sent-mail view, follow.
+
+**Founder decisions (1 October 2026).** The AI line stays as written, as its own last paragraph on every email.
+`Auto-Submitted` goes only on automatic replies, the loop guard, and never on new emails, so help desks do not drop
+them. No email looks like it comes from Qorpera (above).
+
+**Next (M2c).** Attachments' contents into the company's storage (and `mail/<address>/` in the folder once its
+writer lands, with sent mail beside the received); threads as files. A connected Gmail read once a minute can
+become deliveries the same way.
+
+## Deploy (M2a)
+
+The migration adds tables and functions, and patches four existing ones by exact text: the intake door
+(`qorpera_receive_event`: a mailbox's hook is unknown), the hook descriptor (a mailbox shows `email`,
+never its hook address), the agents' hook list (no `url` for a mailbox) and hook creation
+(`qorpera_create_event_hook`: names beginning `mail-` are the mailboxes'; production had none when this
+was written). It rolls: nothing uses mailboxes before they exist. After it is live:
+
+1. Deploy the function: `supabase functions deploy mail-intake` (`verify_jwt = false`), with the secret
+   `RESEND_WEBHOOK_SECRET` (the webhook's signing secret, `whsec_…`); `RESEND_API_KEY` is already set.
+2. In Resend: add the receiving domain (or use the `<id>.resend.app` one for acceptance), and a webhook for
+   `email.received` to `<supabase url>/functions/v1/mail-intake`.
+3. Set the domain and switch mail on:
+   `update public.qorpera_mail_settings set domain = '<receiving domain>', enabled = true;`
+4. Acceptance: an owner creates a mailbox on a test company; an agent sets up a routine on its hook; an
+   email sent to the address wakes it, and the run reads the message.
+
+## Deploy (M2b)
+
+The migration adds a table and functions, three setting columns, and patches one existing function by exact text
+(the observation list names `send_mail`). It rolls with a bundle carrying this runtime: an older runtime has no
+`send_mail`, and nothing sends while sending is off. The mail door (`mail-intake`) is redeployed too: it now marks
+mail sent automatically. After it is live:
+
+1. In Resend (Jonas): verify the mail domain for sending (its SPF and DKIM records), the same domain mailboxes
+   receive on. Until then Resend refuses the platform's `from`, and the outbox fails those emails.
+2. Deploy the functions: `supabase functions deploy mail-outbox` (`verify_jwt = false`) and
+   `supabase functions deploy mail-intake`; `RESEND_API_KEY` is already set.
+3. Schedule it every minute, with the project URL and a Supabase secret key from Vault as for the hour notices
+   (`RUNTIME-COMPUTER-HOURS.md`, "Email"; a key made for this worker, e.g. `qorpera_mail_outbox_key`, keeps its
+   rotation separate):
+
+   ```sql
+   select cron.schedule('qorpera-mail-outbox', '* * * * *', $$
+   	select net.http_post(
+   		url := (select decrypted_secret from vault.decrypted_secrets where name = 'qorpera_project_url')
+   			|| '/functions/v1/mail-outbox',
+   		headers := jsonb_build_object('content-type', 'application/json',
+   			'apikey', (select decrypted_secret from vault.decrypted_secrets where name = 'qorpera_mail_outbox_key')),
+   		body := '{}'::jsonb,
+   		-- A paced batch takes up to about 110 seconds; pg_net's default is 5.
+   		timeout_milliseconds := 120000)
+   $$);
+   ```
+
+4. Switch sending on: `update public.qorpera_mail_settings set sending = true;` (mail `enabled` and the domain
+   are M2a's).
+5. Watch by count: `select status, count(*) from public.qorpera_company_mail_outbox group by 1 order by 1`.
+6. Acceptance: a routine on a mailbox wakes on an email from an outside address and answers it with `send_mail`
+   and `inReplyTo`; the answer arrives from `<agent> at <company>` at the mailbox's address, ends with the AI line,
+   sits in the sender's thread and carries `Auto-Submitted: auto-replied`, with `References` unfolded or folded
+   correctly; the sender's reply wakes the routine again; an out-of-office answer to it arrives `automated` and is
+   not answered.
+7. Off again: `update public.qorpera_mail_settings set sending = false;` (queued email waits, and fails if it
+   waited a day once sending is back), or `select cron.unschedule('qorpera-mail-outbox')`, which also stops the
+   seven-day clearing of sent texts.
 
 ## Deploy (W1a)
 

@@ -3913,6 +3913,26 @@ complete section 16.3's listener triggers and section 11.5's broker. Design:
    the secret's current version, refuses a revoked secret, needs no run or
    agent grant, and the secret and its plaintext never leave the broker's
    memory. The result is only verified, duplicate or refused.
+9. **Mail is an event source (M2).** A company mailbox is an address on the
+   platform's mail domain (decision 7), made by an owner or admin, and a
+   platform-owned hook with the proof `mail`: only the platform's mail door
+   fills it, after checking the mail provider's signed webhook with the
+   platform's signing secret, and the public intake never takes a delivery
+   for it. Each received message is a verified delivery of type
+   `mail.received`, bounded like any delivery, and wakes routines through
+   the event trigger (item 4). Its sender and content are outside content
+   (item 5); the provider's SPF, DKIM and DMARC results travel with it. An
+   agent sends from a live mailbox of its company as itself (M2b): plain
+   text from "<agent> at <company>" at the mailbox's address, always ending
+   with a line saying an AI agent wrote and sent it. Every email passes the
+   automatic review as an outside action first, and only the platform's
+   sender, which alone holds the provider key, sends it. A reply to a
+   received email joins its thread and says it is an automatic response; an
+   email sent automatically is never answered, and a company never emails
+   its own mailboxes. No email goes out as if from Qorpera: a sender name or
+   mailbox that reads as Qorpera is refused (founder decision, 1 October
+   2026). Sending has its own platform switch, built off, and each company
+   an hourly and a daily limit on recipients that operators set.
 
 Section 21, item 33, is the event-wake acceptance item.
 
