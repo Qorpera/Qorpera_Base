@@ -49,6 +49,36 @@ begin
 	values (v_id, p_sha, 1, '63400000-0000-4000-8000-000000000010');
 	return v_id;
 end $$;
+-- A refusal as a conflict: the runtime's QRC01 409 envelope (C1D §9.7), never 40001.
+create function pg_temp.conflict(p_sql text) returns void language plpgsql as $$
+declare v_state text; v_message text;
+begin
+	begin
+		execute p_sql;
+	exception when others then
+		get stacked diagnostics v_state = returned_sqlstate, v_message = message_text;
+		if v_state = 'PGRST' and v_message::jsonb ->> 'code' = 'QRC01' then return; end if;
+		raise exception 'Expected the QRC01 conflict, got % %: %', v_state, v_message, p_sql;
+	end;
+	raise exception 'Expected the QRC01 conflict: %', p_sql;
+end $$;
+-- The version-2 stage helper (C1D §9.3 step 1): the version-1 helper's name and result shape, on the byte path (open,
+-- confirm, seal). A version-2 file is held to possession, so a fixture whose run or member commits it passes that actor.
+drop function pg_temp.stage(text);
+create function pg_temp.stage(p_text text, p_actor jsonb default '{"kind":"platform"}') returns jsonb language plpgsql as $$
+declare v_manifest text := pg_temp.manifest(case when p_text = '' then '{}'::text[] else array[p_text] end, 'text/plain');
+	v_open jsonb; v_object text; v_seal jsonb;
+begin
+	v_open := public.qorpera_folder_open_upload('63400000-0000-4000-8000-000000000020', p_actor, v_manifest);
+	foreach v_object in array case when p_text = '' then array[v_manifest] else array[p_text, v_manifest] end loop
+		if not (v_open -> 'present') ? pg_temp.hash(v_object) then
+			perform public.qorpera_folder_confirm_object('63400000-0000-4000-8000-000000000020', p_actor, (v_open ->> 'intentId')::uuid,
+				pg_temp.hash(v_object), octet_length(convert_to(v_object, 'utf8'))); end if;
+	end loop;
+	v_seal := public.qorpera_folder_seal_upload('63400000-0000-4000-8000-000000000020', p_actor, (v_open ->> 'intentId')::uuid);
+	if v_seal ->> 'state' <> 'sealed' then raise exception 'Fixture: %', v_seal; end if;
+	return v_seal -> 'file';
+end $$;
 create function pg_temp.claimed(p_result jsonb) returns text[] language sql as $$
 	select coalesce(array_agg(o ->> 'sha256' order by o ->> 'sha256'), '{}') from jsonb_array_elements(p_result -> 'objects') o
 $$;
@@ -150,7 +180,12 @@ begin
 	if jsonb_array_length(r -> 'objects') <> 0 or (pg_temp.gc(v_manifest)).sha256 is not null then
 		raise exception 'A rooted object loses its GC row at the claim'; end if;
 	-- A Storage-backed row is kept (its Storage file is its catalog row through the mirror trigger).
-	v_storage := pg_temp.stage('gc storage backed');
+	insert into storage.objects(bucket_id, name, metadata)
+	values ('qorpera-profile-objects', '63400000-0000-4000-8000-000000000010/' || pg_temp.hash('gc storage backed'),
+		jsonb_build_object('size', 17));
+	v_storage := jsonb_build_object('fileSha256', pg_temp.hash('gc storage backed'));
+	if (select backend from public.qorpera_profile_objects where profile_id = '63400000-0000-4000-8000-000000000010'
+		and sha256 = v_storage ->> 'fileSha256') <> 'supabase-storage' then raise exception 'Fixture: a Storage-backed row'; end if;
 	perform pg_temp.mark(v_storage ->> 'fileSha256', extensions.gen_random_uuid(), interval '-1 minute');
 	if pg_temp.claimed(public.qorpera_folder_claim_object_gc(100, extensions.gen_random_uuid())) && array[v_storage ->> 'fileSha256'] then
 		raise exception 'A Storage-backed row is not claimed'; end if;
@@ -173,15 +208,14 @@ begin
 	perform pg_temp.confirm(a, v_seal, pg_temp.manifest(array['gc marked', 'gc third']));
 	perform pg_temp.mark(v_x, v_lease);
 	-- open: a present object GC holds (the platform's present objects are all stored ones).
-	perform pg_temp.raises(format('select pg_temp.open(%L, %L)', '{"kind":"platform"}', pg_temp.manifest(array['gc marked'])), '55P03');
+	perform pg_temp.conflict(format('select pg_temp.open(%L, %L)', '{"kind":"platform"}', pg_temp.manifest(array['gc marked'])));
 	-- authorize and confirm the put; seal.
-	perform pg_temp.raises(format($q$select public.qorpera_folder_authorize_object_upload('63400000-0000-4000-8000-000000000020',
-		%L, %L, %L, 9)$q$, a, v_seal, v_x), '55P03');
-	perform pg_temp.raises(format('select pg_temp.confirm(%L, %L, %L)', a, v_seal, 'gc marked'), '55P03');
-	perform pg_temp.raises(format('select pg_temp.seal(%L, %L)', a, v_seal), '55P03');
+	perform pg_temp.conflict(format($q$select public.qorpera_folder_authorize_object_upload('63400000-0000-4000-8000-000000000020',
+		%L, %L, %L, 9)$q$, a, v_seal, v_x));
+	perform pg_temp.conflict(format('select pg_temp.confirm(%L, %L, %L)', a, v_seal, 'gc marked'));
+	perform pg_temp.conflict(format('select pg_temp.seal(%L, %L)', a, v_seal));
 	-- replication, and the download (answered as missing, even for the platform).
-	perform pg_temp.raises(format($q$select public.qorpera_folder_authorize_replication('63400000-0000-4000-8000-000000000010', %L, 9)$q$, v_x),
-		'55P03');
+	perform pg_temp.conflict(format($q$select public.qorpera_folder_authorize_replication('63400000-0000-4000-8000-000000000010', %L, 9)$q$, v_x));
 	perform pg_temp.raises(format('select pg_temp.download(%L, %L)', '{"kind":"platform"}', v_x), '42501');
 	-- commit step 6: a unit referencing it is refused as for a missing object.
 	perform pg_temp.expect(pg_temp.commit(a, 'gc-marked-write', jsonb_build_array(
@@ -302,29 +336,20 @@ begin
 	if pg_temp.claimed(r) && array[pg_temp.hash('gc elsewhere')] or (pg_temp.gc(pg_temp.hash('gc elsewhere'))).sha256 is not null then
 		raise exception 'The claim checks every folder-v2 environment'; end if;
 
-	-- A version-1 file (single chunk) gets its chunk row, and a left version-2 upload of the same content leaves it alone.
-	v_v1 := pg_temp.stage('gc version one');
-	if not exists (select 1 from public.qorpera_folder_file_chunks where profile_id = '63400000-0000-4000-8000-000000000010'
-		and chunk_sha256 = pg_temp.hash('gc version one') and manifest_sha256 = v_v1 ->> 'manifestSha256') then
-		raise exception 'A version-1 proof of a folder-v2 company gets its chunk rows'; end if;
-	perform pg_temp.expect(pg_temp.commit(pg_temp.member(1), 'gc-v1-0001', jsonb_build_array(
-		jsonb_build_object('op','write','path','gc/v1.md','file',v_v1))), 1, 'saved');
-	v_left := pg_temp.abandon(pg_temp.member(1), array['gc version one', 'gc v2 tail']);
-	perform pg_temp.expire(v_left, interval '2 hours');
-	perform public.qorpera_folder_sweep_upload_intents(100);
-	if (pg_temp.gc(pg_temp.hash('gc version one'))).sha256 is not null then
-		raise exception 'A committed version-1 file roots its chunk'; end if;
-	-- A re-verify writes them again (the update path), and so does an environment becoming folder-v2.
-	delete from public.qorpera_folder_file_chunks where manifest_sha256 = v_v1 ->> 'manifestSha256';
-	perform pg_temp.stage('gc version one');
-	if not exists (select 1 from public.qorpera_folder_file_chunks where manifest_sha256 = v_v1 ->> 'manifestSha256') then
-		raise exception 'A re-verify writes the chunk rows'; end if;
-	delete from public.qorpera_folder_file_chunks where manifest_sha256 = v_v1 ->> 'manifestSha256';
+	-- The version-2 stage helper: a file the platform staged, and one a member staged and commits (possession).
+	v_v1 := pg_temp.stage('gc staged by the platform');
+	if v_v1 - 'manifestSha256' is distinct from jsonb_build_object('fileSha256', pg_temp.hash('gc staged by the platform'), 'bytes', 25,
+			'mediaType', 'text/plain', 'executable', false)
+		or not exists (select 1 from public.qorpera_verified_company_file_objects
+			where manifest_sha256 = v_v1 ->> 'manifestSha256' and verifier_version = 2) then
+		raise exception 'The stage helper keeps the version-1 helper''s result shape: %', v_v1; end if;
+	perform pg_temp.expect(pg_temp.commit(pg_temp.member(1), 'gc-v2-help-1', jsonb_build_array(
+		jsonb_build_object('op','write','path','gc/by-member.md','file',pg_temp.stage('gc staged by a member', pg_temp.member(1))))),
+		1, 'saved');
+	if (pg_temp.stage('')) ->> 'bytes' <> '0' then raise exception 'An empty file stages too'; end if;
 	insert into public.qorpera_company_environments(id, profile_id, name, contract_version, created_by_user_id)
 	values ('63400000-0000-4000-8000-000000000022', '63400000-0000-4000-8000-000000000010', 'Third', 1,
 		'63400000-0000-4000-8000-000000000001');
-	if exists (select 1 from public.qorpera_folder_file_chunks where manifest_sha256 = v_v1 ->> 'manifestSha256') then
-		raise exception 'A snapshot-v1 environment writes no chunk rows'; end if;
 
 	-- A company with a snapshot-v1 environment beside its folder-v2 ones is never claimed.
 	insert into public.qorpera_folder_object_gc(profile_id, sha256, unreferenced_since)
@@ -333,8 +358,6 @@ begin
 	if jsonb_array_length(public.qorpera_folder_claim_object_gc(100, v_lease) -> 'objects') <> 0 then
 		raise exception 'A mixed company is never claimed'; end if;
 	perform public.qorpera_folder_enable('63400000-0000-4000-8000-000000000022');
-	if not exists (select 1 from public.qorpera_folder_file_chunks where manifest_sha256 = v_v1 ->> 'manifestSha256') then
-		raise exception 'An environment becoming folder-v2 writes the chunk rows of the version-1 proofs held'; end if;
 	if pg_temp.claimed(public.qorpera_folder_claim_object_gc(100, v_lease)) is distinct from array[pg_temp.hash('gc here only')] then
 		raise exception 'All folder-v2 again, the company is claimed'; end if;
 	-- A company being deleted is never claimed, and its quarantined files are removed.
@@ -377,8 +400,7 @@ declare v_fn regprocedure; v_body text;
 begin
 	foreach v_fn in array array['public.qorpera_folder_sweep_upload_intents(integer)', 'public.qorpera_folder_claim_object_gc(integer,uuid)',
 		'public.qorpera_folder_gc_unlink_begin(uuid,text,uuid)', 'public.qorpera_folder_gc_unlink_finish(uuid,text,uuid)',
-		'public.qorpera_folder_gc_unlink_abandon(uuid,text,uuid)', 'public.qorpera_folder_gc_quarantine_state(uuid,text,uuid)',
-		'public.qorpera_folder_proof_chunks()', 'public.qorpera_folder_enabled_proof_chunks()']::regprocedure[] loop
+		'public.qorpera_folder_gc_unlink_abandon(uuid,text,uuid)', 'public.qorpera_folder_gc_quarantine_state(uuid,text,uuid)']::regprocedure[] loop
 		select prosrc into v_body from pg_proc where oid = v_fn;
 		-- No company-wide lock: no fence, no company row, no company_files row, no job or run.
 		if v_body ~* '(lock_profile_gc_fence|qorpera_folder_fences|qorpera_runner_jobs|qorpera_execution_runs|nowait)'

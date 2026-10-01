@@ -1,8 +1,9 @@
 -- @fixture 762_folder_core_bytes_concurrency.test.sql until "-- A. Step 6: a commit holds"
 -- Company folder core, C1d-2a under concurrency (deploy/first-node/RUNTIME-COMPANY-FOLDER-C1D.md §9.6–§9.8): the claim
--- skips what a reference holds and never waits, a reference that waited on the claim sees its mark, two claims never
--- take one object, the sweep never makes the claim wait, an upload that slips past the mark by its plain reads is a
--- root the finish restores, and the finish waits at most its lock budget. 762's committed fixture, removed at the end.
+-- skips what a reference holds and never waits, a reference that waited on the claim sees its mark (open, step 6,
+-- confirm, replication), two claims never take one object, the sweep never makes the claim wait, an upload that slips
+-- past the mark by its plain reads is a root the finish restores, the finish waits at most its lock budget, and it takes
+-- the row before its last re-check. 762's committed fixture, removed at the end.
 -- Waits are detected with pg_blocking_pids; only the budget case bounds a wait by time.
 
 -- An object staged and left: put under an intent that is gone, unreferenced for two days (committed).
@@ -60,7 +61,7 @@ begin
 	if not pg_temp.waits_for('auth_two', 'auth_one') then raise exception 'The open waits on the claim'; end if;
 	perform dblink_exec('auth_one', 'commit');
 	v_state := pg_temp.outcome('auth_two');
-	if v_state not like '55P03 %' then raise exception 'The open sees the mark committed while it waited: %', v_state; end if;
+	if v_state not like 'PGRST %QRC01%' then raise exception 'The open sees the mark committed while it waited: %', v_state; end if;
 end $$;
 -- (Other sessions see only what is committed: the first claim's marks on the file are cleared here, on their own.)
 update public.qorpera_folder_object_gc set lease_id = null, lease_expires_at = null
@@ -165,6 +166,71 @@ begin
 	if not exists (select 1 from public.qorpera_folder_object_gc where profile_id = '63500000-0000-4000-8000-000000000010'
 		and sha256 = v_x and lease_id = v_lease) then
 		raise exception 'The mark stays for the next run'; end if;
+end $$;
+
+-- R7 (review round 1). A reference holds the object KEY SHARE and commits a root while the finish waits: the finish takes
+-- the catalog row before it re-checks the roots, so it answers restore and the object stays.
+select set_config('qorpera_test.gc_lockfirst', pg_temp.left_object('gc race lock first'), false);
+select set_config('qorpera_test.gc_lockfirst_lease', extensions.gen_random_uuid()::text, false);
+do $$
+begin
+	if not pg_temp.claims(public.qorpera_folder_claim_object_gc(100, current_setting('qorpera_test.gc_lockfirst_lease')::uuid),
+		current_setting('qorpera_test.gc_lockfirst')) then raise exception 'The claim takes it'; end if;
+end $$;
+do $$
+declare v_x text := current_setting('qorpera_test.gc_lockfirst'); v_lease uuid := current_setting('qorpera_test.gc_lockfirst_lease')::uuid;
+	v_res text;
+begin
+	perform dblink_exec('auth_one', 'begin');
+	perform * from dblink('auth_one', format($q$select 1 from public.qorpera_profile_objects where profile_id = %L and sha256 = %L
+		for key share$q$, '63500000-0000-4000-8000-000000000010', v_x)) as t(r integer);
+	perform dblink_exec('auth_one', format($q$with i as (insert into public.qorpera_folder_upload_intents(environment_id, profile_id,
+		actor_kind, scope_id, manifest_sha256, manifest_text, file_sha256, bytes, media_type, executable, expires_at)
+		values ('63500000-0000-4000-8000-000000000020', '63500000-0000-4000-8000-000000000010', 'platform',
+			'00000000-0000-0000-0000-000000000000', %L, '{}', %L, 1, 'text/plain', false, clock_timestamp() + interval '15 minutes')
+		returning id)
+		insert into public.qorpera_folder_upload_intent_objects(intent_id, sha256, bytes, profile_id)
+		select id, %L, 1, '63500000-0000-4000-8000-000000000010' from i$q$, v_x, v_x, v_x));
+	perform dblink_send_query('auth_two', format('select public.qorpera_folder_gc_unlink_finish(%L, %L, %L)',
+		'63500000-0000-4000-8000-000000000010', v_x, v_lease));
+	if not pg_temp.waits_for('auth_two', 'auth_one') then raise exception 'The finish waits on the holder'; end if;
+	perform dblink_exec('auth_one', 'commit');
+	select t.r into v_res from dblink_get_result('auth_two') as t(r text);
+	perform * from dblink_get_result('auth_two') as t(r text);
+	if v_res <> 'restore' or not exists (select 1 from public.qorpera_profile_objects
+		where profile_id = '63500000-0000-4000-8000-000000000010' and sha256 = v_x) then
+		raise exception 'A root committed while the finish waited keeps the object: %', v_res; end if;
+end $$;
+
+-- R8 and R9. A confirm and a replication wait on the claim's lock, then see its mark: the conflict, not a stale success.
+-- (The confirm's intent is opened after the claim's re-check, by plain reads, as in R5.)
+select set_config('qorpera_test.gc_confirm', pg_temp.left_object('gc race confirm'), false);
+do $$
+declare v_x text := current_setting('qorpera_test.gc_confirm'); v_open jsonb; v_state text; v jsonb := pg_temp.actor('run_one');
+begin
+	perform dblink_exec('auth_one', 'begin');
+	perform * from dblink('auth_one', pg_temp.sql_claim(extensions.gen_random_uuid())) as t(r jsonb);
+	-- (Through a third session, so the intent is committed for the confirm to find.)
+	select t.r into v_open from dblink('auth_three', format('select public.qorpera_folder_open_upload(%L, %L, %L)',
+		'63500000-0000-4000-8000-000000000020', v, pg_temp.manifest(array['gc race confirm']))) as t(r jsonb);
+	perform dblink_send_query('auth_two', pg_temp.sql_confirm(v, (v_open ->> 'intentId')::uuid, 'gc race confirm'));
+	if not pg_temp.waits_for('auth_two', 'auth_one') then raise exception 'The confirm waits on the claim'; end if;
+	perform dblink_exec('auth_one', 'commit');
+	v_state := pg_temp.outcome('auth_two');
+	if v_state not like 'PGRST %QRC01%' then raise exception 'The confirm sees the mark committed while it waited: %', v_state; end if;
+end $$;
+select set_config('qorpera_test.gc_replica', pg_temp.left_object('gc race replica'), false);
+do $$
+declare v_x text := current_setting('qorpera_test.gc_replica'); v_state text;
+begin
+	perform dblink_exec('auth_one', 'begin');
+	perform * from dblink('auth_one', pg_temp.sql_claim(extensions.gen_random_uuid())) as t(r jsonb);
+	perform dblink_send_query('auth_two', format('select public.qorpera_folder_authorize_replication(%L, %L, %s)',
+		'63500000-0000-4000-8000-000000000010', v_x, octet_length('gc race replica')));
+	if not pg_temp.waits_for('auth_two', 'auth_one') then raise exception 'The replication waits on the claim'; end if;
+	perform dblink_exec('auth_one', 'commit');
+	v_state := pg_temp.outcome('auth_two');
+	if v_state not like 'PGRST %QRC01%' then raise exception 'The replication sees the mark committed while it waited: %', v_state; end if;
 end $$;
 
 select dblink_disconnect(name) from unnest(array['auth_one','auth_two','auth_three']) name;

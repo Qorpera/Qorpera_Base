@@ -6,7 +6,7 @@
 -- * The intent sweep records when objects lost their roots; the claim marks under FOR UPDATE SKIP LOCKED with no
 --   company fence; the unlink's begin, finish and abandon, and the quarantine state, serve the gateway lane.
 -- * Every place that takes a new reference refuses a marked object (G1), reading the mark in a statement after its lock.
--- * Version-1 proofs of folder-v2 companies get chunk rows, so the chunk side of the root check is complete.
+-- * A refusal is the runtime's conflict envelope (QRC01, 409), never 40001 (test 361): the writer redoes its call.
 --
 -- Only folder-v2 companies whose every environment is folder-v2 and that are not being deleted are swept or claimed.
 -- Every new function waits at most 2 s for any one lock (as 20260929780000), and the patched ones keep that budget.
@@ -53,11 +53,23 @@ returns boolean language sql stable security definer set search_path = '' as $$
 		where profile_id = p_profile_id and sha256 = p_sha256 and lease_expires_at > clock_timestamp())
 $$;
 
+-- A reference to an object GC holds is refused as a conflict (C1D §9.7): the runtime's QRC01 409 envelope, so PostgREST
+-- answers 409 and the writer redoes its call. Never 40001, which PostgREST retries on its own (test 361).
+create function public.qorpera_folder_object_collecting()
+returns void language plpgsql security definer set search_path = '' as $$
+begin
+	raise sqlstate 'PGRST' using message = jsonb_build_object('code', 'QRC01', 'message',
+		'Company folder object is being collected; retry', 'details', null, 'hint', null)::text,
+		detail = '{"status":409,"headers":{}}';
+end $$;
+
 -- Whether anything still names an object of a company (C1D §9.3), leaving out one intent (the sweep's own). Rooted:
 -- * the manifest of a live entry or of any path version, in any folder-v2 environment of the company;
 -- * an object of an upload intent still in the table that expired less than the grace window ago (24 hours), so an
 --   intent the sweep has not reached yet protects its objects for as long as its sweep would;
--- * a chunk of a rooted manifest (qorpera_folder_file_chunks, complete for every proof version, §6 below).
+-- * a chunk of a rooted manifest (qorpera_folder_file_chunks; seal writes it for version 2, and version 1 is refused for
+--   folder-v2 before C1d-2b's worker phase runs: C1D §9.3, "C5 early"). C2: a root that names a manifest roots its
+--   chunks through this step; one that names a chunk alone adds its own clause.
 -- C2 adds its roots here (proposals, review cards, conflict copies, holds). Plain reads, through the manifest indexes.
 create function public.qorpera_folder_object_rooted(p_profile_id uuid, p_sha256 text, p_except_intent uuid default null)
 returns boolean language sql stable security definer set search_path = '' as $$
@@ -82,14 +94,18 @@ $$;
 
 -- Removes intents expired more than an hour ago, oldest first, skipping any another transaction holds. For each, its
 -- objects that have a catalog row and that nothing else roots get a GC row, or theirs moves forward: unreferenced
--- since the intent's expiry (G4, `greatest`). Each intent in its own subtransaction, so a lock it cannot get within the
--- 2 s budget skips that intent only. Returns how many it removed.
+-- since the intent's expiry (G4, `greatest`). A company GC does not serve (§9.2) gets no GC rows, though its expired
+-- intents are removed all the same. Each intent in its own subtransaction, so a lock it cannot get within the 2 s budget
+-- skips that intent only. Returns how many it removed.
 create function public.qorpera_folder_sweep_upload_intents(p_limit integer)
 returns integer language plpgsql security definer set search_path = '' set lock_timeout = '2s' as $$
 declare v_id uuid; v_intent public.qorpera_folder_upload_intents%rowtype; v_swept integer := 0;
 begin
 	if auth.role() is distinct from 'service_role' then raise exception 'Folder core authority is required' using errcode = '42501'; end if;
 	if p_limit is null or p_limit not between 1 and 100 then raise exception 'Sweep limit is invalid' using errcode = '22023'; end if;
+	-- Every re-check reads after its lock, which only READ COMMITTED gives statement by statement.
+	if current_setting('transaction_isolation') <> 'read committed' then
+		raise exception 'Folder GC needs read committed isolation' using errcode = '25000'; end if;
 	for v_id in select id from public.qorpera_folder_upload_intents
 		where expires_at < clock_timestamp() - interval '1 hour' order by expires_at, id limit p_limit
 	loop
@@ -109,7 +125,9 @@ begin
 			end if;
 			delete from public.qorpera_folder_upload_intents where id = v_intent.id;
 			v_swept := v_swept + 1;
-		exception when lock_not_available or deadlock_detected then
+		-- A lock it cannot get within the budget, a deadlock, or a catalog row deleted between the check and the insert
+		-- (23503): this intent waits for the next run.
+		exception when lock_not_available or deadlock_detected or foreign_key_violation then
 			null;
 		end;
 	end loop;
@@ -131,6 +149,9 @@ begin
 	if auth.role() is distinct from 'service_role' then raise exception 'Folder core authority is required' using errcode = '42501'; end if;
 	if p_limit is null or p_limit not between 1 and 100 or p_lease is null then
 		raise exception 'GC claim is invalid' using errcode = '22023'; end if;
+	-- Every re-check reads after its lock, which only READ COMMITTED gives statement by statement.
+	if current_setting('transaction_isolation') <> 'read committed' then
+		raise exception 'Folder GC needs read committed isolation' using errcode = '25000'; end if;
 	for v_row in select o.profile_id, o.sha256, o.bytes, o.backend from public.qorpera_folder_object_gc g
 		join public.qorpera_profile_objects o on o.profile_id = g.profile_id and o.sha256 = g.sha256
 		where g.unreferenced_since <= clock_timestamp() - interval '24 hours'
@@ -192,6 +213,9 @@ returns text language plpgsql security definer set search_path = '' set lock_tim
 declare v_gc public.qorpera_folder_object_gc%rowtype;
 begin
 	if auth.role() is distinct from 'service_role' then raise exception 'Folder core authority is required' using errcode = '42501'; end if;
+	-- Every re-check reads after its lock, which only READ COMMITTED gives statement by statement.
+	if current_setting('transaction_isolation') <> 'read committed' then
+		raise exception 'Folder GC needs read committed isolation' using errcode = '25000'; end if;
 	perform 1 from public.qorpera_profile_objects where profile_id = p_profile_id and sha256 = p_sha256 for update;
 	if not found then return 'removed'; end if;
 	select * into v_gc from public.qorpera_folder_object_gc where profile_id = p_profile_id and sha256 = p_sha256 for update;
@@ -241,47 +265,7 @@ begin
 	return 'restore';
 end $$;
 
--- 6. Chunk rows for version-1 proofs (C1D §9.3) ------------------------------------------------------------------------
-
--- Seal writes a version-2 proof's chunk rows. A version-1 proof (qorpera_verify_company_path_file; accepted in
--- folder-v2 until C5, and the folder fixtures use it) gets them here, for a folder-v2 company: when the proof is
--- written or re-verified, and, for proofs a company already holds, when an environment of it becomes folder-v2.
-create function public.qorpera_folder_proof_chunks()
-returns trigger language plpgsql security definer set search_path = '' set lock_timeout = '2s' as $$
-begin
-	if new.verifier_version <> 1 or not public.qorpera_company_is_folder_v2(new.profile_id) then return null; end if;
-	insert into public.qorpera_folder_file_chunks(profile_id, chunk_sha256, manifest_sha256)
-	select distinct new.profile_id, o ->> 'sha256', new.manifest_sha256 from jsonb_array_elements(new.objects) o
-	where o ->> 'sha256' is distinct from new.manifest_sha256
-	on conflict do nothing;
-	return null;
-end $$;
-create trigger qorpera_folder_proof_chunks after insert or update on public.qorpera_verified_company_file_objects
-	for each row execute function public.qorpera_folder_proof_chunks();
-
-create function public.qorpera_folder_enabled_proof_chunks()
-returns trigger language plpgsql security definer set search_path = '' set lock_timeout = '2s' as $$
-begin
-	if new.core <> 'folder-v2' or (tg_op = 'UPDATE' and old.core = 'folder-v2') then return null; end if;
-	insert into public.qorpera_folder_file_chunks(profile_id, chunk_sha256, manifest_sha256)
-	select distinct v.profile_id, o ->> 'sha256', v.manifest_sha256 from public.qorpera_verified_company_file_objects v
-	cross join jsonb_array_elements(v.objects) o
-	where v.profile_id = new.profile_id and v.verifier_version = 1 and o ->> 'sha256' is distinct from v.manifest_sha256
-	on conflict do nothing;
-	return null;
-end $$;
-create trigger qorpera_folder_enabled_proof_chunks after insert or update of core on public.qorpera_company_files
-	for each row execute function public.qorpera_folder_enabled_proof_chunks();
-
--- The folder-v2 companies of today.
-insert into public.qorpera_folder_file_chunks(profile_id, chunk_sha256, manifest_sha256)
-select distinct v.profile_id, o ->> 'sha256', v.manifest_sha256 from public.qorpera_verified_company_file_objects v
-cross join jsonb_array_elements(v.objects) o
-where v.verifier_version = 1 and o ->> 'sha256' is distinct from v.manifest_sha256
-	and public.qorpera_company_is_folder_v2(v.profile_id)
-on conflict do nothing;
-
--- 7. References refuse a marked object (C1D §9.7, G1) ---------------------------------------------------------------
+-- 6. References refuse a marked object (C1D §9.7, G1) ---------------------------------------------------------------
 
 -- Each check runs in a statement after the place's own lock, so it sees a mark committed while it waited.
 create function pg_temp.c1d2_replace(p_target regprocedure, p_old text, p_new text) returns void language plpgsql as $$
@@ -305,12 +289,12 @@ begin
 		E'\t\torder by o.sha256 collate "C" for key share of o) p;\n',
 		E'\t\torder by o.sha256 collate "C" for key share of o) p;\n'
 		|| E'\tif exists (select 1 from jsonb_array_elements_text(v_present) s where public.qorpera_folder_object_marked(v_profile, s)) then\n'
-		|| E'\t\traise exception ''Company folder object is being collected; retry'' using errcode = ''55P03''; end if;\n');
+		|| E'\t\tperform public.qorpera_folder_object_collecting(); end if;\n');
 	-- confirm: a row that vanished between the insert and the lock, or one GC holds.
 	perform pg_temp.c1d2_replace('public.qorpera_folder_confirm_object(uuid,jsonb,uuid,text,bigint)',
 		E'\tif v_bytes is distinct from p_bytes then\n',
 		E'\tif v_bytes is null or public.qorpera_folder_object_marked(v_intent.profile_id, p_sha256) then\n'
-		|| E'\t\traise exception ''Company folder object is being collected; retry'' using errcode = ''55P03''; end if;\n'
+		|| E'\t\tperform public.qorpera_folder_object_collecting(); end if;\n'
 		|| E'\tif v_bytes is distinct from p_bytes then\n');
 	-- seal: any of the intent's objects GC holds.
 	perform pg_temp.c1d2_replace('public.qorpera_folder_seal_upload(uuid,jsonb,uuid)',
@@ -318,19 +302,19 @@ begin
 		E'\twhere o.profile_id = v_intent.profile_id order by o.sha256 collate "C" for key share of o;\n'
 		|| E'\tif exists (select 1 from public.qorpera_folder_upload_intent_objects i where i.intent_id = v_intent.id\n'
 		|| E'\t\tand public.qorpera_folder_object_marked(v_intent.profile_id, i.sha256)) then\n'
-		|| E'\t\traise exception ''Company folder object is being collected; retry'' using errcode = ''55P03''; end if;\n');
+		|| E'\t\tperform public.qorpera_folder_object_collecting(); end if;\n');
 	-- authorize upload, before the NAS write (plain reads; safe by the intent's root, C1D §9.7).
 	perform pg_temp.c1d2_replace('public.qorpera_folder_authorize_object_upload(uuid,jsonb,uuid,text,bigint)',
 		E'\tif not exists (select 1 from public.qorpera_profile_objects where profile_id = v_intent.profile_id and sha256 = p_sha256) then\n',
 		E'\tif public.qorpera_folder_object_marked(v_intent.profile_id, p_sha256) then\n'
-		|| E'\t\traise exception ''Company folder object is being collected; retry'' using errcode = ''55P03''; end if;\n'
+		|| E'\t\tperform public.qorpera_folder_object_collecting(); end if;\n'
 		|| E'\tif not exists (select 1 from public.qorpera_profile_objects where profile_id = v_intent.profile_id and sha256 = p_sha256) then\n');
 	-- replication, after its NO KEY UPDATE (and the Storage replica-insert guard, which calls it).
 	perform pg_temp.c1d2_replace('public.qorpera_folder_authorize_replication(uuid,text,bigint)',
 		E'\tif not found then raise exception ''replication object is unavailable'' using errcode = ''42501''; end if;\n',
 		E'\tif not found then raise exception ''replication object is unavailable'' using errcode = ''42501''; end if;\n'
 		|| E'\tif public.qorpera_folder_object_marked(p_profile_id, p_sha256) then\n'
-		|| E'\t\traise exception ''Company folder object is being collected; retry'' using errcode = ''55P03''; end if;\n');
+		|| E'\t\tperform public.qorpera_folder_object_collecting(); end if;\n');
 	-- download: a marked object is answered as missing (safe by roots: only an entry or path version makes it readable).
 	perform pg_temp.c1d2_replace('public.qorpera_folder_authorize_object_download(uuid,jsonb,text)',
 		E'\tif v_bytes is null then raise exception ''Object is unavailable'' using errcode = ''42501''; end if;\n',
@@ -345,11 +329,10 @@ begin
 		|| E'\twhere not public.qorpera_folder_object_marked(v_file.profile_id, s.sha256);\n\n');
 end $$;
 
--- 8. Grants ------------------------------------------------------------------------------------------------------------
+-- 7. Grants ------------------------------------------------------------------------------------------------------------
 
 revoke all on function public.qorpera_folder_gc_company(uuid), public.qorpera_folder_object_marked(uuid, text),
-	public.qorpera_folder_object_rooted(uuid, text, uuid), public.qorpera_folder_proof_chunks(),
-	public.qorpera_folder_enabled_proof_chunks()
+	public.qorpera_folder_object_rooted(uuid, text, uuid), public.qorpera_folder_object_collecting()
 	from public, anon, authenticated, service_role;
 revoke all on function public.qorpera_folder_sweep_upload_intents(integer), public.qorpera_folder_claim_object_gc(integer, uuid),
 	public.qorpera_folder_gc_unlink_begin(uuid, text, uuid), public.qorpera_folder_gc_unlink_finish(uuid, text, uuid),
