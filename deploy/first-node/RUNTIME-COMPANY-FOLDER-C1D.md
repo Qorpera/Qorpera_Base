@@ -348,11 +348,16 @@ company may have several: test 761 enables a second). An object is rooted when i
 - a chunk of a rooted manifest, through `qorpera_folder_file_chunks`, read from the chunk side.
 
 The chunk index must be complete for every proof version. Today only seal writes it, for version 2, while version-1
-proofs are still accepted until C5 and the folder fixtures stage version 1. So C1d-2a adds a folder-v2 line to
-`qorpera_verify_company_path_file` that writes the chunk rows of a version-1 proof, and backfills them for existing
-folder-v2 proofs. The rows are written by an `after insert` trigger on `qorpera_verified_company_file_objects` whose
-first line returns unless the profile is folder-v2: so they follow the proof itself, take no fence, and stay out of
-the snapshot-v1 body of `qorpera_verify_company_path_file`. The file-hash check is then not needed. Manifests of manifests (core §7) will need a recursive step
+proofs are still accepted until C5 and the folder fixtures stage version 1. So C1d-2a writes the chunk rows of
+version-1 proofs too:
+- an `after insert or update` trigger on `qorpera_verified_company_file_objects` (a re-verify takes the update path),
+  whose first line returns unless the profile is folder-v2. The rows follow the proof itself, take no fence, and stay
+  out of the snapshot-v1 body of `qorpera_verify_company_path_file`;
+- an `after insert or update of core` trigger on `qorpera_company_files` that, when an environment becomes folder-v2,
+  writes the chunk rows of the version-1 proofs the company already holds;
+- a backfill for the folder-v2 companies that exist when C1d-2a lands.
+
+The file-hash check is then not needed. Manifests of manifests (core §7) will need a recursive step
 here; that comes with them.
 
 **The catalog of a folder-v2 company holds only folder objects.** Every other feature that stores bytes refuses
