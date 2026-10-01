@@ -874,9 +874,14 @@ export class CodingSessionElement {
 								? t(
 										"The computer running this session stopped answering. The workspace is kept; a follow-up starts it again.",
 									)
-								: reason
-									? t("Failed: {reason}", { reason })
-									: t("Failed"),
+								: reason?.includes("[code=COMPUTER_HOURS_EXHAUSTED]")
+									? // Cut off an hour after the company ran out of computer hours (20260928259270).
+										t(
+											"The company ran out of computer hours. The workspace is kept; a follow-up continues once hours are added.",
+										)
+									: reason
+										? t("Failed: {reason}", { reason })
+										: t("Failed"),
 						),
 					);
 					break;
