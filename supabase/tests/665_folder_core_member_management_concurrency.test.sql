@@ -2,21 +2,30 @@
 -- Company folder core, C1c-3c under concurrency (deploy/first-node/RUNTIME-COMPANY-FOLDER-C1C.md §6.4): a removal takes
 -- the job its connection revoke ends before the fence; two founders leaving at once meet at the fence, so the second
 -- sees no founder left; a removal and a post meet at the agent's thread room; member changes never wait for a
--- company-row KEY SHARE holder; a join waits at the fence behind a removal in flight. 648's committed fixture, removed
--- at the end.
+-- company-row KEY SHARE holder; a join waits at the fence behind a removal in flight; a hire waits for a removal and a
+-- demotion at the member rows, so neither member stays in the new agent's thread; a founder's step-down waits at its
+-- member row holding no room; a join caught at the fence holds no invitation, so a deletion goes on. 648's committed
+-- fixture, removed at the end.
 
--- Three more people (committed): 04 with its own login (connection c6, binding b7) and a queued run it pays for, 05, and
--- 06, who is invited.
+-- More people (committed): 04 with its own login (connection c6, binding b7) and a queued run it pays for, 05, 07 and
+-- 08; 06 and 09, who are invited.
 insert into auth.users(id, email, email_confirmed_at) values
 	('66500000-0000-4000-8000-000000000004', 'race-member-4@example.test', clock_timestamp()),
 	('66500000-0000-4000-8000-000000000005', 'race-member-5@example.test', clock_timestamp()),
-	('66500000-0000-4000-8000-000000000006', 'race-joiner@example.test', clock_timestamp());
+	('66500000-0000-4000-8000-000000000006', 'race-joiner@example.test', clock_timestamp()),
+	('66500000-0000-4000-8000-000000000007', 'race-member-7@example.test', clock_timestamp()),
+	('66500000-0000-4000-8000-000000000008', 'race-member-8@example.test', clock_timestamp()),
+	('66500000-0000-4000-8000-000000000009', 'race-joiner-9@example.test', clock_timestamp());
 insert into public.qorpera_profile_members(profile_id, user_id, email, display_name, role) values
 	('64800000-0000-4000-8000-000000000010', '66500000-0000-4000-8000-000000000004', 'race-member-4@example.test', 'Four', 'contributor'),
-	('64800000-0000-4000-8000-000000000010', '66500000-0000-4000-8000-000000000005', 'race-member-5@example.test', 'Five', 'contributor');
-insert into public.qorpera_profile_invitations(id, profile_id, email, role, invited_by_user_id, expires_at)
-values ('66500000-0000-4000-8000-0000000000e1', '64800000-0000-4000-8000-000000000010', 'race-joiner@example.test', 'contributor',
-	'64800000-0000-4000-8000-000000000001', clock_timestamp() + interval '1 day');
+	('64800000-0000-4000-8000-000000000010', '66500000-0000-4000-8000-000000000005', 'race-member-5@example.test', 'Five', 'contributor'),
+	('64800000-0000-4000-8000-000000000010', '66500000-0000-4000-8000-000000000007', 'race-member-7@example.test', 'Seven', 'contributor'),
+	('64800000-0000-4000-8000-000000000010', '66500000-0000-4000-8000-000000000008', 'race-member-8@example.test', 'Eight', 'contributor');
+insert into public.qorpera_profile_invitations(id, profile_id, email, role, invited_by_user_id, expires_at) values
+	('66500000-0000-4000-8000-0000000000e1', '64800000-0000-4000-8000-000000000010', 'race-joiner@example.test', 'contributor',
+		'64800000-0000-4000-8000-000000000001', clock_timestamp() + interval '1 day'),
+	('66500000-0000-4000-8000-0000000000e2', '64800000-0000-4000-8000-000000000010', 'race-joiner-9@example.test', 'contributor',
+		'64800000-0000-4000-8000-000000000001', clock_timestamp() + interval '1 day');
 set session_replication_role = replica;
 insert into public.qorpera_provider_connections(id, profile_id, client_connection_id, owner_user_id, provider, created_by_user_id)
 values ('66500000-0000-4000-8000-0000000000c6', '64800000-0000-4000-8000-000000000010', extensions.gen_random_uuid(),
@@ -64,13 +73,20 @@ begin
 	end loop;
 	return false;
 end $$;
--- Whether a row is free: a NOWAIT lock on another connection, released at once.
-create function pg_temp.row_free(p_sql text) returns boolean language plpgsql as $$
+-- Whether a row is free: a NOWAIT lock on another connection (fence_four unless named; it must be idle, outside a
+-- transaction), released at once.
+create function pg_temp.row_free(p_sql text, p_conn text default 'fence_four') returns boolean language plpgsql as $$
 begin
-	perform * from dblink('fence_four', p_sql || ' nowait') as t(x integer);
+	perform * from dblink(p_conn, p_sql || ' nowait') as t(x integer);
 	return true;
 exception when lock_not_available then return false;
 end $$;
+-- Whether a member is active in an agent's thread.
+create function pg_temp.in_thread(p_agent uuid, p_user uuid) returns boolean language sql as $$
+	select exists (select 1 from public.qorpera_company_room_members m join public.qorpera_company_rooms r on r.id = m.room_id
+		where r.profile_id = '64800000-0000-4000-8000-000000000010' and r.bound_staff_agent_id = p_agent
+			and m.principal_kind = 'member' and m.principal_id = p_user and m.status = 'active')
+$$;
 
 -- A. The job a removal's connection revoke ends is taken first: behind a holder of it (a tool call of that run), the
 -- removal waits at the job, holding neither the fence nor the member's row; then it lands and the run ends.
@@ -178,6 +194,99 @@ begin
 		raise exception 'B: the second founder leaving: %', v_state; end if;
 end $$;
 
+-- F. A hire (a new agent's folder) beside a member change in flight: the hire names every member row KEY SHARE at rank
+-- 1, so it waits for a removal or a demotion (the member row FOR UPDATE) before its new thread copies the roster.
+-- Neither the removed member nor the new viewer is in the new agent's thread. (Before, the hire copied the roster
+-- beside the change, and the viewer could then post in the new thread.) The hires' bytes are staged first (staging
+-- takes the company row).
+select set_config('qorpera_test.hire_' || h, format('select public.qorpera_folder_commit(%L, %L, %L, %L)::text',
+	'64800000-0000-4000-8000-000000000020', '{"kind":"member","userId":"66500000-0000-4000-8000-000000000006"}', 'member-change-hire-' || h,
+	jsonb_build_array(pg_temp.hire(h, ('66500000-0000-4000-8000-0000000000' || id)::uuid, initcap(h)))), false)
+from (values ('bea', 'a2'), ('cal', 'a3')) v(h, id) \g /dev/null
+do $$
+declare v_change text; v_hire text; v_case record;
+begin
+	perform dblink_exec('fence_one', $q$set request.jwt.claims = '{"role":"authenticated","sub":"66500000-0000-4000-8000-000000000006"}'$q$);
+	perform dblink_exec('fence_two', $q$set request.jwt.claims = '{"role":"service_role"}'$q$);
+	for v_case in select * from (values
+		('bea', '66500000-0000-4000-8000-0000000000a2'::uuid, '66500000-0000-4000-8000-000000000007'::uuid,
+			format('select public.qorpera_remove_profile_member(%L, %L)::text', '64800000-0000-4000-8000-000000000010',
+				'66500000-0000-4000-8000-000000000007')),
+		('cal', '66500000-0000-4000-8000-0000000000a3'::uuid, '66500000-0000-4000-8000-000000000008'::uuid,
+			format('select public.qorpera_update_profile_member_role(%L, %L, %L)::text', '64800000-0000-4000-8000-000000000010',
+				'66500000-0000-4000-8000-000000000008', 'viewer'))) c(handle, agent, member, change) loop
+		perform dblink_exec('fence_one', 'begin');
+		perform * from dblink('fence_one', v_case.change) as t(x text);
+		perform dblink_send_query('fence_two', current_setting('qorpera_test.hire_' || v_case.handle));
+		if not pg_temp.waits_for('fence_two', 'fence_one') or not pg_temp.waits_at('fence_two', 'public.qorpera_profile_members') then
+			raise exception 'F: the hire of % must wait at the member rows for the member change', v_case.handle; end if;
+		perform dblink_exec('fence_one', 'commit');
+		v_hire := pg_temp.outcome('fence_two');
+		if v_hire <> 'ok' then raise exception 'F: the hire of % after the change: %', v_case.handle, v_hire; end if;
+		if pg_temp.in_thread(v_case.agent, v_case.member) then
+			raise exception 'F: the changed member must not be active in %''s new thread', v_case.handle; end if;
+		if not pg_temp.in_thread(v_case.agent, '66500000-0000-4000-8000-000000000006') then
+			raise exception 'F: the hirer must be in %''s new thread', v_case.handle; end if;
+	end loop;
+end $$;
+
+-- G. A founder's step-down stops at its member row behind a KEY SHARE holder (any run, save or post past rank 1)
+-- holding no thread room, so the same member's post goes on beside it and lands. (With the member row taken FOR NO KEY
+-- UPDATE first, the change would hold the rooms and then wait to strengthen the row: the post would deadlock.)
+update public.qorpera_profile_members set role = 'owner' where profile_id = '64800000-0000-4000-8000-000000000010'
+	and user_id = '64800000-0000-4000-8000-000000000001';
+do $$
+declare v_role text; v_post text;
+begin
+	perform dblink_exec('fence_one', $q$set request.jwt.claims = '{"role":"authenticated","sub":"64800000-0000-4000-8000-000000000001"}'$q$);
+	perform dblink_exec('fence_two', $q$set request.jwt.claims = '{"role":"authenticated","sub":"64800000-0000-4000-8000-000000000001"}'$q$);
+	perform dblink_exec('fence_three', 'begin');
+	perform * from dblink('fence_three', $q$select 1 from public.qorpera_profile_members where profile_id = '64800000-0000-4000-8000-000000000010'
+		and user_id = '64800000-0000-4000-8000-000000000001' for key share$q$) as t(x integer);
+	perform dblink_send_query('fence_one', format('select public.qorpera_update_profile_member_role(%L, %L, %L)::text',
+		'64800000-0000-4000-8000-000000000010', '64800000-0000-4000-8000-000000000001', 'admin'));
+	if not pg_temp.waits_for('fence_one', 'fence_three') then raise exception 'G: the step-down must wait at its member row'; end if;
+	if not pg_temp.row_free(format('select 1 from public.qorpera_company_rooms where id = %L for key share', current_setting('qorpera_test.cf_room'))) then
+		raise exception 'G: the step-down must hold no thread room while it waits at its member row'; end if;
+	perform dblink_send_query('fence_two', format('select public.qorpera_post_company_room_message(%L, %L, %L, %L, 1)::text',
+		current_setting('qorpera_test.cf_room'), extensions.gen_random_uuid(),
+		jsonb_build_object('schema', 'qorpera.session-prompt/v1', 'text', 'Beside the step-down'), '64800000-0000-4000-8000-0000000000b1'));
+	if not pg_temp.finishes_unblocked('fence_two', 'fence_one') then raise exception 'G: the post must not wait for the step-down'; end if;
+	v_post := pg_temp.outcome('fence_two');
+	perform dblink_exec('fence_three', 'commit');
+	v_role := pg_temp.outcome('fence_one');
+	if v_post <> 'ok' or v_role <> 'ok' then raise exception 'G: the post % and the step-down %', v_post, v_role; end if;
+end $$;
+
+-- H. A join caught at the fence (held FOR UPDATE, as stop's second phase holds it) holds no invitation, so the last
+-- member's deletion of the company (its stop removes invitations) goes on; the join then finds no invitation. 01 is
+-- made the last member first (the others removed by hand, triggers off).
+set session_replication_role = replica;
+delete from public.qorpera_profile_members where profile_id = '64800000-0000-4000-8000-000000000010'
+	and user_id <> '64800000-0000-4000-8000-000000000001';
+set session_replication_role = origin;
+do $$
+declare v_join text; v_delete text;
+begin
+	perform dblink_exec('fence_four', 'begin');
+	perform * from dblink('fence_four', $q$select 1 from public.qorpera_folder_fences where profile_id = '64800000-0000-4000-8000-000000000010'
+		for update$q$) as t(x integer);
+	perform dblink_exec('fence_two', $q$set request.jwt.claims = '{"role":"authenticated","sub":"66500000-0000-4000-8000-000000000009","email":"race-joiner-9@example.test"}'$q$);
+	perform dblink_send_query('fence_two', $q$select public.qorpera_accept_profile_invitation('66500000-0000-4000-8000-0000000000e2')::text$q$);
+	if not pg_temp.waits_for('fence_two', 'fence_four') then raise exception 'H: the join must wait at the fence'; end if;
+	if not pg_temp.row_free($q$select 1 from public.qorpera_profile_invitations where id = '66500000-0000-4000-8000-0000000000e2'
+			for update$q$, 'fence_one') then
+		raise exception 'H: the join must hold no invitation while it waits at the fence'; end if;
+	perform dblink_exec('fence_three', $q$set request.jwt.claims = '{"role":"authenticated","sub":"64800000-0000-4000-8000-000000000001"}'$q$);
+	perform dblink_send_query('fence_three', $q$select public.qorpera_delete_hosted_profile('64800000-0000-4000-8000-000000000010')::text$q$);
+	if not pg_temp.finishes_unblocked('fence_three', 'fence_two') then raise exception 'H: the deletion must not wait for the join'; end if;
+	v_delete := pg_temp.outcome('fence_three');
+	perform dblink_exec('fence_four', 'rollback');
+	v_join := pg_temp.outcome('fence_two');
+	if v_delete <> 'ok' or v_join not like 'P0002 profile invitation was not found%' then
+		raise exception 'H: the deletion % and the join %', v_delete, v_join; end if;
+end $$;
+
 select dblink_disconnect(name) from unnest(array['fence_one','fence_two','fence_three','fence_four']) name;
 
 -- Remove the fixture (as 648 does).
@@ -214,7 +323,8 @@ set session_replication_role = origin;
 delete from storage.objects where bucket_id = 'qorpera-profile-objects' and name like '64800000-0000-4000-8000-000000000010/%';
 delete from auth.users where id in ('64800000-0000-4000-8000-000000000001','64800000-0000-4000-8000-000000000002',
 	'64800000-0000-4000-8000-000000000003', '66500000-0000-4000-8000-000000000004', '66500000-0000-4000-8000-000000000005',
-	'66500000-0000-4000-8000-000000000006');
+	'66500000-0000-4000-8000-000000000006', '66500000-0000-4000-8000-000000000007', '66500000-0000-4000-8000-000000000008',
+	'66500000-0000-4000-8000-000000000009');
 do $$
 begin
 	if exists (select 1 from public.qorpera_company_files where environment_id in ('64800000-0000-4000-8000-000000000020',

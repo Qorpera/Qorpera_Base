@@ -662,7 +662,8 @@ Concurrency tests (dblink, with `current_database()`), by slice:
 
 Needed before any view goes live (C1B §4).
 
-- **Member removal** (remove, leave, role change, and the founder guard), for `folder-v2`:
+- **Member removal** (remove, leave, role change, and the founder guard), for `folder-v2` (as built: §6.4, which
+  supersedes steps 2 and 3: views are not closed, and the `NOWAIT` for a late job moves to 3d):
   1. lock the queued and leased jobs the removal will end, in id order;
   2. close the member's open views (C1B §4's one order: job, then view, then fence and principals);
   3. then the member row, and the delete. A job queued in between is taken with `NOWAIT`, and the removal refuses as
@@ -764,13 +765,15 @@ Decisions:
      in this company), `FOR UPDATE` in id order. They come before the fence: a run of the member's holds its job and
      then asks for the member row (665 A).
   2. The folder fence `FOR NO KEY UPDATE` (§6.1's decision). Effects hold it `KEY SHARE`, which this mode does not
-     block. Member changes and joins wait for each other, and stop and resume wait for them (665 B, E).
+     block. Member changes and joins wait for each other (665 B, E); stop and resume (`FOR UPDATE`) wait for them, and
+     they for stop and resume, by the lock modes (a join caught behind a stop holds no invitation: 665 H).
   3. The company row `KEY SHARE` (rank 0). A join stops here; its own statements then take the invitation, the new
      member row and, in the thread trigger, the rooms and their conversations, in that order.
   4. **Removal only:** an open founding table's row `FOR NO KEY UPDATE`, which `founding_member_left` updates (before
      the members, as the founding lobby orders it).
   5. Rank 1 in key order: the member `FOR UPDATE`, and when the member is a founder, the other founders `KEY SHARE`
-     (the guard's reads). The member's role is read under the fence, so the founders cannot change meanwhile.
+     (the guard's reads). The member's role is read under the fence, so the founders cannot change meanwhile. A
+     member that does not exist ends the prelude here (the caller refuses with P0002).
   6. Rank 4: every agent thread room `FOR UPDATE` in id order. The thread trigger rewrites them and their room members.
      A post or an answer holding a room `FOR SHARE` makes the change wait there, before it writes (665 C).
   7. **Removal only**, rank 5: the member's compute identities, then its connections, `FOR NO KEY UPDATE` in id order.
@@ -778,24 +781,48 @@ Decisions:
      secrets), then its own secrets, `FOR NO KEY UPDATE` in id order.
   9. Rank 11: the conversations the change writes, `FOR UPDATE` in id order: the agent threads and, for a removal, the
      member's open private conversations.
-  The delete or update that follows fires the triggers in name order: vault rows, the founding row, the threads,
-  access state, private conversations, compute identities, connections and, through the connection cascade, the jobs.
-  Each finds its rows already held, in the same or a stronger mode.
+  The delete or update that follows fires the foreign-key cascade first (the member's presence devices), then the
+  triggers in name order: the browser membership revocation, vault rows, the founding row and seats, the threads,
+  access state, private conversations and their execution bindings, compute identities, connections and, through the
+  connection cascade, the jobs. The rows the prelude locks are found held, in the same or a stronger mode. The rest
+  are not pre-locked, and none can close a cycle (review r1 N1, by pgrowlocks before and after the delete):
+  - room members: every other locker takes the room first, in a mode that conflicts with the room `FOR UPDATE`;
+  - the operation clock: taken at the first conversation write, after rank 11, as everywhere;
+  - access state, browser revocations, presence devices and execution bindings: no other writer holds them across a
+    lock the change needs (access state's other writer, `stop_company_work`, takes the company row first);
+  - a removed member's run-owned rows (assignment, reservation, native lease, inputs, wakes): behind its job, which
+    the prelude holds first.
+  The steps the tests do not pin are defensive: rank 11, the other founders' `KEY SHARE`, the founding row, the vault
+  rows, and the compute identities and connections (their triggers would take the same rows in the same order).
 - **Removing a member, leaving and a role change** take the prelude in place of the company row `FOR UPDATE`. A role
-  change takes the member row `FOR UPDATE` too, which the function then takes again: a stronger mode later would wait
-  for a run's `KEY SHARE` on it while that run waited at a room the change holds.
+  change takes the member row `FOR UPDATE` too, which the function then takes again: with `FOR NO KEY UPDATE` first,
+  the change would take the rooms and then wait to strengthen the row behind a run's or post's `KEY SHARE`, while
+  that post waited at a room the change holds (665 G; 40P01 with the weaker mode).
 - **The founder guard** takes the company row `KEY SHARE` on `folder-v2`, for its "being deleted" check. The fence
   serializes the departures it compares: two founders leaving at once meet there, and the second sees no founder left
   (665 B). Its marker text is unchanged. A member change never waits for a company-row `KEY SHARE` holder (665 D).
-- **Joining by invitation** takes the fence and the company row before the invitation row. Deletion's stop removes
-  invitations, so a join that took the invitation first would meet it in a cycle.
+- **Joining by invitation** takes the fence and the company row before the invitation row (reading the invitation's
+  company once). Deletion's stop removes invitations, so a join that took the invitation first would meet it in a
+  cycle (665 H; 40P01 with the prelude after the invitation).
+- **Hiring an agent** (F2's hook, `qorpera_folder_structured_targets`): a save that creates an agent's staff row names
+  every member row `KEY SHARE` at rank 1. The new agent's thread copies the roster without a lock
+  (`ensure_agent_thread_internal`), and the new room is not yet visible to a member change's rank-4 lock, so before
+  this a removal or a demotion could commit beside the hire and leave the member active in the new thread (a new
+  viewer could then post there; review r1 S1). Now they meet at the member rows (665 F). A rename or a status change
+  already names the agent's thread room at rank 4, where a member change meets it.
 - **Views are not closed.** A removed member's view refuses at its next use: resolving it checks membership, and its
   commit takes the member row at rank 1.
 - Not in 3c:
   - `delete_hosted_profile` still takes the company row `FOR UPDATE` (through `request_company_deletion`'s gc fence);
     3g owns deletion. A join serializes with it at rank 0 meanwhile.
-  - A job queued for the member's connection after the prelude's read, and account deletion's cascade, still reach
-    the connection trigger's job lock late; 3d gives the triggers `NOWAIT` modes that refuse retryably.
+  - A job queued for the member's connection after the prelude's read still reaches the connection trigger's job
+    lock late; 3d gives the triggers `NOWAIT` modes that refuse retryably. No job creator serves `folder-v2` before
+    C3/C4. Account deletion cannot end the member's own runs: `runner_jobs.created_by_user_id` is `ON DELETE
+    RESTRICT`, and a member's login pays only for work that member started.
+  - Pre-existing, for 3d: capture completion and secret rotation take vault rows before the creator's member row
+    (`FOR SHARE`), against a removal's rank order; a joiner misses an agent thread created at the same moment (on
+    master too). For 3g: the last member's leave during the purge can meet `finish_company_deletion` once (40P01,
+    which heals: finish retries and the leave refuses).
   - The founding lobby's own functions (`lock_company_founding`, `remove_company_founder`, `respond_company_founding`)
     go with 3d.
 

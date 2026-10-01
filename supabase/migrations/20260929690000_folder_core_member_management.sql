@@ -1,5 +1,5 @@
--- Company folder core, C1c-3c: member management on the folder fence
--- (deploy/first-node/RUNTIME-COMPANY-FOLDER-C1C.md §6.4; inventory scratchpad reports/C1c3-inventory.md §2).
+-- Company folder core, C1c-3c: member management on the folder fence (deploy/first-node/RUNTIME-COMPANY-FOLDER-C1C.md
+-- §6.1 and §6.4).
 --
 -- Changes only folder-v2 behaviour; snapshot-v1 keeps every path. On folder-v2 member changes no longer take the
 -- company row FOR UPDATE:
@@ -14,6 +14,9 @@
 --   departures it compares.
 -- * Joining by invitation takes the fence FOR NO KEY UPDATE and the company row before the invitation, so a join
 --   meets a departure (and deletion's stop, which removes invitations) at the fence.
+-- * A save that hires a new agent names every member row KEY SHARE at rank 1 (F2's hook): the new agent's thread copies
+--   the roster, and a removal or a demotion (the member row FOR UPDATE) now runs before or after that copy, not
+--   beside it.
 
 -- 1. Patch helper (a name unique to this migration: pg_temp lives for the whole session) ---------------------------
 
@@ -63,6 +66,8 @@ begin
 	-- Rank 1 in key order: the member FOR UPDATE; when the member is a founder, the other founders KEY SHARE (the guard's
 	-- reads). Read under the fence, so the founders cannot change meanwhile.
 	select role into v_role from public.qorpera_profile_members where profile_id = p_profile_id and user_id = p_user_id;
+	-- Not a member: the caller refuses next (P0002), so nothing more needs holding.
+	if not found then return; end if;
 	for v_user in select member.user_id from public.qorpera_profile_members as member
 		where member.profile_id = p_profile_id and (member.user_id = p_user_id or (v_role = 'owner' and member.role = 'owner'))
 		order by member.user_id loop
@@ -98,10 +103,10 @@ begin
 	-- Rank 11: the conversations the change writes, in id order: the agent threads (the thread trigger) and, for a
 	-- removal, the member's open private conversations (closed by their trigger).
 	perform 1 from public.qorpera_shared_sessions as session
-	where session.id in (select room.session_id from public.qorpera_company_rooms as room
+	where session.profile_id = p_profile_id and (session.id in (select room.session_id from public.qorpera_company_rooms as room
 			where room.profile_id = p_profile_id and room.bound_staff_agent_id is not null)
-		or (p_mode = 'remove' and session.profile_id = p_profile_id and session.audience_kind = 'member_private'
-			and session.audience_user_id = p_user_id and session.status = 'open')
+		or (p_mode = 'remove' and session.audience_kind = 'member_private' and session.audience_user_id = p_user_id
+			and session.status = 'open'))
 	order by session.id for update;
 end $$;
 
@@ -145,12 +150,26 @@ begin
 	-- Joining by invitation: the fence FOR NO KEY UPDATE and the company row before the invitation row.
 	perform pg_temp.c1c3c_replace('public.qorpera_accept_profile_invitation(uuid)',
 		E'\tselect invitation.* into v_invitation\n',
-		E'\tif public.qorpera_company_is_folder_v2((select invitation.profile_id from public.qorpera_profile_invitations as invitation\n'
-		|| E'\t\twhere invitation.id = p_invitation_id)) then\n'
-		|| E'\t\tperform public.qorpera_folder_member_change_enter((select invitation.profile_id from public.qorpera_profile_invitations as invitation\n'
-		|| E'\t\t\twhere invitation.id = p_invitation_id), v_user_id, ''join'');\n'
-		|| E'\tend if;\n'
+		E'\tperform public.qorpera_folder_member_change_enter(invitation.profile_id, v_user_id, ''join'')\n'
+		|| E'\tfrom public.qorpera_profile_invitations as invitation\n'
+		|| E'\twhere invitation.id = p_invitation_id and public.qorpera_company_is_folder_v2(invitation.profile_id);\n'
 		|| E'\tselect invitation.* into v_invitation\n', 1);
+
+	-- F2's hook: a save that creates an agent's staff row names every member row KEY SHARE at rank 1, since the new
+	-- agent's thread copies the roster (qorpera_ensure_agent_thread_internal reads it without a lock). A rename or a
+	-- status change already names the agent's thread room at rank 4, where a member change meets it.
+	perform pg_temp.c1c3c_replace('public.qorpera_folder_structured_targets(uuid,jsonb,jsonb)',
+		E'\tv_profile uuid; v_unit jsonb; v_op text; v_key text; v_entry jsonb; v_staff record; v_room uuid; v_routine uuid;\n',
+		E'\tv_profile uuid; v_unit jsonb; v_op text; v_key text; v_entry jsonb; v_staff record; v_room uuid; v_routine uuid;\n'
+		|| E'\tv_member uuid;\n', 1);
+	perform pg_temp.c1c3c_replace('public.qorpera_folder_structured_targets(uuid,jsonb,jsonb)',
+		E'\t\t\t\tif found and (v_staff.display_name is distinct from v_entry -> ''parse'' ->> ''name''\n',
+		E'\t\t\t\tif not found then\n'
+		|| E'\t\t\t\t\tfor v_member in select m.user_id from public.qorpera_profile_members m where m.profile_id = v_profile loop\n'
+		|| E'\t\t\t\t\t\trank := 1; tbl := ''qorpera_profile_members''; key := v_profile::text || '':'' || v_member::text; mode := ''keyshare'';\n'
+		|| E'\t\t\t\t\t\treturn next;\n'
+		|| E'\t\t\t\t\tend loop;\n'
+		|| E'\t\t\t\telsif (v_staff.display_name is distinct from v_entry -> ''parse'' ->> ''name''\n', 1);
 end $$;
 
 -- 4. Privileges ------------------------------------------------------------------------------------------------------

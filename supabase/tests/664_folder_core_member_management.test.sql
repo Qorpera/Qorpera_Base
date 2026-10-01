@@ -63,11 +63,10 @@ begin
 			E'\tperform 1 from public.qorpera_profiles where id = old.profile_id for update;\n')) <> '488053172974066541f7261c96373d63' then
 		raise exception 'The founder guard''s snapshot-v1 text changed'; end if;
 	if md5(replace(pg_get_functiondef('public.qorpera_accept_profile_invitation(uuid)'::regprocedure),
-			E'\tif public.qorpera_company_is_folder_v2((select invitation.profile_id from public.qorpera_profile_invitations as invitation\n'
-			|| E'\t\twhere invitation.id = p_invitation_id)) then\n'
-			|| E'\t\tperform public.qorpera_folder_member_change_enter((select invitation.profile_id from public.qorpera_profile_invitations as invitation\n'
-			|| E'\t\t\twhere invitation.id = p_invitation_id), v_user_id, ''join'');\n'
-			|| E'\tend if;\n', '')) <> '062a100a20d3c8f595b9a22f9d95dc8d' then
+			E'\tperform public.qorpera_folder_member_change_enter(invitation.profile_id, v_user_id, ''join'')\n'
+			|| E'\tfrom public.qorpera_profile_invitations as invitation\n'
+			|| E'\twhere invitation.id = p_invitation_id and public.qorpera_company_is_folder_v2(invitation.profile_id);\n', ''))
+		<> '062a100a20d3c8f595b9a22f9d95dc8d' then
 		raise exception 'The join''s snapshot-v1 text changed'; end if;
 end $$;
 
