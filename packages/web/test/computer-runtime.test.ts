@@ -232,6 +232,35 @@ describe("several computers per company", () => {
 		expect(statusLine(p)).toBe("Waiting for room on our servers. It starts as soon as there is room.");
 		expect(methods(f).some((method) => START_WRITES.test(`/${method}`))).toBe(false);
 	});
+	it("says a sleeping computer waits for computer hours, and wakes it once hours are added", async () => {
+		const maintenance = {
+			reason: "idle",
+			state: "resumed",
+			transitionId: id(74),
+			requestedAt: "2026-09-19T12:00:00Z",
+			resumedAt: "2026-09-19T12:01:00Z",
+			activatedAt: null,
+		};
+		const f = setup({
+			qorpera_member_agent_office: placed({ scope, number: 1, waiting: "hours" }, { placement: "starting" }),
+			qorpera_runtime_office_start_status: { ...start, officeState: "maintenance", maintenance, intent },
+		});
+		const startClient = spyStart(f);
+		const request = vi.spyOn(startClient, "request").mockResolvedValue(intent);
+		const open = spyViewer();
+		const p = await opened(f.computer);
+		await poll();
+		// The wake is still asked for: it waits for hours instead of "starting" for good.
+		expect(request).toHaveBeenCalledOnce();
+		expect(statusLine(p)).toBe("Out of computer hours. The machine starts by itself once hours are added.");
+		f.replies.qorpera_member_agent_office = placed({ scope, number: 1, waiting: null }, { placement: "starting" });
+		for (let n = 0; n < 4; n++) await poll();
+		expect(statusLine(p)).toBe("Starting the machine…");
+		f.replies.qorpera_runtime_office_start_status = start;
+		await poll();
+		expect(request).toHaveBeenCalledOnce();
+		expect(open).toHaveBeenCalledOnce();
+	});
 	it("moves to a computer that has room while the new one still waits for its server", async () => {
 		let asked = 0;
 		const f = setup({
