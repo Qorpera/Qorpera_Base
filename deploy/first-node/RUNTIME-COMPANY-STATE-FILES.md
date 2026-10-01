@@ -580,8 +580,9 @@ A list key is either left out or holds at least one item (`proof: []` is refused
   line in that section that starts, at column 0, with `- [ ] ` (open) or `- [x] ` / `- [X] `
   (done); its text is the rest of the line, trimmed of U+0020 spaces. A carriage return before
   a line end is dropped first. Other lines in the section are text. Fenced code gets no special
-  reading. The file is refused if a step's text is empty, longer than 500 bytes or holds a
-  control character (a tab included), or if there are more than 50 steps. The parse lists them as
+  reading. The file is refused if a step's text is empty, longer than 500 bytes, or not one line
+  (a C0 or C1 control character, a tab included, or U+2028/U+2029, as §1's one-line fields), or
+  if there are more than 50 steps. The parse lists them as
   `steps: [{line, text, done}]` (`line`, the file's line number, lets H2 compare two versions line
   by line). A body without such a section has no steps. The whole body stays the task's
   `instructions`. In H2 a person's own change may flip a box and nothing else: no text changed,
@@ -589,11 +590,12 @@ A list key is either left out or holds at least one item (`proof: []` is refused
 - **`files`.** Each entry is a literal company-folder path: relative, no empty, `.` or `..` part,
   no trailing `/` (a folder spelling), one line, at most 4096 bytes; a pattern character such as
   `*` is part of a name, never a pattern. Repeats are compared by key (`companyPathKey`), since two
-  spellings are one entry. On a contact's task an entry under `agents/`, `contacts/`,
-  `human-tasks/`, `connections/`, `rules/` or `hooks/` is refused: the company's people, other
-  tasks, accounts and rules are not for outside readers. `files` never grants anything (H3, H5):
-  - a listed file opens only if the person sending the link may read it at that moment, and on a
-    member's own task page only if that member may read it;
+  spellings are one entry. On a contact's task an entry whose key is under `agents/`,
+  `contacts/`, `human-tasks/`, `connections/`, `rules/` or `hooks/` is refused: the company's
+  people, other tasks, accounts and rules are not for outside readers. `files` never grants anything (H3, H5):
+  - a listed file opens only if the agent that sent the link may read it at that moment, by its
+    standing read authority (not the ended run's), and on a member's own task page only if that
+    member may read it;
   - a contact's link keeps the list its review approved, and an open shows only the paths on both
     that list and the current one: a removal works at once, an addition needs a new reviewed
     send. A path that no longer exists, or became a folder, is not shown;
@@ -604,7 +606,7 @@ A list key is either left out or holds at least one item (`proof: []` is refused
   `id` (as W1b binds a hook's signing secret to its hook), so a task file can never point at
   another secret, and the file has no secret name. Only the platform sets `secret_state: saved`;
   H1's database already refuses `saved` from anyone else unless the file the save replaces had
-  `saved` with the same label.
+  `saved` with the same `id` and the same label.
 - **No contact details.** A member is reached through their account and a contact at the address
   in their contact file. A link's token (kept only as a hash), an email's delivery and a
   secret's value are runtime state or vault records, never the file: every member and agent reads
@@ -620,13 +622,16 @@ A list key is either left out or holds at least one item (`proof: []` is refused
   - that `member`, `contact`, `todo` and `connection` exist in this company, and `computer` is
     this company's office; that `from` is the saving agent's own id and never changes; that `id`
     is unique among the tasks and never changes; a `member` change hands the task on;
-  - that creating or changing a contact's task, or its `files`, shares company files outside the
-    company: it passes the automatic review as an outside action, like `send_mail`; a task for a
-    contact with no `email` is refused when it is created (H2, H5);
-  - the task's folder follows its file: a move or delete of a task file carries its folder, or is
-    refused while the folder exists, and a new task file is refused while a folder of its name
-    exists; only the platform writes under `human-tasks/<name>/`, as the person's change; a
-    contact's proof and note are outside content (11.1);
+  - that a contact's task shares company files outside the company. The link's send is the
+    reviewed outside action, like `send_mail`, and nothing is sent by a file save; whether
+    creating or changing a contact's task (or its `files`) is also reviewed needs a review class
+    folder commits do not have today, and H2 decides it. A task for a contact with no `email` is
+    refused when it is created (H2, H5);
+  - the task's folder follows its file: the platform's writer carries the folder in the same change
+    set when a member or an agent moves or deletes a task file (so a task with proof can still be
+    renamed or removed), and a new task file is refused while a folder of its name exists; only
+    the platform writes under `human-tasks/<name>/`, as the person's change; a contact's proof and
+    note are outside content (11.1);
   - the overdue wake and the wake on `done` and `declined`; the index; seeding `human-tasks/` and
     `contacts/` in new companies (and whether they join the seeded folders that cannot be
     deleted or moved);
@@ -678,7 +683,8 @@ Our accountant since 2025. Files VAT every quarter.
 The parses, with absent values `null` and absent lists `[]`:
 - human-task: `{kind, id, title, status, member, contact, from, todo, due, minutes, proof, files,
   reason, secret, secretState, computer, connection, step, instructions, steps}`;
-- contact: `{kind, id, name, organization, email, phone, asks, notes}`.
+- contact: `{kind, id, name, organization, email, phone, asks, notes}`, with `notes` the trimmed
+  body (`""` when there is none).
 
 ## 3. Refused files
 
@@ -1360,10 +1366,10 @@ saved), no seeding. Two PRs, released in this order:
   cross-key rules (§2); the steps grammar; the canonical writers `writeHumanTaskFile` and
   `writeContactFile`; the path checks for the file names and for the folder places `human-tasks`,
   `contacts`, `human-tasks/<t>` and `human-tasks/<t>/proof` (`companyStatePathProblems`,
-  `structuredFolderNames`). Released first: the runtime bundle active and the object gateway
-  deployed, since SQL refuses a structured key that carries no parse
-  (`qorpera_company_state_checked`), and a writer sends a parse only for the kinds its bundled
-  parser knows.
+  `structuredFolderNames`). Released first, to every writer that sends structured entries (the
+  runtime bundle active, the object gateway and the folder service deployed), since SQL refuses
+  a structured key that carries no parse (`qorpera_company_state_checked`), and a writer sends a
+  parse only for the kinds its parser knows.
 - **H1b, the database** (one migration, 20260929999000, after H1a is live). It replaces:
   - `qorpera_structured_path_kind`: `human-tasks/<name>.md` and `contacts/<name>.md`;
   - `qorpera_structured_folder_names`: the four folder places;
@@ -1376,7 +1382,7 @@ saved), no seeding. Two PRs, released in this order:
     ordinary `drafts/` into `contacts` would land files with no parse, and moving `human-tasks/`
     away would quietly make every task ordinary);
   - `qorpera_folder_structured_decide`: one rule, `secret_state: saved` only from the platform,
-    unless the file the save replaces had `saved` with the same `secret`.
+    unless the file the save replaces had `saved` with the same `id` and `secret`.
 
   The review class stays plain, and no index, lock target or verify row is added.
 - **Before H1:** a file saved at these paths while they were ordinary (only an operator's test
