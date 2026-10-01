@@ -1,4 +1,4 @@
-const { spawn } = require("node:child_process");
+const { spawn, spawnSync } = require("node:child_process");
 const { createHash, randomUUID } = require("node:crypto");
 const { appendFileSync, existsSync, readFileSync, statSync, writeFileSync } = require("node:fs");
 const { join } = require("node:path");
@@ -79,9 +79,27 @@ for (let index = 0; index < args.length; index++) {
 	const path = setting.slice(0, equal).split(".");
 	let target = configuration;
 	for (const key of path.slice(0, -1)) target = target[key] ??= {};
+	const value = setting.slice(equal + 1);
+	// A TOML inline table (a model provider): bare keys become JSON keys; the fixture's values hold no "=".
+	const toml = (text) => JSON.parse(text.replace(/([{,])([A-Za-z_][A-Za-z0-9_]*)=/g, '$1"$2":'));
 	target[path[path.length - 1]] = path.join(".") === "features.code_mode"
 		? { enabled: false, direct_only_tool_namespaces: ["qorpera"], excluded_tool_namespaces: ["skills"] }
-		: JSON.parse(setting.slice(equal + 1));
+		: value.startsWith("{") ? toml(value) : JSON.parse(value);
+}
+// A ChatGPT plan run: what the configured provider would send as its bearer, by its token command (run as
+// Codex runs it) or its environment variable.
+if (configuration.model_provider && evidencePath) {
+	const provider = configuration.model_providers?.[configuration.model_provider] ?? {};
+	const token = provider.auth
+		? spawnSync(provider.auth.command, provider.auth.args ?? [], { encoding: "utf8" }).stdout.trim()
+		: process.env[provider.env_key ?? ""] ?? null;
+	writeFileSync(`${evidencePath}.plan`, JSON.stringify({
+		provider: configuration.model_provider,
+		baseUrl: provider.base_url,
+		serviceTier: configuration.service_tier,
+		token,
+		codexHomeEntries: require("node:fs").readdirSync(process.env.CODEX_HOME),
+	}));
 }
 const done = () => write({ method: "turn/completed", params: { threadId, turn: { id: turnId, status: "completed", error: null } } });
 const sendEvidence = { reply: null, fenced: null, interrupt: null, pending: null };
@@ -150,6 +168,9 @@ async function handle(message) {
 		if (mode === "skill-route") configuration.orchestrator.skills.enabled = true;
 		if (mode === "fast-mode-off") configuration.features.fast_mode = false;
 		if (mode === "tier-dropped") delete configuration.service_tier;
+		if (mode === "plan-provider-dropped") delete configuration.model_provider;
+		if (mode === "plan-provider-on-codex") configuration.model_provider = "qorpera_chatgpt_plan";
+		if (mode === "test-provider") configuration.model_provider = "fixture_provider";
 		write({ id: message.id, result: { config: configuration } });
 	} else if (message.method === "skills/list") {
 		write({ id: message.id, result: { data: [{ skills: mode === "extra-skills" ? [{ name: "PRIVATE_UNCONTROLLED_SKILL" }] : [], errors: [] }] } });
@@ -314,6 +335,8 @@ async function handle(message) {
 				write({ id: mode === "duplicate-id" ? "duplicate" : `denied_${index}`, method: "item/commandExecution/requestApproval", params: {} });
 			if (mode === "callback-flood") done();
 		} else {
+			// Just under the 1 MiB wire limit: one line over many pipe reads, split inside 3-byte characters.
+			if (mode === "large-line") write({ method: "item/agentMessage/delta", params: { threadId, turnId, delta: "\u20ac".repeat(349_000) } });
 			write({ method: "item/agentMessage/delta", params: { threadId, turnId, delta: "PRIVATE_OUTPUT_CANARY" } });
 			write({ method: "item/reasoning/summaryTextDelta", params: { threadId, turnId, delta: "PRIVATE_REASONING_CANARY" } });
 			done();

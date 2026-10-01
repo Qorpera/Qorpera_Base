@@ -1073,9 +1073,83 @@ describe("conversation UI boundaries", () => {
 		f.company.store.set({ activity: [run], recoveries: { [run.runId]: details("You have hit your usage limit.") } });
 		await settle();
 		expect(card()?.querySelector(".run-failure-reason")?.textContent).toBe(
-			"Your model account has reached its usage limit.",
+			"The model account paying for this work reached its usage limit, so the work stopped. It does not move to another account. It can run again once the limit resets.",
 		);
 		expect([...(card()?.querySelectorAll("button") ?? [])].map((item) => item.textContent)).toEqual(["Dismiss"]);
+		// A real usage limit: the bridge's refusal names only a spent budget; the cloud's usage-limit signal decides.
+		const bridge = "Native provider bridge request failed (422) [code=NATIVE_CODEX_TURN_COMPLETION:BUDGET_EXHAUSTED]";
+		f.company.store.set({ activity: [run], recoveries: { [run.runId]: { ...details(bridge), usageLimit: true } } });
+		await settle();
+		expect(card()?.querySelector(".run-failure-reason")?.textContent).toBe(
+			"The model account paying for this work reached its usage limit, so the work stopped. It does not move to another account. It can run again once the limit resets.",
+		);
+		expect([...(card()?.querySelectorAll("button") ?? [])].map((item) => item.textContent)).toEqual(["Dismiss"]);
+		// The member's own ChatGPT plan reached its limit: OpenAI's words and "Manage usage" (20260928379930).
+		const plan = { ...details(bridge), usageLimit: true, paidByChatgptPlan: true };
+		f.company.store.set({
+			activity: [run],
+			recoveries: { [run.runId]: { ...plan, requestedByUserId: f.company.userId.toLowerCase() } },
+		});
+		await settle();
+		expect(card()?.querySelector(".run-failure-reason")?.textContent).toBe(
+			"ChatGPT · Usage limit reached. Review your plan or this app's limit in ChatGPT settings.",
+		);
+		const manage = card()?.querySelector<HTMLAnchorElement>('[data-action="manage-usage"]');
+		expect([manage?.textContent, manage?.href, manage?.target, manage?.rel]).toEqual([
+			"Manage usage",
+			"https://chatgpt.com/settings/usage",
+			"_blank",
+			"noopener noreferrer",
+		]);
+		expect([...(card()?.querySelectorAll("button") ?? [])].map((item) => item.textContent)).toEqual(["Dismiss"]);
+		// Another member's plan: the plain sentence, no link to someone else's settings.
+		f.company.store.set({
+			activity: [run],
+			recoveries: { [run.runId]: { ...plan, requestedByUserId: "11111111-1111-4111-8111-999999999999" } },
+		});
+		await settle();
+		expect(card()?.querySelector(".run-failure-reason")?.textContent).toBe(
+			"The model account paying for this work reached its usage limit, so the work stopped. It does not move to another account. It can run again once the limit resets.",
+		);
+		expect(card()?.querySelector('[data-action="manage-usage"]')).toBeNull();
+		// The member's own Codex login at its limit: the plain sentence, no link.
+		const own = f.company.userId.toLowerCase();
+		f.company.store.set({
+			activity: [run],
+			recoveries: {
+				[run.runId]: { ...details(bridge), usageLimit: true, paidByChatgptPlan: false, requestedByUserId: own },
+			},
+		});
+		await settle();
+		expect(card()?.querySelector(".run-failure-reason")?.textContent).toBe(
+			"The model account paying for this work reached its usage limit, so the work stopped. It does not move to another account. It can run again once the limit resets.",
+		);
+		expect(card()?.querySelector('[data-action="manage-usage"]')).toBeNull();
+		// The member's own plan, stopped for another reason: no limit words, no link.
+		f.company.store.set({
+			activity: [run],
+			recoveries: {
+				[run.runId]: { ...details(bridge), usageLimit: false, paidByChatgptPlan: true, requestedByUserId: own },
+			},
+		});
+		await settle();
+		expect(card()?.querySelector(".run-failure-reason")?.textContent).toBe(
+			"The run started, but one of its steps was refused. The problem is on Qorpera's side.",
+		);
+		expect(card()?.querySelector('[data-action="manage-usage"]')).toBeNull();
+		// A run that left changes keeps Review, also at the member's own plan's limit.
+		f.company.store.set({
+			activity: [run],
+			recoveries: { [run.runId]: { ...plan, requestedByUserId: own, proposalId: id(72) } },
+		});
+		await settle();
+		expect(card()?.querySelector('[data-action="manage-usage"]')).toBeNull();
+		expect(card()?.querySelector("a")?.textContent).toBe("Review");
+		f.company.store.set({ activity: [run], recoveries: { [run.runId]: details(bridge) } });
+		await settle();
+		expect(card()?.querySelector(".run-failure-reason")?.textContent).toBe(
+			"The run started, but one of its steps was refused. The problem is on Qorpera's side.",
+		);
 		f.company.store.set({
 			activity: [run],
 			recoveries: { [run.runId]: details("Runner lease expired before durable completion") },

@@ -5,9 +5,13 @@ import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import test from "node:test";
 import {
+	CPU_SLOTS,
 	includeRules,
 	parseArgs,
+	parseStatus,
 	pruneScript,
+	RUNNERS,
+	runScript,
 	secretLooking,
 	shellQuote,
 	suiteCommand,
@@ -16,6 +20,7 @@ import {
 } from "./run-on-node.mjs";
 
 test("suites map to their commands", () => {
+	assert.deepEqual(suiteCommand("test"), ["npm", "test"]);
 	assert.deepEqual(suiteCommand("hosted-db"), ["npm", "run", "test:hosted-db"]);
 	assert.deepEqual(suiteCommand("npm:test:scripts"), ["npm", "run", "test:scripts"]);
 	assert.deepEqual(suiteCommand("scripts/test-office-preparation-linux.mjs"), [
@@ -43,6 +48,15 @@ test("options, install default and extra arguments", () => {
 	]);
 	assert.equal(parseArgs(["--install", "hosted-db"]).install, true);
 	assert.equal(parseArgs(["--allow-secrets", "hosted-db"]).allowSecrets, true);
+	const whole = parseArgs(["test"]);
+	assert.deepEqual([whole.install, whole.build], [true, true]);
+	assert.deepEqual([linux.build, hosted.build], [false, false]);
+	assert.equal(parseArgs(["--build", "hosted-db"]).install, true);
+	assert.equal(parseArgs(["--no-build", "test"]).build, false);
+	assert.throws(() => parseArgs(["--no-install", "--build", "test"]), /--build needs --install/);
+	assert.deepEqual([parseArgs(["--no-install", "test"]).install, parseArgs(["--no-install", "test"]).build], [false, false]);
+	assert.throws(() => parseArgs(["--base", "--octopus", "changed"]), /Invalid --base/);
+	assert.equal(parseArgs(["--base", "origin/release/runtime-v150", "changed"]).base, "origin/release/runtime-v150");
 	assert.throws(() => parseArgs(["hosted-db", "extra"]), /after --/);
 	assert.throws(() => parseArgs(["--env", "1BAD=x", "hosted-db"]), /Invalid --env/);
 	assert.throws(() => parseArgs(["--bogus", "hosted-db"]), /Unknown option/);
@@ -60,6 +74,67 @@ test("npm suites pass their arguments to the script, not to npm", () => {
 	]);
 	assert.deepEqual(parseArgs(["hosted-db", "--", "--x"]).command, ["npm", "run", "test:hosted-db", "--", "--x"]);
 	assert.deepEqual(parseArgs(["npm:test:scripts"]).command, ["npm", "run", "test:scripts"]);
+});
+
+test("each run takes a free runner user and installs and runs as that user", () => {
+	assert.equal(RUNNERS.length, 16);
+	assert.deepEqual([RUNNERS[0], RUNNERS[15]], ["ci01", "ci16"]);
+	const script = runScript({
+		run: "R",
+		runDir: "/home/tester/runs/R",
+		treeDir: "/home/tester/trees/T",
+		files: 3,
+		copySeconds: 1.25,
+		install: true,
+		build: true,
+		runCommand: "npm test -- --x 'a b'",
+	});
+	assert.equal(spawnSync("bash", ["-n", "-c", script]).status, 0);
+	// The slot lock stays on fd 8 of the session, so it is held until the run ends.
+	assert.match(script, /exec 8>"\/run\/lock\/qorpera-test-machine-\$candidate\.lock"/);
+	assert.match(script, /flock -n 8; then runner=\$candidate/);
+	assert.match(script, /for candidate in ci01 ci02 .* ci16; do/);
+	assert.match(script, /sudo -n chown -R "\$runner:\$runner" \/home\/tester\/runs\/R \|\| exit 93/);
+	assert.match(script, /sudo -n -u "\$runner" -H bash -c '/);
+	const inner = script.slice(script.indexOf("bash -c '"));
+	assert.ok(inner.indexOf("npm ci") < inner.indexOf("build:web-sdk") && inner.indexOf("build:web-sdk") < inner.indexOf("npm test"));
+	assert.doesNotMatch(runScript({ run: "R", runDir: "/r", treeDir: "/t", files: 1, copySeconds: 0, install: false, build: false, runCommand: "true" }), /npm ci|build:web-sdk/);
+});
+
+test("at most three runs execute at once, in arrival order, with two vitest workers each", () => {
+	assert.equal(CPU_SLOTS, 3);
+	const script = runScript({ run: "R", runDir: "/r", treeDir: "/t", files: 1, copySeconds: 0, install: false, build: false, runCommand: "true" });
+	// The queue ticket sorts by arrival and stays locked by its waiting run (fd 7); only the first ticket
+	// may take a slot; a ticket nobody holds belongs to a dead run and is dropped, whatever its pid became.
+	assert.match(script, /ticket=\/run\/lock\/qorpera-test-machine-queue\/\$\(date \+%s%N\)-\$\$; exec 7>"\$ticket"; flock -n 7;/);
+	assert.match(script, /if \[ "\$position" = 1 \]; then/);
+	assert.match(script, /flock -n "\$t" true 2>\/dev\/null && rm -f "\$t"/);
+	assert.doesNotMatch(script, /kill -0/);
+	// A lock file that cannot be opened skips that candidate instead of reusing the previous descriptor.
+	assert.match(script, /\{ exec 9>"\/run\/lock\/qorpera-test-machine-slot\$candidate\.lock"; \} 2>\/dev\/null \|\| continue/);
+	assert.match(script, /\{ exec 8>"\/run\/lock\/qorpera-test-machine-\$candidate\.lock"; \} 2>\/dev\/null \|\| continue/);
+	// A killed run's leftovers under the runner user are ended once its lock is held.
+	assert.match(script, /sudo -n pkill -KILL -u "\$runner"/);
+	assert.match(script, /for candidate in \$\(seq 1 3\); do/);
+	assert.match(script, /waiting for a slot \(3 runs at a time\), queue position \$position/);
+	// The slot is taken before the runner user, and both stay locked for the session (fds 9 and 8).
+	assert.ok(script.indexOf("qorpera-test-machine-slot") < script.indexOf("qorpera-test-machine-$candidate"));
+	// vCPUs / 3 workers per run (2 on 6 vCPUs, 4 on 12), at least 1.
+	assert.match(script, /export VITEST_MAX_WORKERS=\$\(\( \$\(nproc\) \/ 3 > 0 \? \$\(nproc\) \/ 3 : 1 \)\)/);
+	for (const [cpus, workers] of [[6, 2], [10, 3], [12, 4], [2, 1]])
+		assert.equal(spawnSync("bash", ["-c", `echo $(( ${cpus} / 3 > 0 ? ${cpus} / 3 : 1 ))`], { encoding: "utf8" }).stdout.trim(), String(workers));
+	assert.match(parseArgs(["--sudo", "--", "npm", "test"]).command.join(" "), /npm test/);
+});
+
+test("the status file reads back runner, install and times", () => {
+	assert.deepEqual(parseStatus("runner=ci03\ninstalled=1 prepare_ms=1200\nsuite_ms=900\n"), {
+		runner: "ci03",
+		installed: "1",
+		prepare_ms: "1200",
+		suite_ms: "900",
+	});
+	assert.deepEqual(parseStatus("runner=ci03\ninstalled=0\n"), { runner: "ci03", installed: "0" });
+	assert.deepEqual(parseStatus(""), {});
 });
 
 test("shell quoting survives a round trip through bash", () => {

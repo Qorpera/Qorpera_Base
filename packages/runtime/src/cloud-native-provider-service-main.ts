@@ -10,6 +10,7 @@ import {
 } from "@qorpera/cloud-client/cloud-request";
 import { CloudContentAddressedStore } from "@qorpera/cloud-client/node/cloud-object-store";
 import { createClient } from "@supabase/supabase-js";
+import type { CloudChatGptPlanAuth } from "./cloud-codex-tool-session.ts";
 import { createHttpCloudCodingCommandGateway, parseCloudCodingCommandUrl } from "./cloud-coding-command-http.ts";
 import { HttpCloudCodingControl } from "./cloud-coding-control.ts";
 import {
@@ -17,6 +18,7 @@ import {
 	parseCompanyComputerNativeRoute,
 } from "./cloud-company-computer-native-client.ts";
 import { HttpCloudCompanyComputerRegistry } from "./cloud-company-computer-registry-http.ts";
+import { HttpCloudCompanyFolderBytes } from "./cloud-company-folder-bytes.ts";
 import { HttpCloudCompanyPathControl } from "./cloud-company-path-control.ts";
 import { CloudNativeCompanyPresence } from "./cloud-company-path-presence.ts";
 import { recoveryBase64, recoveryDigest, recoveryRecord } from "./cloud-identity-recovery-crypto.ts";
@@ -115,6 +117,10 @@ async function credentialOrEnvironment(
 	return (await systemdCredential(environment, credentialName)) ?? required(environment, environmentName);
 }
 
+/** How a ChatGPT plan run gets its token unless a host says otherwise (see nativeCompanyRuntimeConfiguration):
+ * switching to the fallback is this one line and a runtime release. */
+export const CHATGPT_PLAN_AUTH_DEFAULT: CloudChatGptPlanAuth = "command";
+
 /** Explicit deployment selection. Unknown or partially configured modes fail
  * closed; they cannot silently fall back to the legacy native tool surface. */
 export function nativeCompanyRuntimeConfiguration(environment: NodeJS.ProcessEnv):
@@ -123,6 +129,7 @@ export function nativeCompanyRuntimeConfiguration(environment: NodeJS.ProcessEnv
 			binarySha256: string;
 			objectGatewayUrl: string;
 			isolation: NativeIsolationConfiguration;
+			chatGptPlanAuth: CloudChatGptPlanAuth;
 	  }
 	| undefined {
 	if (environment.QORPERA_NATIVE_RUNTIME === undefined) return undefined;
@@ -142,11 +149,19 @@ export function nativeCompanyRuntimeConfiguration(environment: NodeJS.ProcessEnv
 		url.pathname !== "/"
 	)
 		throw new Error("Invalid native cloud runtime configuration");
+	// How a run on a member's ChatGPT plan gets the plan's token: Codex's token command by default, or the
+	// token in the process environment (OpenAI's documented path) as the fallback. The orchestrators do not
+	// pass this setting to the hosts they start, so the supported switch is CHATGPT_PLAN_AUTH_DEFAULT in a
+	// runtime release; the setting serves a host started by hand.
+	const chatGptPlanAuth = environment.QORPERA_CHATGPT_PLAN_AUTH ?? CHATGPT_PLAN_AUTH_DEFAULT;
+	if (chatGptPlanAuth !== "command" && chatGptPlanAuth !== "environment")
+		throw new Error("QORPERA_CHATGPT_PLAN_AUTH is invalid");
 	return {
 		command: [command],
 		binarySha256,
 		objectGatewayUrl: url.origin,
 		isolation: { entryPoint: "/opt/qorpera-runner/qorpera-native-isolation-child.mjs" },
+		chatGptPlanAuth,
 	};
 }
 
@@ -366,6 +381,7 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 						command: runtimeConfiguration.command,
 						binarySha256: runtimeConfiguration.binarySha256,
 						isolation: runtimeConfiguration.isolation,
+						chatGptPlanAuth: runtimeConfiguration.chatGptPlanAuth,
 					})
 				: undefined;
 		cloudRuntime = new CloudNativeCompanyRuntime({
@@ -386,6 +402,7 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 			command: runtimeConfiguration.command,
 			binarySha256: runtimeConfiguration.binarySha256,
 			isolation: runtimeConfiguration.isolation,
+			chatGptPlanAuth: runtimeConfiguration.chatGptPlanAuth,
 			...(coding ? { coding } : {}),
 			// Company machines ride the same executor ingress and transport credential.
 			...(codingConfiguration && codingToken
@@ -411,6 +428,15 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 						}),
 					}
 				: {}),
+			// A folder-v2 run's file bytes: the object gateway's folder route, on the same native credential.
+			folderBytes: (binding, identity) =>
+				new HttpCloudCompanyFolderBytes({
+					baseUrl: runtimeConfiguration.objectGatewayUrl,
+					token: objectToken,
+					binding,
+					identity,
+					control: pathControl,
+				}),
 			objectStore: (companyId, binding, signal) =>
 				new CloudContentAddressedStore(
 					new HttpNativeCompanyObjectTransport({

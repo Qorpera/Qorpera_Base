@@ -44,7 +44,7 @@ end $$;
 
 create function pg_temp.review2_change_authority(p_kind text)
 returns void language plpgsql as $$
-declare v_version public.qorpera_cloud_routine_versions%rowtype; v_client uuid; v_sponsor jsonb;
+declare v_version public.qorpera_cloud_routine_versions%rowtype; v_client uuid; v_connection uuid;
 begin
  perform pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
  if p_kind='routine' then
@@ -56,10 +56,13 @@ begin
    v_version.logical_computer_id,v_version.required_capability,v_version.job_type,false,v_version.publication_mode,
    v_version.review_policy_key,v_version.reviewer_staff_ids);
  else
-  v_sponsor:=public.qorpera_create_member_execution_sponsor('30000000-0000-4000-8000-000000000010',extensions.gen_random_uuid(),
-   (current_setting('qorpera_test.wake_connection')::jsonb->>'connection_id')::uuid,2,true);
-  perform public.qorpera_configure_staff_execution_authority('30000000-0000-4000-8000-000000000010','30000000-0000-4000-8000-000000000031',
-   (v_sponsor->>'binding_id')::uuid,(v_sponsor->>'version')::bigint,null);
+  -- An agent's run is paid by the member who started its chain, not by a standing authority
+  -- (20260928230000): that member withdrawing agent work on the login paying for it now is the change.
+  select sponsor.provider_connection_id into strict v_connection
+  from public.qorpera_execution_runs as run join public.qorpera_execution_sponsor_versions as sponsor
+   on sponsor.binding_id=run.sponsor_binding_id and sponsor.version=run.sponsor_version
+  where run.id=(current_setting('qorpera_test.wake_binding')::jsonb->>'runId')::uuid;
+  perform public.qorpera_consent_provider_connection_autonomous('30000000-0000-4000-8000-000000000010',v_connection,false);
  end if;
  perform pg_temp.path_claims('service_role');
 end $$;
@@ -87,8 +90,8 @@ begin
    'Signal retry deduplicates within the current sponsor version');
   perform pg_temp.wake_assert((select count(*)=i from public.qorpera_provider_connection_usage_signals where run_id=(b->>'runId')::uuid),
    'Each exhausted sponsor retains its own signal');
-  perform public.qorpera_fail_runner_job((b->>'runnerId')::uuid,repeat('2',64),(b->>'jobId')::uuid,repeat('3',64),
-   'Native harness failed (provider allowance unavailable)',false);
+  -- The failure report no longer hands off (20260928349910): call the handoff function directly.
+  perform public.qorpera_handoff_run_sponsor((b->>'runId')::uuid,'Native harness failed (provider allowance unavailable)');
   perform pg_temp.wake_assert((select j.status='queued' and r.sponsor_version=i+1 from public.qorpera_execution_runs r
    join public.qorpera_runner_jobs j on j.id=r.job_id where r.id=(b->>'runId')::uuid),'Handoff queues the same logical run');
   b:=pg_temp.wake_start((b->>'runId')::uuid);

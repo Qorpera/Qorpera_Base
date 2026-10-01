@@ -9,6 +9,7 @@ import {
 	CloudModelLoginVault,
 	MODEL_LOGIN_FIELD,
 	type ModelLoginAuthority,
+	type ModelLoginCodexIssue,
 	type ModelLoginRenewer,
 } from "@qorpera/runtime/cloud-model-login-vault";
 import { CloudSecretKeyring, withCloudSecretFields } from "@qorpera/runtime/cloud-secret-crypto";
@@ -211,13 +212,25 @@ it("answers busy past its limit and a failed renewer as a renewal to try again",
 	const held = new Promise<void>((resolveHeld) => {
 		release = resolveHeld;
 	});
+	// The second renewal is sent once the first holds the helper's only slot, not after a guessed pause.
+	let entered!: () => void;
+	const holding = new Promise<void>((resolveHolding) => {
+		entered = resolveHolding;
+	});
 	const h = await helper(async () => {
+		entered();
 		await held;
 		throw new Error("codex crashed");
 	}, 1);
 	const client = new ModelLoginHelperClient({ socketPath: h.socketPath, token: h.token });
 	const first = client.renew(LOGIN, new AbortController().signal);
-	await new Promise((resolveWait) => setTimeout(resolveWait, 100));
+	// If the first renewal never reaches the renewer, say so instead of waiting for the test's timeout.
+	await Promise.race([
+		holding,
+		first.then((answer) => {
+			throw new Error(`The first renewal answered ${JSON.stringify(answer)} before it held the slot`);
+		}),
+	]);
 	await expect(client.renew(LOGIN, new AbortController().signal)).resolves.toEqual({
 		outcome: "transient",
 		reason: "helper_busy",
@@ -279,6 +292,9 @@ it("renews end to end: vault, helper socket, official Codex, next version sealed
 		listModelLoginsWithoutAccount: vi.fn(),
 		recordModelLoginAccount: vi.fn(),
 		switchOffReplacedNodeLogins: vi.fn(),
+		commitChatGptPlanRenewal: vi.fn(),
+		takeChatGptPlanRevocation: vi.fn(),
+		finishChatGptPlanRevocation: vi.fn(),
 	};
 	const { renewer: codex } = await renewer("renew-jwt");
 	const h = await helper((authJson, signal) => codex.renew(authJson, signal));
@@ -287,7 +303,10 @@ it("renews end to end: vault, helper socket, official Codex, next version sealed
 		keyring,
 		renewer: new ModelLoginHelperClient({ socketPath: h.socketPath, token: h.token }),
 	});
-	const login = await vault.issue({ binding: run, knownVersion: 7 }, new AbortController().signal);
+	const login = (await vault.issue(
+		{ binding: run, knownVersion: 7 },
+		new AbortController().signal,
+	)) as ModelLoginCodexIssue;
 	expect(login.version).toBe(8);
 	expect(login.authJson).not.toContain("rt-renewed-by-codex");
 	expect(JSON.parse(login.authJson as string).tokens.refresh_token).toBe("");

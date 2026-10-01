@@ -204,6 +204,6 @@ export async function runOfficialCodexMouthProbe(codexCommand: readonly [string,
 		provider.closeAllConnections();
 		await new Promise<void>((resolve) => provider.close(() => resolve()));
 		await mouth.close();
-		await rm(root, { recursive: true, force: true });
+		await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
 	}
 }

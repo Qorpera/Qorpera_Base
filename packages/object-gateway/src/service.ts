@@ -1,6 +1,7 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, RequestListener, ServerResponse } from "node:http";
 import { boundedObjectOperation, ObjectDependencyError, type ObjectDependencyHealth } from "./dependency.ts";
+import { serveFolderObject } from "./folder-objects.ts";
 import type { MemberCompanyAuthority } from "./member-company-authority.ts";
 import { serveMemberCompanyFile } from "./member-company-file.ts";
 import { type MemberCompanyObjectAuthority, serveMemberCompanyObject } from "./member-company-objects.ts";
@@ -288,6 +289,17 @@ export function createObjectGatewayHandler(options: ObjectGatewayServiceOptions)
 					await serveMemberCompanyObject(request, response, options.memberObjects, options.store, observation);
 					return;
 				}
+				if (request.url?.startsWith("/v1/folder-objects/")) {
+					if (!options.nativeObjects?.folder || !options.replication) throw new HttpError(404, "Not found");
+					await serveFolderObject(
+						request,
+						response,
+						{ token: options.nativeObjects.token, authority: options.nativeObjects.folder },
+						options.store,
+						options.replication,
+					);
+					return;
+				}
 				if (request.url?.startsWith("/v1/native-company-objects/")) {
 					if (!options.nativeObjects || !options.replication) throw new HttpError(404, "Not found");
 					await serveNativeCompanyObject(
@@ -438,7 +450,16 @@ export function createObjectGatewayHandler(options: ObjectGatewayServiceOptions)
 					return;
 				}
 				if (error instanceof ObjectDependencyError) {
-					json(response, error.unavailable ? 503 : error.status, { error: error.message }, observation);
+					// Only a native object request may be sent again whole after a lock conflict: its one write is
+					// content-addressed and its last database call is the one that rolled back. Composite routes (a
+					// member's review, then its apply) may have committed an earlier step, so they never say so.
+					const retryable = error.lockConflict && request.url?.startsWith("/v1/native-company-objects/") === true;
+					json(
+						response,
+						error.unavailable ? 503 : error.status,
+						retryable ? { error: error.message, code: "lock_conflict" } : { error: error.message },
+						observation,
+					);
 					return;
 				}
 				json(response, 503, { error: "Object gateway operation failed" }, observation);

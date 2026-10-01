@@ -143,6 +143,12 @@ do $$
 declare v_policy jsonb := jsonb_build_object('providerId','machine-fixture','providerPolicySha256',repeat('f',64),'project','machines',
 	'imageFingerprint',repeat('a',64),'bootstrapSha256',repeat('b',64),'storagePool','machines','network','machine-net');
 begin
+	-- Agents are offered machine tools only once a node can serve them (20260928259350).
+	perform pg_temp.wake_assert(not public.qorpera_company_machines_available()
+		and has_function_privilege('service_role','public.qorpera_company_machines_available()','execute')
+		and not has_function_privilege('authenticated','public.qorpera_company_machines_available()','execute')
+		and not has_function_privilege('anon','public.qorpera_company_machines_available()','execute'),
+		'No machine executor yet: no machine tools, and only the service role may ask');
 	perform pg_temp.node('30000000-0000-4000-8000-000000000410',repeat('c',64),'machine-a',16000,68719476736);
 	perform public.qorpera_enroll_runtime_node_provider('30000000-0000-4000-8000-000000000410',repeat('c',64),'machine','machine-fixture',
 		repeat('f',64),8000,34359738368);
@@ -150,7 +156,18 @@ begin
 	perform pg_temp.wake_error($sql$select public.qorpera_configure_machine_executor('mx-a',repeat('c',64),true,'{"providerId":"x"}',322122547200)$sql$,'22023');
 	-- The disk the node's pool gives machines is part of enabling it.
 	perform pg_temp.wake_error(format($sql$select public.qorpera_configure_machine_executor('mx-a',repeat('c',64),true,%L,null)$sql$,v_policy),'22023');
+	perform public.qorpera_configure_machine_executor('mx-a',repeat('c',64),false,v_policy,322122547200);
+	perform pg_temp.wake_assert(not public.qorpera_company_machines_available(), 'A disabled executor serves no machines');
 	perform public.qorpera_configure_machine_executor('mx-a',repeat('c',64),true,v_policy,322122547200);
+	perform pg_temp.wake_assert(public.qorpera_company_machines_available(), 'An enabled executor offers the machine tools');
+	-- Its policy must be one an enrolled machine provider holds, as for any start.
+	begin
+		update public.qorpera_machine_executors set policy = jsonb_set(policy, '{providerId}', '"nobody"') where owner = 'mx-a';
+		perform pg_temp.wake_assert(not public.qorpera_company_machines_available(), 'No enrolled provider, no machine tools');
+		raise sqlstate 'P0F99';
+	exception when sqlstate 'P0F99' then null;
+	end;
+	perform pg_temp.wake_assert(public.qorpera_company_machines_available(), 'The sub-block left the executor as it was');
 	perform pg_temp.wake_error($sql$select public.qorpera_configure_machine_executor('mx-a',repeat('d',64),true,null,322122547200)$sql$,'22023');
 	perform pg_temp.wake_error(format($sql$select public.qorpera_configure_machine_executor('mx-a',repeat('d',64),true,%L,322122547200)$sql$,v_policy),'42501');
 end $$;
@@ -777,4 +794,26 @@ begin
 			and reserved_at is not null and released_at is null)
 		and public.qorpera_abandon_machine_executor('mx-b',repeat('d',64)) = 0,
 		'Every placement is given up and every allocation released, once: '||v_given||' of '||cardinality(v_ids));
+end $$;
+
+-- 21. A deleted company's machines are deleted too (20260928269360): under its fence, once, waking no run.
+do $$
+declare v_profile uuid := '30000000-0000-4000-8000-000000000010'; v_open integer; v_events integer; v_result jsonb; v_again jsonb;
+begin
+	select count(*) into v_open from public.qorpera_company_machines
+	where profile_id = v_profile and removed_at is null and desired_state <> 'deleted';
+	select count(*) into v_events from public.qorpera_company_machine_events where profile_id = v_profile and kind = 'stopped';
+	perform pg_temp.wake_assert(v_open >= 1, 'The company still has machines to delete');
+	update public.qorpera_company_machines set notify_run_ids = array[started_by_run_id]
+	where profile_id = v_profile and removed_at is null and desired_state <> 'deleted';
+	perform public.qorpera_lock_profile_gc_fence(v_profile);
+	v_result := public.qorpera_stop_company_work(v_profile);
+	v_again := public.qorpera_stop_company_work(v_profile);
+	perform pg_temp.wake_assert((v_result ->> 'agentMachinesDeleted')::integer = v_open
+		and (v_again ->> 'agentMachinesDeleted')::integer = 0
+		and not exists (select 1 from public.qorpera_company_machines
+			where profile_id = v_profile and removed_at is null and desired_state <> 'deleted')
+		and not exists (select 1 from public.qorpera_company_machines where profile_id = v_profile and cardinality(notify_run_ids) > 0)
+		and (select count(*) from public.qorpera_company_machine_events where profile_id = v_profile and kind = 'stopped') = v_events,
+		'Every machine is deleted, once, and no run is woken about it: '||v_result::text||' then '||v_again::text);
 end $$;

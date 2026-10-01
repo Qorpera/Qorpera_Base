@@ -1,3 +1,10 @@
+import type { ChatGptPlanOAuth } from "./cloud-chatgpt-plan.ts";
+import { ChatGptPlanSignIns } from "./cloud-chatgpt-plan-sign-in.ts";
+import {
+	CloudConnectorTokenRevocations,
+	CloudConnectorTokenRevoker,
+	logConnectorTokenRevocationPass,
+} from "./cloud-connector-token-revocation.ts";
 import type { ModelLoginSignInHelper } from "./cloud-model-login-sign-in.ts";
 import { CloudModelLoginUpkeep } from "./cloud-model-login-upkeep.ts";
 import { CloudModelLoginVault, type ModelLoginRenewer } from "./cloud-model-login-vault.ts";
@@ -17,8 +24,9 @@ import type { CloudSecretKeyring } from "./cloud-secret-crypto.ts";
  * broker, login vault, sign-ins and usage, each on that company's own authority. Every database call
  * still names the company's authority and capability, so a request routed to the wrong company is refused
  * there. The background work of the single-company broker runs here for every company: finished sign-ins
- * are collected (often for a company whose member is signing in, now and then for all), and each company's
- * upkeep pass runs in turn.
+ * are collected (often for a company whose member is signing in, now and then for all), each company's
+ * upkeep pass runs in turn, and so does each company's connector token revocation queue (company delete
+ * D6), once a minute.
  */
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -51,6 +59,7 @@ interface Served {
 	readonly keyId: string;
 	readonly scope: CloudSecretBrokerCompanyScope;
 	readonly upkeep: CloudModelLoginUpkeep;
+	readonly revocations: CloudConnectorTokenRevocations;
 }
 
 function record(value: unknown, label: string): Record<string, unknown> {
@@ -74,10 +83,13 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 	readonly #keyring: CloudSecretKeyring;
 	readonly #adapters: readonly CloudSecretConnectorAdapter[];
 	readonly #helper: (ModelLoginSignInHelper & ModelLoginRenewer) | undefined;
+	readonly #chatGptPlan: ChatGptPlanOAuth | undefined;
+	readonly #revoker: Pick<CloudConnectorTokenRevoker, "revoke">;
 	readonly #refreshEveryMs: number;
 	readonly #collectEveryMs: number;
 	readonly #sweepEveryMs: number;
 	readonly #upkeepEveryMs: number;
+	readonly #revokeEveryMs: number;
 	readonly #now: () => number;
 	readonly #served = new Map<string, Served>();
 	readonly #signingIn = new Map<string, number>();
@@ -86,6 +98,7 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 	#refreshing: Promise<void> | undefined;
 	readonly #timers = new Set<ReturnType<typeof setTimeout>>();
 	#running = new Set<Promise<void>>();
+	readonly #closing = new AbortController();
 	#started = false;
 	#closed = false;
 
@@ -95,20 +108,29 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 		adapters: readonly CloudSecretConnectorAdapter[];
 		/** The login helper on this host: renewals and members' sign-ins. Absent, nothing renews or signs in. */
 		helper?: ModelLoginSignInHelper & ModelLoginRenewer;
+		/** OpenAI's side of ChatGPT plan logins (built switched off). Absent, no plan sign-in starts and no
+		 * plan login is renewed or ended. */
+		chatGptPlan?: ChatGptPlanOAuth;
+		/** Cancels queued connector tokens at Google and GitHub; by default without a GitHub client. */
+		revoker?: Pick<CloudConnectorTokenRevoker, "revoke">;
 		refreshEveryMs?: number;
 		collectEveryMs?: number;
 		sweepEveryMs?: number;
 		upkeepEveryMs?: number;
+		revokeEveryMs?: number;
 		now?: () => number;
 	}) {
 		this.#principal = options.principal;
 		this.#keyring = options.keyring;
 		this.#adapters = options.adapters;
 		this.#helper = options.helper;
+		this.#chatGptPlan = options.chatGptPlan;
+		this.#revoker = options.revoker ?? new CloudConnectorTokenRevoker();
 		this.#refreshEveryMs = options.refreshEveryMs ?? 10_000;
 		this.#collectEveryMs = options.collectEveryMs ?? 2000;
 		this.#sweepEveryMs = options.sweepEveryMs ?? 30_000;
 		this.#upkeepEveryMs = options.upkeepEveryMs ?? 5 * 60_000;
+		this.#revokeEveryMs = options.revokeEveryMs ?? 60_000;
 		this.#now = options.now ?? Date.now;
 	}
 
@@ -202,10 +224,12 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 	#serve(entry: { companyId: string; authorityId: string; keyId: string }): Served {
 		const authority = this.#principal.authority(entry.companyId, entry.authorityId);
 		const helper = this.#helper;
+		const plan = this.#chatGptPlan;
 		const modelLogins = new CloudModelLoginVault({
 			authority,
 			keyring: this.#keyring,
 			...(helper ? { renewer: helper } : {}),
+			...(plan ? { chatGptPlan: plan } : {}),
 		});
 		return {
 			authorityId: entry.authorityId,
@@ -214,13 +238,22 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 				companyId: entry.companyId,
 				broker: new CloudSecretBroker({ authority, keyring: this.#keyring, adapters: this.#adapters }),
 				modelLogins,
-				modelLoginSignIns: helper
-					? new CloudModelLoginSignIns({ authority, keyring: this.#keyring, helper })
-					: undefined,
+				modelLoginSignIns:
+					helper || plan
+						? new CloudModelLoginSignIns({
+								authority,
+								keyring: this.#keyring,
+								...(helper ? { helper } : {}),
+								...(plan
+									? { plan: new ChatGptPlanSignIns({ oauth: plan, authority, keyring: this.#keyring }) }
+									: {}),
+							})
+						: undefined,
 				modelLoginUsage: new CloudModelLoginUsage({ authority, keyring: this.#keyring }),
 			},
 			// Its timer never runs: the shared upkeep loop runs each company's pass in turn.
 			upkeep: new CloudModelLoginUpkeep({ vault: modelLogins }),
+			revocations: new CloudConnectorTokenRevocations({ authority, keyring: this.#keyring, revoker: this.#revoker }),
 		};
 	}
 
@@ -246,6 +279,15 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 		}
 	}
 
+	/** Each company's queued connector tokens in turn. */
+	async revokeTokens(): Promise<void> {
+		for (const served of [...this.#served.values()]) {
+			if (this.#closed) return;
+			if (this.#served.get(served.scope.companyId) === served)
+				await logConnectorTokenRevocationPass(served.revocations, this.#closing.signal);
+		}
+	}
+
 	start(): void {
 		if (this.#started || this.#closed) return;
 		this.#started = true;
@@ -253,6 +295,11 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 		this.#loop(() => this.collect(), this.#collectEveryMs, this.#collectEveryMs);
 		// A random start, so both copies of the vault and a restart spread their renewals.
 		this.#loop(() => this.upkeep(), this.#upkeepEveryMs, 30_000 + Math.floor(Math.random() * this.#upkeepEveryMs));
+		this.#loop(
+			() => this.revokeTokens(),
+			this.#revokeEveryMs,
+			15_000 + Math.floor(Math.random() * this.#revokeEveryMs),
+		);
 	}
 
 	#loop(work: () => Promise<void>, everyMs: number, firstMs: number): void {
@@ -279,6 +326,7 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 	 * which the unit's stop timeout waits for. */
 	async close(): Promise<void> {
 		this.#closed = true;
+		this.#closing.abort();
 		for (const timer of this.#timers) clearTimeout(timer);
 		this.#timers.clear();
 		await Promise.all([...[...this.#served.values()].map((served) => served.upkeep.close()), ...this.#running]);

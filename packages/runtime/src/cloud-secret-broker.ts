@@ -5,6 +5,7 @@ import {
 	withCloudDeadline,
 } from "@qorpera/cloud-client/cloud-request";
 import { type CloudCodingRepository, type JsonValue, parseCloudCodingRepository } from "@qorpera/contracts";
+import type { ConnectorTokenRevocationAuthority } from "./cloud-connector-token-revocation.ts";
 import type { ModelLoginAuthority, ModelLoginRunBinding } from "./cloud-model-login-vault.ts";
 import type { ModelLoginSignInAuthority } from "./cloud-model-login-vault-sign-in.ts";
 import type { ModelLoginUsageAuthority } from "./cloud-model-login-vault-usage.ts";
@@ -946,7 +947,12 @@ export class SupabaseCloudSecretBrokerAuthority implements CloudSecretBrokerAuth
  * one renewal); it has no table privileges and never holds a Supabase service
  * key. */
 export class PostgresCloudSecretBrokerAuthority
-	implements CloudSecretBrokerAuthority, ModelLoginAuthority, ModelLoginSignInAuthority, ModelLoginUsageAuthority
+	implements
+		CloudSecretBrokerAuthority,
+		ModelLoginAuthority,
+		ModelLoginSignInAuthority,
+		ModelLoginUsageAuthority,
+		ConnectorTokenRevocationAuthority
 {
 	readonly #database: CloudSecretPostgresClient;
 	readonly #brokerAuthorityId: string;
@@ -1105,6 +1111,33 @@ export class PostgresCloudSecretBrokerAuthority
 		);
 	}
 
+	/** Company delete D6: this authority's queued connector tokens (20260928269500). */
+	claimConnectorTokenRevocations(limit: number, signal: AbortSignal): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_claim_connector_token_revocations($1::uuid,$2::text,$3::integer) as result",
+			[this.#brokerAuthorityId, this.#brokerCapabilitySha256, limit],
+			signal,
+		);
+	}
+
+	completeConnectorTokenRevocation(
+		answer: Parameters<ConnectorTokenRevocationAuthority["completeConnectorTokenRevocation"]>[0],
+		signal: AbortSignal,
+	): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_complete_connector_token_revocation($1::uuid,$2::text,$3::uuid,$4::bigint,$5::text,$6::text) as result",
+			[
+				this.#brokerAuthorityId,
+				this.#brokerCapabilitySha256,
+				answer.secretId,
+				answer.version,
+				answer.outcome,
+				answer.error,
+			],
+			signal,
+		);
+	}
+
 	takeIdleModelLoginRenewal(signal: AbortSignal): Promise<unknown> {
 		return this.#rpc(
 			"select public.qorpera_take_idle_model_login_renewal($1::uuid,$2::text) as result",
@@ -1145,7 +1178,7 @@ export class PostgresCloudSecretBrokerAuthority
 		signal: AbortSignal,
 	): Promise<unknown> {
 		return this.#rpc(
-			"select public.qorpera_describe_model_login_sign_in($1::uuid,$2::text,$3::uuid,$4::text) as result",
+			"select public.qorpera_describe_model_login_sign_in_v2($1::uuid,$2::text,$3::uuid,$4::text) as result",
 			[this.#brokerAuthorityId, this.#brokerCapabilitySha256, request.loginId, request.capabilitySha256],
 			signal,
 		);
@@ -1178,6 +1211,80 @@ export class PostgresCloudSecretBrokerAuthority
 				completion.accessExpiresAt,
 				completion.providerAccountReference,
 				completion.providerAccountEmail,
+			],
+			signal,
+		);
+	}
+
+	/** Sign in with ChatGPT (20260928329830): a plan sign-in's completion, with OpenAI's earliest renewal. */
+	completeChatGptPlanSignIn(
+		completion: Parameters<ModelLoginSignInAuthority["completeChatGptPlanSignIn"]>[0],
+		signal: AbortSignal,
+	): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_complete_chatgpt_plan_sign_in($1::uuid,$2::text,$3::uuid,$4::text,$5::uuid,$6::text,$7::text,$8::text,$9::timestamptz,$10::timestamptz,$11::text,$12::text,$13::timestamptz) as result",
+			[
+				this.#brokerAuthorityId,
+				this.#brokerCapabilitySha256,
+				completion.loginId,
+				completion.capabilitySha256,
+				completion.modelLoginId,
+				completion.keyId,
+				Buffer.from(completion.encryptedEnvelope).toString("base64"),
+				completion.envelopeSha256,
+				completion.accessIssuedAt,
+				completion.accessExpiresAt,
+				completion.providerAccountReference,
+				completion.providerAccountEmail,
+				completion.renewNotBefore,
+			],
+			signal,
+		);
+	}
+
+	commitChatGptPlanRenewal(
+		renewal: Parameters<ModelLoginAuthority["commitChatGptPlanRenewal"]>[0],
+		signal: AbortSignal,
+	): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_commit_chatgpt_plan_renewal($1::uuid,$2::text,$3::uuid,$4::uuid,$5::bigint,$6::text,$7::text,$8::text,$9::timestamptz,$10::timestamptz,$11::timestamptz) as result",
+			[
+				this.#brokerAuthorityId,
+				this.#brokerCapabilitySha256,
+				renewal.loginId,
+				renewal.token,
+				renewal.baseVersion,
+				renewal.keyId,
+				Buffer.from(renewal.encryptedEnvelope).toString("base64"),
+				renewal.envelopeSha256,
+				renewal.accessIssuedAt,
+				renewal.accessExpiresAt,
+				renewal.renewNotBefore,
+			],
+			signal,
+		);
+	}
+
+	takeChatGptPlanRevocation(signal: AbortSignal): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_take_chatgpt_plan_revocation($1::uuid,$2::text) as result",
+			[this.#brokerAuthorityId, this.#brokerCapabilitySha256],
+			signal,
+		);
+	}
+
+	finishChatGptPlanRevocation(
+		revocation: Parameters<ModelLoginAuthority["finishChatGptPlanRevocation"]>[0],
+		signal: AbortSignal,
+	): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_finish_chatgpt_plan_revocation($1::uuid,$2::text,$3::uuid,$4::uuid,$5::bigint) as result",
+			[
+				this.#brokerAuthorityId,
+				this.#brokerCapabilitySha256,
+				revocation.loginId,
+				revocation.token,
+				revocation.baseVersion,
 			],
 			signal,
 		);

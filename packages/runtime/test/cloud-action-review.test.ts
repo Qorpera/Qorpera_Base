@@ -51,6 +51,14 @@ describe("which calls are reviewed", () => {
 		["computer_desktop", { action: { kind: "desktop", action: "scroll", direction: "up", amount: 2 } }, "read"],
 		["computer_desktop", { action: { kind: "desktop", action: "type", text: "hello" } }, "external"],
 		["computer_screenshot", {}, "read"],
+		["list_hooks", {}, "read"],
+		["read_event", { deliveryId: "73100000-0000-4000-8000-00000000000a" }, "read"],
+		// An email from a company mailbox leaves the company (M2b).
+		[
+			"send_mail",
+			{ from: "support@mail.example.test", to: ["bob@acme.test"], subject: "Hi", text: "Hi" },
+			"external",
+		],
 		["hire_agent", {}, "delegation"],
 		["create_group_chat", {}, "delegation"],
 		["manage_routine", { action: "list" }, "read"],
@@ -128,6 +136,46 @@ describe("what the card shows", () => {
 			target: "bob@acme.test",
 			details: { subject: "Meeting moved", body: "Hi\nBob,\n\nsee you  at 10." },
 		});
+	});
+
+	it("shows a mailbox email's recipients, sender, subject and text, and says when it is a reply", () => {
+		expect(
+			describeCloudAction(tool("send_mail"), {
+				from: "support@mail.example.test",
+				to: ["bob@acme.test", "eve@acme.test"],
+				cc: ["boss@acme.test"],
+				subject: "Your refund",
+				text: "Hi Bob,\n\n\nIt is on its way.",
+				inReplyTo: "73300000-0000-4000-8000-00000000000a",
+			}),
+		).toEqual({
+			title: "Send an email",
+			target: "bob@acme.test, eve@acme.test",
+			details: {
+				from: "support@mail.example.test",
+				cc: "boss@acme.test",
+				subject: "Your refund",
+				text: "Hi Bob,\n\nIt is on its way.",
+				thread: "A reply to an email the company received",
+			},
+		});
+		expect(
+			describeCloudAction(tool("send_mail"), {
+				from: "support@mail.example.test",
+				to: ["bob@acme.test"],
+				subject: "Hello",
+				text: "Hi",
+			}).details,
+		).toEqual({ from: "support@mail.example.test", subject: "Hello", text: "Hi" });
+		const many = Array.from({ length: 10 }, (_, i) => `recipient-number-${i}-${"x".repeat(40)}@acme.test`);
+		const target = describeCloudAction(tool("send_mail"), {
+			from: "support@mail.example.test",
+			to: many,
+			subject: "Hello",
+			text: "Hi",
+		}).target;
+		expect(target?.endsWith("[...]")).toBe(true);
+		expect(Buffer.byteLength(target ?? "")).toBeLessThanOrEqual(500);
 	});
 
 	it("shows the text a Drive file gets, and names the file by its id only when nothing else names it", () => {
@@ -280,6 +328,12 @@ describe("what the card shows for delegation", () => {
 		);
 		expect(schedule({ kind: "file_change", path: "reports/weekly-report.md", timeZone: COPENHAGEN })).toBe(
 			"When “Weekly report” changes",
+		);
+		// An event listener names the event types it takes, never the hook's id.
+		const hookId = "3b2c9e4a-1d7f-4e60-9a2b-5c8d0e1f2a3b";
+		expect(schedule({ kind: "event", hookId, timeZone: COPENHAGEN })).toBe("When a hook receives an event");
+		expect(schedule({ kind: "event", hookId, only: ["invoice.paid", "charge.refunded"], timeZone: COPENHAGEN })).toBe(
+			"When a hook receives “invoice.paid” and “charge.refunded” events",
 		);
 		// Pausing names the routine by its key.
 		expect(

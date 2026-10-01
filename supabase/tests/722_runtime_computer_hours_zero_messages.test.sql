@@ -16,6 +16,7 @@ update public.qorpera_computer_hour_billing set live_since = clock_timestamp() -
 insert into public.qorpera_computer_hour_usage (profile_id, metered_at, run_seconds, standard_seconds)
 values ('15000000-0000-4000-8000-000000000010', clock_timestamp(), 20000, 20000);
 update public.qorpera_computer_hour_billing set zero_rule_since = clock_timestamp() - interval '1 second';
+select public.qorpera_computer_hour_zero_sweep(clock_timestamp());
 do $$
 begin
 	if not public.qorpera_company_at_zero('15000000-0000-4000-8000-000000000010', clock_timestamp()) then

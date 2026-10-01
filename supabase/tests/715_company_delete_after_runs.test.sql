@@ -187,6 +187,32 @@ $$;
 select set_config('qorpera_test.delete_neighbour_rows',
 	pg_temp.company_rows(current_setting('qorpera_test.delete_neighbour')::uuid)::text, true);
 
+-- The folder core's byte path keeps rows per company too (C1d): an upload intent with its objects, a chunk row and the
+-- usage row. The purge must remove each (step 7), and the chunk's manifest joins the stored-object queue (step 9).
+do $$
+declare v_intent uuid;
+begin
+	insert into public.qorpera_profile_objects(profile_id, sha256, bytes, backend)
+	values ('30000000-0000-4000-8000-000000000010', repeat('c', 64), 10, 'nas-object-gateway');
+	-- (An intent names its environment's folder clock.)
+	insert into public.qorpera_folder_clocks(environment_id) values ('30000000-0000-4000-8000-000000000020')
+	on conflict (environment_id) do nothing;
+	insert into public.qorpera_folder_upload_intents(environment_id, profile_id, actor_kind, scope_id, manifest_sha256, manifest_text,
+		file_sha256, bytes, media_type, executable, expires_at)
+	values ('30000000-0000-4000-8000-000000000020', '30000000-0000-4000-8000-000000000010', 'platform',
+		'00000000-0000-0000-0000-000000000000', repeat('c', 64), '{}', repeat('d', 64), 5, 'text/plain', false,
+		clock_timestamp() + interval '15 minutes')
+	returning id into v_intent;
+	insert into public.qorpera_folder_upload_intent_objects(intent_id, sha256, bytes, profile_id)
+	values (v_intent, repeat('d', 64), 5, '30000000-0000-4000-8000-000000000010');
+	insert into public.qorpera_folder_file_chunks(profile_id, chunk_sha256, manifest_sha256)
+	values ('30000000-0000-4000-8000-000000000010', repeat('d', 64), repeat('c', 64));
+	insert into public.qorpera_folder_storage_usage(profile_id, bytes, objects)
+	values ('30000000-0000-4000-8000-000000000010', 10, 1)
+	on conflict (profile_id) do update set bytes = excluded.bytes;
+end
+$$;
+
 -- What the company has now, to check after the delete.
 create temp table delete_before as
 select
@@ -287,7 +313,7 @@ select pg_temp.refused($q$select public.qorpera_set_company_execution_pause('300
 
 -- 5. A machine still on a node keeps the deletion waiting, and nothing is removed. A released machine
 -- is only a record and goes with the company. A sign-in identity a node may still hold waits too,
--- released or not; so does a node's latest update target naming the company; and a row of another
+-- released or not, until that node retires it (D4); so does a node's latest update target naming the company; and a row of another
 -- company that depends on this one fails the purge, which is recorded and retried.
 create function pg_temp.finish() returns jsonb language sql as $$
 	select public.qorpera_finish_company_deletion('30000000-0000-4000-8000-000000000010')
@@ -318,7 +344,21 @@ values ('30000000-0000-4000-8000-000000000161', '30000000-0000-4000-8000-0000000
 	(current_setting('qorpera_test.wake_login')::jsonb ->> 'login_id')::uuid,
 	(current_setting('qorpera_test.wake_identity')::jsonb ->> 'compute_identity_id')::uuid,
 	'lxd-login', repeat('8', 64), clock_timestamp());
-select pg_temp.wake_assert(pg_temp.finish() #>> '{holdings,identities}' = '1', 'A stored sign-in keeps the deletion waiting');
+-- Only a sign-in placed on a node can have left a volume there (20260928269450, D4).
+savepoint unplaced_identity;
+select pg_temp.wake_assert(pg_temp.finish() ->> 'state' = 'purged', 'A sign-in never placed on a node holds nothing');
+rollback to unplaced_identity;
+insert into public.qorpera_runtime_nodes(id, machine_id_sha256, label, version, cpu_millis, memory_bytes,
+	headroom_cpu_millis, headroom_memory_bytes, standard_cpu_millis, standard_memory_bytes, enabled)
+values ('30000000-0000-4000-8000-000000000181', repeat('9', 64), 'delete-login-node', 1, 8000, 17179869184, 1000,
+	1073741824, 4000, 8589934592, true);
+insert into public.qorpera_runtime_node_providers(provider_kind, provider_id, node_id, policy_sha256, cpu_millis, memory_bytes)
+values ('login', 'lxd-login', '30000000-0000-4000-8000-000000000181', repeat('2', 64), 2000, 4294967296);
+insert into public.qorpera_runtime_node_demands(allocation_id, node_id, provider_kind, provider_id, policy_sha256,
+	cpu_millis, memory_bytes, reserved_at, released_at)
+values ('30000000-0000-4000-8000-000000000161', '30000000-0000-4000-8000-000000000181', 'login', 'lxd-login',
+	repeat('2', 64), 2000, 4294967296, clock_timestamp(), clock_timestamp());
+select pg_temp.wake_assert(pg_temp.finish() #>> '{holdings,identities}' = '1', 'A sign-in a node may still hold keeps the deletion waiting');
 rollback to signed_in_identity;
 
 savepoint node_update;

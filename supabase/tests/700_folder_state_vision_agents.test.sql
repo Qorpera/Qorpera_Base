@@ -17,24 +17,64 @@ insert into public.qorpera_company_environments(id,profile_id,name,contract_vers
 select set_config('request.jwt.claims', '{"role":"service_role"}', true) \g /dev/null
 select public.qorpera_folder_enable('70000000-0000-4000-8000-000000000020') \g /dev/null
 
--- Verified bytes for a text, as the object gateway leaves them.
-create function pg_temp.stage(p_text text, p_profile uuid default '70000000-0000-4000-8000-000000000010')
-returns jsonb language plpgsql security definer as $$
-declare v_hash text := encode(extensions.digest(convert_to(p_text,'utf8'),'sha256'),'hex'); v_manifest text; v_manifest_hash text;
+-- Verified version-2 bytes for a text, as the object gateway leaves them: the platform stages them.
+create function pg_temp.manifest_v2(p_text text) returns text language sql immutable as $$
+	select format('{"schema":"qorpera.cloud-file-manifest/v2","fileSha256":"%s","bytes":%s,"mediaType":"text/markdown","executable":false,"chunks":[%s]}',
+		encode(extensions.digest(convert_to(p_text, 'utf8'), 'sha256'), 'hex'), octet_length(convert_to(p_text, 'utf8')),
+		case when p_text = '' then '' else format('{"sha256":"%s","bytes":%s}', encode(extensions.digest(convert_to(p_text, 'utf8'), 'sha256'), 'hex'),
+			octet_length(convert_to(p_text, 'utf8'))) end)
+$$;
+-- Opens an intent for a manifest as the actor, confirms each object the open did not report present (the manifest's
+-- chunks and the manifest itself, by hash and size, as the gateway does once it has stored them), and seals it.
+create function pg_temp.seal_v2(p_env uuid, p_actor jsonb, p_manifest text) returns jsonb language plpgsql as $$
+declare v_open jsonb := public.qorpera_folder_open_upload(p_env, p_actor, p_manifest); v_object jsonb;
 begin
-	insert into storage.objects(bucket_id,name,metadata)
-	values ('qorpera-profile-objects',p_profile::text || '/' || v_hash,
-		jsonb_build_object('size',octet_length(p_text))) on conflict do nothing;
-	v_manifest := jsonb_build_object('schema','qorpera.cloud-file-manifest/v1','fileSha256',v_hash,
-		'bytes',octet_length(p_text),'mediaType','application/octet-stream','chunks',case when p_text = '' then '[]'::jsonb
-		else jsonb_build_array(jsonb_build_object('sha256',v_hash,'bytes',octet_length(p_text))) end)::text;
-	v_manifest_hash := encode(extensions.digest(convert_to(v_manifest,'utf8'),'sha256'),'hex');
-	insert into storage.objects(bucket_id,name,metadata)
-	values ('qorpera-profile-objects',p_profile::text || '/' || v_manifest_hash,
-		jsonb_build_object('size',octet_length(v_manifest))) on conflict do nothing;
-	perform public.qorpera_verify_company_path_file(p_profile,v_manifest);
-	return jsonb_build_object('manifestSha256',v_manifest_hash,'fileSha256',v_hash,'bytes',octet_length(p_text),
-		'mediaType','text/markdown','executable',false);
+	for v_object in select c from jsonb_array_elements(p_manifest::jsonb -> 'chunks') c
+		union all select jsonb_build_object('sha256', encode(extensions.digest(convert_to(p_manifest, 'utf8'), 'sha256'), 'hex'),
+			'bytes', octet_length(convert_to(p_manifest, 'utf8'))) loop
+		if not (v_open -> 'present') ? (v_object ->> 'sha256') then
+			perform public.qorpera_folder_confirm_object(p_env, p_actor, (v_open ->> 'intentId')::uuid, v_object ->> 'sha256',
+				(v_object ->> 'bytes')::bigint);
+		end if;
+	end loop;
+	return public.qorpera_folder_seal_upload(p_env, p_actor, (v_open ->> 'intentId')::uuid);
+end $$;
+-- The platform stages the text in each folder-v2 environment of the company (an intent is one environment's).
+create function pg_temp.stage(p_text text, p_profile uuid default '70000000-0000-4000-8000-000000000010') returns jsonb language plpgsql as $$
+declare v_env uuid; v_seal jsonb;
+begin
+	for v_env in select environment_id from public.qorpera_company_files where profile_id = p_profile and core = 'folder-v2'
+		order by environment_id loop
+		v_seal := pg_temp.seal_v2(v_env, '{"kind":"platform"}', pg_temp.manifest_v2(p_text));
+		if v_seal ->> 'state' is distinct from 'sealed' then raise exception 'Fixture staging: %', v_seal; end if;
+	end loop;
+	if v_seal is null then raise exception 'Fixture staging: the company has no folder-v2 environment'; end if;
+	return v_seal -> 'file';
+end $$;
+-- A version-2 file is held to possession (C1D §3): before an actor other than the platform commits units, it stages
+-- each of their files itself, as its own upload would. An actor that may not stage (42501) or a stopped company (55000)
+-- is left to the commit's own refusal; any other error is a fixture defect and surfaces.
+create function pg_temp.possess(p_env uuid, p_actor jsonb, p_units jsonb) returns void language plpgsql as $$
+declare v_manifest text;
+begin
+	if p_actor ->> 'kind' is not distinct from 'platform' or jsonb_typeof(p_units) is distinct from 'array' then return; end if;
+	for v_manifest in select distinct i.manifest_text from jsonb_array_elements(p_units) u
+		cross join lateral (select u -> 'file' as f union all select c -> 'file' from jsonb_array_elements(
+			case when jsonb_typeof(u -> 'contents') = 'array' then u -> 'contents' else '[]'::jsonb end) c) refs
+		join public.qorpera_folder_upload_intents i on i.environment_id = p_env and i.manifest_sha256 = refs.f ->> 'manifestSha256'
+		where refs.f is not null loop
+		begin
+			perform pg_temp.seal_v2(p_env, p_actor, v_manifest);
+		exception when insufficient_privilege or object_not_in_prerequisite_state then null;
+		end;
+	end loop;
+end $$;
+-- A commit in any environment, as its actor: takes possession of the actor's files first.
+create function pg_temp.commit_in(p_env uuid, p_actor jsonb, p_key text, p_units jsonb, p_review uuid default null)
+returns jsonb language plpgsql as $$
+begin
+	perform pg_temp.possess(p_env, p_actor, p_units);
+	return public.qorpera_folder_commit(p_env, p_actor, p_key, p_units, p_review);
 end $$;
 
 -- A structured entry as the TS parser sends it.
@@ -70,9 +110,11 @@ create function pg_temp.vision(p_name text) returns jsonb language sql as $$
 		(select version from public.qorpera_folder_entries where environment_id = '70000000-0000-4000-8000-000000000020'
 			and key_text = 'vision/vision.md'))
 $$;
-create function pg_temp.commit(p_actor jsonb, p_key text, p_units jsonb) returns jsonb language sql as $$
-	select public.qorpera_folder_commit('70000000-0000-4000-8000-000000000020', p_actor, p_key, p_units)
-$$;
+create function pg_temp.commit(p_actor jsonb, p_key text, p_units jsonb) returns jsonb language plpgsql as $$
+begin
+	perform pg_temp.possess('70000000-0000-4000-8000-000000000020', p_actor, p_units);
+	return public.qorpera_folder_commit('70000000-0000-4000-8000-000000000020', p_actor, p_key, p_units);
+end $$;
 create function pg_temp.owner() returns jsonb language sql as $$
 	select '{"kind":"member","userId":"70000000-0000-4000-8000-000000000001"}'::jsonb
 $$;
@@ -345,7 +387,7 @@ end $$;
 
 -- 8. Lock targets: the roster row at rank 2, and the agent's thread room at rank 4 (FOR UPDATE) when its name or
 -- status changes or it retires, since the roster's thread trigger takes that room after the paths otherwise. With
--- every roster row goes the company row, FOR KEY SHARE at rank 2 (701 races it against posting).
+-- every roster row goes the company row, FOR KEY SHARE at rank 0 (701 races it against posting; C1b-3a moved it from rank 2).
 do $$
 declare nora constant uuid := '70000000-0000-4000-8000-0000000000a1'; env constant uuid := '70000000-0000-4000-8000-000000000020';
 	room uuid; t jsonb;
@@ -359,25 +401,25 @@ begin
 	if not t @> jsonb_build_array(jsonb_build_object('rank', 2, 'tbl', 'qorpera_profile_staff', 'mode', 'nokeyupdate',
 			'key', '70000000-0000-4000-8000-000000000010:' || nora))
 		or not t @> jsonb_build_array(jsonb_build_object('rank', 4, 'tbl', 'qorpera_company_rooms', 'key', room::text, 'mode', 'update'))
-		or not t @> jsonb_build_array(jsonb_build_object('rank', 2, 'tbl', 'qorpera_profiles', 'mode', 'keyshare',
+		or not t @> jsonb_build_array(jsonb_build_object('rank', 0, 'tbl', 'qorpera_profiles', 'mode', 'keyshare',
 			'key', '70000000-0000-4000-8000-000000000010')) then
 		raise exception 'A rename locks the company row, the roster row and the thread room: %', t; end if;
 	select coalesce(jsonb_agg(to_jsonb(x)), '[]'::jsonb) into t from public.qorpera_folder_structured_targets(env, pg_temp.owner(), jsonb_build_array(
 		pg_temp.write('agents/nora-back/agent.md', 'agent', pg_temp.agent_text(nora, 'Nora Skov'), pg_temp.agent_parse(nora, 'Nora Skov'),
 			pg_temp.version('agents/nora-back/agent.md')))) x;
-	if t @> '[{"tbl":"qorpera_company_rooms"}]' or not t @> '[{"rank":2,"tbl":"qorpera_profiles","mode":"keyshare"}]' then
+	if t @> '[{"tbl":"qorpera_company_rooms"}]' or not t @> '[{"rank":0,"tbl":"qorpera_profiles","mode":"keyshare"}]' then
 		raise exception 'An edit that keeps name and status leaves the room, and takes the company row: %', t; end if;
 	select coalesce(jsonb_agg(to_jsonb(x)), '[]'::jsonb) into t from public.qorpera_folder_structured_targets(env, pg_temp.owner(), jsonb_build_array(
 		jsonb_build_object('op','delete','path','agents/nora-back','expectedVersion',pg_temp.version('agents/nora-back'),'asOfSeq',pg_temp.seq()))) x;
 	if not t @> jsonb_build_array(jsonb_build_object('rank', 4, 'tbl', 'qorpera_company_rooms', 'key', room::text, 'mode', 'update'))
-		or not t @> jsonb_build_array(jsonb_build_object('rank', 2, 'tbl', 'qorpera_profiles', 'key', '70000000-0000-4000-8000-000000000010',
+		or not t @> jsonb_build_array(jsonb_build_object('rank', 0, 'tbl', 'qorpera_profiles', 'key', '70000000-0000-4000-8000-000000000010',
 			'mode', 'keyshare')) then
 		raise exception 'Retiring an active agent locks the company row and its thread room: %', t; end if;
 	-- A folder move, and deleting an archived agent's folder, touch no room but still write the roster row, so they
 	-- take the company row too.
 	select coalesce(jsonb_agg(to_jsonb(x)), '[]'::jsonb) into t from public.qorpera_folder_structured_targets(env, pg_temp.owner(), jsonb_build_array(
 		jsonb_build_object('op','move','from','agents/nora-back','to','agents/nora-new'))) x;
-	if t @> '[{"tbl":"qorpera_company_rooms"}]' or not t @> jsonb_build_array(jsonb_build_object('rank', 2, 'tbl', 'qorpera_profiles',
+	if t @> '[{"tbl":"qorpera_company_rooms"}]' or not t @> jsonb_build_array(jsonb_build_object('rank', 0, 'tbl', 'qorpera_profiles',
 			'key', '70000000-0000-4000-8000-000000000010', 'mode', 'keyshare')) then
 		raise exception 'A folder move takes the company row and no room: %', t; end if;
 	begin
@@ -385,7 +427,7 @@ begin
 		where profile_id = '70000000-0000-4000-8000-000000000010' and staff_agent_id = nora;
 		select coalesce(jsonb_agg(to_jsonb(x)), '[]'::jsonb) into t from public.qorpera_folder_structured_targets(env, pg_temp.owner(), jsonb_build_array(
 			jsonb_build_object('op','delete','path','agents/nora-back'))) x;
-		if t @> '[{"tbl":"qorpera_company_rooms"}]' or not t @> jsonb_build_array(jsonb_build_object('rank', 2, 'tbl', 'qorpera_profiles',
+		if t @> '[{"tbl":"qorpera_company_rooms"}]' or not t @> jsonb_build_array(jsonb_build_object('rank', 0, 'tbl', 'qorpera_profiles',
 				'key', '70000000-0000-4000-8000-000000000010', 'mode', 'keyshare')) then
 			raise exception 'Deleting an archived agent takes the company row and no room: %', t; end if;
 		raise exception 'undo' using errcode = 'QTF99';
@@ -393,8 +435,8 @@ begin
 	end;
 	-- The company row is never locked more strongly than KEY SHARE.
 	begin
-		perform public.qorpera_folder_structured_lock(env, jsonb_build_array(jsonb_build_object('rank', 2,
-			'tbl', 'qorpera_profiles', 'key', '70000000-0000-4000-8000-000000000010', 'mode', 'nokeyupdate')), 2::smallint, 2::smallint);
+		perform public.qorpera_folder_structured_lock(env, jsonb_build_array(jsonb_build_object('rank', 0,
+			'tbl', 'qorpera_profiles', 'key', '70000000-0000-4000-8000-000000000010', 'mode', 'nokeyupdate')), 0::smallint, 0::smallint);
 		raise exception 'A stronger lock on the company row must be refused' using errcode = 'QTF02';
 	exception when sqlstate 'XX000' then null;
 	end;
@@ -453,7 +495,7 @@ begin
 	values (env2,'70000000-0000-4000-8000-000000000011','Environment',1,'70000000-0000-4000-8000-000000000001');
 	perform public.qorpera_folder_enable(env2);
 	a := pg_temp.agent_text('70000000-0000-4000-8000-0000000000b1', 'One', 'co-founder');
-	r := public.qorpera_folder_commit(env2, '{"kind":"platform"}', 'twins-0001', jsonb_build_array(jsonb_build_object('op','new_folder',
+	r := pg_temp.commit_in(env2, '{"kind":"platform"}', 'twins-0001', jsonb_build_array(jsonb_build_object('op','new_folder',
 		'path','agents','contents',jsonb_build_array(
 			jsonb_build_object('path','a','kind','folder'), jsonb_build_object('path','b','kind','folder'),
 			jsonb_build_object('path','a/agent.md','kind','file','file',pg_temp.stage(a, '70000000-0000-4000-8000-000000000011')),
@@ -464,7 +506,7 @@ begin
 	if r -> 'units' -> 0 ->> 'reason' is distinct from 'structured_rule' then
 		raise exception 'Two agent.md files with one id in one unit are refused: %', r; end if;
 	-- Two co-founders with two ids in one unit.
-	r := public.qorpera_folder_commit(env2, '{"kind":"platform"}', 'twins-0002', jsonb_build_array(jsonb_build_object('op','new_folder',
+	r := pg_temp.commit_in(env2, '{"kind":"platform"}', 'twins-0002', jsonb_build_array(jsonb_build_object('op','new_folder',
 		'path','agents','contents',jsonb_build_array(
 			jsonb_build_object('path','a','kind','folder'), jsonb_build_object('path','b','kind','folder'),
 			jsonb_build_object('path','a/agent.md','kind','file','file',pg_temp.stage(a, '70000000-0000-4000-8000-000000000011')),
@@ -477,7 +519,7 @@ begin
 	if r -> 'units' -> 0 ->> 'reason' is distinct from 'structured_rule' then
 		raise exception 'Two co-founders in one unit are refused: %', r; end if;
 	-- One id in two units: the first saves, the second finds the id held by the first's folder.
-	r := public.qorpera_folder_commit(env2, pg_temp.owner(), 'twins-0003', jsonb_build_array(
+	r := pg_temp.commit_in(env2, pg_temp.owner(), 'twins-0003', jsonb_build_array(
 		jsonb_build_object('op','mkdir','path','agents'),
 		pg_temp.env2_hire('c', '70000000-0000-4000-8000-0000000000b3', 'agent'),
 		pg_temp.env2_hire('d', '70000000-0000-4000-8000-0000000000b3', 'agent')));
@@ -486,7 +528,7 @@ begin
 		raise exception 'One id in two units: the second is refused: %', r; end if;
 	-- The platform, before any Co-Founder is recorded, cannot make the agent on the roster one.
 	a := pg_temp.agent_text('70000000-0000-4000-8000-0000000000b3', 'Agent', 'co-founder');
-	r := public.qorpera_folder_commit(env2, '{"kind":"platform"}', 'twins-0004', jsonb_build_array(jsonb_build_object('op','write',
+	r := pg_temp.commit_in(env2, '{"kind":"platform"}', 'twins-0004', jsonb_build_array(jsonb_build_object('op','write',
 		'path','agents/c/agent.md','file',pg_temp.stage(a, '70000000-0000-4000-8000-000000000011'),
 		'expectedVersion',(select version from public.qorpera_folder_entries where environment_id = env2 and key_text = 'agents/c/agent.md'),
 		'structured',jsonb_build_array(pg_temp.entry('agents/c/agent.md','agent',a,

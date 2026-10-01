@@ -28,12 +28,16 @@ import {
 
 type PresenceClient = Pick<SupabaseClient, "channel" | "removeChannel">;
 export interface CloudCompanyPathPresence {
+	/** Publishes this claim and waits for a fresh observation of `path`. */
 	observe(
 		path: string,
 		extent: CompanyPathExtent,
 		activity: CompanyPathActivity,
 		signal: AbortSignal,
 	): Promise<CompanyPathPresenceView>;
+	/** Publishes this claim and refreshes its observation in the background. Returns
+	 * the latest observation of `path` already held, without waiting on the network. */
+	claim(path: string, extent: CompanyPathExtent, activity: CompanyPathActivity): CompanyPathPresenceView;
 	close(): Promise<void>;
 }
 export type CloudCompanyPathPresenceFactory = (
@@ -41,6 +45,22 @@ export type CloudCompanyPathPresenceFactory = (
 	identity: CloudNativeToolIdentity,
 	signal: AbortSignal,
 ) => CloudCompanyPathPresence | undefined;
+
+/** One observation's deadline: past it, presence is reported unavailable. */
+const OBSERVATION_DEADLINE_MS = 2000;
+/** Paths whose latest observation is kept for later tool results. */
+const CACHED_OBSERVATIONS = 64;
+/** Every publisher renews its signed statement this often; a statement lives COMPANY_PATH_PRESENCE_TTL_MS. */
+const RENEWAL_MS = 10_000;
+
+function unavailableView(path: string, observedAt = Date.now()): CompanyPathPresenceView {
+	return {
+		schema: "qorpera.company-path-presence-view/v1",
+		state: "unavailable",
+		observedAt,
+		paths: [{ path, participants: [] }],
+	};
+}
 
 /** Presence cannot hold up canonical work or turn startup. */
 export async function observeCloudCompanyPathPresence(
@@ -55,15 +75,27 @@ export async function observeCloudCompanyPathPresence(
 		return await cloudToolRequest(
 			(requestSignal) => presence.observe(path, extent, activity, requestSignal),
 			signal,
-			2000,
+			OBSERVATION_DEADLINE_MS,
 		);
 	} catch {
-		return {
-			schema: "qorpera.company-path-presence-view/v1",
-			state: "unavailable",
-			observedAt: Date.now(),
-			paths: [{ path, participants: [] }],
-		};
+		return unavailableView(path);
+	}
+}
+
+/** Company File tools never wait on presence (contract 5.2: presence is never a lock).
+ * The claim is published in the background; the result carries the latest
+ * observation of the path already held, and is unavailable until there is one. */
+export function claimCloudCompanyPathPresence(
+	presence: CloudCompanyPathPresence | undefined,
+	path: string,
+	extent: CompanyPathExtent,
+	activity: CompanyPathActivity,
+): CompanyPathPresenceView | undefined {
+	if (!presence) return undefined;
+	try {
+		return presence.claim(path, extent, activity);
+	} catch {
+		return unavailableView(path);
 	}
 }
 
@@ -105,6 +137,11 @@ export class CloudNativeCompanyPresence implements CloudCompanyPathPresence {
 	#statements: CompanyPathPresenceWire[] = [];
 	#truncated = false;
 	readonly #seen = new Map<string, number>();
+	/** Latest completed observation per path, newest last. */
+	readonly #views = new Map<string, CompanyPathPresenceView>();
+	/** At most one background observation runs; only the newest claim waits for it. */
+	#background: Promise<void> | undefined;
+	#queued: Claim | undefined;
 
 	constructor(options: {
 		binding: CloudNativeToolBinding;
@@ -126,7 +163,7 @@ export class CloudNativeCompanyPresence implements CloudCompanyPathPresence {
 		this.#signal.addEventListener("abort", this.#abort, { once: true });
 		this.#timer = setInterval(() => {
 			void this.#refresh();
-		}, 10_000);
+		}, RENEWAL_MS);
 		this.#timer.unref?.();
 		if (this.#signal.aborted) void this.close();
 		else void this.#refresh();
@@ -292,7 +329,60 @@ export class CloudNativeCompanyPresence implements CloudCompanyPathPresence {
 		if (tracked !== "ok") throw new Error("NATIVE_PRESENCE_PUBLISH_UNAVAILABLE");
 	}
 
+	claim(path: string, extent: CompanyPathExtent, activity: CompanyPathActivity): CompanyPathPresenceView {
+		const now = Date.now();
+		if (this.#closed) return unavailableView(path, now);
+		this.#queued = { path, extent, activity };
+		this.#observeQueued();
+		const cached = this.#views.get(path);
+		// No observation outlives one statement lifetime.
+		if (!cached || cached.observedAt <= now - COMPANY_PATH_PRESENCE_TTL_MS) return unavailableView(path, now);
+		const listed = cached.paths[0].participants;
+		const participants = listed.filter((item) => item.expiresAt > now);
+		// Within one renewal period every peer seen then still has a current statement. Past it, or
+		// once a listed statement lapsed, a peer may be working unseen: partial, never a complete
+		// "available" that lists nobody.
+		const aged = now - cached.observedAt >= RENEWAL_MS || participants.length < listed.length;
+		return {
+			...cached,
+			state: aged && cached.state === "available" ? "partial" : cached.state,
+			paths: [{ path, participants }],
+		};
+	}
+	/** Runs the newest queued claim once the previous background observation settled. */
+	#observeQueued(): void {
+		const claim = this.#queued;
+		if (this.#background || this.#closed || !claim) return;
+		this.#queued = undefined;
+		this.#background = observeCloudCompanyPathPresence(this, claim.path, claim.extent, claim.activity, this.#signal)
+			.then((view) => {
+				if (view) this.#remember(claim.path, view);
+			})
+			.catch(() => undefined)
+			.finally(() => {
+				this.#background = undefined;
+				this.#observeQueued();
+			});
+	}
+	#remember(path: string, view: CompanyPathPresenceView): void {
+		const cached = this.#views.get(path);
+		if (this.#closed || (cached && cached.observedAt > view.observedAt)) return;
+		this.#views.delete(path);
+		this.#views.set(path, view);
+		if (this.#views.size > CACHED_OBSERVATIONS) this.#views.delete(this.#views.keys().next().value!);
+	}
+
 	async observe(
+		path: string,
+		extent: CompanyPathExtent,
+		activity: CompanyPathActivity,
+		signal: AbortSignal,
+	): Promise<CompanyPathPresenceView> {
+		const view = await this.#observe(path, extent, activity, signal);
+		this.#remember(path, view);
+		return view;
+	}
+	async #observe(
 		path: string,
 		extent: CompanyPathExtent,
 		activity: CompanyPathActivity,
@@ -428,8 +518,12 @@ export class CloudNativeCompanyPresence implements CloudCompanyPathPresence {
 		this.#connected = false;
 		this.#statements = [];
 		this.#claims = [];
+		this.#queued = undefined;
+		this.#views.clear();
 		this.#closing = (async () => {
+			// Both settle promptly once stopped: their requests share the aborted signal.
 			await this.#pending;
+			await this.#background;
 			await Promise.allSettled([
 				...(channel ? [this.#client.removeChannel(channel)] : []),
 				this.#call(

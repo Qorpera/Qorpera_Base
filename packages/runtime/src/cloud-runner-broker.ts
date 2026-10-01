@@ -378,12 +378,25 @@ export interface CloudRunnerBrokerTransport {
 	): Promise<unknown>;
 }
 
+/** The native authority lease a runner asks for, at acquisition and at every renewal. */
+export const NATIVE_AUTHORITY_LEASE_SECONDS = 120;
+
+/** What a runner start (qorpera_start_runner_assignment) read in the acceptance's own transaction:
+ * the broker description and, when asked for and the sponsor is native, the native authority. Both
+ * are raw responses; the broker validates them exactly as it validates the separate calls. */
+export interface CloudRunnerStart {
+	description: unknown;
+	nativeAuthority?: { value: unknown; leaseSeconds: number };
+}
+
 export interface CloudRunnerJobBrokerOptions {
 	job: CloudRunnerJob;
 	runnerId: string;
 	credentials: () => { sessionToken: string; leaseToken: string };
 	transport: CloudRunnerBrokerTransport;
 	signal?: AbortSignal;
+	/** Served once in place of the describe and native authority round trips. */
+	start?: CloudRunnerStart;
 }
 
 function record(value: unknown, label: string): Record<string, unknown> {
@@ -1586,6 +1599,7 @@ export class CloudRunnerJobBroker implements CloudRunnerSubstrateResolver {
 	readonly #options: CloudRunnerJobBrokerOptions;
 	#description?: CloudRunnerBrokerDescription;
 	#nativeAuthority?: CloudRunnerNativeAuthority;
+	#start?: CloudRunnerStart;
 	readonly #canonicalReceiptIds = new Map<string, string>();
 	readonly #durableObjectShas = new Set<string>();
 	readonly objects: CloudContentAddressedStore;
@@ -1601,6 +1615,7 @@ export class CloudRunnerJobBroker implements CloudRunnerSubstrateResolver {
 			throw new Error("Runner broker requires an actively leased job");
 		}
 		this.#options = options;
+		this.#start = options.start;
 		this.objects = new CloudContentAddressedStore(new CloudRunnerBrokerObjectTransport(this, "artifact"));
 		this.companyFileObjects = new CloudContentAddressedStore(
 			new CloudRunnerBrokerObjectTransport(this, "company_file"),
@@ -1609,7 +1624,12 @@ export class CloudRunnerJobBroker implements CloudRunnerSubstrateResolver {
 
 	async describe(): Promise<CloudRunnerBrokerDescription> {
 		if (this.#description) return this.#description;
-		const description = parseCloudRunnerBrokerDescription(await this.#options.transport.describe(this.#authority()));
+		const authority = this.#authority();
+		const started = this.#start?.description;
+		if (started !== undefined) authority.signal?.throwIfAborted();
+		const description = parseCloudRunnerBrokerDescription(
+			started ?? (await this.#options.transport.describe(authority)),
+		);
 		if (
 			description.job.jobId !== this.#options.job.jobId ||
 			description.job.runId !== this.#options.job.runId ||
@@ -1728,23 +1748,31 @@ export class CloudRunnerJobBroker implements CloudRunnerSubstrateResolver {
 		};
 	}
 
-	async acquireNativeAuthority(leaseSeconds = 120): Promise<CloudRunnerNativeAuthority> {
+	async acquireNativeAuthority(leaseSeconds = NATIVE_AUTHORITY_LEASE_SECONDS): Promise<CloudRunnerNativeAuthority> {
 		const description = await this.describe();
 		if (description.sponsor.authenticationMode !== "native_subscription") {
 			throw new Error("Runner execution does not use a native subscription");
 		}
-		const acquire = this.#options.transport.acquireNativeAuthority;
-		if (!acquire) throw new Error("Runner broker does not support native subscription authority");
-		const assignmentId = this.#assignmentId();
-		const authority = parseNativeAuthority(
-			await acquire.call(
+		// The start's authority serves the first acquisition for the same lease length, once.
+		const started = this.#start?.nativeAuthority;
+		this.#start = undefined;
+		let value: unknown;
+		if (started?.leaseSeconds === leaseSeconds) {
+			this.#authority().signal?.throwIfAborted();
+			value = started.value;
+		} else {
+			const acquire = this.#options.transport.acquireNativeAuthority;
+			if (!acquire) throw new Error("Runner broker does not support native subscription authority");
+			value = await acquire.call(
 				this.#options.transport,
 				this.#authority(),
 				description.run.runId,
-				assignmentId,
+				this.#assignmentId(),
 				leaseSeconds,
-			),
-		);
+			);
+		}
+		const assignmentId = this.#assignmentId();
+		const authority = parseNativeAuthority(value);
 		if (
 			authority.runId !== description.run.runId ||
 			authority.providerConnectionId !== description.sponsor.providerConnectionId ||
@@ -1779,7 +1807,7 @@ export class CloudRunnerJobBroker implements CloudRunnerSubstrateResolver {
 		this.#nativeAuthority = undefined;
 	}
 
-	async renewNativeAuthority(leaseSeconds = 120): Promise<CloudRunnerNativeAuthority> {
+	async renewNativeAuthority(leaseSeconds = NATIVE_AUTHORITY_LEASE_SECONDS): Promise<CloudRunnerNativeAuthority> {
 		const current = this.#nativeAuthority;
 		if (!current) throw new Error("Runner has no native subscription authority to renew");
 		const renew = this.#options.transport.renewNativeAuthority;

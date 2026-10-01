@@ -50,11 +50,16 @@ const intent = {
 	computerGeneration: 1,
 	state: "requested" as const,
 };
+// The renderer chunk is never really loaded here. Most tests stand in for loadComputerViewer; the
+// one that runs the real loader meets a download that stalls.
+vi.mock("../src/ui/screen-viewer.mjs", () => new Promise<object>(() => {}));
 const START_WRITES = /\/(?:qorpera_request_runtime_office_start|qorpera_cancel_runtime_office_start)$/;
 const cleanup: (() => void)[] = [];
 beforeEach(() => {
 	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
 	vi.stubGlobal("matchMedia", () => ({ matches: false, addEventListener() {}, removeEventListener() {} }));
+	// The renderer chunk (noVNC) is not fetched here; openComputerViewer stands in for it.
+	vi.spyOn(viewer, "loadComputerViewer").mockResolvedValue();
 });
 afterEach(() => {
 	for (const close of cleanup.splice(0)) close();
@@ -227,6 +232,67 @@ describe("several computers per company", () => {
 		expect(statusLine(p)).toBe("Waiting for room on our servers. It starts as soon as there is room.");
 		expect(methods(f).some((method) => START_WRITES.test(`/${method}`))).toBe(false);
 	});
+	it("says a sleeping computer waits for computer hours, and wakes it once hours are added", async () => {
+		const maintenance = {
+			reason: "idle",
+			state: "resumed",
+			transitionId: id(74),
+			requestedAt: "2026-09-19T12:00:00Z",
+			resumedAt: "2026-09-19T12:01:00Z",
+			activatedAt: null,
+		};
+		const f = setup({
+			qorpera_member_agent_office: placed({ scope, number: 1, waiting: "hours" }, { placement: "starting" }),
+			qorpera_runtime_office_start_status: { ...start, officeState: "maintenance", maintenance, intent },
+		});
+		const startClient = spyStart(f);
+		const request = vi.spyOn(startClient, "request").mockResolvedValue(intent);
+		const open = spyViewer();
+		const p = await opened(f.computer);
+		await poll();
+		// The wake is still asked for: it waits for hours instead of "starting" for good.
+		expect(request).toHaveBeenCalledOnce();
+		expect(statusLine(p)).toBe("Out of computer hours. The machine starts by itself once hours are added.");
+		f.replies.qorpera_member_agent_office = placed({ scope, number: 1, waiting: null }, { placement: "starting" });
+		for (let n = 0; n < 4; n++) await poll();
+		expect(statusLine(p)).toBe("Starting the machine…");
+		f.replies.qorpera_runtime_office_start_status = start;
+		await poll();
+		expect(request).toHaveBeenCalledOnce();
+		expect(open).toHaveBeenCalledOnce();
+	});
+	it("moves to a computer that has room while its sleeping one wakes", async () => {
+		const maintenance = {
+			reason: "idle",
+			state: "resumed",
+			transitionId: id(75),
+			requestedAt: "2026-09-19T12:00:00Z",
+			resumedAt: "2026-09-19T12:01:00Z",
+			activatedAt: null,
+		};
+		let asked = 0;
+		const f = setup({
+				qorpera_member_agent_office: () =>
+					asked++ < 2
+						? placed({ scope: scope2, number: 2, waiting: null }, { placement: "starting" })
+						: placed({ scope, number: 1, waiting: null }, { placement: "room" }),
+				qorpera_runtime_office_start_status: (body: Record<string, unknown>) =>
+					sameScope(body, scope)
+						? start
+						: {
+								...start,
+								scope: scope2,
+								officeState: "maintenance",
+								maintenance,
+								intent: { ...intent, companyComputerId: scope2.companyComputerId },
+							},
+				qorpera_request_runtime_office_start: { ...intent, companyComputerId: scope2.companyComputerId },
+			}),
+			open = spyViewer();
+		await opened(f.computer);
+		for (let n = 0; n < 12 && !open.mock.calls.length; n++) await poll();
+		expect(open).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ binding }));
+	});
 	it("moves to a computer that has room while the new one still waits for its server", async () => {
 		let asked = 0;
 		const f = setup({
@@ -379,6 +445,68 @@ describe("automatic computer popover", () => {
 		p.el.querySelector<HTMLButtonElement>(".computer-close")!.click();
 		expect(close).toHaveBeenCalledOnce();
 		body.remove();
+	});
+	it("fetches the screen renderer while it finds the machine, and only when there is one", async () => {
+		const load = vi.mocked(viewer.loadComputerViewer);
+		const unavailable = new ComputerPanel(staff);
+		cleanup.push(() => unavailable.dispose());
+		expect(load).not.toHaveBeenCalled();
+		const f = setup(),
+			open = spyViewer();
+		panel(f.computer);
+		// Beside the first read about the machine, not after the screen is up.
+		expect(load).toHaveBeenCalledOnce();
+		expect(open).not.toHaveBeenCalled();
+		await settle();
+		await settle();
+		await settle();
+		expect(open).toHaveBeenCalledOnce();
+	});
+	it("asks for a reload, and starts, wakes or opens nothing, when this page cannot load the screen renderer", async () => {
+		// A deploy renamed the renderer chunk while the tab was open: the failed load stays failed.
+		vi.mocked(viewer.loadComputerViewer).mockRejectedValue(
+			new viewer.ComputerViewerUnavailable(new TypeError("Failed to fetch dynamically imported module")),
+		);
+		const reload = vi.spyOn(viewer, "reloadPage").mockImplementation(() => {});
+		const f = setup({
+			qorpera_runtime_office_start_status: { ...start, officeState: "provisioning" },
+			qorpera_request_runtime_office_start: intent,
+		});
+		const open = spyViewer();
+		const p = await opened(f.computer);
+		await poll();
+		expect(statusLine(p)).toBe("The computer screen could not be loaded in this tab. Reload the page to open it.");
+		// Only where the agent's screen is was read; nothing was asked of the machine.
+		expect(methods(f)).toEqual(["qorpera_member_agent_office", "qorpera_member_office_catalog"]);
+		expect(open).not.toHaveBeenCalled();
+		expect(p.el.querySelector<HTMLElement>(".computer-loading-spinner")?.hidden).toBe(true);
+		// Try again could never help: the page has to fetch the renderer anew.
+		const offered = [...p.el.querySelectorAll<HTMLButtonElement>(".computer-loading button")].filter(
+			(button) => !button.hidden,
+		);
+		expect(offered.map((button) => button.textContent)).toEqual(["Reload page"]);
+		offered[0]!.click();
+		expect(reload).toHaveBeenCalledOnce();
+	});
+	it("ends a renderer download that stalls in the same reload state, asking nothing of the machine", async () => {
+		vi.mocked(viewer.loadComputerViewer).mockRestore();
+		const f = setup({
+			qorpera_runtime_office_start_status: { ...start, officeState: "provisioning" },
+			qorpera_request_runtime_office_start: intent,
+		});
+		const open = spyViewer();
+		const p = await opened(f.computer);
+		// Found the machine; waits for the renderer before starting it.
+		expect(statusLine(p)).toBe("Connecting…");
+		await vi.advanceTimersByTimeAsync(viewer.RENDERER_DEADLINE_MS - 1);
+		await settle();
+		expect(statusLine(p)).toBe("Connecting…");
+		await vi.advanceTimersByTimeAsync(1);
+		await settle();
+		expect(statusLine(p)).toBe("The computer screen could not be loaded in this tab. Reload the page to open it.");
+		expect(action(p.el, "Reload page").hidden).toBe(false);
+		expect(methods(f)).toEqual(["qorpera_member_agent_office", "qorpera_member_office_catalog"]);
+		expect(open).not.toHaveBeenCalled();
 	});
 	it("keeps unavailable and missing computers inside the popover without starting a runtime", async () => {
 		const unavailable = new ComputerPanel(staff);

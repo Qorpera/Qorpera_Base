@@ -1,11 +1,9 @@
-import { realpathSync } from "node:fs";
-import { basename, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import { parseCompanyComputerPreparationCommand } from "@qorpera/contracts";
 import {
 	controlCompanyComputerBootServiceStart,
 	createCompanyComputerBootServiceStartSystemdManager,
 } from "./cloud-company-computer-boot-service-start-control.ts";
+import { runCompanyComputerControlEntry } from "./cloud-company-computer-control-entry.ts";
 import { lockedCompanyComputerControlChild } from "./cloud-company-computer-preparation-control-main.ts";
 
 const executable = "/opt/qorpera-office/qorpera-company-computer-boot-service-start-control.mjs";
@@ -44,22 +42,13 @@ export async function runCompanyComputerBootServiceStartControlMain(args: readon
 		process.removeListener("SIGTERM", shutdown);
 	}
 }
-if (
-	process.argv[1] &&
-	["cloud-company-computer-boot-service-start-control-main.ts", basename(executable)].includes(
-		basename(process.argv[1]),
-	) &&
-	realpathSync(resolve(process.argv[1])) === realpathSync(fileURLToPath(import.meta.url))
-) {
-	if (process.argv.length === 3 && process.argv[2] === "--help")
-		console.log(
-			"Protected retained-boot service start and inspection. Requires acknowledged boot configuration and the existing kernel lock; SQL admission remains provider-controlled.",
-		);
-	else
-		runCompanyComputerBootServiceStartControlMain(process.argv.slice(2)).catch(() => {
-			console.error(
-				"Office retained-boot service start could not confirm protected configuration and the current invocation.",
-			);
-			process.exitCode = 1;
-		});
-}
+runCompanyComputerControlEntry({
+	moduleUrl: import.meta.url,
+	names: [
+		"cloud-company-computer-boot-service-start-control-main.ts",
+		"qorpera-company-computer-boot-service-start-control.mjs",
+	],
+	help: "Protected retained-boot service start and inspection. Requires acknowledged boot configuration and the existing kernel lock; SQL admission remains provider-controlled.",
+	failure: "Office retained-boot service start could not confirm protected configuration and the current invocation.",
+	run: runCompanyComputerBootServiceStartControlMain,
+});

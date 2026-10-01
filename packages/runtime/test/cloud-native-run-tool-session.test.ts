@@ -186,8 +186,8 @@ it("does not start native execution or build tools without cloud admission", asy
 	const rows: CloudRuntimeObservation[] = [];
 	const observability = new CloudRuntimeObservability({
 		assignmentId: f.binding.assignmentId,
-		publish: async (row) => {
-			rows.push(row);
+		publish: async (batch) => {
+			rows.push(...batch);
 		},
 	});
 	f.control.describeToolAuthority.mockRejectedValueOnce(new Error("PRIVATE_AUTHORITY_FAILURE"));
@@ -275,4 +275,82 @@ it("stops native generation when a previously read path becomes private", async 
 	});
 	await expect(f.start()).rejects.toThrow("Native boundary execution stopped");
 	await expect(readFile(f.evidence, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+});
+
+/** Counts the host's authority and context calls, and the rounds they take: a round starts
+ * when a call starts while no other is in flight. Every call takes a few milliseconds. */
+function tracked(f: ReturnType<typeof fixture>, oneCall: boolean) {
+	let inFlight = 0;
+	const counts = { rounds: 0, calls: 0, describe: 0, context: 0, record: 0, fence: 0 };
+	const track = async <T>(name: "describe" | "context" | "record" | "fence", value: () => T): Promise<T> => {
+		if (inFlight++ === 0) counts.rounds++;
+		counts.calls++;
+		counts[name]++;
+		try {
+			await new Promise((resolve) => setTimeout(resolve, 3));
+			return value();
+		} finally {
+			inFlight--;
+		}
+	};
+	f.control.describeToolAuthority.mockImplementation(() => track("describe", () => structuredClone(f.authority)));
+	f.assertContext.mockImplementation(() => track("context", () => undefined));
+	f.recordContextView.mockImplementation(() => track("record", () => undefined));
+	const fenceContextView = vi.fn(() => track("fence", () => structuredClone(f.authority) as unknown));
+	const tools = oneCall ? () => ({ ...f.tools(), fenceContextView }) : f.tools;
+	return { counts, fenceContextView, tools };
+}
+
+it("checks and records each model request in one call: 4 rounds and 7 calls become 1", async () => {
+	const before = fixture();
+	const separate = tracked(before, false);
+	await expect(before.start({ tools: separate.tools })).resolves.toMatchObject({ fencedRequests: 2, toolCalls: 1 });
+	const after = fixture();
+	const combined = tracked(after, true);
+	await expect(after.start({ tools: combined.tools })).resolves.toMatchObject({ fencedRequests: 2, toolCalls: 1 });
+	// Admission, the start checks and the tool call's own checks are the same in both runs.
+	// Per model request the separate calls were: the result fence's check (2 calls), the check
+	// before recording (2), the record, and the check after it (2): 4 rounds, 7 calls.
+	expect(separate.counts.record).toBe(2);
+	expect(combined.counts).toMatchObject({ record: 0, fence: 2 });
+	expect(separate.counts.rounds - combined.counts.rounds).toBe(2 * (4 - 1));
+	expect(separate.counts.calls - combined.counts.calls).toBe(2 * (7 - 1));
+	expect(separate.counts.describe - combined.counts.describe).toBe(2 * 3);
+	expect(separate.counts.context - combined.counts.context).toBe(2 * 3);
+	expect(combined.fenceContextView).toHaveBeenCalledTimes(2);
+});
+
+it("makes every separate call, the result fence's check included, while the database lacks the one call", async () => {
+	const before = fixture();
+	const separate = tracked(before, false);
+	await before.start({ tools: separate.tools });
+	const after = fixture();
+	const fallback = tracked(after, true);
+	fallback.fenceContextView.mockImplementation(async () => undefined);
+	await expect(after.start({ tools: fallback.tools })).resolves.toMatchObject({ fencedRequests: 2 });
+	// Asked once; then the same calls as before, one more round for the one that found nothing.
+	expect(fallback.fenceContextView).toHaveBeenCalledOnce();
+	expect(fallback.counts).toMatchObject({
+		describe: separate.counts.describe,
+		context: separate.counts.context,
+		record: separate.counts.record,
+	});
+});
+
+it("releases nothing when the one call fails or reads another run's authority", async () => {
+	for (const failure of ["refused", "other-run"] as const) {
+		const f = fixture();
+		const fenceContextView = vi.fn(async () => {
+			if (failure === "refused") throw new Error("PRIVATE_REVOKED");
+			return { ...structuredClone(f.authority), identity: { ...f.authority.identity, sessionId: null } };
+		});
+		// The run's authority is closed on failure: the fence fails or the session stops first.
+		await expect(f.start({ tools: () => ({ ...f.tools(), fenceContextView }) })).rejects.toThrow(
+			/Native (result boundary unavailable|boundary execution stopped)/,
+		);
+		expect(fenceContextView).toHaveBeenCalledOnce();
+		expect(f.recordContextView).not.toHaveBeenCalled();
+		expect(f.execute).not.toHaveBeenCalled();
+		await expect(readFile(f.evidence)).rejects.toMatchObject({ code: "ENOENT" });
+	}
 });
