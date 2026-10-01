@@ -183,6 +183,23 @@ it("writes a newer pass into a warm root the vault renewed meanwhile", async () 
 	await f.host.releaseWarm();
 });
 
+it("refuses a ChatGPT plan login before anything runs: this host runs Codex logins only", async () => {
+	const harness = vi.fn(async () => undefined);
+	const f = await fixture({
+		issue: async () => ({
+			schema: "qorpera.model-login/v1",
+			loginKind: "chatgpt_plan",
+			version: 1,
+			accessExpiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+			accessToken: "plan-pass",
+		}),
+		harness,
+	});
+	await expect(f.host.execute(request())).rejects.toThrow("credential-download");
+	expect(harness).not.toHaveBeenCalled();
+	expect(await readdir(f.temporaryRoot)).toEqual([]);
+});
+
 it("fails a vault run without the vault or when the vault refuses, and keeps no root", async () => {
 	const refused = await fixture({
 		issue: async () => {
