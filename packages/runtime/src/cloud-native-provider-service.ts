@@ -36,7 +36,10 @@ import {
 	cloudToolRequest,
 	parseCloudNativeToolBinding,
 } from "./cloud-native-tool-authority.ts";
-import type { CloudNativeToolOperationControlPlane } from "./cloud-native-tool-operations.ts";
+import type {
+	CloudNativeToolOperationControlPlane,
+	CompleteFolderToolOperationInput,
+} from "./cloud-native-tool-operations.ts";
 import type { BeginCloudRunnerOperationInput, CompleteCloudRunnerOperationInput } from "./cloud-runner-broker.ts";
 import {
 	type CloudInteractionRequestInput,
@@ -566,6 +569,24 @@ export class SupabaseNativeProviderControlPlane
 				p_result: input.result,
 				p_output_snapshot_id: input.outputSnapshotId ?? null,
 				p_proposal_id: input.proposalId ?? null,
+			},
+			signal,
+		);
+	}
+
+	async completeFolderToolOperation(
+		binding: CloudNativeToolBinding,
+		input: CompleteFolderToolOperationInput,
+		signal: AbortSignal,
+	): Promise<unknown> {
+		return this.#rpc(
+			"qorpera_folder_complete_run_receipt",
+			{
+				p_binding: parseCloudNativeToolBinding(binding),
+				p_receipt_id: input.receiptId,
+				p_input_sha256: input.inputSha256,
+				p_result: input.result,
+				p_folder_commit_id: input.folderCommitId,
 			},
 			signal,
 		);
