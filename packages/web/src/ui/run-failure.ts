@@ -44,7 +44,10 @@ export function classifyRunFailure(lastError: string | undefined, jobStatus: "fa
 
 const REASONS: Record<RunFailureKind, string> = {
 	computer_hours: phrase("The company is out of computer hours. New work starts again once hours are added."),
-	usage_limit: phrase("Your model account has reached its usage limit."),
+	// A usage limit stops the work: it never moves to another account (founder decision 2026-10-01).
+	usage_limit: phrase(
+		"Your model account reached its usage limit, so this work stopped. It does not move to another account. Send it again when the limit resets.",
+	),
 	credential: phrase("Your model account needs to be connected again."),
 	dispatch: phrase("No computer could be started for this run. The problem is on Qorpera's side."),
 	lost: phrase("The computer running this run stopped answering. The problem is on Qorpera's side."),

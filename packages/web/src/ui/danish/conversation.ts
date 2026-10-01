@@ -94,7 +94,8 @@ export const CONVERSATION: Record<string, string> = {
 	Review: "Gennemgå",
 	"Trying again…": "Prøver igen…",
 	Dismiss: "Skjul",
-	"Your model account has reached its usage limit.": "Din modelkonto har nået sin forbrugsgrænse.",
+	"Your model account reached its usage limit, so this work stopped. It does not move to another account. Send it again when the limit resets.":
+		"Din modelkonto nåede sin forbrugsgrænse, så arbejdet stoppede. Det flyttes ikke til en anden konto. Send det igen, når grænsen er nulstillet.",
 	"Your model account needs to be connected again.": "Din modelkonto skal forbindes igen.",
 	"No computer could be started for this run. The problem is on Qorpera's side.":
 		"Der kunne ikke startes en computer til denne kørsel. Fejlen ligger hos Qorpera.",

@@ -1070,7 +1070,7 @@ describe("conversation UI boundaries", () => {
 		f.company.store.set({ activity: [run], recoveries: { [run.runId]: details("You have hit your usage limit.") } });
 		await settle();
 		expect(card()?.querySelector(".run-failure-reason")?.textContent).toBe(
-			"Your model account has reached its usage limit.",
+			"Your model account reached its usage limit, so this work stopped. It does not move to another account. Send it again when the limit resets.",
 		);
 		expect([...(card()?.querySelectorAll("button") ?? [])].map((item) => item.textContent)).toEqual(["Dismiss"]);
 		f.company.store.set({

@@ -115,6 +115,7 @@
 
 ### Changed
 
+- A usage limit now stops the work (founder decision 2026-10-01): when the login paying for a run reaches its usage limit, the run fails and the member is told, and it no longer moves to another login of the same member. `qorpera_fail_runner_job` no longer asks `qorpera_handoff_run_sponsor`; OpenAI's terms for ChatGPT plan use forbid rotating accounts to get round usage limits, and the same rule now holds for Codex logins. Contract section 17 amended. Migration `20260929840000`, SQL test 765.
 - A folder-v2 company's soft storage quota is checked when the object gateway authorizes a put, before it writes the NAS file, and no longer at the confirm after it, so a refused object never stays on the NAS outside the catalog (migration `20260928309710`, test 761). A full company reaches the runtime's folder byte adapter as `CloudCompanyFolderError('full')` (category `budget_exhausted`).
 - The event intake (`event-intake`) answers a path that is not a hook address with 404 "This is not a hook address", decided by its shape alone, and keeps "No hook has this address" for an address with no live hook. The deploy note now says the switched-off intake answers 503 to well-formed addresses only (found in the v150 roll).
 - Coding commands have no time, memory, CPU or task limit of their own (the 30-minute maximum, 2 GiB, 200 % and 256 tasks are gone); the agent may still set a deadline, and a command keeps running after its turn. Commit export no longer requires the session's commands to be stopped: it bundles the exact submitted commit.

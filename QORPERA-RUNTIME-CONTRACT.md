@@ -1981,6 +1981,17 @@ and coding turns then take the binding's newest same-owner version that can
 pay, so a routine or coding session keeps working after the member's old
 ChatGPT login is switched off. Claude logins are never moved.
 
+2026-10-01 amendment: a usage limit stops the work (founder decision, Sign in
+with ChatGPT choice 3). When the login paying for a run reaches its usage
+limit, the run stops and the member is told; the run never moves to another
+login of the same member. OpenAI's terms for ChatGPT plan use forbid rotating
+accounts to get round usage limits, and the founder applied the same rule to
+Codex logins. The thread says that the work stopped, that it did not move to
+another account, and that the member can send it again once the limit resets.
+The sponsor handoff above no longer moves a run between one member's logins
+(migration 20260929840000); whether a company account may take over at a
+member's usage limit stays with the later company-account change.
+
 ## 18. Short constitution
 
 The cached constitution is written after the kernel behavior it describes has
@@ -3964,7 +3975,7 @@ Section 21, item 33, is the event-wake acceptance item.
 | Responsibilities are operating state, not chats | Responsibility schema, measure registry, accountable-agent assignment, ACL projections | Own the outcome and its measures; turn exceptions into verified work. |
 | Responsibility views remain derived | Company File sources, measure projections, provenance, and rebuild service | Reason from exact sources and report material changes. |
 | The Company File is one live document | Live mount, presence service, object versions | See who is working where; re-read on a stale version; never copy the company. |
-| Sponsor routing is recorded | Routing policy, usage-limit signal, sponsor handoff | Continue on the next eligible connection; never another member's credential. |
+| Sponsor routing is recorded | Routing policy, usage-limit signal, sponsor handoff | Stop at a usage limit and say so; never move to another login, never another member's credential (2026-10-01). |
 | Projects remain bounded and distinct from rooms | Project registry, team membership, todos, outcome, and room lifecycle | Coordinate in the room; finish in durable company state. |
 | Routine policy is real | Scheduler and listener services | Author sensible schedules and intent. |
 | Dismissal is not consent | Interaction state machine | Treat dismissal as skip or decline. |
@@ -4082,7 +4093,8 @@ while Azure backup/overflow remains disabled.
     of the same principal (or a policy-permitted company account) through a
     recorded sponsor handoff with full provenance. No other member's
     credential is ever used, and a transient rate limit or provider outage
-    does not trigger a handoff.
+    does not trigger a handoff. (2026-10-01 amendment, section 17: the run
+    stops instead and never moves to another login of the same member.)
 30. A company's ceilings hold without agent cooperation: a deliberately
     runaway loop is stopped at its wake-rate or spend ceiling, the founder
     stop operation pauses the company, and the founder is notified from the
