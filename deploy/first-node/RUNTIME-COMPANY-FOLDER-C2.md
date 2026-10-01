@@ -59,10 +59,9 @@ A run effect. Granted to `service_role` only and reached through the Company Fil
 1. **The run entry:** `qorpera_folder_tool_run(p_binding, '[]')`. That is the binding, the stop, the run mutex, and
    `qorpera_folder_run_enter` with the company row at rank 0, `KEY SHARE`. A company that is not `folder-v2`, a
    stopped run or a paused company is refused there.
-2. **The run:** an agent's run (`staff_agent_id` set), as the action review requires.
-3. **The request:** exactly the two keys. `units` is an array of 1 to 1000 items, the commit's own bound; anything
+2. **The request:** exactly the two keys. `units` is an array of 1 to 1000 items, the commit's own bound; anything
    else is 22023. The recorder does not parse the units: the commit decides every unit, and the digest binds them.
-4. **The approval:** the action review row by id, for this company and this agent, `FOR SHARE`. It must be an
+3. **The approval:** the action review row by id, for this company and this run's agent, `FOR SHARE`. It must be an
    approval this run may act on:
    - the run's own allow: `run_id` is this run and `decision = 'allow'`;
    - or an answered card used by this run: `answer` is `allow_once` or `always_allow` and `consumed_run_id` is this
@@ -70,13 +69,13 @@ A run effect. Granted to `service_role` only and reached through the Company Fil
 
    Its effect must be `delegation` or `destructive`, so an approved email can never stand for folder units. Anything
    else is 42501, "This change has no approval in this run".
-5. **The record:** the id is `md5('qorpera.folder-review:' || action review id)::uuid`, so one approval stands for one
+4. **The record:** the id is `md5('qorpera.folder-review:' || action review id)::uuid`, so one approval stands for one
    change set:
    - a row with that id and the same digest: a replay, returned as it is;
    - a row with that id and another digest: 23505, "This approval was already used for another change";
    - else insert `(id, environment_id = the run's, run_id = this run, change_set_sha256 =
      qorpera_folder_change_set_sha256(units), units = 1..n, decision = 'allow')`.
-6. **The answer:** `{ schema: 'qorpera.folder-review/v1', reviewId, decision: 'allow', units: n }`.
+5. **The answer:** `{ schema: 'qorpera.folder-review/v1', reviewId, decision: 'allow', units: n }`.
 
 The review covers every unit of the change set. The commit only consults it for units whose class is not plain, so
 covering the plain ones changes nothing.
@@ -100,10 +99,13 @@ record. A change set without a record is denied by the commit (`review_required`
 - The commit later takes the new row `FOR SHARE` at 7b, as C1B §6 says. A row that is not yet committed is invisible to
   it, and the writer commits only after the recorder answers.
 - The answer to a card (`qorpera_answer_action_review`) takes the member prelude, the conversation, then the action
-  review `FOR UPDATE`. The recorder never locks a conversation, and the answer never waits for a lock the recorder
-  holds (rank 0 `KEY SHARE` on both sides is compatible). So they never deadlock. The check constraint
+  review `FOR UPDATE`, then the events, admission and the clock. So an answer and a recorder of the same approval wait
+  for each other on that row, one at a time. They never deadlock: the recorder never locks a conversation, rank 0
+  `KEY SHARE` is compatible on both sides, and the answer takes the clock only after the row. The check constraint
   `consumed_at is null or answer in ('allow_once','always_allow')` means an approval used by this run cannot turn into
   a denial afterwards.
+- A member's or another run's commit does not wait for a recorder: the recorder's `KEY SHARE` on the clock row is
+  compatible with the commit's update of it.
 - `qorpera_begin_action_review` in another run takes the same action review `FOR UPDATE` and waits at most for one
   recorder. It holds no lock the recorder needs.
 - Two recorders of one run never overlap: the run mutex orders them.
@@ -114,10 +116,13 @@ record. A change set without a record is denied by the commit (`review_required`
 - **The gate passes its approval on.** `CloudActionGateResult` becomes `{ run: true; reviewId?: string }`. The id is
   set on each approving path: the recorded allow, a card approved while the call held on it, and a parked approval
   repeated (`begin` returns `approved`). The boundary puts it in the tool context as `actionReviewId`.
-- **Staging is split from the commit.** `CloudCompanyFolderClient.stage(units)` stages the bytes and returns the units
-  exactly as the commit sends them. `recordReview(actionReviewId, staged)` calls the recorder. `commit` accepts a
-  staged change set. TypeScript never computes the digest: both RPCs send the same JSON, and SQL hashes its canonical
-  text.
+- **Staging is split from the commit.** `CloudCompanyFolderClient.stage(units)` stages the bytes and returns an opaque
+  change set holding the units exactly as the commit sends them. `recordReview(actionReviewId, staged)` calls the
+  recorder, and `commitStaged(key, staged, { reviewId, receiptId })` commits the same units. `commit(key, units)` is
+  unchanged: it stages, then commits. TypeScript never computes the digest: both RPCs send the same JSON, and SQL
+  hashes its canonical text.
+- The gate passes on only an id that is a UUID. A call without one still runs, but cannot save a reviewed folder
+  change.
 - **A writer with delegation units** (W4; §5):
   1. checks `completesFolderCommits`, pre-reads and refuses what can never be saved (as W1–W3);
   2. without an `actionReviewId`, refuses: "This change needs the automatic review, which did not run";
@@ -154,10 +159,10 @@ files staged on the version-2 path (766's `pg_temp.stage`):
 - **The commit.** A hire (`new_folder` with `agent.md`) saves with the recorded review. Without one it is denied
   (`review_required`). With units changed after recording, or with another run's review, it is denied
   (`review_required`). A review row whose decision is `deny` still gives `review_denied`, as 632 checks today.
-- **The run entry.** A `snapshot-v1` company, a stopped run, a paused company and a run without an agent are refused.
-- **Races (dblink, on 648's committed fixture, as 653).** A recorder waits for an answer in flight on the same action review,
-  and the answer does not wait for the recorder. A recorder and a commit of another change set do not block each
-  other.
+- **The run entry.** A `snapshot-v1` company's run, a paused company and a company being deleted are refused.
+- **Races: test 770** (dblink, on 648's committed fixture, as 653). A recorder waits for an answer in flight on the same
+  approval, and an answer waits for a recorder in flight; both orders finish without a deadlock. A member's commit does
+  not wait for a recorder in flight.
 - **Grants.** `anon` and `authenticated` cannot execute the recorder; `service_role` can.
 
 Runtime:

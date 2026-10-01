@@ -317,6 +317,7 @@ describe("the folder core's entry points (core C3)", () => {
 		"qorpera_folder_seal_upload",
 		"qorpera_folder_renew_upload",
 		"qorpera_folder_agent_todos",
+		"qorpera_folder_record_review",
 	] as const;
 
 	it.each(FOLDER)("permits %s over the fixed RPC route", async (method) => {

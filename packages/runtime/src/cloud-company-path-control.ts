@@ -22,6 +22,7 @@ const FOLDER_RPCS: ReadonlySet<CloudCompanyPathRpc> = new Set([
 	"qorpera_folder_seal_upload",
 	"qorpera_folder_renew_upload",
 	"qorpera_folder_agent_todos",
+	"qorpera_folder_record_review",
 ]);
 
 /** No end-user token, arbitrary URL, redirect, provider credential or retry. */
@@ -114,6 +115,8 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 			"qorpera_folder_renew_upload",
 			// A folder-v2 run's own todos from the todo index (thin writers W1).
 			"qorpera_folder_agent_todos",
+			// An approved call's review of the change set it commits (C2 R1).
+			"qorpera_folder_record_review",
 			// Event wakes (W2).
 			"qorpera_list_agent_event_hooks",
 			"qorpera_read_agent_event",

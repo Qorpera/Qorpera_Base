@@ -1014,6 +1014,30 @@ describe("the review step", () => {
 		});
 	});
 
+	it("passes on the approval's id on each approving path, and none from a malformed answer", async () => {
+		const id = randomUUID();
+		await expect(gate({ begin: { state: "approved", reviewId: id.toUpperCase() } }).check()).resolves.toEqual({
+			run: true,
+			reviewId: id,
+		});
+		await expect(gate({ record: { reviewId: id } }).check()).resolves.toEqual({ run: true, reviewId: id });
+		await expect(
+			gate({
+				holdMs: 60_000,
+				record: { decision: "ask", card: true, reviewId: id, approverName: "Jonas" },
+				waits: [{ state: "approved", answeredBy: "Jonas" }],
+			}).check(),
+		).resolves.toEqual({ run: true, reviewId: id });
+		await expect(
+			gate({
+				holdMs: 0,
+				begin: { state: "pending", reviewId: id, approverName: "An owner" },
+				waits: [{ state: "approved" }],
+			}).check(),
+		).resolves.toEqual({ run: true, reviewId: id });
+		await expect(gate({ record: { reviewId: "review-1" } }).check()).resolves.toEqual({ run: true });
+	});
+
 	it("waits on a card that is already waiting instead of raising a second one", async () => {
 		const { check, calls, review } = gate({
 			holdMs: 0,
@@ -1027,7 +1051,7 @@ describe("the review step", () => {
 });
 
 describe("the boundary's review step", () => {
-	function boundaryFixture(result: { run: true } | { run: false; text: string }) {
+	function boundaryFixture(result: { run: true; reviewId?: string } | { run: false; text: string }) {
 		const execute = vi.fn<CloudNativeTool["execute"]>(async () => ({ kind: "text", value: "Sent" }));
 		const assertActive = vi.fn(async () => undefined);
 		const check = vi.fn(async () => result);
@@ -1069,6 +1093,16 @@ describe("the boundary's review step", () => {
 		const reviewed = check.mock.invocationCallOrder[0];
 		const effect = execute.mock.invocationCallOrder[0];
 		expect(assertActive.mock.invocationCallOrder.some((order) => order > reviewed && order < effect)).toBe(true);
+	});
+
+	it("gives the call the approval's id, and none when the review passed it without one", async () => {
+		const id = randomUUID();
+		const approved = boundaryFixture({ run: true, reviewId: id });
+		await approved.boundary.invoke("call_1", "qorpera", "send_email", {});
+		expect(approved.execute.mock.calls[0]![1]).toMatchObject({ callId: "call_1", actionReviewId: id });
+		const plain = boundaryFixture({ run: true });
+		await plain.boundary.invoke("call_1", "qorpera", "send_email", {});
+		expect(plain.execute.mock.calls[0]![1]).not.toHaveProperty("actionReviewId");
 	});
 
 	it("returns the review's refusal as a denied result and never runs the call", async () => {

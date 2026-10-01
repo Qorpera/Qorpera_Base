@@ -955,6 +955,117 @@ describe("commits", () => {
 	});
 });
 
+describe("reviewed change sets (C2 R1)", () => {
+	const recorded = (units: number, reviewId = randomUUID()) => ({
+		schema: "qorpera.folder-review/v1",
+		reviewId,
+		decision: "allow",
+		units,
+	});
+	const units = [
+		{ op: "write", path: "agents/nora/routines/daily.md", content: { text: "Daily.\n" } },
+		{ op: "delete", path: "old.md", expectedVersion: randomUUID() },
+	] as const;
+
+	it("stages once, records the review of exactly the units the commit sends, then commits them", async () => {
+		const actionReviewId = randomUUID();
+		const reviewId = randomUUID();
+		const { client, calls, bytes, binding } = fixture((method, args) =>
+			method === "qorpera_folder_record_review"
+				? recorded(2, reviewId)
+				: {
+						schema: "qorpera.folder-commit/v1",
+						commitId: randomUUID(),
+						seq: 4,
+						replay: false,
+						units: (args.p_units as Record<string, unknown>[]).map((unit, index) => ({
+							unit: index + 1,
+							op: unit.op,
+							path: unit.path,
+							outcome: "saved",
+							version: randomUUID(),
+						})),
+					},
+		);
+		const staged = await client.stage(units, signal());
+		expect(staged.unitCount).toBe(2);
+		expect(bytes.put).toHaveBeenCalledTimes(1);
+		await expect(client.recordReview(actionReviewId, staged, signal())).resolves.toBe(reviewId);
+		const result = await client.commitStaged("tool-call-r1", staged, { reviewId }, signal());
+		expect(result.units.map((unit) => unit.outcome)).toEqual(["saved", "saved"]);
+		expect(bytes.put).toHaveBeenCalledTimes(1);
+		expect(calls.map((call) => call.method)).toEqual(["qorpera_folder_record_review", "qorpera_folder_commit"]);
+		// A run effect: the binding and the request, nothing of the actor; the units are the commit's own.
+		expect(Object.keys(calls[0]!.args).sort()).toEqual(["p_binding", "p_request"]);
+		expect(calls[0]!.args.p_binding).toEqual(binding);
+		expect(calls[0]!.args.p_request).toEqual({ actionReviewId, units: calls[1]!.args.p_units });
+		expect(calls[1]!.args.p_review_id).toBe(reviewId);
+	});
+
+	it("asks again after a lost answer with the same request, and nothing else", async () => {
+		let tries = 0;
+		const reviewId = randomUUID();
+		const { client, calls } = fixture(() => {
+			if (++tries === 1) throw new CloudRuntimeDiagnosticError("timeout", "Cloud tool authority unavailable");
+			return recorded(2, reviewId);
+		});
+		const staged = await client.stage(units, signal());
+		await expect(client.recordReview(randomUUID(), staged, signal())).resolves.toBe(reviewId);
+		expect(calls).toHaveLength(2);
+		expect(calls[1]!.args).toEqual(calls[0]!.args);
+		for (const thrown of [sqlError("40P01", "deadlock detected"), sqlError("23505", "already used")]) {
+			const refused = fixture(() => {
+				throw thrown;
+			});
+			await expect(
+				refused.client.recordReview(randomUUID(), await refused.client.stage(units, signal()), signal()),
+			).rejects.toBe(thrown);
+			expect(refused.calls).toHaveLength(1);
+		}
+		const unavailable = fixture(() => {
+			throw sqlError("42501", "This change has no approval in this run");
+		});
+		await expect(
+			unavailable.client.recordReview(randomUUID(), await unavailable.client.stage(units, signal()), signal()),
+		).rejects.toMatchObject({ failure: "unavailable" });
+	});
+
+	it("refuses an answer that is not this change set's record", async () => {
+		for (const answer of [
+			recorded(1),
+			{ ...recorded(2), decision: "ask" },
+			{ ...recorded(2), schema: "qorpera.folder-review/v2" },
+			{ ...recorded(2), reviewId: "review-1" },
+			{ ...recorded(2), extra: true },
+		]) {
+			const { client } = fixture(() => answer);
+			await expect(client.recordReview(randomUUID(), await client.stage(units, signal()), signal())).rejects.toThrow(
+				"Company folder response is invalid",
+			);
+		}
+	});
+
+	it("records and commits only a change set this client staged, and checks the approval's id first", async () => {
+		const { client, calls } = fixture(() => null);
+		const other = fixture(() => null).client;
+		const foreign = await other.stage(units, signal());
+		await expect(client.recordReview(randomUUID(), foreign, signal())).rejects.toThrow(
+			"was not staged by this client",
+		);
+		await expect(client.recordReview(randomUUID(), { unitCount: 2 }, signal())).rejects.toThrow(
+			"was not staged by this client",
+		);
+		await expect(client.commitStaged("tool-call-r2", foreign, {}, signal())).rejects.toThrow(
+			"was not staged by this client",
+		);
+		await expect(client.recordReview("review-1", await client.stage(units, signal()), signal())).rejects.toThrow(
+			"Invalid action review",
+		);
+		await expect(client.stage([], signal())).rejects.toThrow("Invalid Company folder change set");
+		expect(calls).toEqual([]);
+	});
+});
+
 describe("releases", () => {
 	it("records the reads a tool result shows, with their receipts", async () => {
 		const file = stagedFile("x");
