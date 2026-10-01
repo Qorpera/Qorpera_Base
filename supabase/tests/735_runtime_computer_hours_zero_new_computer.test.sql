@@ -1,11 +1,16 @@
 -- @fixture 627_runtime_company_computer_seats.test.sql until "select pg_temp.wake_assert(public.qorpera_runtime_office_start_wait(pg_temp.office(2))='setup','no host offers computer 2 yet');"
 -- Computer hours, build step 6b part 2 (20260929720000): a started computer that no host has taken
 -- yet waits for computer hours while the company is at zero. The agent's panel says so, operators
--- see it in the setup queue, and it is never counted as stuck. Switched off, or once hours are
--- added (before the next sweep), it waits for its host as before.
+-- see it in the setup queue, it is never counted as stuck, and the fleet does not try to place it.
+-- Switched off, or once hours are added (before the next sweep), it waits for its host as before.
 
 reset role;
 select pg_temp.wake_assert(public.qorpera_runtime_office_start_wait(pg_temp.office(2)) = 'setup', 'Switched off: it waits for its host');
+-- The fleet returns at zero before it locks or tries any node (behaviour: fixtures/runtime-office-fleet-cases.sql).
+select pg_temp.wake_assert(position('if public.qorpera_company_at_zero(o.profile_id,clock_timestamp()) then' in d)
+		between 1 and position(' -- Deterministic node locks serialize' in d),
+	'The fleet places nothing at zero, before any node lock')
+from pg_get_functiondef('public.qorpera_place_runtime_office_fleet(jsonb,bigint)'::regprocedure) d;
 
 -- The company uses more than its free hours, live, with the zero rule on; the sweep records it.
 update public.qorpera_computer_hour_billing set live_since = clock_timestamp() - interval '1 second';
