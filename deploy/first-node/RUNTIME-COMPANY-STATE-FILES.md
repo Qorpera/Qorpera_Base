@@ -812,13 +812,21 @@ C1d (bytes):
 
 **Built (W3): `decide_routine`** (`packages/runtime/src/cloud-folder-routine-decision.ts`).
 - The run woken by its dynamic routine's `once` occurrence writes the decision into the routine's own file,
-  `agents/<handle>/routines/<routineKey>.md`. `next` sets a new `at` (and, if asked, `effort` and `reply`) with
-  `setCompanyStateSettings`; `conclude` sets `status: concluded` and the `conclusion`.
-- F2-6's hook takes that save as the decision while it is owed, without review. A decision that also changes the
-  title or the instructions (a new body) is delegation: until core C2 records reviews, the commit does not save it,
-  and the tool answers `refused` with "decide only the next time, effort or reply, or conclude".
+  `agents/<handle>/routines/<routineKey>.md`. `next` sets a new `at` (canonical, and, if asked, `effort` and `reply`)
+  with `setCompanyStateSettings`; `conclude` sets `status: concluded` and the `conclusion`, its line breaks and tabs
+  made spaces (the file's conclusion is one line).
+- Refused before the receipt, binding no key (`REFUSED: …`): a title or instructions that differ from the file's
+  (delegation, which the folder core cannot record until C2; equal ones change nothing), and a next run at or after
+  the routine's `ends` ("The routine ends at …. Choose an earlier time or conclude it.", as today). The folder-v2
+  description says the run leaves intent and title out, and that a refused decision is redone under a new key.
+- Settled, as today, when the routine already moved on: its file is gone, it is no longer active, or it is no longer
+  a `once` routine; and when the commit calls a plain decision delegation (`denied`, `review_required`), which by
+  F2-6's review class means nothing is owed any more. A settled answer makes the decision.
 - The save goes under the tool call's receipt with the version read. A saved decision is made (the run owes nothing
-  more); a refusal or a conflict leaves it owed, to decide again.
+  more). A conflict or another refusal leaves it owed, and its reason says to decide again with a new operationKey.
+- A `folder-v2` run on a node without folder bytes keeps the legacy tool, which refuses `folder-v2`: such a dynamic
+  routine run cannot decide, and its final message is refused. Nodes serve folder bytes before any company is
+  `folder-v2` (C1c-3).
 
 Until the mount's writes are accepted (F3), these tools become thin writers of these files:
 `hire_agent`, `create_group_chat`, `organize_sidebar`, `manage_todo`, `manage_routine` and
