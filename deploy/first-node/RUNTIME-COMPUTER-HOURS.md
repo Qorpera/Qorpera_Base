@@ -530,7 +530,7 @@ Coordinator (nothing secret):
     recorded more than about 40 minutes late (grace plus the email's ten-minute wait) sends a
     false "out of hours".
 
-- Build step 6b part 1 (migration `20260929700000`, the node refusal): `qorpera_reserve_runtime_node_machine`
+- Build step 6b part 1 (migration `20260928309700`, the node refusal): `qorpera_reserve_runtime_node_machine`
   refuses a new reservation or the wake of a sleeping machine of a company at zero with
   `COMPUTER_HOURS_EXHAUSTED`, for Company Computers, coding machines and agents' machines, after
   `NODE_DISABLED` (which wins) with the same demand condition; a machine already awake passes. Run and
@@ -540,7 +540,7 @@ Coordinator (nothing secret):
   A coding turn whose run began before zero but whose member machine is asleep waits too (its
   machine's step refuses, and the executor defers it), until hours arrive or the finishing window
   ends the run: the run box is the running work, the coding machine is not.
-- Build step 6b part 2 (migration `20260929720000`, Company Computers):
+- Build step 6b part 2 (migration `20260928309720`, Company Computers):
   - a sleeping computer's wake is kept at zero (a member or agent may still ask) but the idle check
     (`qorpera_reconcile_runtime_office_idle`) hands it to the provider only once the company has hours
     again, so the provider does not retry a refused resume every few seconds for as long as the
