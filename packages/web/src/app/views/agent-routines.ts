@@ -607,28 +607,27 @@ export class AgentRoutines {
 		this.#message = "";
 		this.#setControls();
 		let failure = "";
+		const listening = routine.triggers.some((item) => item.kind === "listener");
 		try {
 			if (await this.#loadAccounts()) {
-				// The account the routine falls back to must be able to pay for it: a ChatGPT plan only
-				// once its member turned on work while away, and never for a file-change or webhook routine.
-				const listening = routine.triggers.some((item) => item.kind === "listener");
+				// The routine's own payer is tried first. The account it falls back to must be able to pay
+				// for it: a ChatGPT plan only once its member turned on work while away, and never for a
+				// file-change or webhook routine.
 				const payer = this.#accounts.find(
 					(item) => !planLogin(item) || (item.allowAutonomous === true && !listening),
 				);
-				if (!payer && this.#accounts.some(planLogin))
-					failure = listening
-						? t(
-								"A ChatGPT plan can't pay for routines that start on a file change or a webhook. Choose another account.",
-							)
-						: t("Turn on “Work while you're away” for this ChatGPT plan in Settings first.");
-				else await this.#access.routines.setEnabled(routine, payer, enabled, crypto.randomUUID());
+				await this.#access.routines.setEnabled(routine, payer, enabled, crypto.randomUUID());
 			} else failure = this.#message;
 		} catch {
-			failure = this.#accounts.length
-				? t("The routine could not be changed. Try again.")
-				: t(
+			failure = !this.#accounts.length
+				? t(
 						"Connect a model account in Settings first; a routine runs on the account of the member who last saved it.",
-					);
+					)
+				: !this.#accounts.some((item) => !planLogin(item) || (item.allowAutonomous === true && !listening))
+					? listening
+						? t("A ChatGPT plan can't pay for routines that start on a file change or a webhook.")
+						: t("Turn on “Work while you're away” for this ChatGPT plan in Settings first.")
+					: t("The routine could not be changed. Try again.");
 		} finally {
 			this.#busy = false;
 			this.#moving = undefined;
@@ -754,9 +753,7 @@ export class AgentRoutines {
 		const describeAccount = () => {
 			const chosen = this.#accounts.find((item) => item.connectionId === account.value);
 			// A file-change or webhook routine never runs on a plan.
-			const listening =
-				when.value === "file" ||
-				(first?.kind === "listener" && when.value !== "weekly" && when.value !== "interval");
+			const listening = when.value === "file";
 			accountNote.textContent =
 				!chosen || !planLogin(chosen)
 					? t(
