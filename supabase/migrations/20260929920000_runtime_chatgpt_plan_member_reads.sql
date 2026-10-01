@@ -16,10 +16,11 @@
 
 set local lock_timeout = '3s';
 
+-- One row per plan login whose card was shown. The connection names its member (no link to the account, so an
+-- account deletion reaches nothing here; 20260928249180).
 create table public.qorpera_chatgpt_plan_routine_offers (
 	connection_id uuid primary key references public.qorpera_provider_connections(id) on delete cascade,
 	profile_id uuid not null references public.qorpera_profiles(id) on delete cascade,
-	user_id uuid not null references auth.users(id) on delete cascade,
 	shown_at timestamptz not null default statement_timestamp()
 );
 alter table public.qorpera_chatgpt_plan_routine_offers enable row level security;
@@ -42,8 +43,8 @@ begin
 		join public.qorpera_model_logins as login on login.credential_capsule_id = version.credential_capsule_id
 		where version.connection_id = p_connection_id and login.login_kind = 'chatgpt_plan') then
 		raise exception 'Not a ChatGPT plan login' using errcode = '22023'; end if;
-	insert into public.qorpera_chatgpt_plan_routine_offers(connection_id, profile_id, user_id)
-	values (p_connection_id, p_profile_id, v_user)
+	insert into public.qorpera_chatgpt_plan_routine_offers(connection_id, profile_id)
+	values (p_connection_id, p_profile_id)
 	on conflict (connection_id) do nothing;
 	select offer.shown_at into strict v_shown from public.qorpera_chatgpt_plan_routine_offers as offer
 	where offer.connection_id = p_connection_id;
