@@ -129,7 +129,8 @@ the commit runs rank 10. The record by itself changes nothing in the company.
   answer does not hold before the row. A recorder behind a first answer then finds the card answered but not used by
   its run, and refuses (42501).
 - `qorpera_begin_action_review` in another run takes the same row `FOR UPDATE` after its own run entry, and needs
-  nothing the recorder holds.
+  nothing the recorder holds. The recorder enters as `begin` does and then takes that row in a weaker mode, so it closes
+  no cycle that `begin` does not.
 - A member's or another run's commit does not wait for a recorder at the clock: the folder clock is only ever updated
   (`FOR NO KEY UPDATE`), which is compatible with `KEY SHARE`. Like any tool call, a recorder still holds its run entry,
   so a commit that takes the run's wake room `FOR UPDATE` (a rename of the agent, for example) waits for it.
@@ -150,8 +151,8 @@ the commit runs rank 10. The record by itself changes nothing in the company.
   both RPCs send the same JSON, and SQL hashes its canonical text.
 - The RPC joins `CloudCompanyPathRpc`, both control lists (`FOLDER_RPCS`, so SQL codes come through, and `permitted`)
   and the pinned test. A lost answer and a deadlock (40P01) are asked again with the same request, which replays; 23505
-  and 42501 are answers. The client reports a 42501 as `unavailable`, as for a run that ended; a writer that needs to
-  tell them apart reads the error's detail.
+  and 42501 are answers. The client reports a 42501 as `unavailable`, the same as a run that ended; inside the receipt
+  neither is the writer's to retry, so it need not tell them apart.
 - **A writer with delegation units** (W4; §5):
   1. checks `completesFolderCommits`, pre-reads and refuses what can never be saved, outside the receipt (as W1–W3).
      Each such check must still pass once the call's own change is saved: a hire's "handle taken" check accepts the
@@ -222,8 +223,8 @@ SQL test **770**, races (dblink, on 648's committed fixture, as 653):
   for a recorder;
 - two recorders of one fresh approval of one run: the second waits at the run mutex, then replays.
 
-Mutants of the recorder: 23 of 25 killed in my set, and the review's own set (round 2) agrees. The survivors are
-equivalent: the agent filter (an approval row always names its run's agent), a denied answer among the accepted ones
+Mutants of the recorder: 23 of 25 killed in my set, and 12 of 15 in the review's own set (rounds 2 and 3). Three
+survivors, all equivalent: the agent filter (an approval row always names its run's agent), a denied answer among the accepted ones
 (a used approval is always an allow, by the check constraint) and the run clause of the replay check (only this run can
 reach a record of an approval it used). A read of the record before the run entry is killed by 770's race E.
 
@@ -232,9 +233,9 @@ Runtime:
   internal call.
 - The boundary passes `actionReviewId` to `execute`, and none when the review passed no id.
 - The folder client: `stage` stages once; `recordReview` and `commitStaged` send the same units; the recorder's request
-  is the binding and the call's approval, nothing of the actor; a lost answer is asked again with the same request;
-  23505, 40P01 and 42501 are not retried; a malformed answer is refused; only a change set this client staged is
-  recorded or committed.
+  is the binding and the call's approval, nothing of the actor; a lost answer and a deadlock (40P01) are asked again
+  with the same request; 23505, 22023 and 42501 are not retried; a malformed answer is refused; only a change set this
+  client staged is recorded or committed.
 - The control list's pinned test.
 
 ## 7. Release
