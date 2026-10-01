@@ -63,8 +63,8 @@ Direct observation-table/sequence access is also revoked from API roles.
 | `qorpera_get_runtime_operational_run(run_id, limit)` | Linked canonical run/job/admission/assignment/compute/bundle and bounded diagnostic, receipt, revision, read, proposal and public-send sections. |
 | `qorpera_get_company_operational_commands(company_id, limit)` | Canonical human command status, actor/resource/version and exact applied-revision linkage without copying the command or file. |
 | `qorpera_purge_runtime_observations(limit)` | Bounded deletion of eligible optional diagnostics only; never authority, receipts, reads, revisions or public sends. |
-| `qorpera_record_runtime_observation_batch(run_id, observations)` | Migration `20260929370000`. Up to 50 events of one run in one call, each recorded, replayed or refused by the single-row function exactly as one call would be; one receipt or refusal (`22023`, `42501`, `23505`) per event, in order. The runtime sends only this; the single-row function stays for older runners. |
-| `qorpera_run_runtime_observation_retention()` | Migration `20260929370000`. The purge's rows only, 200 at a time, at most 25 batches and about two seconds a call, one call at a time. Run by pg_cron; service-only by hand. |
+| `qorpera_record_runtime_observation_batch(run_id, observations)` | Migration `20260928319370`. Up to 50 events of one run in one call, each recorded, replayed or refused by the single-row function exactly as one call would be; one receipt or refusal (`22023`, `42501`, `23505`) per event, in order. The runtime sends only this; the single-row function stays for older runners. |
+| `qorpera_run_runtime_observation_retention()` | Migration `20260928319370`. The purge's rows only, 200 at a time, at most 25 batches and about two seconds a call, one call at a time. Run by pg_cron; service-only by hand. |
 
 Query and purge limits are 1–200, default 200. Sections identify truncation.
 Authorized operator tooling can invoke, for example, the existing RPC transport
@@ -91,7 +91,7 @@ null, not a guessed host name or capacity identity.
 
 - Cloud events are append-only. Events become eligible for deletion after 30
   days of **server ingestion time**, and only for terminal jobs. Since
-  `20260929370000` pg_cron runs `qorpera_run_runtime_observation_retention()`
+  `20260928319370` pg_cron runs `qorpera_run_runtime_observation_retention()`
   every five minutes (job `qorpera-runtime-observations-retention`, up to 5,000
   events a call), so the table keeps about 30 days. The migration schedules it
   when pg_cron is installed; on a database without pg_cron, enable it and run
