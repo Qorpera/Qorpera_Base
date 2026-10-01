@@ -212,6 +212,8 @@ export const AGENTS: Record<string, string> = {
 	"Draft PR opened": "PR-kladde åbnet",
 	"The computer running this session stopped answering. The workspace is kept; a follow-up starts it again.":
 		"Computeren, der kørte sessionen, holdt op med at svare. Arbejdsområdet er gemt; en opfølgning starter den igen.",
+	"The company ran out of computer hours. The workspace is kept; a follow-up continues once hours are added.":
+		"Virksomheden løb tør for computertimer. Arbejdsområdet er gemt; en opfølgning fortsætter, når der er tilføjet timer.",
 	"Failed: {reason}": "Mislykkedes: {reason}",
 	"{count} file": "{count} fil",
 	"{count} files": "{count} filer",
