@@ -602,7 +602,8 @@ https://claude.ai/artifact/UWehPVysVzAmWcwvkuU6on.
   `native-provider-login` at `…/chatgpt-plan-confirm`, which the login chooser routes to the same vault
   and which waits 40 s for it (see the confirmation time budget above; redeploy that function too).
   Smoke check after deploy, which must show a 303 back to the return page with `reason=state_unknown`:
-  `curl -sI 'https://<project>.supabase.co/functions/v1/chatgpt-plan-callback?state=x' | grep -i '^location'`.
+  `curl -s -o /dev/null -D - 'https://<project>.supabase.co/functions/v1/chatgpt-plan-callback?state=x' | grep -i '^location'`
+  (a GET: the function answers anything else with 405).
 - **Switches.** `update public.qorpera_chatgpt_plan_settings set enabled = true;` (platform) and
   `select public.qorpera_set_chatgpt_plan_company('<company>', true);` (service role; only for a company
   whose sign-ins go to its vault). Both start off.
