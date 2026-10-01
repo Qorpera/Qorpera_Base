@@ -59,7 +59,7 @@ begin
 		raise exception 'The platform''s save resumes nothing: %', to_jsonb(pg_temp.rt(e1)); end if;
 	-- A member without a paying login is refused the resume (it would start work on no login).
 	r := pg_temp.commit(pg_temp.mem(), 'resume-by-member', jsonb_build_array(pg_temp.inbox()));
-	if not pg_temp.refused(r) or pg_temp.problem(r) not like 'a routine runs on the AI login of the member who saves it%' then
+	if not pg_temp.refused(r) or coalesce(pg_temp.problem(r), '') not like 'a routine runs on the AI login of the member who saves it%' then
 		raise exception 'A member without a paying login is refused the resume: %', r; end if;
 	-- An unpaid resume, by a run whose requester has no paying login, keeps the platform's pause and its reason. The run
 	-- is woken by another of Nora's routines, which the member (whose login does not pay) made.
@@ -165,6 +165,8 @@ begin
 		jsonb_build_object('cursor', md5('r1')::uuid)), '22023');
 	perform pg_temp.raises(format('select public.qorpera_folder_agent_routines(%L, %L, %L)', '70700000-0000-4000-8000-000000000020', a,
 		jsonb_build_object('cursor', md5('legacy')::uuid)), '22023');
+	perform pg_temp.raises(format('select public.qorpera_folder_agent_routines(%L, %L, %L)', '70700000-0000-4000-8000-000000000020', a,
+		jsonb_build_object('cursor', md5('r2')::uuid)), '22023');
 	-- Bad requests.
 	perform pg_temp.raises(format('select public.qorpera_folder_agent_routines(%L, %L, %L)', '70700000-0000-4000-8000-000000000020', a,
 		'{"routineKey":"Inbox"}'), '22023');

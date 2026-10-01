@@ -1199,7 +1199,7 @@ it("has a folder-v2 dynamic routine run decide through its routine file, settled
 	const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
 	const tools = evidence.threadParameters.dynamicTools[0].tools as { name: string; description: string }[];
 	expect(tools.find((tool) => tool.name === "decide_routine")?.description).toContain(
-		"cannot change its title or instructions yet",
+		"a new intent or title goes through the automatic review",
 	);
 	expect(
 		evidence.fenced.outputs.some((output: { output: string }) => output.output.includes('\\"state\\":\\"settled\\"')),

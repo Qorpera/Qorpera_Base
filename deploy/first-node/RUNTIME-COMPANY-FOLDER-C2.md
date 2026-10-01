@@ -179,11 +179,11 @@ the commit runs rank 10. The record by itself changes nothing in the company.
   `qorpera_prepare_routine_login`). STATE-FILES §5 has their formats and reads. The commit round trip with a real hire
   (F2's agent hook) is tested in W4's PR. W4a (20260929940000) adds contract 14.1's restricted hire to the layering and
   to the recorder: an agent that cannot delegate the new agent's default access hires only on an owner's or admin's answer.
-- **`decide_routine`'s rewrite.** Today W3 refuses a decision that changes the title or the instructions on
-  `folder-v2` ("needs a member's review", `cloud-folder-routine-decision.ts:165-171`), and reads a `denied` /
-  `review_required` result as settled (:232-234). The gate already reviews such a call as delegation, and never raises a
-  card for it, so an ask is refused. With R1, an allowed rewrite records its approval and saves; when a review was
-  recorded, `review_required` becomes a defect, not "settled". This lands with W4's routine PR.
+- **`decide_routine`'s rewrite** (built in W4c-2, STATE-FILES §5 "Built (W4c-2)"). W3 refused a decision that changed
+  the title or the instructions on `folder-v2`, and read a `denied` / `review_required` result as settled. The gate
+  already reviews such a call as delegation, and never raises a card for it, so an ask is refused. With R1, an allowed
+  rewrite records its approval and saves; when a review was recorded, `review_required` is reported as not saved, not
+  "settled".
 - **`company_delete`**, once it writes through the folder core: reviewed as destructive, it uses the recorder the same
   way. A `company_write` onto a delegation path is not reviewed by tool name, so it stays denied until R2. The model is
   told to use the tool made for the change.

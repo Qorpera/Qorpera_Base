@@ -61,8 +61,8 @@ export interface FolderWriterHookAnswer {
  * `recorder` may answer the recording instead. A write of `decisionRoutineId`'s file (the run's own dynamic routine,
  * its decision taken as owed) that only decides it (a new at, effort or reply, or its conclusion) is plain, as SQL's
  * review class. The routine index runs each routine as its file says, unless `routineStates` says otherwise, and keeps
- * SQL's resume rule: a paid save of the active file, unchanged, ends the platform's pause, and a paid edit ends a wait
- * for a login; a change of the file's status overrides. `login` answers `qorpera_prepare_routine_login` (a paying login
+ * SQL's resume rule: a paid save of the active file, unchanged, ends the platform's pause, and a paid edit that makes a
+ * new version ends a wait for a login; a change of the file's status overrides. `login` answers `qorpera_prepare_routine_login` (a paying login
  * by default), and its last answer is whether a save pays. A commit is not replayed by its operation key (SQL's step
  * 0); the receipt ledger replays a completed call. */
 export async function folderWriterFixture(
@@ -287,10 +287,21 @@ export async function folderWriterFixture(
 						if (!decision && !reviewed(args, units))
 							return { ...base, outcome: "denied", reason: "review_required" };
 						// SQL's resume rule: a paid save of the active file, unchanged, ends the platform's pause, and a paid edit
-						// ends a wait for a login; an edit keeps a Stop or a suspension. A change of the file's status overrides,
-						// and so does a changed routine over an ended one.
+						// that makes a new version (a new title, instructions, trigger with its time zone and reply, or effort)
+						// ends a wait for a login; any other edit keeps the pause. A change of the file's status overrides, and so
+						// does a changed routine over an ended one.
 						const state = routineStates.get(key);
 						const same = JSON.stringify(next) === JSON.stringify(previous);
+						const version = (routine: RoutineFile | null) =>
+							routine &&
+							JSON.stringify([
+								routine.title,
+								routine.instructions,
+								routine.trigger,
+								routine.timezone,
+								routine.reply,
+								routine.effort,
+							]);
 						const platform =
 							state?.status === "paused" &&
 							["member", "authorization_failed", "needs_model_account"].includes(state.pauseReason ?? "");
@@ -299,7 +310,7 @@ export async function folderWriterFixture(
 							platform &&
 							paid &&
 							next.status === "active" &&
-							(same || state?.pauseReason === "needs_model_account")
+							(same || (state?.pauseReason === "needs_model_account" && version(next) !== version(previous)))
 						)
 							routineStates.delete(key);
 						else if (state?.status === "expired" && !same) routineStates.delete(key);

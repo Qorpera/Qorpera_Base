@@ -900,8 +900,8 @@ C1d (bytes):
   and the requester as members; another member refused; an archived coworker refused; a lone agent refused by the
   file's own rule).
 
-**Plan (W4c): `manage_routine` and `decide_routine`'s rewrite** (design, round 3 approved with nits; W4c-1 built, below;
-W4c-2 next). Both write
+**Plan (W4c): `manage_routine` and `decide_routine`'s rewrite** (design, round 3 approved with nits; W4c-1 and W4c-2
+built, below). Both write
 the run agent's own routine files, `agents/<handle>/routines/<routineKey>.md`, as W4a and W4b do: the file is checked
 with the arguments, before the automatic review; every other refusal comes before the receipt; under the receipt the
 change set is staged, its review recorded (`manage_routine`, `decide_routine`) and committed with it. No
@@ -1035,7 +1035,8 @@ planned, with these choices made while building:
   pause saves the same bytes. `remove` is a `delete` unit at the version read; a repeat after the file is gone answers
   "nothing to change". The routine that woke the run (any routine wake, by its id) cannot be paused or removed.
 - A conclusion is checked with the arguments too: the summary on one line, over a placeholder routine file.
-- Before the receipt, in this order: the review's approval (without it nothing more happens), the routines folder
+- Before the receipt, after the file read, the index read and the answers that change nothing, in this order: the
+  review's approval (without it nothing more happens), the routines folder
   read, then the login: `upsert` and `resume` pin it last. Any resume with no paying login answers before the
   receipt (a file pause would only turn into a wait for one). The wake's refusals (`55000`: the acknowledgement owed,
   a final reply sent, a paused company) are refusals in the runtime's words; others stay errors.
@@ -1053,6 +1054,32 @@ planned, with these choices made while building:
   writer fixture (routine files as delegation except the run's own dynamic routine's decision, a routine index with
   SQL's resume rule, the login and its payment), the client's two calls, the control's bound, the tool's folder path
   and the runtime's wiring.
+
+**Built (W4c-2): `decide_routine`'s rewrite** (`packages/runtime/src/cloud-folder-routine-decision.ts`), as planned:
+- A `next` whose title or instructions differ from the file writes the whole routine from the file's parse
+  (`writeRoutineFile`, every other key kept) with the new `at`, effort and reply, then stages it, records the review
+  (`decide_routine`) and commits it under the receipt. A plain decision is saved as before (`setCompanyStateSettings`,
+  no review recorded); a title or instructions equal to the file's change nothing.
+- With the arguments, before the review: a new title or instructions are checked as a routine file over a placeholder
+  dynamic routine (a title is one line, without tabs or other controls). Before the receipt: the rewritten file is
+  parsed again; a rewrite without the review's approval is refused (decide again without intent or title); a
+  conclusion with a new title or instructions is refused (the tool's schema never sends one); a routine past its end
+  is settled, since nothing is owed and a rewrite would revive it.
+- What keeps a rewrite from reviving a routine no longer owed: a paused routine's run cannot decide at all (it lost
+  its wake authority, so the call fails, as in W3), and for a routine that expired while active the runtime's past-end
+  settle is the only guard (a reviewed rewrite would be saved and make it active again). The window between that check
+  and the commit is harmless: the scheduler never queues a run at or after the end, and the sweep expires it again.
+- After a recorded review the core never answers `review_required` for that change set; the branch that reports such a
+  rewrite as not saved (the decision stays owed) is defensive. A plain decision answered so is still settled (F2-6's
+  class).
+- The folder-v2 description keeps the intent and title text and says a new intent or title goes through the
+  automatic review. The gate's answer to an ask is unchanged (decide again without them).
+- Tests: SQL 781 §7 (a dynamic routine's run cannot pause it even with the review; its rewrite is not saved without
+  the review and the decision stays owed; with `decide_routine`'s approval recorded it is the decision, a new version
+  with the new title and instructions). Runtime: the rewrite on the writer fixture with its recording, the instructions
+  alone, a renamed file, a plain decision with none, the recorder's refusal (the decision stays owed), the core's
+  refusal of a rewrite, the checks with the arguments and before the receipt, the routine past its end, the
+  descriptions.
 
 Until the mount's writes are accepted (F3), these tools become thin writers of these files:
 `hire_agent`, `create_group_chat`, `organize_sidebar`, `manage_todo`, `manage_routine` and

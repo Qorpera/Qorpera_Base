@@ -4,8 +4,9 @@
 -- the automatic review's approval of the call, recorded for exactly that change set: a new routine, a pause, a resume,
 -- a conclusion and a removal; an unchanged save over the platform's pause resumes the routine. A new routine and a
 -- removal are not saved without the review. A dynamic routine's run cannot pause it, even with the review (SQL leaves
--- a fixed routine's own run to the runtime, which refuses it before the receipt). Runs are 708's routine runs, with
--- 647's native rows so the runtime's binding stands.
+-- a fixed routine's own run to the runtime, which refuses it before the receipt), and rewrites its title and
+-- instructions with its decision, as decide_routine saves it, only with the review (W4c-2). Runs are 708's routine
+-- runs, with 647's native rows so the runtime's binding stands.
 
 -- The native rows a hand-built run needs before the runtime can call a tool with it: the company's compute identity
 -- and saved login (connection b3, version 1, a native subscription), the run's runner, accepted assignment, native
@@ -65,19 +66,20 @@ begin
 		'provider', 'openai', 'nativeHarness', 'codex-cli', 'model', 'gpt-test');
 end $$;
 
--- The kernel's record of one manage_routine call (an allow by the automatic review): its id.
-create function pg_temp.action(p_binding jsonb, p_call text) returns uuid language sql as $$
-	select (public.qorpera_record_action_review(p_binding, jsonb_build_object('callId', p_call, 'tool', 'manage_routine',
+-- The kernel's record of one manage_routine (or decide_routine) call, an allow by the automatic review: its id.
+create function pg_temp.action(p_binding jsonb, p_call text, p_tool text default 'manage_routine') returns uuid language sql as $$
+	select (public.qorpera_record_action_review(p_binding, jsonb_build_object('callId', p_call, 'tool', p_tool,
 		'effect', 'delegation', 'argumentSha256', md5(p_call) || md5(p_call),
 		'action', jsonb_build_object('title', 'Set up or change a routine', 'target', 'Digest', 'details', '{}'::jsonb),
 		'decision', 'allow', 'ruleIds', '[]'::jsonb, 'builtIn', 'none', 'reason', 'Fixture verdict.', 'proposedRule', null,
 		'reviewerModel', 'gpt-6-luna')) ->> 'reviewId')::uuid
 $$;
 -- A run's call, as the writer makes it: the approval of the call, recorded for its change set, then the commit.
-create function pg_temp.call(p_actor jsonb, p_binding jsonb, p_call text, p_units jsonb) returns jsonb language plpgsql as $$
-declare v_action uuid := pg_temp.action(p_binding, p_call); v_review jsonb;
+create function pg_temp.call(p_actor jsonb, p_binding jsonb, p_call text, p_units jsonb, p_tool text default 'manage_routine')
+returns jsonb language plpgsql as $$
+declare v_action uuid := pg_temp.action(p_binding, p_call, p_tool); v_review jsonb;
 begin
-	v_review := public.qorpera_folder_record_review(p_binding, jsonb_build_object('actionReviewId', v_action, 'tool', 'manage_routine',
+	v_review := public.qorpera_folder_record_review(p_binding, jsonb_build_object('actionReviewId', v_action, 'tool', p_tool,
 		'argumentSha256', md5(p_call) || md5(p_call), 'units', p_units));
 	-- The run possesses the bytes it commits, as 707's commit helper makes it once the fixtures stage version-2 bytes
 	-- (C5 early); before that its helpers have no possession step.
@@ -139,9 +141,10 @@ begin
 		pg_temp.rparse('78100000-0000-4000-8000-0000000000e4', 'Digest again', pg_temp.every(60))))), 1, 'saved');
 end $$;
 
--- 7. A dynamic routine's run cannot pause it, even with the review.
+-- 7. A dynamic routine's run cannot pause it, even with the review, and rewrites its title and instructions with its
+-- decision (decide_routine, W4c-2).
 do $$
-declare a jsonb; b jsonb; d jsonb;
+declare a jsonb; b jsonb; d jsonb; u jsonb; v public.qorpera_cloud_routine_versions;
 	e2 constant uuid := '78100000-0000-4000-8000-0000000000e2'; e5 constant uuid := '78100000-0000-4000-8000-0000000000e5';
 	p constant text := 'agents/nora/routines/follow-up.md';
 begin
@@ -156,6 +159,18 @@ begin
 			pg_temp.rparse(e5, 'Follow up', pg_temp.once('2030-01-01T09:00:00Z'), '{"status":"paused"}')))))
 			is distinct from 'this run cannot pause its own routine; conclude it instead' then
 		raise exception 'A dynamic routine''s run cannot pause it, even with the review'; end if;
+	u := jsonb_build_array(pg_temp.routine(p, pg_temp.rparse(e5, 'Follow up weekly', pg_temp.once('2030-02-01T09:00:00Z'),
+		'{"instructions":"Compare this week with last week."}')));
+	-- A rewrite is delegation: not saved without the review, and the decision is still owed.
+	perform pg_temp.expect(pg_temp.commit(d, 'run-rewrite-none', u), 1, 'denied', 'review_required');
+	if not public.qorpera_routine_decision_pending((d ->> 'runId')::uuid) then raise exception 'An unreviewed rewrite decides nothing'; end if;
+	-- With decide_routine's approval recorded for it, the rewrite is the decision: a new version with the new words.
+	perform pg_temp.expect(pg_temp.call(d, b, 'rewrite-0001', u, 'decide_routine'), 1, 'saved');
+	v := pg_temp.rv(e5);
+	if v.version is distinct from 2::bigint or v.title is distinct from 'Follow up weekly' or v.prompt is distinct from 'Compare this week with last week.'
+		or v.triggers -> 0 ->> 'at' is distinct from '2030-02-01T09:00:00Z'
+		or public.qorpera_routine_decision_pending((d ->> 'runId')::uuid) then
+		raise exception 'The reviewed rewrite is the decision: %', to_jsonb(v); end if;
 end $$;
 
 rollback;
