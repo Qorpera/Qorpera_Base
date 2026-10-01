@@ -192,6 +192,7 @@ export function mountApplication(
 		}
 		closeSettings(false);
 		closeFeedback(false);
+		settingsAfterHome = undefined;
 		routeRevision++;
 		resolvingRoute = undefined;
 		routeError = undefined;
@@ -218,6 +219,9 @@ export function mountApplication(
 	let meetState: MeetState = {};
 	let unsubscribeCompany: (() => void) | undefined;
 	let homeReason: string | undefined;
+	/** A Settings tab to open once the company home has resolved: home moves on to the Co-Founder's
+	 * conversation, and that route change would close Settings opened before it. */
+	let settingsAfterHome: SettingsTab | undefined;
 
 	const render = debounce(() => void draw(), 10);
 
@@ -334,6 +338,7 @@ export function mountApplication(
 	}
 
 	function teardownCompany(): void {
+		settingsAfterHome = undefined;
 		notices?.dispose();
 		notices = undefined;
 		executionNotices.replaceChildren();
@@ -441,7 +446,10 @@ export function mountApplication(
 					);
 					void finishPlanSignIn(memberPlanSignIn(userId, profile.profileId), plan, outcome);
 					queueMicrotask(() => {
-						if (!disposed && company === controller) openSettings("my-connections");
+						if (disposed || company !== controller) return;
+						const route = currentRoute();
+						if (route.name === "company" && route.section === "home") settingsAfterHome = "my-connections";
+						else openSettings("my-connections");
 					});
 				}
 			}
@@ -478,6 +486,8 @@ export function mountApplication(
 		try {
 			const result = await controller.openCofounderConversation();
 			if (!current() || company !== controller) return;
+			const tab = settingsAfterHome;
+			settingsAfterHome = undefined;
 			if (result.sessionId)
 				navigate(
 					{ name: "company", profileId: controller.profile.profileId, section: "chat", id: result.sessionId },
@@ -487,6 +497,7 @@ export function mountApplication(
 				homeReason = result.reason;
 				render();
 			}
+			if (tab) openSettings(tab);
 		} finally {
 			if (resolvingRoute === revision) resolvingRoute = undefined;
 		}

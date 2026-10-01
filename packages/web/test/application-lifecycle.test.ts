@@ -823,7 +823,7 @@ describe("Continue with ChatGPT: the return from OpenAI", () => {
 	const settingsOpen = () => document.querySelector(".settings-overlay") !== null;
 	/** A sign-in this tab started on `chat`, a Co-Founder home that redirects to its conversation,
 	 * and a vault that takes 3 s to confirm. */
-	function returned(memberId = userA.id) {
+	function returned(memberId = userA.id, returnRoute = chat) {
 		const signals: AbortSignal[] = [];
 		const confirm = vi.fn(
 			(_input: string | URL | Request, init?: RequestInit) =>
@@ -850,7 +850,7 @@ describe("Continue with ChatGPT: the return from OpenAI", () => {
 				capability: "c".repeat(43),
 				expiresAt: new Date(Date.now() + 900_000).toISOString(),
 				startedAt: Date.now(),
-				returnRoute: chat,
+				returnRoute,
 			}),
 		);
 		// The callback's return page is the site's root, with the outcome after it.
@@ -909,6 +909,19 @@ describe("Continue with ChatGPT: the return from OpenAI", () => {
 		expect(confirm).toHaveBeenCalledOnce();
 	});
 
+	it("from the company list, goes to the company and opens My connections once home has moved on", async () => {
+		const { signals } = returned(userA.id, `#/c/${profileA.profileId}`);
+		await draw();
+		await draw();
+		expect(location.hash).toBe(chat);
+		expect(settingsOpen()).toBe(true);
+		expect(document.querySelector("#settings-tab-my-connections")?.getAttribute("aria-selected")).toBe("true");
+		await vi.advanceTimersByTimeAsync(3500);
+		await draw();
+		expect(signals.map((signal) => signal.aborted)).toEqual([false]);
+		expect(status()).toBe("Your ChatGPT plan is connected.");
+	});
+
 	it("never finishes a sign-in another account started in this tab", async () => {
 		const { confirm } = returned(userB.id);
 		await draw();
@@ -917,6 +930,8 @@ describe("Continue with ChatGPT: the return from OpenAI", () => {
 		expect(confirm).not.toHaveBeenCalled();
 		expect(sessionStorage.getItem("qorpera.chatgpt-plan-sign-in.v1")).toBeNull();
 		expect(settingsOpen()).toBe(false);
+	});
+});
 
 describe("a ChatGPT plan's first-routine card in the app", () => {
 	const notice = {

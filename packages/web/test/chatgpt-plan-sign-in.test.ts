@@ -97,6 +97,14 @@ describe("Continue with ChatGPT: the return trip", () => {
 			expect(stored()).toBeNull();
 		}
 	});
+	it("ignores a kept sign-in whose page is not its company's", () => {
+		for (const returnRoute of [`#/c/${id(9)}`, `${chat}?chatgpt_plan=confirm`, "https://example.com/"]) {
+			sessionStorage.setItem("qorpera.chatgpt-plan-sign-in.v1", JSON.stringify({ ...signIn(), returnRoute }));
+			history.replaceState(null, "", `/#?chatgpt_plan=confirm&confirmation=${confirmation}`);
+			expect(takeChatGptPlanReturn()).toBeUndefined();
+			expect(stored()).toBeNull();
+		}
+	});
 	it("says when this tab cannot keep the sign-in", () => {
 		vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
 			throw new DOMException("full", "QuotaExceededError");
