@@ -142,7 +142,10 @@ describe("company computer private fields", () => {
 			selector: COMPANY_COMPUTER_PRIVATE_FIELD_SELECTOR,
 			maxFields: 64,
 			maxValue: 4096,
+			shownOnly: false,
 		});
+		await readCompanyComputerPrivateValues({ evaluate } as unknown as Page, { shownOnly: true });
+		expect(evaluate).toHaveBeenLastCalledWith(expect.any(Function), expect.objectContaining({ shownOnly: true }));
 	});
 
 	it("refuses an answer it cannot trust", async () => {

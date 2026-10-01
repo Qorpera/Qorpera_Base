@@ -1192,6 +1192,30 @@ describe("Playwright/X11/shell adapters (test doubles, never the member machine)
 			expect.objectContaining({ display: ":1", maxBytes: 8 * 1024 * 1024 }),
 		);
 	});
+	it("takes no whole-screen picture while a shown tab holds a private value, also one typed during the capture", async () => {
+		const fixture = automationFixture();
+		const desktop = () =>
+			fixture.automation.perform({ kind: "screenshot", surface: "desktop" }, computerLease(), computerEffect(), {
+				...computerOperation(),
+				tool: "computer_screenshot",
+				arguments: { kind: "screenshot", surface: "desktop" },
+			});
+		fixture.page.evaluate.mockResolvedValueOnce(["hunter2"]);
+		await expect(desktop()).rejects.toThrow("PRIVATE_FIELD_ON_SCREEN");
+		expect(fixture.commands.capturePng).not.toHaveBeenCalled();
+		fixture.page.evaluate.mockResolvedValueOnce([]).mockResolvedValueOnce(["hunter2"]);
+		await expect(desktop()).rejects.toThrow("PRIVATE_FIELD_ON_SCREEN");
+		expect(fixture.commands.capturePng).toHaveBeenCalledOnce();
+		expect(fixture.screenshots.publish).not.toHaveBeenCalled();
+		// Only shown tabs count; the page itself answers whether it is shown.
+		expect(fixture.page.evaluate).toHaveBeenLastCalledWith(
+			expect.any(Function),
+			expect.objectContaining({ shownOnly: true }),
+		);
+		await expect(desktop()).resolves.toMatchObject({ kind: "json", value: { surface: "desktop" } });
+		expect(fixture.screenshots.publish).toHaveBeenCalledOnce();
+	});
+
 	it("preserves actual page dimensions while desktop images retain fixed pixel coordinates", async () => {
 		const fixture = automationFixture();
 		fixture.page.screenshot.mockResolvedValue(captureBytes(1918, 1048));

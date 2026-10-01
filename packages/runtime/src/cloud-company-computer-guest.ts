@@ -357,6 +357,14 @@ export class CompanyComputerGuestAutomation {
 		}
 	}
 
+	async #assertNoPrivateValueShown(): Promise<void> {
+		for (const page of this.#browser?.context.pages() ?? []) {
+			if (page.isClosed()) continue;
+			const values = await this.#pageCall(() => readCompanyComputerPrivateValues(page, { shownOnly: true }));
+			if (values.length > 0) throw new CompanyComputerActionFailedError(new Error("PRIVATE_FIELD_ON_SCREEN"));
+		}
+	}
+
 	/** Cancellation closes the automation channel, not the persistent profile bytes. */
 	async stopBrowser(): Promise<void> {
 		await this.#browser?.close();
@@ -555,13 +563,12 @@ export class CompanyComputerGuestAutomation {
 		}
 		if (!this.#commands) throw new Error("CONTAINED_COMPUTER_COMMANDS_UNAVAILABLE");
 		if (action.kind === "screenshot") {
-			return this.#publish(
-				await this.#commands.capturePng({ display, signal, maxBytes: 8 * 1024 * 1024 }),
-				lease,
-				effect,
-				"desktop",
-				operation,
-			);
+			// The whole screen shows the browser unmasked: no capture while a shown tab holds a private value,
+			// checked again after the capture for one typed meanwhile.
+			await this.#assertNoPrivateValueShown();
+			const png = await this.#commands.capturePng({ display, signal, maxBytes: 8 * 1024 * 1024 });
+			await this.#assertNoPrivateValueShown();
+			return this.#publish(png, lease, effect, "desktop", operation);
 		}
 		let args: string[];
 		if (action.kind === "shell") args = ["--noprofile", "--norc", "-c", action.command];

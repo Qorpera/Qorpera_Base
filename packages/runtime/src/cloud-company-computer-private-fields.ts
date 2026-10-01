@@ -35,14 +35,23 @@ const MIN_HIDDEN_ELSEWHERE = 4;
 const MAX_PRIVATE_FIELDS = 64;
 const MAX_PRIVATE_VALUE = 4096;
 
-/** The non-empty values of the private boxes in the top document, open shadow roots included (the snapshot reads those too). */
-export async function readCompanyComputerPrivateValues(page: Page): Promise<string[]> {
+/**
+ * The non-empty values of the private boxes in the top document, open shadow
+ * roots included (the snapshot reads those too). `shownOnly` reads nothing from
+ * a tab the browser does not show.
+ */
+export async function readCompanyComputerPrivateValues(
+	page: Page,
+	options: { shownOnly?: boolean } = {},
+): Promise<string[]> {
 	const values = await page.evaluate(
-		({ selector, maxFields, maxValue }) => {
+		({ selector, maxFields, maxValue, shownOnly }) => {
 			type Node = { shadowRoot?: Root | null; matches(selector: string): boolean; value?: unknown };
-			type Root = { querySelectorAll(selector: string): ArrayLike<Node> };
+			type Root = { querySelectorAll(selector: string): ArrayLike<Node>; visibilityState?: string };
 			const found: string[] = [];
-			const roots: Root[] = [(globalThis as unknown as { document: Root }).document];
+			const document = (globalThis as unknown as { document: Root }).document;
+			if (shownOnly && document.visibilityState !== "visible") return found;
+			const roots: Root[] = [document];
 			for (let index = 0; index < roots.length && found.length <= maxFields; index++) {
 				const all = roots[index].querySelectorAll("*");
 				for (let item = 0; item < all.length; item++) {
@@ -55,7 +64,12 @@ export async function readCompanyComputerPrivateValues(page: Page): Promise<stri
 			}
 			return found;
 		},
-		{ selector: COMPANY_COMPUTER_PRIVATE_FIELD_SELECTOR, maxFields: MAX_PRIVATE_FIELDS, maxValue: MAX_PRIVATE_VALUE },
+		{
+			selector: COMPANY_COMPUTER_PRIVATE_FIELD_SELECTOR,
+			maxFields: MAX_PRIVATE_FIELDS,
+			maxValue: MAX_PRIVATE_VALUE,
+			shownOnly: options.shownOnly === true,
+		},
 	);
 	if (
 		!Array.isArray(values) ||

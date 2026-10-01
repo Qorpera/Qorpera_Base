@@ -476,8 +476,9 @@ An agent's browser snapshot is Playwright's aria snapshot, which copies every
 input's value. While a private box (`COMPANY_COMPUTER_PRIVATE_FIELD_SELECTOR`:
 password, one-time code, card, or a box named for one) holds a value, the guest
 shows every typed value as `[hidden]` and hides the private values wherever the
-page repeats them; browser screenshots mask the same boxes. Desktop screenshots
-are not masked yet.
+page repeats them; browser screenshots mask the same boxes. A desktop screenshot
+cannot mask, so it is refused while a shown tab holds such a value (checked
+before and after the capture).
 
 `createCompanyComputerLinuxBrowserLaunch` runs Chromium in a separate checked
 Bubblewrap namespace. Package Chromium at `/usr/lib/qorpera-chromium/chrome`,
