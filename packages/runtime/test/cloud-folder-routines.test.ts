@@ -9,6 +9,7 @@ import {
 } from "@qorpera/runtime/cloud-native-tool-boundary";
 import { CloudNativeToolOperations } from "@qorpera/runtime/cloud-native-tool-operations";
 import { CLOUD_ROUTINE_TOOL_DESCRIPTION, cloudRoutineTools } from "@qorpera/runtime/cloud-routine-tools";
+import { fitsOneResult } from "@qorpera/runtime/cloud-worker-tools";
 import { afterEach, expect, it, vi } from "vitest";
 import { folderWriterFixture } from "./fixtures/folder-writer-fixture.ts";
 
@@ -136,6 +137,14 @@ it("saves a new routine as its file, making the routines folder, with the review
 	execute.mockRestore();
 	// The login was pinned before the save.
 	expect(f.logins).toEqual([{ p_binding: expect.objectContaining({ runId: f.identity.runId }) }]);
+	// The receipt stores the save; how the routine runs now is read back after it, outside the stored result.
+	const stored = ([...f.ledger.values()][0]?.result as { content?: { value: string } } | undefined)?.content;
+	expect(JSON.parse(stored?.value ?? "{}")).toMatchObject({
+		outcome: "saved",
+		routine: { routineKey: "inbox", path: `${ROUTINES}/inbox.md`, version: expect.any(String) },
+		next: "Saved: tell the member what you set up or changed.",
+	});
+	expect(JSON.parse(stored?.value ?? "{}").routine).not.toHaveProperty("status");
 });
 
 it("writes each trigger, the end, the runs, quiet hours and effort as the file says them", async () => {
@@ -324,9 +333,10 @@ it("removes the file with the version read, as a reviewed deletion, and answers 
 	);
 	expect(removed).toMatchObject({
 		outcome: "saved",
-		routine: { routineKey: "inbox", path: `${ROUTINES}/inbox.md` },
 		next: "The routine is removed, and its name is free again.",
 	});
+	// The deletion's version shows the model nothing.
+	expect(removed.routine).toEqual({ routineKey: "inbox", path: `${ROUTINES}/inbox.md` });
 	expect(f.commits[0]?.units).toEqual([{ op: "delete", path: `${ROUTINES}/inbox.md`, expectedVersion: version }]);
 	expect(f.files.has(`${ROUTINES}/inbox.md`)).toBe(false);
 	expect(f.recordings).toHaveLength(1);
@@ -404,11 +414,27 @@ it("checks the key and the file before the review, and refuses a save without th
 	);
 	expect(() => routines.check(UPSERT)).not.toThrow();
 	expect(() => routines.check({ action: "pause", operationKey: "p-1", routineKey: "inbox" })).not.toThrow();
+	// A conclusion is one line of text: a control character in it is refused before the review.
+	expect(
+		argumentRefusal(() =>
+			routines.check({ action: "conclude", operationKey: "c-1", routineKey: "inbox", summary: "Done\u0007." }),
+		),
+	).toMatch(/^This routine cannot be saved as the company's files: \S/);
+	expect(() =>
+		routines.check({ action: "conclude", operationKey: "c-1", routineKey: "inbox", summary: "Done.\nReally." }),
+	).not.toThrow();
 	const { actionReviewId: _, ...unreviewed } = f.call();
 	await refuses(
 		routines.change({ action: "pause", operationKey: "p-1", routineKey: "inbox" }, unreviewed),
 		"needs the automatic review's approval",
 	);
+	// Without the approval nothing more happens: no login is pinned, no review recorded.
+	await refuses(
+		routines.change({ ...UPSERT, title: "Inbox again" }, unreviewed),
+		"needs the automatic review's approval",
+	);
+	expect(f.logins).toEqual([]);
+	expect(f.recordings).toEqual([]);
 	expect(f.commits).toEqual([]);
 	expect(f.operationControl.beginToolOperation).not.toHaveBeenCalled();
 });
@@ -444,8 +470,9 @@ it("tells the model what a conflict, a refusal, a waiting change and a routine t
 			(await h.routines().change({ action: "pause", operationKey: "p-1", routineKey: "inbox" }, h.call())).content,
 		).next,
 	).toContain("do not make it again");
-	// Saved, but waiting for a model account: the read-back says so.
+	// Saved with no paying login: it waits for a model account, and the read-back says so.
 	let states: Map<string, unknown> | undefined;
+	let runId = "";
 	const w = await fixture(
 		{ folders: [ROUTINES] },
 		{
@@ -454,9 +481,11 @@ it("tells the model what a conflict, a refusal, a waiting change and a routine t
 					states?.set("inbox", { status: "paused", pauseReason: "needs_model_account" });
 				return null;
 			},
+			login: () => ({ schema: "qorpera.routine-login/v1", runId, login: null }),
 		},
 	);
 	states = w.routineStates;
+	runId = w.identity.runId;
 	const waiting = parse((await w.routines().change(UPSERT, w.call())).content);
 	expect(waiting).toMatchObject({
 		outcome: "saved",
@@ -510,6 +539,38 @@ it("lists the routines from the index as many as fit, with a cursor, or one whol
 	expect(one.routines[0].file.instructions).toBe(long);
 	expect(one.routines[0]).not.toHaveProperty("instructionsTruncated");
 	expect(parse(await routines.list({ routineKey: "none" }, f.context, () => true)).routines).toEqual([]);
+	// A page that cuts instructions says to read the file before restating them.
+	expect(first.next).toContain("company_read");
+	expect(one).not.toHaveProperty("next");
+	// One routine too long for one tool result: its instructions are cut, at a character, to fit, and marked.
+	const huge = "Ré ".repeat(7000).trim();
+	const g = await fixture({ files: { [`${ROUTINES}/huge.md`]: file({ instructions: huge }) } });
+	const cut = await g.routines().list({ routineKey: "huge" }, g.context, fitsOneResult);
+	expect(fitsOneResult(String(cut.value))).toBe(true);
+	const shownCut = parse(cut);
+	expect(shownCut.routines[0]).toMatchObject({ routineKey: "huge", instructionsTruncated: true });
+	expect(huge.startsWith(shownCut.routines[0].file.instructions)).toBe(true);
+	expect(shownCut.routines[0].file.instructions.length).toBeGreaterThan(1000);
+	// The longest that fits: one more character would not.
+	expect(
+		fitsOneResult(
+			JSON.stringify({
+				...shownCut,
+				routines: [
+					{
+						...shownCut.routines[0],
+						file: {
+							...shownCut.routines[0].file,
+							instructions: Array.from(huge)
+								.slice(0, Array.from(shownCut.routines[0].file.instructions).length + 1)
+								.join(""),
+						},
+					},
+				],
+			}),
+		),
+	).toBe(false);
+	expect(shownCut.next).toContain("read the routine's file (company_read at its path)");
 	// A list reads the index: nothing is released.
 	expect(f.releases).toEqual([]);
 });
@@ -567,6 +628,14 @@ it("is manage_routine's folder-v2 path: its description, its list arguments, the
 		}),
 	).toThrow(CloudToolArgumentRefusal);
 	expect(() => tool?.parseArguments({ ...upsert, title: "In\tbox" })).toThrow(CloudToolArgumentRefusal);
+	// The schema offers the file name rule and only clock triggers.
+	expect(tool?.inputSchema).toHaveProperty("properties.routineKey.pattern", "^[a-z0-9]+(?:-[a-z0-9]+)*$");
+	const kinds = (schema: unknown) =>
+		(
+			schema as { properties: { trigger: { oneOf: { properties: { kind: { const: string } } }[] } } }
+		).properties.trigger.oneOf.map((item) => item.properties.kind.const);
+	expect(kinds(tool?.inputSchema)).toEqual(["dynamic", "every", "weekly"]);
+	expect(kinds(legacy?.inputSchema)).toEqual(["dynamic", "every", "weekly", "file_change", "event"]);
 	const list = parse((await tool?.execute({ action: "list" }, f.context)) as { value: unknown });
 	expect(list.routines.map((routine: { routineKey: string }) => routine.routineKey)).toEqual(["inbox"]);
 	// The run's own dynamic routine, concluded here, owes no decision.
@@ -578,5 +647,12 @@ it("is manage_routine's folder-v2 path: its description, its list arguments, the
 	);
 	expect(concluded.outcome).toBe("saved");
 	expect(settled).toBe(1);
+	// The key is bound to that request: other arguments under it are refused before the review; the same request is not.
+	expect(() => tool?.parseArguments({ action: "pause", operationKey: "end-1", routineKey: "other" })).toThrow(
+		/operationKey is already used in this run for a different routine change/,
+	);
+	expect(() =>
+		tool?.parseArguments({ action: "conclude", operationKey: "end-1", routineKey: "inbox", summary: "Done." }),
+	).not.toThrow();
 	expect(control.call).not.toHaveBeenCalled();
 });

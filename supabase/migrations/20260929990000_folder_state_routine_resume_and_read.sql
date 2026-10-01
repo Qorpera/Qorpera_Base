@@ -102,14 +102,15 @@ begin
 		select * into v_after from public.qorpera_cloud_routines routine
 		where routine.id = (p_request ->> 'cursor')::uuid and routine.profile_id = v_profile
 			and routine.folder_environment_id = p_environment_id and routine.owner_staff_agent_id = v_staff
-			and routine.folder_path is not null and routine.folder_retired_at is null
+			and routine.folder_retired_at is null
 			and public.qorpera_folder_actor_allowed(p_environment_id, v_profile, v_auth, routine.folder_path, 'read');
 		if not found then raise exception 'Routine cursor is unavailable; list again without it' using errcode = '22023'; end if;
 	end if;
 	with matching as (
 		select routine.id, routine.created_at from public.qorpera_cloud_routines routine
+		-- A row from before the folder has no folder environment (qorpera_cloud_routines_folder_complete).
 		where routine.profile_id = v_profile and routine.folder_environment_id = p_environment_id
-			and routine.owner_staff_agent_id = v_staff and routine.folder_path is not null and routine.folder_retired_at is null
+			and routine.owner_staff_agent_id = v_staff and routine.folder_retired_at is null
 			and (not p_request ? 'routineKey' or routine.routine_key = p_request ->> 'routineKey')
 			and (v_after.id is null or (routine.created_at, routine.id) < (v_after.created_at, v_after.id))
 			and public.qorpera_folder_actor_allowed(p_environment_id, v_profile, v_auth, routine.folder_path, 'read')),

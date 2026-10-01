@@ -86,7 +86,7 @@ end $$;
 
 -- 2. The read: a run of Nora sees her file routines, as runs see them and as the file says; one key; a cursor.
 do $$
-declare a jsonb; r jsonb; i integer; e jsonb; seen text[] := '{}'; w jsonb; worker uuid;
+declare a jsonb; r jsonb; i integer; e jsonb; seen text[] := '{}'; w jsonb; worker uuid; v_res uuid;
 begin
 	for i in 1..32 loop
 		perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'routine-read-' || i, jsonb_build_array(pg_temp.routine(
@@ -97,12 +97,13 @@ begin
 		'agents/otto/routines/watch.md', pg_temp.rparse(md5('otto')::uuid, 'Watch', pg_temp.every())))), 1, 'saved');
 	a := pg_temp.routine_run('78000000-0000-4000-8000-0000000000e2');
 	r := public.qorpera_folder_agent_routines('70700000-0000-4000-8000-000000000020', a, '{}');
-	if r ->> 'schema' <> 'qorpera.folder-agent-routines/v1' or jsonb_array_length(r -> 'routines') <> 32
-		or (r ->> 'moreRoutines')::integer <> 2 or r ->> 'nextCursor' is null then
+	if r ->> 'schema' is distinct from 'qorpera.folder-agent-routines/v1' or jsonb_array_length(r -> 'routines') is distinct from 32
+		or (r ->> 'moreRoutines')::integer is distinct from 2 or r ->> 'nextCursor' is null then
 		raise exception 'A page of 32 with a cursor: %', r - 'routines'; end if;
 	for e in select value from jsonb_array_elements(r -> 'routines') loop seen := seen || (e ->> 'routineKey'); end loop;
 	r := public.qorpera_folder_agent_routines('70700000-0000-4000-8000-000000000020', a, jsonb_build_object('cursor', r ->> 'nextCursor'));
-	if jsonb_array_length(r -> 'routines') <> 2 or (r ->> 'moreRoutines')::integer <> 0 or r ->> 'nextCursor' is not null then
+	if jsonb_array_length(r -> 'routines') is distinct from 2 or (r ->> 'moreRoutines')::integer is distinct from 0
+		or r ->> 'nextCursor' is not null then
 		raise exception 'The second page: %', r; end if;
 	for e in select value from jsonb_array_elements(r -> 'routines') loop seen := seen || (e ->> 'routineKey'); end loop;
 	if cardinality(seen) <> 34 or (select count(distinct k) from unnest(seen) k) <> 34 or 'watch' = any(seen) then
@@ -112,9 +113,10 @@ begin
 		raise exception 'Another agent''s routine is not read by key'; end if;
 	r := public.qorpera_folder_agent_routines('70700000-0000-4000-8000-000000000020', a, '{"routineKey":"inbox"}');
 	e := r -> 'routines' -> 0;
-	if jsonb_array_length(r -> 'routines') <> 1 or e ->> 'routineKey' <> 'inbox' or e ->> 'path' <> 'agents/nora/routines/inbox.md'
-		or e ->> 'status' <> 'paused' or e -> 'file' ->> 'status' <> 'paused' or e -> 'file' -> 'trigger' ->> 'when' <> 'every'
-		or e -> 'file' ->> 'instructions' <> 'Look at the inbox.' or e ? 'intent' or e ? 'instructionsTruncated'
+	if jsonb_array_length(r -> 'routines') is distinct from 1 or e ->> 'routineKey' is distinct from 'inbox'
+		or e ->> 'path' is distinct from 'agents/nora/routines/inbox.md' or e ->> 'status' is distinct from 'paused'
+		or e -> 'file' ->> 'status' is distinct from 'paused' or e -> 'file' -> 'trigger' ->> 'when' is distinct from 'every'
+		or e -> 'file' ->> 'instructions' is distinct from 'Look at the inbox.' or e ? 'intent' or e ? 'instructionsTruncated'
 		or e ->> 'folderVersion' is null then
 		raise exception 'One routine, as runs see it and as the file says: %', e; end if;
 	-- A page cuts long instructions to 200 characters; one routine by its key is whole.
@@ -125,12 +127,44 @@ begin
 	r := r -> 'routines' || (public.qorpera_folder_agent_routines('70700000-0000-4000-8000-000000000020', a,
 		jsonb_build_object('cursor', r ->> 'nextCursor')) -> 'routines');
 	select value into e from jsonb_array_elements(r) where value ->> 'routineKey' = 'long';
-	if e -> 'file' ->> 'instructions' <> repeat('é', 200)
-		or e -> 'instructionsTruncated' <> 'true'::jsonb then
+	if e -> 'file' ->> 'instructions' is distinct from repeat('é', 200)
+		or e -> 'instructionsTruncated' is distinct from 'true'::jsonb then
 		raise exception 'A page cuts long instructions: %', e; end if;
 	e := public.qorpera_folder_agent_routines('70700000-0000-4000-8000-000000000020', a, '{"routineKey":"long"}') -> 'routines' -> 0;
-	if e -> 'file' ->> 'instructions' <> repeat('é', 250) or e ? 'instructionsTruncated' then
+	if e -> 'file' ->> 'instructions' is distinct from repeat('é', 250) or e ? 'instructionsTruncated' then
 		raise exception 'One routine by its key is whole: %', e; end if;
+	-- One routine file narrowed to another agent: the run may not read it, so the page, its count, its key and its cursor
+	-- leave it out. Neither a removed routine (its file deleted, the row retired) nor one from before the company's
+	-- folder (no file, so no folder environment) is listed.
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'routine-read-remove', jsonb_build_array(
+		pg_temp.del('agents/nora/routines/r-2.md'))), 1, 'saved');
+	v_res := public.qorpera_folder_set_resource('70700000-0000-4000-8000-000000000020', pg_temp.owner(),
+		'agents/nora/routines/r-1.md', 'exact', 'company_shared', 'normal') ->> 'resourceId';
+	perform public.qorpera_folder_grant('70700000-0000-4000-8000-000000000020', pg_temp.owner(), v_res, 'staff_agent',
+		'70700000-0000-4000-8000-0000000000a2', array['read']);
+	perform pg_temp.fx(format('insert into public.qorpera_cloud_routines select (jsonb_populate_record(r, %L)).* '
+		'from public.qorpera_cloud_routines r where id = %L', jsonb_build_object('id', md5('legacy')::uuid, 'client_routine_id',
+			md5('legacy')::uuid, 'origin', 'agent', 'routine_key', 'legacy', 'folder_path', null, 'folder_environment_id', null,
+			'folder_path_version', null, 'folder_commit_id', null), '78000000-0000-4000-8000-0000000000e1'));
+	r := public.qorpera_folder_agent_routines('70700000-0000-4000-8000-000000000020', a, '{}');
+	if (r ->> 'moreRoutines')::integer is distinct from 1 then raise exception 'Neither is counted: %', r - 'routines'; end if;
+	r := r -> 'routines' || (public.qorpera_folder_agent_routines('70700000-0000-4000-8000-000000000020', a,
+		jsonb_build_object('cursor', r ->> 'nextCursor')) -> 'routines');
+	seen := array(select value ->> 'routineKey' from jsonb_array_elements(r));
+	if cardinality(seen) is distinct from 33 or 'r-1' = any(seen) or 'r-2' = any(seen) or 'legacy' = any(seen)
+		or not 'r-3' = any(seen) then
+		raise exception 'Only what the run may read, from the folder: %', seen; end if;
+	if jsonb_array_length(public.qorpera_folder_agent_routines('70700000-0000-4000-8000-000000000020', a, '{"routineKey":"r-1"}')
+			-> 'routines') is distinct from 0
+		or jsonb_array_length(public.qorpera_folder_agent_routines('70700000-0000-4000-8000-000000000020', a, '{"routineKey":"r-2"}')
+			-> 'routines') is distinct from 0
+		or jsonb_array_length(public.qorpera_folder_agent_routines('70700000-0000-4000-8000-000000000020', a, '{"routineKey":"legacy"}')
+			-> 'routines') is distinct from 0 then
+		raise exception 'None is read by its key'; end if;
+	perform pg_temp.raises(format('select public.qorpera_folder_agent_routines(%L, %L, %L)', '70700000-0000-4000-8000-000000000020', a,
+		jsonb_build_object('cursor', md5('r1')::uuid)), '22023');
+	perform pg_temp.raises(format('select public.qorpera_folder_agent_routines(%L, %L, %L)', '70700000-0000-4000-8000-000000000020', a,
+		jsonb_build_object('cursor', md5('legacy')::uuid)), '22023');
 	-- Bad requests.
 	perform pg_temp.raises(format('select public.qorpera_folder_agent_routines(%L, %L, %L)', '70700000-0000-4000-8000-000000000020', a,
 		'{"routineKey":"Inbox"}'), '22023');

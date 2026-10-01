@@ -56,18 +56,22 @@ export interface FolderWriterHookAnswer {
 
 /** A fake folder core and receipt ledger for a folder writer's tests, with seeded files and folders. A write whose
  * parse has problems is refused as `structured_invalid`, as the real hook does; `hook` may refuse any other write. A
- * new folder with an `agent.md` or a `group.md`, and a write or delete of a routine file other than a dynamic routine's
- * decision, is delegation (C1B §6): the commit saves it only with a review recorded (`qorpera_folder_record_review`, C2 R1) for exactly its change set, and
- * `recorder` may answer the recording instead. The routine index runs each routine as its file says, unless
- * `routineStates` says otherwise; an unchanged save of an active file ends the platform's pause, as SQL's resume rule.
- * `login` answers `qorpera_prepare_routine_login` (a paying login by default). A commit is not replayed by its
- * operation key (SQL's step 0); the receipt ledger replays a completed call. */
+ * new folder with an `agent.md` or a `group.md`, and a write or delete of a routine file, is delegation (C1B §6): the
+ * commit saves it only with a review recorded (`qorpera_folder_record_review`, C2 R1) for exactly its change set, and
+ * `recorder` may answer the recording instead. A write of `decisionRoutineId`'s file (the run's own dynamic routine,
+ * its decision taken as owed) that only decides it (a new at, effort or reply, or its conclusion) is plain, as SQL's
+ * review class. The routine index runs each routine as its file says, unless `routineStates` says otherwise, and keeps
+ * SQL's resume rule: a paid save of the active file, unchanged, ends the platform's pause, and a paid edit ends a wait
+ * for a login; a change of the file's status overrides. `login` answers `qorpera_prepare_routine_login` (a paying login
+ * by default), and its last answer is whether a save pays. A commit is not replayed by its operation key (SQL's step
+ * 0); the receipt ledger replays a completed call. */
 export async function folderWriterFixture(
 	seed: { files?: Record<string, string>; folders?: string[] } = {},
 	options: {
 		hook?: (path: string, text: string) => FolderWriterHookAnswer | null;
 		recorder?: (request: Record<string, unknown>) => Record<string, unknown> | null;
 		login?: () => Record<string, unknown>;
+		decisionRoutineId?: string;
 	} = {},
 ) {
 	const { binding, authority } = nativeToolAuthorityFixture();
@@ -85,6 +89,8 @@ export async function folderWriterFixture(
 	const logins: Record<string, unknown>[] = [];
 	// Routine key → how the index runs it, where that differs from its file.
 	const routineStates = new Map<string, FolderWriterRoutineState>();
+	// Whether the requester's login pays, as the last login preparation found it.
+	let paid = true;
 	const routineOf = (path: string, data: Uint8Array | undefined) => {
 		const parsed = parseCompanyStateFile(path, new TextDecoder().decode(data));
 		if (!parsed?.ok || parsed.file.kind !== "routine") throw new Error("Fixture routine does not parse");
@@ -236,8 +242,8 @@ export async function folderWriterFixture(
 							return { ...base, outcome: "denied", reason: "review_required" };
 						files.delete(path);
 						routineStates.delete(path.slice(ROUTINES.length + 1, -3));
-						// A deleted path has no version: the commit leaves the key out.
-						return { ...base, outcome: "saved" };
+						// The deletion's own version, as the commit answers it.
+						return { ...base, outcome: "saved", version: randomUUID() };
 					}
 					if (!folders.has(parent)) return { ...base, outcome: "refused", reason: "parent_missing" };
 					const current = files.get(path);
@@ -269,7 +275,9 @@ export async function folderWriterFixture(
 								Object.fromEntries(Object.entries(routine).filter(([name]) => !keys.includes(name))),
 							);
 						const decision =
-							previous?.trigger.when === "once" &&
+							options.decisionRoutineId !== undefined &&
+							previous?.id === options.decisionRoutineId &&
+							previous.trigger.when === "once" &&
 							((next.status === "active" &&
 								next.trigger.when === "once" &&
 								without(next, ["trigger", "effort", "reply"]) ===
@@ -278,15 +286,23 @@ export async function folderWriterFixture(
 									without(next, ["status", "conclusion"]) === without(previous, ["status", "conclusion"])));
 						if (!decision && !reviewed(args, units))
 							return { ...base, outcome: "denied", reason: "review_required" };
-						// SQL's resume rule: a save of the active file, unchanged, ends the platform's pause; an edit keeps it.
+						// SQL's resume rule: a paid save of the active file, unchanged, ends the platform's pause, and a paid edit
+						// ends a wait for a login; an edit keeps a Stop or a suspension. A change of the file's status overrides,
+						// and so does a changed routine over an ended one.
 						const state = routineStates.get(key);
-						if (
+						const same = JSON.stringify(next) === JSON.stringify(previous);
+						const platform =
 							state?.status === "paused" &&
+							["member", "authorization_failed", "needs_model_account"].includes(state.pauseReason ?? "");
+						if (previous && next.status !== previous.status) routineStates.delete(key);
+						else if (
+							platform &&
+							paid &&
 							next.status === "active" &&
-							JSON.stringify(next) === JSON.stringify(previous)
+							(same || state?.pauseReason === "needs_model_account")
 						)
 							routineStates.delete(key);
-						else if (previous && next.status !== previous.status) routineStates.delete(key);
+						else if (state?.status === "expired" && !same) routineStates.delete(key);
 					}
 					const version = randomUUID();
 					files.set(path, { version, file: unit.file as CloudCompanyFolderFile, updatedAt: now() });
@@ -412,13 +428,13 @@ export async function folderWriterFixture(
 			}
 			if (method === "qorpera_prepare_routine_login") {
 				logins.push(structuredClone(args));
-				return (
-					options.login?.() ?? {
-						schema: "qorpera.routine-login/v1",
-						runId: (args.p_binding as { runId: string }).runId,
-						login: { bindingId: "0b1c2d3e-4444-4444-8444-444444444444", version: 1 },
-					}
-				);
+				const answer = options.login?.() ?? {
+					schema: "qorpera.routine-login/v1",
+					runId: (args.p_binding as { runId: string }).runId,
+					login: { bindingId: "0b1c2d3e-4444-4444-8444-444444444444", version: 1 },
+				};
+				paid = answer.login !== null;
+				return answer;
 			}
 			if (method === "qorpera_folder_list") {
 				const parent = args.p_parent as string;

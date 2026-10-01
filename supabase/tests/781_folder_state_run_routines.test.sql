@@ -3,7 +3,8 @@
 -- RUNTIME-COMPANY-FOLDER-C2.md §5): a run's routine files, as manage_routine saves them. Each change set is saved with
 -- the automatic review's approval of the call, recorded for exactly that change set: a new routine, a pause, a resume,
 -- a conclusion and a removal; an unchanged save over the platform's pause resumes the routine. A new routine and a
--- removal are not saved without the review, and a run cannot pause its own routine. Runs are 708's routine runs, with
+-- removal are not saved without the review. A dynamic routine's run cannot pause it, even with the review (SQL leaves
+-- a fixed routine's own run to the runtime, which refuses it before the receipt). Runs are 708's routine runs, with
 -- 647's native rows so the runtime's binding stands.
 
 -- The native rows a hand-built run needs before the runtime can call a tool with it: the company's compute identity
@@ -78,6 +79,11 @@ declare v_action uuid := pg_temp.action(p_binding, p_call); v_review jsonb;
 begin
 	v_review := public.qorpera_folder_record_review(p_binding, jsonb_build_object('actionReviewId', v_action, 'tool', 'manage_routine',
 		'argumentSha256', md5(p_call) || md5(p_call), 'units', p_units));
+	-- The run possesses the bytes it commits, as 707's commit helper makes it once the fixtures stage version-2 bytes
+	-- (C5 early); before that its helpers have no possession step.
+	if to_regprocedure('pg_temp.possess(uuid,jsonb,jsonb)') is not null then
+		execute 'select pg_temp.possess($1, $2, $3)' using '70700000-0000-4000-8000-000000000020'::uuid, p_actor, p_units;
+	end if;
 	return public.qorpera_folder_commit('70700000-0000-4000-8000-000000000020', p_actor, 'run-' || p_call, p_units,
 		(v_review ->> 'reviewId')::uuid);
 end $$;
@@ -131,10 +137,25 @@ begin
 		raise exception 'The run removes its routine: %', to_jsonb(pg_temp.rt(e3)); end if;
 	perform pg_temp.expect(pg_temp.call(a, b, 'digest-0007', jsonb_build_array(pg_temp.routine('agents/nora/routines/digest.md',
 		pg_temp.rparse('78100000-0000-4000-8000-0000000000e4', 'Digest again', pg_temp.every(60))))), 1, 'saved');
-	-- 7. A run cannot pause its own routine, even with the review.
-	if pg_temp.problem(pg_temp.call(a, b, 'own-0001', jsonb_build_array(pg_temp.routine('agents/nora/routines/own.md',
-			pg_temp.rparse(e2, 'Own', pg_temp.every(), '{"status":"paused"}'))))) <> 'this run cannot pause its own routine; conclude it instead' then
-		raise exception 'A run cannot pause its own routine'; end if;
+end $$;
+
+-- 7. A dynamic routine's run cannot pause it, even with the review.
+do $$
+declare a jsonb; b jsonb; d jsonb;
+	e2 constant uuid := '78100000-0000-4000-8000-0000000000e2'; e5 constant uuid := '78100000-0000-4000-8000-0000000000e5';
+	p constant text := 'agents/nora/routines/follow-up.md';
+begin
+	a := pg_temp.routine_run(e2);
+	b := pg_temp.native(a);
+	perform pg_temp.expect(pg_temp.call(a, b, 'follow-0001', jsonb_build_array(pg_temp.routine(p,
+		pg_temp.rparse(e5, 'Follow up', pg_temp.once('2030-01-01T09:00:00Z'))))), 1, 'saved');
+	d := pg_temp.routine_run(e5);
+	b := pg_temp.native(d);
+	if not public.qorpera_routine_decision_pending((d ->> 'runId')::uuid) then raise exception 'The run owes its decision'; end if;
+	if pg_temp.problem(pg_temp.call(d, b, 'own-0001', jsonb_build_array(pg_temp.routine(p,
+			pg_temp.rparse(e5, 'Follow up', pg_temp.once('2030-01-01T09:00:00Z'), '{"status":"paused"}')))))
+			is distinct from 'this run cannot pause its own routine; conclude it instead' then
+		raise exception 'A dynamic routine''s run cannot pause it, even with the review'; end if;
 end $$;
 
 rollback;
