@@ -757,7 +757,14 @@ C1d (bytes):
   the commit satisfies the receipt, which is completed with it (`qorpera_folder_complete_run_receipt`).
 - A `conflict` (the file changed since it was read) comes back to the model, which calls again under a new operation
   key; a redo inside the tool would need a second receipt whose digest depends on a re-read.
-- A result that shows content read from a file releases those reads with it, one release per tool call.
+- A result that shows content read from a file releases those reads with it, one release per tool call. A writer
+  releases inside its effect, before the receipt completes: a release that fails after a saved commit leaves W0's
+  fence (the call is not completed, and the run's later operations wait), which keeps a shown read from going
+  unreleased.
+- Known limit: the checks before the receipt read the file as it is now. If the file changed after a call's change
+  was saved (closed, or deleted), a replay of that call is refused before it reaches its receipt, instead of getting
+  the stored result. The change is still saved exactly once; only the replay's answer is wrong. A later fix can look
+  up the completed receipt for that operation key first.
 
 **Built (W1): `manage_todo`** (`packages/runtime/src/cloud-folder-todos.ts`).
 - The todo is `agents/<handle>/todos/<todoKey>.md`; the todoKey is the file name (`^[a-z0-9]+(?:-[a-z0-9]+)*$`, at most
@@ -765,12 +772,17 @@ C1d (bytes):
 - `upsert` writes the whole file (`writeTodoFile`), keeping an existing todo's id and requester; a new todo's
   requester is the run's, and the todos folder is made first when missing. A closed todo is not opened again.
 - `done` and `cancel` change only `status` (`setCompanyStateSettings`), and show the todo as read, released with the
-  result.
-- `list` reads the files: the folder's listing, newest first, then each file until a page fits one result (open and
-  blocked by default; `state`, `includeClosed` and `search` as before; `todoKey` shows one todo's whole detail). The
-  cursor is the version of the last todo shown, and `moreTodos` counts the files after it. A list shows no workers:
-  `manage_worker` refuses `folder-v2` until F2-5b.
-- Open with F1: whether `list` may read the todo index instead (one read, no release).
+  result. An `upsert` that is not saved shows the state and version read, and releases that read too. A todo file
+  that does not parse is refused, for a change and for `todoKey`.
+- `list` reads the todo index (`qorpera_folder_agent_todos`, migration `20260929770000`, test 763), which the commit
+  updates in the same transaction as the files: one plain read, paged as today's list (32 a page, newest first, open
+  and blocked by default, `state`, `includeClosed` and `search` as before, the cursor of the last todo shown). A page
+  shows the start of each detail, as today, and is no folder read, so nothing is released. `todoKey` reads that one
+  todo's file and shows its whole detail, released with the result. A list shows no workers: `manage_worker` refuses
+  `folder-v2` until F2-5b.
+- The read takes the run's plain read check (no lock; a paused company refuses it), a company run that is not a
+  worker, and read authority on the agent's todos folder. A deleted todo file is not listed.
+- The index over the files is the coordinator's ruling of 2026-10-01; F1 may overrule it in a follow-up.
 
 **Built (W2): `organize_sidebar`** (`packages/runtime/src/cloud-folder-sidebar.ts`).
 - It reads and rewrites `agents/sections.md`. A section is named by its name, ignoring case; the file has no section
