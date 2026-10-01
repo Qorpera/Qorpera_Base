@@ -843,18 +843,34 @@ C1d (bytes):
   seeded folder), and `todos/first-assignment.md`: the first assignment as an open todo, asked for by the run's
   requester, titled with the assignment's first line (one line, at most 200 bytes).
 - The handle is the name as a folder name, numbered past the names taken under `agents/` and the reserved ones
-  (`freeCompanyStateName`). The agent's and the todo's ids come from the run and the operation key (the legacy hire's
-  `agentIdFor`), so a call built again sends the same files; the receipt's target is the agent's id.
-- Refused before the receipt (`REFUSED: …`): files the shared parser refuses (its problems), and a call without the
-  automatic review's approval (`actionReviewId`). On `folder-v2` the first assignment holds at most 4000 bytes (a
-  todo's body), in the schema and the parser.
+  (`freeCompanyStateName`), from a listing taken before the receipt. The agent's and the todo's ids come from the run
+  and the operation key (the legacy hire's id format, in a namespace of their own). A rebuilt call may pick another
+  handle; what makes it harmless is the receipt, whose target is the agent's id, so a completed call replays.
+- Checked with the arguments, before the automatic review (`INVALID_ARGUMENTS: …`), so no card is raised for a hire
+  that cannot be saved: the files the shared parser refuses (its problems), a first assignment over 4000 bytes (a
+  todo's body; the schema counts characters), and an operation key reused in this run with other arguments.
+- Refused before the receipt (`REFUSED: …`): a call without the automatic review's approval (`actionReviewId`).
+- **Contract 14.1, the restricted hire** (migration 20260929940000): an agent that cannot delegate the new agent's
+  default access (a current, nonexpiring read and write grant on every live shared root, the legacy hire's predicate,
+  `qorpera_folder_agent_delegates_default`) hires only on a member's answer. The review's layering asks the owners and
+  admins on a card for its `hire_agent` call, whatever the reviewer found (a deny stays a deny), as an access check no
+  rule lifts and with no Always allow; the recorder checks again before the save and records such a hire only from
+  an answered card. Where no card can be raised (a group chat, a worker) the hire is refused, as any ask there.
 - Under the receipt: stage, record the review of exactly these units (`recordReview` with the tool and the call's
   argument digest), commit them with the review. Saved: the agent exists and is indexed with its thread; the commit
   names the review. A conflict (the folder was taken meanwhile) or a refusal says to call again with a new key.
 - **The new agent does not start by itself** (open with F1): no first run is queued for a `folder-v2` hire yet. The
-  result and the description tell the model to send it a coworker message and to tell the member.
+  result tells the model to wake it with `send_coworker_message` to the agent's id, asking it to start on its first
+  todo, and to tell the member (and, if that send fails, that the agent has not started). A hire that waits for a
+  member's review says not to hire again.
+- A `folder-v2` run on a node without folder bytes keeps the legacy tool, which refuses `folder-v2`, as for W1–W3.
+- Known: the Co-Founder's hire overlay still says agent descriptions live under `organization/agents`; its
+  `folder-v2` wording comes with F2-1b's context work.
 - SQL test 774: a run's hire round trip on the recorder (denied without its review or with a review of other units;
-  saved and indexed with it; a taken folder is a conflict; the agent rules still refuse a Co-Founder or a taken id).
+  saved and indexed with it; a taken folder is a conflict; the agent rules still refuse a Co-Founder or a taken id;
+  the restricted hire asks the owners and admins with no Always allow, its own allow is refused by the recorder, and a
+  member's answer saves it with that member as approver). 652's pin of the layering's snapshot-v1 text strips the
+  three `folder-v2` lines.
 
 Until the mount's writes are accepted (F3), these tools become thin writers of these files:
 `hire_agent`, `create_group_chat`, `organize_sidebar`, `manage_todo`, `manage_routine` and

@@ -114,7 +114,7 @@ export function cloudHiringTools(
 		if (previous && previous.request !== request)
 			throw new CloudToolArgumentRefusal(
 				kind === "hire"
-					? "operationKey is already used in this run for a different hire, which may already exist: check organization/agents before hiring again, and repeat this operationKey only with identical arguments"
+					? `operationKey is already used in this run for a different hire, which may already exist: check ${folderHiring ? "agents/" : "organization/agents"} before hiring again, and repeat this operationKey only with identical arguments`
 					: "operationKey is already used in this run for a different group chat, which may already exist: check organization/rooms before opening another, and repeat this operationKey only with identical arguments",
 			);
 	};
@@ -185,6 +185,15 @@ export function cloudHiringTools(
 			const a = value as Record<string, unknown>;
 			if (typeof a.operationKey !== "string" || !OPERATION_KEY.test(a.operationKey))
 				throw new Error("Invalid hire key");
+			// The schema counts characters; the todo the assignment becomes holds bytes.
+			if (
+				folderHiring &&
+				typeof a.firstAssignment === "string" &&
+				Buffer.byteLength(a.firstAssignment.trim()) > FOLDER_ASSIGNMENT_BYTES
+			)
+				throw new CloudToolArgumentRefusal(
+					`firstAssignment holds at most ${FOLDER_ASSIGNMENT_BYTES} bytes in this company: shorten it`,
+				);
 			if (a.figure !== undefined && !FIGURES.includes(a.figure as (typeof FIGURES)[number]))
 				throw new Error("Invalid hire figure");
 			const hire = {
@@ -196,6 +205,8 @@ export function cloudHiringTools(
 				figure: (a.figure as string | undefined) ?? "planet",
 			};
 			refuseRebinding(hires, hire.operationKey, hireRequest(hire), "hire");
+			// A folder-v2 hire's files are checked now, before the automatic review.
+			folderHiring?.check(hire as unknown as CloudFolderHire);
 			return hire;
 		},
 		async execute(value, context) {
@@ -203,8 +214,12 @@ export function cloudHiringTools(
 			const hire = value as Record<string, string>;
 			const request = hireRequest(hire);
 			refuseRebinding(hires, hire.operationKey, request, "hire");
-			// A folder-v2 company: the agent's folder, saved under this call's receipt with its review.
-			if (folderHiring) return folderHiring.hire(hire as unknown as CloudFolderHire, context);
+			// A folder-v2 company: the agent's folder, saved under this call's receipt with its review. The key is bound
+			// to this request first, so reusing it with other arguments is refused, not retried.
+			if (folderHiring) {
+				if (!hires.has(hire.operationKey)) hires.set(hire.operationKey, { request, document: "", apply: "none" });
+				return folderHiring.hire(hire as unknown as CloudFolderHire, context);
+			}
 			let bound = hires.get(hire.operationKey);
 			if (!bound) {
 				const agentId = agentIdFor(expected.runId, hire.operationKey);

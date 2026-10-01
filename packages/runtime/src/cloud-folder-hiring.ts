@@ -10,6 +10,7 @@ import {
 import type { CloudCompanyFolderClient, CloudCompanyFolderUnit } from "./cloud-company-folder-client.ts";
 import type { CloudNativeToolIdentity } from "./cloud-native-tool-authority.ts";
 import {
+	CloudToolArgumentRefusal,
 	type CloudToolContent,
 	type CloudToolContext,
 	CloudToolRefusal,
@@ -24,9 +25,14 @@ import type { CloudNativeToolOperations } from "./cloud-native-tool-operations.t
  * agent in the same transaction. A new agent folder is delegation, so the save carries the automatic review's approval
  * of this call, recorded for exactly these units (C2 R1).
  *
- * Every check that can refuse runs before the receipt: a begun receipt that ends in an error holds the run's other
- * operations until it is resolved. The ids come from the run and the operation key, so the units never depend on when
- * they were built, and the receipt's target is the agent's id, not the handle chosen from the folder's listing.
+ * The files are checked with the arguments, before the automatic review (`check`), so a card is never raised for a
+ * hire that cannot be saved. Every other check that can refuse runs before the receipt: a begun receipt that ends in
+ * an error holds the run's other operations until it is resolved. The ids come from the run and the operation key.
+ * The handle comes from a listing taken before the receipt and may differ on a rebuilt call; the receipt's target is
+ * the agent's id, so a call that already completed replays its stored result.
+ *
+ * Contract 14.1 (20260929940000): an agent that cannot delegate the new agent's default access hires only on a
+ * member's answer to the review's card; the kernel's layering asks for it and the recorder checks again.
  */
 
 const TOOL_VERSION = "folder-v2/1";
@@ -47,7 +53,8 @@ export interface CloudFolderHire {
 	readonly figure: AgentFigure;
 }
 
-/** One id per (namespace, run, operation key), as the legacy hire's agent id (cloud-hiring-tools.ts). */
+/** One id per (namespace, run, operation key), formatted as the legacy hire's agent id (cloud-hiring-tools.ts), in a
+ * namespace of its own so it never meets the legacy hire's or a group chat's. */
 function hashedId(namespace: string, runId: string, operationKey: string): string {
 	const hex = createHash("sha256").update(`${namespace}:${runId}:${operationKey}`).digest("hex");
 	return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-${((Number.parseInt(hex[16] ?? "0", 16) & 3) | 8).toString(16)}${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
@@ -68,16 +75,57 @@ function titleOf(assignment: string): string {
 	return title.trim() || "First assignment";
 }
 
-/** A refusal that names what the shared parser found, within the boundary's plain one-kilobyte message. */
-function invalid(problems: readonly { message: string }[]): CloudToolRefusal {
+/** What the shared parser found, within the boundary's plain one-kilobyte message. */
+function invalidMessage(problems: readonly { message: string }[]): string {
 	let message = "This hire cannot be saved as the company's files";
 	for (const problem of problems) {
 		const next = `${message}${message.includes(":") ? ";" : ":"} ${problem.message}`;
 		if (Buffer.byteLength(next) > 900) break;
 		message = next;
 	}
-	return new CloudToolRefusal(message);
+	return message;
 }
+
+/** The new agent's two files, for a handle and ids. */
+function hireFiles(request: CloudFolderHire, agentId: string, todoId: string, requesterUserId: string) {
+	return {
+		agent: writeAgentFile({
+			id: agentId,
+			name: request.name,
+			role: request.role,
+			agentKind: "agent",
+			status: "active",
+			colour: null,
+			figure: request.figure,
+			model: null,
+			effort: null,
+			instructions: request.jobDescription,
+		}),
+		todo: writeTodoFile({
+			id: todoId,
+			title: titleOf(request.firstAssignment),
+			status: "open",
+			requestedBy: requesterUserId,
+			detail: request.firstAssignment,
+		}),
+	};
+}
+
+/** The parser's problems with the two files at a handle. */
+function problemsOf(root: string, files: { agent: string; todo: string }): { message: string }[] {
+	const problems: { message: string }[] = [];
+	for (const [path, text] of [
+		[`${root}/agent.md`, files.agent],
+		[`${root}/${FIRST_TODO}`, files.todo],
+	] as const) {
+		const parsed = parseCompanyStateFile(path, text);
+		if (!parsed) problems.push({ message: `${path} is not a company state file` });
+		else if (!parsed.ok) problems.push(...parsed.problems);
+	}
+	return problems;
+}
+
+const PLACEHOLDER_ID = "00000000-0000-4000-8000-000000000000";
 
 /** Hires agents as folders of the company. */
 export class CloudFolderHiring {
@@ -95,6 +143,16 @@ export class CloudFolderHiring {
 		this.#identity = options.identity;
 	}
 
+	/** The files' own checks, which need no reads: with the arguments, before the automatic review. The handle and the
+	 * ids are placeholders; the real ones cannot add a problem (the handle is a free folder name). */
+	check(request: CloudFolderHire): void {
+		const problems = problemsOf(
+			"agents/agent",
+			hireFiles(request, PLACEHOLDER_ID, PLACEHOLDER_ID, this.#identity.requesterUserId),
+		);
+		if (problems.length) throw new CloudToolArgumentRefusal(invalidMessage(problems));
+	}
+
 	async hire(request: CloudFolderHire, context: CloudToolContext): Promise<CloudToolContent> {
 		const signal = context.signal;
 		// A commit no one can complete would fence this run's later operations: refuse before writing anything.
@@ -105,50 +163,29 @@ export class CloudFolderHiring {
 				"A hire needs the automatic review's approval of this call, and it has none: call again, and if this repeats tell the member",
 			);
 		const runId = this.#identity.runId;
-		const agentId = hashedId("qorpera.agent-hire/v1", runId, request.operationKey);
-		const agentText = writeAgentFile({
-			id: agentId,
-			name: request.name,
-			role: request.role,
-			agentKind: "agent",
-			status: "active",
-			colour: null,
-			figure: request.figure,
-			model: null,
-			effort: null,
-			instructions: request.jobDescription,
-		});
-		const todoText = writeTodoFile({
-			id: hashedId("qorpera.agent-hire-todo/v1", runId, request.operationKey),
-			title: titleOf(request.firstAssignment),
-			status: "open",
-			requestedBy: this.#identity.requesterUserId,
-			detail: request.firstAssignment,
-		});
+		const agentId = hashedId("qorpera.folder-hire/v1", runId, request.operationKey);
+		const files = hireFiles(
+			request,
+			agentId,
+			hashedId("qorpera.folder-hire-todo/v1", runId, request.operationKey),
+			this.#identity.requesterUserId,
+		);
 		// The handle: the name as a folder name, numbered past the names taken (§1 "Names").
 		const listing = await this.#folder.listAll("agents", { maxEntries: MAX_AGENTS }, signal);
 		const taken = new Set<string>(COMPANY_STATE_RESERVED_AGENT_NAMES);
 		for (const entry of listing.entries) taken.add((entry.path.split("/").at(-1) ?? "").toLowerCase());
 		const handle = freeCompanyStateName(request.name, "agent", taken);
 		const root = `agents/${handle}`;
-		const problems: { message: string }[] = [];
-		for (const [path, text] of [
-			[`${root}/agent.md`, agentText],
-			[`${root}/${FIRST_TODO}`, todoText],
-		] as const) {
-			const parsed = parseCompanyStateFile(path, text);
-			if (!parsed) problems.push({ message: `${path} is not a company state file` });
-			else if (!parsed.ok) problems.push(...parsed.problems);
-		}
-		if (problems.length) throw invalid(problems);
+		const problems = problemsOf(root, files);
+		if (problems.length) throw new CloudToolRefusal(invalidMessage(problems));
 		const units: CloudCompanyFolderUnit[] = [
 			{
 				op: "new_folder",
 				path: root,
 				contents: [
-					{ path: "agent.md", kind: "file", content: { text: agentText, mediaType: "text/markdown" } },
+					{ path: "agent.md", kind: "file", content: { text: files.agent, mediaType: "text/markdown" } },
 					...AGENT_FOLDERS.map((path) => ({ path, kind: "folder" as const })),
-					{ path: FIRST_TODO, kind: "file", content: { text: todoText, mediaType: "text/markdown" } },
+					{ path: FIRST_TODO, kind: "file", content: { text: files.todo, mediaType: "text/markdown" } },
 				],
 			},
 		];
@@ -194,10 +231,12 @@ export class CloudFolderHiring {
 					agent: { id: agentId, name: request.name, role: request.role, folder: root },
 					next:
 						saved.outcome === "saved"
-							? `${request.name} is hired. The first assignment is an open todo in ${root}/todos. ${request.name} has not started yet: send them a coworker message to begin, and tell the member who you hired and why.`
+							? `${request.name} is hired. The first assignment is an open todo in ${root}/todos. ${request.name} has not started yet: wake them with send_coworker_message (recipientStaffId ${agentId}), asking them to start on their first todo, and tell the member who you hired and why. If that message cannot be sent, tell the member that ${request.name} has not started.`
 							: saved.outcome === "conflict"
-								? `${root} was taken while you hired: call again with a new operationKey.`
-								: "Nothing was hired: say why to the member, or correct the arguments and call again with a new operationKey.",
+								? `${root} is taken: call again with a new operationKey, and if this repeats, choose a slightly different name.`
+								: saved.outcome === "waiting_for_review"
+									? "The hire waits for a member's approval: do not hire again; tell the member it is waiting for them."
+									: "Nothing was hired: say why to the member, or correct the arguments and call again with a new operationKey.",
 				});
 				return { content: { kind: "text", value: output }, folderCommitId: committed.commitId };
 			},

@@ -46,7 +46,8 @@ export interface FolderWriterHookAnswer {
 /** A fake folder core and receipt ledger for a folder writer's tests, with seeded files and folders. A write whose
  * parse has problems is refused as `structured_invalid`, as the real hook does; `hook` may refuse any other write. A
  * new folder with an `agent.md` is delegation (C1B §6): the commit saves it only with a review recorded
- * (`qorpera_folder_record_review`, C2 R1) for exactly its change set, and `recorder` may answer the recording instead. */
+ * (`qorpera_folder_record_review`, C2 R1) for exactly its change set, and `recorder` may answer the recording instead.
+ * A commit is not replayed by its operation key (SQL's step 0); the receipt ledger replays a completed call. */
 export async function folderWriterFixture(
 	seed: { files?: Record<string, string>; folders?: string[] } = {},
 	options: {
@@ -163,16 +164,19 @@ export async function folderWriterFixture(
 						if ([...files.keys(), ...folders].some(taken))
 							return { ...base, outcome: "conflict", reason: "exists" };
 						if (!folders.has(parent)) return { ...base, outcome: "refused", reason: "parent_missing" };
+						// As SQL: the unit's own shape, then the hook decides each file, then the review is consulted.
+						const contents = unit.contents as { path: string; kind?: string; file?: CloudCompanyFolderFile }[];
+						const inner = new Set(contents.filter((item) => !item.file).map((item) => item.path));
+						if (
+							contents.some(
+								(item) => item.path.includes("/") && !inner.has(item.path.split("/").slice(0, -1).join("/")),
+							)
+						)
+							return { ...base, outcome: "refused", reason: "invalid" };
 						const entries = (unit.structured as { problems?: Record<string, unknown>[] }[] | undefined) ?? [];
 						const invalid = entries.find((item) => item.problems);
 						if (invalid?.problems)
 							return { ...base, outcome: "refused", reason: "structured_invalid", problems: invalid.problems };
-						const contents = unit.contents as { path: string; file?: CloudCompanyFolderFile }[];
-						if (
-							contents.some((item) => item.path === "agent.md") &&
-							(typeof args.p_review_id !== "string" || reviews.get(args.p_review_id) !== JSON.stringify(units))
-						)
-							return { ...base, outcome: "denied", reason: "review_required" };
 						for (const item of contents) {
 							if (!item.file) continue;
 							const hooked = options.hook?.(
@@ -181,6 +185,11 @@ export async function folderWriterFixture(
 							);
 							if (hooked) return { ...base, ...hooked };
 						}
+						if (
+							contents.some((item) => item.path === "agent.md") &&
+							(typeof args.p_review_id !== "string" || reviews.get(args.p_review_id) !== JSON.stringify(units))
+						)
+							return { ...base, outcome: "denied", reason: "review_required" };
 						folders.add(path);
 						for (const item of contents)
 							if (item.file)

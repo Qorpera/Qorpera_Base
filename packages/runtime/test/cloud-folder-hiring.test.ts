@@ -7,7 +7,7 @@ import {
 	cloudHiringTools,
 } from "@qorpera/runtime/cloud-hiring-tools";
 import type { CloudNativeToolRun } from "@qorpera/runtime/cloud-native-tool-authority";
-import { CloudToolRefusal } from "@qorpera/runtime/cloud-native-tool-boundary";
+import { CloudToolArgumentRefusal, CloudToolRefusal } from "@qorpera/runtime/cloud-native-tool-boundary";
 import { CloudNativeToolOperations } from "@qorpera/runtime/cloud-native-tool-operations";
 import { afterEach, expect, it, vi } from "vitest";
 import { folderWriterFixture } from "./fixtures/folder-writer-fixture.ts";
@@ -53,6 +53,7 @@ it("saves a hire as one new folder with agent.md, its folders and the first assi
 		agent: { name: "Ada Lind", role: "Bookkeeper", folder: "agents/ada-lind" },
 	});
 	expect(result.next).toContain("has not started yet");
+	expect(result.next).toContain(`send_coworker_message (recipientStaffId ${result.agent.id})`);
 	// One unit; the review is this call's approval, recorded for exactly the units the commit carries.
 	expect(f.commits).toHaveLength(1);
 	const [commit] = f.commits;
@@ -115,7 +116,7 @@ it("derives the agent and todo ids from the run and the operation key, so a call
 });
 
 it("numbers the handle past the names taken, the reserved ones included", async () => {
-	const f = await fixture({ folders: ["agents/ada-lind", "agents/groups"] });
+	const f = await fixture({ folders: ["agents/ada-lind"] });
 	expect(parse(await f.hiring().hire(HIRE, f.context)).agent.folder).toBe("agents/ada-lind-2");
 	// Each tool call has its own call id and its own approval.
 	const call = () => ({ ...f.context, callId: randomUUID(), actionReviewId: randomUUID() });
@@ -129,7 +130,7 @@ it("numbers the handle past the names taken, the reserved ones included", async 
 
 it("titles the first todo with the assignment's first line, as one line of at most 200 bytes", async () => {
 	const f = await fixture();
-	const long = `${"Å".repeat(150)}\tmore`;
+	const long = `${"Å".repeat(150)}\u0007more`;
 	await f.hiring().hire({ ...HIRE, firstAssignment: `\n  ${long}\nThe rest.` }, f.context);
 	const todo = parseCompanyStateFile(
 		"agents/ada-lind/todos/first-assignment.md",
@@ -142,7 +143,10 @@ it("titles the first todo with the assignment's first line, as one line of at mo
 
 it("refuses before its receipt what can never be saved, and a call without the review's approval", async () => {
 	const f = await fixture();
-	await refuses(f.hiring().hire({ ...HIRE, name: "Ada\tLind" }, f.context), "This hire cannot be saved");
+	await refuses(
+		f.hiring().hire({ ...HIRE, name: "Ada\tLind" }, f.context),
+		"This hire cannot be saved as the company's files: ",
+	);
 	await refuses(f.hiring().hire({ ...HIRE, role: "\u2028" }, f.context), "This hire cannot be saved");
 	const { actionReviewId: _, ...unreviewed } = f.context;
 	await refuses(f.hiring().hire(HIRE, unreviewed), "needs the automatic review's approval");
@@ -161,6 +165,41 @@ it("refuses to start when the run cannot complete a folder commit", async () => 
 	expect(f.commits).toEqual([]);
 });
 
+it("checks the files with the arguments, before the review, naming the parser's problems", async () => {
+	const f = await fixture();
+	const hiring = f.hiring();
+	for (const bad of [
+		{ ...HIRE, name: "Ada\tLind" },
+		{ ...HIRE, jobDescription: "Keep\u0000 the books." },
+		// The todo's own check: its body holds at most 4000 bytes.
+		{ ...HIRE, firstAssignment: "x".repeat(4001) },
+	]) {
+		let thrown: unknown = null;
+		try {
+			hiring.check(bad);
+		} catch (error) {
+			thrown = error;
+		}
+		expect(thrown).toBeInstanceOf(CloudToolArgumentRefusal);
+		expect(String((thrown as Error).message)).toMatch(/^This hire cannot be saved as the company's files: \S/);
+	}
+	expect(() => hiring.check(HIRE)).not.toThrow();
+	expect(f.recordings).toEqual([]);
+});
+
+it("tells the model a hire that waits for a member's approval not to hire again", async () => {
+	const f = await fixture(
+		{},
+		{
+			hook: (path) =>
+				path.endsWith("/agent.md") ? { outcome: "waiting_for_review", reason: "waiting_for_review" } : null,
+		},
+	);
+	const waiting = parse(await f.hiring().hire(HIRE, f.context));
+	expect(waiting).toMatchObject({ outcome: "waiting_for_review" });
+	expect(waiting.next).toContain("do not hire again");
+});
+
 it("reports a folder taken meanwhile as a conflict, and a save the review does not cover as denied", async () => {
 	const f = await fixture();
 	const hiring = f.hiring();
@@ -170,6 +209,7 @@ it("reports a folder taken meanwhile as a conflict, and a save the review does n
 	const conflict = parse(await hiring.hire(HIRE, f.context));
 	expect(conflict).toMatchObject({ outcome: "conflict", reason: "exists" });
 	expect(conflict.next).toContain("new operationKey");
+	expect(conflict.next).toContain("choose a slightly different name");
 	// A recorded review of other units is not this change set's.
 	const g = await fixture(
 		{},
@@ -190,6 +230,11 @@ it("is the hire tool's folder-v2 path: its description, a 4000-byte assignment, 
 	expect(tool?.inputSchema).toMatchObject({ properties: { firstAssignment: { maxLength: 4000 } } });
 	const args = { ...HIRE };
 	expect(() => tool?.parseArguments({ ...args, firstAssignment: "x".repeat(4001) })).toThrow();
+	// Bytes, not characters: 2001 letters of two bytes each are refused with the field's limit, before the review.
+	expect(() => tool?.parseArguments({ ...args, firstAssignment: "Å".repeat(2001) })).toThrow(
+		new CloudToolArgumentRefusal("firstAssignment holds at most 4000 bytes in this company: shorten it"),
+	);
+	expect(() => tool?.parseArguments({ ...args, name: "Ada\tLind" })).toThrow(CloudToolArgumentRefusal);
 	expect(() =>
 		legacy?.parseArguments({ ...args, operationKey: "hire-9", firstAssignment: "x".repeat(4001) }),
 	).not.toThrow();
@@ -197,4 +242,6 @@ it("is the hire tool's folder-v2 path: its description, a 4000-byte assignment, 
 	const result = parse((await tool?.execute(parsed ?? {}, f.context)) as { value: unknown });
 	expect(result).toMatchObject({ outcome: "saved", agent: { folder: "agents/ada-lind" } });
 	expect(gateway.mutate).not.toHaveBeenCalled();
+	// The key is bound to that request: other arguments under it are refused, pointing at agents/.
+	expect(() => tool?.parseArguments({ ...args, name: "Someone Else" })).toThrow(/check agents\/ before hiring again/);
 });

@@ -62,6 +62,17 @@ begin
 		|| E'\t\t\t\t''authorization_request'', v_body);\n'
 		|| E'\t\telse\n', '');
 	v_text := replace(v_text, E'\t\t\t''authorization_request'', v_body);\n\t\tend if;\n', E'\t\t\t''authorization_request'', v_body);\n');
+	-- W4a (20260929940000): a folder-v2 run's restricted hire asks the owners and admins.
+	v_text := replace(v_text, E'; v_restricted boolean := false;\n', E';\n');
+	v_text := replace(v_text,
+		E'\t-- On a folder-v2 company, a hire by an agent that cannot delegate the new agent''s default Company File access\n'
+		|| E'\t-- waits for a member (contract 14.1): it asks the owners and admins, as an access check no rule lifts.\n'
+		|| E'\tif p_review ->> ''tool'' = ''hire_agent'' and v_decision <> ''deny''\n'
+		|| E'\t\tand public.qorpera_environment_is_folder_v2(v_run.environment_id)\n'
+		|| E'\t\tand not public.qorpera_folder_agent_delegates_default(v_run.profile_id, v_run.staff_agent_id) then\n'
+		|| E'\t\tv_restricted := true; v_decision := ''ask''; v_built_in := ''access_change'';\n'
+		|| E'\tend if;\n', '');
+	v_text := replace(v_text, E'v_decision = ''ask'' and not v_restricted and v_built_in in', E'v_decision = ''ask'' and v_built_in in');
 	if md5(v_text) <> 'a9f30463bc0fcbba9f9a403449f5271d' then raise exception 'The action review''s snapshot-v1 text changed'; end if;
 end $$;
 
