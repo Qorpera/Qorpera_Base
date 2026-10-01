@@ -323,6 +323,10 @@ begin
 	perform dblink_exec('fence_two', 'rollback');
 	v_two := pg_temp.outcome('fence_one'); v_four := pg_temp.outcome('fence_four');
 	if v_two <> 'ok' or v_four <> 'ok' then raise exception 'Two messages around a new pair conversation: % / %', v_two, v_four; end if;
+	-- The hand-made conversation is the one the function finds (a change of its shape would make this case test another).
+	if public.qorpera_agent_pair_session_internal('64800000-0000-4000-8000-000000000010', '64800000-0000-4000-8000-000000000020', c_ada,
+			c_cf, '64800000-0000-4000-8000-000000000002') <> c_pair then
+		raise exception 'The pair conversation must be the hand-made one'; end if;
 end $$;
 
 -- D. C2's creation shape: rank 0 and admission held, a wake insert never meets 55P03. A save rewriting Ada's agent.md
