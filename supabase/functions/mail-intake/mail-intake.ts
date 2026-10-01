@@ -3,8 +3,8 @@
  *
  * POST /mail-intake: the mail provider's (Resend's) webhook for a received message. The function checks the
  * webhook's signature (Standard Webhooks, as Svix sends it) with the platform's signing secret, fetches the whole
- * message from the provider's API with the platform's key, writes it as at most 256 KiB of JSON text (the subject
- * and trust results before the bodies) and hands it with all its recipients (To, Cc, Bcc and the envelope) to the
+ * message from the provider's API with the platform's key, writes it as at most 256 KiB of JSON text (the subject,
+ * the thread, whether it was sent automatically and the trust results before the bodies) and hands it with all its recipients (To, Cc, Bcc and the envelope) to the
  * database's mail door, qorpera_receive_mail, which stores it once in each live mailbox among them and drops the
  * rest. Answers: 200 when every recipient is settled (stored, a duplicate, unknown or paused; mail to a paused
  * mailbox and mail the provider no longer has are dropped; other event types are ignored), 401 for a bad or stale
@@ -191,6 +191,21 @@ function htmlBody(value: unknown): string | null {
 
 const bytes = (value: unknown) => new TextEncoder().encode(JSON.stringify(value)).length;
 
+/** Sent automatically: an Auto-Submitted other than "no" (RFC 3834), a bulk, list, junk or auto-reply Precedence
+ * (or X-Precedence), an older responder's X-Autoreply or X-Autorespond, or a mailing list. Agents never answer it:
+ * answering an auto-reply is how mail loops start. */
+function automated(header: (name: string) => string | null): boolean {
+	const submitted = header("auto-submitted")?.split(";")[0].trim().toLowerCase();
+	const precedence = (header("precedence") ?? header("x-precedence"))?.trim().toLowerCase() ?? "";
+	return (
+		(!!submitted && submitted !== "no") ||
+		["bulk", "junk", "list", "auto_reply"].includes(precedence) ||
+		!!header("x-autoreply")?.trim() ||
+		!!header("x-autorespond")?.trim() ||
+		!!header("list-id")?.trim()
+	);
+}
+
 /** The message the mail door stores: headers that matter for replies and threads, the text and HTML bodies cut to
  * fit 256 KiB of JSON (HTML goes first), and the attachments' descriptions. */
 export function normalizeMessage(emailId: string, received: Json): Json {
@@ -198,7 +213,9 @@ export function normalizeMessage(emailId: string, received: Json): Json {
 		received.headers && typeof received.headers === "object" && !Array.isArray(received.headers)
 			? (received.headers as Json)
 			: {};
-	const header = (name: string) => text(headers[name], 2048);
+	// Header names in any case.
+	const named = new Map(Object.entries(headers).map(([name, value]) => [name.toLowerCase(), value]));
+	const header = (name: string) => text(named.get(name), 2048);
 	const authentication =
 		received.authentication && typeof received.authentication === "object" && !Array.isArray(received.authentication)
 			? (received.authentication as Json)
@@ -233,6 +250,10 @@ export function normalizeMessage(emailId: string, received: Json): Json {
 		messageId: text(received.message_id, 998),
 		inReplyTo: header("in-reply-to"),
 		references: header("references"),
+		autoSubmitted: header("auto-submitted"),
+		precedence: header("precedence"),
+		listId: header("list-id"),
+		automated: automated(header),
 		authentication: {
 			spf: text(authentication.spf, 32),
 			dkim: text(authentication.dkim, 32),
