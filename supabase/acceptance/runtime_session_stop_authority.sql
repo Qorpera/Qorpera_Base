@@ -11,13 +11,14 @@ declare
 begin
  select * into strict v_run from public.qorpera_execution_runs where id=(b->>'runId')::uuid;
  select created_by_user_id into strict v_creator from public.qorpera_runner_jobs where id=v_run.job_id;
- -- Transfer the fixture's single owner slot. The run creator remains a
+ -- Hand the founder role to another member. The run creator remains a
  -- contributor unless the case later downgrades or removes that membership.
- update public.qorpera_profile_members set role='contributor'
- where profile_id=v_run.profile_id and user_id=v_creator;
+ -- The new founder comes first: the last founder cannot step down (20260928248100).
  insert into auth.users(id,email) values(v_other_owner,v_other_owner::text||'@example.test');
  insert into public.qorpera_profile_members(profile_id,user_id,email,display_name,role)
  values(v_run.profile_id,v_other_owner,v_other_owner::text||'@example.test','Fixture owner','owner');
+ update public.qorpera_profile_members set role='contributor'
+ where profile_id=v_run.profile_id and user_id=v_creator;
  if p_private then
   update public.qorpera_shared_sessions set audience_kind='member_private',audience_user_id=v_creator
   where id=v_run.session_id;
