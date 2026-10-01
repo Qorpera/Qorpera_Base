@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { parseCompanyStateFile } from "@qorpera/cloud-client/company-state-files";
 import type { CloudFileReference } from "@qorpera/cloud-client/node/cloud-object-store";
 import type { JsonValue } from "@qorpera/contracts";
 import {
@@ -27,6 +28,9 @@ interface Stored {
 	updatedAt: string;
 }
 
+/** The todos folder whose index the fake answers (`qorpera_folder_agent_todos`). */
+const TODOS = "agents/nora/todos";
+
 /** A fake folder core and receipt ledger for a folder writer's tests, with seeded files and folders. */
 export async function folderWriterFixture(seed: { files?: Record<string, string>; folders?: string[] } = {}) {
 	const { binding, authority } = nativeToolAuthorityFixture();
@@ -34,6 +38,7 @@ export async function folderWriterFixture(seed: { files?: Record<string, string>
 	const receipt = { resourceId: randomUUID(), resourceRevision: 1, grantId: randomUUID(), grantRevision: 1 };
 	const bytesBySha = new Map<string, Uint8Array>();
 	const files = new Map<string, Stored>();
+	const rowIds = new Map<string, string>();
 	const folders = new Set<string>(["agents", "agents/nora", ...(seed.folders ?? [])]);
 	const commits: { key: string; receiptId: unknown; units: Record<string, unknown>[] }[] = [];
 	const releases: Record<string, unknown>[] = [];
@@ -41,7 +46,8 @@ export async function folderWriterFixture(seed: { files?: Record<string, string>
 	let tick = 0;
 	const now = () =>
 		`2026-10-01T00:${String(Math.floor(tick / 60)).padStart(2, "0")}:${String(tick++ % 60).padStart(2, "0")}+00:00`;
-	for (const [path, content] of Object.entries(seed.files ?? {})) {
+	// A file as another writer left it, in a folder that exists.
+	const store = (path: string, content: string) => {
 		const data = new TextEncoder().encode(content);
 		bytesBySha.set(sha(data), data);
 		files.set(path, {
@@ -55,7 +61,9 @@ export async function folderWriterFixture(seed: { files?: Record<string, string>
 			},
 			updatedAt: now(),
 		});
-	}
+		folders.add(path.split("/").slice(0, -1).join("/"));
+	};
+	for (const [path, content] of Object.entries(seed.files ?? {})) store(path, content);
 	const entry = (path: string) => {
 		const file = files.get(path);
 		if (file)
@@ -125,6 +133,56 @@ export async function folderWriterFixture(seed: { files?: Record<string, string>
 					seq: any ? seq : null,
 					replay: false,
 					units: results,
+				};
+			}
+			// The todo index as the commit keeps it: one row per todo file, in the order the files were made.
+			if (method === "qorpera_folder_agent_todos") {
+				const request = args.p_request as {
+					includeClosed?: boolean;
+					state?: string;
+					search?: string;
+					cursor?: string;
+				};
+				const rows = [...files.entries()]
+					.filter(([path]) => path.startsWith(`${TODOS}/`) && /^[^/]+\.md$/.test(path.slice(TODOS.length + 1)))
+					.map(([path, stored]) => {
+						const parsed = parseCompanyStateFile(
+							path,
+							new TextDecoder().decode(bytesBySha.get(stored.file.fileSha256)),
+						);
+						const todo = parsed?.ok && parsed.file.kind === "todo" ? parsed.file : null;
+						if (!todo) throw new Error("Fixture todo does not parse");
+						if (!rowIds.has(path)) rowIds.set(path, randomUUID());
+						return { path, stored, todo, id: rowIds.get(path) as string, key: path.slice(TODOS.length + 1, -3) };
+					})
+					.reverse()
+					.filter(
+						({ todo, key }) =>
+							(request.state
+								? todo.status === request.state
+								: request.includeClosed || todo.status === "open" || todo.status === "blocked") &&
+							(!request.search ||
+								todo.title.toLowerCase().includes(request.search.toLowerCase()) ||
+								key.includes(request.search.toLowerCase())),
+					);
+				const start = request.cursor ? rows.findIndex((row) => row.id === request.cursor) + 1 : 0;
+				const page = rows.slice(start, start + 32);
+				const more = rows.length - start - page.length;
+				return {
+					schema: "qorpera.folder-agent-todos/v1",
+					todos: page.map(({ path, stored, todo, id, key }) => ({
+						todoKey: key,
+						title: todo.title,
+						state: todo.status,
+						detail: todo.detail.slice(0, 200),
+						...(todo.detail.length > 200 ? { detailTruncated: true } : {}),
+						path,
+						version: stored.version,
+						updatedAt: stored.updatedAt,
+						cursor: id,
+					})),
+					moreTodos: more,
+					nextCursor: more > 0 ? (page.at(-1)?.id ?? null) : null,
 				};
 			}
 			if (method === "qorpera_folder_list") {
@@ -229,5 +287,6 @@ export async function folderWriterFixture(seed: { files?: Record<string, string>
 		run,
 		context,
 		text,
+		seed: store,
 	};
 }
