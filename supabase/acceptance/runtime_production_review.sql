@@ -127,7 +127,7 @@ begin
  select to_jsonb(receipt) into strict v_receipt from public.qorpera_run_operation_receipts receipt
  where id=(v_result->>'receiptId')::uuid;
  perform public.qorpera_record_provider_usage_signal(v_first,'usage_limit',clock_timestamp()+interval '2 hours');
- -- The failure report no longer hands off (20260929910000): call the handoff function directly.
+ -- The failure report no longer hands off (20260928349910): call the handoff function directly.
  perform public.qorpera_handoff_run_sponsor((v_first->>'runId')::uuid,'Native harness failed (provider allowance unavailable)');
  perform pg_temp.wake_assert((select status='queued' from public.qorpera_runner_jobs
   where id=(v_first->>'jobId')::uuid),'Confirmed work allows continuation');
@@ -178,7 +178,7 @@ begin
   update public.qorpera_run_operation_receipts set status='ambiguous',completed_at=clock_timestamp() where id=v_id;
  end if;
  perform public.qorpera_record_provider_usage_signal(v_binding,'usage_limit',clock_timestamp()+interval '2 hours');
- -- The failure report no longer hands off (20260929910000): ask the handoff function itself, whose receipt
+ -- The failure report no longer hands off (20260928349910): ask the handoff function itself, whose receipt
  -- fence this case proves, then report the failure.
  perform public.qorpera_handoff_run_sponsor((v_binding->>'runId')::uuid,'Native harness failed (provider allowance unavailable)');
  perform pg_temp.wake_assert(not exists(select 1 from public.qorpera_execution_sponsor_handoffs

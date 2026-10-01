@@ -43,7 +43,7 @@ describe("parsers", () => {
 		expect(recovery({ last_error: { code: "x" } }).lastError).toBeUndefined();
 		expect(() => recovery({ status: "completed" })).toThrow("recovery job status");
 		expect(() => recovery({}, { proposal_id: "not-a-uuid" })).toThrow("recovery proposal id");
-		// The cloud's usage-limit signal for the run (20260929910000): true or false; absent from an older cloud.
+		// The cloud's usage-limit signal for the run (20260928349910): true or false; absent from an older cloud.
 		expect(recovery({}, { usage_limit: true }).usageLimit).toBe(true);
 		expect(recovery({}, { usage_limit: false }).usageLimit).toBe(false);
 		expect(recovery({})).not.toHaveProperty("usageLimit");

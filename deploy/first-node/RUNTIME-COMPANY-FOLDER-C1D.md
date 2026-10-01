@@ -370,6 +370,9 @@ folder-v2 now (C5 early), rather than growing that path with chunk rows:
    mediaType, executable}`. Unlike version 1, a version-2 file is held to possession, so a fixture whose run or
    member commits the file passes that actor (default: the platform). F2 provides it in C1d-2a.
 2. **The fixtures switch to it**, with no change in behaviour: F1 moves 630–665, F2 its own (700–709 and the rest).
+   F2's 700–709 (and 750, on 707's fixture) keep their `pg_temp.stage(text[, profile])`: the platform stages, and the
+   commit helpers first take possession for their actor (`pg_temp.possess`, which seals the same manifest as that
+   actor). 763 is on F1's 634 fixture and moves with it.
 3. **`qorpera_verify_company_path_file` refuses folder-v2** (C5 early). Then the chunk index is complete with no
    version-1 case, and the file-hash check is not needed.
 
@@ -581,7 +584,7 @@ and §9.7's amendment keeps a put off a marked hash. Snapshot-v1 routes and thei
 - **C5 early (§9.3 steps 2 and 3):** the fixtures move to the version-2 helper (F1: 630–665; F2: its own), then
   `qorpera_verify_company_path_file` refuses folder-v2. Before C1d-2b's worker phase is switched on.
 
-**Built (C1d-2a, migration 20260929860000, tests 766 and 767).**
+**Built (C1d-2a, migration 20260928349860, tests 766 and 767).**
 - `qorpera_folder_object_gc` and the `expires_at` index; the helpers `qorpera_folder_gc_company`,
   `qorpera_folder_object_marked`, `qorpera_folder_object_rooted(profile, sha256, except_intent)` and
   `qorpera_folder_object_collecting` (the QRC01 409 refusal every patched place calls).
