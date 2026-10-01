@@ -630,11 +630,12 @@ Coordinator (nothing secret):
     turn failed with "Out of computer hours", and `qorpera_list_coding_machines` then puts the
     member's machine to sleep as soon as no turn holds it, busy commands notwithstanding. Their
     commands end as when it sleeps;
-  - known limits: while coding's switch is off and the zero rule on, a coding turn begun at zero
-    has its run held by 6a and keeps its machine awake and its session "running" until hours are
+  - known limits: while coding's switch is off and the zero rule on, the node does not refuse
+    coding machines, so a coding turn begun at zero starts or wakes its machine, has its run held
+    by 6a, and keeps that machine awake (its time owed) and its session "running" until hours are
     added. The same happens with the switch on in the seconds between a company running out and
     the sweep recording it, if begin falls in them. A held run is not ended by the finishing window
-    (there is no job yet).
+    (there is no job yet). Hence step 2b as soon as the executor allows.
 - Build step 6c part 3b (migration `20260928259270`, the finishing window for runs): one hour
   after a company ran out, while it is still at zero (`qorpera_computer_hour_finish_window_over`,
   which checks at zero again, so a record up to one sweep old never ends work):
@@ -771,20 +772,24 @@ At the agreed minute, in this order:
    Never the other way round: with the test key still in place and `live_since` set, the zero rule
    would hold work while nothing can be bought.
 
-   2b. Coding is held at zero once a coding executor with build step 6b part 4 runs on every coding
-   node (production's was still v6 on 2026-10-01). Then the coordinator switches coding on:
+   From then, use is charged live (every company starts with its five free hours; dry-run
+   balances stay as they were and never count). Plans can be bought by every signed-in account,
+   packs by a company's founders. The hour emails are queued, and a company that runs out is
+   recorded by the next sweep.
+
+   2b. The coordinator switches coding on as soon as a coding executor built from a release with
+   build step 6b part 4 runs on every coding node (its `coding-executor.ts` defers a turn whose
+   begin answers `{"state":"refused","reason":"COMPUTER_HOURS_EXHAUSTED"}`; production's was still
+   v6 on 2026-10-01). Best: install it before step 2, so this follows in the same minute:
 
    ```sql
    update public.qorpera_computer_hour_billing set coding_zero_rule_since = clock_timestamp();
    ```
 
-   Until then, office and agents' machines are held at zero and coding is not (part 4's known
-   limits).
-
-   From then, use is charged live (every company starts with its five free hours; dry-run
-   balances stay as they were and never count). Plans can be bought by every signed-in account,
-   packs by a company's founders. The hour emails are queued, and a company that runs out is
-   recorded by the next sweep.
+   Never before: an older executor fails a coding turn on the reason instead of waiting. Until
+   then a company at zero still has its coding turns held, but only at the run's wake step: the
+   turn shows as running, its machine starts or stays awake, and that machine's time is owed until
+   hours are added (part 4's known limits).
 3. Within the first 30 minutes, a real purchase proves the live webhook: a pack for a company
    other than step 5's test company (or refunded before step 5, which also proves a live refund),
    refunded afterwards in Stripe: Stripe's dashboard shows the delivery answered 2xx, and
@@ -814,7 +819,8 @@ At the agreed minute, in this order:
 Rollback:
 
 - Stop holding work: `update public.qorpera_computer_hour_billing set zero_rule_since = null`
-  (coding follows, since its switch needs the zero rule too). To stop holding only coding:
+  (coding follows, since its switch needs the zero rule too). To go back to holding coding only at
+  the run's wake step (step 2b's "until then"):
   `update public.qorpera_computer_hour_billing set coding_zero_rule_since = null`.
   Held work is released at once (routines with the next sweep), and the next sweep empties the
   zero state. Companies at zero run again and owe what they use; "out of hours" is again sent by

@@ -96,7 +96,7 @@ begin
 	-- A different reason posts its own step.
 	v_claim := pg_temp.hc_claim();
 	perform pg_temp.hc_defer(v_claim, 'NODE_CAPACITY_EXHAUSTED');
-	perform pg_temp.wake_assert(pg_temp.hc_steps('Waiting for a coding machine') >= 1
+	perform pg_temp.wake_assert(pg_temp.hc_steps('Waiting for a coding machine') = 1
 		and (pg_temp.session_row('fix-send')).last_step = 'Waiting for a coding machine', 'A new reason posts its own step');
 end
 $$;
@@ -107,6 +107,15 @@ where profile_id = '30000000-0000-4000-8000-000000000010';
 update public.qorpera_coding_machines set last_used_at = clock_timestamp(), busy_at = clock_timestamp() where id = pg_temp.vm();
 select pg_temp.wake_assert(pg_temp.listed() ->> 'live' = 'false' and pg_temp.listed() ->> 'sleepDue' = 'true',
 	'After the hour the machine sleeps once no turn holds it: ' || (pg_temp.listed())::text);
+-- A machine a turn holds is never put to sleep, the hour over or not.
+do $$
+declare v_claim jsonb := pg_temp.hc_claim();
+begin
+	perform pg_temp.wake_assert(pg_temp.listed() ->> 'live' = 'true' and pg_temp.listed() ->> 'sleepDue' = 'false',
+		'A machine a turn holds does not sleep: ' || (pg_temp.listed())::text);
+	perform pg_temp.hc_defer(v_claim, 'COMPUTER_HOURS_EXHAUSTED');
+end
+$$;
 update public.qorpera_computer_hour_billing set coding_zero_rule_since = null;
 select pg_temp.wake_assert(pg_temp.listed() ->> 'sleepDue' = 'false', 'Coding off: a busy machine stays awake as before');
 update public.qorpera_computer_hour_billing set coding_zero_rule_since = clock_timestamp() - interval '1 second';
