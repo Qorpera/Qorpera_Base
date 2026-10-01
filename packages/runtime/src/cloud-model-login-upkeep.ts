@@ -7,18 +7,25 @@ import type { CloudModelLoginVault } from "./cloud-model-login-vault.ts";
  *   that a vault login of the same account replaced (their pins move to the vault login first,
  *   and their work finishes on them first);
  * - renews its idle logins itself, one at a time, so a login nobody used does not lapse before its
- *   next run. A run's own renewal and this one share the login's one renewal lock.
+ *   next run. A run's own renewal and this one share the login's one renewal lock;
+ * - ends at OpenAI the ChatGPT plan logins nothing uses any longer (their member disconnected or left),
+ *   under the same lock.
  */
 
 /** How often the broker looks for due logins. */
 const PASS_EVERY_MS = 5 * 60_000;
 /** Logins renewed in one pass at most; the rest wait for the next pass. */
 const RENEWALS_PER_PASS = 12;
+/** Plan logins ended in one pass at most. */
+const REVOCATIONS_PER_PASS = 4;
 /** Taking a login gets this long; the renewal then runs to its own budget. */
 const TAKE_DEADLINE_MS = 15_000;
 
 export class CloudModelLoginUpkeep {
-	readonly #vault: Pick<CloudModelLoginVault, "renewIdle" | "recordAccounts" | "switchOffReplacedNodeLogins">;
+	readonly #vault: Pick<
+		CloudModelLoginVault,
+		"renewIdle" | "recordAccounts" | "switchOffReplacedNodeLogins" | "revokeUnused"
+	>;
 	readonly #passEveryMs: number;
 	readonly #firstPassMs: number;
 	#timer: ReturnType<typeof setTimeout> | undefined;
@@ -27,7 +34,10 @@ export class CloudModelLoginUpkeep {
 	#closed = false;
 
 	constructor(options: {
-		vault: Pick<CloudModelLoginVault, "renewIdle" | "recordAccounts" | "switchOffReplacedNodeLogins">;
+		vault: Pick<
+			CloudModelLoginVault,
+			"renewIdle" | "recordAccounts" | "switchOffReplacedNodeLogins" | "revokeUnused"
+		>;
 		passEveryMs?: number;
 		/** The first pass waits this long; by default a random part of a pass, so the brokers that
 		 * share one helper do not all renew at once after a restart. */
@@ -58,8 +68,21 @@ export class CloudModelLoginUpkeep {
 	}
 
 	/** One pass: accounts and the switch-off first, then due logins until none is left, a take fails,
-	 * or the pass has done enough. Each part's failure is logged by fact only: an error may name a login. */
+	 * or the pass has done enough, then unused plan logins. Each part's failure is logged by fact only: an
+	 * error may name a login. */
 	async pass(): Promise<void> {
+		await this.#renewals();
+		for (let ended = 0; ended < REVOCATIONS_PER_PASS && !this.#closed; ended += 1) {
+			try {
+				if ((await this.#vault.revokeUnused(AbortSignal.timeout(TAKE_DEADLINE_MS))) !== "revoked") return;
+			} catch {
+				console.error("Model login upkeep: ending an unused ChatGPT plan login failed; the next pass tries again.");
+				return;
+			}
+		}
+	}
+
+	async #renewals(): Promise<void> {
 		try {
 			await this.#vault.recordAccounts(AbortSignal.timeout(TAKE_DEADLINE_MS * 2));
 		} catch {

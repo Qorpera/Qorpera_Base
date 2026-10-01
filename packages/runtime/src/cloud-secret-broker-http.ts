@@ -2,6 +2,7 @@ import { timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { readBoundedCloudResponse, withCloudDeadline } from "@qorpera/cloud-client/cloud-request";
 import type { JsonValue } from "@qorpera/contracts";
+import { ChatGptPlanSignInError } from "./cloud-chatgpt-plan-sign-in.ts";
 import {
 	CloudConnectorOAuthError,
 	type CloudConnectorOAuthFlows,
@@ -177,6 +178,29 @@ function parseModelLoginRequest(value: unknown): ModelLoginIssueRequest {
 
 function parseModelLogin(value: unknown): ModelLoginIssue {
 	const input = record(value, "Model login");
+	// A ChatGPT plan login: the access token alone (null while the host holds this version).
+	if (input.loginKind !== undefined) {
+		exact(input, ["schema", "loginKind", "version", "accessExpiresAt", "accessToken"], "Model login");
+		if (
+			input.schema !== "qorpera.model-login/v1" ||
+			input.loginKind !== "chatgpt_plan" ||
+			typeof input.version !== "number" ||
+			!Number.isSafeInteger(input.version) ||
+			input.version < 1 ||
+			typeof input.accessExpiresAt !== "string" ||
+			!Number.isFinite(Date.parse(input.accessExpiresAt)) ||
+			(input.accessToken !== null &&
+				(typeof input.accessToken !== "string" || !/^[\x21-\x7e]{1,16384}$/.test(input.accessToken)))
+		)
+			throw new Error("Model login is invalid");
+		return {
+			schema: "qorpera.model-login/v1",
+			loginKind: "chatgpt_plan",
+			version: input.version,
+			accessExpiresAt: input.accessExpiresAt,
+			accessToken: input.accessToken,
+		};
+	}
 	exact(input, ["schema", "version", "accessExpiresAt", "authJson"], "Model login");
 	if (
 		input.schema !== "qorpera.model-login/v1" ||
@@ -517,6 +541,8 @@ export class HttpCloudSecretBrokerService {
 		const oauthStart = /^\/v1\/oauth\/([0-9a-f-]{36})\/start$/i.exec(path);
 		const oauthConfirm = /^\/v1\/oauth\/([0-9a-f-]{36})\/confirm$/i.exec(path);
 		const signIn = /^\/v1\/model-logins\/([0-9a-f-]{36})\/login$/i.exec(path);
+		const planCallback = /^\/v1\/model-logins\/([0-9a-f-]{36})\/chatgpt-plan\/callback$/i.exec(path);
+		const planConfirm = /^\/v1\/model-logins\/([0-9a-f-]{36})\/chatgpt-plan\/confirm$/i.exec(path);
 		const accountRefresh = /^\/v1\/model-logins\/([0-9a-f-]{36})\/account-refresh$/i.exec(path);
 		const memberRoute = Boolean(
 			(capture && UUID.test(capture[1])) ||
@@ -550,6 +576,8 @@ export class HttpCloudSecretBrokerService {
 			}
 			const companyId = (
 				signIn?.[1] ??
+				planCallback?.[1] ??
+				planConfirm?.[1] ??
 				accountRefresh?.[1] ??
 				url.searchParams.get("company") ??
 				undefined
@@ -697,6 +725,67 @@ export class HttpCloudSecretBrokerService {
 				// Only a sign-in the database accepted puts its company on the frequent collection.
 				this.#companies?.signingIn(signIn[1]);
 				response(reply, 200, { ...answer });
+				return;
+			}
+			// Sign in with ChatGPT: OpenAI's callback for a plan sign-in, forwarded server to server by the
+			// callback Edge Function. The state is the only authority; the answer is a one-time confirmation
+			// id the Edge Function hands the returning browser (in the page fragment), never a code or token.
+			if (planCallback && UUID.test(planCallback[1]) && scope.modelLoginSignIns !== undefined) {
+				const input = record(await readRequest(request), "ChatGPT plan callback");
+				exact(input, ["schema", "state", "code", "error", "clientId"], "ChatGPT plan callback");
+				if (input.schema !== "qorpera.chatgpt-plan-callback/v1")
+					throw new Error("ChatGPT plan callback is invalid");
+				let answer: JsonValue;
+				try {
+					const received = scope.modelLoginSignIns.receiveChatGptPlan({
+						companyId: planCallback[1],
+						state: input.state,
+						code: input.code,
+						error: input.error,
+						clientId: input.clientId,
+					});
+					answer = {
+						schema: "qorpera.chatgpt-plan-callback-result/v1",
+						status: "confirm",
+						...received,
+						reason: null,
+					};
+				} catch (error) {
+					answer = {
+						schema: "qorpera.chatgpt-plan-callback-result/v1",
+						status: "failed",
+						confirmation: null,
+						reason: error instanceof ChatGptPlanSignInError ? error.reason : "provider_error",
+					};
+				}
+				response(reply, 200, answer);
+				return;
+			}
+			// The web client's confirmation of a plan sign-in, through its edge function, with the sign-in's
+			// capability as bearer: only then is OpenAI's code exchanged and the login sealed.
+			if (planConfirm && UUID.test(planConfirm[1]) && scope.modelLoginSignIns !== undefined) {
+				const authorization = request.headers.authorization;
+				if (typeof authorization !== "string" || !authorization.startsWith("Bearer "))
+					throw new Error("Vault sign-in capability is missing");
+				let answer: JsonValue;
+				try {
+					answer = {
+						...(await scope.modelLoginSignIns.confirmChatGptPlan(
+							{
+								companyId: planConfirm[1],
+								capability: authorization.slice("Bearer ".length),
+								body: await readRequest(request),
+							},
+							AbortSignal.timeout(40_000),
+						)),
+					};
+				} catch (error) {
+					if (!(error instanceof ChatGptPlanSignInError)) throw error;
+					answer = { schema: "qorpera.chatgpt-plan-confirm-failed/v1", reason: error.reason };
+					response(reply, 403, answer);
+					return;
+				}
+				response(reply, 200, answer);
 				return;
 			}
 			// The usage of the logins the vault keeps (change 2C): the account refresh chooser names

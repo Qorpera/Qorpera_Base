@@ -401,6 +401,43 @@ it("uses only the static broker-role SQL calls and binds downstream idempotency"
 		new AbortController().signal,
 	);
 	await authority.switchOffReplacedNodeLogins(new AbortController().signal);
+	// Sign in with ChatGPT (20260929800000).
+	await authority.completeChatGptPlanSignIn(
+		{
+			loginId: signInId,
+			capabilitySha256: "a".repeat(64),
+			modelLoginId: randomUUID(),
+			keyId: "company-kek-1",
+			encryptedEnvelope: Buffer.from("plan-signed-in"),
+			envelopeSha256: "e".repeat(64),
+			accessIssuedAt: "2026-10-01T00:00:00.000Z",
+			accessExpiresAt: "2026-10-01T01:00:00.000Z",
+			providerAccountReference: null,
+			providerAccountEmail: "member@example.test",
+			renewNotBefore: "2026-10-01T00:30:00.000Z",
+		},
+		new AbortController().signal,
+	);
+	await authority.commitChatGptPlanRenewal(
+		{
+			loginId: accountLogin,
+			token: randomUUID(),
+			baseVersion: 1,
+			keyId: "company-kek-1",
+			encryptedEnvelope: Buffer.from("plan-renewed"),
+			envelopeSha256: "e".repeat(64),
+			accessIssuedAt: "2026-10-01T00:30:00.000Z",
+			accessExpiresAt: "2026-10-01T01:30:00.000Z",
+			renewNotBefore: null,
+		},
+		new AbortController().signal,
+	);
+	await authority.takeChatGptPlanRevocation(new AbortController().signal);
+	const revocationToken = randomUUID();
+	await authority.finishChatGptPlanRevocation(
+		{ loginId: accountLogin, token: revocationToken, baseVersion: 2 },
+		new AbortController().signal,
+	);
 	expect(queries.map((query) => query.text)).toEqual([
 		"select public.qorpera_describe_cloud_secret_capture($1::uuid,$2::text,$3::uuid,$4::text) as result",
 		"select public.qorpera_complete_cloud_secret_capture($1::uuid,$2::text,$3::uuid,$4::text,$5::text,$6::text,$7::text) as result",
@@ -410,7 +447,7 @@ it("uses only the static broker-role SQL calls and binds downstream idempotency"
 		"select public.qorpera_commit_model_login_renewal($1::uuid,$2::text,$3::uuid,$4::uuid,$5::bigint,$6::text,$7::text,$8::text,$9::timestamptz,$10::timestamptz) as result",
 		"select public.qorpera_release_model_login_renewal($1::uuid,$2::text,$3::uuid,$4::uuid,$5::bigint,$6::boolean,$7::text) as result",
 		"select public.qorpera_model_login_broker_company($1::uuid,$2::text) as result",
-		"select public.qorpera_describe_model_login_sign_in($1::uuid,$2::text,$3::uuid,$4::text) as result",
+		"select public.qorpera_describe_model_login_sign_in_v2($1::uuid,$2::text,$3::uuid,$4::text) as result",
 		"select public.qorpera_complete_model_login_sign_in($1::uuid,$2::text,$3::uuid,$4::text,$5::uuid,$6::text,$7::text,$8::text,$9::timestamptz,$10::timestamptz,$11::text,$12::text) as result",
 		"select public.qorpera_describe_model_login_account_refresh($1::uuid,$2::text,$3::uuid,$4::text) as result",
 		"select public.qorpera_record_model_login_account_metadata($1::uuid,$2::text,$3::uuid,$4::text,$5::uuid,$6::uuid,$7::bigint,$8::text,$9::jsonb,$10::text) as result",
@@ -419,7 +456,23 @@ it("uses only the static broker-role SQL calls and binds downstream idempotency"
 		"select public.qorpera_model_logins_without_account($1::uuid,$2::text) as result",
 		"select public.qorpera_record_model_login_account($1::uuid,$2::text,$3::uuid,$4::text) as result",
 		"select public.qorpera_switch_off_replaced_node_logins($1::uuid,$2::text) as result",
+		"select public.qorpera_complete_chatgpt_plan_sign_in($1::uuid,$2::text,$3::uuid,$4::text,$5::uuid,$6::text,$7::text,$8::text,$9::timestamptz,$10::timestamptz,$11::text,$12::text,$13::timestamptz) as result",
+		"select public.qorpera_commit_chatgpt_plan_renewal($1::uuid,$2::text,$3::uuid,$4::uuid,$5::bigint,$6::text,$7::text,$8::text,$9::timestamptz,$10::timestamptz,$11::timestamptz) as result",
+		"select public.qorpera_take_chatgpt_plan_revocation($1::uuid,$2::text) as result",
+		"select public.qorpera_finish_chatgpt_plan_revocation($1::uuid,$2::text,$3::uuid,$4::uuid,$5::bigint) as result",
 	]);
+	expect(queries[17]?.values.slice(6)).toEqual([
+		Buffer.from("plan-signed-in").toString("base64"),
+		"e".repeat(64),
+		"2026-10-01T00:00:00.000Z",
+		"2026-10-01T01:00:00.000Z",
+		null,
+		"member@example.test",
+		"2026-10-01T00:30:00.000Z",
+	]);
+	expect(queries[18]?.values.at(-1)).toBeNull();
+	expect(queries[19]?.values).toHaveLength(2);
+	expect(queries[20]?.values.slice(2)).toEqual([accountLogin, revocationToken, 2]);
 	expect(queries[13]?.values).toHaveLength(2);
 	expect(queries[14]?.values).toHaveLength(2);
 	expect(queries[15]?.values.slice(2)).toEqual([accountLogin, "d".repeat(64)]);

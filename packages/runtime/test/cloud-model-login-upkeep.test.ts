@@ -5,9 +5,19 @@ afterEach(() => {
 	vi.useRealTimers();
 });
 
-function vault(outcomes: ReadonlyArray<"renewed" | "failed" | "none" | Error>) {
+function vault(
+	outcomes: ReadonlyArray<"renewed" | "failed" | "none" | Error>,
+	revocations: ReadonlyArray<"revoked" | "failed" | "none" | Error> = ["none"],
+) {
 	let call = 0;
+	let revocation = 0;
 	return {
+		revokeUnused: vi.fn(async (_signal: AbortSignal): Promise<"revoked" | "failed" | "none"> => {
+			const outcome = revocations[Math.min(revocation, revocations.length - 1)];
+			revocation += 1;
+			if (outcome instanceof Error) throw outcome;
+			return outcome ?? "none";
+		}),
 		renewIdle: vi.fn(async (_signal: AbortSignal): Promise<"renewed" | "failed" | "none"> => {
 			const outcome = outcomes[Math.min(call, outcomes.length - 1)];
 			call += 1;
@@ -94,4 +104,24 @@ it("runs a pass after the first wait and then every pass, until closed", async (
 	upkeep.start();
 	await vi.advanceTimersByTimeAsync(5000);
 	expect(logins.renewIdle).toHaveBeenCalledTimes(2);
+});
+
+it("ends unused ChatGPT plan logins after the renewals, at most four a pass, and stops at the first that does not end", async () => {
+	const logins = vault(["none"], ["revoked", "revoked", "revoked", "revoked", "revoked"]);
+	await new CloudModelLoginUpkeep({ vault: logins }).pass();
+	expect(logins.renewIdle).toHaveBeenCalledTimes(1);
+	expect(logins.revokeUnused).toHaveBeenCalledTimes(4);
+	expect(logins.revokeUnused.mock.invocationCallOrder[0]).toBeGreaterThan(
+		logins.renewIdle.mock.invocationCallOrder[0] ?? 0,
+	);
+	const failing = vault(["none"], ["revoked", "failed", "revoked"]);
+	await new CloudModelLoginUpkeep({ vault: failing }).pass();
+	expect(failing.revokeUnused).toHaveBeenCalledTimes(2);
+	const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+	const broken = vault(["none"], [new Error("login 6f0c private detail")]);
+	await new CloudModelLoginUpkeep({ vault: broken }).pass();
+	expect(log).toHaveBeenCalledExactlyOnceWith(
+		"Model login upkeep: ending an unused ChatGPT plan login failed; the next pass tries again.",
+	);
+	log.mockRestore();
 });

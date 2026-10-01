@@ -500,6 +500,62 @@ Node 2 (warm standby), between node 1's steps 6 and 8:
    in and reconnect again. By founder decision (29 September 2026) there is no third copy: "if the key is
    lost on both vaults, it's lost".
 
+## ChatGPT plan logins (Sign in with ChatGPT, built switched off)
+
+Founder decision 2026-10-01. A member's ChatGPT Plus or Pro plan pays for the work that member starts,
+through OpenAI's "Sign in with ChatGPT" (SIWC). It stays off until OpenAI approves Qorpera's partner
+application; today's Codex login keeps serving our own company until then. Design note:
+https://claude.ai/artifact/UWehPVysVzAmWcwvkuU6on.
+
+- **Kind.** A plan login is a second kind of vault login (`qorpera_model_logins.login_kind =
+  'chatgpt_plan'`, migration `20260929830000`). It holds OpenAI's OAuth tokens: a one-hour access token
+  and a rotating 30-day refresh token. The envelope's one field is `chatgpt_plan_login`. The vault is
+  the only renewer, under the same renewal lock as a Codex login, and renews with OpenAI's token
+  endpoint itself (no helper, no Codex). A run gets the access token alone
+  (`{schema, loginKind: "chatgpt_plan", version, accessExpiresAt, accessToken}`); until the run side
+  ships (slice 4), a host refuses a plan login.
+- **Sign-in.** The web client begins a plan sign-in (`qorpera_begin_chatgpt_plan_sign_in`) and polls
+  `/login` as for any vault sign-in. The vault answers with OpenAI's authorization address:
+  Authorization Code with PKCE, the plan scopes, the resource `https://api.openai.com/v1`, the state
+  `<company>.<43 random characters>`, and the identity's host id (`ext_agent_host_id`). OpenAI sends the
+  browser to the callback Edge Function `chatgpt-plan-callback` (slice 3). That function forwards the
+  state and code to `POST <vault>/v1/model-logins/<company>/chatgpt-plan/callback` and returns the browser
+  with a one-time confirmation id in the page fragment. Nothing is exchanged then. The web client
+  confirms with the sign-in's capability through the `native-provider-login` Edge Function, which
+  forwards to `POST <vault>/v1/model-logins/<company>/chatgpt-plan/confirm`. Only then does the vault
+  exchange the code, check the ID token against OpenAI's keys (signature, issuer, audience, expiry,
+  nonce) and that plan use was granted, seal the login and complete the sign-in. A browser that did not
+  start the sign-in never completes it.
+- **Renewal.** A run renews a plan login past half its pass. Idle upkeep renews one only once its tokens
+  are 7 days old, to keep the refresh token alive. Neither renews before OpenAI's `earliest_refresh_at`.
+  A refused refresh (`invalid_grant`, `refresh_token_reused`, `refresh_token_expired`,
+  `refresh_token_invalidated`, plan use withdrawn) marks the login for a new sign-in. `invalid_client`
+  never does: that error is about our registration, not the member's login.
+- **Ending.** Once a plan login's capsule, every version that points at it, or their connections are
+  revoked (the member disconnected or left), each upkeep pass ends it at OpenAI (token revocation)
+  and marks it revoked. A disabled connection keeps its login.
+- **Configuration (after approval only).** Qorpera's client registration is the private credential
+  `qorpera-cloud-secret-chatgpt-plan`:
+  `{"schema":"qorpera.chatgpt-plan-client/v1","clientId":"oaiapp_…","clientSecret":"…" or null,
+  "redirectUri":"https://<project>.supabase.co/functions/v1/chatgpt-plan-callback"}`. The secret is
+  sent only in the token request's Basic header. Install it on each vault host as a root-only file and
+  a drop-in, `LoadCredential=qorpera-cloud-secret-chatgpt-plan:/etc/qorpera-shared-vault/chatgpt-plan.json`.
+  The unit stays as it is until then: a LoadCredential line for a missing file would stop the unit.
+  Without the credential the vault starts no plan sign-in and renews or ends no plan login, and logs
+  nothing about plans. With it, it logs `Cloud secret broker serves ChatGPT plan sign-ins.` once.
+- **Front routing.** The path map `$qorpera_model_login_broker` must also send the two plan routes to
+  the vault:
+  `"~^/v1/model-logins/[0-9a-fA-F-]{36}/(login|account-refresh|chatgpt-plan/callback|chatgpt-plan/confirm)$" 127.0.0.1:18660;`,
+  with the same `location` widened to match. The vault host needs outbound HTTPS to `auth.openai.com`
+  (discovery, signing keys, token and revocation endpoints).
+- **Switches.** `update public.qorpera_chatgpt_plan_settings set enabled = true;` (platform) and
+  `select public.qorpera_set_chatgpt_plan_company('<company>', true);` (service role; only for a company
+  whose sign-ins go to its vault). Both start off.
+- **Before the platform switch goes on:** the vault runs this slice, the credential and the routing
+  above are in place, the callback Edge Function is deployed with OpenAI's registered address, the run
+  side (slice 4) is live, and company deletion ends plan logins at OpenAI (a follow-up; today the purge
+  removes the rows before the revocation pass can see them).
+
 ## Failure cases
 
 | Case | Result |
