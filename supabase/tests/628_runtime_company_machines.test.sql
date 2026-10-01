@@ -308,6 +308,9 @@ begin
 		and public.qorpera_authorize_machine_command(pg_temp.binding(),v_scope,'read','30000000-0000-4000-8000-000000000502') ->> 'executorOwner' = 'mx-a'
 		and public.qorpera_authorize_machine_command(pg_temp.binding(),v_scope,'cancel','30000000-0000-4000-8000-000000000502') ->> 'executorOwner' = 'mx-a',
 		'The command is authorized, again idempotently, and readable: '||v_auth::text);
+	perform pg_temp.wake_assert((select requested_by_user_id from public.qorpera_company_machine_commands
+		where id = '30000000-0000-4000-8000-000000000502') = '30000000-0000-4000-8000-000000000001',
+		'The command records the member its run works for');
 	perform pg_temp.wake_error(format($sql$select public.qorpera_authorize_machine_command(%L,%L,'start','30000000-0000-4000-8000-000000000502',repeat('4',64),
 		'{"commandHead":"npm test","notify":false}')$sql$,pg_temp.binding(),v_scope),'42501');
 	-- The command on a machine of another company is refused (the scope names a machine, never a node).
