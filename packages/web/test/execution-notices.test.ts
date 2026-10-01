@@ -561,12 +561,17 @@ describe("a ChatGPT plan's first-routine card (shown only to a member with a pla
 		expect(text(f.view)).toContain("Morning brief can run while you're away.");
 		expect(f.offer.native.recordRoutineOffer).toHaveBeenCalledOnce();
 	});
-	it("says nothing more once the kernel started the routine (20260929985000), and writes nothing", async () => {
+	it("says nothing more once the kernel started the routine (20260929985000), and saves no routine", async () => {
 		for (const manage of [true, false]) {
 			const f = planSetup({ manage });
 			await settle();
 			f.offer.native.setWorkWhileAway.mockImplementationOnce(async () => {
-				f.setRoutines([routine({ status: "active", pauseReason: undefined })]);
+				// Routines that do not wait for this plan are left alone too.
+				f.setRoutines([
+					routine({ status: "active", pauseReason: undefined }),
+					routine({ routineId: id(63), pauseReason: "agent" }),
+					routine({ routineId: id(64), runsForUserId: id(98) }),
+				]);
 			});
 			const reads = f.offer.native.listConnections.mock.calls.length;
 			action("turn-on-plan").click();
@@ -597,6 +602,62 @@ describe("a ChatGPT plan's first-routine card (shown only to a member with a pla
 			"Your ChatGPT plan now works while you're away. Ask the agent to set Evening note up again.",
 		);
 	});
+	it("names the agent of the routines that still wait, not of the ones it was asked about", async () => {
+		const f = planSetup({
+			manage: false,
+			routines: [routine({ staffAgentId: id(60) }), routine({ routineId: id(62), staffAgentId: id(63) })],
+		});
+		await settle();
+		// Both that still wait now are the same agent's.
+		f.setRoutines([routine({ staffAgentId: id(60) }), routine({ routineId: id(65), staffAgentId: id(60) })]);
+		action("turn-on-plan").click();
+		await settle();
+		expect(text(f.view)).toBe(
+			"Your ChatGPT plan now works while you're away. Ask the agent to set those routines up again.",
+		);
+	});
+	it("after a failure, says only what is known", async () => {
+		// A member who does not save routines: the switch went through, the routines could not be read again.
+		let f = planSetup({ manage: false });
+		await settle();
+		f.offer.native.setWorkWhileAway.mockImplementationOnce(async () => {
+			f.setRoutines([routine({ status: "active", pauseReason: undefined })]);
+		});
+		f.offer.routines.list.mockRejectedValueOnce(new Error("offline"));
+		action("turn-on-plan").click();
+		await settle();
+		expect(f.view.el.textContent).toContain(
+			"“Work while you're away” is on, but your routines could not be checked. Try again.",
+		);
+		expect(f.view.el.textContent).not.toContain("could not be started");
+		f.view.dispose();
+		// An owner: the kernel started one of two, and the other's save failed.
+		f = planSetup({ routines: [routine(), routine({ routineId: id(62), title: "Evening note" })] });
+		await settle();
+		f.offer.native.setWorkWhileAway.mockImplementationOnce(async () => {
+			f.setRoutines([
+				routine({ status: "active", pauseReason: undefined }),
+				routine({ routineId: id(62), title: "Evening note" }),
+			]);
+		});
+		f.offer.routines.setEnabled.mockRejectedValueOnce(new Error("refused"));
+		action("turn-on-plan").click();
+		await settle();
+		expect(f.view.el.textContent).toContain(
+			"“Work while you're away” is on, but the routine could not be started. Try again.",
+		);
+		f.view.dispose();
+		// An owner whose plan does not read as on after the switch: nothing is saved.
+		f = planSetup();
+		await settle();
+		f.offer.native.setWorkWhileAway.mockImplementationOnce(async () => {});
+		action("turn-on-plan").click();
+		await settle();
+		expect(f.offer.routines.setEnabled).not.toHaveBeenCalled();
+		expect(f.view.el.textContent).toContain(
+			"“Work while you're away” is on, but the routine could not be started. Try again.",
+		);
+	});
 	it("Not now leaves the routine waiting and never asks again in this window", async () => {
 		const f = planSetup({ notices: [waitingNotice(77)] });
 		await settle();
@@ -624,12 +685,13 @@ describe("a ChatGPT plan's first-routine card (shown only to a member with a pla
 		expect(f.view.el.textContent).toContain(
 			"“Work while you're away” is on, but the routine could not be started. Try again.",
 		);
+		// Two wait now, and neither started: the card says routines.
 		f.setRoutines([routine(), routine({ routineId: id(62), title: "Evening note" })]);
 		f.offer.routines.setEnabled.mockRejectedValueOnce(new Error("refused"));
 		action("turn-on-plan").click();
 		await settle();
 		expect(f.view.el.textContent).toContain(
-			"“Work while you're away” is on, but the routine could not be started. Try again.",
+			"“Work while you're away” is on, but the routines could not be started. Try again.",
 		);
 		action("turn-on-plan").click();
 		await settle();

@@ -198,6 +198,9 @@ export class ExecutionNotices {
 		this.#offerBusy = "on";
 		this.#offerError = undefined;
 		this.#draw();
+		// What still waits after the switch (undefined until it is read), and how many of those were started.
+		let still: WebRoutine[] | undefined;
+		let started = 0;
 		try {
 			if (!this.#turnedOn.has(id)) {
 				await plan.native.setWorkWhileAway(id, true, signal);
@@ -205,23 +208,26 @@ export class ExecutionNotices {
 			}
 			this.#answered.add(id);
 			// Turning the plan on starts the member's routines that waited only for it (20260929985000). Read again
-			// what still waits: a routine busy at that moment, one set up while the card stood, or a kernel without
-			// that step. The card never says a routine started that did not.
-			const waiting = (await plan.routines.list()).filter((entry) => waitsForPlan(entry, plan.memberId));
-			if (waiting.length && plan.canManage()) {
+			// what still waits: one the kernel left because it was busy at that moment, one set up while the card
+			// stood, or every one on a kernel without that step. The card never says a routine started that did not.
+			still = (await plan.routines.list()).filter((entry) => waitsForPlan(entry, plan.memberId));
+			if (still.length && plan.canManage()) {
 				const account = (await plan.native.listConnections(signal)).connections
 					.filter((item) => item.connectionId === id && item.allowAutonomous === true)
 					.sort((a, b) => b.connectionVersion - a.connectionVersion)[0];
 				if (!account) throw new Error("The plan did not turn on");
 				// One the agent paused, concluded or removed meanwhile is not in the list read above.
-				for (const routine of waiting) await plan.routines.setEnabled(routine, account, true, crypto.randomUUID());
-			} else if (waiting.length)
+				for (const routine of still) {
+					await plan.routines.setEnabled(routine, account, true, crypto.randomUUID());
+					started += 1;
+				}
+			} else if (still.length)
 				this.#offerDone =
-					waiting.length === 1
+					still.length === 1
 						? t("Your ChatGPT plan now works while you're away. Ask the agent to set {title} up again.", {
-								title: waiting[0]!.title,
+								title: still[0]!.title,
 							})
-						: new Set(waiting.map((routine) => routine.staffAgentId)).size > 1
+						: new Set(still.map((routine) => routine.staffAgentId)).size > 1
 							? t(
 									"Your ChatGPT plan now works while you're away. Ask the agents to set those routines up again.",
 								)
@@ -235,11 +241,14 @@ export class ExecutionNotices {
 			if (!this.#offerDone) this.#offer = undefined;
 		} catch {
 			if (!signal.aborted)
+				// Only what is known: the switch failed, the routines could not be read again, or these could not start.
 				this.#offerError = !this.#turnedOn.has(id)
 					? t("“Work while you're away” could not be turned on. Try again.")
-					: offer.routines.length > 1
-						? t("“Work while you're away” is on, but the routines could not be started. Try again.")
-						: t("“Work while you're away” is on, but the routine could not be started. Try again.");
+					: !still
+						? t("“Work while you're away” is on, but your routines could not be checked. Try again.")
+						: still.length - started > 1
+							? t("“Work while you're away” is on, but the routines could not be started. Try again.")
+							: t("“Work while you're away” is on, but the routine could not be started. Try again.");
 		} finally {
 			this.#offerBusy = undefined;
 			if (!signal.aborted) this.#draw();

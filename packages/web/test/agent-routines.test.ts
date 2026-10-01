@@ -10,7 +10,9 @@ import {
 	parseCloudRoutineTrigger,
 } from "@qorpera/cloud-client/cloud-routines";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { AgentRoutines } from "../src/app/views/agent-routines.ts";
+import type { CompanyController } from "../src/app/company.ts";
+import { AgentRoutines, routineAccessFor } from "../src/app/views/agent-routines.ts";
+import type { WorkspaceActions } from "../src/app/workspace-actions.ts";
 import type { Cloud } from "../src/cloud/client.ts";
 import { createWebRoutines, type WebRoutine, type WebRoutines } from "../src/cloud/routines.ts";
 import { fmtTime } from "../src/ui/dom.ts";
@@ -221,6 +223,26 @@ describe("agent routines section", () => {
 		expect(f.view.el.textContent).not.toContain("Other");
 		expect(f.view.el.textContent).not.toContain("Gone");
 	});
+	it("names a member from the company's team", () => {
+		const anna = "10000000-0000-4000-8000-000000000031";
+		const company = {
+			store: {
+				get: () => ({
+					team: {
+						capabilities: { authorize: false },
+						members: [{ userId: anna, displayName: "Anna", email: "anna@example.test", role: "member" }],
+					},
+				}),
+			},
+		} as unknown as CompanyController;
+		const actions = {
+			routines: { list: vi.fn(), runs: vi.fn(), save: vi.fn(), setEnabled: vi.fn() },
+			nativeSubscription: { listConnections: vi.fn() },
+		} as unknown as WorkspaceActions;
+		const access = routineAccessFor(company, actions)!;
+		expect(access.memberName?.(anna)).toBe("Anna");
+		expect(access.memberName?.("10000000-0000-4000-8000-000000000032")).toBeUndefined();
+	});
 	it("says when a routine started again because its member turned on work while away", async () => {
 		const resumed = {
 			...routine({ status: "active" }),
@@ -232,6 +254,7 @@ describe("agent routines section", () => {
 			[[resumed], () => "Anna", "When Anna turned on “Work while you're away”"],
 			[[resumed], () => undefined, "When a member turned on “Work while you're away”"],
 			[[{ ...resumed, status: "paused" } as WebRoutine], () => "Anna", undefined],
+			[[{ ...resumed, resumeReason: "member" } as WebRoutine], () => "Anna", undefined],
 			[[routine({ status: "active" })], () => "Anna", undefined],
 		] as const) {
 			const stop = new AbortController();
@@ -306,6 +329,18 @@ describe("agent routines section", () => {
 					resumed_at: "soon",
 					resumed_by_user_id: member,
 				},
+				...[
+					["27", "Plan Turned On!", member],
+					["28", "plan_turned_on", "someone"],
+					["29", "plan_turned_on", 7],
+				].map(([n, reason, by]) => ({
+					...row,
+					routine_id: `10000000-0000-4000-8000-0000000000${n}`,
+					status: "active",
+					resume_reason: reason,
+					resumed_at: "2026-10-01T10:00:00.000Z",
+					resumed_by_user_id: by,
+				})),
 				{
 					...row,
 					routine_id: "10000000-0000-4000-8000-000000000023",
@@ -327,17 +362,13 @@ describe("agent routines section", () => {
 			resumedByUserId: member,
 		});
 		// A resume with a field it cannot read is not shown at all.
-		expect(
-			listed.find((item) => item.routineId === "10000000-0000-4000-8000-000000000026")?.resumeReason,
-		).toBeUndefined();
+		for (const n of ["26", "27", "28", "29"])
+			expect(
+				listed.find((item) => item.routineId === `10000000-0000-4000-8000-0000000000${n}`)?.resumeReason,
+			).toBeUndefined();
 		expect(
 			listed
-				.filter(
-					(item) =>
-						!["10000000-0000-4000-8000-000000000025", "10000000-0000-4000-8000-000000000026"].includes(
-							item.routineId,
-						),
-				)
+				.filter((item) => !/-0000000000(2[5-9])$/.test(item.routineId))
 				.map((item) => [item.routineId, item.pauseReason, item.runsForUserId]),
 		).toEqual([
 			[row.routine_id, "needs_model_account", member],
