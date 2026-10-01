@@ -84,7 +84,7 @@ declare
 	v_connection_version bigint; v_hex text; v_client uuid; v_binding uuid; v_at timestamptz; v_sha text;
 begin
 	-- A wait for any one lock ends after 2 s (the function's lock_timeout, below) as a plain "busy" the web shows
-	-- (55P03, never 40001); this block's rollback undoes all the call did, the member's choice mark included. Every
+	-- (55P03, a retry code PostgREST does not replay); this block's rollback undoes all the call did, the member's choice mark included. Every
 	-- other error is raised as it was.
 	begin
 		if v_user is null or p_on is null or p_connection_id is null or p_profile_id is null
