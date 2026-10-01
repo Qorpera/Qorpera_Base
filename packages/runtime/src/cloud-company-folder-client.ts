@@ -220,13 +220,15 @@ export interface CloudCompanyFolderReleaseResult {
  * - `read_revoked`: something the model saw may no longer be seen (the recheck's 42501); the change or release was
  *   not recorded, and the caller reports it as denied;
  * - `contended`: the folder kept changing under a retried commit or release; nothing was recorded;
+ * - `full`: the company's storage allowance has no room for new bytes (checked before they are written); nothing was
+ *   stored;
  * - `unknown`: a try of a commit or release timed out, lost its connection or was cancelled while it was sent, and
  *   no later try gave an answer, so it may have been recorded. The caller retries with the same operation key (or
  *   release id), the same units and the same receipt, whose replay returns the stored outcome.
  * Other SQL errors (22023, 25000) and PostgREST's answers about the request (`PGRST1nn`-`PGRST3nn`) are defects and
  * stay a `CloudCompanyFolderRpcError`.
  */
-export type CloudCompanyFolderFailure = "stopped" | "unavailable" | "read_revoked" | "contended" | "unknown";
+export type CloudCompanyFolderFailure = "stopped" | "unavailable" | "read_revoked" | "contended" | "full" | "unknown";
 
 export class CloudCompanyFolderError extends CloudRuntimeDiagnosticError {
 	readonly failure: CloudCompanyFolderFailure;
@@ -237,7 +239,9 @@ export class CloudCompanyFolderError extends CloudRuntimeDiagnosticError {
 				? "stale_version"
 				: failure === "unknown"
 					? "transport_unavailable"
-					: "authority_unavailable",
+					: failure === "full"
+						? "budget_exhausted"
+						: "authority_unavailable",
 			failure === "stopped"
 				? "Company work is stopped"
 				: failure === "read_revoked"
@@ -246,7 +250,9 @@ export class CloudCompanyFolderError extends CloudRuntimeDiagnosticError {
 						? "Company folder kept changing"
 						: failure === "unknown"
 							? "Company folder outcome is unknown"
-							: "Company folder is unavailable",
+							: failure === "full"
+								? "Company storage is full"
+								: "Company folder is unavailable",
 		);
 		this.failure = failure;
 	}

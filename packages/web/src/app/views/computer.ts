@@ -1,4 +1,5 @@
 import type { CompanyComputerScope } from "@qorpera/cloud-client/cloud-company-computer-contract";
+import type { CompanyComputerWait } from "@qorpera/cloud-client/cloud-member-company-computer";
 import type { WebCompanyComputer } from "../../cloud/computer.ts";
 import type { HostedStaffAgent } from "../../cloud/types.ts";
 import { attachComputerDrag } from "../../ui/computer-drag.ts";
@@ -181,14 +182,16 @@ export class ComputerPanel {
 				waiting: placed.computer.waiting,
 			};
 		};
-		const waitingLine = (waiting: "setup" | "room" | null | undefined, number: number) =>
-			waiting === "setup"
-				? number > 1
-					? t("Setting up another machine. This can take a while.")
-					: t("Setting up the machine. This can take a while.")
-				: waiting === "room"
-					? t("Waiting for room on our servers. It starts as soon as there is room.")
-					: undefined;
+		const waitingLine = (waiting: CompanyComputerWait | null | undefined, number: number) =>
+			waiting === "hours"
+				? t("Out of computer hours. The machine starts by itself once hours are added.")
+				: waiting === "setup"
+					? number > 1
+						? t("Setting up another machine. This can take a while.")
+						: t("Setting up the machine. This can take a while.")
+					: waiting === "room"
+						? t("Waiting for room on our servers. It starts as soon as there is room.")
+						: undefined;
 		/** While a computer starts: why it is not up yet, or that the agent now has
 		 * room on another computer (then the panel moves there). */
 		const recheck = async (scope: CompanyComputerScope, number: number, until: AbortSignal) => {
@@ -276,9 +279,10 @@ export class ComputerPanel {
 							});
 							until.throwIfAborted();
 						}
-						// A new computer can wait for its server first; say so instead of "starting" for minutes.
+						// A new computer can wait for its server first, and a new or sleeping one for computer
+						// hours; say so instead of "starting" for minutes.
 						const reason =
-							start.officeState !== "provisioning"
+							start.officeState !== "provisioning" && !idle
 								? undefined
 								: pass === 0
 									? waitingLine(located.waiting, located.number)

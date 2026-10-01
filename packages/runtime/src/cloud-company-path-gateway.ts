@@ -131,7 +131,9 @@ export type CloudCompanyPathRpc =
 	| "qorpera_folder_agent_todos"
 	// Event wakes (W2): the company's hooks and one event's body.
 	| "qorpera_list_agent_event_hooks"
-	| "qorpera_read_agent_event";
+	| "qorpera_read_agent_event"
+	// Company mail (M2b): an agent's email from a mailbox, queued for the platform's sender.
+	| "qorpera_send_agent_mail";
 
 /** Service-only transport. Never exposed as an arbitrary RPC tool. */
 export interface CloudCompanyPathControl {

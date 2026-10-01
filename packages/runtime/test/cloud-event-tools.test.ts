@@ -174,6 +174,96 @@ describe("agent event tools", () => {
 		}
 	});
 
+	it("sends an email through the run binding with the call's id, each address once", async () => {
+		const f = await fixture((_method, args, runId) => ({
+			schema: "qorpera.agent-mail/v1",
+			runId,
+			mailId: "73300000-0000-4000-8000-0000000000a1",
+			status: "queued",
+			...(args.p_request as object),
+		}));
+		try {
+			const sent = await f.boundary.invoke("m1", "qorpera", "send_mail", {
+				from: " Support@Mail.Example.Test ",
+				to: [" Bob@Acme.test", "bob@acme.test", "eve@acme.test"],
+				cc: ["eve@acme.test", "Boss@Acme.test"],
+				subject: " Your refund ",
+				text: "Hi Bob,\n\nIt is on its way.\n",
+				inReplyTo: DELIVERY.toUpperCase(),
+			});
+			expect(sent.success, JSON.stringify(sent)).toBe(true);
+			expect(f.call.mock.calls[0].slice(0, 2)).toEqual([
+				"qorpera_send_agent_mail",
+				{
+					p_binding: f.binding,
+					p_call_id: "m1",
+					p_request: {
+						from: "support@mail.example.test",
+						to: ["bob@acme.test", "eve@acme.test"],
+						cc: ["boss@acme.test"],
+						subject: "Your refund",
+						text: "Hi Bob,\n\nIt is on its way.\n",
+						inReplyTo: DELIVERY,
+					},
+				},
+			]);
+			expect(sent.contentItems[0].text).toContain("73300000-0000-4000-8000-0000000000a1");
+			expect(JSON.stringify(sent)).not.toContain(f.binding.credentialCapsuleId);
+		} finally {
+			f.run.close();
+		}
+	});
+
+	it("refuses a malformed email without calling the cloud", async () => {
+		const f = await fixture();
+		const email = { from: "support@mail.example.test", to: ["bob@acme.test"], subject: "Hi", text: "Hello" };
+		const many = (n: number) => Array.from({ length: n }, (_, i) => `c${i}@acme.test`);
+		try {
+			for (const [callId, args] of [
+				["mail_1", { ...email, to: [] }],
+				["mail_2", { ...email, to: many(11) }],
+				["mail_3", { ...email, to: many(10), cc: ["boss@acme.test"] }],
+				["mail_4", { ...email, to: ["Bob <bob@acme.test>"] }],
+				["mail_5", { ...email, to: ["bob@localhost"] }],
+				["mail_6", { ...email, to: "bob@acme.test" }],
+				["mail_7", { ...email, subject: "Hi\r\nBcc: all@acme.test" }],
+				["mail_8", { ...email, subject: "  " }],
+				["mail_9", { ...email, text: " \n" }],
+				["mail_10", { ...email, text: "t".repeat(20001) }],
+				["mail_11", { ...email, bcc: ["boss@acme.test"] }],
+				["mail_12", { ...email, inReplyTo: "the last email" }],
+				["mail_13", { to: email.to, subject: email.subject, text: email.text }],
+				["mail_14", { ...email, subject: "s".repeat(201) }],
+			] as const) {
+				const refused = await f.boundary.invoke(callId, "qorpera", "send_mail", args);
+				expect(refused.success, callId).toBe(false);
+			}
+			expect(f.call).not.toHaveBeenCalled();
+		} finally {
+			f.run.close();
+		}
+	});
+
+	it("refuses a mail receipt for another run", async () => {
+		const f = await fixture(() => ({
+			schema: "qorpera.agent-mail/v1",
+			runId: "73300000-0000-4000-8000-0000000000ff",
+			mailId: "73300000-0000-4000-8000-0000000000a1",
+			status: "queued",
+		}));
+		try {
+			const sent = await f.boundary.invoke("m2", "qorpera", "send_mail", {
+				from: "support@mail.example.test",
+				to: ["bob@acme.test"],
+				subject: "Hi",
+				text: "Hello",
+			});
+			expect(sent.success).toBe(false);
+		} finally {
+			f.run.close();
+		}
+	});
+
 	it("refuses to be built for another identity than its binding", async () => {
 		const f = await fixture();
 		try {
