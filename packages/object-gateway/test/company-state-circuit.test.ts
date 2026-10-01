@@ -145,7 +145,8 @@ async function gateway() {
 			return Response.json({}, { status: 403 });
 		},
 	});
-	const replication = new ObjectGatewayReplication(new ObjectGatewayJournal(join(root, "journal")), store, authority);
+	const journal = new ObjectGatewayJournal(join(root, "journal"));
+	const replication = new ObjectGatewayReplication(journal, store, authority);
 	const server = createServer(
 		createObjectGatewayHandler({
 			store,
@@ -185,7 +186,11 @@ async function gateway() {
 				},
 			}),
 	};
-	return { authority, replication, state, routes };
+	const profileRead = (company: Company) =>
+		fetch(`${origin}/v1/profile-objects/${companies[company].companyId}/${sha256}`, {
+			headers: { authorization: "Bearer synthetic-verifier" },
+		});
+	return { authority, journal, replication, state, routes, profileRead };
 }
 
 type Route = "native read" | "native write" | "member read";
@@ -209,7 +214,12 @@ describe("one company's database state and the shared circuit", () => {
 		state.fail = { company: "a", respond: async () => postgrest(code) };
 		const refused = await routes[route]("a");
 		expect(refused.status).toBe(status);
-		expect(await refused.json()).toEqual({ error: "Object authority rejected the operation" });
+		// A lock conflict on the native object route says so: the native object transport may send the same request
+		// again. A stop does not, and neither does a member route, whose earlier steps may have committed.
+		expect(await refused.json()).toEqual({
+			error: "Object authority rejected the operation",
+			...(status === 409 && route !== "member read" ? { code: "lock_conflict" } : {}),
+		});
 		expect(authority.health().api.status).toBe("healthy");
 		// Within the cooldown, another company's request reaches the database and is served.
 		const before = state.rpcCalls.length;
@@ -293,6 +303,48 @@ describe("one company's database state and the shared circuit", () => {
 			expect(state.replicas.size).toBe(2);
 		},
 	);
+
+	it.each(["55P03", "40P01", "40001"])("keeps a %s on a profile read a plain 503", async (code) => {
+		// The lock conflict stays circuit-neutral (ObjectLockConflict), but only the native object route names it.
+		const { authority, profileRead, state } = await gateway();
+		state.fail = { company: "a", respond: async () => postgrest(code) };
+		const refused = await profileRead("a");
+		expect(refused.status).toBe(503);
+		expect(await refused.json()).toEqual({ error: "Object dependency is unavailable" });
+		expect(authority.health().api.status).not.toBe("unavailable");
+	});
+
+	it.each([
+		// PostgREST's own 409: the garbage collector's write fence, which lasts until its deletion ends.
+		[
+			"a GC write fence (409 QRC01)",
+			async () => Response.json({ code: "QRC01", message: "fenced" }, { status: 409 }),
+		],
+		["a denial (403 42501)", async () => Response.json({ code: "42501", message: "denied" }, { status: 403 })],
+		["a stop (55000)", async () => postgrest("55000")],
+		["a statement timeout (57014)", async () => postgrest("57014")],
+		["another 500", async () => postgrest("XX000")],
+	] as const)("names nothing else a lock conflict: %s", async (_label, respond) => {
+		const { state, routes: send } = await gateway();
+		state.fail = { company: "a", respond };
+		for (const route of routes)
+			expect(Object.keys((await (await send[route]("a")).json()) as object)).toEqual(["error"]);
+	});
+
+	it("does not call a write during the same object's deletion a lock conflict", async () => {
+		const { journal, routes } = await gateway();
+		// The deletion lane owns the object until it ends: 409, and not a request to send again at once.
+		await journal.write(`pending/${companies.a.companyId}-${sha256}`, {
+			profileId: companies.a.companyId,
+			sha256,
+			bytes: bytes.length,
+			state: "delete",
+			authorizationId: "40000000-0000-4000-8000-000000000301",
+		});
+		const refused = await routes["native write"]("a");
+		expect(refused.status).toBe(409);
+		expect(await refused.json()).toEqual({ error: "Object authority rejected the operation" });
+	});
 
 	it("keeps other 500s on profile and replication RPCs dependency failures", async () => {
 		const { authority, state } = await gateway();

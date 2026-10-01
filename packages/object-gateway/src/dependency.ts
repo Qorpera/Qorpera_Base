@@ -1,12 +1,18 @@
 export class ObjectDependencyError extends Error {
 	readonly status: number;
 	readonly unavailable: boolean;
+	/** The database call that answered rolled back on a serialization failure, deadlock or lock timeout on one
+	 * company's rows (40001, 40P01, 55P03), and committed nothing. On the native object route, whose request can be
+	 * sent again whole, the error body says so with `code: "lock_conflict"`, the only detail an error body carries,
+	 * and the native object transport retries on it. */
+	readonly lockConflict: boolean;
 
-	constructor(status: number) {
+	constructor(status: number, lockConflict = false) {
 		super(status === 503 ? "Object dependency is unavailable" : "Object authority rejected the operation");
 		this.name = "ObjectDependencyError";
 		this.status = status;
 		this.unavailable = status === 429 || status >= 500;
+		this.lockConflict = lockConflict;
 	}
 }
 
@@ -25,7 +31,7 @@ export class ObjectStatementTimeout extends ObjectDependencyError {
  * circuit stays as it is (`ObjectDependency.run`). */
 export class ObjectLockConflict extends ObjectDependencyError {
 	constructor() {
-		super(503);
+		super(503, true);
 		this.name = "ObjectLockConflict";
 	}
 }
@@ -41,7 +47,7 @@ export class ObjectLockConflict extends ObjectDependencyError {
  * (#560) are read the same way. */
 export function companyStateFailure(code: unknown): ObjectDependencyError {
 	if (code === "55000") return new ObjectDependencyError(423);
-	if (code === "40001" || code === "40P01" || code === "55P03") return new ObjectDependencyError(409);
+	if (code === "40001" || code === "40P01" || code === "55P03") return new ObjectDependencyError(409, true);
 	if (code === "57014") return new ObjectStatementTimeout();
 	return new ObjectDependencyError(500);
 }

@@ -450,7 +450,16 @@ export function createObjectGatewayHandler(options: ObjectGatewayServiceOptions)
 					return;
 				}
 				if (error instanceof ObjectDependencyError) {
-					json(response, error.unavailable ? 503 : error.status, { error: error.message }, observation);
+					// Only a native object request may be sent again whole after a lock conflict: its one write is
+					// content-addressed and its last database call is the one that rolled back. Composite routes (a
+					// member's review, then its apply) may have committed an earlier step, so they never say so.
+					const retryable = error.lockConflict && request.url?.startsWith("/v1/native-company-objects/") === true;
+					json(
+						response,
+						error.unavailable ? 503 : error.status,
+						retryable ? { error: error.message, code: "lock_conflict" } : { error: error.message },
+						observation,
+					);
 					return;
 				}
 				json(response, 503, { error: "Object gateway operation failed" }, observation);
