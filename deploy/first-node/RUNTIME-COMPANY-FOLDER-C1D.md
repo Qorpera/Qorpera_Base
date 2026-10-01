@@ -580,3 +580,23 @@ and §9.7's amendment keeps a put off a marked hash. Snapshot-v1 routes and thei
   leftovers (§9.9).
 - **C5 early (§9.3 steps 2 and 3):** the fixtures move to the version-2 helper (F1: 630–665; F2: its own), then
   `qorpera_verify_company_path_file` refuses folder-v2. Before C1d-2b's worker phase is switched on.
+
+**Built (C1d-2a, migration 20260929860000, tests 766 and 767).**
+- `qorpera_folder_object_gc` and the `expires_at` index; the helpers `qorpera_folder_gc_company`,
+  `qorpera_folder_object_marked`, `qorpera_folder_object_rooted(profile, sha256, except_intent)` and
+  `qorpera_folder_object_collecting` (the QRC01 409 refusal every patched place calls).
+- `qorpera_folder_sweep_upload_intents(limit)`, `qorpera_folder_claim_object_gc(limit, lease)`,
+  `qorpera_folder_gc_unlink_begin`, `_finish`, `_abandon` and `qorpera_folder_gc_quarantine_state`: service role only,
+  each with the 2 s lock budget; the sweep, claim and finish require READ COMMITTED. Nothing calls them until C1d-2b.
+- The refusals of §9.7, patched into open, confirm, seal, authorize, replication, download and commit step 6 by exact
+  anchors; each reads the mark in a statement after the place's lock.
+- The version-2 stage helper of §9.3 step 1, in 766 (it replaces 634's `pg_temp.stage`): the template for the fixture
+  move. Version-1 chunk rows are not written; version 1 is refused for folder-v2 in the C5-early step.
+- 766: the sweep and G4 (reuse, an earlier expiry, an intent the sweep has not reached, an object never put), the root
+  check (two environments, an old path version), the stage helper (result shape, a member's commit, an empty file), the
+  claim (grace, expired marks, a Storage-backed row, mixed and deleting companies), every refusal (QRC01), begin, finish
+  (removed, stale, restore, grace moved, 23503), abandon, the quarantine state, the folder-v2-only catalog, the lock
+  text, the budgets and the grants.
+- 767 (dblink): a reference that holds the object first; references that waited on the claim (open, step 6, confirm,
+  replication); two claims; the sweep and the claim; an upload slipping past the mark (restored); the finish's lock
+  budget; and the finish taking the row before its last re-check (R7).
