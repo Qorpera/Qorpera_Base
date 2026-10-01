@@ -9,7 +9,7 @@
 --     candidate for a run of this bundle; the five- and four-argument choosers pass no bundle.
 --   * qorpera_declare_runtime_node_bundle declares one node's orchestrators at once.
 -- Node A: the fixture orchestrator ...092 (adapter 'process'); it holds the fixture run. Node B: a fast
--- host ...b1 (adapter 'native-b'). Node C: only a coding provider.
+-- host ...b1 (adapter 'native-b'). Node C: coding, run ('native-c', no orchestrator) and sign-in providers.
 select pg_temp.path_claims('service_role');
 select pg_temp.wake_public_send(current_setting('qorpera_test.wake_binding')::jsonb,'progress','runs-switch-ack');
 select public.qorpera_manage_agent_todo(current_setting('qorpera_test.wake_binding')::jsonb,
@@ -47,6 +47,43 @@ $$;
 create function pg_temp.rs_decide(p_provider text,p_bundle text) returns jsonb language sql as $$
 	select public.qorpera_runtime_node_placement_decide(extensions.gen_random_uuid(),'native',p_provider,null::uuid,null::uuid,p_bundle)
 $$;
+-- A sign-in's machine on a login provider (the login session is real; the allocation is written as its
+-- reservation would write it).
+create function pg_temp.rs_login(p_allocation uuid,p_provider text) returns void language plpgsql as $$
+declare v_login jsonb;
+begin
+	perform pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
+	v_login := public.qorpera_begin_native_provider_login('30000000-0000-4000-8000-000000000010',extensions.gen_random_uuid(),
+		extensions.gen_random_uuid(),(current_setting('qorpera_test.wake_identity')::jsonb->>'compute_identity_id')::uuid,
+		'openai','codex-cli',repeat('8',64),900);
+	perform pg_temp.path_claims('service_role');
+	insert into public.qorpera_runtime_machine_allocations(id,profile_id,login_session_id,login_compute_identity_id,provider_adapter,instance_sha256)
+	values(p_allocation,'30000000-0000-4000-8000-000000000010',(v_login->>'login_id')::uuid,
+		(current_setting('qorpera_test.wake_identity')::jsonb->>'compute_identity_id')::uuid,p_provider,
+		encode(extensions.digest('runs-switch-login-' || p_allocation::text,'sha256'),'hex'));
+end $$;
+create function pg_temp.rs_login_reserve(p_allocation uuid,p_provider text,p_policy text,p_machine text) returns jsonb language sql as $$
+	select public.qorpera_reserve_runtime_node_machine(p_allocation,'login',p_provider,p_policy,
+		encode(extensions.digest('runs-switch-login-' || p_allocation::text,'sha256'),'hex'),p_machine,4000,8589934592)
+$$;
+-- A queued run of the fixture conversation with a runner and a machine allocation on `p_provider`.
+create function pg_temp.rs_run_machine(p_allocation uuid,p_provider text) returns uuid language plpgsql as $$
+declare v_input uuid := extensions.gen_random_uuid(); v_run uuid; v_runner uuid;
+begin
+	insert into public.qorpera_session_inputs(id,session_id,client_input_id,kind,author_user_id,body)
+	values(v_input,'30000000-0000-4000-8000-000000000042',extensions.gen_random_uuid(),'user_message',
+		'30000000-0000-4000-8000-000000000001','{"schema":"qorpera.session-prompt/v1","text":"Machine","images":[]}');
+	v_run := pg_temp.wake_input_run(array[v_input]);
+	perform pg_temp.path_claims('service_role');
+	v_runner := (public.qorpera_provision_execution_runner(v_run,p_allocation,p_provider,repeat('1',64)) ->> 'runner_id')::uuid;
+	if public.qorpera_reserve_runtime_machine(p_allocation,p_provider,encode(extensions.digest('runs-switch-run-' || p_allocation::text,'sha256'),'hex'),
+		v_run,v_runner) ->> 'state' <> 'reserved' then raise exception 'The run machine was not reserved'; end if;
+	return v_run;
+end $$;
+create function pg_temp.rs_run_reserve(p_allocation uuid,p_provider text,p_policy text,p_machine text) returns jsonb language sql as $$
+	select public.qorpera_reserve_runtime_node_machine(p_allocation,'native',p_provider,p_policy,
+		encode(extensions.digest('runs-switch-run-' || p_allocation::text,'sha256'),'hex'),p_machine,4000,8589934592)
+$$;
 create function pg_temp.rs_coding(p_worker uuid,p_provider text,p_policy text,p_machine text) returns jsonb language sql as $$
 	select public.qorpera_reserve_runtime_node_machine(p_worker,'coding',p_provider,p_policy,
 		encode(extensions.digest('runs-switch-vm-' || p_worker::text,'sha256'),'hex'),p_machine,4000,8589934592)
@@ -62,6 +99,9 @@ select public.qorpera_enroll_runtime_node_provider('79500000-0000-4000-8000-0000
 select public.qorpera_enroll_runtime_node_provider('79500000-0000-4000-8000-00000000000b',repeat('b',64),'native','native-b',repeat('2',64),4000,8589934592);
 select public.qorpera_enroll_runtime_node_provider('79500000-0000-4000-8000-00000000000a',repeat('a',64),'coding','coding-a',repeat('3',64),4000,8589934592);
 select public.qorpera_enroll_runtime_node_provider('79500000-0000-4000-8000-00000000000c',repeat('c',64),'coding','coding-c',repeat('5',64),4000,8589934592);
+select public.qorpera_enroll_runtime_node_provider('79500000-0000-4000-8000-00000000000a',repeat('a',64),'login','login-a',repeat('6',64),4000,8589934592);
+select public.qorpera_enroll_runtime_node_provider('79500000-0000-4000-8000-00000000000c',repeat('c',64),'login','login-c',repeat('8',64),4000,8589934592);
+select public.qorpera_enroll_runtime_node_provider('79500000-0000-4000-8000-00000000000c',repeat('c',64),'native','native-c',repeat('9',64),4000,8589934592);
 select public.qorpera_register_runner_orchestrator('79500000-0000-4000-8000-0000000000b1','Node B fast host','native-b',repeat('4',64),3600);
 select pg_temp.rs_inventory(node,machine), pg_temp.rs_observe(node,machine)
 from (values ('79500000-0000-4000-8000-00000000000a'::uuid,repeat('a',64)),('79500000-0000-4000-8000-00000000000b'::uuid,repeat('b',64)),
@@ -120,6 +160,8 @@ select set_config('qorpera_test.rs_runner',(public.qorpera_provision_execution_r
 select pg_temp.wake_assert(public.qorpera_reserve_runtime_machine('79500000-0000-4000-8000-0000000000c0','process',repeat('7',64),
 	current_setting('qorpera_test.rs_run')::uuid,current_setting('qorpera_test.rs_runner')::uuid) ->> 'state' = 'reserved',
 	'The run machine is reserved on node A');
+select pg_temp.wake_assert(public.qorpera_reserve_runtime_node_machine('79500000-0000-4000-8000-0000000000c0','native','process',repeat('1',64),
+	repeat('7',64),repeat('a',64),4000,8589934592) ->> 'state' = 'reserved','The ledger admits it while node A takes runs');
 
 -- Runs off on node A.
 select pg_temp.wake_assert(public.qorpera_set_runtime_node_runs('79500000-0000-4000-8000-00000000000a',false,1,'roll to v164')
@@ -140,12 +182,23 @@ set local role service_role;
 
 -- No new run lands on node A; machines still do.
 select pg_temp.wake_assert(not (pg_temp.rs_candidate('native','process') ->> 'eligible')::boolean
+	and not (pg_temp.rs_candidate('login','login-a') ->> 'eligible')::boolean
 	and (pg_temp.rs_candidate('native','native-b') ->> 'eligible')::boolean
 	and (pg_temp.rs_candidate('coding','coding-a') ->> 'eligible')::boolean,
-	'Node A is no run candidate, but still a coding candidate');
+	'Node A is no run or sign-in candidate, but still a coding candidate');
 select pg_temp.wake_assert(public.qorpera_reserve_runtime_node_machine('79500000-0000-4000-8000-0000000000c0','native','process',repeat('1',64),
-	repeat('7',64),repeat('a',64),4000,8589934592) = '{"state":"refused","reason":"NODE_DISABLED"}'::jsonb,
-	'The ledger refuses a new run machine on node A');
+	repeat('7',64),repeat('a',64),4000,8589934592) ->> 'state' = 'reserved','The run machine node A already holds passes again');
+savepoint new_machines;
+reset role;
+select pg_temp.rs_run_machine('79500000-0000-4000-8000-0000000000c2','process');
+select pg_temp.rs_login('79500000-0000-4000-8000-0000000000d1','login-a');
+set local role service_role;
+select pg_temp.wake_assert(pg_temp.rs_run_reserve('79500000-0000-4000-8000-0000000000c2','process',repeat('1',64),repeat('a',64))
+		= '{"state":"refused","reason":"NODE_DISABLED"}'::jsonb
+	and pg_temp.rs_login_reserve('79500000-0000-4000-8000-0000000000d1','login-a',repeat('6',64),repeat('a',64))
+		= '{"state":"refused","reason":"NODE_DISABLED"}'::jsonb,
+	'The ledger refuses a new run machine and a new sign-in on node A');
+rollback to savepoint new_machines;
 select pg_temp.wake_assert(pg_temp.rs_coding('79500000-0000-4000-8000-000000000301','coding-a',repeat('3',64),repeat('a',64)) ->> 'state' = 'reserved',
 	'A coding machine is still admitted on node A');
 select pg_temp.wake_assert(pg_temp.rs_claim('30000000-0000-4000-8000-000000000092') = 'null'::jsonb,
@@ -175,6 +228,62 @@ select pg_temp.wake_assert((pg_temp.rs_status('79500000-0000-4000-8000-000000000
 	and pg_temp.rs_status('79500000-0000-4000-8000-00000000000c') -> 'machinesAwake' = '{"coding":1}'::jsonb,
 	'Runs off and no run left: ready for a node release while the coding machine runs: '
 		|| pg_temp.rs_status('79500000-0000-4000-8000-00000000000c')::text);
+-- A live coding turn on node C does not hold a node release (it holds a full update).
+savepoint coding_turn;
+reset role;
+insert into public.qorpera_coding_executors(environment_id,owner,enabled,harnesses,nas_machine_id_sha256)
+select environment_id,'coding-node-c',true,array['codex'],repeat('c',64) from public.qorpera_runtime_workers
+where id = '79500000-0000-4000-8000-000000000302';
+insert into public.qorpera_coding_sessions(worker_id,profile_id,environment_id,harness,repository,branch,phase,lease_owner,lease_token,lease_until,started_at)
+select id,profile_id,environment_id,'codex','{"host":"github.com","owner":"acme","name":"app","baseBranch":"main"}'::jsonb,'main','running',
+	'coding-node-c',extensions.gen_random_uuid(),clock_timestamp() + interval '1 minute',clock_timestamp()
+from public.qorpera_runtime_workers where id = '79500000-0000-4000-8000-000000000302';
+set local role service_role;
+select pg_temp.wake_assert((pg_temp.rs_status('79500000-0000-4000-8000-00000000000c') ->> 'codingTurns')::bigint = 1
+	and (pg_temp.rs_status('79500000-0000-4000-8000-00000000000c') ->> 'readyForNodeRelease')::boolean,
+	'A coding turn continues through a node release');
+rollback to savepoint coding_turn;
+-- A held run machine, a held sign-in, or an orchestrator still serving another node each hold a node release.
+savepoint held_run_machine;
+select public.qorpera_set_runtime_node_runs('79500000-0000-4000-8000-00000000000c',true,1,'admit one');
+reset role;
+select pg_temp.rs_run_machine('79500000-0000-4000-8000-0000000000c3','native-c');
+set local role service_role;
+select pg_temp.wake_assert(pg_temp.rs_run_reserve('79500000-0000-4000-8000-0000000000c3','native-c',repeat('9',64),repeat('c',64)) ->> 'state' = 'reserved',
+	'A run machine on node C');
+select public.qorpera_set_runtime_node_runs('79500000-0000-4000-8000-00000000000c',false,1,'roll to v164');
+select pg_temp.wake_assert((pg_temp.rs_status('79500000-0000-4000-8000-00000000000c') ->> 'runMachines')::bigint = 1
+	and not (pg_temp.rs_status('79500000-0000-4000-8000-00000000000c') ->> 'readyForNodeRelease')::boolean,
+	'A held run machine holds the release');
+reset role;
+update public.qorpera_runtime_machine_allocations set released_at = clock_timestamp() where id = '79500000-0000-4000-8000-0000000000c3';
+set local role service_role;
+select pg_temp.wake_assert((pg_temp.rs_status('79500000-0000-4000-8000-00000000000c') ->> 'readyForNodeRelease')::boolean,
+	'Released, it no longer does');
+rollback to savepoint held_run_machine;
+savepoint held_sign_in;
+select public.qorpera_set_runtime_node_runs('79500000-0000-4000-8000-00000000000c',true,1,'admit one');
+reset role;
+select pg_temp.rs_login('79500000-0000-4000-8000-0000000000d2','login-c');
+set local role service_role;
+select pg_temp.wake_assert(pg_temp.rs_login_reserve('79500000-0000-4000-8000-0000000000d2','login-c',repeat('8',64),repeat('c',64)) ->> 'state' = 'reserved',
+	'A sign-in on node C');
+select public.qorpera_set_runtime_node_runs('79500000-0000-4000-8000-00000000000c',false,1,'roll to v164');
+select pg_temp.wake_assert((pg_temp.rs_status('79500000-0000-4000-8000-00000000000c') ->> 'signIns')::bigint = 1
+	and not (pg_temp.rs_status('79500000-0000-4000-8000-00000000000c') ->> 'readyForNodeRelease')::boolean,
+	'A held sign-in holds the release');
+rollback to savepoint held_sign_in;
+savepoint serving_elsewhere;
+-- An orchestrator with no run, on an adapter of node C and of node B (which takes runs).
+select public.qorpera_enroll_runtime_node_provider('79500000-0000-4000-8000-00000000000c',repeat('c',64),'native','native-x',repeat('d',64),4000,8589934592);
+select public.qorpera_enroll_runtime_node_provider('79500000-0000-4000-8000-00000000000b',repeat('b',64),'native','native-x',repeat('e',64),4000,8589934592);
+select public.qorpera_register_runner_orchestrator('79500000-0000-4000-8000-0000000000e1','Doubled host','native-x',repeat('6',64),3600);
+select pg_temp.wake_assert(pg_temp.rs_status('79500000-0000-4000-8000-00000000000c') -> 'orchestratorsServingElsewhere'
+		= '["79500000-0000-4000-8000-0000000000e1"]'::jsonb
+	and (pg_temp.rs_status('79500000-0000-4000-8000-00000000000c') ->> 'runs')::bigint = 0
+	and not (pg_temp.rs_status('79500000-0000-4000-8000-00000000000c') ->> 'readyForNodeRelease')::boolean,
+	'An orchestrator still serving another node holds the release: ' || pg_temp.rs_status('79500000-0000-4000-8000-00000000000c')::text);
+rollback to savepoint serving_elsewhere;
 -- The full switch still counts as runs off.
 savepoint full_switch;
 select public.qorpera_set_runtime_node_runs('79500000-0000-4000-8000-00000000000c',true,1,'back');
@@ -198,7 +307,8 @@ rollback to savepoint new_version;
 -- Runs on again: node A's orchestrator claims again (the run node B holds stays there).
 select public.qorpera_set_runtime_node_runs('79500000-0000-4000-8000-00000000000a',true,1,'v164 on node A');
 select pg_temp.wake_assert((pg_temp.rs_candidate('native','process') ->> 'eligible')::boolean
-	and (pg_temp.rs_status('79500000-0000-4000-8000-00000000000a') ->> 'runsServing')::boolean,'Node A takes runs again');
+	and (pg_temp.rs_candidate('login','login-a') ->> 'eligible')::boolean
+	and (pg_temp.rs_status('79500000-0000-4000-8000-00000000000a') ->> 'runsServing')::boolean,'Node A takes runs and sign-ins again');
 reset role;
 insert into public.qorpera_session_inputs(id,session_id,client_input_id,kind,author_user_id,body)
 values('79500000-0000-4000-8000-000000000101','30000000-0000-4000-8000-000000000042',extensions.gen_random_uuid(),
@@ -297,6 +407,22 @@ select pg_temp.wake_assert(public.qorpera_runtime_adapter_takes_bundle('process'
 	and public.qorpera_runtime_adapter_takes_bundle('native-b',current_setting('qorpera_test.rs_next'))
 	and public.qorpera_runtime_adapter_takes_bundle('no-orchestrator',current_setting('qorpera_test.rs_bundle'))
 	and public.qorpera_runtime_adapter_takes_bundle('native-b',null),'Which adapters take a bundle');
+savepoint mixed;
+set local role service_role;
+select public.qorpera_register_runner_orchestrator('79500000-0000-4000-8000-0000000000b2','Node B second host','native-b',repeat('5',64),3600);
+reset role;
+select pg_temp.wake_assert(public.qorpera_runtime_adapter_takes_bundle('native-b',current_setting('qorpera_test.rs_bundle')),
+	'One undeclared orchestrator beside a declared one: the adapter still takes the bundle');
+rollback to savepoint mixed;
+-- A claimant that itself runs another bundle is refused even when no other node can take the run (it waits).
+savepoint self_other;
+set local role service_role;
+select public.qorpera_declare_runner_orchestrator_bundle('30000000-0000-4000-8000-000000000092',current_setting('qorpera_test.rs_next'));
+select pg_temp.wake_assert(pg_temp.rs_decide('process',current_setting('qorpera_test.rs_bundle')) ->> 'decision' = 'refused'
+	and pg_temp.rs_decide('process',current_setting('qorpera_test.rs_bundle')) ->> 'reason' = 'NODE_NOT_PREFERRED',
+	'The claimant of another bundle is refused, not deferred: ' || pg_temp.rs_decide('process',current_setting('qorpera_test.rs_bundle'))::text);
+rollback to savepoint self_other;
+reset role;
 savepoint revoked;
 update public.qorpera_runner_orchestrators set status = 'revoked' where id = '79500000-0000-4000-8000-0000000000b1';
 select pg_temp.wake_assert(public.qorpera_runtime_adapter_takes_bundle('native-b',current_setting('qorpera_test.rs_bundle')),
@@ -306,6 +432,8 @@ set local role service_role;
 
 -- One node's orchestrators at once.
 select pg_temp.wake_error($q$select public.qorpera_declare_runtime_node_bundle('79500000-0000-4000-8000-00000000000b',repeat('9',64))$q$,
+	'42501','Runtime bundle is not registered');
+select pg_temp.wake_error($q$select public.qorpera_declare_runtime_node_bundle('79500000-0000-4000-8000-00000000000c',repeat('9',64))$q$,
 	'42501','Runtime bundle is not registered');
 select pg_temp.wake_error($q$select public.qorpera_declare_runtime_node_bundle('79500000-0000-4000-8000-00000000000b','not-a-sha')$q$,
 	'42501','Invalid node bundle declaration');
@@ -327,6 +455,11 @@ select pg_temp.wake_assert((select runtime_bundle_sha256 is null from public.qor
 set local role service_role;
 -- An adapter on two nodes would declare both: refused.
 select public.qorpera_enroll_runtime_node_provider('79500000-0000-4000-8000-00000000000c',repeat('c',64),'native','native-b',repeat('6',64),4000,8589934592);
+select pg_temp.wake_error($q$select public.qorpera_declare_runtime_node_bundle('79500000-0000-4000-8000-00000000000b',null)$q$,
+	'55000','An orchestrator of this node also serves another node');
+reset role;
+update public.qorpera_runner_orchestrators set status = 'draining' where id = '79500000-0000-4000-8000-0000000000b1';
+set local role service_role;
 select pg_temp.wake_error($q$select public.qorpera_declare_runtime_node_bundle('79500000-0000-4000-8000-00000000000b',null)$q$,
 	'55000','An orchestrator of this node also serves another node');
 rollback;
