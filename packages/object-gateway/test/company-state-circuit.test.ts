@@ -4,7 +4,12 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { ObjectDependency, ObjectDependencyError, ObjectStatementTimeout } from "../src/dependency.ts";
+import {
+	ObjectDependency,
+	ObjectDependencyError,
+	ObjectLockConflict,
+	ObjectStatementTimeout,
+} from "../src/dependency.ts";
 import { ObjectGatewayJournal } from "../src/journal.ts";
 import { SupabaseMemberCompanyAuthority } from "../src/member-company-authority.ts";
 import { FileSystemObjectStore } from "../src/object-store.ts";
@@ -86,6 +91,7 @@ async function gateway() {
 		// A failure for one company's RPCs; every other call is answered normally.
 		fail: undefined as undefined | { company: Company; respond: (signal: AbortSignal) => Promise<Response> },
 		rpcCalls: [] as Array<{ name: string; company: Company | undefined }>,
+		replicas: new Map<string, Uint8Array>(),
 	};
 	const companyOf = (args: Record<string, unknown>): Company | undefined =>
 		(Object.keys(companies) as Company[]).find(
@@ -101,7 +107,17 @@ async function gateway() {
 		now: () => 1_800_000_000_000,
 		fetch: async (input, init) => {
 			const request = new Request(input, init);
-			const name = new URL(request.url).pathname.split("/").at(-1)!;
+			const pathname = new URL(request.url).pathname;
+			if (pathname.startsWith("/storage/v1/object/")) {
+				const key = pathname.split("/").slice(-2).join("/");
+				if (request.method === "POST") {
+					state.replicas.set(key, new Uint8Array(await request.arrayBuffer()));
+					return Response.json({});
+				}
+				const replica = state.replicas.get(key);
+				return replica ? new Response(Uint8Array.from(replica)) : Response.json({}, { status: 404 });
+			}
+			const name = pathname.split("/").at(-1)!;
 			const args = (await request.json()) as Record<string, unknown>;
 			const company = companyOf(args);
 			state.rpcCalls.push({ name, company });
@@ -109,6 +125,9 @@ async function gateway() {
 			if (name === "qorpera_authorize_native_company_object_download")
 				return Response.json({ backend: "nas-object-gateway", bytes: bytes.length });
 			if (name.includes("native_company_object")) return Response.json(true);
+			if (["qorpera_authorize_profile_object_replication", "qorpera_confirm_profile_object_replica"].includes(name))
+				return Response.json(true);
+			if (name === "qorpera_list_profile_objects_for_migration") return Response.json([]);
 			if (name === "qorpera_authorize_member_company_path_object")
 				return Response.json({
 					schema: "qorpera.member-company-object/v2",
@@ -166,7 +185,7 @@ async function gateway() {
 				},
 			}),
 	};
-	return { authority, state, routes };
+	return { authority, replication, state, routes };
 }
 
 type Route = "native read" | "native write" | "member read";
@@ -249,11 +268,35 @@ describe("one company's database state and the shared circuit", () => {
 		expect(state.rpcCalls.length).toBe(before);
 	});
 
-	it("keeps profile and replication RPCs' 500s dependency failures", async () => {
-		// The replication reconciler blocks an object on any non-5xx refusal, so a lock conflict there must stay
-		// transient; these RPCs are not one company's object route.
+	it.each(["55P03", "40P01", "40001"])(
+		"a %s on one company's replication neither blocks its object nor refuses another company",
+		async (code) => {
+			// The reconciler blocks an object for good on any refusal that is not "unavailable", so a lock conflict
+			// on these RPCs stays a 503 to the reconciler, and it leaves the shared circuit closed.
+			const { authority, replication, state, routes } = await gateway();
+			for (const company of ["a", "b"] as const) expect((await routes["native write"](company)).status).toBe(200);
+			state.fail = { company: "a", respond: async () => postgrest(code) };
+			const failure = await authority
+				.authorizeReplication(companies.a.companyId, sha256, bytes.length)
+				.catch((error: unknown) => error);
+			expect(failure).toBeInstanceOf(ObjectLockConflict);
+			expect(failure).toMatchObject({ status: 503, unavailable: true });
+			await replication.reconcile();
+			expect(await replication.status()).toMatchObject({ pending: 1, blocked: 0 });
+			expect([...state.replicas.keys()]).toEqual([`${companies.b.companyId}/${sha256}`]);
+			expect(authority.health().api.status).toBe("healthy");
+			expect(served(await routes["native read"]("b"))).toBe(true);
+			// Once A's rows are free, the same object replicates.
+			state.fail = undefined;
+			await replication.reconcile();
+			expect(await replication.status()).toMatchObject({ pending: 0, blocked: 0 });
+			expect(state.replicas.size).toBe(2);
+		},
+	);
+
+	it("keeps other 500s on profile and replication RPCs dependency failures", async () => {
 		const { authority, state } = await gateway();
-		state.fail = { company: "a", respond: async () => postgrest("40P01") };
+		state.fail = { company: "a", respond: async () => postgrest("55000") };
 		const failure = await authority
 			.authorizeReplication(companies.a.companyId, sha256, bytes.length)
 			.catch((error: unknown) => error);
@@ -335,15 +378,54 @@ describe("member Company File authority", () => {
 				return respond(args, init!.signal!);
 			},
 		});
-		const call = (company: Company) =>
+		const call = (company: Company, signal = new AbortController().signal) =>
 			authority.member(
 				"qorpera_company_presence_scope",
 				memberToken,
 				{ p_environment_id: companies[company].environmentId },
-				new AbortController().signal,
+				signal,
 			);
 		return { calls, call };
 	}
+
+	const hangUntilAborted = (signal: AbortSignal) =>
+		new Promise<Response>((_resolve, reject) => {
+			signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+		});
+
+	it.each([
+		["its client disconnects", (caller: AbortController) => setTimeout(() => caller.abort(), 20)],
+		[
+			"its own deadline passes",
+			(caller: AbortController) => setTimeout(() => caller.abort(new DOMException("", "TimeoutError")), 20),
+		],
+	] as const)("leaves the circuit closed when a caller gives up because %s", async (_label, giveUp) => {
+		// The reviewer's probe on #568: a caller abort used to count as a dependency failure, so the next
+		// company's call got 503 without reaching the database.
+		const { calls, call } = memberAuthority(async (args, signal) =>
+			args.p_environment_id === companies.a.environmentId ? hangUntilAborted(signal) : Response.json({ ok: true }),
+		);
+		const caller = new AbortController();
+		const abandoned = call("a", caller.signal);
+		giveUp(caller);
+		await expect(abandoned).rejects.toBeInstanceOf(ObjectDependencyError);
+		await expect(call("b")).resolves.toEqual({ ok: true });
+		expect(calls).toHaveLength(2);
+	});
+
+	it("still opens its circuit on its own deadline, even when the caller gives up at the same moment", async () => {
+		const caller = new AbortController();
+		const { calls, call } = memberAuthority(async (args, signal) => {
+			if (args.p_environment_id !== companies.a.environmentId) return Response.json({ ok: true });
+			// The gateway's deadline aborts the fetch; the caller gives up in the same tick.
+			signal.addEventListener("abort", () => caller.abort(), { once: true });
+			return hangUntilAborted(signal);
+		});
+		await expect(call("a", caller.signal)).rejects.toMatchObject({ status: 503 });
+		expect(caller.signal.aborted).toBe(true);
+		await expect(call("b")).rejects.toMatchObject({ status: 503 });
+		expect(calls).toHaveLength(1);
+	});
 
 	it.each([
 		["40P01", 409],
@@ -367,6 +449,98 @@ describe("member Company File authority", () => {
 		await expect(call("b")).rejects.toMatchObject({ status: 503 });
 		expect(calls).toHaveLength(1);
 	});
+});
+
+describe("member presence route and the caller's own abort", () => {
+	const token = "a".repeat(64);
+	async function presence() {
+		const calls: Company[] = [];
+		const abandoned: Company[] = [];
+		const authority = new SupabaseMemberCompanyAuthority({
+			projectUrl: "https://cloud.test",
+			publishableKey: "public",
+			secretKey: "secret",
+			requestTimeoutMs: 5_000,
+			fetch: async (_input, init) => {
+				const args = JSON.parse(String(init?.body)) as Record<string, unknown>;
+				const company = (Object.keys(companies) as Company[]).find(
+					(key) => args.p_environment_id === companies[key].environmentId,
+				)!;
+				calls.push(company);
+				// Company A's scope waits on its locks until the request is abandoned.
+				if (company === "a")
+					return new Promise<Response>((_resolve, reject) => {
+						init!.signal!.addEventListener(
+							"abort",
+							() => {
+								abandoned.push(company);
+								reject(init!.signal!.reason);
+							},
+							{ once: true },
+						);
+					});
+				return Response.json({
+					schema: "qorpera.company-presence-scope/v1",
+					companyId: companies.b.companyId,
+					environmentId: companies.b.environmentId,
+					paths: [{ path, routes: [{ path, token }] }],
+				});
+			},
+		});
+		const server = createServer(
+			createObjectGatewayHandler({
+				store: {} as never,
+				authority: {} as never,
+				controlToken: "synthetic-control",
+				verifierToken: "synthetic-verifier",
+				memberPresence: authority,
+			}),
+		);
+		await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+		const address = server.address();
+		if (!address || typeof address === "string") throw new Error("Missing fixture server");
+		cleanups.push(async () => {
+			server.closeAllConnections();
+			await new Promise<void>((resolve) => server.close(() => resolve()));
+		});
+		const post = (company: Company, signal?: AbortSignal) =>
+			fetch(
+				`http://127.0.0.1:${address.port}/v1/member-company-presence/${companies[company].companyId}/${companies[company].environmentId}`,
+				{
+					method: "POST",
+					headers: { authorization: `Bearer ${memberToken}`, "content-type": "application/json" },
+					body: JSON.stringify({ paths: [path], candidates: [], truncated: false }),
+					...(signal ? { signal } : {}),
+				},
+			);
+		return { calls, abandoned, post };
+	}
+
+	it("serves another company after one member closes the tab mid-request", async () => {
+		const { calls, abandoned, post } = await presence();
+		const tab = new AbortController();
+		const closed = post("a", tab.signal).catch((error: unknown) => error);
+		await expect.poll(() => calls.includes("a")).toBe(true);
+		tab.abort();
+		await closed;
+		// The gateway sees the disconnect and abandons A's call; B's presence still reaches the database.
+		await expect.poll(() => abandoned).toEqual(["a"]);
+		await new Promise((resolve) => setImmediate(resolve));
+		const other = await post("b");
+		expect(other.status).toBe(200);
+		expect(await other.json()).toMatchObject({ view: { state: "available" } });
+		expect(calls).toEqual(["a", "b", "b"]);
+	});
+
+	it("serves another company after one presence request passes its 2.5 s deadline", async () => {
+		const { calls, abandoned, post } = await presence();
+		const late = await post("a");
+		expect(abandoned).toEqual(["a"]);
+		expect(late.status).toBe(503);
+		const other = await post("b");
+		expect(other.status).toBe(200);
+		expect(calls).toEqual(["a", "b", "b"]);
+	}, 10_000);
 });
 
 describe("dependency circuit and statement timeouts", () => {

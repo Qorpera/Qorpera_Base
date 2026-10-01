@@ -128,6 +128,6 @@ export class SupabaseMemberCompanyAuthority implements MemberCompanyAuthority {
 			const bytes = await readBoundedObjectResponse(response, 8 * 1024 * 1024, combined);
 			combined.throwIfAborted();
 			return bytes.length ? (JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as unknown) : null;
-		});
+		}, signal);
 	}
 }

@@ -4,6 +4,7 @@ import {
 	ObjectDependencyError,
 	postgrestErrorCode,
 	readBoundedObjectResponse,
+	unavailableStateFailure,
 } from "./dependency.ts";
 import type { FolderObjectAuthority, FolderRunActor } from "./folder-objects.ts";
 import type {
@@ -629,10 +630,11 @@ export class SupabaseObjectAuthority
 		});
 	}
 
-	/** `companyState`: the RPC acts for one company, so its 500s are read with `companyStateFailure`; `"folder"`, a
-	 * folder core byte RPC, also reads its 400s, with `folderStateFailure`. Profile, replication, deletion and
-	 * migration RPCs keep every 500 a dependency failure: the replication reconciler blocks an object on a non-5xx
-	 * refusal, and a profile read drops its member's read leases on one. */
+	/** `companyState`: the RPC acts for one company, so its 500s are read with `companyStateFailure` (409, 423);
+	 * `"folder"`, a folder core byte RPC, also reads its 400s, with `folderStateFailure` (and 413). Profile,
+	 * replication, deletion and migration RPCs must stay "unavailable" to their callers (the replication reconciler
+	 * blocks an object on any other refusal, and a profile read drops its member's read leases on one), so theirs
+	 * are read with `unavailableStateFailure`: a lock conflict is still 503 but leaves the circuit alone. */
 	async #rpc(
 		name: string,
 		body: Record<string, unknown>,
@@ -654,8 +656,10 @@ export class SupabaseObjectAuthority
 			if (!response.ok) {
 				if (companyState === "folder" && (response.status === 500 || response.status === 400))
 					throw folderStateFailure(await postgrestErrorCode(response, signal), response.status);
-				if (companyState && response.status === 500)
-					throw companyStateFailure(await postgrestErrorCode(response, signal));
+				if (response.status === 500)
+					throw (companyState ? companyStateFailure : unavailableStateFailure)(
+						await postgrestErrorCode(response, signal),
+					);
 				void response.body?.cancel().catch(() => undefined);
 				throw new ObjectDependencyError(response.status);
 			}
