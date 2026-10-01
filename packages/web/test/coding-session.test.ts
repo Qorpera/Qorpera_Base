@@ -840,6 +840,26 @@ describe("the element in the thread", () => {
 		expect(element.el.querySelector(".coding-steps")?.textContent).toContain("Prepared the repository at abc1234");
 	});
 
+	it("says a turn cut off for computer hours in plain words, never with its code", async () => {
+		const { element } = mount(codingSession({ phase: "failed", workerState: "failed" }), {
+			events: [
+				event(
+					1,
+					"failed",
+					{
+						summary: "The coding turn did not finish: Out of computer hours [code=COMPUTER_HOURS_EXHAUSTED]",
+					},
+					"executor",
+				),
+			],
+		});
+		await settle();
+		const notes = [...element.el.querySelectorAll(".coding-note")].map((note) => note.textContent);
+		expect(notes).toEqual([
+			"The company ran out of computer hours. The workspace is kept; a follow-up continues once hours are added.",
+		]);
+	});
+
 	it("keeps a draft when the session is left and opened again", async () => {
 		const first = mount(codingSession({ phase: "completed", workerState: "succeeded" }));
 		await settle();
