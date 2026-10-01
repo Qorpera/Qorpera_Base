@@ -1,5 +1,5 @@
 -- @fixture 608_company_file_writer_fence.test.sql until "-- 4. A rebase takes the fence"
--- 20260929750000: a caller the function refuses is refused before it locks the row. Cancelling and retrying an
+-- 20260928319750: a caller the function refuses is refused before it locks the row. Cancelling and retrying an
 -- artifact cleanup plan, accepting, rejecting and rebasing a company proposal, configuring a shared session's
 -- execution and asking for a turn in it locked the row their argument names FOR UPDATE before they checked the
 -- caller's role in its company, so anyone signed in (and, for the cleanup plan and the session, anyone with the

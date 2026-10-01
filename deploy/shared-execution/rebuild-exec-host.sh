@@ -168,7 +168,7 @@ service_key=$(tr -d '\n' < "${STAGING}/credentials/qorpera-supabase-service-key"
 # The service key never appears on a command line: curl reads its headers from a
 # file descriptor this shell owns.
 # The body goes through standard input too: the control token's sha256 names the orchestrator's wake-up
-# topic (migration 20260929550000), so it is kept off the command line like the key.
+# topic (migration 20260928319550), so it is kept off the command line like the key.
 registered=$(printf '{"p_orchestrator_id":"%s","p_display_name":"shared-execution %s","p_provider_adapter":"%s","p_control_token_sha256":"%s","p_control_token_seconds":86400}' \
 	"${orchestrator_id}" "${VM}" "${adapter}" "${control_sha256}" |
 	curl -sS -X POST "${supabase_url}/rest/v1/rpc/qorpera_register_runner_orchestrator" \

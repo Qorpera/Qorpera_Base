@@ -1,5 +1,5 @@
 -- @fixture 320_runtime_operational_observability.test.sql until "-- Operator RPCs are not a member, model, runner, or broker inspection surface."
--- Batch observation writes and scheduled retention (20260929370000), on SQL320's real native run.
+-- Batch observation writes and scheduled retention (20260928319370), on SQL320's real native run.
 
 -- Only service_role writes batches or runs retention by hand; no API role schedules it.
 reset role;
