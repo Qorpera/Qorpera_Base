@@ -323,6 +323,9 @@ platform commit with a review id is refused (22023).
 
   Contract item 4: "the kernel enforces this ordering". Cards, member answers
   and parked proposals come with it.
+- The recorder's design is RUNTIME-COMPANY-FOLDER-C2.md: R1 records an
+  approval the automatic review already gave a tool call; R2 reviews change
+  sets no tool call carried.
 
 ### 7. The folder pause
 

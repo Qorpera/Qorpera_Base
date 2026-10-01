@@ -742,7 +742,7 @@ C1d (bytes):
 - first, `manage_todo` (a todo file, `writeTodoFile`), `organize_sidebar` (`agents/sections.md`, read and
   rewrite) and `decide_routine` (the run's own routine file: a new `at` or a conclusion,
   `setCompanyStateSettings`);
-- after C2's review recorder, `hire_agent` (one `new_folder` unit with `agent.md` and the first todo),
+- after C2's review recorder (RUNTIME-COMPANY-FOLDER-C2.md, R1), `hire_agent` (one `new_folder` unit with `agent.md` and the first todo),
   `create_group_chat` (`group.md`) and `manage_routine` (a routine file, after `qorpera_prepare_routine_login`).
 
 **How a thin writer saves** (W0, #583; W1):
