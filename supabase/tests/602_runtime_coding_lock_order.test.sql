@@ -19,9 +19,11 @@ reset role;
 select set_config(name, current_setting(name), false) from unnest(array['qorpera_test.parent_binding','qorpera_test.coding_claim',
 	'qorpera_test.coding_storage','qorpera_test.coding_binding','qorpera_test.coding_vm']) name;
 select set_config('qorpera_test.lock_order_first_xid', xid(pg_current_xact_id())::text, false);
-select dblink_connect('lock_holder', 'dbname=qorpera_test');
-select dblink_connect('lock_first', 'dbname=qorpera_test');
-select dblink_connect('lock_second', 'dbname=qorpera_test');
+-- Three more connections to this same database, whatever the runner named it (a copy made from a
+-- template has another name, and its calls would otherwise land in a database without the fixture).
+select dblink_connect('lock_holder', 'dbname=' || current_database());
+select dblink_connect('lock_first', 'dbname=' || current_database());
+select dblink_connect('lock_second', 'dbname=' || current_database());
 select set_config('qorpera_test.lock_' || name || '_pid', pid::text, false)
 from unnest(array['holder','first','second']) name, lateral dblink('lock_' || name, 'select pg_backend_pid()') as backend(pid integer);
 -- Only this connection and its three may use the database while the test runs.

@@ -7,6 +7,7 @@ import {
 	parseCloudCodingPullRequest,
 	parseCloudCodingRepository,
 } from "@qorpera/contracts";
+import type { CloudChatGptPlanAuth } from "./cloud-codex-tool-session.ts";
 import { type CloudCodingCommandGateway, cloudCodingCommandTools } from "./cloud-coding-command-tools.ts";
 import type { NativeIsolationConfiguration } from "./cloud-native-isolation.ts";
 import type { NativeCloudExecutionDriver, NativeCompanyExecutionRequest } from "./cloud-native-provider-host.ts";
@@ -333,6 +334,7 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 	readonly #command: readonly [string, ...string[]];
 	readonly #binarySha256: string;
 	readonly #isolation: NativeIsolationConfiguration | undefined;
+	readonly #chatGptPlanAuth: CloudChatGptPlanAuth | undefined;
 	readonly #timeoutMs: number | undefined;
 	constructor(options: {
 		control: CloudCodingNativeControl;
@@ -340,6 +342,7 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 		command: readonly [string, ...string[]];
 		binarySha256: string;
 		isolation?: NativeIsolationConfiguration;
+		chatGptPlanAuth?: CloudChatGptPlanAuth;
 		timeoutMs?: number;
 	}) {
 		if (!SHA.test(options.binarySha256)) throw new Error("Invalid coding native configuration");
@@ -348,6 +351,7 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 		this.#command = Object.freeze([...options.command]) as readonly [string, ...string[]];
 		this.#binarySha256 = options.binarySha256;
 		this.#isolation = options.isolation ? Object.freeze({ ...options.isolation }) : undefined;
+		this.#chatGptPlanAuth = options.chatGptPlanAuth;
 		this.#timeoutMs = options.timeoutMs;
 	}
 	async execute(
@@ -599,6 +603,7 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 			binarySha256: this.#binarySha256,
 			identityRoot,
 			isolation: this.#isolation,
+			...(this.#chatGptPlanAuth ? { chatGptPlanAuth: this.#chatGptPlanAuth } : {}),
 			prompt,
 			runtimeInstructions: INSTRUCTIONS,
 			signal,

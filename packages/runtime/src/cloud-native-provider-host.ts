@@ -19,7 +19,12 @@ import {
 } from "./cloud-agent-mouth.ts";
 import type { ModelLoginIssue, ModelLoginIssueRequest, ModelLoginRunBinding } from "./cloud-model-login-vault.ts";
 import { nativeRuntimeFailureMetadata } from "./cloud-native-failure.ts";
-import { launchIsolatedNativeProcess, type NativeIsolationConfiguration } from "./cloud-native-isolation.ts";
+import {
+	CHATGPT_PLAN_DIRECTORY,
+	CHATGPT_PLAN_TOKEN_FILE,
+	launchIsolatedNativeProcess,
+	type NativeIsolationConfiguration,
+} from "./cloud-native-isolation.ts";
 import type { CloudInteractionRequestInput, CloudInteractionRequestReceipt } from "./cloud-thread-interactions.ts";
 import { nativeProviderAccountEmail, nativeProviderAccountIdentity } from "./native-provider-account.ts";
 import { type NativeProviderAccountUsage, readNativeProviderAccountUsage } from "./native-provider-usage.ts";
@@ -41,6 +46,10 @@ const MODEL_LOGIN_RECHECK_MS = 60_000;
 const MODEL_LOGIN_REFERENCE = /^model-login\/[0-9a-f-]{36}$/;
 const PROVIDER_DEFAULT_MODEL = "provider-default";
 const CODEX_CREDENTIAL_PATHS: ReadonlySet<string> = new Set(["codex/auth.json"]);
+/** A ChatGPT plan run's token file (`<root>/chatgpt-plan/access-token`, read by the run's Codex). */
+const CHATGPT_PLAN_CREDENTIAL_PATHS: ReadonlySet<string> = new Set([
+	`${CHATGPT_PLAN_DIRECTORY}/${CHATGPT_PLAN_TOKEN_FILE}`,
+]);
 
 export type NativeHarnessKind = "codex-cli" | "claude-code";
 export type NativeComputeOwnershipKind = "member" | "company" | "department" | "security_boundary";
@@ -227,6 +236,24 @@ async function writeModelLogin(root: string, authJson: string): Promise<void> {
 	try {
 		await writeFile(staged, authJson, { mode: 0o600, flag: "wx" });
 		await rename(staged, join(codexHome, "auth.json"));
+	} catch (error) {
+		await rm(staged, { force: true });
+		throw error;
+	}
+}
+
+/** Puts a ChatGPT plan's access token from the vault where the run's Codex reads it, in one step: the
+ * token command reads the old token or the new one, never half of either. The file holds the access token
+ * alone (the vault never hands a run the refresh token), is this user's alone (0600, in a 0700 directory),
+ * and lies outside everything the agent's tools reach. */
+async function writeChatGptPlanToken(root: string, accessToken: string): Promise<void> {
+	if (!/^[\x21-\x7e]{1,16384}$/.test(accessToken)) throw new Error("Native login vault returned an invalid login");
+	const directory = join(root, CHATGPT_PLAN_DIRECTORY);
+	await mkdir(directory, { recursive: true, mode: 0o700 });
+	const staged = join(root, `.chatgpt-plan.${randomUUID()}`);
+	try {
+		await writeFile(staged, accessToken, { mode: 0o600, flag: "wx" });
+		await rename(staged, join(directory, CHATGPT_PLAN_TOKEN_FILE));
 	} catch (error) {
 		await rm(staged, { force: true });
 		throw error;
@@ -1638,9 +1665,9 @@ export class NativeProviderHost {
 				};
 				const kept = warm?.vaultVersion;
 				const login = await modelLogins.issue({ binding, knownVersion: kept ?? null }, executionAbort.signal);
-				// A ChatGPT plan login runs Codex with the plan's access token instead of a login file; this
-				// host runs Codex logins only (Sign in with ChatGPT is built switched off).
-				if ("loginKind" in login) throw new Error("Native login is a ChatGPT plan login this host does not run");
+				// A ChatGPT plan login (Sign in with ChatGPT) runs Codex with the plan's access token in a file
+				// of its own instead of a Codex login file; a root holds one kind only.
+				const plan = "loginKind" in login;
 				if (warm && kept === undefined) {
 					root = undefined;
 					await this.#wipeRoot(warm.root);
@@ -1648,10 +1675,12 @@ export class NativeProviderHost {
 				stage = "temporary-workspace";
 				root ??= await mkdtemp(join(this.#temporaryRoot, `qorpera-native-run-${authority.runId}-`));
 				stage = "credential-opening";
-				if (login.authJson !== null) await writeModelLogin(root, login.authJson);
-				else if (kept !== login.version) throw new Error("Native login vault returned no login");
+				if ("loginKind" in login ? login.accessToken !== null : login.authJson !== null) {
+					if ("loginKind" in login) await writeChatGptPlanToken(root, login.accessToken as string);
+					else await writeModelLogin(root, login.authJson as string);
+				} else if (kept !== login.version) throw new Error("Native login vault returned no login");
 				vaultVersion = login.version;
-				durableCredentialPaths = CODEX_CREDENTIAL_PATHS;
+				durableCredentialPaths = plan ? CHATGPT_PLAN_CREDENTIAL_PATHS : CODEX_CREDENTIAL_PATHS;
 				// The pass ends by itself; ask the vault for a newer one while the run goes on. Codex
 				// re-reads its login file before it would renew, and never renews without a token.
 				const runRoot = root;
@@ -1665,8 +1694,12 @@ export class NativeProviderHost {
 							);
 							// A copy comes back whenever the vault opened the login for this call: a newer
 							// version, or the same version after a renewal attempt (a pass it renewed but
-							// could not save keeps the old number). Writing it again is harmless.
-							if ("authJson" in next && next.authJson !== null) {
+							// could not save keeps the old number). Writing it again is harmless. A copy of
+							// another kind than the run started with is never written.
+							if (plan && "loginKind" in next && next.accessToken !== null) {
+								await writeChatGptPlanToken(runRoot, next.accessToken);
+								vaultVersion = next.version;
+							} else if (!plan && "authJson" in next && next.authJson !== null) {
 								await writeModelLogin(runRoot, next.authJson);
 								vaultVersion = next.version;
 							}
