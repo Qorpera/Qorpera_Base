@@ -3929,7 +3929,8 @@ complete section 16.3's listener triggers and section 11.5's broker. Design:
    sender, which alone holds the provider key, sends it. A reply to a received
    email joins its thread and says it is an automatic response; an email
    sent automatically is never answered, and a company never emails its own
-   mailboxes. Sending has its own platform switch, built off, and each
+   mailboxes. No email goes out as if from Qorpera: a sender name or mailbox
+   that reads as Qorpera is refused (founder decision, 1 October 2026). Sending has its own platform switch, built off, and each
    company an hourly and a daily limit on recipients that operators set.
 
 Section 21, item 33, is the event-wake acceptance item.
