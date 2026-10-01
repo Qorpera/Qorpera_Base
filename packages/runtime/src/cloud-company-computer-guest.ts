@@ -699,7 +699,12 @@ export class CompanyComputerGuestAutomation {
 				program: action.kind === "shell" ? "/bin/bash" : "/usr/bin/xdotool",
 				args,
 				...(action.kind === "desktop" && action.action === "type" ? { stdin: action.text } : {}),
-				environment: { DISPLAY: display, PATH: "/usr/local/bin:/usr/bin:/bin", LANG: "C.UTF-8" },
+				// A shell command never gets the screen's display; xdotool does.
+				environment: {
+					...(action.kind === "shell" ? {} : { DISPLAY: display }),
+					PATH: "/usr/local/bin:/usr/bin:/bin",
+					LANG: "C.UTF-8",
+				},
 				workingDirectory: this.#layout.workbenchRoot,
 				timeoutMs: action.kind === "shell" ? action.timeoutMs : 5_000,
 				maxOutputBytes: 16_384,

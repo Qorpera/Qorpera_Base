@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { type FileHandle, lstat, mkdtemp, readdir, realpath, rm, statfs, writeFile } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { type FileHandle, lstat, mkdtemp, readdir, rm, statfs, writeFile } from "node:fs/promises";
+import { join, resolve } from "node:path";
 import type { Duplex } from "node:stream";
 import {
 	assertCompanyComputerScreenBinding,
@@ -29,7 +29,6 @@ import {
 	plumbCompanyComputerNetwork,
 } from "./cloud-company-computer-linux-network.ts";
 import { spawnCompanyComputerLinuxProcess } from "./cloud-company-computer-linux-process.ts";
-import { companyComputerScreenDisplay } from "./cloud-company-computer-screens.ts";
 import {
 	COMPANY_COMPUTER_NAMESPACE_CHILD,
 	COMPANY_COMPUTER_SHELL_LINE_LIMIT,
@@ -61,7 +60,7 @@ const SHELL_IMAGE_FILES = [
 	"/etc/ld.so.cache",
 	"/etc/ssl/openssl.cnf",
 ];
-const SHELL_IMAGE_DIRECTORIES = ["/etc/ssl/certs", "/etc/alternatives", "/etc/fonts", "/etc/xdg", "/etc/X11"];
+const SHELL_IMAGE_DIRECTORIES = ["/etc/ssl/certs", "/etc/alternatives", "/etc/fonts", "/etc/xdg"];
 
 interface Session {
 	id: string;
@@ -560,7 +559,9 @@ export class CompanyComputerLinuxShell implements CompanyComputerGuestShell {
 /**
  * The real shell namespace of one screen. Same sandbox as today's commands:
  * no host network device, PID view, capabilities or privileges; the workbench
- * and the desktop home read-write, the screen's X socket, a read-only image.
+ * and the desktop home read-write, a read-only image. Never the screen's
+ * display: any X client of the screen could read what a member types there,
+ * so agents open programs on the screen through desktop actions instead.
  * Its network is its own: the root plumber adds a veth as it starts, and the
  * machine's firewall lets it reach the public internet on any port and
  * protocol but nothing private, the machine itself or other computers.
@@ -574,7 +575,6 @@ export function createCompanyComputerLinuxShellLauncher(options: {
 	limits: CompanyComputerCommandLimits;
 	/** Existing private local directory with root-owned ancestors, outside every persistent root. */
 	runtimeRoot: string;
-	xSocket: () => string;
 	boundary: CompanyComputerGuestBoundary;
 	timeZone?: string;
 	/** Test seam for the root plumber's socket. */
@@ -623,18 +623,6 @@ export function createCompanyComputerLinuxShellLauncher(options: {
 			])
 				await assertCompanyComputerImageArtifact(path);
 			await assertCompanyComputerImageArtifact("/usr", true);
-			const xSocket = options.xSocket();
-			const socket = await lstat(xSocket);
-			const socketParent = await lstat(dirname(xSocket));
-			if (
-				!socket.isSocket() ||
-				socket.uid !== process.getuid?.() ||
-				(await realpath(xSocket)) !== xSocket ||
-				!socketParent.isDirectory() ||
-				socketParent.uid !== process.getuid?.() ||
-				(socketParent.mode & 0o077) !== 0
-			)
-				throw new Error("OFFICE_X_SOCKET_UNAVAILABLE");
 			files.push(await openCompanyComputerLinuxDirectory(layout.workbenchRoot, false));
 			files.push(await openCompanyComputerLinuxDirectory(layout.desktopHome, true));
 			await assertCompanyComputerWorkbenchMount(files[0], options.workbenchMount, [
@@ -660,9 +648,6 @@ export function createCompanyComputerLinuxShellLauncher(options: {
 				"6",
 				"/home/qorpera",
 				"--ro-bind",
-				xSocket,
-				`/tmp/.X11-unix/X${binding.screenOrdinal}`,
-				"--ro-bind",
 				join(temporary, "hosts"),
 				"/etc/hosts",
 				"--ro-bind",
@@ -684,7 +669,6 @@ export function createCompanyComputerLinuxShellLauncher(options: {
 				LANG: "C.UTF-8",
 				SHELL: "/usr/bin/bash",
 				TERM: "dumb",
-				DISPLAY: companyComputerScreenDisplay(binding.screenOrdinal),
 				...(options.timeZone ? { TZ: options.timeZone } : {}),
 			}))
 				args.push("--setenv", name, value);

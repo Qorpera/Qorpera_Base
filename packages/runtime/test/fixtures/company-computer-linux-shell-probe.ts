@@ -74,7 +74,6 @@ try {
 			workbenchMount,
 			limits,
 			runtimeRoot: "/run/office-screens",
-			xSocket: () => "/tmp/office-x/X1",
 			boundary: { assertReady: async () => undefined },
 		}),
 	);
@@ -175,7 +174,6 @@ printf isolated`),
 			workbenchMount,
 			limits,
 			runtimeRoot: "/run/office-screens",
-			xSocket: () => "/tmp/office-x/X1",
 			boundary: { assertReady: async () => undefined },
 		}),
 	);
@@ -238,7 +236,6 @@ printf isolated`),
 				workbenchMount,
 				limits,
 				runtimeRoot: "/run/office-screens",
-				xSocket: () => "/tmp/office-x/X1",
 				boundary: { assertReady: async () => undefined },
 			}),
 		);
@@ -280,8 +277,31 @@ printf isolated`),
 	const answered = await settled(asking.sessionId, await read(asking.sessionId, 5000));
 	assert.equal(answered.output, "got:yes\n");
 
-	// The screen's display, as before.
-	assert.equal((await done("xdotool getdisplaygeometry")).trim(), "1920 1200");
+	// Never the screen's display (any X client of it could read what a member
+	// types there): no DISPLAY, no X socket, and none of the display server's
+	// sockets in reach, while this machine itself can connect to them.
+	const xConnect = (path: string) =>
+		new Promise<string>((resolve) => {
+			const socket = createConnection(path);
+			socket.once("connect", () => {
+				socket.destroy();
+				resolve("connected");
+			});
+			socket.once("error", (error: NodeJS.ErrnoException) => resolve(error.code ?? "error"));
+		});
+	assert.equal(await xConnect("\0/tmp/.X11-unix/X1"), "connected", "the display's abstract socket");
+	assert.equal(await xConnect("/tmp/office-x/X1"), "connected", "the display's socket file");
+	assert.equal(
+		await done(`set -u
+test -z "\${DISPLAY-}" || exit 31
+test ! -e /tmp/.X11-unix || exit 32
+test ! -e /tmp/office-x || exit 33
+node -e 'for (const p of ["\\0/tmp/.X11-unix/X1", "/tmp/.X11-unix/X1", "/tmp/office-x/X1"]) { const s = require("net").connect(p); s.on("connect", () => process.exit(34)); s.on("error", () => {}); } setTimeout(() => process.exit(0), 2000);' || exit $?
+if xdotool getdisplaygeometry >/dev/null 2>&1; then exit 35; fi
+if DISPLAY=:1 xdotool getdisplaygeometry >/dev/null 2>&1; then exit 36; fi
+printf no-display`),
+		"no-display",
+	);
 
 	// No 15-second stop: this runs for 17 seconds and finishes.
 	const long = await run("sleep 17; echo survived", 1000);

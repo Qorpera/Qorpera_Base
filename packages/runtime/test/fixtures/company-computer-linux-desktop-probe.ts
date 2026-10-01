@@ -62,10 +62,24 @@ function commands(binding: CompanyComputerScreenBinding) {
 	running.push(command);
 	return command;
 }
-async function shell(command: CompanyComputerLinuxCommands, binding: CompanyComputerScreenBinding, script: string) {
+// A shell command never gets the screen's display; the screen's own tools do.
+async function shell(command: CompanyComputerLinuxCommands, script: string) {
 	const result = await command.run({
 		program: "/bin/bash",
 		args: ["--noprofile", "--norc", "-c", script],
+		environment: { PATH: "/usr/local/bin:/usr/bin:/bin", LANG: "C.UTF-8" },
+		workingDirectory: layout.workbenchRoot,
+		timeoutMs: 5000,
+		maxOutputBytes: 16384,
+		signal,
+	});
+	assert.equal(result.code, 0, result.stderr);
+	return result.stdout.trim();
+}
+async function xdo(command: CompanyComputerLinuxCommands, binding: CompanyComputerScreenBinding, ...args: string[]) {
+	const result = await command.run({
+		program: "/usr/bin/xdotool",
+		args,
 		environment: { DISPLAY: `:${binding.screenOrdinal}`, PATH: "/usr/local/bin:/usr/bin:/bin", LANG: "C.UTF-8" },
 		workingDirectory: layout.workbenchRoot,
 		timeoutMs: 5000,
@@ -197,23 +211,20 @@ try {
 	const firstCommands = commands(bindings[0]);
 	const secondCommands = commands(bindings[1]);
 	assert.notEqual(launcher.xSocket(bindings[0]), launcher.xSocket(bindings[1]));
+	await shell(firstCommands, "printf shared-from-first > shared.txt");
+	await xdo(firstCommands, bindings[0], "mousemove", "120", "230");
 	assert.match(
-		await shell(
-			firstCommands,
-			bindings[0],
-			"printf shared-from-first > shared.txt; xdotool mousemove 120 230; xdotool getmouselocation --shell",
-		),
+		await xdo(firstCommands, bindings[0], "getmouselocation", "--shell"),
 		/^X=120\nY=230\nSCREEN=0\nWINDOW=[0-9]+$/,
 	);
-	assert.equal(await shell(secondCommands, bindings[1], "cat shared.txt"), "shared-from-first");
-	await shell(secondCommands, bindings[1], "xdotool mousemove 420 530");
-	assert.match(await shell(firstCommands, bindings[0], "xdotool getmouselocation --shell"), /^X=120\nY=230\n/);
-	assert.match(await shell(secondCommands, bindings[1], "xdotool getmouselocation --shell"), /^X=420\nY=530\n/);
+	assert.equal(await shell(secondCommands, "cat shared.txt"), "shared-from-first");
+	await xdo(secondCommands, bindings[1], "mousemove", "420", "530");
+	assert.match(await xdo(firstCommands, bindings[0], "getmouselocation", "--shell"), /^X=120\nY=230\n/);
+	assert.match(await xdo(secondCommands, bindings[1], "getmouselocation", "--shell"), /^X=420\nY=530\n/);
 	assert.equal(
 		await shell(
 			firstCommands,
-			bindings[0],
-			"test ! -e /srv/profiles; test ! -e /run/office-screens; test ! -e /tmp/.X11-unix/X2; printf contained",
+			`test ! -e /srv/profiles; test ! -e /run/office-screens; test ! -e /tmp/.X11-unix; test -z "\${DISPLAY-}"; printf contained`,
 		),
 		"contained",
 	);
@@ -223,7 +234,7 @@ try {
 		socket.destroy();
 	}
 	await delay(250);
-	assert.equal(await shell(firstCommands, bindings[0], "xdotool getdisplaygeometry"), "1920 1200");
+	assert.equal(await xdo(firstCommands, bindings[0], "getdisplaygeometry"), "1920 1200");
 	const png = Buffer.from(await firstCommands.capturePng({ display: ":1", signal, maxBytes: 16777216 }));
 	assert.equal(png.subarray(0, 8).toString("hex"), "89504e470d0a1a0a");
 	assert.equal(png.readUInt32BE(16), 1920);
@@ -252,7 +263,7 @@ try {
 		await readFile(`/srv/screens/${bindings[0].screenId}/preserved-setting`, "utf8"),
 		"survives-close-and-reopen",
 	);
-	assert.equal(await shell(secondCommands, bindings[1], "cat shared.txt"), "shared-from-first");
+	assert.equal(await shell(secondCommands, "cat shared.txt"), "shared-from-first");
 	const reopened = await launcher.launch(bindings[0], signal);
 	await reopened.ready;
 	await reopened.stop();

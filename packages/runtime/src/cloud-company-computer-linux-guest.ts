@@ -281,7 +281,6 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 				...this.#options,
 				binding,
 				runtimeRoot: this.#options.displayRuntimeRoot,
-				xSocket: () => this.#desktop.xSocket(binding),
 				timeZone: this.#options.desktopTimeZone,
 				boundary: {
 					assertReady: async (exact, signal) => {
