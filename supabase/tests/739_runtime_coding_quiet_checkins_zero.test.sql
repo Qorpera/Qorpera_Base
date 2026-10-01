@@ -1,7 +1,8 @@
 -- @fixture 655_runtime_coding_quiet_checkins.test.sql until "-- 1. A day without a turn: the agent is asked once, in the shape of a report it already reads."
 -- Quiet coding check-ins and computer hours (20260929870000): a company at zero is not asked. Its
 -- mark stays unasked and the thread says nothing; once hours are added (before the next sweep),
--- the next scan asks the latest mark reached, with the right day count.
+-- the next scan asks the latest mark reached, with the right day count. Archiving the session withdraws
+-- a question about it that no run has taken yet.
 
 -- As 655 step 1: the agent's run ends, its report reaches it, and that continuation ends.
 do $$
@@ -59,6 +60,19 @@ begin
 		and exists (select 1 from public.qorpera_coding_session_events where worker_id = v_worker.id and kind = 'step' and actor = 'kernel'
 			and body ->> 'text' = 'Quiet for 3 days; asked the agent whether it can be archived'),
 		'The thread tells it now, with the right days');
+end
+$$;
+
+-- 3. The question still waits (as it would, held at zero) when the session is archived (here as the 30-day scan
+--    does, by the kernel): it is withdrawn and never runs for the archived session.
+reset role;
+do $$
+declare v_worker public.qorpera_runtime_workers := pg_temp.worker_row('fix-send'); v_wake public.qorpera_wake_occurrences;
+begin
+	perform pg_temp.wake_assert(public.qorpera_archive_coding_worker(v_worker, 'kernel', null, null), 'Archived');
+	select * into strict v_wake from pg_temp.asks(v_worker.id);
+	perform pg_temp.wake_assert(v_wake.status = 'cancelled' and v_wake.finished_at is not null and v_wake.run_id is null,
+		'The waiting question went with the archive: ' || v_wake.status);
 end
 $$;
 rollback;
