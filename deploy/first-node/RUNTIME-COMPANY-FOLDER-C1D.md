@@ -564,3 +564,19 @@ and §9.7's amendment keeps a put off a marked hash. Snapshot-v1 routes and thei
     starting mid-lane, and abandon on a lane error.
 - **C1d-2c:** the bytes without a catalog row, pending entries of collected objects, and the deleted company's
   leftovers (§9.9).
+
+**Built (C1d-2a, migration 20260929860000, tests 766 and 767).**
+- `qorpera_folder_object_gc` and the `expires_at` index; the helpers `qorpera_folder_gc_company`,
+  `qorpera_folder_object_marked` and `qorpera_folder_object_rooted(profile, sha256, except_intent)`.
+- `qorpera_folder_sweep_upload_intents(limit)`, `qorpera_folder_claim_object_gc(limit, lease)`,
+  `qorpera_folder_gc_unlink_begin`, `_finish`, `_abandon` and `qorpera_folder_gc_quarantine_state`: service role only,
+  each with the 2 s lock budget. Nothing calls them until C1d-2b.
+- The proof trigger and the enable trigger for version-1 chunk rows, and their backfill.
+- The refusals of §9.7, patched into open, confirm, seal, authorize, replication, download and commit step 6; each
+  check reads the mark in a statement after the place's lock (767 R2 pins it; a one-statement check fails it).
+- 766: the sweep and G4 (reuse, an earlier expiry, an intent the sweep has not reached), the root check (two
+  environments, an old path version, a committed version-1 file), the claim (grace, expired marks, Storage-backed rows,
+  mixed and deleting companies), every refusal, begin, finish (removed, stale, restore, grace moved, 23503), abandon,
+  the quarantine state, the folder-v2-only catalog, the lock text and the grants.
+- 767 (dblink): a reference that holds the object first, a reference that waited on the claim, two claims, the sweep
+  and the claim, an upload slipping past the mark (restored), and the finish's lock budget.
