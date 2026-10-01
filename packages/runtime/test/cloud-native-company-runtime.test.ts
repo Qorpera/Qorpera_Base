@@ -1819,7 +1819,7 @@ it("stops before the final send when a read source loses audience permission", a
 it("exports native composition over HTTP before delivery begins and closes it before the send", async () => {
 	const f = await fixture("company-composition", true);
 	// Wait for the export that records the composition start, not a fixed time: under load
-	// the run takes well over a second to reach it.
+	// the run can take a second or more to reach it.
 	let composed!: () => void;
 	const composing = new Promise<null>((resolve) => {
 		composed = () => resolve(null);
