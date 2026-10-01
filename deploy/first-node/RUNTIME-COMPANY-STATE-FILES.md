@@ -752,6 +752,8 @@ C1d (bytes):
 - A writer first checks that its run can complete a folder receipt (`completesFolderCommits`), then reads the file
   and refuses what can never be saved. Every such check still passes once the call's own change is saved, so a replay
   of the call reaches its receipt and returns the stored result.
+- Such a refusal is a `CloudToolRefusal`, which the tool boundary shows the model as `REFUSED: <reason>`: nothing
+  started and no key is bound. Any other error inside a tool stays an unknown outcome, since an effect may have begun.
 - It then saves under one receipt per tool call (`requiresCompanyRevision`), whose digest binds the model's request,
   not the version read. The commit carries `receiptId` and the `expectedVersion` read. Whatever the units' outcomes,
   the commit satisfies the receipt, which is completed with it (`qorpera_folder_complete_run_receipt`).

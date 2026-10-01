@@ -10,7 +10,7 @@ import {
 import type { CloudCompanyPathControl } from "@qorpera/runtime/cloud-company-path-gateway";
 import { CloudFolderTodos } from "@qorpera/runtime/cloud-folder-todos";
 import { CloudNativeToolRun } from "@qorpera/runtime/cloud-native-tool-authority";
-import type { CloudToolContext } from "@qorpera/runtime/cloud-native-tool-boundary";
+import { type CloudToolContext, CloudToolRefusal } from "@qorpera/runtime/cloud-native-tool-boundary";
 import {
 	type CloudNativeToolOperationControlPlane,
 	CloudNativeToolOperations,
@@ -425,6 +425,10 @@ it("refuses what can never be saved, before any receipt", async () => {
 		await expect(
 			todos.change({ action: "upsert", operationKey: "k", todoKey, title: "x", state: "open" }, f.context),
 		).rejects.toThrow("a todoKey is the todo's file name");
+	// Each is the tool's own refusal before any effect, which the boundary shows the model (REFUSED: ...).
+	await expect(
+		todos.change({ action: "done", operationKey: "k", todoKey: "nothing-here" }, f.context),
+	).rejects.toBeInstanceOf(CloudToolRefusal);
 	await expect(
 		todos.change({ action: "done", operationKey: "k", todoKey: "nothing-here" }, f.context),
 	).rejects.toThrow("You have no todo with that todoKey");
