@@ -895,7 +895,7 @@ C1d (bytes):
   and the requester as members; another member refused; an archived coworker refused; a lone agent refused by the
   file's own rule).
 
-**Plan (W4c): `manage_routine` and `decide_routine`'s rewrite** (design, round 2; built after its review). Both write
+**Plan (W4c): `manage_routine` and `decide_routine`'s rewrite** (design, round 3; built after its review). Both write
 the run agent's own routine files, `agents/<handle>/routines/<routineKey>.md`, as W4a and W4b do: the file is checked
 with the arguments, before the automatic review; every other refusal comes before the receipt; under the receipt the
 change set is staged, its review recorded (`manage_routine`, `decide_routine`) and committed with it. No
@@ -905,23 +905,30 @@ file-change routines move to files.
 *The index and its read (W4c-1, SQL).* The platform records some pauses in the index only, until C2's follow-up queue
 writes them into the file: an authorization-failure suspension, a member's Stop, a wait for a model account. The file
 then still says `active`. So:
-- **A save that changes nothing is a resume.** F2-6's index writer (`qorpera_company_state_index_routine`) gains one
-  rule: a save of an unchanged file (the same parse) that says `active` over a pause the platform recorded (the row
-  paused while the file said `active`) ends that pause, and pays like a resume
-  (`qorpera_company_state_routine_restarts`: the saver's paying login; without one the routine keeps waiting for a
-  login). An edit still leaves the platform's pause in place, as today.
+- **A save that changes nothing is a resume.** A save by anyone but the platform whose file says `active`, with the
+  same parse as the file the routine follows (which also says `active`), while the routine row is `paused` for one of
+  the platform's reasons (`member`: a member's Stop; `authorization_failed`; `needs_model_account`), ends that pause.
+  Every pause that comes from a file leaves a file saying `paused`, so a paused row behind an active file can only be
+  the platform's. The test goes into `qorpera_company_state_routine_restarts`, so the save pays like a resume and the
+  rules' check refuses a member without a paying login (who would otherwise turn a Stop into a wait for a login). The
+  index writer then takes the saver's word (`active`, failures reset) even without a new version: a wait for a login
+  pinned to the login that now pays ends too. An unpaid resume (a run whose requester has no paying login) keeps the
+  platform's pause and its reason. An edit still leaves the platform's pause in place, as today. A member's save of
+  the unchanged routine in the app, even one that changes only notes or layout, resumes it the same way. C2's queue,
+  when it writes the platform's pauses into files, must not write a pause the row no longer holds.
 - **A read of the run agent's routines**, `qorpera_folder_agent_routines(environment, actor, request)`, as W1's todo
   read: a plain read of the index for the run agent's file routines, each only if the run may read its file, with the
   key, title, instructions, trigger, `ends`, `runs`, quiet hours, effort, reply, the status in the file and the
-  status in the index with the platform's pause reason, the next run and the runs used. Routines from before the
-  company's folder (they still hold their names) are not listed. `routineKey` reads one. It joins the client's RPC
-  lists and the pinned test.
+  status in the index with the platform's pause reason, the next run and the runs used, paged with a cursor as W1's.
+  Routines from before the company's folder (they still hold their names) are not listed. `routineKey` reads one. Any
+  run of the agent may read, a member's private conversation included (`manage_routine` is offered there), each file
+  by the run's own read authority. It joins the client's RPC lists and the pinned test.
 
 *`manage_routine` (W4c-1, runtime).*
 - `routineKey` is the file's name: lowercase letters, digits and single hyphens, at most 64 characters (refused with
   the rule otherwise; the legacy key allowed dots, underscores and 96 characters).
-- `list` shows the read's routines, as many as fit the result (W1's rule), and says when there are more; `routineKey`
-  shows one in full.
+- `list` shows the read's routines, as many as fit the result (W1's rule), with the cursor for the next page;
+  `routineKey` shows one in full.
 - `upsert` writes the whole file with `writeRoutineFile`, as today's upsert replaces the whole routine (the list shows
   every field to restate): `every` → `when: every` (`minutes`, `starts`); `weekly` → `when: weekly` (`days`, by
   default Monday to Friday, `time`, `timezone`, `starts`); `dynamic` → `when: once` (`at`: `firstRunAt`, else a still
@@ -931,29 +938,35 @@ then still says `active`. So:
   `status: active`: a save revives a paused, concluded or expired routine (an expired one ends again while its end
   has passed, so an `ends` in the past is refused). A new file gets an id from the run and the operation key; an
   existing one keeps its id. A missing `routines` folder is made in the same change set. `file_change` (core C4) and
-  `event` (F2-6b below) are refused with the arguments.
-- `pause`: `status: paused`. Refused before the review when the file already says `paused` ("already paused") or
-  `concluded` ("concluded; save it again to restart it").
+  `event` (F2-6b below) are refused with the arguments. An upsert that would save the unchanged file over the
+  platform's pause is refused before the receipt: "nothing changes; to switch it back on, use resume", so the review
+  sees a resume as one.
+- `pause`: `status: paused`. A file that already says `paused` answers "nothing to change" (no review is used, no
+  commit), as W2 does, so a repeat of a saved call is not refused; a concluded one is refused ("concluded; save it
+  again to restart it").
 - `resume`: a file that says `paused` becomes `active`; a file that says `active` while the index shows the platform's
-  pause is saved unchanged (the resume rule above). Refused before the review when the routine is active in both
-  ("already running"), concluded ("save it again to restart it") or ended ("it ended; save it again with a later
-  end"), as today.
-- `conclude`: `status: concluded` with the `conclusion` (one line, at most 2000 bytes). Refused when already
-  concluded.
+  pause is saved unchanged (the resume rule above). A routine active in both answers "nothing to change"; concluded
+  ("save it again to restart it") and ended ("it ended; save it again with a later end") are refused, as today. The
+  approval card for a resume says that it switches the routine back on, also after a member's Stop or a suspension.
+- `conclude`: `status: concluded` with the `conclusion` (one line, at most 2000 bytes); already concluded answers
+  "nothing to change". Concluding the run's own dynamic routine settles its owed decision for the host, as today.
 - `remove` deletes the file (a `delete` unit with the version read): the routine retires and its name is free again
   (today's remove kept the key taken). Reviewed as a deletion; the call's approval covers it.
-- The run's own routine (the wake's routine id, matched by the file's id, as W3), refused before the review: `pause`
-  and `remove` in its own run, dynamic or fixed ("conclude it instead": a fixed routine's pause would stop the run
-  itself; SQL refuses it for a dynamic one); and while a dynamic routine's decision is owed, every action but `list`
-  and `conclude` ("use decide_routine"), as today and contract 16.3.
+- The run's own routine: `pause` and `remove` in its own run, dynamic or fixed ("conclude it instead": a fixed
+  routine's pause would stop the run itself; SQL refuses it for a dynamic one); and while a dynamic routine's decision
+  is owed, every action but `list` and `conclude` ("use decide_routine"), as today and contract 16.3. A dynamic
+  routine's key is known with the arguments, so those are refused there, before the review, as today; a fixed
+  routine is known by the wake's routine id, so its run's refusal comes before the receipt, by the file's id. Every
+  other refusal that needs the file or the index comes before the receipt.
 - Login, last before the receipt: `upsert` and `resume` (the saves that start or extend work) call
   `qorpera_prepare_routine_login` (new to the client's RPC lists; a deadlock is asked again, as STATE-FILES §5
   says). Its refusals (the wake's acknowledgement, a paused company, a final reply already sent) come back as
-  `REFUSED` with SQL's words. Unlike today's tool, the consent it records stays if the save is then refused; it is the
-  requester's standing consent, and the same call records it again.
-- After the commit, the result reads the routine back from the index: the outcome, the reason and problems, and the
-  routine as it now runs (status, the platform's pause reason, the next run). A routine waiting for a model account
-  says so, and the model tells the member (folder-v2 queues no member notice until C2).
+  `REFUSED` in the runtime's own words. Unlike today's tool, the consent it records stays if the save is then refused;
+  it is the requester's standing consent, and the same call records it again.
+- After the commit, the result reads the routine back from the index, best effort (a failed read never turns a saved
+  change into an error; the result then says to list it): the outcome, the reason and problems, and the routine as it
+  now runs (status, the platform's pause reason, the next run). A routine waiting for a model account says so, and
+  the model tells the member (folder-v2 queues no member notice until C2).
 - A folder-v2 description replaces "No member approval is needed". The approval card keeps reading today's compiled
   arguments.
 
@@ -974,7 +987,8 @@ lifted and the folder wake read's event batch (EVENT-INTAKE: "whichever of W2 an
 Event routines need hooks on folder-v2 and runs from folder wakes (C1c-3, C4) before they work end to end.
 
 *Tests.* SQL: the resume rule (an unchanged save ends a failure suspension, a Stop, and a login wait only with a paying
-login; an edit does not), the read (authority per file, one key, pre-folder rows left out), a run's routine save,
+login; an edit does not; the platform's save does not; a member without a paying login is refused; a member's own
+file pause is untouched), the read (authority per file, one key, pre-folder rows left out), a run's routine save,
 pause, resume, conclude and removal on the recorder, and a dynamic rewrite (a routine-run fixture with a native
 binding, from 708's `routine_run` and 647's `native`). Runtime: each action and refusal on the writer fixture (which
 learns routine files as delegation, the routine read and the login preparation), the folder description and wiring,
