@@ -44,7 +44,7 @@ export interface MemberAgentComputer {
 		waiting: CompanyComputerWait | null;
 	} | null;
 }
-/** Why a started computer is not up yet (migration 20260928237200; 'hours' since 20260928309720). */
+/** Why a started computer is not up yet (migration 20260928237200; 'hours' since 20260929720000). */
 export type CompanyComputerWait = "setup" | "room" | "hours";
 const WAITS: readonly CompanyComputerWait[] = ["setup", "room", "hours"];
 const PLACEMENTS: readonly MemberAgentComputerPlacement[] = [
