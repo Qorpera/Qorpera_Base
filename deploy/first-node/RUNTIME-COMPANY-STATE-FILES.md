@@ -559,21 +559,26 @@ The photo, and a note with the time node 2 was back up.
 | `from` | yes | the asking agent's id |
 | `todo` | no | the asking agent's todo that waits on it: a todo path, `agents/<h>/todos/<n>.md` |
 | `due` | yes | UTC instant |
-| `minutes` | no | the expected time, whole minutes 1–10080 |
+| `minutes` | no | the expected time, whole minutes 1–480 (shown as "About 40 minutes") |
 | `proof` | no | what counts as done: a list of `photo`, `file`, `signature`, `note`, each at most once |
-| `files` | no | up to 20 company-folder paths the person needs (a draft to check); a contact's link opens these and nothing else (H5) |
-| `reason` | with `returned` and `declined` | one line, 1–500 bytes: why it went back, or why the person can't |
+| `files` | no | up to 20 paths of files in the company folder the person needs (a draft to check), no repeats; files only, never a folder or a pattern, since a folder would grant whatever lands in it later |
+| `reason` | with `returned` and `declined` | one line, 1–500 bytes: why it went back, or why the person can't; optional with `cancelled` (written by whoever cancels) |
 | `secret` | no | one line, 1–100 bytes: the label of the one secret the person enters ("Code from the SMS") |
-| `secret_state` | with `secret` | `asked` or `saved`; the value goes to the vault and never into the folder |
+| `secret_state` | with `secret`, and only then | `asked` or `saved`; the value goes to the vault and never into the folder, and only the platform sets `saved` (H2) |
 | `computer` | no | the Company Computer the person takes over (its id); the platform opens the asking agent's current screen on it (A1) |
 | `connection` | no | the `id` of the `connections/` file the step is for (A1) |
 | `step` | no | the kind of step a website demands of a person (A1): `sign_in`, `captcha`, `phone_code`, `id_check`, `payment`, `create_account`, `other` |
 | body | yes | up to 32 KiB trimmed: `## Why`, `## Steps`, `## Done looks like` |
 
-- **Steps:** the parse lists the `- [ ]` and `- [x]` lines under `## Steps` (to the next `## `
-  heading) as `steps: [{text, done}]`, at most 100, each one line of 1–500 bytes; `[X]` counts as
-  done. A body without `## Steps` has no steps. The rest of the body is free text; the whole body
-  stays the task's `instructions`.
+- **Steps:** the parse lists the lines of the `## Steps` section (up to the next `## ` heading)
+  that start with `- [ ] ` or `- [x] ` as `steps: [{text, done}]`, at most 50, each text (what
+  follows the box) one line of 1–500 bytes; `[X]` counts as done. Other lines in the section are
+  text, not steps. A body without `## Steps` has no steps. The rest of the body is free text; the
+  whole body stays the task's `instructions`. In H2 a person's own change may flip a box and
+  nothing else: no text changed, no line added or removed.
+- **`files`:** H5's link re-reads the list at every open, so removing a path takes it away at
+  once, and a path that no longer exists (or became a folder) is not shown. What a contact uploads
+  goes to the task's `proof/`, never beside the listed files.
 - **No contact details.** A member is reached through their account and a contact at the address
   in their contact file. A link token, an email's delivery and a secret's value are runtime state
   or vault records, never the file: every member and agent reads the folder.
