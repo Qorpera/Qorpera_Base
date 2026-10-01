@@ -1,4 +1,5 @@
 import type { CloudCompanyPathControl } from "./cloud-company-path-gateway.ts";
+import type { CloudFolderRoutineDecision, CloudFolderRoutineDecisionRequest } from "./cloud-folder-routine-decision.ts";
 import {
 	type CloudNativeToolBinding,
 	type CloudNativeToolIdentity,
@@ -203,6 +204,21 @@ export const CLOUD_ROUTINE_DECISION_DESCRIPTION =
 	"If you hand work to workers or wait for the Company Computer, decide first: this run must decide before it ends, and the continuation cannot. " +
 	"state settled means the routine already moved on, changed in another conversation or past its end date, so nothing is owed. state refused carries the reason, such as a next run after the routine's end date: choose again or conclude. " +
 	"Keep operationKey stable for one decision; an unconfirmed result needs the same key and arguments again.";
+
+/** A folder-v2 routine is a file, and before core C2 its own run cannot record a change of its title or instructions
+ * (delegation): the description leaves them out, and a refused decision is redone under a new key (thin writers W3). */
+const CLOUD_ROUTINE_DECISION_DESCRIPTION_FOLDER = CLOUD_ROUTINE_DECISION_DESCRIPTION.replace(
+	"intent, when the work changed, is the complete new instruction for your future self: what to check, what you learned, when to speak; without it the next run keeps this run's intent. title, effort (low, medium, high) and report (optional, required, silent) likewise change only when given. ",
+	"In this company the routine is a file, and its own run cannot change its title or instructions yet: leave intent and title out, and tell the member if the work needs new instructions. effort (low, medium, high) and report (optional, required, silent) change only when given. ",
+)
+	.replace(
+		"state refused carries the reason, such as a next run after the routine's end date: choose again or conclude. ",
+		"state refused carries the reason: choose again or conclude. ",
+	)
+	.replace(
+		"Keep operationKey stable for one decision; an unconfirmed result needs the same key and arguments again.",
+		"Keep operationKey stable for one decision; an unconfirmed result needs the same key and arguments again, while a refused one is decided again under a new operationKey.",
+	);
 
 /** The cloud derives the agent, requester and model account from the run. The
  * model chooses only what to do, when, and how long.
@@ -504,13 +520,20 @@ export function cloudRoutineDecisionTool(
 	binding: CloudNativeToolBinding,
 	identity: CloudNativeToolIdentity,
 	control: CloudCompanyPathControl,
-	options: { readonly decisionOwed: () => boolean; readonly decided: () => void },
+	options: {
+		readonly decisionOwed: () => boolean;
+		readonly decided: () => void;
+		/** A folder-v2 run's decision, written into the routine's file. */
+		readonly folderDecision?: CloudFolderRoutineDecision;
+	},
 ): CloudNativeTool {
 	const { admitted, assertContext } = routineAuthority(binding, identity);
 	return {
 		name: "decide_routine" satisfies CloudRuntimeToolOperation,
 		source: "runtime",
-		description: CLOUD_ROUTINE_DECISION_DESCRIPTION,
+		description: options.folderDecision
+			? CLOUD_ROUTINE_DECISION_DESCRIPTION_FOLDER
+			: CLOUD_ROUTINE_DECISION_DESCRIPTION,
 		inputSchema: {
 			type: "object",
 			additionalProperties: false,
@@ -560,6 +583,15 @@ export function cloudRoutineDecisionTool(
 		async execute(value, context) {
 			assertContext(context);
 			const request = value as Record<string, unknown>;
+			// A folder-v2 routine is a file; the folder core takes the save as the decision while it is owed.
+			if (options.folderDecision) {
+				const decision = await options.folderDecision.decide(
+					request as unknown as CloudFolderRoutineDecisionRequest,
+					context,
+				);
+				if (decision.decided) options.decided();
+				return decision.content;
+			}
 			const result = await cloudToolRequest(
 				(requestSignal) =>
 					control.call("qorpera_decide_agent_routine", { p_binding: admitted, p_request: request }, requestSignal),
