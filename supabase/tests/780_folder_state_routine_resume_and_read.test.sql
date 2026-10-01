@@ -1,6 +1,6 @@
 -- @fixture 708_folder_state_routines.test.sql until "-- 2. A member's routine"
 -- Company state files, thin writers W4c (deploy/first-node/RUNTIME-COMPANY-STATE-FILES.md §5 "Plan (W4c)"; migration
--- 20260929990000): a save that changes nothing ends a pause the platform recorded (a member's Stop, the
+-- 20260928399960): a save that changes nothing ends a pause the platform recorded (a member's Stop, the
 -- authorization-failure suspension, a wait for a login) and pays like a resume; an edit, the platform's own save, a pause
 -- in the file and an unpaid resume do not; a member without a paying login is refused it. And the run agent's routine
 -- read: the routine as runs see it and the file's own view, per file read authority, one key, a cursor, no worker.
