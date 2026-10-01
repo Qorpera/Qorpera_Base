@@ -264,9 +264,10 @@ runtime adapter, with no migration.
     which the gateway answers 409, rather than as a deadline 503 that opens its circuit for every company;
   - open, seal and renew, which the runtime calls through the Company File control with a 3 s deadline: a wait ends
     as 55P03, read as `contended` (two waits in one call can still reach the runtime's own timeout);
-  - `qorpera_folder_authorize_replication`, which the gateway's replication reaches for a folder-v2 company: its
-    55P03 becomes 409 only with the folder refusal mapping on the replication call (#573); until then a 500, as a long
-    wait there already was.
+  - `qorpera_folder_authorize_replication`, which the gateway's replication reaches for a folder-v2 company: with
+    #573 the gateway reads its 55P03 as a lock conflict (503, the object kept pending, the circuit closed; never 409,
+    which would mark the object blocked). Without #573 it is a 500 that opens the circuit, so a 2–5 s wait that used
+    to succeed would fail: this budget ships with or after #573.
 
   The 409 mapping depends on this budget. It bounds each lock wait, not their sum (762 G shows waits end at it; 761
   §8b pins the setting). A later `create or replace` of any of the seven must repeat `set lock_timeout = '2s'`, and

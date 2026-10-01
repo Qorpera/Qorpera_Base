@@ -12,9 +12,10 @@
 --
 -- The runtime calls open, seal and renew through the Company File control; the gateway calls authorize, confirm, the
 -- download check and, for a folder-v2 company's replication, qorpera_folder_authorize_replication (through
--- qorpera_authorize_profile_object_replication and the replica confirm). The same budget for all seven. Replication's
--- 55P03 reaches the gateway as 409 only with the folder refusal mapping on its replication call (#573); until then it
--- ends as a 500, as a long wait there already did.
+-- qorpera_authorize_profile_object_replication and the replica confirm). The same budget for all seven. Replication
+-- needs #573: with it, the gateway reads a lock timeout there as a lock conflict (503, the object kept pending, its
+-- circuit closed); without it the 55P03 is a 500 that opens the circuit, so a 2–5 s wait that used to succeed would
+-- now fail. This migration is meant to ship with or after #573.
 --
 -- Only proconfig changes: the definitions and grants stay, and the guards of 20260928309710 (which read the
 -- definitions before this runs) are untouched. A later `create or replace` of any of these must repeat
