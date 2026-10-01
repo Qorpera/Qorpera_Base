@@ -14,6 +14,34 @@ describe("the fixed code a failed native execution carries back", () => {
 			),
 		).toBe("CODING_TURN_SCOPE_DIFFERS");
 	});
+	it("finds that code under the host's wrapper, as the runner receives it", () => {
+		// What the host makes of a coding turn's failure (safeHarnessExecutionFailure).
+		const wrapped = (inner: Error) =>
+			new Error(
+				"Native provider execution failed (stage=prompt-composition, category=unknown) [mouth=uninitialized]",
+				{
+					cause: tagNativeRuntimeFailure(inner, "prompt-composition", "unknown"),
+				},
+			);
+		expect(nativeProviderFailureCode(wrapped(new Error("CODING_TURN_ENDED_WITHOUT_SUBMISSION")))).toBe(
+			"CODING_TURN_ENDED_WITHOUT_SUBMISSION",
+		);
+		// An authority read's own refusal under its generic wrapper.
+		expect(
+			nativeProviderFailureCode(
+				wrapped(
+					new Error("Cloud tool authority unavailable", { cause: new Error("CODING_NATIVE_BINDING_CHANGED") }),
+				),
+			),
+		).toBe("CODING_NATIVE_BINDING_CHANGED");
+		// Other causes still give the stage and category, never their text.
+		expect(nativeProviderFailureCode(wrapped(new Error("PRIVATE_TOKEN_VALUE")))).toBe(
+			"NATIVE_PROMPT_COMPOSITION:UNKNOWN",
+		);
+		expect(nativeProviderFailureCode(wrapped(new Error(`CODING_${"A".repeat(43)}`)))).toBe(
+			"NATIVE_PROMPT_COMPOSITION:UNKNOWN",
+		);
+	});
 	it("names the stage and category of a tagged failure without a code of its own", () => {
 		expect(
 			nativeProviderFailureCode(
