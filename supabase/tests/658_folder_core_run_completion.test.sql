@@ -153,7 +153,7 @@ begin
 		raise exception 'The handoff''s snapshot-v1 text changed'; end if;
 	v_def := pg_get_functiondef('public.qorpera_resolve_run_operation_receipt(uuid,text,jsonb,uuid,uuid)'::regprocedure);
 	if position(E'\nbegin\n\tif public.qorpera_environment_is_folder_v2((select run.environment_id from public.qorpera_run_operation_receipts receipt' in v_def) = 0
-		or md5(pg_temp.without_guard(v_def)) <> '0afb464666ebda7f30acab5ff3a7a288' then
+		or md5(pg_temp.without_guard(v_def)) <> '9d966774a73d2789f2888dcdf10531ff' then
 		raise exception 'The recovery''s snapshot-v1 body changed'; end if;
 end $$;
 
