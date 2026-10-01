@@ -487,7 +487,7 @@ begin
 		('public.qorpera_refresh_company_storage_usage()',
 			'if public.qorpera_folder_storage_usage_changed(tg_op, old, new) then return case when tg_op = ''DELETE'' then old else new end; end if;',
 			'f70353b583f7cf6853f57331bc9fa897eaa96251d13eb3d120838522965b5075'),
-		-- With the object gateway's 2 s lock budget after the folder-v2 line (20260929630000).
+		-- With the object gateway's 2 s lock budget after the folder-v2 line (20260928339630).
 		('public.qorpera_authorize_profile_object_replication(uuid,text,bigint)',
 			'if public.qorpera_company_is_folder_v2(p_profile_id) then return public.qorpera_folder_authorize_replication(p_profile_id, p_sha256, p_bytes); end if;',
 			'b428e2d5857983ffea34bfef05fe8cefa486d44edfc0e540685da1ee5a45d6fe'),
@@ -516,7 +516,7 @@ begin
 		raise exception 'Step 6 locks the objects in one hash order'; end if;
 end $$;
 
--- 8b. Each byte function a gateway or a run calls waits at most 2 s for any one lock (20260929780000), inside the
+-- 8b. Each byte function a gateway or a run calls waits at most 2 s for any one lock (20260928339780), inside the
 -- gateway's 5 s and the runtime's 3 s, so a long wait ends as 55P03 (409, `contended`) and never opens the gateway's
 -- circuit; the rest of each function's settings stay as they were. A redefinition must repeat it. The waits are in 762 G.
 do $$

@@ -77,7 +77,7 @@ test("deploy, function and SQL-input paths reach the tests that read them", () =
 
 test("a migration, the load harness or its fixture's tests put one company's fence under load", () => {
 	for (const file of [
-		"supabase/migrations/20260929380000_company_fence_shared_readers.sql",
+		"supabase/migrations/20260928339380_company_fence_shared_readers.sql",
 		"scripts/load-company-fence-pool.mjs",
 		"scripts/load-company-fence-pool.sql",
 		"supabase/tests/602_runtime_coding_lock_order.test.sql",
