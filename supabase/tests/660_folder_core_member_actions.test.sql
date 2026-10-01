@@ -41,11 +41,12 @@ begin
 		'a28eecac3437a71e1a73dedc20f40c80');
 	perform pg_temp.guarded('public.qorpera_append_session_input(uuid,uuid,text,jsonb)',
 		'if public.qorpera_company_is_folder_v2(public.qorpera_session_profile_id(p_session_id)) then raise exception', '5cefad1d5b1b3cb674b0da8c7188e78a');
-	-- 20260928319750 checks the caller's role before the session row lock in both turn requests.
+	-- 20260928319750 checks the caller's role before the session row lock in both turn requests; 20260929820000 checks the
+	-- private conversation's audience before it in the second.
 	perform pg_temp.guarded('public.qorpera_request_session_turn(uuid,uuid,uuid,jsonb,text,uuid,bigint,uuid,uuid,uuid,text,text,text,text,text,uuid[])',
 		'if public.qorpera_company_is_folder_v2(public.qorpera_session_profile_id(p_session_id)) then raise exception', '3d34c736990ae3981be314a2f91f0865');
 	perform pg_temp.guarded('public.qorpera_request_session_turn_v2(uuid,uuid,uuid,jsonb,text,uuid,bigint,uuid,uuid,uuid,text,text,text,text,text,uuid[])',
-		'if public.qorpera_company_is_folder_v2(public.qorpera_session_profile_id(p_session_id)) then raise exception', 'c686c32d20a604c8567d402d3070ed43');
+		'if public.qorpera_company_is_folder_v2(public.qorpera_session_profile_id(p_session_id)) then raise exception', '7d60c4cc60311523c0c5953f50adab7a');
 	perform pg_temp.guarded('public.qorpera_begin_member_session_attachment_upload(uuid,uuid,text,bigint,text)',
 		'if public.qorpera_company_is_folder_v2(public.qorpera_session_profile_id(p_session_id)) then raise exception', 'c0d997043587eef3b9aaf206ec40b426');
 	perform pg_temp.guarded('public.qorpera_stage_member_session_attachment(uuid,boolean)',

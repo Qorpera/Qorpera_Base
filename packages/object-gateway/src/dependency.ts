@@ -1,12 +1,83 @@
 export class ObjectDependencyError extends Error {
 	readonly status: number;
 	readonly unavailable: boolean;
+	/** The database call that answered rolled back on a serialization failure, deadlock or lock timeout on one
+	 * company's rows (40001, 40P01, 55P03), and committed nothing. On the native object route, whose request can be
+	 * sent again whole, the error body says so with `code: "lock_conflict"`, the only detail an error body carries,
+	 * and the native object transport retries on it. */
+	readonly lockConflict: boolean;
 
-	constructor(status: number) {
+	constructor(status: number, lockConflict = false) {
 		super(status === 503 ? "Object dependency is unavailable" : "Object authority rejected the operation");
 		this.name = "ObjectDependencyError";
 		this.status = status;
 		this.unavailable = status === 429 || status >= 500;
+		this.lockConflict = lockConflict;
+	}
+}
+
+/** The database ran one statement past its timeout (57014). Its caller gets 503, as for any unavailable
+ * dependency. The circuit opens for it only when no other call succeeded while it ran (`ObjectDependency.run`). */
+export class ObjectStatementTimeout extends ObjectDependencyError {
+	constructor() {
+		super(503);
+		this.name = "ObjectStatementTimeout";
+	}
+}
+
+/** A serialization failure, deadlock or lock timeout (40001, 40P01, 55P03) on an RPC whose callers must keep
+ * seeing an unavailable dependency (503): the replication reconciler blocks an object on any other refusal, and a
+ * profile read drops its member's read leases on one. The database answered about one company's rows, so the
+ * circuit stays as it is (`ObjectDependency.run`). */
+export class ObjectLockConflict extends ObjectDependencyError {
+	constructor() {
+		super(503, true);
+		this.name = "ObjectLockConflict";
+	}
+}
+
+/** PostgREST answers SQLSTATE classes 40 and 55, and 57014, with HTTP 500. From an RPC that acts for one company,
+ * those describe that company's state, not the database's health, so they must not open the dependency circuit
+ * for every company:
+ * - 55000, the company's stop or another state that refuses the call now: 423.
+ * - 40001, 40P01 and 55P03, a serialization failure, deadlock or lock timeout: 409. The transaction rolled back,
+ *   so nothing was committed and the caller may retry.
+ * - 57014, a statement timeout: `ObjectStatementTimeout`.
+ * Any other 500, including one without a readable code, stays a dependency failure. The folder core's byte RPCs
+ * (#560) are read the same way. */
+export function companyStateFailure(code: unknown): ObjectDependencyError {
+	if (code === "55000") return new ObjectDependencyError(423);
+	if (code === "40001" || code === "40P01" || code === "55P03") return new ObjectDependencyError(409, true);
+	if (code === "57014") return new ObjectStatementTimeout();
+	return new ObjectDependencyError(500);
+}
+
+/** The same codes for an RPC whose callers treat anything but "unavailable" as final (see `ObjectLockConflict`):
+ * a lock conflict is `ObjectLockConflict` and a statement timeout `ObjectStatementTimeout`, both 503 to the caller.
+ * Any other 500 stays a dependency failure, 55000 included. */
+export function unavailableStateFailure(code: unknown): ObjectDependencyError {
+	if (code === "40001" || code === "40P01" || code === "55P03") return new ObjectLockConflict();
+	if (code === "57014") return new ObjectStatementTimeout();
+	return new ObjectDependencyError(500);
+}
+
+/** PostgREST's error `code`, read from at most 16 KiB of body within 250 ms; undefined when it has none. */
+export async function postgrestErrorCode(response: Response, signal: AbortSignal): Promise<unknown> {
+	const errorBody = new AbortController();
+	try {
+		const body: unknown = JSON.parse(
+			new TextDecoder().decode(
+				await boundedObjectOperation(
+					() => readBoundedObjectResponse(response, 16 * 1024, AbortSignal.any([signal, errorBody.signal])),
+					250,
+				),
+			),
+		);
+		return body && typeof body === "object" && "code" in body ? body.code : undefined;
+	} catch {
+		return undefined;
+	} finally {
+		errorBody.abort();
 	}
 }
 
@@ -78,6 +149,7 @@ export class ObjectDependency {
 	readonly #now: () => number;
 	#retryAt = 0;
 	#probing = false;
+	#successes = 0;
 	#health: ObjectDependencyHealth = { status: "unknown" };
 
 	constructor(timeoutMs = 5_000, cooldownMs = 5_000, now: () => number = Date.now) {
@@ -100,16 +172,22 @@ export class ObjectDependency {
 		return { ...this.#health };
 	}
 
-	async run<T>(operation: (signal: AbortSignal) => Promise<T>): Promise<T> {
+	/** `caller` is the caller's own signal. A call that fails after the caller gave up (its own deadline, or its
+	 * client disconnecting) before this dependency's deadline says nothing about the dependency: the circuit and
+	 * health stay as they are. Only this deadline and the dependency's own failures count. */
+	async run<T>(operation: (signal: AbortSignal) => Promise<T>, caller?: AbortSignal): Promise<T> {
 		if (this.#retryAt > this.#now() || (this.#retryAt > 0 && this.#probing)) {
 			throw new ObjectDependencyError(503);
 		}
 		const probe = this.#retryAt > 0;
 		if (probe) this.#probing = true;
+		const successes = this.#successes;
 		const controller = new AbortController();
 		let timer: ReturnType<typeof setTimeout> | undefined;
+		let expired = false;
 		const timeout = new Promise<never>((_resolve, reject) => {
 			timer = setTimeout(() => {
+				expired = true;
 				const error = new ObjectDependencyError(503);
 				controller.abort(error);
 				reject(error);
@@ -117,12 +195,19 @@ export class ObjectDependency {
 		});
 		try {
 			const result = await Promise.race([Promise.resolve().then(() => operation(controller.signal)), timeout]);
+			this.#successes++;
 			this.#retryAt = 0;
 			this.#health = { status: "healthy", checkedAt: new Date(this.#now()).toISOString() };
 			return result;
 		} catch (error) {
 			const failure = error instanceof ObjectDependencyError ? error : new ObjectDependencyError(503);
 			controller.abort(failure);
+			if (caller?.aborted && !expired) throw failure;
+			// A lock conflict is about one company's rows, and the database answered it.
+			if (failure instanceof ObjectLockConflict) throw failure;
+			// Another call succeeded while this statement ran: the database is serving, and one company's slow
+			// statement leaves the circuit as it is. With no success meanwhile, it counts like any 5xx.
+			if (failure instanceof ObjectStatementTimeout && this.#successes !== successes) throw failure;
 			this.#health = {
 				status: failure.unavailable ? "unavailable" : "healthy",
 				checkedAt: new Date(this.#now()).toISOString(),

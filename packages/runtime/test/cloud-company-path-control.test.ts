@@ -263,6 +263,28 @@ describe("Company File bounded control transport", () => {
 		expect(transport).not.toHaveBeenCalled();
 	});
 
+	// A lock wait that ran out of its budget (20260929380000): PostgREST returns SQLSTATE 55P03 as HTTP 500.
+	it.each([
+		"qorpera_describe_company_run_context",
+		"qorpera_assert_company_path_reads",
+		"qorpera_commit_company_path_mutation",
+	] as const)("treats a lock timeout on %s as unavailable, never a refusal or a head conflict", async (method) => {
+		const transport = vi.fn<typeof fetch>(async () =>
+			Response.json(
+				{ code: "55P03", message: "canceling statement due to lock timeout", details: null, hint: null },
+				{ status: 500 },
+			),
+		);
+		const error = await fixture(transport)
+			.call(method, {}, new AbortController().signal)
+			.catch((error: unknown) => error);
+		expect(error).toBeInstanceOf(CloudRuntimeDiagnosticError);
+		expect(error).toMatchObject({ category: "transport_unavailable" });
+		expect(error).not.toBeInstanceOf(CloudCompanyPathRpcRefusal);
+		expect(error).not.toBeInstanceOf(CloudCompanyHeadConflict);
+		expect(transport).toHaveBeenCalledTimes(1);
+	});
+
 	it.each([
 		[401, "authority_unavailable"],
 		[403, "authority_unavailable"],
