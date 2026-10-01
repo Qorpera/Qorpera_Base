@@ -424,8 +424,9 @@ begin
 	perform pg_temp.wake_error(format('delete from public.qorpera_native_execution_launches where run_id=%L',v_base.id),'42501');
 	perform pg_temp.wake_public_send(v_binding,'progress');
 	perform public.qorpera_record_provider_usage_signal(v_binding,'usage_limit',clock_timestamp() + interval '2 hours');
-	perform public.qorpera_fail_runner_job((v_binding ->> 'runnerId')::uuid,repeat('2',64),(v_binding ->> 'jobId')::uuid,repeat('3',64),
-		'Native harness failed (provider allowance unavailable)',false);
+	-- 20260929840000: the runner's failure report no longer hands a run off at a usage limit (the run fails;
+	-- SQL test 765). This case calls the handoff function directly to keep proving it, as the report did.
+	perform public.qorpera_handoff_run_sponsor((v_binding ->> 'runId')::uuid,'Native harness failed (provider allowance unavailable)');
 	select * into strict v_job from public.qorpera_runner_jobs where id = (v_binding ->> 'jobId')::uuid;
 	select * into strict v_run from public.qorpera_execution_runs where id = v_base.id;
 	perform pg_temp.wake_assert(v_job.status = 'queued' and v_run.sponsor_version = v_base.sponsor_version + 1,
@@ -542,8 +543,8 @@ begin
 	v_free := pg_temp.handoff_connection();
 	perform public.qorpera_begin_native_company_execution(v_binding,repeat('7',64));
 	perform public.qorpera_record_provider_usage_signal(v_binding,'usage_limit',clock_timestamp() + interval '2 hours');
-	perform public.qorpera_fail_runner_job((v_binding ->> 'runnerId')::uuid,repeat('2',64),(v_binding ->> 'jobId')::uuid,
-		repeat('3',64),'Native harness failed (provider allowance unavailable)',false);
+	-- The failure report no longer hands off (20260929840000): call the handoff function directly.
+	perform public.qorpera_handoff_run_sponsor((v_binding ->> 'runId')::uuid,'Native harness failed (provider allowance unavailable)');
 	perform pg_temp.wake_assert((select to_connection_id = (v_free ->> 'connection_id')::uuid
 		from public.qorpera_execution_sponsor_handoffs where run_id = (v_binding ->> 'runId')::uuid),
 		'Handoff skips a full connection and selects the next eligible account');
@@ -561,8 +562,8 @@ begin
 	v_competitor := pg_temp.handoff_competing_assignment(v_connection,false);
 	perform public.qorpera_begin_native_company_execution(v_binding,repeat('7',64));
 	perform public.qorpera_record_provider_usage_signal(v_binding,'usage_limit',clock_timestamp() + interval '2 hours');
-	perform public.qorpera_fail_runner_job((v_binding ->> 'runnerId')::uuid,repeat('2',64),(v_binding ->> 'jobId')::uuid,
-		repeat('3',64),'Native harness failed (provider allowance unavailable)',false);
+	-- The failure report no longer hands off (20260929840000): call the handoff function directly.
+	perform public.qorpera_handoff_run_sponsor((v_binding ->> 'runId')::uuid,'Native harness failed (provider allowance unavailable)');
 	perform public.qorpera_acquire_native_provider_connection_lease((v_competitor ->> 'runId')::uuid,
 		(v_competitor ->> 'runnerId')::uuid,repeat('2',64),(v_competitor ->> 'assignmentId')::uuid,repeat('3',64),120);
 	select to_jsonb(l) into strict v_before from public.qorpera_native_provider_connection_leases l
@@ -627,8 +628,8 @@ begin
 	v_free := pg_temp.handoff_connection();
 	perform public.qorpera_begin_native_company_execution(v_binding,repeat('7',64));
 	perform public.qorpera_record_provider_usage_signal(v_binding,'usage_limit',clock_timestamp() + interval '2 hours');
-	perform public.qorpera_fail_runner_job((v_binding ->> 'runnerId')::uuid,repeat('2',64),(v_binding ->> 'jobId')::uuid,
-		repeat('3',64),'Native harness failed (provider allowance unavailable)',false);
+	-- The failure report no longer hands off (20260929840000): call the handoff function directly.
+	perform public.qorpera_handoff_run_sponsor((v_binding ->> 'runId')::uuid,'Native harness failed (provider allowance unavailable)');
 	perform pg_temp.wake_assert((select to_connection_id = (v_free ->> 'connection_id')::uuid
 		from public.qorpera_execution_sponsor_handoffs where run_id = (v_binding ->> 'runId')::uuid),
 		'Handoff skips a connection which needs renewed authorization');

@@ -41,7 +41,7 @@ set local role service_role;
 select public.qorpera_record_provider_usage_signal(current_setting('qorpera_test.wake_binding')::jsonb,'usage_limit');
 select public.qorpera_fail_runner_job((current_setting('qorpera_test.wake_binding')::jsonb ->> 'runnerId')::uuid,
 	repeat('2',64),(current_setting('qorpera_test.wake_binding')::jsonb ->> 'jobId')::uuid,repeat('3',64),
-	'Your model account has reached its usage limit',false);
+	'Native provider bridge request failed (422) [code=NATIVE_PROVIDER_REQUEST:BUDGET_EXHAUSTED]',false);
 reset role;
 do $$
 declare v_binding jsonb := current_setting('qorpera_test.wake_binding')::jsonb;
@@ -57,9 +57,33 @@ begin
 	if exists (select 1 from public.qorpera_execution_run_events where run_id = v_run.id and event_type = 'sponsor_handoff')
 		or exists (select 1 from public.qorpera_execution_sponsor_handoffs where run_id = v_run.id) then
 		raise exception 'A run at its usage limit was handed off'; end if;
-	-- The member is still told about the limit.
+	-- The member is still told about the limit, for this run.
 	if not exists (select 1 from public.qorpera_member_notifications
-		where kind = 'provider_usage_limit' and user_id = '30000000-0000-4000-8000-000000000001') then
+		where kind = 'provider_usage_limit' and user_id = '30000000-0000-4000-8000-000000000001'
+			and subject ->> 'runId' = v_run.id::text) then
 		raise exception 'The member was not told about the usage limit'; end if;
 end $$;
+
+-- The thread learns why the work stopped: the run's recovery read says the usage limit was reached, which the
+-- bridge's saved refusal cannot tell from a full context window.
+select pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
+set local role authenticated;
+do $$
+begin
+	if (public.qorpera_get_execution_run_recovery((current_setting('qorpera_test.wake_binding')::jsonb ->> 'runId')::uuid)
+		->> 'usage_limit')::boolean is not true then
+		raise exception 'The recovery read does not say the usage limit stopped the run'; end if;
+end $$;
+reset role;
+delete from public.qorpera_provider_connection_usage_signals
+where run_id = (current_setting('qorpera_test.wake_binding')::jsonb ->> 'runId')::uuid;
+set local role authenticated;
+do $$
+begin
+	if (public.qorpera_get_execution_run_recovery((current_setting('qorpera_test.wake_binding')::jsonb ->> 'runId')::uuid)
+		->> 'usage_limit')::boolean is not false then
+		raise exception 'The recovery read names a usage limit the run never reached'; end if;
+end $$;
+reset role;
+set constraints all immediate;
 rollback;

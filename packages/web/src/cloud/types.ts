@@ -239,6 +239,8 @@ export interface HostedRunRecovery {
 	lastError?: string;
 	/** An open Company File proposal the run left behind: it waits on a decision. */
 	proposalId?: string;
+	/** The model account paying for the run reached its usage limit during it (20260929840000). */
+	usageLimit?: boolean;
 	/** Operations still executing or of unknown outcome. The cloud refuses to
 	 * dismiss the run until they settle. */
 	unsettledOperations: number;

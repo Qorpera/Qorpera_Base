@@ -1962,7 +1962,7 @@ coding sessions, and routines an agent sets up for them. The kernel already
 carries that member as the run's requester; the payer for follow-up work is
 the requester's own login with room left (the parent run's first), else a
 company account whose kind can run, else the requester's own used-up login
-(whose run then meets the usage-limit handoff), else nothing, and the work
+(whose run then stops at the limit, 2026-10-01 amendment), else nothing, and the work
 does not start. Claude logins never pay for agent work. An agent's standing
 execution authority names a company account only; it never pays with a
 member's login. A coding session runs for the member who asked, on their
@@ -1973,24 +1973,28 @@ requester; a company sponsor serves any member. Unattended use stays granted
 by default (2026-09-19/20 amendment, item 2) and covers only the owner's own
 work. A company account is a company-owned account added by an owner or
 admin; it pays only once its kind of account can run. The company OpenAI API
-account, and its use by the usage-limit handoff and for work no member
-started, follow in a later change. When a member signs in again, the control
+account, and whether it may take over at a usage limit and pay for work no
+member started, follow in a later change. When a member signs in again, the control
 plane may move the bindings that pay with their old login to their new one,
 as a new version of each binding with the same owner and kind; routine wakes
 and coding turns then take the binding's newest same-owner version that can
 pay, so a routine or coding session keeps working after the member's old
 ChatGPT login is switched off. Claude logins are never moved.
 
-2026-10-01 amendment: a usage limit stops the work (founder decision, Sign in
+2026-10-01 amendment: a usage limit stops the run (founder decision, Sign in
 with ChatGPT choice 3). When the login paying for a run reaches its usage
-limit, the run stops and the member is told; the run never moves to another
-login of the same member. OpenAI's terms for ChatGPT plan use forbid rotating
-accounts to get round usage limits, and the founder applied the same rule to
-Codex logins. The thread says that the work stopped, that it did not move to
-another account, and that the member can send it again once the limit resets.
-The sponsor handoff above no longer moves a run between one member's logins
-(migration 20260929840000); whether a company account may take over at a
-member's usage limit stays with the later company-account change.
+limit, that run fails and the member is told; it never moves to another login.
+OpenAI's terms for ChatGPT plan use forbid rotating accounts to get round
+usage limits, and the founder applied the same rule to Codex logins. The run's
+recovery read names the usage limit, and the thread says that the work
+stopped, that it did not move to another account, and that it can run again
+once the limit resets. The control plane no longer makes a sponsor handoff
+(migration 20260929840000): the paragraphs above that describe one, and
+acceptance 29, are superseded for every login. Choosing the payer for new work
+is unchanged by this amendment: a member's next turn, follow-up work and
+routines still take a login with room left first, which can be the member's
+other login; whether that choice must also stay on the exhausted login is a
+separate decision.
 
 ## 18. Short constitution
 
@@ -2227,8 +2231,9 @@ NOT represent missing cloud machinery as working autonomy.
 
 - Order 1 owns the typed usage-limit signal from provider adapters and the
   member notification (section 17).
-- Order 3 owns automatic sponsor handoff — the recorded continuation of an
+- Order 3 owned automatic sponsor handoff — the recorded continuation of an
   affected run on the next eligible connection (section 17, acceptance 29).
+  Since 2026-10-01 a usage limit stops the run instead (section 17).
 - Order 4 owns presence over the live Company File mount (5.2, 9.1),
   extending the lossy, membership-authorized presence channel already defined
   in `supabase/SESSIONS.md` to agents.
@@ -2810,7 +2815,7 @@ model-requested read, and at completion; authorized Company File event wakes
 with causal fencing; durable coworker delivery; rooms as canonical
 organization objects with group conversations and member-post fan-out; the
 wake-rate ceiling and the founder stop; automatic sponsor handoff on a usage
-limit; member consent for autonomous work; and the default agent read grant
+limit (replaced on 2026-10-01 by stopping the run, section 17); member consent for autonomous work; and the default agent read grant
 ratified 2026-09-02. Disposable-database acceptance passes nineteen cases.
 Deployed acceptance with clients closed on the production node remains the
 gate before Order 3 is closed. See
@@ -3975,7 +3980,7 @@ Section 21, item 33, is the event-wake acceptance item.
 | Responsibilities are operating state, not chats | Responsibility schema, measure registry, accountable-agent assignment, ACL projections | Own the outcome and its measures; turn exceptions into verified work. |
 | Responsibility views remain derived | Company File sources, measure projections, provenance, and rebuild service | Reason from exact sources and report material changes. |
 | The Company File is one live document | Live mount, presence service, object versions | See who is working where; re-read on a stale version; never copy the company. |
-| Sponsor routing is recorded | Routing policy, usage-limit signal, sponsor handoff | Stop at a usage limit and say so; never move to another login, never another member's credential (2026-10-01). |
+| Sponsor routing is recorded | Routing policy, usage-limit signal, the run failing at a usage limit (2026-10-01) | Never use another member's credential; do not try to continue work a usage limit stopped. |
 | Projects remain bounded and distinct from rooms | Project registry, team membership, todos, outcome, and room lifecycle | Coordinate in the room; finish in durable company state. |
 | Routine policy is real | Scheduler and listener services | Author sensible schedules and intent. |
 | Dismissal is not consent | Interaction state machine | Treat dismissal as skip or decline. |
@@ -4089,12 +4094,10 @@ while Azure backup/overflow remains disabled.
     Concurrent starts cannot consume the same slot, and a stopped or failed
     computer does not release a reservation until its resources are confirmed free.
 29. When a sponsoring connection reaches its usage limit, the member is
-    notified, and an affected run continues on the next eligible connection
-    of the same principal (or a policy-permitted company account) through a
-    recorded sponsor handoff with full provenance. No other member's
-    credential is ever used, and a transient rate limit or provider outage
-    does not trigger a handoff. (2026-10-01 amendment, section 17: the run
-    stops instead and never moves to another login of the same member.)
+    notified, the affected run fails without moving to another login, its
+    recovery read names the usage limit, and the thread says the work stopped
+    (2026-10-01 amendment, section 17). No other member's credential is ever
+    used.
 30. A company's ceilings hold without agent cooperation: a deliberately
     runaway loop is stopped at its wake-rate or spend ceiling, the founder
     stop operation pauses the company, and the founder is notified from the
