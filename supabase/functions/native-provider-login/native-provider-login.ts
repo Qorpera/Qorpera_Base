@@ -1,6 +1,8 @@
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 const MAX_REQUEST_BYTES = 64 * 1024;
 const MAX_RESPONSE_BYTES = 64 * 1024;
+/** How long a ChatGPT plan confirmation may take end to end at this hop (see forwardLogin). */
+export const CHATGPT_PLAN_CONFIRM_TIMEOUT_MS = 40_000;
 
 export interface NativeProviderLoginProxyOptions {
 	upstreamUrl?: string;
@@ -121,16 +123,24 @@ async function forwardLogin(request: Request, options: NativeProviderLoginProxyO
 	}
 	let target: { url: string; source: string } | undefined;
 	try {
-		const timeoutMs = options.timeoutMs ?? 30_000;
+		const path = new URL(request.url).pathname;
+		const refresh = path.endsWith("/account-refresh");
+		// Sign in with ChatGPT: the web client confirms a plan sign-in with the same capability; the same
+		// gateway (the company's vault) answers it. The vault's confirm route answers within 30 s (it may
+		// exchange the code with OpenAI and save the login), after the gateway lookup (at most 5 s): this
+		// hop waits 40 s, inside the web client's 45 s, so a member never sees a failure for a login the
+		// vault saved.
+		const planConfirm = path.endsWith("/chatgpt-plan-confirm");
+		const timeoutMs = options.timeoutMs ?? (planConfirm ? CHATGPT_PLAN_CONFIRM_TIMEOUT_MS : 30_000);
 		if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 60_000) {
 			throw new Error("Native login proxy timeout is invalid");
 		}
 		const signal = AbortSignal.any([request.signal, AbortSignal.timeout(timeoutMs)]);
-		const refresh = new URL(request.url).pathname.endsWith("/account-refresh");
 		target = await resolveUpstream(refresh && options.upstreamResolver
 			? { ...options, upstreamResolver: (hash) => options.upstreamResolver!(hash, "account_refresh") }
 			: options, signal, await sha256Hex(capability));
 		if (refresh) target.url = new URL("account-refresh", target.url).href;
+		if (planConfirm) target.url = new URL("chatgpt-plan/confirm", target.url).href;
 		const upstream = await (options.fetchImplementation ?? fetch)(target.url, {
 			method: "POST",
 			headers: {

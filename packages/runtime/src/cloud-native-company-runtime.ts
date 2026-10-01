@@ -10,6 +10,7 @@ import {
 } from "./cloud-action-review.ts";
 import { CLOUD_AGENT_SEND_INSTRUCTIONS, CloudAgentMouth, parseCloudAgentSendInput } from "./cloud-agent-mouth.ts";
 import {
+	type CloudChatGptPlanAuth,
 	disposeCloudCodexSpares,
 	prefetchCloudCodexArtifact,
 	prepareCloudCodexSpare,
@@ -118,6 +119,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 	readonly #sha256: string;
 	readonly #timeoutMs: number | undefined;
 	readonly #isolation: NativeIsolationConfiguration | undefined;
+	readonly #chatGptPlanAuth: CloudChatGptPlanAuth | undefined;
 	readonly #secretBroker: CloudSecretOperationClient | undefined;
 	readonly #computerSession: CloudCompanyComputerSessionFactory | undefined;
 	readonly #coding: CloudNativeCodingDriver | undefined;
@@ -139,6 +141,8 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		binarySha256: string;
 		timeoutMs?: number;
 		isolation?: NativeIsolationConfiguration;
+		/** How a ChatGPT plan run's Codex gets the plan's token; `command` unless the host chose the fallback. */
+		chatGptPlanAuth?: CloudChatGptPlanAuth;
 		secretBroker?: CloudSecretOperationClient;
 		/** Explicit cloud-office adapter; no local execution or inferred resource grant. */
 		computerSession?: CloudCompanyComputerSessionFactory;
@@ -162,6 +166,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		void prefetchCloudCodexArtifact(this.#command[0]);
 		this.#timeoutMs = options.timeoutMs;
 		this.#isolation = options.isolation ? Object.freeze({ ...options.isolation }) : undefined;
+		this.#chatGptPlanAuth = options.chatGptPlanAuth;
 		this.#secretBroker = options.secretBroker;
 		this.#computerSession = options.computerSession;
 		this.#coding = options.coding;
@@ -187,6 +192,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				serviceTier: settings.serviceTier,
 				identityRoot,
 				...(this.#isolation ? { isolation: this.#isolation } : {}),
+				...(this.#chatGptPlanAuth ? { chatGptPlanAuth: this.#chatGptPlanAuth } : {}),
 			},
 			idleMs,
 		);
@@ -526,6 +532,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					identityRoot,
 					...(this.#spareEfforts.has(identityRoot) ? { reusedIdentityRoot: true } : {}),
 					isolation: this.#isolation,
+					...(this.#chatGptPlanAuth ? { chatGptPlanAuth: this.#chatGptPlanAuth } : {}),
 					prompt,
 					runtimeInstructions: compileCloudNativeCompanyInstructions(context, wake),
 					signal,
