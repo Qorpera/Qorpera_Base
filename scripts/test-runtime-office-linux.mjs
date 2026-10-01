@@ -229,17 +229,18 @@ node /opt/probe/plumb-socket.mjs "$(getent passwd 1000 | cut -d: -f1)" &
 sleep 1
 ` : ""}exec setpriv --reuid=1000 --regid=1000 --clear-groups --bounding-set=-all node /opt/probe/probe.mjs
 `);
-	// Docker's default seccomp and proc masks block nested user/PID namespaces.
+	// Docker's default seccomp, AppArmor profile (on hosts with AppArmor, such as
+	// the node 2 test machine) and proc masks block nested user/PID namespaces.
 	// The outer container permits that setup; the real bwrap boundary then runs
 	// as uid 1000 with no capabilities, no network, and finite cgroup ceilings.
 	const guestArgs = ["run", ...(combined ? ["-i"] : []), "--rm", "--name", container, "--network", "none", "--read-only", "--memory", browser ? "2g" : desktop ? "1g" : shell ? "640m" : "512m", "--memory-swap", browser ? "2g" : desktop ? "1g" : shell ? "640m" : "512m",
 		"--pids-limit", browser ? "512" : desktop || shell ? "256" : "128", "--cpus", desktop ? "2" : "1", "--cap-drop", "ALL", "--cap-add", "CHOWN", "--cap-add", "SETUID", "--cap-add", "SETGID", "--cap-add", "SETPCAP",
 		// The shell proof's root plumber and machine firewall; the probe itself drops them.
-		...(shell ? ["--cap-add", "NET_ADMIN", "--cap-add", "SYS_ADMIN", "--cap-add", "SYS_PTRACE", "--security-opt", "apparmor=unconfined",
+		...(shell ? ["--cap-add", "NET_ADMIN", "--cap-add", "SYS_ADMIN", "--cap-add", "SYS_PTRACE",
 			"--tmpfs", "/run/netns:rw,nosuid,nodev,size=1m,mode=755", "--tmpfs", "/run/qorpera-computer-network:rw,nosuid,nodev,size=1m,mode=755"] : []),
 		// Root attester reads uid-1000 private mounts; setpriv drops this before the broker probe.
 		...(boundary ? ["--cap-add", "DAC_READ_SEARCH"] : []),
-		"--security-opt", "no-new-privileges", "--security-opt", "seccomp=unconfined", "--security-opt", "systempaths=unconfined",
+		"--security-opt", "no-new-privileges", "--security-opt", "seccomp=unconfined", "--security-opt", "apparmor=unconfined", "--security-opt", "systempaths=unconfined",
 		"--tmpfs", "/tmp:rw,nosuid,nodev,noexec,size=128m,mode=1777",
 		...(boundary ? ["--mount", `type=volume,source=${boundaryVolume},target=/srv`] : ["--tmpfs", "/srv:rw,nosuid,nodev,size=128m,mode=755"]),
 		"--tmpfs", "/run/office-captures:rw,nosuid,nodev,noexec,size=32m,uid=1000,gid=1000,mode=700",
