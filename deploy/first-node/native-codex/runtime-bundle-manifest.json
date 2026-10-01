@@ -19,7 +19,7 @@
     "wakeAndSilence": "1c715fff041f078b568f134de5906affd43479f83126fd44298a19cd7203b55c",
     "contextComposer": "dad18e7df8c012879bdbcfb9f95e2d7690a6b17ded02959ef35c672892a25298",
     "providerBootstrap": "f342c16d962f393db6e4f205ed4e5c7d8a73fa0c3f2605de7c42c255cdc15a39",
-    "authorization": "17d05742727ce0fdf65a79bedb1fd0d77032d2a54efbaea6f8daf32953711c05",
+    "authorization": "f4b49637d37fa15bd2ed62fced75f8784d1f2897534f8c0bb83c747311848210",
     "inboundSafety": "bd73e412e81a1858724ba44e543d8ee0ebac981245a335bd5b375655d718ee00",
     "outboundSafety": "f36329805249357b95d05de41af984b3cdd8c5c61b6cd66b0789ab333adf6998",
     "interactionSurfaces": "28983f832341b14eda7e3ffe45cb805d161d59f0f412ccbba094c34df99672b4",
@@ -681,7 +681,7 @@
     "packages/runtime/src/native-provider-account.ts": "9dbb6d065639253c5584876adbeb70f2803de29575ae7de7d1e0f0bbe0442b2b",
     "packages/runtime/src/native-provider-usage.ts": "935086f12167064ae71e90b44af1cbfe28b0d64a59ec2ba685157f45d320297c",
     "packages/runtime/src/systemd-credential.ts": "1d3eb8038a369c58418cbd8248aecf457662cbb3430cc84847235c2222a82478",
-    "scripts/generate-cloud-runtime-bundle.mjs": "66890a9ed32fd96c309abccb577980548dd17b0f5abf33278c60da7b3981db88",
+    "scripts/generate-cloud-runtime-bundle.mjs": "f881f69204f7e103d8ac0577200229c6fcd5fb9ae7a6af96d8c056395e8f03db",
     "scripts/native-company-artifact.mjs": "e394bc799104f188769de07cd3be14e6c732a1a672113ea45d349a29d8e0ca63",
     "scripts/package-coding-executor.mjs": "292c557c75728d08e2fd2574c75cc07634f36bca629981709373f62af90a9272",
     "scripts/package-coding-guest.mjs": "04b1d63699aef4f05a5b800b06adff366e1607b1eaac53da8694d1e7e5d84ad3",
@@ -1261,6 +1261,10 @@
     "supabase/migrations/20260928349990_runtime_bundle_activation_v159.sql": "5a60e25d21c90a1fbe08433b747aeaa5489e366213f740d36af1f0c5797edb17",
     "supabase/migrations/20260928359930_runtime_runner_start.sql": "3bd7ae50da66e28f0c8426def4a9698392c47d056d485b82e02aa7f473f97cf9",
     "supabase/migrations/20260928359950_runtime_chatgpt_plan_rules.sql": "0101bad4070a69276a9a9ecf51de893639db9171d9440436e6a28e61e7d3cc15",
-    "supabase/migrations/20260928359960_runtime_chatgpt_plan_company_delete.sql": "a99f83654420bfc5eeb993db5bd728caa825e0ab5064bc98d50de07c0290f4f4"
+    "supabase/migrations/20260928359960_runtime_chatgpt_plan_company_delete.sql": "a99f83654420bfc5eeb993db5bd728caa825e0ab5064bc98d50de07c0290f4f4",
+    "supabase/migrations/20260928359990_runtime_bundle_activation_v160.sql": "0432e14a0ef8f7b4512b6f09def054dec60cdfe3ebe82a36e158b609a033478e",
+    "supabase/migrations/20260928369970_runtime_chatgpt_plan_member_reads.sql": "c0e89ff2ce02efcf0077f5af1334326c642dbafe14b96a0b47cd34ab88ed7dcc",
+    "supabase/migrations/20260928369980_runtime_chatgpt_plan_consent_guard.sql": "156f771bbc943b21b5bb59fa5a32580036a1e3116aae60e0973558158a5616dd",
+    "supabase/migrations/20260928369985_runtime_chatgpt_plan_turn_on_resumes.sql": "0b31493c5e9771dd91a3bfcf178d6e6583a873e7f14e802e04bfd2c8a0ff10c5"
   }
 }
