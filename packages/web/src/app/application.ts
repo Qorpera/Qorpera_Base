@@ -742,26 +742,46 @@ export function mountApplication(
 			notices = undefined;
 		}
 		if (!notices && state.team?.capabilities.read) {
+			const noticeAccess = () => {
+				const selected = currentRoute();
+				if (
+					disposed ||
+					company !== controller ||
+					auth.userId !== controller.userId ||
+					controller.store.get().accessLost ||
+					!controller.store.get().team?.capabilities.read ||
+					selected.name !== "company" ||
+					selected.profileId !== controller.profile.profileId
+				)
+					throw new Error(t("Company notification access changed."));
+			};
 			const client = createWebMemberNotifications(
 				cloud,
 				controller.profile.profileId,
 				controller.userId,
 				controller.signal,
-				() => {
-					const selected = currentRoute();
-					if (
-						disposed ||
-						company !== controller ||
-						auth.userId !== controller.userId ||
-						controller.store.get().accessLost ||
-						!controller.store.get().team?.capabilities.read ||
-						selected.name !== "company" ||
-						selected.profileId !== controller.profile.profileId
-					)
-						throw new Error(t("Company notification access changed."));
-				},
+				noticeAccess,
 			);
-			notices = new ExecutionNotices(client, controller.signal, () => main.focus({ preventScroll: true }));
+			// A ChatGPT plan's member is asked once to turn on work while away for an agent's routine.
+			const native = createWebNativeSubscription(
+				cloud,
+				controller.profile.profileId,
+				controller.userId,
+				controller.signal,
+				noticeAccess,
+			);
+			const plan =
+				native.setWorkWhileAway && native.recordRoutineOffer
+					? {
+							native: {
+								listConnections: native.listConnections,
+								setWorkWhileAway: native.setWorkWhileAway,
+								recordRoutineOffer: native.recordRoutineOffer,
+							},
+							routines: createWebRoutines(cloud, controller.profile, controller.signal, noticeAccess),
+						}
+					: undefined;
+			notices = new ExecutionNotices(client, controller.signal, () => main.focus({ preventScroll: true }), plan);
 			executionNotices.append(notices.el);
 		}
 		if (route.section !== "chat") {

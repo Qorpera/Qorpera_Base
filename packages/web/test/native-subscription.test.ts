@@ -404,6 +404,19 @@ describe("ChatGPT plan logins (switched off until a company has one)", () => {
 			p_allow_autonomous: false,
 		});
 	});
+	it("records the first-routine card once and returns the first showing", async () => {
+		const f = setup();
+		const rpc = vi
+			.spyOn(f.cloud, "rpc")
+			.mockResolvedValueOnce({ connection_id: id(94), shown_at: timestamp })
+			.mockResolvedValueOnce({ connection_id: id(95), shown_at: timestamp });
+		expect(await f.client.recordRoutineOffer!(id(94))).toBe(timestamp);
+		expect(rpc).toHaveBeenCalledWith("qorpera_record_chatgpt_plan_routine_offer", {
+			p_profile_id: profileA.profileId,
+			p_connection_id: id(94),
+		});
+		await expect(f.client.recordRoutineOffer!(id(94))).rejects.toThrow("Invalid cloud response");
+	});
 	it("turns work while away on (consent, then the consented version bound) and off (consent only)", async () => {
 		const f = setup();
 		const rpc = vi

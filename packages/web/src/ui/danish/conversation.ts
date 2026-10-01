@@ -176,6 +176,15 @@ export const CONVERSATION: Record<string, string> = {
 
 	// Company notices above the composer (app/views/execution-notices.ts)
 	"Company updates": "Virksomhedsopdateringer",
+	"{title} can run while you're away.": "{title} kan køre, mens du er væk.",
+	"{count} routines can run while you're away.": "{count} rutiner kan køre, mens du er væk.",
+	"Turn on work while you're away so your ChatGPT plan can run it.":
+		"Slå Arbejd, mens du er væk til, så dit ChatGPT-abonnement kan køre den.",
+	"Turn on": "Slå til",
+	"Turning on…": "Slår til…",
+	"Not now": "Ikke nu",
+	"Work while you're away could not be turned on. Try again.":
+		"Arbejd, mens du er væk kunne ikke slås til. Prøv igen.",
 	"All {count} company computers are in use. Close one to open another.":
 		"Alle {count} virksomhedscomputere er i brug. Luk én for at åbne en ny.",
 

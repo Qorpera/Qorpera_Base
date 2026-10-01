@@ -68,6 +68,8 @@ export interface WebNativeSubscription {
 	): Promise<{ bindingId: string; version: number }>;
 	/** The member's own choice for their ChatGPT plan: work while they are away, or not. */
 	setWorkWhileAway?(connectionId: string, on: boolean, signal?: AbortSignal): Promise<void>;
+	/** Records that the member was shown the first-routine card (once per member and company). */
+	recordRoutineOffer?(connectionId: string, signal?: AbortSignal): Promise<string>;
 	revokeConnection(
 		input: Omit<RevokeNativeProviderConnectionInput, "profileId">,
 		signal?: AbortSignal,
@@ -610,6 +612,20 @@ export function createWebNativeSubscription(
 					allowAutonomous: true,
 					profileId,
 				});
+		},
+		recordRoutineOffer: async (connectionId, signal) => {
+			signal?.throwIfAborted();
+			const value = (await cloud.rpc("qorpera_record_chatgpt_plan_routine_offer", {
+				p_profile_id: profileId,
+				p_connection_id: connectionId,
+			})) as { connection_id?: unknown; shown_at?: unknown } | null;
+			if (
+				value?.connection_id !== connectionId ||
+				typeof value.shown_at !== "string" ||
+				!Number.isFinite(Date.parse(value.shown_at))
+			)
+				throw new Error("Invalid cloud response");
+			return value.shown_at;
 		},
 		revokeConnection: (input, signal) => client(signal).revokeConnection({ ...input, profileId }),
 	};

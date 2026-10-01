@@ -1,8 +1,11 @@
 // @vitest-environment jsdom
+
+import type { CloudRoutine } from "@qorpera/cloud-client/cloud-routines";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mountApplication } from "../src/app/application.ts";
 import { ExecutionNotices } from "../src/app/views/execution-notices.ts";
 import type { MemberNotification, WebMemberNotifications } from "../src/cloud/member-notifications.ts";
+import type { WebMemberConnection } from "../src/cloud/native-subscription.ts";
 import { deferred, fixture, id, profileA, profileB, settle, timestamp, userB } from "./fixtures.ts";
 
 const cleanup: (() => void)[] = [];
@@ -300,4 +303,124 @@ it("reads notices for the company workspace without any popup, also across an ac
 	f.auth(userB);
 	await vi.advanceTimersByTimeAsync(100);
 	expect(root.textContent).not.toContain("company computers are in use");
+});
+
+describe("a ChatGPT plan's first-routine card (shown only to a member with a plan login)", () => {
+	const waiting = (n = 77): MemberNotification => ({
+		...item(n),
+		kind: "routine_needs_model_account",
+		subject: {
+			schema: "routine-needs-model-account",
+			staffAgentId: id(60),
+			routineId: id(61),
+			title: "Morning brief",
+		},
+	});
+	const connection = (extra: Record<string, unknown>) =>
+		({
+			connectionId: id(85),
+			clientConnectionId: id(185),
+			connectionVersion: 2,
+			provider: "openai",
+			nativeHarness: "codex-cli",
+			authorizationState: "active",
+			maxNativeConcurrency: 1,
+			billingSource: "personal_subscription",
+			consentVersion: "v1",
+			consentedAt: timestamp,
+			connectionStatus: "active",
+			policy: { implementationStatus: "supported", enablementStatus: "enabled", policyVersion: 3 },
+			...extra,
+		}) as unknown as WebMemberConnection;
+	const routine = { routineId: id(61), title: "Morning brief" } as unknown as CloudRoutine;
+	function planSetup(connections: WebMemberConnection[], items: MemberNotification[] = [waiting()]) {
+		const client = {
+			listNotifications: vi.fn(async () => items),
+			acknowledgeNotification: vi.fn(async (notificationId: string) => ({
+				...items.find((entry) => entry.notificationId === notificationId)!,
+				acknowledgedAt: timestamp,
+			})),
+		};
+		let listed = connections;
+		const plan = {
+			native: {
+				listConnections: vi.fn(async () => ({ connections: listed })),
+				setWorkWhileAway: vi.fn(async () => {
+					listed = [...listed, { ...listed[0]!, connectionVersion: 3, allowAutonomous: true }];
+				}),
+				recordRoutineOffer: vi.fn(async () => timestamp),
+			},
+			routines: { list: vi.fn(async () => [routine]), setEnabled: vi.fn(async () => {}) },
+		};
+		const lifetime = new AbortController();
+		const view = new ExecutionNotices(client, lifetime.signal, undefined, plan);
+		document.body.append(view.el);
+		cleanup.push(() => view.dispose());
+		return { client, plan, view };
+	}
+	it("stays out of sight for a member without a plan login, or with a Codex login", async () => {
+		for (const connections of [[], [connection({ loginKind: "codex", allowAutonomous: false })]]) {
+			const f = planSetup(connections);
+			await settle();
+			expect(f.view.el.hidden).toBe(true);
+			expect(f.plan.native.recordRoutineOffer).not.toHaveBeenCalled();
+			f.view.dispose();
+		}
+		// Without the plan's helpers the band reads as before: a waiting routine gets no line.
+		const f = setup([waiting()]);
+		await settle();
+		expect(f.view.el.hidden).toBe(true);
+	});
+	it("does not come back once shown, or once the plan is turned on", async () => {
+		for (const extra of [{ routineOfferShownAt: timestamp }, { allowAutonomous: true }]) {
+			const f = planSetup([connection({ loginKind: "chatgpt_plan", allowAutonomous: false, ...extra })]);
+			await settle();
+			expect(f.view.el.hidden).toBe(true);
+			f.view.dispose();
+		}
+	});
+	it("asks once, and Turn on turns the plan on and saves the waiting routine on it", async () => {
+		const f = planSetup([connection({ loginKind: "chatgpt_plan", allowAutonomous: false })]);
+		await settle();
+		expect(f.view.el.hidden).toBe(false);
+		expect(f.view.el.querySelector(".company-notice p")?.textContent).toBe(
+			"Morning brief can run while you're away. Turn on work while you're away so your ChatGPT plan can run it.",
+		);
+		expect(f.plan.native.recordRoutineOffer).toHaveBeenCalledExactlyOnceWith(id(85), expect.any(AbortSignal));
+		// The card stands in this window after the showing is recorded.
+		await vi.advanceTimersByTimeAsync(30_000);
+		expect(f.plan.native.recordRoutineOffer).toHaveBeenCalledTimes(1);
+		action("turn-on-plan").click();
+		await settle();
+		expect(f.plan.native.setWorkWhileAway).toHaveBeenCalledExactlyOnceWith(id(85), true, expect.any(AbortSignal));
+		expect(f.plan.routines.setEnabled).toHaveBeenCalledExactlyOnceWith(
+			routine,
+			expect.objectContaining({ connectionId: id(85), connectionVersion: 3, allowAutonomous: true }),
+			true,
+			expect.any(String),
+		);
+		expect(f.client.acknowledgeNotification).toHaveBeenCalledWith(id(77), expect.any(AbortSignal));
+		expect(f.view.el.hidden).toBe(true);
+	});
+	it("Not now leaves the routine waiting and never asks again", async () => {
+		const f = planSetup([connection({ loginKind: "chatgpt_plan", allowAutonomous: false })]);
+		await settle();
+		action("not-now-plan").click();
+		await settle();
+		expect(f.client.acknowledgeNotification).toHaveBeenCalledWith(id(77), expect.any(AbortSignal));
+		expect(f.plan.native.setWorkWhileAway).not.toHaveBeenCalled();
+		expect(f.view.el.hidden).toBe(true);
+		await vi.advanceTimersByTimeAsync(30_000);
+		expect(f.view.el.hidden).toBe(true);
+	});
+	it("says when the plan could not be turned on, and keeps the card", async () => {
+		const f = planSetup([connection({ loginKind: "chatgpt_plan", allowAutonomous: false })]);
+		await settle();
+		f.plan.native.setWorkWhileAway.mockRejectedValueOnce(new Error("offline"));
+		action("turn-on-plan").click();
+		await settle();
+		expect(f.view.el.textContent).toContain("Work while you're away could not be turned on. Try again.");
+		expect(f.client.acknowledgeNotification).not.toHaveBeenCalled();
+		expect(action("turn-on-plan")).toBeTruthy();
+	});
 });
