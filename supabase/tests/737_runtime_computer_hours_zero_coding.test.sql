@@ -1,5 +1,5 @@
 -- @fixture 627_runtime_coding_session_standby.test.sql until "-- 3. The next turn keeps the generation the guest still holds"
--- Computer hours, build step 6b part 4 (20260929760000): coding at zero, behind coding's own switch.
+-- Computer hours, build step 6b part 4 (20260928319760): coding at zero, behind coding's own switch.
 --   * With the zero rule on but coding's switch off, coding is left as it was: the machine step and
 --     begin let a turn through, and the node does not refuse coding machines.
 --   * With coding's switch on, a turn not yet begun waits: the machine step refuses it, begin answers

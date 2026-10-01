@@ -610,7 +610,7 @@ wake), so no agent runs and nothing is charged before it.
   `qorpera_mail_settings` (`sending`, built off) and the company limits on recipients `company_hourly_recipients`
   (60) and `company_daily_recipients` (300). Received mail (`mail.received`) now also carries `autoSubmitted`,
   `precedence`, `listId` and `automated`; agents never answer automated mail.
-- Sender names (20260929810000_runtime_company_mail_sender_names): `qorpera_create_company_mailbox` also reserves
+- Sender names (20260928319810_runtime_company_mail_sender_names): `qorpera_create_company_mailbox` also reserves
   (22023) any local part that reads as Qorpera (case, separators, accents, full width and look-alike letters or
   digits folded), and no email goes out when the agent's or the company's name or the mailbox reads as Qorpera.
 
@@ -652,7 +652,7 @@ wake), so no agent runs and nothing is charged before it.
   rule: an active member of an active room. Drafts never send, wake or sponsor
   anything; the owner sends with `qorpera_post_company_room_message` as before.
 - `qorpera-orchestrator-wake-{64 hex}` — **node only, not for clients**
-  (migration `20260929550000_runtime_orchestrator_wake`). A runner orchestrator's
+  (migration `20260928319550_runtime_orchestrator_wake`). A runner orchestrator's
   wake-up: while `qorpera_orchestrator_wake_settings.enabled` is on, the database
   broadcasts event `wake`, payload `{"schema":"qorpera.orchestrator-wake/v1"}`
   and nothing else, when claimable work may have appeared. Private channel read

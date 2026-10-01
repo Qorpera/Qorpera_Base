@@ -262,6 +262,7 @@ async function fixture(
 	const reviewedTools: string[] = [];
 	/** The kernel's answer to whether any node can serve machines (an Error: the call fails). */
 	let machinesAnswer: unknown = true;
+	const folderReads: string[] = [];
 	const pathCall = vi.fn<CloudCompanyPathControl["call"]>(async (method, args) => {
 		if (method === "qorpera_company_machines_available") {
 			if (machinesAnswer instanceof Error) throw machinesAnswer;
@@ -286,6 +287,11 @@ async function fixture(
 					replayed: false,
 				})),
 			};
+		}
+		// A folder-v2 run's folder reads: this suite seeds no files (the folder core takes the run actor, not the binding).
+		if (method === "qorpera_folder_read") {
+			folderReads.push(args.p_path as string);
+			return { schema: "qorpera.folder-read/v1", asOfSeq: 1, found: false, entry: null };
 		}
 		expect(args.p_binding).toEqual(f.binding);
 		if (method === "qorpera_begin_native_company_execution_v2") {
@@ -615,6 +621,7 @@ async function fixture(
 			machinesAnswer = value;
 		},
 		decisions,
+		folderReads,
 		reviewedTools,
 		store,
 		deliveries,
@@ -1106,6 +1113,24 @@ it("has a dynamic routine run decide its next run before its final message", asy
 	const fixedEvidence = JSON.parse(await readFile(fixed.evidence, "utf8"));
 	expect(JSON.stringify(fixedEvidence.threadParameters.dynamicTools)).not.toContain('"name":"decide_routine"');
 	expect(fixedEvidence.threadParameters.developerInstructions).not.toContain("# This routine is dynamic");
+});
+
+it("has a folder-v2 dynamic routine run decide through its routine file, settled when the file is gone", async () => {
+	const f = await fixture("company-dynamic", false, undefined, false, true);
+	f.context.folder = { agent: "nora", coworkers: {} };
+	const result = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+	expect(result.delivery).toEqual({ messageCount: 2, finalMessageId: f.deliveries.get("final")?.messageId });
+	// The decision went to the routine's file, not the kernel's legacy decision: no file there, so nothing is owed.
+	expect(f.decisions).toEqual([]);
+	expect(f.folderReads).toContain(`agents/nora/routines/${f.wake.routine?.routineKey}.md`);
+	const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
+	const tools = evidence.threadParameters.dynamicTools[0].tools as { name: string; description: string }[];
+	expect(tools.find((tool) => tool.name === "decide_routine")?.description).toContain(
+		"cannot change its title or instructions yet",
+	);
+	expect(
+		evidence.fenced.outputs.some((output: { output: string }) => output.output.includes('\\"state\\":\\"settled\\"')),
+	).toBe(true);
 });
 
 it("raises one typed card for the member, appended before the final sentence, and ends the turn", async () => {

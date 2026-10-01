@@ -1,6 +1,6 @@
 -- @fixture 634_folder_core_authority.test.sql until "-- Mutators: owners and admins"
 -- Thin writers W1 (deploy/first-node/RUNTIME-COMPANY-STATE-FILES.md §5 "Built (W1)"): a folder-v2 run lists its own
--- todos from the todo index (qorpera_folder_agent_todos, 20260929770000), paged as today's list, behind the run's plain
+-- todos from the todo index (qorpera_folder_agent_todos, 20260928319770), paged as today's list, behind the run's plain
 -- check and its read authority on its todos folder.
 
 -- Structured files as the TS parser sends them (the shapes of test 707), in this fixture's company.

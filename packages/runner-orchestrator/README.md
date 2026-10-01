@@ -225,7 +225,7 @@ poll interval. Wake-ups that bring a claim forward stay at least one poll
 interval apart. While the channel is not joined, the loop polls as without
 wake-ups. A backstop claim that finds work no wake-up announced makes it poll
 that way for ten minutes and is reported. The database side (migration
-`20260929550000`) broadcasts only while `qorpera_orchestrator_wake_settings.enabled`
+`20260928319550`) broadcasts only while `qorpera_orchestrator_wake_settings.enabled`
 is on; switch it on before the nodes.
 
 The bootstrap orchestrator token is used only when the control-state file does

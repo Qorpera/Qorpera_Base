@@ -776,7 +776,7 @@ C1d (bytes):
 - `done` and `cancel` change only `status` (`setCompanyStateSettings`), and show the todo as read, released with the
   result. An `upsert` that is not saved shows the state and version read, and releases that read too. A todo file
   that does not parse is refused, for a change and for `todoKey`.
-- `list` reads the todo index (`qorpera_folder_agent_todos`, migration `20260929770000`, test 763), which the commit
+- `list` reads the todo index (`qorpera_folder_agent_todos`, migration `20260928319770`, test 763), which the commit
   updates in the same transaction as the files: one plain read, paged as today's list (32 a page, newest first, open
   and blocked by default, `state`, `includeClosed` and `search` as before, the cursor of the last todo shown). A page
   shows the start of each detail, as today, and is no folder read, so nothing is released. `todoKey` reads that one
@@ -809,6 +809,27 @@ C1d (bytes):
 - A section reference ignores case and runs of spaces, as today. Differences from today: sections have no count cap
   beyond the file's 64 KiB (a change past it is refused before any effect), and an open group chat can be placed as
   well as an agent (§2).
+
+**Built (W3): `decide_routine`** (`packages/runtime/src/cloud-folder-routine-decision.ts`).
+- The run woken by its dynamic routine's `once` occurrence writes the decision into the routine's own file,
+  `agents/<handle>/routines/<routineKey>.md`. `next` sets a new `at` (canonical, and, if asked, `effort` and `reply`)
+  with `setCompanyStateSettings`; `conclude` sets `status: concluded` and the `conclusion`, its line breaks and tabs
+  made spaces (the file's conclusion is one line).
+- Refused before the receipt, binding no key (`REFUSED: …`): a title or instructions that differ from the file's
+  (delegation, which the folder core cannot record until C2; equal ones change nothing), and a next run at or after
+  the routine's `ends` ("The routine ends at …. Choose an earlier time or conclude it.", as today). The folder-v2
+  description says the run leaves intent and title out, and that a refused decision is redone under a new key.
+- Settled, as today, when the routine already moved on: its file is gone, it is no longer active, or it is no longer
+  a `once` routine; and when the commit calls a plain decision delegation (`denied`, `review_required`), which by
+  F2-6's review class means nothing is owed any more. A settled answer makes the decision.
+- The save goes under the tool call's receipt with the version read. A saved decision is made (the run owes nothing
+  more). A conflict or another refusal leaves it owed, and its reason says to decide again with a new operationKey.
+- A `folder-v2` run on a node without folder bytes keeps the legacy tool, which refuses `folder-v2`: such a dynamic
+  routine run cannot decide, and its final message is refused. Nodes serve folder bytes before any company is
+  `folder-v2` (C1c-3).
+- Known limit: the routine is found by its path. If a member renames its file (or the agent's folder) while the run
+  works, the decision is still owed but the file is gone, so the tool answers settled; the kernel then refuses the
+  run's final message. A follow-up finds the routine by its id.
 
 Until the mount's writes are accepted (F3), these tools become thin writers of these files:
 `hire_agent`, `create_group_chat`, `organize_sidebar`, `manage_todo`, `manage_routine` and

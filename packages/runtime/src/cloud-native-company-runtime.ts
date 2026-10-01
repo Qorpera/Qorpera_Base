@@ -23,6 +23,7 @@ import {
 	observeCloudCompanyPathPresence,
 } from "./cloud-company-path-presence.ts";
 import { cloudEventTools } from "./cloud-event-tools.ts";
+import { CloudFolderRoutineDecision } from "./cloud-folder-routine-decision.ts";
 import { CloudFolderSidebar } from "./cloud-folder-sidebar.ts";
 import { CloudFolderTodos } from "./cloud-folder-todos.ts";
 import { cloudHiringTools } from "./cloud-hiring-tools.ts";
@@ -601,6 +602,17 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 															decided: () => {
 																routineDecisionOwed = false;
 															},
+															...(folder && wake.routine?.routineKey
+																? {
+																		folderDecision: new CloudFolderRoutineDecision({
+																			folder: folder.client,
+																			operations,
+																			identity,
+																			handle: folder.handle,
+																			routineKey: wake.routine.routineKey,
+																		}),
+																	}
+																: {}),
 														}),
 													]
 												: []),
