@@ -93,6 +93,7 @@ fn mounts_reads_follows_changes_and_unmounts_when_the_view_closes() {
 	// even with the same size: two versions never share cached pages.
 	node.put("docs/same.md", &"a".repeat(64 * 1024), false);
 	let same = company.join("docs/same.md");
+	assert!(eventually(Duration::from_secs(2), || same.exists()));
 	let mut held = std::fs::File::open(&same).unwrap();
 	let mut first = vec![0u8; 4096];
 	held.read_exact(&mut first).unwrap();

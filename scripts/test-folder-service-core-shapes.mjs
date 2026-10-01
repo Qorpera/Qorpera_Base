@@ -25,7 +25,7 @@ function feedSql() {
 	if (end < 0) throw new Error("The feed test's history ended elsewhere: update this script");
 	const call = (label, sql) => `select '@@shape-${label} ' || (${sql})::text;\n`;
 	const platform = `'{"kind":"platform"}'::jsonb`;
-	const member = `'{"kind":"member","userId":"63000000-0000-4000-8000-000000000002"}'::jsonb`;
+	const member = `'{"kind":"member","userId":"63000000-0000-4000-8000-000000000004"}'::jsonb`;
 	return (
 		`\\pset format unaligned\n\\pset tuples_only on\n${fixture.slice(0, end)}\n` +
 		// The listing at seq 0 is empty, so list the history first page by page, the way the service does.
@@ -79,7 +79,7 @@ async function main() {
 		const first = parseListPage(got.get("list-page-1"));
 		assert.equal(first.entries.length, 3);
 		assert.equal(first.next, first.entries[2].path);
-		// A member sees less: the private folder of another member is not theirs.
+		// Another member sees less: member 2's private folder is not theirs.
 		const memberList = parseListPage(got.get("list-member"));
 		assert.ok(memberList.entries.length < list.entries.length);
 		assert.ok(!memberList.entries.some((e) => e.path.startsWith("locked")));
