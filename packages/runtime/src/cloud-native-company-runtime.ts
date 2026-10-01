@@ -608,20 +608,6 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 																			handle: folder.handle,
 																			routineKey: wake.routine.routineKey,
 																			routineId: wake.routine.id,
-																			// After a rename mid-run: the routine's key now, from the kernel.
-																			currentRoutineKey: async (keySignal) =>
-																				parseCloudWakeEnvelope(
-																					await cloudToolRequest(
-																						(requestSignal) =>
-																							this.#paths.call(
-																								"qorpera_read_native_wake",
-																								{ p_binding: binding },
-																								requestSignal,
-																							),
-																						keySignal,
-																					),
-																					identity,
-																				).routine?.routineKey ?? null,
 																		}),
 																	}
 																: {}),

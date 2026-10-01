@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
 	COMPANY_STATE_FILE_MAX_BYTES,
 	type CompanyStateSetting,
@@ -6,7 +7,11 @@ import {
 	type RoutineFile,
 	setCompanyStateSettings,
 } from "@qorpera/cloud-client/company-state-files";
-import type { CloudCompanyFolderClient, CloudCompanyFolderFileEntry } from "./cloud-company-folder-client.ts";
+import {
+	type CloudCompanyFolderClient,
+	type CloudCompanyFolderFileEntry,
+	sha256,
+} from "./cloud-company-folder-client.ts";
 import type { CloudNativeToolIdentity } from "./cloud-native-tool-authority.ts";
 import {
 	type CloudToolContent,
@@ -32,8 +37,9 @@ import type { CloudNativeToolOperations } from "./cloud-native-tool-operations.t
  * calls delegation is one nothing is owed for any more (F2-6's review class), so it is settled too.
  *
  * The routine is the one this run was woken for: the file at its key must carry its id (the routine row is keyed by
- * the file's id). A member may rename the file while the run works; then the kernel's current key, read again from
- * the wake, finds it. Only when neither place holds this routine has it moved on.
+ * the file's id). A member may rename the file while the run works; then the agent's routines folder is listed and the
+ * file carrying that id is found. Only when no file holds this routine has it moved on. (The wake is not read again:
+ * that read also claims the run's held coworker messages.)
  */
 
 const TOOL_VERSION = "folder-v2/1";
@@ -52,6 +58,14 @@ export interface CloudFolderRoutineDecisionRequest {
 const AGAIN = "decide again with a new operationKey";
 const UNREADABLE = "This run's routine file does not read as a routine; a member must correct it";
 
+/** One release id per tool call and output, as `manage_todo`'s. */
+function releaseIdFor(runId: string, callId: string, outputSha256: string): string {
+	const hex = createHash("sha256")
+		.update(`qorpera.routine-release/v1:${runId}:${callId}:${outputSha256}`)
+		.digest("hex");
+	return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-${((Number.parseInt(hex[16] ?? "0", 16) & 3) | 8).toString(16)}${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
+}
+
 interface Located {
 	readonly path: string;
 	readonly routineKey: string;
@@ -66,7 +80,6 @@ export class CloudFolderRoutineDecision {
 	readonly #routines: string;
 	readonly #routineKey: string;
 	readonly #routineId: string;
-	readonly #currentRoutineKey: (signal: AbortSignal) => Promise<string | null>;
 
 	constructor(options: {
 		folder: CloudCompanyFolderClient;
@@ -77,34 +90,44 @@ export class CloudFolderRoutineDecision {
 		routineKey: string;
 		/** The woken routine's id, which its file carries. */
 		routineId: string;
-		/** The routine's key now, read again from the kernel (the wake), or null when it has none. */
-		currentRoutineKey: (signal: AbortSignal) => Promise<string | null>;
 	}) {
 		this.#folder = options.folder;
 		this.#operations = options.operations;
 		this.#identity = options.identity;
 		this.#routineKey = options.routineKey;
 		this.#routineId = options.routineId;
-		this.#currentRoutineKey = options.currentRoutineKey;
 		this.#routines = `agents/${options.handle}/routines`;
 	}
 
-	/** This run's routine file: at its key, or, after a rename, at the key the kernel has now. Null when it is gone. */
+	/** This run's routine file: at its key, or, after a rename, the file in the routines folder that carries its id.
+	 * Null when no file does. The file at its own key must read as a routine; another that doesn't is passed over. */
 	async #locate(signal: AbortSignal): Promise<Located | null> {
-		const at = async (routineKey: string): Promise<Located | null> => {
+		const at = async (routineKey: string, own: boolean): Promise<Located | null> => {
 			const path = `${this.#routines}/${routineKey}.md`;
 			const found = await this.#folder.readText(path, COMPANY_STATE_FILE_MAX_BYTES, signal);
 			if (!found) return null;
 			const parsed = parseCompanyStateFile(path, found.text);
-			if (!parsed?.ok || parsed.file.kind !== "routine") throw new CloudToolRefusal(UNREADABLE);
+			if (!parsed?.ok || parsed.file.kind !== "routine") {
+				if (own) throw new CloudToolRefusal(UNREADABLE);
+				return null;
+			}
 			return { path, routineKey, found, routine: parsed.file as RoutineFile };
 		};
-		const first = await at(this.#routineKey);
+		const first = await at(this.#routineKey, true);
 		if (first?.routine.id === this.#routineId) return first;
-		const now = await this.#currentRoutineKey(signal);
-		if (now === null || now === this.#routineKey) return null;
-		const moved = await at(now);
-		return moved?.routine.id === this.#routineId ? moved : null;
+		// Renamed while this run worked: the routines folder, page by page.
+		let after: string | undefined;
+		for (;;) {
+			const page = await this.#folder.list(this.#routines, after === undefined ? {} : { after }, signal);
+			for (const entry of page.entries) {
+				const name = entry.path.slice(this.#routines.length + 1);
+				if (entry.kind !== "file" || !name.endsWith(".md") || name === `${this.#routineKey}.md`) continue;
+				const moved = await at(name.slice(0, -3), false);
+				if (moved?.routine.id === this.#routineId) return moved;
+			}
+			if (page.next === null) return null;
+			after = page.next;
+		}
 	}
 
 	/** The decision's result, and whether the decision is now made (the run owes nothing more). */
@@ -118,8 +141,27 @@ export class CloudFolderRoutineDecision {
 		// Removed, or replaced by another routine: it moved on.
 		if (!located) return this.#settled(null);
 		const { found, routine, path, routineKey } = located;
-		// Paused, concluded or rescheduled by a member since this run started: nothing is owed, as today.
-		if (routine.status !== "active" || routine.trigger.when !== "once") return this.#settled(located);
+		// Paused, concluded or rescheduled by a member since this run started: nothing is owed, as today. The answer
+		// shows the routine as read, released with it.
+		if (routine.status !== "active" || routine.trigger.when !== "once") {
+			const settled = this.#settled(located);
+			const output = String(settled.content.value);
+			const outputSha256 = sha256(new TextEncoder().encode(output));
+			await this.#folder.release(
+				releaseIdFor(this.#identity.runId, context.callId, outputSha256),
+				[
+					{
+						path,
+						version: found.entry.version,
+						authority: found.entry.authority,
+						fileSha256: found.entry.file.fileSha256,
+					},
+				],
+				outputSha256,
+				signal,
+			);
+			return settled;
+		}
 		if (
 			(request.title !== undefined && request.title !== routine.title) ||
 			(request.intent !== undefined && request.intent.trim() !== routine.instructions)
@@ -148,7 +190,8 @@ export class CloudFolderRoutineDecision {
 				toolVersion: TOOL_VERSION,
 				logicalOperationKey: `decide:${request.operationKey}`,
 				arguments: { ...request },
-				target: { path },
+				// The woken routine's path, whatever it is called now, so a retry after a rename is the same call.
+				target: { path: `${this.#routines}/${this.#routineKey}.md` },
 				requiresCompanyRevision: true,
 			},
 			// The folder core decides at the commit, under this call's receipt.
@@ -206,10 +249,23 @@ export class CloudFolderRoutineDecision {
 															? "This run may not change its routine's file; tell the member"
 															: `Not saved (${written.reason ?? written.outcome}): ${AGAIN}`,
 								};
-				return {
-					content: { kind: "text", value: cloudToolJsonText(value) },
-					folderCommitId: committed.commitId,
-				};
+				const output = cloudToolJsonText(value);
+				// A settled answer shows the routine as read: release that read with it.
+				if (value.state === "settled")
+					await this.#folder.release(
+						receiptId,
+						[
+							{
+								path,
+								version: found.entry.version,
+								authority: found.entry.authority,
+								fileSha256: found.entry.file.fileSha256,
+							},
+						],
+						sha256(new TextEncoder().encode(output)),
+						performSignal,
+					);
+				return { content: { kind: "text", value: output }, folderCommitId: committed.commitId };
 			},
 			signal,
 			...(context.observation ? { observation: context.observation } : {}),

@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { CompanyComputerScreenLease } from "@qorpera/cloud-client/cloud-company-computer-contract";
+import { writeRoutineFile } from "@qorpera/cloud-client/company-state-files";
 import { CloudContentAddressedStore, type CloudObjectTransport } from "@qorpera/cloud-client/node/cloud-object-store";
 import type { CloudAgentSendReceipt } from "@qorpera/runtime/cloud-agent-mouth";
 import {
@@ -263,6 +264,26 @@ async function fixture(
 	/** The kernel's answer to whether any node can serve machines (an Error: the call fails). */
 	let machinesAnswer: unknown = true;
 	const folderReads: string[] = [];
+	const folderReleases: Record<string, unknown>[] = [];
+	const folderFiles = new Map<string, string>();
+	const folderSha = (text: string) => createHash("sha256").update(text).digest("hex");
+	const folderEntry = (path: string) => {
+		const text = folderFiles.get(path);
+		if (text === undefined) return null;
+		return {
+			path,
+			kind: "file",
+			version: randomUUID(),
+			seq: 1,
+			updatedAt: "2026-10-01T00:00:00+00:00",
+			manifestSha256: folderSha(`manifest:${text}`),
+			fileSha256: folderSha(text),
+			bytes: Buffer.byteLength(text),
+			mediaType: "text/markdown",
+			executable: false,
+			authority: { resourceId: randomUUID(), resourceRevision: 1, grantId: randomUUID(), grantRevision: 1 },
+		};
+	};
 	const pathCall = vi.fn<CloudCompanyPathControl["call"]>(async (method, args) => {
 		if (method === "qorpera_company_machines_available") {
 			if (machinesAnswer instanceof Error) throw machinesAnswer;
@@ -282,10 +303,28 @@ async function fixture(
 				replayed: false,
 			};
 		}
-		// A folder-v2 run's folder reads: this suite seeds no files (the folder core takes the run actor, not the binding).
+		// A folder-v2 run's folder: only the files a test seeds (the folder core takes the run actor, not the binding).
 		if (method === "qorpera_folder_read") {
 			folderReads.push(args.p_path as string);
-			return { schema: "qorpera.folder-read/v1", asOfSeq: 1, found: false, entry: null };
+			const entry = folderEntry(args.p_path as string);
+			return { schema: "qorpera.folder-read/v1", asOfSeq: 1, found: entry !== null, entry };
+		}
+		if (method === "qorpera_folder_list") {
+			const parent = `${args.p_parent as string}/`;
+			const entries = [...folderFiles.keys()]
+				.filter((path) => path.startsWith(parent) && !path.slice(parent.length).includes("/"))
+				.sort()
+				.map(folderEntry);
+			return { schema: "qorpera.folder-list/v1", asOfSeq: 1, entries, next: null };
+		}
+		if (method === "qorpera_folder_record_release") {
+			folderReleases.push(args);
+			return {
+				schema: "qorpera.folder-release/v1",
+				releaseId: args.p_release_id,
+				reads: (args.p_reads as unknown[]).length,
+				replay: false,
+			};
 		}
 		expect(args.p_binding).toEqual(f.binding);
 		if (method === "qorpera_begin_native_company_execution_v2") {
@@ -551,15 +590,17 @@ async function fixture(
 		timeoutMs: 10_000,
 		...(secretBroker ? { secretBroker } : {}),
 		...(mode === "company-office" ? { computerSession: officeSession } : {}),
-		// Folder bytes only build the folder client here; this suite never saves a file.
+		// Folder bytes read the files a test seeds; this suite never saves a file.
 		...(folderBytes
 			? {
 					folderBytes: () => ({
 						put: async () => {
 							throw new Error("No folder bytes in this suite");
 						},
-						get: async () => {
-							throw new Error("No folder bytes in this suite");
+						get: async (file: { fileSha256: string }) => {
+							const text = [...folderFiles.values()].find((value) => folderSha(value) === file.fileSha256);
+							if (text === undefined) throw new Error("No such folder bytes in this suite");
+							return new TextEncoder().encode(text);
 						},
 					}),
 				}
@@ -616,6 +657,8 @@ async function fixture(
 		},
 		decisions,
 		folderReads,
+		folderFiles,
+		folderReleases,
 		reviewedTools,
 		store,
 		deliveries,
@@ -1117,8 +1160,10 @@ it("has a folder-v2 dynamic routine run decide through its routine file, settled
 	// The decision went to the routine's file, not the kernel's legacy decision: no file there, so nothing is owed.
 	expect(f.decisions).toEqual([]);
 	expect(f.folderReads).toContain(`agents/nora/routines/${f.wake.routine?.routineKey}.md`);
-	// Not found at its key: the routine's key now is read again from the kernel (the wake) before it is settled.
-	expect(f.pathCall.mock.calls.filter(([method]) => method === "qorpera_read_native_wake")).toHaveLength(2);
+	// Not found at its key: its folder is listed for the file carrying its id (the wake is read once: a second read
+	// would claim held messages).
+	expect(f.pathCall.mock.calls.filter(([method]) => method === "qorpera_folder_list")).toHaveLength(1);
+	expect(f.pathCall.mock.calls.filter(([method]) => method === "qorpera_read_native_wake")).toHaveLength(1);
 	const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
 	const tools = evidence.threadParameters.dynamicTools[0].tools as { name: string; description: string }[];
 	expect(tools.find((tool) => tool.name === "decide_routine")?.description).toContain(
@@ -1127,6 +1172,42 @@ it("has a folder-v2 dynamic routine run decide through its routine file, settled
 	expect(
 		evidence.fenced.outputs.some((output: { output: string }) => output.output.includes('\\"state\\":\\"settled\\"')),
 	).toBe(true);
+});
+
+it("has a folder-v2 dynamic routine run find its file by the woken routine's id", async () => {
+	const f = await fixture("company-dynamic", false, undefined, false, true);
+	f.context.folder = { agent: "nora", coworkers: {} };
+	const routine = f.wake.routine;
+	if (!routine?.routineKey) throw new Error("The dynamic fixture names its routine");
+	// The routine was paused by a member while this run worked: its own file says so, and nothing is owed.
+	f.folderFiles.set(
+		`agents/nora/routines/${routine.routineKey}.md`,
+		writeRoutineFile({
+			id: routine.id,
+			title: "Invoice follow-up",
+			status: "paused",
+			trigger: { when: "once", at: "2026-09-02T10:00:00Z" },
+			timezone: "Europe/Copenhagen",
+			ends: null,
+			runs: null,
+			quiet: null,
+			effort: "medium",
+			reply: "optional",
+			conclusion: null,
+			instructions: "Look again at noon.",
+		}),
+	);
+	const result = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+	expect(result.delivery).toEqual({ messageCount: 2, finalMessageId: f.deliveries.get("final")?.messageId });
+	const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
+	expect(
+		evidence.fenced.outputs.some(
+			(output: { output: string }) =>
+				output.output.includes('\\"state\\":\\"settled\\"') && output.output.includes('\\"status\\":\\"paused\\"'),
+		),
+	).toBe(true);
+	expect(f.folderReleases).toHaveLength(1);
+	expect(f.pathCall.mock.calls.some(([method]) => method === "qorpera_folder_list")).toBe(false);
 });
 
 it("raises one typed card for the member, appended before the final sentence, and ends the turn", async () => {
