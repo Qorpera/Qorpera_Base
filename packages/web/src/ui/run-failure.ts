@@ -91,7 +91,7 @@ const CODING_REASONS: Record<RunFailureKind | "no_submission", string> = {
 		"The company ran out of computer hours. The workspace is kept; a follow-up continues once hours are added.",
 	),
 	usage_limit: phrase(
-		"The model account has reached its usage limit. The workspace is kept; a follow-up continues it once the limit resets.",
+		"The model account paying for this session reached its usage limit. The workspace is kept; a follow-up continues it once the limit resets.",
 	),
 	credential: phrase(
 		"The model account needs to be connected again. The workspace is kept; a follow-up continues it once the account is connected.",

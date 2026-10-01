@@ -137,7 +137,7 @@ describe("why a coding session's turn failed, in the member's words", () => {
 		[`${DID_NOT_FINISH}Execution deadline expired before durable completion`, /^The session took too long/],
 		[
 			`${DID_NOT_FINISH}You have hit your usage limit. Try again later.`,
-			/^The model account has reached its usage limit\./,
+			/^The model account paying for this session reached its usage limit\./,
 		],
 		[`${DID_NOT_FINISH}Provider credential is invalid`, /^The model account needs to be connected again\./],
 		["The coding turn was stopped before it finished.", /^The session was stopped before it finished\./],
