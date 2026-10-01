@@ -373,6 +373,25 @@ select pg_temp.plan764_expect(pg_temp.plan764_try(format('select public.qorpera_
 	'16000000-0000-4000-8000-000000000010.' || repeat('A',43))),'ok','the callback address');
 select pg_temp.plan764_expect(current_setting('qorpera_test.plan764_last'),'null','a listed company with no pending plan sign-in');
 reset role;
+-- Nor with an expired one.
+select set_config('request.jwt.claims',
+	'{"sub":"16000000-0000-4000-8000-000000000001","role":"authenticated"}',false);
+set role authenticated;
+select pg_temp.plan764_expect(pg_temp.plan764_try(format('select public.qorpera_begin_chatgpt_plan_sign_in(%L,%L,%L,%L,%L)::text',
+	'16000000-0000-4000-8000-000000000010','76400000-0000-4000-8000-000000000401','76400000-0000-4000-8000-000000000402',
+	current_setting('qorpera_test.native_identity')::jsonb ->> 'compute_identity_id',encode(sha256('plan-four'::bytea),'hex'))),
+	'ok','a later plan sign-in');
+reset role;
+update public.qorpera_native_provider_login_sessions
+set created_at = clock_timestamp() - interval '20 minutes', expires_at = clock_timestamp() - interval '1 minute'
+where id = (pg_temp.plan764_last() ->> 'login_id')::uuid;
+select set_config('request.jwt.claims',
+	'{"sub":"00000000-0000-4000-8000-000000000000","role":"service_role"}',false);
+set role service_role;
+select pg_temp.plan764_expect(pg_temp.plan764_try(format('select public.qorpera_chatgpt_plan_callback_target(%L)',
+	'16000000-0000-4000-8000-000000000010.' || repeat('A',43))),'ok','the callback address');
+select pg_temp.plan764_expect(current_setting('qorpera_test.plan764_last'),'null','a listed company whose plan sign-in expired');
+reset role;
 
 -- The renewal rule.
 do $$

@@ -880,7 +880,8 @@ begin
 	end if;
 
 	-- A node completes Codex sign-ins only: a plan sign-in whose company went back to node sign-ins is
-	-- never sealed as a node Codex login.
+	-- never sealed as a node Codex login. Every other sign-in, Claude's included, carries the column's
+	-- default 'codex' and completes as before; a different default for them would block them here.
 	v_target := 'public.qorpera_complete_native_provider_login(uuid,text,uuid,text,text,text,text,text,jsonb,text)'::regprocedure;
 	v_definition := pg_get_functiondef(v_target);
 	if position('model_login_kind' in v_definition) = 0 then
