@@ -1,5 +1,5 @@
 -- @fixture 602_runtime_coding_lock_order.test.sql until "-- 1. The owner answers"
--- Readers of a company share its profile fence (20260929380000_company_fence_shared_readers). A call that
+-- Readers of a company share its profile fence (20260928339380_company_fence_shared_readers). A call that
 -- entered through a reader RPC (PostgREST's request.path) takes the company's profile row, wake admission row
 -- and Company File row FOR SHARE; every other call takes them as before. Two agents of 602's path gateway
 -- company, each with its own run, show it with real calls on separate connections: a third connection holds
@@ -149,7 +149,7 @@ begin
 	perform pg_temp.wake_assert(public.qorpera_company_fence_shared(), 'The tool authority is a reader');
 	perform set_config('request.path', '/rest/v1/rpc/qorpera_assert_company_path_reads', true);
 	perform pg_temp.wake_assert(public.qorpera_company_fence_shared(), 'The read-set check is a reader');
-	-- The one-call context fence (20260929400000) makes the first three readers' calls in one transaction.
+	-- The one-call context fence (20260928339400) makes the first three readers' calls in one transaction.
 	perform set_config('request.path', '/rpc/qorpera_fence_native_context', true);
 	perform pg_temp.wake_assert(public.qorpera_company_fence_shared(), 'The one-call context fence is a reader');
 	perform set_config('request.path', '/rest/v1/rpc/qorpera_fence_native_context', true);

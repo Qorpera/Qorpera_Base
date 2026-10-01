@@ -258,7 +258,7 @@ runtime adapter, with no migration.
   timeout at confirm (423 or 409, after the write) leaves the NAS file outside the catalog and the gateway's journal
   entry `blocked` (it reports degraded), as on the native route; the gateway should drop that entry when confirm
   refuses.
-- **Lock waits inside the deadlines: done** (20260929780000). The seven byte functions set `lock_timeout = '2s'`,
+- **Lock waits inside the deadlines: done** (20260928339780). The seven byte functions set `lock_timeout = '2s'`,
   below the PostgREST role's 8 s:
   - authorize, confirm and the download check, which the gateway calls with a 5 s deadline: a long wait ends as 55P03,
     which the gateway answers 409, rather than as a deadline 503 that opens its circuit for every company;

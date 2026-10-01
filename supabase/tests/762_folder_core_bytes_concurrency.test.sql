@@ -215,7 +215,7 @@ begin
 	delete from public.qorpera_company_execution_pauses where profile_id = '63500000-0000-4000-8000-000000000010';
 end $$;
 
--- G. A byte function's lock wait ends at its own function-level budget (20260929780000; 761 §8b pins it at 2 s) as
+-- G. A byte function's lock wait ends at its own function-level budget (20260928339780; 761 §8b pins it at 2 s) as
 -- 55P03, which the gateway answers 409, even in a session that would wait without limit: an open waits for a catalog
 -- row another transaction holds FOR UPDATE (as C1d-2's GC will), and replication for a company row a purge holds. A
 -- lock_not_available can only come from a wait, so the outcome alone shows it; the bound is for the test only.
