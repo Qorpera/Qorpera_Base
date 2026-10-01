@@ -37,6 +37,7 @@ function request() {
 async function fixture(
 	assertActive: (signal: AbortSignal) => Promise<void> = vi.fn(async () => undefined),
 	recordContextView?: Parameters<typeof startCloudNativeResultFence>[0]["recordContextView"],
+	recordChecksAuthority?: () => boolean,
 ) {
 	const abort = new AbortController();
 	const companyId = randomUUID();
@@ -49,6 +50,7 @@ async function fixture(
 		boundary,
 		assertSession,
 		recordContextView,
+		...(recordChecksAuthority ? { recordChecksAuthority } : {}),
 		onFailure,
 		signal: abort.signal,
 	});
@@ -311,4 +313,47 @@ it("caps a native connection flood before unbounded waiting work is created", as
 	const outcomes = await Promise.all(Array.from({ length: 5 }, () => exchange(f.service.path, request())));
 	expect(outcomes).toEqual([undefined, undefined, undefined, undefined, undefined]);
 	expect(f.onFailure).toHaveBeenCalledTimes(1);
+});
+
+it("leaves the boundary's check only to a recorder that makes it before the reply", async () => {
+	const roots: string[] = [root];
+	// One private directory per fence: each listens on its own socket.
+	const next = async () => {
+		root = await mkdtemp(join(tmpdir(), "q-fence-test-"));
+		roots.push(root);
+	};
+	for (const [recorder, checks, boundaryChecks] of [
+		[true, true, false],
+		[true, false, true],
+		[false, true, true],
+	] as const) {
+		await next();
+		const order: string[] = [];
+		const assertActive = vi.fn(async () => {
+			order.push("boundary check");
+		});
+		const record = vi.fn(async () => {
+			order.push("recorder");
+		});
+		const f = await fixture(assertActive, recorder ? record : undefined, () => checks);
+		const reply = await exchange(f.service.path, request());
+		expect(reply?.schema).toBe(CLOUD_NATIVE_RESULT_FENCE_SCHEMA);
+		expect(assertActive).toHaveBeenCalledTimes(boundaryChecks ? 1 : 0);
+		expect(order).toEqual([...(boundaryChecks ? ["boundary check"] : []), ...(recorder ? ["recorder"] : [])]);
+	}
+	// A recorder that checks and fails: nothing is released.
+	await next();
+	const assertActive = vi.fn(async () => undefined);
+	const f = await fixture(
+		assertActive,
+		async () => {
+			throw new Error("PRIVATE_REVOKED");
+		},
+		() => true,
+	);
+	await expect(exchange(f.service.path, request())).resolves.toBeUndefined();
+	expect(assertActive).not.toHaveBeenCalled();
+	expect(f.onFailure).toHaveBeenCalledOnce();
+	await Promise.all(services.splice(0).map((service) => service.close()));
+	await Promise.all(roots.slice(0, -1).map((path) => rm(path, { recursive: true, force: true })));
 });

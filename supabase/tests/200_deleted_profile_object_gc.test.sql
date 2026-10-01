@@ -37,6 +37,9 @@ select set_config(
 set role authenticated;
 select public.qorpera_delete_hosted_profile(current_setting('qorpera_test.deleted_nas_profile')::uuid);
 reset role;
+-- Deleting hides the company and stops its work; the deletion finishes once no node holds anything
+-- of it (20260928249150). This company has nothing on a node.
+select public.qorpera_finish_company_deletion(current_setting('qorpera_test.deleted_nas_profile')::uuid);
 
 select set_config(
 	'request.jwt.claims',

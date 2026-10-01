@@ -141,7 +141,7 @@ jobs:
           chmod go-w "$node_binary" || sudo chmod go-w "$node_binary"
           ls -l "$node_binary"
 
-      # Two office probes run a real Linux container from a cached image with
+      # Three office probes run a real Linux container from a cached image with
       # --pull=never --network none.
       - name: Cache the office probe container image
         if: matrix.suite == 'runtime'

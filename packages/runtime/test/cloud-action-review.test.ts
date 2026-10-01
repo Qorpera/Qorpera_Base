@@ -58,6 +58,14 @@ describe("which calls are reviewed", () => {
 		["computer_desktop", { action: { kind: "desktop", action: "scroll", direction: "up", amount: 2 } }, "read"],
 		["computer_desktop", { action: { kind: "desktop", action: "type", text: "hello" } }, "external"],
 		["computer_screenshot", {}, "read"],
+		["list_hooks", {}, "read"],
+		["read_event", { deliveryId: "73100000-0000-4000-8000-00000000000a" }, "read"],
+		// An email from a company mailbox leaves the company (M2b).
+		[
+			"send_mail",
+			{ from: "support@mail.example.test", to: ["bob@acme.test"], subject: "Hi", text: "Hi" },
+			"external",
+		],
 		["hire_agent", {}, "delegation"],
 		["create_group_chat", {}, "delegation"],
 		["manage_routine", { action: "list" }, "read"],
@@ -135,6 +143,46 @@ describe("what the card shows", () => {
 			target: "bob@acme.test",
 			details: { subject: "Meeting moved", body: "Hi\nBob,\n\nsee you  at 10." },
 		});
+	});
+
+	it("shows a mailbox email's recipients, sender, subject and text, and says when it is a reply", () => {
+		expect(
+			describeCloudAction(tool("send_mail"), {
+				from: "support@mail.example.test",
+				to: ["bob@acme.test", "eve@acme.test"],
+				cc: ["boss@acme.test"],
+				subject: "Your refund",
+				text: "Hi Bob,\n\n\nIt is on its way.",
+				inReplyTo: "73300000-0000-4000-8000-00000000000a",
+			}),
+		).toEqual({
+			title: "Send an email",
+			target: "bob@acme.test, eve@acme.test",
+			details: {
+				from: "support@mail.example.test",
+				cc: "boss@acme.test",
+				subject: "Your refund",
+				text: "Hi Bob,\n\nIt is on its way.",
+				thread: "A reply to an email the company received",
+			},
+		});
+		expect(
+			describeCloudAction(tool("send_mail"), {
+				from: "support@mail.example.test",
+				to: ["bob@acme.test"],
+				subject: "Hello",
+				text: "Hi",
+			}).details,
+		).toEqual({ from: "support@mail.example.test", subject: "Hello", text: "Hi" });
+		const many = Array.from({ length: 10 }, (_, i) => `recipient-number-${i}-${"x".repeat(40)}@acme.test`);
+		const target = describeCloudAction(tool("send_mail"), {
+			from: "support@mail.example.test",
+			to: many,
+			subject: "Hello",
+			text: "Hi",
+		}).target;
+		expect(target?.endsWith("[...]")).toBe(true);
+		expect(Buffer.byteLength(target ?? "")).toBeLessThanOrEqual(500);
 	});
 
 	it("shows the text a Drive file gets, and names the file by its id only when nothing else names it", () => {
@@ -288,6 +336,12 @@ describe("what the card shows for delegation", () => {
 		expect(schedule({ kind: "file_change", path: "reports/weekly-report.md", timeZone: COPENHAGEN })).toBe(
 			"When “Weekly report” changes",
 		);
+		// An event listener names the event types it takes, never the hook's id.
+		const hookId = "3b2c9e4a-1d7f-4e60-9a2b-5c8d0e1f2a3b";
+		expect(schedule({ kind: "event", hookId, timeZone: COPENHAGEN })).toBe("When a hook receives an event");
+		expect(schedule({ kind: "event", hookId, only: ["invoice.paid", "charge.refunded"], timeZone: COPENHAGEN })).toBe(
+			"When a hook receives “invoice.paid” and “charge.refunded” events",
+		);
 		// Pausing names the routine by its key.
 		expect(
 			describeCloudAction(
@@ -295,6 +349,19 @@ describe("what the card shows for delegation", () => {
 				parse("manage_routine", { action: "pause", operationKey: "k", routineKey: "weekly-sales-report" }),
 			),
 		).toEqual({ title: "Pause a routine", target: "Weekly sales report", details: {} });
+		// A resume says that it also undoes a member's Stop or a suspension.
+		expect(
+			describeCloudAction(
+				tool("manage_routine"),
+				parse("manage_routine", { action: "resume", operationKey: "k", routineKey: "weekly-sales-report" }),
+			),
+		).toEqual({
+			title: "Resume a routine",
+			target: "Weekly sales report",
+			details: {
+				effect: "Switches the routine back on, also after a member stopped it or its model account stopped working",
+			},
+		});
 	});
 
 	it("says when a dynamic routine runs next when its run rewrites it", async () => {
@@ -967,6 +1034,30 @@ describe("the review step", () => {
 		});
 	});
 
+	it("passes on the approval's id on each approving path, and none from a malformed answer", async () => {
+		const id = randomUUID();
+		await expect(gate({ begin: { state: "approved", reviewId: id.toUpperCase() } }).check()).resolves.toEqual({
+			run: true,
+			reviewId: id,
+		});
+		await expect(gate({ record: { reviewId: id } }).check()).resolves.toEqual({ run: true, reviewId: id });
+		await expect(
+			gate({
+				holdMs: 60_000,
+				record: { decision: "ask", card: true, reviewId: id, approverName: "Jonas" },
+				waits: [{ state: "approved", answeredBy: "Jonas" }],
+			}).check(),
+		).resolves.toEqual({ run: true, reviewId: id });
+		await expect(
+			gate({
+				holdMs: 0,
+				begin: { state: "pending", reviewId: id, approverName: "An owner" },
+				waits: [{ state: "approved" }],
+			}).check(),
+		).resolves.toEqual({ run: true, reviewId: id });
+		await expect(gate({ record: { reviewId: "review-1" } }).check()).resolves.toEqual({ run: true });
+	});
+
 	it("waits on a card that is already waiting instead of raising a second one", async () => {
 		const { check, calls, review } = gate({
 			holdMs: 0,
@@ -980,7 +1071,7 @@ describe("the review step", () => {
 });
 
 describe("the boundary's review step", () => {
-	function boundaryFixture(result: { run: true } | { run: false; text: string }) {
+	function boundaryFixture(result: { run: true; reviewId?: string } | { run: false; text: string }) {
 		const execute = vi.fn<CloudNativeTool["execute"]>(async () => ({ kind: "text", value: "Sent" }));
 		const assertActive = vi.fn(async () => undefined);
 		const check = vi.fn(async () => result);
@@ -1022,6 +1113,16 @@ describe("the boundary's review step", () => {
 		const reviewed = check.mock.invocationCallOrder[0];
 		const effect = execute.mock.invocationCallOrder[0];
 		expect(assertActive.mock.invocationCallOrder.some((order) => order > reviewed && order < effect)).toBe(true);
+	});
+
+	it("gives the call the approval's id, and none when the review passed it without one", async () => {
+		const id = randomUUID();
+		const approved = boundaryFixture({ run: true, reviewId: id });
+		await approved.boundary.invoke("call_1", "qorpera", "send_email", {});
+		expect(approved.execute.mock.calls[0]![1]).toMatchObject({ callId: "call_1", actionReviewId: id });
+		const plain = boundaryFixture({ run: true });
+		await plain.boundary.invoke("call_1", "qorpera", "send_email", {});
+		expect(plain.execute.mock.calls[0]![1]).not.toHaveProperty("actionReviewId");
 	});
 
 	it("returns the review's refusal as a denied result and never runs the call", async () => {

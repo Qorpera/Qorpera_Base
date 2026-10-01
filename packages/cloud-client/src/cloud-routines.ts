@@ -1,11 +1,15 @@
-/** Cloud routines: standing work an agent does on a schedule or when a
- * Company File path changes. The cloud owns scheduling and delivery; a client
- * only states intent. Shared by every member client. */
+/** Cloud routines: standing work an agent does on a schedule, when a Company
+ * File path changes, or when one of the company's hooks receives an event. The
+ * cloud owns scheduling and delivery; a client only states intent. Shared by
+ * every member client. */
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const LOCAL_TIME = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
 const INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 const LISTENER_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+/** The cloud's one spelling of a hook id, and of an event type. */
+const HOOK_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const EVENT_TYPE = /^[\x21-\x7e]{1,128}$/;
 /** The cloud's closed form for a dynamic routine's next run. */
 const ONCE_INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$/;
 const encoder = new TextEncoder();
@@ -56,6 +60,15 @@ export interface CloudRoutineFileTrigger extends TriggerBase {
 	match: "exact" | "subtree";
 	timeZone: string;
 }
+/** Events that other services send to one of the company's hooks; `only` keeps
+ * the listed event types. Agents set these up; the member editor shows them. */
+export interface CloudRoutineEventTrigger extends TriggerBase {
+	kind: "listener";
+	source: "event";
+	hookId: string;
+	only?: string[];
+	timeZone: string;
+}
 /** A dynamic routine's one next run. It has no cadence: each run of the agent
  * chooses the next one, or concludes the routine. */
 export interface CloudRoutineOnceTrigger extends TriggerBase {
@@ -68,7 +81,8 @@ export type CloudRoutineTrigger =
 	| CloudRoutineIntervalTrigger
 	| CloudRoutineWeeklyTrigger
 	| CloudRoutineWindowTrigger
-	| CloudRoutineFileTrigger;
+	| CloudRoutineFileTrigger
+	| CloudRoutineEventTrigger;
 
 export type CloudRoutineEffort = "low" | "medium" | "high" | "xhigh" | "max";
 
@@ -189,6 +203,32 @@ export function parseCloudRoutineTrigger(value: unknown): CloudRoutineTrigger {
 	if (reply !== undefined && reply !== "optional" && reply !== "required" && reply !== "silent")
 		invalid("routine reply policy");
 	const replyPolicy = reply === undefined ? {} : { replyPolicy: reply as CloudRoutineReplyPolicy };
+	if (input.kind === "listener" && input.source === "event") {
+		only(input, ["id", "kind", "source", "hookId", "only", "timeZone", "replyPolicy"], "routine event listener");
+		const types = input.only;
+		if (
+			typeof input.id !== "string" ||
+			!LISTENER_ID.test(input.id) ||
+			typeof input.hookId !== "string" ||
+			!HOOK_ID.test(input.hookId) ||
+			(types !== undefined &&
+				(!Array.isArray(types) ||
+					types.length < 1 ||
+					types.length > 20 ||
+					new Set(types).size !== types.length ||
+					types.some((type) => typeof type !== "string" || !EVENT_TYPE.test(type))))
+		)
+			invalid("routine event listener");
+		return {
+			id: input.id,
+			kind: "listener",
+			source: "event",
+			hookId: input.hookId,
+			...(types === undefined ? {} : { only: [...(types as string[])] }),
+			timeZone: zone(input.timeZone),
+			...replyPolicy,
+		};
+	}
 	if (input.kind === "listener") {
 		only(input, ["id", "kind", "source", "path", "match", "timeZone", "replyPolicy"], "routine listener");
 		if (
@@ -397,10 +437,15 @@ function weekdayWords(days: readonly CloudRoutineWeekday[], t: CloudRoutineText)
  * pass the interface's translation to have them in its language. */
 export function describeCloudRoutineTrigger(trigger: CloudRoutineTrigger, t: CloudRoutineText = english): string {
 	if (trigger.kind === "once") return t("The agent picks each next run");
-	if (trigger.kind === "listener")
+	if (trigger.kind === "listener") {
+		if (trigger.source === "event")
+			return trigger.only
+				? t("When a hook receives {types}", { types: trigger.only.join(", ") })
+				: t("When a hook receives an event");
 		return trigger.match === "subtree"
 			? t("When {path} or anything under it changes", { path: trigger.path })
 			: t("When {path} changes", { path: trigger.path });
+	}
 	if ("localTime" in trigger)
 		return t("{days} at {time} ({zone})", {
 			days: weekdayWords(trigger.weekdays, t),

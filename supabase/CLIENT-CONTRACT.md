@@ -37,9 +37,40 @@ sign-in, OTP, OAuth providers, and authorization-code exchange
 (`viewer`, `contributor`, `admin`, `owner`) are cloud state read through the
 profile RPCs; RLS is the second read boundary.
 
+Founders (2026-09-28, migration 20260928248100): every member with the role
+`owner` is a founder, and a company may have several. Clients name the role
+"founder".
+- `qorpera_update_profile_member_role`: a founder may make a member `owner`.
+  A founder may step down (change their own role) while another founder
+  remains and no company setup runs for them (42501 otherwise). Nobody else
+  changes a founder. Admins still change contributors and
+  viewers only.
+- `qorpera_remove_profile_member`: founders remove any member except a fellow
+  founder, admins included. Admins remove contributors and viewers.
+- `qorpera_leave_hosted_profile`: anyone leaves, except the last member (who
+  deletes instead), the last founder while others remain, and a founder while
+  company setup runs for them (42501).
+- `qorpera_delete_hosted_profile`: only the last member. Since 20260928249150 it
+  requests the deletion: the company disappears at once (no role for anyone, gone
+  from `qorpera_list_hosted_profiles` and the founding lobby, the member's access
+  state turns `revoked`) and all its work stops. Its rows are removed later, once
+  the servers hold nothing of it (deploy/first-node/RUNTIME-COMPANY-DELETE.md). A
+  second call answers 42501, like any call for a company the caller is not in.
+- Deleting an account (operators only; no client RPC; migration
+  20260928249180) takes the person's memberships as a leave does, with the
+  same refusals, and is also refused for the only member of a company that is
+  not being deleted. It never removes company data: conversations, messages
+  and runs keep naming the person, as they do after a leave. Closing an
+  account instead (a soft delete, an update) triggers none of this; the close
+  must make the same removals and refusals itself.
+- `qorpera_profile_team_info` capabilities add `manage_founders`, `leave` and
+  `delete_company` for the caller; `leave` also tells a founder whether they
+  may step down. A cloud without several founders omits
+  them; a client then falls back to "the owner deletes, others leave".
+
 ## 2. Member-callable RPCs (security-definer, granted to `authenticated`)
 
-164 functions, grouped for navigation. Signatures: see the migration that defines each.
+175 functions, grouped for navigation. Signatures: see the migration that defines each.
 
 
 ### Members, presence, friends, feedback (18)
@@ -97,13 +128,71 @@ profile RPCs; RLS is the second read boundary.
 ### Routines (2)
 
 - `qorpera_list_cloud_routines`
-- `qorpera_upsert_cloud_routine`
+- `qorpera_upsert_cloud_routine`: a folder-v2 company keeps its routines in
+  `agents/<handle>/routines/` files: saving a new routine, or one that comes
+  from a file, is refused with 55000; a routine saved before the company became
+  folder-v2 is saved as before.
 
 
-### Credentials, provider connections, identity recovery (13)
+### Credentials, provider connections, identity recovery (15)
 
+- `qorpera_begin_chatgpt_plan_sign_in` (20260928329830, switched off): begins a
+  ChatGPT plan sign-in ("Continue with ChatGPT") for the caller's own member
+  compute identity, the same as `qorpera_begin_native_provider_login` for
+  OpenAI/Codex with the sign-in marked as a plan sign-in. Refused with 55000
+  while plan logins are switched off for the company, and with 22023 for any
+  identity that is not the caller's own member identity. The answer is the
+  ordinary begin's plus `model_login_kind: "chatgpt_plan"`.
 - `qorpera_begin_cloud_secret_capture`
 - `qorpera_begin_native_provider_login`
+- `qorpera_chatgpt_plan_available(profile)`: whether the caller's company may
+  use ChatGPT plan logins now (show "Continue with ChatGPT" only when true).
+  False while the company is being deleted (20260928359950).
+- ChatGPT plan rules (20260928359950, switched off with plan logins):
+  - work while away on a plan login needs the member's own choice: turn it on
+    with `qorpera_set_chatgpt_plan_work_while_away(profile, connection, on)`
+    (20260928369980), from Settings' "Work while you're away" switch or the
+    first-routine card's Turn on. It answers for the caller's own active plan
+    login in that company only (42501 "ChatGPT plan login is unavailable" for
+    anything else, alike whether or not the connection is a plan, and for a
+    revoked one), and its answer is the consent call's:
+    `{connection_id, version, allow_autonomous, changed, ...}`, with the version
+    to bind, plus `resumed_routines` (20260928369985). Turning the plan on also
+    starts the agents' routines that wait only for it: paused with
+    `needs_model_account`, running for the caller (`runs_for_user_id`) and paid
+    by this same plan, whose agent is active, with no listener, not a routine
+    file, not past its end, and not in a company being deleted or on the folder
+    core (folder-v2). Each moves to the plan's unattended
+    binding and resumes; its content, schedule and agent stay as they were.
+    `resumed_routines` lists their ids (`[]` when none, and always when turning
+    off). A routine that another call holds at that moment stays waiting, so
+    re-read the routine list instead of assuming the card's routine started.
+    The call waits at most 2 s for any one lock (an agent's call in flight, a
+    deletion, the GC) and then answers 55P03 "Busy right now. Try again in a
+    moment." with nothing changed; a rare deadlock PostgreSQL breaks on the
+    call's side answers the same. Show that line and let the member try again.
+    The kernel never consents a plan login for them:
+    `qorpera_consent_provider_connection_autonomous` refuses to turn a plan on
+    (55000 "Turn on work while you're away for this ChatGPT plan in Settings"),
+    and an agent's routine save leaves a plan that is off as it is, also while
+    the member is turning it off. Turning a plan off works through either call;
+  - a plan never pays for a listener routine (a file change or an event): a save
+    with one is refused with 42501 "A ChatGPT plan cannot pay for a listener";
+  - a plan at its usage limit stays the account of the conversations it pays for
+    (`qorpera_select_member_session_account` keeps it; sending then stops at the
+    limit), while a new conversation starts on a login with room; a conversation
+    whose login reached its limit never moves to a plan; a plan pays for
+    follow-up work only of runs it pays for, so a coding worker asked for by a
+    run another login pays for is refused at dispatch with 55000 when the plan
+    is the member's only Codex login;
+  - one usable plan per member and company:
+    `qorpera_begin_chatgpt_plan_sign_in` refuses a second one with 55000
+    "Disconnect your other ChatGPT plan first" (signing in again after the plan
+    login lapsed works);
+  - only the member whose plan pays retries a failed run on it
+    (`qorpera_resolve_failed_execution_run` 'retry': 55000 for anyone else;
+    acknowledging stays open) or a change's review on it
+    (`qorpera_retry_company_proposal_review`: 42501 for anyone else).
 - `qorpera_grant_cloud_connector` — Step 7 (bundle v87): grants every
   operation of one company-owned connection (Gmail, Google Drive, GitHub) to
   all active agents (`p_staff_agent_ids` null, marks the connection shared so
@@ -233,7 +322,8 @@ profile RPCs; RLS is the second read boundary.
   `canManageCompanyRules` (owner or admin) and `rules`: every active company
   rule plus the caller's own (`id`, `scope` `company|member`, `memberUserId`,
   `when`, `outcome` `ask_first|allow_automatically`, `createdVia`
-  `settings|card|agent`, `createdByUserId`, `createdByStaffAgentId`,
+  `settings|card|agent|folder` (`folder`: a company rule from the company's
+  `rules/` files, folder-v2 companies only), `createdByUserId`, `createdByStaffAgentId`,
   `createdAt`, `updatedAt`). Any member, viewers included. A rule with
   `createdVia: agent` was added by an agent (`createdByStaffAgentId`) when the
   member asked it to: always one of the member's own Ask first rules, which the
@@ -244,9 +334,13 @@ profile RPCs; RLS is the second read boundary.
   sentence, 1-280 characters after trimming. Company rules: owners and admins
   (42501 otherwise); a personal rule belongs to its author only. 54000 when
   the company's rules pass 48 KiB of text or one member's pass 16 KiB (what
-  the reviewer reads for one action). Returns the rule.
+  the reviewer reads for one action). Returns the rule. A folder-v2 company
+  keeps its company rules in `rules/` files: saving a company rule there is
+  refused with 55000; personal rules are unchanged.
 - `qorpera_archive_review_rule(p_profile_id, p_rule_id)`: removes a rule
   (again: no change). Company rules: owners and admins; personal: its author.
+  A rule that comes from a `rules/` file (`createdVia: folder`) is refused with
+  55000: delete the file instead.
 - `qorpera_answer_action_review(p_review_id, p_client_input_id, p_answer,
   p_rule_text?, p_sponsor_binding_id?, p_sponsor_version?)` answers an approval
   card (`authorization_request` whose `entry.data.schema` is
@@ -308,6 +402,7 @@ profile RPCs; RLS is the second read boundary.
 - `qorpera_list_wake_occurrences`
 - `qorpera_quarantine_session_turn`
 - `qorpera_read_session_events`
+- `qorpera_read_session_events_tail(p_session_id, p_before_sequence, p_limit)` — the newest events below a sequence (the newest overall when null), oldest first, in the shape of `qorpera_read_session_events`, which it runs for its authorization and page check (20260928279410); a thread opens with it and "Show earlier" pages back
 - `qorpera_renew_session_turn_v2`
 - `qorpera_renew_wake`
 - `qorpera_request_session_turn_v2`
@@ -317,7 +412,7 @@ profile RPCs; RLS is the second read boundary.
 ### Coding sessions (4) — Order 9, part 1 (PR #211)
 
 - `qorpera_list_coding_sessions(p_session_id)` — the coding sessions the agent dispatched from this conversation, each as `qorpera.coding-session/v1` plus `isOwner`; the thread renders each one as a centered system element (the "sandwich": a start line, a collapsible body, a status line) from this view and the session's own events, never from the agent's prose
-- `qorpera_read_coding_session(p_worker_id, p_after_event, p_limit)` — the session view plus its event stream (`phase`, `step`, `text`, `needs_input`, `input`, `delegated`, `published`, `finished`, `failed`), cursor on the event id
+- `qorpera_read_coding_session(p_worker_id, p_after_event, p_limit)` — the session view plus its event stream (`phase`, `step`, `text`, `needs_input`, `input`, `delegated`, `published`, `finished`, `failed`), cursor on the event id. A `failed` event of a turn that stopped at its login's usage limit carries `usageLimit: true` and `paidByChatgptPlan` (whether a member's ChatGPT plan paid; 20260928379930): tell it as a usage limit, never as a refusal
 - `qorpera_answer_coding_session(p_worker_id, p_text, p_client_request_id)` — owner only; idempotent on the client request id; refused while the session is working
 - `qorpera_delegate_coding_session(p_worker_id, p_client_request_id)` — owner only; "let the agent decide" a question the session asked
 
@@ -333,7 +428,7 @@ profile RPCs; RLS is the second read boundary.
 - `qorpera_describe_governed_company_computer`
 - `qorpera_enqueue_execution_run`
 - `qorpera_enqueue_runner_job`
-- `qorpera_get_execution_run_recovery`
+- `qorpera_get_execution_run_recovery` — with `usage_limit` (the run's login reached its usage limit) and `paid_by_chatgpt_plan` (a member's ChatGPT plan pays for the run; tell its limit in OpenAI's words with "Manage usage", to the member whose plan it is: `run.requested_by_user_id`, whom a plan-paid run always serves; 20260928379930)
 - `qorpera_list_compute_identities`
 - `qorpera_list_execution_run_recoveries`
 - `qorpera_list_runner_audit`
@@ -379,6 +474,59 @@ profile RPCs; RLS is the second read boundary.
 - `qorpera_session_profile_id`
 - `qorpera_update_profile_member_role`
 
+### Founding lobby (20260928248200_company_founding_lobby)
+
+A founding team starts one company together. The table is a company row with
+its members; nothing else exists until Start (no Company File, Co-Founder or
+wake), so no agent runs and nothing is charged before it.
+
+- `qorpera_company_founding_available()` → boolean. False until new companies
+  are created on the company folder; until then the hub keeps
+  `qorpera_create_cloud_company`, and opening or starting a table is refused
+  (`0A000`).
+- `qorpera_open_company_founding(p_client_creation_id, p_company_name)` opens
+  a table with the caller's seat; repeat-safe per creation id. Needs a
+  confirmed email. A creation id that already belongs to a company that is not
+  a table is refused (`23505`).
+- `qorpera_read_company_founding(p_profile_id)` → `qorpera.company-founding/v1`:
+  `companyName`, `vision` (the description draft), `phase` (`open`,
+  `started`), `revision`, `seats` (`userId`, `displayName`, `state` `invited` or
+  `joined`, `role`, `ready`, `modelLoginReady`, `creator`), `waitingFor`, `me`
+  (`state`, `canEdit`, `canManage`, `canStart`) and `start` (`startedAt`,
+  `startedByUserId`, `revision`, `clientStartId`, `companyReady`) once started.
+  Anyone with a seat, invited or joined, may read it; after Start only founders
+  who are still members.
+- `qorpera_list_company_foundings()` → the caller's open tables and
+  invitations, and started tables whose company is not ready yet.
+- `qorpera_update_company_founding(p_profile_id, p_expected_revision,
+  p_company_name, p_vision)`, `qorpera_set_founder_role(p_profile_id,
+  p_expected_revision, p_role)` (at most 300 characters) and
+  `qorpera_set_founder_ready(p_profile_id, p_expected_revision, p_ready)`.
+  A stale revision is `PT412`. Ready needs the caller's own usable ChatGPT
+  account (`55000` otherwise; a missing `p_ready` is `22023`) and holds only
+  for that revision: a change to the name, description, a role or who sits at
+  the table clears every Ready.
+- `qorpera_invite_company_founder(p_profile_id, p_friend_user_id)`: any joined
+  founder invites an accepted friend of their own; at most eight seats
+  (`54000`). `qorpera_respond_company_founding(p_profile_id, p_accept)` (needs
+  a confirmed email): joining makes the caller a contributor until Start;
+  declining returns `{"state":"declined"}`.
+- `qorpera_remove_company_founder(p_profile_id, p_user_id)`: your own seat
+  (returns `{"state":"left"}`), an invitation you sent, or, for the table's
+  creator, any other seat. Invitations a leaving founder sent go with them.
+  The creator, the table's only owner, closes it with
+  `qorpera_delete_hosted_profile`; the web offers that once they sit there
+  alone.
+- `qorpera_start_company_founding(p_profile_id, p_expected_revision,
+  p_client_start_id)` (needs a confirmed email): any joined founder, once every
+  joined founder is Ready with a usable account of their own. One step, repeat-safe: every founder at
+  the table becomes `owner`, unanswered invitations are withdrawn, and the
+  description and roles become the company's first files (`vision/vision.md`
+  and the Co-Founder's first todo). The first run is paid by the caller's own
+  account.
+- While a table is open, members join only through a seat, email invitations
+  are refused and roles do not change; `qorpera_list_hosted_profiles` leaves it
+  out.
 
 ### Mentions (20260928010000_runtime_room_mentions)
 
@@ -397,6 +545,145 @@ profile RPCs; RLS is the second read boundary.
   `latestAt`). `qorpera_mark_member_mentions_seen(p_session_id)` marks the
   caller's mentions in a conversation seen. The author is never told about
   their own post.
+
+### Computer hours (20260928248000_runtime_computer_hours_meter)
+
+- Contract: section 19, 2026-09-28 amendment "computer hours"; design
+  `deploy/first-node/RUNTIME-COMPUTER-HOURS.md`. This step measures only:
+  nothing is charged or stopped.
+- `qorpera_read_company_computer_hours(p_profile_id, p_month date default
+  null)` → `qorpera.company-computer-hours/v1`: `profileId`, `month`
+  (`YYYY-MM`, the calendar month in `timeZone` `Europe/Copenhagen`; default
+  the current one), `usedStandardSeconds` (whole standard seconds; one
+  computer hour = 3600), `byKind` (`companyMachines`, `agentMachines`,
+  `codingMachines`, `runs`, standard seconds rounded per kind, so their sum
+  may differ from the total by a few seconds), `awakeNow` (the same kinds,
+  counted now), `meteredUntil` (the meter counts up to about a minute
+  ago) and, from 20260928249200, `waitingForHours` (true while the zero rule
+  holds the company's new work: show "Waiting for computer hours"). Any
+  member of the company, viewers included; anyone else gets 42501. While
+  the rule holds a company, `qorpera_enqueue_execution_run` and
+  `qorpera_enqueue_runner_job` refuse new work with 55000 ("Waiting for
+  computer hours: the company has none left").
+  A client shows "Not measured yet" while the function is missing (PGRST202).
+  From 20260928259330, `hoursLeft`: null before the live switch (show measured
+  hours only); `{"complimentary": true}` for a company that is never limited;
+  otherwise `leftSeconds` (zero or less when out of hours, below zero by what
+  it owes) with `freeSeconds`, `planSeconds` (the founders' current plans,
+  each shared by every company it pays for), `creditSeconds` and
+  `owedSeconds`. A founder reading it also gets `founders`: each founder's
+  `userId`, with `planSeconds` and `creditSeconds` where they have them (who
+  pays), and, with `userId` null, the packs of members who are no longer
+  founders; other members never see who paid. `hoursLeft` is always now,
+  whatever month is read.
+  From 20260928259280, `qorpera_company_waiting_for_hours(p_profile_id)` →
+  boolean says the same as `waitingForHours` without the month's figures,
+  for a client that asks with its other periodic reads (any member; anyone
+  else gets 42501). A client treats a missing function (PGRST202) as not
+  waiting and stops asking.
+
+- 20260928248910_runtime_computer_hours_payments:
+  `qorpera_list_computer_hour_offers()` → `qorpera.computer-hour-offers/v1`:
+  `items` (`itemKey`, `kind` `plan` | `credits`, `name`, `priceMinor` in
+  øre excluding VAT, `currency` `dkk`, `hours`: a plan's hours a month or a
+  pack's hours, `available`: whether it is on sale to this member now; credits
+  still need a founder of the company, and a member who already has a plan
+  changes it on Stripe's billing page, both of which checkout checks). Before live
+  payments only test accounts an operator enrolled see anything available, in
+  Stripe's test mode; a client shows an item that is not available as not for
+  sale. Any signed-in member.
+  `qorpera_read_my_computer_plan()` → `qorpera.my-computer-plan/v1`: `mode`
+  (`dry_run` until live payments), `plan` (null, or `itemKey`, `status`,
+  `periodStart`, `periodEnd`, `cancelAtPeriodEnd`) and `hours` (null until
+  live payments, since members see only measured hours before then; then
+  `grantedSeconds` this period and `companies` (`profileId`, `seconds` this
+  period paid by the plan)). The signed-in member's own plan only.
+
+### Event hooks (20260928259260_runtime_event_intake)
+
+- Contract: section 19, 2026-09-29 amendment "events wake agents"; design
+  `deploy/first-node/RUNTIME-EVENT-INTAKE.md`. Step W1a: address-proven hooks
+  for `snapshot-v1` companies only; nothing wakes agents yet (W2). The intake
+  is built switched off. Settings lists hooks under Company connections (step
+  A3).
+- `qorpera_create_event_hook(p_profile_id, p_environment_id, p_name,
+  p_purpose, p_proof default 'address', p_max_body_bytes default null,
+  p_per_minute default null)` → `qorpera.event-hook/v1`: `id`, `companyId`,
+  `environmentId`, `name` (`^[a-z][a-z0-9-]{0,63}$`, unique among the
+  live hooks of the company environment), `purpose` (one line), `proof`
+  (`address` in W1a; `stripe`, `github` and `hmac-sha256` refuse with 0A000
+  until W1b), `status` (`active`), `address` (43 characters), `path`
+  (`/functions/v1/event-intake/<address>`: the sender posts to the Supabase
+  URL plus this path), `maxBodyBytes` (1024–262144, default 65536),
+  `perMinute` (1–120, default 60), `createdAt`, `lastReceivedAt` (absent
+  until the first delivery). Owners and admins only (42501); 23505 for a
+  name in use, 54000 past 50 live hooks, 22023 for a bad environment, name
+  (names beginning `mail-` belong to mailboxes, from 20260928299650),
+  purpose, proof or limit, 0A000 for a `folder-v2` company (its hooks come
+  with their connection file).
+- `qorpera_set_event_hook_status(p_hook_id, p_status)` with `active`,
+  `paused` or `removed` → the same descriptor. Removing is final (55000
+  afterwards) and frees the name. Owners and admins only.
+- `qorpera_list_event_hooks(p_profile_id, p_environment_id)` → an array of
+  descriptors of live hooks, by name. Any member; `address` and `path` only
+  for owners and admins.
+- `qorpera_list_event_deliveries(p_hook_id, p_limit default 50)` → the
+  newest deliveries (at most 200): `id`, `receivedAt`, `status` (`received`,
+  `verified`, `refused`, `duplicate`), `deliveryKey`, `eventType`,
+  `contentType`, `bodyBytes`, `bodySha256`, `verifiedAt`, `reason`. No
+  bodies. Owners and admins only.
+
+### Company mailboxes (20260928299650_runtime_company_mailboxes)
+
+- Contract: section 19, item 9; design `deploy/first-node/RUNTIME-EVENT-INTAKE.md`, "Mail (M2)". Step M2a:
+  receiving only, for `snapshot-v1` companies. Company mail is built switched off, and no mailbox can be made
+  until operators set the platform's mail domain.
+- `qorpera_create_company_mailbox(p_profile_id, p_environment_id, p_local_part, p_purpose)` → the hook
+  descriptor (`qorpera.event-hook/v1`) of the mailbox's hook: `proof` `mail`, `name` `mail-<local part>` (with a short digest suffix when
+  the local part holds a dot or an underscore), and
+  `email` (`<local part>@<mail domain>`); never `address` or `path`. The local part is 1–64 lowercase letters,
+  digits, dots, hyphens and underscores, with no leading, trailing or doubled dot; RFC 2142 names
+  (`postmaster`, `abuse`, …) and `noreply` are reserved (22023). An address belongs to one live mailbox across
+  the platform (23505 when taken). The domain is one platform setting: a mailbox keeps only its local part, so
+  `email` always shows the current domain. Owners and admins only (42501); 54000 past 20 mailboxes or 50 hooks;
+  0A000 before the mail domain is set, and for a `folder-v2` company.
+- A mailbox is paused, resumed and removed with `qorpera_set_event_hook_status` on its hook; removing frees
+  its address. `qorpera_list_event_hooks` lists mailboxes with their `email` for every member, and
+  `qorpera_list_event_deliveries` their received messages (`eventType` `mail.received`).
+- Sending (20260928309740_runtime_company_mail_sending, step M2b): agents send from a mailbox with the runtime
+  tool `send_mail`; there is no client surface yet. Sent email is queued in `qorpera_company_mail_outbox` (closed
+  to every API role) and sent by the `mail-outbox` Edge Function. Sending has its own switch in
+  `qorpera_mail_settings` (`sending`, built off) and the company limits on recipients `company_hourly_recipients`
+  (60) and `company_daily_recipients` (300). Received mail (`mail.received`) now also carries `autoSubmitted`,
+  `precedence`, `listId` and `automated`; agents never answer automated mail.
+- Sender names (20260928319810_runtime_company_mail_sender_names): `qorpera_create_company_mailbox` also reserves
+  (22023) any local part that reads as Qorpera (case, separators, accents, full width and look-alike letters or
+  digits folded), and no email goes out when the agent's or the company's name or the mailbox reads as Qorpera.
+
+### ChatGPT plan reads (20260928369970_runtime_chatgpt_plan_member_reads)
+
+Built switched off with plan logins. Show none of it while plan logins are switched off for the company
+(`qorpera_chatgpt_plan_available` is false) or the member has no plan login.
+
+- `qorpera_list_member_native_execution_connections`: each connection also has `login_kind` (`codex` or
+  `chatgpt_plan`; null for a node login), `allow_autonomous` (whether its member turned on work while away for
+  this version) and `routine_offer_shown_at` (when the member's first-routine card was shown in this company;
+  null until then; the same on every entry of the member's list, so read it from a plan login's entry). Label
+  a `chatgpt_plan` connection
+  "ChatGPT plan". Never consent a plan login on the member's behalf: its "Work while you're away" switch calls
+  `qorpera_set_chatgpt_plan_work_while_away` (the consent call alone refuses a plan, 20260928369980). Codex
+  logins keep today's behaviour.
+- `qorpera_record_chatgpt_plan_routine_offer(profile, connection)`: records that the first-routine card was shown
+  to the caller, for their own active plan login (members only; not in a company being deleted). Shown once per
+  member and company: a repeat, also on a later plan login after a new sign-in, answers the first showing
+  (`{connection_id, shown_at}`), and "Not now" never brings the card back. 42501 for a connection that is not the
+  caller's own active one in that company, 22023 "Not a ChatGPT plan login" for any other login.
+- `qorpera_list_cloud_routines`: each routine also has `pause_reason` (for example `needs_model_account`, a
+  routine that waits for a payer) and `runs_for_user_id` (the member its current version runs for: that
+  version's creator). When its current version is a resume (20260928369985), `resume_reason` is
+  `plan_turned_on`, `resumed_by_user_id` the member who turned on work while away and `resumed_at` when; all
+  three are null for any other version, so a later save clears them. Show it as "Resumed when <member> turned on
+  work while away".
 
 ## 3. Realtime
 
@@ -435,6 +722,14 @@ profile RPCs; RLS is the second read boundary.
   any active member of the room edits an existing draft. Access is the room post
   rule: an active member of an active room. Drafts never send, wake or sponsor
   anything; the owner sends with `qorpera_post_company_room_message` as before.
+- `qorpera-orchestrator-wake-{64 hex}` — **node only, not for clients**
+  (migration `20260928319550_runtime_orchestrator_wake`). A runner orchestrator's
+  wake-up: while `qorpera_orchestrator_wake_settings.enabled` is on, the database
+  broadcasts event `wake`, payload `{"schema":"qorpera.orchestrator-wake/v1"}`
+  and nothing else, when claimable work may have appeared. Private channel read
+  by `anon` (the orchestrator joins with the publishable key) on that topic only.
+  The name derives from the control token's sha256, which only the database
+  keeps; nobody publishes but the database.
 
 ## 4. Object gateway (HTTP, `packages/object-gateway`)
 
@@ -459,9 +754,38 @@ machine.
 - `native-provider-login` — a member starts the provider-native login handoff
   (Codex / Claude) that runs in an isolated cloud login VM; the client only
   hands the member the link and shows status.
+- `computer-billing` (20260928248910) — computer hours payments. The web app
+  calls `POST /functions/v1/computer-billing/checkout` with the member's
+  bearer token and `{itemKey, profileId?}` (`profileId` for credits, which
+  only a founder of that company may buy) and gets `{url}` (Stripe Checkout)
+  or `409 {refused: "not_a_founder" | "has_plan" | "item_unavailable"}`;
+  `POST .../portal` returns `{url}` (Stripe's billing page) or
+  `409 {refused: "no_customer"}`. Only origins in `QORPERA_WEB_ORIGINS` may
+  call; every answer from these two routes, errors too, carries the CORS
+  headers. `/webhook` is Stripe's alone. Stripe returns the member to
+  `QORPERA_BILLING_RETURN_URL` (`https://app.qorpera.com/#/account`) with
+  `?checkout=done` or `?checkout=cancelled` after the hash; hours arrive with
+  Stripe's webhook, not with the return.
+- `event-intake` (20260928259260) — the public address of a company's
+  hooks: `POST /functions/v1/event-intake/<address>` from the sender, not
+  from clients. Answers 202 (accepted), 200 (duplicate), 400 (malformed), 404
+  (not a hook address, by its shape, or no such hook), 405 (not POST), 409
+  (paused or not ready), 413 (over the hook's size limit or 256 KiB), 429
+  (over the hook's minute or the company's hourly budget, with `Retry-After`),
+  431 (headers too large) or 503 (switched off, or retry).
+- `mail-intake` (20260928299650) — the mail provider's (Resend's) webhook for
+  received email, not for clients: `POST /functions/v1/mail-intake`, signed
+  with the platform's signing secret (Standard Webhooks). Answers 200 (every
+  recipient settled, other event types ignored, or a message the database
+  refuses as malformed, which is logged), 400 (a payload that is not JSON, or
+  an `email.received` without a valid message id), 401 (bad or stale
+  signature), 405, 413 (over 64 KiB), 429 (a mailbox over its limits, with
+  `Retry-After`) or 503 (mail switched off, or retry).
 - `profile-invitation-email`, `company-file-verifier`, `artifact-gc-worker`,
-  `runner-control`, `runner-broker`, `runner-orchestrator` — service or
-  runner authority only. Clients never call them.
+  `runner-control`, `runner-broker`, `runner-orchestrator`,
+  `computer-hour-notices` (20260928249160, founders' hour emails),
+  `mail-outbox` (20260928309740, email agents send from company mailboxes) —
+  service or runner authority only. Clients never call them.
 
 ## 6. Stability by Order (what a client may build now)
 
@@ -615,7 +939,7 @@ does locally that the contract forbids.
 | `profile:migrate-local` | desktop-only transitional (qorpera_promote_local_profile) — no web equivalent by design |
 | `room:archive` | qorpera_close_shared_session |
 | `room:create` | rooms: Order 3 fan-out; today shared sessions (qorpera_create_shared_session_v4) |
-| `room:open` | qorpera_read_session_events + Realtime |
+| `room:open` | qorpera_read_session_events_tail (the newest page; older pages on "Show earlier") + qorpera_read_session_events (new events) + Realtime |
 | `room:restore` | review |
 | `room:send` | qorpera_append_session_input |
 | `room:update` | review |

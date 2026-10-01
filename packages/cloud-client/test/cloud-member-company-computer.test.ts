@@ -76,6 +76,9 @@ describe("member Company Computer transport", () => {
 			p_environment_id: id(2),
 			p_staff_agent_id: id(5),
 		});
+		// A company out of computer hours: the computer waits for hours (20260928309720).
+		f.fetch.mockResolvedValueOnce(Response.json({ ...placed, computer: { ...placed.computer, waiting: "hours" } }));
+		expect((await f.client.agentComputer(id(5), signal))?.computer?.waiting).toBe("hours");
 		f.fetch.mockResolvedValueOnce(Response.json({ ...placed, placement: "new", computer: null }));
 		expect((await f.client.agentComputer(id(5), signal))?.computer).toBeNull();
 		f.fetch.mockResolvedValueOnce(Response.json({ code: "PGRST202" }, { status: 404 }));

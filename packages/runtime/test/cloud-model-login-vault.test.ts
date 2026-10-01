@@ -4,6 +4,7 @@ import {
 	CloudModelLoginVault,
 	MODEL_LOGIN_FIELD,
 	type ModelLoginAuthority,
+	type ModelLoginCodexIssue,
 	type ModelLoginRenewer,
 	type ModelLoginRunBinding,
 	parseCodexLogin,
@@ -136,8 +137,36 @@ function fixture(options: {
 			};
 			return options.change ? options.change(answer) : answer;
 		}),
+		listModelLoginsWithoutAccount: vi.fn(async () => ({
+			schema: "qorpera.model-login-accounts/v1",
+			logins: [
+				{
+					loginId,
+					companyId,
+					computeIdentityId: run.computeIdentityId,
+					version: 3,
+					keyId,
+					encryptedEnvelopeBase64: Buffer.from(envelope).toString("base64"),
+					envelopeSha256: createHash("sha256").update(envelope).digest("hex"),
+				},
+			],
+		})),
+		recordModelLoginAccount: vi.fn(async (account: { loginId: string }) => ({
+			schema: "qorpera.model-login-account/v1",
+			loginId: account.loginId,
+			recorded: true,
+		})),
+		switchOffReplacedNodeLogins: vi.fn(async () => ({
+			schema: "qorpera.model-login-switch-off/v1",
+			switchedOff: 1,
+			waiting: 2,
+			refused: 0,
+		})),
+		commitChatGptPlanRenewal: vi.fn(async () => undefined),
+		takeChatGptPlanRevocation: vi.fn(async () => undefined),
+		finishChatGptPlanRevocation: vi.fn(async () => undefined),
 	};
-	return { authority, keyring, wrappingKey, run, loginId, companyId, identity, renewalToken };
+	return { authority, keyring, wrappingKey, run, loginId, companyId, identity, renewalToken, envelope };
 }
 
 function tokens(text: string): Record<string, string> {
@@ -148,7 +177,10 @@ it("hands a run the stored login without its renewal token", async () => {
 	const stored = codexLogin({ ageSeconds: 60, lifeSeconds: 864_000, refresh: "rt-stored" });
 	const f = fixture({ stored });
 	const vault = new CloudModelLoginVault({ authority: f.authority, keyring: f.keyring });
-	const login = await vault.issue({ binding: f.run, knownVersion: null }, new AbortController().signal);
+	const login = (await vault.issue(
+		{ binding: f.run, knownVersion: null },
+		new AbortController().signal,
+	)) as ModelLoginCodexIssue;
 	expect(login.version).toBe(3);
 	expect(login.accessExpiresAt).toBe(parseCodexLogin(stored).accessExpiresAt);
 	expect(tokens(login.authJson as string)).toEqual({ ...tokens(stored), refresh_token: "" });
@@ -174,7 +206,10 @@ it("renews under the lock it holds and saves the next version sealed for that ve
 		renew: vi.fn(async () => ({ outcome: "renewed" as const, authJson: renewed })),
 	};
 	const vault = new CloudModelLoginVault({ authority: f.authority, keyring: f.keyring, renewer });
-	const login = await vault.issue({ binding: f.run, knownVersion: 3 }, new AbortController().signal);
+	const login = (await vault.issue(
+		{ binding: f.run, knownVersion: 3 },
+		new AbortController().signal,
+	)) as ModelLoginCodexIssue;
 	expect(renewer.renew).toHaveBeenCalledWith(stored, expect.any(AbortSignal));
 	expect(f.authority.issueModelLogin).toHaveBeenCalledWith(f.run, 3, true, expect.any(AbortSignal));
 	expect(login.version).toBe(4);
@@ -212,7 +247,10 @@ it("gives the lock back when the provider refuses the renewal, and the run keeps
 		renew: vi.fn(async () => ({ outcome: "refused" as const, reason: "refresh_token_reused" })),
 	};
 	const vault = new CloudModelLoginVault({ authority: f.authority, keyring: f.keyring, renewer });
-	const login = await vault.issue({ binding: f.run, knownVersion: null }, new AbortController().signal);
+	const login = (await vault.issue(
+		{ binding: f.run, knownVersion: null },
+		new AbortController().signal,
+	)) as ModelLoginCodexIssue;
 	expect(login.version).toBe(3);
 	expect(tokens(login.authJson as string).access_token).toBe(tokens(stored).access_token);
 	expect(f.authority.releaseModelLoginRenewal).toHaveBeenCalledWith(
@@ -231,7 +269,10 @@ it("refuses a renewed login of another account or with an older pass", async () 
 		const f = fixture({ stored, renewal: true });
 		const renewer: ModelLoginRenewer = { renew: async () => ({ outcome: "renewed", authJson: renewed }) };
 		const vault = new CloudModelLoginVault({ authority: f.authority, keyring: f.keyring, renewer });
-		const login = await vault.issue({ binding: f.run, knownVersion: null }, new AbortController().signal);
+		const login = (await vault.issue(
+			{ binding: f.run, knownVersion: null },
+			new AbortController().signal,
+		)) as ModelLoginCodexIssue;
 		expect(login.version).toBe(3);
 		expect(f.authority.commitModelLoginRenewal).not.toHaveBeenCalled();
 		expect(f.authority.releaseModelLoginRenewal).toHaveBeenCalledWith(
@@ -251,7 +292,10 @@ it("keeps a renewed pass for this run when the new version cannot be saved", asy
 		keyring: f.keyring,
 		renewer: { renew: async () => ({ outcome: "renewed", authJson: renewed }) },
 	});
-	const login = await vault.issue({ binding: f.run, knownVersion: null }, new AbortController().signal);
+	const login = (await vault.issue(
+		{ binding: f.run, knownVersion: null },
+		new AbortController().signal,
+	)) as ModelLoginCodexIssue;
 	expect(f.authority.commitModelLoginRenewal).toHaveBeenCalledTimes(3);
 	expect(tokens(login.authJson as string).access_token).toBe(tokens(renewed).access_token);
 	expect(login.version).toBe(3);
@@ -307,7 +351,10 @@ it("never renews with a key it cannot seal with, and gives the lock back", async
 	const renewer: ModelLoginRenewer = { renew: vi.fn(async () => ({ outcome: "renewed" as const, authJson: stored })) };
 	const keyring = new CloudSecretKeyring({ "company-kek-1": f.wrappingKey, "unrelated-kek": randomBytes(32) });
 	const vault = new CloudModelLoginVault({ authority: f.authority, keyring, renewer });
-	const login = await vault.issue({ binding: f.run, knownVersion: null }, new AbortController().signal);
+	const login = (await vault.issue(
+		{ binding: f.run, knownVersion: null },
+		new AbortController().signal,
+	)) as ModelLoginCodexIssue;
 	expect(login.version).toBe(3);
 	expect(renewer.renew).not.toHaveBeenCalled();
 	expect(f.authority.releaseModelLoginRenewal).toHaveBeenCalledWith(
@@ -345,7 +392,10 @@ it("gives the lock back when the renewer fails, and saves once after a lost data
 		keyring: lost.keyring,
 		renewer: { renew: async () => ({ outcome: "renewed", authJson: renewed }) },
 	});
-	const login = await vault.issue({ binding: lost.run, knownVersion: null }, new AbortController().signal);
+	const login = (await vault.issue(
+		{ binding: lost.run, knownVersion: null },
+		new AbortController().signal,
+	)) as ModelLoginCodexIssue;
 	expect(login.version).toBe(4);
 	expect(lost.authority.commitModelLoginRenewal).toHaveBeenCalledTimes(2);
 	// The second try sends the very same envelope, so the database recognises a save it already made.
@@ -517,6 +567,61 @@ it("gives an idle login's lock back when the renewal is refused, fails or the an
 		reason: "login_unreadable",
 	});
 	expect(renewer.renew).not.toHaveBeenCalled();
+});
+
+it("records a login's ChatGPT account from its current version, as nodes record it", async () => {
+	const stored = codexLogin({ ageSeconds: 60, lifeSeconds: 864_000, refresh: "rt", account: "account-7" });
+	const f = fixture({ stored });
+	const vault = new CloudModelLoginVault({ authority: f.authority, keyring: f.keyring });
+	await expect(vault.recordAccounts(new AbortController().signal)).resolves.toBe(1);
+	expect(f.authority.recordModelLoginAccount).toHaveBeenCalledWith(
+		{
+			loginId: f.loginId,
+			accountIdentity: createHash("sha256").update("openai-account:").update("account-7").digest("hex"),
+		},
+		expect.any(AbortSignal),
+	);
+
+	// A login sealed for another login cannot be opened: it is skipped, and nothing is recorded.
+	f.authority.listModelLoginsWithoutAccount.mockResolvedValueOnce({
+		schema: "qorpera.model-login-accounts/v1",
+		logins: [
+			{
+				loginId: randomUUID(),
+				companyId: f.companyId,
+				computeIdentityId: f.run.computeIdentityId,
+				version: 3,
+				keyId: "company-kek-1",
+				encryptedEnvelopeBase64: Buffer.from(f.envelope).toString("base64"),
+				envelopeSha256: createHash("sha256").update(f.envelope).digest("hex"),
+			},
+		],
+	});
+	f.authority.recordModelLoginAccount.mockClear();
+	await expect(vault.recordAccounts(new AbortController().signal)).resolves.toBe(0);
+	expect(f.authority.recordModelLoginAccount).not.toHaveBeenCalled();
+	f.authority.listModelLoginsWithoutAccount.mockResolvedValueOnce({ schema: "other", logins: [] });
+	await expect(vault.recordAccounts(new AbortController().signal)).rejects.toThrow("Model login accounts are invalid");
+});
+
+it("reads one switch-off pass and refuses an answer it does not know", async () => {
+	const f = fixture({ stored: codexLogin({ ageSeconds: 60, lifeSeconds: 864_000, refresh: "rt" }) });
+	const vault = new CloudModelLoginVault({ authority: f.authority, keyring: f.keyring });
+	await expect(vault.switchOffReplacedNodeLogins(new AbortController().signal)).resolves.toEqual({
+		switchedOff: 1,
+		waiting: 2,
+		refused: 0,
+	});
+	for (const answer of [
+		{ schema: "qorpera.model-login-switch-off/v1", switchedOff: -1, waiting: 0, refused: 0 },
+		{ schema: "qorpera.model-login-switch-off/v1", switchedOff: 0, waiting: 5, refused: 0 },
+		{ schema: "other", switchedOff: 0, waiting: 0, refused: 0 },
+	]) {
+		f.authority.switchOffReplacedNodeLogins.mockResolvedValueOnce(answer);
+		await expect(vault.switchOffReplacedNodeLogins(new AbortController().signal)).rejects.toThrow(
+			"Model login switch-off is invalid",
+		);
+	}
 });
 
 it("serves the route only with the runtime token, uncached, and the client reads it", async () => {

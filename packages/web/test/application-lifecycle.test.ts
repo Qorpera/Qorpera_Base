@@ -509,6 +509,51 @@ describe("account and route ownership", () => {
 		expect(api.listFriends).toHaveBeenCalledTimes(2);
 	});
 
+	it("opens the account page back from Stripe, thanks the member once and reads the plan again", async () => {
+		history.replaceState(null, "", "/#/account?checkout=done");
+		const f = fixture();
+		const offers = vi.spyOn(f.api, "listComputerHourOffers").mockResolvedValue([]);
+		const plan = vi.spyOn(f.api, "getMyComputerPlan").mockResolvedValue({ mode: "dry_run", plan: null, hours: null });
+		const root = document.createElement("div");
+		document.body.append(root);
+		dispose = mountApplication(root, f.cloud, f.api);
+		await draw();
+		// The return is read and removed before routing: the account page, not the hub.
+		expect(location.hash).toBe("#/account");
+		expect(root.textContent).toContain("Account A private plan");
+		const thanks = "Thank you. Your hours are added as soon as Stripe confirms the payment.";
+		expect(root.querySelector(".notice-ok")?.textContent).toBe(thanks);
+		expect(offers).toHaveBeenCalledTimes(1);
+		await vi.advanceTimersByTimeAsync(5000);
+		await draw();
+		expect(plan).toHaveBeenCalledTimes(2);
+		// Leaving the page takes the notice with it; the next visit reads afresh.
+		location.hash = "#/";
+		await draw();
+		location.hash = "#/account";
+		await draw();
+		expect(root.textContent).toContain("Account A private plan");
+		expect(root.textContent).not.toContain(thanks);
+		// Once on arrival, once in the refresh, once on the new visit.
+		expect(offers).toHaveBeenCalledTimes(3);
+	});
+
+	it("keeps a return from Stripe for the member who paid, not the next one", async () => {
+		const thanks = "Thank you. Your hours are added as soon as Stripe confirms the payment.";
+		const { api, auth, root } = mounted("#/?checkout=done");
+		vi.spyOn(api, "listComputerHourOffers").mockResolvedValue([]);
+		vi.spyOn(api, "getMyComputerPlan").mockResolvedValue({ mode: "dry_run", plan: null, hours: null });
+		await draw();
+		expect(location.hash).toBe("#/");
+		vi.mocked(api.listProfiles).mockResolvedValue([profileB]);
+		auth(userB);
+		await draw();
+		location.hash = "#/account";
+		await draw();
+		expect(root.textContent).toContain("Plan & usage");
+		expect(root.textContent).not.toContain(thanks);
+	});
+
 	it.each(["#/friends", "#/invitations"])("sends the retired %s page to the company hub", async (hash) => {
 		const f = mounted(hash);
 		await draw();
@@ -768,5 +813,244 @@ describe("account and route ownership", () => {
 		expect(create.mock.calls[0]?.[0]).toBe(create.mock.calls[1]?.[0]);
 		expect(new HubController(f.api, userB.id).store.get().creationRetry).toBeUndefined();
 		hub.dispose();
+	});
+});
+
+describe("Continue with ChatGPT: the return from OpenAI", () => {
+	const chat = `#/c/${profileA.profileId}/chat/${session.sessionId}`;
+	const confirmation = "d".repeat(43);
+	const status = () => document.querySelector(".connection-plan")?.textContent;
+	const settingsOpen = () => document.querySelector(".settings-overlay") !== null;
+	/** A sign-in this tab started on `chat`, a Co-Founder home that redirects to its conversation,
+	 * and a vault that takes 3 s to confirm. */
+	function returned(memberId = userA.id, returnRoute = chat) {
+		const signals: AbortSignal[] = [];
+		const confirm = vi.fn(
+			(_input: string | URL | Request, init?: RequestInit) =>
+				new Promise<Response>((resolve, reject) => {
+					if (init?.signal) signals.push(init.signal);
+					init?.signal?.addEventListener("abort", () => reject(init.signal!.reason), { once: true });
+					setTimeout(() => resolve(Response.json({ status: "completed", login_id: id(105) })), 3000);
+				}),
+		);
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+				if (String(input) === "https://login.fixture.invalid/chatgpt-plan-confirm") return confirm(input, init);
+				throw new Error("No cloud transport in this UI fixture");
+			}),
+		);
+		sessionStorage.setItem(
+			"qorpera.chatgpt-plan-sign-in.v1",
+			JSON.stringify({
+				companyId: profileA.profileId,
+				memberId,
+				loginId: id(105),
+				clientConnectionId: id(103),
+				capability: "c".repeat(43),
+				expiresAt: new Date(Date.now() + 900_000).toISOString(),
+				startedAt: Date.now(),
+				returnRoute,
+			}),
+		);
+		// The callback's return page is the site's root, with the outcome after it.
+		const f = mounted(`#?chatgpt_plan=confirm&confirmation=${confirmation}`);
+		vi.mocked(f.api.getOrganization).mockResolvedValue({
+			schema: "qorpera.company-organization/v1",
+			profileId: profileA.profileId,
+			cofounder: { staffAgentId: staff.id, formationId: id(30), memberSessionId: session.sessionId },
+			formation: {
+				formationId: id(30),
+				state: "operating",
+				status: "active",
+				revision: 1,
+				projectionStatus: "ready",
+				sourcePath: "company/formation.json",
+			},
+			responsibilities: [],
+			projects: [],
+		});
+		return { ...f, confirm, signals };
+	}
+
+	it("goes back to the page the sign-in began on and finishes it in My connections", async () => {
+		const { confirm, signals } = returned();
+		await draw();
+		await draw();
+		expect(location.hash).toBe(chat);
+		expect(sessionStorage.getItem("qorpera.chatgpt-plan-sign-in.v1")).toBeNull();
+		expect(settingsOpen()).toBe(true);
+		expect(document.querySelector("#settings-tab-my-connections")?.getAttribute("aria-selected")).toBe("true");
+		expect(status()).toBe("Finishing your ChatGPT sign-in…");
+		await vi.advanceTimersByTimeAsync(3500);
+		await draw();
+		expect(confirm).toHaveBeenCalledOnce();
+		expect(signals.map((signal) => signal.aborted)).toEqual([false]);
+		expect(status()).toBe("Your ChatGPT plan is connected.");
+	});
+
+	it("finishes it while Settings is closed, and My connections shows the outcome when it opens", async () => {
+		const { confirm, signals } = returned();
+		await draw();
+		await draw();
+		expect(settingsOpen()).toBe(true);
+		document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+		await draw();
+		expect(settingsOpen()).toBe(false);
+		await vi.advanceTimersByTimeAsync(3500);
+		await draw();
+		expect(signals.map((signal) => signal.aborted)).toEqual([false]);
+		document.querySelector<HTMLButtonElement>(".account-trigger")!.click();
+		document.querySelector<HTMLButtonElement>('[data-account-action="settings"]')!.click();
+		await draw();
+		document.querySelector<HTMLButtonElement>("#settings-tab-my-connections")!.click();
+		await draw();
+		expect(status()).toBe("Your ChatGPT plan is connected.");
+		expect(confirm).toHaveBeenCalledOnce();
+	});
+
+	it("from the company list, goes to the company and opens My connections once home has moved on", async () => {
+		const { signals } = returned(userA.id, `#/c/${profileA.profileId}`);
+		await draw();
+		await draw();
+		expect(location.hash).toBe(chat);
+		expect(settingsOpen()).toBe(true);
+		expect(document.querySelector("#settings-tab-my-connections")?.getAttribute("aria-selected")).toBe("true");
+		await vi.advanceTimersByTimeAsync(3500);
+		await draw();
+		expect(signals.map((signal) => signal.aborted)).toEqual([false]);
+		expect(status()).toBe("Your ChatGPT plan is connected.");
+	});
+
+	it("never finishes a sign-in another account started in this tab", async () => {
+		const { confirm } = returned(userB.id);
+		await draw();
+		await draw();
+		await vi.advanceTimersByTimeAsync(3500);
+		expect(confirm).not.toHaveBeenCalled();
+		expect(sessionStorage.getItem("qorpera.chatgpt-plan-sign-in.v1")).toBeNull();
+		expect(settingsOpen()).toBe(false);
+	});
+});
+
+describe("a ChatGPT plan's first-routine card in the app", () => {
+	const notice = {
+		schema: "qorpera.member-notification/v1",
+		notification_id: id(100),
+		profile_id: profileA.profileId,
+		kind: "routine_needs_model_account",
+		created_at: userA.created_at,
+		acknowledged_at: null,
+		subject: { staffAgentId: staff.id, routineId: id(61), title: "Morning brief" },
+	};
+	const planRow = (version: number, on: boolean) => ({
+		connection_id: id(85),
+		client_connection_id: id(185),
+		connection_version: version,
+		provider: "openai",
+		native_harness: "codex-cli",
+		authorization_state: "active",
+		max_native_concurrency: 1,
+		billing_source: "subscription",
+		consent_version: "1",
+		consented_at: userA.created_at,
+		connection_status: "active",
+		sponsor_binding_id: id(86),
+		sponsor_version: 1,
+		policy: { implementation_status: "supported", enablement_status: "enabled", policy_version: 1 },
+		login_kind: "chatgpt_plan",
+		allow_autonomous: on,
+		routine_offer_shown_at: null,
+	});
+	const routineRow = {
+		routine_id: id(61),
+		client_routine_id: id(161),
+		version: 1,
+		status: "paused",
+		pause_reason: "needs_model_account",
+		runs_for_user_id: userA.id,
+		staff_agent_id: staff.id,
+		title: "Morning brief",
+		prompt: "Brief me.",
+		triggers: [{ id: "agent", kind: "schedule", intervalMinutes: 60, replyPolicy: "silent" }],
+		effort: "medium",
+		sponsor_binding_id: id(87),
+		sponsor_version: 1,
+		logical_computer_id: null,
+		required_capability: "agent_turn",
+		job_type: "agent_turn",
+		publication_mode: "automatic",
+		review_policy_key: null,
+		reviewer_staff_ids: [],
+		created_at: userA.created_at,
+		updated_at: userA.created_at,
+	};
+	/** The member's own waiting routine, a plan that is not turned on, plans on, on a conversation page. */
+	function planApp(capabilities = team.capabilities) {
+		let connections = [planRow(2, false)];
+		const calls: string[] = [];
+		const answer = async (method: string, args: Record<string, unknown>): Promise<unknown> => {
+			calls.push(method);
+			if (method === "qorpera_list_member_notifications") return [notice];
+			if (method === "qorpera_acknowledge_member_notification")
+				return { ...notice, acknowledged_at: userA.created_at };
+			if (method === "qorpera_chatgpt_plan_available") return true;
+			if (method === "qorpera_list_member_native_execution_connections")
+				return { compute_identity: null, connections };
+			if (method === "qorpera_list_cloud_routines") return [routineRow];
+			if (method === "qorpera_record_chatgpt_plan_routine_offer")
+				return { connection_id: args.p_connection_id, shown_at: userA.created_at };
+			if (method === "qorpera_set_chatgpt_plan_work_while_away") {
+				connections = [...connections, planRow(3, true)];
+				return { connection_id: args.p_connection_id, version: 3, allow_autonomous: true };
+			}
+			if (method === "qorpera_create_member_execution_sponsor") return { binding_id: id(88), version: 1 };
+			if (method === "qorpera_upsert_cloud_routine")
+				return { ...routineRow, version: 2, status: "active", pause_reason: null };
+			throw new Error(`Unexpected fixture RPC: ${method}`);
+		};
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (input: string | URL | Request, init?: RequestInit) =>
+				Response.json(
+					await answer(
+						String(input).split("/").at(-1)!,
+						init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : {},
+					),
+				),
+			),
+		);
+		const f = mounted(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
+		vi.mocked(f.cloud.rpc).mockImplementation((method: string, args?: Record<string, unknown>) =>
+			answer(method, args ?? {}),
+		);
+		vi.mocked(f.api.listSessions).mockResolvedValue([{ ...session, staffAgentId: staff.id }]);
+		vi.mocked(f.api.getTeam).mockResolvedValue({ ...team, capabilities });
+		return { ...f, calls };
+	}
+	const card = () => document.querySelector(".company-notices .company-notice p")?.textContent;
+
+	it("asks the signed-in member about their own routine, and an owner's Turn on starts it", async () => {
+		const f = planApp();
+		await vi.waitFor(() => expect(card()).toContain("Morning brief can run while you're away."), { timeout: 3000 });
+		expect(f.calls).toContain("qorpera_record_chatgpt_plan_routine_offer");
+		document.querySelector<HTMLButtonElement>('[data-action="turn-on-plan"]')!.click();
+		await vi.waitFor(() => expect(f.calls).toContain("qorpera_upsert_cloud_routine"), { timeout: 3000 });
+		expect(f.calls).toContain("qorpera_set_chatgpt_plan_work_while_away");
+		expect(f.calls).not.toContain("qorpera_consent_provider_connection_autonomous");
+	});
+
+	it("turns the plan on for a member who does not save routines, and says to ask the agent", async () => {
+		const f = planApp({ ...team.capabilities, authorize: false });
+		await vi.waitFor(() => expect(card()).toContain("Morning brief can run while you're away."), { timeout: 3000 });
+		document.querySelector<HTMLButtonElement>('[data-action="turn-on-plan"]')!.click();
+		await vi.waitFor(
+			() =>
+				expect(card()).toBe(
+					"Your ChatGPT plan now works while you're away. Ask the agent to set Morning brief up again.",
+				),
+			{ timeout: 3000 },
+		);
+		expect(f.calls).not.toContain("qorpera_upsert_cloud_routine");
 	});
 });

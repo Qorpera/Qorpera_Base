@@ -173,12 +173,12 @@ select pg_temp.wake_assert((select array_agg(cancelled_by_user_id::text order by
 rollback to savepoint member_messages;
 
 -- The member who saved the routine, now a contributor, stops it while it works.
--- (A company has one owner: ownership moves to a new member first.)
-update public.qorpera_profile_members set role = 'contributor'
-where profile_id = '30000000-0000-4000-8000-000000000010' and user_id = '30000000-0000-4000-8000-000000000001';
+-- (The last founder cannot step down while others remain: a new founder joins first.)
 insert into auth.users(id,email) values ('30000000-0000-4000-8000-000000000008','stop-owner@example.test');
 insert into public.qorpera_profile_members(profile_id,user_id,email,display_name,role)
 values ('30000000-0000-4000-8000-000000000010','30000000-0000-4000-8000-000000000008','stop-owner@example.test','New owner','owner');
+update public.qorpera_profile_members set role = 'contributor'
+where profile_id = '30000000-0000-4000-8000-000000000010' and user_id = '30000000-0000-4000-8000-000000000001';
 set role authenticated;
 select pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
 select pg_temp.wake_assert(pg_temp.stop_read(current_setting('qorpera_test.stop_thread')::uuid) = jsonb_build_object(

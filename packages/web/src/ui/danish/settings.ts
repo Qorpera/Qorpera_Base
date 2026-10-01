@@ -2,7 +2,7 @@
  * passes it to t() / uiText(). One file per area of the app; a key lives in
  * one file only (test/translations.test.ts checks). Wording follows
  * qorpera.com. */
-/** Settings: General, Plan & usage, Friends, Company, Connections. */
+/** Settings: General, Plan & usage, Friends, Company, My connections, Company connections. */
 export const SETTINGS: Record<string, string> = {
 	// Settings dialog (app/views/settings.ts)
 	"Search settings": "Søg i indstillinger",
@@ -87,7 +87,7 @@ export const SETTINGS: Record<string, string> = {
 	"Everything in Basis, plus": "Alt i Basis, plus",
 	"Everything in Standard, plus": "Alt i Standard, plus",
 	"100 GB storage included": "100 GB lagerplads inkluderet",
-	"A worker computer for every agent, 74 hours": "En medarbejder-computer til hver agent over 74 timer",
+	"{hours} computer hours a month": "{hours} computertimer om måneden",
 	"Connect from computer and phone": "Forbind til computer og mobil",
 	"Work in the cloud while your computer is off": "Arbejd i skyen, selvom computeren er slukket",
 	"250 GB storage included": "250 GB lagerplads inkluderet",
@@ -100,7 +100,28 @@ export const SETTINGS: Record<string, string> = {
 	"Plan changes are not open yet.": "Du kan ikke skifte abonnement endnu.",
 	"Every plan starts with a free trial, no card needed. Prices are ex. VAT.":
 		"Alle planer starter med en gratis prøveperiode uden betalingskort. Priserne er ekskl. moms.",
-	"Computer hours": "Computertimer",
+	"Computer hours in your plan": "Computertimer i dit abonnement",
+	"Computer hours this month": "Computertimer denne måned",
+	"Computer hours unavailable": "Computertimer ikke tilgængelige",
+	"Counted once plans open": "Tælles, når abonnementerne åbner",
+	"Measured, not charged yet": "Målt, endnu ikke opkrævet",
+	"Complimentary: no limit": "Gratis adgang: ingen grænse",
+	"{left} left": "{left} tilbage",
+	"Free hours {hours}": "Gratis timer {hours}",
+	"Plans {hours}": "Abonnementer {hours}",
+	"Packs {hours}": "Timepakker {hours}",
+	"Owed {hours}": "Udestående {hours}",
+	"plan {hours}": "abonnement {hours}",
+	"packs {hours}": "timepakker {hours}",
+	"{name}: {parts}": "{name}: {parts}",
+	"A founder": "En stifter",
+	"Former founders": "Tidligere stiftere",
+	"A founder's plan is shared by every company it pays for.":
+		"En stifters abonnement deles af alle de virksomheder, det betaler for.",
+	"Company machines": "Virksomhedens maskiner",
+	"Agent runs": "Agentkørsler",
+	"Coding machines": "Kodemaskiner",
+	"Agents' machines": "Agenternes maskiner",
 	"{used} used of {total}": "{used} brugt af {total}",
 	"{used} used": "{used} brugt",
 	"Not measured yet": "Ikke målt endnu",
@@ -127,6 +148,38 @@ export const SETTINGS: Record<string, string> = {
 	"No card on file": "Intet kort tilføjet",
 	Invoices: "Fakturaer",
 	"No invoices yet": "Ingen fakturaer endnu",
+	// Payments through Stripe (app/views/plan.ts, app/plan-payments.ts)
+	"Choose {plan}": "Vælg {plan}",
+	"Switch to {plan}": "Skift til {plan}",
+	Paused: "Sat på pause",
+	"Opening…": "Åbner…",
+	"Prices are ex. VAT. You pay on Stripe's secure page.": "Priserne er ekskl. moms. Du betaler på Stripes sikre side.",
+	"Test mode: nothing is charged.": "Testtilstand: intet bliver opkrævet.",
+	"Renews {date}": "Fornyes {date}",
+	"Ends {date}": "Slutter {date}",
+	"Paid through Stripe": "Betalt via Stripe",
+	"Waiting for the first payment": "Venter på første betaling",
+	"Payment failed. Update your card under Payments and invoices.":
+		"Betalingen mislykkedes. Opdater dit kort under Betalinger og fakturaer.",
+	"Other companies": "Andre virksomheder",
+	"Buy hours": "Køb timer",
+	"For {company}, valid for 12 months. Prices are ex. VAT.":
+		"Til {company}, gælder i 12 måneder. Priserne er ekskl. moms.",
+	"Computer hours are paid by the founders. You are never charged.":
+		"Computertimer betales af stifterne. Du bliver aldrig opkrævet.",
+	"Payments and invoices": "Betalinger og fakturaer",
+	"None scheduled": "Ingen planlagt",
+	"On Stripe's billing page": "På Stripes betalingsside",
+	"Thank you. Your hours are added as soon as Stripe confirms the payment.":
+		"Tak. Dine timer bliver tilføjet, så snart Stripe bekræfter betalingen.",
+	"Busy right now. Try again in a moment.": "Der er travlt lige nu. Prøv igen om lidt.",
+	"Payments are unavailable right now. Try again in a moment.":
+		"Betaling er ikke tilgængelig lige nu. Prøv igen om lidt.",
+	"You already have a plan. Change it under Payments and invoices.":
+		"Du har allerede et abonnement. Skift det under Betalinger og fakturaer.",
+	"Only the company's founders can buy computer hours.": "Kun virksomhedens stiftere kan købe computertimer.",
+	"This offer is not available right now.": "Tilbuddet er ikke tilgængeligt lige nu.",
+	"No payments yet.": "Ingen betalinger endnu.",
 
 	// Friends (app/views/friends.ts)
 	"Request sent to {email}.": "Anmodning sendt til {email}.",
@@ -157,7 +210,16 @@ export const SETTINGS: Record<string, string> = {
 	"Company members": "Virksomhedens medlemmer",
 	"Role for {name}": "Rolle for {name}",
 	"{name} is now {role}.": "{name} er nu {role}.",
-	"Started it": "Startede den",
+	Founder: "Stifter",
+	"Step down": "Træd tilbage",
+	"Step down as founder of {company}? You stay as an admin.":
+		"Træd tilbage som stifter af {company}? Du bliver administrator.",
+	"You stepped down as founder.": "Du er trådt tilbage som stifter.",
+	"Make founder": "Gør til stifter",
+	"Make {name} a founder? Founders can only step down or leave on their own.":
+		"Gør {name} til stifter? En stifter kan kun selv træde tilbage eller forlade virksomheden.",
+	"Make someone else a founder before you leave.": "Gør en anden til stifter, før du forlader virksomheden.",
+	"Company setup must finish before you can leave.": "Virksomheden skal være sat op, før du kan forlade den.",
 	Building: "Bygger",
 	"Remove {name} from {company}?": "Fjern {name} fra {company}?",
 	"{name} was removed.": "{name} blev fjernet.",
@@ -181,15 +243,40 @@ export const SETTINGS: Record<string, string> = {
 	"Add a friend": "Tilføj en ven",
 	"Delete company": "Slet virksomhed",
 	"Leave company": "Forlad virksomhed",
-	"Delete {company} for every member? Type the company name to confirm.":
-		"Slet {company} for alle medlemmer? Skriv virksomhedens navn for at bekræfte.",
+	"Delete {company}? Type the company name to confirm.": "Slet {company}? Skriv virksomhedens navn for at bekræfte.",
 	"Leave {company}? You lose access until someone invites you again.":
 		"Forlad {company}? Du mister adgangen, indtil nogen inviterer dig igen.",
 	Leave: "Forlad",
 
 	// Company execution (app/views/company-execution.ts)
 
-	// Connections: model accounts (app/views/settings-connections.ts)
+	// My connections and Company connections (app/views/settings.ts)
+	"My connections": "Mine forbindelser",
+	"Company connections": "Virksomhedens forbindelser",
+	"Your own AI subscriptions. They pay for the work you start, including your routines, and they leave with you.":
+		"Dine egne AI-abonnementer. De betaler for det arbejde, du starter, også for dine rutiner, og de følger med dig, når du går.",
+	"The company's own accounts. Every agent can use them, and they stay when someone leaves.":
+		"Virksomhedens egne konti. Alle agenter kan bruge dem, og de bliver, når nogen går.",
+
+	// My connections: model accounts (app/views/settings-connections.ts)
+	"Continue with ChatGPT": "Fortsæt med ChatGPT",
+	"Opening ChatGPT…": "Åbner ChatGPT…",
+	"Finishing your ChatGPT sign-in…": "Afslutter dit ChatGPT-login…",
+	"Your ChatGPT plan is connected.": "Dit ChatGPT-abonnement er forbundet.",
+	"Disconnect your other ChatGPT plan first.": "Afbryd først forbindelsen til dit andet ChatGPT-abonnement.",
+	"Signing in with ChatGPT is not available right now.": "Login med ChatGPT er ikke tilgængeligt lige nu.",
+	"The ChatGPT sign-in was cancelled.": "ChatGPT-login blev annulleret.",
+	"The ChatGPT sign-in took too long. Start it again.": "ChatGPT-login tog for lang tid. Start det igen.",
+	"Too many sign-ins are under way. Try again in a few minutes.":
+		"Der er for mange login i gang. Prøv igen om et par minutter.",
+	"The ChatGPT sign-in did not finish. Try again.": "ChatGPT-login blev ikke gjort færdigt. Prøv igen.",
+	"The ChatGPT sign-in could not be started. Try again.": "ChatGPT-login kunne ikke startes. Prøv igen.",
+	"ChatGPT plan": "ChatGPT-abonnement",
+	"Work while you're away": "Arbejd, mens du er væk",
+	"Your agents may use this plan for routines while you're away. Routines that start on a webhook or a file change never use it.":
+		"Dine agenter må bruge abonnementet til rutiner, mens du er væk. Rutiner, der starter på en webhook eller en filændring, bruger det aldrig.",
+	"“Work while you're away” could not be changed. Try again.":
+		"“Arbejd, mens du er væk” kunne ikke ændres. Prøv igen.",
 	"{minutes}m": "{minutes} min",
 	"{hours}h {minutes}m": "{hours} t {minutes} min",
 	"{days}d {hours}h": "{days} d {hours} t",
@@ -229,12 +316,10 @@ export const SETTINGS: Record<string, string> = {
 	"Open {provider} sign-in": "Åbn login hos {provider}",
 	"This page updates by itself when you are done.": "Siden opdaterer sig selv, når du er færdig.",
 
-	// Connections: services (app/views/settings-services.ts, texts from cloud/connectors.ts)
+	// Company connections: services (app/views/settings-services.ts, texts from cloud/connectors.ts)
 	Services: "Tjenester",
-	"Connected for the company; its agents use them through the company's secret broker.":
-		"Forbundet for virksomheden; agenterne bruger dem via virksomhedens boks til hemmeligheder.",
-	"Connected for the company by an owner or admin; its agents use them through the company's secret broker.":
-		"Forbundet for virksomheden af en ejer eller administrator; agenterne bruger dem via virksomhedens boks til hemmeligheder.",
+	"Only founders and admins can connect or disconnect them.":
+		"Kun stiftere og administratorer kan forbinde eller afbryde dem.",
 	"Read and search the mailbox, send email.": "Læs og søg i postkassen, send e-mail.",
 	"Find, read, create and update documents.": "Find, læs, opret og opdater dokumenter.",
 	"Repositories, issues, pull requests and files.": "Repositories, issues, pull requests og filer.",
@@ -269,7 +354,7 @@ export const SETTINGS: Record<string, string> = {
 		"Login blev afsluttet i en anden browser. Start det igen her.",
 	"The account is connected, but the company's agents could not get it yet. Disconnect it and connect it again.":
 		"Kontoen er forbundet, men virksomhedens agenter kunne ikke få adgang til den endnu. Afbryd den, og forbind den igen.",
-	"Your connected services could not be read.": "Dine forbundne tjenester kunne ikke hentes.",
+	"The company's services could not be read.": "Virksomhedens tjenester kunne ikke hentes.",
 	"The sign-in could not be started. Try again.": "Login kunne ikke startes. Prøv igen.",
 	"The token could not be saved. Try again.": "Tokenet kunne ikke gemmes. Prøv igen.",
 	"The service could not be disconnected. Try again.": "Tjenesten kunne ikke afbrydes. Prøv igen.",

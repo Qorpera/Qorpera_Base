@@ -135,6 +135,61 @@ describe("complete host inventory reconciliation", () => {
 		if (fault === "configuration") i.expandedDevices.extra = { type: "disk", source: "/changed" };
 		expect(reconcileRuntimeNodeInventory(f.inventory, f.context).state).toBe("unavailable");
 	});
+	it("matches a company machine at the size it reserved; nothing may be added to it later", () => {
+		const f = fixture(),
+			i = f.inventory.instances[3],
+			a = f.context.allocations[3];
+		a.providerKind = "machine";
+		a.providerId = "machine-node";
+		a.cpuMillis = 8000;
+		a.memoryBytes = 32 * 1024 ** 3;
+		for (const config of [i.config, i.expandedConfig]) {
+			config["user.qorpera.schema"] = "qorpera.lxd-company-machine/v1";
+			config["user.qorpera.provider_id"] = "machine-node";
+			config["limits.cpu"] = "8";
+			config["limits.memory"] = String(32 * 1024 ** 3);
+		}
+		for (const devices of [i.devices, i.expandedDevices])
+			devices.repository = {
+				type: "disk",
+				source: `/srv/qorpera-coding/executor/workers/${randomUUID()}/${randomUUID()}/${randomUUID()}/data/repository`,
+				path: "/mnt/repository",
+				readonly: "true",
+				required: "true",
+			};
+		a.physical = {
+			project: i.project,
+			name: i.name,
+			physicalId: i.config["volatile.uuid"],
+			configurationSha256: runtimeNodeInstanceConfigurationSha256(i),
+		};
+		const ready = reconcileRuntimeNodeInventory(f.inventory, f.context);
+		expect(ready.state).toBe("ready");
+		expect(ready.entries[3].allocation?.providerKind).toBe("machine");
+		// A machine is never a coding machine: a session folder is a change of its enrollment.
+		const workerId = randomUUID();
+		for (const devices of [i.devices, i.expandedDevices])
+			devices[`data-${workerId.replaceAll("-", "")}`] = {
+				type: "disk",
+				source: `/srv/qorpera-coding/executor/workers/${randomUUID()}/${randomUUID()}/${workerId}/data`,
+				path: `/workspace/${workerId}`,
+				required: "true",
+			};
+		expect(reconcileRuntimeNodeInventory(f.inventory, f.context).state).toBe("unavailable");
+	});
+	it("does not match a company machine whose limits differ from its reservation", () => {
+		const f = fixture(),
+			i = f.inventory.instances[3],
+			a = f.context.allocations[3];
+		a.providerKind = "machine";
+		a.providerId = "machine-node";
+		for (const config of [i.config, i.expandedConfig]) {
+			config["user.qorpera.schema"] = "qorpera.lxd-company-machine/v1";
+			config["user.qorpera.provider_id"] = "machine-node";
+			config["limits.cpu"] = "4";
+		}
+		expect(reconcileRuntimeNodeInventory(f.inventory, f.context).state).toBe("unavailable");
+	});
 	it("matches a member's coding machine, and its sessions' folders coming and going do not change its enrollment", () => {
 		const f = fixture(),
 			i = f.inventory.instances[3];

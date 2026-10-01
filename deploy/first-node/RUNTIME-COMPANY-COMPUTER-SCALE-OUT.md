@@ -49,20 +49,55 @@ environment.
 - **One computer per agent at a time.** Taking a seat on one computer while
   the agent's screen on another running computer is in use is refused
   (`SCREEN_OCCUPIED` for runs, `AGENT_ON_OTHER_COMPUTER` for members).
-- **Placement** (`qorpera_runtime_office_placement`), in order:
+- **No waiting for a seat** (Jonas, 28 September: "if a machine is full, the
+  agent always should start a new one, not wait"; `20260928244200`). An agent
+  waiting for a computer holds a seat on it: its start waiter on the
+  computer's current generation, while it waits (its request's run did not
+  fail) and, once woken, until its woken run ends (the clauses `has_demand`
+  uses to keep the computer awake). Only for an employed agent with active
+  access, once per agent, and not while it has a screen in use on a running
+  computer. A computer is full when its screens in use and the seats other
+  agents hold reach `max_screens`. Seats go first come: a holder counts only
+  the seats held before its own, so a computer asked for by more agents than
+  it has seats (starts in flight at the same moment) seats the earliest and
+  the others are placed again. A start that no host has offered for 30
+  minutes holds no waiting seats, so a broken setup does not add computer
+  after computer. Held seats count only with the switch on.
+- `computer_start` asks for its computer when the agent calls it, not when the
+  run began (runtime), and a native start keeps the computer it names for its
+  agent while that computer can be started (`qorpera.office_start_target`,
+  set by `qorpera_native_office_start` around its descriptor read). So a start
+  never moves under its agent, and a burst adds one computer for each
+  `max_screens` agents without a seat.
+- **Placement** (`qorpera_runtime_office_placement`), in order (switch on):
   1. `screen`: the agent's screen in use on a running computer;
-  2. `room`: a running computer with a free seat, the one the agent used last
-     first, then the lowest number, so extra computers can go idle;
-  3. `stopped`: a computer that is off after its idle time, woken (agent's
-     last first);
-  4. `starting`: a computer already starting, waking, or back from a host
-     reboot. A burst of demand never adds two computers;
-  5. `unstarted`: a computer that was added but never started;
-  6. `new`: every computer is running and full;
-  7. `denied`: the agent's computer access is revoked on every computer; no
+  2. held: the computer the agent's start in progress names, while it can be
+     started, then a running computer where the agent holds a seat (it was
+     woken for it);
+  3. `room`: a running computer with a seat nobody holds, the one the agent
+     used last first, then the lowest number, so extra computers can go idle;
+  3b. waited for: a computer not up yet where the agent holds a seat. A free
+     seat on a running computer comes first; the wait's wake still comes when
+     this computer is up;
+  4. `stopped`: a computer that is off after its idle time, with a seat nobody
+     holds, woken (agent's last first), only when its node would admit it now
+     (switched on, seen ready with its inventory confirmed, its CPU by the
+     node's budget and its memory fit what is left, counting other sleeping
+     computers whose wake is requested). Waking it on another node is later
+     work of the identical-nodes plan;
+  5. `starting`: a computer already starting, waking, or back from a host
+     reboot, with a seat nobody holds; a waking one only if its node takes it
+     or no node has room for a new computer;
+  6. `unstarted`: a computer that was added but never started;
+  7. a sleeping computer whose node is full, woken anyway, only when no node
+     has room for a new computer either (its wake waits for room, as before);
+  8. `new`: no computer has a seat for the agent now or when it is up. A
+     computer in maintenance for an update or reset, or whose start an owner
+     cancelled, is passed over: never waited for, never replaced;
+  9. `denied`: the agent's computer access is revoked on every computer; no
      computer is added around a revoked grant;
-  8. `none`: no computer the agent can use (none registered, or one is in
-     maintenance for another reason, which waits for its owner as today).
+  10. `none`: no computer registered for the company (switched off, also a
+     computer in maintenance for another reason, as before).
 - Computer access is company-wide: changing an agent's grant (state or
   capabilities) on one computer changes it on all the company's computers, and
   a grant created on a computer (a new computer, or an agent hired again)
@@ -81,19 +116,21 @@ environment.
   Stopped computers already give their node CPU and memory back
   (`20260923060000`, bundle v82).
 - `qorpera_runtime_office_setup_queue()` (service role) lists computers that
-  need a host: started ones waiting for `setup` or `room`, and added ones not
+  need a host: started ones waiting for `setup`, `room` or `hours` (computer
+  hours, `20260928309720`: the company is out of hours), and added ones not
   started yet (`unstarted`), with the image, bootstrap and screen count each
   needs. It names no node: which node runs a computer is the fleet placement's
   decision (Stateless Compute, 28 September: any node with room).
 - `qorpera_member_agent_office(environment, agent)` tells the web which
   computer shows an agent's screen, its number, how many computers the company
   has, and why a started computer is not up yet (`setup`: no prepared host has
-  offered it; `room`: prepared hosts have no room). An owner or admin opening an
+  offered it; `room`: prepared hosts have no room; `hours`: the company is out of
+  computer hours, which also holds a sleeping computer's wake). An owner or admin opening an
   agent's computer when every one is full adds the next one, as an agent can.
 
 **Switch.** `qorpera_runtime_office_scale_out` (one row, off by default) keeps
 placement on each company's first computer, exactly as before (with seats).
-It stays off until both hold:
+It stays off until all three hold:
 
 - every runtime can reach any of a company's computers: an old runtime refuses
   a computer other than its one configured office and would fail the run
@@ -102,6 +139,10 @@ It stays off until both hold:
   (`canonicalMount: false`): an agent's files sit in the computer's scratch
   area and reach the company folder only through `computer_transfer`, so a file
   made on computer 1 would not be visible on computer 2.
+- a new computer is set up on a node with room without an operator (automatic
+  setup, the identical-nodes session). Placement passes over computers that
+  are updating, or cancelled, or asleep on a full node, and adds a new one
+  (`20260928244200`); without automatic setup that new one would wait.
 
 Then:
 `update public.qorpera_runtime_office_scale_out set enabled = true, changed_at = clock_timestamp();`
@@ -152,3 +193,11 @@ registry, access, native authority and member RPCs (guest readiness is
 synthetic): seats and the lifetime-cap fix, adding computer 2 once, the wait
 reason, one computer per agent for members and runs, idle demand per computer,
 the start descriptor adding computer 3, the switch, revoked access, and seat hand-over.
+`supabase/tests/628_runtime_company_computer_no_wait.test.sql`: a real native
+start (authorize, receipt, begin, the check after completion) keeping its
+computer while other agents' starts take its seats, first-come seats, a burst
+adding computers, held seats (while waiting, until the woken run ends, once per
+agent, not for archived agents, not on a stuck start, not with the switch off),
+a sleeping computer passed over on a full, emptying or unconfirmed node only
+while another node has room, a waking computer on a full node, and maintenance
+or a cancelled start never waited for.

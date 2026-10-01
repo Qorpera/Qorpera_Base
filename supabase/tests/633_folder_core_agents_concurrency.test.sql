@@ -17,6 +17,16 @@ insert into public.qorpera_profile_staff(profile_id, staff_agent_id, display_nam
 		statement_timestamp(), statement_timestamp(), '63300000-0000-4000-8000-000000000001');
 select set_config('request.jwt.claims', '{"role":"service_role"}', false);
 select public.qorpera_folder_enable('63300000-0000-4000-8000-000000000020');
+-- The runs' sponsor (binding id = agent A's id): a company login, which pays for any member's work (20260928230000).
+set session_replication_role = replica;
+insert into public.qorpera_provider_connections(id, profile_id, client_connection_id, provider, created_by_user_id)
+values ('63300000-0000-4000-8000-0000000000b3', '63300000-0000-4000-8000-000000000010', extensions.gen_random_uuid(), 'openai', '63300000-0000-4000-8000-000000000001');
+insert into public.qorpera_execution_sponsor_bindings(id, profile_id, client_binding_id, created_by_user_id)
+values ('63300000-0000-4000-8000-0000000000a1', '63300000-0000-4000-8000-000000000010', extensions.gen_random_uuid(), '63300000-0000-4000-8000-000000000001');
+insert into public.qorpera_execution_sponsor_versions(binding_id, version, sponsor_kind, provider_connection_id, provider_connection_version,
+	created_by_user_id)
+values ('63300000-0000-4000-8000-0000000000a1', 1, 'company_service_account', '63300000-0000-4000-8000-0000000000b3', 1, '63300000-0000-4000-8000-000000000001');
+set session_replication_role = origin;
 
 -- A hand-built leased human run of agent A for the member (see 632), committed. Returns the run actor.
 create function pg_temp.run() returns jsonb language plpgsql as $$
@@ -88,7 +98,7 @@ begin
 	return v_state;
 end $$;
 
-select dblink_connect(name, 'dbname=qorpera_test') from unnest(array['arace_one','arace_two']) name;
+select dblink_connect(name, 'dbname=' || current_database()) from unnest(array['arace_one','arace_two']) name;
 select dblink_exec(name, $q$set request.jwt.claims = '{"role":"service_role"}'$q$) from unnest(array['arace_one','arace_two']) name;
 select set_config('qorpera_test.pid_' || name, pid::text, false)
 from unnest(array['arace_one','arace_two']) name, lateral dblink(name, 'select pg_backend_pid()') as t(pid integer);
@@ -269,7 +279,8 @@ end $$;
 
 -- H. A hook target at rank 1 is locked by the real commit: while another session holds that member row FOR UPDATE,
 -- a member's commit whose hook names the row waits, then saves (review probe r432impl/rank1wait.sql). The hook is
--- replaced for this company only, and the stub comes back after.
+-- replaced for this company only, and its current definition (F2's since 20260928249020) comes back after.
+select pg_get_functiondef('public.qorpera_folder_structured_targets(uuid,jsonb,jsonb)'::regprocedure) as structured_targets_def \gset
 create or replace function public.qorpera_folder_structured_targets(p_environment_id uuid, p_actor jsonb, p_units jsonb)
 returns table(rank smallint, tbl text, key text, mode text) language sql stable set search_path = '' as $f$
 	select 1::smallint, 'qorpera_profile_members', '63300000-0000-4000-8000-000000000010:63300000-0000-4000-8000-000000000002', 'keyshare'
@@ -288,10 +299,7 @@ begin
 	r := pg_temp.result('arace_two');
 	if r -> 'units' -> 0 ->> 'outcome' <> 'saved' then raise exception 'The commit after the hook row was free: %', r; end if;
 end $$;
-create or replace function public.qorpera_folder_structured_targets(p_environment_id uuid, p_actor jsonb, p_units jsonb)
-returns table(rank smallint, tbl text, key text, mode text) language sql stable set search_path = '' as $f$
-	select null::smallint, null::text, null::text, null::text where false
-$f$;
+select :'structured_targets_def' \gexec
 
 select dblink_disconnect(name) from unnest(array['arace_one','arace_two']) name;
 
@@ -325,6 +333,9 @@ delete from public.qorpera_execution_runs where profile_id = '63300000-0000-4000
 delete from public.qorpera_runner_jobs where profile_id = '63300000-0000-4000-8000-000000000010';
 delete from public.qorpera_session_inputs where session_id in (select id from public.qorpera_shared_sessions where profile_id = '63300000-0000-4000-8000-000000000010');
 delete from public.qorpera_shared_sessions where profile_id = '63300000-0000-4000-8000-000000000010';
+delete from public.qorpera_execution_sponsor_versions where binding_id = '63300000-0000-4000-8000-0000000000a1';
+delete from public.qorpera_execution_sponsor_bindings where id = '63300000-0000-4000-8000-0000000000a1';
+delete from public.qorpera_provider_connections where id = '63300000-0000-4000-8000-0000000000b3';
 delete from public.qorpera_company_room_members where room_id = current_setting('qorpera_test.room')::uuid;
 set session_replication_role = origin;
 delete from public.qorpera_profiles where id = '63300000-0000-4000-8000-000000000010';

@@ -147,6 +147,47 @@ describe("company notices member read", () => {
 		await expect(f.client.acknowledgeNotification(id(100))).rejects.toThrow("Refresh notifications");
 		expect(f.fetch).toHaveBeenCalledTimes(1);
 	});
+	it("reads a routine that waits for its member's account, skips a suspended one, and fails the read for a bad one", async () => {
+		const routineNotice = (kind: string, n: number) => ({
+			...full,
+			notification_id: id(n),
+			kind,
+			subject: { staffAgentId: id(70), routineId: id(71), title: "Morning brief" },
+		});
+		let f = setup();
+		f.fetch.mockResolvedValueOnce(
+			Response.json([
+				routineNotice("routine_needs_model_account", 100),
+				routineNotice("routine_suspended", 101),
+				full,
+			]),
+		);
+		expect(await f.client.listNotifications()).toMatchObject([
+			{
+				notificationId: id(100),
+				kind: "routine_needs_model_account",
+				subject: {
+					schema: "routine-needs-model-account",
+					staffAgentId: id(70),
+					routineId: id(71),
+					title: "Morning brief",
+				},
+			},
+			{ notificationId: id(90) },
+		]);
+		await expect(f.client.acknowledgeNotification(id(101))).rejects.toThrow("Refresh notifications");
+		for (const bad of [
+			{ ...routineNotice("routine_needs_model_account", 100), profile_id: id(99) },
+			{ ...routineNotice("routine_needs_model_account", 100), subject: null },
+			{ ...routineNotice("routine_needs_model_account", 100), subject: { routineId: id(71), title: "x" } },
+			{ ...routineNotice("routine_suspended", 101), profile_id: id(99) },
+			{ ...routineNotice("routine_suspended", 101), schema: "qorpera.member-notification/v2" },
+		]) {
+			f = setup();
+			f.fetch.mockResolvedValueOnce(Response.json([bad, full]));
+			await expect(f.client.listNotifications()).rejects.toThrow("invalid response");
+		}
+	});
 	it("fails the read for a retired notice from another company, under another kind or envelope", async () => {
 		const pause = {
 			...full,

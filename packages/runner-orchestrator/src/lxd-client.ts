@@ -106,6 +106,9 @@ export interface LxdClient {
 		request: LxdCreateStorageVolumeRequest,
 		signal?: AbortSignal,
 	): Promise<void>;
+	/** Deletes a custom volume; true when it existed. LXD refuses a volume that
+	 * an instance still uses. */
+	deleteStorageVolume(project: string, pool: string, name: string, signal?: AbortSignal): Promise<boolean>;
 	/** Admission bounds submission only. Observation retains the caller's own
 	 * lifetime after LXD accepts the operation. A failed submission is uncertain. */
 	createInstance(
@@ -1177,12 +1180,21 @@ function storageVolume(value: unknown): LxdStorageVolumeRecord {
 const AGENT_OFFLINE = /\bVM agent (?:is not|isn't) currently running\b/;
 /** A failed operation as a fixed code: the agent being offline is its own
  * case (a starting VM), anything else is a plain failure. */
-function operationFailure(message: unknown): Error {
-	return new Error(
+/** LXD reported the operation's end as Failure or Cancelled: it did not happen, and never will. Any other
+ * failed wait (a timeout while it still runs, a lost reply) leaves the outcome unknown. */
+export class LxdOperationFailed extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = "LxdOperationFailed";
+	}
+}
+
+function operationFailure(message: unknown, definitive = false): Error {
+	const text =
 		typeof message === "string" && AGENT_OFFLINE.test(message)
 			? "LXD instance agent not running"
-			: "LXD operation failed",
-	);
+			: "LXD operation failed";
+	return definitive ? new LxdOperationFailed(text) : new Error(text);
 }
 
 function lxdError(result: HttpResult, fallback: string): Error {
@@ -1627,6 +1639,26 @@ export class LxdUnixClient
 		await this.#waitForOperation(result, signal);
 	}
 
+	async deleteStorageVolume(project: string, pool: string, name: string, signal?: AbortSignal): Promise<boolean> {
+		if (!INSTANCE_NAME.test(project) || !INSTANCE_NAME.test(pool) || !INSTANCE_NAME.test(name))
+			throw new Error("LXD storage scope is invalid");
+		const result = await this.#request(
+			"DELETE",
+			projectPath(
+				`/1.0/storage-pools/${encodeURIComponent(pool)}/volumes/custom/${encodeURIComponent(name)}`,
+				project,
+			),
+			undefined,
+			signal,
+		);
+		if (result.status === 404) return false;
+		const envelope = record(result.body, "LXD response");
+		if (result.status < 200 || result.status >= 300) throw lxdError(result, "LXD request failed");
+		// A custom volume's delete answers synchronously, with or without metadata.
+		if (envelope.type !== "sync") await this.#waitForOperation(result, signal);
+		return true;
+	}
+
 	async createInstance(
 		project: string,
 		request: LxdCreateInstanceRequest,
@@ -1917,8 +1949,11 @@ export class LxdUnixClient
 					"wait-for-websocket": false,
 					// LXD's VM exec bridge closes its control socket early when
 					// stdout/stderr have no recording targets, killing the guest
-					// command. Pinned controls emit only fixed diagnostics; their
-					// protected requests and credentials never enter these streams.
+					// command. LXD keeps the recorded output on the host, so every
+					// pinned control writes nothing on success and one fixed line on
+					// failure; the locked child that reads protected requests and
+					// credentials runs with ignored stdio (guest README, "Recorded
+					// exec output").
 					"record-output": true,
 					user: 0,
 					group: 0,
@@ -3069,7 +3104,10 @@ export class LxdUnixClient
 		// ({"type":"error","error_code":500,"error":"...","metadata":null}). Newer
 		// LXD renders the failed operation itself (status_code 400, err "...").
 		const waited = record(wait.body, "LXD response");
-		if (wait.status >= 200 && wait.status < 300 && waited.type === "error") throw operationFailure(waited.error);
+		// That error envelope is also what a wait that merely timed out writes ("context deadline exceeded"):
+		// only the operation's own end says whether it failed.
+		if (wait.status >= 200 && wait.status < 300 && waited.type === "error")
+			throw operationFailure(waited.error, await this.#endedInFailure(envelope.operation, signal));
 		const operation = record(envelopeMetadata(wait), "LXD operation");
 		if (
 			typeof operation.status_code !== "number" ||
@@ -3077,9 +3115,32 @@ export class LxdUnixClient
 			operation.status_code >= 300 ||
 			(typeof operation.err === "string" && operation.err.length > 0)
 		) {
-			throw operationFailure(operation.err);
+			// Only an ended operation is a known failure; a wait that timed out returns it still running.
+			throw operationFailure(
+				operation.err,
+				(operation.status_code === 400 && operation.status === "Failure") ||
+					(operation.status_code === 401 && operation.status === "Cancelled"),
+			);
 		}
 		return operation;
+	}
+
+	/** Whether LXD reports the operation ended in Failure or Cancelled. LXD keeps an ended operation for a few
+	 * seconds; anything else (still running, gone, unreadable) is no proof. */
+	async #endedInFailure(operationPath: string, signal?: AbortSignal): Promise<boolean> {
+		try {
+			const checked = AbortSignal.any([...(signal ? [signal] : []), AbortSignal.timeout(5000)]);
+			const result = await this.#request("GET", operationPath, undefined, checked);
+			const envelope = record(result.body, "LXD response");
+			if (result.status !== 200 || envelope.type !== "sync") return false;
+			const operation = record(envelope.metadata, "LXD operation");
+			return (
+				(operation.status_code === 400 && operation.status === "Failure") ||
+				(operation.status_code === 401 && operation.status === "Cancelled")
+			);
+		} catch {
+			return false;
+		}
 	}
 
 	async #request(method: string, path: string, body?: unknown, signal?: AbortSignal): Promise<HttpResult> {

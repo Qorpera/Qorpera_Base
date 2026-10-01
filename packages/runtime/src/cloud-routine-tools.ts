@@ -1,4 +1,12 @@
 import type { CloudCompanyPathControl } from "./cloud-company-path-gateway.ts";
+import type { CloudFolderRoutineDecision, CloudFolderRoutineDecisionRequest } from "./cloud-folder-routine-decision.ts";
+import {
+	CLOUD_FOLDER_ROUTINE_NAME,
+	CLOUD_FOLDER_ROUTINE_NAME_BYTES,
+	type CloudFolderRoutineChange,
+	type CloudFolderRoutineListing,
+	type CloudFolderRoutines,
+} from "./cloud-folder-routines.ts";
 import {
 	type CloudNativeToolBinding,
 	type CloudNativeToolIdentity,
@@ -13,6 +21,7 @@ import {
 } from "./cloud-native-tool-boundary.ts";
 import type { CloudRuntimeToolOperation } from "./cloud-runtime-observability.ts";
 import { CLOUD_RUNTIME_REASONING_EFFORTS, isCloudRuntimeReasoningEffort } from "./cloud-runtime-policy.ts";
+import { CURSOR, fitsOneResult } from "./cloud-worker-tools.ts";
 
 const OPERATION_KEY = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,95}$/;
 const ROUTINE_KEY = /^[a-z0-9][a-z0-9._-]{0,95}$/;
@@ -21,6 +30,9 @@ const WEEKDAYS = ["sunday", "monday", "tuesday", "wednesday", "thursday", "frida
 const BUSINESS_DAYS = ["monday", "tuesday", "wednesday", "thursday", "friday"] as const;
 const REPLY = ["optional", "required", "silent"] as const;
 const ACTIONS = ["list", "upsert", "pause", "resume", "remove", "conclude"] as const;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+/** An event type as a sender names it: printable ASCII without spaces, at most 128 characters. */
+const EVENT_TYPE = /^[\x21-\x7e]{1,128}$/;
 const DECISIONS = ["next", "conclude"] as const;
 
 function object(value: unknown, allowed: readonly string[], required: readonly string[]): Record<string, unknown> {
@@ -152,6 +164,29 @@ function compileTrigger(value: unknown): Record<string, unknown> {
 			replyPolicy: reply(t.report),
 		};
 	}
+	if (kind === "event") {
+		const t = object(value, ["kind", "hookId", "only", "timeZone", "report"], ["kind", "hookId", "timeZone"]);
+		if (typeof t.hookId !== "string" || !UUID.test(t.hookId)) throw new Error("Invalid routine hook");
+		const only =
+			t.only === undefined
+				? {}
+				: Array.isArray(t.only) &&
+						t.only.length >= 1 &&
+						t.only.length <= 20 &&
+						new Set(t.only).size === t.only.length &&
+						t.only.every((type) => typeof type === "string" && EVENT_TYPE.test(type))
+					? { only: [...t.only] }
+					: undefined;
+		if (!only) throw new Error("Invalid routine event types");
+		return {
+			kind: "listener",
+			source: "event",
+			hookId: t.hookId.toLowerCase(),
+			...only,
+			timeZone: timeZone(t.timeZone),
+			replyPolicy: reply(t.report),
+		};
+	}
 	throw new Error("Invalid routine trigger");
 }
 
@@ -159,8 +194,8 @@ export const CLOUD_ROUTINE_TOOL_DESCRIPTION =
 	"Set up your own standing work. A routine wakes you, this same agent, with the stored intent, while no member is online. " +
 	"No member approval is needed; use it whenever a responsibility or a request calls for repeated attention, and tell the member what you set up. " +
 	"Actions: list, upsert, pause, resume, conclude, remove. A routine always belongs to you. Reuse one routineKey for the same standing work so a change becomes a new version instead of a duplicate; list first when unsure. " +
-	"trigger is exactly one of: dynamic (you choose each next run: optional firstRunAt with its offset, default now, or for an existing dynamic routine its next run if that is still ahead; and the member's IANA timeZone), every (minutes 5-10080, optional firstRunAt with its offset), weekly (localTime HH:MM, IANA timeZone, weekdays default Monday to Friday, optional firstRunAt with its offset), or file_change (a Company File path you can read, match exact or subtree). Use the member's time zone from the wake time context. " +
-	"Prefer dynamic when the right time for the next look depends on what you find: learning a new responsibility, following something up, watching a situation. It runs once at firstRunAt; each run then sets the next run, with adjusted instructions if the work changed, or concludes the routine. Use every or weekly for work tied to the clock, such as a Monday report, and file_change to react to a file. " +
+	"trigger is exactly one of: dynamic (you choose each next run: optional firstRunAt with its offset, default now, or for an existing dynamic routine its next run if that is still ahead; and the member's IANA timeZone), every (minutes 5-10080, optional firstRunAt with its offset), weekly (localTime HH:MM, IANA timeZone, weekdays default Monday to Friday, optional firstRunAt with its offset), file_change (a Company File path you can read, match exact or subtree), or event (hookId, the id of one of the company's hooks from list_hooks; optional only, the event types to take; and an IANA timeZone). Use the member's time zone from the wake time context. " +
+	"Prefer dynamic when the right time for the next look depends on what you find: learning a new responsibility, following something up, watching a situation. It runs once at firstRunAt; each run then sets the next run, with adjusted instructions if the work changed, or concludes the routine. Use every or weekly for work tied to the clock, such as a Monday report, file_change to react to a file, and event to react to what other services send, such as a form submission, a payment or an alert: each run gets the events that arrived, up to 20 at a time. " +
 	"A new every or weekly routine runs once right away as a kickoff, then on its schedule; give firstRunAt only when the first run really must wait. Start dense while a responsibility is new to you and use those early runs to learn what the work needs. Never leave new standing work idle for days waiting for its first slot. " +
 	"Write intent as a complete instruction to your future self: what to read, what to decide, when to tell someone and when to stay silent. report is optional (speak only when useful), required (always report) or silent (never speak). When you pick a threshold or cadence nobody gave you, tell the member it is your starting assumption so they can correct it. " +
 	"effort is the thinking depth of each routine run: low, medium or high; a new routine starts at medium and a save without effort keeps what it has. Choose high for judgement-heavy analysis, low for a quick check; conversations with members stay at the thread default. " +
@@ -168,6 +203,37 @@ export const CLOUD_ROUTINE_TOOL_DESCRIPTION =
 	"conclude ends a routine with a one-sentence summary of why, and keeps it in the list as concluded; saving it again restarts it. remove deletes it from the list for good. " +
 	"status paused with pauseReason needs_model_account means no model account of the requesting member allows unattended runs yet: say so plainly, it is a one-time account setting. authorization_failed means the account stopped working. " +
 	"Keep operationKey stable for one intended change; an unconfirmed result needs the same key again, never a new one. A routine is not a reminder to a person and cannot act beyond your own authority.";
+
+/** A folder-v2 agent's routines are files in its own folder, named by their keys, and each change is reviewed (thin
+ * writers W4c). Routines that react to files or events come back when they move to files. */
+const CLOUD_ROUTINE_TOOL_DESCRIPTION_FOLDER = CLOUD_ROUTINE_TOOL_DESCRIPTION.replace(
+	"No member approval is needed; use it whenever",
+	"Each change goes through the automatic review first, and some wait for a member's approval; use it whenever",
+)
+	.replace(
+		"Actions: list, upsert, pause, resume, conclude, remove. A routine always belongs to you. ",
+		"Actions: list, upsert, pause, resume, conclude, remove. A routine always belongs to you: in this company it is a file in your folder, routines/<routineKey>.md, and routineKey is the file's name (lowercase letters, digits and single hyphens, at most 64 characters). ",
+	)
+	.replace(
+		"list first when unsure. ",
+		"list first when unsure. list shows your routines a page at a time (cursor: the nextCursor of an earlier page), and with routineKey one routine whole. ",
+	)
+	.replace(
+		"every (minutes 5-10080, optional firstRunAt with its offset), weekly (localTime HH:MM, IANA timeZone, weekdays default Monday to Friday, optional firstRunAt with its offset), file_change (a Company File path you can read, match exact or subtree), or event (hookId, the id of one of the company's hooks from list_hooks; optional only, the event types to take; and an IANA timeZone). ",
+		"every (minutes 5-10080, optional firstRunAt with its offset) or weekly (localTime HH:MM, IANA timeZone, weekdays default Monday to Friday, optional firstRunAt with its offset); routines that react to files or events are not available in this company yet. ",
+	)
+	.replace(
+		"Use every or weekly for work tied to the clock, such as a Monday report, file_change to react to a file, and event to react to what other services send, such as a form submission, a payment or an alert: each run gets the events that arrived, up to 20 at a time. ",
+		"Use every or weekly for work tied to the clock, such as a Monday report. ",
+	)
+	.replace(
+		"remove deletes it from the list for good. ",
+		"remove deletes its file, and its name is free again. resume switches a routine back on, also after a member stopped it or its model account stopped working. ",
+	)
+	.replace(
+		"an unconfirmed result needs the same key again, never a new one.",
+		"an unconfirmed result needs the same key again, never a new one. A save can come back as a conflict when the file changed since it was read: call again with a new operationKey.",
+	);
 
 export const CLOUD_ROUTINE_DECISION_DESCRIPTION =
 	"Decide what happens after this run of your dynamic routine. Call it exactly once per run, before your final message, or as the last thing you do when you send none. " +
@@ -177,6 +243,21 @@ export const CLOUD_ROUTINE_DECISION_DESCRIPTION =
 	"If you hand work to workers or wait for the Company Computer, decide first: this run must decide before it ends, and the continuation cannot. " +
 	"state settled means the routine already moved on, changed in another conversation or past its end date, so nothing is owed. state refused carries the reason, such as a next run after the routine's end date: choose again or conclude. " +
 	"Keep operationKey stable for one decision; an unconfirmed result needs the same key and arguments again.";
+
+/** A folder-v2 routine is a file: a new title or instructions go through the automatic review (thin writers W4c-2),
+ * and a refused decision is redone under a new key (W3). */
+const CLOUD_ROUTINE_DECISION_DESCRIPTION_FOLDER = CLOUD_ROUTINE_DECISION_DESCRIPTION.replace(
+	"title, effort (low, medium, high) and report (optional, required, silent) likewise change only when given. ",
+	"title, effort (low, medium, high) and report (optional, required, silent) likewise change only when given. In this company the routine is a file, and a new intent or title goes through the automatic review; if it is not approved, decide again without them. ",
+)
+	.replace(
+		"state refused carries the reason, such as a next run after the routine's end date: choose again or conclude. ",
+		"state refused carries the reason: choose again or conclude. ",
+	)
+	.replace(
+		"Keep operationKey stable for one decision; an unconfirmed result needs the same key and arguments again.",
+		"Keep operationKey stable for one decision; an unconfirmed result needs the same key and arguments again, while a refused one is decided again under a new operationKey.",
+	);
 
 /** The cloud derives the agent, requester and model account from the run. The
  * model chooses only what to do, when, and how long.
@@ -216,15 +297,27 @@ export function cloudRoutineTools(
 		readonly decisionOwed: () => boolean;
 		readonly settled: () => void;
 	},
+	/** A folder-v2 run's routines, written as the files in its folder. */
+	folderRoutines?: CloudFolderRoutines,
 ): readonly CloudNativeTool[] {
 	const { admitted, assertContext } = routineAuthority(binding, identity);
 	const reportSchema = { type: "string", enum: [...REPLY] };
 	const zoneSchema = { type: "string", minLength: 1, maxLength: 64 };
 	const timeSchema = { type: "string", pattern: LOCAL_TIME.source };
+	// A folder-v2 change binds its operation key to its request: reusing the key with other arguments is refused with
+	// the arguments, before the automatic review, as hire_agent and create_group_chat do.
+	const bound = new Map<string, string>();
+	const refuseRebinding = (request: Record<string, unknown>) => {
+		const previous = bound.get(request.operationKey as string);
+		if (previous !== undefined && previous !== JSON.stringify(request))
+			throw new CloudToolArgumentRefusal(
+				"operationKey is already used in this run for a different routine change, which may already have been made: list your routines before changing them again, and repeat this operationKey only with identical arguments",
+			);
+	};
 	const tool: CloudNativeTool = {
 		name: "manage_routine" satisfies CloudRuntimeToolOperation,
 		source: "runtime",
-		description: CLOUD_ROUTINE_TOOL_DESCRIPTION,
+		description: folderRoutines ? CLOUD_ROUTINE_TOOL_DESCRIPTION_FOLDER : CLOUD_ROUTINE_TOOL_DESCRIPTION,
 		inputSchema: {
 			type: "object",
 			additionalProperties: false,
@@ -232,7 +325,14 @@ export function cloudRoutineTools(
 			properties: {
 				action: { type: "string", enum: [...ACTIONS] },
 				operationKey: { type: "string", pattern: OPERATION_KEY.source },
-				routineKey: { type: "string", pattern: ROUTINE_KEY.source },
+				// A folder-v2 routine's key is its file's name.
+				routineKey: folderRoutines
+					? {
+							type: "string",
+							pattern: CLOUD_FOLDER_ROUTINE_NAME.source,
+							maxLength: CLOUD_FOLDER_ROUTINE_NAME_BYTES,
+						}
+					: { type: "string", pattern: ROUTINE_KEY.source },
 				title: { type: "string", minLength: 1, maxLength: 160 },
 				intent: { type: "string", minLength: 1, maxLength: 32768 },
 				summary: { type: "string", minLength: 1, maxLength: 2000 },
@@ -279,18 +379,41 @@ export function cloudRoutineTools(
 								report: reportSchema,
 							},
 						},
-						{
-							type: "object",
-							additionalProperties: false,
-							required: ["kind", "path", "timeZone"],
-							properties: {
-								kind: { const: "file_change" },
-								path: { type: "string", minLength: 1, maxLength: 1024 },
-								match: { type: "string", enum: ["exact", "subtree"] },
-								timeZone: zoneSchema,
-								report: reportSchema,
-							},
-						},
+						// Routines that react to files or events are not available on folder-v2 yet.
+						...(folderRoutines
+							? []
+							: [
+									{
+										type: "object",
+										additionalProperties: false,
+										required: ["kind", "path", "timeZone"],
+										properties: {
+											kind: { const: "file_change" },
+											path: { type: "string", minLength: 1, maxLength: 1024 },
+											match: { type: "string", enum: ["exact", "subtree"] },
+											timeZone: zoneSchema,
+											report: reportSchema,
+										},
+									},
+									{
+										type: "object",
+										additionalProperties: false,
+										required: ["kind", "hookId", "timeZone"],
+										properties: {
+											kind: { const: "event" },
+											hookId: { type: "string", pattern: UUID.source },
+											only: {
+												type: "array",
+												minItems: 1,
+												maxItems: 20,
+												uniqueItems: true,
+												items: { type: "string", pattern: EVENT_TYPE.source },
+											},
+											timeZone: zoneSchema,
+											report: reportSchema,
+										},
+									},
+								]),
 					],
 				},
 				expiresAt: { type: "string", format: "date-time" },
@@ -302,6 +425,7 @@ export function cloudRoutineTools(
 					required: ["start", "end", "timeZone"],
 					properties: { start: timeSchema, end: timeSchema, timeZone: zoneSchema },
 				},
+				...(folderRoutines ? { cursor: { type: "string", pattern: CURSOR.source } } : {}),
 			},
 		},
 		parseArguments(value) {
@@ -309,9 +433,29 @@ export function cloudRoutineTools(
 			if (typeof action !== "string" || !ACTIONS.includes(action as (typeof ACTIONS)[number]))
 				throw new Error("Invalid routine action");
 			if (action === "list") {
-				object(value, ["action"], ["action"]);
-				return { action } as never;
+				if (!folderRoutines) {
+					object(value, ["action"], ["action"]);
+					return { action } as never;
+				}
+				// A folder-v2 list pages, or shows one routine.
+				const l = object(value, ["action", "routineKey", "cursor"], ["action"]);
+				if (l.routineKey !== undefined && l.cursor !== undefined)
+					throw new CloudToolArgumentRefusal("list takes a routineKey or a cursor, not both");
+				if (l.routineKey !== undefined) {
+					if (typeof l.routineKey !== "string") throw new Error("Invalid routine key");
+					folderRoutines.path(l.routineKey);
+				}
+				if (l.cursor !== undefined && (typeof l.cursor !== "string" || !CURSOR.test(l.cursor)))
+					throw new CloudToolArgumentRefusal("cursor must be a nextCursor from an earlier page, unchanged");
+				return {
+					action,
+					...(l.routineKey === undefined ? {} : { routineKey: l.routineKey }),
+					...(l.cursor === undefined ? {} : { cursor: l.cursor }),
+				} as never;
 			}
+			// A folder-v2 routine's key is its file's name; the rule is said in words.
+			const named = (value as { routineKey?: unknown } | null)?.routineKey;
+			if (folderRoutines && typeof named === "string") folderRoutines.path(named);
 			if (action === "conclude") {
 				const c = object(
 					value,
@@ -325,12 +469,15 @@ export function cloudRoutineTools(
 					!ROUTINE_KEY.test(c.routineKey)
 				)
 					throw new Error("Invalid routine key");
-				return {
+				const request = {
 					action,
 					operationKey: c.operationKey,
 					routineKey: c.routineKey,
 					summary: text(c.summary, 2000),
-				} as never;
+				};
+				if (folderRoutines) refuseRebinding(request);
+				folderRoutines?.check(request as CloudFolderRoutineChange);
+				return request as never;
 			}
 			const upsert = action === "upsert";
 			const a = object(
@@ -373,7 +520,17 @@ export function cloudRoutineTools(
 						"this is the routine you are running: use decide_routine (next sets the next run and can change its instructions; conclude ends it)",
 					);
 			}
-			if (!upsert) return { action, operationKey: a.operationKey, routineKey: a.routineKey } as never;
+			if (!upsert) {
+				const request = { action, operationKey: a.operationKey, routineKey: a.routineKey };
+				if (folderRoutines) refuseRebinding(request);
+				folderRoutines?.check(request as CloudFolderRoutineChange);
+				return request as never;
+			}
+			const kind = (a.trigger as { kind?: unknown } | null)?.kind;
+			if (folderRoutines && (kind === "file_change" || kind === "event"))
+				throw new CloudToolArgumentRefusal(
+					"In this company a routine runs on the clock (dynamic, every or weekly): routines that react to files or events are not available yet",
+				);
 			const request: Record<string, unknown> = {
 				action,
 				operationKey: a.operationKey,
@@ -417,12 +574,28 @@ export function cloudRoutineTools(
 				if (start === end) throw new Error("Invalid routine quiet hours");
 				request.quietHours = { start, end, timeZone: timeZone(quiet.timeZone) };
 			}
+			// The file's own checks, before the automatic review, so a card is never raised for a save that cannot be.
+			if (folderRoutines) refuseRebinding(request);
+			folderRoutines?.check(request as unknown as CloudFolderRoutineChange);
 			return request as never;
 		},
 		async execute(value, context) {
 			assertContext(context);
 			// The boundary passes the already parsed request; its compiled trigger is not re-parseable input.
 			const request = value as Record<string, unknown>;
+			// A folder-v2 agent's routines are files; the folder core decides each save.
+			if (folderRoutines) {
+				if (request.action === "list")
+					return folderRoutines.list(request as unknown as CloudFolderRoutineListing, context, fitsOneResult);
+				refuseRebinding(request);
+				if (!bound.has(request.operationKey as string))
+					bound.set(request.operationKey as string, JSON.stringify(request));
+				const changed = await folderRoutines.change(request as unknown as CloudFolderRoutineChange, context);
+				// Concluding its own routine here is a decision too.
+				if (ownDynamicRoutine && changed.concluded && request.routineKey === ownDynamicRoutine.routineKey)
+					ownDynamicRoutine.settled();
+				return changed.content;
+			}
 			const result = await cloudToolRequest(
 				(requestSignal) =>
 					control.call("qorpera_manage_agent_routine", { p_binding: admitted, p_request: request }, requestSignal),
@@ -460,13 +633,20 @@ export function cloudRoutineDecisionTool(
 	binding: CloudNativeToolBinding,
 	identity: CloudNativeToolIdentity,
 	control: CloudCompanyPathControl,
-	options: { readonly decisionOwed: () => boolean; readonly decided: () => void },
+	options: {
+		readonly decisionOwed: () => boolean;
+		readonly decided: () => void;
+		/** A folder-v2 run's decision, written into the routine's file. */
+		readonly folderDecision?: CloudFolderRoutineDecision;
+	},
 ): CloudNativeTool {
 	const { admitted, assertContext } = routineAuthority(binding, identity);
 	return {
 		name: "decide_routine" satisfies CloudRuntimeToolOperation,
 		source: "runtime",
-		description: CLOUD_ROUTINE_DECISION_DESCRIPTION,
+		description: options.folderDecision
+			? CLOUD_ROUTINE_DECISION_DESCRIPTION_FOLDER
+			: CLOUD_ROUTINE_DECISION_DESCRIPTION,
 		inputSchema: {
 			type: "object",
 			additionalProperties: false,
@@ -511,11 +691,22 @@ export function cloudRoutineDecisionTool(
 				request.effort = n.effort;
 			}
 			if (n.report !== undefined) request.report = reply(n.report);
+			// A folder-v2 rewrite's file is checked now, before the automatic review.
+			options.folderDecision?.check(request as unknown as CloudFolderRoutineDecisionRequest);
 			return request as never;
 		},
 		async execute(value, context) {
 			assertContext(context);
 			const request = value as Record<string, unknown>;
+			// A folder-v2 routine is a file; the folder core takes the save as the decision while it is owed.
+			if (options.folderDecision) {
+				const decision = await options.folderDecision.decide(
+					request as unknown as CloudFolderRoutineDecisionRequest,
+					context,
+				);
+				if (decision.decided) options.decided();
+				return decision.content;
+			}
 			const result = await cloudToolRequest(
 				(requestSignal) =>
 					control.call("qorpera_decide_agent_routine", { p_binding: admitted, p_request: request }, requestSignal),

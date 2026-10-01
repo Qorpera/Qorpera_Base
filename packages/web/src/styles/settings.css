@@ -1,10 +1,10 @@
 .settings-overlay { position: fixed; z-index: 400; inset: 0; display: grid; place-items: center; padding: 36px; background: rgb(20 20 19 / 48%); backdrop-filter: blur(1.5px); font-family: var(--font-sans); font-optical-sizing: auto; font-synthesis: none; text-rendering: geometricPrecision; }
-.settings-dialog { position: relative; display: grid; grid-template-columns: 320px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); width: min(1200px, calc(100vw - 72px)); height: min(816px, calc(100dvh - 72px)); overflow: hidden; border: 1px solid #d9d9d6; border-radius: 16px; background: var(--overlay); color: #1d1d1b; box-shadow: 0 24px 80px rgb(0 0 0 / 24%); }
+.settings-dialog { position: relative; display: grid; grid-template-columns: 358px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); width: min(1200px, calc(100vw - 72px)); height: min(816px, calc(100dvh - 72px)); overflow: hidden; border: 1px solid #d9d9d6; border-radius: 16px; background: var(--overlay); color: #1d1d1b; box-shadow: 0 24px 80px rgb(0 0 0 / 24%); }
 /* The rail's font size sets the whole rail: search, tabs, count and the way
    back to the companies are sized in em from it. 20px is half again the old 13px; windows
    up to 1000px wide keep 13px (below). A window too short for the rail
-   scrolls it, and the 320px width fits the longest label, Danish
-   "Abonnement og forbrug". */
+   scrolls it, and the 358px width fits the longest label, Danish
+   "Virksomhedens forbindelser", at both interface sizes (the 252px rail below does too). */
 .settings-nav { display: flex; flex-direction: column; gap: 3px; overflow-y: auto; padding: 16px 12px; border-right: 1px solid #dededb; background: #f1f1ef; min-width: 0; font-size: 20px; }
 .settings-nav > * { flex-shrink: 0; }
 .settings-nav input { width: 100%; min-width: 0; height: 2.7em; margin-bottom: .75em; padding: 0 .85em; border: 1px solid #d8d8d5; border-radius: .7em; background: #e6e6e3; font-size: 1em; }
@@ -179,6 +179,8 @@
 .settings-plan > .btn { align-self: center; }
 /* Plans: the three cards qorpera.com sells, opened under the current plan. */
 .settings-plan-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-top: 12px; }
+/* An author `display` beats the browser's [hidden] rule; the account page is outside Settings' own reset. */
+.settings-plan-grid[hidden], .settings-hours-packs[hidden] { display: none; }
 .settings-plan-offer { display: flex; flex-direction: column; gap: 6px; min-width: 0; padding: 16px; border: 1px solid #e3e3e0; border-radius: 13px; background: #fff; }
 .settings-plan-offer-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px; }
 .settings-content .settings-plan-offer h3 { margin: 0; font-size: 13px; font-weight: 600; }
@@ -193,6 +195,9 @@
 .settings-content .settings-plan-offer > .btn:disabled { opacity: .55; cursor: default; }
 .settings-usage + .settings-usage { margin-top: 10px; }
 .settings-period { align-self: end; font-size: 11px; color: #797975; white-space: nowrap; }
+/* Packs of hours a founder can buy for the company, under its hours this month. */
+.settings-hours-packs { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 8px; }
+.settings-hours-packs > small { flex-basis: 100%; }
 /* Billing: one card of label/value rows; actions wait for the billing work. */
 .settings-billing { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0; padding: 4px 13px; }
 .billing-row { display: grid; grid-template-columns: 130px minmax(0, 1fr) auto; align-items: center; gap: 12px; min-height: 42px; padding: 6px 0; font-size: 12.5px; }
@@ -276,6 +281,8 @@
 .connection-section-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 9px; }
 .connection-section-heading h2 { margin: 0; }
 .connection-usage { grid-column: 2 / -1; display: grid; gap: 14px; min-width: 0; font-size: 11.5px; }
+.connection-away { grid-column: 2 / -1; display: flex; gap: 14px; align-items: center; justify-content: space-between; min-width: 0; }
+.connection-away .settings-copy { min-width: 0; }
 .connection-usage-window { display: grid; gap: 7px; }
 .connection-usage-label { font-weight: 500; }
 .connection-usage-heading { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 4px 16px; color: #73736f; }
@@ -303,7 +310,7 @@
 /* Narrow windows and tablets keep the earlier rail, so the content keeps its width. 1000 design
  * pixels is 1300 on a mouse screen at 130%: a 13" or 14" laptop keeps the large rail. */
 @media (max-width: 1000px) {
- .settings-dialog { grid-template-columns: 228px minmax(0, 1fr); }
+ .settings-dialog { grid-template-columns: 252px minmax(0, 1fr); }
  .settings-nav { font-size: 13px; }
 }
 @media (max-width: 720px) {
@@ -340,6 +347,7 @@
  .connection-card > .btn { grid-column: 2; justify-self: start; }
  .connection-actions { grid-column: 2; justify-content: start; }
  .connection-usage { grid-column: 1 / -1; }
+ .connection-away { grid-column: 1 / -1; }
  .connection-account { flex-wrap: wrap; }
  .person-meta { display: none; }
  /* Rules: each row stacks, the sentence over its behaviour and scope, the icons beside. */

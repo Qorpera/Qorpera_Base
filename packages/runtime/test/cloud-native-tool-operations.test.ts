@@ -3,6 +3,7 @@ import type { JsonValue } from "@qorpera/contracts";
 import { CloudNativeToolRun } from "@qorpera/runtime/cloud-native-tool-authority";
 import { CloudNativeToolBoundary } from "@qorpera/runtime/cloud-native-tool-boundary";
 import {
+	CLOUD_NATIVE_TOOL_REMEMBERED_OPERATIONS,
 	type CloudNativeToolOperation,
 	type CloudNativeToolOperationControlPlane,
 	CloudNativeToolOperations,
@@ -23,6 +24,8 @@ interface Receipt {
 	result: JsonValue | null;
 	outputSnapshotId: string | null;
 	proposalId: string | null;
+	/** Set for a folder-v2 receipt, whose answers always name the commit (null before completion). */
+	folderCommitId?: string | null;
 }
 const runs: CloudNativeToolRun[] = [];
 const observations: CloudRuntimeObservability[] = [];
@@ -34,8 +37,8 @@ afterEach(async () => {
 
 function observe(assignmentId: string) {
 	const rows: CloudRuntimeObservation[] = [];
-	const publish = vi.fn(async (row: CloudRuntimeObservation) => {
-		rows.push(structuredClone(row));
+	const publish = vi.fn(async (batch: readonly CloudRuntimeObservation[]) => {
+		rows.push(...structuredClone(batch));
 	});
 	const observability = new CloudRuntimeObservability({ assignmentId, publish });
 	observations.push(observability);
@@ -79,6 +82,7 @@ async function fixture() {
 				result: receipt.result,
 				output_snapshot_id: receipt.outputSnapshotId,
 				proposal_id: receipt.proposalId,
+				...(receipt.folderCommitId !== undefined ? { folder_commit_id: receipt.folderCommitId } : {}),
 			});
 		}),
 		completeToolOperation: vi.fn<CloudNativeToolOperationControlPlane["completeToolOperation"]>(
@@ -98,6 +102,23 @@ async function fixture() {
 				});
 			},
 		),
+		completeFolderToolOperation: vi.fn<
+			NonNullable<CloudNativeToolOperationControlPlane["completeFolderToolOperation"]>
+		>(async (binding, input) => {
+			const receipt = [...ledger.values()].find((entry) => entry.input.receiptId === input.receiptId);
+			if (!receipt || receipt.input.inputSha256 !== input.inputSha256 || receipt.state !== "executing")
+				throw new Error("invalid completion");
+			receipt.state = "completed";
+			receipt.result = structuredClone(input.result);
+			receipt.folderCommitId = input.folderCommitId;
+			return structuredClone({
+				run_id: binding.runId,
+				receipt_id: input.receiptId,
+				state: "completed",
+				result: input.result,
+				folder_commit_id: input.folderCommitId,
+			});
+		}),
 	};
 	const operations = new CloudNativeToolOperations(run, control);
 	const operation: CloudNativeToolOperation = {
@@ -783,6 +804,7 @@ it("keeps effects and canonical replay independent of diagnostic exporter failur
 	await f.execute({ observation: replay });
 	expect(first.result?.status).toBe("succeeded");
 	expect(replay.result).toMatchObject({ status: "replayed", receiptId: first.result?.receiptId });
+	await observed.observability.close();
 	expect(observed.observability.state.status).toBe("unavailable");
 	expect(f.perform).toHaveBeenCalledTimes(1);
 	expect(f.authorize).toHaveBeenCalledTimes(4);
@@ -791,15 +813,20 @@ it("keeps effects and canonical replay independent of diagnostic exporter failur
 it("never refuses a run's operations by count; a forgotten one replays through its receipt", async () => {
 	// Runtime v92: the run used to fail after 65,536 operations. Past that the
 	// oldest are forgotten locally and the kernel receipt stays the authority.
+	// The limit is injected: the same code path at 65,536 took 20-80 s per run.
+	expect(CLOUD_NATIVE_TOOL_REMEMBERED_OPERATIONS).toBe(65_536);
 	const f = await fixture();
 	const receipts = new Map<string, Receipt>();
-	const control: CloudNativeToolOperationControlPlane = {
-		beginToolOperation: async (binding, input) => {
+	// The newest receipt, which the next completion must name.
+	let newest: Receipt | undefined;
+	const control = {
+		beginToolOperation: vi.fn<CloudNativeToolOperationControlPlane["beginToolOperation"]>(async (binding, input) => {
 			let receipt = receipts.get(input.logicalOperationKey);
 			if (receipt && receipt.input.inputSha256 !== input.inputSha256) throw new Error("other work");
 			if (!receipt) {
 				receipt = { input, state: "executing", result: null, outputSnapshotId: null, proposalId: null };
 				receipts.set(input.logicalOperationKey, receipt);
+				newest = receipt;
 			}
 			return {
 				run_id: binding.runId,
@@ -809,30 +836,198 @@ it("never refuses a run's operations by count; a forgotten one replays through i
 				output_snapshot_id: null,
 				proposal_id: null,
 			};
-		},
-		completeToolOperation: async (binding, input) => {
-			const receipt = [...receipts.values()].at(-1)!;
-			expect(receipt.input.receiptId).toBe(input.receiptId);
-			receipt.state = "completed";
-			receipt.result = input.result;
-			return { run_id: binding.runId, receipt_id: input.receiptId, state: "completed", result: input.result };
-		},
+		}),
+		completeToolOperation: vi.fn<CloudNativeToolOperationControlPlane["completeToolOperation"]>(
+			async (binding, input) => {
+				const receipt = newest!;
+				expect(receipt.input.receiptId).toBe(input.receiptId);
+				receipt.state = "completed";
+				receipt.result = input.result;
+				return { run_id: binding.runId, receipt_id: input.receiptId, state: "completed", result: input.result };
+			},
+		),
 	};
-	const operations = new CloudNativeToolOperations(f.run, control);
+	const remembered = 4;
+	const operations = new CloudNativeToolOperations(f.run, control, { rememberedOperations: remembered });
 	const keyed = (index: number) => ({ ...f.operation, logicalOperationKey: `job-document-${index}` });
-	const total = 65_536 + 2;
+	const total = remembered + 2;
 	for (let index = 0; index < total; index++)
 		await expect(f.execute({ operation: keyed(index) }, operations)).resolves.toEqual({
 			kind: "json",
 			value: { changed: true },
 		});
 	expect(f.perform).toHaveBeenCalledTimes(total);
-	// The first operation is no longer remembered locally: its replay reads the
-	// completed receipt and never performs the effect again.
+	expect(control.beginToolOperation).toHaveBeenCalledTimes(total);
+	// The newest operation is still remembered locally: its replay asks no receipt.
+	await expect(f.execute({ operation: keyed(total - 1) }, operations)).resolves.toEqual({
+		kind: "json",
+		value: { changed: true },
+	});
+	expect(control.beginToolOperation).toHaveBeenCalledTimes(total);
+	// Exactly the last `remembered` operations are kept: the oldest of them still
+	// replays locally (a whole-map clear would lose it) ...
+	await expect(f.execute({ operation: keyed(total - remembered) }, operations)).resolves.toEqual({
+		kind: "json",
+		value: { changed: true },
+	});
+	expect(control.beginToolOperation).toHaveBeenCalledTimes(total);
+	// ... and the one just before them is forgotten (keeping one too many would not).
+	await expect(f.execute({ operation: keyed(total - remembered - 1) }, operations)).resolves.toEqual({
+		kind: "json",
+		value: { changed: true },
+	});
+	expect(control.beginToolOperation).toHaveBeenCalledTimes(total + 1);
+	// The first operation is no longer remembered locally either: its replay reads
+	// the completed receipt and never performs the effect again.
 	await expect(f.execute({ operation: keyed(0) }, operations)).resolves.toEqual({
 		kind: "json",
 		value: { changed: true },
 	});
+	expect(control.beginToolOperation).toHaveBeenCalledTimes(total + 2);
 	expect(f.perform).toHaveBeenCalledTimes(total);
 	expect(receipts.size).toBe(total);
-}, 300_000);
+	expect(control.completeToolOperation).toHaveBeenCalledTimes(total);
+	// Without the option the bound is the default: eight operations forget nothing.
+	const defaults = new CloudNativeToolOperations(f.run, control);
+	const unbounded = (index: number) => ({ ...f.operation, logicalOperationKey: `job-default-${index}` });
+	for (let index = 0; index < 8; index++) await f.execute({ operation: unbounded(index) }, defaults);
+	const begun = control.beginToolOperation.mock.calls.length;
+	await expect(f.execute({ operation: unbounded(0) }, defaults)).resolves.toEqual({
+		kind: "json",
+		value: { changed: true },
+	});
+	expect(control.beginToolOperation).toHaveBeenCalledTimes(begun);
+});
+
+it("refuses an invalid remembered operation count", async () => {
+	const f = await fixture();
+	// Only lower than the default: a larger count would switch forgetting off in practice.
+	for (const rememberedOperations of [
+		0,
+		-1,
+		1.5,
+		Number.NaN,
+		Number.POSITIVE_INFINITY,
+		65_537,
+		Number.MAX_SAFE_INTEGER,
+	])
+		expect(() => new CloudNativeToolOperations(f.run, f.control, { rememberedOperations })).toThrow(
+			"Invalid remembered operation count",
+		);
+	expect(() => new CloudNativeToolOperations(f.run, f.control, { rememberedOperations: 65_536 })).not.toThrow();
+});
+
+it("completes a folder writer's receipt with its commit, and replays it from the receipt", async () => {
+	const f = await fixture();
+	const folderCommitId = randomUUID();
+	f.perform.mockResolvedValueOnce({ content: { kind: "json", value: { saved: true } }, folderCommitId });
+	const operation = { ...f.operation, requiresCompanyRevision: true };
+	await expect(f.execute({ operation })).resolves.toEqual({ kind: "json", value: { saved: true } });
+	expect(f.control.completeToolOperation).not.toHaveBeenCalled();
+	expect(f.control.completeFolderToolOperation.mock.calls[0][1]).toMatchObject({ folderCommitId });
+	// A new process replays the stored result from the receipt, which names the commit.
+	await expect(f.execute({ operation }, new CloudNativeToolOperations(f.run, f.control))).resolves.toEqual({
+		kind: "json",
+		value: { saved: true },
+	});
+	expect(f.perform).toHaveBeenCalledTimes(1);
+	// A receipt naming two revisions is not trusted.
+	[...f.ledger.values()][0].outputSnapshotId = randomUUID();
+	await expect(f.execute({ operation }, new CloudNativeToolOperations(f.run, f.control))).rejects.toThrow(
+		"outcome unconfirmed",
+	);
+});
+
+it("refuses a folder commit it cannot complete, or a completion naming another commit", async () => {
+	// Each case on its own ledger: a refused case leaves its receipt executing, which would refuse the next at begin.
+	const legacyCase = await fixture();
+	const { completeFolderToolOperation: _, ...legacy } = legacyCase.control;
+	legacyCase.perform.mockResolvedValueOnce({
+		content: { kind: "text", value: "saved" },
+		folderCommitId: randomUUID(),
+	});
+	await expect(
+		legacyCase.execute(
+			{ operation: { ...legacyCase.operation, requiresCompanyRevision: true } },
+			new CloudNativeToolOperations(legacyCase.run, legacy),
+		),
+	).rejects.toThrow("outcome unconfirmed");
+	expect(legacyCase.perform).toHaveBeenCalledTimes(1);
+	expect(legacyCase.control.completeToolOperation).not.toHaveBeenCalled();
+	const otherCase = await fixture();
+	otherCase.perform.mockResolvedValueOnce({ content: { kind: "text", value: "saved" }, folderCommitId: randomUUID() });
+	const complete = otherCase.control.completeFolderToolOperation.getMockImplementation();
+	if (!complete) throw new Error("Missing test implementation");
+	otherCase.control.completeFolderToolOperation.mockImplementationOnce(async (...args) => ({
+		...((await complete(...args)) as object),
+		folder_commit_id: randomUUID(),
+	}));
+	await expect(
+		otherCase.execute({ operation: { ...otherCase.operation, requiresCompanyRevision: true } }),
+	).rejects.toThrow("outcome unconfirmed");
+	expect(otherCase.control.completeFolderToolOperation).toHaveBeenCalledTimes(1);
+	// A folder completion that names no commit at all is not the commit's either.
+	const silentCase = await fixture();
+	silentCase.perform.mockResolvedValueOnce({
+		content: { kind: "text", value: "saved" },
+		folderCommitId: randomUUID(),
+	});
+	const silent = silentCase.control.completeFolderToolOperation.getMockImplementation();
+	if (!silent) throw new Error("Missing test implementation");
+	silentCase.control.completeFolderToolOperation.mockImplementationOnce(async (...args) => {
+		const { folder_commit_id: _commit, ...rest } = (await silent(...args)) as Record<string, unknown>;
+		return rest;
+	});
+	await expect(
+		silentCase.execute({ operation: { ...silentCase.operation, requiresCompanyRevision: true } }),
+	).rejects.toThrow("outcome unconfirmed");
+});
+
+it("accepts a folder-v2 completion that needed no commit", async () => {
+	const f = await fixture();
+	const complete = f.control.completeToolOperation.getMockImplementation();
+	if (!complete) throw new Error("Missing test implementation");
+	// SQL's folder completion always names the commit, null when the receipt needed none.
+	f.control.completeToolOperation.mockImplementationOnce(async (...args) => ({
+		...((await complete(...args)) as object),
+		folder_commit_id: null,
+	}));
+	await expect(f.execute()).resolves.toEqual({ kind: "json", value: { changed: true } });
+});
+
+it("refuses a folder commit beside another revision, or on an operation that declared none", async () => {
+	const two = await fixture();
+	expect(two.operations.completesFolderCommits).toBe(true);
+	two.perform.mockResolvedValueOnce({
+		content: { kind: "text", value: "saved" },
+		outputSnapshotId: randomUUID(),
+		folderCommitId: randomUUID(),
+	});
+	await expect(two.execute({ operation: { ...two.operation, requiresCompanyRevision: true } })).rejects.toThrow(
+		"outcome unconfirmed",
+	);
+	expect(two.perform).toHaveBeenCalledTimes(1);
+	const none = await fixture();
+	none.perform.mockResolvedValueOnce({ content: { kind: "text", value: "saved" }, folderCommitId: randomUUID() });
+	await expect(none.execute()).rejects.toThrow("outcome unconfirmed");
+	expect(none.perform).toHaveBeenCalledTimes(1);
+	for (const f of [two, none]) {
+		expect(f.control.completeFolderToolOperation).not.toHaveBeenCalled();
+		expect(f.control.completeToolOperation).not.toHaveBeenCalled();
+	}
+	const { completeFolderToolOperation: _, ...legacy } = none.control;
+	expect(new CloudNativeToolOperations(none.run, legacy).completesFolderCommits).toBe(false);
+});
+
+it("sends and compares a folder commit's id in the lower case SQL echoes", async () => {
+	const f = await fixture();
+	const folderCommitId = randomUUID();
+	f.perform.mockResolvedValueOnce({
+		content: { kind: "text", value: "saved" },
+		folderCommitId: folderCommitId.toUpperCase(),
+	});
+	await expect(
+		f.execute({ operation: { ...f.operation, logicalOperationKey: "upper", requiresCompanyRevision: true } }),
+	).resolves.toEqual({ kind: "text", value: "saved" });
+	expect(f.control.completeFolderToolOperation.mock.calls[0][1]).toMatchObject({ folderCommitId });
+});

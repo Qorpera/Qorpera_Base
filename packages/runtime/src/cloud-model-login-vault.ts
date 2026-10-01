@@ -1,5 +1,13 @@
 import { createHash } from "node:crypto";
+import {
+	CHATGPT_PLAN_LOGIN_FIELD,
+	type ChatGptPlanLogin,
+	type ChatGptPlanOAuth,
+	parseChatGptPlanLogin,
+	serializeChatGptPlanLogin,
+} from "./cloud-chatgpt-plan.ts";
 import type { CloudSecretEnvelopeIdentity, CloudSecretKeyring } from "./cloud-secret-crypto.ts";
+import { nativeProviderAccountIdentity } from "./native-provider-account.ts";
 
 /**
  * Model logins in the vault (Stateless Compute step 1).
@@ -10,6 +18,10 @@ import type { CloudSecretEnvelopeIdentity, CloudSecretKeyring } from "./cloud-se
  * time per login (a lock row the database hands to one caller), through a renewer that runs
  * the official Codex. Refresh tokens are single use, so a second renewer could revoke the
  * login; the lock is what prevents that.
+ *
+ * A ChatGPT plan login (Sign in with ChatGPT, built switched off) is kept the same way under the same
+ * lock. The vault renews it itself with OpenAI's token endpoint (no Codex), hands a run only its access
+ * token, and ends it at OpenAI once nothing uses it.
  */
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -50,13 +62,26 @@ export interface ModelLoginIssueRequest {
 	readonly knownVersion: number | null;
 }
 
-/** What a run's host receives. `authJson` is null when the host already holds `version`. */
-export interface ModelLoginIssue {
+/** What a run's host receives for a Codex login. `authJson` is null when the host already holds
+ * `version`. Exactly these keys: hosts parse them strictly. */
+export interface ModelLoginCodexIssue {
 	readonly schema: "qorpera.model-login/v1";
 	readonly version: number;
 	readonly accessExpiresAt: string;
 	readonly authJson: string | null;
 }
+
+/** What a run's host receives for a ChatGPT plan login: the access token alone (null when the host
+ * already holds `version`), never the refresh token. */
+export interface ModelLoginPlanIssue {
+	readonly schema: "qorpera.model-login/v1";
+	readonly loginKind: "chatgpt_plan";
+	readonly version: number;
+	readonly accessExpiresAt: string;
+	readonly accessToken: string | null;
+}
+
+export type ModelLoginIssue = ModelLoginCodexIssue | ModelLoginPlanIssue;
 
 export interface ModelLoginAuthority {
 	issueModelLogin(
@@ -84,6 +109,31 @@ export interface ModelLoginAuthority {
 	): Promise<unknown>;
 	/** Takes the renewal lock of this broker's most urgent idle login, with its current version. */
 	takeIdleModelLoginRenewal(signal: AbortSignal): Promise<unknown>;
+	/** This broker's logins with no recorded ChatGPT account yet, with their current versions. */
+	listModelLoginsWithoutAccount(signal: AbortSignal): Promise<unknown>;
+	recordModelLoginAccount(
+		account: { loginId: string; accountIdentity: string },
+		signal: AbortSignal,
+	): Promise<unknown>;
+	/** One pass switching off members' old node logins that a vault login of the same account replaced. */
+	switchOffReplacedNodeLogins(signal: AbortSignal): Promise<unknown>;
+	commitChatGptPlanRenewal(
+		renewal: Parameters<ModelLoginAuthority["commitModelLoginRenewal"]>[0] & { renewNotBefore: string | null },
+		signal: AbortSignal,
+	): Promise<unknown>;
+	/** Takes, under its renewal lock, one plan login nothing uses any longer, with its current version. */
+	takeChatGptPlanRevocation(signal: AbortSignal): Promise<unknown>;
+	finishChatGptPlanRevocation(
+		revocation: { loginId: string; token: string; baseVersion: number },
+		signal: AbortSignal,
+	): Promise<unknown>;
+}
+
+/** What one switch-off pass did: old node logins switched off, still in use, or not movable yet. */
+export interface ModelLoginSwitchOff {
+	readonly switchedOff: number;
+	readonly waiting: number;
+	readonly refused: number;
 }
 
 /** Runs the official Codex against a full login to renew it. `refused` means the provider
@@ -98,6 +148,7 @@ export interface ModelLoginRenewer {
 
 interface IssueResult {
 	loginId: string;
+	loginKind: "codex" | "chatgpt_plan";
 	companyId: string;
 	computeIdentityId: string;
 	version: number;
@@ -113,6 +164,18 @@ interface CodexLogin {
 	readonly accountId: string;
 	readonly accessIssuedAt: string;
 	readonly accessExpiresAt: string;
+}
+
+/** A stored login opened: the envelope's one field says which kind it is. */
+type OpenedLogin =
+	| { readonly kind: "codex"; readonly codex: CodexLogin }
+	| { readonly kind: "chatgpt_plan"; readonly plan: ChatGptPlanLogin };
+
+function loginKind(value: unknown): "codex" | "chatgpt_plan" {
+	// A database before plan logins names no kind: every login was a Codex login.
+	if (value === undefined || value === "codex") return "codex";
+	if (value === "chatgpt_plan") return value;
+	throw new Error("Model login kind is invalid");
 }
 
 function record(value: unknown, label: string): Record<string, unknown> {
@@ -261,6 +324,7 @@ function parseIssue(value: unknown, binding: ModelLoginRunBinding, knownVersion:
 		throw new Error("Model login issue is invalid");
 	const result: IssueResult = {
 		loginId: uuid(input.loginId, "Model login"),
+		loginKind: loginKind(input.loginKind),
 		companyId: uuid(input.companyId, "Model login company"),
 		computeIdentityId: uuid(input.computeIdentityId, "Model login compute identity"),
 		version: version(input.version, "Model login version"),
@@ -290,6 +354,7 @@ function parseIdleRenewal(value: unknown): IssueResult | null {
 	}
 	const result: IssueResult = {
 		loginId: uuid(input.loginId, "Model login"),
+		loginKind: loginKind(input.loginKind),
 		companyId: uuid(input.companyId, "Model login company"),
 		computeIdentityId: uuid(input.computeIdentityId, "Model login compute identity"),
 		version: version(input.version, "Model login version"),
@@ -301,7 +366,10 @@ function parseIdleRenewal(value: unknown): IssueResult | null {
 	return result;
 }
 
-function envelopeIdentity(issue: IssueResult, versionNumber: number, keyId: string): CloudSecretEnvelopeIdentity {
+/** Whose login an envelope holds: its company, Compute Identity and login. */
+type LoginOwner = Pick<IssueResult, "loginId" | "companyId" | "computeIdentityId">;
+
+function envelopeIdentity(issue: LoginOwner, versionNumber: number, keyId: string): CloudSecretEnvelopeIdentity {
 	return {
 		companyId: issue.companyId,
 		environmentId: issue.computeIdentityId,
@@ -316,18 +384,30 @@ export class CloudModelLoginVault {
 	readonly #keys: CloudSecretKeyring;
 	readonly #renewer: ModelLoginRenewer | undefined;
 
-	constructor(options: { authority: ModelLoginAuthority; keyring: CloudSecretKeyring; renewer?: ModelLoginRenewer }) {
+	/** OpenAI's side of ChatGPT plan logins; absent (no plan client configured), none is renewed or ended. */
+	readonly #plan: ChatGptPlanOAuth | undefined;
+
+	constructor(options: {
+		authority: ModelLoginAuthority;
+		keyring: CloudSecretKeyring;
+		renewer?: ModelLoginRenewer;
+		chatGptPlan?: ChatGptPlanOAuth;
+	}) {
 		this.#authority = options.authority;
 		this.#keys = options.keyring;
 		this.#renewer = options.renewer;
+		this.#plan = options.chatGptPlan;
 	}
 
-	/** Hands a live run its login: the current version, renewed first when it is past half its
-	 * pass life and this call wins the renewal lock. Never the renewal token. */
+	/** Hands a live run its login: the current version, renewed first when it is due and this call
+	 * wins the renewal lock. Never the renewal token. */
 	async issue(request: ModelLoginIssueRequest, signal: AbortSignal): Promise<ModelLoginIssue> {
 		const binding = parseModelLoginRunBinding(request.binding);
 		const knownVersion = request.knownVersion === null ? null : version(request.knownVersion, "Known login version");
-		const answer = await this.#authority.issueModelLogin(binding, knownVersion, this.#renewer !== undefined, signal);
+		// The database decides whether the login is due; a lock this vault cannot use for the login's kind
+		// is given back at once.
+		const canRenew = this.#renewer !== undefined || this.#plan !== undefined;
+		const answer = await this.#authority.issueModelLogin(binding, knownVersion, canRenew, signal);
 		let issue: IssueResult;
 		try {
 			issue = parseIssue(answer, binding, knownVersion);
@@ -336,22 +416,43 @@ export class CloudModelLoginVault {
 			throw error;
 		}
 		if (!issue.envelope) {
-			return {
-				schema: "qorpera.model-login/v1",
-				version: issue.version,
-				accessExpiresAt: issue.accessExpiresAt,
-				authJson: null,
-			};
+			return issue.loginKind === "chatgpt_plan"
+				? {
+						schema: "qorpera.model-login/v1",
+						loginKind: "chatgpt_plan",
+						version: issue.version,
+						accessExpiresAt: issue.accessExpiresAt,
+						accessToken: null,
+					}
+				: {
+						schema: "qorpera.model-login/v1",
+						version: issue.version,
+						accessExpiresAt: issue.accessExpiresAt,
+						authJson: null,
+					};
 		}
-		let current: CodexLogin;
+		let current: OpenedLogin;
 		try {
 			current = await this.#open(issue, issue.version, issue.envelope);
+			if (current.kind !== issue.loginKind) throw new Error("Model login envelope is another kind of login");
 		} catch (error) {
 			if (issue.renewal) await this.#release(issue, issue.renewal, false, "login_unreadable");
 			throw error;
 		}
-		const renewed = issue.renewal ? await this.#renew(issue, issue.renewal, current) : undefined;
-		const login = renewed?.login ?? current;
+		if (current.kind === "chatgpt_plan") {
+			const renewed = issue.renewal ? await this.#renewPlan(issue, issue.renewal, current.plan) : undefined;
+			const login = renewed?.login ?? current.plan;
+			if (Date.parse(login.accessExpiresAt) <= Date.now()) throw new Error("Model login pass has ended");
+			return {
+				schema: "qorpera.model-login/v1",
+				loginKind: "chatgpt_plan",
+				version: renewed?.version ?? issue.version,
+				accessExpiresAt: login.accessExpiresAt,
+				accessToken: login.accessToken,
+			};
+		}
+		const renewed = issue.renewal ? await this.#renew(issue, issue.renewal, current.codex) : undefined;
+		const login = renewed?.login ?? current.codex;
 		if (Date.parse(login.accessExpiresAt) <= Date.now()) throw new Error("Model login pass has ended");
 		return {
 			schema: "qorpera.model-login/v1",
@@ -361,11 +462,11 @@ export class CloudModelLoginVault {
 		};
 	}
 
-	/** Renews this broker's most urgent idle login: one past half its pass that no starting run
-	 * renewed. It takes the same lock and saves the same way as a run's renewal. `none` when no
-	 * login is due, or when this vault has no renewer. */
+	/** Renews this broker's most urgent idle login: a Codex login past half its pass that no starting
+	 * run renewed, or a plan login whose tokens are a week old. It takes the same lock and saves the same
+	 * way as a run's renewal. `none` when no login is due, or when this vault renews nothing. */
 	async renewIdle(signal: AbortSignal): Promise<"renewed" | "failed" | "none"> {
-		if (!this.#renewer) return "none";
+		if (!this.#renewer && !this.#plan) return "none";
 		const answer = await this.#authority.takeIdleModelLoginRenewal(signal);
 		let issue: IssueResult | null;
 		try {
@@ -375,27 +476,116 @@ export class CloudModelLoginVault {
 			throw error;
 		}
 		if (!issue?.envelope || !issue.renewal) return "none";
-		let current: CodexLogin;
+		let current: OpenedLogin;
 		try {
 			current = await this.#open(issue, issue.version, issue.envelope);
+			if (current.kind !== issue.loginKind) throw new Error("Model login envelope is another kind of login");
 		} catch {
 			await this.#release(issue, issue.renewal, false, "login_unreadable");
 			return "failed";
 		}
-		const renewed = await this.#renew(issue, issue.renewal, current);
+		const renewed =
+			current.kind === "chatgpt_plan"
+				? await this.#renewPlan(issue, issue.renewal, current.plan)
+				: await this.#renew(issue, issue.renewal, current.codex);
 		return renewed && renewed.version > issue.version ? "renewed" : "failed";
 	}
 
+	/** Ends one plan login nothing uses any longer (its member disconnected or left) at OpenAI, then marks
+	 * it revoked. `none` when there is none, or when this vault has no plan client; `failed` leaves the
+	 * login to a later pass (its lock lapses). */
+	async revokeUnused(signal: AbortSignal): Promise<"revoked" | "failed" | "none"> {
+		const plan = this.#plan;
+		if (!plan) return "none";
+		const input = record(await this.#authority.takeChatGptPlanRevocation(signal), "ChatGPT plan revocation");
+		if (input.schema !== "qorpera.chatgpt-plan-revocation/v1") throw new Error("ChatGPT plan revocation is invalid");
+		if (input.revocation === null) return "none";
+		const revocation = record(input.revocation, "ChatGPT plan revocation");
+		const owner: LoginOwner = {
+			loginId: uuid(input.loginId, "Model login"),
+			companyId: uuid(input.companyId, "Model login company"),
+			computeIdentityId: uuid(input.computeIdentityId, "Model login compute identity"),
+		};
+		const baseVersion = version(input.version, "Model login version");
+		const token = uuid(revocation.token, "ChatGPT plan revocation");
+		if (version(revocation.baseVersion, "ChatGPT plan revocation base") !== baseVersion)
+			throw new Error("ChatGPT plan revocation is invalid");
+		let opened: OpenedLogin;
+		try {
+			opened = await this.#open(owner, baseVersion, parseEnvelope(input));
+		} catch {
+			return "failed";
+		}
+		if (opened.kind !== "chatgpt_plan") return "failed";
+		if ((await plan.revoke(opened.plan.refreshToken, AbortSignal.timeout(RENEWAL_BUDGET_MS))) !== "revoked")
+			return "failed";
+		const finished = record(
+			await this.#authority.finishChatGptPlanRevocation(
+				{ loginId: owner.loginId, token, baseVersion },
+				AbortSignal.timeout(SAVE_DEADLINE_MS),
+			),
+			"ChatGPT plan revocation",
+		);
+		if (finished.schema !== "qorpera.chatgpt-plan-revocation-finished/v1")
+			throw new Error("ChatGPT plan revocation is invalid");
+		return "revoked";
+	}
+
+	/** Records the ChatGPT account of each login this broker keeps that has none yet, read from its
+	 * current version (the digest nodes and the vault record for usage). Returns how many it recorded;
+	 * a login it cannot read is tried again at the next pass. */
+	async recordAccounts(signal: AbortSignal): Promise<number> {
+		// The database lists Codex logins only: a plan login names its member by OpenAI's subject.
+		const input = record(await this.#authority.listModelLoginsWithoutAccount(signal), "Model login accounts");
+		if (input.schema !== "qorpera.model-login-accounts/v1" || !Array.isArray(input.logins) || input.logins.length > 8)
+			throw new Error("Model login accounts are invalid");
+		let recorded = 0;
+		for (const item of input.logins) {
+			try {
+				const entry = record(item, "Model login account");
+				const login: LoginOwner = {
+					loginId: uuid(entry.loginId, "Model login"),
+					companyId: uuid(entry.companyId, "Model login company"),
+					computeIdentityId: uuid(entry.computeIdentityId, "Model login compute identity"),
+				};
+				const opened = await this.#open(login, version(entry.version, "Model login version"), parseEnvelope(entry));
+				if (opened.kind !== "codex") continue;
+				const accountIdentity = nativeProviderAccountIdentity(opened.codex.text);
+				if (!accountIdentity) continue;
+				await this.#authority.recordModelLoginAccount({ loginId: login.loginId, accountIdentity }, signal);
+				recorded += 1;
+			} catch {
+				// This login is tried again at the next pass; the others go on.
+			}
+		}
+		return recorded;
+	}
+
+	/** One pass switching off members' old node logins that a vault login of the same ChatGPT account
+	 * replaced (the database moves their pins first and waits for their work to finish). */
+	async switchOffReplacedNodeLogins(signal: AbortSignal): Promise<ModelLoginSwitchOff> {
+		const input = record(await this.#authority.switchOffReplacedNodeLogins(signal), "Model login switch-off");
+		const count = (value: unknown): number => {
+			if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0 || value > 4)
+				throw new Error("Model login switch-off is invalid");
+			return value;
+		};
+		if (input.schema !== "qorpera.model-login-switch-off/v1") throw new Error("Model login switch-off is invalid");
+		return { switchedOff: count(input.switchedOff), waiting: count(input.waiting), refused: count(input.refused) };
+	}
+
 	#open(
-		issue: IssueResult,
+		issue: LoginOwner,
 		versionNumber: number,
 		envelope: { keyId: string; bytes: Uint8Array },
-	): Promise<CodexLogin> {
+	): Promise<OpenedLogin> {
 		return this.#keys.use(envelope.bytes, envelopeIdentity(issue, versionNumber, envelope.keyId), async (fields) => {
-			const text = fields[MODEL_LOGIN_FIELD];
-			if (typeof text !== "string" || Object.keys(fields).length !== 1)
-				throw new Error("Model login envelope is invalid");
-			return parseCodexLogin(text);
+			if (Object.keys(fields).length !== 1) throw new Error("Model login envelope is invalid");
+			const codex = fields[MODEL_LOGIN_FIELD];
+			if (typeof codex === "string") return { kind: "codex", codex: parseCodexLogin(codex) };
+			const plan = fields[CHATGPT_PLAN_LOGIN_FIELD];
+			if (typeof plan === "string") return { kind: "chatgpt_plan", plan: parseChatGptPlanLogin(plan) };
+			throw new Error("Model login envelope is invalid");
 		});
 	}
 
@@ -461,6 +651,73 @@ export class CloudModelLoginVault {
 								envelopeSha256,
 								accessIssuedAt: renewed.accessIssuedAt,
 								accessExpiresAt: renewed.accessExpiresAt,
+							},
+							AbortSignal.timeout(SAVE_DEADLINE_MS),
+						),
+						"Model login renewal",
+					);
+					if (saved.schema !== "qorpera.model-login-renewal/v1" || saved.version !== next)
+						throw new Error("Model login renewal was not saved");
+					return { login: renewed, version: next };
+				} catch {
+					// Try again: the database answer may have been lost after the save.
+				}
+			}
+		} catch {
+			// Sealing failed: fall through to give the lock back.
+		}
+		await this.#release(issue, renewal, true, "renewal_unsaved");
+		return { login: renewed, version: renewal.baseVersion };
+	}
+
+	/** Renews a plan login under the lock this call holds, with OpenAI's token endpoint. As with a Codex
+	 * login, every way out gives the lock back, and a renewal OpenAI made but the vault could not save (the
+	 * old refresh token is spent) marks the login for a new sign-in; this run keeps the newest pass. */
+	async #renewPlan(
+		issue: IssueResult,
+		renewal: NonNullable<IssueResult["renewal"]>,
+		current: ChatGptPlanLogin,
+	): Promise<{ login: ChatGptPlanLogin; version: number } | undefined> {
+		const plan = this.#plan;
+		if (!plan || !this.#keys.has(renewal.keyId)) {
+			await this.#release(issue, renewal, false, plan ? "renewal_key_unavailable" : "renewer_unavailable");
+			return undefined;
+		}
+		// Once asked, a renewal runs to its own budget whatever the caller does.
+		const result = await plan.refresh(current, AbortSignal.timeout(RENEWAL_BUDGET_MS));
+		if (result.outcome !== "renewed") {
+			await this.#release(issue, renewal, result.outcome === "refused", result.reason);
+			return undefined;
+		}
+		const renewed = result.login;
+		// OpenAI already spent the old refresh token: a pass the database would refuse (not later than the one
+		// it holds) cannot be saved, so the login asks for a new sign-in and the new token is ended.
+		if (Date.parse(renewed.accessExpiresAt) <= Date.parse(current.accessExpiresAt)) {
+			await plan.revoke(renewed.refreshToken, AbortSignal.timeout(SAVE_DEADLINE_MS)).catch(() => undefined);
+			await this.#release(issue, renewal, true, "renewal_invalid");
+			return undefined;
+		}
+		const next = renewal.baseVersion + 1;
+		try {
+			const envelope = this.#keys.seal(
+				{ [CHATGPT_PLAN_LOGIN_FIELD]: serializeChatGptPlanLogin(renewed) },
+				envelopeIdentity(issue, next, renewal.keyId),
+			);
+			const envelopeSha256 = createHash("sha256").update(envelope).digest("hex");
+			for (let attempt = 0; attempt < 3; attempt += 1) {
+				try {
+					const saved = record(
+						await this.#authority.commitChatGptPlanRenewal(
+							{
+								loginId: issue.loginId,
+								token: renewal.token,
+								baseVersion: renewal.baseVersion,
+								keyId: renewal.keyId,
+								encryptedEnvelope: envelope,
+								envelopeSha256,
+								accessIssuedAt: renewed.accessIssuedAt,
+								accessExpiresAt: renewed.accessExpiresAt,
+								renewNotBefore: renewed.renewNotBefore,
 							},
 							AbortSignal.timeout(SAVE_DEADLINE_MS),
 						),

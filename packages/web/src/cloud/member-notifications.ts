@@ -23,11 +23,18 @@ export type MemberNotificationSubject =
 			toConnectionId: string;
 			reason: "usage_limit";
 			at: string;
+	  }
+	| {
+			/** The kernel writes this subject without a schema (20260920000000); the web names it. */
+			schema: "routine-needs-model-account";
+			staffAgentId: string;
+			routineId: string;
+			title: string;
 	  };
 export interface MemberNotification {
 	notificationId: string;
 	profileId: string;
-	kind: "provider_usage_limit" | "company_ceiling_tripped" | "sponsor_handoff";
+	kind: "provider_usage_limit" | "company_ceiling_tripped" | "sponsor_handoff" | "routine_needs_model_account";
 	createdAt: string;
 	acknowledgedAt: string | null;
 	subject: MemberNotificationSubject;
@@ -46,6 +53,10 @@ const RETIRED = new Map([
 	["qorpera.member-notification.company-ceiling-tripped/v1", ["company_ceiling_tripped"]],
 	["qorpera.member-notification.company-execution-stop/v1", ["company_execution_paused", "company_execution_resumed"]],
 ]);
+/** A suspended routine's notice (20260920000000) carries no subject schema, and this band does
+ * not show it: it is skipped, so it never empties the band. (A routine that waits for its member's
+ * account is read: a ChatGPT plan's member is asked to turn on work while away.) */
+const UNSHOWN = new Set(["routine_suspended"]);
 
 const invalid = () => new Error("Company notices returned an invalid response.");
 function record(value: unknown): Record<string, unknown> {
@@ -74,8 +85,17 @@ function date(value: unknown): string {
 /** A retired record is skipped only when its envelope is otherwise sound; anything
  * else falls through to full validation and fails the read like any bad record. */
 function retired(value: unknown, profileId: string): boolean {
-	const v = record(value),
-		kinds = RETIRED.get(record(v.subject).schema as string);
+	const v = record(value);
+	if (
+		typeof v.kind === "string" &&
+		UNSHOWN.has(v.kind) &&
+		v.schema === "qorpera.member-notification/v1" &&
+		v.profile_id === profileId
+	) {
+		record(v.subject);
+		return true;
+	}
+	const kinds = RETIRED.get(record(v.subject).schema as string);
 	return (
 		kinds !== undefined &&
 		v.schema === "qorpera.member-notification/v1" &&
@@ -107,6 +127,14 @@ function notification(value: unknown, profileId: string): MemberNotification {
 			ceiling: integer(s.ceiling, 1),
 			used: integer(s.used),
 			allocationId: uuid(s.allocationId),
+		};
+	} else if (kind === "routine_needs_model_account" && s.schema === undefined) {
+		if (typeof s.title !== "string" || s.title.length > 200) throw invalid();
+		subject = {
+			schema: "routine-needs-model-account",
+			staffAgentId: uuid(s.staffAgentId),
+			routineId: uuid(s.routineId),
+			title: s.title,
 		};
 	} else if (kind === "sponsor_handoff" && s.schema === "qorpera.member-notification.sponsor-handoff/v1") {
 		if (s.reason !== "usage_limit") throw invalid();

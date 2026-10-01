@@ -1,7 +1,5 @@
-import { realpathSync } from "node:fs";
-import { basename, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import { parseCompanyComputerPreparationCommand } from "@qorpera/contracts";
+import { runCompanyComputerControlEntry } from "./cloud-company-computer-control-entry.ts";
 import { lockedCompanyComputerControlChild } from "./cloud-company-computer-preparation-control-main.ts";
 import {
 	controlCompanyComputerResetConfiguration,
@@ -37,22 +35,13 @@ export async function runCompanyComputerResetConfigurationControlMain(args: read
 		process.removeListener("SIGTERM", shutdown);
 	}
 }
-if (
-	process.argv[1] &&
-	["cloud-company-computer-reset-configuration-control-main.ts", basename(executable)].includes(
-		basename(process.argv[1]),
-	) &&
-	realpathSync(resolve(process.argv[1])) === realpathSync(fileURLToPath(import.meta.url))
-) {
-	if (process.argv.length === 3 && process.argv[2] === "--help")
-		console.log(
-			"Protected office configuration on a recreated root after a governed reset. Requires the restored public receipt and predecessor history, the current boot and the kernel lock; never starts or activates the office.",
-		);
-	else
-		runCompanyComputerResetConfigurationControlMain(process.argv.slice(2)).catch(() => {
-			console.error(
-				"Office reset configuration could not confirm restored provenance, workbench custody and credentials.",
-			);
-			process.exitCode = 1;
-		});
-}
+runCompanyComputerControlEntry({
+	moduleUrl: import.meta.url,
+	names: [
+		"cloud-company-computer-reset-configuration-control-main.ts",
+		"qorpera-company-computer-reset-configuration-control.mjs",
+	],
+	help: "Protected office configuration on a recreated root after a governed reset. Requires the restored public receipt and predecessor history, the current boot and the kernel lock; never starts or activates the office.",
+	failure: "Office reset configuration could not confirm restored provenance, workbench custody and credentials.",
+	run: runCompanyComputerResetConfigurationControlMain,
+});

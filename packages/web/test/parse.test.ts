@@ -43,6 +43,27 @@ describe("parsers", () => {
 		expect(recovery({ last_error: { code: "x" } }).lastError).toBeUndefined();
 		expect(() => recovery({ status: "completed" })).toThrow("recovery job status");
 		expect(() => recovery({}, { proposal_id: "not-a-uuid" })).toThrow("recovery proposal id");
+		// The cloud's usage-limit signal for the run (20260928349910): true or false; absent from an older cloud.
+		expect(recovery({}, { usage_limit: true }).usageLimit).toBe(true);
+		expect(recovery({}, { usage_limit: false }).usageLimit).toBe(false);
+		expect(recovery({})).not.toHaveProperty("usageLimit");
+		// Whether a ChatGPT plan pays (20260928379930), and whom the run is for; absent or odd reads as absent.
+		expect(recovery({}, { paid_by_chatgpt_plan: true }).paidByChatgptPlan).toBe(true);
+		expect(recovery({}, { paid_by_chatgpt_plan: "yes" })).not.toHaveProperty("paidByChatgptPlan");
+		expect(
+			parseRunRecovery({
+				run: { run_id: S1, source_kind: "session_turn", requested_by_user_id: U.toUpperCase() },
+				job: { status: "failed" },
+				operations: [],
+			}).requestedByUserId,
+		).toBe(U);
+		expect(
+			parseRunRecovery({
+				run: { run_id: S1, source_kind: "session_turn", requested_by_user_id: "someone" },
+				job: { status: "failed" },
+				operations: [],
+			}),
+		).not.toHaveProperty("requestedByUserId");
 	});
 
 	it("accepts only a resolution of the run and action that were asked for", () => {
@@ -158,6 +179,24 @@ describe("parsers", () => {
 		});
 		expect(team.capabilities.manageMembers).toBe(false);
 		expect(team.members[0]?.displayName).toBe("A");
+		// A cloud before several founders sends no membership flags.
+		expect(team.capabilities).not.toHaveProperty("leave");
+		const founders = parseTeam({
+			profile_id: P,
+			role: "owner",
+			capabilities: {
+				read: true,
+				write: true,
+				authorize: true,
+				manage_members: true,
+				manage_founders: true,
+				leave: false,
+				delete_company: true,
+			},
+			members: [],
+			invitations: [],
+		});
+		expect(founders.capabilities).toMatchObject({ manageFounders: true, leave: false, deleteCompany: true });
 	});
 
 	it("parses company and private session audiences", () => {

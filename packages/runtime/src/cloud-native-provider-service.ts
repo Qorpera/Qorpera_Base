@@ -36,7 +36,10 @@ import {
 	cloudToolRequest,
 	parseCloudNativeToolBinding,
 } from "./cloud-native-tool-authority.ts";
-import type { CloudNativeToolOperationControlPlane } from "./cloud-native-tool-operations.ts";
+import type {
+	CloudNativeToolOperationControlPlane,
+	CompleteFolderToolOperationInput,
+} from "./cloud-native-tool-operations.ts";
 import type { BeginCloudRunnerOperationInput, CompleteCloudRunnerOperationInput } from "./cloud-runner-broker.ts";
 import {
 	type CloudInteractionRequestInput,
@@ -135,17 +138,23 @@ const EXECUTION_STAGE_FAILED =
 const HARNESS_OUTPUT_LIMIT = "Provider harness output exceeded its byte limit";
 
 /** The fixed code a failed request carries back to the runner: the coding
- * runtime's own code (e.g. CODING_TURN_ENDED_WITHOUT_SUBMISSION), else its
- * native stage and category, else a diagnostic from the closed lists above,
- * else UNCLASSIFIED. Never free text. Each segment stays under 43 characters,
- * so the runner's token redaction never cuts it. */
+ * runtime's own code (e.g. CODING_TURN_ENDED_WITHOUT_SUBMISSION), also when
+ * the host wrapped it as a cause, else its native stage and category, else a
+ * diagnostic from the closed lists above, else UNCLASSIFIED. Never free text.
+ * Each segment stays under 43 characters, so the runner's token redaction never
+ * cuts it. */
 export function nativeProviderFailureCode(error: unknown): string {
 	const fits = (code: string) => /^[A-Z][A-Z0-9_]{0,41}(:[A-Z0-9][A-Z0-9_]{0,41})?$/.test(code);
 	const upper = (value: string) => value.toUpperCase().replace(/[^A-Z0-9]+/g, "_");
 	const coded = (code: string) => (fits(code) ? code : "UNCLASSIFIED");
-	// Only the coding runtime's own codes pass; other upper-case text is not vetted.
-	const own = codingErrorCode(error);
-	if (own.startsWith("CODING_") && fits(own)) return own;
+	// Only the coding runtime's own codes pass; other upper-case text is not vetted. The host
+	// wraps every harness failure (safeHarnessExecutionFailure), so the code is usually a cause.
+	let current = error;
+	for (let depth = 0; depth < 8 && current instanceof Error; depth++) {
+		const own = codingErrorCode(current);
+		if (own.startsWith("CODING_") && fits(own)) return own;
+		current = current.cause;
+	}
 	const failure = nativeRuntimeFailureMetadata(error);
 	if (failure) return coded(`NATIVE_${upper(failure.stage)}:${upper(failure.category)}`);
 	const message = (error instanceof Error ? error.message : "").replace(MOUTH_STATE, "");
@@ -566,6 +575,24 @@ export class SupabaseNativeProviderControlPlane
 				p_result: input.result,
 				p_output_snapshot_id: input.outputSnapshotId ?? null,
 				p_proposal_id: input.proposalId ?? null,
+			},
+			signal,
+		);
+	}
+
+	async completeFolderToolOperation(
+		binding: CloudNativeToolBinding,
+		input: CompleteFolderToolOperationInput,
+		signal: AbortSignal,
+	): Promise<unknown> {
+		return this.#rpc(
+			"qorpera_folder_complete_run_receipt",
+			{
+				p_binding: parseCloudNativeToolBinding(binding),
+				p_receipt_id: input.receiptId,
+				p_input_sha256: input.inputSha256,
+				p_result: input.result,
+				p_folder_commit_id: input.folderCommitId,
 			},
 			signal,
 		);

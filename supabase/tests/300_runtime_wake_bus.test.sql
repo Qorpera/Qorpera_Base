@@ -915,6 +915,10 @@ begin
 	perform pg_temp.wake_routine('30000000-0000-4000-8000-000000000031',
 		'{"id":"changes","kind":"listener","source":"company-file","path":"","match":"subtree","timeZone":"UTC","replyPolicy":"optional"}');
 	perform pg_temp.path_commit(pg_temp.path_plan('requester-check','note.md',pg_temp.path_stage_file('note.md','Event')));
+	-- The last founder cannot leave while others remain: a second founder joins first.
+	insert into auth.users(id,email) values ('30000000-0000-4000-8000-0000000000f1','requester-cofounder@example.test');
+	insert into public.qorpera_profile_members(profile_id,user_id,email,display_name,role)
+	values ('30000000-0000-4000-8000-000000000010','30000000-0000-4000-8000-0000000000f1','requester-cofounder@example.test','Co-founder','owner');
 	delete from public.qorpera_profile_members where profile_id = '30000000-0000-4000-8000-000000000010'
 		and user_id = '30000000-0000-4000-8000-000000000001';
 	v_result := public.qorpera_drain_company_file_wakes(1);

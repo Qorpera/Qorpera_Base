@@ -51,8 +51,10 @@ function world(options: { status?: string } = {}) {
 	const capabilitySha256 = createHash("sha256").update(capability).digest("hex");
 	const expiresAt = new Date(Date.now() + 10 * 60_000).toISOString();
 	const description = {
-		schema: "qorpera.model-login-sign-in/v1",
+		schema: "qorpera.model-login-sign-in/v2",
 		loginId,
+		loginKind: "codex",
+		hostId: null as string | null,
 		profileId: companyId,
 		computeIdentityId: randomUUID(),
 		computeIdentityOwnershipKind: "member",
@@ -97,6 +99,7 @@ function world(options: { status?: string } = {}) {
 			return { schema: "qorpera.model-login-sign-in-complete/v1" };
 		}),
 		modelLoginBrokerCompany: vi.fn(async () => companyId),
+		completeChatGptPlanSignIn: vi.fn(),
 	};
 	const request = { companyId, capability, body };
 	return {

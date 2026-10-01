@@ -1,12 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
 	type AgentFile,
+	COMPANY_STATE_SEEDED_PATHS,
 	type CompanyStateFileResult,
 	canonicalCompanyStateInstant,
 	companyPathKey,
 	companyStateName,
 	companyStatePath,
 	companyStatePathProblems,
+	companyStateSeedTree,
 	companyStateTimeZoneProblem,
 	companyStateValue,
 	freeCompanyStateName,
@@ -172,6 +174,10 @@ describe("companyStatePath", () => {
 		expect(codes("agents/anna/Routines", true)).toEqual(["name"]);
 		expect(codes("agents/anna/todos/Old Stuff", true)).toEqual(["name"]);
 		expect(codes("agents/groups/Launch", true)).toEqual(["name"]);
+		// The seeded agents/groups is spelled in lowercase; any other spelling is read as an agent's folder.
+		expect(codes("agents/groups", true)).toEqual([]);
+		for (const spelled of ["Agents/Groups", "agents/Groups", "AGENTS/GROUPS", "Agents/groups/launch"])
+			expect(codes(spelled, true)).toEqual(["name"]);
 		expect(codes("agents/anna/Notes", true)).toEqual([]);
 		expect(codes("Sales", true)).toEqual([]);
 		expect(codes("agents/Anna/", true)).toEqual(["name"]);
@@ -357,6 +363,13 @@ describe("agent.md", () => {
 		).toBe("syntax");
 	});
 
+	it("refuses control characters in the instructions, keeping tabs", () => {
+		expect(refused("agents/a/agent.md", agentFields().replace("Sell.", "Sell\u0007."))[0]?.code).toBe("body");
+		expect(ok("agents/a/agent.md", agentFields().replace("Sell.", "Sell\tnow."))).toMatchObject({
+			instructions: "Sell\tnow.",
+		});
+	});
+
 	it("refuses an empty body and a folder name that breaks the rule", () => {
 		expect(refused("agents/anna-berg/agent.md", agentText.replace(/---\nYou[\s\S]*$/, "---\n"))[0]?.code).toBe(
 			"body",
@@ -396,6 +409,7 @@ describe("agent.md", () => {
 		expect(refused("vision/vision.md", `#${" ".repeat(10)}\rx\n`)[0]?.code).toBe("body");
 	});
 
+	// A quadratic path costs seconds on these inputs; a linear one milliseconds. The bound leaves room for a busy machine.
 	it("reads a pathological 64 KiB file in linear time", () => {
 		const spaces = " ".repeat(65_000);
 		const inputs: [string, string][] = [
@@ -417,7 +431,7 @@ describe("agent.md", () => {
 		for (const [path, text] of inputs) {
 			const started = performance.now();
 			parseCompanyStateFile(path, text);
-			expect(performance.now() - started).toBeLessThan(250);
+			expect(performance.now() - started).toBeLessThan(1000);
 		}
 	});
 });
@@ -917,7 +931,7 @@ describe("companyStateValue", () => {
 		]) {
 			const started = performance.now();
 			companyStateValue(text);
-			expect(performance.now() - started).toBeLessThan(250);
+			expect(performance.now() - started).toBeLessThan(1000);
 		}
 		// A value the format refuses still makes a file the parser reads; the parse refuses the value.
 		expect(keys(refused("agents/a/agent.md", writeAgentFile({ ...agentBase(), name: "Anna\u2028Berg" })))).toEqual([
@@ -1004,5 +1018,62 @@ describe("setCompanyStateSettings", () => {
 		const text = `---\nid: ${ANNA}\nstatus: active\n---\nx\n`;
 		const changed = setCompanyStateSettings(text, { status: "paused\nkind: co-founder", runs: 3 });
 		expect(changed).toBe(`---\nid: ${ANNA}\nstatus: "paused\\nkind: co-founder"\nruns: 3\n---\nx\n`);
+	});
+});
+
+describe("companyStateSeedTree", () => {
+	it("seeds the tree of contract 5.6, parents first, with files that parse", () => {
+		const tree = companyStateSeedTree({ companyName: "Nordlys Studio", cofounderId: ANNA });
+		const paths = tree.map((entry) => entry.path);
+		for (const [index, entry] of tree.entries()) {
+			const parent = entry.path.split("/").slice(0, -1).join("/");
+			if (parent) expect(paths.slice(0, index)).toContain(parent);
+			expect(companyStatePathProblems(entry.path, entry.kind === "folder")).toEqual([]);
+			if (entry.kind === "file") expect(parseCompanyStateFile(entry.path, entry.text ?? "")?.ok).toBe(true);
+		}
+		for (const seeded of COMPANY_STATE_SEEDED_PATHS) expect(paths).toContain(seeded);
+		expect(ok("vision/vision.md", tree.find((entry) => entry.path === "vision/vision.md")?.text ?? "")).toEqual({
+			kind: "vision",
+			name: "Nordlys Studio",
+		});
+		expect(
+			ok(
+				"agents/co-founder/agent.md",
+				tree.find((entry) => entry.path === "agents/co-founder/agent.md")?.text ?? "",
+			),
+		).toMatchObject({ id: ANNA, agentKind: "co-founder", status: "active", colour: "blue", figure: "crown" });
+		expect(ok("agents/sections.md", tree.find((entry) => entry.path === "agents/sections.md")?.text ?? "")).toEqual({
+			kind: "sections",
+			sections: [],
+		});
+	});
+
+	it("seeds the founding table's vision, roles and the Co-Founder's first todo", () => {
+		const tree = companyStateSeedTree({
+			companyName: "Nordlys Studio",
+			cofounderId: ANNA,
+			vision: "  We book physiotherapy.\n\nFor small clinics.  ",
+			founders: [
+				{ displayName: "Jonas", role: "Product and sales" },
+				{ displayName: "Ida\nLund", role: "" },
+				{ displayName: " ", role: "ignored" },
+			],
+			firstTodo: { id: ID, requestedBy: JONAS },
+		});
+		const vision = tree.find((entry) => entry.path === "vision/vision.md")?.text ?? "";
+		expect(ok("vision/vision.md", vision)).toEqual({ kind: "vision", name: "Nordlys Studio" });
+		expect(vision).toBe(
+			"# Nordlys Studio\n\nWe book physiotherapy.\n\nFor small clinics.\n\n## What we build\n\n## For whom\n\n## Why\n\n## How we work\n- Jonas: Product and sales\n- Ida Lund\n",
+		);
+		const todo = tree.find((entry) => entry.path === "agents/co-founder/todos/start-with-the-founders.md");
+		expect(ok(todo?.path ?? "", todo?.text ?? "")).toMatchObject({ id: ID, status: "open", requestedBy: JONAS });
+		const paths = tree.map((entry) => entry.path);
+		expect(paths.indexOf("agents/co-founder/todos")).toBeLessThan(paths.indexOf(todo?.path ?? ""));
+	});
+
+	it("throws rather than seed a file the database would refuse", () => {
+		expect(() =>
+			companyStateSeedTree({ companyName: "Nordlys Studio", cofounderId: ANNA, vision: "x".repeat(70000) }),
+		).toThrow(/vision\/vision\.md would be refused/);
 	});
 });

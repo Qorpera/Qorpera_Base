@@ -28,6 +28,7 @@ export const CLOUD_TOOL_RESULT_INSTRUCTIONS =
 	"A denied, failed, cut-off or unconfirmed result grants nothing new; read missing pages with the offered read tool. " +
 	"COMPANY_FILE_VERSION_CHANGED is not a block: nothing was written, so read the path again and make the change on its current version. " +
 	"COMPANY_FILE_PARENT_MISSING is not a block either: nothing was written. When a member or your assignment named that folder, or a category of files needs it as its home, create it with company_mkdir and repeat the call; otherwise put a single file in an existing folder where it fits, and if none fits, create one named for its category (contracts/, not acme-nda/). Never replace a file to make a folder. " +
+	"REFUSED: the tool did nothing, for the reason it gives; change what you ask (under a new operation key) or tell the member why it cannot be done. " +
 	"An action whose result you did not see may already have happened: retry it only as its tool describes, with the same operation key and arguments, never under a new key or by another route. " +
 	"An action that completed without showing its response still completed. After a safety block, a genuinely safer way to the same legitimate goal is fine; rewording the blocked action, or reaching a denied result by another route, is not. " +
 	"Members' rules can make an action wait for approval (APPROVAL_PENDING): the platform has raised the card, so do not ask again in chat; do other work meanwhile. When you are woken because such a card was approved, call the same tool again with the card's `call` field as its arguments, value for value: not its `arguments` text, which is the same call escaped (use that only when the card has no `call`); if the card's entry is cut short, read the rest of it first. It then runs once, without another review.";
@@ -77,6 +78,9 @@ export interface CloudToolContext {
 	readonly argumentSha256: string;
 	readonly signal: AbortSignal;
 	readonly identity?: CloudNativeToolIdentity;
+	/** The automatic review's approval of this call, when it was reviewed and may run (C2 R1): a folder writer records
+	 * it as the review of the change set the call commits. */
+	readonly actionReviewId?: string;
 	/** Private host metadata channel; never serialized as tool input or result. */
 	readonly observation?: CloudRuntimeObservationSpan;
 }
@@ -167,6 +171,17 @@ export class CloudToolArgumentRefusal extends Error {
 	constructor(message: string) {
 		super(message);
 		this.name = "CloudToolArgumentRefusal";
+	}
+}
+/**
+ * A tool's own refusal, raised before it began any effect (a thin writer's, before its receipt): the boundary relays
+ * it as denied with its plain reason, never as an unknown outcome. Only code that has started nothing may throw it;
+ * thrown after an effect began, it would hide that effect.
+ */
+export class CloudToolRefusal extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = "CloudToolRefusal";
 	}
 }
 /** Printable ASCII and Latin-1 letters: no control, invisible, bidi or separator character. */
@@ -330,10 +345,18 @@ export class CloudNativeToolBoundary {
 		this.#stop.abort();
 	}
 
-	/** Only the patched native request boundary can release these bodies to the model. */
-	async fenceNativeResults(inputs: readonly CloudNativeResultInput[]): Promise<CloudNativeFencedResult[]> {
+	/**
+	 * Only the patched native request boundary can release these bodies to the model.
+	 * `authority: "with-record"`: the result fence checks run authority and the read set in
+	 * the one call that records this view, before it releases anything (qorpera_fence_native_context),
+	 * so this does not check first; otherwise it checks here.
+	 */
+	async fenceNativeResults(
+		inputs: readonly CloudNativeResultInput[],
+		fence: { authority: "here" | "with-record" } = { authority: "here" },
+	): Promise<CloudNativeFencedResult[]> {
 		this.#signal.throwIfAborted();
-		await untilStopped(() => this.#assertActive(this.#signal), this.#signal);
+		if (fence.authority === "here") await untilStopped(() => this.#assertActive(this.#signal), this.#signal);
 		this.#signal.throwIfAborted();
 		const seen = new Set<string>();
 		// No count of outputs: only their size is bounded, by the reply frame they
@@ -447,6 +470,7 @@ export class CloudNativeToolBoundary {
 			} else {
 				const categories = {
 					INVALID_ARGUMENTS: "invalid_arguments",
+					REFUSED: "invalid_arguments",
 					TOOL_UNAVAILABLE: "unavailable_tool",
 					CALL_ID_REUSED: "call_id_reused",
 					TOOL_BUDGET_EXHAUSTED: "budget_exhausted",
@@ -578,6 +602,7 @@ export class CloudNativeToolBoundary {
 		} catch {
 			return this.#result(callId, tool, digest, "denied", { kind: "text", value: "AUTHORITY_UNAVAILABLE" });
 		}
+		let actionReviewId: string | undefined;
 		if (this.#review) {
 			// Auto-review (v130): an acting call runs only after the reviewer lets it, or a
 			// member approves it. A review that cannot run never counts as an approval.
@@ -594,6 +619,7 @@ export class CloudNativeToolBoundary {
 				});
 			}
 			if (!gate.run) return this.#result(callId, tool, digest, "denied", { kind: "text", value: gate.text });
+			actionReviewId = gate.reviewId;
 			// The call may have waited for an approval: authority is checked again right before the effect (contract 4.3).
 			try {
 				this.#signal.throwIfAborted();
@@ -613,6 +639,7 @@ export class CloudNativeToolBoundary {
 						argumentSha256: digest,
 						signal: this.#signal,
 						...(this.#identity ? { identity: this.#identity } : {}),
+						...(actionReviewId ? { actionReviewId } : {}),
 						...(observation ? { observation } : {}),
 					}),
 				this.#signal,
@@ -685,6 +712,15 @@ export class CloudNativeToolBoundary {
 					kind: "text",
 					value: `${COMPANY_FORMATION_REFUSED}${error.reason}`,
 				});
+			}
+			// A tool's own refusal before any effect: nothing happened, and the model is told why.
+			if (error instanceof CloudToolRefusal && !this.#signal.aborted) {
+				observation?.finish("denied", { errorCategory: "invalid_arguments" });
+				const reason =
+					Buffer.byteLength(error.message) <= 1024 && REFUSAL_PLAIN.test(error.message)
+						? `: ${error.message}`
+						: "";
+				return this.#result(callId, tool, digest, "denied", { kind: "text", value: `REFUSED${reason}` });
 			}
 			observation?.finish("unconfirmed", { errorCategory: cloudRuntimeErrorCategory(error, this.#signal) });
 			// A thrown adapter error may follow a completed effect. Never echo it or automatically rerun the call.
