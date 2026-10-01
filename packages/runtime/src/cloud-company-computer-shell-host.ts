@@ -1,6 +1,7 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { readdir } from "node:fs/promises";
 import type { Readable, Writable } from "node:stream";
+import { UUID_PATTERN } from "@qorpera/contracts";
 
 /** The office code's copy of this module inside the image (the browser child entry). */
 export const COMPANY_COMPUTER_NAMESPACE_CHILD = "/usr/local/lib/qorpera/office-browser-child.mjs";
@@ -22,7 +23,6 @@ export type CompanyComputerShellHostEvent =
 	| { t: "exit"; id: string; code: number | null; signal: string | null }
 	| { t: "procs"; count: number };
 
-const ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const BASE64 = /^[A-Za-z0-9+/]*={0,2}$/;
 
 function fields(value: unknown, expected: string): Record<string, unknown> {
@@ -36,7 +36,7 @@ export function parseCompanyComputerShellHostEvent(line: string): CompanyCompute
 	const value: unknown = JSON.parse(line);
 	const type = (value as { t?: unknown } | null)?.t;
 	const id = (input: Record<string, unknown>): string => {
-		if (typeof input.id !== "string" || !ID.test(input.id)) throw new Error("INVALID_OFFICE_SHELL_MESSAGE");
+		if (typeof input.id !== "string" || !UUID_PATTERN.test(input.id)) throw new Error("INVALID_OFFICE_SHELL_MESSAGE");
 		return input.id;
 	};
 	if (type === "ready") {
@@ -75,13 +75,13 @@ function parseRequest(line: string): CompanyComputerShellHostRequest | undefined
 		const type = (value as { t?: unknown } | null)?.t;
 		if (type === "start") {
 			const input = fields(value, "command,id,t");
-			if (typeof input.id === "string" && ID.test(input.id) && typeof input.command === "string")
+			if (typeof input.id === "string" && UUID_PATTERN.test(input.id) && typeof input.command === "string")
 				return { t: "start", id: input.id, command: input.command };
 		} else if (type === "write") {
 			const input = fields(value, "data,end,id,t");
 			if (
 				typeof input.id === "string" &&
-				ID.test(input.id) &&
+				UUID_PATTERN.test(input.id) &&
 				typeof input.data === "string" &&
 				BASE64.test(input.data) &&
 				typeof input.end === "boolean"
@@ -89,7 +89,7 @@ function parseRequest(line: string): CompanyComputerShellHostRequest | undefined
 				return { t: "write", id: input.id, data: input.data, end: input.end };
 		} else if (type === "stop") {
 			const input = fields(value, "id,t");
-			if (typeof input.id === "string" && ID.test(input.id)) return { t: "stop", id: input.id };
+			if (typeof input.id === "string" && UUID_PATTERN.test(input.id)) return { t: "stop", id: input.id };
 		}
 	} catch {
 		/* A malformed line is dropped; the service only ever sends well-formed ones. */
