@@ -109,8 +109,10 @@ test("the folder program runs its own step in the pinned Rust image", () => {
 	assert.ok(names(["crates/qorpera-folder/src/mount.rs"]).includes("folder-program"));
 	assert.ok(!names(["packages/object-gateway/src/cli.ts"]).includes("folder-program"));
 	const command = STEPS.find((step) => step.name === "folder-program").commands.join(" ");
-	assert.match(command, /rust:1\.95\.0-slim-bookworm@sha256:[0-9a-f]{64} cargo test --locked$/);
+	assert.match(command, /rust:1\.95\.0-slim-bookworm@sha256:[0-9a-f]{64} sh -c 'cargo test --locked && cargo build/);
+	assert.match(command, /node:24\.21\.0-bookworm-slim@sha256:[0-9a-f]{64} node .* test\/folder-mount-e2e\.test\.ts/);
 	assert.match(command, /--device \/dev\/fuse/);
+	assert.ok(names(["packages/object-gateway/src/folder-service/service.ts"]).includes("folder-program"));
 });
 
 test("shared configuration and unknown paths run every step", () => {

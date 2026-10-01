@@ -1,20 +1,9 @@
-import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { connect, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import {
-	type CoreEntry,
-	CoreRefusal,
-	type FeedEvent,
-	type FolderActor,
-	type FolderCore,
-	parseFeedPage,
-	parseListPage,
-} from "../src/folder-service/core.ts";
-import type { MachineCheck, MachineRef } from "../src/folder-service/machines.ts";
-import { MountGrants, parseOperatorMounts } from "../src/folder-service/mounts.ts";
+import { type CoreEntry, parseFeedPage, parseListPage } from "../src/folder-service/core.ts";
 import { NasObjects, ObjectIntegrityError, parseManifest } from "../src/folder-service/objects.ts";
 import {
 	encodeFrame,
@@ -31,18 +20,8 @@ import {
 import { createFolderServer } from "../src/folder-service/server.ts";
 import { FolderService } from "../src/folder-service/service.ts";
 import { type TreeEntry, ViewTree } from "../src/folder-service/view-tree.ts";
+import { CID, ENV, FakeCore, folder, grants, PASS, PROFILE, sha256, storeFile } from "./folder-service-fixtures.ts";
 
-const ENV = "11111111-2222-4333-8444-555555555555";
-const PROFILE = "9ec79fc8-a1a7-4eb6-a764-4bc704d4103f";
-const MEMBER = "66666666-7777-4888-8999-000000000000";
-const MACHINE: MachineRef = {
-	project: "qn25b2",
-	name: "qorpera-exec-node02",
-	physicalId: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
-};
-const CID = 42;
-const PASS = "operator-pass-0123456789-abcdefghijklmnopq";
-const sha256 = (bytes: Uint8Array | string): string => createHash("sha256").update(bytes).digest("hex");
 const cleanup: (() => Promise<void> | void)[] = [];
 
 afterEach(async () => {
@@ -53,153 +32,6 @@ async function tempdir(): Promise<string> {
 	const dir = await mkdtemp(join(tmpdir(), "qorpera-folder-service-"));
 	cleanup.push(() => rm(dir, { recursive: true, force: true }));
 	return dir;
-}
-
-/** Stores a file's bytes the way the gateway does (a v2 manifest and its chunks) and returns its core entry. */
-async function storeFile(
-	root: string,
-	path: string,
-	content: string,
-	version: number,
-	chunkBytes = 4,
-	options: { executable?: boolean; mediaType?: string } = {},
-): Promise<CoreEntry> {
-	const bytes = Buffer.from(content);
-	const chunks: { sha256: string; bytes: number }[] = [];
-	await mkdir(join(root, PROFILE), { recursive: true });
-	for (let offset = 0; offset < bytes.byteLength; offset += chunkBytes) {
-		const chunk = bytes.subarray(offset, offset + chunkBytes);
-		chunks.push({ sha256: sha256(chunk), bytes: chunk.byteLength });
-		await writeFile(join(root, PROFILE, sha256(chunk)), chunk);
-	}
-	const mediaType = options.mediaType ?? "text/plain";
-	const executable = options.executable ?? false;
-	const manifest = JSON.stringify({
-		schema: "qorpera.cloud-file-manifest/v2",
-		fileSha256: sha256(bytes),
-		bytes: bytes.byteLength,
-		mediaType,
-		executable,
-		chunks,
-	});
-	await writeFile(join(root, PROFILE, sha256(manifest)), manifest);
-	return {
-		path,
-		kind: "file",
-		version,
-		manifestSha256: sha256(manifest),
-		fileSha256: sha256(bytes),
-		bytes: bytes.byteLength,
-		mediaType,
-		executable,
-		updatedAt: "2026-10-01T12:00:00.000Z",
-	};
-}
-
-function folder(path: string, version = 1): CoreEntry {
-	return { path, kind: "folder", version, updatedAt: "2026-10-01T12:00:00.000Z" };
-}
-
-/** The folder core, in memory: one company, a journal of change sets and access changes, and a visibility rule for
- * the member. Pages are two entries long so paging is exercised. */
-class FakeCore implements FolderCore {
-	seq = 0;
-	readonly entries = new Map<string, CoreEntry>();
-	readonly journal: FeedEvent[] = [];
-	hidden: (path: string) => boolean = () => false;
-	deny = false;
-	listCalls = 0;
-	profileCalls = 0;
-
-	seed(entries: CoreEntry[]): void {
-		for (const e of entries) this.entries.set(e.path, e);
-	}
-
-	write(entry: CoreEntry): void {
-		this.seq++;
-		this.entries.set(entry.path, entry);
-		this.journal.push({ seq: this.seq, kind: "change_set", changes: [{ ...entry, op: "write" }] });
-	}
-
-	remove(path: string): void {
-		this.seq++;
-		const old = this.entries.get(path)!;
-		this.entries.delete(path);
-		this.journal.push({ seq: this.seq, kind: "change_set", changes: [{ ...old, op: "delete" }] });
-	}
-
-	authority(hidden: (path: string) => boolean): void {
-		this.seq++;
-		this.hidden = hidden;
-		this.journal.push({ seq: this.seq, kind: "authority" });
-	}
-
-	#visible(actor: FolderActor): CoreEntry[] {
-		return [...this.entries.values()]
-			.filter((e) => actor.kind === "platform" || !this.hidden(e.path))
-			.sort((a, b) => (a.path < b.path ? -1 : 1));
-	}
-
-	async list(environmentId: string, actor: FolderActor, after: string | null) {
-		this.listCalls++;
-		if (environmentId !== ENV) throw new CoreRefusal("invalid");
-		if (this.deny) throw new CoreRefusal("denied");
-		const all = this.#visible(actor);
-		const start = after === null ? 0 : all.findIndex((e) => e.path === after) + 1;
-		const page = all.slice(start, start + 2);
-		return { asOfSeq: this.seq, entries: page, next: start + 2 < all.length ? page[page.length - 1]!.path : null };
-	}
-
-	async feed(environmentId: string, actor: FolderActor, afterSeq: number) {
-		if (environmentId !== ENV) throw new CoreRefusal("invalid");
-		if (this.deny) throw new CoreRefusal("denied");
-		const events = this.journal
-			.filter((e) => e.seq > afterSeq)
-			.map((e) =>
-				e.kind === "change_set"
-					? { ...e, changes: e.changes.filter((c) => actor.kind === "platform" || !this.hidden(c.path)) }
-					: e,
-			)
-			.filter((e) => e.kind === "authority" || e.changes.length > 0);
-		return {
-			asOfSeq: this.seq,
-			resync: afterSeq > this.seq,
-			events,
-			next: { afterSeq: this.seq, cursor: null },
-			more: false,
-		};
-	}
-
-	async clocks(environmentIds: readonly string[]) {
-		return new Map(environmentIds.filter((id) => id === ENV).map((id) => [id, this.seq]));
-	}
-
-	async objectProfile(environmentId: string) {
-		this.profileCalls++;
-		if (environmentId !== ENV) throw new CoreRefusal("invalid");
-		return PROFILE;
-	}
-}
-
-class FakeMachines implements MachineCheck {
-	async matches(cid: number, machine: MachineRef): Promise<boolean> {
-		return cid === CID && machine.name === MACHINE.name;
-	}
-}
-
-function grants(): MountGrants {
-	return new MountGrants(
-		parseOperatorMounts([
-			{
-				id: "proof",
-				environmentId: ENV,
-				actor: { kind: "member", userId: MEMBER },
-				machine: MACHINE,
-				passSha256: sha256(PASS),
-			},
-		]),
-		new FakeMachines(),
-	);
 }
 
 /** A machine's side of one connection, as the bridge would hand it to the service. */
