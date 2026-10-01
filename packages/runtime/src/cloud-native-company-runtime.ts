@@ -90,8 +90,10 @@ import {
 } from "./cloud-wake-bus.ts";
 import { cloudWorkerToolFilter, cloudWorkerTools, describeCloudAgentOpenWork } from "./cloud-worker-tools.ts";
 
+// The company runtime's control plane completes folder receipts: a folder-v2 run's writers commit under them.
 type NativeCompanyControl = CloudNativeToolAuthorityReader &
 	CloudNativeToolOperationControlPlane &
+	Required<Pick<CloudNativeToolOperationControlPlane, "completeFolderToolOperation">> &
 	Pick<NativeProviderControlPlane, "sendMessage" | "appendInteractionRequest">;
 
 /** Cloud-only composition of the native fence, live path gateway and public mouth.

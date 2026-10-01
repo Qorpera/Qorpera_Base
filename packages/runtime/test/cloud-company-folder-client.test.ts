@@ -602,10 +602,10 @@ describe("commits", () => {
 			{},
 			signal(),
 		);
-		expect(vi.mocked(bytes.put).mock.calls.map(([, mediaType]) => mediaType)).toEqual([
-			"text/plain",
-			"text/markdown",
-			"application/octet-stream",
+		expect(vi.mocked(bytes.put).mock.calls.map(([, mediaType, executable]) => [mediaType, executable])).toEqual([
+			["text/plain", false],
+			["text/markdown", false],
+			["application/octet-stream", true],
 		]);
 		const files = (calls[0]!.args.p_units as { file: CloudCompanyFolderFile }[]).map((unit) => unit.file);
 		expect(files.map((file) => [file.mediaType, file.executable])).toEqual([

@@ -234,10 +234,12 @@ const CODING_ATTACH_LEASE_MARGIN_MS = 15_000;
 const CODING_KEEP_MACHINE_MS = 15_000;
 /** Refusals a turn waits out in the queue instead of failing: the machine is
  * being removed, the node is full or not ready, the session is still on
- * another machine, or the machine's plan followed a new policy after this turn
- * planned it. A misconfigured deployment is never waited out. */
+ * another machine, the machine's plan followed a new policy after this turn
+ * planned it, or the company is out of computer hours (until hours are added).
+ * A misconfigured deployment is never waited out. */
 const WAITABLE = new Set([
 	"MACHINE_RETIRING",
+	"COMPUTER_HOURS_EXHAUSTED",
 	"NODE_CAPACITY_EXHAUSTED",
 	"NODE_OBSERVATION_UNAVAILABLE",
 	"NODE_DISABLED",

@@ -530,6 +530,84 @@ Coordinator (nothing secret):
     recorded more than about 40 minutes late (grace plus the email's ten-minute wait) sends a
     false "out of hours".
 
+- Build step 6b part 1 (migration `20260928309700`, the node refusal): `qorpera_reserve_runtime_node_machine`
+  refuses a new reservation or the wake of a sleeping machine of a company at zero with
+  `COMPUTER_HOURS_EXHAUSTED`, for Company Computers, coding machines and agents' machines, after
+  `NODE_DISABLED` (which wins) with the same demand condition; a machine already awake passes. Run and
+  sign-in machines are never refused. The runner orchestrator's node admission and the coding
+  executor (which waits it out) know the reason. Callers that reserve inside a subtransaction lose the
+  stored refusal, so members' views ask `qorpera_company_at_zero` themselves (6b's later parts).
+  A coding turn whose run began before zero but whose member machine is asleep waits too (its
+  machine's step refuses, and the executor defers it), until hours arrive or the finishing window
+  ends the run: the run box is the running work, the coding machine is not.
+- Build step 6b part 2 (migration `20260928309720`, Company Computers):
+  - a sleeping computer's wake is kept at zero (a member or agent may still ask) but the idle check
+    (`qorpera_reconcile_runtime_office_idle`) hands it to the provider only once the company has hours
+    again, so the provider does not retry a refused resume every few seconds for as long as the
+    company stays at zero. A wake once handed over stays so (`qorpera_runtime_office_idle_cycles.wake_reported_at`;
+    wakes asked for before the migration count as handed over): the provider may have begun the
+    resume, which then waits at the node refusal;
+  - once the finishing window is over, the idle check powers the computer off at once, whatever
+    keeps it awake (screens, viewers, waiting work, a pause), as for a company being deleted. Its
+    disk is kept, and it wakes as usual once hours are added;
+  - `qorpera_runtime_office_start_wait` says `hours` for a sleeping computer, or a started one no host
+    has taken yet, of a company at zero (before `room`), so the agent's panel says "Out of computer
+    hours. The machine starts by itself once hours are added.", operators see it in the setup
+    queue, and it never counts as stuck. The web learns the value in the same change (an older web
+    client refuses it), so the web is deployed before the rule is switched on. The agent's
+    `computer_start` text says a start may wait for computer hours;
+  - the office fleet (`qorpera_place_runtime_office_fleet`) places no computer of a company at
+    zero, and returns before it locks or tries any node. Adding a computer at zero is allowed: it
+    waits for hours like the others;
+  - known limits, all while the company is at zero:
+    - a wake handed to the provider just before the company ran out is not taken back (that is
+      unsafe once the resume may have begun): the provider retries it every few seconds, refused
+      by the node, until hours are added. Members see the hours line meanwhile;
+    - the power-off after the hour needs the provider's idle policy: a provider with preparation
+      switched off, or a computer whose operator recovery plan is unfinished, stays on until that
+      is done, as for a company being deleted;
+    - once hours are added, a held wake starts the computer even if nobody wants it any more; it
+      then powers off by the idle rule (after 1 minute when every member closed the panel);
+    - a held wake counts toward its node's room in the scale-out wake estimate
+      (`qorpera_runtime_office_can_wake`), as any requested wake does;
+    - a computer that waited for hours longer than 30 minutes counts as stuck (`setup`) as soon as
+      hours are added, until a host offers it;
+    - the panel computes the hours line for a sleeping computer's wake as well as for a new one, so
+      it now asks which computer shows the agent every 12 s during any wake. With scale-out on, that
+      check can move the panel to another computer with room, or let an owner add one, as opening
+      the panel does.
+- Build step 6b part 3 (migration `20260929730000`, agents' machines, the machines an agent starts
+  with `machine_start`, `20260928259050`):
+  - the admit line (`qorpera_admit_executor_machines`) skips a company at zero in both of its queries,
+    as it skips a paused one: its machines take no place among those a pass looks at, and no other
+    machine's disk is given up for one of them;
+  - an agent's start or wake (`qorpera_admit_company_machine`) answers `COMPUTER_HOURS_EXHAUSTED` for
+    an asleep machine at zero without trying to move it (part 1's refusal already kept its node and
+    disk; this saves the attempt and its node locks). A new machine is still offered to the nodes,
+    which refuse it (part 1), and is still told when no node could ever hold it. Either way the
+    machine waits, as when no node has room;
+  - the machine view says `waitingFor: COMPUTER_HOURS_EXHAUSTED` for a waiting machine of a company
+    at zero, with no place in line, and places in line count no machine of a company at zero. The
+    `machine_start` text says a machine waits for hours, and sleeps an hour after the company ran
+    out;
+  - once the finishing window is over every machine of the company, always-on ones too, sleeps: the
+    executor's list says `sleepDue`, the stop custody allows it (open commands notwithstanding) and
+    the suspension gives the room back. The machine stays wanted running and keeps its disk (a
+    machine wanted running is never a disk the give-up pass takes), so the admit line wakes it once
+    hours are added. Its open commands end as lost, as when it is stopped; the runs that used them
+    were ended by the finishing window. No run is told the machine stopped. The executor needs no
+    change;
+  - known limits:
+    - once hours are added, an asleep machine wakes on its own node when that node has room;
+      otherwise it may start fresh, with an empty disk, on another node, as any asleep machine does
+      (the tool text says so). Always-on machines never slept before, so they meet this rule for the
+      first time: their room is given back at the hour and may be taken meanwhile;
+    - a command started with `notify` still reports its end (as lost) to its run. That wake waits
+      for hours like any other, so the run's conversation continues once hours are added;
+    - every machine still running at the hour wakes again once hours are added, a task machine
+      that was nearly idle too, and runs on the new hours until its idle delay (default one hour)
+      puts it to sleep. The alternative, letting an idle task machine be stopped for good, would
+      open its disk to the give-up and removal passes, against "disks kept".
 - Build step 6c part 3b (migration `20260928259270`, the finishing window for runs): one hour
   after a company ran out, while it is still at zero (`qorpera_computer_hour_finish_window_over`,
   which checks at zero again, so a record up to one sweep old never ends work):
@@ -598,7 +676,8 @@ Coordinator (nothing secret):
   never sees it. Built in 6c part 1 (above).
 - A plan renewal is recorded when Stripe's renewal invoice arrives, which can trail the period's
   end by minutes. The check must not hold work back in that gap. For runs, 6a's renewal grace does
-  this (see above); machines follow in 6b.
+  this (see above); machines get the same grace, since 6b's checks use the same
+  `qorpera_company_at_zero`.
 - It ships switched off, in its own release, with a 30-minute database watch after the cut. It is
   switched on together with live payments and hour notices.
 
@@ -612,9 +691,16 @@ Before the switch (all of these hold):
 
 - Every part of the zero rule is live, switched off: 6a (#503), the zero state and "out of hours"
   (#508), the finishing window for runs (#514), members seeing the wait (#515, #516), the bounded
-  checks (#520), and 6b (machines not starting, waking or staying up at zero; not built yet). 6b's
-  node refusal must be known to the node admission, coding executor, fleet and provider parsers on
-  both nodes (their binaries installed) before it can be returned.
+  checks (#520), and 6b (machines not starting, waking or staying up at zero). 6b part 1, the node
+  refusal, is built; its reason must be known on both nodes before it can be returned, by every
+  program that holds the node admission (`runtime-node-admission.ts`: the LXD provider host, the
+  office provider and the office fleet) and by the coding executor host. An older one throws on
+  the reason instead of waiting. On 2026-10-01 production's coding executor is still the old
+  `036e3617` (v6): the executor v7 rollout has not been done. So coding waits for that rollout,
+  and 6b part 4 (coding) gives the coding machines their own switch: office and agent machines can
+  be switched on first, coding once the new executor is installed. Part 1 alone is not
+  enough: the later 6b parts are required too: Company Computers (part 2, built; the web deployed
+  first), agents' machines (part 3, built) and coding (stop after the hour, and the wait at begin).
 - Members see their hours left, by source, on Plan & usage from the switch on
   (contract items 5 and 12; "Plan & usage (web)" below): `hoursLeft` in the member hours read
   and the company card (migration `20260928259330`) are live first.
