@@ -22,6 +22,7 @@ lane's migration) in a disposable PostgreSQL, not from the live node.
 | `qorpera_release_runtime_machine` | fence[P] -> allocations FOR UPDATE |
 | `qorpera_claim_company_object_gc` (before this lane) | fence[P1], fence[P2], ... accumulated for every visited profile, never released inside the 8 s statement |
 | fence-first RPCs (pause, Company File writes, wake admission, office lifecycle, machine limits) | fence[P] -> their own tables; none of the 66 fence callers locks `qorpera_runner_jobs` or `qorpera_runners` after the fence |
+| `qorpera_set_chatgpt_plan_work_while_away`, turning a plan on with a routine to start (added 2026-10-01, `20260929985000`) | profiles[P] FOR KEY SHARE (the lock its routine version insert's foreign key takes, first, so it is never awaited while the login is held) -> waiting routines FOR UPDATE SKIP LOCKED, id order -> consent: profile_members[P,U] FOR SHARE -> provider_connections[C] FOR UPDATE -> binding, versions, cursors, routine rows; `lock_timeout` 2 s, a timeout answers 55P03. Without a routine to start: the consent's two locks only |
 
 ## What the live symptoms are
 

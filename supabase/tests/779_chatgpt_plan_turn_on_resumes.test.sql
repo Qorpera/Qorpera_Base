@@ -4,7 +4,9 @@
 -- version just turned on, with a schedule cursor, and recorded on the new version. Never another member's routine, a
 -- listener, a routine paused for another reason or paid by another login, one that ended, a folder file, nor in a
 -- company being deleted or on the folder core; turning a plan off starts nothing; a routine locked elsewhere is
--- skipped, never waited for. Test 764's fixture leaves the member with a plan login (off) and a Codex vault login.
+-- skipped, never waited for. The switch takes the company row before the routines and the plan, so it never
+-- deadlocks with an agent's tool call (the fence, then its run's login), and waits at most 2 s for a lock, then answers
+-- a plain 55P03. Test 764's fixture leaves the member with a plan login (off) and a Codex vault login.
 reset role;
 do $$
 declare v_plan uuid; v_codex uuid;
@@ -24,6 +26,11 @@ begin
 		or exists (select 1 from unnest(array['anon','authenticated','service_role']) as role(name)
 			where has_function_privilege(role.name, 'public.qorpera_routine_waits_for_member_plan(uuid,uuid,uuid)', 'execute')) then
 		raise exception 'the switch or its helper has the wrong callers'; end if;
+	-- Its lock budget (a redefinition must repeat it).
+	if (select array(select setting from unnest(proconfig) as setting order by setting) from pg_proc
+		where oid = 'public.qorpera_set_chatgpt_plan_work_while_away(uuid,uuid,boolean)'::regprocedure)
+		is distinct from array['lock_timeout=2s', 'search_path=""'] then
+		raise exception 'the switch lost its lock budget'; end if;
 end $$;
 create function pg_temp.r779(p_key text) returns uuid language sql as $$
 	select (current_setting('qorpera_test.r779')::jsonb ->> p_key)::uuid
@@ -404,6 +411,134 @@ begin
 	if (select status || '/' || current_version from public.qorpera_cloud_routines where id = pg_temp.r779_id(20)) <> 'paused/1'
 		or (select status || '/' || current_version from public.qorpera_cloud_routines where id = pg_temp.r779_id(21)) <> 'active/2' then
 		raise exception 'Plan turn-on: the routines read wrong after the lock: %', pg_temp.r779_states(); end if;
+end $$;
+
+
+-- The member's switch as a statement, and its call on the member's connection inside a transaction of its own.
+create function pg_temp.r779_switch_sql(p_on boolean) returns text language sql as $$
+	select format('select public.qorpera_set_chatgpt_plan_work_while_away(%L, %L, %L)',
+		'16000000-0000-4000-8000-000000000010', pg_temp.r779('plan'), p_on)
+$$;
+create function pg_temp.r779_member_begin() returns void language plpgsql as $$
+begin
+	perform dblink_exec('r779_member', 'begin');
+	perform * from dblink('r779_member', $q$select set_config('request.jwt.claims',
+		'{"sub":"16000000-0000-4000-8000-000000000001","role":"authenticated"}', true)$q$) as claims(claims text);
+	perform dblink_exec('r779_member', 'set local role authenticated');
+end $$;
+-- What an agent's tool call on the member's plan holds: the company's fence (the company row FOR UPDATE, then its
+-- wake admission row), then its run's login FOR SHARE.
+create function pg_temp.r779_agent_call() returns void language plpgsql as $$
+begin
+	perform dblink_exec('r779_holder', 'begin');
+	perform * from dblink('r779_holder', format('select 1 from public.qorpera_lock_profile_gc_fence(%L) as fence',
+		'16000000-0000-4000-8000-000000000010')) as fenced(one integer);
+	perform * from dblink('r779_holder', format('select 1 from public.qorpera_provider_connections where id = %L for share',
+		pg_temp.r779('plan'))) as held(one integer);
+end $$;
+-- Whether the connection's call has finished within p_seconds.
+create function pg_temp.r779_settles(p_connection text, p_seconds numeric) returns boolean language plpgsql as $$
+begin
+	for attempt in 1 .. (p_seconds * 40)::integer loop
+		if dblink_is_busy('r779_' || p_connection) = 0 then return true; end if;
+		perform pg_sleep(0.025);
+	end loop;
+	return false;
+end $$;
+-- The plan's versions: how many, and whether the newest is on.
+create function pg_temp.r779_plan_versions() returns text language sql as $$
+	select count(*) || '/' || (array_agg(version.allow_autonomous order by version.version desc))[1]
+	from public.qorpera_provider_connection_versions as version where version.connection_id = pg_temp.r779('plan')
+$$;
+
+-- 10. An agent's tool call on the member's plan holds the fence and its login. The member's switch waits for the
+--     company row while holding nothing, gives up after its 2 s budget with a plain "busy", and changes nothing.
+--     Meanwhile the agent's call takes a waiting routine and the plan FOR UPDATE, as its routine save would,
+--     without waiting for the switch: no deadlock. The plan is off and routine 22 waits, as routine 20 does.
+select pg_temp.r779_routine(22, '16000000-0000-4000-8000-000000000001', 'paused', 'needs_model_account',
+	'{"id":"agent","kind":"schedule","intervalMinutes":60}', pg_temp.r779_id(90));
+do $$
+begin
+	perform pg_temp.r779_member_begin();
+	perform * from dblink('r779_member', pg_temp.r779_switch_sql(false)) as call(result jsonb);
+	perform dblink_exec('r779_member', 'commit');
+end $$;
+do $$
+declare v_member integer := current_setting('qorpera_test.r779_member_pid')::integer;
+	v_holder integer := current_setting('qorpera_test.r779_holder_pid')::integer;
+	v_plan text := pg_temp.r779_plan_versions(); v_states text := pg_temp.r779_states(); v_agent jsonb; v_outcome jsonb;
+begin
+	if v_plan not like '%/false' then raise exception '(a) the plan is not off before the race: %', v_plan; end if;
+	perform pg_temp.r779_agent_call();
+	perform pg_temp.r779_member_begin();
+	perform dblink_send_query('r779_member', pg_temp.r779_switch_sql(true));
+	if not pg_temp.r779_waited_for('member', v_holder) then
+		perform dblink_exec('r779_holder', 'rollback');
+		raise exception '(a) the switch did not wait for the agent''s fence: %', pg_temp.r779_collect('r779_member'); end if;
+	perform dblink_send_query('r779_holder', format('with routine as (select id from public.qorpera_cloud_routines
+			where id = %L for update), plan as (select id from public.qorpera_provider_connections where id = %L for update)
+		select jsonb_build_array((select id from routine), (select id from plan))', pg_temp.r779_id(20), pg_temp.r779('plan')));
+	if pg_temp.r779_waited_for('holder', v_member) then
+		raise exception '(a) the agent''s call waited for the switch (a deadlock)'; end if;
+	v_agent := pg_temp.r779_collect('r779_holder');
+	if v_agent -> 'result' is distinct from jsonb_build_array(pg_temp.r779_id(20), pg_temp.r779('plan')) then
+		raise exception '(a) the agent''s call did not get its locks: %', v_agent; end if;
+	if not pg_temp.r779_settles('member', 5) then
+		perform dblink_exec('r779_holder', 'rollback');
+		raise exception '(a) the switch did not give up within its lock budget'; end if;
+	v_outcome := pg_temp.r779_collect('r779_member');
+	perform dblink_exec('r779_member', 'rollback');
+	perform dblink_exec('r779_holder', 'rollback');
+	if v_outcome is distinct from '{"error": "Busy right now. Try again in a moment.", "state": "55P03"}'::jsonb then
+		raise exception '(a) the switch answered %', v_outcome; end if;
+	if pg_temp.r779_plan_versions() is distinct from v_plan or pg_temp.r779_states() is distinct from v_states then
+		raise exception '(a) the busy switch changed something: % %', pg_temp.r779_plan_versions(), pg_temp.r779_states(); end if;
+end $$;
+
+-- 11. The member's switch goes first and holds its locks; an agent's call then waits for it at the fence, and both
+--     finish.
+do $$
+declare v_member integer := current_setting('qorpera_test.r779_member_pid')::integer; v_switch jsonb; v_agent jsonb;
+begin
+	perform pg_temp.r779_member_begin();
+	select call.result into v_switch from dblink('r779_member', pg_temp.r779_switch_sql(true)) as call(result jsonb);
+	perform dblink_exec('r779_holder', 'begin');
+	perform dblink_send_query('r779_holder', format('select to_jsonb(1) from public.qorpera_lock_profile_gc_fence(%L) as fence',
+		'16000000-0000-4000-8000-000000000010'));
+	if not pg_temp.r779_waited_for('holder', v_member) then
+		perform dblink_exec('r779_member', 'rollback');
+		raise exception '(b) the agent''s fence did not wait for the switch: %', pg_temp.r779_collect('r779_holder'); end if;
+	perform dblink_exec('r779_member', 'commit');
+	v_agent := pg_temp.r779_collect('r779_holder');
+	if v_agent ? 'error' then raise exception '(b) the agent''s call failed: %', v_agent; end if;
+	perform * from dblink('r779_holder', format('select 1 from public.qorpera_provider_connections where id = %L for share',
+		pg_temp.r779('plan'))) as held(one integer);
+	perform dblink_exec('r779_holder', 'rollback');
+	if v_switch -> 'resumed_routines' is distinct from jsonb_build_array(pg_temp.r779_id(20), pg_temp.r779_id(22))
+		or v_switch ->> 'changed' <> 'true' or pg_temp.r779_plan_versions() not like '%/true' then
+		raise exception '(b) the switch did not turn the plan on and start both: %', v_switch; end if;
+end $$;
+
+-- 12. The agent's call ends within the switch's budget: the switch waits for it, then starts the waiting routine.
+select pg_temp.r779_routine(23, '16000000-0000-4000-8000-000000000001', 'paused', 'needs_model_account',
+	'{"id":"agent","kind":"schedule","intervalMinutes":60}', pg_temp.r779_id(90));
+do $$
+declare v_holder integer := current_setting('qorpera_test.r779_holder_pid')::integer; v_outcome jsonb;
+begin
+	perform pg_temp.r779_agent_call();
+	perform pg_temp.r779_member_begin();
+	perform dblink_send_query('r779_member', pg_temp.r779_switch_sql(true));
+	if not pg_temp.r779_waited_for('member', v_holder) then
+		perform dblink_exec('r779_holder', 'rollback');
+		raise exception '(c) the switch did not wait for the agent''s fence: %', pg_temp.r779_collect('r779_member'); end if;
+	perform pg_sleep(0.3);
+	perform dblink_exec('r779_holder', 'rollback');
+	v_outcome := pg_temp.r779_collect('r779_member');
+	perform dblink_exec('r779_member', 'commit');
+	if v_outcome -> 'result' -> 'resumed_routines' is distinct from jsonb_build_array(pg_temp.r779_id(23)) then
+		raise exception '(c) the switch did not start the routine after the wait: %', v_outcome; end if;
+	if (select status || '/' || current_version from public.qorpera_cloud_routines where id = pg_temp.r779_id(23)) <> 'active/2' then
+		raise exception '(c) the routine reads wrong: %', pg_temp.r779_states(); end if;
 end $$;
 
 select pg_temp.r779_cleanup();

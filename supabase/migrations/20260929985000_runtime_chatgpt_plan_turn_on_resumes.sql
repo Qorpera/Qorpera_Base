@@ -45,7 +45,10 @@
 --    triggers: the new version's listener activation returns at once (no listener); the routine's pending trigger
 --    cancels the old version's queued wakes, its listener sync updates old cursors of this routine, its status
 --    triggers clear the pause reason, and the resume-restarts-schedule trigger does not fire (the version changes).
--- No company-wide lock beyond that key share, and no wait for a routine.
+-- No company-wide lock beyond that key share, and no wait for a routine. Every wait of the call is bounded, also
+-- the consent's (up to the API role's 8 s before, 20260913000100): the function's lock_timeout is 2 s, and a lock
+-- timeout anywhere in it answers 55P03 "Busy right now. Try again in a moment." with nothing changed, so a member's
+-- toggle never hangs behind a long hold (an agent's fence, the GC, a deletion).
 
 set local lock_timeout = '3s';
 
@@ -80,105 +83,116 @@ declare
 	v_sponsor public.qorpera_execution_sponsor_versions%rowtype;
 	v_connection_version bigint; v_hex text; v_client uuid; v_binding uuid; v_at timestamptz; v_sha text;
 begin
-	if v_user is null or p_on is null or p_connection_id is null or p_profile_id is null
-		or not exists (select 1 from public.qorpera_provider_connections as connection
-			where connection.id = p_connection_id and connection.profile_id = p_profile_id
-				and connection.owner_user_id = v_user and connection.status = 'active')
-		or not public.qorpera_connection_is_chatgpt_plan(p_connection_id) then
-		raise exception 'ChatGPT plan login is unavailable' using errcode = '42501'; end if;
-	-- Turning the plan on also starts the member's routines that wait only for it (20260929985000): found here
-	-- without locks, then locked (header: company row, routines, then the consent's member row and connection).
-	if p_on and public.qorpera_member_role(p_profile_id) is not null
-		and not public.qorpera_company_is_folder_v2(p_profile_id) then
-		v_waiting := array(select routine.id from public.qorpera_cloud_routines as routine
-			where routine.profile_id = p_profile_id and routine.status = 'paused'
-				and routine.pause_reason = 'needs_model_account'
-				and public.qorpera_routine_waits_for_member_plan(routine.id, v_user, p_connection_id)
-			order by routine.id);
-	end if;
-	if cardinality(v_waiting) > 0 then
-		perform 1 from public.qorpera_profiles as profile where profile.id = p_profile_id for key share;
-		for v_id in select routine.id from public.qorpera_cloud_routines as routine
-			where routine.id = any(v_waiting) order by routine.id for update skip locked loop
-			v_locked := v_locked || v_id;
+	-- A wait for any one lock ends after 2 s (the function's lock_timeout, below) as a plain "busy" the web shows
+	-- (55P03, never 40001); this block's rollback undoes all the call did, the member's choice mark included. Every
+	-- other error is raised as it was.
+	begin
+		if v_user is null or p_on is null or p_connection_id is null or p_profile_id is null
+			or not exists (select 1 from public.qorpera_provider_connections as connection
+				where connection.id = p_connection_id and connection.profile_id = p_profile_id
+					and connection.owner_user_id = v_user and connection.status = 'active')
+			or not public.qorpera_connection_is_chatgpt_plan(p_connection_id) then
+			raise exception 'ChatGPT plan login is unavailable' using errcode = '42501'; end if;
+		-- Turning the plan on also starts the member's routines that wait only for it (20260929985000): found here
+		-- without locks, then locked (header: company row, routines, then the consent's member row and connection).
+		if p_on and public.qorpera_member_role(p_profile_id) is not null
+			and not public.qorpera_company_is_folder_v2(p_profile_id) then
+			v_waiting := array(select routine.id from public.qorpera_cloud_routines as routine
+				where routine.profile_id = p_profile_id and routine.status = 'paused'
+					and routine.pause_reason = 'needs_model_account'
+					and public.qorpera_routine_waits_for_member_plan(routine.id, v_user, p_connection_id)
+				order by routine.id);
+		end if;
+		if cardinality(v_waiting) > 0 then
+			perform 1 from public.qorpera_profiles as profile where profile.id = p_profile_id for key share;
+			for v_id in select routine.id from public.qorpera_cloud_routines as routine
+				where routine.id = any(v_waiting) order by routine.id for update skip locked loop
+				v_locked := v_locked || v_id;
+			end loop;
+		end if;
+		perform set_config('qorpera.chatgpt_plan_member_choice', p_connection_id::text, true);
+		v_result := public.qorpera_consent_provider_connection_autonomous(p_profile_id, p_connection_id, p_on);
+		perform set_config('qorpera.chatgpt_plan_member_choice', '', true);
+		-- Read again under the locks: the routine, the company (a deletion request takes the company row FOR UPDATE,
+		-- which the key share holds off; the folder core is switched on only for an untouched company), and the consent's
+		-- answer.
+		if cardinality(v_locked) > 0 and (v_result ->> 'allow_autonomous') = 'true'
+			and public.qorpera_member_role(p_profile_id) is not null and not public.qorpera_company_is_folder_v2(p_profile_id) then
+			v_ready := array(select locked.id from unnest(v_locked) as locked(id)
+				where public.qorpera_routine_waits_for_member_plan(locked.id, v_user, p_connection_id) order by locked.id);
+		end if;
+		if cardinality(v_ready) = 0 then
+			return v_result || jsonb_build_object('resumed_routines', '[]'::jsonb);
+		end if;
+
+		-- The plan's unattended binding for the version just turned on, as qorpera_ensure_unattended_sponsor makes it.
+		v_connection_version := (v_result ->> 'version')::bigint;
+		v_hex := encode(extensions.digest(convert_to('qorpera.unattended-sponsor/v1:' || p_connection_id::text || ':' ||
+			v_connection_version::text, 'utf8'), 'sha256'), 'hex');
+		v_client := (substr(v_hex, 1, 8) || '-' || substr(v_hex, 9, 4) || '-4' || substr(v_hex, 14, 3) || '-8'
+			|| substr(v_hex, 18, 3) || '-' || substr(v_hex, 21, 12))::uuid;
+		select binding.id into v_binding from public.qorpera_execution_sponsor_bindings as binding
+		where binding.profile_id = p_profile_id and binding.client_binding_id = v_client;
+		if v_binding is null then
+			insert into public.qorpera_execution_sponsor_bindings(profile_id, client_binding_id, created_by_user_id)
+			values (p_profile_id, v_client, v_user) returning id into v_binding;
+			insert into public.qorpera_execution_sponsor_versions(binding_id, version, sponsor_kind, provider_connection_id,
+				provider_connection_version, allow_autonomous, created_by_user_id)
+			values (v_binding, 1, 'member_connection', p_connection_id, v_connection_version, true, v_user);
+		end if;
+		select sponsor.* into v_sponsor from public.qorpera_execution_sponsor_versions as sponsor
+		where sponsor.binding_id = v_binding order by sponsor.version desc limit 1;
+		-- Only on that same plan: a binding that pays with another login now, or is switched off, starts nothing.
+		if v_sponsor.provider_connection_id is distinct from p_connection_id or not v_sponsor.allow_autonomous
+			or v_sponsor.sponsor_kind <> 'member_connection'
+			or not exists (select 1 from public.qorpera_execution_sponsor_bindings as binding
+				where binding.id = v_binding and binding.status = 'active') then
+			return v_result || jsonb_build_object('resumed_routines', '[]'::jsonb);
+		end if;
+
+		foreach v_id in array v_ready loop
+			select * into strict v_routine from public.qorpera_cloud_routines where id = v_id;
+			select * into strict v_current from public.qorpera_cloud_routine_versions
+			where routine_id = v_id and version = v_routine.current_version;
+			v_at := clock_timestamp();
+			-- What qorpera_manage_agent_routine hashes, with the new sponsor.
+			v_sha := encode(extensions.digest(convert_to(jsonb_build_object('staff_agent_id', v_current.staff_agent_id,
+				'title', v_current.title, 'prompt', v_current.prompt, 'triggers', v_current.triggers, 'effort', v_current.effort,
+				'sponsor_binding_id', v_binding, 'sponsor_version', v_sponsor.version,
+				'logical_computer_id', v_current.logical_computer_id, 'required_capability', v_current.required_capability,
+				'job_type', v_current.job_type, 'publication_mode', v_current.publication_mode,
+				'review_policy_key', v_current.review_policy_key,
+				'reviewer_staff_ids', to_jsonb(v_current.reviewer_staff_ids))::text, 'utf8'), 'sha256'), 'hex');
+			insert into public.qorpera_cloud_routine_versions
+			select (jsonb_populate_record(null::public.qorpera_cloud_routine_versions, to_jsonb(v_current)
+				|| jsonb_build_object('version', v_routine.current_version + 1, 'client_version_id', extensions.gen_random_uuid(),
+					'sponsor_binding_id', v_binding, 'sponsor_version', v_sponsor.version, 'content_sha256', v_sha,
+					'created_at', v_at, 'resume_reason', 'plan_turned_on'))).*;
+			-- Each schedule trigger's position, as an agent's save that switches a paused routine on.
+			insert into public.qorpera_cloud_routine_schedule_cursors(routine_id, routine_version, trigger_id,
+				last_scheduled_for, next_due_at)
+			select v_id, v_routine.current_version + 1, trigger.value ->> 'id', position.last_scheduled_for, position.next_due_at
+			from jsonb_array_elements(v_current.triggers) as trigger(value)
+			cross join lateral public.qorpera_routine_version_schedule_position(v_id, v_routine.current_version,
+				trigger.value, v_at, false, true) as position
+			where trigger.value ->> 'kind' = 'schedule';
+			update public.qorpera_cloud_routines set current_version = v_routine.current_version + 1, status = 'active',
+				pause_reason = null, authorization_failures = 0, updated_at = statement_timestamp()
+			where id = v_id;
+			v_resumed := v_resumed || v_id;
 		end loop;
-	end if;
-	perform set_config('qorpera.chatgpt_plan_member_choice', p_connection_id::text, true);
-	v_result := public.qorpera_consent_provider_connection_autonomous(p_profile_id, p_connection_id, p_on);
-	perform set_config('qorpera.chatgpt_plan_member_choice', '', true);
-	-- Read again under the locks: the routine, the company (a deletion request takes the company row FOR UPDATE,
-	-- which the key share holds off; the folder core is switched on only for an untouched company), and the consent's
-	-- answer.
-	if cardinality(v_locked) > 0 and (v_result ->> 'allow_autonomous') = 'true'
-		and public.qorpera_member_role(p_profile_id) is not null and not public.qorpera_company_is_folder_v2(p_profile_id) then
-		v_ready := array(select locked.id from unnest(v_locked) as locked(id)
-			where public.qorpera_routine_waits_for_member_plan(locked.id, v_user, p_connection_id) order by locked.id);
-	end if;
-	if cardinality(v_ready) = 0 then
-		return v_result || jsonb_build_object('resumed_routines', '[]'::jsonb);
-	end if;
-
-	-- The plan's unattended binding for the version just turned on, as qorpera_ensure_unattended_sponsor makes it.
-	v_connection_version := (v_result ->> 'version')::bigint;
-	v_hex := encode(extensions.digest(convert_to('qorpera.unattended-sponsor/v1:' || p_connection_id::text || ':' ||
-		v_connection_version::text, 'utf8'), 'sha256'), 'hex');
-	v_client := (substr(v_hex, 1, 8) || '-' || substr(v_hex, 9, 4) || '-4' || substr(v_hex, 14, 3) || '-8'
-		|| substr(v_hex, 18, 3) || '-' || substr(v_hex, 21, 12))::uuid;
-	select binding.id into v_binding from public.qorpera_execution_sponsor_bindings as binding
-	where binding.profile_id = p_profile_id and binding.client_binding_id = v_client;
-	if v_binding is null then
-		insert into public.qorpera_execution_sponsor_bindings(profile_id, client_binding_id, created_by_user_id)
-		values (p_profile_id, v_client, v_user) returning id into v_binding;
-		insert into public.qorpera_execution_sponsor_versions(binding_id, version, sponsor_kind, provider_connection_id,
-			provider_connection_version, allow_autonomous, created_by_user_id)
-		values (v_binding, 1, 'member_connection', p_connection_id, v_connection_version, true, v_user);
-	end if;
-	select sponsor.* into v_sponsor from public.qorpera_execution_sponsor_versions as sponsor
-	where sponsor.binding_id = v_binding order by sponsor.version desc limit 1;
-	-- Only on that same plan: a binding that pays with another login now, or is switched off, starts nothing.
-	if v_sponsor.provider_connection_id is distinct from p_connection_id or not v_sponsor.allow_autonomous
-		or v_sponsor.sponsor_kind <> 'member_connection'
-		or not exists (select 1 from public.qorpera_execution_sponsor_bindings as binding
-			where binding.id = v_binding and binding.status = 'active') then
-		return v_result || jsonb_build_object('resumed_routines', '[]'::jsonb);
-	end if;
-
-	foreach v_id in array v_ready loop
-		select * into strict v_routine from public.qorpera_cloud_routines where id = v_id;
-		select * into strict v_current from public.qorpera_cloud_routine_versions
-		where routine_id = v_id and version = v_routine.current_version;
-		v_at := clock_timestamp();
-		-- What qorpera_manage_agent_routine hashes, with the new sponsor.
-		v_sha := encode(extensions.digest(convert_to(jsonb_build_object('staff_agent_id', v_current.staff_agent_id,
-			'title', v_current.title, 'prompt', v_current.prompt, 'triggers', v_current.triggers, 'effort', v_current.effort,
-			'sponsor_binding_id', v_binding, 'sponsor_version', v_sponsor.version,
-			'logical_computer_id', v_current.logical_computer_id, 'required_capability', v_current.required_capability,
-			'job_type', v_current.job_type, 'publication_mode', v_current.publication_mode,
-			'review_policy_key', v_current.review_policy_key,
-			'reviewer_staff_ids', to_jsonb(v_current.reviewer_staff_ids))::text, 'utf8'), 'sha256'), 'hex');
-		insert into public.qorpera_cloud_routine_versions
-		select (jsonb_populate_record(null::public.qorpera_cloud_routine_versions, to_jsonb(v_current)
-			|| jsonb_build_object('version', v_routine.current_version + 1, 'client_version_id', extensions.gen_random_uuid(),
-				'sponsor_binding_id', v_binding, 'sponsor_version', v_sponsor.version, 'content_sha256', v_sha,
-				'created_at', v_at, 'resume_reason', 'plan_turned_on'))).*;
-		-- Each schedule trigger's position, as an agent's save that switches a paused routine on.
-		insert into public.qorpera_cloud_routine_schedule_cursors(routine_id, routine_version, trigger_id,
-			last_scheduled_for, next_due_at)
-		select v_id, v_routine.current_version + 1, trigger.value ->> 'id', position.last_scheduled_for, position.next_due_at
-		from jsonb_array_elements(v_current.triggers) as trigger(value)
-		cross join lateral public.qorpera_routine_version_schedule_position(v_id, v_routine.current_version,
-			trigger.value, v_at, false, true) as position
-		where trigger.value ->> 'kind' = 'schedule';
-		update public.qorpera_cloud_routines set current_version = v_routine.current_version + 1, status = 'active',
-			pause_reason = null, authorization_failures = 0, updated_at = statement_timestamp()
-		where id = v_id;
-		v_resumed := v_resumed || v_id;
-	end loop;
-	return v_result || jsonb_build_object('resumed_routines', to_jsonb(v_resumed));
+		return v_result || jsonb_build_object('resumed_routines', to_jsonb(v_resumed));
+	exception when lock_not_available then
+		raise exception 'Busy right now. Try again in a moment.' using errcode = '55P03';
+	end;
 end
 $$;
 revoke all on function public.qorpera_set_chatgpt_plan_work_while_away(uuid, uuid, boolean) from public, anon, service_role;
 grant execute on function public.qorpera_set_chatgpt_plan_work_while_away(uuid, uuid, boolean) to authenticated;
+-- A member's switch waits at most 2 s for any one lock, so it never hangs behind a long hold (the GC fence, a
+-- deletion), as the folder byte functions (20260928339780). lock_timeout is a function setting PostgreSQL allows
+-- any owner (only custom qorpera.* settings need a superuser). A later `create or replace` must repeat it (779 checks).
+alter function public.qorpera_set_chatgpt_plan_work_while_away(uuid, uuid, boolean) set lock_timeout = '2s';
 
 -- The routine list names a resume while its version is current.
 create function pg_temp.qorpera_plan_resume_20260929985000_patch(p_target regprocedure, p_anchor text, p_replacement text)
