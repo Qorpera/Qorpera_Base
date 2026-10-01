@@ -548,6 +548,16 @@ https://claude.ai/artifact/UWehPVysVzAmWcwvkuU6on.
   `"~^/v1/model-logins/[0-9a-fA-F-]{36}/(login|account-refresh|chatgpt-plan/callback|chatgpt-plan/confirm)$" 127.0.0.1:18660;`,
   with the same `location` widened to match. The vault host needs outbound HTTPS to `auth.openai.com`
   (discovery, signing keys, token and revocation endpoints).
+- **Callback Edge Function (slice 3).** `supabase functions deploy chatgpt-plan-callback`
+  (`verify_jwt = false`: OpenAI sends the browser without a JWT). The address OpenAI registers is
+  `https://<project>.supabase.co/functions/v1/chatgpt-plan-callback`, the same as the credential's
+  `redirectUri`. It asks `qorpera_chatgpt_plan_callback_target(state)` with the service role, forwards
+  `{state, code, error, clientId}` to the company's vault, and returns the browser with
+  `#?chatgpt_plan=confirm&confirmation=…` or `#?chatgpt_plan=failed&reason=…` after the return page.
+  The return page is `QORPERA_CHATGPT_PLAN_RETURN_URL` (optional; an HTTPS page of one of
+  `QORPERA_WEB_ORIGINS`, else that list's first origin). It never exchanges a code and never sees a
+  token. The web client's confirmation goes through `native-provider-login` at `…/chatgpt-plan-confirm`,
+  which the login chooser routes to the same vault (redeploy that function too).
 - **Switches.** `update public.qorpera_chatgpt_plan_settings set enabled = true;` (platform) and
   `select public.qorpera_set_chatgpt_plan_company('<company>', true);` (service role; only for a company
   whose sign-ins go to its vault). Both start off.

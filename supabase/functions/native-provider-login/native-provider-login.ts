@@ -126,11 +126,16 @@ async function forwardLogin(request: Request, options: NativeProviderLoginProxyO
 			throw new Error("Native login proxy timeout is invalid");
 		}
 		const signal = AbortSignal.any([request.signal, AbortSignal.timeout(timeoutMs)]);
-		const refresh = new URL(request.url).pathname.endsWith("/account-refresh");
+		const path = new URL(request.url).pathname;
+		const refresh = path.endsWith("/account-refresh");
+		// Sign in with ChatGPT: the web client confirms a plan sign-in with the same capability; the same
+		// gateway (the company's vault) answers it.
+		const planConfirm = path.endsWith("/chatgpt-plan-confirm");
 		target = await resolveUpstream(refresh && options.upstreamResolver
 			? { ...options, upstreamResolver: (hash) => options.upstreamResolver!(hash, "account_refresh") }
 			: options, signal, await sha256Hex(capability));
 		if (refresh) target.url = new URL("account-refresh", target.url).href;
+		if (planConfirm) target.url = new URL("chatgpt-plan/confirm", target.url).href;
 		const upstream = await (options.fetchImplementation ?? fetch)(target.url, {
 			method: "POST",
 			headers: {

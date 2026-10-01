@@ -164,6 +164,22 @@ describe("native provider login proxy", () => {
 		assert.equal(result.status, 200);
 		assert.equal(purpose, "account_refresh");
 	});
+	it("routes a ChatGPT plan confirmation to the sign-in's own gateway, the company's vault", async () => {
+		let purpose: string | undefined = "unset";
+		const vault = "https://vault.example/v1/model-logins/3d2c6a1e-7b4f-4c55-9a1e-2f6b8c9d0e1f/";
+		const result = await forwardNativeProviderLogin(new Request("https://edge.example/native-provider-login/chatgpt-plan-confirm", {
+			method: "POST", headers: { authorization: `Bearer ${capability}` }, body: '{"schema":"qorpera.chatgpt-plan-confirm/v1"}',
+		}), {
+			upstreamResolver: async (_hash, kind) => { purpose = kind; return vault; },
+			fetchImplementation: async (input, init) => {
+				assert.equal(String(input), `${vault}chatgpt-plan/confirm`);
+				assert.equal(new Headers(init?.headers).get("authorization"), `Bearer ${capability}`);
+				return Response.json({ status: "completed" });
+			},
+		});
+		assert.equal(result.status, 200);
+		assert.equal(purpose, undefined);
+	});
 	it("forwards only the opaque login envelope and its one-time capability", async () => {
 		let forwardedBody = "";
 		const response = await forwardNativeProviderLogin(
