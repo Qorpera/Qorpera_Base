@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { parseCompanyStateFile } from "@qorpera/cloud-client/company-state-files";
+import { parseCompanyStateFile, type RoutineFile } from "@qorpera/cloud-client/company-state-files";
 import type { CloudFileReference } from "@qorpera/cloud-client/node/cloud-object-store";
 import type { JsonValue } from "@qorpera/contracts";
 import {
@@ -35,6 +35,17 @@ interface Stored {
 
 /** The todos folder whose index the fake answers (`qorpera_folder_agent_todos`). */
 const TODOS = "agents/nora/todos";
+/** The routines folder whose index the fake answers (`qorpera_folder_agent_routines`). A write or delete of a routine
+ * file is delegation. */
+const ROUTINES = "agents/nora/routines";
+const isRoutine = (path: string) =>
+	path.startsWith(`${ROUTINES}/`) && /^[^/]+\.md$/.test(path.slice(ROUTINES.length + 1));
+
+/** How the fake routine index runs a routine other than its file says: the platform's pauses, an ended routine. */
+export interface FolderWriterRoutineState {
+	readonly status: "paused" | "expired";
+	readonly pauseReason: string | null;
+}
 
 /** A save the fake hook decides other than "saved": a structured file's rule, as F2's hooks word it. */
 export interface FolderWriterHookAnswer {
@@ -45,14 +56,18 @@ export interface FolderWriterHookAnswer {
 
 /** A fake folder core and receipt ledger for a folder writer's tests, with seeded files and folders. A write whose
  * parse has problems is refused as `structured_invalid`, as the real hook does; `hook` may refuse any other write. A
- * new folder with an `agent.md` or a `group.md` is delegation (C1B §6): the commit saves it only with a review recorded
- * (`qorpera_folder_record_review`, C2 R1) for exactly its change set, and `recorder` may answer the recording instead.
- * A commit is not replayed by its operation key (SQL's step 0); the receipt ledger replays a completed call. */
+ * new folder with an `agent.md` or a `group.md`, and a write or delete of a routine file other than a dynamic routine's
+ * decision, is delegation (C1B §6): the commit saves it only with a review recorded (`qorpera_folder_record_review`, C2 R1) for exactly its change set, and
+ * `recorder` may answer the recording instead. The routine index runs each routine as its file says, unless
+ * `routineStates` says otherwise; an unchanged save of an active file ends the platform's pause, as SQL's resume rule.
+ * `login` answers `qorpera_prepare_routine_login` (a paying login by default). A commit is not replayed by its
+ * operation key (SQL's step 0); the receipt ledger replays a completed call. */
 export async function folderWriterFixture(
 	seed: { files?: Record<string, string>; folders?: string[] } = {},
 	options: {
 		hook?: (path: string, text: string) => FolderWriterHookAnswer | null;
 		recorder?: (request: Record<string, unknown>) => Record<string, unknown> | null;
+		login?: () => Record<string, unknown>;
 	} = {},
 ) {
 	const { binding, authority } = nativeToolAuthorityFixture();
@@ -67,6 +82,17 @@ export async function folderWriterFixture(
 	const reviews = new Map<string, string>();
 	const recordings: Record<string, unknown>[] = [];
 	const releases: Record<string, unknown>[] = [];
+	const logins: Record<string, unknown>[] = [];
+	// Routine key → how the index runs it, where that differs from its file.
+	const routineStates = new Map<string, FolderWriterRoutineState>();
+	const routineOf = (path: string, data: Uint8Array | undefined) => {
+		const parsed = parseCompanyStateFile(path, new TextDecoder().decode(data));
+		if (!parsed?.ok || parsed.file.kind !== "routine") throw new Error("Fixture routine does not parse");
+		return parsed.file;
+	};
+	// A routine change is delegation: saved only with the review recorded for exactly this change set.
+	const reviewed = (args: Record<string, unknown>, units: Record<string, unknown>[]) =>
+		typeof args.p_review_id === "string" && reviews.get(args.p_review_id) === JSON.stringify(units);
 	let seq = 1;
 	let tick = 0;
 	const now = () =>
@@ -202,6 +228,17 @@ export async function folderWriterFixture(
 						folders.add(path);
 						return { ...base, outcome: "saved", version: randomUUID() };
 					}
+					if (unit.op === "delete") {
+						const current = files.get(path);
+						if (current?.version !== unit.expectedVersion)
+							return { ...base, outcome: "conflict", reason: current ? "version_changed" : "missing" };
+						if (isRoutine(path) && !reviewed(args, units))
+							return { ...base, outcome: "denied", reason: "review_required" };
+						files.delete(path);
+						routineStates.delete(path.slice(ROUTINES.length + 1, -3));
+						// A deleted path has no version: the commit leaves the key out.
+						return { ...base, outcome: "saved" };
+					}
 					if (!folders.has(parent)) return { ...base, outcome: "refused", reason: "parent_missing" };
 					const current = files.get(path);
 					if (unit.expectedVersion === undefined ? current : current?.version !== unit.expectedVersion)
@@ -222,6 +259,35 @@ export async function folderWriterFixture(
 						new TextDecoder().decode(bytesBySha.get((unit.file as CloudCompanyFolderFile).fileSha256)),
 					);
 					if (hooked) return { ...base, ...hooked };
+					if (isRoutine(path)) {
+						const key = path.slice(ROUTINES.length + 1, -3);
+						const next = routineOf(path, bytesBySha.get((unit.file as CloudCompanyFolderFile).fileSha256));
+						const previous = current ? routineOf(path, bytesBySha.get(current.file.fileSha256)) : null;
+						// Delegation, except a dynamic routine's decision: a new at, effort or reply, or its conclusion.
+						const without = (routine: RoutineFile, keys: readonly string[]) =>
+							JSON.stringify(
+								Object.fromEntries(Object.entries(routine).filter(([name]) => !keys.includes(name))),
+							);
+						const decision =
+							previous?.trigger.when === "once" &&
+							((next.status === "active" &&
+								next.trigger.when === "once" &&
+								without(next, ["trigger", "effort", "reply"]) ===
+									without(previous, ["trigger", "effort", "reply"])) ||
+								(next.status === "concluded" &&
+									without(next, ["status", "conclusion"]) === without(previous, ["status", "conclusion"])));
+						if (!decision && !reviewed(args, units))
+							return { ...base, outcome: "denied", reason: "review_required" };
+						// SQL's resume rule: a save of the active file, unchanged, ends the platform's pause; an edit keeps it.
+						const state = routineStates.get(key);
+						if (
+							state?.status === "paused" &&
+							next.status === "active" &&
+							JSON.stringify(next) === JSON.stringify(previous)
+						)
+							routineStates.delete(key);
+						else if (previous && next.status !== previous.status) routineStates.delete(key);
+					}
 					const version = randomUUID();
 					files.set(path, { version, file: unit.file as CloudCompanyFolderFile, updatedAt: now() });
 					return { ...base, outcome: "saved", version };
@@ -290,6 +356,69 @@ export async function folderWriterFixture(
 					moreTodos: more,
 					nextCursor: more > 0 ? (page.at(-1)?.id ?? null) : null,
 				};
+			}
+			// The routine index as the commit keeps it: one row per routine file, in the order the files were made.
+			if (method === "qorpera_folder_agent_routines") {
+				const request = args.p_request as { routineKey?: string; cursor?: string };
+				const all = [...files.entries()]
+					.filter(([path]) => isRoutine(path))
+					.map(([path, stored]) => {
+						const routine = routineOf(path, bytesBySha.get(stored.file.fileSha256));
+						const key = path.slice(ROUTINES.length + 1, -3);
+						const state = routineStates.get(key);
+						return { path, stored, routine, key, state };
+					})
+					.reverse();
+				const at = request.cursor ? all.findIndex((row) => row.routine.id === request.cursor) : -1;
+				if (request.cursor && at < 0) throw new Error("Routine cursor is unavailable; list again without it");
+				const rows = all
+					.filter((_row, index) => index > at)
+					.filter((row) => request.routineKey === undefined || row.key === request.routineKey);
+				const page = rows.slice(0, 32);
+				const more = rows.length - page.length;
+				return {
+					schema: "qorpera.folder-agent-routines/v1",
+					routines: page.map(({ path, stored, routine, key, state }) => {
+						// A page cuts the instructions to 200 characters, as SQL's left.
+						const cut = request.routineKey === undefined && Array.from(routine.instructions).length > 200;
+						return {
+							routineKey: key,
+							routineId: routine.id,
+							version: 1,
+							status: state?.status ?? routine.status,
+							pauseReason: state ? state.pauseReason : routine.status === "paused" ? "agent" : null,
+							title: routine.title,
+							trigger: { id: "file", kind: "schedule" },
+							effort: routine.effort,
+							expiresAt: routine.ends,
+							maxOccurrences: routine.runs,
+							quietHours: null,
+							occurrences: 2,
+							nextRunAt: routine.status === "active" && !state ? "2026-10-02T09:00:00Z" : null,
+							conclusion: routine.conclusion,
+							concludedAt: null,
+							path,
+							folderVersion: stored.version,
+							cursor: routine.id,
+							file: cut
+								? { ...routine, instructions: Array.from(routine.instructions).slice(0, 200).join("") }
+								: routine,
+							...(cut ? { instructionsTruncated: true } : {}),
+						};
+					}),
+					moreRoutines: more,
+					nextCursor: more > 0 ? (page.at(-1)?.routine.id ?? null) : null,
+				};
+			}
+			if (method === "qorpera_prepare_routine_login") {
+				logins.push(structuredClone(args));
+				return (
+					options.login?.() ?? {
+						schema: "qorpera.routine-login/v1",
+						runId: (args.p_binding as { runId: string }).runId,
+						login: { bindingId: "0b1c2d3e-4444-4444-8444-444444444444", version: 1 },
+					}
+				);
 			}
 			if (method === "qorpera_folder_list") {
 				const parent = args.p_parent as string;
@@ -382,6 +511,7 @@ export async function folderWriterFixture(
 		return stored ? new TextDecoder().decode(bytesBySha.get(stored.file.fileSha256)) : null;
 	};
 	return {
+		binding,
 		identity,
 		folder,
 		files,
@@ -390,6 +520,8 @@ export async function folderWriterFixture(
 		recordings,
 		reviews,
 		releases,
+		logins,
+		routineStates,
 		ledger,
 		operationControl,
 		operations,

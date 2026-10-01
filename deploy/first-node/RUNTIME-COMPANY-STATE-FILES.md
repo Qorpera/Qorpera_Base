@@ -895,7 +895,8 @@ C1d (bytes):
   and the requester as members; another member refused; an archived coworker refused; a lone agent refused by the
   file's own rule).
 
-**Plan (W4c): `manage_routine` and `decide_routine`'s rewrite** (design, round 3 approved with nits; being built). Both write
+**Plan (W4c): `manage_routine` and `decide_routine`'s rewrite** (design, round 3 approved with nits; W4c-1 built, below;
+W4c-2 next). Both write
 the run agent's own routine files, `agents/<handle>/routines/<routineKey>.md`, as W4a and W4b do: the file is checked
 with the arguments, before the automatic review; every other refusal comes before the receipt; under the receipt the
 change set is staged, its review recorded (`manage_routine`, `decide_routine`) and committed with it. No
@@ -999,6 +1000,40 @@ pause, resume, conclude and removal on the recorder, and a dynamic rewrite (a ro
 binding, from 708's `routine_run` and 647's `native`). Runtime: each action and refusal on the writer fixture (which
 learns routine files as delegation, the routine read and the login preparation), the folder description and wiring,
 the own-routine refusals, and `decide_routine`'s rewrite.
+
+**Built (W4c-1): `manage_routine`** (`packages/runtime/src/cloud-folder-routines.ts`; migration 20260929990000), as
+planned, with these choices made while building:
+- SQL: `qorpera_company_state_routine_resumes` and the four-argument `qorpera_company_state_routine_restarts`, patched
+  into the rules and the index writer by exact anchors. `qorpera_folder_agent_routines` returns
+  `qorpera_agent_routine_view` without `intent` (the file's `instructions` say it once), plus `path`, `folderVersion`,
+  `file` (the parse) and `cursor`. A page cuts each routine's instructions to 200 characters and marks it
+  `instructionsTruncated`, as W1 cuts a todo's detail, so a page fits one 8 KiB tool result; `routineKey` reads one
+  whole. The runtime reads it with a 1 MiB response bound. Both new functions join the client's RPC lists; the login
+  preparation is a run effect called with the binding, as the recorder is.
+- `list` takes a `routineKey` or a `cursor` (not both) in a folder-v2 run and shows, for each routine, how it runs now
+  (status, the platform's pause reason, the next run, the runs used) and what its file says. Index reads are not
+  released (W1's ruling).
+- `upsert` maps the compiled trigger: `every` (no time zone; quiet hours carry `quiet_timezone`), `weekly` (days
+  `mon`..`sun`, `time`, `timezone`, `starts`), `dynamic` (`once`: `firstRunAt`, else the file's `at` while it is
+  ahead, else now). The receipt binds the request as parsed; defaults filled in are not part of it. An upsert whose
+  parse equals the file's answers "nothing to change" (pointing at resume over the platform's pause, or at a later
+  end over an ended routine).
+- `pause`, `resume`, `conclude` edit the file's settings (`setCompanyStateSettings`); a resume over the platform's
+  pause saves the same bytes. `remove` is a `delete` unit at the version read; a repeat after the file is gone answers
+  "nothing to change". The routine that woke the run (any routine wake, by its id) cannot be paused or removed.
+- Login: `upsert` and `resume` pin it last before the receipt. Any resume with no paying login answers before the
+  receipt (a file pause would only turn into a wait for one). The wake's refusals (`55000`: the acknowledgement owed,
+  a final reply sent, a paused company) are refusals in the runtime's words; others stay errors.
+- After a save the result reads the routine back from the index, best effort, and says what a paused result still
+  needs (a model account, a working account, a member's Stop).
+- The approval card for a resume adds that it switches the routine back on, also after a member's Stop or a failing
+  account.
+- Tests: SQL 780 (the resume rule and the read: authority per file, workers and views refused, another agent's
+  routines left out, one key, a cursor, the cut) and 781 (a run's new routine, pause, resume, an unchanged save over
+  the platform's pause, conclusion and removal on the recorder; a new routine and a removal not saved without the
+  review; the run's own routine not paused). Runtime: the writer on the writer fixture (which now holds routine files
+  as delegation except a dynamic routine's decision, a routine index and the login), the client's two calls, the
+  control's bound, the tool's folder path and the runtime's wiring.
 
 Until the mount's writes are accepted (F3), these tools become thin writers of these files:
 `hire_agent`, `create_group_chat`, `organize_sidebar`, `manage_todo`, `manage_routine` and

@@ -114,8 +114,23 @@ begin
 	e := r -> 'routines' -> 0;
 	if jsonb_array_length(r -> 'routines') <> 1 or e ->> 'routineKey' <> 'inbox' or e ->> 'path' <> 'agents/nora/routines/inbox.md'
 		or e ->> 'status' <> 'paused' or e -> 'file' ->> 'status' <> 'paused' or e -> 'file' -> 'trigger' ->> 'when' <> 'every'
-		or e ->> 'intent' <> 'Look at the inbox.' or e ->> 'folderVersion' is null then
+		or e -> 'file' ->> 'instructions' <> 'Look at the inbox.' or e ? 'intent' or e ? 'instructionsTruncated'
+		or e ->> 'folderVersion' is null then
 		raise exception 'One routine, as runs see it and as the file says: %', e; end if;
+	-- A page cuts long instructions to 200 characters; one routine by its key is whole.
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'routine-read-long', jsonb_build_array(pg_temp.routine(
+		'agents/nora/routines/long.md', pg_temp.rparse(md5('long')::uuid, 'Long', pg_temp.every(),
+			jsonb_build_object('instructions', repeat('é', 250)))))), 1, 'saved');
+	r := public.qorpera_folder_agent_routines('70700000-0000-4000-8000-000000000020', a, '{}');
+	r := r -> 'routines' || (public.qorpera_folder_agent_routines('70700000-0000-4000-8000-000000000020', a,
+		jsonb_build_object('cursor', r ->> 'nextCursor')) -> 'routines');
+	select value into e from jsonb_array_elements(r) where value ->> 'routineKey' = 'long';
+	if e -> 'file' ->> 'instructions' <> repeat('é', 200)
+		or e -> 'instructionsTruncated' <> 'true'::jsonb then
+		raise exception 'A page cuts long instructions: %', e; end if;
+	e := public.qorpera_folder_agent_routines('70700000-0000-4000-8000-000000000020', a, '{"routineKey":"long"}') -> 'routines' -> 0;
+	if e -> 'file' ->> 'instructions' <> repeat('é', 250) or e ? 'instructionsTruncated' then
+		raise exception 'One routine by its key is whole: %', e; end if;
 	-- Bad requests.
 	perform pg_temp.raises(format('select public.qorpera_folder_agent_routines(%L, %L, %L)', '70700000-0000-4000-8000-000000000020', a,
 		'{"routineKey":"Inbox"}'), '22023');

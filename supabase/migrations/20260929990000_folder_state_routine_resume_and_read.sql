@@ -68,11 +68,12 @@ select pg_temp.w4c_replace('public.qorpera_company_state_index_routine(uuid,uuid
 drop function public.qorpera_company_state_routine_restarts(public.qorpera_cloud_routines, jsonb, jsonb);
 
 -- The run agent's file routines, as the index keeps them, each only if the run may read its file: the routine as the
--- runtime reads it (qorpera_agent_routine_view: title, instructions, trigger, effort, limits, quiet hours, status and
--- the platform's pause reason, occurrences, the next run, conclusion), and the file's own view (its path, version and
--- parse, whose status is the file's). Any run of the agent but a worker may read, a member's private conversation
--- included. routineKey reads one; otherwise a page of 32, newest first, with a cursor. Routines from before the
--- company's folder (no file) are not listed.
+-- runtime reads it (qorpera_agent_routine_view: status and the platform's pause reason, occurrences, the next run,
+-- limits; its instructions are the file's), and the file's own view (its path, version and parse, whose status is the
+-- file's). Any run of the agent but a worker may read, a member's private conversation included. routineKey reads one
+-- whole; a page (32, newest first, with a cursor) cuts each routine's instructions to 200 characters, as W1's todo
+-- read cuts a detail, so a page stays one tool result's size. Routines from before the company's folder (no file) are
+-- not listed.
 create function public.qorpera_folder_agent_routines(p_environment_id uuid, p_actor jsonb, p_request jsonb)
 returns jsonb language plpgsql stable security definer set search_path = '' as $$
 declare
@@ -113,8 +114,13 @@ begin
 			and (v_after.id is null or (routine.created_at, routine.id) < (v_after.created_at, v_after.id))
 			and public.qorpera_folder_actor_allowed(p_environment_id, v_profile, v_auth, routine.folder_path, 'read')),
 	page as (select * from matching order by created_at desc, id desc limit 32)
-	select coalesce(jsonb_agg(public.qorpera_agent_routine_view(routine) || jsonb_build_object('path', routine.folder_path,
-				'folderVersion', routine.folder_path_version, 'file', file.structured -> 'parse', 'cursor', routine.id)
+	select coalesce(jsonb_agg((public.qorpera_agent_routine_view(routine) - 'intent') || jsonb_build_object('path', routine.folder_path,
+				'folderVersion', routine.folder_path_version, 'cursor', routine.id,
+				'file', case when p_request ? 'routineKey' or file.structured -> 'parse' ->> 'instructions' is null
+					then file.structured -> 'parse'
+					else file.structured -> 'parse' || jsonb_build_object('instructions', left(file.structured -> 'parse' ->> 'instructions', 200)) end)
+			|| case when not p_request ? 'routineKey' and char_length(file.structured -> 'parse' ->> 'instructions') > 200
+				then '{"instructionsTruncated":true}'::jsonb else '{}'::jsonb end
 			order by page.created_at desc, page.id desc), '[]'::jsonb),
 		(select count(*) from matching) - count(*),
 		(array_agg(page.id order by page.created_at, page.id))[1]

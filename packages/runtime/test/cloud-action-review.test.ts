@@ -342,6 +342,19 @@ describe("what the card shows for delegation", () => {
 				parse("manage_routine", { action: "pause", operationKey: "k", routineKey: "weekly-sales-report" }),
 			),
 		).toEqual({ title: "Pause a routine", target: "Weekly sales report", details: {} });
+		// A resume says that it also undoes a member's Stop or a suspension.
+		expect(
+			describeCloudAction(
+				tool("manage_routine"),
+				parse("manage_routine", { action: "resume", operationKey: "k", routineKey: "weekly-sales-report" }),
+			),
+		).toEqual({
+			title: "Resume a routine",
+			target: "Weekly sales report",
+			details: {
+				effect: "Switches the routine back on, also after a member stopped it or its model account stopped working",
+			},
+		});
 	});
 
 	it("says when a dynamic routine runs next when its run rewrites it", async () => {
