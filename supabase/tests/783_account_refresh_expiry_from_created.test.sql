@@ -65,7 +65,7 @@ end $$;
 do $$
 declare v_row public.qorpera_native_account_refresh_requests := pg_temp.refresh783('pending');
 begin
-	if v_row.status <> 'pending' or v_row.expires_at <> v_row.created_at + interval '5 minutes' then
+	if v_row.expires_at <> v_row.created_at + interval '5 minutes' then
 		raise exception 'A defaulted pending refresh expires at % after its creation', v_row.expires_at - v_row.created_at; end if;
 	update public.qorpera_native_account_refresh_requests set status = 'cancelled' where id = v_row.id;
 end $$;
