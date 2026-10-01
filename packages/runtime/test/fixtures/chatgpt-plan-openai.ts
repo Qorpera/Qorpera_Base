@@ -44,7 +44,7 @@ export function fakeOpenAi(options: FakeOpenAiOptions = {}) {
 	const requests: Array<{ path: string; form: URLSearchParams; authorization: string | null }> = [];
 	const behaviour = {
 		/** The next token endpoint answer, instead of the normal one. */
-		tokenAnswer: undefined as undefined | { status: number; body: unknown },
+		tokenAnswer: undefined as undefined | { status: number; body?: unknown; raw?: string },
 		/** Leave the plan scope out of the next tokens (the member declined plan use). */
 		withoutPlanScope: false,
 		/** Seconds until the next tokens' earliest renewal, or null for none. */
@@ -205,6 +205,8 @@ export function fakeOpenAi(options: FakeOpenAiOptions = {}) {
 		if (behaviour.tokenAnswer) {
 			const answer = behaviour.tokenAnswer;
 			behaviour.tokenAnswer = undefined;
+			if (answer.raw !== undefined)
+				return new Response(answer.raw, { status: answer.status, headers: { "content-type": "text/html" } });
 			return json(answer.status, answer.body);
 		}
 		if (form.get("grant_type") === "authorization_code") {

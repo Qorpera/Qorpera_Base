@@ -251,6 +251,9 @@ class IdTokenRefused extends Error {}
 class SigningKeyUnknown extends Error {}
 
 /** A token answer OpenAI gave (200) that this vault cannot use, with a fixed label safe to log. */
+/** OpenAI's discovery document answered, but not as this vault needs it (status, issuer, an endpoint). */
+class DiscoveryUnusable extends Error {}
+
 class TokenAnswerUnusable extends Error {
 	readonly label: "answer unreadable" | "plan scope not granted" | "answer unusable";
 	constructor(label: TokenAnswerUnusable["label"]) {
@@ -266,11 +269,14 @@ export function chatGptPlanFailure(error: unknown): string {
 	if (error instanceof IdTokenRefused) return "ID token refused";
 	if (error instanceof SigningKeyUnknown) return "signing key unknown";
 	if (error instanceof TokenAnswerUnusable) return `token ${error.label}`;
+	if (error instanceof DiscoveryUnusable) return "discovery unusable";
 	return "OpenAI unreachable";
 }
 
-/** A shared request's promise, given up by this caller alone when its own signal ends. */
+/** A shared request's promise, given up by this caller alone when its own signal ends. The shared promise
+ * itself never goes unhandled: a fetch nobody waits for any more fails quietly. */
 function abortable<T>(value: Promise<T>, signal: AbortSignal): Promise<T> {
+	value.catch(() => undefined);
 	if (signal.aborted) return Promise.reject(signal.reason);
 	return new Promise<T>((resolveValue, reject) => {
 		const onAbort = (): void => reject(signal.reason);
@@ -361,7 +367,12 @@ export class ChatGptPlanOAuth {
 			signal,
 		);
 		try {
-			const idToken = token(answer.id_token, "ChatGPT plan ID token");
+			let idToken: string;
+			try {
+				idToken = token(answer.id_token, "ChatGPT plan ID token");
+			} catch {
+				throw new TokenAnswerUnusable("answer unusable");
+			}
 			const identity = await this.verifyIdToken(idToken, input.nonce, signal);
 			return this.#login(answer, {
 				subject: identity.subject,
@@ -419,8 +430,10 @@ export class ChatGptPlanOAuth {
 			}
 			return { outcome: "transient", reason: "provider_unreachable" };
 		}
+		// Ends whichever refresh token is live after this answer: the new one, or the old one when OpenAI sent
+		// none (it then stays valid, RFC 6749 6).
 		const spent = (reason: string): ChatGptPlanRenewal => {
-			this.#endIssued(answer);
+			this.#endIssued(answer.refresh_token === undefined ? { refresh_token: login.refreshToken } : answer);
 			return { outcome: "refused", reason };
 		};
 		let idToken = login.idToken;
@@ -644,15 +657,19 @@ export class ChatGptPlanOAuth {
 				maximumBytes: 64 * 1024,
 				deadlineMs: REQUEST_DEADLINE_MS,
 			});
-			if (response.status !== 200) throw new Error("ChatGPT plan discovery is unavailable");
-			const document = jsonRecord(parseJsonResponse(response));
-			if (document.issuer !== CHATGPT_PLAN_ISSUER) throw new Error("ChatGPT plan issuer differs");
-			return Object.freeze({
-				authorization: issuerEndpoint(document.authorization_endpoint, "ChatGPT plan authorization endpoint"),
-				token: issuerEndpoint(document.token_endpoint, "ChatGPT plan token endpoint"),
-				revocation: issuerEndpoint(document.revocation_endpoint, "ChatGPT plan revocation endpoint"),
-				keys: issuerEndpoint(document.jwks_uri, "ChatGPT plan keys"),
-			});
+			if (response.status !== 200) throw new DiscoveryUnusable("ChatGPT plan discovery is unavailable");
+			try {
+				const document = jsonRecord(parseJsonResponse(response));
+				if (document.issuer !== CHATGPT_PLAN_ISSUER) throw new Error("ChatGPT plan issuer differs");
+				return Object.freeze({
+					authorization: issuerEndpoint(document.authorization_endpoint, "ChatGPT plan authorization endpoint"),
+					token: issuerEndpoint(document.token_endpoint, "ChatGPT plan token endpoint"),
+					revocation: issuerEndpoint(document.revocation_endpoint, "ChatGPT plan revocation endpoint"),
+					keys: issuerEndpoint(document.jwks_uri, "ChatGPT plan keys"),
+				});
+			} catch {
+				throw new DiscoveryUnusable("ChatGPT plan discovery is invalid");
+			}
 		})();
 		this.#endpoints = { at: this.#now(), value };
 		// A failed discovery is not kept: the next call asks again.

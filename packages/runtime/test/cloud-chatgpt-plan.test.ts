@@ -252,6 +252,15 @@ it("shares one key fetch, which a caller whose time ends gives up alone", async 
 	expect(late.status).toBe("rejected");
 	expect(waiting).toEqual({ status: "fulfilled", value: { subject: "user-abc", email: null } });
 	expect(openai.requests.filter((request) => request.path === "/.well-known/jwks.json")).toHaveLength(1);
+	// A fetch that fails after its only caller gave up fails quietly: an unhandled rejection would stop the
+	// vault (vitest fails the run on one).
+	openai.behaviour.keysStatus = 503;
+	const alone = new ChatGptPlanOAuth({ client: openai.client, fetch: openai.fetch });
+	await expect(alone.verifyIdToken(idToken, "n", AbortSignal.abort())).rejects.toThrow();
+	await vi.waitFor(() =>
+		expect(openai.requests.filter((request) => request.path === "/.well-known/jwks.json")).toHaveLength(2),
+	);
+	await new Promise((resolveTick) => setImmediate(resolveTick));
 });
 
 it("renews once per refresh token: a reused or dead token is refused for good, the client's own errors are not", async () => {
@@ -337,7 +346,7 @@ it("refuses a renewal answer it cannot read, keeps the old refresh token when Op
 	const oauth = new ChatGptPlanOAuth({ client: openai.client, fetch: openai.fetch });
 	const login = await signedIn(openai, oauth);
 	// A 200 that is not JSON: OpenAI may have spent the token, and the replacement is unreadable.
-	openai.behaviour.tokenAnswer = { status: 200, body: undefined };
+	openai.behaviour.tokenAnswer = { status: 200, raw: "<html>proxy</html>" };
 	expect(await oauth.refresh(login, signal())).toEqual({ outcome: "refused", reason: "renewal_invalid" });
 	// No new refresh token (RFC 6749 6): the old one stays the login's.
 	openai.behaviour.omitRefreshTokenOnRefresh = true;
@@ -346,11 +355,17 @@ it("refuses a renewal answer it cannot read, keeps the old refresh token when Op
 	if (kept.outcome !== "renewed") return;
 	expect(kept.login.refreshToken).toBe(login.refreshToken);
 	expect(kept.login.accessToken).not.toBe(login.accessToken);
+	// Such an answer refused afterwards ends the old refresh token, the one still live at OpenAI.
+	openai.behaviour.withoutPlanScope = true;
+	expect(await oauth.refresh(kept.login, signal())).toEqual({ outcome: "refused", reason: "plan_withdrawn" });
+	await vi.waitFor(() => expect(openai.revoked.has(login.refreshToken)).toBe(true));
+	openai.behaviour.withoutPlanScope = false;
 	openai.behaviour.omitRefreshTokenOnRefresh = false;
 	// Neither `scope` in the answer nor a `scope` claim: the login's earlier scopes.
+	const again = await signedIn(openai, oauth);
 	openai.behaviour.omitScopeOnRefresh = true;
 	openai.behaviour.omitScopeClaim = true;
-	const scoped = await oauth.refresh(kept.login, signal());
+	const scoped = await oauth.refresh(again, signal());
 	expect(scoped.outcome).toBe("renewed");
 	if (scoped.outcome !== "renewed") return;
 	expect(scoped.login.scopes).toEqual(login.scopes);

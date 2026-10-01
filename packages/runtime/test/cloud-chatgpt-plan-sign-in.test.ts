@@ -276,7 +276,7 @@ it("ends a login at OpenAI when the database refuses to keep it", async () => {
 	});
 	w.database.refuseCompletion = true;
 	await expect(confirm(w, confirmation)).rejects.toThrow("provider_error");
-	expect(w.openai.revoked.size).toBe(1);
+	await vi.waitFor(() => expect(w.openai.revoked.size).toBe(1));
 });
 
 it("keeps a login whose saved answer was lost only when the database names this login", async () => {
@@ -303,7 +303,7 @@ it("keeps a login whose saved answer was lost only when the database names this 
 	expect(kept.w.openai.revoked.size).toBe(0);
 	const other = await lost(true);
 	await expect(other.result).rejects.toThrow("provider_error");
-	expect(other.w.openai.revoked.size).toBe(1);
+	await vi.waitFor(() => expect(other.w.openai.revoked.size).toBe(1));
 });
 
 it("refuses a Codex sign-in where only plan sign-ins are served, and a plan sign-in without a plan client", async () => {
