@@ -62,7 +62,9 @@ export const CLOUD_MACHINE_START_DESCRIPTION =
 	"repositoryWorker attaches a coding session's repository read-only at /mnt/repository: copy it to the machine's own disk before you build. " +
 	"To wake a stopped machine, pass only machine with its name. " +
 	"The machine belongs to the company: every member sees it and can stop it, and any agent of the company may use it. It holds no credentials or logins. It can reach the internet, but not private networks, and nothing can reach it from outside. " +
-	"The result says its state. When no server has room it waits in line and the result gives its place. If it is not running yet, finish this run normally: you are woken when it runs. " +
+	"The result says its state. When no server has room it waits in line and the result gives its place. " +
+	"When the company is out of computer hours it waits until hours are added (waitingFor COMPUTER_HOURS_EXHAUSTED); an hour after the company runs out, its running machines sleep, keeping their disks, and wake by themselves once hours are added. " +
+	"If it is not running yet, finish this run normally: you are woken when it runs. " +
 	"A result with refused started nothing and says why (the name is taken, too large for any server, no such machine). Keep operationKey stable after an uncertain result.";
 /** A worker (an agent's background helper) is never woken: it has no conversation to continue. */
 export const CLOUD_MACHINE_START_WORKER_DESCRIPTION = CLOUD_MACHINE_START_DESCRIPTION.replace(
