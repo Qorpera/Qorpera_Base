@@ -328,7 +328,7 @@ c1d2-gc-inventory.md` (2026-10-01).
 - **Today's company GC never claims a folder-v2 company's objects** (the patch at 20260928120000:221-234; artifact GC
   at :236-251 retains everything for folder-v2, and a folder-v2 company is enabled untouched, so it has no artifacts).
   That stays. Folder GC is its own lane, and it takes no company fence.
-- **Order of landing:** #573, then #594 (the 2 s budget; digest guards are taken after it), then C1d-2a, then C1d-2b.
+- **Order of landing:** #573, then #594 (the 2 s budget; C1d-2a's patches are made on top of it), then C1d-2a, then C1d-2b.
 
 ### 9.2 The GC state: one side table
 
@@ -341,8 +341,9 @@ c1d2-gc-inventory.md` (2026-10-01).
 - **Why a side table, and not columns on `qorpera_profile_objects`:** the catalog is shared with snapshot-v1 and is
   hot. A side table leaves it and its triggers alone. GC state is operational, not company data.
 - **Which companies:** only a profile whose every environment is folder-v2 and that isn't being deleted
-  (`qorpera_company_deletions`). A profile with a snapshot-v1 environment beside a folder-v2 one is never swept or
-  claimed: its snapshot-v1 roots are invisible here, as today's GC skips the whole profile. The deleted-company GC
+  (`qorpera_company_deletions`). A profile with a snapshot-v1 environment beside a folder-v2 one gets no GC rows and is
+  never claimed (its expired intents are still removed): its snapshot-v1 roots are invisible here, as today's GC skips
+  the whole profile. The deleted-company GC
   collects a purged company's objects, and folder GC never claims a company being deleted. A lane already in flight
   when a deletion starts is answered `remove` by the quarantine state (§9.8), so it doesn't restore bytes the
   deleted-company GC is about to collect.
@@ -465,7 +466,7 @@ catalog first and an upload of a marked hash waits. Here, `store.put` is unchang
 409, `contended`) instead of waiting. This holds
 because every route that writes into a folder-v2 company's NAS path refuses folder-v2 before its put (the list in
 §9.3), and replication puts bytes back from Storage only after `authorize_replication`, which sees the mark. C1d-2a
-tests that each such route refuses folder-v2. A refused writer redoes its call; the collision needs an object
+tests the old catalog confirm and test 646 the C1c-1 guards on the other routes. A refused writer redoes its call; the collision needs an object
 unreferenced for a day being uploaded again within the minutes GC holds it.
 
 ### 9.8 Step 3: unlink through quarantine (G2, G3)
@@ -549,7 +550,7 @@ and §9.7's amendment keeps a put off a marked hash. Snapshot-v1 routes and thei
   - the side table and the `expires_at` index;
   - `qorpera_folder_object_rooted`, the sweep, the claim, unlink begin and finish, and the quarantine state;
   - the version-2 stage helper (§9.3 step 1), used by its own tests;
-  - the G1 refusals of §9.7, patched into the live functions with digest guards (taken after #594);
+  - the G1 refusals of §9.7, patched into the live functions by exact anchors, each found exactly once (on top of #594);
   - the 2 s lock budget on every new function.
   - Tests:
     - the sweep and §9.4, including a sweep that falls behind;
@@ -561,8 +562,8 @@ and §9.7's amendment keeps a put off a marked hash. Snapshot-v1 routes and thei
       the other, is never collected;
     - the version-2 stage helper stages a file a member's commit may reference;
     - a mixed snapshot-v1 and folder-v2 profile, and a company being deleted, are never claimed;
-    - no table outside the folder core references a folder-v2 profile's catalog rows, and each non-folder writer
-      refuses folder-v2;
+    - no table outside the folder core references a folder-v2 profile's catalog rows, and the old catalog confirm
+      refuses folder-v2 (test 646 pins the C1c-1 guards on the native, office and member routes);
     - the lock text (no fence, no `company_files`, no job);
     - core §8's races with dblink: a read racing GC, an upload racing GC, the reuse of an old chunk, a re-check that
       finds a root, a restore of an old version. Erasure waits for C2.
