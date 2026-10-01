@@ -2,7 +2,8 @@
 -- Sign in with ChatGPT (20260929985000): a member's own Turn on (qorpera_set_chatgpt_plan_work_while_away) also starts
 -- the agent's routines that wait only for that member's plan: re-pinned to the plan's unattended binding of the
 -- version just turned on, with a schedule cursor, and recorded on the new version. Never another member's routine, a
--- listener, a routine paused for another reason or paid by another login, one that ended, a folder file, nor in a
+-- listener, a routine paused for another reason or paid by another login, one that ended, a folder file, one whose
+-- agent is archived, nor in a
 -- company being deleted or on the folder core; turning a plan off starts nothing; a routine locked elsewhere is
 -- skipped, never waited for. The switch takes the company row before the routines and the plan, so it never
 -- deadlocks with an agent's tool call (the fence, then its run's login), and waits at most 2 s for a lock, then answers
@@ -158,6 +159,16 @@ reset role;
 select pg_temp.plan764_expect(pg_temp.r779_resumed(), 'none', 'a folder company starts nothing');
 select pg_temp.plan764_expect(pg_temp.r779_states(), current_setting('qorpera_test.r779_before'), 'no routine changes');
 rollback to savepoint r779_folder;
+-- Nor a routine whose agent is archived: archiving keeps the routine, but every wake of it is cancelled
+-- (qorpera_wake_authorized wants an active agent), so it does not wait only for the plan.
+savepoint r779_archived;
+update public.qorpera_profile_staff set employment_status = 'archived'
+where profile_id = '16000000-0000-4000-8000-000000000010' and staff_agent_id = '16000000-0000-4000-8000-000000000030';
+select pg_temp.plan764_expect(pg_temp.r779_call('16000000-0000-4000-8000-000000000001', true), 'ok', 'on, the agent archived');
+reset role;
+select pg_temp.plan764_expect(pg_temp.r779_resumed(), 'none', 'an archived agent''s routines wait');
+select pg_temp.plan764_expect(pg_temp.r779_states(), current_setting('qorpera_test.r779_before'), 'no routine changes');
+rollback to savepoint r779_archived;
 
 -- 4. Another member turning their own switch never reaches this member's plan or routines.
 select pg_temp.plan764_expect(pg_temp.r779_call('16000000-0000-4000-8000-000000000002', true),
@@ -280,6 +291,85 @@ select pg_temp.plan764_expect(pg_temp.r779_call('16000000-0000-4000-8000-0000000
 reset role;
 select pg_temp.plan764_expect(pg_temp.r779_resumed(), 'none', 'off starts nothing');
 select pg_temp.plan764_expect(pg_temp.r779_states(), current_setting('qorpera_test.r779_after'), 'off changes no routine');
+
+-- 8b. A binding an agent's save made for the plan version that is on is the one the switch pins: the plan is turned on
+--     with nothing waiting, an agent's save for the member makes the plan's unattended binding
+--     (qorpera_ensure_unattended_sponsor), then a routine waits and the member presses Turn on again: no second binding.
+select pg_temp.plan764_expect(pg_temp.r779_call('16000000-0000-4000-8000-000000000001', true), 'ok', 'on, nothing waits');
+reset role;
+select pg_temp.plan764_expect(pg_temp.r779_resumed(), 'none', 'nothing waits');
+do $$
+declare v_run public.qorpera_execution_runs%rowtype; v_binding uuid; v_version bigint;
+begin
+	select * into strict v_run from public.qorpera_execution_runs
+	where id = (current_setting('qorpera_test.plan764_binding')::jsonb ->> 'runId')::uuid;
+	select sponsor.binding_id, sponsor.version into v_binding, v_version from public.qorpera_ensure_unattended_sponsor(v_run) as sponsor;
+	if v_binding is null or v_binding = current_setting('qorpera_test.r779_binding')::uuid then
+		raise exception 'ensure made no binding of its own for the version that is on: %', v_binding; end if;
+	perform set_config('qorpera_test.r779_ensure_binding', v_binding::text, false);
+	perform set_config('qorpera_test.r779_bindings', (select count(*) from public.qorpera_execution_sponsor_bindings
+		where profile_id = '16000000-0000-4000-8000-000000000010')::text, false);
+end $$;
+select pg_temp.r779_routine(30, '16000000-0000-4000-8000-000000000001', 'paused', 'needs_model_account',
+	'{"id":"agent","kind":"schedule","intervalMinutes":60}', pg_temp.r779_id(90));
+select pg_temp.plan764_expect(pg_temp.r779_call('16000000-0000-4000-8000-000000000001', true), 'ok', 'on again, a routine waits');
+reset role;
+select pg_temp.plan764_expect(pg_temp.r779_resumed(), '30', 'the waiting routine starts');
+do $$
+begin
+	if (select sponsor_binding_id::text || '/' || sponsor_version from public.qorpera_cloud_routine_versions
+			where routine_id = pg_temp.r779_id(30) and version = 2) is distinct from current_setting('qorpera_test.r779_ensure_binding') || '/1'
+		or (select count(*) from public.qorpera_execution_sponsor_bindings where profile_id = '16000000-0000-4000-8000-000000000010')::text
+			<> current_setting('qorpera_test.r779_bindings') then
+		raise exception 'the switch did not reuse the binding ensure made'; end if;
+end $$;
+select pg_temp.plan764_expect(pg_temp.r779_call('16000000-0000-4000-8000-000000000001', false), 'ok', 'off');
+reset role;
+
+-- 8c. The plan's unattended binding for the version the switch turns on exists already, but no longer pays with that
+--     plan while the member is away: its newest sponsor version pays with another login (as a pins move leaves it),
+--     or is not on for work while away, or the binding is switched off. The switch starts nothing.
+create function pg_temp.r779_planned_binding(p_pays uuid, p_pays_version bigint, p_allow boolean, p_status text)
+returns void language plpgsql as $$
+declare v_hex text; v_id uuid := extensions.gen_random_uuid();
+begin
+	-- The version the switch is about to write: the newest plus one.
+	v_hex := encode(extensions.digest(convert_to('qorpera.unattended-sponsor/v1:' || pg_temp.r779('plan')::text || ':'
+		|| ((select max(version) from public.qorpera_provider_connection_versions where connection_id = pg_temp.r779('plan')) + 1)::text,
+		'utf8'), 'sha256'), 'hex');
+	insert into public.qorpera_execution_sponsor_bindings(id, profile_id, client_binding_id, status, created_by_user_id)
+	values (v_id, '16000000-0000-4000-8000-000000000010', (substr(v_hex,1,8) || '-' || substr(v_hex,9,4) || '-4' || substr(v_hex,14,3)
+		|| '-8' || substr(v_hex,18,3) || '-' || substr(v_hex,21,12))::uuid, p_status, '16000000-0000-4000-8000-000000000001');
+	insert into public.qorpera_execution_sponsor_versions(binding_id, version, sponsor_kind, provider_connection_id,
+		provider_connection_version, allow_autonomous, created_by_user_id)
+	values (v_id, 1, 'member_connection', p_pays, p_pays_version, p_allow, '16000000-0000-4000-8000-000000000001');
+end $$;
+savepoint r779_bindings;
+select pg_temp.r779_routine(31, '16000000-0000-4000-8000-000000000001', 'paused', 'needs_model_account',
+	'{"id":"agent","kind":"schedule","intervalMinutes":60}', pg_temp.r779_id(90));
+do $$
+declare v_plan_version bigint := (select max(version) from public.qorpera_provider_connection_versions
+	where connection_id = pg_temp.r779('plan'));
+	v_case record;
+begin
+	for v_case in select * from (values
+		('pays with another login', pg_temp.r779('codex'), 1::bigint, true, 'active'),
+		('is not on while away', pg_temp.r779('plan'), v_plan_version, false, 'active'),
+		('is switched off', pg_temp.r779('plan'), v_plan_version, true, 'disabled')) as variant(label, pays, pays_version, allow, status) loop
+		begin
+			perform pg_temp.r779_planned_binding(v_case.pays, v_case.pays_version, v_case.allow, v_case.status);
+			perform pg_temp.plan764_expect(pg_temp.r779_call('16000000-0000-4000-8000-000000000001', true), 'ok', 'on, ' || v_case.label);
+			reset role;
+			perform pg_temp.plan764_expect(pg_temp.r779_resumed(), 'none', 'a binding that ' || v_case.label || ' starts nothing');
+			perform pg_temp.plan764_expect((select status || '/' || current_version from public.qorpera_cloud_routines
+				where id = pg_temp.r779_id(31)), 'paused/1', 'the routine still waits (' || v_case.label || ')');
+			raise exception using errcode = 'P0001', message = 'r779 undo';
+		exception when sqlstate 'P0001' then
+			if sqlerrm <> 'r779 undo' then raise; end if;
+		end;
+	end loop;
+end $$;
+rollback to savepoint r779_bindings;
 
 -- 9. A routine locked elsewhere (an agent's save, the expiry sweep) is left waiting: the switch never waits for it.
 --    Two more waiting routines; the plan is off again.
@@ -539,6 +629,98 @@ begin
 		raise exception '(c) the switch did not start the routine after the wait: %', v_outcome; end if;
 	if (select status || '/' || current_version from public.qorpera_cloud_routines where id = pg_temp.r779_id(23)) <> 'active/2' then
 		raise exception '(c) the routine reads wrong: %', pg_temp.r779_states(); end if;
+end $$;
+
+-- 13. A deletion request (the fence, then its row) is in flight when the member presses Turn on. The switch found its
+--     routine before it locked anything, waits for the company row, and once the request commits reads the company
+--     again under its key share: a company being deleted starts nothing. (The consent itself still turns the plan
+--     on, as before this change; plan use stops for a company being deleted elsewhere.)
+select pg_temp.r779_routine(24, '16000000-0000-4000-8000-000000000001', 'paused', 'needs_model_account',
+	'{"id":"agent","kind":"schedule","intervalMinutes":60}', pg_temp.r779_id(90));
+do $$
+declare v_holder integer := current_setting('qorpera_test.r779_holder_pid')::integer; v_outcome jsonb;
+begin
+	perform dblink_exec('r779_holder', 'begin');
+	perform * from dblink('r779_holder', format('select 1 from public.qorpera_lock_profile_gc_fence(%L) as fence',
+		'16000000-0000-4000-8000-000000000010')) as fenced(one integer);
+	perform dblink_exec('r779_holder', format('insert into public.qorpera_company_deletions(profile_id, requested_by_user_id)
+		values (%L, %L)', '16000000-0000-4000-8000-000000000010', '16000000-0000-4000-8000-000000000001'));
+	perform pg_temp.r779_member_begin();
+	perform dblink_send_query('r779_member', pg_temp.r779_switch_sql(true));
+	if not pg_temp.r779_waited_for('member', v_holder) then
+		perform dblink_exec('r779_holder', 'rollback');
+		raise exception '(13) the switch did not wait for the deletion request: %', pg_temp.r779_collect('r779_member'); end if;
+	perform dblink_exec('r779_holder', 'commit');
+	v_outcome := pg_temp.r779_collect('r779_member');
+	perform dblink_exec('r779_member', 'commit');
+	if v_outcome -> 'result' -> 'resumed_routines' is distinct from '[]'::jsonb
+		or (select status || '/' || current_version from public.qorpera_cloud_routines where id = pg_temp.r779_id(24)) <> 'paused/1' then
+		raise exception '(13) a company being deleted started a routine: % %', v_outcome, pg_temp.r779_states(); end if;
+end $$;
+delete from public.qorpera_company_deletions where profile_id = '16000000-0000-4000-8000-000000000010';
+update public.qorpera_cloud_routines set status = 'retired', pause_reason = null where id = pg_temp.r779_id(24);
+
+-- 14. An agent pauses one of two waiting routines (its fence, then the routine) while the member presses Turn on. The
+--     switch found both before it locked anything; it reads each again under its lock, and starts only the other.
+select pg_temp.r779_routine(25, '16000000-0000-4000-8000-000000000001', 'paused', 'needs_model_account',
+	'{"id":"agent","kind":"schedule","intervalMinutes":60}', pg_temp.r779_id(90));
+select pg_temp.r779_routine(26, '16000000-0000-4000-8000-000000000001', 'paused', 'needs_model_account',
+	'{"id":"agent","kind":"schedule","intervalMinutes":60}', pg_temp.r779_id(90));
+do $$
+declare v_holder integer := current_setting('qorpera_test.r779_holder_pid')::integer; v_outcome jsonb;
+begin
+	perform dblink_exec('r779_holder', 'begin');
+	perform * from dblink('r779_holder', format('select 1 from public.qorpera_lock_profile_gc_fence(%L) as fence',
+		'16000000-0000-4000-8000-000000000010')) as fenced(one integer);
+	perform dblink_exec('r779_holder', format('update public.qorpera_cloud_routines set pause_reason = %L,
+		updated_at = statement_timestamp() where id = %L', 'agent', pg_temp.r779_id(25)));
+	perform pg_temp.r779_member_begin();
+	perform dblink_send_query('r779_member', pg_temp.r779_switch_sql(true));
+	if not pg_temp.r779_waited_for('member', v_holder) then
+		perform dblink_exec('r779_holder', 'rollback');
+		raise exception '(14) the switch did not wait for the agent: %', pg_temp.r779_collect('r779_member'); end if;
+	perform dblink_exec('r779_holder', 'commit');
+	v_outcome := pg_temp.r779_collect('r779_member');
+	perform dblink_exec('r779_member', 'commit');
+	if v_outcome -> 'result' -> 'resumed_routines' is distinct from jsonb_build_array(pg_temp.r779_id(26))
+		or (select status || '/' || coalesce(pause_reason, '-') || '/' || current_version from public.qorpera_cloud_routines
+			where id = pg_temp.r779_id(25)) <> 'paused/agent/1' then
+		raise exception '(14) the switch overrode the agent''s pause: % %', v_outcome, pg_temp.r779_states(); end if;
+end $$;
+
+-- 15. A deadlock broken on the switch's side answers the same busy. The one cycle the switch can be in: something
+--     holds the member's row (an operator deleting a founder's account: the cascade) and then wants the company row
+--     FOR UPDATE (its founder guard), while the switch holds the company row KEY SHARE and waits for that member row.
+--     The switch waits first, so PostgreSQL's check after deadlock_timeout ends the switch; the other side goes on.
+select pg_temp.r779_routine(27, '16000000-0000-4000-8000-000000000001', 'paused', 'needs_model_account',
+	'{"id":"agent","kind":"schedule","intervalMinutes":60}', pg_temp.r779_id(90));
+do $$
+declare v_member integer := current_setting('qorpera_test.r779_member_pid')::integer;
+	v_holder integer := current_setting('qorpera_test.r779_holder_pid')::integer;
+	v_plan text := pg_temp.r779_plan_versions(); v_states text := pg_temp.r779_states(); v_outcome jsonb; v_other jsonb;
+begin
+	perform dblink_exec('r779_holder', 'begin');
+	perform * from dblink('r779_holder', format('select 1 from public.qorpera_profile_members where profile_id = %L
+		and user_id = %L for update', '16000000-0000-4000-8000-000000000010', '16000000-0000-4000-8000-000000000001')) as held(one integer);
+	perform pg_temp.r779_member_begin();
+	perform dblink_send_query('r779_member', pg_temp.r779_switch_sql(true));
+	if not pg_temp.r779_waited_for('member', v_holder) then
+		perform dblink_exec('r779_holder', 'rollback');
+		raise exception '(15) the switch did not wait for the member row: %', pg_temp.r779_collect('r779_member'); end if;
+	perform dblink_send_query('r779_holder', format('select to_jsonb(id) from public.qorpera_profiles where id = %L for update',
+		'16000000-0000-4000-8000-000000000010'));
+	if not pg_temp.r779_settles('member', 5) then
+		perform dblink_exec('r779_holder', 'rollback');
+		raise exception '(15) the deadlock was not broken'; end if;
+	v_outcome := pg_temp.r779_collect('r779_member');
+	perform dblink_exec('r779_member', 'rollback');
+	v_other := pg_temp.r779_collect('r779_holder');
+	perform dblink_exec('r779_holder', 'rollback');
+	if v_outcome is distinct from '{"error": "Busy right now. Try again in a moment.", "state": "55P03"}'::jsonb then
+		raise exception '(15) the switch answered % (the other side: %)', v_outcome, v_other; end if;
+	if v_other ? 'error' then raise exception '(15) the other side failed: %', v_other; end if;
+	if pg_temp.r779_plan_versions() is distinct from v_plan or pg_temp.r779_states() is distinct from v_states then
+		raise exception '(15) the broken switch changed something: % %', pg_temp.r779_plan_versions(), pg_temp.r779_states(); end if;
 end $$;
 
 select pg_temp.r779_cleanup();

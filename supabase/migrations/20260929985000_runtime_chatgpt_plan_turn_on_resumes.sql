@@ -11,6 +11,8 @@
 --   (its current version's sponsor version pays with this connection);
 -- * has no listener (a file change or an event: a plan never pays for one), is no folder-v2 file routine, and is not
 --   past its end;
+-- * belongs to an agent that is active (an archived agent's routine is not retired, but its every wake is cancelled:
+--   qorpera_wake_authorized asks for employment_status 'active', as a member's routine save does);
 -- and only in a company that is not being deleted (qorpera_member_role) and not folder-v2 (qorpera_company_is_folder_v2,
 -- the agent tools' own refusal: there the agents write routine files).
 -- Each is re-pinned and resumed: the plan's unattended binding for the version just turned on, made as
@@ -35,7 +37,10 @@
 --    the company row FOR UPDATE (its fence) before a routine or a login (#377's order), and holds its run's login FOR
 --    SHARE; a call that held the plan's connection and then waited for the company row at the insert would deadlock
 --    with an agent's call that runs on that plan. It waits only for calls in flight in this company, as the insert
---    would; the wake materializer takes the row NOWAIT and skips the company meanwhile.
+--    would; the wake materializer takes the row NOWAIT and skips the company meanwhile. The key share is held for the
+--    rest of the call, across the member-row and connection waits: an exclusive taker of the company row (an agent
+--    tool call's fence FOR UPDATE, a deletion request) waits behind the switch for that long, each of its waits at
+--    most 2 s (below).
 -- 2. The routines FOR UPDATE SKIP LOCKED, in id order, before the connection (an agent's save takes its routine, then
 --    its login). A routine busy elsewhere (an agent's save, a run's commit holding it KEY SHARE, the expiry sweep, the
 --    dynamic tick) is left waiting, never waited for. Each locked routine is read again under its lock.
@@ -47,17 +52,26 @@
 --    triggers clear the pause reason, and the resume-restarts-schedule trigger does not fire (the version changes).
 -- No company-wide lock beyond that key share, and no wait for a routine. Every wait of the call is bounded, also
 -- the consent's (up to the API role's 8 s before, 20260913000100): the function's lock_timeout is 2 s, and a lock
--- timeout anywhere in it answers 55P03 "Busy right now. Try again in a moment." with nothing changed, so a member's
--- toggle never hangs behind a long hold (an agent's fence, the GC, a deletion).
+-- timeout anywhere in it (or a deadlock broken on its side) answers 55P03 "Busy right now. Try again in a moment."
+-- with nothing changed, so a member's toggle never hangs behind a long hold (an agent's fence, the GC, a deletion).
+-- One cycle remains, rare: an operator deleting a founder's account (the cascade locks the member row, then its
+-- founder guard wants the company row FOR UPDATE) while that founder presses Turn on (key share held, waiting for that
+-- member row). PostgreSQL breaks it after deadlock_timeout (1 s); when it ends the switch, the member gets the same
+-- 55P03 busy answer, with nothing changed, and tries again.
 
 set local lock_timeout = '3s';
 
 -- The record of a resume: the version a member's turn-on wrote. Null for every other version.
-alter table public.qorpera_cloud_routine_versions add column resume_reason text
-	constraint qorpera_cloud_routine_versions_resume_reason check (resume_reason is null or resume_reason = 'plan_turned_on');
+-- The column is a catalog change (no default, no rewrite); its check is added NOT VALID and then validated, as for
+-- busy tables (20260920050000).
+alter table public.qorpera_cloud_routine_versions add column resume_reason text;
+alter table public.qorpera_cloud_routine_versions add constraint qorpera_cloud_routine_versions_resume_reason
+	check (resume_reason is null or resume_reason = 'plan_turned_on') not valid;
+alter table public.qorpera_cloud_routine_versions validate constraint qorpera_cloud_routine_versions_resume_reason;
 
 -- Whether a routine waits only for its member's ChatGPT plan: an agent's routine waiting for a payer, whose current
--- version runs for p_user_id and is paid by p_connection_id, with no listener, no folder file, not past its end.
+-- version runs for p_user_id and is paid by p_connection_id, with no listener, no folder file, not past its end, and
+-- whose agent is active (the wake check's own condition).
 create function public.qorpera_routine_waits_for_member_plan(p_routine_id uuid, p_user_id uuid, p_connection_id uuid)
 returns boolean language sql stable security definer set search_path = '' as $$
 	select exists (select 1 from public.qorpera_cloud_routines as routine
@@ -69,6 +83,8 @@ returns boolean language sql stable security definer set search_path = '' as $$
 			and routine.origin = 'agent' and routine.folder_path is null
 			and (routine.expires_at is null or routine.expires_at > statement_timestamp())
 			and version.created_by_user_id = p_user_id and sponsor.provider_connection_id = p_connection_id
+			and exists (select 1 from public.qorpera_profile_staff as staff where staff.profile_id = routine.profile_id
+				and staff.staff_agent_id = version.staff_agent_id and staff.employment_status = 'active')
 			and not exists (select 1 from jsonb_array_elements(version.triggers) as trigger(value)
 				where trigger.value ->> 'kind' = 'listener'))
 $$;
@@ -83,9 +99,10 @@ declare
 	v_sponsor public.qorpera_execution_sponsor_versions%rowtype;
 	v_connection_version bigint; v_hex text; v_client uuid; v_binding uuid; v_at timestamptz; v_sha text;
 begin
-	-- A wait for any one lock ends after 2 s (the function's lock_timeout, below) as a plain "busy" the web shows
-	-- (55P03, a retry code PostgREST does not replay); this block's rollback undoes all the call did, the member's choice mark included. Every
-	-- other error is raised as it was.
+	-- A wait for any one lock ends after 2 s (the function's lock_timeout, below), and a deadlock PostgreSQL breaks on
+	-- this side ends the call too (the header's one cycle); both answer a plain "busy" the web shows (55P03, a retry
+	-- code PostgREST does not replay). This block's rollback undoes all the call did, the member's choice mark
+	-- included. Only these two are caught; every other error is raised as it was.
 	begin
 		if v_user is null or p_on is null or p_connection_id is null or p_profile_id is null
 			or not exists (select 1 from public.qorpera_provider_connections as connection
@@ -182,7 +199,7 @@ begin
 			v_resumed := v_resumed || v_id;
 		end loop;
 		return v_result || jsonb_build_object('resumed_routines', to_jsonb(v_resumed));
-	exception when lock_not_available then
+	exception when lock_not_available or deadlock_detected then
 		raise exception 'Busy right now. Try again in a moment.' using errcode = '55P03';
 	end;
 end

@@ -160,16 +160,17 @@ Founders (2026-09-28, migration 20260928248100): every member with the role
     to bind, plus `resumed_routines` (20260929985000). Turning the plan on also
     starts the agents' routines that wait only for it: paused with
     `needs_model_account`, running for the caller (`runs_for_user_id`) and paid
-    by this same plan, with no listener, not a routine file, not past its end,
-    and not in a company being deleted. Each moves to the plan's unattended
+    by this same plan, whose agent is active, with no listener, not a routine
+    file, not past its end, and not in a company being deleted or on the folder
+    core (folder-v2). Each moves to the plan's unattended
     binding and resumes; its content, schedule and agent stay as they were.
     `resumed_routines` lists their ids (`[]` when none, and always when turning
     off). A routine that another call holds at that moment stays waiting, so
     re-read the routine list instead of assuming the card's routine started.
     The call waits at most 2 s for any one lock (an agent's call in flight, a
     deletion, the GC) and then answers 55P03 "Busy right now. Try again in a
-    moment." with nothing changed: show that line and let the member try
-    again.
+    moment." with nothing changed; a rare deadlock PostgreSQL breaks on the
+    call's side answers the same. Show that line and let the member try again.
     The kernel never consents a plan login for them:
     `qorpera_consent_provider_connection_autonomous` refuses to turn a plan on
     (55000 "Turn on work while you're away for this ChatGPT plan in Settings"),
