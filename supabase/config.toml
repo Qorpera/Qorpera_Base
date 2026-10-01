@@ -40,6 +40,11 @@ verify_jwt = false
 [functions.native-provider-login]
 verify_jwt = false
 
+# Sign in with ChatGPT's callback: OpenAI sends the member's browser here with a code and state, never a
+# JWT. It forwards both to the company's vault and returns the browser to the web app (built switched off).
+[functions.chatgpt-plan-callback]
+verify_jwt = false
+
 # The member gateway preserves the JWT for authoritative checks at the object
 # gateway. OPTIONS carries no JWT; no service-role authority is added.
 [functions.member-company-gateway]
@@ -58,4 +63,9 @@ verify_jwt = false
 # Mail intake: public, for the mail provider's webhook (Resend), which it checks with the platform's signing
 # secret (Standard Webhooks). There is no JWT to check.
 [functions.mail-intake]
+verify_jwt = false
+
+# Mail outbox: called each minute by pg_cron with a Supabase secret key, which it checks itself (like the hour
+# notices); it sends company mail with the platform's Resend key.
+[functions.mail-outbox]
 verify_jwt = false

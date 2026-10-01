@@ -4,6 +4,7 @@ import { createConnection, createServer, Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+	NATIVE_CHATGPT_PLAN_EGRESS_HOSTS,
 	type NativeEgressTransport,
 	nativeClientHelloServerName,
 	nativeEgressPublicAddress,
@@ -102,11 +103,11 @@ afterEach(async () => {
 	for (const stop of cleanup.splice(0).reverse()) await stop();
 });
 
-async function relay(transport: NativeEgressTransport) {
+async function relay(transport: NativeEgressTransport, hosts?: readonly string[]) {
 	const root = await mkdtemp(join(tmpdir(), "q-egress-"));
 	cleanup.push(() => rm(root, { recursive: true, force: true }));
 	const abort = new AbortController();
-	const server = await startNativeCodexEgress({ root, signal: abort.signal, transport });
+	const server = await startNativeCodexEgress({ root, signal: abort.signal, transport, ...(hosts ? { hosts } : {}) });
 	cleanup.push(() => server.close());
 	const client = createConnection(server.path);
 	client.on("error", () => undefined);
@@ -214,6 +215,30 @@ describe("private native egress relay", () => {
 		const closed = once(client, "close");
 		abort.abort();
 		await closed;
+	});
+	it("lets a ChatGPT plan run reach OpenAI's API alone, and a Codex login's run not reach it", async () => {
+		const transport = { resolve: vi.fn(async () => ["93.184.216.34"]), connect: vi.fn(() => new Socket()) };
+		for (const host of ["chatgpt.com", "auth.openai.com"]) {
+			const { client } = await relay(transport, NATIVE_CHATGPT_PLAN_EGRESS_HOSTS);
+			await rejected(client, Buffer.concat([Buffer.from(`CONNECT ${host}:443 HTTP/1.1\r\n\r\n`), hello(host)]));
+		}
+		const { client } = await relay(transport);
+		await rejected(
+			client,
+			Buffer.concat([Buffer.from("CONNECT api.openai.com:443 HTTP/1.1\r\n\r\n"), hello("api.openai.com")]),
+		);
+		expect(transport.resolve).not.toHaveBeenCalled();
+		const plan = await relay(transport, NATIVE_CHATGPT_PLAN_EGRESS_HOSTS);
+		plan.client.write(
+			Buffer.concat([Buffer.from("CONNECT api.openai.com:443 HTTP/1.1\r\n\r\n"), hello("api.openai.com")]),
+		);
+		await vi.waitFor(() => expect(transport.resolve).toHaveBeenCalledWith("api.openai.com", expect.any(AbortSignal)));
+		// Only the two lists the runtime knows: a run cannot name its own hosts.
+		const root = await mkdtemp(join(tmpdir(), "q-egress-hosts-"));
+		cleanup.push(() => rm(root, { recursive: true, force: true }));
+		await expect(
+			startNativeCodexEgress({ root, signal: new AbortController().signal, hosts: ["evil.test"] }),
+		).rejects.toThrow("Unsupported native egress hosts");
 	});
 	it("cancels an unresolved DNS request without opening a connection", async () => {
 		let resolving: () => void = () => undefined;

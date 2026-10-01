@@ -1385,11 +1385,18 @@ describe("cloud runner orchestrator", () => {
 			orchestratorId,
 			current,
 			fakeFetch as typeof fetch,
-			{ persistControlTokens: async (state) => void persisted.push({ ...state }) },
+			{
+				persistControlTokens: async (state) => void persisted.push({ ...state }),
+				onControlRotated: () => topics.push(control.wakeTopic()),
+			},
 		);
+		const topics: string[] = [control.wakeTopic()];
 
 		await control.renewControl();
 
+		// The wake-up topic follows the new token as soon as the rotation is confirmed.
+		expect(topics).toHaveLength(2);
+		expect(topics[1]).not.toBe(topics[0]);
 		expect(persisted).toHaveLength(2);
 		const next = persisted[0]?.pending;
 		expect(next).toMatch(/^[A-Za-z0-9_-]{43}$/);

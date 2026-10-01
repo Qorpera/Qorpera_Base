@@ -10,6 +10,8 @@ import {
 	CloudRunnerBrokerCompanyFilePublisher,
 	CloudRunnerBrokerOutputPublisher,
 	type CloudRunnerBrokerTransport,
+	type CloudRunnerStart,
+	NATIVE_AUTHORITY_LEASE_SECONDS,
 } from "./cloud-runner-broker.ts";
 import type { DisposableCloudRunner } from "./cloud-runner-control.ts";
 import {
@@ -162,6 +164,7 @@ export class EphemeralCloudRunnerWorker {
 		const retained = this.#options.runner.leasedJobs();
 		if (retained.length > 1) throw new Error("Single-lane ephemeral worker restored multiple active jobs");
 		let job: CloudRunnerJob | undefined = retained.at(0);
+		let start: CloudRunnerStart | undefined;
 		if (job && Date.parse(job.leaseExpiresAt as string) <= this.#now()) {
 			await this.#options.runner.discardJobAuthority(job.jobId);
 			job = undefined;
@@ -207,11 +210,18 @@ export class EphemeralCloudRunnerWorker {
 				throw new Error("Runner received an assignment while retained work is unresolved");
 			}
 			job = await this.#options.runner.renew(job.jobId);
-		} else if (assignment) {
+		} else if (assignment && this.#injectedExecuteJob) {
 			job = await this.#options.runner.acceptAssignment(assignment);
+		} else if (assignment) {
+			// One round trip: the acceptance also reads the description and, for a runner that can
+			// execute native subscriptions, acquires the native authority the broker would ask for.
+			({ job, start } = await this.#options.runner.startAssignment(
+				assignment,
+				this.#options.nativeProviderBridge ? NATIVE_AUTHORITY_LEASE_SECONDS : undefined,
+			));
 		}
 		if (!job) return { status: "idle" };
-		return this.#execute(job, signal);
+		return this.#execute(job, signal, start);
 	}
 
 	async run(
@@ -253,7 +263,11 @@ export class EphemeralCloudRunnerWorker {
 		}
 	}
 
-	async #execute(job: CloudRunnerJob, signal: AbortSignal): Promise<EphemeralCloudRunnerWorkerResult> {
+	async #execute(
+		job: CloudRunnerJob,
+		signal: AbortSignal,
+		start?: CloudRunnerStart,
+	): Promise<EphemeralCloudRunnerWorkerResult> {
 		const executionAbort = new AbortController();
 		const maintenanceAbort = new AbortController();
 		let maintenanceError: unknown;
@@ -354,7 +368,7 @@ export class EphemeralCloudRunnerWorker {
 			executionAbort.signal.throwIfAborted();
 			await this.#options.runner.markExecutionStarted(job.jobId);
 			executionAbort.signal.throwIfAborted();
-			const broker = this.#options.runner.broker(job, this.#options.brokerTransport, executionAbort.signal);
+			const broker = this.#options.runner.broker(job, this.#options.brokerTransport, executionAbort.signal, start);
 			let execution: CloudRunnerExecutionResult;
 			try {
 				const shared = {
@@ -400,7 +414,6 @@ export class EphemeralCloudRunnerWorker {
 											job,
 											authority,
 											bridge: this.#options.nativeProviderBridge,
-											refreshAuthority: () => broker.renewNativeAuthority(),
 											...(this.#options.limits ? { limits: this.#options.limits } : {}),
 											signal: executionAbort.signal,
 										})

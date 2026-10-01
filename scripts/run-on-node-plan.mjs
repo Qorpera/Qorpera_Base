@@ -7,7 +7,7 @@
  * - every change that is not web-only (runtime-release-train's exclusion list): all runtime and
  *   cloud-client tests, all script tests (packaging, pins, vocabulary) and the runtime bundle check;
  * - path-specific steps on top (web, member-web, object-gateway, runner-orchestrator, functions, deploy,
- *   hosted-db);
+ *   hosted-db, and company-fence-load for migrations: one company's locks under pooled load);
  * - shared configuration, `packages/contracts`, `packages/company` and any path no rule knows: every step.
  *
  * Release candidates still run the full `test` suite before a cut. */
@@ -20,11 +20,14 @@ const FUNCTION_TESTS = [
 	"supabase/functions/member-company-gateway/member-company-gateway.test.ts",
 	"supabase/functions/computer-billing/computer-billing.test.ts",
 	"supabase/functions/_shared/computer-hour-notices.test.ts",
+	"supabase/functions/chatgpt-plan-callback/chatgpt-plan-callback.test.ts",
 	"supabase/functions/company-file-verifier/object-loader.test.ts",
 	"supabase/functions/company-file-verifier/company-file-verifier.test.ts",
 	"supabase/functions/runner-orchestrator/runner-orchestrator.test.ts",
 	"supabase/functions/event-intake/event-intake.test.ts",
 	"supabase/functions/mail-intake/mail-intake.test.ts",
+	"supabase/functions/mail-outbox/mail-outbox.test.ts",
+	"supabase/functions/runner-control/runner-control.test.ts",
 ];
 const WEB_RELEASE_CONFIG = JSON.stringify({
 	projectUrl: "https://project.example.invalid",
@@ -73,13 +76,14 @@ export const STEPS = [
 	},
 	{
 		name: "checks",
-		why: "pinned dependencies, imports, cloud boundaries, wire helper copies, connector catalog, runtime bundle",
+		why: "pinned dependencies, imports, cloud boundaries, wire helper copies, migration custom settings, connector catalog, runtime bundle",
 		paths: ANY,
 		commands: [
 			"npm run check:pinned-deps",
 			"npm run check:ts-imports",
 			"npm run check:cloud-boundaries",
 			"npm run check:wire-helpers",
+			"npm run check:migration-settings",
 			"npm run check:connector-catalog",
 			"npm run check:runtime-bundle:release-train",
 		],
@@ -195,13 +199,30 @@ export const STEPS = [
 			/^scripts\/test-runtime-[a-z-]+-cases\.mjs$/,
 			/^scripts\/fixtures\/(coding-turn-pre-continuity|email-draft-e2e)/,
 			/^packages\/runtime\/src\/cloud-(secret|connector)-/,
-			/^packages\/runtime\/test\/fixtures\/coding-turn-/,
+			// The production review and wake bus scripts check SQL output with these parsers.
+			/^packages\/runtime\/src\/cloud-(native-company-context|native-tool-authority|wake-bus)\.ts$/,
+			/^packages\/runtime\/test\/fixtures\/(coding-turn-|wake-policies\.json$)/,
 			/^packages\/runner-orchestrator\/src\/lxd-office-[a-z-]+-control\.ts$/,
 			/^packages\/web\/src\/cloud\/email-drafts\.ts$/,
+			/^scripts\/test-runtime-wake-envelope\.mjs$/,
 			...HOSTED_DB_SCRIPTS.map(regex),
 		],
+		// Those two import the runtime's TypeScript, which imports built packages.
+		build: true,
 		// One PostgreSQL and one migration replay for the SQL tests and every script (scripts/test-hosted-db.mjs).
 		commands: ["node --test scripts/test-hosted-db.test.mjs", "node scripts/test-hosted-db.mjs --scripts"],
+	},
+	{
+		// v133 (2026-09-27): a lock change on a hot path ships only with a load test at realistic concurrency.
+		// Any migration can change what one company's calls lock, so every migration runs it (about 1.5 min).
+		name: "company-fence-load",
+		why: "one company under pooled load with the production role timeouts: its agents' reads, writes, GC and foreign-key inserts; fails on a deadlock or a statement timeout",
+		paths: [
+			/^supabase\/migrations\//,
+			/^supabase\/tests\/(300_runtime_wake_bus|396_runtime_coding_executor|602_runtime_coding_lock_order)\.test\.sql$/,
+			/^scripts\/load-company-fence-pool\./,
+		],
+		commands: ["node scripts/load-company-fence-pool.mjs --check"],
 	},
 ];
 

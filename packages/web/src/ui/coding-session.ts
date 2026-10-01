@@ -38,6 +38,7 @@ import { matchesKey } from "./keys.ts";
 import { markdownBubbles } from "./markdown.ts";
 import { t } from "./preferences.ts";
 import { quietScroll } from "./quiet-scroll.ts";
+import { codingFailureReason, manageUsageLink } from "./run-failure.ts";
 import { uiScale } from "./scale.ts";
 
 export const HARNESS_NAMES: Record<CodingHarness, string> = { codex: "Codex", "claude-code": "Claude Code" };
@@ -99,6 +100,9 @@ export function codingSessionStandby(
 	return undefined;
 }
 
+/** The kernel's step while a turn waits for its company's computer hours (20260929760000). */
+const HOURS_STEP = "Waiting for computer hours";
+
 /** The live status line: the state, how long, the last step, the diff size; between turns, whether the session
  * stands by on its machine, runs something there, or sleeps. */
 export function codingSessionStatus(
@@ -118,7 +122,10 @@ export function codingSessionStatus(
 			: undefined;
 	switch (session.phase) {
 		case "queued":
-			return { text: t("Waiting for a computer"), tone: "idle" };
+			return {
+				text: session.lastStep === HOURS_STEP ? t("Waiting for computer hours") : t("Waiting for a computer"),
+				tone: "idle",
+			};
 		case "preparing":
 			return {
 				text: [t("Preparing the workspace"), since(session.updatedAt)].filter(Boolean).join(" · "),
@@ -146,7 +153,9 @@ export function codingSessionStatus(
 			};
 		}
 		case "input_ready":
-			return { text: t("Answer sent · waiting for the session"), tone: "working" };
+			return session.lastStep === HOURS_STEP
+				? { text: t("Answer sent · waiting for computer hours"), tone: "idle" }
+				: { text: t("Answer sent · waiting for the session"), tone: "working" };
 		case "publishing":
 			return { text: [t("Opening the pull request"), files].filter(Boolean).join(" · "), tone: "working" };
 		case "completed":
@@ -197,6 +206,10 @@ function text(value: JsonValue, ...keys: string[]): string | undefined {
 		if (typeof found === "string" && found.trim()) return found;
 	}
 	return undefined;
+}
+
+function flag(value: JsonValue, key: string): boolean {
+	return typeof value === "object" && value !== null && !Array.isArray(value) && value[key] === true;
 }
 
 function options(value: JsonValue): string[] {
@@ -857,18 +870,20 @@ export class CodingSessionElement {
 					break;
 				}
 				case "failed": {
-					const reason = text(event.body, "reason", "summary");
+					// A turn the kernel says stopped at a usage limit (20260929993000); the owner's own plan gets
+					// OpenAI's words and "Manage usage".
+					const limit = {
+						usageLimit: flag(event.body, "usageLimit"),
+						paidByChatgptPlan: flag(event.body, "paidByChatgptPlan"),
+						mine: this.#options.viewerOwns(this.#session),
+					};
 					note(
 						h(
 							"div",
 							{ class: "conversation-note coding-note coding-row-error", role: "note" },
-							reason === "executor-lease-expired"
-								? t(
-										"The computer running this session stopped answering. The workspace is kept; a follow-up starts it again.",
-									)
-								: reason
-									? t("Failed: {reason}", { reason })
-									: t("Failed"),
+							codingFailureReason(text(event.body, "reason", "summary"), limit),
+							limit.usageLimit && limit.paidByChatgptPlan && limit.mine ? " " : null,
+							limit.usageLimit && limit.paidByChatgptPlan && limit.mine ? manageUsageLink() : null,
 						),
 					);
 					break;
@@ -933,6 +948,14 @@ export class CodingSessionElement {
 				: t("{owner} archived the session", { owner: names.owner });
 		}
 		if (event.actor === "kernel" && body.reopened === true) return t("Reopened");
+		// The kernel asked the agent whether a quiet session can be archived.
+		if (event.actor === "kernel" && typeof body.quietDays === "number" && body.quietDays >= 1)
+			return body.quietDays === 1
+				? t("Quiet for a day · asked {agent} whether it can be archived", { agent: names.agent })
+				: t("Quiet for {days} days · asked {agent} whether it can be archived", {
+						days: Math.floor(body.quietDays),
+						agent: names.agent,
+					});
 		if (event.actor !== "executor" || !Array.isArray(body.stopped)) return undefined;
 		// At most 32 are named; the rest are counted.
 		const count =

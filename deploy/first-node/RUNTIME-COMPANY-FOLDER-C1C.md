@@ -740,6 +740,7 @@ Decisions:
   - Nothing else conflicts: runs hold group rooms `KEY SHARE`, thread-room writers already took `FOR UPDATE`, and within
     rank 4 rooms come before members, in key order.
   - F2 naming the chat's conversation at rank 11 (§5.9, test 10b) would make the exception unnecessary.
+  - C1c-3b's answers take the thread room `FOR SHARE` too (§6.3).
   - Not held off: an agent archived while a post waits (the staff row `FOR NO KEY UPDATE` and its own thread rooms, not
     the group chat's room). The post then refuses at its wake (42501 "Wake recipient authority is unavailable"), and
     the member posts again.
@@ -755,6 +756,42 @@ Decisions:
   the path gateway).
 - Not in 3a: `member_manage_company_machine` goes with 3f. `member_office_catalog` takes the gc fence before checking
   membership on either core; that is fixed on its own (it affects live companies).
+
+### 6.3 C1c-3b as built (migration 20260928319670, tests 662 and 663)
+
+- `qorpera_folder_enter_agent_thread(session, member)`: the prelude of a member's answer in an agent's thread. It reads
+  the thread room without a lock, then calls the enter helper with the member (rank 1), the agent (rank 2), the room
+  `FOR SHARE` as a post takes it, and both memberships (rank 4). No target is required, since each caller's own checks
+  refuse as today. It reads no pause: each caller reads the pause under the fence where it does today, so a replayed
+  answer still returns its receipt while the company is paused (662 §2). It returns false, locking nothing, when the
+  conversation is not an agent's thread.
+- **An answer to a card** (`answer_interaction`): the prelude in place of the gc fence; the conversation `FOR UPDATE`;
+  the input; the transcript events (the clock), then admission, then the wake (663 D). A group chat keeps its 22023; any
+  other conversation refuses 0A000 before any lock, as plain conversations' inputs do since 3a.
+- **An email draft's completion** (`finish_email_draft_action`, the secret broker): the prelude before its own
+  conversation lock when the draft sits in an agent's thread (663 B). The answer it gives then takes the same rows again
+  in the same modes, which never waits (core §9's activation check refuses only a stronger mode). The answer to a sent
+  email now reaches the agent (662 §5); before, it refused at the wake and the completion swallowed the refusal.
+- **The broker's claim** (`claim_email_draft_action`) takes the same prelude before its conversation lock (663 E). A
+  claim of an action already completed (a double click, a retry after a sent email) replays the completion under that
+  lock; with the prelude after it, an agent's rename of the thread's agent met the replay in a cycle (review r1 S1).
+- **An answer to an action-review card** (`answer_action_review`): the prelude, the conversation, then the review
+  (§5.7's card exception), "Always allow"'s company rule, the input, the events, admission, then the wake (663 C). A
+  card still held by a call takes the input and the events only, with no admission. A card outside an agent's thread
+  refuses 0A000.
+- **Refusal order.** On `folder-v2` the answers' new refusals (a group chat's 22023, a plain conversation's 0A000) come
+  before the cleanup refusal, the argument checks, the author and approver checks and the replay receipt. No
+  `folder-v2` company holds data that would show the difference: cards left group chats before `folder-v2` existed.
+- **The rule cap is not serialized.** "Always allow" inserts a company rule row (F2-4 keeps it a row until C3) with
+  no company row `FOR UPDATE`, so two answers at once can each pass the 48 KiB check and go over by one rule. The cap
+  bounds the reviewer's prompt; it is not an invariant, and `folder-v2` companies keep their rules in `rules/` (F2-4's
+  saves there are not serialized with "Always allow" either).
+- **The thread room `FOR SHARE`** extends §6.2's exception to the answers. Today every writer of a thread room takes it
+  `FOR UPDATE` (an agent's rename or archive, and member changes through `ensure_agent_thread_internal`), so `KEY
+  SHARE` would also wait for them. `FOR SHARE` matches posting and would also hold off a future `FOR NO KEY UPDATE`
+  writer of a thread room (663 A).
+- Not in 3b: `prepare_email_draft_action` takes the draft `FOR UPDATE` and inserts an action row whose only foreign key
+  names the draft, so it takes no company row at all.
 
 ### 6.4 C1c-3c as built (migration 20260929690000, tests 664 and 665)
 

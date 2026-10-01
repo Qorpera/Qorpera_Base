@@ -1,8 +1,11 @@
 // @vitest-environment jsdom
+
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mountApplication } from "../src/app/application.ts";
 import { ExecutionNotices } from "../src/app/views/execution-notices.ts";
 import type { MemberNotification, WebMemberNotifications } from "../src/cloud/member-notifications.ts";
+import { PlanSwitchBusyError, type WebMemberConnection } from "../src/cloud/native-subscription.ts";
+import type { WebRoutine } from "../src/cloud/routines.ts";
 import { deferred, fixture, id, profileA, profileB, settle, timestamp, userB } from "./fixtures.ts";
 
 const cleanup: (() => void)[] = [];
@@ -300,4 +303,470 @@ it("reads notices for the company workspace without any popup, also across an ac
 	f.auth(userB);
 	await vi.advanceTimersByTimeAsync(100);
 	expect(root.textContent).not.toContain("company computers are in use");
+});
+
+describe("a ChatGPT plan's first-routine card (shown only to a member with a plan login, while plans are on)", () => {
+	const member = id(99);
+	const waitingNotice = (n = 77): MemberNotification => ({
+		...item(n),
+		kind: "routine_needs_model_account",
+		subject: {
+			schema: "routine-needs-model-account",
+			staffAgentId: id(60),
+			routineId: id(61),
+			title: "Morning brief",
+		},
+	});
+	const connection = (extra: Record<string, unknown>) =>
+		({
+			connectionId: id(85),
+			clientConnectionId: id(185),
+			connectionVersion: 2,
+			provider: "openai",
+			nativeHarness: "codex-cli",
+			authorizationState: "active",
+			maxNativeConcurrency: 1,
+			billingSource: "personal_subscription",
+			consentVersion: "v1",
+			consentedAt: timestamp,
+			connectionStatus: "active",
+			policy: { implementationStatus: "supported", enablementStatus: "enabled", policyVersion: 3 },
+			...extra,
+		}) as unknown as WebMemberConnection;
+	const plan = (extra: Record<string, unknown> = {}) =>
+		connection({ loginKind: "chatgpt_plan", allowAutonomous: false, ...extra });
+	const routine = (extra: Record<string, unknown> = {}) =>
+		({
+			routineId: id(61),
+			title: "Morning brief",
+			status: "paused",
+			pauseReason: "needs_model_account",
+			runsForUserId: member,
+			triggers: [{ id: "t", kind: "schedule", intervalMinutes: 60 }],
+			...extra,
+		}) as unknown as WebRoutine;
+	function planSetup(
+		options: {
+			connections?: WebMemberConnection[];
+			routines?: WebRoutine[];
+			notices?: MemberNotification[];
+			available?: boolean;
+			manage?: boolean;
+			mounted?: boolean;
+		} = {},
+	) {
+		const notices = options.notices ?? [waitingNotice()];
+		const client = {
+			listNotifications: vi.fn(async () => notices),
+			acknowledgeNotification: vi.fn(
+				async (notificationId: string): Promise<MemberNotification> => ({
+					...notices.find((entry) => entry.notificationId === notificationId)!,
+					acknowledgedAt: timestamp,
+				}),
+			),
+		};
+		let listed = options.connections ?? [plan()];
+		let routines = options.routines ?? [routine()];
+		const offer = {
+			native: {
+				listConnections: vi.fn(async () => ({ connections: listed })),
+				setWorkWhileAway: vi.fn(async () => {
+					listed = [...listed, { ...listed[0]!, connectionVersion: 3, allowAutonomous: true }];
+				}),
+				recordRoutineOffer: vi.fn(async (connectionId: string) => {
+					// As the cloud does: the list now carries the showing.
+					listed = listed.map((item) =>
+						item.connectionId === connectionId ? { ...item, routineOfferShownAt: timestamp } : item,
+					);
+					return timestamp;
+				}),
+				chatGptPlanAvailable: vi.fn(async () => options.available ?? true),
+			},
+			routines: {
+				list: vi.fn(async () => routines),
+				setEnabled: vi.fn(async () => {
+					routines = routines.map(
+						(entry) => ({ ...entry, status: "active", pauseReason: undefined }) as WebRoutine,
+					);
+				}),
+			},
+			memberId: member,
+			canManage: vi.fn(() => options.manage ?? true),
+		};
+		const view = new ExecutionNotices(client, new AbortController().signal, undefined, offer);
+		if (options.mounted !== false) document.body.append(view.el);
+		cleanup.push(() => view.dispose());
+		const setRoutines = (next: WebRoutine[]) => {
+			routines = next;
+		};
+		return { client, offer, view, setRoutines };
+	}
+	const text = (view: ExecutionNotices) => view.el.querySelector(".company-notice p")?.textContent;
+	it("stays out of sight without a plan login, with a Codex login, or while plans are off", async () => {
+		for (const options of [
+			{ connections: [] },
+			{ connections: [connection({ loginKind: "codex", allowAutonomous: false })] },
+			{ available: false },
+		]) {
+			const f = planSetup(options);
+			await settle();
+			expect(f.view.el.hidden).toBe(true);
+			expect(f.offer.native.recordRoutineOffer).not.toHaveBeenCalled();
+			f.view.dispose();
+		}
+		// Without the plan's helpers the band reads as before: a waiting routine gets no line.
+		const f = setup([waitingNotice()]);
+		await settle();
+		expect(f.view.el.hidden).toBe(true);
+	});
+	it("does not come back once shown, once the plan is on, or for a routine it cannot start", async () => {
+		for (const options of [
+			{ connections: [plan({ routineOfferShownAt: timestamp })] },
+			{ connections: [plan({ allowAutonomous: true })] },
+			{ routines: [routine({ runsForUserId: id(98) })] },
+			{ routines: [routine({ status: "active", pauseReason: undefined })] },
+			// Paused by its agent, not waiting for an account.
+			{ routines: [routine({ pauseReason: "agent" })] },
+			{
+				routines: [
+					routine({
+						triggers: [{ id: "f", kind: "listener", source: "company-file", path: "a", match: "subtree" }],
+					}),
+				],
+			},
+		]) {
+			const f = planSetup(options);
+			await settle();
+			expect(f.view.el.hidden).toBe(true);
+			f.view.dispose();
+		}
+	});
+	it("reads the plan and the routines once for the same notices", async () => {
+		const f = planSetup({ connections: [] });
+		await settle();
+		await vi.advanceTimersByTimeAsync(60_000);
+		expect(f.offer.native.listConnections).toHaveBeenCalledTimes(1);
+	});
+	it("asks once, and Turn on turns the plan on and starts the waiting routine on it", async () => {
+		const f = planSetup();
+		await settle();
+		expect(text(f.view)).toBe(
+			"Morning brief can run while you're away. Turn on “Work while you're away” so your ChatGPT plan can run it.",
+		);
+		expect(f.offer.native.recordRoutineOffer).toHaveBeenCalledExactlyOnceWith(id(85), expect.any(AbortSignal));
+		await vi.advanceTimersByTimeAsync(30_000);
+		expect(f.offer.native.recordRoutineOffer).toHaveBeenCalledTimes(1);
+		expect(f.view.el.hidden).toBe(false);
+		action("turn-on-plan").click();
+		await settle();
+		expect(f.offer.native.setWorkWhileAway).toHaveBeenCalledExactlyOnceWith(id(85), true, expect.any(AbortSignal));
+		expect(f.offer.routines.setEnabled).toHaveBeenCalledExactlyOnceWith(
+			expect.objectContaining({ routineId: id(61) }),
+			expect.objectContaining({ connectionId: id(85), connectionVersion: 3, allowAutonomous: true }),
+			true,
+			expect.any(String),
+		);
+		expect(f.client.acknowledgeNotification).toHaveBeenCalledWith(id(77), expect.any(AbortSignal));
+		expect(f.view.el.hidden).toBe(true);
+	});
+	it("names how many routines wait when there are several", async () => {
+		const f = planSetup({ routines: [routine(), routine({ routineId: id(62), title: "Evening note" })] });
+		await settle();
+		expect(text(f.view)).toBe(
+			"2 routines can run while you're away. Turn on “Work while you're away” so your ChatGPT plan can run them.",
+		);
+	});
+	it("leaves a routine alone that stopped waiting before Turn on", async () => {
+		const f = planSetup();
+		await settle();
+		f.setRoutines([routine({ status: "concluded", pauseReason: undefined })]);
+		action("turn-on-plan").click();
+		await settle();
+		expect(f.offer.native.setWorkWhileAway).toHaveBeenCalledOnce();
+		expect(f.offer.routines.setEnabled).not.toHaveBeenCalled();
+	});
+	it("for a member who does not save routines, turns the plan on and says to ask the agent", async () => {
+		const f = planSetup({ manage: false });
+		await settle();
+		action("turn-on-plan").click();
+		await settle();
+		expect(f.offer.native.setWorkWhileAway).toHaveBeenCalledOnce();
+		expect(f.offer.routines.setEnabled).not.toHaveBeenCalled();
+		expect(text(f.view)).toBe(
+			"Your ChatGPT plan now works while you're away. Ask the agent to set Morning brief up again.",
+		);
+		expect(f.client.acknowledgeNotification).toHaveBeenCalledWith(id(77), expect.any(AbortSignal));
+		await vi.advanceTimersByTimeAsync(30_000);
+		expect(f.view.el.hidden).toBe(false);
+		f.view.el
+			.querySelector(".company-notice")!
+			.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+		expect(f.view.el.hidden).toBe(true);
+	});
+	it("tells a member who does not save routines whom to ask about several", async () => {
+		const evening = routine({ routineId: id(62), title: "Evening note" });
+		for (const [agents, said] of [
+			[[id(60), id(60)], "Ask the agent to set those routines up again."],
+			[[id(60), id(63)], "Ask the agents to set those routines up again."],
+		] as const) {
+			const f = planSetup({
+				manage: false,
+				routines: [routine({ staffAgentId: agents[0] }), { ...evening, staffAgentId: agents[1] } as WebRoutine],
+			});
+			await settle();
+			action("turn-on-plan").click();
+			await settle();
+			expect(text(f.view)).toBe(`Your ChatGPT plan now works while you're away. ${said}`);
+			action("dismiss-plan").click();
+			f.view.dispose();
+		}
+	});
+	it("starts the newest turned-on version, and a routine set up while the card stood", async () => {
+		const f = planSetup();
+		await settle();
+		f.offer.native.setWorkWhileAway.mockImplementationOnce(async () => {
+			f.offer.native.listConnections.mockResolvedValue({
+				connections: [
+					plan(),
+					plan({ connectionVersion: 3, allowAutonomous: true }),
+					plan({ connectionVersion: 4, allowAutonomous: true }),
+				],
+			});
+		});
+		// The same agent's notice stays open, so a second routine comes with no notice of its own.
+		f.setRoutines([routine(), routine({ routineId: id(62), title: "Evening note" })]);
+		action("turn-on-plan").click();
+		await settle();
+		expect(
+			(f.offer.routines.setEnabled.mock.calls as unknown as [WebRoutine, WebMemberConnection][]).map(
+				([entry, account]) => [entry.routineId, account.connectionVersion],
+			),
+		).toEqual([
+			[id(61), 4],
+			[id(62), 4],
+		]);
+	});
+	it("comes back after a failed read, and a failed plan read hides only the card", async () => {
+		const f = planSetup({ notices: [waitingNotice(), item(70)] });
+		f.offer.native.chatGptPlanAvailable.mockRejectedValueOnce(new Error("offline"));
+		await settle();
+		// The other notice still shows.
+		expect(text(f.view)).toBe(FULL);
+		await vi.advanceTimersByTimeAsync(30_000);
+		expect(text(f.view)).toContain("Morning brief can run while you're away.");
+		f.client.listNotifications.mockRejectedValueOnce(new Error("offline"));
+		await vi.advanceTimersByTimeAsync(30_000);
+		expect(f.view.el.hidden).toBe(true);
+		await vi.advanceTimersByTimeAsync(30_000);
+		expect(text(f.view)).toContain("Morning brief can run while you're away.");
+		expect(f.offer.native.recordRoutineOffer).toHaveBeenCalledOnce();
+	});
+	it("says nothing more once the kernel started the routine (20260928369985), and saves no routine", async () => {
+		for (const manage of [true, false]) {
+			const f = planSetup({ manage });
+			await settle();
+			f.offer.native.setWorkWhileAway.mockImplementationOnce(async () => {
+				// Routines that do not wait for this plan are left alone too.
+				f.setRoutines([
+					routine({ status: "active", pauseReason: undefined }),
+					routine({ routineId: id(63), pauseReason: "agent" }),
+					routine({ routineId: id(64), runsForUserId: id(98) }),
+				]);
+			});
+			const reads = f.offer.native.listConnections.mock.calls.length;
+			action("turn-on-plan").click();
+			await settle();
+			expect(f.offer.routines.setEnabled).not.toHaveBeenCalled();
+			expect(f.offer.native.listConnections).toHaveBeenCalledTimes(reads);
+			expect(f.client.acknowledgeNotification).toHaveBeenCalledWith(id(77), expect.any(AbortSignal));
+			expect(f.view.el.hidden).toBe(true);
+			f.view.dispose();
+		}
+	});
+	it("tells a member who does not save routines only about a routine that still waits", async () => {
+		const f = planSetup({
+			manage: false,
+			routines: [routine(), routine({ routineId: id(62), title: "Evening note" })],
+		});
+		await settle();
+		f.offer.native.setWorkWhileAway.mockImplementationOnce(async () => {
+			// The kernel started one; the other was busy at that moment.
+			f.setRoutines([
+				routine({ status: "active", pauseReason: undefined }),
+				routine({ routineId: id(62), title: "Evening note" }),
+			]);
+		});
+		action("turn-on-plan").click();
+		await settle();
+		expect(text(f.view)).toBe(
+			"Your ChatGPT plan now works while you're away. Ask the agent to set Evening note up again.",
+		);
+	});
+	it("names the agent of the routines that still wait, not of the ones it was asked about", async () => {
+		const f = planSetup({
+			manage: false,
+			routines: [routine({ staffAgentId: id(60) }), routine({ routineId: id(62), staffAgentId: id(63) })],
+		});
+		await settle();
+		// Both that still wait now are the same agent's.
+		f.setRoutines([routine({ staffAgentId: id(60) }), routine({ routineId: id(65), staffAgentId: id(60) })]);
+		action("turn-on-plan").click();
+		await settle();
+		expect(text(f.view)).toBe(
+			"Your ChatGPT plan now works while you're away. Ask the agent to set those routines up again.",
+		);
+	});
+	it("says a busy switch is busy, and a second press works", async () => {
+		const f = planSetup();
+		await settle();
+		f.offer.native.setWorkWhileAway.mockRejectedValueOnce(new PlanSwitchBusyError());
+		action("turn-on-plan").click();
+		await settle();
+		expect(f.view.el.textContent).toContain("Busy right now. Try again in a moment.");
+		expect(f.view.el.textContent).not.toContain("could not be turned on");
+		action("turn-on-plan").click();
+		await settle();
+		expect(f.offer.native.setWorkWhileAway).toHaveBeenCalledTimes(2);
+		expect(f.view.el.hidden).toBe(true);
+	});
+	it("after a failure, says only what is known", async () => {
+		// A member who does not save routines: the switch went through, the routines could not be read again.
+		let f = planSetup({ manage: false });
+		await settle();
+		f.offer.native.setWorkWhileAway.mockImplementationOnce(async () => {
+			f.setRoutines([routine({ status: "active", pauseReason: undefined })]);
+		});
+		f.offer.routines.list.mockRejectedValueOnce(new Error("offline"));
+		action("turn-on-plan").click();
+		await settle();
+		expect(f.view.el.textContent).toContain(
+			"“Work while you're away” is on, but your routines could not be checked. Try again.",
+		);
+		expect(f.view.el.textContent).not.toContain("could not be started");
+		f.view.dispose();
+		// An owner: the kernel started one of two, and the other's save failed.
+		f = planSetup({ routines: [routine(), routine({ routineId: id(62), title: "Evening note" })] });
+		await settle();
+		f.offer.native.setWorkWhileAway.mockImplementationOnce(async () => {
+			f.setRoutines([
+				routine({ status: "active", pauseReason: undefined }),
+				routine({ routineId: id(62), title: "Evening note" }),
+			]);
+		});
+		f.offer.routines.setEnabled.mockRejectedValueOnce(new Error("refused"));
+		action("turn-on-plan").click();
+		await settle();
+		expect(f.view.el.textContent).toContain(
+			"“Work while you're away” is on, but the routine could not be started. Try again.",
+		);
+		f.view.dispose();
+		// An owner: the web saved the first, and the second's save failed.
+		f = planSetup({ routines: [routine(), routine({ routineId: id(62), title: "Evening note" })] });
+		await settle();
+		f.offer.routines.setEnabled.mockImplementationOnce(async () => {}).mockRejectedValueOnce(new Error("refused"));
+		action("turn-on-plan").click();
+		await settle();
+		expect(f.view.el.textContent).toContain(
+			"“Work while you're away” is on, but the routine could not be started. Try again.",
+		);
+		f.view.dispose();
+		// An owner whose plan does not read as on after the switch: nothing is saved.
+		f = planSetup();
+		await settle();
+		f.offer.native.setWorkWhileAway.mockImplementationOnce(async () => {});
+		action("turn-on-plan").click();
+		await settle();
+		expect(f.offer.routines.setEnabled).not.toHaveBeenCalled();
+		expect(f.view.el.textContent).toContain(
+			"“Work while you're away” is on, but the routine could not be started. Try again.",
+		);
+	});
+	it("Not now leaves the routine waiting and never asks again in this window", async () => {
+		const f = planSetup({ notices: [waitingNotice(77)] });
+		await settle();
+		action("not-now-plan").click();
+		await settle();
+		expect(f.client.acknowledgeNotification).toHaveBeenCalledWith(id(77), expect.any(AbortSignal));
+		expect(f.offer.native.setWorkWhileAway).not.toHaveBeenCalled();
+		expect(f.view.el.hidden).toBe(true);
+		// A later notice in the same window brings no card back.
+		f.client.listNotifications.mockResolvedValue([waitingNotice(78)]);
+		await vi.advanceTimersByTimeAsync(30_000);
+		expect(f.view.el.hidden).toBe(true);
+	});
+	it("says what failed, keeps the card usable, and does not turn the plan on twice", async () => {
+		const f = planSetup();
+		await settle();
+		f.offer.native.setWorkWhileAway.mockRejectedValueOnce(new Error("offline"));
+		action("turn-on-plan").click();
+		await settle();
+		expect(f.view.el.textContent).toContain("“Work while you're away” could not be turned on. Try again.");
+		expect(action("turn-on-plan").hasAttribute("aria-disabled")).toBe(false);
+		f.offer.routines.setEnabled.mockRejectedValueOnce(new Error("refused"));
+		action("turn-on-plan").click();
+		await settle();
+		expect(f.view.el.textContent).toContain(
+			"“Work while you're away” is on, but the routine could not be started. Try again.",
+		);
+		// Two wait now, and neither started: the card says routines.
+		f.setRoutines([routine(), routine({ routineId: id(62), title: "Evening note" })]);
+		f.offer.routines.setEnabled.mockRejectedValueOnce(new Error("refused"));
+		action("turn-on-plan").click();
+		await settle();
+		expect(f.view.el.textContent).toContain(
+			"“Work while you're away” is on, but the routines could not be started. Try again.",
+		);
+		action("turn-on-plan").click();
+		await settle();
+		expect(f.offer.native.setWorkWhileAway).toHaveBeenCalledTimes(2);
+		expect(f.offer.routines.setEnabled).toHaveBeenCalledTimes(4);
+		expect(f.view.el.hidden).toBe(true);
+	});
+	it("says routines when several could not be started", async () => {
+		const f = planSetup({ routines: [routine(), routine({ routineId: id(62), title: "Evening note" })] });
+		await settle();
+		f.offer.routines.setEnabled.mockRejectedValueOnce(new Error("refused"));
+		action("turn-on-plan").click();
+		await settle();
+		expect(f.view.el.textContent).toContain(
+			"“Work while you're away” is on, but the routines could not be started. Try again.",
+		);
+	});
+	it("records the showing only once the card is on a page the member can see", async () => {
+		const f = planSetup({ mounted: false });
+		await settle();
+		expect(f.offer.native.recordRoutineOffer).not.toHaveBeenCalled();
+		document.body.append(f.view.el);
+		f.client.listNotifications.mockResolvedValue([waitingNotice(79)]);
+		await vi.advanceTimersByTimeAsync(30_000);
+		expect(f.offer.native.recordRoutineOffer).toHaveBeenCalledOnce();
+	});
+	it("records nothing for a card read while the page went out of sight", async () => {
+		let visibility: DocumentVisibilityState = "visible";
+		vi.spyOn(document, "visibilityState", "get").mockImplementation(() => visibility);
+		const f = planSetup();
+		const routines = deferred<WebRoutine[]>();
+		f.offer.routines.list.mockImplementationOnce(() => routines.promise);
+		await settle();
+		visibility = "hidden";
+		routines.resolve([routine()]);
+		await settle();
+		expect(f.offer.native.recordRoutineOffer).not.toHaveBeenCalled();
+		visibility = "visible";
+		document.dispatchEvent(new Event("visibilitychange"));
+		await settle();
+		expect(f.offer.native.recordRoutineOffer).toHaveBeenCalledOnce();
+	});
+	it("names only the action that is busy", async () => {
+		const f = planSetup();
+		await settle();
+		const ack = deferred<MemberNotification>();
+		f.client.acknowledgeNotification.mockImplementationOnce(() => ack.promise);
+		action("not-now-plan").click();
+		await settle();
+		expect(action("turn-on-plan").textContent).toBe("Turn on");
+		expect(action("turn-on-plan").getAttribute("aria-disabled")).toBe("true");
+		ack.resolve({ ...waitingNotice(), acknowledgedAt: timestamp });
+		await settle();
+	});
 });

@@ -37,7 +37,13 @@ import { findMentions, type MentionTarget, matchTargets, mentionParts, mentionQu
 import { presentationDay, presentationLocale, presentationTimeZone, t, timeZoneOption } from "../../ui/preferences.ts";
 import { quietScroll } from "../../ui/quiet-scroll.ts";
 import { ReceivedAttachments } from "../../ui/received-attachments.ts";
-import { runFailureCard, runFailureInterrupted, runFailureReason } from "../../ui/run-failure.ts";
+import {
+	manageUsageLink,
+	planUsageLimitReason,
+	runFailureCard,
+	runFailureInterrupted,
+	runFailureReason,
+} from "../../ui/run-failure.ts";
 import { uiScale } from "../../ui/scale.ts";
 import { composerSkeleton, messagesSkeleton, threadIdentitySkeleton } from "../../ui/skeleton.ts";
 import { markSkillNames, SkillMentions } from "../../ui/skill-mentions.ts";
@@ -2399,11 +2405,20 @@ export class ConversationView {
 				? t("A review did not finish")
 				: t("{name} did not finish this run", { name: agentName });
 		const recovery = failed?.recovery;
+		// The member's own ChatGPT plan reached its limit: OpenAI's words and "Manage usage" (Sign in with ChatGPT).
+		// Anyone else reads that the account paying for the work reached its limit.
+		const ownPlanLimit =
+			!proposalId &&
+			recovery?.usageLimit === true &&
+			recovery.paidByChatgptPlan === true &&
+			recovery.requestedByUserId === this.#company.userId.toLowerCase();
 		const reason = proposalId
 			? t("Its changes wait for your decision.")
-			: recovery
-				? runFailureReason(recovery.lastError, recovery.jobStatus)
-				: undefined;
+			: ownPlanLimit
+				? planUsageLimitReason()
+				: recovery
+					? runFailureReason(recovery.lastError, recovery.jobStatus, recovery.usageLimit)
+					: undefined;
 		const retryState = runId ? company.runRetries?.[runId] : undefined;
 		// Try again is for an interrupted run; a refused one says what the member must do first.
 		const canRetry =
@@ -2411,7 +2426,7 @@ export class ConversationView {
 			!review &&
 			this.#company.canRetryFailedRun(failed) &&
 			recovery !== undefined &&
-			runFailureInterrupted(recovery.lastError, recovery.jobStatus);
+			runFailureInterrupted(recovery.lastError, recovery.jobStatus, recovery.usageLimit);
 		const key = JSON.stringify([
 			runId,
 			hidden,
@@ -2422,6 +2437,7 @@ export class ConversationView {
 			recovery?.lastError,
 			retryState,
 			canRetry,
+			ownPlanLimit,
 		]);
 		if (key === this.#runNotificationKey) return;
 		this.#runNotificationKey = key;
@@ -2445,8 +2461,9 @@ export class ConversationView {
 			});
 		};
 		const profileId = this.#company.profile.profileId;
-		const action =
-			proposalId || review
+		const action = ownPlanLimit
+			? manageUsageLink()
+			: proposalId || review
 				? h(
 						"a",
 						{

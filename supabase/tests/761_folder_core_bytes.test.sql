@@ -120,7 +120,7 @@ begin
 		pg_temp.hash('two')), '42501');
 	perform pg_temp.raises(format('select public.qorpera_folder_authorize_object_upload(%L, %L, %L, %L, 3)', c_env,
 		pg_temp.member(1), v_intent, pg_temp.hash('two')), '42501');
-	-- Its confirm checks the same itself (it no longer calls the authorization, 20260929710000): an unlisted object, or
+	-- Its confirm checks the same itself (it no longer calls the authorization, 20260928309710): an unlisted object, or
 	-- a listed one at another size, is refused and nothing is catalogued.
 	perform pg_temp.raises(format('select public.qorpera_folder_confirm_object(%L, %L, %L, %L, 3)', c_env, a, v_intent,
 		pg_temp.hash('other')), '42501');
@@ -417,7 +417,7 @@ begin
 	if (pg_temp.usage()).bytes <> v_before.bytes or (pg_temp.usage()).objects <> v_before.objects then
 		raise exception 'A removed object leaves usage'; end if;
 
-	-- The quota is read plainly and checked before the NAS write (20260929710000): the gateway's authorization of a new
+	-- The quota is read plainly and checked before the NAS write (20260928309710): the gateway's authorization of a new
 	-- object past the limit is refused, and so is the Storage trigger's insert; one already stored is not counted again.
 	v_limit := (pg_temp.usage()).bytes;
 	update public.qorpera_company_files set storage_limit_bytes = v_limit where profile_id = c_profile;
@@ -487,9 +487,10 @@ begin
 		('public.qorpera_refresh_company_storage_usage()',
 			'if public.qorpera_folder_storage_usage_changed(tg_op, old, new) then return case when tg_op = ''DELETE'' then old else new end; end if;',
 			'f70353b583f7cf6853f57331bc9fa897eaa96251d13eb3d120838522965b5075'),
+		-- With the object gateway's 2 s lock budget after the folder-v2 line (20260928339630).
 		('public.qorpera_authorize_profile_object_replication(uuid,text,bigint)',
 			'if public.qorpera_company_is_folder_v2(p_profile_id) then return public.qorpera_folder_authorize_replication(p_profile_id, p_sha256, p_bytes); end if;',
-			'483143cc9ae9e1d4b3c7eec128b047f99161632303f628df572ddc2060961beb'),
+			'b428e2d5857983ffea34bfef05fe8cefa486d44edfc0e540685da1ee5a45d6fe'),
 		('public.qorpera_confirm_profile_object_upload(uuid,text,bigint,text)',
 			'if public.qorpera_company_is_folder_v2(p_profile_id) then raise exception ''This Company File path does not serve folder-v2 companies'' using errcode = ''0A000''; end if;',
 			'e97bb1724e5235cd41d1f2ed6af295f17765d7ab4e87e8ad98262303714e0059')) c(target, guard, digest)
@@ -513,6 +514,25 @@ begin
 	if position('order by o.sha256 collate "C" for key share' in (select prosrc from pg_proc
 		where pronamespace = 'public'::regnamespace and proname = 'qorpera_folder_commit')) = 0 then
 		raise exception 'Step 6 locks the objects in one hash order'; end if;
+end $$;
+
+-- 8b. Each byte function a gateway or a run calls waits at most 2 s for any one lock (20260928339780), inside the
+-- gateway's 5 s and the runtime's 3 s, so a long wait ends as 55P03 (409, `contended`) and never opens the gateway's
+-- circuit; the rest of each function's settings stay as they were. A redefinition must repeat it. The waits are in 762 G.
+do $$
+declare v_fn regprocedure;
+begin
+	foreach v_fn in array array[
+		'public.qorpera_folder_open_upload(uuid,jsonb,text)', 'public.qorpera_folder_seal_upload(uuid,jsonb,uuid)',
+		'public.qorpera_folder_renew_upload(uuid,jsonb,uuid)',
+		'public.qorpera_folder_authorize_object_upload(uuid,jsonb,uuid,text,bigint)',
+		'public.qorpera_folder_confirm_object(uuid,jsonb,uuid,text,bigint)',
+		'public.qorpera_folder_authorize_object_download(uuid,jsonb,text)',
+		'public.qorpera_folder_authorize_replication(uuid,text,bigint)']::regprocedure[] loop
+		if (select array(select c from unnest(proconfig) c order by c) from pg_proc where oid = v_fn)
+				is distinct from array['lock_timeout=2s', 'search_path=""'] then
+			raise exception 'The lock budget of %: %', v_fn, (select proconfig from pg_proc where oid = v_fn); end if;
+	end loop;
 end $$;
 
 -- 9. Only the service role stages and downloads.

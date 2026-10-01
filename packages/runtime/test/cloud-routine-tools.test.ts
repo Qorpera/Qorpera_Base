@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import type { CloudCompanyPathControl } from "@qorpera/runtime/cloud-company-path-gateway";
+import type { CloudFolderRoutineDecision } from "@qorpera/runtime/cloud-folder-routine-decision";
 import { CloudNativeToolRun } from "@qorpera/runtime/cloud-native-tool-authority";
-import { CloudNativeToolBoundary } from "@qorpera/runtime/cloud-native-tool-boundary";
+import { CloudNativeToolBoundary, CloudToolRefusal } from "@qorpera/runtime/cloud-native-tool-boundary";
 import { cloudRoutineDecisionTool, cloudRoutineTools } from "@qorpera/runtime/cloud-routine-tools";
 import { describe, expect, it, vi } from "vitest";
 import { nativeToolAuthorityFixture } from "./fixtures/native-tool-authority-fixture.ts";
@@ -590,6 +591,98 @@ describe("dynamic routine decision tool", () => {
 			expect(f.decided).not.toHaveBeenCalled();
 		} finally {
 			f.run.close();
+		}
+	});
+});
+
+describe("a folder-v2 dynamic routine's decision", () => {
+	it("goes through the routine file writer and is made only when the file saved", async () => {
+		const { binding, authority } = nativeToolAuthorityFixture();
+		const identity = authority.identity;
+		const call = vi.fn<CloudCompanyPathControl["call"]>(async () => ({}));
+		const decided = vi.fn();
+		const answers = [
+			{ content: { kind: "text" as const, value: '{"state":"refused"}' }, decided: false },
+			{ content: { kind: "text" as const, value: '{"saved":true}' }, decided: true },
+		];
+		const decide = vi.fn(async () => answers.shift() ?? answers[0]!);
+		const tool = cloudRoutineDecisionTool(
+			binding,
+			identity,
+			{ call },
+			{
+				decisionOwed: () => true,
+				decided,
+				folderDecision: { decide } as unknown as CloudFolderRoutineDecision,
+			},
+		);
+		const context = {
+			companyId: identity.companyId,
+			runId: identity.runId,
+			callId: randomUUID(),
+			argumentSha256: "a".repeat(64),
+			signal: new AbortController().signal,
+			identity,
+		};
+		const request = tool.parseArguments({ action: "next", operationKey: "decide-1", at: "2026-10-03T07:30:00Z" });
+		await expect(tool.execute(request, context)).resolves.toEqual({ kind: "text", value: '{"state":"refused"}' });
+		expect(decided).not.toHaveBeenCalled();
+		await expect(tool.execute(request, context)).resolves.toEqual({ kind: "text", value: '{"saved":true}' });
+		expect(decided).toHaveBeenCalledTimes(1);
+		expect(decide).toHaveBeenCalledWith(request, context);
+		expect(call).not.toHaveBeenCalled();
+	});
+
+	it("says what this company's run can decide, and shows a refusal before any effect, owing still", async () => {
+		const { binding, authority } = nativeToolAuthorityFixture();
+		const run = await CloudNativeToolRun.open(
+			binding,
+			{ describeToolAuthority: async () => authority },
+			new AbortController().signal,
+		);
+		const decided = vi.fn();
+		const decide = vi.fn(async () => {
+			throw new CloudToolRefusal("In this company a routine's own run cannot change its title or instructions yet");
+		});
+		const call = vi.fn<CloudCompanyPathControl["call"]>(async () => ({}));
+		const tool = cloudRoutineDecisionTool(
+			binding,
+			run.identity,
+			{ call },
+			{ decisionOwed: () => true, decided, folderDecision: { decide } as unknown as CloudFolderRoutineDecision },
+		);
+		expect(tool.description).toContain("cannot change its title or instructions yet: leave intent and title out");
+		expect(tool.description).toContain("a refused one is decided again under a new operationKey");
+		expect(tool.description).not.toContain("intent, when the work changed");
+		expect(tool.description).toContain("state refused carries the reason: choose again or conclude.");
+		expect(
+			cloudRoutineDecisionTool(binding, run.identity, { call }, { decisionOwed: () => true, decided }).description,
+		).toContain("intent, when the work changed");
+		const boundary = new CloudNativeToolBoundary({
+			companyId: run.identity.companyId,
+			runId: run.identity.runId,
+			identity: run.identity,
+			tools: [tool],
+			assertActive: (signal) => run.assertActive(signal),
+			signal: run.signal,
+		});
+		try {
+			const refused = await boundary.invoke("d1", "qorpera", "decide_routine", {
+				action: "next",
+				operationKey: "decide-1",
+				at: "2026-10-03T07:30:00Z",
+				intent: "Compare this week's prices.",
+			});
+			expect(JSON.parse(refused.contentItems[0].text)).toMatchObject({
+				status: "denied",
+				content: {
+					text: "REFUSED: In this company a routine's own run cannot change its title or instructions yet",
+				},
+			});
+			expect(decided).not.toHaveBeenCalled();
+			expect(call).not.toHaveBeenCalled();
+		} finally {
+			run.close();
 		}
 	});
 });

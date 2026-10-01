@@ -96,6 +96,26 @@ export type CloudCompanyFolderEntry =
 
 export type CloudCompanyFolderFileEntry = Extract<CloudCompanyFolderEntry, { kind: "file" }>;
 
+/** A todo as the todo index lists it (`agentTodos`): the start of its detail, and its file. */
+export interface CloudCompanyFolderTodo {
+	readonly todoKey: string;
+	readonly title: string;
+	readonly state: "open" | "blocked" | "done" | "cancelled";
+	readonly detail: string;
+	readonly detailTruncated?: true;
+	readonly path: string;
+	readonly version: string;
+	readonly updatedAt: string;
+	readonly cursor: string;
+}
+
+export interface CloudCompanyFolderTodoPage {
+	readonly todos: readonly CloudCompanyFolderTodo[];
+	/** How many more match after this page; `nextCursor` (the last todo's cursor) continues it. */
+	readonly moreTodos: number;
+	readonly nextCursor: string | null;
+}
+
 export interface CloudCompanyFolderReadResult {
 	/** The folder's clock when the read was answered. */
 	readonly asOfSeq: number;
@@ -602,6 +622,55 @@ export class CloudCompanyFolderClient {
 			return { asOfSeq: counter(input.asOfSeq), entry: null };
 		}
 		return { asOfSeq: counter(input.asOfSeq), entry: entry(input.entry) };
+	}
+
+	/** A page of the run agent's own todos from the todo index, which the commit updates with the files (thin writers
+	 * W1, `qorpera_folder_agent_todos`, 20260929770000): newest first, 32 at most, each with its cursor. */
+	async agentTodos(
+		request: { includeClosed?: boolean; state?: string; search?: string; cursor?: string },
+		signal: AbortSignal,
+	): Promise<CloudCompanyFolderTodoPage> {
+		const input = record(await this.#once("qorpera_folder_agent_todos", { p_request: request }, signal), [
+			"schema",
+			"todos",
+			"moreTodos",
+			"nextCursor",
+		]);
+		if (input.schema !== "qorpera.folder-agent-todos/v1" || !Array.isArray(input.todos) || input.todos.length > 32)
+			invalid();
+		const todos = input.todos.map((value) => {
+			const todo = record(
+				value,
+				["todoKey", "title", "state", "detail", "path", "version", "updatedAt", "cursor"],
+				["detailTruncated"],
+			);
+			if (
+				typeof todo.todoKey !== "string" ||
+				typeof todo.title !== "string" ||
+				!["open", "blocked", "done", "cancelled"].includes(todo.state as string) ||
+				typeof todo.detail !== "string" ||
+				typeof todo.path !== "string" ||
+				typeof todo.updatedAt !== "string" ||
+				(todo.detailTruncated !== undefined && todo.detailTruncated !== true)
+			)
+				invalid();
+			return {
+				todoKey: todo.todoKey,
+				title: todo.title,
+				state: todo.state as CloudCompanyFolderTodo["state"],
+				detail: todo.detail,
+				...(todo.detailTruncated ? { detailTruncated: true as const } : {}),
+				path: todo.path,
+				version: uuid(todo.version),
+				updatedAt: todo.updatedAt,
+				cursor: uuid(todo.cursor),
+			};
+		});
+		const moreTodos = counter(input.moreTodos);
+		const nextCursor = input.nextCursor === null ? null : uuid(input.nextCursor);
+		if (moreTodos > 0 !== (nextCursor !== null) || (nextCursor !== null && nextCursor !== todos.at(-1)?.cursor))
+			invalid();
+		return { todos, moreTodos, nextCursor };
 	}
 
 	/** A file's text, checked against its entry, or null when nothing is at the path. A folder, a file larger than

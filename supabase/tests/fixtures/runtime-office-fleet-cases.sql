@@ -88,6 +88,27 @@ set local role service_role;
 select pg_temp.wake_assert(pg_temp.office_fleet_place()->>'state'='unplaced','Stale inventory cannot place');
 rollback to fleet_staged;
 
+-- Computer hours (20260928309720): a computer of a company at zero is not placed though a node has
+-- room, and nothing is reserved; once hours are added it is placed as before.
+update public.qorpera_computer_hour_billing set live_since=clock_timestamp()-interval '1 second';
+insert into public.qorpera_computer_hour_usage(profile_id,metered_at,run_seconds,standard_seconds)
+ select o.profile_id,clock_timestamp(),20000,20000 from public.qorpera_runtime_offices o
+ where o.id=(current_setting('qorpera_test.office_scope')::jsonb->>'companyComputerId')::uuid;
+update public.qorpera_computer_hour_billing set zero_rule_since=clock_timestamp()-interval '1 second';
+select pg_temp.wake_assert(public.qorpera_computer_hour_zero_sweep(clock_timestamp())->>'ranOut'='1','The company is at zero');
+set local role service_role;
+select pg_temp.wake_assert(pg_temp.office_fleet_place()->>'state'='unplaced','At zero the computer is not placed');
+reset role;
+select pg_temp.wake_assert(not exists(select 1 from public.qorpera_runtime_office_providers)
+ and not exists(select 1 from public.qorpera_runtime_machine_allocations)
+ and not exists(select 1 from public.qorpera_runtime_node_demands),'Nothing is reserved at zero');
+insert into public.qorpera_computer_hour_sources(kind,profile_id,user_id,granted_seconds,expires_at,dry_run)
+ select 'credit',o.profile_id,'30000000-0000-4000-8000-000000000001',72000,clock_timestamp()+interval '12 months',false
+ from public.qorpera_runtime_offices o where o.id=(current_setting('qorpera_test.office_scope')::jsonb->>'companyComputerId')::uuid;
+set local role service_role;
+select pg_temp.wake_assert(pg_temp.office_fleet_place()#>>'{offer,nodeId}' is not null,'With hours it is placed');
+rollback to fleet_staged;
+
 -- An older larger policy must not exclude this exact smaller installation.
 update public.qorpera_runtime_nodes set headroom_cpu_millis=1000 where id='60300000-0000-4000-8000-000000000010';
 set local role service_role;

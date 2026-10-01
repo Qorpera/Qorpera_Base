@@ -4,6 +4,7 @@ import {
 	readRunnerControlRequest,
 	runnerControlRpcName,
 	runnerControlRpcStatus,
+	runnerStartRpcStatus,
 	type RunnerControlRequest,
 } from "./runner-control.ts";
 
@@ -81,6 +82,16 @@ Deno.serve(async (request) => {
 				p_assignment_capability_sha256: await sha256(action.assignmentCapability),
 			};
 			break;
+		case "start":
+			args = {
+				p_runner_id: action.runnerId,
+				p_session_token_sha256: currentTokenSha256,
+				p_assignment_id: action.assignmentId,
+				p_job_id: action.jobId,
+				p_assignment_capability_sha256: await sha256(action.assignmentCapability),
+				p_native_lease_seconds: action.nativeLeaseSeconds ?? null,
+			};
+			break;
 		case "renew":
 			args = {
 				p_runner_id: action.runnerId,
@@ -113,6 +124,9 @@ Deno.serve(async (request) => {
 			break;
 	}
 	const { data, error } = await client.rpc(runnerControlRpcName(action.action), args);
-	if (error) return jsonResponse({ error: "Runner request was rejected" }, runnerControlRpcStatus(error));
+	if (error) {
+		const status = action.action === "start" ? runnerStartRpcStatus(error) : runnerControlRpcStatus(error);
+		return jsonResponse({ error: "Runner request was rejected" }, status);
+	}
 	return jsonResponse({ value: data });
 });

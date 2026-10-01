@@ -60,7 +60,13 @@ describe("native Company File runtime selection", () => {
 			binarySha256: configured.QORPERA_NATIVE_CODEX_FENCE_SHA256,
 			objectGatewayUrl: configured.QORPERA_NATIVE_OBJECT_GATEWAY_URL,
 			isolation: { entryPoint: "/opt/qorpera-runner/qorpera-native-isolation-child.mjs" },
+			chatGptPlanAuth: "command",
 		});
+		// A ChatGPT plan run's token: Codex's token command by default, the environment as the fallback.
+		expect(
+			nativeCompanyRuntimeConfiguration({ ...configured, QORPERA_CHATGPT_PLAN_AUTH: "environment" })
+				?.chatGptPlanAuth,
+		).toBe("environment");
 	});
 	it("does not downgrade a misspelled or incomplete selection to legacy execution", () => {
 		for (const patch of [
@@ -71,6 +77,8 @@ describe("native Company File runtime selection", () => {
 			{ QORPERA_NATIVE_OBJECT_GATEWAY_URL: "http://objects.example.test" },
 			{ QORPERA_NATIVE_OBJECT_GATEWAY_URL: "https://secret@objects.example.test" },
 			{ QORPERA_NATIVE_OBJECT_GATEWAY_URL: "https://objects.example.test/another-route" },
+			{ QORPERA_CHATGPT_PLAN_AUTH: "" },
+			{ QORPERA_CHATGPT_PLAN_AUTH: "file" },
 		])
 			expect(() => nativeCompanyRuntimeConfiguration({ ...configured, ...patch })).toThrow();
 	});

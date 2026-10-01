@@ -92,7 +92,7 @@ class Control implements CloudRunnerControlTransport {
 				throw new Error("failure response lost");
 			}
 		}
-		return {
+		const job = {
 			job_id: jobId,
 			run_id: runId,
 			assignment_id: assignmentId,
@@ -117,6 +117,8 @@ class Control implements CloudRunnerControlTransport {
 			created_at: new Date().toISOString(),
 			lease_expires_at: this.status === "leased" ? new Date(Date.now() + this.leaseMs).toISOString() : null,
 		};
+		// A start that defers its reads: the broker spies below serve describe and authority.
+		return body.action === "start" ? { job, description: null, native_authority: null } : job;
 	}
 }
 

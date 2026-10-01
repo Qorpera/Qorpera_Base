@@ -535,6 +535,62 @@ describe("the coding executor over a session turn", () => {
 		expect(w.world.phase).toBe("queued");
 	});
 
+	it("a turn whose company ran out of computer hours before it began waits in the queue", async () => {
+		const w = world();
+		// Computer hours (20260928319760): begin answers a refusal instead of beginning.
+		const control: CodingExecutorControl = {
+			call: (method, args, signal) =>
+				method === "qorpera_begin_coding_turn"
+					? Promise.resolve({ state: "refused", reason: "COMPUTER_HOURS_EXHAUSTED" })
+					: w.control.call(method, args, signal),
+		};
+		const executor = new CloudCodingExecutor({ control, host: w.host, owner: "exec-test", turnPollMs: 1 });
+		expect(await executor.runOnce(new AbortController().signal)).toBe("deferred");
+		expect(w.host.endTurn).toHaveBeenCalled();
+		// An attached session stays with the keeper: nothing is unplugged.
+		expect(w.host.detachSession).not.toHaveBeenCalled();
+		expect(w.world.calls.find((c) => c.method === "qorpera_defer_coding_session")!.args).toEqual({
+			p_worker_id: w.world.claim.workerId,
+			p_lease_token: w.world.claim.leaseToken,
+			p_reason: "COMPUTER_HOURS_EXHAUSTED",
+		});
+		expect(w.world.calls.map((c) => c.method)).not.toContain("qorpera_complete_coding_turn");
+		expect(w.world.phase).toBe("queued");
+	});
+
+	it("a begin refusal for any other reason is never taken for a wait", async () => {
+		const w = world();
+		const control: CodingExecutorControl = {
+			call: (method, args, signal) =>
+				method === "qorpera_begin_coding_turn"
+					? Promise.resolve({ state: "refused", reason: "NODE_CAPACITY_EXHAUSTED" })
+					: w.control.call(method, args, signal),
+		};
+		const executor = new CloudCodingExecutor({ control, host: w.host, owner: "exec-test", turnPollMs: 1 });
+		expect(await executor.runOnce(new AbortController().signal)).toBe("recovery-required");
+		expect(w.world.calls.map((c) => c.method)).not.toContain("qorpera_defer_coding_session");
+		expect(w.world.calls.map((c) => c.method)).not.toContain("qorpera_complete_coding_turn");
+	});
+
+	it("a deferral after an hours refusal that fails is reported and left to recovery", async () => {
+		const w = world();
+		const report = vi.fn();
+		const control: CodingExecutorControl = {
+			call: (method, args, signal) =>
+				method === "qorpera_begin_coding_turn"
+					? Promise.resolve({ state: "refused", reason: "COMPUTER_HOURS_EXHAUSTED" })
+					: method === "qorpera_defer_coding_session"
+						? Promise.reject(new Error("CODING_CONTROL_UNCONFIRMED"))
+						: w.control.call(method, args, signal),
+		};
+		const executor = new CloudCodingExecutor({ control, host: w.host, owner: "exec-test", turnPollMs: 1, report });
+		expect(await executor.runOnce(new AbortController().signal)).toBe("recovery-required");
+		expect(report.mock.calls.map(([stage, error]) => [stage, (error as Error).message])).toEqual([
+			["defer", "CODING_CONTROL_UNCONFIRMED"],
+		]);
+		expect(w.world.calls.map((c) => c.method)).not.toContain("qorpera_complete_coding_turn");
+	});
+
 	it("a deferral that fails is reported and left to recovery, never completed", async () => {
 		const w = world();
 		vi.mocked(w.host.prepareWorkspace).mockRejectedValueOnce(new CodingMachineUnavailable("MACHINE_RETIRING"));

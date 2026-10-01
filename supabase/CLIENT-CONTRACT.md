@@ -134,10 +134,65 @@ Founders (2026-09-28, migration 20260928248100): every member with the role
   folder-v2 is saved as before.
 
 
-### Credentials, provider connections, identity recovery (13)
+### Credentials, provider connections, identity recovery (15)
 
+- `qorpera_begin_chatgpt_plan_sign_in` (20260928329830, switched off): begins a
+  ChatGPT plan sign-in ("Continue with ChatGPT") for the caller's own member
+  compute identity, the same as `qorpera_begin_native_provider_login` for
+  OpenAI/Codex with the sign-in marked as a plan sign-in. Refused with 55000
+  while plan logins are switched off for the company, and with 22023 for any
+  identity that is not the caller's own member identity. The answer is the
+  ordinary begin's plus `model_login_kind: "chatgpt_plan"`.
 - `qorpera_begin_cloud_secret_capture`
 - `qorpera_begin_native_provider_login`
+- `qorpera_chatgpt_plan_available(profile)`: whether the caller's company may
+  use ChatGPT plan logins now (show "Continue with ChatGPT" only when true).
+  False while the company is being deleted (20260928359950).
+- ChatGPT plan rules (20260928359950, switched off with plan logins):
+  - work while away on a plan login needs the member's own choice: turn it on
+    with `qorpera_set_chatgpt_plan_work_while_away(profile, connection, on)`
+    (20260928369980), from Settings' "Work while you're away" switch or the
+    first-routine card's Turn on. It answers for the caller's own active plan
+    login in that company only (42501 "ChatGPT plan login is unavailable" for
+    anything else, alike whether or not the connection is a plan, and for a
+    revoked one), and its answer is the consent call's:
+    `{connection_id, version, allow_autonomous, changed, ...}`, with the version
+    to bind, plus `resumed_routines` (20260928369985). Turning the plan on also
+    starts the agents' routines that wait only for it: paused with
+    `needs_model_account`, running for the caller (`runs_for_user_id`) and paid
+    by this same plan, whose agent is active, with no listener, not a routine
+    file, not past its end, and not in a company being deleted or on the folder
+    core (folder-v2). Each moves to the plan's unattended
+    binding and resumes; its content, schedule and agent stay as they were.
+    `resumed_routines` lists their ids (`[]` when none, and always when turning
+    off). A routine that another call holds at that moment stays waiting, so
+    re-read the routine list instead of assuming the card's routine started.
+    The call waits at most 2 s for any one lock (an agent's call in flight, a
+    deletion, the GC) and then answers 55P03 "Busy right now. Try again in a
+    moment." with nothing changed; a rare deadlock PostgreSQL breaks on the
+    call's side answers the same. Show that line and let the member try again.
+    The kernel never consents a plan login for them:
+    `qorpera_consent_provider_connection_autonomous` refuses to turn a plan on
+    (55000 "Turn on work while you're away for this ChatGPT plan in Settings"),
+    and an agent's routine save leaves a plan that is off as it is, also while
+    the member is turning it off. Turning a plan off works through either call;
+  - a plan never pays for a listener routine (a file change or an event): a save
+    with one is refused with 42501 "A ChatGPT plan cannot pay for a listener";
+  - a plan at its usage limit stays the account of the conversations it pays for
+    (`qorpera_select_member_session_account` keeps it; sending then stops at the
+    limit), while a new conversation starts on a login with room; a conversation
+    whose login reached its limit never moves to a plan; a plan pays for
+    follow-up work only of runs it pays for, so a coding worker asked for by a
+    run another login pays for is refused at dispatch with 55000 when the plan
+    is the member's only Codex login;
+  - one usable plan per member and company:
+    `qorpera_begin_chatgpt_plan_sign_in` refuses a second one with 55000
+    "Disconnect your other ChatGPT plan first" (signing in again after the plan
+    login lapsed works);
+  - only the member whose plan pays retries a failed run on it
+    (`qorpera_resolve_failed_execution_run` 'retry': 55000 for anyone else;
+    acknowledging stays open) or a change's review on it
+    (`qorpera_retry_company_proposal_review`: 42501 for anyone else).
 - `qorpera_grant_cloud_connector` — Step 7 (bundle v87): grants every
   operation of one company-owned connection (Gmail, Google Drive, GitHub) to
   all active agents (`p_staff_agent_ids` null, marks the connection shared so
@@ -357,7 +412,7 @@ Founders (2026-09-28, migration 20260928248100): every member with the role
 ### Coding sessions (4) — Order 9, part 1 (PR #211)
 
 - `qorpera_list_coding_sessions(p_session_id)` — the coding sessions the agent dispatched from this conversation, each as `qorpera.coding-session/v1` plus `isOwner`; the thread renders each one as a centered system element (the "sandwich": a start line, a collapsible body, a status line) from this view and the session's own events, never from the agent's prose
-- `qorpera_read_coding_session(p_worker_id, p_after_event, p_limit)` — the session view plus its event stream (`phase`, `step`, `text`, `needs_input`, `input`, `delegated`, `published`, `finished`, `failed`), cursor on the event id
+- `qorpera_read_coding_session(p_worker_id, p_after_event, p_limit)` — the session view plus its event stream (`phase`, `step`, `text`, `needs_input`, `input`, `delegated`, `published`, `finished`, `failed`), cursor on the event id. A `failed` event of a turn that stopped at its login's usage limit carries `usageLimit: true` and `paidByChatgptPlan` (whether a member's ChatGPT plan paid; 20260928379930): tell it as a usage limit, never as a refusal
 - `qorpera_answer_coding_session(p_worker_id, p_text, p_client_request_id)` — owner only; idempotent on the client request id; refused while the session is working
 - `qorpera_delegate_coding_session(p_worker_id, p_client_request_id)` — owner only; "let the agent decide" a question the session asked
 
@@ -373,7 +428,7 @@ Founders (2026-09-28, migration 20260928248100): every member with the role
 - `qorpera_describe_governed_company_computer`
 - `qorpera_enqueue_execution_run`
 - `qorpera_enqueue_runner_job`
-- `qorpera_get_execution_run_recovery`
+- `qorpera_get_execution_run_recovery` — with `usage_limit` (the run's login reached its usage limit) and `paid_by_chatgpt_plan` (a member's ChatGPT plan pays for the run; tell its limit in OpenAI's words with "Manage usage", to the member whose plan it is: `run.requested_by_user_id`, whom a plan-paid run always serves; 20260928379930)
 - `qorpera_list_compute_identities`
 - `qorpera_list_execution_run_recoveries`
 - `qorpera_list_runner_audit`
@@ -595,6 +650,40 @@ wake), so no agent runs and nothing is charged before it.
 - A mailbox is paused, resumed and removed with `qorpera_set_event_hook_status` on its hook; removing frees
   its address. `qorpera_list_event_hooks` lists mailboxes with their `email` for every member, and
   `qorpera_list_event_deliveries` their received messages (`eventType` `mail.received`).
+- Sending (20260928309740_runtime_company_mail_sending, step M2b): agents send from a mailbox with the runtime
+  tool `send_mail`; there is no client surface yet. Sent email is queued in `qorpera_company_mail_outbox` (closed
+  to every API role) and sent by the `mail-outbox` Edge Function. Sending has its own switch in
+  `qorpera_mail_settings` (`sending`, built off) and the company limits on recipients `company_hourly_recipients`
+  (60) and `company_daily_recipients` (300). Received mail (`mail.received`) now also carries `autoSubmitted`,
+  `precedence`, `listId` and `automated`; agents never answer automated mail.
+- Sender names (20260928319810_runtime_company_mail_sender_names): `qorpera_create_company_mailbox` also reserves
+  (22023) any local part that reads as Qorpera (case, separators, accents, full width and look-alike letters or
+  digits folded), and no email goes out when the agent's or the company's name or the mailbox reads as Qorpera.
+
+### ChatGPT plan reads (20260928369970_runtime_chatgpt_plan_member_reads)
+
+Built switched off with plan logins. Show none of it while plan logins are switched off for the company
+(`qorpera_chatgpt_plan_available` is false) or the member has no plan login.
+
+- `qorpera_list_member_native_execution_connections`: each connection also has `login_kind` (`codex` or
+  `chatgpt_plan`; null for a node login), `allow_autonomous` (whether its member turned on work while away for
+  this version) and `routine_offer_shown_at` (when the member's first-routine card was shown in this company;
+  null until then; the same on every entry of the member's list, so read it from a plan login's entry). Label
+  a `chatgpt_plan` connection
+  "ChatGPT plan". Never consent a plan login on the member's behalf: its "Work while you're away" switch calls
+  `qorpera_set_chatgpt_plan_work_while_away` (the consent call alone refuses a plan, 20260928369980). Codex
+  logins keep today's behaviour.
+- `qorpera_record_chatgpt_plan_routine_offer(profile, connection)`: records that the first-routine card was shown
+  to the caller, for their own active plan login (members only; not in a company being deleted). Shown once per
+  member and company: a repeat, also on a later plan login after a new sign-in, answers the first showing
+  (`{connection_id, shown_at}`), and "Not now" never brings the card back. 42501 for a connection that is not the
+  caller's own active one in that company, 22023 "Not a ChatGPT plan login" for any other login.
+- `qorpera_list_cloud_routines`: each routine also has `pause_reason` (for example `needs_model_account`, a
+  routine that waits for a payer) and `runs_for_user_id` (the member its current version runs for: that
+  version's creator). When its current version is a resume (20260928369985), `resume_reason` is
+  `plan_turned_on`, `resumed_by_user_id` the member who turned on work while away and `resumed_at` when; all
+  three are null for any other version, so a later save clears them. Show it as "Resumed when <member> turned on
+  work while away".
 
 ## 3. Realtime
 
@@ -633,6 +722,14 @@ wake), so no agent runs and nothing is charged before it.
   any active member of the room edits an existing draft. Access is the room post
   rule: an active member of an active room. Drafts never send, wake or sponsor
   anything; the owner sends with `qorpera_post_company_room_message` as before.
+- `qorpera-orchestrator-wake-{64 hex}` — **node only, not for clients**
+  (migration `20260928319550_runtime_orchestrator_wake`). A runner orchestrator's
+  wake-up: while `qorpera_orchestrator_wake_settings.enabled` is on, the database
+  broadcasts event `wake`, payload `{"schema":"qorpera.orchestrator-wake/v1"}`
+  and nothing else, when claimable work may have appeared. Private channel read
+  by `anon` (the orchestrator joins with the publishable key) on that topic only.
+  The name derives from the control token's sha256, which only the database
+  keeps; nobody publishes but the database.
 
 ## 4. Object gateway (HTTP, `packages/object-gateway`)
 
@@ -686,8 +783,9 @@ machine.
   `Retry-After`) or 503 (mail switched off, or retry).
 - `profile-invitation-email`, `company-file-verifier`, `artifact-gc-worker`,
   `runner-control`, `runner-broker`, `runner-orchestrator`,
-  `computer-hour-notices` (20260928249160, founders' hour emails) — service or
-  runner authority only. Clients never call them.
+  `computer-hour-notices` (20260928249160, founders' hour emails),
+  `mail-outbox` (20260928309740, email agents send from company mailboxes) —
+  service or runner authority only. Clients never call them.
 
 ## 6. Stability by Order (what a client may build now)
 

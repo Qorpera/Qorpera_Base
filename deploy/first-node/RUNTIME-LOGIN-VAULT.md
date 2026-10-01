@@ -500,6 +500,160 @@ Node 2 (warm standby), between node 1's steps 6 and 8:
    in and reconnect again. By founder decision (29 September 2026) there is no third copy: "if the key is
    lost on both vaults, it's lost".
 
+## ChatGPT plan logins (Sign in with ChatGPT, built switched off)
+
+Founder decision 2026-10-01. A member's ChatGPT Plus or Pro plan pays for the work that member starts,
+through OpenAI's "Sign in with ChatGPT" (SIWC). It stays off until OpenAI approves Qorpera's partner
+application; today's Codex login keeps serving our own company until then. Design note:
+https://claude.ai/artifact/UWehPVysVzAmWcwvkuU6on.
+
+- **Deploy order.** This vault build reads every vault sign-in, Codex ones included, with
+  `qorpera_describe_model_login_sign_in_v2` from migration `20260928329830`. That migration must be live
+  before any vault (shared or one-company) runs this build; otherwise every vault Codex sign-in fails.
+  The migration alone changes nothing a member sees: plans stay off.
+- **Kind.** A plan login is a second kind of vault login (`qorpera_model_logins.login_kind =
+  'chatgpt_plan'`, migration `20260928329830`). It holds OpenAI's OAuth tokens: a one-hour access token
+  and a rotating 30-day refresh token. The envelope's one field is `chatgpt_plan_login`. The vault is
+  the only renewer, under the same renewal lock as a Codex login, and renews with OpenAI's token
+  endpoint itself (no helper, no Codex). A run gets the access token alone
+  (`{schema, loginKind: "chatgpt_plan", version, accessExpiresAt, accessToken}`).
+- **Runs (slice 4).** The run's host writes that token to `<run root>/chatgpt-plan/access-token` (mode
+  0600 in a 0700 directory, the host's own user; never a refresh token) and rewrites it in one step
+  whenever the vault hands it a newer one (the same once-a-minute check as for a Codex login). The run's
+  Codex home stays empty. Codex uses a provider of its own, `qorpera_chatgpt_plan`: OpenAI's API
+  (`https://api.openai.com/v1`, Responses) with the token as the bearer, read by Codex's token command
+  (`/bin/cat` on the file, run again each minute and after a refused request), at standard speed (Fast
+  mode is a Codex login's). The sandbox binds the token directory read-only, and the run reaches
+  `api.openai.com` alone (not `chatgpt.com` or `auth.openai.com`: the vault renews). The agent's tools
+  never reach the host's run root, and Codex's own shell is off. A 429 on a plan run is the plan's usage
+  limit (OpenAI's only 429 for plan use), which stops the work; Codex 0.155.1 reports it as a 429 it gave
+  up on. OpenAI takes the host id (`ext_agent_host_id`) at sign-in only, not on each request, so runs
+  send none. Coding turns run the same way.
+  - Fallback: the token in the run's Codex environment at start instead (OpenAI's documented path;
+    through bwrap's own environment, readable by the host's user alone, never an argument). Each run
+    then starts its own Codex (no warm spare for a plan run), so the next run picks up a renewed token;
+    a run that outlives its token fails at OpenAI's refusal. The orchestrators do not pass a setting for
+    it to the provider hosts they start, so the supported switch is `CHATGPT_PLAN_AUTH_DEFAULT` in
+    `cloud-native-provider-service-main.ts` (`"command"` to `"environment"`) and a runtime release.
+    `QORPERA_CHATGPT_PLAN_AUTH` (`command` or `environment`) serves a host started by hand.
+- **Sign-in.** The web client begins a plan sign-in (`qorpera_begin_chatgpt_plan_sign_in`) and polls
+  `/login` as for any vault sign-in. The vault answers with OpenAI's authorization address:
+  Authorization Code with PKCE, the plan scopes, the resource `https://api.openai.com/v1`, the state
+  `<company>.<43 random characters>`, and the identity's host id (`ext_agent_host_id`). OpenAI sends the
+  browser to the callback Edge Function `chatgpt-plan-callback` (slice 3). That function forwards the
+  state and code to `POST <vault>/v1/model-logins/<company>/chatgpt-plan/callback` and returns the browser
+  with a one-time confirmation id in the page fragment. Nothing is exchanged then. The web client
+  confirms with the sign-in's capability through the `native-provider-login` Edge Function, which
+  forwards to `POST <vault>/v1/model-logins/<company>/chatgpt-plan/confirm`. Only then does the vault
+  exchange the code, check the ID token against OpenAI's keys (signature, issuer, audience, expiry,
+  nonce) and that plan use was granted, seal the login and complete the sign-in. A browser that did not
+  start the sign-in never completes it.
+- **Renewal.** A run renews a plan login past half its pass. Idle upkeep renews one only once its tokens
+  are 7 days old, to keep the refresh token alive. Neither renews before OpenAI's `earliest_refresh_at`.
+  A refused refresh (`invalid_grant`, `invalid_refresh_token`, `token_expired`, `refresh_token_expired`,
+  `refresh_token_invalidated`, `refresh_token_reused`) marks the login for a new sign-in, and so does an
+  answer after which the old refresh token is gone but the vault cannot keep the new one: plan use
+  withdrawn (no `chatgpt.tokens.use.direct`), an ID token for another account or one that fails its
+  checks, a 200 it cannot read, or a pass not later than the saved one. The vault then ends the new
+  refresh token at OpenAI. A refresh answer without a new refresh token keeps the old one (RFC 6749 6
+  allows it). A code exchange OpenAI answered but the vault refuses (no plan use, an ID token failing its
+  checks) ends that answer's refresh token at OpenAI too; OpenAI's keys are loaded before the one-time
+  code is spent.
+  `invalid_client` never marks a login: that error is about our registration, not the member's login.
+  Two cases stay `transient` and are retried with the capped backoff, logged with their reason, until
+  someone acts: a login made under another client id (`client_changed`, after the registration changed:
+  those logins need a new sign-in, marked by hand for now), and any refusal code OpenAI has not
+  documented (`refresh_rejected`; add the code to the refused list once it is known).
+- **Confirmation time budget.** Each hop waits longer than the one behind it, so the member never sees a
+  failure for a login the vault saved: the vault's confirm route 30 s (the code exchange 15 s, the save
+  8 s, a re-read after a lost save answer 4 s; ending an unsaved login at OpenAI waits for nobody), the
+  `native-provider-login` Edge Function's `…/chatgpt-plan-confirm` 40 s (its gateway lookup, at most
+  5 s, comes first), the web client 45 s, the front's read timeout 60 s.
+- **Sign-ins in flight.** A plan sign-in between its first poll and its confirmation lives only in the
+  memory of the vault copy that serves it (at most 32 per company). A restart or a failover drops them:
+  the member's callback then answers `state_unknown` and the member starts again. Restart the vault at a
+  moment with no plan sign-in pending, as for the helper.
+- **Ending.** Once a plan login's capsule, every version that points at it, or their connections are
+  revoked (the member disconnected or left), each upkeep pass ends it at OpenAI (token revocation)
+  and marks it revoked. A disabled connection keeps its login.
+- **Configuration (after approval only).** Qorpera's client registration is the private credential
+  `qorpera-cloud-secret-chatgpt-plan`:
+  `{"schema":"qorpera.chatgpt-plan-client/v1","clientId":"oaiapp_…","clientSecret":"…" or null,
+  "redirectUri":"https://<project>.supabase.co/functions/v1/chatgpt-plan-callback"}`. The secret is
+  sent only in the token request's Basic header (client id and secret form-encoded, RFC 6749 2.3.1).
+  - Who installs it: the founder, who holds OpenAI's partner console, writes the file on each vault
+    host directly (node 1 and node 2: node 2's copy renews too), for example by pasting it over SSH into
+    `install -m 0400 -o root -g root /dev/stdin /etc/qorpera-shared-vault/chatgpt-plan.json`. It never
+    passes through a chat, a session or the coordinator; the coordinator compares only the two hosts'
+    `sha256sum` of the file.
+  - Check the file before the drop-in: `jq -e '.schema == "qorpera.chatgpt-plan-client/v1" and
+    (.clientId | startswith("oaiapp_")) and (.redirectUri | startswith("https://"))'` (prints nothing
+    secret). A file the vault cannot parse does not stop it: it logs `Cloud secret broker: the ChatGPT
+    plan credential is invalid; ChatGPT plan sign-ins stay off.` and serves on without plans. An empty,
+    oversized or unsafe file (wrong owner or mode) still stops the unit, as for every credential.
+  - Then the drop-in, `LoadCredential=qorpera-cloud-secret-chatgpt-plan:/etc/qorpera-shared-vault/chatgpt-plan.json`,
+    `systemctl daemon-reload` and a vault restart. The unit stays as it is until then: a LoadCredential
+    line for a missing file would stop the unit.
+  - Without the credential the vault starts no plan sign-in and renews or ends no plan login, and logs
+    nothing about plans. With it, it logs `Cloud secret broker serves ChatGPT plan sign-ins.` once.
+  - A one-company broker serves plan sign-ins for its company only with the same file in its own unit
+    (`/etc/qorpera-secret-broker/chatgpt-plan.json`, the same drop-in line pointing there) and with its
+    company's line in the front map below. Switch such a company on only after both are in place.
+- **Front routing.** The path map `$qorpera_model_login_broker` must also send the two plan routes to
+  the vault:
+  `"~^/v1/model-logins/[0-9a-fA-F-]{36}/(login|account-refresh|chatgpt-plan/callback|chatgpt-plan/confirm)$" 127.0.0.1:18660;`,
+  with the same `location` widened to match. A company on a one-company broker needs the same widening
+  on its own line. The vault host needs outbound HTTPS to `auth.openai.com` (discovery, signing keys,
+  token and revocation endpoints). The vault requires `revocation_endpoint` in OpenAI's discovery
+  document: without it, plan sign-ins and renewals stop (retried as `transient`), not only revocation.
+- **Callback Edge Function (slice 3).** `supabase functions deploy chatgpt-plan-callback`
+  (`verify_jwt = false`: OpenAI sends the browser without a JWT). The address OpenAI registers is
+  `https://<project>.supabase.co/functions/v1/chatgpt-plan-callback`, the same as the credential's
+  `redirectUri`. It asks `qorpera_chatgpt_plan_callback_target(state)` with the service role, forwards
+  `{state, code, error, clientId}` to the company's vault, and returns the browser with
+  `#?chatgpt_plan=confirm&confirmation=…` or `#?chatgpt_plan=failed&reason=…` after the return page.
+  The return page is `QORPERA_CHATGPT_PLAN_RETURN_URL` (optional, and empty counts as unset: an HTTPS
+  page of one of `QORPERA_WEB_ORIGINS`, else that list's first origin; no query, no credentials, no `?`
+  in its fragment, or the function does not start). It forwards only to the vault route of the state's
+  own company, gives the vault 20 s, reads at most 16 KB of its answer, and answers only GET. It never
+  exchanges a code and never sees a token. The web client's confirmation goes through
+  `native-provider-login` at `…/chatgpt-plan-confirm`, which the login chooser routes to the same vault
+  and which waits 40 s for it (see the confirmation time budget above; redeploy that function too).
+  Smoke check after deploy, which must show a 303 back to the return page with `reason=state_unknown`:
+  `curl -s -o /dev/null -D - 'https://<project>.supabase.co/functions/v1/chatgpt-plan-callback?state=x' | grep -i '^location'`
+  (a GET: the function answers anything else with 405).
+- **Switches.** `update public.qorpera_chatgpt_plan_settings set enabled = true;` (platform) and
+  `select public.qorpera_set_chatgpt_plan_company('<company>', true);` (service role; only for a company
+  whose sign-ins go to its vault). Both start off.
+- **Before the platform switch goes on:** the vault runs this slice, the credential and the routing
+  above are in place, the callback Edge Function is deployed with OpenAI's registered address, every
+  provider host runs slice 4, a usage limit stops the run instead of moving it to another login (#601,
+  migration `20260928349910`, live), the plan rules (#614, slice 1b) are live, and company deletion ends plan
+  logins at OpenAI (slice 1c, migration `20260928359960`; see RUNTIME-COMPANY-DELETE.md; it relies on #614,
+  which keeps a plan sign-in from completing for a company being deleted).
+- **First real sign-in (one company, the founder's own plan).** The fake OpenAI in the tests cannot prove
+  what only OpenAI's endpoint answers. With one company switched on, sign in once and renew once, and
+  check from the vault's journal and the login's row (never its envelope):
+  - the code exchange succeeds: our Basic encoding and redirect address are accepted (a failure logs
+    `ChatGPT plan sign-in: the code exchange failed (<reason>)`, where the reason is OpenAI's status and
+    error code, or one of `token answer unreadable`, `token plan scope not granted`, `token answer
+    unusable`, `ID token refused`, `signing key unknown`, `discovery unusable`, `OpenAI unreachable`);
+  - discovery lists `revocation_endpoint`, and disconnecting a test login ends it at OpenAI;
+  - a renewal succeeds and its answer keeps the plan scope, whether or not it repeats `scope` or sends
+    an `id_token`; the renewed login keeps its owner (the access token's `sub` equals the ID token's);
+  - `renew_not_before` on the row lies within the hour after the renewal (OpenAI's `earliest_refresh_at`
+    read in the right unit; the vault drops a value outside the pass);
+  - two members of one company never connect the same ChatGPT account unnoticed:
+    `provider_account_reference` holds `openai-subject:<sha256 of OpenAI's subject>`;
+  - one run on the plan completes: OpenAI accepts the token as the bearer on `/v1/responses` with no other
+    header, and Codex's start (its model list) works with it;
+  - a run that lasts past a renewal keeps working: the token the host renamed into the bound directory
+    is the one Codex's next token command reads;
+  - the usage limit: when the plan's limit is reached, the run's card says so. If it says the run was
+    stopped by a provider step instead, Codex did not recognise OpenAI's code (a limit reached mid-answer
+    arrives as `subscription_sharing_usage_limit_exceeded` in the stream, which Codex 0.155.1 retries
+    and then reports as a lost stream): the follow-up is a pinned Codex that names it a usage limit.
+
 ## Failure cases
 
 | Case | Result |
