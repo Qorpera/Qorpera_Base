@@ -1,7 +1,8 @@
 -- @fixture 300_runtime_wake_bus.test.sql until "-- END WAKE FIXTURE"
 -- G2-1 (20260929999500): the native host's entry point checks the runner job's lease token before any lock, so a
 -- refused call never waits for a transaction that holds the job row (the authorization-before-lock pattern of
--- tests 755-757). Test 300's fixture leases a run's job; its lease token's hash is set to a known token's.
+-- tests 755-757), and a company reader through it keeps its shared lock on the company. Test 300's fixture leases a
+-- run's job; its lease token's hash is set to a known token's.
 reset role;
 select set_config('qorpera_test.g2_token', 'g2-lease-token-0123456789abcdef', false);
 update public.qorpera_runner_jobs
@@ -109,12 +110,23 @@ begin
 	if cardinality(v_wrong) > 0 then raise exception 'Native host call race cleanup left other row counts: %', v_wrong; end if;
 end $$;
 
--- A native host call from the caller connection, as the publishable key's role.
-create function pg_temp.r793_send(p_token text) returns void language sql as $$
-	select dblink_send_query('r793_caller', format($q$select to_jsonb(public.qorpera_native_host_call(%L, %L, %L, %L))$q$,
-		current_setting('qorpera_test.wake_binding')::jsonb ->> 'jobId', p_token, 'qorpera_runtime_wake_policy',
-		jsonb_build_object('p_run_id', current_setting('qorpera_test.wake_binding')::jsonb ->> 'runId')::text))
+-- A native host call (the run's tool authority, a company reader) from the caller connection.
+create function pg_temp.r793_call_sql(p_token text) returns text language sql as $$
+	select format($q$select to_jsonb(public.qorpera_native_host_call(%L, %L, %L, %L))$q$,
+		current_setting('qorpera_test.wake_binding')::jsonb ->> 'jobId', p_token, 'qorpera_describe_native_tool_authority',
+		jsonb_build_object('p_binding', current_setting('qorpera_test.wake_binding')::jsonb)::text)
 $$;
+create function pg_temp.r793_send(p_token text) returns void language sql as $$
+	select dblink_send_query('r793_caller', pg_temp.r793_call_sql(p_token))
+$$;
+-- The caller connection as PostgREST runs the entry point: the publishable key's role on its RPC path.
+create function pg_temp.r793_caller_begin() returns void language plpgsql as $$
+begin
+	perform dblink_exec('r793_caller', 'begin');
+	perform * from dblink('r793_caller', $q$select set_config('request.jwt.claims', '{"role":"anon"}', true),
+		set_config('request.path', '/rpc/qorpera_native_host_call', true)$q$) as c(claims text, path text);
+	perform dblink_exec('r793_caller', 'set local role anon');
+end $$;
 
 -- 1. Another transaction holds the job row. A wrong token is refused at once, without waiting for it.
 do $$
@@ -123,9 +135,7 @@ begin
 	perform dblink_exec('r793_holder', 'begin');
 	perform * from dblink('r793_holder', format('select 1 from public.qorpera_runner_jobs where id = %L for update',
 		current_setting('qorpera_test.wake_binding')::jsonb ->> 'jobId')) as held(one integer);
-	perform dblink_exec('r793_caller', 'begin');
-	perform * from dblink('r793_caller', $q$select set_config('request.jwt.claims', '{"role":"anon"}', true)$q$) as c(claims text);
-	perform dblink_exec('r793_caller', 'set local role anon');
+	perform pg_temp.r793_caller_begin();
 	perform pg_temp.r793_send('a-wrong-token-0123456789abcdef');
 	if pg_temp.r793_waited_for('caller', current_setting('qorpera_test.r793_holder_pid')::integer) then
 		perform dblink_exec('r793_holder', 'rollback');
@@ -133,7 +143,7 @@ begin
 	v_outcome := pg_temp.r793_collect('r793_caller');
 	perform dblink_exec('r793_caller', 'rollback');
 	perform dblink_exec('r793_holder', 'rollback');
-	if v_outcome ->> 'state' is distinct from '42501' then
+	if v_outcome ->> 'state' is distinct from '42501' or v_outcome ->> 'error' is distinct from 'native host call is refused' then
 		raise exception 'A wrong token was not refused: %', v_outcome; end if;
 end $$;
 
@@ -141,13 +151,35 @@ end $$;
 do $$
 declare v_outcome jsonb;
 begin
-	perform dblink_exec('r793_caller', 'begin');
-	perform * from dblink('r793_caller', $q$select set_config('request.jwt.claims', '{"role":"anon"}', true)$q$) as c(claims text);
-	perform dblink_exec('r793_caller', 'set local role anon');
+	perform pg_temp.r793_caller_begin();
 	perform pg_temp.r793_send(current_setting('qorpera_test.g2_token'));
 	v_outcome := pg_temp.r793_collect('r793_caller');
 	perform dblink_exec('r793_caller', 'rollback');
 	if v_outcome ? 'error' then raise exception 'The right token was refused: %', v_outcome; end if;
+end $$;
+
+-- 3. A company reader through the entry point keeps its shared lock on the company (qorpera_company_fence_shared reads
+--    the called function's RPC path): while the call's transaction is open, another connection still takes the
+--    company row FOR SHARE at once, but not FOR UPDATE.
+do $$
+declare v_profile uuid := (select profile_id from public.qorpera_execution_runs
+	where id = (current_setting('qorpera_test.wake_binding')::jsonb ->> 'runId')::uuid);
+	v_share text; v_update text;
+begin
+	perform pg_temp.r793_caller_begin();
+	perform * from dblink('r793_caller', pg_temp.r793_call_sql(current_setting('qorpera_test.g2_token')), false) as r(result jsonb);
+	if dblink_error_message('r793_caller') <> 'OK' then
+		perform dblink_exec('r793_caller', 'rollback');
+		raise exception 'The reader call failed: %', dblink_error_message('r793_caller'); end if;
+	perform * from dblink('r793_holder', format('select 1 from public.qorpera_profiles where id = %L for share nowait', v_profile),
+		false) as held(one integer);
+	v_share := dblink_error_message('r793_holder');
+	perform * from dblink('r793_holder', format('select 1 from public.qorpera_profiles where id = %L for update nowait', v_profile),
+		false) as held(one integer);
+	v_update := dblink_error_message('r793_holder');
+	perform dblink_exec('r793_caller', 'rollback');
+	if v_share <> 'OK' then raise exception 'A reader through the entry point locked the company exclusively: %', v_share; end if;
+	if v_update = 'OK' then raise exception 'The reader held no lock on the company to test'; end if;
 end $$;
 
 select pg_temp.r793_cleanup();

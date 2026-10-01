@@ -6,19 +6,29 @@
 -- So a guest that is broken out of can act for any company. This adds one entry point the native host can call
 -- with the publishable key instead:
 --   qorpera_native_host_call(p_job_id, p_job_lease_token, p_name, p_args)
--- 1. It checks the runner job's lease token first, with no lock: the job is leased, its lease is current, and the
---    token's sha256 is the job's lease_token_sha256 (the runner unit in the same guest holds the token; its hash
---    is set at claim and cleared at the end). Every refusal is one 42501.
--- 2. It allows only the calls listed in qorpera_native_host_calls, each with a scope rule that ties the call's
---    arguments to that job's run: binding (p_binding's jobId and runId), lease (p_job_id, p_run_id), run
---    (p_run_id), identity (p_compute_identity_id), profile (p_profile_id), folder (p_environment_id and a
---    kind 'run' actor of this job), environment (p_environment_id), proposal (a proposal this run left), none
---    (no arguments).
--- 3. It calls the function by its declared argument names, as the platform's own service caller for this one
---    transaction (request.jwt.claims and request.jwt.claim.role, set with set_config and restored), so every
---    listed function runs exactly as it does today; and it returns its result as jsonb.
--- The listed functions stay unreachable with the publishable key. The office VM's calls and the login guest's
--- capability-bound calls are later G2 steps.
+-- 1. It checks the runner job's lease token first, by the job's primary key and with no lock: the job is an
+--    agent turn's, leased, its lease is current, and the token's sha256 is the job's lease_token_sha256 (the runner
+--    unit in the same guest holds the token; its hash is set at claim and cleared at the end). Every refusal is
+--    one 42501 "native host call is refused".
+-- 2. It allows only the calls listed in qorpera_native_host_calls (changed by migrations only; no API role reads
+--    or writes it), each with a scope rule that ties the call's arguments to that job's run: binding (p_binding),
+--    lease (p_job_id and p_run_id), run (p_run_id), identity (p_compute_identity_id), profile (p_profile_id),
+--    folder (p_environment_id and p_actor), environment (p_environment_id), proposal (a proposal this run left),
+--    none (no arguments); a proposal is a qorpera_company_path_proposals row of this run and environment.
+--    Whatever the scope, p_job_id, p_run_id, p_environment_id, p_profile_id and
+--    p_compute_identity_id must be this run's, p_binding must name this job and run, and p_actor must be this
+--    job's kind 'run' actor (never 'platform' or 'member').
+-- 3. It calls the one public function of that name (named plain inputs, a single scalar or void result) by its
+--    declared argument names: identifiers through %I, types from the catalog (format_type), every value through
+--    USING, read from the JSON as PostgREST reads an RPC's arguments. It runs as the platform's own service caller
+--    on the function's own RPC path for that call (request.jwt.claims, request.jwt.claim.role and request.path, set
+--    with set_config and restored; the fence readers and object RPCs choose their locks by request.path), with the
+--    service role's 8 s statement and lock budgets as function settings (PostgREST applies a function's
+--    statement_timeout to its request), so every listed function runs as today, and its errors reach the caller
+--    unchanged (no handler). The result comes back as jsonb, as PostgREST returns a scalar; a void call returns
+--    null where PostgREST answered 204, which a supabase-js caller reads as the same null.
+-- The listed functions stay unreachable with the publishable key. The office VM's calls, the login guest's
+-- capability-bound calls and the native host's calls between jobs are later G2 steps.
 --
 -- Locks: none added. The checks read the job, run and proposal without locks, before the called function takes
 -- its own (the authorization-before-lock pattern of 20260928319750, 20260928329660 and 20260928339820).
@@ -40,8 +50,6 @@ insert into public.qorpera_native_host_calls(name, scope) values
 	('qorpera_assert_company_path_reads', 'binding'),
 	('qorpera_assert_native_connector_operation', 'binding'),
 	('qorpera_assert_native_office_captures', 'binding'),
-	('qorpera_assert_wake_completion', 'run'),
-	('qorpera_assert_wake_work_allowed', 'run'),
 	('qorpera_authorize_coding_turn', 'binding'),
 	('qorpera_await_action_review', 'binding'),
 	('qorpera_begin_action_review', 'binding'),
@@ -84,11 +92,8 @@ insert into public.qorpera_native_host_calls(name, scope) values
 	('qorpera_native_company_file_write_source', 'binding'),
 	('qorpera_native_machine_manage', 'binding'),
 	('qorpera_native_machine_start', 'binding'),
-	('qorpera_native_office_browser_grant', 'binding'),
 	('qorpera_native_office_capture', 'binding'),
 	('qorpera_native_office_descriptor', 'binding'),
-	('qorpera_native_office_file_export', 'binding'),
-	('qorpera_native_office_file_import', 'binding'),
 	('qorpera_native_office_operation', 'binding'),
 	('qorpera_native_office_screen', 'binding'),
 	('qorpera_native_office_start', 'binding'),
@@ -96,7 +101,6 @@ insert into public.qorpera_native_host_calls(name, scope) values
 	('qorpera_native_presence_forget', 'binding'),
 	('qorpera_native_presence_register', 'binding'),
 	('qorpera_native_presence_subject', 'environment'),
-	('qorpera_office_screen_browser_grant', 'binding'),
 	('qorpera_prepare_company_path_approval', 'proposal'),
 	('qorpera_prepare_company_path_mutation', 'binding'),
 	('qorpera_prepare_routine_login', 'binding'),
@@ -113,9 +117,7 @@ insert into public.qorpera_native_host_calls(name, scope) values
 	('qorpera_record_native_provider_account_metadata', 'identity'),
 	('qorpera_record_provider_usage_signal', 'binding'),
 	('qorpera_record_runtime_observation_batch', 'run'),
-	('qorpera_record_runtime_screen_event', 'binding'),
 	('qorpera_report_worker_result', 'binding'),
-	('qorpera_runtime_wake_policy', 'run'),
 	('qorpera_self_approve_organization_proposal', 'binding'),
 	('qorpera_send_agent_mail', 'binding'),
 	('qorpera_send_coworker_message', 'binding'),
@@ -126,88 +128,99 @@ insert into public.qorpera_native_host_calls(name, scope) values
 	('qorpera_verify_company_path_tree', 'profile');
 
 create function public.qorpera_native_host_call(p_job_id uuid, p_job_lease_token text, p_name text, p_args jsonb)
-returns jsonb language plpgsql volatile security definer set search_path = '' as $$
+returns jsonb language plpgsql volatile security definer set search_path = ''
+	set statement_timeout = '8s' set lock_timeout = '8s' as $$
 declare
-	v_job public.qorpera_runner_jobs%rowtype; v_run public.qorpera_execution_runs%rowtype;
-	v_scope text; v_function oid; v_names text[]; v_types oid[]; v_count integer; v_retset boolean; v_rettype oid;
-	v_parts text[] := '{}'; v_name text; v_type text; v_sql text; v_result jsonb;
-	v_claims text; v_claim_role text; v_in_scope boolean;
+	v_job public.qorpera_runner_jobs%rowtype; v_run public.qorpera_execution_runs%rowtype; v_scope text;
+	v_function pg_catalog.pg_proc%rowtype; v_inputs text; v_columns text; v_sql text; v_result jsonb;
+	v_claims text; v_claim_role text; v_path text;
 begin
-	-- 20260929999500: the token first, with no lock.
+	-- 20260929999500: the token first, by the job's primary key, with no lock.
 	if p_job_id is null or p_job_lease_token is null or octet_length(p_job_lease_token) not between 16 and 512
-		or p_name is null or jsonb_typeof(p_args) is distinct from 'object' then
+		or p_name is null or p_name !~ '^qorpera_[a-z0-9_]{1,120}$' or jsonb_typeof(p_args) is distinct from 'object' then
 		raise exception 'native host call is refused' using errcode = '42501'; end if;
 	select job.* into v_job from public.qorpera_runner_jobs as job where job.id = p_job_id;
-	if not found or v_job.status <> 'leased' or v_job.lease_token_sha256 is null
+	if not found or v_job.status <> 'leased' or v_job.job_type <> 'agent_turn' or v_job.run_id is null
+		or v_job.lease_token_sha256 is null
 		or v_job.lease_expires_at is null or v_job.lease_expires_at <= clock_timestamp()
 		or v_job.lease_token_sha256 <> encode(extensions.digest(convert_to(p_job_lease_token, 'utf8'), 'sha256'), 'hex') then
 		raise exception 'native host call is refused' using errcode = '42501'; end if;
 	select run.* into v_run from public.qorpera_execution_runs as run where run.id = v_job.run_id;
 	if not found then raise exception 'native host call is refused' using errcode = '42501'; end if;
 
-	-- A listed call, in this run's scope.
+	-- A listed call in this run's scope. An argument that names a job, run, environment, company, compute identity,
+	-- binding or folder actor must be this run's, whatever the call's scope.
 	select calls.scope into v_scope from public.qorpera_native_host_calls as calls where calls.name = p_name;
-	if not found then raise exception 'native host call is refused' using errcode = '42501'; end if;
-	v_in_scope := case v_scope
-		when 'binding' then jsonb_typeof(p_args -> 'p_binding') = 'object'
-			and p_args #>> '{p_binding,jobId}' = v_job.id::text and p_args #>> '{p_binding,runId}' = v_run.id::text
-		when 'lease' then p_args ->> 'p_job_id' = v_job.id::text and p_args ->> 'p_run_id' = v_run.id::text
-		when 'run' then p_args ->> 'p_run_id' = v_run.id::text
-		when 'identity' then p_args ->> 'p_compute_identity_id' = v_run.compute_identity_id::text
-		when 'profile' then p_args ->> 'p_profile_id' = v_run.profile_id::text
-		when 'folder' then p_args ->> 'p_environment_id' = v_run.environment_id::text
-			and jsonb_typeof(p_args -> 'p_actor') = 'object' and p_args #>> '{p_actor,kind}' = 'run'
-			and p_args #>> '{p_actor,jobId}' = v_job.id::text and p_args #>> '{p_actor,runId}' = v_run.id::text
-		when 'environment' then p_args ->> 'p_environment_id' = v_run.environment_id::text
-		when 'proposal' then exists (select 1 from public.qorpera_company_proposals as proposal
-			where proposal.id::text = p_args ->> 'p_proposal_id' and proposal.profile_id = v_run.profile_id
-				and proposal.execution_kind = 'run' and proposal.execution_id = v_run.id)
-		when 'none' then p_args = '{}'::jsonb
-		else false end;
-	if v_in_scope is not true then raise exception 'native host call is refused' using errcode = '42501'; end if;
-
-	-- The function, by its declared argument names only.
-	select p.oid, p.proargnames, p.proargtypes::oid[], p.pronargs, p.proretset, p.prorettype
-	into v_function, v_names, v_types, v_count, v_retset, v_rettype
-	from pg_catalog.pg_proc as p join pg_catalog.pg_namespace as n on n.oid = p.pronamespace
-	where n.nspname = 'public' and p.proname = p_name;
-	if not found or (select count(*) from pg_catalog.pg_proc as p join pg_catalog.pg_namespace as n
-		on n.oid = p.pronamespace where n.nspname = 'public' and p.proname = p_name) <> 1
-		or exists (select 1 from jsonb_object_keys(p_args) as k(key)
-			where v_count = 0 or not (k.key = any(v_names[1:v_count]))) then
+	if not found
+		or (p_args ? 'p_job_id' and p_args ->> 'p_job_id' is distinct from v_job.id::text)
+		or (p_args ? 'p_run_id' and p_args ->> 'p_run_id' is distinct from v_run.id::text)
+		or (p_args ? 'p_environment_id' and p_args ->> 'p_environment_id' is distinct from v_run.environment_id::text)
+		or (p_args ? 'p_profile_id' and p_args ->> 'p_profile_id' is distinct from v_run.profile_id::text)
+		or (p_args ? 'p_compute_identity_id'
+			and p_args ->> 'p_compute_identity_id' is distinct from v_run.compute_identity_id::text)
+		or (p_args ? 'p_binding' and (p_args #>> '{p_binding,jobId}' is distinct from v_job.id::text
+			or p_args #>> '{p_binding,runId}' is distinct from v_run.id::text))
+		or (p_args ? 'p_actor' and (p_args #>> '{p_actor,kind}' is distinct from 'run'
+			or p_args #>> '{p_actor,jobId}' is distinct from v_job.id::text
+			or p_args #>> '{p_actor,runId}' is distinct from v_run.id::text))
+		or (case v_scope
+			when 'binding' then p_args ? 'p_binding'
+			when 'lease' then p_args ?& array['p_job_id', 'p_run_id']
+			when 'run' then p_args ? 'p_run_id'
+			when 'identity' then p_args ? 'p_compute_identity_id'
+			when 'profile' then p_args ? 'p_profile_id'
+			when 'folder' then p_args ?& array['p_environment_id', 'p_actor']
+			when 'environment' then p_args ? 'p_environment_id'
+			when 'proposal' then p_args ->> 'p_proposal_id' ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+				and exists (select 1 from public.qorpera_company_path_proposals as proposal
+					where proposal.id = (p_args ->> 'p_proposal_id')::uuid and proposal.run_id = v_run.id
+						and proposal.environment_id = v_run.environment_id)
+			when 'none' then p_args = '{}'::jsonb
+			else false end) is not true then
 		raise exception 'native host call is refused' using errcode = '42501'; end if;
-	for i in 1 .. v_count loop
-		v_name := v_names[i];
-		continue when not (p_args ? v_name);
-		v_type := pg_catalog.format_type(v_types[i - 1], null); -- proargtypes is zero-based
-		v_parts := v_parts || case
-			when v_type = 'jsonb' then format('%I => ($1 -> %L)', v_name, v_name)
-			when v_type = 'json' then format('%I => ($1 -> %L)::json', v_name, v_name)
-			when v_type = 'text' then format('%I => ($1 ->> %L)', v_name, v_name)
-			when v_type like '%[]' then format('%I => (select coalesce(array_agg(e.value order by e.position), ''{}'')::%s '
-				|| 'from jsonb_array_elements_text($1 -> %L) with ordinality as e(value, position))', v_name, v_type, v_name)
-			else format('%I => ($1 ->> %L)::%s', v_name, v_name, v_type) end;
-	end loop;
 
-	-- As the platform's own service caller, for this call only.
+	-- The one public function of that name: named plain inputs only, and a single scalar or void result.
+	select p.* into v_function from pg_catalog.pg_proc as p
+	where p.pronamespace = 'public'::regnamespace and p.proname = p_name;
+	if not found
+		or (select count(*) from pg_catalog.pg_proc as p where p.pronamespace = 'public'::regnamespace and p.proname = p_name) <> 1
+		or v_function.prokind <> 'f' or v_function.proretset or v_function.proargmodes is not null
+		or not (v_function.prorettype = 'void'::regtype or exists (select 1 from pg_catalog.pg_type as t
+			where t.oid = v_function.prorettype and t.typtype in ('b', 'd', 'e')))
+		or exists (select 1 from jsonb_object_keys(p_args) as k(key)
+			where not (k.key = any(coalesce(v_function.proargnames[1:v_function.pronargs], '{}'::text[])))) then
+		raise exception 'native host call is refused' using errcode = '42501'; end if;
+
+	-- The call: identifiers through %I, types from the catalog, every value through USING, read from the JSON
+	-- the way PostgREST reads an RPC's arguments (json_to_record); arguments left out take their defaults.
+	select string_agg(format('%I => r.%I', a.name, a.name), ', ' order by a.position),
+		string_agg(format('%I %s', a.name, pg_catalog.format_type(a.type, null)), ', ' order by a.position)
+	into v_inputs, v_columns
+	from unnest(v_function.proargnames[1:v_function.pronargs], v_function.proargtypes::oid[])
+		with ordinality as a(name, type, position)
+	where p_args ? a.name;
+	v_sql := format('public.%I(%s)', p_name, coalesce(v_inputs, ''));
+	v_sql := case when v_function.prorettype = 'void'::regtype then 'select ' || v_sql else format('select to_jsonb(%s)', v_sql) end
+		|| case when v_inputs is null then '' else format(' from jsonb_to_record($1) as r(%s)', v_columns) end;
+
+	-- As the platform's own service caller, on the called function's own RPC path (qorpera_company_fence_shared and
+	-- qorpera_object_rpc_lock_budget choose lock strength and budget by request.path), for this call only. No
+	-- handler: the called function's errors reach the caller unchanged, and the transaction (or the caller's
+	-- savepoint) undoes these settings with it.
 	v_claims := current_setting('request.jwt.claims', true);
 	v_claim_role := current_setting('request.jwt.claim.role', true);
-	perform set_config('request.jwt.claims', jsonb_build_object('role', 'service_role')::text, true);
+	v_path := current_setting('request.path', true);
+	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
 	perform set_config('request.jwt.claim.role', 'service_role', true);
-	perform set_config('qorpera.native_host_job', v_job.id::text, true);
-	if v_retset then
-		v_sql := format('select coalesce(jsonb_agg(to_jsonb(r)), ''[]''::jsonb) from public.%I(%s) as r', p_name,
-			array_to_string(v_parts, ', '));
-		execute v_sql into v_result using p_args;
-	elsif v_rettype = 'void'::regtype then
-		execute format('select public.%I(%s)', p_name, array_to_string(v_parts, ', ')) using p_args;
-		v_result := null;
+	perform set_config('request.path', '/rpc/' || p_name, true);
+	if v_function.prorettype = 'void'::regtype then
+		execute v_sql using p_args;
 	else
-		execute format('select to_jsonb(public.%I(%s))', p_name, array_to_string(v_parts, ', ')) into v_result using p_args;
+		execute v_sql into v_result using p_args;
 	end if;
 	perform set_config('request.jwt.claims', coalesce(v_claims, ''), true);
 	perform set_config('request.jwt.claim.role', coalesce(v_claim_role, ''), true);
-	perform set_config('qorpera.native_host_job', '', true);
+	perform set_config('request.path', coalesce(v_path, ''), true);
 	return v_result;
 end
 $$;
