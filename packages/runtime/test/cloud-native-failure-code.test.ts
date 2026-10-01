@@ -26,7 +26,7 @@ describe("the fixed code a failed native execution carries back", () => {
 		expect(nativeProviderFailureCode(wrapped(new Error("CODING_TURN_ENDED_WITHOUT_SUBMISSION")))).toBe(
 			"CODING_TURN_ENDED_WITHOUT_SUBMISSION",
 		);
-		// An authority read's own refusal under its generic wrapper.
+		// A code under a second, generic wrapper (a guard: today CloudNativeToolRun.open drops the cause).
 		expect(
 			nativeProviderFailureCode(
 				wrapped(

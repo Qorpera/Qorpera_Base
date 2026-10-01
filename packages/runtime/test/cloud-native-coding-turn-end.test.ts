@@ -190,6 +190,7 @@ async function fixture() {
 	};
 	const gateway: CloudCodingCommandGateway = { authorize: refused, start: refused, read: refused, cancel: refused };
 	const evidence = join(root, "evidence.json");
+	// Not a mode of its own: any name the fixture does not know takes its default branch.
 	const command = [process.execPath, rpcFixture, "coding-text-end", evidence] as const;
 	const observations: CloudRuntimeObservation[] = [];
 	const runtime = new CloudNativeCompanyRuntime({
