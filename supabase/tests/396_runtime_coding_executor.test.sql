@@ -67,7 +67,7 @@ select pg_temp.wake_error($q$select pg_temp.worker('{"action":"dispatch","operat
 select pg_temp.wake_error($q$select pg_temp.worker('{"action":"dispatch","operationKey":"c0","todoKey":"composer-latency","workerKey":"fix-send",
 	"title":"t","goal":"g","definitionOfDone":"d","access":"read","species":"coding","harness":"codex","owner":"30000000-0000-4000-8000-000000000003",
 	"repository":{"host":"github.com","owner":"Qorpera","name":"Qorpera_Base","baseBranch":"master"}}')$q$,'42501',
-	'The session owner has no active openai account connected for codex');
+	'A coding session runs for the member who asked for it');
 do $$
 declare v_first jsonb; v_replay jsonb; v_worker public.qorpera_runtime_workers; v_session public.qorpera_coding_sessions;
 	v_sponsor jsonb := current_setting('qorpera_test.wake_sponsor')::jsonb;

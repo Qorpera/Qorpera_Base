@@ -1,4 +1,6 @@
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
+import { isChatGptPlanHostId } from "./cloud-chatgpt-plan.ts";
+import type { ChatGptPlanSignInAuthority, ChatGptPlanSignIns } from "./cloud-chatgpt-plan-sign-in.ts";
 import type { ModelLoginSignInHelper, ModelLoginSignInState } from "./cloud-model-login-sign-in.ts";
 import { MODEL_LOGIN_FIELD, parseCodexLogin } from "./cloud-model-login-vault.ts";
 import type { CloudSecretKeyring } from "./cloud-secret-crypto.ts";
@@ -13,6 +15,10 @@ import type { CloudSecretKeyring } from "./cloud-secret-crypto.ts";
  * sign-in, and answers with the link and code while the member finishes in the browser. Once
  * Codex has the login, the vault seals it under the company's broker key as version 1 and
  * completes the sign-in in one database transaction. No node is involved.
+ *
+ * A ChatGPT plan sign-in (Sign in with ChatGPT, built switched off) arrives the same way; the database's
+ * v2 read names its kind, and the plan flow answers with OpenAI's authorization address instead of a
+ * link and code (cloud-chatgpt-plan-sign-in.ts).
  */
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -43,8 +49,10 @@ const DESCRIPTION_KEYS = [
 	"computeIdentityOwnerUserId",
 	"computeIdentityOwnershipKind",
 	"expiresAt",
+	"hostId",
 	"keyId",
 	"loginId",
+	"loginKind",
 	"modelLoginId",
 	"profileId",
 	"schema",
@@ -52,7 +60,8 @@ const DESCRIPTION_KEYS = [
 ];
 
 /** The sign-in side of the vault's database authority. */
-export interface ModelLoginSignInAuthority {
+export interface ModelLoginSignInAuthority extends ChatGptPlanSignInAuthority {
+	/** The v2 read of a pending sign-in of either kind. */
 	describeModelLoginSignIn(
 		request: { loginId: string; capabilitySha256: string },
 		signal: AbortSignal,
@@ -100,6 +109,8 @@ interface SignInRequest extends Ownership {
 
 interface SignInDescription extends Ownership {
 	loginId: string;
+	loginKind: "codex" | "chatgpt_plan";
+	hostId: string | null;
 	companyId: string;
 	clientConnectionId: string;
 	computeIdentityId: string;
@@ -158,7 +169,9 @@ function parseRequest(value: unknown, capability: string): SignInRequest {
 function parseDescription(value: unknown): SignInDescription {
 	const input = record(value, DESCRIPTION_KEYS, "Vault sign-in description");
 	if (
-		input.schema !== "qorpera.model-login-sign-in/v1" ||
+		input.schema !== "qorpera.model-login-sign-in/v2" ||
+		(input.loginKind !== "codex" && input.loginKind !== "chatgpt_plan") ||
+		(input.loginKind === "codex" ? input.hostId !== null : !isChatGptPlanHostId(input.hostId)) ||
 		!["pending", "completed", "cancelled", "expired"].includes(String(input.status)) ||
 		typeof input.expiresAt !== "string" ||
 		!Number.isFinite(Date.parse(input.expiresAt)) ||
@@ -169,6 +182,8 @@ function parseDescription(value: unknown): SignInDescription {
 		throw new Error("Vault sign-in description is invalid");
 	return {
 		loginId: uuid(input.loginId, "Vault sign-in id"),
+		loginKind: input.loginKind,
+		hostId: input.hostId as string | null,
 		companyId: uuid(input.profileId, "Vault sign-in company"),
 		clientConnectionId: uuid(input.clientConnectionId, "Vault sign-in connection id"),
 		computeIdentityId: uuid(input.computeIdentityId, "Vault sign-in Compute Identity id"),
@@ -216,7 +231,10 @@ function refused(error: unknown): boolean {
 export class CloudModelLoginSignIns {
 	readonly #authority: ModelLoginSignInAuthority;
 	readonly #keys: CloudSecretKeyring;
-	readonly #helper: ModelLoginSignInHelper;
+	/** Runs Codex sign-ins; absent, a Codex sign-in is refused. */
+	readonly #helper: ModelLoginSignInHelper | undefined;
+	/** Runs ChatGPT plan sign-ins; absent (no plan client configured), a plan sign-in is refused. */
+	readonly #plan: ChatGptPlanSignIns | undefined;
 	readonly #collectEveryMs: number;
 	readonly #inFlight = new Set<string>();
 	/** Collections the database refused in a row, per sign-in: after a few the helper's copy ends. */
@@ -229,13 +247,16 @@ export class CloudModelLoginSignIns {
 	constructor(options: {
 		authority: ModelLoginSignInAuthority;
 		keyring: CloudSecretKeyring;
-		helper: ModelLoginSignInHelper;
+		helper?: ModelLoginSignInHelper;
+		plan?: ChatGptPlanSignIns;
 		/** How often finished sign-ins are collected from the helper. */
 		collectEveryMs?: number;
 	}) {
+		if (!options.helper && !options.plan) throw new Error("Vault sign-ins need a helper or a ChatGPT plan client");
 		this.#authority = options.authority;
 		this.#keys = options.keyring;
 		this.#helper = options.helper;
+		this.#plan = options.plan;
 		this.#collectEveryMs = options.collectEveryMs ?? 2000;
 	}
 
@@ -260,14 +281,16 @@ export class CloudModelLoginSignIns {
 		await this.#collecting;
 	}
 
-	/** One collection pass: completes every finished sign-in of this broker's company. */
+	/** One collection pass: completes every finished Codex sign-in of this broker's company. */
 	async collect(): Promise<void> {
+		const helper = this.#helper;
+		if (!helper) return;
 		try {
 			this.#company ??= uuid(
 				await this.#authority.modelLoginBrokerCompany(AbortSignal.timeout(SAVE_DEADLINE_MS)),
 				"Vault broker company",
 			);
-			const finished = await this.#helper.listCompletedSignIns(
+			const finished = await helper.listCompletedSignIns(
 				{ companyId: this.#company },
 				AbortSignal.timeout(SAVE_DEADLINE_MS),
 			);
@@ -300,15 +323,18 @@ export class CloudModelLoginSignIns {
 			Date.parse(description.expiresAt) !== login.expiresAt
 		)
 			throw new Error("Vault sign-in request crossed its authority");
+		if (description.loginKind === "chatgpt_plan") return this.#planSignIn(description, capabilitySha256, signal);
+		const helper = this.#helper;
+		if (!helper) throw new Error("Vault Codex sign-ins are not served here");
 		const target = { signInId: login.loginId, companyId: description.companyId };
 		if (description.status !== "pending") {
-			await this.#helper.finishSignIn(target, AbortSignal.timeout(10_000)).catch(() => undefined);
+			await helper.finishSignIn(target, AbortSignal.timeout(10_000)).catch(() => undefined);
 			if (description.status === "completed") return answer(login.loginId, "completed");
 			throw new Error("Vault sign-in has ended");
 		}
 		let state: ModelLoginSignInState;
 		try {
-			state = await this.#helper.beginSignIn(
+			state = await helper.beginSignIn(
 				{
 					signInId: login.loginId,
 					companyId: description.companyId,
@@ -325,7 +351,7 @@ export class CloudModelLoginSignIns {
 		if (state.status === "preparing") return answer(login.loginId, "preparing");
 		if (state.status === "awaiting_member") return answer(login.loginId, "awaiting_member", state);
 		if (state.status === "failed") {
-			await this.#helper.finishSignIn(target, AbortSignal.timeout(10_000)).catch(() => undefined);
+			await helper.finishSignIn(target, AbortSignal.timeout(10_000)).catch(() => undefined);
 			throw new Error("Vault sign-in failed");
 		}
 		// Codex has the login already: complete it now rather than at the next collection.
@@ -335,13 +361,69 @@ export class CloudModelLoginSignIns {
 		);
 	}
 
+	/** A plan sign-in's poll: OpenAI's authorization address while it waits for the member. */
+	async #planSignIn(
+		description: SignInDescription,
+		capabilitySha256: string,
+		signal: AbortSignal,
+	): Promise<ModelLoginSignInAnswer> {
+		const plan = this.#plan;
+		if (!plan) throw new Error("Vault ChatGPT plan sign-ins are not served here");
+		if (description.status === "completed") return answer(description.loginId, "completed");
+		if (description.status !== "pending") throw new Error("Vault sign-in has ended");
+		// A plan login is always a member's own.
+		if (description.kind !== "member" || description.userId === null) throw new Error("Vault sign-in is invalid");
+		const interactionUrl = await plan.begin(
+			{
+				loginId: description.loginId,
+				companyId: description.companyId,
+				computeIdentityId: description.computeIdentityId,
+				hostId: description.hostId as string,
+				expiresAt: description.expiresAt,
+				keyId: description.keyId,
+				capabilitySha256,
+			},
+			signal,
+		);
+		return answer(description.loginId, "awaiting_member", { interactionUrl });
+	}
+
+	/** OpenAI's callback for a plan sign-in, forwarded by the callback Edge Function: a one-time
+	 * confirmation id for the returning browser. */
+	receiveChatGptPlan(input: { companyId: string; state: unknown; code: unknown; error: unknown; clientId: unknown }): {
+		confirmation: string;
+	} {
+		const plan = this.#plan;
+		if (!plan) throw new Error("Vault ChatGPT plan sign-ins are not served here");
+		return plan.receive(input);
+	}
+
+	/** The web client's confirmation of a plan sign-in, under the sign-in's capability. */
+	async confirmChatGptPlan(
+		input: { companyId: string; capability: string; body: unknown },
+		signal: AbortSignal,
+	): Promise<ModelLoginSignInAnswer> {
+		const plan = this.#plan;
+		if (!plan) throw new Error("Vault ChatGPT plan sign-ins are not served here");
+		if (!TOKEN.test(input.capability)) throw new Error("Vault sign-in capability is invalid");
+		const body = record(input.body, ["schema", "login_id", "confirmation"], "ChatGPT plan confirmation");
+		if (body.schema !== "qorpera.chatgpt-plan-confirm/v1") throw new Error("ChatGPT plan confirmation is invalid");
+		const loginId = uuid(body.login_id, "ChatGPT plan sign-in id");
+		await plan.confirm(
+			{ companyId: input.companyId, loginId, capability: input.capability, confirmation: body.confirmation },
+			signal,
+		);
+		return answer(loginId, "completed");
+	}
+
 	/** Seals a finished sign-in's login as version 1 and completes it in the database. True when
 	 * the sign-in is complete; the helper's copy is ended once the sign-in is settled either way. */
 	async #complete(companyId: string, signInId: string, capabilitySha256: string): Promise<boolean> {
-		if (this.#inFlight.has(signInId)) return false;
+		const helper = this.#helper;
+		if (!helper || this.#inFlight.has(signInId)) return false;
 		this.#inFlight.add(signInId);
 		const target = { signInId, companyId };
-		const finish = () => this.#helper.finishSignIn(target, AbortSignal.timeout(10_000)).catch(() => undefined);
+		const finish = () => helper.finishSignIn(target, AbortSignal.timeout(10_000)).catch(() => undefined);
 		const describe = async (): Promise<SignInDescription> => {
 			const answer = await this.#authority.describeModelLoginSignIn(
 				{ loginId: signInId, capabilitySha256 },
@@ -371,11 +453,16 @@ export class CloudModelLoginSignIns {
 				throw error;
 			}
 			if (description.companyId !== companyId || description.loginId !== signInId) return false;
+			// A plan sign-in never completes through the Codex helper.
+			if (description.loginKind !== "codex") {
+				await finish();
+				return false;
+			}
 			if (description.status !== "pending") {
 				await finish();
 				return description.status === "completed";
 			}
-			const state = await this.#helper.readSignIn(target, AbortSignal.timeout(10_000));
+			const state = await helper.readSignIn(target, AbortSignal.timeout(10_000));
 			if (state.status === "failed") await finish();
 			if (state.status !== "completed") return false;
 			let codex: ReturnType<typeof parseCodexLogin>;

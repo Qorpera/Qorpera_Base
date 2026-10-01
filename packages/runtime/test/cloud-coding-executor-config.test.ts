@@ -3,7 +3,7 @@ import { errorCode, parseCodingExecutorConfiguration } from "../../../deploy/cod
 
 function fixture() {
 	return {
-		schema: "qorpera.coding-executor-service/v6",
+		schema: "qorpera.coding-executor-service/v7",
 		owner: "node-coding",
 		supabaseUrl: "https://project.supabase.co",
 		commandPort: 8789,
@@ -33,10 +33,6 @@ function fixture() {
 			gid: 1000,
 			storageHelperSha256: "d".repeat(64),
 			resourceProfile: {
-				maxTimeoutMs: 1800000,
-				memoryBytes: 2147483648,
-				tasksMax: 256,
-				cpuQuotaPercent: 200,
 				maxLogBytes: 67108864,
 			},
 			commandHelperSha256: "a".repeat(64),
@@ -80,6 +76,37 @@ describe("coding executor service configuration", () => {
 				repositories: [{ repository: config.repositories[0].repository }],
 			}),
 		).toThrow("CONFIG_INVALID");
+	});
+	it("carries company machines only with a closed node policy on the coding provider's identity", () => {
+		const machines = {
+			policy: {
+				providerId: "native-node",
+				providerPolicySha256: "e".repeat(64),
+				project: "machines",
+				imageFingerprint: "f".repeat(64),
+				bootstrapSha256: "a".repeat(64),
+				storagePool: "machines",
+				network: "machine-net",
+			},
+			helperSha256: "b".repeat(64),
+		};
+		expect(parseCodingExecutorConfiguration(fixture()).machines).toBeNull();
+		expect(parseCodingExecutorConfiguration({ ...fixture(), machines }).machines).toEqual({
+			...machines,
+			previousHelperSha256s: [],
+		});
+		// The helpers of earlier images whose machines still run on this node.
+		const upgraded = { ...machines, previousHelperSha256s: ["c".repeat(64)] };
+		expect(parseCodingExecutorConfiguration({ ...fixture(), broker, machines: upgraded }).machines).toEqual(upgraded);
+		for (const bad of [
+			{ ...machines, helperSha256: "x" },
+			{ ...machines, previousHelperSha256s: ["b".repeat(64)] },
+			{ ...machines, previousHelperSha256s: "c".repeat(64) },
+			{ ...machines, policy: { ...machines.policy, providerId: "other-node" } },
+			{ ...machines, policy: { ...machines.policy, cpus: 4 } },
+			{ ...machines, extra: true },
+		])
+			expect(() => parseCodingExecutorConfiguration({ ...fixture(), machines: bad })).toThrow();
 	});
 	it("refuses a broker that is not an HTTPS origin or reuses another credential's name", () => {
 		const config = fixture();
@@ -175,7 +202,7 @@ describe("coding executor service configuration", () => {
 		expect(() =>
 			parseCodingExecutorConfiguration({
 				...config,
-				guest: { ...config.guest, resourceProfile: { ...config.guest.resourceProfile, cpuQuotaPercent: 300 } },
+				guest: { ...config.guest, resourceProfile: { ...config.guest.resourceProfile, cpuQuotaPercent: 200 } },
 			}),
 		).toThrow();
 	});

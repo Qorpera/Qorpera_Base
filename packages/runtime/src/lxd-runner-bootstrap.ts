@@ -5,7 +5,7 @@ import { chmod, chown, link, lstat, mkdir, open, readdir, readFile, rename, unli
 import { isIP } from "node:net";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
-import { parseCompanyComputerNativeUrl } from "@qorpera/contracts";
+import { parseCompanyComputerNativeRoute } from "@qorpera/contracts";
 import { recoveryBase64, recoveryDigest } from "./cloud-identity-recovery-crypto.ts";
 import {
 	assertIdentityRecoveryMarker,
@@ -260,7 +260,7 @@ export function parseLxdRunnerBootstrapConfig(value: unknown): LxdRunnerBootstra
 			exactKeys(route, ["environment_id", "url", "token_sha256"], "Governed office endpoint");
 			office = {
 				environmentId: text(route.environment_id, "Office environment", UUID_PATTERN),
-				url: parseCompanyComputerNativeUrl(text(route.url, "Office URL", /^https:\/\//)).url,
+				url: parseCompanyComputerNativeRoute(text(route.url, "Office URL", /^https:\/\//)).url,
 				tokenSha256: text(route.token_sha256, "Office token digest", SHA256_PATTERN),
 			};
 		}
@@ -859,8 +859,11 @@ async function verifyCompanyGuest(
 	const identities = mounts.filter((mount) => mount.path === paths.identityVolume);
 	const recoveries = mounts.filter((mount) => mount.path === paths.runnerHomeDirectory);
 	if (company.loginCustody === "vault") {
-		// The vault keeps the login: no node volume may carry identity material into this guest.
-		if (identities.length !== 0) throw new Error("A vault login guest must not mount an identity volume");
+		// The vault keeps the login: no node volume may carry identity material into this guest. This
+		// unit's own ReadWritePaths= makes systemd mount the plain identity folder onto itself, so the
+		// root filesystem shows up at the path; any other device there is a volume.
+		if (roots.length === 1 && identities.some((mount) => mount.device !== roots[0]?.device))
+			throw new Error("A vault login guest must not mount an identity volume");
 		if (
 			roots.length !== 1 ||
 			recoveries.length !== 1 ||

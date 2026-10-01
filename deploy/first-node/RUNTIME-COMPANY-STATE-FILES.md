@@ -1,7 +1,8 @@
 # Company state files
 
-Status: design, with the shared parser built (F2-0). Nothing reads or writes these files in
-production yet. This is workstream F2 of the Rebuild Map: company state moves out of database
+Status: the shared parser is built (F2-0, #421). The vision and agents are indexed in the database
+(F2-1, migration 20260928249020), for `folder-v2` companies only, so nothing reads or writes these
+files in production yet. This is workstream F2 of the Rebuild Map: company state moves out of database
 rows into the company folder of contract 5.6. It defines the fixed format of each structured
 file, the database index each one feeds, how a refused file is reported, and what the runtime
 and the web app read. The storage core that saves the files and calls these checks is
@@ -186,7 +187,7 @@ first; deleting or moving the file (seeded).
 | `figure` | no | `STAFF_CHARACTER_IDS`: planet, acorn, flame, rocket, crown, heart, ghost |
 | `model` | no | gpt-6-astra, gpt-6-sol, gpt-6-luna: used when no conversation or routine picks one |
 | `effort` | no | low, medium, high; default low |
-| body | yes | the instructions (today's charter), up to 32768 bytes trimmed |
+| body | yes | the instructions (today's charter), up to 32768 bytes trimmed; no control character other than tab and line breaks |
 
 **Database rules:**
 - The Co-Founder is `qorpera_company_cofounders`. Only it has `kind: co-founder`. A save that
@@ -227,14 +228,20 @@ No settings block.
   section, an id line before the first section, and an uppercase id.
 
 **Database rules:**
-- Every id the save adds is an agent or a group chat of this company (**pending decision 1**:
-  group chats are listed too, as #370 allows).
+- Every id the save adds is an agent (not retired) or an open group chat of this company
+  (**pending decision 1**: group chats are listed too, as #370 allows).
 - An id already in the saved version is never refused, even if its agent is gone or its group
-  chat is closed. The index skips it, so an old line never blocks a save.
+  chat is closed, so an old line never blocks a save. The index keeps its place, which the sidebar
+  hides until a restore brings the agent or chat back where the file says.
 - The Co-Founder is refused.
+- Section names are unique ignoring case, and an id is listed once in the whole file (the parse's
+  shape; the parser refuses both).
 
-Agents and group chats not listed are Unassigned, in roster order. Today's placement positions
-for Unassigned are not kept. Pins and hidden agents stay member settings in the database. Not
+**Index:** sections in file order, matched to today's rows by name ignoring case, so a section
+keeps its id when only its case changes. A section's agents and group chats share one order, as the
+sidebar draws them. An id with no agent or chat at all is skipped. Agents and group chats not
+listed are Unassigned, in roster order. Today's
+placement positions for Unassigned are not kept. Pins and hidden agents stay member settings in the database. Not
 reviewed. Deleting or moving the file is refused (seeded).
 
 The platform seeds:
@@ -258,10 +265,22 @@ Each line is an id. The words after it are only for reading.
 
 **Database rules:**
 - Only the ids a save adds are checked: they must exist and be active. An agent that is later
-  archived, or a person who leaves, never blocks a later save of the file. The index skips
-  them.
+  archived, or a person who leaves, never blocks a later save of the file. The index keeps them
+  listed as written: wakes check the agent's status and access checks the person's membership, so
+  a reactivated agent or a returning member is back without another save.
+- A restore has no saved version at its path, so it is compared with the chat's last file: the
+  same file restores even after one of its agents was archived or a person left.
 - An agent's change may add to `people` only the member its run works for (today's
   `create_group_chat` rule), because adding a person lets them read the conversation.
+- The id never changes, and belongs to this folder's chat only: never to an agent, an agent's
+  thread, a snapshot-v1 chat (or its `chat-<id>` key) or another folder's open chat. One change set
+  carries it once. An agent never takes a conversation's id either, since `sections.md` lists both
+  kinds by id.
+
+**Index:** a new `group.md` opens a room (`chat-<id>`, no bound agent) and its conversation. An
+edit sets the name, subtitle and purpose, and the conversation's title. Members follow the two
+lists: anyone left out is `removed` at that version. Deleting the folder archives the room and
+closes the conversation; a restore reopens both, with the same conversation.
 
 **Review:** a new `group.md` is delegation.
 
@@ -282,12 +301,18 @@ Each line is an id. The words after it are only for reading.
 | `connected_at` | yes | UTC instant |
 | body | no | what the account is for, written by the company |
 
-- **Settings:** written only by the platform, inside the vault's own transaction (core §3 step
-  4). Any other change to them is refused.
+- **Settings:** written only by the platform (the vault's writer, core C3). A member or an agent
+  may change the body only, and never creates or deletes the file.
 - **Body:** company-authored.
 - **Authority:** the vault and the operation grants stay in charge (contract 5.6).
-- **Deleting:** refused while the vault record is active, whether `connected` or `broken`.
-  Disconnecting removes the file.
+- **Database rules:** the id is a company-owned vault row (`qorpera_cloud_secrets`) of this
+  company and environment, and never changes. A platform write matches that row: it is active and
+  its connector is the `service`. One file holds one account. A file saved before this slice is not
+  trusted as the saved version until the platform writes it (the index points at its path).
+- **Deleting:** only the platform deletes the file, and only once the vault record is revoked
+  (refused while it is active, whether `connected` or `broken`). Disconnecting removes the file; the
+  writer treats a file already missing as done.
+- **Moving:** within `connections/` the index follows; out of it is a kind change (refused).
 - Not reviewed.
 
 ### `rules/<name>.md`
@@ -298,24 +323,39 @@ Each line is an id. The words after it are only for reading.
 | `outcome` | yes | `ask-first` (`ask_first`) or `allow` (`allow_automatically`) |
 | body | yes | how "When an agent wants to …" ends, as today's `when_text`: one line, 1–280 characters trimmed, no controls |
 
-- **Who writes:** only owners and admins write `rules/` (members' commits). A card's "Always
-  allow" writes as the answering owner or admin. Agents never write it. Personal rules stay rows.
+- **Who writes:** only owners and admins write `rules/` (members' commits; the core's
+  `company_rules` resource scope). A card's "Always allow" writes as the answering owner or admin
+  (core C3's writer; until then that path still saves a row). Agents never write it. Personal rules
+  stay rows. For folder-v2 companies Settings refuses saving a company rule and removing a rule
+  that comes from a file (55000): they change as file edits. A company rule saved as a row (a
+  card's "Always allow" until C3) can still be removed there. The web's rules list reads
+  `createdVia: folder`.
+- **Database rules:** the id never changes and belongs to this file's rule only: never a personal
+  rule, a row saved outside the folder, another company's or another file's rule. A file saved
+  before this slice is the saved version only once the index points at its path.
 - **Budget:** the company rule budget of 48 KiB (`qorpera_review_rules_assert_room`) stays a
-  database rule.
+  database rule. `decide` checks it against the rules as they are, with every rule file of the
+  same unit counted by its new text, so two concurrent saves of different files can each pass and
+  overshoot by at most one unit each: serializing them would take a company-wide lock.
+- **Index:** a new rule inserts a company row (`created_via` `folder`, the file's id); an edit
+  updates it; deleting the file archives it (review records keep citing it) and a restore brings
+  it back; a move repoints it. The row's foreign key to the company row takes it `KEY SHARE`, so a
+  rule save takes the company row at rank 0 first.
 - Never reviewed.
 
 ### `agents/<handle>/routines/<name>.md`
 
-**Pending decision 3:** exactly one trigger per file.
+**Pending decision 3:** exactly one trigger per file. F2-6 (migration 20260928259310) is built on
+it; a different answer changes the parser and `qorpera_company_state_routine_trigger` only.
 
 | Key | Required | Values |
 | --- | --- | --- |
 | `id` | yes | UUID: the routine id cursors and occurrences use |
 | `title` | yes | 1–160 bytes |
 | `status` | yes | `active`, `paused`, `concluded` ("expired" is derived by the scheduler) |
-| `when` | yes | `every`, `weekly`, `window`, `once`, `file-change` |
+| `when` | yes | `every`, `weekly`, `window`, `once`, `file-change` (refused on `folder-v2` until core C4 brings the folder's file events); `event` comes with W2 (#519): `hook` (the hook's lowercase uuid), optional `only` (1–20 distinct event types), plus `timezone` and `reply`, added by whichever of W2 and F2-6 lands second |
 | `minutes` | every, window | 5–10080 |
-| `starts` | every, weekly: optional | UTC instant |
+| `starts` | every, weekly: optional | UTC instant, to the millisecond at most (what a schedule keeps) |
 | `days` | weekly (required), window (optional) | list of `mon`…`sun`, at least one |
 | `time` | weekly | `HH:MM` |
 | `from`, `to` | window | `HH:MM`, `from` ≤ `to` |
@@ -323,7 +363,7 @@ Each line is an id. The words after it are only for reading.
 | `at` | once | UTC instant; before `ends` |
 | `watch` | file-change | a path in the company; a trailing `/` is dropped |
 | `match` | file-change | `exact` or `subtree` |
-| `timezone` | all but `every` | IANA name |
+| `timezone` | all but `every` | IANA name the database knows |
 | `ends` | no | UTC instant |
 | `runs` | no (not for `once`) | 1–100000 |
 | `quiet` | no | `"HH:MM-HH:MM"`, start ≠ end |
@@ -337,13 +377,40 @@ Each line is an id. The words after it are only for reading.
 - A key of another `when` is refused by name.
 - The owner is the agent whose folder holds the file. Moving the file to another agent's
   `routines/` hands the routine over.
-- Who pays for a routine's runs is not in the file (the "starter pays" work, S2).
+- Who pays for a routine's runs is not in the file (the "starter pays" work, S2: a member's login
+  pays only for work that member started). The saver's own login that pays for unattended work
+  (a member's, or a run's requester's; the rule of `qorpera_agent_routine_sponsor`, read without
+  its lock on the login) pays for a new version and for work a save starts or extends: a resume,
+  a reopen, reviving an expired routine, more runs, a later end, a handover to another agent. A
+  version on another login moves to the saver's. A pause, a conclusion, fewer runs, an earlier
+  end or new quiet hours need no login.
+- A member without such a login cannot make those saves, and neither can an agent acting with no
+  run (a coding session, or a desktop whose run ended: C1b-3a's views) for a member without one. A
+  run whose requester has none pins the run's login, and the routine waits (`needs_model_account`). Unlike an agent's save today, the
+  commit never sets up a login for unattended work (that takes the login `FOR UPDATE` and writes
+  rows after the clock): the runtime's routine writer does it before its commit (F2-1b).
+- The index row's `origin` is who made the first commit: `agent` for a run, else `member`.
 
 **Versions and schedule positions:**
-- Each saved change of the parse is a new routine version.
-- Schedule positions follow the 2026-09-25 rules: the same timing keeps its position. The rules
-  compare the two parses' timing, keyed by the routine id with one trigger. Instants are
-  compared canonically, so re-spelling `starts` changes nothing.
+- A saved change of what a run pins (the agent, title, instructions, trigger with its reply, and
+  effort) is a new routine version. Status, `ends`, `runs`, quiet hours and the conclusion are
+  the routine row's, so pausing or timing a routine needs no login. A dynamic routine's own run
+  always makes its decision a new version, even at the same `at`.
+- Schedule positions follow the 2026-09-25 rules (`qorpera_routine_version_schedule_position`):
+  the same timing keeps its position, and a slot the scheduler queued for the old version is
+  offered again at the new one. The file's trigger id is always `file`. Instants are canonical,
+  so re-spelling `starts` changes nothing.
+- The commit never inserts a wake. The tick starts a dynamic routine's next run
+  (`qorpera_restore_dynamic_routine_runs`), so no admission fence is taken after the clock.
+
+**Status:**
+- The file's status is the saver's word when the save changes it, and when it restores the file.
+- Otherwise a pause, expiry or suspension that the platform recorded stays until core C2's queue
+  writes it into the file. The only exceptions: a save revives an expired routine (the sweep
+  expires it again while it has ended), and a new version with a paying login (a save's, or a
+  handover's) ends a wait for one. A platform commit's pause keeps the recorded reason.
+- A routine whose runs are used up has ended (`expired`), as the recorded occurrence at its limit
+  leaves it; more runs start it again.
 
 **Database rules (contract 16.3):**
 - While a run owes its routine's end-of-run decision, a unit from that run on that routine's
@@ -351,20 +418,46 @@ Each line is an id. The words after it are only for reading.
   title, instructions, effort or reply, or concludes with a `conclusion`. The run cannot pause,
   remove, move or otherwise change its own routine.
 - A member's commit cannot create a `when: once` routine, or change a routine to it: "a
-  member's save … cannot create a dynamic routine".
+  member's save … cannot create a dynamic routine". Nor does a routine a member made become
+  dynamic (the tick runs only an agent's dynamic routines).
+- The platform starts no routine: nothing would pay for it.
+- The id never changes and belongs to one file; the name is one no routine row of the agent from
+  before the files has.
 - The platform writes `status: paused` for:
   - an agent's archiving (the follow-up queue, so a restore does not revive the routine);
   - the authorization-failure suspension;
   - a member's Stop of a dynamic routine's run;
   - a routine left without a model account.
 
-  Each platform commit records its reason. The index keeps it as `pause_reason`.
+  Each platform commit records its reason. The index keeps it as `pause_reason`. Until C2's
+  queue exists, the runtime writes these pauses to the index only.
 
 **Review:** an agent creating, changing, moving or deleting a routine is delegation. The one
-exception is the routine run's own end-of-run decision, when the actor's wake is this routine's
-occurrence and only `at`, `effort`, `reply`, or `status: concluded` with `conclusion` change. A
+exception is the routine run's own end-of-run decision while it is owed, when the actor's wake is
+this routine's occurrence and only `at`, `effort`, `reply`, or `status: concluded` with
+`conclusion` change. After the run decided, or another change settled the decision, its changes
+are delegation. A run that concludes its routine (reviewed, for a fixed routine) keeps working to
+its end. A
 decision that also changes the title or the instructions is reviewed as delegation (contract
 16.3; `cloud-action-review.ts`).
+
+**Index:** a new routine inserts `qorpera_cloud_routines` (`client_routine_id` is the file's id)
+and its first version; deleting the file retires it (its runs and history stay) and gives its
+key a tombstone, as a todo's; a restore brings it back; a move repoints it, and a move to
+another agent's folder is a version like the last one with the new agent, paid by the mover. The routine row is
+locked at rank 5 `FOR NO KEY UPDATE` (a run of that routine holds it `FOR KEY SHARE`), with the
+company row at rank 0 for the rows' foreign keys. The scheduler takes the company row `FOR
+UPDATE` (its fence) before the routine, so it and a save wait for each other at the company row
+(test 709). The member RPC (`qorpera_upsert_cloud_routine`) refuses a `folder-v2` company's
+routines with 55000, except rows from before it became `folder-v2`; the agent tools
+(`qorpera_manage_agent_routine`, `qorpera_decide_agent_routine`) refuse on a `folder-v2` company, whose
+agents write routine files (their file writers come with F2-1b). The name index
+(`qorpera_cloud_routines_agent_key`) covers file routines of either origin. Known: a save that
+carries several routines (an agent folder's delete or move) locks them in id order while the
+expiry sweep updates ended routines in its own order, so the two can deadlock (40P01; one side
+retries, nothing is wrong). F1's C1b-3a (#497,
+20260928259230) moved the company row to rank 0, before the members; F2-6 takes it there too (its
+migration stops if that change has not run).
 
 ### `agents/<handle>/todos/<name>.md`
 
@@ -380,8 +473,21 @@ decision that also changes the title or the instructions is reviewed as delegati
 - `done` is refused while a worker is active.
 - A closed todo is not opened again; write a new file instead.
 - `cancelled` stops the todo's active workers (follow-up queue).
-- Moving a todo with an active worker is refused.
-- `requested_by` is checked only when the save changes it.
+- Moving or deleting a todo with an active worker is refused, and so is moving or deleting a
+  folder that carries one (an agent's rename or retirement included).
+- `requested_by` is checked (a member) only when the save changes it.
+
+**Also:** the todo belongs to the agent whose folder holds it (its indexed `agent.md`, or the
+`agent.md` the same unit writes, as a hire with its first todo); a move lands only in an agent's
+`todos/`. The id never changes and belongs to one file; a file saved before this slice is the
+saved version only once the index points at its path, and a restore is compared with the todo's
+last file. The key is the file name.
+
+**Index:** a folder row has no run ids (the commit records the actor) and may have no requester.
+Deleting the file cancels an open or blocked todo, retires the row and gives its key a tombstone
+with a `.` (no file name has one) and the whole id, so a new file of that name is free and two
+tombstones never meet; a restore brings it back.
+A todo save takes the company row at rank 0 (the row's foreign key).
 
 Not reviewed. Dispatching a worker is reviewed.
 
@@ -456,11 +562,16 @@ Outcome shape (core §3 "Outcomes"):
     always serializes (no NUL or lone surrogate in jsonb) and the commit records the refusal
     the same way for every writer.
   - A writer that cannot decode the bytes as strict UTF-8 reports `encoding` itself.
-- `structured_rule`: a database rule, such as an unknown id added, an unknown time zone, a
-  taken name, a second Co-Founder, a platform-only field, `no_agent`, `kind_change` or
-  `structured_copy`.
-- The 5.6 refusals keep their own reasons: `seeded`, `cofounder`, `coding_session_read_only`,
-  `rules_owner_only`, `connected`, `lone_structured_file`, `out_of_place`.
+- `structured_rule`: a database rule, such as an id that another folder holds, the Co-Founder
+  rules, an unknown time zone, a platform-only field, or `no_agent`.
+- The 5.6 refusals keep their own reasons: `seeded`, `cofounder`, `lone_structured_file`,
+  `kind_change` (which also covers moving an agent's folder out of `agents/` or into
+  `agents/groups/`), `structured_copy`, and later `connected`. A coding session's write under
+  `agents/` or `rules/`, and anyone but an owner or admin writing `rules/`, are `denied` by the
+  core's authority (C1b-1).
+- The trust boundary: the parse comes from the shared parser in trusted writers. SQL re-hashes the
+  text, re-checks the parse's shape and limits for the kinds it indexes, and applies the database
+  rules; it does not re-derive the parse from the text. The drift check re-parses stored bytes.
 
 Messages name the fix: an unknown key lists the allowed ones, and a bad folder name suggests
 one. Agents see them in the tool result or the shell report (F3), members in the editor, and
@@ -475,29 +586,75 @@ of the body, for readers that should not reach the storage server.
 | Kind | Index | Keeps | Stays runtime state |
 | --- | --- | --- | --- |
 | vision | new `qorpera_folder_company_index` row | name, vision version, `vision_seeded`; `qorpera_profiles.name` is copied by the follow-up queue | — |
-| agent | `qorpera_profile_staff` | every setting, the instructions (charter), handle, path, path version; retired on folder delete | lifecycle (setup), execution authority |
+| agent | `qorpera_profile_staff` (folder columns `folder_environment_id`, `folder_path`: the stored path of its `agent.md`, `folder_path_version`, `folder_commit_id`, `folder_retired_at`) | name, role, instructions (charter), colour (`native` when none), figure, status; the Co-Founder's `template_id = 'co-founder'` and its `qorpera_company_cofounders` row (no formation) | lifecycle (setup), execution authority. `hire_overlay`, `reasoning_policy` and `startup_instructions` stay null on folder-v2 rows (the source-complete check ties them to the snapshot-v1 source columns), so the file's `model` and `effort` stay in the parse until the runtime reads them (F2-1b) |
 | sections | sidebar sections and placements (+ #370's room placements) | section order, members in order | member pins and hidden |
-| group | `qorpera_company_rooms`, room members | name, subtitle, purpose copy, members | conversation, drafts, mentions, session model |
-| connection | `qorpera_cloud_secrets` descriptor columns | path, path version, purpose copy | secret versions, grants, audit |
-| rule | `qorpera_review_rules` (company scope) | outcome, `when_text` copy | personal rules, review records |
+| group | `qorpera_company_rooms` (folder columns as the roster's, with no bound agent), room members | name, subtitle, purpose copy, members, open or closed | conversation, drafts, mentions, session model |
+| connection | new `qorpera_folder_connection_index`, one row per account keyed by the vault row's id (its own table, so a connection save never writes or locks a vault row) | path, path version, purpose copy | the vault row, secret versions, grants, audit |
+| rule | `qorpera_review_rules` (company scope, folder columns as the roster's, `created_via` `folder`) | outcome, `when_text` copy | personal rules, review records |
 | routine | `qorpera_cloud_routines`, `_versions` | owner from the folder, title, trigger, timezone, ends, runs, quiet with its zone, effort, reply, status, conclusion, intent copy | schedule cursors, occurrences, retries, sponsor, `pause_reason`, `authorization_failures`, `origin` (who created it, from the first commit) |
-| todo | `qorpera_runtime_agent_todos` | owner from the folder, title, status, requester, detail copy | — |
+| todo | `qorpera_runtime_agent_todos` (folder columns as the roster's; run ids and requester optional for folder rows) | owner from the folder, key from the name, title, status, requester, detail copy | revision, publication columns (moot for folder rows) |
 | worker-brief/results | `qorpera_runtime_workers` | dispatch and result copies | handles, leases, revival, completion |
 
 - **Moves** repoint index rows without re-parsing. An agent rename carries its routines and
   todos along (core §5).
 - **Deletes** mark rows retired at the last version. Runs and conversations that reference them
-  keep working. **Restores** re-parse and bring them back.
+  keep working. **Restores** re-parse and bring them back. An agent's row is retired with
+  `folder_retired_at` and `archived`, never `deleted_at`: `qorpera_protect_deleted_staff` freezes a
+  row with `deleted_at` for good, which would make a restore impossible.
+- **The roster's triggers** stay as they are and run for folder-v2 rows too: the agent's thread,
+  the default grants, office access, execution access, connector grants, secret revocation on
+  archive. The index writer sets only the columns that change, in one statement, so a trigger that
+  runs on a column fires for real changes only, and every change bumps `version`, which pins a
+  running agent's instructions (`qorpera_record_staff_operation`). A new id that another change set
+  took first aborts this change set (23505); its retry is refused by `decide`.
+- **Lock order with the triggers:**
+  - Every roster write ends in a company operation (`qorpera_record_staff_operation`). That takes the
+    company's operation clock and then the company row (`qorpera_profiles`) `FOR KEY SHARE`.
+  - When a save renames, archives or retires an agent, the thread trigger also takes the agent's room
+    `FOR UPDATE` and updates the thread's session, which is another company operation.
+  - A run of the room takes the room `FOR KEY SHARE` at rank 4, before its paths.
+  - Posting takes the company row `FOR UPDATE` (`qorpera_lock_profile_gc_fence`) before the room and
+    the clock.
+  - So `targets` returns the company row at rank 0 (`keyshare`; C1b-3a moved it from the head of rank 2) with every
+    roster row, and the room at rank 4 (`update`) for a rename, archive or retire, all before the
+    paths. Test 701 races a rename and an instructions edit against posting.
+  - A `group.md` write takes the company row the same way: a new chat's room and conversation,
+    and a conversation's title or status, are company operations too. A `sections.md` write takes
+    it too: its rows reference the company row by foreign key, and one order keeps it simple. An existing
+    chat's room is taken at rank 4 `FOR NO KEY UPDATE`: posting's `FOR SHARE` waits for it, a run's
+    `FOR KEY SHARE` does not. Deleting or moving a folder takes the rooms of the chats in it. Test
+    703 races a chat rename against posting.
+  - Known, not F2's: the email-draft finish (agent threads only) locks the thread's session and
+    then the gc fence, the other way round from posting, so it can lose a deadlock to an agent
+    rename (found in F2-1's review). Its owner should take the gc fence first. It never reaches a
+    group chat: claiming a draft is refused outside agent threads.
+  - A `group.md` or `sections.md` parse stored under F2-1 alone was only kind-checked. A malformed
+    one is not trusted as a base; a well-formed one is. F2-1 and F2-2 ship in one release, so no
+    folder-v2 company (only an operator makes one before C5) saves such a file in between.
+  - The sidebar tables take no lock of their own: `agents/sections.md`'s path lock orders their only
+    writer. The member RPC's section and move actions refuse for `folder-v2` companies (55000), and
+    the sidebar's revision row is not bumped; the web reads the folder feed (C4).
+- `targets` reads the roster with no lock. A legacy roster write (`qorpera_put_profile_staff`)
+  between `targets` and the company-row lock can still make the trigger take the room after the paths.
+  That save can then deadlock with a run of that room (40P01; one side retries, no data is wrong).
+  This ends when C1c stops legacy writes to folder-v2 rows (§9).
+- The member RPCs of #462 (remove, change role, leave) take the company row before the member's row.
+  A save used to take its member row at rank 1 and the company row at rank 2, so a membership change
+  of the saving member could deadlock with that member's roster save. Resolved in C1b-3a: the
+  company row is rank 0, before the members, which fits posting and #462 (test 644 D).
+- A row removed outside its folder (`deleted_at`, the legacy roster delete): `decide` refuses an
+  edit of its `agent.md`; moving or deleting its folder is saved and leaves the row alone.
 - **Rebuild:** a job lists every structured path, reads the bytes and parses them with the
   shared parser. It then calls `qorpera_folder_index_rebuild(env, kind, rows)`, which fixes rows
   under the same locks as a commit. In dry-run mode it is the daily drift check, reported to
   operators only. Each stored parse records `COMPANY_STATE_PARSER_VERSION`, so drift from a rule
   change is told apart from drift in the data.
-- **Follow-ups** (core §5 "After the commit"):
-  - a hire's session, grants and first run;
-  - an archive's paused routines and revoked secret grants;
+- **Follow-ups** (core §5 "After the commit"), which need C2's queue:
+  - a hire's first run (its thread, grants and execution access come from the roster's
+    triggers today);
+  - an archive's paused routines and removed execution access (no trigger does these);
   - a cancelled todo's workers;
-  - the company name copy.
+  - the company name copy to `qorpera_profiles.name`.
 
   Consumers that must react at once read the index directly: wake admission, routine firing,
   the secret broker, coding admission, screens and run authority.
@@ -517,6 +674,167 @@ of the body, for readers that should not reach the storage server.
 | memory, skills | `agents/<id>/…` | `agents/<handle>/…`, through one agent-folder helper (agreed with the coordinator and the #387/#400 session) |
 | rules (reviewer) | rule rows | the rule index, with the versions read; personal rules unchanged |
 | connections | vault rows and grants | the same, plus the purpose copy |
+
+**Built (F2-1b, migration 20260928269440):**
+- Part A. `qorpera_company_state_run_folder(env, agent, coworkers)` gives the folder names of a
+  `folder-v2` run's agent and of the coworkers its context lists (null for a `snapshot-v1` company
+  or an agent without a folder). Core C1c-2's `folder-v2` body of `qorpera_describe_company_run_context`
+  (RUNTIME-COMPANY-FOLDER-C1C.md §5.4) adds them as the context's optional `folder`, from the same
+  coworker ids it lists, beside the company name from the vision index. The runtime's closed parser
+  accepts `folder` like `serviceTier`, turns it into the place `cloudAgentFolder` takes
+  (`agents/<handle>`, else `agents/<id>`), which memory and skills now both ask, and the prompt shows
+  each agent's `folder`. Every `snapshot-v1` context and prompt keeps its exact shape. Older parsers
+  refuse `folder`, so a bundle with this parser is active before C1c-2's `folder-v2` context sends
+  one; no `folder-v2` company runs before C1c-3.
+- Part B. `qorpera_prepare_routine_login(binding)` sets up the login the run's requester pays with for
+  unattended work (`qorpera_ensure_unattended_sponsor`, which takes the login `FOR UPDATE` and writes
+  rows), for the routine writer to call in its own transaction before it commits a routine file, whose
+  commit reads that login without a lock. The consent and binding stay if the save is then refused,
+  as the default consent an agent's save records today. It takes the run's job and then the login,
+  as an agent's routine save does, so it can meet a member switching that login off (40P01): the
+  writer retries it.
+- Still to come: the vision in full (read through core C3's folder client), and the file's `model`
+  and `effort` reaching runs.
+
+**Core C3's folder client** (`packages/runtime/src/cloud-company-folder-client.ts`). The coordinator moved it
+from F1 to F2 on 2026-09-29, and F1 reviewed its shape on #533. It is the run's client of the folder core's four
+entry points: `read`, `readText`, `list`/`listAll`, `commit` and `release`.
+- **Actor:** `{kind:'run', runId, jobId, runnerId, assignmentId}` from the binding. The client passes no fence and
+  holds no lock between calls. Reads take SQL's plain checks; a commit or a release runs SQL's run check.
+- **Commit:**
+  - each file's bytes are staged through `CloudCompanyFolderBytes`;
+  - every structured file in a write or a new folder carries `structured: [{path, kind, text, parse,
+    parserVersion}]`, or `[{path, kind, problems}]` without the text, built by the shared parser from the same
+    bytes. SQL decides every unit;
+  - the operation key comes from the tool call. A retry with the same key, units and receipt replays the stored
+    outcome, so `CloudCompanyFolderBytes.put` must return the same reference for the same bytes and media type;
+  - `receiptId` carries the tool call's folder receipt once core C1c-2b has it. That receipt is the model-facing
+    gate (lease, sponsor, wake and the wake work gate), bound to the one commit.
+- **Outcomes:** `saved`, `conflict` (re-read, then redo under a new key), `refused` with `problems`, `denied` and
+  `waiting_for_review`, each with SQL's reason.
+- **Retries and errors:**
+  - QRC01 (the authority changed after the commit decided), 40P01, 23505 (the structured hook's "taken by another
+    change set") and 55P03 (a path claim that gave up waiting) are retried with the same key; a release retries
+    QRC01 and 40P01 with the same id;
+  - a lost answer (a timeout or a dropped connection) is retried the same way, since the transaction may have
+    committed and a replay returns its outcome;
+  - `CloudCompanyFolderError` says why a call did not complete: `stopped` (55000), `unavailable` (42501, 0A000),
+    `read_revoked` (the recheck's "no longer readable": the model saw something it may no longer see), `contended`
+    (still changing after four tries; nothing was recorded) and `unknown` (a try lost its answer or was cancelled
+    while it was sent, and none answered after it: the caller retries later with the same key, units and receipt);
+  - 22023, 25000 and PostgREST's answers about the request (`PGRST1nn`-`PGRST3nn`) are defects; its connection errors
+    (`PGRST0nn`) are lost answers. SQL's words stay off the errors.
+- **Open for C1c-2b (F1):** a commit carries at most one folder receipt, and a receipt one commit. A conflict's redo
+  is a second commit, so under a receipt it needs 2b to refuse a used receipt with its own code under the receipt
+  lock (the client must not read it as the hook's retryable 23505), or to leave the receipt unused by a commit that
+  saved nothing. Until that is settled, the conflict rule above is for writers that carry no receipt.
+- **Releases:** one per tool result that shows folder content, before the result leaves the tool. A listing's
+  entries are reads too. The caller keeps the release id and the output hash with its tool call, because a replay
+  with another output is refused. Composition releases once, before the first model request that uses it. A result
+  that shows more than 10,000 entries is released in parts, each with its own id and the same output hash.
+- **Bytes:** `CloudCompanyFolderBytes` is the one place core C1d plugs in (upload intents, and a byte check that
+  never locks the company row). Until then a folder-v2 run moves no bytes: C1c-1 refuses its object upload and
+  download. The client checks what it stages against its own hash, and what it reads against the entry.
+- **Test 760** pins the four entry points' shapes, as the client parses them.
+
+**The thin writers on it** go live after core C1c-2b (folder receipts; a writer that sends also needs 2b's send) and
+C1d (bytes):
+- first, `manage_todo` (a todo file, `writeTodoFile`), `organize_sidebar` (`agents/sections.md`, read and
+  rewrite) and `decide_routine` (the run's own routine file: a new `at` or a conclusion,
+  `setCompanyStateSettings`);
+- after C2's review recorder, `hire_agent` (one `new_folder` unit with `agent.md` and the first todo),
+  `create_group_chat` (`group.md`) and `manage_routine` (a routine file, after `qorpera_prepare_routine_login`).
+
+**How a thin writer saves** (W0, #583; W1):
+- The runtime gives a run whose context names its agent's folder (`folder`) a `CloudCompanyFolderClient` over the
+  object gateway's folder route (`HttpCloudCompanyFolderBytes`, on the native credential). A `folder-v2` agent without
+  an indexed folder gets no `folder`, keeps the legacy tools, and they refuse.
+- A writer first checks that its run can complete a folder receipt (`completesFolderCommits`), then reads the file
+  and refuses what can never be saved. Every such check still passes once the call's own change is saved, so a replay
+  of the call reaches its receipt and returns the stored result.
+- Such a refusal is a `CloudToolRefusal`, which the tool boundary shows the model as `REFUSED: <reason>`: nothing
+  started and no key is bound. Any other error inside a tool stays an unknown outcome, since an effect may have begun.
+- It then saves under one receipt per tool call (`requiresCompanyRevision`), whose digest binds the model's request,
+  not the version read. The commit carries `receiptId` and the `expectedVersion` read. Whatever the units' outcomes,
+  the commit satisfies the receipt, which is completed with it (`qorpera_folder_complete_run_receipt`).
+- A `conflict` (the file changed since it was read) comes back to the model, which calls again under a new operation
+  key; a redo inside the tool would need a second receipt whose digest depends on a re-read.
+- A result that shows content read from a file releases those reads with it, one release per tool call. A writer
+  releases inside its effect, before the receipt completes: a release that fails after a saved commit leaves W0's
+  fence (the call is not completed, and the run's later operations wait), which keeps a shown read from going
+  unreleased.
+- Known limit: the checks before the receipt read the file as it is now. If the file changed after a call's change
+  was saved (closed, or deleted), a replay of that call is refused before it reaches its receipt, instead of getting
+  the stored result. The change is still saved exactly once; only the replay's answer is wrong. A later fix can look
+  up the completed receipt for that operation key first.
+
+**Built (W1): `manage_todo`** (`packages/runtime/src/cloud-folder-todos.ts`).
+- The todo is `agents/<handle>/todos/<todoKey>.md`; the todoKey is the file name (`^[a-z0-9]+(?:-[a-z0-9]+)*$`, at most
+  64 bytes), and a wider key is refused with that rule.
+- `upsert` writes the whole file (`writeTodoFile`), keeping an existing todo's id and requester; a new todo's
+  requester is the run's, and the todos folder is made first when missing. A closed todo is not opened again.
+- `done` and `cancel` change only `status` (`setCompanyStateSettings`), and show the todo as read, released with the
+  result. An `upsert` that is not saved shows the state and version read, and releases that read too. A todo file
+  that does not parse is refused, for a change and for `todoKey`.
+- `list` reads the todo index (`qorpera_folder_agent_todos`, migration `20260928319770`, test 763), which the commit
+  updates in the same transaction as the files: one plain read, paged as today's list (32 a page, newest first, open
+  and blocked by default, `state`, `includeClosed` and `search` as before, the cursor of the last todo shown). A page
+  shows the start of each detail, as today, and is no folder read, so nothing is released. `todoKey` reads that one
+  todo's file and shows its whole detail, released with the result. A list shows no workers: `manage_worker` refuses
+  `folder-v2` until F2-5b.
+- The read takes the run's plain read check (no lock; a paused company refuses it), a company run that is not a
+  worker, and read authority on the agent's todos folder. Each todo is listed only if the run may read its file (the
+  core judges a file by its most specific resource, so one todo can be narrowed on its own); the count and the cursor
+  follow the same rule. A deleted todo file is not listed.
+- The index over the files is the coordinator's ruling of 2026-10-01; F1 may overrule it in a follow-up.
+
+**Built (W2): `organize_sidebar`** (`packages/runtime/src/cloud-folder-sidebar.ts`).
+- It reads and rewrites `agents/sections.md`. A section is named by its name, ignoring case; the file has no section
+  ids. Lines before the first section (the company's own notes) are kept as they are; the sections are written back in
+  the seeded form, each line an id and the words after it only for reading (a line keeps its words, indented or not;
+  an agent placed for the first time gets its name). A name ending in `#` takes the parser's closing ` #`, and what is
+  written must read back as the sections intended, or the call is refused before any effect.
+- As today it is idempotent by content: a change already in the sections (their names in order, each with its ids in
+  order) saves nothing and says so, however the file is laid out. `create_section` of an existing name is that
+  section, a retried rename finds the new name, deleting a section leaves its agents Unassigned and deleting one
+  already gone changes nothing, `move_agent` into the agent's own section changes nothing, and `move_agent` with
+  `section: null` takes an agent out of every section.
+- A change saves under a receipt keyed by the tool call (the tool has no operation key), with the version read; a
+  `conflict` or a refusal by F2-2's hook (the Co-Founder, worded as today; an id that is not an agent or an open group
+  chat) comes back as `refused`, with nothing changed, showing the sections as read.
+- `list` and every result show the sections with names from the run context (the agent and its listed coworkers),
+  then the unlisted as Unassigned (`unassignedTruncated` when the context's coworker list was cut). The Co-Founder is
+  left out when it is the run's own agent; the context does not say which coworker is. Each result releases the read
+  of the file it shows.
+- A section reference ignores case and runs of spaces, as today. Differences from today: sections have no count cap
+  beyond the file's 64 KiB (a change past it is refused before any effect), and an open group chat can be placed as
+  well as an agent (§2).
+
+**Built (W3): `decide_routine`** (`packages/runtime/src/cloud-folder-routine-decision.ts`).
+- The run woken by its dynamic routine's `once` occurrence writes the decision into the routine's own file,
+  `agents/<handle>/routines/<routineKey>.md`. `next` sets a new `at` (canonical, and, if asked, `effort` and `reply`)
+  with `setCompanyStateSettings`; `conclude` sets `status: concluded` and the `conclusion`, its line breaks and tabs
+  made spaces (the file's conclusion is one line).
+- Refused before the receipt, binding no key (`REFUSED: …`): a title or instructions that differ from the file's
+  (delegation, which the folder core cannot record until C2; equal ones change nothing), and a next run at or after
+  the routine's `ends` ("The routine ends at …. Choose an earlier time or conclude it.", as today). The folder-v2
+  description says the run leaves intent and title out, and that a refused decision is redone under a new key.
+- Settled, as today, when the routine already moved on: its file is gone, it is no longer active, or it is no longer
+  a `once` routine; and when the commit calls a plain decision delegation (`denied`, `review_required`), which by
+  F2-6's review class means nothing is owed any more. A settled answer makes the decision.
+- The save goes under the tool call's receipt with the version read. A saved decision is made (the run owes nothing
+  more). A conflict or another refusal leaves it owed, and its reason says to decide again with a new operationKey.
+- A `folder-v2` run on a node without folder bytes keeps the legacy tool, which refuses `folder-v2`: such a dynamic
+  routine run cannot decide, and its final message is refused. Nodes serve folder bytes before any company is
+  `folder-v2` (C1c-3).
+- The routine is the one the run was woken for: the file at its key must carry its id (F2-6 keys the routine row by
+  the file's id). When it is missing there, or another routine took the name, the agent's routines folder is listed
+  and the file carrying the id is found (files that don't read as routines are passed over). Only when no file holds
+  this routine is it settled. The wake is not read again: that read also claims the run's held coworker messages.
+  The receipt's target stays the woken path, so a retry after a second rename is the same call. A settled answer
+  that shows the routine as read releases that read. Known limit: a rename of the agent's own folder mid-run is not
+  followed (the run context names the folder once); the decision is then answered settled while the kernel may still
+  owe it.
 
 Until the mount's writes are accepted (F3), these tools become thin writers of these files:
 `hire_agent`, `create_group_chat`, `organize_sidebar`, `manage_todo`, `manage_routine` and
@@ -548,8 +866,10 @@ Agreed with F1 on #408: F2 proposed in comments 5864281465 and 5865135113, and F
 5864414721 and 5865197696. C1b adds the call
 sites to `qorpera_folder_commit` with inert stubs of exactly these signatures, and F2's SQL
 slices replace the stub bodies with `create or replace`, never touching the commit. F1 owns the
-commit, its lock order, and the follow-up queue table and its drain loop. F2 owns the functions it calls. All are plpgsql,
-security definer, `search_path = ''`, and called only from the commit or the rebuild. They
+commit, its lock order, and the follow-up queue table and its drain loop. F2 owns the functions it calls. F2-1 also
+teaches F1's `qorpera_folder_structured_lock` one more table, the company row (§4). All are plpgsql with
+`search_path = ''`, security definer except `targets` (it runs inside the commit, with its rights), and called only
+from the commit or the rebuild. They
 raise only for malformed calls. `decide` checks every index constraint, so `apply` never raises
 on a unit that `decide` passed.
 
@@ -557,7 +877,7 @@ on a unit that `decide` passed.
 | --- | --- | --- |
 | before tx (TS) | `parseCompanyStateFile(path, text)` | Each structured path of a unit gets an entry in `structured: [{path, kind, text, parse, parserVersion}]`, or `[{path, kind, problems}]` without the text when refused. A `new_folder` lists every structured file inside it. SQL re-hashes each parsed file's text against its file hash. |
 | any | `qorpera_structured_path_kind(path)` | The pattern table, on the key. |
-| 4, plan | `qorpera_folder_structured_targets(p_environment_id uuid, p_actor jsonb, p_units jsonb) returns table(rank smallint, tbl text, key text, mode text)` | Takes no locks. Returns the rows to lock, each with its rank and mode: index rows by parse id, index rows by path prefix for a subtree unit as of its `asOfSeq`, referenced member rows (`people`, `requested_by`, `connected_by`: rank 1, KEY SHARE), and unique claims (`key` is a uuid as text, or a claim key). Rows of F1's tables (members, execution authorities, resources, grants) are merged into F1's own pass at their rank, the stronger mode winning. |
+| 4, plan | `qorpera_folder_structured_targets(p_environment_id uuid, p_actor jsonb, p_units jsonb) returns table(rank smallint, tbl text, key text, mode text)` | Takes no locks. Returns the rows to lock, each with its rank and mode: index rows by parse id, index rows by path prefix for a subtree unit as of its `asOfSeq`, referenced member rows that an index row depends on (rank 1, KEY SHARE; none so far: `people` and `connected_by` are read without a lock, since no index row depends on them), and unique claims (`key` is a uuid as text, or a claim key). Rows of F1's tables (members, execution authorities, resources, grants) are merged into F1's own pass at their rank, the stronger mode winning. |
 | 4, lock | `qorpera_folder_structured_lock(p_environment_id uuid, p_targets jsonb, p_from_rank smallint, p_to_rank smallint) returns void` | Locks F2's tables through a closed list, in key order. F1 calls it for ranks 2, 4–5 and 8–9, between its own ranks 1, 3, 6 and 7. |
 | 7, per unit | `qorpera_folder_structured_decide(p_environment_id uuid, p_actor jsonb, p_commit_id uuid, p_unit_no integer, p_unit jsonb, p_eff_path text, p_eff_to text) returns jsonb` | Runs after F1's own checks, on the effective (stored) paths. Covers the path checks, the database rules, the dependency rule and the 5.6 refusals, and returns `{ok, reason, problems}`. It reads the index as the earlier units of the commit left it. |
 | 7, review | `qorpera_folder_structured_review_class(p_environment_id uuid, p_actor jsonb, p_unit jsonb, p_eff_path text, p_eff_to text) returns text` | Returns plain, delegation or deletion, from the base parse (the current entry's path version) and the new one. The TS proposal before the transaction applies the units in the same order, so both sides agree. |
@@ -590,20 +910,71 @@ claims by kind then key (F2). All nine come before paths, objects, admission and
 ## 8. Build order
 
 1. **F2-0** (this): this document and the shared parser, with tests. No SQL; inert.
-2. **F2-1** vision and agents:
-   - the pattern table, the company index, and the staff index for `folder-v2`;
-   - the Co-Founder and naming rules, and the seeding templates;
-   - hire, rename, archive and delete, with their follow-ups;
-   - the context composer;
-   - the agent-folder helper for memory and skills.
-3. **F2-2** group chats and sections (replaces #370's tables and `organize_sidebar` for new
-   companies).
-4. **F2-3** connections (the vault writes the file).
-5. **F2-4** rules (the reviewer reads the rule index).
-6. **F2-5** todos and worker files.
-7. **F2-6** routines, last because the scheduler, schedule positions and decisions are the
-   most delicate part.
+2. **F2-1** vision and agents, in the database (migration 20260928249020):
+   - the pattern table, the path checks, the stored parse, the company index, and the staff
+     index for `folder-v2`;
+   - the seeded-path, Co-Founder, lone-file, kind-change and copy refusals, and the review
+     class;
+   - hire, edit, archive, rename, delete and restore;
+   - the seed tree for C2's creation commit (`companyStateSeedTree`, §9).
+
+   **F2-1b** follows: the follow-ups on C2's queue, the context composer reading the vision and
+   `agent.md`, and the agent-folder helper for memory and skills. Part A (migration
+   20260928269440) is the folder names for the context and the helper (§5); part B, in the
+   same migration, the routine save's login setup; the thin writers come on core C3's folder
+   client, and the reviewed ones after C2's review recorder.
+3. **F2-2** group chats and sections (migration 20260928249100; for new companies it replaces
+   #370's writes and `organize_sidebar`):
+   - the rooms table's folder columns, and the parse shape and database rules of both kinds;
+   - `group.md` to rooms, room members and the conversation; `sections.md` to the sidebar's
+     sections and placements;
+   - the member RPC's section actions refused for `folder-v2`.
+4. **F2-3** connections (migration 20260928249140): the parse's shape, the rules and the index
+   table. The vault's writer is core C3's; the vault's SQL cannot create file bytes, so it stages
+   the text through the object gateway first, or C2's queue writes the file after the vault
+   commits.
+5. **F2-4** rules (migration 20260928249190): the reviewer reads the rule index, its own table;
+   the Settings RPCs refuse company rules for folder-v2.
+6. **F2-5** todos and worker files: **F2-5a** todos (migration 20260928259210); **F2-5b** worker
+   briefs and results, with core C3's writers, which dispatch and report through the platform.
+7. **F2-6** routines (migration 20260928259310), last because the scheduler, schedule positions
+   and decisions are the most delicate part. `file-change` routines wait for core C4.
 
 Each step comes after F1's C1 (C1b brings the call sites), is `folder-v2` only, rides the release
 train, and gets an independent exact-head review. The web screens for each kind follow with
 core step C4.
+
+## 9. The seeded tree
+
+`companyStateSeedTree({companyName, cofounderId, vision?, founders?, firstTodo?})` lists what a new
+company's folder holds, parents first, and C2's creation commit writes it in one change set as the
+platform:
+
+- `vision/` and `vision/vision.md`: the name, the founders' text from the founding table, then the
+  four seeded headings, with a `- name: role` line per founder under "How we work";
+- `agents/` and `agents/sections.md` (no sections);
+- `agents/co-founder/` with `agent.md` (`kind: co-founder`, `status: active`, colour blue,
+  figure crown, and `COMPANY_STATE_COFOUNDER_INSTRUCTIONS`, whose first job is the vision), and
+  its empty `memory/`, `skills/`, `routines/` and `todos/`;
+- with `firstTodo`, the Co-Founder's first todo at `COMPANY_STATE_FIRST_TODO_PATH` ("Start with the
+  founders", requested by the founder who started the table);
+- `agents/groups/`, `connections/`, `skills/` and `rules/`.
+
+It throws a `RangeError` when a file would not parse (a founders' vision past the size limit), so
+C2 never sends a creation commit the database refuses.
+
+The creation commit's `agent.md` with `kind: co-founder` also records the Co-Founder
+(`qorpera_company_cofounders`), since no Co-Founder is recorded yet, the actor is the platform, and
+the agent is new: an agent already on the roster never becomes the Co-Founder. After that, only
+that id has the kind, and one change set may carry only one. For folder-v2
+companies the creation path must not also run the old chain (`qorpera_seed_company_cofounder`, the
+snapshot bootstrap). If it runs first, its database-only Co-Founder makes the creation commit's
+Co-Founder unit refused; if it runs after, it finds the recorded one. Either way the old chain
+queues its own first run and leaves the company half on the old core (C2; #444 comment 5872662909).
+
+Found while building F2-1, for F1 (C1c): `qorpera_put_profile_staff` and
+`qorpera_delete_profile_staff` still write folder-v2 roster rows directly, since their guards look
+at snapshot-v1 columns, and `qorpera_ensure_default_agent_read_grants` (the roster's default-grant
+trigger) inserts grants outside the authority journal and the rank-6 lock of C1b-2. A folder-v2
+index row should change only through its file.
+

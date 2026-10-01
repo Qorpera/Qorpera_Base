@@ -1,0 +1,536 @@
+# Event intake and event wakes
+
+Founder decisions of 29 September 2026, on the Q1 page "Qorpera on Qorpera"
+(https://claude.ai/artifact/Y74zt9zUc35EbeJ3MN64mh), relayed by the coordinator:
+
+- Agents must wake on defined events, such as incoming email and webhooks from any service. This
+  is the base for routines and the top priority of workstream Q1.
+- Event wakes also come to today's routine rows before the clean reset (decision 6), although new
+  features otherwise go to the folder model. Routine files (F2-6) take the same trigger.
+- Agents act through the company's own accounts, and credentials live in the vault (decision 2).
+- A company's first address is on a mail domain Qorpera owns (decision 7). Mail arrives through this
+  same intake (step M2).
+
+Contract: section 16.3 and the 2026-09-29 amendment "events wake agents" (section 19). This file is
+the technical design. The Q1 page is the plain one.
+
+Status: W1a is live (v150, `20260928259260_runtime_event_intake`) and W2 is live (v151,
+`20260928269290_runtime_event_wakes`), both accepted; the intake is switched on. M2a is merged
+(`20260928299650_runtime_company_mailboxes`, release v154), with mail switched off until the domain exists.
+M2b is merged (`20260928309740_runtime_company_mail_sending`, release v155), with sending switched off; the founder's
+sender-name rule is in review (`20260928319810_runtime_company_mail_sender_names`). W1b takes a fresh slot when it
+starts.
+
+## Words
+
+- A **hook** is a company connection that receives events: one public address, how the sender
+  proves itself, and limits. It is created by an owner or admin (W1a), and later by an agent (W3).
+- A **delivery** is one request that reached a hook's address. It is runtime state: a queue entry
+  and a receipt. The event it carries becomes company content once it is saved in the company folder
+  (below).
+- A delivery is **verified** when its sender is proven, or when the hook takes its address as the
+  proof. Only verified deliveries wake agents.
+
+## Build steps
+
+| Step | What | Slot |
+| --- | --- | --- |
+| W1a | Hooks, deliveries, the public intake function, address-proven hooks end to end, member RPCs | `20260928259260` |
+| W1b | Signed hooks: the vault verifies Stripe, GitHub and HMAC signatures | registered when started |
+| W2 | Routine trigger on a hook, event wakes, the agent tools `list_hooks` and `read_event` | `20260928269290` |
+| W3 | Agents create, pause and remove hooks (`manage_hook`) | registered when started |
+| M2a | Company mailboxes, receiving: owners create them, the mail provider's webhook fills them, routines wake on mail | `20260928299650` |
+| M2b | Sending as a mailbox, as the agent with an AI line: `send_mail`, the outbox and its sender | `20260928309740` |
+| M2b+ | Founder decisions of 1 October: no sender that reads as Qorpera | `20260928319810` |
+| M2c | Attachments' contents, threads and sent mail in the folder | registered when started |
+
+Each step is a release-train feature PR: no bundle, manifest or activation files, an independent
+exact-head review, and a hand-off to the coordinator.
+
+## Where the intake runs
+
+The intake is a Supabase Edge Function, `event-intake`, at
+`<supabase url>/functions/v1/event-intake/<address>`.
+
+- It is public and always up. It does not depend on one node, while the brokers and the shared vault
+  serve requests from node 1 only (`RUNTIME-LOGIN-VAULT.md`).
+- Senders differ in how they retry. GitHub does not retry a failed delivery on its own. The intake
+  must answer quickly and not wait for the vault.
+- The Stripe webhook of computer-hours billing already runs this way
+  (`supabase/functions/computer-billing`).
+
+The function holds no company secret. It reads the body, checks limits, and hands the delivery to
+one database function granted to `service_role` only. Signatures are checked afterwards by the
+company's broker (W1b), the only component allowed to unwrap a company secret (contract 11.5). An
+address-proven hook needs no secret, so its deliveries are verified in the same database call.
+
+## Hooks
+
+Table `qorpera_event_hooks`, one row per hook:
+
+| Column | Meaning |
+| --- | --- |
+| `id` | uuid |
+| `profile_id`, `environment_id` | the company and its environment |
+| `name` | handle, `^[a-z][a-z0-9-]{0,63}$`, unique among the live hooks of the company environment |
+| `purpose` | one line, 1–512 characters |
+| `proof` | `address`, `stripe`, `github` or `hmac-sha256` |
+| `address` | 43 characters of base64url from 32 random bytes, unique |
+| `status` | `active`, `paused` or `removed` |
+| `max_body_bytes` | 1 KiB to 256 KiB, default 64 KiB |
+| `per_minute` | deliveries accepted per rolling minute, 1–120, default 60 |
+| `created_by_user_id` / `created_by_staff_agent_id` | who made it: at most one, a member (cleared if the account is deleted) or an agent (from W2) |
+
+A company has at most 50 live hooks. A hook's last delivery time is read from its deliveries; the
+hook row is never written by a receive. A receive's delivery shares the hook row's key (its foreign
+key), so it waits only while the hook is deleted; a status change locks the row without its key. A removed hook's row is deleted 30 days after its
+removal, once its deliveries have gone.
+
+**Which companies.** In W1a, hooks exist for `snapshot-v1` companies, whose connections are rows.
+For a `folder-v2` company a hook is described by its connection file, `connections/hook-<name>.md`,
+which the platform writes in the same step as the hook (contract amendment, item 2). The writer step
+reserves the `hook-` prefix for hook files: today's connection-file rules (20260928249140) let an
+account file be renamed within `connections/` and require a vault row per file, which an
+address-proven hook lacks, so they gain a hook branch then. That waits for the
+core's writer (F1 C3), so creating a hook there refuses with 0A000 until then. A company with live hooks is not
+untouched, so `qorpera_folder_enable` refuses it (55000); its hooks go with it at the reset. Creating a
+hook holds the company's Company File row shared, which `qorpera_folder_enable` locks for update before
+it looks for hooks, so the two cannot pass each other. Creation locks the company row without its
+key, so it never deadlocks with enable, which references the company only through foreign keys after
+taking the Company File row.
+
+**Proof.**
+- `address`: whoever knows the address may post. The address works like a key that only lets
+  someone post events into this hook, and nothing else. The platform shows it to the company's owners
+  and admins, and to agents in runs an owner or admin started (W2). It is not a vault secret: holding it grants no
+  access to any service or company data, and every event is outside content anyway (below). Use it
+  for senders that cannot sign, such as a website form. Addresses also appear in the platform's
+  request logs, which only operators read.
+- `stripe`, `github`, `hmac-sha256`: the sender signs each delivery with a shared secret. The secret
+  is a company vault secret with connector `event_hook` and the secret name `h<hook id without
+  hyphens>`, captured by a member through the existing vault capture
+  (`qorpera_begin_cloud_secret_capture`). Binding it to the hook's id means a new hook never picks up
+  a removed hook's secret. Agents never see it. Until that secret exists, and until W1b ships, the
+  hook refuses deliveries (`not_ready`, HTTP 409).
+
+**Who manages hooks (W1a).** Owners and admins, through
+`qorpera_create_event_hook`, `qorpera_set_event_hook_status` and `qorpera_list_event_hooks`.
+Contributors and viewers see names, proof and status, not addresses. From W3, an agent creates,
+pauses and removes hooks with `manage_hook`, and creating one passes the automatic review as a new
+connection. The Settings split (step A3) lists hooks under Company connections.
+
+## Limits
+
+The intake is shared by every company, so it is bounded three ways. A request refused by any limit
+writes nothing: no delivery, no counter.
+
+- **Per hook:** a body of at most `max_body_bytes` (at most 256 KiB), and at most `per_minute`
+  deliveries in any rolling 60 seconds (at most 120). The check counts the hook's deliveries of the
+  last minute without locking, so a burst of concurrent requests can pass it by the number in flight.
+- **Per company:** `qorpera_event_intake_usage` counts stored deliveries (accepted or duplicate) and
+  their stored bytes, body and headers, per UTC clock hour. A delivery is refused when the current
+  and previous hour together would pass the budget in `qorpera_event_intake_settings` (default 2,000
+  deliveries and 64 MiB). The usage row is the only row a receive locks for update, briefly, and the
+  public door waits at most 2 seconds for any lock. Deliveries and usage carry the company id without a foreign key,
+  so a receive never waits for the company row (whose gc fence a company purge holds): deliveries go
+  with the company through the hook, and usage rows, which hold only counts, expire within a day.
+- **The platform switch:** `qorpera_event_intake_settings.enabled` is built off. While it is off,
+  every delivery that reaches the database (a POST to a well-formed address) is answered 503, before
+  the address is looked up. Operators turn it on at acceptance, and can turn it off at any time or
+  change the budget, in SQL.
+
+## Deliveries
+
+Table `qorpera_event_deliveries`:
+
+| Column | Meaning |
+| --- | --- |
+| `id` | uuid, the delivery id agents see |
+| `hook_id`, `profile_id` | the hook and its company |
+| `received_at` | when the intake took it |
+| `status` | `received` (waits for the vault), `verified`, `refused` or `duplicate` |
+| `delivery_key` | the sender's own id once verified: Stripe's `evt_…`, GitHub's `X-GitHub-Delivery`, or `X-Qorpera-Delivery` / `Idempotency-Key`; for a sender without one, `body:<sha256>:<delivery id>` |
+| `event_type` | Stripe's `type`, GitHub's `X-GitHub-Event` (with `.action` when the body has one), `X-Qorpera-Event`, or null |
+| `content_type`, `headers` | the content type, and an allowed list of headers (below), at most 8 KiB |
+| `body`, `body_sha256`, `body_bytes` | the raw body; the body and the headers are cleared after 7 days, the rest kept 30 days |
+| `verified_at`, `reason` | when it was verified, or why it was refused (at most 500 characters) |
+
+- **Kept headers:** `content-type`, `user-agent`, `stripe-signature`, `x-hub-signature-256`,
+  `x-github-event`, `x-github-delivery`, `x-github-hook-id`, `x-qorpera-signature`,
+  `x-qorpera-timestamp`, `x-qorpera-delivery`, `x-qorpera-event`, `idempotency-key`, and the Standard
+  Webhooks and Svix headers (`webhook-id`, `webhook-timestamp`, `webhook-signature`, `svix-id`,
+  `svix-timestamp`, `svix-signature`) for mail providers (M2). Everything else, including
+  `authorization` and cookies, is dropped by the function. Kept headers over 8000 bytes of JSON are
+  refused (431).
+- **Duplicates.** With a sender id, a verified delivery is unique on `(hook_id, delivery_key)`: the
+  unique index decides, so two concurrent copies cannot both be verified. The sender id is the first
+  well-formed one of `X-Qorpera-Delivery` and `Idempotency-Key`. Without a sender id, the same body
+  within 10 minutes is taken as the sender's retry, as a best effort (two identical bodies arriving
+  at the same instant may both be accepted); after that the same body is a new event (a monitor's
+  second identical alert is real). A duplicate is recorded without its body and
+  answered 200, so the sender stops retrying. Deduplication runs only after verification. Otherwise
+  someone who knows an address could send a fake delivery with a real event's id ahead of it and have
+  the real one dropped.
+- **Size.** The function refuses a body over 256 KiB before reading it (`Content-Length`) or while
+  reading it (a stream cap). The database refuses a body over the hook's `max_body_bytes` (413).
+- **Retention.** `qorpera_purge_event_deliveries(limit)` refuses deliveries still waiting for the
+  vault after 24 hours, deletes rows after 30 days, clears bodies and headers after 7, deletes hooks
+  removed over 30 days ago, and deletes hourly usage older than a day, at most `limit` rows of each
+  kind a call. The coordinator schedules it every 5 minutes (pg_cron), which keeps ahead of dozens of
+  companies at their budget. Events saved in the company folder stay there (below).
+
+**Answers.**
+
+| Outcome | HTTP | When |
+| --- | --- | --- |
+| `accepted` | 202 | stored; for an address-proven hook, also verified |
+| `duplicate` | 200 | a copy of a delivery already verified |
+| `unknown` | 404 | no hook has this address, or it was removed, or its company is being deleted |
+| `paused` | 409 | the hook is paused |
+| `not_ready` | 409 | a signed hook whose secret is not in the vault yet |
+| `too_large` | 413 | over the hook's limit |
+| `limited` | 429 | over the hook's minute (`Retry-After: 60`) or the company's budget (`Retry-After: 600`) |
+| `unavailable` | 503 | the intake is switched off (`Retry-After: 300`) |
+| — | 400 | input the database calls malformed |
+| — | 404, 405 | a path that is not a hook address ("This is not a hook address"); a method other than POST |
+| — | 413, 431 | a body over 256 KiB; kept headers over 8000 bytes |
+| — | 503 | the database cannot be reached; the sender retries |
+
+A signed delivery is answered 202 when it is stored, before the vault checks it. A bad signature is
+therefore not reported to the sender. It is recorded as `refused` with the reason.
+
+## Verification in the vault (W1b)
+
+Every broker, both the per-company brokers and the shared vault, runs a verification loop for the
+companies it serves:
+
+1. `qorpera_claim_event_verifications(authority, capability, limit)` claims up to 32 `received`
+   deliveries of its companies for 60 seconds. For each it returns the body, the kept headers, the
+   hook's proof, and the current version of the hook's `event_hook` secret (key id and envelope),
+   refusing a revoked secret.
+2. The broker unwraps the secret in memory and checks the signature:
+   - `stripe`: `Stripe-Signature` `t=` and `v1=` values; HMAC-SHA256 of `t.body`; 300 seconds
+     tolerance measured against `received_at`; the event id `evt_…` and `type` from the body.
+   - `github`: `X-Hub-Signature-256: sha256=<hex>`, HMAC-SHA256 of the body; the key is
+     `X-GitHub-Delivery`, the type is `X-GitHub-Event` plus `.action`.
+   - `hmac-sha256`: `X-Qorpera-Signature: v1=<hex>` over `<X-Qorpera-Timestamp>.<body>`, 300 seconds
+     tolerance; for senders the company controls, such as its own backend.
+   Comparisons are constant time. The secret never leaves the broker's memory.
+3. `qorpera_finish_event_verification(authority, capability, delivery, claim, verdict, key, type,
+   reason)` records `verified`, `duplicate` or `refused`. A claim that expired is retaken by any
+   broker that serves the company. It stamps `verified_at` with `clock_timestamp()` in a transaction
+   shorter than a minute, because event listeners' watermarks trail the clock by one minute (W2).
+
+A delivery still `received` after 24 hours is refused with "not verified in time". The broker HMAC
+helpers are shared with the intake function's tests, so both sides agree on every format.
+
+## Event wakes (W2)
+
+W2a (migration `20260928269290_runtime_event_wakes`, on today's routine rows per decision 6) and the
+runtime side ship in one cut. Acceptance is contract section 21, item 33.
+
+**The trigger.** A routine version may carry one listener trigger on a hook:
+`{id, kind:'listener', source:'event', hookId, only?: [types], timeZone, replyPolicy?}`. `hookId` is
+the hook's id in lowercase canonical form, so every reader compares it as text. `only` lists 1–20
+distinct event types of printable ASCII without spaces, at most 128 characters each. A delivery
+with no type matches only a trigger without `only`. As with file-change listeners, a listener is the
+version's only trigger, and the hook must be a live hook of the routine's company and environment
+(checked when the version is saved, by the agent's routine tool and by the version's activation). The
+agent's tool compiles `{kind:"event", hookId, only?, timeZone, report?}` to it; `list_hooks` gives
+the ids. In routine files (F2-6) this becomes `when: event`, `hook: <hook id>` and `only: [...]`, with
+the file's `timezone` and `reply` keys. Member clients read the trigger (`CloudRoutineEventTrigger`):
+the web routine list words it and offers pause and resume, and its editor does not edit it.
+
+**Cursors.** Each event listener version gets a row in `qorpera_event_listener_cursors` with the
+instant it became active. A resume or a new current version starts it again from now, as a file
+listener does, so events that arrived while it was paused do not wake it. `taken_before` is the
+listener's watermark: every matching verified delivery verified before it is taken or left behind, so
+the waiting query starts there (or at the activation, or 7 days back, whichever is latest). The reader
+moves it after each batch to the first delivery still waiting, and the drain moves it when nothing
+matching waits (a filtered listener skipping other types); never closer than a minute to the clock,
+so a receive still committing is never passed. W1b must therefore stamp `verified_at` with
+`clock_timestamp()` in a transaction shorter than a minute.
+
+**Admission.** The materializer's drain (`qorpera_drain_event_wakes`, called after the file drain)
+takes up to 32 active cursors, oldest scan first, and for each one:
+- skips it while its hook is removed, the company is paused, or the routine is not active at that
+  version; it takes the routine row without waiting (a routine save takes it first) and skips the
+  cursor when it is busy;
+- skips it while one of the routine trigger's open event wakes is pending: queued, or materialized
+  with its job queued or leased and nothing read (a finished run moves its wake on, so the open ones
+  are few);
+- otherwise, when a verified delivery of the hook since the cursor's start (within 7 days), matching
+  `only` and not yet taken by this routine trigger, is waiting, inserts one occurrence: `wake_kind
+  'routine'`, `source_kind 'event'`, `source_id` the hook, key `event:<routine version>:<trigger
+  id>:<first delivery id>:<attempt>`, `scheduled_for` the first delivery's arrival, payload `{hookId,
+  firstDeliveryId}`.
+- A wake that ended without taking its deliveries (cancelled at admission, or its run failed before
+  reading) is tried again for the same first delivery after 1, 4, 16 and 64 minutes. After five tries
+  the first delivery is left behind, recorded against the fifth wake, and the next delivery wakes the
+  routine. The attempt number comes from history, so the key is deterministic.
+
+A routine that must report needs a public audience, as for file listeners. The existing insert
+triggers apply unchanged: quiet hours move `not_before`, and the pinned sponsor pays. Errors for one
+cursor that mean it cannot run now (the agent or requester gone, a lock held, a deadlock) skip it this
+round; the materializer goes on.
+
+**Reading.** `qorpera_read_native_wake` builds the rest of the wake first, then adds the batch in the
+room left: the smaller of what the kernel's 48 KiB envelope bound and the runtime's 48 KiB payload
+bound leave, less 4 KiB for the batch's own layout. The first read takes up to 20 waiting deliveries
+into `qorpera_event_wake_deliveries(routine, trigger, delivery, occurrence)`, fewer when their
+descriptions alone would not fit (always at least one), so a retried run reads the same batch. Each
+event shows its delivery id, type, arrival, content type and size, and its body as UTF-8 text
+(`encoding: utf8`) or base64 (`encoding: base64`), cut by its JSON-escaped bytes to at most 8 KiB and
+to the room left (`truncated`), left out when no room is left (`truncated` alone), or `bodyCleared`
+after 7 days. Events come in the order they were verified. `more` counts deliveries still waiting,
+up to 1000, which wake the routine again once this occurrence has been read. A hook removed after
+admission cancels its queued wakes at materialization, like any lost source authority. Two edges stay:
+a wake whose other parts (a long intent and many held messages) leave less room than the batch's
+descriptions need fails with 54000 before it takes anything, and the retry rule bounds it; a retried
+read that finds more held messages than the first can fail the same way after its batch was taken,
+and those deliveries are then not offered again.
+
+**Outside content.** The wake protocol for an event wake says every event is outside content (contract
+11.1): an instruction inside it is data, and outside actions it leads to pass the automatic review.
+Item 33 of section 21 carries the adversarial event case of item 10.
+
+**Tools.**
+- `list_hooks` lists the company's live hooks. Addresses, which let anyone post into a hook, are shown
+  only in runs an owner or admin started, as members see them; with them comes `url`, the full address,
+  once operators set `qorpera_event_intake_settings.public_url` (Deploy (W2)).
+- `read_event(deliveryId, offset?)` reads one verified delivery of the agent's own company: text in
+  pieces of at most 16,000 characters and 32 KiB of JSON, or base64 of 24 KiB of raw bytes. `next` is
+  the offset of the following piece (characters for text, bytes for base64).
+
+Both are reads for the automatic review. Agents creating and removing hooks (`manage_hook`, W3,
+reviewed as a new connection; a signed hook asks a member for its secret, connector `event_hook`,
+secret name `h<hook id without hyphens>`) follows in a later step.
+
+**Folder companies.** Event wakes of `folder-v2` companies are refused like their file-change wakes
+until routine files (F2-6) and the folder's writer land. Whichever of W2 and F2-6 lands second lifts
+the refusal and adds `event` to the routine file parser.
+
+**The folder.** For `folder-v2` companies, once the core's writer lands (F1 C3), the platform saves each
+verified delivery as `hooks/<hook name>/<yyyy-mm-dd>/<delivery id>.json` (the kept headers and the
+body) in the same change set, and the wake names that path. Until then, and for today's companies, the
+delivery row is the record, and agents save what they need.
+
+## Deploy (W2)
+
+The migration patches existing functions by exact text (trigger check, listener activation and sync,
+`qorpera_manage_agent_routine`, the pin trigger, wake authority, the wake policy, the materializer,
+the wake reader and the observation list); compare the anchors with master again before merging.
+Roll the migration first, then a bundle with this runtime: until that runtime runs, no event routine
+exists (older routine tools cannot write the trigger), and an older runtime refuses an event wake.
+After it is live:
+
+1. Set the public origin agents give senders:
+   `update public.qorpera_event_intake_settings set public_url = '<supabase url>';` (the project's
+   `https://` origin, no path).
+2. Acceptance (section 21, item 33), with the intake switched on (Deploy (W1a) step 3): an agent sets
+   up a routine with `{kind:"event", hookId}`, three posts to the hook wake it once, the run reads all
+   three and one with `read_event`, and an event that tells the agent to do something outside its
+   routine gains no authority.
+
+## Mail (M2)
+
+Email waking agents is the top priority after events (29 September), and a company's first address is on
+a mail domain Qorpera owns (decision 7). Mail reuses the event machinery: a mailbox is a hook, a
+received message is a delivery, and routines wake on it through the event trigger (W2).
+
+**Provider.** Resend, which already sends the platform's invitations and hour notices. It receives
+every message sent to a domain whose MX record points to it, parses it, and posts a signed
+`email.received` webhook carrying only metadata; the body, headers and attachments' descriptions come
+from its API (`GET /emails/receiving/{id}`) with the platform's key. The domain and the cost are Jonas's
+call; until the domain exists, the build runs against Resend's `<id>.resend.app` receiving domain.
+
+**Mailboxes (M2a).** An owner or admin creates one with `qorpera_create_company_mailbox`: a local part
+(1–64 lowercase letters, digits, dots, hyphens and underscores; RFC 2142 names and `noreply` reserved)
+on the platform's mail domain, and a purpose. An address belongs to one live mailbox across the
+platform. The domain is one setting (`qorpera_mail_settings.domain`): a mailbox keeps only its local
+part, so going live on the real domain is that one change plus its MX record, and every mailbox made on
+the test domain moves with it. Each mailbox is a hook with the proof `mail`, named `mail-<local part>` (with a short digest when the
+local part holds a dot or an underscore, which hook names cannot; hook names beginning `mail-` are
+reserved for mailboxes), owned by the
+platform: it has a random hook address that is never shown, and the public intake answers `unknown`
+for it, so only the mail door fills it. Pausing, resuming and removing are the hook's; removing frees
+the address. Members see the address (`email`) in the hook list. At most 20 mailboxes a company, within
+its 50 hooks. `folder-v2` companies get mailboxes with their connection file, as hooks. Mailboxes do not
+wait for N1: when founding gives companies handles, their first mailbox can be made from the handle.
+
+**The mail door.** The Edge Function `mail-intake` checks the webhook's Standard Webhooks signature
+(`svix-*` headers, five minutes' tolerance) with the platform's signing secret, which is an Edge Function
+secret like the Resend key: mailboxes are the platform's, so no company vault is involved. It fetches the
+message, writes it as JSON text (`qorpera.mail/v1`) and hands it in one call, with every recipient in To,
+Cc, Bcc and the envelope, to `qorpera_receive_mail`. The database knows the domain: it looks up each
+address on it and stores the message once in every live mailbox among them, as a verified delivery of
+event type `mail.received`, content type JSON and key `mail:<provider message id>` (a retried webhook is
+a duplicate and writes nothing). The text is stored as written, so its size is what the function
+measured and its keys keep their order: subject, sender, recipients, reply-to, received time, message id,
+In-Reply-To and References, whether it was sent automatically (M2b: the Auto-Submitted, Precedence and List-Id
+headers, and `automated`, true for an Auto-Submitted other than `no`, a bulk, list, junk or auto-reply Precedence,
+or a mailing list), the SPF, DKIM and DMARC results, the attachments' descriptions, then the text
+and HTML bodies, cut to 256 KiB (HTML first, `truncated`). Text the database cannot hold (NUL, half a
+surrogate pair) is cleaned first, and the recipient lists are bounded. The hook's minute and the company's
+hourly budget apply as to any delivery. Mail for an address with no live mailbox, for a paused mailbox, or
+that the provider no longer has is dropped. The door answers the provider 200 when every recipient is
+settled, 429 with the longest `Retry-After` when a mailbox is over its limits, and 503 when mail is
+switched off or something failed, so the provider retries; a message the database calls malformed is
+logged and settled with 200, since a retry would send the same message.
+
+**Agents.** A routine on a mailbox is an event routine on its hook: `{kind:"event", hookId}`, optionally
+`only: ["mail.received"]`. The wake shows the message (cut to fit the wake), `read_event` reads it
+whole, and `list_hooks` lists mailboxes with their addresses. Mail is outside content: the wake protocol
+says so and names the authentication results.
+
+**Sending (M2b).** An agent sends from a live mailbox of its company with the tool `send_mail`: `from` (the
+mailbox's address as `list_hooks` shows it), `to` and `cc` (plain addresses, at most 10 together), a one-line
+`subject`, plain `text` of at most 20,000 characters, and optionally `inReplyTo`, the deliveryId of a received
+email it answers. Every email is an outside action to the automatic review, which sees the recipients, sender,
+subject and text; workers have no `send_mail`, and the wake must allow work (acknowledged, the company neither
+paused nor being deleted, no final answer yet). The service-role `qorpera_send_agent_mail` checks the request
+again, finds the mailbox (live, of the run's company and environment, not paused) and queues the email in
+`qorpera_company_mail_outbox`, keyed by the run and the tool call, so the same call again is the same email:
+
+- From the agent, as recipients read it: the name `<agent> at <company>` (quotes, brackets, line breaks and
+  invisible format characters such as bidi controls removed) at the mailbox's address.
+- The AI line: the text's last paragraph is `Written and sent by <agent>, an AI agent working for <company>.` The
+  database adds it; no agent can leave it out. It is not placed after a signature separator, which clients dim.
+- Never as if from Qorpera (founder decision, 1 October 2026; `20260928319810`): a send is refused (42501) when the
+  agent's name, the company's name or the mailbox's local part reads as Qorpera however it is spelled (case,
+  separators, accents, full width, look-alike Cyrillic or Greek letters and digits), and no mailbox is created
+  with such a name (22023). Names are not refused where they are set; the check guards the From line.
+- A reply to a received email of the company (`mail.received`, verified) carries that email's thread:
+  `In-Reply-To` its message id, and `References` the thread's first id and its newest ids that fit one header line
+  (980 characters, RFC 5322 3.6.4). An email whose text was cleared (after 7 days), or without a usable message
+  id, is answered outside its thread.
+- Mail loops: an email the mail door marked `automated` (an auto-reply, a mailing list, bulk mail) is never
+  answered (42501); every reply carries `Auto-Submitted: auto-replied` (RFC 3834), so other responders, another
+  company's agents included, leave it unanswered; and a company never emails its own mailboxes (42501), whose
+  routines would answer it. Another company's mailbox is a recipient like any other.
+- Limits: sending has its own switch (`qorpera_mail_settings.sending`, built off; `enabled` must be on too), and
+  a company emails at most `company_hourly_recipients` (60) recipients an hour and `company_daily_recipients`
+  (300) a day, each address of an email counting once, under one lock per company. Email cancelled before any
+  attempt does not count; email attempted counts, since it may have gone out. Past a limit the tool says, to the
+  second, when this email can go; an email with more recipients than a limit allows never fits. Every company
+  sends from the platform's domain, so one company's spam would hurt all of them: these are the guard until
+  reputation tracking.
+
+The Edge Function `mail-outbox`, called each minute by pg_cron + pg_net with a Supabase secret key (like the hour
+notices), claims up to 10 emails with `qorpera_claim_company_mail` under a five-minute lease and sends each
+through Resend's `POST /emails` with the platform's key, which no node, guest or agent holds, 0.6 seconds apart:
+plain text and the headers above, from the mailbox's address as it was at the email's first attempt (a domain
+change moves email not yet attempted; one already attempted repeats its address). The idempotency key is
+`company-mail/<email id>`, so a send repeated after a lost answer or an expired lease is the same email. A
+timeout, rate limit or server error is retried after 1, 2, 4 ... minutes, at most eight attempts; any other
+refusal fails the email (`qorpera_complete_company_mail`, `qorpera_fail_company_mail`). The claim cancels email
+from a removed or paused mailbox or of a company being deleted, fails email not sent within a day, and clears
+texts seven days after they settle, keeping the receipt; an email already attempted says it may have gone out.
+Switched off, the claim sends nothing and queued email waits; the first claim after sending is switched on again
+fails what waited more than a day. Texts are cleared only by the claim, so unscheduling the worker stops that too.
+Agents learn an email was queued, not that it arrived; bounces and complaints, and a sent-mail view, follow.
+
+**Founder decisions (1 October 2026).** The AI line stays as written, as its own last paragraph on every email.
+`Auto-Submitted` goes only on automatic replies, the loop guard, and never on new emails, so help desks do not drop
+them. No email looks like it comes from Qorpera (above).
+
+**Next (M2c).** Attachments' contents into the company's storage (and `mail/<address>/` in the folder once its
+writer lands, with sent mail beside the received); threads as files. A connected Gmail read once a minute can
+become deliveries the same way.
+
+## Deploy (M2a)
+
+The migration adds tables and functions, and patches four existing ones by exact text: the intake door
+(`qorpera_receive_event`: a mailbox's hook is unknown), the hook descriptor (a mailbox shows `email`,
+never its hook address), the agents' hook list (no `url` for a mailbox) and hook creation
+(`qorpera_create_event_hook`: names beginning `mail-` are the mailboxes'; production had none when this
+was written). It rolls: nothing uses mailboxes before they exist. After it is live:
+
+1. Deploy the function: `supabase functions deploy mail-intake` (`verify_jwt = false`), with the secret
+   `RESEND_WEBHOOK_SECRET` (the webhook's signing secret, `whsec_…`); `RESEND_API_KEY` is already set.
+2. In Resend: add the receiving domain (or use the `<id>.resend.app` one for acceptance), and a webhook for
+   `email.received` to `<supabase url>/functions/v1/mail-intake`.
+3. Set the domain and switch mail on:
+   `update public.qorpera_mail_settings set domain = '<receiving domain>', enabled = true;`
+4. Acceptance: an owner creates a mailbox on a test company; an agent sets up a routine on its hook; an
+   email sent to the address wakes it, and the run reads the message.
+
+## Deploy (M2b)
+
+The migration adds a table and functions, three setting columns, and patches one existing function by exact text
+(the observation list names `send_mail`). It rolls with a bundle carrying this runtime: an older runtime has no
+`send_mail`, and nothing sends while sending is off. The mail door (`mail-intake`) is redeployed too: it now marks
+mail sent automatically. After it is live:
+
+1. In Resend (Jonas): verify the mail domain for sending (its SPF and DKIM records), the same domain mailboxes
+   receive on. Until then Resend refuses the platform's `from`, and the outbox fails those emails.
+2. Deploy the functions: `supabase functions deploy mail-outbox` (`verify_jwt = false`) and
+   `supabase functions deploy mail-intake`; `RESEND_API_KEY` is already set.
+3. Schedule it every minute, with the project URL and a Supabase secret key from Vault as for the hour notices
+   (`RUNTIME-COMPUTER-HOURS.md`, "Email"; a key made for this worker, e.g. `qorpera_mail_outbox_key`, keeps its
+   rotation separate):
+
+   ```sql
+   select cron.schedule('qorpera-mail-outbox', '* * * * *', $$
+   	select net.http_post(
+   		url := (select decrypted_secret from vault.decrypted_secrets where name = 'qorpera_project_url')
+   			|| '/functions/v1/mail-outbox',
+   		headers := jsonb_build_object('content-type', 'application/json',
+   			'apikey', (select decrypted_secret from vault.decrypted_secrets where name = 'qorpera_mail_outbox_key')),
+   		body := '{}'::jsonb,
+   		-- A paced batch takes up to about 110 seconds; pg_net's default is 5.
+   		timeout_milliseconds := 120000)
+   $$);
+   ```
+
+4. Switch sending on: `update public.qorpera_mail_settings set sending = true;` (mail `enabled` and the domain
+   are M2a's).
+5. Watch by count: `select status, count(*) from public.qorpera_company_mail_outbox group by 1 order by 1`.
+6. Acceptance: a routine on a mailbox wakes on an email from an outside address and answers it with `send_mail`
+   and `inReplyTo`; the answer arrives from `<agent> at <company>` at the mailbox's address, ends with the AI line,
+   sits in the sender's thread and carries `Auto-Submitted: auto-replied`, with `References` unfolded or folded
+   correctly; the sender's reply wakes the routine again; an out-of-office answer to it arrives `automated` and is
+   not answered.
+7. Off again: `update public.qorpera_mail_settings set sending = false;` (queued email waits, and fails if it
+   waited a day once sending is back), or `select cron.unschedule('qorpera-mail-outbox')`, which also stops the
+   seven-day clearing of sent texts.
+
+## Deploy (W1a)
+
+The migration adds tables and functions that nothing calls yet, and patches `qorpera_folder_enable`
+(operator-only) by exact text so it also refuses a company with hooks, a condition that cannot hold
+before the migration. It is safe for both bundles during a roll. Before merging, compare the patch's
+anchor with master again (RUNTIME-RELEASE-TRAIN.md). After it is live:
+
+1. Deploy the function: `supabase functions deploy event-intake` (`verify_jwt = false` in
+   `supabase/config.toml`). It needs only `SUPABASE_URL` and the service key the platform provides.
+   Until the switch is on it answers every delivery that reaches the database, a POST to a
+   well-formed address, 503 ("Events are unavailable right now"), before looking the address up. The
+   function's own answers (405, 413, 431) come first either way. A path that is not a 43-character
+   address gets 404 ("This is not a hook address") from the function itself, by its shape alone;
+   an address with no live hook gets 404 ("No hook has this address") once the switch is on.
+2. Schedule retention:
+   `select cron.schedule('qorpera-event-deliveries-purge', '*/5 * * * *',
+   $$select public.qorpera_purge_event_deliveries(10000)$$);`
+3. Turn the intake on for acceptance:
+   `update public.qorpera_event_intake_settings set enabled = true;` (off again with `false`).
+4. Acceptance: an owner creates an address-proven hook on a test company, posts to
+   `<supabase url>/functions/v1/event-intake/<address>` with `curl`, and sees the delivery with
+   `qorpera_list_event_deliveries` (202 `accepted`, then 200 `duplicate` for the same
+   `X-Qorpera-Delivery`, and 404 after removing the hook).
+
+## Security
+
+- The intake holds no company secret and no user session. It can only add deliveries to hooks that
+  exist.
+- A hook's address grants only posting into that hook. Deliveries wake agents only after the proof
+  holds, and their content is outside content.
+- Duplicates are decided after verification, so a forged early copy cannot suppress a real event.
+- Limits bound storage: at most `per_minute × max_body_bytes` a minute per hook (30 MiB at the
+  maximums), the company's hourly budget across all its hooks (64 MiB by default), and the platform
+  switch. Refused requests write nothing.
+- A company being deleted stops receiving at once (`unknown`). The company purge removes its hooks and
+  deliveries with the company (foreign keys cascade; test 730 runs the purge). Its usage rows hold
+  only counts and expire within a day.
+- No table is readable by `anon`, `authenticated` or the broker role. Members read through the
+  listed functions, and the broker reads only through its two functions (W1b).

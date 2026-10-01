@@ -90,7 +90,7 @@ describe("shared member file downloads", () => {
 	});
 	it.each([0, 6, 4194305])("downloads %i bytes with exact immutable source provenance", async (size) => {
 		const f = fixture(size),
-			result = await f.reader.download(f.selection, signal());
+			{ bytes, ...result } = await f.reader.download(f.selection, signal());
 		expect(result).toEqual({
 			source: {
 				...f.selection,
@@ -99,9 +99,15 @@ describe("shared member file downloads", () => {
 				sha256: f.file.fileSha256,
 				manifestSha256: f.file.manifestSha256,
 			},
-			bytes: f.bytes,
 			mediaType: "application/octet-stream",
 		});
+		// Compared as bytes: toEqual walks a 4 MiB array element by element (6.5 s on the test machine).
+		// Only a mismatch pays for finding its first offset, which the failure then names.
+		expect(bytes).toBeInstanceOf(Uint8Array);
+		expect(bytes.byteLength, "downloaded length").toBe(f.bytes.byteLength);
+		const firstDifference =
+			Buffer.compare(bytes, f.bytes) === 0 ? -1 : bytes.findIndex((byte, index) => byte !== f.bytes[index]);
+		expect(firstDifference, "first offset where the downloaded bytes differ").toBe(-1);
 		expect(f.token).toHaveBeenCalledOnce();
 	});
 	it("rejects a stale member selection before immutable object reads", async () => {

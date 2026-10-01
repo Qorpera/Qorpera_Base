@@ -154,12 +154,13 @@ function world(machineId = randomUUID()): {
 			vmId: turn.vmAllocationId ?? machineId,
 			baseSha,
 		})),
-		refreshLease: vi.fn(async () => {}),
+		endTurn: vi.fn(() => {}),
 		publish: vi.fn(async (_claim: CodingSessionClaim, submission: Extract<CodingSubmission, { kind: "finish" }>) => ({
 			pullRequest: { url: "https://github.com/Qorpera/app/pull/12", number: 12, headSha: submission.headSha },
 			noChange: false,
 		})),
 		detachSession: vi.fn(async () => {}),
+		keep: vi.fn(async () => []),
 		housekeep: vi.fn(async () => []),
 	};
 	return {
@@ -239,15 +240,14 @@ describe("the coding executor over a session turn", () => {
 			turnId: codingHostId("turn", `${w.world.claim.workerId}:1`),
 		});
 		expect(w.host.publish).toHaveBeenCalledTimes(1);
-		expect(w.host.detachSession).toHaveBeenCalledTimes(1);
-		// The session's folders are unplugged before the kernel hears the outcome.
+		// The turn ends before the kernel hears the outcome; its session stays attached.
+		expect(w.host.endTurn).toHaveBeenCalledTimes(1);
+		expect(w.host.detachSession).not.toHaveBeenCalled();
 		const calls = vi.mocked(w.control.call).mock;
 		const completed = calls.calls.findIndex((c) => c[0] === "qorpera_complete_coding_turn");
-		expect(vi.mocked(w.host.detachSession).mock.invocationCallOrder[0]).toBeLessThan(
-			calls.invocationCallOrder[completed]!,
-		);
+		expect(vi.mocked(w.host.endTurn).mock.invocationCallOrder[0]).toBeLessThan(calls.invocationCallOrder[completed]!);
 		expect(vi.mocked(w.host.publish).mock.invocationCallOrder[0]).toBeLessThan(
-			vi.mocked(w.host.detachSession).mock.invocationCallOrder[0]!,
+			vi.mocked(w.host.endTurn).mock.invocationCallOrder[0]!,
 		);
 		const completion = w.world.calls.find((c) => c.method === "qorpera_complete_coding_turn")!.args;
 		expect(completion).toMatchObject({
@@ -261,7 +261,7 @@ describe("the coding executor over a session turn", () => {
 		);
 	});
 
-	it("a question blocks the session with its choices and detaches it", async () => {
+	it("a question blocks the session with its choices and leaves it standing by", async () => {
 		const w = world();
 		const ask = {
 			schema: "qorpera.coding-submission/v1",
@@ -278,7 +278,8 @@ describe("the coding executor over a session turn", () => {
 		const executor = new CloudCodingExecutor({ control, host: w.host, owner: "exec-test", turnPollMs: 1 });
 		expect(await executor.runOnce(new AbortController().signal)).toBe("blocked");
 		expect(w.host.publish).not.toHaveBeenCalled();
-		expect(w.host.detachSession).toHaveBeenCalledTimes(1);
+		expect(w.host.endTurn).toHaveBeenCalledTimes(1);
+		expect(w.host.detachSession).not.toHaveBeenCalled();
 		const completion = w.world.calls.find((c) => c.method === "qorpera_complete_coding_turn")!.args;
 		expect(completion).toMatchObject({
 			p_outcome: "blocked",
@@ -300,21 +301,24 @@ describe("the coding executor over a session turn", () => {
 			const completion = w.world.calls.find((c) => c.method === "qorpera_complete_coding_turn")!.args;
 			expect(completion.p_outcome).toBe("failed");
 			expect(String(completion.p_summary)).toContain(expected);
-			expect(w.host.detachSession).toHaveBeenCalledTimes(1);
+			expect(w.host.endTurn).toHaveBeenCalledTimes(1);
+			expect(w.host.detachSession).not.toHaveBeenCalled();
 		}
 	});
 
-	it("a failed workspace preparation detaches what it can and asks for recovery, never completion", async () => {
+	it("a failed workspace preparation unplugs what the turn plugged and asks for recovery, never completion", async () => {
 		const w = world();
 		vi.mocked(w.host.prepareWorkspace).mockRejectedValueOnce(new Error("CODING_HOST_VM_RECOVERY_REQUIRED"));
 		const executor = new CloudCodingExecutor({ control: w.control, host: w.host, owner: "exec-test", turnPollMs: 1 });
 		expect(await executor.runOnce(new AbortController().signal)).toBe("recovery-required");
+		// The host unplugs only a session this turn plugged and never attached.
+		expect(w.host.endTurn).toHaveBeenCalledTimes(1);
 		expect(w.host.detachSession).toHaveBeenCalledTimes(1);
 		expect(w.world.calls.some((c) => c.method === "qorpera_complete_coding_turn")).toBe(false);
 		expect(w.world.calls.some((c) => c.method === "qorpera_begin_coding_turn")).toBe(false);
 	});
 
-	it("a lost heartbeat aborts the turn and detaches the session", async () => {
+	it("a lost heartbeat aborts the turn and ends it", async () => {
 		const w = world();
 		let admitted = false;
 		const control: CodingExecutorControl = {
@@ -330,6 +334,7 @@ describe("the coding executor over a session turn", () => {
 		const run = executor.runOnce(new AbortController().signal);
 		await vi.advanceTimersByTimeAsync(16000);
 		expect(await run).toBe("recovery-required");
+		expect(w.host.endTurn).toHaveBeenCalledTimes(1);
 		expect(w.host.detachSession).toHaveBeenCalled();
 		expect(w.world.calls.some((c) => c.method === "qorpera_complete_coding_turn")).toBe(false);
 		// The log names the cause, not whichever await the abort interrupted.
@@ -338,7 +343,7 @@ describe("the coding executor over a session turn", () => {
 		]);
 	});
 
-	it("a shutdown mid-turn is reported as the shutdown and still detaches the session", async () => {
+	it("a shutdown mid-turn is reported as the shutdown and still ends the turn", async () => {
 		const w = world();
 		const parent = new AbortController();
 		const control: CodingExecutorControl = {
@@ -392,7 +397,8 @@ describe("the coding executor over a session turn", () => {
 		expect(begins).toHaveLength(4);
 		for (const begin of begins) expect(begin.args).toEqual(begins[0]!.args);
 		expect(w.world.calls.filter((c) => c.method === "qorpera_complete_coding_turn")).toHaveLength(1);
-		expect(w.host.detachSession).toHaveBeenCalledTimes(1);
+		expect(w.host.endTurn).toHaveBeenCalledTimes(1);
+		expect(w.host.detachSession).not.toHaveBeenCalled();
 		expect(report).not.toHaveBeenCalled();
 	});
 
@@ -529,6 +535,62 @@ describe("the coding executor over a session turn", () => {
 		expect(w.world.phase).toBe("queued");
 	});
 
+	it("a turn whose company ran out of computer hours before it began waits in the queue", async () => {
+		const w = world();
+		// Computer hours (20260928319760): begin answers a refusal instead of beginning.
+		const control: CodingExecutorControl = {
+			call: (method, args, signal) =>
+				method === "qorpera_begin_coding_turn"
+					? Promise.resolve({ state: "refused", reason: "COMPUTER_HOURS_EXHAUSTED" })
+					: w.control.call(method, args, signal),
+		};
+		const executor = new CloudCodingExecutor({ control, host: w.host, owner: "exec-test", turnPollMs: 1 });
+		expect(await executor.runOnce(new AbortController().signal)).toBe("deferred");
+		expect(w.host.endTurn).toHaveBeenCalled();
+		// An attached session stays with the keeper: nothing is unplugged.
+		expect(w.host.detachSession).not.toHaveBeenCalled();
+		expect(w.world.calls.find((c) => c.method === "qorpera_defer_coding_session")!.args).toEqual({
+			p_worker_id: w.world.claim.workerId,
+			p_lease_token: w.world.claim.leaseToken,
+			p_reason: "COMPUTER_HOURS_EXHAUSTED",
+		});
+		expect(w.world.calls.map((c) => c.method)).not.toContain("qorpera_complete_coding_turn");
+		expect(w.world.phase).toBe("queued");
+	});
+
+	it("a begin refusal for any other reason is never taken for a wait", async () => {
+		const w = world();
+		const control: CodingExecutorControl = {
+			call: (method, args, signal) =>
+				method === "qorpera_begin_coding_turn"
+					? Promise.resolve({ state: "refused", reason: "NODE_CAPACITY_EXHAUSTED" })
+					: w.control.call(method, args, signal),
+		};
+		const executor = new CloudCodingExecutor({ control, host: w.host, owner: "exec-test", turnPollMs: 1 });
+		expect(await executor.runOnce(new AbortController().signal)).toBe("recovery-required");
+		expect(w.world.calls.map((c) => c.method)).not.toContain("qorpera_defer_coding_session");
+		expect(w.world.calls.map((c) => c.method)).not.toContain("qorpera_complete_coding_turn");
+	});
+
+	it("a deferral after an hours refusal that fails is reported and left to recovery", async () => {
+		const w = world();
+		const report = vi.fn();
+		const control: CodingExecutorControl = {
+			call: (method, args, signal) =>
+				method === "qorpera_begin_coding_turn"
+					? Promise.resolve({ state: "refused", reason: "COMPUTER_HOURS_EXHAUSTED" })
+					: method === "qorpera_defer_coding_session"
+						? Promise.reject(new Error("CODING_CONTROL_UNCONFIRMED"))
+						: w.control.call(method, args, signal),
+		};
+		const executor = new CloudCodingExecutor({ control, host: w.host, owner: "exec-test", turnPollMs: 1, report });
+		expect(await executor.runOnce(new AbortController().signal)).toBe("recovery-required");
+		expect(report.mock.calls.map(([stage, error]) => [stage, (error as Error).message])).toEqual([
+			["defer", "CODING_CONTROL_UNCONFIRMED"],
+		]);
+		expect(w.world.calls.map((c) => c.method)).not.toContain("qorpera_complete_coding_turn");
+	});
+
 	it("a deferral that fails is reported and left to recovery, never completed", async () => {
 		const w = world();
 		vi.mocked(w.host.prepareWorkspace).mockRejectedValueOnce(new CodingMachineUnavailable("MACHINE_RETIRING"));
@@ -602,15 +664,24 @@ describe("the coding executor over a session turn", () => {
 		expect(executor.active).toBe(0);
 		expect(a.world.phase).toBe("awaiting_input");
 		expect(b.world.phase).toBe("awaiting_input");
-		expect(a.host.detachSession).toHaveBeenCalledTimes(2);
+		expect(a.host.endTurn).toHaveBeenCalledTimes(2);
+		expect(a.host.detachSession).not.toHaveBeenCalled();
 	});
 
-	it("hands housekeeping to the host", async () => {
+	it("hands housekeeping and keeping to the host", async () => {
 		const w = world();
 		const outcome = { machineId: w.world.machineId, step: "sleep" as const, state: "done" as const };
 		vi.mocked(w.host.housekeep).mockResolvedValueOnce([outcome]);
+		const kept = {
+			machineId: w.world.machineId,
+			workerId: randomUUID(),
+			step: "keep" as const,
+			state: "done" as const,
+		};
+		vi.mocked(w.host.keep).mockResolvedValueOnce([kept]);
 		const executor = new CloudCodingExecutor({ control: w.control, host: w.host, owner: "exec-test" });
 		expect(await executor.housekeep(new AbortController().signal)).toEqual([outcome]);
+		expect(await executor.keep(new AbortController().signal)).toEqual([kept]);
 	});
 
 	it("parses the kernel's claim and turn state strictly", () => {

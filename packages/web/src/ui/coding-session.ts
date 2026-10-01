@@ -19,8 +19,10 @@ import {
 	type CodingSession,
 	type CodingSessionEvent,
 	type CodingSessionRead,
+	codingSessionGoing,
 	codingSessionSettled,
 	codingSessionTakesInput,
+	compareCodingSessions,
 } from "../cloud/coding-session.ts";
 import type { HostedStaffAgent, JsonValue } from "../cloud/types.ts";
 import { agentFigure } from "./avatar.ts";
@@ -36,6 +38,7 @@ import { matchesKey } from "./keys.ts";
 import { markdownBubbles } from "./markdown.ts";
 import { t } from "./preferences.ts";
 import { quietScroll } from "./quiet-scroll.ts";
+import { codingFailureReason, manageUsageLink } from "./run-failure.ts";
 import { uiScale } from "./scale.ts";
 
 export const HARNESS_NAMES: Record<CodingHarness, string> = { codex: "Codex", "claude-code": "Claude Code" };
@@ -83,13 +86,34 @@ export function fmtDuration(ms: number): string {
 	return rest ? t("{hours} h {minutes} min", { hours, minutes: rest }) : t("{hours} h", { hours });
 }
 
-/** The live status line: the state, how long, the last step, the diff size. */
+/** Where a session is between its turns: on its machine with what it left running, or its machine asleep.
+ * Nothing when neither is known (a session from before sessions stood by). */
+export function codingSessionStandby(
+	session: Pick<CodingSession, "attached" | "runningCommands" | "machineAsleep">,
+): string | undefined {
+	if (session.attached && session.runningCommands > 0)
+		return session.runningCommands === 1
+			? t("running 1 command")
+			: t("running {count} commands", { count: session.runningCommands });
+	if (session.attached) return t("standing by");
+	if (session.machineAsleep) return t("asleep");
+	return undefined;
+}
+
+/** The kernel's step while a turn waits for its company's computer hours (20260929760000). */
+const HOURS_STEP = "Waiting for computer hours";
+
+/** The live status line: the state, how long, the last step, the diff size; between turns, whether the session
+ * stands by on its machine, runs something there, or sleeps. */
 export function codingSessionStatus(
 	session: CodingSession,
 	names: CodingSessionNames,
 	now = Date.now(),
 ): { text: string; tone: CodingSessionTone } {
+	if (session.archivedAt) return { text: t("Archived · files kept"), tone: "idle" };
 	const since = (iso: string | undefined) => (iso ? fmtDuration(now - Date.parse(iso)) : undefined);
+	const standby = codingSessionStandby(session);
+	const running = session.attached && session.runningCommands > 0 ? standby : undefined;
 	const files =
 		session.filesChanged > 0
 			? session.filesChanged === 1
@@ -98,7 +122,10 @@ export function codingSessionStatus(
 			: undefined;
 	switch (session.phase) {
 		case "queued":
-			return { text: t("Waiting for a computer"), tone: "idle" };
+			return {
+				text: session.lastStep === HOURS_STEP ? t("Waiting for computer hours") : t("Waiting for a computer"),
+				tone: "idle",
+			};
 		case "preparing":
 			return {
 				text: [t("Preparing the workspace"), since(session.updatedAt)].filter(Boolean).join(" · "),
@@ -112,29 +139,41 @@ export function codingSessionStatus(
 		case "awaiting_input": {
 			const paused = since(session.updatedAt);
 			return {
-				text: names.ownerIsViewer
-					? t("Needs you · your answer is recorded in this thread")
-					: paused
-						? t("Needs {name} · paused {duration}", { name: names.owner, duration: paused })
-						: t("Needs {name} · paused now", { name: names.owner }),
+				text: [
+					names.ownerIsViewer
+						? t("Needs you · your answer is recorded in this thread")
+						: paused
+							? t("Needs {name} · paused {duration}", { name: names.owner, duration: paused })
+							: t("Needs {name} · paused now", { name: names.owner }),
+					running,
+				]
+					.filter(Boolean)
+					.join(" · "),
 				tone: "attention",
 			};
 		}
 		case "input_ready":
-			return { text: t("Answer sent · waiting for the session"), tone: "working" };
+			return session.lastStep === HOURS_STEP
+				? { text: t("Answer sent · waiting for computer hours"), tone: "idle" }
+				: { text: t("Answer sent · waiting for the session"), tone: "working" };
 		case "publishing":
 			return { text: [t("Opening the pull request"), files].filter(Boolean).join(" · "), tone: "working" };
 		case "completed":
 			return {
-				text: session.pullRequest
-					? t("Draft PR ready · session kept for follow-ups")
-					: t("Finished · session kept for follow-ups"),
+				text: standby
+					? [session.pullRequest ? t("Draft PR ready") : t("Finished"), standby].join(" · ")
+					: session.pullRequest
+						? t("Draft PR ready · session kept for follow-ups")
+						: t("Finished · session kept for follow-ups"),
 				tone: "done",
 			};
 		case "failed":
-			return { text: t("Failed · workspace kept"), tone: "failed" };
+			return { text: standby ? [t("Failed"), standby].join(" · ") : t("Failed · workspace kept"), tone: "failed" };
 		case "cancelled":
-			return { text: t("Cancelled · workspace kept"), tone: "idle" };
+			return {
+				text: standby ? [t("Cancelled"), standby].join(" · ") : t("Cancelled · workspace kept"),
+				tone: "idle",
+			};
 	}
 }
 
@@ -142,6 +181,7 @@ export interface CodingSessionApi {
 	read(workerId: string, afterEvent: number): Promise<CodingSessionRead>;
 	answer(workerId: string, text: string, clientRequestId: string): Promise<void>;
 	delegate(workerId: string, clientRequestId: string): Promise<void>;
+	archive(workerId: string, clientRequestId: string): Promise<void>;
 }
 
 /** The session as the body of its own thread (the thread view adds the header): the transcript, and under it
@@ -168,6 +208,10 @@ function text(value: JsonValue, ...keys: string[]): string | undefined {
 	return undefined;
 }
 
+function flag(value: JsonValue, key: string): boolean {
+	return typeof value === "object" && value !== null && !Array.isArray(value) && value[key] === true;
+}
+
 function options(value: JsonValue): string[] {
 	if (typeof value !== "object" || value === null || Array.isArray(value)) return [];
 	const found = value.options;
@@ -176,7 +220,7 @@ function options(value: JsonValue): string[] {
 		: [];
 }
 
-/* The makers' own marks: OpenAI's for Codex (the ChatGPT mark, as on the Connections
+/* The makers' own marks: OpenAI's for Codex (the ChatGPT mark, as on the My connections
  * card) and the Claude spark for Claude Code. Drawn in currentColor; the stylesheet
  * gives the Claude spark its own orange. */
 const HARNESS_MARKS: Record<CodingHarness, { viewBox: string; path: string }> = {
@@ -256,9 +300,14 @@ export class CodingSessionElement {
 	readonly #body = h("div", { class: "coding-body" });
 	readonly #footer = h("footer", { class: "coding-footer" });
 	readonly #status = h("div", { class: "coding-status" });
-	/** Read out when the phase changes, not at every step the visible status line shows. */
+	readonly #statusDot = h("span", { "aria-hidden": "true" });
+	readonly #statusText = h("span", { class: "coding-status-text" });
+	/** Made once, so a redraw of the status line never takes the focus from it. */
+	readonly #archiveButton: HTMLButtonElement;
+	/** Read out when the phase or the session's place changes (standing by, running, asleep, archived), not at
+	 * every step the visible status line shows. */
 	readonly #announce = h("span", { class: "visually-hidden", role: "status" });
-	#announcedPhase = "";
+	#announced = "";
 	readonly #extras = h("div", { class: "coding-extras", hidden: true });
 	readonly #field: HTMLTextAreaElement;
 	readonly #sendButton: HTMLButtonElement;
@@ -276,7 +325,8 @@ export class CodingSessionElement {
 	#error: string | undefined;
 	/** Why the stream cannot be read, shown only while nothing is known yet. */
 	#readError: string | undefined;
-	#requestId: string | undefined;
+	/** Per action, the request id kept for a retry after a refusal. */
+	readonly #requestIds = new Map<"answer" | "delegate" | "archive", string>();
 	#poll: ReturnType<typeof setTimeout> | undefined;
 	#request: AbortController | undefined;
 	#refreshing: Promise<void> | undefined;
@@ -323,6 +373,19 @@ export class CodingSessionElement {
 		this.#field.value = drafts.get(session.workerId) ?? "";
 		this.#shell = h("div", { class: "composer-shell coding-composer" }, this.#field, this.#sendButton);
 		this.#talk = h("div", { class: "coding-talk" }, this.#shell);
+		this.#archiveButton = h(
+			"button",
+			{
+				type: "button",
+				class: "btn btn-small coding-archive",
+				title: t(
+					"Stops what it runs and takes it off its machine. Its files are kept, and a new message reopens it.",
+				),
+				onclick: () => void this.#archive(),
+			},
+			t("Archive"),
+		);
+		this.#status.append(this.#statusDot, this.#statusText, this.#archiveButton);
 		this.#log.append(this.#body);
 		this.#footer.append(this.#announce, this.#status, this.#extras);
 		this.el = h(
@@ -383,7 +446,7 @@ export class CodingSessionElement {
 	/** A fresh listing from the conversation's own reads; the element keeps the newer of the two. */
 	update(session: CodingSession): void {
 		if (this.disposed) return;
-		const newer = session.updatedAt.localeCompare(this.#session.updatedAt) >= 0;
+		const newer = compareCodingSessions(session, this.#session) >= 0;
 		const moved = session.phase !== this.#session.phase;
 		if (newer) this.#session = { ...session, isOwner: session.isOwner ?? this.#session.isOwner };
 		this.#render();
@@ -453,7 +516,7 @@ export class CodingSessionElement {
 		const wait =
 			typeof document !== "undefined" && document.hidden
 				? POLL_HIDDEN_MS
-				: codingSessionSettled(phase)
+				: !codingSessionGoing(this.#session)
 					? POLL_SETTLED_MS
 					: phase === "awaiting_input"
 						? POLL_WAITING_MS
@@ -470,6 +533,7 @@ export class CodingSessionElement {
 		const value = text.trim();
 		if (!value || this.#busy || this.disposed || !codingSessionTakesInput(this.#session)) return;
 		await this.#act(
+			"answer",
 			(requestId) => this.#options.api.answer(this.#session.workerId, value, requestId),
 			typed
 				? () => {
@@ -483,20 +547,32 @@ export class CodingSessionElement {
 
 	async #delegate(): Promise<void> {
 		if (this.#busy || this.disposed) return;
-		await this.#act((requestId) => this.#options.api.delegate(this.#session.workerId, requestId));
+		await this.#act("delegate", (requestId) => this.#options.api.delegate(this.#session.workerId, requestId));
 	}
 
-	/** One answer or delegation under one request id, kept for a retry after a refusal. The controls stay busy
-	 * until the session has been read again after it, so a second click cannot send it twice. */
-	async #act(call: (requestId: string) => Promise<void>, sent?: () => void): Promise<void> {
-		this.#requestId ??= crypto.randomUUID();
+	/** The owner closes the session: what it runs stops, it leaves its machine, its files stay. */
+	async #archive(): Promise<void> {
+		if (this.#busy || this.disposed || this.#session.archivedAt) return;
+		await this.#act("archive", (requestId) => this.#options.api.archive(this.#session.workerId, requestId));
+	}
+
+	/** One answer, delegation or archive under one request id, kept for a retry of the same action after a
+	 * refusal. The controls stay busy until the session has been read again after it, so a second click cannot
+	 * send it twice. */
+	async #act(
+		action: "answer" | "delegate" | "archive",
+		call: (requestId: string) => Promise<void>,
+		sent?: () => void,
+	): Promise<void> {
+		const requestId = this.#requestIds.get(action) ?? crypto.randomUUID();
+		this.#requestIds.set(action, requestId);
 		this.#busy = true;
 		this.#error = undefined;
 		this.#stickToBottom = true;
 		this.#render();
 		try {
-			await call(this.#requestId);
-			this.#requestId = undefined;
+			await call(requestId);
+			this.#requestIds.delete(action);
 			sent?.();
 		} catch (error) {
 			this.#error = describeError(error);
@@ -519,10 +595,11 @@ export class CodingSessionElement {
 		const focused = active instanceof HTMLElement && this.el.contains(active) ? active : undefined;
 		this.#renderTranscript(names);
 		this.#renderFooter(names, status);
-		// A redraw that took or disabled the focused control (a choice just used, the fold, the send button while
-		// the answer is on its way) keeps the focus in the session, not on the page's body, so Escape still reaches
-		// the thread: the field for the send button, else the log (where a phone opens no keyboard).
-		if (focused && (!focused.isConnected || focused.matches(":disabled")))
+		// A redraw that took, hid or disabled the focused control (a choice just used, the fold, Archive once the
+		// session is archived, the send button while the answer is on its way) keeps the focus in the session, not
+		// on the page's body, so Escape still reaches the thread: the field for the send button, else the log
+		// (where a phone opens no keyboard).
+		if (focused && (!focused.isConnected || focused.matches(":disabled") || focused.closest("[hidden]")))
 			(focused === this.#sendButton ? this.#field : this.#log).focus({ preventScroll: true });
 		this.#pinToBottom();
 	}
@@ -672,6 +749,13 @@ export class CodingSessionElement {
 			const when = fmtTime(event.at);
 			switch (event.kind) {
 				case "step": {
+					// Archived, reopened, or taken off its machine: the session's place, not the harness speaking.
+					const place = this.#placeNote(event, names);
+					if (place) {
+						lastSaid = "";
+						note(h("div", { class: "conversation-note coding-note", role: "note" }, place));
+						break;
+					}
 					const title = text(event.body, "text", "title", "command", "summary") ?? t("Step");
 					const status = text(event.body, "status");
 					step(
@@ -786,18 +870,20 @@ export class CodingSessionElement {
 					break;
 				}
 				case "failed": {
-					const reason = text(event.body, "reason", "summary");
+					// A turn the kernel says stopped at a usage limit (20260929993000); the owner's own plan gets
+					// OpenAI's words and "Manage usage".
+					const limit = {
+						usageLimit: flag(event.body, "usageLimit"),
+						paidByChatgptPlan: flag(event.body, "paidByChatgptPlan"),
+						mine: this.#options.viewerOwns(this.#session),
+					};
 					note(
 						h(
 							"div",
 							{ class: "conversation-note coding-note coding-row-error", role: "note" },
-							reason === "executor-lease-expired"
-								? t(
-										"The computer running this session stopped answering. The workspace is kept; a follow-up starts it again.",
-									)
-								: reason
-									? t("Failed: {reason}", { reason })
-									: t("Failed"),
+							codingFailureReason(text(event.body, "reason", "summary"), limit),
+							limit.usageLimit && limit.paidByChatgptPlan && limit.mine ? " " : null,
+							limit.usageLimit && limit.paidByChatgptPlan && limit.mine ? manageUsageLink() : null,
 						),
 					);
 					break;
@@ -846,6 +932,55 @@ export class CodingSessionElement {
 		const next = this.#renderIntro();
 		if (intro) intro.replaceWith(next);
 		else this.#log.prepend(next);
+	}
+
+	/** A step that says where the session is: archived (by whom), reopened, or taken off its machine and what that
+	 * stopped. Undefined for the harness's and the executor's working steps. */
+	#placeNote(event: CodingSessionEvent, names: CodingSessionNames): string | undefined {
+		const body = event.body;
+		if (typeof body !== "object" || body === null || Array.isArray(body)) return undefined;
+		if (event.actor === "kernel" && body.archived === true) {
+			const by = body.by;
+			if (by === "agent") return t("{agent} archived the session", { agent: names.agent });
+			if (by === "kernel") return t("Archived after a long quiet time");
+			return names.ownerIsViewer
+				? t("You archived the session")
+				: t("{owner} archived the session", { owner: names.owner });
+		}
+		if (event.actor === "kernel" && body.reopened === true) return t("Reopened");
+		// The kernel asked the agent whether a quiet session can be archived.
+		if (event.actor === "kernel" && typeof body.quietDays === "number" && body.quietDays >= 1)
+			return body.quietDays === 1
+				? t("Quiet for a day · asked {agent} whether it can be archived", { agent: names.agent })
+				: t("Quiet for {days} days · asked {agent} whether it can be archived", {
+						days: Math.floor(body.quietDays),
+						agent: names.agent,
+					});
+		if (event.actor !== "executor" || !Array.isArray(body.stopped)) return undefined;
+		// At most 32 are named; the rest are counted.
+		const count =
+			body.stopped.length +
+			(typeof body.moreStopped === "number" && body.moreStopped > 0 ? Math.floor(body.moreStopped) : 0);
+		const reason =
+			body.reason === "SLEEP"
+				? t("The machine went to sleep")
+				: body.reason === "RETIRED"
+					? t("The machine was replaced with a newer one")
+					: body.reason === "EXPIRED"
+						? t("The session lost its machine")
+						: body.reason === "OWNER_LEFT"
+							? t("The owner is no longer a member")
+							: body.reason === "REPOSITORY_WITHDRAWN"
+								? t("{agent} no longer has the repository", { agent: names.agent })
+								: body.reason === "EXECUTOR_DISABLED"
+									? t("Coding is turned off here")
+									: undefined;
+		const stopped = count
+			? count === 1
+				? t("1 command stopped")
+				: t("{count} commands stopped", { count })
+			: undefined;
+		return [reason, stopped].filter(Boolean).join(" · ") || undefined;
 	}
 
 	/** The top of the transcript: the harness, the task and where it works. */
@@ -970,22 +1105,39 @@ export class CodingSessionElement {
 		const owns = this.#options.viewerOwns(session);
 		const harness = HARNESS_NAMES[session.harness];
 		const takesInput = codingSessionTakesInput(session);
-		const asking = session.phase === "awaiting_input";
+		const archived = Boolean(session.archivedAt);
+		// An archived session that was asking waits for nothing: a message reopens it.
+		const asking = session.phase === "awaiting_input" && !archived;
 		const question = this.#liveQuestion();
 		const choices = question ? options(question.body) : [];
+		// The status text carries whether the session stands by, runs something or sleeps, where it is shown.
 		const key = JSON.stringify([status, owns, harness, takesInput, asking, choices, this.#busy, this.#error, names]);
 		if (key === this.#footerKey) return;
 		this.#footerKey = key;
 		this.#status.className = `coding-status coding-tone-${status.tone}`;
-		if (this.#announcedPhase !== session.phase) {
-			this.#announcedPhase = session.phase;
+		// Read out when the phase or the session's place changes, as far as the status line shows it: between
+		// turns where it is, while it asks what it runs, while it works nothing.
+		const running = session.attached && session.runningCommands > 0 ? session.runningCommands : 0;
+		const announced = JSON.stringify([
+			session.phase,
+			archived,
+			archived
+				? undefined
+				: codingSessionSettled(session.phase)
+					? codingSessionStandby(session)
+					: asking
+						? running
+						: undefined,
+		]);
+		if (this.#announced !== announced) {
+			this.#announced = announced;
 			this.#announce.textContent = status.text;
 		}
-		replace(
-			this.#status,
-			h("span", { class: `coding-dot coding-dot-${status.tone}`, "aria-hidden": "true" }),
-			h("span", { class: "coding-status-text" }, status.text),
-		);
+		this.#statusDot.className = `coding-dot coding-dot-${status.tone}`;
+		this.#statusText.textContent = status.text;
+		// Offered once the cloud keeps sessions standing by, and so can archive one.
+		this.#archiveButton.hidden = !owns || archived || !session.standby;
+		this.#archiveButton.disabled = this.#busy;
 		replace(
 			this.#extras,
 			owns && asking
@@ -1027,18 +1179,17 @@ export class CodingSessionElement {
 		}
 		this.#lock.remove();
 		if (this.#talk.parentElement !== this.#footer) this.#footer.append(this.#talk);
-		const placeholder =
-			!takesInput && (asking || codingSessionSettled(session.phase))
-				? t("This session takes no more messages")
-				: asking
-					? choices.length
-						? t("Or answer in your own words")
-						: t("Answer {harness}", { harness })
-					: takesInput
-						? t("Follow up on this session")
-						: session.phase === "queued"
-							? t("The session has not started yet")
-							: t("{harness} is working", { harness });
+		const placeholder = asking
+			? choices.length
+				? t("Or answer in your own words")
+				: t("Answer {harness}", { harness })
+			: takesInput
+				? archived
+					? t("Send a message to reopen this session")
+					: t("Follow up on this session")
+				: session.phase === "queued"
+					? t("The session has not started yet")
+					: t("{harness} is working", { harness });
 		this.#field.placeholder = placeholder;
 		this.#field.setAttribute("aria-label", asking ? t("Answer the session") : t("Follow up on the session"));
 		// Read-only, never disabled, until the session takes input and while an answer is on its way: a disabled
@@ -1074,10 +1225,10 @@ export class CodingSessionElement {
 }
 
 /** How a session's figure moves in the header, in the agents' own vocabulary:
- * working while it works, waiting while it asks, still while it waits for a computer. */
-export function codingSessionActivity(phase: CodingSession["phase"]): Activity {
-	if (phase === "awaiting_input") return "Waiting";
-	if (phase === "queued" || codingSessionSettled(phase)) return "Idle";
+ * working while it works, waiting while it asks, still while it waits for a computer or is archived. */
+export function codingSessionActivity(session: Pick<CodingSession, "phase" | "archivedAt">): Activity {
+	if (session.phase === "queued" || !codingSessionGoing(session)) return "Idle";
+	if (session.phase === "awaiting_input") return "Waiting";
 	return "Working";
 }
 
@@ -1101,7 +1252,7 @@ export class CodingSessionSlot {
 	}
 
 	update(session: CodingSession, agent: HostedStaffAgent | undefined, names: CodingSessionNames): void {
-		const activity = codingSessionActivity(session.phase);
+		const activity = codingSessionActivity(session);
 		const figureKey = JSON.stringify([activity, session.harness, agent?.id, agent?.appearance, agent?.templateId]);
 		if (figureKey !== this.#figureKey) {
 			this.#figureKey = figureKey;

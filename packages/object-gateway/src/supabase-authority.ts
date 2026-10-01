@@ -1,4 +1,12 @@
-import { ObjectDependency, ObjectDependencyError, readBoundedObjectResponse } from "./dependency.ts";
+import {
+	companyStateFailure,
+	ObjectDependency,
+	ObjectDependencyError,
+	postgrestErrorCode,
+	readBoundedObjectResponse,
+	unavailableStateFailure,
+} from "./dependency.ts";
+import type { FolderObjectAuthority, FolderRunActor } from "./folder-objects.ts";
 import type {
 	AuthorizedMemberCompanyObject,
 	MemberCompanyObjectAuthority,
@@ -60,6 +68,17 @@ interface SupabaseObjectAuthorityOptions {
 	now?: () => number;
 }
 
+/** PostgREST answers classes 40 and 55 with 500, and a check violation with 400. From the folder core those are one
+ * company's state, not the database's health: a stopped company (55000) becomes 423, a lock conflict (40001, 40P01,
+ * 55P03) 409, so neither opens the dependency circuit for every company, and the company's storage allowance
+ * (23514, checked before the NAS write) 413, so the writer can say the storage is full. A statement timeout (57014)
+ * follows `companyStateFailure`'s rule. Any other answer keeps its status: another 500 stays a dependency failure. */
+function folderStateFailure(code: unknown, status: number): ObjectDependencyError {
+	if (code === "23514") return new ObjectDependencyError(413);
+	const failure = companyStateFailure(code);
+	return failure.status === 500 ? new ObjectDependencyError(status) : failure;
+}
+
 function record(value: unknown, label: string): Record<string, unknown> {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`Invalid ${label}`);
 	return value as Record<string, unknown>;
@@ -79,7 +98,7 @@ function deletionAuthorization(value: unknown): ObjectDeletionAuthorization {
 }
 
 export class SupabaseObjectAuthority
-	implements ObjectGatewayAuthority, NativeCompanyObjectAuthority, MemberCompanyObjectAuthority
+	implements ObjectGatewayAuthority, NativeCompanyObjectAuthority, FolderObjectAuthority, MemberCompanyObjectAuthority
 {
 	readonly #projectUrl: string;
 	readonly #publishableKey: string;
@@ -223,6 +242,7 @@ export class SupabaseObjectAuthority
 				},
 				userToken,
 				this.#publishableKey,
+				true,
 			),
 			"member Company File authority",
 		);
@@ -310,6 +330,7 @@ export class SupabaseObjectAuthority
 				},
 				undefined,
 				this.#secretKey,
+				true,
 			)) !== true
 		)
 			throw new ObjectDependencyError(403);
@@ -332,6 +353,7 @@ export class SupabaseObjectAuthority
 				},
 				undefined,
 				this.#secretKey,
+				true,
 			)) !== true
 		)
 			throw new ObjectDependencyError(403);
@@ -352,8 +374,78 @@ export class SupabaseObjectAuthority
 				},
 				undefined,
 				this.#secretKey,
+				true,
 			),
 		);
+	}
+
+	async authorizeFolderUpload(
+		environmentId: string,
+		actor: FolderRunActor,
+		intentId: string,
+		sha256: string,
+		bytes: number,
+	): Promise<{ profileId: string }> {
+		const value = await this.#rpc(
+			"qorpera_folder_authorize_object_upload",
+			{ p_environment_id: environmentId, p_actor: actor, p_intent: intentId, p_sha256: sha256, p_bytes: bytes },
+			undefined,
+			this.#secretKey,
+			"folder",
+		);
+		const receipt = value as Record<string, unknown> | null;
+		if (
+			!receipt ||
+			typeof receipt !== "object" ||
+			receipt.schema !== "qorpera.folder-object-upload/v1" ||
+			typeof receipt.profileId !== "string" ||
+			!UUID_PATTERN.test(receipt.profileId)
+		)
+			throw new ObjectDependencyError(403);
+		return { profileId: receipt.profileId };
+	}
+
+	async confirmFolderObject(
+		environmentId: string,
+		actor: FolderRunActor,
+		intentId: string,
+		sha256: string,
+		bytes: number,
+	): Promise<void> {
+		const value = (await this.#rpc(
+			"qorpera_folder_confirm_object",
+			{ p_environment_id: environmentId, p_actor: actor, p_intent: intentId, p_sha256: sha256, p_bytes: bytes },
+			undefined,
+			this.#secretKey,
+			"folder",
+		)) as Record<string, unknown> | null;
+		if (!value || value.schema !== "qorpera.folder-object/v1" || value.sha256 !== sha256 || value.bytes !== bytes)
+			throw new ObjectDependencyError(403);
+	}
+
+	async authorizeFolderDownload(
+		environmentId: string,
+		actor: FolderRunActor,
+		sha256: string,
+	): Promise<{ profileId: string; bytes: number }> {
+		const value = (await this.#rpc(
+			"qorpera_folder_authorize_object_download",
+			{ p_environment_id: environmentId, p_actor: actor, p_sha256: sha256 },
+			undefined,
+			this.#secretKey,
+			"folder",
+		)) as Record<string, unknown> | null;
+		if (
+			!value ||
+			value.schema !== "qorpera.folder-object-download/v1" ||
+			typeof value.profileId !== "string" ||
+			!UUID_PATTERN.test(value.profileId) ||
+			!Number.isSafeInteger(value.bytes) ||
+			(value.bytes as number) < 0 ||
+			(value.bytes as number) > 8 * 1024 * 1024
+		)
+			throw new ObjectDependencyError(403);
+		return { profileId: value.profileId, bytes: value.bytes as number };
 	}
 
 	async authorizeDelete(
@@ -538,11 +630,17 @@ export class SupabaseObjectAuthority
 		});
 	}
 
+	/** `companyState`: the RPC acts for one company, so its 500s are read with `companyStateFailure` (409, 423);
+	 * `"folder"`, a folder core byte RPC, also reads its 400s, with `folderStateFailure` (and 413). Profile,
+	 * replication, deletion and migration RPCs must stay "unavailable" to their callers (the replication reconciler
+	 * blocks an object on any other refusal, and a profile read drops its member's read leases on one), so theirs
+	 * are read with `unavailableStateFailure`: a lock conflict is still 503 but leaves the circuit alone. */
 	async #rpc(
 		name: string,
 		body: Record<string, unknown>,
 		bearer: string | undefined,
 		apiKey: string,
+		companyState: boolean | "folder" = false,
 	): Promise<unknown> {
 		const headers: Record<string, string> = {
 			...supabaseRequestHeaders(apiKey, bearer),
@@ -556,6 +654,12 @@ export class SupabaseObjectAuthority
 				signal,
 			});
 			if (!response.ok) {
+				if (companyState === "folder" && (response.status === 500 || response.status === 400))
+					throw folderStateFailure(await postgrestErrorCode(response, signal), response.status);
+				if (response.status === 500)
+					throw (companyState ? companyStateFailure : unavailableStateFailure)(
+						await postgrestErrorCode(response, signal),
+					);
 				void response.body?.cancel().catch(() => undefined);
 				throw new ObjectDependencyError(response.status);
 			}

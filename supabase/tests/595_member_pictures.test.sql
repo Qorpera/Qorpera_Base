@@ -295,8 +295,8 @@ reset role;
 -- limit holds there too, and parallel uploads into one folder count one after
 -- another: the second waits for the first to commit, then sees its objects and
 -- is refused.
-select dblink_connect('picture_a', 'dbname=qorpera_test');
-select dblink_connect('picture_b', 'dbname=qorpera_test');
+select dblink_connect('picture_a', 'dbname=' || current_database());
+select dblink_connect('picture_b', 'dbname=' || current_database());
 select dblink_exec('picture_a', $$set request.jwt.claims = '{"role":"service_role"}'$$);
 select dblink_exec('picture_b', $$set request.jwt.claims = '{"role":"service_role"}'$$);
 select dblink_exec('picture_a', 'set role service_role');
@@ -348,8 +348,8 @@ $$;
 
 -- Choosing an object and deleting it wait for each other: a delete that comes
 -- while the object is being chosen finds it current and leaves it.
-select dblink_connect('picture_a', 'dbname=qorpera_test');
-select dblink_connect('picture_b', 'dbname=qorpera_test');
+select dblink_connect('picture_a', 'dbname=' || current_database());
+select dblink_connect('picture_b', 'dbname=' || current_database());
 select dblink_exec('picture_a', $$set request.jwt.claims = '{"sub":"95000000-0000-4000-8000-00000000000a","role":"authenticated"}'$$);
 select dblink_exec('picture_b', $$set request.jwt.claims = '{"sub":"95000000-0000-4000-8000-00000000000a","role":"authenticated"}'$$);
 select dblink_exec('picture_a', 'set role authenticated');
@@ -386,8 +386,8 @@ select dblink_disconnect('picture_a');
 
 -- The other order: a delete that holds the folder first leaves nothing to
 -- choose, and the choice says so instead of pointing at a missing object.
-select dblink_connect('picture_a', 'dbname=qorpera_test');
-select dblink_connect('picture_b', 'dbname=qorpera_test');
+select dblink_connect('picture_a', 'dbname=' || current_database());
+select dblink_connect('picture_b', 'dbname=' || current_database());
 select dblink_exec('picture_a', $$set request.jwt.claims = '{"sub":"95000000-0000-4000-8000-00000000000a","role":"authenticated"}'$$);
 select dblink_exec('picture_b', $$set request.jwt.claims = '{"sub":"95000000-0000-4000-8000-00000000000a","role":"authenticated"}'$$);
 select dblink_exec('picture_a', 'set role authenticated');

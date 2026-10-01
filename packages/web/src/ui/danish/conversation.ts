@@ -66,6 +66,12 @@ export const CONVERSATION: Record<string, string> = {
 	"{label}. Open the conversation": "{label}. Åbn samtalen",
 	"Loading conversation": "Henter samtale",
 	"No messages yet.": "Ingen beskeder endnu.",
+	"Show earlier messages": "Vis tidligere beskeder",
+	"Loading earlier messages…": "Henter tidligere beskeder…",
+	"Earlier messages could not be loaded. {reason}": "Tidligere beskeder kunne ikke hentes. {reason}",
+	"Loaded 1 earlier message.": "Hentede 1 tidligere besked.",
+	"Loaded {count} earlier messages.": "Hentede {count} tidligere beskeder.",
+	"This is the start of the conversation.": "Dette er starten på samtalen.",
 	"This conversation is archived.": "Denne samtale er arkiveret.",
 	"You can read this conversation. Contributors and above can write.":
 		"Du kan læse denne samtale. Bidragydere og derover kan skrive.",
@@ -88,7 +94,12 @@ export const CONVERSATION: Record<string, string> = {
 	Review: "Gennemgå",
 	"Trying again…": "Prøver igen…",
 	Dismiss: "Skjul",
-	"Your model account has reached its usage limit.": "Din modelkonto har nået sin forbrugsgrænse.",
+	"ChatGPT · Usage limit reached. Review your plan or this app's limit in ChatGPT settings.":
+		"ChatGPT · Forbrugsgrænsen er nået. Gennemse dit abonnement eller denne apps grænse i ChatGPT-indstillingerne.",
+	"Manage usage": "Administrer forbrug",
+	"The workspace is kept; a follow-up continues it.": "Arbejdsområdet er gemt; en opfølgning fortsætter sessionen.",
+	"The model account paying for this work reached its usage limit, so the work stopped. It does not move to another account. It can run again once the limit resets.":
+		"Modelkontoen, der betaler for dette arbejde, har nået sin forbrugsgrænse, så arbejdet er stoppet. Det flyttes ikke til en anden konto. Det kan køre igen, når grænsen er nulstillet.",
 	"Your model account needs to be connected again.": "Din modelkonto skal forbindes igen.",
 	"No computer could be started for this run. The problem is on Qorpera's side.":
 		"Der kunne ikke startes en computer til denne kørsel. Fejlen ligger hos Qorpera.",
@@ -101,6 +112,8 @@ export const CONVERSATION: Record<string, string> = {
 		"Kørslen startede, men et af dens trin blev afvist. Fejlen ligger hos Qorpera.",
 	"The run was stopped before it finished.": "Kørslen blev stoppet, før den var færdig.",
 	"The run stopped because of an internal error.": "Kørslen stoppede på grund af en intern fejl.",
+	"The company is out of computer hours. New work starts again once hours are added.":
+		"Virksomheden har ikke flere computertimer. Nyt arbejde starter igen, når der er tilføjet timer.",
 
 	// The model menu (app/views/composer-models.ts)
 	Model: "Model",
@@ -167,6 +180,29 @@ export const CONVERSATION: Record<string, string> = {
 
 	// Company notices above the composer (app/views/execution-notices.ts)
 	"Company updates": "Virksomhedsopdateringer",
+	"{title} can run while you're away.": "{title} kan køre, mens du er væk.",
+	"{count} routines can run while you're away.": "{count} rutiner kan køre, mens du er væk.",
+	"Turn on “Work while you're away” so your ChatGPT plan can run it.":
+		"Slå “Arbejd, mens du er væk” til, så dit ChatGPT-abonnement kan køre den.",
+	"Turn on “Work while you're away” so your ChatGPT plan can run them.":
+		"Slå “Arbejd, mens du er væk” til, så dit ChatGPT-abonnement kan køre dem.",
+	"Your ChatGPT plan now works while you're away. Ask the agent to set {title} up again.":
+		"Dit ChatGPT-abonnement arbejder nu, mens du er væk. Bed agenten om at sætte {title} op igen.",
+	"Your ChatGPT plan now works while you're away. Ask the agents to set those routines up again.":
+		"Dit ChatGPT-abonnement arbejder nu, mens du er væk. Bed agenterne om at sætte rutinerne op igen.",
+	"Your ChatGPT plan now works while you're away. Ask the agent to set those routines up again.":
+		"Dit ChatGPT-abonnement arbejder nu, mens du er væk. Bed agenten om at sætte rutinerne op igen.",
+	"“Work while you're away” is on, but the routine could not be started. Try again.":
+		"“Arbejd, mens du er væk” er slået til, men rutinen kunne ikke startes. Prøv igen.",
+	"“Work while you're away” is on, but your routines could not be checked. Try again.":
+		"“Arbejd, mens du er væk” er slået til, men dine rutiner kunne ikke tjekkes. Prøv igen.",
+	"“Work while you're away” is on, but the routines could not be started. Try again.":
+		"“Arbejd, mens du er væk” er slået til, men rutinerne kunne ikke startes. Prøv igen.",
+	"Turn on": "Slå til",
+	"Turning on…": "Slår til…",
+	"Not now": "Ikke nu",
+	"“Work while you're away” could not be turned on. Try again.":
+		"“Arbejd, mens du er væk” kunne ikke slås til. Prøv igen.",
 	"All {count} company computers are in use. Close one to open another.":
 		"Alle {count} virksomhedscomputere er i brug. Luk én for at åbne en ny.",
 

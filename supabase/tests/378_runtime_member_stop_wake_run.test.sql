@@ -49,8 +49,19 @@ end
 $$;
 
 -- A contributor's own queued message in Bob's thread: a room delivery, as every
--- member message there is. Inserted as 280 does, because this fixture gives the
--- contributor no model account of their own to post with.
+-- member message there is. Inserted as 280 does, on an account of the contributor's
+-- own: a member's login pays only for that member's work (20260928230000).
+select pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000002');
+select set_config('qorpera_test.stop_member_connection',public.qorpera_register_provider_connection(
+	'30000000-0000-4000-8000-000000000010','30000000-0000-4000-8000-000000000780','30000000-0000-4000-8000-000000000002',
+	'openai','api_key','openai-responses','vault://member/openai','member-account','member-api-budget',
+	'qorpera-provider-consent/v1',null,
+	'{"monthly_microusd":1000000,"reservation_microusd":1000,"max_calls_per_run":32,"max_input_tokens_per_run":2000000,"max_output_tokens_per_run":500000,"max_concurrent_runs":8}',
+	false)::text,true);
+select set_config('qorpera_test.stop_member_sponsor',public.qorpera_create_member_execution_sponsor(
+	'30000000-0000-4000-8000-000000000010','30000000-0000-4000-8000-000000000781',
+	(current_setting('qorpera_test.stop_member_connection')::jsonb ->> 'connection_id')::uuid,1,false)::text,true);
+select pg_temp.path_claims('service_role');
 create function pg_temp.stop_member_run(p_user uuid) returns uuid language plpgsql as $$
 declare v_base public.qorpera_execution_runs%rowtype; v_id uuid := extensions.gen_random_uuid(); v_job uuid;
 begin
@@ -64,7 +75,11 @@ begin
 		required_capability,job_type,payload_sha256,compute_identity_id,transcript_start_sequence,created_by_user_id)
 	values(v_id,v_base.profile_id,v_base.environment_id,'room_delivery',v_id,v_base.session_id,v_job,
 		v_base.substrate_version_id,v_base.company_snapshot_id,v_base.staff_agent_id,v_base.staff_version,'{}',
-		v_base.sponsor_binding_id,v_base.sponsor_version,'agent_turn','agent_turn',repeat('e',64),v_base.compute_identity_id,0,p_user);
+		case when p_user = v_base.requested_by_user_id then v_base.sponsor_binding_id
+			else (current_setting('qorpera_test.stop_member_sponsor')::jsonb ->> 'binding_id')::uuid end,
+		case when p_user = v_base.requested_by_user_id then v_base.sponsor_version else 1 end,
+		'agent_turn','agent_turn',repeat('e',64),
+		case when p_user = v_base.requested_by_user_id then v_base.compute_identity_id end,0,p_user);
 	update public.qorpera_runner_jobs set run_id = v_id where id = v_job;
 	return v_id;
 end
@@ -158,12 +173,12 @@ select pg_temp.wake_assert((select array_agg(cancelled_by_user_id::text order by
 rollback to savepoint member_messages;
 
 -- The member who saved the routine, now a contributor, stops it while it works.
--- (A company has one owner: ownership moves to a new member first.)
-update public.qorpera_profile_members set role = 'contributor'
-where profile_id = '30000000-0000-4000-8000-000000000010' and user_id = '30000000-0000-4000-8000-000000000001';
+-- (The last founder cannot step down while others remain: a new founder joins first.)
 insert into auth.users(id,email) values ('30000000-0000-4000-8000-000000000008','stop-owner@example.test');
 insert into public.qorpera_profile_members(profile_id,user_id,email,display_name,role)
 values ('30000000-0000-4000-8000-000000000010','30000000-0000-4000-8000-000000000008','stop-owner@example.test','New owner','owner');
+update public.qorpera_profile_members set role = 'contributor'
+where profile_id = '30000000-0000-4000-8000-000000000010' and user_id = '30000000-0000-4000-8000-000000000001';
 set role authenticated;
 select pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
 select pg_temp.wake_assert(pg_temp.stop_read(current_setting('qorpera_test.stop_thread')::uuid) = jsonb_build_object(

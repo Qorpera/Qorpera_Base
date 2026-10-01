@@ -14,14 +14,18 @@ import { LxdUnixClient } from "../../packages/runner-orchestrator/src/lxd-client
 import { HttpCloudCodingCommandService } from "../../packages/runtime/src/cloud-coding-command-http.ts";
 import { codingErrorCode } from "../../packages/runtime/src/cloud-coding-error-code.ts";
 import { parseCodingGuestConfiguration } from "../../packages/runtime/src/cloud-coding-guest-configuration.ts";
+import { LxdCompanyMachineHost } from "../../packages/runner-orchestrator/src/company-machine-host.ts";
+import { type CompanyMachinePolicy, parseCompanyMachinePolicy } from "../../packages/runner-orchestrator/src/company-machine.ts";
 import { authorizeCodingCommand } from "./command-authority.ts";
+import { authorizeMachineCommand } from "./machine-command-authority.ts";
+import { MachineCommandRouter } from "./machine-command-routing.ts";
 import { CodingCommandRouter, type CodingCommandPeer } from "./command-routing.ts";
 import { CodingExecutorHttpControl } from "./control.ts";
 import { readCodingServiceCredential } from "./credentials.ts";
 import { BrokerRepositoryCredentials, REPOSITORY_TOKEN } from "./repository-credentials.ts";
 
 interface Config {
-	schema: "qorpera.coding-executor-service/v6";
+	schema: "qorpera.coding-executor-service/v7";
 	owner: string;
 	supabaseUrl: string;
 	commandPort: number;
@@ -38,6 +42,12 @@ interface Config {
 	 * (the product path). A named credential: a static token file for that
 	 * repository, proof-only plumbing that bypasses the company connection. */
 	repositories: { repository: CloudCodingRepository; credential: string | null }[];
+	/** Company machines on this node (2026-09-28): the node policy SQL copies
+	 * into every machine placed here, and the pin of the machine guest helper
+	 * the reviewed machine image carries (plus the helpers of earlier images
+	 * whose machines still run here). Absent: this executor makes no machines,
+	 * but still forwards machine commands to its peers. */
+	machines: { policy: CompanyMachinePolicy; helperSha256: string; previousHelperSha256s: string[] } | null;
 }
 const RESERVED_CREDENTIALS = new Set(["qorpera-coding-executor-config", "qorpera-coding-registry", "qorpera-coding-command", "qorpera-coding-peer-command"]);
 const CONFIG_KEYS = "commandPeers,commandPort,guest,owner,peerCommandPort,repositories,schema,storagePolicy,supabaseUrl,vmPolicy";
@@ -59,20 +69,22 @@ function broker(value: unknown): Config["broker"] {
 		input.executorTokenCredential.startsWith("qorpera-coding-repository-")) throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
 	return { origin: origin(input.origin), executorTokenCredential: input.executorTokenCredential };
 }
-/** The reviewed JSON configuration (v6: SQL placement routes commands across
+/** The reviewed JSON configuration (v7: SQL placement routes commands across
  * per-node executors using a separate, local-only peer listener and credential;
- * one coding machine per member, many
- * sessions per machine; every guest path derives from the session, so the
- * guest section names only the image's own coding user, the per-command
- * resource profile and the helper pins). The executor claims coding sessions
+ * one coding machine per member, many sessions per machine, each attached
+ * until it is archived; every guest path derives from the session, so the
+ * guest section names only the image's own coding user, the log bound and the
+ * helper pins. A command has no time, memory, CPU or task limit of its own). The executor claims coding sessions
  * for `owner` (qorpera_coding_executors.owner) and serves the command gateway
  * on `commandPort` behind the node's HTTPS reverse proxy. `repositories` is the
  * executor's own allowlist; SQL repository grants stay the authority. */
 export function parseCodingExecutorConfiguration(value: unknown): Config {
 	const config = object(value);
 	const keys = Object.keys(config).sort().join();
-	if ((keys !== CONFIG_KEYS && keys !== `broker,${CONFIG_KEYS}`) ||
-		config.schema !== "qorpera.coding-executor-service/v6" || typeof config.owner !== "string" || !/^[A-Za-z0-9_.:-]{1,120}$/.test(config.owner) ||
+	const optional = keys.split(",").filter((key) => key === "broker" || key === "machines");
+	if (keys.split(",").filter((key) => key !== "broker" && key !== "machines").join() !== CONFIG_KEYS ||
+		new Set(optional).size !== optional.length ||
+		config.schema !== "qorpera.coding-executor-service/v7" || typeof config.owner !== "string" || !/^[A-Za-z0-9_.:-]{1,120}$/.test(config.owner) ||
 		!Number.isSafeInteger(config.commandPort) || Number(config.commandPort) < 1024 || Number(config.commandPort) > 65535 ||
 		!Number.isSafeInteger(config.peerCommandPort) || Number(config.peerCommandPort) < 1024 || Number(config.peerCommandPort) > 65535 || config.peerCommandPort === config.commandPort ||
 		!Array.isArray(config.commandPeers) || config.commandPeers.length > 100 ||
@@ -111,16 +123,28 @@ export function parseCodingExecutorConfiguration(value: unknown): Config {
 	if (Object.keys(guest).sort().join() !== "commandHelperSha256,gid,gitHelperSha256,resourceProfile,storageHelperSha256,uid,watchdogHelperSha256" ||
 		![guest.commandHelperSha256, guest.gitHelperSha256, guest.watchdogHelperSha256, guest.storageHelperSha256].every((v) => typeof v === "string" && /^[0-9a-f]{64}$/.test(v))) throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
 	const layout = cloudCodingSessionLayout(id);
-	const parsedGuest = parseCodingGuestConfiguration({ schema: "qorpera.coding-command-guest/v3", workerId: id, vmId: id, bootId: id,
+	const parsedGuest = parseCodingGuestConfiguration({ schema: "qorpera.coding-command-guest/v4", workerId: id, vmId: id, bootId: id,
 		uid: guest.uid, gid: guest.gid, workspacePath: layout.workspacePath, homePath: layout.homePath, cachePath: layout.cachePath,
 		outputRoot: layout.outputRoot, resourceProfile: guest.resourceProfile });
-	if (parsedGuest.uid >= 200000 || parsedGuest.gid >= 200000 || parsedGuest.resourceProfile.memoryBytes > Number(vmPolicy.memoryBytes) ||
-		parsedGuest.resourceProfile.cpuQuotaPercent > Number(vmPolicy.cpus) * 100)
-		throw new Error("CODING_EXECUTOR_RESOURCE_POLICY_INVALID");
+	if (parsedGuest.uid >= 200000 || parsedGuest.gid >= 200000) throw new Error("CODING_EXECUTOR_RESOURCE_POLICY_INVALID");
+	let machines: Config["machines"] = null;
+	if (config.machines !== undefined) {
+		const entry = object(config.machines);
+		const keys = Object.keys(entry).sort().join();
+		const previous = entry.previousHelperSha256s ?? [];
+		if ((keys !== "helperSha256,policy" && keys !== "helperSha256,policy,previousHelperSha256s") ||
+			typeof entry.helperSha256 !== "string" || !/^[0-9a-f]{64}$/.test(entry.helperSha256) || !Array.isArray(previous) ||
+			previous.length > 16 || previous.some((sha) => typeof sha !== "string" || !/^[0-9a-f]{64}$/.test(sha)) ||
+			new Set([entry.helperSha256, ...previous]).size !== previous.length + 1) throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
+		const policy = parseCompanyMachinePolicy(entry.policy);
+		// Commands route to this executor by the coding provider's peer identity.
+		if (policy.providerId !== vmPolicy.providerId) throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
+		machines = { policy, helperSha256: entry.helperSha256, previousHelperSha256s: previous as string[] };
+	}
 	return {
-		schema: "qorpera.coding-executor-service/v6", owner: config.owner, supabaseUrl: origin(config.supabaseUrl),
+		schema: "qorpera.coding-executor-service/v7", owner: config.owner, supabaseUrl: origin(config.supabaseUrl),
 		commandPort: Number(config.commandPort), peerCommandPort: Number(config.peerCommandPort), commandPeers, storagePolicy, vmPolicy: vmPolicy as unknown as Config["vmPolicy"],
-		guest: guest as unknown as Config["guest"], broker: brokerConfig, repositories,
+		guest: guest as unknown as Config["guest"], broker: brokerConfig, repositories, machines,
 	};
 }
 
@@ -173,6 +197,23 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 	const shutdown = () => stop.abort(new Error("CODING_EXECUTOR_SHUTDOWN"));
 	process.on("SIGTERM", shutdown);
 	process.on("SIGINT", shutdown);
+	const machineHost = config.machines ? new LxdCompanyMachineHost({
+		control, owner: config.owner, machineIdSha256: createHash("sha256").update(machine).digest("hex"),
+		policy: config.machines.policy, client: new LxdUnixClient(), journalRoot, storagePolicy: config.storagePolicy,
+		helperSha256: config.machines.helperSha256, previousHelperSha256s: config.machines.previousHelperSha256s,
+	}) : undefined;
+	const machineRouter = new MachineCommandRouter({
+		owner: config.owner, providerId: config.vmPolicy.providerId, peers: config.commandPeers, control, credential,
+		...(machineHost ? {
+			executeLocal: (request, authority, signal) => machineHost.command(
+				{ machineId: authority.machineId, placementId: authority.placementId, commandId: request.input.commandId,
+					inputSha256: authority.inputSha256 },
+				request.action === "start" ? { action: "start", commandId: request.input.commandId, inputSha256: request.input.inputSha256,
+					command: request.input.command, timeoutMs: request.input.timeoutMs }
+					: request.action === "read" ? { action: "read", read: request.input } : { action: "cancel", commandId: request.input.commandId },
+				signal),
+		} : {}),
+	});
 	const router = new CodingCommandRouter({
 		owner: config.owner, providerId: config.vmPolicy.providerId, peers: config.commandPeers, control, credential,
 		async executeLocal(request, signal) {
@@ -196,11 +237,19 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 		token: commandToken, port: config.commandPort,
 		authorize: (request, signal) => authorizeCodingCommand(control, request, signal),
 		execute: (request, signal) => router.execute(request, signal),
+		machines: {
+			authorize: (request, signal) => authorizeMachineCommand(control, request, signal),
+			execute: (request, signal) => machineRouter.execute(request, signal),
+		},
 	});
 	const peerCommands = new HttpCloudCodingCommandService({
 		token: peerToken, port: config.peerCommandPort,
 		authorize: (request, signal) => authorizeCodingCommand(control, request, signal),
 		execute: (request, signal) => router.execute(request, signal, true),
+		machines: {
+			authorize: (request, signal) => authorizeMachineCommand(control, request, signal),
+			execute: (request, signal) => machineRouter.execute(request, signal, true),
+		},
 	});
 	let executor: CloudCodingExecutor | undefined;
 	try {
@@ -229,9 +278,32 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 				if (!claimed) await setTimeout(2000, undefined, { signal: stop.signal }).catch(() => undefined);
 			}
 		})();
-		// Housekeeping (sleep, removal, release) runs beside claiming, at start and
-		// every 30 s after a pass: a long pass never holds up a turn. Every step is
-		// logged; a failed one as coding-machine-error, and recorded on the machine.
+		// The keeper renews every attached session (standing by or in a turn) in a
+		// pass every 10 s from the start of the last one, each machine within 15 s,
+		// so well inside the guest lease's 45 s: a session's commands run as long as
+		// this process keeps its attachment, and stop within a minute after it
+		// cannot. Released sessions (archived, revoked, lost) are taken off beside
+		// the passes.
+		const keeping = (async () => {
+			while (!stop.signal.aborted) {
+				const started = performance.now();
+				try {
+					for (const outcome of await running.keep(stop.signal))
+						if (outcome.state === "failed") console.error(JSON.stringify({ event: "coding-session-error", ...outcome }));
+						else if (outcome.step === "detach" || outcome.state === "not-now")
+							console.log(JSON.stringify({ event: "coding-session", ...outcome }));
+				} catch (error) {
+					if (!stop.signal.aborted) console.error(JSON.stringify({ event: "coding-session-error", code: errorCode(error) }));
+				}
+				await setTimeout(Math.max(0, 10_000 - (performance.now() - started)), undefined, {
+					signal: stop.signal,
+				}).catch(() => undefined);
+			}
+		})();
+		// Housekeeping (quiet sessions archived, sleep, removal, release) runs beside
+		// claiming, at start and every 30 s after a pass: a long pass never holds up
+		// a turn. Every step is logged; a failed one as coding-machine-error, and
+		// recorded on the machine.
 		const housekeeping = (async () => {
 			while (!stop.signal.aborted) {
 				try {
@@ -244,10 +316,28 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 				await setTimeout(30_000, undefined, { signal: stop.signal }).catch(() => undefined);
 			}
 		})();
-		await Promise.all([claiming, housekeeping]);
+		// Company machines: admission, lifecycle, guest leases and command ends,
+		// every 10 s after a pass. A failed step is logged and recorded on its machine.
+		const machines = (async () => {
+			while (machineHost && !stop.signal.aborted) {
+				try {
+					for (const outcome of await machineHost.pass(stop.signal))
+						if (outcome.state === "failed") console.error(JSON.stringify({ event: "company-machine-error", ...outcome }));
+						else if ((outcome.state === "done" && outcome.step !== "commands") || (outcome.state === "not-now" && outcome.code))
+							console.log(JSON.stringify({ event: "company-machine", ...outcome }));
+				} catch (error) {
+					if (!stop.signal.aborted) console.error(JSON.stringify({ event: "company-machine-error", code: errorCode(error) }));
+				}
+				await setTimeout(10_000, undefined, { signal: stop.signal }).catch(() => undefined);
+			}
+		})();
+		await Promise.all([claiming, keeping, housekeeping, machines]);
 	} finally {
 		stop.abort();
 		await executor?.drain();
+		// A take-off the keeper started settles before the process ends.
+		for (const outcome of await host.settled())
+			console.log(JSON.stringify({ event: outcome.state === "failed" ? "coding-session-error" : "coding-session", ...outcome }));
 		await commands.close();
 		await peerCommands.close();
 		process.off("SIGTERM", shutdown);

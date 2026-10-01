@@ -192,7 +192,9 @@ export interface CloudWakeEnvelope {
 			| "room"
 			| "office-activation"
 			| "worker-dispatch"
-			| "worker-completion";
+			| "worker-completion"
+			| "machine-event"
+			| "event";
 		id: string;
 		occurrenceKey: string;
 	}>;
@@ -370,6 +372,56 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 			nullableUuid(event.previousVersion);
 			nullableUuid(event.receiptId);
 			nullableUuid(event.proposalId);
+		} else if (source.kind === "event") {
+			// Events from one of the company's hooks (W2): outside content, at most 20 a wake.
+			const batch = closed(payloadBody, ["hookId", "firstDeliveryId", "hook", "events", "more"]);
+			const hook = closed(batch.hook, ["id", "name", "purpose"]);
+			if (
+				uuidKey(batch.hookId) !== uuidKey(source.id) ||
+				uuidKey(hook.id) !== uuidKey(source.id) ||
+				typeof hook.name !== "string" ||
+				!/^[a-z][a-z0-9-]{0,63}$/.test(hook.name) ||
+				typeof hook.purpose !== "string" ||
+				Buffer.byteLength(hook.purpose) > 2048 ||
+				!Array.isArray(batch.events) ||
+				batch.events.length > 20 ||
+				!Number.isSafeInteger(batch.more) ||
+				(batch.more as number) < 0 ||
+				parentRunId !== null ||
+				actorStaffId !== null
+			)
+				throw new Error("Invalid event wake");
+			uuid(batch.firstDeliveryId);
+			const seen = new Set<string>();
+			for (const item of batch.events) {
+				const event = closedWithOptional(
+					item,
+					["deliveryId", "type", "receivedAt", "contentType", "bytes"],
+					["encoding", "text", "data", "truncated", "bodyCleared"],
+				);
+				const id = uuidKey(event.deliveryId);
+				const body = event.encoding === "utf8" ? event.text : event.encoding === "base64" ? event.data : undefined;
+				if (
+					seen.has(id) ||
+					(event.type !== null && (typeof event.type !== "string" || !/^[\x21-\x7e]{1,128}$/.test(event.type))) ||
+					typeof event.receivedAt !== "string" ||
+					!Number.isFinite(Date.parse(event.receivedAt)) ||
+					(event.contentType !== null &&
+						(typeof event.contentType !== "string" || event.contentType.length > 256)) ||
+					!Number.isSafeInteger(event.bytes) ||
+					(event.bytes as number) < 0 ||
+					(event.encoding !== undefined && event.encoding !== "utf8" && event.encoding !== "base64") ||
+					// The payload's own bound (below) bounds each body.
+					(event.encoding !== undefined && (typeof body !== "string" || typeof event.truncated !== "boolean")) ||
+					(event.encoding === "utf8" && event.data !== undefined) ||
+					(event.encoding === "base64" && event.text !== undefined) ||
+					(event.encoding === undefined && (event.text !== undefined || event.data !== undefined)) ||
+					(event.truncated !== undefined && typeof event.truncated !== "boolean") ||
+					(event.bodyCleared !== undefined && (event.bodyCleared !== true || event.encoding !== undefined))
+				)
+					throw new Error("Invalid event wake");
+				seen.add(id);
+			}
 		} else throw new Error("Invalid routine source");
 	} else if (wake.kind === "room") {
 		const post = closed(payloadBody, ["roomId", "inputIds", "recipientStaffId"]);
@@ -511,6 +563,49 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 				!Array.isArray(completion.outputs)
 			)
 				throw new Error("Invalid worker completion wake");
+		}
+	} else if (wake.kind === "agent" && source.kind === "machine-event") {
+		// A typed internal continuation of the agent's own run: a machine it asked
+		// for is running, or a command it started with notify ended.
+		const events = closed(payloadBody, ["schema", "parentRunId", "events", "stillWaiting"]);
+		if (
+			events.schema !== "qorpera.machine-event/v1" ||
+			parentRunId === null ||
+			uuidKey(parentRunId) === uuidKey(identity.runId) ||
+			uuid(events.parentRunId) !== parentRunId ||
+			actorStaffId !== null ||
+			actorUserId !== null ||
+			audience.kind !== "company" ||
+			wake.routine !== null ||
+			(audience.sessionId === null && policy.final !== "forbidden") ||
+			!Number.isSafeInteger(events.stillWaiting) ||
+			(events.stillWaiting as number) < 0 ||
+			!Array.isArray(events.events) ||
+			events.events.length < 1 ||
+			events.events.length > 8
+		)
+			throw new Error("Invalid machine event wake");
+		for (const item of events.events) {
+			const event = closed(item, [
+				"machine",
+				"machineId",
+				"kind",
+				"at",
+				"machineState",
+				"command",
+				"commandId",
+				"commandState",
+				"exitCode",
+				"outputTail",
+			]);
+			if (
+				typeof event.machine !== "string" ||
+				(event.kind !== "running" && event.kind !== "stopped" && event.kind !== "command") ||
+				(event.kind === "command" && (typeof event.command !== "string" || uuid(event.commandId) === null)) ||
+				(event.outputTail !== null && typeof event.outputTail !== "string")
+			)
+				throw new Error("Invalid machine event wake");
+			uuid(event.machineId);
 		}
 	} else if (wake.kind === "agent") {
 		// A coworker message. Delivered into the agent's own shared thread (the

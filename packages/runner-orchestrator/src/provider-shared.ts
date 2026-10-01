@@ -16,12 +16,15 @@ export function record(value: unknown, label: string): Record<string, unknown> {
 export function canonical(value: unknown): unknown {
 	if (Array.isArray(value)) return value.map((entry) => canonical(entry));
 	if (!value || typeof value !== "object") return value;
-	const output: Record<string, unknown> = {};
-	for (const key of Object.keys(value).sort()) {
-		const entry = (value as Record<string, unknown>)[key];
-		if (entry !== undefined) output[key] = canonical(entry);
-	}
-	return output;
+	// Object.fromEntries keeps a `__proto__` key as an entry. Assigning it
+	// would set the copy's prototype and drop the key from every comparison.
+	const input = value as Record<string, unknown>;
+	return Object.fromEntries(
+		Object.keys(input)
+			.sort()
+			.filter((key) => input[key] !== undefined)
+			.map((key) => [key, canonical(input[key])]),
+	);
 }
 
 export function sha256(value: string): string {
@@ -109,4 +112,61 @@ export class ProviderAdmissionRefused extends Error {
 		this.state = state;
 		this.reason = reason;
 	}
+}
+
+const RPC_ERROR_CODE = /^(?:[0-9A-Z]{5}|PGRST[0-9X][0-9]{2})$/;
+
+/** A database call a provider made that failed. Its function name, HTTP status and error code
+ * (the SQLSTATE or PostgREST code) are fixed values the provider may log; the answer's text is not. */
+export class ProviderRpcFailed extends Error {
+	readonly rpc: string;
+	readonly status: number;
+	readonly code: string | undefined;
+
+	constructor(message: string, rpc: string, status: number, code: string | undefined) {
+		super(message);
+		this.name = "ProviderRpcFailed";
+		this.rpc = rpc;
+		this.status = status;
+		this.code = code;
+	}
+}
+
+/** Reads a failed PostgREST answer's error code, and nothing else of its body. */
+export async function providerRpcErrorCode(response: Pick<Response, "text">): Promise<string | undefined> {
+	try {
+		const code = (JSON.parse((await response.text()).slice(0, 8192)) as { code?: unknown }).code;
+		return typeof code === "string" && RPC_ERROR_CODE.test(code) ? code : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+/** A provider step that failed with an error rather than an admission answer. The provider service
+ * logs the step's fixed name and, for a failed database call, its function, status and code; never
+ * the error's own text, which may carry request bodies, host paths or credentials. */
+export class ProviderStepFailed extends Error {
+	readonly category = "provider_step" as const;
+	readonly stage: string;
+	readonly rpc: string | undefined;
+	readonly rpcStatus: number | undefined;
+	readonly rpcCode: string | undefined;
+
+	constructor(stage: string, cause: unknown) {
+		super(cause instanceof Error ? cause.message : "Provider step failed", { cause });
+		this.name = "ProviderStepFailed";
+		this.stage = stage;
+		this.rpc = cause instanceof ProviderRpcFailed ? cause.rpc : undefined;
+		this.rpcStatus = cause instanceof ProviderRpcFailed ? cause.status : undefined;
+		this.rpcCode = cause instanceof ProviderRpcFailed ? cause.code : undefined;
+	}
+}
+
+/** Names the step an error came from; an admission answer, or an error that already names its
+ * step, is passed on unchanged. */
+export function providerStepFailure(stage: string, error: unknown): unknown {
+	const category = error && typeof error === "object" ? (error as { category?: unknown }).category : undefined;
+	return category === "admission_refused" || category === "provider_step"
+		? error
+		: new ProviderStepFailed(stage, error);
 }

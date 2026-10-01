@@ -41,7 +41,7 @@ async function fixture() {
 		outputRoot: join(root, "logs"),
 	};
 	const guest = {
-		schema: "qorpera.coding-command-guest/v3",
+		schema: "qorpera.coding-command-guest/v4",
 		workerId: randomUUID(),
 		vmId: randomUUID(),
 		bootId: randomUUID(),
@@ -49,10 +49,6 @@ async function fixture() {
 		gid: Math.max(1000, process.getgid?.() ?? 1000),
 		...folders,
 		resourceProfile: {
-			maxTimeoutMs: 1800000,
-			memoryBytes: 2147483648,
-			tasksMax: 256,
-			cpuQuotaPercent: 200,
 			maxLogBytes: 67108864,
 		},
 	};

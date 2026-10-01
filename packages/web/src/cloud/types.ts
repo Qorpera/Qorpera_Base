@@ -93,7 +93,18 @@ export interface HostedProfileMember {
 export interface HostedProfileTeam {
 	profileId: string;
 	role: HostedProfileRole;
-	capabilities: { read: true; write: boolean; authorize: boolean; manageMembers: boolean };
+	capabilities: {
+		read: true;
+		write: boolean;
+		authorize: boolean;
+		manageMembers: boolean;
+		/** Founders make founders (2026-09-28). Absent from a cloud before several founders. */
+		manageFounders?: boolean;
+		/** Whether this member may leave: not the last member, and not the last founder while others stay. */
+		leave?: boolean;
+		/** Only the last member deletes the company. */
+		deleteCompany?: boolean;
+	};
 	members: HostedProfileMember[];
 	invitations: HostedProfileInvitation[];
 }
@@ -228,6 +239,12 @@ export interface HostedRunRecovery {
 	lastError?: string;
 	/** An open Company File proposal the run left behind: it waits on a decision. */
 	proposalId?: string;
+	/** The model account paying for the run reached its usage limit during it (20260929910000). */
+	usageLimit?: boolean;
+	/** A member's ChatGPT plan pays for the run (20260929993000); absent from an older cloud. */
+	paidByChatgptPlan?: boolean;
+	/** The member the run was started for, whose login pays for it. */
+	requestedByUserId?: string;
 	/** Operations still executing or of unknown outcome. The cloud refuses to
 	 * dismiss the run until they settle. */
 	unsettledOperations: number;

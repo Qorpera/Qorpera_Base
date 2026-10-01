@@ -212,6 +212,90 @@ function workerWakeFixture(kind: "worker-dispatch" | "worker-completion") {
 	return { identity, wake, silent, continuation };
 }
 
+/** Exactly what qorpera_machine_event_payload / qorpera_machine_event_view build. */
+function machineWakeFixture() {
+	const { identity, wake, continuation } = workerWakeFixture("worker-completion");
+	const eventId = randomUUID(),
+		machineId = randomUUID(),
+		commandId = randomUUID();
+	const machineWake: CloudWakeEnvelope = {
+		...wake,
+		// The key names the wake itself: every drain attempt is its own occurrence.
+		source: { kind: "machine-event", id: eventId, occurrenceKey: `machine-event:${randomUUID()}` },
+		policy: continuation,
+		payload: {
+			schema: "qorpera.machine-event/v1",
+			parentRunId: wake.parentRunId,
+			events: [
+				{
+					machine: "build-a",
+					machineId,
+					kind: "running",
+					at: "2026-09-28T05:53:26.087508+00:00",
+					machineState: "running",
+					command: null,
+					commandId: null,
+					commandState: null,
+					exitCode: null,
+					outputTail: null,
+				},
+				{
+					machine: "build-a",
+					machineId,
+					kind: "command",
+					at: "2026-09-28T05:55:01.100000+00:00",
+					machineState: "running",
+					command: "npm test",
+					commandId,
+					commandState: "failed",
+					exitCode: 2,
+					outputTail: "1 test failed",
+				},
+				{
+					machine: "build-b",
+					machineId: randomUUID(),
+					kind: "stopped",
+					at: "2026-09-28T05:56:00.000000+00:00",
+					machineState: "stopped",
+					command: null,
+					commandId: null,
+					commandState: null,
+					exitCode: null,
+					outputTail: null,
+				},
+			],
+			stillWaiting: 0,
+		},
+	};
+	return { identity, wake: machineWake };
+}
+
+describe("machine event envelopes", () => {
+	it("admits a machine event as an internal continuation in its parent's conversation", () => {
+		const { identity, wake } = machineWakeFixture();
+		const parsed = parseCloudWakeEnvelope(wake, identity);
+		expect(parsed.source.kind).toBe("machine-event");
+		expect(parsed.policy).toMatchObject({ initial: "optional", final: "optional" });
+	});
+	it.each([
+		(wake: CloudWakeEnvelope) => ({ ...wake, actorUserId: randomUUID() }),
+		(wake: CloudWakeEnvelope) => ({ ...wake, parentRunId: null }),
+		(wake: CloudWakeEnvelope) => ({ ...wake, payload: { ...wake.payload, schema: "qorpera.worker-completion/v1" } }),
+		(wake: CloudWakeEnvelope) => ({ ...wake, payload: { ...wake.payload, events: [] } }),
+		(wake: CloudWakeEnvelope) => ({
+			...wake,
+			payload: { ...wake.payload, events: [{ ...(wake.payload.events as object[])[1], kind: "shell" }] },
+		}),
+		(wake: CloudWakeEnvelope) => ({
+			...wake,
+			payload: { ...wake.payload, events: [{ ...(wake.payload.events as object[])[1], extra: true }] },
+		}),
+	])("rejects a machine event that is not exactly what the kernel admits %#", (mutate) => {
+		const { identity, wake } = machineWakeFixture();
+		expect(() => parseCloudWakeEnvelope(mutate(wake), identity)).toThrow();
+	});
+});
+
 describe("worker dispatch and completion envelopes", () => {
 	it("admits a blank worker with a complete dispatch and no public mouth", () => {
 		const { identity, wake } = workerWakeFixture("worker-dispatch");
@@ -1069,5 +1153,208 @@ describe("dynamic routine wakes", () => {
 	])("rejects a routine marked %j", (extra) => {
 		const { identity, wake } = routineWake(extra);
 		expect(() => parseCloudWakeEnvelope(wake, identity)).toThrow();
+	});
+});
+
+describe("event wakes", () => {
+	function eventWake(payload: Record<string, unknown> = {}, source: Record<string, unknown> = {}) {
+		const { authority, envelope } = fixture();
+		const routineId = randomUUID();
+		const hookId = randomUUID();
+		const deliveryId = randomUUID();
+		return {
+			identity: authority.identity,
+			hookId,
+			wake: {
+				...envelope,
+				kind: "routine",
+				actorUserId: null,
+				source: { kind: "event", id: hookId, occurrenceKey: `event:1:agent:${deliveryId}:1`, ...source },
+				policy: policies[2].policy,
+				routine: { id: routineId, version: 1, intent: "Answer each form submission." },
+				payload: {
+					hookId,
+					firstDeliveryId: deliveryId,
+					hook: { id: hookId, name: "forms", purpose: "Website form" },
+					events: [
+						{
+							deliveryId,
+							type: "contact.submitted",
+							receivedAt: "2026-09-29T02:00:00.000000Z",
+							contentType: "application/json",
+							bytes: 14,
+							encoding: "utf8",
+							text: '{"name":"Ada"}',
+							truncated: false,
+						},
+						{
+							deliveryId: randomUUID(),
+							type: null,
+							receivedAt: "2026-09-29T02:00:01.000000Z",
+							contentType: null,
+							bytes: 3,
+							encoding: "base64",
+							data: "/wAQ",
+							truncated: false,
+						},
+						{
+							deliveryId: randomUUID(),
+							type: null,
+							receivedAt: "2026-09-22T02:00:00.000000Z",
+							contentType: null,
+							bytes: 9,
+							bodyCleared: true,
+						},
+					],
+					more: 0,
+					...payload,
+				},
+			} as unknown as CloudWakeEnvelope,
+		};
+	}
+	it("admits a routine wake with a batch of events from its hook", () => {
+		const { wake, identity } = eventWake();
+		const parsed = parseCloudWakeEnvelope(wake, identity);
+		expect(parsed.source.kind).toBe("event");
+		expect(parsed.payload.events).toHaveLength(3);
+	});
+	it("admits 20 events and a payload at its bound, and nothing past it", () => {
+		const event = () => ({
+			deliveryId: randomUUID(),
+			type: null,
+			receivedAt: "2026-09-29T02:00:00.000000Z",
+			contentType: null,
+			bytes: 0,
+		});
+		const twenty = eventWake({ events: Array.from({ length: 20 }, event) });
+		expect(parseCloudWakeEnvelope(twenty.wake, twenty.identity).payload.events).toHaveLength(20);
+		const sized = (extra: number) => {
+			const { wake, identity } = eventWake({
+				events: [{ ...event(), encoding: "utf8", text: "", truncated: true }],
+			});
+			const base = Buffer.byteLength(JSON.stringify(wake.payload));
+			const events = (wake.payload as { events: Record<string, unknown>[] }).events;
+			events[0].text = "a".repeat(49152 - base + extra);
+			return () => parseCloudWakeEnvelope(wake, identity);
+		};
+		expect(sized(0)).not.toThrow();
+		expect(sized(1)).toThrow();
+	});
+	it.each<[string, Record<string, unknown>, Record<string, unknown>?]>([
+		["another hook's events", { hookId: randomUUID() }],
+		["a hook named otherwise", { hook: { id: randomUUID(), name: "forms", purpose: "Website form" } }],
+		[
+			"more than 20 events",
+			{
+				events: Array.from({ length: 21 }, () => ({
+					deliveryId: randomUUID(),
+					type: null,
+					receivedAt: "2026-09-29T02:00:00.000000Z",
+					contentType: null,
+					bytes: 0,
+				})),
+			},
+		],
+		["a negative remainder", { more: -1 }],
+		[
+			"a content type over 256 characters",
+			{
+				events: [
+					{
+						deliveryId: randomUUID(),
+						type: null,
+						receivedAt: "2026-09-29T02:00:00.000000Z",
+						contentType: "c".repeat(257),
+						bytes: 0,
+					},
+				],
+			},
+		],
+		[
+			"a cleared body that also has text",
+			{
+				events: [
+					{
+						deliveryId: randomUUID(),
+						type: null,
+						receivedAt: "2026-09-29T02:00:00.000000Z",
+						contentType: null,
+						bytes: 1,
+						encoding: "utf8",
+						text: "x",
+						truncated: false,
+						bodyCleared: true,
+					},
+				],
+			},
+		],
+		[
+			"a body marked not cleared",
+			{
+				events: [
+					{
+						deliveryId: randomUUID(),
+						type: null,
+						receivedAt: "2026-09-29T02:00:00.000000Z",
+						contentType: null,
+						bytes: 1,
+						bodyCleared: false,
+					},
+				],
+			},
+		],
+		["an unknown key", { note: "hi" }],
+		[
+			"a body without its truncation flag",
+			{
+				events: [
+					{
+						deliveryId: randomUUID(),
+						type: null,
+						receivedAt: "2026-09-29T02:00:00.000000Z",
+						contentType: null,
+						bytes: 1,
+						encoding: "utf8",
+						text: "x",
+					},
+				],
+			},
+		],
+		[
+			"a type with a space",
+			{
+				events: [
+					{
+						deliveryId: randomUUID(),
+						type: "invoice paid",
+						receivedAt: "2026-09-29T02:00:00.000000Z",
+						contentType: null,
+						bytes: 0,
+					},
+				],
+			},
+		],
+		["a parent run", {}, {}],
+	])("rejects %s", (label, payload, source) => {
+		const { wake, identity } = eventWake(payload, source);
+		const changed = label === "a parent run" ? ({ ...wake, parentRunId: randomUUID() } as CloudWakeEnvelope) : wake;
+		expect(() => parseCloudWakeEnvelope(changed, identity)).toThrow();
+	});
+	it("rejects a hook purpose over 2048 bytes", () => {
+		const { wake, identity } = eventWake();
+		const payload = wake.payload as { hook: Record<string, unknown> };
+		payload.hook.purpose = "p".repeat(2048);
+		expect(() => parseCloudWakeEnvelope(wake, identity)).not.toThrow();
+		payload.hook.purpose = "p".repeat(2049);
+		expect(() => parseCloudWakeEnvelope(wake, identity)).toThrow();
+	});
+	it("rejects the same event twice in one batch", () => {
+		const { wake, identity } = eventWake();
+		const events = (wake.payload as { events: Record<string, unknown>[] }).events;
+		const doubled = {
+			...wake,
+			payload: { ...wake.payload, events: [events[0], { ...events[0] }] },
+		} as CloudWakeEnvelope;
+		expect(() => parseCloudWakeEnvelope(doubled, identity)).toThrow();
 	});
 });

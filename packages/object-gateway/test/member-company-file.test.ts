@@ -357,7 +357,9 @@ describe("selected member binary uploads", () => {
 			const chunks = await Promise.all(
 				metadata.manifest.chunks.map((chunk) => service.store.get(companyId, chunk.sha256, chunk.bytes)),
 			);
-			expect(Buffer.concat(chunks)).toEqual(bytes);
+			// Buffer.equals, not toEqual: toEqual walks 4-8 MiB element by element and blocks
+			// the event loop for seconds, which the server's 5 s keep-alive timeout outlives.
+			expect(Buffer.concat(chunks).equals(bytes)).toBe(true);
 			expect(service.member).toHaveBeenCalledWith(
 				"qorpera_begin_member_company_file_upload",
 				token,
@@ -961,6 +963,11 @@ describe("human and publisher transport separation", () => {
 		[409, "PT409", true, 409],
 		[409, "23505", false, 409],
 		[500, "40001", false, 409],
+		[500, "40P01", false, 409],
+		[500, "55P03", false, 409],
+		[500, "55000", false, 423],
+		[500, "57014", false, 503],
+		[500, "XX000", false, 500],
 		[409, "QRC01", false, 409],
 		[412, "PT412", false, 412],
 	] as const)("classifies %s/%s without retrying uncertainty", async (status, code, rebuild, expectedStatus) => {

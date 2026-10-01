@@ -1,10 +1,11 @@
-import { createHash } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import {
 	readBoundedCloudResponse,
 	supabaseServiceHeaders,
 	withCloudDeadline,
 } from "@qorpera/cloud-client/cloud-request";
 import { type CloudCodingRepository, type JsonValue, parseCloudCodingRepository } from "@qorpera/contracts";
+import type { ConnectorTokenRevocationAuthority } from "./cloud-connector-token-revocation.ts";
 import type { ModelLoginAuthority, ModelLoginRunBinding } from "./cloud-model-login-vault.ts";
 import type { ModelLoginSignInAuthority } from "./cloud-model-login-vault-sign-in.ts";
 import type { ModelLoginUsageAuthority } from "./cloud-model-login-vault-usage.ts";
@@ -946,7 +947,12 @@ export class SupabaseCloudSecretBrokerAuthority implements CloudSecretBrokerAuth
  * one renewal); it has no table privileges and never holds a Supabase service
  * key. */
 export class PostgresCloudSecretBrokerAuthority
-	implements CloudSecretBrokerAuthority, ModelLoginAuthority, ModelLoginSignInAuthority, ModelLoginUsageAuthority
+	implements
+		CloudSecretBrokerAuthority,
+		ModelLoginAuthority,
+		ModelLoginSignInAuthority,
+		ModelLoginUsageAuthority,
+		ConnectorTokenRevocationAuthority
 {
 	readonly #database: CloudSecretPostgresClient;
 	readonly #brokerAuthorityId: string;
@@ -1105,12 +1111,74 @@ export class PostgresCloudSecretBrokerAuthority
 		);
 	}
 
+	/** Company delete D6: this authority's queued connector tokens (20260928269500). */
+	claimConnectorTokenRevocations(limit: number, signal: AbortSignal): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_claim_connector_token_revocations($1::uuid,$2::text,$3::integer) as result",
+			[this.#brokerAuthorityId, this.#brokerCapabilitySha256, limit],
+			signal,
+		);
+	}
+
+	completeConnectorTokenRevocation(
+		answer: Parameters<ConnectorTokenRevocationAuthority["completeConnectorTokenRevocation"]>[0],
+		signal: AbortSignal,
+	): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_complete_connector_token_revocation($1::uuid,$2::text,$3::uuid,$4::bigint,$5::text,$6::text) as result",
+			[
+				this.#brokerAuthorityId,
+				this.#brokerCapabilitySha256,
+				answer.secretId,
+				answer.version,
+				answer.outcome,
+				answer.error,
+			],
+			signal,
+		);
+	}
+
+	takeIdleModelLoginRenewal(signal: AbortSignal): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_take_idle_model_login_renewal($1::uuid,$2::text) as result",
+			[this.#brokerAuthorityId, this.#brokerCapabilitySha256],
+			signal,
+		);
+	}
+
+	listModelLoginsWithoutAccount(signal: AbortSignal): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_model_logins_without_account($1::uuid,$2::text) as result",
+			[this.#brokerAuthorityId, this.#brokerCapabilitySha256],
+			signal,
+		);
+	}
+
+	recordModelLoginAccount(
+		account: Parameters<ModelLoginAuthority["recordModelLoginAccount"]>[0],
+		signal: AbortSignal,
+	): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_record_model_login_account($1::uuid,$2::text,$3::uuid,$4::text) as result",
+			[this.#brokerAuthorityId, this.#brokerCapabilitySha256, account.loginId, account.accountIdentity],
+			signal,
+		);
+	}
+
+	switchOffReplacedNodeLogins(signal: AbortSignal): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_switch_off_replaced_node_logins($1::uuid,$2::text) as result",
+			[this.#brokerAuthorityId, this.#brokerCapabilitySha256],
+			signal,
+		);
+	}
+
 	describeModelLoginSignIn(
 		request: Parameters<ModelLoginSignInAuthority["describeModelLoginSignIn"]>[0],
 		signal: AbortSignal,
 	): Promise<unknown> {
 		return this.#rpc(
-			"select public.qorpera_describe_model_login_sign_in($1::uuid,$2::text,$3::uuid,$4::text) as result",
+			"select public.qorpera_describe_model_login_sign_in_v2($1::uuid,$2::text,$3::uuid,$4::text) as result",
 			[this.#brokerAuthorityId, this.#brokerCapabilitySha256, request.loginId, request.capabilitySha256],
 			signal,
 		);
@@ -1143,6 +1211,80 @@ export class PostgresCloudSecretBrokerAuthority
 				completion.accessExpiresAt,
 				completion.providerAccountReference,
 				completion.providerAccountEmail,
+			],
+			signal,
+		);
+	}
+
+	/** Sign in with ChatGPT (20260928329830): a plan sign-in's completion, with OpenAI's earliest renewal. */
+	completeChatGptPlanSignIn(
+		completion: Parameters<ModelLoginSignInAuthority["completeChatGptPlanSignIn"]>[0],
+		signal: AbortSignal,
+	): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_complete_chatgpt_plan_sign_in($1::uuid,$2::text,$3::uuid,$4::text,$5::uuid,$6::text,$7::text,$8::text,$9::timestamptz,$10::timestamptz,$11::text,$12::text,$13::timestamptz) as result",
+			[
+				this.#brokerAuthorityId,
+				this.#brokerCapabilitySha256,
+				completion.loginId,
+				completion.capabilitySha256,
+				completion.modelLoginId,
+				completion.keyId,
+				Buffer.from(completion.encryptedEnvelope).toString("base64"),
+				completion.envelopeSha256,
+				completion.accessIssuedAt,
+				completion.accessExpiresAt,
+				completion.providerAccountReference,
+				completion.providerAccountEmail,
+				completion.renewNotBefore,
+			],
+			signal,
+		);
+	}
+
+	commitChatGptPlanRenewal(
+		renewal: Parameters<ModelLoginAuthority["commitChatGptPlanRenewal"]>[0],
+		signal: AbortSignal,
+	): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_commit_chatgpt_plan_renewal($1::uuid,$2::text,$3::uuid,$4::uuid,$5::bigint,$6::text,$7::text,$8::text,$9::timestamptz,$10::timestamptz,$11::timestamptz) as result",
+			[
+				this.#brokerAuthorityId,
+				this.#brokerCapabilitySha256,
+				renewal.loginId,
+				renewal.token,
+				renewal.baseVersion,
+				renewal.keyId,
+				Buffer.from(renewal.encryptedEnvelope).toString("base64"),
+				renewal.envelopeSha256,
+				renewal.accessIssuedAt,
+				renewal.accessExpiresAt,
+				renewal.renewNotBefore,
+			],
+			signal,
+		);
+	}
+
+	takeChatGptPlanRevocation(signal: AbortSignal): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_take_chatgpt_plan_revocation($1::uuid,$2::text) as result",
+			[this.#brokerAuthorityId, this.#brokerCapabilitySha256],
+			signal,
+		);
+	}
+
+	finishChatGptPlanRevocation(
+		revocation: Parameters<ModelLoginAuthority["finishChatGptPlanRevocation"]>[0],
+		signal: AbortSignal,
+	): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_finish_chatgpt_plan_revocation($1::uuid,$2::text,$3::uuid,$4::uuid,$5::bigint) as result",
+			[
+				this.#brokerAuthorityId,
+				this.#brokerCapabilitySha256,
+				revocation.loginId,
+				revocation.token,
+				revocation.baseVersion,
 			],
 			signal,
 		);
@@ -1192,17 +1334,89 @@ export class PostgresCloudSecretBrokerAuthority
 		);
 	}
 
-	async #rpc(text: string, values: readonly unknown[], signal: AbortSignal): Promise<unknown> {
-		return withCloudDeadline(
-			async () => {
-				const result = await this.#database.query<{ result: unknown }>(text, values);
-				if (result.rowCount !== 1 || result.rows.length !== 1 || !("result" in (result.rows[0] ?? {}))) {
-					throw new Error("Cloud secret authority returned invalid data");
-				}
-				return result.rows[0]?.result;
-			},
-			5000,
+	#rpc(text: string, values: readonly unknown[], signal: AbortSignal): Promise<unknown> {
+		return oneCloudSecretRpc(this.#database, text, values, signal);
+	}
+}
+
+/** One broker database call: exactly one row with a `result`, within 5 s. */
+function oneCloudSecretRpc(
+	database: CloudSecretPostgresClient,
+	text: string,
+	values: readonly unknown[],
+	signal: AbortSignal,
+): Promise<unknown> {
+	return withCloudDeadline(
+		async () => {
+			const result = await database.query<{ result: unknown }>(text, values);
+			if (result.rowCount !== 1 || result.rows.length !== 1 || !("result" in (result.rows[0] ?? {}))) {
+				throw new Error("Cloud secret authority returned invalid data");
+			}
+			return result.rows[0]?.result;
+		},
+		5000,
+		signal,
+	);
+}
+
+const PRINCIPAL_SECRET = /^[A-Za-z0-9_-]{43}$/;
+
+/** The shared vault's capabilities (Vault By Default), all derived from its one principal secret so both
+ * copies of the vault hold the same ones and nothing is stored: its own, which lets it register new
+ * companies, and each company's, whose hash is that company's authority row. */
+export function sharedBrokerCapability(principalSecret: string, companyId?: string): string {
+	if (!PRINCIPAL_SECRET.test(principalSecret)) throw new Error("Shared cloud secret broker secret is invalid");
+	const label =
+		companyId === undefined
+			? "qorpera.broker-principal/v1"
+			: `qorpera.broker-authority/v1:${uuid(companyId, "Shared cloud secret broker company").toLowerCase()}`;
+	return createHmac("sha256", Buffer.from(principalSecret, "base64url")).update(label).digest("base64url");
+}
+
+/** The shared vault's principal: it lists the companies it serves and registers new ones, and hands out
+ * each company's own authority, which every existing broker call uses unchanged. */
+export class PostgresCloudSecretBrokerPrincipal {
+	readonly #database: CloudSecretPostgresClient;
+	readonly #principalId: string;
+	readonly #principalSecret: string;
+	readonly #capabilitySha256: string;
+
+	constructor(options: { database: CloudSecretPostgresClient; principalId: string; principalSecret: string }) {
+		this.#database = options.database;
+		this.#principalId = uuid(options.principalId, "Shared cloud secret broker principal");
+		this.#principalSecret = options.principalSecret;
+		this.#capabilitySha256 = createHash("sha256")
+			.update(sharedBrokerCapability(options.principalSecret))
+			.digest("hex");
+	}
+
+	/** The companies it serves and the new companies it should register. */
+	companies(signal: AbortSignal): Promise<unknown> {
+		return oneCloudSecretRpc(
+			this.#database,
+			"select public.qorpera_broker_principal_companies($1::uuid,$2::text) as result",
+			[this.#principalId, this.#capabilitySha256],
 			signal,
 		);
+	}
+
+	/** Registers a new company: its authority row carries the hash of the capability derived for it. */
+	register(companyId: string, signal: AbortSignal): Promise<unknown> {
+		const capability = sharedBrokerCapability(this.#principalSecret, companyId);
+		return oneCloudSecretRpc(
+			this.#database,
+			"select public.qorpera_register_company_with_broker_principal($1::uuid,$2::text,$3::uuid,$4::text) as result",
+			[this.#principalId, this.#capabilitySha256, companyId, createHash("sha256").update(capability).digest("hex")],
+			signal,
+		);
+	}
+
+	/** A registered company's own authority: every existing broker call with its derived capability. */
+	authority(companyId: string, authorityId: string): PostgresCloudSecretBrokerAuthority {
+		return new PostgresCloudSecretBrokerAuthority({
+			database: this.#database,
+			brokerAuthorityId: authorityId,
+			brokerCapability: sharedBrokerCapability(this.#principalSecret, companyId),
+		});
 	}
 }

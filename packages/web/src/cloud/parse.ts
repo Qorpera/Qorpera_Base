@@ -252,10 +252,22 @@ export function parseTeam(value: unknown): HostedProfileTeam {
 	}
 	const manageMembers =
 		typeof capabilities.manage_members === "boolean" ? capabilities.manage_members : capabilities.authorize;
+	const flag = (value: unknown) => (typeof value === "boolean" ? value : undefined);
+	const manageFounders = flag(capabilities.manage_founders);
+	const leave = flag(capabilities.leave);
+	const deleteCompany = flag(capabilities.delete_company);
 	return {
 		profileId: uuid(input.profile_id, "team profile id"),
 		role: teamRole,
-		capabilities: { read: true, write: capabilities.write, authorize: capabilities.authorize, manageMembers },
+		capabilities: {
+			read: true,
+			write: capabilities.write,
+			authorize: capabilities.authorize,
+			manageMembers,
+			...(manageFounders === undefined ? {} : { manageFounders }),
+			...(leave === undefined ? {} : { leave }),
+			...(deleteCompany === undefined ? {} : { deleteCompany }),
+		},
 		members: array(input.members, "profile member list").map(parseMember),
 		invitations: array(input.invitations, "profile invitation list").map(parseInvitation),
 	};
@@ -442,6 +454,15 @@ export function parseRunRecovery(value: unknown): HostedRunRecovery {
 		jobStatus: oneOf(job.status, ["failed", "cancelled"], "recovery job status"),
 		...(lastError ? { lastError } : {}),
 		...(recovery.proposal_id ? { proposalId: uuid(recovery.proposal_id, "recovery proposal id") } : {}),
+		// Absent before 20260929910000: then only the error text can tell.
+		...(typeof recovery.usage_limit === "boolean" ? { usageLimit: recovery.usage_limit } : {}),
+		// Absent before 20260929993000: then a plan's limit reads as any account's.
+		...(typeof recovery.paid_by_chatgpt_plan === "boolean"
+			? { paidByChatgptPlan: recovery.paid_by_chatgpt_plan }
+			: {}),
+		...(typeof run.requested_by_user_id === "string" && UUID_PATTERN.test(run.requested_by_user_id)
+			? { requestedByUserId: run.requested_by_user_id.toLowerCase() }
+			: {}),
 		unsettledOperations: operations.filter(
 			(operation) => operation.status === "executing" || operation.status === "ambiguous",
 		).length,

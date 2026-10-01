@@ -1,7 +1,8 @@
 import {
-	boundedObjectOperation,
+	companyStateFailure,
 	ObjectDependency,
 	ObjectDependencyError,
+	postgrestErrorCode,
 	readBoundedObjectResponse,
 } from "./dependency.ts";
 import { supabaseRequestHeaders } from "./supabase-headers.ts";
@@ -115,36 +116,18 @@ export class SupabaseMemberCompanyAuthority implements MemberCompanyAuthority {
 				signal: combined,
 			});
 			if (!response.ok) {
-				// Never inspect a denial body. A very short, bounded error-code
-				// read distinguishes an atomic head conflict from a stale path.
-				let code: unknown;
-				if (response.status === 409 || response.status === 500) {
-					const errorBody = new AbortController();
-					try {
-						const body: unknown = JSON.parse(
-							new TextDecoder().decode(
-								await boundedObjectOperation(
-									() =>
-										readBoundedObjectResponse(response, 4096, AbortSignal.any([combined, errorBody.signal])),
-									250,
-								),
-							),
-						);
-						if (body && typeof body === "object" && "code" in body) code = body.code;
-					} catch {
-						// A missing/error body cannot authorize a rebuild.
-					} finally {
-						errorBody.abort();
-					}
-				} else void response.body?.cancel().catch(() => undefined);
-				if (response.status === 409 && code === "PT409") throw new MemberCompanyHeadConflict();
-				if (response.status === 500 && code === "40001") throw new ObjectDependencyError(409);
+				// Never inspect a denial body. A very short, bounded error-code read distinguishes an atomic head
+				// conflict from a stale path, and one company's state or lock conflict from the database's health.
+				// A missing or unreadable body cannot authorize a rebuild and stays a dependency failure.
+				if (response.status === 500) throw companyStateFailure(await postgrestErrorCode(response, combined));
+				if (response.status !== 409) void response.body?.cancel().catch(() => undefined);
+				else if ((await postgrestErrorCode(response, combined)) === "PT409") throw new MemberCompanyHeadConflict();
 				throw new ObjectDependencyError(response.status);
 			}
 			if (response.status === 204) return null;
 			const bytes = await readBoundedObjectResponse(response, 8 * 1024 * 1024, combined);
 			combined.throwIfAborted();
 			return bytes.length ? (JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as unknown) : null;
-		});
+		}, signal);
 	}
 }

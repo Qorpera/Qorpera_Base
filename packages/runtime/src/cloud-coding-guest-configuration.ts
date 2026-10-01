@@ -1,24 +1,21 @@
 import { type CloudCodingSessionLayout, cloudCodingSessionLayout } from "@qorpera/contracts";
 
+/** Only a storage bound: how much of one command's output the NAS keeps. A
+ * command has no time, memory, CPU or task limit of its own (Jonas,
+ * 2026-09-28: no caps on the work); a session's commands share the machine
+ * with its other sessions through equal cgroup weights, and the machine keeps
+ * a reserve for its own control (the coding slice's MemoryMax). */
 export interface CodingGuestResourceProfile {
-	maxTimeoutMs: number;
-	memoryBytes: number;
-	tasksMax: number;
-	cpuQuotaPercent: number;
 	maxLogBytes: number;
 }
 export const DEFAULT_CODING_GUEST_RESOURCES: Readonly<CodingGuestResourceProfile> = Object.freeze({
-	maxTimeoutMs: 1800000,
-	memoryBytes: 2147483648,
-	tasksMax: 256,
-	cpuQuotaPercent: 200,
 	maxLogBytes: 67108864,
 });
 /** One session's configuration inside its member's coding machine. The vmId
  * is the machine the session is attached to for this boot; the paths are the
  * session's layout (cloudCodingSessionLayout) and nothing else. */
 export interface CodingGuestConfiguration {
-	schema: "qorpera.coding-command-guest/v3";
+	schema: "qorpera.coding-command-guest/v4";
 	workerId: string;
 	vmId: string;
 	bootId: string;
@@ -47,7 +44,7 @@ export function parseCodingGuestConfiguration(value: unknown, folders?: CodingGu
 		Array.isArray(input) ||
 		Object.keys(input).sort().join() !==
 			"bootId,cachePath,gid,homePath,outputRoot,resourceProfile,schema,uid,vmId,workerId,workspacePath" ||
-		input.schema !== "qorpera.coding-command-guest/v3" ||
+		input.schema !== "qorpera.coding-command-guest/v4" ||
 		![input.workerId, input.vmId, input.bootId].every((id) => typeof id === "string" && uuid.test(id)) ||
 		![input.uid, input.gid].every((id) => Number.isSafeInteger(id) && Number(id) >= 1000 && Number(id) < 4294967295)
 	)
@@ -62,10 +59,6 @@ export function parseCodingGuestConfiguration(value: unknown, folders?: CodingGu
 		throw new Error("INVALID_CODING_GUEST_PATHS");
 	const profile = input.resourceProfile as Record<string, unknown>;
 	const bounds = {
-		maxTimeoutMs: [1000, 1800000],
-		memoryBytes: [268435456, 137438953472],
-		tasksMax: [16, 4096],
-		cpuQuotaPercent: [10, 6400],
 		maxLogBytes: [1048576, 1073741824],
 	};
 	if (

@@ -31,7 +31,9 @@ export async function authorizeCodingCommand(
 		const operationKey = result.operationKey;
 		const inputSha256 = createHash("sha256").update(cloudNativeToolOperationEnvelope(parsed.identity, {
 			tool: "coding_run_command", toolVersion: "v1", logicalOperationKey: operationKey,
-			arguments: { operationKey, command: request.input.command, timeoutMs: request.input.timeoutMs },
+			// The tool records a deadline only when the agent chose one.
+			arguments: { operationKey, command: request.input.command,
+				...(request.input.timeoutMs === null ? {} : { timeoutMs: request.input.timeoutMs }) },
 			target: { schema: "qorpera.coding-command-target/v1", ...request.scope }, requiresCompanyRevision: false,
 		})).digest("hex");
 		if (inputSha256 !== result.inputSha256 || inputSha256 !== request.input.inputSha256) throw new Error("CODING_COMMAND_INPUT_DIFFERS");

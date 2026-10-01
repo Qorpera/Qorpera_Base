@@ -151,8 +151,11 @@ All tables are keyed by company environment.
     round 3). Resources are resolved by the same key
     (`qorpera_folder_path_resource`). When two resources share one folder key
     (possible while the shared unique key folds ASCII only), the path has no
-    covering resource and only the platform reaches it; C1b gives the stored
-    folder key a unique index. `snapshot-v1` keeps today's key.
+    covering resource and only the platform reaches it. C1b-2's folder
+    resource mutators refuse to create a tie. A plain unique index on the
+    folder key is not added to the shared table, because snapshot-v1 rows may
+    already collide (C1B §3). Lookups use an expression index on
+    `(environment_id, qorpera_folder_key(path))`. `snapshot-v1` keeps today's key.
   - **After a PostgreSQL major upgrade**, the Unicode tables behind
     `normalize()` and `pg_c_utf8` case mapping may have changed. The runbook
     step: find entries and resources whose stored key differs from
@@ -271,7 +274,9 @@ is never upgraded. The steps:
 
 1. **Commit id and operation key.** The commit id is assigned and the
    operation key claimed. A replay stops here and returns the stored outcomes.
-2. **The run.** The job is taken `FOR KEY SHARE`.
+2. **The run.** For an effect that needs its run to itself (a tool call, a send, a receipt; not a commit or a
+   release), the run mutex first: the run's budget row `FOR UPDATE` (C1C §5.2). Then the job is taken
+   `FOR KEY SHARE`.
    - Lease renewal takes `FOR NO KEY UPDATE`, which does not conflict with
      it, so renewal is never starved.
    - Every change that ends a lease (requeue, cancel, handoff, completion,
@@ -282,6 +287,11 @@ is never upgraded. The steps:
      The commit re-checks the agent's current authority and status, and the
      approver's right to answer the card. It records the agent as actor and
      the member as approver, and refuses the unit if either check fails.
+   - **A view** (C1B "C1b-3: views" §4): the job of its live run, if any, then
+     the view row `FOR KEY SHARE`, which closing and superseding (`FOR
+     UPDATE`) wait for. Releases take them in the same order, and so must
+     anything that locks two of them: the job, then the view, then the fence
+     (step 3) and the principal rows (step 4).
 3. **The folder fence.** The company's fence row is taken `FOR KEY SHARE`.
    - Stop and resume take it `FOR UPDATE`.
    - After this lock, the pause is read again, as today's rule requires
@@ -296,6 +306,15 @@ is never upgraded. The steps:
      `folder-v2` path (§9).
 4. **Principals, indexes, authority and uniques.** These are taken once, in
    one global order used everywhere:
+   0. the company's profile row, `FOR KEY SHARE` (never stronger, and only this company's), in every
+      save whose hook writes a roster row (C1b-3a; it was the head of rank 2 in F2-1). A roster write ends in a company
+      operation: the operation clock, then a foreign key to `qorpera_profiles`. The thread trigger's
+      session update is another one. On snapshot-v1, posting takes the profile row `FOR UPDATE` (gc fence)
+      before the room and the clock, so the save takes the profile row first too (F2-1, #461; test
+      701). On `folder-v2` (C1c-3a), posting takes the profile row `KEY SHARE` and its room `FOR SHARE`,
+      so a save that changes a group chat meets it at the room instead (C1C §6.2). It comes before the members because #462's leave, remove and role change lock the
+      profile row and then the member (C1B "C1b-3: views" §4). The commit refuses
+      `qorpera_profiles` at any other rank;
    1. members;
    2. staff;
    3. execution authorities;
@@ -306,6 +325,10 @@ is never upgraded. The steps:
    7. grants;
    8. vault rows;
    9. unique-key claims, by kind then key.
+
+   After rank 9 (C1C §5.7): run-owned rows (receipts, action reviews, context views); rank 10's recheck of read sets;
+   every session the transaction will write, `FOR UPDATE` in id order; and the company's operation clock, which the
+   first session write takes (an insert, a title or status change, or an event). Admission and the folder clock stay last.
 
    These numbers are the lock ranks, and all nine come before paths (step 5),
    objects (step 6), admission (step 10) and the clock (step 11). The commit
@@ -376,6 +399,10 @@ is never upgraded. The steps:
    index row written points at its entry's current version. The folder core's
    tables have no deferred constraints or deferred triggers; an activation
    check verifies this for them. So nothing heavy runs at COMMIT.
+   - **The anchor step, for a view** (C1B "C1b-3: views" §3, §4): the view's
+     anchor `FOR SHARE` (the screen or the coding session), then the view's
+     full validity re-checked in a new statement. It comes after the check and
+     before admission and the clock, so it is held only to the end.
 10. **Admission.** If the transaction inserts a wake, it takes the company's
     admission row `FOR NO KEY UPDATE` as its last lock before the clock, and
     inserts its wakes after it. That covers:
@@ -691,6 +718,31 @@ check reports drift.
 
   The journal is kept for good, so "resync" is returned only for an invalid
   cursor.
+
+  As built in C1f (`20260928237000_folder_core_feed`):
+  - The signature is `qorpera_folder_feed(env, actor, after_seq, limit,
+    cursor)`. It is for service_role only. Its actors are the platform, a
+    member and a run, resolved as `qorpera_folder_read` resolves them; view
+    actors come with C1b-3.
+  - A position is `after_seq` (every seq up to it is done) plus an optional
+    `cursor {unitNo, version}` inside seq `after_seq + 1`. A subtree move can
+    touch 100,000 paths, so a page may stop inside a change set. A change set
+    is whole in the reader's hands once `next.afterSeq` has reached its seq.
+  - Changes are ordered by `(unit_no, version)`. The order within a unit is
+    stable but has no meaning: a unit is one atomic path set.
+  - Each call examines at most `limit` changes and authority rows, readable or
+    not. A member's page may therefore hold fewer events, or none, and still
+    advance. A change set none of whose paths the actor may read is left out.
+    A move's `priorVersion` is shown only when the actor may read the source.
+  - Each page returns `asOfSeq`, `next {afterSeq, cursor}` and `more`. A
+    current version's `updatedAt` is its entry's, as read and list report it;
+    a superseded version carries none.
+  - The clock is service_role's to poll: `select` on `qorpera_folder_clocks`.
+    It is not published to Realtime: as we read `realtime.apply_rls`,
+    Realtime sends every subscriber that may not select a published table an
+    "unauthorized" event per change, which would show any client the timing
+    of every commit. Members' and
+    clients' own hints come with C4.
 - **Wakes.**
   - Listener cursors hold `processed_seq`. The drain reads a batch of journal
     rows after it and matches every unit, including a move's source path.
@@ -708,7 +760,8 @@ check reports drift.
   4,096 revisions) becomes a comparison of sequence numbers. No substrate
   version is created per commit.
 - **Clients.**
-  - The clock row is the Realtime hint, and the hints are coalesced.
+  - The clock row is the hint: the node's folder service polls it (C1f), and
+    C4 gives members and clients a hint of their own. Hints are coalesced.
     `last_seq` reveals only that something changed.
   - On a hint, the web client asks the feed what changed instead of listing
     everything again.
@@ -763,16 +816,21 @@ An object is retained while it is referenced by any of:
   unlink runs under the object row lock and checks that its lease token is
   still current, so a GC that outlived its lease never unlinks.
 - **G3. A deleting object is never "already there".** GC holds a lease with an
-  expiry on each object it deletes. An upload of a hash marked deleting waits
-  until GC finishes or its lease expires, then writes the bytes again. A
-  recovery step clears the marks of expired leases. `put`
-  asks the catalog first, unlike today's `object-store.ts:60`. The unlink goes
-  through a quarantine rename and a final re-check. If the re-check finds a
-  root, GC clears the mark and restores the bytes from quarantine; otherwise
-  it removes them. There is no unconditional `remove` as at `:110-113`. The
-  object gateway is shared, so this catalog check on `put` is the one
-  behaviour change that `snapshot-v1` companies see. It changes no outcome for
-  them.
+  expiry on each object it deletes. A new reference to a hash marked
+  deleting, an upload's included, is refused: as a conflict (the runtime's
+  QRC01 409 envelope; never 40001) by staging and replication, as missing by
+  a download, and as `bytes_unverified` by a commit. The writer redoes its
+  call once GC has finished or the lease has expired; an expired lease is no
+  mark. `put` itself is unchanged: every route that writes into a `folder-v2`
+  company's NAS path refuses `folder-v2` before its put, and the folder byte
+  path checks the mark after the catalog row's lock where it takes one (the
+  upload's authorization reads plainly, and its committed intent is a root)
+  (amended 2026-10-01, F1 and F2, #605;
+  C1d-2a's per-route tests are the evidence, and 3m checks it). The unlink
+  goes through a quarantine rename and a final re-check. If the re-check
+  finds a root, GC clears the mark and restores the bytes from quarantine;
+  otherwise it removes them. There is no unconditional `remove` as at
+  `:110-113`. `snapshot-v1` companies see no change.
 - **G4. Grace is measured from the last reference.** Each object keeps
   `unreferenced_since`, set when its last root ends and cleared on reuse. GC
   considers only objects past a grace window measured from that time, not
@@ -812,7 +870,7 @@ GC is the largest correctness risk of the design, so it gets its own tests:
 | Folder fence row | not present (the wake-admission fence, `FOR UPDATE`) | effects, wake admission and the post-commit worker `FOR KEY SHARE`; stop and resume `FOR UPDATE`; reads and GC never |
 | Admission row | not present | every wake-inserting or wake-admitting transaction `FOR NO KEY UPDATE`, last before the clock; multi-company loops one company per transaction |
 | Job row | `FOR UPDATE`, which also serializes a run's own reads | commits and effects `FOR KEY SHARE`; renewal `FOR NO KEY UPDATE`; lease-ending changes `FOR UPDATE`; reads never |
-| Members, staff, rooms, index rows, resources, grants, vault rows, unique claims | various, unordered | once, in the order of §3 step 4: `FOR NO KEY UPDATE` for rows rewritten, `FOR KEY SHARE` for rows referenced |
+| Members, staff, rooms, index rows, resources, grants, vault rows, unique claims | various, unordered | once, in the order of §3 step 4: `FOR NO KEY UPDATE` for rows rewritten, `FOR KEY SHARE` for rows referenced. One exception: a member's post, a room delivery's retry and a member's answer in an agent's thread take their room `FOR SHARE` (C1C §6.2, §6.3) |
 | Entry rows | the one path, after the head | targets and sources, plus every ancestor `FOR KEY SHARE`, in one ancestors-first order; absent rows claimed in order; a subtree unit locks only its root; no update changes a key |
 | Clock | none | last, from the increment to the end of the commit |
 
@@ -957,7 +1015,7 @@ and the machine-side session F3, on #408):
 | Slice | Contents | Owner |
 | --- | --- | --- |
 | C1a | the flag; the tables; the change-set commit for members and the platform; reads and listings (with each entry's version time); today's object and artifact GC skipping `folder-v2` | storage core |
-| C1f | `qorpera_folder_feed` (the paths each change set touched, filtered by read authority, with `asOfSeq`) and a service-only Realtime clock hint, so the read-only mount can follow changes before C4 | F3, reviewed by the storage core |
+| C1f | `qorpera_folder_feed` (the paths each change set touched, filtered by read authority, with `asOfSeq`) and the clock polled by service_role, so the read-only mount can follow changes before C4 | F3, reviewed by the storage core |
 | C1b | run actors (job, lease, fence, causal wake, session kind, requester), computer holders (the company-wide view plus the holder's own authority) and coding sessions (agent ∩ member, `agents/**` and `rules/**` read-only); authority revisions; read sets and records; explicit resources and bases; review classification in SQL; the call sites and inert stubs of the §5 hook that F2 fills | storage core |
 | C1c | the actor's `folder-v2` branch and the per-caller decisions; the raw `/v1/profile-objects` fallback refusing `folder-v2`; the activation checks | a separate session |
 | C1d | GC G1–G4; upload intents; the object gateway's put and remove; a `folder-v2` byte check that never locks the profile row; the storage usage row and the quota trigger | a separate session |
@@ -982,7 +1040,7 @@ For `folder-v2` companies:
 ### C4. Journal consumers and clients
 
 - The wake drain works on sequence numbers, and the pin becomes `companySeq`.
-- The feed and the Realtime hint.
+- The members' and clients' hint (the feed itself is C1f).
 - The observability views.
 - The web client's file page, history view and editors (rules, sections,
   agent details, routines, group chats) branch on the core flag, and write

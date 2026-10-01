@@ -1,5 +1,6 @@
 import type { User } from "@supabase/supabase-js";
 import { CloudApi } from "../cloud/api.ts";
+import { forgetChatGptPlanSignIn, takeChatGptPlanReturn } from "../cloud/chatgpt-plan-sign-in.ts";
 import { type Cloud, describeError } from "../cloud/client.ts";
 import { createWebCompanyAgents } from "../cloud/company-agents.ts";
 import { WebCompanyFiles } from "../cloud/company-files.ts";
@@ -22,7 +23,9 @@ import { RailLayout } from "../ui/rail-layout.ts";
 import { blankSkeleton, pageSkeleton, railSkeleton, threadSkeleton } from "../ui/skeleton.ts";
 import { AuthController } from "./auth.ts";
 import { CompanyController } from "./company.ts";
+import { FoundingController } from "./founding.ts";
 import { MemberPictures } from "./member-pictures.ts";
+import { PlanPayments, takeCheckoutReturn } from "./plan-payments.ts";
 import { currentRoute, navigate, type Route } from "./router.ts";
 import { createConversationStarter } from "./start-conversation.ts";
 import { debounce } from "./state.ts";
@@ -33,12 +36,14 @@ import { ComputerPanels } from "./views/computer.ts";
 import { ConversationView } from "./views/conversation.ts";
 import { ExecutionNotices } from "./views/execution-notices.ts";
 import { FeedbackView } from "./views/feedback.ts";
+import { FoundingView } from "./views/founding.ts";
 import { HubController, renderHub } from "./views/hub.ts";
 import { LiveCompanyFileView } from "./views/live-company-file.ts";
 import { type MeetState, renderMeet } from "./views/meet.ts";
 import { NewConversationView } from "./views/new-conversation.ts";
 import { renderPlan } from "./views/plan.ts";
 import { type SettingsTab, SettingsView } from "./views/settings.ts";
+import { finishPlanSignIn, memberPlanSignIn } from "./views/settings-connections.ts";
 import { noteConnectorReturn } from "./views/settings-services.ts";
 import { renderRail, renderTopbar, type ShellContext } from "./views/shell.ts";
 import { renderSignIn } from "./views/signin.ts";
@@ -60,6 +65,15 @@ export function mountApplication(
 ): () => void {
 	const auth = new AuthController(cloud);
 	let hub = new HubController(api);
+	/** The founding table on screen, if any; one at a time, like the company. */
+	let founding: { controller: FoundingController; view: FoundingView } | undefined;
+	function teardownFounding(): void {
+		if (!founding) return;
+		founding.controller.dispose();
+		founding = undefined;
+		// Leaving a table's page: joins, answers and closes made there show on the hub.
+		void hub.refresh();
+	}
 	// Every initials disc on the page shows the person's own picture through this store.
 	const pictures = new MemberPictures(api);
 	setPersonPictures(pictures);
@@ -127,6 +141,10 @@ export function mountApplication(
 	// Taken from the page hash once at startup and on every route change; the
 	// broker appends it after the provider consent (see cloud/connectors.ts).
 	let connectorReturn = takeConnectorReturn();
+	// "Continue with ChatGPT": OpenAI's callback sends the member back with a one-time confirmation.
+	let planReturn = takeChatGptPlanReturn();
+	// Stripe's checkout page sends the member back to the account page.
+	let checkoutReturn = takeCheckoutReturn();
 	let accountUserId: string | undefined;
 	let navigationOpen = false;
 	let navigationFocus: "rail" | "toggle" | undefined;
@@ -161,6 +179,8 @@ export function mountApplication(
 	}
 	function onRouteChange(): void {
 		connectorReturn = takeConnectorReturn() ?? connectorReturn;
+		planReturn = takeChatGptPlanReturn() ?? planReturn;
+		checkoutReturn = takeCheckoutReturn() ?? checkoutReturn;
 		if (liveFile && liveFile.routeHash !== location.hash) {
 			const message = liveFile.leaveMessage();
 			if (message && !window.confirm(message)) {
@@ -172,6 +192,7 @@ export function mountApplication(
 		}
 		closeSettings(false);
 		closeFeedback(false);
+		settingsAfterHome = undefined;
 		routeRevision++;
 		resolvingRoute = undefined;
 		routeError = undefined;
@@ -194,9 +215,13 @@ export function mountApplication(
 	let teamFeedback: TeamFeedback = {};
 	let accountState: AccountViewState = {};
 	const accountPlan = h("div");
+	let accountPayments: PlanPayments | undefined;
 	let meetState: MeetState = {};
 	let unsubscribeCompany: (() => void) | undefined;
 	let homeReason: string | undefined;
+	/** A Settings tab to open once the company home has resolved: home moves on to the Co-Founder's
+	 * conversation, and that route change would close Settings opened before it. */
+	let settingsAfterHome: SettingsTab | undefined;
 
 	const render = debounce(() => void draw(), 10);
 
@@ -213,6 +238,14 @@ export function mountApplication(
 	auth.store.subscribe(() => {
 		const userId = auth.userId;
 		if (userId !== accountUserId) {
+			// A return from Stripe belongs to the member who paid, not to whoever signs in next;
+			// the first sign-in of the page (back from Stripe) keeps it.
+			if (accountUserId !== undefined) checkoutReturn = undefined;
+			// So does a ChatGPT plan sign-in: it is finished only for the member who started it.
+			if (accountUserId !== undefined && planReturn) {
+				planReturn = undefined;
+				forgetChatGptPlanSignIn();
+			}
 			closeSettings(false);
 			closeFeedback(false);
 			accountUserId = userId;
@@ -220,9 +253,12 @@ export function mountApplication(
 			accountRevision++;
 			routeRevision++;
 			teardownCompany();
+			teardownFounding();
 			hub.dispose();
 			profiles = [];
 			accountState = {};
+			accountPayments?.dispose();
+			accountPayments = undefined;
 			meetState = {};
 			resolvingRoute = undefined;
 			routeError = undefined;
@@ -279,6 +315,12 @@ export function mountApplication(
 	 * text live only in their screens, so those stay until they are left. */
 	function redrawScreens(): void {
 		if (disposed) return;
+		// The founding table's page keeps its text between refreshes; a new language builds it again.
+		if (founding)
+			founding = {
+				controller: founding.controller,
+				view: new FoundingView(founding.controller, founding.view.drafts()),
+			};
 		notices?.dispose();
 		notices = undefined;
 		executionNotices.replaceChildren();
@@ -296,6 +338,7 @@ export function mountApplication(
 	}
 
 	function teardownCompany(): void {
+		settingsAfterHome = undefined;
 		notices?.dispose();
 		notices = undefined;
 		executionNotices.replaceChildren();
@@ -384,13 +427,39 @@ export function mountApplication(
 					)(sessionId, clientInputId, text, signal, files, executionSponsor, roomTarget),
 			);
 			company = controller;
+			if (planReturn && planReturn.signIn.companyId === controller.profile.profileId) {
+				const outcome = planReturn;
+				planReturn = undefined;
+				if (outcome.signIn.memberId !== userId) forgetChatGptPlanSignIn();
+				else {
+					// A ChatGPT plan sign-in for this company. Its confirm belongs to the member, not to a
+					// page: it finishes while Settings closes or the route changes, stopping only if the
+					// account changes, and My connections shows the outcome.
+					const plan = createWebNativeSubscription(
+						cloud,
+						profile.profileId,
+						userId,
+						new AbortController().signal,
+						() => {
+							if (auth.userId !== userId) throw new Error("The account changed.");
+						},
+					);
+					void finishPlanSignIn(memberPlanSignIn(userId, profile.profileId), plan, outcome);
+					queueMicrotask(() => {
+						if (disposed || company !== controller) return;
+						const route = currentRoute();
+						if (route.name === "company" && route.section === "home") settingsAfterHome = "my-connections";
+						else openSettings("my-connections");
+					});
+				}
+			}
 			if (connectorReturn) {
 				// A provider sign-in (Step 7 connector) sent the member back to this
 				// company: show the outcome where the connection was started.
 				noteConnectorReturn(connectorReturn);
 				connectorReturn = undefined;
 				queueMicrotask(() => {
-					if (!disposed && company === controller) openSettings("connections");
+					if (!disposed && company === controller) openSettings("company-connections");
 				});
 			}
 			computer = new WebCompanyComputer(cloud, profile, userId, controller.signal, () => {
@@ -417,6 +486,8 @@ export function mountApplication(
 		try {
 			const result = await controller.openCofounderConversation();
 			if (!current() || company !== controller) return;
+			const tab = settingsAfterHome;
+			settingsAfterHome = undefined;
 			if (result.sessionId)
 				navigate(
 					{ name: "company", profileId: controller.profile.profileId, section: "chat", id: result.sessionId },
@@ -426,6 +497,7 @@ export function mountApplication(
 				homeReason = result.reason;
 				render();
 			}
+			if (tab) openSettings(tab);
 		} finally {
 			if (resolvingRoute === revision) resolvingRoute = undefined;
 		}
@@ -489,6 +561,12 @@ export function mountApplication(
 		}
 		if (!root!.contains(frame)) replace(root!, frame);
 		const route: Route = currentRoute();
+		// The account page's payments live while it shows: its notices go with it, and a failed
+		// read is tried again on the next visit.
+		if (route.name !== "account" && accountPayments) {
+			accountPayments.dispose();
+			accountPayments = undefined;
+		}
 		frame.classList.toggle(
 			"has-thread",
 			route.name === "company" && (route.section === "chat" || route.section === "new"),
@@ -497,8 +575,32 @@ export function mountApplication(
 			teardownCompany();
 			rail.hidden = true;
 			renderTopbar(topbar, shellContext(authState.user, route), undefined);
+			if (route.name !== "found") teardownFounding();
 			if (route.name === "hub") {
 				renderHub(hub, main);
+			} else if (route.name === "found") {
+				const userId = auth.userId!;
+				if (founding?.controller.profileId !== route.profileId) {
+					teardownFounding();
+					const controller = new FoundingController(api, userId, route.profileId, {
+						currentUserId: () => auth.userId,
+						onSeatChanged: () => void hub.refresh(),
+					});
+					founding = { controller, view: new FoundingView(controller) };
+					let companyListed = false;
+					controller.store.subscribe(() => {
+						if (founding?.controller !== controller) return;
+						// A started table's company joins the hub's list once it is ready.
+						if (!companyListed && controller.store.get().table?.start?.companyReady) {
+							companyListed = true;
+							void hub.refresh();
+						}
+						render();
+					});
+				}
+				// The table's page is kept and updated in place, never rebuilt (typing, focus and scroll).
+				if (!main.contains(founding.view.el)) replace(main, founding.view.el);
+				founding.view.update();
 			} else if (route.name === "account") {
 				const revision = accountRevision;
 				if (!accountState.loading && !accountState.loaded) {
@@ -524,11 +626,33 @@ export function mountApplication(
 				// The standalone account page shows the plan below the general settings.
 				// One panel across renders keeps an opened plan grid open; the general
 				// panel above already shows the account error.
-				renderPlan(accountPlan, accountState, undefined, {}, { showError: false });
+				if (checkoutReturn) {
+					accountPayments?.dispose();
+					accountPayments = undefined;
+				}
+				accountPayments ??= new PlanPayments(api, render, checkoutReturn === "done" ? "done" : undefined);
+				checkoutReturn = undefined;
+				accountPayments.load();
+				const payments = accountPayments;
+				renderPlan(
+					accountPlan,
+					accountState,
+					undefined,
+					{
+						payments: {
+							state: payments.state,
+							checkout: (itemKey) => payments.checkout(itemKey),
+							portal: () => payments.portal(),
+							companyName: (profileId) => profiles.find((item) => item.profileId === profileId)?.profileName,
+						},
+					},
+					{ showError: false },
+				);
 				main.append(accountPlan);
 			}
 			return;
 		}
+		teardownFounding();
 		if (company?.profile.profileId !== route.profileId) {
 			// Opening a company takes a round trip or two. Meanwhile its rail and page stand
 			// as placeholders, never a blank frame or the page it came from.
@@ -662,26 +786,49 @@ export function mountApplication(
 			notices = undefined;
 		}
 		if (!notices && state.team?.capabilities.read) {
+			const noticeAccess = () => {
+				const selected = currentRoute();
+				if (
+					disposed ||
+					company !== controller ||
+					auth.userId !== controller.userId ||
+					controller.store.get().accessLost ||
+					!controller.store.get().team?.capabilities.read ||
+					selected.name !== "company" ||
+					selected.profileId !== controller.profile.profileId
+				)
+					throw new Error(t("Company notification access changed."));
+			};
 			const client = createWebMemberNotifications(
 				cloud,
 				controller.profile.profileId,
 				controller.userId,
 				controller.signal,
-				() => {
-					const selected = currentRoute();
-					if (
-						disposed ||
-						company !== controller ||
-						auth.userId !== controller.userId ||
-						controller.store.get().accessLost ||
-						!controller.store.get().team?.capabilities.read ||
-						selected.name !== "company" ||
-						selected.profileId !== controller.profile.profileId
-					)
-						throw new Error(t("Company notification access changed."));
-				},
+				noticeAccess,
 			);
-			notices = new ExecutionNotices(client, controller.signal, () => main.focus({ preventScroll: true }));
+			// A ChatGPT plan's member is asked once to turn on work while away for an agent's routine.
+			const native = createWebNativeSubscription(
+				cloud,
+				controller.profile.profileId,
+				controller.userId,
+				controller.signal,
+				noticeAccess,
+			);
+			const plan =
+				native.setWorkWhileAway && native.recordRoutineOffer && native.chatGptPlanAvailable
+					? {
+							native: {
+								listConnections: native.listConnections,
+								setWorkWhileAway: native.setWorkWhileAway,
+								recordRoutineOffer: native.recordRoutineOffer,
+								chatGptPlanAvailable: native.chatGptPlanAvailable,
+							},
+							routines: createWebRoutines(cloud, controller.profile, controller.signal, noticeAccess),
+							memberId: controller.userId,
+							canManage: () => controller.store.get().team?.capabilities.authorize === true,
+						}
+					: undefined;
+			notices = new ExecutionNotices(client, controller.signal, () => main.focus({ preventScroll: true }), plan);
 			executionNotices.append(notices.el);
 		}
 		if (route.section !== "chat") {
@@ -1098,7 +1245,9 @@ export function mountApplication(
 		closeFeedback(false);
 		auth.dispose();
 		hub.dispose();
+		teardownFounding();
 		teardownCompany();
+		accountPayments?.dispose();
 		pictures.reset();
 		if (personPictures() === pictures) setPersonPictures(undefined);
 		window.removeEventListener("hashchange", onRouteChange);

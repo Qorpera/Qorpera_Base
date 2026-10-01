@@ -222,11 +222,80 @@ describe("native office startup without a running guest", () => {
 		expect(f.guest).not.toHaveBeenCalled();
 		expect(f.control.beginToolOperation).not.toHaveBeenCalled();
 	});
-	it("rejects startup metadata for a different configured office", async () => {
+	it("offers no startup for a computer a one-computer route cannot reach, and the run goes on", async () => {
 		const f = await fixture();
 		f.descriptor.scope.companyComputerId = randomUUID();
-		await expect(f.factory(f.run, f.operations)).rejects.toThrow("OFFICE_NATIVE_CONFIGURATION_DIFFERS");
+		expect(await f.factory(f.run, f.operations)).toBeUndefined();
+		expect(f.guest).not.toHaveBeenCalled();
 	});
+	it("offers startup of any of the company's computers through a company route", async () => {
+		const f = await fixture();
+		f.descriptor.scope.companyComputerId = randomUUID();
+		const factory = createHttpCompanyComputerSessionFactory({
+			url: "https://office.qorpera.test/office/{companyComputerId}/native",
+			token: randomBytes(32).toString("base64url"),
+			registry: new HttpCloudCompanyComputerRegistry({
+				supabaseUrl: "https://registry.qorpera.test",
+				serviceRoleKey: "synthetic-service-key",
+				fetch: f.sql,
+			}),
+			fetch: f.guest,
+		});
+		const session = await factory(f.run, f.operations);
+		expect(session?.tools.map((tool) => tool.name)).toEqual(["computer_start"]);
+		await session?.close();
+	});
+	it("starts the computer placement picks when the agent asks, and keeps it for a replay", async () => {
+		const f = await fixture();
+		const factory = createHttpCompanyComputerSessionFactory({
+			url: "https://office.qorpera.test/office/{companyComputerId}/native",
+			token: randomBytes(32).toString("base64url"),
+			registry: new HttpCloudCompanyComputerRegistry({
+				supabaseUrl: "https://registry.qorpera.test",
+				serviceRoleKey: "synthetic-service-key",
+				fetch: f.sql,
+			}),
+			fetch: f.guest,
+		});
+		const session = await factory(f.run, f.operations);
+		if (!session) throw new Error("missing startup session");
+		cleanups.push(session.close);
+		const asked = () =>
+			f.sql.mock.calls.filter(([input]) => String(input).endsWith("/qorpera_native_office_start_descriptor")).length;
+		// Other agents took the offered computer's seats: placement now names another one.
+		f.descriptor.scope.companyComputerId = randomUUID();
+		f.result.companyComputerId = f.descriptor.scope.companyComputerId;
+		const before = asked();
+		await expect(session.tools[0].execute(f.args, f.context)).resolves.toEqual({ kind: "json", value: f.result });
+		expect(asked()).toBe(before + 1);
+		// Placement moves again; the same request stays with its computer.
+		const original = f.sql.getMockImplementation()!;
+		f.sql.mockImplementation(async (input, init) =>
+			String(input).endsWith("/qorpera_native_office_start_descriptor")
+				? Response.json({ ...f.descriptor, scope: { ...f.descriptor.scope, companyComputerId: randomUUID() } })
+				: original(input, init),
+		);
+		await expect(session.tools[0].execute(f.args, f.context)).resolves.toEqual({ kind: "json", value: f.result });
+		expect(asked()).toBe(before + 1);
+		expect(f.order.filter((event) => event === "start:begin")).toHaveLength(1);
+	});
+	it.each(["nothing to start now", "a computer the route cannot reach"])(
+		"starts the offered computer when placement names %s",
+		async (reason) => {
+			const f = await fixture();
+			const original = f.sql.getMockImplementation()!;
+			f.sql.mockImplementation(async (input, init) => {
+				if (!String(input).endsWith("/qorpera_native_office_start_descriptor")) return original(input, init);
+				if (reason === "nothing to start now") return Response.json({ state: "unavailable" });
+				return Response.json({
+					...f.descriptor,
+					scope: { ...f.descriptor.scope, companyComputerId: randomUUID() },
+				});
+			});
+			await expect(f.tool.execute(f.args, f.context)).resolves.toEqual({ kind: "json", value: f.result });
+			expect(f.order.filter((event) => event === "start:begin")).toHaveLength(1);
+		},
+	);
 	it("publishes a closed input schema without model-selectable scope or paths", async () => {
 		const f = await fixture();
 		expect(f.tool.inputSchema.additionalProperties).toBe(false);

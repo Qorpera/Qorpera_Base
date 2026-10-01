@@ -76,6 +76,10 @@ function codingSession(overrides: Partial<CodingSession> = {}): CodingSession {
 		createdAt: "2026-09-22T10:01:00Z",
 		sessionId: session.sessionId,
 		isOwner: true,
+		standby: true,
+		attached: false,
+		runningCommands: 0,
+		machineAsleep: false,
 		...overrides,
 	};
 }
@@ -139,7 +143,7 @@ describe("coding sessions in the thread", () => {
 		});
 		const store = f.store;
 		await settle();
-		const messages = f.view.el.querySelector<HTMLElement>(".messages")!;
+		const messages = f.view.el.querySelector<HTMLElement>('[role="log"]')!;
 		// Date separators (<time>) are not part of the order under test.
 		const order = rows(messages).map((node) =>
 			node.classList.contains("coding-line")

@@ -1385,11 +1385,18 @@ describe("cloud runner orchestrator", () => {
 			orchestratorId,
 			current,
 			fakeFetch as typeof fetch,
-			{ persistControlTokens: async (state) => void persisted.push({ ...state }) },
+			{
+				persistControlTokens: async (state) => void persisted.push({ ...state }),
+				onControlRotated: () => topics.push(control.wakeTopic()),
+			},
 		);
+		const topics: string[] = [control.wakeTopic()];
 
 		await control.renewControl();
 
+		// The wake-up topic follows the new token as soon as the rotation is confirmed.
+		expect(topics).toHaveLength(2);
+		expect(topics[1]).not.toBe(topics[0]);
 		expect(persisted).toHaveLength(2);
 		const next = persisted[0]?.pending;
 		expect(next).toMatch(/^[A-Za-z0-9_-]{43}$/);
@@ -1625,14 +1632,61 @@ describe("cloud runner orchestrator", () => {
 		expect(local.deliver).toHaveBeenCalledOnce();
 	});
 
+	it("keeps asking for new work while a reconcile pass is still running", async () => {
+		// A provider's reconcile can wait on a machine it is starting; claims must not wait with it.
+		const control = controlPlane(undefined);
+		vi.mocked(control.claimNext)
+			.mockResolvedValueOnce(undefined)
+			.mockResolvedValueOnce(undefined)
+			.mockResolvedValueOnce(claim())
+			.mockResolvedValue(undefined);
+		const local = localAdapter();
+		let finishPass = (): void => undefined;
+		local.reconcile
+			.mockImplementationOnce(async () => undefined)
+			.mockImplementationOnce(
+				() =>
+					new Promise<undefined>((resolvePass) => {
+						finishPass = () => resolvePass(undefined);
+					}),
+			);
+		const controller = new AbortController();
+		local.deliver.mockImplementationOnce(async () => {
+			controller.abort();
+		});
+		const orchestrator = new CloudRunnerOrchestrator({
+			orchestratorId,
+			controlPlane: control,
+			providerAdapter: local.adapter,
+			clientClaimId: () => claimId,
+			clientAssignmentId: () => assignmentId,
+			createCapability: () => capability,
+		});
+
+		const running = orchestrator.run(controller.signal, {
+			pollIntervalMs: 10,
+			reconcileIntervalMs: 10,
+			shutdownGraceMs: 10,
+		});
+		await running;
+		finishPass();
+		expect(local.reconcile).toHaveBeenCalledTimes(2);
+		expect(local.deliver).toHaveBeenCalledOnce();
+		expect(vi.mocked(control.claimNext).mock.invocationCallOrder.at(-1)).toBeGreaterThan(
+			local.reconcile.mock.invocationCallOrder[1] ?? Number.MAX_SAFE_INTEGER,
+		);
+	});
+
 	it("reconciles on the next poll after a dispatch fails instead of waiting for the interval", async () => {
 		const control = controlPlane(undefined);
 		vi.mocked(control.claimNext).mockResolvedValueOnce(claim()).mockResolvedValue(undefined);
 		const local = localAdapter();
 		local.acquire.mockRejectedValueOnce(new Error("Sandbox start failed"));
 		const controller = new AbortController();
-		vi.mocked(control.reconcileExpired).mockImplementation(async () => {
-			if (vi.mocked(control.reconcileExpired).mock.calls.length >= 2) controller.abort();
+		// The retained claims are read again after that reconcile, before any new work.
+		vi.mocked(control.retainedClaims).mockImplementation(async () => {
+			if (vi.mocked(control.retainedClaims).mock.calls.length >= 2) controller.abort();
+			return [];
 		});
 		const onError = vi.fn();
 		const orchestrator = new CloudRunnerOrchestrator({
@@ -1649,8 +1703,16 @@ describe("cloud runner orchestrator", () => {
 		expect(control.reconcileExpired).toHaveBeenCalledTimes(2);
 		expect(performance.now() - started).toBeLessThan(30_000);
 		expect(onError).toHaveBeenCalled();
-		// The retained claims are read again with that reconcile.
 		expect(control.retainedClaims).toHaveBeenCalledTimes(2);
+		expect(vi.mocked(control.retainedClaims).mock.invocationCallOrder[1]).toBeGreaterThan(
+			vi.mocked(control.reconcileExpired).mock.invocationCallOrder[1] ?? Number.MAX_SAFE_INTEGER,
+		);
+		// No new work is asked for between the failed dispatch and that reconcile.
+		const failed = local.acquire.mock.invocationCallOrder[0] ?? 0;
+		const reconciled = vi.mocked(control.reconcileExpired).mock.invocationCallOrder[1] ?? 0;
+		expect(
+			vi.mocked(control.claimNext).mock.invocationCallOrder.every((order) => order < failed || order > reconciled),
+		).toBe(true);
 	});
 
 	it("retries a failed reconcile on the next poll and claims nothing until it succeeds", async () => {

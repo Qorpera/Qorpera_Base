@@ -1,7 +1,4 @@
 import { createHash } from "node:crypto";
-import { realpathSync } from "node:fs";
-import { resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import {
 	type CompanyComputerPreparationCommand,
 	type CompanyComputerServiceSoftwareInvocationChallenge,
@@ -11,6 +8,7 @@ import {
 	parseCompanyComputerServiceSoftwareInvocationEvidence,
 } from "../../packages/contracts/src/index.ts";
 import { officeRecord, officeSha } from "../../packages/runner-orchestrator/src/lxd-office-image-provenance.ts";
+import { runCompanyComputerControlEntry } from "../../packages/runtime/src/cloud-company-computer-control-entry.ts";
 import {
 	assertCompanyComputerPreparationLockAndBoot,
 	publishCompanyComputerPreparationProtected,
@@ -174,14 +172,10 @@ export async function runOfficeSoftwareMeasurementControl(args: readonly string[
 		}, signal),
 	);
 }
-if (process.argv[1] && realpathSync(resolve(process.argv[1])) === realpathSync(fileURLToPath(import.meta.url))) {
-	if (process.argv.length === 3 && process.argv[2] === "--help")
-		console.log(
-			"Pinned temporary root software invocation measurement. Reads a staged canonical challenge, claims its nonce once, measures the actual running service under the preparation flock and publishes a closed receipt. No SQL, capability, start or activation.",
-		);
-	else
-		runOfficeSoftwareMeasurementControl(process.argv.slice(2)).catch(() => {
-			console.error("OFFICE_SOFTWARE_MEASUREMENT_UNCONFIRMED");
-			process.exitCode = 1;
-		});
-}
+runCompanyComputerControlEntry({
+	moduleUrl: import.meta.url,
+	names: ["office-service-software-measurement-control.ts", "software-measurement-control.mjs"],
+	help: "Pinned temporary root software invocation measurement. Reads a staged canonical challenge, claims its nonce once, measures the actual running service under the preparation flock and publishes a closed receipt. No SQL, capability, start or activation.",
+	failure: "OFFICE_SOFTWARE_MEASUREMENT_UNCONFIRMED",
+	run: runOfficeSoftwareMeasurementControl,
+});

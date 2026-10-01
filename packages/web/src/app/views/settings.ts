@@ -1,5 +1,6 @@
 import type { CloudApi } from "../../cloud/api.ts";
-import { describeError } from "../../cloud/client.ts";
+import { CloudRpcError, describeError } from "../../cloud/client.ts";
+import type { CompanyComputerHours } from "../../cloud/computer-hours.ts";
 import { createWebConnectors } from "../../cloud/connectors.ts";
 import { createWebNativeSubscription } from "../../cloud/native-subscription.ts";
 import { createWebReviewRules } from "../../cloud/review-rules.ts";
@@ -9,13 +10,14 @@ import { button, h, icon, notice, replace } from "../../ui/dom.ts";
 import { phrase, t, uiText } from "../../ui/preferences.ts";
 import type { AuthController } from "../auth.ts";
 import { CompanyController } from "../company.ts";
+import { PlanPayments } from "../plan-payments.ts";
 import { currentRoute } from "../router.ts";
 import { type AccountViewState, renderAccount } from "./account.ts";
 import { renderAppearance } from "./appearance.ts";
 import { FriendsController, renderFriends } from "./friends.ts";
 import type { HubController } from "./hub.ts";
 import { renderPlan } from "./plan.ts";
-import { ConnectionsView, ProviderSignIns } from "./settings-connections.ts";
+import { ConnectionsView, memberPlanSignIn, memberProviderSignIns } from "./settings-connections.ts";
 import { RulesView } from "./settings-rules.ts";
 import { ServicesView } from "./settings-services.ts";
 import { storageSummary } from "./storage-summary.ts";
@@ -58,17 +60,32 @@ const TABS = [
 			"plan billing subscription usage storage trial upgrade price payment card invoices computer hours basis standard dedicated abonnement forbrug betaling lager lagerplads prøveperiode opgrader pris kort fakturaer computertimer dedikeret",
 	},
 	{
-		id: "connections",
-		label: phrase("Connections"),
+		id: "my-connections",
+		label: phrase("My connections"),
+		icon: "key",
+		keywords:
+			"model accounts providers subscriptions sign in openai chatgpt codex anthropic claude usage mine forbindelser modelkonti udbydere abonnementer log ind forbrug",
+	},
+	{
+		id: "company-connections",
+		label: phrase("Company connections"),
 		icon: "connections",
 		keywords:
-			"providers subscriptions openai codex anthropic claude secrets forbindelser udbydere modelkonti konti tjenester gmail google drive github hemmeligheder",
+			"services accounts gmail google drive github token secrets agents virksomhedens forbindelser tjenester konti hemmeligheder agenter",
 	},
 ] as const;
 export type SettingsTab = (typeof TABS)[number]["id"];
 
-/** Provider sign-ins in progress, per member and company, for the life of the tab. */
-const SIGN_INS = new Map<string, ProviderSignIns>();
+/** A connections tab: its title, the rule that sorts a connection into it, then its lists. */
+function connectionsPage(title: string, rule: string, ...content: HTMLElement[]): HTMLElement {
+	return h("div", null, h("h1", null, title), h("p", { class: "settings-lead" }, rule), ...content);
+}
+
+/** Founders (owners) pay a company's computer hours; undefined until the member's role is known. */
+function founderOf(company: CompanyController): boolean | undefined {
+	const role = company.store.get().team?.role;
+	return role === undefined ? undefined : role === "owner";
+}
 
 /** A settings session owns its async work; the conversation stays mounted below it. */
 export class SettingsView {
@@ -117,6 +134,14 @@ export class SettingsView {
 	#file: HostedCompanyFile | undefined;
 	#fileLoading = false;
 	#fileError: string | undefined;
+	#hours: CompanyComputerHours | undefined;
+	#hoursLoading = false;
+	#hoursMissing = false;
+	/** Set once a lookup failed: the hours are not asked again until the company changes. */
+	#hoursFailed = false;
+	/** Offers, the member's own plan, and Stripe's pages; loaded when Plan & usage first shows. */
+	readonly #payments: PlanPayments;
+	#planFounder: boolean | undefined;
 
 	constructor(
 		api: CloudApi,
@@ -135,6 +160,9 @@ export class SettingsView {
 		this.#close = close;
 		this.#companyRemoved = companyRemoved;
 		this.#borrowedCompany = company;
+		this.#payments = new PlanPayments(api, () => {
+			if (!this.#lifetime.signal.aborted && this.#panels.has("plan")) this.#plan();
+		});
 		const route = currentRoute();
 		this.#overCompany = Boolean(company) || route.name === "company";
 		const search = this.#search;
@@ -290,6 +318,7 @@ export class SettingsView {
 		this.#services?.dispose();
 		this.#rules?.dispose();
 		this.#friends.dispose();
+		this.#payments.dispose();
 		if (this.#ownsCompany) this.#company?.stop();
 		this.el.remove();
 	}
@@ -334,61 +363,75 @@ export class SettingsView {
 		else if (tab === "friends") this.#drawFriends();
 		else if (tab === "company") this.#drawCompany();
 		else if (this.#company) {
-			if (tab === "connections") {
-				if (!this.#connections) {
-					const company = this.#company;
-					const memberId = this.#auth.userId!;
-					const signal = AbortSignal.any([this.#companyLifetime.signal, this.#lifetime.signal, company.signal]);
-					const key = `${memberId}:${company.profile.profileId}`;
-					let signIns = SIGN_INS.get(key);
-					if (!signIns) {
-						signIns = new ProviderSignIns();
-						SIGN_INS.set(key, signIns);
-					}
-					// A sign-in belongs to the member, not to this page: it continues while
-					// the page is rebuilt or closed, and stops only if the account changes.
-					const auth = this.#auth;
-					const signIn = createWebNativeSubscription(
-						this.#api.cloud,
-						company.profile.profileId,
-						memberId,
-						new AbortController().signal,
-						() => {
-							if (auth.userId !== memberId) throw new Error("The account changed.");
-						},
-					);
-					this.#connections = new ConnectionsView(
-						createWebNativeSubscription(this.#api.cloud, company.profile.profileId, memberId, signal, () => {
-							signal.throwIfAborted();
-							if (this.#auth.userId !== memberId || this.#company !== company || company.store.get().accessLost)
-								throw new Error("The account or company changed.");
-						}),
-						signal,
-						signIns,
-						(input) => signIn.beginProviderLogin(input),
-					);
-					// Step 7 connectors sit under the model accounts on the same page.
-					// Company first: owners and admins manage them, everyone sees them.
-					this.#services = new ServicesView(
-						createWebConnectors(this.#api.cloud, {
-							profileId: company.profile.profileId,
-							environmentId: company.profile.environmentId,
-						}),
-						signal,
-						{
-							access: {
-								canManage: () => {
-									const role = company.store.get().team?.role;
-									return role === "owner" || role === "admin";
-								},
-								memberName: (userId) =>
-									company.store.get().team?.members.find((member) => member.userId === userId)?.displayName ||
-									undefined,
+			const company = this.#company;
+			const memberId = this.#auth.userId!;
+			const signal = () => AbortSignal.any([this.#companyLifetime.signal, this.#lifetime.signal, company.signal]);
+			if (tab === "my-connections" && !this.#connections) {
+				const lifetime = signal();
+				const signIns = memberProviderSignIns(memberId, company.profile.profileId);
+				// A sign-in belongs to the member, not to this page: it continues while
+				// the page is rebuilt or closed, and stops only if the account changes.
+				const auth = this.#auth;
+				const signIn = createWebNativeSubscription(
+					this.#api.cloud,
+					company.profile.profileId,
+					memberId,
+					new AbortController().signal,
+					() => {
+						if (auth.userId !== memberId) throw new Error("The account changed.");
+					},
+				);
+				this.#connections = new ConnectionsView(
+					createWebNativeSubscription(this.#api.cloud, company.profile.profileId, memberId, lifetime, () => {
+						lifetime.throwIfAborted();
+						if (this.#auth.userId !== memberId || this.#company !== company || company.store.get().accessLost)
+							throw new Error("The account or company changed.");
+					}),
+					lifetime,
+					signIns,
+					(input) => signIn.beginProviderLogin(input),
+					undefined,
+					undefined,
+					memberPlanSignIn(memberId, company.profile.profileId),
+				);
+				this.#panels.set(
+					tab,
+					connectionsPage(
+						t("My connections"),
+						t(
+							"Your own AI subscriptions. They pay for the work you start, including your routines, and they leave with you.",
+						),
+						this.#connections.el,
+					),
+				);
+			} else if (tab === "company-connections" && !this.#services) {
+				// Step 7 connectors. Company first: owners and admins manage them, everyone sees them.
+				this.#services = new ServicesView(
+					createWebConnectors(this.#api.cloud, {
+						profileId: company.profile.profileId,
+						environmentId: company.profile.environmentId,
+					}),
+					signal(),
+					{
+						access: {
+							canManage: () => {
+								const role = company.store.get().team?.role;
+								return role === "owner" || role === "admin";
 							},
+							memberName: (userId) =>
+								company.store.get().team?.members.find((member) => member.userId === userId)?.displayName ||
+								undefined,
 						},
-					);
-					this.#panels.set(tab, h("div", null, this.#connections.el, this.#services.el));
-				}
+					},
+				);
+				this.#panels.set(
+					tab,
+					connectionsPage(
+						t("Company connections"),
+						t("The company's own accounts. Every agent can use them, and they stay when someone leaves."),
+						this.#services.el,
+					),
+				);
 			}
 		}
 		const panel =
@@ -440,7 +483,7 @@ export class SettingsView {
 		}
 	}
 
-	/** The plan is the account's; the usage shown is the open company's storage. */
+	/** The plan is the account's; the usage shown is the open company's computer hours and storage. */
 	#plan(): void {
 		if (this.#lifetime.signal.aborted) return;
 		let panel = this.#panels.get("plan");
@@ -451,6 +494,17 @@ export class SettingsView {
 		const company = this.#company;
 		if (this.#tab === "plan" && company && !this.#file && !this.#fileLoading && !this.#fileError)
 			void this.#loadFile();
+		if (this.#tab === "plan") this.#payments.load();
+		this.#planFounder = company ? founderOf(company) : undefined;
+		if (
+			this.#tab === "plan" &&
+			company &&
+			!this.#hours &&
+			!this.#hoursLoading &&
+			!this.#hoursMissing &&
+			!this.#hoursFailed
+		)
+			void this.#loadHours();
 		renderPlan(
 			panel,
 			this.#account,
@@ -461,8 +515,26 @@ export class SettingsView {
 						loading: this.#fileLoading,
 						error: this.#fileError,
 						retry: () => void this.#loadFile(true),
+						hours: {
+							value: this.#hours,
+							loading: this.#hoursLoading || (!this.#hours && !this.#hoursMissing && !this.#hoursFailed),
+							missing: this.#hoursMissing,
+							failed: this.#hoursFailed,
+						},
+						profileId: company.profile.profileId,
+						founder: this.#planFounder,
+						memberName: (userId) =>
+							company.store.get().team?.members.find((member) => member.userId === userId)?.displayName,
 					}
 				: undefined,
+			{
+				payments: {
+					state: this.#payments.state,
+					checkout: (itemKey, profileId) => this.#payments.checkout(itemKey, profileId),
+					portal: () => this.#payments.portal(),
+					companyName: (profileId) => this.#profiles.find((item) => item.profileId === profileId)?.profileName,
+				},
+			},
 		);
 	}
 
@@ -499,7 +571,11 @@ export class SettingsView {
 		this.#file = undefined;
 		this.#fileLoading = false;
 		this.#fileError = undefined;
-		for (const tab of ["company", "connections"] as const) this.#panels.delete(tab);
+		this.#hours = undefined;
+		this.#hoursLoading = false;
+		this.#hoursMissing = false;
+		this.#hoursFailed = false;
+		for (const tab of ["company", "my-connections", "company-connections"] as const) this.#panels.delete(tab);
 		if (company) {
 			this.#unsubscribe = company.store.subscribe(() => {
 				if (company.store.get().accessLost) {
@@ -509,6 +585,8 @@ export class SettingsView {
 				this.#services?.update();
 				this.#rules?.update();
 				this.#drawCompany();
+				// "Buy hours" is for founders: the plan tab follows the member's role once the team loads.
+				if (this.#panels.has("plan") && founderOf(company) !== this.#planFounder) this.#plan();
 			});
 			if (owned) void company.start();
 		}
@@ -612,6 +690,28 @@ export class SettingsView {
 				},
 			},
 		);
+	}
+
+	/** This month's computer hours of the open company. A cloud without the meter shows "Not measured yet". */
+	async #loadHours(): Promise<void> {
+		const company = this.#company;
+		if (!company || this.#hoursLoading) return;
+		const signal = this.#companyLifetime.signal;
+		this.#hoursLoading = true;
+		try {
+			const hours = await this.#api.getCompanyComputerHours(company.profile.profileId);
+			if (signal.aborted || this.#lifetime.signal.aborted) return;
+			this.#hours = hours;
+		} catch (error) {
+			if (signal.aborted || this.#lifetime.signal.aborted) return;
+			if (error instanceof CloudRpcError && error.missing) this.#hoursMissing = true;
+			else this.#hoursFailed = true;
+		} finally {
+			if (!signal.aborted && !this.#lifetime.signal.aborted) {
+				this.#hoursLoading = false;
+				if (this.#panels.has("plan")) this.#plan();
+			}
+		}
 	}
 
 	/** `redraw` (a retry) repaints at once so the Retry button disables while the load runs. */

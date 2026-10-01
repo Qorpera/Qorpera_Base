@@ -328,9 +328,8 @@ begin
 	foreach v_staff in array array['30000000-0000-4000-8000-000000000030'::uuid,
 		'30000000-0000-4000-8000-000000000031'::uuid,'30000000-0000-4000-8000-000000000032'::uuid] loop
 		perform public.qorpera_grant_company_path(v_resource.id,v_resource.version,'staff_agent',v_staff,array['read','write']);
-		perform public.qorpera_configure_staff_execution_authority('30000000-0000-4000-8000-000000000010',v_staff,
-			(current_setting('qorpera_test.wake_sponsor')::jsonb ->> 'binding_id')::uuid,1,null);
 	end loop;
+	-- No standing authority: agent wakes are paid by the member who started them (20260928230000).
 	perform public.qorpera_configure_session_execution('30000000-0000-4000-8000-000000000042',
 		(current_setting('qorpera_test.wake_sponsor')::jsonb ->> 'binding_id')::uuid,1,null,'agent_turn','agent_turn');
 end
@@ -491,7 +490,11 @@ begin
 			where id = v_run;
 			perform pg_temp.wake_assert(public.qorpera_runtime_wake_policy(v_run) = public.qorpera_wake_policy_value(null),'Wrongly attached occurrence keeps human obligations: ' || v_patch::text);
 			raise sqlstate 'PZ001';
-		exception when sqlstate 'PZ001' then null; end;
+		exception when sqlstate 'PZ001' then null;
+			-- Another requester on this login is refused where runs change (20260928230000).
+			when insufficient_privilege then
+				if not v_patch ? 'requested_by_user_id' then raise; end if;
+		end;
 	end loop;
 	insert into public.qorpera_execution_sponsor_versions
 	select (jsonb_populate_record(null::public.qorpera_execution_sponsor_versions,to_jsonb(s)||'{"version":2}'::jsonb)).*
@@ -912,6 +915,10 @@ begin
 	perform pg_temp.wake_routine('30000000-0000-4000-8000-000000000031',
 		'{"id":"changes","kind":"listener","source":"company-file","path":"","match":"subtree","timeZone":"UTC","replyPolicy":"optional"}');
 	perform pg_temp.path_commit(pg_temp.path_plan('requester-check','note.md',pg_temp.path_stage_file('note.md','Event')));
+	-- The last founder cannot leave while others remain: a second founder joins first.
+	insert into auth.users(id,email) values ('30000000-0000-4000-8000-0000000000f1','requester-cofounder@example.test');
+	insert into public.qorpera_profile_members(profile_id,user_id,email,display_name,role)
+	values ('30000000-0000-4000-8000-000000000010','30000000-0000-4000-8000-0000000000f1','requester-cofounder@example.test','Co-founder','owner');
 	delete from public.qorpera_profile_members where profile_id = '30000000-0000-4000-8000-000000000010'
 		and user_id = '30000000-0000-4000-8000-000000000001';
 	v_result := public.qorpera_drain_company_file_wakes(1);

@@ -4,14 +4,15 @@ import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type {
-	LxdClient,
-	LxdCreateInstanceRequest,
-	LxdCreateStorageVolumeRequest,
-	LxdInstancePowerAction,
-	LxdInstanceRecord,
-	LxdInstanceStateRecord,
-	LxdStorageVolumeRecord,
+import {
+	type LxdClient,
+	type LxdCreateInstanceRequest,
+	type LxdCreateStorageVolumeRequest,
+	type LxdInstancePowerAction,
+	type LxdInstanceRecord,
+	type LxdInstanceStateRecord,
+	LxdOperationFailed,
+	type LxdStorageVolumeRecord,
 } from "../src/lxd-client.ts";
 import { lxdNativeNodePolicy, lxdResourceBytes } from "../src/lxd-native-node-policy.ts";
 import {
@@ -21,6 +22,7 @@ import {
 	type LxdGuestTransport,
 } from "../src/lxd-provider.ts";
 import type { CloudRunnerAssignmentDelivery, CloudRunnerWork } from "../src/orchestrator.ts";
+import { canonical } from "../src/provider-shared.ts";
 import { readRuntimeNodeHost } from "../src/runtime-node-host.ts";
 import { nodeAdmissionFixture } from "./fixtures/node-admission.ts";
 
@@ -124,6 +126,8 @@ class FakeLxd implements LxdClient {
 	filePushes: Array<{ path: string; content: string; mode: number }> = [];
 	execCalls: string[][] = [];
 	deleteCalls: string[] = [];
+	/** Set to make the next create fail as this error, with no guest. */
+	createFailure?: Error;
 
 	async getInstance(_project: string, name: string): Promise<LxdInstanceRecord | undefined> {
 		return this.instance?.name === name ? structuredClone(this.instance) : undefined;
@@ -144,6 +148,12 @@ class FakeLxd implements LxdClient {
 		return volume ? structuredClone(volume) : undefined;
 	}
 
+	async deleteStorageVolume(_project: string, _pool: string, name: string): Promise<boolean> {
+		const existed = this.volumes.delete(name) || this.volume?.name === name;
+		if (this.volume?.name === name) this.volume = undefined;
+		return existed;
+	}
+
 	async createStorageVolume(_project: string, _pool: string, request: LxdCreateStorageVolumeRequest): Promise<void> {
 		this.createVolumeCalls.push(structuredClone(request));
 		this.volume = {
@@ -158,6 +168,11 @@ class FakeLxd implements LxdClient {
 
 	async createInstance(_project: string, request: LxdCreateInstanceRequest): Promise<void> {
 		this.createCalls.push(structuredClone(request));
+		const failure = this.createFailure;
+		if (failure) {
+			this.createFailure = undefined;
+			throw failure;
+		}
 		this.instance = {
 			name: request.name,
 			type: request.type,
@@ -353,6 +368,23 @@ async function acquiredFixture() {
 	};
 }
 
+describe("canonical device comparison (2026-09-28)", () => {
+	it("keeps a device named __proto__ in the comparison, and every other key as before", () => {
+		// As LXD's JSON carries it: an own key. Assigned into a copy, it became
+		// the copy's prototype, and the drift check compared equal without it.
+		const live = JSON.parse(
+			'{"root":{"type":"disk","path":"/"},"__proto__":{"type":"disk","source":"/","path":"/host"}}',
+		);
+		const expected = { root: { type: "disk", path: "/" } };
+		expect(JSON.stringify(canonical(live))).not.toBe(JSON.stringify(canonical(expected)));
+		expect(JSON.stringify(canonical(live))).toBe(
+			'{"__proto__":{"path":"/host","source":"/","type":"disk"},"root":{"path":"/","type":"disk"}}',
+		);
+		expect(JSON.stringify(canonical({ b: [{ z: 1, a: undefined }], a: "x", c: undefined }))).toBe(
+			'{"a":"x","b":[{"z":1}]}',
+		);
+	});
+});
 describe("native physical node policy", () => {
 	it("pins public resource and host policy independently of credential rotation", () => {
 		const original = governedConfig("/provider-state");
@@ -682,6 +714,71 @@ describe("LXD cloud runner provider", () => {
 		);
 	});
 
+	it("settles a stopped journal after a restart once a deleted company's identity volume is retired", async () => {
+		const directory = await root();
+		const settings = governedConfig(join(directory, "state"));
+		const lxd = new FakeLxd();
+		const guest = new FakeGuest();
+		const backend = new LxdCloudRunnerProviderBackend(settings, lxd, guest, fetchProvisioner([]));
+		const runner = await backend.acquire(runId, work(), new AbortController().signal);
+		await backend.deliver(runner, delivery(work()));
+		await backend.stop(runner, "idle");
+		await backend.reconcile();
+		const journal = JSON.parse(await readFile(join(settings.stateRoot, runId, "journal.json"), "utf-8"));
+		expect(journal.physicalState).toBe("stopped");
+		// Company delete D4: the node's login gateway deletes the identity volume.
+		expect(await lxd.deleteStorageVolume(settings.project, settings.storagePool, journal.lxd.identityVolume)).toBe(
+			true,
+		);
+		const volumes = lxd.createVolumeCalls.length;
+		// A provider restart reconciles the retained journal again: it neither fails nor makes the volume again.
+		const restarted = new LxdCloudRunnerProviderBackend(settings, lxd, guest, fetchProvisioner([]));
+		await restarted.reconcile();
+		await restarted.reconcile();
+		expect(lxd.createVolumeCalls).toHaveLength(volumes);
+		expect(
+			await lxd.getStorageVolume(settings.project, settings.storagePool, journal.lxd.identityVolume),
+		).toBeUndefined();
+	});
+	it.each([
+		// A crash between the release call's reply and its journal write.
+		[
+			"a stopping journal whose guest deletion is recorded",
+			{ physicalState: "stopping", deletionConfirmed: true },
+			false,
+		],
+		// A crash after the release was recorded, before the guest's absence was written.
+		["an assigned journal whose capacity release is recorded", { physicalState: "assigned" }, true],
+	] as const)("settles %s after a crash, once its identity volume is retired", async (_label, crashed, released) => {
+		const directory = await root();
+		const settings = governedConfig(join(directory, "state"));
+		const lxd = new FakeLxd();
+		const guest = new FakeGuest();
+		const backend = new LxdCloudRunnerProviderBackend(settings, lxd, guest, fetchProvisioner([]));
+		const runner = await backend.acquire(runId, work(), new AbortController().signal);
+		await backend.deliver(runner, delivery(work()));
+		await backend.stop(runner, "idle");
+		const path = join(settings.stateRoot, runId, "journal.json");
+		const { capacityReleased: _released, ...journal } = JSON.parse(await readFile(path, "utf-8"));
+		await writeFile(
+			path,
+			JSON.stringify({ ...journal, ...crashed, ...(released ? { capacityReleased: true } : {}) }),
+			{
+				mode: 0o600,
+			},
+		);
+		expect(await lxd.deleteStorageVolume(settings.project, settings.storagePool, journal.lxd.identityVolume)).toBe(
+			true,
+		);
+		const restarted = new LxdCloudRunnerProviderBackend(settings, lxd, guest, fetchProvisioner([]));
+		await restarted.reconcile();
+		await restarted.reconcile();
+		// It settles (as a run whose guest is gone) instead of throwing on every pass.
+		expect(JSON.parse(await readFile(path, "utf-8")).physicalState).toBe("lost");
+		expect(
+			await lxd.getStorageVolume(settings.project, settings.storagePool, journal.lxd.identityVolume),
+		).toBeUndefined();
+	});
 	it("stops reconciling a settled journal, archives it a day later and refuses its replay", async () => {
 		// Live cost (23 Sep 2026): node 1 re-read 76 finished run journals, three LXD calls each, on every pass.
 		const f = await acquiredFixture();
@@ -805,6 +902,51 @@ describe("LXD cloud runner provider", () => {
 		expect(JSON.parse(await readFile(f.journalPath, "utf8"))).toMatchObject({
 			physicalState: "stopped",
 			capacityReleased: true,
+		});
+	});
+
+	it("releases the capacity of a create LXD reports as failed, at once and once", async () => {
+		// A start that failed before its guest existed kept its allocation reserved for good, so the run's
+		// attempt could never move on (2026-09-29). LXD's own Failure is proof no guest will appear.
+		const directory = await root();
+		const stateRoot = join(directory, "state");
+		const lxd = new FakeLxd();
+		lxd.createFailure = new LxdOperationFailed("LXD operation failed");
+		const fetcher = fetchProvisioner([]);
+		const backend = new LxdCloudRunnerProviderBackend(config(stateRoot), lxd, new FakeGuest(), fetcher);
+		await expect(backend.acquire(runId, work(), new AbortController().signal)).rejects.toThrow(
+			"LXD operation failed",
+		);
+		const releases = () =>
+			vi.mocked(fetcher).mock.calls.filter(([url]) => String(url).includes("qorpera_release_runtime_machine"));
+		expect(releases()).toHaveLength(1);
+		expect(JSON.parse(await readFile(join(stateRoot, runId, "journal.json"), "utf8"))).toMatchObject({
+			physicalState: "lost",
+			stopReason: "delivery_failed",
+			deletionConfirmed: true,
+			capacityReleased: true,
+		});
+		await backend.reconcile();
+		expect(releases()).toHaveLength(1);
+	});
+
+	it("keeps the capacity of a create whose outcome is unknown", async () => {
+		// A wait that timed out, or a lost reply: the guest may still appear, so nothing is released.
+		const directory = await root();
+		const stateRoot = join(directory, "state");
+		const lxd = new FakeLxd();
+		lxd.createFailure = new Error("LXD operation failed");
+		const fetcher = fetchProvisioner([]);
+		const backend = new LxdCloudRunnerProviderBackend(config(stateRoot), lxd, new FakeGuest(), fetcher);
+		await expect(backend.acquire(runId, work(), new AbortController().signal)).rejects.toThrow(
+			"LXD operation failed",
+		);
+		expect(
+			vi.mocked(fetcher).mock.calls.filter(([url]) => String(url).includes("qorpera_release_runtime_machine")),
+		).toHaveLength(0);
+		expect(JSON.parse(await readFile(join(stateRoot, runId, "journal.json"), "utf8"))).toMatchObject({
+			physicalState: "creating",
+			capacityRegistered: true,
 		});
 	});
 
@@ -1004,6 +1146,64 @@ describe("LXD cloud runner provider", () => {
 		});
 		expect(lxd.createCalls).toHaveLength(0);
 	});
+	it("names the step, and a failed database call's function, status and code, when acquire fails", async () => {
+		const stateRoot = join(await root(), "state");
+		const lxd = new FakeLxd();
+		const base = fetchProvisioner([]);
+		const fetcher: typeof fetch = async (input, init) => {
+			if (String(input).includes("qorpera_reserve_runtime_machine"))
+				return Response.json({ code: "42501", message: "PRIVATE detail" }, { status: 403 });
+			return base(input, init);
+		};
+		const backend = new LxdCloudRunnerProviderBackend(config(stateRoot), lxd, new FakeGuest(), fetcher);
+		const failure = await backend
+			.acquire(runId, work(), new AbortController().signal)
+			.catch((error: unknown) => error);
+		expect(failure).toMatchObject({
+			name: "ProviderStepFailed",
+			category: "provider_step",
+			stage: "reserve",
+			rpc: "qorpera_reserve_runtime_machine",
+			rpcStatus: 403,
+			rpcCode: "42501",
+			message: "Runner provisioning failed (403)",
+		});
+		expect(lxd.createCalls).toHaveLength(0);
+
+		// A failure that is no database call names only its step; a body without a code names none.
+		const other = join(await root(), "state");
+		const unreadable: typeof fetch = async (input, init) => {
+			if (String(input).includes("qorpera_compute_identity_login_in_vault"))
+				return new Response("<html>gateway</html>", { status: 502 });
+			return base(input, init);
+		};
+		const custody = await new LxdCloudRunnerProviderBackend(
+			governedConfig(other),
+			new FakeLxd(),
+			new FakeGuest(),
+			unreadable,
+		)
+			.acquire(runId, work(), new AbortController().signal)
+			.catch((error: unknown) => error);
+		expect(custody).toMatchObject({
+			category: "provider_step",
+			stage: "login_custody",
+			rpc: "qorpera_compute_identity_login_in_vault",
+			rpcStatus: 502,
+			rpcCode: undefined,
+		});
+		const lxdFailure = new FakeLxd();
+		vi.spyOn(lxdFailure, "createInstance").mockRejectedValue(new Error("PRIVATE /var/lib host path"));
+		const created = await new LxdCloudRunnerProviderBackend(
+			config(join(await root(), "state")),
+			lxdFailure,
+			new FakeGuest(),
+			fetchProvisioner([]),
+		)
+			.acquire(runId, work(), new AbortController().signal)
+			.catch((error: unknown) => error);
+		expect(created).toMatchObject({ category: "provider_step", stage: "create", rpc: undefined });
+	});
 	it.each(["NODE_CAPACITY_EXHAUSTED", "NODE_OBSERVATION_UNAVAILABLE", "NODE_DISABLED"])(
 		"reports a node refusal %s as a typed admission refusal",
 		async (reason) => {
@@ -1181,6 +1381,69 @@ describe("LXD cloud runner provider", () => {
 			stopReason: "idle",
 		});
 		await expect(backend.acquire(runId, request, new AbortController().signal)).rejects.toThrow("cannot be replayed");
+	});
+
+	it("retires a guest still waiting two minutes after its job ended, and keeps one whose job goes on", async () => {
+		// 29 Sep 2026 (company deletion): an unknown assign or delivery leaves the guest up for a replay,
+		// but an ended job is never replayed, so the guest waited on its inbox forever with its machine.
+		const f = await acquiredFixture();
+		const asked: string[][] = [];
+		let ended = false;
+		const fetcher = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+			if (String(input).includes("qorpera_runtime_ended_runners")) {
+				const body = JSON.parse(String(init?.body)) as { p_runner_ids: string[] };
+				asked.push(body.p_runner_ids);
+				return Response.json(ended ? body.p_runner_ids : []);
+			}
+			return f.fetchImplementation(input, init);
+		}) as typeof fetch;
+		const journal = async () => JSON.parse(await readFile(f.journalPath, "utf8")) as Record<string, unknown>;
+		const age = async (ms: number) =>
+			writeFile(
+				f.journalPath,
+				JSON.stringify({ ...(await journal()), updatedAt: new Date(Date.now() - ms).toISOString() }),
+			);
+		// A fresh guest is not asked about.
+		await new LxdCloudRunnerProviderBackend(config(f.stateRoot), f.lxd, f.guest, fetcher).reconcile();
+		expect(asked).toEqual([]);
+		// Waiting two minutes: asked once per minute; while the job goes on the guest stays.
+		await age(2 * 60_000 + 1_000);
+		const backend = new LxdCloudRunnerProviderBackend(config(f.stateRoot), f.lxd, f.guest, fetcher);
+		await backend.reconcile();
+		await backend.reconcile();
+		expect(asked).toEqual([[runnerId]]);
+		expect(f.lxd.deleteCalls).toEqual([]);
+		expect(await journal()).toMatchObject({ physicalState: "registered" });
+		// Its job ended: a later pass retires the guest and releases its machine.
+		ended = true;
+		const later = new LxdCloudRunnerProviderBackend(config(f.stateRoot), f.lxd, f.guest, fetcher);
+		await later.reconcile();
+		expect(f.lxd.deleteCalls).toEqual([f.lxd.createCalls[0]?.name]);
+		expect(await journal()).toMatchObject({
+			physicalState: "stopped",
+			stopReason: "revoked",
+			capacityReleased: true,
+		});
+	});
+
+	it("keeps waiting guests when the database has no ended-runner check yet", async () => {
+		const f = await acquiredFixture();
+		const journal = async () => JSON.parse(await readFile(f.journalPath, "utf8")) as Record<string, unknown>;
+		await writeFile(
+			f.journalPath,
+			JSON.stringify({ ...(await journal()), updatedAt: new Date(Date.now() - 10 * 60_000).toISOString() }),
+		);
+		const fetcher = vi.fn(async (input: string | URL | Request, init?: RequestInit) =>
+			String(input).includes("qorpera_runtime_ended_runners")
+				? Response.json({ code: "PGRST202" }, { status: 404 })
+				: f.fetchImplementation(input, init),
+		) as typeof fetch;
+		await new LxdCloudRunnerProviderBackend(config(f.stateRoot), f.lxd, f.guest, fetcher).reconcile();
+		expect(
+			vi.mocked(fetcher).mock.calls.filter(([url]) => String(url).includes("qorpera_runtime_ended_runners")),
+		).toHaveLength(1);
+		expect(f.lxd.deleteCalls).toEqual([]);
+		expect(await journal()).toMatchObject({ physicalState: "registered" });
 	});
 
 	it("continues a sponsor handoff in a fresh attempt while preserving the retired guest and recovery history", async () => {

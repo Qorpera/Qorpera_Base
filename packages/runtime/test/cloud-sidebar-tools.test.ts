@@ -1,4 +1,5 @@
 import type { CloudCompanyPathControl } from "@qorpera/runtime/cloud-company-path-gateway";
+import type { CloudFolderSidebar } from "@qorpera/runtime/cloud-folder-sidebar";
 import { CloudNativeToolRun } from "@qorpera/runtime/cloud-native-tool-authority";
 import { CloudNativeToolBoundary } from "@qorpera/runtime/cloud-native-tool-boundary";
 import { cloudSidebarTools } from "@qorpera/runtime/cloud-sidebar-tools";
@@ -142,5 +143,38 @@ describe("agent sidebar tool", () => {
 		} finally {
 			f.run.close();
 		}
+	});
+});
+
+describe("a folder-v2 company's sections", () => {
+	it("goes through the sections file writer and names sections by name", async () => {
+		const { binding, authority } = nativeToolAuthorityFixture();
+		const identity = authority.identity;
+		const call = vi.fn<CloudCompanyPathControl["call"]>(async () => ({}));
+		const run = vi.fn(async () => ({ kind: "text" as const, value: '{"changed":true}' }));
+		const [tool] = cloudSidebarTools(
+			binding,
+			identity,
+			{ call },
+			{
+				folderSidebar: { run } as unknown as CloudFolderSidebar,
+			},
+		);
+		if (!tool) throw new Error("Missing sidebar tool");
+		expect(tool.description).toContain("agents/sections.md");
+		expect(tool.description).toContain("name the section by its name;");
+		expect(tool.description).not.toContain("by its id or name");
+		const context = {
+			companyId: identity.companyId,
+			runId: identity.runId,
+			callId: "call-1",
+			argumentSha256: "a".repeat(64),
+			signal: new AbortController().signal,
+			identity,
+		};
+		const request = tool.parseArguments({ action: "move_agent", agentId: bob, section: "Sales" });
+		await expect(tool.execute(request, context)).resolves.toEqual({ kind: "text", value: '{"changed":true}' });
+		expect(run).toHaveBeenCalledWith({ action: "move_agent", agentId: bob, section: "Sales" }, context);
+		expect(call).not.toHaveBeenCalled();
 	});
 });

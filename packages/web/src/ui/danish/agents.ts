@@ -37,6 +37,8 @@ export const AGENTS: Record<string, string> = {
 	"every day": "hver dag",
 	"When {path} or anything under it changes": "Når {path} eller noget i den ændres",
 	"When {path} changes": "Når {path} ændres",
+	"When a hook receives an event": "Når en hook modtager en hændelse",
+	"When a hook receives {types}": "Når en hook modtager {types}",
 	"{days} at {time} ({zone})": "{days} kl. {time} ({zone})",
 	"Every day at {time}": "Hver dag kl. {time}",
 	"Weekdays at {time}": "Hverdage kl. {time}",
@@ -55,6 +57,8 @@ export const AGENTS: Record<string, string> = {
 	"Routines could not be read. Refresh to try again.": "Rutinerne kunne ikke hentes. Opdater for at prøve igen.",
 	"New routine": "Ny rutine",
 	"Has not run yet": "Har ikke kørt endnu",
+	Resumed: "Genoptaget",
+	"When {name} turned on “Work while you're away”": "Da {name} slog “Arbejd, mens du er væk” til",
 	Ended: "Afsluttet",
 	Done: "Færdig",
 	"Runs until {name} decides it is done": "Kører, indtil {name} beslutter, at den er færdig",
@@ -100,6 +104,14 @@ export const AGENTS: Record<string, string> = {
 	"Enter a Company File path such as finance/invoices.": "Skriv en sti i Virksomhedsfilen som finance/invoices.",
 	"Give the routine a name and say what to do.": "Giv rutinen et navn, og skriv, hvad den skal gøre.",
 	"Connect a model account in Settings first.": "Forbind først en modelkonto i Indstillinger.",
+	"A ChatGPT plan can't pay for routines that start on a file change or a webhook.":
+		"Et ChatGPT-abonnement kan ikke betale for rutiner, der starter på en filændring eller en webhook.",
+	"A ChatGPT plan can't pay for routines that start on a file change or a webhook. Choose another account.":
+		"Et ChatGPT-abonnement kan ikke betale for rutiner, der starter på en filændring eller en webhook. Vælg en anden konto.",
+	"Turn on “Work while you're away” for this ChatGPT plan in Settings first.":
+		"Slå først “Arbejd, mens du er væk” til for ChatGPT-abonnementet i Indstillinger.",
+	"{name} uses your ChatGPT plan for this routine while you are away. Pause the routine to stop it.":
+		"{name} bruger dit ChatGPT-abonnement til rutinen, mens du er væk. Sæt rutinen på pause for at stoppe den.",
 	"The routine could not be saved. Your draft is still here.": "Rutinen kunne ikke gemmes. Din kladde er her stadig.",
 	"Edit routine": "Rediger rutine",
 	"Back to routines": "Tilbage til rutiner",
@@ -109,8 +121,8 @@ export const AGENTS: Record<string, string> = {
 	"Effort: {effort}": "Indsats: {effort}",
 	"Saving lets {name} use this account for this routine while you are away. Pause the routine to stop it.":
 		"Når du gemmer, kan {name} bruge kontoen til rutinen, mens du er væk. Sæt rutinen på pause for at stoppe den.",
-	"Connect a model account in Settings → Connections first. A routine runs on a member's own account.":
-		"Forbind først en modelkonto i Indstillinger → Forbindelser. En rutine kører på et medlems egen konto.",
+	"Connect a model account in Settings → My connections first. A routine runs on a member's own account.":
+		"Forbind først en modelkonto i Indstillinger → Mine forbindelser. En rutine kører på et medlems egen konto.",
 
 	// Group details (app/views/group-details.ts, group-edits.ts, app/update-group.ts)
 	Participants: "Deltagere",
@@ -167,11 +179,40 @@ export const AGENTS: Record<string, string> = {
 	"Needs {name} · paused {duration}": "Venter på {name} · på pause i {duration}",
 	"Needs {name} · paused now": "Venter på {name} · på pause nu",
 	"Answer sent · waiting for the session": "Svar sendt · venter på sessionen",
+	"Waiting for computer hours": "Venter på computertimer",
+	"Answer sent · waiting for computer hours": "Svar sendt · venter på computertimer",
 	"Opening the pull request": "Åbner pull requesten",
 	"Draft PR ready · session kept for follow-ups": "PR-kladde klar · sessionen gemmes til opfølgning",
 	"Finished · session kept for follow-ups": "Færdig · sessionen gemmes til opfølgning",
 	"Failed · workspace kept": "Mislykkedes · arbejdsområdet er gemt",
 	"Cancelled · workspace kept": "Annulleret · arbejdsområdet er gemt",
+	"Draft PR ready": "PR-kladde klar",
+	"running 1 command": "kører 1 kommando",
+	"running {count} commands": "kører {count} kommandoer",
+	"standing by": "står klar",
+	asleep: "sover",
+	"Archived · files kept": "Arkiveret · filerne er gemt",
+	Archive: "Arkivér",
+	"Stops what it runs and takes it off its machine. Its files are kept, and a new message reopens it.":
+		"Stopper det, den kører, og tager den af sin maskine. Filerne gemmes, og en ny besked genåbner den.",
+	"Send a message to reopen this session": "Send en besked for at genåbne sessionen",
+	"{agent} archived the session": "{agent} arkiverede sessionen",
+	"Archived after a long quiet time": "Arkiveret efter lang tids stilhed",
+	"You archived the session": "Du arkiverede sessionen",
+	"{owner} archived the session": "{owner} arkiverede sessionen",
+	Reopened: "Genåbnet",
+	"Quiet for a day · asked {agent} whether it can be archived":
+		"Stille i en dag · spurgte {agent}, om den kan arkiveres",
+	"Quiet for {days} days · asked {agent} whether it can be archived":
+		"Stille i {days} dage · spurgte {agent}, om den kan arkiveres",
+	"The machine went to sleep": "Maskinen gik i dvale",
+	"The machine was replaced with a newer one": "Maskinen blev skiftet ud med en nyere",
+	"The session lost its machine": "Sessionen mistede sin maskine",
+	"The owner is no longer a member": "Ejeren er ikke længere medlem",
+	"{agent} no longer has the repository": "{agent} har ikke længere adgang til repositoriet",
+	"Coding is turned off here": "Kodning er slået fra her",
+	"1 command stopped": "1 kommando stoppet",
+	"{count} commands stopped": "{count} kommandoer stoppet",
 	"Coding session": "Kodesession",
 	"Session transcript": "Sessionens forløb",
 	"{count} earlier steps": "{count} tidligere trin",
@@ -185,7 +226,26 @@ export const AGENTS: Record<string, string> = {
 	"Draft PR opened": "PR-kladde åbnet",
 	"The computer running this session stopped answering. The workspace is kept; a follow-up starts it again.":
 		"Computeren, der kørte sessionen, holdt op med at svare. Arbejdsområdet er gemt; en opfølgning starter den igen.",
-	"Failed: {reason}": "Mislykkedes: {reason}",
+	"The company ran out of computer hours. The workspace is kept; a follow-up continues once hours are added.":
+		"Virksomheden løb tør for computertimer. Arbejdsområdet er gemt; en opfølgning fortsætter, når der er tilføjet timer.",
+	"The session's last turn ended without saving its work or asking a question. The workspace is kept; a follow-up continues it.":
+		"Sessionens sidste tur sluttede uden at gemme sit arbejde eller stille et spørgsmål. Arbejdsområdet er gemt; en opfølgning fortsætter den.",
+	"The model account paying for this session reached its usage limit. The workspace is kept; a follow-up continues it once the limit resets.":
+		"Modelkontoen, der betaler for sessionen, har nået sin forbrugsgrænse. Arbejdsområdet er gemt; en opfølgning fortsætter den, når grænsen er nulstillet.",
+	"The model account needs to be connected again. The workspace is kept; a follow-up continues it once the account is connected.":
+		"Modelkontoen skal forbindes igen. Arbejdsområdet er gemt; en opfølgning fortsætter den, når kontoen er forbundet.",
+	"No computer could be started for the session. The workspace is kept; a follow-up tries again.":
+		"Der kunne ikke startes en computer til sessionen. Arbejdsområdet er gemt; en opfølgning prøver igen.",
+	"One of the session's steps got no answer in time. The workspace is kept; a follow-up continues it.":
+		"Et af sessionens trin fik ikke svar i tide. Arbejdsområdet er gemt; en opfølgning fortsætter den.",
+	"The session took too long and was stopped. The workspace is kept; a follow-up continues it.":
+		"Sessionen tog for lang tid og blev stoppet. Arbejdsområdet er gemt; en opfølgning fortsætter den.",
+	"Something on Qorpera's side refused one of the session's steps. The workspace is kept; a follow-up continues it.":
+		"Noget hos Qorpera afviste et af sessionens trin. Arbejdsområdet er gemt; en opfølgning fortsætter den.",
+	"The session was stopped before it finished. The workspace is kept; a follow-up continues it.":
+		"Sessionen blev stoppet, før den var færdig. Arbejdsområdet er gemt; en opfølgning fortsætter den.",
+	"The session stopped because of an internal error. The workspace is kept; a follow-up continues it.":
+		"Sessionen stoppede på grund af en intern fejl. Arbejdsområdet er gemt; en opfølgning fortsætter den.",
 	"{count} file": "{count} fil",
 	"{count} files": "{count} filer",
 	"{count} artifact": "{count} artefakt",
@@ -205,7 +265,6 @@ export const AGENTS: Record<string, string> = {
 	"Answer {harness}": "Svar {harness}",
 	"The session has not started yet": "Sessionen er ikke startet endnu",
 	"{harness} is working": "{harness} arbejder",
-	"This session takes no more messages": "Sessionen tager ikke imod flere beskeder",
 	"Only {owner} can write to this session. Steer it through {agent}.":
 		"Kun {owner} kan skrive til sessionen. Styr den via {agent}.",
 	"Back to the conversation": "Tilbage til samtalen",

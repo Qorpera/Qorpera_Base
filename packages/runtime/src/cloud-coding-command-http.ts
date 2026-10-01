@@ -8,6 +8,11 @@ import {
 	parseCloudCodingCommandReceipt,
 } from "@qorpera/contracts";
 import type { CloudCodingCommandGateway } from "./cloud-coding-command-tools.ts";
+import {
+	CloudMachineCommandRefusal,
+	type CloudMachineCommandServiceOptions,
+	serveCloudMachineCommand,
+} from "./cloud-machine-command-http.ts";
 import { type CloudNativeToolBinding, parseCloudNativeToolBinding } from "./cloud-native-tool-authority.ts";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -16,7 +21,7 @@ const TOKEN = /^[A-Za-z0-9_-]{43}$/;
 const REQUEST_LIMIT = 128 * 1024;
 const RESULT_LIMIT = 128 * 1024;
 const ERROR = "Coding command gateway unavailable";
-type CommandInput = { commandId: string; inputSha256: string; command: string; timeoutMs: number };
+type CommandInput = { commandId: string; inputSha256: string; command: string; timeoutMs: number | null };
 export type CloudCodingCommandHttpRequest = Readonly<
 	{
 		schema: "qorpera.coding-command-http/v1";
@@ -75,9 +80,7 @@ function parseRequest(value: unknown, action: string): CloudCodingCommandHttpReq
 			Buffer.from(input.command).toString("utf8") !== input.command ||
 			Buffer.byteLength(input.command) > 16384 ||
 			Buffer.byteLength(JSON.stringify(input.command)) > 60000 ||
-			!Number.isSafeInteger(input.timeoutMs) ||
-			Number(input.timeoutMs) < 1000 ||
-			Number(input.timeoutMs) > 1800000)
+			(input.timeoutMs !== null && (!Number.isSafeInteger(input.timeoutMs) || Number(input.timeoutMs) < 1000)))
 	)
 		throw new Error(ERROR);
 	return Object.freeze({
@@ -193,6 +196,9 @@ export interface CloudCodingCommandServiceOptions {
 	/** Trusted host composition constructs the fixed LXD guest transport after
 	 * SQL authority checks; never execute a shell on the host. */
 	execute(request: CloudCodingCommandHttpRequest, signal: AbortSignal): Promise<unknown>;
+	/** Company machines' commands on the same ingress (/v1/machine-commands/*),
+	 * when this executor routes them. */
+	machines?: CloudMachineCommandServiceOptions;
 	host?: "127.0.0.1" | "::1";
 	port?: number;
 }
@@ -310,14 +316,37 @@ export class HttpCloudCodingCommandService {
 		try {
 			const authorization = Buffer.from(request.headers.authorization ?? "");
 			const route = /^\/v1\/coding-commands\/(start|read|cancel)$/.exec(request.url ?? "");
+			const machineRoute = this.#options.machines
+				? /^\/v1\/machine-commands\/(start|read|cancel)$/.exec(request.url ?? "")
+				: null;
 			if (
 				request.method !== "POST" ||
-				!route ||
+				(!route && !machineRoute) ||
 				request.headers["content-type"] !== "application/json" ||
 				authorization.length !== this.#token.length ||
 				!timingSafeEqual(authorization, this.#token)
 			)
 				throw new Error(ERROR);
+			if (machineRoute && this.#options.machines) {
+				try {
+					replyJson(
+						reply,
+						200,
+						await serveCloudMachineCommand(
+							this.#options.machines,
+							await readRequest(request, controller.signal),
+							machineRoute[1],
+							controller.signal,
+						),
+					);
+				} catch (error) {
+					// Only a refusal the agent can act on is told apart, by its fixed code.
+					if (!(error instanceof CloudMachineCommandRefusal)) throw error;
+					replyJson(reply, 409, { code: error.code });
+				}
+				return;
+			}
+			if (!route) throw new Error(ERROR);
 			const admitted = parseRequest(await readRequest(request, controller.signal), route[1]);
 			const authority = await this.#options.authorize(admitted, controller.signal);
 			if (

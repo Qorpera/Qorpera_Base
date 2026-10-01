@@ -113,6 +113,11 @@ function fixture() {
 	};
 	return { policy, context, inventory, host };
 }
+/** An own key named like this, as JSON.parse makes one. A plain assignment of
+ * `__proto__` would set the object's prototype instead. */
+function ownKey<T>(target: Record<string, T>, key: string, value: T) {
+	Object.defineProperty(target, key, { value, enumerable: true, writable: true, configurable: true });
+}
 describe("complete host inventory reconciliation", () => {
 	it.each(["uuid", "project", "name", "configuration"])("blocks replacement of an observed physical %s", (fault) => {
 		const f = fixture(),
@@ -128,6 +133,61 @@ describe("complete host inventory reconciliation", () => {
 		if (fault === "project") i.project = "different";
 		if (fault === "name") i.name = "different";
 		if (fault === "configuration") i.expandedDevices.extra = { type: "disk", source: "/changed" };
+		expect(reconcileRuntimeNodeInventory(f.inventory, f.context).state).toBe("unavailable");
+	});
+	it("matches a company machine at the size it reserved; nothing may be added to it later", () => {
+		const f = fixture(),
+			i = f.inventory.instances[3],
+			a = f.context.allocations[3];
+		a.providerKind = "machine";
+		a.providerId = "machine-node";
+		a.cpuMillis = 8000;
+		a.memoryBytes = 32 * 1024 ** 3;
+		for (const config of [i.config, i.expandedConfig]) {
+			config["user.qorpera.schema"] = "qorpera.lxd-company-machine/v1";
+			config["user.qorpera.provider_id"] = "machine-node";
+			config["limits.cpu"] = "8";
+			config["limits.memory"] = String(32 * 1024 ** 3);
+		}
+		for (const devices of [i.devices, i.expandedDevices])
+			devices.repository = {
+				type: "disk",
+				source: `/srv/qorpera-coding/executor/workers/${randomUUID()}/${randomUUID()}/${randomUUID()}/data/repository`,
+				path: "/mnt/repository",
+				readonly: "true",
+				required: "true",
+			};
+		a.physical = {
+			project: i.project,
+			name: i.name,
+			physicalId: i.config["volatile.uuid"],
+			configurationSha256: runtimeNodeInstanceConfigurationSha256(i),
+		};
+		const ready = reconcileRuntimeNodeInventory(f.inventory, f.context);
+		expect(ready.state).toBe("ready");
+		expect(ready.entries[3].allocation?.providerKind).toBe("machine");
+		// A machine is never a coding machine: a session folder is a change of its enrollment.
+		const workerId = randomUUID();
+		for (const devices of [i.devices, i.expandedDevices])
+			devices[`data-${workerId.replaceAll("-", "")}`] = {
+				type: "disk",
+				source: `/srv/qorpera-coding/executor/workers/${randomUUID()}/${randomUUID()}/${workerId}/data`,
+				path: `/workspace/${workerId}`,
+				required: "true",
+			};
+		expect(reconcileRuntimeNodeInventory(f.inventory, f.context).state).toBe("unavailable");
+	});
+	it("does not match a company machine whose limits differ from its reservation", () => {
+		const f = fixture(),
+			i = f.inventory.instances[3],
+			a = f.context.allocations[3];
+		a.providerKind = "machine";
+		a.providerId = "machine-node";
+		for (const config of [i.config, i.expandedConfig]) {
+			config["user.qorpera.schema"] = "qorpera.lxd-company-machine/v1";
+			config["user.qorpera.provider_id"] = "machine-node";
+			config["limits.cpu"] = "4";
+		}
 		expect(reconcileRuntimeNodeInventory(f.inventory, f.context).state).toBe("unavailable");
 	});
 	it("matches a member's coding machine, and its sessions' folders coming and going do not change its enrollment", () => {
@@ -189,6 +249,27 @@ describe("complete host inventory reconciliation", () => {
 		const before = runtimeNodeInstanceConfigurationSha256(legacy);
 		legacy.devices[`data-${worker}`] = { type: "disk", source: "/srv/coding/data", path: "/workspace/x" };
 		expect(runtimeNodeInstanceConfigurationSha256(legacy)).not.toBe(before);
+	});
+	// The LXD client refuses such a device (lxd-host-inventory.test.ts). Should a
+	// record still carry one as its own key, the digests count it like any other.
+	it.each([0, 3])("counts a host-path disk named __proto__ in a machine's digest (instance %s)", (index) => {
+		const f = fixture(),
+			i = f.inventory.instances[index];
+		if (index === 3)
+			i.config["user.qorpera.schema"] = i.expandedConfig["user.qorpera.schema"] = "qorpera.lxd-coding-machine/v1";
+		f.context.allocations[index].physical = {
+			project: i.project,
+			name: i.name,
+			physicalId: i.config["volatile.uuid"],
+			configurationSha256: runtimeNodeInstanceConfigurationSha256(i),
+		};
+		expect(reconcileRuntimeNodeInventory(f.inventory, f.context).state).toBe("ready");
+		for (const devices of [i.devices, i.expandedDevices])
+			ownKey(devices, "__proto__", { type: "disk", source: "/", path: "/host", required: "true" });
+		expect(Object.keys(i.expandedDevices)).toEqual(["__proto__"]);
+		const result = reconcileRuntimeNodeInventory(f.inventory, f.context);
+		expect(result.entries[index].reason).toBe("INSTANCE_AUTHORITY_DIFFERS");
+		expect(result.state).toBe("unavailable");
 	});
 	it("matches all three physical provider types with exact ledger costs across projects", () => {
 		const f = fixture(),
@@ -455,6 +536,16 @@ describe("shared execution host identity devices (2026-09-27)", () => {
 			change(g.i);
 			expect(reconcileRuntimeNodeInventory(g.inventory, g.context).state).toBe("unavailable");
 		}
+	});
+	it("a device named __proto__ is neither an identity nor left out of the digest", () => {
+		const f = execHost();
+		f.attach(randomUUID());
+		expect(reconcileRuntimeNodeInventory(f.inventory, f.context).state).toBe("ready");
+		for (const devices of [f.i.devices, f.i.expandedDevices])
+			ownKey(devices, "__proto__", { type: "disk", source: "/var/lib/lxd", path: "/host" });
+		const result = reconcileRuntimeNodeInventory(f.inventory, f.context);
+		expect(result.state).toBe("unavailable");
+		expect(result.entries[4]).toMatchObject({ reason: "INSTANCE_AUTHORITY_DIFFERS" });
 	});
 	it("declares identity volumes only for a virtual machine, with exactly pool and source prefix", () => {
 		const f = execHost();
@@ -978,6 +1069,18 @@ describe("image build space (identical nodes, 2026-09-28)", () => {
 			"a GPU",
 			(i) => {
 				i.expandedDevices.g = { type: "gpu" };
+			},
+		],
+		[
+			"a host path disk named __proto__",
+			(i) => {
+				ownKey(i.expandedDevices, "__proto__", { type: "disk", source: "/", path: "/host" });
+			},
+		],
+		[
+			"a configuration key named __proto__",
+			(i) => {
+				ownKey(i.expandedConfig, "__proto__", "true");
 			},
 		],
 	])("refuses a build machine with %s", (_, change) => {

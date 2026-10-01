@@ -160,7 +160,7 @@ export function parseRuntimeNodeInventoryPolicy(value: unknown): RuntimeNodeInve
 }
 export interface RuntimeNodeInventoryAllocation {
 	allocationId: string;
-	providerKind: "native" | "office" | "login" | "coding";
+	providerKind: "native" | "office" | "login" | "coding" | "machine";
 	providerId: string;
 	policySha256: string;
 	instanceSha256: string;
@@ -199,7 +199,7 @@ export function parseRuntimeNodeInventoryContext(value: unknown): RuntimeNodeInv
 			"allocationId,providerKind,providerId,policySha256,instanceSha256,cpuMillis,memoryBytes,physical",
 		);
 		const physical = a.physical === null ? null : record(a.physical, "project,name,physicalId,configurationSha256");
-		if (!["native", "office", "login", "coding"].includes(a.providerKind as string))
+		if (!["native", "office", "login", "coding", "machine"].includes(a.providerKind as string))
 			throw new Error("INVALID_NODE_INVENTORY_CONTEXT");
 		return {
 			allocationId: text(a.allocationId, UUID),
@@ -452,14 +452,17 @@ function allocation(
 					? "native"
 					: tag("schema") === "qorpera.lxd-coding-vm/v2" || tag("schema") === "qorpera.lxd-coding-machine/v1"
 						? "coding"
-						: null;
+						: tag("schema") === "qorpera.lxd-company-machine/v1"
+							? "machine"
+							: null;
 	const id = kind === "native" ? tag("acquisition_id") : tag("allocation_id");
 	const expected = c.allocations.find((a) => a.allocationId === id);
 	if (
 		!expected ||
 		i.type !== "virtual-machine" ||
 		kind !== expected.providerKind ||
-		tag(kind === "office" || kind === "coding" ? "provider_id" : "provider_adapter") !== expected.providerId ||
+		tag(kind === "office" || kind === "coding" || kind === "machine" ? "provider_id" : "provider_adapter") !==
+			expected.providerId ||
 		tag("provider_policy_sha256") !== expected.policySha256 ||
 		tag("instance_sha256") !== expected.instanceSha256
 	)
