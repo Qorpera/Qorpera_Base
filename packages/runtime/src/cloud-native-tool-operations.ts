@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import type { JsonValue } from "@qorpera/contracts";
+import { type JsonValue, normalizeUuid } from "@qorpera/contracts";
 import {
 	type CloudNativeToolBinding,
 	type CloudNativeToolIdentity,
@@ -166,6 +166,12 @@ export class CloudNativeToolOperations {
 		this.#run = run;
 		this.#control = control;
 		this.#remembered = remembered;
+	}
+
+	/** Whether an operation's effect may return a folder commit: this control plane completes folder receipts. A
+	 * folder writer asks before it commits, since a commit no one can complete fences the run's later operations. */
+	get completesFolderCommits(): boolean {
+		return this.#control.completeFolderToolOperation !== undefined;
 	}
 
 	async execute(options: {
@@ -359,13 +365,17 @@ export class CloudNativeToolOperations {
 					revisions.some((value) => typeof value !== "string" || !UUID.test(value)) ||
 					revisions.length > 1 ||
 					(operation.requiresCompanyRevision && revisions.length === 0) ||
-					(output.folderCommitId !== undefined && !this.#control.completeFolderToolOperation)
+					(output.folderCommitId !== undefined &&
+						(!operation.requiresCompanyRevision || !this.#control.completeFolderToolOperation))
 				)
 					throw new Error("Invalid cloud tool operation output");
 				const storedResult = JSON.parse(
 					cloudToolJsonText({ schema: RESULT_SCHEMA, inputSha256: digest, content }, 48 * 1024),
 				) as JsonValue;
-				const { outputSnapshotId, proposalId, folderCommitId } = output;
+				const { outputSnapshotId, proposalId } = output;
+				// SQL echoes the commit id in lower case; send and compare it that way.
+				const folderCommitId =
+					output.folderCommitId === undefined ? undefined : (normalizeUuid(output.folderCommitId) ?? undefined);
 				await this.#run.assertActive(signal);
 				const completed = record(
 					await cloudToolRequest(
