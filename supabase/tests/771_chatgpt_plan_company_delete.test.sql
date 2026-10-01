@@ -95,6 +95,24 @@ end $$;
 set local session_replication_role = replica;
 select pg_temp.r771_job_status('leased');
 set local session_replication_role = origin;
+-- Only the plan connection's own jobs hold it back: once they end, another connection's open job does not.
+savepoint r771_other_job;
+do $$
+begin
+	perform public.qorpera_terminalize_runner_attempt(job.id, 'failed', 'Ended for this check', false)
+	from public.qorpera_runner_jobs as job join public.qorpera_execution_runs as run on run.job_id = job.id
+	join public.qorpera_execution_sponsor_versions as sponsor
+		on sponsor.binding_id = run.sponsor_binding_id and sponsor.version = run.sponsor_version
+	where job.status in ('queued', 'leased') and sponsor.provider_connection_id = (current_setting('qorpera_test.r771')::jsonb ->> 'plan')::uuid;
+	if not exists (select 1 from public.qorpera_runner_jobs as job join public.qorpera_execution_runs as run on run.job_id = job.id
+		where job.status in ('queued', 'leased') and run.profile_id = '16000000-0000-4000-8000-000000000010') then
+		raise exception 'the fixture has no other open job of the company'; end if;
+	perform public.qorpera_revoke_company_chatgpt_plan_logins('16000000-0000-4000-8000-000000000010');
+	if (select status from public.qorpera_provider_connections
+		where id = (current_setting('qorpera_test.r771')::jsonb ->> 'plan')::uuid) <> 'revoked' then
+		raise exception 'another connection''s open job held the plan connection back'; end if;
+end $$;
+rollback to savepoint r771_other_job;
 
 -- A pass of the finisher: its stop ends the job (nothing holds it here), then it revokes the plan login's
 -- connection (the Codex login's stays, for the purge, and so does the other company's plan login), and waits
@@ -136,13 +154,20 @@ begin
 	if pg_temp.r771_open(interval '6 hours 1 minute') <> 0 then
 		raise exception 'the finisher waits for a plan login past 6 hours'; end if;
 end $$;
--- Past 6 hours the login is counted in the log (it lapses at OpenAI) and deleted with the company.
+-- Past 6 hours the login is counted in the log (it lapses at OpenAI) and deleted with the company: the purging
+-- pass counts it, also when it needs a new sign-in.
 savepoint r771_cap;
 do $$
 declare v_result jsonb;
 begin
+	if position('perform public.qorpera_abandon_company_chatgpt_plan_logins(p_profile_id);'
+		in pg_get_functiondef('public.qorpera_finish_company_deletion(uuid)'::regprocedure)) = 0 then
+		raise exception 'the purging pass does not count plan logins left open'; end if;
 	if public.qorpera_abandon_company_chatgpt_plan_logins('16000000-0000-4000-8000-000000000010') <> 1 then
 		raise exception 'the plan login left open is not counted'; end if;
+	update public.qorpera_model_logins set status = 'needs_sign_in' where id = '76400000-0000-4000-8000-000000000150';
+	if public.qorpera_abandon_company_chatgpt_plan_logins('16000000-0000-4000-8000-000000000010') <> 1 then
+		raise exception 'a plan login left open that needs a new sign-in is not counted'; end if;
 	v_result := public.qorpera_finish_company_deletion('16000000-0000-4000-8000-000000000010');
 	if v_result ->> 'state' <> 'purged'
 		or exists (select 1 from public.qorpera_model_logins where id = '76400000-0000-4000-8000-000000000150') then
