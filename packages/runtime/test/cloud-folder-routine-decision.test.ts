@@ -141,20 +141,103 @@ it("concludes the routine with its conclusion on one line", async () => {
 	);
 });
 
-it("refuses before any receipt what can never be saved: new instructions or title, a next run past the end", async () => {
-	const f = await fixture(writeRoutineFile({ ...BASE, ends: "2026-10-05T00:00:00Z" }));
+it("rewrites the title and instructions with the decision, on the review's approval recorded for the change set", async () => {
+	const f = await fixture(writeRoutineFile({ ...BASE, ends: "2030-01-01T00:00:00Z" }));
+	const { result, decided } = await f.decide({
+		action: "next",
+		operationKey: "decide-1",
+		at: "2026-10-03T07:30:00.000Z",
+		title: "Check the market weekly",
+		intent: "Compare this week's prices with last week's.\n",
+		effort: "low",
+	});
+	expect(decided).toBe(true);
+	expect(result).toMatchObject({
+		schema: "qorpera.agent-routine-receipt/v1",
+		routine: {
+			status: "active",
+			at: "2026-10-03T07:30:00Z",
+			title: "Check the market weekly",
+			instructionsChanged: true,
+		},
+	});
+	// Every other key of the file's parse is kept.
+	expect(f.text(PATH)).toBe(
+		writeRoutineFile({
+			...BASE,
+			ends: "2030-01-01T00:00:00Z",
+			title: "Check the market weekly",
+			instructions: "Compare this week's prices with last week's.",
+			trigger: { when: "once", at: "2026-10-03T07:30:00Z" },
+			effort: "low",
+		}),
+	);
+	expect(f.recordings[0]?.p_request).toEqual({
+		actionReviewId: f.context.actionReviewId,
+		tool: "decide_routine",
+		argumentSha256: f.context.argumentSha256,
+		units: f.commits[0]?.units,
+	});
+	expect(f.commits[0]).toMatchObject({ key: "decide-file:decide-1", receiptId: result.receiptId });
+	// A plain decision records no review.
+	const g = await fixture();
+	await g.decide({ action: "next", operationKey: "decide-1", at: "2026-10-03T07:30:00Z", title: BASE.title });
+	expect(g.recordings).toEqual([]);
+	expect(g.commits[0]?.reviewId).toBeUndefined();
+});
+
+it("does not take a rewrite the core refuses as the decision", async () => {
+	const f = await fixture();
+	vi.spyOn(CloudCompanyFolderClient.prototype, "commitStaged").mockImplementationOnce(async () => ({
+		commitId: randomUUID(),
+		seq: null,
+		replay: false,
+		units: [
+			{
+				unit: 1,
+				op: "write",
+				path: PATH,
+				to: null,
+				version: null,
+				outcome: "denied",
+				reason: "review_required",
+				problems: [],
+			},
+		],
+	}));
+	await expect(
+		f.decide({
+			action: "next",
+			operationKey: "decide-1",
+			at: "2026-10-03T07:30:00Z",
+			title: "Check the market weekly",
+		}),
+	).resolves.toMatchObject({
+		decided: false,
+		result: {
+			state: "refused",
+			reason: expect.stringContaining("decide again with a new operationKey, without intent or title"),
+		},
+	});
+});
+
+it("refuses before any receipt what can never be saved: a rewrite without approval, a conclusion's rewrite, a next run past the end", async () => {
+	const f = await fixture(writeRoutineFile({ ...BASE, ends: "2030-01-05T00:00:00Z" }));
+	const { actionReviewId: _, ...unreviewed } = f.context;
 	for (const change of [{ title: "Check the market weekly" }, { intent: "Compare this week's prices." }])
 		await refuses(
-			f.decide({ action: "next", operationKey: "decide-1", at: "2026-10-03T07:30:00Z", ...change }),
-			"cannot change its title or instructions yet",
+			f
+				.decision()
+				.decide({ action: "next", operationKey: "decide-1", at: "2026-10-03T07:30:00Z", ...change }, unreviewed),
+			"need the automatic review's approval of this call",
 		);
 	await refuses(
-		f.decide({ action: "next", operationKey: "decide-1", at: "2026-10-05T00:00:00Z" }),
-		"The routine ends at 2026-10-05T00:00:00Z. Choose an earlier time or conclude it.",
+		f.decide({ action: "next", operationKey: "decide-1", at: "2030-01-05T00:00:00Z" }),
+		"The routine ends at 2030-01-05T00:00:00Z. Choose an earlier time or conclude it.",
 	);
 	await refuses(
 		f.decide({ action: "conclude", operationKey: "decide-1", summary: "Done.", title: "Other" }),
-		"cannot change its title or instructions yet",
+		"A conclusion keeps the routine's title and instructions",
 	);
 	// No key is bound: the same key decides once the request can be saved.
 	expect(f.ledger.size).toBe(0);
@@ -169,6 +252,12 @@ it("answers settled when the routine already moved on, as today", async () => {
 		writeRoutineFile({ ...BASE, status: "paused" }),
 		writeRoutineFile({ ...BASE, status: "concluded", conclusion: "A member ended it." }),
 		writeRoutineFile({ ...BASE, trigger: { when: "every", minutes: 1440, starts: null } }),
+		// Past its end: a rewrite would revive it.
+		writeRoutineFile({
+			...BASE,
+			ends: "2026-09-30T00:00:00Z",
+			trigger: { when: "once", at: "2026-09-29T09:00:00Z" },
+		}),
 	]) {
 		const f = await fixture(text);
 		const { result, decided } = await f.decide({

@@ -642,7 +642,7 @@ describe("a folder-v2 dynamic routine's decision", () => {
 		);
 		const decided = vi.fn();
 		const decide = vi.fn(async () => {
-			throw new CloudToolRefusal("In this company a routine's own run cannot change its title or instructions yet");
+			throw new CloudToolRefusal("A conclusion keeps the routine's title and instructions: conclude without them");
 		});
 		const call = vi.fn<CloudCompanyPathControl["call"]>(async () => ({}));
 		const tool = cloudRoutineDecisionTool(
@@ -651,13 +651,15 @@ describe("a folder-v2 dynamic routine's decision", () => {
 			{ call },
 			{ decisionOwed: () => true, decided, folderDecision: { decide } as unknown as CloudFolderRoutineDecision },
 		);
-		expect(tool.description).toContain("cannot change its title or instructions yet: leave intent and title out");
+		expect(tool.description).toContain(
+			"In this company the routine is a file, and a new intent or title goes through the automatic review; if it is not approved, decide again without them.",
+		);
 		expect(tool.description).toContain("a refused one is decided again under a new operationKey");
-		expect(tool.description).not.toContain("intent, when the work changed");
+		expect(tool.description).toContain("intent, when the work changed");
 		expect(tool.description).toContain("state refused carries the reason: choose again or conclude.");
 		expect(
 			cloudRoutineDecisionTool(binding, run.identity, { call }, { decisionOwed: () => true, decided }).description,
-		).toContain("intent, when the work changed");
+		).not.toContain("goes through the automatic review");
 		const boundary = new CloudNativeToolBoundary({
 			companyId: run.identity.companyId,
 			runId: run.identity.runId,
@@ -676,7 +678,7 @@ describe("a folder-v2 dynamic routine's decision", () => {
 			expect(JSON.parse(refused.contentItems[0].text)).toMatchObject({
 				status: "denied",
 				content: {
-					text: "REFUSED: In this company a routine's own run cannot change its title or instructions yet",
+					text: "REFUSED: A conclusion keeps the routine's title and instructions: conclude without them",
 				},
 			});
 			expect(decided).not.toHaveBeenCalled();

@@ -6,6 +6,7 @@ import {
 	parseCompanyStateFile,
 	type RoutineFile,
 	setCompanyStateSettings,
+	writeRoutineFile,
 } from "@qorpera/cloud-client/company-state-files";
 import {
 	type CloudCompanyFolderClient,
@@ -26,15 +27,19 @@ import type { CloudNativeToolOperations } from "./cloud-native-tool-operations.t
  * RUNTIME-COMPANY-STATE-FILES.md §2 "routines", §5): `agents/<handle>/routines/<routineKey>.md`, whose name is the
  * routine's key. The run woken by the routine's `once` occurrence owes its end-of-run decision: a new `at` (with,
  * if needed, a new effort or reply), or `status: concluded` with a `conclusion`. F2-6's hook takes that save as the
- * decision while it is owed, without review; a decision that also changes the title or the instructions is
- * delegation, which the folder core cannot record before core C2, so it is not saved.
+ * decision while it is owed, without review. A next run that also rewrites the title or the instructions is
+ * delegation (later runs read them as their request): it is written with the decision (`writeRoutineFile` from the
+ * file's parse, every other key kept) and saved with the automatic review's approval of this call, recorded for
+ * exactly that change set (C2 R1; thin writers W4c-2). The gate never raises a card for `decide_routine`, so only a
+ * reviewer's allow reaches a rewrite.
  *
- * The file is read first, outside the receipt, and what can never be saved is refused there, binding no key: a title
- * or instructions that differ from the file (delegation, before C2), or a next run at or after the routine's end. A
- * routine that already moved on (its file gone, no longer active, or no longer a dynamic routine's `once`) is settled,
- * as today: nothing is owed. The receipt binds the model's request, and the commit carries the version read, so a file
- * changed in between is a conflict the model decides again under a new operation key. A plain decision the folder core
- * calls delegation is one nothing is owed for any more (F2-6's review class), so it is settled too.
+ * The file is read first, outside the receipt, and what can never be saved is refused there, binding no key: a rewrite
+ * without the review's approval, a conclusion with a new title or instructions, or a next run at or after the
+ * routine's end. A routine that already moved on (its file gone, no longer active, no longer a dynamic routine's
+ * `once`, or past its end) is settled, as today: nothing is owed. The receipt binds the model's request, and the commit
+ * carries the version read, so a file changed in between is a conflict the model decides again under a new operation
+ * key. A plain decision the folder core calls delegation is one nothing is owed for any more (F2-6's review class), so
+ * it is settled too; a reviewed rewrite the core still refuses is not saved, and the run decides again without it.
  *
  * The routine is the one this run was woken for: the file at its key must carry its id (the routine row is keyed by
  * the file's id). A member may rename the file while the run works; then the agent's routines folder is listed and the
@@ -141,9 +146,13 @@ export class CloudFolderRoutineDecision {
 		// Removed, or replaced by another routine: it moved on.
 		if (!located) return this.#settled(null);
 		const { found, routine, path, routineKey } = located;
-		// Paused, concluded or rescheduled by a member since this run started: nothing is owed, as today. The answer
-		// shows the routine as read, released with it.
-		if (routine.status !== "active" || routine.trigger.when !== "once") {
+		// Paused, concluded or rescheduled by a member since this run started, or past its end: nothing is owed, as today
+		// (a rewrite would revive it). The answer shows the routine as read, released with it.
+		if (
+			routine.status !== "active" ||
+			routine.trigger.when !== "once" ||
+			(routine.ends !== null && Date.parse(routine.ends) <= Date.now())
+		) {
 			const settled = this.#settled(located);
 			const output = String(settled.content.value);
 			const outputSha256 = sha256(new TextEncoder().encode(output));
@@ -162,12 +171,19 @@ export class CloudFolderRoutineDecision {
 			);
 			return settled;
 		}
-		if (
-			(request.title !== undefined && request.title !== routine.title) ||
-			(request.intent !== undefined && request.intent.trim() !== routine.instructions)
-		)
+		// A title or instructions equal to the file's change nothing, so they are not written.
+		const title = request.title !== undefined && request.title !== routine.title ? request.title : undefined;
+		const instructions =
+			request.intent !== undefined && request.intent.trim() !== routine.instructions
+				? request.intent.trim()
+				: undefined;
+		const rewrite = title !== undefined || instructions !== undefined;
+		if (rewrite && request.action === "conclude")
+			throw new CloudToolRefusal("A conclusion keeps the routine's title and instructions: conclude without them");
+		const actionReviewId = context.actionReviewId;
+		if (rewrite && !actionReviewId)
 			throw new CloudToolRefusal(
-				"In this company a routine's own run cannot change its title or instructions yet (that needs a member's review): decide next without intent or title, or conclude",
+				"New instructions or a new title need the automatic review's approval of this call, and it has none: decide next without intent or title, or call again",
 			);
 		let text: string;
 		if (request.action === "conclude") {
@@ -178,12 +194,32 @@ export class CloudFolderRoutineDecision {
 			const at = canonicalCompanyStateInstant(request.at ?? "") ?? request.at ?? "";
 			if (routine.ends && Date.parse(at) >= Date.parse(routine.ends))
 				throw new CloudToolRefusal(`The routine ends at ${routine.ends}. Choose an earlier time or conclude it.`);
-			// A title or instructions equal to the file's change nothing, so they are not written.
-			const changes: Record<string, CompanyStateSetting> = { at };
-			if (request.effort !== undefined) changes.effort = request.effort;
-			if (request.report !== undefined) changes.reply = request.report;
-			text = setCompanyStateSettings(found.text, changes);
+			if (rewrite) {
+				// The whole routine from the file's parse, with the decision and the new title or instructions.
+				const { kind: _kind, ...kept } = routine;
+				text = writeRoutineFile({
+					...kept,
+					title: title ?? routine.title,
+					instructions: instructions ?? routine.instructions,
+					trigger: { when: "once", at },
+					effort: (request.effort as RoutineFile["effort"] | undefined) ?? routine.effort,
+					reply: request.report ?? routine.reply,
+				});
+			} else {
+				const changes: Record<string, CompanyStateSetting> = { at };
+				if (request.effort !== undefined) changes.effort = request.effort;
+				if (request.report !== undefined) changes.reply = request.report;
+				text = setCompanyStateSettings(found.text, changes);
+			}
 		}
+		const units = [
+			{
+				op: "write" as const,
+				path,
+				content: { text, mediaType: "text/markdown" },
+				expectedVersion: found.entry.version,
+			},
+		];
 		const content = await this.#operations.execute({
 			operation: {
 				tool: "decide_routine",
@@ -197,19 +233,28 @@ export class CloudFolderRoutineDecision {
 			// The folder core decides at the commit, under this call's receipt.
 			authorize: async () => {},
 			perform: async (_operation, { receiptId, signal: performSignal }) => {
-				const committed = await this.#folder.commit(
-					`decide-file:${request.operationKey}`,
-					[
-						{
-							op: "write",
-							path,
-							content: { text, mediaType: "text/markdown" },
-							expectedVersion: found.entry.version,
-						},
-					],
-					{ receiptId },
-					performSignal,
-				);
+				let committed: Awaited<ReturnType<CloudCompanyFolderClient["commit"]>>;
+				if (rewrite && actionReviewId) {
+					// A rewrite is delegation: the review of exactly this change set goes with it.
+					const staged = await this.#folder.stage(units, performSignal);
+					const reviewId = await this.#folder.recordReview(
+						{ actionReviewId, tool: "decide_routine", argumentSha256: context.argumentSha256 },
+						staged,
+						performSignal,
+					);
+					committed = await this.#folder.commitStaged(
+						`decide-file:${request.operationKey}`,
+						staged,
+						{ reviewId, receiptId },
+						performSignal,
+					);
+				} else
+					committed = await this.#folder.commit(
+						`decide-file:${request.operationKey}`,
+						units,
+						{ receiptId },
+						performSignal,
+					);
 				const written = committed.units[0];
 				if (!written) throw new Error("Company folder commit answered no unit");
 				const value =
@@ -227,10 +272,12 @@ export class CloudFolderRoutineDecision {
 									...(request.action === "next"
 										? { at: canonicalCompanyStateInstant(request.at ?? "") ?? request.at }
 										: { conclusion: (request.summary ?? "").replace(/\s+/g, " ").trim() }),
+									...(title !== undefined ? { title } : {}),
+									...(instructions !== undefined ? { instructionsChanged: true } : {}),
 								},
 							}
 						: // A plain decision the core calls delegation: nothing is owed any more (F2-6's review class).
-							written.outcome === "denied" && written.reason === "review_required"
+							!rewrite && written.outcome === "denied" && written.reason === "review_required"
 							? this.#settledValue(located)
 							: {
 									schema: "qorpera.agent-routine-decision/v1",
@@ -243,11 +290,13 @@ export class CloudFolderRoutineDecision {
 												? `${written.problems.map((problem) => problem.message).join("; ")}: ${AGAIN}`
 												: written.outcome === "waiting_for_review"
 													? `The change waits for a member's review and is not the decision: ${AGAIN}`
-													: written.reason === "review_denied"
-														? `A member declined this change: ${AGAIN}`
-														: written.outcome === "denied"
-															? "This run may not change its routine's file; tell the member"
-															: `Not saved (${written.reason ?? written.outcome}): ${AGAIN}`,
+													: rewrite && written.reason === "review_required"
+														? "The new title or instructions were not saved, and neither was the decision: decide again with a new operationKey, without intent or title"
+														: written.reason === "review_denied"
+															? `A member declined this change: ${AGAIN}`
+															: written.outcome === "denied"
+																? "This run may not change its routine's file; tell the member"
+																: `Not saved (${written.reason ?? written.outcome}): ${AGAIN}`,
 								};
 				const output = cloudToolJsonText(value);
 				// A settled answer shows the routine as read, and a saved one after a rename shows the name the file was
