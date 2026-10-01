@@ -365,6 +365,7 @@ function fakePage() {
 		evaluate: vi.fn(async (): Promise<string[]> => []),
 		// One frame: the page's own document.
 		frames: vi.fn((): unknown[] => [page]),
+		isDetached: vi.fn(() => false),
 	};
 	return { locator, page };
 }
@@ -380,7 +381,11 @@ function tabList(content: CompanyComputerToolContent): BrowserTabList {
 	return content.value as unknown as BrowserTabList;
 }
 
-function automationFixture(withBrowser = true, withCommands = true) {
+function automationFixture(
+	withBrowser = true,
+	withCommands = true,
+	screenBrowser?: (signal: AbortSignal) => Promise<BrowserContext | undefined>,
+) {
 	const layout: CompanyComputerGuestLayout = {
 		workbenchRoot: "/srv/workbench",
 		desktopHome: "/srv/desktop",
@@ -435,6 +440,7 @@ function automationFixture(withBrowser = true, withCommands = true) {
 		fileExports,
 		...(withBrowser ? { browser } : {}),
 		...(withCommands ? { commands } : {}),
+		...(screenBrowser ? { screenBrowser } : {}),
 	});
 	const effects = {
 		assertAuthorized: vi.fn(async () => undefined),
@@ -1227,6 +1233,26 @@ describe("Playwright/X11/shell adapters (test doubles, never the member machine)
 		expect(fixture.page.frames).toHaveBeenCalled();
 		await expect(desktop()).resolves.toMatchObject({ kind: "json", value: { surface: "desktop" } });
 		expect(fixture.screenshots.publish).toHaveBeenCalledOnce();
+	});
+
+	it("looks at the window on the screen even when this run never drove its browser", async () => {
+		const { page } = fakePage();
+		const onScreen = new FakeBrowserContext();
+		onScreen.pages.mockReturnValue([page as unknown as Page]);
+		const fixture = automationFixture(false, true, async () => onScreen as unknown as BrowserContext);
+		const desktop = () =>
+			fixture.automation.perform({ kind: "screenshot", surface: "desktop" }, computerLease(), computerEffect(), {
+				...computerOperation(),
+				tool: "computer_screenshot",
+				arguments: { kind: "screenshot", surface: "desktop" },
+			});
+		page.evaluate.mockResolvedValueOnce(["hunter2"]);
+		await expect(desktop()).rejects.toThrow("PRIVATE_FIELD_ON_SCREEN");
+		// A tab that cannot answer refuses with its own reason: a member closes it, or the agent looks through the browser.
+		page.evaluate.mockRejectedValueOnce(new Error("Target crashed"));
+		await expect(desktop()).rejects.toThrow("PRIVATE_FIELD_TAB_UNREADABLE");
+		expect(fixture.commands.capturePng).not.toHaveBeenCalled();
+		await expect(desktop()).resolves.toMatchObject({ kind: "json", value: { surface: "desktop" } });
 	});
 
 	it("preserves actual page dimensions while desktop images retain fixed pixel coordinates", async () => {

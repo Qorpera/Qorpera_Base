@@ -146,6 +146,34 @@ describe("company computer snapshot redaction", () => {
 		);
 	});
 
+	it("reads a quoted key with a doubled apostrophe, hides a value escaped as JSON in a bare key, and one typed with a soft hyphen", () => {
+		expect(
+			redactCompanyComputerSnapshot(
+				lines(
+					"- 'textbox \"Card''s code: back\"': \"321\"",
+					// A bare key: JSON escapes the control character, the apostrophe stays single.
+					'- heading "Code it\'s\\u0001abcdef"',
+					"- paragraph: hunter2xyz",
+				),
+				["321", "it's\u0001abcdef", "hunter\u00ad2xyz"],
+			),
+		).toBe(
+			lines("- 'textbox \"Card''s code: back\"': [hidden]", '- heading "Code [hidden]"', "- paragraph: [hidden]"),
+		);
+	});
+
+	it("never joins the page's text across a hidden part", () => {
+		expect(redactCompanyComputerSnapshot("- paragraph: abcdMIDDLE-15678", ["MIDDLE-1", "abcd5678"])).toBe(
+			"- paragraph: abcd[hidden]5678",
+		);
+	});
+
+	it("does not refuse a page where a value's letters and digits are only part of a longer word or number", () => {
+		expect(redactCompanyComputerSnapshot('- paragraph: "Total: 912.345.678 kr"', ["12345678"])).toBe(
+			'- paragraph: "Total: 912.345.678 kr"',
+		);
+	});
+
 	it("never matches a value across or inside the marker", () => {
 		expect(redactCompanyComputerSnapshot('- textbox "Code": hidden', ["hidden"])).toBe('- textbox "Code": [hidden]');
 		expect(redactCompanyComputerSnapshot("- paragraph: [hidden]x", ["[hidden]x"])).toBe("- paragraph: [hidden]");
@@ -153,11 +181,11 @@ describe("company computer snapshot redaction", () => {
 
 	it("refuses a snapshot that still shows a private value in a form it does not know", () => {
 		// U+2010 hyphens: the same letters and digits, written differently.
-		expect(() => redactCompanyComputerSnapshot("- paragraph: secret‐value‐1", ["secret-value-1"])).toThrow(
+		expect(() => redactCompanyComputerSnapshot("- paragraph: secret\u2010value\u20101", ["secret-value-1"])).toThrow(
 			"PRIVATE_FIELD_VISIBLE",
 		);
 		// A value with fewer than six letters and digits is not checked this way.
-		expect(redactCompanyComputerSnapshot("- paragraph: ab‐cd", ["ab-cd"])).toBe("- paragraph: ab‐cd");
+		expect(redactCompanyComputerSnapshot("- paragraph: ab\u2010cd", ["ab-cd"])).toBe("- paragraph: ab\u2010cd");
 	});
 });
 
@@ -214,7 +242,11 @@ describe("company computer private values", () => {
 	it("asks the top document, or every frame, and joins their answers", async () => {
 		const evaluate = vi.fn(async () => ["hunter2", "123456"]);
 		const frame = { evaluate: vi.fn(async () => ["123456", "4242424242424242"]) };
-		const page = { evaluate, frames: () => [{ evaluate }, frame] } as unknown as Page;
+		const detached = { evaluate: vi.fn(async () => ["gone"]), isDetached: () => true };
+		const page = {
+			evaluate,
+			frames: () => [{ evaluate, isDetached: () => false }, { ...frame, isDetached: () => false }, detached],
+		} as unknown as Page;
 		await expect(readCompanyComputerPrivateValues(page)).resolves.toEqual(["hunter2", "123456"]);
 		expect(evaluate).toHaveBeenCalledWith(companyComputerPrivateValuesInDocument, {
 			selector: COMPANY_COMPUTER_PRIVATE_FIELD_SELECTOR,
@@ -231,6 +263,35 @@ describe("company computer private values", () => {
 			companyComputerPrivateValuesInDocument,
 			expect.objectContaining({ shownOnly: true }),
 		);
+		expect(detached.evaluate).not.toHaveBeenCalled();
+	});
+
+	it("lets every frame's read settle before a failure counts, and gives up on a tab that does not answer", async () => {
+		let settled = false;
+		const slow = {
+			isDetached: () => false,
+			evaluate: () =>
+				new Promise<string[]>((resolve) =>
+					setTimeout(() => {
+						settled = true;
+						resolve([]);
+					}, 50),
+				),
+		};
+		const failing = { isDetached: () => false, evaluate: async () => Promise.reject(new Error("Target crashed")) };
+		const page = { frames: () => [failing, slow] } as unknown as Page;
+		await expect(readCompanyComputerPrivateValues(page, { allFrames: true })).rejects.toThrow("Target crashed");
+		expect(settled).toBe(true);
+		vi.useFakeTimers();
+		try {
+			const hung = { evaluate: () => new Promise<string[]>(() => undefined) } as unknown as Page;
+			const read = readCompanyComputerPrivateValues(hung);
+			const refused = expect(read).rejects.toThrow("PRIVATE_FIELD_UNREADABLE");
+			await vi.advanceTimersByTimeAsync(5_000);
+			await refused;
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it("refuses an answer it cannot trust", async () => {
@@ -248,25 +309,36 @@ describe("company computer private values", () => {
 
 	it("masks the private boxes of every frame", () => {
 		const locators = [{ name: "top" }, { name: "card iframe" }];
-		const frames = locators.map((locator) => ({ locator: vi.fn(() => locator) }));
-		expect(companyComputerPrivateFieldMasks({ frames: () => frames } as unknown as Page)).toEqual(locators);
+		const frames = locators.map((locator) => ({ locator: vi.fn(() => locator), isDetached: () => false }));
+		const detached = { locator: vi.fn(), isDetached: () => true };
+		expect(companyComputerPrivateFieldMasks({ frames: () => [...frames, detached] } as unknown as Page)).toEqual(
+			locators,
+		);
 		for (const frame of frames) expect(frame.locator).toHaveBeenCalledWith(COMPANY_COMPUTER_PRIVATE_FIELD_SELECTOR);
+		expect(detached.locator).not.toHaveBeenCalled();
 	});
 
-	it("covers password, code and card boxes, never hidden inputs or words that only contain otp", () => {
-		const parts = COMPANY_COMPUTER_PRIVATE_FIELD_SELECTOR.split(",");
+	it("covers password, code and card boxes that take typed text, and words like otp only on their own", () => {
+		const [password, textBoxes, ...rest] = COMPANY_COMPUTER_PRIVATE_FIELD_SELECTOR.split(/,(?=input)/);
+		expect(rest).toEqual([]);
+		expect(password).toBe('input[type="password" i]');
+		// Checkboxes, radio buttons, submit buttons and hidden inputs never count (their values are labels, "on", flags).
+		expect(textBoxes).toMatch(
+			/^input:is\(:not\(\[type\]\),\[type="text" i\],\[type="password" i\],\[type="email" i\],\[type="tel" i\],\[type="number" i\],\[type="search" i\],\[type="url" i\]\):is\(/,
+		);
 		for (const part of [
-			'input[type="password" i]',
-			'input:not([type="hidden" i])[autocomplete~="current-password" i]',
-			'input:not([type="hidden" i])[autocomplete~="one-time-code" i]',
-			'input:not([type="hidden" i])[autocomplete*="cc-" i]',
-			'input:not([type="hidden" i])[name*="adgangskode" i]',
-			'input:not([type="hidden" i])[id^="otp" i]',
-			'input:not([type="hidden" i])[aria-label*="verif" i][aria-label*="code" i]',
+			'[autocomplete~="current-password" i]',
+			'[autocomplete~="one-time-code" i]',
+			'[autocomplete*="cc-" i]',
+			'[name*="adgangskode" i]',
+			'[placeholder*="passwort" i]',
+			'[id^="otp" i]',
+			'[name$="mfa" i]',
+			'[name*="_2fa" i]',
+			'[aria-label*="verif" i][aria-label*="code" i]',
 		])
-			expect(parts).toContain(part);
-		expect(parts).not.toContain('input:not([type="hidden" i])[id*="otp" i]');
-		for (const part of parts)
-			expect(part === 'input[type="password" i]' || part.startsWith('input:not([type="hidden" i])[')).toBe(true);
+			expect(textBoxes).toContain(part);
+		for (const part of ['[id*="otp" i]', '[name*="mfa" i]', "checkbox", "hidden", "submit"])
+			expect(textBoxes).not.toContain(part);
 	});
 });

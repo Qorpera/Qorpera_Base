@@ -309,6 +309,7 @@ export class CompanyComputerGuestAutomation {
 	readonly #boundary: CompanyComputerGuestBoundary;
 	readonly #commands?: CompanyComputerGuestCommands;
 	readonly #browser?: CompanyComputerBrowserSession;
+	readonly #screenBrowser?: (signal: AbortSignal) => Promise<BrowserContext | undefined>;
 	readonly #screenshots: CompanyComputerScreenshotPublisher;
 	readonly #fileImports: import("./cloud-company-computer-file-imports.ts").CompanyComputerFileImporter | undefined;
 	readonly #fileExports:
@@ -324,6 +325,8 @@ export class CompanyComputerGuestAutomation {
 		boundary: CompanyComputerGuestBoundary;
 		commands?: CompanyComputerGuestCommands;
 		browser?: CompanyComputerBrowserSession;
+		/** The browser window open on this screen now, whether or not this run drives it; it never opens one. */
+		screenBrowser?: (signal: AbortSignal) => Promise<BrowserContext | undefined>;
 		screenshots: CompanyComputerScreenshotPublisher;
 		fileExports?: import("./cloud-company-computer-file-transfers.ts").CompanyComputerFileExportPublisher;
 		fileImports?: import("./cloud-company-computer-file-imports.ts").CompanyComputerFileImporter;
@@ -336,6 +339,7 @@ export class CompanyComputerGuestAutomation {
 		this.#boundary = options.boundary;
 		this.#commands = options.commands;
 		this.#browser = options.browser;
+		this.#screenBrowser = options.screenBrowser;
 		this.#screenshots = options.screenshots;
 		this.#fileExports = options.fileExports;
 		this.#fileImports = options.fileImports;
@@ -357,12 +361,23 @@ export class CompanyComputerGuestAutomation {
 		}
 	}
 
-	async #assertNoPrivateValueShown(): Promise<void> {
-		for (const page of this.#browser?.context.pages() ?? []) {
+	/**
+	 * A whole-screen capture shows the browser unmasked. It is refused while a shown
+	 * tab of the window on this screen holds a private value in any frame, and while
+	 * a tab cannot answer (crashed or hung): a member closes that tab, or the agent
+	 * uses a browser screenshot, which masks.
+	 */
+	async #assertNoPrivateValueShown(signal: AbortSignal): Promise<void> {
+		const context = (await this.#screenBrowser?.(signal)) ?? this.#browser?.context;
+		signal.throwIfAborted();
+		for (const page of context?.pages() ?? []) {
 			if (page.isClosed()) continue;
-			const values = await this.#pageCall(() =>
-				readCompanyComputerPrivateValues(page, { shownOnly: true, allFrames: true }),
-			);
+			let values: string[];
+			try {
+				values = await readCompanyComputerPrivateValues(page, { shownOnly: true, allFrames: true });
+			} catch (error) {
+				throw new CompanyComputerActionFailedError(new Error("PRIVATE_FIELD_TAB_UNREADABLE", { cause: error }));
+			}
 			if (values.length > 0) throw new CompanyComputerActionFailedError(new Error("PRIVATE_FIELD_ON_SCREEN"));
 		}
 	}
@@ -567,9 +582,9 @@ export class CompanyComputerGuestAutomation {
 		if (action.kind === "screenshot") {
 			// The whole screen shows the browser unmasked: no capture while a shown tab holds a private value,
 			// checked again after the capture for one typed meanwhile.
-			await this.#assertNoPrivateValueShown();
+			await this.#assertNoPrivateValueShown(signal);
 			const png = await this.#commands.capturePng({ display, signal, maxBytes: 8 * 1024 * 1024 });
-			await this.#assertNoPrivateValueShown();
+			await this.#assertNoPrivateValueShown(signal);
 			return this.#publish(png, lease, effect, "desktop", operation);
 		}
 		let args: string[];

@@ -7,10 +7,13 @@ import type { Page } from "playwright-core";
  * password a member typed during a takeover would reach the agent's next
  * snapshot until the form is sent. One selector decides all three. */
 
-const INPUT = 'input:not([type="hidden" i])';
+// Boxes a person types text into; checkboxes, buttons, hidden and file inputs never count.
+const TEXT_INPUT = `input:is(:not([type]),${["text", "password", "email", "tel", "number", "search", "url"]
+	.map((type) => `[type="${type}" i]`)
+	.join(",")})`;
 const NAMING_ATTRIBUTES = ["name", "id", "aria-label", "placeholder"];
 // Words that name a password or a code anywhere in an attribute (English, German, Danish).
-const SECRET_WORDS = [
+const CONTAINED_WORDS = [
 	"password",
 	"passwort",
 	"passwd",
@@ -22,28 +25,35 @@ const SECRET_WORDS = [
 	"one-time",
 	"onetime",
 	"totp",
-	"2fa",
-	"mfa",
 	"cvc",
 	"cvv",
 ];
+// Words that count only on their own: "rootPath" and "formFactor" are not codes.
+const OWN_WORDS = ["otp", "mfa", "2fa"];
 
-/** Boxes whose value is private. Attribute matches ignore case; hidden inputs never count. */
+/** Boxes whose value is private. Attribute matches ignore case. */
 export const COMPANY_COMPUTER_PRIVATE_FIELD_SELECTOR = [
 	'input[type="password" i]',
-	`${INPUT}[autocomplete~="current-password" i]`,
-	`${INPUT}[autocomplete~="new-password" i]`,
-	`${INPUT}[autocomplete~="one-time-code" i]`,
-	`${INPUT}[autocomplete*="cc-" i]`,
-	...NAMING_ATTRIBUTES.flatMap((attribute) => [
-		...SECRET_WORDS.map((word) => `${INPUT}[${attribute}*="${word}" i]`),
-		// "otp" only as its own word: "rootPath" is not a code.
-		...['="otp"', '^="otp"', '$="otp"', '*="_otp"', '*="-otp"', '*=" otp"', '*="otp_"', '*="otp-"', '*="otp "'].map(
-			(match) => `${INPUT}[${attribute}${match} i]`,
-		),
-		`${INPUT}[${attribute}*="verif" i][${attribute}*="code" i]`,
-		`${INPUT}[${attribute}*="security" i][${attribute}*="code" i]`,
-	]),
+	`${TEXT_INPUT}:is(${[
+		'[autocomplete~="current-password" i]',
+		'[autocomplete~="new-password" i]',
+		'[autocomplete~="one-time-code" i]',
+		'[autocomplete*="cc-" i]',
+		...NAMING_ATTRIBUTES.flatMap((attribute) => [
+			...CONTAINED_WORDS.map((word) => `[${attribute}*="${word}" i]`),
+			...OWN_WORDS.flatMap((word) => [
+				`[${attribute}="${word}" i]`,
+				`[${attribute}^="${word}" i]`,
+				`[${attribute}$="${word}" i]`,
+				...["_", "-", " "].flatMap((separator) => [
+					`[${attribute}*="${separator}${word}" i]`,
+					`[${attribute}*="${word}${separator}" i]`,
+				]),
+			]),
+			`[${attribute}*="verif" i][${attribute}*="code" i]`,
+			`[${attribute}*="security" i][${attribute}*="code" i]`,
+		]),
+	].join(",")})`,
 ].join(",");
 
 /** What the agent sees instead of a private value. */
@@ -51,8 +61,10 @@ export const COMPANY_COMPUTER_PRIVATE_VALUE = "[hidden]";
 
 /** Values this short are hidden only where the page shows them in a box. */
 const MIN_HIDDEN_ELSEWHERE = 4;
-/** A value with this many letters and digits refuses a snapshot that still shows them in any form. */
-const MIN_CHECKED_SKELETON = 6;
+/** A value with this many letters and digits refuses a snapshot that still shows them, as a word of their own, in any form. */
+const MIN_CHECKED_SKELETON = 8;
+/** One read of a page's private values; a hung tab is unreadable, not a reason to wait. */
+const READ_TIMEOUT_MS = 5_000;
 const MAX_PRIVATE_VALUES = 64;
 const MAX_PRIVATE_VALUE = 4096;
 
@@ -88,6 +100,22 @@ export function companyComputerPrivateValuesInDocument(query: PrivateValueQuery)
 	return [...found];
 }
 
+function withinReadTimeout<T>(read: Promise<T>): Promise<T> {
+	return new Promise((resolve, reject) => {
+		const timer = setTimeout(() => reject(new Error("PRIVATE_FIELD_UNREADABLE")), READ_TIMEOUT_MS);
+		read.then(
+			(value) => {
+				clearTimeout(timer);
+				resolve(value);
+			},
+			(error: unknown) => {
+				clearTimeout(timer);
+				reject(error);
+			},
+		);
+	});
+}
+
 /**
  * The private values of a page: of its top document, or of every frame with
  * `allFrames` (a whole-screen capture shows card boxes inside iframes too; the
@@ -104,11 +132,18 @@ export async function readCompanyComputerPrivateValues(
 		maxValue: MAX_PRIVATE_VALUE,
 		shownOnly: options.shownOnly === true,
 	};
-	const answers: unknown[] = options.allFrames
-		? await Promise.all(page.frames().map((frame) => frame.evaluate(companyComputerPrivateValuesInDocument, query)))
-		: [await page.evaluate(companyComputerPrivateValuesInDocument, query)];
+	const reads = options.allFrames
+		? page
+				.frames()
+				.filter((frame) => !frame.isDetached())
+				.map((frame) => frame.evaluate(companyComputerPrivateValuesInDocument, query))
+		: [page.evaluate(companyComputerPrivateValuesInDocument, query)];
+	// Every read settles before a failure counts, so none is left in flight.
+	const settled = await Promise.allSettled(reads.map(withinReadTimeout));
 	const values = new Set<string>();
-	for (const answer of answers) {
+	for (const read of settled) {
+		if (read.status === "rejected") throw read.reason;
+		const answer: unknown = read.value;
 		if (!Array.isArray(answer)) throw new Error("PRIVATE_FIELD_UNREADABLE");
 		for (const value of answer as unknown[]) {
 			if (typeof value !== "string" || value.length > MAX_PRIVATE_VALUE) throw new Error("PRIVATE_FIELD_UNREADABLE");
@@ -121,7 +156,10 @@ export async function readCompanyComputerPrivateValues(
 
 /** Browser screenshot masks for the private boxes of every frame. */
 export const companyComputerPrivateFieldMasks = (page: Page) =>
-	page.frames().map((frame) => frame.locator(COMPANY_COMPUTER_PRIVATE_FIELD_SELECTOR));
+	page
+		.frames()
+		.filter((frame) => !frame.isDetached())
+		.map((frame) => frame.locator(COMPANY_COMPUTER_PRIVATE_FIELD_SELECTOR));
 
 /* Playwright 1.62's aria snapshot lines (renderAriaTree): `- <key>`, `- <key>:`
  * followed by deeper lines, or `- <key>: <value>`. The key is the role, a
@@ -173,7 +211,11 @@ function hideTypedValues(snapshot: string): Array<string | null> {
 }
 
 /** Playwright's normalizeWhiteSpace. */
-const normalized = (value: string) => value.replace(/[​­]/g, "").trim().replace(/\s+/g, " ");
+const normalized = (value: string) =>
+	value
+		.replace(/[\u200b\u00ad]/g, "")
+		.trim()
+		.replace(/\s+/g, " ");
 const YAML_ESCAPES: Record<string, string> = {
 	"\\": "\\\\",
 	'"': '\\"',
@@ -229,8 +271,13 @@ export function redactCompanyComputerSnapshot(snapshot: string, privateValues: r
 	const remaining = skeleton(parts.map((part) => part ?? "\0").join(""));
 	for (const value of privateValues) {
 		const left = skeleton(normalized(value)).trim();
-		if (left.replace(/ /g, "").length >= MIN_CHECKED_SKELETON && remaining.includes(left))
-			throw new Error("PRIVATE_FIELD_VISIBLE");
+		if (left.replace(/ /g, "").length < MIN_CHECKED_SKELETON) continue;
+		// Only as a word of its own: a code inside a longer number is that number, not the code.
+		for (let at = remaining.indexOf(left); at >= 0; at = remaining.indexOf(left, at + 1)) {
+			const word = /[\p{L}\p{N}]/u;
+			if (!word.test(remaining[at - 1] ?? "") && !word.test(remaining[at + left.length] ?? ""))
+				throw new Error("PRIVATE_FIELD_VISIBLE");
+		}
 	}
 	return parts.map((part) => part ?? COMPANY_COMPUTER_PRIVATE_VALUE).join("");
 }
