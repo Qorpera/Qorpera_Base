@@ -2000,7 +2000,7 @@ versions made before this change (no new ones are made). Whether new work
 must also stay on the exhausted login is a separate decision.
 
 2026-10-01 amendment: ChatGPT plan logins (founder decisions, Sign in with
-ChatGPT; built switched off, migrations 20260928329830 and 20260929950000). A
+ChatGPT; built switched off, migrations 20260928329830 and 20260928359950). A
 member's ChatGPT Plus or Pro plan pays only for work that member starts, and
 no other member's activity triggers calls on it (OpenAI's terms for plan use).
 So a plan login: works while its member is away only after the member turned

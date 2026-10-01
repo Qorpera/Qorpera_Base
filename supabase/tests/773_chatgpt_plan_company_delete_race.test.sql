@@ -1,5 +1,5 @@
 -- @fixture 771_chatgpt_plan_company_delete.test.sql until "-- The company is being deleted."
--- Sign in with ChatGPT, slice 1c (20260929960000): the deletion finisher never waits for a run's job while it
+-- Sign in with ChatGPT, slice 1c (20260928359960): the deletion finisher never waits for a run's job while it
 -- holds the company fence. A run host's lease check locks its job and then takes the fence (job before fence,
 -- 20260912000400); the finisher's stop skips a job one of them holds. Revoking the plan connection that pays
 -- for that job would end it through the connection's status trigger, which would wait for the job under the

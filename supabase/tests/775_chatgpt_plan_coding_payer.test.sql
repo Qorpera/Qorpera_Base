@@ -1,5 +1,5 @@
 -- @fixture 395_runtime_coding_sessions.test.sql until "-- 2. The executor claims the session, prepares, admits the turn under the owner's sponsor, and the"
--- Sign in with ChatGPT, slice 1b (20260929950000): a member's ChatGPT plan pays for coding only when the asking
+-- Sign in with ChatGPT, slice 1b (20260928359950): a member's ChatGPT plan pays for coding only when the asking
 -- run is paid by that plan, and a coding worker takes the member's other login before a plan. Test 395's
 -- fixture: the member's connection pays for the agent's run; the company has a coding executor and the agent a
 -- repository grant. A connection is a plan login's when its capsule is a plan login's (rows written directly
