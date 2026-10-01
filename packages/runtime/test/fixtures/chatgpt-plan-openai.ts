@@ -32,7 +32,10 @@ export function fakeOpenAi(options: FakeOpenAiOptions = {}) {
 	const redirectUri = options.redirectUri ?? "https://project.supabase.co/functions/v1/chatgpt-plan-callback";
 	const now = options.now ?? Date.now;
 	const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
-	const jwk = { ...publicKey.export({ format: "jwk" }), kid: "key-1", use: "sig", alg: "RS256" };
+	/** OpenAI's published keys: an RSA key, and keys a test adds (an EC key, a key with another alg). */
+	const jwks: Array<Record<string, unknown>> = [
+		{ ...publicKey.export({ format: "jwk" }), kid: "key-1", use: "sig", alg: "RS256" },
+	];
 	const codes = new Map<string, Grant>();
 	/** Live refresh tokens; a used one moves to `spent` (using it again is `refresh_token_reused`). */
 	const refreshTokens = new Map<string, Grant>();
@@ -48,14 +51,43 @@ export function fakeOpenAi(options: FakeOpenAiOptions = {}) {
 		earliestRefreshIn: 1800 as number | null,
 		accessLifeSeconds: 3600,
 		revocationStatus: 200,
+		/** A refresh answer also carries an ID token, signed with this key id (unknown ids are refused). */
+		idTokenOnRefresh: undefined as undefined | { kid: string; subject?: string },
+		/** A refresh answer leaves `scope` out (RFC 6749 6 allows it when unchanged). */
+		omitScopeOnRefresh: false,
+		/** The earliest renewal as sent, overriding `earliestRefreshIn` (to test units and bounds). */
+		earliestRefreshAt: undefined as undefined | number | string,
+		keysStatus: 200,
+	};
+	const signers = new Map<string, { key: KeyObject; alg: "RS256" | "ES256" }>([
+		["key-1", { key: privateKey, alg: "RS256" }],
+	]);
+
+	const jwt = (claims: Record<string, unknown>, key?: KeyObject, kid = "key-1", alg?: "RS256" | "ES256") => {
+		const signer = signers.get(kid);
+		const algorithm = alg ?? signer?.alg ?? "RS256";
+		const signed = `${part({ alg: algorithm, kid, typ: "JWT" })}.${part(claims)}`;
+		const signature =
+			algorithm === "ES256"
+				? sign("sha256", Buffer.from(signed), { key: key ?? (signer?.key as KeyObject), dsaEncoding: "ieee-p1363" })
+				: sign("sha256", Buffer.from(signed), key ?? signer?.key ?? privateKey);
+		return `${signed}.${signature.toString("base64url")}`;
 	};
 
-	const jwt = (claims: Record<string, unknown>, key: KeyObject = privateKey, kid = "key-1") => {
-		const signed = `${part({ alg: "RS256", kid, typ: "JWT" })}.${part(claims)}`;
-		return `${signed}.${sign("sha256", Buffer.from(signed), key).toString("base64url")}`;
+	/** Publishes another signing key: an EC P-256 key, or an RSA key whose published alg differs. */
+	const addKey = (kid: string, kind: "ec" | "rsa-mislabelled") => {
+		if (kind === "ec") {
+			const pair = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+			jwks.push({ ...pair.publicKey.export({ format: "jwk" }), kid, use: "sig", alg: "ES256" });
+			signers.set(kid, { key: pair.privateKey, alg: "ES256" });
+		} else {
+			const pair = generateKeyPairSync("rsa", { modulusLength: 2048 });
+			jwks.push({ ...pair.publicKey.export({ format: "jwk" }), kid, use: "sig", alg: "ES256" });
+			signers.set(kid, { key: pair.privateKey, alg: "RS256" });
+		}
 	};
 
-	const tokensFor = (grant: Grant, idToken: boolean) => {
+	const tokensFor = (grant: Grant, idToken: boolean, refresh_ = false) => {
 		const issued = Math.floor(now() / 1000);
 		const scope = behaviour.withoutPlanScope
 			? grant.scope
@@ -91,10 +123,30 @@ export function fakeOpenAi(options: FakeOpenAiOptions = {}) {
 						}),
 					}
 				: {}),
+			...(refresh_ && behaviour.idTokenOnRefresh
+				? {
+						id_token: jwt(
+							{
+								iss: ISSUER,
+								aud: clientId,
+								sub: behaviour.idTokenOnRefresh.subject ?? grant.subject,
+								email: "renewed@example.test",
+								iat: issued,
+								exp: issued + 3600,
+							},
+							undefined,
+							behaviour.idTokenOnRefresh.kid,
+						),
+					}
+				: {}),
 			token_type: "Bearer",
 			expires_in: behaviour.accessLifeSeconds,
-			scope,
-			...(behaviour.earliestRefreshIn === null ? {} : { earliest_refresh_at: issued + behaviour.earliestRefreshIn }),
+			...(refresh_ && behaviour.omitScopeOnRefresh ? {} : { scope }),
+			...(behaviour.earliestRefreshAt !== undefined
+				? { earliest_refresh_at: behaviour.earliestRefreshAt }
+				: behaviour.earliestRefreshIn === null
+					? {}
+					: { earliest_refresh_at: issued + behaviour.earliestRefreshIn }),
 		};
 	};
 
@@ -120,7 +172,8 @@ export function fakeOpenAi(options: FakeOpenAiOptions = {}) {
 				revocation_endpoint: `${ISSUER}/api/accounts/oauth/revoke`,
 				jwks_uri: `${ISSUER}/.well-known/jwks.json`,
 			});
-		if (url.pathname === "/.well-known/jwks.json") return json(200, { keys: [jwk] });
+		if (url.pathname === "/.well-known/jwks.json")
+			return behaviour.keysStatus === 200 ? json(200, { keys: jwks }) : json(behaviour.keysStatus, {});
 		if (url.pathname === "/api/accounts/oauth/revoke") {
 			if (behaviour.revocationStatus !== 200) return json(behaviour.revocationStatus, { error: "server_error" });
 			const token = form.get("token") ?? "";
@@ -129,10 +182,12 @@ export function fakeOpenAi(options: FakeOpenAiOptions = {}) {
 			return new Response("", { status: 200 });
 		}
 		if (url.pathname !== "/api/accounts/oauth/token") return json(404, { error: "not_found" });
+		// RFC 6749 2.3.1: client id and secret are form-encoded before the Basic header.
+		const formEncoded = (value: string) => new URLSearchParams({ v: value }).toString().slice(2);
 		const expected =
 			clientSecret === null
 				? null
-				: `Basic ${Buffer.from(`${encodeURIComponent(clientId)}:${encodeURIComponent(clientSecret)}`).toString("base64")}`;
+				: `Basic ${Buffer.from(`${formEncoded(clientId)}:${formEncoded(clientSecret)}`).toString("base64")}`;
 		if (headers.get("authorization") !== expected || form.get("client_secret") !== null)
 			return json(401, { error: "invalid_client" });
 		if (form.get("client_id") !== clientId || form.get("resource") !== "https://api.openai.com/v1")
@@ -162,7 +217,7 @@ export function fakeOpenAi(options: FakeOpenAiOptions = {}) {
 			if (!grant) return json(400, { error: "invalid_grant" });
 			refreshTokens.delete(refresh);
 			spent.add(refresh);
-			return json(200, tokensFor(grant, false));
+			return json(200, tokensFor(grant, false, true));
 		}
 		return json(400, { error: "unsupported_grant_type" });
 	}) as typeof globalThis.fetch;
@@ -212,6 +267,7 @@ export function fakeOpenAi(options: FakeOpenAiOptions = {}) {
 		spent,
 		revoked,
 		issueRefreshToken,
+		addKey,
 		client: { clientId, clientSecret, redirectUri },
 	};
 }

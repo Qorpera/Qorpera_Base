@@ -4,6 +4,7 @@ import {
 	CHATGPT_PLAN_LOGIN_FIELD,
 	type ChatGptPlanOAuth,
 	chatGptPlanCodeChallenge,
+	chatGptPlanFailure,
 	serializeChatGptPlanLogin,
 } from "./cloud-chatgpt-plan.ts";
 import type { CloudSecretKeyring } from "./cloud-secret-crypto.ts";
@@ -31,7 +32,11 @@ const STATE_TTL_MS = 10 * 60_000;
 const CONFIRM_TTL_MS = 5 * 60_000;
 /** Sign-ins in flight per vault (started, or back from OpenAI and waiting for the browser's confirm). */
 const MAX_FLOWS = 32;
-const SAVE_DEADLINE_MS = 15_000;
+/** The confirmation's budget inside the route's 40 s (the web client waits 45 s, the front 60 s): the code
+ * exchange, then the save, then a read when the save's answer was lost. */
+const EXCHANGE_DEADLINE_MS = 20_000;
+const SAVE_DEADLINE_MS = 10_000;
+const CHECK_DEADLINE_MS = 5_000;
 
 /** Why a callback or a confirmation ended without a login: what the member's page may show. */
 export type ChatGptPlanSignInFailure = "state_unknown" | "expired" | "declined" | "provider_error" | "busy";
@@ -243,9 +248,11 @@ export class ChatGptPlanSignIns {
 		try {
 			login = await this.#oauth.exchange(
 				{ code: parked.code, codeVerifier: parked.codeVerifier, nonce: parked.nonce, hostId: parked.signIn.hostId },
-				signal,
+				AbortSignal.any([signal, AbortSignal.timeout(EXCHANGE_DEADLINE_MS)]),
 			);
-		} catch {
+		} catch (error) {
+			// Only the status and OpenAI's error code: never the code, a token or the secret.
+			console.error(`ChatGPT plan sign-in: the code exchange failed (${chatGptPlanFailure(error)}).`);
 			throw new ChatGptPlanSignInError("provider_error");
 		}
 		const modelLoginId = randomUUID();
@@ -270,7 +277,8 @@ export class ChatGptPlanSignIns {
 					envelopeSha256: createHash("sha256").update(envelope).digest("hex"),
 					accessIssuedAt: login.accessIssuedAt,
 					accessExpiresAt: login.accessExpiresAt,
-					providerAccountReference: null,
+					// One ChatGPT account, pseudonymously: the same account connected by two members can be seen.
+					providerAccountReference: `openai-subject:${digest(login.subject)}`,
 					providerAccountEmail: login.email,
 					renewNotBefore: login.renewNotBefore,
 				},
@@ -279,7 +287,7 @@ export class ChatGptPlanSignIns {
 		} catch {
 			// The answer may have been lost after the save: the database decides. A login that was not
 			// saved is ended at OpenAI, since nothing else holds it now.
-			if (!(await this.#completed(parked.signIn))) {
+			if (!(await this.#completed(parked.signIn, modelLoginId))) {
 				await this.#oauth.revoke(login.refreshToken, AbortSignal.timeout(SAVE_DEADLINE_MS)).catch(() => undefined);
 				throw new ChatGptPlanSignInError("provider_error");
 			}
@@ -288,15 +296,15 @@ export class ChatGptPlanSignIns {
 		}
 	}
 
-	async #completed(signIn: ChatGptPlanPendingSignIn): Promise<boolean> {
+	/** Whether the database completed the sign-in with this login (another flow's login is not this one's). */
+	async #completed(signIn: ChatGptPlanPendingSignIn, modelLoginId: string): Promise<boolean> {
 		try {
 			const answer = await this.#authority.describeModelLoginSignIn(
 				{ loginId: signIn.loginId, capabilitySha256: signIn.capabilitySha256 },
-				AbortSignal.timeout(SAVE_DEADLINE_MS),
+				AbortSignal.timeout(CHECK_DEADLINE_MS),
 			);
-			return Boolean(
-				answer && typeof answer === "object" && (answer as { status?: unknown }).status === "completed",
-			);
+			const read = answer && typeof answer === "object" ? (answer as Record<string, unknown>) : {};
+			return read.status === "completed" && read.modelLoginId === modelLoginId;
 		} catch {
 			return false;
 		}

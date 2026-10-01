@@ -55,7 +55,7 @@ function fixture(options: { renewal?: boolean; unchanged?: boolean; idle?: boole
 		idToken: null,
 		accessToken: tokens.access_token,
 		refreshToken: tokens.refresh_token,
-		scopes: tokens.scope.split(" "),
+		scopes: String(tokens.scope).split(" "),
 		accessIssuedAt: new Date(now - 40 * 60_000).toISOString(),
 		accessExpiresAt: new Date(now + 20 * 60_000).toISOString(),
 		renewNotBefore: null,
@@ -265,6 +265,22 @@ it("marks the login for a new sign-in when a renewal OpenAI made cannot be saved
 		expect.objectContaining({ permanent: true, reason: "renewal_unsaved" }),
 		expect.any(AbortSignal),
 	);
+});
+
+it("ends a renewal whose pass is not later than the saved one: a new sign-in, and the new token ended at OpenAI", async () => {
+	const f = fixture({ renewal: true });
+	// OpenAI spends the old refresh token but answers with a pass ending before the one the vault holds.
+	f.openai.behaviour.accessLifeSeconds = 60;
+	const vault = new CloudModelLoginVault({ authority: f.authority, keyring: f.keyring, chatGptPlan: f.oauth });
+	await expect(vault.issue({ binding: f.run, knownVersion: null }, signal())).resolves.toMatchObject({ version: 3 });
+	expect(f.openai.spent.has(f.stored.refreshToken)).toBe(true);
+	expect(f.authority.commitChatGptPlanRenewal).not.toHaveBeenCalled();
+	expect(f.authority.releaseModelLoginRenewal).toHaveBeenCalledWith(
+		expect.objectContaining({ permanent: true, reason: "renewal_invalid", baseVersion: 3 }),
+		expect.any(AbortSignal),
+	);
+	expect(f.openai.revoked.size).toBe(1);
+	expect(f.openai.refreshTokens.size).toBe(0);
 });
 
 it("renews an idle plan login the same way", async () => {

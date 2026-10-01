@@ -157,7 +157,7 @@ it("completes only after the starting browser confirms: one code, one confirmati
 	expect(saved).toMatchObject({
 		loginId: w.loginId,
 		keyId: "company-kek-1",
-		providerAccountReference: null,
+		providerAccountReference: `openai-subject:${createHash("sha256").update("user-abc").digest("hex")}`,
 		providerAccountEmail: "member@example.test",
 	});
 	expect(saved.renewNotBefore).not.toBeNull();
@@ -242,7 +242,26 @@ it("refuses a callback for another company, another client, a declined consent, 
 			error: null,
 			clientId: null,
 		}),
-	).toThrow();
+	).toThrow("expired");
+});
+
+it("holds at most 32 sign-ins in flight per company; a sign-in's own poll still gets its address", async () => {
+	const w = world();
+	const oauth = new ChatGptPlanOAuth({ client: w.openai.client, fetch: w.openai.fetch });
+	const plan = new ChatGptPlanSignIns({ oauth, authority: w.authority, keyring: w.keyring });
+	const pending = (loginId: string) => ({
+		loginId,
+		companyId: w.companyId,
+		computeIdentityId: w.description.computeIdentityId,
+		hostId: HOST,
+		expiresAt: new Date(Date.now() + 10 * 60_000).toISOString(),
+		keyId: "company-kek-1",
+		capabilitySha256: "a".repeat(64),
+	});
+	const first = await plan.begin(pending(w.loginId), signal());
+	for (let flow = 1; flow < 32; flow += 1) await plan.begin(pending(randomUUID()), signal());
+	await expect(plan.begin(pending(randomUUID()), signal())).rejects.toThrow("busy");
+	await expect(plan.begin(pending(w.loginId), signal())).resolves.toBe(first);
 });
 
 it("ends a login at OpenAI when the database refuses to keep it", async () => {
@@ -258,6 +277,33 @@ it("ends a login at OpenAI when the database refuses to keep it", async () => {
 	w.database.refuseCompletion = true;
 	await expect(confirm(w, confirmation)).rejects.toThrow("provider_error");
 	expect(w.openai.revoked.size).toBe(1);
+});
+
+it("keeps a login whose saved answer was lost only when the database names this login", async () => {
+	const lost = async (otherLogin: boolean) => {
+		const w = world();
+		const { code, state } = w.openai.consent((await poll(w)).interaction_url as string, { subject: "user-abc" });
+		const { confirmation } = w.signIns.receiveChatGptPlan({
+			companyId: w.companyId,
+			state,
+			code,
+			error: null,
+			clientId: null,
+		});
+		vi.mocked(w.authority.completeChatGptPlanSignIn).mockImplementationOnce(async (completion) => {
+			// The database completed the sign-in (with this login, or another flow's), then the answer was lost.
+			w.description.status = "completed";
+			w.description.modelLoginId = otherLogin ? randomUUID() : completion.modelLoginId;
+			throw new Error("connection reset");
+		});
+		return { w, result: confirm(w, confirmation) };
+	};
+	const kept = await lost(false);
+	await expect(kept.result).resolves.toMatchObject({ status: "completed" });
+	expect(kept.w.openai.revoked.size).toBe(0);
+	const other = await lost(true);
+	await expect(other.result).rejects.toThrow("provider_error");
+	expect(other.w.openai.revoked.size).toBe(1);
 });
 
 it("refuses a Codex sign-in where only plan sign-ins are served, and a plan sign-in without a plan client", async () => {

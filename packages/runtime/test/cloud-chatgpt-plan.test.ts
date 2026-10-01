@@ -153,8 +153,9 @@ it("refuses an exchange whose ID token fails a check, or that grants no plan use
 
 it("checks the ID token's signature against OpenAI's keys and its audience against this client", async () => {
 	const openai = fakeOpenAi();
-	const oauth = new ChatGptPlanOAuth({ client: openai.client, fetch: openai.fetch });
-	const now = Math.floor(Date.now() / 1000);
+	let clock = Date.now();
+	const oauth = new ChatGptPlanOAuth({ client: openai.client, fetch: openai.fetch, now: () => clock });
+	const now = Math.floor(clock / 1000);
 	const claims = { iss: ISSUER, aud: openai.clientId, sub: "user-abc", nonce: "n", iat: now, exp: now + 600 };
 	await expect(oauth.verifyIdToken(openai.jwt(claims), "n", signal())).resolves.toEqual({
 		subject: "user-abc",
@@ -167,13 +168,43 @@ it("checks the ID token's signature against OpenAI's keys and its audience again
 		oauth.verifyIdToken(openai.jwt({ ...claims, iss: "https://evil.example" }), "n", signal()),
 	).rejects.toThrow();
 	await expect(oauth.verifyIdToken(openai.jwt({ ...claims, exp: now - 60 }), "n", signal())).rejects.toThrow();
-	// An unknown key id refetches the keys at most once a minute.
-	const before = openai.requests.filter((request) => request.path === "/.well-known/jwks.json").length;
-	await expect(oauth.verifyIdToken(openai.jwt(claims, undefined, "key-2"), "n", signal())).rejects.toThrow();
-	await expect(oauth.verifyIdToken(openai.jwt(claims, undefined, "key-2"), "n", signal())).rejects.toThrow();
-	expect(
-		openai.requests.filter((request) => request.path === "/.well-known/jwks.json").length - before,
-	).toBeLessThanOrEqual(1);
+	// Several audiences: only with this client as the authorized party.
+	const both = { ...claims, aud: [openai.clientId, "oaiapp_other"] };
+	await expect(oauth.verifyIdToken(openai.jwt(both), "n", signal())).rejects.toThrow();
+	await expect(
+		oauth.verifyIdToken(openai.jwt({ ...both, azp: openai.clientId }), "n", signal()),
+	).resolves.toMatchObject({
+		subject: "user-abc",
+	});
+	await expect(oauth.verifyIdToken(openai.jwt({ ...claims, azp: "oaiapp_other" }), "n", signal())).rejects.toThrow();
+	const keyFetches = () => openai.requests.filter((request) => request.path === "/.well-known/jwks.json").length;
+	// An unknown key id refetches the keys only once a minute has passed since the last fetch.
+	const first = keyFetches();
+	await expect(oauth.verifyIdToken(openai.jwt(claims, undefined, "key-2"), "n", signal())).rejects.toThrow("unknown");
+	expect(keyFetches()).toBe(first);
+	clock += 61_000;
+	await expect(oauth.verifyIdToken(openai.jwt(claims, undefined, "key-2"), "n", signal())).rejects.toThrow("unknown");
+	expect(keyFetches()).toBe(first + 1);
+	await expect(oauth.verifyIdToken(openai.jwt(claims, undefined, "key-2"), "n", signal())).rejects.toThrow("unknown");
+	expect(keyFetches()).toBe(first + 1);
+	// OpenAI adds an EC P-256 key: after the minute, callers at the same moment share one fetch, and ES256
+	// tokens verify.
+	openai.addKey("key-ec", "ec");
+	clock += 61_000;
+	const ec = openai.jwt(claims, undefined, "key-ec");
+	const [one, two] = await Promise.all([
+		oauth.verifyIdToken(ec, "n", signal()),
+		oauth.verifyIdToken(ec, "n", signal()),
+	]);
+	expect(one.subject).toBe("user-abc");
+	expect(two.subject).toBe("user-abc");
+	expect(keyFetches()).toBe(first + 2);
+	// A key published for another algorithm than the token names is refused.
+	openai.addKey("key-mislabelled", "rsa-mislabelled");
+	clock += 61_000;
+	await expect(oauth.verifyIdToken(openai.jwt(claims, undefined, "key-mislabelled"), "n", signal())).rejects.toThrow(
+		"signature",
+	);
 });
 
 it("renews once per refresh token: a reused or dead token is refused for good, the client's own errors are not", async () => {
@@ -204,6 +235,80 @@ it("renews once per refresh token: a reused or dead token is refused for good, t
 		outcome: "transient",
 		reason: "client_changed",
 	});
+});
+
+it("never spends the refresh token for a reason that passes: OpenAI's keys are loaded first", async () => {
+	const openai = fakeOpenAi();
+	const login = await signedIn(openai, new ChatGptPlanOAuth({ client: openai.client, fetch: openai.fetch }));
+	// A vault that just started has no keys yet; OpenAI's keys are unreachable.
+	openai.behaviour.keysStatus = 503;
+	const fresh = new ChatGptPlanOAuth({ client: openai.client, fetch: openai.fetch });
+	expect(await fresh.refresh(login, signal())).toEqual({ outcome: "transient", reason: "provider_unreachable" });
+	expect(openai.spent.has(login.refreshToken)).toBe(false);
+});
+
+it("after OpenAI spent the refresh token, keeps or ends the login but never leaves it to a retry", async () => {
+	const openai = fakeOpenAi();
+	const oauth = new ChatGptPlanOAuth({ client: openai.client, fetch: openai.fetch });
+	const login = await signedIn(openai, oauth);
+	// An ID token on the renewal, signed with a key the vault cannot fetch yet: the renewal is kept with the
+	// stored ID token (the access token still names the owner).
+	openai.behaviour.idTokenOnRefresh = { kid: "key-later" };
+	const kept = await oauth.refresh(login, signal());
+	expect(kept.outcome).toBe("renewed");
+	if (kept.outcome !== "renewed") return;
+	expect(kept.login.idToken).toBe(login.idToken);
+	// A verifiable ID token replaces the stored one.
+	openai.behaviour.idTokenOnRefresh = { kid: "key-1" };
+	const replaced = await oauth.refresh(kept.login, signal());
+	expect(replaced.outcome).toBe("renewed");
+	if (replaced.outcome !== "renewed") return;
+	expect(replaced.login.idToken).not.toBe(login.idToken);
+	expect(replaced.login.email).toBe("renewed@example.test");
+	// An answer without `scope` keeps the access token's own scopes (RFC 6749 6).
+	openai.behaviour.idTokenOnRefresh = undefined;
+	openai.behaviour.omitScopeOnRefresh = true;
+	const unscoped = await oauth.refresh(replaced.login, signal());
+	expect(unscoped.outcome).toBe("renewed");
+	if (unscoped.outcome !== "renewed") return;
+	expect(unscoped.login.scopes).toContain("chatgpt.tokens.use.direct");
+	openai.behaviour.omitScopeOnRefresh = false;
+	// An ID token naming someone else: the login ends, and the new refresh token is ended at OpenAI.
+	openai.behaviour.idTokenOnRefresh = { kid: "key-1", subject: "user-other" };
+	const revokedBefore = openai.revoked.size;
+	expect(await oauth.refresh(unscoped.login, signal())).toEqual({
+		outcome: "refused",
+		reason: "renewal_owner_differs",
+	});
+	await new Promise((resolveWait) => setTimeout(resolveWait, 50));
+	expect(openai.revoked.size).toBe(revokedBefore + 1);
+});
+
+it("keeps OpenAI's earliest renewal only within the pass, in seconds or milliseconds", async () => {
+	const openai = fakeOpenAi();
+	const oauth = new ChatGptPlanOAuth({ client: openai.client, fetch: openai.fetch });
+	let login = await signedIn(openai, oauth);
+	const renew = async (earliest: number | string | undefined) => {
+		openai.behaviour.earliestRefreshAt = earliest;
+		const result = await oauth.refresh(login, signal());
+		if (result.outcome !== "renewed") throw new Error(`renewal ${result.outcome}`);
+		login = result.login;
+		return login.renewNotBefore;
+	};
+	const inTenMinutes = Date.now() + 10 * 60_000;
+	expect(Date.parse((await renew(Math.floor(inTenMinutes / 1000))) ?? "")).toBeCloseTo(inTenMinutes, -4);
+	expect(Date.parse((await renew(inTenMinutes)) ?? "")).toBeCloseTo(inTenMinutes, -4);
+	expect(Date.parse((await renew(new Date(inTenMinutes).toISOString())) ?? "")).toBeCloseTo(inTenMinutes, -4);
+	// After the pass ends, or a day ahead: a renewal must stay possible, so the time is not kept.
+	expect(await renew(Math.floor(Date.now() / 1000) + 2 * 3600)).toBeNull();
+	expect(await renew(Date.now() + 40 * 24 * 3600_000)).toBeNull();
+	expect(await renew("tomorrow")).toBeNull();
+});
+
+it("encodes the client in the Basic header as OAuth asks, whatever characters the secret holds", async () => {
+	const openai = fakeOpenAi({ clientSecret: "p!a'(s)s~w*o+r/d=&%x" });
+	const login = await signedIn(openai, new ChatGptPlanOAuth({ client: openai.client, fetch: openai.fetch }));
+	expect(login.subject).toBe("user-abc");
 });
 
 it("ends a session at OpenAI, and counts a token OpenAI no longer knows as ended", async () => {
