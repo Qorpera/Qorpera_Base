@@ -700,6 +700,9 @@ declare v_member integer := current_setting('qorpera_test.r779_member_pid')::int
 	v_plan text := pg_temp.r779_plan_versions(); v_states text := pg_temp.r779_states(); v_outcome jsonb; v_other jsonb;
 begin
 	perform dblink_exec('r779_holder', 'begin');
+	-- Only the switch's deadlock check may end the cycle (its 1 s), even on a machine that stalls: the other side
+	-- checks after 10 s.
+	perform dblink_exec('r779_holder', 'set local deadlock_timeout = ''10s''');
 	perform * from dblink('r779_holder', format('select 1 from public.qorpera_profile_members where profile_id = %L
 		and user_id = %L for update', '16000000-0000-4000-8000-000000000010', '16000000-0000-4000-8000-000000000001')) as held(one integer);
 	perform pg_temp.r779_member_begin();
