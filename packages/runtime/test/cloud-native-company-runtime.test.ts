@@ -1439,7 +1439,17 @@ it.each([
 	async (catalogFails, presenceFails, message, stage) => {
 		const f = await fixture("company-secret", false, () => {
 			if (presenceFails) throw new Error("Presence is unavailable");
-			return { observe: async () => ({ state: "unavailable" }) as never, close: async () => {} };
+			return {
+				observe: async () => ({ state: "unavailable" }) as never,
+				// As the real claim answers before it holds any observation: at once, unavailable.
+				claim: (path) => ({
+					schema: "qorpera.company-path-presence-view/v1",
+					state: "unavailable",
+					observedAt: Date.now(),
+					paths: [{ path, participants: [] }],
+				}),
+				close: async () => {},
+			};
 		});
 		const original = f.pathCall.getMockImplementation()!;
 		f.pathCall.mockImplementation(async (method, args, signal) => {
