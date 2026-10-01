@@ -33,8 +33,10 @@ select pg_temp.path_claims('service_role');
 select pg_temp.wake_assert(pg_temp.idle_poll() -> 'request' = 'null', 'Within the hour a held screen keeps it awake');
 select pg_temp.wake_assert(public.qorpera_runtime_office_start_wait(pg_temp.hz_office()) is null, 'A running computer waits for nothing');
 
--- 3. The hour is over: the computer powers off at once, held screen notwithstanding.
+-- 3. The hour is over: the computer powers off at once, held screen and a pause notwithstanding.
 reset role;
+insert into public.qorpera_company_execution_pauses (profile_id, paused_by_user_id, reason)
+values ('30000000-0000-4000-8000-000000000010', '30000000-0000-4000-8000-000000000001', 'Operator pause');
 update public.qorpera_computer_hour_zero_state set ran_out_at = ran_out_at - interval '61 minutes'
 where profile_id = '30000000-0000-4000-8000-000000000010';
 select pg_temp.path_claims('service_role');
@@ -44,7 +46,7 @@ begin
 	perform pg_temp.wake_assert(v_first #>> '{request,action}' = 'power_off'
 		and v_first #>> '{request,activationId}' = '39000000-0000-4000-8000-000000000004'
 		and not (v_first ->> 'wakeRequested')::boolean,
-		'After the hour the computer is asked to power off: ' || v_first::text);
+		'After the hour the computer is asked to power off, held screen and pause notwithstanding: ' || v_first::text);
 	perform pg_temp.wake_assert((pg_temp.hz_office()).state = 'maintenance', 'The computer is going down');
 	v_again := pg_temp.idle_poll();
 	perform pg_temp.wake_assert(v_again -> 'request' = v_first -> 'request', 'The provider keeps getting the same power_off');

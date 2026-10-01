@@ -17,6 +17,7 @@
 -- 3. `qorpera_runtime_office_start_wait` says 'hours' for a sleeping computer, or a started one no
 --    host has taken yet, of a company at zero. Members see it on the computer panel; operators in
 --    the setup queue. `qorpera_runtime_office_start_stuck` (= 'setup') does not count it as stuck.
+-- 4. The office fleet places no computer of a company at zero, before it locks or tries any node.
 --
 -- While the rule is off `qorpera_company_at_zero` and the finishing window are false and nothing
 -- changes. The web learns 'hours' in the same change and is deployed before the rule is switched on.
@@ -87,3 +88,24 @@ as $$
 			and f.computer_generation = p_office.generation and f.ready_at > clock_timestamp() - interval '60 seconds') then 'room'
 		else 'setup' end
 $$;
+
+-- 4. The office fleet places no computer of a company at zero. It returns before it locks or tries
+--    any node, so a computer started at zero costs no node work while it waits for hours (each try
+--    would otherwise be refused by the node and rolled back on every fleet pass).
+do $fleet$
+declare
+	v_definition text := pg_get_functiondef('public.qorpera_place_runtime_office_fleet(jsonb,bigint)'::regprocedure);
+	v_old text := $old$ -- Deterministic node locks serialize concurrent placements with every existing
+$old$;
+	v_new text := $new$ -- Computer hours (20260929720000): a company at zero starts no computer; no node is locked or tried.
+ if public.qorpera_company_at_zero(o.profile_id,clock_timestamp()) then
+  return public.qorpera_runtime_office_fleet_status(p_scope,p_computer_generation); end if;
+ -- Deterministic node locks serialize concurrent placements with every existing
+$new$;
+begin
+	if (length(v_definition) - length(replace(v_definition, v_old, ''))) / length(v_old) <> 1 then
+		raise exception 'Computer hours: the office fleet placement differs';
+	end if;
+	execute replace(v_definition, v_old, v_new);
+end
+$fleet$;
