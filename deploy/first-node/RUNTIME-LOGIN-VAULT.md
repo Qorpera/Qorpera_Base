@@ -588,6 +588,22 @@ https://claude.ai/artifact/UWehPVysVzAmWcwvkuU6on.
   on its own line. The vault host needs outbound HTTPS to `auth.openai.com` (discovery, signing keys,
   token and revocation endpoints). The vault requires `revocation_endpoint` in OpenAI's discovery
   document: without it, plan sign-ins and renewals stop (retried as `transient`), not only revocation.
+- **Callback Edge Function (slice 3).** `supabase functions deploy chatgpt-plan-callback`
+  (`verify_jwt = false`: OpenAI sends the browser without a JWT). The address OpenAI registers is
+  `https://<project>.supabase.co/functions/v1/chatgpt-plan-callback`, the same as the credential's
+  `redirectUri`. It asks `qorpera_chatgpt_plan_callback_target(state)` with the service role, forwards
+  `{state, code, error, clientId}` to the company's vault, and returns the browser with
+  `#?chatgpt_plan=confirm&confirmation=…` or `#?chatgpt_plan=failed&reason=…` after the return page.
+  The return page is `QORPERA_CHATGPT_PLAN_RETURN_URL` (optional, and empty counts as unset: an HTTPS
+  page of one of `QORPERA_WEB_ORIGINS`, else that list's first origin; no query, no credentials, no `?`
+  in its fragment, or the function does not start). It forwards only to the vault route of the state's
+  own company, gives the vault 20 s, reads at most 16 KB of its answer, and answers only GET. It never
+  exchanges a code and never sees a token. The web client's confirmation goes through
+  `native-provider-login` at `…/chatgpt-plan-confirm`, which the login chooser routes to the same vault
+  and which waits 40 s for it (see the confirmation time budget above; redeploy that function too).
+  Smoke check after deploy, which must show a 303 back to the return page with `reason=state_unknown`:
+  `curl -s -o /dev/null -D - 'https://<project>.supabase.co/functions/v1/chatgpt-plan-callback?state=x' | grep -i '^location'`
+  (a GET: the function answers anything else with 405).
 - **Switches.** `update public.qorpera_chatgpt_plan_settings set enabled = true;` (platform) and
   `select public.qorpera_set_chatgpt_plan_company('<company>', true);` (service role; only for a company
   whose sign-ins go to its vault). Both start off.
