@@ -1117,6 +1117,8 @@ it("has a folder-v2 dynamic routine run decide through its routine file, settled
 	// The decision went to the routine's file, not the kernel's legacy decision: no file there, so nothing is owed.
 	expect(f.decisions).toEqual([]);
 	expect(f.folderReads).toContain(`agents/nora/routines/${f.wake.routine?.routineKey}.md`);
+	// Not found at its key: the routine's key now is read again from the kernel (the wake) before it is settled.
+	expect(f.pathCall.mock.calls.filter(([method]) => method === "qorpera_read_native_wake")).toHaveLength(2);
 	const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
 	const tools = evidence.threadParameters.dynamicTools[0].tools as { name: string; description: string }[];
 	expect(tools.find((tool) => tool.name === "decide_routine")?.description).toContain(

@@ -38,9 +38,12 @@ const ROUTINE = writeRoutineFile(BASE);
 async function fixture(
 	text: string | null = ROUTINE,
 	hook?: (path: string, text: string) => FolderWriterHookAnswer | null,
+	files: Record<string, string> = text === null ? {} : { [PATH]: text },
 ) {
-	const f = await folderWriterFixture(text === null ? {} : { files: { [PATH]: text } }, hook ? { hook } : {});
+	const f = await folderWriterFixture({ files }, hook ? { hook } : {});
 	runs.push(f.run);
+	// The kernel's key for the routine now (the wake read again): unchanged unless a test renames it.
+	const currentRoutineKey = vi.fn(async (): Promise<string | null> => "market-check");
 	const decision = (operations = f.operations()) =>
 		new CloudFolderRoutineDecision({
 			folder: f.folder,
@@ -48,12 +51,14 @@ async function fixture(
 			identity: f.identity,
 			handle: "nora",
 			routineKey: "market-check",
+			routineId: BASE.id,
+			currentRoutineKey,
 		});
 	const decide = async (request: CloudFolderRoutineDecisionRequest, writer = decision()) => {
 		const { content, decided } = await writer.decide(request, f.context);
 		return { result: JSON.parse(String(content.value)), decided };
 	};
-	return { ...f, decision, decide };
+	return { ...f, decision, decide, currentRoutineKey };
 }
 
 /** The tool's own refusal before any effect (no key bound), which the boundary shows the model. */
@@ -259,4 +264,39 @@ it("refuses an unreadable routine file, and a run that cannot complete a folder 
 		),
 	).rejects.toThrow("cannot complete folder writes");
 	expect(f.commits).toHaveLength(0);
+});
+
+it("finds its routine after a member renamed the file mid-run, by the kernel's key now and the routine's id", async () => {
+	const moved = "agents/nora/routines/market-watch.md";
+	const f = await fixture(null, undefined, { [moved]: ROUTINE });
+	f.currentRoutineKey.mockResolvedValue("market-watch");
+	const { result, decided } = await f.decide({ action: "next", operationKey: "decide-1", at: "2026-10-03T07:30:00Z" });
+	expect(decided).toBe(true);
+	expect(result).toMatchObject({
+		schema: "qorpera.agent-routine-receipt/v1",
+		routine: { routineKey: "market-watch", path: moved, at: "2026-10-03T07:30:00Z" },
+	});
+	expect(f.commits[0]?.units[0]).toMatchObject({ path: moved });
+	expect(f.text(moved)).toBe(writeRoutineFile({ ...BASE, trigger: { when: "once", at: "2026-10-03T07:30:00Z" } }));
+	expect(f.currentRoutineKey).toHaveBeenCalledTimes(1);
+});
+
+it("is settled when another routine took its file's name, and reads the kernel's key only when the file is not its own", async () => {
+	const other = writeRoutineFile({ ...BASE, id: "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d", title: "Someone else's" });
+	const f = await fixture(other);
+	await expect(
+		f.decide({ action: "next", operationKey: "decide-1", at: "2026-10-03T07:30:00Z" }),
+	).resolves.toMatchObject({ decided: true, result: { state: "settled", routine: { status: "retired" } } });
+	expect(f.commits).toHaveLength(0);
+	expect(f.currentRoutineKey).toHaveBeenCalledTimes(1);
+	// Renamed, but the file at the kernel's key is not this routine either: settled.
+	const g = await fixture(null, undefined, { "agents/nora/routines/market-watch.md": other });
+	g.currentRoutineKey.mockResolvedValue("market-watch");
+	await expect(
+		g.decide({ action: "next", operationKey: "decide-1", at: "2026-10-03T07:30:00Z" }),
+	).resolves.toMatchObject({ decided: true, result: { state: "settled" } });
+	// Its own file at its key: no second read.
+	const h = await fixture();
+	await h.decide({ action: "next", operationKey: "decide-1", at: "2026-10-03T07:30:00Z" });
+	expect(h.currentRoutineKey).not.toHaveBeenCalled();
 });
