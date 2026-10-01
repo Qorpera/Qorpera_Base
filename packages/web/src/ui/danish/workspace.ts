@@ -218,6 +218,8 @@ export const WORKSPACE: Record<string, string> = {
 	"Setting up the machine. This can take a while.": "Sætter maskinen op. Det kan tage et stykke tid.",
 	"Waiting for room on our servers. It starts as soon as there is room.":
 		"Venter på plads på vores servere. Den starter, så snart der er plads.",
+	"Out of computer hours. The machine starts by itself once hours are added.":
+		"Ingen computertimer tilbage. Maskinen starter af sig selv, når der er tilføjet timer.",
 
 	// app/views/feedback.ts
 	"+ Bug": "+ Fejl",
