@@ -611,10 +611,10 @@ Coordinator (nothing secret):
       open its disk to the give-up and removal passes, against "disks kept".
 - Build step 6b part 4 (migration `20260928319760`, coding), behind coding's own switch,
   `qorpera_computer_hour_billing.coding_zero_rule_since` (null until switched on). A coding executor
-  that does not know `COMPUTER_HOURS_EXHAUSTED` fails a turn on it, and production's executor was
-  still v6 on 2026-10-01, so coding is switched on only once an executor with this change runs on
-  every coding node ("Going live", step 2b). While it is off, part 1's node refusal no longer covers
-  coding machines. With it on:
+  that does not know `COMPUTER_HOURS_EXHAUSTED` fails a turn on it, so coding is switched on only
+  once an executor with this change runs on every coding node ("Going live", step 2b). That holds
+  since 2026-10-01: K1 put executor `9fef1f70` (which carries part 4) on both nodes. While the
+  switch is off, part 1's node refusal no longer covers coding machines. With it on:
   - the node refusal covers coding machines again;
   - `qorpera_authorize_coding_machine_run` (the machine step every turn passes before begin) refuses
     a turn not yet begun with `COMPUTER_HOURS_EXHAUSTED`, even on an awake machine, and the executor
@@ -726,10 +726,10 @@ Before the switch (all of these hold):
   refusal, is built; its reason must be known on both nodes before it can be returned, by every
   program that holds the node admission (`runtime-node-admission.ts`: the LXD provider host, the
   office provider and the office fleet) and by the coding executor host. An older one throws on
-  the reason instead of waiting. On 2026-10-01 production's coding executor is still the old
-  `036e3617` (v6): the executor v7 rollout has not been done. So coding waits for that rollout,
-  and 6b part 4 (coding) gives the coding machines their own switch: office and agent machines can
-  be switched on first, coding once the new executor is installed. Part 1 alone is not
+  the reason instead of waiting. The coding executor rollout (K1) was done on 2026-10-01: both
+  nodes run `9fef1f70` with config v7 and coding image `ffae8371`, proven on a real session. So
+  coding's own switch (6b part 4) can follow the zero rule in the same minute (step 2b). Part 1
+  alone is not
   enough: the later 6b parts are required too: Company Computers (part 2, built; the web deployed
   first), agents' machines (part 3, built) and coding (part 4, built, with its own switch).
 - Members see their hours left, by source, on Plan & usage from the switch on
@@ -780,19 +780,19 @@ At the agreed minute, in this order:
    packs by a company's founders. The hour emails are queued, and a company that runs out is
    recorded by the next sweep.
 
-   2b. The coordinator switches coding on as soon as a coding executor built from a release with
-   build step 6b part 4 runs on every coding node (its `coding-executor.ts` defers a turn whose
-   begin answers `{"state":"refused","reason":"COMPUTER_HOURS_EXHAUSTED"}`; production's was still
-   v6 on 2026-10-01). Best: install it before step 2, so this follows in the same minute:
+   2b. In the same minute, the coordinator switches coding on. Its precondition holds since K1
+   (2026-10-01): both coding nodes run executor `9fef1f70`, whose `coding-executor.ts` defers a
+   turn whose begin answers `{"state":"refused","reason":"COMPUTER_HOURS_EXHAUSTED"}`. Check
+   first that no node was rolled back to `036e3617`:
 
    ```sql
    update public.qorpera_computer_hour_billing set coding_zero_rule_since = clock_timestamp();
    ```
 
-   Never before: an older executor fails a coding turn on the reason instead of waiting. Until
-   then a company at zero still has its coding turns held, but only at the run's wake step: the
-   turn shows as running, its machine starts or stays awake, and that machine's time is owed until
-   hours are added (part 4's known limits).
+   Never with an older executor on a node: it fails a coding turn on the reason instead of
+   waiting. Without this step, a company at zero still has its coding turns held, but only at the
+   run's wake step: the turn shows as running, its machine starts or stays awake, and that
+   machine's time is owed until hours are added (part 4's known limits).
 3. Within the first 30 minutes, a real purchase proves the live webhook: a pack for a company
    other than step 5's test company (or refunded before step 5, which also proves a live refund),
    refunded afterwards in Stripe: Stripe's dashboard shows the delivery answered 2xx, and
