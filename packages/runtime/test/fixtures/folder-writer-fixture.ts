@@ -45,7 +45,7 @@ export interface FolderWriterHookAnswer {
 
 /** A fake folder core and receipt ledger for a folder writer's tests, with seeded files and folders. A write whose
  * parse has problems is refused as `structured_invalid`, as the real hook does; `hook` may refuse any other write. A
- * new folder with an `agent.md` is delegation (C1B §6): the commit saves it only with a review recorded
+ * new folder with an `agent.md` or a `group.md` is delegation (C1B §6): the commit saves it only with a review recorded
  * (`qorpera_folder_record_review`, C2 R1) for exactly its change set, and `recorder` may answer the recording instead.
  * A commit is not replayed by its operation key (SQL's step 0); the receipt ledger replays a completed call. */
 export async function folderWriterFixture(
@@ -185,8 +185,9 @@ export async function folderWriterFixture(
 							);
 							if (hooked) return { ...base, ...hooked };
 						}
+						// A new agent or group chat is delegation.
 						if (
-							contents.some((item) => item.path === "agent.md") &&
+							contents.some((item) => item.path === "agent.md" || item.path === "group.md") &&
 							(typeof args.p_review_id !== "string" || reviews.get(args.p_review_id) !== JSON.stringify(units))
 						)
 							return { ...base, outcome: "denied", reason: "review_required" };

@@ -55,7 +55,7 @@ export interface CloudFolderHire {
 
 /** One id per (namespace, run, operation key), formatted as the legacy hire's agent id (cloud-hiring-tools.ts), in a
  * namespace of its own so it never meets the legacy hire's or a group chat's. */
-function hashedId(namespace: string, runId: string, operationKey: string): string {
+export function hashedId(namespace: string, runId: string, operationKey: string): string {
 	const hex = createHash("sha256").update(`${namespace}:${runId}:${operationKey}`).digest("hex");
 	return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-${((Number.parseInt(hex[16] ?? "0", 16) & 3) | 8).toString(16)}${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
 }
@@ -76,8 +76,11 @@ function titleOf(assignment: string): string {
 }
 
 /** What the shared parser found, within the boundary's plain one-kilobyte message. */
-function invalidMessage(problems: readonly { message: string }[]): string {
-	let message = "This hire cannot be saved as the company's files";
+export function invalidMessage(
+	problems: readonly { message: string }[],
+	opening = "This hire cannot be saved as the company's files",
+): string {
+	let message = opening;
 	for (const problem of problems) {
 		const next = `${message}${message.includes(":") ? ";" : ":"} ${problem.message}`;
 		if (Buffer.byteLength(next) > 900) break;
