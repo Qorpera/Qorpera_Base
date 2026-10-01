@@ -2,21 +2,21 @@
 // No external database URL, credentials or provider process is accepted.
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { hash, randomBytes } from "node:crypto";
-import { readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { hash } from "node:crypto";
+import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseCloudNativeCompanyContext, composeCloudNativeCompanyPrompt } from "../packages/runtime/src/cloud-native-company-context.ts";
-import { POSTGRES_IMAGE, sortMigrationNames } from "./test-hosted-db.mjs";
+import { hostedDatabase, MIGRATIONS, migrationNames } from "./test-hosted-db-cluster.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const args = process.argv.slice(2);
 assert(args.length === 0 || (args.length === 2 && args[0] === "--report"), "Usage: node scripts/test-runtime-production-review.mjs [--report PATH]");
-const container = `qorpera-production-review-${process.pid}-${randomBytes(4).toString("hex")}`;
-const volume = `${container}-data`;
 const report = { schema: "qorpera.production-review-regressions/v1", startedAt: new Date().toISOString(),
 	network: "none", providerInvoked: false, deployedAcceptance: false, migrations: [], cases: [], concurrency: [], passed: false };
-const psql = ["exec", "-i", container, "psql", "-X", "-qAt", "-v", "ON_ERROR_STOP=1", "-U", "postgres", "-d", "review"];
+// Its own database: a copy of the hosted-db suite's replay under the suite, else a container of its own.
+const databaseName = "production_review";
+let database, psql;
 const profile = "30000000-0000-4000-8000-000000000010";
 const owner = "30000000-0000-4000-8000-000000000001";
 const sessions = new Set();
@@ -61,20 +61,22 @@ async function commit(current) {
 async function waitLock(application) {
 	await until(() => sql(`select count(*) from pg_stat_activity where application_name='${application}' and wait_event_type='Lock';`) === "1", "competing consent lock");
 }
-let started = false, volumeCreated = false;
 try {
-	docker(["volume", "create", volume]); volumeCreated = true;
-	docker(["run", "--detach", "--name", container, "--network", "none", "--env", "POSTGRES_PASSWORD=review-disposable-only",
-		"--env", "POSTGRES_DB=review", "--mount", `type=volume,source=${volume},target=/var/lib/postgresql/data`, POSTGRES_IMAGE]); started = true;
-	await until(() => spawnSync("docker", ["exec", container, "pg_isready", "-h", "127.0.0.1", "-U", "postgres", "-d", "review"], { stdio: "ignore" }).status === 0, "PostgreSQL startup");
-	sql(readFileSync(join(root, "supabase/tests/bootstrap.sql"), "utf8"));
-	for (const file of sortMigrationNames(readdirSync(join(root, "supabase/migrations")))) {
-		const bytes = readFileSync(join(root, "supabase/migrations", file)); sql(bytes);
-		report.migrations.push({ file, sha256: hash("sha256", bytes) });
-	}
+	database = await hostedDatabase(databaseName);
+	psql = database.cluster.psqlArgs(databaseName, ["-qAt"]);
+	for (const file of migrationNames()) report.migrations.push({ file, sha256: hash("sha256", readFileSync(join(MIGRATIONS, file))) });
+	// The broker's exact custody calls are pinned once, in 306; the third review compares against that list.
+	const privileges = readFileSync(join(root, "supabase/tests/306_governed_company_computer_privileges.test.sql"), "utf8");
+	const pinned = /if v_functions is distinct from array\[([\s\S]*?)\]::text\[\]/.exec(privileges);
+	assert(pinned, "306 no longer pins the broker's custody calls");
+	const brokerSurface = [...pinned[1].matchAll(/'([^']+)'/g)].map((match) => match[1]);
+	// Signatures only (any argument types, no quote), so the list cannot leave its SQL literal.
+	assert(brokerSurface.length > 0 && brokerSurface.every((signature) => /^qorpera_[a-z0-9_]+\([^()']*\)$/.test(signature)),
+		"306's broker list must hold function signatures");
 	const component = readFileSync(join(root, "supabase/tests/300_runtime_wake_bus.test.sql"), "utf8");
 	assert.equal(component.split("-- END WAKE FIXTURE").length, 2);
-	const fixture = component.split("-- END WAKE FIXTURE")[0];
+	const fixture = `select set_config('qorpera_test.broker_surface','${JSON.stringify(brokerSurface)}',false);\n`
+		+ component.split("-- END WAKE FIXTURE")[0];
 	const original = readFileSync(join(root, "supabase/acceptance/runtime_wake_bus.sql"), "utf8");
 	const regression = readFileSync(join(root, "supabase/acceptance/runtime_production_review.sql"), "utf8")
 		+ readFileSync(join(root, "supabase/acceptance/runtime_second_production_review.sql"), "utf8")
@@ -211,8 +213,7 @@ try {
 	report.error = error.message; process.exitCode = 1; console.error(report.error);
 } finally {
 	for (const child of sessions) child.kill("SIGTERM");
-	if (started) docker(["rm", "--force", container]);
-	if (volumeCreated) docker(["volume", "rm", volume]);
+	database?.close();
 	report.cleanupConfirmed = true; report.finishedAt = new Date().toISOString();
 	if (args.length) writeFileSync(resolve(args[1]), `${JSON.stringify(report, null, 2)}\n`, { flag: "wx" });
 	console.log(JSON.stringify({ passed: report.passed, migrations: report.migrations.length, cases: report.cases.length, concurrency: report.concurrency, cleanupConfirmed: report.cleanupConfirmed }));

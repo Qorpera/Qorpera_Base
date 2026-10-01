@@ -8,6 +8,7 @@
 
 ### Added
 
+- `CloudRunnerControlRequest` has a `start` action: an acceptance plus, in the same transaction, the broker description and (with `nativeLeaseSeconds`) the native authority.
 - `CloudRoutineEventTrigger`: a routine listener on one of the company's hooks (`kind: "listener"`, `source: "event"`, `hookId`, optional `only` event types). `parseCloudRoutineTrigger` reads it with the cloud's rules and `describeCloudRoutineTrigger` words it ("When a hook receives an event", or the event types).
 - Added `cloud-agent-folder`: `cloudAgentFolder(agent)`, the one resolver of an agent's folder in the company folder (contract 5.6), `agents/<staffAgentId>` until agents have named folders with an `agent.md` index.
 - `CloudMemberCompanyAccessDenied`: the member Company File client's refusal (401/403) is now its own error class, with the same message, so a caller can tell a closed folder from an outage.

@@ -170,7 +170,7 @@ begin
 end
 $$;
 do $$
-declare v_config text[]; v_function regprocedure;
+declare v_config text[]; v_function regprocedure; v_definition text;
 begin
 	foreach v_function in array array['public.qorpera_lock_profile_gc_fence_shared(uuid)'::regprocedure,
 		'public.qorpera_lock_company_file_shared(uuid)'::regprocedure] loop
@@ -183,8 +183,19 @@ begin
 		'public.qorpera_native_company_file_write_source(uuid,jsonb,jsonb)'::regprocedure,
 		'public.qorpera_native_company_file_write(uuid,jsonb,jsonb,jsonb,text,uuid,text)'::regprocedure] loop
 		select proconfig into v_config from pg_catalog.pg_proc where oid = v_function;
-		perform pg_temp.wake_assert(v_config @> array['lock_timeout=2s','qorpera.company_fence_wait=2s'],
-			v_function || ' waits 2 s, the fence included: ' || v_config::text);
+		-- lock_timeout is a function setting; the fence wait cannot be one (a function's SET of a custom parameter
+		-- needs a superuser, and production's migration role is not one), so the body sets it and gives it back.
+		perform pg_temp.wake_assert('lock_timeout=2s' = any (v_config)
+			and not exists (select 1 from unnest(v_config) setting where split_part(setting, '=', 1) like '%.%'),
+			v_function || ' waits 2 s, with no custom function setting: ' || v_config::text);
+		v_definition := pg_get_functiondef(v_function);
+		perform pg_temp.wake_assert(
+			position(E'declare v_fence_wait text := pg_catalog.current_setting(''qorpera.company_fence_wait'', true);\n' in v_definition) > 0
+			and v_definition ~ E'\nbegin\n\t--[^\n]*\n\tperform pg_catalog\\.set_config\\(''qorpera\\.company_fence_wait'', ''2s'', true\\);\n'
+			and (select count(*) from regexp_matches(v_definition, '\mreturn\M', 'gi')) > 0
+			and (select count(*) from regexp_matches(v_definition, '\mreturn\M', 'gi'))
+				= (select count(*) from regexp_matches(v_definition, '\mreturn public\.qorpera_company_fence_wait_end\(v_fence_wait, ', 'g')),
+			v_function || ' sets its 2 s fence wait first and gives the caller''s back at every return: ' || v_definition);
 	end loop;
 	select proconfig into v_config from pg_catalog.pg_proc
 	where oid = 'public.qorpera_validate_native_provider_execution_lease(uuid,uuid,uuid,uuid,uuid,uuid,uuid,text,text)'::regprocedure;
@@ -197,7 +208,8 @@ do $$
 declare v_function regprocedure; v_role text;
 begin
 	foreach v_function in array array['public.qorpera_company_fence_shared()'::regprocedure,
-		'public.qorpera_lock_profile_gc_fence_shared(uuid)'::regprocedure, 'public.qorpera_lock_company_file_shared(uuid)'::regprocedure] loop
+		'public.qorpera_lock_profile_gc_fence_shared(uuid)'::regprocedure, 'public.qorpera_lock_company_file_shared(uuid)'::regprocedure,
+		'public.qorpera_company_fence_wait_end(text,jsonb)'::regprocedure] loop
 		foreach v_role in array array['public', 'anon', 'authenticated', 'service_role'] loop
 			perform pg_temp.wake_assert(not has_function_privilege(v_role, v_function, 'EXECUTE'), v_role || ' cannot call ' || v_function);
 		end loop;
@@ -353,6 +365,74 @@ begin
 	v_outcome := pg_temp.fence_single(null, v_hold, 'qorpera_begin_native_tool_operation', pg_temp.fence_receipt(v_second, 'fence-budget'));
 	perform pg_temp.wake_assert(v_outcome ->> 'waited' = 'true' and v_outcome -> 'result' is not null and v_outcome -> 'error' is null,
 		'A receipt keeps waiting for the fence: ' || v_outcome::text);
+end
+$$;
+
+-- 7. The write path's fence wait belongs to the call. Inside each of the five it is 2 s, also for a direct SQL caller
+--    (no request.path) whose own wait is longer: 6 s here. After a call, returned or failed, the caller's transaction
+--    has its own value back, or none, so nothing after the call inherits the 2 s. (A function's SET of the custom
+--    parameter did this before production refused it: 42501 for a migration role that is not a superuser.)
+do $$
+declare v_outcome jsonb; v_call text; v_second text := current_setting('qorpera_test.second_binding');
+	v_hold text := 'select public.qorpera_lock_profile_gc_fence(''30000000-0000-4000-8000-000000000010'')';
+	v_plan text := '{"schema":"qorpera.company-path-mutation/v1","operationKey":"fence-wait-own","path":"fence-wait-own.txt","expectedVersion":null,"entry":null}';
+begin
+	perform dblink_exec('lock_first', 'set qorpera.company_fence_wait = ''6s''');
+	foreach v_call in array array[
+		format('select public.qorpera_check_company_path_mutation(%L, %L::jsonb, %L::jsonb)', '30000000-0000-4000-8000-000000000020', v_second, v_plan),
+		format('select public.qorpera_prepare_company_path_mutation(%L, %L::jsonb, %L::jsonb)', '30000000-0000-4000-8000-000000000020', v_second, v_plan),
+		format('select public.qorpera_commit_company_path_mutation(%L, %L::jsonb, %L::jsonb)', '30000000-0000-4000-8000-000000000020', v_second, v_plan),
+		format('select public.qorpera_native_company_file_write_source(%L, %L::jsonb, ''{}'')', '30000000-0000-4000-8000-000000000020', v_second),
+		format('select public.qorpera_native_company_file_write(%L, %L::jsonb, ''{}'', %L::jsonb, ''check'')',
+			'30000000-0000-4000-8000-000000000020', v_second, v_plan)] loop
+		v_outcome := pg_temp.fence_wait_out(null, v_hold, null, v_call);
+		perform pg_temp.wake_assert(v_outcome ->> 'state' = '55P03' and v_outcome ->> 'error' like '%lock timeout%'
+			and (v_outcome ->> 'elapsedMs')::integer between 1900 and 4500,
+			'Inside the call the fence wait is 2 s, not the caller''s 6 s: ' || v_call || ' ' || v_outcome::text);
+	end loop;
+	perform dblink_exec('lock_first', 'reset qorpera.company_fence_wait');
+end
+$$;
+do $$
+declare v_binding jsonb := current_setting('qorpera_test.second_binding')::jsonb; v_previous text; v_result jsonb;
+	v_call text; v_failure text; v_environment uuid := '30000000-0000-4000-8000-000000000020'; v_plan jsonb;
+begin
+	perform pg_temp.path_claims('service_role');
+	foreach v_previous in array array['1234ms', ''] loop
+		v_plan := jsonb_build_object('schema','qorpera.company-path-mutation/v1','operationKey','fence-wait-folder-' || length(v_previous),
+			'path','fence-wait-folder','expectedVersion',null,'entry',jsonb_build_object('kind','directory','path','fence-wait-folder'));
+		perform set_config('qorpera.company_fence_wait', v_previous, true);
+		-- Calls that return; prepare also calls check, which gives prepare its 2 s back before prepare gives the caller its own.
+		v_result := public.qorpera_check_company_path_mutation(v_environment, v_binding, v_plan);
+		perform pg_temp.wake_assert(v_result ->> 'state' in ('ready', 'protected') and current_setting('qorpera.company_fence_wait') = v_previous,
+			format('After a check the caller''s fence wait is back (%L): %s %s', v_previous, v_result, current_setting('qorpera.company_fence_wait')));
+		v_result := public.qorpera_prepare_company_path_mutation(v_environment, v_binding, v_plan);
+		perform pg_temp.wake_assert(v_result ->> 'state' in ('ready', 'protected') and current_setting('qorpera.company_fence_wait') = v_previous,
+			format('After a prepare the caller''s fence wait is back (%L): %s %s', v_previous, v_result ->> 'state', current_setting('qorpera.company_fence_wait')));
+		-- Calls in the caller's exception block. The native writes fail inside, after their first statement: no export
+		-- source. A commit without its staged tree fails too, unless the folder needs approval (then it proposes).
+		foreach v_call in array array['commit', 'write_source', 'write'] loop
+			v_failure := null;
+			begin
+				case v_call
+					when 'commit' then v_result := public.qorpera_commit_company_path_mutation(v_environment, v_binding, v_plan);
+					when 'write_source' then v_result := public.qorpera_native_company_file_write_source(v_environment, v_binding, '{}');
+					else v_result := public.qorpera_native_company_file_write(v_environment, v_binding, '{}', v_plan, 'check');
+				end case;
+			exception when others then
+				v_failure := sqlerrm;
+			end;
+			perform pg_temp.wake_assert((v_call = 'commit' or v_failure is not null) and current_setting('qorpera.company_fence_wait') = v_previous,
+				format('After %s (%s) the caller''s fence wait is back (%L): %s', v_call, coalesce(v_failure, 'returned'), v_previous,
+					current_setting('qorpera.company_fence_wait')));
+		end loop;
+	end loop;
+	-- The helper itself: the value passes through, and the caller's wait (none: '') is back.
+	perform set_config('qorpera.company_fence_wait', '2s', true);
+	perform pg_temp.wake_assert(public.qorpera_company_fence_wait_end(null, '{"kept":1}') = '{"kept":1}'::jsonb
+		and current_setting('qorpera.company_fence_wait') = '', 'The helper puts back no wait as none');
+	perform pg_temp.wake_assert(public.qorpera_company_fence_wait_end('7s', 'null') = 'null'::jsonb
+		and current_setting('qorpera.company_fence_wait') = '7s', 'The helper puts back the caller''s wait');
 end
 $$;
 

@@ -386,3 +386,181 @@ describe("disposable cloud runner", () => {
 		).toThrow("output substrate");
 	});
 });
+
+describe("runner start", () => {
+	const assignment = { assignmentId, jobId, capability: assignmentCapability };
+	const description = { company_runtime: "company-path-v1", marker: "raw description" };
+	const nativeAuthority = { lease_id: clientRunnerId, marker: "raw native authority" };
+
+	function startService(answer: (body: CloudRunnerControlRequest) => unknown) {
+		const requests: CloudRunnerControlRequest[] = [];
+		const transport: CloudRunnerControlTransport = {
+			request: vi.fn(async (_token, body) => {
+				if (body.action === "activate") return runnerRecord();
+				requests.push(structuredClone(body));
+				return answer(body);
+			}),
+		};
+		return { transport, requests };
+	}
+
+	async function activeRunner(transport: CloudRunnerControlTransport, store = new MemoryAuthorityStore()) {
+		const runner = await DisposableCloudRunner.open(
+			transport,
+			runnerId,
+			store,
+			createCloudRunnerPairingSecret().activationToken,
+		);
+		await runner.activate("linux-x64", "0.1.0");
+		return runner;
+	}
+
+	it("accepts, describes and takes the native authority in one request, and keeps the acceptance's state", async () => {
+		const service = startService(() => ({
+			job: jobRecord("leased"),
+			description,
+			native_authority: nativeAuthority,
+		}));
+		const store = new MemoryAuthorityStore();
+		const runner = await activeRunner(service.transport, store);
+		const started = await runner.startAssignment(assignment, 120);
+		expect(service.requests).toEqual([
+			{ action: "start", runnerId, assignmentId, jobId, assignmentCapability, nativeLeaseSeconds: 120 },
+		]);
+		expect(started).toEqual({
+			job: parseCloudRunnerJob(jobRecord("leased")),
+			start: { description, nativeAuthority: { value: nativeAuthority, leaseSeconds: 120 } },
+		});
+		// The same local authority an acceptance records: the lease, not yet started.
+		const accepting = startService(() => jobRecord("leased"));
+		const acceptedStore = new MemoryAuthorityStore();
+		const accepted = await activeRunner(accepting.transport, acceptedStore);
+		await accepted.acceptAssignment(assignment);
+		const persisted = (value: JsonValue | undefined) => {
+			const state = structuredClone(value) as Record<string, JsonValue>;
+			delete state.session_token;
+			delete state.runner;
+			return state;
+		};
+		expect(persisted(store.value)).toEqual(persisted(acceptedStore.value));
+		expect(runner.executionStarted(jobId)).toBe(false);
+		expect(runner.snapshot().activeJobIds).toEqual([jobId]);
+	});
+
+	it("asks for no native authority when the runner cannot execute native subscriptions", async () => {
+		const service = startService(() => ({ job: jobRecord("leased"), description, native_authority: null }));
+		const runner = await activeRunner(service.transport);
+		await expect(runner.startAssignment(assignment)).resolves.toEqual({
+			job: parseCloudRunnerJob(jobRecord("leased")),
+			start: { description },
+		});
+		expect(service.requests).toEqual([{ action: "start", runnerId, assignmentId, jobId, assignmentCapability }]);
+	});
+
+	it("returns only the lease when the cloud deferred the reads to the separate calls", async () => {
+		const service = startService(() => ({ job: jobRecord("leased"), description: null, native_authority: null }));
+		const runner = await activeRunner(service.transport);
+		await expect(runner.startAssignment(assignment, 120)).resolves.toEqual({
+			job: parseCloudRunnerJob(jobRecord("leased")),
+		});
+	});
+
+	it("replays the identical start after an ambiguous response", async () => {
+		let lose = true;
+		const service = startService(() => {
+			if (lose) {
+				lose = false;
+				throw new Error("start response lost");
+			}
+			return { job: jobRecord("leased"), description, native_authority: nativeAuthority };
+		});
+		const store = new MemoryAuthorityStore();
+		let runner = await activeRunner(service.transport, store);
+		await expect(runner.startAssignment(assignment, 120)).rejects.toThrow("start response lost");
+		runner = await DisposableCloudRunner.open(service.transport, runnerId, store);
+		await expect(runner.startAssignment(assignment, 120)).resolves.toMatchObject({ job: { jobId } });
+		expect(service.requests).toHaveLength(2);
+		expect(service.requests[1]).toEqual(service.requests[0]);
+	});
+
+	it.each([400, 501])(
+		"accepts alone for ten minutes when the control plane has no start (%s), then asks again",
+		async (status) => {
+			vi.useFakeTimers({ toFake: ["Date"] });
+			try {
+				const service = startService((body) => {
+					if (body.action === "start") throw new CloudRunnerControlRequestError(status);
+					if (body.action === "accept") return { ...jobRecord("leased"), job_id: body.jobId };
+					throw new Error("unexpected runner action");
+				});
+				const runner = await activeRunner(service.transport);
+				await expect(runner.startAssignment(assignment, 120)).resolves.toEqual({
+					job: parseCloudRunnerJob(jobRecord("leased")),
+				});
+				const next = (id: string) => ({ assignmentId: id, jobId: id, capability: assignmentCapability });
+				vi.advanceTimersByTime(10 * 60_000 - 1);
+				await expect(runner.startAssignment(next(substrateVersionId), 120)).resolves.toMatchObject({
+					job: { jobId: substrateVersionId },
+				});
+				vi.advanceTimersByTime(1);
+				await runner.startAssignment(next(clientJobId), 120);
+				expect(service.requests.map((request) => request.action)).toEqual([
+					"start",
+					"accept",
+					"accept",
+					"start",
+					"accept",
+				]);
+				expect(service.requests[1]).toEqual({
+					action: "accept",
+					runnerId,
+					assignmentId,
+					jobId,
+					assignmentCapability,
+				});
+			} finally {
+				vi.useRealTimers();
+			}
+		},
+	);
+
+	it.each([401, 409, 423, 503, undefined])(
+		"does not fall back when a start may have run or was refused (%s)",
+		async (status) => {
+			const service = startService(() => {
+				throw status === undefined ? new Error("start response lost") : new CloudRunnerControlRequestError(status);
+			});
+			const store = new MemoryAuthorityStore();
+			const runner = await activeRunner(service.transport, store);
+			await expect(runner.startAssignment(assignment, 120)).rejects.toThrow();
+			expect(service.requests.map((request) => request.action)).toEqual(["start"]);
+			expect(runner.snapshot().activeJobIds).toEqual([]);
+			// The assignment stays pending, exactly as after a failed acceptance.
+			expect((store.value as Record<string, JsonValue>).pending_assignment).toEqual({
+				assignment_id: assignmentId,
+				job_id: jobId,
+				capability: assignmentCapability,
+			});
+		},
+	);
+
+	it.each([
+		["an unknown field", { job: jobRecord("leased"), description, native_authority: null, extra: true }, 120],
+		[
+			"an authority without a description",
+			{ job: jobRecord("leased"), description: null, native_authority: nativeAuthority },
+			120,
+		],
+		[
+			"an authority nobody asked for",
+			{ job: jobRecord("leased"), description, native_authority: nativeAuthority },
+			undefined,
+		],
+		["a bare job", jobRecord("leased"), 120],
+	] as const)("refuses a start receipt with %s and records no lease", async (_label, receipt, nativeLeaseSeconds) => {
+		const service = startService(() => structuredClone(receipt));
+		const runner = await activeRunner(service.transport);
+		await expect(runner.startAssignment(assignment, nativeLeaseSeconds)).rejects.toThrow();
+		expect(runner.snapshot().activeJobIds).toEqual([]);
+	});
+});

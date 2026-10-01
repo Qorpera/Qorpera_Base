@@ -10,9 +10,12 @@ import {
 	parseCloudRoutineTrigger,
 } from "@qorpera/cloud-client/cloud-routines";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { AgentRoutines } from "../src/app/views/agent-routines.ts";
+import type { CompanyController } from "../src/app/company.ts";
+import { AgentRoutines, routineAccessFor } from "../src/app/views/agent-routines.ts";
+import type { WorkspaceActions } from "../src/app/workspace-actions.ts";
 import type { Cloud } from "../src/cloud/client.ts";
-import { createWebRoutines, type WebRoutines } from "../src/cloud/routines.ts";
+import { createWebRoutines, type WebRoutine, type WebRoutines } from "../src/cloud/routines.ts";
+import { fmtTime } from "../src/ui/dom.ts";
 import { profileA, settle, staff } from "./fixtures.ts";
 
 const account = {
@@ -219,6 +222,159 @@ describe("agent routines section", () => {
 		expect(f.view.el.querySelector(".routine-card-summary span")?.textContent).toMatch(/^Mon at 8:30\sAM/);
 		expect(f.view.el.textContent).not.toContain("Other");
 		expect(f.view.el.textContent).not.toContain("Gone");
+	});
+	it("names a member from the company's team", () => {
+		const anna = "10000000-0000-4000-8000-000000000031";
+		const company = {
+			store: {
+				get: () => ({
+					team: {
+						capabilities: { authorize: false },
+						members: [{ userId: anna, displayName: "Anna", email: "anna@example.test", role: "member" }],
+					},
+				}),
+			},
+		} as unknown as CompanyController;
+		const actions = {
+			routines: { list: vi.fn(), runs: vi.fn(), save: vi.fn(), setEnabled: vi.fn() },
+			nativeSubscription: { listConnections: vi.fn() },
+		} as unknown as WorkspaceActions;
+		const access = routineAccessFor(company, actions)!;
+		expect(access.memberName?.(anna)).toBe("Anna");
+		expect(access.memberName?.("10000000-0000-4000-8000-000000000032")).toBeUndefined();
+	});
+	it("says when a routine started again because its member turned on work while away", async () => {
+		const resumed = {
+			...routine({ status: "active" }),
+			resumeReason: "plan_turned_on",
+			resumedAt: "2026-10-01T10:00:00.000Z",
+			resumedByUserId: "10000000-0000-4000-8000-000000000031",
+		} as WebRoutine;
+		for (const [items, name, said] of [
+			[[resumed], () => "Anna", "When Anna turned on “Work while you're away”"],
+			[[resumed], () => undefined, "When a member turned on “Work while you're away”"],
+			[[{ ...resumed, status: "paused" } as WebRoutine], () => "Anna", undefined],
+			[[{ ...resumed, resumeReason: "member" } as WebRoutine], () => "Anna", undefined],
+			[[routine({ status: "active" })], () => "Anna", undefined],
+		] as const) {
+			const stop = new AbortController();
+			const view = new AgentRoutines(
+				() => staff,
+				{
+					routines: {
+						list: vi.fn(async () => [...items]),
+						runs: vi.fn(async (): Promise<CloudRoutineOccurrence[]> => []),
+						save: vi.fn(async () => {}),
+						setEnabled: vi.fn(async () => {}),
+					},
+					accounts: async () => ({ connections: [account] }),
+					canManage: () => true,
+					memberName: name,
+				},
+				stop.signal,
+			);
+			document.body.append(view.el);
+			await settle();
+			const fact = [...view.el.querySelectorAll(".routine-card-fact")].find(
+				(item) => item.querySelector("dt")?.textContent === "Resumed",
+			);
+			if (said)
+				expect(fact?.querySelector("dd")?.textContent).toBe(`${said} · ${fmtTime("2026-10-01T10:00:00.000Z")}`);
+			else expect(fact).toBeUndefined();
+			stop.abort();
+			view.el.remove();
+		}
+	});
+	it("keeps why a routine is paused and whom it runs for, from the list's own answer", async () => {
+		const row = {
+			routine_id: "10000000-0000-4000-8000-000000000020",
+			client_routine_id: "10000000-0000-4000-8000-000000000021",
+			version: 1,
+			status: "paused",
+			staff_agent_id: staff.id,
+			title: "Morning brief",
+			prompt: "Brief me.",
+			triggers: [{ id: "agent", kind: "schedule", intervalMinutes: 60, replyPolicy: "silent" }],
+			effort: "medium",
+			sponsor_binding_id: "10000000-0000-4000-8000-000000000004",
+			sponsor_version: 1,
+			logical_computer_id: null,
+			required_capability: "agent_turn",
+			job_type: "agent_turn",
+			publication_mode: "automatic",
+			review_policy_key: null,
+			reviewer_staff_ids: [],
+			created_at: "2026-09-17T06:00:00.000Z",
+			updated_at: "2026-09-17T06:05:00.000Z",
+		};
+		const member = "10000000-0000-4000-8000-000000000022";
+		const rpc = vi.fn(async (name: string) => {
+			if (name !== "qorpera_list_cloud_routines") throw new Error(`Unexpected call ${name}`);
+			return [
+				{ ...row, pause_reason: "needs_model_account", runs_for_user_id: member },
+				{
+					...row,
+					routine_id: "10000000-0000-4000-8000-000000000025",
+					status: "active",
+					runs_for_user_id: member,
+					resume_reason: "plan_turned_on",
+					resumed_at: "2026-10-01T10:00:00.000Z",
+					resumed_by_user_id: member,
+				},
+				{
+					...row,
+					routine_id: "10000000-0000-4000-8000-000000000026",
+					status: "active",
+					resume_reason: "plan_turned_on",
+					resumed_at: "soon",
+					resumed_by_user_id: member,
+				},
+				...[
+					["27", "Plan Turned On!", member],
+					["28", "plan_turned_on", "someone"],
+					["29", "plan_turned_on", 7],
+				].map(([n, reason, by]) => ({
+					...row,
+					routine_id: `10000000-0000-4000-8000-0000000000${n}`,
+					status: "active",
+					resume_reason: reason,
+					resumed_at: "2026-10-01T10:00:00.000Z",
+					resumed_by_user_id: by,
+				})),
+				{
+					...row,
+					routine_id: "10000000-0000-4000-8000-000000000023",
+					pause_reason: "Needs an account!",
+					runs_for_user_id: "someone",
+				},
+				{ ...row, routine_id: "10000000-0000-4000-8000-000000000024" },
+			];
+		});
+		const listed = await createWebRoutines(
+			{ rpc } as unknown as Cloud,
+			profileA,
+			new AbortController().signal,
+			() => {},
+		).list();
+		expect(listed.find((item) => item.routineId === "10000000-0000-4000-8000-000000000025")).toMatchObject({
+			resumeReason: "plan_turned_on",
+			resumedAt: "2026-10-01T10:00:00.000Z",
+			resumedByUserId: member,
+		});
+		// A resume with a field it cannot read is not shown at all.
+		for (const n of ["26", "27", "28", "29"])
+			expect(
+				listed.find((item) => item.routineId === `10000000-0000-4000-8000-0000000000${n}`)?.resumeReason,
+			).toBeUndefined();
+		expect(
+			listed
+				.filter((item) => !/-0000000000(2[5-9])$/.test(item.routineId))
+				.map((item) => [item.routineId, item.pauseReason, item.runsForUserId]),
+		).toEqual([
+			[row.routine_id, "needs_model_account", member],
+			["10000000-0000-4000-8000-000000000023", undefined, undefined],
+			["10000000-0000-4000-8000-000000000024", undefined, undefined],
+		]);
 	});
 	it("reads an ended routine and shows it as ended, next to the others", async () => {
 		// One expired routine (a finished finite watch) used to make the whole list unreadable.
@@ -1043,5 +1199,267 @@ describe("a member edit of an agent's routine", () => {
 				replyPolicy: "optional",
 			},
 		]);
+	});
+});
+
+describe("routines on a ChatGPT plan (shown only when the member has one)", () => {
+	const plan = (allowAutonomous: boolean) =>
+		({
+			...account,
+			connectionId: "10000000-0000-4000-8000-000000000011",
+			connectionVersion: 3,
+			provider: "openai",
+			providerAccountReference: "member@example.invalid",
+			loginKind: "chatgpt_plan",
+			allowAutonomous,
+		}) as unknown as NativeMemberConnection;
+	function mountPlan(items: CloudRoutine[], connections: NativeMemberConnection[]) {
+		const calls: Array<[string, Record<string, unknown>]> = [];
+		const cloud = {
+			rpc: vi.fn(async (name: string, args: Record<string, unknown> = {}) => {
+				calls.push([name, args]);
+				if (name === "qorpera_consent_provider_connection_autonomous")
+					return { connection_id: args.p_connection_id, allow_autonomous: true, version: 2 };
+				if (name === "qorpera_create_member_execution_sponsor")
+					return { binding_id: "10000000-0000-4000-8000-000000000005", version: 1 };
+				if (name !== "qorpera_upsert_cloud_routine") throw new Error(`Unexpected call ${name}`);
+				return {
+					routine_id: "10000000-0000-4000-8000-000000000002",
+					client_routine_id: args.p_client_routine_id,
+					version: 2,
+					status: "active",
+				};
+			}),
+		} as unknown as Cloud;
+		const stop = new AbortController();
+		const routines = {
+			...createWebRoutines(cloud, profileA, stop.signal, () => {}),
+			list: vi.fn(async () => items),
+			runs: vi.fn(async () => []),
+		} satisfies WebRoutines;
+		const view = new AgentRoutines(
+			() => staff,
+			{ routines, accounts: async () => ({ connections }), canManage: () => true },
+			stop.signal,
+		);
+		document.body.append(view.el);
+		return { calls, view, stop };
+	}
+	async function draft(view: AgentRoutines) {
+		await settle();
+		click(view.el, "New routine");
+		await settle();
+		view.el.querySelector<HTMLInputElement>('[aria-label="Routine name"]')!.value = "Weekly close";
+		view.el.querySelector<HTMLTextAreaElement>('[aria-label="What to do"]')!.value = "Close the week.";
+	}
+	it("never turns on work while away for a plan: the editor says where to turn it on", async () => {
+		const f = mountPlan([], [plan(false)]);
+		await draft(f.view);
+		const picker = f.view.el.querySelector<HTMLSelectElement>('[aria-label="Model account"]')!;
+		expect(picker.selectedOptions[0]!.textContent).toBe("ChatGPT plan · member@example.invalid");
+		expect(f.view.el.textContent).toContain(
+			"Turn on “Work while you're away” for this ChatGPT plan in Settings first.",
+		);
+		click(f.view.el, "Save routine");
+		await settle();
+		// The editor's own refusal, on its status line (the note says the same).
+		expect([...f.view.el.querySelectorAll("p.surface-status")].map((item) => item.textContent)).toContain(
+			"Turn on “Work while you're away” for this ChatGPT plan in Settings first.",
+		);
+		expect(f.calls).toEqual([]);
+		f.stop.abort();
+	});
+	it("binds a plan its member turned on without asking for consent again", async () => {
+		const f = mountPlan([], [plan(true)]);
+		await draft(f.view);
+		expect(f.view.el.textContent).toContain(
+			`${staff.displayName} uses your ChatGPT plan for this routine while you are away.`,
+		);
+		click(f.view.el, "Save routine");
+		await vi.waitFor(() => expect(f.calls.map(([name]) => name)).toContain("qorpera_upsert_cloud_routine"), {
+			timeout: 3000,
+		});
+		expect(f.calls.map(([name]) => name)).not.toContain("qorpera_consent_provider_connection_autonomous");
+		expect(f.calls.find(([name]) => name === "qorpera_create_member_execution_sponsor")![1]).toMatchObject({
+			p_provider_connection_id: "10000000-0000-4000-8000-000000000011",
+			p_provider_connection_version: 3,
+			p_allow_autonomous: true,
+		});
+		f.stop.abort();
+	});
+	it("keeps a file-change routine off a plan", async () => {
+		const f = mountPlan(
+			[
+				routine({
+					triggers: [
+						parseCloudRoutineTrigger({
+							id: "agent",
+							kind: "listener",
+							source: "company-file",
+							path: "finance/invoices",
+							match: "subtree",
+							timeZone: "Europe/Copenhagen",
+							replyPolicy: "optional",
+						}),
+					],
+				}),
+			],
+			[plan(true)],
+		);
+		await settle();
+		click(f.view.el, "Edit");
+		await settle();
+		click(f.view.el, "Save routine");
+		await settle();
+		expect(f.view.el.textContent).toContain(
+			"A ChatGPT plan can't pay for routines that start on a file change or a webhook. Choose another account.",
+		);
+		expect(f.calls).toEqual([]);
+		f.stop.abort();
+	});
+	/** The cloud over the real routines client, with the first routine write refused (the routine's
+	 * own payer is not the member's), so the switch falls back to an account. */
+	function fallbackRoutines() {
+		const calls: string[] = [];
+		let upserts = 0;
+		const cloud = {
+			rpc: vi.fn(async (name: string, args: Record<string, unknown> = {}) => {
+				calls.push(name);
+				if (name === "qorpera_consent_provider_connection_autonomous")
+					return { connection_id: args.p_connection_id, allow_autonomous: true, version: 9 };
+				if (name === "qorpera_create_member_execution_sponsor")
+					return { binding_id: "10000000-0000-4000-8000-000000000005", version: 1 };
+				if (name !== "qorpera_upsert_cloud_routine") throw new Error(`Unexpected call ${name}`);
+				upserts += 1;
+				if (upserts === 1) throw new Error("not your payer");
+				return {
+					routine_id: "10000000-0000-4000-8000-000000000002",
+					client_routine_id: args.p_client_routine_id,
+					version: 2,
+					status: "active",
+				};
+			}),
+		} as unknown as Cloud;
+		return { calls, routines: createWebRoutines(cloud, profileA, new AbortController().signal, () => {}) };
+	}
+	const fileRoutine = () =>
+		routine({
+			triggers: [
+				parseCloudRoutineTrigger({
+					id: "agent",
+					kind: "listener",
+					source: "company-file",
+					path: "finance/invoices",
+					match: "subtree",
+					timeZone: "Europe/Copenhagen",
+					replyPolicy: "optional",
+				}),
+			],
+		});
+	it("never consents a plan on the switch's fallback, and never binds one for a file routine", async () => {
+		let f = fallbackRoutines();
+		await expect(f.routines.setEnabled(routine(), plan(false), true, crypto.randomUUID())).rejects.toThrow(
+			"Turn on “Work while you're away”",
+		);
+		expect(f.calls).toEqual(["qorpera_upsert_cloud_routine"]);
+		f = fallbackRoutines();
+		await expect(f.routines.setEnabled(fileRoutine(), plan(true), true, crypto.randomUUID())).rejects.toThrow(
+			"can't pay for routines that start on a file change",
+		);
+		expect(f.calls).toEqual(["qorpera_upsert_cloud_routine"]);
+		// A Codex login falls back as before: consent, bind, save.
+		f = fallbackRoutines();
+		await f.routines.setEnabled(routine(), account, true, crypto.randomUUID());
+		expect(f.calls).toEqual([
+			"qorpera_upsert_cloud_routine",
+			"qorpera_consent_provider_connection_autonomous",
+			"qorpera_create_member_execution_sponsor",
+			"qorpera_upsert_cloud_routine",
+		]);
+	});
+	it("pauses or resumes on the routine's own payer first, falling back only to an account that can pay", async () => {
+		// A Codex login comes before a plan for a file routine.
+		const both = mount([fileRoutine()], true, [plan(true), account]);
+		await settle();
+		click(both.view.el, "Morning brief");
+		await settle();
+		expect(both.routines.setEnabled).toHaveBeenCalledWith(expect.anything(), account, false, expect.any(String));
+		both.stop.abort();
+		document.body.replaceChildren();
+		// With only a plan that is not turned on, the routine's own payer still pauses it.
+		const only = mount([routine()], true, [plan(false)]);
+		await settle();
+		click(only.view.el, "Morning brief");
+		await settle();
+		expect(only.routines.setEnabled).toHaveBeenCalledWith(expect.anything(), undefined, false, expect.any(String));
+		expect(only.view.el.querySelector(".surface-status")).toBeNull();
+		only.stop.abort();
+		document.body.replaceChildren();
+		// When the routine's own payer cannot, it says what to do.
+		const refused = mount([routine()], true, [plan(false)]);
+		refused.routines.setEnabled.mockRejectedValueOnce(new Error("not your payer"));
+		await settle();
+		click(refused.view.el, "Morning brief");
+		await settle();
+		expect(refused.view.el.querySelector(".surface-status")?.textContent).toBe(
+			"Turn on “Work while you're away” for this ChatGPT plan in Settings first.",
+		);
+		refused.stop.abort();
+		document.body.replaceChildren();
+		const file = mount([fileRoutine()], true, [plan(true)]);
+		file.routines.setEnabled.mockRejectedValueOnce(new Error("not your payer"));
+		await settle();
+		click(file.view.el, "Morning brief");
+		await settle();
+		expect(file.view.el.querySelector(".surface-status")?.textContent).toBe(
+			"A ChatGPT plan can't pay for routines that start on a file change or a webhook.",
+		);
+		file.stop.abort();
+	});
+	it("keeps a file routine off a plan when it is saved directly, and its note says so as the trigger changes", async () => {
+		const f = fallbackRoutines();
+		await expect(
+			f.routines.save(
+				{
+					clientRoutineId: "10000000-0000-4000-8000-000000000009",
+					staffAgentId: staff.id,
+					title: "Invoices",
+					prompt: "File them.",
+					trigger: fileRoutine().triggers[0]!,
+					effort: "low",
+					enabled: true,
+				},
+				plan(true),
+				crypto.randomUUID(),
+			),
+		).rejects.toThrow("can't pay for routines that start on a file change");
+		expect(f.calls).toEqual([]);
+		const view = mountPlan([], [plan(true)]);
+		await draft(view.view);
+		const when = view.view.el.querySelector<HTMLSelectElement>('[aria-label="When it runs"]')!;
+		when.value = "file";
+		when.dispatchEvent(new Event("change"));
+		expect(view.view.el.textContent).toContain(
+			"A ChatGPT plan can't pay for routines that start on a file change or a webhook. Choose another account.",
+		);
+		view.stop.abort();
+	});
+	it("offers a Codex login first and a plan without work while away last; a Codex login is consented as before", async () => {
+		const f = mountPlan([], [plan(false), account]);
+		await draft(f.view);
+		const picker = f.view.el.querySelector<HTMLSelectElement>('[aria-label="Model account"]')!;
+		expect([...picker.options].map((option) => option.value)).toEqual([
+			account.connectionId,
+			"10000000-0000-4000-8000-000000000011",
+		]);
+		click(f.view.el, "Save routine");
+		await vi.waitFor(() => expect(f.calls.map(([name]) => name)).toContain("qorpera_upsert_cloud_routine"), {
+			timeout: 3000,
+		});
+		expect(f.calls[0]).toEqual([
+			"qorpera_consent_provider_connection_autonomous",
+			{ p_profile_id: profileA.profileId, p_connection_id: account.connectionId, p_allow_autonomous: true },
+		]);
+		f.stop.abort();
 	});
 });

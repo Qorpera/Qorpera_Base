@@ -241,6 +241,10 @@ export interface HostedRunRecovery {
 	proposalId?: string;
 	/** The model account paying for the run reached its usage limit during it (20260929910000). */
 	usageLimit?: boolean;
+	/** A member's ChatGPT plan pays for the run (20260929993000); absent from an older cloud. */
+	paidByChatgptPlan?: boolean;
+	/** The member the run was started for, whose login pays for it. */
+	requestedByUserId?: string;
 	/** Operations still executing or of unknown outcome. The cloud refuses to
 	 * dismiss the run until they settle. */
 	unsettledOperations: number;

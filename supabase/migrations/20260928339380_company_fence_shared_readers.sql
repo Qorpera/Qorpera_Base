@@ -67,7 +67,9 @@
 --   - the Company File write path (check, prepare, commit, write) waits at most 2 s for any lock, the fence
 --     inside the validator included (qorpera.company_fence_wait): under its 3 s client deadline, so a write
 --     that could not lock ends with a definite "not committed" instead of a client timeout that may have
---     committed. The verification steps are left out: company bootstrap calls them too.
+--     committed. The verification steps are left out: company bootstrap calls them too. The five set the
+--     fence wait in their bodies for the length of the call, not as a function setting: a function's SET of
+--     a custom parameter needs a superuser (permission denied, 42501, for Supabase's postgres role).
 -- The validator itself keeps its 25 s budget and its exclusive fence when the host's authority monitor calls
 -- it directly (every 15 s per run, and a failure ends the run): it is not one of the reader RPCs above.
 -- A wait that runs out raises lock_not_available (55P03), which PostgREST returns as HTTP 500. The runtime
@@ -220,13 +222,70 @@ $old$,
 $new$);
 
 -- The Company File write path: 2 s for any one lock wait, the fence's included.
-alter function public.qorpera_check_company_path_mutation(uuid,jsonb,jsonb)
-	set lock_timeout = '2s' set qorpera.company_fence_wait = '2s';
-alter function public.qorpera_prepare_company_path_mutation(uuid,jsonb,jsonb)
-	set lock_timeout = '2s' set qorpera.company_fence_wait = '2s';
-alter function public.qorpera_commit_company_path_mutation(uuid,jsonb,jsonb,uuid,text)
-	set lock_timeout = '2s' set qorpera.company_fence_wait = '2s';
-alter function public.qorpera_native_company_file_write_source(uuid,jsonb,jsonb)
-	set lock_timeout = '2s' set qorpera.company_fence_wait = '2s';
-alter function public.qorpera_native_company_file_write(uuid,jsonb,jsonb,jsonb,text,uuid,text)
-	set lock_timeout = '2s' set qorpera.company_fence_wait = '2s';
+--
+-- lock_timeout is a function setting, as for any function. The fence wait cannot be one: a function's (or a
+-- role's) SET of a custom parameter such as qorpera.company_fence_wait needs a superuser or a SET grant on that
+-- parameter, and Supabase's postgres role, which applies migrations, has neither (permission denied, 42501;
+-- scripts/check-migration-custom-settings.mjs refuses one). set_config needs neither. So each of the five sets
+-- the wait itself, transaction-local, as its first statement, and gives the caller's value back as it returns:
+-- every return passes its value through qorpera_company_fence_wait_end, which runs after that value was computed
+-- (computing it may take locks, under the 2 s). That is what the function setting did, for every caller: only
+-- the five call each other in SQL, and the runtime calls each as its own RPC; within a call the wait is 2 s, and
+-- after it the caller's own value (or none) stands again, so nothing later in the caller's transaction, such as
+-- the host monitor's lease check with its 25 s, inherits the 2 s. An error needs nothing: it aborts the
+-- transaction, or the caller's exception block rolls back its subtransaction, and either way PostgreSQL restores
+-- the setting; none of the five catches an error itself.
+alter function public.qorpera_check_company_path_mutation(uuid,jsonb,jsonb) set lock_timeout = '2s';
+alter function public.qorpera_prepare_company_path_mutation(uuid,jsonb,jsonb) set lock_timeout = '2s';
+alter function public.qorpera_commit_company_path_mutation(uuid,jsonb,jsonb,uuid,text) set lock_timeout = '2s';
+alter function public.qorpera_native_company_file_write_source(uuid,jsonb,jsonb) set lock_timeout = '2s';
+alter function public.qorpera_native_company_file_write(uuid,jsonb,jsonb,jsonb,text,uuid,text) set lock_timeout = '2s';
+
+-- A write path call's return value, after the caller's fence wait is back ('' when it had none, which the
+-- fence reads as none). It has no setting of its own for the wait, so the value it sets outlives its own call.
+create function public.qorpera_company_fence_wait_end(p_previous text, p_result jsonb)
+returns jsonb
+language plpgsql
+set search_path = ''
+as $$
+begin
+	perform pg_catalog.set_config('qorpera.company_fence_wait', coalesce(p_previous, ''), true);
+	return p_result;
+end
+$$;
+comment on function public.qorpera_company_fence_wait_end(text, jsonb) is
+	'Puts back the caller''s qorpera.company_fence_wait as a Company File write path call returns p_result. 20260929380000.';
+-- Internal: only the five below call it, as its owner.
+revoke all on function public.qorpera_company_fence_wait_end(text, jsonb) from public, anon, authenticated, service_role;
+
+-- Each of the five as it is live: its one top-level declare section saves the caller's wait, the first statement
+-- after its one top-level begin sets 2 s, and each of its p_returns return statements (each ends at its first
+-- semicolon) returns through the helper. Any other text refuses the migration.
+create function pg_temp.company_fence_wait_patch(p_target regprocedure, p_returns integer)
+returns void language plpgsql as $$
+declare v_definition text := pg_get_functiondef(p_target);
+	v_declare text := E'AS $function$\ndeclare ';
+	v_begin text := E'\nbegin\n';
+begin
+	if (length(v_definition) - length(replace(v_definition, v_declare, ''))) / length(v_declare) <> 1
+		or (length(v_definition) - length(replace(v_definition, v_begin, ''))) / length(v_begin) <> 1
+		or (select count(*) from regexp_matches(v_definition, '\mreturn\M', 'gi')) <> p_returns
+		or (select count(*) from regexp_matches(v_definition, '\mreturn\s+[^;]*;', 'g')) <> p_returns
+		or v_definition like '%company_fence_wait%' then
+		raise exception 'Company fence wait: % differs', p_target; end if;
+	v_definition := regexp_replace(v_definition, '\mreturn\s+([^;]*);',
+		'return public.qorpera_company_fence_wait_end(v_fence_wait, \1);', 'g');
+	v_definition := replace(v_definition, v_declare,
+		v_declare || E'v_fence_wait text := pg_catalog.current_setting(''qorpera.company_fence_wait'', true);\n\t');
+	v_definition := replace(v_definition, v_begin, v_begin
+		|| E'\t-- The write path''s fence wait, for this call only; the caller''s comes back as it ends (20260929380000).\n'
+		|| E'\tperform pg_catalog.set_config(''qorpera.company_fence_wait'', ''2s'', true);\n');
+	execute v_definition;
+end
+$$;
+select pg_temp.company_fence_wait_patch(patch.target, patch.returns) from (values
+	('public.qorpera_check_company_path_mutation(uuid,jsonb,jsonb)'::regprocedure, 2),
+	('public.qorpera_prepare_company_path_mutation(uuid,jsonb,jsonb)'::regprocedure, 3),
+	('public.qorpera_commit_company_path_mutation(uuid,jsonb,jsonb,uuid,text)'::regprocedure, 2),
+	('public.qorpera_native_company_file_write_source(uuid,jsonb,jsonb)'::regprocedure, 1),
+	('public.qorpera_native_company_file_write(uuid,jsonb,jsonb,jsonb,text,uuid,text)'::regprocedure, 4)) patch(target, returns);
