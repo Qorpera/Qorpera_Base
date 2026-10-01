@@ -219,7 +219,7 @@ export const AGENTS: Record<string, string> = {
 	"The company ran out of computer hours. The workspace is kept; a follow-up continues once hours are added.":
 		"Virksomheden løb tør for computertimer. Arbejdsområdet er gemt; en opfølgning fortsætter, når der er tilføjet timer.",
 	"The session's last turn ended without saving its work or asking a question. The workspace is kept; a follow-up continues it.":
-		"Sessionens sidste tur sluttede, uden at den gemte sit arbejde eller stillede et spørgsmål. Arbejdsområdet er gemt; en opfølgning fortsætter den.",
+		"Sessionens sidste tur sluttede uden at gemme sit arbejde eller stille et spørgsmål. Arbejdsområdet er gemt; en opfølgning fortsætter den.",
 	"The model account paying for this session reached its usage limit. The workspace is kept; a follow-up continues it once the limit resets.":
 		"Modelkontoen, der betaler for sessionen, har nået sin forbrugsgrænse. Arbejdsområdet er gemt; en opfølgning fortsætter den, når grænsen er nulstillet.",
 	"The model account needs to be connected again. The workspace is kept; a follow-up continues it once the account is connected.":
