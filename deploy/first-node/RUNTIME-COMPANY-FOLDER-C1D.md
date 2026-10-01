@@ -465,7 +465,8 @@ catalog row is gone, and a new upload of the hash is an ordinary absent object, 
 catalog first and an upload of a marked hash waits. Here, `store.put` is unchanged and the upload is refused (QRC01
 409, `contended`) instead of waiting. This holds
 because every route that writes into a folder-v2 company's NAS path refuses folder-v2 before its put (the list in
-§9.3), and replication puts bytes back from Storage only after `authorize_replication`, which sees the mark. C1d-2a
+§9.3), replication puts bytes back from Storage only after `authorize_replication`, which sees the mark, and the
+gateway's `migration.ts` reaches only Storage-backed rows, which the claim never marks. C1d-2a
 tests the old catalog confirm and test 646 the C1c-1 guards on the other routes. A refused writer redoes its call; the collision needs an object
 unreferenced for a day being uploaded again within the minutes GC holds it.
 
@@ -569,7 +570,8 @@ and §9.7's amendment keeps a put off a marked hash. Snapshot-v1 routes and thei
       finds a root, a restore of an old version. Erasure waits for C2.
 - **C1d-2b, gateway and worker:**
   - the `/v1/folder-gc` lane with quarantine, replica removal under the mark, and the three-answer recovery;
-  - the folder phase of the worker;
+  - the folder phase of the worker, which a test keeps off while `qorpera_verify_company_path_file` still accepts
+    folder-v2 (the C5-early step must have landed);
   - TS tests: a crash between each step, restore with re-replication, a stale lease, a put racing the rename, the
     scan against a live lane, two lanes on one object, a re-upload while the replica is removed, the replication
     worker putting bytes back during quarantine, no NAS file (the replica kept until `removed`), a company deletion
