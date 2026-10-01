@@ -115,6 +115,14 @@ export class ChatGptPlanSignInError extends Error {
 }
 const CONFIRM_DEADLINE_MS = 45_000;
 
+/** The plan's switch waited too long for a lock, or lost a deadlock (55P03, 20260929985000): nothing changed,
+ * and the member can press it again. */
+export class PlanSwitchBusyError extends Error {
+	constructor() {
+		super("The ChatGPT plan switch is busy.");
+	}
+}
+
 /** The plan fields of one connection version, from the list's own answer; anything malformed
  * reads as absent (a Codex or node login). */
 function withPlanFields(connection: NativeMemberConnection, answer: unknown): WebMemberConnection {
@@ -247,11 +255,16 @@ export function createWebNativeSubscription(
 	const consent = async (connectionId: string, allow: boolean, plan = false): Promise<number> => {
 		const value = (
 			plan
-				? await cloud.rpc("qorpera_set_chatgpt_plan_work_while_away", {
-						p_profile_id: profileId,
-						p_connection_id: connectionId,
-						p_on: allow,
-					})
+				? await cloud
+						.rpc("qorpera_set_chatgpt_plan_work_while_away", {
+							p_profile_id: profileId,
+							p_connection_id: connectionId,
+							p_on: allow,
+						})
+						.catch((error: unknown) => {
+							if (error instanceof CloudRpcError && error.code === "55P03") throw new PlanSwitchBusyError();
+							throw error;
+						})
 				: await cloud.rpc("qorpera_consent_provider_connection_autonomous", {
 						p_profile_id: profileId,
 						p_connection_id: connectionId,

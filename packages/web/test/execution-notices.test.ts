@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mountApplication } from "../src/app/application.ts";
 import { ExecutionNotices } from "../src/app/views/execution-notices.ts";
 import type { MemberNotification, WebMemberNotifications } from "../src/cloud/member-notifications.ts";
-import type { WebMemberConnection } from "../src/cloud/native-subscription.ts";
+import { PlanSwitchBusyError, type WebMemberConnection } from "../src/cloud/native-subscription.ts";
 import type { WebRoutine } from "../src/cloud/routines.ts";
 import { deferred, fixture, id, profileA, profileB, settle, timestamp, userB } from "./fixtures.ts";
 
@@ -615,6 +615,19 @@ describe("a ChatGPT plan's first-routine card (shown only to a member with a pla
 		expect(text(f.view)).toBe(
 			"Your ChatGPT plan now works while you're away. Ask the agent to set those routines up again.",
 		);
+	});
+	it("says a busy switch is busy, and a second press works", async () => {
+		const f = planSetup();
+		await settle();
+		f.offer.native.setWorkWhileAway.mockRejectedValueOnce(new PlanSwitchBusyError());
+		action("turn-on-plan").click();
+		await settle();
+		expect(f.view.el.textContent).toContain("Busy right now. Try again in a moment.");
+		expect(f.view.el.textContent).not.toContain("could not be turned on");
+		action("turn-on-plan").click();
+		await settle();
+		expect(f.offer.native.setWorkWhileAway).toHaveBeenCalledTimes(2);
+		expect(f.view.el.hidden).toBe(true);
 	});
 	it("after a failure, says only what is known", async () => {
 		// A member who does not save routines: the switch went through, the routines could not be read again.
