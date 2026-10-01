@@ -1,5 +1,6 @@
 import type { RequestSponsoredSessionTurnInput } from "@qorpera/cloud-client/cloud-native-subscription-control";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { CloudRpcError } from "../src/cloud/client.ts";
 import { createWebNativeSubscription, type WebNativeProviderLoginInput } from "../src/cloud/native-subscription.ts";
 import { deferred, fixture, id, profileA, session, settle, timestamp, userA, userB } from "./fixtures.ts";
 
@@ -335,6 +336,127 @@ function loginSetup(existing = true) {
 	});
 	return { ...f, input, responses };
 }
+
+describe("Continue with ChatGPT (offered only while the company may use plan logins)", () => {
+	const authorize = "https://auth.openai.com/oauth/authorize?state=fixture";
+	function planSetup() {
+		const f = loginSetup();
+		const rpc = vi.spyOn(f.cloud, "rpc").mockImplementation(async (name: string) => {
+			if (name === "qorpera_begin_chatgpt_plan_sign_in")
+				return { ...f.responses.authorization, model_login_kind: "chatgpt_plan", status: "pending" };
+			throw new Error(`Unexpected ${name}`);
+		});
+		f.responses.prompt.interaction_url = authorize;
+		(f.responses.prompt as Record<string, unknown>).user_code = null;
+		return { ...f, rpc };
+	}
+	it("asks the company's switches, and reads a deployment without them as off", async () => {
+		const f = setup();
+		const rpc = vi
+			.spyOn(f.cloud, "rpc")
+			.mockResolvedValueOnce(true)
+			.mockResolvedValueOnce(false)
+			.mockRejectedValueOnce(
+				new CloudRpcError("qorpera_chatgpt_plan_available", { message: "missing", code: "PGRST202" }, 404),
+			);
+		expect(await f.client.chatGptPlanAvailable!()).toBe(true);
+		expect(rpc).toHaveBeenCalledWith("qorpera_chatgpt_plan_available", { p_profile_id: profileA.profileId });
+		expect(await f.client.chatGptPlanAvailable!()).toBe(false);
+		expect(await f.client.chatGptPlanAvailable!()).toBe(false);
+	});
+	it("begins a plan sign-in for the member's own identity and answers OpenAI's address with what this tab keeps", async () => {
+		const f = planSetup();
+		const { url, signIn } = await f.client.beginChatGptPlanSignIn!("My model account");
+		expect(url).toBe(authorize);
+		const begin = f.rpc.mock.calls.find(([name]) => name === "qorpera_begin_chatgpt_plan_sign_in")![1] as Record<
+			string,
+			unknown
+		>;
+		expect(begin).toMatchObject({ p_profile_id: profileA.profileId, p_compute_identity_id: id(104) });
+		const [loginUrl, request] = f.fetch.mock.calls.find(([address]) => String(address).endsWith("/login"))!;
+		expect(loginUrl).toBe("https://fixture.invalid/functions/v1/native-provider-login/login");
+		const body = JSON.parse(request!.body as string);
+		expect(body).toMatchObject({ login_id: id(105), client_connection_id: begin.p_client_connection_id });
+		expect(new Headers(request!.headers).get("authorization")).toBe(`Bearer ${body.login_capability}`);
+		const digest = new Uint8Array(
+			await crypto.subtle.digest("SHA-256", new TextEncoder().encode(body.login_capability)),
+		);
+		expect(begin.p_capability_sha256).toBe(Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join(""));
+		expect(signIn).toMatchObject({
+			companyId: profileA.profileId,
+			loginId: id(105),
+			clientConnectionId: begin.p_client_connection_id,
+			capability: body.login_capability,
+			expiresAt: f.responses.authorization.expires_at,
+		});
+	});
+	it("refuses an address that is not OpenAI's, and says why a begin was refused", async () => {
+		let f = planSetup();
+		f.responses.prompt.interaction_url = "https://example.com/authorize";
+		await expect(f.client.beginChatGptPlanSignIn!("My model account")).rejects.toThrow("OpenAI's address");
+		for (const [message, reason] of [
+			["Disconnect your other ChatGPT plan first", "other_plan"],
+			["ChatGPT plan sign-in is switched off", "unavailable"],
+		] as const) {
+			f = planSetup();
+			f.rpc.mockRejectedValueOnce(
+				new CloudRpcError("qorpera_begin_chatgpt_plan_sign_in", { message, code: "55000" }, 400),
+			);
+			await expect(f.client.beginChatGptPlanSignIn!("My model account")).rejects.toMatchObject({ reason });
+		}
+	});
+	it("confirms with the tab's capability and the one-time confirmation id, and says why a confirm failed", async () => {
+		const f = setup("https://fixture.invalid/functions/v1/native-provider-login/");
+		const signIn = {
+			companyId: profileA.profileId,
+			loginId: id(105),
+			clientConnectionId: id(103),
+			capability: "c".repeat(43),
+			expiresAt: timestamp,
+			startedAt: Date.now(),
+		};
+		const confirmation = "d".repeat(43);
+		f.fetch.mockResolvedValueOnce(
+			Response.json({ schema: "qorpera.native-provider-login-result/v1", login_id: id(105), status: "completed" }),
+		);
+		await f.client.finishChatGptPlanSignIn!({ outcome: "confirm", confirmation, signIn });
+		const [url, request] = f.fetch.mock.calls[0]!;
+		expect(url).toBe("https://fixture.invalid/functions/v1/native-provider-login/chatgpt-plan-confirm");
+		expect(request).toMatchObject({ method: "POST", credentials: "omit", redirect: "error" });
+		expect(new Headers(request!.headers).get("authorization")).toBe(`Bearer ${"c".repeat(43)}`);
+		expect(new Headers(request!.headers).has("apikey")).toBe(false);
+		expect(JSON.parse(request!.body as string)).toEqual({
+			schema: "qorpera.chatgpt-plan-confirm/v1",
+			login_id: id(105),
+			confirmation,
+		});
+		f.fetch.mockResolvedValueOnce(
+			Response.json({ schema: "qorpera.chatgpt-plan-confirm-failed/v1", reason: "expired" }, { status: 403 }),
+		);
+		await expect(
+			f.client.finishChatGptPlanSignIn!({ outcome: "confirm", confirmation, signIn }),
+		).rejects.toMatchObject({
+			reason: "expired",
+		});
+		f.fetch.mockResolvedValueOnce(Response.json({ error: "Native provider login is unavailable" }, { status: 503 }));
+		await expect(
+			f.client.finishChatGptPlanSignIn!({ outcome: "confirm", confirmation, signIn }),
+		).rejects.toMatchObject({
+			reason: "provider_error",
+		});
+		await expect(
+			f.client.finishChatGptPlanSignIn!({ outcome: "failed", reason: "declined", signIn }),
+		).rejects.toMatchObject({ reason: "declined" });
+		await expect(
+			f.client.finishChatGptPlanSignIn!({
+				outcome: "confirm",
+				confirmation,
+				signIn: { ...signIn, companyId: id(9) },
+			}),
+		).rejects.toThrow("cannot be finished here");
+		expect(f.fetch).toHaveBeenCalledTimes(3);
+	});
+});
 
 describe("ChatGPT plan logins (switched off until a company has one)", () => {
 	const row = (n: number, extra: Record<string, unknown>) => ({

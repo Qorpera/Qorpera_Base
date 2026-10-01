@@ -258,6 +258,18 @@ export const SETTINGS: Record<string, string> = {
 		"Virksomhedens egne konti. Alle agenter kan bruge dem, og de bliver, når nogen går.",
 
 	// My connections: model accounts (app/views/settings-connections.ts)
+	"Continue with ChatGPT": "Fortsæt med ChatGPT",
+	"Opening ChatGPT…": "Åbner ChatGPT…",
+	"Finishing your ChatGPT sign-in…": "Afslutter dit ChatGPT-login…",
+	"Your ChatGPT plan is connected.": "Dit ChatGPT-abonnement er forbundet.",
+	"Disconnect your other ChatGPT plan first.": "Afbryd først forbindelsen til dit andet ChatGPT-abonnement.",
+	"Signing in with ChatGPT is not available right now.": "Login med ChatGPT er ikke tilgængeligt lige nu.",
+	"The ChatGPT sign-in was cancelled.": "ChatGPT-login blev annulleret.",
+	"The ChatGPT sign-in took too long. Start it again.": "ChatGPT-login tog for lang tid. Start det igen.",
+	"Too many sign-ins are under way. Try again in a few minutes.":
+		"Der er for mange login i gang. Prøv igen om et par minutter.",
+	"The ChatGPT sign-in did not finish. Try again.": "ChatGPT-login blev ikke gjort færdigt. Prøv igen.",
+	"The ChatGPT sign-in could not be started. Try again.": "ChatGPT-login kunne ikke startes. Prøv igen.",
 	"ChatGPT plan": "ChatGPT-abonnement",
 	"Work while you're away": "Arbejd, mens du er væk",
 	"Your agents may use this plan for routines while you're away. Webhook and file routines never use it.":

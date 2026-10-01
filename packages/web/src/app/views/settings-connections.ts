@@ -1,5 +1,11 @@
 import type { NativeMemberConnection } from "@qorpera/cloud-client/cloud-native-subscription-control";
 import {
+	type ChatGptPlanReturn,
+	forgetChatGptPlanSignIn,
+	keepChatGptPlanSignIn,
+} from "../../cloud/chatgpt-plan-sign-in.ts";
+import {
+	ChatGptPlanSignInError,
 	planLogin,
 	type WebExecutionConnections,
 	type WebMemberConnection,
@@ -13,7 +19,13 @@ type ConnectionsClient = Pick<WebNativeSubscription, "listConnections" | "revoke
 	Partial<
 		Pick<
 			WebNativeSubscription,
-			"onboardingAvailable" | "beginProviderLogin" | "refreshAccountMetadata" | "setWorkWhileAway"
+			| "onboardingAvailable"
+			| "beginProviderLogin"
+			| "refreshAccountMetadata"
+			| "setWorkWhileAway"
+			| "chatGptPlanAvailable"
+			| "beginChatGptPlanSignIn"
+			| "finishChatGptPlanSignIn"
 		>
 	>;
 
@@ -69,6 +81,31 @@ export function memberProviderSignIns(memberId: string, profileId: string): Prov
 	return signIns;
 }
 
+/** A "Continue with ChatGPT" outcome the callback sent back in the page hash, kept until a
+ * model accounts page of its company is drawn (cloud/chatgpt-plan-sign-in.ts). */
+let pendingPlanReturn: ChatGptPlanReturn | undefined;
+export function notePlanReturn(outcome: ChatGptPlanReturn | undefined): void {
+	pendingPlanReturn = outcome;
+}
+/** What a ChatGPT plan sign-in's reason means to the member. */
+function planReason(reason: string | undefined): string {
+	switch (reason) {
+		case "other_plan":
+			return t("Disconnect your other ChatGPT plan first.");
+		case "unavailable":
+			return t("Signing in with ChatGPT is not available right now.");
+		case "declined":
+			return t("The ChatGPT sign-in was cancelled.");
+		case "expired":
+		case "state_unknown":
+			return t("The ChatGPT sign-in took too long. Start it again.");
+		case "busy":
+			return t("Too many sign-ins are under way. Try again in a few minutes.");
+		default:
+			return t("The ChatGPT sign-in did not finish. Try again.");
+	}
+}
+
 const live = (connection: NativeMemberConnection) =>
 	connection.connectionStatus === "active" && connection.authorizationState === "active";
 /** Cards with the same provider and email read the same. */
@@ -102,6 +139,14 @@ export class ConnectionsView {
 	#metadataForced = false;
 	#usageUpdating = false;
 	#usageError: string | undefined;
+	/** "Continue with ChatGPT": offered while the company may use plan logins, asked when the
+	 * member opens Add account (nobody else makes the request). */
+	#planOffered = false;
+	#planChecked = false;
+	#planAvailable = false;
+	#planState: "starting" | "finishing" | undefined;
+	#planMessage: string | undefined;
+	readonly #navigate: (url: string) => void;
 	/** `signIns` and `begin` come from the application when sign-ins should
 	 * outlive this page; alone, the page keeps its own. */
 	constructor(
@@ -110,8 +155,10 @@ export class ConnectionsView {
 		signIns = new ProviderSignIns(),
 		begin: WebNativeSubscription["beginProviderLogin"] | undefined = client.beginProviderLogin?.bind(client),
 		offered: readonly Provider[] = PROVIDERS.map((provider) => provider.id),
+		navigate: (url: string) => void = (url) => location.assign(url),
 	) {
 		this.#client = client;
+		this.#navigate = navigate;
 		this.#offered = PROVIDERS.filter((provider) => offered.includes(provider.id));
 		this.#signIns = signIns;
 		this.#attempts = signIns.attempts;
@@ -136,6 +183,64 @@ export class ConnectionsView {
 		document.addEventListener("visibilitychange", resume, { signal: this.#lifetime.signal });
 		this.#draw();
 		void this.#refreshUsage();
+		this.#planOffered = offered.includes("openai");
+		const outcome = pendingPlanReturn;
+		if (outcome) {
+			pendingPlanReturn = undefined;
+			void this.#finishPlan(outcome);
+		}
+	}
+	async #checkPlan(): Promise<void> {
+		if (this.#planChecked || !this.#planOffered) return;
+		this.#planChecked = true;
+		try {
+			this.#planAvailable = (await this.#client.chatGptPlanAvailable?.(this.#lifetime.signal)) === true;
+		} catch {
+			this.#planAvailable = false;
+		}
+		if (!this.#lifetime.signal.aborted && this.#planAvailable) this.#draw();
+	}
+	/** Sends the browser to OpenAI; it comes back to this company's model accounts. */
+	async #connectPlan(): Promise<void> {
+		if (this.#planState || this.#lifetime.signal.aborted || !this.#client.beginChatGptPlanSignIn) return;
+		this.#planState = "starting";
+		this.#planMessage = undefined;
+		this.#adding = false;
+		this.#draw();
+		try {
+			const { url, signIn } = await this.#client.beginChatGptPlanSignIn("My model account", this.#lifetime.signal);
+			keepChatGptPlanSignIn(signIn);
+			this.#navigate(url);
+			return;
+		} catch (error) {
+			if (this.#lifetime.signal.aborted) return;
+			this.#planMessage =
+				error instanceof ChatGptPlanSignInError
+					? planReason(error.reason)
+					: t("The ChatGPT sign-in could not be started. Try again.");
+		}
+		this.#planState = undefined;
+		this.#draw();
+	}
+	async #finishPlan(outcome: ChatGptPlanReturn): Promise<void> {
+		// One attempt: the capability is dropped whatever the vault answers.
+		forgetChatGptPlanSignIn();
+		if (!this.#client.finishChatGptPlanSignIn) return;
+		this.#planState = "finishing";
+		this.#planMessage = undefined;
+		this.#draw();
+		try {
+			await this.#client.finishChatGptPlanSignIn(outcome, this.#lifetime.signal);
+			if (this.#lifetime.signal.aborted) return;
+			this.#planMessage = t("Your ChatGPT plan is connected.");
+		} catch (error) {
+			if (this.#lifetime.signal.aborted) return;
+			this.#planMessage = planReason(error instanceof ChatGptPlanSignInError ? error.reason : undefined);
+		} finally {
+			this.#planState = undefined;
+		}
+		this.#draw();
+		void this.#refresh();
 	}
 	dispose(): void {
 		this.#lifetime.abort();
@@ -616,6 +721,7 @@ export class ConnectionsView {
 			t("Add account"),
 			() => {
 				this.#adding = !this.#adding;
+				if (this.#adding) void this.#checkPlan();
 				this.#draw();
 				this.el
 					.querySelector<HTMLButtonElement>(
@@ -655,6 +761,17 @@ export class ConnectionsView {
 						const attempt = this.#attempts.get(provider.id);
 						return attempt ? [this.#attempt(provider, attempt)] : [];
 					}),
+					this.#planState || this.#planMessage
+						? h(
+								"p",
+								{ class: "connection-plan muted", role: "status" },
+								this.#planState === "starting"
+									? t("Opening ChatGPT…")
+									: this.#planState === "finishing"
+										? t("Finishing your ChatGPT sign-in…")
+										: this.#planMessage,
+							)
+						: null,
 					this.#loading
 						? h("p", { class: "connection-empty muted", role: "status" }, t("Checking…"))
 						: !accounts.length && !this.#attempts.size && !this.#error
@@ -685,6 +802,24 @@ export class ConnectionsView {
 								choice.dataset.focusKey = `provider:${provider.id}`;
 								return choice;
 							}),
+							this.#planAvailable
+								? (() => {
+										const choice = button(
+											[
+												h("img", {
+													class: "connection-logo",
+													src: "./assets/provider-openai.svg",
+													alt: "",
+												}),
+												t("Continue with ChatGPT"),
+											],
+											() => void this.#connectPlan(),
+											{ disabled: Boolean(this.#planState) },
+										);
+										choice.dataset.focusKey = "provider:chatgpt-plan";
+										return choice;
+									})()
+								: null,
 						),
 					),
 				),

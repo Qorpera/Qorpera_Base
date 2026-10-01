@@ -1,5 +1,6 @@
 import type { User } from "@supabase/supabase-js";
 import { CloudApi } from "../cloud/api.ts";
+import { takeChatGptPlanReturn } from "../cloud/chatgpt-plan-sign-in.ts";
 import { type Cloud, describeError } from "../cloud/client.ts";
 import { createWebCompanyAgents } from "../cloud/company-agents.ts";
 import { WebCompanyFiles } from "../cloud/company-files.ts";
@@ -42,6 +43,7 @@ import { type MeetState, renderMeet } from "./views/meet.ts";
 import { NewConversationView } from "./views/new-conversation.ts";
 import { renderPlan } from "./views/plan.ts";
 import { type SettingsTab, SettingsView } from "./views/settings.ts";
+import { notePlanReturn } from "./views/settings-connections.ts";
 import { noteConnectorReturn } from "./views/settings-services.ts";
 import { renderRail, renderTopbar, type ShellContext } from "./views/shell.ts";
 import { renderSignIn } from "./views/signin.ts";
@@ -139,6 +141,8 @@ export function mountApplication(
 	// Taken from the page hash once at startup and on every route change; the
 	// broker appends it after the provider consent (see cloud/connectors.ts).
 	let connectorReturn = takeConnectorReturn();
+	// "Continue with ChatGPT": OpenAI's callback sends the member back with a one-time confirmation.
+	let planReturn = takeChatGptPlanReturn();
 	// Stripe's checkout page sends the member back to the account page.
 	let checkoutReturn = takeCheckoutReturn();
 	let accountUserId: string | undefined;
@@ -175,6 +179,7 @@ export function mountApplication(
 	}
 	function onRouteChange(): void {
 		connectorReturn = takeConnectorReturn() ?? connectorReturn;
+		planReturn = takeChatGptPlanReturn() ?? planReturn;
 		checkoutReturn = takeCheckoutReturn() ?? checkoutReturn;
 		if (liveFile && liveFile.routeHash !== location.hash) {
 			const message = liveFile.leaveMessage();
@@ -412,6 +417,14 @@ export function mountApplication(
 					)(sessionId, clientInputId, text, signal, files, executionSponsor, roomTarget),
 			);
 			company = controller;
+			if (planReturn && planReturn.signIn.companyId === controller.profile.profileId) {
+				// A ChatGPT plan sign-in for this company: finish it where model accounts are listed.
+				notePlanReturn(planReturn);
+				planReturn = undefined;
+				queueMicrotask(() => {
+					if (!disposed && company === controller) openSettings("my-connections");
+				});
+			}
 			if (connectorReturn) {
 				// A provider sign-in (Step 7 connector) sent the member back to this
 				// company: show the outcome where the connection was started.
