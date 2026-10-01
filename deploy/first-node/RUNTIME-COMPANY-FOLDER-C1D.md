@@ -359,17 +359,21 @@ company may have several: test 761 enables a second). An object is rooted when i
   falls behind); or
 - a chunk of a rooted manifest, through `qorpera_folder_file_chunks`, read from the chunk side.
 
-The chunk index must be complete for every proof version. Today only seal writes it, for version 2, while version-1
-proofs are still accepted until C5 and the folder fixtures stage version 1. So C1d-2a writes the chunk rows of
-version-1 proofs too:
-- an `after insert or update` trigger on `qorpera_verified_company_file_objects` (a re-verify takes the update path),
-  whose first line returns unless the profile is folder-v2. The rows follow the proof itself, take no fence, and stay
-  out of the snapshot-v1 body of `qorpera_verify_company_path_file`;
-- an `after insert or update of core` trigger on `qorpera_company_files` that, when an environment becomes folder-v2,
-  writes the chunk rows of the version-1 proofs the company already holds;
-- a backfill for the folder-v2 companies that exist when C1d-2a lands.
+The chunk index must be complete for every proof a folder-v2 company holds. Seal writes it for version 2; version-1
+proofs have no chunk rows, and are still accepted until C5, though no real route reaches
+`qorpera_verify_company_path_file` for folder-v2: only the SQL test fixtures do. That function takes the gc fence (the
+company row FOR UPDATE), which 3m must remove from folder-v2 anyway. So, as F1 asked, version 1 is refused for
+folder-v2 now (C5 early), rather than growing that path with chunk rows:
+1. **A version-2 stage helper** on the byte path (open, confirm, seal, as 761 and 762 stage), with the version-1
+   helper's name and result shape: `pg_temp.stage(text[, actor])` returns `{manifestSha256, fileSha256, bytes,
+   mediaType, executable}`. Unlike version 1, a version-2 file is held to possession, so a fixture whose run or
+   member commits the file passes that actor (default: the platform). F2 provides it in C1d-2a.
+2. **The fixtures switch to it**, with no change in behaviour: F1 moves 630–665, F2 its own (700–709 and the rest).
+3. **`qorpera_verify_company_path_file` refuses folder-v2** (C5 early). Then the chunk index is complete with no
+   version-1 case, and the file-hash check is not needed.
 
-The file-hash check is then not needed. Manifests of manifests (core §7) will need a recursive step
+Until step 3, version-1 proofs of folder-v2 companies exist only in test fixtures. C1d-2b's worker phase is not
+switched on before step 3. Manifests of manifests (core §7) will need a recursive step
 here; that comes with them.
 
 **The catalog of a folder-v2 company holds only folder objects.** Every other feature that stores bytes refuses
@@ -426,9 +430,11 @@ C1d-2a pins this with a test that no table outside the folder core references a 
 
 ### 9.7 References refuse a marked object (G1)
 
-A live mark is refused with 55P03 (`lock_not_available`): the gateway answers it 409 and the runtime reads
-`contended`, as for a lock timeout under the 2 s budget. Not 40001, which PostgREST would retry on its own and which no
-function may raise (test 361).
+A live mark is refused with the runtime's conflict envelope, as F1 asked: `raise sqlstate 'PGRST' using message =
+jsonb_build_object('code','QRC01','message',…,'details',null,'hint',null)::text, detail = '{"status":409,"headers":{}}'`.
+PostgREST answers it 409 with code QRC01; the gateway passes the 409 on, and the runtime reads it as `contended`
+(C1d-2b makes the byte path's control calls do so). Never 40001, which PostgREST would retry on its own and which no
+function may raise (test 361). A plain 55P03 from the 2 s budget stays as it is.
 
 The places that take a new reference with a lock hold the object's catalog row KEY SHARE. Each reads the side row
 **in a new statement after the KEY SHARE is granted**: a check inside the locking statement reads that statement's
@@ -436,15 +442,15 @@ snapshot, taken before the claim committed (probe A of review round 1), and woul
 
 | Place | Today | With a live mark |
 | --- | --- | --- |
-| `open_upload`, present objects | KEY SHARE | 55P03 "being collected; retry", so the runtime reads `contended` |
-| `confirm_object` | insert, then KEY SHARE | 55P03; a row that vanished between the two is 55P03 too, not 23505 |
-| `seal_upload` | KEY SHARE on its objects | 55P03 |
+| `open_upload`, present objects | KEY SHARE | QRC01 409 "being collected; retry" |
+| `confirm_object` | insert, then KEY SHARE | QRC01 409; a row that vanished between the two is too, not 23505 |
+| `seal_upload` | KEY SHARE on its objects | QRC01 409 |
 | commit step 6 | KEY SHARE on every object | the unit is refused `bytes_unverified`, as for a missing object |
-| `authorize_replication` | NO KEY UPDATE | 55P03: a lock conflict; with #573 the gateway keeps the object pending (503, never `blocked`). A wait on the claim's lock ends as 55P03 under the budget |
+| `authorize_replication` | NO KEY UPDATE | QRC01 409. The replication journal would mark a 409 `blocked`; C1d-2b keeps a folder entry pending on QRC01 instead, and the lane drops or rewrites the entry when GC finishes (§9.8). A wait on the claim's lock ends as 55P03 under the budget |
 | the Storage replica-insert guard (it calls `authorize_replication`) | the same | the same refusal, which reaches the gateway as Storage's own 400 or 500, not through #573's mapping. It is rare (a replication of an object unreferenced for a day, within the minutes GC holds it), and the lane's journal write cleans up after it |
 
 Two places take no lock, and are safe by roots, not by the mark:
-- **`authorize_object_upload`** (plain reads) answers 55P03 for a live mark, but can pass just before the mark
+- **`authorize_object_upload`** (plain reads) answers QRC01 409 for a live mark, but can pass just before the mark
   commits, and its put can land after the quarantine rename. That is harmless: the upload's intent was committed by
   `open` before any put, so it is a root, and the finish answers `restore`.
 - **`authorize_object_download`** answers a marked object as missing. A non-platform download is allowed only for an
@@ -454,8 +460,9 @@ Since the claim marks under `FOR UPDATE`, a locking reference either holds KEY S
 object) or is granted it after the mark is committed (and sees it in its next statement). Once GC has finished, the
 catalog row is gone, and a new upload of the hash is an ordinary absent object, staged and put again.
 
-**Amendment to core G3, for F1's sign-off.** G3 says `put` asks the catalog first and an upload of a marked hash
-waits. Here, `store.put` is unchanged and the upload is refused (55P03, `contended`) instead of waiting. This holds
+**Amendment to core G3, signed off by F1 (#605, 2026-10-01) and made in core §8 by this PR.** G3 said `put` asks the
+catalog first and an upload of a marked hash waits. Here, `store.put` is unchanged and the upload is refused (QRC01
+409, `contended`) instead of waiting. This holds
 because every route that writes into a folder-v2 company's NAS path refuses folder-v2 before its put (the list in
 §9.3), and replication puts bytes back from Storage only after `authorize_replication`, which sees the mark. C1d-2a
 tests that each such route refuses folder-v2. A refused writer redoes its call; the collision needs an object
@@ -541,7 +548,7 @@ and §9.7's amendment keeps a put off a marked hash. Snapshot-v1 routes and thei
 - **C1d-2a, SQL.** One migration:
   - the side table and the `expires_at` index;
   - `qorpera_folder_object_rooted`, the sweep, the claim, unlink begin and finish, and the quarantine state;
-  - chunk rows for version-1 proofs of folder-v2 companies (the proof trigger), and their backfill;
+  - the version-2 stage helper (§9.3 step 1), used by its own tests;
   - the G1 refusals of §9.7, patched into the live functions with digest guards (taken after #594);
   - the 2 s lock budget on every new function.
   - Tests:
@@ -552,7 +559,7 @@ and §9.7's amendment keeps a put off a marked hash. Snapshot-v1 routes and thei
     - the claim skips a Storage-backed row;
     - the two-environment company of 761: a file committed in one environment, its hash in an abandoned intent of
       the other, is never collected;
-    - a committed version-1 file whose chunk an abandoned version-2 intent listed is never collected;
+    - the version-2 stage helper stages a file a member's commit may reference;
     - a mixed snapshot-v1 and folder-v2 profile, and a company being deleted, are never claimed;
     - no table outside the folder core references a folder-v2 profile's catalog rows, and each non-folder writer
       refuses folder-v2;
@@ -568,6 +575,8 @@ and §9.7's amendment keeps a put off a marked hash. Snapshot-v1 routes and thei
     starting mid-lane, and abandon on a lane error.
 - **C1d-2c:** the bytes without a catalog row, pending entries of collected objects, and the deleted company's
   leftovers (§9.9).
+- **C5 early (§9.3 steps 2 and 3):** the fixtures move to the version-2 helper (F1: 630–665; F2: its own), then
+  `qorpera_verify_company_path_file` refuses folder-v2. Before C1d-2b's worker phase is switched on.
 
 **Built (C1d-2a, migration 20260929860000, tests 766 and 767).**
 - `qorpera_folder_object_gc` and the `expires_at` index; the helpers `qorpera_folder_gc_company`,
@@ -575,11 +584,11 @@ and §9.7's amendment keeps a put off a marked hash. Snapshot-v1 routes and thei
 - `qorpera_folder_sweep_upload_intents(limit)`, `qorpera_folder_claim_object_gc(limit, lease)`,
   `qorpera_folder_gc_unlink_begin`, `_finish`, `_abandon` and `qorpera_folder_gc_quarantine_state`: service role only,
   each with the 2 s lock budget. Nothing calls them until C1d-2b.
-- The proof trigger and the enable trigger for version-1 chunk rows, and their backfill.
+- `qorpera_folder_object_collecting`, the QRC01 409 refusal every patched place calls.
 - The refusals of §9.7, patched into open, confirm, seal, authorize, replication, download and commit step 6; each
   check reads the mark in a statement after the place's lock (767 R2 pins it; a one-statement check fails it).
 - 766: the sweep and G4 (reuse, an earlier expiry, an intent the sweep has not reached), the root check (two
-  environments, an old path version, a committed version-1 file), the claim (grace, expired marks, Storage-backed rows,
+  environments, an old path version), the version-2 stage helper, the claim (grace, expired marks, Storage-backed rows,
   mixed and deleting companies), every refusal, begin, finish (removed, stale, restore, grace moved, 23503), abandon,
   the quarantine state, the folder-v2-only catalog, the lock text and the grants.
 - 767 (dblink): a reference that holds the object first, a reference that waited on the claim, two claims, the sweep
