@@ -31,8 +31,19 @@ interface Stored {
 /** The todos folder whose index the fake answers (`qorpera_folder_agent_todos`). */
 const TODOS = "agents/nora/todos";
 
-/** A fake folder core and receipt ledger for a folder writer's tests, with seeded files and folders. */
-export async function folderWriterFixture(seed: { files?: Record<string, string>; folders?: string[] } = {}) {
+/** A save the fake hook decides other than "saved": a structured file's rule, as F2's hooks word it. */
+export interface FolderWriterHookAnswer {
+	readonly outcome: "refused" | "denied" | "waiting_for_review";
+	readonly reason: string;
+	readonly problems?: readonly { code: string; message: string }[];
+}
+
+/** A fake folder core and receipt ledger for a folder writer's tests, with seeded files and folders. A write whose
+ * parse has problems is refused as `structured_invalid`, as the real hook does; `hook` may refuse any other write. */
+export async function folderWriterFixture(
+	seed: { files?: Record<string, string>; folders?: string[] } = {},
+	options: { hook?: (path: string, text: string) => FolderWriterHookAnswer | null } = {},
+) {
 	const { binding, authority } = nativeToolAuthorityFixture();
 	const identity = authority.identity;
 	const receipt = { resourceId: randomUUID(), resourceRevision: 1, grantId: randomUUID(), grantRevision: 1 };
@@ -117,6 +128,22 @@ export async function folderWriterFixture(seed: { files?: Record<string, string>
 						return { ...base, outcome: "saved", version: randomUUID() };
 					}
 					if (!folders.has(parent)) return { ...base, outcome: "refused", reason: "parent_missing" };
+					// The structured hook: a parse with problems is refused with them (nulls stripped, as the commit does).
+					const structured = (unit.structured as { problems?: Record<string, unknown>[] }[] | undefined)?.[0];
+					if (structured?.problems)
+						return {
+							...base,
+							outcome: "refused",
+							reason: "structured_invalid",
+							problems: structured.problems.map((problem) =>
+								Object.fromEntries(Object.entries(problem).filter(([, value]) => value !== null)),
+							),
+						};
+					const hooked = options.hook?.(
+						path,
+						new TextDecoder().decode(bytesBySha.get((unit.file as CloudCompanyFolderFile).fileSha256)),
+					);
+					if (hooked) return { ...base, ...hooked };
 					const current = files.get(path);
 					if (unit.expectedVersion === undefined ? current : current?.version !== unit.expectedVersion)
 						return { ...base, outcome: "conflict", reason: current ? "version_changed" : "missing" };
@@ -143,6 +170,7 @@ export async function folderWriterFixture(seed: { files?: Record<string, string>
 					search?: string;
 					cursor?: string;
 				};
+				const search = request.search?.trim().toLowerCase();
 				const rows = [...files.entries()]
 					.filter(([path]) => path.startsWith(`${TODOS}/`) && /^[^/]+\.md$/.test(path.slice(TODOS.length + 1)))
 					.map(([path, stored]) => {
@@ -161,11 +189,12 @@ export async function folderWriterFixture(seed: { files?: Record<string, string>
 							(request.state
 								? todo.status === request.state
 								: request.includeClosed || todo.status === "open" || todo.status === "blocked") &&
-							(!request.search ||
-								todo.title.toLowerCase().includes(request.search.toLowerCase()) ||
-								key.includes(request.search.toLowerCase())),
+							(!search || todo.title.toLowerCase().includes(search) || key.includes(search)),
 					);
-				const start = request.cursor ? rows.findIndex((row) => row.id === request.cursor) + 1 : 0;
+				// As the real function: a cursor must be one of the rows listed.
+				const at = request.cursor ? rows.findIndex((row) => row.id === request.cursor) : -1;
+				if (request.cursor && at < 0) throw new Error("Todo cursor is unavailable; list again without it");
+				const start = at + 1;
 				const page = rows.slice(start, start + 32);
 				const more = rows.length - start - page.length;
 				return {
@@ -174,8 +203,9 @@ export async function folderWriterFixture(seed: { files?: Record<string, string>
 						todoKey: key,
 						title: todo.title,
 						state: todo.status,
-						detail: todo.detail.slice(0, 200),
-						...(todo.detail.length > 200 ? { detailTruncated: true } : {}),
+						// Code points, as SQL's left and char_length.
+						detail: Array.from(todo.detail).slice(0, 200).join(""),
+						...(Array.from(todo.detail).length > 200 ? { detailTruncated: true } : {}),
 						path,
 						version: stored.version,
 						updatedAt: stored.updatedAt,
