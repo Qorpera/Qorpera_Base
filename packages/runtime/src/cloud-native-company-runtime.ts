@@ -23,6 +23,7 @@ import {
 	observeCloudCompanyPathPresence,
 } from "./cloud-company-path-presence.ts";
 import { cloudEventTools } from "./cloud-event-tools.ts";
+import { CloudFolderSidebar } from "./cloud-folder-sidebar.ts";
 import { CloudFolderTodos } from "./cloud-folder-todos.ts";
 import { cloudHiringTools } from "./cloud-hiring-tools.ts";
 import type { CloudMachineCommandGateway } from "./cloud-machine-command-http.ts";
@@ -600,7 +601,28 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 														}),
 													]
 												: []),
-											...cloudSidebarTools(binding, identity, this.#paths),
+											...cloudSidebarTools(
+												binding,
+												identity,
+												this.#paths,
+												folder
+													? {
+															folderSidebar: new CloudFolderSidebar({
+																folder: folder.client,
+																operations,
+																identity,
+																// The Co-Founder stays on top, outside the sections.
+																people: new Map(
+																	[
+																		...(context.agentKind === "cofounder" ? [] : [context.agent]),
+																		...context.coworkers,
+																	].map((agent) => [agent.id, agent.name]),
+																),
+																peopleComplete: !context.coworkersTruncated,
+															}),
+														}
+													: {},
+											),
 											...cloudReviewRuleTools(binding, identity, this.#paths),
 											...cloudEventTools(binding, identity, this.#paths),
 										]),

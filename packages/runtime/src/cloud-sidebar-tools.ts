@@ -1,4 +1,5 @@
 import type { CloudCompanyPathControl } from "./cloud-company-path-gateway.ts";
+import type { CloudFolderSidebar, CloudFolderSidebarRequest } from "./cloud-folder-sidebar.ts";
 import {
 	type CloudNativeToolBinding,
 	type CloudNativeToolIdentity,
@@ -25,6 +26,9 @@ export const CLOUD_SIDEBAR_TOOL_DESCRIPTION =
 	"action list shows every section with its agents in order, then the Unassigned agents. create_section makes a section (a name that already exists is that section). rename_section and delete_section name the section by its id or name; deleting a section keeps its agents, they become Unassigned. move_agent moves agentId (yourself or a coworker id from your context) into section, or out of any section when section is null; it goes last in that section. " +
 	"Sections are shared structure, not a place for notes: short plain names such as Research or Customer support. Tell the member what you changed. When the result has refused, nothing changed and it says why (no such section, the name is taken, the Co-Founder stays on top): correct the request or tell the member. Pins and hidden agents are each member's own and not yours to change.";
 
+/** A folder-v2 company's sections are agents/sections.md, named by their names (thin writers, W2). */
+const CLOUD_SIDEBAR_TOOL_DESCRIPTION_FOLDER = `${CLOUD_SIDEBAR_TOOL_DESCRIPTION} In this company the sections live in the file agents/sections.md, so name a section by its name; a change already made saves nothing and says so, and a save can come back refused when the file changed since it was read: call again.`;
+
 function sectionName(value: unknown): string {
 	if (typeof value !== "string") throw new Error("Invalid sidebar section name");
 	const name = value.trim().replace(/\s+/g, " ");
@@ -44,7 +48,10 @@ export function cloudSidebarTools(
 	binding: CloudNativeToolBinding,
 	identity: CloudNativeToolIdentity,
 	control: CloudCompanyPathControl,
+	/** A folder-v2 run's sections file writer. */
+	options: { folderSidebar?: CloudFolderSidebar } = {},
 ): readonly CloudNativeTool[] {
+	const folderSidebar = options.folderSidebar;
 	const admitted = parseCloudNativeToolBinding(binding),
 		expected = Object.freeze({ ...identity });
 	if (
@@ -68,7 +75,7 @@ export function cloudSidebarTools(
 	const tool: CloudNativeTool = {
 		name: "organize_sidebar" satisfies CloudRuntimeToolOperation,
 		source: "runtime",
-		description: CLOUD_SIDEBAR_TOOL_DESCRIPTION,
+		description: folderSidebar ? CLOUD_SIDEBAR_TOOL_DESCRIPTION_FOLDER : CLOUD_SIDEBAR_TOOL_DESCRIPTION,
 		inputSchema: {
 			type: "object",
 			additionalProperties: false,
@@ -106,6 +113,8 @@ export function cloudSidebarTools(
 		async execute(value, context) {
 			assertContext(context);
 			const request = value as Record<string, unknown>;
+			// A folder-v2 company's sections are a file; the folder core decides each save.
+			if (folderSidebar) return folderSidebar.run(request as unknown as CloudFolderSidebarRequest, context);
 			const result = await cloudToolRequest(
 				(requestSignal) =>
 					control.call("qorpera_manage_agent_sidebar", { p_binding: admitted, p_request: request }, requestSignal),

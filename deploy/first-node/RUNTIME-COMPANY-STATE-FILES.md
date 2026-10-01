@@ -772,6 +772,22 @@ C1d (bytes):
   `manage_worker` refuses `folder-v2` until F2-5b.
 - Open with F1: whether `list` may read the todo index instead (one read, no release).
 
+**Built (W2): `organize_sidebar`** (`packages/runtime/src/cloud-folder-sidebar.ts`).
+- It reads and rewrites `agents/sections.md`. A section is named by its name, ignoring case; the file has no section
+  ids. Lines before the first section (the company's own notes) are kept as they are; the sections are written back in
+  the seeded form, each line an id and the words after it only for reading (an existing line keeps its words, a moved
+  agent gets its name).
+- As today it is idempotent by content: a change already in the file saves nothing and says so. `create_section` of an
+  existing name is that section, a retried rename finds the new name, deleting a section leaves its agents Unassigned,
+  and `move_agent` with `section: null` takes an agent out of every section.
+- A change saves under a receipt keyed by the tool call (the tool has no operation key), with the version read; a
+  `conflict` or a refusal by F2-2's hook (the Co-Founder, an id that is not an agent or an open group chat) comes back
+  as `refused`, with nothing changed.
+- `list` and every result show the sections with names from the run context (the agent and its listed coworkers),
+  then the unlisted as Unassigned (`unassignedTruncated` when the context's coworker list was cut). The Co-Founder is
+  left out when it is the run's own agent; the context does not say which coworker is. Each result releases the read
+  of the file it shows.
+
 Until the mount's writes are accepted (F3), these tools become thin writers of these files:
 `hire_agent`, `create_group_chat`, `organize_sidebar`, `manage_todo`, `manage_routine` and
 `decide_routine`. They use the canonical writers here, or `setCompanyStateSettings` for a
