@@ -61,9 +61,11 @@ interface SupabaseObjectAuthorityOptions {
 	now?: () => number;
 }
 
-/** PostgREST answers classes 40 and 55 with 500. From the folder core those are one company's state, not the
- * database's health: a stopped company (55000) becomes 423 and a lock conflict (40001, 40P01, 55P03) 409, so neither
- * opens the dependency circuit for every company. Any other 500 stays a dependency failure. */
+/** PostgREST answers classes 40 and 55 with 500, and a check violation with 400. From the folder core those are one
+ * company's state, not the database's health: a stopped company (55000) becomes 423, a lock conflict (40001, 40P01,
+ * 55P03) 409, so neither opens the dependency circuit for every company, and the company's storage allowance
+ * (23514, checked before the NAS write) 413, so the writer can say the storage is full. Any other answer keeps its
+ * status: another 500 stays a dependency failure. */
 async function folderRefusal(response: Response, signal: AbortSignal): Promise<ObjectDependencyError> {
 	let code: unknown;
 	try {
@@ -73,11 +75,12 @@ async function folderRefusal(response: Response, signal: AbortSignal): Promise<O
 			}
 		).code;
 	} catch {
-		return new ObjectDependencyError(500);
+		return new ObjectDependencyError(response.status);
 	}
 	if (code === "55000") return new ObjectDependencyError(423);
 	if (code === "40001" || code === "40P01" || code === "55P03") return new ObjectDependencyError(409);
-	return new ObjectDependencyError(500);
+	if (code === "23514") return new ObjectDependencyError(413);
+	return new ObjectDependencyError(response.status);
 }
 
 function record(value: unknown, label: string): Record<string, unknown> {
@@ -646,7 +649,8 @@ export class SupabaseObjectAuthority
 				signal,
 			});
 			if (!response.ok) {
-				if (folder && response.status === 500) throw await folderRefusal(response, signal);
+				if (folder && (response.status === 500 || response.status === 400))
+					throw await folderRefusal(response, signal);
 				void response.body?.cancel().catch(() => undefined);
 				throw new ObjectDependencyError(response.status);
 			}
