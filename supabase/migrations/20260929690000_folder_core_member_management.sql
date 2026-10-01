@@ -14,9 +14,9 @@
 --   departures it compares.
 -- * Joining by invitation takes the fence FOR NO KEY UPDATE and the company row before the invitation, so a join
 --   meets a departure (and deletion's stop, which removes invitations) at the fence.
--- * A save that hires a new agent names every member row KEY SHARE at rank 1 (F2's hook): the new agent's thread copies
---   the roster, and a removal or a demotion (the member row FOR UPDATE) now runs before or after that copy, not
---   beside it.
+-- * A save of an agent with no thread room yet (a hire, or an archived agent's activation) names every member row KEY
+--   SHARE at rank 1 (F2's hook): the room it creates copies the roster, and a removal or a demotion (the member row FOR
+--   UPDATE) now runs before or after that copy, not beside it.
 
 -- 1. Patch helper (a name unique to this migration: pg_temp lives for the whole session) ---------------------------
 
@@ -155,16 +155,18 @@ begin
 		|| E'\twhere invitation.id = p_invitation_id and public.qorpera_company_is_folder_v2(invitation.profile_id);\n'
 		|| E'\tselect invitation.* into v_invitation\n', 1);
 
-	-- F2's hook: a save that creates an agent's staff row names every member row KEY SHARE at rank 1, since the new
-	-- agent's thread copies the roster (qorpera_ensure_agent_thread_internal reads it without a lock). A rename or a
-	-- status change already names the agent's thread room at rank 4, where a member change meets it.
+	-- F2's hook: a save of an agent that has no thread room yet (a new agent, or an archived one being activated) names
+	-- every member row KEY SHARE at rank 1, since the room it creates copies the roster
+	-- (qorpera_ensure_agent_thread_internal reads it without a lock). For an agent with a room, a rename or a status
+	-- change already names that room at rank 4, where a member change meets it.
 	perform pg_temp.c1c3c_replace('public.qorpera_folder_structured_targets(uuid,jsonb,jsonb)',
 		E'\tv_profile uuid; v_unit jsonb; v_op text; v_key text; v_entry jsonb; v_staff record; v_room uuid; v_routine uuid;\n',
 		E'\tv_profile uuid; v_unit jsonb; v_op text; v_key text; v_entry jsonb; v_staff record; v_room uuid; v_routine uuid;\n'
 		|| E'\tv_member uuid;\n', 1);
 	perform pg_temp.c1c3c_replace('public.qorpera_folder_structured_targets(uuid,jsonb,jsonb)',
 		E'\t\t\t\tif found and (v_staff.display_name is distinct from v_entry -> ''parse'' ->> ''name''\n',
-		E'\t\t\t\tif not found then\n'
+		E'\t\t\t\tif not exists (select 1 from public.qorpera_company_rooms r where r.profile_id = v_profile\n'
+		|| E'\t\t\t\t\t\tand r.bound_staff_agent_id = (v_entry -> ''parse'' ->> ''id'')::uuid) then\n'
 		|| E'\t\t\t\t\tfor v_member in select m.user_id from public.qorpera_profile_members m where m.profile_id = v_profile loop\n'
 		|| E'\t\t\t\t\t\trank := 1; tbl := ''qorpera_profile_members''; key := v_profile::text || '':'' || v_member::text; mode := ''keyshare'';\n'
 		|| E'\t\t\t\t\t\treturn next;\n'

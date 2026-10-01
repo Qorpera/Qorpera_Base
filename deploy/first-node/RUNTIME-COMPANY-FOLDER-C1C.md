@@ -793,7 +793,8 @@ Decisions:
   - a removed member's run-owned rows (assignment, reservation, native lease, inputs, wakes): behind its job, which
     the prelude holds first.
   The steps the tests do not pin are defensive: rank 11, the other founders' `KEY SHARE`, the founding row, the vault
-  rows, and the compute identities and connections (their triggers would take the same rows in the same order).
+  rows, the compute identities and connections (their triggers would take the same rows in the same order), and the
+  guard's company-row `KEY SHARE`.
 - **Removing a member, leaving and a role change** take the prelude in place of the company row `FOR UPDATE`. A role
   change takes the member row `FOR UPDATE` too, which the function then takes again: with `FOR NO KEY UPDATE` first,
   the change would take the rooms and then wait to strengthen the row behind a run's or post's `KEY SHARE`, while
@@ -804,12 +805,15 @@ Decisions:
 - **Joining by invitation** takes the fence and the company row before the invitation row (reading the invitation's
   company once). Deletion's stop removes invitations, so a join that took the invitation first would meet it in a
   cycle (665 H; 40P01 with the prelude after the invitation).
-- **Hiring an agent** (F2's hook, `qorpera_folder_structured_targets`): a save that creates an agent's staff row names
-  every member row `KEY SHARE` at rank 1. The new agent's thread copies the roster without a lock
-  (`ensure_agent_thread_internal`), and the new room is not yet visible to a member change's rank-4 lock, so before
-  this a removal or a demotion could commit beside the hire and leave the member active in the new thread (a new
-  viewer could then post there; review r1 S1). Now they meet at the member rows (665 F). A rename or a status change
-  already names the agent's thread room at rank 4, where a member change meets it.
+- **Hiring or activating an agent** (F2's hook, `qorpera_folder_structured_targets`): a save of an agent that has no
+  thread room yet names every member row `KEY SHARE` at rank 1. That is a new agent, or one first saved archived (a
+  staff row but no room) and now activated. The room the save creates copies the roster without a lock
+  (`ensure_agent_thread_internal`) and is not yet visible to a member change's rank-4 lock, so before this a removal
+  or a demotion could commit beside the save and leave the member active in the new thread (a new viewer could then
+  post there; review r1 S1, r2 R1). Now they meet at the member rows (665 F: a hire beside a removal and a demotion,
+  and an activation beside a removal). For an agent that has a room, a rename or a status change already names that
+  room at rank 4, where a member change meets it. The state files doc records the branch next to the hook's other
+  targets.
 - **Views are not closed.** A removed member's view refuses at its next use: resolving it checks membership, and its
   commit takes the member row at rank 1.
 - Not in 3c:

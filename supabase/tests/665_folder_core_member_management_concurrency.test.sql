@@ -7,20 +7,22 @@
 -- member row holding no room; a join caught at the fence holds no invitation, so a deletion goes on. 648's committed
 -- fixture, removed at the end.
 
--- More people (committed): 04 with its own login (connection c6, binding b7) and a queued run it pays for, 05, 07 and
--- 08; 06 and 09, who are invited.
+-- More people (committed): 04 with its own login (connection c6, binding b7) and a queued run it pays for, 05, 07, 08
+-- and 10; 06 and 09, who are invited.
 insert into auth.users(id, email, email_confirmed_at) values
 	('66500000-0000-4000-8000-000000000004', 'race-member-4@example.test', clock_timestamp()),
 	('66500000-0000-4000-8000-000000000005', 'race-member-5@example.test', clock_timestamp()),
 	('66500000-0000-4000-8000-000000000006', 'race-joiner@example.test', clock_timestamp()),
 	('66500000-0000-4000-8000-000000000007', 'race-member-7@example.test', clock_timestamp()),
 	('66500000-0000-4000-8000-000000000008', 'race-member-8@example.test', clock_timestamp()),
-	('66500000-0000-4000-8000-000000000009', 'race-joiner-9@example.test', clock_timestamp());
+	('66500000-0000-4000-8000-000000000009', 'race-joiner-9@example.test', clock_timestamp()),
+	('66500000-0000-4000-8000-00000000000a', 'race-member-10@example.test', clock_timestamp());
 insert into public.qorpera_profile_members(profile_id, user_id, email, display_name, role) values
 	('64800000-0000-4000-8000-000000000010', '66500000-0000-4000-8000-000000000004', 'race-member-4@example.test', 'Four', 'contributor'),
 	('64800000-0000-4000-8000-000000000010', '66500000-0000-4000-8000-000000000005', 'race-member-5@example.test', 'Five', 'contributor'),
 	('64800000-0000-4000-8000-000000000010', '66500000-0000-4000-8000-000000000007', 'race-member-7@example.test', 'Seven', 'contributor'),
-	('64800000-0000-4000-8000-000000000010', '66500000-0000-4000-8000-000000000008', 'race-member-8@example.test', 'Eight', 'contributor');
+	('64800000-0000-4000-8000-000000000010', '66500000-0000-4000-8000-000000000008', 'race-member-8@example.test', 'Eight', 'contributor'),
+	('64800000-0000-4000-8000-000000000010', '66500000-0000-4000-8000-00000000000a', 'race-member-10@example.test', 'Ten', 'contributor');
 insert into public.qorpera_profile_invitations(id, profile_id, email, role, invited_by_user_id, expires_at) values
 	('66500000-0000-4000-8000-0000000000e1', '64800000-0000-4000-8000-000000000010', 'race-joiner@example.test', 'contributor',
 		'64800000-0000-4000-8000-000000000001', clock_timestamp() + interval '1 day'),
@@ -194,15 +196,34 @@ begin
 		raise exception 'B: the second founder leaving: %', v_state; end if;
 end $$;
 
--- F. A hire (a new agent's folder) beside a member change in flight: the hire names every member row KEY SHARE at rank
--- 1, so it waits for a removal or a demotion (the member row FOR UPDATE) before its new thread copies the roster.
--- Neither the removed member nor the new viewer is in the new agent's thread. (Before, the hire copied the roster
--- beside the change, and the viewer could then post in the new thread.) The hires' bytes are staged first (staging
--- takes the company row).
+-- F. A save that creates an agent's thread room beside a member change in flight: a hire (a new agent's folder), or
+-- the activation of an agent first saved archived (it has a staff row but no room). The save names every member row
+-- KEY SHARE at rank 1, so it waits for a removal or a demotion (the member row FOR UPDATE) before the new room copies
+-- the roster. Neither the removed member nor the new viewer is in the new thread. (Before, the save copied the roster
+-- beside the change, and the viewer could then post in the new thread.) Bytes are staged first (staging takes the
+-- company row); Dan is saved archived first, committed.
 select set_config('qorpera_test.hire_' || h, format('select public.qorpera_folder_commit(%L, %L, %L, %L)::text',
 	'64800000-0000-4000-8000-000000000020', '{"kind":"member","userId":"66500000-0000-4000-8000-000000000006"}', 'member-change-hire-' || h,
 	jsonb_build_array(pg_temp.hire(h, ('66500000-0000-4000-8000-0000000000' || id)::uuid, initcap(h)))), false)
 from (values ('bea', 'a2'), ('cal', 'a3')) v(h, id) \g /dev/null
+select pg_temp.expect(pg_temp.commit('{"kind":"member","userId":"66500000-0000-4000-8000-000000000006"}', 'member-change-dan-archived',
+	jsonb_build_array(jsonb_build_object('op', 'new_folder', 'path', 'agents/dan',
+		'contents', jsonb_build_array(
+			jsonb_build_object('path', 'agent.md', 'kind', 'file', 'file', pg_temp.stage(replace(pg_temp.agent_text('66500000-0000-4000-8000-0000000000a4',
+				'Dan'), 'status: active', 'status: archived'))),
+			jsonb_build_object('path', 'memory', 'kind', 'folder'), jsonb_build_object('path', 'todos', 'kind', 'folder')),
+		'structured', jsonb_build_array(pg_temp.entry('agents/dan/agent.md', 'agent',
+			replace(pg_temp.agent_text('66500000-0000-4000-8000-0000000000a4', 'Dan'), 'status: active', 'status: archived'),
+			pg_temp.agent_parse('66500000-0000-4000-8000-0000000000a4', 'Dan') || '{"status":"archived"}'))))), 1, 'saved') \g /dev/null
+select set_config('qorpera_test.hire_dan', format('select public.qorpera_folder_commit(%L, %L, %L, %L)::text',
+	'64800000-0000-4000-8000-000000000020', '{"kind":"member","userId":"66500000-0000-4000-8000-000000000006"}', 'member-change-dan-active',
+	jsonb_build_array(pg_temp.write('agents/dan/agent.md', 'agent', pg_temp.agent_text('66500000-0000-4000-8000-0000000000a4', 'Dan'),
+		pg_temp.agent_parse('66500000-0000-4000-8000-0000000000a4', 'Dan'), pg_temp.version('agents/dan/agent.md')))), false) \g /dev/null
+do $$
+begin
+	if exists (select 1 from public.qorpera_company_rooms where bound_staff_agent_id = '66500000-0000-4000-8000-0000000000a4') then
+		raise exception 'F: an agent saved archived has no thread room yet'; end if;
+end $$;
 do $$
 declare v_change text; v_hire text; v_case record;
 begin
@@ -214,7 +235,10 @@ begin
 				'66500000-0000-4000-8000-000000000007')),
 		('cal', '66500000-0000-4000-8000-0000000000a3'::uuid, '66500000-0000-4000-8000-000000000008'::uuid,
 			format('select public.qorpera_update_profile_member_role(%L, %L, %L)::text', '64800000-0000-4000-8000-000000000010',
-				'66500000-0000-4000-8000-000000000008', 'viewer'))) c(handle, agent, member, change) loop
+				'66500000-0000-4000-8000-000000000008', 'viewer')),
+		('dan', '66500000-0000-4000-8000-0000000000a4'::uuid, '66500000-0000-4000-8000-00000000000a'::uuid,
+			format('select public.qorpera_remove_profile_member(%L, %L)::text', '64800000-0000-4000-8000-000000000010',
+				'66500000-0000-4000-8000-00000000000a'))) c(handle, agent, member, change) loop
 		perform dblink_exec('fence_one', 'begin');
 		perform * from dblink('fence_one', v_case.change) as t(x text);
 		perform dblink_send_query('fence_two', current_setting('qorpera_test.hire_' || v_case.handle));
@@ -324,7 +348,7 @@ delete from storage.objects where bucket_id = 'qorpera-profile-objects' and name
 delete from auth.users where id in ('64800000-0000-4000-8000-000000000001','64800000-0000-4000-8000-000000000002',
 	'64800000-0000-4000-8000-000000000003', '66500000-0000-4000-8000-000000000004', '66500000-0000-4000-8000-000000000005',
 	'66500000-0000-4000-8000-000000000006', '66500000-0000-4000-8000-000000000007', '66500000-0000-4000-8000-000000000008',
-	'66500000-0000-4000-8000-000000000009');
+	'66500000-0000-4000-8000-000000000009', '66500000-0000-4000-8000-00000000000a');
 do $$
 begin
 	if exists (select 1 from public.qorpera_company_files where environment_id in ('64800000-0000-4000-8000-000000000020',
