@@ -6,8 +6,9 @@
 -- publishable key) who knew the id could queue for that row. Here a second connection holds the row FOR UPDATE.
 -- Someone outside the company, a caller with the publishable key only, and a member without the role the function
 -- asks, call each function and are refused at once, with the error they got before; so is a call for an id nobody
--- has. The owner calls it too, waits for the row, and then lands. On the previous function text every refused call
--- for an id that exists waited. Last, an admin who passes the plain check and loses their membership while the call
+-- has. A caller the function serves waits for the row: the owner's calls then land, and a contributor's turn meets
+-- the next check, the sponsor it names. On the previous function text every refused call for an id that exists
+-- waited. Last, an admin who passes the plain check and loses their membership while the call
 -- waits for the row is still refused: the locked check after the lock stays. Races use 602's committed fixture
 -- (608's proposal on its plain company, 300's session); this test's rows go with the fixture at the end.
 
@@ -225,7 +226,7 @@ select pg_temp.wake_assert(exists (select 1 from public.qorpera_company_proposal
 --    Asking for a turn: owners, admins and contributors. Through the second turn function someone outside the
 --    company, the viewer and a session nobody has are refused; the contributor locks the row; the owner's turn is
 --    requested. The first turn function refuses a caller with the publishable key only (22023, as before) and a
---    service-role call for the viewer.
+--    service-role call for the viewer; a service-role call for the contributor waits for the row.
 select pg_temp.own_refused(pg_temp.own_session_row(), pg_temp.own_claims('75600000-0000-4000-8000-000000000001'),
 	pg_temp.own_configure(), 'session execution configuration requires authorize access',
 	'Configuring another company''s session');
@@ -269,6 +270,11 @@ select pg_temp.own_refused(pg_temp.own_session_row(), '{"role":"anon"}',
 select pg_temp.own_refused(pg_temp.own_session_row(), pg_temp.own_claims('30000000-0000-4000-8000-000000000003', 'service_role'),
 	pg_temp.own_turn(p_request => '75600000-0000-4000-8000-000000000023', p_function => 'qorpera_request_session_turn'),
 	'session turn request is invalid', 'A service-role turn through the first function for the viewer', '22023');
+select pg_temp.wake_assert(pg_temp.own_waits(pg_temp.own_session_row(),
+	pg_temp.own_claims('30000000-0000-4000-8000-000000000002', 'service_role'),
+	pg_temp.own_turn(p_request => '75600000-0000-4000-8000-000000000025', p_function => 'qorpera_request_session_turn'),
+	'A service-role turn through the first function for the contributor') ->> 'error' = 'session turn sponsor is unavailable',
+	'The contributor''s service-role turn through the first function is refused for the sponsor');
 
 -- 5. The locked checks stay: an admin removed from the company while their call waits for the row is refused.
 select pg_temp.own_removed(pg_temp.own_plan_row('75600000-0000-4000-8000-000000000010'), '30000000-0000-4000-8000-000000000010',
