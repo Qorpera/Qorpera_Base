@@ -60,7 +60,7 @@ select set_config('request.jwt.claims',
 	'{"sub":"16000000-0000-4000-8000-000000000001","role":"authenticated"}',false);
 set role authenticated;
 select pg_temp.plan764_expect(pg_temp.plan764_try(format(
-	'select public.qorpera_consent_provider_connection_autonomous(%L,%L,true)::text',
+	'select public.qorpera_set_chatgpt_plan_work_while_away(%L,%L,true)::text',
 	'16000000-0000-4000-8000-000000000010', pg_temp.r768('plan'))), 'ok', 'the member turns on work while away');
 reset role;
 do $$

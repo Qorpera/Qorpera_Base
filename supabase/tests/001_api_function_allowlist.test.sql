@@ -352,6 +352,7 @@ insert into api_function_allowlist(signature, anon, authenticated, reason) value
 	('public.qorpera_select_member_session_account(uuid,uuid)', false, true, 'member: auth.uid() + membership/ownership'),
 	('public.qorpera_send_friend_request(text)', false, true, 'member: auth.uid() + membership/ownership'),
 	('public.qorpera_session_profile_id(uuid)', false, true, 'member RPC (CLIENT-CONTRACT): checks qorpera_can_read_session for authenticated; anon and service_role revoked (20260928279570)'),
+	('public.qorpera_set_chatgpt_plan_work_while_away(uuid,uuid,boolean)', false, true, 'member: the consent call''s own owner and membership checks; the caller''s own ChatGPT plan only'),
 	('public.qorpera_set_company_path_resource(uuid,text,text,text,text,uuid)', false, true, 'member: auth.uid() + membership/ownership'),
 	('public.qorpera_set_event_hook_status(uuid,text)', false, true, 'member: auth.uid() + membership/ownership'),
 	('public.qorpera_set_execution_sponsor_status(uuid,uuid,text)', true, true, 'member: auth.uid() + membership/ownership; anon only through the platform default'),
