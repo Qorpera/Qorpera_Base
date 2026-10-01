@@ -788,6 +788,16 @@ C1d (bytes):
   left out when it is the run's own agent; the context does not say which coworker is. Each result releases the read
   of the file it shows.
 
+**Built (W3): `decide_routine`** (`packages/runtime/src/cloud-folder-routine-decision.ts`).
+- The run woken by its dynamic routine's `once` occurrence writes the decision into the routine's own file,
+  `agents/<handle>/routines/<routineKey>.md`. `next` sets a new `at` (and, if asked, `effort` and `reply`) with
+  `setCompanyStateSettings`; `conclude` sets `status: concluded` and the `conclusion`.
+- F2-6's hook takes that save as the decision while it is owed, without review. A decision that also changes the
+  title or the instructions (a new body) is delegation: until core C2 records reviews, the commit does not save it,
+  and the tool answers `refused` with "decide only the next time, effort or reply, or conclude".
+- The save goes under the tool call's receipt with the version read. A saved decision is made (the run owes nothing
+  more); a refusal or a conflict leaves it owed, to decide again.
+
 Until the mount's writes are accepted (F3), these tools become thin writers of these files:
 `hire_agent`, `create_group_chat`, `organize_sidebar`, `manage_todo`, `manage_routine` and
 `decide_routine`. They use the canonical writers here, or `setCompanyStateSettings` for a

@@ -1,4 +1,5 @@
 import type { CloudCompanyPathControl } from "./cloud-company-path-gateway.ts";
+import type { CloudFolderRoutineDecision, CloudFolderRoutineDecisionRequest } from "./cloud-folder-routine-decision.ts";
 import {
 	type CloudNativeToolBinding,
 	type CloudNativeToolIdentity,
@@ -504,7 +505,12 @@ export function cloudRoutineDecisionTool(
 	binding: CloudNativeToolBinding,
 	identity: CloudNativeToolIdentity,
 	control: CloudCompanyPathControl,
-	options: { readonly decisionOwed: () => boolean; readonly decided: () => void },
+	options: {
+		readonly decisionOwed: () => boolean;
+		readonly decided: () => void;
+		/** A folder-v2 run's decision, written into the routine's file. */
+		readonly folderDecision?: CloudFolderRoutineDecision;
+	},
 ): CloudNativeTool {
 	const { admitted, assertContext } = routineAuthority(binding, identity);
 	return {
@@ -560,6 +566,15 @@ export function cloudRoutineDecisionTool(
 		async execute(value, context) {
 			assertContext(context);
 			const request = value as Record<string, unknown>;
+			// A folder-v2 routine is a file; the folder core takes the save as the decision while it is owed.
+			if (options.folderDecision) {
+				const decision = await options.folderDecision.decide(
+					request as unknown as CloudFolderRoutineDecisionRequest,
+					context,
+				);
+				if (decision.decided) options.decided();
+				return decision.content;
+			}
 			const result = await cloudToolRequest(
 				(requestSignal) =>
 					control.call("qorpera_decide_agent_routine", { p_binding: admitted, p_request: request }, requestSignal),
