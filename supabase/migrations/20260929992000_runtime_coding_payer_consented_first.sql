@@ -6,11 +6,11 @@
 -- away, without looking at the member's other logins. So:
 -- * a run a member's ChatGPT plan pays for, whose member also has a Codex login that was never allowed to work
 --   while away, had its coding refused although the plan could pay (Sign in with ChatGPT; switched off);
--- * live for Codex logins (a bug fix): a member whose newest Codex login was never allowed to work while away but
---   who has an older one that was, had their coding refused.
+-- * live for Codex and Claude Code logins (a bug fix): a member whose newest login for that tool does not allow work
+--   while away (never allowed, or turned off since), but who has another login that does, had their coding refused.
 -- Now the logins whose newest version allows it come first. Everything else is as before: a plan still comes after
--- any other login, pays only for work started on it (qorpera_manage_agent_worker's 55000), and a member with no
--- login that may work while away is refused as before.
+-- any other login that may work while away, pays only for work started on it (qorpera_manage_agent_worker's
+-- 55000), and a member with no login that may work while away is refused as before.
 --
 -- Locks: none added. The order reads the versions without locks, as the chosen login's version was read before.
 

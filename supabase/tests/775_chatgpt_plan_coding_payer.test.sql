@@ -67,13 +67,18 @@ select pg_temp.wake_error($q$select pg_temp.dispatch775('plan-other')$q$, '55000
 	'Coding for this work needs a Codex login: a ChatGPT plan pays only for work started on it');
 
 -- Switch-on gate 1 (20260929992000): a login that may work while its member is away comes first.
-create function pg_temp.away775(p_connection uuid, p_allow boolean) returns void language plpgsql as $$
+-- A new version of the login, as a consent change makes one (versions are never changed in place); written
+-- directly, since the copied login's capsule is the fixture's.
+create function pg_temp.away775(p_connection uuid, p_allow boolean, p_state text default 'active',
+	p_harness text default 'codex-cli') returns void language plpgsql as $$
 begin
 	set local session_replication_role = replica;
-	update public.qorpera_provider_connection_versions set allow_autonomous = p_allow
-	where connection_id = p_connection
-		and version = (select max(later.version) from public.qorpera_provider_connection_versions as later
-			where later.connection_id = p_connection);
+	insert into public.qorpera_provider_connection_versions
+	select (jsonb_populate_record(newest, jsonb_build_object('version', newest.version + 1, 'allow_autonomous', p_allow,
+		'authorization_state', p_state, 'native_harness', p_harness, 'created_at', clock_timestamp()))).*
+	from public.qorpera_provider_connection_versions as newest
+	where newest.connection_id = p_connection
+	order by newest.version desc limit 1;
 	set local session_replication_role = origin;
 end $$;
 
@@ -100,9 +105,18 @@ select pg_temp.dispatch775('codex-before-plan');
 select pg_temp.wake_assert(pg_temp.owner_connection775('codex-before-plan') = current_setting('qorpera_test.c775')::uuid,
 	'A Codex login that may work while away comes before a plan that may');
 
--- 7. No login of the member may work while away: refused as before.
+-- 7. Only the newest active version of the coding harness counts. The newer login once allowed work while away,
+--    then was turned off; a later version that needs a new sign-in, and one for another harness, both allow it.
+--    Neither makes the newer login one that may, so coding still takes the older one.
 delete from public.qorpera_model_logins where id = '77500000-0000-4000-8000-000000000013';
 select pg_temp.away775('77500000-0000-4000-8000-000000000010', false);
+select pg_temp.away775('77500000-0000-4000-8000-000000000010', true, 'reauthentication_required');
+select pg_temp.away775('77500000-0000-4000-8000-000000000010', true, 'active', 'claude-code');
+select pg_temp.dispatch775('newest-active-harness');
+select pg_temp.wake_assert(pg_temp.owner_connection775('newest-active-harness') = current_setting('qorpera_test.c775')::uuid,
+	'Only the newest active version of the coding harness says whether a login may work while away');
+
+-- 8. No login of the member may work while away: refused as before.
 select pg_temp.away775(current_setting('qorpera_test.c775')::uuid, false);
 select pg_temp.wake_error($q$select pg_temp.dispatch775('none-may')$q$, '42501',
 	'The session owner has not allowed background work on their openai account');
