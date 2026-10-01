@@ -1,5 +1,5 @@
 -- @fixture 731_runtime_event_wakes.test.sql until "-- The trigger: valid shapes only"
--- Company mailboxes, step M2a (20260929650000): owners create mailboxes on the platform's mail domain (one
+-- Company mailboxes, step M2a (20260928299650): owners create mailboxes on the platform's mail domain (one
 -- setting); the mail door stores a received message, as its exact JSON text, once in each live mailbox among its
 -- recipients, within the hook's and the company's limits; a routine wakes on it through the event trigger (W2) and
 -- reads it whole; the public intake never fills a mailbox; removing a mailbox frees its address.

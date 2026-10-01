@@ -530,6 +530,16 @@ Coordinator (nothing secret):
     recorded more than about 40 minutes late (grace plus the email's ten-minute wait) sends a
     false "out of hours".
 
+- Build step 6b part 1 (migration `20260929700000`, the node refusal): `qorpera_reserve_runtime_node_machine`
+  refuses a new reservation or the wake of a sleeping machine of a company at zero with
+  `COMPUTER_HOURS_EXHAUSTED`, for Company Computers, coding machines and agents' machines, after
+  `NODE_DISABLED` (which wins) with the same demand condition; a machine already awake passes. Run and
+  sign-in machines are never refused. The runner orchestrator's node admission and the coding
+  executor (which waits it out) know the reason. Callers that reserve inside a subtransaction lose the
+  stored refusal, so members' views ask `qorpera_company_at_zero` themselves (6b's later parts).
+  A coding turn whose run began before zero but whose member machine is asleep waits too (its
+  machine's step refuses, and the executor defers it), until hours arrive or the finishing window
+  ends the run: the run box is the running work, the coding machine is not.
 - Build step 6c part 3b (migration `20260928259270`, the finishing window for runs): one hour
   after a company ran out, while it is still at zero (`qorpera_computer_hour_finish_window_over`,
   which checks at zero again, so a record up to one sweep old never ends work):
@@ -598,7 +608,8 @@ Coordinator (nothing secret):
   never sees it. Built in 6c part 1 (above).
 - A plan renewal is recorded when Stripe's renewal invoice arrives, which can trail the period's
   end by minutes. The check must not hold work back in that gap. For runs, 6a's renewal grace does
-  this (see above); machines follow in 6b.
+  this (see above); machines get the same grace, since 6b's checks use the same
+  `qorpera_company_at_zero`.
 - It ships switched off, in its own release, with a 30-minute database watch after the cut. It is
   switched on together with live payments and hour notices.
 
@@ -612,9 +623,13 @@ Before the switch (all of these hold):
 
 - Every part of the zero rule is live, switched off: 6a (#503), the zero state and "out of hours"
   (#508), the finishing window for runs (#514), members seeing the wait (#515, #516), the bounded
-  checks (#520), and 6b (machines not starting, waking or staying up at zero; not built yet). 6b's
-  node refusal must be known to the node admission, coding executor, fleet and provider parsers on
-  both nodes (their binaries installed) before it can be returned.
+  checks (#520), and 6b (machines not starting, waking or staying up at zero). 6b part 1, the node
+  refusal, is built; its reason must be known to the node admission and the coding executor on
+  both nodes (the runner orchestrator installed) before it can be returned. Part 1 alone is not
+  enough: the later 6b parts are required too, for Company Computers (a sleeping computer's wake
+  held at zero instead of retried every few seconds, members told why, power-off after the hour),
+  agents' machines (the admit line skipping companies at zero, a refused sleeping machine never
+  moved to another node, the view saying why, stop after the hour) and coding (stop after the hour).
 - Members see their hours left, by source, on Plan & usage from the switch on
   (contract items 5 and 12; "Plan & usage (web)" below): `hoursLeft` in the member hours read
   and the company card (migration `20260928259330`) are live first.

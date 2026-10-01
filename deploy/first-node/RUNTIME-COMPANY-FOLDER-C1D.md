@@ -86,14 +86,16 @@ writer renews it, and a new intent judges again. (Reviewer round 2, L1; F1 may a
      others: `{schema: 'qorpera.folder-upload/v1', intentId, manifestSha256, expiresAt, present: [sha256…]}`.
 2. **`qorpera_folder_authorize_object_upload(env, actor, intent, sha256, bytes)`**, per chunk, from the gateway:
    plain reads of the intent (this environment, this actor's kind and scope, `open`, unexpired) and of its object row
-   for `(sha256, bytes)`. Returns the company (`profileId`); the gateway derives the NAS path. No run check per chunk
-   (core §7).
+   for `(sha256, bytes)`, and for an object the catalog lacks the soft quota (§5; 23514), so a company at its limit
+   is refused before the gateway writes (20260929710000). Returns the company (`profileId`); the gateway derives the
+   NAS path. No run check per chunk (core §7).
 3. **`qorpera_folder_confirm_object(env, actor, intent, sha256, bytes)`**, after the gateway's NAS put: the same
-   checks, then marks the row `put`. For an object the catalog lacks, the soft quota (§5), then
-   `insert into profile_objects … on conflict do nothing`; then `KEY SHARE` on the row. A row already there with
-   another size is 23505, as today. The transaction is this statement and the trigger. Its `stored` flag (and the
-   gateway's 201 or 200) says whether the company already held the bytes; only trusted code sees it, and the runtime
-   never shows it to the model.
+   intent checks, then marks the row `put`, then `insert into profile_objects … on conflict do nothing`; then
+   `KEY SHARE` on the row. It checks no quota: the authorization before the write let this object in, and refusing
+   it now would strand its bytes on the NAS outside the catalog (20260929710000). A row already there with
+   another size is 23505, as today. The transaction is this statement and the trigger. Its `stored` flag is true when
+   this confirm added the object to the catalog (the gateway's 201 or 200 says the same of the NAS file); only
+   trusted code sees either, and the runtime never shows them to the model.
 4. **`qorpera_folder_seal_upload(env, actor, intent)`**
    - the actor's plain check again (a member who left is refused), and the intent must be this actor's own
      (environment, kind, scope: the run, view or member id). A run's job, runner and assignment ids are not
@@ -148,8 +150,9 @@ once.
 - **`enforce_company_storage_quota`** (on `storage.objects`): for a `folder-v2` company it reads the usage and the
   limit plainly, takes neither the fence nor `company_files`, and checks only objects the catalog lacks.
 - **The quota is soft** for `folder-v2`: uploads in flight at once can pass the limit by what they carry, as F2-3's
-  48 KiB budget can. `confirm_object` checks the same way before its insert. An object already stored never counts
-  again, so a company at its limit can still stage a file from bytes it has.
+  48 KiB budget can. The gateway's authorization checks it before the NAS write, for an object the catalog lacks;
+  the confirm after the write never refuses for it (20260929710000). An object already stored never counts again,
+  so a company at its limit can still stage a file from bytes it has.
 - GC (C1d-2) decrements the row through the same trigger.
 - `qorpera_company_file_json` still reports `company_files.storage_used_bytes`, which stops moving for `folder-v2`.
   C4's clients read the usage row instead.
@@ -194,7 +197,9 @@ that the Storage mirror inserted is still served.
 
 - **Gateway** (`packages/object-gateway`): `/v1/folder-objects/<environmentId>/<sha256>`, on the native token, with
   the run's binding (its actor) and, for a put, `x-qorpera-upload-intent`. Put: authorize, read the body, check the
-  hash, `uploadWithAuthority` (NAS put, confirm, replication). Get: authorize, NAS read, check, re-authorize.
+  hash, `uploadWithAuthority` (NAS put, confirm, replication). Get: authorize, NAS read, check, re-authorize. The
+  native route's token check and binding format are shared; SQL judges the run by the folder actor (run, job, runner
+  and assignment, as commit and read do), not by the provider execution lease the native route checks.
 - **Runtime**: `HttpCloudCompanyFolderBytes`, the production `CloudCompanyFolderBytes` (#548).
   - `put(bytes, mediaType, executable)`: splits into 4 MiB chunks, builds the canonical version-2 manifest, opens the
     intent, puts the chunks and the manifest the catalog lacks, then seals. The same bytes, media type and bit give
@@ -203,8 +208,8 @@ that the Storage mirror inserted is still served.
   - The client's `CloudCompanyFolderBytes.put` gains the executable bit, which the manifest now carries.
   - Open, renew and seal join the Company File control's allow-lists.
 - Nothing constructs either yet; the thin writers do, after C1c-2b. A writer commits right after `put`. If its
-  commit keeps retrying past the sealed intent's hour, it renews the intent, or `put` again re-puts every object it
-  may not yet read.
+  commit keeps retrying past the sealed intent's hour, it calls `put` again, which re-puts every object it may not
+  yet read (the interface has no renew of its own).
 
 **Split.** C1d-1a is the SQL (§2–§7, slot 20260928279520) with tests 761 and 762. C1d-1b is the gateway route and the
 runtime adapter, with no migration.
@@ -223,6 +228,45 @@ runtime adapter, with no migration.
   `qorpera_folder_authorize_replication` at the start of `authorize_profile_object_replication`;
   `confirm_profile_object_upload` refuses `folder-v2` (0A000). The four snapshot-v1 definitions are pinned by digest
   before the lines go in.
+
+**Built (C1d-1b, no migration).**
+- Gateway: `packages/object-gateway/src/folder-objects.ts` serves `/v1/folder-objects/` when the native options name
+  a `folder` authority (`cli.ts` gives it the Supabase authority on the native credential). Each put is authorized by
+  `qorpera_folder_authorize_object_upload`, stored through `uploadWithAuthority`, and confirmed by
+  `qorpera_folder_confirm_object`; each get by `qorpera_folder_authorize_object_download`, before and after the NAS
+  read. The native route's token and binding checks are shared, not copied. PostgREST answers SQLSTATE classes 40
+  and 55 with 500, which would open the gateway's database circuit for every company, so the folder calls map the
+  stop (55000) to 423 and lock conflicts (40001, 40P01, 55P03) to 409; any other 500 stays a dependency failure.
+- Runtime: `packages/runtime/src/cloud-company-folder-bytes.ts`, `HttpCloudCompanyFolderBytes`. A put builds the
+  canonical manifest, opens the intent, puts the missing objects, renews the intent when ten minutes have passed, and
+  seals; an object the catalog lost is put once more, then the put fails as `contended`. Renew's answer is checked.
+  A file over 256 MiB is `invalid_arguments` before anything is hashed or sent. A get checks the manifest against the
+  reference, that its chunk sizes add up to the file's before it fetches any, each chunk against its hash, and the
+  whole file against the reference's hash (the manifest's `fileSha256` is only its writer's word); it reads into one
+  buffer of the file's size. A refusal of the folder core's checks (403) is `CloudCompanyFolderError('unavailable')`,
+  a stop (423) `stopped`, a lock conflict (409) `contended`, a full storage allowance (413, the gateway's answer to
+  23514) `full`; a busy gateway (503) is asked twice more after a short
+  random wait (an object is content-addressed, so a put asked again is the same put). That is for the NAS lanes: a
+  database 500 opens the gateway's circuit for 5 s, so those tries fail fast without reaching the database. The folder
+  route answers a busy NAS lane with no Storage copy yet (replication pending, right after staging) as the lane's
+  503, not Storage's miss, so a read-back right after staging is asked again.
+
+**Follow-ups from C1d-1b's review** (for C1d-2 and the thin writers):
+- **Quota before the NAS write: done** (20260929710000). `_authorize_object_upload` checks the soft quota for an
+  object the catalog lacks, so a company at its limit is refused before the gateway writes, and the confirm no longer
+  refuses for it. The gateway answers 23514 as 413, which the adapter reads as `full`. Still open: a stop at confirm
+  (after the write) leaves the NAS file outside the catalog and the gateway's journal entry `blocked` (it reports
+  degraded), as on the native route; the gateway should drop that entry when confirm refuses.
+- **Lock waits inside the gateway's deadline.** Before GC holds objects `FOR UPDATE`, the folder functions the gateway
+  calls set `lock_timeout` below its 5 s deadline (2 s), so a long wait ends as 55P03, which the gateway answers 409,
+  rather than as a deadline 503 that opens its circuit for every company.
+- **The gateway's NAS lanes.** It allows two operations in flight; core §7 raises that with content storage. The
+  native route's read still answers Storage's miss when its NAS lane is busy; give it the folder route's 503.
+- **Labels.** On the byte path a size clash (23505) reads as `contended` and a refused run kind (0A000) as
+  `transport_unavailable`; the control path reads deadlocks at open, seal and renew as raw errors. The writers align
+  them.
+- The body read and the NAS-then-Storage read are copies of the native route's; share them, and give the gateway
+  package its own test of the route.
 
 **Activation checks** (test 761 §8 runs them; the coordinator may copy them into the activation file):
 - each of the four patched snapshot-v1 bodies, with its `folder-v2` line removed, has its reviewed digest, so the
@@ -262,8 +306,9 @@ runtime adapter, with no migration.
   `unreferenced_since`.
 - GC takes objects `FOR UPDATE` in the same order as open, seal and step 6 (`sha256 collate "C"`), or one object per
   transaction, so it cannot deadlock with a commit. `KEY SHARE` holders can starve a waiting `FOR UPDATE` (a hot
-  object such as the empty file's manifest), so the claim uses `SKIP LOCKED` or `NOWAIT` and retries later. The usage row stays the last lock of any transaction that adds or
-  removes objects: a GC batch locks all its objects before its first delete.
+  object such as the empty file's manifest), so the claim uses `SKIP LOCKED` or `NOWAIT` and retries later. The
+  usage row stays the last lock of any transaction that adds or removes objects: a GC batch locks all its objects
+  before its first delete.
 - G1's "refuse rows marked deleting" at every reference point of C1d-1: open's present objects, seal, commit step 6,
   and folder replication.
 - Expired intents are swept: an intent past `expires_at` plus the grace window, after the G4 root check, with its
