@@ -508,11 +508,11 @@ application; today's Codex login keeps serving our own company until then. Desig
 https://claude.ai/artifact/UWehPVysVzAmWcwvkuU6on.
 
 - **Deploy order.** This vault build reads every vault sign-in, Codex ones included, with
-  `qorpera_describe_model_login_sign_in_v2` from migration `20260929830000`. That migration must be live
+  `qorpera_describe_model_login_sign_in_v2` from migration `20260928329830`. That migration must be live
   before any vault (shared or one-company) runs this build; otherwise every vault Codex sign-in fails.
   The migration alone changes nothing a member sees: plans stay off.
 - **Kind.** A plan login is a second kind of vault login (`qorpera_model_logins.login_kind =
-  'chatgpt_plan'`, migration `20260929830000`). It holds OpenAI's OAuth tokens: a one-hour access token
+  'chatgpt_plan'`, migration `20260928329830`). It holds OpenAI's OAuth tokens: a one-hour access token
   and a rotating 30-day refresh token. The envelope's one field is `chatgpt_plan_login`. The vault is
   the only renewer, under the same renewal lock as a Codex login, and renews with OpenAI's token
   endpoint itself (no helper, no Codex). A run gets the access token alone
@@ -536,12 +536,21 @@ https://claude.ai/artifact/UWehPVysVzAmWcwvkuU6on.
   `refresh_token_invalidated`, `refresh_token_reused`) marks the login for a new sign-in, and so does an
   answer after which the old refresh token is gone but the vault cannot keep the new one: plan use
   withdrawn (no `chatgpt.tokens.use.direct`), an ID token for another account or one that fails its
-  checks, or a pass not later than the saved one. The vault then ends the new refresh token at OpenAI.
+  checks, a 200 it cannot read, or a pass not later than the saved one. The vault then ends the new
+  refresh token at OpenAI. A refresh answer without a new refresh token keeps the old one (RFC 6749 6
+  allows it). A code exchange OpenAI answered but the vault refuses (no plan use, an ID token failing its
+  checks) ends that answer's refresh token at OpenAI too; OpenAI's keys are loaded before the one-time
+  code is spent.
   `invalid_client` never marks a login: that error is about our registration, not the member's login.
   Two cases stay `transient` and are retried with the capped backoff, logged with their reason, until
   someone acts: a login made under another client id (`client_changed`, after the registration changed:
   those logins need a new sign-in, marked by hand for now), and any refusal code OpenAI has not
   documented (`refresh_rejected`; add the code to the refused list once it is known).
+- **Confirmation time budget.** Each hop waits longer than the one behind it, so the member never sees a
+  failure for a login the vault saved: the vault's confirm route 30 s (the code exchange 15 s, the save
+  8 s, a re-read after a lost save answer 4 s; ending an unsaved login at OpenAI waits for nobody), the
+  `native-provider-login` Edge Function's `…/chatgpt-plan-confirm` 40 s (its gateway lookup, at most
+  5 s, comes first), the web client 45 s, the front's read timeout 60 s.
 - **Sign-ins in flight.** A plan sign-in between its first poll and its confirmation lives only in the
   memory of the vault copy that serves it (at most 32 per company). A restart or a failover drops them:
   the member's callback then answers `state_unknown` and the member starts again. Restart the vault at a
@@ -561,8 +570,9 @@ https://claude.ai/artifact/UWehPVysVzAmWcwvkuU6on.
     `sha256sum` of the file.
   - Check the file before the drop-in: `jq -e '.schema == "qorpera.chatgpt-plan-client/v1" and
     (.clientId | startswith("oaiapp_")) and (.redirectUri | startswith("https://"))'` (prints nothing
-    secret). A file the vault cannot read does not stop it: it logs `Cloud secret broker: the ChatGPT
-    plan credential is invalid; ChatGPT plan sign-ins stay off.` and serves on without plans.
+    secret). A file the vault cannot parse does not stop it: it logs `Cloud secret broker: the ChatGPT
+    plan credential is invalid; ChatGPT plan sign-ins stay off.` and serves on without plans. An empty,
+    oversized or unsafe file (wrong owner or mode) still stops the unit, as for every credential.
   - Then the drop-in, `LoadCredential=qorpera-cloud-secret-chatgpt-plan:/etc/qorpera-shared-vault/chatgpt-plan.json`,
     `systemctl daemon-reload` and a vault restart. The unit stays as it is until then: a LoadCredential
     line for a missing file would stop the unit.
@@ -589,7 +599,9 @@ https://claude.ai/artifact/UWehPVysVzAmWcwvkuU6on.
   what only OpenAI's endpoint answers. With one company switched on, sign in once and renew once, and
   check from the vault's journal and the login's row (never its envelope):
   - the code exchange succeeds: our Basic encoding and redirect address are accepted (a failure logs
-    `ChatGPT plan sign-in: the code exchange failed (<status and OpenAI's error code>)`);
+    `ChatGPT plan sign-in: the code exchange failed (<reason>)`, where the reason is OpenAI's status and
+    error code, or one of `token answer unreadable`, `token plan scope not granted`, `token answer
+    unusable`, `ID token refused`, `signing key unknown`, `discovery unusable`, `OpenAI unreachable`);
   - discovery lists `revocation_endpoint`, and disconnecting a test login ends it at OpenAI;
   - a renewal succeeds and its answer keeps the plan scope, whether or not it repeats `scope` or sends
     an `id_token`; the renewed login keeps its owner (the access token's `sub` equals the ID token's);

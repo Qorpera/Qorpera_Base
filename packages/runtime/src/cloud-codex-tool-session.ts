@@ -1270,6 +1270,8 @@ interface CloudCodexRunBinding {
 		outputs: readonly CloudNativeFencedResult[],
 		signal: AbortSignal,
 	) => Promise<void>;
+	/** recordContextView makes the run authority and read-set check itself, before release. */
+	recordChecksAuthority?: boolean;
 }
 
 /** A started, handshaken Codex app-server that no run has used: no thread, no provider request. */
@@ -1402,11 +1404,12 @@ async function startCloudCodexProcess(
 			// A request before the run is bound finds no thread and fails the fence.
 			boundary: {
 				close: () => binding.boundary?.close(),
-				fenceNativeResults: (outputs) =>
+				fenceNativeResults: (outputs, fence) =>
 					binding.boundary
-						? binding.boundary.fenceNativeResults(outputs)
+						? binding.boundary.fenceNativeResults(outputs, fence)
 						: Promise.reject(new Error("Native result boundary is not bound")),
 			},
+			recordChecksAuthority: () => binding.recordContextView !== undefined && binding.recordChecksAuthority === true,
 			assertSession: (request) => {
 				if (!rpc?.bound) throw new Error("Native result boundary not initialized");
 				rpc.assertModelRequest(request);
@@ -1717,6 +1720,9 @@ export async function runCloudCodexToolSession(options: {
 		outputs: readonly CloudNativeFencedResult[],
 		signal: AbortSignal,
 	) => Promise<void>;
+	/** recordContextView checks run authority and the read set itself, in the same step
+	 * as recording and before release, so the result fence does not check first. */
+	recordChecksAuthority?: boolean;
 	signal: AbortSignal;
 	timeoutMs?: number;
 	idleTimeoutMs?: number;
@@ -1786,7 +1792,10 @@ export async function runCloudCodexToolSession(options: {
 		// now the fence refused every request and no thread could start.
 		rpc.bind(options.boundary, options.observability);
 		started.binding.boundary = options.boundary;
-		if (options.recordContextView) started.binding.recordContextView = options.recordContextView;
+		if (options.recordContextView) {
+			started.binding.recordContextView = options.recordContextView;
+			started.binding.recordChecksAuthority = options.recordChecksAuthority === true;
+		}
 		if (
 			options.boundary.captureImagesEnabled &&
 			!started.userAgent.split(" ").includes(CLOUD_NATIVE_CAPTURE_IMAGES_CAPABILITY)

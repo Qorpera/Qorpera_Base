@@ -30,13 +30,16 @@ const CONFIRMATION = /^[A-Za-z0-9_-]{43}$/;
 const CODE = /^[\x21-\x7e]{1,2048}$/;
 const STATE_TTL_MS = 10 * 60_000;
 const CONFIRM_TTL_MS = 5 * 60_000;
-/** Sign-ins in flight per vault (started, or back from OpenAI and waiting for the browser's confirm). */
+/** Sign-ins in flight per served company (started, or back from OpenAI and waiting for the browser's
+ * confirm). */
 const MAX_FLOWS = 32;
-/** The confirmation's budget inside the route's 40 s (the web client waits 45 s, the front 60 s): the code
- * exchange, then the save, then a read when the save's answer was lost. */
-const EXCHANGE_DEADLINE_MS = 20_000;
-const SAVE_DEADLINE_MS = 10_000;
-const CHECK_DEADLINE_MS = 5_000;
+/** The confirmation's budget inside the vault route's 30 s: the code exchange, then the save, then a read
+ * when the save's answer was lost (27 s). The Edge Function forwarding it waits 40 s (its own 5 s lookup
+ * first), the web client 45 s, the front 60 s. Ending a login that was not saved waits for nobody. */
+export const CHATGPT_PLAN_CONFIRM_ROUTE_MS = 30_000;
+const EXCHANGE_DEADLINE_MS = 15_000;
+const SAVE_DEADLINE_MS = 8_000;
+const CHECK_DEADLINE_MS = 4_000;
 
 /** Why a callback or a confirmation ended without a login: what the member's page may show. */
 export type ChatGptPlanSignInFailure = "state_unknown" | "expired" | "declined" | "provider_error" | "busy";
@@ -288,7 +291,7 @@ export class ChatGptPlanSignIns {
 			// The answer may have been lost after the save: the database decides. A login that was not
 			// saved is ended at OpenAI, since nothing else holds it now.
 			if (!(await this.#completed(parked.signIn, modelLoginId))) {
-				await this.#oauth.revoke(login.refreshToken, AbortSignal.timeout(SAVE_DEADLINE_MS)).catch(() => undefined);
+				void this.#oauth.revoke(login.refreshToken, AbortSignal.timeout(15_000)).catch(() => undefined);
 				throw new ChatGptPlanSignInError("provider_error");
 			}
 		} finally {

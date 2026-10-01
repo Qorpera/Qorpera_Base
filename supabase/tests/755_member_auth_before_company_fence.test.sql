@@ -1,5 +1,5 @@
 -- @fixture 405_runtime_office_browser_idle_lease_reap.test.sql until "create function pg_temp.browser("
--- 20260929660000: someone outside a company is refused before that company's gc fence. Thirteen member functions
+-- 20260928329660: someone outside a company is refused before that company's gc fence. Thirteen member functions
 -- looked the company up from their argument and took its fence (the profile row FOR UPDATE) before they checked
 -- the caller's membership, so anyone signed in who knew an environment, computer, identity, recovery or room id
 -- could hold another company's fence for the length of a call. Here a second connection holds the company's
