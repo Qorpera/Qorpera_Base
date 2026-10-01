@@ -90,8 +90,8 @@ begin
    'Signal retry deduplicates within the current sponsor version');
   perform pg_temp.wake_assert((select count(*)=i from public.qorpera_provider_connection_usage_signals where run_id=(b->>'runId')::uuid),
    'Each exhausted sponsor retains its own signal');
-  perform public.qorpera_fail_runner_job((b->>'runnerId')::uuid,repeat('2',64),(b->>'jobId')::uuid,repeat('3',64),
-   'Native harness failed (provider allowance unavailable)',false);
+  -- The failure report no longer hands off (20260929910000): call the handoff function directly.
+  perform public.qorpera_handoff_run_sponsor((b->>'runId')::uuid,'Native harness failed (provider allowance unavailable)');
   perform pg_temp.wake_assert((select j.status='queued' and r.sponsor_version=i+1 from public.qorpera_execution_runs r
    join public.qorpera_runner_jobs j on j.id=r.job_id where r.id=(b->>'runId')::uuid),'Handoff queues the same logical run');
   b:=pg_temp.wake_start((b->>'runId')::uuid);
