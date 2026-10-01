@@ -102,6 +102,12 @@ export const AGENTS: Record<string, string> = {
 	"Enter a Company File path such as finance/invoices.": "Skriv en sti i Virksomhedsfilen som finance/invoices.",
 	"Give the routine a name and say what to do.": "Giv rutinen et navn, og skriv, hvad den skal gøre.",
 	"Connect a model account in Settings first.": "Forbind først en modelkonto i Indstillinger.",
+	"A ChatGPT plan can't pay for routines that start on a file change or a webhook. Choose another account.":
+		"Et ChatGPT-abonnement kan ikke betale for rutiner, der starter på en filændring eller en webhook. Vælg en anden konto.",
+	"Turn on work while you're away for this ChatGPT plan in Settings first.":
+		"Slå først Arbejd, mens du er væk til for ChatGPT-abonnementet i Indstillinger.",
+	"{name} uses your ChatGPT plan for this routine while you are away. Pause the routine to stop it.":
+		"{name} bruger dit ChatGPT-abonnement til rutinen, mens du er væk. Sæt rutinen på pause for at stoppe den.",
 	"The routine could not be saved. Your draft is still here.": "Rutinen kunne ikke gemmes. Din kladde er her stadig.",
 	"Edit routine": "Rediger rutine",
 	"Back to routines": "Tilbage til rutiner",

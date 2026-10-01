@@ -5,7 +5,12 @@ import type {
 } from "@qorpera/cloud-client/cloud-native-subscription-control";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ConnectionsView, ProviderSignIns } from "../src/app/views/settings-connections.ts";
-import type { WebNativeProviderLogin, WebNativeSubscription } from "../src/cloud/native-subscription.ts";
+import type {
+	WebExecutionConnections,
+	WebMemberConnection,
+	WebNativeProviderLogin,
+	WebNativeSubscription,
+} from "../src/cloud/native-subscription.ts";
 import { fmtTime } from "../src/ui/dom.ts";
 import { setLanguagePreference } from "../src/ui/preferences.ts";
 import { deferred, id, settle, timestamp, userA } from "./fixtures.ts";
@@ -1193,5 +1198,71 @@ describe("member model account settings", () => {
 		expect(listConnections.mock.calls[0]![0]!.aborted).toBe(true);
 		expect(createMemberSponsor).not.toHaveBeenCalled();
 		expect(revokeConnection).not.toHaveBeenCalled();
+	});
+});
+
+describe("a ChatGPT plan login (shown only when the member has one)", () => {
+	const plan: WebMemberConnection = {
+		...connected,
+		connectionId: id(85),
+		clientConnectionId: id(185),
+		loginKind: "chatgpt_plan",
+		allowAutonomous: false,
+	};
+	async function planSetup(...items: WebMemberConnection[]) {
+		let current = observed(...items) as WebExecutionConnections;
+		const client = {
+			listConnections: vi.fn(async () => structuredClone(current)),
+			revokeConnection: vi.fn(async () => ({ connectionId: id(85), status: "revoked" as const })),
+			createMemberSponsor: vi.fn(async () => ({ bindingId: id(86), version: 1 })),
+			setWorkWhileAway: vi.fn(async () => {}),
+		};
+		view = new ConnectionsView(client, new AbortController().signal);
+		document.body.append(view.el);
+		await settle();
+		const set = (next: WebMemberConnection[]) => {
+			current = observed(...next) as WebExecutionConnections;
+		};
+		return { client, set };
+	}
+	const lever = () => view.el.querySelector<HTMLButtonElement>('.connection-away [role="switch"]');
+	it("leaves a Codex login as it was: its label, no switch, consented as before", async () => {
+		const { client } = await planSetup({ ...connected, loginKind: "codex", allowAutonomous: true });
+		expect(card(OPENAI)).toBeTruthy();
+		expect(lever()).toBeNull();
+		expect(client.createMemberSponsor).toHaveBeenCalledExactlyOnceWith(
+			{ providerConnectionId: id(81), providerConnectionVersion: 2, allowAutonomous: false },
+			expect.any(AbortSignal),
+		);
+	});
+	it("names the plan, binds it for the member's messages only, and leaves work while away to the member", async () => {
+		const { client, set } = await planSetup(plan);
+		expect(card("ChatGPT plan")).toBeTruthy();
+		expect(client.createMemberSponsor).toHaveBeenCalledExactlyOnceWith(
+			{ providerConnectionId: id(85), providerConnectionVersion: 2, allowAutonomous: false, planLogin: true },
+			expect.any(AbortSignal),
+		);
+		expect(lever()!.getAttribute("aria-checked")).toBe("false");
+		expect(client.setWorkWhileAway).not.toHaveBeenCalled();
+		set([{ ...plan, allowAutonomous: true, sponsorBindingId: id(86), sponsorVersion: 1 }]);
+		lever()!.click();
+		await settle();
+		expect(client.setWorkWhileAway).toHaveBeenCalledExactlyOnceWith(id(85), true, expect.any(AbortSignal));
+		expect(lever()!.getAttribute("aria-checked")).toBe("true");
+		lever()!.click();
+		await settle();
+		expect(client.setWorkWhileAway).toHaveBeenLastCalledWith(id(85), false, expect.any(AbortSignal));
+	});
+	it("says when the switch could not move, and keeps it where it was", async () => {
+		const { client } = await planSetup(plan);
+		client.setWorkWhileAway.mockRejectedValueOnce(new Error("offline"));
+		lever()!.click();
+		await settle();
+		expect(view.el.textContent).toContain("Work while you're away could not be changed. Try again.");
+		expect(lever()!.getAttribute("aria-checked")).toBe("false");
+	});
+	it("shows no switch for a plan that needs a new sign-in", async () => {
+		await planSetup({ ...plan, authorizationState: "reauthentication_required" });
+		expect(lever()).toBeNull();
 	});
 });

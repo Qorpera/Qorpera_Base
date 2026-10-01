@@ -13,6 +13,7 @@ import {
 	describeCloudRoutineTrigger,
 	parseCloudRoutineTrigger,
 } from "@qorpera/cloud-client/cloud-routines";
+import { planLogin, type WebMemberConnection } from "../../cloud/native-subscription.ts";
 import type { WebRoutines } from "../../cloud/routines.ts";
 import type { HostedStaffAgent } from "../../cloud/types.ts";
 import { dialogPageHeader } from "../../ui/dialog.ts";
@@ -72,8 +73,9 @@ function latestVersions(accounts: readonly NativeMemberConnection[]): NativeMemb
 }
 
 function accountLabel(account: NativeMemberConnection): string {
-	const name =
-		account.provider === "openai" || account.provider === "openai-codex"
+	const name = planLogin(account as WebMemberConnection)
+		? t("ChatGPT plan")
+		: account.provider === "openai" || account.provider === "openai-codex"
 			? "ChatGPT"
 			: account.provider === "anthropic"
 				? "Claude"
@@ -575,11 +577,16 @@ export class AgentRoutines {
 		try {
 			const result = await this.#access!.accounts(this.#signal);
 			if (this.#signal.aborted) return false;
-			this.#accounts = latestVersions(
+			// A ChatGPT plan its member has not turned on for work while away comes last: a routine
+			// cannot run on it (Codex accounts keep their order).
+			const waits = (item: NativeMemberConnection) =>
+				planLogin(item as WebMemberConnection) && (item as WebMemberConnection).allowAutonomous !== true;
+			const accounts = latestVersions(
 				result.connections.filter(
 					(item) => item.connectionStatus === "active" && item.authorizationState === "active",
 				),
 			);
+			this.#accounts = [...accounts.filter((item) => !waits(item)), ...accounts.filter(waits)];
 			return true;
 		} catch {
 			if (!this.#signal.aborted) {
@@ -732,7 +739,31 @@ export class AgentRoutines {
 			...accountLabels(this.#accounts).map((label, index) =>
 				h("option", { value: this.#accounts[index]!.connectionId }, label),
 			),
-		);
+		) as HTMLSelectElement;
+		// What saving means for the chosen account: a ChatGPT plan works while its member is away only
+		// once they turned that on in Settings; saving turns it on for no account but a Codex login.
+		const accountNote = h("small");
+		const describeAccount = () => {
+			const chosen = this.#accounts.find((item) => item.connectionId === account.value) as
+				| WebMemberConnection
+				| undefined;
+			accountNote.textContent =
+				!chosen || !planLogin(chosen)
+					? t(
+							"Saving lets {name} use this account for this routine while you are away. Pause the routine to stop it.",
+							{ name: this.#agent().displayName },
+						)
+					: chosen.allowAutonomous === true
+						? t(
+								"{name} uses your ChatGPT plan for this routine while you are away. Pause the routine to stop it.",
+								{
+									name: this.#agent().displayName,
+								},
+							)
+						: t("Turn on work while you're away for this ChatGPT plan in Settings first.");
+		};
+		account.addEventListener("change", describeAccount);
+		describeAccount();
 		const intervalFields = h("div", { class: "routine-inline" }, t("Every"), every, unit);
 		const weeklyFields = h(
 			"div",
@@ -848,6 +879,18 @@ export class AgentRoutines {
 				status.textContent = t("Connect a model account in Settings first.");
 				return;
 			}
+			if (planLogin(chosenAccount as WebMemberConnection)) {
+				if (built.kind === "listener") {
+					status.textContent = t(
+						"A ChatGPT plan can't pay for routines that start on a file change or a webhook. Choose another account.",
+					);
+					return;
+				}
+				if ((chosenAccount as WebMemberConnection).allowAutonomous !== true) {
+					status.textContent = t("Turn on work while you're away for this ChatGPT plan in Settings first.");
+					return;
+				}
+			}
 			this.#busy = true;
 			save.disabled = cancel.disabled = true;
 			status.textContent = t("Saving…");
@@ -896,20 +939,7 @@ export class AgentRoutines {
 				h("label", null, t("Reply"), reply),
 				h("div", { class: "muted" }, t("Effort: {effort}", { effort: effortName(effort) })),
 				this.#accounts.length
-					? h(
-							"label",
-							null,
-							t("Runs on"),
-							account,
-							h(
-								"small",
-								null,
-								t(
-									"Saving lets {name} use this account for this routine while you are away. Pause the routine to stop it.",
-									{ name: this.#agent().displayName },
-								),
-							),
-						)
+					? h("label", null, t("Runs on"), account, accountNote)
 					: h(
 							"p",
 							{ class: "muted" },

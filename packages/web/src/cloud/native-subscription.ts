@@ -38,10 +38,24 @@ export interface WebNativeProviderLogin {
 	expiresAt: string;
 }
 
+/** A member's connection with what the web reads beside the SDK's fields (migration
+ * 20260929970000): the login's kind (absent for a node login), whether its member turned
+ * on work while away for this version, and when the member's first-routine card was shown. */
+export type WebMemberConnection = NativeMemberConnection & {
+	loginKind?: "codex" | "chatgpt_plan";
+	allowAutonomous?: boolean;
+	routineOfferShownAt?: string;
+};
+export interface WebExecutionConnections extends NativeExecutionConnections {
+	connections: readonly WebMemberConnection[];
+}
+/** A ChatGPT plan login: its member alone turns on work while away (Sign in with ChatGPT). */
+export const planLogin = (connection: WebMemberConnection): boolean => connection.loginKind === "chatgpt_plan";
+
 export interface WebNativeSubscription {
 	readonly onboardingAvailable: boolean;
 	beginProviderLogin(input: WebNativeProviderLoginInput, signal?: AbortSignal): Promise<WebNativeProviderLogin>;
-	listConnections(signal?: AbortSignal): Promise<NativeExecutionConnections>;
+	listConnections(signal?: AbortSignal): Promise<WebExecutionConnections>;
 	/** Resolves once account usage is current. `force` asks for a new observation
 	 * even inside the window of a completed attempt: the member pressed Refresh. */
 	refreshAccountMetadata?(signal?: AbortSignal, force?: boolean): Promise<void>;
@@ -49,9 +63,11 @@ export interface WebNativeSubscription {
 	listSessionTurnProvenance(sessionId: string, signal?: AbortSignal): Promise<readonly SessionTurnProvenance[]>;
 	requestSessionTurn(input: RequestSponsoredSessionTurnInput, signal?: AbortSignal): Promise<SessionTurnRequestResult>;
 	createMemberSponsor(
-		input: Omit<CreateMemberSponsorInput, "profileId">,
+		input: Omit<CreateMemberSponsorInput, "profileId"> & { planLogin?: boolean },
 		signal?: AbortSignal,
 	): Promise<{ bindingId: string; version: number }>;
+	/** The member's own choice for their ChatGPT plan: work while they are away, or not. */
+	setWorkWhileAway?(connectionId: string, on: boolean, signal?: AbortSignal): Promise<void>;
 	revokeConnection(
 		input: Omit<RevokeNativeProviderConnectionInput, "profileId">,
 		signal?: AbortSignal,
@@ -72,6 +88,31 @@ function usageStale(account: NativeMemberConnection, now: number, held: boolean)
 		if (!(observedAt > now - 60_000) || observedAt > now + 30_000) return true;
 	}
 	return usage.windows.some((window) => window.resetAt !== undefined && Date.parse(window.resetAt) <= now);
+}
+
+/** The plan fields of one connection version, from the list's own answer; anything malformed
+ * reads as absent (a Codex or node login). */
+function withPlanFields(connection: NativeMemberConnection, answer: unknown): WebMemberConnection {
+	const entries =
+		answer && typeof answer === "object" && Array.isArray((answer as { connections?: unknown }).connections)
+			? ((answer as { connections: unknown[] }).connections as unknown[])
+			: [];
+	const entry = entries.find(
+		(item): item is Record<string, unknown> =>
+			Boolean(item) &&
+			typeof item === "object" &&
+			(item as Record<string, unknown>).connection_id === connection.connectionId &&
+			(item as Record<string, unknown>).connection_version === connection.connectionVersion,
+	);
+	if (!entry) return connection;
+	const kind = entry.login_kind;
+	const shown = entry.routine_offer_shown_at;
+	return {
+		...connection,
+		...(kind === "codex" || kind === "chatgpt_plan" ? { loginKind: kind } : {}),
+		...(typeof entry.allow_autonomous === "boolean" ? { allowAutonomous: entry.allow_autonomous } : {}),
+		...(typeof shown === "string" && Number.isFinite(Date.parse(shown)) ? { routineOfferShownAt: shown } : {}),
+	};
 }
 
 /** The SDK owns admission and provenance contracts. This host only supplies
@@ -176,6 +217,20 @@ export function createWebNativeSubscription(
 	};
 	const client = (signal?: AbortSignal, sessionId?: string) =>
 		new NativeSubscriptionControlPlane({ rpc: (method, args) => rpc(method, args, signal, sessionId) });
+	const consent = async (connectionId: string, allow: boolean): Promise<number> => {
+		const value = (await cloud.rpc("qorpera_consent_provider_connection_autonomous", {
+			p_profile_id: profileId,
+			p_connection_id: connectionId,
+			p_allow_autonomous: allow,
+		})) as { connection_id?: unknown; version?: unknown; allow_autonomous?: unknown } | null;
+		if (
+			value?.connection_id !== connectionId ||
+			value.allow_autonomous !== allow ||
+			!Number.isSafeInteger(value.version)
+		)
+			throw new Error("Invalid cloud response");
+		return value.version as number;
+	};
 	let pendingMetadataRefresh: Promise<void> | undefined;
 	let metadataAdmission:
 		| { clientRequestId: string; capability: string; expiresAt: number; completed: boolean }
@@ -331,7 +386,18 @@ export function createWebNativeSubscription(
 					);
 				});
 		},
-		listConnections: (signal) => client(signal).listConnections(profileId),
+		listConnections: async (signal) => {
+			// The SDK reads the fields it knows; the plan fields come from the same answer.
+			let answer: unknown;
+			const listed = await new NativeSubscriptionControlPlane({
+				rpc: async (method, args) => {
+					const value = await rpc(method, args, signal);
+					if (method === "qorpera_list_member_native_execution_connections") answer = value;
+					return value;
+				},
+			}).listConnections(profileId);
+			return { ...listed, connections: listed.connections.map((connection) => withPlanFields(connection, answer)) };
+		},
 		refreshAccountMetadata: async (signal, force = false) => {
 			const checked = AbortSignal.any([companySignal, ...(signal ? [signal] : [])]);
 			checked.throwIfAborted();
@@ -518,26 +584,32 @@ export function createWebNativeSubscription(
 		requestSessionTurn: (input, signal) => client(signal, input.sessionId).requestSessionTurn(input),
 		// Unattended use is the default (founder decision 2026-09-20), not a setting: binding an account
 		// records its owner's consent first and binds the consented version, so routines, coworker wakes
-		// and first runs can use the account while nobody is online.
-		createMemberSponsor: async (input, signal) => {
+		// and first runs can use the account while nobody is online. A ChatGPT plan is the exception
+		// (founder decision 2026-10-01): it is bound for the member's own messages only, and works while
+		// they are away once they turn that on themselves.
+		createMemberSponsor: async ({ planLogin: plan, ...input }, signal) => {
 			signal?.throwIfAborted();
-			const consent = (await cloud.rpc("qorpera_consent_provider_connection_autonomous", {
-				p_profile_id: profileId,
-				p_connection_id: input.providerConnectionId,
-				p_allow_autonomous: true,
-			})) as { connection_id?: unknown; version?: unknown; allow_autonomous?: unknown } | null;
-			if (
-				consent?.connection_id !== input.providerConnectionId ||
-				consent.allow_autonomous !== true ||
-				!Number.isSafeInteger(consent.version)
-			)
-				throw new Error("Invalid cloud response");
+			if (plan) return client(signal).createMemberSponsor({ ...input, allowAutonomous: false, profileId });
+			const version = await consent(input.providerConnectionId, true);
 			return client(signal).createMemberSponsor({
 				...input,
-				providerConnectionVersion: consent.version as number,
+				providerConnectionVersion: version,
 				allowAutonomous: true,
 				profileId,
 			});
+		},
+		setWorkWhileAway: async (connectionId, on, signal) => {
+			signal?.throwIfAborted();
+			const version = await consent(connectionId, on);
+			// Turned on, the consented version is bound for work while away; turned off, the newer
+			// version stops that, and the member's messages are bound again on the next read.
+			if (on)
+				await client(signal).createMemberSponsor({
+					providerConnectionId: connectionId,
+					providerConnectionVersion: version,
+					allowAutonomous: true,
+					profileId,
+				});
 		},
 		revokeConnection: (input, signal) => client(signal).revokeConnection({ ...input, profileId }),
 	};

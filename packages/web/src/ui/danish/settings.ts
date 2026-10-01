@@ -258,6 +258,11 @@ export const SETTINGS: Record<string, string> = {
 		"Virksomhedens egne konti. Alle agenter kan bruge dem, og de bliver, når nogen går.",
 
 	// My connections: model accounts (app/views/settings-connections.ts)
+	"ChatGPT plan": "ChatGPT-abonnement",
+	"Work while you're away": "Arbejd, mens du er væk",
+	"Your agents may use this plan for routines while you're away. Webhook and file routines never use it.":
+		"Dine agenter må bruge abonnementet til rutiner, mens du er væk. Rutiner, der starter på en webhook eller en fil, bruger det aldrig.",
+	"Work while you're away could not be changed. Try again.": "Arbejd, mens du er væk kunne ikke ændres. Prøv igen.",
 	"{minutes}m": "{minutes} min",
 	"{hours}h {minutes}m": "{hours} t {minutes} min",
 	"{days}d {hours}h": "{days} d {hours} t",

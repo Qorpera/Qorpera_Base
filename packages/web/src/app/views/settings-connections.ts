@@ -1,13 +1,21 @@
-import type {
-	NativeExecutionConnections,
-	NativeMemberConnection,
-} from "@qorpera/cloud-client/cloud-native-subscription-control";
-import type { WebNativeProviderLogin, WebNativeSubscription } from "../../cloud/native-subscription.ts";
+import type { NativeMemberConnection } from "@qorpera/cloud-client/cloud-native-subscription-control";
+import {
+	planLogin,
+	type WebExecutionConnections,
+	type WebMemberConnection,
+	type WebNativeProviderLogin,
+	type WebNativeSubscription,
+} from "../../cloud/native-subscription.ts";
 import { button, fmtTime, h, replace } from "../../ui/dom.ts";
 import { t } from "../../ui/preferences.ts";
 
 type ConnectionsClient = Pick<WebNativeSubscription, "listConnections" | "revokeConnection" | "createMemberSponsor"> &
-	Partial<Pick<WebNativeSubscription, "onboardingAvailable" | "beginProviderLogin" | "refreshAccountMetadata">>;
+	Partial<
+		Pick<
+			WebNativeSubscription,
+			"onboardingAvailable" | "beginProviderLogin" | "refreshAccountMetadata" | "setWorkWhileAway"
+		>
+	>;
 
 export type Provider = "openai" | "anthropic";
 const PROVIDERS: ReadonlyArray<{ id: Provider; label: string; logo: string }> = [
@@ -79,7 +87,7 @@ export class ConnectionsView {
 	/** The providers "Add account" offers; every connected account is still listed. */
 	readonly #offered: ReadonlyArray<(typeof PROVIDERS)[number]>;
 	readonly #enabling = new Set<string>();
-	#connections: NativeExecutionConnections | undefined;
+	#connections: WebExecutionConnections | undefined;
 	#loading = true;
 	#adding = false;
 	#working: string | undefined;
@@ -216,7 +224,7 @@ export class ConnectionsView {
 			if (this.#lifetime.signal.aborted) return;
 			// Historical credential versions are not separate accounts and must
 			// not be enabled again when a newer version has replaced them.
-			const latest = new Map<string, NativeMemberConnection>();
+			const latest = new Map<string, WebMemberConnection>();
 			for (const connection of observed.connections) {
 				const current = latest.get(connection.connectionId);
 				if (!current || connection.connectionVersion > current.connectionVersion)
@@ -267,6 +275,8 @@ export class ConnectionsView {
 						providerConnectionId: connection.connectionId,
 						providerConnectionVersion: connection.connectionVersion,
 						allowAutonomous: false,
+						// A Codex login's call is as before; a plan's is never consented.
+						...(planLogin(connection) ? { planLogin: true } : {}),
 					},
 					this.#lifetime.signal,
 				);
@@ -338,8 +348,66 @@ export class ConnectionsView {
 			this.#draw();
 		}
 	}
+	/** The member's own choice for their ChatGPT plan; nothing else turns it on. */
+	async #setAway(connection: WebMemberConnection): Promise<void> {
+		if (this.#working || !this.#client.setWorkWhileAway) return;
+		this.#working = connection.connectionId;
+		this.#error = undefined;
+		this.#draw();
+		let changed = false;
+		try {
+			await this.#client.setWorkWhileAway(
+				connection.connectionId,
+				connection.allowAutonomous !== true,
+				this.#lifetime.signal,
+			);
+			changed = true;
+		} catch {
+			if (!this.#lifetime.signal.aborted) this.#error = t("Work while you're away could not be changed. Try again.");
+		} finally {
+			this.#working = undefined;
+			if (!this.#lifetime.signal.aborted) {
+				this.#draw();
+				// A read clears the line, so only a change is read back.
+				if (changed) void this.#refresh();
+			}
+		}
+	}
+	/** A ChatGPT plan's switch: off until its member turns it on. */
+	#away(connection: WebMemberConnection): HTMLElement | null {
+		if (!planLogin(connection) || !live(connection) || !this.#client.setWorkWhileAway) return null;
+		const on = connection.allowAutonomous === true;
+		const lever = h("button", {
+			type: "button",
+			role: "switch",
+			class: "routine-switch",
+			"aria-checked": String(on),
+			"aria-label": t("Work while you're away"),
+			onclick: () => void this.#setAway(connection),
+		});
+		if (this.#working) lever.setAttribute("aria-disabled", "true");
+		if (this.#working === connection.connectionId) lever.setAttribute("aria-busy", "true");
+		lever.dataset.focusKey = `away:${connection.connectionId}`;
+		return h(
+			"div",
+			{ class: "connection-away" },
+			h(
+				"div",
+				{ class: "settings-copy" },
+				h("strong", null, t("Work while you're away")),
+				h(
+					"small",
+					null,
+					t(
+						"Your agents may use this plan for routines while you're away. Webhook and file routines never use it.",
+					),
+				),
+			),
+			lever,
+		);
+	}
 	/** `showAdded`: another card reads the same, so this one says when it was added. */
-	#account(connection: NativeMemberConnection, showAdded: boolean): HTMLElement {
+	#account(connection: WebMemberConnection, showAdded: boolean): HTMLElement {
 		const provider = PROVIDERS.find((item) => item.id === connection.provider)!;
 		const email = connection.providerAccountEmail;
 		const signOut = button(
@@ -355,7 +423,7 @@ export class ConnectionsView {
 			h(
 				"div",
 				{ class: "settings-copy" },
-				h("strong", null, provider.label),
+				h("strong", null, planLogin(connection) ? t("ChatGPT plan") : provider.label),
 				h("small", { class: "connection-email" }, email ?? t("Email unavailable")),
 				showAdded
 					? h(
@@ -373,6 +441,7 @@ export class ConnectionsView {
 			),
 			h("div", { class: "connection-actions" }, signOut),
 			this.#usage(connection),
+			this.#away(connection),
 		);
 	}
 	#usage(connection: NativeMemberConnection): HTMLElement {

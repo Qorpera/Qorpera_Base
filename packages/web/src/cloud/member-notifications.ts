@@ -46,6 +46,10 @@ const RETIRED = new Map([
 	["qorpera.member-notification.company-ceiling-tripped/v1", ["company_ceiling_tripped"]],
 	["qorpera.member-notification.company-execution-stop/v1", ["company_execution_paused", "company_execution_resumed"]],
 ]);
+/** Routine notices (20260920000000: an agent's routine waits for its member's account, or was
+ * suspended) carry no subject schema, and this band does not show them: they are skipped, so one
+ * of them never empties the band. */
+const UNSHOWN = new Set(["routine_needs_model_account", "routine_suspended"]);
 
 const invalid = () => new Error("Company notices returned an invalid response.");
 function record(value: unknown): Record<string, unknown> {
@@ -74,8 +78,17 @@ function date(value: unknown): string {
 /** A retired record is skipped only when its envelope is otherwise sound; anything
  * else falls through to full validation and fails the read like any bad record. */
 function retired(value: unknown, profileId: string): boolean {
-	const v = record(value),
-		kinds = RETIRED.get(record(v.subject).schema as string);
+	const v = record(value);
+	if (
+		typeof v.kind === "string" &&
+		UNSHOWN.has(v.kind) &&
+		v.schema === "qorpera.member-notification/v1" &&
+		v.profile_id === profileId
+	) {
+		record(v.subject);
+		return true;
+	}
+	const kinds = RETIRED.get(record(v.subject).schema as string);
 	return (
 		kinds !== undefined &&
 		v.schema === "qorpera.member-notification/v1" &&
