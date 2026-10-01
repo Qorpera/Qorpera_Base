@@ -561,7 +561,7 @@ describe("a ChatGPT plan's first-routine card (shown only to a member with a pla
 		expect(text(f.view)).toContain("Morning brief can run while you're away.");
 		expect(f.offer.native.recordRoutineOffer).toHaveBeenCalledOnce();
 	});
-	it("says nothing more once the kernel started the routine (20260929985000), and saves no routine", async () => {
+	it("says nothing more once the kernel started the routine (20260928369985), and saves no routine", async () => {
 		for (const manage of [true, false]) {
 			const f = planSetup({ manage });
 			await settle();

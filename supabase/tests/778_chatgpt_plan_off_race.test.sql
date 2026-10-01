@@ -1,5 +1,5 @@
 -- @fixture 764_chatgpt_plan_login.test.sql until "-- A plan login is never listed for the account record the node switch-off reads; the Codex login is."
--- Sign in with ChatGPT (20260929980000, #628 review): a member turns their ChatGPT plan off while an agent's
+-- Sign in with ChatGPT (20260928369980, #628 review): a member turns their ChatGPT plan off while an agent's
 -- routine save runs qorpera_ensure_unattended_sponsor. Ensure waits for the member's lock on the connection;
 -- its filter still reads the plan as on after that wait, so before this fix it wrote a new "on" version in the
 -- member's name. It now reads the newest version again under the lock and leaves an "off" plan off.
