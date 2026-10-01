@@ -134,10 +134,19 @@ Founders (2026-09-28, migration 20260928248100): every member with the role
   folder-v2 is saved as before.
 
 
-### Credentials, provider connections, identity recovery (13)
+### Credentials, provider connections, identity recovery (15)
 
+- `qorpera_begin_chatgpt_plan_sign_in` (20260929830000, switched off): begins a
+  ChatGPT plan sign-in ("Continue with ChatGPT") for the caller's own member
+  compute identity, the same as `qorpera_begin_native_provider_login` for
+  OpenAI/Codex with the sign-in marked as a plan sign-in. Refused with 55000
+  while plan logins are switched off for the company, and with 22023 for any
+  identity that is not the caller's own member identity. The answer is the
+  ordinary begin's plus `model_login_kind: "chatgpt_plan"`.
 - `qorpera_begin_cloud_secret_capture`
 - `qorpera_begin_native_provider_login`
+- `qorpera_chatgpt_plan_available(profile)`: whether the caller's company may
+  use ChatGPT plan logins now (show "Continue with ChatGPT" only when true).
 - `qorpera_grant_cloud_connector` — Step 7 (bundle v87): grants every
   operation of one company-owned connection (Gmail, Google Drive, GitHub) to
   all active agents (`p_staff_agent_ids` null, marks the connection shared so
