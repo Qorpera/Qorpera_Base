@@ -57,6 +57,8 @@ export const AGENTS: Record<string, string> = {
 	"Routines could not be read. Refresh to try again.": "Rutinerne kunne ikke hentes. Opdater for at prøve igen.",
 	"New routine": "Ny rutine",
 	"Has not run yet": "Har ikke kørt endnu",
+	Resumed: "Genoptaget",
+	"When {name} turned on “Work while you're away”": "Da {name} slog “Arbejd, mens du er væk” til",
 	Ended: "Afsluttet",
 	Done: "Færdig",
 	"Runs until {name} decides it is done": "Kører, indtil {name} beslutter, at den er færdig",

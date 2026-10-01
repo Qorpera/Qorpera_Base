@@ -190,6 +190,8 @@ export const CONVERSATION: Record<string, string> = {
 		"Dit ChatGPT-abonnement arbejder nu, mens du er væk. Bed agenten om at sætte rutinerne op igen.",
 	"“Work while you're away” is on, but the routine could not be started. Try again.":
 		"“Arbejd, mens du er væk” er slået til, men rutinen kunne ikke startes. Prøv igen.",
+	"“Work while you're away” is on, but your routines could not be checked. Try again.":
+		"“Arbejd, mens du er væk” er slået til, men dine rutiner kunne ikke tjekkes. Prøv igen.",
 	"“Work while you're away” is on, but the routines could not be started. Try again.":
 		"“Arbejd, mens du er væk” er slået til, men rutinerne kunne ikke startes. Prøv igen.",
 	"Turn on": "Slå til",
