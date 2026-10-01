@@ -39,11 +39,20 @@ export function chatGptPlanReturnLocation(
 	return url.href;
 }
 
-/** Reads the deployment's return page: HTTPS, an allowed web origin, no query, no credentials. */
+/** Reads the deployment's return page: HTTPS, an allowed web origin, no query, no credentials, and no `?`
+ * in its fragment (the web client reads the outcome from the fragment's first `?`). Unset or empty means
+ * the first allowed origin's root. */
 export function chatGptPlanReturnUrl(value: string | undefined, allowedOrigins: readonly string[]): string {
 	const origins = allowedOrigins.length > 0 ? allowedOrigins : ["https://app.qorpera.com"];
-	const url = new URL(value ?? `${origins[0]}/`);
-	if (url.protocol !== "https:" || url.username || url.password || url.search || !origins.includes(url.origin))
+	const url = new URL(value ? value : `${origins[0]}/`);
+	if (
+		url.protocol !== "https:" ||
+		url.username ||
+		url.password ||
+		url.search ||
+		url.hash.includes("?") ||
+		!origins.includes(url.origin)
+	)
 		throw new Error("The ChatGPT plan return page is invalid");
 	return url.href;
 }
@@ -103,7 +112,16 @@ export async function handleChatGptPlanCallback(request: Request, options: ChatG
 		const target = await options.resolveTarget(state);
 		if (!target) return failed("state_unknown");
 		const url = new URL(target);
-		if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash)
+		// The database names the vault; it must also be the state's own company's callback route.
+		const company = state.slice(0, state.indexOf("."));
+		if (
+			url.protocol !== "https:" ||
+			url.username ||
+			url.password ||
+			url.search ||
+			url.hash ||
+			!url.pathname.endsWith(`/v1/model-logins/${company}/chatgpt-plan/callback`)
+		)
 			return failed("provider_error");
 		const answer = await (options.fetchImplementation ?? fetch)(url.href, {
 			method: "POST",

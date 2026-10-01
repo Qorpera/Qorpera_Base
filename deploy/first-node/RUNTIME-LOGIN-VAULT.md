@@ -584,10 +584,15 @@ https://claude.ai/artifact/UWehPVysVzAmWcwvkuU6on.
   `redirectUri`. It asks `qorpera_chatgpt_plan_callback_target(state)` with the service role, forwards
   `{state, code, error, clientId}` to the company's vault, and returns the browser with
   `#?chatgpt_plan=confirm&confirmation=…` or `#?chatgpt_plan=failed&reason=…` after the return page.
-  The return page is `QORPERA_CHATGPT_PLAN_RETURN_URL` (optional; an HTTPS page of one of
-  `QORPERA_WEB_ORIGINS`, else that list's first origin). It never exchanges a code and never sees a
-  token. The web client's confirmation goes through `native-provider-login` at `…/chatgpt-plan-confirm`,
-  which the login chooser routes to the same vault (redeploy that function too).
+  The return page is `QORPERA_CHATGPT_PLAN_RETURN_URL` (optional, and empty counts as unset: an HTTPS
+  page of one of `QORPERA_WEB_ORIGINS`, else that list's first origin; no query, no credentials, no `?`
+  in its fragment, or the function does not start). It forwards only to the vault route of the state's
+  own company, gives the vault 20 s, reads at most 16 KB of its answer, and answers only GET. It never
+  exchanges a code and never sees a token. The web client's confirmation goes through
+  `native-provider-login` at `…/chatgpt-plan-confirm`, which the login chooser routes to the same vault
+  and which waits 40 s for it (see the confirmation time budget above; redeploy that function too).
+  Smoke check after deploy, which must show a 303 back to the return page with `reason=state_unknown`:
+  `curl -sI 'https://<project>.supabase.co/functions/v1/chatgpt-plan-callback?state=x' | grep -i '^location'`.
 - **Switches.** `update public.qorpera_chatgpt_plan_settings set enabled = true;` (platform) and
   `select public.qorpera_set_chatgpt_plan_company('<company>', true);` (service role; only for a company
   whose sign-ins go to its vault). Both start off.

@@ -117,9 +117,17 @@ describe("the ChatGPT plan callback", () => {
 		}
 	});
 
-	it("refuses a vault address that is not plain HTTPS, and any method but GET", async () => {
+	it("refuses a vault address that is not plain HTTPS or not the state's own company's route, and any method but GET", async () => {
 		const stub = vault({ status: 200, body: {} });
-		for (const target of ["http://vault.qorpera.test/callback", `${VAULT}?x=1`, "https://user:pass@vault.qorpera.test/callback"]) {
+		const other = "9d2c6a1e-7b4f-4c55-9a1e-2f6b8c9d0e1f";
+		for (const target of [
+			"http://vault.qorpera.test/callback",
+			`${VAULT}?x=1`,
+			`${VAULT}#x`,
+			"https://user:pass@vault.qorpera.test/callback",
+			`https://vault.qorpera.test/v1/model-logins/${other}/chatgpt-plan/callback`,
+			`https://vault.qorpera.test/v1/model-logins/${COMPANY}/login`,
+		]) {
 			const response = await handleChatGptPlanCallback(callback({ state: STATE, code: "c" }), {
 				returnUrl: RETURN,
 				resolveTarget: async () => target,
@@ -128,18 +136,66 @@ describe("the ChatGPT plan callback", () => {
 			assert.deepEqual(fragment(response), { chatgpt_plan: "failed", reason: "provider_error" });
 		}
 		assert.equal(stub.calls.length, 0);
-		const posted = await handleChatGptPlanCallback(callback({ state: STATE, code: "c" }, "POST"), {
-			returnUrl: RETURN,
-			resolveTarget: async () => VAULT,
-		});
-		assert.equal(posted.status, 405);
+		for (const method of ["POST", "HEAD", "PUT"]) {
+			const refused = await handleChatGptPlanCallback(callback({ state: STATE, code: "c" }, method), {
+				returnUrl: RETURN,
+				resolveTarget: async () => VAULT,
+				fetchImplementation: stub.fetchImplementation,
+			});
+			assert.equal(refused.status, 405);
+			assert.equal(refused.headers.get("allow"), "GET");
+		}
+		assert.equal(stub.calls.length, 0);
+	});
+
+	it("gives up on a vault that stalls, answers too much, answers no JSON or redirects", async () => {
+		const answers: Array<(signal: AbortSignal) => Promise<Response>> = [
+			// Stalls until this function's own deadline ends it.
+			(signal) =>
+				new Promise((_resolve, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true })),
+			async () =>
+				new Response(
+					JSON.stringify({ schema: "qorpera.chatgpt-plan-callback-result/v1", status: "confirm", confirmation: CONFIRMATION, pad: "x".repeat(20_000) }),
+					{ status: 200 },
+				),
+			async () => new Response("<html>not json</html>", { status: 200 }),
+			async () => {
+				throw new TypeError("redirect was refused");
+			},
+		];
+		for (const answer of answers) {
+			const started = Date.now();
+			const response = await handleChatGptPlanCallback(callback({ state: STATE, code: "c" }), {
+				returnUrl: RETURN,
+				resolveTarget: async () => VAULT,
+				fetchImplementation: (async (_input: string | URL | Request, init?: RequestInit) =>
+					answer(init?.signal as AbortSignal)) as typeof fetch,
+				timeoutMs: 50,
+			});
+			assert.equal(response.status, 303);
+			assert.deepEqual(fragment(response), { chatgpt_plan: "failed", reason: "provider_error" });
+			assert.ok(Date.now() - started < 5_000);
+		}
 	});
 
 	it("returns members only to an HTTPS page of an allowed web origin", () => {
 		assert.equal(chatGptPlanReturnUrl(undefined, []), "https://app.qorpera.com/");
 		assert.equal(chatGptPlanReturnUrl(undefined, ["https://staging.qorpera.com"]), "https://staging.qorpera.com/");
 		assert.equal(chatGptPlanReturnUrl(RETURN, ["https://app.qorpera.com"]), RETURN);
-		for (const bad of ["https://evil.example/", "http://app.qorpera.com/", "https://app.qorpera.com/?next=x"])
+		// Empty is unset; an uppercase scheme or host is the same origin.
+		assert.equal(chatGptPlanReturnUrl("", []), "https://app.qorpera.com/");
+		assert.equal(chatGptPlanReturnUrl("HTTPS://APP.QORPERA.COM/#/x", ["https://app.qorpera.com"]), "https://app.qorpera.com/#/x");
+		for (const bad of [
+			"https://evil.example/",
+			"http://app.qorpera.com/",
+			"https://app.qorpera.com/?next=x",
+			"https://user:pass@app.qorpera.com/",
+			"https://app.qorpera.com:8443/",
+			"https://app.qorpera.com.evil.example/",
+			// The web client reads the outcome from the fragment's first "?": a page with one already would
+			// never see it.
+			"https://app.qorpera.com/#/settings?tab=x",
+		])
 			assert.throws(() => chatGptPlanReturnUrl(bad, ["https://app.qorpera.com"]));
 		assert.equal(
 			chatGptPlanReturnLocation("https://app.qorpera.com/", { reason: "expired" }),

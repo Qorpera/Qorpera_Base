@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { forwardNativeProviderLogin } from "./native-provider-login.ts";
+import { CHATGPT_PLAN_CONFIRM_TIMEOUT_MS, forwardNativeProviderLogin } from "./native-provider-login.ts";
 
 const capability = "a".repeat(43);
 
@@ -179,6 +179,9 @@ describe("native provider login proxy", () => {
 		});
 		assert.equal(result.status, 200);
 		assert.equal(purpose, undefined);
+		// The vault's confirm route answers within 30 s, after a gateway lookup of at most 5 s; this hop waits
+		// longer, and the web client (45 s) longer still.
+		assert.ok(CHATGPT_PLAN_CONFIRM_TIMEOUT_MS >= 30_000 + 5_000 && CHATGPT_PLAN_CONFIRM_TIMEOUT_MS < 45_000);
 	});
 	it("forwards only the opaque login envelope and its one-time capability", async () => {
 		let forwardedBody = "";
