@@ -7,10 +7,22 @@ import type { Page } from "playwright-core";
  * password a member typed during a takeover would reach the agent's next
  * snapshot until the form is sent. One selector decides all three. */
 
-// Boxes a person types text into; checkboxes, buttons, hidden and file inputs never count.
-const TEXT_INPUT = `input:is(:not([type]),${["text", "password", "email", "tel", "number", "search", "url"]
-	.map((type) => `[type="${type}" i]`)
-	.join(",")})`;
+// Boxes a person types text into, including ones with an empty or unknown type (browsers show
+// those as text boxes); checkboxes, radios, buttons, hidden, file, range and color inputs never count.
+const TEXT_INPUT = `input${[
+	"checkbox",
+	"radio",
+	"submit",
+	"button",
+	"reset",
+	"image",
+	"file",
+	"hidden",
+	"range",
+	"color",
+]
+	.map((type) => `:not([type="${type}" i])`)
+	.join("")}`;
 const NAMING_ATTRIBUTES = ["name", "id", "aria-label", "placeholder"];
 // Words that name a password or a code anywhere in an attribute (English, German, Danish).
 const CONTAINED_WORDS = [
@@ -138,7 +150,8 @@ export async function readCompanyComputerPrivateValues(
 				.filter((frame) => !frame.isDetached())
 				.map((frame) => frame.evaluate(companyComputerPrivateValuesInDocument, query))
 		: [page.evaluate(companyComputerPrivateValuesInDocument, query)];
-	// Every read settles before a failure counts, so none is left in flight.
+	// A failure counts only once every frame's read has settled or timed out; a timed-out read is
+	// left to finish on its own (it only reads).
 	const settled = await Promise.allSettled(reads.map(withinReadTimeout));
 	const values = new Set<string>();
 	for (const read of settled) {

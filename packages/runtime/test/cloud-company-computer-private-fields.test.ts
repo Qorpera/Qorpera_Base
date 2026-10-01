@@ -184,7 +184,7 @@ describe("company computer snapshot redaction", () => {
 		expect(() => redactCompanyComputerSnapshot("- paragraph: secret\u2010value\u20101", ["secret-value-1"])).toThrow(
 			"PRIVATE_FIELD_VISIBLE",
 		);
-		// A value with fewer than six letters and digits is not checked this way.
+		// A value with fewer than eight letters and digits is not checked this way.
 		expect(redactCompanyComputerSnapshot("- paragraph: ab\u2010cd", ["ab-cd"])).toBe("- paragraph: ab\u2010cd");
 	});
 });
@@ -322,9 +322,10 @@ describe("company computer private values", () => {
 		const [password, textBoxes, ...rest] = COMPANY_COMPUTER_PRIVATE_FIELD_SELECTOR.split(/,(?=input)/);
 		expect(rest).toEqual([]);
 		expect(password).toBe('input[type="password" i]');
-		// Checkboxes, radio buttons, submit buttons and hidden inputs never count (their values are labels, "on", flags).
+		// Checkboxes, radios, buttons, hidden, file, range and color inputs never count (their values are labels,
+		// "on", flags); a box with an empty or unknown type is a text box.
 		expect(textBoxes).toMatch(
-			/^input:is\(:not\(\[type\]\),\[type="text" i\],\[type="password" i\],\[type="email" i\],\[type="tel" i\],\[type="number" i\],\[type="search" i\],\[type="url" i\]\):is\(/,
+			/^input:not\(\[type="checkbox" i\]\):not\(\[type="radio" i\]\):not\(\[type="submit" i\]\):not\(\[type="button" i\]\):not\(\[type="reset" i\]\):not\(\[type="image" i\]\):not\(\[type="file" i\]\):not\(\[type="hidden" i\]\):not\(\[type="range" i\]\):not\(\[type="color" i\]\):is\(/,
 		);
 		for (const part of [
 			'[autocomplete~="current-password" i]',
@@ -338,7 +339,6 @@ describe("company computer private values", () => {
 			'[aria-label*="verif" i][aria-label*="code" i]',
 		])
 			expect(textBoxes).toContain(part);
-		for (const part of ['[id*="otp" i]', '[name*="mfa" i]', "checkbox", "hidden", "submit"])
-			expect(textBoxes).not.toContain(part);
+		for (const part of ['[id*="otp" i]', '[name*="mfa" i]', '[type="text" i]']) expect(textBoxes).not.toContain(part);
 	});
 });

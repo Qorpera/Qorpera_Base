@@ -368,9 +368,17 @@ export class CompanyComputerGuestAutomation {
 	 * uses a browser screenshot, which masks.
 	 */
 	async #assertNoPrivateValueShown(signal: AbortSignal): Promise<void> {
-		const context = (await this.#screenBrowser?.(signal)) ?? this.#browser?.context;
+		let pages: Page[];
+		try {
+			// A window still opening is waited for: it may show a box a moment later.
+			const context = (await this.#screenBrowser?.(signal)) ?? this.#browser?.context;
+			pages = context?.pages() ?? [];
+		} catch (error) {
+			signal.throwIfAborted();
+			throw new CompanyComputerActionFailedError(new Error("PRIVATE_FIELD_TAB_UNREADABLE", { cause: error }));
+		}
 		signal.throwIfAborted();
-		for (const page of context?.pages() ?? []) {
+		for (const page of pages) {
 			if (page.isClosed()) continue;
 			let values: string[];
 			try {
