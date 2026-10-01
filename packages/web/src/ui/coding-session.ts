@@ -38,6 +38,7 @@ import { matchesKey } from "./keys.ts";
 import { markdownBubbles } from "./markdown.ts";
 import { t } from "./preferences.ts";
 import { quietScroll } from "./quiet-scroll.ts";
+import { codingFailureReason } from "./run-failure.ts";
 import { uiScale } from "./scale.ts";
 
 export const HARNESS_NAMES: Record<CodingHarness, string> = { codex: "Codex", "claude-code": "Claude Code" };
@@ -864,28 +865,15 @@ export class CodingSessionElement {
 					);
 					break;
 				}
-				case "failed": {
-					const reason = text(event.body, "reason", "summary");
+				case "failed":
 					note(
 						h(
 							"div",
 							{ class: "conversation-note coding-note coding-row-error", role: "note" },
-							reason === "executor-lease-expired"
-								? t(
-										"The computer running this session stopped answering. The workspace is kept; a follow-up starts it again.",
-									)
-								: reason?.includes("[code=COMPUTER_HOURS_EXHAUSTED]")
-									? // Cut off an hour after the company ran out of computer hours (20260928259270).
-										t(
-											"The company ran out of computer hours. The workspace is kept; a follow-up continues once hours are added.",
-										)
-									: reason
-										? t("Failed: {reason}", { reason })
-										: t("Failed"),
+							codingFailureReason(text(event.body, "reason", "summary")),
 						),
 					);
 					break;
-				}
 				default:
 					break;
 			}

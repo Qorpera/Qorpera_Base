@@ -60,6 +60,52 @@ export function runFailureReason(lastError: string | undefined, jobStatus: "fail
 	return t(REASONS[classifyRunFailure(lastError, jobStatus)]);
 }
 
+// The coding executor's own words for a turn that ended with no coding_finish or
+// coding_ask, or that was stopped (runner-orchestrator coding-executor.ts). Any
+// other failure it reports carries the run's last error after its own prefix.
+const CODING_TURN_ENDED = "The coding turn ended without a submission.";
+const CODING_TURN_STOPPED = "The coding turn was stopped before it finished.";
+
+const CODING_REASONS: Record<RunFailureKind | "no_submission", string> = {
+	no_submission: phrase(
+		"The session's last turn ended without saving its work or asking a question. The workspace is kept; a follow-up continues it.",
+	),
+	// Cut off an hour after the company ran out of computer hours (20260928259270).
+	computer_hours: phrase(
+		"The company ran out of computer hours. The workspace is kept; a follow-up continues once hours are added.",
+	),
+	usage_limit: phrase(
+		"The model account has reached its usage limit. The workspace is kept; a follow-up continues it once the limit resets.",
+	),
+	credential: phrase(
+		"The model account needs to be connected again. The workspace is kept; a follow-up continues it once the account is connected.",
+	),
+	dispatch: phrase("No computer could be started for the session. The workspace is kept; a follow-up tries again."),
+	lost: phrase(
+		"The computer running this session stopped answering. The workspace is kept; a follow-up starts it again.",
+	),
+	step_timeout: phrase(
+		"One of the session's steps got no answer in time. The workspace is kept; a follow-up continues it.",
+	),
+	timeout: phrase("The session took too long and was stopped. The workspace is kept; a follow-up continues it."),
+	bridge: phrase(
+		"Something on Qorpera's side refused one of the session's steps. The workspace is kept; a follow-up continues it.",
+	),
+	cancelled: phrase("The session was stopped before it finished. The workspace is kept; a follow-up continues it."),
+	other: phrase("The session stopped because of an internal error. The workspace is kept; a follow-up continues it."),
+};
+
+/** Why a coding session's turn failed, in the member's words, and that its
+ * workspace is kept. The reason is the kernel's "executor-lease-expired" or the
+ * executor's summary, which carries the run's last error and its fixed code;
+ * both name machinery, so neither is ever shown as it is. */
+export function codingFailureReason(reason: string | undefined): string {
+	if (reason === "executor-lease-expired") return t(CODING_REASONS.lost);
+	if (reason === CODING_TURN_ENDED || reason?.includes("[code=CODING_TURN_ENDED_WITHOUT_SUBMISSION]"))
+		return t(CODING_REASONS.no_submission);
+	return t(CODING_REASONS[classifyRunFailure(reason, reason === CODING_TURN_STOPPED ? "cancelled" : "failed")]);
+}
+
 /** Whether the run was interrupted rather than refused: its computer stopped
  * answering, a step got no answer in time, it was stopped for time, cancelled, or
  * never got a computer. Those are worth trying again as they are.
