@@ -63,12 +63,13 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Made whole in one request, so the observer never sees a half-made builder. Its root is 10 GiB, the smallest machine
+# Made whole in one request, so the observer never sees a half-made builder. Its stdin is closed: lxc init reads
+# instance configuration from a stdin that is not a terminal, and would wait for one left open. Its root is 10 GiB, the smallest machine
 # disk: a machine's root can never be smaller than its image.
 lx init ubuntu:26.04 "$BUILDER" --vm --no-profiles --storage "$POOL" -d root,size=10GiB -n "$NETWORK" \
 	-d eth0,security.mac_filtering=true -d eth0,security.ipv4_filtering=true -d eth0,security.ipv6_filtering=true \
 	-d eth0,security.port_isolation=true -c limits.cpu=4 -c limits.memory=8GiB -c boot.mode=uefi-secureboot \
-	-c boot.autostart=false -c user.qorpera.image_builder=true -c user.qorpera.purpose=machine-image
+	-c boot.autostart=false -c user.qorpera.image_builder=true -c user.qorpera.purpose=machine-image </dev/null
 lx start "$BUILDER"
 for _ in $(seq 1 90); do lx exec "$BUILDER" -- true >/dev/null 2>&1 && break; sleep 2; done
 lx exec "$BUILDER" -- cloud-init status --wait >/dev/null
