@@ -1,5 +1,6 @@
 import type { RequestSponsoredSessionTurnInput } from "@qorpera/cloud-client/cloud-native-subscription-control";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { CloudRpcError } from "../src/cloud/client.ts";
 import { createWebNativeSubscription, type WebNativeProviderLoginInput } from "../src/cloud/native-subscription.ts";
 import { deferred, fixture, id, profileA, session, settle, timestamp, userA, userB } from "./fixtures.ts";
 
@@ -420,7 +421,7 @@ describe("ChatGPT plan logins (switched off until a company has one)", () => {
 		});
 		await expect(f.client.recordRoutineOffer!(id(94))).rejects.toThrow("Invalid cloud response");
 	});
-	it("turns work while away on (consent, then the consented version bound) and off (consent only)", async () => {
+	it("turns work while away on and off through the member's own switch, binding each new version", async () => {
 		const f = setup();
 		const rpc = vi
 			.spyOn(f.cloud, "rpc")
@@ -430,10 +431,10 @@ describe("ChatGPT plan logins (switched off until a company has one)", () => {
 			.mockResolvedValueOnce(Response.json({ binding_id: id(92), version: 2 }))
 			.mockResolvedValueOnce(Response.json({ binding_id: id(93), version: 1 }));
 		await f.client.setWorkWhileAway!(id(94), true);
-		expect(rpc).toHaveBeenNthCalledWith(1, "qorpera_consent_provider_connection_autonomous", {
+		expect(rpc).toHaveBeenNthCalledWith(1, "qorpera_set_chatgpt_plan_work_while_away", {
 			p_profile_id: profileA.profileId,
 			p_connection_id: id(94),
-			p_allow_autonomous: true,
+			p_on: true,
 		});
 		expect(JSON.parse(f.fetch.mock.calls[0]![1]!.body as string)).toMatchObject({
 			p_provider_connection_id: id(94),
@@ -441,10 +442,10 @@ describe("ChatGPT plan logins (switched off until a company has one)", () => {
 			p_allow_autonomous: true,
 		});
 		await f.client.setWorkWhileAway!(id(94), false);
-		expect(rpc).toHaveBeenNthCalledWith(2, "qorpera_consent_provider_connection_autonomous", {
+		expect(rpc).toHaveBeenNthCalledWith(2, "qorpera_set_chatgpt_plan_work_while_away", {
 			p_profile_id: profileA.profileId,
 			p_connection_id: id(94),
-			p_allow_autonomous: false,
+			p_on: false,
 		});
 		// Turned off, the new version is bound at once for the member's own messages.
 		expect(JSON.parse(f.fetch.mock.calls[1]![1]!.body as string)).toMatchObject({
@@ -455,6 +456,20 @@ describe("ChatGPT plan logins (switched off until a company has one)", () => {
 		// An answer for another connection or the other choice is refused.
 		rpc.mockResolvedValueOnce({ connection_id: id(94), version: 5, allow_autonomous: true });
 		await expect(f.client.setWorkWhileAway!(id(94), false)).rejects.toThrow("Invalid cloud response");
+	});
+	it("asks the company's switches, and reads a deployment without them as off", async () => {
+		const f = setup();
+		const rpc = vi
+			.spyOn(f.cloud, "rpc")
+			.mockResolvedValueOnce(true)
+			.mockResolvedValueOnce(false)
+			.mockRejectedValueOnce(
+				new CloudRpcError("qorpera_chatgpt_plan_available", { message: "missing", code: "PGRST202" }, 404),
+			);
+		expect(await f.client.chatGptPlanAvailable!()).toBe(true);
+		expect(rpc).toHaveBeenCalledWith("qorpera_chatgpt_plan_available", { p_profile_id: profileA.profileId });
+		expect(await f.client.chatGptPlanAvailable!()).toBe(false);
+		expect(await f.client.chatGptPlanAvailable!()).toBe(false);
 	});
 });
 

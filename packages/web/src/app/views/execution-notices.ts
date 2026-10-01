@@ -1,6 +1,6 @@
 import type { MemberNotification, WebMemberNotifications } from "../../cloud/member-notifications.ts";
 import { planLogin, type WebMemberConnection, type WebNativeSubscription } from "../../cloud/native-subscription.ts";
-import type { WebRoutines } from "../../cloud/routines.ts";
+import type { WebRoutine, WebRoutines } from "../../cloud/routines.ts";
 import { button, h } from "../../ui/dom.ts";
 import { matchesKey } from "../../ui/keys.ts";
 import { t } from "../../ui/preferences.ts";
@@ -9,16 +9,36 @@ type Client = Pick<WebMemberNotifications, "listNotifications" | "acknowledgeNot
 /** What the band needs to ask a ChatGPT plan's member to turn on work while away (Sign in with ChatGPT). */
 export interface PlanOffer {
 	native: Pick<WebNativeSubscription, "listConnections"> &
-		Required<Pick<WebNativeSubscription, "setWorkWhileAway" | "recordRoutineOffer">>;
+		Required<Pick<WebNativeSubscription, "setWorkWhileAway" | "recordRoutineOffer" | "chatGptPlanAvailable">>;
 	routines: Pick<WebRoutines, "list" | "setEnabled">;
+	/** The signed-in member: the card restarts only routines that run for them. */
+	memberId: string;
+	/** Owners and admins save routines; for anyone else the card turns the plan on and says what is next. */
+	canManage: () => boolean;
 }
+/** The card while it stands: the notices that raised it, the member's waiting routines, the plan. */
+interface Offer {
+	notices: readonly Waiting[];
+	routines: readonly WebRoutine[];
+	plan: WebMemberConnection;
+}
+/** A routine of this member that waits for a payer a plan can be: never a file-change or webhook routine. */
+const waitsForPlan = (routine: WebRoutine, memberId: string) =>
+	routine.status === "paused" &&
+	routine.pauseReason === "needs_model_account" &&
+	routine.runsForUserId === memberId &&
+	!routine.triggers.some((trigger) => trigger.kind === "listener");
 type Waiting = MemberNotification & {
 	subject: { schema: "routine-needs-model-account"; routineId: string; title: string };
 };
 const waiting = (item: MemberNotification): item is Waiting => item.subject.schema === "routine-needs-model-account";
 /** The member's ChatGPT plan that may be offered: signed in, not turned on, its card not shown
- * before (or shown in this window). Undefined for every member without a plan login. */
-function offerable(connections: readonly WebMemberConnection[], offered: ReadonlySet<string>) {
+ * before (or shown, and not answered, in this window). Undefined for every member without a plan login. */
+function offerable(
+	connections: readonly WebMemberConnection[],
+	offered: ReadonlySet<string>,
+	answered: ReadonlySet<string>,
+) {
 	const newest = new Map<string, WebMemberConnection>();
 	for (const item of connections) {
 		const current = newest.get(item.connectionId);
@@ -30,6 +50,7 @@ function offerable(connections: readonly WebMemberConnection[], offered: Readonl
 			item.connectionStatus === "active" &&
 			item.authorizationState === "active" &&
 			item.allowAutonomous !== true &&
+			!answered.has(item.connectionId) &&
 			(!item.routineOfferShownAt || offered.has(item.connectionId)),
 	);
 }
@@ -67,11 +88,19 @@ export class ExecutionNotices {
 	readonly #restoreFocus: (() => void) | undefined;
 	readonly #plan: PlanOffer | undefined;
 	#items: readonly MemberNotification[] = [];
-	/** Routines waiting for this member's plan, and the plan, while its card stands. */
-	#offer: { items: readonly Waiting[]; plan: WebMemberConnection } | undefined;
+	#offer: Offer | undefined;
 	/** Plans whose card this window showed (and recorded): it stays until answered here. */
 	readonly #offered = new Set<string>();
+	/** Plans answered in this window (Turn on or Not now): their card never comes back. */
+	readonly #answered = new Set<string>();
+	/** Plans this window turned on: a retry after a failed routine save does not turn them on again. */
+	readonly #turnedOn = new Set<string>();
+	/** The waiting notices last read with nothing to offer: the next poll reads no more unless they change. */
+	#offerChecked = "";
+	#offerBusy: "on" | "not-now" | undefined;
 	#offerError: string | undefined;
+	/** After Turn on, for a member who does not save routines: what to do next. */
+	#offerDone: string | undefined;
 	readonly #hidden = new Set<string>();
 	#request: AbortController | undefined;
 	#timer: ReturnType<typeof setInterval> | undefined;
@@ -95,7 +124,13 @@ export class ExecutionNotices {
 	}
 
 	async refresh(): Promise<void> {
-		if (this.#lifetime.signal.aborted || this.#request || this.#acking || document.visibilityState === "hidden")
+		if (
+			this.#lifetime.signal.aborted ||
+			this.#request ||
+			this.#acking ||
+			this.#offerBusy ||
+			document.visibilityState === "hidden"
+		)
 			return;
 		const request = new AbortController();
 		this.#request = request;
@@ -104,7 +139,12 @@ export class ExecutionNotices {
 			const items = await this.#client.listNotifications(signal);
 			if (signal.aborted) return;
 			this.#items = told(items);
-			this.#offer = await this.#readOffer(items, signal);
+			// The plan card has its own reads; a failed one hides only the card.
+			if (!this.#offerDone)
+				this.#offer = await this.#readOffer(items, signal).catch((error: unknown) => {
+					if (signal.aborted) throw error;
+					return undefined;
+				});
 		} catch {
 			if (signal.aborted) return;
 			// Nothing stale is shown, and nothing can be dismissed, until a read succeeds.
@@ -116,68 +156,111 @@ export class ExecutionNotices {
 		}
 	}
 
-	/** A routine waits for its member's account, and the member has a ChatGPT plan they have not
-	 * turned on: the card asks them once. Members without a plan login never get here. */
-	async #readOffer(items: readonly MemberNotification[], signal: AbortSignal) {
-		const routines = items.filter(
+	/** An agent's routine waits for this member's account, and the member has a ChatGPT plan they have not
+	 * turned on, while plans are on: the card asks them once. Members without a plan login never get here. */
+	async #readOffer(items: readonly MemberNotification[], signal: AbortSignal): Promise<Offer | undefined> {
+		const plan = this.#plan;
+		const notices = items.filter(
 			(item): item is Waiting => !item.acknowledgedAt && waiting(item) && !this.#hidden.has(item.notificationId),
 		);
-		if (!this.#plan || !routines.length) return undefined;
-		const plan = offerable((await this.#plan.native.listConnections(signal)).connections, this.#offered);
-		return plan ? { items: routines, plan } : undefined;
+		if (!plan || !notices.length) return undefined;
+		const key = notices
+			.map((item) => item.notificationId)
+			.sort()
+			.join();
+		if (this.#offer && key === this.#offerChecked) return this.#offer;
+		if (key === this.#offerChecked) return undefined;
+		this.#offerChecked = key;
+		if (!(await plan.native.chatGptPlanAvailable(signal))) return undefined;
+		const connection = offerable(
+			(await plan.native.listConnections(signal)).connections,
+			this.#offered,
+			this.#answered,
+		);
+		if (!connection) return undefined;
+		const routines = (await plan.routines.list()).filter((routine) => waitsForPlan(routine, plan.memberId));
+		return routines.length ? { notices, routines, plan: connection } : undefined;
 	}
 
-	/** Turns on work while away for the plan, then saves each waiting routine on it again. */
+	/** Turns on work while away for the plan, then (for an owner or admin) saves each waiting routine on it
+	 * again; anyone else is told to ask the agent. */
 	async #turnOn(): Promise<void> {
 		const offer = this.#offer;
-		if (this.#lifetime.signal.aborted || this.#acking || !offer || !this.#plan) return;
+		const plan = this.#plan;
+		if (this.#lifetime.signal.aborted || this.#acking || this.#offerBusy || !offer || !plan) return;
 		const signal = this.#lifetime.signal;
+		const id = offer.plan.connectionId;
 		this.#request?.abort();
 		this.#request = undefined;
-		this.#acking = true;
+		this.#offerBusy = "on";
 		this.#offerError = undefined;
 		this.#draw();
 		try {
-			await this.#plan.native.setWorkWhileAway(offer.plan.connectionId, true, signal);
-			const account = (await this.#plan.native.listConnections(signal)).connections
-				.filter((item) => item.connectionId === offer.plan.connectionId && item.allowAutonomous === true)
-				.sort((a, b) => b.connectionVersion - a.connectionVersion)[0];
-			if (!account) throw new Error("The plan did not turn on");
-			const routines = await this.#plan.routines.list();
-			for (const item of offer.items) {
-				const routine = routines.find((entry) => entry.routineId === item.subject.routineId);
-				if (routine) await this.#plan.routines.setEnabled(routine, account, true, crypto.randomUUID());
+			if (!this.#turnedOn.has(id)) {
+				await plan.native.setWorkWhileAway(id, true, signal);
+				this.#turnedOn.add(id);
+			}
+			this.#answered.add(id);
+			if (plan.canManage()) {
+				const account = (await plan.native.listConnections(signal)).connections
+					.filter((item) => item.connectionId === id && item.allowAutonomous === true)
+					.sort((a, b) => b.connectionVersion - a.connectionVersion)[0];
+				if (!account) throw new Error("The plan did not turn on");
+				const current = await plan.routines.list();
+				for (const waiting of offer.routines) {
+					const routine = current.find((entry) => entry.routineId === waiting.routineId);
+					// Only a routine that still waits: one the agent paused, concluded or removed stays as it is.
+					if (routine && waitsForPlan(routine, plan.memberId))
+						await plan.routines.setEnabled(routine, account, true, crypto.randomUUID());
+				}
+			} else
+				this.#offerDone =
+					offer.routines.length > 1
+						? t("Your ChatGPT plan now works while you're away. Ask the agents to set those routines up again.")
+						: t("Your ChatGPT plan now works while you're away. Ask the agent to set {title} up again.", {
+								title: offer.routines[0]!.title,
+							});
+			for (const item of offer.notices) {
 				await this.#client.acknowledgeNotification(item.notificationId, signal).catch(() => undefined);
 				this.#hidden.add(item.notificationId);
 			}
-			this.#offer = undefined;
+			if (!this.#offerDone) this.#offer = undefined;
 		} catch {
-			if (!signal.aborted) this.#offerError = t("“Work while you're away” could not be turned on. Try again.");
+			if (!signal.aborted)
+				this.#offerError = this.#turnedOn.has(id)
+					? t("“Work while you're away” is on, but the routine could not be started. Try again.")
+					: t("“Work while you're away” could not be turned on. Try again.");
 		} finally {
-			if (!signal.aborted) {
-				this.#acking = false;
-				this.#draw();
-			}
+			this.#offerBusy = undefined;
+			if (!signal.aborted) this.#draw();
 		}
 	}
 
 	/** "Not now": the routines keep waiting, and the card never comes back. */
 	async #notNow(): Promise<void> {
 		const offer = this.#offer;
-		if (this.#lifetime.signal.aborted || this.#acking || !offer) return;
+		if (this.#lifetime.signal.aborted || this.#acking || this.#offerBusy || !offer) return;
 		this.#request?.abort();
 		this.#request = undefined;
-		this.#acking = true;
+		this.#offerBusy = "not-now";
+		this.#answered.add(offer.plan.connectionId);
 		this.#draw();
-		for (const item of offer.items) {
+		for (const item of offer.notices) {
 			await this.#client.acknowledgeNotification(item.notificationId, this.#lifetime.signal).catch(() => undefined);
 			this.#hidden.add(item.notificationId);
 		}
+		this.#offerBusy = undefined;
 		if (!this.#lifetime.signal.aborted) {
 			this.#offer = undefined;
-			this.#acking = false;
 			this.#draw();
 		}
+	}
+
+	/** Closes the line that says what to do next. */
+	#closeDone(): void {
+		this.#offerDone = undefined;
+		this.#offer = undefined;
+		this.#draw();
 	}
 
 	async #acknowledge(): Promise<void> {
@@ -251,35 +334,31 @@ export class ExecutionNotices {
 		this.#drawn = key;
 	}
 
-	/** The plan card, in the notice's shape: what waits, and Turn on or Not now. Showing it records
-	 * the showing, so it comes once per member. */
-	#drawOffer(offer: { items: readonly Waiting[]; plan: WebMemberConnection }): void {
-		const first = offer.items[0]!;
+	/** The plan card, in the notice's shape: what waits, and Turn on or Not now. Showing it, on a page
+	 * the member can see, records the showing, so it comes once per member. */
+	#drawOffer(offer: Offer): void {
+		const first = offer.routines[0]!;
 		const key = JSON.stringify([
 			"plan",
 			offer.plan.connectionId,
-			first.notificationId,
-			this.#acking,
+			offer.routines.map((routine) => routine.routineId),
+			this.#offerBusy,
 			this.#offerError,
+			this.#offerDone,
 		]);
-		if (key === this.#drawn) return;
-		if (!this.#offered.has(offer.plan.connectionId)) {
+		if (
+			!this.#offered.has(offer.plan.connectionId) &&
+			this.el.isConnected &&
+			document.visibilityState === "visible"
+		) {
 			this.#offered.add(offer.plan.connectionId);
 			void this.#plan?.native
 				.recordRoutineOffer(offer.plan.connectionId, this.#lifetime.signal)
 				.catch(() => undefined);
 		}
+		if (key === this.#drawn) return;
 		const focused = this.el.contains(document.activeElement);
-		const turnOn = button(
-			this.#acking ? t("Turning on…") : t("Turn on"),
-			(event) => event.detail < 2 && void this.#turnOn(),
-			{ small: true, primary: true },
-		);
-		turnOn.dataset.action = "turn-on-plan";
-		const notNow = button(t("Not now"), (event) => event.detail < 2 && void this.#notNow(), { small: true });
-		notNow.dataset.action = "not-now-plan";
-		if (this.#acking) for (const item of [turnOn, notNow]) item.setAttribute("aria-disabled", "true");
-		this.el.replaceChildren(
+		const card = (text: (Node | string | null)[], ...actions: HTMLElement[]) =>
 			h(
 				"div",
 				{
@@ -289,24 +368,45 @@ export class ExecutionNotices {
 						if (!matchesKey(event, "dismiss")) return;
 						event.preventDefault();
 						event.stopPropagation();
-						void this.#notNow();
+						if (this.#offerDone) this.#closeDone();
+						else void this.#notNow();
 					},
 				},
-				h(
-					"p",
-					null,
-					offer.items.length > 1
-						? t("{count} routines can run while you're away.", { count: offer.items.length })
-						: t("{title} can run while you're away.", { title: first.subject.title }),
-					" ",
-					t("Turn on “Work while you're away” so your ChatGPT plan can run it."),
-					this.#offerError ? " " : null,
-					this.#offerError ? h("span", { role: "alert" }, this.#offerError) : null,
+				h("p", null, ...text),
+				...actions,
+			);
+		if (this.#offerDone) {
+			const close = button(t("Dismiss"), (event) => event.detail < 2 && this.#closeDone(), { small: true });
+			close.dataset.action = "dismiss-plan";
+			this.el.replaceChildren(card([this.#offerDone], close));
+		} else {
+			const turnOn = button(
+				this.#offerBusy === "on" ? t("Turning on…") : t("Turn on"),
+				(event) => event.detail < 2 && void this.#turnOn(),
+				{ small: true, primary: true },
+			);
+			turnOn.dataset.action = "turn-on-plan";
+			const notNow = button(t("Not now"), (event) => event.detail < 2 && void this.#notNow(), { small: true });
+			notNow.dataset.action = "not-now-plan";
+			if (this.#offerBusy) for (const item of [turnOn, notNow]) item.setAttribute("aria-disabled", "true");
+			this.el.replaceChildren(
+				card(
+					[
+						offer.routines.length > 1
+							? t("{count} routines can run while you're away.", { count: offer.routines.length })
+							: t("{title} can run while you're away.", { title: first.title }),
+						" ",
+						offer.routines.length > 1
+							? t("Turn on “Work while you're away” so your ChatGPT plan can run them.")
+							: t("Turn on “Work while you're away” so your ChatGPT plan can run it."),
+						this.#offerError ? " " : null,
+						this.#offerError ? h("span", { role: "alert" }, this.#offerError) : null,
+					],
+					turnOn,
+					notNow,
 				),
-				turnOn,
-				notNow,
-			),
-		);
+			);
+		}
 		this.el.hidden = false;
 		if (focused) this.el.querySelector<HTMLElement>("button[data-action]")?.focus({ preventScroll: true });
 		this.#drawn = key;
