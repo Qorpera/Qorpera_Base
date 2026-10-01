@@ -24,7 +24,10 @@ import {
 	observeCloudCompanyPathPresence,
 } from "./cloud-company-path-presence.ts";
 import { cloudEventTools } from "./cloud-event-tools.ts";
+import { CloudFolderGroupChats } from "./cloud-folder-group-chats.ts";
+import { CloudFolderHiring } from "./cloud-folder-hiring.ts";
 import { CloudFolderRoutineDecision } from "./cloud-folder-routine-decision.ts";
+import { CloudFolderRoutines } from "./cloud-folder-routines.ts";
 import { CloudFolderSidebar } from "./cloud-folder-sidebar.ts";
 import { CloudFolderTodos } from "./cloud-folder-todos.ts";
 import { cloudHiringTools } from "./cloud-hiring-tools.ts";
@@ -617,6 +620,18 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 															},
 														}
 													: undefined,
+												folder
+													? new CloudFolderRoutines({
+															folder: folder.client,
+															operations,
+															identity,
+															handle: folder.handle,
+															// The routine that woke this run, which it may not pause or remove.
+															...(wake.kind === "routine" && wake.routine
+																? { ownRoutineId: wake.routine.id }
+																: {}),
+														})
+													: undefined,
 											),
 											...(dynamicRoutine
 												? [
@@ -695,7 +710,27 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 								),
 								...(identity.audienceKind === "company"
 									? [
-											...(work.isWorker ? [] : cloudHiringTools(gateway, identity)),
+											...(work.isWorker
+												? []
+												: cloudHiringTools(
+														gateway,
+														identity,
+														undefined,
+														folder
+															? {
+																	folderHiring: new CloudFolderHiring({
+																		folder: folder.client,
+																		operations,
+																		identity,
+																	}),
+																	folderGroupChats: new CloudFolderGroupChats({
+																		folder: folder.client,
+																		operations,
+																		identity,
+																	}),
+																}
+															: {},
+													)),
 											...cloudWorkerTools(binding, identity, this.#paths, gateway, wake, {
 												machines: Boolean(this.#machines) && machinesAvailable,
 												...(folder
