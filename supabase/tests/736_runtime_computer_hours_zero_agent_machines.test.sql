@@ -1,5 +1,5 @@
 -- @fixture 628_runtime_company_machines.test.sql until "-- 8. Stop: the agent's wish, carried out under custody; the room is given back and the next in line gets it."
--- Computer hours, build step 6b part 3 (20260929730000): agents' machines at zero.
+-- Computer hours, build step 6b part 3 (20260928319730): agents' machines at zero.
 --   * At zero no machine starts or wakes: a new one waits, unplaced, for computer hours, and so does
 --     an asleep one, on its own node with its disk. Neither takes a place in line.
 --   * Within the hour after the company ran out, machines keep running.
