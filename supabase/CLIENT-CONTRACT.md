@@ -621,8 +621,9 @@ Built switched off with plan logins. Show none of it while plan logins are switc
 
 - `qorpera_list_member_native_execution_connections`: each connection also has `login_kind` (`codex` or
   `chatgpt_plan`; null for a node login), `allow_autonomous` (whether its member turned on work while away for
-  this version) and `routine_offer_shown_at` (when the first-routine card was shown for a plan login; null until
-  then; the same for all of the member's plan logins in the company). Label a `chatgpt_plan` connection
+  this version) and `routine_offer_shown_at` (when the member's first-routine card was shown in this company;
+  null until then; the same on every entry of the member's list, so read it from a plan login's entry). Label
+  a `chatgpt_plan` connection
   "ChatGPT plan". Never consent a plan login on the member's behalf:
   `qorpera_consent_provider_connection_autonomous` runs only from the member's own "Work while you're away"
   choice. Codex logins keep today's behaviour.
