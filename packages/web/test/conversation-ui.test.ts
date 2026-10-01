@@ -1109,6 +1109,39 @@ describe("conversation UI boundaries", () => {
 			"The model account paying for this work reached its usage limit, so the work stopped. It does not move to another account. It can run again once the limit resets.",
 		);
 		expect(card()?.querySelector('[data-action="manage-usage"]')).toBeNull();
+		// The member's own Codex login at its limit: the plain sentence, no link.
+		const own = f.company.userId.toLowerCase();
+		f.company.store.set({
+			activity: [run],
+			recoveries: {
+				[run.runId]: { ...details(bridge), usageLimit: true, paidByChatgptPlan: false, requestedByUserId: own },
+			},
+		});
+		await settle();
+		expect(card()?.querySelector(".run-failure-reason")?.textContent).toBe(
+			"The model account paying for this work reached its usage limit, so the work stopped. It does not move to another account. It can run again once the limit resets.",
+		);
+		expect(card()?.querySelector('[data-action="manage-usage"]')).toBeNull();
+		// The member's own plan, stopped for another reason: no limit words, no link.
+		f.company.store.set({
+			activity: [run],
+			recoveries: {
+				[run.runId]: { ...details(bridge), usageLimit: false, paidByChatgptPlan: true, requestedByUserId: own },
+			},
+		});
+		await settle();
+		expect(card()?.querySelector(".run-failure-reason")?.textContent).toBe(
+			"The run started, but one of its steps was refused. The problem is on Qorpera's side.",
+		);
+		expect(card()?.querySelector('[data-action="manage-usage"]')).toBeNull();
+		// A run that left changes keeps Review, also at the member's own plan's limit.
+		f.company.store.set({
+			activity: [run],
+			recoveries: { [run.runId]: { ...plan, requestedByUserId: own, proposalId: id(72) } },
+		});
+		await settle();
+		expect(card()?.querySelector('[data-action="manage-usage"]')).toBeNull();
+		expect(card()?.querySelector("a")?.textContent).toBe("Review");
 		f.company.store.set({ activity: [run], recoveries: { [run.runId]: details(bridge) } });
 		await settle();
 		expect(card()?.querySelector(".run-failure-reason")?.textContent).toBe(
