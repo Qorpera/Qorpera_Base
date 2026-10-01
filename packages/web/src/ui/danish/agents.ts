@@ -169,8 +169,8 @@ export const AGENTS: Record<string, string> = {
 	"Needs {name} · paused {duration}": "Venter på {name} · på pause i {duration}",
 	"Needs {name} · paused now": "Venter på {name} · på pause nu",
 	"Answer sent · waiting for the session": "Svar sendt · venter på sessionen",
-	"The company ran out of computer hours. The workspace is kept; a follow-up continues once hours are added.":
-		"Virksomheden løb tør for computertimer. Arbejdsområdet er gemt; en opfølgning fortsætter, når der er tilføjet timer.",
+	"Waiting for computer hours": "Venter på computertimer",
+	"Answer sent · waiting for computer hours": "Svar sendt · venter på computertimer",
 	"Opening the pull request": "Åbner pull requesten",
 	"Draft PR ready · session kept for follow-ups": "PR-kladde klar · sessionen gemmes til opfølgning",
 	"Finished · session kept for follow-ups": "Færdig · sessionen gemmes til opfølgning",
@@ -212,6 +212,8 @@ export const AGENTS: Record<string, string> = {
 	"Draft PR opened": "PR-kladde åbnet",
 	"The computer running this session stopped answering. The workspace is kept; a follow-up starts it again.":
 		"Computeren, der kørte sessionen, holdt op med at svare. Arbejdsområdet er gemt; en opfølgning starter den igen.",
+	"The company ran out of computer hours. The workspace is kept; a follow-up continues once hours are added.":
+		"Virksomheden løb tør for computertimer. Arbejdsområdet er gemt; en opfølgning fortsætter, når der er tilføjet timer.",
 	"Failed: {reason}": "Mislykkedes: {reason}",
 	"{count} file": "{count} fil",
 	"{count} files": "{count} filer",

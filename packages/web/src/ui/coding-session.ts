@@ -99,6 +99,9 @@ export function codingSessionStandby(
 	return undefined;
 }
 
+/** The kernel's step while a turn waits for its company's computer hours (20260929760000). */
+const HOURS_STEP = "Waiting for computer hours";
+
 /** The live status line: the state, how long, the last step, the diff size; between turns, whether the session
  * stands by on its machine, runs something there, or sleeps. */
 export function codingSessionStatus(
@@ -118,7 +121,10 @@ export function codingSessionStatus(
 			: undefined;
 	switch (session.phase) {
 		case "queued":
-			return { text: t("Waiting for a computer"), tone: "idle" };
+			return {
+				text: session.lastStep === HOURS_STEP ? t("Waiting for computer hours") : t("Waiting for a computer"),
+				tone: "idle",
+			};
 		case "preparing":
 			return {
 				text: [t("Preparing the workspace"), since(session.updatedAt)].filter(Boolean).join(" · "),
@@ -146,7 +152,9 @@ export function codingSessionStatus(
 			};
 		}
 		case "input_ready":
-			return { text: t("Answer sent · waiting for the session"), tone: "working" };
+			return session.lastStep === HOURS_STEP
+				? { text: t("Answer sent · waiting for computer hours"), tone: "idle" }
+				: { text: t("Answer sent · waiting for the session"), tone: "working" };
 		case "publishing":
 			return { text: [t("Opening the pull request"), files].filter(Boolean).join(" · "), tone: "working" };
 		case "completed":

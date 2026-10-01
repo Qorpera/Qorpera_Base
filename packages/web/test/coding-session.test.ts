@@ -123,6 +123,17 @@ describe("the captions the kernel state produces", () => {
 			tone: "working",
 		});
 		expect(codingSessionStatus(codingSession({ phase: "queued" }), owner, NOW).text).toBe("Waiting for a computer");
+		// A turn waiting for its company's computer hours says so (20260929760000).
+		expect(
+			codingSessionStatus(codingSession({ phase: "queued", lastStep: "Waiting for computer hours" }), owner, NOW),
+		).toEqual({ text: "Waiting for computer hours", tone: "idle" });
+		expect(
+			codingSessionStatus(
+				codingSession({ phase: "input_ready", lastStep: "Waiting for computer hours" }),
+				owner,
+				NOW,
+			),
+		).toEqual({ text: "Answer sent · waiting for computer hours", tone: "idle" });
 		expect(codingSessionStatus(codingSession({ phase: "awaiting_input" }), owner, NOW)).toEqual({
 			text: "Needs you · your answer is recorded in this thread",
 			tone: "attention",
