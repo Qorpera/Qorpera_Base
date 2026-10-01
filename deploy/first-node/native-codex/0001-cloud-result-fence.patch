@@ -127,6 +127,89 @@ index d6c77f12e..f622b4c15 100644
          let response = InitializeResponse {
              user_agent,
              codex_home,
+diff --git a/codex-rs/codex-api/src/api_bridge.rs b/codex-rs/codex-api/src/api_bridge.rs
+index 6b79b4754..5bd9705be 100644
+--- a/codex-rs/codex-api/src/api_bridge.rs
++++ b/codex-rs/codex-api/src/api_bridge.rs
+@@ -168,6 +168,8 @@ pub fn map_api_error(err: ApiError) -> CodexErr {
+                                         | "organization_spend_limit_exceeded"
+                                         | "project_spend_limit_exceeded"
+                                         | "organization_usage_limit_exceeded"
++                                        // Qorpera: a ChatGPT plan's usage limit.
++                                        | "subscription_sharing_usage_limit_exceeded"
+                                 )
+                             )
+                         {
+diff --git a/codex-rs/codex-api/src/api_bridge_tests.rs b/codex-rs/codex-api/src/api_bridge_tests.rs
+index 51fb5a28b..43df0bbf7 100644
+--- a/codex-rs/codex-api/src/api_bridge_tests.rs
++++ b/codex-rs/codex-api/src/api_bridge_tests.rs
+@@ -352,6 +352,27 @@ fn map_api_error_distinguishes_http_quota_errors_from_rate_limits() {
+     }
+ }
+ 
++#[test]
++fn qorpera_maps_subscription_sharing_usage_limit_to_usage_limit_exceeded() {
++    let err = map_api_error(ApiError::Transport(TransportError::Http {
++        status: http::StatusCode::TOO_MANY_REQUESTS,
++        url: None,
++        headers: None,
++        body: Some(
++            serde_json::json!({"error": {
++                "code": "subscription_sharing_usage_limit_exceeded",
++                "message": "You have reached your ChatGPT plan's usage limit."
++            }})
++            .to_string(),
++        ),
++    }));
++
++    assert_eq!(
++        err.to_codex_protocol_error(),
++        CodexErrorInfo::UsageLimitExceeded
++    );
++}
++
+ #[test]
+ fn map_api_error_maps_usage_limit_limit_name_header() {
+     let mut headers = HeaderMap::new();
+diff --git a/codex-rs/codex-api/src/sse/responses.rs b/codex-rs/codex-api/src/sse/responses.rs
+index e4f5f04d6..db696620a 100644
+--- a/codex-rs/codex-api/src/sse/responses.rs
++++ b/codex-rs/codex-api/src/sse/responses.rs
+@@ -713,7 +713,11 @@ fn is_context_window_error(error: &Error) -> bool {
+ }
+ 
+ fn is_quota_exceeded_error(error: &Error) -> bool {
+-    error.code.as_deref() == Some("insufficient_quota")
++    matches!(
++        error.code.as_deref(),
++        // Qorpera: a ChatGPT plan's usage limit, which can end a response mid-stream.
++        Some("insufficient_quota" | "subscription_sharing_usage_limit_exceeded")
++    )
+ }
+ 
+ fn is_usage_not_included(error: &Error) -> bool {
+@@ -1194,6 +1198,20 @@ mod tests {
+         assert_matches!(events[0], Err(ApiError::QuotaExceeded));
+     }
+ 
++    #[tokio::test]
++    async fn qorpera_subscription_sharing_usage_limit_mid_stream_is_quota_exceeded() {
++        let created = r#"{"type":"response.created","response":{"id":"resp_plan_limit"}}"#;
++        let failed = r#"{"type":"response.failed","sequence_number":7,"response":{"id":"resp_plan_limit","object":"response","status":"failed","error":{"code":"subscription_sharing_usage_limit_exceeded","message":"You have reached your ChatGPT plan's usage limit."}}}"#;
++        let sse1 = format!("event: response.created\ndata: {created}\n\n");
++        let sse2 = format!("event: response.failed\ndata: {failed}\n\n");
++
++        let events = collect_events(&[sse1.as_bytes(), sse2.as_bytes()]).await;
++
++        assert_eq!(events.len(), 2);
++        assert_matches!(events[0], Ok(ResponseEvent::Created { .. }));
++        assert_matches!(events[1], Err(ApiError::QuotaExceeded));
++    }
++
+     #[tokio::test]
+     async fn cyber_policy_error_is_fatal() {
+         let raw_error = r#"{"type":"response.failed","sequence_number":3,"response":{"id":"resp_fatal_cyber","object":"response","created_at":1759771626,"status":"failed","background":false,"error":{"code":"cyber_policy","message":"This request was flagged for cyber policy."},"incomplete_details":null}}"#;
 diff --git a/codex-rs/core/Cargo.toml b/codex-rs/core/Cargo.toml
 index 24c6640cc..a851e5344 100644
 --- a/codex-rs/core/Cargo.toml
