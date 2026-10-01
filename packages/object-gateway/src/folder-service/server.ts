@@ -8,7 +8,6 @@ import {
 	FrameReader,
 	HELLO_MAX_PAYLOAD,
 	Kind,
-	MAX_PAYLOAD,
 	PROTOCOL,
 	ProtocolError,
 	parseAck,
@@ -16,6 +15,7 @@ import {
 	parseHello,
 	parseList,
 	parseRead,
+	REQUEST_MAX_PAYLOAD,
 } from "./protocol.ts";
 import type { ChangeMessage, FolderService, ViewHandle } from "./service.ts";
 
@@ -28,8 +28,9 @@ const FEED_BACKLOG = 4 * 1024 * 1024;
 /** Serves the folder protocol on the node's Unix socket. Only the vsock bridge can open that socket (systemd gives it
  * the bridge's group, mode 0660); its first frame names the machine, and no other frame may.
  *
- * Memory per connection stays bounded: frames are at most 4 KiB until the hello is accepted, one request is handled
- * at a time (the socket is paused meanwhile), and the next waits until the machine has read the last answer. */
+ * Memory per connection stays bounded: frames from a machine are at most 4 KiB until the hello is accepted and 64 KiB
+ * after, one request is handled at a time (the socket is paused meanwhile), and the next waits until the machine has
+ * read the last answer. */
 export function createFolderServer(service: FolderService, log: (line: string) => void): Server {
 	return createServer((socket) => serve(service, socket, log));
 }
@@ -126,7 +127,7 @@ function serve(service: FolderService, socket: Socket, log: (line: string) => vo
 				return;
 			}
 			role = hello.role;
-			reader.limit = MAX_PAYLOAD;
+			reader.limit = REQUEST_MAX_PAYLOAD;
 			send(
 				encodeJson(Kind.helloOk, {
 					protocol: PROTOCOL,

@@ -1,105 +1,223 @@
-//! Which machine has a vsock CID, as this node's LXD says: one fixed read request on LXD's local socket, made
-//! by the bridge for every machine connection. Nothing is cached, because LXD may give a machine another CID
-//! when it starts again. The bridge reads nothing a machine sends, so the account that may ask LXD (which is
-//! root-equivalent on the node) never parses machine input.
+//! Which machine has a vsock CID, as this node's LXD says, asked by the bridge for every machine connection
+//! before any pass is checked. So any machine on the node can make the bridge ask, and asking must stay cheap:
+//! - A CID confirmed in the last two seconds is answered from memory.
+//! - A CID known from an earlier listing is confirmed with one single-instance request.
+//! - Otherwise the node's instances are listed, one listing at a time for the whole bridge (connections arriving
+//!   meanwhile wait for it), and at most one a second: a CID missing from a listing under a second old is answered
+//!   "none" without asking again.
+//!
+//! The bridge reads nothing a machine sends, so the account that may ask LXD (which is root-equivalent on the node)
+//! never parses machine input.
 
 use crate::proto::{Lookup, Machine};
+use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
-use std::time::Duration;
+use std::sync::{Condvar, Mutex};
+use std::time::{Duration, Instant};
 
 pub const SOCKET: &str = "/var/snap/lxd/common/lxd/unix.socket";
 /// The largest answer read from LXD: every instance on the node with its configuration.
 const MAX_ANSWER: u64 = 64 * 1024 * 1024;
+const CONFIRMED_FOR: Duration = Duration::from_secs(2);
+const LIST_AT_MOST_EVERY: Duration = Duration::from_secs(1);
+const TIMEOUT: Duration = Duration::from_secs(5);
 
-/// The running machine with this CID, if any. Anything unexpected from LXD is `Unavailable`, never `None`:
-/// the service then answers "try again" instead of refusing the machine.
-pub fn lookup(socket: &str, cid: u32, timeout: Duration) -> (Lookup, Option<Machine>) {
-	match instances(socket, timeout) {
-		Ok(body) => find(&body, cid),
-		Err(_) => (Lookup::Unavailable, None),
-	}
+struct Known {
+	machine: Machine,
+	confirmed: Instant,
 }
 
-fn instances(socket: &str, timeout: Duration) -> std::io::Result<Vec<u8>> {
-	let mut s = UnixStream::connect(socket)?;
-	s.set_read_timeout(Some(timeout))?;
-	s.set_write_timeout(Some(timeout))?;
-	// HTTP/1.0: LXD then answers with the whole body and closes, never chunked.
-	s.write_all(b"GET /1.0/instances?all-projects=true&recursion=1 HTTP/1.0\r\nHost: lxd\r\n\r\n")?;
-	let mut answer = Vec::new();
-	s.take(MAX_ANSWER + 1).read_to_end(&mut answer)?;
-	if answer.len() as u64 > MAX_ANSWER {
-		return Err(std::io::Error::other("LXD answer is too large"));
-	}
-	let split = answer.windows(4).position(|w| w == b"\r\n\r\n").ok_or_else(|| std::io::Error::other("no HTTP head"))?;
-	let status = answer[..split].split(|&b| b == b'\n').next().unwrap_or_default();
-	if !(status.starts_with(b"HTTP/1.") && status.get(8..13) == Some(b" 200 ")) {
-		return Err(std::io::Error::other("LXD did not answer 200"));
-	}
-	Ok(answer[split + 4..].to_vec())
+#[derive(Default)]
+struct State {
+	known: HashMap<u32, Known>,
+	listing: bool,
+	listed: Option<Instant>,
 }
 
-fn find(body: &[u8], cid: u32) -> (Lookup, Option<Machine>) {
-	let Ok(answer) = serde_json::from_slice::<serde_json::Value>(body) else { return (Lookup::Unavailable, None) };
-	let Some(instances) = answer.get("metadata").and_then(|m| m.as_array()) else {
-		return (Lookup::Unavailable, None);
-	};
-	let wanted = cid.to_string();
-	for instance in instances {
-		let config = instance.get("config");
-		let field = |key: &str| config.and_then(|c| c.get(key)).and_then(|v| v.as_str());
-		if field("volatile.vsock_id") != Some(wanted.as_str()) {
-			continue;
-		}
-		let text = |key: &str| instance.get(key).and_then(|v| v.as_str());
-		return match (text("status"), text("project"), text("name"), field("volatile.uuid")) {
-			(Some("Running"), Some(project), Some(name), Some(uuid)) => (
-				Lookup::Found,
-				Some(Machine { project: project.to_string(), name: name.to_string(), physical_id: uuid.to_string() }),
-			),
-			// Not running (a stale CID), or an answer without the fields: never a match.
-			(Some(_), Some(_), Some(_), _) => (Lookup::None, None),
-			_ => (Lookup::Unavailable, None),
+pub struct Machines {
+	socket: String,
+	state: Mutex<State>,
+	done: Condvar,
+	/// Requests made to LXD (for tests and the log).
+	asked: Mutex<u64>,
+}
+
+impl Machines {
+	pub fn new(socket: &str) -> Machines {
+		Machines { socket: socket.to_string(), state: Mutex::new(State::default()), done: Condvar::new(), asked: Mutex::new(0) }
+	}
+
+	pub fn asked(&self) -> u64 {
+		*self.asked.lock().unwrap()
+	}
+
+	/// The running machine with this CID, if any. Anything unexpected from LXD is `Unavailable`, never `None`:
+	/// the service then answers "try again" instead of refusing the machine.
+	pub fn lookup(&self, cid: u32) -> (Lookup, Option<Machine>) {
+		let hint = {
+			let state = self.state.lock().unwrap();
+			match state.known.get(&cid) {
+				Some(k) if k.confirmed.elapsed() < CONFIRMED_FOR => return (Lookup::Found, Some(k.machine.clone())),
+				Some(k) => Some(k.machine.clone()),
+				None => None,
+			}
 		};
+		if let Some(machine) = hint {
+			match self.confirm(cid, &machine) {
+				Ok(true) => {
+					let mut state = self.state.lock().unwrap();
+					state.known.insert(cid, Known { machine: machine.clone(), confirmed: Instant::now() });
+					return (Lookup::Found, Some(machine));
+				}
+				Ok(false) => {
+					self.state.lock().unwrap().known.remove(&cid);
+				}
+				Err(_) => return (Lookup::Unavailable, None),
+			}
+		}
+		self.from_listing(cid)
 	}
-	(Lookup::None, None)
+
+	/// One single-instance request: is the machine still running with this CID and physical id?
+	fn confirm(&self, cid: u32, machine: &Machine) -> std::io::Result<bool> {
+		let path = format!("/1.0/instances/{}?project={}", machine.name, machine.project);
+		let body = self.get(&path)?;
+		let answer: serde_json::Value = serde_json::from_slice(&body).map_err(std::io::Error::other)?;
+		let meta = answer.get("metadata").ok_or_else(|| std::io::Error::other("no metadata"))?;
+		Ok(matches(meta, cid).as_ref() == Some(machine))
+	}
+
+	fn from_listing(&self, cid: u32) -> (Lookup, Option<Machine>) {
+		let mut state = self.state.lock().unwrap();
+		loop {
+			if let Some(k) = state.known.get(&cid) {
+				return (Lookup::Found, Some(k.machine.clone()));
+			}
+			if state.listed.is_some_and(|at| at.elapsed() < LIST_AT_MOST_EVERY) {
+				return (Lookup::None, None);
+			}
+			if !state.listing {
+				break;
+			}
+			state = self.done.wait(state).unwrap();
+		}
+		state.listing = true;
+		drop(state);
+		let listed = self.get("/1.0/instances?all-projects=true&recursion=1").and_then(|body| running(&body));
+		let mut state = self.state.lock().unwrap();
+		state.listing = false;
+		self.done.notify_all();
+		match listed {
+			Ok(found) => {
+				let now = Instant::now();
+				state.known = found.into_iter().map(|(c, machine)| (c, Known { machine, confirmed: now })).collect();
+				state.listed = Some(now);
+				match state.known.get(&cid) {
+					Some(k) => (Lookup::Found, Some(k.machine.clone())),
+					None => (Lookup::None, None),
+				}
+			}
+			Err(_) => (Lookup::Unavailable, None),
+		}
+	}
+
+	fn get(&self, path: &str) -> std::io::Result<Vec<u8>> {
+		*self.asked.lock().unwrap() += 1;
+		let mut s = UnixStream::connect(&self.socket)?;
+		s.set_read_timeout(Some(TIMEOUT))?;
+		s.set_write_timeout(Some(TIMEOUT))?;
+		// HTTP/1.0: LXD then answers with the whole body and closes, never chunked.
+		s.write_all(format!("GET {path} HTTP/1.0\r\nHost: lxd\r\n\r\n").as_bytes())?;
+		let mut answer = Vec::new();
+		s.take(MAX_ANSWER + 1).read_to_end(&mut answer)?;
+		if answer.len() as u64 > MAX_ANSWER {
+			return Err(std::io::Error::other("LXD answer is too large"));
+		}
+		let split =
+			answer.windows(4).position(|w| w == b"\r\n\r\n").ok_or_else(|| std::io::Error::other("no HTTP head"))?;
+		let status = answer[..split].split(|&b| b == b'\n').next().unwrap_or_default();
+		if !(status.starts_with(b"HTTP/1.") && status.get(8..13) == Some(b" 200 ")) {
+			return Err(std::io::Error::other("LXD did not answer 200"));
+		}
+		Ok(answer[split + 4..].to_vec())
+	}
+}
+
+/// The instance as a machine if it is running with this CID and has every field.
+fn matches(instance: &serde_json::Value, cid: u32) -> Option<Machine> {
+	let config = instance.get("config")?;
+	let field = |key: &str| config.get(key).and_then(|v| v.as_str());
+	let text = |key: &str| instance.get(key).and_then(|v| v.as_str());
+	if field("volatile.vsock_id")? != cid.to_string() || text("status")? != "Running" {
+		return None;
+	}
+	// Names go into a request path later: LXD's own names only.
+	let safe = |s: &str| !s.is_empty() && s.len() <= 63 && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-');
+	if !safe(text("name")?) || !safe(text("project")?) {
+		return None;
+	}
+	Some(Machine {
+		project: text("project")?.to_string(),
+		name: text("name")?.to_string(),
+		physical_id: field("volatile.uuid")?.to_string(),
+	})
+}
+
+/// Every running machine with a CID. A stopped instance whose stale CID a running one now has is skipped.
+fn running(body: &[u8]) -> std::io::Result<HashMap<u32, Machine>> {
+	let answer: serde_json::Value = serde_json::from_slice(body).map_err(std::io::Error::other)?;
+	let instances = answer.get("metadata").and_then(|m| m.as_array()).ok_or_else(|| std::io::Error::other("no list"))?;
+	let mut out = HashMap::new();
+	for instance in instances {
+		let Some(cid) = instance
+			.get("config")
+			.and_then(|c| c.get("volatile.vsock_id"))
+			.and_then(|v| v.as_str())
+			.and_then(|v| v.parse::<u32>().ok())
+		else {
+			continue;
+		};
+		if let Some(machine) = matches(instance, cid) {
+			out.insert(cid, machine);
+		}
+	}
+	Ok(out)
 }
 
 #[cfg(test)]
 mod tests {
 	use super::*;
 	use std::os::unix::net::UnixListener;
+	use std::sync::Arc;
 
-	fn answer(instances: &str) -> Vec<u8> {
-		format!(r#"{{"type":"sync","status":"Success","status_code":200,"metadata":[{instances}]}}"#).into_bytes()
+	fn answer(instances: &str) -> String {
+		format!(r#"{{"type":"sync","status":"Success","status_code":200,"metadata":[{instances}]}}"#)
 	}
 
 	const EXEC: &str = r#"{"name":"qorpera-exec-node02","project":"qn25b2","status":"Running","config":{"volatile.vsock_id":"42","volatile.uuid":"aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee","image.os":"ubuntu"}}"#;
-	const STOPPED: &str = r#"{"name":"old","project":"p","status":"Stopped","config":{"volatile.vsock_id":"43","volatile.uuid":"u"}}"#;
+	const STOPPED: &str = r#"{"name":"old","project":"p","status":"Stopped","config":{"volatile.vsock_id":"42","volatile.uuid":"u"}}"#;
+	const STOPPED_43: &str = r#"{"name":"gone","project":"p","status":"Stopped","config":{"volatile.vsock_id":"43","volatile.uuid":"u"}}"#;
 
-	#[test]
-	fn finds_the_running_machine_with_the_cid() {
-		let body = answer(&format!("{STOPPED},{EXEC}"));
-		let (lookup, machine) = find(&body, 42);
-		assert_eq!(lookup, Lookup::Found);
-		assert_eq!(
-			machine,
-			Some(Machine {
-				project: "qn25b2".into(),
-				name: "qorpera-exec-node02".into(),
-				physical_id: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee".into()
-			})
-		);
-		assert_eq!(find(&body, 43), (Lookup::None, None), "a stopped machine's CID matches nothing");
-		assert_eq!(find(&body, 44), (Lookup::None, None));
-		// "4" must not match "42".
-		assert_eq!(find(&body, 4), (Lookup::None, None));
-		assert_eq!(find(b"not json", 42), (Lookup::Unavailable, None));
-		assert_eq!(find(br#"{"metadata":{}}"#, 42), (Lookup::Unavailable, None));
+	fn exec() -> Machine {
+		Machine {
+			project: "qn25b2".into(),
+			name: "qorpera-exec-node02".into(),
+			physical_id: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee".into(),
+		}
 	}
 
-	fn serve_once(reply: Vec<u8>) -> (String, std::thread::JoinHandle<Vec<u8>>) {
+	#[test]
+	fn the_running_machine_wins_over_a_stopped_one_with_the_same_stale_cid() {
+		let found = running(answer(&format!("{STOPPED},{EXEC},{STOPPED_43}")).as_bytes()).unwrap();
+		assert_eq!(found.get(&42), Some(&exec()));
+		assert!(!found.contains_key(&43), "a stopped machine's CID matches nothing");
+		assert!(running(b"not json").is_err());
+		assert!(running(br#"{"metadata":{}}"#).is_err());
+	}
+
+	/// A stand-in LXD answering every request from `reply(path)`, counting them, each after `delay`.
+	fn fake_lxd(reply: impl Fn(&str) -> (u16, String) + Send + Sync + 'static, delay: Duration) -> (String, Arc<Mutex<Vec<String>>>) {
 		let dir = std::env::temp_dir().join(format!(
 			"qorpera-folder-lxd-{}-{}",
 			std::process::id(),
@@ -108,36 +226,92 @@ mod tests {
 		std::fs::create_dir(&dir).unwrap();
 		let path = dir.join("lxd.sock");
 		let listener = UnixListener::bind(&path).unwrap();
-		let handle = std::thread::spawn(move || {
-			let (mut s, _) = listener.accept().unwrap();
-			let mut request = vec![0u8; 4096];
-			let n = s.read(&mut request).unwrap();
-			s.write_all(&reply).unwrap();
-			drop(s);
-			let _ = std::fs::remove_dir_all(&dir);
-			request.truncate(n);
-			request
+		let seen = Arc::new(Mutex::new(Vec::new()));
+		let log = seen.clone();
+		let reply = Arc::new(reply);
+		std::thread::spawn(move || {
+			for conn in listener.incoming() {
+				let Ok(mut s) = conn else { return };
+				let reply = reply.clone();
+				let log = log.clone();
+				std::thread::spawn(move || {
+					let mut request = vec![0u8; 4096];
+					let n = s.read(&mut request).unwrap_or(0);
+					let request = String::from_utf8_lossy(&request[..n]).to_string();
+					let target = request.split(' ').nth(1).unwrap_or("").to_string();
+					log.lock().unwrap().push(target.clone());
+					std::thread::sleep(delay);
+					let (status, body) = reply(&target);
+					let _ = s.write_all(format!("HTTP/1.0 {status} X\r\nContent-Type: application/json\r\n\r\n{body}").as_bytes());
+				});
+			}
 		});
-		(path.to_string_lossy().into_owned(), handle)
+		(path.to_string_lossy().into_owned(), seen)
 	}
 
 	#[test]
-	fn asks_lxd_once_over_its_socket() {
-		let mut reply = b"HTTP/1.0 200 OK\r\nContent-Type: application/json\r\n\r\n".to_vec();
-		reply.extend(answer(EXEC));
-		let (socket, server) = serve_once(reply);
-		let (lookup, machine) = lookup(&socket, 42, Duration::from_secs(5));
-		assert_eq!(lookup, Lookup::Found);
-		assert_eq!(machine.unwrap().name, "qorpera-exec-node02");
-		let request = String::from_utf8(server.join().unwrap()).unwrap();
-		assert!(request.starts_with("GET /1.0/instances?all-projects=true&recursion=1 HTTP/1.0\r\n"), "{request}");
+	fn many_connections_at_once_make_one_listing_and_cheap_confirmations() {
+		let (socket, seen) = fake_lxd(
+			|target| {
+				if target.starts_with("/1.0/instances?") {
+					(200, answer(EXEC))
+				} else {
+					(200, format!(r#"{{"type":"sync","metadata":{EXEC}}}"#))
+				}
+			},
+			Duration::from_millis(50),
+		);
+		let machines = Arc::new(Machines::new(&socket));
+		let threads: Vec<_> = (0..64)
+			.map(|i| {
+				let machines = machines.clone();
+				// Half ask for the running machine, half for a CID nobody has.
+				std::thread::spawn(move || machines.lookup(if i % 2 == 0 { 42 } else { 77 }))
+			})
+			.collect();
+		for (i, t) in threads.into_iter().enumerate() {
+			let (lookup, machine) = t.join().unwrap();
+			if i % 2 == 0 {
+				assert_eq!((lookup, machine), (Lookup::Found, Some(exec())));
+			} else {
+				assert_eq!((lookup, machine), (Lookup::None, None));
+			}
+		}
+		assert_eq!(seen.lock().unwrap().len(), 1, "64 connections, one listing: {:?}", seen.lock().unwrap());
+		// After the confirmation window, a known machine costs one single-instance request.
+		std::thread::sleep(CONFIRMED_FOR + Duration::from_millis(50));
+		assert_eq!(machines.lookup(42), (Lookup::Found, Some(exec())));
+		let requests = seen.lock().unwrap().clone();
+		assert_eq!(requests.len(), 2);
+		assert_eq!(requests[1], "/1.0/instances/qorpera-exec-node02?project=qn25b2");
+		assert!(requests[0].starts_with("/1.0/instances?all-projects=true&recursion=1"));
+		assert_eq!(machines.asked(), 2);
 	}
 
 	#[test]
-	fn an_error_or_no_lxd_is_unavailable_not_a_refusal() {
-		let (socket, server) = serve_once(b"HTTP/1.0 500 Internal Server Error\r\n\r\n{}".to_vec());
-		assert_eq!(lookup(&socket, 42, Duration::from_secs(5)), (Lookup::Unavailable, None));
-		server.join().unwrap();
-		assert_eq!(lookup("/nonexistent/lxd.sock", 42, Duration::from_secs(1)), (Lookup::Unavailable, None));
+	fn a_machine_that_stopped_is_listed_again_and_an_error_is_unavailable() {
+		let calls = Arc::new(Mutex::new(0u32));
+		let count = calls.clone();
+		let (socket, _) = fake_lxd(
+			move |target| {
+				let mut n = count.lock().unwrap();
+				*n += 1;
+				match (*n, target.starts_with("/1.0/instances?")) {
+					(1, _) => (200, answer(EXEC)),
+					// The confirmation finds it stopped; the listing after it has nothing.
+					(2, false) => (200, format!(r#"{{"type":"sync","metadata":{STOPPED}}}"#)),
+					(3, true) => (200, answer("")),
+					_ => (500, "{}".into()),
+				}
+			},
+			Duration::ZERO,
+		);
+		let machines = Machines::new(&socket);
+		assert_eq!(machines.lookup(42).0, Lookup::Found);
+		std::thread::sleep(CONFIRMED_FOR + Duration::from_millis(50));
+		assert_eq!(machines.lookup(42), (Lookup::None, None));
+		std::thread::sleep(LIST_AT_MOST_EVERY + Duration::from_millis(50));
+		assert_eq!(machines.lookup(42), (Lookup::Unavailable, None));
+		assert_eq!(Machines::new("/nonexistent/lxd.sock").lookup(42), (Lookup::Unavailable, None));
 	}
 }

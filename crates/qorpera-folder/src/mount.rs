@@ -97,19 +97,20 @@ impl Shared {
 				}
 				busy.insert(dir);
 			}
-			let fetched = self.link.list(&path);
+			let fetched = self.link.list(&path).map_err(|f| f.errno()).map(|entries| {
+				let entries = entries.into_iter().filter(|e| valid_name(&e.name)).collect();
+				let keep = self.feed_up.load(Ordering::SeqCst);
+				self.tree.lock().unwrap().install(dir, entries, started, keep, hold)
+			});
+			// Released only after the listing is in: a second fetch of this folder never overlaps the first's install.
 			{
 				self.listing.lock().unwrap().remove(&dir);
 				self.listed.notify_all();
 			}
-			let entries = fetched.map_err(|f| f.errno())?;
-			let entries = entries.into_iter().filter(|e| valid_name(&e.name)).collect();
-			let keep = self.feed_up.load(Ordering::SeqCst);
-			let (children, kept) = self.tree.lock().unwrap().install(dir, entries, started, keep, hold);
-			if debug() {
+			if let (true, Ok((children, kept))) = (debug(), &fetched) {
 				eprintln!("qorpera-folder: listed {path:?}: {} entries, kept {kept}", children.len());
 			}
-			return Ok((children, kept));
+			return fetched;
 		}
 	}
 

@@ -161,6 +161,7 @@ impl Tree {
 		};
 		let current = started == self.changes;
 		let keep = keep && current;
+		let mut detached = false;
 		let mut children = Vec::with_capacity(entries.len());
 		for e in entries {
 			let path = join(&dir_path, &e.name);
@@ -171,6 +172,7 @@ impl Tree {
 				_ => {
 					if let Some(old) = existing {
 						self.detach(old);
+						detached = true;
 					}
 					let ino = self.next_ino;
 					self.next_ino += 1;
@@ -219,6 +221,11 @@ impl Tree {
 				}
 			}
 		} else {
+			// A cached listing that named a version now replaced must not hand out its inode. (When kept, the new
+			// listing replaced it above.) Dropped only now: dropping it mid-loop would prune siblings this answer names.
+			if detached {
+				self.drop_listing(dir);
+			}
 			// Nodes made for this answer alone go when nothing holds them.
 			for c in &children {
 				self.prune(c.ino);
@@ -305,18 +312,15 @@ impl Tree {
 		out
 	}
 
-	/// A newer version of the node's path arrived: the node keeps its version for whoever holds it.
+	/// A newer version of the node's path arrived: the node keeps its version for whoever holds it. Its folder's
+	/// cached listing is the caller's to replace or drop (`install`).
 	fn detach(&mut self, ino: u64) {
 		let Some(n) = self.nodes.get_mut(&ino) else { return };
 		n.detached = true;
 		n.attr = Some(n.seen.clone());
-		let (path, parent) = (n.path.clone(), n.parent);
+		let path = n.path.clone();
 		if self.by_path.get(&path) == Some(&ino) {
 			self.by_path.remove(&path);
-		}
-		// A cached listing must not hand out the old inode for the name.
-		if self.dirs.get(&parent).is_some_and(|l| l.iter().any(|c| c.ino == ino)) {
-			self.drop_listing(parent);
 		}
 		if self.dirs.contains_key(&ino) {
 			self.drop_listing(ino);
@@ -419,6 +423,26 @@ mod tests {
 		let (kids, _) = t.install(ROOT, vec![file("f", 9, "v3")], t.changes(), true, None);
 		assert!(!t.knows(v2));
 		assert_ne!(ino_of(&kids, "f"), v2);
+	}
+
+	#[test]
+	fn a_newer_version_seen_before_the_feed_keeps_the_siblings_listed() {
+		let mut t = Tree::new();
+		let (kids, _) = t.install(ROOT, vec![file("a", 1, "v1"), file("b", 1, "v1"), file("c", 1, "v1")], t.changes(), true, None);
+		let (a, c) = (ino_of(&kids, "a"), ino_of(&kids, "c"));
+		// A second fetch of the same folder sees b's next version before the feed says so.
+		let (kids, kept) = t.install(ROOT, vec![file("a", 1, "v1"), file("b", 2, "v2"), file("c", 1, "v1")], t.changes(), true, None);
+		assert!(kept);
+		assert_eq!((ino_of(&kids, "a"), ino_of(&kids, "c")), (a, c));
+		for c in t.listing(ROOT).unwrap() {
+			assert!(t.attr(c.ino).is_some(), "{} is listed but unknown", c.name);
+		}
+		// Not kept (the feed was down): the cached listing that named the old b goes; siblings in the answer stay
+		// reachable through their paths.
+		let (kids, kept) = t.install(ROOT, vec![file("a", 1, "v1"), file("b", 3, "v3"), file("c", 1, "v1")], t.changes(), false, Some("b"));
+		assert!(!kept);
+		assert!(t.listing(ROOT).is_none());
+		assert!(t.attr(ino_of(&kids, "b")).is_some(), "the entry about to be looked up stays");
 	}
 
 	#[test]

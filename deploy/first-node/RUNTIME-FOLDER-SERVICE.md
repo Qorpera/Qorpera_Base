@@ -17,9 +17,11 @@ see it yet; step 2 (the run box) is the first user.
 | Folder service | `packages/object-gateway/src/folder-service` (Node) | node host, `qorpera-folder` | the service credential; each view's tree, chunks and manifests in memory |
 
 The bridge exists because Node has no `AF_VSOCK`. It listens on vsock port 5250 and takes the peer's CID from the
-kernel (LXD assigns it; a machine cannot choose it). For each connection it asks LXD, on its local socket, which
-running machine has that CID now (one fixed read request, nothing cached: a machine may get another CID when it
-starts again). It sends both as the first frame on the service's Unix socket, then passes bytes through untouched.
+kernel (LXD assigns it; a machine cannot choose it). For each connection, before any pass is checked, it asks LXD on
+its local socket which running machine has that CID now, so asking stays cheap: a CID confirmed in the last two
+seconds is answered from memory, a known one is confirmed with one single-instance request, and otherwise the
+node's instances are listed, one listing at a time for the whole bridge and at most one a second (a machine may get
+another CID when it starts again, so nothing older is trusted). It sends both as the first frame on the service's Unix socket, then passes bytes through untouched.
 LXD's socket group is root-equivalent; the bridge holds it and reads nothing a machine sends, while the service,
 which parses machine input, holds the database credential and never talks to LXD. Only the bridge's account can open
 the service's socket (systemd socket, 0660, group `qorpera-folder-bridge`).
@@ -50,15 +52,15 @@ the folder; the program exits 3 and its unit does not restart it.
 
 `version` is the core's version id of the path (a uuid), opaque to the machine. A read names the version the machine
 was shown, and the service serves exactly that version: the current one, or one of the last 16 replaced on the
-feed, so a file opened before a change reads its own version to the end. Replaced versions go when their path
-leaves the view, and all at once on an access change; a read of one then is `STALE`.
+feed, so a file opened before a change reads its own version to the end. Replaced versions go at the next full
+listing if their path has left the view, and all at once on an access change; a read of one then is `STALE`.
 
 On the machine, an inode is one version of a file. A newer version gets a new inode; the old one is detached (no
 longer reachable by name, its attributes frozen) and stays readable by whoever opened it. So the kernel never mixes
 pages of two versions in one file.
 
-Memory per connection is bounded in the service: until the hello is accepted frames are at most 4 KiB, one request
-is handled at a time with the socket paused, the next waits until the machine has read the last answer, and a feed
+Memory per connection is bounded in the service: frames from a machine are at most 4 KiB until the hello is accepted
+and 64 KiB after, one request is handled at a time with the socket paused, the next waits until the machine has read the last answer, and a feed
 connection whose machine leaves 4 MiB unread is ended (the machine reconnects and drops its caches).
 
 ## Who may connect
@@ -129,9 +131,11 @@ adding a file does not change it.
 
 `node scripts/run-on-node.mjs changed` runs the step `folder-program` on the node 2 test machine (it has no Rust):
 
-- in `rust:1.95.0-slim-bookworm` (pinned by digest): 22 unit tests, and two FUSE tests that mount for real against
-  a stand-in node (listing, reads, read-only refusals, the page cache, a change shown at once, a new file, a removal,
-  a feed that breaks and comes back, a view closed, a view refused);
+- in `rust:1.95.0-slim-bookworm` (pinned by digest): the unit tests (frames, paths, the inode tree, the link, the
+  bridge's LXD lookup against a stand-in LXD), and two FUSE tests that mount for real against a stand-in node
+  (listing, reads, read-only refusals, the page cache, a file read on at its old version while a new reader sees
+  only the new one, a change shown at once, a new file, a removal, a feed that breaks and comes back, a view closed,
+  a view refused);
 - then the built program in `node:24.21.0-bookworm-slim` against this package's folder service with a stand-in core
   and share (`packages/object-gateway/test/folder-mount-e2e.test.ts`): a 3 MiB file across chunks, a member's edit
   shown in under a second, a folder taken away disappearing, SIGTERM unmounting.

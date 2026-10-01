@@ -11,6 +11,8 @@ export const MAX_PAYLOAD = 2 * 1024 * 1024;
 /** Before a machine's hello is accepted, frames (the bridge's and the hello) are small: an unfinished large frame
  * would otherwise hold memory for any machine on the node, with no pass. */
 export const HELLO_MAX_PAYLOAD = 4 * 1024;
+/** After it, a machine sends only requests and acknowledgements: a path of at most 4 KiB and a few numbers. */
+export const REQUEST_MAX_PAYLOAD = 64 * 1024;
 export const MAX_READ = 1024 * 1024;
 /** Entries per listing page. */
 export const LIST_PAGE = 1000;
