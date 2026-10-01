@@ -17,7 +17,8 @@
 -- Someone outside the company and an admin each check in 12 adds and removes. Fixture rows of the path company
 -- (triggers and key checks off): a proposal and a queued review of it, a retention hold, two operation receipts (one
 -- claimed by the contributor, one by the admin), graphs the admin and the contributor are uploading, an event hook, a logical computer, a
--- provider connection the contributor owns and one the company owns, a secret broker and a company secret, a member's Company File edit, and
+-- provider connection the contributor owns and one the company owns, a secret broker, a company secret and the
+-- owner's own secret, a member's Company File edit, and
 -- the owner's private conversation. The fixture job's lease is extended past the test.
 insert into auth.users(id,email) values
 	('75700000-0000-4000-8000-000000000001','own-row-2-outsider@example.test'),
@@ -71,6 +72,11 @@ begin
 	values ('75700000-0000-4000-8000-000000000033','30000000-0000-4000-8000-000000000010','30000000-0000-4000-8000-000000000020',
 		'75700000-0000-4000-8000-000000000032','company','github','own-row','The company repository',1,
 		'30000000-0000-4000-8000-000000000001');
+	insert into public.qorpera_cloud_secrets(id,profile_id,environment_id,broker_authority_id,owner_kind,owner_user_id,connector_id,
+		secret_name,purpose,current_version,created_by_user_id)
+	values ('75700000-0000-4000-8000-000000000048','30000000-0000-4000-8000-000000000010','30000000-0000-4000-8000-000000000020',
+		'75700000-0000-4000-8000-000000000032','member','30000000-0000-4000-8000-000000000001','github','own-row-owner',
+		'The owner''s repository',1,'30000000-0000-4000-8000-000000000001');
 	insert into public.qorpera_member_company_path_commands(id,environment_id,user_id,operation_key,plan,plan_sha256,
 		resource_id,resource_version,protected,status)
 	values ('75700000-0000-4000-8000-000000000034','30000000-0000-4000-8000-000000000020','30000000-0000-4000-8000-000000000001',
@@ -254,10 +260,10 @@ create function pg_temp.own_rotate(p_owner_kind text, p_owner_user text) returns
 	select format('select public.qorpera_begin_cloud_secret_capture(''30000000-0000-4000-8000-000000000010'', ''30000000-0000-4000-8000-000000000020'', %L, %L, ''github'', ''own-row'', ''The company repository'', ''75700000-0000-4000-8000-000000000033'')',
 		p_owner_kind, p_owner_user)
 $$;
-create function pg_temp.own_grant_operation(p_secret text default '75700000-0000-4000-8000-000000000033') returns text
-language sql as $$
-	select format('select public.qorpera_grant_cloud_secret_operation(''30000000-0000-4000-8000-000000000010'', ''30000000-0000-4000-8000-000000000020'', %L, ''75700000-0000-4000-8000-000000000047'', ''github'', ''read_repository'', 1)',
-		p_secret)
+create function pg_temp.own_grant_operation(p_secret text default '75700000-0000-4000-8000-000000000033',
+	p_expires timestamptz default null) returns text language sql as $$
+	select format('select public.qorpera_grant_cloud_secret_operation(''30000000-0000-4000-8000-000000000010'', ''30000000-0000-4000-8000-000000000020'', %L, ''75700000-0000-4000-8000-000000000047'', ''github'', ''read_repository'', 1, %L)',
+		p_secret, p_expires)
 $$;
 create function pg_temp.own_revoke_secret(p_secret text default '75700000-0000-4000-8000-000000000033') returns text
 language sql as $$
@@ -523,11 +529,13 @@ select pg_temp.wake_assert(pg_temp.own_served(pg_temp.own_row('qorpera_provider_
 
 -- 9. A company secret. Granting it to an agent: owners and admins (the role was read first). Someone outside the
 --    company, the contributor and the viewer are refused; a secret nobody has gets "query returned no rows" as before;
---    the owner and an admin wait for the secret and grant it. Granting it to one operation: the contributor and a secret
---    nobody has are refused; the owner and an admin wait and meet the agent check (no such agent). Rotating it: the
---    contributor and an admin may capture secrets, but naming the company's secret as their own is refused; the owner
---    and an admin wait for the secret and start its rotation. Revoking it: the contributor, the viewer and a secret
---    nobody has are refused; an admin waits and revokes it.
+--    the owner and an admin wait for the secret and grant it. Granting it to one operation: the contributor, a grant
+--    that has already expired and a secret nobody has are refused; the owner and an admin wait and meet the agent check
+--    (no such agent). Rotating it: the contributor and an admin may capture secrets, but naming the company's secret as
+--    their own is refused; the owner and an admin wait for the secret and start its rotation. The owner's own secret:
+--    the contributor neither grants nor revokes it; the owner waits for it, meets the agent check, then revokes it.
+--    Revoking the company's: the contributor, the viewer and a secret nobody has are refused; an admin waits and
+--    revokes it.
 select pg_temp.own_refused(pg_temp.own_row('qorpera_cloud_secrets', '75700000-0000-4000-8000-000000000033'),
 	pg_temp.own_outsider(), pg_temp.own_grant(), 'secret grant authority is unavailable', 'Granting another company''s secret');
 select pg_temp.own_refused(pg_temp.own_row('qorpera_cloud_secrets', '75700000-0000-4000-8000-000000000033'),
@@ -564,11 +572,26 @@ select pg_temp.own_refused(pg_temp.own_row('qorpera_cloud_secrets', '75700000-00
 select pg_temp.own_refused(pg_temp.own_row('qorpera_cloud_secrets', '75700000-0000-4000-8000-000000000033'),
 	pg_temp.own_owner(), pg_temp.own_grant_operation('75700000-0000-4000-8000-000000000099'), 'secret grant authority is unavailable',
 	'Granting a secret nobody has to an operation');
+select pg_temp.own_refused(pg_temp.own_row('qorpera_cloud_secrets', '75700000-0000-4000-8000-000000000033'),
+	pg_temp.own_owner(), pg_temp.own_grant_operation(p_expires => statement_timestamp() - interval '1 minute'),
+	'secret grant authority is unavailable', 'The owner granting the secret to an operation until a time already past');
 select pg_temp.own_served(pg_temp.own_row('qorpera_cloud_secrets', '75700000-0000-4000-8000-000000000033'),
 	pg_temp.own_owner(), pg_temp.own_grant_operation(), 'The owner granting the secret to an operation', 'secret grant agent is unavailable');
 select pg_temp.wake_assert(pg_temp.own_message(pg_temp.own_admin_waits(pg_temp.own_row('qorpera_cloud_secrets',
 	'75700000-0000-4000-8000-000000000033'), pg_temp.own_grant_operation(), 'An admin granting the secret to an operation'))
 	= 'secret grant agent is unavailable', 'An admin meets the agent check');
+select pg_temp.own_refused(pg_temp.own_row('qorpera_cloud_secrets', '75700000-0000-4000-8000-000000000048'),
+	pg_temp.own_contributor(), pg_temp.own_grant_operation('75700000-0000-4000-8000-000000000048'), 'secret grant authority is unavailable',
+	'The contributor granting the owner''s own secret to an operation');
+select pg_temp.own_refused(pg_temp.own_row('qorpera_cloud_secrets', '75700000-0000-4000-8000-000000000048'),
+	pg_temp.own_contributor(), pg_temp.own_revoke_secret('75700000-0000-4000-8000-000000000048'), 'secret revocation is unavailable',
+	'The contributor revoking the owner''s own secret');
+select pg_temp.own_served(pg_temp.own_row('qorpera_cloud_secrets', '75700000-0000-4000-8000-000000000048'),
+	pg_temp.own_owner(), pg_temp.own_grant_operation('75700000-0000-4000-8000-000000000048'),
+	'The owner granting their own secret to an operation', 'secret grant agent is unavailable');
+select pg_temp.wake_assert(pg_temp.own_served(pg_temp.own_row('qorpera_cloud_secrets', '75700000-0000-4000-8000-000000000048'),
+	pg_temp.own_owner(), pg_temp.own_revoke_secret('75700000-0000-4000-8000-000000000048'), 'The owner revoking their own secret')
+	->> 'status' = 'revoked', 'The owner revokes their own secret');
 select pg_temp.own_refused(pg_temp.own_row('qorpera_cloud_secrets', '75700000-0000-4000-8000-000000000033'),
 	pg_temp.own_contributor(), pg_temp.own_revoke_secret(), 'secret revocation is unavailable', 'The contributor revoking the secret');
 select pg_temp.own_refused(pg_temp.own_row('qorpera_cloud_secrets', '75700000-0000-4000-8000-000000000033'),
@@ -603,7 +626,8 @@ select pg_temp.own_served(pg_temp.own_row('qorpera_shared_sessions', '30000000-0
 	'The contributor''s turn in a company conversation', 'session turn sponsor is unavailable');
 
 -- 12. The locked checks stay: an admin removed from the company while their call waits for the row is refused. The
---     admin began the uploading graph and claimed the second receipt.
+--     admin began the uploading graph and claimed the second receipt. For the company's connection the locked check
+--     is 20260929790000's (before it, the admin's revocation landed).
 select pg_temp.own_removed(pg_temp.own_row('qorpera_runner_jobs', current_setting('qorpera_test.own_job')), pg_temp.own_policy(),
 	'runner model policy requires authorization access', 'The model policy');
 select pg_temp.own_removed(pg_temp.own_row('qorpera_company_proposal_review_assignments', '75700000-0000-4000-8000-000000000014'),
@@ -637,6 +661,9 @@ select pg_temp.own_removed(pg_temp.own_row('qorpera_logical_computers', '7570000
 select pg_temp.own_removed(pg_temp.own_row('qorpera_provider_connections', current_setting('qorpera_test.own_connection')),
 	pg_temp.own_status('qorpera_set_provider_connection_status', current_setting('qorpera_test.own_connection')),
 	'provider connection lifecycle requires authorize access', 'The connection''s status');
+select pg_temp.own_removed(pg_temp.own_row('qorpera_provider_connections', '75700000-0000-4000-8000-000000000045'),
+	pg_temp.own_status('qorpera_set_provider_connection_status', '75700000-0000-4000-8000-000000000045', 'revoked'),
+	'provider connection lifecycle requires authorize access', 'Revoking the company''s connection');
 
 -- The folder-v2 resolution is the dispatcher's again.
 revoke execute on function public.qorpera_folder_resolve_run_receipt(uuid,text,jsonb,uuid,uuid) from anon, authenticated;
