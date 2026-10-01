@@ -610,6 +610,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 																			identity,
 																			handle: folder.handle,
 																			routineKey: wake.routine.routineKey,
+																			routineId: wake.routine.id,
 																		}),
 																	}
 																: {}),
@@ -700,6 +701,8 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 							assertContext: (requestSignal) => gateway.assertReadableContext(requestSignal),
 							recordContextView: (frame, outputs, requestSignal) =>
 								gateway.recordContextView(frame, outputs, requestSignal),
+							fenceContextView: (frame, outputs, requestSignal) =>
+								gateway.fenceContextView(frame, outputs, requestSignal),
 							...(computer ? { close: () => computer.close() } : {}),
 						};
 					},
