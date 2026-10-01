@@ -149,11 +149,13 @@ Founders (2026-09-28, migration 20260928248100): every member with the role
   use ChatGPT plan logins now (show "Continue with ChatGPT" only when true).
   False while the company is being deleted (20260928359950).
 - ChatGPT plan rules (20260928359950, switched off with plan logins):
-  - work while away on a plan login needs the member's own
-    `qorpera_consent_provider_connection_autonomous`; the kernel never consents a
-    plan login for them, and a client must not either (no automatic consent on
-    a plan login: ask, for example when an agent creates the member's first
-    routine);
+  - work while away on a plan login needs the member's own choice: turn it on
+    with `qorpera_set_chatgpt_plan_work_while_away(profile, connection, on)`
+    (20260929980000; the caller's own plan login only, 42501 otherwise). The
+    kernel never consents a plan login for them, and
+    `qorpera_consent_provider_connection_autonomous` refuses to turn a plan on
+    (55000 "Turn on work while you're away for this ChatGPT plan in Settings");
+    turning a plan off works through either call;
   - a plan never pays for a listener routine (a file change or an event): a save
     with one is refused with 42501 "A ChatGPT plan cannot pay for a listener";
   - a plan at its usage limit stays the account of the conversations it pays for
@@ -648,9 +650,9 @@ Built switched off with plan logins. Show none of it while plan logins are switc
   this version) and `routine_offer_shown_at` (when the member's first-routine card was shown in this company;
   null until then; the same on every entry of the member's list, so read it from a plan login's entry). Label
   a `chatgpt_plan` connection
-  "ChatGPT plan". Never consent a plan login on the member's behalf:
-  `qorpera_consent_provider_connection_autonomous` runs only from the member's own "Work while you're away"
-  choice. Codex logins keep today's behaviour.
+  "ChatGPT plan". Never consent a plan login on the member's behalf: its "Work while you're away" switch calls
+  `qorpera_set_chatgpt_plan_work_while_away` (the consent call alone refuses a plan, 20260929980000). Codex
+  logins keep today's behaviour.
 - `qorpera_record_chatgpt_plan_routine_offer(profile, connection)`: records that the first-routine card was shown
   to the caller, for their own active plan login (members only; not in a company being deleted). Shown once per
   member and company: a repeat, also on a later plan login after a new sign-in, answers the first showing

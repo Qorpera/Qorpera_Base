@@ -1,0 +1,58 @@
+-- Sign in with ChatGPT: a kernel guard for "work while you're away" on a ChatGPT plan (coordinator's ask after
+-- #623; built switched off with plan logins).
+--
+-- The founder decided (2026-10-01) that a member's ChatGPT plan works while they are away only once they turn
+-- that on themselves. The kernel never consents a plan for them (20260928359950), and the web does not either
+-- (#623). But qorpera_consent_provider_connection_autonomous cannot tell the member's switch from an automatic
+-- call, and a web build older than #623 consents every connection it binds, on every read of Settings. So:
+-- 1. qorpera_consent_provider_connection_autonomous refuses to turn a ChatGPT plan on (55000) unless the call
+--    comes through qorpera_set_chatgpt_plan_work_while_away. Turning a plan off, and every Codex login, are as
+--    before. A plan already on reads as unchanged.
+-- 2. qorpera_set_chatgpt_plan_work_while_away(profile, connection, on): the member's own choice for their plan
+--    (the web's "Work while you're away" switch and the first-routine card's Turn on). It marks the call for
+--    this transaction only (set_config, transaction-local; no API role can set it) and makes the same consent,
+--    so the owner, membership and current-version checks are the consent call's own.
+--
+-- Locks: none added. The marker is a transaction-local setting.
+
+set local lock_timeout = '3s';
+
+create function public.qorpera_set_chatgpt_plan_work_while_away(p_profile_id uuid, p_connection_id uuid, p_on boolean)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare v_result jsonb;
+begin
+	if auth.uid() is null or p_on is null or p_connection_id is null
+		or not public.qorpera_connection_is_chatgpt_plan(p_connection_id) then
+		raise exception 'ChatGPT plan login is unavailable' using errcode = '42501'; end if;
+	perform set_config('qorpera.chatgpt_plan_member_choice', p_connection_id::text, true);
+	v_result := public.qorpera_consent_provider_connection_autonomous(p_profile_id, p_connection_id, p_on);
+	perform set_config('qorpera.chatgpt_plan_member_choice', '', true);
+	return v_result;
+end
+$$;
+revoke all on function public.qorpera_set_chatgpt_plan_work_while_away(uuid, uuid, boolean) from public, anon, service_role;
+grant execute on function public.qorpera_set_chatgpt_plan_work_while_away(uuid, uuid, boolean) to authenticated;
+
+do $patch$
+declare
+	v_definition text := pg_get_functiondef('public.qorpera_consent_provider_connection_autonomous(uuid,uuid,boolean)'::regprocedure);
+	v_anchor text := $a0$	v_next := v_version.version + 1;
+$a0$;
+	v_count integer;
+begin
+	if position('20260929980000' in v_definition) > 0 then return; end if;
+	v_count := (length(v_definition) - length(replace(v_definition, v_anchor, ''))) / length(v_anchor);
+	if v_count <> 1 then
+		raise exception 'The consent call''s source differs (anchor matches % times)', v_count; end if;
+	execute replace(v_definition, v_anchor, $r0$	-- A ChatGPT plan works while its member is away only by the member's own choice (20260929980000): turned on
+	-- through qorpera_set_chatgpt_plan_work_while_away (their switch in Settings, or the first-routine card),
+	-- never by this call alone. An older web build consents every connection it binds; for a plan that is
+	-- refused here. Turning it off stays open.
+	if p_allow_autonomous and public.qorpera_connection_is_chatgpt_plan(v_connection.id)
+		and current_setting('qorpera.chatgpt_plan_member_choice', true) is distinct from v_connection.id::text then
+		raise exception 'Turn on work while you''re away for this ChatGPT plan in Settings' using errcode = '55000';
+	end if;
+	v_next := v_version.version + 1;
+$r0$);
+end
+$patch$;

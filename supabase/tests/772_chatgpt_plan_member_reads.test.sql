@@ -60,7 +60,7 @@ end $$;
 -- The member turns on work while away: the list says so.
 set role authenticated;
 select pg_temp.plan764_expect(pg_temp.plan764_try(format(
-	'select public.qorpera_consent_provider_connection_autonomous(%L,%L,true)::text',
+	'select public.qorpera_set_chatgpt_plan_work_while_away(%L,%L,true)::text',
 	'16000000-0000-4000-8000-000000000010', pg_temp.r772('plan'))), 'ok', 'the member turns on work while away');
 select pg_temp.plan764_expect(pg_temp.plan764_try(
 	'select public.qorpera_list_member_native_execution_connections(''16000000-0000-4000-8000-000000000010'')::text'),
