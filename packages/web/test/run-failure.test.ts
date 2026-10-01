@@ -52,6 +52,22 @@ describe("why a run stopped, in the member's words", () => {
 		// Plain words only: no status codes, no machinery names.
 		expect(reason).not.toMatch(/\d{3}|runner|provider|bridge|lease|dispatch/i);
 	});
+
+	it("takes the cloud's word on a usage limit, and never reads a rate limit as one", () => {
+		const limit = /reached its usage limit/;
+		// The cloud recorded the limit for this run: the saved refusal names only a spent budget.
+		expect(
+			runFailureReason(
+				"Native provider bridge request failed (422) [code=NATIVE_CODEX_TURN_COMPLETION:BUDGET_EXHAUSTED]",
+				"failed",
+				true,
+			),
+		).toMatch(limit);
+		// The cloud says no: the error text cannot overrule it.
+		expect(runFailureReason("You have hit your usage limit. Try again later.", "failed", false)).not.toMatch(limit);
+		// A rate limit passes by itself.
+		expect(runFailureReason("Rate limit reached for requests", "failed")).not.toMatch(limit);
+	});
 });
 
 describe("whether a stopped run is worth trying again as it is", () => {
