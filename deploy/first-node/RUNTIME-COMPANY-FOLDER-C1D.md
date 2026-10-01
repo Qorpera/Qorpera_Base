@@ -414,21 +414,25 @@ C1d-2a pins this with a test that no table outside the folder core references a 
 
 ### 9.7 References refuse a marked object (G1)
 
+A live mark is refused with 55P03 (`lock_not_available`): the gateway answers it 409 and the runtime reads
+`contended`, as for a lock timeout under the 2 s budget. Not 40001, which PostgREST would retry on its own and which no
+function may raise (test 361).
+
 The places that take a new reference with a lock hold the object's catalog row KEY SHARE. Each reads the side row
 **in a new statement after the KEY SHARE is granted**: a check inside the locking statement reads that statement's
 snapshot, taken before the claim committed (probe A of review round 1), and would miss the mark. A live mark refuses:
 
 | Place | Today | With a live mark |
 | --- | --- | --- |
-| `open_upload`, present objects | KEY SHARE | 40001 "being collected; retry", so the runtime reads `contended` |
-| `confirm_object` | insert, then KEY SHARE | 40001; a row that vanished between the two is 40001 too, not 23505 |
-| `seal_upload` | KEY SHARE on its objects | 40001 |
+| `open_upload`, present objects | KEY SHARE | 55P03 "being collected; retry", so the runtime reads `contended` |
+| `confirm_object` | insert, then KEY SHARE | 55P03; a row that vanished between the two is 55P03 too, not 23505 |
+| `seal_upload` | KEY SHARE on its objects | 55P03 |
 | commit step 6 | KEY SHARE on every object | the unit is refused `bytes_unverified`, as for a missing object |
-| `authorize_replication` | NO KEY UPDATE | 40001: a lock conflict; with #573 the gateway keeps the object pending (503, never `blocked`). A wait on the claim's lock ends as 55P03 under the budget |
+| `authorize_replication` | NO KEY UPDATE | 55P03: a lock conflict; with #573 the gateway keeps the object pending (503, never `blocked`). A wait on the claim's lock ends as 55P03 under the budget |
 | the Storage replica-insert guard (it calls `authorize_replication`) | the same | the same refusal, which reaches the gateway as Storage's own 400 or 500, not through #573's mapping. It is rare (a replication of an object unreferenced for a day, within the minutes GC holds it), and the lane's journal write cleans up after it |
 
 Two places take no lock, and are safe by roots, not by the mark:
-- **`authorize_object_upload`** (plain reads) answers 40001 for a live mark, but can pass just before the mark
+- **`authorize_object_upload`** (plain reads) answers 55P03 for a live mark, but can pass just before the mark
   commits, and its put can land after the quarantine rename. That is harmless: the upload's intent was committed by
   `open` before any put, so it is a root, and the finish answers `restore`.
 - **`authorize_object_download`** answers a marked object as missing. A non-platform download is allowed only for an
@@ -439,7 +443,7 @@ object) or is granted it after the mark is committed (and sees it in its next st
 catalog row is gone, and a new upload of the hash is an ordinary absent object, staged and put again.
 
 **Amendment to core G3, for F1's sign-off.** G3 says `put` asks the catalog first and an upload of a marked hash
-waits. Here, `store.put` is unchanged and the upload is refused (40001, `contended`) instead of waiting. This holds
+waits. Here, `store.put` is unchanged and the upload is refused (55P03, `contended`) instead of waiting. This holds
 because every route that writes into a folder-v2 company's NAS path refuses folder-v2 before its put (the list in
 §9.3), and replication puts bytes back from Storage only after `authorize_replication`, which sees the mark. C1d-2a
 tests that each such route refuses folder-v2. A refused writer redoes its call; the collision needs an object
