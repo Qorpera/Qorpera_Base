@@ -170,8 +170,8 @@ begin
 end
 $$;
 
-select dblink_connect('gc_locker', 'dbname=qorpera_test');
-select dblink_connect('gc_worker', 'dbname=qorpera_test');
+select dblink_connect('gc_locker', 'dbname=' || current_database());
+select dblink_connect('gc_worker', 'dbname=' || current_database());
 select dblink_exec('gc_locker', 'begin');
 select * from dblink(
 	'gc_locker',
@@ -229,8 +229,8 @@ begin
 end
 $$;
 
-select dblink_connect('write_locker', 'dbname=qorpera_test');
-select dblink_connect('root_writer', 'dbname=qorpera_test');
+select dblink_connect('write_locker', 'dbname=' || current_database());
+select dblink_connect('root_writer', 'dbname=' || current_database());
 select dblink_exec('write_locker', 'begin');
 select * from dblink(
 	'write_locker',
