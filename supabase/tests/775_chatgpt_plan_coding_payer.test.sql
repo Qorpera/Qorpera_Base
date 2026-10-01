@@ -1,6 +1,7 @@
 -- @fixture 395_runtime_coding_sessions.test.sql until "-- 2. The executor claims the session, prepares, admits the turn under the owner's sponsor, and the"
 -- Sign in with ChatGPT, slice 1b (20260928359950): a member's ChatGPT plan pays for coding only when the asking
--- run is paid by that plan, and a coding worker takes the member's other login before a plan. Test 395's
+-- run is paid by that plan, and a coding worker takes the member's other login before a plan; switch-on gate 1
+-- (20260929992000): a login that may work while its member is away comes before one that may not. Test 395's
 -- fixture: the member's connection pays for the agent's run; the company has a coding executor and the agent a
 -- repository grant. A connection is a plan login's when its capsule is a plan login's (rows written directly
 -- for these checks).
@@ -64,5 +65,46 @@ select pg_temp.wake_assert(pg_temp.owner_connection775('other-first') = current_
 select pg_temp.plan775(current_setting('qorpera_test.c775')::uuid, '77500000-0000-4000-8000-000000000001');
 select pg_temp.wake_error($q$select pg_temp.dispatch775('plan-other')$q$, '55000',
 	'Coding for this work needs a Codex login: a ChatGPT plan pays only for work started on it');
+
+-- Switch-on gate 1 (20260929992000): a login that may work while its member is away comes first.
+create function pg_temp.away775(p_connection uuid, p_allow boolean) returns void language plpgsql as $$
+begin
+	set local session_replication_role = replica;
+	update public.qorpera_provider_connection_versions set allow_autonomous = p_allow
+	where connection_id = p_connection
+		and version = (select max(later.version) from public.qorpera_provider_connection_versions as later
+			where later.connection_id = p_connection);
+	set local session_replication_role = origin;
+end $$;
+
+-- 4. The plan pays for the asking run, and the member's newer login is a Codex login that was never allowed to
+--    work while away. Before, coding took that login and was refused; now the plan pays.
+delete from public.qorpera_model_logins where id = '77500000-0000-4000-8000-000000000013';
+select pg_temp.away775('77500000-0000-4000-8000-000000000010', false);
+select pg_temp.dispatch775('plan-may');
+select pg_temp.wake_assert(pg_temp.owner_connection775('plan-may') = current_setting('qorpera_test.c775')::uuid,
+	'A plan that pays for the asking run pays for its coding, not a Codex login that may not work while away');
+
+-- 5. Live for Codex logins (a bug fix): both are Codex logins, and only the older may work while away. Before,
+--    coding took the newer and was refused; now it takes the older.
+delete from public.qorpera_model_logins where id = '77500000-0000-4000-8000-000000000001';
+select pg_temp.dispatch775('codex-may');
+select pg_temp.wake_assert(pg_temp.owner_connection775('codex-may') = current_setting('qorpera_test.c775')::uuid,
+	'Coding takes the member''s Codex login that may work while away over a newer one that may not');
+
+-- 6. A Codex login that may work while away still comes before a plan that may: the plan pays only for work
+--    started on it.
+select pg_temp.plan775('77500000-0000-4000-8000-000000000010', '77500000-0000-4000-8000-000000000013');
+select pg_temp.away775('77500000-0000-4000-8000-000000000010', true);
+select pg_temp.dispatch775('codex-before-plan');
+select pg_temp.wake_assert(pg_temp.owner_connection775('codex-before-plan') = current_setting('qorpera_test.c775')::uuid,
+	'A Codex login that may work while away comes before a plan that may');
+
+-- 7. No login of the member may work while away: refused as before.
+delete from public.qorpera_model_logins where id = '77500000-0000-4000-8000-000000000013';
+select pg_temp.away775('77500000-0000-4000-8000-000000000010', false);
+select pg_temp.away775(current_setting('qorpera_test.c775')::uuid, false);
+select pg_temp.wake_error($q$select pg_temp.dispatch775('none-may')$q$, '42501',
+	'The session owner has not allowed background work on their openai account');
 
 rollback;
