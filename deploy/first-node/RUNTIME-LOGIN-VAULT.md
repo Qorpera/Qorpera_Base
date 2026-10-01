@@ -508,11 +508,11 @@ application; today's Codex login keeps serving our own company until then. Desig
 https://claude.ai/artifact/UWehPVysVzAmWcwvkuU6on.
 
 - **Deploy order.** This vault build reads every vault sign-in, Codex ones included, with
-  `qorpera_describe_model_login_sign_in_v2` from migration `20260929830000`. That migration must be live
+  `qorpera_describe_model_login_sign_in_v2` from migration `20260928329830`. That migration must be live
   before any vault (shared or one-company) runs this build; otherwise every vault Codex sign-in fails.
   The migration alone changes nothing a member sees: plans stay off.
 - **Kind.** A plan login is a second kind of vault login (`qorpera_model_logins.login_kind =
-  'chatgpt_plan'`, migration `20260929830000`). It holds OpenAI's OAuth tokens: a one-hour access token
+  'chatgpt_plan'`, migration `20260928329830`). It holds OpenAI's OAuth tokens: a one-hour access token
   and a rotating 30-day refresh token. The envelope's one field is `chatgpt_plan_login`. The vault is
   the only renewer, under the same renewal lock as a Codex login, and renews with OpenAI's token
   endpoint itself (no helper, no Codex). A run gets the access token alone

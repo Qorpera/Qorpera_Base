@@ -1216,7 +1216,7 @@ export class PostgresCloudSecretBrokerAuthority
 		);
 	}
 
-	/** Sign in with ChatGPT (20260929830000): a plan sign-in's completion, with OpenAI's earliest renewal. */
+	/** Sign in with ChatGPT (20260928329830): a plan sign-in's completion, with OpenAI's earliest renewal. */
 	completeChatGptPlanSignIn(
 		completion: Parameters<ModelLoginSignInAuthority["completeChatGptPlanSignIn"]>[0],
 		signal: AbortSignal,

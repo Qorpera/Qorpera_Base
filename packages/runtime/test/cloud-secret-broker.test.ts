@@ -401,7 +401,7 @@ it("uses only the static broker-role SQL calls and binds downstream idempotency"
 		new AbortController().signal,
 	);
 	await authority.switchOffReplacedNodeLogins(new AbortController().signal);
-	// Sign in with ChatGPT (20260929830000).
+	// Sign in with ChatGPT (20260928329830).
 	await authority.completeChatGptPlanSignIn(
 		{
 			loginId: signInId,
