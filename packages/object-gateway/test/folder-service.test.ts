@@ -399,11 +399,22 @@ describe("view tree", () => {
 			docs,
 			docs,
 		]);
+		// A path under a folder the feed just made takes the nearest receipt above it; a new top-level path has none.
+		tree.apply({ ...file("docs/new/deep.md"), op: "write" });
+		tree.apply({ ...file("top.md"), op: "write" });
+		const deep = tree.children("docs/new", undefined, 10);
+		expect(deep !== "not_found" && deep !== "not_a_folder" && deep.entries[0]?.authority).toEqual(docs);
+		const top = tree.children("", undefined, 10);
+		expect(
+			top !== "not_found" && top !== "not_a_folder" && top.entries.find((e) => e.name === "top.md")?.authority,
+		).toBe(undefined);
 		// A listing after an access change brings a newer receipt: the path changed for the machines.
 		const relisted = new ViewTree();
 		relisted.put({ ...folder("docs"), authority: docs });
 		relisted.put({ ...file("docs/a.md", 2), authority: { ...docs, grantRevision: 2 } });
 		relisted.put({ ...file("docs/b.md"), authority: docs });
+		relisted.put({ ...file("docs/new/deep.md"), authority: docs });
+		relisted.put(file("top.md"));
 		expect(ViewTree.diff(tree, relisted)).toEqual(["docs/a.md"]);
 	});
 });

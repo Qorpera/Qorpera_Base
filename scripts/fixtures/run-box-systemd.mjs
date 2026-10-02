@@ -25,11 +25,14 @@ const ok = (file, args, options) => {
 const ctl = (...args) => ok("/usr/bin/systemctl", args);
 const state = (unit) => run("/usr/bin/systemctl", ["is-active", unit]).stdout.trim();
 const id = (flag, name) => Number(ok("/usr/bin/id", [flag, name]));
-/** The native host's side of the box's read log: one take, as `account`. */
+/** The native host's side of the box's read log: everything waiting, then acknowledged, as `account`. */
 function takeReads(account) {
 	const script =
 		"const s=require('net').connect(process.argv[1]);s.on('error',e=>{console.error(e.code);process.exit(3)});" +
-		"s.write(JSON.stringify({t:'take',max:10000})+'\\n');let b='';s.on('data',d=>{b+=d;if(b.includes('\\n')){process.stdout.write(b);s.end()}});";
+		"let b='',first;s.write(JSON.stringify({t:'take',after:0,max:10000})+'\\n');" +
+		"s.on('data',d=>{b+=d;let i;while((i=b.indexOf('\\n'))>=0){const a=JSON.parse(b.slice(0,i));b=b.slice(i+1);" +
+		"if(a.t==='reads'){first=a;const last=a.reads.at(-1);s.write(JSON.stringify({t:'ack',upTo:last?last.seq:0})+'\\n')}" +
+		"else{process.stdout.write(JSON.stringify(first)+'\\n');s.end()}}});";
 	const result = spawnSync("/usr/bin/node", ["-e", script, "/run/qorpera-shared-box/0.reads"], {
 		encoding: "utf8",
 		timeout: 10_000,
@@ -214,6 +217,7 @@ try {
 	}
 	let taken = takeReads("qorpera-shared-host-0");
 	assert.equal(taken.answer.t, "reads");
+	assert.match(taken.answer.log, /^[0-9a-f]{32}$/);
 	assert.equal(taken.answer.more, false);
 	assert.deepEqual(taken.answer.reads.map((read) => read.path).sort(), ["docs/plan.md", "readme.md", "tools/run.sh"]);
 	assert(taken.answer.reads.every((read) => read.kind === "file" && read.authority?.resourceRevision === 1));
