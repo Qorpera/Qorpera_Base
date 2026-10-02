@@ -43,6 +43,7 @@ begin
 		and function.proname like 'qorpera_%'
 		and has_function_privilege('qorpera_secret_broker', function.oid, 'EXECUTE');
 	if v_functions is distinct from array[
+		'qorpera_add_company_account_version(uuid,text,jsonb,uuid,text,text,uuid,bigint,text,text,bytea,text)',
 		'qorpera_authorize_cloud_secret_operation(uuid,text,jsonb,uuid,text,text,uuid,text,text,bigint,text,text)',
 		'qorpera_authorize_coding_repository_credential(uuid,text,uuid,uuid,text,jsonb)',
 		'qorpera_broker_principal_companies(uuid,text)',
@@ -65,13 +66,16 @@ begin
 		'qorpera_issue_model_login(uuid,text,jsonb,bigint,boolean)',
 		'qorpera_model_login_broker_company(uuid,text)',
 		'qorpera_model_logins_without_account(uuid,text)',
+		'qorpera_open_company_account(uuid,text,jsonb,uuid,text,text,text,text[],text,text,uuid,text,bytea,text)',
 		'qorpera_record_model_login_account(uuid,text,uuid,text)',
 		'qorpera_record_model_login_account_metadata(uuid,text,uuid,text,uuid,uuid,bigint,text,jsonb,text)',
 		'qorpera_register_company_with_broker_principal(uuid,text,uuid,text)',
 		'qorpera_release_model_login_renewal(uuid,text,uuid,uuid,bigint,boolean,text)',
+		'qorpera_set_company_account_state(uuid,text,jsonb,uuid,text,text,uuid,text)',
 		'qorpera_switch_off_replaced_node_logins(uuid,text)',
 		'qorpera_take_chatgpt_plan_revocation(uuid,text)',
-		'qorpera_take_idle_model_login_renewal(uuid,text)'
+		'qorpera_take_idle_model_login_renewal(uuid,text)',
+		'qorpera_use_company_account(uuid,text,jsonb,uuid,text,text,uuid)'
 	]::text[] then
 		raise exception 'Broker inherited a function outside its fixed custody calls';
 	end if;
