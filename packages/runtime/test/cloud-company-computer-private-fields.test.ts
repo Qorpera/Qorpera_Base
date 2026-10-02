@@ -14,6 +14,23 @@ import {
 const lines = (...all: string[]) => all.join("\n");
 
 describe("company computer snapshot redaction", () => {
+	it("hides the vault's earlier secrets, in an address's spellings too, without hiding every typed value", () => {
+		const snapshot = [
+			'- textbox "Subject": Quarterly invoice',
+			"- paragraph: Your code is 123456 for order 4012345678",
+			'- link "Back":',
+			"  - /url: https://x.example/?pw=Pw-1234567890%40abcd%23EFGH",
+		].join("\n");
+		expect(redactCompanyComputerSnapshot(snapshot, [], { filled: ["Pw-1234567890@abcd#EFGH", "123456"] })).toBe(
+			[
+				'- textbox "Subject": Quarterly invoice',
+				"- paragraph: Your code is [hidden] for order 4012345678",
+				'- link "Back":',
+				"  - /url: https://x.example/?pw=[hidden]",
+			].join("\n"),
+		);
+	});
+
 	it("leaves a page without a private value as it is", () => {
 		const snapshot = lines('- textbox "Email": agents@nordlys.example', '- button "Sign in"');
 		expect(redactCompanyComputerSnapshot(snapshot, [])).toBe(snapshot);
@@ -328,6 +345,7 @@ describe("company computer private values", () => {
 			/^input:not\(\[type="checkbox" i\]\):not\(\[type="radio" i\]\):not\(\[type="submit" i\]\):not\(\[type="button" i\]\):not\(\[type="reset" i\]\):not\(\[type="image" i\]\):not\(\[type="file" i\]\):not\(\[type="hidden" i\]\):not\(\[type="range" i\]\):not\(\[type="color" i\]\):is\(/,
 		);
 		for (const part of [
+			"[data-qorpera-private]",
 			'[autocomplete~="current-password" i]',
 			'[autocomplete~="one-time-code" i]',
 			'[autocomplete*="cc-" i]',

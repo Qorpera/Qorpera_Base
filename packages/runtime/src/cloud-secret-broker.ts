@@ -9,7 +9,10 @@ import {
 	type CompanyAccountAnswer,
 	type CompanyAccountAuthority,
 	type CompanyAccountCall,
+	type CompanyAccountFillAnswer,
+	type CompanyAccountFillRequest,
 	type CompanyAccountOpening,
+	type CompanyAccountRefusal,
 	type CompanyAccountRequest,
 	type CompanyAccountState,
 	CompanyAccountVault,
@@ -156,6 +159,7 @@ export interface CloudSecretBrokerAuthority {
 	describeCompanyAccountOpen?: CompanyAccountAuthority["describeCompanyAccountOpen"];
 	openCompanyAccount?: CompanyAccountAuthority["openCompanyAccount"];
 	setCompanyAccountState?: CompanyAccountAuthority["setCompanyAccountState"];
+	readCompanyAccountFill?: CompanyAccountAuthority["readCompanyAccountFill"];
 }
 
 export interface CloudSecretPostgresClient {
@@ -527,14 +531,16 @@ export class CloudSecretBroker {
 	}) {
 		this.#authority = options.authority;
 		this.#keys = options.keyring;
-		const { describeCompanyAccountOpen, openCompanyAccount, setCompanyAccountState } = options.authority;
+		const { describeCompanyAccountOpen, openCompanyAccount, setCompanyAccountState, readCompanyAccountFill } =
+			options.authority;
 		this.#companyAccounts =
-			describeCompanyAccountOpen && openCompanyAccount && setCompanyAccountState
+			describeCompanyAccountOpen && openCompanyAccount && setCompanyAccountState && readCompanyAccountFill
 				? new CompanyAccountVault({
 						authority: {
 							describeCompanyAccountOpen: describeCompanyAccountOpen.bind(options.authority),
 							openCompanyAccount: openCompanyAccount.bind(options.authority),
 							setCompanyAccountState: setCompanyAccountState.bind(options.authority),
+							readCompanyAccountFill: readCompanyAccountFill.bind(options.authority),
 						},
 						keys: options.keyring,
 					})
@@ -635,6 +641,15 @@ export class CloudSecretBroker {
 	companyAccount(request: CompanyAccountRequest, signal: AbortSignal): Promise<CompanyAccountAnswer> {
 		if (!this.#companyAccounts) return Promise.reject(new Error("Company accounts unavailable"));
 		return this.#companyAccounts.handle(request, signal);
+	}
+
+	/** One vault_fill of the Company Computer's browser (A1-3): the value sealed to that computer's boot key. */
+	companyAccountFill(
+		request: CompanyAccountFillRequest,
+		signal: AbortSignal,
+	): Promise<CompanyAccountFillAnswer | CompanyAccountRefusal> {
+		if (!this.#companyAccounts) return Promise.reject(new Error("Company accounts unavailable"));
+		return this.#companyAccounts.fill(request, signal);
 	}
 
 	async execute(request: CloudSecretOperationRequest, signal: AbortSignal): Promise<CloudToolContent> {
@@ -1105,6 +1120,21 @@ export class PostgresCloudSecretBrokerAuthority
 		return this.#rpc(
 			"select public.qorpera_set_company_account_state($1::uuid,$2::text,$3::jsonb,$4::uuid,$5::text,$6::text,$7::uuid,$8::text) as result",
 			[...this.#companyAccountCall(call), accountId, status],
+			signal,
+		);
+	}
+
+	readCompanyAccountFill(request: CompanyAccountFillRequest, signal: AbortSignal): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_fill_company_account($1::uuid,$2::text,$3::jsonb,$4::uuid,$5::text,$6::text) as result",
+			[
+				this.#brokerAuthorityId,
+				this.#brokerCapabilitySha256,
+				JSON.stringify(request.binding),
+				request.receiptId,
+				request.envelope,
+				createHash("sha256").update(request.idempotencyKey).digest("hex"),
+			],
 			signal,
 		);
 	}

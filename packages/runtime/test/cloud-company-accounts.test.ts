@@ -85,6 +85,8 @@ describe("company account authenticator codes", () => {
 			`otpauth://totp/x?secret=${seeds.SHA1}&digits=`,
 			`otpauth://totp/x?secret=${seeds.SHA1}&secret=${seeds.SHA256}`,
 			`otpauth://totp/x?secret=${seeds.SHA1}&algorithm=SHA1&ALGORITHM=SHA256`,
+			`otpauth://totp/x?secret=${seeds.SHA1}&digits=6&digits=8`,
+			`otpauth://totp/x?secret=${seeds.SHA1}&period=30&Period=60`,
 			"not a link",
 		])
 			expect(() => parseCompanyAccountOtpauth(link), link).toThrow(/Company account authenticator/);
