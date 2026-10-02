@@ -5,6 +5,7 @@
 @import "./feedback.css";
 @import "./company-file-live.css";
 @import "./founding.css";
+@import "./interfaces.css";
 @import "./dark.css";
 @import "./motion.css";
 
@@ -248,31 +249,48 @@ label > input, label > select { font-weight: 400; }
 	font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
 }
 .rail[hidden] { display: none; }
-/* One top row: the search field takes whatever width the add button leaves. The two
- * controls share one height, half again the trailer's 1x chrome (31px field, 18px plus). */
-.rail-toolbar { --rail-control: 46px; flex: none; display: flex; align-items: center; gap: 6px; padding-top: 14px; }
-.rail-add { width: var(--rail-control); height: var(--rail-control); border-radius: 9px; color: #676664; }
-.rail-add svg { width: 27px; height: 27px; }
-.rail-mobile-close { display: none; }
+/* One top row (rail top option A, 2 Oct): the Agents | Interfaces tabs fill it, then the
+ * search button and the add button. The search folds out of its button leftward over the
+ * tabs, which share its cell (styles/interfaces.css). Without the tabs the field stays open. */
+.rail-toolbar {
+	--rail-control: 36px; flex: none; display: grid; grid-template-columns: auto minmax(0, 1fr) auto;
+	align-items: center; padding-top: 14px;
+}
+.rail-add { grid-area: 1 / 3; width: var(--rail-control); height: var(--rail-control); margin-left: 6px; border-radius: 10px; color: #676664; }
+.rail-add svg { width: 18px; height: 18px; }
+.rail-mobile-close { display: none; grid-area: 1 / 1; margin-right: 6px; }
 .rail-resizer { position: absolute; z-index: 8; left: calc(var(--rail-width) - 4px); top: 0; bottom: 0; width: 8px; cursor: col-resize; touch-action: none; }
 .rail-resizer:hover, .rail-resizer:focus-visible { background: rgb(0 122 255 / 12%); outline: none; }
 .rail[hidden] + .rail-resizer { display: none; }
 .rail-resizing { cursor: col-resize; user-select: none; }
 .rail-add:hover { text-decoration: none; background: var(--rail-hover); }
 .rail-search {
-	display: flex; flex-direction: row; align-items: center; gap: 6px; height: var(--rail-control); flex: 1; min-width: 0;
-	margin-left: 6px;
-	padding: 0 8px 0 35px;
-	border-radius: 9px; background: var(--rail-search) no-repeat 11px 50%; color: var(--rail-search-ink);
-	box-shadow: inset 0 0 0 0.5px rgba(18, 18, 17, 0.08);
-	background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2385857f' stroke-width='1.8'%3E%3Ccircle cx='11' cy='11' r='7'/%3E%3Cpath d='m20 20-4-4'/%3E%3C/svg%3E");
-	background-size: 17px 17px;
+	grid-area: 1 / 2; justify-self: end; position: relative; z-index: 1; display: flex; align-items: center;
+	width: var(--rail-control); min-width: 0; height: var(--rail-control); overflow: hidden;
+	border-radius: 10px; color: var(--rail-search-ink);
 }
+.rail-toolbar:is(:not(.has-tabs), .is-searching) .rail-search {
+	width: 100%; background: var(--overlay); box-shadow: 0 0 0 1px rgb(18 18 17 / 10%);
+}
+.rail-search-toggle, .rail-search-close {
+	flex: none; display: grid; place-items: center; padding: 0; border: 0; background: transparent; color: inherit; cursor: pointer;
+}
+.rail-search-toggle { width: var(--rail-control); height: var(--rail-control); border-radius: 10px; }
+.rail-search-toggle svg { width: 16px; height: 16px; }
+.rail-toolbar.has-tabs:not(.is-searching) .rail-search-toggle:hover { background: var(--rail-hover); }
+.rail-search-close { width: 30px; height: 30px; margin-right: 3px; border-radius: 8px; }
+.rail-search-close svg { width: 14px; height: 14px; }
+.rail-search-close:hover { background: var(--rail-hover); }
+.rail-search-close[hidden] { display: none; }
 .rail-search input {
 	flex: 1; width: 100%; min-width: 0; height: 100%; min-height: 0; padding: 0; border: 0; border-radius: 0;
-	background: transparent; font: inherit; font-size: 15px; font-weight: 400; color: var(--text); outline: 0;
+	background: transparent; font: inherit; font-size: 13px; font-weight: 400; color: var(--text); outline: 0;
 }
-.rail-search:focus-within { outline: 1px solid var(--text-soft); outline-offset: -1px; }
+/* Folded, the field is only its button: the text box can't be seen or reached. */
+.rail-toolbar.has-tabs:not(.is-searching) .rail-search input { visibility: hidden; opacity: 0; }
+/* The open field's ring and caret show where typing goes; the buttons show keyboard focus themselves. */
+.rail-search input::-webkit-search-cancel-button { appearance: none; display: none; }
+.rail-search :is(.rail-search-toggle, .rail-search-close):focus-visible { outline: 2px solid var(--rail-selection); outline-offset: -2px; }
 .rail-search input::placeholder { color: #777772; }
 .rail-scroll { flex: 1; min-height: 0; overflow-y: auto; padding-top: 0; }
 .rail-empty { padding: 14px 8px; color: var(--rail-small); font-size: 12.5px; }
@@ -413,7 +431,9 @@ label > input, label > select { font-weight: 400; }
 @media (prefers-reduced-motion: reduce) { .status-wave-letter { animation: none; } }
 /* RailLayout sets rail-compact only where the rail stands beside the page, never on the drawer. */
 .rail-compact .rail { padding-inline: 7px; }
-.rail-compact .rail-toolbar { justify-content: center; }
+.rail-compact .rail-toolbar { grid-template-columns: minmax(0, 1fr); row-gap: 6px; }
+.rail-compact .rail-add { grid-area: 2 / 1; justify-self: center; margin-left: 0; }
+.rail-compact .rail-toolbar:not(.has-tabs) .rail-add { grid-row: 1; }
 .rail-compact .rail-search, .rail-compact .cofounder-home > strong, .rail-compact .rail-row-copy, .rail-compact .account-menu-rail .account-trigger-name, .rail-compact .rail-connection { display: none; }
 .rail-compact .rail-cofounder { padding: 6px 0 3px; }
 .rail-compact .cofounder-home { height: 64px; padding: 0; }
@@ -435,7 +455,7 @@ label > input, label > select { font-weight: 400; }
 .rail-compact .account-menu-rail .account-popover { position: fixed; left: 8px; right: auto; bottom: 66px; width: 260px; z-index: 50; }
 /* The rail's placeholder (ui/skeleton.ts) stands on the real rail's geometry: the
  * search field, the Co-Founder's tier, 63.75px agent rows and the account foot. */
-.skeleton-rail-search { flex: 1; height: var(--rail-control); margin: 0 calc(var(--rail-control) + 6px) 0 6px; border-radius: 9px; }
+.skeleton-rail-search { grid-area: 1 / 2; height: var(--rail-control); margin-right: calc(2 * var(--rail-control) + 12px); border-radius: 11px; }
 .skeleton-rail-cofounder { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 19px 0 24.5px; }
 .skeleton-cofounder-figure { width: 76px; height: 76px; }
 .skeleton-cofounder-name { width: 72px; height: 13px; }
@@ -725,7 +745,6 @@ details > summary { cursor: pointer; font-weight: 600; margin: 8px 0; }
 	.rail { display: none; position: fixed; top: var(--titlebar-height); bottom: 0; left: 0; width: min(304px, calc(100vw - 48px)); z-index: 6; }
 	.rail-resizer { display: none; }
 	.rail-mobile-close { display: inline-flex; }
-	.rail-mobile-close:not([hidden]) + .rail-search { margin-left: 0; }
 	.frame.navigation-open .rail:not([hidden]) { display: flex; }
 	.frame.navigation-open .navigation-backdrop { display: block; position: fixed; inset: var(--titlebar-height) 0 0; z-index: 5; background: rgba(18,18,17,.25); border: 0; }
 	.page { padding: 16px; }
