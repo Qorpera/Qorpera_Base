@@ -5,7 +5,8 @@
 --    native host's 'binding' scope, G2-1). It answers the company's open accounts (reuse first: never a second
 --    account where one serves), the company's mailboxes (an account signs up with a tagged address of one), and,
 --    when asked by key, the id of the agent's own open todo the account is for (agents know a todo by its key; the
---    opening names it by id). No value, envelope or key id.
+--    opening names it by id). No value, envelope or key id. Refusals the agent can act on are answered as
+--    `refused`, since the native host's transport keeps no database message.
 -- 2. An agent's account signs up with a tagged address of one of the company's mailboxes,
 --    `<mailbox>+<tag>@<mail domain>` (find_mail's tags), so its codes and links are marked as the account's own
 --    mail (A1-5a) and its wait finds them. A trigger refuses any other login for an agent's opening (22023, which
@@ -30,7 +31,10 @@ $$;
 -- p_request: {todo?: the agent's todo key, site?: a website host}. The company's accounts that are not closed
 -- (on that site when one is named: as the account's site or one of its sign-in hosts), newest first, at most 20,
 -- with `more` when there are others; the company's mailbox addresses; and the todo's id when one is named, which
--- must be this agent's own open or blocked todo (22023 otherwise).
+-- must be this agent's own open or blocked todo. What the agent can act on is answered, not raised (the native
+-- host's transport keeps no database message): `refused` {code, message} while accounts are switched off or the
+-- company is a folder company (0A000), and for a malformed request or a todo that is not the agent's open one
+-- (22023). A binding that is not this job's run raises, as every native host call does.
 create function public.qorpera_find_company_accounts(p_binding jsonb, p_request jsonb)
 returns jsonb
 language plpgsql
@@ -46,15 +50,18 @@ declare
 	v_accounts jsonb;
 	v_more boolean;
 	v_mailboxes jsonb;
+	v_schema constant text := 'qorpera.agent-company-accounts/v1';
 begin
 	if not coalesce((select settings.enabled from public.qorpera_company_account_settings as settings), false) then
-		raise exception 'Company accounts are switched off' using errcode = '0A000';
+		return jsonb_build_object('schema', v_schema, 'refused',
+			jsonb_build_object('code', '0A000', 'message', 'Company accounts are switched off'));
 	end if;
 	if p_binding is null or jsonb_typeof(p_binding) <> 'object' then
 		raise exception 'company account run binding is malformed' using errcode = '22023';
 	end if;
 	if public.qorpera_binding_is_folder_v2(p_binding) then
-		raise exception 'Accounts for folder companies come with their connection file' using errcode = '0A000';
+		return jsonb_build_object('schema', v_schema, 'refused', jsonb_build_object('code', '0A000',
+			'message', 'Accounts for folder companies come with their connection file'));
 	end if;
 	v_run := public.qorpera_native_tool_locked_run(p_binding);
 	if jsonb_typeof(p_request) is distinct from 'object'
@@ -62,8 +69,8 @@ begin
 		or exists (select 1 from jsonb_each(p_request) as field where jsonb_typeof(field.value) <> 'string')
 		or coalesce((p_request ->> 'todo') !~ '^[a-z0-9][a-z0-9._-]{0,63}$', false)
 		or (p_request ? 'site' and not public.qorpera_company_account_host_valid(lower(p_request ->> 'site'))) then
-		raise exception 'Account search is invalid: todo is your todo''s key, site a website''s host name'
-			using errcode = '22023';
+		return jsonb_build_object('schema', v_schema, 'runId', v_run.id, 'refused', jsonb_build_object('code', '22023',
+			'message', 'Account search is invalid: todo is your todo''s key, site a website''s host name'));
 	end if;
 	v_site := lower(p_request ->> 'site');
 	v_todo_key := p_request ->> 'todo';
@@ -73,7 +80,8 @@ begin
 			and todo.staff_agent_id = v_run.staff_agent_id and todo.todo_key = v_todo_key
 			and todo.state in ('open', 'blocked') and todo.folder_retired_at is null;
 		if v_todo_id is null then
-			raise exception 'No open todo of yours has that key: an account is opened only for one' using errcode = '22023';
+			return jsonb_build_object('schema', v_schema, 'runId', v_run.id, 'refused', jsonb_build_object('code', '22023',
+				'message', 'No open todo of yours has that key: an account is opened only for one'));
 		end if;
 	end if;
 	with found as (
@@ -105,7 +113,7 @@ begin
 	from public.qorpera_company_mailboxes as mailbox
 	where v_domain is not null and mailbox.profile_id = v_run.profile_id
 		and mailbox.environment_id = v_run.environment_id and mailbox.removed_at is null;
-	return jsonb_strip_nulls(jsonb_build_object('schema', 'qorpera.agent-company-accounts/v1', 'runId', v_run.id,
+	return jsonb_strip_nulls(jsonb_build_object('schema', v_schema, 'runId', v_run.id,
 		'todo', case when v_todo_id is not null then jsonb_build_object('key', v_todo_key, 'id', v_todo_id) end,
 		'mailboxes', v_mailboxes, 'accounts', v_accounts, 'more', v_more));
 end

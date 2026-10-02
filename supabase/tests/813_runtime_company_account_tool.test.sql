@@ -21,6 +21,12 @@ create function pg_temp.fa_answer(p_result text)
 returns jsonb language sql as $$
 	select case when p_result like 'ok:%' then substring(p_result from 4)::jsonb end
 $$;
+-- What the agent can act on is answered as `refused`, never raised: 'code:message', or null.
+create function pg_temp.fa_refused(p_request text)
+returns text language sql as $$
+	select (answer -> 'refused' ->> 'code') || ':' || (answer -> 'refused' ->> 'message')
+	from (select pg_temp.fa_answer(pg_temp.fa_find(p_request)) as answer) as found
+$$;
 
 -- 1. The company's open accounts, newest first; its mailboxes; nothing secret.
 do $$
@@ -48,10 +54,11 @@ begin
 		is distinct from '{"key": "website-online", "id": "79400000-0000-4000-8000-000000000060"}'::jsonb then
 		raise exception 'The open todo''s id was not found';
 	end if;
-	if pg_temp.fa_find('''{"todo": "old-task"}''::jsonb')
+	if pg_temp.fa_refused('''{"todo": "old-task"}''::jsonb')
 			is distinct from '22023:No open todo of yours has that key: an account is opened only for one'
-		or pg_temp.fa_find('''{"todo": "not-mine"}''::jsonb') not like '22023:No open todo of yours%'
-		or pg_temp.fa_find('''{"todo": "nothing-here"}''::jsonb') not like '22023:No open todo of yours%' then
+		or coalesce(pg_temp.fa_refused('''{"todo": "not-mine"}''::jsonb'), '') not like '22023:No open todo of yours%'
+		or coalesce(pg_temp.fa_refused('''{"todo": "nothing-here"}''::jsonb'), '') not like '22023:No open todo of yours%'
+		or pg_temp.fa_answer(pg_temp.fa_find('''{"todo": "old-task"}''::jsonb')) ?| array['accounts', 'mailboxes', 'todo'] then
 		raise exception 'A done, another agent''s or a missing todo was found';
 	end if;
 	update public.qorpera_runtime_agent_todos set state = 'blocked' where id = '79400000-0000-4000-8000-000000000060';
@@ -68,7 +75,7 @@ declare v_request text;
 begin
 	foreach v_request in array array['''{"other": "x"}''::jsonb', '''{"todo": 1}''::jsonb', '''{"todo": "Bad Key"}''::jsonb',
 		'''{"site": "not a host"}''::jsonb', '''{"site": ""}''::jsonb', '''[]''::jsonb', 'null::jsonb'] loop
-		if pg_temp.fa_find(v_request) not like '22023:Account search is invalid%' then
+		if coalesce(pg_temp.fa_refused(v_request), '') not like '22023:Account search is invalid%' then
 			raise exception 'A malformed request was answered: % -> %', v_request, pg_temp.fa_find(v_request);
 		end if;
 	end loop;
@@ -144,7 +151,8 @@ end $$;
 update public.qorpera_company_account_settings set enabled = false;
 do $$
 begin
-	if pg_temp.fa_find('''{}''::jsonb') is distinct from '0A000:Company accounts are switched off' then
+	if pg_temp.fa_find('''{}''::jsonb') is distinct from
+		'ok:{"schema": "qorpera.agent-company-accounts/v1", "refused": {"code": "0A000", "message": "Company accounts are switched off"}}' then
 		raise exception 'The read answered while accounts are switched off';
 	end if;
 end $$;
@@ -152,7 +160,7 @@ update public.qorpera_company_account_settings set enabled = true;
 select set_config('qorpera_test.fa_job_v2', pg_get_functiondef('public.qorpera_job_is_folder_v2(uuid)'::regprocedure), true);
 create or replace function public.qorpera_job_is_folder_v2(p_job_id uuid)
 returns boolean language sql stable security definer set search_path = '' as $$ select true $$;
-select set_config('qorpera_test.fa_folder', pg_temp.fa_find('''{}''::jsonb'), true);
+select set_config('qorpera_test.fa_folder', coalesce(pg_temp.fa_refused('''{}''::jsonb'), ''), true);
 do $$ begin execute current_setting('qorpera_test.fa_job_v2'); end $$;
 do $$
 begin
