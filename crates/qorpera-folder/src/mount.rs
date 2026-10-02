@@ -5,6 +5,10 @@
 //!
 //! While the feed is down nothing is cached at all (every lookup asks the node), so a machine never
 //! shows a version older than the node's.
+//!
+//! A lookup answered from what this program held just before a change can reach the kernel after the change's own
+//! drop: the kernel does not find a name it is still making, and would keep the old name or version for the whole
+//! TTL. So a change also drops every name such a lookup answered, again and again for a while (`chase`).
 
 use crate::link::{Fail, Link};
 use crate::proto::{code, valid_name, valid_path, EntryKind, MAX_READ};
@@ -20,7 +24,14 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Condvar, Mutex};
-use std::time::{Duration, UNIX_EPOCH};
+use std::time::{Duration, Instant, UNIX_EPOCH};
+
+/// A raced name is dropped again at 1, 2, 4 … ms after its change, CHASE_STEPS times (the last about 16 s after it);
+/// a lookup's answer counts as possibly not yet in the kernel for as long.
+const CHASE_STEPS: u32 = 15;
+const CHASE_WINDOW: Duration = Duration::from_millis(1 << (CHASE_STEPS - 1));
+/// Answers remembered at most (the oldest go first past it; a burst of lookups never grows memory without end).
+const ANSWERED_MAX: usize = 1 << 16;
 
 pub struct Options {
 	pub mountpoint: PathBuf,
@@ -57,6 +68,8 @@ struct Shared {
 	handles: Mutex<HashMap<u64, Handle>>,
 	next_fh: AtomicU64,
 	ttl: Duration,
+	/// Names a lookup answered with a cacheable entry: the tree's `changes()` it read them at, and when.
+	answered: Mutex<HashMap<(u64, String), (u64, Instant)>>,
 }
 
 impl Shared {
@@ -82,6 +95,8 @@ impl Shared {
 					let listing = listing.to_vec();
 					if let Some(c) = hold.and_then(|name| listing.iter().find(|c| c.name == name)) {
 						tree.hold(c.ino);
+						// Recorded under the tree's lock, so a change after this read always sees it.
+						self.answer(dir, &c.name, tree.changes());
 					}
 					return Ok((listing, true));
 				}
@@ -100,7 +115,12 @@ impl Shared {
 			let fetched = self.link.list(&path).map_err(|f| f.errno()).map(|entries| {
 				let entries = entries.into_iter().filter(|e| valid_name(&e.name)).collect();
 				let keep = self.feed_up.load(Ordering::SeqCst);
-				self.tree.lock().unwrap().install(dir, entries, started, keep, hold)
+				let mut tree = self.tree.lock().unwrap();
+				let (children, kept) = tree.install(dir, entries, started, keep, hold);
+				if let Some(name) = hold.filter(|name| kept && children.iter().any(|c| c.name == *name)) {
+					self.answer(dir, name, started);
+				}
+				(children, kept)
 			});
 			// Released only after the listing is in: a second fetch of this folder never overlaps the first's install.
 			{
@@ -131,6 +151,33 @@ impl Shared {
 			// is gone.
 			_ => self.tree.lock().unwrap().attr(ino).map(|a| (a, kept)).ok_or(libc::ENOENT),
 		}
+	}
+
+	/// A lookup is about to answer `name` in `dir` from what the tree held at `changes`.
+	fn answer(&self, dir: u64, name: &str, changes: u64) {
+		let mut answered = self.answered.lock().unwrap();
+		if answered.len() >= ANSWERED_MAX {
+			answered.retain(|_, (_, at)| at.elapsed() < CHASE_WINDOW);
+			if answered.len() >= ANSWERED_MAX {
+				answered.clear();
+			}
+		}
+		answered.insert((dir, name.to_string()), (changes, Instant::now()));
+	}
+
+	/// The names in `inval` that a lookup answered from before the tree reached `changes`, lately enough that the
+	/// answer may not have landed in the kernel yet.
+	fn raced(&self, inval: &[Inval], changes: u64) -> Vec<(u64, String)> {
+		let mut answered = self.answered.lock().unwrap();
+		answered.retain(|_, (_, at)| at.elapsed() < CHASE_WINDOW);
+		inval
+			.iter()
+			.filter_map(|i| match i {
+				Inval::Entry(parent, name) => Some((*parent, name.clone())),
+				Inval::Inode(_) => None,
+			})
+			.filter(|key| answered.get(key).is_some_and(|(read, _)| *read < changes))
+			.collect()
 	}
 
 	fn handle(&self, h: Handle) -> FileHandle {
@@ -335,7 +382,21 @@ fn tell_kernel(notifier: &Notifier, inval: Vec<Inval>) {
 
 /// Follows the node's feed until the view closes. Every (re)connection starts from a clean slate,
 /// so nothing missed while the link was down is ever shown.
-fn follow(s: Arc<Shared>, notifier: Notifier, mut feed: crate::link::Feed, stop: mpsc::Sender<Stop>) {
+fn follow(
+	s: Arc<Shared>,
+	notifier: Notifier,
+	mut feed: crate::link::Feed,
+	stop: mpsc::Sender<Stop>,
+	chased: mpsc::Sender<Vec<(u64, String)>>,
+) {
+	// Drops what a change names in the kernel, and has every name a lookup answered from before it dropped again.
+	let apply = |inval: Vec<Inval>, changes: u64| {
+		let raced = s.raced(&inval, changes);
+		tell_kernel(&notifier, inval);
+		if !raced.is_empty() {
+			let _ = chased.send(raced);
+		}
+	};
 	let mut wait = Duration::from_secs(1);
 	loop {
 		loop {
@@ -350,26 +411,33 @@ fn follow(s: Arc<Shared>, notifier: Notifier, mut feed: crate::link::Feed, stop:
 					break;
 				}
 			};
-			let inval = if change.resync {
-				s.tree.lock().unwrap().resync()
-			} else if change.paths.is_empty() {
-				Vec::new()
-			} else {
-				let paths: Vec<&str> = change.paths.iter().map(String::as_str).filter(|p| valid_path(p)).collect();
-				s.tree.lock().unwrap().invalidate(paths)
+			let (inval, changes) = {
+				let mut tree = s.tree.lock().unwrap();
+				let inval = if change.resync {
+					tree.resync()
+				} else if change.paths.is_empty() {
+					Vec::new()
+				} else {
+					let paths: Vec<&str> = change.paths.iter().map(String::as_str).filter(|p| valid_path(p)).collect();
+					tree.invalidate(paths)
+				};
+				(inval, tree.changes())
 			};
 			if debug() {
 				eprintln!("qorpera-folder: change {} resync {} paths {:?}: {inval:?}", change.seq, change.resync, change.paths);
 			}
-			tell_kernel(&notifier, inval);
+			apply(inval, changes);
 			if feed.ack(change.seq).is_err() {
 				break;
 			}
 		}
 		feed.close();
 		s.feed_up.store(false, Ordering::SeqCst);
-		let inval = s.tree.lock().unwrap().resync();
-		tell_kernel(&notifier, inval);
+		let (inval, changes) = {
+			let mut tree = s.tree.lock().unwrap();
+			(tree.resync(), tree.changes())
+		};
+		apply(inval, changes);
 		feed = loop {
 			std::thread::sleep(wait);
 			match s.link.open_feed() {
@@ -377,9 +445,12 @@ fn follow(s: Arc<Shared>, notifier: Notifier, mut feed: crate::link::Feed, stop:
 					wait = Duration::from_secs(1);
 					eprintln!("qorpera-folder: feed back at change {}", ok.as_of_seq);
 					// Anything fetched before this moment may be older than the feed's start.
-					let inval = s.tree.lock().unwrap().resync();
+					let (inval, changes) = {
+						let mut tree = s.tree.lock().unwrap();
+						(tree.resync(), tree.changes())
+					};
 					s.feed_up.store(true, Ordering::SeqCst);
-					tell_kernel(&notifier, inval);
+					apply(inval, changes);
 					break f;
 				}
 				Err(f) if f.view_closed() => {
@@ -392,6 +463,41 @@ fn follow(s: Arc<Shared>, notifier: Notifier, mut feed: crate::link::Feed, stop:
 				}
 			}
 		};
+	}
+}
+
+/// Drops raced names from the kernel again at 1, 2, 4 … ms after their change, CHASE_STEPS times: a lookup answered
+/// from before the change lands in the kernel within that, and the next drop after it removes what it made. A drop
+/// of a name the kernel no longer holds does nothing.
+fn chase(notifier: Notifier, names: mpsc::Receiver<Vec<(u64, String)>>) {
+	let mut due: Vec<(Instant, u32, u64, String)> = Vec::new();
+	loop {
+		let next = due.iter().map(|d| d.0).min();
+		let got = match next {
+			Some(at) => names.recv_timeout(at.saturating_duration_since(Instant::now())),
+			None => names.recv().map_err(|_| mpsc::RecvTimeoutError::Disconnected),
+		};
+		match got {
+			Ok(batch) => {
+				let at = Instant::now() + Duration::from_millis(1);
+				due.extend(batch.into_iter().map(|(parent, name)| (at, 0, parent, name)));
+			}
+			Err(mpsc::RecvTimeoutError::Timeout) => {}
+			Err(mpsc::RecvTimeoutError::Disconnected) => return,
+		}
+		let now = Instant::now();
+		let mut later = Vec::with_capacity(due.len());
+		for (at, step, parent, name) in due.drain(..) {
+			if at > now {
+				later.push((at, step, parent, name));
+				continue;
+			}
+			tell_kernel(&notifier, vec![Inval::Entry(parent, name.clone())]);
+			if step + 1 < CHASE_STEPS {
+				later.push((now + Duration::from_millis(1 << step), step + 1, parent, name));
+			}
+		}
+		due = later;
 	}
 }
 
@@ -439,6 +545,7 @@ pub fn run(link: Link, options: Options) -> Result<Stop, Failed> {
 		handles: Mutex::new(HashMap::new()),
 		next_fh: AtomicU64::new(1),
 		ttl: options.ttl,
+		answered: Mutex::new(HashMap::new()),
 	});
 	let mut config = Config::default();
 	config.mount_options = vec![
@@ -483,7 +590,10 @@ pub fn run(link: Link, options: Options) -> Result<Stop, Failed> {
 	}
 	{
 		let shared = shared.clone();
-		std::thread::spawn(move || follow(shared, notifier, feed, stop_tx));
+		let (chased, names) = mpsc::channel();
+		let chaser = notifier.clone();
+		std::thread::spawn(move || chase(chaser, names));
+		std::thread::spawn(move || follow(shared, notifier, feed, stop_tx, chased));
 	}
 	eprintln!("qorpera-folder: mounted at {} with {} threads", options.mountpoint.display(), options.threads);
 	let why = stop_rx.recv().map_err(|_| Failed::Other("every stop channel closed".into()))?;

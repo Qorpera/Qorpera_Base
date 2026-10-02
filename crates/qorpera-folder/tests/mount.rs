@@ -134,6 +134,53 @@ fn mounts_reads_follows_changes_and_unmounts_when_the_view_closes() {
 }
 
 #[test]
+fn a_change_that_races_a_lookup_never_leaves_the_old_name_or_version_in_the_kernel() {
+	if !wanted() {
+		return;
+	}
+	let node = FakeNode::start();
+	node.put("race/keep.md", "keep", false);
+	let (company, runner) = start(&node);
+	assert_eq!(names(&company.join("race")), ["keep.md"]);
+	// A lookup answered from what the folder held just before a change can reach the kernel after the change's
+	// own drop: the kernel does not find a name it is still making, and would keep it for the whole TTL.
+	let mut stale = Vec::new();
+	for i in 0..300u64 {
+		let name = format!("race/{i}.md");
+		let path = company.join(&name);
+		node.put(&name, "version one", false);
+		let looker = {
+			let path = path.clone();
+			std::thread::spawn(move || {
+				let start = Instant::now();
+				while start.elapsed() < Duration::from_millis(50) && std::fs::metadata(&path).is_err() {}
+			})
+		};
+		std::thread::sleep(Duration::from_micros((i % 8) * 50));
+		let removed = i % 2 == 0;
+		if removed {
+			node.remove(&name);
+		} else {
+			node.put(&name, "version two", false);
+		}
+		looker.join().unwrap();
+		let settled = eventually(Duration::from_secs(1), || {
+			if removed {
+				std::fs::metadata(&path).err().map(|e| e.kind()) == Some(ErrorKind::NotFound)
+			} else {
+				std::fs::read_to_string(&path).ok().as_deref() == Some("version two")
+			}
+		});
+		if !settled {
+			stale.push(name);
+		}
+	}
+	assert!(stale.is_empty(), "the kernel kept an old name or version: {stale:?}");
+	node.close_view();
+	assert!(matches!(runner.join().unwrap(), Stop::ViewClosed));
+}
+
+#[test]
 fn a_refused_view_is_never_mounted() {
 	if !wanted() {
 		return;
