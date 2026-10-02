@@ -4,14 +4,15 @@
 -- `a <> b` and `x !~ p` are unknown, not true, when a side is NULL, and an unknown condition skipped the refusal:
 -- a NULL capability, capture capability, digest, envelope or operation fact passed. Real admission, assignment and
 -- native lease from the 290 fixture, a real capture ticket and a real executing effect receipt.
--- 1. Describing a capture ticket: a NULL or wrong broker capability, a NULL or wrong capture capability.
--- 2. Sealing it: the same, plus a NULL or malformed envelope digest and a NULL envelope, on the pending ticket and
---    again on the committed one (a repeat after a lost answer); the six-argument form too. Nothing is sealed until
---    the right call, which then seals once.
--- 3. Authorizing an agent's connector call: a NULL or wrong broker capability, each of the five operation facts the
---    broker pins NULL (and a wrong adapter digest), a NULL or wrong input digest, a NULL or wrong downstream digest.
---    Nothing is audited as authorized until the right call, which hands out the sealed envelope once.
--- Each refusal is the error the wrong non-NULL value gets.
+-- 1. Describing a capture ticket: a NULL or wrong broker capability, a NULL or wrong capture capability, and another
+--    company's broker with its own real capability.
+-- 2. Sealing it: the same, plus a NULL, malformed or other envelope's digest and a NULL or empty envelope, on the
+--    pending ticket and again on the committed one (a repeat after a lost answer); the six-argument form too.
+--    Nothing is sealed until the right call, which then seals once.
+-- 3. Authorizing an agent's connector call: a NULL or wrong broker capability, another company's broker, each of the
+--    five operation facts the broker pins NULL or wrong, a NULL or wrong input digest, a NULL, malformed or wrong
+--    downstream digest. Nothing is audited as authorized until the right call, which hands out the envelope once.
+-- Each NULL is refused with the error the wrong non-NULL value gets.
 
 insert into auth.users(id,email) values ('80600000-0000-4000-8000-000000000001','null-safe-other-owner@example.test');
 insert into public.qorpera_profiles(id,name,created_by_user_id)
@@ -60,24 +61,26 @@ select set_config('qorpera_test.ns_envelope',encode(extensions.gen_random_bytes(
 select set_config('qorpera_test.ns_envelope_sha',encode(extensions.digest(
 	decode(current_setting('qorpera_test.ns_envelope'),'base64'),'sha256'),'hex'),true);
 
--- Describe with these broker and capture capabilities.
-create function pg_temp.ns_describe(p_broker text,p_capture text)
+-- Describe with these broker and capture capabilities (this company's broker unless p_authority).
+create function pg_temp.ns_describe(p_broker text,p_capture text,
+	p_authority text default '80600000-0000-4000-8000-000000000040')
 returns text language plpgsql as $$
 begin
 	return pg_temp.ns_try(format('select public.qorpera_describe_cloud_secret_capture(%L,%L,%L,%L)',
-		'80600000-0000-4000-8000-000000000040',p_broker,current_setting('qorpera_test.ns_ticket'),p_capture));
+		p_authority,p_broker,current_setting('qorpera_test.ns_ticket'),p_capture));
 end
 $$;
 -- Seal with these capabilities, envelope and digest (the seven-argument form unless p_six).
-create function pg_temp.ns_complete(p_broker text,p_capture text,p_envelope text,p_sha text,p_six boolean default false)
+create function pg_temp.ns_complete(p_broker text,p_capture text,p_envelope text,p_sha text,p_six boolean default false,
+	p_authority text default '80600000-0000-4000-8000-000000000040')
 returns text language plpgsql as $$
 begin
 	return pg_temp.ns_try(format('select public.qorpera_complete_cloud_secret_capture(%L,%L,%L,%L,%L,%L%s)',
-		'80600000-0000-4000-8000-000000000040',p_broker,current_setting('qorpera_test.ns_ticket'),p_capture,
+		p_authority,p_broker,current_setting('qorpera_test.ns_ticket'),p_capture,
 		p_envelope,p_sha,case when p_six then '' else ',null' end));
 end
 $$;
-grant execute on function pg_temp.ns_describe(text,text), pg_temp.ns_complete(text,text,text,text,boolean)
+grant execute on function pg_temp.ns_describe(text,text,text), pg_temp.ns_complete(text,text,text,text,boolean,text)
 	to qorpera_secret_broker;
 
 set local session authorization qorpera_secret_broker;
@@ -95,8 +98,10 @@ begin
 	perform pg_temp.ns_expect('describe, wrong broker capability',pg_temp.ns_describe(repeat('d',64),t),v_broker);
 	perform pg_temp.ns_expect('describe, NULL capture capability',pg_temp.ns_describe(c,null),v_capture);
 	perform pg_temp.ns_expect('describe, wrong capture capability',pg_temp.ns_describe(c,repeat('d',64)),v_capture);
+	perform pg_temp.ns_expect('describe, another company''s broker',
+		pg_temp.ns_describe(repeat('e',64),t,'80600000-0000-4000-8000-000000000041'),v_capture);
 	-- Control: the right capabilities describe the ticket.
-	if pg_temp.ns_describe(c,t) !~ '^ok:.*"keyId": "company-kek-1"' then
+	if coalesce(pg_temp.ns_describe(c,t) !~ '^ok:.*"keyId": "company-kek-1"',true) then
 		raise exception 'The right capabilities did not describe the ticket: %',pg_temp.ns_describe(c,t);
 	end if;
 
@@ -107,10 +112,13 @@ begin
 	perform pg_temp.ns_expect('seal, NULL envelope digest',pg_temp.ns_complete(c,t,e,null),v_completion);
 	perform pg_temp.ns_expect('seal, malformed envelope digest',pg_temp.ns_complete(c,t,e,'x'),v_completion);
 	perform pg_temp.ns_expect('seal, NULL envelope',pg_temp.ns_complete(c,t,null,s),v_completion);
+	perform pg_temp.ns_expect('seal, empty envelope',pg_temp.ns_complete(c,t,'',s),v_completion);
 	perform pg_temp.ns_expect('seal, another envelope''s digest',pg_temp.ns_complete(c,t,e,repeat('0',64)),
 		'22023:encrypted secret envelope is invalid');
 	perform pg_temp.ns_expect('seal, NULL capture capability',pg_temp.ns_complete(c,null,e,s),v_capture);
 	perform pg_temp.ns_expect('seal, wrong capture capability',pg_temp.ns_complete(c,repeat('d',64),e,s),v_capture);
+	perform pg_temp.ns_expect('seal, another company''s broker',
+		pg_temp.ns_complete(repeat('e',64),t,e,s,false,'80600000-0000-4000-8000-000000000041'),v_capture);
 end
 $$;
 reset session authorization;
@@ -118,7 +126,7 @@ reset session authorization;
 do $$
 begin
 	if (select status from public.qorpera_cloud_secret_capture_tickets
-		where id = current_setting('qorpera_test.ns_ticket')::uuid) <> 'pending'
+		where id = current_setting('qorpera_test.ns_ticket')::uuid) is distinct from 'pending'
 		or exists (select 1 from public.qorpera_cloud_secrets as secret
 			join public.qorpera_cloud_secret_capture_tickets as ticket on ticket.secret_id = secret.id
 			where ticket.id = current_setting('qorpera_test.ns_ticket')::uuid) then
@@ -138,7 +146,7 @@ declare
 	v_completion text := '42501:cloud secret broker completion is invalid';
 begin
 	-- Control: the right call seals.
-	if pg_temp.ns_complete(c,t,e,s) !~ '^ok:.*"status": "active"' then
+	if coalesce(pg_temp.ns_complete(c,t,e,s) !~ '^ok:.*"status": "active"',true) then
 		raise exception 'The right seal was refused: %',pg_temp.ns_complete(c,t,e,s);
 	end if;
 	-- A repeat after a lost answer still needs every proof.
@@ -146,7 +154,7 @@ begin
 	perform pg_temp.ns_expect('repeat seal, NULL envelope digest',pg_temp.ns_complete(c,t,e,null),v_completion);
 	perform pg_temp.ns_expect('repeat seal, NULL envelope',pg_temp.ns_complete(c,t,null,s),v_completion);
 	perform pg_temp.ns_expect('repeat seal, NULL capture capability',pg_temp.ns_complete(c,null,e,s),v_capture);
-	if pg_temp.ns_complete(c,t,e,s) !~ '^ok:.*"status": "active"' then
+	if coalesce(pg_temp.ns_complete(c,t,e,s) !~ '^ok:.*"status": "active"',true) then
 		raise exception 'The right repeat seal was refused: %',pg_temp.ns_complete(c,t,e,s);
 	end if;
 end
@@ -203,19 +211,20 @@ begin
 end $$;
 reset role;
 
--- Authorize with this broker capability, these operation facts and these digests.
+-- Authorize with this broker capability, these operation facts and these digests (this company's broker unless
+-- p_authority).
 create function pg_temp.ns_authorize(p_broker text,p_connector text,p_operation text,p_version bigint,p_adapter text,
-	p_origin text,p_input text,p_downstream text)
+	p_origin text,p_input text,p_downstream text,p_authority text default '80600000-0000-4000-8000-000000000040')
 returns text language plpgsql as $$
 begin
 	return pg_temp.ns_try(format('select public.qorpera_authorize_cloud_secret_operation(%L,%L,%L::jsonb,%L,%L,%L,%L,'
 		'%L,%L,%L,%L,%L)',
-		'80600000-0000-4000-8000-000000000040',p_broker,current_setting('qorpera_test.path_binding'),
+		p_authority,p_broker,current_setting('qorpera_test.path_binding'),
 		'80600000-0000-4000-8000-000000000070',p_input,p_downstream,'80600000-0000-4000-8000-000000000060',
 		p_connector,p_operation,p_version,p_adapter,p_origin));
 end
 $$;
-grant execute on function pg_temp.ns_authorize(text,text,text,bigint,text,text,text,text) to qorpera_secret_broker;
+grant execute on function pg_temp.ns_authorize(text,text,text,bigint,text,text,text,text,text) to qorpera_secret_broker;
 
 set local session authorization qorpera_secret_broker;
 do $$
@@ -236,16 +245,26 @@ begin
 	perform pg_temp.ns_expect('authorize, NULL broker capability',pg_temp.ns_authorize(null,n,p,v,a,d,i,k),v_broker);
 	perform pg_temp.ns_expect('authorize, wrong broker capability',
 		pg_temp.ns_authorize(repeat('d',64),n,p,v,a,d,i,k),v_broker);
+	perform pg_temp.ns_expect('authorize, another company''s broker',
+		pg_temp.ns_authorize(repeat('e',64),n,p,v,a,d,i,k,'80600000-0000-4000-8000-000000000041'),
+		'42501:cloud secret broker does not own this envelope');
 	perform pg_temp.ns_expect('authorize, NULL connector',pg_temp.ns_authorize(c,null,p,v,a,d,i,k),v_operation);
+	perform pg_temp.ns_expect('authorize, wrong connector',pg_temp.ns_authorize(c,'google_drive',p,v,a,d,i,k),v_operation);
 	perform pg_temp.ns_expect('authorize, NULL operation',pg_temp.ns_authorize(c,n,null,v,a,d,i,k),v_operation);
+	perform pg_temp.ns_expect('authorize, wrong operation',pg_temp.ns_authorize(c,n,'send_message',v,a,d,i,k),v_operation);
 	perform pg_temp.ns_expect('authorize, NULL operation version',pg_temp.ns_authorize(c,n,p,null,a,d,i,k),v_operation);
+	perform pg_temp.ns_expect('authorize, wrong operation version',pg_temp.ns_authorize(c,n,p,v + 1,a,d,i,k),v_operation);
 	perform pg_temp.ns_expect('authorize, NULL adapter digest',pg_temp.ns_authorize(c,n,p,v,null,d,i,k),v_operation);
 	perform pg_temp.ns_expect('authorize, wrong adapter digest',
 		pg_temp.ns_authorize(c,n,p,v,repeat('0',64),d,i,k),v_operation);
 	perform pg_temp.ns_expect('authorize, NULL destination',pg_temp.ns_authorize(c,n,p,v,a,null,i,k),v_operation);
+	perform pg_temp.ns_expect('authorize, wrong destination',
+		pg_temp.ns_authorize(c,n,p,v,a,'https://attacker.example.test',i,k),v_operation);
 	perform pg_temp.ns_expect('authorize, NULL input digest',pg_temp.ns_authorize(c,n,p,v,a,d,null,k),v_receipt);
-	perform pg_temp.ns_expect('authorize, wrong input digest',pg_temp.ns_authorize(c,n,p,v,a,d,repeat('0',64),k),v_receipt);
+	perform pg_temp.ns_expect('authorize, wrong input digest',
+		pg_temp.ns_authorize(c,n,p,v,a,d,repeat('0',64),k),v_receipt);
 	perform pg_temp.ns_expect('authorize, NULL downstream digest',pg_temp.ns_authorize(c,n,p,v,a,d,i,null),v_receipt);
+	perform pg_temp.ns_expect('authorize, malformed downstream digest',pg_temp.ns_authorize(c,n,p,v,a,d,i,'x'),v_receipt);
 	perform pg_temp.ns_expect('authorize, wrong downstream digest',
 		pg_temp.ns_authorize(c,n,p,v,a,d,i,repeat('0',64)),v_receipt);
 end
@@ -272,14 +291,14 @@ reset session authorization;
 do $$
 declare v_answer jsonb;
 begin
-	if current_setting('qorpera_test.ns_authorized') !~ '^ok:' then
+	if coalesce(current_setting('qorpera_test.ns_authorized') !~ '^ok:',true) then
 		raise exception 'The right call was not authorized: %',current_setting('qorpera_test.ns_authorized');
 	end if;
 	v_answer := substr(current_setting('qorpera_test.ns_authorized'),4)::jsonb;
-	if v_answer ->> 'secretId' <> '80600000-0000-4000-8000-000000000050'
-		or v_answer ->> 'receiptId' <> '80600000-0000-4000-8000-000000000070'
-		or v_answer ->> 'inputSha256' <> repeat('a',64)
-		or decode(v_answer ->> 'encryptedEnvelopeBase64','base64') <> '\x0102'::bytea then
+	if v_answer ->> 'secretId' is distinct from '80600000-0000-4000-8000-000000000050'
+		or v_answer ->> 'receiptId' is distinct from '80600000-0000-4000-8000-000000000070'
+		or v_answer ->> 'inputSha256' is distinct from repeat('a',64)
+		or decode(v_answer ->> 'encryptedEnvelopeBase64','base64') is distinct from '\x0102'::bytea then
 		raise exception 'The authorization answer differs: %',v_answer;
 	end if;
 	if (select count(*) from public.qorpera_cloud_secret_audit_events
