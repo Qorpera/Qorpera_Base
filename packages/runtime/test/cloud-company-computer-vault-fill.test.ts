@@ -21,7 +21,7 @@ import {
 
 const account = computerId(60);
 /** With the generator's symbols, which a page address percent-encodes. */
-const password = "Pw-1234567890@abcd#EFGH";
+const password = "Pw-1234567890@ab!cd#EF+GH";
 
 /** A synthetic PNG header the size of a page, as the guest checks it (not a real picture). */
 function pngHeader(width = 1920, height = 1200): Uint8Array {
@@ -54,7 +54,13 @@ interface FakeNode {
  * against this fake document: its title and address, its text, its boxes and an open shadow root.
  */
 function office(
-	options: { url?: string; key?: CompanyComputerFillKey | null; filled?: CompanyComputerFilledValues } = {},
+	options: {
+		url?: string;
+		key?: CompanyComputerFillKey | null;
+		filled?: CompanyComputerFilledValues;
+		/** A page script moves the focus somewhere with no value (an editable area) before the typing. */
+		lose?: boolean;
+	} = {},
 ) {
 	const shown = {
 		url: options.url ?? "https://vercel.com/login",
@@ -63,6 +69,13 @@ function office(
 		/** Another box on the page, not marked private (a "show password" that made a new one). */
 		other: { value: "" },
 		shadowText: "",
+		/** A box inside the open shadow root. */
+		shadowBox: { value: "" },
+		/** Extra boxes and shadow roots on the page, to reach the check's limits. */
+		extraBoxes: 0,
+		extraRoots: 0,
+		/** A link's address, as the snapshot lists it. */
+		link: "https://vercel.com/",
 	};
 	const element = { tagName: "INPUT", type: "password", disabled: false, readOnly: false, value: "" };
 	const attributes = new Map<string, string>();
@@ -77,7 +90,7 @@ function office(
 	});
 	const shadowHost: FakeNode = {
 		get shadowRoot() {
-			return { querySelectorAll: () => [], textContent: shown.shadowText };
+			return { querySelectorAll: () => [node(shown.shadowBox, () => false)], textContent: shown.shadowText };
 		},
 	};
 	const runScreenCheck = (fn: (arg: unknown) => unknown, arg: unknown) => {
@@ -89,6 +102,10 @@ function office(
 					node(element, () => attributes.has(COMPANY_ACCOUNT_FILLED_ATTRIBUTE)),
 					node(shown.other, () => false),
 					shadowHost,
+					...Array.from({ length: shown.extraBoxes }, () => node({ value: "x" }, () => false)),
+					...Array.from({ length: shown.extraRoots }, () => ({
+						shadowRoot: { querySelectorAll: () => [], textContent: "" },
+					})),
 				],
 			},
 			location: { href: shown.url },
@@ -127,6 +144,7 @@ function office(
 	};
 	const page = {
 		isClosed: () => false,
+		close: vi.fn(async () => undefined),
 		url: () => shown.url,
 		title: async () => shown.title,
 		waitForLoadState: async () => undefined,
@@ -142,13 +160,18 @@ function office(
 		isDetached: () => false,
 		locator: vi.fn(() => ({
 			ariaSnapshot: async () =>
-				`- textbox "Subject": Quarterly invoice\n- paragraph: ${shown.text}\n- textbox "Password": ${element.value}`,
+				`- textbox "Subject": Quarterly invoice\n- paragraph: ${shown.text}\n- textbox "Password": ${element.value}\n- link "Back":\n  - /url: ${shown.link}`,
 		})),
 		context: () => ({
 			newCDPSession: async () => ({
 				send: async (method: string, params: { text: string }) => {
 					expect(method).toBe("Input.insertText");
 					typed.push(params.text);
+					if (options.lose) {
+						// The focus went to an editable area: the value is in the page, not in the box.
+						Object.assign(globalThis, { document: { activeElement: { tagName: "DIV", setAttribute() {} } } });
+						return;
+					}
 					element.value += params.text;
 				},
 				detach: async () => undefined,
@@ -167,6 +190,14 @@ function office(
 		run: vi.fn(async () => ({ code: 0, stdout: "", stderr: "" })),
 		capturePng: vi.fn(async () => pngHeader()),
 	};
+	const automationScreenshots = {
+		publish: vi.fn(async (bytes: Uint8Array) => ({
+			assetId: computerId(50),
+			sha256: createHash("sha256").update(bytes).digest("hex"),
+			bytes: bytes.length,
+			mediaType: "image/png" as const,
+		})),
+	};
 	const key = options.key === null ? undefined : (options.key ?? new CompanyComputerFillKey());
 	const automation = new CompanyComputerGuestAutomation({
 		binding: computerBinding(),
@@ -179,18 +210,11 @@ function office(
 		boundary: { assertReady: vi.fn(async () => undefined) },
 		browser,
 		commands,
-		screenshots: {
-			publish: vi.fn(async (bytes: Uint8Array) => ({
-				assetId: computerId(50),
-				sha256: createHash("sha256").update(bytes).digest("hex"),
-				bytes: bytes.length,
-				mediaType: "image/png" as const,
-			})),
-		},
+		screenshots: automationScreenshots,
 		...(key ? { fillKey: key } : {}),
 		...(options.filled ? { filled: options.filled } : {}),
 	});
-	return { automation, key, element, attributes, typed, page, shown, commands };
+	return { automation, key, element, attributes, typed, page, shown, commands, screenshots: automationScreenshots };
 }
 
 const action = (field: "password" | "code" = "password"): CompanyComputerAction => ({
@@ -340,6 +364,75 @@ describe("vault_fill on the Company Computer", () => {
 		await perform(f, action(), sealed(f.key!));
 		await expect(screenshot(f, "browser")).resolves.toMatchObject({ kind: "json" });
 		expect(f.page.screenshot).toHaveBeenCalledOnce();
+	});
+
+	it("hides the value two encodings deep and in lower-case hex, and refuses a snapshot where it survives", async () => {
+		const f = office();
+		await perform(f, action(), sealed(f.key!));
+		const once = encodeURIComponent(password);
+		const twice = encodeURIComponent(`https://vercel.com/login?pw=${once}`);
+		// A redirect that wraps the address, and a site that writes lower-case escapes.
+		f.shown.url = `https://vercel.com/next?return_to=${twice}`;
+		f.shown.link = `https://vercel.com/?pw=${once.replace(/%[0-9A-F]{2}/g, (hex) => hex.toLowerCase())}`;
+		const snapshot = JSON.stringify(await perform(f, { kind: "browser", action: "snapshot" }));
+		const tabs = JSON.stringify(await perform(f, { kind: "browser", action: "list_tabs" }));
+		for (const shown of [snapshot, tabs]) {
+			expect(shown).toContain("[hidden]");
+			expect(shown).not.toMatch(/Pw-1234567890|%2540|%40ab/i);
+		}
+		// A page whose text carries the value in a spelling no hiding rule covers: no snapshot at all.
+		f.shown.text = `Continue: ${twice}`;
+		await expect(perform(f, { kind: "browser", action: "snapshot" })).rejects.toThrow("PRIVATE_FIELD_VISIBLE");
+	});
+
+	it("takes no picture when the page holds more than the check reads, or shows the value only after the capture", async () => {
+		for (const set of [
+			(f: ReturnType<typeof office>) => {
+				f.shown.shadowBox.value = password;
+			},
+			(f: ReturnType<typeof office>) => {
+				f.shown.extraBoxes = 600;
+			},
+			(f: ReturnType<typeof office>) => {
+				f.shown.extraRoots = 300;
+			},
+		]) {
+			const f = office();
+			await perform(f, action(), sealed(f.key!));
+			set(f);
+			await expect(screenshot(f, "browser")).rejects.toThrow(/PRIVATE_FIELD_(ON_SCREEN|TAB_UNREADABLE)/);
+			expect(f.page.screenshot).not.toHaveBeenCalled();
+		}
+		// The page shows the value only once the picture is taken: it is never published.
+		const f = office();
+		await perform(f, action(), sealed(f.key!));
+		f.page.screenshot.mockImplementationOnce(async () => {
+			f.shown.text = `Your password is ${password}`;
+			return pngHeader();
+		});
+		await expect(screenshot(f, "browser")).rejects.toThrow("PRIVATE_FIELD_ON_SCREEN");
+		expect(f.screenshots.publish).not.toHaveBeenCalled();
+	});
+
+	it("gives up on a page that does not answer within five seconds, taking no picture", async () => {
+		vi.useFakeTimers();
+		try {
+			const f = office();
+			await perform(f, action(), sealed(f.key!));
+			f.page.evaluate.mockImplementation(() => new Promise(() => undefined));
+			const refused = expect(screenshot(f, "browser")).rejects.toThrow("PRIVATE_FIELD_TAB_UNREADABLE");
+			await vi.advanceTimersByTimeAsync(5_000);
+			await refused;
+			expect(f.page.screenshot).not.toHaveBeenCalled();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("closes the tab when the value went where nothing can empty it", async () => {
+		const f = office({ lose: true });
+		await expect(perform(f, action(), sealed(f.key!))).rejects.toThrow("ACCOUNT_FILL_LOST");
+		expect(f.page.close).toHaveBeenCalledOnce();
 	});
 
 	it("tells a spent box apart from one that is not for this call", async () => {

@@ -386,32 +386,35 @@ export class CompanyComputerGuestAutomation {
 							location: { href: string };
 						};
 						const document = global.document;
-						const parts = [
-							document.title,
-							global.location.href,
-							(document.documentElement?.innerText ?? "").slice(0, 2_000_000),
-						];
+						// Everything the page shows, or null when it is more than this check reads: then no picture.
+						const parts = [document.title, global.location.href, document.documentElement?.innerText ?? ""];
+						let size = parts.reduce((total, part) => total + part.length, 0);
 						// Boxes not marked private, and the text and boxes inside open shadow roots (innerText skips them).
 						const roots: Root[] = [document];
 						let boxes = 0;
-						for (let index = 0; index < roots.length && index < 256; index++) {
+						for (let index = 0; index < roots.length; index++) {
+							if (index >= 256) return null;
 							for (const node of roots[index]!.querySelectorAll("*")) {
+								let part: string | undefined;
 								if (node.shadowRoot) {
 									roots.push(node.shadowRoot);
-									parts.push((node.shadowRoot as unknown as Node).textContent?.slice(0, 200_000) ?? "");
+									part = (node.shadowRoot as unknown as Node).textContent ?? "";
 								}
 								if (
-									boxes < 512 &&
 									typeof node.value === "string" &&
 									node.matches?.("input, textarea") &&
 									!node.matches(`[${attribute}]`)
 								) {
-									parts.push(node.value.slice(0, 4096));
-									boxes++;
+									if (++boxes > 512 || node.value.length > 4096) return null;
+									part = part === undefined ? node.value : `${part}\n${node.value}`;
 								}
+								if (part === undefined) continue;
+								size += part.length;
+								if (size > 4_000_000) return null;
+								parts.push(part);
 							}
 						}
-						return parts.join("\n");
+						return size > 4_000_000 ? null : parts.join("\n");
 					}, COMPANY_ACCOUNT_FILLED_ATTRIBUTE),
 					new Promise<never>((_, reject) => {
 						timer = setTimeout(() => reject(new Error("timed out")), 5_000);
@@ -424,7 +427,7 @@ export class CompanyComputerGuestAutomation {
 			}
 			if (typeof shown !== "string")
 				throw new CompanyComputerActionFailedError(new Error("PRIVATE_FIELD_TAB_UNREADABLE"));
-			if (this.#filled.shows(shown))
+			if (this.#filled.showsDecoded(shown))
 				throw new CompanyComputerActionFailedError(new Error("PRIVATE_FIELD_ON_SCREEN"));
 		}
 	}
@@ -563,8 +566,8 @@ export class CompanyComputerGuestAutomation {
 					if (page.isClosed()) continue;
 					tabs.push({
 						tabId: this.#tabIds.get(page)!,
-						titlePreview: tabPreview(this.#filled.hide(title), 128),
-						urlPreview: tabPreview(this.#filled.hide(page.url()), 256),
+						titlePreview: tabPreview(this.#filled.hideText(title), 128),
+						urlPreview: tabPreview(this.#filled.hideAddress(page.url()), 256),
 					});
 				}
 				await companyComputerActionCheck(this.#browser.assertActive(signal));
@@ -675,6 +678,12 @@ export class CompanyComputerGuestAutomation {
 				try {
 					await fillCompanyAccountBox(page, box, opened);
 				} catch (error) {
+					// Typed where nothing can empty it: the tab goes, with the value in it.
+					if (error instanceof CompanyAccountFillRefusedError && error.reason === "ACCOUNT_FILL_LOST") {
+						this.#tabIds.delete(page);
+						this.#page = undefined;
+						await page.close().catch(() => undefined);
+					}
 					// The reason, never the value: a page that is not the account's, or a box of the wrong kind.
 					throw new CompanyComputerActionFailedError(
 						new Error(error instanceof CompanyAccountFillRefusedError ? error.reason : "ACCOUNT_FILL_FAILED"),
@@ -686,11 +695,21 @@ export class CompanyComputerGuestAutomation {
 			if (action.action === "snapshot") {
 				// The aria snapshot copies every box's value; read the private ones on both sides of it.
 				const before = await this.#pageCall(() => readCompanyComputerPrivateValues(page));
-				const aria = await this.#pageCall(() => page.locator("body").ariaSnapshot({ timeout: 5_000 }));
+				const full = await this.#pageCall(() => page.locator("body").ariaSnapshot({ timeout: 5_000 }));
 				const after = await this.#pageCall(() => readCompanyComputerPrivateValues(page));
-				const snapshot = await this.#pageCall(async () =>
-					redactCompanyComputerSnapshot(aria, [...before, ...after], { filled: this.#filled.current() }),
-				);
+				// Only what can leave is hidden (16 KB, with room for hidden parts): a huge page costs no more.
+				const aria = full.slice(0, 20_480);
+				const snapshot = await this.#pageCall(async () => {
+					const redacted = redactCompanyComputerSnapshot(aria, [...before, ...after], {
+						filled: this.#filled.current(),
+					}).replace(
+						/(\/url: )(\S+)/g,
+						(_line, label: string, address: string) => `${label}${this.#filled.hideAddress(address)}`,
+					);
+					// A secret the vault typed that survives in another spelling refuses the snapshot.
+					if (this.#filled.showsDecoded(redacted)) throw new Error("PRIVATE_FIELD_VISIBLE");
+					return redacted;
+				});
 				const title = await this.#pageCall(() => page.title());
 				await companyComputerActionCheck(this.#browser.assertActive(signal));
 				signal.throwIfAborted();
@@ -698,10 +717,10 @@ export class CompanyComputerGuestAutomation {
 					kind: "json",
 					value: {
 						tabId: this.#tabIds.get(page)!,
-						url: this.#filled.hide(page.url()),
-						title: this.#filled.hide(title).slice(0, 1024),
+						url: this.#filled.hideAddress(page.url()),
+						title: this.#filled.hideText(title).slice(0, 1024),
 						snapshot: snapshot.slice(0, 16_384),
-						truncated: snapshot.length > 16_384,
+						truncated: full.length > aria.length || snapshot.length > 16_384,
 					},
 				};
 			}
