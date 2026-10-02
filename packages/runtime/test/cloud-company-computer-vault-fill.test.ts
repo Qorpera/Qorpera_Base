@@ -474,6 +474,51 @@ describe("vault_fill on the Company Computer", () => {
 		expect(cut.value.truncated).toBe(true);
 	});
 
+	it("cuts by words for what a member typed into a password box, and by lines when it holds a space", async () => {
+		// What a member typed into a password box (no vault fill): the page's own private values count as hidden.
+		const typed = (secret: string) => {
+			const f = office();
+			f.page.evaluate.mockImplementation(async (fn: (arg: unknown) => unknown, arg?: unknown) =>
+				arg === COMPANY_ACCOUNT_FILLED_ATTRIBUTE ? fn(arg) : [secret],
+			);
+			return f;
+		};
+		const snapshotOf = async (f: ReturnType<typeof office>) =>
+			((await perform(f, { kind: "browser", action: "snapshot" })) as unknown as { value: { snapshot: string } })
+				.value.snapshot;
+		// One long line, the value many times before (each hidden, so the text shrinks) and once across the cut.
+		const word = "Member-Typed-Secret-77";
+		const one = typed(word);
+		let line = `- text: ${`note ${word} `.repeat(400)}`;
+		while (line.length < 20_400) line += "lorem ipsum ";
+		line += "x".repeat(20_470 - line.length - 1);
+		one.shown.aria = `${line} ${word} and more ${"lorem ".repeat(200)}`;
+		// The cut at 20,480 would leave "Member-Typ" (10 characters) without the word cut.
+		expect(await snapshotOf(one)).not.toContain("Member-Ty");
+		// A value with spaces: the cut falls at a line's end, never between its words.
+		const phrase = "Zebra Quokka Mango 4417";
+		const spaced = typed(phrase);
+		let lines = `- text: note ${phrase}\n`.repeat(400);
+		while (lines.length < 20_300) lines += "- text: lorem ipsum dolor\n";
+		lines += `- paragraph: ${"y".repeat(20_470 - lines.length - 14)} ${phrase} after\n`;
+		expect(lines.indexOf(phrase, 20_000)).toBeLessThan(20_480);
+		expect(lines.indexOf(phrase, 20_000) + phrase.length).toBeGreaterThan(20_480);
+		spaced.shown.aria = `${lines}${"- text: more\n".repeat(200)}`;
+		// A cut between its words would leave "Zebra".
+		expect(await snapshotOf(spaced)).not.toContain("Zebra");
+	});
+
+	it("hides a minified page whole after a fill rather than returning almost nothing", async () => {
+		const f = office();
+		await perform(f, action(), sealed(f.key!));
+		f.shown.aria = `- text: {"data":"${"x".repeat(35_000)}"}`;
+		const result = (await perform(f, { kind: "browser", action: "snapshot" })) as unknown as {
+			value: { snapshot: string; truncated: boolean };
+		};
+		expect(result.value.snapshot).toHaveLength(16_384);
+		expect(result.value.truncated).toBe(true);
+	});
+
 	it("finds the cut after the last whitespace, or the last line's end when a value holds whitespace", () => {
 		expect(companyComputerSnapshotCut("one two\nthree four", 15, false)).toBe(13);
 		expect(companyComputerSnapshotCut("one two\nthree four", 15, true)).toBe(7);

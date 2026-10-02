@@ -314,7 +314,6 @@ function tabPreview(value: string, maxBytes: number): string {
 	return value.slice(0, end);
 }
 
-/** Low-level established automation, called only inside the authorized guest ScreenActionGate. */
 /** Where a long snapshot is cut, at or before `limit`: after the last whitespace, or the last line's end when a hidden
  * value holds whitespace itself; 0 when there is none. */
 export function companyComputerSnapshotCut(text: string, limit: number, linesOnly: boolean): number {
@@ -323,6 +322,7 @@ export function companyComputerSnapshotCut(text: string, limit: number, linesOnl
 	return 0;
 }
 
+/** Low-level established automation, called only inside the authorized guest ScreenActionGate. */
 export class CompanyComputerGuestAutomation {
 	readonly #binding: CompanyComputerScreenBinding;
 	readonly #layout: CompanyComputerGuestLayout;
@@ -749,22 +749,21 @@ export class CompanyComputerGuestAutomation {
 				// something is hidden, the cut falls between words, so no part of a value slips past checks that look
 				// for whole values: at a space when no value holds one (none the vault makes does), else a line's end.
 				const hidden = [...before, ...after, ...this.#filled.current()];
-				const aria =
+				const cut =
 					full.length <= 20_480 || hidden.length === 0
-						? full.slice(0, 20_480)
-						: full.slice(
-								0,
-								companyComputerSnapshotCut(
-									full,
-									20_480,
-									hidden.some((value) => /\s/u.test(value)),
-								),
+						? 20_480
+						: companyComputerSnapshotCut(
+								full,
+								20_480,
+								hidden.some((value) => /\s/u.test(value)),
 							);
+				// Too little before a word's end (a minified page): the whole snapshot is hidden, as before the cut.
+				const aria = cut < 16_384 ? full : full.slice(0, cut);
 				const snapshot = await this.#pageCall(async () => {
 					const redacted = redactCompanyComputerSnapshot(aria, [...before, ...after], {
 						filled: this.#filled.current(),
 					}).replace(
-						/(\/url: )(.*)/g,
+						/(\/url: )([^\n]*)/g,
 						(_line, label: string, address: string) => `${label}${this.#filled.hideAddress(address)}`,
 					);
 					// A secret the vault typed that survives in another spelling refuses the snapshot.

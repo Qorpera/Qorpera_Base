@@ -38,6 +38,46 @@ refer to.
 > writing side (C1–C3) and the reset. This holds in section 19, the
 > checkpoint, section 20 and launch acceptance.
 
+## Decided on 2 October 2026 (light threads)
+
+The contract's "2026-10-02 amendment: light threads" governs wherever this
+design differs from it. In this document that includes:
+- the Goal and the shape diagram, where a run box has a shell;
+- the run box and test machine rows and bullets of
+  [Which view each machine gets](#which-view-each-machine-gets-founder-decision-2);
+- the end of
+  [How a machine reaches the folder](#how-a-machine-reaches-the-folder-founder-decision-1);
+- the 28 September build order: step 1's execution-host mount, the run box
+  steps, and step 3's retirement of the five `company_*` tools (a chat turn
+  keeps them until its write tools are decided);
+- section 1's execution-host mount;
+- section 4, and section 5's run box line and its shell-review bullet;
+- section 8's run box lines, and section 10's run box checks;
+- open questions 2, 3 and 5.
+
+In short:
+- **A chat turn has no shell or folder mount.** In a turn, agents list, read
+  and search the folder through the server, with the run's own view.
+  - Search runs on the node's folder service.
+  - The run opens its view through the native host's database entry point
+    (G2), which takes no service key.
+  - The execution host's relay carries the native host's connection to the
+    node, byte for byte.
+  - The F3 PRs are #687, #690 and #656.
+- **Commands run on machines:** the company machine, coding machines and
+  agents' own machines. Each shows the folder through its folder program.
+- **Folders shared with only some agents** may be mounted on the agent's own
+  machine with the view of the run working in it. The company machine stays
+  company-wide. Who else may use such a machine is open.
+- **Folder work runs offline.** Commands that work in the folder run without
+  network, and need no review of outside effects. A command that needs the
+  network passes the company's review rules. Coding sessions keep their open
+  network. How the rule holds on machines where commands run as root is open.
+- **Reads on a company machine go to the run.** Each shell command has a
+  folder mount of its own, owned by the run that started it. Its folder
+  program logs what the command reads (a read log), so the reads go to that
+  run's read set.
+
 ## Decided on 28 September 2026
 
 Words: a *computer* is one agent's screen with its terminal and browser; a
