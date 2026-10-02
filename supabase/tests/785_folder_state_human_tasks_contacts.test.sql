@@ -345,6 +345,10 @@ begin
 	r := public.qorpera_folder_structured_decide('70700000-0000-4000-8000-000000000020', agent, extensions.gen_random_uuid(), 1,
 		pg_temp.save('human-tasks/enter-code.md', saved || '{"title":"Enter the SMS code"}'), 'human-tasks/enter-code.md', null);
 	if r is distinct from '{"ok": true}'::jsonb then raise exception 'An agent keeps the mark over the same task and label: %', r; end if;
+	-- The mark is the file's at its own path: a saved task elsewhere does not lend it to a new path.
+	r := public.qorpera_folder_structured_decide('70700000-0000-4000-8000-000000000020', agent, extensions.gen_random_uuid(), 1,
+		pg_temp.save('human-tasks/enter-code-5.md', saved), 'human-tasks/enter-code-5.md', null);
+	if r ->> 'reason' is distinct from 'structured_rule' then raise exception 'Not at a new path while another is saved: %', r; end if;
 end $$;
 
 -- 7. Nothing is locked, and the review class is plain ---------------------------------------------------------------

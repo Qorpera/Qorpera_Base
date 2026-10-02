@@ -1425,7 +1425,9 @@ building:
   definition changed since is caught rather than overwritten.
 - A parse that breaks a rule is refused as for the indexed kinds: one problem naming the rules it breaks ("the
   platform read this file differently from its rules (files)"). `files` entries are held to the core's path rule
-  (`qorpera_company_path_valid`, which agrees with `parseCloudCompanyPath` on 9,747 generated paths) and to one line.
+  (`qorpera_company_path_valid`) and to one line. On 371,581 generated paths the rule agrees with
+  `parseCloudCompanyPath` but for one, `conİn$`, which only the database refuses (it folds `İ` to `i`, giving the
+  reserved name `conin$`; §1's case, failing closed).
 - The secret rule reads the stored parse of the version the save replaces (the current version at the same key), as
   the agent rules read their base, and refuses with `structured_rule` and the problem on `secret_state`. A move keeps
   the file's bytes and so its mark; a copy of a task file is refused anyway (`structured_copy`). 785 §6 holds a
@@ -1435,8 +1437,8 @@ building:
   `human-tasks` its folders must also pass the task-folder name rule.
 - A task or contact save takes no lock and its review class stays plain (785 §7).
 - Proof besides 785 and 700 §7: 6,000 random files written by `writeHumanTaskFile` and `writeContactFile`; every parse
-  the parser accepted (4,962) passes `qorpera_company_state_parse_problems`. 68 mutants of the migration (every rule,
-  limit, place and root, the round-1 reviewer's included) are each caught by 785.
+  the parser accepted (4,962) passes `qorpera_company_state_parse_problems`. 81 mutants of the migration (every rule,
+  limit, place and root, both review rounds' included) are each caught by 785.
 
 **Then:** H2 (on the folder core) adds what §2 lists under "What H1 does not decide"; H3 the web
 screens; H4 the emails; H5 the contact links, after F1 widens erasure. A1's takeover becomes a
