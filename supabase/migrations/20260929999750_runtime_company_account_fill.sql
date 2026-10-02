@@ -50,12 +50,19 @@ alter table public.qorpera_runtime_office_activations
 --    not yet active; the same key again (the office repeats its report until it is active) is accepted,
 --    another key never.
 do $$
+declare
+	v_function regprocedure := 'public.qorpera_report_runtime_office_ready(jsonb,uuid,integer,integer)'::regprocedure;
 begin
-	-- The whole stored body, so a later patch of the four-argument function is never dropped silently.
-	if (select md5(function.prosrc) from pg_proc as function
-		where function.oid = 'public.qorpera_report_runtime_office_ready(jsonb,uuid,integer,integer)'::regprocedure)
-		is distinct from '81febed0328d82ad40c97328612a410d' then
-		raise exception 'qorpera_report_runtime_office_ready differs from the reviewed body';
+	-- The whole stored body, its settings and who may call it, so a later change of the four-argument function
+	-- (a patch, a setting, a new grant) is never dropped silently.
+	if (select md5(function.prosrc) from pg_proc as function where function.oid = v_function)
+			is distinct from '81febed0328d82ad40c97328612a410d'
+		or (select function.prosecdef and function.proconfig = array['search_path=""']
+			from pg_proc as function where function.oid = v_function) is distinct from true
+		or (select array_agg(acl.grantee::regrole::text order by acl.grantee::regrole::text)
+			from pg_proc as function, aclexplode(function.proacl) as acl
+			where function.oid = v_function and acl.grantee <> function.proowner) is distinct from array['service_role'] then
+		raise exception 'qorpera_report_runtime_office_ready differs from the reviewed function';
 	end if;
 end
 $$;
@@ -295,7 +302,8 @@ grant execute on function public.qorpera_fill_company_account(uuid,text,jsonb,uu
 -- 5. Closing an account revokes its vault row at once (A1-7 review, with F2): the revoke trigger of
 --    20260929999700 wipes its envelopes in the same statement, so nothing keeps a closed account's password
 --    and its connection file can be removed at close (the folder core keeps a file while its secret is active).
---    A mistaken close is recovered with the website's own reset on the company's mailbox. A repeat of a close,
+--    Closing is a "deleting things outside" step the company's review rules check (A1-4): after it the password
+--    and any authenticator are gone, and only the website's own account recovery gets back in. A repeat of a close,
 --    or a close of an account already closed, answers the closed account instead of "no such open account".
 --    The body is 20260929999700's (null-safe, r5/r6) plus the close.
 create or replace function public.qorpera_set_company_account_state(
@@ -357,3 +365,11 @@ begin
 		(select secret.current_version from public.qorpera_cloud_secrets as secret where secret.id = p_account_id));
 end
 $$;
+
+-- Accounts closed before this migration (their vault row still active, possible only if accounts were ever switched on)
+-- are revoked now, so the trigger wipes their envelopes as a close does from here on.
+update public.qorpera_cloud_secrets as secret
+set status = 'revoked', revoked_at = statement_timestamp(), updated_at = statement_timestamp()
+where secret.status = 'active' and secret.connector_id = 'website'
+	and exists (select 1 from public.qorpera_company_accounts as account
+		where account.secret_id = secret.id and account.status = 'closed');
