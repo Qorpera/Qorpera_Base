@@ -13,6 +13,8 @@ import {
 	parseCompanyComputerPrivacyChallenge,
 } from "@qorpera/cloud-client/cloud-company-computer-privacy";
 import { parseCompanyComputerViewerGrant } from "@qorpera/cloud-client/cloud-company-computer-viewer";
+import type { CompanyComputerFillKey } from "./cloud-company-account-fill-box.ts";
+import { CompanyComputerFilledValues } from "./cloud-company-computer-account-fill.ts";
 import {
 	CloudCompanyComputerBrowserControl,
 	CloudCompanyComputerScreenBrowserControl,
@@ -136,6 +138,8 @@ interface PrivateSurface {
 export interface CompanyComputerLinuxGuestOptions {
 	scope: CompanyComputerScope;
 	computerGeneration: number;
+	/** This service's boot key for company account fills (A1-3); without it a vault_fill is refused. */
+	fillKey?: CompanyComputerFillKey;
 	layout: CompanyComputerGuestLayout;
 	limits: CompanyComputerCommandLimits;
 	workbenchMount: RecoveryDirectoryMount;
@@ -168,6 +172,8 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 	readonly #screenBrowserControl: CloudCompanyComputerScreenBrowserControl;
 	readonly #stop = new AbortController();
 	readonly #screens = new Map<number, SharedScreen>();
+	/** The secrets typed on each screen, kept while this service runs: a screen's tabs outlive its runs. */
+	readonly #filled = new Map<number, CompanyComputerFilledValues>();
 	readonly #sessions = new Set<NativeSession>();
 	/** The company's one set of website sign-ins, shared by every agent's browser. */
 	readonly #logins: CompanyComputerBrowserLogins;
@@ -372,6 +378,16 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 		await cloudToolRequest(() => screen.opening, signal, 20000);
 		signal.throwIfAborted();
 		await this.#assertShared(binding, signal);
+	}
+
+	/** The secrets typed on one screen, one store per screen for this service's lifetime. */
+	#filledOn(screenOrdinal: number): CompanyComputerFilledValues {
+		let filled = this.#filled.get(screenOrdinal);
+		if (!filled) {
+			filled = new CompanyComputerFilledValues();
+			this.#filled.set(screenOrdinal, filled);
+		}
+		return filled;
 	}
 
 	/**
@@ -726,6 +742,8 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 						screenshots: this.#options.screenshots(input.run),
 						fileExports: this.#options.fileExports?.(input.run),
 						fileImports: this.#options.fileImports?.(input.run),
+						fillKey: this.#options.fillKey,
+						filled: this.#filledOn(binding.screenOrdinal),
 					});
 					return automation.perform(action, currentLease, { ...context, signal: checked }, operation);
 				},

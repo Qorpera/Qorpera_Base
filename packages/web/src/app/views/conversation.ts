@@ -34,6 +34,7 @@ import { renderInteractionCard } from "../../ui/interaction-card.ts";
 import { matchesKey } from "../../ui/keys.ts";
 import { markdownBubbles } from "../../ui/markdown.ts";
 import { findMentions, type MentionTarget, matchTargets, mentionParts, mentionQuery } from "../../ui/mentions.ts";
+import { foldFrom, playOnce } from "../../ui/motion.ts";
 import { presentationDay, presentationLocale, presentationTimeZone, t, timeZoneOption } from "../../ui/preferences.ts";
 import { quietScroll } from "../../ui/quiet-scroll.ts";
 import { ReceivedAttachments } from "../../ui/received-attachments.ts";
@@ -128,6 +129,17 @@ function copyShape(target: Node, source: Node, labelsOnly: boolean): void {
 	for (let index = 0; index < target.childNodes.length; index++)
 		copyShape(target.childNodes[index]!, source.childNodes[index]!, labelsOnly);
 }
+
+/** A card that has its answer: an approval folded to its outcome, a question answered or declined. */
+/** How long an answered card settles (styles/motion.css, the longest of its parts). */
+const SETTLING = 1500;
+/** Its parts (not the fold, which restarts from the height it had got to). */
+const SETTLING_PARTS = new Set(["decided-edge", "decided-line", "decided-mark", "draw-stroke", "motion-hold"]);
+const DECIDED = [
+	".action-review-card.is-folded",
+	".interaction-card:is(.state-answered, .state-declined)",
+	".auth-card:not(.action-review-card):is([data-decision-state='approved'], [data-decision-state='declined'], [data-decision-state='denied'])",
+].join(", ");
 
 /** Puts `children` in `parent` in this order, moving only what is out of place and removing the
  * rest: a node that stays is never taken out, so a live log does not read it again. */
@@ -252,6 +264,8 @@ export class ConversationView {
 	/** The working figure's row and the empty thread's line, kept while they read the same. */
 	#activityRow: { key: string; element: HTMLElement } | undefined;
 	#emptyRow: HTMLElement | undefined;
+	/** The thread has shown its first messages: what joins the log after this comes in moving. */
+	#filled = false;
 	/** "Show earlier" at the top of a thread that has not read all its history yet. */
 	readonly #earlierButton: HTMLButtonElement;
 	readonly #earlierNote = h("p", { class: "thread-earlier-note", role: "status", hidden: true });
@@ -588,6 +602,8 @@ export class ConversationView {
 			this.#sizes = new ResizeObserver(() => this.#pinToBottom());
 			this.#sizes.observe(this.#messages);
 		} else queueMicrotask(() => this.#pinToBottom()); // The application mounts the view right after construction.
+		// A conversation opened comes in: the thread fades up in place (styles/motion.css).
+		playOnce(this.#messages, "is-entering");
 		this.#conversationPane = h(
 			"div",
 			{ class: "thread-conversation" },
@@ -1883,6 +1899,7 @@ export class ConversationView {
 		const live = new Set(drawn.values());
 		for (const previous of this.#drawn.values()) if (!live.has(previous)) previous.message?.files?.view.dispose();
 		this.#drawn = drawn;
+		const placeholderShown = this.#messagesPlaceholder?.isConnected === true;
 		if (conversation.loading && !items.length) {
 			this.#messagesPlaceholder ??= messagesSkeleton();
 			nodes.push(this.#messagesPlaceholder);
@@ -1912,6 +1929,7 @@ export class ConversationView {
 			if (this.#emptyRow?.textContent !== empty) this.#emptyRow = h("div", { class: "empty" }, empty);
 			nodes.push(this.#emptyRow);
 		}
+		const priorActivity = this.#activityRow?.element;
 		if (this.#working && !conversation.loading) {
 			// As on the desktop: the figure works or writes, and "Nova is writing"
 			// shows beside it on hover or focus, never as a bubble. The row is kept while it
@@ -2005,8 +2023,78 @@ export class ConversationView {
 				return separator ? [separator, node] : [node];
 			});
 		const olderNodes = nodes.slice(0, liveStart);
+		const liveNodes = nodes.slice(liveStart);
+		// Once the thread has filled, what joins the live log comes in (styles/motion.css): a new
+		// message, card or the working figure. Not a card redrawn in place of itself (an answer), nor
+		// the figure's row rebuilt for a new state, nor what "Show earlier" reads above the log.
+		const arriving = this.#filled
+			? liveNodes.filter(
+					(node) =>
+						!node.parentNode &&
+						!replaced.has(node) &&
+						node !== this.#emptyRow &&
+						!(node === this.#activityRow?.element && priorActivity),
+				)
+			: [];
+		// A card answered just now is drawn anew in its old one's place: it folds from the old
+		// card's height to its outcome line, and the outcome is stamped (styles/motion.css).
+		const decided = this.#filled
+			? liveNodes.flatMap(
+					(node): { node: HTMLElement; card: HTMLElement; since: number; height: number; was?: Element }[] => {
+						const former = replaced.get(node);
+						if (!former?.isConnected || node.parentNode) return [];
+						const card = node.matches(DECIDED) ? node : node.querySelector<HTMLElement>(DECIDED);
+						if (!card) return [];
+						// The answer as first drawn (the member's own click) is drawn again when the cloud
+						// confirms it, a round trip later: the settling carries on from where it is.
+						const since = Number(former.dataset.decidedAt);
+						if (Number.isFinite(since) && since > 0) {
+							const ghost = former.querySelector<HTMLElement>(":scope > .fold-ghost") ?? undefined;
+							if (ghost) ghost.style.opacity = getComputedStyle(ghost).opacity;
+							return [
+								{ node, card, since, height: ghost ? former.getBoundingClientRect().height : 0, was: ghost },
+							];
+						}
+						// A decided card redrawn for some other reason just stays.
+						if (former.matches(DECIDED) || former.querySelector(DECIDED)) return [];
+						return [
+							{
+								node,
+								card,
+								since: 0,
+								height: former.getBoundingClientRect().height,
+								was: former.cloneNode(true) as Element,
+							},
+						];
+					},
+				)
+			: [];
 		placeChildren(this.#older, rows(olderNodes));
-		placeChildren(this.#log, rows(nodes.slice(liveStart)));
+		placeChildren(this.#log, rows(liveNodes));
+		for (const node of arriving) playOnce(node, "is-arriving");
+		for (const { node, card, since, height, was } of decided) {
+			if (height) foldFrom(node, height, was);
+			const now = performance.now();
+			const elapsed = since ? now - since : 0;
+			if (elapsed > SETTLING) continue;
+			playOnce(card, "is-decided");
+			node.dataset.decidedAt = String(since || now);
+			// Picked up mid-way: every part of the settling starts where the first drawing had got to.
+			if (elapsed && typeof card.getAnimations === "function")
+				for (const animation of card.getAnimations({ subtree: true }))
+					if (
+						typeof CSSAnimation !== "undefined" &&
+						animation instanceof CSSAnimation &&
+						SETTLING_PARTS.has(animation.animationName)
+					)
+						animation.currentTime = elapsed;
+		}
+		// Filled once a read has worked: a thread that failed and is read again opens still.
+		if (!this.#filled && !conversation.loading && !conversation.error) {
+			this.#filled = true;
+			// Messages taking the skeleton's place fade up into it.
+			if (placeholderShown) playOnce(this.#log, "is-filling");
+		}
 		placeChildren(
 			this.#messages,
 			[
@@ -2090,6 +2178,8 @@ export class ConversationView {
 			mine && "mine",
 			item.phase === "progress" && "message-progress",
 			item.pending && `pending-${item.pending}`,
+			// A message still coming in keeps coming in while it changes ("Queued" to "Processing").
+			element.classList.contains("is-arriving") && "is-arriving",
 		]
 			.filter(Boolean)
 			.join(" ");
