@@ -158,16 +158,20 @@ describe("a picker list that is open", () => {
 		const popover = document.querySelector<HTMLElement>(".preference-picker-popover")!;
 		expect(popover.hidden).toBe(false);
 		// Turning the animation off and on again would start it over: the list would blank out.
-		const restarts: string[] = [];
-		new MutationObserver(() => restarts.push(popover.style.animation)).observe(popover, {
-			attributes: true,
-			attributeFilter: ["style"],
+		// Every write to the popover's animation is recorded as it happens.
+		const writes: string[] = [];
+		Object.defineProperty(popover.style, "animation", {
+			configurable: true,
+			get: () => "",
+			set: (value: string) => {
+				writes.push(value);
+			},
 		});
 		const search = popover.querySelector<HTMLInputElement>("input")!;
 		search.value = "lis";
 		search.dispatchEvent(new Event("input", { bubbles: true }));
-		window.dispatchEvent(new Event("resize"));
-		expect(restarts).not.toContain("none");
-		expect(popover.style.animation).toBe("");
+		search.value = "";
+		search.dispatchEvent(new Event("input", { bubbles: true }));
+		expect(writes).toEqual([]);
 	});
 });
