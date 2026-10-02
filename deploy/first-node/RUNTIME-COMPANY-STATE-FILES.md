@@ -1699,6 +1699,14 @@ Two PRs, in this order:
   with the connector `website`.
 - Then A1's vault writer writes website account files. Before it, no file has these keys.
 
+**Built (A1-7):** as planned. A1-7b patches two anchors in `qorpera_company_state_parse_problems` (marker
+`20260929999950` in its body) and repeats the vault's host regex rather than calling
+`qorpera_company_account_host_valid`, so it does not wait for A1's migration: labels of 1–63 characters, as A1
+tightened the vault's rule on 2 October. It applies before or after H1b's migration (20260929999000): their anchors
+do not overlap. SQL test 801 (on 704's fixture): the platform saves a website file in each of its four states, a
+member changes only its text (and an old gmail file's text, whose shape is unchanged), the shapes, and which rule
+each refusal names; 13 of 13 mutants caught (the review's two survivors included).
+
 ## 9. The seeded tree
 
 `companyStateSeedTree({companyName, cofounderId, vision?, founders?, firstTodo?})` lists what a new
