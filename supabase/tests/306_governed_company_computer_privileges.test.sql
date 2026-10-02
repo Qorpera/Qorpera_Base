@@ -70,7 +70,7 @@ begin
 		'qorpera_issue_model_login(uuid,text,jsonb,bigint,boolean)',
 		'qorpera_model_login_broker_company(uuid,text)',
 		'qorpera_model_logins_without_account(uuid,text)',
-		'qorpera_open_company_account(uuid,text,jsonb,uuid,text,text,text,text[],text,text,uuid,text,bytea,text)',
+		'qorpera_open_company_account(uuid,text,jsonb,uuid,text,text,uuid,uuid,text,text[],text,text,uuid,text,bytea,text)',
 		'qorpera_record_model_login_account(uuid,text,uuid,text)',
 		'qorpera_record_model_login_account_metadata(uuid,text,uuid,text,uuid,uuid,bigint,text,jsonb,text)',
 		'qorpera_register_company_with_broker_principal(uuid,text,uuid,text)',
