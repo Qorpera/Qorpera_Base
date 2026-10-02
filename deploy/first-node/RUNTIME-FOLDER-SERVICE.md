@@ -115,6 +115,19 @@ keeps names and attributes for an hour and file pages across opens, and is told 
 is no kernel listing cache (`FOPEN_CACHE_DIR`): the kernel keeps it while the folder's time is unchanged, and
 adding a file does not change it.
 
+A lookup answered from the program's memory just before a change can land in the kernel after the change's drop:
+the kernel does not find a name it is still making, so without more it would keep the old name, or the old
+version's inode, for the hour (found on node 2's kernel 7.0: 1 or 2 of the stress test's 300 races each run). So the
+program remembers each name it answered with a cacheable entry, and the tree's change count it read it at, for 16
+s. A change that names one answered before it drops that name again at 1, 2, 4 … ms after the change, 15 times. A
+drop of a name the kernel no longer holds does nothing; one it holds again costs one more lookup (from memory), and a
+folder's drop unhashes it, so a process working inside it reads `getcwd` as gone until it looks the folder up again:
+harmless for step 1's read-only mounts, to be revisited (an expire-only drop) before commands run inside the folder
+on machines. At most 65,536 answers are remembered: past that, those older than the window go first, then the older
+half. A resync (a feed lost and back, or more than 5,000 changed paths) chases every name answered in the last 16 s,
+which costs the chase thread up to a few seconds of CPU at that bound. fuser 0.18 cannot send the kernel's own fix
+for this (`FUSE_NOTIFY_INC_EPOCH`, kernel 6.16), which would also drop every other name at each change.
+
 ## Staying current
 
 - The service reads `qorpera_folder_clocks` (service_role select, C1f) every 500 ms for the companies with live
@@ -138,7 +151,8 @@ adding a file does not change it.
   bridge's LXD lookup against a stand-in LXD), and two FUSE tests that mount for real against a stand-in node
   (listing, reads, read-only refusals, the page cache, a file read on at its old version while a new reader sees
   only the new one, a change shown at once, a new file, a removal, a feed that breaks and comes back, a view closed,
-  a view refused);
+  a view refused), and a third that races 300 lookups against removals and new versions and requires every one to
+  show the change within a second;
 - then the built program in `node:24.21.0-bookworm-slim` against this package's folder service with a stand-in core
   and share (`packages/object-gateway/test/folder-mount-e2e.test.ts`): a 3 MiB file across chunks, a member's edit
   shown in under a second, a folder taken away disappearing, SIGTERM unmounting.
