@@ -35,6 +35,8 @@ export async function executeNativeCompanyRunnerJob(options: {
 	job: CloudRunnerJob;
 	authority: CloudRunnerNativeAuthority;
 	bridge: NativeProviderComputerBridge;
+	/** The job's lease token, for the host's calls through qorpera_native_host_call (G2-2). */
+	leaseToken?: string;
 	limits?: Partial<CloudRunnerSandboxLimits>;
 	signal: AbortSignal;
 }): Promise<CloudRunnerExecutionResult> {
@@ -67,6 +69,7 @@ export async function executeNativeCompanyRunnerJob(options: {
 			bridge.startCompany!(authority, {
 				jobId: job.jobId,
 				attemptCount: job.attemptCount,
+				...(options.leaseToken !== undefined ? { leaseToken: options.leaseToken } : {}),
 			}),
 		30_000,
 		signal,

@@ -356,9 +356,10 @@ describe("runner start", () => {
 		// Before: accept, describe, native authority and an immediate renewal (4 waves).
 		expect(wavesAtStart).toBe(1);
 		expect(calls).toEqual(["start", "complete"]);
+		// The job's lease token (the assignment's capability) travels with it, for the host's calls (G2-2).
 		expect(f.startCompany).toHaveBeenCalledWith(
 			expect.objectContaining({ leaseId, runId, assignmentId, runnerId, model: "gpt-native" }),
-			{ jobId, attemptCount: 1 },
+			{ jobId, attemptCount: 1, leaseToken: capability },
 		);
 		expect(f.broker.describe).not.toHaveBeenCalled();
 		expect(f.broker.acquireNativeAuthority).not.toHaveBeenCalled();
