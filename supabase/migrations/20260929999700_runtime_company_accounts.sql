@@ -182,8 +182,8 @@ revoke all on function public.qorpera_company_account_descriptor(public.qorpera_
 
 -- The broker opens an account for the agent's tool call: version 1 holds the
 -- password the broker made, sealed under the company's key. The broker chose the
--- account's id and sealed it, with the run's environment, into the envelope's
--- associated data, so both come in and must match. The account is pending until
+-- account's id and sealed it, with the run's company and environment, into the
+-- envelope's associated data, so all three come in and must match. The account is pending until
 -- the agent reports the website accepted it.
 create function public.qorpera_open_company_account(
 	p_broker_authority_id uuid,
@@ -193,6 +193,7 @@ create function public.qorpera_open_company_account(
 	p_input_sha256 text,
 	p_downstream_idempotency_sha256 text,
 	p_secret_id uuid,
+	p_company_id uuid,
 	p_environment_id uuid,
 	p_site text,
 	p_sign_in_hosts text[],
@@ -223,7 +224,8 @@ begin
 		return public.qorpera_company_account_descriptor(v_account,
 			(select secret.current_version from public.qorpera_cloud_secrets as secret where secret.id = v_account.secret_id));
 	end if;
-	if p_environment_id is distinct from v_call.environment_id or p_secret_id is null then
+	if p_company_id is distinct from v_call.profile_id or p_environment_id is distinct from v_call.environment_id
+		or p_secret_id is null then
 		raise exception 'company account envelope is unavailable' using errcode = '42501';
 	end if;
 	if exists (select 1 from public.qorpera_cloud_secrets as secret where secret.id = p_secret_id) then
@@ -493,13 +495,13 @@ end
 $$;
 
 revoke all on function
-	public.qorpera_open_company_account(uuid,text,jsonb,uuid,text,text,uuid,uuid,text,text[],text,text,uuid,text,bytea,text),
+	public.qorpera_open_company_account(uuid,text,jsonb,uuid,text,text,uuid,uuid,uuid,text,text[],text,text,uuid,text,bytea,text),
 	public.qorpera_use_company_account(uuid,text,jsonb,uuid,text,text,uuid),
 	public.qorpera_add_company_account_version(uuid,text,jsonb,uuid,text,text,uuid,bigint,text,text,bytea,text),
 	public.qorpera_set_company_account_state(uuid,text,jsonb,uuid,text,text,uuid,text)
 	from public, anon, authenticated, service_role, qorpera_secret_broker;
 grant execute on function
-	public.qorpera_open_company_account(uuid,text,jsonb,uuid,text,text,uuid,uuid,text,text[],text,text,uuid,text,bytea,text),
+	public.qorpera_open_company_account(uuid,text,jsonb,uuid,text,text,uuid,uuid,uuid,text,text[],text,text,uuid,text,bytea,text),
 	public.qorpera_use_company_account(uuid,text,jsonb,uuid,text,text,uuid),
 	public.qorpera_add_company_account_version(uuid,text,jsonb,uuid,text,text,uuid,bigint,text,text,bytea,text),
 	public.qorpera_set_company_account_state(uuid,text,jsonb,uuid,text,text,uuid,text)
