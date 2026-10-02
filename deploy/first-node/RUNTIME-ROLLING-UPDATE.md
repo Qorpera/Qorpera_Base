@@ -13,7 +13,7 @@ and ends on one bundle.
 | Identical nodes change 1 (`20260928180700`) | The serving switch and `qorpera_runtime_node_drain_status` |
 | Identical nodes change 4 (`20260928182000`) | Orchestrator bundle declarations and `qorpera_runtime_bundle_roll_status` |
 | Logins in the vault change 3 (`20260928180600`) | Member runs of a vault login are pinned to no node |
-| Rolling step 1 (`20260929996000`) | The runs switch and `readyForNodeRelease` (machines stay admitted while a node empties), placement by bundle declaration (needed while dispatch roles are unset), and `qorpera_declare_runtime_node_bundle` |
+| Rolling step 1 (`20260928409960`) | The runs switch and `readyForNodeRelease` (machines stay admitted while a node empties), placement by bundle declaration (needed while dispatch roles are unset), and `qorpera_declare_runtime_node_bundle` |
 | Rolling steps 2 and 3 | The roll packets with the one-transaction switch and a pause that needs no quiet runtime (`scripts/runtime-roll.mjs`), a node release whose `order` is `schema-first` or `either`, and a fast host rebuild gated on its node's drain instead of a pause |
 
 Until these are live, cuts keep today's paused procedure.
@@ -113,7 +113,7 @@ Never run `qorpera_configure_runtime_node` on a node switched off fully during a
    - both nodes are `serving`, `runsServing` (a runs switch left off by an aborted roll is not in the
      node's policy and survives a new policy version) and `ready`;
    - release R+1 is staged on both nodes (`agent stage`);
-   - the release's migrations, the activation and the reverse activation (see "If something goes
+   - the release's migrations, the activation and the emergency packets (see "If something goes
      wrong") were rehearsed on a copy of the production schema;
    - every active orchestrator maps to exactly one node. An orchestrator with no node is not
      stopped by emptying, and one with two nodes keeps `readyForUpdate` false. Enrol or revoke such
@@ -199,26 +199,35 @@ Never run `qorpera_configure_runtime_node` on a node switched off fully during a
    select public.qorpera_declare_runtime_node_bundle('<B>', '<N sha>');
    ```
 4. **Empty node A of runs.**
+   - First check that B serves runs, is observed ready, and every active orchestrator on it is live: B
+     is about to be the only node that claims runs.
    - `qorpera_set_runtime_node_runs(A, false, <version>, 'roll vN+1')`. If the release also changes A's
      office provider or coding executor, switch A off fully instead (`qorpera_set_runtime_node_serving`)
      and wait for `readyForUpdate`.
    - Wait until `qorpera_runtime_node_drain_status(A)` shows `readyForNodeRelease`. Runs usually end
      within a minute; long ones take up to 14 minutes. Waiting is fine: node B serves meanwhile.
      Computers, coding machines and agent machines on A carry on.
-   - Clear A's parked warm hosts, as today's cut script does before the fast host rebuild.
+   - Parked warm hosts on A's fast host need no separate step: the rebuild ends them
+     (`EXEC_CLEAR_PARKED=1`, step 5).
 5. **Update node A.** A still takes no runs.
    - `agent apply <R+1>`. A is quiet, so no role needs `--defer`.
    - If A was switched off fully (step 4), roll the office provider and coding executor. Machines
      already running there keep running and take new guest software at their next start.
-   - Rebuild the fast host **without** `EXEC_RUNTIME_BUNDLE_SHA256`: N+1 is not registered yet.
+   - Rebuild the fast host (if A has one) with `EXEC_CLEAR_PARKED=1 EXEC_START_ORCHESTRATOR=1` and
+     **without** `EXEC_RUNTIME_BUNDLE_SHA256`: N+1 is not registered yet. The script stops the host's
+     orchestrator, ends parked hosts, refuses while a run is in flight there, and starts the
+     orchestrator again once the host is healthy (it claims nothing while A takes no runs).
      The rebuild's re-registration clears any older declaration and keeps the host's dispatch role
      (change 3).
    - Re-enrol A's inventory digest if the policy still pins the fast host's image (with the fast
      host listed by role, change 6, this step goes away).
-   - Start A's orchestrators. While A takes no runs they report heartbeats but claim nothing.
+   - Check that A's orchestrators run: the fast host's was started by its rebuild, and the node release
+     restarts the node's own. Start any that is stopped. While A takes no runs they report heartbeats but
+     claim nothing.
 6. **Switch.** The activation cannot be undone without a pause. Run 6.0's checks, the activation, its
    migration history record, A's declaration, 6.3's gate and A's return as **one transaction** (the
-   roll-mode switch packet). New messages wait only for its commit; if any check fails, nothing changes.
+   roll-mode switch packet). A message sent before its commit binds to N and runs on B; if any check
+   fails, nothing changes.
    0. Before the activation, all of these must hold:
       - every active orchestrator on B is still declared N (the query of step 6.3 for B and N
         returns no rows);
@@ -233,6 +242,8 @@ Never run `qorpera_configure_runtime_node` on a node switched off fully during a
         where o.status = 'active' and n.node_id = '<A>'
           and o.last_heartbeat_at < statement_timestamp() - interval '30 seconds';
         ```
+      - A is still no home of a node-disk login (the query of step 1 again: a sign-in routed to A
+        before its runs went off could have made it one);
       - A's observer publishes `ready` for A under A's current policy, fresh enough for placement,
         so A's run machines, sign-ins and machine wakes are admitted once it returns. This must
         return `true`:
@@ -277,14 +288,16 @@ Never run `qorpera_configure_runtime_node` on a node switched off fully during a
 
    B still serves N, so let such work run there. Never relabel an input's bundle.
 8. **Empty and update node B.**
-   - Empty B of runs as in step 4 and wait for `readyForNodeRelease`.
+   - Empty B of runs as in step 4 (A now must serve runs, be observed ready, with every orchestrator
+     live) and wait for `readyForNodeRelease`.
    - Check N once more: no queued or running N run, and no N pending input outside the baseline.
      If there is one, return B (it still runs N), let it finish, and empty B again. N work that
      appears after B is updated has no N host left: it waits until step 9 clears the declarations,
      then an N+1 host claims it and it fails with `bundle-compatibility`, as it would in a paused
      cut. The member sees the failed run and sends again.
    - Update B as in step 5, except that N+1 is registered now: rebuild B's fast host with
-     `EXEC_RUNTIME_BUNDLE_SHA256=<N+1>` (the script declares it as its last step).
+     `EXEC_CLEAR_PARKED=1 EXEC_START_ORCHESTRATOR=1 EXEC_RUNTIME_BUNDLE_SHA256=<N+1>` (the script declares
+     the bundle once the host is set up, then starts the orchestrator).
    - Declare B as N+1 (`qorpera_declare_runtime_node_bundle('<B>', '<N+1 sha>')`). `agent apply` does
      not clear B's N declaration from step 3; only a re-registration does.
    - Gate: the query of step 6.3 for B returns no rows, and N's `declaredBy` in the roll status is
@@ -299,28 +312,87 @@ Never run `qorpera_configure_runtime_node` on a node switched off fully during a
    - Check that both nodes are `serving` and `runsServing`.
    - Run acceptance, then `agent gc`.
 
+## Packets (rolling step 2)
+
+`scripts/runtime-roll.mjs` writes every SQL step of the procedure as one packet directory for the
+coordinator's packet runner. Nothing in it connects to a database.
+
+```sh
+node scripts/runtime-roll.mjs packets --ref <release commit> \
+  --activation <NNN>_runtime_bundle_activation_vN1.sql --migration <file> [--migration <file> …] \
+  --from-version N --from-sha <N sha> --to-version N+1 --to-sha <N+1 sha> \
+  --node-a <node 1 id> --node-b <node 2 id> --reason 'roll vN+1' --out <new directory> [--empty full]
+```
+
+- `--empty full` switches each node off fully while it empties, for a release that also changes its office
+  provider or coding executor; the drain gates then wait for `readyForUpdate`. The default stops only runs
+  and sign-ins. Either way a node returns with both switches on.
+- `00-check` refuses a node A that is the home of a node-disk login, and lists those logins with their
+  homes. It checks every guard marker of step 2.
+
+- Every file is exactly one outer transaction, and its sha256 is in `packet.json` with the order. A
+  mutation packet is dry-run first, then committed.
+- `dryRunOnly` lists the check packets (`00-check`, `31-drain-a`, `50-check-n`, `61-drain-b`). They read
+  operator functions that a read-only role cannot run. The runner refuses to commit them (its
+  `dryRunOnly` rule).
+- `emergencyOnly` lists the paused way back: `90-pause-now`, `91-reverse`, `92-clear-declarations` and
+  `93-resume`.
+  - `90-pause-now` has no quiet gate. It pauses every company that has an owner or admin and is not
+    being deleted: a folder-v2 company through its operator pause, any other under that founder (the
+    pause records that founder). Each company is tried on its own, so a busy lock or a refusal stops only
+    that one. The result names what failed; run the packet again for those.
+  - Each company waits at most 2 s for its lock, so a long list stays inside the statement timeout.
+  - `93-resume` resumes the same way.
+  - The runner commits these files only when told to (`QORPERA_ROLL_EMERGENCY=<file>`).
+- `node scripts/runtime-roll.mjs compare <00-check result> <50-check-n result>` lists N inputs that became
+  pending after the check (live N work, step 7). It exits 1 when there are any.
+
+| Packet | Procedure step |
+|---|---|
+| `00-check` | 1, the preflight. It also lists the node-disk logins and records N's pending inputs |
+| `10-migration-*` | 2, one per release migration, gated on N and not yet recorded |
+| `20-declare-b` | 3 |
+| `30-runs-off-a`, `31-drain-a` | 4 (wait until `readyForNodeRelease`). `30` needs B serving runs, ready, with live orchestrators |
+| (node release, fast host) | 5 and 8: `agent apply`, then `rebuild-exec-host.sh` with `EXEC_CLEAR_PARKED=1 EXEC_START_ORCHESTRATOR=1` (and the bundle on node B) |
+| `40-switch` | 6, as one transaction (6.0 gates, activation, history record, declaration, 6.3 gate, return). Its result says whether B still serves (`nodeBServes`); it does not refuse on B, since that would keep A off too |
+| `50-check-n` | 7 |
+| `60-runs-off-b`, `61-drain-b` | 8, emptying. `60` needs A serving runs, ready, with live orchestrators, and refuses while N work is queued that no orchestrator holds yet (it counts them and names up to 20) |
+| `70-return-b` | 8, declaration, gate and return after node B's update |
+| `80-finish` | 9. It reports the N work left (`oldBundleWorkLeft`); `60-runs-off-b` already refuses while N work is queued |
+
+`scripts/test-runtime-roll.mjs` (part of the hosted-db step) rehearses a whole roll with these packets on two
+fixture nodes, from the active bundle to a fixture bundle, once with each `--empty`, and the emergency way
+back twice: right after the switch, and after the finish. No company is paused during the roll.
+
 ## If something goes wrong
 
 - **Node A fails its checks in step 5** (before the activation). A stays empty. Roll it back
-  (`agent rollback`, and rebuild the fast host from N), declare A's orchestrators as N (N is
-  registered), and return A. Clear the declarations once both nodes run N. The switch never
-  happened, and B served throughout.
+  (`agent rollback`, and rebuild the fast host from N with `EXEC_CLEAR_PARKED=1
+  EXEC_START_ORCHESTRATOR=1`), declare A's orchestrators as N (N is
+  registered), and return A with both switches (`qorpera_set_runtime_node_runs(A, true, …)`, and
+  `qorpera_set_runtime_node_serving(A, true, …)` if it was switched off fully). Clear the declarations
+  once both nodes run N. The switch never happened, and B served throughout.
 - **The switch transaction fails** (a gate, the activation, a declaration or the return). Nothing
   changed: N stays active, A takes no runs, and B serves N. Fix the cause and run step 6 again.
 - **N+1 misbehaves after the switch.** There is no rolling way back once N+1 is active. The node
   agent's rollback after an activation runs under a pause. So:
-  1. Pause as today's cut does.
-  2. Apply the reverse activation. It is written by hand with the release, not generated: the
-     generator's activation always inserts a new bundle row, and N's row already exists
-     (`unique (bundle_key, version)`, and the table is immutable). The reverse activation checks
-     that exactly N+1 is active, then moves the active pointer back to the existing N row. Rehearse
-     it on a test database with the release (step 1).
-  3. Move **every** node that runs N+1 back to N (`agent rollback`, fast host rebuilt from N), node B
-     too if step 8 has started, and clear all declarations. Never declare a node as N while it still
-     runs N+1: it would take N runs and refuse them.
+  1. Pause every company (`90-pause-now`). Work already running is not waited for.
+  2. Reverse the activation (`91-reverse`). It needs every company paused, checks that exactly N+1 is
+     active, and moves the active pointer back to the existing N row; N's row already exists
+     (`unique (bundle_key, version)`, and the table is immutable). The declarations stay: a node
+     still on N+1 code must not take N runs. After `80-finish` nothing is declared, so it declares
+     both nodes N+1.
+  3. Move **every** node that runs N+1 back to N (`agent rollback`, and the fast host rebuilt from N:
+     the coordinator's `roll-rollback`, outside this repo), node B too if step 8 has started. Then
+     clear all declarations (`92-clear-declarations`). Dry-run it first: `declaredNext` lists the
+     orchestrators still declared N+1, and the packet cannot see which code a node runs. Commit it
+     only once each of them runs N again. Never declare a node as N while it still runs N+1: it would
+     take N runs and refuse them.
   4. Renew packaged offices' packages for N again; offices renewed for N+1 cannot start or reset
      under N.
-  5. Resume.
+  5. Resume (`93-resume`). Its `runsOn` shows any node still emptied: once it runs N, return it with
+     the switches it was emptied with (`qorpera_set_runtime_node_runs(…, true, …)`, and
+     `qorpera_set_runtime_node_serving(…, true, …)` if it was switched off fully).
 
   Runs and pending inputs already bound to N+1 fail with their reason.
 - **N work left over** (an input that can never run, or a session held on a sponsorship): see steps
