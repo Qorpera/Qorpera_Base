@@ -62,11 +62,16 @@ it("calls the principal's functions with its own capability hash and registers w
 		principalSecret: secret,
 	});
 	await principal.companies(new AbortController().signal);
+	await principal.eventVerificationsDue(new AbortController().signal);
 	await principal.register(company, new AbortController().signal);
 	const own = createHash("sha256").update(sharedBrokerCapability(secret)).digest("hex");
 	expect(db.queries).toEqual([
 		{
 			text: "select public.qorpera_broker_principal_companies($1::uuid,$2::text) as result",
+			values: [principalId, own],
+		},
+		{
+			text: "select public.qorpera_broker_principal_event_verifications_due($1::uuid,$2::text) as result",
 			values: [principalId, own],
 		},
 		{
@@ -90,7 +95,13 @@ it("calls the principal's functions with its own capability hash and registers w
 });
 
 function principalFixture(
-	options: { registered?: string[]; unregistered?: string[]; keyId?: string; principalKeyId?: string } = {},
+	options: {
+		registered?: string[];
+		unregistered?: string[];
+		due?: string[];
+		keyId?: string;
+		principalKeyId?: string;
+	} = {},
 ) {
 	const authorityIds = new Map<string, string>();
 	const authorityOf = (companyId: string) => {
@@ -113,6 +124,10 @@ function principalFixture(
 				keyId: state.keyId,
 			})),
 			unregistered: [...state.unregistered],
+		})),
+		eventVerificationsDue: vi.fn(async () => ({
+			schema: "qorpera.broker-principal-event-verifications/v1",
+			companyIds: [...(options.due ?? [])],
 		})),
 		register: vi.fn(async (companyId: string) => {
 			state.unregistered = state.unregistered.filter((id) => id !== companyId);
@@ -394,6 +409,44 @@ it("runs every served company's connector token revocations in turn, on the comp
 	expect((first.mock.calls[1]![1] as AbortSignal).aborted).toBe(true);
 	await companies.revokeTokens();
 	expect([...claims.values()].reduce((total, claim) => total + claim.mock.calls.length, 0)).toBe(3);
+});
+
+it("checks the signed deliveries of each served company that has some due, on the company's own authority", async () => {
+	const one = randomUUID();
+	const two = randomUUID();
+	const idle = randomUUID();
+	// A company the vault does not serve (another vault's, or just dropped) is passed over.
+	const { principal } = principalFixture({
+		registered: [one, two, idle],
+		due: [two, randomUUID(), one.toUpperCase()],
+	});
+	const claims = new Map<string, ReturnType<typeof vi.fn>>();
+	principal.authority.mockImplementation((companyId: string) => {
+		const claim = vi.fn(async () => ({ schema: "qorpera.event-verification-claim/v1", deliveries: [], refused: 0 }));
+		claims.set(companyId, claim);
+		return {
+			claimEventVerifications: claim,
+			finishEventVerification: vi.fn(),
+		} as unknown as PostgresCloudSecretBrokerAuthority;
+	});
+	const companies = new SharedCloudSecretBrokerCompanies({
+		principal,
+		keyring: new CloudSecretKeyring({}, { "vault-root-1": randomBytes(32) }),
+		adapters: [],
+		revoker: { revoke: vi.fn() },
+	});
+	await companies.refresh(new AbortController().signal);
+	await companies.verifyEvents();
+	expect(principal.eventVerificationsDue).toHaveBeenCalledOnce();
+	expect(claims.get(idle)).not.toHaveBeenCalled();
+	for (const companyId of [one, two])
+		expect(claims.get(companyId)).toHaveBeenCalledExactlyOnceWith(16, expect.any(AbortSignal));
+	principal.eventVerificationsDue.mockResolvedValueOnce({ schema: "other", companyIds: [] });
+	await expect(companies.verifyEvents()).rejects.toThrow("Shared vault event verifications are invalid");
+	await companies.close();
+	await companies.verifyEvents();
+	expect(principal.eventVerificationsDue).toHaveBeenCalledTimes(2);
+	expect([...claims.values()].reduce((total, claim) => total + claim.mock.calls.length, 0)).toBe(2);
 });
 
 it("runs every served company's upkeep pass in turn, and its loops until closed", async () => {
