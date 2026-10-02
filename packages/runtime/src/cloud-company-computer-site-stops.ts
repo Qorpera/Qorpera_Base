@@ -42,7 +42,6 @@ const CHECK_FRAMES: ReadonlyArray<{ host: string; path?: string; reason: Company
 const CHECK_TITLES: ReadonlyMap<string, CompanyComputerSiteStopReason> = new Map([
 	["just a moment...", "human_check"],
 	["attention required! | cloudflare", "blocked"],
-	["access denied", "blocked"],
 	["pardon our interruption", "human_check"],
 	["access to this page has been denied", "human_check"],
 	["robot check", "captcha"],
@@ -117,6 +116,8 @@ export function companyComputerSiteStop(page: {
 	const exact = CHECK_TITLES.get(title);
 	if (exact) return exact;
 	if (page.length > SHORT_PAGE) return undefined;
+	// A block page titled "Access Denied" is short; a long page with that title is an application's own permission page.
+	if (title === "access denied") return "blocked";
 	const text = plain(page.text.slice(0, COMPANY_COMPUTER_SITE_SAMPLE));
 	return CHECK_WORDS.find((check) => check.words.test(title) || check.words.test(text))?.reason;
 }
@@ -158,7 +159,14 @@ export async function readCompanyComputerSiteStop(page: Page): Promise<CompanyCo
 			continue;
 		}
 		if (!companyComputerCheckFrame({ url })) continue;
-		const visible = await within(async () => (await frame.frameElement()).isVisible(), 1_000);
+		const visible = await within(async () => {
+			const element = await frame.frameElement();
+			try {
+				return await element.isVisible();
+			} finally {
+				void element.dispose().catch(() => undefined);
+			}
+		}, 1_000);
 		const reason = companyComputerCheckFrame({ url, ...(visible === undefined ? {} : { visible }) });
 		if (reason) return reason;
 	}

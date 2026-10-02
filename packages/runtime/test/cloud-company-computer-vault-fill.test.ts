@@ -88,7 +88,7 @@ function office(
 		/** The whole aria snapshot, instead of the one built from the fields above. */
 		aria: undefined as string | undefined,
 		/** Frames inside the page, by address and whether shown (a CAPTCHA service's, A1-4c). */
-		frames: [] as Array<string | { url: string; visible: boolean }>,
+		frames: [] as Array<string | { url: string; visible: boolean | "never" }>,
 	};
 	const element = { tagName: "INPUT", type: "password", disabled: false, readOnly: false, value: "" };
 	const attributes = new Map<string, string>();
@@ -200,7 +200,11 @@ function office(
 					isDetached: () => false,
 					url: () => url,
 					evaluate: async () => "",
-					frameElement: async () => ({ isVisible: async () => visible }),
+					// "never": the frame's element does not answer.
+					frameElement: () =>
+						visible === "never"
+							? new Promise(() => undefined)
+							: Promise.resolve({ isVisible: async () => visible, dispose: async () => undefined }),
 				};
 			}),
 		],
@@ -851,6 +855,54 @@ describe("vault_fill on the Company Computer", () => {
 		// Moving the pointer only looks.
 		await desktop({ kind: "desktop", action: "move", x: 10, y: 10 });
 		expect(f.commands.run).toHaveBeenCalledTimes(2);
+	});
+
+	it("records the site that shows the check, never the site a navigation left", async () => {
+		const stops = new CompanyComputerSiteStops();
+		const f = office({ siteStops: stops, url: "https://duckduckgo.com/?q=vercel" });
+		f.page.goto.mockImplementationOnce(async (url: string) => {
+			f.shown.url = url;
+			f.shown.title = "Just a moment...";
+		});
+		await perform(f, { kind: "browser", action: "navigate", url: "https://vercel.com/signup" });
+		expect(stops.stoppedAt("https://vercel.com/")).toBe("human_check");
+		expect(stops.stoppedAt("https://duckduckgo.com/")).toBeUndefined();
+		f.shown.title = "Search";
+		expect(
+			(
+				(await perform(f, { kind: "browser", action: "navigate", url: "https://duckduckgo.com/" })) as unknown as {
+					value: object;
+				}
+			).value,
+		).toMatchObject({ completed: true });
+	});
+
+	it("counts a check frame whose visibility does not answer, and lets a hidden tab be", async () => {
+		const f = office();
+		f.shown.frames = [{ url: "https://challenges.cloudflare.com/cdn-cgi/x", visible: "never" }];
+		expect(((await perform(f, action(), sealed(f.key!))) as unknown as { value: object }).value).toMatchObject({
+			refused: { code: "SITE_STOPPED" },
+		});
+		expect(f.typed).toEqual([]);
+		// A tab the screen does not show (in the background) does not hold back desktop input.
+		const stops = new CompanyComputerSiteStops();
+		const g = office({ siteStops: stops });
+		stops.add("https://vercel.com/", "captcha");
+		const evaluate = g.page.evaluate.getMockImplementation()!;
+		g.page.evaluate.mockImplementation(async (fn: (arg: unknown) => unknown, arg?: unknown) =>
+			arg === undefined && String(fn).includes("hidden") ? true : evaluate(fn, arg),
+		);
+		await g.automation.perform(
+			{ kind: "desktop", action: "click", x: 1, y: 1, button: "left" },
+			computerLease(),
+			computerEffect(),
+			{
+				...computerOperation(),
+				tool: "computer_desktop",
+				arguments: { kind: "desktop", action: "click", x: 1, y: 1, button: "left" } as never,
+			},
+		);
+		expect(g.commands.run).toHaveBeenCalledOnce();
 	});
 
 	it("tells a spent box apart from one that is not for this call", async () => {

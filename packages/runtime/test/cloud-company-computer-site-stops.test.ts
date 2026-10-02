@@ -40,11 +40,13 @@ describe("a page that asks for a person", () => {
 			"Just a moment...",
 			"Just a moment…",
 			"Attention Required! | Cloudflare",
-			"Access Denied",
 			"Robot Check",
 			"Access to this page has been denied",
 		])
 			expect(companyComputerSiteStop(page({ title, length: long })), title).toBeDefined();
+		// "Access Denied" counts on a short page; a long one is an application's own permission page.
+		expect(companyComputerSiteStop(page({ title: "Access Denied", text: "Reference #18.2f" }))).toBe("blocked");
+		expect(companyComputerSiteStop(page({ title: "Access Denied", length: long }))).toBeUndefined();
 		expect(companyComputerSiteStop(page({ text: "Verify you are human by completing the action below." }))).toBe(
 			"human_check",
 		);

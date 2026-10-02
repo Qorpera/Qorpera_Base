@@ -521,13 +521,18 @@ export class CompanyComputerGuestAutomation {
 		for (const page of pages) {
 			if (page.isClosed()) continue;
 			let hidden = false;
+			let timer: ReturnType<typeof setTimeout> | undefined;
 			try {
 				hidden = await Promise.race([
 					page.evaluate(() => (globalThis as unknown as { document: { hidden: boolean } }).document.hidden),
-					new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 1_000)),
+					new Promise<boolean>((resolve) => {
+						timer = setTimeout(() => resolve(false), 1_000);
+					}),
 				]);
 			} catch {
 				hidden = false;
+			} finally {
+				clearTimeout(timer);
 			}
 			if (hidden === true) continue;
 			const stop = this.#siteStops.stoppedAt(page.url()) ?? (await readCompanyComputerSiteStop(page));
@@ -780,11 +785,24 @@ export class CompanyComputerGuestAutomation {
 			// A page that now shows a CAPTCHA, a human check, an unusual activity warning or a block stops the agent
 			// at once, and the site is never acted on again while this computer runs; nothing tries to pass it.
 			// A link or a redirect that lands on a site stopped on earlier reports the stop too.
+			// What is recorded is the site that shows the check (and a navigation's destination); the page the agent came
+			// from only when it is that same site, never the site a navigation or a link left (a search page).
 			const stopAt = async () => {
 				const stop = (await readCompanyComputerSiteStop(page)) ?? this.#siteStops.stoppedAt(page.url());
-				if (stop)
-					for (const address of [actedOn, page.url(), ...(action.action === "navigate" ? [action.url] : [])])
+				if (stop) {
+					const shown = page.url();
+					const site = CompanyComputerSiteStops.site(shown);
+					for (const address of [
+						shown,
+						...(action.action === "navigate" ? [action.url] : []),
+						...(action.action !== "navigate" &&
+						site !== undefined &&
+						CompanyComputerSiteStops.site(actedOn) === site
+							? [actedOn]
+							: []),
+					])
 						this.#siteStops.add(address, stop);
+				}
 				return stop;
 			};
 			if (action.action !== "snapshot") {
