@@ -1211,18 +1211,21 @@ it("has a folder-v2 dynamic routine run decide through its routine file, settled
 	).toBe(true);
 });
 
-it("offers the run box's tools to a folder-v2 run on a host with a box, and to no other run", async () => {
-	const names = async (folder: boolean, runBox: boolean): Promise<string[]> => {
+it.each([
+	{ folder: true, runBox: true, offered: true },
+	{ folder: true, runBox: false, offered: false },
+	{ folder: false, runBox: true, offered: false },
+])(
+	"offers the run box's tools only to a folder-v2 run on a host with a box (%o)",
+	async ({ folder, runBox, offered }) => {
 		const f = await fixture("company-dynamic", false, undefined, false, true, runBox);
 		if (folder) f.context.folder = { agent: "nora", coworkers: {} };
 		await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
 		const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
-		return evidence.threadParameters.dynamicTools[0].tools.map((tool: { name: string }) => tool.name);
-	};
-	expect(await names(true, true)).toEqual(expect.arrayContaining(["exec_command", "write_stdin"]));
-	expect(await names(true, false)).not.toContain("exec_command");
-	expect(await names(false, true)).not.toContain("exec_command");
-});
+		const names = evidence.threadParameters.dynamicTools[0].tools.map((tool: { name: string }) => tool.name);
+		expect(names.includes("exec_command") && names.includes("write_stdin")).toBe(offered);
+	},
+);
 
 it("has a folder-v2 dynamic routine run find its file by the woken routine's id", async () => {
 	const f = await fixture("company-dynamic", false, undefined, false, true);
