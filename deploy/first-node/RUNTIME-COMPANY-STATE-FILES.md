@@ -313,8 +313,9 @@ closes the conversation; a restore reopens both, with the same conversation.
   the vault (`qorpera_company_accounts`). `site` is shown and never used: where a secret may be
   typed stays in the vault, so editing the file can never move a password. The parse has `site`,
   `twoStep` and `openedFor` (`null` when absent) only for a website account; any other
-  connection's parse keeps its shape. A closed account's file is removed like any disconnected
-  connection's.
+  connection's parse keeps its shape. Closing an account revokes its vault row at once (A1, 2
+  October; #668), so its file is removed at close, as any disconnected connection's: no file ever
+  says closed.
 
 - **Settings:** written only by the platform (the vault's writer, core C3). A member or an agent
   may change the body only, and never creates or deletes the file.
