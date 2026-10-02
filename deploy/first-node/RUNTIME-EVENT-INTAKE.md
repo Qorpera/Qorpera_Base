@@ -46,7 +46,7 @@ review (`20260928429982_runtime_company_mail_find_and_tags`), and so are attachm
 | M2b+ | Founder decisions of 1 October: no sender that reads as Qorpera | `20260928319810` |
 | M2c-1 | Attachments: an agent saves a received one into the company folder, and sends company files | `20260928429984` |
 | M2c-2 | Threads and sent mail as files in the folder | registered when started |
-| I5a | Members read mail (the Interfaces Mailbox): threads, mailboxes, waiting sends | `20260929999998` |
+| I5a | Members read mail (the Interfaces Mailbox): threads, mailboxes, waiting sends | `20260928439980` |
 
 Each step is a release-train feature PR: no bundle, manifest or activation files, an independent
 exact-head review, and a hand-off to the coordinator.
@@ -579,7 +579,7 @@ and receive files by mail, and a received attachment is fetched when an agent sa
 - **folder-v2.** Refused both ways (`0A000`) until the folder-v2 core adds mail attachments as a GC root (C1d). No
   production company uses folder-v2 today.
 
-**Members read mail (I5a)** (migration `20260929999998_runtime_company_mail_member_read`; shapes agreed with the
+**Members read mail (I5a)** (migration `20260928439980_runtime_company_mail_member_read`; shapes agreed with the
 Interfaces session on 2 October for the Mailbox, `RUNTIME-INTERFACES.md` §4, sources `mail` and `mail_addresses`).
 - **Threads.** A thread's id is base64url (no padding) of sha-256 over `<mailbox id>:<key>`: 43 characters, safe in a
   URL and a path, never the raw header, and the same after the text is cleared.

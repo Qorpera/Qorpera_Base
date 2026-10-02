@@ -118,7 +118,7 @@ carries only the sealed box beside the action. Plaintext exists only in the vaul
   any more, so closing is a "deleting things outside" step the company's review rules check (A1-4); after it only the
   website's own account recovery gets back in. Accounts closed before this migration are revoked by it.
 
-## A1-5a: which mail is an account's own (migration `20260929999960`, SQL test 809)
+## A1-5a: which mail is an account's own (migration `20260928439960`, SQL test 809)
 
 Members read the company's mail (Interfaces I5, Q1's member read), but an account's sign-up and sign-in mail carries
 codes and reset links, so it is shown only as "<site> · sign-in mail · used by <agent> <time>".
@@ -136,7 +136,7 @@ codes and reset links, so it is shown only as "<site> · sign-in mail · used by
   company's accounts (the planner uses the company index, or `qorpera_company_accounts_login` (profile,
   environment, lower(login)) when companies hold many accounts on average).
 
-## A1-4a: the account tool's database side (migration `20260929999965`, SQL test 813)
+## A1-4a: the account tool's database side (migration `20260928439965`, SQL test 813)
 
 The agent's account tool (A1-4b) needs three things the vault's calls do not give it. Inert until that tool is
 offered and accounts are switched on.

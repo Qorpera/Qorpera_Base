@@ -59,7 +59,7 @@ it("lists exactly the calls the host makes inside a job, with the long budget fo
 		...rowsOf(migration),
 		...rowsOf(read("20260928429982_runtime_company_mail_find_and_tags.sql")),
 		...rowsOf(read("20260928429984_runtime_company_mail_attachments.sql")),
-		...rowsOf(read("20260929999965_runtime_company_account_tool.sql")),
+		...rowsOf(read("20260928439965_runtime_company_account_tool.sql")),
 	];
 	const long = new Set(
 		[...migration.matchAll(/set budget = 'long' where name = '(qorpera_[a-z0-9_]+)'/g)].map((m) => m[1]),
