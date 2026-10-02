@@ -50,8 +50,8 @@ select pg_temp.h1_human_tasks_replace('public.qorpera_company_state_parse_proble
 	$new$-- H1: a human task and a contact (§2), with the parser's limits and cross-key rules.
 	if p_kind = 'human-task' then
 		if (select array_agg(k order by k) from jsonb_object_keys(p_parse) k) is distinct from
-			array['computer','connection','contact','due','files','from','id','instructions','kind','member','minutes','proof','reason',
-				'secret','secretState','status','step','steps','title','todo'] then
+			array['connection','contact','due','files','from','id','instructions','kind','member','minutes','proof','reason','secret',
+				'secretState','status','step','steps','title','todo'] then
 			v_bad := array_append(v_bad, 'keys'); end if;
 		if coalesce(p_parse ->> 'id', '') !~ c_uuid then v_bad := array_append(v_bad, 'id'); end if;
 		if not public.qorpera_company_state_one_line(p_parse -> 'title', 1, 200, true) then v_bad := array_append(v_bad, 'title'); end if;
@@ -74,13 +74,12 @@ select pg_temp.h1_human_tasks_replace('public.qorpera_company_state_parse_proble
 				where jsonb_typeof(x) <> 'string' or (x #>> '{}') not in ('photo','file','signature','note'))
 			or (select count(distinct x) from jsonb_array_elements(p_parse -> 'proof') x) <> jsonb_array_length(p_parse -> 'proof') then
 			v_bad := array_append(v_bad, 'proof'); end if;
-		-- Literal paths of files in the company folder, at most 20, each once by key; on a contact's task, none under the
-		-- roots outside readers may not see.
+		-- Literal paths the company folder can hold (the core's path rule), one line, at most 20, each once by key; on a
+		-- contact's task, none under the roots outside readers may not see.
 		if jsonb_typeof(p_parse -> 'files') is distinct from 'array' or jsonb_array_length(p_parse -> 'files') > 20
 			or exists (select 1 from jsonb_array_elements(p_parse -> 'files') f
-				where jsonb_typeof(f) <> 'string' or octet_length(f #>> '{}') not between 1 and 4096
-					or (f #>> '{}') ~ '[\x01-\x1f\x7f-\x9f\u2028\u2029]' or (f #>> '{}') like '/%'
-					or exists (select 1 from unnest(string_to_array(f #>> '{}', '/')) part where part in ('', '.', '..'))
+				where jsonb_typeof(f) <> 'string' or (f #>> '{}') ~ '[\x01-\x1f\x7f-\x9f\u2028\u2029]'
+					or not public.qorpera_company_path_valid(f #>> '{}')
 					or (jsonb_typeof(p_parse -> 'contact') = 'string'
 						and public.qorpera_folder_key(f #>> '{}') ~ '^(agents|contacts|human-tasks|connections|rules|hooks)/'))
 			or (select count(distinct public.qorpera_folder_key(f #>> '{}')) from jsonb_array_elements(p_parse -> 'files') f)
@@ -92,7 +91,7 @@ select pg_temp.h1_human_tasks_replace('public.qorpera_company_state_parse_proble
 			or (p_parse ->> 'status' in ('returned','declined') and jsonb_typeof(p_parse -> 'reason') is distinct from 'string')
 			or (p_parse ->> 'status' not in ('returned','declined','cancelled') and jsonb_typeof(p_parse -> 'reason') is distinct from 'null') then
 			v_bad := array_append(v_bad, 'reason'); end if;
-		-- A secret's label and its state go together, on a member's task only; so does the computer.
+		-- A secret's label and its state go together, on a member's task only.
 		if (jsonb_typeof(p_parse -> 'secret') = 'null') is distinct from (jsonb_typeof(p_parse -> 'secretState') = 'null')
 			or (jsonb_typeof(p_parse -> 'secret') is distinct from 'null'
 				and not public.qorpera_company_state_one_line(p_parse -> 'secret', 1, 100, true))
@@ -100,9 +99,6 @@ select pg_temp.h1_human_tasks_replace('public.qorpera_company_state_parse_proble
 				and coalesce(p_parse ->> 'secretState', '') not in ('asked','saved'))
 			or (jsonb_typeof(p_parse -> 'contact') = 'string' and jsonb_typeof(p_parse -> 'secret') is distinct from 'null') then
 			v_bad := array_append(v_bad, 'secret'); end if;
-		if jsonb_typeof(p_parse -> 'computer') is distinct from 'null' and (coalesce(p_parse ->> 'computer', '') !~ c_uuid
-			or jsonb_typeof(p_parse -> 'contact') = 'string') then
-			v_bad := array_append(v_bad, 'computer'); end if;
 		if jsonb_typeof(p_parse -> 'connection') is distinct from 'null' and coalesce(p_parse ->> 'connection', '') !~ c_uuid then
 			v_bad := array_append(v_bad, 'connection'); end if;
 		if jsonb_typeof(p_parse -> 'step') is distinct from 'null' and coalesce(p_parse ->> 'step', '') not in

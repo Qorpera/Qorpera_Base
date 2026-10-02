@@ -2,7 +2,8 @@
 -- Company state files, H1b (deploy/first-node/RUNTIME-COMPANY-STATE-FILES.md §2 "human-tasks/<name>.md" and
 -- "contacts/<name>.md", §8 "Plan (H1)"): the two formats on the folder core. A task and a contact are saved with their
 -- parse and checked by its shape; their folder places follow the naming rule; a folder move or copy into or out of the
--- two roots cannot change a file's kind; only the platform marks a secret saved. Nothing is indexed and nothing is locked.
+-- two roots cannot change a file's kind; only the platform marks a secret saved, for a member, an agent's run and a new
+-- folder alike. Nothing is locked, and the review class is plain.
 
 -- The file's text as the parser reads it, near enough: the database reads only the parse and the text's hash.
 create function pg_temp.state_text(p_parse jsonb) returns text language sql as $$
@@ -20,7 +21,7 @@ language sql as $$
 	select jsonb_build_object('kind','human-task','id',p_id,'title','Fit the new disk in node 2','status','open',
 		'member','70700000-0000-4000-8000-000000000002','contact',null,'from','70700000-0000-4000-8000-0000000000a1','todo',null,
 		'due','2026-10-20T12:00:00Z','minutes',40,'proof','["photo","note"]'::jsonb,'files','["ops/disk-order.pdf"]'::jsonb,
-		'reason',null,'secret',null,'secretState',null,'computer',null,'connection',null,'step',null,
+		'reason',null,'secret',null,'secretState',null,'connection',null,'step',null,
 		'instructions',E'## Steps\n- [ ] Fit it in slot 2\n- [x] Agree a window',
 		'steps','[{"line":15,"text":"Fit it in slot 2","done":false},{"line":16,"text":"Agree a window","done":true}]'::jsonb) || p_set
 $$;
@@ -65,6 +66,17 @@ begin
 	perform pg_temp.expect(r, 4, 'saved');
 end $$;
 
+-- A new folder's files are held to the secret rule too: no task starts with its secret saved (§6).
+do $$
+declare saved jsonb := pg_temp.task('78500000-0000-4000-8000-0000000000eb', '{"secret":"Code","secretState":"saved"}');
+	r jsonb;
+begin
+	r := pg_temp.commit(pg_temp.owner(), 'tasks-0017', jsonb_build_array(jsonb_build_object('op','new_folder','path','human-tasks',
+		'contents', jsonb_build_array(jsonb_build_object('path','enter.md','kind','file','file',pg_temp.stage(pg_temp.state_text(saved)))),
+		'structured', jsonb_build_array(pg_temp.entry('human-tasks/enter.md', 'human-task', pg_temp.state_text(saved), saved)))));
+	perform pg_temp.expect(r, 1, 'refused', 'structured_rule');
+end $$;
+
 -- 2. The two roots are places; a task's folder and its proof folder follow the naming rule -----------------------------
 
 do $$
@@ -86,14 +98,15 @@ begin
 	-- The same checks as the parser's structuredFolderNames (700 §7 keeps the file names).
 	for t in select * from (values ('human-tasks', 0), ('contacts', 0), ('human-tasks/fit-disk', 0), ('human-tasks/fit-disk/proof', 0),
 		('human-tasks/T/proof', 1), ('human-tasks/my_task', 1), ('human-tasks/fit-disk/Proof', 1), ('Human-Tasks', 1), ('Contacts', 1),
-		('human-tasks/fit-disk/photos', 0), ('human-tasks/fit-disk/proof/x', 0), ('contacts/Archive', 0), ('human-tasks/', 0),
+		('human-tasks/fit-disk/photos', 0), ('human-tasks/fit-disk/Photos', 0), ('human-tasks/fit-disk/proof/x', 0), ('contacts/Archive', 0),
+		('human-tasks/', 0),
 		('human-tasks/Fit/', 1)) v(path, problems)
 	loop
 		if jsonb_array_length(public.qorpera_company_state_path_problems(t.path, true)) is distinct from t.problems then
 			raise exception 'Folder % expected % problems, got %', t.path, t.problems,
 				public.qorpera_company_state_path_problems(t.path, true); end if;
 	end loop;
-	if public.qorpera_company_state_path_problems('human-tasks/日本', true) -> 0 ->> 'message' not like '%a human task''s folder%' then
+	if coalesce(public.qorpera_company_state_path_problems('human-tasks/日本', true) -> 0 ->> 'message', '') not like '%a human task''s folder%' then
 		raise exception 'A task folder''s problem names the place: %', public.qorpera_company_state_path_problems('human-tasks/日本', true); end if;
 end $$;
 
@@ -120,8 +133,8 @@ begin
 		pg_temp.write('contacts/wrong-kind.md', 'contact', 'x', pg_temp.task('78500000-0000-4000-8000-0000000000e6'))));
 	for i in 1..3 loop perform pg_temp.expect(r, i, 'saved'); end loop;
 	for i in 4..9 loop perform pg_temp.expect(r, i, 'refused', 'structured_invalid'); end loop;
-	if (r -> 'units' -> 5 -> 'problems' -> 0 ->> 'message') not like '%read this file differently%(files)%'
-		or (r -> 'units' -> 6 -> 'problems' -> 0 ->> 'message') not like '%read this file differently%(member)%' then
+	if coalesce(r -> 'units' -> 5 -> 'problems' -> 0 ->> 'message', '') not like '%read this file differently%(files)%'
+		or coalesce(r -> 'units' -> 6 -> 'problems' -> 0 ->> 'message', '') not like '%read this file differently%(member)%' then
 		raise exception 'A broken parse names the rule it breaks: %', r; end if;
 	-- The parse is stored with the version, as H2's index will read it.
 	select v2.structured into v from public.qorpera_folder_entries e join public.qorpera_folder_path_versions v2 on v2.version = e.version
@@ -147,8 +160,8 @@ begin
 		(pg_temp.task(p_set => '{"status":"declined","reason":"I am away"}'), 0), (pg_temp.task(p_set => '{"status":"done"}'), 0),
 		(pg_temp.task(p_set => '{"minutes":480,"proof":[],"files":[],"steps":[],"instructions":"x"}'), 0),
 		(pg_temp.task(p_set => '{"minutes":null,"todo":"78500000-0000-4000-8000-0000000000d1"}'), 0),
-		(pg_temp.task(p_set => '{"secret":"Code from the SMS","secretState":"asked","computer":"78500000-0000-4000-8000-0000000000c1",
-			"connection":"78500000-0000-4000-8000-0000000000c2","step":"phone_code"}'), 0),
+		(pg_temp.task(p_set => '{"secret":"Code from the SMS","secretState":"asked","connection":"78500000-0000-4000-8000-0000000000c2",
+			"step":"phone_code"}'), 0),
 		(pg_temp.task(p_set => '{"secret":"Code","secretState":"saved","step":"other"}'), 0),
 		(pg_temp.task(p_set => '{"files":["sales/q3 draft.pdf","a*b.md","agents/a/memory/x.md","Sales/Q4.pdf"]}'), 0),
 		(pg_temp.contact_task('{"files":["finance/vat-q3-draft.pdf","agentsx/a.pdf","hooks.md"]}'), 0),
@@ -160,7 +173,9 @@ begin
 		(pg_temp.contact('{"email":"first.last+tag@sub.example.org","phone":"+123456","asks":["VAT filing","vat filing"]}'), 0),
 		(pg_temp.contact(jsonb_build_object('phone', '+' || repeat('1', 20), 'email', 'a@b')), 0),
 		-- The keys.
-		(pg_temp.task(p_set => '{"note":"x"}'), 1), (pg_temp.task() - 'computer', 1), (pg_temp.contact('{"company":"x"}'), 1),
+		(pg_temp.task(p_set => '{"note":"x"}'), 1), (pg_temp.task() - 'connection', 1), (pg_temp.contact('{"company":"x"}'), 1),
+		-- No computer key: the platform finds the asking agent's screen from `from` (A1).
+		(pg_temp.task(p_set => '{"computer":"78500000-0000-4000-8000-0000000000c1"}'), 1),
 		(pg_temp.task(p_set => '{"kind":"contact"}'), 1),
 		-- One person, by id.
 		(pg_temp.task(p_set => '{"member":null}'), 1), (pg_temp.task(p_set => '{"contact":"78500000-0000-4000-8000-0000000000f1"}'), 1),
@@ -173,7 +188,7 @@ begin
 		(pg_temp.task(p_set => '{"minutes":481}'), 1), (pg_temp.task(p_set => '{"minutes":"40"}'), 1), (pg_temp.task(p_set => '{"minutes":40.5}'), 1),
 		(pg_temp.task(p_set => '{"proof":["photo","photo"]}'), 1), (pg_temp.task(p_set => '{"proof":["video"]}'), 1),
 		(pg_temp.task(p_set => '{"proof":null}'), 1), (pg_temp.task(p_set => '{"step":"login"}'), 1),
-		(pg_temp.task(p_set => '{"computer":"office-1"}'), 1), (pg_temp.task(p_set => '{"connection":"github"}'), 1),
+		(pg_temp.task(p_set => '{"due":null}'), 1), (pg_temp.task(p_set => '{"connection":"github"}'), 1),
 		(pg_temp.task(p_set => '{"instructions":""}'), 1), (pg_temp.task(p_set => E'{"instructions":"Fit it.\\n"}'), 1),
 		(pg_temp.task(p_set => jsonb_build_object('instructions', repeat('x', 32769))), 1),
 		-- Why, only with the statuses that take one.
@@ -186,7 +201,6 @@ begin
 		(pg_temp.task(p_set => '{"secret":"Code","secretState":"sent"}'), 1),
 		(pg_temp.task(p_set => jsonb_build_object('secret', repeat('x', 101), 'secretState', 'asked')), 1),
 		(pg_temp.contact_task('{"secret":"Code","secretState":"asked"}'), 1),
-		(pg_temp.contact_task('{"computer":"78500000-0000-4000-8000-0000000000c1"}'), 1),
 		-- Files: literal paths, at most 20, once each by key; a contact's task stays out of the inside roots.
 		(pg_temp.task(p_set => '{"files":["a/../b.pdf"]}'), 1), (pg_temp.task(p_set => '{"files":["a/./b.pdf"]}'), 1),
 		(pg_temp.task(p_set => '{"files":["sales/"]}'), 1), (pg_temp.task(p_set => '{"files":["/etc/passwd"]}'), 1),
@@ -195,6 +209,11 @@ begin
 		(pg_temp.task(p_set => jsonb_build_object('files', jsonb_build_array('a' || chr(8232) || 'b.pdf'))), 1),
 		(pg_temp.task(p_set => jsonb_build_object('files', jsonb_build_array('a' || chr(133) || 'b.pdf'))), 1),
 		(pg_temp.task(p_set => '{"files":["Sales/Q3.pdf","sales/q3.pdf"]}'), 1),
+		-- Only paths the folder can hold (the core's path rule).
+		(pg_temp.task(p_set => '{"files":["a:b.pdf"]}'), 1), (pg_temp.task(p_set => '{"files":["50%.pdf"]}'), 1),
+		(pg_temp.task(p_set => '{"files":["Notes /x.pdf"]}'), 1), (pg_temp.task(p_set => '{"files":["con.txt"]}'), 1),
+		(pg_temp.task(p_set => '{"files":["x."]}'), 1), (pg_temp.task(p_set => E'{"files":["a\\\\b.pdf"]}'), 1),
+		(pg_temp.task(p_set => jsonb_build_object('files', jsonb_build_array('e' || chr(769) || '.pdf'))), 1),
 		(pg_temp.task(p_set => jsonb_build_object('files', jsonb_build_array(repeat('x', 4097)))), 1),
 		(pg_temp.task(p_set => jsonb_build_object('files', (select jsonb_agg('f' || n || '.pdf') from generate_series(1, 21) n))), 1),
 		(pg_temp.contact_task('{"files":["agents/nora/agent.md"]}'), 1), (pg_temp.contact_task('{"files":["CONTACTS/maria.md"]}'), 1),
@@ -224,6 +243,7 @@ begin
 		(pg_temp.contact('{"phone":"45 12 34 56"}'), 1), (pg_temp.contact('{"phone":"+45  12 34 56"}'), 1),
 		(pg_temp.contact('{"phone":"+45-12-34-56"}'), 1), (pg_temp.contact('{"phone":4512345678}'), 1),
 		(pg_temp.contact('{"asks":["VAT filing","VAT filing"]}'), 1), (pg_temp.contact('{"asks":[" VAT filing"]}'), 1),
+		(pg_temp.contact('{"asks":[7]}'), 1),
 		(pg_temp.contact(jsonb_build_object('asks', jsonb_build_array(repeat('x', 101)))), 1), (pg_temp.contact('{"asks":[""]}'), 1),
 		(pg_temp.contact(jsonb_build_object('asks', (select jsonb_agg('a' || n) from generate_series(1, 51) n))), 1),
 		(pg_temp.contact('{"notes":"Notes "}'), 1), (pg_temp.contact('{"notes":null}'), 1),
@@ -275,6 +295,9 @@ end $$;
 
 do $$
 declare r jsonb; code constant uuid := '78500000-0000-4000-8000-0000000000e7';
+	agent constant jsonb := '{"kind":"staff_agent","staffAgentId":"70700000-0000-4000-8000-0000000000a1",
+		"requesterUserId":"70700000-0000-4000-8000-000000000001","sessionKind":"in_house","runId":"78500000-0000-4000-8000-0000000000ff",
+		"audience":{"kind":"company"}}';
 	asked jsonb := pg_temp.task(code, '{"title":"Enter the code","secret":"Code from the SMS","secretState":"asked","step":"phone_code"}');
 	saved jsonb := pg_temp.task(code, '{"title":"Enter the code","secret":"Code from the SMS","secretState":"saved","step":"phone_code"}');
 begin
@@ -284,7 +307,7 @@ begin
 	r := pg_temp.commit(pg_temp.owner(), 'tasks-0008', jsonb_build_array(pg_temp.save('human-tasks/enter-code.md', saved)));
 	perform pg_temp.expect(r, 1, 'refused', 'structured_rule');
 	if r -> 'units' -> 0 -> 'problems' -> 0 ->> 'key' is distinct from 'secret_state'
-		or r -> 'units' -> 0 -> 'problems' -> 0 ->> 'message' not like 'only the platform marks a secret saved%' then
+		or coalesce(r -> 'units' -> 0 -> 'problems' -> 0 ->> 'message', '') not like 'only the platform marks a secret saved%' then
 		raise exception 'The refusal names secret_state: %', r; end if;
 	perform pg_temp.expect(pg_temp.commit(pg_temp.mem(), 'tasks-0009', jsonb_build_array(pg_temp.save('human-tasks/enter-code.md', saved))),
 		1, 'refused', 'structured_rule');
@@ -310,9 +333,21 @@ begin
 		1, 'saved');
 	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'tasks-0016', jsonb_build_array(pg_temp.save('human-tasks/enter-code.md', saved))),
 		1, 'refused', 'structured_rule');
+	-- An agent's run, which writes most task files, is held to the same rule (the decision its commit takes).
+	r := public.qorpera_folder_structured_decide('70700000-0000-4000-8000-000000000020', agent, extensions.gen_random_uuid(), 1,
+		pg_temp.save('human-tasks/enter-code.md', saved), 'human-tasks/enter-code.md', null);
+	if r ->> 'reason' is distinct from 'structured_rule' then raise exception 'An agent never marks a secret saved: %', r; end if;
+	r := public.qorpera_folder_structured_decide('70700000-0000-4000-8000-000000000020', agent, extensions.gen_random_uuid(), 1,
+		pg_temp.save('human-tasks/enter-code-4.md', saved), 'human-tasks/enter-code-4.md', null);
+	if r ->> 'reason' is distinct from 'structured_rule' then raise exception 'Not at a new path either: %', r; end if;
+	perform pg_temp.expect(pg_temp.commit('{"kind":"platform"}', 'tasks-0018', jsonb_build_array(pg_temp.save('human-tasks/enter-code.md', saved))),
+		1, 'saved');
+	r := public.qorpera_folder_structured_decide('70700000-0000-4000-8000-000000000020', agent, extensions.gen_random_uuid(), 1,
+		pg_temp.save('human-tasks/enter-code.md', saved || '{"title":"Enter the SMS code"}'), 'human-tasks/enter-code.md', null);
+	if r is distinct from '{"ok": true}'::jsonb then raise exception 'An agent keeps the mark over the same task and label: %', r; end if;
 end $$;
 
--- 7. Nothing is indexed or locked, and the review class is plain -------------------------------------------------------
+-- 7. Nothing is locked, and the review class is plain ---------------------------------------------------------------
 
 do $$
 declare env constant uuid := '70700000-0000-4000-8000-000000000020'; t jsonb; u jsonb;

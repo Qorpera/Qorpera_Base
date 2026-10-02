@@ -1394,8 +1394,9 @@ saved), no seeding. Two PRs, released in this order:
 
   The review class stays plain, and no index, lock target or verify row is added.
 - **Before H1:** a file saved at these paths while they were ordinary (only an operator's test
-  companies can have one) can then only be deleted: an edit must parse, and a move out is a kind
-  change. H2 says how it treats a structured key whose current version has no parse.
+  companies can have one) can then only be replaced by a file that parses, moved within its root,
+  or deleted: a move out is a kind change. H2 says how it treats a structured key whose current
+  version has no parse.
 - **Contract:** the proposed amendment of 2 October (work for people) writes Jonas's decisions 4
   and 5 into 5.6 and widens 16.1's last step to contacts; 5.6's own text changes when it is
   approved. The seeding code is H2's.
@@ -1422,17 +1423,18 @@ building:
 - The seven functions are patched by exact anchors, each of which must match once or the migration stops, so a
   definition changed since is caught rather than overwritten.
 - A parse that breaks a rule is refused as for the indexed kinds: one problem naming the rules it breaks ("the
-  platform read this file differently from its rules (files)"). `files` has no trimming rule, since a file name may
-  start or end with a space; its entries are checked as the parser checks them.
+  platform read this file differently from its rules (files)"). `files` entries are held to the core's path rule
+  (`qorpera_company_path_valid`, which agrees with `parseCloudCompanyPath` on 9,747 generated paths) and to one line.
 - The secret rule reads the stored parse of the version the save replaces (the current version at the same key), as
   the agent rules read their base, and refuses with `structured_rule` and the problem on `secret_state`. A move keeps
-  the file's bytes and so its mark; a copy of a task file is refused anyway (`structured_copy`).
-- A folder that holds no `.md` file may still be moved or copied onto `contacts` or `human-tasks` while the root does
-  not exist: what it holds stays ordinary.
+  the file's bytes and so its mark; a copy of a task file is refused anyway (`structured_copy`). 785 §6 holds a
+  member, an agent's run (the decision its commit takes) and a new folder's file to it.
+- A folder with no `.md` file directly inside it may still be moved or copied onto `contacts` or `human-tasks` while
+  that root does not exist: what lands there is ordinary (`x/sub/a.md` becomes `contacts/sub/a.md`), and under
+  `human-tasks` its folders must also pass the task-folder name rule.
 - A task or contact save takes no lock and its review class stays plain (785 §7).
-- Proof besides 785 and 700 §7: 2,000 random files written by `writeHumanTaskFile` and `writeContactFile`; every parse
-  the parser accepted (1,859) passes `qorpera_company_state_parse_problems`. 60 mutants of the migration (each rule,
-  limit and place) are each caught by 785.
+- Proof besides 785 and 700 §7: 6,000 random files written by `writeHumanTaskFile` and `writeContactFile`; every parse
+  the parser accepted (4,962) passes `qorpera_company_state_parse_problems`. 68 mutants of the migration (every rule, limit, place and root, the round-1 reviewer's included) are each caught by 785.
 
 **Then:** H2 (on the folder core) adds what §2 lists under "What H1 does not decide"; H3 the web
 screens; H4 the emails; H5 the contact links, after F1 widens erasure. A1's takeover becomes a
