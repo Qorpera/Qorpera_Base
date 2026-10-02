@@ -105,13 +105,16 @@ carries only the sealed box beside the action. Plaintext exists only in the vaul
   Then, by plain read: the computer the envelope names is the run's company's, at its current generation, and the
   run's own unexpired screen lease is on it (42501 'company computer lease is unavailable'); its current active,
   not superseded activation has a key (0A000 otherwise: the agent is told the computer cannot type account values
-  until it restarts on a newer image). Then the account as `use` reads it (this company's open website account,
+  right now, because it is still starting or needs a restart on a newer version). Then the account as `use` reads it (this company's open website account,
   locked; 22023 'no such open account'), its current version, last use and an `account_used` event. Answers
   `qorpera.company-account-fill-context/v1`: the account's facts, the envelope with its associated data, and what
   the box is bound to (receipt, field, computer, generation, the key).
-- Neither function is on the native host's call list (`qorpera_native_host_calls`), so the host never reaches the
-  key's registration or the fill (test 802). The office's ready report still uses its service-role registry key
-  until G2's office step moves it; the key moves with it.
+- Neither function is on the native host's call list (`qorpera_native_host_calls`, test 802), so once G2-2's switch
+  takes the service-role key off the native host it cannot reach the key's registration or the fill. The office's
+  ready report still uses its service-role registry key until G2's office step moves it; the key moves with it.
+- Closing an account (`qorpera_set_company_account_state(…, 'closed')`) revokes its vault row at once, and the revoke
+  trigger wipes its envelopes in the same statement: nothing keeps a closed account's password, and its connection
+  file is removed at close (A1-7). A repeat close answers the closed account. There is no 30-day wipe any more.
 
 ## Notes for later steps
 
@@ -129,4 +132,4 @@ carries only the sealed box beside the action. Plaintext exists only in the vaul
   `vault_fill` action from the agent's tool to the office, the page and box checks, CDP `Input.insertText`, masks
   for filled boxes and authenticator QR codes, and #644's two test nits (the shell's X access went with #411).
 - A1-4 agent tools and words; A1-5 mail (Q1's `find_mail` and `local+tag` addresses); A1-6 Settings; A1-7 the
-  account files. A clean-up job wipes a closed account's envelopes 30 days after it closed.
+  account files.

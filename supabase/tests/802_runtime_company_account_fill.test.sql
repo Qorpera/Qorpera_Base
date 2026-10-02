@@ -120,16 +120,16 @@ end
 $$;
 -- The broker's call: 'ok:<answer>' or '<sqlstate>:<message>'.
 create function pg_temp.fill(p_n text, p_envelope text, p_capability text default repeat('c', 64),
-	p_downstream text default repeat('b', 64))
+	p_downstream text default repeat('b', 64), p_authority text default '79400000-0000-4000-8000-000000000040')
 returns text language plpgsql as $$
 begin
-	return pg_temp.ca_try(format('select public.qorpera_fill_company_account(''79400000-0000-4000-8000-000000000040'',%L,'
-		'current_setting(''qorpera_test.path_binding'')::jsonb,%L,%L,%L)', p_capability,
+	return pg_temp.ca_try(format('select public.qorpera_fill_company_account(%L,%L,'
+		'current_setting(''qorpera_test.path_binding'')::jsonb,%L,%L,%L)', p_authority, p_capability,
 		'80200000-0000-4000-8000-0000000001' || p_n, p_envelope, p_downstream));
 end
 $$;
 grant execute on function pg_temp.fill_envelope(text,text,text,integer,text), pg_temp.fill_receipt(text,text,text),
-	pg_temp.fill_done(text,text), pg_temp.fill(text,text,text,text) to qorpera_secret_broker;
+	pg_temp.fill_done(text,text), pg_temp.fill(text,text,text,text,text) to qorpera_secret_broker;
 -- A swap of one computer row's column inside this transaction, as the owner (the broker writes none of them).
 create function pg_temp.fill_set(p_sql text) returns void language plpgsql security definer as $$
 begin
@@ -217,12 +217,52 @@ select set_config('qorpera_test.fill_other_run', pg_temp.fill_case('17',
 	'update public.qorpera_runtime_office_screens set run_id = ''80200000-0000-4000-8000-000000000099''',
 	format('update public.qorpera_runtime_office_screens set run_id = %L',
 		current_setting('qorpera_test.path_binding')::jsonb ->> 'runId')), true);
+select set_config('qorpera_test.fill_other_environment', pg_temp.fill_case('18',
+	'update public.qorpera_runtime_offices set environment_id = ''80200000-0000-4000-8000-000000000098''',
+	'update public.qorpera_runtime_offices set environment_id = ''29000000-0000-4000-8000-000000000020'''), true);
+-- The checks the fill makes itself, before any lock: a malformed call, the switch, a folder company, another
+-- company's broker, another downstream digest.
+select set_config('qorpera_test.fill_not_json', pg_temp.fill('30', '{not json'), true);
+select set_config('qorpera_test.fill_array', pg_temp.fill('30', '[]'), true);
+select set_config('qorpera_test.fill_switched_off', pg_temp.fill_case('31',
+	'update public.qorpera_company_account_settings set enabled = false',
+	'update public.qorpera_company_account_settings set enabled = true'), true);
+select set_config('qorpera_test.fill_job_v2', pg_get_functiondef('public.qorpera_job_is_folder_v2(uuid)'::regprocedure), true);
+select set_config('qorpera_test.fill_folder', pg_temp.fill_case('32',
+	'create or replace function public.qorpera_job_is_folder_v2(p_job_id uuid) returns boolean language sql stable
+		security definer set search_path = '''' as $f$ select true $f$',
+	current_setting('qorpera_test.fill_job_v2')), true);
+select set_config('qorpera_test.fill_env33', pg_temp.fill_envelope('fill-33', 'code'), true);
+select pg_temp.fill_receipt('33', current_setting('qorpera_test.fill_env33'), 'fill-33');
+select set_config('qorpera_test.fill_other_broker', pg_temp.fill('33', current_setting('qorpera_test.fill_env33'),
+	p_capability => repeat('e', 64), p_authority => '79400000-0000-4000-8000-000000000041'), true);
+select set_config('qorpera_test.fill_other_downstream', pg_temp.fill('33', current_setting('qorpera_test.fill_env33'),
+	p_downstream => repeat('d', 64)), true);
+select pg_temp.fill_done('33', current_setting('qorpera_test.fill_env33'));
 -- 3. The account: an id that is none of the company's accounts.
 select set_config('qorpera_test.fill_env20', pg_temp.fill_envelope('fill-20', 'code',
 	'79400000-0000-4000-8000-000000000041'), true);
 select pg_temp.fill_receipt('20', current_setting('qorpera_test.fill_env20'), 'fill-20');
 select set_config('qorpera_test.fill_unknown_account', pg_temp.fill('20', current_setting('qorpera_test.fill_env20')), true);
 select pg_temp.fill_done('20', current_setting('qorpera_test.fill_env20'));
+-- 4. Closing the account revokes its vault row at once (its envelopes go with it); a repeat or a second close
+--    answers the closed account; nothing is filled from it after.
+select pg_temp.ca_receipt('50', 'company_account:state:' || current_setting('qorpera_test.ca_account') || ':r50');
+select set_config('qorpera_test.close', pg_temp.ca_call('qorpera_set_company_account_state', '50',
+	quote_literal(current_setting('qorpera_test.ca_account')) || ',''closed'''), true);
+select set_config('qorpera_test.close_repeat', pg_temp.ca_call('qorpera_set_company_account_state', '50',
+	quote_literal(current_setting('qorpera_test.ca_account')) || ',''closed'''), true);
+select pg_temp.ca_done('50');
+select pg_temp.ca_receipt('51', 'company_account:state:' || current_setting('qorpera_test.ca_account') || ':r51');
+select set_config('qorpera_test.close_again', pg_temp.ca_call('qorpera_set_company_account_state', '51',
+	quote_literal(current_setting('qorpera_test.ca_account')) || ',''closed'''), true);
+select set_config('qorpera_test.reopen_closed', pg_temp.ca_call('qorpera_set_company_account_state', '51',
+	quote_literal(current_setting('qorpera_test.ca_account')) || ',''connected'''), true);
+select pg_temp.ca_done('51');
+select set_config('qorpera_test.fill_env52', pg_temp.fill_envelope('fill-52'), true);
+select pg_temp.fill_receipt('52', current_setting('qorpera_test.fill_env52'), 'fill-52');
+select set_config('qorpera_test.fill_closed', pg_temp.fill('52', current_setting('qorpera_test.fill_env52')), true);
+select pg_temp.fill_done('52', current_setting('qorpera_test.fill_env52'));
 reset session authorization;
 -- Not the broker.
 select set_config('qorpera_test.fill_not_broker', pg_temp.ca_try(format(
@@ -235,7 +275,8 @@ declare
 	v_ok jsonb;
 	v_audit integer;
 	v_lease_refused constant text := '42501:company computer lease is unavailable';
-	v_no_key constant text := '0A000:This computer cannot type account values until it restarts on a newer image';
+	v_no_key constant text :=
+		'0A000:The computer cannot type account values right now: it is still starting, or it needs a restart on a newer version';
 	v_receipt_refused constant text := '42501:company account fill receipt is unavailable';
 	v_malformed constant text := '22023:company account fill call is malformed';
 begin
@@ -287,11 +328,47 @@ begin
 		or current_setting('qorpera_test.fill_released') is distinct from v_lease_refused
 		or current_setting('qorpera_test.fill_next_generation') is distinct from v_lease_refused
 		or current_setting('qorpera_test.fill_other_company_computer') is distinct from v_lease_refused
-		or current_setting('qorpera_test.fill_other_run') is distinct from v_lease_refused then
-		raise exception 'A computer the run does not hold now was filled: % % % % % %',
+		or current_setting('qorpera_test.fill_other_run') is distinct from v_lease_refused
+		or current_setting('qorpera_test.fill_other_environment') is distinct from v_lease_refused then
+		raise exception 'A computer the run does not hold now was filled: % % % % % % %',
 			current_setting('qorpera_test.fill_old_generation'), current_setting('qorpera_test.fill_expired'),
 			current_setting('qorpera_test.fill_released'), current_setting('qorpera_test.fill_next_generation'),
-			current_setting('qorpera_test.fill_other_company_computer'), current_setting('qorpera_test.fill_other_run');
+			current_setting('qorpera_test.fill_other_company_computer'), current_setting('qorpera_test.fill_other_run'),
+			current_setting('qorpera_test.fill_other_environment');
+	end if;
+	if current_setting('qorpera_test.fill_not_json') is distinct from v_malformed
+		or current_setting('qorpera_test.fill_array') is distinct from v_malformed
+		or current_setting('qorpera_test.fill_switched_off') is distinct from '0A000:Company accounts are switched off'
+		or current_setting('qorpera_test.fill_folder') is distinct from
+			'0A000:Accounts for folder companies come with their connection file'
+		or current_setting('qorpera_test.fill_other_broker') is distinct from
+			'42501:cloud secret broker does not serve this company'
+		or current_setting('qorpera_test.fill_other_downstream') is distinct from v_receipt_refused then
+		raise exception 'A fill check before any lock failed: % % % % % %', current_setting('qorpera_test.fill_not_json'),
+			current_setting('qorpera_test.fill_array'), current_setting('qorpera_test.fill_switched_off'),
+			current_setting('qorpera_test.fill_folder'), current_setting('qorpera_test.fill_other_broker'),
+			current_setting('qorpera_test.fill_other_downstream');
+	end if;
+	-- The close: revoked, wiped, closed, by no member; a repeat and a second close answer it; it never reopens.
+	if current_setting('qorpera_test.close') not like 'ok:%'
+		or substring(current_setting('qorpera_test.close') from 4)::jsonb ->> 'status' is distinct from 'closed'
+		or current_setting('qorpera_test.close_repeat') is distinct from current_setting('qorpera_test.close')
+		or current_setting('qorpera_test.close_again') is distinct from current_setting('qorpera_test.close')
+		or current_setting('qorpera_test.reopen_closed') is distinct from '22023:The company has no such open account'
+		or current_setting('qorpera_test.fill_closed') is distinct from '22023:The company has no such open account'
+		or not exists (select 1 from public.qorpera_cloud_secrets where id = current_setting('qorpera_test.ca_account')::uuid
+			and status = 'revoked' and revoked_by_user_id is null)
+		or exists (select 1 from public.qorpera_cloud_secret_versions
+			where secret_id = current_setting('qorpera_test.ca_account')::uuid)
+		or not exists (select 1 from public.qorpera_company_accounts
+			where secret_id = current_setting('qorpera_test.ca_account')::uuid and status = 'closed'
+				and closed_at is not null and removed_by_user_id is null)
+		or (select count(*) from public.qorpera_cloud_secret_audit_events
+			where secret_id = current_setting('qorpera_test.ca_account')::uuid and event_type = 'account_state_changed'
+				and operation_id = 'closed') <> 1 then
+		raise exception 'A close did not revoke and wipe the account once: % % % % %', current_setting('qorpera_test.close'),
+			current_setting('qorpera_test.close_repeat'), current_setting('qorpera_test.close_again'),
+			current_setting('qorpera_test.reopen_closed'), current_setting('qorpera_test.fill_closed');
 	end if;
 	if current_setting('qorpera_test.fill_no_key') is distinct from v_no_key
 		or current_setting('qorpera_test.fill_superseded') is distinct from v_no_key

@@ -1,11 +1,14 @@
 -- Company accounts A1-3: a company account's value typed into the Company Computer without any agent,
--- person or the native host seeing it (deploy/first-node/RUNTIME-COMPANY-ACCOUNTS.md, "Filling").
+-- person or the native host seeing it (deploy/first-node/RUNTIME-COMPANY-ACCOUNTS.md, "A1-3a: filling in the
+-- database").
 --
 -- The office service makes an X25519 key pair in memory when it starts and reports the public half with
 -- its readiness; it is kept on that activation row only, once. For a `computer_browser` `vault_fill` tool
 -- call the vault reads the account's envelope and the computer's current key with
 -- qorpera_fill_company_account, makes the value and seals it to that key; the host only carries the
 -- sealed box to the office, which opens it inside the same tool call. A boot without a key gets no fill.
+
+set local lock_timeout = '3s';
 
 -- 1. The computer's fill key: 32 bytes as one fixed base64url form, never a low-order point (all-zero,
 --    one, the two points of order 8, p-1, p, p+1; libsodium's list, with the unused top bit ignored).
@@ -48,8 +51,10 @@ alter table public.qorpera_runtime_office_activations
 --    another key never.
 do $$
 begin
-	if position('where activation_id=v_activation.activation_id returning * into v_activation;' in
-		pg_get_functiondef('public.qorpera_report_runtime_office_ready(jsonb,uuid,integer,integer)'::regprocedure)) = 0 then
+	-- The whole stored body, so a later patch of the four-argument function is never dropped silently.
+	if (select md5(function.prosrc) from pg_proc as function
+		where function.oid = 'public.qorpera_report_runtime_office_ready(jsonb,uuid,integer,integer)'::regprocedure)
+		is distinct from '81febed0328d82ad40c97328612a410d' then
 		raise exception 'qorpera_report_runtime_office_ready differs from the reviewed body';
 	end if;
 end
@@ -246,7 +251,8 @@ begin
 	where activation.office_id = v_office.id and activation.computer_generation = v_office.generation
 		and activation.superseded_at is null and activation.state = 'active';
 	if v_key is null then
-		raise exception 'This computer cannot type account values until it restarts on a newer image' using errcode = '0A000';
+		raise exception 'The computer cannot type account values right now: it is still starting, or it needs a restart on a newer version'
+			using errcode = '0A000';
 	end if;
 	v_account := public.qorpera_company_account_locked(v_run.profile_id, v_run.environment_id, v_authority.id,
 		v_account_id);
@@ -285,3 +291,69 @@ $$;
 revoke all on function public.qorpera_fill_company_account(uuid,text,jsonb,uuid,text,text)
 	from public, anon, authenticated, service_role, qorpera_secret_broker;
 grant execute on function public.qorpera_fill_company_account(uuid,text,jsonb,uuid,text,text) to qorpera_secret_broker;
+
+-- 5. Closing an account revokes its vault row at once (A1-7 review, with F2): the revoke trigger of
+--    20260929999700 wipes its envelopes in the same statement, so nothing keeps a closed account's password
+--    and its connection file can be removed at close (the folder core keeps a file while its secret is active).
+--    A mistaken close is recovered with the website's own reset on the company's mailbox. A repeat of a close,
+--    or a close of an account already closed, answers the closed account instead of "no such open account".
+--    The body is 20260929999700's (null-safe, r5/r6) plus the close.
+create or replace function public.qorpera_set_company_account_state(
+	p_broker_authority_id uuid,
+	p_broker_capability_sha256 text,
+	p_binding jsonb,
+	p_receipt_id uuid,
+	p_input_sha256 text,
+	p_downstream_idempotency_sha256 text,
+	p_account_id uuid,
+	p_status text
+)
+returns jsonb
+language plpgsql security definer set search_path = '' set lock_timeout = '5s' as $$
+declare
+	v_call record;
+	v_account public.qorpera_company_accounts%rowtype;
+begin
+	select call.* into strict v_call from public.qorpera_company_account_call(p_broker_authority_id,
+		p_broker_capability_sha256, p_binding, p_receipt_id, p_input_sha256, p_downstream_idempotency_sha256, 'state',
+		p_account_id) as call;
+	if p_status is null or p_status not in ('connected','needs_person','closed') then
+		raise exception 'An account becomes connected, needs_person or closed' using errcode = '22023';
+	end if;
+	if p_status = 'closed' then
+		-- Already closed (this call's earlier attempt, or another): the closed account, without a lock.
+		select account.* into v_account from public.qorpera_company_accounts as account
+		where account.secret_id = p_account_id and account.profile_id = v_call.profile_id
+			and account.environment_id = v_call.environment_id and account.status = 'closed';
+		if found then
+			return public.qorpera_company_account_descriptor(v_account,
+				(select secret.current_version from public.qorpera_cloud_secrets as secret where secret.id = p_account_id));
+		end if;
+	end if;
+	v_account := public.qorpera_company_account_locked(v_call.profile_id, v_call.environment_id, v_call.authority_id,
+		p_account_id);
+	if v_account.status is distinct from p_status then
+		if p_status = 'closed' then
+			-- The trigger wipes the envelopes and closes the account row (closed_at); no member removed it.
+			update public.qorpera_cloud_secrets as secret
+			set status = 'revoked', revoked_at = statement_timestamp(), updated_at = statement_timestamp()
+			where secret.id = p_account_id and secret.status = 'active';
+		end if;
+		update public.qorpera_company_accounts as account
+		set status = p_status,
+			connected_at = case when p_status = 'connected' then coalesce(account.connected_at, statement_timestamp())
+				else account.connected_at end,
+			closed_at = case when p_status = 'closed' then coalesce(account.closed_at, statement_timestamp())
+				else account.closed_at end,
+			updated_at = statement_timestamp()
+		where account.secret_id = p_account_id
+		returning * into v_account;
+		insert into public.qorpera_cloud_secret_audit_events(profile_id, environment_id, secret_id, run_id, receipt_id,
+			event_type, actor_user_id, connector_id, operation_id)
+		values (v_call.profile_id, v_call.environment_id, p_account_id, v_call.run_id, p_receipt_id,
+			'account_state_changed', v_call.acting_user_id, 'website', replace(p_status, '_', '-'));
+	end if;
+	return public.qorpera_company_account_descriptor(v_account,
+		(select secret.current_version from public.qorpera_cloud_secrets as secret where secret.id = p_account_id));
+end
+$$;
