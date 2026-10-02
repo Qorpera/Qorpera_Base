@@ -678,7 +678,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 													: {},
 											),
 											...cloudReviewRuleTools(binding, identity, this.#paths),
-											...cloudEventTools(binding, identity, this.#paths),
+											...cloudEventTools(binding, identity, this.#paths, gateway),
 										]),
 								// Machines are the company's: any agent run in a company conversation may start and
 								// use them and hears about them in that conversation; a worker uses them like its agent
