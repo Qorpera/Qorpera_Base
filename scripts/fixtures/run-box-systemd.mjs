@@ -184,7 +184,7 @@ try {
 	assert.equal(readme, "hello from the company folder");
 	assert.equal(plan, "the plan, version one");
 	assert.equal(ran, "ran");
-	assert.match(mount, /^fuse\.qorpera\s+ro,/);
+	assert.match(mount, /^fuse(\.qorpera)?\s+ro,.*\ballow_other\b/);
 	reply = await client.sh("touch /company/new 2>&1; echo status=$?");
 	assert.match(reply.out, /Read-only file system[\s\S]*status=1/);
 	check("a command runs as the box account in /company, reads the company folder and cannot write it");
