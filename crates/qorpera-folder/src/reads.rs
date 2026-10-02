@@ -10,7 +10,7 @@
 use crate::proto::{Authority, EntryKind};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashSet, VecDeque};
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader, Read as _, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::sync::{Arc, Mutex};
 
