@@ -444,16 +444,24 @@ from public.qorpera_runtime_bundles b where singleton and b.bundle_key = 'qorper
 		`select public.qorpera_declare_runtime_node_bundle(${literal(nodeA)}::uuid, ${literal(to.sha)}) as roll_declare_a,
 	public.qorpera_declare_runtime_node_bundle(${literal(nodeB)}::uuid, ${literal(to.sha)}) as roll_declare_b
 where not exists (select 1 from public.qorpera_runner_orchestrators where status <> 'revoked' and runtime_bundle_sha256 is not null);`,
+		// The select above returns no row when declarations exist: end with one summary row for the receipt.
+		`select jsonb_build_object('activeVersion', (select b.version from public.qorpera_active_runtime_bundle a join public.qorpera_runtime_bundles b on b.id = a.runtime_bundle_id where a.singleton),
+	'declaredNext', (select count(*) from public.qorpera_runner_orchestrators where status <> 'revoked' and runtime_bundle_sha256 = ${literal(to.sha)}),
+	'declaredOld', (select count(*) from public.qorpera_runner_orchestrators where status <> 'revoked' and runtime_bundle_sha256 = ${literal(from.sha)})) as roll_reversed;`,
 	]);
 	files["92-clear-declarations.sql"] = packet([
 		SERVICE,
 		gate("roll_gate", [[ACTIVE_IS(from.version, from.sha), `Runtime ${from.version} is not active (91-reverse first)`]]),
 		// Nothing here can see which code a node runs: dry-run first, and commit only once every node listed
-		// in declaredNext runs N again (agent rollback; the fast host is re-registered by its rebuild).
-		`select jsonb_build_object('declaredNext', (select coalesce(jsonb_agg(jsonb_build_object('orchestrator', o.id, 'adapter', o.provider_adapter, 'lastHeartbeatAt', o.last_heartbeat_at) order by o.id), '[]'::jsonb)
-	from public.qorpera_runner_orchestrators o where o.status <> 'revoked' and o.runtime_bundle_sha256 = ${literal(to.sha)})) as roll_clearing;`,
+		// in declaredNext runs N again (agent rollback; the fast host is re-registered by its rebuild). The
+		// list is taken before the clears and reported last: the runner keeps only the last statement's rows.
+		`create temporary table roll_next on commit drop as
+	select o.id, o.provider_adapter, o.last_heartbeat_at from public.qorpera_runner_orchestrators o
+	where o.status <> 'revoked' and o.runtime_bundle_sha256 = ${literal(to.sha)};`,
 		`select public.qorpera_declare_runtime_node_bundle(${literal(nodeA)}::uuid, null) as roll_clear_a;`,
 		`select public.qorpera_declare_runtime_node_bundle(${literal(nodeB)}::uuid, null) as roll_clear_b;`,
+		`select jsonb_build_object('declaredNext', (select coalesce(jsonb_agg(jsonb_build_object('orchestrator', id, 'adapter', provider_adapter, 'lastHeartbeatAt', last_heartbeat_at) order by id), '[]'::jsonb) from pg_temp.roll_next),
+	'stillDeclared', (select count(*) from public.qorpera_runner_orchestrators where status <> 'revoked' and runtime_bundle_sha256 is not null)) as roll_clearing;`,
 	]);
 	files["93-resume.sql"] = packet([
 		companies(false),
