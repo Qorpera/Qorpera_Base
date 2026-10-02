@@ -522,6 +522,34 @@ describe("vault_fill on the Company Computer", () => {
 		expect(await snapshotOf(spaced)).not.toContain("Zebra");
 	});
 
+	it("hides a secret anywhere in a minified page, across the cut, before returning its first 16 KB", async () => {
+		const f = office();
+		await perform(f, action(), sealed(f.key!));
+		// No whitespace after the line's start: the value many times early (each hidden, so the text shrinks), then once
+		// across 20,480.
+		let line = `- text: ${`${password}x`.repeat(400)}`;
+		line += "y".repeat(20_470 - line.length);
+		line += `${password}${"z".repeat(15_000)}`;
+		expect(line.indexOf(password, 20_000)).toBe(20_470);
+		f.shown.aria = line;
+		const result = (await perform(f, { kind: "browser", action: "snapshot" })) as unknown as {
+			value: { snapshot: string };
+		};
+		expect(result.value.snapshot).toHaveLength(16_384);
+		expect(result.value.snapshot).not.toContain("Pw-12345");
+	});
+
+	it("hides a link address with a line separator in it, read to the line's end", async () => {
+		const f = office();
+		await perform(f, action(), sealed(f.key!));
+		const lower = encodeURIComponent(password).replace(/%[0-9A-F]{2}/g, (hex) => hex.toLowerCase());
+		f.shown.link = `"/next?q=a\u2028b&pw=${lower}"`;
+		const result = (await perform(f, { kind: "browser", action: "snapshot" })) as unknown as {
+			value: { snapshot: string };
+		};
+		expect(result.value.snapshot).toContain("- /url: [hidden]");
+	});
+
 	it("hides a minified page whole after a fill rather than returning almost nothing", async () => {
 		const f = office();
 		await perform(f, action(), sealed(f.key!));

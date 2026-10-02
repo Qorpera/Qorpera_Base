@@ -821,7 +821,8 @@ export class CompanyComputerGuestAutomation {
 								20_480,
 								hidden.some((value) => /\s/u.test(value)),
 							);
-				// Too little before a word's end (a minified page): the whole snapshot is hidden, as before the cut.
+				// Too little before a word's end (a minified page): secrets are hidden across the whole snapshot, as before
+				// the cut, and its first 16 KB is returned.
 				const aria = cut < 16_384 ? full : full.slice(0, cut);
 				const snapshot = await this.#pageCall(async () => {
 					const redacted = redactCompanyComputerSnapshot(aria, [...before, ...after], {
