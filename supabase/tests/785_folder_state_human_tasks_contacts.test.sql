@@ -3,7 +3,8 @@
 -- "contacts/<name>.md", §8 "Plan (H1)"): the two formats on the folder core. A task and a contact are saved with their
 -- parse and checked by its shape; their folder places follow the naming rule; a folder move or copy into or out of the
 -- two roots cannot change a file's kind; only the platform marks a secret saved, for a member, an agent's run and a new
--- folder alike. Nothing is locked, and the review class is plain.
+-- folder alike. The review class is plain. Since H2b (test 803 has its rules): a task's `from` is an active agent, its
+-- folder needs its file and belongs to its person while it is open, the roots are seeded, and a save locks its own row.
 
 -- The file's text as the parser reads it, near enough: the database reads only the parse and the text's hash.
 create function pg_temp.state_text(p_parse jsonb) returns text language sql as $$
@@ -20,7 +21,7 @@ create function pg_temp.task(p_id uuid default '78500000-0000-4000-8000-00000000
 language sql as $$
 	select jsonb_build_object('kind','human-task','id',p_id,'title','Fit the new disk in node 2','status','open',
 		'member','70700000-0000-4000-8000-000000000002','contact',null,'from','70700000-0000-4000-8000-0000000000a1','todo',null,
-		'due','2026-10-20T12:00:00Z','minutes',40,'proof','["photo","note"]'::jsonb,'files','["ops/disk-order.pdf"]'::jsonb,
+		'due','2099-10-20T12:00:00Z','minutes',40,'proof','["photo","note"]'::jsonb,'files','["ops/disk-order.pdf"]'::jsonb,
 		'reason',null,'secret',null,'secretState',null,'connection',null,'step',null,
 		'instructions',E'## Steps\n- [ ] Fit it in slot 2\n- [x] Agree a window',
 		'steps','[{"line":15,"text":"Fit it in slot 2","done":false},{"line":16,"text":"Agree a window","done":true}]'::jsonb) || p_set
@@ -43,6 +44,21 @@ create function pg_temp.problems(p_parse jsonb) returns integer language sql as 
 	select jsonb_array_length(public.qorpera_company_state_parse_problems(p_parse ->> 'kind', p_parse))
 $$;
 
+-- 0. The company, and the agent that asks (H2: a task's `from` is an active agent) ------------------------------------
+
+do $$
+declare r jsonb; i integer;
+begin
+	r := pg_temp.commit('{"kind":"platform"}', 'seed-0001', jsonb_build_array(
+		jsonb_build_object('op','mkdir','path','vision'), pg_temp.vision('Nordlys Tasks'),
+		jsonb_build_object('op','mkdir','path','agents'),
+		pg_temp.write('agents/sections.md', 'sections', E'# Sections\n', '{"kind":"sections","sections":[]}'),
+		pg_temp.hire('co-founder', '70700000-0000-4000-8000-0000000000c0', 'Co-Founder', 'co-founder')));
+	for i in 1..5 loop perform pg_temp.expect(r, i, 'saved'); end loop;
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'hire-0001', jsonb_build_array(
+		pg_temp.hire('nora', '70700000-0000-4000-8000-0000000000a1', 'Nora'))), 1, 'saved');
+end $$;
+
 -- 1. A folder renamed onto a root that does not exist yet cannot land ordinary files there as tasks or contacts --------
 
 do $$
@@ -60,7 +76,8 @@ begin
 		jsonb_build_object('op','copy','from','drafts','to','contacts'),
 		jsonb_build_object('op','copy','from','ops','to','contacts')));
 	perform pg_temp.expect(r, 1, 'refused', 'kind_change');
-	perform pg_temp.expect(r, 2, 'refused', 'kind_change');
+	-- Since H2b nothing moves or copies onto human-tasks/: it is made empty.
+	perform pg_temp.expect(r, 2, 'refused', 'structured_rule');
 	perform pg_temp.expect(r, 3, 'refused', 'structured_copy');
 	-- A folder that holds no .md file may become a root: what it holds stays ordinary.
 	perform pg_temp.expect(r, 4, 'saved');
@@ -84,17 +101,14 @@ declare r jsonb; t record;
 begin
 	r := pg_temp.commit(pg_temp.owner(), 'tasks-0003', jsonb_build_array(
 		jsonb_build_object('op','mkdir','path','human-tasks'),
-		jsonb_build_object('op','mkdir','path','human-tasks/fit-disk'),
-		jsonb_build_object('op','mkdir','path','human-tasks/fit-disk/proof'),
-		jsonb_build_object('op','mkdir','path','human-tasks/fit-disk/photos'),
 		jsonb_build_object('op','mkdir','path','contacts/archive'),
 		jsonb_build_object('op','mkdir','path','human-tasks/Fit Disk'),
 		jsonb_build_object('op','mkdir','path','human-tasks/fit_disk'),
 		jsonb_build_object('op','mkdir','path','human-tasks/' || repeat('a', 65)),
 		jsonb_build_object('op','new_folder','path','human-tasks/My Task','contents',
 			jsonb_build_array(jsonb_build_object('path','proof','kind','folder')))));
-	for i in 1..5 loop perform pg_temp.expect(r, i, 'saved'); end loop;
-	for i in 6..9 loop perform pg_temp.expect(r, i, 'refused', 'structured_invalid'); end loop;
+	for i in 1..2 loop perform pg_temp.expect(r, i, 'saved'); end loop;
+	for i in 3..6 loop perform pg_temp.expect(r, i, 'refused', 'structured_invalid'); end loop;
 	-- The same checks as the parser's structuredFolderNames (700 §7 keeps the file names).
 	for t in select * from (values ('human-tasks', 0), ('contacts', 0), ('human-tasks/fit-disk', 0), ('human-tasks/fit-disk/proof', 0),
 		('human-tasks/T/proof', 1), ('human-tasks/my_task', 1), ('human-tasks/fit-disk/Proof', 1), ('Human-Tasks', 1), ('Contacts', 1),
@@ -145,6 +159,17 @@ begin
 	where e.environment_id = '70700000-0000-4000-8000-000000000020' and e.key_text = 'contacts/maria-jensen.md';
 	if v is distinct from jsonb_build_object('kind', 'contact', 'parse', pg_temp.contact(), 'parserVersion', 1) then
 		raise exception 'A contact''s version keeps its parse: %', v; end if;
+end $$;
+
+-- A task's folder, made by the task's person once the task is there (H2b): the proof folder and another one.
+do $$
+declare r jsonb; i integer;
+begin
+	r := pg_temp.commit(pg_temp.mem(), 'tasks-0019', jsonb_build_array(
+		jsonb_build_object('op','mkdir','path','human-tasks/fit-disk'),
+		jsonb_build_object('op','mkdir','path','human-tasks/fit-disk/proof'),
+		jsonb_build_object('op','mkdir','path','human-tasks/fit-disk/photos')));
+	for i in 1..3 loop perform pg_temp.expect(r, i, 'saved'); end loop;
 end $$;
 
 -- 4. The shapes: every limit and cross-key rule the parser holds a file to, held again on the parse --------------------
@@ -266,29 +291,36 @@ begin
 		jsonb_build_object('op','copy','from','contacts','to','contacts-copy'),
 		jsonb_build_object('op','copy','from','drafts/plan.md','to','contacts/plan.md'),
 		jsonb_build_object('op','copy','from','human-tasks/fit-disk.md','to','human-tasks/fit-disk-again.md'),
-		jsonb_build_object('op','move','from','human-tasks/fit-disk.md','to','drafts/fit-disk.md',
-			'expectedVersion',pg_temp.version('human-tasks/fit-disk.md')),
+		jsonb_build_object('op','move','from','human-tasks/file-vat-q3.md','to','drafts/file-vat-q3.md',
+			'expectedVersion',pg_temp.version('human-tasks/file-vat-q3.md')),
 		jsonb_build_object('op','move','from','drafts/plan.md','to','human-tasks/plan.md','expectedVersion',pg_temp.version('drafts/plan.md')),
-		jsonb_build_object('op','move','from','human-tasks/fit-disk','to','human-tasks/Fit','expectedVersion',pg_temp.version('human-tasks/fit-disk'),
-			'asOfSeq',pg_temp.seq()),
-		jsonb_build_object('op','move','from','human-tasks/fit-disk.md','to','human-tasks/Fit.md',
-			'expectedVersion',pg_temp.version('human-tasks/fit-disk.md'))));
-	perform pg_temp.expect(r, 1, 'refused', 'kind_change');
+		jsonb_build_object('op','move','from','human-tasks/file-vat-q3.md','to','human-tasks/File Vat.md',
+			'expectedVersion',pg_temp.version('human-tasks/file-vat-q3.md'))));
+	-- Since H2b the root is a seeded folder (Jonas, 2 October): it never moves.
+	perform pg_temp.expect(r, 1, 'refused', 'seeded');
 	perform pg_temp.expect(r, 2, 'refused', 'kind_change');
 	perform pg_temp.expect(r, 3, 'refused', 'structured_copy');
 	perform pg_temp.expect(r, 4, 'refused', 'structured_copy');
 	perform pg_temp.expect(r, 5, 'refused', 'kind_change');
 	perform pg_temp.expect(r, 6, 'refused', 'kind_change');
 	perform pg_temp.expect(r, 7, 'refused', 'structured_invalid');
-	perform pg_temp.expect(r, 8, 'refused', 'structured_invalid');
-	-- Within a root, a task file and a task's folder move like any file and folder.
+	-- A task's folder moved by its person onto a misnamed folder: the name check says so.
+	perform pg_temp.expect(pg_temp.commit(pg_temp.mem(), 'tasks-0020', jsonb_build_array(
+		jsonb_build_object('op','move','from','human-tasks/fit-disk','to','human-tasks/Fit Disk 2',
+			'expectedVersion',pg_temp.version('human-tasks/fit-disk'),'asOfSeq',pg_temp.seq()))), 1, 'refused', 'structured_invalid');
+	-- Within a root a task file without a folder moves like any file; a task with a folder keeps its name, and its folder
+	-- never goes where no task is (H2b).
 	r := pg_temp.commit(pg_temp.owner(), 'tasks-0006', jsonb_build_array(
+		jsonb_build_object('op','move','from','human-tasks/file-vat-q3.md','to','human-tasks/file-vat-quarter-3.md',
+			'expectedVersion',pg_temp.version('human-tasks/file-vat-q3.md')),
+		jsonb_build_object('op','copy','from','contacts/archive','to','contacts/archive-2'),
 		jsonb_build_object('op','move','from','human-tasks/fit-disk.md','to','human-tasks/fit-the-disk.md',
-			'expectedVersion',pg_temp.version('human-tasks/fit-disk.md')),
+			'expectedVersion',pg_temp.version('human-tasks/fit-disk.md'))));
+	perform pg_temp.expect(r, 1, 'saved'); perform pg_temp.expect(r, 2, 'saved');
+	perform pg_temp.expect(r, 3, 'refused', 'structured_rule');
+	perform pg_temp.expect(pg_temp.commit(pg_temp.mem(), 'tasks-0021', jsonb_build_array(
 		jsonb_build_object('op','move','from','human-tasks/fit-disk','to','human-tasks/fit-the-disk',
-			'expectedVersion',pg_temp.version('human-tasks/fit-disk'),'asOfSeq',pg_temp.seq()),
-		jsonb_build_object('op','copy','from','contacts/archive','to','contacts/archive-2')));
-	for i in 1..3 loop perform pg_temp.expect(r, i, 'saved'); end loop;
+			'expectedVersion',pg_temp.version('human-tasks/fit-disk'),'asOfSeq',pg_temp.seq()))), 1, 'refused', 'structured_rule');
 end $$;
 
 -- 6. Only the platform marks a secret saved ---------------------------------------------------------------------------
@@ -309,8 +341,11 @@ begin
 	if r -> 'units' -> 0 -> 'problems' -> 0 ->> 'key' is distinct from 'secret_state'
 		or coalesce(r -> 'units' -> 0 -> 'problems' -> 0 ->> 'message', '') not like 'only the platform marks a secret saved%' then
 		raise exception 'The refusal names secret_state: %', r; end if;
-	perform pg_temp.expect(pg_temp.commit(pg_temp.mem(), 'tasks-0009', jsonb_build_array(pg_temp.save('human-tasks/enter-code.md', saved))),
-		1, 'refused', 'structured_rule');
+	-- The task's person is refused earlier since H2b, by the person's own rule (803 has it).
+	r := pg_temp.commit(pg_temp.mem(), 'tasks-0009', jsonb_build_array(pg_temp.save('human-tasks/enter-code.md', saved)));
+	perform pg_temp.expect(r, 1, 'refused', 'structured_rule');
+	if coalesce(r -> 'units' -> 0 -> 'problems' -> 0 ->> 'message', '') not like 'as the task''s person you may only tick%' then
+		raise exception 'The person''s rule answers first: %', r; end if;
 	-- A new task cannot start saved either.
 	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'tasks-0010', jsonb_build_array(pg_temp.save('human-tasks/enter-code-2.md',
 		pg_temp.task('78500000-0000-4000-8000-0000000000e8', '{"secret":"Code","secretState":"saved"}')))), 1, 'refused', 'structured_rule');
@@ -320,11 +355,14 @@ begin
 	-- Anyone may keep the mark over the same task and label, as when the agent edits the title.
 	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'tasks-0012', jsonb_build_array(pg_temp.save('human-tasks/enter-code.md',
 		saved || '{"title":"Enter the code from the SMS"}'))), 1, 'saved');
-	-- Not over another label, and not at another path with the same id and label.
+	-- Not over another label, and not as a new task at another path (the same id there is H2's one-file rule).
 	r := pg_temp.commit(pg_temp.owner(), 'tasks-0013', jsonb_build_array(
 		pg_temp.save('human-tasks/enter-code.md', saved || '{"secret":"Code from the email"}'),
-		pg_temp.save('human-tasks/enter-code-3.md', saved)));
+		pg_temp.save('human-tasks/enter-code-3.md', saved || '{"id":"78500000-0000-4000-8000-0000000000ef"}')));
 	perform pg_temp.expect(r, 1, 'refused', 'structured_rule'); perform pg_temp.expect(r, 2, 'refused', 'structured_rule');
+	if r -> 'units' -> 0 -> 'problems' -> 0 ->> 'key' is distinct from 'secret_state'
+		or r -> 'units' -> 1 -> 'problems' -> 0 ->> 'key' is distinct from 'secret_state' then
+		raise exception 'Both refusals name secret_state: %', r; end if;
 	-- Not over another task's saved file either: the id is part of the mark.
 	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'tasks-0014', jsonb_build_array(pg_temp.save('human-tasks/enter-code.md',
 		saved || '{"id":"78500000-0000-4000-8000-0000000000e9"}'))), 1, 'refused', 'structured_rule');
@@ -338,8 +376,9 @@ begin
 		pg_temp.save('human-tasks/enter-code.md', saved), 'human-tasks/enter-code.md', null);
 	if r ->> 'reason' is distinct from 'structured_rule' then raise exception 'An agent never marks a secret saved: %', r; end if;
 	r := public.qorpera_folder_structured_decide('70700000-0000-4000-8000-000000000020', agent, extensions.gen_random_uuid(), 1,
-		pg_temp.save('human-tasks/enter-code-4.md', saved), 'human-tasks/enter-code-4.md', null);
-	if r ->> 'reason' is distinct from 'structured_rule' then raise exception 'Not at a new path either: %', r; end if;
+		pg_temp.save('human-tasks/enter-code-4.md', saved || '{"id":"78500000-0000-4000-8000-0000000000f5"}'), 'human-tasks/enter-code-4.md', null);
+	if r ->> 'reason' is distinct from 'structured_rule' or r -> 'problems' -> 0 ->> 'key' is distinct from 'secret_state' then
+		raise exception 'Not as a new task either: %', r; end if;
 	perform pg_temp.expect(pg_temp.commit('{"kind":"platform"}', 'tasks-0018', jsonb_build_array(pg_temp.save('human-tasks/enter-code.md', saved))),
 		1, 'saved');
 	r := public.qorpera_folder_structured_decide('70700000-0000-4000-8000-000000000020', agent, extensions.gen_random_uuid(), 1,
@@ -347,23 +386,29 @@ begin
 	if r is distinct from '{"ok": true}'::jsonb then raise exception 'An agent keeps the mark over the same task and label: %', r; end if;
 	-- The mark is the file's at its own path: a saved task elsewhere does not lend it to a new path.
 	r := public.qorpera_folder_structured_decide('70700000-0000-4000-8000-000000000020', agent, extensions.gen_random_uuid(), 1,
-		pg_temp.save('human-tasks/enter-code-5.md', saved), 'human-tasks/enter-code-5.md', null);
-	if r ->> 'reason' is distinct from 'structured_rule' then raise exception 'Not at a new path while another is saved: %', r; end if;
+		pg_temp.save('human-tasks/enter-code-5.md', saved || '{"id":"78500000-0000-4000-8000-0000000000f6"}'), 'human-tasks/enter-code-5.md', null);
+	if r ->> 'reason' is distinct from 'structured_rule' or r -> 'problems' -> 0 ->> 'key' is distinct from 'secret_state' then
+		raise exception 'Not at a new path while another is saved: %', r; end if;
 end $$;
 
--- 7. Nothing is locked, and the review class is plain ---------------------------------------------------------------
+-- 7. A save locks only its own row, at rank 5 (H2b); the review class is plain ---------------------------------------
 
 do $$
-declare env constant uuid := '70700000-0000-4000-8000-000000000020'; t jsonb; u jsonb;
+declare env constant uuid := '70700000-0000-4000-8000-000000000020'; t jsonb; u record;
 begin
-	foreach u in array array[pg_temp.save('human-tasks/fit-the-disk.md', pg_temp.task(p_set => '{"status":"done"}')),
-		pg_temp.save('contacts/maria-jensen.md', pg_temp.contact('{"asks":["VAT filing"]}')),
-		pg_temp.save('human-tasks/new-task.md', pg_temp.task('78500000-0000-4000-8000-0000000000ea'))] loop
+	for u in select * from (values
+		(pg_temp.save('human-tasks/fit-disk.md', pg_temp.task(p_set => '{"title":"Fit the disk"}')),
+			'qorpera_folder_human_task_index', '78500000-0000-4000-8000-0000000000e1'),
+		(pg_temp.save('contacts/maria-jensen.md', pg_temp.contact('{"asks":["VAT filing"]}')),
+			'qorpera_folder_contact_index', '78500000-0000-4000-8000-0000000000f1'),
+		(pg_temp.save('human-tasks/new-task.md', pg_temp.task('78500000-0000-4000-8000-0000000000ea')),
+			'qorpera_folder_human_task_index', '78500000-0000-4000-8000-0000000000ea')) v(unit, tbl, id) loop
 		select coalesce(jsonb_agg(to_jsonb(y)), '[]'::jsonb) into t
-		from public.qorpera_folder_structured_targets(env, pg_temp.owner(), jsonb_build_array(u)) y;
-		if t is distinct from '[]'::jsonb then raise exception 'A task or contact save takes no lock: %', t; end if;
-		if public.qorpera_folder_structured_review_class(env, '{"kind":"run","sessionKind":"in_house"}', u, u ->> 'path', null)
-			is distinct from 'plain' then raise exception 'A task or contact save is plain: %', u ->> 'path'; end if;
+		from public.qorpera_folder_structured_targets(env, pg_temp.owner(), jsonb_build_array(u.unit)) y;
+		if t is distinct from jsonb_build_array(jsonb_build_object('rank', 5, 'tbl', u.tbl, 'key', env || ':' || u.id, 'mode', 'nokeyupdate')) then
+			raise exception 'A task or contact save locks its own row: %', t; end if;
+		if public.qorpera_folder_structured_review_class(env, '{"kind":"run","sessionKind":"in_house"}', u.unit, u.unit ->> 'path', null)
+			is distinct from 'plain' then raise exception 'A task or contact save is plain: %', u.unit ->> 'path'; end if;
 	end loop;
 end $$;
 

@@ -35,7 +35,6 @@ export const SHARED: Record<string, string> = {
 	Remove: "Fjern",
 	Edit: "Rediger",
 	Send: "Send",
-	Search: "Søg",
 	Settings: "Indstillinger",
 	Agent: "Agent",
 	Agents: "Agenter",

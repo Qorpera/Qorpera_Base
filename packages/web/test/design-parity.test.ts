@@ -468,11 +468,12 @@ describe("shell presentation lifecycle", () => {
 		});
 		const { rail } = mountRail(f, "file");
 		const figures = new Map(mount.mock.calls.map(([, , , , options]) => [options?.identity, options?.activity]));
+		// A failed run shows a red "!" in place of the figure; working shows the green disc.
 		const disc = (status: Element | null) =>
-			!status ? "none" : status.classList.contains("failed") ? "red" : "green";
+			!status ? "none" : status.classList.contains("alert-mark") ? "red" : "green";
 		for (const { agent, figure, line, disc: shown } of rows) {
 			const link = rail.querySelector(`a[href$="/staff/${agent.id}"]`)!;
-			const status = link.querySelector(".rail-row-status");
+			const status = link.querySelector(".rail-row-status, .alert-mark");
 			expect(figures.get(agent.id), agent.displayName).toBe(figure);
 			expect(link.querySelector("small")?.textContent, agent.displayName).toBe(line);
 			expect(disc(status), agent.displayName).toBe(shown);
@@ -490,14 +491,14 @@ describe("shell presentation lifecycle", () => {
 		// The card shows only the name; its role and state are in the link's name.
 		expect(card.querySelector("small")).toBeNull();
 		expect(card.textContent).toBe("Co-Founder");
-		expect(disc(card.querySelector(".cofounder-status"))).toBe("red");
+		expect(disc(card.querySelector(".cofounder-status, .alert-mark"))).toBe("red");
 		expect(card.getAttribute("aria-label")).toBe("Co-Founder · Co-founder · A run did not finish");
 	});
 	it("redraws the status disc as a run fails, is picked up again and is dismissed", () => {
 		stubFigureMotion();
 		const f = companyFixture();
 		const { rail, draw } = mountRail(f);
-		const disc = () => rail.querySelector(`a[href$="/staff/${staff.id}"] .rail-row-status`);
+		const disc = () => rail.querySelector(`a[href$="/staff/${staff.id}"] :is(.rail-row-status, .alert-mark)`);
 		const failed = {
 			runId: id(70),
 			staffAgentId: staff.id,
@@ -510,10 +511,10 @@ describe("shell presentation lifecycle", () => {
 		// Idle and failed share the figure and the subtitle, so a redraw must look at the disc itself.
 		f.company.store.set({ activity: [failed] });
 		draw();
-		expect(disc()?.classList.contains("failed")).toBe(true);
+		expect(disc()?.classList.contains("alert-mark")).toBe(true);
 		f.company.store.set({ activity: [{ ...failed, runId: id(71), jobStatus: "leased", activity: "working" }] });
 		draw();
-		expect(disc()?.classList.contains("failed")).toBe(false);
+		expect(disc()?.classList.contains("alert-mark")).toBe(false);
 		f.company.store.set({ activity: [failed] });
 		draw();
 		f.company.store.set({ activity: [] });
@@ -527,9 +528,10 @@ describe("shell presentation lifecycle", () => {
 		const { rail, draw } = mountRail(f);
 		const row = () =>
 			rail.querySelector<HTMLElement>(kind === "cofounder" ? ".cofounder-home" : `a[href$="/staff/${staff.id}"]`)!;
-		const disc = () => row().querySelector(".rail-row-status, .cofounder-status");
+		const disc = () => row().querySelector(".rail-row-status, .cofounder-status, .alert-mark");
 		const search = rail.querySelector<HTMLInputElement>('input[type="search"]')!;
-		search.focus();
+		rail.querySelector<HTMLButtonElement>(".rail-search-toggle")!.click();
+		expect(document.activeElement).toBe(search);
 		search.dispatchEvent(new CompositionEvent("compositionstart"));
 		search.value = "Fixture";
 		search.setSelectionRange(1, 3);
@@ -548,7 +550,7 @@ describe("shell presentation lifecycle", () => {
 		f.company.store.set({ activity: [failed] });
 		draw();
 		expect(row()).not.toBe(idle);
-		expect(disc()?.classList.contains("failed")).toBe(true);
+		expect(disc()?.classList.contains("alert-mark")).toBe(true);
 		expect(row().getAttribute("aria-label")).toContain("A run did not finish");
 		f.company.store.set({ activity: [] });
 		draw();
@@ -750,7 +752,10 @@ it("keeps responsibility and project pages out of the rail even when they are re
 	// Search and the add button share the top row, search first.
 	expect(rail.querySelector('.rail-toolbar > .rail-search > input[type="search"]')).not.toBeNull();
 	expect(rail.querySelector('.rail-toolbar > .rail-search + .rail-add[href$="/new"]')).not.toBeNull();
+	// The search folds out of its button over the tabs.
+	rail.querySelector<HTMLButtonElement>(".rail-search-toggle")!.click();
 	const search = rail.querySelector<HTMLInputElement>('input[type="search"]')!;
+	expect(document.activeElement).toBe(search);
 	search.value = "Product quality";
 	search.dispatchEvent(new Event("input"));
 	expect(rail.textContent).toContain("No matching conversations.");
@@ -798,7 +803,8 @@ it("keeps the rail's search field, rows and focus through redraws and pauses the
 	expect(rail.querySelector(".rail-toolbar")).toBe(toolbar);
 	expect(rail.querySelector(".rail-scroll")).toBe(list);
 	// Every keystroke filters, composed text included, and redraws never move the field.
-	search.focus();
+	rail.querySelector<HTMLButtonElement>(".rail-search-toggle")!.click();
+	expect(document.activeElement).toBe(search);
 	search.dispatchEvent(new CompositionEvent("compositionstart"));
 	search.value = "é";
 	search.dispatchEvent(new InputEvent("input", { isComposing: true }));

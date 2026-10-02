@@ -13,6 +13,13 @@ import {
 	companyComputerRequest,
 } from "@qorpera/cloud-client/cloud-company-computer-contract";
 import type { BrowserContext, Page } from "playwright-core";
+import type { CompanyComputerFillKey } from "./cloud-company-account-fill-box.ts";
+import {
+	COMPANY_ACCOUNT_FILLED_ATTRIBUTE,
+	CompanyAccountFillRefusedError,
+	CompanyComputerFilledValues,
+	fillCompanyAccountBox,
+} from "./cloud-company-computer-account-fill.ts";
 import { CompanyComputerBrowserNetworkPausedError } from "./cloud-company-computer-browser-control.ts";
 import { assertCompanyComputerGuestLayout, type CompanyComputerGuestLayout } from "./cloud-company-computer-layout.ts";
 import { CompanyComputerActionFailedError, companyComputerActionCheck } from "./cloud-company-computer-leases.ts";
@@ -316,6 +323,10 @@ export class CompanyComputerGuestAutomation {
 		| import("./cloud-company-computer-file-transfers.ts").CompanyComputerFileExportPublisher
 		| undefined;
 	readonly #tabIds = new Map<Page, string>();
+	/** This office service's boot key: it alone opens what the vault sealed for a vault_fill (A1-3). */
+	readonly #fillKey: CompanyComputerFillKey | undefined;
+	/** Secrets the vault typed on this screen, hidden wherever the agent would see them (shared across runs). */
+	readonly #filled: CompanyComputerFilledValues;
 	#tabLease?: string;
 	#page?: Page;
 
@@ -330,6 +341,8 @@ export class CompanyComputerGuestAutomation {
 		screenshots: CompanyComputerScreenshotPublisher;
 		fileExports?: import("./cloud-company-computer-file-transfers.ts").CompanyComputerFileExportPublisher;
 		fileImports?: import("./cloud-company-computer-file-imports.ts").CompanyComputerFileImporter;
+		fillKey?: CompanyComputerFillKey;
+		filled?: CompanyComputerFilledValues;
 	}) {
 		assertCompanyComputerScreenBinding(options.binding, options.binding);
 		assertCompanyComputerGuestLayout(options.layout);
@@ -343,6 +356,77 @@ export class CompanyComputerGuestAutomation {
 		this.#screenshots = options.screenshots;
 		this.#fileExports = options.fileExports;
 		this.#fileImports = options.fileImports;
+		this.#fillKey = options.fillKey;
+		this.#filled = options.filled ?? new CompanyComputerFilledValues();
+	}
+
+	/**
+	 * No picture while a page shows a secret the vault typed: as text, in its title or address, or in a box that is
+	 * not marked private (a "show password" that made a new box). The page is read; it is never told the value.
+	 */
+	async #assertFilledNotShown(page: Page): Promise<void> {
+		if (this.#filled.current().length === 0) return;
+		for (const frame of page.frames()) {
+			let shown: unknown;
+			let timer: ReturnType<typeof setTimeout> | undefined;
+			try {
+				shown = await Promise.race([
+					frame.evaluate((attribute) => {
+						interface Node {
+							value?: unknown;
+							textContent?: string | null;
+							shadowRoot?: Root | null;
+							matches?(selector: string): boolean;
+						}
+						interface Root {
+							querySelectorAll(selector: string): Iterable<Node>;
+						}
+						const global = globalThis as unknown as {
+							document: Root & { title: string; documentElement: { innerText?: string } | null };
+							location: { href: string };
+						};
+						const document = global.document;
+						const parts = [
+							document.title,
+							global.location.href,
+							(document.documentElement?.innerText ?? "").slice(0, 2_000_000),
+						];
+						// Boxes not marked private, and the text and boxes inside open shadow roots (innerText skips them).
+						const roots: Root[] = [document];
+						let boxes = 0;
+						for (let index = 0; index < roots.length && index < 256; index++) {
+							for (const node of roots[index]!.querySelectorAll("*")) {
+								if (node.shadowRoot) {
+									roots.push(node.shadowRoot);
+									parts.push((node.shadowRoot as unknown as Node).textContent?.slice(0, 200_000) ?? "");
+								}
+								if (
+									boxes < 512 &&
+									typeof node.value === "string" &&
+									node.matches?.("input, textarea") &&
+									!node.matches(`[${attribute}]`)
+								) {
+									parts.push(node.value.slice(0, 4096));
+									boxes++;
+								}
+							}
+						}
+						return parts.join("\n");
+					}, COMPANY_ACCOUNT_FILLED_ATTRIBUTE),
+					new Promise<never>((_, reject) => {
+						timer = setTimeout(() => reject(new Error("timed out")), 5_000);
+					}),
+				]);
+			} catch (error) {
+				throw new CompanyComputerActionFailedError(new Error("PRIVATE_FIELD_TAB_UNREADABLE", { cause: error }));
+			} finally {
+				clearTimeout(timer);
+			}
+			if (typeof shown !== "string")
+				throw new CompanyComputerActionFailedError(new Error("PRIVATE_FIELD_TAB_UNREADABLE"));
+			if (this.#filled.shows(shown))
+				throw new CompanyComputerActionFailedError(new Error("PRIVATE_FIELD_ON_SCREEN"));
+		}
 	}
 
 	/**
@@ -387,6 +471,7 @@ export class CompanyComputerGuestAutomation {
 				throw new CompanyComputerActionFailedError(new Error("PRIVATE_FIELD_TAB_UNREADABLE", { cause: error }));
 			}
 			if (values.length > 0) throw new CompanyComputerActionFailedError(new Error("PRIVATE_FIELD_ON_SCREEN"));
+			await this.#assertFilledNotShown(page);
 		}
 	}
 
@@ -478,8 +563,8 @@ export class CompanyComputerGuestAutomation {
 					if (page.isClosed()) continue;
 					tabs.push({
 						tabId: this.#tabIds.get(page)!,
-						titlePreview: tabPreview(title, 128),
-						urlPreview: tabPreview(page.url(), 256),
+						titlePreview: tabPreview(this.#filled.hide(title), 128),
+						urlPreview: tabPreview(this.#filled.hide(page.url()), 256),
 					});
 				}
 				await companyComputerActionCheck(this.#browser.assertActive(signal));
@@ -517,19 +602,17 @@ export class CompanyComputerGuestAutomation {
 			}
 			const page = this.#page;
 			if (action.kind === "screenshot") {
-				return this.#publish(
-					await this.#pageCall(() =>
-						page.screenshot({
-							type: "png",
-							timeout: 5_000,
-							mask: companyComputerPrivateFieldMasks(page),
-						}),
-					),
-					lease,
-					effect,
-					"browser",
-					operation,
+				// Before and after the picture: a value the page shows by then is never published.
+				await this.#assertFilledNotShown(page);
+				const png = await this.#pageCall(() =>
+					page.screenshot({
+						type: "png",
+						timeout: 5_000,
+						mask: companyComputerPrivateFieldMasks(page),
+					}),
 				);
+				await this.#assertFilledNotShown(page);
+				return this.#publish(png, lease, effect, "browser", operation);
 			}
 			if (action.action === "navigate")
 				await this.#pageCall(() => page.goto(action.url, { waitUntil: "domcontentloaded", timeout: 10_000 }));
@@ -559,6 +642,44 @@ export class CompanyComputerGuestAutomation {
 			} else if (action.action === "press") {
 				const key = action.key;
 				await this.#pageCall(() => page.keyboard.press(key));
+			} else if (action.action === "vault_fill") {
+				// Only this boot's key opens the box, and only for this call, account and field: the value then
+				// goes into the one box named, on the account's own website, and nowhere else.
+				const sealed = effect.fill;
+				const key = this.#fillKey;
+				if (!key || !sealed) throw new CompanyComputerActionNotStartedError("ACCOUNT_FILL_UNAVAILABLE");
+				let opened: ReturnType<CompanyComputerFillKey["open"]>;
+				try {
+					opened = key.open(sealed, {
+						companyId: this.#binding.companyId,
+						companyComputerId: this.#binding.companyComputerId,
+						computerGeneration: this.#binding.computerGeneration,
+						receiptId: effect.receiptId,
+						accountId: action.account,
+						field: action.field,
+					});
+				} catch (error) {
+					// A spent box (or computers' clocks far apart) is told apart from one for another call or key.
+					throw new CompanyComputerActionNotStartedError(
+						error instanceof Error && error.message === "Company account fill expired"
+							? "ACCOUNT_FILL_EXPIRED"
+							: "ACCOUNT_FILL_UNOPENED",
+					);
+				}
+				const box = page.getByRole(action.role, { name: action.name, exact: true });
+				if ((await this.#pageCall(() => box.count())) !== 1)
+					throw new CompanyComputerActionNotStartedError("BROWSER_TARGET_AMBIGUOUS");
+				await companyComputerActionCheck(this.#browser.assertActive(signal));
+				signal.throwIfAborted();
+				this.#filled.add(opened.value, opened.field);
+				try {
+					await fillCompanyAccountBox(page, box, opened);
+				} catch (error) {
+					// The reason, never the value: a page that is not the account's, or a box of the wrong kind.
+					throw new CompanyComputerActionFailedError(
+						new Error(error instanceof CompanyAccountFillRefusedError ? error.reason : "ACCOUNT_FILL_FAILED"),
+					);
+				}
 			}
 			await companyComputerActionCheck(this.#browser.assertActive(signal));
 			signal.throwIfAborted();
@@ -568,7 +689,7 @@ export class CompanyComputerGuestAutomation {
 				const aria = await this.#pageCall(() => page.locator("body").ariaSnapshot({ timeout: 5_000 }));
 				const after = await this.#pageCall(() => readCompanyComputerPrivateValues(page));
 				const snapshot = await this.#pageCall(async () =>
-					redactCompanyComputerSnapshot(aria, [...before, ...after]),
+					redactCompanyComputerSnapshot(aria, [...before, ...after], { filled: this.#filled.current() }),
 				);
 				const title = await this.#pageCall(() => page.title());
 				await companyComputerActionCheck(this.#browser.assertActive(signal));
@@ -577,8 +698,8 @@ export class CompanyComputerGuestAutomation {
 					kind: "json",
 					value: {
 						tabId: this.#tabIds.get(page)!,
-						url: page.url(),
-						title: title.slice(0, 1024),
+						url: this.#filled.hide(page.url()),
+						title: this.#filled.hide(title).slice(0, 1024),
 						snapshot: snapshot.slice(0, 16_384),
 						truncated: snapshot.length > 16_384,
 					},
