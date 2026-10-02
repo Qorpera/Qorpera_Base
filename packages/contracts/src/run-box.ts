@@ -179,8 +179,8 @@ export function parseRunBoxReply(encoded: string, maxOutputBytes = RUN_BOX_MAX_O
 	if (value.t === "ready") {
 		const input = parseClosedRecord(value, "Run box ready", ["t", "protocol", "sessions"]);
 		if (input.protocol !== RUN_BOX_PROTOCOL) throw new WireValueError("Run box protocol");
-		if (!Array.isArray(input.sessions) || input.sessions.length > 100_000)
-			throw new WireValueError("Run box sessions");
+		// The box's process bound (TasksMax=4096) keeps far fewer commands running; this many fit one line.
+		if (!Array.isArray(input.sessions) || input.sessions.length > 8192) throw new WireValueError("Run box sessions");
 		return {
 			t: "ready",
 			protocol: RUN_BOX_PROTOCOL,

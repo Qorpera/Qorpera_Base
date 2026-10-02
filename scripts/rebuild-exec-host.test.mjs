@@ -2,6 +2,7 @@
 // it refuses, and when it starts the orchestrator (rolling updates, step 3). Nothing reaches LXD or a database.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -74,7 +75,14 @@ function setup({ runners = "", hosts = "", journals = "" } = {}) {
 	writeFileSync(join(state, "journals"), journals);
 	writeFileSync(join(state, "orchestrator"), "active\n");
 	writeFileSync(join(state, "log"), "");
-	for (const file of ["qorpera-shared-execution-service.mjs", "install-shared-execution-guest.sh", "manifest.json"]) writeFileSync(join(pkg, file), "");
+	// Every file the script requires of the package (its own list), and a folder program the installer pins.
+	const required = /for file in ([^;]*); do\n\t\[\[ -f \$\{PACKAGE\}/.exec(readFileSync(script, "utf8"))?.[1] ?? "";
+	for (const file of required.split(/[\s\\]+/).filter(Boolean)) writeFileSync(join(pkg, file), "");
+	writeFileSync(join(pkg, "qorpera-folder"), "folder program");
+	writeFileSync(
+		join(pkg, "install-shared-execution-guest.sh"),
+		`EXPECTED_FOLDER_PROGRAM_SHA256="${createHash("sha256").update("folder program").digest("hex")}"\n`,
+	);
 	writeFileSync(
 		join(staging, "shared-execution.env"),
 		"QORPERA_SHARED_EXECUTION_SLOTS=2\nQORPERA_SUPABASE_URL=https://db.example\nQORPERA_RUNNER_PROVIDER_ADAPTER=native-b\nQORPERA_NATIVE_CODEX_FENCE_SHA256=0\n",

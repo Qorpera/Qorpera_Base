@@ -268,7 +268,13 @@ export class RunBoxHost {
 			const directory = resolve(this.#options.company, request.workdir ?? ".");
 			const directoryStat = await stat(directory).catch(() => undefined);
 			if (!directoryStat?.isDirectory())
-				return { t: "error", id: request.id, code: "WORKDIR_UNAVAILABLE", message: `No directory ${directory}` };
+				return {
+					t: "error",
+					id: request.id,
+					code: "WORKDIR_UNAVAILABLE",
+					// The message stays inside the contract's 512 characters, however long the path.
+					message: `No directory ${directory.length > 400 ? `...${directory.slice(-400)}` : directory}`,
+				};
 			const session = await this.#start(request.cmd, directory, request.tty);
 			if (!session)
 				return { t: "error", id: request.id, code: "SPAWN_FAILED", message: "The command could not be started" };
