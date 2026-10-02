@@ -45,7 +45,13 @@ A release **rolls** when both of these hold:
 - Every service both nodes share works with both bundles. The secret broker, the object gateway,
   the web API and the edge functions (such as `runner-orchestrator`) serve both nodes at once, so
   they cannot be updated one node at a time. A release that changes one of them is deployed at
-  step 2 only if the new version works with both bundles; otherwise the release pauses.
+  step 2 only if the new version works with both bundles; otherwise the release pauses. A node 1
+  shared service that restarts (the secret broker, the vault's nginx on node 1, the object gateway)
+  briefly stops new runs from starting on both nodes, so its update goes outside the roll, in its own
+  quiet minute (v166's broker update did). A new broker endpoint is reachable only once the vault's
+  nginx routes it (the `:10000` server block in `RUNTIME-STEP-7-CLOUD-CONNECTORS.md`): a
+  `location = /v1/company-accounts` (POST only) proxied through `$qorpera_operations_broker`, exactly
+  like `/v1/operations`. That line belongs to the feature's switch-on, not to the roll.
 - Its node release's `order` is `schema-first` or `either`: the migrations come before node A's
   update. With `pause`, `agent apply` insists on `--defer`.
 
@@ -55,6 +61,9 @@ That covers:
   `create index concurrently` in its own migration, or the release pauses.
 - A function body replaced under the same signature, where every N caller sends the same inputs and
   gets the same output shape.
+- A lock-order change kept inside SQL functions (v166's vault lock order). N and N+1 call the same
+  functions, so the new order replaces the old one for every caller at once: there is no stretch where
+  one bundle locks in the old order and the other in the new, and the two cannot deadlock each other.
 - Control-plane patches: placement, claim, admission, deferral, wake policy, the web RPCs. They must
   keep the guards the roll relies on; step 2 checks them.
 - The activation migration itself, which is the switch in step 6.
@@ -67,8 +76,9 @@ A release **pauses** when any migration:
   node out while it was the only one serving.
 - changes what a shared service accepts or sends in a way one of the two bundles cannot handle, for
   example a new operation name the secret broker checks, unless the service accepts both;
-- changes lock order on busy tables, or takes long table locks. The storage core does this; it
-  ships alone with a 30-minute database watch.
+- changes lock order on busy tables in program code (each bundle then keeps its own order for the
+  whole roll), or takes long table locks. The storage core does this; it ships alone with a 30-minute
+  database watch.
 - rewrites or relabels company data in bulk (the clean reset).
 
 When unsure, the release pauses.
@@ -159,9 +169,24 @@ Never run `qorpera_configure_runtime_node` on a node switched off fully during a
      and runtime_bundle_sha256 = '<N sha>';
    ```
 2. **Migrations.** Apply the release's migrations, not the activation.
-   - Deploy the release's changed edge functions and other shared services now, and only if they
-     work with both bundles (see "Does a release roll or pause?").
-   - A migration that runs in a transaction: dry run first, then commit.
+   - Deploy the release's changed edge functions now, and only if they work with both bundles (see
+     "Does a release roll or pause?"). A changed node 1 service that restarts (the secret broker, the
+     vault's nginx, the object gateway) goes outside the roll, in its own quiet minute.
+   - Rehearse first: `05-rehearse-migrations` (dry-run only) applies every release migration in
+     order in one transaction and rolls back, so every exact-text patch is checked before anything
+     commits. It refuses if a guard the roll relies on is missing after them: then commit nothing, and
+     the release pauses. It holds every
+     migration's locks until its rollback (for v166: `qorpera_runner_jobs`, `qorpera_profiles`, the
+     vault tables), so run it in the same quiet minute as the commits, never in a busy hour; a `55P03`
+     from it only means "try again later". A release with no migration has no `05`. Each `10-migration-*` packet needs the one before it recorded, so on its own only the
+     first could be dry-run before a commit. A lighter check that takes no lock (v166's): read-only,
+     each exact-text anchor occurs exactly once in `pg_get_functiondef` of its target function. It
+     covers a patch whose target no earlier migration of the release replaces; the rehearsal covers
+     every case.
+   - A migration that runs in a transaction: dry run first, then commit. A commit the database refused
+     (for example `55P03`, a lock timeout) changed nothing: run it again. Running it again is safe even
+     when the outcome is unknown (a lost reply): a commit that landed is recorded, and the packet
+     refuses a second one.
    - A `create index concurrently` migration cannot run in a transaction: apply it on its own, as
      rehearsed, and record it in the migration history as today's cut does.
 
@@ -219,6 +244,9 @@ Never run `qorpera_configure_runtime_node` on a node switched off fully during a
      orchestrator again once the host is healthy (it claims nothing while A takes no runs).
      The rebuild's re-registration clears any older declaration and keeps the host's dispatch role
      (change 3).
+   - A run machine's runner and its native host always come from one image (#659). Never swap only the
+     runner file, or only some of the fast host's guest pins: every company run there would fail. A
+     rebuild, and a rollback, moves the whole image.
    - Re-enrol A's inventory digest if the policy still pins the fast host's image (with the fast
      host listed by role, change 6, this step goes away).
    - Check that A's orchestrators run: the fast host's was started by its rebuild, and the node release
@@ -332,9 +360,9 @@ node scripts/runtime-roll.mjs packets --ref <release commit> \
 
 - Every file is exactly one outer transaction, and its sha256 is in `packet.json` with the order. A
   mutation packet is dry-run first, then committed.
-- `dryRunOnly` lists the check packets (`00-check`, `31-drain-a`, `50-check-n`, `61-drain-b`). They read
-  operator functions that a read-only role cannot run. The runner refuses to commit them (its
-  `dryRunOnly` rule).
+- `dryRunOnly` lists the check packets (`00-check`, `05-rehearse-migrations`, `31-drain-a`, `50-check-n`,
+  `61-drain-b`). They read operator functions that a read-only role cannot run, or (05) apply every
+  migration only to roll it back. The runner refuses to commit them (its `dryRunOnly` rule).
 - `emergencyOnly` lists the paused way back: `90-pause-now`, `91-reverse`, `92-clear-declarations` and
   `93-resume`.
   - `90-pause-now` has no quiet gate. It pauses every company that has an owner or admin and is not
@@ -355,7 +383,8 @@ node scripts/runtime-roll.mjs packets --ref <release commit> \
 | Packet | Procedure step |
 |---|---|
 | `00-check` | 1, the preflight. It also lists the node-disk logins and records N's pending inputs |
-| `10-migration-*` | 2, one per release migration, gated on N and not yet recorded |
+| `05-rehearse-migrations` | 2, before the first commit, in the same quiet minute: every release migration in one transaction, rolled back, and the guards after them (dry-run only; absent without migrations) |
+| `10-migration-*` | 2, one per release migration, gated on N, the one before it recorded, and not yet recorded |
 | `20-declare-b` | 3 |
 | `30-runs-off-a`, `31-drain-a` | 4 (wait until `readyForNodeRelease`). `30` needs B serving runs, ready, with live orchestrators |
 | (node release, fast host) | 5 and 8: `agent apply`, then `rebuild-exec-host.sh` with `EXEC_CLEAR_PARKED=1 EXEC_START_ORCHESTRATOR=1` (and the bundle on node B) |
@@ -388,7 +417,8 @@ back twice: right after the switch, and after the finish. No company is paused d
      still on N+1 code must not take N runs. After `80-finish` nothing is declared, so it declares
      both nodes N+1.
   3. Move **every** node that runs N+1 back to N (`agent rollback`, and the fast host rebuilt from N:
-     the coordinator's `roll-rollback`, outside this repo), node B too if step 8 has started. Then
+     the coordinator's `roll-rollback`, outside this repo, which restores the whole previous image,
+     never only some of its pins), node B too if step 8 has started. Then
      clear all declarations (`92-clear-declarations`). Dry-run it first: `declaredNext` lists the
      orchestrators still declared N+1, and the packet cannot see which code a node runs. Commit it
      only once each of them runs N again. Its `stillDeclared` must be 0; if not, an orchestrator of a
