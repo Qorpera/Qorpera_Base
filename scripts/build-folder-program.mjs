@@ -1,14 +1,14 @@
 import { spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { recordFor } from "./folder-program-artifact.mjs";
 import { RUST_IMAGE } from "./run-on-node-plan.mjs";
 
 /** Builds crates/qorpera-folder for x86-64 Linux in the pinned Rust image (the one its tests run in), with the
- * locked crates, and writes the program to --out. The same source and image give the same bytes, so the coordinator
- * can build it again at a cut and compare the sha256 printed here. Needs Docker (the node 2 test machine or the build
+ * locked crates, writes the program to --out and prints its build record (scripts/folder-program-artifact.mjs). The
+ * same source and image give the same bytes, so the coordinator can build it again at a cut and compare. Needs Docker (the node 2 test machine or the build
  * space); nothing is left in the source tree. */
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const args = process.argv.slice(2);
@@ -40,9 +40,8 @@ try {
 	if (built.status !== 0) throw new Error(`cargo build failed (${built.status})`);
 	const bytes = readFileSync(join(work, "qorpera-folder"));
 	spawnSync("install", ["-m", "0755", join(work, "qorpera-folder"), out], { stdio: "inherit" });
-	console.log(
-		JSON.stringify({ out, image: RUST_IMAGE, bytes: bytes.byteLength, sha256: createHash("sha256").update(bytes).digest("hex") }),
-	);
+	// The record to commit as deploy/folder-service/folder-program-linux-x64.json when the source changed.
+	console.log(JSON.stringify(recordFor(bytes, RUST_IMAGE), null, 2));
 } finally {
 	rmSync(work, { recursive: true, force: true });
 }

@@ -68,6 +68,28 @@ export interface FolderCore {
 	/** The company's storage profile, through the core's download check of one object the actor may read. The check
 	 * also refuses a company being deleted, for every actor. */
 	objectProfile(environmentId: string, actor: FolderActor, sha256: string, signal?: AbortSignal): Promise<string>;
+	/** Extends a machine view's lease (120 s) or learns that it closed (C1b-3a `qorpera_folder_view_renew`). */
+	renewView(viewId: string, pass: string, signal?: AbortSignal): Promise<ViewRenewal>;
+}
+
+export type ViewRenewal =
+	| { readonly state: "open"; readonly leaseUntil: string }
+	| { readonly state: "closed"; readonly reason: "closed" | "superseded" | "ended" | "expired" };
+
+export function parseViewRenewal(value: unknown): ViewRenewal {
+	const answer = answerRecord(value, "view renewal");
+	if (answer.schema !== "qorpera.folder-view-renew/v1") invalidAnswer("view renewal");
+	if (answer.state === "open" && typeof answer.leaseUntil === "string" && !Number.isNaN(Date.parse(answer.leaseUntil)))
+		return { state: "open", leaseUntil: answer.leaseUntil };
+	if (
+		answer.state === "closed" &&
+		(answer.reason === "closed" ||
+			answer.reason === "superseded" ||
+			answer.reason === "ended" ||
+			answer.reason === "expired")
+	)
+		return { state: "closed", reason: answer.reason };
+	invalidAnswer("view renewal");
 }
 
 /** The core refused: `denied` (42501, the actor may not read this any more), `stopped` (55000, the company is paused
@@ -323,6 +345,17 @@ export class SupabaseFolderCore implements FolderCore {
 		)
 			invalidAnswer("download check");
 		return answer.profileId;
+	}
+
+	async renewView(viewId: string, pass: string, signal?: AbortSignal): Promise<ViewRenewal> {
+		// Nothing is unsaved in a read-only view: p_unsaved_since stays null.
+		return parseViewRenewal(
+			await this.#rpc(
+				"qorpera_folder_view_renew",
+				{ p_view_id: viewId, p_pass: pass, p_unsaved_since: null },
+				signal,
+			),
+		);
 	}
 
 	async #rpc(name: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {

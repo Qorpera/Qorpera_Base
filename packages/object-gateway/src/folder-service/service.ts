@@ -1,3 +1,4 @@
+import { timingSafeEqual } from "node:crypto";
 import { CoreRefusal, type FeedCursor, type FolderActor, type FolderCore } from "./core.ts";
 import type { Grant, MountGrants } from "./mounts.ts";
 import { type NasObjects, ObjectIntegrityError } from "./objects.ts";
@@ -48,11 +49,15 @@ const RESYNC_OVER = 5_000;
 const SUPERSEDED_PER_PATH = 16;
 /** The machine's folder program treats 45 s without a frame as a dead link. */
 const HEARTBEAT_MS = 15_000;
+/** A core view's lease is 120 s; it is renewed every 40 s while a machine is connected (C1b-3a). */
+const RENEW_MS = 40_000;
 
 class View {
 	readonly key: string;
 	readonly environmentId: string;
 	readonly actor: FolderActor;
+	readonly passSha256: Buffer;
+	readonly lease: Grant["lease"];
 	tree: ViewTree | undefined;
 	seq = 0;
 	cursor: FeedCursor | null = null;
@@ -73,6 +78,8 @@ class View {
 		this.key = grant.key;
 		this.environmentId = grant.environmentId;
 		this.actor = grant.actor;
+		this.passSha256 = grant.passSha256;
+		this.lease = grant.lease;
 	}
 }
 
@@ -100,6 +107,7 @@ export class FolderService {
 	readonly #profiles = new Map<string, string>();
 	#timer: ReturnType<typeof setInterval> | undefined;
 	#heartbeat: ReturnType<typeof setInterval> | undefined;
+	#renewals: ReturnType<typeof setInterval> | undefined;
 	#polling = false;
 
 	constructor(options: FolderServiceOptions) {
@@ -116,19 +124,45 @@ export class FolderService {
 	start(): void {
 		this.#timer ??= setInterval(() => void this.poll(), this.#pollMs);
 		this.#heartbeat ??= setInterval(() => this.heartbeat(), HEARTBEAT_MS);
+		this.#renewals ??= setInterval(() => void this.renewLeases(), RENEW_MS);
 	}
 
 	stop(): void {
 		if (this.#timer) clearInterval(this.#timer);
 		if (this.#heartbeat) clearInterval(this.#heartbeat);
+		if (this.#renewals) clearInterval(this.#renewals);
 		this.#timer = undefined;
 		this.#heartbeat = undefined;
+		this.#renewals = undefined;
+	}
+
+	/** Renews the lease of every core view a machine is connected to; a view the core closed is closed on every
+	 * connection. A view no machine holds is not renewed: its lease runs out, unless the core closed it first (a run's
+	 * end closes its run box). Exposed for tests. */
+	async renewLeases(): Promise<void> {
+		await Promise.all(
+			[...this.#views.values()]
+				.filter((view) => view.lease && view.connections > 0 && !view.closed)
+				.map(async (view) => {
+					try {
+						const renewal = await this.#core.renewView(view.lease!.viewId, view.lease!.pass);
+						if (renewal.state === "closed") this.#close(view, `The view was ${renewal.reason}`);
+					} catch (error) {
+						if (error instanceof CoreRefusal && error.reason === "denied")
+							this.#close(view, "The view was refused");
+						else this.#log(`folder-service: ${view.key}: lease not renewed now: ${(error as Error).message}`);
+					}
+				}),
+		);
 	}
 
 	/** Checks a machine's hello and opens (or joins) its view. The first connection of a view lists its tree. */
 	async open(hello: Hello, bridge: BridgeInfo): Promise<ViewHandle> {
 		const grant = this.#grants.admit(hello, bridge);
 		let view = this.#views.get(grant.key);
+		// Joining an open view takes the pass it was opened with. (A core view's first pass is checked by the core.)
+		if (view && !view.closed && !timingSafeEqual(view.passSha256, grant.passSha256))
+			throw new ProtocolError(ErrorCode.viewRefused, "The view, its pass or this machine did not match");
 		if (!view || view.closed) {
 			view = new View(grant);
 			this.#views.set(grant.key, view);

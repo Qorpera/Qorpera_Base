@@ -26,6 +26,7 @@ import {
 	BRIDGE,
 	CID,
 	ENV,
+	EXEC_HOST,
 	FakeCore,
 	folder,
 	grants,
@@ -95,6 +96,10 @@ class Client {
 		this.#socket.write(bytes);
 	}
 
+	close(): void {
+		this.#socket.destroy();
+	}
+
 	next(timeoutMs = 2_000): Promise<Frame | undefined> {
 		const frame = this.#frames.shift();
 		if (frame) return Promise.resolve(frame);
@@ -118,9 +123,10 @@ class Client {
 		role: "io" | "feed",
 		pass = PASS,
 		bridge: BridgeInfo = BRIDGE,
+		viewId = "proof",
 	): Promise<{ kind: number; body: Record<string, unknown> }> {
 		this.send(Kind.bridge, bridge);
-		this.send(Kind.hello, { protocol: 1, environmentId: ENV, viewId: "proof", pass, role });
+		this.send(Kind.hello, { protocol: 1, environmentId: ENV, viewId, pass, role });
 		return this.json();
 	}
 
@@ -607,5 +613,71 @@ describe("folder service", () => {
 		await service.settled();
 		expect(await io.read("readme.md", 2, 0, 4)).toBe("STALE");
 		expect(await io.read("readme.md", 18, 0, 5)).toEqual(Buffer.from("hi 18"));
+	});
+});
+
+describe("run box views", () => {
+	const VIEW = "3a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d";
+	const BOX_PASS = "boxpass_0123456789-abcdefghijklmnopqrstuvwx";
+	const EXEC: BridgeInfo = { cid: 77, lookup: "found", machine: EXEC_HOST };
+
+	async function box(): Promise<{ core: FakeCore; service: FolderService; path: string }> {
+		const root = await tempdir();
+		const core = new FakeCore();
+		core.seed([folder("docs"), await storeFile(root, "docs/plan.md", "the plan", 1)]);
+		core.openView(VIEW, BOX_PASS);
+		return { core, ...(await serve(core, root)) };
+	}
+
+	it("opens a core view for the execution host only, with its own pass, and renews its lease while connected", async () => {
+		expect(BOX_PASS).toMatch(/^[A-Za-z0-9_-]{43}$/);
+		const { core, service, path } = await box();
+		const io = await Client.open(path);
+		expect((await io.hello("io", BOX_PASS, EXEC, VIEW)).kind).toBe(Kind.helloOk);
+		expect(await io.list("docs")).toEqual(["plan.md"]);
+		expect(await io.read("docs/plan.md", 1, 4, 4)).toEqual(Buffer.from("plan"));
+		// Another machine (here, the operator mount's) may not present a run box view.
+		const other = await Client.open(path);
+		expect((await other.hello("io", BOX_PASS, BRIDGE, VIEW)).body.code).toBe("VIEW_REFUSED");
+		const noLxd = await Client.open(path);
+		expect((await noLxd.hello("io", BOX_PASS, { cid: 77, lookup: "unavailable" }, VIEW)).body.code).toBe(
+			"UNAVAILABLE",
+		);
+		// Joining the open view takes its pass; a pass of the wrong shape never reaches the core.
+		const wrong = await Client.open(path);
+		expect((await wrong.hello("io", `${"z".repeat(42)}y`, EXEC, VIEW)).body.code).toBe("VIEW_REFUSED");
+		const malformed = await Client.open(path);
+		expect((await malformed.hello("io", "short", EXEC, VIEW)).body.code).toBe("VIEW_REFUSED");
+		await service.renewLeases();
+		expect(core.views.get(VIEW)!.renewals).toBe(1);
+		// No machine connected: the lease is left to run out.
+		io.close();
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		await service.renewLeases();
+		expect(core.views.get(VIEW)!.renewals).toBe(1);
+	});
+
+	it("closes the view on every connection when the core ends it, and keeps it through a renewal that failed", async () => {
+		const { core, service, path } = await box();
+		const feed = await Client.open(path);
+		expect((await feed.hello("feed", BOX_PASS, EXEC, VIEW)).kind).toBe(Kind.helloOk);
+		const io = await Client.open(path);
+		await io.hello("io", BOX_PASS, EXEC, VIEW);
+		core.renewalFails = true;
+		await service.renewLeases();
+		expect(await io.list("")).toEqual(["docs"]);
+		core.renewalFails = false;
+		core.views.get(VIEW)!.state = "closed";
+		await service.renewLeases();
+		expect((await feed.json()).body).toMatchObject({ code: "VIEW_CLOSED", message: "The view was ended" });
+		expect(await feed.next()).toBeUndefined();
+		io.send(Kind.list, { path: "" });
+		expect((await io.json()).body.code).toBe("VIEW_CLOSED");
+	});
+
+	it("refuses a first hello whose pass the core does not know", async () => {
+		const { path } = await box();
+		const io = await Client.open(path);
+		expect((await io.hello("io", `${"q".repeat(42)}w`, EXEC, VIEW)).body.code).toBe("VIEW_CLOSED");
 	});
 });

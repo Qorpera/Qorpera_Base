@@ -39,7 +39,7 @@ PrivateTmp=yes
 PrivateDevices=yes
 ProtectSystem=strict
 ReadWritePaths=/var/lib/qorpera-shared-execution/slots/%i/host
-InaccessiblePaths=/var/lib/qorpera/identities /var/lib/qorpera-shared-execution/journals /run/qorpera-shared-execution -/var/lib/qorpera/identity -/var/lib/qorpera-bootstrap -/var/lib/qorpera-runner -/var/lib/qorpera-native-workspace
+InaccessiblePaths=/var/lib/qorpera/identities /var/lib/qorpera-shared-execution/journals /run/qorpera-shared-execution /srv/qorpera-folder /etc/qorpera-folder -/var/lib/qorpera/identity -/var/lib/qorpera-bootstrap -/var/lib/qorpera-runner -/var/lib/qorpera-native-workspace
 ProtectHome=yes
 ProtectProc=invisible
 # The trusted launcher reads overflowuid/overflowgid when creating the user

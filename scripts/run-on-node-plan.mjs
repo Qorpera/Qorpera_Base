@@ -179,11 +179,16 @@ export const STEPS = [
 	{
 		name: "folder-program",
 		why: "crates/qorpera-folder and the folder service: unit and FUSE tests in the pinned Rust image, then the built program against the service in Node (root and /dev/fuse in containers; vsock is proven live)",
-		paths: [/^crates\/qorpera-folder\//, /^packages\/object-gateway\/(src\/folder-service\/|test\/folder-)/],
+		paths: [
+			/^crates\/qorpera-folder\//,
+			/^packages\/object-gateway\/(src\/folder-service\/|test\/folder-)/,
+			/^deploy\/folder-service\/folder-program-linux-x64\.json$/,
+			/^scripts\/folder-program-artifact\.mjs$/,
+		],
 		// Crates are cached in a named volume between runs; the built program passes between the two containers in
 		// a volume of this run's own, removed at the end.
 		commands: [
-			`v=qorpera-folder-$(date +%s%N); docker volume create "$v" >/dev/null && docker run --rm ${FUSE} -e QORPERA_FOLDER_FUSE_TESTS=1 -e CARGO_TARGET_DIR=/tmp/target -v qorpera-cargo-registry:/usr/local/cargo/registry -v "$PWD/crates/qorpera-folder:/src:ro" -v "$v:/out" -w /src ${RUST_IMAGE} sh -c 'cargo test --locked && cargo build --locked --release && cp /tmp/target/release/qorpera-folder /out/' && docker run --rm ${FUSE} -e QORPERA_FOLDER_MOUNT_BIN=/out/qorpera-folder -v "$v:/out:ro" -v "$PWD:/repo" -w /repo/packages/object-gateway ${NODE_IMAGE} node ../../node_modules/vitest/dist/cli.js --run test/folder-mount-e2e.test.ts; s=$?; docker volume rm "$v" >/dev/null; exit $s`,
+			`v=qorpera-folder-$(date +%s%N); docker volume create "$v" >/dev/null && docker run --rm ${FUSE} -e QORPERA_FOLDER_FUSE_TESTS=1 -e CARGO_TARGET_DIR=/tmp/target -v qorpera-cargo-registry:/usr/local/cargo/registry -v "$PWD/crates/qorpera-folder:/src:ro" -v "$v:/out" -w /src ${RUST_IMAGE} sh -c 'cargo test --locked && cargo build --locked --release && cp /tmp/target/release/qorpera-folder /out/' && docker run --rm ${FUSE} -e QORPERA_FOLDER_MOUNT_BIN=/out/qorpera-folder -v "$v:/out:ro" -v "$PWD:/repo" -w /repo/packages/object-gateway ${NODE_IMAGE} sh -c 'node ../../scripts/folder-program-artifact.mjs --check /out/qorpera-folder && node ../../node_modules/vitest/dist/cli.js --run test/folder-mount-e2e.test.ts'; s=$?; docker volume rm "$v" >/dev/null; exit $s`,
 		],
 	},
 	{

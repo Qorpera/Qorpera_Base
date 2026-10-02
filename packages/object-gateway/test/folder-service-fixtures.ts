@@ -9,6 +9,7 @@ import {
 	type FeedEvent,
 	type FolderActor,
 	type FolderCore,
+	type ViewRenewal,
 } from "../src/folder-service/core.ts";
 import type { MachineRef } from "../src/folder-service/machines.ts";
 import { MountGrants, parseOperatorMounts } from "../src/folder-service/mounts.ts";
@@ -84,6 +85,20 @@ export class FakeCore implements FolderCore {
 	deny = false;
 	listCalls = 0;
 	profileCalls = 0;
+	/** Core views (run boxes): id to pass and state, as C1b-3a keeps them. */
+	readonly views = new Map<string, { pass: string; state: "open" | "closed"; renewals: number }>();
+	renewalFails = false;
+
+	openView(viewId: string, pass: string): void {
+		this.views.set(viewId, { pass, state: "open", renewals: 0 });
+	}
+
+	/** A view actor reads only with its own pass, and only while its view is open (view_resolve: 42501). */
+	#check(actor: FolderActor): void {
+		if (actor.kind !== "view") return;
+		const view = this.views.get(actor.viewId);
+		if (!view || view.pass !== actor.pass || view.state !== "open") throw new CoreRefusal("denied");
+	}
 
 	seed(entries: CoreEntry[]): void {
 		for (const e of entries) this.entries.set(e.path, e);
@@ -118,6 +133,7 @@ export class FakeCore implements FolderCore {
 		this.listCalls++;
 		if (environmentId !== ENV) throw new CoreRefusal("invalid");
 		if (this.deny) throw new CoreRefusal("denied");
+		this.#check(actor);
 		const all = this.#visible(actor);
 		const start = after === null ? 0 : all.findIndex((e) => e.path === after) + 1;
 		const page = all.slice(start, start + 2);
@@ -127,6 +143,7 @@ export class FakeCore implements FolderCore {
 	async feed(environmentId: string, actor: FolderActor, afterSeq: number) {
 		if (environmentId !== ENV) throw new CoreRefusal("invalid");
 		if (this.deny) throw new CoreRefusal("denied");
+		this.#check(actor);
 		const events = this.journal
 			.filter((e) => e.seq > afterSeq)
 			.map((e) =>
@@ -148,12 +165,30 @@ export class FakeCore implements FolderCore {
 		return new Map(environmentIds.filter((id) => id === ENV).map((id) => [id, this.seq]));
 	}
 
-	async objectProfile(environmentId: string) {
+	async objectProfile(environmentId: string, actor: FolderActor) {
 		this.profileCalls++;
 		if (environmentId !== ENV) throw new CoreRefusal("invalid");
+		this.#check(actor);
 		return PROFILE;
 	}
+
+	async renewView(viewId: string, pass: string): Promise<ViewRenewal> {
+		const view = this.views.get(viewId);
+		if (!view || view.pass !== pass) throw new CoreRefusal("denied");
+		if (this.renewalFails) throw new Error("The database did not answer");
+		view.renewals++;
+		return view.state === "open"
+			? { state: "open", leaseUntil: new Date(Date.now() + 120_000).toISOString() }
+			: { state: "closed", reason: "ended" };
+	}
 }
+
+/** The execution host's machine, which may present run box views. */
+export const EXEC_HOST: MachineRef = {
+	project: "qn25b2",
+	name: "qorpera-exec-node02",
+	physicalId: "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff",
+};
 
 export function grants(): MountGrants {
 	return new MountGrants(
@@ -166,5 +201,6 @@ export function grants(): MountGrants {
 				passSha256: hashOf(PASS),
 			},
 		]),
+		[EXEC_HOST],
 	);
 }

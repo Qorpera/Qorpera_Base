@@ -2,6 +2,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { SupabaseFolderCore } from "./core.ts";
+import { parseMachineRef } from "./machines.ts";
 import { MountGrants, parseOperatorMounts } from "./mounts.ts";
 import { NasObjects } from "./objects.ts";
 import { createFolderServer } from "./server.ts";
@@ -22,11 +23,13 @@ interface Config {
 	readonly storageRoot: string;
 	readonly cacheMiB?: number;
 	readonly mounts: unknown;
+	/** The machines on this node that may present the core's run box views: its execution host. */
+	readonly runBoxHosts?: unknown;
 }
 
 function config(): Config {
 	const value = JSON.parse(credential("qorpera-folder-config")) as Record<string, unknown>;
-	const known = ["supabaseUrl", "storageRoot", "cacheMiB", "mounts"];
+	const known = ["supabaseUrl", "storageRoot", "cacheMiB", "mounts", "runBoxHosts"];
 	for (const key of Object.keys(value)) if (!known.includes(key)) throw new Error(`Unknown configuration key ${key}`);
 	if (typeof value.supabaseUrl !== "string" || typeof value.storageRoot !== "string")
 		throw new Error("supabaseUrl and storageRoot are required");
@@ -34,6 +37,8 @@ function config(): Config {
 	const cache = value.cacheMiB;
 	if (cache !== undefined && (typeof cache !== "number" || !Number.isSafeInteger(cache) || cache < 16 || cache > 2048))
 		throw new Error("cacheMiB must be a whole number from 16 to 2048");
+	if (value.runBoxHosts !== undefined && !Array.isArray(value.runBoxHosts))
+		throw new Error("runBoxHosts must be a list");
 	return value as unknown as Config;
 }
 
@@ -47,7 +52,10 @@ const service = new FolderService({
 		secretKey: credential("qorpera-supabase-service-key"),
 	}),
 	objects: new NasObjects({ root: settings.storageRoot, cacheBytes: (settings.cacheMiB ?? 1024) * 1024 * 1024 }),
-	grants: new MountGrants(parseOperatorMounts(settings.mounts)),
+	grants: new MountGrants(
+		parseOperatorMounts(settings.mounts),
+		Array.isArray(settings.runBoxHosts) ? settings.runBoxHosts.map(parseMachineRef) : [],
+	),
 	log,
 });
 const server = createFolderServer(service, log);

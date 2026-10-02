@@ -3,17 +3,20 @@
 # host VM that was booted from the pinned LXD runner guest image. The image
 # already carries the runner, native provider host, isolation helper and the
 # official harness; this adds the service, the two slot unit templates, one
-# account pair per slot and the co-located orchestrator. Nothing in the pinned
-# image is replaced.
+# account pair per slot, the co-located orchestrator, and the folder program
+# with its mount unit (F3). Nothing in the pinned image is replaced.
 set -euo pipefail
 
 EXPECTED_SERVICE_SHA256="eb77968c43fe4f4d132e9edecfbde86e214e2a794d377911ec01553d9426df5a"
 EXPECTED_SERVICE_UNIT_SHA256="f673571b39062b664ec2543b46d7b6728c70c4a00ede09dbc327c6a3b0e4b375"
-EXPECTED_HOST_UNIT_SHA256="3283540be2bcf180c7afca1b56ecd5cfc8b097cf7f010192e713087f361f37c9"
-EXPECTED_RUNNER_UNIT_SHA256="826b7d6046771334d712df85c13b2052ef4adfe1ecff26778593d2bf50b508ef"
+EXPECTED_HOST_UNIT_SHA256="69f0bb557d70125ee8cc7991699af00c8328220d30fec37b154ca8acea7fca06"
+EXPECTED_RUNNER_UNIT_SHA256="09070c9dd6d8f1a4c2dd5aab25f251e5e3da1735ce9dab50f6591d9b59becbfd"
 EXPECTED_ENV_EXAMPLE_SHA256="b7042964ee5d65f398945f83d3cdeefc2a795973c578bb47b8efff1a775582a6"
 EXPECTED_ORCHESTRATOR_SHA256="2a6605135bbdb66a6879298d3d04571cf429738d6b5361d874e7bdec7b940957"
 EXPECTED_ORCHESTRATOR_UNIT_SHA256="12128aaf4be23d759e940407bf32c99b145aa8e927fe31f730a15ce7c447f4df"
+# The folder program's recorded build (deploy/folder-service/folder-program-linux-x64.json) and its mount unit.
+EXPECTED_FOLDER_PROGRAM_SHA256="214e6ea47db0b7f6cf946bd90207a7352dd35cd05c247cb07d121d93a4e33b43"
+EXPECTED_FOLDER_MOUNT_UNIT_SHA256="984a236cd49ee40a83de8fefefd546ff90dcd4c3d379a7a56f516abd6df6cd89"
 STAGING_ROOT="/var/lib/qorpera-bootstrap/shared-execution"
 SLOT_COUNT="${QORPERA_SHARED_EXECUTION_SLOTS:-16}"
 INSTALL_ROOT="/opt/qorpera/shared-execution"
@@ -40,6 +43,10 @@ for unit in qorpera-shared-execution.service qorpera-runner-orchestrator.service
 		exit 1
 	fi
 done
+if systemctl list-units --state=active --plain --no-legend 'qorpera-folder-mount@*' | grep -q .; then
+	echo "Refusing to replace the folder program under a running mount." >&2
+	exit 1
+fi
 for artifact in qorpera-ephemeral-runner.mjs qorpera-native-provider-host.mjs qorpera-native-isolation-child.mjs; do
 	if [[ ! -f /opt/qorpera-runner/${artifact} ]]; then
 		echo "This guest is not the pinned runner image: /opt/qorpera-runner/${artifact} is missing." >&2
@@ -69,6 +76,8 @@ verify_sha256 "${STAGING_ROOT}/qorpera-shared-runner@.service" "${EXPECTED_RUNNE
 verify_sha256 "${STAGING_ROOT}/shared-execution.env.example" "${EXPECTED_ENV_EXAMPLE_SHA256}"
 verify_sha256 "${STAGING_ROOT}/qorpera-runner-orchestrator.mjs" "${EXPECTED_ORCHESTRATOR_SHA256}"
 verify_sha256 "${STAGING_ROOT}/qorpera-runner-orchestrator.service" "${EXPECTED_ORCHESTRATOR_UNIT_SHA256}"
+verify_sha256 "${STAGING_ROOT}/qorpera-folder" "${EXPECTED_FOLDER_PROGRAM_SHA256}"
+verify_sha256 "${STAGING_ROOT}/qorpera-folder-mount@.service" "${EXPECTED_FOLDER_MOUNT_UNIT_SHA256}"
 
 # A long-lived host must stay the pinned image: no unattended package upgrades,
 # no needrestart restarting the sandboxes under a run.
@@ -111,6 +120,13 @@ install -o root -g root -m 0644 "${STAGING_ROOT}/qorpera-shared-run-host@.servic
 install -o root -g root -m 0644 "${STAGING_ROOT}/qorpera-shared-runner@.service" /etc/systemd/system/qorpera-shared-runner@.service
 install -o root -g root -m 0644 "${STAGING_ROOT}/qorpera-runner-orchestrator.service" /etc/systemd/system/qorpera-runner-orchestrator.service
 install -o root -g root -m 0600 "${STAGING_ROOT}/shared-execution.env.example" /etc/qorpera/shared-execution.env.example
+# The folder program (F3): mounts live under /srv/qorpera-folder (root only; the slot units also hide it), each from
+# a view file in /etc/qorpera-folder/mounts. No mount starts here.
+install -d -o root -g root -m 0755 /opt/qorpera-folder
+install -o root -g root -m 0555 "${STAGING_ROOT}/qorpera-folder" /opt/qorpera-folder/qorpera-folder
+install -o root -g root -m 0644 "${STAGING_ROOT}/qorpera-folder-mount@.service" /etc/systemd/system/qorpera-folder-mount@.service
+install -d -o root -g root -m 0700 /etc/qorpera-folder /etc/qorpera-folder/mounts /srv/qorpera-folder
+/opt/qorpera-folder/qorpera-folder version
 
 /usr/bin/node --check "${INSTALL_ROOT}/qorpera-shared-execution-service.mjs"
 /usr/bin/node --check "${ORCHESTRATOR_ROOT}/qorpera-runner-orchestrator.mjs"
