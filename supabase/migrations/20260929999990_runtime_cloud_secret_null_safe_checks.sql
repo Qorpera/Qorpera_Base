@@ -17,7 +17,7 @@
 -- comparisons is now null-safe: `is distinct from` against a NOT NULL column, and `coalesce(... , true)` around a
 -- pattern or length test of an argument. Nothing else changes: the same errors, the same order, the same locks; a
 -- comparison already after one of these (the envelope's digest against the decoded bytes, the stored downstream
--- digest) only ever sees a non-NULL argument now. The other 33 functions the login may call already compared
+-- digest) only ever sees a non-NULL argument now. Every other function the login may call already compared
 -- null-safely (the PR lists each).
 --
 -- Exact-text patches, as #660 (20260928419980): each fails unless its text is found exactly once, so a function
