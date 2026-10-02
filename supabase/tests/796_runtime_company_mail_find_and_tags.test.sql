@@ -1,5 +1,5 @@
 -- @fixture 733_runtime_company_mail_sending.test.sql until "-- Switched off, nothing is queued."
--- Company mail for accounts the company owns (20260929999800): local+tag@ reaches the mailbox local@ and the
+-- Company mail for accounts the company owns (20260929999920): local+tag@ reaches the mailbox local@ and the
 -- delivery records where the mail was delivered, its sender and its subject; an agent never mails its own company's
 -- mailboxes under a tag, nor sends from one; find_mail searches the company's received mail of the last days by
 -- mailbox, delivered-to address, sender and subject, at most 10 newest first.

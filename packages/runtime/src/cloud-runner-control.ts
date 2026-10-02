@@ -621,6 +621,13 @@ export class DisposableCloudRunner {
 		return job;
 	}
 
+	/** The job's lease token, which the native host presents for its calls inside the job (G2-2). */
+	nativeHostLeaseToken(jobId: string): string {
+		const lease = this.#leases.get(jobId);
+		if (!lease || lease.job.status !== "leased") throw new Error("Runner job lease is unavailable");
+		return lease.leaseToken;
+	}
+
 	broker(
 		job: CloudRunnerJob,
 		transport: CloudRunnerBrokerTransport,

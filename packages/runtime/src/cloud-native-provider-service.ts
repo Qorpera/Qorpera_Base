@@ -19,6 +19,12 @@ import {
 } from "./cloud-agent-mouth.ts";
 import { codingErrorCode } from "./cloud-coding-error-code.ts";
 import { nativeRuntimeFailureMetadata } from "./cloud-native-failure.ts";
+import {
+	isNativeHostPublishableKey,
+	NativeHostCredentialError,
+	type NativeHostDispatch,
+	type NativeHostJobCredential,
+} from "./cloud-native-host-dispatch.ts";
 import type {
 	CompleteNativeProviderLoginInput,
 	NativeCredentialCapsuleStore,
@@ -149,6 +155,7 @@ export function nativeProviderFailureCode(error: unknown): string {
 	const coded = (code: string) => (fits(code) ? code : "UNCLASSIFIED");
 	// Only the coding runtime's own codes pass; other upper-case text is not vetted. The host
 	// wraps every harness failure (safeHarnessExecutionFailure), so the code is usually a cause.
+	if (error instanceof NativeHostCredentialError) return error.code;
 	let current = error;
 	for (let depth = 0; depth < 8 && current instanceof Error; depth++) {
 		const own = codingErrorCode(current);
@@ -252,8 +259,8 @@ function parseExecution(value: unknown): NativeProviderExecutionRequest {
 		authority.authentication_mode !== "native_subscription" ||
 		(!companyRuntime && (job.job_type !== "agent_turn" || job.required_capability !== "agent_turn")) ||
 		(companyRuntime &&
-			(Object.keys(input).some((key) => !["schema", "authority", "job"].includes(key)) ||
-				Object.keys(job).some((key) => !["job_id", "attempt_count"].includes(key)))) ||
+			(Object.keys(input).some((key) => !["schema", "authority", "job", "native_host"].includes(key)) ||
+				Object.keys(job).some((key) => !["job_id", "attempt_count", "lease_token"].includes(key)))) ||
 		!Number.isSafeInteger(job.attempt_count) ||
 		(job.attempt_count as number) < 1
 	) {
@@ -295,6 +302,25 @@ function parseExecution(value: unknown): NativeProviderExecutionRequest {
 		},
 		outputRoot: text(paths.output_root, "Native output root", 4096),
 	};
+}
+
+/** G2-2: what a company execution brings for the native host's calls through qorpera_native_host_call (the runner job's
+ * lease token and the publishable key). Kept apart from the request, which the host, the runtime and its tool sessions
+ * pass on; read only by the dispatch, never logged. */
+function parseNativeHostCredential(value: unknown): NativeHostJobCredential | undefined {
+	const input = record(value, "Native execution request");
+	if (input.schema !== "qorpera.native-company-execution/v1") return undefined;
+	const job = record(input.job, "Native execution job");
+	if (job.lease_token === undefined && input.native_host === undefined) return undefined;
+	const nativeHost = record(input.native_host, "Native host credential");
+	if (
+		typeof job.lease_token !== "string" ||
+		!TOKEN_PATTERN.test(job.lease_token) ||
+		Object.keys(nativeHost).some((key) => key !== "publishable_key") ||
+		!isNativeHostPublishableKey(nativeHost.publishable_key)
+	)
+		throw new NativeHostCredentialError("NATIVE_HOST_CREDENTIAL", "Native host credential is invalid");
+	return { leaseToken: job.lease_token, publishableKey: nativeHost.publishable_key };
 }
 
 function tokenMatches(expected: string, authorization: string | undefined): boolean {
@@ -769,9 +795,17 @@ export class HttpNativeProviderHostService {
 	readonly #port: number;
 	readonly #trustedSource?: string;
 	readonly #executions = new Map<string, { controller: AbortController; runId: string; assignmentId: string }>();
+	readonly #dispatch?: NativeHostDispatch;
 	#server?: Server;
 
-	constructor(host: NativeProviderHost, token: string, listenHost = "127.0.0.1", port = 0, trustedSource?: string) {
+	constructor(
+		host: NativeProviderHost,
+		token: string,
+		listenHost = "127.0.0.1",
+		port = 0,
+		trustedSource?: string,
+		dispatch?: NativeHostDispatch,
+	) {
 		if (!TOKEN_PATTERN.test(token)) throw new Error("Native provider host token is invalid");
 		if (!Number.isSafeInteger(port) || port < 0 || port > 65_535) throw new Error("Native provider port is invalid");
 		if (trustedSource !== undefined && isIP(trustedSource) !== 4) {
@@ -782,6 +816,7 @@ export class HttpNativeProviderHostService {
 		this.#listenHost = listenHost;
 		this.#port = port;
 		this.#trustedSource = trustedSource;
+		this.#dispatch = dispatch;
 	}
 
 	async start(): Promise<number> {
@@ -804,6 +839,7 @@ export class HttpNativeProviderHostService {
 	}
 
 	async close(): Promise<void> {
+		// Each execution drops its job's credential as it unwinds, after its own cleanup (G2-2).
 		for (const { controller } of this.#executions.values())
 			controller.abort(new Error("Native provider host stopped"));
 		this.#executions.clear();
@@ -881,37 +917,45 @@ export class HttpNativeProviderHostService {
 				value = await this.#host.beginLogin(parsed);
 			} else if (request.url === "/execute") {
 				const parsed = parseExecution(body);
+				const credential = parseNativeHostCredential(body);
 				if (this.#executions.has(parsed.authority.leaseId))
 					throw new Error("Native execution lease is already active");
-				const controller = new AbortController();
-				this.#executions.set(parsed.authority.leaseId, {
-					controller,
-					runId: parsed.authority.runId,
-					assignmentId: parsed.authority.assignmentId,
-				});
-				const disconnected = (): void => {
-					if (!response.writableFinished) controller.abort(new Error("Native runner connection closed"));
-				};
-				response.once("close", disconnected);
-				// A run has no deadline (founder, 2026-09-24). Headers go out now and a
-				// newline every minute keeps the runner's HTTP client (whose header and
-				// idle-body timeouts are five minutes) and anything between from giving up.
-				response.writeHead(200, { "content-type": "application/json" });
-				response.flushHeaders();
-				const keepalive = setInterval(() => {
-					if (!response.destroyed && !response.writableEnded) response.write("\n");
-				}, EXECUTE_KEEPALIVE_MS);
-				keepalive.unref();
+				// The job's credential is held for this execution only and dropped when it ends, so a warm host's
+				// next job cannot use it (G2-2).
+				const releaseCredential = this.#dispatch?.begin(parsed.job.jobId, credential) ?? (() => {});
 				try {
-					value = {
-						schema: RESULT_SCHEMA,
-						lease_id: parsed.authority.leaseId,
-						result: await this.#host.execute(parsed, controller.signal),
+					const controller = new AbortController();
+					this.#executions.set(parsed.authority.leaseId, {
+						controller,
+						runId: parsed.authority.runId,
+						assignmentId: parsed.authority.assignmentId,
+					});
+					const disconnected = (): void => {
+						if (!response.writableFinished) controller.abort(new Error("Native runner connection closed"));
 					};
+					response.once("close", disconnected);
+					// A run has no deadline (founder, 2026-09-24). Headers go out now and a
+					// newline every minute keeps the runner's HTTP client (whose header and
+					// idle-body timeouts are five minutes) and anything between from giving up.
+					response.writeHead(200, { "content-type": "application/json" });
+					response.flushHeaders();
+					const keepalive = setInterval(() => {
+						if (!response.destroyed && !response.writableEnded) response.write("\n");
+					}, EXECUTE_KEEPALIVE_MS);
+					keepalive.unref();
+					try {
+						value = {
+							schema: RESULT_SCHEMA,
+							lease_id: parsed.authority.leaseId,
+							result: await this.#host.execute(parsed, controller.signal),
+						};
+					} finally {
+						clearInterval(keepalive);
+						response.off("close", disconnected);
+						this.#executions.delete(parsed.authority.leaseId);
+					}
 				} finally {
-					clearInterval(keepalive);
-					response.off("close", disconnected);
-					this.#executions.delete(parsed.authority.leaseId);
+					releaseCredential();
 				}
 			} else {
 				const cancel = record(body, "Native provider cancellation");
@@ -936,7 +980,14 @@ export class HttpNativeProviderHostService {
 			response.end(`${JSON.stringify(value)}\n`);
 		} catch (error) {
 			const code = nativeProviderFailureCode(error);
-			console.error(`Native provider request rejected: ${safeRequestDiagnostic(error)} [code=${code}]`);
+			// The diagnostic is fixed text or a hash; any token-shaped run (a lease token or bridge credential) is
+			// redacted all the same (G2-2).
+			console.error(
+				`Native provider request rejected: ${safeRequestDiagnostic(error)} [code=${code}]`.replace(
+					/[A-Za-z0-9_-]{43}/g,
+					"[redacted]",
+				),
+			);
 			// An execution already answered 200 with its keepalive; its failure is in the body.
 			const rejected = `${JSON.stringify({ error: "request rejected", code })}\n`;
 			if (!response.destroyed && response.headersSent) response.end(rejected);

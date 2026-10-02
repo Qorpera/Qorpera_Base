@@ -19,8 +19,8 @@ Status: W1a is live (v150, `20260928259260_runtime_event_intake`) and W2 is live
 (`20260928299650_runtime_company_mailboxes`, release v154), with mail switched off until the domain exists.
 M2b is merged (`20260928309740_runtime_company_mail_sending`, release v155), with sending switched off, and so is
 the founder's sender-name rule (`20260928319810_runtime_company_mail_sender_names`). W1b, signed hooks, is merged
-(`20260929998000_runtime_event_signed_hooks`, release v165, then a broker roll). Plus addresses and find_mail are in
-review (`20260929999800_runtime_company_mail_find_and_tags`).
+(`20260928409980_runtime_event_signed_hooks`, release v165, then a broker roll). Plus addresses and find_mail are in
+review (`20260929999920_runtime_company_mail_find_and_tags`).
 
 ## Words
 
@@ -37,7 +37,7 @@ review (`20260929999800_runtime_company_mail_find_and_tags`).
 | Step | What | Slot |
 | --- | --- | --- |
 | W1a | Hooks, deliveries, the public intake function, address-proven hooks end to end, member RPCs | `20260928259260` |
-| W1b | Signed hooks: the vault verifies Stripe, GitHub and Standard Webhooks signatures | `20260929998000` |
+| W1b | Signed hooks: the vault verifies Stripe, GitHub and Standard Webhooks signatures | `20260928409980` |
 | W2 | Routine trigger on a hook, event wakes, the agent tools `list_hooks` and `read_event` | `20260928269290` |
 | W3 | Agents create, pause and remove hooks (`manage_hook`) | registered when started |
 | M2a | Company mailboxes, receiving: owners create them, the mail provider's webhook fills them, routines wake on mail | `20260928299650` |
@@ -206,7 +206,7 @@ therefore not reported to the sender. It is recorded as `refused` with the reaso
 
 ## Verification in the vault (W1b)
 
-Migration `20260929998000_runtime_event_signed_hooks` and the runtime's `cloud-event-verification.ts`.
+Migration `20260928409980_runtime_event_signed_hooks` and the runtime's `cloud-event-verification.ts`.
 
 **Creating.** Owners and admins now create `stripe`, `github` and `hmac-sha256` hooks with
 `qorpera_create_event_hook`. The descriptor carries `signingSecret: {connectorId: "event_hook",
@@ -493,7 +493,7 @@ Switched off, the claim sends nothing and queued email waits; the first claim af
 fails what waited more than a day. Texts are cleared only by the claim, so unscheduling the worker stops that too.
 Agents learn an email was queued, not that it arrived; bounces and complaints, and a sent-mail view, follow.
 
-**Plus addresses and find_mail** (migration `20260929999800_runtime_company_mail_find_and_tags`, agreed with A1 on 2
+**Plus addresses and find_mail** (migration `20260929999920_runtime_company_mail_find_and_tags`, agreed with A1 on 2
 October, for accounts the company owns).
 - **Plus addresses.** `local+tag@<mail domain>` reaches the mailbox `local@`, so an agent can open a second account
   on one site (`agents+stripe@`). The tag is lowercase letters, digits, dots, hyphens and underscores, and the whole

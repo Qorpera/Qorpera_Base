@@ -268,7 +268,7 @@ $$;
 revoke all on function public.qorpera_find_agent_mail(jsonb, jsonb) from public, anon, authenticated, service_role;
 grant execute on function public.qorpera_find_agent_mail(jsonb, jsonb) to service_role;
 -- The guest's native host reaches it as it reaches send_mail: through the publishable-key entry point, bound to
--- its job's run (G2-1, 20260929999500).
+-- its job's run (G2-1, 20260928409985), and its dispatch lists it (G2-2, cloud-native-host-dispatch.ts).
 insert into public.qorpera_native_host_calls(name, scope) values ('qorpera_find_agent_mail', 'binding');
 
 -- ---------------------------------------------------------------------------
