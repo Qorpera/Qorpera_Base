@@ -301,6 +301,10 @@ checked by each slice's functional test (647, 652, 656, 658).
   - `record_release` and `read_actor`;
   - C1b-3a's view functions: `folder_view_resolve`, the view inheritance, and its bodies of `read_actor`,
     `record_release` and the commit.
+- **Members and the platform stop on deletion only** (slice P01, `20260930001000`). `read_actor` answers them before
+  the stop check, so read, list, the feed, agent todos and routine reads served them while the company was being
+  deleted. Now `read_actor` refuses them with 55000 'Company is being deleted' when the company has a deletion row. A
+  pause alone still lets them read. Runs and views keep 'Company execution is paused'.
 - **The real gap is the fence.** Deletion never drains the folder fence. It takes the gc fence (the company row
   `FOR UPDATE`), and it fails jobs with `SKIP LOCKED`, so jobs a folder effect holds at `KEY SHARE` are skipped. An
   effect that passed its post-fence re-read before the deletion committed finishes after it. C1c-3 makes deletion run
