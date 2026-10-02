@@ -306,6 +306,7 @@ describe("paths and order", () => {
 		expect(interfacePathProblems("tables/notes.txt")).toHaveLength(1);
 		expect(interfacePathProblems("tables/numbers/notes.txt")).toHaveLength(1);
 		expect(interfacePathProblems("tables/numbers")).toEqual([]);
+		expect(interfacePathProblems("tables/numbers/README.md")).toEqual([]);
 		expect(interfacePathProblems("work/anything.csv")).toEqual([]);
 	});
 
@@ -429,6 +430,7 @@ type = "choice"
 			readable: true,
 		});
 		expect(parseTableRows(numbers, "number,at,value,unit,kept_by,colour\n")).toMatchObject({ readable: false });
+		expect(parseTableRows(numbers, `${String.fromCharCode(0xfeff)}${text}`).rows).toHaveLength(1);
 		expect(parseTableRows(numbers, "number,at,value,unit,kept_by,unit\n")).toMatchObject({ readable: false });
 	});
 

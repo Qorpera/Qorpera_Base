@@ -347,7 +347,7 @@ export function interfacePathProblems(path: string): InterfaceProblem[] {
 	const parts = key.split("/");
 	if (parts[0] !== "interfaces" && parts[0] !== "tables") return [];
 	if (interfaceStatePath(path)) return [];
-	if (parts[0] === "interfaces" && parts.length === 3 && parts[2] === "readme.md" && isInterfaceName(parts[1] ?? "")) {
+	if (parts.length === 3 && parts[2] === "readme.md" && isInterfaceName(parts[1] ?? "")) {
 		return [];
 	}
 	if (parts.length === 2 && isInterfaceName(parts[1] ?? "")) return [];
@@ -1609,9 +1609,10 @@ export function parseTableRows(table: TableFile, text: string): TableRowsResult 
 			problem(null, null, "too_large", "The rows are larger than 64 KiB; a bigger table waits for the table store."),
 		);
 	}
-	if (LONE_SURROGATE.test(text) || text.startsWith("\ufeff"))
-		return fail(problem(null, null, "encoding", "The rows must be UTF-8 text without a byte order mark."));
-	const { records, error } = splitCsv(text);
+	// Spreadsheet exports start CSV with a byte order mark; it carries nothing, so it is ignored.
+	const body = text.startsWith("\ufeff") ? text.slice(1) : text;
+	if (LONE_SURROGATE.test(body)) return fail(problem(null, null, "encoding", "The rows must be UTF-8 text."));
+	const { records, error } = splitCsv(body);
 	if (error) return fail(problem(error.line, null, "row", error.message));
 	const header = records[0];
 	const byName = new Map(table.columns.map((c) => [c.name, c]));
