@@ -56,7 +56,8 @@ const LEASE_MS = 120_000;
 class View {
 	readonly key: string;
 	readonly environmentId: string;
-	readonly #actor: FolderActor;
+	/** An operator mount's actor; a core view's is built from its lease (`actor`), so no copy of its pass is kept. */
+	readonly #operator: FolderActor | undefined;
 	readonly passSha256: Buffer;
 	/** A core view's id and pass, for renewals; dropped when the view closes. */
 	lease: Grant["lease"];
@@ -84,7 +85,7 @@ class View {
 	constructor(grant: Grant) {
 		this.key = grant.key;
 		this.environmentId = grant.environmentId;
-		this.#actor = grant.actor;
+		this.#operator = grant.lease ? undefined : grant.actor;
 		this.passSha256 = grant.passSha256;
 		this.lease = grant.lease;
 		this.leaseUntil = undefined;
@@ -93,7 +94,7 @@ class View {
 
 	/** Who the core reads as. A core view's actor carries its pass, so it exists only while the view does. */
 	get actor(): FolderActor {
-		if (this.#actor.kind !== "view") return this.#actor;
+		if (this.#operator) return this.#operator;
 		if (!this.lease) throw new ProtocolError(ErrorCode.viewClosed, this.closed ?? "The view is closed");
 		return { kind: "view", viewId: this.lease.viewId, pass: this.lease.pass };
 	}
@@ -316,6 +317,8 @@ export class FolderService {
 	}
 
 	#failed(view: View, error: unknown): void {
+		// Work that was already running when the view closed or was dropped: nothing to retry.
+		if (view.closed) return;
 		if (error instanceof CoreRefusal && error.reason === "denied") {
 			this.#close(view, "The view's owner may no longer read this folder");
 			return;
