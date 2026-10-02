@@ -70,6 +70,7 @@ async function fixture(
 	presence?: CloudCompanyPathPresenceFactory,
 	machines = false,
 	folderBytes = false,
+	folderSearch = false,
 ) {
 	const f = nativeCompanyContextFixture();
 	if (mode === "company-silent" || mode === "company-worker") {
@@ -622,6 +623,8 @@ async function fixture(
 		timeoutMs: 10_000,
 		...(secretBroker ? { secretBroker } : {}),
 		...(mode === "company-office" ? { computerSession: officeSession } : {}),
+		// A relay socket only offers the search here; this suite never searches.
+		...(folderSearch ? { folderSearch: { socketPath: "/run/qorpera-folder-relay/0.sock" } } : {}),
 		// Folder bytes read the files a test seeds; this suite never saves a file.
 		...(folderBytes
 			? {
@@ -1206,6 +1209,22 @@ it("has a folder-v2 dynamic routine run decide through its routine file, settled
 		evidence.fenced.outputs.some((output: { output: string }) => output.output.includes('\\"state\\":\\"settled\\"')),
 	).toBe(true);
 });
+
+it.each([
+	{ folder: true, search: true, offered: true },
+	{ folder: true, search: false, offered: false },
+	{ folder: false, search: true, offered: false },
+])(
+	"offers company_search only to a folder-v2 run on a host with the node's folder search (%o)",
+	async ({ folder, search, offered }) => {
+		const f = await fixture("company-dynamic", false, undefined, false, true, search);
+		if (folder) f.context.folder = { agent: "nora", coworkers: {} };
+		await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+		const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
+		const names = evidence.threadParameters.dynamicTools[0].tools.map((tool: { name: string }) => tool.name);
+		expect(names.includes("company_search")).toBe(offered);
+	},
+);
 
 it("has a folder-v2 dynamic routine run find its file by the woken routine's id", async () => {
 	const f = await fixture("company-dynamic", false, undefined, false, true);

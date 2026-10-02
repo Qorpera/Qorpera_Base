@@ -182,6 +182,8 @@ export function cloudActionEffect(
 	switch (tool.name) {
 		case "company_read":
 		case "company_list":
+		// The node's folder search (F3): reads the folder, with the run's own view.
+		case "company_search":
 		case "read_context":
 		case "recall_memory":
 		case "read_skill":

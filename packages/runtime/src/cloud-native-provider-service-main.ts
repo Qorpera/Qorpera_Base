@@ -206,6 +206,18 @@ export function nativeCodingConfiguration(environment: NodeJS.ProcessEnv): { url
 	return { url: parseCloudCodingCommandUrl(required(environment, "QORPERA_CODING_COMMAND_URL")) };
 }
 
+/** The slot's relay to the node's folder search (F3, "Light threads"), which the shared execution service names while
+ * the search is on. */
+export function nativeFolderSearchConfiguration(environment: NodeJS.ProcessEnv): { socketPath: string } | undefined {
+	const socketPath = environment.QORPERA_FOLDER_SEARCH_SOCKET;
+	if (socketPath === undefined) return undefined;
+	if (!/^\/run\/qorpera-folder-relay\/[0-9]{1,2}\.sock$/.test(socketPath))
+		throw new Error("QORPERA_FOLDER_SEARCH_SOCKET must be a slot's socket under /run/qorpera-folder-relay");
+	if (environment.QORPERA_NATIVE_RUNTIME !== "company-path-v1")
+		throw new Error("The folder search requires the cloud-native runtime");
+	return { socketPath };
+}
+
 /** Whether this identity's login is kept by the vault (Stateless Compute step 1). */
 async function fetchIdentityLoginInVault(
 	baseUrl: string,
@@ -236,6 +248,7 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 	const runtimeConfiguration = nativeCompanyRuntimeConfiguration(environment);
 	const computerConfiguration = nativeCompanyComputerConfiguration(environment);
 	const codingConfiguration = nativeCodingConfiguration(environment);
+	const folderSearch = nativeFolderSearchConfiguration(environment);
 	const baseUrl = required(environment, "QORPERA_SUPABASE_URL");
 	const serviceKey = await credentialOrEnvironment(
 		environment,
@@ -441,6 +454,7 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 						}),
 					}
 				: {}),
+			...(folderSearch ? { folderSearch } : {}),
 			// A folder-v2 run's file bytes: the object gateway's folder route, on the same native credential.
 			folderBytes: (binding, identity) =>
 				new HttpCloudCompanyFolderBytes({

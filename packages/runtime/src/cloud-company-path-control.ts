@@ -18,6 +18,7 @@ const FOLDER_RPCS: ReadonlySet<CloudCompanyPathRpc> = new Set([
 	"qorpera_folder_list",
 	"qorpera_folder_commit",
 	"qorpera_folder_record_release",
+	"qorpera_folder_run_view_open",
 	"qorpera_folder_open_upload",
 	"qorpera_folder_seal_upload",
 	"qorpera_folder_renew_upload",
@@ -111,6 +112,8 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 			"qorpera_folder_list",
 			"qorpera_folder_commit",
 			"qorpera_folder_record_release",
+			// The run's own view, for the node's folder search (F3, 20260929999970).
+			"qorpera_folder_run_view_open",
 			// Staging a folder-v2 file's bytes (core C1d).
 			"qorpera_folder_open_upload",
 			"qorpera_folder_seal_upload",

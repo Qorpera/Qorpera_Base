@@ -54,6 +54,8 @@ describe("which calls are reviewed", () => {
 		["list_hooks", {}, "read"],
 		["read_event", { deliveryId: "73100000-0000-4000-8000-00000000000a" }, "read"],
 		["find_mail", { to: "agents+stripe@northwind.qorpera.mail", waitSeconds: 30 }, "read"],
+		// The node's folder search (F3): a read with the run's own view.
+		["company_search", { query: "plan" }, "read"],
 		// An email from a company mailbox leaves the company (M2b).
 		[
 			"send_mail",

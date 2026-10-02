@@ -58,6 +58,8 @@ export const CLOUD_RUNTIME_TOOL_OPERATIONS = [
 	// Company mail (M2b): an email from a mailbox; finding received mail.
 	"send_mail",
 	"find_mail",
+	// The node's folder search (F3, "Light threads").
+	"company_search",
 ] as const;
 /** Closed vocabulary; the SQL ingestion function checks the same list. */
 export const CLOUD_RUNTIME_OPERATIONS = [

@@ -48,6 +48,7 @@ export const NATIVE_HOST_CALLS: ReadonlyMap<string, "standard" | "long"> = new M
 	["qorpera_folder_open_upload", "standard"],
 	["qorpera_folder_read", "standard"],
 	["qorpera_folder_record_release", "standard"],
+	["qorpera_folder_run_view_open", "standard"],
 	["qorpera_folder_record_review", "standard"],
 	["qorpera_folder_renew_upload", "standard"],
 	["qorpera_folder_seal_upload", "standard"],
