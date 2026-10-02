@@ -1,4 +1,4 @@
-import type { CloudCompanyPathControl } from "@qorpera/runtime/cloud-company-path-gateway";
+import type { CloudCompanyPathControl, CloudCompanyPathGateway } from "@qorpera/runtime/cloud-company-path-gateway";
 import { cloudEventTools } from "@qorpera/runtime/cloud-event-tools";
 import { CloudNativeToolRun } from "@qorpera/runtime/cloud-native-tool-authority";
 import { CloudNativeToolBoundary } from "@qorpera/runtime/cloud-native-tool-boundary";
@@ -8,7 +8,10 @@ import { nativeToolAuthorityFixture } from "./fixtures/native-tool-authority-fix
 const DELIVERY = "73100000-0000-4000-8000-00000000000a";
 const HOOK = "73100000-0000-4000-8000-0000000000b1";
 
-async function fixture(result?: (method: string, args: Record<string, unknown>, runId: string) => unknown) {
+async function fixture(
+	result?: (method: string, args: Record<string, unknown>, runId: string) => unknown,
+	gateway?: Pick<CloudCompanyPathGateway, "mutate">,
+) {
 	const { binding, authority } = nativeToolAuthorityFixture();
 	const run = await CloudNativeToolRun.open(
 		binding,
@@ -41,7 +44,7 @@ async function fixture(result?: (method: string, args: Record<string, unknown>, 
 		companyId: run.identity.companyId,
 		runId: run.identity.runId,
 		identity: run.identity,
-		tools: cloudEventTools(binding, run.identity, { call }),
+		tools: cloudEventTools(binding, run.identity, { call }, gateway as CloudCompanyPathGateway | undefined),
 		assertActive: (signal) => run.assertActive(signal),
 		signal: run.signal,
 	});
@@ -277,5 +280,337 @@ describe("agent event tools", () => {
 		} finally {
 			f.run.close();
 		}
+	});
+	const mail = {
+		deliveryId: DELIVERY,
+		mailbox: "agents@northwind.qorpera.mail",
+		deliveredTo: ["agents+stripe@northwind.qorpera.mail"],
+		from: "Stripe <notifications@stripe.com>",
+		subject: "Confirm your email",
+		receivedAt: "2026-10-02T10:00:01+00:00",
+	};
+	const search = (answers: unknown[][]) => (method: string, _args: Record<string, unknown>, runId: string) => {
+		if (method !== "qorpera_find_agent_mail") throw new Error(method);
+		const mails = answers.shift() ?? [];
+		return { schema: "qorpera.agent-mail-search/v1", runId, since: "2026-10-02T09:00:00+00:00", mails, more: false };
+	};
+
+	it("finds mail through the run binding, with addresses lowercased and no wait passed on", async () => {
+		const f = await fixture(search([[mail]]));
+		try {
+			const found = await f.boundary.invoke("f1", "qorpera", "find_mail", {
+				to: " Agents+Stripe@Northwind.Qorpera.Mail ",
+				from: "Stripe",
+				subject: "Confirm",
+				since: "2026-10-02T09:00:00+02:00",
+				before: "2026-10-02T12:00:00Z",
+				waitSeconds: 60,
+			});
+			// A match answers at once, whatever time is left to wait.
+			expect(found.success, JSON.stringify(found)).toBe(true);
+			expect(f.call.mock.calls.map((call) => call.slice(0, 2))).toEqual([
+				[
+					"qorpera_find_agent_mail",
+					{
+						p_binding: f.binding,
+						p_request: {
+							to: "agents+stripe@northwind.qorpera.mail",
+							from: "Stripe",
+							subject: "Confirm",
+							since: "2026-10-02T09:00:00+02:00",
+							before: "2026-10-02T12:00:00Z",
+						},
+					},
+				],
+			]);
+			expect(found.contentItems[0].text).toContain("Confirm your email");
+		} finally {
+			f.run.close();
+		}
+	});
+
+	it("waits for a matching email, and answers with none when the time is up", async () => {
+		const arriving = await fixture(search([[], [mail]]));
+		try {
+			const started = Date.now();
+			const found = await arriving.boundary.invoke("w1", "qorpera", "find_mail", {
+				mailbox: "agents@x.example",
+				waitSeconds: 1,
+			});
+			expect(found.success, JSON.stringify(found)).toBe(true);
+			expect(found.contentItems[0].text).toContain(DELIVERY);
+			expect(arriving.call).toHaveBeenCalledTimes(2);
+			expect(Date.now() - started).toBeGreaterThanOrEqual(900);
+		} finally {
+			arriving.run.close();
+		}
+		const quiet = await fixture(search([]));
+		try {
+			const none = await quiet.boundary.invoke("w2", "qorpera", "find_mail", { waitSeconds: 1 });
+			expect(none.success, JSON.stringify(none)).toBe(true);
+			expect(none.contentItems[0].text).toContain('\\"mails\\":[]');
+			expect(quiet.call).toHaveBeenCalledTimes(2);
+		} finally {
+			quiet.run.close();
+		}
+		const now = await fixture(search([]));
+		try {
+			expect((await now.boundary.invoke("w3", "qorpera", "find_mail", {})).success).toBe(true);
+			expect(now.call).toHaveBeenCalledOnce();
+		} finally {
+			now.run.close();
+		}
+	});
+
+	it("stops waiting as soon as the run ends", async () => {
+		const f = await fixture(search([]));
+		const waiting = f.boundary.invoke("w4", "qorpera", "find_mail", { waitSeconds: 120 });
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		const closed = Date.now();
+		f.run.close();
+		const ended = await waiting;
+		expect(Date.now() - closed).toBeLessThan(1000);
+		expect(ended.success).toBe(false);
+		expect(f.call).toHaveBeenCalledOnce();
+	});
+
+	it("refuses a malformed search without calling the cloud, and an answer for another run", async () => {
+		const f = await fixture(search([]));
+		try {
+			for (const [callId, args] of [
+				["s1", { folder: "inbox" }],
+				["s2", { mailbox: "ab" }],
+				["s3", { from: "" }],
+				["s4", { subject: "s".repeat(201) }],
+				["s5", { since: "2026-10-02T09:00:00" }],
+				["s6", { since: "yesterday" }],
+				["s7", { waitSeconds: 121 }],
+				["s8", { waitSeconds: 1.5 }],
+				["s9", { from: "a\nb" }],
+				["s10", { to: 42 }],
+				["s15", { waitSeconds: null }],
+				["s16", { before: "yesterday" }],
+			] as const) {
+				const refused = await f.boundary.invoke(callId, "qorpera", "find_mail", args);
+				expect(refused.success, callId).toBe(false);
+			}
+			expect(f.call).not.toHaveBeenCalled();
+		} finally {
+			f.run.close();
+		}
+		for (const [callId, answer] of [
+			["s11", { runId: "73100000-0000-4000-8000-0000000000ff" }],
+			["s12", { schema: "qorpera.agent-mail/v1" }],
+			["s13", { mails: Array.from({ length: 11 }, () => mail) }],
+			["s14", { more: "no" }],
+		] as const) {
+			const other = await fixture((_method, _args, runId) =>
+				Object.assign({ schema: "qorpera.agent-mail-search/v1", runId, mails: [], more: false }, answer),
+			);
+			try {
+				expect((await other.boundary.invoke(callId, "qorpera", "find_mail", {})).success, callId).toBe(false);
+			} finally {
+				other.run.close();
+			}
+		}
+	});
+
+	it("attaches company files by their paths, each once, and refuses more than 10", async () => {
+		const f = await fixture((_method, args, runId) => ({
+			schema: "qorpera.agent-mail/v1",
+			runId,
+			mailId: "73300000-0000-4000-8000-0000000000a1",
+			status: "queued",
+			...(args.p_request as object),
+		}));
+		const email = { from: "support@mail.example.test", to: ["bob@acme.test"], subject: "Invoice", text: "Attached." };
+		try {
+			const sent = await f.boundary.invoke("m3", "qorpera", "send_mail", {
+				...email,
+				attachments: ["finance/invoice-42.pdf", "finance/totals.csv"],
+			});
+			expect(sent.success, JSON.stringify(sent)).toBe(true);
+			expect((f.call.mock.calls[0][1] as { p_request: unknown }).p_request).toEqual({
+				...email,
+				attachments: ["finance/invoice-42.pdf", "finance/totals.csv"],
+			});
+			for (const [callId, attachments] of [
+				["mail_a1", ["finance/a.pdf", "finance/a.pdf"]],
+				["mail_a2", Array.from({ length: 11 }, (_, n) => `f${n}.pdf`)],
+				["mail_a3", ["../secrets.txt"]],
+				["mail_a4", "finance/a.pdf"],
+				["mail_a5", [42]],
+			] as const) {
+				const refused = await f.boundary.invoke(callId, "qorpera", "send_mail", { ...email, attachments });
+				expect(refused.success, callId).toBe(false);
+			}
+			expect(f.call).toHaveBeenCalledOnce();
+		} finally {
+			f.run.close();
+		}
+	});
+
+	describe("save_attachment", () => {
+		const CHUNK = "c".repeat(64);
+		const request = {
+			deliveryId: DELIVERY.toUpperCase(),
+			attachment: 2,
+			path: "finance/invoice-42.pdf",
+			operationKey: "save-invoice-42",
+			expectedVersion: null,
+		};
+		const receipt = (runId: string, extra: Record<string, unknown>) => ({
+			schema: "qorpera.agent-mail-attachment/v1",
+			runId,
+			deliveryId: DELIVERY,
+			attachment: 2,
+			filename: "invoice-42.pdf",
+			contentType: "application/pdf",
+			...extra,
+		});
+		const writer = () => ({
+			mutate: vi.fn<CloudCompanyPathGateway["mutate"]>(async (_operation, input) => ({
+				schema: "qorpera.company-path-result/v1",
+				state: "applied",
+				operationKey: input.operationKey,
+				path: input.path,
+				version: "73300000-0000-4000-8000-0000000000c3",
+				receiptId: "73300000-0000-4000-8000-0000000000c1",
+				snapshotId: "73300000-0000-4000-8000-0000000000c2",
+				proposalId: null,
+			})),
+		});
+
+		it("is offered only with the company folder's writer", async () => {
+			const f = await fixture();
+			try {
+				expect((await f.boundary.invoke("s0", "qorpera", "save_attachment", request)).success).toBe(false);
+			} finally {
+				f.run.close();
+			}
+		});
+
+		it("waits while the platform fetches it, then writes its stored chunks as the file", async () => {
+			const gateway = writer();
+			const states = ["fetching", "stored"];
+			const f = await fixture(
+				(_method, _args, runId) =>
+					receipt(
+						runId,
+						states.shift() === "stored"
+							? {
+									state: "stored",
+									bytes: 12,
+									fileSha256: "f".repeat(64),
+									chunks: [{ sha256: CHUNK, bytes: 12 }],
+								}
+							: { state: "fetching" },
+					),
+				gateway,
+			);
+			try {
+				const saved = await f.boundary.invoke("s1", "qorpera", "save_attachment", request);
+				expect(saved.success, JSON.stringify(saved)).toBe(true);
+				expect(f.call.mock.calls.map(([method, args]) => [method, args])).toEqual([
+					[
+						"qorpera_native_mail_attachment",
+						{ p_binding: f.binding, p_request: { deliveryId: DELIVERY, attachment: 2 } },
+					],
+					[
+						"qorpera_native_mail_attachment",
+						{ p_binding: f.binding, p_request: { deliveryId: DELIVERY, attachment: 2 } },
+					],
+				]);
+				expect(gateway.mutate.mock.calls[0].slice(0, 2)).toEqual([
+					"write",
+					{
+						path: "finance/invoice-42.pdf",
+						operationKey: "save-invoice-42",
+						expectedVersion: null,
+						attachment: { fileSha256: "f".repeat(64), bytes: 12, chunks: [{ sha256: CHUNK, bytes: 12 }] },
+					},
+				]);
+				const text = saved.contentItems[0].text;
+				expect(text).toContain("invoice-42.pdf");
+				expect(text).toContain("applied");
+				expect(text).not.toContain(CHUNK);
+			} finally {
+				f.run.close();
+			}
+		});
+
+		it("says why a fetch failed, writing nothing", async () => {
+			const gateway = writer();
+			const f = await fixture(
+				(_method, _args, runId) =>
+					receipt(runId, { state: "failed", error: "The mail provider no longer has this attachment" }),
+				gateway,
+			);
+			try {
+				const failed = await f.boundary.invoke("s2", "qorpera", "save_attachment", request);
+				expect(failed.success, JSON.stringify(failed)).toBe(true);
+				expect(failed.contentItems[0].text).toContain("no longer has this attachment");
+				expect(gateway.mutate).not.toHaveBeenCalled();
+			} finally {
+				f.run.close();
+			}
+		});
+
+		it("stops waiting as soon as the run ends", async () => {
+			const gateway = writer();
+			const f = await fixture((_method, _args, runId) => receipt(runId, { state: "fetching" }), gateway);
+			const waiting = f.boundary.invoke("s3", "qorpera", "save_attachment", request);
+			await new Promise((resolve) => setTimeout(resolve, 50));
+			const closed = Date.now();
+			f.run.close();
+			const ended = await waiting;
+			expect(Date.now() - closed).toBeLessThan(1000);
+			expect(ended.success).toBe(false);
+			expect(gateway.mutate).not.toHaveBeenCalled();
+		});
+
+		it("refuses a malformed request without calling the cloud, and a receipt for another run or attachment", async () => {
+			const gateway = writer();
+			const f = await fixture(undefined, gateway);
+			try {
+				for (const [callId, args] of [
+					["s4", { ...request, attachment: 0 }],
+					["s5", { ...request, attachment: 51 }],
+					["s6", { ...request, attachment: 1.5 }],
+					["s7", { ...request, deliveryId: "the invoice" }],
+					["s8", { ...request, path: "../outside.pdf" }],
+					["s9", { ...request, operationKey: "" }],
+					["s10", { ...request, expectedVersion: "latest" }],
+					["s11", { ...request, extra: true }],
+				] as const) {
+					expect((await f.boundary.invoke(callId, "qorpera", "save_attachment", args)).success, callId).toBe(
+						false,
+					);
+				}
+				expect(f.call).not.toHaveBeenCalled();
+			} finally {
+				f.run.close();
+			}
+			for (const [callId, answer] of [
+				["s12", { runId: "73100000-0000-4000-8000-0000000000ff" }],
+				["s13", { attachment: 3 }],
+				["s14", { state: "saved" }],
+				["s15", { state: "stored", bytes: 12, fileSha256: "f".repeat(64), chunks: "all" }],
+			] as const) {
+				const other = await fixture(
+					(_method, _args, runId) => Object.assign(receipt(runId, { state: "fetching" }), answer),
+					gateway,
+				);
+				try {
+					expect(
+						(await other.boundary.invoke(callId, "qorpera", "save_attachment", request)).success,
+						callId,
+					).toBe(false);
+				} finally {
+					other.run.close();
+				}
+			}
+			expect(gateway.mutate).not.toHaveBeenCalled();
+		});
 	});
 });

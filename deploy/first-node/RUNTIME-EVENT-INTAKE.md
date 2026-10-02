@@ -18,8 +18,10 @@ Status: W1a is live (v150, `20260928259260_runtime_event_intake`) and W2 is live
 `20260928269290_runtime_event_wakes`), both accepted; the intake is switched on. M2a is merged
 (`20260928299650_runtime_company_mailboxes`, release v154), with mail switched off until the domain exists.
 M2b is merged (`20260928309740_runtime_company_mail_sending`, release v155), with sending switched off, and so is
-the founder's sender-name rule (`20260928319810_runtime_company_mail_sender_names`). W1b, signed hooks, is in review
-(`20260928409980_runtime_event_signed_hooks`).
+the founder's sender-name rule (`20260928319810_runtime_company_mail_sender_names`). W1b, signed hooks, is merged
+(`20260928409980_runtime_event_signed_hooks`, release v165, then a broker roll). Plus addresses and find_mail are in
+review (`20260929999920_runtime_company_mail_find_and_tags`), and so are attachments
+(`20260929999940_runtime_company_mail_attachments`, M2c-1).
 
 ## Words
 
@@ -42,7 +44,8 @@ the founder's sender-name rule (`20260928319810_runtime_company_mail_sender_name
 | M2a | Company mailboxes, receiving: owners create them, the mail provider's webhook fills them, routines wake on mail | `20260928299650` |
 | M2b | Sending as a mailbox, as the agent with an AI line: `send_mail`, the outbox and its sender | `20260928309740` |
 | M2b+ | Founder decisions of 1 October: no sender that reads as Qorpera | `20260928319810` |
-| M2c | Attachments' contents, threads and sent mail in the folder | registered when started |
+| M2c-1 | Attachments: an agent saves a received one into the company folder, and sends company files | `20260929999940` |
+| M2c-2 | Threads and sent mail as files in the folder | registered when started |
 
 Each step is a release-train feature PR: no bundle, manifest or activation files, an independent
 exact-head review, and a hand-off to the coordinator.
@@ -492,13 +495,127 @@ Switched off, the claim sends nothing and queued email waits; the first claim af
 fails what waited more than a day. Texts are cleared only by the claim, so unscheduling the worker stops that too.
 Agents learn an email was queued, not that it arrived; bounces and complaints, and a sent-mail view, follow.
 
+**Plus addresses and find_mail** (migration `20260929999920_runtime_company_mail_find_and_tags`, agreed with A1 on 2
+October, for accounts the company owns).
+- **Plus addresses.** `local+tag@<mail domain>` reaches the mailbox `local@`, so an agent can open a second account
+  on one site (`agents+stripe@`). The tag is lowercase letters, digits, dots, hyphens and underscores, and the whole
+  local part, tag included, is at most 64 characters (the mail door's limit); any other tag reaches no mailbox
+  (`unknown`). A message to several tags of one mailbox is stored once. Plus addresses
+  only receive: `send_mail` sends from a mailbox's own address, and refuses a company's own mailboxes as recipients
+  with or without a tag.
+- **What a mail delivery keeps.** Each received mail's delivery now records in `headers`:
+  - `delivered-to`: the message's recipients that reach that mailbox, tags included, whole addresses up to 2048 bytes;
+  - `from` and `subject`: control characters become spaces, at most 998 characters, cut further to 2048 bytes of JSON;
+  - `authentication-results`: the mail door's verdicts, `spf=… dkim=… dmarc=…`.
+
+  So the headers always fit their 8 KiB check. They count toward the company's hourly byte budget with the body
+  (contract item 3), and are cleared with the body after 7 days. Mail received before the migration keeps none.
+- **`find_mail`.** An agent searches its company's received mail (`qorpera_find_agent_mail`, through the run
+  binding like `read_event`), with these filters:
+  - `mailbox`: its address, which must be one of the company's;
+  - `to`: an address the mail was delivered to, tag included;
+  - `from` and `subject`: parts of them, in any case;
+  - `since`: an instant with its offset; by default the last 24 hours, never more than 7 days back;
+  - `before`: an instant with its offset, to page back.
+
+  It returns up to 10, newest first, as many as fit the tool's 8 KiB answer (about 6000 bytes of mails). Each has
+  `deliveryId`, `mailbox`, up to 5 `deliveredTo`, `from` and `subject` (200 characters each), `authentication` and
+  `receivedAt`. `more` is true when there are other matches, or when the search reached its bound: it looks at the
+  newest 2000 mails in the window (one ordered index scan per mailbox, planned with that mailbox's own values and
+  stopping at 2000 rows, whatever the company's volume) and reads only the kept headers. `nextBefore` is the `before` that shows the next older ones,
+  even when a page shows none. The answer's size counts the escaping it gets inside the tool's 8 KiB. It returns no mail text and matches nothing
+  inside it; the agent reads a mail with `read_event`. With `waitSeconds` (up to 120) the runtime asks again every 3
+  seconds until a match arrives. It is a read for the automatic review.
+- **Deploy.** The migration patches `qorpera_receive_mail`, `qorpera_send_agent_mail` and
+  `qorpera_record_runtime_observation` by exact text, and adds `qorpera_find_agent_mail` to G2-1's native host
+  allowlist. It rolls with a bundle carrying this runtime: an older runtime has no `find_mail`. Received mail now
+  records its headers and counts their bytes, tagged or not; nothing else changes for untagged mail. Acceptance: an agent
+  signs a test company up on a site with `agents+<site>@`, waits with `find_mail` for the confirmation, reads it
+  with `read_event`, and the account is opened.
+
 **Founder decisions (1 October 2026).** The AI line stays as written, as its own last paragraph on every email.
 `Auto-Submitted` goes only on automatic replies, the loop guard, and never on new emails, so help desks do not drop
 them. No email looks like it comes from Qorpera (above).
 
-**Next (M2c).** Attachments' contents into the company's storage (and `mail/<address>/` in the folder once its
-writer lands, with sent mail beside the received); threads as files. A connected Gmail read once a minute can
-become deliveries the same way.
+**Attachments (M2c-1)** (migration `20260929999940_runtime_company_mail_attachments`; Jonas, 2 October: agents send
+and receive files by mail, and a received attachment is fetched when an agent saves it, not when the mail arrives).
+- **Received.** The mail door keeps each attachment's description (`id`, `filename`, `contentType`, `size`); the
+  provider keeps the bytes for 30 days, and its download addresses last an hour. An agent saves one into the company
+  folder with `save_attachment`: `deliveryId`, `attachment` (its place in the email's list, from 1), and `path`,
+  `operationKey` and `expectedVersion` as for `company_write`.
+  - The first request (`qorpera_native_mail_attachment`, through the run binding like `read_event`) records a fetch
+    in `qorpera_mail_attachment_fetches`, one per received email and attachment, and calls the Edge Function
+    `mail-attachments` at once through `pg_net` (each minute through `pg_cron` too).
+  - The function claims a few fetches under a five-minute lease, asks the provider where each attachment is (its
+    received-attachments list, with the platform's key), streams it, and stores it as the company's objects: 4 MiB
+    chunks named by their sha256 in the Storage bucket `qorpera-profile-objects`. The catalog records each chunk, and
+    the company's storage allowance counts it. The fetch completes with the file's digest, size and chunks; the
+    database checks each chunk is the company's object of its size.
+  - The runtime waits up to 90 seconds, asking every 2. Once stored, it reads the chunks through the object gateway
+    (each against its digest, the whole against the file's) and writes them as a company file through the path
+    gateway, as `company_write` does: the agent's authority, the version check, protected paths as proposals, and a
+    receipt. A second save of the same attachment reuses its bytes. If the fetch is still running when the wait
+    ends, the agent calls again with the same arguments.
+  - A failure that may pass (a timeout, a rate limit, a server error) is tried again after 1, 2, 4 ... minutes, up to
+    six attempts or a day. An attachment the provider no longer has, one over 40 MiB, one whose size differs from what
+    the provider announced, or an allowance used up fails at once. The agent learns why, in fixed words (an
+    exception's own text can carry the signed download address). A failed fetch is tried afresh when an agent asks
+    again ten minutes later, while the email's text is kept.
+  - Limits: 40 MiB an attachment, while the email's text is kept (7 days). Nothing is stored that no agent saved.
+  - Reading: `company_read` reads text files. A PDF, an image or an office file opens on a computer
+    (`computer_transfer`).
+- **Sent.** `send_mail` takes `attachments`: up to 10 company file paths the agent may read, at most 28 MiB in all
+  (40 MB once encoded, the provider's limit). The database checks each through the Company File authority every file
+  tool uses (`qorpera_company_path_actor`, `qorpera_company_path_remember_read`), records each as it is when queued
+  (path, version, manifest, digest, size) and lists them on the receipt and the review card. A file name over 255
+  characters is refused. `mail-outbox` reads each
+  file's manifest and chunks from the company's objects in Storage, where the object gateway copies every object,
+  checks them against their digests, and sends them as the email's attachments. A file not in Storage yet is tried
+  again later. A claim takes due emails in order while their attachments come to 28 MiB, one email's worth, and the
+  sender turns each file into base64 as it reads it, so one call stays within an Edge Function's memory (256 MB) and
+  time. `mail-attachments` claims one fetch a call, for the same reason.
+- **folder-v2.** Refused both ways (`0A000`) until the folder-v2 core adds mail attachments as a GC root (C1d). No
+  production company uses folder-v2 today.
+
+**Next (M2c-2).** Threads and sent mail as files in the folder (`mail/<address>/`, sent mail beside the received;
+Jonas, 2 October, Interfaces decision 3), once the folder's platform writer lands. A connected Gmail read once a
+minute can become deliveries the same way.
+
+## Deploy (M2c-1)
+
+The migration adds a table and six functions, and patches `qorpera_send_agent_mail`, `qorpera_agent_mail_receipt`,
+`qorpera_claim_company_mail` and `qorpera_record_runtime_observation` by exact text. It rolls with a bundle carrying
+this runtime: an older runtime has no `save_attachment` and sends no `attachments`.
+
+The functions go first. The old `mail-outbox` ignores a claimed email's files and would send it without them, and a
+fetch nobody serves is given up after a day. The new `mail-outbox` reads the old claim's shape too, and
+`mail-attachments` only answers 503 until the migration exists. In order:
+
+1. `pg_net` must be installed (`create extension if not exists pg_net`; production had none on 2 October). The outbox's
+   timer (M2b) needs it too.
+2. Deploy the functions: `supabase functions deploy mail-outbox` (it now sends attachments) and
+   `supabase functions deploy mail-attachments` (`verify_jwt = false`, reads `RESEND_API_KEY`).
+3. Apply the migration with its bundle.
+4. Schedule the fetch worker each minute, as the outbox (same Vault entries: `qorpera_project_url` and
+   `qorpera_mail_outbox_key`; the database's immediate call uses them too):
+
+   ```sql
+   select cron.schedule('qorpera-mail-attachments', '* * * * *', $$
+   	select net.http_post(
+   		url := (select decrypted_secret from vault.decrypted_secrets where name = 'qorpera_project_url')
+   			|| '/functions/v1/mail-attachments',
+   		headers := jsonb_build_object('content-type', 'application/json',
+   			'apikey', (select decrypted_secret from vault.decrypted_secrets where name = 'qorpera_mail_outbox_key')),
+   		body := '{}'::jsonb,
+   		timeout_milliseconds := 120000)
+   $$);
+   ```
+
+5. Watch by count: `select status, count(*) from public.qorpera_mail_attachment_fetches group by 1 order by 1`.
+6. Acceptance: an email with a PDF and a CSV arrives at a test mailbox; the routine saves both with `save_attachment`;
+   the CSV reads with `company_read`; the PDF opens on a computer. The agent answers with `send_mail` attaching a
+   company file, and the reply arrives with the file intact (same digest). Then a 28 MiB attachment both ways: received
+   and saved, then sent, with the functions' logs showing no resource error.
 
 ## Deploy (M2a)
 
@@ -527,7 +644,8 @@ mail sent automatically. After it is live:
 1. In Resend (Jonas): verify the mail domain for sending (its SPF and DKIM records), the same domain mailboxes
    receive on. Until then Resend refuses the platform's `from`, and the outbox fails those emails.
 2. Deploy the functions: `supabase functions deploy mail-outbox` (`verify_jwt = false`) and
-   `supabase functions deploy mail-intake`; `RESEND_API_KEY` is already set.
+   `supabase functions deploy mail-intake`. They read the Edge Function secrets `RESEND_API_KEY` and (the intake)
+   `RESEND_WEBHOOK_SECRET`, which Jonas sets; production had neither on 2 October.
 3. Schedule it every minute, with the project URL and a Supabase secret key from Vault as for the hour notices
    (`RUNTIME-COMPUTER-HOURS.md`, "Email"; a key made for this worker, e.g. `qorpera_mail_outbox_key`, keeps its
    rotation separate):

@@ -55,8 +55,10 @@ export const CLOUD_RUNTIME_TOOL_OPERATIONS = [
 	// Event wakes (W2): the company's hooks and one event's body.
 	"list_hooks",
 	"read_event",
-	// Company mail (M2b): an email from a mailbox.
+	// Company mail (M2b): an email from a mailbox; finding received mail; saving a received attachment (M2c-1).
 	"send_mail",
+	"find_mail",
+	"save_attachment",
 ] as const;
 /** Closed vocabulary; the SQL ingestion function checks the same list. */
 export const CLOUD_RUNTIME_OPERATIONS = [

@@ -65,6 +65,22 @@ export const WORKSPACE: Record<string, string> = {
 	"This conversation has an unsent draft. Open it to finish or clear that draft before sending another.":
 		"Denne samtale har en usendt kladde. Åbn den, og gør kladden færdig eller ryd den, før du sender en ny.",
 
+	// app/views/shell.ts: the Agents | Interfaces switch and the Interfaces tab
+	Interfaces: "Interfaces",
+	"Agents or interfaces": "Agenter eller interfaces",
+	"No matching interfaces.": "Ingen interfaces passer.",
+	"Search interfaces": "Søg i interfaces",
+	"Close search": "Luk søgning",
+
+	// app/interfaces.ts and app/views/interface.ts
+	"{name} needs you": "{name} har brug for dig",
+	"{name} has a run that did not finish": "{name} har en kørsel, der ikke blev færdig",
+	"You were mentioned in {conversation}": "Du blev nævnt i {conversation}",
+	"This page isn't available here yet.": "Siden er ikke tilgængelig her endnu.",
+	"Back to the company": "Tilbage til virksomheden",
+	Live: "Live",
+	"Nothing here right now.": "Intet her lige nu.",
+
 	// app/views/shell.ts
 	"Profile: {name}": "Profil: {name}",
 	"← Companies": "← Virksomheder",

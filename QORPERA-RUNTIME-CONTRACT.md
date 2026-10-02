@@ -399,6 +399,12 @@ not design intent and MUST NOT be presented as product limits.
 
 ### 5.6 Company folder layout
 
+> **Amended 2026-10-02.** The tree gains `interfaces/` and `tables/`, both
+> seeded and kept; their files join the structured files, and the automatic
+> review gains the interface changes. See the
+> [interfaces amendment](#2026-10-02-amendment-interfaces-project-company-state-from-the-company-folder)
+> in section 19, item 12.
+
 Ratified 2026-09-27 (see the
 [layout amendment](#2026-09-27-amendment-the-company-folder-layout) in
 section 19).
@@ -448,11 +454,19 @@ agents/
     <group-name>/group.md    one folder per group chat
 connections/
   <connection>.md            one file per connected account
+human-tasks/
+  <task>.md                  work an agent hands to a member or a contact
+  <task>/                    what the person sends back: proof/ and note.md
+contacts/
+  <contact>.md               one file per outside person or firm
 skills/
   <skill>/SKILL.md           company skills
 rules/
   <rule>.md                  company review rules
 ```
+
+`human-tasks/` and `contacts/` joined the seeded tree on 2 October 2026 (Jonas;
+the 2026-10-02 amendment "work for people", item 5).
 
 `code/<owner>/<name>/` holds repositories and is created when coding starts
 (the 2026-09-27 amendment "every machine works in the company folder", item
@@ -556,7 +570,8 @@ works for when that member asks (2026-09-25 amendment, item 1).
   unassisted, and its hire waits for a member.
 - Seeded folders and files cannot be deleted or moved: `vision/`,
   `vision/vision.md`, `agents/`, `agents/sections.md`, `agents/groups/`,
-  `connections/`, `skills/` and `rules/`. The Co-Founder's folder and its
+  `connections/`, `human-tasks/`, `contacts/`, `skills/` and `rules/`
+  (`human-tasks/` and `contacts/`: Jonas, 2 October 2026). The Co-Founder's folder and its
   `agent.md` cannot be deleted; the folder is only renamed within `agents/`
   when the Co-Founder is renamed.
 - Only owners and admins write `rules/`.
@@ -1462,6 +1477,11 @@ a permanent hire when the responsibility ends with the project.
 
 ### 14.5 Attention and product projection
 
+> **Amended 2026-10-02.** The rail has two tabs: Agents, the hierarchy below,
+> and Interfaces, the company's pages with the main interface on top. See the
+> [interfaces amendment](#2026-10-02-amendment-interfaces-project-company-state-from-the-company-folder),
+> item 8.
+
 > **Amended 2026-09-27.** The hierarchy is built from the company folder: the
 > Co-Founder, then the sections of `agents/sections.md` with their agents,
 > then group chats (5.6).
@@ -1718,6 +1738,10 @@ authorize browser session use.
 
 ### 16.2 Interaction surfaces
 
+> **Amended 2026-10-02.** The list gains offers to a member: of a card, an area, the supervision of an area's
+> agents, or an agent joining a supervised area. See the
+> [interfaces amendment](#2026-10-02-amendment-interfaces-project-company-state-from-the-company-folder), item 9.
+
 Qorpera MUST use distinct state machines for:
 
 - destructive or external-action approval;
@@ -1953,6 +1977,10 @@ distinguish quota exhaustion (switch) from transient rate limiting (retry)
 and provider outage (wait or fail over). Agents MAY later configure model and
 sponsor routing for routines, workers, and teammate questions through
 versioned policy objects.
+
+Amended 2026-10-02: for a supervised agent's work that no member started, the supervisor gets the cards and their
+own login pays where the rules below let it; see the
+[interfaces amendment](#2026-10-02-amendment-interfaces-project-company-state-from-the-company-folder), item 10.
 
 2026-09-28 amendment: the member who started the work pays. A member's own
 model login pays only for work that member started: their turns and room
@@ -2622,7 +2650,10 @@ placements that depended on them.
    document keeps its `grants.responsibilities` key, ignored, so no stored
    document becomes invalid, and the organization read model still answers an
    empty `responsibilities` list so every client keeps parsing.
-7. **Tools are the intended replacement for live measurement.** The part of
+7. **Superseded 2026-10-02 by the
+   [interfaces amendment](#2026-10-02-amendment-interfaces-project-company-state-from-the-company-folder):
+   pages are files drawn from fixed building blocks, and no page code runs.**
+   **Tools are the intended replacement for live measurement.** The part of
    the old model worth keeping is that people can see how the things they care
    about are going. The planned form is a second kind of item beside agents:
    **tools**, internal apps and dashboards hosted in the Company File, possibly
@@ -4015,7 +4046,8 @@ immediately before an effect, and section 9.1's context views, are unchanged.
 
 ### 2026-10-02 amendment: work for people
 
-Proposed 2 October 2026 (F2, step H1); pending founder approval. It writes
+Proposed 2 October 2026 (F2, step H1); pending founder approval, except item
+5's seeded folders, which Jonas approved on 2 October 2026. It writes
 into 5.6 the founder's decisions 4 and 5 of 29 September 2026 (Q1 page "Qorpera
 on Qorpera", section 5) and widens 16.1's last step. The folder names
 `human-tasks/` and `contacts/` are the coordinator's proposal on those decisions
@@ -4056,11 +4088,197 @@ and can still be renamed. Formats:
 
    - "Structured files" gains task and contact files: a fixed format, with
      their index once the folder core keeps it (H2);
-   - the platform seeds both folders when a company is created, once that
-     index exists; whether they join the seeded folders that cannot be
-     deleted or moved is decided then.
+   - the platform seeds both folders when a company is created, and they join
+     the seeded folders that cannot be deleted or moved (Jonas, 2 October
+     2026; written into 5.6's tree and its list of seeded folders).
 6. **16.2 is unchanged here.** Turning the office sign-in handoff into a human
    task (A1, company accounts) is for A1's own amendment.
+
+### 2026-10-02 amendment: interfaces project company state from the company folder
+
+Ratified 2 October 2026 (Jonas). He named Interfaces and set their direction:
+- the rail splits into Agents and Interfaces;
+- the first interfaces are Mailbox, Company Pulse and Members;
+- interfaces are pages built from TOML files in the company folder;
+- a marketplace comes later.
+
+The same day he approved the design page (https://claude.ai/artifact/PXouSQFWVSHTc6Vko3Gm7G) and its four decisions.
+
+This amendment:
+- extends 5.6, 14.5 and 16.2, section 17's payer rules, and the 2026-09-24 and 2026-09-25 amendments;
+- supersedes item 7 of the 2026-09-20 amendment.
+
+Formats, limits and the build order: `deploy/first-node/RUNTIME-INTERFACES.md`.
+
+1. **An interface is a page the company keeps as a file.** `interfaces/<interface>/interface.toml` says what the page
+   shows, where each part reads from, which buttons it has and who sees it.
+   - The client draws it from a fixed set of building blocks that ship with the client.
+   - An interface holds no code: no script, style, markup or network request from a file runs in a member's browser
+     or on any Qorpera origin.
+   - Text a page shows from a file or an email is drawn without HTML and loads nothing from outside the company
+     folder.
+2. **An interface shows company state and decides nothing.** Like an index, it is read from files and says nothing the
+   files don't. It grants nothing:
+   - every part reads with the viewer's own authority (4.3), so a page shows a member or an agent only what they could
+     open themselves;
+   - `access` only narrows who sees a page;
+   - a part whose source does not exist is not drawn (the client contract's rule against rendering missing machinery,
+     `supabase/CLIENT-CONTRACT.md`).
+3. **Sources are a closed list.**
+   - From the folder: `vision`, a file, the indexes of structured files, and tables.
+   - From runtime state, through calls the member already has: members, agents working now, activity, and what waits
+     for the viewer.
+   - Mail:
+     - received mail is saved in the folder under `hooks/<hook>/` once the core's writer lands (2026-09-29 amendment,
+       items 6 and 9);
+     - sent mail is kept as files beside it (founder decision, 2 October 2026), where Q1's M2c puts it;
+     - until both are files, mail is read through a member read.
+   - Outside content (11.1), such as an email, stays marked as outside content wherever an interface shows it or a
+     button carries it.
+   - Mail the platform marks as sign-up or sign-in mail for a company account shows who used it, never its text.
+4. **Tables are company state.**
+   - A table is a folder, `tables/<table>/`, so creating, moving or deleting a table is one unit:
+     - `table.toml` defines it: its columns, its key and who writes it;
+     - `rows.csv` holds its rows: a structured file checked at every save against the definition (founder decision,
+       2 October 2026: rows in a file first), within the folder core's current bound for a checked file, which is
+       the core's and not a product limit (5.5).
+   - Deleting or moving `table.toml` or `rows.csv` on its own is refused; deleting the folder deletes the table.
+   - The rows name their columns in their first line, in any order, and may leave out optional ones.
+   - A definition change lands only if the rows it finds still fit. To add a required column, add it as optional,
+     fill the rows, then make it required. To remove one, make it optional, drop it from the rows, then remove it.
+     Each step is its own save, so the folder core's unit-by-unit commit never splits a change.
+   - The database holds rows only as the folder's index of those files (5.6).
+   - A table that outgrows a file waits for the company's table store. The store has its own amendment, which says
+     where it runs. Its rows belong to the company like the folder: they never go to the database, the folder gets a
+     snapshot at least daily, and deleting or erasing the company removes them.
+5. **Buttons are actions that already exist.**
+   - A button names one verb: open, message, add, set, take, offer, release or answer.
+   - Each verb is something the viewer can already do: post a message, save a file, or answer a card through its
+     existing state machine (16.2).
+   - A button runs as the viewer, under the same review as doing it by hand, and does no more than its verb. A
+     message button posts only after the viewer sends the prefilled text, and a value it fills in from outside content
+     travels as a marked quote, never as the viewer's own words.
+   - The platform draws every confirmation. Money, sending and other outside effects keep their own review.
+6. **Nobody assigns anybody.** A member column marked `needs_yes` holds who has something: who holds a card, who owns
+   or supervises an area.
+   - **Take:** a member may put their own id in an empty cell.
+   - **Release:** a member may clear a cell that names them.
+   - **Offer:** the member a cell names, or anyone when the cell is empty, may offer it to a member. The offer is a
+     request card (item 9) and changes nothing in the file. When the member says yes, the platform saves the change as
+     that member, and the save is allowed because the open offer names them.
+   - **Agents** act for their supervisor (item 10):
+     - an agent may take for its supervisor, release what its supervisor holds, and offer what its supervisor holds or
+       what is empty;
+     - an agent never changes an area's owner, supervisor or agents.
+   - **Leaving:** when a member leaves the company, the platform clears the cells that name them, and the owners are
+     told.
+   - The save check refuses any other change to such a column, whoever makes it and however.
+7. **Agents use interfaces as members do.**
+   - Agents read a page as text (`interface_read`) and read and write tables (`table_read`, `table_write`).
+   - They create and change interfaces and tables with `save_interface`.
+   - The automatic review (2026-09-25 amendment) counts these as delegation:
+     - creating an interface;
+     - adding or changing a button, including a verb a block lists;
+     - changing `access`;
+     - creating a table, or changing its columns or writers.
+
+     No member's yes is needed beyond what the review asks (founder decision, 2 October 2026). `save_interface` joins
+     the tools the review recorder (C2) records, and the review gate and the database classify each call by what it
+     changes. Until the review of changes no tool carried exists (C2's R2), an agent makes these changes only with
+     `save_interface`.
+   - Layout, wording, order and sources apply at once, whatever carries them. The agent's thread shows the change with
+     Undo, and it can be restored from the version history.
+   - Members' own changes are not reviewed.
+   - Coding sessions see `interfaces/` and table definitions read-only.
+8. **The rail has two tabs (amends 14.5).**
+   - Agents is the hierarchy 14.5 describes.
+   - Interfaces lists the company's active interfaces: the main interface on top, then the others in the order of
+     `interfaces/order.md`.
+   - An interface whose `needs` are not met is not listed.
+   - Pins and hiding are each member's own (2026-09-24 amendment, item 3).
+9. **Offers are an interaction surface (amends 16.2).** 16.2's list gains an offer to a member of:
+   - a card;
+   - an area;
+   - the supervision of an area's agents;
+   - an agent joining a supervised area.
+
+   An offer waits durably for that member. Dismissal or no answer is never a yes (16.2).
+10. **Supervision (founder decision, 2 October 2026; amends section 17).**
+    - **What a supervisor is.** The member an area's agents answer to. It is shown in the `supervisor` column of
+      `tables/areas/rows.csv`, the seeded table the platform reads supervision from.
+    - **Work alone** is the agents' work that no member started: routines an agent set up for itself, event and
+      file-change wakes, and the wakes those runs start. Work a member started stays theirs (section 17).
+    - **What follows from it.** For the agents' work alone:
+      - their questions, and the review cards that go to the requester today, go to the supervisor;
+      - the supervisor's personal rules apply;
+      - the supervisor's own login pays, where section 17 lets it.
+
+      The recorded requester stays whoever caused the work (4.2). The supervisor is recorded as the payer and as the
+      one who gets the cards. Cards that go to owners and admins (company rules and built-in checks; 2026-09-25
+      amendment, item 5) still go to them.
+    - **What it changes in section 17.** For supervised agents it changes section 17's "An agent's standing execution
+      authority names a company account only; it never pays with a member's login." Every other rule of section 17
+      still decides which login may pay:
+      - a ChatGPT plan pays only for work its own member starts, and no other member's activity triggers calls on it
+        (2026-10-01 amendment), so it never pays for work alone. On a plan login, supervision brings the cards and
+        the personal rules; the payment follows today's rule;
+      - a Claude login never pays for agent work;
+      - work stops at a usage limit.
+
+      Where the supervisor's login may not pay, today's rule applies. A member's own messages still run on that
+      member's own account.
+    - **Consent is a record, not a cell.** Payment follows the member's own consent record, kept with their settings
+      in the database.
+      - It is made when they say yes to supervising an area's agents: when they put their own id in the area's
+        `supervisor` cell, or accept a supervisor request. Taking an area's `owner` cell offers its supervision to
+        the taker on the same screen.
+      - It can be withdrawn at any time. It ends when they release the area, when the area's row is deleted or its
+        key changes, or when they leave the company; the owners are told.
+      - A cell that names a member without a live consent record decides nothing.
+    - **Adding agents needs the supervisor's yes.** While an area has a live consent record, a member other than the
+      supervisor who adds an agent to its `agents` makes an offer to the supervisor. The file changes only when the
+      supervisor says yes. Agents never change `agents` (item 6).
+    - **One area per agent.** An agent sits in at most one area's `agents`, and the save check refuses a second.
+    - **What areas are not.** Areas grant nothing and are not the retired responsibility objects (2026-09-20
+      amendment, item 1).
+    - **Until it is built** (step I9b), today's rules apply.
+11. **Seeded interfaces and the library.**
+    - At founding the platform seeds `interfaces/` and `tables/` with:
+      - Pulse, the main interface, and its numbers table;
+      - Mailbox;
+      - Members, with its areas and cards tables.
+    - Each is copied from Qorpera's library and marked with where it came from.
+    - The main interface can be changed but not deleted.
+    - Adding a library interface later copies its files the same way, and the copy is the company's.
+    - A newer library version is offered, never applied by itself. A line both sides changed becomes a choice.
+    - The library holds only files of this format.
+12. **5.6 changes with this amendment.**
+    - The tree gains:
+
+      ```
+      interfaces/
+        order.md                 the order of the Interfaces tab
+        <interface>/
+          interface.toml         one page
+          README.md              what it is for (optional)
+      tables/
+        <table>/
+          table.toml             a table's columns, key and writers
+          rows.csv               its rows
+      ```
+
+    - "It holds all company state" gains one exception: rows in the table store (item 4).
+    - The database's list gains:
+      - each member's pins and hidden interfaces;
+      - their supervision consent records;
+      - open offers, as runtime state.
+    - "Structured files" gains interface files, `interfaces/order.md`, table definitions and table rows.
+    - The seeded folders that can't be deleted or moved gain:
+      - `interfaces/`, `interfaces/order.md`, and the main interface's folder and file;
+      - `tables/`, and the `tables/areas/` folder with its two files.
+    - The automatic review's list gains item 7's changes.
+    - Coding sessions see `interfaces/` and table definitions read-only, beside `agents/` and `rules/`.
+    - Until F2 writes these into 5.6's text with the save-hook step (I6), the note at the top of 5.6 points here.
 
 ## 20. Enforcement matrix
 

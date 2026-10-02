@@ -191,9 +191,12 @@ export function cloudActionEffect(
 		case "machine_list":
 		case "list_hooks":
 		case "read_event":
+		case "find_mail":
 			return "read";
 		case "company_write":
 		case "company_mkdir":
+		// A received attachment saved into the company folder, through the same governed gateway (M2c-1).
+		case "save_attachment":
 		case "update_memory":
 		// A skill is guidance in the Company File, written through the same governed gateway.
 		case "update_skill":
@@ -465,6 +468,8 @@ export function describeCloudAction(
 		add("subject", args.subject);
 		quote("text", args.text, CONTENT_BYTES);
 		if (typeof args.inReplyTo === "string") add("thread", "A reply to an email the company received");
+		// The company files that leave with it.
+		add("attachments", addresses(args.attachments));
 	} else if (tool.name === "company_delete") {
 		title = "Delete from the Company File";
 		target = text(args.path) || null;
