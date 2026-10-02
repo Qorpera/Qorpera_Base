@@ -151,7 +151,7 @@ export function attachComputerDrag(panel: HTMLElement, signal: AbortSignal): () 
 			bounds,
 		);
 	};
-	// The enter animation slides the panel in by 18px; once the member takes hold of it, measurements and
+	// The open animation grows the panel out of its button; once the member takes hold of it, measurements and
 	// positions must be the panel's own. Toggling animation via a class would replay the slide on release.
 	const settle = () => {
 		if (panel.style.animation !== "none") panel.style.animation = "none";

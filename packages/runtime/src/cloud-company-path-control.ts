@@ -125,9 +125,10 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 			// Event wakes (W2).
 			"qorpera_list_agent_event_hooks",
 			"qorpera_read_agent_event",
-			// Company mail (M2b), and finding received mail.
+			// Company mail (M2b), finding received mail, and a received attachment's stored bytes (M2c-1).
 			"qorpera_send_agent_mail",
 			"qorpera_find_agent_mail",
+			"qorpera_native_mail_attachment",
 		];
 		if (!permitted.includes(method)) throw new Error("Unknown Company File control operation");
 		const body = JSON.stringify(argumentsValue);

@@ -2,6 +2,7 @@
  * Text always goes through textContent, never innerHTML. */
 
 import { figureElement } from "./avatar.ts";
+import { leave } from "./motion.ts";
 import { attachPersonPicture } from "./person-pictures.ts";
 import { presentationDay, presentationLocale, t, timeZoneOption } from "./preferences.ts";
 
@@ -311,7 +312,7 @@ export function confirmDialog(
 		const close = (result: boolean) => {
 			if (closed) return;
 			closed = true;
-			dialog.remove();
+			leave(dialog, "is-leaving", () => dialog.remove());
 			signal?.removeEventListener("abort", cancel);
 			window.removeEventListener("hashchange", cancel);
 			document.removeEventListener("keydown", onKey);

@@ -6,6 +6,7 @@
 @import "./company-file-live.css";
 @import "./founding.css";
 @import "./dark.css";
+@import "./motion.css";
 
 /* Layout and components for the web client. Values derive from tokens.css
  * (shared with the desktop). Selectors are the contract with the views. */
@@ -72,7 +73,7 @@ label > input, label > select { font-weight: 400; }
 .btn {
 	min-height: 32px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
 	background: var(--bg); padding: 0 12px; cursor: pointer; white-space: nowrap;
-	transition: background 120ms ease, border-color 120ms ease;
+	transition: background 120ms ease, border-color 120ms ease, transform var(--motion-base) var(--ease-spring);
 	display: inline-flex; align-items: center; gap: 6px;
 }
 .btn:hover:not(:disabled, [aria-disabled="true"]) { background: var(--hover); }
@@ -393,7 +394,6 @@ label > input, label > select { font-weight: 400; }
 .rail-mention { position: absolute; z-index: 2; top: -3px; right: -3px; display: grid; place-items: center; width: 18px; height: 18px; border-radius: 50%; background: var(--sidebar-selection); color: #fff; font-size: 11px; font-weight: 700; line-height: 1; box-shadow: 0 0 0 2px var(--rail); }
 .rail-row:hover .rail-row-status { border-color: var(--rail-hover); }
 .rail-row.active .rail-row-status { border-color: var(--rail-selection); }
-.cofounder-status.failed, .rail-row-status.failed { background: var(--rail-status-failed); }
 .rail-row-copy { display: flex; flex-direction: column; justify-content: flex-start; gap: 2px; min-width: 0; }
 .rail-row-copy strong { font-size: 13px; font-weight: 600; line-height: 16px; }
 .rail-row-copy small { font-size: 11px; line-height: 15px; color: #5f5e5d; }
@@ -469,9 +469,8 @@ label > input, label > select { font-weight: 400; }
 .figure-canvas[hidden], .figure-fallback[hidden] { display: none; }
 @media (forced-colors: active) {
 	.cofounder-home.active, .rail-row.active, .rail-pin.active { outline: 2px solid Highlight; }
-	/* Forced colours empty both discs into rings; the failed one stays filled. */
-	/* Under .rail so it outranks the hover and selected ring colours. */
-	.rail :is(.cofounder-status, .rail-row-status).failed { forced-color-adjust: none; background: CanvasText; border-color: Canvas; }
+	/* Forced colours empty the disc into a ring; a failed run's "!" stays filled. */
+	:is(.rail, .rail-drag-ghost) .alert-mark::before, :is(.rail, .rail-drag-ghost) .alert-mark::after { forced-color-adjust: none; background: CanvasText; }
 }
 
 .avatar {
@@ -537,7 +536,7 @@ details > summary { cursor: pointer; font-weight: 600; margin: 8px 0; }
 .hub-create-submit {
 	height: 48px; padding: 0 22px; border: 0; border-radius: 8px; background: var(--primary); color: var(--on-primary);
 	font-size: 15px; font-weight: 600; letter-spacing: -0.005em; cursor: pointer; white-space: nowrap;
-	transition: background-color 160ms ease;
+	transition: background-color 160ms ease, transform var(--motion-base) var(--ease-spring);
 }
 .hub-create-submit:hover:not(:disabled) { background: var(--primary-hover); }
 .hub-create-submit:disabled { opacity: 0.5; cursor: default; }
