@@ -113,7 +113,7 @@ Never run `qorpera_configure_runtime_node` on a node switched off fully during a
    - both nodes are `serving`, `runsServing` (a runs switch left off by an aborted roll is not in the
      node's policy and survives a new policy version) and `ready`;
    - release R+1 is staged on both nodes (`agent stage`);
-   - the release's migrations, the activation and the reverse activation (see "If something goes
+   - the release's migrations, the activation and the emergency packets (see "If something goes
      wrong") were rehearsed on a copy of the production schema;
    - every active orchestrator maps to exactly one node. An orchestrator with no node is not
      stopped by emptying, and one with two nodes keeps `readyForUpdate` false. Enrol or revoke such
@@ -323,11 +323,16 @@ node scripts/runtime-roll.mjs packets --ref <release commit> \
 - Every file is exactly one outer transaction, and its sha256 is in `packet.json` with the order. A
   mutation packet is dry-run first, then committed.
 - `dryRunOnly` lists the check packets (`00-check`, `31-drain-a`, `50-check-n`, `61-drain-b`). They read
-  operator functions that a read-only role cannot run, so the runner runs them as a dry run and never
-  commits them.
-- `emergencyOnly` lists the paused way back (`90-pause-now`, `91-reverse`, `92-resume`). `90-pause-now`
-  has no quiet gate: it pauses every company that has an owner or admin and is not on folder-v2, under that
-  founder, and names the companies it could not pause.
+  operator functions that a read-only role cannot run. The runner refuses to commit them (its
+  `dryRunOnly` rule).
+- `emergencyOnly` lists the paused way back: `90-pause-now`, `91-reverse`, `92-clear-declarations` and
+  `93-resume`.
+  - `90-pause-now` has no quiet gate. It pauses every company that has an owner or admin and is not
+    being deleted: a folder-v2 company through its operator pause, any other under that founder (the
+    pause records that founder). Each company is tried on its own, so a busy lock or a refusal stops only
+    that one. The result names what failed; run the packet again for those.
+  - `93-resume` resumes the same way.
+  - The runner commits these files only when told to (`QORPERA_ROLL_EMERGENCY=<file>`).
 - `node scripts/runtime-roll.mjs compare <00-check result> <50-check-n result>` lists N inputs that became
   pending after the check (live N work, step 7). It exits 1 when there are any.
 
@@ -342,7 +347,7 @@ node scripts/runtime-roll.mjs packets --ref <release commit> \
 | `50-check-n` | 7 |
 | `60-runs-off-b`, `61-drain-b` | 8, emptying |
 | `70-return-b` | 8, declaration, gate and return after node B's update |
-| `80-finish` | 9. It refuses while N work is queued or running |
+| `80-finish` | 9. It reports the N work left (`oldBundleWorkLeft`); `60-runs-off-b` already refuses while N work is queued |
 
 `scripts/test-runtime-roll.mjs` (part of the hosted-db step) rehearses a whole roll with these packets on two
 fixture nodes, from the active bundle to a fixture bundle, and the emergency way back, once with each
@@ -359,18 +364,18 @@ fixture nodes, from the active bundle to a fixture bundle, and the emergency way
   changed: N stays active, A takes no runs, and B serves N. Fix the cause and run step 6 again.
 - **N+1 misbehaves after the switch.** There is no rolling way back once N+1 is active. The node
   agent's rollback after an activation runs under a pause. So:
-  1. Pause as today's cut does.
-  2. Apply the reverse activation. It is written by hand with the release, not generated: the
-     generator's activation always inserts a new bundle row, and N's row already exists
-     (`unique (bundle_key, version)`, and the table is immutable). The reverse activation checks
-     that exactly N+1 is active, then moves the active pointer back to the existing N row. Rehearse
-     it on a test database with the release (step 1).
-  3. Move **every** node that runs N+1 back to N (`agent rollback`, fast host rebuilt from N), node B
-     too if step 8 has started, and clear all declarations. Never declare a node as N while it still
-     runs N+1: it would take N runs and refuse them.
+  1. Pause every company (`90-pause-now`). Work already running is not waited for.
+  2. Reverse the activation (`91-reverse`). It needs every company paused, checks that exactly N+1 is
+     active, and moves the active pointer back to the existing N row; N's row already exists
+     (`unique (bundle_key, version)`, and the table is immutable). The declarations stay: a node
+     still on N+1 code must not take N runs.
+  3. Move **every** node that runs N+1 back to N (`agent rollback`, and the fast host rebuilt from N:
+     `roll-rollback`), node B too if step 8 has started. Then clear all declarations
+     (`92-clear-declarations`). Never declare a node as N while it still runs N+1: it would take N runs
+     and refuse them.
   4. Renew packaged offices' packages for N again; offices renewed for N+1 cannot start or reset
      under N.
-  5. Resume.
+  5. Resume (`93-resume`).
 
   Runs and pending inputs already bound to N+1 fail with their reason.
 - **N work left over** (an input that can never run, or a session held on a sponsorship): see steps

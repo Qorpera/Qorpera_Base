@@ -91,9 +91,9 @@ const paused = () => Number(sql("select count(*) from public.qorpera_company_exe
 const active = () => sql("select b.version || ' ' || b.sha256 from public.qorpera_active_runtime_bundle a join public.qorpera_runtime_bundles b on b.id = a.runtime_bundle_id where a.singleton;").split(" ");
 
 /** One whole roll on a fresh database: `empty` is the packets' --empty (runs only, or the full switch). */
-async function rehearse(empty) {
+async function rehearse(empty, path = "roll") {
 	let started = false;
-	database = localPort ? `roll_${randomBytes(4).toString("hex")}` : `roll_${empty}`;
+	database = localPort ? `roll_${randomBytes(4).toString("hex")}` : `roll_${empty}_${path}`;
 	psqlArgs = ["-X", "-qAt", "-h", "localhost", "-p", localPort, "-U", "postgres", "-d", database, "-v", "ON_ERROR_STOP=1"];
 	hosted = null;
 	try {
@@ -160,6 +160,7 @@ async function rehearse(empty) {
 
 		// A queued N run before the roll; node B's fast host will take it.
 		const runN = newRun();
+		const runN2 = newRun(); // a second N run, still queued when node B is about to leave N
 		// 10, 20: the release migration and node B declared N.
 		commit(`10-migration-${migration.name}`);
 		assert.equal(sql("select count(*) from supabase_migrations.schema_migrations where version = '20260929999000';"), "1");
@@ -184,36 +185,48 @@ async function rehearse(empty) {
 		// N+1 work goes to node A only; node B still runs N.
 		const runNext = newRun();
 		assert.equal(sql(`select runtime_bundle_sha256 from public.qorpera_execution_runs where id = '${runNext}';`), to.sha);
-		assert.equal(claim(orchestratorB), null, "node B (declared N) takes no N+1 run");
 		assert.equal(claim(orchestratorA).work.run_id, runNext, "node A takes the N+1 run");
 		const checkN = lastJson(dryRun(p("50-check-n.sql")));
 		assert(checkN.rollStatus.bundles.some((b) => b.sha256 === from.sha && b.runningRuns + b.queuedRuns >= 1), JSON.stringify(checkN.rollStatus));
-		// 60–70: the N run ends on node B, node B empties, returns declared N+1.
-		assert.match(fails(p("70-return-b.sql")), /not emptied of runs/);
-		finish(runN);
-		commit("60-runs-off-b.sql");
-		assert.equal(lastJson(dryRun(p("61-drain-b.sql"))).status[ready], true);
-		heartbeat();
-		observeBoth();
-		commit("70-return-b.sql");
-		assert.equal(sql(`select count(*) from public.qorpera_runner_orchestrators where runtime_bundle_sha256 = '${to.sha}';`), "2");
-		// 80: declarations cleared, both nodes serve runs.
-		finish(runNext);
-		commit("80-finish.sql");
-		assert.equal(sql("select count(*) from public.qorpera_runner_orchestrators where runtime_bundle_sha256 is not null;"), "0");
-		assert.equal(sql(`select bool_and(enabled and runs_enabled) from public.qorpera_runtime_nodes where id in ('${nodeA}','${nodeB}');`), "t");
-		assert.equal(paused(), 0, "the whole roll paused no company");
-
-		// Emergency: the reverse refuses before every company is paused; pause-now needs no quiet runtime.
-		newRun();
-		assert.match(fails(p("91-reverse.sql")), /paused first/);
-		commit("90-pause-now.sql");
-		assert(paused() >= 1, "every company is paused");
-		commit("91-reverse.sql");
-		assert.deepEqual(active(), [String(from.version), from.sha], "the active bundle is N again");
-		commit("92-resume.sql");
-		assert.equal(paused(), 0, "the companies resume");
-		console.log(JSON.stringify({ schema: "qorpera.runtime-roll-rehearsal/v1", empty, from: from.version, to: to.version, packets: Object.keys(packets).length, paused: 0, passed: true }));
+		if (path === "emergency") {
+			// After the switch N+1 misbehaves: pause every company with work still running, reverse, roll the
+			// nodes back (by hand), clear the declarations, resume.
+			const pausable = () =>
+				Number(sql(`select count(*) from public.qorpera_profiles p where not public.qorpera_company_deleting(p.id) and exists (select 1 from public.qorpera_profile_members m where m.profile_id = p.id and m.role in ('owner','admin'));`));
+			assert.match(fails(p("91-reverse.sql")), /paused first/);
+			const pausedNow = lastJson(commit("90-pause-now.sql"));
+			assert.equal(paused(), pausable(), "every company that can be paused is paused: " + JSON.stringify(pausedNow));
+			commit("91-reverse.sql");
+			assert.deepEqual(active(), [String(from.version), from.sha], "the active bundle is N again");
+			const runBack = newRun();
+			assert.equal(sql(`select runtime_bundle_sha256 from public.qorpera_execution_runs where id = '${runBack}';`), from.sha);
+			assert.equal(claim(orchestratorA), null, "node A (still declared N+1, still on N+1 code) takes no N run");
+			commit("92-clear-declarations.sql");
+			assert.equal(sql("select count(*) from public.qorpera_runner_orchestrators where runtime_bundle_sha256 is not null;"), "0");
+			const resumed = lastJson(commit("93-resume.sql"));
+			assert.equal(paused(), 0, "the companies resume: " + JSON.stringify(resumed));
+		} else {
+			// 60: node B may not leave N while N work is queued; once it takes it, it empties and returns as N+1.
+			assert.match(fails(p("60-runs-off-b.sql")), /still queued/);
+			assert.equal(claim(orchestratorB).work.run_id, runN2, "node B takes the queued N run");
+			assert.match(fails(p("70-return-b.sql")), /not emptied of runs/);
+			finish(runN);
+			finish(runN2);
+			commit("60-runs-off-b.sql");
+			assert.equal(lastJson(dryRun(p("61-drain-b.sql"))).status[ready], true);
+			heartbeat();
+			observeBoth();
+			commit("70-return-b.sql");
+			assert.equal(sql(`select count(*) from public.qorpera_runner_orchestrators where runtime_bundle_sha256 = '${to.sha}';`), "2");
+			// 80: declarations cleared, both nodes serve runs.
+			finish(runNext);
+			const finished = lastJson(commit("80-finish.sql"));
+			assert.equal(finished.oldBundleWorkLeft, 0);
+			assert.equal(sql("select count(*) from public.qorpera_runner_orchestrators where runtime_bundle_sha256 is not null;"), "0");
+			assert.equal(sql(`select bool_and(enabled and runs_enabled) from public.qorpera_runtime_nodes where id in ('${nodeA}','${nodeB}');`), "t");
+			assert.equal(paused(), 0, "the whole roll paused no company");
+		}
+		console.log(JSON.stringify({ schema: "qorpera.runtime-roll-rehearsal/v1", empty, path, from: from.version, to: to.version, packets: Object.keys(packets).length, paused: 0, passed: true }));
 	} finally {
 		if (started)
 			run("psql", ["-X", "-q", "-h", "localhost", "-p", localPort, "-U", "postgres", "-d", "postgres", "-c", `drop database if exists ${database} with (force)`]);
@@ -223,3 +236,4 @@ async function rehearse(empty) {
 
 await rehearse("runs");
 await rehearse("full");
+await rehearse("runs", "emergency");

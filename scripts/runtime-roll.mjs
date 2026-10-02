@@ -25,9 +25,10 @@
 //   61-drain-b        dry-run only: node B's drain status
 //   70-return-b       node B declared N+1, gate, node B runs on
 //   80-finish         every declaration cleared, both nodes serving runs
-//   90-pause-now      emergency only: every company paused, with no quiet gate
-//   91-reverse        emergency only: the active bundle back to N, declarations cleared (after 90)
-//   92-resume         emergency only: the companies 90 paused resume
+//   90-pause-now      emergency only: every company paused (founder or folder pause), no quiet gate
+//   91-reverse        emergency only: the active bundle back to N (after 90); declarations stay
+//   92-clear-declarations  emergency only: once every node runs N again
+//   93-resume         emergency only: the companies 90 paused resume
 import { execFileSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -189,13 +190,15 @@ function historyInsert(name, text) {
 	const [, version, label] = MIGRATION_NAME.exec(name);
 	return `insert into supabase_migrations.schema_migrations(version,name,statements) values (${literal(version)},${literal(label)},array[${dollar(text)}]);`;
 }
-const NOT_RECORDED = (name) => [
-	`not exists (select 1 from supabase_migrations.schema_migrations where version = ${literal(MIGRATION_NAME.exec(name)[1])})`,
-	`${name} is already recorded; inspect receipts instead of replaying`,
-];
+const RECORD = (name) => {
+	const [, version, label] = MIGRATION_NAME.exec(name);
+	return `select 1 from supabase_migrations.schema_migrations where version = ${literal(version)}`;
+};
+// A version taken by another name is refused too: the history must hold exactly this migration.
+const NOT_RECORDED = (name) => [`not exists (${RECORD(name)})`, `${name} is already recorded; inspect receipts instead of replaying`];
 const RECORDED = (name) => [
-	`exists (select 1 from supabase_migrations.schema_migrations where version = ${literal(MIGRATION_NAME.exec(name)[1])})`,
-	`${name} is not recorded yet`,
+	`exists (${RECORD(name)} and name = ${literal(MIGRATION_NAME.exec(name)[2])})`,
+	`${name} is not recorded yet (or under another name)`,
 ];
 
 /** Every packet of one roll, by file name. */
@@ -206,17 +209,22 @@ export function rollPackets(options) {
 	if (!UUID.test(nodeA) || !UUID.test(nodeB) || nodeA === nodeB) throw new Error("Two different node ids are required");
 	if (!SHA.test(from.sha) || !SHA.test(to.sha) || from.sha === to.sha) throw new Error("Two different bundle digests are required");
 	if (!Number.isSafeInteger(from.version) || to.version !== from.version + 1) throw new Error("The new bundle is the next version");
-	if (!reason || reason.length > 200 || /[\0\r\n]/.test(reason)) throw new Error("A one-line reason of at most 200 characters is required");
+	if (!/^[A-Za-z0-9 ._:+()-]{1,200}$/.test(reason ?? "")) throw new Error("The reason is 1-200 letters, digits, spaces and ._:+()- only");
 	if (!MIGRATION_NAME.test(activation.name)) throw new Error("Activation file name is not a migration name");
 	if (
 		!new RegExp(`values \\('qorpera\\.cloud-runtime',${to.version},`).test(activation.text) ||
 		!activation.text.includes(`b.version=${from.version}`) ||
-		!activation.text.includes(`'${from.sha}'`)
+		!activation.text.includes(`'${from.sha}'`) ||
+		!activation.text.includes(`'${to.sha}'`)
 	)
 		throw new Error(`Activation does not move ${from.version} to ${to.version}`);
 	if (/\b(update|delete\s+from)\s+public\.(qorpera_execution_runs|qorpera_session_inputs)\b/i.test(activation.text))
 		throw new Error("Activation touches historical provenance");
 	const activationBody = migrationBody(activation.text);
+	// The history order: two migrations that replace one function must apply in timestamp order.
+	const sorted = [...migrations].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+	if (new Set(sorted.map((m) => MIGRATION_NAME.exec(m.name)?.[1])).size !== sorted.length) throw new Error("Two migrations share a version");
+	migrations.splice(0, migrations.length, ...sorted);
 	for (const migration of migrations) {
 		if (!MIGRATION_NAME.test(migration.name) || migration.name >= activation.name)
 			throw new Error(`${migration.name} is no migration that sorts before the activation`);
@@ -236,6 +244,10 @@ export function rollPackets(options) {
 		[`not exists (select 1 from public.qorpera_runner_orchestrators where status <> 'revoked' and runtime_bundle_sha256 is not null)`, "An orchestrator declares a bundle"],
 		[MARKERS, "A guard the roll relies on is missing"],
 		[NO_LOGIN_HOME(nodeA), "Node A is the home of a node-disk login: empty the other node first"],
+		[
+			`not exists (select 1 from public.qorpera_runner_jobs job join public.qorpera_execution_runs run on run.id = job.run_id where job.status in ('queued','leased','running') and run.runtime_bundle_sha256 is distinct from ${literal(from.sha)})`,
+			"Work of another bundle is still queued or running",
+		],
 	];
 	const check = (title, rows) => packet([SERVICE, `select jsonb_build_object(${rows.join(", ")}) as ${title};`]);
 	files["00-check.sql"] = check("roll_check", [
@@ -259,7 +271,7 @@ export function rollPackets(options) {
 		`not exists (${ORCHESTRATORS_ON(node)} and orchestrator.runtime_bundle_sha256 is distinct from ${literal(sha)})`;
 	files["20-declare-b.sql"] = packet([
 		SERVICE,
-		gate("roll_gate", [[ACTIVE_IS(from.version, from.sha), `Runtime ${from.version} is not the active bundle`], ...migrations.map((m) => RECORDED(m.name))]),
+		gate("roll_gate", [...hard, ...migrations.map((m) => RECORDED(m.name))]),
 		`select public.qorpera_declare_runtime_node_bundle(${literal(nodeB)}::uuid, ${literal(from.sha)}) as roll_declare;`,
 		gate("roll_after", [[declared(nodeB, from.sha), "Node B is not declared for the running bundle"]]),
 	]);
@@ -270,14 +282,24 @@ export function rollPackets(options) {
 		`select public.qorpera_set_runtime_node_serving(${literal(node)}::uuid, ${on}, ${version(node)}, ${literal(reason)}) as roll_serving;`;
 	// Emptying: the runs switch, or the full switch too. Returning: both switches on, whichever was used.
 	const off = (node) => (empty === "full" ? [runs(node, false), serving(node, false)] : [runs(node, false)]);
-	const back = (node) => [serving(node, true), runs(node, true)];
-	files["30-runs-off-a.sql"] = packet([SERVICE, ...off(nodeA)]);
+	const back = (node) => (empty === "full" ? [serving(node, true), runs(node, true)] : [runs(node, true)]);
+	files["30-runs-off-a.sql"] = packet([
+		SERVICE,
+		gate("roll_gate", [
+			[ACTIVE_IS(from.version, from.sha), `Runtime ${from.version} is not the active bundle`],
+			[declared(nodeB, from.sha), "Node B is not declared for the running bundle (20-declare-b)"],
+			[NO_LOGIN_HOME(nodeA), "Node A is the home of a node-disk login: empty the other node first"],
+		]),
+		...off(nodeA),
+	]);
 	const drain = (node) =>
 		check("roll_drain", [`'status', public.qorpera_runtime_node_drain_status(${literal(node)}::uuid)`, `'rollStatus', public.qorpera_runtime_bundle_roll_status()`]);
 	files["31-drain-a.sql"] = drain(nodeA);
+	// Every active orchestrator of the node runs, and there is at least one: the node's runs need a claimant.
 	const live = (node) => [
-		`not exists (${ORCHESTRATORS_ON(node)} and orchestrator.status = 'active' and orchestrator.last_heartbeat_at < statement_timestamp() - interval '30 seconds')`,
-		`An orchestrator of ${node === nodeA ? "node A" : "node B"} is not running`,
+		`not exists (${ORCHESTRATORS_ON(node)} and orchestrator.status = 'active' and orchestrator.last_heartbeat_at < statement_timestamp() - interval '30 seconds')
+			and exists (${ORCHESTRATORS_ON(node)} and orchestrator.status = 'active' and orchestrator.last_heartbeat_at >= statement_timestamp() - interval '30 seconds')`,
+		`An orchestrator of ${node === nodeA ? "node A" : "node B"} is not running, or it has none`,
 	];
 	const undeclaredOnlyOn = (node) =>
 		`not exists (select 1 from public.qorpera_runner_orchestrators o where o.status <> 'revoked' and o.runtime_bundle_sha256 is null
@@ -314,7 +336,15 @@ export function rollPackets(options) {
 	]);
 	files["60-runs-off-b.sql"] = packet([
 		SERVICE,
-		gate("roll_gate", [[ACTIVE_IS(to.version, to.sha), `Runtime ${to.version} is not the active bundle`], [RUNS_ON(nodeA), "Node A must serve runs first"]]),
+		gate("roll_gate", [
+			[ACTIVE_IS(to.version, to.sha), `Runtime ${to.version} is not the active bundle`],
+			[RUNS_ON(nodeA), "Node A must serve runs first"],
+			// Node B is the last host of N: queued N work must be taken while B still serves it (step 7).
+			[
+				`not exists (select 1 from public.qorpera_runner_jobs job join public.qorpera_execution_runs run on run.id = job.run_id where job.status = 'queued' and run.runtime_bundle_sha256 = ${literal(from.sha)})`,
+				"Work of the old bundle is still queued: let node B take it first",
+			],
+		]),
 		...off(nodeB),
 	]);
 	files["61-drain-b.sql"] = drain(nodeB);
@@ -338,40 +368,52 @@ export function rollPackets(options) {
 		gate("roll_gate", [
 			[ACTIVE_IS(to.version, to.sha), `Runtime ${to.version} is not the active bundle`],
 			[`${RUNS_ON(nodeA)} and ${RUNS_ON(nodeB)}`, "Both nodes must serve runs"],
-			[
-				`not exists (select 1 from public.qorpera_runner_jobs job join public.qorpera_execution_runs run on run.id = job.run_id where job.status in ('queued','leased','running') and run.runtime_bundle_sha256 = ${literal(from.sha)})`,
-				"Work of the old bundle is still queued or running",
-			],
 		]),
 		`select public.qorpera_declare_runtime_node_bundle(${literal(nodeA)}::uuid, null) as roll_clear_a;`,
 		`select public.qorpera_declare_runtime_node_bundle(${literal(nodeB)}::uuid, null) as roll_clear_b;`,
-		`select public.qorpera_runtime_bundle_roll_status() as roll_finished;`,
+		// N work that appeared after node B left N has no N host: with the declarations cleared an N+1 host
+		// claims it and it fails (bundle-compatibility), as in a paused cut (RUNTIME-ROLLING-UPDATE.md step 8).
+		`select jsonb_build_object('rollStatus', public.qorpera_runtime_bundle_roll_status(), 'oldBundleWorkLeft', (select count(*) from public.qorpera_runner_jobs job join public.qorpera_execution_runs run on run.id = job.run_id where job.status in ('queued','leased','running') and run.runtime_bundle_sha256 = ${literal(from.sha)})) as roll_finished;`,
 	]);
-	// Emergency: pause without a quiet gate (today's pause refuses unless nothing runs), reverse, resume.
-	// The company stop is a founder's call: each company is paused under one of its owners or admins. A
-	// folder-v2 company or one without an owner or admin cannot be stopped this way; the result names them.
-	const PAUSABLE = `not public.qorpera_company_is_folder_v2(profile.id) and exists (select 1 from public.qorpera_profile_members member
+	// Emergency, after the switch (RUNTIME-ROLLING-UPDATE.md "If something goes wrong"): pause every company
+	// with no quiet gate (today's pause refuses unless nothing runs), move the active pointer back to N, roll
+	// the nodes back to N (by hand), clear the declarations, resume. A company stop is a founder's call: each
+	// company is paused under one of its owners or admins; a folder-v2 company through its operator pause.
+	// A company being deleted is left alone, and one company's failure (a busy lock) never stops the others:
+	// each is tried in its own savepoint and the result names what did not change; run the packet again.
+	const PAUSABLE = `not public.qorpera_company_deleting(profile.id) and exists (select 1 from public.qorpera_profile_members member
 			where member.profile_id = profile.id and member.role in ('owner','admin'))`;
-	const founders = (paused) => `do $roll_pause$
+	const companies = (paused) => `create temporary table roll_companies(profile_id uuid, outcome text) on commit drop;
+do $roll_companies$
 declare v_company record;
 begin
 	for v_company in
-		select profile.id, (select member.user_id from public.qorpera_profile_members member
+		select profile.id, public.qorpera_company_is_folder_v2(profile.id) folder_v2,
+			(select member.user_id from public.qorpera_profile_members member
 			where member.profile_id = profile.id and member.role in ('owner','admin') order by member.role = 'owner' desc, member.user_id limit 1) founder
 		from public.qorpera_profiles profile
 		where ${PAUSABLE}
 			and ${paused ? "not exists (select 1 from public.qorpera_company_execution_pauses p where p.profile_id = profile.id)" : `exists (select 1 from public.qorpera_company_execution_pauses p where p.profile_id = profile.id and p.reason = ${literal(reason)})`}
 		order by profile.id
 	loop
-		perform set_config('request.jwt.claims', jsonb_build_object('sub', v_company.founder, 'role', 'authenticated')::text, true);
-		perform public.qorpera_set_company_execution_pause(v_company.id, ${paused}, ${paused ? literal(reason) : "null"});
+		begin
+			if v_company.folder_v2 then
+				perform ${paused ? `public.qorpera_folder_pause(v_company.id, v_company.founder, ${literal(reason)})` : "public.qorpera_folder_resume(v_company.id)"};
+			else
+				perform set_config('request.jwt.claims', jsonb_build_object('sub', v_company.founder, 'role', 'authenticated')::text, true);
+				perform public.qorpera_set_company_execution_pause(v_company.id, ${paused}, ${paused ? literal(reason) : "null"});
+			end if;
+			insert into roll_companies values (v_company.id, 'done');
+		exception when others then
+			insert into roll_companies values (v_company.id, left(sqlerrm, 200));
+		end;
 	end loop;
-end $roll_pause$;`;
+end $roll_companies$;`;
+	const notDone = `(select coalesce(jsonb_object_agg(profile_id, outcome), '{}'::jsonb) from roll_companies where outcome <> 'done')`;
 	files["90-pause-now.sql"] = packet([
-		founders(true),
-		`select jsonb_build_object('paused', (select count(*) from public.qorpera_company_execution_pauses where reason = ${literal(reason)}),
-	'notPaused', (select coalesce(jsonb_agg(profile.id order by profile.id), '[]'::jsonb) from public.qorpera_profiles profile
-		where not exists (select 1 from public.qorpera_company_execution_pauses p where p.profile_id = profile.id))) as roll_paused;`,
+		companies(true),
+		`select jsonb_build_object('paused', (select count(*) from roll_companies where outcome = 'done'), 'failed', ${notDone},
+	'notPausable', (select coalesce(jsonb_agg(profile.id order by profile.id), '[]'::jsonb) from public.qorpera_profiles profile where not (${PAUSABLE}))) as roll_paused;`,
 	]);
 	files["91-reverse.sql"] = packet([
 		gate("roll_gate", [
@@ -384,13 +426,19 @@ end $roll_pause$;`;
 		`update public.qorpera_active_runtime_bundle set runtime_bundle_id = b.id, runtime_bundle_sha256 = b.sha256, activated_at = statement_timestamp()
 from public.qorpera_runtime_bundles b where singleton and b.bundle_key = 'qorpera.cloud-runtime' and b.version = ${from.version} and b.sha256 = ${literal(from.sha)};`,
 		gate("roll_after", [[ACTIVE_IS(from.version, from.sha), `Runtime ${from.version} is not active again`]]),
+		// The declarations stay: a node still running N+1 code must not take N runs. 92 clears them once
+		// every node is back on N.
+	]);
+	files["92-clear-declarations.sql"] = packet([
 		SERVICE,
+		gate("roll_gate", [[ACTIVE_IS(from.version, from.sha), `Runtime ${from.version} is not active (91-reverse first)`]]),
 		`select public.qorpera_declare_runtime_node_bundle(${literal(nodeA)}::uuid, null) as roll_clear_a;`,
 		`select public.qorpera_declare_runtime_node_bundle(${literal(nodeB)}::uuid, null) as roll_clear_b;`,
 	]);
-	files["92-resume.sql"] = packet([
-		founders(false),
-		`select jsonb_build_object('stillPaused', (select count(*) from public.qorpera_company_execution_pauses where reason = ${literal(reason)})) as roll_resumed;`,
+	files["93-resume.sql"] = packet([
+		companies(false),
+		`select jsonb_build_object('resumed', (select count(*) from roll_companies where outcome = 'done'), 'failed', ${notDone},
+	'stillPaused', (select count(*) from public.qorpera_company_execution_pauses where reason = ${literal(reason)})) as roll_resumed;`,
 	]);
 	for (const [name, text] of Object.entries(files)) assertOneTransaction(name, text);
 	return files;
@@ -426,7 +474,7 @@ export function writeRoll(out, options) {
 		source: options.source ?? null,
 		order: Object.keys(files),
 		dryRunOnly: DRY_RUN_ONLY,
-		emergencyOnly: ["90-pause-now.sql", "91-reverse.sql", "92-resume.sql"],
+		emergencyOnly: ["90-pause-now.sql", "91-reverse.sql", "92-clear-declarations.sql", "93-resume.sql"],
 		files: digests,
 	};
 	writeFileSync(join(out, "packet.json"), `${JSON.stringify(manifest, null, 2)}\n`, { flag: "wx" });

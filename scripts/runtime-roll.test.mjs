@@ -57,7 +57,8 @@ test("every packet is exactly one outer transaction, in the procedure's order", 
 		"80-finish.sql",
 		"90-pause-now.sql",
 		"91-reverse.sql",
-		"92-resume.sql",
+		"92-clear-declarations.sql",
+		"93-resume.sql",
 	]);
 	for (const [name, text] of Object.entries(packets)) assertOneTransaction(name, text);
 	assert.throws(() => assertOneTransaction("x", "begin;\nselect 1;\ncommit;\ncommit;\n"), /exactly one outer transaction/);
@@ -94,6 +95,37 @@ test("the preflight refuses a node A that is a node-disk login's home, and check
 		assert.ok(check.includes(marker), marker);
 });
 
+test("migrations apply in timestamp order whatever the argument order", () => {
+	const later = { name: "20260928400500_later.sql", text: "create table public.later(id integer);\n" };
+	assert.deepEqual(
+		Object.keys(rollPackets(options({ migrations: [later, migration] }))).filter((name) => name.startsWith("10-")),
+		[`10-migration-${migration.name}`, `10-migration-${later.name}`],
+	);
+});
+
+test("old-bundle work: node B is not emptied while N work is queued; the finish reports what is left", () => {
+	const packets = rollPackets(options());
+	assert.ok(packets["60-runs-off-b.sql"].includes("Work of the old bundle is still queued"));
+	assert.ok(!packets["80-finish.sql"].includes("raise exception 'Work of the old bundle"));
+	assert.ok(packets["80-finish.sql"].includes("'oldBundleWorkLeft'"));
+	assert.ok(packets["00-check.sql"].includes("Work of another bundle is still queued or running"));
+	assert.ok(packets["20-declare-b.sql"].includes("Node A is the home of a node-disk login"), "20 repeats the preflight gates");
+	assert.ok(packets["30-runs-off-a.sql"].includes("Node B is not declared for the running bundle"));
+	for (const name of ["40-switch.sql", "70-return-b.sql"]) assert.ok(packets[name].includes("or it has none"), name);
+});
+
+test("the emergency packets: per-company savepoints, folder-v2 companies, declarations cleared only after the nodes are back", () => {
+	const packets = rollPackets(options());
+	for (const name of ["90-pause-now.sql", "93-resume.sql"]) {
+		assert.ok(packets[name].includes("exception when others"), name);
+		assert.ok(packets[name].includes("qorpera_company_deleting(profile.id)"), name);
+	}
+	assert.ok(packets["90-pause-now.sql"].includes("qorpera_folder_pause("));
+	assert.ok(packets["93-resume.sql"].includes("qorpera_folder_resume("));
+	assert.ok(!packets["91-reverse.sql"].includes("qorpera_declare_runtime_node_bundle"), "91 keeps the declarations");
+	assert.ok(packets["92-clear-declarations.sql"].includes(`qorpera_declare_runtime_node_bundle('${nodeA}'::uuid, null)`));
+});
+
 test("--empty full switches a node off fully and returns it with both switches", () => {
 	const runsOnly = rollPackets(options());
 	assert.ok(!runsOnly["30-runs-off-a.sql"].includes("qorpera_set_runtime_node_serving"));
@@ -102,11 +134,12 @@ test("--empty full switches a node off fully and returns it with both switches",
 	assert.ok(full["30-runs-off-a.sql"].includes(`qorpera_set_runtime_node_serving('${nodeA}'::uuid, false`));
 	assert.ok(full["60-runs-off-b.sql"].includes(`qorpera_set_runtime_node_serving('${nodeB}'::uuid, false`));
 	assert.ok(full["70-return-b.sql"].includes("'readyForUpdate'"));
-	for (const [name, node] of [["40-switch.sql", nodeA], ["70-return-b.sql", nodeB]])
-		for (const packets of [runsOnly, full]) {
-			assert.ok(packets[name].includes(`qorpera_set_runtime_node_serving('${node}'::uuid, true`), name);
-			assert.ok(packets[name].includes(`qorpera_set_runtime_node_runs('${node}'::uuid, true`), name);
-		}
+	for (const [name, node] of [["40-switch.sql", nodeA], ["70-return-b.sql", nodeB]]) {
+		for (const packets of [runsOnly, full]) assert.ok(packets[name].includes(`qorpera_set_runtime_node_runs('${node}'::uuid, true`), name);
+		// The full switch (and its signed-updater refusal) only where it was used.
+		assert.ok(!runsOnly[name].includes("qorpera_set_runtime_node_serving"), name);
+		assert.ok(full[name].includes(`qorpera_set_runtime_node_serving('${node}'::uuid, true`), name);
+	}
 	assert.throws(() => rollPackets(options({ empty: "half" })), /runs or full/);
 });
 
@@ -123,7 +156,13 @@ test("bad inputs are refused", () => {
 	assert.throws(() => rollPackets(options({ nodeB: nodeA })), /Two different node ids/);
 	assert.throws(() => rollPackets(options({ to: { version: 166, sha: to.sha } })), /next version/);
 	assert.throws(() => rollPackets(options({ to: { version: 165, sha: from.sha } })), /Two different bundle digests/);
-	assert.throws(() => rollPackets(options({ reason: "two\nlines" })), /one-line reason/);
+	assert.throws(() => rollPackets(options({ reason: "two\nlines" })), /letters, digits/);
+	assert.throws(() => rollPackets(options({ reason: "roll $roll_pause$" })), /letters, digits/);
+	assert.throws(() => rollPackets(options({ to: { version: 165, sha: "c".repeat(64) } })), /does not move 164 to 165/);
+	assert.throws(
+		() => rollPackets(options({ migrations: [migration, { ...migration, name: "20260928400000_other.sql" }] })),
+		/share a version/,
+	);
 	assert.throws(
 		() => rollPackets(options({ activation: { ...activation, text: activation.text.replace("b.version=164", "b.version=163") } })),
 		/does not move 164 to 165/,
