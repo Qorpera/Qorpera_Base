@@ -260,7 +260,7 @@ execution host (`deploy/shared-execution/README.md`, "Run boxes"):
   (`view_open` refuses before), writes the view file on the slot's tmpfs and starts `qorpera-shared-box@N`. That pulls
   in the box's folder unit, which mounts the view with `allow_other` through the node's folder bridge, and the box's
   socket, which only the slot's native host account can open. At the run's end the box goes first (also when the
-  native host parks), then the service closes the view and removes its file.
+  native host parks), then the service removes the view's file and closes the view after its lock (best effort).
 - The box runs the box host (`packages/runner-orchestrator/src/run-box-host.ts`) as a third account per slot:
   `/company` read-only, home and `/tmp` in memory, no network, no capability, its own `/dev/shm`, nothing of the
   host's state, run material or credentials. The box host runs commands under bash (optionally on a terminal, for

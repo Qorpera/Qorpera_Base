@@ -92,6 +92,7 @@ const BOX_SOCKET_DIRECTORY = "/run/qorpera-shared-box";
  * run gets no box. A test checks the live SQL still raises exactly this. */
 export const RUN_BOX_NO_FOLDER_MESSAGE = "Company folder is unavailable";
 const VIEW_SCHEMA = "qorpera.folder-view/v1";
+const INVALID_VIEW = "Folder view answer is invalid";
 
 export type SharedExecutionPhysicalState =
 	| "reserving"
@@ -1220,8 +1221,8 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 			let opened: { viewId: string; pass: string } | "none" | { retry: string };
 			try {
 				opened = await this.#openView(journal, box);
-			} catch {
-				opened = { retry: "network" };
+			} catch (error) {
+				opened = { retry: error instanceof Error && error.message === INVALID_VIEW ? "invalid_answer" : "network" };
 			}
 			if (
 				typeof opened === "object" &&
@@ -1330,7 +1331,7 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 			typeof view.pass !== "string" ||
 			!TOKEN_PATTERN.test(view.pass)
 		)
-			throw new Error("Folder view answer is invalid");
+			throw new Error(INVALID_VIEW);
 		return { viewId: view.viewId.toLowerCase(), pass: view.pass };
 	}
 

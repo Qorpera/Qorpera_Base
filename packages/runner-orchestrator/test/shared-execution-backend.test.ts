@@ -1296,6 +1296,23 @@ describe("run boxes (F3)", () => {
 		expect(f.units.log.at(-1)).toBe("start qorpera-shared-box@0.service");
 	});
 
+	it("gives a run no box when a stale one on its slot will not stop, and closes the run's view", async () => {
+		const f = await fixture({ runBox: true });
+		const signal = new AbortController().signal;
+		const runner = await f.backend.acquire(runId, work(), signal);
+		// The stale box appears after the sandbox started, and nothing stops it.
+		for (const unit of box(0)) {
+			f.units.activeUnits.add(unit);
+			f.units.unkillable.add(unit);
+			f.units.stuck.add(unit);
+		}
+		await f.backend.deliver(runner, delivery());
+		await until(async () => (await boxState(f)) === "failed", "the box gives up");
+		expect((await journal(f)).box).toMatchObject({ reason: "stale_box" });
+		expect(f.closedViews).toEqual(f.views);
+		expect(f.units.log.some((line) => line.startsWith("start qorpera-shared-box"))).toBe(false);
+	});
+
 	it("asks for the view again after a restart while it opened, and keeps the runner's own time", async () => {
 		const f = await fixture({ runBox: true });
 		let release = (): void => undefined;
@@ -1318,14 +1335,20 @@ describe("run boxes (F3)", () => {
 	});
 
 	it("knows a company without a folder-v2 folder by the refusal the live SQL raises", async () => {
-		// The last migration that defines view_open must still raise exactly the text the backend matches.
+		// The newest migration that defines or patches view_open must still raise exactly the text the backend matches
+		// (SQL test 802, with F3 step 2b-3, checks the live function itself).
 		const directory = new URL("../../../supabase/migrations/", import.meta.url);
-		const files = (await readdir(directory)).filter((name) => name.endsWith(".sql")).sort();
+		const files = (await readdir(directory))
+			.filter((name) => name.endsWith(".sql"))
+			.sort()
+			.reverse();
 		let definition = "";
 		for (const name of files) {
 			const sql = await readFile(new URL(name, directory), "utf-8");
+			if (!sql.includes("qorpera_folder_view_open")) continue;
 			const at = sql.search(/create (or replace )?function public\.qorpera_folder_view_open\(/);
-			if (at >= 0) definition = sql.slice(at, sql.indexOf("$$;", at));
+			definition = at >= 0 ? sql.slice(at, sql.indexOf("$$;", at)) : "patched elsewhere";
+			if (at >= 0 || /qorpera_folder_view_open\(uuid, ?jsonb, ?text, ?jsonb\)'::regprocedure/.test(sql)) break;
 		}
 		expect(definition).toContain(`raise exception '${RUN_BOX_NO_FOLDER_MESSAGE}' using errcode = '42501'`);
 	});

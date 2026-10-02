@@ -253,6 +253,11 @@ describe("run box host", () => {
 			t: "error",
 			code: "WORKDIR_UNAVAILABLE",
 		});
+		// However long the missing path, the answer stays one the native host accepts.
+		expect(await client.exec("ls", { workdir: "x".repeat(600) })).toMatchObject({
+			t: "error",
+			code: "WORKDIR_UNAVAILABLE",
+		});
 		expect(ended(await client.exec("pwd", { workdir: "docs" })).output.head).toBe(
 			`${await realpath(join(company, "docs"))}\n`,
 		);
