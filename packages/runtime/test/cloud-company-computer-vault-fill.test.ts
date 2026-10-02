@@ -60,6 +60,8 @@ function office(
 		filled?: CompanyComputerFilledValues;
 		/** A page script moves the focus somewhere with no value (an editable area) before the typing. */
 		lose?: boolean;
+		/** Meanwhile the page opens a second tab. */
+		popup?: boolean;
 	} = {},
 ) {
 	const shown = {
@@ -76,6 +78,8 @@ function office(
 		extraRoots: 0,
 		/** A link's address, as the snapshot lists it. */
 		link: "https://vercel.com/",
+		/** The whole aria snapshot, instead of the one built from the fields above. */
+		aria: undefined as string | undefined,
 	};
 	const element = { tagName: "INPUT", type: "password", disabled: false, readOnly: false, value: "" };
 	const attributes = new Map<string, string>();
@@ -142,9 +146,22 @@ function office(
 		}),
 		focus: vi.fn(async () => undefined),
 	};
+	let closed = false;
+	/** Tabs the page or the guest opened. */
+	const opened: Page[] = [];
+	const tab = (url: string) =>
+		({
+			isClosed: () => false,
+			url: () => url,
+			title: async () => "",
+			locator: vi.fn(),
+			evaluate: vi.fn(),
+		}) as unknown as Page;
 	const page = {
-		isClosed: () => false,
-		close: vi.fn(async () => undefined),
+		isClosed: () => closed,
+		close: vi.fn(async () => {
+			closed = true;
+		}),
 		url: () => shown.url,
 		title: async () => shown.title,
 		waitForLoadState: async () => undefined,
@@ -160,6 +177,7 @@ function office(
 		isDetached: () => false,
 		locator: vi.fn(() => ({
 			ariaSnapshot: async () =>
+				shown.aria ??
 				`- textbox "Subject": Quarterly invoice\n- paragraph: ${shown.text}\n- textbox "Password": ${element.value}\n- link "Back":\n  - /url: ${shown.link}`,
 		})),
 		context: () => ({
@@ -167,6 +185,7 @@ function office(
 				send: async (method: string, params: { text: string }) => {
 					expect(method).toBe("Input.insertText");
 					typed.push(params.text);
+					if (options.popup) opened.push(tab("https://vercel.com/help"));
 					if (options.lose) {
 						// The focus went to an editable area: the value is in the page, not in the box.
 						Object.assign(globalThis, { document: { activeElement: { tagName: "DIV", setAttribute() {} } } });
@@ -178,7 +197,14 @@ function office(
 			}),
 		}),
 	};
-	const context = { pages: () => [page as unknown as Page], newPage: vi.fn() };
+	const context = {
+		pages: () => [page as unknown as Page, ...opened].filter((candidate) => !candidate.isClosed()),
+		newPage: vi.fn(async () => {
+			const blank = tab("about:blank");
+			opened.push(blank);
+			return blank;
+		}),
+	};
 	const browser: CompanyComputerBrowserSession = {
 		binding: computerBinding(),
 		grant: { profileId: computerId(40), grantId: computerId(41), version: 1 },
@@ -214,7 +240,19 @@ function office(
 		...(key ? { fillKey: key } : {}),
 		...(options.filled ? { filled: options.filled } : {}),
 	});
-	return { automation, key, element, attributes, typed, page, shown, commands, screenshots: automationScreenshots };
+	return {
+		automation,
+		key,
+		element,
+		attributes,
+		typed,
+		page,
+		opened,
+		context,
+		shown,
+		commands,
+		screenshots: automationScreenshots,
+	};
 }
 
 const action = (field: "password" | "code" = "password"): CompanyComputerAction => ({
@@ -348,6 +386,12 @@ describe("vault_fill on the Company Computer", () => {
 					f.shown.shadowText = `Copied ${password}`;
 				},
 			],
+			[
+				"text, encoded twice",
+				(f) => {
+					f.shown.text = `Continue: ${encodeURIComponent(`https://vercel.com/login?pw=${encodeURIComponent(password)}`)}`;
+				},
+			],
 		];
 		for (const [where, show] of shows) {
 			for (const surface of ["browser", "desktop"] as const) {
@@ -374,6 +418,7 @@ describe("vault_fill on the Company Computer", () => {
 		// A redirect that wraps the address, and a site that writes lower-case escapes.
 		f.shown.url = `https://vercel.com/next?return_to=${twice}`;
 		f.shown.link = `https://vercel.com/?pw=${once.replace(/%[0-9A-F]{2}/g, (hex) => hex.toLowerCase())}`;
+		f.shown.title = `Moved to ${twice}`;
 		const snapshot = JSON.stringify(await perform(f, { kind: "browser", action: "snapshot" }));
 		const tabs = JSON.stringify(await perform(f, { kind: "browser", action: "list_tabs" }));
 		for (const shown of [snapshot, tabs]) {
@@ -385,10 +430,25 @@ describe("vault_fill on the Company Computer", () => {
 		await expect(perform(f, { kind: "browser", action: "snapshot" })).rejects.toThrow("PRIVATE_FIELD_VISIBLE");
 	});
 
-	it("takes no picture when the page holds more than the check reads, or shows the value only after the capture", async () => {
+	it("hides a link address the snapshot quotes, spaces and all", async () => {
+		const f = office();
+		await perform(f, action(), sealed(f.key!));
+		// Playwright quotes an address with a space or a leading "#" or "%"; lower-case escapes, which only the
+		// address check reads.
+		const lower = encodeURIComponent(password).replace(/%[0-9A-F]{2}/g, (hex) => hex.toLowerCase());
+		f.shown.link = `"/next?q=a #b&pw=${lower}"`;
+		const result = (await perform(f, { kind: "browser", action: "snapshot" })) as unknown as {
+			value: { snapshot: string };
+		};
+		expect(result.value.snapshot).toContain("- /url: [hidden]");
+		expect(result.value.snapshot).not.toContain("%40ab");
+		expect(result.value.snapshot).not.toContain("1234567890");
+	});
+
+	it("pictures long and many boxes and shadow roots, but none past 4 MB or showing the value after the capture", async () => {
 		for (const set of [
 			(f: ReturnType<typeof office>) => {
-				f.shown.shadowBox.value = password;
+				f.shown.other.value = "x".repeat(5_000);
 			},
 			(f: ReturnType<typeof office>) => {
 				f.shown.extraBoxes = 600;
@@ -400,7 +460,27 @@ describe("vault_fill on the Company Computer", () => {
 			const f = office();
 			await perform(f, action(), sealed(f.key!));
 			set(f);
-			await expect(screenshot(f, "browser")).rejects.toThrow(/PRIVATE_FIELD_(ON_SCREEN|TAB_UNREADABLE)/);
+			await expect(screenshot(f, "browser")).resolves.toMatchObject({ kind: "json" });
+			expect(f.page.screenshot).toHaveBeenCalledOnce();
+		}
+		for (const [set, reason] of [
+			[
+				(f: ReturnType<typeof office>) => {
+					f.shown.shadowBox.value = password;
+				},
+				"PRIVATE_FIELD_ON_SCREEN",
+			],
+			[
+				(f: ReturnType<typeof office>) => {
+					f.shown.other.value = "x".repeat(4_000_001);
+				},
+				"PRIVATE_FIELD_TAB_UNREADABLE",
+			],
+		] as const) {
+			const f = office();
+			await perform(f, action(), sealed(f.key!));
+			set(f);
+			await expect(screenshot(f, "browser")).rejects.toThrow(reason);
 			expect(f.page.screenshot).not.toHaveBeenCalled();
 		}
 		// The page shows the value only once the picture is taken: it is never published.
@@ -412,6 +492,29 @@ describe("vault_fill on the Company Computer", () => {
 		});
 		await expect(screenshot(f, "browser")).rejects.toThrow("PRIVATE_FIELD_ON_SCREEN");
 		expect(f.screenshots.publish).not.toHaveBeenCalled();
+	});
+
+	it("cuts a long snapshot at a line's end, so no part of a value slips past the checks", async () => {
+		const f = office();
+		await perform(f, action(), sealed(f.key!));
+		// The value as text many times (each hidden, so the text shrinks), filler, the value across the 20 KB cut,
+		// then the value in a spelling that would refuse the snapshot, past the cut.
+		let aria = `- paragraph: ${password}\n`.repeat(300);
+		while (aria.length < 20_300) aria += `- paragraph: ${"a".repeat(60)}\n`;
+		const echo = "- paragraph: Your password: ";
+		aria += `- paragraph: ${"b".repeat(20_470 - echo.length - aria.length - 14)}\n`;
+		aria += `${echo}${password}\n`;
+		expect(aria.indexOf(`${echo}${password}`) + echo.length).toBe(20_470);
+		const twice = encodeURIComponent(`https://vercel.com/login?pw=${encodeURIComponent(password)}`);
+		aria += `- paragraph: Continue: ${twice}\n${"- paragraph: more\n".repeat(100)}`;
+		f.shown.aria = aria;
+		const result = (await perform(f, { kind: "browser", action: "snapshot" })) as unknown as {
+			value: { snapshot: string; truncated: boolean };
+		};
+		expect(result.value.snapshot).not.toContain("Pw-12345");
+		expect(result.value.snapshot).not.toContain("Your password");
+		expect(result.value.snapshot.length).toBeLessThan(16_384);
+		expect(result.value.truncated).toBe(true);
 	});
 
 	it("gives up on a page that does not answer within five seconds, taking no picture", async () => {
@@ -429,10 +532,21 @@ describe("vault_fill on the Company Computer", () => {
 		}
 	});
 
-	it("closes the tab when the value went where nothing can empty it", async () => {
-		const f = office({ lose: true });
+	it("closes the tab when the value went where nothing can empty it, and never moves the agent to another tab", async () => {
+		// The page opened a second tab meanwhile: the agent's next action is told its tab closed.
+		const f = office({ lose: true, popup: true });
 		await expect(perform(f, action(), sealed(f.key!))).rejects.toThrow("ACCOUNT_FILL_LOST");
 		expect(f.page.close).toHaveBeenCalledOnce();
+		expect(f.context.newPage).not.toHaveBeenCalled();
+		await expect(perform(f, { kind: "browser", action: "snapshot" })).rejects.toThrow("BROWSER_TARGET_CLOSED");
+		expect(f.opened[0]!.locator).not.toHaveBeenCalled();
+		// The only tab: a blank one opens first, so the window stays.
+		const only = office({ lose: true });
+		await expect(perform(only, action(), sealed(only.key!))).rejects.toThrow("ACCOUNT_FILL_LOST");
+		expect(only.context.newPage.mock.invocationCallOrder[0]).toBeLessThan(
+			only.page.close.mock.invocationCallOrder[0]!,
+		);
+		expect(only.context.pages().map((tab) => tab.url())).toEqual(["about:blank"]);
 	});
 
 	it("tells a spent box apart from one that is not for this call", async () => {

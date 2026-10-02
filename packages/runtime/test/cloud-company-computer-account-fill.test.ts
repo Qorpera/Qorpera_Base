@@ -250,10 +250,16 @@ describe("filled values on one screen", () => {
 			`https://x.example/next?return_to=${twice}`,
 			`https://x.example/?pw=${once.replace(/%[0-9A-F]{2}/g, (hex) => hex.toLowerCase())}`,
 			`https://x.example/?pw=${encodeURIComponent(twice)}`,
+			// Four encodings deep: three decodes reach the spelling an address uses.
+			`https://x.example/?pw=${encodeURIComponent(encodeURIComponent(twice))}`,
 			"https://x.example/?q=%22123456%22",
 		])
 			expect(filled.showsDecoded(text), text).toBe(true);
 		expect(filled.showsDecoded("https://x.example/?q=4012345678")).toBe(false);
+		// Five deep is past what the check reads (an address would not fit a page's limits anyway).
+		expect(filled.showsDecoded(encodeURIComponent(encodeURIComponent(encodeURIComponent(twice))))).toBe(false);
+		// A value in the host itself: none of the address is kept.
+		expect(filled.hideAddress("https://123456.example.com/next")).toBe("[hidden]");
 		expect(filled.hideAddress(`https://x.example/next?return_to=${twice}#top`)).toBe(
 			"https://x.example/next?[hidden]#[hidden]",
 		);
@@ -261,6 +267,16 @@ describe("filled values on one screen", () => {
 		expect(filled.hideAddress("https://x.example/plain?q=1")).toBe("https://x.example/plain?q=1");
 		expect(filled.hideText(`Moved to ${twice}`)).toBe("[hidden]");
 		expect(filled.hideText("Sign in")).toBe("Sign in");
+	});
+
+	it("reads escapes of a value that is not ASCII as UTF-8 in either letter case, or byte by byte", () => {
+		const filled = new CompanyComputerFilledValues();
+		const value = "Æblegrød-1234567890!x";
+		filled.add(value, "password");
+		const lower = encodeURIComponent(value).replace(/%[0-9A-F]{2}/g, (hex) => hex.toLowerCase());
+		expect(filled.shows(lower)).toBe(false);
+		for (const text of [lower, encodeURIComponent(lower), escape(value)])
+			expect(filled.showsDecoded(`https://x.example/?pw=${text}`), text).toBe(true);
 	});
 
 	it("drops spent codes before it drops a password", () => {

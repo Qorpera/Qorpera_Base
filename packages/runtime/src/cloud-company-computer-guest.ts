@@ -386,14 +386,12 @@ export class CompanyComputerGuestAutomation {
 							location: { href: string };
 						};
 						const document = global.document;
-						// Everything the page shows, or null when it is more than this check reads: then no picture.
+						// Everything the page shows, or null past 4 MB of it (more than this check reads): then no picture.
 						const parts = [document.title, global.location.href, document.documentElement?.innerText ?? ""];
 						let size = parts.reduce((total, part) => total + part.length, 0);
 						// Boxes not marked private, and the text and boxes inside open shadow roots (innerText skips them).
 						const roots: Root[] = [document];
-						let boxes = 0;
 						for (let index = 0; index < roots.length; index++) {
-							if (index >= 256) return null;
 							for (const node of roots[index]!.querySelectorAll("*")) {
 								let part: string | undefined;
 								if (node.shadowRoot) {
@@ -404,10 +402,8 @@ export class CompanyComputerGuestAutomation {
 									typeof node.value === "string" &&
 									node.matches?.("input, textarea") &&
 									!node.matches(`[${attribute}]`)
-								) {
-									if (++boxes > 512 || node.value.length > 4096) return null;
+								)
 									part = part === undefined ? node.value : `${part}\n${node.value}`;
-								}
 								if (part === undefined) continue;
 								size += part.length;
 								if (size > 4_000_000) return null;
@@ -678,15 +674,24 @@ export class CompanyComputerGuestAutomation {
 				try {
 					await fillCompanyAccountBox(page, box, opened);
 				} catch (error) {
-					// Typed where nothing can empty it: the tab goes, with the value in it.
+					// Typed where nothing can empty it: the tab goes, with the value in it. The agent's next action is told
+					// its tab closed (never moved to another tab), and the window keeps a tab, as at start.
+					let cause: unknown;
 					if (error instanceof CompanyAccountFillRefusedError && error.reason === "ACCOUNT_FILL_LOST") {
-						this.#tabIds.delete(page);
-						this.#page = undefined;
-						await page.close().catch(() => undefined);
+						const context = this.#browser.context;
+						try {
+							if (context.pages().every((other) => other === page || other.isClosed())) await context.newPage();
+							await page.close();
+						} catch (closeError) {
+							cause = closeError;
+						}
 					}
 					// The reason, never the value: a page that is not the account's, or a box of the wrong kind.
 					throw new CompanyComputerActionFailedError(
-						new Error(error instanceof CompanyAccountFillRefusedError ? error.reason : "ACCOUNT_FILL_FAILED"),
+						new Error(
+							error instanceof CompanyAccountFillRefusedError ? error.reason : "ACCOUNT_FILL_FAILED",
+							cause === undefined ? undefined : { cause },
+						),
 					);
 				}
 			}
@@ -697,13 +702,14 @@ export class CompanyComputerGuestAutomation {
 				const before = await this.#pageCall(() => readCompanyComputerPrivateValues(page));
 				const full = await this.#pageCall(() => page.locator("body").ariaSnapshot({ timeout: 5_000 }));
 				const after = await this.#pageCall(() => readCompanyComputerPrivateValues(page));
-				// Only what can leave is hidden (16 KB, with room for hidden parts): a huge page costs no more.
-				const aria = full.slice(0, 20_480);
+				// Only what can leave is hidden (16 KB, with room for hidden parts): a huge page costs no more. The cut is
+				// at a line's end: no value spans lines, so no part of one slips past checks that look for whole values.
+				const aria = full.length <= 20_480 ? full : full.slice(0, Math.max(0, full.lastIndexOf("\n", 20_480)));
 				const snapshot = await this.#pageCall(async () => {
 					const redacted = redactCompanyComputerSnapshot(aria, [...before, ...after], {
 						filled: this.#filled.current(),
 					}).replace(
-						/(\/url: )(\S+)/g,
+						/(\/url: )("(?:[^"\\]|\\.)*"|\S+)/g,
 						(_line, label: string, address: string) => `${label}${this.#filled.hideAddress(address)}`,
 					);
 					// A secret the vault typed that survives in another spelling refuses the snapshot.

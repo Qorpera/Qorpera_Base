@@ -181,19 +181,18 @@ export class CompanyComputerFilledValues {
 	}
 
 	/**
-	 * Whether `text` shows a value still hidden, also after up to three lenient decodes of percent escapes (either
-	 * letter case, `+` read both ways): a redirect that wraps an address encodes it again.
+	 * Whether `text` shows a value still hidden, also after up to three decodes of percent escapes (either letter
+	 * case): a redirect that wraps an address encodes it again. A value's spellings already match one encoding.
 	 */
 	showsDecoded(text: string): boolean {
 		if (this.current().length === 0) return false;
-		let layers = [text];
-		for (let depth = 0; depth <= 3; depth++) {
-			if (layers.some((layer) => this.shows(layer))) return true;
-			layers = [
-				...new Set(layers.flatMap((layer) => [percentDecoded(layer), percentDecoded(layer.replace(/\+/g, " "))])),
-			];
+		let layer = text;
+		for (let depth = 0; ; depth++) {
+			if (this.shows(layer)) return true;
+			const next = percentDecoded(layer);
+			if (depth === 3 || next === layer) return false;
+			layer = next;
 		}
-		return false;
 	}
 
 	/** A page address the agent may read: its query and fragment (or all of it) hidden when they show a value. */
@@ -202,7 +201,9 @@ export class CompanyComputerFilledValues {
 		try {
 			const url = new URL(address);
 			const path = this.showsDecoded(url.pathname) ? `/${COMPANY_COMPUTER_PRIVATE_VALUE}` : url.pathname;
-			return `${url.origin}${path}${url.search ? `?${COMPANY_COMPUTER_PRIVATE_VALUE}` : ""}${url.hash ? `#${COMPANY_COMPUTER_PRIVATE_VALUE}` : ""}`;
+			const out = `${url.origin}${path}${url.search ? `?${COMPANY_COMPUTER_PRIVATE_VALUE}` : ""}${url.hash ? `#${COMPANY_COMPUTER_PRIVATE_VALUE}` : ""}`;
+			// A value in the host itself (a code as a subdomain): none of the address is kept.
+			return this.showsDecoded(out) ? COMPANY_COMPUTER_PRIVATE_VALUE : out;
 		} catch {
 			return COMPANY_COMPUTER_PRIVATE_VALUE;
 		}
@@ -225,7 +226,19 @@ export class CompanyComputerFilledValues {
 	}
 }
 
-/** `text` with every %XX escape replaced by its byte as a character (lenient: invalid UTF-8 never throws). */
+const utf8 = new TextDecoder("utf-8", { fatal: true });
+
+/**
+ * `text` with each run of %XX escapes decoded: as UTF-8 when the run is UTF-8, else each byte as a character (as
+ * `escape` writes one). Lenient: it never throws.
+ */
 function percentDecoded(text: string): string {
-	return text.replace(/%([0-9A-Fa-f]{2})/g, (_match, hex: string) => String.fromCharCode(Number.parseInt(hex, 16)));
+	return text.replace(/(?:%[0-9A-Fa-f]{2})+/g, (run) => {
+		const bytes = Uint8Array.from(run.slice(1).split("%"), (hex) => Number.parseInt(hex, 16));
+		try {
+			return utf8.decode(bytes);
+		} catch {
+			return String.fromCharCode(...bytes);
+		}
+	});
 }
